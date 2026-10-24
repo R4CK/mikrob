@@ -211,7 +211,7 @@ function kgRenderDetail(node, neighbors) {
     <div class="kg-anchor">
       <span class="${kgAnchorStateClass(a.state)}">${escapeHtml(t('kg.anchor.state.' + (a.state || 'fresh')))}</span>
       <span class="kg-anchor-path">${escapeHtml(a.repo || '')}/${escapeHtml(a.path || '')}${a.symbol ? '#' + escapeHtml(a.symbol) : ''}</span>
-      ${typeof a.line_start === 'number' ? `<span class="kg-anchor-lines">L${a.line_start}${a.line_end ? '-' + a.line_end : ''}</span>` : ''}
+      ${typeof a.line_start === 'number' ? `<span class="kg-anchor-lines">L${a.line_start}${typeof a.line_end === 'number' ? '-' + a.line_end : ''}</span>` : ''}
     </div>`).join('') || `<p class="kg-detail-muted">${escapeHtml(t('kg.detail.no_anchors'))}</p>`
 
   const neighborsHtml = neighbors.map((n) => `

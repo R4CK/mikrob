@@ -104,6 +104,146 @@ describe('kg (Megoldás-tár): pure helper functions, real execution', () => {
   })
 })
 
+// WhiteHat F1/F2 (card 88fd0000, source: card 8bb7cf54 comment 20875, CYBERSEC GO with
+// condition): the ORIGINAL kg-dashboard-widget.test.ts never ran the real render functions
+// against an attacker string -- it only grep'd source text, so stripping any one of 6
+// escapeHtml() call-sites (detail title, result title, snippet, the data-attribute id, the
+// anchor path, the neighbor title) left the suite fully green. These tests actually EXECUTE
+// kgRenderResults/kgRenderDetail against a crafted payload on a minimal (Node, no jsdom) DOM
+// stub -- the same "truncated DOM" approach WhiteHat's own verification used -- and assert the
+// real escaped output, so removing any one of those escapeHtml() calls turns a specific test
+// red (verified by mutation, see the commit message).
+function loadKgRenderModule() {
+  class FakeEl {
+    _html = ''
+    hidden = false
+    value = '*'
+    checked = false
+    selectedOptions: unknown[] = []
+    classList = { toggle: () => {}, add: () => {}, remove: () => {} }
+    get innerHTML(): string { return this._html }
+    set innerHTML(v: string) { this._html = v }
+    querySelectorAll(): unknown[] { return [] }
+    querySelector(): null { return null }
+    addEventListener(): void {}
+    getAttribute(): null { return null }
+    setAttribute(): void {}
+  }
+  const elements = new Map<string, FakeEl>()
+  function fakeEl(id: string): FakeEl {
+    if (!elements.has(id)) elements.set(id, new FakeEl())
+    return elements.get(id)!
+  }
+  const fakeDocument = { getElementById: fakeEl }
+  // Faithful to the real escapeHtml (app-helpers.js:25-33): textContent->innerHTML escapes
+  // & < > (in that order, so a literal & is never re-escaped by the later rules), then an
+  // explicit replace for " and ' (attribute-context safety).
+  const realEscapeHtml = (v: unknown) =>
+    String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+  const tStub = (key: string, params: Record<string, unknown> = {}) =>
+    key.replace(/\{(\w+)\}/g, (_: string, k: string) => String(params[k] ?? `{${k}}`))
+  const factory = new Function(
+    'document', 'escapeHtml', 't', 'localStorage', 'fetch', 'confirm', 'alert',
+    APP_KG + '\nreturn { kgRenderResults, kgRenderDetail, kgCurrentQuery }',
+  )
+  const mod = factory(fakeDocument, realEscapeHtml, tStub, { getItem: () => '' }, () => Promise.reject(new Error('not used')), () => true, () => {})
+  return { mod, fakeEl }
+}
+
+describe('kg: escaping, real execution against the actual render functions (WhiteHat F1/F2)', () => {
+  const XSS = '"><img src=x onerror=alert(1)>'
+
+  it('kgRenderResults escapes result.title', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderResults([{ id: 'ok1', type: 'solution', project: 'marveen', title: XSS, status: 'active' }], {})
+    const html = fakeEl('kgResultsBody').innerHTML
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img')
+  })
+
+  it('kgRenderResults escapes result.snippet', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderResults([{ id: 'ok1', type: 'solution', project: 'marveen', title: 'ok', snippet: XSS, status: 'active' }], {})
+    const html = fakeEl('kgResultsBody').innerHTML
+    expect(html).not.toContain('<img')
+  })
+
+  it('kgRenderResults escapes the data-kg-node-id attribute value', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderResults([{ id: XSS, type: 'solution', project: 'marveen', title: 'ok', status: 'active' }], {})
+    const html = fakeEl('kgResultsBody').innerHTML
+    expect(html).not.toContain('"><img')
+    expect(html).not.toContain('<img')
+  })
+
+  it('kgRenderDetail escapes node.title', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderDetail({ id: 'n1', type: 'solution', project: 'marveen', status: 'active', title: XSS, anchors: [] }, [])
+    const html = fakeEl('kgDetailBody').innerHTML
+    expect(html).not.toContain('<img')
+  })
+
+  it('kgRenderDetail escapes node.snippet', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderDetail({ id: 'n1', type: 'solution', project: 'marveen', status: 'active', title: 'ok', snippet: XSS, anchors: [] }, [])
+    const html = fakeEl('kgDetailBody').innerHTML
+    expect(html).not.toContain('<img')
+  })
+
+  it('kgRenderDetail escapes the anchor repo/path', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderDetail(
+      { id: 'n1', type: 'solution', project: 'marveen', status: 'active', title: 'ok', anchors: [{ repo: XSS, path: XSS, state: 'fresh' }] },
+      [],
+    )
+    const html = fakeEl('kgDetailBody').innerHTML
+    expect(html).not.toContain('<img')
+  })
+
+  it('kgRenderDetail escapes a neighbor title', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderDetail(
+      { id: 'n1', type: 'solution', project: 'marveen', status: 'active', title: 'ok', anchors: [] },
+      [{ edge: { rel: 'produced' }, node: { id: 'n2', type: 'solution', status: 'active', title: XSS } }],
+    )
+    const html = fakeEl('kgDetailBody').innerHTML
+    expect(html).not.toContain('<img')
+  })
+
+  it('F1: kgRenderDetail never emits a raw, unescaped non-numeric anchor.line_end', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderDetail(
+      { id: 'n1', type: 'solution', project: 'marveen', status: 'active', title: 'ok', anchors: [{ repo: 'r', path: 'p', line_start: 1, line_end: XSS, state: 'fresh' }] },
+      [],
+    )
+    const html = fakeEl('kgDetailBody').innerHTML
+    expect(html).not.toContain('<img')
+    // typeof-guarded like line_start: a non-number line_end is omitted entirely, not stringified.
+    expect(html).not.toContain(XSS)
+  })
+
+  it('F1: a genuine numeric line_end still renders (no regression)', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderDetail(
+      { id: 'n1', type: 'solution', project: 'marveen', status: 'active', title: 'ok', anchors: [{ repo: 'r', path: 'p', line_start: 10, line_end: 20, state: 'fresh' }] },
+      [],
+    )
+    const html = fakeEl('kgDetailBody').innerHTML
+    expect(html).toContain('L10-20')
+  })
+
+  it('F2: default scope is always project=* (no card_id-less, project-less dead end)', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    // Simulate the post-F3 DOM: a single, selected "Összes projekt" (*) option.
+    fakeEl('kgSearchInput').value = 'anything'
+    fakeEl('kgProjectSelect').value = '*'
+    fakeEl('kgTypeFilter').selectedOptions = []
+    fakeEl('kgStrictToggle').checked = false
+    const query = mod.kgCurrentQuery()
+    expect(query.project).toBe('*')
+  })
+})
+
 describe('kg: search fetch contract', () => {
   const src = fnBody(APP_KG, 'async function kgRunSearch(')
 
@@ -119,8 +259,9 @@ describe('kg: search fetch contract', () => {
     expect(src).toContain("params.set('k'")
   })
 
-  it('does NOT send project=* unless the project selector itself holds "*" (D5/F2 default scope)', () => {
-    // kgCurrentQuery reads the raw <select> value; it never hardcodes '*' anywhere in this file.
+  it('never hardcodes the "*" scope in JS -- it is read from the DOM select (F3, card 88fd0000)', () => {
+    // kgCurrentQuery reads the raw <select> value; the HTML now carries a single, selected
+    // "Összes projekt" (*) option (F3), but the JS itself still never hardcodes the scope.
     expect(APP_KG).not.toMatch(/project['"]?\s*[:=]\s*['"]\*['"]/)
   })
 
@@ -215,6 +356,19 @@ describe('kg: HTML wiring', () => {
     for (const ty of ['solution', 'anti_pattern', 'decision', 'finding', 'lesson']) {
       expect(slice).toContain(`value="${ty}"`)
     }
+  })
+
+  it('F3 (card 88fd0000): the project select defaults to "Összes projekt" (*), no "Saját projekt" dead end', () => {
+    const selectIdx = HTML.indexOf('id="kgProjectSelect"')
+    const closeIdx = HTML.indexOf('</select>', selectIdx)
+    const slice = HTML.slice(selectIdx, closeIdx)
+    expect(slice).toContain('value="*"')
+    expect(slice).toContain('selected')
+    // The old "Saját projekt" (empty-value) option sent neither project nor card_id and hit
+    // the contract's 400 project_or_card_id_required dead end -- it must be gone, not just
+    // relabeled.
+    expect(slice).not.toContain('value=""')
+    expect(slice).not.toContain('kg.filter.default_scope')
   })
 
   it('the script tag is present after app-overview.js', () => {
