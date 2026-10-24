@@ -67,7 +67,7 @@ SEGED_HIVO_HELPERS="$HEAVY_TD/scripts/seged-hivo.py"
 run() {
   LOCAL_OK="${1:-0}" GEMINI_OK="${2:-0}" GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
     GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
-    UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
+    UBD_SELFTEST_MODE=1 UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
     bash "$SCRIPT" --caller test "${@:3}"
 }
 
@@ -123,7 +123,7 @@ rm -f "$GEMINI_HEAVY_FLAG"
 run_realgate() {
   LOCAL_OK="${1:-0}" GEMINI_OK="${2:-0}" GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
     GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
-    UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
+    UBD_SELFTEST_MODE=1 UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
     bash "$SCRIPT" --caller test "${@:3}"
 }
 
@@ -188,6 +188,50 @@ touch "$GEMINI_HEAVY_FLAG"
 out="$(UBD_OFFLOAD_DISPATCH="$STUB_ALWAYS_ALLOW" run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT")"; rc=$?
 check "K: UBD_OFFLOAD_DISPATCH override is inert, sensitive content still blocked" 2 "" "$rc" "$out"
 rm -f "$GEMINI_HEAVY_FLAG"
+
+# L/M/N regress WhiteHat NO-GO F1/F2 (card 7b5cf804, komment 23922, Gate-SHA
+# bffa6341ef399a75c696a4aa902cddb670d445c6): the J/env -u wrapper above does not help if `env`/
+# `bash` themselves are shadowed by an exported function or a PATH-prepended fake binary, and the
+# FILTER/LOCAL_LLM/GEMINI_OFFLOAD seams were overridable from ANY caller, not just the selftest.
+
+echo "=== L. a bash function named 'env', exported by the CALLER, must not let a sensitive commit through (old code: rc=0, Gemini-stub received the subject) ==="
+touch "$GEMINI_HEAVY_FLAG"
+out_l="$( (
+  env() { return 42; }
+  export -f env
+  run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT"
+) )"; rc_l=$?
+check "L: exported env function -> content gate still blocks" 2 "" "$rc_l" "$out_l"
+rm -f "$GEMINI_HEAVY_FLAG"
+
+echo "=== M. a PATH-prepended fake 'env' binary must not let a sensitive commit through (old code: rc=0) ==="
+FAKE_BIN="$TMP/fakebin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/env" <<'EOF'
+#!/usr/bin/env bash
+exit 42
+EOF
+chmod +x "$FAKE_BIN/env"
+touch "$GEMINI_HEAVY_FLAG"
+out_m="$(PATH="$FAKE_BIN:$PATH" run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT")"; rc_m=$?
+check "M: PATH-prepended fake env -> content gate still blocks" 2 "" "$rc_m" "$out_m"
+rm -f "$GEMINI_HEAVY_FLAG"
+
+echo "=== N. UBD_FILTER override has NO EFFECT without UBD_SELFTEST_MODE (production mode): a malicious passthrough filter cannot let a filter-rejected input through ==="
+PASSTHROUGH_FILTER="$TMP/passthrough-filter.sh"
+cat > "$PASSTHROUGH_FILTER" <<'EOF'
+#!/usr/bin/env bash
+cat
+EOF
+chmod +x "$PASSTHROUGH_FILTER"
+# No UBD_SELFTEST_MODE set here -- on fixed code UBD_FILTER is ignored and the real filter.sh
+# rejects UNSAFE_ONLY exactly as in case E, before any local/Gemini attempt (fast, no real call).
+# Bounded with timeout: on the pre-fix mutation (UBD_FILTER honored unconditionally) the malicious
+# filter would let UNSAFE_ONLY through unfiltered, and the script would proceed to call the REAL
+# local-llm.sh (not stubbed, since UBD_LOCAL_LLM is not set here either) -- that hangs rather than
+# failing fast, so the timeout turns an otherwise-indefinite mutation run into a bounded FAIL.
+out_n="$(timeout 10 env UBD_FILTER="$PASSTHROUGH_FILTER" bash "$SCRIPT" --caller test --confirm-gemini-ok <<<"$UNSAFE_ONLY" 2>/dev/null)"; rc_n=$?
+check "N: UBD_FILTER override inert without UBD_SELFTEST_MODE, unsafe input still rejected" 1 "" "$rc_n" "$out_n"
 
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"

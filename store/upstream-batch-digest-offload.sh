@@ -40,13 +40,33 @@
 #   local attempt and the Gemini fallback failed.
 set -uo pipefail
 
+# WhiteHat NO-GO F1 (card 7b5cf804, komment 23922, Gate-SHA bffa6341ef399a75c696a4aa902cddb670d445c6):
+# the caller's environment could shadow `env`/`bash` with an exported bash function (export -f env)
+# or a PATH-prepended fake binary, which defeats the `env -u BASH_ENV -u ENV bash ...` gate call
+# below even though BASH_ENV/ENV themselves are unset -- the function/PATH lookup happens BEFORE the
+# gate runs. Drop any inherited function with these names, pin PATH, and unset BASH_ENV/ENV so later
+# invocations (including the absolute-path gate call further down) cannot be shadowed this way.
+unset -f env bash awk date cat printf 2>/dev/null || true
+PATH=/usr/bin:/bin
+unset BASH_ENV ENV
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Env-overridable (selftest-only pattern, matches gemini-heavy-gate.sh's GEMINI_HEAVY_FLAG/
-# HEAVY_HOURLY_LOCK): lets a selftest point these at stub scripts instead of the real
-# local-llm.sh/gemini-offload-call.sh. Production calls never set these, so they resolve here.
-FILTER="${UBD_FILTER:-$HERE/upstream-batch-digest-filter.sh}"
-LOCAL_LLM="${UBD_LOCAL_LLM:-$HERE/local-llm.sh}"
-GEMINI_OFFLOAD="${UBD_GEMINI_OFFLOAD:-$HERE/gemini-offload-call.sh}"
+# WhiteHat NO-GO F2 (card 7b5cf804, komment 23922): FILTER/LOCAL_LLM/GEMINI_OFFLOAD were overridable
+# from ANY caller's environment, not just the selftest's -- e.g. a caller-supplied UBD_FILTER could
+# let --stat lines through to Gemini, exactly the invariant upstream-batch-digest-filter.sh exists to
+# enforce. These seams stay (the selftest genuinely needs to stub local-llm.sh/gemini-offload-call.sh
+# to avoid a real Ollama/Gemini call), but are now gated behind a second, non-production variable the
+# selftest sets alongside them in its own bash invocation -- a production caller that does not set
+# UBD_SELFTEST_MODE gets the real paths regardless of what else it sets.
+if [[ "${UBD_SELFTEST_MODE:-0}" == "1" ]]; then
+  FILTER="${UBD_FILTER:-$HERE/upstream-batch-digest-filter.sh}"
+  LOCAL_LLM="${UBD_LOCAL_LLM:-$HERE/local-llm.sh}"
+  GEMINI_OFFLOAD="${UBD_GEMINI_OFFLOAD:-$HERE/gemini-offload-call.sh}"
+else
+  FILTER="$HERE/upstream-batch-digest-filter.sh"
+  LOCAL_LLM="$HERE/local-llm.sh"
+  GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
+fi
 # WhiteHat MEDIUM (card 7b5cf804, d886e9c2 GO @ a7742f46): the content gate below is the one
 # thing standing between a sensitive commit and Gemini -- it must NOT be overridable from the
 # caller's environment. No test (selftest or otherwise) ever sets UBD_OFFLOAD_DISPATCH, so the
@@ -96,8 +116,11 @@ fi
 # would be sourced by this `bash <scriptfile>` invocation BEFORE offload-dispatch.sh's own code
 # runs -- a caller-supplied file there could just `exit 42` and skip the real check entirely.
 # Strip both so the gate call always runs the real logic, regardless of caller environment.
+# WhiteHat NO-GO F1 (card 7b5cf804, komment 23922): absolute paths, so no PATH lookup for `env`/
+# `bash` happens at all (the unset -f/PATH pin above already strips inherited functions, this
+# closes the same hole even if something re-exported a function or re-widened PATH in between).
 CHECK_RC=0
-env -u BASH_ENV -u ENV bash "$OFFLOAD_DISPATCH" --check-blocked mikrob "gemini-ok" "" "$FILTERED" >/dev/null 2>&1 || CHECK_RC=$?
+/usr/bin/env -u BASH_ENV -u ENV /bin/bash "$OFFLOAD_DISPATCH" --check-blocked mikrob "gemini-ok" "" "$FILTERED" >/dev/null 2>&1 || CHECK_RC=$?
 if [[ "$CHECK_RC" != 42 ]]; then
   echo "upstream-batch-digest-offload: no Gemini fallback (content gate blocked)" >&2
   exit 2
