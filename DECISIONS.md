@@ -21689,3 +21689,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet WhiteHat-tól jön (ff7e1b0a GO, komment 6640), a kódot/tesztet backend3 írta.
 
 **Hivatkozás:** kártya 99a4a2d4, előd ff7e1b0a, WhiteHat komment 6640.
+
+## 2026-10-24: 88fd0000 -- MT F5 follow-up: line_end escape, valódi-végrehajtású escape-teszt-pin, "Összes projekt" alapértelmezés (WhiteHat GO feltétellel, kártya 8bb7cf54 komment 20875)
+
+**Kontextus:** a 8bb7cf54 (MT-11 Megoldás-tár dashboard) WhiteHat GO-ja feltételes volt: F1 MEDIUM (a kódhorgony `line_end` mezője escape és típusőr nélkül, míg `line_start` typeof number őrt kapott -- a dashboard a flotta Bearer tokenjét localStorage-ban tartja, tehát egy nem-egész `line_end` token-lopás útja lenne, mihelyt a KG-backend adatot szolgáltat), F2 LOW (a teszt-csomag 0 escapeHtml-állítást tartalmazott, csak forrás-szöveg grep -- 6/6 escape-kivétel mutáns zölden maradt volna, az alapértelmezett hatókör regexe is vak volt a `project || '*'` alakra), F3 LOW (a "Saját projekt" alapértelmezés -- sem project, sem card_id -- a 20763 kontraktus szerint 400 project_or_card_id_required-et ad, zsákutca az oldal betöltésekor).
+
+**Döntés:** F1: `a.line_end` typeof number-őrt kap, azonos mintával mint `a.line_start`. F2: valódi végrehajtású teszt-harness (minimális Node DOM-stub, nincs jsdom), ami a tényleges `kgRenderResults`/`kgRenderDetail` függvényeket hívja meg támadó stringgel a 7 escape-pontra (találat cím/snippet/id-attribútum, részlet cím/snippet, horgony repo+path, szomszéd cím) plusz a line_end őrre és az alapértelmezett hatókörre (`kgCurrentQuery()` tényleges hívása, nem forrás-regex). F3: a "Saját projekt" (üres érték) opció eltávolítva, a projekt-választó egyetlen, előválasztott "Összes projekt" (`project=*`) opciót tartalmaz; a `kg.filter.default_scope` i18n-kulcs törölve (használaton kívüli), a `kg.filter.all_projects` felirat a kártya szövegéhez igazítva.
+
+**Mutáció-ellenőrzés:** mind a 8 pont (7 escapeHtml-hívás + a line_end típusőr) egyenként visszamutatva a javítás előtti alakra -- mindegyik PONTOSAN a saját célzott tesztjét vitte pirosra (8/8), majd visszaállítva, a teljes csomag 44/44 zöld. A projekt-választó HTML-szerkezeti tesztje a régi két-opciós markup-ra visszaállítva is pirosra vált.
+
+**Ki döntött:** a lelet WhiteHat-tól jön (8bb7cf54 GO feltétellel, komment 20875), a javítást és a teszteket fron-ted írta.
+
+**Hivatkozás:** kártya 88fd0000, előd 8bb7cf54 (WhiteHat GO komment 20875), Pair-BE ee9ee17b.
