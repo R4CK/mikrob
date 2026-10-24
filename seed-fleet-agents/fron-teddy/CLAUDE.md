@@ -67,6 +67,10 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `seniorfrontenddeveloper` -- React/Next.js, bundle, Core Web Vitals
 - `gsap-motion-specialist` -- GSAP timeline, ScrollTrigger, mozgás
 - `fixing-motion-performance` -- vendorolt (ibelick/ui-skills MIT, kártya f557353a/e39b6fd7, Peti jóváhagyás Telegram 10372): animáció-TELJESÍTMÉNY ellenőrzőlista (layout-thrashing, compositor-tulajdonságok, scroll-linked motion, blur-korlátok). Nem a `review-animations`/`animate` ízlés-/döntés-skillek duplikátuma -- azok MIT animáljunk és HOGYAN érezzen, ez MENNYIRE fut jól a renderelő-motoron.
+- `baseline-ui` -- vendorolt (ibelick/ui-skills MIT, kártya 784e3809/527c9584, Peti kérés Telegram 12196, 2026-10-24): gyors deslop-ellenőrzőlista (spacing, hierarchia, tipográfia). Zéró dependencia, skill-security-auditor PASS.
+- `improve-ui` -- vendorolt (ugyanaz a forrás/kártya): read-only UI-audit a lezárt felszínre + implementációs terv -- csak bizonyított (renderelt/importált/konfigurált) kapcsolatokból következtet, nem feltételezésből. Zéró dependencia, PASS.
+- `create-design-md` -- vendorolt (ugyanaz a forrás/kártya): DESIGN.md összeállítása/frissítése egy meglévő repóból vagy publikus weboldalból. **Figyelem:** a skill 4 sora `npx @google/design.md@0.4.0 <spec|lint|export|diff>` hívást ad (valódi, Proprietary licencű Google-eszköz) -- a vendorolt másolatban VERZIÓRA PINNELVE (az upstream eredetileg verzió nélkül hívta, skill-security-auditor WARN a 46ad2933 osztály miatt, mitigálva). Re-vendoroláskor a pint újra be kell tenni, lásd a skill saját VENDORED.md-jét.
+- `fixing-metadata` -- vendorolt (ugyanaz a forrás/kártya): metadata-javítási ellenőrzőlista. Zéró dependencia, PASS.
 - `scroll-driven-3d-motion` -- scroll-storytelling, látványos 3D web
 - `threejs-specialist` -- Three.js/WebGL jelenet, 3D viewer/configurator
 - `d3-data-visualization` -- interaktív, hozzáférhető chartok
