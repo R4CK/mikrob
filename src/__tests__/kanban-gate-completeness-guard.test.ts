@@ -1386,4 +1386,32 @@ describe('gateCompletenessGuardVerdict', () => {
     })
   })
 
+  // Card 6b87df14 (incident on card d87adb90, 2026-09-26 08:5x): REVIEW(548b5c73) -> QA PASS ->
+  // Cybersec GO citing a TYPO'd sha (548b5c7300000000, extra trailing zeros) -> Cybersec GO citing
+  // the correct sha. The live `PUT status:done` was rejected with "QA verdiktjét is megköveteli",
+  // even though QA had already PASSed for the same round -- MikroB had to force:true past it.
+  // Measured (this card): the current guard is ALREADY correct here, by TWO independent, already-
+  // shipped protections neither of which was written for this exact shape -- (1) the short-vs-full
+  // prefix-containment merge (card 85c87024) folds the typo'd long sha into the same entry as the
+  // correct short sha, since one is a prefix of the other; (2) even without that merge, the
+  // gate-only-citer drop (card 9ce3181c round-5) removes an entry no non-gate author ever
+  // confirmed, which the typo'd sha's own entry would be (only Cybersec ever cited it). Mutation-
+  // verified: this test only goes red when BOTH protections are disabled at once (confirmed in the
+  // worktree, reverted, `git status` clean) -- so it is not a vacuous pin on either mechanism
+  // alone, it pins the OUTCOME the card asked for. No code change: the incident's root cause was
+  // already fixed as a side effect of the 85c87024/9ce3181c rounds; this test is the missing
+  // regression coverage for this specific shape, per the card's own "Teendő".
+  describe('card 6b87df14: a typo-extended Gate-SHA citation from one gate must not hide that gate\'s own fresh verdict', () => {
+    it('QA PASS stays fresh even though Cybersec cited a typo-extended sha before its own correct one', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 548b5c73', created_at: 100 },
+        { author: 'qa', content: 'QA PASS\nGate-SHA: 548b5c73', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 548b5c7300000000', created_at: 300 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 548b5c73', created_at: 310 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
+
 })
