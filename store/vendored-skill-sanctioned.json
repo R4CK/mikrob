@@ -274,6 +274,9 @@
     "~/marveen/agents/fron-teddy/.claude/skills/animation-vocabulary": [],
     "~/marveen/agents/fron-teddy/.claude/skills/apple-design": [],
     "~/marveen/agents/fron-teddy/.claude/skills/break-ui": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/create-design-md": [
+      "changed:SKILL.md@22f01706fc0a28635b9769351e64a7e6e0a1be7751d00ab75fc5c77dcfc5cd91"
+    ],
     "~/marveen/agents/fron-teddy/.claude/skills/emil-design-eng": [],
     "~/marveen/agents/fron-teddy/.claude/skills/find-animation-opportunities": [],
     "~/marveen/agents/fron-teddy/.claude/skills/fixing-accessibility": [],
