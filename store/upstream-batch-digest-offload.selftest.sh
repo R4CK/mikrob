@@ -117,6 +117,33 @@ out="$(GEMINI_AGY_HEAVY_HOURLY_LIMIT=0 run 0 1 --confirm-gemini-ok <<<"$COMMIT_I
 check "G: hourly budget capped -> exit 2" 2 "" "$rc" "$out"
 rm -f "$GEMINI_HEAVY_FLAG"
 
+# H/I use the REAL offload-dispatch.sh --check-blocked (card d886e9c2, MikroB 23556 point (a),
+# RedHat GO 23683) -- NOT stubbed, because the whole point is proving the real content-gate
+# vocabulary actually runs, not a stand-in that always agrees with the caller.
+run_realgate() {
+  LOCAL_OK="${1:-0}" GEMINI_OK="${2:-0}" GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
+    GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
+    UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
+    bash "$SCRIPT" --caller test "${@:3}"
+}
+
+echo "=== H. local fails, confirm given, heavy flag ON, budget available, Gemini WOULD succeed, but the commit subject is sensitive -> the content gate blocks, exit 2, no Gemini call (card d886e9c2) ==="
+touch "$GEMINI_HEAVY_FLAG"
+SENSITIVE_INPUT=$'abc1234 fix auth bypass in login\n'
+out="$(run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT")"; rc=$?
+check "H: sensitive content -> content gate blocks -> exit 2" 2 "" "$rc" "$out"
+rm -f "$GEMINI_HEAVY_FLAG"
+
+echo "=== I. the --confirm-gemini-ok switch ALONE is not sufficient: everything else (heavy flag, budget, Gemini) is wide open, yet a sensitive commit is still blocked (same case as H, restated as the acceptance criterion) ==="
+touch "$GEMINI_HEAVY_FLAG"
+out="$(run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT")"; rc=$?
+if [[ "$rc" == 2 && "$out" == "" ]]; then
+  PASS=$((PASS+1)); echo "OK   I: confirm switch alone does not open the Gemini path"
+else
+  FAIL=$((FAIL+1)); FAILED+=("I: confirm switch alone"); echo "FAIL rc=$rc out='$out'"
+fi
+rm -f "$GEMINI_HEAVY_FLAG"
+
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
 if [ "$FAIL" -gt 0 ]; then
