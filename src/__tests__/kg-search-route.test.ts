@@ -43,7 +43,7 @@ vi.mock('../db.js', async () => {
   }
 })
 
-const { tryHandleKg } = await import('../web/routes/kg.js')
+const { tryHandleKg, resolveK } = await import('../web/routes/kg.js')
 
 function makeCtx(path: string, params: Record<string, string>): { ctx: RouteContext; body: () => any; status: () => number | undefined } {
   const url = new URL(`http://localhost:3420${path}`)
@@ -126,5 +126,66 @@ describe('GET /api/kg/search and /api/kg/for-card (MT-04, card 34c2d2a2)', () =>
     const { ctx, body } = makeCtx('/api/kg/other', {})
     await expect(tryHandleKg(ctx)).resolves.toBe(false)
     expect(body()).toBeNull()
+  })
+
+  // WhiteHat NO-GO F2 MEDIUM (card 34c2d2a2, comment 24103): `k` had no upper bound (the KG_TOPK
+  // registry max only applied to the DEFAULT, not an explicit `?k=`), and `q`/`path`/`types`/
+  // `project` had no length/count bound at all. Each case here is red against the pre-fix code
+  // (an unclamped `k`, and no length/count checks at all).
+  describe('F2 MEDIUM: k/q/path/types/project bounds', () => {
+    it('resolveK clamps an oversized k to the real KG_TOPK registry max (8)', () => {
+      expect(resolveK('100000')).toBe(8)
+      expect(resolveK('8')).toBe(8)
+      expect(resolveK('5')).toBe(5)
+      expect(resolveK('0')).toBe(3) // invalid (<=0) falls back to the default, not clamped-to-min
+      expect(resolveK('not-a-number')).toBe(3)
+      expect(resolveK(null)).toBe(3)
+    })
+
+    it('?k=100000 does not crash the route (end-to-end, clamp applied before the SQL LIMIT)', async () => {
+      kgEnabledValue = '1'
+      const { ctx, body } = makeCtx('/api/kg/search', { q: 'fix', project: 'mikrob', k: '100000' })
+      await expect(tryHandleKg(ctx)).resolves.toBe(true)
+      expect(body().results).toBeDefined()
+    })
+
+    it('q over 2000 chars -> 400 q_too_long, hybridKgSearch never reached', async () => {
+      kgEnabledValue = '1'
+      const { ctx, body, status } = makeCtx('/api/kg/search', { q: 'a'.repeat(2001), project: 'mikrob' })
+      await expect(tryHandleKg(ctx)).resolves.toBe(true)
+      expect(status()).toBe(400)
+      expect(body()).toEqual({ error: 'q_too_long' })
+    })
+
+    it('q at exactly 2000 chars is accepted (boundary)', async () => {
+      kgEnabledValue = '1'
+      const { ctx, status } = makeCtx('/api/kg/search', { q: 'a'.repeat(2000), project: 'mikrob' })
+      await expect(tryHandleKg(ctx)).resolves.toBe(true)
+      expect(status()).not.toBe(400)
+    })
+
+    it('more than 32 repeated path/types params -> 400 too_many_values', async () => {
+      kgEnabledValue = '1'
+      const { ctx, body, status } = makeCtx('/api/kg/search', { q: 'fix', project: 'mikrob' })
+      for (let i = 0; i < 33; i++) ctx.url.searchParams.append('path', `src/file${i}.ts`)
+      await expect(tryHandleKg(ctx)).resolves.toBe(true)
+      expect(status()).toBe(400)
+      expect(body()).toEqual({ error: 'too_many_values' })
+    })
+
+    it('project over 2000 chars -> 400 project_too_long', async () => {
+      kgEnabledValue = '1'
+      const { ctx, body, status } = makeCtx('/api/kg/search', { q: 'fix', project: 'a'.repeat(2001) })
+      await expect(tryHandleKg(ctx)).resolves.toBe(true)
+      expect(status()).toBe(400)
+      expect(body()).toEqual({ error: 'project_too_long' })
+    })
+
+    it('for-card ?k=100000 does not throw (clamped, same resolveK as search)', async () => {
+      kgEnabledValue = '1'
+      const { ctx, status } = makeCtx('/api/kg/for-card/cardA', { k: '100000' })
+      await expect(tryHandleKg(ctx)).resolves.toBe(true)
+      expect(status()).not.toBe(500)
+    })
   })
 })
