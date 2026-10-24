@@ -17,10 +17,14 @@
 //
 // Idempotent by construction: the node id is derived from the stable `memories.id`
 // (`lesson:memory:<id>`) -- re-running the import over the same rows upserts the same rows rather
-// than duplicating them. Atomic: one kgDb transaction, a bad row rolls back the whole run.
+// than duplicating them.
+//
+// F-d (card 4ecd75d0, WhiteHat 22988/23292): NOT atomic -- a secret shape in ONE memory row must
+// not roll back every other lesson already written in this run (same shape, same fix, as
+// import-decisions-log.ts's own F3, card 49b96b30).
 
 import type Database from 'better-sqlite3'
-import { upsertNode, upsertEdge } from './store.js'
+import { upsertNode, upsertEdge, KgSecretError } from './store.js'
 import { GLOBAL_PARTITION } from './project-map.js'
 import { referencedCardIds } from './import-decisions-log.js'
 
@@ -28,6 +32,10 @@ export interface ColdMemoriesImportReport {
   memoriesScanned: number
   lessonsUpserted: number
   aboutEdges: number
+  /** F-d: counted and the source ids recorded (never the raw secret text) so a caller/operator
+   *  can find and fix it without re-deriving it from the count alone. */
+  rowsRejectedSecret: number
+  secretRejectedSources: string[]
 }
 
 interface MemoryRow {
@@ -68,6 +76,8 @@ export function importColdMemories(
     memoriesScanned: 0,
     lessonsUpserted: 0,
     aboutEdges: 0,
+    rowsRejectedSecret: 0,
+    secretRejectedSources: [],
   }
 
   const rows = mainDb
@@ -83,16 +93,28 @@ export function importColdMemories(
 
     for (const row of rows) {
       const id = lessonNodeId(row.id)
-      upsertNode(kgDb, {
-        id,
-        type: 'lesson',
-        project: GLOBAL_PARTITION,
-        title: firstLine(row.content) || `(no content, memories:${row.id})`,
-        body: row.content,
-        keywords: row.keywords ?? null,
-        source_ref: `memories:${row.id}`,
-        extractor,
-      })
+      // F-d (card 4ecd75d0): a secret shape in THIS row must not roll back every lesson already
+      // written in this run (a SAVEPOINT via upsertNode's own nested transaction) -- catch it
+      // here, count and record the source, skip straight to the next row.
+      try {
+        upsertNode(kgDb, {
+          id,
+          type: 'lesson',
+          project: GLOBAL_PARTITION,
+          title: firstLine(row.content) || `(no content, memories:${row.id})`,
+          body: row.content,
+          keywords: row.keywords ?? null,
+          source_ref: `memories:${row.id}`,
+          extractor,
+        })
+      } catch (err) {
+        if (err instanceof KgSecretError) {
+          report.rowsRejectedSecret += 1
+          report.secretRejectedSources.push(`memories:${row.id}`)
+          continue
+        }
+        throw err
+      }
       report.lessonsUpserted += 1
 
       const targets = new Set<string>()

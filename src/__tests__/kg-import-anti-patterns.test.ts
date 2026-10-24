@@ -150,19 +150,51 @@ describe('importAntiPatterns (MT-10d, card 33e5e4ff)', () => {
     expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_edges').get()).toEqual(edgesAfterFirst)
   })
 
-  it('a failure partway through the run leaves NOTHING written (atomic, not partial)', () => {
+  // F-d (card 4ecd75d0, WhiteHat 22988/23292): the OLD behavior (a secret shape anywhere rolled
+  // back the WHOLE run) is exactly the bug this card closes -- same per-row isolation
+  // import-decisions-log.ts already has for the identical shape (card 49b96b30, F3).
+  it('F-d: a secret shape in ONE comment is skipped and counted, every other row still imports', () => {
     const mainDb = makeMainDbFixture()
     const kgDb = new Database(':memory:')
     migrateKg(kgDb)
     // A secret-shaped token in the FIRST matching comment's content makes upsertNode's
     // assertNoSecretShape throw (store.ts), same guard every kg_nodes write already passes
-    // through -- same technique as kg-import-findings.test.ts's atomicity test.
+    // through.
     mainDb
       .prepare(`UPDATE kanban_comments SET content = content || ' ghp_${'a'.repeat(36)}' WHERE id = 1`)
       .run()
 
-    expect(() => importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')).toThrow()
-    expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
-    expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_edges').get()).toEqual({ n: 0 })
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.rowsRejectedSecret).toBe(1)
+    expect(report.secretRejectedSources).toEqual(['kanban_comments:1'])
+    // Comment 1 is skipped, but comment 4 (deleted1) and both DECISIONS.md rejections still land.
+    expect(report.commentAntiPatternsUpserted).toBe(1)
+    expect(report.decisionAntiPatternsUpserted).toBe(2)
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:1')).toBeUndefined()
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:4')).toBeTruthy()
+  })
+
+  // F-b (card 4ecd75d0, source card description): a gate agent or a generated/automated comment
+  // author is not an eligible anti-pattern source, even with a line-start ELUTASITVA marker.
+  it('F-b: a Draft-Review: ELUTASITVA comment from a gate agent or a generated author is skipped', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+           ('card1', 'cybersec', 'Draft-Review: ELUTASITVA\n\nGate agent, not a builder.', 2000),
+           ('card1', 'local-llm', 'Draft-Review: ELUTASITVA\n\nGenerated comment author.', 2001)`,
+      )
+      .run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.commentsSkippedAuthor).toBe(2)
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:5')).toBeUndefined()
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:6')).toBeUndefined()
+    // The original, eligible-author comment still imports normally.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
   })
 })

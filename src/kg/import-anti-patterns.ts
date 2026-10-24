@@ -25,9 +25,11 @@
 // transaction, a bad row rolls back the whole run.
 
 import type Database from 'better-sqlite3'
-import { upsertNode, upsertEdge } from './store.js'
+import { upsertNode, upsertEdge, KgSecretError } from './store.js'
 import { mapProjectToPartition } from './project-map.js'
 import { parseEntries, referencedCardIds } from './import-decisions-log.js'
+import { GATE_AGENT_NAMES } from '../web/kanban-gate-completeness-guard.js'
+import { GENERATED_COMMENT_AUTHORS } from '../web/kanban-landed-guard.js'
 
 export interface AntiPatternsImportReport {
   commentsScanned: number
@@ -36,6 +38,17 @@ export interface AntiPatternsImportReport {
   decisionAntiPatternsUpserted: number
   rejectedForEdges: number
   cardRefsSkippedMissing: number
+  /** F-b (card 4ecd75d0, source card description): a Draft-Review: ELUTASITVA line authored by a
+   *  gate agent or a generated/automated comment author (local-llm, gate-pretriage, ...) is not an
+   *  eligible anti-pattern source -- only a builder's own rejection decision counts. Counted so a
+   *  caller can see the filter is active, not just infer it from a lower upserted count. */
+  commentsSkippedAuthor: number
+  /** F-d (card 4ecd75d0) + F3 precedent (import-decisions-log.ts, card 49b96b30): a secret shape in
+   *  ONE comment/entry must not roll back every other anti-pattern already written in this run.
+   *  Counted and the source ids recorded (never the raw secret text) so a caller/operator can find
+   *  and fix it without re-deriving it from the count alone. */
+  rowsRejectedSecret: number
+  secretRejectedSources: string[]
 }
 
 interface CardRow {
@@ -48,6 +61,7 @@ interface CommentRow {
   id: number
   card_id: string
   content: string
+  author: string | null
 }
 
 // Sor elején, a Gate-SHA/Draft-Review konvenció mintájára (sor elején, de nem kell az egész
@@ -112,6 +126,9 @@ export function importAntiPatterns(
     decisionAntiPatternsUpserted: 0,
     rejectedForEdges: 0,
     cardRefsSkippedMissing: 0,
+    commentsSkippedAuthor: 0,
+    rowsRejectedSecret: 0,
+    secretRejectedSources: [],
   }
   const lookup = makeCardLookup(mainDb)
   const cardNodesWritten = new Set<string>()
@@ -124,15 +141,27 @@ export function importAntiPatterns(
     }
     const cNodeId = cardNodeId(cardId)
     if (!cardNodesWritten.has(cNodeId)) {
+      // F-d (card 4ecd75d0): a secret-shaped card TITLE must not roll back every anti-pattern
+      // already written in this run (same shape as the comment/entry rows below) -- a card this
+      // happens to is simply never linked, the rest of the import still completes.
+      try {
+        upsertNode(kgDb, {
+          id: cNodeId,
+          type: 'card',
+          project: mapProjectToPartition(card.project),
+          title: card.title,
+          source_ref: `kanban_cards:${card.id}`,
+          extractor,
+        })
+      } catch (err) {
+        if (err instanceof KgSecretError) {
+          report.rowsRejectedSecret += 1
+          report.secretRejectedSources.push(`kanban_cards:${card.id}`)
+          return
+        }
+        throw err
+      }
       cardNodesWritten.add(cNodeId)
-      upsertNode(kgDb, {
-        id: cNodeId,
-        type: 'card',
-        project: mapProjectToPartition(card.project),
-        title: card.title,
-        source_ref: `kanban_cards:${card.id}`,
-        extractor,
-      })
     }
     if (
       upsertEdge(kgDb, { src: antiPatternId, dst: cNodeId, rel: 'rejected_for', source: extractor }) >
@@ -142,11 +171,20 @@ export function importAntiPatterns(
     }
   }
 
+  // F-b (card 4ecd75d0, source card description): only a builder's own rejection decision is an
+  // eligible anti-pattern source -- a gate agent or a generated/automated comment author
+  // (local-llm, gate-pretriage, ...) is not, same authority list capture-pipeline.ts already uses
+  // for the analogous "whose comment counts as a legitimate signal" question.
+  function isEligibleAuthor(author: string | null): boolean {
+    const a = (author ?? '').toLowerCase()
+    return !(GATE_AGENT_NAMES as ReadonlySet<string>).has(a) && !GENERATED_COMMENT_AUTHORS.has(a)
+  }
+
   // Coarse SQL pre-filter, precise match in JS (same split as import-findings.ts's verdict
   // filter): keeps the query simple while the actual "line starts with Draft-Review: ELUTASITVA"
   // decision stays in one place, testable without a DB.
   const comments = mainDb
-    .prepare(`SELECT id, card_id, content FROM kanban_comments WHERE content LIKE '%Draft-Review%'`)
+    .prepare(`SELECT id, card_id, content, author FROM kanban_comments WHERE content LIKE '%Draft-Review%'`)
     .all() as CommentRow[]
   report.commentsScanned = comments.length
 
@@ -158,17 +196,33 @@ export function importAntiPatterns(
 
     for (const c of comments) {
       if (!DRAFT_REVIEW_REJECTED_RX.test(c.content)) continue
+      if (!isEligibleAuthor(c.author)) {
+        report.commentsSkippedAuthor += 1
+        continue
+      }
       const id = commentAntiPatternNodeId(c.id)
       const card = lookup(c.card_id)
-      upsertNode(kgDb, {
-        id,
-        type: 'anti_pattern',
-        project: mapProjectToPartition(card?.project ?? null),
-        title: `Draft-Review: ELUTASITVA (kanban_comments:${c.id})`,
-        body: c.content,
-        source_ref: `kanban_comments:${c.id}`,
-        extractor,
-      })
+      // F-d (card 4ecd75d0): a secret shape in THIS comment must not roll back every anti-pattern
+      // already written in this run (a SAVEPOINT via upsertNode's own nested transaction) -- catch
+      // it here, count and record the source, skip straight to the next comment.
+      try {
+        upsertNode(kgDb, {
+          id,
+          type: 'anti_pattern',
+          project: mapProjectToPartition(card?.project ?? null),
+          title: `Draft-Review: ELUTASITVA (kanban_comments:${c.id})`,
+          body: c.content,
+          source_ref: `kanban_comments:${c.id}`,
+          extractor,
+        })
+      } catch (err) {
+        if (err instanceof KgSecretError) {
+          report.rowsRejectedSecret += 1
+          report.secretRejectedSources.push(`kanban_comments:${c.id}`)
+          continue
+        }
+        throw err
+      }
       report.commentAntiPatternsUpserted += 1
       linkToCard(id, c.card_id, extractor)
     }
@@ -178,15 +232,24 @@ export function importAntiPatterns(
       const decisionLine = rejectionDecisionLine(entryText)
       if (!decisionLine) continue
       const id = decisionAntiPatternNodeId(entry.lineNumber)
-      upsertNode(kgDb, {
-        id,
-        type: 'anti_pattern',
-        project: decisionsProject,
-        title: entry.title || decisionLine,
-        body: entry.body || null,
-        source_ref: `${sourcePath}:L${entry.lineNumber}`,
-        extractor,
-      })
+      try {
+        upsertNode(kgDb, {
+          id,
+          type: 'anti_pattern',
+          project: decisionsProject,
+          title: entry.title || decisionLine,
+          body: entry.body || null,
+          source_ref: `${sourcePath}:L${entry.lineNumber}`,
+          extractor,
+        })
+      } catch (err) {
+        if (err instanceof KgSecretError) {
+          report.rowsRejectedSecret += 1
+          report.secretRejectedSources.push(`${sourcePath}:L${entry.lineNumber}`)
+          continue
+        }
+        throw err
+      }
       report.decisionAntiPatternsUpserted += 1
 
       for (const cardId of referencedCardIds(entryText)) {

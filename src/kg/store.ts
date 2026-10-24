@@ -78,6 +78,49 @@ function capLength(text: string | null | undefined, max: number): string | null 
   return text.length > max ? text.slice(0, max) : text
 }
 
+// F-a (card 4ecd75d0, WhiteHat 22805/23292): upsertNode is the ONE write path every kg-* importer
+// goes through, but it stored title/body/snippet/keywords UNFILTERED -- invisible/BIDI/control
+// characters (a Unicode tag character, an RLO override, a ZWSP, a C0/C1 control) all passed
+// straight into a node that the capture pipeline's OWN output-side check (isSafeDraftField,
+// capture-pipeline.ts) would have rejected outright had it arrived through that path instead. Every
+// kg-importer (comments, DECISIONS.md entries, cold-memory rows, kanban card titles pulled in as
+// `card` nodes) shares this same unfiltered gap, so the fix belongs HERE, once, not per-importer.
+// The regex is the SAME one capture-pipeline.ts's isSafeDraftField/frameReviewAsData already use on
+// LLM input/output (imported from here, not duplicated back -- capture-pipeline.ts already imports
+// upsertNode/findSecretShape from this module, so the dependency only runs one way).
+// NO 'g' FLAG on the exported constant, deliberately: capture-pipeline.ts's isSafeDraftField calls
+// `.test()` on this exact object repeatedly across many parseDraft() calls, and a global regex's
+// `.test()` advances `lastIndex` as a SIDE EFFECT -- the next call then resumes mid-string instead
+// of from the start, silently missing a real match. sanitizeKgText below needs global replacement,
+// so it builds its OWN throwaway global instance from `.source` instead of mutating this one --
+// same pattern capture-pipeline.ts's frameReviewAsData already uses for the identical reason.
+// "szomszéd-karakter" gap (card f66b3652, RedHat 23202/23225, landed on develop while this move was
+// in flight): the class is a hand-picked list, not a Unicode category, so the Cf/Cc neighbors of
+// every character above were still unfiltered -- measured against Unicode 16.0 unicodedata:
+// interlinear annotation terminator, Khmer vowel inherent AA, more musical-notation format chars,
+// the full Mongolian free-variation-selector block, and the Arabic/Syriac/Kaithi/Egyptian-
+// hieroglyph/shorthand format-control blocks. Carried forward here rather than re-landed on the
+// narrower pre-f66b3652 list.
+export const UNSAFE_CHARS_RX = new RegExp(
+  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00ad\\u061c' +
+    '\\u0600-\\u0605\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180b-\\u180f' +
+    '\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\u3164\\ufeff' +
+    '\\u034f\\u115f\\u1160\\u17b4-\\u17b5\\u206a-\\u206f\\ufe00-\\ufe0f\\uffa0\\ufff9-\\ufffb' +
+    '\\u{110BD}\\u{110CD}\\u{13430}-\\u{1343F}\\u{1BCA0}-\\u{1BCA3}' +
+    '\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}\\u{1D173}-\\u{1D17A}]',
+  'u',
+)
+
+/** Strips (never rejects -- these are importer rows, not adversarial LLM output) every invisible,
+ *  BIDI-override and control character from a kg_nodes text field. Exported so every kg-importer
+ *  can apply the SAME sanitization to text that reaches upsertNode by a path other than its own
+ *  string fields (e.g. a card title copied in as a `card` node's title) -- still cheap/idempotent
+ *  to call twice. */
+export function sanitizeKgText<T extends string | null | undefined>(text: T): T {
+  if (text == null) return text
+  return text.replace(new RegExp(UNSAFE_CHARS_RX.source, 'gu'), '') as T
+}
+
 /** Reuses the SAME patterns the commit-time secret-gate scans diffs with (src/security/
  *  secret-gate.ts), so a node body is held to the same bar as a commit -- one source of truth
  *  for "what a secret shape looks like", not a second regex list that can drift from the first. */
@@ -201,16 +244,23 @@ export function rebuild(db: Database.Database, dbPath: string): Database.Databas
 
 export function upsertNode(db: Database.Database, input: KgNodeInput): void {
   assertValidIdentifiers(input)
+  // F-a (card 4ecd75d0): sanitize BEFORE the secret-shape check, not after -- an invisible
+  // character inserted inside a token (e.g. a ZWSP mid-hash) could otherwise dodge
+  // findSecretShape's regexes while still reconstituting into the real secret on display/copy.
+  const sanitizedTitle = sanitizeKgText(input.title)
+  const sanitizedBody = sanitizeKgText(input.body)
+  const sanitizedSnippet = sanitizeKgText(input.snippet)
+  const sanitizedKeywords = sanitizeKgText(input.keywords)
   assertNoSecretShape({
-    title: input.title,
-    body: input.body,
-    snippet: input.snippet,
-    keywords: input.keywords,
+    title: sanitizedTitle,
+    body: sanitizedBody,
+    snippet: sanitizedSnippet,
+    keywords: sanitizedKeywords,
   })
   const now = nowSec()
-  const title = capLength(input.title, 200) as string
-  const body = capLength(input.body ?? null, 8000)
-  const snippet = capLength(input.snippet ?? null, 12000)
+  const title = capLength(sanitizedTitle, 200) as string
+  const body = capLength(sanitizedBody ?? null, 8000)
+  const snippet = capLength(sanitizedSnippet ?? null, 12000)
 
   const tx = db.transaction(() => {
     // F1 (eeb57483, WhiteHat GO condition on ee9ee17b): a re-import (e.g. importFromRelations
@@ -253,7 +303,7 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
       body,
       snippet,
       snippet_lang: input.snippet_lang ?? null,
-      keywords: input.keywords ?? null,
+      keywords: sanitizedKeywords ?? null,
       status: finalStatus,
       source_ref: input.source_ref,
       gate_sha: input.gate_sha ?? null,
