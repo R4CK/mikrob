@@ -7,6 +7,8 @@ description: Create or update a DESIGN.md from an existing product repository or
 
 Create a `DESIGN.md` for one product or coherent website. Record the design language that governs it, not every value that happens to exist.
 
+> **Note (vendored copy, card 784e3809):** the `npx @google/design.md@0.4.0` validator calls below are OPTIONAL and for internal use only (spec/lint/export checks on your own draft) -- the `@google/design.md` package itself is Proprietary-licensed, is never vendored or redistributed by this fork, and its exact license terms are not fixed in this repo (cite "Nem található" rather than guessing the terms).
+
 ## Boundaries
 
 - Modify only `DESIGN.md`. Do not change product source, dependencies, configuration, or generated files.
