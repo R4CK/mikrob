@@ -142,6 +142,38 @@ describe('cf075d41 reapChannelOrphans on real processes', () => {
     process.kill(job, 'SIGKILL'); await sleep(150)
   })
 
+  it('(v) card b89fbac6: a plugin process carrying BOTH markers but failing the argv-shape check is spared, via the env scan AND via bot.pid', async () => {
+    // Unlike (i)/(ii), this process passes every check EXCEPT isPollerArgv: it has
+    // CLAUDE_PLUGIN_ROOT (so isPluginPollerPid/parseStateDirPollerPids both say yes) and the state
+    // dir, but no 'server.ts' argv element, so filterPollerPids's own argv-shape check is the ONLY
+    // thing standing between it and a kill. Pins reapChannelOrphans's own two filterPollerPids call
+    // sites (fromBotPid, fromEnvScan) -- WhiteHat 22621/4 mutants: dropping either call left this
+    // candidate reaped despite every existing fixture already satisfying isPollerArgv by construction.
+    clearBotPid()
+    const notAPollerArgv = spawnWith(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 300000)'],
+      { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot },
+    )
+    await sleep(300)
+    fakeTmuxPrints('echo 4242')
+    const r1 = reapChannelOrphans('telegram', agentDir, { tmuxPath: fakeTmux })
+    await sleep(600)
+    expect(alive(notAPollerArgv)).toBe(true)
+    expect(r1.reaped).not.toContain(notAPollerArgv)
+    expect(r1.source.fromEnvScan).not.toContain(notAPollerArgv)
+
+    writeFileSync(join(chanDir, 'bot.pid'), String(notAPollerArgv))
+    const r2 = reapChannelOrphans('telegram', agentDir, { tmuxPath: fakeTmux })
+    await sleep(600)
+    expect(alive(notAPollerArgv)).toBe(true)
+    expect(r2.reaped).not.toContain(notAPollerArgv)
+    expect(r2.source.fromBotPid).toBeNull()
+
+    clearBotPid()
+    process.kill(notAPollerArgv, 'SIGKILL'); await sleep(150)
+  })
+
   it('(iv) positive control: a real orphan poller (state dir AND plugin root) is still stopped, via the env scan and via bot.pid', async () => {
     clearBotPid()
     const scanned = nodeJob({ TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
