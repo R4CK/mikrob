@@ -232,7 +232,7 @@ ha egy kártya nem esik az alábbi sorok valamelyikébe. Ez a tábla a mért, t�
 
 | Feladattípus | Skill(ek) |
 |---|---|
-| Minden kódolás | `karpathy-guidelines`; commit előtt `karpathycoder` |
+| Minden kódolás | `karpathy-guidelines`, `ponytail` (full fokozat); commit előtt `karpathycoder` |
 | Bug, piros main, bukó teszt, 5xx | `sp-systematic-debugging` |
 | Új funkció | `sp-test-driven-development` + `api-and-interface-design`; user-facing: `contract-first-codev` + `writing-prds` |
 | mopsion domain | `tenant-pure-domain` -> `injected-port-adapters`; sync->async: `async-refactor-fail-open-guard` |

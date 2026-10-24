@@ -3358,7 +3358,7 @@ const BACKEND_FAMILY = new Set(['backend', 'backend2', 'backend3'])
 
 function buildBackendFamilySkillUsageBody(): string {
   const rows = [
-    '| Minden kódolás | `karpathy-guidelines`; commit előtt `karpathycoder` |',
+    '| Minden kódolás | `karpathy-guidelines`, `ponytail` (full fokozat); commit előtt `karpathycoder` |',
     '| Bug, piros main, bukó teszt, 5xx | `sp-systematic-debugging` |',
     "| Új funkció | `sp-test-driven-development` + `api-and-interface-design`; user-facing: `contract-first-codev` + `writing-prds` |",
     '| mopsion domain | `tenant-pure-domain` -> `injected-port-adapters`; sync->async: `async-refactor-fail-open-guard` |',
