@@ -21653,3 +21653,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet Cybersec-től jön (86b78648 GO, komment 5297, kártya 79aeaeb1 követő), a kódot/tesztet a backend írta.
 
 **Hivatkozás:** kártya 6dd721f8, Cybersec GO 86b78648 (komment 5297), előd 79aeaeb1.
+
+## 2026-10-24: 99a4a2d4 -- selftest fa-mutálás: név-független dinamikus őr a statikus detektor 5 vakfoltjára (WhiteHat GO ff7e1b0a, komment 6640)
+
+**Kontextus:** WhiteHat F1 (ff7e1b0a, komment 6640) mérte, hogy a meglévő statikus detektor (`selftests-do-not-mutate-the-shared-tree.test.ts`, név/alak-alapú: `^\s*(mv|rm|ln|truncate|chmod)` + hand-kept HERE/ROOT/SCRIPT/SCRIPT_DIR/G anchor-nevek) 5 mért alakra 56/56 zöld maradt, miközben mindegyik törli vagy felülírja a megosztott fa egy követett fájlját: nem sor eleji mutáció (`true && rm ...`), `sed -i`, `: >` átirányításos felülírás, `cp /dev/null`, és `rm "$(dirname "$0")/..."` horgony-változó nélkül. Egy név/alak-alapú detektor ezt a hibaosztályt csak szűkíti, sosem zárja le.
+
+**Döntés:** a VALÓDI selftest-futtató (`store-selftests-all-run.test.ts`) kapott egy név-független, DINAMIKUS réteget: minden selftest futása előtt és után `git status --porcelain --untracked-files=no` pillanatkép a repo gyökerén (csak követett fájl módosítás/törlés számít), és ha az UTÁNI állapot olyan sort tartalmaz, ami az ELŐTTIBEN nem volt, loud FAIL a selftest nevével és az érintett sorokkal. A különbség a selftest SAJÁT ablakára szűkül (newlyDirty), hogy egy egyidejű landolás által már előre meglévő eltérés ne a vizsgált selftestre íródjon rá. A statikus detektor marad gyors, magyarázó első rétegként (WhiteHat saját javaslata).
+
+**Mutáció-ellenőrzés:** új önteszt-blokk saját, eldobható fixture git-repóban (sosem a valódi fán) reprodukálja mind az 5 Cybersec-mért alakot és bizonyítja, hogy a dinamikus őr mindegyiket elkapja, plusz egy csak-olvasó selftest nem ad hamis pozitívot, plusz egy selftest-előtti eltérés nem íródik rá a vizsgált selftestre. `newlyDirty()`-t mindig `[]`-t visszaadóra mutálva mind az 5 "catches" eset PIROS lett; visszaállítva zöld. Teljes `store-selftests-all-run.test.ts`: 127/127 zöld (121 régi + 6 új). `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** a lelet WhiteHat-tól jön (ff7e1b0a GO, komment 6640), a kódot/tesztet backend3 írta.
+
+**Hivatkozás:** kártya 99a4a2d4, előd ff7e1b0a, WhiteHat komment 6640.
