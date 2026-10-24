@@ -23,7 +23,14 @@ import {
 } from '../web/kanban-gate-completeness-guard.js'
 import { GENERATED_COMMENT_AUTHORS } from '../web/kanban-landed-guard.js'
 import { mapProjectToPartition } from './project-map.js'
-import { upsertNode, upsertEdge, upsertAnchor, findSecretShape, type KgNodeInput } from './store.js'
+import {
+  upsertNode,
+  upsertEdge,
+  upsertAnchor,
+  findSecretShape,
+  UNSAFE_CHARS_RX,
+  type KgNodeInput,
+} from './store.js'
 import { markCaptureDone, markCaptureFailed, markCaptureSkipped } from './capture.js'
 
 // F4 (card 2ace4db9, WhiteHat): both subprocess calls below used to hardcode the live checkout
@@ -61,15 +68,10 @@ const KG_DRAFT_MAX_ATTEMPTS = 2
 // measured against Unicode 16.0 unicodedata: interlinear annotation terminator, Khmer vowel
 // inherent AA, more musical-notation format chars, the full Mongolian free-variation-selector
 // block, and the Arabic/Syriac/Kaithi/Egyptian-hieroglyph/shorthand format-control blocks.
-const UNSAFE_CHARS_RX = new RegExp(
-  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00ad\\u061c' +
-    '\\u0600-\\u0605\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180b-\\u180f' +
-    '\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\u3164\\ufeff' +
-    '\\u034f\\u115f\\u1160\\u17b4-\\u17b5\\u206a-\\u206f\\ufe00-\\ufe0f\\uffa0\\ufff9-\\ufffb' +
-    '\\u{110BD}\\u{110CD}\\u{13430}-\\u{1343F}\\u{1BCA0}-\\u{1BCA3}' +
-    '\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}\\u{1D173}-\\u{1D17A}]',
-  'u',
-)
+// MOVED to store.ts (card 4ecd75d0, landed on top of f66b3652's widening above): upsertNode -- the
+// one write path every kg-importer shares -- needed the SAME (now-widened) list, so this is
+// imported rather than duplicated (see store.ts's own header on UNSAFE_CHARS_RX for why the
+// exported constant carries no 'g' flag).
 const DRAFT_TITLE_MAX = 300
 const DRAFT_BODY_MAX = 3000
 const DRAFT_KEYWORDS_MAX = 500

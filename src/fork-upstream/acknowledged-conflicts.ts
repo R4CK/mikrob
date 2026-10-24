@@ -1522,6 +1522,17 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // --data-urlencode usage.
   'src/__tests__/telegram-urlencode-guard.test.ts':
     "fork-owned corpus guard (card b43d6dfd), NOT deleted -- extended CASES into scripts/lib/ and updated the notify.sh-specific assertion for the NOTIFYVAKSWEEP826 lib delegation",
+  // Card be1df1b6, 2026-10-24: delete/modify conflict (the file exists in the merge-base AND in
+  // HEAD, upstream deleted it). It is the CI wrapper for scripts/__tests__/email-approval-gate.test.py
+  // (EMAILKAPU901 PR2, this fork's own email_send autonomy-level gate) -- upstream has no equivalent
+  // feature at this path, so there is nothing to merge toward. Resolution: keep the fork's file as
+  // is; upstream's deletion is not followed. ABSENT_UPSTREAM_BLOB, same pattern as
+  // telegram-urlencode-guard.test.ts above, not GUARDED_FILES: GUARDED_FILES's report framing
+  // ("FORK-OWNED FILES NOW CONFLICT... zero-conflict claim no longer holds") is for a file that
+  // must NEVER see a conflict at all; this one conflicts every round by construction (upstream
+  // genuinely no longer has the path) and that is the expected, decided state, not an alarm.
+  'src/__tests__/email-approval-gate.test.ts':
+    'fork-owned CI wrapper for the EMAILKAPU901 PR2 email-approval-gate feature, upstream has no counterpart at this path -- keep the fork\'s file, upstream\'s deletion not followed',
   // The fork's ONLY addition to this upstream test file: stageTree() also copies
   // store/session-limit-pattern.sh + .json for limit-monitor.sh's fork-only dependency. Round 2
   // (MD5SUMHIANY826) is upstream's own addition -- stageTree() also copies the new
@@ -3302,6 +3313,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // (e.g. a file with this path reappears upstream), the guard trips again and this needs a fresh
   // decision rather than silently comparing against a phantom blob.
   'src/__tests__/telegram-urlencode-guard.test.ts': ABSENT_UPSTREAM_BLOB,
+  'src/__tests__/email-approval-gate.test.ts': ABSENT_UPSTREAM_BLOB,
   'scripts/fleet-memory-gate.sh': 'ce2e49d6460c56cc49c7637dc0073d0172d5520f',
   'scripts/github-pr-monitor.sh': 'aca5a51b633457795328412d522db3d02778e8d7',
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
@@ -3540,7 +3552,15 @@ export function classifyConflicts(
   for (const file of acknowledged) {
     const recorded = (ACKNOWLEDGED_UPSTREAM_BLOBS as Readonly<Record<string, string>>)[file]!
     const actual = blobOf(file)
-    if (actual !== recorded) {
+    // Card be1df1b6: a file acknowledged with the ABSENT_UPSTREAM_BLOB sentinel (recorded = that
+    // string, meaning "we already decided there is no upstream blob to pin") stayed stale on EVERY
+    // run forever, because `actual` is `null` here and `null !== ABSENT_UPSTREAM_BLOB` is always
+    // true -- the one case the sentinel exists for could never actually report clean. Normalizing
+    // null to the same sentinel before comparing is what findCorruptedPins already does for this
+    // exact value (it skips `git cat-file` entirely when the recorded blob IS the sentinel); this
+    // is the matching fix on the stale side.
+    const actualOrAbsent = actual ?? ABSENT_UPSTREAM_BLOB
+    if (actualOrAbsent !== recorded) {
       const rule = (ACKNOWLEDGED_CONFLICTS as Readonly<Record<string, string>>)[file]!
       stale.push({ file, recorded, actual: actual ?? '(absent upstream)', rule })
     }
@@ -4611,13 +4631,18 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   // Card 4aa87fdf (fullstack/DevO, 2026-10-17): the channel-poller-reap.ts entry above keeps
   // isPollerArgv() as a second, argv-based narrowing layer on top of the CLAUDE_PLUGIN_ROOT env-scan
   // (upstream's cf075d41 removed it). The 2026-09-26 incident (100+ pids reaped off bare env needle,
-  // fleet-wide tmux server killed) is why both layers are kept. If this function is silently dropped
-  // (e.g. a merge taking upstream's blob), the defence-in-depth reverts to env-only narrowing --
-  // exactly the condition that caused the incident. The needle is the exact export declaration; a
-  // comment reproducing the name does not satisfy the anchor (guards-that-pin-behaviour skill,
-  // karpathy-guidelines comments-strip rule).
+  // fleet-wide tmux server killed) is why both layers are kept.
+  // WIDENED (card b89fbac6, 2026-10-24, WhiteHat 22621): the needle used to be the bare export
+  // declaration, which an earlier merge attempt proved insufficient on its own (8d625ccd, RedHat
+  // NO-GO 22524) -- the declaration survived while reapChannelOrphans's own CALL to it was dropped,
+  // and nothing here would have caught that, because a declaration can go unused forever without
+  // failing an anchor that only checks it is still exported. The needle is now the exact call-site
+  // line inside reapChannelOrphans, so a merge that keeps the function but stops calling it (the
+  // precise near-miss that already happened once) fails this anchor. A comment reproducing either
+  // the name or the call does not satisfy it (guards-that-pin-behaviour skill, karpathy-guidelines
+  // comments-strip rule).
   'src/web/channel-poller-reap.ts': {
-    needle: 'export function isPollerArgv',
+    needle: 'const fromEnvScan = filterPollerPids(parseStateDirPollerPids(psEww, envVar, chanDir, pluginRootNeedle), argvOf)',
     file: 'src/web/channel-poller-reap.ts',
     expect: 'present',
     because:
@@ -4625,10 +4650,15 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "filterPollerPids) as defence-in-depth over the CLAUDE_PLUGIN_ROOT env-scan that both the " +
       "fork (PLUGIN_ROOT_ENV_RE, line 72) and upstream (cf075d41) have. Upstream removed this " +
       "function; keeping it here is the deliberate decision after the 2026-09-26 incident where the " +
-      "env-scan alone matched 100+ pids and killed the fleet-wide tmux server. If isPollerArgv " +
-      "disappears, the defence-in-depth is gone: reap candidates are filtered only by env-var " +
-      "presence, with no argv check confirming the process is actually a bun/node server.ts poller. " +
-      "That is a revert to the pre-incident surface, not a safe merge.",
+      "env-scan alone matched 100+ pids and killed the fleet-wide tmux server. If this exact call " +
+      "disappears from reapChannelOrphans -- even with isPollerArgv/filterPollerPids still declared " +
+      "and exported elsewhere -- the defence-in-depth is gone at the one place it matters: reap " +
+      "candidates are filtered only by env-var presence, with no argv check confirming the process " +
+      "is actually a bun/node server.ts poller. That is a revert to the pre-incident surface, not a " +
+      "safe merge, and card b89fbac6's tests (channel-poller-reap-guards.test.ts, '(v) card b89fbac6: " +
+      "a plugin process carrying BOTH markers but failing the argv-shape check is spared...' and " +
+      "'(vi) card b89fbac6, RedHat NO-GO 23465: a non-bun/node process whose argv literally contains " +
+      "server.ts is spared...') fail red the moment it happens, independent of this anchor.",
   },
 }
 

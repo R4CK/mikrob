@@ -19,6 +19,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# WhiteHat F3 (komment 23714, 8a4a8b09): --days must be a positive integer -- a negative/zero/
+# huge value previously passed through to strftime() silently, which SQLite evaluates to NULL and
+# the comparison against it is never true, so every agent quietly reported 0% instead of erroring.
+if [[ ! "$DAYS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "HIBA: --days pozitiv egesz szam legyen, nem: $DAYS" >&2; exit 1
+fi
+
 DB="${MARVEEN_DB:-/home/neon/marveen/store/claudeclaw.db}"
 MAP="${SKILL_ROLE_MAP:-/home/neon/marveen/store/skill-role-map.md}"
 
@@ -72,6 +79,12 @@ for agent_id, skill_name in rows:
 
 agents = sorted(agent_required.keys())
 if agent_filter:
+    # WhiteHat F3 (komment 23714, 8a4a8b09): a misspelled/unknown agent previously fell through to
+    # the generic "no data" message below (results stayed empty), indistinguishable from a real
+    # agent with genuinely zero usage. An unknown agent is a caller error, not a measurement.
+    if agent_filter not in agents:
+        print(f"HIBA: ismeretlen agent: {agent_filter}", file=sys.stderr)
+        sys.exit(1)
     agents = [a for a in agents if a == agent_filter]
 
 results = []
@@ -85,6 +98,10 @@ for agent in agents:
     missing = sorted(required - seen)
     results.append((agent, len(covered), len(required), pct, missing))
 
+# WhiteHat F2 (komment 23714, 8a4a8b09): the number below is "seen" (a tool_call/skill_read row
+# exists), not "used" -- a skill loaded purely from context (no tool invocation) leaves no
+# skill_usage row, so 0% does not prove the skill went unused, only unobserved by this signal.
+print("  (nem latott != nem hasznalt: latott = tool_call/skill_read; a kontextusbol betoltott skill nem latszik)")
 if not results:
     print("  Nincs skill_usage adat az elmult " + days_str + " napban.")
 else:

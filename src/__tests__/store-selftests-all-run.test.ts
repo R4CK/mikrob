@@ -36,11 +36,79 @@
 // there is no filename signal to discover from) and its own comment for the measurement behind it.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync, readlinkSync } from 'node:fs'
+import {
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  writeFileSync,
+  mkdtempSync,
+  mkdirSync,
+  chmodSync,
+  rmSync,
+} from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const STORE = join(REPO_ROOT, 'store')
+
+// Card 99a4a2d4 (WhiteHat F1 on ff7e1b0a, comment 6640): the EXISTING static detector
+// (selftests-do-not-mutate-the-shared-tree.test.ts) matches destructive commands by NAME/SHAPE --
+// a hand-picked `^\s*(mv|rm|ln|truncate|chmod)` pattern plus a hand-kept list of own-directory
+// anchor variable names (HERE/ROOT/SCRIPT/SCRIPT_DIR/G). Measured live: 5 shapes all delete or
+// overwrite a tracked file in the shared tree while that detector stays 56/56 green -- a
+// non-line-start command (`true && rm ...`), `sed -i`, a `: >` redirect-truncate, `cp /dev/null`,
+// and `rm "$(dirname "$0")/..."` (no anchor variable at all). A name/shape detector can only ever
+// narrow this class, never close it (the next unnamed anchor or the next sed/cp/redirect variant is
+// just as invisible). This is the DYNAMIC, name-independent layer WhiteHat asked for: compare the
+// tracked-file git status of the tree BEFORE and AFTER each selftest runs, and fail loudly, naming
+// the selftest, if the AFTER state contains an entry the BEFORE state did not -- regardless of which
+// command or which variable name produced it. `--untracked-files=no` deliberately excludes new,
+// never-committed scratch files a selftest creates under the tree (those are not "the shared fan"
+// WhiteHat's finding is about); only a TRACKED file becoming modified/deleted counts.
+function trackedDirtySet(repoRoot: string): ReadonlySet<string> {
+  const out = execFileSync('git', ['-C', repoRoot, 'status', '--porcelain', '--untracked-files=no'], {
+    encoding: 'utf-8',
+  })
+  return new Set(out.split('\n').filter((line) => line.length > 0))
+}
+
+// Scoped to THIS selftest's own window (WhiteHat's own caution, comment 6640): a concurrent landing
+// on the same shared test tree can leave the tree dirty for reasons that have nothing to do with the
+// selftest under test. Blaming the selftest for a dirty entry that was ALREADY present before it ran
+// would misattribute that noise; only an entry that is new in `after` is this selftest's own doing.
+function newlyDirty(before: ReadonlySet<string>, after: ReadonlySet<string>): string[] {
+  return [...after].filter((line) => !before.has(line))
+}
+
+// RedHat NO-GO K1 (card 99a4a2d4 delta, comment 23762): the first version of this guard had
+// trackedDirtySet/newlyDirty exercised ONLY by the real it.each loop below and by a SEPARATE set of
+// fixture tests that called those two helpers directly -- proving the helpers work, not that the
+// real runner still calls them. Deleting the guard's assertion from the it.each body (W1), or moving
+// the "before" snapshot to after the selftest ran (W2), left every test in the file green, because
+// nothing but the loop itself exercised that wiring. This function is the ONE place both the real
+// loop and the fixture tests now call, so a future edit that breaks the wiring breaks both at once.
+// Throws (rather than returning a boolean) so `expect(() => ...).toThrow()` reads the same in a
+// fixture test as an uncaught throw failing a real `it.each` case.
+function runGuardedSelftest(repoRoot: string, runner: string, file: string, args: readonly string[] = []): string {
+  const store = join(repoRoot, 'store')
+  const before = trackedDirtySet(repoRoot)
+  const out = execFileSync(runner, [join(store, file), ...args], {
+    encoding: 'utf-8',
+    timeout: 180_000,
+    // Inherit nothing that could make a selftest take a different path than it does by hand.
+    env: process.env,
+  })
+  const dirtied = newlyDirty(before, trackedDirtySet(repoRoot))
+  if (dirtied.length > 0) {
+    throw new Error(
+      `${file} left the shared tracked tree dirty (card 99a4a2d4): ${dirtied.join(', ')}. ` +
+        `A selftest may read the shared tree freely, but must not modify or delete a tracked ` +
+        `file in it -- write to a disposable copy/mktemp sandbox instead.`,
+    )
+  }
+  return out
+}
 
 /**
  * Selftests this file deliberately does NOT run, each with the reason.
@@ -313,12 +381,11 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
   it.each(RUNNABLE.map((s) => [s.name, s] as const))(
     '%s passes',
     (_label, script) => {
-      const out = execFileSync(script.runner, [join(STORE, script.file), ...script.args], {
-        encoding: 'utf-8',
-        timeout: 180_000,
-        // Inherit nothing that could make a selftest take a different path than it does by hand.
-        env: process.env,
-      })
+      // Card 99a4a2d4: runGuardedSelftest (above) wraps the dynamic, name-independent tree guard
+      // around the SAME execFileSync this test needs to make anyway -- no separate invocation, so a
+      // selftest that leaves tracked files dirty cannot slip through in the gap. It throws on its
+      // own if the tree came out dirty; this is the ONLY place that decides pass/fail for that part.
+      const out = runGuardedSelftest(REPO_ROOT, script.runner, script.file, script.args)
       const matched = OK_SHAPES.some((re) => re.test(out))
       expect(
         matched,
@@ -329,6 +396,90 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
     },
     200_000,
   )
+})
+
+// Card 99a4a2d4 (WhiteHat F1 on ff7e1b0a, comment 6640): proves the guard wired into the real
+// it.each loop above actually catches the 5 shapes Cybersec measured as invisible to the static
+// detector, PLUS that it does not false-positive on a clean read-only selftest or on tree-dirt that
+// predates the selftest under test (a concurrent landing on the shared test tree). Uses its own
+// disposable git fixture repo -- never the real tree -- so a deliberately-corrupting probe script
+// cannot touch anything this suite depends on.
+describe('the shared-tracked-tree guard is name-independent (card 99a4a2d4)', () => {
+  // The tracked file AND the probe both live under `<repo>/store/`, mirroring the real shape
+  // (REPO_ROOT/store), so every case below can call the real `runGuardedSelftest(repoRoot, ...)` --
+  // the EXACT function the real it.each loop calls -- rather than re-testing trackedDirtySet/
+  // newlyDirty in isolation (RedHat NO-GO K1, card 99a4a2d4 delta, comment 23762): calling the
+  // helpers directly proved the HELPERS work, not that the real runner still calls them. Deleting
+  // the guard's check from the loop (W1), or moving the "before" snapshot to after the selftest runs
+  // (W2), left every test in the FIRST version of this file green -- going through the same shared
+  // function this suite's real cases use closes that gap, because a break there now fails these too.
+  function makeFixtureRepo(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'selftest-tree-guard-fixture-'))
+    const store = join(dir, 'store')
+    mkdirSync(store, { recursive: true })
+    execFileSync('git', ['init', '-q', dir])
+    execFileSync('git', ['-C', dir, 'config', 'user.email', 'fixture@fixture.invalid'])
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'fixture'])
+    writeFileSync(join(store, 'tracked.sh'), '#!/bin/sh\necho hi\n')
+    execFileSync('git', ['-C', dir, 'add', '.'])
+    execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'init'])
+    return dir
+  }
+
+  // Exactly Cybersec's 5 measured shapes (comment 6640), each run against `$1` (the fixture repo
+  // root, passed through runGuardedSelftest's `args`, so the probe itself needs no HERE/ROOT/
+  // SCRIPT/G anchor variable -- the whole point is that the guard must not care what the probe
+  // calls its own path).
+  const EVASIONS: ReadonlyArray<readonly [string, string]> = [
+    ['mutation not at the start of the line', 'true && rm "$1/store/tracked.sh"\n'],
+    ['sed -i', 'sed -i "s/hi/bye/" "$1/store/tracked.sh"\n'],
+    ['redirect truncate', ': > "$1/store/tracked.sh"\n'],
+    ['cp /dev/null', 'cp /dev/null "$1/store/tracked.sh"\n'],
+    ['no anchor variable at all (dirname "$0")', 'rm "$(dirname "$0")/tracked.sh"\n'],
+  ]
+
+  it.each(EVASIONS)('catches: %s', (_label, body) => {
+    const repo = makeFixtureRepo()
+    try {
+      const probe = join(repo, 'store', 'probe.sh')
+      writeFileSync(probe, `#!/bin/sh\n${body}`)
+      chmodSync(probe, 0o755)
+      expect(
+        () => runGuardedSelftest(repo, 'sh', 'probe.sh', [repo]),
+        `expected the ${body.trim()} shape to be caught`,
+      ).toThrow()
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('a read-only selftest produces no false positive', () => {
+    const repo = makeFixtureRepo()
+    try {
+      const probe = join(repo, 'store', 'probe.sh')
+      writeFileSync(probe, `#!/bin/sh\ncat "$1/store/tracked.sh" > /dev/null\necho "selftest: 1 passed, 0 failed"\n`)
+      chmodSync(probe, 0o755)
+      expect(() => runGuardedSelftest(repo, 'sh', 'probe.sh', [repo])).not.toThrow()
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  it('tree-dirt that already existed BEFORE this selftest ran is not blamed on it', () => {
+    // The scoping WhiteHat's own comment called for: a concurrent landing on the same shared test
+    // tree can leave it dirty for reasons that have nothing to do with the selftest under test.
+    const repo = makeFixtureRepo()
+    try {
+      writeFileSync(join(repo, 'store', 'tracked.sh'), 'dirtied by something else before this selftest ran\n')
+      const probe = join(repo, 'store', 'probe.sh')
+      // This selftest itself does nothing -- the pre-existing dirt must not surface as "new".
+      writeFileSync(probe, `#!/bin/sh\necho "selftest: 1 passed, 0 failed"\n`)
+      chmodSync(probe, 0o755)
+      expect(() => runGuardedSelftest(repo, 'sh', 'probe.sh', [repo])).not.toThrow()
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
 })
 
 // Card 0ebeff55. The discovery above keys on the `.selftest.` SUFFIX, and that is exactly how far

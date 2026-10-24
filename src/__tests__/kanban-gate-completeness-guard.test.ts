@@ -1386,4 +1386,48 @@ describe('gateCompletenessGuardVerdict', () => {
     })
   })
 
+  // Card 6b87df14 (incident on card d87adb90, 2026-09-26 08:5x): REVIEW -> QA PASS, both citing the
+  // FULL 40-char Gate-SHA `548b5c73885007b2b5b55edc1456f220605feca6` -> Cybersec cites a TYPO'd sha
+  // (`548b5c7300000000`, diverges from the real one at the 9th hex char -- NOT a prefix of it) in a
+  // Gate-SHA line that also carries a parenthetical naming the card id and another commit
+  // (`(a landolt d87adb90 delta: commit fe24f790)`) -> Cybersec GO citing the correct full sha. The
+  // live `PUT status:done` was rejected with "QA verdiktjét is megköveteli", even though QA had
+  // already PASSed for the same round -- MikroB had to force:true past it.
+  //
+  // CORRECTED after Cybersec NO-GO (komment 23348, Gate-SHA 1eb4c4b35): the first version of this
+  // test used SHORTENED 8-char shas (`548b5c73` / `548b5c7300000000`), which made the typo'd sha a
+  // false PREFIX of the real one (`548b5c73...` startsWith `548b5c73`) -- a shape the real incident
+  // never had, since every real comment cited the full 40-char form. Replayed against the real
+  // d87adb90 comment history (37 comments, API-verified by Cybersec), the shortened-sha test stayed
+  // GREEN on the incident-era guard (commit 769a3183f) -- it did not reproduce the incident at all.
+  // The REAL root cause, measured by replaying the real comments with each protection disabled in
+  // turn: disabling ONLY the gate-only-citer drop (card 9ce3181c round-5) reproduces the incident
+  // (blocked=true); disabling ONLY the short-vs-full prefix-containment merge (card 85c87024) does
+  // NOT (stays blocked=false) -- the prior claim that "two independent protections" both matter was
+  // wrong. The REAL mechanism: the typo'd-sha comment's Gate-SHA line also contains two more
+  // hex-shaped tokens (the card id `d87adb90` and the commit `fe24f790`), which the hex-token
+  // extraction (see extractGateShas) also reads as cited shas introduced at that same (late)
+  // timestamp; since only Cybersec ever cites any of these three, the gate-only-citer drop removes
+  // them from the round-start computation entirely -- without that drop, their late introduction
+  // timestamp would push the round boundary past QA's earlier PASS, hiding it as stale.
+  describe('card 6b87df14: a typo-extended Gate-SHA citation from one gate must not hide that gate\'s own fresh verdict', () => {
+    const REAL_SHA = '548b5c73885007b2b5b55edc1456f220605feca6'
+    const TYPO_SHA = '548b5c7300000000' // diverges from REAL_SHA at the 9th hex char -- not a prefix
+
+    it('QA PASS stays fresh even though Cybersec cited a typo-extended sha (with a card-id/commit parenthetical) before its own correct one', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: `REVIEW: kesz\nGate-SHA: ${REAL_SHA}`, created_at: 100 },
+        { author: 'qa', content: `QA PASS\nGate-SHA: ${REAL_SHA}`, created_at: 200 },
+        {
+          author: 'cybersec',
+          content: `CYBERSEC GO\nGate-SHA: ${TYPO_SHA}  (a landolt d87adb90 delta: commit fe24f790)`,
+          created_at: 300,
+        },
+        { author: 'cybersec', content: `CYBERSEC GO\nGate-SHA: ${REAL_SHA}`, created_at: 310 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
+
 })
