@@ -62,8 +62,12 @@ _GIT_BIN = shutil.which('git') or 'git'
 # control-char bound, no secret redaction. Fix: reject anything that is not a plain, bounded,
 # single-line string outright (file_path=None, never a truncated value), then redact the
 # survivors through the sibling hook's own secret-shape patterns.
+# RedHat NO-GO F (card f88289d6, comment 24233): the ORIGINAL class excluded \x09/\x0a/\x0d
+# (tab/LF/CR) from the control-char set, so a SHORT newline-carrying path passed through
+# unfiltered -- only the 512-char length cap happened to reject the one newline case this
+# hook's own selftest tried (a 20KB payload). \x00-\x1f now covers the whole C0 range.
 _MAX_FILE_PATH_LEN = 512
-_CONTROL_OR_LINEBREAK_RX = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0085\u2028\u2029]')
+_CONTROL_OR_LINEBREAK_RX = re.compile('[\x00-\x1f\x7f\u0085\u2028\u2029]')
 
 # WhiteHat NO-GO F2 LOW: no dedup -- every qualifying call writes its own cold row. Reuses the
 # sibling hook's dedup shape (card 3bcc1242 part 2) but in this hook's OWN state file: the two
