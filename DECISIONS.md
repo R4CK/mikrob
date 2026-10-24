@@ -21876,3 +21876,22 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** Peti (12184/12191, Telegram), a végrehajtást a backend tervezte és írta.
 
 **Hivatkozás:** kártya 27db86f4, fázis 527c9584, mért alap a kártya saját "Mért alap" bekezdése (304 REVIEW Skills: sor, 30 nap), előd kártya 27b02677 (a generátor eredeti megépítése, f0cefd85 audit alapján).
+
+## 2026-10-24 -- kártya 9518b377: REA bwrap sandbox -- konfigurálható kijárás, minta-beadás, WhiteHat F1/F2/F3 delta-fix
+
+**Kontextus:** ca1b763c N2 követő (unshare-net fail-closed alapértelmezés mellett konfigurálható kijárás kell) + minta-beadási út (a sandbox nem látott semmit elemzo könyvtárából) + 3 LOW keményítés (cache-szűkítés, npx-cache integritás-pin, seccomp). Első kör Gate-SHA 189c3424527a0a3822872ee6c4c322bb63e0ebed: QA PASS (23911), WhiteHat NO-GO (23921) F1/F2 MEDIUM + F3/F4 LOW.
+
+**Döntés:**
+- **REA_NET_ALLOW** (alapértelmezés 0, fail-closed `--unshare-net`) és **REA_SAMPLE_DIR** (read-only bind) bekötve a wrapperbe.
+- Cache-szűkítés: `~/.cache/rea` RO, csak `hopper-releases`/`kuna` RW (a korábbi teljes-fa RW helyett).
+- **F1 (WhiteHat MEDIUM) fix:** a wrapper a SAJÁT PATH-ját `/usr/bin:/bin`-re rögzíti a script elején (a regisztrált PATH-ot `REG_PATH`-be mentve, azt kapja a sandboxolt folyamat `env -i`-je) -- a registrált PATH első eleme `$JAVA_HOME/bin`, user-írható könyvtár, és minden csupasz-nevű belső hívás (readlink, sha256sum, sed, sort, cut, dirname, mkdir, find, grep) ellene hijackelhető volt, pontosan a bwrap/env/node-ra már korábban (ca1b763c, 23049) zárt osztály.
+- **F2 (WhiteHat MEDIUM) fix:** az integritás-pin a TELJES rea-agents csomagfát (1775 fájl, 32M) fedi (rendezett relatív útvonal + tartalom sha256, egyetlen manifest-hashbe összefogva), nem csak a `scripts/rea.mjs` indítót -- a korábbi pin egy `dist/mcp/main.js`-be írt tamper-t nem fogott el.
+- **F3 (WhiteHat LOW) fix:** a `REA_SAMPLE_DIR` denylist helyett ALLOWLIST -- csak egy dedikált `agents/elemzo/samples/` alá eső útvonal engedélyezett, nem "bármi elemzo alatt, kivéve .claude-config/store" (a régi denylist elemzo `.claude/`-ját is bindelte volna, és a `*/store/*` minta egy pontosan "store" nevű könyvtárat záróperjel hiányában nem fogott volna el).
+- **F4 (WhiteHat LOW, REA_NET_ALLOW=1 teljes host-hálózat/loopback):** tervezési döntésként rögzítve, NEM ebben a kártyában javítva -- MikroB külön kártyát nyit rá (naplózott, session-szintű bekapcsolás + Peti jóváhagyás, hosszabb távon allowlistes proxy).
+- Seccomp (LOW #3) továbbra is elhalasztva: nincs tooling a repóban egy REA-motorok tényleges szükségletéhez illő BPF-profil biztonságos, mért (strace -f egy valódi, kontrollált mintafuttatásból, nem fejből írt whitelist) levezetésére.
+
+**Miért:** a zöld selftest (25/25, majd a delta-fix után 30/30) önmagában nem bizonyíték -- WhiteHat élő PoC-kal (hijackelt `readlink`/`sha256sum` a PATH elején, tamperelt `dist/mcp/main.js`) mutatta meg, hogy a funkcionálisan helyes kód megkerülhető a saját feloldási láncán keresztül. A manifest-hash ~0,17s/futás (mérve, 1775 fájl/32M), elhanyagolható az MCP-indításhoz képest.
+
+**Ki döntött:** a tételek WhiteHat-tól jönnek (ca1b763c 23049 + 9518b377 23921 NO-GO), MikroB a delta-fix irányát adta (14594), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933), ca1b763c; komment 23899/23911/23921; `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.
