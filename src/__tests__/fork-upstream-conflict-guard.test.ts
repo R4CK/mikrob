@@ -603,6 +603,15 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   //     entry. No unsafe state to re-detect on the production side; the follow-up card closes the
   //     ps-scan test-coverage gap, not a security regression.
   const UNANCHORED_BACKLOG: readonly string[] = [
+    // src/__tests__/email-approval-gate.test.ts (card be1df1b6, 2026-10-24): fork-only CI wrapper
+    // with no upstream counterpart at this path -- the decision is to keep it, not follow
+    // upstream's (nonexistent) deletion. Same shape as 'src/web/message-router-window.ts' and
+    // 'scripts/supabase-q.sh' below: an anchor must point at a PRODUCTION file, not at a test
+    // (the anchor-production-file rule, card 3531538d), and this file's own describe/it blocks
+    // disqualify it from being its own anchor target. There is no separate non-test production
+    // fact that reverses specifically when THIS wrapper (as opposed to the python suite it
+    // spawns, scripts/__tests__/email-approval-gate.test.py) is deleted -- no anchor possible.
+    'src/__tests__/email-approval-gate.test.ts',
     'src/__tests__/context-guard.test.ts',
     'src/__tests__/installer-ollama-nonfatal.test.ts',
     'src/__tests__/send-honesty-round2.test.ts',
