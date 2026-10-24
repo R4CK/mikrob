@@ -107,6 +107,9 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
     )
     // Present: a representative curated-table row.
     expect(curatedFn).toContain('fork-adopt-investigation')
+    // Peti 24117 addendum: "Minden kódolás" must carry ponytail (full fokozat) alongside
+    // karpathy-guidelines, not just karpathy-guidelines + karpathycoder.
+    expect(curatedFn).toMatch(/Minden kódolás.*karpathy-guidelines.*ponytail/)
     // Absent: catalog-only entries that are NOT in the curated 12(+2) rows.
     for (const catalogOnly of ['working-backwards', 'usability-testing', 'writing-north-star-metrics']) {
       expect(curatedFn).not.toContain(catalogOnly)
