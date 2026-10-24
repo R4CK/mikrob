@@ -21605,3 +21605,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** WhiteHat (lelet, komment 22988), backend3 (implementáció, 11/11 selftest, mutáció-ellenőrzött: `index(body,f)>0` mutáns 6 esetet pirosít, a `-z` elhagyása a két rename/unicode esetet).
 
 **Hivatkozás:** kártya 40b5038f (szülő 4a769a34, komment 22988); `store/decisions-conflict-check.sh`, `store/marveen-land.sh`, `store/mopsion-land.sh`.
+
+## 2026-10-24: f66b3652 -- 2c54029d RedHat GO (komment 23225) nem blokkoló tételei
+
+**Kontextus:** a 2c54029d CYBERED GO (komment 23225, Gate-SHA 6817e5d3) négy nem blokkoló tételt jelölt követő kártyára: N2 (AGREE sha nélkül még ACTIVE-ot adna), a pre-verdict ablak (legkésőbbi fedett REVIEW nyer), N1 (rövid sha-s Gate-SHA sorok nem fedettek) és a 23202 NO-GO-ból áthúzott V6/V7/V15/V16 pin-hiányok + a `UNSAFE_CHARS_RX` karakter-osztály hand-picked-lista-rés (23202 2. tétele: a kategória szomszédjai, 45 Cf/Cc kódpont 13 tartományban, átmentek a szűrön).
+
+**Döntés:** N2 zárva: `allowedActiveCandidate` most `!!closure.sha`-t is megköveteli (`capture-pipeline.ts`), így AGREE sha nélkül draftra esik, nem a régi latest-wins ágra. N1 zárva: `commentCitesSha` most egy Gate-SHA sor minden hex-tokenjét a closure-sha-val kétirányú prefix-egyezésre nézi (min. 7 karakter), nem csak teljes-sha substring-illesztéssel. A karakter-osztály rés zárva: `UNSAFE_CHARS_RX` kibővült a RedHat által mért 45 kódponttal (mongol FVS teljes blokk, arab/szír/kaithi/egyiptomi-hieroglifa/gyorsírás formázó-blokkok, a már meglévő tartományok vég-kiterjesztése). V6/V7/V15/V16: a kód már helyesen viselkedett, csak nem volt pin -- 4 új teszt zárja a határértékeket (tartomány-vég karakterek, body/keywords hossz-plafon +1 karakter). A pre-verdict ablak tételt NEM zártuk: a RedHat saját szövege ezt "F5 tervezési plafonjának, nem regressziónak" nevezi, konkrét javítási irány nélkül (csak lehetséges szigorítási ötletek) -- ez MikroB/Peti döntése, nem némán választott kódváltozás.
+
+**Miért:** mindhárom kódfix ugyanaz a fail-open/szűrő-rés osztály, mint a kártya elődjein (2ace4db9, f809b24c, 2c54029d) már zárt tételek -- olcsón vihetők egy követő körben, ahogy RedHat is jelezte.
+
+**Ki döntött:** RedHat (lelet és javítási recept, komment 23202/23225), backend (implementáció).
+
+**Hivatkozás:** kártya f66b3652 (szülő c65add5a), előd 2c54029d (komment 23202 NO-GO, 23225 GO).
