@@ -540,78 +540,13 @@ gemini_route_enabled() {
 # while the draft loop had explicitly asked for local-only. Measured by WhiteHat: with
 # OFFLOAD_NO_GEMINI=1 and the flag ON, both new call sites (GOAL 1, GOAL 2) still fired. Same
 # fail-closed check as gemini_route_enabled(), first line of the function.
-GEMINI_HEAVY_FLAG="${GEMINI_HEAVY_FLAG:-$HERE/gemini-heavy-second-opinion-enabled}"
-gemini_heavy_second_opinion_enabled() {
-  [[ "${OFFLOAD_NO_GEMINI:-0}" == "1" ]] && return 1
-  [[ -f "$GEMINI_HEAVY_FLAG" ]]
-}
-
-# HEAVY BUDGET SUB-RESERVATION (card f0b3b674 C2): "UGYANAZ a kozos 5/ora ablak ... NEM uj, kulon
-# szamlalo" -- shares gemini-agy-call.sh's existing fleet-wide hourly window and flock
-# (gemini-agy-call.hourly.lock), exactly as src/gemini-ghost-budget.ts's reserveGhostCallSlot()
-# already does for the Ghost pipeline. This is a SEPARATE bash-callable reservation rather than a
-# call into that TS module because offload-dispatch.sh is pure bash with no Node runtime in its own
-# call chain; the python reservation logic below is the SAME shape (same log file, same flock, same
-# calls_of()/append_log() from scripts/seged-hivo.py) deliberately mirrored, not reinvented.
-#
-# RESERVED SUB-CAP, NOT A SEPARATE CEILING: out of the shared N/hour (default 5), the heavy path may
-# take AT MOST GEMINI_AGY_HEAVY_HOURLY_LIMIT (default 3) of them -- so at least 2 always remain for
-# the stop-period draft path (gemini-offload-call via try_gemini_for_leaf) and the Ghost ranking/
-# review pipeline, per the card's own requirement 4 ("a nehez-kartya ut oranykent legfeljebb 3
-# slotot vihet el, 2 marad a stop alatti draft-utnak es a Ghostnak"). Tagged seged='agy-heavy' --
-# counted toward the SAME hourly window as 'agy'/'agy-ghost' (so the shared 5/hour ceiling actually
-# shares), but NOT 'agy' itself, so it does not feed scripts/seged-hivo.py's own unrelated daily
-# "agy" jailed-CLI quota (same reasoning gemini-ghost-budget.ts documents for 'agy-ghost').
-#
-# Fail-closed: any inability to run the check (missing flock/python3, timeout, non-zero/non-OK exit)
-# returns false -- "could not confirm a slot is free" must never be read as "a slot is free".
-HEAVY_HOURLY_LOCK="${GEMINI_AGY_HOURLY_LOCK:-$HERE/gemini-agy-call.hourly.lock}"
-HEAVY_SEGED_HIVO="${SEGED_HIVO_HELPERS:-$HERE/../scripts/seged-hivo.py}"
-reserve_heavy_gemini_slot() {
-  local card_id="$1"
-  local total_limit="${GEMINI_AGY_HOURLY_LIMIT:-5}"
-  local heavy_limit="${GEMINI_AGY_HEAVY_HOURLY_LIMIT:-3}"
-  local rc=0
-  flock -x -w 30 "$HEAVY_HOURLY_LOCK" python3 -I - "$HEAVY_SEGED_HIVO" "$total_limit" "$heavy_limit" "$card_id" <<'PY' >/dev/null 2>&1 || rc=$?
-import datetime, importlib.util, os, sys, time
-spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
-sh = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(sh)
-total_limit = int(sys.argv[2])
-heavy_limit = int(sys.argv[3])
-card_id = sys.argv[4]
-window_start = time.time() - 3600
-used = 0
-heavy_used = 0
-for row in sh.calls_of(sh.read_log()):
-    if row.get('seged') not in ('agy', 'agy-ghost', 'agy-heavy') or row.get('status') == 'blocked':
-        continue
-    try:
-        ts = datetime.datetime.fromisoformat(str(row.get('ido', ''))).timestamp()
-    except ValueError:
-        continue
-    if ts < window_start:
-        continue
-    used += 1
-    if row.get('seged') == 'agy-heavy':
-        heavy_used += 1
-if heavy_used >= heavy_limit:
-    sys.exit(3)
-if used >= total_limit:
-    sys.exit(2)
-sh.append_log({
-    'ido': datetime.datetime.now().isoformat(),
-    'hivas_id': os.urandom(8).hex(),
-    'seged': 'agy-heavy',
-    'hivo': 'offload-dispatch-heavy',
-    'kartya': card_id,
-    'feladattipus': 'kod',
-    'status': 'ok',
-})
-sys.exit(0)
-PY
-  [[ "$rc" -eq 0 ]]
-}
+# Card efe4aa40: extracted (pure move, no behavior change) into store/gemini-heavy-gate.sh, so a
+# caller outside this dispatch sweep (store/upstream-batch-digest-offload.sh) can reuse the SAME
+# switch + the SAME shared hourly budget instead of re-deriving them. The comment above (history
+# preserved via git blame) still describes this function's own rationale; see that file for why
+# is_gemini_blocked() below was NOT also extracted.
+# shellcheck source=/dev/null
+. "$HERE/gemini-heavy-gate.sh"
 
 # gemini_draft_comment_body: same contract as draft_comment_body but for a Gemini-sourced draft.
 # $1=leaf_title, $2=content, $3=synthetic ("true"/"false", optional)
