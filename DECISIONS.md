@@ -21809,3 +21809,17 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a MODULTERV és az F0 kontraktus MikroB-tól (3f6fc4ce, 20727/20758/20763/20814/20822 kommentek), az F1b implementációt a backend tervezte és írta.
 
 **Hivatkozás:** kártya 34c2d2a2, fázis c65add5a (MODULTERV, komment 20665/20673), kontraktus 3f6fc4ce (F0, kommentek 20727/20758/20763/20814/20822), előd ee9ee17b (F1, MT-01/MT-02 alap).
+
+## 2026-10-24 -- e5c46e87: a 2026-10-15 14:10-es ledger-korrekció stale volt, store/upstream-ported.json javítva (176 SHA pending->ported), Köteg 19 nyitva
+
+**Kontextus:** MikroB kérte (üzenet 14602) a Köteg-alapú upstream-sync Fázis (e5c46e87) folytatását: egy új Köteg-19 kártya a korábbi "2026-10-15 14:10 -- KORREKCIÓ: ledger-only 'ported' mark hibás volt" bejegyzés (feljebb, "## 2026-10-15 14:10") által 34 SHA-ra visszaállított "pending" státuszra, plusz a Fázis címének [NN%]/"Köteg 15 gate-re vár" részének frissítése.
+
+**Felismerés:** a 34 SHA mindegyikét `git merge-base --is-ancestor <sha> origin/develop` ellenőrzéssel megnézve: MIND a 34 már ancestor, tehát MÁR MEGTÖRTÉNT a valódi `git merge` -- egy korábbi Köteg-landolás (16/17/18, a duplikált/többszörösen újraszámozott Köteg-kártyák miatt zavaros sorrendben: két külön kártya is "Köteg 18" címet visel, d06a325d és 13b2648e) már áthozta őket, csak a ledger (`store/upstream-ported.json`) nem lett utána frissítve "pending"-ről "ported"-ra. Kiterjesztve a TELJES `pending` bucketre (186 tétel, nem csak a 34): 176 elem hasonlóan stale volt (valódi git-ancestor, csak rosszul jelölve), 10 elem valódi, még nyitott pending.
+
+**Döntés:** `store/upstream-ported.json`-ban a 176 stale tétel átsorolva `pending`→`ported`, a reason mezőhöz hozzáfűzve: "ÚJRA-ELLENŐRIZVE 2026-10-24 (backend3, e5c46e87 fázis audit): git merge-base --is-ancestor igazolja...". A 10 valódi pending változatlanul maradt (lista a 2337e4b0 kártya kommentjében). Mivel a 34/186 ledger-tétel már kész munka, NEM nyílt rá új kártya (dedup, 6b. szabály) -- ehelyett a Köteg-19 kártya (2337e4b0, @backend3) a `scripts/upstream-new.sh --count` szerinti VALÓDI, ledger-hibától független nyitott gapet (223 kezeletlen upstream commit, 2026-10-16-tól) célozza, annak első, kronologikus 25-commitos szeletével (091744d477f9..9ba8dd955d0d, 2026-10-16..2026-10-17, az előző Kötegek mérete szerint).
+
+**Fázis-cím frissítve:** `[62%]` (számítás: `ported`=303 + `skipped`=68 = `handled`=371; `scripts/upstream-new.sh --count`=223 nyitott; 371/(371+223)=62,5%, lefelé kerekítve). A korábbi "[5%]"/"Köteg 15 gate-re vár" cím stale volt: a Köteg 15 (f61156b9) már DONE+archivált, mind a 7 gyerek-kártya done -- a gyerek-szám (7/7) önmagában viszont félrevezető progress-metrika lett volna, mert alulszámolja a 223 még dispatchelhetetlen commitot, ezért a tartalmi (ledger-szintű) százalékot használtam.
+
+**Ki döntött:** backend3 (ledger-audit + Köteg 19 nyitás, MikroB 14602 kérésére).
+
+**Hivatkozás:** kártya e5c46e87 (Fázis), 2337e4b0 (Köteg 19), a korábbi stale bejegyzés feljebb ("## 2026-10-15 14:10 -- KORREKCIÓ..."), `store/upstream-ported.json`.
