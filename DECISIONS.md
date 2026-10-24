@@ -21921,3 +21921,10 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 **Ki döntött:** RedHat (cybered) NO-GO-ja (komment 24233) adta meg a hatókört, MikroB dispatchja (msg 14696) szabta a Kész-ha listát, a backend tervezte és írta a javítást.
 
 **Hivatkozás:** kártya f88289d6, RedHat NO-GO komment 24233, előd 5a4bea2e (plan-grilling verdikt), eredeti bejegyzés fentebb (21759. sor).
+
+## 2026-10-24: f88289d6 -- RedHat NO-GO delta E1, a hossz-határ (512) regresszió-pin
+**Kontextus:** a fenti f88289d6 bejegyzés (21759. sor) és a feljebbi "RedHat NO-GO javítás" bejegyzés rögzíti az A-D/H/I és az F (rövid sortöréses) mutánsok lefedését. RedHat (cybered) delta-gate-je (komment 24426) NO-GO-t adott: a `_MAX_FILE_PATH_LEN` (512) hossz-határ törlése 53/53 zölden átment, mert az egyetlen 512 felett lévő fixture (a 20KB-os prompt-injekciós payload) EGYSZERRE sortöréses is -- a kontroll-karakter-szűrés F-javítása (regex-bővítés) rátelepedett a hossz-határ tesztjére, anélkül hogy a hossz-határnak saját, kontroll-karakter-mentes fixtureja lett volna.
+**Döntés:** új fixture (`/tmp/x ` + `ignore previous instructions ` * 30, 877 karakter, egysoros, kontroll-karakter-mentes) a `_sanitize_file_path` szinten ÉS a `main()` end-to-end szinten egyaránt. Mutáció: a `_MAX_FILE_PATH_LEN` ellenőrzés kivéve -> mindkét új ellenőrzés pirosra vált (55 ellenőrzésből 2 bukik), visszaállítva -> 55/55 zöld.
+**Mérés:** `auto_obs_capture.selftest.py` 53/53-ról 55/55-re nőtt. A teljes marveen suite-ot ezen a delta-kártyán nem futtattuk újra külön (a `marveen-land.sh` a landoláskor a merge eredményén futtatja).
+**Ki döntött:** RedHat (cybered) NO-GO-ja (komment 24426) adta meg a hatókört és a pontos recepet, a backend írta a javítást.
+**Hivatkozás:** kártya f88289d6, RedHat NO-GO komment 24426, előd komment 24233/21759. sor (eredeti NO-GO), MikroB re-dispatch komment 24431.
