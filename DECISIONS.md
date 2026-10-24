@@ -21630,18 +21630,6 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 
 **Hivatkozás:** kártya 87fd2f19, WhiteHat gate 2564e877 (F1, F2).
 
-## 2026-10-24 -- kártya 6b87df14: Cybersec NO-GO javítva, gyökérok korrigálva (9ce3181c egyedül, nem két mechanizmus)
-
-**Kontextus:** a d87adb90 zár-őr incidens regressziós tesztjét (6b87df14) backend2 landolta (f898a65a6, Gate-SHA 1eb4c4b35), de Cybersec NO-GO-t adott (komment 23348): a teszt rövidített 8-karakteres shákat használt, ami false-prefix-matchet adott és a teszt az incidens-kori guardon (769a3183f) is zölden maradt -- nem reprodukálta az incidenst. A REVIEW gyökérok-állítása ("két független védelem: 85c87024 + 9ce3181c") is téves volt: Cybersec saját mutáció-replayje szerint egyedül a 9ce3181c gate-only-citer drop okozza/szünteti meg az incidenst.
-
-**Döntés:** a teszt a valós 40 karakteres REVIEW/QA/Cybersec shát, a tipuzott shát (9. hex karaktertől eltér, nem prefix) és a valós zárójeles részt (`(a landolt d87adb90 delta: commit fe24f790)`) használja egy soron, pontosan Cybersec javaslata szerint. A komment gyökérokként a 9ce3181c-t nevezi meg egyedüli mechanizmusként.
-
-**Miért:** mutáció-tesztelve a javított kódon: a 9ce3181c gate-only-citer drop kikapcsolva PIROS (expected true to be false), a 85c87024 prefix-összevonás kikapcsolva ZÖLD marad (110/110 a teljes guard-suite-on) -- a 85c87024 erre a shape-re irreleváns, ahogy Cybersec F3 lelete is mondta.
-
-**Ki döntött:** Cybersec (NO-GO és javítási recept, komment 23348), backend2 (implementáció, REVIEW komment 23379, Gate-SHA c7068baca0b36acf907d44910ae75311d713ad1e).
-
-**Hivatkozás:** kártya 6b87df14, előd d87adb90, Cybersec komment 23348.
-
 ## 2026-10-24: 6dd721f8 -- GPU-kapu aszimmetrikus hiszterézis + zárolt állapotfájl-írás (Cybersec GO 86b78648, kártya 79aeaeb1 követő)
 
 **Kontextus:** Cybersec GO @ 86b78648 (komment 5297) két lelete a `vram-guard-check.sh`-n. (1) a mostani utilization-hiszterézis szimmetrikus, 30 mp mindkét irányban -- egy 100%-os GPU-ra érkező dispatch az első 30 mp-ben még ADMIT-ot kapott, miközben Peti szándéka (79aeaeb1): a GPU 60% feletti kihasználtságánál a feladat azonnal online menjen, ne várjon egy teljes hiszterézis-ablakot. (2) LOW: a lock-held ág a 79aeaeb1 óta írja az állapotfájlt is (az utilization tier-t), és egy ezzel egyidejű, lock-free hívás, ami a VRAM tier-t erősíti meg, read-modify-write-tal felülírhatja a másik fél által írt felet -- lost update, nem torn write (az `os.replace()`-es atomi csere ez ellen nem véd).
@@ -21677,30 +21665,6 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet RedHat-tól jön (NO-GO, komment 23610, a `a93ce2e8c` shán), a javítás recept-jét is RedHat adta, a kódot/tesztet a backend írta.
 
 **Hivatkozás:** kártya 6dd721f8, RedHat NO-GO (komment 23610), MikroB re-dispatch (komment 23613).
-
-## 2026-10-24: 99a4a2d4 -- selftest fa-mutálás: név-független dinamikus őr a statikus detektor 5 vakfoltjára (WhiteHat GO ff7e1b0a, komment 6640)
-
-**Kontextus:** WhiteHat F1 (ff7e1b0a, komment 6640) mérte, hogy a meglévő statikus detektor (`selftests-do-not-mutate-the-shared-tree.test.ts`, név/alak-alapú: `^\s*(mv|rm|ln|truncate|chmod)` + hand-kept HERE/ROOT/SCRIPT/SCRIPT_DIR/G anchor-nevek) 5 mért alakra 56/56 zöld maradt, miközben mindegyik törli vagy felülírja a megosztott fa egy követett fájlját: nem sor eleji mutáció (`true && rm ...`), `sed -i`, `: >` átirányításos felülírás, `cp /dev/null`, és `rm "$(dirname "$0")/..."` horgony-változó nélkül. Egy név/alak-alapú detektor ezt a hibaosztályt csak szűkíti, sosem zárja le.
-
-**Döntés:** a VALÓDI selftest-futtató (`store-selftests-all-run.test.ts`) kapott egy név-független, DINAMIKUS réteget: minden selftest futása előtt és után `git status --porcelain --untracked-files=no` pillanatkép a repo gyökerén (csak követett fájl módosítás/törlés számít), és ha az UTÁNI állapot olyan sort tartalmaz, ami az ELŐTTIBEN nem volt, loud FAIL a selftest nevével és az érintett sorokkal. A különbség a selftest SAJÁT ablakára szűkül (newlyDirty), hogy egy egyidejű landolás által már előre meglévő eltérés ne a vizsgált selftestre íródjon rá. A statikus detektor marad gyors, magyarázó első rétegként (WhiteHat saját javaslata).
-
-**Mutáció-ellenőrzés:** új önteszt-blokk saját, eldobható fixture git-repóban (sosem a valódi fán) reprodukálja mind az 5 Cybersec-mért alakot és bizonyítja, hogy a dinamikus őr mindegyiket elkapja, plusz egy csak-olvasó selftest nem ad hamis pozitívot, plusz egy selftest-előtti eltérés nem íródik rá a vizsgált selftestre. `newlyDirty()`-t mindig `[]`-t visszaadóra mutálva mind az 5 "catches" eset PIROS lett; visszaállítva zöld. Teljes `store-selftests-all-run.test.ts`: 127/127 zöld (121 régi + 6 új). `tsc --noEmit -p .` tiszta.
-
-**Ki döntött:** a lelet WhiteHat-tól jön (ff7e1b0a GO, komment 6640), a kódot/tesztet backend3 írta.
-
-**Hivatkozás:** kártya 99a4a2d4, előd ff7e1b0a, WhiteHat komment 6640.
-
-## 2026-10-24: 88fd0000 -- MT F5 follow-up: line_end escape, valódi-végrehajtású escape-teszt-pin, "Összes projekt" alapértelmezés (WhiteHat GO feltétellel, kártya 8bb7cf54 komment 20875)
-
-**Kontextus:** a 8bb7cf54 (MT-11 Megoldás-tár dashboard) WhiteHat GO-ja feltételes volt: F1 MEDIUM (a kódhorgony `line_end` mezője escape és típusőr nélkül, míg `line_start` typeof number őrt kapott -- a dashboard a flotta Bearer tokenjét localStorage-ban tartja, tehát egy nem-egész `line_end` token-lopás útja lenne, mihelyt a KG-backend adatot szolgáltat), F2 LOW (a teszt-csomag 0 escapeHtml-állítást tartalmazott, csak forrás-szöveg grep -- 6/6 escape-kivétel mutáns zölden maradt volna, az alapértelmezett hatókör regexe is vak volt a `project || '*'` alakra), F3 LOW (a "Saját projekt" alapértelmezés -- sem project, sem card_id -- a 20763 kontraktus szerint 400 project_or_card_id_required-et ad, zsákutca az oldal betöltésekor).
-
-**Döntés:** F1: `a.line_end` typeof number-őrt kap, azonos mintával mint `a.line_start`. F2: valódi végrehajtású teszt-harness (minimális Node DOM-stub, nincs jsdom), ami a tényleges `kgRenderResults`/`kgRenderDetail` függvényeket hívja meg támadó stringgel a 7 escape-pontra (találat cím/snippet/id-attribútum, részlet cím/snippet, horgony repo+path, szomszéd cím) plusz a line_end őrre és az alapértelmezett hatókörre (`kgCurrentQuery()` tényleges hívása, nem forrás-regex). F3: a "Saját projekt" (üres érték) opció eltávolítva, a projekt-választó egyetlen, előválasztott "Összes projekt" (`project=*`) opciót tartalmaz; a `kg.filter.default_scope` i18n-kulcs törölve (használaton kívüli), a `kg.filter.all_projects` felirat a kártya szövegéhez igazítva.
-
-**Mutáció-ellenőrzés:** mind a 8 pont (7 escapeHtml-hívás + a line_end típusőr) egyenként visszamutatva a javítás előtti alakra -- mindegyik PONTOSAN a saját célzott tesztjét vitte pirosra (8/8), majd visszaállítva, a teljes csomag 44/44 zöld. A projekt-választó HTML-szerkezeti tesztje a régi két-opciós markup-ra visszaállítva is pirosra vált.
-
-**Ki döntött:** a lelet WhiteHat-tól jön (8bb7cf54 GO feltétellel, komment 20875), a javítást és a teszteket fron-ted írta.
-
-**Hivatkozás:** kártya 88fd0000, előd 8bb7cf54 (WhiteHat GO komment 20875), Pair-BE ee9ee17b.
 
 ## 2026-10-24: f88289d6 -- claude-mem (B), determinisztikus tool-megfigyelési napló (a claude-mem (A) 5a4bea2e plan-grilling verdiktjéből leválasztva)
 
