@@ -344,6 +344,28 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     // The active MARVEEN_SSH_DIR override must be visible in the audit row.
     expect(audit[0]!.new_value).toContain('sshdir_override=1')
   })
+
+  // WhiteHat F2 (card 2564e877, gate on 87fd2f19): the route's catch-block mapping from a
+  // real ENROLL813 SshDirGuardError to {status:500, code:'enroll813'} (security.ts:127-139)
+  // was unpinned -- only the unit-level isSshDirGuardError() classifier had coverage
+  // (enroll-seam-fail-closed.test.ts), not the route branch that calls it. Unsetting the
+  // seam makes resolveSshDir() throw the real guard error (src/ssh-dir.ts), exactly as it
+  // would if the seam were ever dropped by accident -- the route must still answer with the
+  // specific, translatable code, not the generic 'enroll_failed' 500 one line below it.
+  it('maps a real ENROLL813 guard refusal to {status:500, code:"enroll813"} -- card 2564e877 F2', async () => {
+    delete process.env.MARVEEN_SSH_DIR
+    try {
+      const { line } = makeKeyLine()
+      const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
+        auth: { kind: 'session', user: 'peti' },
+        body: { key_line: line, name: 'Guard Phone' },
+      })
+      expect(r.statusCode).toBe(500)
+      expect(r.json().code).toBe('enroll813')
+    } finally {
+      process.env.MARVEEN_SSH_DIR = sshDir
+    }
+  })
 })
 
 describe('DELETE /api/auth/device-keys/:id for a paired key', () => {
