@@ -109,6 +109,15 @@ export function validateFleetPythonVenvDir(raw: string, home: string = homedir()
   return null
 }
 
+// KG_MIN_SCORE (card 34c2d2a2): the registry has no float SettingType, so a 0..1 score threshold
+// is stored as a validated string instead of adding a new type for one setting.
+export function validateUnitFloat(raw: string): string | null {
+  const n = Number(raw.trim())
+  if (!Number.isFinite(n)) return 'Tizedestört szám szükséges.'
+  if (n < 0 || n > 1) return 'Az érték 0 és 1 között lehet.'
+  return null
+}
+
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KANBAN_WIP_PLANNED',
@@ -374,6 +383,69 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
     min: 1,
     max: 5,
+  },
+  {
+    key: 'KG_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Platform-szintű fő kapcsoló (MODULTERV 6. szakasz). Kikapcsolva (alapértelmezés): a GET /api/kg/search és /api/kg/for-card 404-et ad, store/kg-search.sh jelzi és kilép -- nincs tudásgráf-lekérdezés.',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'KG_TOPK',
+    type: 'int',
+    default: 3,
+    description: 'MT-03/04 (card 34c2d2a2): a /api/kg/search és /api/kg/for-card alapértelmezett eredményszáma (`k`), ha a hívó nem adja meg (MODULTERV 6. szakasz).',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+    min: 1,
+    max: 8,
+  },
+  {
+    key: 'KG_MIN_SCORE',
+    type: 'string',
+    default: '0.35',
+    description: 'MT-03/04 (card 34c2d2a2): a hibrid kereső minimális rangsor-pontszáma (0..1) -- ez alatt a találat nem kerül a results tömbbe. Nincs saját float típus a beállítás-regiszterben, ezért sztringként tárolva, 0..1 közti tizedestört formátummal validálva.',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+    validate: validateUnitFloat,
+  },
+  {
+    key: 'KG_EXPAND_HOPS',
+    type: 'int',
+    default: 1,
+    description: 'MT-03 (card 34c2d2a2): a gráf-kiterjesztés hány ugrásnyit jár körbe a kezdő találatok kg_edges szomszédain (MODULTERV 6. szakasz).',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+    min: 0,
+    max: 2,
+  },
+  {
+    key: 'KG_INJECT_MAX_CHARS',
+    type: 'int',
+    default: 3000,
+    description: 'MT-07 (card 34c2d2a2 for-card végpontja, felhasználva a F3 dispatch-injekciónál): a /api/kg/for-card szerializált válaszának max karakterszáma -- felette a legalacsonyabb score-ú elemek esnek ki, `meta.truncated=true` jelzi.',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+    min: 500,
+    max: 8000,
+  },
+  {
+    key: 'KG_SNIPPET_MAX_LINES',
+    type: 'int',
+    default: 60,
+    description: 'MT-04 (card 34c2d2a2): egy GET /api/kg/search találat snippet mezőjének max sorszáma (MODULTERV 6. szakasz) -- a teljes kód mindig git show-val érhető el.',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+    min: 10,
+    max: 200,
   },
   {
     key: 'KG_BACKFILL_BATCH',

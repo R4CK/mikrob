@@ -33,8 +33,11 @@ Design rules (card f88289d6):
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,11 +49,83 @@ from activity_memory_capture import (  # noqa: E402
     _agent_id_from_cwd,
     _dashboard_token,
     _project_root,
+    _redact,
     _web_port,
 )
 
 _EDIT_TOOLS = frozenset({'Write', 'Edit', 'MultiEdit', 'NotebookEdit'})
 _FLAG_FILE = os.path.join(_project_root(), 'store', 'auto-obs-capture-agents.json')
+_GIT_BIN = shutil.which('git') or 'git'
+
+# WhiteHat NO-GO F1 MEDIUM (card f88289d6, comment 24012): file_path is the tool's own raw
+# argument -- an attacker who controls a Write/Edit call controls this value. No length/type/
+# control-char bound, no secret redaction. Fix: reject anything that is not a plain, bounded,
+# single-line string outright (file_path=None, never a truncated value), then redact the
+# survivors through the sibling hook's own secret-shape patterns.
+_MAX_FILE_PATH_LEN = 512
+_CONTROL_OR_LINEBREAK_RX = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u0085\u2028\u2029]')
+
+# WhiteHat NO-GO F2 LOW: no dedup -- every qualifying call writes its own cold row. Reuses the
+# sibling hook's dedup shape (card 3bcc1242 part 2) but in this hook's OWN state file: the two
+# hooks write structurally different records (prose summary vs. fixed-field JSON), so sharing one
+# dedup file would make one hook's key collide with the other's unrelated content.
+_DEDUP_WINDOW_SECONDS = int(os.environ.get('AUTO_OBS_DEDUP_WINDOW_SECONDS', '3600'))
+_DEDUP_MAX_ENTRIES = 200
+
+
+def _sanitize_file_path(value):
+    """None for anything that is not a plain, bounded, single-line string; the known secret
+    shapes are redacted out of what remains. Never returns a truncated/partial value -- a value
+    that fails any check is dropped whole, not shortened (shortening a reject can still leak the
+    start of a secret)."""
+    if not isinstance(value, str):
+        return None
+    if len(value) > _MAX_FILE_PATH_LEN:
+        return None
+    if _CONTROL_OR_LINEBREAK_RX.search(value):
+        return None
+    try:
+        return _redact(value)
+    except Exception:
+        return None
+
+
+def _dedup_path(agent_id: str) -> str:
+    return os.path.join(_project_root(), 'store', 'activity-log', f'{agent_id}.autoobsdedup.json')
+
+
+def _is_recent_duplicate(agent_id: str, key: str, now_ts: float) -> bool:
+    """Fails OPEN (False) on any read error -- this is a hygiene control, not the secrecy path
+    above, so an unreadable state file costs at most a stray duplicate row."""
+    try:
+        with open(_dedup_path(agent_id)) as f:
+            seen = json.load(f)
+        last_ts = seen.get(key)
+        return last_ts is not None and (now_ts - last_ts) < _DEDUP_WINDOW_SECONDS
+    except Exception:
+        return False
+
+
+def _record_dedup(agent_id: str, key: str, now_ts: float) -> None:
+    """Best-effort; called only after a successful POST (recording an attempt that never
+    reached the memories table would suppress the real write on a later retry)."""
+    try:
+        path = _dedup_path(agent_id)
+        try:
+            with open(path) as f:
+                seen = json.load(f)
+        except Exception:
+            seen = {}
+        seen[key] = now_ts
+        seen = {k: v for k, v in seen.items() if now_ts - v < _DEDUP_WINDOW_SECONDS}
+        if len(seen) > _DEDUP_MAX_ENTRIES:
+            for k in sorted(seen, key=seen.get)[: len(seen) - _DEDUP_MAX_ENTRIES]:
+                del seen[k]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(seen, f)
+    except Exception:
+        pass
 
 
 def _enabled_agents() -> set:
@@ -80,7 +155,10 @@ def _exit_code(tool_response: dict) -> int:
 def _file_path(tool_name: str, tool_input: dict):
     if tool_name not in _EDIT_TOOLS:
         return None
-    return tool_input.get('file_path') or tool_input.get('path')
+    raw = tool_input.get('file_path')
+    if raw is None:
+        raw = tool_input.get('path')
+    return _sanitize_file_path(raw)
 
 
 def _commit_sha(cwd: str):
@@ -88,7 +166,7 @@ def _commit_sha(cwd: str):
         return None
     try:
         out = subprocess.run(
-            ['git', '-C', cwd, 'rev-parse', '--short', 'HEAD'],
+            [_GIT_BIN, '-C', cwd, 'rev-parse', '--short', 'HEAD'],
             capture_output=True, text=True, timeout=2,
         )
         if out.returncode == 0:
@@ -174,7 +252,12 @@ def main() -> None:
             'card_id': _current_card_id(agent_id),
             'commit_sha': _commit_sha(cwd),
         }
+        dedup_key = json.dumps(record, sort_keys=True)
+        now_ts = time.time()
+        if _is_recent_duplicate(agent_id, dedup_key, now_ts):
+            sys.exit(0)
         _post_observation(agent_id, record)
+        _record_dedup(agent_id, dedup_key, now_ts)
     except Exception:
         pass
 

@@ -3348,6 +3348,45 @@ export function ensureEvidenceSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// Card 27db86f4: the backend family's measured skill usage (304 REVIEW "Skills:" lines, 30 days)
+// is dominated by a dozen task types, not the full mechanically-extracted catalog -- a hand-picked
+// 12-line "task-type -> skill" table replaces the generated 45-line catalog for backend/backend2/
+// backend3 ONLY (other agents keep the generated catalog from buildFn below, unchanged). Literal
+// table text + the two Peti-12191 security/docs rows live here so the three roles render byte-
+// identically; the full catalog remains available via store/skill-role-map.md.
+const BACKEND_FAMILY = new Set(['backend', 'backend2', 'backend3'])
+
+function buildBackendFamilySkillUsageBody(): string {
+  const rows = [
+    '| Minden kódolás | `karpathy-guidelines`; commit előtt `karpathycoder` |',
+    '| Bug, piros main, bukó teszt, 5xx | `sp-systematic-debugging` |',
+    "| Új funkció | `sp-test-driven-development` + `api-and-interface-design`; user-facing: `contract-first-codev` + `writing-prds` |",
+    '| mopsion domain | `tenant-pure-domain` -> `injected-port-adapters`; sync->async: `async-refactor-fail-open-guard` |',
+    '| PG/Redis e2e | `embedded-pg-e2e-runner` |',
+    '| Fork/upstream átvétel, újra-döntés | `fork-adopt-investigation` |',
+    '| Őr- vagy regressziós teszt | `guards-that-pin-behaviour` |',
+    '| DB-migráció, leépítés | `deprecation-and-migration` |',
+    '| Secret, env, RLS, auth érintés | `threat-modeling` |',
+    '| Ismeretlen kód | `code-comprehension` |',
+    '| Kockázatos döntés | `plan-grilling` / `doubt-driven-development` |',
+    '| Mechanikus részfeladat | `local-llm-offload` |',
+    '| Biztonság írás közben (secure-by-default: input-validáció, authz, fail-closed, secrets) | `defensive-security-analysis` önellenőrzésként REVIEW előtt, `threat-modeling` tervezéskor, `engineering-standards` |',
+    '| Könyvtár/API használata | friss dokumentáció a context7 MCP-n át (nem fejből idézett verzió) |',
+  ]
+
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 27db86f4)',
+    '',
+    'A teljes, mechanikusan generált skill-katalógus a store/skill-role-map.md-ben él -- azt nézd,',
+    'ha egy kártya nem esik az alábbi sorok valamelyikébe. Ez a tábla a mért, tényleges használatot',
+    '(304 REVIEW "Skills:" sora, 30 nap) fedi, nem próza.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3355,6 +3394,8 @@ export function ensureEvidenceSection(name: string): void {
 // SKILL_USAGE_DATA (the main agent, or any role not covered by the f0cefd85 extraction) get no
 // section -- ensureSkillUsageSection() below is a no-op for them.
 function buildSkillUsageBody(name: string): string | null {
+  if (BACKEND_FAMILY.has(name)) return buildBackendFamilySkillUsageBody()
+
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null
 

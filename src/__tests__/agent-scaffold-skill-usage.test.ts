@@ -96,6 +96,53 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
     }
   })
 
+  // Card 27db86f4: a Peti 12184 request ("vidd egyben a backend családot") replaces the generated
+  // 45-line catalog with a hand-picked 12(+2)-line task-type -> skill table for backend/backend2/
+  // backend3 ONLY. These assertions read the rendered output the way the card's own "Kész, ha" 1
+  // does (grep counts on the written CLAUDE.md), via buildBackendFamilySkillUsageBody's source.
+  it('backend family gets the curated table, not the full catalog, for all three roles', () => {
+    const curatedFn = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildBackendFamilySkillUsageBody('),
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+    )
+    // Present: a representative curated-table row.
+    expect(curatedFn).toContain('fork-adopt-investigation')
+    // Absent: catalog-only entries that are NOT in the curated 12(+2) rows.
+    for (const catalogOnly of ['working-backwards', 'usability-testing', 'writing-north-star-metrics']) {
+      expect(curatedFn).not.toContain(catalogOnly)
+    }
+    // The two Peti-12191 addendum rows (security self-check + context7 docs lookup).
+    expect(curatedFn).toContain('defensive-security-analysis')
+    expect(curatedFn).toContain('context7')
+    // Points to the full catalog instead of duplicating it.
+    expect(curatedFn).toContain('store/skill-role-map.md')
+  })
+
+  it('buildSkillUsageBody dispatches all three backend-family names to the curated table', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('BACKEND_FAMILY.has(name)) return buildBackendFamilySkillUsageBody()')
+    const familySet = SCAFFOLD.slice(
+      SCAFFOLD.indexOf("const BACKEND_FAMILY = new Set("),
+      SCAFFOLD.indexOf("const BACKEND_FAMILY = new Set(") + 80,
+    )
+    for (const name of ['backend', 'backend2', 'backend3']) expect(familySet).toContain(`'${name}'`)
+  })
+
+  it('a non-backend role (e.g. cybered) still renders from SKILL_USAGE_DATA, unaffected', () => {
+    // BACKEND_FAMILY only has the three backend names (asserted above) -- anything else falls
+    // through to the pre-existing `const entries = SKILL_USAGE_DATA[name]` path, byte-for-byte
+    // the same code this card found already working for every other role.
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('const entries = SKILL_USAGE_DATA[name]')
+    expect(SKILL_USAGE_DATA['cybered']?.length ?? 0).toBeGreaterThan(0)
+  })
+
   it('marks a known self-claimed-but-unreferenced skill as gap for its role', () => {
     const cybered = SKILL_USAGE_DATA['cybered'] ?? []
     const redHatGate = cybered.find((e) => e.skill === 'redhat-gate-pattern')

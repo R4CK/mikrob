@@ -87,11 +87,9 @@ describe('package.json scripts', () => {
 // 5. Unused exports unexported
 // ---------------------------------------------------------------------------
 describe('cosineSimilarity and vectorSearch are not exported from db.ts', () => {
-  it('cosineSimilarity is not an exported symbol', () => {
+  it('cosineSimilarity is exported -- no longer dead code, consumed by src/kg/search.ts (card 34c2d2a2)', () => {
     const src = readFileSync(join(REPO_ROOT, 'src', 'db.ts'), 'utf8')
-    // Must be defined (function exists) but NOT exported.
-    expect(src).toContain('function cosineSimilarity(')
-    expect(src).not.toMatch(/export\s+function\s+cosineSimilarity/)
+    expect(src).toMatch(/export\s+function\s+cosineSimilarity/)
   })
 
   it('vectorSearch is not an exported symbol', () => {

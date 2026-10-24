@@ -7401,7 +7401,7 @@ export async function generateEmbedding(text: string): Promise<number[] | null> 
   }
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineSimilarity(a: number[], b: number[]): number {
   let dotProduct = 0, normA = 0, normB = 0
   for (let i = 0; i < a.length; i++) {
     dotProduct += a[i] * b[i]
