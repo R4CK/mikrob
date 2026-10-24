@@ -67,7 +67,7 @@ SEGED_HIVO_HELPERS="$HEAVY_TD/scripts/seged-hivo.py"
 run() {
   LOCAL_OK="${1:-0}" GEMINI_OK="${2:-0}" GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
     GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
-    UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
+    UBD_SELFTEST_MODE=1 UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
     bash "$SCRIPT" --caller test "${@:3}"
 }
 
@@ -123,7 +123,7 @@ rm -f "$GEMINI_HEAVY_FLAG"
 run_realgate() {
   LOCAL_OK="${1:-0}" GEMINI_OK="${2:-0}" GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
     GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
-    UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
+    UBD_SELFTEST_MODE=1 UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
     bash "$SCRIPT" --caller test "${@:3}"
 }
 
@@ -143,6 +143,95 @@ else
   FAIL=$((FAIL+1)); FAILED+=("I: confirm switch alone"); echo "FAIL rc=$rc out='$out'"
 fi
 rm -f "$GEMINI_HEAVY_FLAG"
+
+# J/K regress the WhiteHat MEDIUM (card 7b5cf804, d886e9c2 GO @ a7742f46): an env-seam that let
+# the caller force the content gate's own rc without going through its real logic at all.
+
+echo "=== J. BASH_ENV/ENV poisoned MID-SCRIPT (e.g. by something the script sources, not by the caller of the top-level script -- BASH_ENV sourcing happens at bash startup, so poisoning it before the top invocation would hijack the whole script before any of its own code runs, which is a noisy crash, not the sneaky selective bypass this finding is about) must NOT let the gate subprocess get forced to exit 42 ==="
+BASH_ENV_EXIT42="$TMP/bash-env-exit42.sh"
+cat > "$BASH_ENV_EXIT42" <<'EOF'
+exit 42
+EOF
+# Simulate the real attack surface directly: the exact OFFLOAD_DISPATCH invocation line from the
+# production script, run with BASH_ENV/ENV already exported in the CURRENT (already-running)
+# shell -- this is what the content-gate subprocess call actually sees if something sourced into
+# this script's own process (e.g. gemini-heavy-gate.sh) exported BASH_ENV earlier in the run.
+run_gate_line() {
+  local use_envu="$1"
+  local real_dispatch="$HERE/offload-dispatch.sh"
+  if [[ "$use_envu" == "1" ]]; then
+    env -u BASH_ENV -u ENV bash "$real_dispatch" --check-blocked mikrob "gemini-ok" "" "$SENSITIVE_INPUT" >/dev/null 2>&1
+  else
+    bash "$real_dispatch" --check-blocked mikrob "gemini-ok" "" "$SENSITIVE_INPUT" >/dev/null 2>&1
+  fi
+}
+( export BASH_ENV="$BASH_ENV_EXIT42" ENV="$BASH_ENV_EXIT42"
+  run_gate_line 0; echo "unprotected_rc=$?" > "$TMP/j-unprotected.rc"
+  run_gate_line 1; echo "protected_rc=$?" > "$TMP/j-protected.rc"
+)
+unprotected_rc="$(grep -o '[0-9]*' "$TMP/j-unprotected.rc")"
+protected_rc="$(grep -o '[0-9]*' "$TMP/j-protected.rc")"
+if [[ "$unprotected_rc" == "42" && "$protected_rc" != "42" ]]; then
+  PASS=$((PASS+1)); echo "OK   J: env -u BASH_ENV -u ENV prevents mid-script BASH_ENV poisoning from forcing the gate's exit code to 42 (unprotected got 42, protected got $protected_rc)"
+else
+  FAIL=$((FAIL+1)); FAILED+=("J: BASH_ENV mid-script poisoning"); echo "FAIL expected unprotected=42 (poisoned) and protected!=42 (immune), got unprotected=$unprotected_rc protected=$protected_rc"
+fi
+
+echo "=== K. UBD_OFFLOAD_DISPATCH env var pointed at an always-exit-42 stub has NO effect -- the seam was removed, the real offload-dispatch.sh is always used ==="
+STUB_ALWAYS_ALLOW="$TMP/always-exit42.sh"
+cat > "$STUB_ALWAYS_ALLOW" <<'EOF'
+#!/usr/bin/env bash
+exit 42
+EOF
+chmod +x "$STUB_ALWAYS_ALLOW"
+touch "$GEMINI_HEAVY_FLAG"
+out="$(UBD_OFFLOAD_DISPATCH="$STUB_ALWAYS_ALLOW" run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT")"; rc=$?
+check "K: UBD_OFFLOAD_DISPATCH override is inert, sensitive content still blocked" 2 "" "$rc" "$out"
+rm -f "$GEMINI_HEAVY_FLAG"
+
+# L/M/N regress WhiteHat NO-GO F1/F2 (card 7b5cf804, komment 23922, Gate-SHA
+# bffa6341ef399a75c696a4aa902cddb670d445c6): the J/env -u wrapper above does not help if `env`/
+# `bash` themselves are shadowed by an exported function or a PATH-prepended fake binary, and the
+# FILTER/LOCAL_LLM/GEMINI_OFFLOAD seams were overridable from ANY caller, not just the selftest.
+
+echo "=== L. a bash function named 'env', exported by the CALLER, must not let a sensitive commit through (old code: rc=0, Gemini-stub received the subject) ==="
+touch "$GEMINI_HEAVY_FLAG"
+out_l="$( (
+  env() { return 42; }
+  export -f env
+  run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT"
+) )"; rc_l=$?
+check "L: exported env function -> content gate still blocks" 2 "" "$rc_l" "$out_l"
+rm -f "$GEMINI_HEAVY_FLAG"
+
+echo "=== M. a PATH-prepended fake 'env' binary must not let a sensitive commit through (old code: rc=0) ==="
+FAKE_BIN="$TMP/fakebin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/env" <<'EOF'
+#!/usr/bin/env bash
+exit 42
+EOF
+chmod +x "$FAKE_BIN/env"
+touch "$GEMINI_HEAVY_FLAG"
+out_m="$(PATH="$FAKE_BIN:$PATH" run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT")"; rc_m=$?
+check "M: PATH-prepended fake env -> content gate still blocks" 2 "" "$rc_m" "$out_m"
+rm -f "$GEMINI_HEAVY_FLAG"
+
+echo "=== N. UBD_FILTER override has NO EFFECT without UBD_SELFTEST_MODE (production mode): a malicious passthrough filter cannot let a filter-rejected input through ==="
+PASSTHROUGH_FILTER="$TMP/passthrough-filter.sh"
+cat > "$PASSTHROUGH_FILTER" <<'EOF'
+#!/usr/bin/env bash
+cat
+EOF
+chmod +x "$PASSTHROUGH_FILTER"
+# No UBD_SELFTEST_MODE set here -- on fixed code UBD_FILTER is ignored and the real filter.sh
+# rejects UNSAFE_ONLY exactly as in case E, before any local/Gemini attempt (fast, no real call).
+# Bounded with timeout: on the pre-fix mutation (UBD_FILTER honored unconditionally) the malicious
+# filter would let UNSAFE_ONLY through unfiltered, and the script would proceed to call the REAL
+# local-llm.sh (not stubbed, since UBD_LOCAL_LLM is not set here either) -- that hangs rather than
+# failing fast, so the timeout turns an otherwise-indefinite mutation run into a bounded FAIL.
+out_n="$(timeout 10 env UBD_FILTER="$PASSTHROUGH_FILTER" bash "$SCRIPT" --caller test --confirm-gemini-ok <<<"$UNSAFE_ONLY" 2>/dev/null)"; rc_n=$?
+check "N: UBD_FILTER override inert without UBD_SELFTEST_MODE, unsafe input still rejected" 1 "" "$rc_n" "$out_n"
 
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
