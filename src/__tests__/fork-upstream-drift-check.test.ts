@@ -363,7 +363,6 @@ describe('realGit does not leak a failing git call\'s stderr to the process (car
 
       const writes: string[] = []
       const spy = process.stderr.write.bind(process.stderr)
-      // @ts-expect-error -- test-local spy, restored in finally below
       process.stderr.write = (chunk: unknown, ...rest: unknown[]) => {
         writes.push(String(chunk))
         return spy(chunk as never, ...(rest as []))
