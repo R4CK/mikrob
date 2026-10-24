@@ -8,8 +8,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/upstream-batch-digest-offload.sh"
 TMP="$(mktemp -d)"
-PROBE_IN_PLACE="$HERE/.upstream-batch-digest-offload.selftest-probe.sh"
-trap 'rm -rf "$TMP" "$PROBE_IN_PLACE"' EXIT
+trap 'rm -rf "$TMP"' EXIT
 
 PASS=0
 FAIL=0
@@ -86,9 +85,17 @@ check "the stub probe copy differs from the real script by exactly 3 lines (HERE
 # A SEPARATE probe for case O below: it must swap ONLY LOCAL_LLM/GEMINI_OFFLOAD to absolute stub
 # paths (so the attack cannot be tested by accidentally hitting the real network calls) while
 # leaving the HERE computation itself untouched (so the dirname-function attack has something
-# real to redirect). It lives NEXT TO the real script (not in $TMP), because HERE is computed from
-# this probe's OWN location via BASH_SOURCE, and FILTER/OFFLOAD_DISPATCH/the gemini-heavy-gate.sh
-# source must still resolve to the real store directory when the attack fails (the fixed-code case).
+# real to redirect). It must NOT live next to the real script -- selftests-do-not-mutate-the-
+# shared-tree.test.ts (card 9b224eec) rightly flags any write into $HERE: every other vitest
+# worker reads that same store/ directory. Instead, copy the WHOLE store/ directory into a sandbox
+# under $TMP (reading from the tree, writing elsewhere -- explicitly not flagged) and build the
+# probe there: FILTER/OFFLOAD_DISPATCH/the gemini-heavy-gate.sh source and OFFLOAD_DISPATCH's own
+# unconditional top-level sources all resolve inside the sandbox when the attack fails (the
+# fixed-code case), exactly as they would against the real store directory.
+SANDBOX_HERE="$TMP/sandbox-here"
+mkdir -p "$SANDBOX_HERE"
+cp -a "$HERE/." "$SANDBOX_HERE/"
+PROBE_IN_PLACE="$SANDBOX_HERE/.upstream-batch-digest-offload.selftest-probe.sh"
 sed \
   -e "${LOCAL_LLM_LINE}c\\
 LOCAL_LLM=\"$STUB_LOCAL\"" \

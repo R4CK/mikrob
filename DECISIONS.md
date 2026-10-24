@@ -21805,3 +21805,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet WhiteHat delta NO-GO-jabol jon (komment 23996), a dontes MikroB-tol (komment 23997), a javitast backend2 irta.
 
 **Hivatkozás:** kártya 7b5cf804, delta-gate WhiteHat delta NO-GO 23996, MikroB dontes 23997, elozo ket dontes ugyanerrol a kartyarol feljebb.
+
+## 2026-10-24: 7b5cf804 -- delta 3: a case-O probe-copy a store/ megosztott fába írt, selftests-do-not-mutate-the-shared-tree.test.ts (9b224eec) joggal elkapta
+
+**Kontextus:** a delta-2 javítás (lásd feljebb, F1'/F2' lezárása) `marveen-land.sh`-s landolása a MERGE eredményén futó teljes fleet-test-en pirosra fordult: a `PROBE_IN_PLACE` (case O, a dirname-attack teszt) a valódi `store/` könyvtárba írt (`$HERE/.upstream-batch-digest-offload.selftest-probe.sh`) és `chmod +x`-elte ott -- ezt a `selftests-do-not-mutate-the-shared-tree.test.ts` (kártya 9b224eec) helyesen elkapta, mert minden más vitest-worker ugyanazt a megosztott fát olvassa, és egy ilyen írás tranziens ablakot nyit (a kártya saját mérése: ~1,4% esély arra, hogy egy másik teszt pont ebben az ablakban nézi a fát).
+
+**Döntés:** a `PROBE_IN_PLACE` többé nem él a valódi `store/`-ban. A selftest a TELJES `store/` könyvtárat lemásolja egy `$TMP`-alapú sandbox-ba (`cp -a "$HERE/." "$SANDBOX_HERE/"` -- ez a guard saját dokumentált gyógymódja: "copying OUT of the tree is not flagged"), és a case-O probe-ot a sandbox MÁSOLATÁBAN hozza létre/chmod-olja. A sandbox teljesség azért kell, mert a case O "javítás után a támadás elbukik" ágán a HERE a probe valódi helyére esik, és onnantól FILTER/OFFLOAD_DISPATCH/gemini-heavy-gate.sh (plusz offload-dispatch.sh saját, feltétlenül futó top-level source-jai: card-decompose-templates.sh, decompose-sample-context.sh, local-first-draft-check.sh) mind léteznie kell ott -- egy részleges sandbox hamis pirosat adna a fix oldalon.
+
+**Mutáció-ellenőrzés:** a sandboxolt probe-pal a selftest változatlanul 17/17 zöld (A-O). `store/offload-dispatch.selftest.sh`: 88/88 zöld, nincs regresszió. A guard saját detekciós logikáját (Python-reprodukció a treeVars/hits mintából) lefuttatva a javított fájlra: `hits: []` -- a `chmod +x "$PROBE_IN_PLACE"` már nem `$HERE`-ből származó változót céloz, hanem `$SANDBOX_HERE`-ből (ami `$TMP`-ből származik), tehát a guard mintája nem illeszkedik rá.
+
+**Ki döntött:** a lelet a `marveen-land.sh` fleet-test futásából jött (nem gate-verdikt, a guard-teszt saját kódja), a javítást backend2 írta, ugyanazon a delta-körön belül.
+
+**Hivatkozás:** kártya 7b5cf804, az előző két bejegyzés ugyanerről a kártyáról feljebb, `src/__tests__/selftests-do-not-mutate-the-shared-tree.test.ts` (kártya 9b224eec).
