@@ -21729,3 +21729,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a hiány backend3 jelzéséből derült ki (acc197c8), a kártyát (91b9f3c0) és a javítást backend2 vitte végig.
 
 **Hivatkozás:** kártya 91b9f3c0, forrás acc197c8.
+
+## 2026-10-24: 7b5cf804 -- delta: WhiteHat NO-GO F1/F2 (exportált env/bash-függvény + PATH-trükk + FILTER/LOCAL_LLM/GEMINI_OFFLOAD seamek)
+
+**Kontextus:** WhiteHat NO-GO (komment 23922) @ bffa6341ef399a75c696a4aa902cddb670d445c6: az eredeti env-seam javítás (UBD_OFFLOAD_DISPATCH törlése + `env -u BASH_ENV -u ENV`) két további, hívó-környezetből elérhető vektort hagyott nyitva. F1: a hívó egy exportált `env` vagy `bash` nevű bash-függvénnyel, vagy egy PATH elejére tett hamis `env` binárissal elfedhette a `env -u BASH_ENV -u ENV bash ...` kapu-hívást úgy, hogy BASH_ENV/ENV maga unset marad -- a függvény/PATH-lookup MEGELŐZTE a kaput. F2: a FILTER/LOCAL_LLM/GEMINI_OFFLOAD env-seamek (UBD_FILTER, UBD_LOCAL_LLM, UBD_GEMINI_OFFLOAD) továbbra is bármely hívó környezetéből felülírhatók voltak -- egy caller-supplied UBD_FILTER a --stat sorokat is átengedhette a Gemini-nek küldött promptba, pont azt az invariánst megkerülve, amit a FILTER fájl saját fejlécében kimond.
+
+**Döntés:** `store/upstream-batch-digest-offload.sh` elején `unset -f env bash awk date cat printf`, `PATH=/usr/bin:/bin`, `unset BASH_ENV ENV`; a tartalmi kapu hívása abszolút úttal (`/usr/bin/env -u BASH_ENV -u ENV /bin/bash ...`), hogy se függvény-, se PATH-lookup ne fusson. A FILTER/LOCAL_LLM/GEMINI_OFFLOAD seamek egy második, csak a selftest által állított `UBD_SELFTEST_MODE=1` kapcsoló mögé kerültek -- ha ez nincs jelen, a seamek figyelmen kívül maradnak, a script mindig a valódi scripteket hívja. A seamek megmaradtak (nem törölve, mint az OFFLOAD_DISPATCH-nél), mert a selftestnek tényleg kell a LOCAL_LLM/GEMINI_OFFLOAD stubolás egy valódi Ollama/Gemini-hívás elkerüléséhez.
+
+**Mutáció-ellenőrzés:** `git stash` a javítás előtti scriptre, 3 új regressziós eset (L: exportált `env` függvény, M: PATH-elejére tett hamis `env` binárus, N: UBD_FILTER override `UBD_SELFTEST_MODE` nélkül) mindhárom PIROS lett (pass=11 fail=3 -- L/M a szenzitív tárgyat valóban átengedte a Gemini-stubnak, N az UBD_FILTER-t honorálta a kapcsoló nélkül is). `git stash pop` után mind a 14 eset ZÖLD (pass=14 fail=0, a J/K régi esetek is változatlanul). `store/offload-dispatch.selftest.sh`: 88/88 zöld, nincs regresszió.
+
+**Ki döntött:** a lelet WhiteHat NO-GO-jából jön (komment 23922), a javítást backend2 írta.
+
+**Hivatkozás:** kártya 7b5cf804, delta-gate WhiteHat NO-GO 23922, előző döntés ugyanerről a kártyáról feljebb.
