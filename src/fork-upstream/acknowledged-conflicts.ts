@@ -4611,13 +4611,18 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   // Card 4aa87fdf (fullstack/DevO, 2026-10-17): the channel-poller-reap.ts entry above keeps
   // isPollerArgv() as a second, argv-based narrowing layer on top of the CLAUDE_PLUGIN_ROOT env-scan
   // (upstream's cf075d41 removed it). The 2026-09-26 incident (100+ pids reaped off bare env needle,
-  // fleet-wide tmux server killed) is why both layers are kept. If this function is silently dropped
-  // (e.g. a merge taking upstream's blob), the defence-in-depth reverts to env-only narrowing --
-  // exactly the condition that caused the incident. The needle is the exact export declaration; a
-  // comment reproducing the name does not satisfy the anchor (guards-that-pin-behaviour skill,
-  // karpathy-guidelines comments-strip rule).
+  // fleet-wide tmux server killed) is why both layers are kept.
+  // WIDENED (card b89fbac6, 2026-10-24, WhiteHat 22621): the needle used to be the bare export
+  // declaration, which an earlier merge attempt proved insufficient on its own (8d625ccd, RedHat
+  // NO-GO 22524) -- the declaration survived while reapChannelOrphans's own CALL to it was dropped,
+  // and nothing here would have caught that, because a declaration can go unused forever without
+  // failing an anchor that only checks it is still exported. The needle is now the exact call-site
+  // line inside reapChannelOrphans, so a merge that keeps the function but stops calling it (the
+  // precise near-miss that already happened once) fails this anchor. A comment reproducing either
+  // the name or the call does not satisfy it (guards-that-pin-behaviour skill, karpathy-guidelines
+  // comments-strip rule).
   'src/web/channel-poller-reap.ts': {
-    needle: 'export function isPollerArgv',
+    needle: 'const fromEnvScan = filterPollerPids(parseStateDirPollerPids(psEww, envVar, chanDir, pluginRootNeedle), argvOf)',
     file: 'src/web/channel-poller-reap.ts',
     expect: 'present',
     because:
@@ -4625,10 +4630,14 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "filterPollerPids) as defence-in-depth over the CLAUDE_PLUGIN_ROOT env-scan that both the " +
       "fork (PLUGIN_ROOT_ENV_RE, line 72) and upstream (cf075d41) have. Upstream removed this " +
       "function; keeping it here is the deliberate decision after the 2026-09-26 incident where the " +
-      "env-scan alone matched 100+ pids and killed the fleet-wide tmux server. If isPollerArgv " +
-      "disappears, the defence-in-depth is gone: reap candidates are filtered only by env-var " +
-      "presence, with no argv check confirming the process is actually a bun/node server.ts poller. " +
-      "That is a revert to the pre-incident surface, not a safe merge.",
+      "env-scan alone matched 100+ pids and killed the fleet-wide tmux server. If this exact call " +
+      "disappears from reapChannelOrphans -- even with isPollerArgv/filterPollerPids still declared " +
+      "and exported elsewhere -- the defence-in-depth is gone at the one place it matters: reap " +
+      "candidates are filtered only by env-var presence, with no argv check confirming the process " +
+      "is actually a bun/node server.ts poller. That is a revert to the pre-incident surface, not a " +
+      "safe merge, and card b89fbac6's test (channel-poller-reap-guards.test.ts, 'env-scan candidate " +
+      "with the plugin marker but a non-poller argv') fails red the moment it happens, independent " +
+      "of this anchor.",
   },
 }
 
