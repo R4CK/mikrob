@@ -202,6 +202,18 @@ describe('isPollerArgv / filterPollerPids', () => {
     expect(isPollerArgv([])).toBe(false)
   })
 
+  // Card b89fbac6, RedHat NO-GO 23465 (mutant B9): a `server.ts` argv element alone is not enough --
+  // every existing fixture above that carries one also has exe === 'bun'/'node', so dropping the
+  // `exe !== 'bun' && exe !== 'node'` check (isPollerArgv, channel-poller-reap.ts line 113) survived
+  // 103/103 green on the whole affected family. A non-bun/node process whose argv happens to contain
+  // the literal token 'server.ts' (a shell one-liner, a script path, an unrelated tool's positional
+  // arg) must stay false -- the exe check is what the env-needle narrowing in the header comment
+  // above cannot do on its own, since a `server.ts` substring says nothing about who is running it.
+  it('rejects a non-bun/node exe even when an argv element is literally server.ts', () => {
+    expect(isPollerArgv(['python3', '/x/server.ts'])).toBe(false)
+    expect(isPollerArgv(['sh', 'server.ts'])).toBe(false)
+  })
+
   it('keeps only poller pids, and drops a pid whose argv cannot be read', () => {
     const argv: Record<number, string[] | null> = {
       814: ['tmux', 'new-session'],

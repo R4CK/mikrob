@@ -4635,9 +4635,10 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "and exported elsewhere -- the defence-in-depth is gone at the one place it matters: reap " +
       "candidates are filtered only by env-var presence, with no argv check confirming the process " +
       "is actually a bun/node server.ts poller. That is a revert to the pre-incident surface, not a " +
-      "safe merge, and card b89fbac6's test (channel-poller-reap-guards.test.ts, 'env-scan candidate " +
-      "with the plugin marker but a non-poller argv') fails red the moment it happens, independent " +
-      "of this anchor.",
+      "safe merge, and card b89fbac6's tests (channel-poller-reap-guards.test.ts, '(v) card b89fbac6: " +
+      "a plugin process carrying BOTH markers but failing the argv-shape check is spared...' and " +
+      "'(vi) card b89fbac6, RedHat NO-GO 23465: a non-bun/node process whose argv literally contains " +
+      "server.ts is spared...') fail red the moment it happens, independent of this anchor.",
   },
 }
 

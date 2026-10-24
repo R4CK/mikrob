@@ -174,6 +174,34 @@ describe('cf075d41 reapChannelOrphans on real processes', () => {
     process.kill(notAPollerArgv, 'SIGKILL'); await sleep(150)
   })
 
+  it('(vi) card b89fbac6, RedHat NO-GO 23465: a non-bun/node process whose argv literally contains server.ts is spared, via the env scan AND via bot.pid', async () => {
+    // Every (v)-style fixture above fails isPollerArgv because it has NO server.ts argv element at
+    // all -- that leaves the exe check (isPollerArgv's `exe !== 'bun' && exe !== 'node'`) completely
+    // unexercised by a real process: dropping it survived 103/103 green (RedHat's measured mutant
+    // B9). This process's exe is /bin/sh, not bun/node, but its argv DOES contain the literal token
+    // 'server.ts' (as a positional arg after `-c`) -- the one shape that distinguishes the exe check
+    // from the server.ts-element check.
+    clearBotPid()
+    const notBunOrNode = spawnWith('/bin/sh', ['-c', 'sleep 300', 'server.ts'], { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
+    await sleep(300)
+    fakeTmuxPrints('echo 4242')
+    const r1 = reapChannelOrphans('telegram', agentDir, { tmuxPath: fakeTmux })
+    await sleep(600)
+    expect(alive(notBunOrNode)).toBe(true)
+    expect(r1.reaped).not.toContain(notBunOrNode)
+    expect(r1.source.fromEnvScan).not.toContain(notBunOrNode)
+
+    writeFileSync(join(chanDir, 'bot.pid'), String(notBunOrNode))
+    const r2 = reapChannelOrphans('telegram', agentDir, { tmuxPath: fakeTmux })
+    await sleep(600)
+    expect(alive(notBunOrNode)).toBe(true)
+    expect(r2.reaped).not.toContain(notBunOrNode)
+    expect(r2.source.fromBotPid).toBeNull()
+
+    clearBotPid()
+    process.kill(notBunOrNode, 'SIGKILL'); await sleep(150)
+  })
+
   it('(iv) positive control: a real orphan poller (state dir AND plugin root) is still stopped, via the env scan and via bot.pid', async () => {
     clearBotPid()
     const scanned = nodeJob({ TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
