@@ -21629,3 +21629,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a leletek WhiteHat-tól jönnek (2564e877 gate, F1+F2), a kódot/tesztet a backend írta.
 
 **Hivatkozás:** kártya 87fd2f19, WhiteHat gate 2564e877 (F1, F2).
+
+## 2026-10-24 -- kártya 6b87df14: Cybersec NO-GO javítva, gyökérok korrigálva (9ce3181c egyedül, nem két mechanizmus)
+
+**Kontextus:** a d87adb90 zár-őr incidens regressziós tesztjét (6b87df14) backend2 landolta (f898a65a6, Gate-SHA 1eb4c4b35), de Cybersec NO-GO-t adott (komment 23348): a teszt rövidített 8-karakteres shákat használt, ami false-prefix-matchet adott és a teszt az incidens-kori guardon (769a3183f) is zölden maradt -- nem reprodukálta az incidenst. A REVIEW gyökérok-állítása ("két független védelem: 85c87024 + 9ce3181c") is téves volt: Cybersec saját mutáció-replayje szerint egyedül a 9ce3181c gate-only-citer drop okozza/szünteti meg az incidenst.
+
+**Döntés:** a teszt a valós 40 karakteres REVIEW/QA/Cybersec shát, a tipuzott shát (9. hex karaktertől eltér, nem prefix) és a valós zárójeles részt (`(a landolt d87adb90 delta: commit fe24f790)`) használja egy soron, pontosan Cybersec javaslata szerint. A komment gyökérokként a 9ce3181c-t nevezi meg egyedüli mechanizmusként.
+
+**Miért:** mutáció-tesztelve a javított kódon: a 9ce3181c gate-only-citer drop kikapcsolva PIROS (expected true to be false), a 85c87024 prefix-összevonás kikapcsolva ZÖLD marad (110/110 a teljes guard-suite-on) -- a 85c87024 erre a shape-re irreleváns, ahogy Cybersec F3 lelete is mondta.
+
+**Ki döntött:** Cybersec (NO-GO és javítási recept, komment 23348), backend2 (implementáció, REVIEW komment 23379, Gate-SHA c7068baca0b36acf907d44910ae75311d713ad1e).
+
+**Hivatkozás:** kártya 6b87df14, előd d87adb90, Cybersec komment 23348.
