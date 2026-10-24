@@ -28,9 +28,24 @@
 #     (ca1b763c N2 follow-up) via REA_NET_ALLOW=1 for a session that genuinely
 #     needs it (e.g. a signature/update lookup); fail-closed if unset.
 #   - sample submission: read-only bind of REA_SAMPLE_DIR (if set), restricted
-#     to a path under elemzo's own agent directory, excluding its own
-#     .claude-config and any store/ path -- card 9518b377. Without this, the
+#     to a dedicated allowlisted directory (elemzo/samples) -- card 9518b377,
+#     hardened to an ALLOWLIST after WhiteHat F3 (komment 23921): the original
+#     denylist (deny .claude-config*/store/*, allow anything else under
+#     elemzo/) would also have bound elemzo's readable .claude/ (channels,
+#     hooks), and the store/ pattern without a trailing separator did not even
+#     catch a directory literally named "store". Without this knob, the
 #     sandbox cannot see any file elemzo wants analyzed at all.
+#   - this script's OWN PATH is pinned to /usr/bin:/bin at the top (WhiteHat
+#     NO-GO F1, komment 23921): the registered PATH (needed by the sandboxed
+#     REA process itself, saved below as REG_PATH) has $JAVA_HOME/bin first, a
+#     directory writable by the same user running this script and every
+#     engine. Before this fix, every bare-name external command the script
+#     calls (readlink, sha256sum, sed, sort, cut, dirname, mkdir, find, grep)
+#     resolved against that registered PATH -- the exact hijack class
+#     resolve_trusted_bin() below already closed for bwrap/env/node (RedHat
+#     NO-GO, ca1b763c komment 23049) but left open everywhere else. Measured:
+#     a planted fake `readlink`/`sha256sum` first in PATH let WhiteHat's PoC
+#     defeat both the REA_SAMPLE_DIR validation and the integrity pin.
 #   - --unshare-pid: own PID namespace. Measured necessary, not just defensive:
 #     without it, rea's own ghidra-java health probe intermittently fails
 #     with EACCES reading /proc/<pid>/environ of its own short-lived child
@@ -56,6 +71,13 @@ for v in "${REQUIRED_VARS[@]}"; do
   fi
 done
 
+# Pin our OWN PATH to trusted directories only (WhiteHat NO-GO F1, komment 23921, see header
+# comment). Save the registered PATH first -- the sandboxed REA process still needs it (it
+# resolves its own child tools via it) -- then lock down the PATH this script itself uses for
+# every bare-name command below (readlink, sha256sum, sed, sort, cut, dirname, mkdir, find, grep).
+REG_PATH="$PATH"
+export PATH=/usr/bin:/bin
+
 # HOPPER_LAUNCHER_PATH is optional (Hopper may not be installed/registered yet).
 HOPPER_LAUNCHER_PATH="${HOPPER_LAUNCHER_PATH:-}"
 
@@ -63,21 +85,18 @@ HOPPER_LAUNCHER_PATH="${HOPPER_LAUNCHER_PATH:-}"
 REA_NET_ALLOW="${REA_NET_ALLOW:-0}"
 
 # Configurable sample-submission bind (card 9518b377): default-closed (unset = no bind).
-# Restricted to elemzo's own agent directory so this knob cannot be used to expose an
-# unrelated agent's files or flotta secrets (store/.dashboard-token, .claude-config).
+# ALLOWLIST (WhiteHat F3, komment 23921; replaces the original denylist, which also exposed
+# elemzo's readable .claude/ and missed a directory literally named "store"): only a path
+# under a DEDICATED sample directory is accepted, nothing else under elemzo or anywhere else.
+SAMPLES_ROOT="$(readlink -f /home/neon/marveen/agents/elemzo/samples)"
 REA_SAMPLE_DIR="${REA_SAMPLE_DIR:-}"
 RESOLVED_SAMPLE_DIR=""
 if [ -n "$REA_SAMPLE_DIR" ]; then
-  ELEMZO_ROOT="$(readlink -f /home/neon/marveen/agents/elemzo)"
   RESOLVED_SAMPLE_DIR="$(readlink -f "$REA_SAMPLE_DIR" 2>/dev/null || true)"
   case "$RESOLVED_SAMPLE_DIR" in
-    "$ELEMZO_ROOT"/.claude-config*|*/store/*|"")
-      echo "rea-bwrap-sandbox: REA_SAMPLE_DIR ($REA_SAMPLE_DIR) resolves to a config/secret path or could not be resolved -- refusing (fail-closed)" >&2
-      exit 1
-      ;;
-    "$ELEMZO_ROOT"/*) ;;
+    "$SAMPLES_ROOT"|"$SAMPLES_ROOT"/*) ;;
     *)
-      echo "rea-bwrap-sandbox: REA_SAMPLE_DIR ($REA_SAMPLE_DIR) is not under $ELEMZO_ROOT -- refusing (fail-closed)" >&2
+      echo "rea-bwrap-sandbox: REA_SAMPLE_DIR ($REA_SAMPLE_DIR) is not under the dedicated sample directory $SAMPLES_ROOT -- refusing (fail-closed)" >&2
       exit 1
       ;;
   esac
@@ -110,10 +129,12 @@ NODE_BIN="$(resolve_trusted_bin node)"
 
 REA_VERSION="6.7.0"
 REA_SCRIPT=""
+PKG_DIR=""
 for pkg_json in "$HOME"/.npm/_npx/*/node_modules/rea-agents/package.json; do
   [ -f "$pkg_json" ] || continue
   if grep -q "\"version\": \"$REA_VERSION\"" "$pkg_json" 2>/dev/null; then
-    REA_SCRIPT="$(dirname "$pkg_json")/scripts/rea.mjs"
+    PKG_DIR="$(dirname "$pkg_json")"
+    REA_SCRIPT="$PKG_DIR/scripts/rea.mjs"
     break
   fi
 done
@@ -122,16 +143,18 @@ if [ -z "$REA_SCRIPT" ] || [ ! -f "$REA_SCRIPT" ]; then
   exit 1
 fi
 
-# npx-cache integrity pin (card 9518b377, LOW): the version-string match above only checks
-# package.json's self-reported version, not the actual script content -- a tampered or
-# corrupted cache entry claiming the same version would pass silently. Pin the known-good
-# hash of the vetted 6.7.0 script; refuse to start on any mismatch (fail-closed), rather than
-# running unverified code against real samples. Update this constant (and re-verify the new
-# hash through normal due diligence) only on a deliberate, reviewed version bump.
-REA_SCRIPT_SHA256_PIN="ed06cee49505b95a3cc5fceb1b4b279167e26df86227c644bb366ffffdbaf738"
-REA_SCRIPT_SHA256_ACTUAL="$(sha256sum "$REA_SCRIPT" | cut -d' ' -f1)"
-if [ "$REA_SCRIPT_SHA256_ACTUAL" != "$REA_SCRIPT_SHA256_PIN" ]; then
-  echo "rea-bwrap-sandbox: $REA_SCRIPT hash mismatch (expected $REA_SCRIPT_SHA256_PIN, got $REA_SCRIPT_SHA256_ACTUAL) -- refusing to start (fail-closed)" >&2
+# npx-cache integrity pin (card 9518b377, hardened after WhiteHat F2, komment 23921): the
+# version-string match above only checks package.json's self-reported version, and the
+# PREVIOUS version of this check hashed only scripts/rea.mjs (a ~100-line entrypoint) -- the
+# actual engine logic lives in dist/** (dynamically imported), so a tampered dist file passed
+# untouched (WhiteHat PoC: rc=0, tampered dist/mcp/main.js executed inside the sandbox). Hash
+# the WHOLE package tree instead: sorted relative-path+content hash of every file under
+# $PKG_DIR, folded into one sha256. Measured ~0.17s for the real 1775-file/32MB package --
+# negligible against MCP startup, and confirmed to change on a single tampered dist file.
+REA_PKG_MANIFEST_SHA256_PIN="e4c5144a8a5405b5ed42016a57c98540c353ed4e5527c99365c40229af534afb"
+REA_PKG_MANIFEST_SHA256_ACTUAL="$(find "$PKG_DIR" -type f -exec sha256sum {} + | sed "s#$PKG_DIR/##" | sort | sha256sum | cut -d' ' -f1)"
+if [ "$REA_PKG_MANIFEST_SHA256_ACTUAL" != "$REA_PKG_MANIFEST_SHA256_PIN" ]; then
+  echo "rea-bwrap-sandbox: $PKG_DIR package-tree hash mismatch (expected $REA_PKG_MANIFEST_SHA256_PIN, got $REA_PKG_MANIFEST_SHA256_ACTUAL) -- refusing to start (fail-closed)" >&2
   exit 1
 fi
 
@@ -205,12 +228,13 @@ fi
 # becomes pid 1 of the new pid namespace, so its environment must already be the minimal 7 names
 # before it starts, not stripped only for the node process it execs afterward.
 # $ENV_BIN/$BWRAP_BIN/$NODE_BIN are trusted absolute paths resolved above, not bare names --
-# the registered PATH itself still needs to be a minimal, allowed value for the sandboxed REA
-# process to use (rea-agents resolves its own child tools via it), it just must never be used to
-# look up bwrap/env/node themselves (RedHat NO-GO, komment 23049).
+# the sandboxed REA process gets REG_PATH (the ORIGINAL registered PATH, saved before this
+# script pinned its own $PATH to /usr/bin:/bin for F1 above), since rea-agents resolves its
+# own child tools via it; it must never be used to look up bwrap/env/node themselves (RedHat
+# NO-GO, komment 23049), which is why resolve_trusted_bin() never consults $PATH either.
 exec "$ENV_BIN" -i \
   HOME="$HOME" \
-  PATH="$PATH" \
+  PATH="$REG_PATH" \
   JAVA_HOME="$JAVA_HOME" \
   GHIDRA_INSTALL_DIR="$GHIDRA_INSTALL_DIR" \
   REA_JADX_MCP_JAR="$REA_JADX_MCP_JAR" \

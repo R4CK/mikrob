@@ -137,14 +137,66 @@ check "REA_NET_ALLOW=1 shares the host network namespace (host's eth0 visible)" 
   "$(printf '%s' "$NET_OUT_ALLOWED" | grep -qE '^\s*eth0:' && echo 1 || echo 0)"
 
 ELEMZO_ROOT="/home/neon/marveen/agents/elemzo"
-check "REA_SAMPLE_DIR outside elemzo's own directory is refused" \
+SAMPLES_ROOT="$ELEMZO_ROOT/samples"
+mkdir -p "$SAMPLES_ROOT"
+check "REA_SAMPLE_DIR outside the dedicated samples/ allowlist directory is refused (WhiteHat F3, komment 23921)" \
   "$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="/home/neon/marveen/store" bash "$REAL" doctor >/dev/null 2>&1; [ $? -eq 1 ] && echo 1 || echo 0)"
-check "REA_SAMPLE_DIR pointing at elemzo's .claude-config is refused" \
+check "REA_SAMPLE_DIR pointing at elemzo's .claude-config (not under samples/) is refused" \
   "$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="$ELEMZO_ROOT/.claude-config" bash "$REAL" doctor >/dev/null 2>&1; [ $? -eq 1 ] && echo 1 || echo 0)"
-check "REA_SAMPLE_DIR under elemzo's own directory but nonexistent is refused" \
-  "$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="$ELEMZO_ROOT/does-not-exist-9518b377" bash "$REAL" doctor >/dev/null 2>&1; [ $? -eq 1 ] && echo 1 || echo 0)"
+check "REA_SAMPLE_DIR pointing at elemzo's readable .claude/ (not under samples/) is refused -- the denylist this replaces would NOT have caught this" \
+  "$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="$ELEMZO_ROOT/.claude" bash "$REAL" doctor >/dev/null 2>&1; [ $? -eq 1 ] && echo 1 || echo 0)"
+check "REA_SAMPLE_DIR under samples/ but nonexistent is refused" \
+  "$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="$SAMPLES_ROOT/does-not-exist-9518b377" bash "$REAL" doctor >/dev/null 2>&1; [ $? -eq 1 ] && echo 1 || echo 0)"
 
-SAMPLE_DIR="$ELEMZO_ROOT/selftest-samples-9518b377"
+# Regression test for WhiteHat F1 (komment 23921, PoC C3-equivalent): a fake `readlink` planted
+# first in PATH used to be able to fool the sample-dir check into resolving an out-of-scope
+# path as if it were inside the allowlist. With the script's own PATH now pinned to
+# /usr/bin:/bin (F1 fix), the planted readlink is never consulted -- the real one runs, and an
+# out-of-scope REA_SAMPLE_DIR is still refused even with the hijack directory first in PATH.
+FAKE_READLINK_DIR="$WORK/hijack-readlink"
+mkdir -p "$FAKE_READLINK_DIR"
+cat > "$FAKE_READLINK_DIR/readlink" <<EOF
+#!/usr/bin/env bash
+echo "$SAMPLES_ROOT/fooled-by-hijacked-readlink"
+EOF
+chmod +x "$FAKE_READLINK_DIR/readlink"
+env -i \
+  HOME="$HOME" PATH="$FAKE_READLINK_DIR:/usr/bin:/bin" \
+  JAVA_HOME="/usr" GHIDRA_INSTALL_DIR="/usr" \
+  REA_JADX_MCP_JAR="/usr/bin/true" REA_KUNA_COMMAND="/usr/bin/true" \
+  REA_SAMPLE_DIR="/home/neon/marveen/store" \
+  bash "$REAL" doctor >/dev/null 2>&1 && RC_HIJACKED_READLINK=0 || RC_HIJACKED_READLINK=$?
+check "a hijacked readlink planted first in PATH cannot fool the REA_SAMPLE_DIR allowlist (rc=1, fail-closed)" \
+  "$([ "$RC_HIJACKED_READLINK" -eq 1 ] && echo 1 || echo 0)"
+
+# Extended hijack coverage (WhiteHat F1, komment 23921): the previous hijack test only planted
+# fake bwrap/env/node. readlink/sha256sum/sed/sort/cut/dirname/mkdir/find/grep are also called
+# by this script and were equally hijackable via the registered PATH before the F1 fix pinned
+# the script's own PATH to /usr/bin:/bin.
+HIJACK_DIR2="$WORK/hijack-bin-2"
+mkdir -p "$HIJACK_DIR2"
+SENTINEL2="$WORK/hijacked2"
+for fake in bwrap env node readlink sha256sum sed sort cut dirname mkdir find grep; do
+  cat > "$HIJACK_DIR2/$fake" <<EOF
+#!/usr/bin/env bash
+echo "$fake" >> "$SENTINEL2"
+exit 1
+EOF
+  chmod +x "$HIJACK_DIR2/$fake"
+done
+HIJACK_SAMPLE_DIR="$SAMPLES_ROOT/selftest-hijack-9518b377"
+mkdir -p "$HIJACK_SAMPLE_DIR"
+env -i \
+  HOME="$HOME" PATH="$HIJACK_DIR2:/usr/bin:/bin" \
+  JAVA_HOME="/usr" GHIDRA_INSTALL_DIR="/usr" \
+  REA_JADX_MCP_JAR="/usr/bin/true" REA_KUNA_COMMAND="/usr/bin/true" \
+  REA_SAMPLE_DIR="$HIJACK_SAMPLE_DIR" \
+  bash "$REAL" doctor >/dev/null 2>&1 || true
+check "none of bwrap/env/node/readlink/sha256sum/sed/sort/cut/dirname/mkdir/find/grep planted first in PATH are ever executed" \
+  "$([ ! -f "$SENTINEL2" ] && echo 1 || echo 0)"
+rm -rf "$HIJACK_SAMPLE_DIR"
+
+SAMPLE_DIR="$SAMPLES_ROOT/selftest-samples-9518b377"
 mkdir -p "$SAMPLE_DIR"
 echo marker > "$SAMPLE_DIR/marker.txt"
 SAMPLE_PROBE="$WORK/sample-probe.sh"
@@ -172,6 +224,30 @@ check "the known kuna cache subdir stays writable" \
 check "an unlisted subdir of ~/.cache/rea is read-only (narrowed from the previous whole-tree RW bind)" \
   "$(printf '%s' "$CACHE_OUT" | grep -q "UNEXPECTED_RO" && echo 1 || echo 0)"
 rm -f "$HOME/.cache/rea/kuna/selftest-9518b377.tmp"
+
+# Regression test for WhiteHat F2 (komment 23921): the integrity pin must cover the WHOLE
+# package tree, not just scripts/rea.mjs -- a tampered dist/** file must be caught. Copy the
+# real cached rea-agents package into an isolated fake $HOME (so this never touches the real,
+# shared npx cache), confirm the unmodified copy passes the hash check (it may still fail
+# LATER for unrelated reasons -- module resolution against an isolated fake HOME -- that is not
+# what this test is checking), then tamper one dist file in the COPY and confirm it is refused
+# with a hash-mismatch message before node ever runs.
+REAL_PKG_DIR="$(dirname "$(find "$HOME/.npm/_npx" -maxdepth 4 -path '*/node_modules/rea-agents/package.json' -exec grep -l '"version": "6.7.0"' {} \; 2>/dev/null | head -1)" 2>/dev/null)"
+if [ -n "$REAL_PKG_DIR" ] && [ -d "$REAL_PKG_DIR" ]; then
+  FAKE_HOME="$WORK/fakehome-f2"
+  mkdir -p "$FAKE_HOME/.npm/_npx/testhash/node_modules"
+  cp -r "$REAL_PKG_DIR" "$FAKE_HOME/.npm/_npx/testhash/node_modules/rea-agents"
+  F2_UNMODIFIED_ERR="$(env -i HOME="$FAKE_HOME" PATH=/usr/bin:/bin JAVA_HOME=/usr GHIDRA_INSTALL_DIR=/usr REA_JADX_MCP_JAR=/usr/bin/true REA_KUNA_COMMAND=/usr/bin/true bash "$REAL" doctor 2>&1)" || true
+  check "an unmodified copy of the real package tree passes the manifest-hash check (no mismatch message)" \
+    "$(printf '%s' "$F2_UNMODIFIED_ERR" | grep -q "package-tree hash mismatch" && echo 0 || echo 1)"
+  echo "// tampered-by-selftest-9518b377" >> "$FAKE_HOME/.npm/_npx/testhash/node_modules/rea-agents/dist/mcp/main.js"
+  F2_TAMPERED_OUT="$(env -i HOME="$FAKE_HOME" PATH=/usr/bin:/bin JAVA_HOME=/usr GHIDRA_INSTALL_DIR=/usr REA_JADX_MCP_JAR=/usr/bin/true REA_KUNA_COMMAND=/usr/bin/true bash "$REAL" doctor 2>&1)" && F2_TAMPERED_RC=0 || F2_TAMPERED_RC=$?
+  check "tampering a single dist/** file (not just the entrypoint) is caught: refused with rc=1 and a hash-mismatch message" \
+    "$([ "$F2_TAMPERED_RC" -eq 1 ] && printf '%s' "$F2_TAMPERED_OUT" | grep -q "package-tree hash mismatch" && echo 1 || echo 0)"
+  rm -rf "$FAKE_HOME"
+else
+  check "F2 package-tree tamper test (skipped: no cached rea-agents@6.7.0 found to copy from -- not a pass/fail of the pin itself)" "1"
+fi
 
 if [ "$FAIL" -eq 0 ]; then
   echo "selftest: $PASS passed, 0 failed"
