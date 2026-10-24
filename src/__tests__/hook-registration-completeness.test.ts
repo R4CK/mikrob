@@ -114,6 +114,10 @@ const EXEMPT: Record<string, string> = {
     'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
   'activity-memory-capture.selftest.py':
     'selftest for activity_memory_capture.py (note the underscore/hyphen naming mismatch between the hook and this selftest); the hook itself is unwired, see its own EXEMPT entry',
+  'auto_obs_capture.py':
+    'card f88289d6: built as a feature-flagged capability (store/auto-obs-capture-agents.json, enabled_agents defaults to []) -- deliberately NOT wired into settings.json in this landing; fleet activation is a separate, later decision (same split as the activity_memory_capture.py / claude-mem (A) pattern above)',
+  'auto_obs_capture.selftest.py':
+    'selftest for auto_obs_capture.py; the hook itself is unwired, see its own EXEMPT entry',
   'telegram_fallback_send.py':
     'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
   // telegram-image-resize.sh deliberately NOT exempted here (UPSTREAM-SYNC BATCH 4, card
