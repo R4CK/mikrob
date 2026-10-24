@@ -21821,3 +21821,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** Peti (12184/12191, Telegram), a végrehajtást a backend tervezte és írta.
 
 **Hivatkozás:** kártya 27db86f4, fázis 527c9584, mért alap a kártya saját "Mért alap" bekezdése (304 REVIEW Skills: sor, 30 nap), előd kártya 27b02677 (a generátor eredeti megépítése, f0cefd85 audit alapján).
+
+## 2026-10-24: f88289d6 -- RedHat NO-GO javítás, a fix PERSISTENCE main()-en keresztül
+
+**Kontextus:** a fenti f88289d6 bejegyzés (21759. sor) az eredeti, QA PASS-t kapott megépítést rögzíti. RedHat (cybered) delta-gate-je (komment 24233) NO-GO-t adott: a `main()`-ből a javított helper-hívások (flag-kapu, dedup check/record) nem voltak pinelve egy main()-szintű teszttel -- egy mutáns, ami ezeket a hívásokat kiveszi `main()`-ből (de a helper-függvényeket érintetlenül hagyja), zölden maradt a 36-checkes selftesten. Plusz: a `_CONTROL_OR_LINEBREAK_RX` eredetileg `\x09`/`\x0a`/`\x0d`-t (tab/LF/CR) kihagyta a kontroll-karakter-osztályból, egy rövid, sortöréses `file_path` szűrés nélkül ment át -- csak az 512-karakteres hosszhatár fogta meg az eredeti selftest 20KB-os fixtureját.
+
+**Döntés:** (1) `_CONTROL_OR_LINEBREAK_RX` kiterjesztve `[\x00-\x1f\x7f\u0085  ]`-ra (a teljes C0-tartomány), hogy egy rövid, newline/NUL/CR/U+2028-tartalmú path hossztól függetlenül elbukjon. (2) Új main()-szintű e2e harness (valódi lokális `http.server` a tényleges POST/GET bodyk elfogására, `main()` valódi subprocessben futtatva, `aoc._FLAG_FILE`/`aoc._project_root`/`activity_memory_capture._project_root` patch-elve) -- hat mutáns (A: flag-kapu törlés, B: nyers file_path, C: dedup-check törlés, D: dedup-record törlés, H: category='shared', I: szabad-szöveges extra mező) egyenként alkalmazva, mindegyik pirosra fordítja az új e2e teszteket, majd a fix visszaállításával zöldre. (3) 4 új unit-check a rövid-sortöréses path hossztól független elbukására (bare `\n`, bare NUL, bare CR, U+2028).
+
+**Mérés:** `auto_obs_capture.selftest.py` 36/36-ról 53/53-ra nőtt (4 unit + a main()-e2e szcenáriók). Sibling tesztek (`hook-registration-completeness.test.ts` + `activity-hook-redaction.test.ts`): 2 passed (2); 32 passed (32). `marveen-land.sh` a merge eredményén: Test Files 1221 passed | 1 skipped (1222); Tests 35283 passed | 130 skipped (35413).
+
+**Ki döntött:** RedHat (cybered) NO-GO-ja (komment 24233) adta meg a hatókört, MikroB dispatchja (msg 14696) szabta a Kész-ha listát, a backend tervezte és írta a javítást.
+
+**Hivatkozás:** kártya f88289d6, RedHat NO-GO komment 24233, előd 5a4bea2e (plan-grilling verdikt), eredeti bejegyzés fentebb (21759. sor).
