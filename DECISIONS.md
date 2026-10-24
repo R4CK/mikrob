@@ -21641,3 +21641,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** Cybersec (NO-GO és javítási recept, komment 23348), backend2 (implementáció, REVIEW komment 23379, Gate-SHA c7068baca0b36acf907d44910ae75311d713ad1e).
 
 **Hivatkozás:** kártya 6b87df14, előd d87adb90, Cybersec komment 23348.
+
+## 2026-10-24: 6dd721f8 -- GPU-kapu aszimmetrikus hiszterézis + zárolt állapotfájl-írás (Cybersec GO 86b78648, kártya 79aeaeb1 követő)
+
+**Kontextus:** Cybersec GO @ 86b78648 (komment 5297) két lelete a `vram-guard-check.sh`-n. (1) a mostani utilization-hiszterézis szimmetrikus, 30 mp mindkét irányban -- egy 100%-os GPU-ra érkező dispatch az első 30 mp-ben még ADMIT-ot kapott, miközben Peti szándéka (79aeaeb1): a GPU 60% feletti kihasználtságánál a feladat azonnal online menjen, ne várjon egy teljes hiszterézis-ablakot. (2) LOW: a lock-held ág a 79aeaeb1 óta írja az állapotfájlt is (az utilization tier-t), és egy ezzel egyidejű, lock-free hívás, ami a VRAM tier-t erősíti meg, read-modify-write-tal felülírhatja a másik fél által írt felet -- lost update, nem torn write (az `os.replace()`-es atomi csere ez ellen nem véd).
+
+**Döntés:** (1) a config egy új `util_hold_entry_seconds` kulcsot kapott (alapérték 5 mp), ami KIZÁRÓLAG az "ok"->"hold" átmenetre vonatkozik; a "hold"->"ok" (kilépés) a régi `sustained_seconds`-ot (30 mp) használja változatlanul. A hiszterézis egy mintavétel-alapú flip-et továbbra sem enged (a belső medián + ez a rövid ablak két külön védelmi réteg), de a HOLD-ba lépés ~6x gyorsabb. (2) a teljes döntés+írás lépés most `flock "$STATE.lock"` alatt fut (a python-hívás wrapperje), így két egyidejű hívás read-modify-write-ja sorosodik. Best-effort: ha a state-fájl könyvtára még nem létezik (pl. a meglévő persist-failure teszt-fixture), a wrapper lock nélkül fut tovább -- nincs mit zárolni és nincs egyidejű író, amitől védeni kellene.
+
+**Mutáció-ellenőrzés:** a javítás előtti (stash-elt) `vram-guard-check.sh`-ra 6 selftest-eset PIROS lett: a 3 új aszimmetria-eset (gyors belépés 5 mp-nél, lassú kilépés a 30 mp-es ablak előtt/után), a belépés-érték a sorban, és a lock-szerializációs időzítés-teszt (egy külső `flock` birtokos 2 mp-ig tartja a zárat, a guard 0 mp alatt válaszolt -- nem várt rá). A javítás visszaállítása után a teljes `vram-guard-check.selftest.sh` 65/65 zöld, a `vram-guard-wiring.selftest.sh` 19/19 zöld (a hat meglévő hívó -- card-build-route.sh, offload-dispatch.sh, local-llm-rag.sh, gate-pretriage.sh, i18n-draft.sh, route-classify.sh -- továbbra is konzultálja a kaput). `bash -n` tiszta szintaxis-ellenőrzés a módosított shell-fájlon.
+
+**Ki döntött:** a lelet Cybersec-től jön (86b78648 GO, komment 5297, kártya 79aeaeb1 követő), a kódot/tesztet a backend írta.
+
+**Hivatkozás:** kártya 6dd721f8, Cybersec GO 86b78648 (komment 5297), előd 79aeaeb1.

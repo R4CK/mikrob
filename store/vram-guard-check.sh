@@ -39,7 +39,9 @@
 # the SAME candidate/pending/sustained_seconds hysteresis shape as VRAM, on its own state keys, so
 # a single CALL's reading cannot flip either gate either way -- the two layers (median within a
 # call, hysteresis across calls) cover the "single sample lies" risk from different angles.
-# Threshold: GPU_UTIL_HOLD_PCT env, else config's gpu_util_hold_pct, else 60.
+# Threshold: GPU_UTIL_HOLD_PCT env, else config's gpu_util_hold_pct, else 60. Entry into HOLD is
+# fast (util_hold_entry_seconds, default 5s); leaving HOLD stays on the slow sustained_seconds
+# (default 30s) -- asymmetric, card 6dd721f8 F1.
 #
 # FAIL-SAFE follows the VRAM split exactly: tool absent -> not a subject, no hold; tool present but
 # the utilization query fails/unreadable -> doubt, hold. In TEST MODE (--metrics-json given, i.e.
@@ -348,7 +350,24 @@ probe_gpu_lock() {
 [ -n "$LOCK_HELD" ] || LOCK_HELD="$(probe_gpu_lock)"
 
 # ---- decision ---------------------------------------------------------------------------------
-python3 - "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" "$OWN_VRAM_MIB" "$LOCK_HELD" "$UTIL_SAMPLES_JSON" "$GPU_UTIL_HOLD_PCT" "$GATE_MIRROR" <<'PYEOF'
+# Card 6dd721f8 F2 (LOW): the lock-held branch now ALSO writes the state file (it updates
+# util_tier/util_pending even while VRAM's own tier/pending are left alone), so two concurrent
+# calls -- one lock-held updating utilization, one lock-free confirming a VRAM HOLD -- each read
+# the whole state object, modify only their own half, and write it back. The per-call write is
+# already atomic (os.replace(), see _persist()'s own header), but atomic does not mean serialized:
+# the SECOND writer's temp file still replaces the FIRST writer's complete file, silently dropping
+# whichever field only the first writer touched -- a classic lost update, not a torn write. flock
+# around the whole read-decide-persist step below serializes it. Best-effort: if the state
+# directory does not exist yet (e.g. a deliberately-broken path used to test the persist-failure
+# branch), there is nothing to lock and no concurrent writer to race, so fall through unlocked
+# rather than failing the call over a lock file that cannot be created.
+STATE_DIR_FOR_LOCK="$(dirname "$STATE")"
+if [ -d "$STATE_DIR_FOR_LOCK" ]; then
+  DECISION_RUNNER=(flock "$STATE.lock" python3 -)
+else
+  DECISION_RUNNER=(python3 -)
+fi
+"${DECISION_RUNNER[@]}" "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" "$OWN_VRAM_MIB" "$LOCK_HELD" "$UTIL_SAMPLES_JSON" "$GPU_UTIL_HOLD_PCT" "$GATE_MIRROR" <<'PYEOF'
 import json
 import os
 import sys
@@ -368,6 +387,12 @@ DEFAULTS = {
     "hard_pct": 92,
     "sustained_seconds": 30,
     "gpu_util_hold_pct": 60,
+    # Card 6dd721f8 F1: asymmetric on purpose, utilization tier only. Entering HOLD is fast (a
+    # single sampling window's median already smooths one spike, see read_util_samples()) so a
+    # genuinely saturated GPU is not admitted into for most of a 30s window; leaving HOLD stays
+    # slow (sustained_seconds) so a momentary dip during a request boundary does not re-admit into
+    # a GPU that is still saturated a second later.
+    "util_hold_entry_seconds": 5,
 }
 try:
     with open(config_path) as f:
@@ -514,7 +539,10 @@ if util_state_input is not None:
     if util_state_input == util_current:
         util_pending = None
     else:
-        required = config["sustained_seconds"]
+        # Card 6dd721f8 F1: asymmetric hysteresis. Entering "hold" only needs
+        # util_hold_entry_seconds (fast); leaving "hold" back to "ok" still needs the full
+        # sustained_seconds (slow) -- see the DEFAULTS comment above for why.
+        required = config["util_hold_entry_seconds"] if util_state_input == "hold" else config["sustained_seconds"]
         if not util_pending or util_pending.get("tier") != util_state_input:
             util_pending = {"tier": util_state_input, "first_seen": now}
         elif now - util_pending["first_seen"] >= required:

@@ -347,19 +347,51 @@ check "below-threshold utilization admits, no util= suffix wasted on a non-holdi
   bash "$GUARD" --config "$cfg" --state "$(st util-a)" --now 10000 --metrics-json "$QUIET_VRAM" \
     --util-samples-json '{"samples":[40,45,42]}'
 
+# Card 6dd721f8 F1: entry into HOLD only needs util_hold_entry_seconds (default 5s), not the full
+# 30s sustained_seconds -- still not a ONE-SAMPLE flip (a single reading must not decide it), but
+# fast once it does repeat.
 s="$(st util-b)"
 check "first over-threshold utilization reading does NOT flip yet" 0 "ADMIT ok" \
   bash "$GUARD" --config "$cfg" --state "$s" --now 10000 --metrics-json "$QUIET_VRAM" \
     --util-samples-json '{"samples":[70,72,75]}'
-check "still not flipped before sustained_seconds elapses" 0 "ADMIT ok" \
-  bash "$GUARD" --config "$cfg" --state "$s" --now 10029 --metrics-json "$QUIET_VRAM" \
+check "still not flipped before util_hold_entry_seconds elapses" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 10004 --metrics-json "$QUIET_VRAM" \
     --util-samples-json '{"samples":[70,72,75]}'
-check "flips to HOLD gpu-util-hold once sustained" 1 "HOLD gpu-util-hold" \
-  bash "$GUARD" --config "$cfg" --state "$s" --now 10030 --metrics-json "$QUIET_VRAM" \
+check "flips to HOLD gpu-util-hold once the (short) entry window is sustained" 1 "HOLD gpu-util-hold" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 10005 --metrics-json "$QUIET_VRAM" \
     --util-samples-json '{"samples":[70,72,75]}'
 check "the line names the measured utilization value (median of 70/72/75 is 72)" 1 "util=72%" \
-  bash "$GUARD" --config "$cfg" --state "$s" --now 10030 --metrics-json "$QUIET_VRAM" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 10005 --metrics-json "$QUIET_VRAM" \
     --util-samples-json '{"samples":[70,72,75]}'
+# CONTROL: entry still waits for the full entry window, not just "a second call" -- one second
+# after the first over-threshold reading is still short of util_hold_entry_seconds (5).
+s="$(st util-b2)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 11000 --metrics-json "$QUIET_VRAM" \
+  --util-samples-json '{"samples":[70,72,75]}' >/dev/null 2>&1
+check "a second call one second later still has not reached the entry window" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 11001 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[70,72,75]}'
+
+# THE ASYMMETRY ITSELF: once HOLD is confirmed, leaving it still needs the FULL slow
+# sustained_seconds (30s), unchanged from before this card -- a momentary dip at a request boundary
+# must not re-admit into a GPU that is still saturated a second later.
+s="$(st util-asym)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 12000 --metrics-json "$QUIET_VRAM" \
+  --util-samples-json '{"samples":[70,72,75]}' >/dev/null 2>&1
+bash "$GUARD" --config "$cfg" --state "$s" --now 12005 --metrics-json "$QUIET_VRAM" \
+  --util-samples-json '{"samples":[70,72,75]}' >/dev/null 2>&1
+check "confirmed HOLD via the fast entry path" 1 "HOLD gpu-util-hold" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 12005 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[70,72,75]}'
+check "one good reading does NOT immediately re-admit (exit stays slow)" 1 "HOLD gpu-util-hold" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 12006 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[10,12,11]}'
+check "still holding just before the full exit window elapses" 1 "HOLD gpu-util-hold" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 12035 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[10,12,11]}'
+check "re-admits once the recovery is sustained for the full exit window" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 12036 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[10,12,11]}'
 
 # MEDIAN, NOT MEAN OR MAX: a single spike among several samples must not decide the tier -- the
 # same "one sample lies" reasoning the VRAM hysteresis already documents, applied at the sampling
@@ -595,6 +627,37 @@ mkdir -p "$tmpdir/mirror-is-a-dir"
 check "mirror write failure (path is a directory) does not change exit/stdout" 0 "ADMIT ok" \
   bash "$GUARD" --config "$cfg" --state "$(st mirror-write-fail)" --mirror "$tmpdir/mirror-is-a-dir" --now 720000 \
     --metrics-json '{"used_mib":4000,"total_mib":10000}'
+
+# ---- F2: the decision step serializes on the state's own lock file (card 6dd721f8) -------------
+# A real cross-field lost-update race (one caller's lock-held branch only touching util_tier, a
+# concurrent lock-free caller only touching tier/pending) needs precise interleaving a selftest
+# cannot force deterministically. What CAN be pinned deterministically is that the fix's mechanism
+# is actually wired: the guard must wait on "$STATE.lock" if something else holds it. Hold the lock
+# externally for a known duration and time how long the guard takes to answer -- if the decision
+# step were not serialized on this file, the call would return almost instantly regardless.
+lockdemo_state="$(st lock-demo)"
+: > "$lockdemo_state"
+( flock -x "$lockdemo_state.lock" sleep 2 ) &
+holder_pid=$!
+sleep 0.2
+lock_wait_start=$(date +%s)
+bash "$GUARD" --config "$cfg" --state "$lockdemo_state" --now 900000 \
+  --metrics-json '{"used_mib":1000,"total_mib":10000}' >/dev/null 2>&1
+lock_wait_elapsed=$(( $(date +%s) - lock_wait_start ))
+wait "$holder_pid" 2>/dev/null || true
+if [ "$lock_wait_elapsed" -ge 1 ]; then
+  passed=$((passed+1))
+else
+  echo "FAIL lock-serializes: the guard returned in ${lock_wait_elapsed}s while an external holder held state.lock for 2s -- the decision step is not serialized on it"
+  failed=$((failed+1))
+fi
+
+# CONTROL: a state path whose directory does not exist must not fail the call just because the
+# lock file itself cannot be created there (the fallback in the guard's own "decision" section) --
+# same fixture shape as the existing persist-failure cases above.
+check "no-such-dir state path still answers (no lock-dir fallback breaks it)" 1 "HOLD hard" \
+  bash "$GUARD" --config "$cfg" --state "$tmpdir/lock-no-such-dir/state.json" --now 900000 \
+    --metrics-json '{"used_mib":9600,"total_mib":10000}'
 
 if [ "$failed" -eq 0 ]; then
   echo "selftest: $passed passed, 0 failed"
