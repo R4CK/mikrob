@@ -248,16 +248,24 @@
     "~/marveen/agents/fron-ted/.claude/skills/animate": [],
     "~/marveen/agents/fron-ted/.claude/skills/animation-vocabulary": [],
     "~/marveen/agents/fron-ted/.claude/skills/apple-design": [],
+    "~/marveen/agents/fron-ted/.claude/skills/baseline-ui": [],
     "~/marveen/agents/fron-ted/.claude/skills/break-ui": [],
+    "~/marveen/agents/fron-ted/.claude/skills/create-design-md": [
+      "changed:SKILL.md@22f01706fc0a28635b9769351e64a7e6e0a1be7751d00ab75fc5c77dcfc5cd91"
+    ],
     "~/marveen/agents/fron-ted/.claude/skills/emil-design-eng": [],
     "~/marveen/agents/fron-ted/.claude/skills/find-animation-opportunities": [],
     "~/marveen/agents/fron-ted/.claude/skills/fixing-accessibility": [],
+    "~/marveen/agents/fron-ted/.claude/skills/fixing-metadata": [],
     "~/marveen/agents/fron-ted/.claude/skills/fixing-motion-performance": [],
     "~/marveen/agents/fron-ted/.claude/skills/improve-animations": [],
+    "~/marveen/agents/fron-ted/.claude/skills/improve-ui": [],
     "~/marveen/agents/fron-ted/.claude/skills/mobile-native": [],
     "~/marveen/agents/fron-ted/.claude/skills/pick-ui-library": [],
     "~/marveen/agents/fron-ted/.claude/skills/prototype": [],
+    "~/marveen/agents/fron-ted/.claude/skills/redesign-skill": [],
     "~/marveen/agents/fron-ted/.claude/skills/review-animations": [],
+    "~/marveen/agents/fron-ted/.claude/skills/stitch-skill": [],
     "~/marveen/agents/fron-ted/.claude/skills/webapp-testing": [
       "changed:SKILL.md@dc20ea4388d3fd33a315d1fe885d55134cc83c198eb2bda4fa7d28a4b9f45b86"
     ],
@@ -266,6 +274,9 @@
     "~/marveen/agents/fron-teddy/.claude/skills/animation-vocabulary": [],
     "~/marveen/agents/fron-teddy/.claude/skills/apple-design": [],
     "~/marveen/agents/fron-teddy/.claude/skills/break-ui": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/create-design-md": [
+      "changed:SKILL.md@22f01706fc0a28635b9769351e64a7e6e0a1be7751d00ab75fc5c77dcfc5cd91"
+    ],
     "~/marveen/agents/fron-teddy/.claude/skills/emil-design-eng": [],
     "~/marveen/agents/fron-teddy/.claude/skills/find-animation-opportunities": [],
     "~/marveen/agents/fron-teddy/.claude/skills/fixing-accessibility": [],
@@ -274,7 +285,9 @@
     "~/marveen/agents/fron-teddy/.claude/skills/mobile-native": [],
     "~/marveen/agents/fron-teddy/.claude/skills/pick-ui-library": [],
     "~/marveen/agents/fron-teddy/.claude/skills/prototype": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/redesign-skill": [],
     "~/marveen/agents/fron-teddy/.claude/skills/review-animations": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/stitch-skill": [],
     "~/marveen/agents/fron-teddy/.claude/skills/webapp-testing": [
       "changed:SKILL.md@dc20ea4388d3fd33a315d1fe885d55134cc83c198eb2bda4fa7d28a4b9f45b86"
     ],
@@ -442,16 +455,24 @@
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/animate": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/animation-vocabulary": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/apple-design": [],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/baseline-ui": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/break-ui": [],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/create-design-md": [
+      "changed:SKILL.md@22f01706fc0a28635b9769351e64a7e6e0a1be7751d00ab75fc5c77dcfc5cd91"
+    ],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/emil-design-eng": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/find-animation-opportunities": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/fixing-accessibility": [],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/fixing-metadata": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/fixing-motion-performance": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/improve-animations": [],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/improve-ui": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/mobile-native": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/pick-ui-library": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/prototype": [],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/redesign-skill": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/review-animations": [],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/stitch-skill": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/taste-skill": [
       "changed:SKILL.md@66c9827b9997e537417a643ee9a0bd3edbfdb084014e895e6a34e14281452029"
     ],
@@ -461,16 +482,24 @@
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/animate": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/animation-vocabulary": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/apple-design": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/baseline-ui": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/break-ui": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/create-design-md": [
+      "changed:SKILL.md@22f01706fc0a28635b9769351e64a7e6e0a1be7751d00ab75fc5c77dcfc5cd91"
+    ],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/emil-design-eng": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/find-animation-opportunities": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/fixing-accessibility": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/fixing-metadata": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/fixing-motion-performance": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/improve-animations": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/improve-ui": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/mobile-native": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/pick-ui-library": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/prototype": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/redesign-skill": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/review-animations": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/stitch-skill": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/taste-skill": [
       "changed:SKILL.md@66c9827b9997e537417a643ee9a0bd3edbfdb084014e895e6a34e14281452029"
     ],

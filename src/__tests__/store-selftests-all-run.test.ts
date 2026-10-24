@@ -90,7 +90,16 @@ function newlyDirty(before: ReadonlySet<string>, after: ReadonlySet<string>): st
 // loop and the fixture tests now call, so a future edit that breaks the wiring breaks both at once.
 // Throws (rather than returning a boolean) so `expect(() => ...).toThrow()` reads the same in a
 // fixture test as an uncaught throw failing a real `it.each` case.
+// Card 445e9515 (RedHat N1 on the 99a4a2d4 delta, comment 23840): runGuardedSelftest's own body was
+// pinned (above), but its CALL SITE in the real it.each loop below was not -- if that loop reverted
+// to calling execFileSync directly (W3), the separate fixture tests further down still call
+// runGuardedSelftest themselves and would stay green, hiding the regression. This counter is read by
+// a dedicated test placed right after the it.each loop, before any fixture test runs, so it only
+// counts calls the real loop made.
+let guardedCallCount = 0
+
 function runGuardedSelftest(repoRoot: string, runner: string, file: string, args: readonly string[] = []): string {
+  guardedCallCount++
   const store = join(repoRoot, 'store')
   const before = trackedDirtySet(repoRoot)
   const out = execFileSync(runner, [join(store, file), ...args], {
@@ -396,6 +405,16 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
     },
     200_000,
   )
+
+  // Card 445e9515: pins the it.each loop's CALL SITE above, not just runGuardedSelftest's own body.
+  // Placed directly after the it.each block and before the fixture describe further down (vitest
+  // runs cases in declaration order within a file), so guardedCallCount reflects only what the real
+  // loop did. If the loop above is changed to call execFileSync directly instead of
+  // runGuardedSelftest (W3), this count stays 0 and the assertion goes red even though every fixture
+  // test below -- which calls runGuardedSelftest itself, not the loop -- would still pass.
+  it('the real loop above calls runGuardedSelftest exactly once per selftest (card 445e9515, W3)', () => {
+    expect(guardedCallCount).toBe(RUNNABLE.length)
+  })
 })
 
 // Card 99a4a2d4 (WhiteHat F1 on ff7e1b0a, comment 6640): proves the guard wired into the real
