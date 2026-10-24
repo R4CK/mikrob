@@ -612,7 +612,7 @@ function renderKanbanQuickFilters() {
     el.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
     if (chip.label) el.dataset.labelId = chip.label.id
     el.dataset.agent = chip.name
-    el.style.setProperty('--chip-color', chip.color)
+    el.style.setProperty('--chip-color', safeCssColor(chip.color, '#64748b'))
     el.innerHTML = `@${escapeHtml(chip.displayName)} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
     el.addEventListener('click', () =>
       chip.label ? toggleKanbanLabelFilter(chip.label.id) : toggleKanbanAgentFilter(chip.name)
@@ -962,7 +962,7 @@ function createCardEl(card, embeddedChildren = []) {
     const shown = card.labels.slice(0, 3)
     const overflow = card.labels.length - shown.length
     const pills = shown.map((l) =>
-      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(l.color)}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
+      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
     ).join('')
     const overflowHtml = overflow > 0
       ? `<span class="kanban-card-label-pill kanban-card-label-overflow" title="${t('kanban.label.overflow_tooltip', { n: overflow })}">+${overflow}</span>`
@@ -1000,7 +1000,7 @@ function createCardEl(card, embeddedChildren = []) {
       const days = Math.floor(hoursOld / 24)
       const ageLabel = days >= 1 ? `${days}d` : `${Math.floor(hoursOld)}h`
       const exact = new Date(card.updated_at * 1000).toLocaleString('hu-HU')
-      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
+      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${escapeHtml(safeCssColor(agingColor, 'inherit'))}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
       el.dataset.aging = agingLevel
       el.style.setProperty('--card-aging-color', agingColor)
     }
@@ -1496,7 +1496,7 @@ async function renderCardLabelsSection(card) {
   for (const label of attached) {
     const pill = document.createElement('span')
     pill.className = 'label-pill'
-    pill.style.setProperty('--label-color', label.color)
+    pill.style.setProperty('--label-color', safeCssColor(label.color, '#64748b'))
     pill.innerHTML = `#${escapeHtml(label.name)} <button class="label-pill-remove" title="${t('kanban.label.remove_btn')}" aria-label="${t('kanban.label.remove_btn')}">&times;</button>`
     pill.querySelector('.label-pill-remove').addEventListener('click', async () => {
       try {
@@ -1542,7 +1542,7 @@ async function renderCardLabelsSection(card) {
   palette.forEach((color, i) => {
     const sw = document.createElement('span')
     sw.className = 'label-color-swatch' + (i === 0 ? ' selected' : '')
-    sw.style.background = color
+    sw.style.backgroundColor = safeCssColor(color)
     sw.addEventListener('click', () => {
       selectedColor = color
       newColorsEl.querySelectorAll('.label-color-swatch').forEach((s) => s.classList.remove('selected'))
@@ -1728,11 +1728,11 @@ async function showCardDetail(card) {
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.status')}</span>
-      <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${statusLabels[card.status] || card.status}</span>
+      <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${escapeHtml(card.id)}" title="${t('kanban.meta.edit_tooltip')}">${statusLabels[card.status] || escapeHtml(String(card.status))}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.assignee')}</span>
-      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${escapeHtml(card.id)}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.priority')}</span>
@@ -2047,8 +2047,8 @@ async function showCardDetail(card) {
         div.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px'
         const info = document.createElement('div')
         info.style.flex = '1'
-        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${statusLabelsShort[ch.status] || ch.status}]</span></div>
-          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escapeHtml(ch.description).slice(0, 80) : ''}</div>`
+        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${statusLabelsShort[ch.status] || escapeHtml(String(ch.status))}]</span></div>
+          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escSnippet(ch.description, 80) : ''}</div>`
         info.onclick = () => { closeModal(cardDetailOverlay); showCardDetail(ch) }
         div.appendChild(info)
         if (canDeleteChild) {
@@ -2409,7 +2409,7 @@ async function addDiffComment(cardId, sha, file, line, text) {
 }
 
 async function triggerBreakdown(card) {
-  const btn = document.querySelector(`.kanban-card[data-id="${card.id}"] .card-breakdown-btn`)
+  const btn = document.querySelector(`.kanban-card[data-id="${CSS.escape(card.id)}"] .card-breakdown-btn`)
   if (btn) { btn.disabled = true; btn.textContent = '...' }
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
@@ -2427,7 +2427,7 @@ async function triggerBreakdown(card) {
 }
 
 function showBreakdownModal(subtasks, parentCard) {
-  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: escapeHtml(parentCard.title) })
+  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: parentCard.title })
   const list = document.getElementById('breakdownList')
   list.innerHTML = ''
 

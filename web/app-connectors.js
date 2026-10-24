@@ -97,20 +97,20 @@ function renderCatalog() {
     const authHint = item.authType === 'oauth' && item.authNote ? `<span class="catalog-auth-hint">${escapeHtml(item.authNote)}</span>` : ''
     card.innerHTML = `
       <div class="catalog-card-header">
-        <div class="catalog-card-icon">${item.icon || '?'}</div>
+        <div class="catalog-card-icon">${escapeHtml(item.icon || '?')}</div>
         <div class="catalog-card-info">
           <div class="catalog-card-name">
             ${escapeHtml(item.name)}
-            <span class="catalog-card-type ${item.type}">${item.type}</span>
-            ${item.infoUrl ? `<a href="${escapeHtml(item.infoUrl)}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
+            <span class="catalog-card-type ${escapeHtml(item.type)}">${escapeHtml(item.type)}</span>
+            ${safeHref(item.infoUrl, { relative: true }) ? `<a href="${escapeHtml(safeHref(item.infoUrl, { relative: true }))}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
           </div>
           <div class="catalog-card-desc">${escapeHtml(item.description)}</div>
         </div>
       </div>
       <div class="catalog-card-footer">
         ${item.installed
-          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
-          : `<button class="catalog-install-btn install" data-id="${item.id}">${t('connectors.catalog.install_btn')}</button>${authHint}`
+          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${escapeHtml(item.id)}">Eltávolítás</a>`}`
+          : `<button class="catalog-install-btn install" data-id="${escapeHtml(item.id)}">${t('connectors.catalog.install_btn')}</button>${authHint}`
         }
       </div>
     `
@@ -399,7 +399,7 @@ function renderConnectors() {
   if (connectors.length > 0 && !connectorCacheWarming && connectorCacheError && hasClaudeAiEntries) {
     const banner = document.createElement('div')
     banner.className = 'connector-stale-banner'
-    banner.innerHTML = t('connectors.stale_banner', { msg: escapeHtml(connectorCacheError) })
+    banner.innerHTML = tHtml('connectors.stale_banner', { msg: connectorCacheError })
     connectorGrid.appendChild(banner)
   }
   if (connectors.length === 0 && !BUILTIN_MCPS.length) {
@@ -1933,7 +1933,7 @@ function renderVaultGrid(secrets) {
 
     const grouped = new Map()
     for (const f of actionable) {
-      const key = `${f.serverName}|${f.envVar}`
+      const key = JSON.stringify([f.serverName, f.envVar])
       if (!grouped.has(key)) grouped.set(key, { ...f, allTargets: [] })
       grouped.get(key).allTargets.push({ mcpFilePath: f.mcpFilePath, serverName: f.serverName })
     }
@@ -1971,9 +1971,9 @@ function renderVaultGrid(secrets) {
       const cb = row.querySelector('input[type="checkbox"]')
       if (!cb?.checked) continue
       const key = cb.getAttribute('data-key')
-      const [serverName, envVar] = key.split('|')
+      const [serverName, envVar] = JSON.parse(key)
       const vaultIdInput = row.querySelector('.vault-scan-vault-id')
-      const vaultId = vaultIdInput?.value?.trim() || key
+      const vaultId = vaultIdInput?.value?.trim() || `${serverName}|${envVar}`
 
       const matchingFindings = allFindings.filter(
         f => f.serverName === serverName && f.envVar === envVar && !f.alreadyInVault,
@@ -2087,7 +2087,7 @@ async function openConnectorDetail(connector) {
     document.getElementById('connectorDetailInfo').innerHTML = `
       <div class="connector-detail-row">
         <span class="meta-label">Statusz</span>
-        <span class="meta-value" style="color:${statusColors[detail.status] || ''}">${statusLabels[detail.status] || detail.status}</span>
+        <span class="meta-value" style="color:${statusColors[detail.status] || ''}">${statusLabels[detail.status] || escapeHtml(String(detail.status))}</span>
       </div>
       <div class="connector-detail-row">
         <span class="meta-label">Hatokor</span>
@@ -2095,7 +2095,7 @@ async function openConnectorDetail(connector) {
       </div>
       ${detail.type ? `<div class="connector-detail-row"><span class="meta-label">Tipus</span><span class="meta-value">${escapeHtml(detail.type)}</span></div>` : ''}
       ${detail.command ? `<div class="connector-detail-row"><span class="meta-label">Parancs</span><span class="meta-value" style="font-family:monospace;font-size:12px">${escapeHtml(detail.command)} ${escapeHtml(detail.args || '')}</span></div>` : ''}
-      ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${k}=${v}`).join(', ')}</span></div>` : ''}
+      ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`).join(', ')}</span></div>` : ''}
     `
   } catch {
     document.getElementById('connectorDetailInfo').innerHTML = `<p>${t('connectors.detail_error')}</p>`
@@ -2133,8 +2133,8 @@ async function openConnectorDetail(connector) {
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="assign-${agent.name}" value="${agent.name}" ${isAssigned ? 'checked' : ''}>
-        <label for="assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        <input type="checkbox" id="assign-${escapeHtml(agent.name)}" value="${escapeHtml(agent.name)}" ${isAssigned ? 'checked' : ''}>
+        <label for="assign-${escapeHtml(agent.name)}">${escapeHtml(agent.label || agent.name)}</label>
       `
       listEl.appendChild(item)
     }
@@ -2204,8 +2204,8 @@ async function loadNewConnectorAgents() {
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="new-assign-${agent.name}" value="${agent.name}">
-        <label for="new-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        <input type="checkbox" id="new-assign-${escapeHtml(agent.name)}" value="${escapeHtml(agent.name)}">
+        <label for="new-assign-${escapeHtml(agent.name)}">${escapeHtml(agent.label || agent.name)}</label>
       `
       list.appendChild(item)
     }

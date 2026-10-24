@@ -175,9 +175,9 @@ async function loadVoiceConfig(agentName) {
     if (!r.ok) return
     const cfg = await r.json()
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
-      `<option value="${v}"${v === cfg.voiceModel ? ' selected' : ''}>${v}</option>`
+      `<option value="${escapeHtml(v)}"${v === cfg.voiceModel ? ' selected' : ''}>${escapeHtml(v)}</option>`
     ).join('')
-    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${cfg.responseMode || 'text'}"]`)
+    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${CSS.escape(cfg.responseMode || 'text')}"]`)
     if (modeInput) modeInput.checked = true
   } catch { /* silent */ }
 }

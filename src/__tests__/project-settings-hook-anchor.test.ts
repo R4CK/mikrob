@@ -24,9 +24,23 @@ type Hooks = Record<string, HookEntry[]>
 const settings = JSON.parse(readFileSync(SETTINGS_PATH, 'utf-8')) as { hooks?: Hooks }
 const hooks: Hooks = settings.hooks ?? {}
 
-// The full expected registration: event -> script basenames (order-free).
-// A change here is a REVIEWED decision about what runs in the main session,
-// never a side effect.
+// The full expected registration: event -> one entry per matcher group
+// (order-free, duplicates count): the script basename, followed by
+// ` @ <matcher>` when the group has a matcher. A change here is a REVIEWED
+// decision about what runs in the main session, never a side effect.
+//
+// Group granularity matters because several scripts are registered under more
+// than one matcher (outgoing-copy-gate.py and email-approval-gate.py: one group
+// per mail surface and channel). A script-name set stays green when one of
+// those groups is deleted or its matcher narrowed, and when a non-gate hook's
+// matcher changes; this list does not.
+//
+// Both channel providers' progress hooks are listed unconditionally. That is
+// deliberate: each one is provider-scoped internally and no-ops on the other
+// provider's turns, so the cost of the idle set is a process spawn. Only the
+// watchdog DAEMON -- which polls on a timer whether or not a turn is in
+// flight -- is gated to the active CHANNEL_PROVIDER, by the two
+// install-*-progress-hook.sh scripts.
 const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py', 'telegram-reply-directive.py',
@@ -35,9 +49,9 @@ const EXPECTED: Record<string, string[]> = {
     'marveen-commands.py',
   ],
   PostToolUse: [
-    'ledger-outbound.py', 'tool-log-capture.py',
-    'telegram_progress_reply_clear.py', 'slack_progress_reply_clear.py',
-    'skill-usage-capture.py', 'memory-frontmatter-bash-gate.py',
+    'ledger-outbound.py @ mcp__plugin_telegram_telegram__reply', 'tool-log-capture.py',
+    'telegram_progress_reply_clear.py @ telegram.*reply', 'slack_progress_reply_clear.py @ slack.*reply',
+    'skill-usage-capture.py @ Skill|Read', 'memory-frontmatter-bash-gate.py @ Bash',
     // The persona guard watches the main agent's own CLAUDE.md/SOUL.md and
     // every agents/*/ pair, and it must fire on EVERY tool call: the first
     // version filtered on the Write/Edit file_path and a python3 heredoc
@@ -48,24 +62,43 @@ const EXPECTED: Record<string, string[]> = {
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.
   // KAPUEGYUT918: a failed Bash call can still have written a memory file.
-  PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py'],
+  PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py @ Bash'],
   PreToolUse: [
-    'outgoing-copy-gate.py', 'email-approval-gate.py',
-    'channel-image-resize.sh', 'egress-gate.mjs',
+    'outgoing-copy-gate.py @ Bash',
+    'outgoing-copy-gate.py @ .*send_email.*',
+    'outgoing-copy-gate.py @ .*manage_email.*',
+    'outgoing-copy-gate.py @ .*[Gg]mail.*__.*',
+    'outgoing-copy-gate.py @ .*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*',
+    'outgoing-copy-gate.py @ .*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
+    'outgoing-copy-gate.py @ .*draft_email.*',
+    'outgoing-copy-gate.py @ mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message',
+    'outgoing-copy-gate.py @ mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__edit_message',
+    'email-approval-gate.py @ Bash',
+    'email-approval-gate.py @ .*send_email.*',
+    'email-approval-gate.py @ .*manage_email.*',
+    'email-approval-gate.py @ .*[Gg]mail.*__.*',
+    'email-approval-gate.py @ .*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*',
+    'email-approval-gate.py @ .*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
+    'email-approval-gate.py @ .*draft_email.*',
+    'channel-image-resize.sh @ Read', 'egress-gate.mjs @ WebFetch', 'memory-frontmatter-gate.py @ Write|Edit|MultiEdit',
+    'memory-frontmatter-bash-gate.py @ Bash',
     // Card c00d5429 (2026-09-25): the main agent's own session ran with none of the ten
     // security guards every sub-agent's settings.json already carried (a live
     // `cd /etc && grep -c zzz hostname` ran unblocked here, rc=2 direct from the guard).
-    'secret-write-guard.py', 'big-file-guard.py', 'git-protect-guard.py', 'npm-protect-guard.py',
-    'symlinked-node-modules-guard.py', 'agent-key-secret-guard.py', 'blast-radius-guard.py', 'cd-chain-guard.py',
-    'bash-egress-guard.py', 'noisy-command-guard.py', 'pentest-tool-install-guard.py',
-    // Card b5b7eb6b child 971f7d4f (upstream 4a4eba39 #1398, MEMFMGATE918): a memory write must
-    // parse back in the same PreToolUse step, or the harness never sees `description` for recall.
-    'memory-frontmatter-gate.py',
-    'memory-frontmatter-bash-gate.py',
+    'secret-write-guard.py @ Write|Edit|MultiEdit', 'big-file-guard.py @ Write', 'git-protect-guard.py @ Bash',
+    'npm-protect-guard.py @ Bash', 'symlinked-node-modules-guard.py @ Bash', 'agent-key-secret-guard.py @ Bash',
+    'blast-radius-guard.py @ Edit|Write|MultiEdit', 'cd-chain-guard.py @ Bash', 'bash-egress-guard.py @ Bash',
+    'noisy-command-guard.py @ Bash', 'pentest-tool-install-guard.py @ Bash',
   ],
-  Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py'],
+  Stop: [
+    'marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py',
+    '<no script: touch "$CLAUDE_PROJECT_DIR/store/mikrob-alive.heartbeat">',
+  ],
   StopFailure: ['ledger-turn-failure.py'],
-  SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],
+  SessionStart: [
+    'ledger-replay.py @ startup|resume|clear', 'taskstate-replay.py @ compact|resume|clear',
+    'clear-replay.py @ clear', 'marveen-commands.py',
+  ],
   SessionEnd: ['clear-capture.py'],
 }
 
@@ -73,12 +106,10 @@ function commands(event: string): string[] {
   return (hooks[event] ?? []).flatMap((e) => e.hooks ?? []).map((h) => h.command ?? '')
 }
 
+const scriptOf = (command: string) => command.match(/scripts\/hooks\/([^/\s'"]+?\.(?:py|sh|mjs))/)?.[1] ?? ''
+
 function scriptNames(event: string): Set<string> {
-  return new Set(
-    commands(event)
-      .map((c) => c.match(/scripts\/hooks\/([^/\s'"]+?\.(?:py|sh|mjs))/)?.[1] ?? '')
-      .filter(Boolean),
-  )
+  return new Set(commands(event).map(scriptOf).filter(Boolean))
 }
 
 // Card c00d5429, Cybersec F1 MEDIUM (komment 6081/6100): the checks above only pin that a
@@ -141,11 +172,45 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'memory-frontmatter-bash-gate.py', matcher: 'Bash' },
 ]
 
+// One descriptor per handler, in the EXPECTED form: '<script>' or '<script> @ <matcher>'.
+function groupDescriptors(event: string): string[] {
+  return (hooks[event] ?? []).flatMap((e) => (e.hooks ?? []).map((h) => {
+    const script = scriptOf(h.command ?? '') || `<no script: ${h.command ?? ''}>`
+    return e.matcher === undefined ? script : `${script} @ ${e.matcher}`
+  }))
+}
+
+// The keys this file uses today. A new key (a stray `id` or `description`, a
+// handler option nobody reviewed) has to be added here on purpose.
+const GROUP_KEYS = new Set(['matcher', 'hooks'])
+const HANDLER_KEYS = new Set(['type', 'command', 'timeout'])
+
 describe('tracked .claude/settings.json hook anchor (#1305)', () => {
   it('registers exactly the expected script set per event', () => {
     expect(Object.keys(hooks).sort()).toEqual(Object.keys(EXPECTED).sort())
     for (const [event, expected] of Object.entries(EXPECTED)) {
-      expect([...scriptNames(event)].sort(), `event ${event}`).toEqual([...new Set(expected)].sort())
+      // Non-script commands (e.g. a bare `touch`) show up only as a `<no script: ...>`
+      // descriptor in the richer matcher-group test below; scriptNames() filters them out
+      // the same way, via scriptOf()'s empty-match -> falsy -> Boolean filter.
+      const names = expected.map((d) => d.split(' @ ')[0]).filter((n) => !n.startsWith('<no script:'))
+      expect([...scriptNames(event)].sort(), `event ${event}`).toEqual([...new Set(names)].sort())
+    }
+  })
+
+  it('registers exactly the expected matcher groups per event (each group, each matcher)', () => {
+    for (const [event, expected] of Object.entries(EXPECTED)) {
+      expect(groupDescriptors(event).sort(), `event ${event}`).toEqual([...expected].sort())
+    }
+  })
+
+  it('uses only the reviewed hook keys (matcher group: matcher, hooks; handler: type, command, timeout)', () => {
+    for (const [event, entries] of Object.entries(hooks)) {
+      entries.forEach((e, i) => {
+        for (const k of Object.keys(e)) expect(GROUP_KEYS.has(k), `${event}[${i}] group key ${k}`).toBe(true)
+        for (const h of e.hooks ?? []) {
+          for (const k of Object.keys(h)) expect(HANDLER_KEYS.has(k), `${event}[${i}] handler key ${k}`).toBe(true)
+        }
+      })
     }
   })
 

@@ -4641,7 +4641,30 @@ export function getChildCards(parentId: string): KanbanCard[] {
   return db.prepare('SELECT * FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL ORDER BY sort_order ASC').all(parentId) as KanbanCard[]
 }
 
-export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string, force?: boolean, reason?: string): boolean {
+// The statuses the kanban_cards CHECK constraint accepts. Exported so the HTTP
+// boundary can validate a caller-supplied status (e.g. the /move route's
+// `expected_status`) against exactly this set.
+export const KANBAN_STATUSES: readonly KanbanCard['status'][] = [
+  'planned', 'in_progress', 'testing', 'waiting', 'done',
+]
+
+// Card 973ed6eb (upstream #1975, adopted 2026-10-24 during Koteg 19): the fork's own
+// (force, reason) positional parameters predate this and have ~60 existing call sites
+// (production and test), so expectedStatus is appended as a NEW trailing parameter rather
+// than consolidated into an options object -- that would have required updating every one
+// of those call sites for no functional gain.
+export function moveKanbanCard(
+  id: string,
+  status: KanbanCard['status'],
+  sortOrder: number,
+  actor?: string,
+  force?: boolean,
+  reason?: string,
+  // Compare-and-set guard. When given, the move only happens if the card's current status
+  // equals this value; otherwise nothing is written and the call returns false. Without it
+  // the move is unconditional (last writer wins), exactly as before.
+  expectedStatus?: KanbanCard['status'],
+): boolean {
   const now = Math.floor(Date.now() / 1000)
   // Card c4f2de32: a card waiting on an unanswered REVIEW is finished work, not stalled work --
   // pulling it back to in_progress is what made other agents rebuild it. A gate FAIL leaves a
@@ -4666,28 +4689,40 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // Card 4bbb5167: same predicate as updateKanbanCard's, gated on a REAL transition so a
   // sort_order reorder inside one column never trips it.
   if (prev !== undefined && prev !== status && bulkAttributionRequired(now, actor, reason, id)) return false
+  // dispatched_at: nothing used to clear it, so a card pulled to in_progress and
+  // put BACK burned its dispatch forever: the board showed it alive while the
+  // next pull woke nobody. The clear follows kanbanWriteClearsDispatch, the rule
+  // the whole-card PUT and the card script share (it also heals a row already
+  // stuck this way, since the clear does not depend on the previous status).
+  //
+  // With expectedStatus the status check is part of the SAME statement
+  // (WHERE id=? AND status=?), so check and write cannot be split by another
+  // writer. A false return then means "missing card" OR "status mismatch"; the
+  // caller tells them apart with a follow-up read (see the /move route).
+  //
   // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
+  const setClause = kanbanWriteClearsDispatch(status)
+    ? 'SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL'
+    : 'SET status=?, sort_order=?, updated_at=?'
   return db.transaction((): boolean => {
-    // dispatched_at: nothing used to clear it, so a card pulled to in_progress and
-    // put BACK burned its dispatch forever: the board showed it alive while the
-    // next pull woke nobody. The clear follows kanbanWriteClearsDispatch, the rule
-    // the whole-card PUT and the card script share.
-    const changed = db.prepare(
-      kanbanWriteClearsDispatch(status)
-        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
-        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-    ).run(status, sortOrder, now, id).changes > 0
+    const changed = (expectedStatus === undefined
+      ? db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=?`).run(status, sortOrder, now, id)
+      : db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=? AND status=?`).run(status, sortOrder, now, id, expectedStatus)
+    ).changes > 0
     if (changed) touchAncestorChain(row?.parent_id, now, id)
-    if (changed && prev !== undefined && prev !== status) {
+    // With the guard, a successful UPDATE proves the status WAS `expectedStatus` at
+    // the write, which is a stronger fact than the read above.
+    const from = expectedStatus ?? prev
+    if (changed && from !== undefined && from !== status) {
       // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
       // override -- an ordinary move that happens to carry `force:true` (e.g. an exempt agent's
       // client always sends it) is not itself a guard override and must not read as one; a caller
       // that wants the newDevStop route-layer bypass in the audit trail records that separately.
       const r = db.prepare(
         'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0, reason?.trim() || null)
+      ).run(id, from, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0, reason?.trim() || null)
       // Card d05d72b3: the drag/move path is the other live writer of a status transition -- see
       // updateKanbanCard's sibling hook and maybeResolveStuckIncident's own comment.
       if (status === 'waiting' || status === 'done') {
@@ -6716,6 +6751,21 @@ export function markMessageFailed(id: number, error?: string): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
 }
 
+// Close a message that is still OPEN (pending or delivered), atomically: the
+// status check and the write are one UPDATE, so of two concurrent closes only
+// one changes the row. Used by the PUT /api/messages/:id route, where a second
+// close of an already-closed row used to overwrite its result and send a
+// second completion report in the recipient's name. The router keeps the
+// unguarded markMessageDone/markMessageFailed above for its own transitions.
+export function closeOpenMessage(id: number, status: 'done' | 'failed', result?: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const sql = status === 'done'
+    ? "UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ? AND status NOT IN ('done', 'failed')"
+    : "UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND status NOT IN ('done', 'failed')"
+  const args = status === 'done' ? [result ?? null, now, now, id] : [result ?? null, now, id]
+  return db.prepare(sql).run(...args).changes > 0
+}
+
 // Status-guarded fail for the federation bridge's terminal branches: it must
 // only fire (and only bounce a failure notice) when THIS call actually closed
 // a still-pending row. The unguarded markMessageFailed above would also
@@ -7530,7 +7580,17 @@ export async function hybridSearch(
   return ranked.slice(0, limit).map(([id]) => byId.get(id)!)
 }
 
-export async function backfillEmbeddings(): Promise<number> {
+// What one backfill run did. BACKFILLZERO (card 370f34c0): the old bare
+// number only counted successes, so "every call failed" and "nothing to do"
+// both came back as 0 and the endpoint answered {ok:true,count:0} for both.
+// `attempted` separates the two: attempted>0 && embedded===0 is the outage.
+export interface BackfillResult {
+  attempted: number
+  embedded: number
+  failed: number
+}
+
+export async function backfillEmbeddings(): Promise<BackfillResult> {
   const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL').all() as { id: number; content: string; keywords: string | null }[]
   let count = 0
   for (const row of rows) {
@@ -7551,7 +7611,7 @@ export async function backfillEmbeddings(): Promise<number> {
       'Embedding backfill embedded 0 of the pending memories -- the embedding backend answered none of them (Ollama not installed/running, or EMBED_MODEL missing); the backlog stays until it does',
     )
   }
-  return count
+  return { attempted: rows.length, embedded: count, failed: rows.length - count }
 }
 
 // --- Pending Channel Requests ---

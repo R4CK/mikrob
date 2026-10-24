@@ -40,7 +40,7 @@
     let labelsHtml = ''
     if (Array.isArray(card.labels) && card.labels.length > 0) {
       const pills = card.labels
-        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(safeCssColor(l.color, '#64748b'))}">#${esc(l.name)}</span>`)
         .join('')
       labelsHtml = `<div class="kanban-card-labels">${pills}</div>`
     }
@@ -69,9 +69,9 @@
     const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
     meta.innerHTML = `
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.id')}</span><span class="meta-value" style="font-family:monospace">${esc(idLabel)}</span></div>
-      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${STATUS_LABELS[card.status]?.() ?? card.status}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${STATUS_LABELS[card.status]?.() ?? escapeHtml(String(card.status))}</span></div>
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.assignee')}</span><span class="meta-value">${card.assignee ? esc(card.assignee) : t('kanban.meta.none')}</span></div>
-      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${PRIORITY_LABELS[card.priority]?.() ?? card.priority}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${PRIORITY_LABELS[card.priority]?.() ?? escapeHtml(String(card.priority))}</span></div>
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.project')}</span><span class="meta-value">${card.project ? esc(card.project) : t('kanban.meta.none')}</span></div>
       <div class="meta-item"><span class="meta-label">${t('archived.meta.archived_at')}</span><span class="meta-value">${fmtDate(card.archived_at)}</span></div>
     `
@@ -79,7 +79,7 @@
     const labelsBox = document.getElementById('archivedDetailLabels')
     if (Array.isArray(card.labels) && card.labels.length > 0) {
       labelsBox.innerHTML = card.labels
-        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(safeCssColor(l.color, '#64748b'))}">#${esc(l.name)}</span>`)
         .join('')
       labelsWrap.style.display = ''
     } else {
@@ -207,7 +207,7 @@
         })
       })
     } catch (err) {
-      list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: err.message}) + '</p>'
+      list.innerHTML = '<p class="naplo-empty error">' + tHtml('common.error_network', { msg: err.message }) + '</p>'
     }
   }
 
@@ -268,11 +268,10 @@
       detail = `<code>${esc(e.rel_path)}</code> <span class="naplo-event-type">${esc(e.event_type)}</span>${sizeStr}${agentStr}${sens}`
     } else if (e.source === 'diary') {
       const entryColor = DIARY_ENTRY_COLORS[e.entry_type] || '#6b7280'
-      const entryLabelRaw = DIARY_ENTRY_LABELS[e.entry_type]; const entryLabel = entryLabelRaw ? (typeof entryLabelRaw === 'function' ? entryLabelRaw() : entryLabelRaw) : e.entry_type
+      const entryLabelRaw = DIARY_ENTRY_LABELS[e.entry_type]; const entryLabel = entryLabelRaw ? (typeof entryLabelRaw === 'function' ? entryLabelRaw() : entryLabelRaw) : esc(e.entry_type)
       const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${entryLabel}</span>`
       const agentStr = e.agent_id ? ` <span class="naplo-actor">${esc(e.agent_id)}</span>` : ''
-      let contentSnippet = esc(e.content || '').replace(/\n/g, ' ').slice(0, 200)
-      if ((e.content || '').length > 200) contentSnippet += '…'
+      const contentSnippet = escSnippet((e.content || '').replace(/\n/g, ' '), 200)
       const keywordsStr = e.keywords ? `<div class="naplo-note" style="margin-top:2px">Kulcsszavak: ${esc(e.keywords)}</div>` : ''
       const catStr = e.category ? ` <span class="naplo-event-type">${esc(e.category)}</span>` : ''
       detail = `${entryBadge}${catStr}${agentStr}<div class="naplo-diary-content">${contentSnippet}</div>${keywordsStr}`

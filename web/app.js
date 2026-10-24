@@ -410,6 +410,250 @@
 
 // === SVG icons -- see web/app-helpers.js ===
 
+// A value passed as a string argument of an inline handler
+// (onclick="fn(${jsArg(id)})"). escapeHtml alone is NOT enough there: the
+// HTML parser decodes &#39; back to ' before the handler's JavaScript is
+// parsed, so a quote in the value would end the JS string. JSON.stringify
+// makes it a JS string literal; escapeHtml then keeps it inside the attribute.
+function jsArg(v) {
+  return escapeHtml(JSON.stringify(String(v ?? '')))
+}
+
+// A shortened text for HTML: cut the RAW text, then escape it, and add the
+// ellipsis by the raw length. Escaping first and slicing after could split an
+// entity (&quot; -> &q) and would count entity bytes as visible characters.
+function escSnippet(raw, max) {
+  const s = String(raw ?? '')
+  return escapeHtml(s.slice(0, max)) + (s.length > max ? '…' : '')
+}
+
+// The one gate for a URL from data (a catalogue file, the API, CLI output, a
+// markdown doc) before it becomes an href. escapeHtml stops an attribute
+// breakout but not the scheme: only http(s) and mailto pass, or -- with
+// { relative: true } -- a scheme-less relative or fragment link. The URL
+// parser drops control characters and spaces, and a leading // or /\ means
+// another host, so the check judges the URL the same way. Returns the URL
+// unchanged when it passes, '' otherwise. HTML-encode the result in markup.
+function safeHref(raw, { relative = false } = {}) {
+  const s = String(raw ?? '')
+  const u = s.replace(/[\x00-\x20\x7f]/g, '')
+  if (!u) return ''
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(u)
+  if (scheme) return /^(https?|mailto):$/i.test(scheme[0]) ? s : ''
+  return relative && !/^[\\/][\\/]/.test(u) ? s : ''
+}
+
+// The dashboard's mirror of src/css-color.ts normalizeCssColor -- the same
+// colour table, regexes and arithmetic; both are checked against the same
+// vectors (src/__tests__/fixtures/css-color-vectors.json) and the table is
+// compared entry by entry, so the server and the page apply ONE policy:
+// hex kept, a CSS colour name or a strictly numeric rgb()/rgba()/hsl()/hsla()
+// becomes hex, anything else (url(), declarations, words, bad hex) is null.
+const CSS_NAMED_COLORS = {
+  aliceblue: '#f0f8ff', antiquewhite: '#faebd7', aqua: '#00ffff', aquamarine: '#7fffd4', azure: '#f0ffff',
+  beige: '#f5f5dc', bisque: '#ffe4c4', black: '#000000', blanchedalmond: '#ffebcd', blue: '#0000ff',
+  blueviolet: '#8a2be2', brown: '#a52a2a', burlywood: '#deb887', cadetblue: '#5f9ea0', chartreuse: '#7fff00',
+  chocolate: '#d2691e', coral: '#ff7f50', cornflowerblue: '#6495ed', cornsilk: '#fff8dc', crimson: '#dc143c',
+  cyan: '#00ffff', darkblue: '#00008b', darkcyan: '#008b8b', darkgoldenrod: '#b8860b', darkgray: '#a9a9a9',
+  darkgreen: '#006400', darkgrey: '#a9a9a9', darkkhaki: '#bdb76b', darkmagenta: '#8b008b', darkolivegreen: '#556b2f',
+  darkorange: '#ff8c00', darkorchid: '#9932cc', darkred: '#8b0000', darksalmon: '#e9967a', darkseagreen: '#8fbc8f',
+  darkslateblue: '#483d8b', darkslategray: '#2f4f4f', darkslategrey: '#2f4f4f', darkturquoise: '#00ced1', darkviolet: '#9400d3',
+  deeppink: '#ff1493', deepskyblue: '#00bfff', dimgray: '#696969', dimgrey: '#696969', dodgerblue: '#1e90ff',
+  firebrick: '#b22222', floralwhite: '#fffaf0', forestgreen: '#228b22', fuchsia: '#ff00ff', gainsboro: '#dcdcdc',
+  ghostwhite: '#f8f8ff', gold: '#ffd700', goldenrod: '#daa520', gray: '#808080', green: '#008000',
+  greenyellow: '#adff2f', grey: '#808080', honeydew: '#f0fff0', hotpink: '#ff69b4', indianred: '#cd5c5c',
+  indigo: '#4b0082', ivory: '#fffff0', khaki: '#f0e68c', lavender: '#e6e6fa', lavenderblush: '#fff0f5',
+  lawngreen: '#7cfc00', lemonchiffon: '#fffacd', lightblue: '#add8e6', lightcoral: '#f08080', lightcyan: '#e0ffff',
+  lightgoldenrodyellow: '#fafad2', lightgray: '#d3d3d3', lightgreen: '#90ee90', lightgrey: '#d3d3d3', lightpink: '#ffb6c1',
+  lightsalmon: '#ffa07a', lightseagreen: '#20b2aa', lightskyblue: '#87cefa', lightslategray: '#778899', lightslategrey: '#778899',
+  lightsteelblue: '#b0c4de', lightyellow: '#ffffe0', lime: '#00ff00', limegreen: '#32cd32', linen: '#faf0e6',
+  magenta: '#ff00ff', maroon: '#800000', mediumaquamarine: '#66cdaa', mediumblue: '#0000cd', mediumorchid: '#ba55d3',
+  mediumpurple: '#9370db', mediumseagreen: '#3cb371', mediumslateblue: '#7b68ee', mediumspringgreen: '#00fa9a', mediumturquoise: '#48d1cc',
+  mediumvioletred: '#c71585', midnightblue: '#191970', mintcream: '#f5fffa', mistyrose: '#ffe4e1', moccasin: '#ffe4b5',
+  navajowhite: '#ffdead', navy: '#000080', oldlace: '#fdf5e6', olive: '#808000', olivedrab: '#6b8e23',
+  orange: '#ffa500', orangered: '#ff4500', orchid: '#da70d6', palegoldenrod: '#eee8aa', palegreen: '#98fb98',
+  paleturquoise: '#afeeee', palevioletred: '#db7093', papayawhip: '#ffefd5', peachpuff: '#ffdab9', peru: '#cd853f',
+  pink: '#ffc0cb', plum: '#dda0dd', powderblue: '#b0e0e6', purple: '#800080', rebeccapurple: '#663399',
+  red: '#ff0000', rosybrown: '#bc8f8f', royalblue: '#4169e1', saddlebrown: '#8b4513', salmon: '#fa8072',
+  sandybrown: '#f4a460', seagreen: '#2e8b57', seashell: '#fff5ee', sienna: '#a0522d', silver: '#c0c0c0',
+  skyblue: '#87ceeb', slateblue: '#6a5acd', slategray: '#708090', slategrey: '#708090', snow: '#fffafa',
+  springgreen: '#00ff7f', steelblue: '#4682b4', tan: '#d2b48c', teal: '#008080', thistle: '#d8bfd8',
+  tomato: '#ff6347', turquoise: '#40e0d0', violet: '#ee82ee', wheat: '#f5deb3', white: '#ffffff',
+  whitesmoke: '#f5f5f5', yellow: '#ffff00', yellowgreen: '#9acd32', transparent: '#00000000',
+}
+
+const CSS_HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i
+// CSS <number>: optional sign, digits with an optional fraction or a leading
+// dot, optional exponent (1e2, -1, .5, +3.25E-1); nothing else
+const CSS_NUMBER = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?$/i
+const CSS_HUE_UNIT = { deg: 1, grad: 0.9, rad: 180 / Math.PI, turn: 360 }
+
+const CSS_HUE_UNITS = ['grad', 'turn', 'deg', 'rad']
+// Input budget, as on the server: a resource bound
+// well above any real spelling (a full-precision JS number serialization is
+// ~85 characters); a longer value is not a colour, decided before parsing.
+const MAX_CSS_COLOR_LENGTH = 256
+
+function isCssWs(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f'
+}
+
+// Trim and split are plain character scans, one pass each, no regex (the
+// regex trim was quadratic on a long internal whitespace run)
+function cssTrim(s) {
+  let i = 0
+  let j = s.length
+  while (i < j && isCssWs(s[i])) i++
+  while (j > i && isCssWs(s[j - 1])) j--
+  return s.slice(i, j)
+}
+
+// the tokens of a TRIMMED string separated by runs of CSS whitespace
+function cssSplitWs(s) {
+  const out = []
+  let i = 0
+  while (i < s.length) {
+    let j = i
+    while (j < s.length && !isCssWs(s[j])) j++
+    out.push(s.slice(i, j))
+    while (j < s.length && isCssWs(s[j])) j++
+    i = j
+  }
+  return out
+}
+
+function cssHex2(n) {
+  // + 1e-7: a half-way channel that float arithmetic left at 127.4999999
+  // rounds up like the browser's 127.5 does
+  return Math.round(Math.min(255, Math.max(0, n)) + 1e-7).toString(16).padStart(2, '0')
+}
+
+function cssToHex(r, g, b, a) {
+  const rgb = `#${cssHex2(r)}${cssHex2(g)}${cssHex2(b)}`
+  return a >= 1 ? rgb : rgb + cssHex2(Math.max(0, a) * 255)
+}
+
+// a token: a number (pct=false) or a percentage (pct=true), else null
+function cssNum(token) {
+  const pct = token.endsWith('%')
+  const t = pct ? token.slice(0, -1) : token
+  if (!CSS_NUMBER.test(t)) return null
+  const n = Number(t)
+  return Number.isNaN(n) ? null : { n, pct }
+}
+
+// alpha: a number or a percentage, clamped to 0..1
+function cssAlpha(token) {
+  const v = cssNum(token)
+  if (!v) return null
+  const a = v.pct ? v.n / 100 : v.n
+  return Math.min(1, Math.max(0, a))
+}
+
+// hue: a number (degrees) or a number with deg / grad / rad / turn
+// (the unit is matched ASCII case-insensitively; 'grad' is tried before 'rad')
+function cssHue(token) {
+  const unit = CSS_HUE_UNITS.find((u) => token.slice(-u.length).replace(/[A-Z]/g, (c) => c.toLowerCase()) === u)
+  const v = cssNum(unit ? token.slice(0, -unit.length) : token)
+  if (!v || v.pct) return null
+  const deg = v.n * (unit ? CSS_HUE_UNIT[unit] : 1)
+  return Number.isFinite(deg) ? ((deg % 360) + 360) % 360 : null
+}
+
+function cssHslToRgb(hue, s, l) {
+  const h = hue / 360
+  const sat = Math.min(1, Math.max(0, s / 100))
+  const lig = Math.min(1, Math.max(0, l / 100))
+  if (sat === 0) return [lig * 255, lig * 255, lig * 255]
+  const q = lig < 0.5 ? lig * (1 + sat) : lig + sat - lig * sat
+  const p = 2 * lig - q
+  const ch = (t) => {
+    if (t < 0) t += 1
+    if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  return [ch(h + 1 / 3) * 255, ch(h) * 255, ch(h - 1 / 3) * 255]
+}
+
+// rgb()/rgba()/hsl()/hsla() with numeric arguments (CSS Color 4):
+// - legacy comma syntax: 3 values (+ alpha); rgb channels all numbers or all
+//   percentages; hsl saturation / lightness must be percentages
+// - modern space syntax: 3 values (+ "/ alpha"); rgb channels may mix numbers
+//   and percentages; hsl saturation / lightness numbers or percentages
+// Numbers may carry a sign, a leading dot or an exponent; channels clamp to
+// 0..255, alpha to 0..1, saturation / lightness to 0..100. No nested
+// function, keyword (none, calc, var) or anything else is accepted.
+function cssColorFunction(c) {
+  const m = /^(rgba?|hsla?)\(([^()]*)\)$/i.exec(c)
+  if (!m) return null
+  const fn = m[1].toLowerCase()
+  const body = cssTrim(m[2])
+  let parts
+  let alphaToken
+  const legacy = body.includes(',')
+  if (legacy) {
+    parts = body.split(',').map(cssTrim)
+    if (parts.length === 4) alphaToken = parts.pop()
+  } else {
+    const slash = body.split('/')
+    if (slash.length > 2) return null
+    if (slash.length === 2) alphaToken = cssTrim(slash[1])
+    parts = cssSplitWs(cssTrim(slash[0]))
+  }
+  if (parts.length !== 3) return null
+  const a = alphaToken === undefined ? 1 : cssAlpha(alphaToken)
+  if (a === null) return null
+  if (fn.startsWith('rgb')) {
+    const ch = parts.map(cssNum)
+    if (ch.some((v) => v === null)) return null
+    if (legacy && !(ch.every((v) => v.pct) || ch.every((v) => !v.pct))) return null
+    const [r, g, b] = ch.map((v) => (v.pct ? (v.n * 255) / 100 : v.n))
+    return cssToHex(r, g, b, a)
+  }
+  const hue = cssHue(parts[0])
+  const s = cssNum(parts[1])
+  const l = cssNum(parts[2])
+  if (hue === null || !s || !l) return null
+  if (legacy && !(s.pct && l.pct)) return null
+  const [r, g, b] = cssHslToRgb(hue, s.n, l.n)
+  return cssToHex(r, g, b, a)
+}
+
+function normalizeCssColor(value) {
+  if (typeof value !== 'string' || value.length > MAX_CSS_COLOR_LENGTH) return null
+  const c = cssTrim(value)
+  if (CSS_HEX_COLOR.test(c)) return c
+  const named = /^[a-z]+$/i.test(c) && Object.prototype.hasOwnProperty.call(CSS_NAMED_COLORS, c.toLowerCase()) ? CSS_NAMED_COLORS[c.toLowerCase()] : undefined
+  if (named) return named
+  return cssColorFunction(c)
+}
+
+// A colour from data (settings files, label records) before it lands in a
+// style: escapeHtml keeps it inside the attribute, but a ';' or url(...) would
+// still add CSS declarations or fetch a resource. A colour normalizeCssColor
+// accepts comes back as hex; a var(--token) passes as is; anything else
+// becomes the fallback.
+function safeCssColor(v, fallback = '') {
+  const n = normalizeCssColor(v)
+  if (n) return n
+  const c = String(v ?? '').trim()
+  return /^var\(--[a-z0-9-]+\)$/i.test(c) ? c : fallback
+}
+
+// t() for a translation that is itself HTML (the *_html keys, data-i18n-html):
+// the template is trusted markup, but every substituted value -- the brand
+// tokens, which come from .env BRAND_NAME / BOT_NAME, and the caller's params
+// -- is text, so each one is HTML-escaped. Plain t() stays raw for its
+// textContent / confirm / toast callers.
+function tHtml(key, params = {}) {
+  const enc = {}
+  for (const [k, v] of Object.entries({ ...window._brandTokens, ...params })) enc[k] = v == null ? v : escapeHtml(String(v))
+  return t(key, enc)
+}
+
 // ============================================================
 // === Connectors -- see web/app-connectors.js ===
 // ============================================================
@@ -514,7 +758,7 @@ async function loadUpdates() {
       applyBtn.hidden = true
     } else if (data.behind === 0) {
       summary.className = 'updates-summary up-to-date'
-      summary.innerHTML = `<strong>${t('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
+      summary.innerHTML = `<strong>${tHtml('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
       applyBtn.hidden = true
     } else {
       summary.className = 'updates-summary behind'

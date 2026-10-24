@@ -22,8 +22,15 @@ function mdInline(text) {
   s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>')
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) =>
-    '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>')
+  // url is already HTML-escaped (the whole text went through escapeHtml above, before this
+  // regex runs) -- escapeAttr-ing it again here would double-escape (&amp; -> &amp;amp;).
+  // safeHref only validates the scheme; it does not change the encoding.
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) => {
+    const href = safeHref(url, { relative: true })
+    return href
+      ? '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>'
+      : m
+  })
   return s
 }
 

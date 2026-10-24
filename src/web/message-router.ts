@@ -49,11 +49,9 @@ import { messageWakesReceiver } from './message-wake.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { isStopMessage, isUrgentDelivery } from './message-router-window.js'
 
-// A message that cannot be delivered within this window (target session never
-// exists / stays busy) is marked failed so it stops clogging the pending
-// queue and we stop re-scanning it forever. Matches the scheduled-task retry
-// window so a long turn that ate one also eats the other.
-const MESSAGE_ABANDON_WINDOW_MS = 60 * 60 * 1000
+// Upstream, adopted 2026-10-24 during Koteg 19: extracted so the POST /api/messages route can
+// quote the same number without importing the whole router.
+import { MESSAGE_ABANDON_WINDOW_MS } from './message-abandon.js'
 // RESTORED (card 4f15966e, backend, 2026-09-07): this fork-owned wakeup mechanism (card 3bd457ed)
 // existed in HEAD before the merge and was mistakenly dropped in favour of upstream's simpler
 // `if (isMainAgent) continue` during conflict resolution -- message-wake-field.test.ts and
@@ -199,7 +197,7 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     createAgentMessage(
       'system',
       MAIN_AGENT_ID,
-      `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent. Content preview: ${preview}`,
+      `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent (full text: GET /api/messages/${msg.id}). Content preview: ${preview}`,
     )
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, reason }, 'handoff-failure surfaced to orchestrator')
   } catch (err) {
@@ -223,12 +221,16 @@ export function shouldNotifySenderOfFailure(fromAgent: string, mainAgentId: stri
   return !isChannelInboundSender(fromAgent)
 }
 
-/** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060). */
+/** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060).
+ *  It also names where the FULL text is (GET /api/messages/<id>): the preview stops at 220
+ *  characters, and a sender re-sending a long handoff should not have to reconstruct it from
+ *  memory or from its transcript. */
 export function formatSenderFailureNotice(msg: AgentMessage, reason: string): string {
   const content = msg.content ?? ''
   const preview = content.length > 220 ? `${content.slice(0, 220)} [... +${content.length - 220} karakter]` : content
   return `[handoff-failure] A(z) ${msg.to_agent} címre küldött üzeneted (#${msg.id}) NEM kézbesült: ${reason}. ` +
-    `A visszakapott id a befogadást igazolta, nem a kézbesítést; ha még számít, küldd újra. Tartalom eleje: ${preview}`
+    `A visszakapott id a befogadást igazolta, nem a kézbesítést; ha még számít, küldd újra ` +
+    `(a teljes szöveg: GET /api/messages/${msg.id}). Tartalom eleje: ${preview}`
 }
 
 function notifySenderOfFailedHandoff(msg: AgentMessage, reason: string): void {

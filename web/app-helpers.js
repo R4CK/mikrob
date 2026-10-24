@@ -42,14 +42,14 @@ const STATUS_COMPONENT_LABELS = {
 }
 
 // esc() -- compact HTML-escape for inline use in template literals.
-// Difference from escapeHtml(): only encodes & < > (via textContent->innerHTML),
-// which is sufficient for text-node contexts. escapeHtml() also encodes " and '
-// for attribute-value safety. Both are in this file so call sites can pick the
-// appropriate one. Moved here from app.js (slice 44).
+// Quote-safe like escapeHtml: esc() output also lands in attributes (data-cat,
+// style), where a bare " would break out of the attribute. Upstream, adopted
+// 2026-10-24 during Koteg 19 (card 26a4198b7, #1875): several call sites in the
+// modularized slices (e.g. app-recall.js's `data-cat="${esc(cat)}"`) interpolate
+// esc() output into an attribute, so the previous text-node-only variant left
+// those sinks open to an attribute-breakout. Moved here from app.js (slice 44).
 // Exposed globally: esc()
 function esc(s) {
   if (!s) return ''
-  const d = document.createElement('div')
-  d.textContent = String(s)
-  return d.innerHTML
+  return escapeHtml(String(s))
 }
