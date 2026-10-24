@@ -225,29 +225,108 @@ check "an unlisted subdir of ~/.cache/rea is read-only (narrowed from the previo
   "$(printf '%s' "$CACHE_OUT" | grep -q "UNEXPECTED_RO" && echo 1 || echo 0)"
 rm -f "$HOME/.cache/rea/kuna/selftest-9518b377.tmp"
 
-# Regression test for WhiteHat F2 (komment 23921): the integrity pin must cover the WHOLE
-# package tree, not just scripts/rea.mjs -- a tampered dist/** file must be caught. Copy the
-# real cached rea-agents package into an isolated fake $HOME (so this never touches the real,
-# shared npx cache), confirm the unmodified copy passes the hash check (it may still fail
-# LATER for unrelated reasons -- module resolution against an isolated fake HOME -- that is not
-# what this test is checking), then tamper one dist file in the COPY and confirm it is refused
-# with a hash-mismatch message before node ever runs.
+# Regression test for WhiteHat F2 (komment 23921, then 24375): the integrity pin must cover
+# the WHOLE npx-hash tree, not just scripts/rea.mjs and not just the rea-agents package dir --
+# a tampered dist/** file in rea-agents itself, AND a tampered file in a SIBLING dependency
+# (rea-agents ships with no vendored node_modules; its 158 deps live as siblings under the
+# same _npx/<hash>/node_modules/), must both be caught. Copy the real cached rea-agents
+# package PLUS a fake sibling dependency into an isolated fake $HOME (so this never touches
+# the real, shared npx cache), confirm the unmodified copy passes the hash check (it may still
+# fail LATER for unrelated reasons -- module resolution against an isolated fake HOME -- that
+# is not what this test is checking), then tamper one dist file and one sibling file,
+# separately, and confirm each is refused with a hash-mismatch message before node ever runs.
 REAL_PKG_DIR="$(dirname "$(find "$HOME/.npm/_npx" -maxdepth 4 -path '*/node_modules/rea-agents/package.json' -exec grep -l '"version": "6.7.0"' {} \; 2>/dev/null | head -1)" 2>/dev/null)"
-if [ -n "$REAL_PKG_DIR" ] && [ -d "$REAL_PKG_DIR" ]; then
+# NPX_HASH_DIR mirrors the real script's own derivation (two levels up from $PKG_DIR) -- the
+# pin covers this WHOLE directory (rea-agents + its 158 real sibling deps), so a synthetic
+# fixture with only rea-agents (or a fake sibling) can never reproduce the real pin's hash.
+# Copy the REAL whole npx-hash directory (renamed to "testhash" -- the hash is computed on
+# paths RELATIVE to it, so the rename itself does not change the hash) into an isolated fake
+# $HOME instead, to get a byte-for-byte match before tampering.
+REAL_NPX_HASH_DIR="$([ -n "$REAL_PKG_DIR" ] && dirname "$(dirname "$REAL_PKG_DIR")")"
+if [ -n "$REAL_NPX_HASH_DIR" ] && [ -d "$REAL_NPX_HASH_DIR" ]; then
   FAKE_HOME="$WORK/fakehome-f2"
-  mkdir -p "$FAKE_HOME/.npm/_npx/testhash/node_modules"
-  cp -r "$REAL_PKG_DIR" "$FAKE_HOME/.npm/_npx/testhash/node_modules/rea-agents"
+  mkdir -p "$FAKE_HOME/.npm/_npx"
+  cp -r "$REAL_NPX_HASH_DIR" "$FAKE_HOME/.npm/_npx/testhash"
+  SIBLING_DEP_FILE="$(find "$FAKE_HOME/.npm/_npx/testhash/node_modules" -mindepth 2 -maxdepth 2 -type f -not -path '*/rea-agents/*' -print -quit)"
   F2_UNMODIFIED_ERR="$(env -i HOME="$FAKE_HOME" PATH=/usr/bin:/bin JAVA_HOME=/usr GHIDRA_INSTALL_DIR=/usr REA_JADX_MCP_JAR=/usr/bin/true REA_KUNA_COMMAND=/usr/bin/true bash "$REAL" doctor 2>&1)" || true
-  check "an unmodified copy of the real package tree passes the manifest-hash check (no mismatch message)" \
+  check "an unmodified copy of the real npx-hash tree (rea-agents + its real sibling deps) passes the manifest-hash check (no mismatch message)" \
     "$(printf '%s' "$F2_UNMODIFIED_ERR" | grep -q "package-tree hash mismatch" && echo 0 || echo 1)"
+  cp -r "$FAKE_HOME" "$WORK/fakehome-f2-sibling-base"
   echo "// tampered-by-selftest-9518b377" >> "$FAKE_HOME/.npm/_npx/testhash/node_modules/rea-agents/dist/mcp/main.js"
   F2_TAMPERED_OUT="$(env -i HOME="$FAKE_HOME" PATH=/usr/bin:/bin JAVA_HOME=/usr GHIDRA_INSTALL_DIR=/usr REA_JADX_MCP_JAR=/usr/bin/true REA_KUNA_COMMAND=/usr/bin/true bash "$REAL" doctor 2>&1)" && F2_TAMPERED_RC=0 || F2_TAMPERED_RC=$?
   check "tampering a single dist/** file (not just the entrypoint) is caught: refused with rc=1 and a hash-mismatch message" \
     "$([ "$F2_TAMPERED_RC" -eq 1 ] && printf '%s' "$F2_TAMPERED_OUT" | grep -q "package-tree hash mismatch" && echo 1 || echo 0)"
   rm -rf "$FAKE_HOME"
+  if [ -n "$SIBLING_DEP_FILE" ]; then
+    FAKE_HOME="$WORK/fakehome-f2-sibling-base"
+    SIBLING_IN_BASE="$FAKE_HOME/${SIBLING_DEP_FILE#"$WORK"/fakehome-f2/}"
+    echo "// tampered-by-selftest-9518b377-sibling" >> "$SIBLING_IN_BASE"
+    F2_SIBLING_OUT="$(env -i HOME="$FAKE_HOME" PATH=/usr/bin:/bin JAVA_HOME=/usr GHIDRA_INSTALL_DIR=/usr REA_JADX_MCP_JAR=/usr/bin/true REA_KUNA_COMMAND=/usr/bin/true bash "$REAL" doctor 2>&1)" && F2_SIBLING_RC=0 || F2_SIBLING_RC=$?
+    check "tampering a SIBLING dependency file (outside rea-agents's own dir, same npx-hash tree) is caught: refused with rc=1 and a hash-mismatch message (WhiteHat 24375 PoC)" \
+      "$([ "$F2_SIBLING_RC" -eq 1 ] && printf '%s' "$F2_SIBLING_OUT" | grep -q "package-tree hash mismatch" && echo 1 || echo 0)"
+  else
+    check "F2 sibling-dependency tamper test (skipped: no sibling dependency file found under the real npx-hash dir)" "1"
+  fi
+  # KC2 (RedHat NO-GO, komment 24382): the manifest hash must also cover SYMLINKS (name +
+  # target), not just regular files -- "find -type f" alone skips the 19 symlinks in the real
+  # tree (mostly node_modules/.bin/* shims), so retargeting one left the hash unchanged before
+  # this fix. Reuse the pristine base copy, retarget one symlink, confirm rc=1.
+  FAKE_HOME="$WORK/fakehome-f2-sibling-base"
+  SYMLINK_IN_BASE="$(find "$FAKE_HOME/.npm/_npx/testhash" -type l -print -quit)"
+  if [ -n "$SYMLINK_IN_BASE" ]; then
+    rm -f "$SYMLINK_IN_BASE"
+    ln -s "/tmp" "$SYMLINK_IN_BASE"
+    F2_SYMLINK_OUT="$(env -i HOME="$FAKE_HOME" PATH=/usr/bin:/bin JAVA_HOME=/usr GHIDRA_INSTALL_DIR=/usr REA_JADX_MCP_JAR=/usr/bin/true REA_KUNA_COMMAND=/usr/bin/true bash "$REAL" doctor 2>&1)" && F2_SYMLINK_RC=0 || F2_SYMLINK_RC=$?
+    check "retargeting a symlink inside the npx-hash tree is caught: refused with rc=1 and a hash-mismatch message (RedHat 24382 KC2)" \
+      "$([ "$F2_SYMLINK_RC" -eq 1 ] && printf '%s' "$F2_SYMLINK_OUT" | grep -q "package-tree hash mismatch" && echo 1 || echo 0)"
+  else
+    check "KC2 symlink-retarget tamper test (skipped: no symlink found under the real npx-hash dir)" "1"
+  fi
+  rm -rf "$FAKE_HOME" "$WORK/fakehome-f2-sibling-base"
 else
   check "F2 package-tree tamper test (skipped: no cached rea-agents@6.7.0 found to copy from -- not a pass/fail of the pin itself)" "1"
 fi
+
+# KC1 (RedHat NO-GO, komment 24382): a bare command name (readlink, sha256sum, ...) is looked
+# up against bash's FUNCTION table before PATH, so the F1 PATH-pin alone does not stop a
+# single exported BASH_FUNC_<name>%% function from shadowing it -- no PATH write access
+# needed. PoC: export a hijacked readlink that writes a marker file whenever it's called, point
+# REA_SAMPLE_DIR at a real allowed sample dir, and confirm the marker is NEVER created (i.e.
+# the real, absolute-path readlink ran, not the shadowed function) -- the fix resolves every
+# such name via resolve_trusted_bin() to an absolute path, which bash's function lookup cannot
+# intercept (verified manually: absolute-path invocation bypasses it, bare-name does not).
+KC1_MARKER="$WORK/kc1-readlink-hijacked-$RANDOM"
+rm -f "$KC1_MARKER"
+KC1_SAMPLE_DIR="$SAMPLES_ROOT/selftest-kc1-9518b377"
+mkdir -p "$KC1_SAMPLE_DIR"
+KC1_OUT="$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="$KC1_SAMPLE_DIR" \
+  "BASH_FUNC_readlink%%=() { echo hijacked >> \"$KC1_MARKER\"; command readlink \"\$@\"; }" \
+  bash "$REAL" doctor 2>&1)" || true
+check "RED-MUTANT (RedHat KC1): an exported BASH_FUNC_readlink%% never runs -- readlink is resolved to its absolute trusted path, not looked up via bash's function table" \
+  "$([ ! -f "$KC1_MARKER" ] && echo 1 || echo 0)"
+rm -rf "$KC1_SAMPLE_DIR" "$KC1_MARKER"
+
+# KC3 (RedHat NO-GO, komment 24382): the allowlist root (SAMPLES_ROOT) must not silently
+# follow a symlink if the dedicated samples directory itself is replaced with one -- that
+# would move the allowlist root to whatever the symlink points at. Test on a scratch copy of
+# the wrapper with the hardcoded ELEMZO_SAMPLES_DIR repointed at a scratch path (never touches
+# the real elemzo/samples), both as a real dir (must proceed) and as a symlink (must refuse).
+KC3_SCRATCH_ROOT="$WORK/kc3-samples-root-$RANDOM"
+KC3_SCRATCH_REAL="$WORK/kc3-samples-real-target-$RANDOM"
+MUTANT_KC3="$WORK/mutant-kc3-samples.sh"
+sed "s#ELEMZO_SAMPLES_DIR=/home/neon/marveen/agents/elemzo/samples#ELEMZO_SAMPLES_DIR=$KC3_SCRATCH_ROOT#" "$REAL" > "$MUTANT_KC3"
+chmod +x "$MUTANT_KC3"
+mkdir -p "$KC3_SCRATCH_ROOT"
+KC3_REALDIR_OUT="$(env -i "${BASE_ENV[@]}" bash "$MUTANT_KC3" doctor 2>&1)" || true
+check "KC3 control: a real (non-symlink) samples directory is accepted (no 'is a symlink' refusal)" \
+  "$(printf '%s' "$KC3_REALDIR_OUT" | grep -q "is a symlink" && echo 0 || echo 1)"
+rm -rf "$KC3_SCRATCH_ROOT"
+mkdir -p "$KC3_SCRATCH_REAL"
+ln -s "$KC3_SCRATCH_REAL" "$KC3_SCRATCH_ROOT"
+KC3_SYMLINK_OUT="$(env -i "${BASE_ENV[@]}" bash "$MUTANT_KC3" doctor 2>&1)" && KC3_SYMLINK_RC=0 || KC3_SYMLINK_RC=$?
+check "RED-MUTANT (RedHat KC3): a samples directory replaced with a symlink is refused with rc=1 (allowlist root cannot be silently relocated)" \
+  "$([ "$KC3_SYMLINK_RC" -eq 1 ] && printf '%s' "$KC3_SYMLINK_OUT" | grep -q "is a symlink" && echo 1 || echo 0)"
+rm -rf "$KC3_SCRATCH_ROOT" "$KC3_SCRATCH_REAL" "$MUTANT_KC3"
 
 # Regression tests for RedHat KC5/KC6 (komment 23925, the 23079 "piros-mutáns" requirement):
 # a combined mutant removing --new-session, --die-with-parent, the Hopper lib/ bind, and the
@@ -389,7 +468,7 @@ except Exception:
   check "the real script's Hopper lib/ bind keeps the hopper doctor check healthy" \
     "$(printf '%s' "$HOPPER_DOCTOR_REAL" | hopper_ok)"
   MUTANT_NO_HOPPERLIB="$WORK/mutant-no-hopperlib.sh"
-  sed '/HOPPER_LIB_DIR="\$(dirname/,/^  fi$/d' "$REAL" > "$MUTANT_NO_HOPPERLIB"
+  sed '/HOPPER_LIB_DIR=/,/^  fi$/d' "$REAL" > "$MUTANT_NO_HOPPERLIB"
   HOPPER_DOCTOR_MUT="$(env -i "${REAL_ENV_ARGS[@]}" bash "$MUTANT_NO_HOPPERLIB" doctor --json 2>/dev/null)" || true
   check "RED-MUTANT (RedHat KC6): removing the Hopper lib/ bind is caught (hopper doctor check goes false)" \
     "$([ "$(printf '%s' "$HOPPER_DOCTOR_MUT" | hopper_ok)" = "0" ] && echo 1 || echo 0)"
