@@ -160,6 +160,14 @@ fi
 
 BIND_ARGS=(
   --unshare-pid --unshare-ipc --unshare-uts
+  # --unshare-user + --disable-userns (RedHat KC5, komment 23925): without this, a compromised
+  # engine inside the sandbox can `unshare -U -r` to get uid 0 in a NESTED user namespace
+  # (measured: CapEff=0 at the sandbox's own top level, but the nested namespace still grants
+  # CAP_SYS_ADMIN there), widening the kernel attack surface available for an escape attempt.
+  # --disable-userns requires --unshare-user (bwrap's own error if it's missing -- measured).
+  # Closes that path without needing the still-deferred seccomp BPF profile (separate card, per
+  # RedHat's own recommendation).
+  --unshare-user --disable-userns
   --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib --ro-bind /lib64 /lib64 --ro-bind /etc /etc
   --dir "$HOME"
   --ro-bind "$HOME/.npm" "$HOME/.npm"
