@@ -144,6 +144,51 @@ else
 fi
 rm -f "$GEMINI_HEAVY_FLAG"
 
+# J/K regress the WhiteHat MEDIUM (card 7b5cf804, d886e9c2 GO @ a7742f46): an env-seam that let
+# the caller force the content gate's own rc without going through its real logic at all.
+
+echo "=== J. BASH_ENV/ENV poisoned MID-SCRIPT (e.g. by something the script sources, not by the caller of the top-level script -- BASH_ENV sourcing happens at bash startup, so poisoning it before the top invocation would hijack the whole script before any of its own code runs, which is a noisy crash, not the sneaky selective bypass this finding is about) must NOT let the gate subprocess get forced to exit 42 ==="
+BASH_ENV_EXIT42="$TMP/bash-env-exit42.sh"
+cat > "$BASH_ENV_EXIT42" <<'EOF'
+exit 42
+EOF
+# Simulate the real attack surface directly: the exact OFFLOAD_DISPATCH invocation line from the
+# production script, run with BASH_ENV/ENV already exported in the CURRENT (already-running)
+# shell -- this is what the content-gate subprocess call actually sees if something sourced into
+# this script's own process (e.g. gemini-heavy-gate.sh) exported BASH_ENV earlier in the run.
+run_gate_line() {
+  local use_envu="$1"
+  local real_dispatch="$HERE/offload-dispatch.sh"
+  if [[ "$use_envu" == "1" ]]; then
+    env -u BASH_ENV -u ENV bash "$real_dispatch" --check-blocked mikrob "gemini-ok" "" "$SENSITIVE_INPUT" >/dev/null 2>&1
+  else
+    bash "$real_dispatch" --check-blocked mikrob "gemini-ok" "" "$SENSITIVE_INPUT" >/dev/null 2>&1
+  fi
+}
+( export BASH_ENV="$BASH_ENV_EXIT42" ENV="$BASH_ENV_EXIT42"
+  run_gate_line 0; echo "unprotected_rc=$?" > "$TMP/j-unprotected.rc"
+  run_gate_line 1; echo "protected_rc=$?" > "$TMP/j-protected.rc"
+)
+unprotected_rc="$(grep -o '[0-9]*' "$TMP/j-unprotected.rc")"
+protected_rc="$(grep -o '[0-9]*' "$TMP/j-protected.rc")"
+if [[ "$unprotected_rc" == "42" && "$protected_rc" != "42" ]]; then
+  PASS=$((PASS+1)); echo "OK   J: env -u BASH_ENV -u ENV prevents mid-script BASH_ENV poisoning from forcing the gate's exit code to 42 (unprotected got 42, protected got $protected_rc)"
+else
+  FAIL=$((FAIL+1)); FAILED+=("J: BASH_ENV mid-script poisoning"); echo "FAIL expected unprotected=42 (poisoned) and protected!=42 (immune), got unprotected=$unprotected_rc protected=$protected_rc"
+fi
+
+echo "=== K. UBD_OFFLOAD_DISPATCH env var pointed at an always-exit-42 stub has NO effect -- the seam was removed, the real offload-dispatch.sh is always used ==="
+STUB_ALWAYS_ALLOW="$TMP/always-exit42.sh"
+cat > "$STUB_ALWAYS_ALLOW" <<'EOF'
+#!/usr/bin/env bash
+exit 42
+EOF
+chmod +x "$STUB_ALWAYS_ALLOW"
+touch "$GEMINI_HEAVY_FLAG"
+out="$(UBD_OFFLOAD_DISPATCH="$STUB_ALWAYS_ALLOW" run_realgate 0 1 --confirm-gemini-ok <<<"$SENSITIVE_INPUT")"; rc=$?
+check "K: UBD_OFFLOAD_DISPATCH override is inert, sensitive content still blocked" 2 "" "$rc" "$out"
+rm -f "$GEMINI_HEAVY_FLAG"
+
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
 if [ "$FAIL" -gt 0 ]; then

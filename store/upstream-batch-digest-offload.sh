@@ -47,7 +47,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILTER="${UBD_FILTER:-$HERE/upstream-batch-digest-filter.sh}"
 LOCAL_LLM="${UBD_LOCAL_LLM:-$HERE/local-llm.sh}"
 GEMINI_OFFLOAD="${UBD_GEMINI_OFFLOAD:-$HERE/gemini-offload-call.sh}"
-OFFLOAD_DISPATCH="${UBD_OFFLOAD_DISPATCH:-$HERE/offload-dispatch.sh}"
+# WhiteHat MEDIUM (card 7b5cf804, d886e9c2 GO @ a7742f46): the content gate below is the one
+# thing standing between a sensitive commit and Gemini -- it must NOT be overridable from the
+# caller's environment. No test (selftest or otherwise) ever sets UBD_OFFLOAD_DISPATCH, so the
+# seam bought nothing and only gave a caller a way to point it at a script that always exits 42.
+OFFLOAD_DISPATCH="$HERE/offload-dispatch.sh"
 
 CALLER=""
 CONFIRM_GEMINI_OK=0
@@ -88,8 +92,12 @@ fi
 # "--check-blocked" exposure, run on the FILTERED commit text (the exact text that would reach
 # Gemini) -- its own convention is exit 42 == allowed, anything else (including a crashed/missing
 # interpreter) == blocked, fail-closed.
+# WhiteHat MEDIUM (card 7b5cf804): BASH_ENV/ENV, if inherited from the caller's environment,
+# would be sourced by this `bash <scriptfile>` invocation BEFORE offload-dispatch.sh's own code
+# runs -- a caller-supplied file there could just `exit 42` and skip the real check entirely.
+# Strip both so the gate call always runs the real logic, regardless of caller environment.
 CHECK_RC=0
-bash "$OFFLOAD_DISPATCH" --check-blocked mikrob "gemini-ok" "" "$FILTERED" >/dev/null 2>&1 || CHECK_RC=$?
+env -u BASH_ENV -u ENV bash "$OFFLOAD_DISPATCH" --check-blocked mikrob "gemini-ok" "" "$FILTERED" >/dev/null 2>&1 || CHECK_RC=$?
 if [[ "$CHECK_RC" != 42 ]]; then
   echo "upstream-batch-digest-offload: no Gemini fallback (content gate blocked)" >&2
   exit 2

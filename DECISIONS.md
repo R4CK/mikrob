@@ -21703,3 +21703,17 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet WhiteHat-tól jön (23714, 8a4a8b09-en), a javítást backend2 írta.
 
 **Hivatkozás:** kártya ed7d7948, előd 8a4a8b09, WhiteHat komment 23714.
+
+## 2026-10-24: 7b5cf804 -- upstream-batch-digest Gemini-kapu: env-seam megkerülés lezárása (WhiteHat MEDIUM, d886e9c2 követő)
+
+**Kontextus:** WhiteHat MEDIUM lelet (d886e9c2 GO @ a7742f46, msg 14543): az `is_gemini_blocked` kapu env-ből megkerülhető volt kétféleképpen -- (1) `UBD_OFFLOAD_DISPATCH` egy exit-42 szkriptre állítva, amit a 2369d8c1 commit hozott be, de teszt sosem használt; (2) `BASH_ENV`/`ENV` mid-script poisoning a kapu saját `bash "$OFFLOAD_DISPATCH" ...` alhívásán.
+
+**Döntés:** `store/upstream-batch-digest-offload.sh`-ban az `OFFLOAD_DISPATCH` útvonal nem env-felülírható többé (mindig `$HERE/offload-dispatch.sh`), és a kapu saját alhívása `env -u BASH_ENV -u ENV` alatt fut, hogy egy a script saját futása KÖZBEN (nem a belépéskor) elexportált BASH_ENV/ENV ne tudja a tartalmi kapu kimenetét exit 42-re kényszeríteni anélkül, hogy a valódi `offload-dispatch.sh --check-blocked` logika lefutna.
+
+**Mérés/korlát:** a BASH_ENV sourcolása bash saját indulásakor történik, MIELŐTT a script bármely sora lefutna -- ezért ha a BASH_ENV már a BELÉPÉSKOR (a hívó környezetében) mérgezett, az a TELJES script indulását akasztja meg (zajos leállás, nem szelektív megkerülés), és ez a behatolási mód ebből a scriptből nem védhető. A valós, csendes kockázat a mid-script mérgezés (pl. egy sourcelt fájl exportálna BASH_ENV-et), ami ellen az `env -u` wrapper tényleg véd -- empirikusan igazolva (`env -u BASH_ENV -u ENV` nélkül a kapu alhívása rc=42-re ugrik, vele a valódi offload-dispatch.sh logikája fut).
+
+**Mutáció-ellenőrzés:** `git stash` a javítás előtti `upstream-batch-digest-offload.sh`-ra, az új J/K selftest-esettel futtatva a K piros (rc=0, a stub Gemini válasza visszajön a `fix auth bypass` tárgyra), J zöld marad (a BASH_ENV-védelem a kapu saját, közvetlenül tesztelt parancssorát nézi, nem ennek a scriptnek az állapotát). `git stash pop` után mindkettő zöld (pass=11 fail=0). `store/offload-dispatch.selftest.sh`: 88/88 zöld, nincs regresszió.
+
+**Ki döntött:** a lelet WhiteHat-tól jön (d886e9c2 GO, msg 14543), a javítást backend2 írta.
+
+**Hivatkozás:** kártya 7b5cf804, előd d886e9c2.
