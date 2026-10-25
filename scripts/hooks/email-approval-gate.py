@@ -176,6 +176,52 @@ def _is_explicit_draft(tool_input: dict) -> bool:
     return draft is True or draft == "true"
 
 
+# MAILCCGATE1016: the owner wants a copy of every letter the main agent sends.
+# The rule lived only in memory; measured over four days, at least six letters
+# left through send_email without it, and the owner noticed. So it is a gate
+# now, and it runs at EVERY email_send level (the owner's CC is not an approval
+# question). The address comes from MAIL_OWNER_CC in the install .env only (see
+# owner_cc_address); unset or empty means the check is off, so a fresh install
+# is unchanged. A draft is checked too: send_draft carries only a draft id, so the
+# letter it sends can only be checked where the draft is written. An update of
+# an existing draft is not checked: it may carry only the changed fields, and a
+# missing cc there would be a false deny.
+_DRAFT_TOOL = re.compile(r"draft_email|create_draft|draft_gmail_message", re.I)
+_ADDR = re.compile(r"[^\s<>,;:\"'()\[\]]+@[^\s<>,;:\"'()\[\]]+")
+
+
+def owner_cc_address() -> str:
+    """MAIL_OWNER_CC from the install .env ONLY, lowercased, or '' when the
+    check is off. Never from the process environment: an empty value that ends
+    up in the launch environment would switch the gate off with no trace (the
+    mail senders read their recipient settings from .env only for the same
+    reason). The .env is the one next to the store this gate uses, i.e. the
+    install root in production, and the test's own root when a test points
+    EMAIL_APPROVAL_GATE_STORE at a temporary store."""
+    try:
+        with open(os.path.join(os.path.dirname(STORE_DIR), ".env"), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MAIL_OWNER_CC="):
+                    return line.split("=", 1)[1].strip().strip("'\"").lower()
+    except OSError:  # no .env: the check is off, as on a fresh install
+        pass
+    return ""
+
+
+def owner_cc_missing(tool_input: dict, owner: str) -> bool:
+    """True when the owner's address is in none of the call's to / cc / bcc
+    fields. Read straight from the MCP input, not through email_extract: that
+    collector only reads send_email-shaped tools, and a draft or a manage_email
+    call would come back with no recipients at all."""
+    found = set()
+    for field in ("to", "cc", "bcc"):
+        v = tool_input.get(field)
+        for raw in (v if isinstance(v, (list, tuple)) else [v]):
+            if raw:
+                found.update(a.lower().rstrip(".") for a in _ADDR.findall(str(raw)))
+    return owner not in found
+
+
 def manage_email_is_send(tool_input: dict) -> bool:
     """Is this manage_email call a send? Unreadable operation -> True (closed).
 
@@ -596,9 +642,53 @@ def main():
     tool_input = payload.get("tool_input")
     tool_input = tool_input if isinstance(tool_input, dict) else {}
 
+    # MAILCCGATE1016 (upstream, adopted 2026-10-24 during Koteg 19): the owner-CC check,
+    # before the level (it applies at every level) and for drafts too. MCP tools only: the
+    # Bash senders carry their own owner-CC default (scripts/support-mail/send.py,
+    # SUPPORT_OWNER_CC). Runs BEFORE the fork's own deny-by-default scoping below, because it
+    # must see draft calls too, and the deny-by-default branch's _EMAIL_SAFE_TOOL_RE early-exit
+    # would otherwise let an unchecked draft call through first.
+    is_mcp_draft = bool(_DRAFT_TOOL.search(tool)) or (
+        bool(_MULTIPLEX_TOOL.search(tool)) and _is_explicit_draft(tool_input))
+    # GMAILCONNECTOR914-class gap, caught here too (card 2337e4b0 delta on MAILCCGATE1016):
+    # _SEND_TOOL only matches literal send[-_]email/manage_email by name, so a connector
+    # reply/forward/send_message (mcp__claude_ai_Gmail__reply, no "send"/"email" substring)
+    # skipped the owner-CC check entirely and could reach level 3's plain allow with no copy
+    # to the owner. Scoped to the bare verbs GMAILCONNECTOR914 itself named (reply/forward/
+    # send_message and their aliases) -- NOT the whole "not in _EMAIL_SAFE_TOOL_RE" surface,
+    # which also catches update_draft (a draft edit, not a send; see the dedicated test for it).
+    _CONNECTOR_SEND_VERB_RE = re.compile(r"^(?:reply|reply_all|replyall|forward|send[-_]?message)$", re.I)
+    is_connector_send = bool(_EMAIL_SERVER_RE.search(tool)) and bool(
+        _CONNECTOR_SEND_VERB_RE.search(_bare_tool_name(tool)))
+    is_mcp_send = is_connector_send or (bool(_SEND_TOOL.search(tool)) and not (
+        _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input)))
+    if is_mcp_draft or is_mcp_send:
+        owner = owner_cc_address()
+        if owner:
+            if owner_cc_missing(tool_input, owner):
+                what = "piszkozat" if is_mcp_draft and not is_mcp_send else "level"
+                no_fields = not any(tool_input.get(f) for f in ("to", "cc", "bcc"))
+                if no_fields and tool_input.get("messageId"):
+                    # A messageId-addressed reply/forward has no recipient field at
+                    # all, so "put the owner in cc" cannot be followed there.
+                    how = (f"Ez a hivas az eredeti uzenetre valaszol (messageId), cimzett-mezo "
+                           f"nelkul, igy a cc nem adhato hozza. Valaszolj send_email-lel: "
+                           f"threadId / inReplyTo + a teljes boritek (to, subject, body), "
+                           f"a cc-ben {owner}.")
+                else:
+                    how = f"Tedd a cc-be ({owner}), aztan kuldd ujra."
+                deny(f"A gazda masolata hianyzik: a {what} cimzettjei kozott (to, cc, bcc) "
+                     f"nincs ott a(z) {owner} cim.\n{how}\nA gazda minden kimeno "
+                     "levelrol masolatot ker (MAIL_OWNER_CC az install .env-jeben).")
+    if is_mcp_draft and not is_mcp_send:
+        sys.exit(0)
+
     if _EMAIL_SERVER_RE.search(tool):
         # Deny-by-default: everything on a gmail__/resend__ server is in scope unless it is
-        # an explicit read/draft op -- see _EMAIL_SAFE_TOOL_RE above.
+        # an explicit read/draft op -- see _EMAIL_SAFE_TOOL_RE above. Fork-only (card 498d53c1);
+        # upstream's tree has no _EMAIL_SERVER_RE/_EMAIL_SAFE_TOOL_RE at all, so this branch is
+        # kept in full rather than taking upstream's structure, which would have silently
+        # dropped it.
         if _EMAIL_SAFE_TOOL_RE.search(_bare_tool_name(tool)):
             sys.exit(0)
     elif _SEND_TOOL.search(tool):

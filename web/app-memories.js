@@ -57,8 +57,8 @@ async function loadMemAgents() {
     sel.innerHTML = `<option value="">${t('memories.agent_all')}</option>`
     memSel.innerHTML = ''
     for (const a of agents) {
-      sel.innerHTML += `<option value="${a.name}">${a.label}</option>`
-      memSel.innerHTML += `<option value="${a.name}">${a.label}</option>`
+      sel.innerHTML += `<option value="${escapeHtml(a.name)}">${escapeHtml(a.label)}</option>`
+      memSel.innerHTML += `<option value="${escapeHtml(a.name)}">${escapeHtml(a.label)}</option>`
     }
   } catch {}
 }
@@ -1316,7 +1316,7 @@ function showGraphPanel(node) {
   const created = node.mem.created_label || ''
   panel.innerHTML = `
     <div class="graph-panel-header">
-      <span class="badge badge-${node.tier}">${tierLabelsMap[node.tier] || node.tier}</span>
+      <span class="badge badge-${escapeHtml(node.tier)}">${tierLabelsMap[node.tier] || escapeHtml(String(node.tier))}</span>
       <span class="graph-panel-agent">${escapeHtml(node.agent)}</span>
       <button class="graph-panel-close" id="graphPanelCloseBtn">&times;</button>
     </div>

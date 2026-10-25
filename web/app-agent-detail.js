@@ -30,13 +30,12 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailTitle').textContent = detailLabel
 
   // Overview tab
-  const initial = detailLabel.charAt(0).toUpperCase()
   const gradientClass = getAvatarGradient(currentAgent.name)
   const avatar = document.getElementById('agentDetailAvatar')
   avatar.className = 'detail-avatar ' + gradientClass
   avatar.innerHTML = (currentAgent.hasImage || currentAgent.hasAvatar)
     ? `<img src="/api/agents/${encodeURIComponent(currentAgent.name)}/avatar" alt="${escapeHtml(detailLabel)}">`
-    : initial
+    : escapeHtml(detailLabel.charAt(0).toUpperCase())
   document.getElementById('agentDetailName').textContent = detailLabel
   document.getElementById('agentDetailDesc').textContent = currentAgent.description || ''
   document.getElementById('agentDetailModel').textContent = currentAgent.activeModel || currentAgent.model || 'inherit'

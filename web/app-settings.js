@@ -380,7 +380,7 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
       html += '<ul style="margin:0 0 10px;padding-left:18px">'
       for (const r of changes) {
         const safeReason = r.reason.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-        html += `<li style="margin-bottom:6px"><strong>${r.agent}</strong>: ${r.currentModel} &rarr; ${r.suggestedModel}`
+        html += `<li style="margin-bottom:6px"><strong>${escapeHtml(r.agent)}</strong>: ${escapeHtml(r.currentModel)} &rarr; ${escapeHtml(r.suggestedModel)}`
         html += ` <details style="display:inline-block;vertical-align:top;margin-left:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text-muted)">${t('agents.model.details')}</summary>`
         html += `<pre style="white-space:pre-wrap;font-size:11px;margin:4px 0 0;background:var(--surface);padding:6px 8px;border-radius:4px;color:var(--text-muted)">${safeReason}</pre></details></li>`
       }

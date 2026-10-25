@@ -384,7 +384,7 @@ function makeScheduleRow(task) {
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
-          <span>${describeCron(task.schedule)}</span>
+          <span>${escapeHtml(describeCron(task.schedule))}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
         </div>
       </div>

@@ -729,7 +729,7 @@ async function refreshChannelRequests() {
     for (const req of items) {
       const item = document.createElement('div')
       item.className = 'tg-allowed-item'
-      const name = req.channel_name ? escapeHtml(req.channel_name) : req.channel_id
+      const name = escapeHtml(req.channel_name || req.channel_id)
       const ts = new Date(req.requested_at * 1000).toLocaleString('hu-HU')
       const userId = req.user_id ? `<span class="tg-allowed-id">user: ${escapeHtml(req.user_id)}</span>` : ''
       item.innerHTML = `
@@ -756,8 +756,8 @@ let _approveReqId = null
 function openApproveModal(id, channelName, userId) {
   _approveReqId = id
   const desc = document.getElementById('chApproveModalDesc')
-  const userNote = userId ? t('channel.approve.requester', { user: escapeHtml(userId) }) : ''
-  desc.textContent = t('channel.approve.desc', { channel: escapeHtml(channelName), requester: userNote })
+  const userNote = userId ? t('channel.approve.requester', { user: userId }) : ''
+  desc.textContent = t('channel.approve.desc', { channel: channelName, requester: userNote })
   document.getElementById('chApproveRequireMention').checked = true
   document.getElementById('chApproveAllowFromAll').checked = false
   document.getElementById('chApproveModalOverlay').hidden = false

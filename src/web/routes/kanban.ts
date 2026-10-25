@@ -6,7 +6,7 @@ import {
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanLineComments, addKanbanLineComment,
-  getKanbanCard, getChildCards, getDb,
+  getKanbanCard, getChildCards, getDb, KANBAN_STATUSES,
   bulkAttributionRequired, BULK_ATTRIBUTION_MESSAGE,
   createAgentMessage, markKanbanCardDispatched,
   getKanbanSeqByIdPrefix, getKanbanCardStateByIdPrefix,
@@ -32,7 +32,7 @@ import {
 import { isForceActor, forceActors } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, DB_FILENAME } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
@@ -139,9 +139,19 @@ const NEW_DEV_STOP_MESSAGE =
 import { resolveKanbanDispatch, isSelfAdvanceMove } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
+import { MAX_LABEL_PALETTE_ENTRIES, resolveLabelColor } from '../../css-color.js'
 import { readBody, json, jsonMaybeGzip, methodNotAllowed } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
+
+// KANBAN_LABEL_COLORS entries that are not colours were dropped by config.ts
+// (which cannot log); say so once, when the kanban routes load.
+if (KANBAN_LABEL_COLORS_REJECTED.length > 0) {
+  logger.warn({ rejected: KANBAN_LABEL_COLORS_REJECTED.length }, 'KANBAN_LABEL_COLORS: entries that are not a colour (hex, CSS colour name, numeric rgb()/hsl(), var(--token)) were dropped from the label palette')
+}
+if (KANBAN_LABEL_COLORS_OVERFLOW > 0) {
+  logger.warn({ dropped: KANBAN_LABEL_COLORS_OVERFLOW, kept: KANBAN_LABEL_COLORS.length }, `KANBAN_LABEL_COLORS: the label palette is too large; the entries past the size limit (${MAX_LABEL_PALETTE_ENTRIES} distinct colours) were dropped`)
+}
 
 // #1023: keys a PUT /api/kanban/:id body may carry WITHOUT being a writable
 // column -- the read-only card fields and the GET-embedded arrays the dashboard
@@ -167,8 +177,9 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
 // rule as the PUT above. `force`/`reason` are the newDevStopWouldBlock override
 // (same shape as the PUT's), not generic card fields -- they belong here, not
-// in KANBAN_WRITABLE_FIELDS.
-const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'force', 'reason'] as const
+// in KANBAN_WRITABLE_FIELDS. `expected_status` (upstream #1975, adopted 2026-10-24 during
+// Koteg 19) is the compare-and-set guard.
+const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'force', 'reason', 'expected_status'] as const
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
@@ -937,7 +948,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Colour is validated against the configured palette (KANBAN_LABEL_COLORS)
     // rather than accepted as free-text, so every label's colour traces back
     // to the single configurable source instead of an arbitrary per-request value.
-    const resolvedColor = color && KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
+    // (compared normalized: a palette written as `red` matches a request for red)
+    const { color: resolvedColor, replaced } = resolveLabelColor(color, KANBAN_LABEL_COLORS)
+    if (replaced && color !== undefined) logger.warn({ path }, 'Kanban label POST: colour not in the palette, the first palette colour was used')
     const id = randomUUID().slice(0, 8)
     const label = createLabel({ id, name: name.trim(), color: resolvedColor })
     json(res, label)
@@ -961,7 +974,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       fields.name = name.trim()
     }
     if (color !== undefined) {
-      fields.color = KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
+      // a client sending a legacy label's current colour back keeps it
+      const existing = getLabel(id)
+      const resolved = resolveLabelColor(color, KANBAN_LABEL_COLORS, existing?.color)
+      // (an unknown id gets a 404 below, not a log line)
+      if (resolved.replaced && existing) logger.warn({ id }, 'Kanban label PUT: colour not in the palette and not the label\'s own, the first palette colour was used')
+      fields.color = resolved.color
     }
     if (updateLabel(id, fields)) { json(res, { ok: true }); return true }
     json(res, { error: 'Címke nem található' }, 404)
@@ -1407,8 +1425,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Unknown field(s): ${unknownMoveKeys.join(', ')}. Accepted: ${KANBAN_MOVE_FIELDS.join(', ')}` }, 400)
       return true
     }
-    const { status, sort_order, actor: rawActor, force, reason } = moveBody as
-      { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; force?: unknown; reason?: unknown }
+    const { status, sort_order, actor: rawActor, force, reason, expected_status } = moveBody as
+      { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; force?: unknown; reason?: unknown; expected_status?: unknown }
+    // Optional compare-and-set guard (upstream #1975, adopted 2026-10-24 during Koteg 19).
+    // Absent (undefined/null) keeps the old unconditional move. Present, it must name a real
+    // status: an unknown value could never match, and a 409 would wrongly suggest someone else
+    // moved it.
+    const hasExpected = expected_status !== undefined && expected_status !== null
+    if (hasExpected && !(KANBAN_STATUSES as readonly string[]).includes(expected_status as string)) {
+      json(res, { error: `Invalid expected_status. Accepted: ${KANBAN_STATUSES.join(', ')}` }, 400)
+      return true
+    }
     // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
     measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/move', rawActor)
     // X16 (card f6fba9ec): the move follows the PUT's actor rule -- refused before any write.
@@ -1457,7 +1484,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
       return true
     }
-    if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined)) {
+    if (moveKanbanCard(
+      id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined,
+      hasExpected ? (expected_status as Parameters<typeof moveKanbanCard>[1]) : undefined,
+    )) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, status, actor)
       // Wake the assigned agent once when the card enters in_progress -- unless
@@ -1469,7 +1499,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { ok: true, ...archivedNote(getKanbanCard(id)) })
       return true
     }
-    if (getKanbanCard(id)) {
+    // Nothing changed: a missing card stays the old 404; an existing card means either the
+    // expectedStatus compare-and-set guard did not hold (upstream #1975, adopted 2026-10-24
+    // during Koteg 19 -- tell the caller what the status actually is) or the fork's own
+    // reviewed-card-reopen guard fired (the original 409 message, when no expected_status
+    // was given at all).
+    if (hasExpected) {
+      const current = getKanbanCard(id)
+      if (current) {
+        json(res, { error: 'status_conflict', current_status: current.status, expected_status }, 409)
+        return true
+      }
+    } else if (getKanbanCard(id)) {
       json(res, {
         error:
           'A kártya waiting állapotban REVIEW-ra vár: nem húzható vissza in_progress-be, amíg egy gate nem írt rá verdiktet (PASS/GO vagy FAIL/NO-GO). Ha tudatosan újra akarod nyitni, küldd force: true értékkel.',

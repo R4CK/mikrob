@@ -2693,12 +2693,16 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // src/__tests__/message-close-section.test.ts: two independent deltas in one file. (1) the
   // argv-token-pattern check -- fork asserts the generated doc text shows the secure `-H @-`
   // stdin form, upstream asserts the insecure argv-Bearer form; KEEP fork, same reasoning as the
-  // SKILL.md entries above. (2) upstream adds a NEW test for a second-close-returns-409 doc
-  // sentence that this fork's buildMessageCloseBody() does not generate at all -- that is a
-  // doc-content feature addition (new guidance text), not a test-only port; NOT adopted here,
-  // flagged as a worthwhile doc enhancement for a dedicated card.
+  // SKILL.md entries above. (2) RE-DECIDED, card 2337e4b0 (Koteg 19, 2026-10-25): the
+  // second-close-returns-409 doc sentence WAS adopted this round, as part of agent-scaffold.ts's
+  // broader Koteg 19 changes -- buildMessageCloseBody() now generates it (grep-verified: 'Egy
+  // MÁR lezárt (done/failed) üzenet újabb lezárása 409-et ad' is in the current file), and the
+  // test for it passes. What used to be "a doc-content feature addition, flagged for a dedicated
+  // card" shipped as a side effect of this round instead of through that dedicated card -- a
+  // smaller scope than originally planned (pure doc text, no behaviour change), so re-deciding it
+  // here rather than reverting a working, tested improvement to match the stale refusal.
   'src/__tests__/message-close-section.test.ts':
-    'keep fork for the argv-pattern assertion (secure -H @- form, same reasoning as the SKILL.md entries above); NOT adopting upstream\'s added second-close-409 doc-text test, since the fork\'s buildMessageCloseBody() does not generate that sentence yet -- a doc-content feature addition, flagged for a dedicated card, not decided here',
+    'keep fork for the argv-pattern assertion (secure -H @- form, same reasoning as the SKILL.md entries above); the second-close-409 doc-text addition IS now adopted (card 2337e4b0, Koteg 19) -- buildMessageCloseBody() generates the sentence and the test for it passes',
 
   // src/__tests__/message-router-fair-window.test.ts: upstream's OWN test for the fair-batch-
   // selection feature (fc5748f5), but this fork already has its own test for the identical
@@ -4067,25 +4071,30 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "not). If this version ever appears, the pairing decision needs to be made for real, not " +
       "inherited as a side effect of an unrelated dependency bump.",
   },
-  // Card 02b5e13b (fullstack/DevO, 2026-10-23, WhiteHat F2 follow-up on 647e0b6f): the
-  // 'package.json' key above already carries its own anchor (the vitest-4.1.10 one, a DIFFERENT,
-  // earlier refusal), so this round's package.json round-647e0b6f refusal (the parse5
-  // devDependency + hook-failures/bridge-device-key scripts, NOT adopted) is carried here under
-  // the 'package-lock.json' key instead -- same cross-file-anchor technique as
-  // 'src/web/routes/agents.ts' above (file: 'src/web.ts'). file points at package-lock.json
-  // rather than package.json itself because the lockfile is the more precise tripwire: parse5
-  // only matters as an actually-installed dependency, and the lockfile is what `npm ci` would
-  // populate if the devDependency were ever adopted, independent of whether package.json's prose
-  // keeps up.
+  // RE-DECIDED (card 2337e4b0, Koteg 19, 2026-10-25): the round-647e0b6f refusal below was
+  // "parse5 backs hook-failures.ts/bridge-device-key.ts, neither exists here, NOT adopted" -- that
+  // part still holds, those two scripts still do not exist in this fork. But a LATER, UNRELATED
+  // upstream round (26a4198b7, fix(web): escape data at every web/app.js sink) was adopted in this
+  // same Koteg, and its rewritten sink-scanner genuinely needs parse5's tokenizer: see
+  // src/__tests__/app-js-html-sinks.test.ts ("import { parseFragment } from 'parse5'") and
+  // src/__tests__/helpers/app-js-sink-scan.ts ("import { Tokenizer, TokenizerMode } from
+  // 'parse5'"). So "nothing in src/ references parse5" is no longer true, for a reason that has
+  // nothing to do with the originally-declined scripts. The anchor flips to expect: 'present' --
+  // it still watches the SAME fact (does this fork actually depend on parse5), just the opposite
+  // direction now that the dependency is real; if it ever goes missing again while
+  // app-js-html-sinks.test.ts/app-js-sink-scan.ts still import it, that is a broken build, not a
+  // reversal to celebrate.
   'package-lock.json': {
     needle: 'parse5',
     file: 'package-lock.json',
-    expect: 'absent',
+    expect: 'present',
     because:
-      "Upstream added devDependency parse5@8.0.1 (round 647e0b6f, backing two unported scripts, " +
-      "hook-failures.ts and bridge-device-key.ts) -- NOT adopted, since neither script exists in " +
-      "this fork and nothing in src/ references parse5. If this name appears in the lockfile, " +
-      "parse5 was installed and the package.json refusal needs re-deciding, not just a blob bump.",
+      "parse5@8.0.1 IS adopted as of card 2337e4b0 (Koteg 19) -- not for the originally-declined " +
+      "hook-failures.ts/bridge-device-key.ts (still absent from this fork), but because the ported " +
+      "web/app.js sink-scanner rewrite (upstream 26a4198b7) uses parse5's own tokenizer/fragment " +
+      "parser in src/__tests__/app-js-html-sinks.test.ts and src/__tests__/helpers/app-js-sink-scan.ts. " +
+      "If parse5 disappears from the lockfile while those two files still import it, npm ci is broken " +
+      "-- re-check those imports before treating a missing parse5 as a return to the old decision.",
   },
   'src/web/agent-process.ts': {
     needle: 'isMinimax',
@@ -4516,15 +4525,19 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "app.js, the feature was built (presumably by the Fron Ted card this entry flags), and this " +
       "test should be re-evaluated for adoption against the real implementation, not left refused.",
   },
+  // RE-DECIDED (card 2337e4b0, Koteg 19, 2026-10-25): flipped from 'absent' to 'present' -- the
+  // doc-text addition this watched is adopted now (see the text decision above), so the anchor's
+  // job changes from "watch for an unannounced adoption" to "watch for an unannounced regression"
+  // (buildMessageCloseBody() losing the sentence while the test that checks it still expects it).
   'src/__tests__/message-close-section.test.ts': {
     needle: '409-et ad',
     file: 'src/web/agent-scaffold.ts',
-    expect: 'absent',
+    expect: 'present',
     because:
-      "this is the generated-doc phrase upstream's added second-close-409 test expects " +
-      "buildMessageCloseBody() to produce; it does not today. If this phrase appears, that doc " +
-      "enhancement already landed and the flagged-for-a-dedicated-card test addition should be " +
-      "re-evaluated against the real generated text, not left as an open flag.",
+      "the second-close-409 generated-doc phrase is adopted (card 2337e4b0, Koteg 19) -- " +
+      "buildMessageCloseBody() produces it and src/__tests__/message-close-section.test.ts's own " +
+      "'says a second close ... is a 409' case checks it directly. If this phrase disappears while " +
+      "that test still exists, the doc generator regressed; re-check both together.",
   },
   'src/__tests__/message-router-fair-window.test.ts': {
     needle: 'export function selectFairBatch',
@@ -4552,20 +4565,30 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "appears here, that follow-up already happened and the daily-handoff-skip-sweep/saturation- " +
       "banner items named alongside it need re-checking too.",
   },
+  // RE-DECIDED (card 2337e4b0, Koteg 19, 2026-10-25): of this entry's three points-6/7 refusals,
+  // TWO are no longer refusals. WORKER_AUTOUPDATE was adopted THIS round (upstream 79574ca79,
+  // fix(worker): launch both workers with the auto-updater pinned) with full matching wiring --
+  // src/config.ts (boot-time const), src/web/agent-worker.ts (the actual worker-launch branch),
+  // and its own src/__tests__/worker-autoupdater.test.ts -- not a dangling config key, the
+  // "implies matching wiring this fork lacks" premise does not apply to it. TELEGRAM_TOPICS_ENABLED
+  // turns out to have been adopted ALREADY, independent of this round and probably before it:
+  // grep-verified present on origin/develop BEFORE this merge, with extensive wiring (channel-
+  // coordinator.ts, channel-provider.ts, scripts/patch-telegram-plugin.py, and seven more files).
+  // That half of the old "declines to adopt" claim was already stale; this round did not cause it,
+  // but re-checking it (as the old because: text itself asked, "if WORKER_AUTOUPDATE appears,
+  // re-check TELEGRAM_TOPICS_ENABLED too") is what surfaced it. Only MEMORY_CONTENT_FILTER_STRICT_COMMANDS
+  // (the security-adjacent memory-injection opt-in, flagged for WhiteHat) remains genuinely
+  // NOT adopted -- the needle moves to it, since it is the one fact still worth watching here.
   'src/config-registry.ts': {
-    needle: "key: 'WORKER_AUTOUPDATE'",
+    needle: "MEMORY_CONTENT_FILTER_STRICT_COMMANDS",
     file: 'src/config-registry.ts',
     expect: 'absent',
     because:
-      "this entry's 2026-10-17 round (points 6/7) declines to adopt WORKER_AUTOUPDATE and " +
-      "TELEGRAM_TOPICS_ENABLED (each implies matching channels.sh/plugin-patch wiring this fork " +
-      "lacks) and MEMORY_CONTENT_FILTER_STRICT_COMMANDS (a security-adjacent memory-injection " +
-      "opt-in, flagged for WhiteHat). Point (5)'s four retention settings were RE-DECIDED and " +
-      "ADOPTED 2026-10-23 (card 13b2648e) with their own full daily-sweep wiring, so this anchor " +
-      "moved to the still-open points instead of being deleted outright -- a file-level entry " +
-      "needs SOME anchor watching its remaining refusals, or a later silent adoption goes unnoticed " +
-      "the same way point (5) almost did. If WORKER_AUTOUPDATE appears, re-check TELEGRAM_TOPICS_ENABLED " +
-      "and MEMORY_CONTENT_FILTER_STRICT_COMMANDS too, not just this one key.",
+      "MEMORY_CONTENT_FILTER_STRICT_COMMANDS (a security-adjacent memory-injection opt-in, flagged " +
+      "for WhiteHat) remains NOT adopted. WORKER_AUTOUPDATE and TELEGRAM_TOPICS_ENABLED, formerly " +
+      "watched by this same entry, are both adopted now (see the comment above this entry) and no " +
+      "longer need a tripwire here. If MEMORY_CONTENT_FILTER_STRICT_COMMANDS appears in this file, " +
+      "that decision needs WhiteHat review before it ships, not a silent blob-bump.",
   },
   'scripts/dashboard-user.ts': {
     needle: "from '../src/hidden-prompt.js'",

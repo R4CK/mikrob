@@ -117,7 +117,7 @@ describe('getAgentMemories in-process cache', () => {
 // 3. Embedding backfill
 // ---------------------------------------------------------------------------
 describe('backfillEmbeddings', () => {
-  it('returns 0 when every memory already has an embedding', async () => {
+  it('returns all-zero when every memory already has an embedding', async () => {
     // FLAKY FIX (card 0677c9ad). This used to assume "Ollama is not running in the test
     // environment" and simply call backfillEmbeddings() on whatever the shared DB happened to
     // contain. Both halves of that were wrong:
@@ -131,15 +131,22 @@ describe('backfillEmbeddings', () => {
     // possible return value, so the test could only ever fail by timing out.
     //
     // Now the test establishes its OWN precondition -- the exact one its name claims -- so it is
-    // independent of suite order and does no network I/O at all.
+    // independent of suite order and does no network I/O at all. Assertion shape adopted from
+    // upstream (BACKFILLZERO, a040b922) during Koteg 19: backfillEmbeddings() already returns the
+    // richer {attempted, embedded, failed} shape on this fork (card 370f34c0, same fix concept,
+    // src/db.ts BackfillResult), so this test's own `count` number assertion was already stale
+    // against the real signature -- replaced to match it, with the deterministic no-network setup.
     getDb().prepare("UPDATE memories SET embedding = ? WHERE embedding IS NULL").run('[]')
     const remaining = getDb()
       .prepare('SELECT COUNT(*) AS n FROM memories WHERE embedding IS NULL')
       .get() as { n: number }
     expect(remaining.n).toBe(0) // precondition actually holds
 
-    const count = await backfillEmbeddings()
-    expect(count).toBe(0) // nothing to backfill -> exactly 0, not merely ">= 0"
+    const { attempted, embedded, failed } = await backfillEmbeddings()
+    expect(attempted).toBe(0) // nothing pending -> exactly 0, not merely ">= 0"
+    expect(embedded).toBe(0)
+    expect(failed).toBe(0)
+    expect(embedded + failed).toBe(attempted)
   })
 
   // FLAKY FIX #2 (card ac74b0e9, QA2 found it red in a full fleet-test run). One test here was
@@ -186,8 +193,10 @@ describe('backfillEmbeddings', () => {
         status: 200,
         json: async () => ({ embedding: OLLAMA_EMBEDDING }),
       }))
-      const count = await backfillEmbeddings()
-      expect(count).toBe(1) // exactly the one row, not ">= 0"
+      const { attempted, embedded, failed } = await backfillEmbeddings()
+      expect(embedded).toBe(1) // exactly the one row, not ">= 0"
+      expect(attempted).toBe(1)
+      expect(failed).toBe(0)
 
       const after = getDb().prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
       // The stored value must be the embedding that came back -- "some valid JSON array" would pass
@@ -204,8 +213,10 @@ describe('backfillEmbeddings', () => {
       vi.stubGlobal('fetch', async () => {
         throw new Error('connect ECONNREFUSED 127.0.0.1:11434')
       })
-      const count = await backfillEmbeddings()
-      expect(count).toBe(0) // nothing was written, and the failure was swallowed on purpose
+      const { attempted, embedded, failed } = await backfillEmbeddings()
+      expect(embedded).toBe(0) // nothing was written, and the failure was swallowed on purpose
+      expect(attempted).toBe(1)
+      expect(failed).toBe(1)
 
       const after = getDb().prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
       expect(after.embedding).toBeNull()
@@ -221,7 +232,10 @@ describe('backfillEmbeddings', () => {
     const id = insertRowNeedingBackfill('Backfill target with a malformed reply')
     try {
       vi.stubGlobal('fetch', async () => ({ ok: true, status: 200, json: async () => ({}) }))
-      expect(await backfillEmbeddings()).toBe(0)
+      const { attempted, embedded, failed } = await backfillEmbeddings()
+      expect(embedded).toBe(0)
+      expect(attempted).toBe(1)
+      expect(failed).toBe(1)
       const after = getDb().prepare('SELECT embedding FROM memories WHERE id = ?').get(id) as { embedding: string | null }
       expect(after.embedding).toBeNull()
     } finally {

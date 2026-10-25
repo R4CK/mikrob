@@ -655,7 +655,7 @@ function renderTuTimeline(data, filterAgent) {
       let html = `<div style="font-weight:600;margin-bottom:4px">${tuFormatLocalShort(hit.bucket)}${isPeak ? ` <span style="color:#ef4444;font-size:10px">${t('tokenUsage.chart.peak')}</span>` : ''}</div>`
       let total = 0
       for (const seg of hit.segments) {
-        html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${seg.agent}: ${tuFormatTokens(seg.val)}</div>`
+        html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${escapeHtml(seg.agent)}: ${tuFormatTokens(seg.val)}</div>`
         total += seg.val
       }
       if (hit.segments.length > 1) html += `<div style="border-top:1px solid rgba(255,255,255,0.2);margin-top:4px;padding-top:4px;font-weight:600">${t('tokenUsage.total')} ${tuFormatTokens(total)}</div>`

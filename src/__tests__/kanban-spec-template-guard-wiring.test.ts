@@ -51,11 +51,14 @@ describe('specTemplateGuardCheck wiring in kanban.ts', () => {
   })
 
   it('POST /move handler: the call is textually AFTER the successful moveKanbanCard write, not before it', () => {
+    // moveKanbanCard( now wraps its args onto the next line (upstream #1975's expected_status
+    // compare-and-set param, adopted 2026-10-24 during Koteg 19) -- the marker tracks the call
+    // itself, not a formatting detail of how its arguments are laid out.
     const moveHandlerSlice = sliceBetween(
-      'if (moveKanbanCard(id, status, sort_order',
+      'if (moveKanbanCard(',
       "'Kártya nem található'",
     )
-    const writeIdx = moveHandlerSlice.indexOf('moveKanbanCard(id, status, sort_order')
+    const writeIdx = moveHandlerSlice.indexOf('moveKanbanCard(')
     const guardIdx = moveHandlerSlice.indexOf('specTemplateGuardCheck(')
     expect(guardIdx, 'specTemplateGuardCheck must be called in the move success branch').toBeGreaterThan(-1)
     expect(guardIdx).toBeGreaterThan(writeIdx)

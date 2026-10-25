@@ -4798,6 +4798,8 @@ export function buildMessageCloseBody(): string {
     '```',
     'A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem',
     'történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
+    'Egy MÁR lezárt (done/failed) üzenet újabb lezárása 409-et ad (`Message already closed`): az első',
+    'lezárás érvényes, semmi nem változott, nyugta nem ment. Ez nem hiba, nem kell ismételni vagy jelenteni.',
   ].join('\n')
 }
 
