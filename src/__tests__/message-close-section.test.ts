@@ -1,6 +1,6 @@
 // ACKONCLOSE927: the message-close rule that ships to every agent's CLAUDE.md.
 //
-// Closing a message sends an '[Eredmény]' ack to the original sender by
+// Closing a message sends an '[Result]' ack to the original sender by
 // default. For an incoming report that ack only lengthens the sender's queue
 // (measured on an external install, 2026-09-27: three closes took it from 1 to
 // 4). `notify: false` already skips it, but no recipe told an agent about it.

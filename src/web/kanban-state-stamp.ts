@@ -117,8 +117,8 @@ function stampCards(content: string, lookup: CardStateLookup): string {
 
   const lines = found.map((c) => `  ${c.id} status=${c.status} updated_at=${c.updatedAt}`)
   return (
-    `${content}\n\n${CARD_STATE_MARKER} a tabla ezt mondta a kuldes pillanataban -- ` +
-    `MIELOTT dolgozol rajta, olvasd ujra a kartyat:\n${lines.join('\n')}`
+    `${content}\n\n${CARD_STATE_MARKER} this is what the board said at send time -- ` +
+    `re-read the card BEFORE working on it:\n${lines.join('\n')}`
   )
 }
 
@@ -191,9 +191,9 @@ export function formatDeliveryStalenessNote(
 
   const waited = Math.max(0, Math.round(queuedSeconds / 60))
   return (
-    `\n\n${CARD_STATE_DELIVERY_MARKER} ez az uzenet ${waited} percet allt a sorban, es azota ` +
-    `VALTOZOTT a tabla -- lehet hogy a dispatch mar nem aktualis:\n${changed.join('\n')}\n` +
-    `Olvasd ujra az erintett kartyakat, mielott barmit csinalsz.`
+    `\n\n${CARD_STATE_DELIVERY_MARKER} this message sat in the queue for ${waited} minute(s), and the ` +
+    `board has CHANGED since -- this dispatch may no longer be current:\n${changed.join('\n')}\n` +
+    `Re-read the affected cards before doing anything.`
   )
 }
 

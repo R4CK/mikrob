@@ -432,7 +432,7 @@ describe('getDispatchedPendingStats -- self-addressed messages', () => {
   })
 })
 
-// Closing an inbound message makes the server post a reverse [Eredmény] row FROM
+// Closing an inbound message makes the server post a reverse [Result] row FROM
 // this agent, so finishing work used to block the gate for the whole stale
 // cutoff -- and a busy agent renewed the block with every close. A result report
 // is the end of a delegation, never outstanding work.
@@ -475,7 +475,7 @@ describe('getDispatchedPendingStats -- result notifications', () => {
 })
 
 // A context-restart gate ezt szamolja "dispatcholt, meg nem lezart munkakent".
-// Egy lezaraskor auto-generalt [Eredmény] visszajelzes NEM munka: senki nem
+// Egy lezaraskor auto-generalt [Result] visszajelzes NEM munka: senki nem
 // valaszol ra, sosem lesz done, tehat orokre gyulik -- es igy egy aktiv agens
 // tartosan alkalmatlanna valik a puha ujrainditasra (2026-08-12).
 describe('getDispatchedPendingStats -- a lezaro visszajelzes nem dispatcholt munka', () => {

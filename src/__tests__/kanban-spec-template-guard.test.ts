@@ -82,12 +82,20 @@ describe('isNonTrivialCard', () => {
   })
 })
 
+const FULL_SPEC_EN =
+  'Context: src/x.ts:1\nRequirements: 1) foo\nAcceptance criteria: npm test green\n' +
+  'Out of scope: bar\nAssumptions: foo works'
+
 describe('missingSpecSections', () => {
   it('a full spec is missing nothing', () => {
     expect(missingSpecSections(FULL_SPEC)).toEqual([])
   })
   it('an empty text is missing all five', () => {
     expect(missingSpecSections('')).toHaveLength(5)
+  })
+  // card 867fa8f2 (agent-to-agent English rule): a card written entirely in English must not warn.
+  it('a full spec in English is missing nothing', () => {
+    expect(missingSpecSections(FULL_SPEC_EN)).toEqual([])
   })
 })
 
