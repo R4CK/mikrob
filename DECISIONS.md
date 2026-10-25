@@ -22100,7 +22100,7 @@ Három red-then-green eset, mindegyik RED-MUTANT-tal (a mutáns ugyanaz a szkrip
 **Corrected record for 2ba98cac (7 upstream commits):**
 
 LIVE (fully adopted in fork, some adapted):
-- b47bf993: fix(update): failed npm ci names cause + rolls back -- LIVE
+- b47bf993: fix(watchdog): a userbot-prober elesitese explicit megerositest ker, amig a tail-vak reader all (HBTAILVAK914) (#1317) -- LIVE
 - 3032da46: fix(inbound-probe): main session reads REAL config root -- LIVE
 - 0602f88a, b73b0812, 5b74adc2 -- LIVE
 
@@ -22124,8 +22124,8 @@ LIVE (original 13):
 - d964aab4, d3cdb375, b69ace21, 4c7e06f9, ebc0168d, 1abd45cf, b85bd129, b5739368, 3d02f370, 10b4f331, d5d323af -- all LIVE in origin/develop
 
 NOT ADOPTED (deliberate fork decisions):
-- a54a50d2: feat(update): egress-drift scan -- scripts/egress-drift-scan.py does not exist in fork; acknowledged-conflicts.ts ~line 4142 records this (TASKEGRESSDRIFT913 audit not running)
-- 0e9442ea: fix(suites): SUITETMPPIROS912 suite tmp-root refusal -- isTmpRootedPath refusal not present; only TMP_ROOT_PREFIXES list and agent-scaffold hook guard are live; acknowledged-conflicts.ts ~line 4464
+- a54a50d2: feat(scripts): egress-drift scan on logical lines, marked vs bare (TASKEGRESSDRIFT913) (#1319) -- scripts/egress-drift-scan.py does not exist in fork; acknowledged-conflicts.ts ~line 4142 records this
+- 0e9442ea: fix(test-gate): refuse the suite from a transient root instead of going falsely red (SUITETMPPIROS912) (#1297) -- isTmpRootedPath refusal not present; only TMP_ROOT_PREFIXES list and agent-scaffold hook guard are live; acknowledged-conflicts.ts ~line 4464
 
 Triage shas (comment 8062, added to card scope post-triage):
 - 0a33ab37: SKIPPED (comment-only fix depending on unported upstream commit 866da985; ledger entry pre-existing)
