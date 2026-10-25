@@ -4554,16 +4554,30 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   // Card 4aa87fdf (2026-10-17), new anchors for entries this round's refusal-widening regex
   // (mentionsRefusal) catches, each naming a checkable production fact for its own file key.
 
+  // RE-DECIDED (card 4f5e43e6, Koteg 20, 2026-10-25): adopted. Upstream 4e4dba221
+  // (fix(context-guard): the owed resume prompt survives a dashboard restart;
+  // READY_TIMEOUT 5 -> 20 min, #1972) landed in this round's merge with full
+  // matching wiring (context-guard-resume-store.ts, the restore call in
+  // startContextGuardRunner(), the clear-on-delivery/timeout/disable paths) and
+  // its own mutation-tested regression suite (context-guard-resume-persist.test.ts,
+  // 9 mutants checked). It fixes a measured reliability gap (a dashboard restart
+  // between an agent restart and the next sweep silently dropped the owed resume
+  // prompt; 3 of 13 guard restarts lost it on one live install) and carries no
+  // security-adjacent flag, unlike the MEMORY_CONTENT_FILTER_STRICT_COMMANDS entry
+  // below -- so this is not the same case as that one's "decline, needs WhiteHat
+  // first" default. The needle now PINS the adoption instead of watching for a
+  // regression into it.
   'src/web/context-guard-runner.ts': {
     needle: 'export function restorePendingResumes',
     file: 'src/web/context-guard-runner.ts',
-    expect: 'absent',
+    expect: 'present',
     because:
-      "this entry's 2026-10-17 round declines to adopt upstream's pending-resume persistence layer " +
-      "(context-guard-resume-store.ts, restorePendingResumes re-arming an 'await-ready' obligation " +
-      "across a dashboard restart) as a follow-up candidate, not built. If restorePendingResumes " +
-      "appears here, that follow-up already happened and the daily-handoff-skip-sweep/saturation- " +
-      "banner items named alongside it need re-checking too.",
+      "the pending-resume persistence layer (context-guard-resume-store.ts, " +
+      "restorePendingResumes re-arming an 'await-ready' obligation across a dashboard " +
+      "restart) was adopted in Koteg 20 (upstream 4e4dba221, card 4f5e43e6, see the " +
+      "comment above this entry). If restorePendingResumes disappears from here, the " +
+      "fix was reverted or refactored away -- re-check that the obligation is still " +
+      "honored some other way before treating this as a clean removal.",
   },
   // RE-DECIDED (card 2337e4b0, Koteg 19, 2026-10-25): of this entry's three points-6/7 refusals,
   // TWO are no longer refusals. WORKER_AUTOUPDATE was adopted THIS round (upstream 79574ca79,

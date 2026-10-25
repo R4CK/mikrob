@@ -90,10 +90,23 @@ vi.mock('../web/channel-monitor.js', () => ({
   markAgentRestartPending: () => {},
 }))
 vi.mock('../web/stuck-tool-call-watcher.js', () => ({ shouldDeferForRecentRespawn: () => false }))
-vi.mock('../web/agent-config.js', () => ({
+// Partial mock (importOriginal): this fork's agent-config.js has more exports
+// than upstream's (listRejectedAgentDirNames, readAgentClaudePlan, ... --
+// consulted by agent-dir-tripwire.ts/claude-plans.ts elsewhere in the sweep),
+// and a full replacement mock silently drops whichever ones this test doesn't
+// name, throwing deep in the sweep and getting swallowed by checkAgent's
+// per-agent try/catch (logger.debug) -- a real call that never happens reads
+// identically to a config decision not to call it. Only override what the
+// test actually drives.
+vi.mock('../web/agent-config.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   listAgentNames: () => ['boni'],
   listAllAgentNames: () => ['boni'],
   agentDir: (n: string) => join(ROOT, 'agents', n),
+  // agentConfigRoot wraps agentDir, MAIN_AGENT_ID -> PROJECT_ROOT: this test's
+  // agent is never the main agent, so the agentDir branch is the only one
+  // exercised here.
+  agentConfigRoot: (n: string) => join(ROOT, 'agents', n),
   readAgentModel: () => null,
   readAgentRemoteHost: () => null,
 }))
