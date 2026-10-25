@@ -22074,3 +22074,9 @@ Három red-then-green eset, mindegyik RED-MUTANT-tal (a mutáns ugyanaz a szkrip
 **Ki döntött:** a lelet és a javítási irányok WhiteHat kommentje (24868); a kivitelezés backend saját munkája (MikroB dispatch, üzenet 14957).
 
 **Hivatkozás:** kártya d2d47a92 (szülő: bf03aaa1), WhiteHat komment 24868, QA2 komment 24870 (ugyanazon shán PASS, delta-gate előtt).
+
+## 2026-10-25 -- upstream-sync 96b27014: secret-gate + copy-gate kemenyites (7 commit) -- backend
+
+**Döntés:** mind a 7 upstream commit (7b520b37, 0cef04a3, 9b4eef9a, 68d3a102, 86b2e461, 57526d63, ec1eb717) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges, a kártyát gate-re adjuk.
+
+**Hivatkozás:** kártya 96b27014, upstream-ported.json ledger (backend3 UJRA-ELLENORIZVE 2026-10-24), origin/develop de46c96e.
