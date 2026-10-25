@@ -21970,3 +21970,17 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 **Ki döntött:** a tételek RedHat-tól jönnek (9518b377 23925 NO-GO), MikroB a delta-fix irányát adta (14598/14604), a kódot DevO (fullstack) írta.
 
 **Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933); komment 23925/23943; `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.
+
+## 2026-10-25 -- kártya e25e2bbc: mcp-compressor proxy-réteg terve és plan-grilling verdikt
+
+**Kontextus:** Peti (Telegram 12334) elrendelte az mcp-compressor bekötését, a 13315-ös HOLD feloldva (24748). A `compressToolListing` csak szöveget ad vissza, ezért a bekötés egy saját MCP-proxy (get_tool_schema + invoke_tool felület), nem egy sima hívás.
+
+**Verdikt (elemzo, plan-grilling): GO-WITH-CHANGES.** A build (d58a2ce3) csak akkor indulhat, ha az M0 alapmérés igazolja az előfeltevést: a Claude Code alapból halasztja az MCP-eszközök betöltését (csak a nevek és a szerver-utasítások foglalnak kontextust), a proxy viszont az első használatkor a teljes listát betölti. A három legerősebb bukási ok: (1) az előfeltevés már teljesül a beépített tool search-csel, (2) a név alapú szabályok (deny, email-kapuk) a wrapper mögött vakká válnak, ezért a proxynak maga kell érvényesítenie a deny-listát, (3) új, mindig az úton lévő folyamat: menet közbeni összeomlás nem fail-open, a lista elavulhat, a 4096 karakteres vágás eszközöket rejthet el.
+
+**Hatókör v1:** csak stdio szerverek, csak sub-agentek (agent-process.ts, egyetlen szűk keresztmetszet), engedélyezőlista playwright, filesystem, code-review-graph. A fő agent, a HTTP/SSE szerverek, a hostinger, firecrawl, resend és rea kimarad. Kötelező feltételek változatlanul: csak `compressToolListing`, soha `shrinkHostOutput`/`shrinkfitTools` (24736), `MCP_COMPRESS` alapból kikapcsolva és kikapcsolva bájtra azonos, fail-open, a leírások nem megbízható bemenetek.
+
+**Nyitott döntés (MikroB/Peti):** A1 (wrapper, ahogy rendelve) vagy A2 (névtartó rövidítő proxy); az M0 küszöb (javaslat: 3000 token vagy az első kör kontextusának 3%-a); a soha nem használt MCP-szerverek ügynökönkénti leválasztása (A4) külön kártyán, a kaputól függetlenül.
+
+**Ki döntött:** a verdikt az elemzoé, a WhiteHat társ-átnézi a STRIDE-táblát (komment a kártyán), az irányt MikroB adja.
+
+**Hivatkozás:** kártya e25e2bbc (szülő 9ab4c3b3, build d58a2ce3, ellátási lánc 92d4a8e7); `docs/mcp-compressor-proxy-design.md`.
