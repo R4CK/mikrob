@@ -21985,16 +21985,16 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 
 **Hivatkozás:** kártya e25e2bbc (szülő 9ab4c3b3, build d58a2ce3, ellátási lánc 92d4a8e7); `docs/mcp-compressor-proxy-design.md`.
 
-## 2026-10-25 -- az mcp-compressor proxy-bekötés Peti döntésével elvetve (kártyák e25e2bbc, a843ce7c, d58a2ce3)
+## 2026-10-25 -- az mcp-compressor proxy-bekötés Peti döntésével elvetve, a repó-figyelésből kivéve (kártyák e25e2bbc, a843ce7c, d58a2ce3)
 
 **Kontextus:** Peti (Telegram 12334) elrendelte az mcp-compressor bekötését, majd lemondta (Telegram 12341). A proxy-terv (e25e2bbc, WhiteHat GO a `0361e70c` commitra) elkészült, az M0 kapu (a843ce7c) viszont megmérte az előfeltevést.
 
-**Döntés:** a proxy nem épül meg (d58a2ce3 megszűnik), az upstream-figyelés ki van kapcsolva (`store/watched-repos.json`: `mcp-compressor` `enabled:false`, `enabled_reason`-nel).
+**Döntés:** a proxy nem épül meg (d58a2ce3 megszűnik). Peti 12344: az `mcp-compressor` bejegyzés TELJESEN törölve a `store/watched-repos.json` regiszterből (nem csak kikapcsolva, így az upstream-figyelés sem fut rá). A `store/mcp-compress.sh`, annak selftestje és az `mcp-compressor-upstream-check.sh` érintetlen marad; a MikroB holt kódként jelenti Petinek.
 
 **Miért:** M0 = MCP-eszközök 73 db, **0 token** a session elején (igény szerinti betöltés), a `marketing` ügynök friss sessionjén mért `/context` szerint (MikroB, a843ce7c komment 24772). A kapu 3000 token vagy az első kör 3%-a volt; a legrosszabb becslés is 0,6-0,9%. A valódi token-tétel a memóriafájl: 66,1k token (az ablak 33%-a), ebből a gyökér `CLAUDE.md` 51,9k.
 
 **Ami marad:** a telepített csomag és a könyvtár-módú adapter (`store/mcp-compress.sh`, 0 hívó) változatlan; a design a `docs/mcp-compressor-proxy-design.md`-ben megmarad indoklásként.
 
-**Ki döntött:** Peti (12341); az M0 mérést a MikroB végezte, az elemzést az elemzo.
+**Ki döntött:** Peti (12341 a lemondás, 12344 a regiszterből törlés); az M0 mérést a MikroB végezte, az elemzést az elemzo.
 
-**Hivatkozás:** kártyák e25e2bbc, a843ce7c, d58a2ce3, 9ab4c3b3; `docs/mcp-compressor-proxy-design.md` 8a szakasz.
+**Hivatkozás:** Telegram 12341, 12344; kártyák e25e2bbc, a843ce7c, d58a2ce3, 9ab4c3b3; `docs/mcp-compressor-proxy-design.md` 8a szakasz.
