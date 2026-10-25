@@ -3656,18 +3656,25 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   },
   // Card 1eae1b41 (fullstack/DevO, 2026-10-17): the quarantine-reader.md entry above NOT ADOPTS
   // upstream's SSRF-protection block ("Always refused, in every posture"), deferring the decision
-  // to a separate security-group follow-up card. If that section's heading text ever appears in
-  // the fork's live file, the SSRF question was already decided elsewhere and this entry's
-  // "NOT adopted here" deferral is stale.
+  // to a separate security-group follow-up card.
+  // Card 9529d46e (fullstack/DevO, 2026-10-25): the SSRF protection was adopted as a PreToolUse
+  // egress-gate hook (scripts/hooks/egress-gate.mjs isQuarantineDenied) rather than as prose in the
+  // template. Hook enforcement is strictly stronger than prose: it fires on every tool invocation,
+  // regardless of what the template says or whether the template is used at all. Adding the upstream
+  // prose block to the template would create a second, prose-only enforcement layer that could drift
+  // out of sync with the hook and mislead future editors into thinking the template is the
+  // enforcement layer. Decision: SSRF protection lives in the hook only; the template heading stays
+  // absent. If this heading ever appears in the fork's quarantine-reader.md it means someone added
+  // the upstream prose alongside the hook -- that duplication is the stale state this tripwire catches.
   'templates/sub-agents/quarantine-reader.md': {
     needle: 'Always refused, in every posture',
     file: 'templates/sub-agents/quarantine-reader.md',
     expect: 'absent',
     because:
-      "this entry defers the upstream SSRF-protection block (internal/private-address blocking) " +
-      "and the open-posture opt-in to a separate security-group follow-up card, not decided here. " +
-      "If this heading appears in the fork's live file, that follow-up already happened and this " +
-      "entry's deferral text is stale.",
+      "SSRF protection was adopted in the egress-gate hook (card 9529d46e), not as prose in the " +
+      "template. Hook enforcement is strictly stronger (fires on every invocation regardless of " +
+      "template); adding upstream prose alongside the hook creates a duplicate that can drift out " +
+      "of sync. The heading stays absent from the template; the hook is the single enforcement layer.",
   },
   // Card 9163495b (backend2, 2026-09-25): agent-config.ts's entry above refuses upstream's
   // unfiltered listAllAgentNames() -- keeping the fork's fail-closed version (card 53c59307) means
