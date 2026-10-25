@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
-  initDatabase, createKanbanCard, updateKanbanCard, getKanbanCard,
+  initDatabase, createKanbanCard, updateKanbanCard, getKanbanCard, archiveKanbanCard,
   listKanbanProjectSummaries, upsertKanbanProjectDescription,
 } from '../db.js'
 
@@ -41,7 +41,9 @@ describe('listKanbanProjectSummaries', () => {
   it('excludes archived cards from the counts (matches listKanbanProjects\' own filter)', () => {
     createKanbanCard({ id: 'a', title: 'A', project: 'demo', status: 'done' })
     createKanbanCard({ id: 'b', title: 'B', project: 'demo' })
-    updateKanbanCard('a', { archived_at: Math.floor(Date.now() / 1000) })
+    // updateKanbanCard pins archived_at to the card's own existing value (card db3ff9bd) --
+    // archiveKanbanCard is the only writer of this column in this fork.
+    archiveKanbanCard('a')
     const [summary] = listKanbanProjectSummaries()
     expect(summary.cardTotal).toBe(1)
     expect(summary.cardDone).toBe(0)
@@ -49,7 +51,7 @@ describe('listKanbanProjectSummaries', () => {
 
   it('a project whose every card is archived does not appear at all', () => {
     createKanbanCard({ id: 'a', title: 'A', project: 'wrapped-up', status: 'done' })
-    updateKanbanCard('a', { archived_at: Math.floor(Date.now() / 1000) })
+    archiveKanbanCard('a')
     expect(listKanbanProjectSummaries()).toEqual([])
   })
 

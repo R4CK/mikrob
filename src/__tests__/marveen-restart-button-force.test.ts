@@ -1,7 +1,9 @@
 /**
- * RESTARTFORCEUI1018: the dashboard's main-agent restart button, the SHIPPED handler from web/app.js run against
- * a fake DOM and fetch. The server refuses a manual main restart while the pane is busy (409 restart-blocked);
- * without a way past that refusal the owner's button is dead exactly when the main agent is stuck. What it proves:
+ * RESTARTFORCEUI1018: the dashboard's main-agent restart button, the SHIPPED handler from
+ * web/app-agent-detail.js (the monolithic web/app.js -> web/app-*.js split moved this handler
+ * here; card 4f5e43e6 porting note) run against a fake DOM and fetch. The server refuses a
+ * manual main restart while the pane is busy (409 restart-blocked); without a way past that
+ * refusal the owner's button is dead exactly when the main agent is stuck. What it proves:
  * - an idle pane: one plain POST, success toast, no second confirm;
  * - a refusal: a second confirm, worded for the reason, then a POST with the JSON body {"force": true};
  * - the second confirm declined: no forced POST, a toast that says nothing was started;
@@ -11,7 +13,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const APP = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf-8')
+const APP = readFileSync(new URL('../../web/app-agent-detail.js', import.meta.url), 'utf-8')
 const start = APP.indexOf('function postMarveenRestart(')
 const end = APP.indexOf("\ndocument.getElementById('agentStartBtn')", start)
 const SNIPPET = APP.slice(start, end)
@@ -47,7 +49,7 @@ const forced = (c: Call) => c.url === '/api/marveen/restart' && c.init.method ==
   && c.init.headers?.['Content-Type'] === 'application/json' && JSON.parse(c.init.body ?? 'null')?.force === true
 
 describe('main-agent restart button', () => {
-  it('the snippet is found in web/app.js', () => {
+  it('the snippet is found in web/app-agent-detail.js', () => {
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
   })

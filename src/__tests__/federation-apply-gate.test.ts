@@ -4,7 +4,7 @@
  * with no check and could cut a running turn. What it proves:
  * - the route: a refused gate answers 409 with the reason and does not restart; an allowed gate restarts; an
  *   explicit {"force": true} skips the gate and is logged; the page's plain '{}' body is gated;
- * - the Federation page (the shipped fedApplyToMainAgent from web/app.js, fake DOM): a refusal asks a second time
+ * - the Federation page (the shipped fedApplyToMainAgent from web/app-federation.js, fake DOM): a refusal asks a second time
  *   and only then forces; a declined second confirm starts nothing.
  * The gate and the hard restart are stubbed: no tmux, no launchctl.
  */
@@ -83,7 +83,10 @@ describe('POST /api/federation/apply behind the busy gate', () => {
 })
 
 // --- the Federation page ---
-const APP = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf-8')
+// web/app-federation.js: the monolithic web/app.js -> web/app-*.js split moved
+// fedApplyToMainAgent here (card 4f5e43e6 porting note); it never lived in
+// app.js in this fork.
+const APP = readFileSync(new URL('../../web/app-federation.js', import.meta.url), 'utf-8')
 const start = APP.indexOf('async function fedApplyToMainAgent()')
 const end = APP.indexOf('\n// Re-poll peer reachability', start)
 const SNIPPET = APP.slice(start, end)
@@ -108,7 +111,7 @@ async function click(replies: Reply[], confirms: boolean[]) {
 }
 
 describe('Federation page apply button', () => {
-  it('the snippet is found in web/app.js', () => {
+  it('the snippet is found in web/app-federation.js', () => {
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
   })

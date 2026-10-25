@@ -28,7 +28,13 @@ vi.mock('node:child_process', () => ({
   },
 }))
 vi.mock('../logger.js', () => ({ logger: { info: h.info, warn: h.warn, error: vi.fn(), debug: vi.fn() } }))
-vi.mock('../platform.js', () => ({ resolveFromPath: () => '/usr/bin/tmux' }))
+vi.mock('../platform.js', () => ({
+  resolveFromPath: () => '/usr/bin/tmux',
+  // Köteg 20 (card 4f5e43e6, upstream f85577c15): stuck-tool-call-watcher.ts
+  // now resolves its tmux binary lazily (makeLazyBinResolver), not via a
+  // bare resolveFromPath() call at import time.
+  makeLazyBinResolver: () => () => '/usr/bin/tmux',
+}))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: '/nonexistent-project-root', STORE_DIR: '/nonexistent-store-dir' }))
 vi.mock('../web/agent-process.js', () => ({ capturePane: () => h.pane }))
 vi.mock('../web/active-model.js', () => ({ readTranscriptMtimeAcrossConfigDirs: () => null }))
