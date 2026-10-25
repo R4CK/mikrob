@@ -2778,6 +2778,25 @@ function compactPrompt(): string {
       return true
     }
 
+    // Card 91188f92 (RedHat NO-GO on 96c00ee5, comment 24687): the L1+L2 customProvider checks
+    // used to sit in the LAST block of this handler, after memoryIsolation/claudeMd/soulMd/
+    // mcpJson/model/modelProfile/authMode/claudePlan were already written -- a bad customProvider
+    // returned 400 but those earlier fields were already persisted (live repro: claudeMd and
+    // soulMd written in 6/6 bad-customProvider cases). Both checks now run here, right after
+    // checkAgentPutFields and before any field write, so a bad customProvider rejects the whole
+    // request with nothing written.
+    if (data.customProvider !== undefined) {
+      if (data.customProvider !== null && typeof data.customProvider !== 'string') {
+        json(res, { error: 'customProvider must be a string or null' }, 400)
+        return true
+      }
+      const trimmedCustomProvider = (data.customProvider ?? '').trim()
+      if (trimmedCustomProvider && !CUSTOM_PROVIDER_ID_RX.test(trimmedCustomProvider)) {
+        json(res, { error: `customProvider must match ${CUSTOM_PROVIDER_ID_RX}` }, 400)
+        return true
+      }
+    }
+
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
       // root: a memory boundary there is meaningless, and exposing the knob
@@ -2870,25 +2889,10 @@ function compactPrompt(): string {
       }
       writeAgentClaudePlan(name, planId)
     }
-    // Pure storage (card 96c00ee5): no registry to validate against yet, and
-    // no launch path reads this field -- that wiring is card f1800242.
-    //
-    // Card 91188f92 (WhiteHat L1+L2): data.customProvider is caller-controlled JSON, not actually
-    // typed by the `customProvider?: string` annotation above. L1: a non-string value (123, {},
-    // [], true) reached writeAgentCustomProvider() and threw inside (providerId ?? '').trim(),
-    // AFTER every earlier field in this handler had already been written -- a single bad field
-    // turned into a 500 with partial writes already applied. L2: no format/length limit let a
-    // 1 MiB string be stored as-is. null is still accepted ("clear", same as empty string).
+    // Pure storage (card 96c00ee5): no registry to validate against yet, and no launch path reads
+    // this field -- that wiring is card f1800242. Validation for this field (type + format/length)
+    // already ran at the top of this handler (card 91188f92); this is the write only.
     if (data.customProvider !== undefined) {
-      if (data.customProvider !== null && typeof data.customProvider !== 'string') {
-        json(res, { error: 'customProvider must be a string or null' }, 400)
-        return true
-      }
-      const trimmedProvider = (data.customProvider ?? '').trim()
-      if (trimmedProvider && !CUSTOM_PROVIDER_ID_RX.test(trimmedProvider)) {
-        json(res, { error: `customProvider must match ${CUSTOM_PROVIDER_ID_RX}` }, 400)
-        return true
-      }
       writeAgentCustomProvider(name, data.customProvider)
     }
     json(res, { ok: true })
