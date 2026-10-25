@@ -174,7 +174,7 @@ function redactValue(v: unknown, path: Set<object>, depth: number): unknown {
  * recursively). The original is never touched.
  */
 export function maskError(err: Error, path: Set<object> = new Set(), depth = 0): Error {
-  const copy = Object.create(Object.getPrototypeOf(err)) as Error
+  const copy = Object.create(Object.getPrototypeOf(err) as object | null) as Error
   for (const key of Reflect.ownKeys(err)) {
     const d = Object.getOwnPropertyDescriptor(err, key)
     if (!d) continue
