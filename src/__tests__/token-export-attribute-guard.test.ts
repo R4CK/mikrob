@@ -112,4 +112,59 @@ describe('pre-pr-review.sh never lets DASHBOARD_TOKEN become an exportable shell
         'exactly the leak class card 02b5e13b/647e0b6f F1 found a surviving mutant for.'
     ).toBe('declare +x DASHBOARD_TOKEN')
   })
+
+  // Card d5342cf9 (N1 follow-up, WhiteHat komment 23050): the above pin is on the VARIABLE NAME
+  // only. WhiteHat measured that mutants using other names (TOKEN=, declare -x, read -r) survive
+  // with 11/11 green. The correct invariant is shape-independent: $TOKEN_FILE must never appear
+  // inside a $(cat ...) substitution or a `read` redirect -- those are the only two forms that
+  // would move the token VALUE into a shell variable that a child process could inherit.
+  it('N1 shape-independent: $TOKEN_FILE never used in $(cat) substitution or read-redirect regardless of variable name (card d5342cf9)', () => {
+    const absPath = join(REPO_ROOT, 'scripts', 'pre-pr-review.sh')
+    const src = readFileSync(absPath, 'utf-8')
+    // $(cat ... $TOKEN_FILE ...) -- catches TOKEN=$(cat "$TOKEN_FILE"), declare -x X=$(cat ...)
+    const catSubstRx = /\$\(cat\b[^)]*\$TOKEN_FILE/
+    // read ... < ... $TOKEN_FILE -- catches read -r VAR < "$TOKEN_FILE"
+    const readRedirectRx = /\bread\b[^;\n]*<[^;\n]*\$TOKEN_FILE/
+
+    expect(src.match(catSubstRx),
+      'N1: $TOKEN_FILE appears inside $(cat ...) -- the token value would enter a shell variable ' +
+      'and be inheritable by curl/python3 children, regardless of what variable name is used'
+    ).toBeNull()
+    expect(src.match(readRedirectRx),
+      'N1: $TOKEN_FILE appears in a read redirect -- the token value would enter a shell variable'
+    ).toBeNull()
+  })
+
+  // NON-VACUITY: prove the two regexes actually fire on the surviving mutants WhiteHat measured.
+  it('NON-VACUITY: the N1 shape-independent regexes catch each surviving mutant from WhiteHat 23050', () => {
+    const catSubstRx = /\$\(cat\b[^)]*\$TOKEN_FILE/
+    const readRedirectRx = /\bread\b[^;\n]*<[^;\n]*\$TOKEN_FILE/
+    // Mutant B: most likely regression -- TOKEN name (used by 10 sibling store/ scripts)
+    expect(catSubstRx.test('TOKEN="$(cat "$TOKEN_FILE")"'), 'mutant B not caught').toBe(true)
+    // Mutant C: declare -x form
+    expect(catSubstRx.test('declare -x DASHBOARD_TOKEN="$(cat "$TOKEN_FILE")"'), 'mutant C not caught').toBe(true)
+    // Mutant D: read-redirect form
+    expect(readRedirectRx.test('read -r DASHBOARD_TOKEN < "$TOKEN_FILE"'), 'mutant D not caught').toBe(true)
+    // Mutant E: arbitrary other name
+    expect(catSubstRx.test('SECRET=$(cat "$TOKEN_FILE")'), 'mutant E not caught').toBe(true)
+  })
+})
+
+// Card d5342cf9 (N2 follow-up, WhiteHat komment 23050): the existing fork-anchor watches
+// package-lock.json for parse5 (expect: present, since card 2337e4b0 adopted it). But the
+// PACKAGE.JSON decision is a separate slot -- adding parse5 to package.json devDependencies
+// while leaving the lockfile untouched (not running npm ci) survives 89/89 green.
+// This test pins the package.json decision directly so the invariant holds without npm ci.
+describe('package.json parse5 devDependency decision pinned (card d5342cf9 N2)', () => {
+  it('package.json lists parse5 in devDependencies (adopted in card 2337e4b0; lock-anchor alone is insufficient)', () => {
+    const pkgPath = join(REPO_ROOT, 'package.json')
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as Record<string, unknown>
+    const dev = pkg['devDependencies'] as Record<string, string> | undefined
+    expect(dev, 'package.json has no devDependencies section').toBeDefined()
+    expect(Object.prototype.hasOwnProperty.call(dev, 'parse5'),
+      'parse5 is missing from package.json devDependencies -- this reverses the card 2337e4b0 ' +
+      'adoption decision; if intentional, update this test AND the lock-anchor in ' +
+      'src/fork-upstream/acknowledged-conflicts.ts together'
+    ).toBe(true)
+  })
 })
