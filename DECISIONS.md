@@ -21984,3 +21984,15 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 **Ki döntött:** a design Peti jóváhagyása (Telegram 12321/12323/12324); a plan-grilling lelet (3. pont) és a nyitott kérdések (a) a backend saját plan-grillingje, kártya d2d47a92, MikroB dispatch (üzenet 14825).
 
 **Hivatkozás:** kártya d2d47a92 (szülő: bf03aaa1, utód: 340585f6), e060a794 elemzo report 3/4. szakasz, `store/skill-role-map.md`, `store/agent-skill-drift-sync.sh`.
+
+## 2026-10-25 -- kártya 077970fc: REA bwrap sandbox seccomp-szűrő (RedHat KC5-követő, 9518b377 komment 24382)
+
+**Kontextus:** a fenti 9518b377 bejegyzés KC5 fixe (`--unshare-user --disable-userns`) a nested-userns escape-et zárta, de RedHat komment 24382 szerint syscall-szintű szűrés nélkül maradt a sandbox -- egy kompromittált REA engine ptrace/bpf/mount/keyctl/userfaultfd hívással még mindig próbálkozhatna.
+
+**Döntés:** új `store/rea-seccomp-filter.py`: libseccomp.so.2-t (már telepített runtime lib, nincs libseccomp-dev/Python-binding a gépen) ctypes-szal hívva generál egy minimális cBPF denylist-et (ptrace, keyctl, bpf, userfaultfd, mount -> EPERM, minden más ALLOW -- a REA engine-ek nincsenek per-syscall profilozva, egy teljes allowlist egy nem tesztelt code path-en törne). `rea-bwrap-sandbox.sh` a filtert egy `exec {SECCOMP_FD}<fájl` + azonnali `rm -f` mintával nyitja meg (az FD túléli a további execeket, nincs mire trap-elni), és a `--seccomp "$SECCOMP_FD"` bekerül a végső bwrap-hívásba, a `--new-session --die-with-parent` mellé.
+
+**Mérés:** `rea-bwrap-sandbox.selftest.sh` 44 -> 47 teszt (3 új: ptrace EPERM, bpf EPERM, RED-MUTANT a `--seccomp` eltávolítására). 3x egymás utáni futás mind 47/47 zöld (stabilitás-ellenőrzés). 4 REA engine smoke-teszt elemzo valódi regisztrációs env-jeivel (`GHIDRA_INSTALL_DIR`, `JAVA_HOME`, `REA_JADX_MCP_JAR`, `REA_KUNA_COMMAND`, `HOPPER_LAUNCHER_PATH`) a `doctor --json` ágon: ghidra/jadx/kuna/hopper/node/host mind `ok:true`.
+
+**Ki döntött:** a tétel RedHat-tól jön (9518b377 komment 24382), a kártyát MikroB nyitotta (077970fc), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 077970fc (RedHat-követő, 9518b377 komment 24382), `store/rea-seccomp-filter.py`, `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.

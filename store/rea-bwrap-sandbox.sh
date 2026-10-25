@@ -55,6 +55,12 @@
 #     N5 LOW) -- drops the sandboxed process out of the caller's terminal
 #     session, and guarantees it cannot outlive the wrapper if the wrapper is
 #     killed.
+#   - --seccomp: a minimal, documented syscall denylist (card 077970fc, RedHat
+#     follow-up to 9518b377 komment 24382) -- ptrace, keyctl, bpf,
+#     userfaultfd, mount all return EPERM. See store/rea-seccomp-filter.py for
+#     why each one is denied. Everything else stays ALLOW; the REA engines
+#     are not strace-profiled, so a full allowlist would break on any
+#     untested code path.
 #
 # This wrapper is invoked AS the `command` in the MCP client registration
 # (elemzo's .claude.json `mcpServers.rea`), in place of calling `npx` directly.
@@ -112,6 +118,9 @@ MKDIR_BIN="$(resolve_trusted_bin mkdir)"
 FIND_BIN="$(resolve_trusted_bin find)"
 GREP_BIN="$(resolve_trusted_bin grep)"
 SED_BIN="$(resolve_trusted_bin sed)"
+PYTHON3_BIN="$(resolve_trusted_bin python3)"
+MKTEMP_BIN="$(resolve_trusted_bin mktemp)"
+SCRIPT_DIR="$(cd "$("$DIRNAME_BIN" "$0")" && pwd)"
 
 # HOPPER_LAUNCHER_PATH is optional (Hopper may not be installed/registered yet).
 HOPPER_LAUNCHER_PATH="${HOPPER_LAUNCHER_PATH:-}"
@@ -196,6 +205,17 @@ if [ "$REA_PKG_MANIFEST_SHA256_ACTUAL" != "$REA_PKG_MANIFEST_SHA256_PIN" ]; then
   echo "rea-bwrap-sandbox: $NPX_HASH_DIR package-tree hash mismatch (expected $REA_PKG_MANIFEST_SHA256_PIN, got $REA_PKG_MANIFEST_SHA256_ACTUAL) -- refusing to start (fail-closed)" >&2
   exit 1
 fi
+
+# Seccomp denylist (card 077970fc): compile the filter from store/rea-seccomp-filter.py (see
+# that file for the documented list and why each syscall is denied) and open it on a dedicated
+# FD that survives the env/bwrap execs below (exec with only a redirection, no command, changes
+# the CURRENT shell's FDs in place -- it does not replace the process). The compiled file is
+# unlinked right after the FD is open on it: the FD keeps the data alive, nothing on disk needs
+# cleanup via a trap (traps on EXIT do not fire across the final `exec` below anyway).
+SECCOMP_BPF_FILE="$("$MKTEMP_BIN")"
+"$PYTHON3_BIN" "$SCRIPT_DIR/rea-seccomp-filter.py" "$SECCOMP_BPF_FILE"
+exec {SECCOMP_FD}<"$SECCOMP_BPF_FILE"
+rm -f "$SECCOMP_BPF_FILE"
 
 BIND_ARGS=(
   --unshare-pid --unshare-ipc --unshare-uts
@@ -287,5 +307,5 @@ exec "$ENV_BIN" -i \
   REA_JADX_MCP_JAR="$REA_JADX_MCP_JAR" \
   REA_KUNA_COMMAND="$REA_KUNA_COMMAND" \
   ${HOPPER_LAUNCHER_PATH:+HOPPER_LAUNCHER_PATH="$HOPPER_LAUNCHER_PATH"} \
-"$BWRAP_BIN" "${BIND_ARGS[@]}" --new-session --die-with-parent \
+"$BWRAP_BIN" "${BIND_ARGS[@]}" --seccomp "$SECCOMP_FD" --new-session --die-with-parent \
   "$NODE_BIN" "$REA_SCRIPT" "${REA_ARGS[@]}"

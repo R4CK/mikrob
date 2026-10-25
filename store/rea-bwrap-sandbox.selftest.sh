@@ -19,6 +19,12 @@ REAL="$SCRIPT_DIR/rea-bwrap-sandbox.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Every probe below is a one-line-diff COPY of $REAL placed in $WORK (see the header comment).
+# Since card 077970fc, the real script unconditionally resolves store/rea-seccomp-filter.py next
+# to its own $0 -- every probe copy needs that sibling file present in $WORK too, or bwrap never
+# even starts. Copy it once, here, before any probe is built.
+cp "$SCRIPT_DIR/rea-seccomp-filter.py" "$WORK/"
+
 FAIL=0
 PASS=0
 
@@ -514,6 +520,31 @@ except Exception:
 else
   check "Hopper lib-bind mutant test (skipped: no HOPPER_LAUNCHER_PATH registered on this host -- not a pass/fail of the bind itself)" "1"
 fi
+
+# Seccomp denylist (card 077970fc, RedHat follow-up to 9518b377 komment 24382): ptrace and bpf
+# must return EPERM inside the sandbox.
+SECCOMP_PROBE_CMD='python3 -c "import ctypes;libc=ctypes.CDLL(None,use_errno=True);r1=libc.syscall(101,0,0,0,0);e1=ctypes.get_errno();r2=libc.syscall(321,0,0,0,0,0,0);e2=ctypes.get_errno();print(r1,e1,r2,e2)"'
+SECCOMP_PROBE="$WORK/seccomp-probe.sh"
+head -n -1 "$REAL" > "$SECCOMP_PROBE"
+printf '  sh -c %s\n' "'$SECCOMP_PROBE_CMD'" >> "$SECCOMP_PROBE"
+chmod +x "$SECCOMP_PROBE"
+SECCOMP_OUT="$(env -i "${BASE_ENV[@]}" bash "$SECCOMP_PROBE" 2>&1)" || true
+read -r PT_RC PT_ERRNO BPF_RC BPF_ERRNO <<< "$SECCOMP_OUT"
+check "ptrace is denied with EPERM inside the sandbox (card 077970fc)" \
+  "$([ "$PT_RC" = "-1" ] && [ "$PT_ERRNO" = "1" ] && echo 1 || echo 0)"
+check "bpf is denied with EPERM inside the sandbox (card 077970fc)" \
+  "$([ "$BPF_RC" = "-1" ] && [ "$BPF_ERRNO" = "1" ] && echo 1 || echo 0)"
+
+MUTANT_NO_SECCOMP="$WORK/mutant-no-seccomp.sh"
+sed 's/--seccomp "\$SECCOMP_FD" //' "$REAL" > "$MUTANT_NO_SECCOMP"
+SECCOMP_PROBE_MUT="$WORK/seccomp-probe-mut.sh"
+head -n -1 "$MUTANT_NO_SECCOMP" > "$SECCOMP_PROBE_MUT"
+printf '  sh -c %s\n' "'$SECCOMP_PROBE_CMD'" >> "$SECCOMP_PROBE_MUT"
+chmod +x "$SECCOMP_PROBE_MUT"
+SECCOMP_OUT_MUT="$(env -i "${BASE_ENV[@]}" bash "$SECCOMP_PROBE_MUT" 2>&1)" || true
+read -r PT_RC_MUT PT_ERRNO_MUT _ _ <<< "$SECCOMP_OUT_MUT"
+check "RED-MUTANT (card 077970fc): removing --seccomp is caught (ptrace succeeds again without the filter)" \
+  "$([ "$PT_RC_MUT" = "0" ] && [ "$PT_ERRNO_MUT" = "0" ] && echo 1 || echo 0)"
 
 if [ "$FAIL" -eq 0 ]; then
   echo "selftest: $PASS passed, 0 failed"
