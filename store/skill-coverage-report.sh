@@ -23,17 +23,25 @@ done
 # huge value previously passed through to strftime() silently, which SQLite evaluates to NULL and
 # the comparison against it is never true, so every agent quietly reported 0% instead of erroring.
 if [[ ! "$DAYS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "HIBA: --days pozitiv egesz szam legyen, nem: $DAYS" >&2; exit 1
+  echo "HIBA: --days pozitív egész szám legyen, nem: $DAYS" >&2; exit 1
+fi
+# RedHat N2 (card 43dad36d): a huge --days (e.g. 99999999999999999999) passed the regex above and
+# reached SQLite's strftime(), which returns NULL for an out-of-range offset -- the comparison
+# against NULL is never true, so every agent silently reported 0%/rc 0 instead of an error. The
+# length check short-circuits before any arithmetic on the oversized string (bash (( )) would
+# overflow/wrap on a 64-bit-exceeding value, making a numeric-only check unreliable).
+if (( ${#DAYS} > 4 )) || (( DAYS > 3650 )); then
+  echo "HIBA: --days legfeljebb 3650 lehet, nem: $DAYS" >&2; exit 1
 fi
 
 DB="${MARVEEN_DB:-/home/neon/marveen/store/claudeclaw.db}"
 MAP="${SKILL_ROLE_MAP:-/home/neon/marveen/store/skill-role-map.md}"
 
 if [[ ! -f "$DB" ]]; then
-  echo "HIBA: DB nem talalhato: $DB" >&2; exit 1
+  echo "HIBA: DB nem található: $DB" >&2; exit 1
 fi
 if [[ ! -f "$MAP" ]]; then
-  echo "HIBA: skill-role-map nem talalhato: $MAP" >&2; exit 1
+  echo "HIBA: skill-role-map nem található: $MAP" >&2; exit 1
 fi
 
 python3 -I - "$DB" "$MAP" "$DAYS" "$AGENT_FILTER" <<'PYEOF'
@@ -101,9 +109,9 @@ for agent in agents:
 # WhiteHat F2 (komment 23714, 8a4a8b09): the number below is "seen" (a tool_call/skill_read row
 # exists), not "used" -- a skill loaded purely from context (no tool invocation) leaves no
 # skill_usage row, so 0% does not prove the skill went unused, only unobserved by this signal.
-print("  (nem latott != nem hasznalt: latott = tool_call/skill_read; a kontextusbol betoltott skill nem latszik)")
+print("  (nem látott != nem használt: látott = tool_call/skill_read; a kontextusból betöltött skill nem látszik)")
 if not results:
-    print("  Nincs skill_usage adat az elmult " + days_str + " napban.")
+    print("  Nincs skill_usage adat az elmúlt " + days_str + " napban.")
 else:
     for agent, cov, tot, pct, missing in results:
         filled = pct // 10
