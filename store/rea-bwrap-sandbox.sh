@@ -1,5 +1,20 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # bwrap sandbox wrapper for the REA MCP server (card ca1b763c, c7e0d83f R1+R2).
+#
+# Shebang uses -p (card 9518b377, RedHat komment 24721 / WhiteHat komment 24727):
+# `-p` makes bash ignore every BASH_FUNC_<name>%% imported function from the
+# launching environment, including shell builtins (exit, echo, [, ...). The
+# earlier fix (resolve_trusted_bin() for every bare external command) only
+# closed the class for named external commands; a launcher-controlled
+# exported function shadowing a BUILTIN the script calls (e.g. a no-op
+# `exit`, or an `echo` that lies about what readlink resolved to) defeated
+# every fail-closed check regardless. `-p` drops the whole class at once,
+# which is why env -i alone (used below for bwrap/the sandboxed process) was
+# never enough on its own: env -i clears variables, not already-exported
+# shell functions that arrived via the same environment block. Anyone
+# invoking this script as `bash rea-bwrap-sandbox.sh` (not executing the
+# file directly) bypasses the shebang -- such callers (selftest, any future
+# wrapper) MUST use `bash -p` explicitly; see rea-bwrap-sandbox.selftest.sh.
 #
 # Isolates the rea-agents MCP server process (Ghidra/JADX/Kuna/Hopper engines)
 # from the flotta's shared environment and filesystem:
