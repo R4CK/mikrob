@@ -192,6 +192,13 @@ const TRANSCRIPT_CALLER_KINDS = ['session', 'device'] as const
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
+// Card 91188f92 (WhiteHat L2, 96c00ee5): data.customProvider had no format/length limit, so a
+// 1 MiB string would be stored as-is. custom-providers.ts' own registry (validateDef) places NO
+// character restriction on an id -- only non-empty after trim -- and existing ids in the test
+// corpus include underscores (e.g. "__test-provider"), so this stays a safety net (printable
+// identifier characters only) plus a length cap, not a new, narrower id convention.
+const CUSTOM_PROVIDER_ID_RX = /^[A-Za-z0-9_-]{1,100}$/
+
 // Dropped into the agent dir when personality generation failed and the agent was
 // kept on a template instead of being deleted. Its presence means "this agent
 // works, but its CLAUDE.md/SOUL.md are placeholders".
@@ -2865,7 +2872,23 @@ function compactPrompt(): string {
     }
     // Pure storage (card 96c00ee5): no registry to validate against yet, and
     // no launch path reads this field -- that wiring is card f1800242.
+    //
+    // Card 91188f92 (WhiteHat L1+L2): data.customProvider is caller-controlled JSON, not actually
+    // typed by the `customProvider?: string` annotation above. L1: a non-string value (123, {},
+    // [], true) reached writeAgentCustomProvider() and threw inside (providerId ?? '').trim(),
+    // AFTER every earlier field in this handler had already been written -- a single bad field
+    // turned into a 500 with partial writes already applied. L2: no format/length limit let a
+    // 1 MiB string be stored as-is. null is still accepted ("clear", same as empty string).
     if (data.customProvider !== undefined) {
+      if (data.customProvider !== null && typeof data.customProvider !== 'string') {
+        json(res, { error: 'customProvider must be a string or null' }, 400)
+        return true
+      }
+      const trimmedProvider = (data.customProvider ?? '').trim()
+      if (trimmedProvider && !CUSTOM_PROVIDER_ID_RX.test(trimmedProvider)) {
+        json(res, { error: `customProvider must match ${CUSTOM_PROVIDER_ID_RX}` }, 400)
+        return true
+      }
       writeAgentCustomProvider(name, data.customProvider)
     }
     json(res, { ok: true })
