@@ -95,7 +95,7 @@ export async function sendOwnerMessage(text: string): Promise<ChannelSendResult>
     if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
     return { sent: false, reason: !CHANNEL_TOKEN ? 'no-token' : 'no-owner-chat' }
   }
-  return sendToChat(owner.chatId, text)
+  return sendToChat(owner.chatId, text, 'owner')
 }
 
 // True when operational alerts go to a chat other than the owner's. Callers
@@ -112,7 +112,7 @@ export async function notifyChannel(text: string): Promise<void> {
     const alertChat = normalizeChatId(ALERT_CHAT_ID)
     // sendToChat reports now, this caller does not care: drop the result so the
     // callback keeps its Promise<void> shape (slack-notify wiring contract).
-    if (alertChat) return sendToChat(alertChat, text).then(() => {})
+    if (alertChat) return sendToChat(alertChat, text, 'alert').then(() => {})
     return telegramOwner(text)
   })
 }
@@ -178,14 +178,31 @@ async function telegramOwner(text: string): Promise<void> {
     if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
     return
   }
-  await sendToChat(owner.chatId, text)
+  await sendToChat(owner.chatId, text, 'owner')
 }
 
 // PR1655 review, ask 2: this used to return void and swallow every provider
 // exception, so a caller could not tell a delivered notification from a dead
 // one. It reports now; every existing caller ignores the value, so nothing
 // else changes shape.
-async function sendToChat(chatId: string, text: string): Promise<ChannelSendResult> {
+// NOTIFYSENDLOG930 -- every send leaves one line in the channel log: the
+// outcome, the HTTP status of the answer and the id the Bot API gave the new
+// message. Before this, the catches below swallowed every outcome, so neither
+// a delivered nor a lost alert could be told from store/dashboard.log. The
+// line names the target by its role, never the raw chat id, and carries no
+// token and no text: a Bot API error description can quote the text it
+// rejected, so on failure only the status is kept.
+type SendTarget = 'owner' | 'alert'
+
+/** The HTTP status in a provider send error ("Telegram API 403: ...",
+ *  "Discord API 404: ...", "Slack API HTTP 500"), or null when the send never
+ *  got an HTTP answer (timeout, network) or the answer carried no code. */
+function sendErrorStatus(err: unknown): number | null {
+  const m = /(?:Telegram API|Discord API|Slack API HTTP) (\d{3})\b/.exec(err instanceof Error ? err.message : String(err))
+  return m ? Number(m[1]) : null
+}
+
+async function sendToChat(chatId: string, text: string, target: SendTarget): Promise<ChannelSendResult> {
   if (!CHANNEL_TOKEN) {
     logger.warn('Channel ertesites kihagyva: nincs token')
     return { sent: false, reason: 'no-token' }
@@ -203,30 +220,42 @@ async function sendToChat(chatId: string, text: string): Promise<ChannelSendResu
   const parseMode = CHANNEL_PROVIDER === 'telegram' ? 'HTML' : undefined
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]
+    const where = { provider: CHANNEL_PROVIDER, target, chunk: i + 1, chunks: chunks.length }
     try {
-      await provider.sendMessage(CHANNEL_TOKEN, chatId, chunk, parseMode)
+      const receipt = await provider.sendMessage(CHANNEL_TOKEN, chatId, chunk, parseMode)
       delivered++
+      logger.info({ ...where, status: receipt?.status ?? null, messageId: receipt?.messageId ?? null }, 'Channel ertesites elkuldve')
     } catch (err) {
       lastError = err
+      const firstStatus = sendErrorStatus(err)
       // #1878 (9): the fallback is THIS chunk without formatting. It used to be
       // outbound.slice(0, 4096), so a failure on chunk N sent the start of the
       // whole message again and chunk N was never delivered.
       try {
-        await provider.sendMessage(CHANNEL_TOKEN, chatId, parseMode === 'HTML' ? telegramHtmlToPlain(chunk) : chunk)
+        const receipt = await provider.sendMessage(CHANNEL_TOKEN, chatId, parseMode === 'HTML' ? telegramHtmlToPlain(chunk) : chunk)
         delivered++
+        logger.info(
+          { ...where, status: receipt?.status ?? null, messageId: receipt?.messageId ?? null, plainTextRetry: true, firstStatus },
+          'Channel ertesites elkuldve',
+        )
       } catch (err2) {
         lastError = err2
-        // Last resort failed too: say so (index only, never the text).
-        logger.warn({ err: err2 instanceof Error ? err2.message : String(err2), chunk: i + 1, of: chunks.length }, 'Channel ertesites: egy resz nem ment ki (formazva sem, sima szovegkent sem)')
+        // Last resort failed too: say so -- the role, the chunk index and the
+        // statuses only, never the text or the Bot API's error words.
+        logger.warn({ ...where, firstStatus, retryStatus: sendErrorStatus(err2) }, 'Channel ertesites SIKERTELEN')
       }
     }
   }
   if (delivered === 0) {
-    logger.warn({ err: lastError, provider: CHANNEL_PROVIDER }, 'channel send failed on every chunk')
+    // With one chunk the SIKERTELEN line above already says everything; the
+    // summary is for a multi-chunk send. Status only, like the chunk line.
+    if (chunks.length > 1) {
+      logger.warn({ provider: CHANNEL_PROVIDER, target, chunks: chunks.length, status: sendErrorStatus(lastError) }, 'channel send failed on every chunk')
+    }
     return { sent: false, reason: 'send-failed' }
   }
   if (delivered < chunks.length) {
-    logger.warn({ err: lastError, provider: CHANNEL_PROVIDER, delivered, chunks: chunks.length },
+    logger.warn({ provider: CHANNEL_PROVIDER, target, delivered, chunks: chunks.length, status: sendErrorStatus(lastError) },
       'channel send only partially delivered')
     return { sent: false, reason: 'partial' }
   }

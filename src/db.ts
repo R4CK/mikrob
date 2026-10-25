@@ -345,6 +345,25 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch (err) {
     logger.warn({ err }, 'kanban_cards testing-status migration failed -- continuing')
   }
+  // Kanban project summaries: a small, separate table for the one thing that
+  // cannot be derived from kanban_cards -- the human-written project
+  // description. Everything else the project-overview page needs (card
+  // counts, last activity, who is on it) is computed live from kanban_cards
+  // by GROUP BY project (see listKanbanProjectSummaries), so there is exactly
+  // one source of truth for card state and the two tables can never drift out
+  // of sync. `project` is the same free-text string already stored on
+  // kanban_cards.project (no surrogate id, no foreign key -- a project can
+  // exist here before any card is tagged with it, or vice versa).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_projects (
+      project TEXT PRIMARY KEY,
+      description TEXT,
+      description_updated_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
   // Migration: add test_steps to kanban_cards (card 8fe51afd -- the testing
   // instructions get a field of their own instead of living in the comment
   // thread). Placed AFTER the testing-status rebuild above on purpose: that
@@ -2971,14 +2990,14 @@ export function searchMemories(query: string, chatId: string, limit = 3, allowRe
         ? db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.content MATCH ? AND m.chat_id = ? AND m.category = ?
+             WHERE f.memories_fts MATCH ? AND m.chat_id = ? AND m.category = ?
              ORDER BY rank
              LIMIT ?`
           ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
         : db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.content MATCH ? AND m.chat_id = ?
+             WHERE f.memories_fts MATCH ? AND m.chat_id = ?
              ORDER BY rank
              LIMIT ?`
           ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
@@ -3022,12 +3041,22 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0): Memory[] {
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
   // LIMIT/OFFSET over them can repeat a row on one page and never return
   // another. id is the unique insertion order, so it makes paging total.
+  //
+  // The category goes INTO the query. It used to be a post-filter in the
+  // route, applied after this function had already cut to `limit`: measured
+  // 2026-10-17 on the owner store, the dashboard Hot tab (no agent filter,
+  // limit 50) showed 6 of 115 hot memories.
+  if (category) {
+    return db
+      .prepare('SELECT * FROM memories WHERE chat_id = ? AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
+      .all(chatId, category, limit, offset) as Memory[]
+  }
   return db
     .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
     .all(chatId, limit, offset) as Memory[]
@@ -4870,6 +4899,111 @@ export function listKanbanProjects(): string[] {
   return rows.map(r => r.project)
 }
 
+export interface KanbanProjectSummary {
+  project: string
+  /** Human-written 1-2 sentence description; null when no one has set one yet. */
+  description: string | null
+  descriptionUpdatedAt: number | null
+  cardTotal: number
+  cardDone: number
+  /** MAX(updated_at) across the project's non-archived cards. */
+  lastActivityAt: number | null
+  /** Distinct assignees on cards currently in_progress/testing; falls back to
+   *  every assignee who has ever touched the project when nothing is in
+   *  flight right now, so the summary is never blank between active pushes. */
+  activeAssignees: string[]
+}
+
+/**
+ * One summary row per project that has at least one non-archived card.
+ * Everything except `description`/`descriptionUpdatedAt` is computed live
+ * from kanban_cards -- never stored -- so it can never drift from the board
+ * itself. Fully-archived projects (e.g. a wrapped-up initiative where every
+ * card was archived) intentionally do not appear here: this mirrors
+ * listKanbanProjects()'s own archived_at IS NULL filter, and keeps the
+ * overview to "what has live work", not a permanent project registry.
+ */
+export function listKanbanProjectSummaries(): KanbanProjectSummary[] {
+  const rows = db.prepare(`
+    SELECT
+      kc.project AS project,
+      COUNT(*) AS cardTotal,
+      SUM(CASE WHEN kc.status = 'done' THEN 1 ELSE 0 END) AS cardDone,
+      MAX(kc.updated_at) AS lastActivityAt,
+      kp.description AS description,
+      kp.description_updated_at AS descriptionUpdatedAt
+    FROM kanban_cards kc
+    LEFT JOIN kanban_projects kp ON kp.project = kc.project
+    WHERE kc.archived_at IS NULL AND kc.project IS NOT NULL AND kc.project != ''
+    GROUP BY kc.project
+    ORDER BY kc.project
+  `).all() as Array<{
+    project: string; cardTotal: number; cardDone: number; lastActivityAt: number | null
+    description: string | null; descriptionUpdatedAt: number | null
+  }>
+
+  // Active assignees are a second, per-project query rather than a
+  // GROUP_CONCAT in the query above: the "in-flight, else ever-touched"
+  // fallback needs two different WHERE filters, which GROUP_CONCAT cannot
+  // express in one pass without a much less readable CASE-inside-aggregate.
+  // Both statements are prepared once, outside the loop, and reused per row.
+  const activeStmt = db.prepare(
+    `SELECT DISTINCT assignee FROM kanban_cards
+     WHERE project = ? AND archived_at IS NULL AND assignee IS NOT NULL
+       AND status IN ('in_progress', 'testing')`
+  )
+  const everStmt = db.prepare(
+    `SELECT DISTINCT assignee FROM kanban_cards
+     WHERE project = ? AND archived_at IS NULL AND assignee IS NOT NULL`
+  )
+
+  return rows.map((r) => {
+    let assignees = (activeStmt.all(r.project) as Array<{ assignee: string }>).map((a) => a.assignee)
+    if (assignees.length === 0) {
+      assignees = (everStmt.all(r.project) as Array<{ assignee: string }>).map((a) => a.assignee)
+    }
+    return {
+      project: r.project,
+      description: r.description ?? null,
+      descriptionUpdatedAt: r.descriptionUpdatedAt ?? null,
+      cardTotal: r.cardTotal,
+      cardDone: r.cardDone,
+      lastActivityAt: r.lastActivityAt,
+      activeAssignees: assignees,
+    }
+  })
+}
+
+/**
+ * Upsert a project's human-written description. A no-op write (submitted text
+ * identical to what is already stored) does NOT bump description_updated_at
+ * or updated_at -- so re-saving the same text does not make the project card
+ * look freshly edited. Returns whether the stored value actually changed.
+ */
+export function upsertKanbanProjectDescription(project: string, description: string): { changed: boolean } {
+  const trimmed = description.trim()
+  const existing = db.prepare('SELECT description FROM kanban_projects WHERE project = ?').get(project) as
+    | { description: string | null }
+    | undefined
+  if (!existing && trimmed === '') {
+    // Nothing stored, nothing meaningful to store -- do not create a blank row.
+    return { changed: false }
+  }
+  if (existing && (existing.description ?? '') === trimmed) {
+    return { changed: false }
+  }
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO kanban_projects (project, description, description_updated_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(project) DO UPDATE SET
+      description = excluded.description,
+      description_updated_at = excluded.description_updated_at,
+      updated_at = excluded.updated_at
+  `).run(project, trimmed, now, now, now)
+  return { changed: true }
+}
+
 export function deleteKanbanCard(id: string, actor?: string): boolean {
   // Wrapped in a transaction to ensure atomicity: all mutations succeed
   // together or none of them do. Steps in FK-safe order:
@@ -6228,6 +6362,20 @@ export function countHighForPairSince(from: string, to: string, sinceSec: number
   // urgent = 0: an urgent row never spends the pair's high budget (it is above high by its own column).
   return (db.prepare('SELECT count(*) AS n FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND created_at >= ? AND priority > 0 AND urgent = 0')
     .get(from, to, sinceSec) as { n: number }).n
+}
+
+// Last moment a PULL-delivery agent proved it is alive on the API, in epoch
+// seconds (null = never). A pull agent has no session this install can watch,
+// so "is anyone serving this queue?" has to be answered from its own API
+// traffic instead of from a pane. The weakest honest evidence is a row it
+// WROTE: sending a message requires its scoped token, so a from_agent row is
+// proof of a live, authenticated client. It is deliberately not proof that it
+// READ anything -- that is why the router only warns on staleness and never
+// closes the row.
+export function lastMessageFromAgentAt(agent: string): number | null {
+  const row = db.prepare('SELECT MAX(created_at) AS ts FROM agent_messages WHERE from_agent = ?')
+    .get(agent) as { ts: number | null } | undefined
+  return row?.ts ?? null
 }
 
 // Status-guarded (pending only): the federation removal path bulk-fails

@@ -64,6 +64,7 @@ vi.mock('../web/routes/voice.js', () => ({
 
 vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
+  readAgentPullDelivery: () => false,
   readAgentVoiceConfig: () => voiceCfg.current,
   readAgentWorksourceChannel: () => false,
 }))
