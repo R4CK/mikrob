@@ -119,3 +119,49 @@ describe('PUT/GET /api/agents/:name -- customProvider wired into the real route'
     expect(g.body?.customProvider).toBeNull()
   })
 })
+
+// Card 91188f92 (WhiteHat L1+L2, 96c00ee5).
+describe('PUT customProvider: type and format/length guard (card 91188f92)', () => {
+  it('L1: a non-string value is rejected with 400, not a 500 after partial writes', async () => {
+    const r = await putAgent(AGENT, { claudeMd: 'unrelated write before the bad field', customProvider: 123 })
+    expect(r.status).toBe(400)
+    const g = await getAgent(AGENT)
+    expect(g.body?.customProvider).toBeNull()
+  })
+
+  it('L1: an object value is rejected with 400', async () => {
+    const r = await putAgent(AGENT, { customProvider: {} })
+    expect(r.status).toBe(400)
+  })
+
+  it('L1: an array value is rejected with 400', async () => {
+    const r = await putAgent(AGENT, { customProvider: [] })
+    expect(r.status).toBe(400)
+  })
+
+  it('L1: a boolean value is rejected with 400', async () => {
+    const r = await putAgent(AGENT, { customProvider: true })
+    expect(r.status).toBe(400)
+  })
+
+  it('L1: an explicit null is still accepted as "clear"', async () => {
+    await putAgent(AGENT, { customProvider: 'acme-llm' })
+    const r = await putAgent(AGENT, { customProvider: null })
+    expect(r.status).toBe(200)
+    const g = await getAgent(AGENT)
+    expect(g.body?.customProvider).toBeNull()
+  })
+
+  it('L2: an oversized string is rejected with 400, not stored', async () => {
+    const huge = 'a'.repeat(1024 * 1024)
+    const r = await putAgent(AGENT, { customProvider: huge })
+    expect(r.status).toBe(400)
+    const g = await getAgent(AGENT)
+    expect(g.body?.customProvider).toBeNull()
+  })
+
+  it('L2: a value with disallowed characters is rejected with 400', async () => {
+    const r = await putAgent(AGENT, { customProvider: 'has spaces/slashes' })
+    expect(r.status).toBe(400)
+  })
+})
