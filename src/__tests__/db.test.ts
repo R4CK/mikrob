@@ -26,6 +26,7 @@ import {
   getDispatchedPendingStats,
   closeMessagesWithoutDelivery,
   COMPLETION_REPORT_PREFIX,
+  LEGACY_COMPLETION_REPORT_PREFIX,
   GATE_ALERT_ORIGIN_NOTE,
   CLOSED_WITHOUT_DELIVERY_PREFIX,
   createKanbanCard,
@@ -470,6 +471,26 @@ describe('getDispatchedPendingStats -- result notifications', () => {
     createAgentMessage('gateres-quote', 'gateres-peer',
       `Nezd meg a ${COMPLETION_REPORT_PREFIX} sorokat es jelezz vissza`)
     const s = getDispatchedPendingStats('gateres-quote', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(1)
+  })
+
+  // L1 (card a1eceda6): COMPLETION_REPORT_PREFIX was renamed from '[Eredmény]' to '[Result]'
+  // by card 867fa8f2. A row written before that rename still carries the old prefix, and must
+  // still be excluded -- otherwise every legacy completion report starts counting as outstanding
+  // dispatched work the moment the rename lands.
+  it('also ignores a completion report written with the pre-rename legacy prefix', () => {
+    createAgentMessage('gateres-legacy', 'gateres-peer',
+      `${LEGACY_COMPLETION_REPORT_PREFIX} msg_id:3 status:done\n\nkesz`)
+    const s = getDispatchedPendingStats('gateres-legacy', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(0)
+    expect(s.hasStale).toBe(false)
+  })
+
+  it('a legacy-prefix report does not mask real dispatched work either', () => {
+    createAgentMessage('gateres-legacymix', 'gateres-peer',
+      `${LEGACY_COMPLETION_REPORT_PREFIX} msg_id:4 status:done\n\nkesz`)
+    createAgentMessage('gateres-legacymix', 'gateres-peer', 'valodi delegalas')
+    const s = getDispatchedPendingStats('gateres-legacymix', Date.now(), TWO_HOURS)
     expect(s.count).toBe(1)
   })
 })

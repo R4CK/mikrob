@@ -61,6 +61,13 @@ describe('language section: what it says', () => {
     expect(body).toMatch(/[Nn]ever hardcode a language/)
   })
 
+  // L3 (card a1eceda6): USER_LANGUAGE had no consumer -- the generated text only NAMED the env
+  // var, it never READ it. The mocked config.js above sets USER_LANGUAGE to 'hu'; the generated
+  // body must echo that actual value, not a hardcoded example.
+  it('reads the actual configured USER_LANGUAGE value into the generated text', () => {
+    expect(body).toContain('currently `hu`')
+  })
+
   it('lists the protocol tokens that never change language', () => {
     expect(body).toContain('Gate-SHA:')
     expect(body).toContain('Fix-Direction:')
@@ -94,9 +101,15 @@ describe('language section: idempotent insert and update', () => {
   })
 
   it('the main agent CLAUDE.md is not modified (no-op for MAIN_AGENT_ID, statically committed instead)', () => {
-    writeFileSync(join(tmpRoot, 'CLAUDE.md'), '# Main\n', 'utf-8')
+    // MAIN_AGENT_ID is 'agent-a' (see the vi.mock('../config.js') above), and agentDir('agent-a')
+    // resolves to tmpRoot/agents/agent-a -- that is the file the guard must leave untouched. A
+    // nonexistent path would make this test pass vacuously (existsSync short-circuits before the
+    // MAIN_AGENT_ID check ever runs), so the file must actually exist here.
+    setup('agent-a', '# Main\n')
+    const before = read('agent-a')
     ensureLanguageSection('agent-a')
-    expect(readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')).not.toContain(BEGIN)
+    expect(read('agent-a')).toBe(before)
+    expect(read('agent-a')).not.toContain(BEGIN)
   })
 })
 
