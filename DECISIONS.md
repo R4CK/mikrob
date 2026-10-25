@@ -21956,3 +21956,71 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 **Ki döntött:** Peti (12303 + 12306), a konkrét kiegészítő hatókört MikroB (komment 24519, elemzo grilling alapján), a kivitelezés backend2-é.
 
 **Hivatkozás:** kártya 867fa8f2 (szülő: bf03aaa1), MikroB komment 24500 + 24519, elemzo report `/home/neon/marveen/agents/elemzo/reports/e060a794-installed-repo-inventory.md` 5. szakasz.
+
+## 2026-10-24 -- kártya 9518b377 (folytatás): RedHat KC5/KC6 delta-fix (23925 NO-GO kövezője)
+
+**Kontextus:** az előző bejegyzés (fentebb, ugyanezen a napon, kártya 9518b377) az F1/F2/F3-at zárta WhiteHat 23921 NO-GO-jára. RedHat 23925 NO-GO-ja ugyanarra a Gate-SHA-ra (189c3424527a0a3822872ee6c4c322bb63e0ebed) további két tételt talált: KC5 (nested userns, seccomp nélkül) és KC6 (a 23079 piros-mutáns követelmény -- `--new-session`, `--die-with-parent`, a Hopper lib-bind és a doctor-ág törlése némán visszajöhetne, a selftest ezekre vak volt).
+
+**Döntés:**
+- **KC5 fix:** `--unshare-user --disable-userns` bekerült a base `BIND_ARGS`-ba. Ellenőrizve: a sandboxon belüli `unshare -U -r id` most "unshare failed: No space left on device"-del bukik (a bwrap `--disable-userns` saját errno-ja).
+- **KC6 fix:** mind a négy tételre egyenként piros-mutáns teszt: (1) `--new-session` -- sid-probe `/proc/self/stat`-ból, sid=1 a valódi kódon, sid!=1 a mutánsban; (2) `--die-with-parent` -- ancestor-kilövéssel mért folyamatfa-túlélés teszt, poll-alapú (nem fix delay, hogy ne legyen időzítési versenyhelyzet); (3) doctor-ág -- `scope_checks` kulcs jelenléte/hiánya a valódi vs mutált kódon; (4) Hopper lib-bind -- hopper doctor-check `healthy=true/false` a valódi vs mutált kódon (elemzo valódi `HOPPER_LAUNCHER_PATH`-jával, nem szintetikus `BASE_ENV`-vel). Selftest 30 -> 39 teszt, mind zöld.
+
+**Miért:** a KC6 hiányosság pont azt a hibaosztályt nyitotta volna meg, amit a 23079 (ca1b763c RedHat delta-gate) már egyszer lezárt kért -- egy zöld selftest, ami nem köti a négy tételt piros-mutáns teszttel, némán engedné vissza bármelyiket egy jövőbeli, jóhiszemű refaktornál.
+
+**Ki döntött:** a tételek RedHat-tól jönnek (9518b377 23925 NO-GO), MikroB a delta-fix irányát adta (14598/14604), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933); komment 23925/23943; `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.
+
+## 2026-10-25: d2d47a92 -- skill-map provisioner: ügynökönkénti skill-halmaz egy JSON-térképből induláskor
+
+**Kontextus:** Peti jóváhagyta (Telegram 12321 -> javaslat 12323 -> "Mehet" 12324). A mért hiba (e060a794 E3/E4, elemzo report): fleet-wide szánt skillek (caveman, unlazy, sp-using-superpowers) NULLA ügynök CLAUDE.md-jében nem szerepeltek, mert senki nem adta hozzá kézzel semelyik ügynök seed-fleet-agents forrásához -- ez más hiba, mint amit a meglévő `store/agent-skill-drift-sync.sh` fed: az csak egy MÁR HOZZÁRENDELT skill elavulását (stale/diverged) és egy klón-családon belüli hiányt javít, sosem az első hozzárendelést.
+
+**Döntés:** (1) `store/skill-role-map.json` -- egyetlen forrás, két réteg: `fleet-core` (a kártya szövegéből szó szerint idézett 7 skill: caveman, unlazy, sp-using-superpowers, karpathy-guidelines, sp-verification-before-completion, sp-systematic-debugging, local-llm-offload -- a kártya "kb. 10"-et ír, de csak ezt a 7-et nevezi meg szó szerint; a fennmaradó 2-3 slotot MikroB/Peti bővítheti, kódváltozás nélkül), és `roles` (17 szerep-ügynök, mindegyik a saját CLAUDE.md-jében már "már bekötve"-ként jelölt skilleket kapja, mechanikusan kinyerve a `store/skill-role-map.md`-ből -- elemzo kivétel, nincs hozzá CLAUDE.md-skill-tábla, üres role-lista, nyitott kérdés). (2) `src/web/skill-map-provisioner.ts`: `provisionFleetSkills(name)`, agent-indításkor (`agent-process.ts` `startAgentProcessUnlocked`) hívva. Szimlinket hoz létre `agents/<name>/.claude/skills/<skill>` -> `~/.claude/skills/<skill>` minden hiányzó, map-ben szereplő skillre; egy MEGLÉVŐ VALÓDI (nem szimlink) könyvtárat sosem bánt (seed-copy vagy kézzel patchelt skill). Manifest (`store/skill-map-provisioner-manifest.json`) jegyzi, mely linkeket maga hozta létre, hogy egy map-ből törölt skill linkje a következő induláskor eltűnjön -- de csak akkor, ha még szimlink (védelem, ha valami közben valódi könyvtárra váltotta). (3) Plan-grilling lelet, javítva: `store/agent-skill-drift-sync.sh` a saját stale/diverged osztályozó ciklusában most kihagyja (jelentve, nem szinkronizálva) egy olyan skill-könyvtárat, ami szimlink -- enélkül a `mv "$tmp" "$installed"` a szimlinken ÁT írt volna, azaz a MEGOSZTOTT globális skill-fájlt módosította volna minden ügynöknél egyszerre, nem egy privát másolatot. (4) `store/skill-map-consistency-check.sh`: hibát jelez (exit 1), ha egy ügynök CLAUDE.md-je egy core-skill sort (`- \`name\` -- ...`) olyan skillre hivatkozik, amit a map nem ad neki (fleet-core ∪ roles[agent]); a fordított irány (map ad, CLAUDE.md nem említi) nem hiba, mert a fleet-core skilleket szándékosan nem kell minden CLAUDE.md-ben egyenként dokumentálni.
+
+**Nyitva hagyva, tudatosan:** (a) a kártya "fix the false CLAUDE.md line about global skills" tétele -- a pontos sor nem azonosítható a kártya szövegéből egyértelműen (több CLAUDE.md-szakasz érintett lehet, pl. a 20. munkavégzési szabály "minden ügynöknek elérhető" megfogalmazása az agent-process.ts ISOLATED_CONFIG_SKIP kommentjének "nem blanket-shared" állításával ütközik) -- MikroB/Peti döntése kell, melyik konkrét sort kell módosítani. (b) a design 3. pontja (DREAM.md "48 órája nincs map-ben lévő globális skill" riasztás) nincs bedrótozva -- külön kártyának tűnik, a jelen kártya "Kész, ha" listája nem nevezi meg explicit módon. (c) elemzo szerepe a map-ben fleet-core-only, mert nincs mért CLAUDE.md-skill-tábla hozzá (a `elemzo` ügynök "rea" skill-adoptálása, Peti-külön-döntés, ettől a mechanizmustól teljesen független, nem keverendő össze).
+
+**Mérés:** `src/__tests__/skill-map-provisioner.test.ts` 5/5 zöld, mutáció-bizonyított (a real-dir-skip és a removal-loop logika kivételével RED lett a 2 érintett teszt, a másik 3 GREEN maradt, majd visszaállítva 5/5 GREEN); `store/skill-map-consistency-check.sh selftest` 4/4 ok; `store/agent-skill-drift-sync.sh selftest` továbbra is PASS (a symlink-skip guard nem bontott meg semmit). `npx tsc --noEmit -p .` az én fájljaimra tiszta (3, a kártyától független, meglévő `parse5`-függőség-hiány hiba a landoláskor szinkronizált, de a fő klónban még nem `npm ci`-zett upstream batch miatt).
+
+**Ki döntött:** a design Peti jóváhagyása (Telegram 12321/12323/12324); a plan-grilling lelet (3. pont) és a nyitott kérdések (a) a backend saját plan-grillingje, kártya d2d47a92, MikroB dispatch (üzenet 14825).
+
+**Hivatkozás:** kártya d2d47a92 (szülő: bf03aaa1, utód: 340585f6), e060a794 elemzo report 3/4. szakasz, `store/skill-role-map.md`, `store/agent-skill-drift-sync.sh`.
+
+## 2026-10-25 -- kártya 077970fc: REA bwrap sandbox seccomp-szűrő (RedHat KC5-követő, 9518b377 komment 24382)
+
+**Kontextus:** a fenti 9518b377 bejegyzés KC5 fixe (`--unshare-user --disable-userns`) a nested-userns escape-et zárta, de RedHat komment 24382 szerint syscall-szintű szűrés nélkül maradt a sandbox -- egy kompromittált REA engine ptrace/bpf/mount/keyctl/userfaultfd hívással még mindig próbálkozhatna.
+
+**Döntés:** új `store/rea-seccomp-filter.py`: libseccomp.so.2-t (már telepített runtime lib, nincs libseccomp-dev/Python-binding a gépen) ctypes-szal hívva generál egy minimális cBPF denylist-et (ptrace, keyctl, bpf, userfaultfd, mount -> EPERM, minden más ALLOW -- a REA engine-ek nincsenek per-syscall profilozva, egy teljes allowlist egy nem tesztelt code path-en törne). `rea-bwrap-sandbox.sh` a filtert egy `exec {SECCOMP_FD}<fájl` + azonnali `rm -f` mintával nyitja meg (az FD túléli a további execeket, nincs mire trap-elni), és a `--seccomp "$SECCOMP_FD"` bekerül a végső bwrap-hívásba, a `--new-session --die-with-parent` mellé.
+
+**Mérés:** `rea-bwrap-sandbox.selftest.sh` 44 -> 47 teszt (3 új: ptrace EPERM, bpf EPERM, RED-MUTANT a `--seccomp` eltávolítására). 3x egymás utáni futás mind 47/47 zöld (stabilitás-ellenőrzés). 4 REA engine smoke-teszt elemzo valódi regisztrációs env-jeivel (`GHIDRA_INSTALL_DIR`, `JAVA_HOME`, `REA_JADX_MCP_JAR`, `REA_KUNA_COMMAND`, `HOPPER_LAUNCHER_PATH`) a `doctor --json` ágon: ghidra/jadx/kuna/hopper/node/host mind `ok:true`.
+
+**Ki döntött:** a tétel RedHat-tól jön (9518b377 komment 24382), a kártyát MikroB nyitotta (077970fc), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 077970fc (RedHat-követő, 9518b377 komment 24382), `store/rea-seccomp-filter.py`, `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.
+
+## 2026-10-25 -- kártya e25e2bbc: mcp-compressor proxy-réteg terve és plan-grilling verdikt
+
+**Kontextus:** Peti (Telegram 12334) elrendelte az mcp-compressor bekötését, a 13315-ös HOLD feloldva (24748). A `compressToolListing` csak szöveget ad vissza, ezért a bekötés egy saját MCP-proxy (get_tool_schema + invoke_tool felület), nem egy sima hívás.
+
+**Verdikt (elemzo, plan-grilling): GO-WITH-CHANGES.** A build (d58a2ce3) csak akkor indulhat, ha az M0 alapmérés igazolja az előfeltevést: a Claude Code alapból halasztja az MCP-eszközök betöltését (csak a nevek és a szerver-utasítások foglalnak kontextust), a proxy viszont az első használatkor a teljes listát betölti. A három legerősebb bukási ok: (1) az előfeltevés már teljesül a beépített tool search-csel, (2) a név alapú szabályok (deny, email-kapuk) a wrapper mögött vakká válnak, ezért a proxynak maga kell érvényesítenie a deny-listát, (3) új, mindig az úton lévő folyamat: menet közbeni összeomlás nem fail-open, a lista elavulhat, a 4096 karakteres vágás eszközöket rejthet el.
+
+**Hatókör v1:** csak stdio szerverek, csak sub-agentek (agent-process.ts, egyetlen szűk keresztmetszet), engedélyezőlista playwright, filesystem, code-review-graph. A fő agent, a HTTP/SSE szerverek, a hostinger, firecrawl, resend és rea kimarad. Kötelező feltételek változatlanul: csak `compressToolListing`, soha `shrinkHostOutput`/`shrinkfitTools` (24736), `MCP_COMPRESS` alapból kikapcsolva és kikapcsolva bájtra azonos, fail-open, a leírások nem megbízható bemenetek.
+
+**Nyitott döntés (MikroB/Peti):** A1 (wrapper, ahogy rendelve) vagy A2 (névtartó rövidítő proxy); az M0 küszöb (javaslat: 3000 token vagy az első kör kontextusának 3%-a); a soha nem használt MCP-szerverek ügynökönkénti leválasztása (A4) külön kártyán, a kaputól függetlenül.
+
+**Ki döntött:** a verdikt az elemzoé, a WhiteHat társ-átnézi a STRIDE-táblát (komment a kártyán), az irányt MikroB adja.
+
+**Hivatkozás:** kártya e25e2bbc (szülő 9ab4c3b3, build d58a2ce3, ellátási lánc 92d4a8e7); `docs/mcp-compressor-proxy-design.md`.
+
+## 2026-10-25 -- az mcp-compressor proxy-bekötés Peti döntésével elvetve, a repó-figyelésből kivéve (kártyák e25e2bbc, a843ce7c, d58a2ce3)
+
+**Kontextus:** Peti (Telegram 12334) elrendelte az mcp-compressor bekötését, majd lemondta (Telegram 12341). A proxy-terv (e25e2bbc, WhiteHat GO a `0361e70c` commitra) elkészült, az M0 kapu (a843ce7c) viszont megmérte az előfeltevést.
+
+**Döntés:** a proxy nem épül meg (d58a2ce3 megszűnik). Peti 12344: az `mcp-compressor` bejegyzés TELJESEN törölve a `store/watched-repos.json` regiszterből (nem csak kikapcsolva, így az upstream-figyelés sem fut rá). A `store/mcp-compress.sh`, annak selftestje és az `mcp-compressor-upstream-check.sh` érintetlen marad; a MikroB holt kódként jelenti Petinek.
+
+**Miért:** M0 = MCP-eszközök 73 db, **0 token** a session elején (igény szerinti betöltés), a `marketing` ügynök friss sessionjén mért `/context` szerint (MikroB, a843ce7c komment 24772). A kapu 3000 token vagy az első kör 3%-a volt; a legrosszabb becslés is 0,6-0,9%. A valódi token-tétel a memóriafájl: 66,1k token (az ablak 33%-a), ebből a gyökér `CLAUDE.md` 51,9k.
+
+**Ami marad:** a telepített csomag és a könyvtár-módú adapter (`store/mcp-compress.sh`, 0 hívó) változatlan; a design a `docs/mcp-compressor-proxy-design.md`-ben megmarad indoklásként.
+
+**Ki döntött:** Peti (12341 a lemondás, 12344 a regiszterből törlés); az M0 mérést a MikroB végezte, az elemzést az elemzo.
+
+**Hivatkozás:** Telegram 12341, 12344; kártyák e25e2bbc, a843ce7c, d58a2ce3, 9ab4c3b3; `docs/mcp-compressor-proxy-design.md` 8a szakasz.

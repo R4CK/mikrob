@@ -417,6 +417,26 @@ describe('kg: remaining escape/guard pins (WhiteHat LOW, card 08302d67)', () => 
   })
 })
 
+// WhiteHat F1 (card 6a371039, source: card 08302d67 gate comment 23880): the mutation sweep on
+// the 19 pins above reported 18/19 red, not 19/19 -- the neighbor item's own data-kg-node-id
+// attribute (app-kg.js, kgRenderDetail's neighborsHtml, distinct from the result-list node id
+// already pinned above) was escaped in source but had no test killing the mutant that removes
+// the escapeHtml() call. The REVIEW's "19/19" claim was off by one for exactly that reason.
+describe('kg: neighbor data-kg-node-id attribute escape (WhiteHat F1, card 6a371039)', () => {
+  const XSS = '"><img src=x onerror=alert(1)>'
+
+  it('kgRenderDetail escapes the neighbor item\'s own data-kg-node-id attribute value', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderDetail(
+      { id: 'n1', type: 'solution', project: 'marveen', status: 'active', title: 'ok', anchors: [] },
+      [{ edge: { rel: 'produced' }, node: { id: XSS, type: 'solution', status: 'active', title: 'ok' } }],
+    )
+    const html = fakeEl('kgDetailBody').innerHTML
+    expect(html).not.toContain('"><img')
+    expect(html).not.toContain('<img')
+  })
+})
+
 describe('kg: search fetch contract', () => {
   const src = fnBody(APP_KG, 'async function kgRunSearch(')
 

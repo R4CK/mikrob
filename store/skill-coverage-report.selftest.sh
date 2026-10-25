@@ -39,9 +39,12 @@ cat > "$FIXTURE_MAP" <<'EOF'
 EOF
 
 # --- Fixture DB: fixtureagent saw skill-a (within window) and skill-c (irrelevant, not required);
-# otheragent saw nothing. So fixtureagent: covered=1, total=2, pct=50; otheragent: covered=0, total=1, pct=0.
+# otheragent saw nothing within the window, but DID see skill-x 30 days ago (card 43dad36d, RedHat
+# N1): that row must be excluded at --days 7, pinning the time-window filter itself, not just the
+# shape of the query. So fixtureagent: covered=1, total=2, pct=50; otheragent: covered=0, total=1, pct=0.
 FIXTURE_DB="$TMP/claudeclaw.db"
 NOW=$(date +%s)
+STALE=$((NOW - 30*86400))
 sqlite3 "$FIXTURE_DB" <<SQL
 CREATE TABLE skill_usage (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +56,8 @@ CREATE TABLE skill_usage (
 );
 INSERT INTO skill_usage (agent_id, skill_name, trigger_type, created_at)
   VALUES ('fixtureagent', 'skill-a', 'tool_call', $NOW),
-         ('fixtureagent', 'skill-c', 'tool_call', $NOW);
+         ('fixtureagent', 'skill-c', 'tool_call', $NOW),
+         ('otheragent', 'skill-x', 'tool_call', $STALE);
 SQL
 
 run() { MARVEEN_DB="$FIXTURE_DB" SKILL_ROLE_MAP="$FIXTURE_MAP" bash "$SCRIPT" "$@"; }
@@ -74,7 +78,7 @@ else
 fi
 
 echo "=== 3. header line present: not-seen != not-used (WhiteHat F2) ==="
-if [[ "$out" == *"nem latott != nem hasznalt"* ]]; then
+if [[ "$out" == *"nem látott != nem használt"* ]]; then
   ok "header states not-seen != not-used"
 else
   fail_case "missing not-seen != not-used header: $out"
@@ -133,6 +137,32 @@ if MARVEEN_DB=/nonexistent/db.db SKILL_ROLE_MAP="$FIXTURE_MAP" bash "$SCRIPT" --
   fail_case "MARVEEN_DB=/nonexistent should exit non-zero"
 else
   ok "MARVEEN_DB=/nonexistent exits non-zero"
+fi
+
+echo "=== 10. --days above the upper bound -> non-zero exit + error, not a silent 0%/rc 0 (RedHat N2) ==="
+if out_bad="$(run --days 99999999999999999999 2>&1)"; then
+  fail_case "--days 99999999999999999999 should exit non-zero: $out_bad"
+else
+  if [[ "$out_bad" == *"HIBA"* ]]; then
+    ok "--days 99999999999999999999 exits non-zero with an error message"
+  else
+    fail_case "--days 99999999999999999999 exited non-zero but no error message: $out_bad"
+  fi
+fi
+
+echo "=== 11. MUTATION: dropping the time-window filter must turn case 1's otheragent count red (RedHat N1) ==="
+# otheragent's only skill_usage row (skill-x) is 30 days old (STALE above) and must be excluded at
+# --days 7, so otheragent stays 0/1 (0%). A mutant that drops the WHERE clause picks that row up
+# regardless of age, flipping otheragent to 1/1 (100%) -- this pins the window filter itself, not
+# just the query shape.
+WINDOW_MUTANT="$TMP/skill-coverage-report.window-mutant.sh"
+sed "/WHERE created_at > CAST(strftime/d" "$SCRIPT" > "$WINDOW_MUTANT"
+chmod +x "$WINDOW_MUTANT"
+window_mutant_out="$(MARVEEN_DB="$FIXTURE_DB" SKILL_ROLE_MAP="$FIXTURE_MAP" bash "$WINDOW_MUTANT" --days 7 2>&1)"
+if [[ "$window_mutant_out" == *"otheragent: 0/1 (0%)"* ]]; then
+  fail_case "mutant (no time-window filter) was NOT caught -- the stale row does not pin the window: $window_mutant_out"
+else
+  ok "mutant (no time-window filter) is caught: stale row leaks in once the filter is dropped"
 fi
 
 echo ""

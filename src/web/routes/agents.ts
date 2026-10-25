@@ -195,6 +195,13 @@ const TRANSCRIPT_CALLER_KINDS = ['session', 'device'] as const
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
+// Card 91188f92 (WhiteHat L2, 96c00ee5): data.customProvider had no format/length limit, so a
+// 1 MiB string would be stored as-is. custom-providers.ts' own registry (validateDef) places NO
+// character restriction on an id -- only non-empty after trim -- and existing ids in the test
+// corpus include underscores (e.g. "__test-provider"), so this stays a safety net (printable
+// identifier characters only) plus a length cap, not a new, narrower id convention.
+const CUSTOM_PROVIDER_ID_RX = /^[A-Za-z0-9_-]{1,100}$/
+
 // Dropped into the agent dir when personality generation failed and the agent was
 // kept on a template instead of being deleted. Its presence means "this agent
 // works, but its CLAUDE.md/SOUL.md are placeholders".
@@ -2801,6 +2808,25 @@ function compactPrompt(): string {
       return true
     }
 
+    // Card 91188f92 (RedHat NO-GO on 96c00ee5, comment 24687): the L1+L2 customProvider checks
+    // used to sit in the LAST block of this handler, after memoryIsolation/claudeMd/soulMd/
+    // mcpJson/model/modelProfile/authMode/claudePlan were already written -- a bad customProvider
+    // returned 400 but those earlier fields were already persisted (live repro: claudeMd and
+    // soulMd written in 6/6 bad-customProvider cases). Both checks now run here, right after
+    // checkAgentPutFields and before any field write, so a bad customProvider rejects the whole
+    // request with nothing written.
+    if (data.customProvider !== undefined) {
+      if (data.customProvider !== null && typeof data.customProvider !== 'string') {
+        json(res, { error: 'customProvider must be a string or null' }, 400)
+        return true
+      }
+      const trimmedCustomProvider = (data.customProvider ?? '').trim()
+      if (trimmedCustomProvider && !CUSTOM_PROVIDER_ID_RX.test(trimmedCustomProvider)) {
+        json(res, { error: `customProvider must match ${CUSTOM_PROVIDER_ID_RX}` }, 400)
+        return true
+      }
+    }
+
     if (data.memoryIsolation !== undefined) {
       // The main agent's cwd IS the install repo root, which is already a git
       // root: a memory boundary there is meaningless, and exposing the knob
@@ -2893,8 +2919,9 @@ function compactPrompt(): string {
       }
       writeAgentClaudePlan(name, planId)
     }
-    // Pure storage (card 96c00ee5): no registry to validate against yet, and
-    // no launch path reads this field -- that wiring is card f1800242.
+    // Pure storage (card 96c00ee5): no registry to validate against yet, and no launch path reads
+    // this field -- that wiring is card f1800242. Validation for this field (type + format/length)
+    // already ran at the top of this handler (card 91188f92); this is the write only.
     if (data.customProvider !== undefined) {
       writeAgentCustomProvider(name, data.customProvider)
     }

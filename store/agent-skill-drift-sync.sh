@@ -527,6 +527,17 @@ run_scan() {
       [ -d "$sdir" ] || continue
       skill="$(basename "${sdir%/}")"
       _wanted_skill "$skill" || continue
+      # Card d2d47a92: a skill directory that is a SYMLINK is owned by the skill-map provisioner
+      # (store/skill-map-provisioner.ts), which points it straight at the shared
+      # ~/.claude/skills/<skill> copy. Classifying/writing through it here would mean this
+      # script's `mv "$tmp" "$installed"` resolves through the symlink and overwrites the GLOBAL
+      # skill file for every agent at once, not a private per-agent copy -- never do that. Report
+      # and skip; the provisioner itself always points at current HEAD, so there is nothing for
+      # this tool to fix here anyway.
+      if [ -L "${sdir%/}" ]; then
+        agent_lines="${agent_lines}  SKIP      ${skill} -- provisioner-managed symlink, not this tool's to sync\n"
+        continue
+      fi
       installed="$sdir/SKILL.md"
       [ -f "$installed" ] || continue
       rel="seed-skills/$skill/SKILL.md"

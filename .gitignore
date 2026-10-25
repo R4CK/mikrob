@@ -116,6 +116,10 @@ Ingatlan/token*
 # records which of the 188 global skills each fleet agent's CLAUDE.md already cites and which are
 # gaps. Named, not a blanket *.md rule, so runtime markdown under store/ stays ignored.
 !store/skill-role-map.md
+# Card d2d47a92: the machine-readable source of truth the skill-map provisioner reads at every
+# agent start (fleet-core + per-role skill lists). Config, not runtime data -- the provisioner's
+# own manifest of symlinks it created stays runtime state and is NOT unignored here.
+!store/skill-role-map.json
 # Local-LLM offload tooling (config + task templates) is operational, not runtime data.
 !store/local-llm-model
 !store/route-classify-validated-model
