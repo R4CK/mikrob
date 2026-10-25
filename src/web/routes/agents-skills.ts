@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { execShellAsync } from '../exec-async.js'
@@ -88,9 +88,14 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     try {
       writeFileSync(tmpPath, file.data)
       const listOutput = await execShellAsync(`unzip -Z1 ${shellEscape(tmpPath)} 2>&1`, { timeoutMs: 5000 })
+      // Normalise entry paths first: posix.normalize strips leading ./ and resolves a/./b segments,
+      // so a zip entry named ./core-a/SKILL.md becomes core-a/SKILL.md and its split('/')[0] is
+      // 'core-a', not '.'. Without this, detachSkillSymlinkIfAny(join(skillsDir,'.')) is a no-op
+      // and unzip -o writes through the provisioned symlink into the shared global skill (N1).
       const entries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((e) => posix.normalize(e.replace(/\\/g, '/')))
       for (const entry of entries) {
-        if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
+        if (entry === '.' || entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
           unlinkSync(tmpPath)
           json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
           return true

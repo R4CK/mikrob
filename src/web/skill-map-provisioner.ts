@@ -208,10 +208,15 @@ export function detachSkillSymlinkIfAny(skillDir: string): void {
   try { real = realpathSync(skillDir) } catch { real = null } // dangling link
   unlinkSync(skillDir)
   mkdirSync(skillDir, { recursive: true })
-  if (real) {
+  // N2: only copy the symlink target when it resolves into the global skills catalog.
+  // A foreign symlink (pointing outside the catalog) gets an empty dir instead -- copying an
+  // arbitrary tree would silently duplicate potentially sensitive content into the agent dir.
+  if (real && isUnderGlobalSkillsDir(real)) {
     try { cpSync(real, skillDir, { recursive: true }) } catch (err) { logger.warn({ err, skillDir, real }, 'skill-map-provisioner: could not copy symlink target before detach') }
+    logger.warn({ skillDir, real }, 'skill-map-provisioner: detached a symlink before write, converted to a real agent-local copy so the write cannot land outside the agent directory')
+  } else {
+    logger.warn({ skillDir, real }, 'skill-map-provisioner: detached a FOREIGN symlink (target outside global catalog) -- empty dir created, target not copied')
   }
-  logger.warn({ skillDir, real }, 'skill-map-provisioner: detached a symlink before write, converted to a real agent-local copy so the write cannot land outside the agent directory')
 }
 
 // Used by store/agent-skill-drift-sync.sh's consistency with this provisioner: true if the given
