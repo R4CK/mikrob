@@ -433,6 +433,37 @@ describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR t
     )
   })
 
+  // Card 9529d46e (fullstack/DevO, 2026-10-25): non-vacuity proof for the quarantine-reader SSRF
+  // absent-anchor. The anchor watches that upstream's "Always refused, in every posture" heading
+  // does NOT appear in the fork's quarantine-reader.md template (SSRF protection lives in the
+  // egress-gate hook instead). An 'absent' anchor satisfied by an empty/mistyped needle is no
+  // guard at all -- this test proves the needle is real by showing that if the heading were added,
+  // the anchor would fire as drift.
+  it('NON-VACUITY: quarantine-reader SSRF absent-anchor catches the heading if it were introduced', () => {
+    const anchor = ACKNOWLEDGED_FORK_ANCHORS['templates/sub-agents/quarantine-reader.md']
+    expect(anchor).toBeDefined()
+    expect(typeof anchor).toBe('object')
+    // Run against a synthetic file that contains the upstream heading.
+    const drifted = classifyForkAnchors(
+      { 'templates/sub-agents/quarantine-reader.md': anchor! },
+      () => '## Always refused, in every posture\nThe egress hook blocks these addresses.',
+    )
+    expect(drifted, 'needle not found in synthetic file -- is the needle a typo?').toHaveLength(1)
+    expect(drifted[0]!.found).toBe(true) // needle found => drift for absent anchor
+  })
+
+  // Two-way check: the current live file must NOT contain the heading (the anchor must stay green
+  // on the real tree). Without this the non-vacuity test above proves the mechanism works but says
+  // nothing about whether the anchor is actually satisfied today.
+  it('TWO-WAY: quarantine-reader SSRF absent-anchor is currently satisfied (heading absent from live file)', () => {
+    const liveContent = readReal('templates/sub-agents/quarantine-reader.md') ?? ''
+    expect(
+      liveContent,
+      "upstream's SSRF heading appeared in the fork's quarantine-reader.md -- " +
+        "update the absent-anchor decision in acknowledged-conflicts.ts (card 9529d46e)",
+    ).not.toContain('Always refused, in every posture')
+  })
+
   // Card 405a6da0 (WhiteHat 1f252502 gate): known-positive control, per CLAUDE.md code-quality rule
   // 12 ("run a guard on its own founding case before reporting zero findings"). The keychainDelete
   // anchor (src/web/keychain.ts, above) was added SPECIFICALLY because this exact regression already

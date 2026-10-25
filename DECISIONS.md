@@ -22061,3 +22061,20 @@ Három red-then-green eset, mindegyik RED-MUTANT-tal (a mutáns ugyanaz a szkrip
 **Ki döntött:** a tételek RedHat-tól (24721) és WhiteHat-tól (24727) jönnek, a fix-direction mindkettő saját mérése (`bash -p` igazoltan ignorálja az importált függvényeket), MikroB a delta dispatch-ot adta (msg 14876/14883/14885), a kódot DevO (fullstack) írta.
 
 **Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933), komment 24721 (RedHat NO-GO), 24727 (WhiteHat NO-GO), 77e6e011 komment 24726 (WhiteHat F1/F2 LOW), `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.
+
+## 2026-10-25 -- kártya 9529d46e: SSRF-block adopció -- hook, nem template-próza
+
+**Kontextus:** az 1eae1b41 kártya (2026-10-17) a quarantine-reader.md upstream `Always refused, in every posture` SSRF-védelmi blokkját nem adoptálta, külön security-group követő kártyát ígért. Ez a kártya (9529d46e) az a követő.
+
+**Döntés:**
+- **Hook-alapú adoptálás, NEM template-próza.** Az SSRF-védelmet a `scripts/hooks/egress-gate.mjs` `isQuarantineDenied()` függvénye implementálja (PreToolUse hook), nem a `templates/sub-agents/quarantine-reader.md` sablonban lévő próza. A hook minden tool-híváskor tüzel, sablon-tartalomtól és posture-beállítástól függetlenül; a sablonba írt próza csak olvasható dokumentum, nem végrehajtott szabály.
+- **Következmény az acknowledged-conflicts.ts tripwire-ra:** az `expect: 'absent'` bejegyzés megmarad, de a `because` szövege frissült: az SSRF-védelem már a hook-ban él, a sablonba kerülő heading duplikáció lenne (és összezavarhatná a jövőbeli karbantartókat, kik az enforcement réteget keresgélnék).
+- **Négy bypass osztály lezárva (kód-szintű döntés):**
+  - (a) Trailing-dot hostname bypass (`localhost.`) -> `isQuarantineDenied` normalizál (`replace(/\.$/, '')`).
+  - (a) Pure-hex IPv4-mapped IPv6 (`::ffff:a9fe:a9fe`) és NAT64 (`64:ff9b::a9fe:a9fe`) -> `isPrivateIPv6` hex-pair -> IPv4 konverzió.
+  - (b) Default-posture quarantine-reader eléri a localhost-ot az ALLOWED_PREFIXES-en keresztül -> step 0 feltétel `openReader &&` helyett `isQuarantine &&` (posture-független).
+- **Non-adoptált eredeti javaslat:** az upstream template-beli `Always refused, in every posture` szövegblokkot nem portoltuk, mert a hook már szigorúbb garanciát ad.
+
+**Ki döntött:** a bypass osztályok azonosítása 9529d46e kártya leírásából, a hook-adoptálás vs template-próza döntés DevO (fullstack) javaslatára, MikroB jóváhagyásával. Kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9529d46e (szülő 7f0efce3), acknowledged-conflicts.ts `templates/sub-agents/quarantine-reader.md` bejegyzés, `scripts/hooks/egress-gate.mjs` `isQuarantineDenied`/`isPrivateIPv6`.
