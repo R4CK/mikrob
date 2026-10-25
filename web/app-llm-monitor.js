@@ -427,7 +427,7 @@ function llmMonCloseDetail() {
   if (!panel || panel.hidden) return
   panel.hidden = true
   panel.innerHTML = ''
-  const block = llmMonDetailIdx >= 0 ? document.querySelector(`.llm-mon-block[data-idx="${llmMonDetailIdx}"]`) : null
+  const block = llmMonDetailIdx >= 0 ? document.querySelector(`.llm-mon-block[data-idx="${CSS.escape(llmMonDetailIdx)}"]`) : null
   llmMonDetailIdx = -1
   if (block) block.focus()
 }

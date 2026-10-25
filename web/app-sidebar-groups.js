@@ -23,14 +23,14 @@ SIDEBAR_GROUPS.forEach((def) => def.pages.forEach((p) => { PAGE_SIDEBAR_GROUP[p]
 // Re-parent the 23 static links to match the map. Moving an existing DOM node
 // does not invalidate the navLinks refs captured by querySelectorAll at boot.
 SIDEBAR_GROUPS.forEach((def) => {
-  const group = document.querySelector(`.sb-group[data-group="${def.key}"]`)
+  const group = document.querySelector(`.sb-group[data-group="${CSS.escape(def.key)}"]`)
   if (!group) return
   const label = group.querySelector('.sb-group-label')
   if (label) label.dataset.i18n = def.labelKey
   const items = group.querySelector('.sb-group-items')
   if (!items) return
   def.pages.forEach((p) => {
-    const link = document.querySelector(`.sb-link[data-page="${p}"]`)
+    const link = document.querySelector(`.sb-link[data-page="${CSS.escape(p)}"]`)
     if (link) items.appendChild(link)
   })
 })

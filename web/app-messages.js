@@ -12,7 +12,7 @@ const chatAgentHasAvatar = new Map() // name -> true|false
 let chatSelectedAgent = null
 
 function chatMonogramEl(agentName, size) {
-  const letter = agentName.charAt(0).toUpperCase()
+  const letter = escapeHtml(agentName.charAt(0).toUpperCase())
   const colors = ['#d97757','#00C2A8','#818cf8','#22c55e','#f59e0b','#ec4899']
   const color = colors[agentName.split('').reduce((a,c)=>a+c.charCodeAt(0),0) % colors.length]
   return `<div class="chat-avatar chat-avatar-mono" style="width:${size}px;height:${size}px;background:${color};font-size:${Math.round(size*0.4)}px">${letter}</div>`

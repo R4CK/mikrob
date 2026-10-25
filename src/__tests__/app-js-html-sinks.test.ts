@@ -529,7 +529,7 @@ describe('textContent sinks get the raw text, not escaped twice', () => {
 // mdInline javascript: URLs, a t.map(t=>) shadowing bug). The remainder needs its own dedicated,
 // gated pass (card ba065168) rather than a rushed sweep bundled into a 25-commit upstream-merge
 // review -- remove this skip once that card's Kesz-ha is met.
-describe.skip('sink-level completeness of web/app.js', () => {
+describe('sink-level completeness of web/app.js', () => {
   const { strict, review } = scanAppJs(src, Object.values(langSrc))
   const allowlist = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'app-js-html-allowlist.json'), 'utf8')) as Record<string, string>
   const fmt = (r: Interp) => `app.js:${r.line} [${r.context}] ${allowKey(r)}`

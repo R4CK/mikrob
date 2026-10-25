@@ -764,7 +764,7 @@ function openEditSchedule(task) {
 
     // Set agent
     const agentSel = document.getElementById('scheduleAgent')
-    if (agentSel.querySelector(`option[value="${task.agent}"]`)) {
+    if (agentSel.querySelector(`option[value="${CSS.escape(task.agent)}"]`)) {
       agentSel.value = task.agent
     }
 

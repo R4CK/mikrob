@@ -220,8 +220,8 @@ function renderOperatorAccessSection(body) {
 
 function applyOperatorAccess(a) {
   document.getElementById('opAccEnabled').checked = !!a.enabled
-  for (const c of OPERATOR_CAPS) document.querySelector(`[data-op-cap="${c}"]`).checked = !!(a.capabilities && a.capabilities[c])
-  for (const c of OPERATOR_CMDS) document.querySelector(`[data-op-cmd="${c}"]`).checked = (a.commands || []).includes(c)
+  for (const c of OPERATOR_CAPS) document.querySelector(`[data-op-cap="${CSS.escape(c)}"]`).checked = !!(a.capabilities && a.capabilities[c])
+  for (const c of OPERATOR_CMDS) document.querySelector(`[data-op-cmd="${CSS.escape(c)}"]`).checked = (a.commands || []).includes(c)
   document.getElementById('opAccCaps').style.opacity = a.enabled ? '1' : '0.5'
 }
 
@@ -242,8 +242,8 @@ async function saveOperatorAccess(ev) {
   }
   const next = {
     enabled: document.getElementById('opAccEnabled').checked,
-    capabilities: Object.fromEntries(OPERATOR_CAPS.map((c) => [c, document.querySelector(`[data-op-cap="${c}"]`).checked])),
-    commands: OPERATOR_CMDS.filter((c) => document.querySelector(`[data-op-cmd="${c}"]`).checked),
+    capabilities: Object.fromEntries(OPERATOR_CAPS.map((c) => [c, document.querySelector(`[data-op-cap="${CSS.escape(c)}"]`).checked])),
+    commands: OPERATOR_CMDS.filter((c) => document.querySelector(`[data-op-cmd="${CSS.escape(c)}"]`).checked),
   }
   try {
     const r = await fetch('/api/operator-access', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) })
