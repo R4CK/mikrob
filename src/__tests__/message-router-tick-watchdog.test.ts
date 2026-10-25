@@ -89,6 +89,10 @@ vi.mock('../web/agent-config.js', () => ({
   // "No <name> export is defined on the mock" -- which surfaced as the watchdog never latching,
   // not as a missing-export error.
   readAgentWorksourceChannel: () => null,
+  // Köteg 20 (card 4f5e43e6, upstream 4f4c0eee7): same class of gap this file's own comment
+  // above already warned about -- the router now also asks whether the recipient is a
+  // pull-delivery agent, default false.
+  readAgentPullDelivery: () => false,
 }))
 
 vi.mock('../web/agent-process.js', () => ({

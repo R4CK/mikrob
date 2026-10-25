@@ -391,12 +391,29 @@ function updateProcessControl(agent) {
   }
 }
 
+// RESTARTFORCEUI1018: the server refuses a manual main restart while the pane is busy or unreadable (409
+// restart-blocked, manual-restart-gate.ts), so a click never cuts a running turn by accident. A stuck main
+// agent can read busy for good, so the refusal is not the end: a second confirm sends an explicit force.
+function postMarveenRestart(force) {
+  return force
+    ? fetch('/api/marveen/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }) })
+    : fetch('/api/marveen/restart', { method: 'POST' })
+}
+
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
   if (!confirm(t('agents.confirm.hard_restart'))) return
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
-    const res = await fetch('/api/marveen/restart', { method: 'POST' })
+    let res = await postMarveenRestart(false)
+    if (res.status === 409) {
+      const blocked = await res.clone().json().catch(() => ({}))
+      if (blocked.error === 'restart-blocked') {
+        const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
+        if (!confirm(t(key))) { showToast(t('agents.toast.restart_not_forced')); return }
+        res = await postMarveenRestart(true)
+      }
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || t('agents.toast.restart_failed'))

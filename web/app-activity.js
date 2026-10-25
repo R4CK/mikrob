@@ -10,9 +10,26 @@ let activityTimer = null
 const ACTIVITY_STATE_META = {
   working: { label: () => t('activity.state.working'), cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
   idle: { label: () => t('activity.state.idle'), cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
+  // Main thread idle, background (sub-)agents running. Display-only: the API's
+  // `state` stays 'idle' and this is picked by activityDisplayState.
+  subagents: {
+    label: (entry) => entry.bgAgents.queued > 0
+      ? t('activity.state.subagents_queued', { n: entry.bgAgents.running, q: entry.bgAgents.queued })
+      : t('activity.state.subagents', { n: entry.bgAgents.running }),
+    cls: 'act-subagents',
+    tip: 'Élő állapot (3 másodpercenként): a fő szál tétlen, de a háttér-alügynökei dolgoznak. A "vár" az alügynököknek küldött, még fel nem vett üzenetek száma.',
+  },
   unknown: { label: () => t('activity.state.unknown'), cls: 'act-unknown', tip: 'Élő állapot: nem sikerült megállapítani a session pane tartalmából.' },
   error: { label: () => t('activity.state.error'), cls: 'act-error', tip: 'Élő állapot: hiba látszik az ágens session paneljén.' },
   stopped: { label: () => t('activity.state.stopped'), cls: 'act-stopped', tip: 'Élő állapot: az ágens session nem fut.' },
+}
+
+// The state an entry is SHOWN in. The main thread working always wins; only an
+// idle main thread with running background agents reads as 'subagents'. An
+// entry without a recognised agent block (bgAgents null) keeps its own state.
+function activityDisplayState(entry) {
+  if (entry && entry.state === 'idle' && entry.bgAgents && entry.bgAgents.running > 0) return 'subagents'
+  return entry ? entry.state : 'unknown'
 }
 
 // === Kanban auto-refresh ===
@@ -74,8 +91,8 @@ function renderActivity(entries) {
     return
   }
   list.innerHTML = entries.map((a) => {
-    const metaRaw = ACTIVITY_STATE_META[a.state] || ACTIVITY_STATE_META.unknown
-    const meta = { ...metaRaw, label: typeof metaRaw.label === 'function' ? metaRaw.label() : metaRaw.label }
+    const metaRaw = ACTIVITY_STATE_META[activityDisplayState(a)] || ACTIVITY_STATE_META.unknown
+    const meta = { ...metaRaw, label: typeof metaRaw.label === 'function' ? metaRaw.label(a) : metaRaw.label }
     const tail = (a.tail || []).map((l) => escapeHtml(l)).join('\n')
     const mainBadge = a.isMain ? '<span class="act-main-badge">' + t('activity.badge.main') + '</span>' : ''
     // Permission-mode chip. Shown for every mode EXCEPT the ones that let the

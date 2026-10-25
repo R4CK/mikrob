@@ -13,6 +13,7 @@ chat. Pure stdlib (sqlite3) -- no node startup, no jq.
 """
 import os
 import sqlite3
+import calendar
 import time
 
 # Canonical schema. MUST stay identical to the db.ts initDatabase() migration
@@ -352,6 +353,31 @@ def recent(agent_id, limit=RECENT_LIMIT):
         con.close()
 
 
+# How much earlier than its ledger write an inbound may count as having
+# arrived. It covers the processing lag between a message arriving and the model
+# logging it (59 s in the 2026-09-11 case), and nothing more.
+MAX_PROCESSING_LAG = 15 * 60
+
+
+def _arrival_epoch(ts, logged_at):
+    """Unix epoch of an inbound's channel timestamp ("2026-09-11T08:40:21.000Z",
+    always UTC), clamped into [logged_at - MAX_PROCESSING_LAG, logged_at].
+    Falls back to the ledger write time when ts is missing or does not parse.
+
+    Both bounds matter. A ts skewed into the FUTURE is cut at logged_at (a
+    message cannot arrive after it was logged), which is the old behaviour. A ts
+    skewed into the PAST would otherwise widen the answered-window by the whole
+    skew: an outbound sent a month before the inbound was logged would count as
+    answering it. The lower bound limits that widening to the processing lag."""
+    logged_at = int(logged_at)
+    try:
+        base = str(ts).strip().rstrip("Z").split(".")[0]
+        parsed = calendar.timegm(time.strptime(base, "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        return logged_at
+    return max(min(parsed, logged_at), logged_at - MAX_PROCESSING_LAG)
+
+
 def source_for(agent_id, chat_id):
     """The channel envelope source ("plugin:<provider>:<server>") most recently
     recorded for this agent+chat, or None if unknown (PROVIDERVAK908).
@@ -393,11 +419,22 @@ def open_question_with_age(agent_id):
         if not row:
             return None
         chat_id, message_id, text, ts, created_at, rid, att_kind, att_file_id = row
+        # An inbound row is written when the model PROCESSES the message, not when
+        # it arrives, so a reply sent in between lands in the ledger BEFORE the
+        # message it answered. Measured 2026-09-11: "hahó" arrived 08:40:21Z, the
+        # reply went out 08:41:19Z, the inbound row was written 08:41:20Z -- and
+        # the reply guard blocked on a message that had already been answered.
+        # So a reply also counts when it was SENT after the inbound ARRIVED (ts).
+        # Trade-off: a new question landing while an unrelated reply is being
+        # written reads as answered; the model still has it in context, and a
+        # missed nudge is cheaper than a duplicate message to the owner.
+        arrived = _arrival_epoch(ts, created_at)
         later_out = con.execute(
             "SELECT 1 FROM conversation_log"
             " WHERE agent_id=? AND direction='out'"
-            "   AND (created_at > ? OR (created_at = ? AND id > ?)) LIMIT 1",
-            (str(agent_id), created_at, created_at, rid),
+            "   AND (created_at > ? OR (created_at = ? AND id > ?) OR created_at > ?)"
+            " LIMIT 1",
+            (str(agent_id), created_at, created_at, rid, arrived),
         ).fetchone()
         if later_out:
             return None  # the last inbound has already been answered
