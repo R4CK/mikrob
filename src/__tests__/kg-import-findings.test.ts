@@ -57,6 +57,20 @@ describe('classifyFindingText (MT-10a deterministic keyword taxonomy)', () => {
     expect(classifyFindingText('QA', null)).toBe('unclassified')
     expect(classifyFindingText('QA', 'teljesen ismeretlen szoveg')).toBe('unclassified')
   })
+
+  it('F2: security rules have priority over generic rules (auth-bypass beats env-allowlist)', () => {
+    // Without fix (generics first): 'allowlist' matches missing-env-allowlist before auth-bypass
+    // With fix (security first): auth-bypass matches first
+    expect(classifyFindingText('CYBERSEC', 'auth bypass via env allowlist config')).toBe('auth-bypass')
+    expect(classifyFindingText('QA', 'SQL injection; lint ratchet baseline still holds')).toBe('injection')
+  })
+
+  it('F3: classification text is truncated to 8000 chars before pattern matching', () => {
+    // 'auth bypass' placed beyond the 8000-char cut-off must NOT match after truncation.
+    // CYBERSEC (7) + space (1) = 8 chars prefix; 'auth bypass' appears at position 8001+.
+    const prefix = 'x'.repeat(8001)
+    expect(classifyFindingText('CYBERSEC', prefix + 'auth bypass')).toBe('unclassified')
+  })
 })
 
 describe('importFindings (MT-10a, card 63206155)', () => {
@@ -69,6 +83,7 @@ describe('importFindings (MT-10a, card 63206155)', () => {
 
     expect(report.verdictsSeen).toBe(4) // 2 env-allowlist + 1 unclassified + 1 deleted-card lint
     expect(report.verdictsSkippedMissing).toBe(1)
+    expect(report.verdictsSkippedSecret).toBe(0)
     expect(report.findingsUpserted).toBe(3)
     expect(report.foundOnEdges).toBe(3)
     expect(report.classEdges).toBe(3)
@@ -135,20 +150,62 @@ describe('importFindings (MT-10a, card 63206155)', () => {
     expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_edges').get()).toEqual(edgesAfterFirst)
   })
 
-  it('a failure partway through the run leaves NOTHING written (atomic, not partial)', () => {
+  it('F1: ZWS injected into findings_ref cannot hide a security finding from classification', () => {
+    // U+200B (ZERO WIDTH SPACE) inserted between "auth" and " bypass" prevents the auth-bypass
+    // pattern's literal-space requirement from matching: "auth​ bypass" ≠ "auth bypass".
+    // Without sanitization the finding silently falls through to 'unclassified' -- a genuine
+    // auth-bypass stays undetected by the taxonomy. With sanitization the ZWS is stripped first,
+    // restoring "auth bypass" so the security rule fires correctly.
     const mainDb = makeMainDbFixture()
     const kgDb = new Database(':memory:')
     migrateKg(kgDb)
-    // Force a throw on the FIRST verdict row (card1/CYBERSEC), after it would already have
-    // written a finding node and a found_on edge in a real run -- a findings_ref matching a
-    // secret shape makes upsertNode's assertNoSecretShape throw (store.ts), same guard every
-    // kg_nodes write already passes through.
+    mainDb
+      .prepare(`UPDATE kanban_verdicts SET findings_ref = ? WHERE card_id = 'card1' AND gate = 'CYBERSEC'`)
+      .run('auth​ bypass critical')
+
+    importFindings(mainDb, kgDb)
+
+    const classEdge = kgDb
+      .prepare(`SELECT dst FROM kg_edges WHERE src = 'finding:1' AND rel = 'of_class'`)
+      .get() as { dst: string } | undefined
+    // After sanitization: "auth bypass critical" -> auth-bypass rule matches first
+    expect(classEdge?.dst).toBe('error_class:auth-bypass')
+  })
+
+  it('F4: re-running after findings_ref changes removes the stale of_class edge', () => {
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    importFindings(mainDb, kgDb) // first run: finding:1 -> of_class:missing-env-allowlist
+
+    // Change findings_ref so the finding would reclassify to auth-bypass
+    mainDb.prepare(`UPDATE kanban_verdicts SET findings_ref = 'auth bypass' WHERE id = 1`).run()
+    importFindings(mainDb, kgDb) // second run: should remove old edge and insert new one
+
+    const classEdges = kgDb
+      .prepare(`SELECT dst FROM kg_edges WHERE src = 'finding:1' AND rel = 'of_class'`)
+      .all() as { dst: string }[]
+    expect(classEdges).toHaveLength(1) // exactly one of_class edge (no stale duplicate)
+    expect(classEdges[0]?.dst).toBe('error_class:auth-bypass')
+  })
+
+  it('F5: a secret-shaped findings_ref is skipped and counted; the rest of the run continues', () => {
+    // Previously: upsertNode's assertNoSecretShape threw KgSecretError and aborted the whole run.
+    // Now: the row is pre-screened, skipped with verdictsSkippedSecret++, and the remaining rows
+    // are still written.
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
     mainDb
       .prepare(`UPDATE kanban_verdicts SET findings_ref = 'ghp_${'a'.repeat(36)}' WHERE card_id = 'card1' AND gate = 'CYBERSEC'`)
       .run()
 
-    expect(() => importFindings(mainDb, kgDb)).toThrow()
-    expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
-    expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_edges').get()).toEqual({ n: 0 })
+    let report!: ReturnType<typeof importFindings>
+    expect(() => { report = importFindings(mainDb, kgDb) }).not.toThrow()
+    expect(report.verdictsSkippedSecret).toBe(1)
+    // card2/CYBERED env-allowlist + card1/QA FAIL (no findings_ref) are still written
+    expect(report.findingsUpserted).toBe(2)
+    // deleted1/QA FAIL still counted as skipped-missing
+    expect(report.verdictsSkippedMissing).toBe(1)
   })
 })

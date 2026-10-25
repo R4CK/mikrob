@@ -23,17 +23,19 @@
 // which is tracked outside this card.
 //
 // Deterministic, same shape as import-from-relations.ts and import-decisions-log.ts: one
-// transaction (atomic -- a bad row rolls back the whole run, not a partial one), idempotent by
-// construction (the finding node id is derived from kanban_verdicts.id, a stable autoincrement
-// primary key; upsertEdge's composite PK makes a re-run a no-op for edges already present).
+// transaction (atomic for infrastructure faults; rows with secret-shaped findings_ref are
+// pre-screened and skipped rather than aborting the whole run -- F5, card 61348647).
+// Idempotent by construction (finding node id from kanban_verdicts.id stable autoincrement pk;
+// of_class edges are delete-then-insert per run so reclassification removes stale edges -- F4).
 
 import type Database from 'better-sqlite3'
-import { upsertNode, upsertEdge } from './store.js'
+import { upsertNode, upsertEdge, sanitizeKgText, findSecretShape } from './store.js'
 import { mapProjectToPartition, GLOBAL_PARTITION } from './project-map.js'
 
 export interface FindingsImportReport {
   verdictsSeen: number
   verdictsSkippedMissing: number
+  verdictsSkippedSecret: number
   findingsUpserted: number
   foundOnEdges: number
   classEdges: number
@@ -62,12 +64,35 @@ interface ErrorClassRule {
   pattern: RegExp
 }
 
-// Ordered: first match wins. Deliberately small and conservative -- a rule that is too broad
-// mis-groups unrelated findings, which is worse than leaving them `unclassified` (the card's own
-// acceptance criterion only requires that two findings with the SAME real root cause land on the
-// same class, not that every row gets classified). Extend this list as real findings_ref text is
-// observed; do not guess categories that have never actually appeared.
+// Ordered: first match wins. Security-specific rules come FIRST so that a finding like
+// "auth bypass via env allowlist" does not get mis-grouped into the generic env-allowlist
+// bucket (F2, card 61348647 -- measured: 7/7 realistic mixed-signal sentences misclassified
+// with generics-first). Generic rules follow. Deliberately small and conservative -- a rule
+// that is too broad mis-groups unrelated findings, which is worse than leaving them
+// `unclassified`. Extend as real findings_ref text is observed; do not guess.
 const ERROR_CLASS_RULES: readonly ErrorClassRule[] = [
+  // Security-specific first.
+  {
+    id: 'auth-bypass',
+    title: 'Hitelesítés/jogosultság megkerülés',
+    pattern: /\bauth(entication|orization)? bypass\b|\bjogosults[aá]g.*megker[uü]l/i,
+  },
+  {
+    id: 'injection',
+    title: 'Injection (SQL/command/path)',
+    pattern: /\binjection\b|\binjekci[oó]\b/i,
+  },
+  {
+    id: 'fail-open',
+    title: 'Fail-open hiba (védelem kikerülhető hibánál)',
+    pattern: /\bfail[-_ ]?open\b/i,
+  },
+  {
+    id: 'race-condition',
+    title: 'Versenyfeltétel / konkurrencia hiba',
+    pattern: /\brace condition\b|\bverseny ?felt[ée]tel\b|\bconcurrency\b/i,
+  },
+  // Generic quality rules after security.
   {
     id: 'missing-env-allowlist',
     title: 'Hiányzó/nem engedélyezett env-változó',
@@ -88,36 +113,24 @@ const ERROR_CLASS_RULES: readonly ErrorClassRule[] = [
     title: 'Flaky/instabil teszt',
     pattern: /\bflaky\b|\binstabil\b|\bintermittens\b/i,
   },
-  {
-    id: 'race-condition',
-    title: 'Versenyfeltétel / konkurrencia hiba',
-    pattern: /\brace condition\b|\bverseny ?felt[ée]tel\b|\bconcurrency\b/i,
-  },
-  {
-    id: 'auth-bypass',
-    title: 'Hitelesítés/jogosultság megkerülés',
-    pattern: /\bauth(entication|orization)? bypass\b|\bjogosults[aá]g.*megker[uü]l/i,
-  },
-  {
-    id: 'injection',
-    title: 'Injection (SQL/command/path)',
-    pattern: /\binjection\b|\binjekci[oó]\b/i,
-  },
-  {
-    id: 'fail-open',
-    title: 'Fail-open hiba (védelem kikerülhető hibánál)',
-    pattern: /\bfail[-_ ]?open\b/i,
-  },
 ]
 
 const UNCLASSIFIED_CLASS_ID = 'unclassified'
 const UNCLASSIFIED_CLASS_TITLE = 'Nem osztályozott'
 
+// F3 (card 61348647): truncate classification text to the body cap before running patterns.
+// The auth-bypass rule's `.*` quantifier on an untruncated 480 KB string triggers catastrophic
+// backtracking (~15 s measured). The body cap (8000) is already the schema's hard limit for
+// stored text, so any text beyond it can never be indexed or surfaced -- truncating here is
+// consistent with what the DB would store anyway.
+const CLASSIFICATION_TEXT_CAP = 8000
+
 /** Picks the first matching rule's id, or the unclassified bucket. Exported so the coverage
  *  measurement the card asks for (and a future taxonomy-tuning pass) can run this over real
  *  findings_ref text without re-running the whole import. */
 export function classifyFindingText(gate: string, findingsRef: string | null): string {
-  const text = `${gate} ${findingsRef ?? ''}`
+  const full = `${gate} ${findingsRef ?? ''}`
+  const text = full.length > CLASSIFICATION_TEXT_CAP ? full.slice(0, CLASSIFICATION_TEXT_CAP) : full
   for (const rule of ERROR_CLASS_RULES) {
     if (rule.pattern.test(text)) return rule.id
   }
@@ -160,6 +173,7 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
   const report: FindingsImportReport = {
     verdictsSeen: 0,
     verdictsSkippedMissing: 0,
+    verdictsSkippedSecret: 0,
     findingsUpserted: 0,
     foundOnEdges: 0,
     classEdges: 0,
@@ -170,13 +184,25 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
   const classNodesWritten = new Set<string>()
   const cardNodesWritten = new Set<string>()
 
-  const verdicts = mainDb
+  const allVerdicts = mainDb
     .prepare(
       `SELECT id, card_id, gate, verdict, sha, findings_ref FROM kanban_verdicts
        WHERE verdict IN ('NO-GO','FAIL')`,
     )
     .all() as VerdictRow[]
-  report.verdictsSeen = verdicts.length
+  report.verdictsSeen = allVerdicts.length
+
+  // F5 (card 61348647): pre-screen for secret-shaped findings_ref BEFORE the transaction.
+  // A single secret row must not abort the entire import; skip and count it instead.
+  // Screening happens on the sanitized text so invisible-char-disguised secrets are caught
+  // by the same path as clear-text ones (F1 interaction).
+  const verdicts = allVerdicts.filter((v) => {
+    if (findSecretShape(sanitizeKgText(v.findings_ref))) {
+      report.verdictsSkippedSecret += 1
+      return false
+    }
+    return true
+  })
 
   const runImport = kgDb.transaction(() => {
     for (const v of verdicts) {
@@ -185,6 +211,12 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
         report.verdictsSkippedMissing += 1
         continue
       }
+      // F1 (card 61348647): sanitize findings_ref before it reaches classifyFindingText
+      // (classification input) and upsertNode body (storage). upsertNode already sanitizes
+      // internally, but BIDI chars between words can create spurious regex word boundaries that
+      // mis-classify the finding before it ever hits the node write path. Sanitizing here
+      // keeps classification and storage consistent on the same clean text.
+      const safeRef = sanitizeKgText(v.findings_ref) ?? null
       const project = mapProjectToPartition(card.project)
       const cardId = cardNodeId(v.card_id)
       if (!cardNodesWritten.has(cardId)) {
@@ -204,7 +236,7 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
         type: 'finding',
         project,
         title: `${v.gate} ${v.verdict}`,
-        body: v.findings_ref ?? null,
+        body: safeRef,
         source_ref: `kanban_verdicts:${v.id}`,
         gate_sha: v.sha ?? null,
         extractor: 'import:kanban_verdicts_findings',
@@ -222,7 +254,7 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
         report.foundOnEdges += 1
       }
 
-      const classId = classifyFindingText(v.gate, v.findings_ref)
+      const classId = classifyFindingText(v.gate, safeRef)
       if (classId === UNCLASSIFIED_CLASS_ID) report.unclassifiedCount += 1
       else report.classifiedCount += 1
 
@@ -238,6 +270,10 @@ export function importFindings(mainDb: Database.Database, kgDb: Database.Databas
           extractor: 'import:kanban_verdicts_findings',
         })
       }
+      // F4 (card 61348647): delete stale of_class edges for this finding before inserting
+      // the new one. upsertEdge uses INSERT OR IGNORE, so without this DELETE a reclassified
+      // finding accumulates two of_class edges: the old one and the new one.
+      kgDb.prepare(`DELETE FROM kg_edges WHERE src = ? AND rel = 'of_class'`).run(findingId)
       if (
         upsertEdge(kgDb, {
           src: findingId,
