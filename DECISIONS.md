@@ -22134,3 +22134,11 @@ Triage shas (comment 8062, added to card scope post-triage):
 **Ledger (store/upstream-ported.json):** a54a50d2 and 0e9442ea moved from ported to skipped with reasons.
 
 **Reference:** card 4d367048, RedHat NO-GO comment 25006.
+
+## 2026-10-25: 2ba98cac + 4d367048 -- sha description accuracy fix (RedHat NO-GO 25019/25020)
+
+In-place correction to the not-yet-landed correcting entries above. Three sha descriptions did not match `git log -1 --format=%s` verbatim:
+- 2ba98cac: b47bf993 was attributed "fix(update): failed npm ci" (6b397f23's subject). Now: "fix(watchdog): a userbot-prober elesitese..." (HBTAILVAK914).
+- 4d367048: a54a50d2 was "feat(update): egress-drift scan"; now verbatim "feat(scripts): egress-drift scan on logical lines..." (TASKEGRESSDRIFT913). 0e9442ea was "fix(suites)..."; now verbatim "fix(test-gate): refuse the suite from a transient root..." (SUITETMPPIROS912).
+
+Classification and ledger entries unchanged. No new security/functional finding.
