@@ -40,7 +40,9 @@
     "~/.claude/skills/imagegen-frontend-mobile": [],
     "~/.claude/skills/imagegen-frontend-web": [],
     "~/.claude/skills/industrial-brutalist-ui": [],
-    "~/.claude/skills/interview-me": [],
+    "~/.claude/skills/interview-me": [
+      "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
+    ],
     "~/.claude/skills/launch-marketing": [],
     "~/.claude/skills/managing-tech-debt": [],
     "~/.claude/skills/mattpocock-productivity": [],
@@ -68,6 +70,7 @@
     "~/.claude/skills/writing-specs-designs": [],
     "~/marveen/agents/backend/.claude/skills/chaos-engineering": [],
     "~/marveen/agents/backend/.claude/skills/feature-flags-architect": [],
+    "~/marveen/agents/backend/.claude/skills/interview-me": [],
     "~/marveen/agents/backend/.claude/skills/mcp-builder": [],
     "~/marveen/agents/backend/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
@@ -77,6 +80,9 @@
     "~/marveen/agents/backend/.claude/skills/stripe-integration-expert": [],
     "~/marveen/agents/backend2/.claude/skills/chaos-engineering": [],
     "~/marveen/agents/backend2/.claude/skills/feature-flags-architect": [],
+    "~/marveen/agents/backend2/.claude/skills/interview-me": [
+      "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
+    ],
     "~/marveen/agents/backend2/.claude/skills/mcp-builder": [],
     "~/marveen/agents/backend2/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
@@ -86,6 +92,9 @@
     "~/marveen/agents/backend2/.claude/skills/stripe-integration-expert": [],
     "~/marveen/agents/backend3/.claude/skills/chaos-engineering": [],
     "~/marveen/agents/backend3/.claude/skills/feature-flags-architect": [],
+    "~/marveen/agents/backend3/.claude/skills/interview-me": [
+      "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
+    ],
     "~/marveen/agents/backend3/.claude/skills/mcp-builder": [],
     "~/marveen/agents/backend3/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
@@ -244,6 +253,9 @@
     "~/marveen/agents/cybersec2/.claude/skills/testing-oauth2-implementation-flaws": [
       "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
     ],
+    "~/marveen/agents/elemzo/.claude/skills/interview-me": [
+      "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
+    ],
     "~/marveen/agents/fron-ted/.claude/skills/a11y-audit": [],
     "~/marveen/agents/fron-ted/.claude/skills/animate": [],
     "~/marveen/agents/fron-ted/.claude/skills/animation-vocabulary": [],
@@ -260,6 +272,9 @@
     "~/marveen/agents/fron-ted/.claude/skills/fixing-motion-performance": [],
     "~/marveen/agents/fron-ted/.claude/skills/improve-animations": [],
     "~/marveen/agents/fron-ted/.claude/skills/improve-ui": [],
+    "~/marveen/agents/fron-ted/.claude/skills/interview-me": [
+      "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
+    ],
     "~/marveen/agents/fron-ted/.claude/skills/mobile-native": [],
     "~/marveen/agents/fron-ted/.claude/skills/pick-ui-library": [],
     "~/marveen/agents/fron-ted/.claude/skills/prototype": [],
@@ -273,6 +288,7 @@
     "~/marveen/agents/fron-teddy/.claude/skills/animate": [],
     "~/marveen/agents/fron-teddy/.claude/skills/animation-vocabulary": [],
     "~/marveen/agents/fron-teddy/.claude/skills/apple-design": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/baseline-ui": [],
     "~/marveen/agents/fron-teddy/.claude/skills/break-ui": [],
     "~/marveen/agents/fron-teddy/.claude/skills/create-design-md": [
       "changed:SKILL.md@22f01706fc0a28635b9769351e64a7e6e0a1be7751d00ab75fc5c77dcfc5cd91"
@@ -280,8 +296,13 @@
     "~/marveen/agents/fron-teddy/.claude/skills/emil-design-eng": [],
     "~/marveen/agents/fron-teddy/.claude/skills/find-animation-opportunities": [],
     "~/marveen/agents/fron-teddy/.claude/skills/fixing-accessibility": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/fixing-metadata": [],
     "~/marveen/agents/fron-teddy/.claude/skills/fixing-motion-performance": [],
     "~/marveen/agents/fron-teddy/.claude/skills/improve-animations": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/improve-ui": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/interview-me": [
+      "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
+    ],
     "~/marveen/agents/fron-teddy/.claude/skills/mobile-native": [],
     "~/marveen/agents/fron-teddy/.claude/skills/pick-ui-library": [],
     "~/marveen/agents/fron-teddy/.claude/skills/prototype": [],
@@ -290,6 +311,9 @@
     "~/marveen/agents/fron-teddy/.claude/skills/stitch-skill": [],
     "~/marveen/agents/fron-teddy/.claude/skills/webapp-testing": [
       "changed:SKILL.md@dc20ea4388d3fd33a315d1fe885d55134cc83c198eb2bda4fa7d28a4b9f45b86"
+    ],
+    "~/marveen/agents/fullstack/.claude/skills/interview-me": [
+      "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
     ],
     "~/marveen/agents/fullstack/.claude/skills/mcp-builder": [],
     "~/marveen/agents/fullstack/.claude/skills/observability-and-instrumentation": [
@@ -311,16 +335,19 @@
     "~/marveen/agents/qa2/.claude/skills/a11y-audit": [],
     "~/marveen/agents/qa2/.claude/skills/webapp-testing": [],
     "~/marveen/agents/teszter/.claude/skills/webapp-testing": [],
+    "~/marveen/seed-fleet-agents/backend/.claude/skills/interview-me": [],
     "~/marveen/seed-fleet-agents/backend/.claude/skills/mcp-builder": [],
     "~/marveen/seed-fleet-agents/backend/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
       "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
     ],
+    "~/marveen/seed-fleet-agents/backend2/.claude/skills/interview-me": [],
     "~/marveen/seed-fleet-agents/backend2/.claude/skills/mcp-builder": [],
     "~/marveen/seed-fleet-agents/backend2/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
       "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
     ],
+    "~/marveen/seed-fleet-agents/backend3/.claude/skills/interview-me": [],
     "~/marveen/seed-fleet-agents/backend3/.claude/skills/mcp-builder": [],
     "~/marveen/seed-fleet-agents/backend3/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
@@ -452,6 +479,7 @@
     "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/testing-oauth2-implementation-flaws": [
       "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
     ],
+    "~/marveen/seed-fleet-agents/elemzo/.claude/skills/interview-me": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/animate": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/animation-vocabulary": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/apple-design": [],
@@ -467,6 +495,7 @@
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/fixing-motion-performance": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/improve-animations": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/improve-ui": [],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/interview-me": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/mobile-native": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/pick-ui-library": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/prototype": [],
@@ -494,6 +523,7 @@
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/fixing-motion-performance": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/improve-animations": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/improve-ui": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/interview-me": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/mobile-native": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/pick-ui-library": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/prototype": [],
@@ -506,6 +536,7 @@
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/webapp-testing": [
       "changed:SKILL.md@dc20ea4388d3fd33a315d1fe885d55134cc83c198eb2bda4fa7d28a4b9f45b86"
     ],
+    "~/marveen/seed-fleet-agents/fullstack/.claude/skills/interview-me": [],
     "~/marveen/seed-fleet-agents/qa/.claude/skills/webapp-testing": [],
     "~/marveen/seed-fleet-agents/qa2/.claude/skills/webapp-testing": []
   }
