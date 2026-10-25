@@ -4,22 +4,26 @@
 // matched nothing. These tests guard the fix from both sides: the behaviour of
 // the normaliser, and the wiring that every comparison site actually uses it.
 //
-// The behavioural half evaluates the function OUT OF web/app.js rather than
-// restating it here. A copy in the test would keep passing after the shipped
-// code changed, which is the one thing a guard must not do.
+// The behavioural half evaluates the function OUT OF web/app-kanban.js rather
+// than restating it here. A copy in the test would keep passing after the
+// shipped code changed, which is the one thing a guard must not do.
+//
+// This fork modularized the old monolithic web/app.js into ~50 web/app-*.js
+// slices (card b33fc5f7+) before upstream's #2010 landed, so the function and
+// all three comparison sites live in web/app-kanban.js here, not web/app.js.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+const APP = readFileSync(join(__dirname, '../../web/app-kanban.js'), 'utf-8')
 
 function loadAssigneeKey(): (name: unknown) => string {
   const m = APP.match(/function assigneeKey\(name\) \{[\s\S]*?\n\}/)
   // An empty match must fail the test, not quietly produce a stub: a missing
   // function is exactly the regression this file exists to catch.
-  if (!m) throw new Error('assigneeKey() not found in web/app.js')
+  if (!m) throw new Error('assigneeKey() not found in web/app-kanban.js')
   return new Function(`${m[0]}; return assigneeKey`)() as (name: unknown) => string
 }
 
