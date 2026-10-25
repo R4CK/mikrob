@@ -22080,3 +22080,15 @@ Három red-then-green eset, mindegyik RED-MUTANT-tal (a mutáns ugyanaz a szkrip
 **Döntés:** mind a 7 upstream commit (7b520b37, 0cef04a3, 9b4eef9a, 68d3a102, 86b2e461, 57526d63, ec1eb717) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges, a kártyát gate-re adjuk.
 
 **Hivatkozás:** kártya 96b27014, upstream-ported.json ledger (backend3 UJRA-ELLENORIZVE 2026-10-24), origin/develop de46c96e.
+
+## 2026-10-25 -- upstream-sync 2ba98cac: watchdog + install megbizhatosag (7 commit) -- backend
+
+**Döntés:** mind a 7 upstream commit (b47bf993, f8a1f5d2, 3582807f, 3032da46, 0602f88a, b73b0812, 5b74adc2) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges.
+
+**Hivatkozás:** kártya 2ba98cac, upstream-ported.json ledger, origin/develop aade034ac.
+
+## 2026-10-25 -- upstream-sync 4d367048: context-guard + vegyes javitasok (13 commit) -- backend
+
+**Döntés:** mind a 13 upstream commit (d964aab4, d3cdb375, b69ace21, 4c7e06f9, ebc0168d, 1abd45cf, a54a50d2, b85bd129, b5739368, 3d02f370, 0e9442ea, 10b4f331, d5d323af) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges.
+
+**Hivatkozás:** kártya 4d367048, upstream-ported.json ledger, origin/develop aade034ac.
