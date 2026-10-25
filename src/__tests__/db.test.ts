@@ -26,7 +26,6 @@ import {
   getDispatchedPendingStats,
   closeMessagesWithoutDelivery,
   COMPLETION_REPORT_PREFIX,
-  LEGACY_COMPLETION_REPORT_PREFIX,
   GATE_ALERT_ORIGIN_NOTE,
   CLOSED_WITHOUT_DELIVERY_PREFIX,
   createKanbanCard,
@@ -480,7 +479,7 @@ describe('getDispatchedPendingStats -- result notifications', () => {
   // dispatched work the moment the rename lands.
   it('also ignores a completion report written with the pre-rename legacy prefix', () => {
     createAgentMessage('gateres-legacy', 'gateres-peer',
-      `${LEGACY_COMPLETION_REPORT_PREFIX} msg_id:3 status:done\n\nkesz`)
+      '[Eredmény] msg_id:3 status:done\n\nkesz') // N1 (d4c89ff1): literal prefix, not the constant (which is now '[Result]')
     const s = getDispatchedPendingStats('gateres-legacy', Date.now(), TWO_HOURS)
     expect(s.count).toBe(0)
     expect(s.hasStale).toBe(false)
@@ -488,7 +487,7 @@ describe('getDispatchedPendingStats -- result notifications', () => {
 
   it('a legacy-prefix report does not mask real dispatched work either', () => {
     createAgentMessage('gateres-legacymix', 'gateres-peer',
-      `${LEGACY_COMPLETION_REPORT_PREFIX} msg_id:4 status:done\n\nkesz`)
+      '[Eredmény] msg_id:4 status:done\n\nkesz') // N1 (d4c89ff1): literal prefix, not the constant
     createAgentMessage('gateres-legacymix', 'gateres-peer', 'valodi delegalas')
     const s = getDispatchedPendingStats('gateres-legacymix', Date.now(), TWO_HOURS)
     expect(s.count).toBe(1)
