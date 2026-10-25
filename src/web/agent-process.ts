@@ -36,6 +36,7 @@ import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
+import { provisionFleetSkills } from './skill-map-provisioner.js'
 import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { getCustomProviderOrThrow } from './custom-providers.js'
@@ -2316,6 +2317,10 @@ export function needsFleetOauthFor(
 async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
+
+  // Card d2d47a92: assemble this agent's fleet-core + role skill set from store/skill-role-map.json
+  // before launch. Best-effort (see provisionFleetSkills doc) -- never blocks a start.
+  provisionFleetSkills(name)
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
