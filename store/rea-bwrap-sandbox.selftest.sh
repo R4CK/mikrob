@@ -364,9 +364,18 @@ SID_MUT="$(env -i "${BASE_ENV[@]}" bash "$SID_PROBE_MUT" 2>&1)" || true
 check "RED-MUTANT (RedHat KC6): removing --new-session is caught (sid no longer 1)" \
   "$([ "$SID_MUT" != "1" ] && echo 1 || echo 0)"
 
-# --die-with-parent: killing an ANCESTOR of bwrap's parent must tear down bwrap + the sandboxed
-# command too (measured: with the flag, both die within ~2s; without it, both survive as
-# orphans). Always clean up any survivors regardless of outcome.
+# --die-with-parent: killing bwrap's own process must tear down its whole descendant tree (the
+# sandboxed command) too (measured: with the flag, the tree dies within ~1.5s of wrap_pid being
+# killed, 10/10 consecutive runs under a load average of 9-25 on a 12-core host; without it, the
+# tree survives as orphans, also 10/10). Card 77e6e011: the PREVIOUS version of this test
+# simulated "ancestor dies" by killing the launching subshell wrapper instead of wrap_pid itself,
+# which raced bwrap's own internal fork+namespace setup under load -- the subshell's death only
+# reaches bwrap via PDEATHSIG, and that registration can still be in flight when the kill fires
+# (measured flaky: 1 FAIL + 2 ok across repeated runs on unmodified, already-landed code).
+# Killing wrap_pid directly removes that race entirely; a settle-wait (poll until wrap_pid has
+# actually exec'd into bwrap, not still mid-setup in bash) removes a second, smaller one.
+# Death-detection polls /proc/<pid>/cmdline identity, not bare kill -0 (PID reuse under heavy
+# process churn can make a dead PID number look "alive" again). Always clean up survivors.
 check_die_with_parent() {
   local script="$1" desc="$2" expect_dead="$3"
   local probe="$WORK/die-probe-$RANDOM.sh"
@@ -376,34 +385,64 @@ check_die_with_parent() {
   local pidfile="$WORK/die-wrap-pid-$RANDOM.txt"
   ( env -i "${BASE_ENV[@]}" bash "$probe" & echo $! > "$pidfile"; wait ) &
   local intermediate=$!
-  local wrap_pid="" bwrap_pid="" tries=0
-  # Retry capture: the bwrap grandchild may not exist yet at the first instant.
-  while [ "$tries" -lt 20 ] && { [ -z "$wrap_pid" ] || [ -z "$bwrap_pid" ]; }; do
+  local wrap_pid="" tries=0
+  while [ "$tries" -lt 20 ] && [ -z "$wrap_pid" ]; do
     sleep 0.2
     wrap_pid="$(cat "$pidfile" 2>/dev/null || echo "")"
-    if [ -n "$wrap_pid" ]; then
-      bwrap_pid="$(ps --ppid "$wrap_pid" -o pid --no-headers 2>/dev/null | head -1 | tr -d ' ')" || true
-    fi
     tries=$((tries + 1))
   done
-  kill -9 "$intermediate" 2>/dev/null || true
+  local settle=0
+  while [ "$settle" -lt 75 ] && [ -n "$wrap_pid" ] && [ "$(cat "/proc/$wrap_pid/comm" 2>/dev/null || echo "")" != "bwrap" ]; do
+    sleep 0.2
+    settle=$((settle + 1))
+  done
+  sleep 0.5
+  local -a desc_pids=() desc_ids=()
+  _die_probe_collect_descendants() {
+    local root="$1" kid kids
+    kids="$(ps --ppid "$root" -o pid --no-headers 2>/dev/null | tr -d ' ')" || true
+    for kid in $kids; do
+      desc_pids+=("$kid")
+      desc_ids+=("$(tr '\0' ' ' < "/proc/$kid/cmdline" 2>/dev/null || echo "")")
+      _die_probe_collect_descendants "$kid"
+    done
+  }
+  [ -n "$wrap_pid" ] && _die_probe_collect_descendants "$wrap_pid"
+  local wrap_id=""
+  [ -n "$wrap_pid" ] && wrap_id="$(tr '\0' ' ' < "/proc/$wrap_pid/cmdline" 2>/dev/null || echo "")"
+  [ -n "$wrap_pid" ] && { kill -9 "$wrap_pid" 2>/dev/null || true; }
+  _die_probe_alive() {
+    # A PID counts as alive only if /proc/<pid>/cmdline still matches the identity recorded
+    # before the kill -- a bare kill -0 would also "succeed" against an unrelated process that
+    # reused the same PID number under heavy process churn (PID-reuse false positive).
+    local pid="$1" id="$2"
+    [ -z "$pid" ] && return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    [ "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || echo "")" = "$id" ]
+  }
   local survived=0 t=0
   # Poll for death over up to 5s instead of a single fixed-delay check (avoids a timing race).
   while [ "$t" -lt 10 ]; do
     sleep 0.5
-    local wrap_alive=0 bwrap_alive=0
-    [ -n "$wrap_pid" ] && kill -0 "$wrap_pid" 2>/dev/null && wrap_alive=1
-    [ -n "$bwrap_pid" ] && kill -0 "$bwrap_pid" 2>/dev/null && bwrap_alive=1
-    if [ "$wrap_alive" = "0" ] && [ "$bwrap_alive" = "0" ]; then
-      break
+    survived=0
+    if _die_probe_alive "$wrap_pid" "$wrap_id"; then
+      survived=1
+    else
+      local i
+      for i in "${!desc_pids[@]}"; do
+        if _die_probe_alive "${desc_pids[$i]}" "${desc_ids[$i]}"; then
+          survived=1
+          break
+        fi
+      done
     fi
+    [ "$survived" = "0" ] && break
     t=$((t + 1))
   done
-  if { [ -n "$wrap_pid" ] && kill -0 "$wrap_pid" 2>/dev/null; } || { [ -n "$bwrap_pid" ] && kill -0 "$bwrap_pid" 2>/dev/null; }; then
-    survived=1
-  fi
+  kill -9 "$intermediate" 2>/dev/null || true
   [ -n "$wrap_pid" ] && { kill -9 "$wrap_pid" 2>/dev/null || true; }
-  [ -n "$bwrap_pid" ] && { kill -9 "$bwrap_pid" 2>/dev/null || true; }
+  local pid
+  for pid in "${desc_pids[@]}"; do kill -9 "$pid" 2>/dev/null || true; done
   pkill -9 -f "$probe" 2>/dev/null || true
   if [ "$expect_dead" = "1" ]; then
     check "$desc" "$([ "$survived" = "0" ] && echo 1 || echo 0)"
