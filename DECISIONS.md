@@ -22092,3 +22092,45 @@ Három red-then-green eset, mindegyik RED-MUTANT-tal (a mutáns ugyanaz a szkrip
 **Döntés:** mind a 13 upstream commit (d964aab4, d3cdb375, b69ace21, 4c7e06f9, ebc0168d, 1abd45cf, a54a50d2, b85bd129, b5739368, 3d02f370, 0e9442ea, 10b4f331, d5d323af) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges.
 
 **Hivatkozás:** kártya 4d367048, upstream-ported.json ledger, origin/develop aade034ac.
+
+## 2026-10-25: 2ba98cac delta -- correcting upstream-sync record (RedHat NO-GO comment 25005)
+
+**Context:** The 05bf5c0ca entry above said all 7 commits are "igazoltan benne van az origin/develop-ban ... Uj port-munka nem szukseges". RedHat (cybered) measured the live code on origin/develop and found two commits are not fully adopted. This is a record correction; no security defect.
+
+**Corrected record for 2ba98cac (7 upstream commits):**
+
+LIVE (fully adopted in fork, some adapted):
+- b47bf993: fix(update): failed npm ci names cause + rolls back -- LIVE
+- 3032da46: fix(inbound-probe): main session reads REAL config root -- LIVE
+- 0602f88a, b73b0812, 5b74adc2 -- LIVE
+
+PARTIAL:
+- 3582807f: fix(update): keepalive + macOS wiring -- morning-briefing sentinel LIVE; install_keepalive_probe_timer block in update.sh (lines 692-723) and install-macos.sh macOS keepalive wiring NOT adopted (commit 15c091ba0 removed the macOS block again)
+
+NOT ADOPTED (deliberate fork decision):
+- f8a1f5d2: feat(update): park_morning_timer -- update.sh block 692-723 not adopted; Cybersec ef6a8031 records the decision; adopting is Peti's call on a separate card
+
+**Ledger (store/upstream-ported.json):** f8a1f5d2 and 3582807f moved from ported to skipped with reasons. Ancestry (merge-base --is-ancestor) is still true for both; the correction is that ancestry alone does not mean the fork carries the fix.
+
+**Reference:** card 2ba98cac, RedHat NO-GO comment 25005.
+
+## 2026-10-25: 4d367048 delta -- correcting upstream-sync record (RedHat NO-GO comment 25006)
+
+**Context:** Same as above: the 05bf5c0ca entry said all 13 commits are live. RedHat measured two as not adopted. Record correction, no security defect.
+
+**Corrected record for 4d367048 (13 original + 7 triage shas from comment 8062):**
+
+LIVE (original 13):
+- d964aab4, d3cdb375, b69ace21, 4c7e06f9, ebc0168d, 1abd45cf, b85bd129, b5739368, 3d02f370, 10b4f331, d5d323af -- all LIVE in origin/develop
+
+NOT ADOPTED (deliberate fork decisions):
+- a54a50d2: feat(update): egress-drift scan -- scripts/egress-drift-scan.py does not exist in fork; acknowledged-conflicts.ts ~line 4142 records this (TASKEGRESSDRIFT913 audit not running)
+- 0e9442ea: fix(suites): SUITETMPPIROS912 suite tmp-root refusal -- isTmpRootedPath refusal not present; only TMP_ROOT_PREFIXES list and agent-scaffold hook guard are live; acknowledged-conflicts.ts ~line 4464
+
+Triage shas (comment 8062, added to card scope post-triage):
+- 0a33ab37: SKIPPED (comment-only fix depending on unported upstream commit 866da985; ledger entry pre-existing)
+- a67881aa, 70213357, df5e4462, 67e1daea, 4919d8b0, 3f93c00f: LIVE (checked by RedHat on origin/develop aade034ac)
+
+**Ledger (store/upstream-ported.json):** a54a50d2 and 0e9442ea moved from ported to skipped with reasons.
+
+**Reference:** card 4d367048, RedHat NO-GO comment 25006.
