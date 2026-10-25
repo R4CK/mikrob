@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readd
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR, ALLOWED_CHAT_ID } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR, ALLOWED_CHAT_ID, USER_LANGUAGE } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -4844,8 +4844,9 @@ export function buildLanguageBody(): string {
     '',
     'Talk to OTHER AGENTS in English: inter-agent messages, kanban comments, REVIEW/verdict free',
     'text, dispatch messages, and any shared-tier memory entry other agents read. Talk to the owner',
-    'in the configured owner language (env `USER_LANGUAGE`, default `hu`) on owner-facing channels',
-    'only: Telegram, daily log, morning brief, README feature list, DECISIONS.md, USER-MANUAL.md.',
+    `in the configured owner language (env \`USER_LANGUAGE\`, currently \`${USER_LANGUAGE}\`) on`,
+    'owner-facing channels only: Telegram, daily log, morning brief, README feature list,',
+    'DECISIONS.md, USER-MANUAL.md.',
     'Never hardcode a language as a constant in a prompt or template -- read it from config.',
     '',
     'Protocol tokens never change language: gate verdict keywords (`QA PASS`, `CYBERSEC GO/NO-GO`,',

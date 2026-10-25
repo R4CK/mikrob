@@ -6814,6 +6814,14 @@ export interface DispatchedPendingStats {
 export const COMPLETION_REPORT_PREFIX = '[Result]'
 
 /**
+ * The prefix COMPLETION_REPORT_PREFIX carried before card 867fa8f2 (2026-10-25) renamed it to
+ * English. Rows written before that rename still start with this string, and the exclusion
+ * below must keep matching them -- otherwise every pre-rename completion report starts counting
+ * as outstanding dispatched work the moment the rename lands (L1, card a1eceda6).
+ */
+export const LEGACY_COMPLETION_REPORT_PREFIX = '[Eredmény]'
+
+/**
  * origin_note stamped on the restart gate's persistent-block alert. Shared so
  * the writer and the counter that must ignore it cannot drift apart -- the
  * defect this constant closes was exactly a string agreement that did not exist.
@@ -6838,6 +6846,7 @@ export function getDispatchedPendingStats(
   // Bound parameter, not interpolation: the prefix contains no LIKE wildcards
   // today, but a future edit adding one would silently widen the exclusion.
   const ackPattern = `${COMPLETION_REPORT_PREFIX}%`
+  const legacyAckPattern = `${LEGACY_COMPLETION_REPORT_PREFIX}%`
   const deadPattern = `${CLOSED_WITHOUT_DELIVERY_PREFIX}%`
   // Kept as one fragment so the live and stale halves can never drift apart.
   //
@@ -6890,13 +6899,14 @@ export function getDispatchedPendingStats(
     `from_agent = ? AND to_agent != from_agent
        AND status IN ('pending','delivered')
        AND content NOT LIKE ?
+       AND content NOT LIKE ?
        AND COALESCE(result, '') NOT LIKE ?
        AND COALESCE(origin_note, '') != '${GATE_ALERT_ORIGIN_NOTE}'`
     + (reportsUpward ? `
        AND to_agent != ?` : '')
   const bindings = reportsUpward
-    ? [fromAgent, ackPattern, deadPattern, mainAgent]
-    : [fromAgent, ackPattern, deadPattern]
+    ? [fromAgent, ackPattern, legacyAckPattern, deadPattern, mainAgent]
+    : [fromAgent, ackPattern, legacyAckPattern, deadPattern]
   const liveRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
        WHERE ${OUTSTANDING_WORK}
