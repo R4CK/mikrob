@@ -66,10 +66,19 @@ describe('classifyFindingText (MT-10a deterministic keyword taxonomy)', () => {
   })
 
   it('F3: classification text is truncated to 8000 chars before pattern matching', () => {
-    // 'auth bypass' placed beyond the 8000-char cut-off must NOT match after truncation.
-    // CYBERSEC (7) + space (1) = 8 chars prefix; 'auth bypass' appears at position 8001+.
-    const prefix = 'x'.repeat(8001)
-    expect(classifyFindingText('CYBERSEC', prefix + 'auth bypass')).toBe('unclassified')
+    // The classified text is `gate + ' ' + findings_ref`; 'CYBERSEC ' is 9 chars.
+    // Pad with 'a' chars + leading space so that 'auth bypass' (11 chars) ends EXACTLY on
+    // character 8000 (index 7999) -- no truncation, pattern must match:
+    //   full = 'CYBERSEC ' (9) + 'a'.repeat(7979) (7979) + ' auth bypass' (12) = 8000 chars
+    // Shift one character right so 'auth bypass' ends at 8001 (outside the cap):
+    //   full = 8001 chars; slice(0,8000) cuts off the final 's' -> 'bypas', no match.
+    // The cap-removed mutant (CLASSIFICATION_TEXT_CAP >> 8000) passes both inputs untruncated,
+    // so the second assertion turns red -- it finds 'auth bypass' instead of 'unclassified'.
+    const atCap = 'a'.repeat(7979) + ' auth bypass'   // full 8000 chars, no truncation
+    expect(classifyFindingText('CYBERSEC', atCap)).toBe('auth-bypass')
+
+    const pastCap = 'a'.repeat(7980) + ' auth bypass'  // full 8001 chars; 's' of 'bypass' cut off
+    expect(classifyFindingText('CYBERSEC', pastCap)).toBe('unclassified')
   })
 })
 
@@ -187,6 +196,32 @@ describe('importFindings (MT-10a, card 63206155)', () => {
       .all() as { dst: string }[]
     expect(classEdges).toHaveLength(1) // exactly one of_class edge (no stale duplicate)
     expect(classEdges[0]?.dst).toBe('error_class:auth-bypass')
+  })
+
+  it('T2: ZWS-split secret token is caught by the pre-screen because it runs on SANITIZED text', () => {
+    // U+200B (ZERO WIDTH SPACE) splits the ghp_ token so the raw pattern
+    // /\bgh[pousr]_[A-Za-z0-9]{30,}/ cannot match (only 15 consecutive alphanum chars after the
+    // prefix, below the 30-char minimum). After sanitization the ZWS is stripped: the token
+    // becomes ghp_ + 36 a-chars, which the pattern catches.
+    // Raw-screen mutant (findSecretShape(v.findings_ref) instead of
+    // findSecretShape(sanitizeKgText(v.findings_ref))): the split token passes the pre-screen,
+    // reaches upsertNode, which sanitizes internally and then calls assertNoSecretShape on the
+    // reassembled full token -> KgSecretError -> the whole import throws (measured by RedHat:
+    // 0 findings written). The test must go RED on that mutant.
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    // ghp_ + 15 a's + U+200B + 21 a's; sanitized: ghp_ + 36 a's (≥30, matches the pattern)
+    const zwsToken = 'ghp_' + 'a'.repeat(15) + '​' + 'a'.repeat(21)
+    mainDb
+      .prepare(`UPDATE kanban_verdicts SET findings_ref = ? WHERE card_id = 'card1' AND gate = 'CYBERSEC'`)
+      .run(zwsToken)
+
+    let report!: ReturnType<typeof importFindings>
+    expect(() => { report = importFindings(mainDb, kgDb) }).not.toThrow()
+    expect(report.verdictsSkippedSecret).toBe(1)
+    // card2/CYBERED env-allowlist + card1/QA FAIL (null findings_ref) are still written
+    expect(report.findingsUpserted).toBe(2)
   })
 
   it('F5: a secret-shaped findings_ref is skipped and counted; the rest of the run continues', () => {
