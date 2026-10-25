@@ -104,10 +104,10 @@ send_alarm() {
   local text="$1" tok chat http
   tok="$(read_token)" || { log "ERROR cannot send: no bot token in $CHAN_DIR/.env, parked copies, or $TOKEN_STASH"; return 1; }
   chat="$(read_chat_id)" || { log "ERROR cannot send: no allowFrom chat id in $CHAN_DIR/access.json"; return 1; }
-  http="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
-    "https://api.telegram.org/bot${tok}/sendMessage" \
-    --data-urlencode "chat_id=${chat}" \
-    --data-urlencode "text=${text}" 2>/dev/null)"
+  http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$tok" \
+    | curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -K - \
+      --data-urlencode "chat_id=${chat}" \
+      --data-urlencode "text=${text}" 2>/dev/null)"
   if [ "$http" = "200" ]; then
     log "alarm delivered (HTTP 200)"
     return 0
