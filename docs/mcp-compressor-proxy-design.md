@@ -13,6 +13,15 @@ Markers: [OBS] observed with evidence, [INF] inferred (basis, confidence), [UNK]
 5. Fail-open to the uncompressed listing on any compressor error; never drop a tool.
 6. Tool descriptions are untrusted input (prompt-injection surface).
 
+Additional conditions required by WhiteHat (msg 14892, 2026-10-25, binding for the build; they extend 24736):
+7. Fail-open applies to the LISTING only. The deny/gate decision on `invoke_tool` never fails open.
+8. `invoke_tool`'s tool name must exactly match a name from the backend's own live `tools/list` (no case folding, no prefix, no unlisted backend tool), compared with the same normalisation the permission engine uses.
+9. Arguments pass through byte for byte; no rewriting.
+10. One proxy process per backend server, holding only that server's env (the proxy becomes a new holder of that server's credentials). No multiplexing of several servers' secrets, no env in logs, pinned code and `PINNED_TREE_SHA256` checked at start (mismatch = no compression, uncompressed listing, loud log).
+11. Backend descriptions and schemas are untrusted text going into agent context: size caps, no interpolation into anything executed, compression output never fed back into a shell or a config.
+12. The audit trail (tool-log-capture and friends) records the REAL tool name, not `invoke_tool`.
+13. Flag off = byte-identical config; flag on is per server, and the server list is in this document (section 4).
+
 ## 1. What the library actually gives us
 
 - [OBS] `compressToolListing(level, tools)` returns a STRING, not a `tools/list` result. Sample run (store/mcp-compress.sh, 2 playwright-like tools, 592 B of JSON): `low` = 183 B (`<tool>name(p1, p2): description</tool>` per line), `high` = 88 B (`<tool>name(p1, p2)</tool>`). `high` drops parameter types, required flags, enums and parameter descriptions. `max` returns an empty listing (refused by the adapter).
@@ -50,20 +59,24 @@ Why main is excluded in v1: its config is the operator's own ~/.claude.json (a f
 
 [OBS] from names/transports only (no values read):
 
-| server | transport | where defined | in v1 allowlist? |
-|--------|-----------|---------------|------------------|
-| playwright | stdio (npx) | ~/.claude.json user scope; elemzo/teszter .mcp.json | YES - 2245 uses, deny rule exists, so it exercises governance parity |
-| filesystem | stdio (npx) | user scope, 17 agents | YES (low risk, 23 uses) |
-| code-review-graph | stdio (pipx python) | root .mcp.json (+5 agent files) | YES (read-only, credential-free) |
-| hostinger | stdio (npx), env `HOSTINGER_API_TOKEN` | user scope | NO (secret, mutating hosting API; better removed from agents that never use it) |
-| firecrawl | stdio via scripts/vault-env-wrapper.sh | agents/backend/.mcp.json | NO (egress-gate.mjs allowlist is keyed on exact tool names and denies unknown firecrawl names; vault secret) |
-| Stitch | SSE (remote) | user scope | NO (remote; 0 uses) |
-| resend | HTTP (remote), project-scoped under /home/neon | .claude.json `projects` | NO (outbound email, name-keyed email gates; 0 uses) |
-| context7 | HTTP (remote) | root .mcp.json | NO (remote; egress-gate restricts to quarantine-reader) |
-| rea | stdio | elemzo .claude.json | NO (sandboxed analysis tool, ~200 tools; separate decision) |
-| channel plugins | stdio + notifications | plugin | NEVER |
+| server | transport | where defined | name-keyed anywhere? (grep result below) | v1 |
+|--------|-----------|---------------|-------------------------------------------|----|
+| filesystem | stdio (npx) | user scope, 17 agents | no | YES |
+| code-review-graph | stdio (pipx python) | root .mcp.json (+5 agent files) | no rule today; an operator CAN deny a tool per agent through `toolDeny` (agent-config.ts:872, e.g. `mcp__code-review-graph__apply_refactor_tool`), currently set for no agent | YES, with the dynamic guard below |
+| playwright | stdio (npx) | ~/.claude.json user scope; elemzo/teszter .mcp.json | YES: baseline deny `mcp__playwright__browser_run_code_unsafe` (agent-scaffold.ts:1400, 13 settings files) | NO (phase 2, after the unwrap work) |
+| firecrawl | stdio via scripts/vault-env-wrapper.sh | agents/backend/.mcp.json | YES: egress-gate matcher `mcp__firecrawl__.*`, exact-name allow keys, default-deny namespace | NO |
+| context7 | HTTP (remote) | root .mcp.json | YES: egress-gate matcher `mcp__context7__.*` | NO |
+| resend, gmail families, google-workspace | HTTP/other | .claude.json `projects`, not configured elsewhere | YES: `.*send_email.*`, `.*draft_email.*`, `.*manage_email.*`, `.*resend.*`, `.*[Gg]mail.*` matchers (email-approval-gate, outgoing-copy-gate) | NO |
+| telegram / discord / slack channel plugins | stdio + notifications | plugin | YES: reply/edit matchers | NEVER |
+| hostinger | stdio (npx), env `HOSTINGER_API_TOKEN` | user scope | no | NO (secret holder, mutating API; unused: remove, see A4) |
+| Stitch | SSE (remote) | user scope | no | NO (remote, 0 uses) |
+| rea | stdio | elemzo .claude.json | no | NO (sandboxed analysis tool, ~200 tools, separate decision) |
+
+How the keyed list was derived (reproducible): grep of every `mcp__<server>__` string in settings.json (root, ~/.claude, 17 agents x 2 files), scripts/, src/ and store/ excluding tests, plus the generated sources of the deny rules: `FLEET_BASELINE_DENY` (agent-scaffold.ts:~1390-1400), the per-agent `toolDeny` field (agent-config.ts:872, `sanitizeToolDenyList`), the email-gate matcher generator (agent-scaffold.ts:~1031-1090) and `EGRESS_GATE_MATCHER` (agent-scaffold.ts:1574). Counts of `mcp__<prefix>__` references in non-test sources: firecrawl 47, plugin_telegram 40, claude_ai_Gmail 31, context7 20, server-gmail-autoauth-mcp 18, gmail 16, resend 15, playwright 14, plugin_discord 11, plugin_slack-channel 8, google-workspace 5, code-review-graph 4 (all comments or examples), filesystem 0, hostinger 0, Stitch 0. No MCP `allow` rule exists in any settings file today (so the allow-list collapse WhiteHat describes has nothing to collapse in v1, but it is a finding of the same class as the deny bypass and is covered by the parity test).
 
 Rule: stdio only in v1. HTTP/SSE servers would put upstream auth headers/OAuth into the proxy, a new secret path.
+
+Dynamic guard (keeps the list honest after the build): at start the proxy loads the effective rules of its agent (merged `permissions.deny`/`allow`/`ask`, `toolDeny`, and the matchers of every hook in the merged settings). If ANY of them names a tool of this server (`mcp__<server>__*`), or a matcher could match `mcp__<server>__invoke_tool` through a tool-name pattern (`.*send_email.*` style), the proxy does not compress that server: it serves the uncompressed listing and logs loudly. A server therefore falls out of compression automatically when someone later adds a keyed rule, instead of silently becoming a bypass.
 
 ## 5. Options
 
@@ -83,10 +96,11 @@ Components (all new, all in the tracked repo; none in ~/.npm-tools):
 - Render step (L4 hook point): only when `MCP_COMPRESS` is on for that agent AND server. For each allowlisted stdio entry it rewrites `command`/`args` to `scripts/mcp-proxy-launch.sh <server> -- <orig>` in the agent's isolated `.claude.json` / `.mcp.json`, after saving `<file>.mcp-compress.orig`. With the flag off it is not called; if a marker from an earlier "on" exists it restores the original bytes (reconcile at launch). It must run in the L3 start path before the CLI starts, because the CLI rewrites `.claude.json` itself.
 - Settings (rule 14: not constants): `MCP_COMPRESS` (off/on), `MCP_COMPRESS_AGENTS`, `MCP_COMPRESS_SERVERS`, `MCP_COMPRESS_LEVEL` (low|medium|high; default `medium`, because `high` removes types and required flags), `MCP_COMPRESS_MAX_LISTING_CHARS`. Stored in the settings store like AGENT_INHERITED_MCP_SERVERS.
 
-Governance parity (hard requirement, otherwise the build is a privilege bypass):
-- [OBS] A permission deny rule exists for `mcp__playwright__browser_run_code_unsafe` in 13 settings files; MCP permission rules match server and tool name only (docs, permissions page). With the wrapper the model calls `mcp__playwright__invoke_tool`, which no deny rule matches.
-- [OBS] Hook matchers keyed on tool names: `.*send_email.*`, `.*manage_email.*`, `.*draft_email.*` (email-approval-gate, outgoing-copy-gate) go blind; matchers keyed on server names (`.*resend.*`, `.*[Gg]mail.*`) and `mcp__firecrawl__.*|mcp__context7__.*` (egress-gate) still match the namespace, and egress-gate denies unknown firecrawl names (fail-closed).
-- Required: (1) the proxy enforces the deny list itself: it loads the effective `permissions.deny` MCP entries for its server (settings merge, read-only), removes denied tools from the listing, and refuses `invoke_tool`/`get_tool_schema` for them with a tool error; (2) a test that every `mcp__<server>__<tool>` deny/ask rule and every tool-name-keyed hook matcher in the merged settings is either enforced inside the proxy or the server is not in `MCP_COMPRESS_SERVERS`; (3) `tool-log-capture`/ledger record the unwrapped name (`invoke_tool:<tool_name>`) so audit trails keep the real tool.
+Governance parity (hard requirement; v1 avoids it by scope, phase 2 needs it):
+- [OBS] The permission engine evaluates the OUTER tool name only (docs: MCP permission rules match `mcp__<server>__<tool>`, no argument specifier), so an unwrap hook cannot rescue deny/allow rules, and a hook whose matcher is `.*send_email.*` does not even fire on `mcp__x__invoke_tool` (WhiteHat, msg 14892). Allow rules collapse too: an agent allowed 3 tools of a server would get all of them through `invoke_tool`. Same finding class as the deny bypass.
+- [OBS] Today's keyed rules: `mcp__playwright__browser_run_code_unsafe` (baseline deny, 13 settings files), the email matchers, the egress-gate matcher (firecrawl/context7), the channel reply matchers. See section 4.
+- Required before any keyed server enters the allowlist (phase 2): (1) the proxy enforces the real-name deny list itself, authoritative and fail-CLOSED, generated from the same source as the settings deny rules (FLEET_BASELINE_DENY + per-agent toolDeny + merged `permissions.deny`), never from a copy; (2) every name-keyed hook matcher gets `mcp__.*__invoke_tool` added and unwraps `tool_name`/`tool_input` through ONE shared helper; (3) a table-driven parity test over every deny rule, allow rule and matcher in the fleet (a wrapped call must be denied or gated exactly like the direct one), failing on drift, in the style of src/__tests__/email-gate-matcher-drift.test.ts; (4) `tool-log-capture`/ledger record the unwrapped name.
+- v1 skips all of this by construction: only servers with no keyed name enter the allowlist, and the dynamic guard in section 4 removes a server the moment a keyed rule appears.
 
 Fail-open, stated precisely (what is possible):
 - Startup: any failure before the first `initialize` (flag, pin, node, SDK, upstream spawn) -> launcher `exec`s the real command: the agent sees the uncompressed server. Possible.
@@ -112,15 +126,21 @@ Other axes: assumptions verified vs believed (section 2 lists which); success = 
 
 ## 8. Measurement plan (Done item 4)
 
-Named agent: `marketing` (stdio servers playwright, filesystem, code-review-graph in scope; hostinger, Stitch, resend, context7 out of scope but present, so the unchanged share is visible). It is normally parked, so a measurement session costs no production slot. Second agent for confirmation: `backend3` after the first result.
+Updated after WhiteHat (msg 14892): measure where the tokens are first, and compare BOTH variants per named agent. M0 is its own card (a843ce7c, elemzo, predecessor of d58a2ce3).
 
-M0 baseline, BEFORE any build (this is the gate): fresh session of `marketing`, default tool search, flag absent. Record `/context` (MCP section, per server) and the first-turn `usage` from the transcript (`input_tokens`, `cache_creation_input_tokens`). Also record each in-scope server's `tools/list` byte size once through a throwaway stdio client (read-only handshake, plugin-free config). Output: tokens attributable to MCP names + instructions for the three in-scope servers, and their share of the first-turn context.
-Gate (proposal, MikroB to confirm): build only if the in-scope MCP tokens are at least 3,000 or at least 3% of first-turn context. Below that, A1 cannot pay for its trust boundary; do A4 only.
+Variants: V0 = today (native deferral). V1 = A1 wrapper (get_tool_schema + invoke_tool, listing by `compressToolListing`). V2 = A2 name-preserving proxy (real tool names and full `inputSchema`, only description text swapped/shortened). V2 keeps every name-keyed rule working, so it is the baseline any wrapper has to beat.
 
-M1 static after: same agent, flag on, `/context` MCP row per server. Pass: reduction at least 30% of the M0 in-scope figure.
-M2 dynamic: fixed script of 12 playwright/filesystem/code-review-graph calls (navigate, snapshot, click, read file, one graph query), 3 fresh sessions with the flag off and 3 on. Metrics from transcript usage: sum of `input + cache_creation` over the session, count of `cache_read` reported separately, number of turns, tool errors, wall time. Pass: tokens not higher than baseline, turns at most baseline + 2, zero tool errors attributable to the proxy.
-M3 safety: replay denied/gated calls through the wrapper (browser_run_code_unsafe, a fake send_email tool on a stub server) and assert refusal and an audit-log line with the unwrapped name.
-Where numbers go: card d58a2ce3 REVIEW, with the named agent, model, flag state, sha of the proxy, and the transcript ids.
+Named agent: `marketing` (stdio servers filesystem, playwright, code-review-graph, hostinger present; Stitch, resend, context7 remote and out of scope but present, so the unchanged share is visible). It is normally parked, so a measurement session costs no production slot. Second agent for confirmation: `backend3`.
+
+Server sets: S1 = v1 allowlist (filesystem + code-review-graph, no keyed names). S2 = S1 + playwright (phase 2 candidate; the keyed deny rule must be handled first). Report S1 and S2 separately; S2 is where most tool calls are (playwright 2245 tool_use blocks versus code-review-graph 115 and filesystem 23).
+
+M0 baseline, BEFORE any build (the gate): fresh session of `marketing`, default tool search, flag absent. Record `/context` (MCP section, per server) and the first-turn `usage` from the transcript (`input_tokens`, `cache_creation_input_tokens`). Record each in-scope server's `tools/list` JSON bytes once through a throwaway stdio client (read-only handshake, plugin-free config) and split them into description text versus names versus schema structure, so we know whether descriptions (what V2 and V1 shorten) are the cost at all. Output: tokens attributable to MCP names + instructions for S1 and S2, their share of first-turn context, and the description share of the `tools/list` bytes.
+Gate (accepted by MikroB, comment 24762): build only if the in-scope MCP tokens are at least 3,000 or at least 3% of first-turn context. Evaluated for S1 and for S2. If only S2 passes, the case for the build rests on playwright, which means the governance work (section 6) is part of the build, not optional. Below the threshold on both: do A4 only.
+
+M1 static after: same agent, flag on, `/context` MCP row per server, V1 and V2. Pass: reduction at least 30% of the M0 in-scope figure.
+M2 dynamic: fixed script of 12 calls (filesystem read, one graph query, and for S2 navigate, snapshot, click), 3 fresh sessions per variant (V0, V1, V2). Metrics from transcript usage: sum of `input + cache_creation` over the session, count of `cache_read` reported separately, number of turns, tool errors, wall time. Pass: tokens not higher than V0, turns at most V0 + 2, zero tool errors attributable to the proxy.
+M3 safety (S2 or any keyed server only): replay denied/gated calls through the wrapper (browser_run_code_unsafe, a fake send_email tool on a stub server) and assert refusal, and an audit-log line with the real name; plus the parity test of section 6.
+Where numbers go: cards a843ce7c (M0) and d58a2ce3 (M1-M3) REVIEW, with named agent, model, flag state, sha of the proxy, and transcript ids.
 
 ## 9. STRIDE (draft, WhiteHat co-reviews on the card)
 
@@ -134,13 +154,15 @@ Assets: the model's tool surface, agent credentials in env, the deny/ask rules a
 | T2 | Upstream names/descriptions forge extra `<tool>` entries or instructions (observed, section 1) | listing built from untrusted metadata | name regex, control-char strip, delimiter strip, per-field and total caps, set-equality post-check, fall back to uncompressed on any violation | the forged-name and forged-description fixtures from this doc | semantic prompt injection inside a plain description of the upstream server (same as today) |
 | T3 | Arguments altered or coerced in transit | `invoke_tool` | byte-for-byte forward after deny check; no schema coercion | golden-argument fixture, unicode, large payload | none |
 | T4 | Render step corrupts or races the CLI's `.claude.json` | L3/L4 | write via the existing writeJsonAtomic helper, only before launch, only agent-isolated files, `.orig` backup, never ~/.claude.json | concurrent-write test; corrupt-file test leaves the original untouched | CLI rewrites after launch (keeps entries as read) |
-| R1 | Tool calls no longer attributable (everything is `invoke_tool`) | audit/ledger/tool-log | log `invoke_tool:<real name>` in the proxy and through the tool-log hook | M3 audit-line assertion | hooks that only see the outer name |
-| I1 | Secrets in upstream env reach the proxy process and its logs | proxy inherits env | proxy never logs env or arguments at INFO; env passed through, not copied; hostinger/firecrawl/remote servers out of v1 | log-scan test with a canary env value | the proxy process can read env (same uid as the server) |
+| R1 | Tool calls no longer attributable (everything is `invoke_tool`) | audit/ledger/tool-log | log the REAL tool name in the proxy and through the tool-log hook (condition 12) | audit-line assertion | hooks that only see the outer name |
+| I1 | Secrets in upstream env reach the proxy process and its logs; the proxy becomes a new holder of that server's credentials | proxy inherits env | one proxy process per backend server with only that server's env, no multiplexing, env never logged, secret-bearing servers (hostinger, firecrawl) out of v1 (condition 10) | log-scan test with a canary env value; process-per-server test | the proxy process can read env (same uid as the server) |
 | I2 | Descriptions or schemas leaked through logs/metrics | proxy logging | log counts, sizes, hashes only | log-scan test | none |
 | D1 | Proxy crash/hang mid-session removes the server's tools | always-in-path process | startup fail-open `exec`; heartbeat/timeout on upstream calls; CLI reconnect re-runs launcher; kill-test measured | kill upstream and proxy mid-call | not fail-open mid-session (stated) |
 | D2 | Huge or hostile catalog exhausts memory or the 4,096-char cut hides tools | listing | caps, uncompressed fallback | 20,000-char description and 2,000-tool fixtures | none |
 | D3 | Stale listing after `tools/list_changed` | wrapper description | forward and re-emit `list_changed`, rebuild listing | change-notification test | refresh failure keeps the old list (CLI behaviour) |
-| E1 | Deny/ask rules and name-keyed hooks bypassed via `invoke_tool` (observed gap, section 6) | wrapper surface | proxy-side deny enforcement from merged settings; parity test over every MCP rule and matcher; allowlist excludes servers with name-keyed gates it cannot enforce | M3 replay | a rule added later and not parsed by the proxy -> parity test in CI fails closed (server drops out of the allowlist) |
+| E1 | Deny/allow/ask rules and name-keyed hooks bypassed via `invoke_tool` (permission engine sees the outer name only; allow rules collapse to every tool of the server) | wrapper surface | v1 allowlist = servers with NO keyed name (section 4), dynamic guard drops a server that gains a keyed rule; phase 2: authoritative fail-closed real-name deny in the proxy, matchers widened with `mcp__.*__invoke_tool` + one shared unwrap helper, table-driven parity test (style of email-gate-matcher-drift.test.ts) | parity test over every deny/allow rule and matcher; M3 replay | none in v1; phase 2 depends on the parity test staying in CI |
+| E4 | `invoke_tool` called with a name that is not in the backend's live `tools/list` (unlisted backend tool, case or prefix variant) | wrapper dispatch | exact match against the live upstream name set with the permission engine's normalisation, else tool error (condition 8) | fixtures: unlisted, case-folded, prefixed, unicode-lookalike names | none |
+| E5 | Fail-open widened from the listing to the deny/gate decision | proxy error paths | listing fails open, the deny/gate decision fails CLOSED (condition 7); any exception in the decision path = refuse | fault-injection test on the decision path | none |
 | E2 | Compression flag or allowlist edited by an agent to widen scope | settings store | same trust as AGENT_INHERITED_MCP_SERVERS (dashboard-gated); render logs every change | settings audit test | agents with dashboard token (existing) |
 | E3 | Supply chain: package drift or the 0.38.x shrinkfit surface reached | library | pin + integrity + tree hash on the run path; `shrinkHostOutput`/`shrinkfitTools` never imported (static grep test in CI) | doctor + grep test | upstream bump needs a new gate (24736) |
 
@@ -176,13 +198,12 @@ Boundaries: B1 (model-facing surface now authored by us), B2 (unchanged trust in
 - C. Edit another agent's config to point at a different launcher or drop the proxy. Possible today with a shared uid (unchanged); the proxy adds no new capability here. Mitigation outside this card: file permissions / config integrity (existing hook-scope-audit lineage).
 - D. Flip `MCP_COMPRESS_SERVERS` to widen scope to a server with name-keyed gates. Choke point: the parity test makes such a server fail closed (drops out of the allowlist); settings store gate.
 
-## 10. Open decisions (for MikroB or Peti)
+## 10. Decisions
 
-1. A1 (wrapper, as ordered) or A2 (slimming, names kept)? Section 5.
-2. M0 gate threshold (3,000 tokens or 3% of first-turn context) - proposal.
-3. v1 scope: stdio only, sub-agents only, allowlist = playwright, filesystem, code-review-graph. Main agent, HTTP/SSE servers, hostinger, firecrawl, resend, rea out.
-4. Run A4 (prune never-used servers per agent) as its own card now, regardless of the gate.
-5. Deferred-wrapper description limit (4,096?) is [UNK]; it needs one throwaway test before the cap value is fixed.
+Decided (MikroB, comment 24762): M0 gate threshold accepted (>= 3,000 tokens or >= 3% of first-turn context, agent `marketing`) and run as card a843ce7c; A4 opened as c69a8da2 (fullstack).
+Tightened by WhiteHat (msg 14892), adopted here: v1 allowlist = servers with no keyed name = filesystem + code-review-graph (playwright moves to phase 2); the seven extra conditions in section 0; the measurement plan compares V1 and V2 per named agent.
+Open: A1 (wrapper as ordered) versus A2 (name-preserving proxy). MikroB asked Peti (comment 24762). The design is written so the shared parts (launcher, render/reconcile, flag, M0-M3) serve both; only the proxy core differs.
+Open [UNK]: the description-length limit for deferred wrapper tools (4,096 documented only for upfront tools); one throwaway test before the cap value is fixed.
 
 ## 11. Handoff to the build card (d58a2ce3)
 
