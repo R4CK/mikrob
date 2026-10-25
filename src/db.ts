@@ -6747,7 +6747,7 @@ export interface DispatchedPendingStats {
  * staleCutoffMs) from stale (beyond it). Used by the context-restart gate.
  *
  * Completion reports are excluded. Closing an inbound message auto-creates an
- * `[Eredmény] msg_id:<n> status:<s>` message back to the sender (see the PUT
+ * `[Result] msg_id:<n> status:<s>` message back to the sender (see the PUT
  * /api/messages/:id route, which uses this same prefix to avoid ping-pong).
  * Those are notifications, not dispatched work: nobody is expected to answer
  * them, and they are never marked done, so they accumulate. Counting them made
@@ -6761,7 +6761,7 @@ export interface DispatchedPendingStats {
  * alert -- blocked, alert, pending count 1, still blocked, and the alert re-sent
  * every alert interval. Measured live on 2026-08-11.
  */
-export const COMPLETION_REPORT_PREFIX = '[Eredmény]'
+export const COMPLETION_REPORT_PREFIX = '[Result]'
 
 /**
  * origin_note stamped on the restart gate's persistent-block alert. Shared so

@@ -47,13 +47,16 @@ export function isNonTrivialCard(title: string, priority: string | null | undefi
 }
 
 // The five mandatory sections, accent-tolerant (this fleet's Hungarian is often ASCII-degraded --
-// same tolerance kanban-plan-grilling-guard.ts already applies to "kötelező"/"kotelezo").
+// same tolerance kanban-plan-grilling-guard.ts already applies to "kötelező"/"kotelezo") and
+// bilingual: the English heading (Context, Requirements, Acceptance criteria, Out of scope,
+// Assumptions) counts too, since the fleet's agent-to-agent/kanban-comment language moved to
+// English (card 867fa8f2, Peti 12303/12306) and a card written in English must not warn.
 const SECTION_PATTERNS: ReadonlyArray<{ readonly label: string; readonly rx: RegExp }> = [
-  { label: 'Kontextus', rx: /kontextus/i },
-  { label: 'Követelmények', rx: /k[öo]vetelm[ée]ny/i },
-  { label: 'Ellenőrizhető elfogadási kritériumok', rx: /elfogad[áa]si krit[ée]rium/i },
-  { label: 'Nincs benne', rx: /nincs benne/i },
-  { label: 'Feltételezések', rx: /feltételez[ée]s|feltetelez[ée]s/i },
+  { label: 'Kontextus', rx: /kontextus|\bcontext\b/i },
+  { label: 'Követelmények', rx: /k[öo]vetelm[ée]ny|\brequirements?\b/i },
+  { label: 'Ellenőrizhető elfogadási kritériumok', rx: /elfogad[áa]si krit[ée]rium|\bacceptance criteri/i },
+  { label: 'Nincs benne', rx: /nincs benne|\bout of scope\b/i },
+  { label: 'Feltételezések', rx: /feltételez[ée]s|feltetelez[ée]s|\bassumptions?\b/i },
 ]
 
 /** Exported for tests. Returns the labels of sections that are missing from the given text. */

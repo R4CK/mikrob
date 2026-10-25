@@ -114,8 +114,8 @@ describe('the stamp says what it is', () => {
     // It is a staleness HINT. If it ever reads like an authorization, someone will act on it
     // without re-checking -- which is the exact behaviour this card exists to stop.
     const out = appendCardStateStamp('45331a93', lookup)
-    expect(out).toMatch(/olvasd ujra a kartyat/i)
-    expect(out).toMatch(/a kuldes pillanataban/i)
+    expect(out).toMatch(/re-read the card/i)
+    expect(out).toMatch(/at send time/i)
   })
 })
 
@@ -147,7 +147,7 @@ describe('formatDeliveryStalenessNote (card 9566a197)', () => {
     const note = formatDeliveryStalenessNote(msg, live, 153 * 60)
     expect(note).toContain(CARD_STATE_DELIVERY_MARKER)
     expect(note).toContain('956fdaf5: in_progress -> done')
-    expect(note).toContain('153 percet')
+    expect(note).toContain('153 minute(s)')
   })
 
   it('CONTROL: a card still in the column it was stamped in produces NO note', () => {

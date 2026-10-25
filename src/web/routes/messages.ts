@@ -34,7 +34,7 @@ import { decidePriority, parsePriorityField } from '../message-priority.js'
 import { rankedSenders } from '../../delivery-order.js'
 import type { RouteContext } from './types.js'
 
-// Should closing a message produce a reverse "[Eredmény]" notification to its sender?
+// Should closing a message produce a reverse "[Result]" notification to its sender?
 //
 // Exported and tested directly, rather than inlined in the PUT handler: the previous
 // tests re-implemented this condition inside the test file, so they passed no matter
@@ -107,13 +107,13 @@ export function mayMarkUrgent(auth: RouteContext['auth'], listedDeviceIds: Reado
 export const RESULT_NOTIFY_MAX = 2000
 
 export function resultSummary(id: number, result: string | undefined | null): string {
-  if (!result) return '(nincs eredmény)'
+  if (!result) return '(no result)'
   if (result.length <= RESULT_NOTIFY_MAX) return result
-  const maradt = result.length - RESULT_NOTIFY_MAX
+  const remaining = result.length - RESULT_NOTIFY_MAX
   return (
     result.slice(0, RESULT_NOTIFY_MAX) +
-    `\n... [levágva, még ${maradt} karakter. A teljes szöveg a(z) ${id}. üzenet result mezőjében áll` +
-    ` -- ez NEM ennek az üzenetnek az id-je. Kérd le: bash scripts/agent-msg-get.sh ${id}]`
+    `\n... [truncated, ${remaining} more characters. The full text is in message ${id}'s result field` +
+    ` -- this is NOT this message's own id. Fetch it: bash scripts/agent-msg-get.sh ${id}]`
   )
 }
 
@@ -681,12 +681,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Invalid JSON body' }, 400)
       return true
     }
-    // `notify` lets the CLOSER decide whether the reverse [Eredmény] message is
+    // `notify` lets the CLOSER decide whether the reverse [Result] message is
     // worth an agent turn at the other end. The two cases share this one code
     // path and cannot be told apart from here:
     //   - closing a DELEGATED task   -> the delegator is waiting, the ack IS the result;
     //   - closing an INCOMING report -> the sender already knows it sent it, and the ack
-    //     (typically the 52-char "(nincs eredmény)" form) only lengthens the very queue
+    //     (typically the short "(no result)" form) only lengthens the very queue
     //     whose delay made the report late. Measured on a live install: several such acks
     //     sat queued behind an agent whose delivery was already lagging, so closing the
     //     reports made the queue that the reports arrive in longer still.

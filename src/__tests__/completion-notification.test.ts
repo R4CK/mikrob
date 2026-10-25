@@ -16,7 +16,7 @@ import type { RouteContext } from '../web/routes/types.js'
 // the route handler creates a reverse notification message from executor → delegator
 // so the delegator learns the result without polling. These tests verify:
 //   1. getAgentMessage() returns the full record needed to build the notification
-//   2. The sentinel prefix [Eredmény] breaks ping-pong chains
+//   2. The sentinel prefix [Result] breaks ping-pong chains
 //   3. The notification message is created with the right from/to/content
 //   4. self-messages do not create a notification
 
@@ -35,9 +35,9 @@ describe('completion-notification contract', () => {
   })
 
   it('completion sentinel prefix is detectable (ping-pong guard)', () => {
-    const notif = createAgentMessage('dex', 'orin', '[Eredmény] msg_id:42 status:done\n\nreply')
+    const notif = createAgentMessage('dex', 'orin', `${COMPLETION_REPORT_PREFIX} msg_id:42 status:done\n\nreply`)
     const fetched = getAgentMessage(notif.id)!
-    expect(fetched.content.startsWith('[Eredmény]')).toBe(true)
+    expect(fetched.content.startsWith(COMPLETION_REPORT_PREFIX)).toBe(true)
   })
 
   it('notification message has correct from/to/content and is pending', () => {
@@ -46,17 +46,17 @@ describe('completion-notification contract', () => {
     const done = getAgentMessage(msg.id)!
 
     // Simulate what routes/messages.ts does after marking done
-    expect(done.content.startsWith('[Eredmény]')).toBe(false) // not a notification
-    const summary = (done.result ?? '').slice(0, 500) || '(nincs eredmény)'
+    expect(done.content.startsWith(COMPLETION_REPORT_PREFIX)).toBe(false) // not a notification
+    const summary = (done.result ?? '').slice(0, 500) || '(no result)'
     const notif = createAgentMessage(
       done.to_agent,
       done.from_agent,
-      `[Eredmény] msg_id:${done.id} status:done\n\n${summary}`,
+      `${COMPLETION_REPORT_PREFIX} msg_id:${done.id} status:done\n\n${summary}`,
     )
     expect(notif.from_agent).toBe('rex')
     expect(notif.to_agent).toBe('orin')
     expect(notif.status).toBe('pending')
-    expect(notif.content).toContain('[Eredmény]')
+    expect(notif.content).toContain(COMPLETION_REPORT_PREFIX)
     expect(notif.content).toContain('PR opened')
   })
 
@@ -66,11 +66,11 @@ describe('completion-notification contract', () => {
     const failed = getAgentMessage(msg.id)!
     expect(failed.status).toBe('failed')
 
-    const summary = (failed.result ?? '').slice(0, 500) || '(nincs eredmény)'
+    const summary = (failed.result ?? '').slice(0, 500) || '(no result)'
     const notif = createAgentMessage(
       failed.to_agent,
       failed.from_agent,
-      `[Eredmény] msg_id:${failed.id} status:failed\n\n${summary}`,
+      `${COMPLETION_REPORT_PREFIX} msg_id:${failed.id} status:failed\n\n${summary}`,
     )
     expect(notif.content).toContain('status:failed')
     expect(notif.content).toContain('Network error')

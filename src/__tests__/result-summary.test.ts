@@ -12,55 +12,56 @@ vi.mock('../web/agent-config.js', () => ({ isKnownAgent: vi.fn(() => true) }))
 
 const { resultSummary, RESULT_NOTIFY_MAX } = await import('../web/routes/messages.js')
 
-describe('resultSummary -- a levagott eredmeny KOVETHETO marad', () => {
-  it('a rovid eredmenyt valtozatlanul adja tovabb', () => {
-    expect(resultSummary(42, 'kesz, 3 sor')).toBe('kesz, 3 sor')
+describe('resultSummary -- a truncated result stays FOLLOWABLE', () => {
+  it('passes a short result through unchanged', () => {
+    expect(resultSummary(42, 'done, 3 lines')).toBe('done, 3 lines')
   })
 
-  it('hianyzo eredmenynel megmondja, hogy nincs -- nem ures stringet ad', () => {
-    expect(resultSummary(42, undefined)).toBe('(nincs eredmény)')
-    expect(resultSummary(42, '')).toBe('(nincs eredmény)')
+  it('says so when there is no result -- never returns an empty string', () => {
+    expect(resultSummary(42, undefined)).toBe('(no result)')
+    expect(resultSummary(42, '')).toBe('(no result)')
   })
 
-  it('a HATARON meg nem vag: pontosan RESULT_NOTIFY_MAX karakter valtozatlan', () => {
-    const eppen = 'x'.repeat(RESULT_NOTIFY_MAX)
-    expect(resultSummary(42, eppen)).toBe(eppen)
+  it('does not truncate AT the boundary: exactly RESULT_NOTIFY_MAX characters unchanged', () => {
+    const exactly = 'x'.repeat(RESULT_NOTIFY_MAX)
+    expect(resultSummary(42, exactly)).toBe(exactly)
   })
 
-  it('egy karakterrel a hatar folott MAR vag, es jelzi is', () => {
-    const tul = 'x'.repeat(RESULT_NOTIFY_MAX + 1)
-    const ki = resultSummary(42, tul)
-    expect(ki).not.toBe(tul)
-    expect(ki).toContain('levágva')
+  it('one character over the boundary already truncates, and says so', () => {
+    const over = 'x'.repeat(RESULT_NOTIFY_MAX + 1)
+    const out = resultSummary(42, over)
+    expect(out).not.toBe(over)
+    expect(out).toContain('truncated')
   })
 
-  // EZ A LENYEG. A regi valtozat egy MEZOT nevezett meg ("msg N result mezoje"), amit a cimzett
-  // nem tudott egy lepesben elolvasni -- ketszer is ujrakuldest kert helyette. A marker ezert
-  // egy FUTTATHATO parancsot tartalmaz, a KONKRET azonositoval.
-  it('a marker futtathato parancsot ad, a valodi uzenet-azonositoval', () => {
-    const ki = resultSummary(1767, 'y'.repeat(RESULT_NOTIFY_MAX + 500))
-    expect(ki).toContain('bash scripts/agent-msg-get.sh 1767')
-    // A mutato MEGMONDJA, mire mutat: a megnevezett id nem az olvasott uzenete. Enelkul
-    // egy agens a sajat id-jevel kerdezte le, ures valaszt kapott, es adatvesztest jelentett volna.
-    expect(ki).toContain('NEM ennek az üzenetnek az id-je')
+  // THE POINT. The old version named a FIELD ("msg N's result field"), which the recipient
+  // could not read in one step -- it twice asked for a resend instead. The marker therefore
+  // carries a RUNNABLE command, with the CONCRETE id.
+  it('the marker gives a runnable command, with the real message id', () => {
+    const out = resultSummary(1767, 'y'.repeat(RESULT_NOTIFY_MAX + 500))
+    expect(out).toContain('bash scripts/agent-msg-get.sh 1767')
+    // The pointer SAYS what it points to: the named id is not the id of the message being read.
+    // Without this an agent queried its own id, got an empty answer, and would have reported
+    // data loss.
+    expect(out).toContain("NOT this message's own id")
   })
 
-  it('megmondja, MENNYI maradt le -- kulonben nem tudni, erdemes-e utananezni', () => {
-    const ki = resultSummary(7, 'z'.repeat(RESULT_NOTIFY_MAX + 137))
-    expect(ki).toContain('137 karakter')
+  it('says HOW MUCH was cut -- otherwise there is no way to know if it is worth chasing', () => {
+    const out = resultSummary(7, 'z'.repeat(RESULT_NOTIFY_MAX + 137))
+    expect(out).toContain('137 more characters')
   })
 
-  it('a tovabbitott resz a MEG NEM VAGOTT eleje, nem valami rovidebb kivonat', () => {
-    const eredeti = 'A'.repeat(RESULT_NOTIFY_MAX) + 'B'.repeat(50)
-    const ki = resultSummary(9, eredeti)
-    expect(ki.startsWith('A'.repeat(RESULT_NOTIFY_MAX))).toBe(true)
-    expect(ki).not.toContain('B')
+  it('the part forwarded is the UNCUT start, not some shorter excerpt', () => {
+    const original = 'A'.repeat(RESULT_NOTIFY_MAX) + 'B'.repeat(50)
+    const out = resultSummary(9, original)
+    expect(out.startsWith('A'.repeat(RESULT_NOTIFY_MAX))).toBe(true)
+    expect(out).not.toContain('B')
   })
 
-  // A hatar NEM lehet akarmi: egy tul kicsi ertek pont azt a hibat hozna vissza, ami miatt ez
-  // a fuggveny letezik (a vagas a lenyeg kozepere esett), egy vegtelen pedig a cimzett
-  // kontextusat koltene el a beleegyezese nelkul. Mindket irany merve.
-  it('a hatar tagas, de veges', () => {
+  // The boundary cannot be arbitrary: too small brings back exactly the bug this function
+  // exists for (the cut landing mid-argument), too large spends the recipient's context
+  // without consent. Both directions measured.
+  it('the boundary is generous, but finite', () => {
     expect(RESULT_NOTIFY_MAX).toBeGreaterThanOrEqual(1500)
     expect(RESULT_NOTIFY_MAX).toBeLessThanOrEqual(8000)
   })

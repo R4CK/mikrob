@@ -167,6 +167,12 @@ export const OWNER_NAME = env['OWNER_NAME'] ?? OWNER_NAME_PLACEHOLDER
 // install's generated agent CLAUDE.md); set OWNER_DRIVE_FOLDER in .env to wire
 // the default shared drive for this install.
 export const OWNER_DRIVE_FOLDER = env['OWNER_DRIVE_FOLDER'] ?? ''
+// The language the fleet speaks TO THE OWNER (Telegram, daily log, morning brief, README feature
+// list, DECISIONS.md, docs/USER-MANUAL.md). Card 867fa8f2 (agent-to-agent English rule, Peti
+// 12303/12306): agent-to-agent traffic (inter-agent messages, kanban comments) is English
+// regardless of this setting; this constant is ONLY the owner-facing language, and it must stay
+// an env-sourced value, never a hardcoded "Hungarian" baked into a prompt (code-quality rule 14).
+export const USER_LANGUAGE = env['USER_LANGUAGE'] ?? 'hu'
 export const BOT_NAME = env['BOT_NAME'] ?? 'Marveen'
 
 // Product / system brand shown in the dashboard chrome (browser tab title,

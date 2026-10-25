@@ -4783,7 +4783,7 @@ export function buildMessageCloseBody(): string {
     '## Üzenet lezárása: bejövő riportnál `notify:false`',
     '',
     'Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"status":"done"` vagy',
-    '`"failed"`). A lezárás ALAPBÓL egy `[Eredmény] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.',
+    '`"failed"`). A lezárás ALAPBÓL egy `[Result] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.',
     '',
     '- DELEGÁLT FELADAT (a feladó az eredményre vár): zárd a szokásos módon, a nyugta maga az',
     '  eredmény -- a `result` mezőbe írd, mit csináltál.',
@@ -4819,6 +4819,60 @@ export function ensureMessageCloseSection(name: string): void {
 
   const updated = MSGCLOSE_BLOCK_RE.test(existing)
     ? existing.replace(MSGCLOSE_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+const LANGUAGE_BEGIN = '<!-- BEGIN GENERATED: agent-to-agent-language (auto-generated, do not edit by hand) -->'
+const LANGUAGE_END = '<!-- END GENERATED: agent-to-agent-language -->'
+const LANGUAGE_BLOCK_RE = new RegExp(
+  `${LANGUAGE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${LANGUAGE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Card 867fa8f2 (Peti 12303 + 12306): agents talk to EACH OTHER in English -- inter-agent
+// messages, kanban comments, REVIEW/verdict free text, dispatch messages, shared-tier memory
+// entries other agents read. The OWNER-facing language (Telegram, daily log, morning brief,
+// README feature list, DECISIONS.md, USER-MANUAL.md) is unaffected and comes from USER_LANGUAGE
+// (env, src/config.ts), never a hardcoded constant.
+export function buildLanguageBody(): string {
+  return [
+    '## Language: agent-to-agent English, owner-facing configured',
+    '',
+    'Talk to OTHER AGENTS in English: inter-agent messages, kanban comments, REVIEW/verdict free',
+    'text, dispatch messages, and any shared-tier memory entry other agents read. Talk to the owner',
+    'in the configured owner language (env `USER_LANGUAGE`, default `hu`) on owner-facing channels',
+    'only: Telegram, daily log, morning brief, README feature list, DECISIONS.md, USER-MANUAL.md.',
+    'Never hardcode a language as a constant in a prompt or template -- read it from config.',
+    '',
+    'Protocol tokens never change language: gate verdict keywords (`QA PASS`, `CYBERSEC GO/NO-GO`,',
+    '`CYBERED GO/NO-GO`), `Gate-SHA:`, `Fix-Direction:`, `Pair-FE:`/`Pair-BE:`, `BLOKKOLT-*` labels,',
+    '`ELUTASÍTVA`, `Kész, ha:`. Mirroring a sender\'s language in a reply is the main failure mode --',
+    'answer in English even if the dispatch you received is in Hungarian.',
+  ].join('\n')
+}
+
+/** Idempotently ensures the agent-to-agent language block is present and current. Same no-op
+ *  contract as ensureEvidenceSection/ensureMessageCloseSection: the main agent's CLAUDE.md is
+ *  git-tracked and carries this rule statically (root CLAUDE.md "Nyelv" section), so a runtime
+ *  write there would fight the --ff-only pull. */
+export function ensureLanguageSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${LANGUAGE_BEGIN}\n${buildLanguageBody()}\n${LANGUAGE_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = LANGUAGE_BLOCK_RE.test(existing)
+    ? existing.replace(LANGUAGE_BLOCK_RE, block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
