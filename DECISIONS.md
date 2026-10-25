@@ -21956,3 +21956,17 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 **Ki döntött:** Peti (12303 + 12306), a konkrét kiegészítő hatókört MikroB (komment 24519, elemzo grilling alapján), a kivitelezés backend2-é.
 
 **Hivatkozás:** kártya 867fa8f2 (szülő: bf03aaa1), MikroB komment 24500 + 24519, elemzo report `/home/neon/marveen/agents/elemzo/reports/e060a794-installed-repo-inventory.md` 5. szakasz.
+
+## 2026-10-24 -- kártya 9518b377 (folytatás): RedHat KC5/KC6 delta-fix (23925 NO-GO kövezője)
+
+**Kontextus:** az előző bejegyzés (fentebb, ugyanezen a napon, kártya 9518b377) az F1/F2/F3-at zárta WhiteHat 23921 NO-GO-jára. RedHat 23925 NO-GO-ja ugyanarra a Gate-SHA-ra (189c3424527a0a3822872ee6c4c322bb63e0ebed) további két tételt talált: KC5 (nested userns, seccomp nélkül) és KC6 (a 23079 piros-mutáns követelmény -- `--new-session`, `--die-with-parent`, a Hopper lib-bind és a doctor-ág törlése némán visszajöhetne, a selftest ezekre vak volt).
+
+**Döntés:**
+- **KC5 fix:** `--unshare-user --disable-userns` bekerült a base `BIND_ARGS`-ba. Ellenőrizve: a sandboxon belüli `unshare -U -r id` most "unshare failed: No space left on device"-del bukik (a bwrap `--disable-userns` saját errno-ja).
+- **KC6 fix:** mind a négy tételre egyenként piros-mutáns teszt: (1) `--new-session` -- sid-probe `/proc/self/stat`-ból, sid=1 a valódi kódon, sid!=1 a mutánsban; (2) `--die-with-parent` -- ancestor-kilövéssel mért folyamatfa-túlélés teszt, poll-alapú (nem fix delay, hogy ne legyen időzítési versenyhelyzet); (3) doctor-ág -- `scope_checks` kulcs jelenléte/hiánya a valódi vs mutált kódon; (4) Hopper lib-bind -- hopper doctor-check `healthy=true/false` a valódi vs mutált kódon (elemzo valódi `HOPPER_LAUNCHER_PATH`-jával, nem szintetikus `BASE_ENV`-vel). Selftest 30 -> 39 teszt, mind zöld.
+
+**Miért:** a KC6 hiányosság pont azt a hibaosztályt nyitotta volna meg, amit a 23079 (ca1b763c RedHat delta-gate) már egyszer lezárt kért -- egy zöld selftest, ami nem köti a négy tételt piros-mutáns teszttel, némán engedné vissza bármelyiket egy jövőbeli, jóhiszemű refaktornál.
+
+**Ki döntött:** a tételek RedHat-tól jönnek (9518b377 23925 NO-GO), MikroB a delta-fix irányát adta (14598/14604), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933); komment 23925/23943; `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.
