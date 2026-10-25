@@ -14,7 +14,7 @@ function fakeCtx(pathAndQuery: string, method = 'GET') {
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
     setHeader() {},
-    end(chunk?: any) { if (chunk) { try { out.body = JSON.parse(chunk.toString()) } catch { out.body = chunk.toString() } } },
+    end(chunk?: string) { if (chunk) { try { out.body = JSON.parse(chunk) } catch { out.body = chunk } } },
   }
   const req: any = Readable.from([])
   req.headers = {}

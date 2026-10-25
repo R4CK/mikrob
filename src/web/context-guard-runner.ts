@@ -103,7 +103,8 @@ function recordPendingResume(name: string, entry: PendingResume): void {
 
 function dropPendingResume(name: string, why: string): void {
   if (!(name in pendingResumes)) return
-  const { [name]: _dropped, ...rest } = pendingResumes
+  const rest = { ...pendingResumes }
+  delete rest[name]
   pendingResumes = rest
   persistPendingResumes()
   logger.info({ name, why }, 'context-guard: pending resume cleared')
@@ -129,7 +130,8 @@ export function restorePendingResumes(nowMs: number): string[] {
         { name, restartedAtMs: pendingResumes[name]?.restartedAtMs, reason: pendingResumes[name]?.reason },
         'context-guard: pending resume EXPIRED across a dashboard restart -- the fresh session never got its resume prompt',
       )
-      const { [name]: _expired, ...rest } = pendingResumes
+      const rest = { ...pendingResumes }
+      delete rest[name]
       pendingResumes = rest
     }
     persistPendingResumes()
