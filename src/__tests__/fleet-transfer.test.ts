@@ -91,6 +91,10 @@ vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: vi.fn(),
 }))
 
+vi.mock('../web/skill-map-provisioner.js', () => ({
+  detachSkillSymlinkIfAny: vi.fn(),
+}))
+
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASKS_DIR: '/mock/tasks',
 }))
@@ -574,6 +578,42 @@ describe('importFleet: oauthTokenFile is stripped from an imported agent-config.
       expect(written).not.toHaveProperty(key)
     }
     expect(written.model).toBe('claude-opus-5-5')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Card d2d47a92 WhiteHat F1 HIGH (comment 24868): a provisioned agent skill is a symlink into
+// the shared global catalog. Before this fix, writeAgentFiles wrote agent.agentSkills straight
+// into agents/<name>/.claude/skills/<skill>/SKILL.md with no symlink check first, so an import
+// onto a provisioned name wrote THROUGH the link into the shared global copy. MUTATION PIN: if
+// the detachSkillSymlinkIfAny() call is ever removed from writeAgentFiles, this test flips (the
+// mock is never invoked).
+// ---------------------------------------------------------------------------
+
+describe('importFleet: agent-skill import detaches a provisioner symlink before writing (card d2d47a92 WhiteHat F1)', () => {
+  it('calls detachSkillSymlinkIfAny for the imported skill dir before the write', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { detachSkillSymlinkIfAny } = await import('../web/skill-map-provisioner.js')
+    vi.mocked(detachSkillSymlinkIfAny).mockClear()
+    const fleet = JSON.stringify({
+      schemaVersion: 1,
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      sourceHost: 'test-host',
+      agents: [{
+        name: 'victim',
+        config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {},
+        agentSkills: [{ name: 'core-a', skillMd: '# core-a\n' }],
+      }],
+      skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+      kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+      ideaBox: { ideas: [], comments: [], statusLog: [] },
+      dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+    })
+    importFleet(fleet, { apply: true })
+    expect(vi.mocked(detachSkillSymlinkIfAny)).toHaveBeenCalledTimes(1)
+    const calledPath = vi.mocked(detachSkillSymlinkIfAny).mock.calls[0]![0] as string
+    expect(calledPath).toContain('victim')
+    expect(calledPath).toContain('core-a')
   })
 })
 

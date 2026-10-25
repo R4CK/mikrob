@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { execShellAsync } from '../exec-async.js'
@@ -11,6 +11,7 @@ import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries, shellEscape } from '../sanitize.js'
+import { detachSkillSymlinkIfAny } from '../skill-map-provisioner.js'
 import type { RouteContext } from './types.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
@@ -87,13 +88,27 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     try {
       writeFileSync(tmpPath, file.data)
       const listOutput = await execShellAsync(`unzip -Z1 ${shellEscape(tmpPath)} 2>&1`, { timeoutMs: 5000 })
+      // Normalise entry paths first: posix.normalize strips leading ./ and resolves a/./b segments,
+      // so a zip entry named ./core-a/SKILL.md becomes core-a/SKILL.md and its split('/')[0] is
+      // 'core-a', not '.'. Without this, detachSkillSymlinkIfAny(join(skillsDir,'.')) is a no-op
+      // and unzip -o writes through the provisioned symlink into the shared global skill (N1).
       const entries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((e) => posix.normalize(e.replace(/\\/g, '/')))
       for (const entry of entries) {
-        if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
+        if (entry === '.' || entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
           unlinkSync(tmpPath)
           json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
           return true
         }
+      }
+      // Card d2d47a92 WhiteHat F1(b): a top-level entry name that pre-exists as a provisioner
+      // symlink into the shared global catalog is invisible to the `after`-diff taint check below
+      // (it was already in `before`), and `unzip -o` writes straight through it into the global
+      // skill, poisoning every agent that shares it. Detach any such symlink to a real,
+      // agent-local copy BEFORE extraction, so the extraction can only land in this agent's copy.
+      const topLevelNames = new Set(entries.map((e) => e.split('/')[0]).filter(Boolean))
+      for (const topName of topLevelNames) {
+        detachSkillSymlinkIfAny(join(skillsDir, topName))
       }
       await execShellAsync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeoutMs: 10000 })
       unlinkSync(tmpPath)

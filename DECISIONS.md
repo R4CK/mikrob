@@ -22078,3 +22078,84 @@ Három red-then-green eset, mindegyik RED-MUTANT-tal (a mutáns ugyanaz a szkrip
 **Ki döntött:** a bypass osztályok azonosítása 9529d46e kártya leírásából, a hook-adoptálás vs template-próza döntés DevO (fullstack) javaslatára, MikroB jóváhagyásával. Kódot DevO (fullstack) írta.
 
 **Hivatkozás:** kártya 9529d46e (szülő 7f0efce3), acknowledged-conflicts.ts `templates/sub-agents/quarantine-reader.md` bejegyzés, `scripts/hooks/egress-gate.mjs` `isQuarantineDenied`/`isPrivateIPv6`.
+## 2026-10-25: d2d47a92 delta -- WhiteHat NO-GO (24868) F1-F4 javítva: szimlink write-through, map-crash, path-traversal, foreign-symlink-adopció
+
+**Kontextus:** WhiteHat delta-gate NO-GO-t adott a446871df shán (komment 24868), miközben QA2 ugyanazon shán PASS-t (komment 24870). Négy lelet: **F1 HIGH** -- egy provisionált agent-skill szimlink a megosztott globális katalógusba, ezért BÁRMELY már létező, agent-scope-ú író út (fleet-transfer.ts agentSkills import, routes/agents-skills.ts zip-import) a szimlinken ÁT írt, és a globális kópiát mérgezte MINDEN ügynöknél egyszerre -- élő PoC-val bizonyítva mindkét útra (atomicWriteFileSync + `unzip -o`). **F2 MEDIUM** -- `provisionFleetSkills` dokumentáltan sosem dob, de egy rossz map-sor (`fleet-core: ["core-a", null]`, vagy `roles[agent]` nem tömb) TypeError-t dobott, és a hívó (`startAgentProcessUnlocked`) try/catch nélkül hívja -- egy rossz sor MINDEN ügynök indulását blokkolta volna. **F3 MEDIUM** -- egy map-bejegyzés (`"../escape-skill"`) csupasz `join()`-nal ment a fájlrendszerbe, a skills mappán KÍVÜL hozott létre könyvtárat. **F4 LOW** -- egy előre létező szimlink feltétel nélkül bekerült a manifestbe (akár máshonnan, akár lógó linkként), amit a provisioner ezután "sajátjaként" kezelt és törölt volna egy jövőbeli map-változásnál.
+
+**Döntés:** mind a négy javítva, sebészien, csak a `src/web/skill-map-provisioner.ts` + a két hívó (`fleet-transfer.ts`, `routes/agents-skills.ts`) érintve. (1) F1: új, exportált `detachSkillSymlinkIfAny(skillDir)` -- ha a cél szimlink, egy valódi, agent-local másolattá alakítja (readlink + cpSync + unlink+mkdir), MIELŐTT a hívó ír; mindkét write-path (fleet-import egyenként a skill nevére, zip-import az archívum minden top-level nevére, az `unzip -o` ELŐTT) meghívja. (2) F2: `readSkillRoleMap` most `sanitizedSkillNames()`-en szűr minden bejegyzést (nem-string vagy nem-tömb -> warn + kihagyva, sosem dob). (3) F3: `SKILL_NAME_RX = /^[a-z0-9][a-z0-9._-]*$/` a map olvasásakor ÉS a manifest-alapú törlés-ciklusban is -- egy rossz név sosem éri el a `join()`/`symlinkSync()`-et. (4) F4: egy előre létező szimlink csak akkor számít "már provisionáltnak" (adoptálva a manifestbe), ha a `realpathSync` a GLOBAL_SKILLS_DIR alá oldódik -- egyébként meghagyva, sosem kezelve/törölve; ugyanez a szabály a törlés-ciklusban is (a manifestben szereplő skill csak akkor törlődik, ha MÉG a globális katalógus alá mutat).
+
+**Ellenőrzés (mérve a jelen javítás commitján, nem landolva még, fleet-test.sh a landoláskor futtat a merge eredményén):** `src/__tests__/skill-map-provisioner.test.ts` 12/12 zöld (7 új eset F1-F4-re); `src/__tests__/fleet-transfer.test.ts` 46/46 zöld (1 új eset, F1 a fleet-import oldalon, mock-spy a detach-hívásra); `src/__tests__/agents-skills-import-symlink-guard.test.ts` (új fájl) 1/1 zöld, valódi zip-importtal, valódi szimlinkkel, a globális `~/.claude/skills/<fixture>/SKILL.md` tartalmát a futás előtt és után összevetve. Mutáció-bizonyítva mindhárom helyen: a javítás `git stash`-sel visszavéve, a 7+1+1 új teszt PIROS lett (a fleet-transfer F1 esetben a mock sosem hívódott; az agents-skills esetben a globális fájl tényleg felülíródott `ATTACKER-OR-STALE-OVERWRITE`-ra -- pontosan a WhiteHat-lelet reprodukálva), majd visszaállítva mind zöld. `npx tsc --noEmit -p .` 3, a kártyától független, meglévő hiba (parse5-típus hiány, 006b506b-előtti upstream batch).
+
+**Nyitva hagyva, tudatosan:** a zip-import route-nak egy ETTŐL a kártyától FÜGGETLEN, meglévő furcsasága van: ha az archívum egy MÁR LÉTEZŐ nevet hoz (szimlinket vagy valódi könyvtárat egyaránt), a before/after névlista-diff nem látja az átírt nevet, és a route "No valid skill found"-ot jelent, miközben az `unzip -o` valójában felülírta a fájlt. Ez a jelentés-pontosság hibája, nem biztonsági lelet (a teszt ezt a tényt fájlrendszer-szintű ellenőrzéssel kerüli ki, nem a válasz-kódra épít) -- MikroB/Peti döntése kell, nyíljon-e rá külön kártya.
+
+**Ki döntött:** a lelet és a javítási irányok WhiteHat kommentje (24868); a kivitelezés backend saját munkája (MikroB dispatch, üzenet 14957).
+
+**Hivatkozás:** kártya d2d47a92 (szülő: bf03aaa1), WhiteHat komment 24868, QA2 komment 24870 (ugyanazon shán PASS, delta-gate előtt).
+
+## 2026-10-25 -- upstream-sync 96b27014: secret-gate + copy-gate kemenyites (7 commit) -- backend
+
+**Döntés:** mind a 7 upstream commit (7b520b37, 0cef04a3, 9b4eef9a, 68d3a102, 86b2e461, 57526d63, ec1eb717) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges, a kártyát gate-re adjuk.
+
+**Hivatkozás:** kártya 96b27014, upstream-ported.json ledger (backend3 UJRA-ELLENORIZVE 2026-10-24), origin/develop de46c96e.
+
+## 2026-10-25 -- upstream-sync 2ba98cac: watchdog + install megbizhatosag (7 commit) -- backend
+
+**Döntés:** mind a 7 upstream commit (b47bf993, f8a1f5d2, 3582807f, 3032da46, 0602f88a, b73b0812, 5b74adc2) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges.
+
+**Hivatkozás:** kártya 2ba98cac, upstream-ported.json ledger, origin/develop aade034ac.
+
+## 2026-10-25 -- upstream-sync 4d367048: context-guard + vegyes javitasok (13 commit) -- backend
+
+**Döntés:** mind a 13 upstream commit (d964aab4, d3cdb375, b69ace21, 4c7e06f9, ebc0168d, 1abd45cf, a54a50d2, b85bd129, b5739368, 3d02f370, 0e9442ea, 10b4f331, d5d323af) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges.
+
+**Hivatkozás:** kártya 4d367048, upstream-ported.json ledger, origin/develop aade034ac.
+
+## 2026-10-25: 2ba98cac delta -- correcting upstream-sync record (RedHat NO-GO comment 25005)
+
+**Context:** The 05bf5c0ca entry above said all 7 commits are "igazoltan benne van az origin/develop-ban ... Uj port-munka nem szukseges". RedHat (cybered) measured the live code on origin/develop and found two commits are not fully adopted. This is a record correction; no security defect.
+
+**Corrected record for 2ba98cac (7 upstream commits):**
+
+LIVE (fully adopted in fork, some adapted):
+- b47bf993: fix(watchdog): a userbot-prober elesitese explicit megerositest ker, amig a tail-vak reader all (HBTAILVAK914) (#1317) -- LIVE
+- 3032da46: fix(inbound-probe): main session reads REAL config root -- LIVE
+- 0602f88a, b73b0812, 5b74adc2 -- LIVE
+
+PARTIAL:
+- 3582807f: fix(update): keepalive + macOS wiring -- morning-briefing sentinel LIVE; install_keepalive_probe_timer block in update.sh (lines 692-723) and install-macos.sh macOS keepalive wiring NOT adopted (commit 15c091ba0 removed the macOS block again)
+
+NOT ADOPTED (deliberate fork decision):
+- f8a1f5d2: feat(update): park_morning_timer -- update.sh block 692-723 not adopted; Cybersec ef6a8031 records the decision; adopting is Peti's call on a separate card
+
+**Ledger (store/upstream-ported.json):** f8a1f5d2 and 3582807f moved from ported to skipped with reasons. Ancestry (merge-base --is-ancestor) is still true for both; the correction is that ancestry alone does not mean the fork carries the fix.
+
+**Reference:** card 2ba98cac, RedHat NO-GO comment 25005.
+
+## 2026-10-25: 4d367048 delta -- correcting upstream-sync record (RedHat NO-GO comment 25006)
+
+**Context:** Same as above: the 05bf5c0ca entry said all 13 commits are live. RedHat measured two as not adopted. Record correction, no security defect.
+
+**Corrected record for 4d367048 (13 original + 7 triage shas from comment 8062):**
+
+LIVE (original 13):
+- d964aab4, d3cdb375, b69ace21, 4c7e06f9, ebc0168d, 1abd45cf, b85bd129, b5739368, 3d02f370, 10b4f331, d5d323af -- all LIVE in origin/develop
+
+NOT ADOPTED (deliberate fork decisions):
+- a54a50d2: feat(scripts): egress-drift scan on logical lines, marked vs bare (TASKEGRESSDRIFT913) (#1319) -- scripts/egress-drift-scan.py does not exist in fork; acknowledged-conflicts.ts ~line 4142 records this
+- 0e9442ea: fix(test-gate): refuse the suite from a transient root instead of going falsely red (SUITETMPPIROS912) (#1297) -- isTmpRootedPath refusal not present; only TMP_ROOT_PREFIXES list and agent-scaffold hook guard are live; acknowledged-conflicts.ts ~line 4464
+
+Triage shas (comment 8062, added to card scope post-triage):
+- 0a33ab37: SKIPPED (comment-only fix depending on unported upstream commit 866da985; ledger entry pre-existing)
+- a67881aa, 70213357, df5e4462, 67e1daea, 4919d8b0, 3f93c00f: LIVE (checked by RedHat on origin/develop aade034ac)
+
+**Ledger (store/upstream-ported.json):** a54a50d2 and 0e9442ea moved from ported to skipped with reasons.
+
+**Reference:** card 4d367048, RedHat NO-GO comment 25006.
+
+## 2026-10-25: 2ba98cac + 4d367048 -- sha description accuracy fix (RedHat NO-GO 25019/25020)
+
+In-place correction to the not-yet-landed correcting entries above. Three sha descriptions did not match `git log -1 --format=%s` verbatim:
+- 2ba98cac: b47bf993 was attributed "fix(update): failed npm ci" (6b397f23's subject). Now: "fix(watchdog): a userbot-prober elesitese..." (HBTAILVAK914).
+- 4d367048: a54a50d2 was "feat(update): egress-drift scan"; now verbatim "feat(scripts): egress-drift scan on logical lines..." (TASKEGRESSDRIFT913). 0e9442ea was "fix(suites)..."; now verbatim "fix(test-gate): refuse the suite from a transient root..." (SUITETMPPIROS912).
+
+Classification and ledger entries unchanged. No new security/functional finding.
