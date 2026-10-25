@@ -22024,3 +22024,40 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 **Ki döntött:** Peti (12341 a lemondás, 12344 a regiszterből törlés); az M0 mérést a MikroB végezte, az elemzést az elemzo.
 
 **Hivatkozás:** Telegram 12341, 12344; kártyák e25e2bbc, a843ce7c, d58a2ce3, 9ab4c3b3; `docs/mcp-compressor-proxy-design.md` 8a szakasz.
+
+## 2026-10-25 -- kártya 9518b377 (retroaktív bejegyzés): F1/F2/F3 delta-fix (commit 1f27bcb5f), QA 14884 hiány-lelete
+
+**Kontextus:** a korábbi PASS (23911, komment 24388) és a két NO-GO (WhiteHat 24375, RedHat 24382) nyomán landolt commit 1f27bcb5f-nek nem volt DECISIONS.md tail-bejegyzése, miközben az F1-F3 és a KC5/KC6 kör mindkettő már kapott egyet. QA (msg 14884) jelezte a hiányt a KC1-builtin-shadow delta-gate előtt; MikroB (komment, msg 14885) kérte a pótlást ugyanabban a fix-kommitban, mint az új KC1-builtin-shadow javítás.
+
+**Döntés (mit csinált 1f27bcb5f, retroaktívan rögzítve):**
+- `resolve_trusted_bin()` kiterjesztve minden csupasz belső parancsra (`readlink`, `sha256sum`, `sort`, `cut`, `dirname`, `mkdir`, `find`, `grep`, `sed`) -- lezárja a `BASH_FUNC_<name>%%` PATH-árnyékolási bypasst (RedHat KC1, csak a NEVESÍTETT külső parancsokra).
+- Az integritás-pin most a TELJES npx-hash könyvtárat fedi (rea-agents + mind a 158 testvér-függőség), fájlokra ÉS symlinkekre (név + cél) egyaránt hashelve -- lezárja a testvér-függőség bypasst (WhiteHat F2) és a symlink-retarget bypasst (RedHat KC2).
+- Symlink-ellenőrzés az `ELEMZO_SAMPLES_DIR` gyökerén -- lezárja a samples-allowlist-gyökér symlink bypasst (RedHat KC3).
+- selftest: 5 új red-then-green eset, mindegyik a lezárt WhiteHat/RedHat komment-számra hivatkozva.
+
+**Mérés:** selftest 25 -> 30 teszt (a REVIEW, komment 24712 szerint). Teljes `fleet-test.sh` a landoláskor (Gate-SHA 3435b2936671f1d72748b81acc789a1a97f0bd21) futott, lásd a kártya saját REVIEW-ját.
+
+**Ki döntött:** WhiteHat (24375) és RedHat (24382) NO-GO-ja adta a hatókört, MikroB a delta dispatch-ot (msg 14743), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933), commit 1f27bcb5f, komment 24375/24382/24388/24712, QA hiány-lelete msg 14884, MikroB pótlás-kérése msg 14885.
+
+## 2026-10-25 -- kártya 9518b377 (folytatás): KC1 builtin-shadow delta-fix (RedHat 24721 / WhiteHat 24727), bash -p shebang
+
+**Kontextus:** a fenti 1f27bcb5f (F1/F2/F3) csak a NEVESÍTETT külső parancsokat (readlink, sha256sum, ...) zárta a `BASH_FUNC_<name>%%` osztály ellen `resolve_trusted_bin()`-nel. RedHat (24721) és WhiteHat (24727) delta-gate-je (Gate-SHA 3435b2936671f1d72748b81acc789a1a97f0bd21) NO-GO-t adott: UGYANAZ az osztály, egy bash BUILTIN árnyékolásán át (nem nevesített külső parancs), még nyitva maradt. RedHat PoC-ja: `BASH_FUNC_exit%%` no-op minden fail-closed `exit 1`-et átenged. WhiteHat PoC-ja: `BASH_FUNC_echo%%`, ami a `resolve_trusted_bin()`-ben az `echo "$cand"` kimenetet hamisítja, így `READLINK_BIN` támadó által választott szkriptre áll, és a `store/.dashboard-token` láthatóvá válik a sandboxban.
+
+**Döntés:** `resolve_trusted_bin()` névenkénti védelme NEM elég a builtin-eket (exit, echo, `[`, stb.) árnyékoló exportált függvényekre -- mindkét gate ugyanazt a javítást javasolta: a bash `-p` (privileged mode) teljesen ELUTASÍTJA az importált függvényeket a környezetből, osztályszinten, nevenkénti védelem helyett. Shebang `#!/usr/bin/env bash` -> `#!/bin/bash -p` a valódi szkripten (a MCP-regisztráció `"command": ".../rea-bwrap-sandbox.sh"` direkt exec-ként hívja, a shebang tehát érvényes a valódi futási útra). A selftestben minden eset, ami ezt az osztályt teszteli, a FÁJLT kell direktben futtassa (nem `bash file`-lel, mert az ignorálja a shebanget) -- ez pont az a hiba, amire RedHat felhívta a figyelmet ("a meglévő selftest `bash "$REAL"`-lel hívja, az ignorálja a shebanget, az új esetnek a fájlt magát kell futtatnia").
+
+Három red-then-green eset, mindegyik RED-MUTANT-tal (a mutáns ugyanaz a szkript `-p` nélküli shebanggal):
+1. `BASH_FUNC_exit%%` no-op + `REA_SAMPLE_DIR=/home/neon/marveen/store` -- egy probe listázza a store-t a sandboxban; a valódi (`-p`) szkripten a token sosem jelenik meg, a mutánson megjelenik.
+2. `BASH_FUNC_echo%%`, ami hamis readlink-eredményt ad a `resolve_trusted_bin()`-nek -- ugyanaz a mintázat.
+3. `BASH_FUNC_[%%`, ami csak a `-L` tesztre hazudik (a `[ -L "$ELEMZO_SAMPLES_DIR" ]` KC3-ellenőrzésre), minden más teszt a valódi `/usr/bin/[`-re delegál -- egy mindent-hamisító `[` a `resolve_trusted_bin()` saját `-x` ellenőrzését is elrontaná, és egy másik, korábbi refusalt váltana ki, nem a KC3-at tesztelné.
+
+**Mellékesen zárva (MikroB kérése, msg 14885, a 77e6e011 WhiteHat 24726 LOW leletei, ugyanazon a selftest-fájlon):**
+- F1: a selftest három fix nevű scratch-könyvtárat hozott létre az ÉLŐ `agents/elemzo/samples` alatt (`selftest-hijack-9518b377`, `selftest-samples-9518b377`, `selftest-kc1-9518b377`), ami egy párhuzamosan futó másik selftest-futással ütközött (mérve: QA egyszer elbukott emiatt, amíg a selftestet egyszerre futtatta valaki más). Javítás: mindhárom név `$$-$RANDOM` utótagot kapott.
+- F2: a `check_die_with_parent()` a valódi-szkript ágon vakon átmehetett volna, ha a leszármazott-lista üres volt a mintavétel pillanatában (a bwrap még nem indította el a gyermeket terhelés alatt) -- új `had_descendants` feltétel teszi ki a sikert attól, hogy legalább egy leszármazottat tényleg találtunk, mielőtt a "survived=0" önmagában elég lenne.
+
+**Mérés:** `rea-bwrap-sandbox.selftest.sh` 47 -> 53 teszt (3 új KC1-builtin eset + 3 RED-MUTANT; az F1/F2 javítás nem ad új esetszámot, meglévő eseteket erősít). 3x egymás utáni futás mind zöld (stabilitás-ellenőrzés).
+
+**Ki döntött:** a tételek RedHat-tól (24721) és WhiteHat-tól (24727) jönnek, a fix-direction mindkettő saját mérése (`bash -p` igazoltan ignorálja az importált függvényeket), MikroB a delta dispatch-ot adta (msg 14876/14883/14885), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933), komment 24721 (RedHat NO-GO), 24727 (WhiteHat NO-GO), 77e6e011 komment 24726 (WhiteHat F1/F2 LOW), `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.

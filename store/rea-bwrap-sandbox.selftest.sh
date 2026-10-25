@@ -190,7 +190,11 @@ exit 1
 EOF
   chmod +x "$HIJACK_DIR2/$fake"
 done
-HIJACK_SAMPLE_DIR="$SAMPLES_ROOT/selftest-hijack-9518b377"
+# WhiteHat F1 (77e6e011 komment 24726): these scratch dirs live inside the LIVE
+# agents/elemzo/samples, so a fixed name collides with a concurrent selftest run (QA was
+# measured running the same selftest at the same time). $$-$RANDOM makes every run's name
+# unique; same reasoning applies at the other two fixed-name sites below.
+HIJACK_SAMPLE_DIR="$SAMPLES_ROOT/selftest-hijack-9518b377-$$-$RANDOM"
 mkdir -p "$HIJACK_SAMPLE_DIR"
 env -i \
   HOME="$HOME" PATH="$HIJACK_DIR2:/usr/bin:/bin" \
@@ -202,7 +206,78 @@ check "none of bwrap/env/node/readlink/sha256sum/sed/sort/cut/dirname/mkdir/find
   "$([ ! -f "$SENTINEL2" ] && echo 1 || echo 0)"
 rm -rf "$HIJACK_SAMPLE_DIR"
 
-SAMPLE_DIR="$SAMPLES_ROOT/selftest-samples-9518b377"
+# Regression test for RedHat 24721 / WhiteHat 24727 (card 9518b377, KC1 builtin-shadow class):
+# resolve_trusted_bin() calls `echo "$cand"` and `exit 1` -- both shell BUILTINS, not external
+# commands, so the PATH pin and the per-name resolve_trusted_bin() fix above never touch them.
+# A launcher-controlled exported BASH_FUNC_<name>%% shadowing a builtin defeats the fail-closed
+# checks regardless of PATH. The fix is `#!/bin/bash -p` on the real script (bash -p ignores
+# every imported function). These cases MUST invoke the script FILE directly (not `bash file`),
+# because `bash file` ignores the shebang -- that is exactly how the MCP registration launches
+# it (agents/elemzo/.claude-config/.claude.json: "command": ".../rea-bwrap-sandbox.sh").
+# Case 1 (RedHat 24721): a no-op BASH_FUNC_exit%% turns every fail-closed `exit 1` into a
+# no-op continue. REA_SAMPLE_DIR is pointed outside the allowlist (at the store directory
+# itself); on the vulnerable (mutant) code the refusal message prints but execution continues
+# into the doctor branch regardless, so rc alone is not a reliable signal (doctor's own report
+# can independently exit non-zero for unrelated reasons). The reliable signal, matching
+# RedHat's own ask, is whether store/.dashboard-token is actually reachable -- a custom probe
+# (last line replaced, same pattern as SAMPLE_PROBE/CACHE_PROBE above) lists it directly.
+EXIT_NOOP_PROBE="$WORK/exit-noop-probe.sh"
+head -n -1 "$REAL" > "$EXIT_NOOP_PROBE"
+printf '  sh -c %s\n' \
+  "'ls /home/neon/marveen/store/.dashboard-token 2>&1 || echo STORE_NOT_VISIBLE'" \
+  >> "$EXIT_NOOP_PROBE"
+chmod +x "$EXIT_NOOP_PROBE"
+
+MUTANT_EXIT_NOOP_PROBE="$WORK/exit-noop-probe-mutant.sh"
+sed '1s@.*@#!/usr/bin/env bash@' "$EXIT_NOOP_PROBE" > "$MUTANT_EXIT_NOOP_PROBE"
+chmod +x "$MUTANT_EXIT_NOOP_PROBE"
+
+EXIT_NOOP_OUT_REAL="$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="/home/neon/marveen/store" BASH_FUNC_exit%%='() { :; }' \
+  "$EXIT_NOOP_PROBE" 2>&1)" || true
+check "bash -p: a no-op exported BASH_FUNC_exit%% cannot defeat the REA_SAMPLE_DIR fail-closed refusal (card 9518b377, RedHat 24721)" \
+  "$(printf '%s' "$EXIT_NOOP_OUT_REAL" | grep -q "dashboard-token" && echo 0 || echo 1)"
+
+EXIT_NOOP_OUT_MUT="$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="/home/neon/marveen/store" BASH_FUNC_exit%%='() { :; }' \
+  "$MUTANT_EXIT_NOOP_PROBE" 2>&1)" || true
+check "RED-MUTANT (card 9518b377): without -p, the same BASH_FUNC_exit%% attack exposes store/.dashboard-token" \
+  "$(printf '%s' "$EXIT_NOOP_OUT_MUT" | grep -qv "STORE_NOT_VISIBLE" && printf '%s' "$EXIT_NOOP_OUT_MUT" | grep -q "dashboard-token" && echo 1 || echo 0)"
+
+# Case 2 (WhiteHat 24727, F1): resolve_trusted_bin() outputs its result with `echo "$cand"`. A
+# BASH_FUNC_echo%% that recognizes cand=/usr/bin/readlink and substitutes a fake readlink script
+# makes READLINK_BIN attacker-controlled, so BOTH SAMPLES_ROOT and RESOLVED_SAMPLE_DIR resolve to
+# whatever the fake script prints -- here, the store directory -- and the allowlist (which only
+# compares the two against each other) passes, binding store/.dashboard-token into the sandbox.
+ECHO_HIJACK_FAKE_READLINK="$WORK/echo-hijack-fake-readlink"
+cat > "$ECHO_HIJACK_FAKE_READLINK" <<'EOF'
+#!/usr/bin/env bash
+echo "/home/neon/marveen/store"
+EOF
+chmod +x "$ECHO_HIJACK_FAKE_READLINK"
+
+ECHO_HIJACK_PROBE="$WORK/echo-hijack-probe.sh"
+head -n -1 "$REAL" > "$ECHO_HIJACK_PROBE"
+printf '  sh -c %s\n' \
+  "'ls /home/neon/marveen/store/.dashboard-token 2>&1 || echo STORE_NOT_VISIBLE'" \
+  >> "$ECHO_HIJACK_PROBE"
+chmod +x "$ECHO_HIJACK_PROBE"
+
+MUTANT_ECHO_HIJACK_PROBE="$WORK/echo-hijack-probe-mutant.sh"
+sed '1s@.*@#!/usr/bin/env bash@' "$ECHO_HIJACK_PROBE" > "$MUTANT_ECHO_HIJACK_PROBE"
+chmod +x "$MUTANT_ECHO_HIJACK_PROBE"
+
+ECHO_HIJACK_FUNC="() { if [ \"\$1\" = /usr/bin/readlink ]; then printf '%s\n' '$ECHO_HIJACK_FAKE_READLINK'; else printf '%s\n' \"\$@\"; fi; }"
+
+ECHO_HIJACK_OUT_REAL="$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="/home/neon/marveen/agents/elemzo/samples" \
+  BASH_FUNC_echo%%="$ECHO_HIJACK_FUNC" "$ECHO_HIJACK_PROBE" 2>&1)" || true
+check "bash -p: an exported BASH_FUNC_echo%% faking resolve_trusted_bin's readlink output cannot expose store/.dashboard-token (card 9518b377, WhiteHat 24727)" \
+  "$(printf '%s' "$ECHO_HIJACK_OUT_REAL" | grep -q "STORE_NOT_VISIBLE" && echo 1 || echo 0)"
+
+ECHO_HIJACK_OUT_MUT="$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="/home/neon/marveen/agents/elemzo/samples" \
+  BASH_FUNC_echo%%="$ECHO_HIJACK_FUNC" "$MUTANT_ECHO_HIJACK_PROBE" 2>&1)" || true
+check "RED-MUTANT (card 9518b377): without -p, the same BASH_FUNC_echo%% attack exposes store/.dashboard-token" \
+  "$(printf '%s' "$ECHO_HIJACK_OUT_MUT" | grep -qv "STORE_NOT_VISIBLE" && printf '%s' "$ECHO_HIJACK_OUT_MUT" | grep -q "dashboard-token" && echo 1 || echo 0)"
+
+SAMPLE_DIR="$SAMPLES_ROOT/selftest-samples-9518b377-$$-$RANDOM"
 mkdir -p "$SAMPLE_DIR"
 echo marker > "$SAMPLE_DIR/marker.txt"
 SAMPLE_PROBE="$WORK/sample-probe.sh"
@@ -303,7 +378,7 @@ fi
 # intercept (verified manually: absolute-path invocation bypasses it, bare-name does not).
 KC1_MARKER="$WORK/kc1-readlink-hijacked-$RANDOM"
 rm -f "$KC1_MARKER"
-KC1_SAMPLE_DIR="$SAMPLES_ROOT/selftest-kc1-9518b377"
+KC1_SAMPLE_DIR="$SAMPLES_ROOT/selftest-kc1-9518b377-$$-$RANDOM"
 mkdir -p "$KC1_SAMPLE_DIR"
 KC1_OUT="$(env -i "${BASE_ENV[@]}" REA_SAMPLE_DIR="$KC1_SAMPLE_DIR" \
   "BASH_FUNC_readlink%%=() { echo hijacked >> \"$KC1_MARKER\"; command readlink \"\$@\"; }" \
@@ -332,7 +407,31 @@ ln -s "$KC3_SCRATCH_REAL" "$KC3_SCRATCH_ROOT"
 KC3_SYMLINK_OUT="$(env -i "${BASE_ENV[@]}" bash "$MUTANT_KC3" doctor 2>&1)" && KC3_SYMLINK_RC=0 || KC3_SYMLINK_RC=$?
 check "RED-MUTANT (RedHat KC3): a samples directory replaced with a symlink is refused with rc=1 (allowlist root cannot be silently relocated)" \
   "$([ "$KC3_SYMLINK_RC" -eq 1 ] && printf '%s' "$KC3_SYMLINK_OUT" | grep -q "is a symlink" && echo 1 || echo 0)"
-rm -rf "$KC3_SCRATCH_ROOT" "$KC3_SCRATCH_REAL" "$MUTANT_KC3"
+
+# Case 3 (WhiteHat 24727 explicit ask): BASH_FUNC_[%% shadowing the `[ -L "$ELEMZO_SAMPLES_DIR" ]`
+# check above (the `[` builtin itself, not a named command). Reuses the already-symlinked KC3
+# scratch root from the test above. Must invoke the FILE directly (shebang), not via `bash file`,
+# same reasoning as the exit/echo cases.
+MUTANT_KC3_NO_DASHP="$WORK/mutant-kc3-no-dashp.sh"
+sed '1s@.*@#!/usr/bin/env bash@' "$MUTANT_KC3" > "$MUTANT_KC3_NO_DASHP"
+chmod +x "$MUTANT_KC3_NO_DASHP"
+
+# The hostile `[` only lies for the `-L` test (the one the KC3 check uses) and delegates every
+# other test to the real /usr/bin/[ -- a blanket "always fail" function would also break
+# resolve_trusted_bin's own `[ -x "$cand" ]` checks that run first, masking what this case is
+# actually testing. Uses [[ ]] (a bash keyword, not a shadowable name) to avoid the function
+# calling itself recursively.
+BRACKET_HIJACK_FUNC='() { if [[ "$1" = -L ]]; then return 1; else /usr/bin/[ "$@"; fi; }'
+
+BRACKET_OUT_REAL="$(env -i "${BASE_ENV[@]}" "BASH_FUNC_[%%=$BRACKET_HIJACK_FUNC" "$MUTANT_KC3" doctor 2>&1)" && BRACKET_RC_REAL=0 || BRACKET_RC_REAL=$?
+check "bash -p: an exported BASH_FUNC_[%% cannot defeat the KC3 symlinked-samples-root refusal (card 9518b377, WhiteHat 24727)" \
+  "$([ "$BRACKET_RC_REAL" -eq 1 ] && printf '%s' "$BRACKET_OUT_REAL" | grep -q "is a symlink" && echo 1 || echo 0)"
+
+BRACKET_OUT_MUT="$(env -i "${BASE_ENV[@]}" "BASH_FUNC_[%%=$BRACKET_HIJACK_FUNC" "$MUTANT_KC3_NO_DASHP" doctor 2>&1)" && BRACKET_RC_MUT=0 || BRACKET_RC_MUT=$?
+check "RED-MUTANT (card 9518b377): without -p, the same BASH_FUNC_[%% attack bypasses the KC3 symlink-root refusal" \
+  "$(printf '%s' "$BRACKET_OUT_MUT" | grep -q "is a symlink" && echo 0 || echo 1)"
+
+rm -rf "$KC3_SCRATCH_ROOT" "$KC3_SCRATCH_REAL" "$MUTANT_KC3" "$MUTANT_KC3_NO_DASHP"
 
 # Regression tests for RedHat KC5/KC6 (komment 23925, the 23079 "piros-mutáns" requirement):
 # a combined mutant removing --new-session, --die-with-parent, the Hopper lib/ bind, and the
@@ -414,6 +513,13 @@ check_die_with_parent() {
     done
   }
   [ -n "$wrap_pid" ] && _die_probe_collect_descendants "$wrap_pid"
+  # WhiteHat F2 (77e6e011 komment 24726): if desc_pids is empty because bwrap hadn't spawned
+  # its child yet when we sampled (heavy load), the real-script case below could pass
+  # trivially (nothing alive to find) without actually proving die-with-parent did anything.
+  # had_descendants makes that vacuous pass impossible -- the mutant side is unaffected
+  # (it must independently show survived=1 to pass, which already requires a live descendant).
+  local had_descendants=0
+  [ -n "$wrap_pid" ] && [ "${#desc_pids[@]}" -gt 0 ] && had_descendants=1
   local wrap_id=""
   [ -n "$wrap_pid" ] && wrap_id="$(tr '\0' ' ' < "/proc/$wrap_pid/cmdline" 2>/dev/null || echo "")"
   [ -n "$wrap_pid" ] && { kill -9 "$wrap_pid" 2>/dev/null || true; }
@@ -451,7 +557,7 @@ check_die_with_parent() {
   for pid in "${desc_pids[@]}"; do kill -9 "$pid" 2>/dev/null || true; done
   pkill -9 -f "$probe" 2>/dev/null || true
   if [ "$expect_dead" = "1" ]; then
-    check "$desc" "$([ "$survived" = "0" ] && echo 1 || echo 0)"
+    check "$desc" "$([ "$survived" = "0" ] && [ "$had_descendants" = "1" ] && echo 1 || echo 0)"
   else
     check "$desc" "$([ "$survived" = "1" ] && echo 1 || echo 0)"
   fi
