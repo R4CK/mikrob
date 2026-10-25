@@ -322,13 +322,13 @@ const BUILTIN_MCPS = [
     name: 'computer-use',
     label: 'Computer Use',
     desc: () => t('connectors.builtin.computer_use'),
-    get detailHtml() { return t('connectors.builtin.computer_use_html') },
+    get detailHtml() { return tHtml('connectors.builtin.computer_use_html') },
   },
   {
     name: 'chrome',
     label: 'Claude in Chrome',
     desc: () => t('connectors.builtin.chrome'),
-    get detailHtml() { return t('connectors.builtin.chrome_html') },
+    get detailHtml() { return tHtml('connectors.builtin.chrome_html') },
   },
 ]
 
@@ -788,7 +788,7 @@ function renderReposGrid(repos) {
     const tooltip = descText || integ
       ? `<div class="repo-card-info" tabindex="0" role="button" aria-label="${escapeHtml(t('repos.tooltip.aria'))}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><span class="repo-card-tooltip" role="tooltip">${descText ? `<span class="tt-desc">${descText}</span>` : ''}<span class="tt-how"><strong>${escapeHtml(t('repos.tooltip.how'))}:</strong> ${integ}${kindTxt}${instTxt}</span></span></div>`
       : ''
-    const header = `<div class="repo-card-header"><div class="repo-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></div><div class="repo-card-title"><div class="repo-card-name">${displayName}</div><a class="repo-card-source" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a></div>${tooltip}</div>`
+    const header = `<div class="repo-card-header"><div class="repo-card-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></div><div class="repo-card-title"><div class="repo-card-name">${displayName}</div><a class="repo-card-source" href="${escapeHtml(safeHref(r.url || ''))}" target="_blank" rel="noopener noreferrer">${url}</a></div>${tooltip}</div>`
     if (r.adopted) {
       // Adopted (vendored skill / pipx tool or MCP) -- managed outside the dashboard, so it is
       // READ-ONLY here: a kind badge instead of update/delete. `kind` (skill/mcp/external) is a

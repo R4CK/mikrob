@@ -241,7 +241,7 @@ function renderMemories(memories) {
     item.className = 'mem-item'
 
     const tier = mem.tier || mem.category || 'warm'
-    const tierBadge = tierLabels[tier] || tier
+    const tierBadge = escapeHtml(tierLabels[tier] || tier)
     const badgeClass = 'badge-' + tier
     const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
     const agentLabel = mem.agent_id || mainAgentId()
@@ -751,7 +751,7 @@ function setRelationLayerStatus(state, counts) {
   legend.hidden = state !== 'ready'
   if (state === 'ready' && counts) {
     for (const kind of ['card', 'file', 'decision', 'other']) {
-      const chip = legend.querySelector(`[data-kind="${kind}"]`)
+      const chip = legend.querySelector(`[data-kind="${CSS.escape(kind)}"]`)
       if (!chip) continue
       chip.querySelector('b').textContent = String(counts[kind] || 0)
       chip.hidden = (kind === 'decision' || kind === 'other') && !counts[kind]

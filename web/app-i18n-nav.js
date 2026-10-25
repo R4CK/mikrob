@@ -163,7 +163,7 @@ function renderStaticI18n() {
   })
   // Elements whose translation contains inline markup (strong/code/a): set innerHTML.
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
-    el.innerHTML = t(el.dataset.i18nHtml)
+    el.innerHTML = tHtml(el.dataset.i18nHtml)
   })
   // #updatesSubtitle opts out of the [data-i18n] sweep (renderUpdatesVersion owns
   // it, see app.js). Re-apply from the cached status so a language switch

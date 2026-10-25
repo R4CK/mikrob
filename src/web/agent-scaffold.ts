@@ -4904,7 +4904,7 @@ export function ensureLanguageSection(name: string): void {
   }
 
   const updated = LANGUAGE_BLOCK_RE.test(existing)
-    ? existing.replace(LANGUAGE_BLOCK_RE, block)
+    ? existing.replace(LANGUAGE_BLOCK_RE, () => block) // function replacer: $& / $' / $` in block are not interpreted
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return

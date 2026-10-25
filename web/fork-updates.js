@@ -84,7 +84,7 @@ function updatesRepoBlockHtml(repo) {
     summaryHtml = `<strong>${t('updates.check_failed')}:</strong> ${escapeHtmlUpdates(repo.error)}<br>${t('updates.current_label')} <code>${cur}</code>`
   } else if (!repo.behind) {
     summaryClass += ' up-to-date'
-    summaryHtml = `<strong>${t('updates.up_to_date_html')}</strong> (<code>${cur}</code>). ${t('updates.no_changes')}`
+    summaryHtml = `<strong>${tHtml('updates.up_to_date_html')}</strong> (<code>${cur}</code>). ${t('updates.no_changes')}`
   } else {
     summaryClass += ' behind'
     const versions = (repo.releases || []).filter((r) => r.version)
@@ -167,9 +167,9 @@ function integratedReposSummaryHtml(repos) {
     const lastChecked = r.lastCheckedAt
       ? esc(new Date(r.lastCheckedAt).toLocaleDateString(dateLocale))
       : `<span class="repo-card-date-never">${esc(t('repos.last_checked_never'))}</span>`
-    const url = esc(r.repo || '')
-    const name = url
-      ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>`
+    const safeRepoUrl = escapeHtml(safeHref(r.repo || ''))
+    const name = safeRepoUrl
+      ? `<a href="${safeRepoUrl}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>`
       : esc(r.name)
     // Some registry descriptions are whole due-diligence paragraphs: clamp to two lines in the
     // cell (CSS), keep the full text reachable on hover via title.
