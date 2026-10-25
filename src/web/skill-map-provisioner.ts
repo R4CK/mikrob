@@ -16,8 +16,8 @@
 // provisioner must never clobber either. Only a symlink this module itself created may be removed,
 // tracked in a manifest, so that removing a name from the map actually removes the link next start
 // instead of leaving an orphan.
-import { existsSync, readFileSync, mkdirSync, lstatSync, symlinkSync, unlinkSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readFileSync, mkdirSync, lstatSync, symlinkSync, unlinkSync, readdirSync, realpathSync, cpSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { logger } from '../logger.js'
 import { PROJECT_ROOT } from '../config.js'
@@ -40,11 +40,46 @@ interface Manifest {
   [agent: string]: string[]
 }
 
+// Card d2d47a92 WhiteHat F3 (comment 24868): a bare skill name is used to join() a filesystem
+// path, so a map entry like "../escape-skill" creates agents/<name>/.claude/escape-skill outside
+// the skills dir entirely (P4). The map is a merged-by-card tracked file, not an attacker-reachable
+// input, but it is still text anyone can merge wrong -- reject anything that is not a plain,
+// single-component, lowercase skill-folder name at the point the map is read, so a bad entry never
+// reaches join()/symlinkSync() at all.
+const SKILL_NAME_RX = /^[a-z0-9][a-z0-9._-]*$/
+
+function isUnderGlobalSkillsDir(resolvedPath: string): boolean {
+  const base = resolve(GLOBAL_SKILLS_DIR)
+  return resolvedPath === base || resolvedPath.startsWith(base + sep)
+}
+
+// Card d2d47a92 WhiteHat F2 (comment 24868): provisionFleetSkills is documented never-throws but
+// is called from startAgentProcessUnlocked with no try/catch -- a single malformed line in the
+// tracked skill-role-map.json (a non-string in "fleet-core", or roles[agent] not an array) threw
+// (TypeError / "not iterable") and blocked the start of EVERY agent, not just the mis-mapped one.
+// Filtering invalid entries here, with a warn instead of a throw, is what makes "never throws" true.
+function sanitizedSkillNames(raw: unknown, context: string): string[] {
+  if (!Array.isArray(raw)) {
+    if (raw !== undefined) logger.warn({ context }, 'skill-map-provisioner: expected an array in skill-role-map.json, skipping entry')
+    return []
+  }
+  const out: string[] = []
+  for (const v of raw) {
+    if (typeof v === 'string' && SKILL_NAME_RX.test(v)) { out.push(v); continue }
+    logger.warn({ context, value: v }, 'skill-map-provisioner: invalid skill name in skill-role-map.json, skipping')
+  }
+  return out
+}
+
 function readSkillRoleMap(): SkillRoleMap | null {
   try {
     const raw = JSON.parse(readFileSync(SKILL_ROLE_MAP_PATH, 'utf-8')) as Record<string, unknown>
-    const fleetCore = Array.isArray(raw['fleet-core']) ? (raw['fleet-core'] as string[]) : []
-    const roles = (raw.roles && typeof raw.roles === 'object' ? raw.roles : {}) as Record<string, string[]>
+    const fleetCore = sanitizedSkillNames(raw['fleet-core'], 'fleet-core')
+    const rolesRaw = (raw.roles && typeof raw.roles === 'object' ? raw.roles as Record<string, unknown> : {})
+    const roles: Record<string, string[]> = {}
+    for (const [role, list] of Object.entries(rolesRaw)) {
+      roles[role] = sanitizedSkillNames(list, `roles.${role}`)
+    }
     return { 'fleet-core': fleetCore, roles }
   } catch (err) {
     logger.warn({ err }, 'skill-map-provisioner: could not read/parse skill-role-map.json, skipping')
@@ -96,7 +131,22 @@ export function provisionFleetSkills(name: string): ProvisionResult {
     try { st = lstatSync(target) } catch { st = null }
 
     if (st) {
-      if (st.isSymbolicLink()) { nowCreated.push(skill); continue } // already provisioned, idempotent
+      if (st.isSymbolicLink()) {
+        // Card d2d47a92 WhiteHat F4 (comment 24868): any pre-existing symlink used to be adopted
+        // into the manifest unconditionally (nowCreated.push), even one planted by something else
+        // and pointing outside GLOBAL_SKILLS_DIR, or a dangling one -- this provisioner would then
+        // "manage" (and later unlink) a link it never created and does not own. Only treat it as
+        // already-provisioned if it actually resolves under our own global catalog.
+        let real: string | null = null
+        try { real = realpathSync(target) } catch { real = null }
+        if (real && isUnderGlobalSkillsDir(real)) {
+          nowCreated.push(skill) // already provisioned, idempotent
+        } else {
+          logger.warn({ name, skill, target, real }, 'skill-map-provisioner: existing symlink is not provisioner-managed, leaving untouched')
+          result.skippedRealDir.push(skill)
+        }
+        continue
+      }
       result.skippedRealDir.push(skill) // pre-existing real dir (seed or hand-patched) -- never touch
       continue
     }
@@ -120,18 +170,48 @@ export function provisionFleetSkills(name: string): ProvisionResult {
   const nowCreatedSet = new Set(nowCreated)
   for (const skill of previouslyCreated) {
     if (nowCreatedSet.has(skill)) continue
+    if (!SKILL_NAME_RX.test(skill)) {
+      logger.warn({ name, skill }, 'skill-map-provisioner: invalid skill name in manifest, skipping removal')
+      continue
+    }
     const target = join(skillsDir, skill)
     try {
-      if (lstatSync(target).isSymbolicLink()) {
-        unlinkSync(target)
-        result.removed.push(skill)
-      }
-    } catch { /* already gone */ }
+      if (!lstatSync(target).isSymbolicLink()) continue
+      // F4, same rule as adoption above: only remove it if it still resolves under our own
+      // global catalog -- never blindly unlink a link that was swapped for something else since.
+      const real = realpathSync(target)
+      if (!isUnderGlobalSkillsDir(real)) continue
+      unlinkSync(target)
+      result.removed.push(skill)
+    } catch { /* already gone, or a dangling link -- not ours to clean up blindly */ }
   }
 
   manifest[name] = nowCreated
   writeManifest(manifest)
   return result
+}
+
+// Card d2d47a92 WhiteHat F1 HIGH (comment 24868): a provisioned agent skill is a symlink into the
+// shared global catalog, so a PRE-EXISTING write path that targets
+// agents/<name>/.claude/skills/<skill>/... (fleet-transfer.ts's agent-skills import,
+// routes/agents-skills.ts's zip-skill import) would write THROUGH the link into
+// ~/.claude/skills/<skill>, silently poisoning every agent (and MikroB) that shares it -- proven
+// live with both an atomicWriteFileSync and an `unzip -o` onto a provisioned name. Every such
+// writer must call this FIRST: if the target is currently a symlink, detach it into a real,
+// agent-local copy so the write that follows lands only in that agent's own copy. A real
+// directory, or a path that does not exist yet, is left for the caller's own mkdir to handle.
+export function detachSkillSymlinkIfAny(skillDir: string): void {
+  let st: ReturnType<typeof lstatSync> | null = null
+  try { st = lstatSync(skillDir) } catch { return }
+  if (!st.isSymbolicLink()) return
+  let real: string | null = null
+  try { real = realpathSync(skillDir) } catch { real = null } // dangling link
+  unlinkSync(skillDir)
+  mkdirSync(skillDir, { recursive: true })
+  if (real) {
+    try { cpSync(real, skillDir, { recursive: true }) } catch (err) { logger.warn({ err, skillDir, real }, 'skill-map-provisioner: could not copy symlink target before detach') }
+  }
+  logger.warn({ skillDir, real }, 'skill-map-provisioner: detached a symlink before write, converted to a real agent-local copy so the write cannot land outside the agent directory')
 }
 
 // Used by store/agent-skill-drift-sync.sh's consistency with this provisioner: true if the given
