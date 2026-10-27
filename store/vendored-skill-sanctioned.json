@@ -70,7 +70,9 @@
     "~/.claude/skills/writing-specs-designs": [],
     "~/marveen/agents/backend/.claude/skills/chaos-engineering": [],
     "~/marveen/agents/backend/.claude/skills/feature-flags-architect": [],
-    "~/marveen/agents/backend/.claude/skills/interview-me": [],
+    "~/marveen/agents/backend/.claude/skills/interview-me": [
+      "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
+    ],
     "~/marveen/agents/backend/.claude/skills/mcp-builder": [],
     "~/marveen/agents/backend/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
