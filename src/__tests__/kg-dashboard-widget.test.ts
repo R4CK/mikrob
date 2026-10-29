@@ -435,6 +435,27 @@ describe('kg: neighbor data-kg-node-id attribute escape (WhiteHat F1, card 6a371
     expect(html).not.toContain('"><img')
     expect(html).not.toContain('<img')
   })
+
+  // Card 0cd716f3: the pin above only proves the angle-bracket half -- "not.toContain('<img')"
+  // stays true even if the quote is left unescaped (the attribute boundary breaks, but no
+  // literal "<img" substring survives once '<' is still escaped) or if escapeHtml returns some
+  // other wrong-but-tag-free value (RedHat's M2/M5/M6). This assertion instead computes the
+  // exact expected output with an INDEPENDENT reference implementation (deliberately a second
+  // copy, not the `realEscapeHtml` injected as the module's `escapeHtml` above) and requires the
+  // rendered attribute to match it exactly, quote character included.
+  it('the neighbor data-kg-node-id attribute matches escapeHtml(n.node.id) exactly, quote included', () => {
+    const { mod, fakeEl } = loadKgRenderModule()
+    mod.kgRenderDetail(
+      { id: 'n1', type: 'solution', project: 'marveen', status: 'active', title: 'ok', anchors: [] },
+      [{ edge: { rel: 'produced' }, node: { id: XSS, type: 'solution', status: 'active', title: 'ok' } }],
+    )
+    const html = fakeEl('kgDetailBody').innerHTML
+    const expectedEscape = (v: string) =>
+      v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+    const match = html.match(/data-kg-node-id="([^"]*)"/)
+    expect(match).not.toBeNull()
+    expect(match![1]).toBe(expectedEscape(XSS))
+  })
 })
 
 describe('kg: search fetch contract', () => {
