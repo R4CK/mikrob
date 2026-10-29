@@ -171,40 +171,73 @@ describe('freellm key inputs use autocomplete=new-password (RedHat KC5)', () => 
   })
 })
 
-describe('freellm masked-value shape guard (WhiteHat2 F1)', () => {
-  function extractLooksMasked(): (m: unknown) => boolean {
-    const src = extract('freellmLooksMasked')
-    const factory = new Function(src + '\nreturn freellmLooksMasked')
+// Card 678848ce (fd5fcc2c D1/D2, backend 08d1aa90 REVIEW 25388, commit 603e6df89): the backend
+// no longer sends a raw "masked" string -- it normalizes freellmapi's real maskKey() output into
+// {set, hint, error} before it ever reaches the dashboard. The regex-based freellmLooksMasked()
+// guard that used to parse a mask string is DEAD CODE under this contract (there is no mask
+// string left to parse) and was removed from web/app-freellm.js rather than kept unreachable.
+// These tests use the backend's OWN test fixtures (src/__tests__/freellm-keys.test.ts, same
+// commit) -- the real upstream strings gsk_...3c7a / ****7a / **** / [decrypt failed], already
+// normalized to the exact {set,hint,error} values that function's own tests assert -- not
+// invented shapes.
+describe('freellm key status rendering (KeyStatus contract, card 678848ce)', () => {
+  function extractHintLooksSafe(): (h: unknown) => boolean {
+    const src = extract('freellmHintLooksSafe')
+    const factory = new Function(src + '\nreturn freellmHintLooksSafe')
     return factory()
   }
 
-  it('accepts the backend\'s own short masked shapes', () => {
-    const looksMasked = extractLooksMasked()
-    expect(looksMasked('***ABCD')).toBe(true)
-    expect(looksMasked('***...1234')).toBe(true)
+  it('freellmHintLooksSafe accepts null and short hints, matching every real upstream shape', () => {
+    const looksSafe = extractHintLooksSafe()
+    expect(looksSafe(null)).toBe(true) // from maskedKey "****" (len<5, no hint)
+    expect(looksSafe('7a')).toBe(true) // from maskedKey "****7a" (len 5-8)
+    expect(looksSafe('3c7a')).toBe(true) // from maskedKey "gsk_...3c7a" (len>8, hint=last4)
   })
 
-  it('rejects a value that is not actually masked (e.g. a full key leaking through a buggy backend)', () => {
-    const looksMasked = extractLooksMasked()
-    expect(looksMasked('this-is-definitely-not-a-masked-value-at-all')).toBe(false)
-    expect(looksMasked('')).toBe(false)
-    expect(looksMasked(undefined)).toBe(false)
-    expect(looksMasked(null)).toBe(false)
+  it('freellmHintLooksSafe rejects a hint longer than the contract promises (buggy/hostile backend)', () => {
+    const looksSafe = extractHintLooksSafe()
+    expect(looksSafe('this-is-way-more-than-four-characters')).toBe(false)
+    expect(looksSafe('this-looks-like-a-full-length-provider-credential-value')).toBe(false) // a full key, hypothetically
   })
 
-  // WhiteHat2 R1 (25351, card 5ae7e8be pt.3): the OLD guard (`^\*{2,}` + 20-char cap) accepted
-  // this exact value, showing 16 real characters against the UI's "last 4 only" promise. The
-  // specific case WhiteHat2 asked be added to the pin test.
-  it('rejects four asterisks followed by 16 letters (R1: more than the last 4 chars must never show)', () => {
-    const looksMasked = extractLooksMasked()
-    expect(looksMasked('****' + 'A'.repeat(16))).toBe(false)
+  function extractRenderKeyRowWithEntry(entry: Record<string, unknown>) {
+    const stub = makeDom(['freellmKeyInput_groq', 'freellmKeyStatus_groq', 'freellmKeyDeleteBtn_groq'])
+    const body =
+      `let _freellmKeysByProvider = { groq: ${JSON.stringify(entry)} }\n` +
+      `${extract('freellmHintLooksSafe')}\n${extract('freellmRenderKeyRow')}\nreturn { freellmRenderKeyRow }`
+    const factory = new Function('document', 't', body) as (
+      document: unknown, t: unknown,
+    ) => { freellmRenderKeyRow: (provider: string) => void }
+    const { freellmRenderKeyRow } = factory(stub.document, fakeT)
+    freellmRenderKeyRow('groq')
+    return stub
+  }
+
+  it('renders the real upstream shapes the backend\'s own test (freellm-keys.test.ts) asserts', () => {
+    // gsk_...3c7a -> {set:true, hint:'3c7a', error:null}
+    expect(extractRenderKeyRowWithEntry({ set: true, hint: '3c7a', error: null }).els.get('freellmKeyStatus_groq')!.textContent)
+      .toBe('Set, ***3c7a')
+    // ****7a -> {set:true, hint:'7a', error:null}
+    expect(extractRenderKeyRowWithEntry({ set: true, hint: '7a', error: null }).els.get('freellmKeyStatus_groq')!.textContent)
+      .toBe('Set, ***7a')
+    // **** (no trailing chars) -> {set:true, hint:null, error:null}
+    expect(extractRenderKeyRowWithEntry({ set: true, hint: null, error: null }).els.get('freellmKeyStatus_groq')!.textContent)
+      .toBe('freellm.keys.status_set_no_hint')
+    // [decrypt failed] -> {set:true, hint:null, error:'decrypt_failed'} -- a distinct state, not "set"
+    expect(extractRenderKeyRowWithEntry({ set: true, hint: null, error: 'decrypt_failed' }).els.get('freellmKeyStatus_groq')!.textContent)
+      .toBe('freellm.keys.status_decrypt_failed')
   })
 
-  it('still accepts the real upstream short-mask shapes after the R1 tightening', () => {
-    const looksMasked = extractLooksMasked()
-    expect(looksMasked('****')).toBe(true) // shorter-than-8 keys: four asterisks alone
-    expect(looksMasked('****AB')).toBe(true) // 5-8 char keys: four asterisks + 2
-    expect(looksMasked('***...abcd')).toBe(true) // 9+ char keys: the dotted first4...last4 TAIL shape, masked prefix + 4
+  it('the full key never renders, even if a buggy backend sent it as "hint" (card requirement)', () => {
+    const fullKey = 'this-looks-like-a-full-length-provider-credential-value'
+    const status = extractRenderKeyRowWithEntry({ set: true, hint: fullKey, error: null }).els.get('freellmKeyStatus_groq')!.textContent
+    expect(status).not.toContain(fullKey)
+    expect(status).toBe('freellm.keys.status_set_no_hint')
+  })
+
+  it('an unset entry shows the unset marker, not a stale hint', () => {
+    expect(extractRenderKeyRowWithEntry({ set: false, hint: null, error: null }).els.get('freellmKeyStatus_groq')!.textContent)
+      .toBe('freellm.keys.status_unset')
   })
 })
 
@@ -259,13 +292,13 @@ describe('D3a: a rejecting status fetch still shows the error section (the catch
 })
 
 describe('D3b: the key row never renders a raw/unmasked backend value, even if called directly', () => {
-  it('freellmRenderKeyRow substitutes the generic marker for a value that fails the mask-shape guard', () => {
+  it('freellmRenderKeyRow substitutes a safe marker for a hint that fails freellmHintLooksSafe', () => {
     const ids = ['freellmKeyInput_groq', 'freellmKeyStatus_groq', 'freellmKeyDeleteBtn_groq']
     const stub = makeDom(ids)
     const rawUnmasked = 'totally-raw-unmasked-value-that-should-never-render-verbatim'
     const body =
-      `let _freellmKeysByProvider = { groq: { provider: 'groq', masked: ${JSON.stringify(rawUnmasked)} } }\n` +
-      `${extract('freellmLooksMasked')}\n${extract('freellmRenderKeyRow')}\nreturn { freellmRenderKeyRow }`
+      `let _freellmKeysByProvider = { groq: { provider: 'groq', set: true, hint: ${JSON.stringify(rawUnmasked)}, error: null } }\n` +
+      `${extract('freellmHintLooksSafe')}\n${extract('freellmRenderKeyRow')}\nreturn { freellmRenderKeyRow }`
     const factory = new Function('document', 't', body) as (
       document: unknown, t: unknown,
     ) => { freellmRenderKeyRow: (provider: string) => void }
@@ -275,7 +308,7 @@ describe('D3b: the key row never renders a raw/unmasked backend value, even if c
 
     const status = stub.els.get('freellmKeyStatus_groq')!.textContent
     expect(status).not.toContain(rawUnmasked)
-    expect(status).toBe('Set, ***')
+    expect(status).toBe('freellm.keys.status_set_no_hint')
   })
 })
 
@@ -322,12 +355,13 @@ describe('D3d: the Retry button is actually bound to re-run the status load', ()
   })
 })
 
-describe('D3e: the mask-shape guard rejects an implausibly long value even if its length cap is loosened', () => {
-  it('a masked-looking but very long value is rejected (closes the "cap raised 20->2000" mutation gap)', () => {
-    const src = extract('freellmLooksMasked')
-    const factory = new Function(src + '\nreturn freellmLooksMasked') as () => (m: unknown) => boolean
-    const looksMasked = factory()
-    expect(looksMasked('***' + 'x'.repeat(40))).toBe(false)
+describe('D3e: freellmHintLooksSafe enforces its length boundary precisely (card 678848ce)', () => {
+  it('accepts exactly 4 characters, rejects 5 (closes a "cap loosened" mutation gap)', () => {
+    const src = extract('freellmHintLooksSafe')
+    const factory = new Function(src + '\nreturn freellmHintLooksSafe') as () => (h: unknown) => boolean
+    const looksSafe = factory()
+    expect(looksSafe('abcd')).toBe(true)
+    expect(looksSafe('abcde')).toBe(false)
   })
 })
 
