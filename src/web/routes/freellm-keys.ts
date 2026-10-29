@@ -93,6 +93,19 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
         json(res, { error: `key must be a non-empty string of at most ${MAX_KEY_LENGTH} characters` }, 400); return true
       }
 
+      // RedHat NO-GO 25444 F1: freellmapi's /api/keys add is an unconditional INSERT,
+      // not an upsert -- a second POST for the same provider left two rows instead
+      // of replacing the first, so "rotating" a key did not retire the old one.
+      // Enforce exactly one row per provider here: remove every existing row for
+      // this provider BEFORE adding the new one.
+      const existing = await freellmapiRequest('GET', '/api/keys')
+      if (existing.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
+      const existingRows = Array.isArray(existing.data) ? (existing.data as UpstreamKeyRow[]) : []
+      for (const row of existingRows.filter((r) => r.platform === provider)) {
+        const del = await freellmapiRequest('DELETE', `/api/keys/${row.id}`)
+        if (del.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
+      }
+
       const upstream = await freellmapiRequest('POST', '/api/keys', { platform: provider, key })
       if (upstream.status >= 400) {
         // Never echo `key` into the error response -- the upstream message is
@@ -131,7 +144,15 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
     // DELETE /api/freellm/keys/:provider
     const delMatch = path.match(/^\/api\/freellm\/keys\/([^/]+)$/)
     if (delMatch && method === 'DELETE') {
-      const provider = decodeURIComponent(delMatch[1])
+      let provider: string
+      try {
+        provider = decodeURIComponent(delMatch[1])
+      } catch {
+        // RedHat NO-GO 25444 F3: a malformed percent-escape (e.g. "%E0%A4%A") makes
+        // decodeURIComponent throw, which used to fall through to the generic 500
+        // handler below -- this is a client input error, not a server fault.
+        json(res, { error: 'invalid provider encoding' }, 400); return true
+      }
       if (!ALLOWED_PROVIDERS.has(provider)) {
         json(res, { error: 'provider must be one of the supported providers' }, 400); return true
       }
@@ -139,11 +160,16 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
       const list = await freellmapiRequest('GET', '/api/keys')
       if (list.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
       const rows = Array.isArray(list.data) ? (list.data as UpstreamKeyRow[]) : []
-      const row = rows.find((r) => r.platform === provider)
-      if (!row) { json(res, { error: `provider "${provider}" has no key set` }, 404); return true }
+      const matching = rows.filter((r) => r.platform === provider)
+      if (matching.length === 0) { json(res, { error: `provider "${provider}" has no key set` }, 404); return true }
 
-      const del = await freellmapiRequest('DELETE', `/api/keys/${row.id}`)
-      if (del.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
+      // RedHat NO-GO 25444 F1: delete EVERY row for this provider, not just the
+      // first match -- the prior unconditional-INSERT bug (same finding) could
+      // have left more than one row, and "deleted: true" must mean no row remains.
+      for (const row of matching) {
+        const del = await freellmapiRequest('DELETE', `/api/keys/${row.id}`)
+        if (del.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
+      }
       json(res, { provider, deleted: true })
       return true
     }

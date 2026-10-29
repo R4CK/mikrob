@@ -13,6 +13,21 @@ export const FREELLMAPI_BASE_URL = process.env.FREELLMAPI_BASE_URL || 'http://12
 export const FREELLMAPI_ADMIN_CREDENTIAL_FILE =
   process.env.FREELLMAPI_ADMIN_CREDENTIAL_FILE || '/home/neon/.config/freellmapi/admin'
 
+// RedHat NO-GO 25444 F2: FREELLMAPI_BASE_URL was read from the environment with no
+// check that it stays loopback -- anything that can redirect it (the service unit,
+// or a .env file) could make this client POST the admin credential and every
+// submitted key to an arbitrary host. Compute the check once at module load and
+// refuse to ever send a request when it fails, before any fetch/login happens.
+function isLoopbackUrl(urlString: string): boolean {
+  try {
+    const { hostname } = new URL(urlString)
+    return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]'
+  } catch {
+    return false
+  }
+}
+const FREELLMAPI_BASE_URL_IS_LOOPBACK = isLoopbackUrl(FREELLMAPI_BASE_URL)
+
 export class FreellmapiUnavailableError extends Error {}
 export class FreellmapiUpstreamError extends Error {
   constructor(message: string, readonly status: number) {
@@ -80,6 +95,10 @@ export async function freellmapiRequest(
   path: string,
   body?: unknown,
 ): Promise<{ status: number; data: any }> {
+  if (!FREELLMAPI_BASE_URL_IS_LOOPBACK) {
+    logger.error({ baseUrl: FREELLMAPI_BASE_URL }, 'freellmapi: refusing a non-loopback base URL, fail-closed')
+    throw new FreellmapiUnavailableError('freellmapi base URL must be loopback (127.0.0.1/localhost)')
+  }
   const token = cachedToken ?? (await login())
   const doFetch = async (bearer: string) => {
     try {

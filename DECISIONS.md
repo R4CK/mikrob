@@ -22209,3 +22209,17 @@ Classification and ledger entries unchanged. No new security/functional finding.
 **Who decided:** WhiteHat2 (B4, D1 findings) + RedHat (D1 finding) + backend (implementation, agreed shape).
 
 **Reference:** card 08d1aa90, commits e431d50a5/6737b7cc6/603e6df89/6757b2f90, card fd5fcc2c comments 25254/25333.
+
+## 2026-10-29: 08d1aa90 delta -- revocation does not revoke, fixed (RedHat NO-GO 25444)
+
+**Context:** follow-up to the 08d1aa90 entry above. RedHat's NO-GO (comment 25444, gated on bee6619e) found that freellmapi's `/api/keys` add is an unconditional INSERT: a second POST for the same provider left two rows instead of replacing the first, and DELETE removed only the first matching row while still answering `deleted: true` -- so rotating or revoking a key did not actually retire the old one (F1, HIGH, blocking). The same finding also flagged F2 (MEDIUM): `FREELLMAPI_BASE_URL` was read from the environment with no check that it stays loopback, so anything able to redirect it could make the client send the admin credential and every submitted key to an arbitrary host. F3 (LOW): a malformed percent-escape in the DELETE path threw past the route's own error mapping into a generic 500.
+
+**Decision:** F1 fixed as a true replace: POST now deletes every existing row for the target provider before adding the new one, and DELETE deletes every row matching the provider before answering `deleted: true` -- "deleted" now means no row remains for that provider, not "the first one found is gone". F2 fixed by validating the base URL against loopback hostnames (`127.0.0.1`, `localhost`, `::1`) once at module load, and refusing every request (before any fetch/login, so the credential is never sent) when it is not loopback. F3 fixed by catching the `decodeURIComponent` failure and answering 400 instead of falling through to the generic 500 handler.
+
+**Verification:** `src/__tests__/freellm-keys.test.ts` (16 tests, +4 for this delta: POST-replaces-one-row, POST-removes-multiple-pre-existing-rows, DELETE-removes-every-row, malformed-percent-escape-400) and a new `src/__tests__/freellmapi-client.test.ts` (4 tests: non-loopback base URL refused before any `fetch` call, loopback base URL proceeds, exactly one re-login on a 401, session token/credential never logged) -- 20/20 green. Mutation-checked: reverted the F1/F2/F3 fix, confirmed all 6 new/changed assertions went RED on the pre-fix code, then restored the fix and confirmed GREEN again, same tree (`npx vitest run src/__tests__/freellm-keys.test.ts src/__tests__/freellmapi-client.test.ts`).
+
+**Not resolved here:** F4 (LOW, test gaps RedHat found elsewhere: upstream-401-passthrough and an error response that echoes the submitted key) and F5 (the frontend still reads `entry.masked` and ignores `set`/`hint`/`error`) are out of scope for this delta -- F5 goes to Fron Ted on card 678848ce per MikroB's re-dispatch (comment 25446). C1 (encryption-at-rest check) remains WhiteHat2's own item (comment 25262).
+
+**Who decided:** RedHat (F1/F2/F3 findings, comment 25444) + MikroB (re-dispatch, comment 25446) + backend (implementation).
+
+**Reference:** card 08d1aa90, RedHat NO-GO comment 25444, MikroB re-dispatch comment 25446.
