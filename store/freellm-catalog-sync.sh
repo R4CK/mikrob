@@ -18,9 +18,9 @@ perms=$(stat -c '%a' "$AUTH_TOKEN_FILE" 2>/dev/null || echo "000")
 TOKEN=$(tr -d '\n' < "$AUTH_TOKEN_FILE")
 [ -n "$TOKEN" ] || { echo "[ERROR] auth token is empty" >&2; exit 1; }
 
-# Call sync endpoint
-response=$(curl -s -X POST "$FREELLM_URL/api/premium/sync" \
-  -H "Authorization: Bearer $TOKEN" \
+# Call sync endpoint. The auth header is piped via stdin (-H @-), not passed
+# as a -H argv value, so the token never shows up in /proc/<pid>/cmdline.
+response=$(printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -s -H @- -X POST "$FREELLM_URL/api/premium/sync" \
   -H "Content-Type: application/json") || { echo "[ERROR] sync request failed" >&2; exit 1; }
 
 # Parse JSON fields using jq
