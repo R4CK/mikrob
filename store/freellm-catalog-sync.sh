@@ -54,9 +54,11 @@ if [ "$ok" != "true" ] || [ "$total_changed" -gt 0 ]; then
 
     notify_msg="freellmapi catalog sync $status: $log_msg"
 
+    payload=$(jq -n --arg agent_id mikrob --arg content "## $notify_msg" '{agent_id:$agent_id,content:$content}')
+
     printf 'Authorization: Bearer %s\n' "$dashboard_token" | curl -s -H @- -X POST http://localhost:3420/api/daily-log \
       -H "Content-Type: application/json" \
-      --data-binary "{\"agent_id\":\"mikrob\",\"content\":\"## $notify_msg\"}" >/dev/null 2>&1 || true
+      --data-binary "$payload" >/dev/null 2>&1 || true
   fi
 fi
 
