@@ -22173,3 +22173,25 @@ Classification and ledger entries unchanged. No new security/functional finding.
 **Who decided:** MikroB (delegated) + backend (implementation).
 
 **Reference:** card ad6b183f, commit 32575e541, contract comment 25158.
+
+## 2026-10-29 -- kártya e3ab83e8: freellmapi utómunka b21a7ff7 után -- forward invariánsok
+
+**Kontextus:** b21a7ff7 (freellmapi telepítés) DONE, QA PASS + CYBERSEC GO + CYBERED GO, config-only. A gate-ek (köztük WhiteHat2) nem blokkoló leleteket hagytak hátra (régi titok a journalban, forgot-password naplózás, korlátlan egress), amiket ez a kártya zár le vagy dokumentál accepted-risk-ként.
+
+**Döntés -- forward invariánsok (mind élesben ellenőrizve ebben a kártyában, 2026-10-29):**
+- `FREEAPI_DESKTOP` nincs beállítva (nincs a systemd unit `Environment=`-jében, nincs a `/home/neon/.config/freellmapi/env` fájlban, nincs a shell env-ben) -- a desktop-embedder-only kódút (`server/src/routes/auth.ts:180`) inaktív.
+- `ALLOWED_HOSTS` be van állítva (`localhost`) -- a DNS-rebinding guard (`server/src/lib/config.ts` `parseAllowedHosts`, #1637) aktív, nem az üres/kikapcsolt állapotban van.
+- Ollama-emuláció ki van kapcsolva -- a `freeapi.db` `settings` tábla `ollama_emulation` kulcsa `off` (az alapértelmezés is ez, de itt explicit sorként van tárolva; `server/src/routes/ollama.ts` `getOllamaEmulationMode()`).
+- `ProtectHome=tmpfs` áll a systemd user unitban (`~/.config/systemd/user/freellmapi.service`), a `/home/neon` többi tartalma (más ügynökök checkoutjai, a flotta dashboard-tokenje) a szolgáltatás nézőpontjából üres tmpfs mögé kerül; csak a service saját könyvtárai vannak `BindReadOnlyPaths`/`BindPaths`-szal visszanyitva.
+- Nincs inline titok a unitban -- a unit `EnvironmentFile=/home/neon/.config/freellmapi/env` (0600) hivatkozást használ az `ENCRYPTION_KEY`/`ALLOWED_HOSTS` értékekre, a unit fájl maga titkot nem tartalmaz.
+
+**N1 (régi titok a journalban) -- BLOKKOLT-Peti, nincs végrehajtva.** A `/home/neon/.local/opt/freellmapi-vault/encryption-key` (0600, 44 karakter) egy korábbi, mára nem-élő `EnvironmentFile=` sorból maradt vissza, és a pontos 44-karakteres érték 8 alkalommal szerepel a journalban (`journalctl --user -u freellmapi`), a 2026-10-27 20:52:55--20:53:26 közötti ablakban (boot -3, Tue 2026-10-27 16:47--22:11). A fájl törlése és a journal vacuum/rotate rendszer-szintű, visszafordíthatatlan művelet (a vacuum a teljes gépi journalt érinti, nem csak a freellmapi unitot) -- a pontos parancsok a kártya `BLOKKOLT-Peti` kommentjében, Peti jóváhagyására várnak.
+
+**N2 (forgot-password kódja a journalba íródik) -- accepted risk, indoklással.** A `generateResetCode()` (`server/src/lib/reset-code.ts`) szándékosan `console.log`-ol a kódot + a fiók emailjét, mert ez a self-hosted, egy-operátoros eszköz egyetlen helyreállítási útja (nincs email-kiküldés). Nincs env/DB-kapcsoló, amivel ez kikapcsolható vagy a naplózás elnémítható lenne (ellenőrizve: a forrásban nincs ilyen feltétel). A végpont loopback-only (`HOST=127.0.0.1`), rate-limitelt (10s min. intervallum) és nem enumerálja a fiókokat. A journal csak root/`adm`/`systemd-journal` csoportnak olvasható -- ugyanaz a bizalmi kör, mint ami a gép többi titkát (pl. a dashboard-token fájlt) is olvashatja ezen a single-tenant WSL gépen, tehát ez nem nyit új támadási felületet a már meglévőhöz képest. Elfogadott kockázat, amíg a freellmapi upstream nem ad kikapcsoló kapcsolót, vagy amíg a szolgáltatás nem kap valódi email-alapú reset-utat.
+- **Mit ellenőriztem:** `journalctl --user -u freellmapi --no-pager | grep -c "encryption"` -> 30 sor (szó-szintű egyezés, nem a titok maga); az pontos régi secret-érték 8 előfordulását külön, a titkot sehova nem kiírva számoltam meg.
+
+**N3 (korlátlan kimenő forgalom) -- dokumentált why-not, nem adoptálva most.** A freellmapi ~60 különböző LLM/eszköz-szolgáltatóhoz kapcsolódik ki (`server/src/providers/*.ts`), mindegyik saját, gyakran CDN mögötti, rotáló IP-tartománnyal. A systemd `IPAddressAllow`/`Deny` csak induláskor old fel hostnevet IP-cimre, és statikus listát tart -- egy CDN IP-rotáció csendben megszakítaná az egressz-forgalmat anélkül, hogy a szolgáltatás hibát jelezne, amíg újra nem indul. ~60 dinamikus célponttal ez a kontroll jelenleg több üzemeltetési kockázatot hordna (csendes kiesés), mint biztonsági nyereséget. A megfelelő megoldás egy hostname-alapú kimenő proxy/allowlist lenne, ami önálló, nagyobb kártyát igényel; emiatt most nem adoptáljuk, csak dokumentáljuk.
+
+**Ki döntött:** a leletek WhiteHat2-től jönnek (b21a7ff7 non-blocking findings), a lezárás/dokumentálás módja (N1 blokkolás, N2/N3 accepted-risk indoklása) DevO (fullstack) mérése és javaslata, MikroB dispatch-ja (msg_id 15209) alapján.
+
+**Hivatkozás:** kártya e3ab83e8 (szülő 92b76ff0), kártya b21a7ff7 (előd, DONE), `/home/neon/.config/systemd/user/freellmapi.service`, `/home/neon/.config/freellmapi/env`, `server/src/lib/reset-code.ts`, `server/src/routes/auth.ts`, `server/src/lib/config.ts`, `server/src/routes/ollama.ts`.
