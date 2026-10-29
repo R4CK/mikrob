@@ -1510,16 +1510,23 @@ if [ -d "$SCHED_TPL_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
-          -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018: a task may keep part of its text in a references/
+    # subdir that its SKILL.md points at; it ships with the same templating,
+    # or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
+            -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
     ok "Utemezett feladat scaffoldolva: $task_name"
   done
@@ -1543,16 +1550,23 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
-          -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018: a task may keep part of its text in a references/
+    # subdir that its SKILL.md points at; it ships with the same templating,
+    # or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
+            -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
     SCHED_NEW=$((SCHED_NEW + 1))
   done
@@ -1711,8 +1725,11 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     # __pycache__/*.pyc baked in another machine's HOME path was the concrete find, and the repo
     # guards (fleet-test.sh's checked-out worktree) never see it because they only ever look at the
     # git tree. `git archive` makes "what ships" and "what the guards scan" the SAME set by
-    # construction. Falls back to the old recursive copy only if $INSTALL_DIR is not a git checkout
-    # (e.g. a hand-extracted tarball) -- rare, but an install must not hard-fail over it.
+    # construction (this also covers SEEDSKILLSUB1018's goal -- a skill's tracked subdirs,
+    # scripts/, references/, ... ship with their mode bits, since archive pulls the whole tracked
+    # subtree, not just the top level). Falls back to the old recursive copy only if $INSTALL_DIR
+    # is not a git checkout (e.g. a hand-extracted tarball) -- rare, but an install must not
+    # hard-fail over it.
     if git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       git -C "$INSTALL_DIR" archive HEAD -- "seed-skills/$skill_name" | tar -x -C "$SKILLS_DIR" --strip-components=1
     else

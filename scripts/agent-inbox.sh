@@ -46,15 +46,13 @@ else
   URL="http://localhost:${PORT}/api/messages?agent=${AGENT}&limit=${PAGE}"; WANT="$LIMIT"
 fi
 
+. "$(dirname "$0")/lib/curl-tok.sh"
+
 # The HTTP status is checked, not assumed: an error body would otherwise read as an empty inbox.
 # curl's own failure (no dashboard: exit 7) must reach the FAIL line as HTTP 000, not end the
 # script in silence under set -e (71263d15 K6.14).
-# Token in curl argv is world-readable via /proc/<pid>/cmdline -- feed it through a 0600 temp
-# header file (-H @"$hdr_file"), same pattern as every other dashboard caller in this fork.
-OUT="$(mktemp)"; HDR_FILE="$(mktemp)"; chmod 600 "$HDR_FILE"
-trap 'rm -f "$OUT" "$HDR_FILE"' EXIT
-printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
-CODE="$(curl -s -o "$OUT" -w '%{http_code}' -H @"$HDR_FILE" "$URL" || true)"
+OUT="$(mktemp)"; trap 'rm -f "$OUT"' EXIT
+CODE="$(curl_tok "$(cat "$TOKEN_FILE")" -s -o "$OUT" -w '%{http_code}' "$URL" || true)"
 if [[ "$CODE" != "200" ]]; then
   echo "FAIL: GET ${URL#http://localhost:${PORT}} -> HTTP ${CODE}" >&2
   head -c 400 "$OUT" >&2; echo >&2

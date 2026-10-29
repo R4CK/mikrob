@@ -35,6 +35,8 @@ const FUNCS = [
   'render_seed_template',
   'seed_copy_is_untouched',
   'seed_copy_try_merge',
+  'render_seed_file',
+  'refresh_one_seed_file',
   'refresh_untouched_seeds',
   'run_seed_refresh',
 ]
