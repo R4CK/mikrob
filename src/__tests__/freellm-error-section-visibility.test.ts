@@ -12,7 +12,7 @@
 //
 // This test is a PIN: reverting the fix (removing the `section.hidden = false` line, or routing
 // freellmRenderStatus back to only touch #freellmLastError) must turn it red.
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,12 +20,16 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(ROOT, 'web', 'app-freellm.js'), 'utf8')
 const HTML = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8')
+const CSS = readFileSync(join(ROOT, 'web', 'style.css'), 'utf8')
 const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
 const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
 
 function extract(name: string): string {
-  const start = SRC.indexOf(`function ${name}(`)
+  let start = SRC.indexOf(`function ${name}(`)
   if (start < 0) throw new Error(`missing function ${name}`)
+  // Preserve a leading `async` -- otherwise an extracted async function's `await` throws a
+  // SyntaxError when re-embedded as a plain (non-async) declaration.
+  if (SRC.slice(Math.max(0, start - 6), start) === 'async ') start -= 6
   let depth = 0
   let i = SRC.indexOf('{', start)
   for (; i < SRC.length; i++) {
@@ -41,7 +45,17 @@ class FakeEl {
   hidden = false
   textContent = ''
   value = ''
+  checked = false
+  disabled = false
+  private listeners: Record<string, Array<() => void>> = {}
   constructor(tag: string) { this.tag = tag }
+  addEventListener(event: string, cb: () => void) {
+    ;(this.listeners[event] ||= []).push(cb)
+  }
+  /** Test helper, not a real DOM method: fires every listener registered for `event`. */
+  dispatch(event: string) {
+    (this.listeners[event] || []).forEach((cb) => cb())
+  }
 }
 
 function makeDom(ids: string[], initiallyHidden: string[] = []) {
@@ -55,9 +69,19 @@ function makeDom(ids: string[], initiallyHidden: string[] = []) {
   return { document, els: registry }
 }
 
-/** Mimics the real t(): unknown key -> the key itself, with {param} interpolation. */
+// Real template text for the one key whose interpolated VALUE matters to a test below (D3b: the
+// masked value must actually show up, or not, in the rendered text -- a stub that just echoed the
+// key name back would never notice a guard bypass, since the raw value would be silently dropped).
+// Sourced from web/lang/en.js 'freellm.keys.status_set'. Every other key the tests touch only
+// needs the key name itself (no test asserts on their interpolated text), so the fallback stays
+// the key verbatim, same as before.
+const T_TEMPLATES: Record<string, string> = {
+  'freellm.keys.status_set': 'Set, {masked}',
+}
+/** Mimics the real t(): known key -> its real template with {param} interpolation, else the key itself. */
 function fakeT(key: string, params: Record<string, unknown> = {}): string {
-  return key.replace(/\{(\w+)\}/g, (_: string, k: string) => String(params[k] ?? `{${k}}`))
+  const template = T_TEMPLATES[key] ?? key
+  return template.replace(/\{(\w+)\}/g, (_: string, k: string) => String(params[k] ?? `{${k}}`))
 }
 
 let renderStatus: (data: Record<string, unknown>) => void
@@ -167,5 +191,115 @@ describe('freellm key field clearing on page-leave (WhiteHat2 F2)', () => {
     out.freellmClearKeyFields()
 
     for (const id of ids) expect(stub.els.get(id)!.value).toBe('')
+  })
+})
+
+// --- D3 (RedHat 25333): the existing pin above exercises the FIXES, but a 12-case mutation batch
+// found four wiring paths with zero coverage -- a regression in any of them would ship silently.
+// Each test below was verified red against a one-line-reverted scratch copy before this file was
+// committed (not re-run automatically here; see the REVIEW for the mutation log).
+
+describe('D3a: a rejecting status fetch still shows the error section (the catch branch itself)', () => {
+  it('freellmLoadStatus shows the wrapper + the load_error message when the GET throws', async () => {
+    const dom2 = makeDom(
+      ['freellmToggle', 'freellmLabel', 'freellmCallsCount', 'freellmDraftsCount', 'freellmErrorSection', 'freellmLastError', 'freellmMsg'],
+      ['freellmErrorSection'],
+    )
+    const body =
+      `${extract('freellmMsg')}\n${extract('freellmShowErrorSection')}\n${extract('freellmHideErrorSection')}\n` +
+      `${extract('freellmRenderStatus')}\n${extract('freellmLoadStatus')}\nreturn { freellmLoadStatus }`
+    const factory = new Function('document', 't', 'fetch', body) as (
+      document: unknown, t: unknown, fetch: unknown,
+    ) => { freellmLoadStatus: () => Promise<void> }
+    const rejectingFetch = vi.fn().mockRejectedValue(new Error('network down'))
+    const { freellmLoadStatus } = factory(dom2.document, fakeT, rejectingFetch)
+
+    expect(dom2.els.get('freellmErrorSection')!.hidden).toBe(true) // sanity: starts hidden
+    await freellmLoadStatus()
+
+    expect(dom2.els.get('freellmErrorSection')!.hidden).toBe(false)
+    expect(dom2.els.get('freellmLastError')!.textContent).toBe('freellm.load_error')
+    expect(dom2.els.get('freellmMsg')!.textContent).toBe('freellm.load_error')
+  })
+})
+
+describe('D3b: the key row never renders a raw/unmasked backend value, even if called directly', () => {
+  it('freellmRenderKeyRow substitutes the generic marker for a value that fails the mask-shape guard', () => {
+    const ids = ['freellmKeyInput_groq', 'freellmKeyStatus_groq', 'freellmKeyDeleteBtn_groq']
+    const stub = makeDom(ids)
+    const rawUnmasked = 'totally-raw-unmasked-value-that-should-never-render-verbatim'
+    const body =
+      `let _freellmKeysByProvider = { groq: { provider: 'groq', masked: ${JSON.stringify(rawUnmasked)} } }\n` +
+      `${extract('freellmLooksMasked')}\n${extract('freellmRenderKeyRow')}\nreturn { freellmRenderKeyRow }`
+    const factory = new Function('document', 't', body) as (
+      document: unknown, t: unknown,
+    ) => { freellmRenderKeyRow: (provider: string) => void }
+    const { freellmRenderKeyRow } = factory(stub.document, fakeT)
+
+    freellmRenderKeyRow('groq')
+
+    const status = stub.els.get('freellmKeyStatus_groq')!.textContent
+    expect(status).not.toContain(rawUnmasked)
+    expect(status).toBe('Set, ***')
+  })
+})
+
+describe('D3c: stopFreellmPoll actually calls freellmClearKeyFields, not just a standalone helper', () => {
+  it('calling stopFreellmPoll (the real page-leave hook) empties the key inputs', () => {
+    const providers = ['groq', 'cerebras', 'google_ai_studio', 'openrouter', 'mistral']
+    const ids = providers.map((p) => `freellmKeyInput_${p}`)
+    const stub = makeDom(ids)
+    for (const id of ids) stub.els.get(id)!.value = 'typed-but-unsaved-secret'
+
+    const body =
+      `const FREELLM_PROVIDERS = ${JSON.stringify(providers)}\n` +
+      `let _freellmStatusPollTimer = null\n${extract('freellmClearKeyFields')}\n${extract('stopFreellmPoll')}\n` +
+      'return { stopFreellmPoll }'
+    const factory = new Function('document', 'clearInterval', body) as (
+      document: unknown, clearInterval: unknown,
+    ) => { stopFreellmPoll: () => void }
+    const { stopFreellmPoll } = factory(stub.document, vi.fn())
+
+    stopFreellmPoll()
+
+    for (const id of ids) expect(stub.els.get(id)!.value).toBe('')
+  })
+})
+
+describe('D3d: the Retry button is actually bound to re-run the status load', () => {
+  it('freellmSetup wires #freellmErrorRetryBtn to call freellmLoadStatus on click', () => {
+    const dom3 = makeDom(['freellmToggle', 'freellmErrorRetryBtn'])
+    const loadStatusSpy = vi.fn()
+    const postStatusSpy = vi.fn()
+    const body =
+      'let _freellmToggleBound = false\nlet _freellmRetryBound = false\n' +
+      `${extract('freellmSetup')}\nreturn { freellmSetup }`
+    const factory = new Function('document', 'freellmLoadStatus', 'freellmPostStatus', body) as (
+      document: unknown, freellmLoadStatus: unknown, freellmPostStatus: unknown,
+    ) => { freellmSetup: () => void }
+    const { freellmSetup } = factory(dom3.document, loadStatusSpy, postStatusSpy)
+
+    freellmSetup() // also calls freellmLoadStatus() once on its own, by design
+    expect(loadStatusSpy).toHaveBeenCalledTimes(1)
+
+    dom3.els.get('freellmErrorRetryBtn')!.dispatch('click')
+    expect(loadStatusSpy).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('D3e: the mask-shape guard rejects an implausibly long value even if its length cap is loosened', () => {
+  it('a masked-looking but very long value is rejected (closes the "cap raised 20->2000" mutation gap)', () => {
+    const src = extract('freellmLooksMasked')
+    const factory = new Function(src + '\nreturn freellmLooksMasked') as () => (m: unknown) => boolean
+    const looksMasked = factory()
+    expect(looksMasked('***' + 'x'.repeat(40))).toBe(false)
+  })
+})
+
+// --- D4 (RedHat 25333): the Retry button was 68x38px at 375px width, under the 44px touch target
+// (rule 13). Fixed by extending the existing #localLlmPage min-height convention to #freellmPage.
+describe('D4: freellm buttons meet the 44px touch-target minimum (rule 13)', () => {
+  it('scopes a 44px min-height rule to #freellmPage, matching the #localLlmPage convention', () => {
+    expect(CSS).toMatch(/#freellmPage \.btn-compact,\s*\n#freellmPage \.btn-primary,\s*\n#freellmPage \.btn-secondary \{ min-height: 44px; \}/)
   })
 })
