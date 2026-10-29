@@ -22195,3 +22195,13 @@ Classification and ledger entries unchanged. No new security/functional finding.
 **Ki döntött:** a leletek WhiteHat2-től jönnek (b21a7ff7 non-blocking findings), a lezárás/dokumentálás módja (N1 blokkolás, N2/N3 accepted-risk indoklása) DevO (fullstack) mérése és javaslata, MikroB dispatch-ja (msg_id 15209) alapján.
 
 **Hivatkozás:** kártya e3ab83e8 (szülő 92b76ff0), kártya b21a7ff7 (előd, DONE), `/home/neon/.config/systemd/user/freellmapi.service`, `/home/neon/.config/freellmapi/env`, `server/src/lib/reset-code.ts`, `server/src/routes/auth.ts`, `server/src/lib/config.ts`, `server/src/routes/ollama.ts`.
+
+## 2026-10-29: ad6b183f -- freellm-call.sh F1-F5 fix (QA FAIL 25363 / CYBERSEC NO-GO 25366)
+
+**Döntés:** store/freellm-call.sh teljesen átírva: F1 (CRITICAL, RCE unquoted heredoc) -- prompt/model env var + stdin herestringen megy be, a Python script quoted heredocból íródik; F2 (HIGH, gyenge content gate) -- a valós store/gemini-agy-category-check.py-t hívja (a kártya előírása szerint) + a gemini-offload-call.sh redaktorának teljes másolata; F3 (fail-closed kapcsoló) -- hiányzó/hibás store/freellm-enabled.json = KI, selftesttel bizonyítva (nincs hálózati hívás); F4 (LOW, bool type confusion) -- `d.get("enabled") is True` szigorú identitás-check; F5 (MEDIUM, port+auth) -- alap port 3001, Authorization header a /home/neon/.config/freellmapi/auth-token fájlból, mindig `-H @-`-n, soha argv-ben. Minden fix mellé selftest-eset került, ami RED add3c65049b0ea83bad20ef9d057b980e6b2d7f1-en és GREEN a javításon (store/freellm-call.selftest.sh).
+
+**Mit ellenőriztem:** fleet-test.sh --ref a landolt merge-en: Test Files 1267 passed | 1 skipped, Tests 37523 passed | 130 skipped, lint-ratchet.sh baseline tart. Minden teszt elkülönített mock HTTP szerver ellen futott (127.0.0.1, fabrikált FREELLM_API_BASE/FREELLM_AUTH_TOKEN_FILE), az éles freellmapi szolgáltatást és valós kulcsokat egyszer sem érintette.
+
+**Ki döntött:** backend2 (a fix szerzője), MikroB dispatch (trusted-peer msg_id:15236) alapján, a korábbi QA FAIL 25363 + CYBERSEC NO-GO 25366 leletei szerint.
+
+**Hivatkozás:** kártya ad6b183f (szülő fd5fcc2c), store/freellm-call.sh, store/freellm-call.selftest.sh.
