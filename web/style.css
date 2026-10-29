@@ -10178,6 +10178,11 @@ body {
 #localLlmPage .btn-compact,
 #localLlmPage .btn-primary,
 #localLlmPage .btn-secondary { min-height: 44px; }
+/* Rule 13 (RedHat D4, card fd5fcc2c, delta gate 25333): the freellm Retry button measured
+   68x38px at 375px width, under the 44px minimum -- same convention as #localLlmPage above. */
+#freellmPage .btn-compact,
+#freellmPage .btn-primary,
+#freellmPage .btn-secondary { min-height: 44px; }
 /* Rule 13, scoped to the new controls only (card 9bf6a1e0) -- the rest of the Föderáció page's
    compact buttons (reveal/rotate/edit/delete on peer cards) predate this and are unaffected, so
    they stay unaltered rather than folding an unrelated fleet-wide fix into this card's diff. */
@@ -11093,4 +11098,165 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   font-size: 12px;
+}
+
+/* === FreeAPI LLM (freellm) === */
+.freellm-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.freellm-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 14px;
+}
+.freellm-desc {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+.freellm-control {
+  padding: 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.freellm-label {
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--text);
+  display: inline-block;
+  padding: 2px 4px;
+}
+.freellm-label.enabled {
+  color: var(--success, #10b981);
+}
+.freellm-label.disabled {
+  color: var(--text-muted);
+}
+.freellm-msg {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+}
+.freellm-msg.ok {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success, #10b981);
+}
+.freellm-msg.bad {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error, #ef4444);
+}
+.freellm-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.freellm-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+.freellm-metric-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+.freellm-metric-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.freellm-error {
+  padding: 12px;
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid var(--error, #ef4444);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+/* Responsive: 375px minimum (rule 13) */
+@media (max-width: 480px) {
+  .freellm-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* === FreeAPI LLM provider key form (card fd5fcc2c point 5) === */
+.freellm-keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.freellm-key-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.freellm-key-provider {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 120px;
+  flex: 0 0 auto;
+}
+.freellm-key-input {
+  flex: 1 1 140px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+}
+.freellm-key-delete-btn[hidden] { display: none; }
+.freellm-key-status {
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.freellm-key-status--set { color: var(--success, #10b981); }
+.freellm-key-status--unset { color: var(--text-muted); }
+.freellm-key-msg {
+  flex: 1 0 100%;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.freellm-key-msg.ok { color: var(--success, #10b981); }
+.freellm-key-msg.bad { color: var(--error, #ef4444); }
+
+/* 375px (rule 13): stack each key row vertically, full-width controls, no h-scroll */
+@media (max-width: 480px) {
+  .freellm-key-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .freellm-key-provider { min-width: 0; }
+  .freellm-key-input { flex: 1 1 auto; width: 100%; }
+  .freellm-key-row .btn-primary, .freellm-key-row .btn-secondary { width: 100%; }
 }

@@ -263,7 +263,7 @@ function updateProviderUI() {
 
   if (isTg) {
     if (title) title.textContent = t('channel.setup.tg_title')
-    if (steps) steps.innerHTML = t('channel.setup.tg_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.tg_steps')
     if (label) label.textContent = 'Bot API Token'
     if (input) input.placeholder = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
     if (slackGroup) slackGroup.hidden = true
@@ -273,7 +273,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.tg_pairing')
   } else if (currentChannelProvider === 'discord') {
     if (title) title.textContent = t('channel.setup.discord_title')
-    if (steps) steps.innerHTML = t('channel.setup.discord_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.discord_steps')
     if (label) label.textContent = 'Bot Token'
     if (input) input.placeholder = 'MTIzNDU2Nzg5MDEyMzQ1Njc4OQ...'
     if (slackGroup) slackGroup.hidden = true
@@ -283,7 +283,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.discord_pairing')
   } else if (currentChannelProvider === 'teams') {
     if (title) title.textContent = t('channel.setup.teams_title')
-    if (steps) steps.innerHTML = t('channel.setup.teams_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.teams_steps')
     if (slackGroup) slackGroup.hidden = true
     if (manifestBtnGroup) manifestBtnGroup.hidden = true
     if (smokeTestBtn) smokeTestBtn.hidden = true
@@ -293,7 +293,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.teams_pairing')
   } else {
     if (title) title.textContent = t('channel.setup.slack_title')
-    if (steps) steps.innerHTML = t('channel.setup.slack_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.slack_steps')
     if (label) label.textContent = 'Bot Token (xoxb-...)'
     if (input) input.placeholder = 'xoxb-...'
     if (slackGroup) slackGroup.hidden = false
@@ -628,7 +628,7 @@ async function refreshInvites() {
         ? `<span class="tg-allowed-kind" style="background:rgba(180,180,180,0.15); color:var(--text-muted);">${t('channel.invite.used_badge')}</span>`
         : `<span class="tg-allowed-kind tg-allowed-kind-group">${t('channel.invite.active_badge', { min: expiresIn })}</span>`
       const linkHtml = inv.deepLink
-        ? `<a href="${escapeHtml(inv.deepLink)}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
+        ? `<a href="${escapeHtml(safeHref(inv.deepLink))}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
         : `<span class="tg-allowed-id">${t('channel.invite.no_username')}</span>`
       item.innerHTML = `
         <div class="tg-allowed-meta" style="flex-wrap:wrap; gap:6px;">
@@ -780,7 +780,7 @@ async function submitApproveModal() {
     })
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
     document.getElementById('chApproveModalOverlay').hidden = true
-    const item = document.querySelector(`[data-req-id="${id}"]`)
+    const item = document.querySelector(`[data-req-id="${CSS.escape(id)}"]`)
     if (item) item.remove()
     showToast(t('channel.toast.approved'))
     refreshChannelRequests()

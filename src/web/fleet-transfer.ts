@@ -26,6 +26,7 @@ import {
   stripRiskyConfigFields, stripRiskyMcpCommands, stripRiskySettings, hasMcpCommand,
 } from './agent-bundle.js'
 import { safeJoin } from './sanitize.js'
+import { detachSkillSymlinkIfAny } from './skill-map-provisioner.js'
 import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -1102,6 +1103,10 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker, allowRiskyFi
 
   for (const skill of agent.agentSkills ?? []) {
     const skillDir = safeJoin(claudeDir, 'skills', skill.name)
+    // Card d2d47a92 WhiteHat F1: skillDir may be a provisioner symlink into the shared global
+    // catalog -- detach it to a real, agent-local copy BEFORE writing, so this import can never
+    // write through the link into every other agent's shared skill.
+    detachSkillSymlinkIfAny(skillDir)
     trackedMkdir(skillDir, tracker)
     trackedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
   }

@@ -173,7 +173,11 @@ export const OWNER_DRIVE_FOLDER = env['OWNER_DRIVE_FOLDER'] ?? ''
 // 12303/12306): agent-to-agent traffic (inter-agent messages, kanban comments) is English
 // regardless of this setting; this constant is ONLY the owner-facing language, and it must stay
 // an env-sourced value, never a hardcoded "Hungarian" baked into a prompt (code-quality rule 14).
-export const USER_LANGUAGE = env['USER_LANGUAGE'] ?? 'hu'
+const _rawUserLanguage = env['USER_LANGUAGE'] ?? 'hu'
+// Validate BCP-47 basic format to prevent String.replace injection via $& / $' / $` in the value
+// (card d4c89ff1 N3). An invalid value falls back to 'hu' silently -- mis-configuration is a
+// deployment mistake, not a runtime error that should crash the server.
+export const USER_LANGUAGE = /^[a-z]{2}(-[A-Z]{2})?$/.test(_rawUserLanguage) ? _rawUserLanguage : 'hu'
 export const BOT_NAME = env['BOT_NAME'] ?? 'Marveen'
 
 // Product / system brand shown in the dashboard chrome (browser tab title,

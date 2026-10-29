@@ -493,7 +493,7 @@ async function loadWeeklyGauge() {
     const fill = document.getElementById(fillId)
     const pctEl = document.getElementById(pctId)
     const resetEl = document.getElementById(resetId)
-    if (fill) { fill.style.width = pct + '%'; fill.style.background = (colorFn || barColor)(pct) }
+    if (fill) { fill.style.width = pct + '%'; fill.style.background = safeCssColor((colorFn || barColor)(pct), 'transparent') }
     if (pctEl) pctEl.textContent = pct + '%'
     if (resetEl) resetEl.textContent = metric.resetAt ? t('overview.quota.resets', { at: metric.resetAt }) : ''
     row.hidden = false

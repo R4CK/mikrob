@@ -975,7 +975,7 @@ async function llmRefreshUsage() {
         // innerHTML write can get batched into a single paint with no visible motion.
         requestAnimationFrame(() => {
           callerEl.querySelectorAll('.llm-usage-bar-fill').forEach(el =>
-            el.style.setProperty('--w', (el.dataset.pct || 0) + '%'))
+            el.style.width = (parseFloat(el.dataset.pct) || 0) + '%')
         })
       }
     }
@@ -1013,7 +1013,7 @@ async function llmRefreshUsage() {
       // target frame to animate across instead of painting straight to the final height.
       requestAnimationFrame(() => {
         dayEl.querySelectorAll('.llm-usage-day-bar').forEach(el =>
-          el.style.setProperty('--h', (el.dataset.pct || 0) + '%'))
+          el.style.height = (parseFloat(el.dataset.pct) || 0) + '%')
       })
     }
 
@@ -1401,7 +1401,7 @@ async function llmHfSearch() {
         : `<span class="llm-hf-nogguf">${t('localLlm.hf.not_gguf')}</span>`
       return `<div class="llm-model-row llm-hf-row">
         <div class="llm-model-info">
-          <a class="llm-model-name llm-hf-link" href="${escapeHtml(r.hf_url || '#')}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.id || '?')}</a>
+          <a class="llm-model-name llm-hf-link" href="${escapeHtml(safeHref(r.hf_url || '#'))}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.id || '?')}</a>
           <span class="llm-rec-meta">${dl}${lk}${badge}</span>
         </div>
         <div class="llm-model-actions">${action}</div>

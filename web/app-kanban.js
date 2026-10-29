@@ -691,7 +691,7 @@ function renderKanban() {
     swimlaneBoard.hidden = true
     flatBoard.hidden = false
     for (const [status, cards] of Object.entries(grouped)) {
-      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${status}"]`)
+      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${CSS.escape(status)}"]`)
       col.innerHTML = ''
       cards.sort(kanbanCardSorter())
 
@@ -705,7 +705,7 @@ function renderKanban() {
     // Hide/show flat-board columns based on visibility set
     const allColsHidden = KANBAN_STATUS_DEFS.every(d => kanbanHiddenColumns.has(d.status))
     for (const def of KANBAN_STATUS_DEFS) {
-      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${def.status}"]`)
+      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${CSS.escape(def.status)}"]`)
       if (colEl) colEl.hidden = kanbanHiddenColumns.has(def.status)
     }
     // "All columns hidden" hint
@@ -1017,7 +1017,7 @@ function createCardEl(card, embeddedChildren = []) {
       const exact = new Date(card.updated_at * 1000).toLocaleString('hu-HU')
       agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${escapeHtml(safeCssColor(agingColor, 'inherit'))}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
       el.dataset.aging = agingLevel
-      el.style.setProperty('--card-aging-color', agingColor)
+      el.style.setProperty('--card-aging-color', safeCssColor(agingColor, 'transparent'))
     }
   }
 
@@ -1349,7 +1349,7 @@ async function kanbanTouchEnd(e) {
   if (chip) {
     // Dropped on the status bar: no position information, so append.
     newStatus = chip.dataset.status
-    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${newStatus}"] .kanban-card`).length
+    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${CSS.escape(newStatus)}"] .kanban-card`).length
   } else if (col) {
     newStatus = col.dataset.status
     const after = getDragAfterElement(col, p.clientY)
@@ -2357,7 +2357,7 @@ function wireDiffInteractions(cardId, container) {
   container.querySelectorAll('.diff-add-comment-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const line = btn.dataset.line
-      const form = container.querySelector(`.diff-add-form[data-line="${line}"]`)
+      const form = container.querySelector(`.diff-add-form[data-line="${CSS.escape(line)}"]`)
       if (!form) return
       const wasHidden = form.hidden
       // Close all other forms first

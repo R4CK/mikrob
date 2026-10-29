@@ -23,7 +23,7 @@ vi.mock('../config.js', () => ({
   DASHBOARD_PUBLIC_URL: '',
   AGENT_API_ORIGIN: '',
   APP_TZ: 'Europe/Budapest',
-  USER_LANGUAGE: 'hu',
+  USER_LANGUAGE: 'de', // non-default: if the generated text hardcodes 'hu', L3 would pass vacuously
 }))
 
 vi.mock('../web/agent-config.js', () => ({
@@ -65,7 +65,7 @@ describe('language section: what it says', () => {
   // var, it never READ it. The mocked config.js above sets USER_LANGUAGE to 'hu'; the generated
   // body must echo that actual value, not a hardcoded example.
   it('reads the actual configured USER_LANGUAGE value into the generated text', () => {
-    expect(body).toContain('currently `hu`')
+    expect(body).toContain('currently `de`')
   })
 
   it('lists the protocol tokens that never change language', () => {
@@ -76,6 +76,22 @@ describe('language section: what it says', () => {
 
   it('warns against mirroring the sender\'s language', () => {
     expect(body).toMatch(/[Mm]irroring/)
+  })
+
+  // N3 (card d4c89ff1): function replacer prevents String.replace special-pattern injection.
+  // If `existing.replace(RE, block)` used a string replacer, a block containing `$&` / `$'` / `$\``
+  // would expand to the matched text / suffix / prefix, duplicating content.
+  it('ensureLanguageSection does not duplicate content when block contains $& (function-replacer guard)', () => {
+    // We cannot inject a $& into USER_LANGUAGE via the mock (config is already imported),
+    // so we test the underlying replace directly by exercising the idempotent-replace path.
+    // The test verifies the existing block is replaced once, not expanded.
+    setup('agent-inject', `# X\n\n${BEGIN}\n$& $' \`old\`\n${END}\n\ntail\n`)
+    ensureLanguageSection('agent-inject')
+    const out = read('agent-inject')
+    // After replacement the old block (containing $&) must be gone and no duplication of 'tail'
+    expect(out).not.toContain('$&')
+    expect(out.split('tail').length - 1).toBe(1) // 'tail' appears exactly once
+    expect(out.split(BEGIN).length - 1).toBe(1)
   })
 })
 

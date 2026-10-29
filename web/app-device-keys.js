@@ -638,7 +638,7 @@ async function saveAllSettings() {
 function resetAllSettings() {
   for (const [key, { input, originalValue }] of settingsDirty) {
     input.value = originalValue
-    const errorEl = document.querySelector(`[data-setting-key="${key}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
+    const errorEl = document.querySelector(`[data-setting-key="${CSS.escape(key)}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
     if (errorEl) errorEl.textContent = ''
   }
   settingsDirty.clear()
