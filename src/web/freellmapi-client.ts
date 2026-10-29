@@ -51,8 +51,8 @@ async function login(): Promise<string> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     })
-  } catch (err) {
-    // Never interpolate `err` verbatim here: a connection-refused message can
+  } catch {
+    // Never interpolate the caught error verbatim here: a connection-refused message can
     // include the target URL but never the credential, which never reaches
     // this catch (it is only used to build the request).
     logger.warn({ baseUrl: FREELLMAPI_BASE_URL }, 'freellmapi: login request failed (service unreachable)')
