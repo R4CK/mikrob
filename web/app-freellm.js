@@ -36,24 +36,43 @@ function freellmHideErrorSection() {
   if (lastError) lastError.textContent = ''
 }
 
+// Card 5ae7e8be point 4 / WhiteHat2 R3 (25351): while the status call is failing, the toggle/
+// label/calls/drafts kept showing the LAST SUCCESSFUL values underneath the (now-visible) error
+// notice -- e.g. "Bekapcsolva", "7" hívás -- which reads as current when it may be minutes stale
+// or simply wrong. This clears them to the house "no value" marker and disables the toggle (an
+// unknown state is not a safe thing to flip) whenever the error section is shown.
+function freellmResetStatusDisplay() {
+  const toggle = document.getElementById('freellmToggle')
+  const label = document.getElementById('freellmLabel')
+  const callsCount = document.getElementById('freellmCallsCount')
+  const draftsCount = document.getElementById('freellmDraftsCount')
+  if (toggle) { toggle.disabled = true; toggle.checked = false }
+  if (label) { label.textContent = '—'; label.className = 'freellm-label' }
+  if (callsCount) callsCount.textContent = '—'
+  if (draftsCount) draftsCount.textContent = '—'
+}
+
 function freellmRenderStatus(data) {
   const toggle = document.getElementById('freellmToggle')
   const label = document.getElementById('freellmLabel')
   const callsCount = document.getElementById('freellmCallsCount')
   const draftsCount = document.getElementById('freellmDraftsCount')
 
-  if (toggle) toggle.checked = !!data.enabled
+  if (data.lastError) {
+    // Do not set the fresh fields first and then overwrite them -- the payload's own enabled/
+    // calls/drafts next to an error are not trustworthy, so skip straight to the neutral display.
+    freellmResetStatusDisplay()
+    freellmShowErrorSection(String(data.lastError))
+    return
+  }
+  if (toggle) { toggle.checked = !!data.enabled; toggle.disabled = false }
   if (label) {
     label.textContent = t(data.enabled ? 'freellm.status.on' : 'freellm.status.off')
     label.className = 'freellm-label' + (data.enabled ? ' enabled' : ' disabled')
   }
   if (callsCount) callsCount.textContent = String(data.calls || 0)
   if (draftsCount) draftsCount.textContent = String(data.drafts || 0)
-  if (data.lastError) {
-    freellmShowErrorSection(String(data.lastError))
-  } else {
-    freellmHideErrorSection()
-  }
+  freellmHideErrorSection()
 }
 
 async function freellmLoadStatus() {
@@ -66,8 +85,10 @@ async function freellmLoadStatus() {
   } catch (e) {
     // Rule 12: speak the failure in the flow (not a silent no-op) with a retry-able message --
     // AND surface it in the (now correctly unhidden) error section, since a failed status call is
-    // exactly the "freellmapi server is down" case the card's done-criterion 2 names.
+    // exactly the "freellmapi server is down" case the card's done-criterion 2 names. A fully
+    // failed fetch means we have NO fresh data at all, so the stale-state reset applies here too.
     freellmMsg(t('freellm.load_error'), 'bad')
+    freellmResetStatusDisplay()
     freellmShowErrorSection(t('freellm.load_error'))
   }
 }
@@ -157,12 +178,14 @@ function freellmProviderLabel(provider) {
   return t('freellm.keys.provider.' + provider) || provider
 }
 
-// WhiteHat2 F1 (25254): the FE rendered the backend's "masked" field verbatim. If a buggy or
-// hostile backend ever returns the FULL key as "masked", the row would print the secret. This
-// shape guard accepts only the backend's own short masked form (leading mask characters, a short
-// remainder) and falls back to a generic "set" marker for anything else -- never the raw value.
+// WhiteHat2 F1 (25254) + R1 (25351, card 5ae7e8be point 3): the FE rendered the backend's
+// "masked" field verbatim behind a loose `^\*{2,}` + 20-char cap -- which still let through
+// e.g. four asterisks followed by 16 arbitrary letters, showing up to 16 real characters of a
+// key against the UI's own "only the last 4 characters" promise. Tightened to: 2-8 leading
+// asterisks, an optional "..." separator, then AT MOST 4 trailing characters -- structurally
+// caps what can ever be shown to the last 4, regardless of what a buggy/hostile backend sends.
 function freellmLooksMasked(masked) {
-  return typeof masked === 'string' && /^\*{2,}/.test(masked) && masked.length <= 20
+  return typeof masked === 'string' && /^\*{2,8}(\.{3})?[A-Za-z0-9_-]{0,4}$/.test(masked)
 }
 
 function freellmRenderKeyRow(provider) {
