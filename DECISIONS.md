@@ -22272,3 +22272,13 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** CYBERED (a lelet, komment 25502), MikroB (a fix-irány jóváhagyása, komment 25504, WhiteHat2 eredeti javaslata alapján, komment 25318), DevO/fullstack (a tényleges kód+teszt).
 
 **Hivatkozás:** kártya 405869d9, CYBERED NO-GO 25502, MikroB 25504, WhiteHat2 eredeti lelet 25318 (kártya 9ab81f48), `store/freellm-catalog-sync.sh`, `store/freellm-catalog-sync.selftest.sh`.
+
+## 2026-10-29: ad6b183f -- freellm-call.sh F2 homoglyph fail-closed backstop (delta, CYBERED NO-GO 25494)
+
+**Döntés:** a fenti F1-F5 javítás F2 redaktora átvette a gemini-offload-call.sh 12-elemű homoglyph-táblás `_fold()`-ját, de a hozzá tartozó fail-closed backstopot (`_has_unmapped_letter()`) nem -- egy a táblán kívüli homoglyph betű (pl. görög omikron az ASCII "o" helyén) sértetlenül túljutott a foldáson, megkerülve a SECRET_PATTERNS/PII_PATTERNS kulcsszó-illesztést. RedHat élő repróval bizonyította: "t" + omikron + "ken: <titok>" a mock providerhez verbatim eljutott. Javítás: `_has_unmapped_letter()` átvétele a gemini-offload-call.sh-ból -- bármely nem-ASCII betű, ami a homoglyph-map + NFKD után is megmarad, fail-closedre zárja a kaput (exit 1 -> a hívó bash exit 4-re mappeli). A store/gemini-agy-category-check.py saját, hasonló hibaosztályú hibája (norm() csendben eldobja a nem-leképezett betűt ascii-encode "ignore"-ral, helyette el kellene utasítania) NEM ezen a kártyán javítva -- megosztott script, külön kártya (c5f2d6c9, backend) a tulajdonosa, MikroB dispatch (msg_id:15284) szerint.
+
+**Mit ellenőriztem:** új selftest-eset (store/freellm-call.selftest.sh, "unmapped homoglyph (Greek omicron)") RED a Gate-SHA 39284c8a63090df2bdcf418a9f28f68d76f30d1d-n (a `_GATE_PY` kivonata közvetlenül futtatva az omikronos stringre: exit 0), GREEN a javításon (exit 1 -> exit 4). Teljes selftest-suite 32/32 zöld a javításon (F1/F3/F4/F5 változatlanul zöld). fleet-test.sh --ref a landolt merge-en: lásd a Gate-SHA sort a kártyán.
+
+**Ki döntött:** RedHat (cybered) lelete (komment 25494), a javítás iránya WhiteHat2 eredeti F2-designjából (gemini-offload-call.sh backstopja), backend2 végrehajtása MikroB dispatch (trusted-peer msg_id:15284) alapján.
+
+**Hivatkozás:** kártya ad6b183f (szülő fd5fcc2c), komment 25494 (CYBERED NO-GO), store/freellm-call.sh, store/freellm-call.selftest.sh, store/gemini-offload-call.sh (_has_unmapped_letter forrás).
