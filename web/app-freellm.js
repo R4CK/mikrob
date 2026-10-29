@@ -4,6 +4,7 @@
 // Exposes: loadFreellm() (called from switchPage in app.js).
 
 let _freellmToggleBound = false
+let _freellmRetryBound = false
 let _freellmStatusPollTimer = null
 
 function freellmMsg(text, cls) {
@@ -13,12 +14,33 @@ function freellmMsg(text, cls) {
   m.className = 'freellm-msg' + (cls ? ' ' + cls : '')
 }
 
+// MikroB decision (25258) / RedHat N1 + QA F3 (25256, 25239): the HTML ships with
+// #freellmErrorSection carrying the `hidden` attribute, and nothing ever cleared it on the
+// WRAPPER -- only the inner #freellmLastError text was being touched, so a real lastError from a
+// stopped freellmapi server rendered into an invisible parent (a rule-12 failure: the error never
+// reached the operator). These two helpers own the wrapper's visibility exclusively.
+function freellmShowErrorSection(message) {
+  const section = document.getElementById('freellmErrorSection')
+  const lastError = document.getElementById('freellmLastError')
+  // textContent never interprets markup -- assigning an already-escaped string here double-escapes
+  // it (WhiteHat2 F1/N2, RedHat N2: the operator saw literal "&lt;" instead of "<"). Assign the raw
+  // string directly.
+  if (lastError) lastError.textContent = message
+  if (section) section.hidden = false
+}
+
+function freellmHideErrorSection() {
+  const section = document.getElementById('freellmErrorSection')
+  const lastError = document.getElementById('freellmLastError')
+  if (section) section.hidden = true
+  if (lastError) lastError.textContent = ''
+}
+
 function freellmRenderStatus(data) {
   const toggle = document.getElementById('freellmToggle')
   const label = document.getElementById('freellmLabel')
   const callsCount = document.getElementById('freellmCallsCount')
   const draftsCount = document.getElementById('freellmDraftsCount')
-  const lastError = document.getElementById('freellmLastError')
 
   if (toggle) toggle.checked = !!data.enabled
   if (label) {
@@ -27,14 +49,10 @@ function freellmRenderStatus(data) {
   }
   if (callsCount) callsCount.textContent = String(data.calls || 0)
   if (draftsCount) draftsCount.textContent = String(data.drafts || 0)
-  if (lastError) {
-    if (data.lastError) {
-      lastError.textContent = escapeHtml(data.lastError)
-      lastError.className = 'freellm-error'
-      lastError.hidden = false
-    } else {
-      lastError.hidden = true
-    }
+  if (data.lastError) {
+    freellmShowErrorSection(String(data.lastError))
+  } else {
+    freellmHideErrorSection()
   }
 }
 
@@ -46,8 +64,11 @@ async function freellmLoadStatus() {
     freellmRenderStatus(d)
     freellmMsg('')
   } catch (e) {
-    // Rule 12: speak the failure in the flow (not a silent no-op) with a retry-able message.
+    // Rule 12: speak the failure in the flow (not a silent no-op) with a retry-able message --
+    // AND surface it in the (now correctly unhidden) error section, since a failed status call is
+    // exactly the "freellmapi server is down" case the card's done-criterion 2 names.
     freellmMsg(t('freellm.load_error'), 'bad')
+    freellmShowErrorSection(t('freellm.load_error'))
   }
 }
 
@@ -76,6 +97,11 @@ function freellmSetup() {
     _freellmToggleBound = true
     toggle.addEventListener('change', () => freellmPostStatus(toggle.checked))
   }
+  const retryBtn = document.getElementById('freellmErrorRetryBtn')
+  if (retryBtn && !_freellmRetryBound) {
+    _freellmRetryBound = true
+    retryBtn.addEventListener('click', () => freellmLoadStatus())
+  }
   freellmLoadStatus()
 }
 
@@ -93,8 +119,19 @@ async function loadFreellm() {
   }, 5000)
 }
 
+// WhiteHat2 F2 (25254): a key typed but not yet saved stayed in its password field until a full
+// page reload (stopFreellmPoll only cleared the timer). Clearing on page-leave means a typo'd or
+// abandoned key does not keep sitting in the DOM once the operator navigates elsewhere.
+function freellmClearKeyFields() {
+  FREELLM_PROVIDERS.forEach(provider => {
+    const input = document.getElementById('freellmKeyInput_' + provider)
+    if (input) input.value = ''
+  })
+}
+
 function stopFreellmPoll() {
   if (_freellmStatusPollTimer) { clearInterval(_freellmStatusPollTimer); _freellmStatusPollTimer = null }
+  freellmClearKeyFields()
 }
 
 // --- Provider key form (card fd5fcc2c point 5, Peti 12500, Pair-BE 08d1aa90) -----------------
@@ -120,6 +157,14 @@ function freellmProviderLabel(provider) {
   return t('freellm.keys.provider.' + provider) || provider
 }
 
+// WhiteHat2 F1 (25254): the FE rendered the backend's "masked" field verbatim. If a buggy or
+// hostile backend ever returns the FULL key as "masked", the row would print the secret. This
+// shape guard accepts only the backend's own short masked form (leading mask characters, a short
+// remainder) and falls back to a generic "set" marker for anything else -- never the raw value.
+function freellmLooksMasked(masked) {
+  return typeof masked === 'string' && /^\*{2,}/.test(masked) && masked.length <= 20
+}
+
 function freellmRenderKeyRow(provider) {
   const input = document.getElementById('freellmKeyInput_' + provider)
   const statusEl = document.getElementById('freellmKeyStatus_' + provider)
@@ -128,7 +173,10 @@ function freellmRenderKeyRow(provider) {
   if (input) input.value = ''
   if (statusEl) {
     if (entry) {
-      statusEl.textContent = t('freellm.keys.status_set', { masked: escapeHtml(entry.masked || '') })
+      // textContent never interprets markup -- escapeHtml() before it double-escapes (the operator
+      // would see literal "&amp;" for a masked value containing "&"). Assign the raw string.
+      const safeMasked = freellmLooksMasked(entry.masked) ? entry.masked : '***'
+      statusEl.textContent = t('freellm.keys.status_set', { masked: safeMasked })
       statusEl.className = 'freellm-key-status freellm-key-status--set'
     } else {
       statusEl.textContent = t('freellm.keys.status_unset')

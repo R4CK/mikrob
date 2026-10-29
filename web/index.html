@@ -1317,10 +1317,12 @@
         </div>
       </div>
 
-      <!-- Error state -->
+      <!-- Error state (RedHat N1 / QA F3, 25256/25239: the wrapper must be the thing that gets
+           unhidden -- app-freellm.js freellmShowErrorSection()/freellmHideErrorSection() own it). -->
       <div class="freellm-section" id="freellmErrorSection" hidden>
         <h2 class="freellm-section-title" data-i18n="freellm.error.title">Utolsó hiba</h2>
         <div id="freellmLastError" class="freellm-error" role="status" aria-live="polite"></div>
+        <button type="button" id="freellmErrorRetryBtn" class="btn-secondary btn-compact" data-i18n="freellm.error.retry">Újra</button>
       </div>
 
       <!-- Provider key form (card fd5fcc2c point 5, Peti 12500, Pair-BE 08d1aa90).
@@ -1332,7 +1334,7 @@
         <div class="freellm-keys-list">
           <div class="freellm-key-row" data-provider="groq">
             <span class="freellm-key-provider" data-i18n="freellm.keys.provider.groq">Groq</span>
-            <input type="password" id="freellmKeyInput_groq" class="freellm-key-input" autocomplete="off" spellcheck="false" aria-describedby="freellmKeyStatus_groq freellmKeyMsg_groq">
+            <input type="password" id="freellmKeyInput_groq" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_groq freellmKeyMsg_groq">
             <button type="button" id="freellmKeySaveBtn_groq" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
             <button type="button" id="freellmKeyDeleteBtn_groq" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
             <span id="freellmKeyStatus_groq" class="freellm-key-status" role="status" aria-live="polite"></span>
@@ -1340,7 +1342,7 @@
           </div>
           <div class="freellm-key-row" data-provider="cerebras">
             <span class="freellm-key-provider" data-i18n="freellm.keys.provider.cerebras">Cerebras</span>
-            <input type="password" id="freellmKeyInput_cerebras" class="freellm-key-input" autocomplete="off" spellcheck="false" aria-describedby="freellmKeyStatus_cerebras freellmKeyMsg_cerebras">
+            <input type="password" id="freellmKeyInput_cerebras" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_cerebras freellmKeyMsg_cerebras">
             <button type="button" id="freellmKeySaveBtn_cerebras" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
             <button type="button" id="freellmKeyDeleteBtn_cerebras" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
             <span id="freellmKeyStatus_cerebras" class="freellm-key-status" role="status" aria-live="polite"></span>
@@ -1348,7 +1350,7 @@
           </div>
           <div class="freellm-key-row" data-provider="google_ai_studio">
             <span class="freellm-key-provider" data-i18n="freellm.keys.provider.google_ai_studio">Google AI Studio</span>
-            <input type="password" id="freellmKeyInput_google_ai_studio" class="freellm-key-input" autocomplete="off" spellcheck="false" aria-describedby="freellmKeyStatus_google_ai_studio freellmKeyMsg_google_ai_studio">
+            <input type="password" id="freellmKeyInput_google_ai_studio" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_google_ai_studio freellmKeyMsg_google_ai_studio">
             <button type="button" id="freellmKeySaveBtn_google_ai_studio" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
             <button type="button" id="freellmKeyDeleteBtn_google_ai_studio" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
             <span id="freellmKeyStatus_google_ai_studio" class="freellm-key-status" role="status" aria-live="polite"></span>
@@ -1356,7 +1358,7 @@
           </div>
           <div class="freellm-key-row" data-provider="openrouter">
             <span class="freellm-key-provider" data-i18n="freellm.keys.provider.openrouter">OpenRouter</span>
-            <input type="password" id="freellmKeyInput_openrouter" class="freellm-key-input" autocomplete="off" spellcheck="false" aria-describedby="freellmKeyStatus_openrouter freellmKeyMsg_openrouter">
+            <input type="password" id="freellmKeyInput_openrouter" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_openrouter freellmKeyMsg_openrouter">
             <button type="button" id="freellmKeySaveBtn_openrouter" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
             <button type="button" id="freellmKeyDeleteBtn_openrouter" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
             <span id="freellmKeyStatus_openrouter" class="freellm-key-status" role="status" aria-live="polite"></span>
@@ -1364,7 +1366,7 @@
           </div>
           <div class="freellm-key-row" data-provider="mistral">
             <span class="freellm-key-provider" data-i18n="freellm.keys.provider.mistral">Mistral</span>
-            <input type="password" id="freellmKeyInput_mistral" class="freellm-key-input" autocomplete="off" spellcheck="false" aria-describedby="freellmKeyStatus_mistral freellmKeyMsg_mistral">
+            <input type="password" id="freellmKeyInput_mistral" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_mistral freellmKeyMsg_mistral">
             <button type="button" id="freellmKeySaveBtn_mistral" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
             <button type="button" id="freellmKeyDeleteBtn_mistral" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
             <span id="freellmKeyStatus_mistral" class="freellm-key-status" role="status" aria-live="polite"></span>
