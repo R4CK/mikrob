@@ -11,6 +11,12 @@ import {
 } from '../freellmapi-client.js'
 import type { RouteContext } from './types.js'
 
+// Same 5 providers the FE offers (web/app-freellm.js FREELLM_PROVIDERS) -- the
+// FE's list is not a security control (RedHat/WhiteHat B4, card 08d1aa90),
+// so the server enforces its own copy, fail-closed on anything else.
+const ALLOWED_PROVIDERS = new Set(['groq', 'cerebras', 'google_ai_studio', 'openrouter', 'mistral'])
+const MAX_KEY_LENGTH = 512
+
 interface UpstreamKeyRow {
   id: number
   platform: string
@@ -80,11 +86,11 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
       }
       if (!body || typeof body !== 'object') { json(res, { error: 'body must be an object' }, 400); return true }
       const { provider, key } = body as Record<string, unknown>
-      if (typeof provider !== 'string' || !provider.trim()) {
-        json(res, { error: 'provider must be a non-empty string' }, 400); return true
+      if (typeof provider !== 'string' || !ALLOWED_PROVIDERS.has(provider)) {
+        json(res, { error: 'provider must be one of the supported providers' }, 400); return true
       }
-      if (typeof key !== 'string' || !key.trim()) {
-        json(res, { error: 'key must be a non-empty string' }, 400); return true
+      if (typeof key !== 'string' || !key.trim() || key.length > MAX_KEY_LENGTH) {
+        json(res, { error: `key must be a non-empty string of at most ${MAX_KEY_LENGTH} characters` }, 400); return true
       }
 
       const upstream = await freellmapiRequest('POST', '/api/keys', { platform: provider, key })
@@ -126,7 +132,9 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
     const delMatch = path.match(/^\/api\/freellm\/keys\/([^/]+)$/)
     if (delMatch && method === 'DELETE') {
       const provider = decodeURIComponent(delMatch[1])
-      if (!provider.trim()) { json(res, { error: 'provider must be a non-empty string' }, 400); return true }
+      if (!ALLOWED_PROVIDERS.has(provider)) {
+        json(res, { error: 'provider must be one of the supported providers' }, 400); return true
+      }
 
       const list = await freellmapiRequest('GET', '/api/keys')
       if (list.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }

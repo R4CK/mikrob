@@ -110,6 +110,29 @@ describe('freellm-keys proxy', () => {
     expect(freellmapiRequestMock).not.toHaveBeenCalled()
   })
 
+  it('POST rejects a provider outside the fixed allow-list (RedHat/WhiteHat B4, card 08d1aa90)', async () => {
+    const { ctx, out } = mkRequest('/api/freellm/keys', 'POST', { provider: 'some-other-llm', key: SECRET_KEY })
+    await tryHandleFreellmKeys(ctx)
+    expect(out.status).toBe(400)
+    expect(freellmapiRequestMock).not.toHaveBeenCalled()
+  })
+
+  it('POST rejects a key over the length cap, fail-closed (B4)', async () => {
+    const { ctx, out } = mkRequest('/api/freellm/keys', 'POST', { provider: 'groq', key: 'x'.repeat(513) })
+    await tryHandleFreellmKeys(ctx)
+    expect(out.status).toBe(400)
+    expect(freellmapiRequestMock).not.toHaveBeenCalled()
+  })
+
+  it('DELETE rejects a provider outside the fixed allow-list, never reaching upstream (B4)', async () => {
+    // Encoded traversal segment: decodeURIComponent turns this into "../../etc/passwd",
+    // which must fail the allow-list check rather than ever reach freellmapiRequest.
+    const { ctx, out } = mkRequest('/api/freellm/keys/..%2F..%2Fetc%2Fpasswd', 'DELETE')
+    await tryHandleFreellmKeys(ctx)
+    expect(out.status).toBe(400)
+    expect(freellmapiRequestMock).not.toHaveBeenCalled()
+  })
+
   it('GET lists keys with only set/hint/error, never the plaintext key or its first chars', async () => {
     // createdAt arrives from freellmapi's SQLite driver as a "YYYY-MM-DD HH:MM:SS"
     // UTC string, not a unix epoch -- confirmed against the live service.
@@ -135,9 +158,9 @@ describe('freellm-keys proxy', () => {
     expect(freellmapiRequestMock).toHaveBeenNthCalledWith(2, 'DELETE', '/api/keys/7')
   })
 
-  it('DELETE on an unknown provider returns 404 without calling upstream delete', async () => {
+  it('DELETE on an allow-listed provider with no key set returns 404 without calling upstream delete', async () => {
     freellmapiRequestMock.mockResolvedValueOnce({ status: 200, data: [] })
-    const { ctx, out } = mkRequest('/api/freellm/keys/nosuch', 'DELETE')
+    const { ctx, out } = mkRequest('/api/freellm/keys/mistral', 'DELETE')
     await tryHandleFreellmKeys(ctx)
     expect(out.status).toBe(404)
     expect(freellmapiRequestMock).toHaveBeenCalledTimes(1)
