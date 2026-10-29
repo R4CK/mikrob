@@ -965,6 +965,7 @@ window._i18n.en = {
   'freellm.metrics.calls':       'Calls',
   'freellm.metrics.drafts':      'Drafts',
   'freellm.error.title':         'Last error',
+  'freellm.error.retry':         'Retry',
   'freellm.keys.title':          'Provider keys',
   'freellm.keys.desc':           'marveen never stores or logs these keys -- it only forwards them to the freellmapi service. Once set, only the last 4 characters are shown.',
   'freellm.keys.provider.groq':             'Groq',

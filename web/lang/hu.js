@@ -1217,6 +1217,7 @@ window._i18n.hu = {
   'freellm.metrics.calls':       'Hívások',
   'freellm.metrics.drafts':      'Draftok',
   'freellm.error.title':         'Utolsó hiba',
+  'freellm.error.retry':         'Újra',
   'freellm.keys.title':          'Szolgáltatói kulcsok',
   'freellm.keys.desc':           'A kulcsokat a marveen nem tárolja és nem logolja -- csak továbbítja a freellmapi szolgáltatásnak. Beállítás után csak az utolsó 4 karakter látható.',
   'freellm.keys.provider.groq':             'Groq',
