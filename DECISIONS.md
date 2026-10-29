@@ -22228,3 +22228,23 @@ Classification and ledger entries unchanged. No new security/functional finding.
 **Ki döntött:** QA (a lelet, komment 24836), DevO/fullstack (a bővítés + selftest, kártya 7f6d435f). A smoke-teszt nyitott pont emberi/MikroB-döntésre vár (ki futtatja le a REA-felszerelt környezetben).
 
 **Hivatkozás:** kártya 7f6d435f (szülő-lelet: 077970fc, komment 24836, eredeti NO-GO 24721/24727), `store/rea-seccomp-filter.py`, `store/rea-bwrap-sandbox.sh` (87., 231. sor), `store/rea-bwrap-sandbox.selftest.sh`.
+
+## 2026-10-29 -- e3ab83e8 delta: adapter-szám korrekció 48 -> 47 (MikroB pontosítása)
+
+**Korrekció a fenti, e3ab83e8-hoz tartozó F3 bejegyzéshez (lásd a "~60 az adapterszám... pontosabban 48" sort):** a `server/src/providers/*.ts` könyvtár 49 fájlt tartalmaz (közvetlenül leszámolva), de ebből KETTŐ nem adapter: `base.ts` (közös ősosztály, ahogy a korábbi bejegyzés már helyesen kizárta) ÉS `index.ts` (aggregátor, ezt a korábbi bejegyzés nem vette figyelembe). A tényleges adapter-szám tehát 49 - 2 = **47**, nem 48. A következtetés (statikus IP-allowlist nem tartható fenn CDN-mögötti hostoknál) ettől függetlenül egyformán áll 47-nél is.
+
+**Ki döntött:** MikroB (a pontosítás), DevO/fullstack (a tail-append + a 49 fájlos listázás újra-ellenőrzése: `ls server/src/providers/*.ts` a freellmapi telepítésben, 49 sor, benne base.ts és index.ts).
+
+**Hivatkozás:** kártya e3ab83e8, a fenti (2026-10-29 előtti) F3 bejegyzés, `/home/neon/.local/opt/freellmapi/server/src/providers/`.
+
+## 2026-10-29 -- 405869d9 delta: az R1-fix szándékosan MEGFORDÍTJA a régi "08"-elfogadási pontot
+
+**Kontextus:** a 405869d9 kártya R1 pontjának EREDETI elvárása (WhiteHat2 eredeti lelete, kártya 9ab81f48) az volt, hogy egy `"08"` alakú számláló NE fusson át bash aritmetikán ellenőrzés nélkül, mert az invalid octal literálként elhasalt a szkript korábbi, `set -e` alatti verziójában -- az akkori javítás (`^-?[0-9]+$` -> `^(0|[1-9][0-9]*)$`) ezt úgy zárta le, hogy a `"08"`-at EGYÁLTALÁN ELUTASÍTOTTA (FAILED + exit 1), mert a regex csak egyetlen `0`-t vagy egy nem-nullával kezdődő számot fogadott el.
+
+A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső jegyszám-korlátja, és egy 2^64 méretű szám átment és csendben 0-ra csavarta az aritmetikát. A javítás (ez a kártya, lásd a fenti N1/N2/N3 utáni, 693925c3 utáni bejegyzést) `^[0-9]{1,9}$` + `10#$n` base-10-kényszerítés -- ez a kombináció SZÁNDÉKOSAN MEGFORDÍTJA a régi elfogadási pontot: a `"08"` most ÁTMEGY (base-10-ként 8-nak olvasva, FAILED helyett sikeres `exit 0`), mert a `10#$n` előtag zárja ki a bash octal-literal crash-t, nem a regex. A jegyszám-korlát (9 jegy, max 999 999 999) a VALÓS védelem a 2^64-es overflow ellen, nem a leading-zero tilalma -- az utóbbi csak egy mellékhatása volt az első (hiányos) javításnak, nem a tervezett cél.
+
+**Miért nem regresszió:** a kártya saját selftestje (`store/freellm-catalog-sync.selftest.sh`) ezt a fordulást EXPLICIT dokumentálja és teszteli: a régi Test 1 ("08" -> FAILED) felülírva egy új elvárásra ("08" -> exit 0, updated=08 olvasva base-10 8-ként), plusz egy ÚJ Test 1c a tényleges overflow-esetre (2^64 -> FAILED). A teljes selftest-kör (11/11 PASS) és egy kézi piros/zöld ellenőrzés a régi Gate-SHA-n (693925c3) empirikusan igazolta mindkét irányt.
+
+**Ki döntött:** CYBERED (a lelet, komment 25502), MikroB (a fix-irány jóváhagyása, komment 25504, WhiteHat2 eredeti javaslata alapján, komment 25318), DevO/fullstack (a tényleges kód+teszt).
+
+**Hivatkozás:** kártya 405869d9, CYBERED NO-GO 25502, MikroB 25504, WhiteHat2 eredeti lelet 25318 (kártya 9ab81f48), `store/freellm-catalog-sync.sh`, `store/freellm-catalog-sync.selftest.sh`.
