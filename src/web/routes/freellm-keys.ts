@@ -28,6 +28,33 @@ function parseUpstreamCreatedAt(value: string | number | undefined): number | nu
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
 }
 
+interface KeyStatus {
+  set: boolean
+  hint: string | null
+  error: 'decrypt_failed' | null
+}
+
+// Normalizes freellmapi's own maskKey() output (server/src/lib/crypto.ts,
+// measured against the installed service, card fd5fcc2c D1 finding) into a
+// shape the FE can render without parsing a mask string:
+//   len < 5   -> "****"             -> no hint
+//   len 5-8   -> "****" + last2     -> hint = last2
+//   len > 8   -> first4 + "..." + last4 -> hint = last4 (first4 dropped: the
+//                card's own contract promises only the last 4 chars, never
+//                any prefix of the real key)
+//   decrypt failure -> the literal "[decrypt failed]" -- surfaced as an
+//                explicit error, not silently rendered as "set"
+function normalizeUpstreamMask(maskedKey: string | undefined): KeyStatus {
+  if (!maskedKey) return { set: false, hint: null, error: null }
+  if (maskedKey === '[decrypt failed]') return { set: true, hint: null, error: 'decrypt_failed' }
+  const dotted = maskedKey.match(/\.\.\.(.+)$/)
+  if (dotted) return { set: true, hint: dotted[1], error: null }
+  const starred = maskedKey.match(/^\*+(.*)$/)
+  if (starred) return { set: true, hint: starred[1].length > 0 ? starred[1] : null, error: null }
+  // Unrecognized shape -- fail closed rather than guess at a hint.
+  return { set: true, hint: null, error: null }
+}
+
 function freellmKeyUnavailable(res: import('node:http').ServerResponse): void {
   json(res, {
     error: 'freellm_upstream_unavailable',
@@ -68,11 +95,12 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
         json(res, { error: upstream.data?.error?.message ?? 'freellmapi rejected the key' }, upstream.status === 401 ? 502 : upstream.status)
         return true
       }
+      const addedMaskedKey: unknown = upstream.data?.maskedKey
       json(res, {
         provider,
         setBy: 'admin',
         since: Math.floor(Date.now() / 1000),
-        masked: upstream.data?.maskedKey ?? '****',
+        ...normalizeUpstreamMask(typeof addedMaskedKey === 'string' ? addedMaskedKey : undefined),
       }, 201)
       return true
     }
@@ -89,7 +117,7 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
         provider: row.platform,
         setBy: 'admin',
         since: parseUpstreamCreatedAt(row.createdAt),
-        masked: row.maskedKey ?? '****',
+        ...normalizeUpstreamMask(row.maskedKey),
       })))
       return true
     }

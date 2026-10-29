@@ -60,14 +60,40 @@ function mkRequest(path: string, method: string, body?: unknown) {
 }
 
 describe('freellm-keys proxy', () => {
-  it('POST stores a key upstream and returns only the masked value', async () => {
-    freellmapiRequestMock.mockResolvedValueOnce({ status: 201, data: { maskedKey: '****3c7a' } })
+  it('POST stores a key upstream and returns only set/hint/error, never the masked prefix', async () => {
+    // Real upstream shape for a >8-char key (server/src/lib/crypto.ts maskKey,
+    // measured against the installed freellmapi): first4 + "..." + last4.
+    freellmapiRequestMock.mockResolvedValueOnce({ status: 201, data: { maskedKey: 'gsk_...3c7a' } })
     const { ctx, out } = mkRequest('/api/freellm/keys', 'POST', { provider: 'groq', key: SECRET_KEY })
     const handled = await tryHandleFreellmKeys(ctx)
     expect(handled).toBe(true)
     expect(out.status).toBe(201)
-    expect(out.body).toMatchObject({ provider: 'groq', masked: '****3c7a' })
+    expect(out.body).toMatchObject({ provider: 'groq', set: true, hint: '3c7a', error: null })
+    expect(out.body.masked).toBeUndefined()
     expect(freellmapiRequestMock).toHaveBeenCalledWith('POST', '/api/keys', { platform: 'groq', key: SECRET_KEY })
+  })
+
+  it('maps every real upstream mask shape to set/hint/error (card fd5fcc2c D1)', async () => {
+    const cases: Array<{ maskedKey: string; expect: { set: boolean; hint: string | null; error: string | null } }> = [
+      // >8 chars: first4 + "..." + last4 -- the first4 is dropped, the contract promises only the last 4.
+      { maskedKey: 'gsk_...3c7a', expect: { set: true, hint: '3c7a', error: null } },
+      // 5-8 chars: "****" + last2.
+      { maskedKey: '****7a', expect: { set: true, hint: '7a', error: null } },
+      // <5 chars: "****", no hint available.
+      { maskedKey: '****', expect: { set: true, hint: null, error: null } },
+      // Decrypt failure -- the key IS set, but must surface as a distinct error, not as a plain "set".
+      { maskedKey: '[decrypt failed]', expect: { set: true, hint: null, error: 'decrypt_failed' } },
+    ]
+    for (const { maskedKey, expect: wanted } of cases) {
+      freellmapiRequestMock.mockReset()
+      freellmapiRequestMock.mockResolvedValueOnce({
+        status: 200,
+        data: [{ id: 1, platform: 'groq', maskedKey, createdAt: '2026-10-29 14:42:33' }],
+      })
+      const { ctx, out } = mkRequest('/api/freellm/keys', 'GET')
+      await tryHandleFreellmKeys(ctx)
+      expect(out.body[0]).toMatchObject(wanted)
+    }
   })
 
   it('POST rejects an empty provider', async () => {
@@ -84,18 +110,18 @@ describe('freellm-keys proxy', () => {
     expect(freellmapiRequestMock).not.toHaveBeenCalled()
   })
 
-  it('GET lists keys with only the masked value, never the plaintext key', async () => {
+  it('GET lists keys with only set/hint/error, never the plaintext key or its first chars', async () => {
     // createdAt arrives from freellmapi's SQLite driver as a "YYYY-MM-DD HH:MM:SS"
     // UTC string, not a unix epoch -- confirmed against the live service.
     freellmapiRequestMock.mockResolvedValueOnce({
       status: 200,
-      data: [{ id: 1, platform: 'groq', maskedKey: '****3c7a', createdAt: '2026-10-29 14:42:33' }],
+      data: [{ id: 1, platform: 'groq', maskedKey: 'gsk_...3c7a', createdAt: '2026-10-29 14:42:33' }],
     })
     const { ctx, out } = mkRequest('/api/freellm/keys', 'GET')
     await tryHandleFreellmKeys(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual([
-      { provider: 'groq', setBy: 'admin', since: Math.floor(Date.parse('2026-10-29T14:42:33Z') / 1000), masked: '****3c7a' },
+      { provider: 'groq', setBy: 'admin', since: Math.floor(Date.parse('2026-10-29T14:42:33Z') / 1000), set: true, hint: '3c7a', error: null },
     ])
   })
 
