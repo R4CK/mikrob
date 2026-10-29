@@ -46,6 +46,8 @@ function switchPage(pageId) {
   if (pageId === 'skills') loadGlobalSkills()
   if (pageId !== 'localLlm') stopLocalLlmPoll()
   if (pageId === 'localLlm') loadLocalLlm()
+  if (pageId !== 'freellm') stopFreellmPoll()
+  if (pageId === 'freellm') loadFreellm()
   if (pageId === 'connectors') loadConnectors()
   if (pageId === 'migrate') loadMigrateAgents()
   if (pageId === 'docs') loadDocs()
