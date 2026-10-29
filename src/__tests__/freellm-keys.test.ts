@@ -120,6 +120,10 @@ describe('freellm-keys proxy', () => {
       { maskedKey: '****', expect: { set: true, hint: null, error: null } },
       // Decrypt failure -- the key IS set, but must surface as a distinct error, not as a plain "set".
       { maskedKey: '[decrypt failed]', expect: { set: true, hint: null, error: 'decrypt_failed' } },
+      // WhiteHat2 GO 25458 L1: a hostile/future upstream shape with a longer tail
+      // must still be capped at 4 characters, never passed through longer.
+      { maskedKey: 'gsk_abcdef...ghijklmnopqrstuvwxyz', expect: { set: true, hint: 'wxyz', error: null } },
+      { maskedKey: '****0123456789ab', expect: { set: true, hint: '89ab', error: null } },
     ]
     for (const { maskedKey, expect: wanted } of cases) {
       freellmapiRequestMock.mockReset()
@@ -230,6 +234,19 @@ describe('freellm-keys proxy', () => {
     await tryHandleFreellmKeys(ctx)
     expect(out.status).toBe(400)
     expect(freellmapiRequestMock).not.toHaveBeenCalled()
+  })
+
+  it('POST does not reflect the upstream rejection message verbatim, but logs it (WhiteHat2 L2)', async () => {
+    const UPSTREAM_DETAIL = 'upstream-internal-detail-should-not-reach-the-client'
+    freellmapiRequestMock
+      .mockResolvedValueOnce({ status: 200, data: [] }) // F1 pre-check
+      .mockResolvedValueOnce({ status: 400, data: { error: { message: UPSTREAM_DETAIL } } })
+    const { ctx, out } = mkRequest('/api/freellm/keys', 'POST', { provider: 'groq', key: SECRET_KEY })
+    await tryHandleFreellmKeys(ctx)
+    expect(out.status).toBe(400)
+    expect(JSON.stringify(out.body)).not.toContain(UPSTREAM_DETAIL)
+    expect(out.body.error).toBe('freellm_upstream_rejected')
+    expect(JSON.stringify(logCalls)).toContain(UPSTREAM_DETAIL)
   })
 
   it('a stopped/unreachable freellmapi answers 503, not 500', async () => {

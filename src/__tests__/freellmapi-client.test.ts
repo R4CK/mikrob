@@ -76,6 +76,20 @@ describe('freellmapi-client', () => {
     expect(loginCalls).toHaveLength(2)
   })
 
+  it('backs off after a failed login instead of retrying immediately (WhiteHat2 L4, comment 25458)', async () => {
+    process.env.FREELLMAPI_BASE_URL = 'http://127.0.0.1:3001'
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) }) // first login fails (bad credential)
+    vi.stubGlobal('fetch', fetchMock)
+    const { freellmapiRequest, FreellmapiUnavailableError } = await freshClient()
+    await expect(freellmapiRequest('GET', '/api/keys')).rejects.toThrow()
+    // A second call right after the failed login must NOT attempt another login
+    // (freellmapi locks the account out after 5 bad logins) -- it should fail
+    // fast instead, with no additional fetch call at all.
+    await expect(freellmapiRequest('GET', '/api/keys')).rejects.toBeInstanceOf(FreellmapiUnavailableError)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
   it('never logs the session token or the credential password', async () => {
     process.env.FREELLMAPI_BASE_URL = 'http://127.0.0.1:3001'
     const SESSION_TOKEN = 'super-secret-session-token-should-never-leak'

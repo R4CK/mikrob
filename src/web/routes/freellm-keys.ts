@@ -53,10 +53,13 @@ interface KeyStatus {
 function normalizeUpstreamMask(maskedKey: string | undefined): KeyStatus {
   if (!maskedKey) return { set: false, hint: null, error: null }
   if (maskedKey === '[decrypt failed]') return { set: true, hint: null, error: 'decrypt_failed' }
+  // WhiteHat2 GO 25458 L1: cap the hint at 4 characters even if a future/hostile
+  // upstream shape returns more -- the card's contract promises only the last 4,
+  // never a longer tail (measured against today's real upstream: already exactly 4).
   const dotted = maskedKey.match(/\.\.\.(.+)$/)
-  if (dotted) return { set: true, hint: dotted[1], error: null }
+  if (dotted) return { set: true, hint: dotted[1].slice(-4), error: null }
   const starred = maskedKey.match(/^\*+(.*)$/)
-  if (starred) return { set: true, hint: starred[1].length > 0 ? starred[1] : null, error: null }
+  if (starred) return { set: true, hint: starred[1].length > 0 ? starred[1].slice(-4) : null, error: null }
   // Unrecognized shape -- fail closed rather than guess at a hint.
   return { set: true, hint: null, error: null }
 }
@@ -108,10 +111,12 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
 
       const upstream = await freellmapiRequest('POST', '/api/keys', { platform: provider, key })
       if (upstream.status >= 400) {
-        // Never echo `key` into the error response -- the upstream message is
-        // about the submitted key's validity, not the key's value, but the
-        // request body itself is never reflected back regardless.
-        json(res, { error: upstream.data?.error?.message ?? 'freellmapi rejected the key' }, upstream.status === 401 ? 502 : upstream.status)
+        // WhiteHat2 GO 25458 L2: do not reflect the upstream's error text verbatim
+        // (it echoed `upstream.data?.error?.message`, which could be anything the
+        // upstream decides to put there, including a non-string value) -- log the
+        // upstream detail server-side and answer with our own fixed message.
+        logger.warn({ status: upstream.status, upstreamError: upstream.data?.error }, 'freellm-keys: upstream rejected the key')
+        json(res, { error: 'freellm_upstream_rejected', message: 'A freellmapi elutasította a kulcsot.' }, upstream.status === 401 ? 502 : upstream.status)
         return true
       }
       const addedMaskedKey: unknown = upstream.data?.maskedKey

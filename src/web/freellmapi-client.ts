@@ -57,7 +57,17 @@ function readCredential(filePath: string): Credential {
 
 let cachedToken: string | null = null
 
+// WhiteHat2 GO 25458 L4: freellmapi locks the admin account out for 15 minutes
+// after 5 bad logins. Without a back-off, a stale credential file turns every
+// dashboard request into another failed-login attempt, hitting that lockout
+// after a handful of clicks. Fail fast instead of retrying login immediately.
+const LOGIN_FAILURE_BACKOFF_MS = 60_000
+let loginFailureUntil: number | null = null
+
 async function login(): Promise<string> {
+  if (loginFailureUntil !== null && Date.now() < loginFailureUntil) {
+    throw new FreellmapiUnavailableError('freellmapi admin login recently failed; backing off before retrying')
+  }
   const { email, password } = readCredential(FREELLMAPI_ADMIN_CREDENTIAL_FILE)
   let res: Response
   try {
@@ -74,9 +84,11 @@ async function login(): Promise<string> {
     throw new FreellmapiUnavailableError('freellmapi is not reachable')
   }
   if (!res.ok) {
+    loginFailureUntil = Date.now() + LOGIN_FAILURE_BACKOFF_MS
     logger.error({ status: res.status }, 'freellmapi: admin login rejected')
     throw new FreellmapiUpstreamError('freellmapi admin login rejected', res.status)
   }
+  loginFailureUntil = null
   const body = (await res.json()) as { token?: string }
   if (!body.token) throw new FreellmapiUpstreamError('freellmapi login response carried no token', 502)
   cachedToken = body.token
