@@ -184,6 +184,16 @@ describe('the open reader posture (operator opt-in)', () => {
       'http://box.internal/',
       'http://metadata.google.internal/',
       'file:///etc/passwd',
+      // (a) trailing-dot hostname normalisation bypass
+      'http://localhost./',
+      'http://localhost.:3420/api/memories',
+      'http://metadata.google.internal./',
+      // (a) IPv4-mapped IPv6 pure-hex (::ffff:a9fe:a9fe = 169.254.169.254)
+      'http://[::ffff:a9fe:a9fe]/',
+      'http://[::ffff:0a00:0001]/', // 10.0.0.1
+      // (a) NAT64 well-known prefix 64:ff9b::/96 mapping a private v4
+      'http://[64:ff9b::a9fe:a9fe]/', // 169.254.169.254
+      'http://[64:ff9b::0a00:0001]/', // 10.0.0.1
     ]
     for (const url of internal) {
       expect(egressDecision('WebFetch', { url }, OPEN, QUARANTINE).tier).toBe('quarantine-denied')
@@ -195,13 +205,13 @@ describe('the open reader posture (operator opt-in)', () => {
     }
   })
 
-  it('keeps the deny rules away from the main agent and from the default posture', () => {
-    // The main agent may still reach its own dashboard through the built-in
-    // prefixes, and so may the DEFAULT-posture reader (its prompt never asks
-    // for internal addresses, and the owner's rule is that the default
-    // changes for no one).
+  it('keeps the deny rules away from the main agent but applies them to the quarantine reader in BOTH postures', () => {
+    // (b) The main agent may still reach its own dashboard through the built-in
+    // prefixes. The quarantine-reader is denied in BOTH postures because SSRF
+    // blocking is posture-independent: the default posture is not an exception.
     expect(isEgressBlocked('WebFetch', { url: 'http://localhost:3420/api/memories' }, OPEN, '')).toBe(false)
-    expect(isEgressBlocked('WebFetch', { url: 'http://localhost:3420/api/memories' }, EMPTY, QUARANTINE)).toBe(false)
+    // default-posture quarantine-reader must also be blocked (was: toBe(false) before fix)
+    expect(isEgressBlocked('WebFetch', { url: 'http://localhost:3420/api/memories' }, EMPTY, QUARANTINE)).toBe(true)
   })
 
   it('reddit: the RSS path still matches by name, and the rest opens like any public site', () => {

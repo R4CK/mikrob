@@ -295,6 +295,13 @@ const OK_SHAPES: readonly RegExp[] = [
   // kg-check-landing.selftest.sh style: `pass=N fail=0`. Captured non-zero N keeps the
   // non-vacuous guarantee: `pass=0 fail=0` does not match.
   /pass=([1-9]\d*) fail=0/,
+  // freellm-catalog-sync.selftest.sh style (card 405869d9): `PASS=N FAIL=0` on its own line,
+  // after per-case `OK   <description>` lines. Captured non-zero N keeps the non-vacuous
+  // guarantee: `PASS=0 FAIL=0` does not match.
+  /^PASS=([1-9]\d*) FAIL=0$/m,
+  // freellm-call.selftest.sh style (card ad6b183f): `PASSED: N` then `FAILED: 0` on the next
+  // line. Captured non-zero N keeps the non-vacuous guarantee: `PASSED: 0` does not match.
+  /PASSED: ([1-9]\d*)\nFAILED: 0/,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {

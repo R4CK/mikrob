@@ -18,6 +18,18 @@
 #                    its own filesystem view; bwrap already relies on its own mount-namespace
 #                    setup finishing before the sandboxed process starts, so the process itself
 #                    never needs to mount anything.
+#   process_vm_readv/process_vm_writev -- QA finding 24836 (card 7f6d435f): same-uid sibling
+#                    cross-process memory read/write, gated by the identical ptrace_may_access
+#                    permission check as ptrace itself -- denying ptrace alone left this open.
+#   add_key/request_key -- kernel keyring write/lookup; same rationale as keyctl above.
+#   pivot_root   -- would let a compromised engine swap its own mount-namespace root, a
+#                    container-escape primitive bwrap's own mount setup never needs at runtime.
+#   kexec_load/kexec_file_load -- loads and boots a whole new kernel image; no REA engine ever
+#                    needs this, and it is a full host-takeover primitive if reachable.
+#   init_module/finit_module/delete_module -- kernel module load/unload; no REA engine loads
+#                    kernel modules, and a compromised engine with this would own the host kernel.
+#   perf_event_open -- has repeatedly been the entry point for kernel-info-leak and
+#                    privilege-escalation CVEs; no REA engine profiles itself via perf events.
 #
 # Uses libseccomp (already installed system-wide as libseccomp2, "high level interface to Linux
 # seccomp filter") via ctypes -- no libseccomp-dev headers or a C compiler needed at runtime, no
@@ -27,7 +39,15 @@ import ctypes
 import os
 import sys
 
-DENY_SYSCALLS = ("ptrace", "keyctl", "bpf", "userfaultfd", "mount")
+DENY_SYSCALLS = (
+    "ptrace", "keyctl", "bpf", "userfaultfd", "mount",
+    "process_vm_readv", "process_vm_writev",
+    "add_key", "request_key",
+    "pivot_root",
+    "kexec_load", "kexec_file_load",
+    "init_module", "finit_module", "delete_module",
+    "perf_event_open",
+)
 
 SCMP_ACT_ALLOW = 0x7FFF0000
 _EPERM = 1

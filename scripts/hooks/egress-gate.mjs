@@ -288,7 +288,32 @@ function isPrivateIPv6(host) {
   if (h === '::1' || h === '::') return true
   if (h.startsWith('fc') || h.startsWith('fd')) return true // unique-local
   if (h.startsWith('fe80')) return true // link-local
-  // IPv4-mapped (::ffff:10.0.0.1) -- reuse the v4 rules on the tail.
+  // IPv4-mapped ::ffff: in dotted-decimal (::ffff:10.0.0.1) OR pure-hex 32-bit
+  // (::ffff:0a00:0001). Both encode an IPv4 address; reuse the v4 rules.
+  if (h.startsWith('::ffff:')) {
+    const rest = h.slice(7)
+    if (rest.includes('.')) return isPrivateIPv4(rest) // dotted decimal
+    const hexPair = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest)
+    if (hexPair) {
+      const hi = parseInt(hexPair[1], 16)
+      const lo = parseInt(hexPair[2], 16)
+      return isPrivateIPv4(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`)
+    }
+    return true // ::ffff: with unrecognised tail -- deny to be safe
+  }
+  // NAT64 well-known prefix 64:ff9b::/96 -- the low 32 bits are the IPv4 address.
+  if (h.startsWith('64:ff9b::')) {
+    const rest = h.slice(9)
+    if (rest.includes('.')) return isPrivateIPv4(rest)
+    const hexPair = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest)
+    if (hexPair) {
+      const hi = parseInt(hexPair[1], 16)
+      const lo = parseInt(hexPair[2], 16)
+      return isPrivateIPv4(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`)
+    }
+    return true // 64:ff9b:: with unrecognised tail -- deny to be safe
+  }
+  // Fallback: other address forms whose last colon-separated segment is a dotted IPv4.
   const tail = h.split(':').pop() ?? ''
   if (tail.includes('.')) return isPrivateIPv4(tail)
   return false
@@ -306,7 +331,9 @@ export function isQuarantineDenied(url) {
     return true // unparseable -> deny
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true
-  const host = parsed.hostname.toLowerCase()
+  // Strip trailing dot: FQDN normalisation (localhost. → localhost).
+  // Node's URL parser does NOT always strip it, so we do it here.
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
   if (!host) return true
   if (QUARANTINE_DENY_HOSTS.has(host)) return true
   if (QUARANTINE_DENY_SUFFIXES.some((s) => host.endsWith(s))) return true
@@ -497,19 +524,18 @@ export function egressDecision(
   // the schema, so its absence means the input is not what we think it is.
   if (!url) return { blocked: isFirecrawl, tier: isFirecrawl ? 'firecrawl-missing-url' : 'no-url' }
 
-  const openReader = String(agentType ?? '') === QUARANTINE_AGENT_TYPE
-    && (runtimeList.quarantinePosture ?? 'allowlist') === 'denylist'
+  const isQuarantine = String(agentType ?? '') === QUARANTINE_AGENT_TYPE
+  const openReader = isQuarantine && (runtimeList.quarantinePosture ?? 'allowlist') === 'denylist'
 
-  // 0. Reader deny rules, BEFORE every allow path -- in the denylist posture
-  //    only, so the default posture stays byte-identical to the pre-switch
-  //    gate. Order matters and was found by a test, not by reading: the
-  //    built-in prefixes include this install's own dashboard
-  //    (http://localhost:PORT/), so with the deny rules consulted only in
-  //    step 4 an open reader would have reached localhost through step 1 --
-  //    the one address the deny rules exist to refuse. An allowlist that
-  //    predates the switch must not be able to re-open what the open posture
-  //    walls off.
-  if (openReader && isQuarantineDenied(url)) {
+  // 0. Reader deny rules, BEFORE every allow path -- in BOTH postures for the
+  //    quarantine-reader. SSRF blocking is posture-independent: an allowlist
+  //    posture is a restricted whitelist of domains, not a grant to any
+  //    internal address. Order matters and was found by a test, not by reading:
+  //    the built-in prefixes include this install's own dashboard
+  //    (http://localhost:PORT/), so deny rules consulted only at step 4 would
+  //    have let even a DEFAULT-posture quarantine-reader reach localhost through
+  //    step 1 -- the one address the deny rules exist to refuse.
+  if (isQuarantine && isQuarantineDenied(url)) {
     return { blocked: true, tier: 'quarantine-denied' }
   }
 

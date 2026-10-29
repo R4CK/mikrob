@@ -22024,3 +22024,251 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 **Ki döntött:** Peti (12341 a lemondás, 12344 a regiszterből törlés); az M0 mérést a MikroB végezte, az elemzést az elemzo.
 
 **Hivatkozás:** Telegram 12341, 12344; kártyák e25e2bbc, a843ce7c, d58a2ce3, 9ab4c3b3; `docs/mcp-compressor-proxy-design.md` 8a szakasz.
+
+## 2026-10-25 -- kártya 9518b377 (retroaktív bejegyzés): F1/F2/F3 delta-fix (commit 1f27bcb5f), QA 14884 hiány-lelete
+
+**Kontextus:** a korábbi PASS (23911, komment 24388) és a két NO-GO (WhiteHat 24375, RedHat 24382) nyomán landolt commit 1f27bcb5f-nek nem volt DECISIONS.md tail-bejegyzése, miközben az F1-F3 és a KC5/KC6 kör mindkettő már kapott egyet. QA (msg 14884) jelezte a hiányt a KC1-builtin-shadow delta-gate előtt; MikroB (komment, msg 14885) kérte a pótlást ugyanabban a fix-kommitban, mint az új KC1-builtin-shadow javítás.
+
+**Döntés (mit csinált 1f27bcb5f, retroaktívan rögzítve):**
+- `resolve_trusted_bin()` kiterjesztve minden csupasz belső parancsra (`readlink`, `sha256sum`, `sort`, `cut`, `dirname`, `mkdir`, `find`, `grep`, `sed`) -- lezárja a `BASH_FUNC_<name>%%` PATH-árnyékolási bypasst (RedHat KC1, csak a NEVESÍTETT külső parancsokra).
+- Az integritás-pin most a TELJES npx-hash könyvtárat fedi (rea-agents + mind a 158 testvér-függőség), fájlokra ÉS symlinkekre (név + cél) egyaránt hashelve -- lezárja a testvér-függőség bypasst (WhiteHat F2) és a symlink-retarget bypasst (RedHat KC2).
+- Symlink-ellenőrzés az `ELEMZO_SAMPLES_DIR` gyökerén -- lezárja a samples-allowlist-gyökér symlink bypasst (RedHat KC3).
+- selftest: 5 új red-then-green eset, mindegyik a lezárt WhiteHat/RedHat komment-számra hivatkozva.
+
+**Mérés:** selftest 25 -> 30 teszt (a REVIEW, komment 24712 szerint). Teljes `fleet-test.sh` a landoláskor (Gate-SHA 3435b2936671f1d72748b81acc789a1a97f0bd21) futott, lásd a kártya saját REVIEW-ját.
+
+**Ki döntött:** WhiteHat (24375) és RedHat (24382) NO-GO-ja adta a hatókört, MikroB a delta dispatch-ot (msg 14743), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933), commit 1f27bcb5f, komment 24375/24382/24388/24712, QA hiány-lelete msg 14884, MikroB pótlás-kérése msg 14885.
+
+## 2026-10-25 -- kártya 9518b377 (folytatás): KC1 builtin-shadow delta-fix (RedHat 24721 / WhiteHat 24727), bash -p shebang
+
+**Kontextus:** a fenti 1f27bcb5f (F1/F2/F3) csak a NEVESÍTETT külső parancsokat (readlink, sha256sum, ...) zárta a `BASH_FUNC_<name>%%` osztály ellen `resolve_trusted_bin()`-nel. RedHat (24721) és WhiteHat (24727) delta-gate-je (Gate-SHA 3435b2936671f1d72748b81acc789a1a97f0bd21) NO-GO-t adott: UGYANAZ az osztály, egy bash BUILTIN árnyékolásán át (nem nevesített külső parancs), még nyitva maradt. RedHat PoC-ja: `BASH_FUNC_exit%%` no-op minden fail-closed `exit 1`-et átenged. WhiteHat PoC-ja: `BASH_FUNC_echo%%`, ami a `resolve_trusted_bin()`-ben az `echo "$cand"` kimenetet hamisítja, így `READLINK_BIN` támadó által választott szkriptre áll, és a `store/.dashboard-token` láthatóvá válik a sandboxban.
+
+**Döntés:** `resolve_trusted_bin()` névenkénti védelme NEM elég a builtin-eket (exit, echo, `[`, stb.) árnyékoló exportált függvényekre -- mindkét gate ugyanazt a javítást javasolta: a bash `-p` (privileged mode) teljesen ELUTASÍTJA az importált függvényeket a környezetből, osztályszinten, nevenkénti védelem helyett. Shebang `#!/usr/bin/env bash` -> `#!/bin/bash -p` a valódi szkripten (a MCP-regisztráció `"command": ".../rea-bwrap-sandbox.sh"` direkt exec-ként hívja, a shebang tehát érvényes a valódi futási útra). A selftestben minden eset, ami ezt az osztályt teszteli, a FÁJLT kell direktben futtassa (nem `bash file`-lel, mert az ignorálja a shebanget) -- ez pont az a hiba, amire RedHat felhívta a figyelmet ("a meglévő selftest `bash "$REAL"`-lel hívja, az ignorálja a shebanget, az új esetnek a fájlt magát kell futtatnia").
+
+Három red-then-green eset, mindegyik RED-MUTANT-tal (a mutáns ugyanaz a szkript `-p` nélküli shebanggal):
+1. `BASH_FUNC_exit%%` no-op + `REA_SAMPLE_DIR=/home/neon/marveen/store` -- egy probe listázza a store-t a sandboxban; a valódi (`-p`) szkripten a token sosem jelenik meg, a mutánson megjelenik.
+2. `BASH_FUNC_echo%%`, ami hamis readlink-eredményt ad a `resolve_trusted_bin()`-nek -- ugyanaz a mintázat.
+3. `BASH_FUNC_[%%`, ami csak a `-L` tesztre hazudik (a `[ -L "$ELEMZO_SAMPLES_DIR" ]` KC3-ellenőrzésre), minden más teszt a valódi `/usr/bin/[`-re delegál -- egy mindent-hamisító `[` a `resolve_trusted_bin()` saját `-x` ellenőrzését is elrontaná, és egy másik, korábbi refusalt váltana ki, nem a KC3-at tesztelné.
+
+**Mellékesen zárva (MikroB kérése, msg 14885, a 77e6e011 WhiteHat 24726 LOW leletei, ugyanazon a selftest-fájlon):**
+- F1: a selftest három fix nevű scratch-könyvtárat hozott létre az ÉLŐ `agents/elemzo/samples` alatt (`selftest-hijack-9518b377`, `selftest-samples-9518b377`, `selftest-kc1-9518b377`), ami egy párhuzamosan futó másik selftest-futással ütközött (mérve: QA egyszer elbukott emiatt, amíg a selftestet egyszerre futtatta valaki más). Javítás: mindhárom név `$$-$RANDOM` utótagot kapott.
+- F2: a `check_die_with_parent()` a valódi-szkript ágon vakon átmehetett volna, ha a leszármazott-lista üres volt a mintavétel pillanatában (a bwrap még nem indította el a gyermeket terhelés alatt) -- új `had_descendants` feltétel teszi ki a sikert attól, hogy legalább egy leszármazottat tényleg találtunk, mielőtt a "survived=0" önmagában elég lenne.
+
+**Mérés:** `rea-bwrap-sandbox.selftest.sh` 47 -> 53 teszt (3 új KC1-builtin eset + 3 RED-MUTANT; az F1/F2 javítás nem ad új esetszámot, meglévő eseteket erősít). 3x egymás utáni futás mind zöld (stabilitás-ellenőrzés).
+
+**Ki döntött:** a tételek RedHat-tól (24721) és WhiteHat-tól (24727) jönnek, a fix-direction mindkettő saját mérése (`bash -p` igazoltan ignorálja az importált függvényeket), MikroB a delta dispatch-ot adta (msg 14876/14883/14885), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9518b377 (szülő c7e0d83f, szülő-szülő 46ad2933), komment 24721 (RedHat NO-GO), 24727 (WhiteHat NO-GO), 77e6e011 komment 24726 (WhiteHat F1/F2 LOW), `store/rea-bwrap-sandbox.sh`, `store/rea-bwrap-sandbox.selftest.sh`.
+
+## 2026-10-25 -- kártya 9529d46e: SSRF-block adopció -- hook, nem template-próza
+
+**Kontextus:** az 1eae1b41 kártya (2026-10-17) a quarantine-reader.md upstream `Always refused, in every posture` SSRF-védelmi blokkját nem adoptálta, külön security-group követő kártyát ígért. Ez a kártya (9529d46e) az a követő.
+
+**Döntés:**
+- **Hook-alapú adoptálás, NEM template-próza.** Az SSRF-védelmet a `scripts/hooks/egress-gate.mjs` `isQuarantineDenied()` függvénye implementálja (PreToolUse hook), nem a `templates/sub-agents/quarantine-reader.md` sablonban lévő próza. A hook minden tool-híváskor tüzel, sablon-tartalomtól és posture-beállítástól függetlenül; a sablonba írt próza csak olvasható dokumentum, nem végrehajtott szabály.
+- **Következmény az acknowledged-conflicts.ts tripwire-ra:** az `expect: 'absent'` bejegyzés megmarad, de a `because` szövege frissült: az SSRF-védelem már a hook-ban él, a sablonba kerülő heading duplikáció lenne (és összezavarhatná a jövőbeli karbantartókat, kik az enforcement réteget keresgélnék).
+- **Négy bypass osztály lezárva (kód-szintű döntés):**
+  - (a) Trailing-dot hostname bypass (`localhost.`) -> `isQuarantineDenied` normalizál (`replace(/\.$/, '')`).
+  - (a) Pure-hex IPv4-mapped IPv6 (`::ffff:a9fe:a9fe`) és NAT64 (`64:ff9b::a9fe:a9fe`) -> `isPrivateIPv6` hex-pair -> IPv4 konverzió.
+  - (b) Default-posture quarantine-reader eléri a localhost-ot az ALLOWED_PREFIXES-en keresztül -> step 0 feltétel `openReader &&` helyett `isQuarantine &&` (posture-független).
+- **Non-adoptált eredeti javaslat:** az upstream template-beli `Always refused, in every posture` szövegblokkot nem portoltuk, mert a hook már szigorúbb garanciát ad.
+
+**Ki döntött:** a bypass osztályok azonosítása 9529d46e kártya leírásából, a hook-adoptálás vs template-próza döntés DevO (fullstack) javaslatára, MikroB jóváhagyásával. Kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya 9529d46e (szülő 7f0efce3), acknowledged-conflicts.ts `templates/sub-agents/quarantine-reader.md` bejegyzés, `scripts/hooks/egress-gate.mjs` `isQuarantineDenied`/`isPrivateIPv6`.
+## 2026-10-25: d2d47a92 delta -- WhiteHat NO-GO (24868) F1-F4 javítva: szimlink write-through, map-crash, path-traversal, foreign-symlink-adopció
+
+**Kontextus:** WhiteHat delta-gate NO-GO-t adott a446871df shán (komment 24868), miközben QA2 ugyanazon shán PASS-t (komment 24870). Négy lelet: **F1 HIGH** -- egy provisionált agent-skill szimlink a megosztott globális katalógusba, ezért BÁRMELY már létező, agent-scope-ú író út (fleet-transfer.ts agentSkills import, routes/agents-skills.ts zip-import) a szimlinken ÁT írt, és a globális kópiát mérgezte MINDEN ügynöknél egyszerre -- élő PoC-val bizonyítva mindkét útra (atomicWriteFileSync + `unzip -o`). **F2 MEDIUM** -- `provisionFleetSkills` dokumentáltan sosem dob, de egy rossz map-sor (`fleet-core: ["core-a", null]`, vagy `roles[agent]` nem tömb) TypeError-t dobott, és a hívó (`startAgentProcessUnlocked`) try/catch nélkül hívja -- egy rossz sor MINDEN ügynök indulását blokkolta volna. **F3 MEDIUM** -- egy map-bejegyzés (`"../escape-skill"`) csupasz `join()`-nal ment a fájlrendszerbe, a skills mappán KÍVÜL hozott létre könyvtárat. **F4 LOW** -- egy előre létező szimlink feltétel nélkül bekerült a manifestbe (akár máshonnan, akár lógó linkként), amit a provisioner ezután "sajátjaként" kezelt és törölt volna egy jövőbeli map-változásnál.
+
+**Döntés:** mind a négy javítva, sebészien, csak a `src/web/skill-map-provisioner.ts` + a két hívó (`fleet-transfer.ts`, `routes/agents-skills.ts`) érintve. (1) F1: új, exportált `detachSkillSymlinkIfAny(skillDir)` -- ha a cél szimlink, egy valódi, agent-local másolattá alakítja (readlink + cpSync + unlink+mkdir), MIELŐTT a hívó ír; mindkét write-path (fleet-import egyenként a skill nevére, zip-import az archívum minden top-level nevére, az `unzip -o` ELŐTT) meghívja. (2) F2: `readSkillRoleMap` most `sanitizedSkillNames()`-en szűr minden bejegyzést (nem-string vagy nem-tömb -> warn + kihagyva, sosem dob). (3) F3: `SKILL_NAME_RX = /^[a-z0-9][a-z0-9._-]*$/` a map olvasásakor ÉS a manifest-alapú törlés-ciklusban is -- egy rossz név sosem éri el a `join()`/`symlinkSync()`-et. (4) F4: egy előre létező szimlink csak akkor számít "már provisionáltnak" (adoptálva a manifestbe), ha a `realpathSync` a GLOBAL_SKILLS_DIR alá oldódik -- egyébként meghagyva, sosem kezelve/törölve; ugyanez a szabály a törlés-ciklusban is (a manifestben szereplő skill csak akkor törlődik, ha MÉG a globális katalógus alá mutat).
+
+**Ellenőrzés (mérve a jelen javítás commitján, nem landolva még, fleet-test.sh a landoláskor futtat a merge eredményén):** `src/__tests__/skill-map-provisioner.test.ts` 12/12 zöld (7 új eset F1-F4-re); `src/__tests__/fleet-transfer.test.ts` 46/46 zöld (1 új eset, F1 a fleet-import oldalon, mock-spy a detach-hívásra); `src/__tests__/agents-skills-import-symlink-guard.test.ts` (új fájl) 1/1 zöld, valódi zip-importtal, valódi szimlinkkel, a globális `~/.claude/skills/<fixture>/SKILL.md` tartalmát a futás előtt és után összevetve. Mutáció-bizonyítva mindhárom helyen: a javítás `git stash`-sel visszavéve, a 7+1+1 új teszt PIROS lett (a fleet-transfer F1 esetben a mock sosem hívódott; az agents-skills esetben a globális fájl tényleg felülíródott `ATTACKER-OR-STALE-OVERWRITE`-ra -- pontosan a WhiteHat-lelet reprodukálva), majd visszaállítva mind zöld. `npx tsc --noEmit -p .` 3, a kártyától független, meglévő hiba (parse5-típus hiány, 006b506b-előtti upstream batch).
+
+**Nyitva hagyva, tudatosan:** a zip-import route-nak egy ETTŐL a kártyától FÜGGETLEN, meglévő furcsasága van: ha az archívum egy MÁR LÉTEZŐ nevet hoz (szimlinket vagy valódi könyvtárat egyaránt), a before/after névlista-diff nem látja az átírt nevet, és a route "No valid skill found"-ot jelent, miközben az `unzip -o` valójában felülírta a fájlt. Ez a jelentés-pontosság hibája, nem biztonsági lelet (a teszt ezt a tényt fájlrendszer-szintű ellenőrzéssel kerüli ki, nem a válasz-kódra épít) -- MikroB/Peti döntése kell, nyíljon-e rá külön kártya.
+
+**Ki döntött:** a lelet és a javítási irányok WhiteHat kommentje (24868); a kivitelezés backend saját munkája (MikroB dispatch, üzenet 14957).
+
+**Hivatkozás:** kártya d2d47a92 (szülő: bf03aaa1), WhiteHat komment 24868, QA2 komment 24870 (ugyanazon shán PASS, delta-gate előtt).
+
+## 2026-10-25 -- upstream-sync 96b27014: secret-gate + copy-gate kemenyites (7 commit) -- backend
+
+**Döntés:** mind a 7 upstream commit (7b520b37, 0cef04a3, 9b4eef9a, 68d3a102, 86b2e461, 57526d63, ec1eb717) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges, a kártyát gate-re adjuk.
+
+**Hivatkozás:** kártya 96b27014, upstream-ported.json ledger (backend3 UJRA-ELLENORIZVE 2026-10-24), origin/develop de46c96e.
+
+## 2026-10-25 -- upstream-sync 2ba98cac: watchdog + install megbizhatosag (7 commit) -- backend
+
+**Döntés:** mind a 7 upstream commit (b47bf993, f8a1f5d2, 3582807f, 3032da46, 0602f88a, b73b0812, 5b74adc2) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges.
+
+**Hivatkozás:** kártya 2ba98cac, upstream-ported.json ledger, origin/develop aade034ac.
+
+## 2026-10-25 -- upstream-sync 4d367048: context-guard + vegyes javitasok (13 commit) -- backend
+
+**Döntés:** mind a 13 upstream commit (d964aab4, d3cdb375, b69ace21, 4c7e06f9, ebc0168d, 1abd45cf, a54a50d2, b85bd129, b5739368, 3d02f370, 0e9442ea, 10b4f331, d5d323af) igazoltan benne van az origin/develop-ban (git merge-base --is-ancestor = YES minden sha-ra). Új port-munka nem szükséges.
+
+**Hivatkozás:** kártya 4d367048, upstream-ported.json ledger, origin/develop aade034ac.
+
+## 2026-10-25: 2ba98cac delta -- correcting upstream-sync record (RedHat NO-GO comment 25005)
+
+**Context:** The 05bf5c0ca entry above said all 7 commits are "igazoltan benne van az origin/develop-ban ... Uj port-munka nem szukseges". RedHat (cybered) measured the live code on origin/develop and found two commits are not fully adopted. This is a record correction; no security defect.
+
+**Corrected record for 2ba98cac (7 upstream commits):**
+
+LIVE (fully adopted in fork, some adapted):
+- b47bf993: fix(watchdog): a userbot-prober elesitese explicit megerositest ker, amig a tail-vak reader all (HBTAILVAK914) (#1317) -- LIVE
+- 3032da46: fix(inbound-probe): main session reads REAL config root -- LIVE
+- 0602f88a, b73b0812, 5b74adc2 -- LIVE
+
+PARTIAL:
+- 3582807f: fix(update): keepalive + macOS wiring -- morning-briefing sentinel LIVE; install_keepalive_probe_timer block in update.sh (lines 692-723) and install-macos.sh macOS keepalive wiring NOT adopted (commit 15c091ba0 removed the macOS block again)
+
+NOT ADOPTED (deliberate fork decision):
+- f8a1f5d2: feat(update): park_morning_timer -- update.sh block 692-723 not adopted; Cybersec ef6a8031 records the decision; adopting is Peti's call on a separate card
+
+**Ledger (store/upstream-ported.json):** f8a1f5d2 and 3582807f moved from ported to skipped with reasons. Ancestry (merge-base --is-ancestor) is still true for both; the correction is that ancestry alone does not mean the fork carries the fix.
+
+**Reference:** card 2ba98cac, RedHat NO-GO comment 25005.
+
+## 2026-10-25: 4d367048 delta -- correcting upstream-sync record (RedHat NO-GO comment 25006)
+
+**Context:** Same as above: the 05bf5c0ca entry said all 13 commits are live. RedHat measured two as not adopted. Record correction, no security defect.
+
+**Corrected record for 4d367048 (13 original + 7 triage shas from comment 8062):**
+
+LIVE (original 13):
+- d964aab4, d3cdb375, b69ace21, 4c7e06f9, ebc0168d, 1abd45cf, b85bd129, b5739368, 3d02f370, 10b4f331, d5d323af -- all LIVE in origin/develop
+
+NOT ADOPTED (deliberate fork decisions):
+- a54a50d2: feat(scripts): egress-drift scan on logical lines, marked vs bare (TASKEGRESSDRIFT913) (#1319) -- scripts/egress-drift-scan.py does not exist in fork; acknowledged-conflicts.ts ~line 4142 records this
+- 0e9442ea: fix(test-gate): refuse the suite from a transient root instead of going falsely red (SUITETMPPIROS912) (#1297) -- isTmpRootedPath refusal not present; only TMP_ROOT_PREFIXES list and agent-scaffold hook guard are live; acknowledged-conflicts.ts ~line 4464
+
+Triage shas (comment 8062, added to card scope post-triage):
+- 0a33ab37: SKIPPED (comment-only fix depending on unported upstream commit 866da985; ledger entry pre-existing)
+- a67881aa, 70213357, df5e4462, 67e1daea, 4919d8b0, 3f93c00f: LIVE (checked by RedHat on origin/develop aade034ac)
+
+**Ledger (store/upstream-ported.json):** a54a50d2 and 0e9442ea moved from ported to skipped with reasons.
+
+**Reference:** card 4d367048, RedHat NO-GO comment 25006.
+
+## 2026-10-25: 2ba98cac + 4d367048 -- sha description accuracy fix (RedHat NO-GO 25019/25020)
+
+In-place correction to the not-yet-landed correcting entries above. Three sha descriptions did not match `git log -1 --format=%s` verbatim:
+- 2ba98cac: b47bf993 was attributed "fix(update): failed npm ci" (6b397f23's subject). Now: "fix(watchdog): a userbot-prober elesitese..." (HBTAILVAK914).
+- 4d367048: a54a50d2 was "feat(update): egress-drift scan"; now verbatim "feat(scripts): egress-drift scan on logical lines..." (TASKEGRESSDRIFT913). 0e9442ea was "fix(suites)..."; now verbatim "fix(test-gate): refuse the suite from a transient root..." (SUITETMPPIROS912).
+
+Classification and ledger entries unchanged. No new security/functional finding.
+
+## 2026-10-27: ad6b183f -- freellm-call.sh: offline content gate + fail-closed switch (Peti 12494)
+
+**Decision:** Free LLM (openai-compatible local service) integration requires an offline, fail-closed content gate to prevent sensitive data egress. The gate runs BOTH in the client script (store/freellm-call.sh) and on the dispatcher side (gemini-agy-category-check.py pattern), so no single missing layer can leak.
+
+**Architecture:** (1) Switch file (store/freellm-enabled.json) missing/invalid = OFF (fail-closed, exit code 2, no API call); (2) Content patterns (mopsion, tenant, password, secret, token, PII, auth, finance) inline-checked via Python regex, refused with exit 4 if matched; (3) All temp files cleaned (trap EXIT), no secrets in argv/log/stdout; (4) Service listens 127.0.0.1 only; (5) Contract-first API (GET/PUT /api/freellm/status) posted (comment 25158), FE fd5fcc2c mocks against it in parallel.
+
+**Selftest:** 8/8 PASS: dry-run, missing switch (exit 2), disabled switch (exit 2), mopsion/token/api_key patterns (exit 4), validate-key (exit 0/2).
+
+**Why:** Peti directive (12494): "build it in, modular, switchable". Security-critical (SEC tag): content gate must NOT be bypassable by missing config, and must refuse ALL sensitive category patterns on initial request before any API touch.
+
+**Who decided:** MikroB (delegated) + backend (implementation).
+
+**Reference:** card ad6b183f, commit 32575e541, contract comment 25158.
+
+## 2026-10-29 -- kártya e3ab83e8: freellmapi utómunka b21a7ff7 után -- forward invariánsok
+
+**Kontextus:** b21a7ff7 (freellmapi telepítés) DONE, QA PASS + CYBERSEC GO + CYBERED GO, config-only. A gate-ek (köztük WhiteHat2) nem blokkoló leleteket hagytak hátra (régi titok a journalban, forgot-password naplózás, korlátlan egress), amiket ez a kártya zár le vagy dokumentál accepted-risk-ként.
+
+**Döntés -- forward invariánsok (mind élesben ellenőrizve ebben a kártyában, 2026-10-29):**
+- `FREEAPI_DESKTOP` nincs beállítva (nincs a systemd unit `Environment=`-jében, nincs a `/home/neon/.config/freellmapi/env` fájlban, nincs a shell env-ben) -- a desktop-embedder-only kódút (`server/src/routes/auth.ts:180`) inaktív.
+- `ALLOWED_HOSTS` be van állítva (`localhost`) -- a DNS-rebinding guard (`server/src/lib/config.ts` `parseAllowedHosts`, #1637) aktív, nem az üres/kikapcsolt állapotban van.
+- Ollama-emuláció ki van kapcsolva -- a `freeapi.db` `settings` tábla `ollama_emulation` kulcsa `off` (az alapértelmezés is ez, de itt explicit sorként van tárolva; `server/src/routes/ollama.ts` `getOllamaEmulationMode()`).
+- `ProtectHome=tmpfs` áll a systemd user unitban (`~/.config/systemd/user/freellmapi.service`), a `/home/neon` többi tartalma (más ügynökök checkoutjai, a flotta dashboard-tokenje) a szolgáltatás nézőpontjából üres tmpfs mögé kerül; csak a service saját könyvtárai vannak `BindReadOnlyPaths`/`BindPaths`-szal visszanyitva.
+- Nincs inline titok a unitban -- a unit `EnvironmentFile=/home/neon/.config/freellmapi/env` (0600) hivatkozást használ az `ENCRYPTION_KEY`/`ALLOWED_HOSTS` értékekre, a unit fájl maga titkot nem tartalmaz.
+
+**N1 (régi titok a journalban) -- BLOKKOLT-Peti, nincs végrehajtva.** A `/home/neon/.local/opt/freellmapi-vault/encryption-key` (0600, 44 karakter) egy korábbi, mára nem-élő `EnvironmentFile=` sorból maradt vissza, és a pontos 44-karakteres érték 8 alkalommal szerepel a journalban (`journalctl --user -u freellmapi`), a 2026-10-27 20:52:55--20:53:26 közötti ablakban (boot -3, Tue 2026-10-27 16:47--22:11). A fájl törlése és a journal vacuum/rotate rendszer-szintű, visszafordíthatatlan művelet (a vacuum a teljes gépi journalt érinti, nem csak a freellmapi unitot) -- a pontos parancsok a kártya `BLOKKOLT-Peti` kommentjében, Peti jóváhagyására várnak.
+
+**N2 (forgot-password kódja a journalba íródik) -- accepted risk, indoklással.** A `generateResetCode()` (`server/src/lib/reset-code.ts`) szándékosan `console.log`-ol a kódot + a fiók emailjét, mert ez a self-hosted, egy-operátoros eszköz egyetlen helyreállítási útja (nincs email-kiküldés). Nincs env/DB-kapcsoló, amivel ez kikapcsolható vagy a naplózás elnémítható lenne (ellenőrizve: a forrásban nincs ilyen feltétel). A végpont loopback-only (`HOST=127.0.0.1`), rate-limitelt (10s min. intervallum) és nem enumerálja a fiókokat. A journal csak root/`adm`/`systemd-journal` csoportnak olvasható -- ugyanaz a bizalmi kör, mint ami a gép többi titkát (pl. a dashboard-token fájlt) is olvashatja ezen a single-tenant WSL gépen, tehát ez nem nyit új támadási felületet a már meglévőhöz képest. Elfogadott kockázat, amíg a freellmapi upstream nem ad kikapcsoló kapcsolót, vagy amíg a szolgáltatás nem kap valódi email-alapú reset-utat.
+- **Mit ellenőriztem:** `journalctl --user -u freellmapi --no-pager | grep -c "encryption"` -> 30 sor (szó-szintű egyezés, nem a titok maga); az pontos régi secret-érték 8 előfordulását külön, a titkot sehova nem kiírva számoltam meg.
+
+**N3 (korlátlan kimenő forgalom) -- dokumentált why-not, nem adoptálva most.** A freellmapi ~60 különböző LLM/eszköz-szolgáltatóhoz kapcsolódik ki (`server/src/providers/*.ts`), mindegyik saját, gyakran CDN mögötti, rotáló IP-tartománnyal. A systemd `IPAddressAllow`/`Deny` csak induláskor old fel hostnevet IP-cimre, és statikus listát tart -- egy CDN IP-rotáció csendben megszakítaná az egressz-forgalmat anélkül, hogy a szolgáltatás hibát jelezne, amíg újra nem indul. ~60 dinamikus célponttal ez a kontroll jelenleg több üzemeltetési kockázatot hordna (csendes kiesés), mint biztonsági nyereséget. A megfelelő megoldás egy hostname-alapú kimenő proxy/allowlist lenne, ami önálló, nagyobb kártyát igényel; emiatt most nem adoptáljuk, csak dokumentáljuk.
+
+**Ki döntött:** a leletek WhiteHat2-től jönnek (b21a7ff7 non-blocking findings), a lezárás/dokumentálás módja (N1 blokkolás, N2/N3 accepted-risk indoklása) DevO (fullstack) mérése és javaslata, MikroB dispatch-ja (msg_id 15209) alapján.
+
+**Hivatkozás:** kártya e3ab83e8 (szülő 92b76ff0), kártya b21a7ff7 (előd, DONE), `/home/neon/.config/systemd/user/freellmapi.service`, `/home/neon/.config/freellmapi/env`, `server/src/lib/reset-code.ts`, `server/src/routes/auth.ts`, `server/src/lib/config.ts`, `server/src/routes/ollama.ts`.
+
+## 2026-10-29: 08d1aa90 -- freellm keys write-only proxy: server-side provider allow-list + agreed FE mask-status shape (Peti 12500 freellmapi phase)
+
+**Decision:** The dashboard's write-only key surface (POST/GET/DELETE /api/freellm/keys, proxying to the local freellmapi service) must never pass the upstream's raw masked string through, and must not trust the FE's provider list as a security control.
+
+**Architecture:** (1) `normalizeUpstreamMask()` translates freellmapi's own `maskKey()` output (measured directly from the installed service's `server/src/lib/crypto.ts`) into `{set: boolean, hint: string|null, error: 'decrypt_failed'|null}` -- the first-4-chars prefix on a >8-char key is dropped, a `[decrypt failed]` upstream value surfaces as an explicit error instead of a silent "set". This is the shape backend and Fron Ted (fd5fcc2c) agreed on after RedHat's D1 finding (comment 25333) that the FE's mask-shape guard rejected the real upstream format. (2) Server-side provider allow-list (groq, cerebras, google_ai_studio, openrouter, mistral -- the same 5 as the FE's own list) plus a 512-char key length cap, fail-closed on POST and DELETE, per WhiteHat2's B4 gate input (comment 25254) that the FE's list is not itself a security control.
+
+**Verification:** 12 unit tests (mocked freellmapi) plus a live round-trip against the running freellmapi service (dummy key POST/GET/DELETE, cleaned up after) confirming the real masked shape and that no full key reaches logs. B1 (no local persistence) confirmed by source grep.
+
+**Not resolved here:** B3 (shared dashboard token, no per-caller audit identity for `setBy`) is an accepted limitation of the fleet's same-UID token model, not fixed by this card. C1 (dummy-key encryption-at-rest check inside freellmapi's own DB) is left to WhiteHat2 per their own request (comment 25262).
+
+**Who decided:** WhiteHat2 (B4, D1 findings) + RedHat (D1 finding) + backend (implementation, agreed shape).
+
+**Reference:** card 08d1aa90, commits e431d50a5/6737b7cc6/603e6df89/6757b2f90, card fd5fcc2c comments 25254/25333.
+
+## 2026-10-29: ad6b183f -- freellm-call.sh F1-F5 fix (QA FAIL 25363 / CYBERSEC NO-GO 25366)
+
+**Döntés:** store/freellm-call.sh teljesen átírva: F1 (CRITICAL, RCE unquoted heredoc) -- prompt/model env var + stdin herestringen megy be, a Python script quoted heredocból íródik; F2 (HIGH, gyenge content gate) -- a valós store/gemini-agy-category-check.py-t hívja (a kártya előírása szerint) + a gemini-offload-call.sh redaktorának teljes másolata; F3 (fail-closed kapcsoló) -- hiányzó/hibás store/freellm-enabled.json = KI, selftesttel bizonyítva (nincs hálózati hívás); F4 (LOW, bool type confusion) -- `d.get("enabled") is True` szigorú identitás-check; F5 (MEDIUM, port+auth) -- alap port 3001, Authorization header a /home/neon/.config/freellmapi/auth-token fájlból, mindig `-H @-`-n, soha argv-ben. Minden fix mellé selftest-eset került, ami RED add3c65049b0ea83bad20ef9d057b980e6b2d7f1-en és GREEN a javításon (store/freellm-call.selftest.sh).
+
+**Mit ellenőriztem:** fleet-test.sh --ref a landolt merge-en: Test Files 1267 passed | 1 skipped, Tests 37523 passed | 130 skipped, lint-ratchet.sh baseline tart. Minden teszt elkülönített mock HTTP szerver ellen futott (127.0.0.1, fabrikált FREELLM_API_BASE/FREELLM_AUTH_TOKEN_FILE), az éles freellmapi szolgáltatást és valós kulcsokat egyszer sem érintette.
+
+**Ki döntött:** backend2 (a fix szerzője), MikroB dispatch (trusted-peer msg_id:15236) alapján, a korábbi QA FAIL 25363 + CYBERSEC NO-GO 25366 leletei szerint.
+
+**Hivatkozás:** kártya ad6b183f (szülő fd5fcc2c), store/freellm-call.sh, store/freellm-call.selftest.sh.
+
+## 2026-10-29 -- kártya e3ab83e8: RedHat (25370) F1-F3 -- manual catalog sync, N2/N3 korrekciók
+
+**Kontextus:** RedHat (cybered) CYBERED GO (komment 25370) a Gate-SHA b8d938668e68da3b7e8376efbf74f5ff2ee532c4 bejegyzésen. Három, nem-blokkoló pontossági/hiányossági lelet (F1 MEDIUM, F2/F3 LOW), MikroB döntésével (komment 25371) lezárva.
+
+**F1 (MEDIUM) -- manual catalog sync: CATALOG_SYNC_DISABLED=1 NEM fedi a kézi útvonalat.** RedHat forrás-olvasása (services/catalog-sync.ts ~1255. sor): a flag csak a freellmapi SAJÁT induláskori ütemezőjét állítja le; a `POST /api/premium/sync` (requireAuth mögött) feltétel nélkül hívja `syncCatalog(true)`-t. Ez a hívás MÁR megtörtént: a journal szerint 2026-10-29 15:37:33-kor, a service-restart után kb. 12 másodperccel, "[catalog-sync] applied monthly v2026.10.29: 460 updated, 8 new, 0 removed, 92 quirks, 17 skipped" (ugyanez szerepel DevO 9ab81f48 REVIEW-jának 25218 kommentjében is, bizonyítékként). A feed Ed25519-aláírt és a kód a pontos byte-sorozat felett ellenőrzi az aláírást (man-in-the-middle nem tudja módosítani), de a vendor maga igen -- a pinnelt-SHA tartalom emiatt már NEM a katalógus jelenlegi állapota.
+**MikroB döntés (25371):** a kézi catalog sync TOVÁBBRA IS ENGEDÉLYEZETT, de KIZÁRÓLAG a `store/freellm-catalog-sync.sh` gated heti feladaton keresztül (kártya 9ab81f48, QA + WhiteHat2 zöld) -- az a szkript SZÁNDÉKOSAN hívja a `POST /api/premium/sync`-et, és a `CATALOG_SYNC_DISABLED=1` pont azért tartja ki a freellmapi saját ütemezőjét, hogy az időzítés a mi kezünkben maradjon. Bármilyen MÁS, ad-hoc `POST /api/premium/sync` hívás egy ügynöktől KÜLÖN KÁRTYÁT igényel.
+**Új forward invariáns (F1 nyomán):** a katalógus-frissítés kizárólag a gated `store/freellm-catalog-sync.sh`-n keresztül történhet -- nincs felügyelet nélküli (unreviewed) manuális catalog-apply.
+
+**F2 (LOW) -- N2 korrekció: a bizalmi kör NEM "csak neon+root", hanem MINDEN flotta-ügynök.** A korábbi REVIEW (25358) és a QA (25367) is alulbecsülte a kört: a journal-olvasási jogosultság (`adm`, `systemd-journal` csoport) ugyanazon `neon` UID alatt fut, mint a TELJES flotta -- minden ügynök session UGYANAZZAL az OS-felhasználóval (neon) dolgozik, tehát bármelyik ügynök folyamata ugyanúgy olvashatja a journalt, mint egy ember-operátor. Ez NEM nyit új felszint CSAK azért, mert a b21a7ff7 F3 lelet már elfogadta, hogy ugyanez a UID az env-fájlt és az adatbázist is eleve olvashatja -- de a rekordnak ki kell mondania, hogy a kör "minden flotta-ügynök", ne csak "neon+root", különben egy későbbi olvasó azt hinné, az admin-jelszó védelmet ad egy flotta-ügynök ellen. Konkrét, NEM futtatott, csak kód-szintjén igazolt lánc: egy azonos-UID folyamat POST forgot-password (unauth, 10s rate-limit) -> kód olvasása `journalctl --user -u freellmapi`-val -> POST reset-password -> session token. Kiegészítő, nem-blokkoló megfigyelés: egy rosszindulatú böngészőlap cross-site NEM tudja végigvinni a reset-password-öt (JSON preflight elbukik, text/plain nem JSON-ként parse-olódik), de egy egyszerű no-cors POST-tal a forgot-password-ot ismételten hívhatja, ami minden hívással érvényteleníti az előző kódot -- ez csak elérhetőség-szintű zavarás (a legitim helyreállítást akadályozhatja), nem account-takeover. A CORS allow-list tartalmazza a `http://localhost:5173`/`127.0.0.1:5173`-at (Vite dev alapértelmezés); jelenleg semmi nem figyel ott, de ha valami figyelne, az teljes cross-origin olvasást/írást kapna a pre-auth végpontokon (INFO-szintű előretekintő megjegyzés).
+
+**F3 (LOW) -- N3 korrekció: az IPAddressAllow/Deny EGYÁLTALÁN NEM fogad hostnevet, és a "~60" az adapterszám, nem a célpontszám.** Korábbi állítás (a 25358 REVIEW-ban), hogy a systemd IPAddressAllow/Deny induláskor old fel hostnevet IP-cimre, PONTATLAN: a `man systemd.resource-control` (IPAddressAllow szakasz) szerint a lista KIZÁRÓLAG IPv4/IPv6 cím + opcionális prefix-hossz (plusz néhány kulcsszó) -- hostnevet SOHA nem fogad. Ez ERŐSEBB indok a why-not döntésre, mint a CDN IP-rotáció. A "~60" a `server/src/providers/*.ts` ADAPTER-fájlok száma (pontosabban 48, a `base.ts` közös ősosztályt nem számolva), NEM a tényleges élő célpontok száma -- a szolgáltatás csak olyan providerhez kapcsolódik ki, amihez van kulcsa, és a `freeapi.db` `api_keys` táblája jelenleg 0 sort tartalmaz; a kártya tervezett közeli köre 5 provider (Groq, Cerebras, Google AI Studio, OpenRouter, Mistral). A következtetés (statikus IP-allowlist nem tartható fenn CDN-mögötti hostoknál) 48-nál és 5-nél is egyformán áll.
+Új megfigyelés (nem adoptált, csak rögzítve): ha a kimenő tartalom-szűrő (`store/freellm-call.sh` kulcsszó-regex: secret/token/password stb.) elbukik, a szivárgás célpontja egy ENGEDÉLYEZETT provider lenne definíció szerint -- egy IP-allowlist ezt az esetet eleve nem tudná megállítani, a valódi kontroll a tartalom-gate, ami szavakkal/kódolással trivialisan megkerülhető és más, a szolgáltatás egyesített kulcsát közvetlenül használó hívóra nincs érvényesítve (ez a design tulajdonsága, nem e kártya hibája). Egy olcsó, RÉSZLEGES kontroll, amit RedHat NEM tudott élesben tesztelni (saját tranziens-unit tesztjét egy governance-hook blokkolta, nem kerülte meg): a privát/link-local tartományok tiltása loopback engedélyezése mellett, védelmül egy kompromittált szolgáltatás ellen, ami a lokális Ollamát (11434, auth nélkül) vagy a flotta dashboardot (3420) vagy a LAN-t/Windows-hostot érné el a WSL gateway-en át. NEM adoptálva most, mert nincs igazolt bizonyíték, hogy a systemd user manager valóban érvényesíti az IPAddressDeny-t; egy külön, scratch-unit teszt szükséges, mielőtt bárki beépítené -- jövőbeli kártya-jelölt.
+
+**N4 kiegészítés (RedHat lelete, a 4 eredeti invariáns mellé):** TRUST_PROXY nincs beállítva (0 az env fájlban és a unitban is), HOST=127.0.0.1 a unitban (nem csak ALLOWED_HOSTS), és CATALOG_SYNC_DISABLED=1 a tényleges, korlátozott hatókörével (csak a belső ütemezőt állítja le, lásd F1 fent) -- mindhárom a forward invariáns-lista implicit, de korábban ki nem mondott része volt.
+
+**Ki döntött:** a lelet RedHat-tól (cybered, komment 25370), a hatókör-döntés (F1: kizárólag a gated szkripten át) MikroB-tól (komment 25371). A korrekciós bejegyzést DevO (fullstack) írta, MikroB kérésére.
+
+**Hivatkozás:** kártya e3ab83e8, komment 25358 (REVIEW, korábbi -- most korrigálva), 25364 (MikroB gate-kijelölés), 25367 (QA PASS, saját korrekciós megjegyzéssel), 25370 (CYBERED GO, F1/F2/F3), 25371 (MikroB döntés). Kártya 9ab81f48 (gated catalog-sync szkript, QA+WhiteHat2 zöld), `server/src/services/catalog-sync.ts`, `server/src/routes/premium.ts`, `server/src/lib/reset-code.ts`, `server/src/app.ts` (CORS/host-guard), `man systemd.resource-control` (IPAddressAllow).
+
+## 2026-10-29 -- Kártya 7f6d435f: REA bwrap seccomp-denylist kibővítve 11 syscall-lal (QA lelet 24836 a 077970fc-n)
+
+**Kontextus:** a 077970fc kártya (RedHat follow-up, komment 24382) `store/rea-seccomp-filter.py` denylistet adott a REA bwrap sandboxhoz: `ptrace`, `keyctl`, `bpf`, `userfaultfd`, `mount`. QA FAIL (komment 24836) rámutatott, hogy `process_vm_readv`/`process_vm_writev` ugyanazt a same-uid cross-process memória-olvasás/írás képességet adja, mint a `ptrace` (azonos `ptrace_may_access` jogosultsági modell) -- a `ptrace` blokkolásának saját célja (másik sandboxbeli folyamat memóriájának megtámadása) emiatt nem volt teljesen lezárva. A korábbi, már NO-GO-ban (24721/24727) felsorolt további primitíveket (kernel-modul be/kitöltés, kexec, keyring-írás, pivot_root, perf_event_open) is felvettük most, ugyanazon az elven: nem méréssel (strace) indokolt tiltás, hanem "a REA motoroknak nincs rá legitim szükségük, és kernel/host-szintű primitívek".
+
+**Döntés:** `DENY_SYSCALLS` 5 -> 16 elemre bővítve (`store/rea-seccomp-filter.py`): `process_vm_readv`, `process_vm_writev`, `add_key`, `request_key`, `pivot_root`, `kexec_load`, `kexec_file_load`, `init_module`, `finit_module`, `delete_module`, `perf_event_open`. Mind a 11 új név libseccomp `seccomp_syscall_resolve_name`-mel VERIFIKÁLVA feloldódik ezen a hoszton/arch-on (x86_64 syscall-számok: 310, 311, 248, 249, 155, 246, 320, 175, 313, 176, 298) -- egy nem-feloldódó név a generátort teljesen elbuktatná (fail-closed az egész szűrőre), ezért ez nem feltételezés volt.
+
+**Teszt:** `store/rea-bwrap-sandbox.selftest.sh` új esete: `process_vm_readv` EPERM-et ad a sandboxban (nyers syscall-hívás, self pid, érvénytelen NULL/0 iovec argumentumokkal -- ezek SIKERES áthaladás esetén EINVAL(22)-t adnának, tehát az EPERM(1) egyértelműen a szűrő műve, nem véletlen hibakód), PLUSZ egy RED-MUTANT, ami KIZÁRÓLAG a `process_vm_readv` bejegyzést törli a listából (nem az egész `--seccomp` kapcsolót) és bizonyítja, hogy ez a konkrét lista-tétel -- nem csak "létezik egy szűrő" -- hordozza a védelmet. Teljes selftest-futás: 55 passed, 0 failed.
+
+**NYITOTT PONT -- a kártya 3. Kész-ha pontja (4 REA motor smoke-futása a bővített szűrővel) NEM lett lefuttatva ebből a környezetből.** A `rea-bwrap-sandbox.sh doctor --json` megköveteli a `JAVA_HOME`, `GHIDRA_INSTALL_DIR`, `REA_JADX_MCP_JAR`, `REA_KUNA_COMMAND` env-változókat (fail-closed check a szkript 87. sorában) -- ezek SEHOL nincsenek konfigurálva a fullstack (DevO) munkakörnyezetben vagy worktree-ben, sem systemd unitban, sem elemzo `.mcp.json`-jában; ez elemzo saját, erre felszerelt (Ghidra/jadx/Kuna/Hopper telepítésekkel bíró) futtatókörnyezete, amihez DevO-nak nincs hozzáférése. Proxy-bizonyíték helyette: mind a 11 új syscall-név verifikáltan feloldódik ezen a hoszton (fent), tehát a generátor nem bukik el az új listával -- ez NEM egyenértékű a tényleges 4-motor smoke-futással. Ezt a pontot QA vagy elemzo tudja csak lezárni, a REA-felszerelt környezetben.
+
+**Ki döntött:** QA (a lelet, komment 24836), DevO/fullstack (a bővítés + selftest, kártya 7f6d435f). A smoke-teszt nyitott pont emberi/MikroB-döntésre vár (ki futtatja le a REA-felszerelt környezetben).
+
+**Hivatkozás:** kártya 7f6d435f (szülő-lelet: 077970fc, komment 24836, eredeti NO-GO 24721/24727), `store/rea-seccomp-filter.py`, `store/rea-bwrap-sandbox.sh` (87., 231. sor), `store/rea-bwrap-sandbox.selftest.sh`.
+
+## 2026-10-29 -- e3ab83e8 delta: adapter-szám korrekció 48 -> 47 (MikroB pontosítása)
+
+**Korrekció a fenti, e3ab83e8-hoz tartozó F3 bejegyzéshez (lásd a "~60 az adapterszám... pontosabban 48" sort):** a `server/src/providers/*.ts` könyvtár 49 fájlt tartalmaz (közvetlenül leszámolva), de ebből KETTŐ nem adapter: `base.ts` (közös ősosztály, ahogy a korábbi bejegyzés már helyesen kizárta) ÉS `index.ts` (aggregátor, ezt a korábbi bejegyzés nem vette figyelembe). A tényleges adapter-szám tehát 49 - 2 = **47**, nem 48. A következtetés (statikus IP-allowlist nem tartható fenn CDN-mögötti hostoknál) ettől függetlenül egyformán áll 47-nél is.
+
+**Ki döntött:** MikroB (a pontosítás), DevO/fullstack (a tail-append + a 49 fájlos listázás újra-ellenőrzése: `ls server/src/providers/*.ts` a freellmapi telepítésben, 49 sor, benne base.ts és index.ts).
+
+**Hivatkozás:** kártya e3ab83e8, a fenti (2026-10-29 előtti) F3 bejegyzés, `/home/neon/.local/opt/freellmapi/server/src/providers/`.
+
+## 2026-10-29 -- 405869d9 delta: az R1-fix szándékosan MEGFORDÍTJA a régi "08"-elfogadási pontot
+
+**Kontextus:** a 405869d9 kártya R1 pontjának EREDETI elvárása (WhiteHat2 eredeti lelete, kártya 9ab81f48) az volt, hogy egy `"08"` alakú számláló NE fusson át bash aritmetikán ellenőrzés nélkül, mert az invalid octal literálként elhasalt a szkript korábbi, `set -e` alatti verziójában -- az akkori javítás (`^-?[0-9]+$` -> `^(0|[1-9][0-9]*)$`) ezt úgy zárta le, hogy a `"08"`-at EGYÁLTALÁN ELUTASÍTOTTA (FAILED + exit 1), mert a regex csak egyetlen `0`-t vagy egy nem-nullával kezdődő számot fogadott el.
+
+A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső jegyszám-korlátja, és egy 2^64 méretű szám átment és csendben 0-ra csavarta az aritmetikát. A javítás (ez a kártya, lásd a fenti N1/N2/N3 utáni, 693925c3 utáni bejegyzést) `^[0-9]{1,9}$` + `10#$n` base-10-kényszerítés -- ez a kombináció SZÁNDÉKOSAN MEGFORDÍTJA a régi elfogadási pontot: a `"08"` most ÁTMEGY (base-10-ként 8-nak olvasva, FAILED helyett sikeres `exit 0`), mert a `10#$n` előtag zárja ki a bash octal-literal crash-t, nem a regex. A jegyszám-korlát (9 jegy, max 999 999 999) a VALÓS védelem a 2^64-es overflow ellen, nem a leading-zero tilalma -- az utóbbi csak egy mellékhatása volt az első (hiányos) javításnak, nem a tervezett cél.
+
+**Miért nem regresszió:** a kártya saját selftestje (`store/freellm-catalog-sync.selftest.sh`) ezt a fordulást EXPLICIT dokumentálja és teszteli: a régi Test 1 ("08" -> FAILED) felülírva egy új elvárásra ("08" -> exit 0, updated=08 olvasva base-10 8-ként), plusz egy ÚJ Test 1c a tényleges overflow-esetre (2^64 -> FAILED). A teljes selftest-kör (11/11 PASS) és egy kézi piros/zöld ellenőrzés a régi Gate-SHA-n (693925c3) empirikusan igazolta mindkét irányt.
+
+**Ki döntött:** CYBERED (a lelet, komment 25502), MikroB (a fix-irány jóváhagyása, komment 25504, WhiteHat2 eredeti javaslata alapján, komment 25318), DevO/fullstack (a tényleges kód+teszt).
+
+**Hivatkozás:** kártya 405869d9, CYBERED NO-GO 25502, MikroB 25504, WhiteHat2 eredeti lelet 25318 (kártya 9ab81f48), `store/freellm-catalog-sync.sh`, `store/freellm-catalog-sync.selftest.sh`.
