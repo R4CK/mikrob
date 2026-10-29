@@ -22272,3 +22272,15 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** CYBERED (a lelet, komment 25502), MikroB (a fix-irány jóváhagyása, komment 25504, WhiteHat2 eredeti javaslata alapján, komment 25318), DevO/fullstack (a tényleges kód+teszt).
 
 **Hivatkozás:** kártya 405869d9, CYBERED NO-GO 25502, MikroB 25504, WhiteHat2 eredeti lelet 25318 (kártya 9ab81f48), `store/freellm-catalog-sync.sh`, `store/freellm-catalog-sync.selftest.sh`.
+
+## 2026-10-29 -- Kártya aab26b61: token-export-attribute-guard L1 (10 hiányzó read-shape) + L2 (önmásolt regex) fix, RedHat 25290 követője d5342cf9-nek
+
+**Kontextus:** a `src/__tests__/token-export-attribute-guard.test.ts` "N1 shape-independent" tesztje (card d5342cf9) csak 2 alakot ismert fel ($(cat ...) szubsztitúció, read-redirect) a $TOKEN_FILE értékét shell-változóba mozgató formák közül. RedHat (komment 25290) két LOW leletet mért: **L1** -- 10 további, gyakorlatban élő alak marad lefedetlen (`${TOKEN_FILE}` zárójel, `$(<f)` gyors-olvasás, backtick, mapfile, egymásba ágyazott command substitution, head, tr, literal hardcoded elérési út ami megkerüli a változónevet, python, `exec`+`read -u` fd-redirect pár); **L2** -- a NON-VACUITY teszt a saját, külön másolt regex-literáljait használta a valós ellenőrzés (N1) regexei helyett, tehát ha a ÉLŐ regexet élet nélkülivé tette egy mutáns, a NON-VACUITY zölden maradt (RedHat mérése: 14/14 zöld egy ilyen mutánson).
+
+**Döntés:** egyetlen modul-szintű `TOKEN_FILE_LEAK_PATTERNS` minta-tábla (11 bejegyzés: a régi 2 + a RedHat által jelzett 10 új alak, mindegyik a `VARREF = '\$\{?TOKEN_FILE\}?'` zárójel-toleráns változórefrenciát használja) lett az EGYETLEN forrás -- ezt használja a valós N1 ellenőrzés IS, a NON-VACUITY teszt IS (korábbi külön másolat megszüntetve). A NON-VACUITY teszt 14 mutáns-stringet futtat át a táblán (a régi WhiteHat 23050 B/C/D/E + a 10 új alak), mindegyik saját nevesített `it()`-ben.
+
+**Mérés:** a teljes guard-fájl önállóan futtatva 27/27 PASS. A dead-regex-tulajdonság empirikusan ellenőrizve: a `VARREF` konstanst ideiglenesen `'NEVERMATCH_XYZ_IMPOSSIBLE'`-re állítva (majd visszaállítva) a futtatás 13/27 FAIL-t adott -- minden olyan NON-VACUITY-eset, ami a VARREF-re épül, piros lett, bizonyítva, hogy az élő regex gyengítése a NON-VACUITY teszteket is magával rántja, nem marad vak rá.
+
+**Ki döntött:** a lelet RedHat-tól jön (d5342cf9 komment 25290), a kártyát MikroB nyitotta (aab26b61), a kódot DevO (fullstack) írta.
+
+**Hivatkozás:** kártya aab26b61 (d5342cf9 follow-up), RedHat 25290, `src/__tests__/token-export-attribute-guard.test.ts`.
