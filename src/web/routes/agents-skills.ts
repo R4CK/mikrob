@@ -88,19 +88,26 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     try {
       writeFileSync(tmpPath, file.data)
       const listOutput = await execShellAsync(`unzip -Z1 ${shellEscape(tmpPath)} 2>&1`, { timeoutMs: 5000 })
-      // Normalise entry paths first: posix.normalize strips leading ./ and resolves a/./b segments,
-      // so a zip entry named ./core-a/SKILL.md becomes core-a/SKILL.md and its split('/')[0] is
-      // 'core-a', not '.'. Without this, detachSkillSymlinkIfAny(join(skillsDir,'.')) is a no-op
-      // and unzip -o writes through the provisioned symlink into the shared global skill (N1).
-      const entries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
-        .map((e) => posix.normalize(e.replace(/\\/g, '/')))
-      for (const entry of entries) {
+      // WhiteHat NO-GO 25187 (card d2d47a92): the check and the extraction must judge the
+      // SAME string. The previous version normalised (posix.normalize) BEFORE checking for
+      // '..', which collapses an entry like "core-a/../SKILL.md" to "SKILL.md" -- no '..'
+      // left, so it passed -- while unzip itself only strips the literal "../" component and
+      // still writes through core-a/ (a provisioner symlink into the shared global skill).
+      // Reject on the raw (slash-normalised only, NOT path-normalised) string first, so any
+      // '..' segment the archive actually carries is caught before extraction ever runs.
+      const rawEntries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((e) => e.replace(/\\/g, '/'))
+      for (const entry of rawEntries) {
         if (entry === '.' || entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
           unlinkSync(tmpPath)
           json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
           return true
         }
       }
+      // Only AFTER the traversal check passes do we normalise (strips leading ./, resolves
+      // a/./b) to compute the top-level directory name for the symlink-detach step below --
+      // normalising here is safe because every entry already proved '..'-free above.
+      const entries = rawEntries.map((e) => posix.normalize(e))
       // Card d2d47a92 WhiteHat F1(b): a top-level entry name that pre-exists as a provisioner
       // symlink into the shared global catalog is invisible to the `after`-diff taint check below
       // (it was already in `before`), and `unzip -o` writes straight through it into the global

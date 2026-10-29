@@ -167,6 +167,50 @@ describe('POST /api/agents/:name/skills/import -- symlink write-through guard (c
     expect(status).toBe(400)
   })
 
+  // N1 residual (WhiteHat NO-GO 25187, Gate-SHA 40e07b72): the previous fix normalised
+  // (posix.normalize) BEFORE checking for '..', which collapses "<name>/../SKILL.md" to
+  // "SKILL.md" (no '..' left) -- the check passed, but unzip itself only skips the literal
+  // "../" path component and still writes through <name>/, landing in the symlinked global
+  // skill. Measured RED before this fix: global SKILL.md became the attacker payload.
+  it('importing a zip with a "<name>/../SKILL.md" entry is rejected, never reaching the global skill (N1 residual)', async () => {
+    mkdirSync(agentDir(AGENT), { recursive: true })
+    scaffoldAgentDir(AGENT)
+    const skillsDir = join(agentDir(AGENT), '.claude', 'skills')
+    mkdirSync(skillsDir, { recursive: true })
+    symlinkSync(GLOBAL_SKILL_DIR, join(skillsDir, GLOBAL_SKILL_NAME))
+
+    const zip = buildZipRawEntry(`${GLOBAL_SKILL_NAME}/../SKILL.md`, 'ATTACKER-PAYLOAD\n')
+    const { status } = await importSkillZip(AGENT, zip)
+
+    expect(status).toBe(400)
+    expect(readFileSync(join(GLOBAL_SKILL_DIR, 'SKILL.md'), 'utf-8')).toBe(GLOBAL_ORIGINAL_CONTENT)
+  })
+
+  // N1 residual, second spelling (same WhiteHat finding): "<name>/../x/SKILL.md" normalises to
+  // "x/SKILL.md" (also '..'-free), so the old check passed while unzip still wrote through
+  // <name>/ -- landing a NEW file inside the shared global skill dir.
+  it('importing a zip with a "<name>/../x/SKILL.md" entry is rejected, never landing inside the global skill dir (N1 residual, second spelling)', async () => {
+    mkdirSync(agentDir(AGENT), { recursive: true })
+    scaffoldAgentDir(AGENT)
+    const skillsDir = join(agentDir(AGENT), '.claude', 'skills')
+    mkdirSync(skillsDir, { recursive: true })
+    symlinkSync(GLOBAL_SKILL_DIR, join(skillsDir, GLOBAL_SKILL_NAME))
+
+    const leakedPath = join(GLOBAL_SKILL_DIR, '..', 'x')
+    try {
+      const zip = buildZipRawEntry(`${GLOBAL_SKILL_NAME}/../x/SKILL.md`, 'ATTACKER-PAYLOAD\n')
+      const { status } = await importSkillZip(AGENT, zip)
+
+      expect(status).toBe(400)
+      expect(existsSync(join(leakedPath, 'SKILL.md'))).toBe(false)
+      expect(readFileSync(join(GLOBAL_SKILL_DIR, 'SKILL.md'), 'utf-8')).toBe(GLOBAL_ORIGINAL_CONTENT)
+    } finally {
+      // Best-effort cleanup in case the fix regresses and this test needs to fail loudly
+      // without also leaving a stray directory in the real, shared ~/.claude/skills.
+      rmSync(leakedPath, { recursive: true, force: true })
+    }
+  })
+
   // N2 regression (B1): detachSkillSymlinkIfAny on a FOREIGN symlink (pointing outside the
   // global skills catalog) must NOT copy the target -- it creates an empty dir instead.
   // Without the fix, an agent-bundle import with a foreign symlink in skillsDir causes the
