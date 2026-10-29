@@ -57,7 +57,7 @@ function makeDom(ids: string[], initiallyHidden: string[] = []) {
 
 /** Mimics the real t(): unknown key -> the key itself, with {param} interpolation. */
 function fakeT(key: string, params: Record<string, unknown> = {}): string {
-  return key.replace(/\{(\w+)\}/g, () => '') || key
+  return key.replace(/\{(\w+)\}/g, (_: string, k: string) => String(params[k] ?? `{${k}}`))
 }
 
 let renderStatus: (data: Record<string, unknown>) => void
