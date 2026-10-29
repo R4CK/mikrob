@@ -89,7 +89,8 @@ let dom: ReturnType<typeof makeDom>
 
 beforeAll(() => {
   const body =
-    `${extract('freellmShowErrorSection')}\n${extract('freellmHideErrorSection')}\n${extract('freellmRenderStatus')}\n` +
+    `${extract('freellmShowErrorSection')}\n${extract('freellmHideErrorSection')}\n` +
+    `${extract('freellmResetStatusDisplay')}\n${extract('freellmRenderStatus')}\n` +
     'return { freellmRenderStatus }'
   const factory = new Function('document', 't', body) as (
     document: unknown, t: unknown,
@@ -119,6 +120,20 @@ describe('freellm error section visibility (card fd5fcc2c, RedHat N1 / QA F3 pin
     renderStatus({ enabled: true, calls: 1, drafts: 0 })
     expect(dom.els.get('freellmErrorSection')!.hidden).toBe(true)
     expect(dom.els.get('freellmLastError')!.textContent).toBe('')
+  })
+
+  it('an error payload resets the stale calls/drafts/label instead of leaving the last good values (card 5ae7e8be pt.4 / WhiteHat2 R3)', () => {
+    renderStatus({ enabled: true, calls: 7, drafts: 3 }) // a healthy load first, so there IS stale state to clear
+    expect(dom.els.get('freellmCallsCount')!.textContent).toBe('7')
+    renderStatus({ enabled: true, calls: 7, drafts: 3, lastError: 'connect ECONNREFUSED' })
+    expect(dom.els.get('freellmCallsCount')!.textContent).toBe('—')
+    expect(dom.els.get('freellmDraftsCount')!.textContent).toBe('—')
+    expect(dom.els.get('freellmLabel')!.textContent).toBe('—')
+    expect(dom.els.get('freellmToggle')!.disabled).toBe(true)
+    // A subsequent healthy response re-enables the toggle and restores real numbers.
+    renderStatus({ enabled: true, calls: 8, drafts: 3 })
+    expect(dom.els.get('freellmCallsCount')!.textContent).toBe('8')
+    expect(dom.els.get('freellmToggle')!.disabled).toBe(false)
   })
 
   it('does not double-escape the error text (RedHat N2 / WhiteHat2 F1 cosmetic fix)', () => {
@@ -176,6 +191,21 @@ describe('freellm masked-value shape guard (WhiteHat2 F1)', () => {
     expect(looksMasked(undefined)).toBe(false)
     expect(looksMasked(null)).toBe(false)
   })
+
+  // WhiteHat2 R1 (25351, card 5ae7e8be pt.3): the OLD guard (`^\*{2,}` + 20-char cap) accepted
+  // this exact value, showing 16 real characters against the UI's "last 4 only" promise. The
+  // specific case WhiteHat2 asked be added to the pin test.
+  it('rejects four asterisks followed by 16 letters (R1: more than the last 4 chars must never show)', () => {
+    const looksMasked = extractLooksMasked()
+    expect(looksMasked('****' + 'A'.repeat(16))).toBe(false)
+  })
+
+  it('still accepts the real upstream short-mask shapes after the R1 tightening', () => {
+    const looksMasked = extractLooksMasked()
+    expect(looksMasked('****')).toBe(true) // shorter-than-8 keys: four asterisks alone
+    expect(looksMasked('****AB')).toBe(true) // 5-8 char keys: four asterisks + 2
+    expect(looksMasked('***...abcd')).toBe(true) // 9+ char keys: the dotted first4...last4 TAIL shape, masked prefix + 4
+  })
 })
 
 describe('freellm key field clearing on page-leave (WhiteHat2 F2)', () => {
@@ -207,19 +237,24 @@ describe('D3a: a rejecting status fetch still shows the error section (the catch
     )
     const body =
       `${extract('freellmMsg')}\n${extract('freellmShowErrorSection')}\n${extract('freellmHideErrorSection')}\n` +
-      `${extract('freellmRenderStatus')}\n${extract('freellmLoadStatus')}\nreturn { freellmLoadStatus }`
+      `${extract('freellmResetStatusDisplay')}\n${extract('freellmRenderStatus')}\n${extract('freellmLoadStatus')}\n` +
+      'return { freellmLoadStatus }'
     const factory = new Function('document', 't', 'fetch', body) as (
       document: unknown, t: unknown, fetch: unknown,
     ) => { freellmLoadStatus: () => Promise<void> }
     const rejectingFetch = vi.fn().mockRejectedValue(new Error('network down'))
     const { freellmLoadStatus } = factory(dom2.document, fakeT, rejectingFetch)
 
+    dom2.els.get('freellmCallsCount')!.textContent = '7' // stale value from a prior good load
     expect(dom2.els.get('freellmErrorSection')!.hidden).toBe(true) // sanity: starts hidden
     await freellmLoadStatus()
 
     expect(dom2.els.get('freellmErrorSection')!.hidden).toBe(false)
     expect(dom2.els.get('freellmLastError')!.textContent).toBe('freellm.load_error')
     expect(dom2.els.get('freellmMsg')!.textContent).toBe('freellm.load_error')
+    // card 5ae7e8be pt.4: a fully failed fetch is the strongest "no fresh data" case, so the
+    // stale calls counter must not keep reading "7" underneath the error.
+    expect(dom2.els.get('freellmCallsCount')!.textContent).toBe('—')
   })
 })
 
