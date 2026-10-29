@@ -11,6 +11,12 @@ import {
 } from '../freellmapi-client.js'
 import type { RouteContext } from './types.js'
 
+// Same 5 providers the FE offers (web/app-freellm.js FREELLM_PROVIDERS) -- the
+// FE's list is not a security control (RedHat/WhiteHat B4, card 08d1aa90),
+// so the server enforces its own copy, fail-closed on anything else.
+const ALLOWED_PROVIDERS = new Set(['groq', 'cerebras', 'google_ai_studio', 'openrouter', 'mistral'])
+const MAX_KEY_LENGTH = 512
+
 interface UpstreamKeyRow {
   id: number
   platform: string
@@ -26,6 +32,33 @@ function parseUpstreamCreatedAt(value: string | number | undefined): number | nu
   if (typeof value !== 'string') return null
   const ms = Date.parse(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`)
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
+}
+
+interface KeyStatus {
+  set: boolean
+  hint: string | null
+  error: 'decrypt_failed' | null
+}
+
+// Normalizes freellmapi's own maskKey() output (server/src/lib/crypto.ts,
+// measured against the installed service, card fd5fcc2c D1 finding) into a
+// shape the FE can render without parsing a mask string:
+//   len < 5   -> "****"             -> no hint
+//   len 5-8   -> "****" + last2     -> hint = last2
+//   len > 8   -> first4 + "..." + last4 -> hint = last4 (first4 dropped: the
+//                card's own contract promises only the last 4 chars, never
+//                any prefix of the real key)
+//   decrypt failure -> the literal "[decrypt failed]" -- surfaced as an
+//                explicit error, not silently rendered as "set"
+function normalizeUpstreamMask(maskedKey: string | undefined): KeyStatus {
+  if (!maskedKey) return { set: false, hint: null, error: null }
+  if (maskedKey === '[decrypt failed]') return { set: true, hint: null, error: 'decrypt_failed' }
+  const dotted = maskedKey.match(/\.\.\.(.+)$/)
+  if (dotted) return { set: true, hint: dotted[1], error: null }
+  const starred = maskedKey.match(/^\*+(.*)$/)
+  if (starred) return { set: true, hint: starred[1].length > 0 ? starred[1] : null, error: null }
+  // Unrecognized shape -- fail closed rather than guess at a hint.
+  return { set: true, hint: null, error: null }
 }
 
 function freellmKeyUnavailable(res: import('node:http').ServerResponse): void {
@@ -53,11 +86,11 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
       }
       if (!body || typeof body !== 'object') { json(res, { error: 'body must be an object' }, 400); return true }
       const { provider, key } = body as Record<string, unknown>
-      if (typeof provider !== 'string' || !provider.trim()) {
-        json(res, { error: 'provider must be a non-empty string' }, 400); return true
+      if (typeof provider !== 'string' || !ALLOWED_PROVIDERS.has(provider)) {
+        json(res, { error: 'provider must be one of the supported providers' }, 400); return true
       }
-      if (typeof key !== 'string' || !key.trim()) {
-        json(res, { error: 'key must be a non-empty string' }, 400); return true
+      if (typeof key !== 'string' || !key.trim() || key.length > MAX_KEY_LENGTH) {
+        json(res, { error: `key must be a non-empty string of at most ${MAX_KEY_LENGTH} characters` }, 400); return true
       }
 
       const upstream = await freellmapiRequest('POST', '/api/keys', { platform: provider, key })
@@ -68,11 +101,12 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
         json(res, { error: upstream.data?.error?.message ?? 'freellmapi rejected the key' }, upstream.status === 401 ? 502 : upstream.status)
         return true
       }
+      const addedMaskedKey: unknown = upstream.data?.maskedKey
       json(res, {
         provider,
         setBy: 'admin',
         since: Math.floor(Date.now() / 1000),
-        masked: upstream.data?.maskedKey ?? '****',
+        ...normalizeUpstreamMask(typeof addedMaskedKey === 'string' ? addedMaskedKey : undefined),
       }, 201)
       return true
     }
@@ -89,7 +123,7 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
         provider: row.platform,
         setBy: 'admin',
         since: parseUpstreamCreatedAt(row.createdAt),
-        masked: row.maskedKey ?? '****',
+        ...normalizeUpstreamMask(row.maskedKey),
       })))
       return true
     }
@@ -98,7 +132,9 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
     const delMatch = path.match(/^\/api\/freellm\/keys\/([^/]+)$/)
     if (delMatch && method === 'DELETE') {
       const provider = decodeURIComponent(delMatch[1])
-      if (!provider.trim()) { json(res, { error: 'provider must be a non-empty string' }, 400); return true }
+      if (!ALLOWED_PROVIDERS.has(provider)) {
+        json(res, { error: 'provider must be one of the supported providers' }, 400); return true
+      }
 
       const list = await freellmapiRequest('GET', '/api/keys')
       if (list.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
