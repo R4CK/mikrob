@@ -98,7 +98,9 @@ setup_admin_file() {
   chmod 600 "$TD/admin"
 }
 
-# --- Test 1 (R1): a "08" count must FAIL loudly, not crash silently past fail() ---
+# --- Test 1 (R1): a "08" count must NOT crash bash arithmetic -- 10#$n forces base-10,
+# so "08" is read as 8, not an invalid octal literal (CYBERED NO-GO 25502 / WhiteHat2 25318:
+# is_int's job is the digit-length cap below, not rejecting leading zeros). ---
 setup_token_file 600
 cat > "$TD/sync-q1.json" <<'JSON'
 [{"status":200,"body":{"sync":{"ok":true,"version":"v1","action":"applied","counts":{"updated":"08","inserted":"0","removed":"0"}}}}]
@@ -113,8 +115,25 @@ out=$(FREELLM_URL="http://127.0.0.1:$port" AUTH_TOKEN_FILE="$TD/auth-token" \
 rc=$?
 set -e
 stop_mock
-[[ "$out" == *"freellmapi catalog FAILED:"* ]] && [ "$rc" -eq 1 ]
-check "R1: '08' count -> FAILED line + exit 1" "$([[ "$out" == *'freellmapi catalog FAILED:'* ]] && [ "$rc" -eq 1 ] && echo 1 || echo 0)"
+check "R1: '08' count parses as base-10 8, no octal crash, exit 0" "$([ "$rc" -eq 0 ] && [[ "$out" == *'updated=08, inserted=0, removed=0'* ]] && echo 1 || echo 0)"
+
+# --- Test 1c (R1, CYBERED NO-GO 25502): an oversize (20-digit) count must FAIL via is_int's
+# digit-length cap, not silently wrap bash's signed 64-bit arithmetic to 0/negative and skip
+# notify(). Red on Gate-SHA 693925c3 (is_int had no length bound), green after the fix. ---
+cat > "$TD/sync-q1c.json" <<'JSON'
+[{"status":200,"body":{"sync":{"ok":true,"version":"v1","action":"applied","counts":{"updated":"18446744073709551616","inserted":"0","removed":"0"}}}}]
+JSON
+echo '[]' > "$TD/login-q1c.json"
+start_mock "$TD/sync-q1c.json" "$TD/login-q1c.json" "$TD/srv1c.out"
+port=$(mock_port "$TD/srv1c.out")
+set +e
+out=$(FREELLM_URL="http://127.0.0.1:$port" AUTH_TOKEN_FILE="$TD/auth-token" \
+      ADMIN_CRED_FILE="$TD/admin" MARVEEN_TOKEN_FILE="$TD/no-such-dashboard-token" \
+      bash "$SUT" 2>&1)
+rc=$?
+set -e
+stop_mock
+check "R1 (CYBERED 25502): oversize count (2^64) -> FAILED line + exit 1, no silent wrap" "$([[ "$out" == *'freellmapi catalog FAILED:'* ]] && [ "$rc" -eq 1 ] && echo 1 || echo 0)"
 
 # --- Test 1b (R1 regression): a negative count must also FAIL, not read as "no change" ---
 cat > "$TD/sync-q1b.json" <<'JSON'

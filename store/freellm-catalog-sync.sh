@@ -12,13 +12,21 @@ MARVEEN_TOKEN_FILE="${MARVEEN_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-to
 CURL_MAX_TIME="${CURL_MAX_TIME:-30}"
 readonly FREELLM_URL AUTH_TOKEN_FILE ADMIN_CRED_FILE MARVEEN_TOKEN_FILE CURL_MAX_TIME
 
-# Non-negative, no-leading-zero only (405869d9 R1): "08" matched the old
-# ^-?[0-9]+$ regex, then crashed bash arithmetic (invalid octal literal) AFTER
-# is_int passed it, dying without going through fail() -- no FAILED line, no
-# daily-log row. A negative count (allowed by the old -? prefix) could also
-# make the sum <= 0 and silently look like "no change". Neither should ever
-# come from a sane catalog response, so both are now rejected here instead.
-is_int() { [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]; }
+# Non-negative, max 9 digits (405869d9 R1, CYBERED NO-GO 25502 / WhiteHat2
+# 25318): the old ^-?[0-9]+$ let "08" through, which then crashed bash
+# arithmetic (invalid octal literal) AFTER is_int passed it, dying without
+# going through fail() -- no FAILED line, no daily-log row. The first fix
+# (^(0|[1-9][0-9]*)$) closed that and the negative-count case, but had no
+# length bound: a 20-digit count like 2^64 still passed is_int and wrapped
+# bash's signed 64-bit arithmetic to 0 (or a large negative), which then
+# silently read as "no change" and skipped notify() -- the exact failure
+# mode R1 exists to close, just moved to a bigger number. A 9-digit cap
+# (max 999,999,999) is far above any real catalog count and stays inside
+# bash's 64-bit range with room to spare, so the sum of three such values
+# can never wrap. Leading zeros are allowed again here (the length cap
+# alone can't tell "08" from "8"); the arithmetic below reads counts via
+# 10#$c to force base-10, so "08" no longer hits bash's octal-literal rule.
+is_int() { [[ "$1" =~ ^[0-9]{1,9}$ ]]; }
 
 # Reject anything outside a plain token charset before it reaches a daily-log
 # row that lands in an agent's memory/context (405869d9 R3). The catalog is
@@ -152,7 +160,7 @@ if [ "$action" = "applied" ]; then
   for c in "$updated" "$inserted" "$removed"; do
     is_int "$c" || fail "action=applied but counts are non-numeric/missing (updated=$updated, inserted=$inserted, removed=$removed)"
   done
-  total_changed=$(( updated + inserted + removed ))
+  total_changed=$(( 10#$updated + 10#$inserted + 10#$removed ))
   counts_str="updated=$updated, inserted=$inserted, removed=$removed"
 else
   total_changed=0
