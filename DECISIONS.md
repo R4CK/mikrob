@@ -22195,3 +22195,17 @@ Classification and ledger entries unchanged. No new security/functional finding.
 **Ki döntött:** a leletek WhiteHat2-től jönnek (b21a7ff7 non-blocking findings), a lezárás/dokumentálás módja (N1 blokkolás, N2/N3 accepted-risk indoklása) DevO (fullstack) mérése és javaslata, MikroB dispatch-ja (msg_id 15209) alapján.
 
 **Hivatkozás:** kártya e3ab83e8 (szülő 92b76ff0), kártya b21a7ff7 (előd, DONE), `/home/neon/.config/systemd/user/freellmapi.service`, `/home/neon/.config/freellmapi/env`, `server/src/lib/reset-code.ts`, `server/src/routes/auth.ts`, `server/src/lib/config.ts`, `server/src/routes/ollama.ts`.
+
+## 2026-10-29: 08d1aa90 -- freellm keys write-only proxy: server-side provider allow-list + agreed FE mask-status shape (Peti 12500 freellmapi phase)
+
+**Decision:** The dashboard's write-only key surface (POST/GET/DELETE /api/freellm/keys, proxying to the local freellmapi service) must never pass the upstream's raw masked string through, and must not trust the FE's provider list as a security control.
+
+**Architecture:** (1) `normalizeUpstreamMask()` translates freellmapi's own `maskKey()` output (measured directly from the installed service's `server/src/lib/crypto.ts`) into `{set: boolean, hint: string|null, error: 'decrypt_failed'|null}` -- the first-4-chars prefix on a >8-char key is dropped, a `[decrypt failed]` upstream value surfaces as an explicit error instead of a silent "set". This is the shape backend and Fron Ted (fd5fcc2c) agreed on after RedHat's D1 finding (comment 25333) that the FE's mask-shape guard rejected the real upstream format. (2) Server-side provider allow-list (groq, cerebras, google_ai_studio, openrouter, mistral -- the same 5 as the FE's own list) plus a 512-char key length cap, fail-closed on POST and DELETE, per WhiteHat2's B4 gate input (comment 25254) that the FE's list is not itself a security control.
+
+**Verification:** 12 unit tests (mocked freellmapi) plus a live round-trip against the running freellmapi service (dummy key POST/GET/DELETE, cleaned up after) confirming the real masked shape and that no full key reaches logs. B1 (no local persistence) confirmed by source grep.
+
+**Not resolved here:** B3 (shared dashboard token, no per-caller audit identity for `setBy`) is an accepted limitation of the fleet's same-UID token model, not fixed by this card. C1 (dummy-key encryption-at-rest check inside freellmapi's own DB) is left to WhiteHat2 per their own request (comment 25262).
+
+**Who decided:** WhiteHat2 (B4, D1 findings) + RedHat (D1 finding) + backend (implementation, agreed shape).
+
+**Reference:** card 08d1aa90, commits e431d50a5/6737b7cc6/603e6df89/6757b2f90, card fd5fcc2c comments 25254/25333.
