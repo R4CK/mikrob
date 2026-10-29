@@ -39,6 +39,7 @@ function switchPage(pageId) {
   // Local-LLM feladat-elosztás swimlane: same start/stop-on-leave pattern (card fix, 2026-09-11).
   if (pageId !== 'overview') stopOvwLlmDist()
   if (pageId === 'overview') loadOverview()
+  if (pageId === 'projects') initProjectsPage()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
   if (pageId === 'agents') { loadAgents().then(() => _setAgentsView(_agentsActiveView || 'grid')); startAgentsBusyPoll() }
