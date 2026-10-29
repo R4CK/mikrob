@@ -178,14 +178,17 @@ function freellmProviderLabel(provider) {
   return t('freellm.keys.provider.' + provider) || provider
 }
 
-// WhiteHat2 F1 (25254) + R1 (25351, card 5ae7e8be point 3): the FE rendered the backend's
-// "masked" field verbatim behind a loose `^\*{2,}` + 20-char cap -- which still let through
-// e.g. four asterisks followed by 16 arbitrary letters, showing up to 16 real characters of a
-// key against the UI's own "only the last 4 characters" promise. Tightened to: 2-8 leading
-// asterisks, an optional "..." separator, then AT MOST 4 trailing characters -- structurally
-// caps what can ever be shown to the last 4, regardless of what a buggy/hostile backend sends.
-function freellmLooksMasked(masked) {
-  return typeof masked === 'string' && /^\*{2,8}(\.{3})?[A-Za-z0-9_-]{0,4}$/.test(masked)
+// DEAD CODE REMOVED (card 678848ce): freellmLooksMasked() used to regex-parse the backend's raw
+// "masked" string (e.g. "***ABCD") on the FE. Backend (08d1aa90 REVIEW 25388, commit 603e6df89)
+// now sends a normalized { set, hint, error } instead of a mask string at all -- hint is never
+// more than the upstream's own trailing 2-4 characters, and a decrypt failure is its own explicit
+// error state rather than a silent "set". There is no mask-string shape left on the FE to parse,
+// so the old regex guard was removed rather than kept as unreachable code.
+//
+// freellmHintLooksSafe is its narrower replacement: defense-in-depth against a buggy or
+// compromised backend sending more than the contract promises, not re-deriving a mask format.
+function freellmHintLooksSafe(hint) {
+  return hint === null || hint === undefined || (typeof hint === 'string' && hint.length <= 4)
 }
 
 function freellmRenderKeyRow(provider) {
@@ -195,18 +198,28 @@ function freellmRenderKeyRow(provider) {
   const entry = _freellmKeysByProvider[provider]
   if (input) input.value = ''
   if (statusEl) {
-    if (entry) {
-      // textContent never interprets markup -- escapeHtml() before it double-escapes (the operator
-      // would see literal "&amp;" for a masked value containing "&"). Assign the raw string.
-      const safeMasked = freellmLooksMasked(entry.masked) ? entry.masked : '***'
-      statusEl.textContent = t('freellm.keys.status_set', { masked: safeMasked })
-      statusEl.className = 'freellm-key-status freellm-key-status--set'
+    if (entry && entry.set) {
+      if (entry.error === 'decrypt_failed') {
+        // A set-but-undecryptable key is a distinct, actionable state -- never shown as a plain
+        // "set" (that would hide a broken credential from the operator).
+        statusEl.textContent = t('freellm.keys.status_decrypt_failed')
+        statusEl.className = 'freellm-key-status freellm-key-status--error'
+      } else {
+        // textContent never interprets markup, so no escapeHtml() needed here. A hint longer than
+        // the contract promises (buggy/hostile backend) falls back to no hint at all, never the
+        // raw value.
+        const safeHint = freellmHintLooksSafe(entry.hint) ? entry.hint : null
+        statusEl.textContent = safeHint
+          ? t('freellm.keys.status_set', { masked: '***' + safeHint })
+          : t('freellm.keys.status_set_no_hint')
+        statusEl.className = 'freellm-key-status freellm-key-status--set'
+      }
     } else {
       statusEl.textContent = t('freellm.keys.status_unset')
       statusEl.className = 'freellm-key-status freellm-key-status--unset'
     }
   }
-  if (delBtn) delBtn.hidden = !entry
+  if (delBtn) delBtn.hidden = !(entry && entry.set)
 }
 
 function freellmRenderAllKeyRows() {

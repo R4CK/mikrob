@@ -11180,6 +11180,7 @@ body {
 }
 .freellm-key-status--set { color: var(--success, #10b981); }
 .freellm-key-status--unset { color: var(--text-muted); }
+.freellm-key-status--error { color: var(--error, #ef4444); }
 .freellm-key-msg {
   flex: 1 0 100%;
   font-size: 12px;

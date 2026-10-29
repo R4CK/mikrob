@@ -1228,6 +1228,8 @@ window._i18n.hu = {
   'freellm.keys.save_btn':       'Mentés',
   'freellm.keys.delete_btn':     'Törlés',
   'freellm.keys.status_set':     'Beállítva, {masked}',
+  'freellm.keys.status_set_no_hint': 'Beállítva',
+  'freellm.keys.status_decrypt_failed': 'Beállítva, de nem olvasható (visszafejtési hiba)',
   'freellm.keys.status_unset':   'Nincs beállítva',
   'freellm.keys.saved':          'Kulcs elmentve.',
   'freellm.keys.deleted':        'Kulcs törölve.',

@@ -976,6 +976,8 @@ window._i18n.en = {
   'freellm.keys.save_btn':       'Save',
   'freellm.keys.delete_btn':     'Delete',
   'freellm.keys.status_set':     'Set, {masked}',
+  'freellm.keys.status_set_no_hint': 'Set',
+  'freellm.keys.status_decrypt_failed': 'Set, but unreadable (decryption error)',
   'freellm.keys.status_unset':   'Not set',
   'freellm.keys.saved':          'Key saved.',
   'freellm.keys.deleted':        'Key deleted.',
