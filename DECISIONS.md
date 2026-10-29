@@ -22238,3 +22238,37 @@ Classification and ledger entries unchanged. No new security/functional finding.
 **Ki döntött:** a lelet RedHat-tól (cybered, komment 25370), a hatókör-döntés (F1: kizárólag a gated szkripten át) MikroB-tól (komment 25371). A korrekciós bejegyzést DevO (fullstack) írta, MikroB kérésére.
 
 **Hivatkozás:** kártya e3ab83e8, komment 25358 (REVIEW, korábbi -- most korrigálva), 25364 (MikroB gate-kijelölés), 25367 (QA PASS, saját korrekciós megjegyzéssel), 25370 (CYBERED GO, F1/F2/F3), 25371 (MikroB döntés). Kártya 9ab81f48 (gated catalog-sync szkript, QA+WhiteHat2 zöld), `server/src/services/catalog-sync.ts`, `server/src/routes/premium.ts`, `server/src/lib/reset-code.ts`, `server/src/app.ts` (CORS/host-guard), `man systemd.resource-control` (IPAddressAllow).
+
+## 2026-10-29 -- Kártya 7f6d435f: REA bwrap seccomp-denylist kibővítve 11 syscall-lal (QA lelet 24836 a 077970fc-n)
+
+**Kontextus:** a 077970fc kártya (RedHat follow-up, komment 24382) `store/rea-seccomp-filter.py` denylistet adott a REA bwrap sandboxhoz: `ptrace`, `keyctl`, `bpf`, `userfaultfd`, `mount`. QA FAIL (komment 24836) rámutatott, hogy `process_vm_readv`/`process_vm_writev` ugyanazt a same-uid cross-process memória-olvasás/írás képességet adja, mint a `ptrace` (azonos `ptrace_may_access` jogosultsági modell) -- a `ptrace` blokkolásának saját célja (másik sandboxbeli folyamat memóriájának megtámadása) emiatt nem volt teljesen lezárva. A korábbi, már NO-GO-ban (24721/24727) felsorolt további primitíveket (kernel-modul be/kitöltés, kexec, keyring-írás, pivot_root, perf_event_open) is felvettük most, ugyanazon az elven: nem méréssel (strace) indokolt tiltás, hanem "a REA motoroknak nincs rá legitim szükségük, és kernel/host-szintű primitívek".
+
+**Döntés:** `DENY_SYSCALLS` 5 -> 16 elemre bővítve (`store/rea-seccomp-filter.py`): `process_vm_readv`, `process_vm_writev`, `add_key`, `request_key`, `pivot_root`, `kexec_load`, `kexec_file_load`, `init_module`, `finit_module`, `delete_module`, `perf_event_open`. Mind a 11 új név libseccomp `seccomp_syscall_resolve_name`-mel VERIFIKÁLVA feloldódik ezen a hoszton/arch-on (x86_64 syscall-számok: 310, 311, 248, 249, 155, 246, 320, 175, 313, 176, 298) -- egy nem-feloldódó név a generátort teljesen elbuktatná (fail-closed az egész szűrőre), ezért ez nem feltételezés volt.
+
+**Teszt:** `store/rea-bwrap-sandbox.selftest.sh` új esete: `process_vm_readv` EPERM-et ad a sandboxban (nyers syscall-hívás, self pid, érvénytelen NULL/0 iovec argumentumokkal -- ezek SIKERES áthaladás esetén EINVAL(22)-t adnának, tehát az EPERM(1) egyértelműen a szűrő műve, nem véletlen hibakód), PLUSZ egy RED-MUTANT, ami KIZÁRÓLAG a `process_vm_readv` bejegyzést törli a listából (nem az egész `--seccomp` kapcsolót) és bizonyítja, hogy ez a konkrét lista-tétel -- nem csak "létezik egy szűrő" -- hordozza a védelmet. Teljes selftest-futás: 55 passed, 0 failed.
+
+**NYITOTT PONT -- a kártya 3. Kész-ha pontja (4 REA motor smoke-futása a bővített szűrővel) NEM lett lefuttatva ebből a környezetből.** A `rea-bwrap-sandbox.sh doctor --json` megköveteli a `JAVA_HOME`, `GHIDRA_INSTALL_DIR`, `REA_JADX_MCP_JAR`, `REA_KUNA_COMMAND` env-változókat (fail-closed check a szkript 87. sorában) -- ezek SEHOL nincsenek konfigurálva a fullstack (DevO) munkakörnyezetben vagy worktree-ben, sem systemd unitban, sem elemzo `.mcp.json`-jában; ez elemzo saját, erre felszerelt (Ghidra/jadx/Kuna/Hopper telepítésekkel bíró) futtatókörnyezete, amihez DevO-nak nincs hozzáférése. Proxy-bizonyíték helyette: mind a 11 új syscall-név verifikáltan feloldódik ezen a hoszton (fent), tehát a generátor nem bukik el az új listával -- ez NEM egyenértékű a tényleges 4-motor smoke-futással. Ezt a pontot QA vagy elemzo tudja csak lezárni, a REA-felszerelt környezetben.
+
+**Ki döntött:** QA (a lelet, komment 24836), DevO/fullstack (a bővítés + selftest, kártya 7f6d435f). A smoke-teszt nyitott pont emberi/MikroB-döntésre vár (ki futtatja le a REA-felszerelt környezetben).
+
+**Hivatkozás:** kártya 7f6d435f (szülő-lelet: 077970fc, komment 24836, eredeti NO-GO 24721/24727), `store/rea-seccomp-filter.py`, `store/rea-bwrap-sandbox.sh` (87., 231. sor), `store/rea-bwrap-sandbox.selftest.sh`.
+
+## 2026-10-29 -- e3ab83e8 delta: adapter-szám korrekció 48 -> 47 (MikroB pontosítása)
+
+**Korrekció a fenti, e3ab83e8-hoz tartozó F3 bejegyzéshez (lásd a "~60 az adapterszám... pontosabban 48" sort):** a `server/src/providers/*.ts` könyvtár 49 fájlt tartalmaz (közvetlenül leszámolva), de ebből KETTŐ nem adapter: `base.ts` (közös ősosztály, ahogy a korábbi bejegyzés már helyesen kizárta) ÉS `index.ts` (aggregátor, ezt a korábbi bejegyzés nem vette figyelembe). A tényleges adapter-szám tehát 49 - 2 = **47**, nem 48. A következtetés (statikus IP-allowlist nem tartható fenn CDN-mögötti hostoknál) ettől függetlenül egyformán áll 47-nél is.
+
+**Ki döntött:** MikroB (a pontosítás), DevO/fullstack (a tail-append + a 49 fájlos listázás újra-ellenőrzése: `ls server/src/providers/*.ts` a freellmapi telepítésben, 49 sor, benne base.ts és index.ts).
+
+**Hivatkozás:** kártya e3ab83e8, a fenti (2026-10-29 előtti) F3 bejegyzés, `/home/neon/.local/opt/freellmapi/server/src/providers/`.
+
+## 2026-10-29 -- 405869d9 delta: az R1-fix szándékosan MEGFORDÍTJA a régi "08"-elfogadási pontot
+
+**Kontextus:** a 405869d9 kártya R1 pontjának EREDETI elvárása (WhiteHat2 eredeti lelete, kártya 9ab81f48) az volt, hogy egy `"08"` alakú számláló NE fusson át bash aritmetikán ellenőrzés nélkül, mert az invalid octal literálként elhasalt a szkript korábbi, `set -e` alatti verziójában -- az akkori javítás (`^-?[0-9]+$` -> `^(0|[1-9][0-9]*)$`) ezt úgy zárta le, hogy a `"08"`-at EGYÁLTALÁN ELUTASÍTOTTA (FAILED + exit 1), mert a regex csak egyetlen `0`-t vagy egy nem-nullával kezdődő számot fogadott el.
+
+A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső jegyszám-korlátja, és egy 2^64 méretű szám átment és csendben 0-ra csavarta az aritmetikát. A javítás (ez a kártya, lásd a fenti N1/N2/N3 utáni, 693925c3 utáni bejegyzést) `^[0-9]{1,9}$` + `10#$n` base-10-kényszerítés -- ez a kombináció SZÁNDÉKOSAN MEGFORDÍTJA a régi elfogadási pontot: a `"08"` most ÁTMEGY (base-10-ként 8-nak olvasva, FAILED helyett sikeres `exit 0`), mert a `10#$n` előtag zárja ki a bash octal-literal crash-t, nem a regex. A jegyszám-korlát (9 jegy, max 999 999 999) a VALÓS védelem a 2^64-es overflow ellen, nem a leading-zero tilalma -- az utóbbi csak egy mellékhatása volt az első (hiányos) javításnak, nem a tervezett cél.
+
+**Miért nem regresszió:** a kártya saját selftestje (`store/freellm-catalog-sync.selftest.sh`) ezt a fordulást EXPLICIT dokumentálja és teszteli: a régi Test 1 ("08" -> FAILED) felülírva egy új elvárásra ("08" -> exit 0, updated=08 olvasva base-10 8-ként), plusz egy ÚJ Test 1c a tényleges overflow-esetre (2^64 -> FAILED). A teljes selftest-kör (11/11 PASS) és egy kézi piros/zöld ellenőrzés a régi Gate-SHA-n (693925c3) empirikusan igazolta mindkét irányt.
+
+**Ki döntött:** CYBERED (a lelet, komment 25502), MikroB (a fix-irány jóváhagyása, komment 25504, WhiteHat2 eredeti javaslata alapján, komment 25318), DevO/fullstack (a tényleges kód+teszt).
+
+**Hivatkozás:** kártya 405869d9, CYBERED NO-GO 25502, MikroB 25504, WhiteHat2 eredeti lelet 25318 (kártya 9ab81f48), `store/freellm-catalog-sync.sh`, `store/freellm-catalog-sync.selftest.sh`.
