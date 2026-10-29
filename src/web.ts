@@ -125,6 +125,7 @@ import { tryHandleVoice } from './web/routes/voice.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
+import { tryHandleFreellmKeys } from './web/routes/freellm-keys.js'
 import { tryHandleLocalLlm } from './web/routes/local-llm.js'
 import { tryHandleIntegratedRepos } from './web/routes/integrated-repos.js'
 import type { RouteContext } from './web/routes/types.js'
@@ -298,6 +299,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleIntegrations(routeCtx)) return
       if (await tryHandleVoice(routeCtx)) return
       if (await tryHandleVaultSshKeys(routeCtx)) return
+      if (await tryHandleFreellmKeys(routeCtx)) return
       if (await tryHandleVaultSsh(routeCtx)) return
       if (await tryHandleLocalLlm(routeCtx)) return
       if (await tryHandleIntegratedRepos(routeCtx)) return

@@ -22159,3 +22159,17 @@ In-place correction to the not-yet-landed correcting entries above. Three sha de
 - 4d367048: a54a50d2 was "feat(update): egress-drift scan"; now verbatim "feat(scripts): egress-drift scan on logical lines..." (TASKEGRESSDRIFT913). 0e9442ea was "fix(suites)..."; now verbatim "fix(test-gate): refuse the suite from a transient root..." (SUITETMPPIROS912).
 
 Classification and ledger entries unchanged. No new security/functional finding.
+
+## 2026-10-27: ad6b183f -- freellm-call.sh: offline content gate + fail-closed switch (Peti 12494)
+
+**Decision:** Free LLM (openai-compatible local service) integration requires an offline, fail-closed content gate to prevent sensitive data egress. The gate runs BOTH in the client script (store/freellm-call.sh) and on the dispatcher side (gemini-agy-category-check.py pattern), so no single missing layer can leak.
+
+**Architecture:** (1) Switch file (store/freellm-enabled.json) missing/invalid = OFF (fail-closed, exit code 2, no API call); (2) Content patterns (mopsion, tenant, password, secret, token, PII, auth, finance) inline-checked via Python regex, refused with exit 4 if matched; (3) All temp files cleaned (trap EXIT), no secrets in argv/log/stdout; (4) Service listens 127.0.0.1 only; (5) Contract-first API (GET/PUT /api/freellm/status) posted (comment 25158), FE fd5fcc2c mocks against it in parallel.
+
+**Selftest:** 8/8 PASS: dry-run, missing switch (exit 2), disabled switch (exit 2), mopsion/token/api_key patterns (exit 4), validate-key (exit 0/2).
+
+**Why:** Peti directive (12494): "build it in, modular, switchable". Security-critical (SEC tag): content gate must NOT be bypassable by missing config, and must refuse ALL sensitive category patterns on initial request before any API touch.
+
+**Who decided:** MikroB (delegated) + backend (implementation).
+
+**Reference:** card ad6b183f, commit 32575e541, contract comment 25158.
