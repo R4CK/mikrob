@@ -22471,3 +22471,17 @@ MikroB HOLD (26253) escalálta F2-t Peti felé (Telegram 12838): **"Tiltás"** -
 **Ki döntött:** backend (bisect + root-cause, elfogadva MikroB által: "good root cause, accepted direction", msg 15678); a timing-visszaállítást MikroB kifejezetten kérte ugyanott.
 
 **Hivatkozás:** kártya 3629e133, store/rea-bwrap-sandbox.selftest.sh, commit 83cb05ad91097d2ac6e2786203d204e79c6cb328 (regresszió forrása), e9717579e (ezen a kártyán, a fix).
+
+## 2026-10-30: 00cdfdd2 -- card closes as superseded by a2db9d8f, missing DECISIONS.md entry was the only gap
+
+**Döntés:** a 00cdfdd2 kártya (RedHat 25863 L1: `gemini-agy-category-check.py` fail-closed kiterjesztése a labelekre is) scope-ja teljes egészében lefedve lett egy másik, szélesebb kártya, `a2db9d8f` által (landolt sha `00829b896`, "test(a2db9d8f): pin freellm homoglyph backstop in isolation + close symbol-letter/label gaps") -- a2db9d8f ugyanazt a `has_unmapped_letter()` ellenőrzést vezette be minden raw labelre, PLUSZ egy második rést (symbol-letter kódpontok) is zárt, amit a 00cdfdd2 scope-ja sosem fedett. A 00cdfdd2-n elkészült saját commit (`db3442c57`) ezért no-op: `git diff origin/develop -- store/gemini-agy-category-check.py store/gemini-agy-call.selftest.sh` a db3442c57-ről futtatva 0 sor diffet adott -- byte-azonos azzal, amit 00829b896 már leszállított.
+
+QA2 FAIL (26706) jogosan jelezte, hogy a kártya saját "Kész, ha:" 4. pontja ("DECISIONS.md tail-append entry") hiányzott a leszállított fán: a db3442c57 commit tartalmazott egy ilyen bejegyzést, de az nem élte túl az a2db9d8f-et landoló merge-et (az origin/develop oldali verzió nyert), és a2db9d8f maga sosem írt ilyet. Pontok 1-3 (has_unmapped_letter minden labelre, mutáció-pin, selftestek) QA2 szerint mutáció-verifikáltan megvannak 00829b896-on (46/46 + 34/34 selftest).
+
+**Javítás:** ez a bejegyzés maga -- kizárólag DECISIONS.md tail-append, nincs kódváltozás. A kártya scope-ja a2db9d8f alatt landolt, a saját commit no-op.
+
+**Mit ellenőriztem:** `git -C /home/neon/marveen log --oneline origin/develop | grep 00829b896` -> jelen van. `git diff origin/develop -- store/gemini-agy-category-check.py store/gemini-agy-call.selftest.sh` a db3442c57-ről futtatva -> 0 sor.
+
+**Ki döntött:** cybersec2 (QA2 FAIL 26706, a hiányzó 4. pont), MikroB (msg 15795, DECISIONS.md-only fix + landolás delegálása), backend (végrehajtás).
+
+**Hivatkozás:** kártya 00cdfdd2 (superseded by a2db9d8f, status=done), Gate-SHA 00829b896 (a2db9d8f commitja, ahol a tényleges kód landolt), db3442c57 (ezen a kártyán, no-op commit).
