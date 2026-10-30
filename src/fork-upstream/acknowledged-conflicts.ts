@@ -3136,6 +3136,147 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'ADOPT curl_tok() (scripts/lib/curl-tok.sh) at both call sites (agents list fetch, agent start ' +
     'POST), dropping the now-dead HDR_FILE mktemp/chmod/trap block -- same stdin-piped-token ' +
     'property, no fork-specific logic lost.',
+
+  // Cards 417e2343/c8f33954 (trust-boundary drift re-decision, WhiteHat pre-opinion comment 26763).
+  // auth.ts + its two test files: fork fully retired the HTTP break-glass path (creating the first
+  // user AND resetting a password) per card 49960046 (RedHat 17005 X1/X3) -- the shared fleet
+  // bearer could otherwise mint itself a session and self-escalate (chain 68254bd7/9655494c).
+  // Upstream still lets the bearer create the first user over HTTP. Taking upstream would reopen a
+  // documented, already-closed self-escalation path.
+  'src/web/routes/auth.ts':
+    'KEEP FORK -- the HTTP break-glass retirement (card 49960046, RedHat 17005 X1/X3) closes a ' +
+    'self-escalation path (chain 68254bd7/9655494c) that upstream still leaves open (bearer can ' +
+    'create the first user over HTTP). WhiteHat agreed (card 417e2343 comment 26763).',
+  'src/__tests__/auth-routes.test.ts':
+    'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above.',
+  'src/__tests__/auth-recovery.test.ts':
+    'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above.',
+  // security.ts ENROLL_KINDS: fork is ['session'] only, upstream is ['token','session']. This IS
+  // the bridge-enroll door named in fleet.ts's own comments as one of three self-escalation routes
+  // the 68254bd7 chain closed (shared bearer minting a session/device credential). WhiteHat
+  // confirmed and flagged DEVICE_KEY_ADMIN_KINDS (messages.ts) as a DIFFERENT, unrelated constant
+  // that also includes 'token' -- not to be read as the same thing.
+  'src/web/routes/security.ts':
+    "KEEP FORK -- ENROLL_KINDS = ['session'] excludes 'token' from bridge-enroll, one of the three " +
+    "self-escalation routes the 68254bd7 chain closed. Upstream's ['token','session'] reopens it. " +
+    'DEVICE_KEY_ADMIN_KINDS (messages.ts) is a separate constant that does include token -- do not ' +
+    'conflate the two (WhiteHat, card 417e2343 comment 26763).',
+  // fleet-transfer.ts: fork's isReservedSenderId check is "the fourth door" (card b46a4b7e). A
+  // residual gap was raised (VOICE_CHANNEL_AGENT_ID = 'hanna' not in RESERVED_SENDER_IDS) and
+  // traced by WhiteHat (comment 26763): NOT a privilege-escalation path -- POST /api/messages 403s
+  // from=hanna unless the request carries an out-of-band allowlisted device key (card 7503bb31), so
+  // an imported/created agent named 'hanna' cannot send AS hanna. The real residual is a NAME
+  // COLLISION (messages TO 'hanna' route to the voice mailbox; create/import do not refuse the
+  // name) -- a separate, LOW follow-up card for reserved agent NAMES on the create/import/scaffold
+  // paths, not a fix to isReservedSenderId/RESERVED_SENDER_IDS (widening that would 403 the
+  // legitimate voice relay).
+  'src/web/fleet-transfer.ts':
+    "KEEP FORK -- isReservedSenderId (the 'fourth door', card b46a4b7e) closes a real self-" +
+    'escalation route upstream names differently (RESERVED_AGENT_IDS/VOICECHANNELID1022). Traced ' +
+    "residual: VOICE_CHANNEL_AGENT_ID ('hanna') is not in RESERVED_SENDER_IDS, but this is a name-" +
+    'collision hygiene gap on create/import, NOT a privilege-escalation path (WhiteHat traced the ' +
+    "full message-send path, card 417e2343 comment 26763: POST /api/messages 403s from='hanna' " +
+    'unless an out-of-band allowlisted device key is presented, card 7503bb31). Do NOT widen ' +
+    'RESERVED_SENDER_IDS for this -- open a separate LOW code card for reserved agent NAMES on the ' +
+    'create/import/scaffold paths instead.',
+  'src/__tests__/fleet-transfer.test.ts':
+    "KEEP FORK -- pins the 'fourth door' fix in src/web/fleet-transfer.ts above.",
+  // approvals.ts: fork's consumeEmailSendApproval + its separate generic consumeApproval (db.ts,
+  // used directly by fleet.ts) are both content-hash-bound and atomic single-use. Verified
+  // upstream's consumeCategoryApproval (db.ts) is ALSO content-hash-bound (content_hash IS ? in its
+  // UPDATE WHERE clause) and atomic -- so this is not "upstream is less secure", it is that upstream
+  // generalised into one function with its own exclusion-list machinery
+  // (SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) that no current fork caller needs.
+  'src/web/routes/approvals.ts':
+    'KEEP FORK -- consumeEmailSendApproval + the separate generic consumeApproval (db.ts) are both ' +
+    "content-hash-bound (exact payload match) and atomic single-use. Verified upstream's " +
+    'consumeCategoryApproval is EQUALLY hash-bound (content_hash IS ? in its UPDATE), so adopting ' +
+    'it is not a security upgrade -- it would only add exclusion-list machinery ' +
+    '(SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) no current fork caller needs ' +
+    '(WhiteHat, card 417e2343 comment 26763, confirmed by reading upstream/develop:src/db.ts).',
+  'src/__tests__/approvals-delivery.test.ts':
+    'KEEP FORK -- pins the current single-arg notifyOwner(approval) call shape matching ' +
+    'src/web/routes/approvals.ts above.',
+  // auth-device-keys.ts: fork's mintAgentDeviceKey/findAgentDeviceKeys/revokeAgentDeviceKeys
+  // (agent: prefix, card 9655494c F1) and upstream's mintBridgeDeviceKey/DEVICE_NAME_RE (Bridge
+  // pairing, BRIDGEINSTKEY1020) solve different problems -- MERGE, not a real conflict. Verified
+  // bridge-enroll.ts already duplicates upstream's exact replace-by-installId logic inline (its own
+  // lines 193-195), so upstream's hunk is a dedup refactor of logic the fork already has, just not
+  // centralised. WhiteHat's condition (comment 26763) verified: upstream's DEVICE_NAME_RE has no
+  // colon (/^[\p{L}\p{N} ._-]{1,64}$/u, same class as the fork's two name-validating routes), so
+  // the agent: prefix stays unreachable over HTTP either way -- the merge is neutral.
+  'src/web/auth-device-keys.ts':
+    'MERGE -- take both: fork keeps mintAgentDeviceKey/findAgentDeviceKeys/revokeAgentDeviceKeys ' +
+    '(agent: prefix, card 9655494c F1), add upstream\'s mintBridgeDeviceKey/DEVICE_NAME_RE (Bridge ' +
+    'pairing, BRIDGEINSTKEY1020). No real conflict: bridge-enroll.ts already duplicates ' +
+    "mintBridgeDeviceKey's logic inline, this just centralises it. Verified upstream's " +
+    'DEVICE_NAME_RE has no colon, same class as the fork\'s existing name-validation regexes, so ' +
+    'the agent: prefix stays HTTP-unreachable either way (WhiteHat, card 417e2343 comment 26763). ' +
+    'Centralising bridge-enroll.ts onto the new function is a future refactor, out of this scope.',
+  // email-gate-matcher-drift.test.ts: already self-documented in the fork's own test comment --
+  // upstream's recipient-ledger widening was rejected by Cybersec (card afd64623, HIGH) as inert
+  // coverage without the ledger feature the fork does not have. Formalizing an existing decision.
+  'src/__tests__/email-gate-matcher-drift.test.ts':
+    "KEEP FORK -- upstream's recipient-ledger-based widening was already rejected (Cybersec, card " +
+    'afd64623, HIGH): EMAIL_SERVER_RE still requires gmail/resend in the server name, so a name-' +
+    'independent matcher alone would fire the hook without ever denying -- inert coverage, not a ' +
+    'real gate, without the ledger feature the fork does not have.',
+  // email-approval-gate.test.ts: ALREADY DECIDED (card be1df1b6, 2026-10-24, line ~1534) --
+  // same ABSENT_UPSTREAM_BLOB resolution I'd have written. My drift-watch run flagged this file as
+  // nobody-decided, which was WRONG (not a new decision needed); not duplicating the entry here.
+  // fleet.ts: implements the human-approval-gate (FLEET_IMPORT_APPROVAL_CATEGORY,
+  // createAndNotifyApproval) that IS the 68254bd7 security-fix chain's core deliverable for this
+  // endpoint. WhiteHat confirmed the gate matches what they read in the code.
+  'src/web/routes/fleet.ts':
+    'KEEP FORK -- implements the human-resolved, payload-hash-bound, single-use approval gate ' +
+    '(FLEET_IMPORT_APPROVAL_CATEGORY/createAndNotifyApproval) that is the core deliverable of the ' +
+    '68254bd7 security-fix chain for apply=true. WhiteHat confirmed the gate in the code matches ' +
+    'this description (card 417e2343 comment 26763).',
+  // fixtures/app-js-html-allowlist.json: a SELF-VALIDATING generated fixture (verified against
+  // src/__tests__/app-js-html-sinks.test.ts), not a portable security policy. The allowlist only
+  // has meaning against the SAME app.js it was reviewed for: app-js-html-sinks.test.ts's own tests
+  // ("the allowlist has no stale entries", "an allowlist entry covers exactly the number of sites
+  // it was reviewed for") would fail immediately if upstream's allowlist (reviewed against
+  // upstream's DIFFERENT app.js) were substituted in -- there is no merge operation that makes
+  // sense here. WhiteHat (comment 26763): this card claims it; any future addition must be checked
+  // against the fork's OWN app.js sink, not copied from upstream's census.
+  'src/__tests__/fixtures/app-js-html-allowlist.json':
+    'KEEP FORK -- this is a generated, self-validating census of HTML-interpolation sites in the ' +
+    "fork's OWN web/app.js (checked by app-js-html-sinks.test.ts's own stale-entry and exact-count " +
+    "tests), not a portable security policy. Upstream's allowlist is a census of upstream's " +
+    'DIFFERENT app.js and would fail those self-checks if substituted. Any future new sink gets a ' +
+    "new allowlist entry reviewed against the fork's app.js directly, never copied from upstream's " +
+    'census (WhiteHat, card 417e2343 comment 26763).',
+  // bash-egress-parser.test.ts: the TEST for upstream's scripts/hooks/bash-egress-parser.mjs hook,
+  // which this file ALREADY records as NOT ADOPTED (see that entry above): fork's own
+  // bash-egress-guard.py is an allowlist-based judge over the same threat surface, already hardened
+  // against a class upstream's hook admits it doesn't close. The test for an un-adopted hook stays
+  // un-adopted too -- this closes the drift report's nobody-decided flag, inheriting the existing
+  // decision rather than making a new one.
+  'src/__tests__/bash-egress-parser.test.ts':
+    'NOT ADOPTED -- consistent with the existing NOT ADOPTED decision for ' +
+    "scripts/hooks/bash-egress-parser.mjs above: fork's bash-egress-guard.py (allowlist-based) " +
+    "covers the same threat surface. The test for a hook the fork doesn't ship stays un-adopted too.",
+  // hook-fail-closed.test.ts: fork's current file already asserts security.length === 17 (vs
+  // upstream's 15) because Köteg 17 ported Discord reply|edit_message plus a broader gmail regex
+  // and draft_email ALONGSIDE the fork's existing narrower patterns (union, not replacement, per
+  // the file's own comment) -- taking upstream's 15 would drop hook coverage the fork deliberately
+  // added on top. Formalizing an existing, already-implemented decision.
+  'src/__tests__/hook-fail-closed.test.ts':
+    'KEEP FORK -- security.length === 17 is a UNION of upstream\'s hooks plus the fork\'s own ' +
+    "narrower patterns (Köteg 17, the file's own comment), not a replacement. Taking upstream's 15 " +
+    'would drop hook coverage the fork deliberately kept on top.',
+  // egress-allowlist-selfedit.test.ts: fork's hunk adds more deny-coverage (history-dir decoy,
+  // bash-egress-allowlist.json target, RedHat GO 1f4c046b); upstream's hunk adds case-insensitivity
+  // variants (review #2001 round 3). Verified via source read: scripts/self-pace-gate.mjs already
+  // lower-cases the basename before comparing against the allowlist filename, so upstream's case-
+  // insensitivity test already passes against the fork's current implementation -- it is a missing
+  // TEST, not a missing feature. MERGE: keep both sets of cases, no real conflict.
+  'src/__tests__/egress-allowlist-selfedit.test.ts':
+    "MERGE -- keep fork's history-dir/bash-allowlist deny cases (RedHat GO 1f4c046b) AND add " +
+    "upstream's case-insensitivity cases (review #2001 round 3). Verified the gate implementation " +
+    'already lower-cases the basename before comparing, so the case-insensitivity test already ' +
+    'passes against current code -- a missing test, not a missing feature. No real conflict.',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -3529,6 +3670,22 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/channel-poller-reap.ts': '03452582d4a0bcd9fd93b7e42dd684d26d5ea916',
   'scripts/agent-inbox.sh': '256ae53dad78baad27f3dc341743b52bc89db4e1',
   'scripts/fleet-safe-start.sh': 'd24aff1b93ea2f773f9bff4c86099e37f92eb56a',
+  // Cards 417e2343/c8f33954, see the matching ACKNOWLEDGED_CONFLICTS entries above.
+  'src/web/routes/auth.ts': 'f60b766cc7826cb4154f56d34590362cf6212200',
+  'src/__tests__/auth-routes.test.ts': '11930dd0537e432b1bf375e28e54c623dc5ac154',
+  'src/__tests__/auth-recovery.test.ts': 'cc929ff2fdbcb3c85f0c409ec730a060dd069ec5',
+  'src/web/routes/security.ts': '03fb34204e0a378d336f010781dae7c3b9c4e2e4',
+  'src/web/fleet-transfer.ts': 'd2da1432854eaaa4ee83901089e78cafa9059f81',
+  'src/__tests__/fleet-transfer.test.ts': '0efe57f4a0eabf007f23ce9bf17f5806eeb0560e',
+  'src/web/routes/approvals.ts': 'e936aa7c21253773cfb236012d90e8f005fd72d3',
+  'src/__tests__/approvals-delivery.test.ts': '125da1f21a19f3b10a78d0a19e38d436071e68b5',
+  'src/web/auth-device-keys.ts': '5be94598249441e497f9b07103ee31887d2d18f4',
+  'src/__tests__/email-gate-matcher-drift.test.ts': '9874aa64605991a42a2416af87e9ac87775c4d3e',
+  'src/web/routes/fleet.ts': 'e2a89a8fd215b77c16a9c5c5fe8dd2e1990e24fa',
+  'src/__tests__/fixtures/app-js-html-allowlist.json': 'b4083ea9bf35f9b93516a8f334b4df6f17bb20f2',
+  'src/__tests__/bash-egress-parser.test.ts': '73bfec2ab10467163394143c0a911683f60eacb0',
+  'src/__tests__/hook-fail-closed.test.ts': '71f2eed6b8bf16a9b97fd308819496a7b46cdda4',
+  'src/__tests__/egress-allowlist-selfedit.test.ts': '4729d8baf78a6fb10084078338a674769e0e8e5f',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -4435,6 +4592,19 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "ensureOutgoingCopyGate (GATECOPY828, anchored under the 'src/web.ts' key above). If this " +
       "symbol appears, someone adopted the second hook without re-deciding the duplication -- " +
       "re-read this key's ACKNOWLEDGED_CONFLICTS entry before keeping it.",
+  },
+  // Cards 417e2343/c8f33954: the TEST file's NOT ADOPTED decision rests on the exact same premise
+  // as the hook's own entry above (same symbol, same file) -- the test for a hook the fork does not
+  // ship stays un-adopted for the same reason the hook stays un-adopted.
+  'src/__tests__/bash-egress-parser.test.ts': {
+    needle: 'ensureBashEgressParser',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "Card 417e2343: NOT ADOPTED, inheriting the decision at the 'scripts/hooks/bash-egress-" +
+      "parser.mjs' key above -- this is the TEST for that un-adopted hook. If ensureBashEgressParser " +
+      "appears, the hook was adopted without re-deciding the duplication (same anchor, same file) " +
+      "-- re-read both entries before adopting this test too.",
   },
 
   // Card 26083811 (WhiteHat L2 from the 405a6da0 gate): mentionsRefusal widened to also catch the
