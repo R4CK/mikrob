@@ -40,6 +40,18 @@
 #                                      agent with a real in_progress card or a waiting+REVIEW
 #                                      card, and sends it a resume message naming the card id(s);
 #                                      never starts a work-less agent (parking rule 7 intact).
+#   gemini-day-draft-tick (5x/hour, randomized) : card 5cb861e6, Peti Telegram 12371 daytime
+#                                      mode -- replaces a hand-created, non-version-controlled
+#                                      transient timer (lost on every reboot) with the tested
+#                                      store/gemini-day-draft-tick.sh. OnCalendar=*:00/12 (5 fixed
+#                                      12-minute slots an hour) + RandomizedDelaySec scatters each
+#                                      into a random point within its own slot -- "5 random
+#                                      ticks/hour", the same shape the lost transient timer used.
+#                                      Does not call Gemini directly: it asks store/vram-guard-
+#                                      check.sh for the existing gpu-util-hold tier first, and only
+#                                      on ADMIT triggers store/gemini-ghost-runner.sh --once (same
+#                                      pipeline, same shared hourly budget, quota-bridge's own
+#                                      Ghost-mode driver already uses).
 #
 # Surgical by design: recovery respawns only the affected component. Restarting
 # the WSL VM is deliberately NOT done here -- it would SIGKILL all fleet agents
@@ -112,6 +124,27 @@ WantedBy=timers.target
 EOF
 }
 
+# args: <name> <desc> <oncalendar> <randomized-delay-sec> -- sibling of write_timer above, for a
+# unit that needs OnCalendar + RandomizedDelaySec (card 5cb861e6: "5 random ticks/hour") rather
+# than OnBootSec/OnUnitActiveSec. Kept separate instead of widening write_timer's own signature,
+# so every existing call site above stays untouched.
+write_calendar_timer() {
+  local name="$1" desc="$2" oncalendar="$3" randomdelay="$4"
+  cat > "$UNIT_DIR/${MAIN_AGENT_ID}-${name}.timer" <<EOF
+[Unit]
+Description=$desc
+
+[Timer]
+OnCalendar=$oncalendar
+RandomizedDelaySec=$randomdelay
+AccuracySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
 write_service channel-watchdog  "MikroB channels watchdog (independent net for a wedged channels session)" channel-watchdog.sh  log
 write_timer   channel-watchdog  "Run the MikroB channels watchdog every 5 minutes"                            2min 5min
 
@@ -145,6 +178,15 @@ write_timer   load-guard "Run the MikroB load-guard tick every 7 seconds"       
 write_service boot-reconcile "MikroB agent boot-reconcile (restart role-agents with real work after a VM reboot)" "../store/agent-boot-reconcile.sh" log
 write_timer   boot-reconcile "Run the MikroB agent boot-reconcile 90s after boot, then every 5 minutes as a backstop" 90s 5min
 
+# Card 5cb861e6 (daytime-mode phase c7abdf57): same "../store/..." hop as load-guard/boot-reconcile
+# above (the script lives in store/, not scripts/). OnCalendar=*:00/12 fires at :00/:12/:24/:36/:48
+# (5 fixed slots an hour); RandomizedDelaySec=660 (11 min) scatters each into a random point within
+# its own 12-minute slot, so the 5 real ticks land at unpredictable minutes -- "5 random ticks/
+# hour", matching the lost transient timer's own shape. The script itself decides GPU-admit vs
+# GPU-hold per tick; this unit only supplies the schedule.
+write_service gemini-day-draft-tick "MikroB Gemini daytime-mode tick (GPU-gated, 5 random ticks/hour)" "../store/gemini-day-draft-tick.sh" journal
+write_calendar_timer gemini-day-draft-tick "Run the MikroB Gemini daytime-mode tick 5x/hour at a random minute" "*:00/12" 660
+
 echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR"
 
 # Enable only if a working user systemd is present. During a fresh headless /
@@ -153,7 +195,7 @@ echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR
 # user session exists. Never hard-fail the caller (install-linux.sh) over this.
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload || true
-  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard load-guard ollama-down-guard build-freshness-guard boot-reconcile; do
+  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard load-guard ollama-down-guard build-freshness-guard boot-reconcile gemini-day-draft-tick; do
     systemctl --user enable --now "${MAIN_AGENT_ID}-${t}.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-${t}.timer"
   done
   echo "Enabled guard timers:"

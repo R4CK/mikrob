@@ -192,6 +192,65 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     expect(ok).toBe(true)
   }, 20_000)
 
+  // Card 5cb861e6 (daytime-mode phase c7abdf57): releaseGhostCallSlot() un-spends a reservation
+  // (a simulated 503 must not burn one of the 5 hourly slots) by appending a status='blocked' row
+  // for the SAME hivas_id -- which the 'blocked' filter above already excludes from the count.
+  describe('releaseGhostCallSlot() -- un-spends a reservation on a retriable (503) failure', () => {
+    async function freshReleaseGhostCallSlot() {
+      const mod = await import('../gemini-ghost-budget.js')
+      const sandboxedSegedHivo = join(td, 'scripts', 'seged-hivo.py')
+      return (cardId: string) => mod.releaseGhostCallSlot(cardId, sandboxedSegedHivo)
+    }
+
+    it('a simulated 503 (release right after reserve) frees the slot for a 6th reservation under the default limit of 5', async () => {
+      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+      const releaseGhostCallSlot = await freshReleaseGhostCallSlot()
+      for (let i = 0; i < 4; i++) expect(reserveGhostCallSlot('card1')).toBe(true)
+      // 5th reservation simulates a 503: reserve (spends the slot), then immediately release it.
+      expect(reserveGhostCallSlot('card5')).toBe(true)
+      expect(releaseGhostCallSlot('card5')).toBe(true)
+      // Without the release, this would be the 6th spend against a limit of 5 and be refused.
+      expect(reserveGhostCallSlot('card6')).toBe(true)
+      const rows = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      // card5's ORIGINAL row keeps its 'ok' status (release appends a new row, never rewrites in
+      // place -- see this module's own comment on why); the budget's own count (calls_of(), which
+      // dedupes by hivas_id and keeps the LAST row) is what actually excludes it, already proven
+      // by card6's admission above. This just pins that a 'blocked' row for card5 exists at all.
+      expect(rows.some((r) => r.kartya === 'card5' && r.status === 'blocked')).toBe(true)
+    }, 30_000)
+
+    it('without releasing, the same sequence hits the cap on the 6th reservation (control)', async () => {
+      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+      const results: boolean[] = []
+      for (let i = 0; i < 6; i++) results.push(reserveGhostCallSlot(`card${i}`))
+      expect(results).toEqual([true, true, true, true, true, false])
+    }, 30_000)
+
+    it('releasing a cardId with no reservation at all is a safe no-op (returns false)', async () => {
+      const releaseGhostCallSlot = await freshReleaseGhostCallSlot()
+      expect(releaseGhostCallSlot('never-reserved')).toBe(false)
+    }, 20_000)
+
+    it('releasing the same reservation twice is a safe no-op the second time (returns false)', async () => {
+      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+      const releaseGhostCallSlot = await freshReleaseGhostCallSlot()
+      expect(reserveGhostCallSlot('card1')).toBe(true)
+      expect(releaseGhostCallSlot('card1')).toBe(true)
+      expect(releaseGhostCallSlot('card1')).toBe(false)
+    }, 20_000)
+
+    it('releasing frees exactly ONE slot, not the whole window', async () => {
+      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+      const releaseGhostCallSlot = await freshReleaseGhostCallSlot()
+      for (let i = 0; i < 5; i++) expect(reserveGhostCallSlot(`card${i}`)).toBe(true)
+      expect(releaseGhostCallSlot('card2')).toBe(true)
+      // Exactly one slot is free again: the next reservation (by any cardId -- release is not
+      // tied to who spends the freed slot) succeeds, but the one after that is refused again.
+      expect(reserveGhostCallSlot('card5')).toBe(true)
+      expect(reserveGhostCallSlot('card6')).toBe(false)
+    }, 30_000)
+  })
+
   // H1 (RedHat NO-GO, card f0b3b674 komment 20369, Gate-SHA 44931ad6): same hole, same shape, for
   // the heavy-second-opinion path's 'agy-heavy' rows (store/offload-dispatch.sh's reserve_heavy_
   // gemini_slot) -- before the fix this reservation script did not count them, so 3 heavy rows

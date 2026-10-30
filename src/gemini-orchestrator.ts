@@ -38,7 +38,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
-import { reserveGhostCallSlot } from './gemini-ghost-budget.js'
+import { reserveGhostCallSlot, releaseGhostCallSlot } from './gemini-ghost-budget.js'
 import { getSecret } from './web/vault.js'
 import { initDatabase, listKanbanCards, getLabelsForAllCards } from './db.js'
 
@@ -208,6 +208,7 @@ export async function decideGeminiOrder(
   apiKey: string | null,
   callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = geminiGenerate,
   reserveSlot: (cardId: string) => boolean = reserveGhostCallSlot,
+  releaseSlot: (cardId: string) => boolean = releaseGhostCallSlot,
 ): Promise<OrchestratorDecision> {
   const eligible = cards.filter(
     (c) => (c.status === 'planned' || c.status === 'in_progress') && isEligibleForGeminiOrdering(c),
@@ -223,6 +224,11 @@ export async function decideGeminiOrder(
 
   const result = await callGemini({ apiKey, prompt })
   if (!result.ok || !result.text) {
+    // Card 5cb861e6: a 503 (provider overloaded) did not come from anything the fleet's own
+    // usage caused -- un-spend the slot reserved above so it does not count against the hourly
+    // cap. Every other failure reason (auth/quota/model_missing/bad_response) keeps the spend:
+    // those reflect a real, attributable call outcome.
+    if (result.httpStatus === 503) releaseSlot(ORDERING_BUDGET_CARD_ID)
     return { ok: false, reason: result.reason ?? 'no_response' }
   }
 
@@ -256,6 +262,7 @@ export async function runGeminiOrchestratorSweep(
   loadCards: () => readonly OrchestratorCard[],
   callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = geminiGenerate,
   reserveSlot: (cardId: string) => boolean = reserveGhostCallSlot,
+  releaseSlot: (cardId: string) => boolean = releaseGhostCallSlot,
 ): Promise<void> {
   if (!isGeminiOrchestratorEnabled()) {
     console.log('[gemini-orchestrator] kill switch is OFF -- no-op.')
@@ -268,7 +275,7 @@ export async function runGeminiOrchestratorSweep(
 
   const apiKey = getSecret(GEMINI_VAULT_KEY_ID) ?? null
   const cards = loadCards()
-  const decision = await decideGeminiOrder(cards, apiKey, callGemini, reserveSlot)
+  const decision = await decideGeminiOrder(cards, apiKey, callGemini, reserveSlot, releaseSlot)
 
   if (!decision.ok) {
     console.log(`[gemini-orchestrator] fail-closed, no action (reason=${decision.reason ?? 'unknown'}).`)
