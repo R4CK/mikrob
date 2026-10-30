@@ -677,6 +677,37 @@ mopsion_out="$(echo '{"id":"deadbeef","title":"mopsion feature","description":"o
   | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || mopsion_rc=$?
 [ "$mopsion_rc" = 0 ] && [ "$mopsion_out" = "mopsion" ] || fails+=("category-check: plain ASCII 'mopsion' must still be detected, got rc=$mopsion_rc out='$mopsion_out'")
 
+# --- N5 (RedHat LOW on c5f2d6c9, msg 15488, card a2db9d8f): symbol-letters and the labels field
+# must fail closed the same way an L*-category homoglyph does -------------------------------------
+n=$((n + 1))
+regional_rc=0
+# U+1F1F2 U+1F1F4 U+1F1F8 U+1F1EE U+1F1F8 U+1F1F2 -- regional indicator symbols spelling "mosion"
+# (word-shaped, not an L*-category letter, so it bypassed the L*-only check before this fix).
+regional_out="$(printf '{"id":"deadbeef","title":"\xf0\x9f\x87\xb2\xf0\x9f\x87\xb4\xf0\x9f\x87\xb8\xf0\x9f\x87\xae\xf0\x9f\x87\xb8\xf0\x9f\x87\xb2 feature","description":"x","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || regional_rc=$?
+[ "$regional_rc" = 2 ] && [ -z "$regional_out" ] || fails+=("category-check: regional-indicator-symbol word in title must return 2 (cannot verify), got rc=$regional_rc out='$regional_out'")
+
+n=$((n + 1))
+squared_rc=0
+# U+1F170 U+1F178 U+1F17E -- negative squared Latin letters A/I/U, a symbol-letter homoglyph class.
+squared_out="$(printf '{"id":"deadbeef","title":"safe feature","description":"\xf0\x9f\x85\xb0\xf0\x9f\x85\xb8\xf0\x9f\x85\xbe token","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || squared_rc=$?
+[ "$squared_rc" = 2 ] && [ -z "$squared_out" ] || fails+=("category-check: negative-squared-letter symbols in description must return 2 (cannot verify), got rc=$squared_rc out='$squared_out'")
+
+n=$((n + 1))
+label_homoglyph_rc=0
+# labels field, Greek-omicron-laced "m<omicron>psion" -- before this fix, norm()'s ascii-ignore
+# encode silently dropped the omicron and the label tokenized clean instead of failing closed.
+label_homoglyph_out="$(printf '{"id":"deadbeef","title":"clean","description":"ok","labels":["m\xcf\x8fpsion"]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || label_homoglyph_rc=$?
+[ "$label_homoglyph_rc" = 2 ] && [ -z "$label_homoglyph_out" ] || fails+=("category-check: unmapped homoglyph letter in a label must return 2 (cannot verify), got rc=$label_homoglyph_rc out='$label_homoglyph_out'")
+
+n=$((n + 1))
+ordinary_label_rc=0
+ordinary_label_out="$(echo '{"id":"deadbeef","title":"clean","description":"ok","labels":["sec"]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || ordinary_label_rc=$?
+[ "$ordinary_label_rc" = 0 ] && [ "$ordinary_label_out" = "security" ] || fails+=("category-check: ordinary ASCII label 'sec' must still be detected, got rc=$ordinary_label_rc out='$ordinary_label_out'")
+
 # --- N3: a malformed --kartya must be refused BEFORE any URL/HTTP use ---------------------------
 : > "$LOG"
 for bad in "not-hex!" "../../etc/passwd" "ab" "" "deadbeef; rm -rf /"; do
