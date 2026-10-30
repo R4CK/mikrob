@@ -78,9 +78,26 @@ def norm(s: str) -> str:
 # A homoglyph/foreign-script letter (Greek, Cyrillic, Armenian, ...) has no such decomposition and
 # survives as a non-ASCII character of category L* (Lu/Ll/Lo/...) -- that is the fail-closed
 # signal norm()'s later .encode("ascii", "ignore") would otherwise silently erase.
+#
+# RedHat LOW (card a2db9d8f, req 2): a letter can also be spelled with a SYMBOL codepoint rather
+# than a Letter one -- regional indicator symbols ("REGIONAL INDICATOR SYMBOL LETTER M") and
+# circled/squared Latin letters ("NEGATIVE SQUARED LATIN CAPITAL LETTER M") are Unicode category
+# So, not L*, so the L*-only check above missed them entirely, and norm()'s ascii-ignore encode
+# erases them the same way it erases an unmapped script letter. Unicode names it right in the
+# name itself: every one of these per-letter symbol codepoints has "LETTER" in its name (checked
+# against the actual Unicode database, not assumed); a whole-word symbol like "SQUARED OK" does
+# not, and is correctly left alone (it is not spelling a letter-by-letter homoglyph).
 def has_unmapped_letter(s: str) -> bool:
     decomposed = unicodedata.normalize("NFKD", s)
-    return any(ord(ch) > 127 and unicodedata.category(ch).startswith("L") for ch in decomposed)
+    for ch in decomposed:
+        if ord(ch) <= 127:
+            continue
+        cat = unicodedata.category(ch)
+        if cat.startswith("L"):
+            return True
+        if cat == "So" and "LETTER" in unicodedata.name(ch, ""):
+            return True
+    return False
 
 
 def label_tokens_of(text: str):
@@ -137,6 +154,13 @@ def main() -> int:
                 return 0
 
     for lab in card.get("labels") or []:
+        # RedHat L1 (card a2db9d8f, req 3, msg 15488): label_tokens_of() routes through norm(),
+        # whose final .encode("ascii", "ignore") silently drops an unmapped homoglyph/symbol
+        # letter the same way it would in title/description -- a label like "m<omicron>psion"
+        # became the clean token "mpsion" instead of failing closed. Same guarantee as above,
+        # checked on the RAW label text before norm() erases the evidence.
+        if has_unmapped_letter(str(lab)):
+            return 2  # cannot verify -- fail closed (unmapped homoglyph/script letter in a label)
         for tok in label_tokens_of(str(lab)):
             cat = BLOCKED_LABEL_TOKENS.get(tok)
             if cat:
