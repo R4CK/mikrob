@@ -154,9 +154,18 @@ describe('pre-pr-review.sh never lets DASHBOARD_TOKEN become an exportable shell
   // module docstring above) relies on: `python3 -I - "$TOKEN_FILE" <<'PY'`, where the token file
   // path is passed as argv to a python3 heredoc that writes straight to a 0600 file, never through
   // a shell variable. The actual leak shape is the token's VALUE being captured into a shell
-  // variable via `$(python3 ...)` command substitution, so the pattern is now scoped to that
-  // substitution form, matching the same `$(...)`-anchored structure cat-substitution already uses
-  // (reproduced and verified below).
+  // variable via a `$(python3 ...)` command substitution OR a backtick capture, so the pattern is
+  // scoped to that capture structure (matching the same anchoring cat-substitution/backtick-cat
+  // already use), rather than to `$(...)` alone.
+  //
+  // Card f3f91f5c CYBERSEC NO-GO 26194 (RedHat, Gate-SHA ba69563aa): the first F3 fix anchored on
+  // `\$\([^)]*\bpython3?\b[^)]*${VARREF}`, but `[^)]*` stops at the FIRST `)`, so any `)` between
+  // `python3` and the token path hides the leak -- e.g. the common argv idiom
+  // `$(python3 -c 'import sys;print(open(sys.argv[1]).read())' "$TOKEN_FILE")` has a `)` right
+  // after `sys.argv[1]).read())`, long before `$TOKEN_FILE`, so `[^)]*` never reaches it. It also
+  // only matched `$(...)`, missing the equivalent backtick-capture form. Fixed to anchor on either
+  // opener and scan the whole LINE (not just up to the next `)`), matching the backtick-cat
+  // pattern's own line-bound `[^\n]*` style instead of a paren-bound one (reproduced below).
   const VARREF = '\\$\\{?TOKEN_FILE\\}?'
   const TOKEN_FILE_LEAK_PATTERNS: Array<{ name: string; re: RegExp }> = [
     { name: 'cat-substitution', re: new RegExp(`\\$\\(cat\\b[^)]*${VARREF}`) },
@@ -168,7 +177,7 @@ describe('pre-pr-review.sh never lets DASHBOARD_TOKEN become an exportable shell
     { name: 'head', re: new RegExp(`\\bhead\\b[^;\\n]*${VARREF}`) },
     { name: 'tr', re: new RegExp(`\\btr\\b[^;\\n]*${VARREF}`) },
     { name: 'literal-path', re: /\$\(cat\b[^)]*store\/\.dashboard-token/ },
-    { name: 'python', re: new RegExp(`\\$\\([^)]*\\bpython3?\\b[^)]*${VARREF}`) },
+    { name: 'python', re: new RegExp(`(?:\\$\\(|\`)[^\\n]*\\bpython3?\\b[^\\n]*${VARREF}`) },
     { name: 'read-dash-u', re: new RegExp(`\\bexec\\b[^\\n]*<[^\\n]*${VARREF}[\\s\\S]{0,80}?\\bread\\b[^\\n]*-u\\b`) },
   ]
 
@@ -249,6 +258,13 @@ describe('pre-pr-review.sh never lets DASHBOARD_TOKEN become an exportable shell
       mutant: 'TOKEN=$(python3 -c "data = open(\\"${TOKEN_FILE}\\").read(); print(data)")',
     },
     { pattern: 'read-dash-u', mutant: 'exec 4< "${TOKEN_FILE}"\nread -u 4 -r TOKEN' },
+    // Card f3f91f5c CYBERSEC NO-GO 26194: the argv idiom and backtick-capture leak shapes the
+    // first F3 fix's `[^)]*` (stops at the first `)`) and `$(...)`-only anchor missed.
+    {
+      pattern: 'python',
+      mutant: 'TOKEN=$(python3 -c \'import sys;print(open(sys.argv[1]).read())\' "$TOKEN_FILE")',
+    },
+    { pattern: 'python', mutant: 'TOKEN=`python3 -c \'...(...)...\' "$TOKEN_FILE"`' },
   ]
   for (const { pattern, mutant } of NON_VACUITY_MUTANTS) {
     it(`NON-VACUITY (${pattern}): shared pattern table catches mutant "${mutant.replace(/\n/g, '\\n')}"`, () => {
