@@ -1144,14 +1144,20 @@ export function reapForeignMainPollers(opts: {
   provider: ChannelProviderType
   mainSession: string
   tmuxPath?: string
+  // Card 5760a278: this reaper used to resolve its tmux/ps reads directly, bypassing the same
+  // ReapSeams (psEww, procs) its sibling reapers already take -- no test could drive it
+  // end-to-end without reaching real tmux/ps on the host, so a mutation inside its own body
+  // (the UID split, or the findForeignMainPollers call) had nothing pinning it. `psEww`/`procs`
+  // reuse ReapSeams; `mainSessionPanePids` is this function's own session-scoped tmux read.
+  mainSessionPanePids?: (session: string, tmuxPath: string) => Set<number>
 } & ReapSeams): number[] {
   const tmuxPath = opts.tmuxPath ?? 'tmux'
-  const legit = mainSessionPanePids(opts.mainSession, tmuxPath)
+  const legit = (opts.mainSessionPanePids ?? mainSessionPanePids)(opts.mainSession, tmuxPath)
   if (legit.size === 0) return [] // fail-safe: cannot distinguish legit from thief
 
   let psEww: string
   try {
-    psEww = execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+    psEww = opts.psEww ? opts.psEww() : execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
   } catch (err) {
     logger.warn({ err }, 'channel-poller-reap: ps env scan failed (foreign-main reap skipped)')
     return []
@@ -1159,7 +1165,7 @@ export function reapForeignMainPollers(opts: {
   const candidates = parseMainDirPollerPids(psEww, PLUGIN_ROOT_NEEDLE[opts.provider], STATE_ENV_VAR[opts.provider])
   if (candidates.length === 0) return []
 
-  const foreign = findForeignMainPollers(candidates, snapshotProcs(), legit)
+  const foreign = findForeignMainPollers(candidates, opts.procs ? opts.procs() : snapshotProcs(), legit)
   // 35ea0375: only this user's pollers are signalled; the outcome is kept by kind.
   const owners = splitByOwner(foreign, opts.ownUid === undefined ? dashboardUid() : opts.ownUid, opts.ownerOf)
   const where = { provider: opts.provider, mainSession: opts.mainSession }

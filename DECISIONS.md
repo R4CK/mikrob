@@ -22413,3 +22413,13 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** MikroB (A/B/C döntés, komment 26148, a backend3 terve -- komment 26143 -- alapján) + backend3 (implementáció).
 
 **Hivatkozás:** kártya 1a350f22 (szülő c65add5a), komment 26143 (terv), 26148 (MikroB döntés), `src/kg/usage.ts`, `store/kg-for-card-block.sh`.
+
+## 2026-10-30: 5760a278 -- reapForeignMainPollers seam-bekötés (35e1d876 follow-up)
+
+**Döntés:** `reapForeignMainPollers` (src/web/channel-poller-reap.ts) eddig a tmux/ps hívásait direktben futtatta (`mainSessionPanePids`, `execSync(PS_ENV_SCAN_CMD)`, `snapshotProcs()`), így semmilyen teszt nem tudta végig-vinni szintetikus adattal -- a channel-poller-reap-own-uid.test.ts saját kommentje szerint ez a reaper "csak a pure réteggel van lefedve". Fix: a már létező `ReapSeams.psEww`/`.procs` mezőket (amiket a testvér-reaperek, `reapChannelOrphans`/`reapDetachedChannelClaudes`, már használnak) bekötöttem ide is, plusz egy új, csak ide tartozó `mainSessionPanePids` seam mezőt adtam a függvény saját opt-objektumához. Új teszt: `src/__tests__/channel-poller-reap-foreign-main-integration.test.ts`, 4 eset, a teljes `reapForeignMainPollers` útvonalon szintetikus procs/psEww/pane adattal.
+
+**Mutáció-ellenőrzés:** (1) a saját-uid szűrés kihagyása (`terminatePids(owners.own, ...)` -> `terminatePids(foreign, ...)`) az új "UID filter" esetet pirosra fordította; (2) a `BUN_RUN_WRAPPER_RE` horgony kivétele `findForeignMainPollers`-ből az új 3 esetből 3-at ÉS a meglévő `channel-poller-reap.test.ts` "does not reap a non-poller descendant" esetét is pirosra fordította. Mindkét mutáció visszaállítva, teljes reap-suite (7 fájl, 70 teszt) zöld.
+
+**Ki döntött:** backend (self-advance pickup, Karpathy loop).
+
+**Hivatkozás:** kártya 5760a278 (forrás: RedHat GO 35e1d876, WhiteHat2 GO 25902), src/web/channel-poller-reap.ts, src/__tests__/channel-poller-reap-foreign-main-integration.test.ts.
