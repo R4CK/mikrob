@@ -24,11 +24,15 @@ def escape_frame(text):
     if text is None:
         return ""
     text = str(text)
+    # Strip control characters BEFORE the marker replace loop (keep plain newline/tab) -- same
+    # defense class the fleet's other injection-framing code already applies
+    # (src/kg/capture-pipeline.ts). Order matters: a control char hidden inside a marker
+    # (e.g. "[KG\x00-ADAT vege]") doesn't match the marker substring yet, so stripping it AFTER
+    # the replace loop reassembles a live close marker (WhiteHat F1, gate 1a350f22, Gate-SHA
+    # 6373be10e).
+    text = "".join(ch for ch in text if ch == "\n" or ch == "\t" or ord(ch) >= 32)
     for marker in (OPEN_MARKER, CLOSE_MARKER, "[KG-ADAT"):
         text = text.replace(marker, "(escaped) " + marker.replace("[", "{").replace("]", "}"))
-    # Strip control characters (keep plain newline/tab) -- same defense class the fleet's other
-    # injection-framing code already applies (src/kg/capture-pipeline.ts).
-    text = "".join(ch for ch in text if ch == "\n" or ch == "\t" or ord(ch) >= 32)
     return text
 
 
