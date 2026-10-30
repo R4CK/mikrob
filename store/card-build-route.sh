@@ -93,7 +93,16 @@ online() { # $1 = reason, $2 = model calls (optional)
     [ -n "${cand:-}" ] && decomp="$cand"
   fi
   log_verdict ONLINE "$1" "${2:-0}" "$decomp"
-  echo ONLINE
+  # REASON ON STDOUT, OPT-IN ONLY (card e11167c5, Peti 12838 "Tilta6s"): offload-dispatch.sh's
+  # fragment veto needs to tell a SECURITY-signal ONLINE (authz/money/tenant/sec-label) from every
+  # other ONLINE reason (multi-decision, model-complex, vram-hold, ...), which the bare "ONLINE"
+  # token can never carry. Opt-in and additive only: every other caller's `[[ "$(...)" == "ONLINE"
+  # ]]` stays byte-for-byte correct because the env var defaults off.
+  if [ "${CARD_BUILD_ROUTE_SHOW_REASON:-0}" = "1" ]; then
+    echo "ONLINE $1"
+  else
+    echo ONLINE
+  fi
   exit 0
 }
 
@@ -552,5 +561,9 @@ done <<< "$WINDOWS"
 # Every window answered, every answer was EASY, and every earlier stage passed.
 [ "$SAW_EASY" -eq 1 ] || online no-window-answered "$CALLS"
 log_verdict LOCAL all-stages-passed "$CALLS"
-echo LOCAL
+if [ "${CARD_BUILD_ROUTE_SHOW_REASON:-0}" = "1" ]; then
+  echo "LOCAL all-stages-passed"
+else
+  echo LOCAL
+fi
 exit 0

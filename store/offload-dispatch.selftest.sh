@@ -149,13 +149,12 @@ decomp_desc_carries_parent="$(CARD=decompCard bash "$DISPATCH" --test-resolve-de
 check "SAFETY: every synthetic leaf description carries the PARENT description text (routeTask sees the real risk signal)" \
   "$decomp_desc_carries_parent" "True"
 
-# --- VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f) ------------------------------------
-# REPRO for the exact described defect: an authz signal ("authorizat") sitting past character 600 of
-# the parent description. Before the fix, every synthetic fragment's description was unconditionally
-# truncated to desc[:600], so the signal never reached any fragment at all, and the whole card (which
-# card-build-route.sh correctly vetoes ONLINE on its own full text) would have routed every fragment
-# as if it were plain mechanical work. After the fix, the veto is decided ONCE on the parent's full
-# text and every fragment inherits it via an explicit "veto_online" field.
+# --- VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f; narrowed by Peti 12838 "Tiltas"
+# after CYBERSEC GO 26252 F1+F2) -----------------------------------------------------------------
+# The veto now fires ONLY when the router's ONLINE REASON is a security path (route-classify-
+# security, deterministic-money, deterministic-auth-tenant-scope, deterministic-sec-label) -- not
+# on the bare ONLINE token. Every other ONLINE reason must leave veto_online False, so a fragment
+# of such a parent keeps the ORIGINAL 501c489f behaviour (its own local attempt on its own text).
 python3 -c "
 import json
 base = 'A kontraktus (architektura) modosul. Kell hozza unit test es a hu/de i18n string forditasok is. '
@@ -171,9 +170,80 @@ veto_ids="$(CARD=vetoCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/f
 check "vetoCard still decomposes into its synthetic fragments (the veto does not change WHICH fragments exist)" \
   "$veto_ids" "vetoCard~i18n-keys,vetoCard~test-scaffold"
 
+# EXCLUDED REASON #1 (CYBERSEC GO 26252 F1: this fixture's ONLINE verdict actually comes from
+# deterministic-multi-decision -- "architektura"/"kontraktus" -- NOT from the authz word; measured
+# directly against card-build-route.sh with CARD_BUILD_ROUTE_SHOW_REASON=1). Under the narrowed
+# rule this must NOT veto: multi-decision parents keep the 501c489f fragment-local-attempt
+# behaviour (Peti 9159).
 veto_flags="$(CARD=vetoCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-veto.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(sorted(str(l.get("veto_online")) for l in d)))')"
-check "REPRO (THE POINT OF THE CARD): every fragment inherits the parent veto, even though the authz signal sits past char 600 of the truncated copy" \
-  "$veto_flags" "True,True"
+check "EXCLUDED REASON (deterministic-multi-decision): fragments do NOT inherit a veto, even though the parent is ONLINE" \
+  "$veto_flags" "False,False"
+
+# EXCLUDED REASON #2: vram-hold (ambient/transient capacity state, Peti 12838/MikroB direction) --
+# must not veto and must not permanently lock the fragment out across a transient GPU hold.
+cat > "$TMPDIR/vram-hold-stub.sh" <<'STUBEOF'
+#!/usr/bin/env bash
+echo "stub: simulated vram hold" >&2
+exit 1
+STUBEOF
+chmod +x "$TMPDIR/vram-hold-stub.sh"
+vram_flags="$(CARD=decompCard CARD_BUILD_ROUTE_VRAM_GUARD="$TMPDIR/vram-hold-stub.sh" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(sorted(str(l.get("veto_online")) for l in d)))' 2>/dev/null)"
+check "EXCLUDED REASON (vram-hold): fragments do NOT inherit a veto on a transient GPU hold" \
+  "$vram_flags" "False,False"
+
+# EXCLUDED REASON #3: not-installed (host-level capacity state, same direction as vram-hold).
+cat > "$TMPDIR/not-installed-stub.sh" <<'STUBEOF'
+#!/usr/bin/env bash
+exit 1
+STUBEOF
+chmod +x "$TMPDIR/not-installed-stub.sh"
+installed_flags="$(CARD=decompCard CARD_BUILD_ROUTE_INSTALLED="$TMPDIR/not-installed-stub.sh" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(sorted(str(l.get("veto_online")) for l in d)))' 2>/dev/null)"
+check "EXCLUDED REASON (not-installed): fragments do NOT inherit a veto when the local runtime is absent" \
+  "$installed_flags" "False,False"
+
+# DISCRIMINATING REPRO (CYBERSEC GO 26252 F1, cybersec2's fixture-clean.json approach): the ONLY
+# veto source is an authz word past char 600, isolated with 3 one-line router stubs so no OTHER
+# deterministic gate or model call can produce the ONLINE verdict. This is the fixture the shipped
+# test (above, now EXCLUDED REASON #1) failed to provide -- mutant M-a (veto fed desc[:600]) must
+# turn this one red, which the backup/mutate/restore cycle below the full suite exercises.
+cat > "$TMPDIR/sec-installed-ok.sh" <<'STUBEOF'
+#!/usr/bin/env bash
+exit 0
+STUBEOF
+cat > "$TMPDIR/sec-vram-ok.sh" <<'STUBEOF'
+#!/usr/bin/env bash
+exit 0
+STUBEOF
+cat > "$TMPDIR/sec-classify-mechanical.sh" <<'STUBEOF'
+#!/usr/bin/env bash
+echo MECHANICAL
+STUBEOF
+cat > "$TMPDIR/sec-llm-easy.sh" <<'STUBEOF'
+#!/usr/bin/env bash
+echo EASY
+STUBEOF
+chmod +x "$TMPDIR"/sec-*.sh
+python3 -c "
+import json
+base = 'Kell hozza unit test es a hu/de i18n string forditasok is. '
+filler_unit = 'padding szoveg ide. '
+pad_len = 650 - len(base)
+filler = (filler_unit * (pad_len // len(filler_unit) + 1))[:pad_len]
+desc = base + filler + 'authorizat kerdes a vegen.'
+assert desc.index('authorizat') > 600, 'fixture must place the signal past the old 600-char cut'
+cards = [{'id':'secCleanCard','title':'Egyszeru segedfeladat leirasa','description':desc,'status':'planned','assignee':'backend2','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[]}]
+json.dump(cards, open('$TMPDIR/fixture-sec-clean.json', 'w'))
+"
+sec_clean_flags="$(CARD=secCleanCard \
+  CARD_BUILD_ROUTE_INSTALLED="$TMPDIR/sec-installed-ok.sh" \
+  CARD_BUILD_ROUTE_VRAM_GUARD="$TMPDIR/sec-vram-ok.sh" \
+  CARD_BUILD_ROUTE_CLASSIFY="$TMPDIR/sec-classify-mechanical.sh" \
+  CARD_BUILD_ROUTE_LLM="$TMPDIR/sec-llm-easy.sh" \
+  CARD_BUILD_ROUTE_ROUTER_JS=/nonexistent \
+  bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-sec-clean.json" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(sorted(str(l.get("veto_online")) for l in d)))' 2>/dev/null)"
+check "DISCRIMINATING REPRO (deterministic-auth-tenant-scope, isolated via router stubs): fragments inherit the veto when the ONLY ONLINE source is the authz word past char 600" \
+  "$sec_clean_flags" "True,True"
 
 # CONTROL: no mechanical shape in the text -> the wrapper is a no-op, byte-identical to resolve_leaves alone.
 lone_via_wrapper="$(decompose_ids loneCard)"
