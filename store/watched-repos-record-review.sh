@@ -172,10 +172,18 @@ if note_append:
     _sleep_s = os.environ.get("WATCHED_REGISTRY_TEST_SLEEP_S")
     if _sleep_s:
         time.sleep(float(_sleep_s))
+    # MikroB delta (card 8aed7984, comment 26578 LOW): the state-write side already preserves the
+    # target's existing file mode across the swap (see the matching comment there); this registry
+    # tmp had no chmod at all, so os.replace handed it whatever mode the caller's umask produced.
+    try:
+        _mode = os.stat(registry_path).st_mode & 0o777
+    except FileNotFoundError:
+        _mode = 0o644
     tmp_path = registry_path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(registry, f, indent=2, ensure_ascii=False)
         f.write("\n")
+    os.chmod(tmp_path, _mode)
     # Test-only hook (card 9710bdfd GO follow-up R3), same reasoning as the state-write twin above.
     _pre_replace_sleep_s = os.environ.get("WATCHED_REGISTRY_TEST_PRE_REPLACE_SLEEP_S")
     if _pre_replace_sleep_s:
