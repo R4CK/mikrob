@@ -251,6 +251,69 @@ describe('parseGateDesignation (ported from gate-dispatch-check.sh, same fixture
     )
   })
 
+  // PIN GAPS m4/m5/m6 (card d8074d78, cybersec2 CYBERSEC GO 26643 on ba25db04's own gate): three
+  // mutants survived the ba25db04 test suite because the rows added there happened to be vacuous
+  // for them. Each row below kills exactly the mutant it names; reverting the real fix to that
+  // mutant's shape turns the row red (verified manually, see this card's REVIEW).
+  it('d8074d78 m4: a loop capped at 1 pass leaves an unresolved nested-paren dot that cuts the clause early', () => {
+    // Full removal needs 2 passes: pass 1 strips the inner "(b)", pass 2 strips what is left of
+    // the (now non-nested) outer group. A cap of 1 leaves "(a  c. d)" standing, and its '.' cuts
+    // the clause before "+ Cybersec" is ever reached.
+    expect(parseGateDesignation('QA (a (b) c. d) + Cybersec')).toEqual(
+      new Set(['qa', 'qa2', 'cybersec', 'cybersec2']),
+    )
+  })
+
+  it('d8074d78 m5: an UNBALANCED open paren must not make the final cut fall back to cutting at \'(\'', () => {
+    // The non-nested-paren regex can never match an unbalanced '(' (it requires a matching ')'
+    // with no parens in between), so it survives every pass unchanged -- the final clause-end cut
+    // must only look for '.', '!', '?', never '(' again, or this stray character reproduces the
+    // original bug on a line that never even closes its parenthetical.
+    expect(parseGateDesignation('QA ( + Cybersec')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  it('d8074d78 m6: a non-global paren-removal regex only strips ONE sibling group per pass, not all of them', () => {
+    // 9 SIBLING (non-nested) groups, the 9th containing a '.': a global replace strips all 9 in a
+    // single pass (no dot survives to cut the clause). A non-global replace strips only the FIRST
+    // match per call, so across the loop's 8-iteration cap only 8 of the 9 groups are gone and the
+    // 9th's '.' is still there to cut the clause before "Cybersec".
+    const line = 'QA (1) (2) (3) (4) (5) (6) (7) (8) (x. y) + Cybersec'
+    expect(parseGateDesignation(line)).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  // N3 PARITY GAP (card d8074d78, cybersec2 N3 on ba25db04's own gate): a Gate: line that names a
+  // gate ANYWHERE must never yield null -- null reads as "no verifiable claim", and the done-guard
+  // then requires nothing at all. Two real shapes used to do this in BOTH parsers: a gate name
+  // written entirely inside a parenthetical, and 8+ nested layers with a '.' inside that outlive
+  // the removal loop's cap. Both now fall back to a fail-closed "require everything named" scan of
+  // the un-truncated (but still filename-stripped) line rather than returning null.
+  it('d8074d78 N3: a gate name written entirely inside a parenthetical must not yield null', () => {
+    expect(parseGateDesignation('(QA + Cybersec)')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  it('d8074d78 N3 (real line, card 7d92a775): "(val. QA + Cybersec/Cybered, ...)" must designate, not null', () => {
+    const line = 'risk-tiering plan-grilling UTAN dontendo (val. QA + Cybersec/Cybered, mert auth-kritikus utvonalat erint).'
+    expect(parseGateDesignation(line)).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']))
+  })
+
+  it('d8074d78 N3: 8+ nested paren layers with a dot in an outer layer must not yield null when a name follows', () => {
+    // Build "(((((((((h. QA + Cybersec" -- 9 opens, one dot inside the 9th-from-outside layer,
+    // and the names AFTER all the parens close (they never do, deliberately unbalanced, so the
+    // removal loop can never fully resolve it within 8 passes either way).
+    const line = '('.repeat(9) + 'h. QA + Cybersec'
+    const d = parseGateDesignation(line)
+    expect(d).not.toBeNull()
+    expect(d?.has('qa')).toBe(true)
+    expect(d?.has('cybersec')).toBe(true)
+  })
+
+  it('d8074d78 CONTROL: text naming no gate at all (b8ac0ef1 real shape) still correctly yields null', () => {
+    // The fallback must not force a match where no gate name exists anywhere on the line -- this
+    // real line ("Gate: ... a gyerekeken.", designation deferred to child cards) legitimately
+    // designates nothing, and must stay null, not be swept into the fail-closed fallback.
+    expect(parseGateDesignation('a gyerekeken.')).toBeNull()
+  })
+
   // CROSS-CHECK (ba25db04 Kész-ha #2): store/gate-designation-corpus.json is a frozen snapshot of
   // every DISTINCT "Gate: ..." line on the live board (723 lines, extracted the same way
   // extractGateLine does), each paired with the designation store/gate_designation.py itself

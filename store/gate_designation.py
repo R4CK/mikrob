@@ -39,27 +39,11 @@ def designated_from_labels(csv):
     return widen_cybersec(widen_qa(names)) if names else None
 
 
-def designated_from_gate_line(text):
-    # DESIGNATION vs EXPLANATION (card 55af560d): a name-scan over the WHOLE line reads the
-    # explanatory parenthetical too, so a card that EXCLUDES a gate by NAMING it in its own
-    # exclusion reasoning -- "QA + Cybersec (... trust boundary, ezert Cybersec, nem Cybered)." --
-    # would otherwise read as designating the excluded gate too, because its name appears in the
-    # text. The fix scans only the OWN designation clause of the gate line, not the whole line.
-    #
-    # TWO STEPS, AND THE ORDER MATTERS (card aa837c5b): 1. REMOVE parenthesised parts (innermost-
-    # first until the text stops changing, so nesting cannot leave a stray fragment behind) rather
-    # than truncating at the first "(" -- truncating threw away every name after it, misreading
-    # "Gate: QA (functional...), Cybersec (...)" as QA-only. 2. THEN cut at sentence-ending
-    # punctuation, for the trailing-sentence exclusion shape ("QA + Cybered (...). Cybersec
-    # kimarad: ...").
-    for _ in range(8):
-        stripped = re.sub(r"\([^()]*\)", "", text)
-        if stripped == text:
-            break
-        text = stripped
-    clause_end = re.search(r"[.!?]", text)
-    clause = text[: clause_end.start()] if clause_end else text
-    low = clause.lower()
+def _names_in_text(text):
+    """Pure name-matching, no truncation and no widening -- shared by the clause-scoped primary
+    parse and the fail-closed fallback below (card d8074d78), so the two never drift on which
+    tokens count as a gate name."""
+    low = text.lower()
     names = set()
     if re.search(r"\bqa2\b", low):
         names.add("qa2")
@@ -75,7 +59,44 @@ def designated_from_gate_line(text):
         names.add("cybersec")
     if re.search(r"\bcybered\b", low) or re.search(r"\bredhat\b", low):
         names.add("cybered")
-    return widen_cybersec(widen_qa(names)) if names else None
+    return names
+
+
+def designated_from_gate_line(text):
+    # DESIGNATION vs EXPLANATION (card 55af560d): a name-scan over the WHOLE line reads the
+    # explanatory parenthetical too, so a card that EXCLUDES a gate by NAMING it in its own
+    # exclusion reasoning -- "QA + Cybersec (... trust boundary, ezert Cybersec, nem Cybered)." --
+    # would otherwise read as designating the excluded gate too, because its name appears in the
+    # text. The fix scans only the OWN designation clause of the gate line, not the whole line.
+    #
+    # TWO STEPS, AND THE ORDER MATTERS (card aa837c5b): 1. REMOVE parenthesised parts (innermost-
+    # first until the text stops changing, so nesting cannot leave a stray fragment behind) rather
+    # than truncating at the first "(" -- truncating threw away every name after it, misreading
+    # "Gate: QA (functional...), Cybersec (...)" as QA-only. 2. THEN cut at sentence-ending
+    # punctuation, for the trailing-sentence exclusion shape ("QA + Cybered (...). Cybersec
+    # kimarad: ...").
+    original = text
+    for _ in range(8):
+        stripped = re.sub(r"\([^()]*\)", "", text)
+        if stripped == text:
+            break
+        text = stripped
+    clause_end = re.search(r"[.!?]", text)
+    clause = text[: clause_end.start()] if clause_end else text
+    names = _names_in_text(clause)
+    if names:
+        return widen_cybersec(widen_qa(names))
+    # FAIL-CLOSED FALLBACK (card d8074d78, N3 on ba25db04's own gate): the clause-scoped parse
+    # above can legitimately find no names at all even though a gate name IS written somewhere on
+    # the line -- either entirely inside a parenthetical ("(QA + Cybersec)"), or because 8+ layers
+    # of nesting with a '.' inside outlive the removal loop's cap and the stray '.' cuts the clause
+    # before any name is reached. Returning None in either case reads as "no verifiable claim,
+    # nothing to check" -- the same fail-open direction the alias fixes above already closed for a
+    # different cause. A Gate: line that names a gate ANYWHERE must never silently designate
+    # nothing, so fall back to scanning the original (un-truncated) text for the same names and, if
+    # that finds any, require ALL of them -- fail closed, not a null that skips every gate.
+    fallback_names = _names_in_text(original)
+    return widen_cybersec(widen_qa(fallback_names)) if fallback_names else None
 
 
 def designated_gates(gate_labels, gate_line):
