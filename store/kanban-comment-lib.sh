@@ -38,8 +38,11 @@ _kc_token_file() {
   [ -n "${KANBAN_COMMENT_TOKEN_FILE:-}" ] && { echo "$KANBAN_COMMENT_TOKEN_FILE"; return; }
   local here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   [ -f "$here/.dashboard-token" ] && { echo "$here/.dashboard-token"; return; }
-  local common; common="$(git -C "$here" rev-parse --git-common-dir 2>/dev/null)" || return 1
-  echo "$(cd "$(dirname "$common")" && pwd)/store/.dashboard-token"
+  # --path-format=absolute (card 56b14f14): the plain form answers relative to "$here", and
+  # resolving that with a bare `cd` runs against the CALLER's cwd, not "$here" -- a caller outside
+  # this directory can silently resolve to the wrong repo or fail.
+  local common; common="$(git -C "$here" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  echo "$(dirname "$common")/store/.dashboard-token"
 }
 
 # SECURITY (card edb7559f): the token never goes in argv. `-H "Authorization: Bearer $(cat ...)"` is

@@ -1540,9 +1540,13 @@ echo "offload-dispatch: $CARD -> $LEAF_COUNT open leaf(s) resolved" >&2
 # `*)` default, returned empty, and graph_args_for's `[[ -n "$repo" ... ]] || return 0` silently
 # skipped code-graph context for it -- not a wrong answer, a quietly-degraded local-llm draft.
 graph_repo_for() {
-  local project="$1"
+  local project="$1" gcd
   case "$project" in
-    MikroB)              (cd "$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null || echo .)/.." 2>/dev/null && pwd) ;;
+    # --path-format=absolute (card 56b14f14): the plain form answers RELATIVE TO "$HERE", but the
+    # `cd` resolving that answer runs in THIS function's own shell, against the CALLER's cwd, not
+    # "$HERE" -- a caller outside the repo (or in a different repo) silently jumps to the wrong
+    # place or fails. Asking git for an absolute path removes the ambiguity entirely.
+    MikroB)              { gcd="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && dirname "$gcd"; } || echo "" ;;
     CleanCore|mopsion)    echo "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}" ;;
     # Explicit fail-safe default (Cybersec, card 1b02ed3a comment 4864): an unrecognised project
     # already fell through to this same empty output before this arm existed -- stated here rather

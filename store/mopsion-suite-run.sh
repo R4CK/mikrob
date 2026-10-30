@@ -247,8 +247,11 @@ unset _d1_arg _d1_path
 # to the stuck-monitor and to whoever is reading the board, not a precondition for testing.
 _token_file() {
   [ -f "$HERE/.dashboard-token" ] && { echo "$HERE/.dashboard-token"; return; }
-  local common; common="$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null)" || return 1
-  echo "$(cd "$(dirname "$common")" && pwd)/store/.dashboard-token"
+  # --path-format=absolute (card 56b14f14): the plain form answers relative to "$HERE", and
+  # resolving that with a bare `cd` runs against the CALLER's cwd, not "$HERE" -- a caller outside
+  # this directory can silently resolve to the wrong repo or fail.
+  local common; common="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  echo "$(dirname "$common")/store/.dashboard-token"
 }
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token never goes in argv.

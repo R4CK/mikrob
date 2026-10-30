@@ -295,6 +295,23 @@ graph_repo_pin="$(
 )"
 check "graph_repo_for('mopsion') resolves to the SAME repo as graph_repo_for('CleanCore')" "$graph_repo_pin" "OK"
 
+# --- graph_repo_for('MikroB') does not depend on the CALLER's cwd (card 56b14f14) --------------
+# `git -C "$HERE" rev-parse --git-common-dir` (no --path-format) answers RELATIVE TO "$HERE", but
+# a bare `cd` resolving that answer runs in the CALLER's own shell, against the CALLER's cwd, not
+# "$HERE". Measured before the fix: calling this from a non-repo cwd (here, a fresh mktemp -d)
+# made the MikroB arm return empty. Run from a cwd that is NOT inside any git repo at all, so a
+# caller-cwd dependency can't accidentally still resolve to the right answer by coincidence.
+graph_repo_cwd_pin="$(
+  NONREPO_CWD="$(mktemp -d)"
+  trap 'rm -rf "$NONREPO_CWD"' EXIT
+  cd "$NONREPO_CWD" || exit 1
+  HERE="$(dirname "$(realpath "$DISPATCH")")"
+  source <(sed -n '/^graph_repo_for() {/,/^}/p' "$DISPATCH")
+  mk="$(graph_repo_for MikroB)"
+  [[ -n "$mk" && -d "$mk/.git" ]] && echo "OK" || echo "BROKEN:$mk"
+)"
+check "graph_repo_for('MikroB') resolves correctly when called from a non-repo cwd" "$graph_repo_cwd_pin" "OK"
+
 # --- the INSTALLED gate is WIRED, ahead of the per-card lock (card 3906d77b follow-up, Peti
 # Telegram 8928) ---------------------------------------------------------------------------------
 # Same source-pin discipline as the VRAM gate above: proves the call is still there and still
