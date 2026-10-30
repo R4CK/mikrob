@@ -19,6 +19,11 @@
 # 9b. content gate (redactor, F2, CYBERED NO-GO 25494): a secret-shaped string with one
 #     Greek-omicron homoglyph substituted for the ASCII "o" (outside the 12-entry map) fails
 #     closed = exit 4, zero requests -- the fold table is a convenience, not the guarantee.
+# 9c. (card a2db9d8f req 1) same omicron-secret payload as 9b, but with CATEGORY_CHECK
+#     (gate 1) stubbed to always report "clean" -- isolates gate 2 (the inline _GATE_PY
+#     backstop) so this test actually exercises the backstop itself, not gate 1's own
+#     unmapped-letter fail-closed (c5f2d6c9), which in the real checker already catches
+#     omicron-laced text before gate 2 ever runs.
 # 10. content gate: benign prompt is NOT refused (passes both gates)
 # 11. validate-key with enabled switch = exit 0
 # 12. validate-key with disabled switch = exit 2
@@ -215,6 +220,24 @@ OMICRON_SECRET="$(printf 't\xce\xbfken: hunter2verylongsecretvalue1234567890')"
 test_case "F2: unmapped homoglyph (Greek omicron) in secret-shaped text fails closed" 4 \
   bash "$SCRIPT" "$OMICRON_SECRET"
 assert_true "F2 omicron: zero network requests" "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
+
+# ---- Test 9c (card a2db9d8f req 1): same omicron-secret, but gate 1 stubbed clean --------
+# A "clean" stub that always reports no category isolates gate 2 (the inline _GATE_PY
+# backstop in freellm-call.sh). Without this, test 9b alone proves nothing about gate 2:
+# the REAL category checker (gate 1) now also fails closed on any unmapped letter anywhere
+# in the wrapped description (card c5f2d6c9), so it already refuses this exact payload
+# before gate 2's own backstop ever runs -- removing gate 2's backstop would NOT turn 9b red.
+CLEAN_CATEGORY_CHECK="$TMPDIR_TEST/clean-category-check.py"
+cat > "$CLEAN_CATEGORY_CHECK" << 'PYEOF'
+import sys
+sys.exit(0)
+PYEOF
+clear_mock_requests
+export FREELLM_CATEGORY_CHECK_OVERRIDE="$CLEAN_CATEGORY_CHECK"
+test_case "F2 (gate 2 isolated): unmapped homoglyph (Greek omicron) fails closed even when gate 1 is stubbed clean" 4 \
+  bash "$SCRIPT" "$OMICRON_SECRET"
+assert_true "F2 omicron (gate 2 isolated): zero network requests" "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
+export FREELLM_CATEGORY_CHECK_OVERRIDE="$CATEGORY_CHECK"
 
 # ---- Test 10: a benign prompt is NOT refused by the content gates ---------------------
 clear_mock_requests

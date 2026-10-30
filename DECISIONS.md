@@ -22374,3 +22374,18 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** WhiteHat (cybersec) eredeti lelete (6dc50a41, msg 3749), backend2 végrehajtása MikroB self-advance-dispatch alapján (2026-10-30, 35 napos planned kártya, fleet-rule 6b).
 
 **Hivatkozás:** kártya 2c94eae5 (szülő 6dc50a41), msg 3749 (WhiteHat F1 MEDIUM), src/agent.ts, src/__tests__/agent-sdk-fallback-config-isolation.test.ts.
+
+## 2026-10-30: a2db9d8f -- ad6b183f follow-up: a homoglyph backstop önálló pinnelése + szimbólum-betű/label rések
+
+**Döntés:** RedHat CYBERED GO ad6b183f-n (69da33ba, msg 15479) rámutatott, hogy a backstop eltávolítása a `store/freellm-call.sh`-ban a 32/32-es selftest-suite-ot zölden hagyja, mert a c5f2d6c9 (fb481253d) kártya már korábban fail-closedre zárta az 1. kaput (a megosztott kategória-ellenőrzőt) ugyanarra a predikátumra -- a 9b teszt emiatt az 1. kaput pinnelte, nem a backstopot.
+
+**Javítás (három rész):**
+1. `store/freellm-call.selftest.sh` -- új Test 9c: ugyanaz az omikronos "secret-shaped" payload, de a `FREELLM_CATEGORY_CHECK_OVERRIDE` egy mindig-tiszta stubra mutat, ami elszigeteli a 2. kaput (a `freellm-call.sh` saját `_GATE_PY` backstopja).
+2. `store/gemini-agy-category-check.py` -- a `has_unmapped_letter()` csak az L* Unicode-kategóriát (betűk) nézte; a regionális jelző szimbólumok és a körözött/négyzetes latin betűk `So` kategóriájúak, de betűnként szót betűznek (a Unicode-név tartalmazza a "LETTER" szót) -- ezeket most a név alapján is elkapja, nem feltételezett kódponttartomány alapján.
+3. `store/gemini-agy-category-check.py` -- a `labels` ciklus a `norm()`-on keresztül csendben eldobta a nem-leképezett homoglyph/szimbólum-betűt, mielőtt a tokenizálás látta volna (egy "m&lt;omikron&gt;psion" label tiszta "mpsion"-ként tokenizálódott) -- most a nyers label-szövegen is lefut a `has_unmapped_letter()` ellenőrzés a tokenizálás előtt.
+
+**Mit ellenőriztem:** `store/gemini-agy-call.selftest.sh` 4 új esete (N5) a (2) és (3) pontra, plusz negatív kontroll (sima ASCII label/szó továbbra is átmegy). Mutáció-pin külön-külön: a (2) visszaállítása csak a 2 szimbólum-betű tesztet viszi pirosra, a (3) visszaállítása csak a label-tesztet; mindkettő visszaállítva 46/46 (volt 42/42). `freellm-call.selftest.sh`: a backstop eltávolítása a `_GATE_PY`-ban csak az új 9c tesztet viszi pirosra (9b zöld marad, igazolva, hogy az 1. kapu önmagában már lefedi azt a payloadot); visszaállítva 34/34 (volt 32/32). A `store/freellm-call.sh` maga NEM módosult (a kártya korlátja szerint csak teszt).
+
+**Ki döntött:** RedHat (cybered) GO-ja és a 3 követelmény (komment msg 15479, msg 15488), backend2 végrehajtása MikroB self-advance-dispatch alapján.
+
+**Hivatkozás:** kártya a2db9d8f (kapcsolódó: ad6b183f, c5f2d6c9), RedHat msg 15479/15488, store/freellm-call.sh, store/freellm-call.selftest.sh, store/gemini-agy-category-check.py, store/gemini-agy-call.selftest.sh.
