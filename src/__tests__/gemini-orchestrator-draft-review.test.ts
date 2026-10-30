@@ -599,7 +599,7 @@ describe('reviewOneCard() (card 626df838)', () => {
   // Card 5cb861e6 (daytime-mode phase c7abdf57): a retriable 503 must release the slot it just
   // spent -- the provider's own overload is not evidence of our usage pattern.
   it('a 503 response releases the just-reserved slot (card 5cb861e6)', async () => {
-    const releaseSlot = vi.fn((_cardId: string) => true)
+    const releaseSlot = vi.fn((): boolean => true)
     const deps = { ...baseDeps(), releaseSlot }
     deps.callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'http', httpStatus: 503 }))
     const result = await reviewOneCard('c1', 'key', deps)
@@ -609,7 +609,7 @@ describe('reviewOneCard() (card 626df838)', () => {
   })
 
   it('a non-503 failure (e.g. quota/429) does NOT release the slot -- that spend is real', async () => {
-    const releaseSlot = vi.fn((_cardId: string) => true)
+    const releaseSlot = vi.fn((): boolean => true)
     const deps = { ...baseDeps(), releaseSlot }
     deps.callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota', httpStatus: 429 }))
     await reviewOneCard('c1', 'key', deps)
