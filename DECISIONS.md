@@ -22451,3 +22451,19 @@ MikroB HOLD (26253) escalálta F2-t Peti felé (Telegram 12838): **"Tiltás"** -
 **Ki döntött:** cybersec2 (CYBERSEC NO-GO 26331, a 4 elfogadási kritérium), MikroB (26280-hoz hasonló delegálás, msg 15660), backend2 (végrehajtás).
 
 **Hivatkozás:** kártya bd5241b7, komment 26329 (QA PASS), 26331 (CYBERSEC NO-GO), Gate-SHA 5d051bcd0 (a hibás első javítás), `src/web/kanban-gate-completeness-guard.ts`, `src/__tests__/kanban-gate-completeness-guard.test.ts`, `store/gate_designation.py` (referencia, nem módosítva).
+
+## 2026-10-30: 0b7375ab -- send-honesty-round2.test.ts (fleet-memory-gate.sh cooldown-stamp) hamis-piros a curl-stub stdin-race miatt, nem wall-clock miatt
+
+**Döntés:** backend3 jelzése (2026-09-25, msg 3902-höz hasonló) szerint a "fleet-memory-gate.sh: cooldown stamp only after confirmed delivery" teszt (send-honesty-round2.test.ts) párhuzamos landolási terhelés alatt hamis-pirosat adott, izoláltan mindig zöld. A feladat feltételezte, hogy a teszt a wall-clock/IO-latenciától függ.
+
+**Repro (mért):** 14 db CPU-kötött `yes` háttérfolyamat (12 magos gép, load avg ~7-27) alatt a cél-teszt 50 ismételt futásából 10 ment pirosra (20/20 és 30/30 körökben 4 és 6). Minden piros eset ugyanazt mutatta: a script verdiktje helyes maradt (exit 10), de a cooldown-stamp fájl hiányzott, és a script saját stderr-je `telegram_api_call(sendMessage): transport failure (curl exit 141)`-t írt -- 141 = 128+13 = SIGPIPE.
+
+**Gyökér-ok:** NEM wall-clock/IO-latencia. A `telegram_api_call` (scripts/lib/send-telegram.sh) `printf 'url = ...' | curl -K - "$@"` formában adja át a curl-konfigot stdinen. A teszt megosztott curl-stubja (send-honesty-round2.test.ts `stageTree()`) soha nem olvasta a saját stdinjét -- sikeres ÉS hibás ágon egyaránt azonnal kiírt/kilépett. CPU-terhelés alatt az ütemező néha a stub (olvasó) oldalát futtatja előbb: az lezárja a stdint és kilép, MIELŐTT a `printf` (író) befejezte volna az írást -- a `printf` SIGPIPE-ot kap (kilépő kód 141), és a script `set -o pipefail`-je ezt a kódot (nem a curl saját, sikeres kódját) adja a pipeline eredményeként. A valódi curl ELŐSZÖR olvassa a `-K -` stdint, utána hív -- a stub ezt nem emulálta, így egy kizárólag a tesztfixtúrában élő verseny-feltétel okozta a hamis-pirosat, nem a script logikája.
+
+**Javítás:** a megosztott curl-stub (src/__tests__/send-honesty-round2.test.ts, `stageTree()`) ELSŐ sora `cat >/dev/null` -- lecsapolja a stdint, mielőtt bármi mást tenne, pontosan úgy, ahogy a valódi curl is olvassa a `-K -` konfigot a kérés elküldése előtt. Ez megszünteti az írás-előtt-záródás versenyt minden hívónál, nem csak a fleet-memory-gate tesztnél (a stub megosztott, más tesztek -- `telegram_api_call: succeeds only on ok:true`, `set-bot-menu.sh: reports success only on ok:true` -- ugyanennek a versenynek voltak kitéve, csak nem lettek még megfigyelve/jelentve).
+
+**Mit ellenőriztem:** a javítás előtt 50 ismételt futás 14-szeres CPU-terhelés alatt: 10/50 piros. A javítás után, UGYANAZON terhelés alatt: 50 ismételt futás, 0/50 piros. Mutáció-pin: a `cat >/dev/null` sort eltávolítva (visszaállítva az eredeti stubra), ugyanazon terhelés alatt 30 ismételt futásból 10 piros -- pontosan reprodukálja az eredeti hibát. Visszaállítva, a teljes fájl (13/13 teszt) zöld terhelés nélkül is.
+
+**Ki döntött:** backend3 (eredeti jelzés, 2026-09-25), backend2 (gyökér-ok mérés + javítás, 2026-10-30).
+
+**Hivatkozás:** kártya 0b7375ab, src/__tests__/send-honesty-round2.test.ts (`stageTree()` curl-stub), scripts/lib/send-telegram.sh (`telegram_api_call`, nem módosítva -- a hiba kizárólag a tesztfixtúrában élt), scripts/fleet-memory-gate.sh (nem módosítva).
