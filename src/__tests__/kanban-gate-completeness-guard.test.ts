@@ -140,6 +140,36 @@ describe('parseGateDesignation (ported from gate-dispatch-check.sh, same fixture
       new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']),
     )
   })
+
+  // Card bd5241b7 (real incident b474e1b9): a filename reference inside prose DISCUSSING the
+  // absence of a Gate: line must not itself be read as a Gate: designation. The exact extracted
+  // clause from b474e1b9's real description (after extractGateLine), where "NINCS Gate: sora"
+  // (there is NO Gate: line) is itself a sentence that happens to contain "Gate:", and the clause
+  // before the next '.'/'('/'!'/'?' contains the filename "cybersec-gate-scan.py" -- which, before
+  // this fix, made \bcybersec\b match inside it (a hyphen counts as a word boundary) and demanded
+  // a Cybersec verdict nobody designated.
+  it('bd5241b7 (b474e1b9 real text): a filename reference inside prose is not a designation', () => {
+    const line =
+      'sora -- ha REVIEW kerul ra, a deklaracio-vezerelt cybersec-gate-scan.py nem fogja latni, mert nem nevez meg egyetlen gate-agentet sem (lasd 4a. munkavegzesi szabaly, kimondatlan gate-kijeloles).'
+    expect(parseGateDesignation(line)).toBeNull()
+  })
+
+  // Card 165ff1af regression guard: a legitimate mid-sentence declaration (no preceding newline,
+  // same shape as the false positive above) must keep matching. Anchoring GATE_LINE_RX/the clause
+  // to line-start -- the fix bd5241b7 originally proposed -- would suppress BOTH this case and the
+  // b474e1b9 false positive identically, since neither is preceded by a newline; this is why the
+  // fix lives in parseGateDesignation's token-shape check instead.
+  it('165ff1af regression guard: a mid-sentence "Gate: QA." declaration still designates qa/qa2', () => {
+    expect(parseGateDesignation('QA.')).toEqual(new Set(['qa', 'qa2']))
+  })
+
+  it('bd5241b7: "Cybersec-only" (not filename-shaped: no extension, no "/") still designates cybersec', () => {
+    expect(parseGateDesignation('Cybersec-only')).toEqual(new Set(['cybersec', 'cybersec2']))
+  })
+
+  it('bd5241b7: a path reference ("scripts/cybersec/x.sh") is excluded the same way a bare filename is', () => {
+    expect(parseGateDesignation('lasd scripts/cybersec/x.sh')).toBeNull()
+  })
 })
 
 describe('gateCompletenessGuardVerdict', () => {
