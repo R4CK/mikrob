@@ -1000,8 +1000,22 @@ $ldesc
 $ltags" 2>/dev/null | head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD")"
   [[ -n "${candidates// }" ]] || { printf '%s' "$raw"; return; }
 
+  # VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f, Gate-SHA dad7994b): the per-fragment
+  # description below used to ALWAYS truncate the parent description to 600 chars before any
+  # downstream routing call ever saw it -- a signal past char 600 (measured: an authz word at char
+  # 699) never reached a fragment's own classification, so the fragment routed LOCAL while the
+  # whole card was correctly vetoed ONLINE by card-build-route.sh on its own (untruncated) text.
+  # Fix: decide the veto ONCE, here, on the FULL untruncated parent text, and carry the result as
+  # an explicit field every fragment inherits -- try_leaf short-circuits to the categorical-online
+  # path on this field, never re-deriving the decision from its own (necessarily bounded) copy of
+  # the text. card-build-route.sh's deterministic content gates are pure keyword matches, no
+  # network/model call, so this costs nothing extra for the common (non-vetoed) case.
+  local parent_veto_online="false"
+  [[ "$(bash "$HERE/card-build-route.sh" --text "$ltitle
+$ldesc" 2>/dev/null | tr -d '[:space:]')" == "ONLINE" ]] && parent_veto_online="true"
+
   REAL_ID="$lid" TITLE="$ltitle" DESC="$ldesc" TAGS="$ltags" ASSIGNEE="$lassignee" \
-  ASSIGNEE_RAW="$lassignee_raw" PROJECT="$lproject" \
+  ASSIGNEE_RAW="$lassignee_raw" PROJECT="$lproject" PARENT_VETO_ONLINE="$parent_veto_online" \
     python3 -c '
 import json, os, sys
 cands = []
@@ -1014,6 +1028,7 @@ for line in sys.stdin:
 real_id = os.environ["REAL_ID"]
 title = os.environ["TITLE"]
 desc = os.environ["DESC"]
+veto_online = os.environ.get("PARENT_VETO_ONLINE") == "true"
 out = []
 for t, task in cands:
     # SAFETY (card 501c489f, requirement 2): local-llm-rag.sh own routeTask classifier reads ONLY
@@ -1035,6 +1050,7 @@ for t, task in cands:
         "project": os.environ["PROJECT"],
         "parent_context": f"{title}\n{desc[:400]}",
         "synthetic": True,
+        "veto_online": veto_online,
     })
 print(json.dumps(out))
 ' <<< "$candidates"
@@ -1580,10 +1596,20 @@ try_leaf() {
   # independently. post_id is where a comment/nudge actually LANDS on the board -- a synthetic id is
   # not a real kanban row, so it is ALWAYS the real card id, same for every fragment of that card.
   # For a real leaf the two are identical (post_id == leaf_id), so this is a no-op there.
-  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_assignee="$4" leaf_tags="$5" leaf_project="$6" parent_ctx="$7" leaf_assignee_raw="${8:-}" post_id="${9:-$1}" synthetic="${10:-false}"
+  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_assignee="$4" leaf_tags="$5" leaf_project="$6" parent_ctx="$7" leaf_assignee_raw="${8:-}" post_id="${9:-$1}" synthetic="${10:-false}" veto_online="${11:-false}"
   local task="$leaf_title
 
 $leaf_desc"
+
+  # VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f): a synthetic fragment whose PARENT
+  # was vetoed ONLINE on the parent's own full (untruncated) text never gets a local attempt of its
+  # own -- the decision was already made, once, on text this fragment's own (necessarily bounded)
+  # copy may not even contain. Never re-derive it here from the fragment's truncated text.
+  if [[ "$synthetic" == "true" && "$veto_online" == "true" ]]; then
+    attempts_op categorical-online "$leaf_id" >/dev/null
+    echo "offload-dispatch: leaf $leaf_id -> categorical online (parent veto inherited), no local attempt" >&2
+    return 1
+  fi
 
   # GEMINI ROUTE, LOCAL LLM NOT AVAILABLE (card a92e9913): skip the RAG call entirely.
   if [[ "$GEMINI_ROUTE" == "gemini" && "${LOCAL_LLM_AVAILABLE:-1}" -eq 0 ]]; then
@@ -1734,7 +1760,7 @@ drafted=0
 # The same shift also handed the local model the ASSIGNEE NAME as its --context. The old 7-field
 # form hid it because the empty field was LAST, so nothing came after it to lose.
 # '|' is outside the base64 alphabet (A-Za-z0-9+/=) and is not IFS whitespace, so empty fields survive.
-while IFS='|' read -r b64id b64title b64desc b64assignee b64tags b64project b64ctx b64assignee_raw b64synthetic; do
+while IFS='|' read -r b64id b64title b64desc b64assignee b64tags b64project b64ctx b64assignee_raw b64synthetic b64veto; do
   [[ -z "$b64id" ]] && continue
   lid="$(printf '%s' "$b64id" | base64 -d)"
   (( attempted >= OFFLOAD_MAX_SUBTASKS )) && { echo "offload-dispatch: leaf call budget ($OFFLOAD_MAX_SUBTASKS) reached, stopping" >&2; break; }
@@ -1749,6 +1775,7 @@ while IFS='|' read -r b64id b64title b64desc b64assignee b64tags b64project b64c
   lctx="$(printf '%s' "$b64ctx" | base64 -d)"
   lassignee_raw="$(printf '%s' "$b64assignee_raw" | base64 -d)"
   lsynthetic="$(printf '%s' "$b64synthetic" | base64 -d)"
+  lveto="$(printf '%s' "${b64veto:-}" | base64 -d 2>/dev/null)"
   # POST TARGET (card 501c489f): a synthetic leaf id ("$realCardId~$type") is not a real kanban row
   # -- comments/nudges always go to the real card, named by stripping everything from the FIRST `~`
   # onward (a no-op for a real leaf id, which never contains one).
@@ -1779,13 +1806,13 @@ else:
     print(desc)
 ')"
   attempted=$(( attempted + 1 ))
-  if try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic"; then
+  if try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic" "$lveto"; then
     drafted=$(( drafted + 1 ))
   fi
 done < <(printf '%s' "$LEAVES_JSON" | python3 -c '
 import json, sys, base64
 for l in json.load(sys.stdin):
-    fields = [l["id"], l["title"], l["description"], l["assignee"], l["tags"], l["project"], l["parent_context"], l["assignee_raw"], str(bool(l.get("synthetic", False))).lower()]
+    fields = [l["id"], l["title"], l["description"], l["assignee"], l["tags"], l["project"], l["parent_context"], l["assignee_raw"], str(bool(l.get("synthetic", False))).lower(), str(bool(l.get("veto_online", False))).lower()]
     print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
 ')
 
