@@ -22350,3 +22350,15 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** Peti (direktíva) + DevO (végrehajtás).
 
 **Hivatkozás:** kártya 7dde8ebc (dashboard-token rotálása), 21df3822 (titok-őr előfeltétel, már DONE).
+
+## 2026-10-30: 2c94eae5 -- SDK-fallback telegram-tiltás flag-settings réteggel, nem az üres plugin-könyvtárral
+
+**Döntés:** a WhiteHat F1 MEDIUM lelet (6dc50a41, msg 3749) szerint az `ensureIsolatedSdkConfigDir()` üres `enabledPlugins:{}`-je csak addig "véd", amíg a saját plugin-könyvtára üres marad -- egy üres objektum egy rétegen soha nem írja felül egy MÁSIK réteg engedélyezett pluginját. A query() hívás nem állította be a `settingSources`-t, tehát MINDEN fájlrendszeri forrást betöltött, köztük a `cwd`-ből (PROJECT_ROOT) olvasott projekt-settingset, ami a valós csatorna-session számára `"telegram@claude-plugins-official": true`-t ad -- a `CLAUDE_CONFIG_DIR` csak a USER-settings fájlt helyezi át, a projekt/local settingset a saját fix helyéről jön, függetlenül tőle. Ezt közvetlenül ellenőriztem a `/home/neon/marveen/.claude/settings.json` tartalma és a SDK saját `sdk.d.ts`-e ellen (a `settings` opció a "flag settings" réteg, ami a legmagasabb prioritású a felhasználó-vezérelt rétegek között, egyenértékű a `--settings` CLI flaggel).
+
+**Javítás:** `src/agent.ts` -- új `SDK_FALLBACK_FLAG_SETTINGS = { enabledPlugins: { 'telegram@claude-plugins-official': false } }` konstans, bekötve a `runAgent()` SDK-fallback ágának `query()` hívásába `settings:` kulcsként. Ez a tényleges tiltás mostantól (a flag-settings réteg felülírja a projekt-settingset); az izolált könyvtár üres objektuma változatlan marad, de nem az egyetlen védelem.
+
+**Mit ellenőriztem:** új teszt (`src/__tests__/agent-sdk-fallback-config-isolation.test.ts`) asszertálja, hogy a mockolt `query()` hívás megkapja ezt a pontos settings-objektumot. Mutáció-pin: a `settings:` sor eltávolítása CSAK az új tesztet viszi pirosra (4/4 zöld a javításon, 54/54 a tágabb isolation/inheritance sweep-ben); visszaállítva zöld. `tsc --noEmit -p .` tiszta a már korábban is meglévő, nem kapcsolódó `parse5` modul-feloldási hibákon kívül.
+
+**Ki döntött:** WhiteHat (cybersec) eredeti lelete (6dc50a41, msg 3749), backend2 végrehajtása MikroB self-advance-dispatch alapján (2026-10-30, 35 napos planned kártya, fleet-rule 6b).
+
+**Hivatkozás:** kártya 2c94eae5 (szülő 6dc50a41), msg 3749 (WhiteHat F1 MEDIUM), src/agent.ts, src/__tests__/agent-sdk-fallback-config-isolation.test.ts.
