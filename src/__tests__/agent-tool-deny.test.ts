@@ -226,3 +226,24 @@ describe('writeAgentSettingsFromProfile unions toolDeny, never replaces (card 21
     expect(settings.permissions.allow).not.toContain('Workflow')
   })
 })
+
+// Card 4113c2d7 (follow-up of 21597530, Cybersec F1 MEDIUM, Gate-SHA d6569d8e): the shipped union
+// is correct live, but nothing pinned it -- replacing the egress or self-pace deny alongside
+// toolDeny kept the suite above green while all 8 egress denies silently disappeared live. This
+// asserts the deny list WITH toolDeny configured is a SUPERSET of the deny list WITHOUT it, so a
+// future change that pushes toolDeny entries in place of (rather than onto) the security-purpose
+// entries goes red here, not just live.
+describe('writeAgentSettingsFromProfile: toolDeny union is a strict superset of the security floor (card 4113c2d7)', () => {
+  it('deny list with toolDeny configured contains every entry the deny list without it has', () => {
+    writeAgentSettingsFromProfile(AGENT_NAME, loadProfileTemplate('default'))
+    const without = JSON.parse(readFileSync(agentSettingsPath(AGENT_NAME), 'utf-8')).permissions.deny as string[]
+    expect(without.length).toBeGreaterThan(0)
+    rmSync(AGENT_DIR, { recursive: true, force: true })
+    writeConfig({ toolDeny: ['Artifact', 'Workflow'] })
+    writeAgentSettingsFromProfile(AGENT_NAME, loadProfileTemplate('default'))
+    const withToolDeny = JSON.parse(readFileSync(agentSettingsPath(AGENT_NAME), 'utf-8')).permissions.deny as string[]
+    for (const rule of without) {
+      expect(withToolDeny).toContain(rule)
+    }
+  })
+})
