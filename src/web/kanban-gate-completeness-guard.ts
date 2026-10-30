@@ -106,11 +106,26 @@ function widenCybersec(names: Set<GateAgent>): Set<GateAgent> {
 // Scoped to the TOKEN shape, not a blanket hyphen exclusion: "Gate: Cybersec-only" must keep
 // matching (measured contradiction in backend2's first draft), because "Cybersec-only" does not
 // end in a file extension and contains no '/'.
+//
+// NARROWED (CYBERSEC NO-GO 26331 on the first version of this rule): a bare "contains '/'" check
+// took "QA/Cybersec" as ONE token and blanked BOTH names (fail-open: the done-guard's null-means-
+// nothing-to-check path let a card close with no verdict at all), and the generic 1-4-letter
+// dot-suffix shape matched ordinary prose continuations ("Cybersec.Then", "Cybersec.Next") as if
+// they were extensions, silently dropping the gate. A token now only reads as a filename/path
+// reference -- and gets blanked -- when it BOTH (a) has path-like structure (a hyphenated
+// compound or a slash-joined path) AND (b) ends in a KNOWN extension from a closed list, never a
+// generic short-suffix shape. "QA/Cybersec" has (a) but not (b) (ends in "Cybersec", not an
+// extension) and survives untouched; "Cybersec.py"/"Cybersec.md" have (b) but not (a) (no hyphen,
+// no slash) and also survive; "cybersec-gate-scan.py" and "scripts/cybersec/x.sh" have both and
+// are blanked, same as before.
 const FILENAME_TOKEN_RX = /[A-Za-z0-9_./-]+/g
-const FILENAME_SHAPED_RX = /\.[a-z]{1,4}$/i
+const FILENAME_EXT_RX = /\.(py|sh|bash|md|markdown|ts|tsx|js|jsx|mjs|cjs|json|yml|yaml|txt|sql|go|rs|rb|php|html|htm|css|toml|ini|cfg|conf|log|csv|xml|env)$/i
 
 function stripFilenameShapedTokens(text: string): string {
-  return text.replace(FILENAME_TOKEN_RX, (token) => (FILENAME_SHAPED_RX.test(token) || token.includes('/') ? ' ' : token))
+  return text.replace(FILENAME_TOKEN_RX, (token) => {
+    const pathLike = token.includes('-') || token.includes('/')
+    return pathLike && FILENAME_EXT_RX.test(token) ? ' ' : token
+  })
 }
 
 /** Which gate agents a Gate: line actually designates -- `null` if it names none (an unparseable or

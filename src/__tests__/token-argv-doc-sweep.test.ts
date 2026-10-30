@@ -49,8 +49,8 @@ const ALLOWLIST: Record<string, number[]> = {
   'docs/memoria-szuro-hamis-pozitiv-negativ-meres.md': [223], // doc table example row with a placeholder "X" token, not an invocation
   'scripts/agent-msg-get.sh': [30], // comment naming the anti-pattern, not an invocation (shifted by the PORT chain, card d06a325d/#1869)
   'scripts/install-prod-tree-guard-hook.sh': [204, 269], // comment naming the anti-pattern, not an invocation
-  'store/kanban-comment-lib.sh': [45], // comment naming the anti-pattern, not an invocation
-  'store/mopsion-suite-run.sh': [255], // comment naming the anti-pattern, not an invocation (line shifted again by card c0408a1c's M1/M2/D1/D2 fix)
+  'store/kanban-comment-lib.sh': [48], // comment naming the anti-pattern, not an invocation (shifted from 45 by card 56b14f14's git-common-dir fix)
+  'store/mopsion-suite-run.sh': [258], // comment naming the anti-pattern, not an invocation (shifted from 255 by card 56b14f14's git-common-dir fix)
   'store/sync-agent-templates.sh': [112, 131, 140, 215, 406, 416, 444, 465, 480, 488, 519], // the rewriter's own docstring + test fixtures
   'store/szotasz-marveen-daily-check.sh': [24], // comment naming the anti-pattern, not an invocation
   'scripts/__tests__/supabase-q-token-hiding.test.sh': [192], // mutation-control fixture: a python one-liner that writes a MUTATED supabase-q.sh putting the token in argv, to prove the suite's own test 1 would catch it -- not an invocation. Line shifted from 189 when the stub grew a -H @- capture branch (card 13b2648e).

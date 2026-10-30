@@ -1010,9 +1010,25 @@ $ltags" 2>/dev/null | head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD")"
   # path on this field, never re-deriving the decision from its own (necessarily bounded) copy of
   # the text. card-build-route.sh's deterministic content gates are pure keyword matches, no
   # network/model call, so this costs nothing extra for the common (non-vetoed) case.
+  #
+  # SECURITY-REASONS ONLY (Peti 12838, "Tiltas", narrowing the above after CYBERSEC GO 26252 F2):
+  # the veto fires ONLY when the router's ONLINE reason is one of the security paths below -- NOT
+  # on the bare "ONLINE" token. Every other ONLINE reason (deterministic-multi-decision,
+  # model-complex, route-classify-abstained, model-unknown/busy, and the ambient/transient ones:
+  # vram-hold, not-installed, local-first-draft-off, kill-switch, ...) must NOT veto a fragment and
+  # must NOT write the persistent categorical-online/exhausted mark -- those keep the ORIGINAL
+  # 501c489f behaviour (fragments still get their own local attempt on their own text), because the
+  # veto exists to stop a SECURITY signal from being hidden by truncation, not to broaden every
+  # online-for-any-reason parent into a blanket fragment lockout (that reversed a working feature
+  # for ambient/transient reasons, which rule 5 forbids without Peti's say).
   local parent_veto_online="false"
-  [[ "$(bash "$HERE/card-build-route.sh" --text "$ltitle
-$ldesc" 2>/dev/null | tr -d '[:space:]')" == "ONLINE" ]] && parent_veto_online="true"
+  local route_out route_reason
+  route_out="$(CARD_BUILD_ROUTE_SHOW_REASON=1 bash "$HERE/card-build-route.sh" --text "$ltitle
+$ldesc" 2>/dev/null)"
+  read -r _ route_reason <<< "$route_out"
+  if [[ "$route_out" == ONLINE* ]] && printf '%s' "$route_reason" | grep -Eq '^(route-classify-security|deterministic-money|deterministic-auth-tenant-scope|deterministic-sec-label)$'; then
+    parent_veto_online="true"
+  fi
 
   REAL_ID="$lid" TITLE="$ltitle" DESC="$ldesc" TAGS="$ltags" ASSIGNEE="$lassignee" \
   ASSIGNEE_RAW="$lassignee_raw" PROJECT="$lproject" PARENT_VETO_ONLINE="$parent_veto_online" \
@@ -1540,9 +1556,13 @@ echo "offload-dispatch: $CARD -> $LEAF_COUNT open leaf(s) resolved" >&2
 # `*)` default, returned empty, and graph_args_for's `[[ -n "$repo" ... ]] || return 0` silently
 # skipped code-graph context for it -- not a wrong answer, a quietly-degraded local-llm draft.
 graph_repo_for() {
-  local project="$1"
+  local project="$1" gcd
   case "$project" in
-    MikroB)              (cd "$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null || echo .)/.." 2>/dev/null && pwd) ;;
+    # --path-format=absolute (card 56b14f14): the plain form answers RELATIVE TO "$HERE", but the
+    # `cd` resolving that answer runs in THIS function's own shell, against the CALLER's cwd, not
+    # "$HERE" -- a caller outside the repo (or in a different repo) silently jumps to the wrong
+    # place or fails. Asking git for an absolute path removes the ambiguity entirely.
+    MikroB)              { gcd="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && dirname "$gcd"; } || echo "" ;;
     CleanCore|mopsion)    echo "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}" ;;
     # Explicit fail-safe default (Cybersec, card 1b02ed3a comment 4864): an unrecognised project
     # already fell through to this same empty output before this arm existed -- stated here rather

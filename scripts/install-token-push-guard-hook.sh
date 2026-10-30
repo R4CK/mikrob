@@ -20,7 +20,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HOOK_DIR="$(cd "$(git -C "$ROOT" rev-parse --git-common-dir)" && pwd)/hooks"
+# --path-format=absolute (card 56b14f14): the plain form answers relative to "$ROOT", and
+# resolving that with a bare `cd` runs against the CALLER's cwd (wherever this installer was
+# invoked from), not "$ROOT" -- an invocation from elsewhere can silently install the hook into
+# the wrong repository (see install-git-guard-hook.sh's identical finding for the mechanism).
+HOOK_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/hooks"
 GUARD="$HOOK_DIR/pre-push.d/20-no-dashboard-token-in-push"
 DISPATCH="$HOOK_DIR/pre-push"
 MARK="marveen-pre-push-dispatcher"
