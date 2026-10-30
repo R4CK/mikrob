@@ -118,36 +118,77 @@ describe('pre-pr-review.sh never lets DASHBOARD_TOKEN become an exportable shell
   // with 11/11 green. The correct invariant is shape-independent: $TOKEN_FILE must never appear
   // inside a $(cat ...) substitution or a `read` redirect -- those are the only two forms that
   // would move the token VALUE into a shell variable that a child process could inherit.
-  it('N1 shape-independent: $TOKEN_FILE never used in $(cat) substitution or read-redirect regardless of variable name (card d5342cf9)', () => {
+  //
+  // Card aab26b61 (RedHat 25290, d5342cf9 follow-up): the two L2 findings on this N1 check --
+  // (1) only 2 of 12 real shapes that read a file's contents into a shell variable were covered
+  // (brace-wrapped `${TOKEN_FILE}`, `$(<f)`, backticks, mapfile, nested command substitution,
+  // head, tr, a literal hardcoded path bypassing the variable entirely, python, and an `exec`+
+  // `read -u` fd-redirect pair were all unmatched); (2) the NON-VACUITY test below used to carry
+  // its OWN inline copies of catSubstRx/readRedirectRx, so a mutant that broke the LIVE regexes
+  // (the ones actually applied to pre-pr-review.sh) would leave NON-VACUITY green, since it never
+  // re-exercised the live pattern -- RedHat measured this at 14/14 green with the live regexes
+  // dead. Fix: a single, module-scope pattern TABLE is now the only copy, used by BOTH the real
+  // check below and NON-VACUITY, so a mutant that weakens any pattern turns BOTH red together.
+  const VARREF = '\\$\\{?TOKEN_FILE\\}?'
+  const TOKEN_FILE_LEAK_PATTERNS: Array<{ name: string; re: RegExp }> = [
+    { name: 'cat-substitution', re: new RegExp(`\\$\\(cat\\b[^)]*${VARREF}`) },
+    { name: 'read-redirect', re: new RegExp(`\\bread\\b[^;\\n]*<[^;\\n]*${VARREF}`) },
+    { name: 'dollar-paren-lt ($(<f) fast read)', re: new RegExp(`\\$\\(<[^)]*${VARREF}`) },
+    { name: 'backtick-cat', re: new RegExp('`[^`]*cat\\b[^`]*' + VARREF + '[^`]*`') },
+    { name: 'mapfile', re: new RegExp(`\\bmapfile\\b[^;\\n]*<[^;\\n]*${VARREF}`) },
+    { name: 'nested-paren', re: new RegExp(`\\$\\([^()]*\\$\\(cat\\b[^)]*${VARREF}[^)]*\\)[^()]*\\)`) },
+    { name: 'head', re: new RegExp(`\\bhead\\b[^;\\n]*${VARREF}`) },
+    { name: 'tr', re: new RegExp(`\\btr\\b[^;\\n]*${VARREF}`) },
+    { name: 'literal-path', re: /\$\(cat\b[^)]*store\/\.dashboard-token/ },
+    { name: 'python', re: new RegExp(`\\bpython3?\\b[^\\n]*${VARREF}`) },
+    { name: 'read-dash-u', re: new RegExp(`\\bexec\\b[^\\n]*<[^\\n]*${VARREF}[\\s\\S]{0,80}?\\bread\\b[^\\n]*-u\\b`) },
+  ]
+
+  it('N1 shape-independent: $TOKEN_FILE never used in any file-read-into-shell-variable shape, regardless of variable name (card d5342cf9, aab26b61)', () => {
     const absPath = join(REPO_ROOT, 'scripts', 'pre-pr-review.sh')
     const src = readFileSync(absPath, 'utf-8')
-    // $(cat ... $TOKEN_FILE ...) -- catches TOKEN=$(cat "$TOKEN_FILE"), declare -x X=$(cat ...)
-    const catSubstRx = /\$\(cat\b[^)]*\$TOKEN_FILE/
-    // read ... < ... $TOKEN_FILE -- catches read -r VAR < "$TOKEN_FILE"
-    const readRedirectRx = /\bread\b[^;\n]*<[^;\n]*\$TOKEN_FILE/
-
-    expect(src.match(catSubstRx),
-      'N1: $TOKEN_FILE appears inside $(cat ...) -- the token value would enter a shell variable ' +
-      'and be inheritable by curl/python3 children, regardless of what variable name is used'
-    ).toBeNull()
-    expect(src.match(readRedirectRx),
-      'N1: $TOKEN_FILE appears in a read redirect -- the token value would enter a shell variable'
-    ).toBeNull()
+    for (const { name, re } of TOKEN_FILE_LEAK_PATTERNS) {
+      expect(src.match(re),
+        `N1 (${name}): $TOKEN_FILE appears in a shape that moves the token value into a shell ` +
+        'variable, inheritable by curl/python3 children'
+      ).toBeNull()
+    }
   })
 
-  // NON-VACUITY: prove the two regexes actually fire on the surviving mutants WhiteHat measured.
-  it('NON-VACUITY: the N1 shape-independent regexes catch each surviving mutant from WhiteHat 23050', () => {
-    const catSubstRx = /\$\(cat\b[^)]*\$TOKEN_FILE/
-    const readRedirectRx = /\bread\b[^;\n]*<[^;\n]*\$TOKEN_FILE/
-    // Mutant B: most likely regression -- TOKEN name (used by 10 sibling store/ scripts)
-    expect(catSubstRx.test('TOKEN="$(cat "$TOKEN_FILE")"'), 'mutant B not caught').toBe(true)
-    // Mutant C: declare -x form
-    expect(catSubstRx.test('declare -x DASHBOARD_TOKEN="$(cat "$TOKEN_FILE")"'), 'mutant C not caught').toBe(true)
-    // Mutant D: read-redirect form
-    expect(readRedirectRx.test('read -r DASHBOARD_TOKEN < "$TOKEN_FILE"'), 'mutant D not caught').toBe(true)
-    // Mutant E: arbitrary other name
-    expect(catSubstRx.test('SECRET=$(cat "$TOKEN_FILE")'), 'mutant E not caught').toBe(true)
-  })
+  // NON-VACUITY: prove every pattern in the shared table actually fires on a real mutant for its
+  // shape. Uses the SAME TOKEN_FILE_LEAK_PATTERNS table as the real check above (card aab26b61
+  // L2) -- no separate copy, so weakening a live pattern turns this red too.
+  const NON_VACUITY_MUTANTS: Array<{ pattern: string; mutant: string }> = [
+    // Pre-existing mutants (WhiteHat 23050 B/C/D/E), now checked against the shared table.
+    { pattern: 'cat-substitution', mutant: 'TOKEN="$(cat "$TOKEN_FILE")"' },
+    { pattern: 'cat-substitution', mutant: 'declare -x DASHBOARD_TOKEN="$(cat "$TOKEN_FILE")"' },
+    { pattern: 'read-redirect', mutant: 'read -r DASHBOARD_TOKEN < "$TOKEN_FILE"' },
+    { pattern: 'cat-substitution', mutant: 'SECRET=$(cat "$TOKEN_FILE")' },
+    // The 10 shapes RedHat 25290 found uncovered (card aab26b61 L1).
+    { pattern: 'cat-substitution', mutant: 'TOKEN="$(cat "${TOKEN_FILE}")"' }, // braces
+    { pattern: 'dollar-paren-lt ($(<f) fast read)', mutant: 'TOKEN=$(<"$TOKEN_FILE")' },
+    { pattern: 'backtick-cat', mutant: 'TOKEN=`cat "$TOKEN_FILE"`' },
+    { pattern: 'mapfile', mutant: 'mapfile -t LINES < "$TOKEN_FILE"' },
+    { pattern: 'nested-paren', mutant: 'TOKEN=$(echo $(cat "$TOKEN_FILE"))' },
+    { pattern: 'head', mutant: 'TOKEN=$(head -n1 "$TOKEN_FILE")' },
+    { pattern: 'tr', mutant: "TOKEN=$(tr -d '\\n' < \"$TOKEN_FILE\")" },
+    { pattern: 'literal-path', mutant: 'TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")' },
+    { pattern: 'python', mutant: "TOKEN=$(python3 -c \"print(open('$TOKEN_FILE').read())\")" },
+    { pattern: 'read-dash-u', mutant: 'exec 3< "$TOKEN_FILE"\nread -u 3 TOKEN' },
+  ]
+  for (const { pattern, mutant } of NON_VACUITY_MUTANTS) {
+    it(`NON-VACUITY (${pattern}): shared pattern table catches mutant "${mutant.replace(/\n/g, '\\n')}"`, () => {
+      const entry = TOKEN_FILE_LEAK_PATTERNS.find((p) => p.name === pattern)
+      expect(entry, `no pattern named '${pattern}' in TOKEN_FILE_LEAK_PATTERNS`).toBeDefined()
+      expect(entry!.re.test(mutant), `pattern '${pattern}' did not match mutant`).toBe(true)
+    })
+  }
+
+  // Dead-regex detection: if every pattern in the table is neutralized (never matches anything),
+  // every NON-VACUITY case above goes red together with the real N1 check -- this is the
+  // structural property card aab26b61 Kesz-ha #2 asks for (measured in the REVIEW comment by
+  // temporarily replacing TOKEN_FILE_LEAK_PATTERNS with a never-matching table and re-running
+  // this file, then reverting).
 })
 
 // Card d5342cf9 (N2 follow-up, WhiteHat komment 23050): the existing fork-anchor watches

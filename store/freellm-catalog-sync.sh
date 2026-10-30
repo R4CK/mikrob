@@ -5,13 +5,38 @@
 
 set -euo pipefail
 
-readonly FREELLM_URL="http://127.0.0.1:3001"
-readonly AUTH_TOKEN_FILE="/home/neon/.config/freellmapi/auth-token"
-readonly ADMIN_CRED_FILE="/home/neon/.config/freellmapi/admin"
-readonly MARVEEN_TOKEN_FILE="/home/neon/marveen/store/.dashboard-token"
-readonly CURL_MAX_TIME=30
+FREELLM_URL="${FREELLM_URL:-http://127.0.0.1:3001}"
+AUTH_TOKEN_FILE="${AUTH_TOKEN_FILE:-/home/neon/.config/freellmapi/auth-token}"
+ADMIN_CRED_FILE="${ADMIN_CRED_FILE:-/home/neon/.config/freellmapi/admin}"
+MARVEEN_TOKEN_FILE="${MARVEEN_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}"
+CURL_MAX_TIME="${CURL_MAX_TIME:-30}"
+readonly FREELLM_URL AUTH_TOKEN_FILE ADMIN_CRED_FILE MARVEEN_TOKEN_FILE CURL_MAX_TIME
 
-is_int() { [[ "$1" =~ ^-?[0-9]+$ ]]; }
+# Non-negative, max 9 digits (405869d9 R1, CYBERED NO-GO 25502 / WhiteHat2
+# 25318): the old ^-?[0-9]+$ let "08" through, which then crashed bash
+# arithmetic (invalid octal literal) AFTER is_int passed it, dying without
+# going through fail() -- no FAILED line, no daily-log row. The first fix
+# (^(0|[1-9][0-9]*)$) closed that and the negative-count case, but had no
+# length bound: a 20-digit count like 2^64 still passed is_int and wrapped
+# bash's signed 64-bit arithmetic to 0 (or a large negative), which then
+# silently read as "no change" and skipped notify() -- the exact failure
+# mode R1 exists to close, just moved to a bigger number. A 9-digit cap
+# (max 999,999,999) is far above any real catalog count and stays inside
+# bash's 64-bit range with room to spare, so the sum of three such values
+# can never wrap. Leading zeros are allowed again here (the length cap
+# alone can't tell "08" from "8"); the arithmetic below reads counts via
+# 10#$c to force base-10, so "08" no longer hits bash's octal-literal rule.
+is_int() { [[ "$1" =~ ^[0-9]{1,9}$ ]]; }
+
+# Reject anything outside a plain token charset before it reaches a daily-log
+# row that lands in an agent's memory/context (405869d9 R3). The catalog is
+# Ed25519-signed, but a signature only proves who published it, not that
+# version/action are safe to echo verbatim into another agent's context.
+sanitize_field() {
+  local v="$1"
+  [[ "$v" =~ ^[A-Za-z0-9._-]{1,32}$ ]] && { printf '%s' "$v"; return; }
+  printf 'invalid'
+}
 
 # Build the daily-log body with jq -n --arg (never raw string interpolation): a
 # hostile $version/$action from the (signed but not JSON-safe) catalog response
@@ -41,7 +66,7 @@ fail() {
 # Re-login once on an expired/invalid session, using the admin credential file.
 # Email and password flow only via stdin into jq/curl, never as argv or env of a
 # child process (same constraint as the Bearer-header piping below). The new
-# token is written with umask 077 so it lands 0600.
+# token lands 0600 via mktemp+mv (see comment at that call below).
 reauth() {
   [ -f "$ADMIN_CRED_FILE" ] || { echo "[ERROR] admin credential file not found: $ADMIN_CRED_FILE" >&2; return 1; }
   local admin_perms
@@ -63,7 +88,24 @@ reauth() {
   new_token=$(echo "$login_response" | jq -r '.token // empty' 2>/dev/null || echo "")
   [ -n "$new_token" ] || { echo "[ERROR] re-login failed: $(echo "$login_response" | jq -r '.error.message // "unparseable response"' 2>/dev/null || echo "unparseable response")" >&2; return 1; }
 
-  ( umask 077; printf '%s' "$new_token" > "$AUTH_TOKEN_FILE" )
+  # mktemp + mv, not a direct '>' write (405869d9 R2): writing into an
+  # EXISTING file with '>' keeps that file's old mode (umask only governs
+  # newly-created files), so a token file that pre-existed as 0644 stayed
+  # 0644 after a "successful" re-login. mktemp always creates its file 0600
+  # (mkstemp, independent of umask), and mv replaces the destination with
+  # that new inode, mode and all. A failure at any step is no longer silent.
+  local tmp_token_file
+  tmp_token_file=$(mktemp "${AUTH_TOKEN_FILE}.XXXXXX") || { echo "[ERROR] could not create temp file for new token" >&2; return 1; }
+  if ! printf '%s' "$new_token" > "$tmp_token_file"; then
+    echo "[ERROR] failed to write new token to temp file" >&2
+    rm -f "$tmp_token_file"
+    return 1
+  fi
+  if ! mv -f "$tmp_token_file" "$AUTH_TOKEN_FILE"; then
+    echo "[ERROR] failed to move new token into place" >&2
+    rm -f "$tmp_token_file"
+    return 1
+  fi
   TOKEN="$new_token"
   return 0
 }
@@ -106,8 +148,8 @@ fi
 ok=$(echo "$response" | jq -r '.sync.ok // "null"' 2>/dev/null || echo "null")
 [ "$ok" = "true" ] || fail "sync response not ok: $(echo "$response" | tr -d '\n' | head -c 200)"
 
-version=$(echo "$response" | jq -r '.sync.version // "unknown"' 2>/dev/null || echo "unknown")
-action=$(echo "$response" | jq -r '.sync.action // "unknown"' 2>/dev/null || echo "unknown")
+version=$(sanitize_field "$(echo "$response" | jq -r '.sync.version // "unknown"' 2>/dev/null || echo "unknown")")
+action=$(sanitize_field "$(echo "$response" | jq -r '.sync.action // "unknown"' 2>/dev/null || echo "unknown")")
 
 # A non-numeric or missing count on a reported "applied" sync is a failure, not
 # "no changes" (WhiteHat L2) -- only "applied" carries counts at all.
@@ -118,7 +160,7 @@ if [ "$action" = "applied" ]; then
   for c in "$updated" "$inserted" "$removed"; do
     is_int "$c" || fail "action=applied but counts are non-numeric/missing (updated=$updated, inserted=$inserted, removed=$removed)"
   done
-  total_changed=$(( updated + inserted + removed ))
+  total_changed=$(( 10#$updated + 10#$inserted + 10#$removed ))
   counts_str="updated=$updated, inserted=$inserted, removed=$removed"
 else
   total_changed=0

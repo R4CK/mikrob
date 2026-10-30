@@ -61,6 +61,19 @@ describe('runAgent legacy SDK-fallback path: CLAUDE_CONFIG_DIR isolation (card 6
     expect(capturedOptions.env.CLAUDE_CONFIG_DIR).toBe(ownDir)
   })
 
+  it('card 2c94eae5 (WhiteHat F1 on 6dc50a41): telegram is disabled via the flag-settings layer, not just the empty plugin dir', async () => {
+    // The isolated CLAUDE_CONFIG_DIR's settings.json sets enabledPlugins:{},
+    // but an empty object at one layer never overrides a DIFFERENT layer's
+    // enabled plugin -- project settings (read from cwd regardless of
+    // CLAUDE_CONFIG_DIR) enable telegram for the real channel session. Only
+    // an explicit `false` in the query() `settings` option (the flag-settings
+    // layer, which outranks project settings) actually disables it here.
+    await runAgent('hello')
+    expect(capturedOptions.settings).toEqual({
+      enabledPlugins: { 'telegram@claude-plugins-official': false },
+    })
+  })
+
   it('KNOWN-POSITIVE for the pin: the pre-fix options builder omitted env entirely for an unprotected caller', () => {
     const preFixOptionsBuilder = (env?: Record<string, string>) => ({
       ...(env ? { env: { ...process.env, ...env } } : {}),

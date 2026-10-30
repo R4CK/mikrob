@@ -652,6 +652,35 @@ read -r PT_RC_MUT PT_ERRNO_MUT _ _ <<< "$SECCOMP_OUT_MUT"
 check "RED-MUTANT (card 077970fc): removing --seccomp is caught (ptrace succeeds again without the filter)" \
   "$([ "$PT_RC_MUT" = "0" ] && [ "$PT_ERRNO_MUT" = "0" ] && echo 1 || echo 0)"
 
+# process_vm_readv denylist entry (card 7f6d435f, QA finding 24836): process_vm_readv gives the
+# same cross-process memory read capability as ptrace (same ptrace_may_access check), so denying
+# ptrace alone left this open. Baseline probe args (self pid, NULL/zero-length iovecs) are
+# deliberately invalid in a way that fails EINVAL (22) when the syscall is allowed through, so
+# EPERM (1) is unambiguously the seccomp filter's doing, not a coincidental error from the args.
+PVR_PROBE_CMD='python3 -c "import ctypes,os;libc=ctypes.CDLL(None,use_errno=True);r=libc.syscall(310,os.getpid(),0,0,0,0,0);e=ctypes.get_errno();print(r,e)"'
+PVR_PROBE="$WORK/pvr-probe.sh"
+head -n -1 "$REAL" > "$PVR_PROBE"
+printf '  sh -c %s\n' "'$PVR_PROBE_CMD'" >> "$PVR_PROBE"
+chmod +x "$PVR_PROBE"
+PVR_OUT="$(env -i "${BASE_ENV[@]}" bash "$PVR_PROBE" 2>&1)" || true
+read -r PVR_RC PVR_ERRNO <<< "$PVR_OUT"
+check "process_vm_readv is denied with EPERM inside the sandbox (card 7f6d435f, QA 24836)" \
+  "$([ "$PVR_RC" = "-1" ] && [ "$PVR_ERRNO" = "1" ] && echo 1 || echo 0)"
+
+# RED-MUTANT: a probe copy with process_vm_readv specifically removed FROM THE DENYLIST (not the
+# whole --seccomp flag, to prove this one list entry -- not just "a filter exists" -- is load-bearing).
+MUTANT_PVR_DIR="$WORK/mutant-no-pvr"
+mkdir -p "$MUTANT_PVR_DIR"
+sed 's/"process_vm_readv", //' "$SCRIPT_DIR/rea-seccomp-filter.py" > "$MUTANT_PVR_DIR/rea-seccomp-filter.py"
+PVR_PROBE_MUT="$MUTANT_PVR_DIR/rea-bwrap-sandbox.sh"
+head -n -1 "$REAL" > "$PVR_PROBE_MUT"
+printf '  sh -c %s\n' "'$PVR_PROBE_CMD'" >> "$PVR_PROBE_MUT"
+chmod +x "$PVR_PROBE_MUT"
+PVR_OUT_MUT="$(env -i "${BASE_ENV[@]}" bash "$PVR_PROBE_MUT" 2>&1)" || true
+read -r PVR_RC_MUT PVR_ERRNO_MUT <<< "$PVR_OUT_MUT"
+check "RED-MUTANT (card 7f6d435f): removing process_vm_readv from DENY_SYSCALLS is caught (EPERM gone, back to EINVAL)" \
+  "$([ "$PVR_RC_MUT" = "-1" ] && [ "$PVR_ERRNO_MUT" = "22" ] && echo 1 || echo 0)"
+
 if [ "$FAIL" -eq 0 ]; then
   echo "selftest: $PASS passed, 0 failed"
   exit 0
