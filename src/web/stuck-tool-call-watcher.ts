@@ -99,10 +99,16 @@ export function confirmsWedgeProfile(cpuPercent: number | null, maxCpuPercent: n
 // populations.
 //
 // Known limit, stated not hidden: the mtime is DIRECTORY-level (newest jsonl
-// under the main session's project dir), so a hypothetical sibling session
-// with the same cwd could mask a real wedge -- for at most one sweep at a
-// time, because an abort keeps the spell and the next poll re-fires the
-// verdict once the masking writer pauses.
+// under the main session's project dir), so another session writing into the
+// same project dir (same cwd) masks a real wedge. Since STUCKATTEMPTS1018 the
+// kill also needs NO write since the freeze (transcriptWrittenSinceStagnation),
+// so the mask lasts for as long as the other writer writes at all during the
+// spell, not for one sweep: one write after stagnantSince holds the recovery
+// until the counter moves or the spell ends. Measured on this host
+// (2026-10-11..18, Samu's #2051 review): the main project dir held 10 jsonl
+// files that replace each other, and of 938 five-minute windows with writes
+// only 5 had two writers, all of them session hand-overs -- so no overlap here.
+// An install that runs a second claude session in the same project dir has it.
 export const STALE_VERDICT_FRESH_MS = 30_000
 
 // STUCKALLCLEAR923 (owner request, 2026-09-23). The failed-recovery branch
@@ -208,6 +214,21 @@ export function verdictStaleByTranscript(
 ): boolean {
   if (transcriptMtimeMs === null) return false
   return nowMs - transcriptMtimeMs < freshMs
+}
+
+// STUCKATTEMPTS1018: has the transcript been written at all since the counter froze? A wedged TUI
+// writes nothing from the moment it freezes, so a write at or after stagnantSince means the session
+// was alive during the stagnation, however long ago that write was. This is the gate that holds a
+// LIVE session once a deferred verdict re-fires every poll: the 30 s snapshot alone does not.
+// Measured on this host (2026-10-12..17, the 9 STUCKFREEZE819 aborts in store/dashboard.log against
+// the main transcript's record timestamps): after every abort a poll with a 30-56 s old write came
+// within 1-3.5 minutes, and a 180-210 s silence within 3.5-18.5 minutes, each followed by more
+// writes. Neither a 30 s nor a 180 s window tells that live session from a wedge; "written since
+// the freeze" does. Stated limit: a wedge that begins AFTER a write inside the same frozen spell is
+// not recovered by this watcher (as before STUCKATTEMPTS1018, when the first abort held the spell).
+// null mtime or no stagnation recorded -> false (fail-open, as verdictStaleByTranscript).
+export function transcriptWrittenSinceStagnation(transcriptMtimeMs: number | null, stagnantSince: number | null): boolean {
+  return transcriptMtimeMs !== null && stagnantSince !== null && transcriptMtimeMs >= stagnantSince
 }
 
 // Recent CPU% of the main session's pane-leader claude (claudePid == panePid for
@@ -451,6 +472,29 @@ export function shouldDeferForRecentRespawn(
   return lastRespawnMs > 0 && nowMs - lastRespawnMs < graceMs
 }
 
+// STUCKATTEMPTS1018: a guard that DEFERS a verdict (rather than ending the spell) must store the
+// spell with attempts back at 0. decideStuckToolCallRecovery() already stored attempts=1 for this
+// verdict, and with attempts >= 1 it answers "recovery already fired: hold" for the rest of the
+// spell -- so a bare `return` turned every deferral into a permanent stand-down, and a real wedge
+// behind it was never recovered. Measured before this fix: one CPU-busy verdict sample, then a
+// frozen counter at 1.8% CPU for 30 minutes -> zero recoveries. With attempts reset, the same spell
+// re-fires on the next poll and every guard is asked again.
+function deferVerdict(session: string, next: StuckToolCallState): void {
+  watchState.set(session, { ...next, attempts: 0 })
+}
+
+// A re-fired verdict meets the transcript gate on every poll for as long as a live session holds
+// the spell. Log the abort at warn once per spell (keyed by stagnantSince), then at debug.
+const transcriptAbortLogged = new Map<string, number | null>()
+function logTranscriptAbort(session: string, stagnantSince: number | null, fields: Record<string, unknown>, msg: string): void {
+  if (transcriptAbortLogged.get(session) === stagnantSince) {
+    logger.debug(fields, msg)
+    return
+  }
+  transcriptAbortLogged.set(session, stagnantSince)
+  logger.warn(fields, msg)
+}
+
 async function checkSession(label: string, session: string): Promise<void> {
   const pane = capturePane(session)
   const sig = pane == null ? null : stuckToolCallSignature(pane)
@@ -564,6 +608,7 @@ async function checkSession(label: string, session: string): Promise<void> {
         { label, session, sinceRespawnMs: lastRespawn ? Date.now() - lastRespawn : null, graceMs: MARVEEN_POST_RESPAWN_GRACE_MS },
         'stuck-tool-call-watcher: recent respawn within grace, deferring recovery (avoid double-respawn / boot churn)',
       )
+      deferVerdict(session, next)
       return
     }
     // CPU-profile guard (#248): the genuine wedge is a render loop blocked on
@@ -577,6 +622,7 @@ async function checkSession(label: string, session: string): Promise<void> {
         { label, session, cpuPercent, maxCpuPercent: WEDGE_MAX_CPU_PERCENT, seconds: next.lastSeconds },
         'stuck-tool-call-watcher: counter stagnant but claude is CPU-active (not the idle wedge profile) -- deferring recovery',
       )
+      deferVerdict(session, next)
       return
     }
     // STUCKCHILD1016: a live tool child (running, or CPU burned within the last polls) means a long
@@ -590,7 +636,7 @@ async function checkSession(label: string, session: string): Promise<void> {
           { label, session, cpuPercent, seconds: next.lastSeconds, stagnantPolls: next.stagnantPolls },
           'stuck-tool-call-watcher: counter stagnant but a tool child process is active (long foreground tool call, not a wedge) -- deferring recovery',
         )
-        watchState.set(session, { ...next, attempts: 0 })
+        deferVerdict(session, next)
         return
       }
       logger.warn(
@@ -602,8 +648,9 @@ async function checkSession(label: string, session: string): Promise<void> {
     // Every earlier guard sampled state at VERDICT time; this one samples at
     // EXECUTION time, because the two are ~2 minutes apart and both measured
     // false kills happened exactly in that gap (the session woke up between
-    // verdict and kill). Abort keeps the spell: a real wedge re-fires on the
-    // next poll, so this gate can only delay a true recovery by one sweep.
+    // verdict and kill). Abort keeps the spell and resets attempts (deferVerdict), so the verdict is
+    // asked again on the next poll; the written-since-the-freeze gate below keeps a live session safe
+    // on those later polls (STUCKATTEMPTS1018).
     // STUCKROOT923 (measured 2026-09-23, this guard's FOURTH sibling after
     // SCHEDLOST914 / TOKENVAK915 / GATEVAK917): reading ONE config root made
     // this gate dead code on an install where the two roots DIVERGE. There the
@@ -621,10 +668,21 @@ async function checkSession(label: string, session: string): Promise<void> {
     // mainConfigRoots() and let newest-wins decide; never write a second list.
     const transcriptMtime = killGateTranscriptMtime()
     if (verdictStaleByTranscript(transcriptMtime, Date.now())) {
-      logger.warn(
+      logTranscriptAbort(
+        session, next.stagnantSince,
         { label, session, transcriptAgeMs: transcriptMtime ? Date.now() - transcriptMtime : null, freshMs: STALE_VERDICT_FRESH_MS, seconds: next.lastSeconds },
         'stuck-tool-call-watcher: verdict stale -- the session transcript was written moments ago, the session is alive; ABORTING recovery (STUCKFREEZE819)',
       )
+      deferVerdict(session, next)
+      return
+    }
+    if (transcriptWrittenSinceStagnation(transcriptMtime, next.stagnantSince)) {
+      logTranscriptAbort(
+        session, next.stagnantSince,
+        { label, session, transcriptAgeMs: transcriptMtime ? Date.now() - transcriptMtime : null, stagnantMs: next.stagnantSince ? Date.now() - next.stagnantSince : null, seconds: next.lastSeconds },
+        'stuck-tool-call-watcher: the session transcript was written after the counter froze, the session is alive; ABORTING recovery (STUCKATTEMPTS1018)',
+      )
+      deferVerdict(session, next)
       return
     }
     // Audit log requested by Marveen 2026-06-02: every respawn this watcher

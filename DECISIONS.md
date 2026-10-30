@@ -22363,21 +22363,29 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 
 **Reference:** card 4aae1357 (parent c65add5a), common reference 34c2d2a2, WhiteHat comment 24241, QA2 comment 24234.
 
-## 2026-10-30: 00cdfdd2 -- gemini-agy-category-check.py fail-closed also on labels (c5f2d6c9 follow-up)
+## 2026-10-30: 2c94eae5 -- SDK-fallback telegram-tiltás flag-settings réteggel, nem az üres plugin-könyvtárral
 
-**What:** `store/gemini-agy-category-check.py`'s `has_unmapped_letter()` raw-text homoglyph
-check ran on title/description (card c5f2d6c9) but not on the `labels` array -- a label
-containing a Greek/Cyrillic letter still went through `norm()`'s silent ASCII-drop and could
-read as clean. Fixed by running `has_unmapped_letter()` over each label before the
-`BLOCKED_LABEL_TOKENS` exact-token match, fail-closed (rc=2) on any unmapped letter.
+**Döntés:** a WhiteHat F1 MEDIUM lelet (6dc50a41, msg 3749) szerint az `ensureIsolatedSdkConfigDir()` üres `enabledPlugins:{}`-je csak addig "véd", amíg a saját plugin-könyvtára üres marad -- egy üres objektum egy rétegen soha nem írja felül egy MÁSIK réteg engedélyezett pluginját. A query() hívás nem állította be a `settingSources`-t, tehát MINDEN fájlrendszeri forrást betöltött, köztük a `cwd`-ből (PROJECT_ROOT) olvasott projekt-settingset, ami a valós csatorna-session számára `"telegram@claude-plugins-official": true`-t ad -- a `CLAUDE_CONFIG_DIR` csak a USER-settings fájlt helyezi át, a projekt/local settingset a saját fix helyéről jön, függetlenül tőle. Ezt közvetlenül ellenőriztem a `/home/neon/marveen/.claude/settings.json` tartalma és a SDK saját `sdk.d.ts`-e ellen (a `settings` opció a "flag settings" réteg, ami a legmagasabb prioritású a felhasználó-vezérelt rétegek között, egyenértékű a `--settings` CLI flaggel).
 
-**Verification:** new selftest case in `store/gemini-agy-call.selftest.sh` (N4 series): a label
-`["m<Greek omicron>psion"]` must return rc=2. Mutation-checked: removing the new label check
-makes the case fail (1 failed of 44); restored, 44/44 (43 prior + 1 new) pass.
-`store/freellm-call.selftest.sh` stayed green (32/32), unaffected (that script never touches
-labels).
+**Javítás:** `src/agent.ts` -- új `SDK_FALLBACK_FLAG_SETTINGS = { enabledPlugins: { 'telegram@claude-plugins-official': false } }` konstans, bekötve a `runAgent()` SDK-fallback ágának `query()` hívásába `settings:` kulcsként. Ez a tényleges tiltás mostantól (a flag-settings réteg felülírja a projekt-settingset); az izolált könyvtár üres objektuma változatlan marad, de nem az egyetlen védelem.
 
-**Who decided:** RedHat (L1 finding, comment 25863, on card c5f2d6c9) + MikroB (follow-up card
-00cdfdd2) + backend (implementation).
+**Mit ellenőriztem:** új teszt (`src/__tests__/agent-sdk-fallback-config-isolation.test.ts`) asszertálja, hogy a mockolt `query()` hívás megkapja ezt a pontos settings-objektumot. Mutáció-pin: a `settings:` sor eltávolítása CSAK az új tesztet viszi pirosra (4/4 zöld a javításon, 54/54 a tágabb isolation/inheritance sweep-ben); visszaállítva zöld. `tsc --noEmit -p .` tiszta a már korábban is meglévő, nem kapcsolódó `parse5` modul-feloldási hibákon kívül.
 
-**Reference:** card 00cdfdd2 (parent 92b76ff0), source card c5f2d6c9, RedHat comment 25863 L1.
+**Ki döntött:** WhiteHat (cybersec) eredeti lelete (6dc50a41, msg 3749), backend2 végrehajtása MikroB self-advance-dispatch alapján (2026-10-30, 35 napos planned kártya, fleet-rule 6b).
+
+**Hivatkozás:** kártya 2c94eae5 (szülő 6dc50a41), msg 3749 (WhiteHat F1 MEDIUM), src/agent.ts, src/__tests__/agent-sdk-fallback-config-isolation.test.ts.
+
+## 2026-10-30: a2db9d8f -- ad6b183f follow-up: a homoglyph backstop önálló pinnelése + szimbólum-betű/label rések
+
+**Döntés:** RedHat CYBERED GO ad6b183f-n (69da33ba, msg 15479) rámutatott, hogy a backstop eltávolítása a `store/freellm-call.sh`-ban a 32/32-es selftest-suite-ot zölden hagyja, mert a c5f2d6c9 (fb481253d) kártya már korábban fail-closedre zárta az 1. kaput (a megosztott kategória-ellenőrzőt) ugyanarra a predikátumra -- a 9b teszt emiatt az 1. kaput pinnelte, nem a backstopot.
+
+**Javítás (három rész):**
+1. `store/freellm-call.selftest.sh` -- új Test 9c: ugyanaz az omikronos "secret-shaped" payload, de a `FREELLM_CATEGORY_CHECK_OVERRIDE` egy mindig-tiszta stubra mutat, ami elszigeteli a 2. kaput (a `freellm-call.sh` saját `_GATE_PY` backstopja).
+2. `store/gemini-agy-category-check.py` -- a `has_unmapped_letter()` csak az L* Unicode-kategóriát (betűk) nézte; a regionális jelző szimbólumok és a körözött/négyzetes latin betűk `So` kategóriájúak, de betűnként szót betűznek (a Unicode-név tartalmazza a "LETTER" szót) -- ezeket most a név alapján is elkapja, nem feltételezett kódponttartomány alapján.
+3. `store/gemini-agy-category-check.py` -- a `labels` ciklus a `norm()`-on keresztül csendben eldobta a nem-leképezett homoglyph/szimbólum-betűt, mielőtt a tokenizálás látta volna (egy "m&lt;omikron&gt;psion" label tiszta "mpsion"-ként tokenizálódott) -- most a nyers label-szövegen is lefut a `has_unmapped_letter()` ellenőrzés a tokenizálás előtt.
+
+**Mit ellenőriztem:** `store/gemini-agy-call.selftest.sh` 4 új esete (N5) a (2) és (3) pontra, plusz negatív kontroll (sima ASCII label/szó továbbra is átmegy). Mutáció-pin külön-külön: a (2) visszaállítása csak a 2 szimbólum-betű tesztet viszi pirosra, a (3) visszaállítása csak a label-tesztet; mindkettő visszaállítva 46/46 (volt 42/42). `freellm-call.selftest.sh`: a backstop eltávolítása a `_GATE_PY`-ban csak az új 9c tesztet viszi pirosra (9b zöld marad, igazolva, hogy az 1. kapu önmagában már lefedi azt a payloadot); visszaállítva 34/34 (volt 32/32). A `store/freellm-call.sh` maga NEM módosult (a kártya korlátja szerint csak teszt).
+
+**Ki döntött:** RedHat (cybered) GO-ja és a 3 követelmény (komment msg 15479, msg 15488), backend2 végrehajtása MikroB self-advance-dispatch alapján.
+
+**Hivatkozás:** kártya a2db9d8f (kapcsolódó: ad6b183f, c5f2d6c9), RedHat msg 15479/15488, store/freellm-call.sh, store/freellm-call.selftest.sh, store/gemini-agy-category-check.py, store/gemini-agy-call.selftest.sh.
