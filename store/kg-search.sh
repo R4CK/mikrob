@@ -56,12 +56,22 @@ _curl_get() {
 
 _urlencode() { python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' "$1"; }
 
+# WhiteHat NO-GO F1 MEDIUM (card 34c2d2a2, comment 24241): for-card/--card-id take an opaque ID,
+# never a path -- _urlencode's default `safe="/"` left a literal "/" through, so
+# `for-card '../../memories'` reached /api/memories with the dashboard Bearer token attached
+# instead of /api/kg/for-card/<id>. safe="" encodes the slash too.
+_urlencode_id() { python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
+
 _pretty() {
   # --json (raw) or the default human summary, via python3 so the script has no jq dependency.
   if [ "$WANT_JSON" = "1" ]; then
     cat
     return 0
   fi
+  # WhiteHat NO-GO F6 (card 34c2d2a2, since 409dded5): a backslash-escaped quote inside an
+  # f-string's {} expression part is a SyntaxError in Python (PEP 701 allows unescaped quotes
+  # there, but never a backslash) -- every dict/.get() lookup below is pulled into a plain
+  # variable FIRST, so the f-strings only ever reference a bare name inside {}.
   python3 -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -69,23 +79,28 @@ if "error" in data and "results" not in data and "solutions" not in data:
     print("error:", data["error"]); sys.exit(1)
 if "results" in data:
     meta = data.get("meta", {})
-    print(f"scope={meta.get(\"scope\")} hits={meta.get(\"hits\")} relaxed={meta.get(\"relaxed\")} strict={meta.get(\"strict\")}")
+    scope = meta.get("scope"); hits = meta.get("hits"); relaxed = meta.get("relaxed"); strict = meta.get("strict")
+    print(f"scope={scope} hits={hits} relaxed={relaxed} strict={strict}")
     for r in data["results"]:
-        print(f"- [{r[\"type\"]}] {r[\"id\"]} (score={r[\"score\"]:.3f}, status={r[\"status\"]}) {r[\"title\"]}")
-        print(f"    why: {r[\"why\"]}")
+        rtype = r["type"]; rid = r["id"]; score = r["score"]; status = r["status"]; title = r["title"]; why = r["why"]
+        print(f"- [{rtype}] {rid} (score={score:.3f}, status={status}) {title}")
+        print(f"    why: {why}")
 else:
     meta = data.get("meta", {})
-    print(f"card={data.get(\"card_id\")} scope={meta.get(\"scope\")} chars={meta.get(\"chars\")} truncated={meta.get(\"truncated\")}")
+    card_id = data.get("card_id"); scope = meta.get("scope"); chars = meta.get("chars"); truncated = meta.get("truncated")
+    print(f"card={card_id} scope={scope} chars={chars} truncated={truncated}")
     for key in ("solutions", "known_pitfalls", "decisions"):
         rows = data.get(key, [])
         print(f"{key} ({len(rows)}):")
         for r in rows:
-            print(f"  - {r[\"card_id\"]} {r.get(\"verdict\") or \"\"} why={r[\"why\"]}")
+            r_card_id = r["card_id"]; verdict = r.get("verdict") or ""; why = r["why"]
+            print(f"  - {r_card_id} {verdict} why={why}")
     cross = data.get("cross_project_refs", [])
     if cross:
         print(f"cross_project_refs ({len(cross)}):")
         for r in cross:
-            print(f"  - {r[\"card_id\"]} ({r[\"error_class\"]})")
+            r_card_id = r["card_id"]; error_class = r["error_class"]
+            print(f"  - {r_card_id} ({error_class})")
 '
 }
 
@@ -119,7 +134,7 @@ case "$cmd" in
     QS="strict=$([ "$STRICT" = 1 ] && echo 1 || echo 0)"
     [ -n "$Q" ] && QS="$QS&q=$(_urlencode "$Q")"
     [ -n "$PROJECT" ] && QS="$QS&project=$(_urlencode "$PROJECT")"
-    [ -n "$CARD_ID" ] && QS="$QS&card_id=$(_urlencode "$CARD_ID")"
+    [ -n "$CARD_ID" ] && QS="$QS&card_id=$(_urlencode_id "$CARD_ID")"
     [ -n "$K" ] && QS="$QS&k=$K"
     # WhiteHat NO-GO F5 LOW: the route reads repeated `types=` params (getAll), not a single
     # comma-joined value -- split so multiple --types values actually reach the route as multiple
@@ -150,9 +165,9 @@ case "$cmd" in
     [ -z "$K" ] || [[ "$K" =~ ^[0-9]+$ ]] || { echo "kg-search: --k must be a positive integer" >&2; exit 2; }
     QS=""
     [ -n "$K" ] && QS="?k=$K"
-    # WhiteHat NO-GO F3 LOW: an unencoded CARD let `for-card '../../search?project=*'` reach a
-    # different endpoint with the token attached.
-    _curl_get "$KG_SEARCH_API/api/kg/for-card/$(_urlencode "$CARD")$QS" | _pretty
+    # WhiteHat NO-GO F3 LOW / F1 MEDIUM: an unencoded CARD let `for-card '../../search?project=*'`
+    # (or `for-card '../../memories'`) reach a different endpoint with the token attached.
+    _curl_get "$KG_SEARCH_API/api/kg/for-card/$(_urlencode_id "$CARD")$QS" | _pretty
     ;;
   *) usage ;;
 esac
