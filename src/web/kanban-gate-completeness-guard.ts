@@ -94,12 +94,35 @@ function widenCybersec(names: Set<GateAgent>): Set<GateAgent> {
   return names
 }
 
+// FILENAME-SHAPED TOKENS (card bd5241b7, MikroB's scoping on backend2's root-cause finding): a
+// gate keyword occurring only as PART of a file/script reference -- "cybersec-gate-scan.py",
+// "scripts/hooks/x.sh" -- must not count as a designation. Card b474e1b9's description says
+// "NINCS Gate: sora -- ... a deklaracio-vezerelt cybersec-gate-scan.py nem fogja latni" (there
+// is NO Gate: line, discussing the absence); GATE_LINE_RX (unanchored, see its own comment --
+// anchoring to line-start would regress card 165ff1af's legitimate mid-sentence declaration)
+// captures everything up to the clause boundary, and "cybersec-gate-scan" sits inside that
+// clause before the first '.', so \bcybersec\b matched it (a hyphen is a non-word character, so
+// it counts as a word boundary) and the guard demanded a Cybersec verdict nobody asked for.
+// Scoped to the TOKEN shape, not a blanket hyphen exclusion: "Gate: Cybersec-only" must keep
+// matching (measured contradiction in backend2's first draft), because "Cybersec-only" does not
+// end in a file extension and contains no '/'.
+const FILENAME_TOKEN_RX = /[A-Za-z0-9_./-]+/g
+const FILENAME_SHAPED_RX = /\.[a-z]{1,4}$/i
+
+function stripFilenameShapedTokens(text: string): string {
+  return text.replace(FILENAME_TOKEN_RX, (token) => (FILENAME_SHAPED_RX.test(token) || token.includes('/') ? ' ' : token))
+}
+
 /** Which gate agents a Gate: line actually designates -- `null` if it names none (an unparseable or
  *  free-text line makes no verifiable claim, so this guard has nothing to check, same silent-vs-
  *  verified split as the landing guard's `allowUnverified`). */
 export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
-  const clauseEnd = /[.(!?]/.exec(gateLine)
-  const clause = clauseEnd ? gateLine.slice(0, clauseEnd.index) : gateLine
+  // Strip filename-shaped tokens BEFORE clause-truncation: the clause-ending dot in
+  // "cybersec-gate-scan.py" is itself the extension's dot, so truncating the clause first would
+  // cut the ".py" suffix off and leave the bare "cybersec-gate-scan" token looking unshaped.
+  const stripped = stripFilenameShapedTokens(gateLine)
+  const clauseEnd = /[.(!?]/.exec(stripped)
+  const clause = clauseEnd ? stripped.slice(0, clauseEnd.index) : stripped
   const low = clause.toLowerCase()
   const names = new Set<GateAgent>()
   if (/\bqa2\b/.test(low)) names.add('qa2')
