@@ -22524,6 +22524,46 @@ MikroB HOLD (26253) escalálta F2-t Peti felé (Telegram 12838): **"Tiltás"** -
 
 **Hivatkozás:** kártya f93fe76a (szülő c65add5a, split 1a350f22-ből QA FAIL 26532 után), kártya 1a350f22 (komment 26148 C pont), `CLAUDE.md`, `~/.claude/skills/project-workflow/SKILL.md`.
 
+## 2026-10-30: 00cdfdd2 -- card closes as superseded by a2db9d8f, missing DECISIONS.md entry was the only gap
+
+**Döntés:** a 00cdfdd2 kártya (RedHat 25863 L1: `gemini-agy-category-check.py` fail-closed kiterjesztése a labelekre is) scope-ja teljes egészében lefedve lett egy másik, szélesebb kártya, `a2db9d8f` által (landolt sha `00829b896`, "test(a2db9d8f): pin freellm homoglyph backstop in isolation + close symbol-letter/label gaps") -- a2db9d8f ugyanazt a `has_unmapped_letter()` ellenőrzést vezette be minden raw labelre, PLUSZ egy második rést (symbol-letter kódpontok) is zárt, amit a 00cdfdd2 scope-ja sosem fedett. A 00cdfdd2-n elkészült saját commit (`db3442c57`) ezért no-op: `git diff origin/develop -- store/gemini-agy-category-check.py store/gemini-agy-call.selftest.sh` a db3442c57-ről futtatva 0 sor diffet adott -- byte-azonos azzal, amit 00829b896 már leszállított.
+
+QA2 FAIL (26706) jogosan jelezte, hogy a kártya saját "Kész, ha:" 4. pontja ("DECISIONS.md tail-append entry") hiányzott a leszállított fán: a db3442c57 commit tartalmazott egy ilyen bejegyzést, de az nem élte túl az a2db9d8f-et landoló merge-et (az origin/develop oldali verzió nyert), és a2db9d8f maga sosem írt ilyet. Pontok 1-3 (has_unmapped_letter minden labelre, mutáció-pin, selftestek) QA2 szerint mutáció-verifikáltan megvannak 00829b896-on (46/46 + 34/34 selftest).
+
+**Javítás:** ez a bejegyzés maga -- kizárólag DECISIONS.md tail-append, nincs kódváltozás. A kártya scope-ja a2db9d8f alatt landolt, a saját commit no-op.
+
+**Mit ellenőriztem:** `git -C /home/neon/marveen log --oneline origin/develop | grep 00829b896` -> jelen van. `git diff origin/develop -- store/gemini-agy-category-check.py store/gemini-agy-call.selftest.sh` a db3442c57-ről futtatva -> 0 sor.
+
+**Ki döntött:** cybersec2 (QA2 FAIL 26706, a hiányzó 4. pont), MikroB (msg 15795, DECISIONS.md-only fix + landolás delegálása), backend (végrehajtás).
+
+**Hivatkozás:** kártya 00cdfdd2 (superseded by a2db9d8f, status=done), Gate-SHA 00829b896 (a2db9d8f commitja, ahol a tényleges kód landolt), db3442c57 (ezen a kártyán, no-op commit).
+
+## 2026-10-30 18:04 -- 64f56f97: dispatch route-verdict coverage made visible (fresh vs reopen, parent-exclusion, null-actor)
+
+**Context:** Peti flagged (Telegram 9836) the "Last card decisions" panel undercounting; MikroB measured 35% of fresh dispatches (planned->in_progress) carried no `card-build-route.sh` verdict at all, blended with gate-FAIL reopens (waiting->in_progress, which are bounce-backs, not new routing decisions) and with Fázis/parent cards (nobody builds those directly).
+
+**Decision:** did NOT change the live `PUT /api/kanban/<id>/move` handler to synchronously call or block on the router -- `route-check-audit.sh`'s own header already records a prior plan-grilling GO-WITH-CHANGES that deliberately kept this mechanism soft/report-only, reasoning that "a brand-new mechanism that can stop the fleet's dispatch path is a worse bug than the one it audits." Touching the hot dispatch path used by every agent's every pickup is exactly the kind of risky, hard-to-revert infra change the DevO role's own CLAUDE.md asks to keep behind a flag or out of the live path without a dedicated plan-grilling round -- out of scope for this card to force through. Instead, extended the EXISTING audit (`route-check-audit.sh`, requirement 1's own stated acceptable form: "naplózza VAGY hívja a route-ot" -- logging satisfies it) with exactly the breakdown the card asked for: fresh vs. reopen dispatch counts/coverage (requirement 2), Fázis/parent-card exclusion from the metric entirely (requirement 3), and a null-actor count among missing fresh dispatches (the card's own "ki hívja actor nélkül?" question, answered as a count, not yet as a root-cause). Surfaced the result on the existing "Utolsó kártya-döntések" dashboard panel via the same `/api/local-llm/routing` endpoint (one new `routeCoverage`/`routeCoverageAvailable` field pair), rather than adding a second endpoint/round-trip.
+
+**Verification:** `route-check-audit.selftest.sh` grew from 10 to 14 cases (fresh/reopen split, parent-exclusion, null-actor counting), all passing against a throwaway sqlite db + log, nothing touching the live board. `local-llm-routing-endpoint.test.ts` grew from 23 to 30 cases: `readRouteCoverage()` unit tests (missing script, non-zero exit, non-JSON stdout all degrade to `available:false` rather than throwing; a fake script's snake_case JSON maps correctly to the camelCase `RouteCoverage` shape) plus two full-handler tests confirming the endpoint surfaces it. `lang-parity.test.ts` (hu.js/en.js key-set parity) and `store-selftests-all-run.test.ts`'s `route-check-audit` case both green. `tsc --noEmit` on the touched file shows no new errors (3 pre-existing, unrelated errors elsewhere in the worktree, confirmed by name).
+
+**What requirement 1 is still missing:** this makes the coverage GAP measurable and visible, it does not CLOSE any of the three bypass paths (self-advance-pickup.sh's own path was already covered; the 4 own-pickup and 15 null-actor cases are callers skipping the mandated script, which only entry-point-level logging inside the move API itself -- or stricter server-side rejection -- would close). Left as an explicit follow-up requiring its own plan-grilling round given the blast radius (every dispatch, every agent).
+
+**Who decided:** DevO (fullstack) -- investigation + implementation; Peti's original Telegram 9836 report and MikroB's card description set the requirements.
+
+**Reference:** card 64f56f97, `store/route-check-audit.sh`, `store/route-check-audit.selftest.sh`, `src/web/routes/local-llm.ts` (`readRouteCoverage`), `web/app-local-llm.js`, `web/lang/hu.js`+`en.js`.
+
+## 2026-10-30: 3c9c3a10 -- freellm google_ai_studio mapped to upstream "google", 4 WhiteHat2 LOWs closed
+
+**Döntés:** a freellm key-surface backend (card 08d1aa90) FE-provider ID `google_ai_studio` mostantól egy explicit map-en keresztül fordítódik a valós freellmapi platform enum `google` értékére a POST/GET/DELETE útvonalakon (`src/web/routes/freellm-keys.ts`, `PROVIDER_TO_UPSTREAM_PLATFORM`) -- korábban a route a `google_ai_studio` stringet küldte közvetlenül az upstreamnek, ami 400-at adott, tehát a Google sor sosem volt menthető a dashboardról (WhiteHat2 delta GO 25837 finding 1, Gate-SHA bdba0423).
+
+Négy LOW ugyanezen a kártyán zárva: (1) a POST sorrendje megfordult (előbb add, utána törli a régi sor(oka)t, nem fordítva) -- egy sikertelen add többé nem veszi el a korábban működő kulcsot; (2) egy per-provider in-process async lock (`withProviderLock`) sorosítja az egyazon providerre menő konkurens POST/DELETE hívásokat -- a korábbi unconditional-INSERT race miatt 2 konkurens POST 2 sort hagyott; (3) a `freellmapi-client.ts` mindkét fetch hívása (`login`, az autentikált kérés) `redirect:'error'`-t ad, egy redirect a hitelesítő adatot/kulcsot máshova küldhette volna; (4) a login-sikertelenség backoff 60s->240s, hogy a freellmapi 5-bad-login/15-min lockoutja alatt maradjunk (mérve: 60s-cal 6 bad login fért 15 percbe, 240s-cal legfeljebb 4).
+
+**Mit ellenőriztem:** élő probe a futó freellmapi ellen (127.0.0.1:3001), valódi route handler, eldobható dummy kulccsal: POST google_ai_studio -> 201, GET -> listázza, DELETE -> töröl, végső GET -> 0 sor. Minden javítást egyenként mutáció-teszteltem (a javítás visszavonása pirosra fordítja a hozzá tartozó pin-tesztet, visszaállítás zöldre).
+
+**Ki döntött:** WhiteHat2 (delta GO 25837, a hibák azonosítása + a LOW-1 javítási irány javaslata), MikroB (dispatch, msg 15838), backend (végrehajtás).
+
+**Hivatkozás:** kártya 3c9c3a10, Gate-SHA 66effef3acfe34bc203ca1567233a8402e687163, commit 03e6b743c, `src/web/routes/freellm-keys.ts`, `src/web/freellmapi-client.ts`.
+
 ## 2026-10-30: 5cb861e6 -- Gemini daytime mode made durable (version-controlled timer + GPU gate + flock + 503 budget fix)
 
 **Kontextus:** Peti Telegram 12371 (2026-10-25): daytime mode 1 (5 random Gemini-draft ticks/hour, admitted only under 60% GPU utilization) existed only as a hand-created, non-version-controlled transient systemd user timer (`gemini-day-draft.timer`) -- lost on every reboot, which is exactly what happened before this card was dispatched. The first real call under this mode also hit HTTP 503 (provider overload on `gemini-flash-latest`).

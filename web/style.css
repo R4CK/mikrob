@@ -9498,6 +9498,24 @@ body {
 .llm-decisions-window { color: var(--text-muted); margin-left: auto; }
 .llm-decision-reason { color: var(--text); }
 .llm-decision-meta { color: var(--text-muted); margin-left: auto; }
+/* Card 64f56f97: the dispatch route-verdict coverage gap, shown as its own warning-toned row
+   above the per-card decision list -- distinct from .llm-decisions-summary (which counts the
+   decisions the router DID make), this counts dispatches that never asked it at all. */
+.llm-route-coverage-gap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  background: color-mix(in srgb, #f59e0b 10%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, #f59e0b 35%, var(--border));
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+:root[data-theme="dark"] .llm-route-coverage-item { color: #fbbf24; }
+:root[data-theme="light"] .llm-route-coverage-item { color: #b45309; }
+.llm-route-coverage-unavailable { font-size: 12px; }
 @media (max-width: 720px) {
   .llm-routing-cols { grid-template-columns: 1fr; }
   .llm-decision-meta { margin-left: 0; width: 100%; }
