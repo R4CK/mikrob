@@ -368,19 +368,37 @@ check "graph_repo_for('mopsion') resolves to the SAME repo as graph_repo_for('Cl
 # --- graph_repo_for('MikroB') does not depend on the CALLER's cwd (card 56b14f14) --------------
 # `git -C "$HERE" rev-parse --git-common-dir` (no --path-format) answers RELATIVE TO "$HERE", but
 # a bare `cd` resolving that answer runs in the CALLER's own shell, against the CALLER's cwd, not
-# "$HERE". Measured before the fix: calling this from a non-repo cwd (here, a fresh mktemp -d)
-# made the MikroB arm return empty. Run from a cwd that is NOT inside any git repo at all, so a
-# caller-cwd dependency can't accidentally still resolve to the right answer by coincidence.
+# "$HERE".
+#
+# QA FAIL round 2 (qa2, comment 26511): the original version of this test set
+# HERE="$(dirname "$(realpath "$DISPATCH")")" -- wherever offload-dispatch.sh ITSELF lives. Every
+# sanctioned gating path for this repo (gate-worktree-pattern, fleet-test.sh's shared tree,
+# agent-worktree-marveen.sh) runs the script from inside a LINKED WORKTREE, and a worktree's .git
+# file always stores an ALREADY-ABSOLUTE gitdir pointer -- so `git -C "$HERE" rev-parse
+# --git-common-dir` returns an absolute path there regardless of the fix, and the mutant (reverting
+# the fix) never goes red under any of those gates. Confirmed by qa2 on two independent worktrees.
+#
+# Fixed by building a REAL (non-worktree) repo for the test itself: `git init` always gets a real
+# .git directory, never a worktree pointer, so the relative-answer bug is reproduced regardless of
+# which kind of checkout happens to be running this selftest. HERE is a subdirectory of that repo
+# (mirroring "$dir"/store in the real bug), and the caller's shell cwd is a SEPARATE, unrelated repo
+# root -- a non-git cwd would also trigger the mutant, but a separate repo root is a stronger check
+# (pre-fix, it would have resolved to WRONG caller's repo rather than merely failing).
 graph_repo_cwd_pin="$(
-  NONREPO_CWD="$(mktemp -d)"
-  trap 'rm -rf "$NONREPO_CWD"' EXIT
-  cd "$NONREPO_CWD" || exit 1
-  HERE="$(dirname "$(realpath "$DISPATCH")")"
+  MAIN_REPO="$(mktemp -d)"
+  CALLER_REPO="$(mktemp -d)"
+  trap 'rm -rf "$MAIN_REPO" "$CALLER_REPO"' EXIT
+  MAIN_REPO="$(cd "$MAIN_REPO" && pwd -P)"
+  git init -q "$MAIN_REPO"
+  mkdir -p "$MAIN_REPO/store"
+  git init -q "$CALLER_REPO"
+  cd "$CALLER_REPO" || exit 1
+  HERE="$MAIN_REPO/store"
   source <(sed -n '/^graph_repo_for() {/,/^}/p' "$DISPATCH")
   mk="$(graph_repo_for MikroB)"
-  [[ -n "$mk" && -d "$mk/.git" ]] && echo "OK" || echo "BROKEN:$mk"
+  [[ "$mk" == "$MAIN_REPO" ]] && echo "OK" || echo "BROKEN:$mk"
 )"
-check "graph_repo_for('MikroB') resolves correctly when called from a non-repo cwd" "$graph_repo_cwd_pin" "OK"
+check "graph_repo_for('MikroB') resolves correctly from a real (non-worktree) checkout, called from an unrelated repo's cwd" "$graph_repo_cwd_pin" "OK"
 
 # --- the INSTALLED gate is WIRED, ahead of the per-card lock (card 3906d77b follow-up, Peti
 # Telegram 8928) ---------------------------------------------------------------------------------

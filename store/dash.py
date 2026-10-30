@@ -70,13 +70,16 @@ def token_file() -> Path:
     if local.exists():
         return local
     try:
+        # --path-format=absolute (card 56b14f14): the plain form answers relative to HERE, and
+        # Path.resolve() resolves a relative path against the PROCESS cwd, not HERE -- a caller
+        # with a different cwd than HERE would resolve to the wrong repo's token file.
         common = subprocess.run(
-            ["git", "-C", str(HERE), "rev-parse", "--git-common-dir"],
+            ["git", "-C", str(HERE), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True, text=True, timeout=10, check=True,
         ).stdout.strip()
     except (subprocess.SubprocessError, OSError):
         return local
-    return (Path(common).resolve().parent / "store" / ".dashboard-token")
+    return (Path(common).parent / "store" / ".dashboard-token")
 
 
 def die(msg: str, code: int = 1) -> None:

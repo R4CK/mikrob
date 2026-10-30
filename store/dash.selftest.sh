@@ -149,6 +149,37 @@ echo "$out" | grep -q 'BLOCKED' \
   && bad "an UNBLOCKED card printed a BLOCKED line" "$out" \
   || ok "an unblocked card prints no BLOCKED line"
 
+# --- 10. token_file() resolves to its OWN repo's token file, not the caller's cwd (card 56b14f14
+# round 2, MikroB comment 26513: dash.py carries the same bug class as the shell sites) ---------
+# `--path-format=absolute` is already in place at the git-common-dir call, but gate-worktree-
+# pattern/fleet-test.sh always run this script from inside a LINKED WORKTREE, where
+# --git-common-dir is already absolute with or without that flag (a worktree's .git is a FILE
+# pointing at an absolute gitdir) -- so running this selftest from the worktree alone cannot tell
+# the fix apart from the pre-fix line (Path(common).resolve(), which resolves a RELATIVE path
+# against the PROCESS cwd, not HERE). Build a REAL (non-worktree) repo via `git init`, with a copy
+# of dash.py living somewhere WITHOUT a local .dashboard-token beside it (so the fallback branch,
+# the one this card's fix touches, actually runs), and call from an UNRELATED repo's cwd so a
+# caller-cwd dependency cannot coincidentally still resolve right.
+MAIN_REPO="$(mktemp -d)"; MAIN_REPO="$(cd "$MAIN_REPO" && pwd -P)"
+CALLER_REPO="$(mktemp -d)"
+git init -q "$MAIN_REPO"
+mkdir -p "$MAIN_REPO/other-dir" "$MAIN_REPO/store"
+cp "$DASH" "$MAIN_REPO/other-dir/dash.py"
+printf 'main-repo-token' > "$MAIN_REPO/store/.dashboard-token"
+git init -q "$CALLER_REPO"
+out="$(cd "$CALLER_REPO" && python3 -c "
+import sys
+sys.path.insert(0, '$MAIN_REPO/other-dir')
+import dash
+print(dash.token_file())
+")"
+rm -rf "$MAIN_REPO" "$CALLER_REPO"
+if [[ "$out" == "$MAIN_REPO/store/.dashboard-token" ]]; then
+  ok "token_file() resolves to its own repo's token file from a real (non-worktree) checkout, called from an unrelated repo's cwd"
+else
+  bad "token_file() resolves to its own repo's token file from a real (non-worktree) checkout, called from an unrelated repo's cwd" "$out"
+fi
+
 echo
 echo "dash.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

@@ -114,6 +114,33 @@ post_count=$(grep -c '^Bearer' "$CAPTURE_LOG" || true)
 [ "$post_count" -ge 1 ]
 check "$?" "sanity: at least one authenticated request reached the server ($post_count)"
 
+# --- _kc_token_file resolves to its OWN repo's token file, not the caller's cwd (card 56b14f14
+# round 2, qa2 comment 26511) -------------------------------------------------------------------
+# `--path-format=absolute` is already in place at the git-common-dir call, but gate-worktree-
+# pattern/fleet-test.sh always run this script from inside a LINKED WORKTREE, where
+# --git-common-dir is already absolute with or without that flag (a worktree's .git is a FILE
+# pointing at an absolute gitdir) -- so testing from this worktree alone cannot tell the fix apart
+# from the pre-fix line. Build a REAL (non-worktree) repo via `git init`, with the sourced script
+# living somewhere WITHOUT a local .dashboard-token beside it (so the fallback branch, the one this
+# card's fix touches, actually runs instead of taking the short-circuit at line ~40), and call from
+# an UNRELATED repo's cwd so a caller-cwd dependency cannot coincidentally still resolve right.
+(
+  MAIN_REPO="$(mktemp -d)"; MAIN_REPO="$(cd "$MAIN_REPO" && pwd -P)"
+  CALLER_REPO="$(mktemp -d)"
+  trap 'rm -rf "$MAIN_REPO" "$CALLER_REPO"' EXIT
+  git init -q "$MAIN_REPO"
+  mkdir -p "$MAIN_REPO/other-dir" "$MAIN_REPO/store"
+  cp "$SCRIPT_DIR/kanban-comment-lib.sh" "$MAIN_REPO/other-dir/kanban-comment-lib.sh"
+  printf 'main-repo-token' > "$MAIN_REPO/store/.dashboard-token"
+  git init -q "$CALLER_REPO"
+  cd "$CALLER_REPO" || exit 1
+  unset KANBAN_COMMENT_TOKEN_FILE
+  . "$MAIN_REPO/other-dir/kanban-comment-lib.sh"
+  tf="$(_kc_token_file)"
+  [ "$tf" = "$MAIN_REPO/store/.dashboard-token" ]
+)
+check "$?" "_kc_token_file resolves to its own repo's token file from a real (non-worktree) checkout, called from an unrelated repo's cwd"
+
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS check(s) failed"
   exit 1
