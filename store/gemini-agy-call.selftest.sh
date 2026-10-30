@@ -677,6 +677,12 @@ mopsion_out="$(echo '{"id":"deadbeef","title":"mopsion feature","description":"o
   | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || mopsion_rc=$?
 [ "$mopsion_rc" = 0 ] && [ "$mopsion_out" = "mopsion" ] || fails+=("category-check: plain ASCII 'mopsion' must still be detected, got rc=$mopsion_rc out='$mopsion_out'")
 
+n=$((n + 1))
+label_omicron_rc=0
+label_omicron_out="$(printf '{"id":"deadbeef","title":"safe feature","description":"x","labels":["m\xcf\x8fpsion"]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || label_omicron_rc=$?
+[ "$label_omicron_rc" = 2 ] && [ -z "$label_omicron_out" ] || fails+=("category-check: Greek-omicron 'mopsion' in a label must return 2 (cannot verify), got rc=$label_omicron_rc out='$label_omicron_out'")
+
 # --- N3: a malformed --kartya must be refused BEFORE any URL/HTTP use ---------------------------
 : > "$LOG"
 for bad in "not-hex!" "../../etc/passwd" "ab" "" "deadbeef; rm -rf /"; do

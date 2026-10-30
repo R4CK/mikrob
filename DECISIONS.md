@@ -22362,3 +22362,22 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Who decided:** WhiteHat (F1/F6 findings, comment 24241) + QA2 (unused-export/missing-test findings, comment 24234) + MikroB (relay via kanban-audit, comment 24279) + backend (implementation).
 
 **Reference:** card 4aae1357 (parent c65add5a), common reference 34c2d2a2, WhiteHat comment 24241, QA2 comment 24234.
+
+## 2026-10-30: 00cdfdd2 -- gemini-agy-category-check.py fail-closed also on labels (c5f2d6c9 follow-up)
+
+**What:** `store/gemini-agy-category-check.py`'s `has_unmapped_letter()` raw-text homoglyph
+check ran on title/description (card c5f2d6c9) but not on the `labels` array -- a label
+containing a Greek/Cyrillic letter still went through `norm()`'s silent ASCII-drop and could
+read as clean. Fixed by running `has_unmapped_letter()` over each label before the
+`BLOCKED_LABEL_TOKENS` exact-token match, fail-closed (rc=2) on any unmapped letter.
+
+**Verification:** new selftest case in `store/gemini-agy-call.selftest.sh` (N4 series): a label
+`["m<Greek omicron>psion"]` must return rc=2. Mutation-checked: removing the new label check
+makes the case fail (1 failed of 44); restored, 44/44 (43 prior + 1 new) pass.
+`store/freellm-call.selftest.sh` stayed green (32/32), unaffected (that script never touches
+labels).
+
+**Who decided:** RedHat (L1 finding, comment 25863, on card c5f2d6c9) + MikroB (follow-up card
+00cdfdd2) + backend (implementation).
+
+**Reference:** card 00cdfdd2 (parent 92b76ff0), source card c5f2d6c9, RedHat comment 25863 L1.

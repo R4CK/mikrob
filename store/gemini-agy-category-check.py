@@ -137,6 +137,10 @@ def main() -> int:
                 return 0
 
     for lab in card.get("labels") or []:
+        # RedHat 25863 L1 (card 00cdfdd2): labels went through norm()'s silent ascii-drop
+        # without the raw-text homoglyph check title/description already get above.
+        if has_unmapped_letter(str(lab)):
+            return 2  # cannot verify -- fail closed (unmapped homoglyph/script letter)
         for tok in label_tokens_of(str(lab)):
             cat = BLOCKED_LABEL_TOKENS.get(tok)
             if cat:
