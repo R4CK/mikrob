@@ -120,7 +120,11 @@ describe('kanban unblock notification', () => {
   })
 
   it('a done or archived waiting card is not notified', async () => {
-    await put('wait-b', { status: 'done' })
+    // force+mikrob bypasses this fork's own gate-completeness guard (no REVIEW/Gate-SHA on this
+    // test card) -- a fork-specific control upstream's test (card #2027) has no way to know about;
+    // what this test actually exercises is getCardsUnblockedBy's done/archived exclusion, not the
+    // gate guard itself.
+    await put('wait-b', { status: 'done', force: true, actor: 'mikrob' })
     mockCreateAgentMessage.mockClear()
     await move('blk-a', 'done')
     expect(unblockMessages()).toHaveLength(0)

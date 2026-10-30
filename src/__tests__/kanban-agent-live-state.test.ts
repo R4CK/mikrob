@@ -1,5 +1,8 @@
 // Live agent state on in_progress kanban cards. The browser code has no module
-// boundary, so the real functions are sliced out of web/app.js and run in a vm.
+// boundary, so the real functions are sliced out of web/app-kanban.js (where
+// createCardEl/loadKanban actually live -- this fork's app.js modularisation,
+// slice 30 -- not web/app.js, which upstream's monolithic script would use)
+// and run in a vm.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -7,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const APP_JS = readFileSync(join(ROOT, 'web', 'app.js'), 'utf-8')
+const APP_JS = readFileSync(join(ROOT, 'web', 'app-kanban.js'), 'utf-8')
 const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf-8')
 const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf-8')
 

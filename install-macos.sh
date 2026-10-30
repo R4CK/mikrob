@@ -1222,35 +1222,42 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
       SEED_SKIP=$((SEED_SKIP + 1))
       continue
     fi
-    # Copy from the GIT TREE, not the disk (card f39dd8fb). `cp -r` ships whatever is physically
-    # sitting under seed-skills/<skill>/, including untracked/gitignored debris -- a stray
-    # __pycache__/*.pyc baked in another machine's HOME path was the concrete find, and the repo
-    # guards (fleet-test.sh's checked-out worktree) never see it because they only ever look at the
-    # git tree. `git archive` makes "what ships" and "what the guards scan" the SAME set by
-    # construction (this also covers SEEDSKILLSUB1018's goal -- a skill's tracked subdirs,
-    # scripts/, references/, ... ship with their mode bits, since archive pulls the whole tracked
-    # subtree, not just the top level). Falls back to the old recursive copy only if $INSTALL_DIR
-    # is not a git checkout (e.g. a hand-extracted tarball) -- rare, but an install must not
-    # hard-fail over it.
-    if git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      git -C "$INSTALL_DIR" archive HEAD -- "seed-skills/$skill_name" | tar -x -C "$SKILLS_DIR" --strip-components=1
+    # Copy ONLY git-TRACKED files (card f39dd8fb + SEEDSKILLSUB1018), top-level AND subdirs
+    # (scripts/, references/, ...) alike, with mode bits preserved. `cp -r` ships whatever is
+    # physically sitting under seed-skills/<skill>/, including untracked/gitignored debris -- a
+    # stray __pycache__/*.pyc baked in another machine's HOME path was the concrete find, and the
+    # repo guards (fleet-test.sh's checked-out worktree) never see it because they only ever look
+    # at the git tree. `git ls-files` makes "what ships" and "what the guards scan" the SAME set
+    # by construction. Self-contained on $skill_dir (not $INSTALL_DIR): src/__tests__/seed-skills-
+    # subdirs.test.ts slices this loop and runs it against its own throwaway git repo, unrelated to
+    # $INSTALL_DIR. Falls back to the old recursive copy only if $skill_dir itself is not a git
+    # checkout (e.g. a hand-extracted tarball) -- rare, but an install must not hard-fail over it.
+    if git -C "$skill_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git -C "$skill_dir" ls-files -z | while IFS= read -r -d '' rel; do
+        mkdir -p "$target/$(dirname "$rel")"
+        cp -p "$skill_dir$rel" "$target/$rel"
+      done
     else
       cp -r "${skill_dir%/}" "$SKILLS_DIR/"
     fi
     # ...then render the identity placeholders, exactly as the scheduled-task seeding above does.
     # Without this the skills shipped their {{INSTALL_DIR}} LITERALLY: a live install here had
     # `{{INSTALL_DIR}}/store/local-llm-rag.sh` sitting in a command an agent is told to run (card
-    # 041681b5). Only UPPERCASE identity placeholders are touched, so a skill that legitimately
-    # discusses `{{name}}` (the i18n double-brace rule) is unaffected.
+    # 041681b5) -- in SKILL.md specifically, a TOP-LEVEL file (the original report's own words:
+    # "seed-skills/*/SKILL.md carried hardcoded paths"). Top-level only, NOT recursive into
+    # subdirs (SEEDSKILLSUB1018, src/__tests__/seed-skills-subdirs.test.ts): an arbitrary
+    # scripts/references/ file ships verbatim, because unlike SKILL.md its content is not ours to
+    # assume -- a script legitimately using `{{name}}`-shaped syntax of its own (the i18n double-
+    # brace rule already carves out this same exception) must not be rewritten by surprise.
     while IFS= read -r _skillf; do
       LC_ALL=C sed -i \
-        -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-        -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-        -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-        -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+        -e "s|{{INSTALL_DIR}}|${INSTALL_DIR:-}|g" \
+        -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
+        -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
+        -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
         -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
         "$_skillf"
-    done < <(grep -rlI '{{INSTALL_DIR}}\|{{MAIN_AGENT_ID}}\|{{BOT_NAME}}\|{{OWNER_NAME}}\|{{WEB_PORT}}' "$SKILLS_DIR/$skill_name" 2>/dev/null)
+    done < <(grep -lI '{{INSTALL_DIR}}\|{{MAIN_AGENT_ID}}\|{{BOT_NAME}}\|{{OWNER_NAME}}\|{{WEB_PORT}}' "$SKILLS_DIR/$skill_name"/* 2>/dev/null)
     SEED_NEW=$((SEED_NEW + 1))
   done
   if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then

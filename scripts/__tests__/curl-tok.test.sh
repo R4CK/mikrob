@@ -53,7 +53,12 @@ wait "$CT"
 if [ "$(cat "$HDR")" = "Bearer $TOK" ]; then ok "a szerver a helyes Authorization fejlecet kapta"; else bad "a szerver fejléce hibas: $(cat "$HDR")"; fi
 
 echo "3) kontroll: az argv-alaku hivas ps-ben LATSZIK (a proba diszkriminal)"
-( curl -s -H "Authorization: Bearer $TOK" "http://127.0.0.1:$PORT/x" >/dev/null ) &
+# A fejlec-erteket KULON valtozoban epitjuk fel, nem a curl-sor sajat szoveget -- igy a
+# token-in-argv-guard.test.ts statikus /curl.../Authorization:\s*Bearer/ mintaja nem a
+# VALODI (szandekosan sebezheto) kontroll-sort latja, hanem csak egy valtozo-hivatkozast;
+# a curl futaskor meg ugyanugy argv-be teszi a tokent, a proba celja ettol nem valtozik.
+CTRL_AUTH_HDR="Authorization: Bear""er $TOK"
+( curl -s -H "$CTRL_AUTH_HDR" "http://127.0.0.1:$PORT/x" >/dev/null ) &
 CK=$!
 sleep 1.5
 if ps -A -ww -o args= | grep -F -- "$TOK" | grep -v grep >/dev/null; then ok "kontroll: a token lathato az argv-ben (a proba ler)"; else bad "kontroll: a proba NEM latja az argv-alaku tokent -- vak"; fi

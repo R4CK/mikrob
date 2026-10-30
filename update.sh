@@ -1034,6 +1034,7 @@ refresh_one_seed_file() {
   if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
     if [ "$mode" = "template" ]; then
       render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+      if [ -x "$f" ]; then chmod 755 "$installed"; else chmod 644 "$installed"; fi
     else
       cp "$f" "$installed"
     fi
@@ -1079,6 +1080,7 @@ refresh_untouched_seeds() {
       if [ ! -f "$installed" ]; then
         if [ "$mode" = "template" ]; then
           render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+          if [ -x "$f" ]; then chmod 755 "$installed"; else chmod 644 "$installed"; fi
         else
           cp "$f" "$installed"
         fi
@@ -1116,6 +1118,7 @@ refresh_untouched_seeds() {
         mkdir -p "$(dirname "$installed")"
         if [ "$mode" = "template" ]; then
           render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+          if [ -x "$f" ]; then chmod 755 "$installed"; else chmod 644 "$installed"; fi
         else
           cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
         fi
