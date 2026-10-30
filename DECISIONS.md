@@ -22413,3 +22413,15 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** MikroB (A/B/C döntés, komment 26148, a backend3 terve -- komment 26143 -- alapján) + backend3 (implementáció).
 
 **Hivatkozás:** kártya 1a350f22 (szülő c65add5a), komment 26143 (terv), 26148 (MikroB döntés), `src/kg/usage.ts`, `store/kg-for-card-block.sh`.
+
+## 2026-10-30 16:21 -- f93fe76a: MT F3b, a 26148 C pont dokumentáció-része pótolva (kártya 1a350f22 felbontása)
+
+**Döntés:** a `store/kg-for-card-block.sh <cardId>` manuális-dispatch pointer bekerült a root CLAUDE.md "Ellenőrizhető munka" szekciójába, rögtön a 12. szabály (Dispatch-üzenet és lezárás formája) után, ÉS a globális `project-workflow` skillbe (`~/.claude/skills/project-workflow/SKILL.md`), a spec-sablon "Kontextus" bullet-jéhez fűzve. Mindkét helyen ugyanaz a rövid szöveg: futtasd a scriptet, az output -- ha nem üres -- menjen a Kontextus blokkba, a REVIEW-sablon felveszi a `Megoldás-tár: <id> felhasználva | nem illett | nincs találat` sort. Nincs duplikált keretezési/escape logika a dokumentációban -- a script maga adja.
+
+**Miért:** az 1a350f22 (MT F3) kódja landolt (három Gate-SHA iteráció: 6373be10e -> 7871771e9 WhiteHat NO-GO javítás -> 681f7614f RedHat NO-GO javítás, mind GO/PASS-szal zárva), de a MikroB-döntés 26148 C pontja (a dokumentáció-rész) QA FAIL 26532-ig nem épült meg -- a kód és a dokumentáció közötti rés külön kártyaként (f93fe76a) lett szétbontva, hogy a kódrész ne várjon a dokumentáció-írásra.
+
+**Megjegyzés a globális skill-írásra:** a `project-workflow` SKILL.md írása FLOTTA-SZINTŰ hatású (minden ügynök betöltheti), nem csak backend3-ra. A módosítás rövid (egy mondat egy meglévő bullet végén), nem ír át meglévő tartalmat.
+
+**Ki döntött:** MikroB (a split, kártya-leírás f93fe76a) + backend3 (implementáció).
+
+**Hivatkozás:** kártya f93fe76a (szülő c65add5a, split 1a350f22-ből QA FAIL 26532 után), kártya 1a350f22 (komment 26148 C pont), `CLAUDE.md`, `~/.claude/skills/project-workflow/SKILL.md`.
