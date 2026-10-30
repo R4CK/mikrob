@@ -150,6 +150,20 @@ function ensureIsolatedSdkConfigDir(): string {
   return tmpdir()
 }
 
+// Card 2c94eae5 (WhiteHat F1 MEDIUM on 6dc50a41): ensureIsolatedSdkConfigDir's
+// empty enabledPlugins:{} only protects this path as long as its own plugin
+// directory happens to stay empty -- an empty object at one settings layer
+// mentions no plugin ids, so it never overrides a plugin enabled at a
+// DIFFERENT, higher-precedence layer. The SDK always loads project settings
+// from `cwd` (PROJECT_ROOT's .claude/settings.json, which enables the
+// telegram plugin for the real channel session) regardless of
+// CLAUDE_CONFIG_DIR -- CLAUDE_CONFIG_DIR only relocates the user-settings
+// file, not project/local settings, which the SDK reads from their own fixed
+// locations. The query() `settings` option loads into the flag-settings
+// layer, which outranks project settings, so an explicit `false` here is the
+// actual override, not the directory being empty.
+const SDK_FALLBACK_FLAG_SETTINGS = { enabledPlugins: { 'telegram@claude-plugins-official': false } }
+
 // Backend selector (jun.15 subscription migration). 'worker' (default) routes
 // to a persistent INTERACTIVE Claude Code session in tmux (subscription login);
 // 'sdk' keeps the legacy Agent SDK `query` path (API billing) as an emergency
@@ -224,6 +238,10 @@ export async function runAgent(
         // Fail-closed default: isolated/plugin-free unless the caller opts
         // into its own CLAUDE_CONFIG_DIR (spread last, so it still wins).
         env: { ...process.env, CLAUDE_CONFIG_DIR: ensureIsolatedSdkConfigDir(), ...(env ?? {}) },
+        // Flag-settings layer (see SDK_FALLBACK_FLAG_SETTINGS above): outranks
+        // the project settings this call's cwd always reads, so it is the
+        // actual telegram-disable, not the isolated config dir's empty object.
+        settings: SDK_FALLBACK_FLAG_SETTINGS,
       },
     })
 
