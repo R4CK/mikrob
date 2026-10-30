@@ -58,7 +58,7 @@ import { join, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
-import { reserveGhostCallSlot } from './gemini-ghost-budget.js'
+import { reserveGhostCallSlot, releaseGhostCallSlot } from './gemini-ghost-budget.js'
 import { getSecret } from './web/vault.js'
 import { getKanbanCard, getKanbanComments, addKanbanComment, getLabelsForCard } from './db.js'
 import { isGeminiOrchestratorEnabled, readFallbackRoute, isBlockedByLandedFilter } from './gemini-orchestrator.js'
@@ -321,6 +321,10 @@ export async function reviewOneCard(
     // call below -- not once per tick. Required (not optional) so every call site states its
     // policy explicitly, same as every other deps field here.
     reserveSlot: (cardId: string) => boolean
+    // Card 5cb861e6: un-spends a reservation on a retriable 503 (see reserveSlot's own comment
+    // for why that matters). Optional, defaulting to the real releaseGhostCallSlot, so existing
+    // deps object literals (production and test) that predate this field keep compiling unchanged.
+    releaseSlot?: (cardId: string) => boolean
     // Injectable (mirrors readDraft) so the pure decision logic stays testable without touching
     // the real filesystem -- defaults to the real, fs-backed resolveDraftPathSafely.
     resolveDraftPath?: (relPath: string) => string | null
@@ -401,7 +405,13 @@ export async function reviewOneCard(
 
   const prompt = buildReviewPrompt(meta, draftText)
   const result = await deps.callGemini({ apiKey, prompt })
-  if (!result.ok || !result.text) return { id: cardId, reviewed: false, reason: result.reason ?? 'no_response' }
+  if (!result.ok || !result.text) {
+    // Card 5cb861e6: a 503 did not come from anything the fleet's own usage caused -- un-spend
+    // the slot reserved above. Every other failure reason keeps the spend (a real, attributable
+    // call outcome).
+    if (result.httpStatus === 503) (deps.releaseSlot ?? releaseGhostCallSlot)(cardId)
+    return { id: cardId, reviewed: false, reason: result.reason ?? 'no_response' }
+  }
 
   const verdict = parseReviewResponse(result.text)
   if (!verdict) return { id: cardId, reviewed: false, reason: 'invalid_response_schema' }

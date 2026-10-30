@@ -164,3 +164,70 @@ export function reserveGhostCallSlot(
   if (result.error) return false
   return result.status === 0
 }
+
+// Card 5cb861e6 (daytime-mode phase c7abdf57): reserveGhostCallSlot() above spends the slot
+// (appends the log row) BEFORE the real network call, which is correct for the concurrency
+// atomicity H1 fixed -- but it means a retriable provider failure (503 "model overloaded") still
+// consumes one of the 5 hourly slots even though nothing about OUR usage caused it. Measured
+// live (card's own "mai allapot" note): the first real call hit exactly this, gemini-flash-latest
+// returning 503 under high demand.
+//
+// WHY A NEW LOG ROW, NOT AN IN-PLACE REWRITE: scripts/seged-hivo.py's own calls_of() already
+// treats "the LAST row with a given hivas_id wins" as its update mechanism (see its docstring) --
+// append_log() is the only write primitive the module exposes, and reusing it here keeps this
+// release path consistent with how every other row in this log is ever changed (never rewritten
+// in place). A status='blocked' row is already excluded from the hourly/daily count by the exact
+// same filter RESERVE_SCRIPT above uses (`row.get('status') == 'blocked': continue`), so marking
+// the row blocked after the fact un-spends the slot with zero change to the counting logic.
+const RELEASE_SCRIPT = `
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
+sh = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sh)
+card_id = sys.argv[2]
+target = None
+for row in reversed(sh.read_log()):
+    if row.get('seged') == 'agy-ghost' and row.get('kartya') == card_id:
+        target = row
+        break
+if target is None or target.get('status') == 'blocked':
+    print('NOT_FOUND')
+    sys.exit(1)
+sh.append_log({
+    'ido': datetime.datetime.now().isoformat(),
+    'hivas_id': target['hivas_id'],
+    'seged': 'agy-ghost',
+    'hivo': 'quota-bridge-ghost',
+    'kartya': card_id,
+    'feladattipus': 'kod',
+    'status': 'blocked',
+})
+print('OK')
+sys.exit(0)
+`
+
+/**
+ * Un-spends the SINGLE most recent, not-already-released reservation for this exact cardId (card
+ * 5cb861e6): call this when the network call that followed a reserveGhostCallSlot() turned out to
+ * be a retriable provider failure (HTTP 503), so it does not count against the shared hourly cap.
+ * Safe to call even when there is nothing to release (returns false, nothing is written twice).
+ * Same flock as reserveGhostCallSlot -- the read-then-append here must not race a concurrent
+ * reservation or release for the same cardId.
+ */
+export function releaseGhostCallSlot(
+  cardId: string,
+  segedHivoPath: string = SEGED_HIVO,
+): boolean {
+  let result: ReturnType<typeof spawnSync>
+  try {
+    result = spawnSync(
+      'flock',
+      ['-x', '-w', String(LOCK_WAIT_S), HOURLY_LOCK, 'python3', '-I', '-', segedHivoPath, cardId],
+      { input: RELEASE_SCRIPT, encoding: 'utf-8', timeout: (LOCK_WAIT_S + 10) * 1000 },
+    )
+  } catch {
+    return false
+  }
+  if (result.error) return false
+  return result.status === 0
+}

@@ -447,6 +447,33 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
     await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot)
     expect(order).toEqual(['reserve', 'call'])
   })
+
+  // Card 5cb861e6 (daytime-mode phase c7abdf57): a retriable 503 must release the slot it just
+  // spent -- the provider's own overload is not evidence of our usage pattern.
+  it('a 503 response releases the just-reserved slot (card 5cb861e6)', async () => {
+    const reserveSlot = vi.fn(() => true)
+    const releaseSlot = vi.fn(() => true)
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'http', httpStatus: 503 }))
+    const result = await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot, releaseSlot)
+    expect(result).toEqual({ ok: false, reason: 'http' })
+    expect(releaseSlot).toHaveBeenCalledTimes(1)
+  })
+
+  it('a non-503 failure (e.g. quota/429) does NOT release the slot -- that spend is real', async () => {
+    const reserveSlot = vi.fn(() => true)
+    const releaseSlot = vi.fn(() => true)
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota', httpStatus: 429 }))
+    await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot, releaseSlot)
+    expect(releaseSlot).not.toHaveBeenCalled()
+  })
+
+  it('a successful call never releases the slot', async () => {
+    const reserveSlot = vi.fn(() => true)
+    const releaseSlot = vi.fn(() => true)
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["c1"]' }))
+    await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot, releaseSlot)
+    expect(releaseSlot).not.toHaveBeenCalled()
+  })
 })
 
 describe('runGeminiOrchestratorSweep (conditions 1+4+7: kill switch, route gate, never closes a card)', () => {

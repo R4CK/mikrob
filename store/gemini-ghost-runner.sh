@@ -30,7 +30,23 @@ LOG="$STORE/gemini-ghost-runner.log"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"$LOG"; }
 
+# MUTUAL EXCLUSION (card 5cb861e6, daytime-mode phase c7abdf57): this script is now called from
+# TWO independent drivers -- quota-bridge.py's continuous loop below, AND the new daytime-mode
+# dispatcher (store/gemini-day-draft-tick.sh) calling `--once` on its own random-tick timer. The
+# card's own constraint ("ne fusson parhuzamosan a quota-bridge Ghost runnerrel") means both must
+# share ONE lock, and putting it here -- the single file both drivers already call through -- is
+# the natural shared choke point, rather than inventing a second lock either driver would have to
+# know about. Non-blocking: a tick that cannot get the lock SKIPS (logs and returns), it does not
+# queue up and wait, because the next random/scheduled tick is only minutes away either way.
+GHOST_RUNNER_LOCK="${GEMINI_GHOST_RUNNER_LOCK:-$STORE/gemini-ghost-runner.lock}"
+
 run_tick() {
+  exec 8>"$GHOST_RUNNER_LOCK"
+  if ! flock -n 8; then
+    log "SKIP tick (locked: another tick is already running)"
+    exec 8>&-
+    return 0
+  fi
   log "RUN tick"
   local status="ok"
   bash "$STORE/run-gemini-fallback.sh" >>"$LOG" 2>&1 || status="hiba(fallback-runner)"
@@ -38,6 +54,7 @@ run_tick() {
   node "$ROOT/dist/gemini-orchestrator-draft.js" >>"$LOG" 2>&1 || status="hiba(draft)"
   node "$ROOT/dist/gemini-orchestrator-draft-review.js" >>"$LOG" 2>&1 || status="hiba(review)"
   log "tick finished: $status"
+  exec 8>&-
 }
 
 # Sourced (not executed) by the selftest, which defines run_tick above and calls it directly

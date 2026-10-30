@@ -74,11 +74,37 @@ case_ "a failing step still runs every later step (draft-review still invoked)" 
 stub "$TD/dist/gemini-orchestrator-draft.js" 0   # restore for any later case
 
 # --- case 3: a tick runs every time it is called, unconditionally (no self-imposed cap) --------
+# NOTE: these 7 calls are SEQUENTIAL (one finishes, fully releasing the lock added below, before
+# the next starts) -- this case is about the absence of a tick-COUNT cap, not about concurrency.
+# Case 4 below is the concurrency case.
 rm -f "$TD/store/gemini-ghost-runner.log"
 for _ in 1 2 3 4 5 6 7; do run_with_fresh_env; done
 run_count="$(grep -c 'RUN tick' "$TD/store/gemini-ghost-runner.log")"
 case_ "the runner never skips a tick on its own (budget enforcement moved to the pipeline)" \
   "$([ "$run_count" -eq 7 ] && echo 0 || echo 1)"
+
+# --- case 4: two truly CONCURRENT ticks -- one runs, the other is skipped by the flock (card ----
+# 5cb861e6, Kesz-ha: "ket egyideju tick kozul az egyik a flock miatt kimarad"). The
+# run-gemini-fallback.sh stub sleeps briefly so the first tick is still holding the lock when the
+# second one starts; both share the SAME MARVEEN_ROOT (hence the same lock file path).
+rm -f "$TD/store/gemini-ghost-runner.log"
+printf '#!/bin/bash\nsleep 0.3\necho "STUB-RAN: run-gemini-fallback.sh"\nexit 0\n' > "$TD/store/run-gemini-fallback.sh"
+chmod +x "$TD/store/run-gemini-fallback.sh"
+run_with_fresh_env &
+pid1=$!
+sleep 0.05  # give the first tick time to acquire the lock before the second one tries
+run_with_fresh_env &
+pid2=$!
+wait "$pid1" "$pid2"
+# grep -c exits 1 on zero matches (which is exactly what a failing mutant produces for one of
+# these two counts) -- under this file's own `set -e`, an unguarded assignment would abort the
+# whole selftest right here instead of letting case_ below record a clean FAIL.
+run_lines="$(grep -c 'RUN tick' "$TD/store/gemini-ghost-runner.log" || true)"
+skip_lines="$(grep -c 'SKIP tick (locked' "$TD/store/gemini-ghost-runner.log" || true)"
+case_ "of two concurrent ticks, exactly one runs and the other is skipped by the flock" \
+  "$([ "$run_lines" -eq 1 ] && [ "$skip_lines" -eq 1 ] && echo 0 || echo 1)"
+# Restore the normal (non-sleeping) stub for any later case in this file.
+stub "$TD/store/run-gemini-fallback.sh" 0
 
 echo
 echo "selftest: $n case(s), $([ ${#failures[@]} -eq 0 ] && echo PASS || echo FAIL)"
