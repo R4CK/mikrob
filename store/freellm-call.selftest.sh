@@ -16,6 +16,9 @@
 # 7.  content gate (real checker, F2): CleanCore (mopsion's old name) = exit 4, zero requests
 # 8.  content gate (real checker, F2): zero-width-split mopsion = exit 4, zero requests
 # 9.  content gate (redactor, F2): secret-shaped GitHub token = exit 4, zero requests
+# 9b. content gate (redactor, F2, CYBERED NO-GO 25494): a secret-shaped string with one
+#     Greek-omicron homoglyph substituted for the ASCII "o" (outside the 12-entry map) fails
+#     closed = exit 4, zero requests -- the fold table is a convenience, not the guarantee.
 # 10. content gate: benign prompt is NOT refused (passes both gates)
 # 11. validate-key with enabled switch = exit 0
 # 12. validate-key with disabled switch = exit 2
@@ -201,6 +204,17 @@ clear_mock_requests
 test_case "F2: secret-shaped GitHub token" 4 \
   bash "$SCRIPT" "ghp_$(printf 'a%.0s' $(seq 1 36))"
 assert_true "F2 github token: zero network requests" "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
+
+# ---- Test 9b (F2): unmapped homoglyph (Greek omicron) fails closed --------------------
+# CYBERED NO-GO 25494 repro: "t" + U+03BF (GREEK SMALL LETTER OMICRON) + "ken: <secret>" is
+# visually "token: <secret>" but survives the 12-entry Cyrillic-only _HOMOGLYPH_MAP untouched,
+# so the SECRET_PATTERNS keyword alternation never matches it. On the pre-fix script (39284c8a)
+# this reaches the mock verbatim (exit 0); the fail-closed backstop must refuse it (exit 4).
+clear_mock_requests
+OMICRON_SECRET="$(printf 't\xce\xbfken: hunter2verylongsecretvalue1234567890')"
+test_case "F2: unmapped homoglyph (Greek omicron) in secret-shaped text fails closed" 4 \
+  bash "$SCRIPT" "$OMICRON_SECRET"
+assert_true "F2 omicron: zero network requests" "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
 
 # ---- Test 10: a benign prompt is NOT refused by the content gates ---------------------
 clear_mock_requests
