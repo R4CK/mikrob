@@ -353,6 +353,8 @@ async function llmLoadRouting() {
       presets: Array.isArray(d.presets) ? d.presets : [],
       recentDecisions: Array.isArray(d.recentDecisions) ? d.recentDecisions : [],
       decisionsLogAvailable: d.decisionsLogAvailable !== false,
+      routeCoverage: d.routeCoverage && typeof d.routeCoverage === 'object' ? d.routeCoverage : null,
+      routeCoverageAvailable: d.routeCoverageAvailable !== false,
     }
     _llmRoutingState = 'ok'
     return _llmRouting
@@ -421,6 +423,32 @@ function llmRouteReasonLabel(reason) {
   return s === key ? reason : s
 }
 
+// Card 64f56f97 requirement 2: make the dispatch route-verdict gap VISIBLE, separate from
+// card-build-route.sh's own LOCAL/ONLINE decisions above (those are "what did the router decide",
+// this is "how many dispatches never asked it at all"). A gate-FAIL reopen is shown on its own line
+// because it is a bounce-back, not a fresh routing decision -- counting it the same way as a fresh
+// dispatch's missing verdict would blur exactly the distinction the card asked for.
+function llmRouteCoverageHtml() {
+  if (!_llmRouting) return ''
+  if (_llmRouting.routeCoverageAvailable === false || !_llmRouting.routeCoverage) {
+    return `<div class="llm-empty llm-route-coverage-unavailable">${t('localLlm.routing.coverage_unavailable')}</div>`
+  }
+  const c = _llmRouting.routeCoverage
+  if (!c.freshDispatches && !c.reopenDispatches) return ''
+  const parts = []
+  if (c.freshMissing > 0) {
+    parts.push(t('localLlm.routing.coverage_fresh_missing', { n: c.freshMissing, total: c.freshDispatches }))
+  }
+  if (c.reopenMissing > 0) {
+    parts.push(t('localLlm.routing.coverage_reopen_missing', { n: c.reopenMissing, total: c.reopenDispatches }))
+  }
+  if (c.nullActorMissingCount > 0) {
+    parts.push(t('localLlm.routing.coverage_null_actor', { n: c.nullActorMissingCount }))
+  }
+  if (!parts.length) return ''
+  return `<div class="llm-route-coverage-gap" role="status">${parts.map(p => `<span class="llm-route-coverage-item">${escapeHtml(p)}</span>`).join('')}</div>`
+}
+
 function llmRoutingDecisionsHtml() {
   if (!_llmRouting) return `<div class="llm-empty">${t('localLlm.routing.endpoint_missing_short')}</div>`
   if (!_llmRouting.decisionsLogAvailable) return `<div class="llm-empty">${t('localLlm.routing.decisions_unavailable')}</div>`
@@ -444,7 +472,7 @@ function llmRoutingDecisionsHtml() {
     ${decomposedRows.length ? `<span class="llm-verdict llm-verdict--decomposed">${t('localLlm.routing.summary_decomposed', { n: decomposedRows.length })}</span>` : ''}
     ${windowNote ? `<span class="llm-decisions-window">${escapeHtml(windowNote)}</span>` : ''}
   </div>`
-  return summaryHtml + rows.map((r) => {
+  return summaryHtml + llmRouteCoverageHtml() + rows.map((r) => {
     const online = String(r.verdict).toUpperCase() !== 'LOCAL'
     const decompose = Array.isArray(r.decompose) ? r.decompose.filter(t2 => typeof t2 === 'string' && t2) : []
     const when = typeof r.ts === 'number' ? llmFmtTime(Math.round(r.ts / 1000)) : ''
