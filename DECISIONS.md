@@ -22389,3 +22389,15 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** RedHat (cybered) GO-ja és a 3 követelmény (komment msg 15479, msg 15488), backend2 végrehajtása MikroB self-advance-dispatch alapján.
 
 **Hivatkozás:** kártya a2db9d8f (kapcsolódó: ad6b183f, c5f2d6c9), RedHat msg 15479/15488, store/freellm-call.sh, store/freellm-call.selftest.sh, store/gemini-agy-category-check.py, store/gemini-agy-call.selftest.sh.
+
+## 2026-10-30: 0ef630d7 -- Upstream Köteg 21 landolva (08bfe387..24ba58622, 20 commit)
+
+**Döntés:** a Köteg 21 upstream-szinkron (Szótász/marveen v1.38..v1.43+ fázis, e5c46e87) felmergelve és landolva, Gate-SHA `4af08cd81ec5fccc25d3712892775c8b91a08253`. Két érdemi konfliktus-döntés: (1) `src/db.ts` vectorSearch floor-kalibrációja az upstream commitból átvéve, DE a fork saját `selfAuthenticatedOnly` biztonsági szűrőjét megtartva fölötte (nem az upstream verziót vette át egészben); (2) `web/app.js`/`web/app-kanban.js` -- az upstream újra-beágyazott inline kanban-UI blokkja NEM került be (a fork modularizációja marad), DE a vele egy batch-ben érkezett "live agent state" funkció (upstream #2025) emiatt tényleg kimaradt volna, ezért kézzel portolva `web/app-kanban.js`-be, nem csak kihagyva.
+
+**Miért:** a modularizált `app-kanban.js` és a `selfAuthenticatedOnly` szűrő mindkettő korábbi, szándékos fork-divergencia az upstreamtől; a sima "upstream nyer" vagy "fork nyer" választás bármelyik irányban funkciót vagy biztonsági szűrőt vesztett volna, ezért egyedi, kódszintű összevonás kellett mindkét helyen.
+
+**Mit ellenőriztem:** a `marveen-land.sh` a MERGE EREDMÉNYÉN futtatta a teljes `store/fleet-test.sh`-t, zöld, csak ezután pusholt `origin/develop`-ra. 2 fájl drift-ként elismerve (`scripts/agent-inbox.sh`, `scripts/fleet-safe-start.sh`, ACKNOWLEDGED_CONFLICTS/_BLOBS, commit `07da2f094`).
+
+**Ki döntött:** backend3 (merge-konfliktus feloldás és landolás).
+
+**Hivatkozás:** kártya 0ef630d7 (szülő e5c46e87), merge-commit `57aa711a5`, root-cause fix `81117ef62`, drift-rögzítés `07da2f094`, Gate-SHA `4af08cd81ec5fccc25d3712892775c8b91a08253`.
