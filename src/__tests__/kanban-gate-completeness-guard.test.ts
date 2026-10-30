@@ -217,6 +217,67 @@ describe('parseGateDesignation (ported from gate-dispatch-check.sh, same fixture
   it('bd5241b7 NO-GO 26331: "Cybersec.md" (bare word + known extension, no separator) still designates', () => {
     expect(parseGateDesignation('QA + Cybersec.md')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
   })
+
+  // Card ba25db04 (found by cybersec on bd5241b7's own gate, comment 26589): the clause-end regex
+  // cut at the FIRST of '.', '(', '!', '?' -- so a parenthetical BEFORE the next gate name truncated
+  // the clause there and lost every name after it, exactly like truncating at the first '(' did
+  // before gate_designation.py was fixed to remove parentheticals innermost-first instead (card
+  // aa837c5b, same root cause, shell side). store/gate_designation.py is the reference these rows
+  // are measured against; each shape below is a REAL live Gate: line (card ids are real).
+  it('ba25db04 (real line, card d2c26e32): a parenthetical between two gate names must not truncate the clause', () => {
+    expect(parseGateDesignation('QA (flow + reszponzivitás) + Cybersec/Cybered rotálva a Fázis szerint.')).toEqual(
+      new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']),
+    )
+  })
+
+  it('ba25db04 (real line, card bddcc9df): "QA (...) + Cybersec (...)" designates both, not QA alone', () => {
+    const line =
+      'QA (hogy a hotfix nem tort-e mas email-utat, pl. SUPERADMIN_MAIL_FROM erintetlen maradt) + Cybersec (a sandbox-domainrol).'
+    expect(parseGateDesignation(line)).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  it('ba25db04 (real line, card 036a0913): a parenthetical BEFORE the first gate name must not blank the whole clause', () => {
+    const line = 'a (a)-ba zart kartyakat QA MINTAVETELESEN ellenorzi (nem mind egyenkent) -- a te feladatod.'
+    expect(parseGateDesignation(line)).toEqual(new Set(['qa', 'qa2']))
+  })
+
+  it('ba25db04: a NESTED parenthetical (paren inside a paren) must not leave a stray fragment behind', () => {
+    // gate_designation.py's own reasoning for innermost-first removal (card aa837c5b): a single
+    // non-nested-paren regex pass over "QA (ok (sub) more) + Cybersec." would strip only the
+    // innermost "(sub)" on one pass, leaving "QA (ok  more) + Cybersec." -- still containing an
+    // unbalanced '(' that a first-'('-wins cut (or a non-looping removal) would still truncate on.
+    expect(parseGateDesignation('QA (ok (sub) more) + Cybersec.')).toEqual(
+      new Set(['qa', 'qa2', 'cybersec', 'cybersec2']),
+    )
+  })
+
+  // CROSS-CHECK (ba25db04 Kész-ha #2): store/gate-designation-corpus.json is a frozen snapshot of
+  // every DISTINCT "Gate: ..." line on the live board (723 lines, extracted the same way
+  // extractGateLine does), each paired with the designation store/gate_designation.py itself
+  // computed for it -- i.e. both parsers already ran, one at corpus-build time (Python, the
+  // reference) and one here (TypeScript, the subject). Asserts the TS parser agrees with the
+  // Python reference on every one of them; before this fix, 42 of 723 disagreed (see this file's
+  // git history / the ba25db04 REVIEW for the measurement). One documented, pre-existing,
+  // intentional exception is excluded from the corpus itself (card b474e1b9: TS strips a
+  // filename-shaped token Python does not, covered by its own dedicated test above) -- it is not a
+  // disagreement this fix is about, and leaving it in would make the corpus assert something false.
+  it('ba25db04: parseGateDesignation agrees with gate_designation.py on every live Gate: line in the frozen corpus', () => {
+    const corpusPath = new URL('../../store/gate-designation-corpus.json', import.meta.url)
+    const corpus: Array<{ id: string; gateLine: string; expected: string[] | null }> = JSON.parse(
+      readFileSync(corpusPath, 'utf-8'),
+    )
+    expect(corpus.length).toBeGreaterThan(0)
+    const mismatches: Array<{ id: string; gateLine: string; got: string[] | null; expected: string[] | null }> = []
+    for (const c of corpus) {
+      const got = parseGateDesignation(c.gateLine)
+      const gotSorted = got ? [...got].sort() : null
+      const expSorted = c.expected ? [...c.expected].sort() : null
+      if (JSON.stringify(gotSorted) !== JSON.stringify(expSorted)) {
+        mismatches.push({ id: c.id, gateLine: c.gateLine, got: gotSorted, expected: expSorted })
+      }
+    }
+    expect(mismatches).toEqual([])
+  })
 })
 
 describe('gateCompletenessGuardVerdict', () => {
