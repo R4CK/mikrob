@@ -181,6 +181,31 @@ describe('importFindings (MT-10a, card 63206155)', () => {
     expect(classEdge?.dst).toBe('error_class:auth-bypass')
   })
 
+  it('F1-STORAGE: a BIDI/ZWS findings_ref is stored sanitized, not raw (card 61348647 NO-GO 25602)', () => {
+    // The F1 test above only asserts the CLASSIFICATION result (the of_class edge). It never
+    // reads the finding node's stored body, so it stayed green even while the importer wrote
+    // the raw, unsanitized findings_ref to kg_nodes.body (comment 25602: reverting
+    // `body: safeRef` to `body: v.findings_ref` kept all 12 then-existing tests green).
+    // U+202E (RIGHT-TO-LEFT OVERRIDE) + U+200B (ZERO WIDTH SPACE) mixed into the text: both are
+    // in UNSAFE_CHARS_RX, so sanitizeKgText strips them; a raw write would keep them verbatim.
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    const poisoned = 'auth bypass‮critical​finding'
+    mainDb
+      .prepare(`UPDATE kanban_verdicts SET findings_ref = ? WHERE card_id = 'card1' AND gate = 'CYBERSEC'`)
+      .run(poisoned)
+
+    importFindings(mainDb, kgDb)
+
+    const node = kgDb.prepare(`SELECT body FROM kg_nodes WHERE id = 'finding:1'`).get() as
+      | { body: string }
+      | undefined
+    expect(node?.body).toBe('auth bypasscriticalfinding')
+    expect(node?.body).not.toContain('‮')
+    expect(node?.body).not.toContain('​')
+  })
+
   it('F4: re-running after findings_ref changes removes the stale of_class edge', () => {
     const mainDb = makeMainDbFixture()
     const kgDb = new Database(':memory:')
