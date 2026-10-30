@@ -4591,8 +4591,7 @@ NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
 
 ### Skill-ek helye
-- Globális: ~/.claude/skills/ (minden ágens számára elérhető)
-- Egyéni: a te munkakönyvtárad .claude/skills/ mappája
+- A te skilljeid: agents/AGENT_NAME/.claude/skills/ mappa. A globális ~/.claude/skills/ NEM látható neked közvetlenül (csak MikroB-nak) -- onnan csak az kerül hozzád, amit a skill-map provisioner (store/skill-role-map.json, card d2d47a92) a saját mappádba szimlinkelt induláskor (e060a794 E2/E3 mérés, kártya 340585f6).
 - CSAPDA: a .claude-config/skills NEM a tiéd -- az a globális mappa symlinken át; saját skill a .claude/skills alá menjen
 
 ### Automatikus skill generálás

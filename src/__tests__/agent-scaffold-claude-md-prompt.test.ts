@@ -81,3 +81,24 @@ describe('deferred MCP tool hint (FLEETDEFER809)', () => {
     expect(SRC).toMatch(/Csak akkor mondd ki a hiányt/)
   })
 })
+
+describe('generateClaudeMd: skill-location claim is not the false fleet-wide one (card 340585f6)', () => {
+  // e060a794 E2/E3 measured that global ~/.claude/skills/ is NOT visible to any fleet agent
+  // (only to MikroB, who has no agents/<name> config dir). The scaffold's own "Skill-ek helye"
+  // section previously told every generated fleet-agent CLAUDE.md the opposite ("Globalis: ...
+  // minden agens szamara elerheto") -- a false claim the agent would read as fact. The generated
+  // text must now say skills live in the agent's own folder, not the global one.
+  const src = readFileSync(SCAFFOLD_PATH, 'utf-8')
+  const promptStart = src.indexOf('export async function generateClaudeMd')
+  expect(promptStart, 'generateClaudeMd entry not found').toBeGreaterThan(0)
+  const promptEnd = src.indexOf('export async function generateSoulMd')
+  const promptBody = src.slice(promptStart, promptEnd)
+
+  it('does not claim the global skills dir is available to every agent', () => {
+    expect(promptBody).not.toMatch(/Glob[aá]lis:\s*~\/\.claude\/skills\/\s*\(minden [aá]g[eé]ns sz[aá]m[aá]ra el[eé]rhet[oő]\)/)
+  })
+
+  it('states the agent-local skills folder as the actual location', () => {
+    expect(promptBody).toContain('agents/AGENT_NAME/.claude/skills')
+  })
+})
