@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, chmodSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -389,6 +389,193 @@ describe('watched-repos-record-review.sh', () => {
       expect(demo?.note).toContain(`note-${i}`)
     }
   }, 15000)
+})
+
+// Card 9710bdfd GO follow-up (CYBERED comment 19618, Gate-SHA 79a0c9c45cb81fce290beda95d216d703fdd6be4):
+// the GO verdict listed four non-blocking survivor mutants (R5, S4/R3, L1, a file-mode INFO),
+// closed out here by card 8aed7984. Each gets either a mutation-resistant pin (MUTATION CHECK
+// proves the exact survivor mutant makes the pin fail) or, for L1, the fix itself (reordering the
+// writes) is what the regression test below exercises. S4 (external-repos-sync.sh's twin of R3)
+// is the identical tmp+replace pattern in a sibling file and is not separately re-tested here.
+describe('watched-repos-record-review.sh -- GO follow-up survivors (card 8aed7984)', () => {
+  beforeEach(() => {
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'existing note' },
+    ])
+  })
+
+  // L1: the state write now runs BEFORE the registry note-append (see the comment above the
+  // state-write block in the script). A corrupt state file must abort before the note is
+  // touched at all -- reverting to the old order (registry first) would make this assertion
+  // fail, because the note would land despite the state write never succeeding.
+  it('L1: a corrupt state file aborts before the registry note is touched, so a fixed retry does not double-append', () => {
+    const corrupt = '{ not valid json !!'
+    writeFileSync(statePath, corrupt)
+    expect(() =>
+      execFileSync(
+        'bash',
+        [RECORD_SH, 'demo', '--sha', 'deadbee0', '--note-append', 'first attempt', '--registry', registryPath, '--state', statePath],
+        { stdio: 'pipe' },
+      ),
+    ).toThrow()
+    const registry = JSON.parse(readFileSync(registryPath, 'utf-8'))
+    expect(registry.find((e: { name: string }) => e.name === 'demo').note).toBe('existing note') // unchanged
+
+    // Retry after fixing the state file: the note must land exactly once, not twice.
+    writeFileSync(statePath, JSON.stringify({}))
+    execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'deadbee0', '--note-append', 'first attempt', '--registry', registryPath, '--state', statePath])
+    const after = JSON.parse(readFileSync(registryPath, 'utf-8'))
+    expect(after.find((e: { name: string }) => e.name === 'demo').note).toBe('existing note | first attempt')
+  })
+
+  // R5: every state-writer (git-repo-watcher.sh, pipx-version-check.sh, external-repos-sync.sh,
+  // this script) must share the exact same $STATE.lock file, or the shared exclusion the whole
+  // card family relies on silently stops applying between any two of them. Proven here between
+  // this script and pipx-version-check.sh: a record-review.sh write holds the lock while
+  // sleeping; a concurrent pipx-version-check.sh write to the SAME state file must block on the
+  // SAME lock and therefore never lose either entry.
+  it('R5: a concurrent pipx-version-check.sh write and a record-review.sh write to the SAME state file never lose either entry', async () => {
+    const overrideDir = join(dir, 'pypi-override')
+    mkdirSync(overrideDir, { recursive: true })
+    writeFileSync(join(overrideDir, 'widget-pipx.json'), JSON.stringify({ info: { version: '1.2.3' } }))
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+      { name: 'widget-pipx', adoption: 'pipx', pinned_version: '1.2.3' },
+    ])
+
+    const recordP = execFileP('bash', [RECORD_SH, 'demo', '--sha', 'deadbee0', '--registry', registryPath, '--state', statePath], {
+      env: { ...process.env, WATCHED_STATE_TEST_SLEEP_S: '0.5' },
+    })
+    const pipxP = execFileP('bash', [PIPX_CHECK_SH], {
+      env: {
+        ...process.env,
+        WATCHED_REPOS_STATE_JSON: statePath,
+        PIPX_VERSION_CHECK_REGISTRY_JSON: registryPath,
+        PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR: overrideDir,
+      },
+    })
+    await Promise.all([recordP, pipxP])
+
+    const state = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, { last_sha?: string; pypi_latest_version?: string }>
+    expect(state['demo']?.last_sha).toBe('deadbee0')
+    expect(state['widget-pipx']?.pypi_latest_version).toBe('1.2.3')
+  }, 10000)
+
+  // MUTATION CHECK for R5: a record-review.sh copy whose state-lock suffix is renamed from
+  // ".lock" to ".lock2" no longer shares the lock with pipx-version-check.sh -- proving the pin
+  // above is non-vacuous (it would have caught exactly the survivor mutant RedHat found).
+  it('MUTATION: a record-review.sh copy with a renamed state-lock genuinely loses one of the two entries', async () => {
+    const overrideDir = join(dir, 'pypi-override-mutant')
+    mkdirSync(overrideDir, { recursive: true })
+    writeFileSync(join(overrideDir, 'widget-pipx.json'), JSON.stringify({ info: { version: '1.2.3' } }))
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+      { name: 'widget-pipx', adoption: 'pipx', pinned_version: '1.2.3' },
+    ])
+
+    const mutantSh = join(dir, 'watched-repos-record-review-mutant.sh')
+    const src = readFileSync(RECORD_SH, 'utf-8')
+    const mutated = src.replace('200>"$STATE.lock" 2>&1 )"', '200>"$STATE.lock2" 2>&1 )"')
+    expect(mutated).not.toBe(src) // the replace actually matched something
+    writeFileSync(mutantSh, mutated)
+
+    let lostAnEntry = false
+    for (let attempt = 0; attempt < 5 && !lostAnEntry; attempt++) {
+      writeFileSync(statePath, JSON.stringify({}))
+      const recordP = execFileP('bash', [mutantSh, 'demo', '--sha', 'deadbee0', '--registry', registryPath, '--state', statePath], {
+        env: { ...process.env, WATCHED_STATE_TEST_SLEEP_S: '0.5' },
+      })
+      const pipxP = execFileP('bash', [PIPX_CHECK_SH], {
+        env: {
+          ...process.env,
+          WATCHED_REPOS_STATE_JSON: statePath,
+          PIPX_VERSION_CHECK_REGISTRY_JSON: registryPath,
+          PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR: overrideDir,
+        },
+      })
+      await Promise.all([recordP, pipxP])
+      const state = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>
+      lostAnEntry = !state['demo'] || !state['widget-pipx']
+    }
+    expect(lostAnEntry).toBe(true)
+  }, 15000)
+
+  // R3 (S4's twin in this script): a lock-free reader (the real-world case -- dashboard-settings.ts,
+  // integrated-repos.ts both read this file without a lock) must never observe a torn/incomplete
+  // file no matter how long the write takes. Proven by stretching the window between "tmp file
+  // fully written" and the atomic rename via WATCHED_STATE_TEST_PRE_REPLACE_SLEEP_S, while a tight
+  // reader loop samples the real target path throughout.
+  it('R3: a lock-free reader never observes a torn state file during a slow write (atomic swap pin)', async () => {
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: 'old0000' } }))
+    const writeP = execFileP('bash', [RECORD_SH, 'demo', '--sha', 'deadbee1', '--registry', registryPath, '--state', statePath], {
+      env: { ...process.env, WATCHED_STATE_TEST_PRE_REPLACE_SLEEP_S: '0.4' },
+    })
+    let sawInvalid = false
+    let samples = 0
+    const readerTimer = setInterval(() => {
+      samples++
+      try {
+        JSON.parse(readFileSync(statePath, 'utf-8')) // throws on torn/partial content
+      } catch {
+        sawInvalid = true
+      }
+    }, 2)
+    await writeP
+    clearInterval(readerTimer)
+    expect(samples).toBeGreaterThan(5) // the reader actually sampled during the delay
+    expect(sawInvalid).toBe(false)
+  }, 10000)
+
+  // MUTATION CHECK for R3: reproduces the PRE-FIX in-place truncating write directly (not via the
+  // real script) to prove the pin above is non-vacuous -- without tmp+rename, the same slow-write
+  // window genuinely produces a torn read.
+  it('MUTATION: an in-place truncating write (the pre-fix shape) genuinely produces a torn read during the same window', async () => {
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: 'old0000' } }))
+    const truncatingPy = join(dir, 'truncating-write.py')
+    writeFileSync(
+      truncatingPy,
+      'import json, sys, time\n' +
+        'path, delay = sys.argv[1], float(sys.argv[2])\n' +
+        'f = open(path, "w")\n' + // truncates immediately -- the pre-fix shape
+        'time.sleep(delay)\n' +
+        'json.dump({"demo": {"last_sha": "newsha01"}}, f)\n' +
+        'f.close()\n',
+    )
+    const truncatingWriteP = execFileP('python3', [truncatingPy, statePath, '0.4'])
+    let sawInvalid = false
+    const readerTimer = setInterval(() => {
+      try {
+        JSON.parse(readFileSync(statePath, 'utf-8'))
+      } catch {
+        sawInvalid = true
+      }
+    }, 2)
+    await truncatingWriteP
+    clearInterval(readerTimer)
+    expect(sawInvalid).toBe(true)
+  }, 10000)
+
+  // File-mode finding (CYBERED comment 19618, INFO-weight): os.replace() used to carry the tmp
+  // file's mode from the CALLER's umask, not the state file's prior mode -- measured turning a
+  // 0600 state file into 0644 under umask 022. Pinned by running under an explicitly loose umask.
+  it('preserves the state file\'s existing 0600 mode across a rewrite even under a loose umask', () => {
+    writeFileSync(statePath, JSON.stringify({}))
+    chmodSync(statePath, 0o600)
+    execFileSync('bash', ['-c', 'umask 022 && exec "$0" "$@"', RECORD_SH, 'demo', '--sha', 'deadbee0', '--registry', registryPath, '--state', statePath])
+    expect(statSync(statePath).mode & 0o777).toBe(0o600)
+  })
+
+  // MUTATION CHECK: without the os.chmod() preservation, the same loose umask genuinely loosens a
+  // freshly-created tmp file to 0644 before the swap -- proves the pin above is non-vacuous.
+  it('MUTATION: a bare tmp-file create+replace (no chmod) under umask 022 genuinely ends up 0644', () => {
+    const target = join(dir, 'mutant-mode-target.json')
+    writeFileSync(target, '{}')
+    chmodSync(target, 0o600)
+    const mutantModePy = join(dir, 'mutant-mode.py')
+    writeFileSync(mutantModePy, 'import os, sys\np = sys.argv[1]\ntmp = p + ".tmp"\nopen(tmp, "w").write("{}")\nos.replace(tmp, p)\n')
+    execFileSync('bash', ['-c', 'umask 022 && exec python3 "$0" "$@"', mutantModePy, target])
+    expect(statSync(target).mode & 0o777).toBe(0o644)
+  })
 })
 
 describe('git-repo-watcher.sh rejects a non-hex/too-short last_sha instead of using it for the prefix match (card ffca678d)', () => {
