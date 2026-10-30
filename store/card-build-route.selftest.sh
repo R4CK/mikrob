@@ -233,20 +233,28 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('Content-Length') or 0)
         body = self.rfile.read(n).decode()
-        with open(sys.argv[2], 'a') as f:
+        with open(sys.argv[1], 'a') as f:
             f.write(body + "\n")
         self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
-port = int(sys.argv[1])
-http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+# Card 3629e133 (WhiteHat 14121): a fixed random-range port guess collides under concurrent
+# fleet-test/selftest runs ("Address already in use"). Bind :0 and let the kernel hand out a
+# free port instead -- print it so the shell side can read it back.
+srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+print(srv.server_address[1], flush=True)
+srv.serve_forever()
 PYEOF
 
 vram_fake_dashboard() { # $1 = card id the router is given, $2 = vram stub, $3 = expect-a-post (1/0)
   local card="$1" vram="$2" want_post="$3"
   local seen="$TMP/vram-seen-$card.log"; : > "$seen"
-  local port=$((20000 + RANDOM % 20000))
-  python3 "$TMP/vram-fake-dashboard.py" "$port" "$seen" &
+  local portfile="$TMP/vram-port-$card.log"
+  python3 "$TMP/vram-fake-dashboard.py" "$seen" > "$portfile" &
   local pid=$!
-  sleep 0.3
+  local port="" tries=0
+  while [ -z "$port" ] && [ "$tries" -lt 50 ]; do
+    port="$(head -n1 "$portfile" 2>/dev/null)"
+    [ -n "$port" ] || { sleep 0.1; tries=$((tries + 1)); }
+  done
   printf 'throwaway-not-real\n' > "$TMP/vram-fake-token"
   CARD_BUILD_ROUTE_LOG=/dev/null \
   CARD_BUILD_ROUTE_API="http://127.0.0.1:$port" \
@@ -415,19 +423,27 @@ class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
         self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
-        self.wfile.write(json.dumps({"title": sys.argv[2], "description": sys.argv[3], "priority": "normal"}).encode())
-port = int(sys.argv[1])
-http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+        self.wfile.write(json.dumps({"title": sys.argv[1], "description": sys.argv[2], "priority": "normal"}).encode())
+# Card 3629e133: kernel-assigned free port instead of a guessed random range (see
+# vram-fake-dashboard.py above for the collision this avoids).
+srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+print(srv.server_address[1], flush=True)
+srv.serve_forever()
 PYEOF
 
 # $1 = card id (hex-shaped), $2 = title, $3 = description, $4... = extra env assignments (NAME=value)
 decompose_run() {
   local card="$1" title="$2" desc="$3"; shift 3
-  local port=$((20000 + RANDOM % 20000)) log="$TMP/decompose-$card.log"
+  local log="$TMP/decompose-$card.log"
   : > "$log"
-  python3 "$TMP/decompose-fake-dashboard.py" "$port" "$title" "$desc" &
+  local portfile="$TMP/decompose-port-$card.log"
+  python3 "$TMP/decompose-fake-dashboard.py" "$title" "$desc" > "$portfile" &
   local pid=$!
-  sleep 0.3
+  local port="" tries=0
+  while [ -z "$port" ] && [ "$tries" -lt 50 ]; do
+    port="$(head -n1 "$portfile" 2>/dev/null)"
+    [ -n "$port" ] || { sleep 0.1; tries=$((tries + 1)); }
+  done
   printf 'throwaway-not-real\n' > "$TMP/decompose-fake-token"
   local extra_env=("$@")
   env "${extra_env[@]+"${extra_env[@]}"}" \
