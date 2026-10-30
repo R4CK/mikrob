@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer, type Server } from 'node:http'
 
 const logCalls: unknown[] = []
 vi.mock('../logger.js', () => ({
@@ -88,6 +89,89 @@ describe('freellmapi-client', () => {
     // fast instead, with no additional fetch call at all.
     await expect(freellmapiRequest('GET', '/api/keys')).rejects.toBeInstanceOf(FreellmapiUnavailableError)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps failed logins under the upstream 5-bad-logins/15-min lockout (WhiteHat2 GO 25458 LOW-4, card 3c9c3a10)', async () => {
+    process.env.FREELLMAPI_BASE_URL = 'http://127.0.0.1:3001'
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { freellmapiRequest } = await freshClient()
+    const WINDOW_MS = 15 * 60_000
+    const start = Date.now()
+    let loginAttempts = 0
+    while (Date.now() - start < WINDOW_MS) {
+      try {
+        await freellmapiRequest('GET', '/api/keys')
+      } catch {
+        // expected: every call either logs in and fails, or backs off
+      }
+      loginAttempts = fetchMock.mock.calls.length
+      await vi.advanceTimersByTimeAsync(5_000)
+    }
+    expect(loginAttempts).toBeLessThan(5)
+    vi.useRealTimers()
+  })
+
+  it('does not follow a redirect from the base URL on login (WhiteHat2 GO 25458 LOW-3, card 3c9c3a10)', async () => {
+    // Real (unstubbed) fetch against a real loopback server that issues a 307 --
+    // redirect:'error' is a fetch option, so a mocked fetch can't exercise it.
+    let redirectTargetHit = false
+    const redirectTarget: Server = createServer((_req, res) => {
+      redirectTargetHit = true
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{}')
+    })
+    await new Promise<void>((resolve) => redirectTarget.listen(0, '127.0.0.1', resolve))
+    const targetPort = (redirectTarget.address() as { port: number }).port
+
+    const redirector: Server = createServer((_req, res) => {
+      res.writeHead(307, { Location: `http://127.0.0.1:${targetPort}/` })
+      res.end()
+    })
+    await new Promise<void>((resolve) => redirector.listen(0, '127.0.0.1', resolve))
+    const redirectorPort = (redirector.address() as { port: number }).port
+
+    process.env.FREELLMAPI_BASE_URL = `http://127.0.0.1:${redirectorPort}`
+    const { freellmapiRequest, FreellmapiUnavailableError } = await freshClient()
+    await expect(freellmapiRequest('GET', '/api/keys')).rejects.toBeInstanceOf(FreellmapiUnavailableError)
+    expect(redirectTargetHit).toBe(false)
+
+    await new Promise<void>((resolve) => redirector.close(() => resolve()))
+    await new Promise<void>((resolve) => redirectTarget.close(() => resolve()))
+  })
+
+  it('does not follow a redirect from the base URL on a request AFTER a successful login (WhiteHat2 GO 25458 LOW-3, card 3c9c3a10)', async () => {
+    // Login succeeds directly (no redirect); the subsequent GET is what gets
+    // redirected -- this exercises the second fetch call (doFetch), not login's.
+    let redirectTargetHit = false
+    const redirectTarget: Server = createServer((_req, res) => {
+      redirectTargetHit = true
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('[]')
+    })
+    await new Promise<void>((resolve) => redirectTarget.listen(0, '127.0.0.1', resolve))
+    const targetPort = (redirectTarget.address() as { port: number }).port
+
+    const server: Server = createServer((req, res) => {
+      if (req.url === '/api/auth/login') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ token: 'tok-redirect-test' }))
+        return
+      }
+      res.writeHead(307, { Location: `http://127.0.0.1:${targetPort}/api/keys` })
+      res.end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const serverPort = (server.address() as { port: number }).port
+
+    process.env.FREELLMAPI_BASE_URL = `http://127.0.0.1:${serverPort}`
+    const { freellmapiRequest, FreellmapiUnavailableError } = await freshClient()
+    await expect(freellmapiRequest('GET', '/api/keys')).rejects.toBeInstanceOf(FreellmapiUnavailableError)
+    expect(redirectTargetHit).toBe(false)
+
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await new Promise<void>((resolve) => redirectTarget.close(() => resolve()))
   })
 
   it('never logs the session token or the credential password', async () => {
