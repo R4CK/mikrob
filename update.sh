@@ -778,10 +778,87 @@ scrub_rc_secrets() {
   return 0
 }
 
+# Keepalive-probe unit backfill (card 3f2886d8, Peti incident 2026-10-30, Telegram 12831).
+# install-linux.sh writes ${SERVICE_ID}-channel-keepalive-probe.service/.timer (card 40d2d2f9),
+# but update.sh never (re)generates a missing helper unit on an EXISTING install -- a host
+# installed before 40d2d2f9 landed never gets it, and the only producer of
+# store/.channel-keepalive left is organic inbound traffic, which is exactly the night-restart
+# failure class card 40d2d2f9 exists to prevent. Measured live on this host: `systemctl --user
+# enable --now mikrob-channel-keepalive-probe.timer` failed with "Unit does not exist"
+# (hand-installed 2026-10-30 11:35, the host's only producer until then).
+#
+# Idempotent and non-destructive: per existing *-channels.service on the host (same
+# derive-the-service-id-from-an-existing-unit pattern as migrate_channels_restart above), it
+# creates ONLY the unit file(s) that are missing -- a unit that already exists is never opened
+# for writing, so an operator's own edit to it is never touched. Deliberately a different name
+# from upstream's install_keepalive_probe_timer (not adopted, see the breadcrumb and
+# update-unit-maintenance-order.test.ts): that function also unconditionally enables+starts a new
+# background watcher on every host; this one only backfills the file content install-linux.sh
+# already defines for a host that is supposed to have it, and does not enable or start anything,
+# so an operator (or a later, separately-reviewed card) decides when it goes live.
+ensure_keepalive_probe_unit() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _created=0
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    _sid="$(basename "$chan_unit" "-channels.service")"
+    _svc="$units_dir/${_sid}-channel-keepalive-probe.service"
+    _timer="$units_dir/${_sid}-channel-keepalive-probe.timer"
+    [ -f "$_svc" ] && [ -f "$_timer" ] && continue
+    _install_dir="$(sed -n 's/^WorkingDirectory=//p' "$chan_unit" | head -1)"
+    [ -n "$_install_dir" ] || continue
+    _home="$(sed -n 's/^Environment=HOME=//p' "$chan_unit" | head -1)"
+    [ -n "$_home" ] || _home="$HOME"
+    _tz_line="$(sed -n '/^Environment=TZ=/p' "$chan_unit" | head -1)"
+    [ -n "$_tz_line" ] || _tz_line="# no explicit TZ detected; inheriting host default"
+    if [ ! -f "$_svc" ]; then
+      cat >"$_svc" <<EOF
+[Unit]
+Description=${_sid} token-free idle-path channel keepalive probe
+After=${_sid}-channels.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=${_install_dir}
+ExecStart=${_install_dir}/scripts/channel-keepalive-probe.sh
+Environment=PATH=${_home}/.local/bin:${_home}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=${_home}
+${_tz_line}
+StandardOutput=append:${_install_dir}/store/channel-keepalive-probe.log
+StandardError=append:${_install_dir}/store/channel-keepalive-probe.log
+EOF
+      echo -e "  Channel keepalive-probe unit letrehozva (hianyzott): $(basename "$_svc")"
+      _created=1
+    fi
+    if [ ! -f "$_timer" ]; then
+      cat >"$_timer" <<EOF
+[Unit]
+Description=${_sid} channel keepalive probe every 3 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=3min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target
+EOF
+      echo -e "  Channel keepalive-probe timer letrehozva (hianyzott): $(basename "$_timer")"
+      _created=1
+    fi
+  done
+  if [ "$_created" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
   strip_legacy_notifier_telegram_env "$@"
+  ensure_keepalive_probe_unit "$@"
   return 0
 }
 run_unit_maintenance

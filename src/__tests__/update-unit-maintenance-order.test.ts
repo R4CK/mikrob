@@ -66,7 +66,12 @@ function stripShellComments(src: string): string {
 // from) wired into run_unit_maintenance passed the denylist 48/48 green. MikroB's acceptance
 // criterion (comment 11277) was an ALLOWLIST from the start: run_unit_maintenance may call ONLY
 // the functions explicitly adopted today, and ANY other name -- known or not -- is red.
-const ADOPTED_UNIT_FUNCTIONS = new Set(['repair_morning_timer', 'migrate_channels_restart', 'strip_legacy_notifier_telegram_env'])
+const ADOPTED_UNIT_FUNCTIONS = new Set([
+  'repair_morning_timer',
+  'migrate_channels_restart',
+  'strip_legacy_notifier_telegram_env',
+  'ensure_keepalive_probe_unit',
+])
 
 // Cybered NO-GO (card e47dc04a, comment 11485, delta-gate on the second attempt): the FIRST
 // allowlist extractor matched only the exact `name`/`name "$@"` shape and SKIPPED every other
@@ -161,6 +166,7 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     expect(wrapper).toMatch(/repair_morning_timer "\$@"/)
     expect(wrapper).toMatch(/migrate_channels_restart "\$@"/)
     expect(wrapper).toMatch(/strip_legacy_notifier_telegram_env "\$@"/)
+    expect(wrapper).toMatch(/ensure_keepalive_probe_unit "\$@"/)
     expect(UPDATE).toMatch(/^run_unit_maintenance$/m)
   })
 
@@ -337,6 +343,7 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     // having nothing to check.
     expect(called).toContain('repair_morning_timer')
     expect(called).toContain('migrate_channels_restart')
+    expect(called).toContain('ensure_keepalive_probe_unit')
   })
 
   // CONTROL, reproducing Cybersec's measured M5 directly: a THIRD, not-yet-named not-adopted
@@ -504,6 +511,127 @@ describe('the maintenance itself, executed for real', () => {
     try {
       expect(run(join(dir, 'nope')).code).toBe(0)
       expect(run(dir).code).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// Card 3f2886d8 (Peti incident 2026-10-30, Telegram 12831): install-linux.sh writes the
+// keepalive-probe unit pair, but update.sh never backfilled it on an existing host -- this host's
+// own timer was missing until MikroB hand-installed it. These tests are RED on current develop
+// (ensure_keepalive_probe_unit does not exist yet) and pin the three Kesz-ha criteria: the unit
+// pair gets created when missing, nothing changes when it already exists, and an operator's own
+// edit to an existing unit survives untouched.
+describe('ensure_keepalive_probe_unit backfills a missing keepalive-probe unit pair', () => {
+  const body = [sliceShellFn(UPDATE, 'ensure_keepalive_probe_unit')].join('\n')
+
+  function run(dir: string) {
+    return runScript(`${body}\nensure_keepalive_probe_unit "${dir}"`)
+  }
+
+  const CHANNELS_UNIT = [
+    '[Unit]',
+    'Description=Marveen Channels (Telegram bridge)',
+    '',
+    '[Service]',
+    'Type=simple',
+    'WorkingDirectory=/home/neon/marveen',
+    'ExecStart=/home/neon/marveen/scripts/channels.sh',
+    'Environment=HOME=/home/neon',
+    'Environment=TZ=Europe/Budapest',
+    '',
+  ].join('\n')
+
+  it('creates a missing keepalive-probe unit pair from the channels unit it sits next to', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'units-'))
+    try {
+      writeFileSync(join(dir, 'mikrob-channels.service'), CHANNELS_UNIT)
+      const r = run(dir)
+      expect(r.code).toBe(0)
+      const svc = readFileSync(join(dir, 'mikrob-channel-keepalive-probe.service'), 'utf-8')
+      const timer = readFileSync(join(dir, 'mikrob-channel-keepalive-probe.timer'), 'utf-8')
+      expect(svc).toContain('ExecStart=/home/neon/marveen/scripts/channel-keepalive-probe.sh')
+      expect(svc).toContain('WorkingDirectory=/home/neon/marveen')
+      expect(svc).toContain('Environment=HOME=/home/neon')
+      expect(svc).toContain('Environment=TZ=Europe/Budapest')
+      expect(svc).toContain('After=mikrob-channels.service')
+      expect(timer).toContain('OnUnitActiveSec=3min')
+      expect(timer).toContain('WantedBy=timers.target')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('matches systemctl --user list-unit-files counting 2 keepalive-probe units after the run', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'units-'))
+    try {
+      writeFileSync(join(dir, 'mikrob-channels.service'), CHANNELS_UNIT)
+      run(dir)
+      const files = readdirSync(dir).filter((f: string) => f.includes('keepalive-probe'))
+      expect(files.length).toBe(2)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('is idempotent: a second pass changes nothing and creates nothing new', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'units-'))
+    try {
+      writeFileSync(join(dir, 'mikrob-channels.service'), CHANNELS_UNIT)
+      run(dir)
+      const after1 = [
+        readFileSync(join(dir, 'mikrob-channel-keepalive-probe.service'), 'utf-8'),
+        readFileSync(join(dir, 'mikrob-channel-keepalive-probe.timer'), 'utf-8'),
+      ]
+      const second = run(dir)
+      expect(second.code).toBe(0)
+      expect(second.out).not.toContain('letrehozva')
+      expect(readFileSync(join(dir, 'mikrob-channel-keepalive-probe.service'), 'utf-8')).toBe(after1[0])
+      expect(readFileSync(join(dir, 'mikrob-channel-keepalive-probe.timer'), 'utf-8')).toBe(after1[1])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('never overwrites an existing unit file, even one an operator hand-edited', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'units-'))
+    try {
+      writeFileSync(join(dir, 'mikrob-channels.service'), CHANNELS_UNIT)
+      const handEdited = '[Unit]\nDescription=OPERATOR EDITED THIS\n[Service]\nType=oneshot\nExecStart=/custom/path.sh\n'
+      writeFileSync(join(dir, 'mikrob-channel-keepalive-probe.service'), handEdited)
+      writeFileSync(join(dir, 'mikrob-channel-keepalive-probe.timer'), '[Timer]\nOnUnitActiveSec=99min\n')
+      const r = run(dir)
+      expect(r.code).toBe(0)
+      expect(r.out).not.toContain('letrehozva')
+      expect(readFileSync(join(dir, 'mikrob-channel-keepalive-probe.service'), 'utf-8')).toBe(handEdited)
+      expect(readFileSync(join(dir, 'mikrob-channel-keepalive-probe.timer'), 'utf-8')).toBe('[Timer]\nOnUnitActiveSec=99min\n')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('backfills only the missing half of the pair, leaving the existing half untouched', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'units-'))
+    try {
+      writeFileSync(join(dir, 'mikrob-channels.service'), CHANNELS_UNIT)
+      const handEditedTimer = '[Timer]\nOnUnitActiveSec=99min\n'
+      writeFileSync(join(dir, 'mikrob-channel-keepalive-probe.timer'), handEditedTimer)
+      const r = run(dir)
+      expect(r.code).toBe(0)
+      expect(readFileSync(join(dir, 'mikrob-channel-keepalive-probe.timer'), 'utf-8')).toBe(handEditedTimer)
+      expect(readFileSync(join(dir, 'mikrob-channel-keepalive-probe.service'), 'utf-8')).toContain('ExecStart=')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('survives a machine with no unit directory at all, and one with no channels unit', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'units-'))
+    try {
+      expect(run(join(dir, 'nope')).code).toBe(0)
+      expect(run(dir).code).toBe(0)
+      expect(readdirSync(dir).length).toBe(0)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
