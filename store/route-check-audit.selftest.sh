@@ -33,11 +33,19 @@ mkdb() { # $1 = path
   sqlite3 "$1" "CREATE TABLE kanban_card_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL, from_status TEXT,
       to_status TEXT NOT NULL, actor TEXT, created_at INTEGER NOT NULL,
-      forced INTEGER NOT NULL DEFAULT 0);"
+      forced INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, parent_id TEXT);"
 }
-dispatch() { # $1 db, $2 card, $3 epoch
-  sqlite3 "$1" "INSERT INTO kanban_card_events (card_id,from_status,to_status,created_at)
-                VALUES ('$2','planned','in_progress',$3);"
+dispatch() { # $1 db, $2 card, $3 epoch, [$4 from_status=planned], [$5 actor='']
+  local fs="${4:-planned}" act="${5:-}"
+  sqlite3 "$1" "INSERT INTO kanban_card_events (card_id,from_status,to_status,actor,created_at)
+                VALUES ('$2','$fs','in_progress',$([ -n "$act" ] && echo "'$act'" || echo NULL),$3);"
+}
+reopen() { # $1 db, $2 card, $3 epoch -- a gate-FAIL bounce-back (waiting -> in_progress)
+  dispatch "$1" "$2" "$3" waiting mikrob
+}
+make_parent() { # $1 db, $2 child card id, $3 parent card id -- registers $2 as a child of $3
+  sqlite3 "$1" "INSERT INTO kanban_cards (id,parent_id) VALUES ('$2','$3');"
 }
 verdict() { # $1 log, $2 card, $3 epoch
   printf '%s\t%s\tONLINE\ttest-path\tcalls=0\tchars=10\n' \
@@ -165,6 +173,48 @@ if [ "$(field "$out" dispatches)" = "2" ] && [ "$(field "$out" missing)" = "1" ]
   ok "re-dispatch is audited independently of the earlier routed one"
 else
   bad "re-dispatch is audited independently" "$out"
+fi
+
+# 10. FRESH vs REOPEN split (card 64f56f97 requirement 2): a gate-FAIL bounce-back
+#     (waiting -> in_progress) is not a new routing decision, and must not be counted the same
+#     way as a genuinely fresh (planned -> in_progress) dispatch that skipped routing.
+new_case 10
+dispatch "$DB" eeee1111 $((NOW - 100))                  # fresh, unrouted
+reopen   "$DB" ffff2222 $((NOW - 100))                   # reopen, unrouted
+out="$(run --since $((NOW - 1000)))"
+if [ "$(field "$out" fresh_dispatches)" = "1" ] && [ "$(field "$out" fresh_missing)" = "1" ] \
+  && [ "$(field "$out" reopen_dispatches)" = "1" ] && [ "$(field "$out" reopen_missing)" = "1" ] \
+  && [ "$(field "$out" dispatches)" = "2" ]; then
+  ok "fresh dispatch and gate-FAIL reopen are classified and counted separately"
+else
+  bad "fresh dispatch and gate-FAIL reopen are classified separately" "$out"
+fi
+
+# 11. PARENT EXCLUSION (card 64f56f97 requirement 3): a Fázis/parent card (it has at least one
+#     child registered against it) is excluded from the metric entirely -- nobody builds it
+#     directly, so an unrouted dispatch of it is not a coverage gap.
+new_case 11
+make_parent "$DB" gggg3333 hhhh4444   # hhhh4444 is now a parent (gggg3333 is its child)
+dispatch "$DB" hhhh4444 $((NOW - 100))   # dispatching the PARENT card itself, unrouted
+dispatch "$DB" iiii5555 $((NOW - 100))   # an ordinary leaf card, unrouted, for contrast
+out="$(run --since $((NOW - 1000)))"
+if [ "$(field "$out" dispatches)" = "1" ] && [ "$(field "$out" excluded_parent_count)" = "1" ]; then
+  ok "a Fázis/parent card's dispatch is excluded from the metric, a leaf card's is not"
+else
+  bad "a Fázis/parent card's dispatch is excluded from the metric" "$out"
+fi
+
+# 12. NULL-ACTOR tracking among missing FRESH dispatches (card 64f56f97: "15-nél az actor üres").
+#     A reopen always carries mikrob's actor in practice (dispatch helper enforces it via reopen()),
+#     so this is fresh-only by construction, matching the card's own measurement.
+new_case 12
+dispatch "$DB" jjjj6666 $((NOW - 100)) planned ""          # fresh, unrouted, NO actor
+dispatch "$DB" kkkk7777 $((NOW - 100)) planned self-advance # fresh, unrouted, HAS an actor
+out="$(run --since $((NOW - 1000)))"
+if [ "$(field "$out" null_actor_missing_count)" = "1" ] && [ "$(field "$out" fresh_missing)" = "2" ]; then
+  ok "only the actor-less missing fresh dispatch is counted as null-actor"
+else
+  bad "only the actor-less missing fresh dispatch is counted as null-actor" "$out"
 fi
 
 # The `selftest: N passed, 0 failed` wording is not cosmetic: src/__tests__/store-selftests-all-run.test.ts

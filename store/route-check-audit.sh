@@ -82,11 +82,29 @@ else
   [ -n "$cutoff" ] || cutoff="$now"
 fi
 
+# Cards with at least one child: nobody "builds" a Fázis/parent card directly (card 64f56f97,
+# requirement 3), so a dispatch of one is excluded from the coverage metric entirely -- not merely
+# from the denominator, from the event set, the same way a pre-cutoff dispatch is excluded above.
+parent_ids="$(sqlite3 "$DB" \
+  "SELECT DISTINCT parent_id FROM kanban_cards WHERE parent_id IS NOT NULL AND parent_id != '';" 2>/dev/null)" || {
+  printf 'route-check-audit: kanban_cards query failed\n' >&2; exit 3; }
+declare -A IS_PARENT=()
+while IFS= read -r pid; do
+  [ -n "$pid" ] || continue
+  IS_PARENT["$pid"]=1
+done <<EOF
+$parent_ids
+EOF
+
 # Dispatch events after the cutoff. kanban_card_events is the board's own status-transition record,
 # so this counts what ACTUALLY moved into in_progress -- not what a card's current status implies,
-# which is unrecoverable once the card moves on to waiting or done.
+# which is unrecoverable once the card moves on to waiting or done. from_status splits a FRESH
+# dispatch (planned -> in_progress) from a gate-FAIL REOPEN (waiting -> in_progress, card 64f56f97
+# requirement 2): a reopen is a bounce-back, not a new routing decision, and lumping the two
+# together hid how bad FRESH coverage actually was (MikroB measured 24/68 fresh missing vs the
+# blended 35%). actor rides along to find the NULL-actor dispatches the card also asked about.
 events="$(sqlite3 -separator '	' "$DB" \
-  "SELECT card_id, created_at FROM kanban_card_events
+  "SELECT card_id, created_at, COALESCE(from_status,''), COALESCE(actor,'') FROM kanban_card_events
    WHERE to_status='in_progress' AND created_at >= $cutoff
    ORDER BY created_at;" 2>/dev/null)" || {
   printf 'route-check-audit: kanban_card_events query failed\n' >&2; exit 3; }
@@ -105,8 +123,16 @@ if [ -f "$LOG" ]; then
 fi
 
 total=0; covered=0; missing_ids=""
-while IFS="$(printf '\t')" read -r card ts; do
+excluded_parent=0
+fresh_total=0; fresh_covered=0
+reopen_total=0; reopen_covered=0
+null_actor_missing=0
+while IFS="$(printf '\t')" read -r card ts from_status actor; do
   [ -n "$card" ] || continue
+  if [ -n "${IS_PARENT[$card]:-}" ]; then
+    excluded_parent=$((excluded_parent + 1))
+    continue
+  fi
   total=$((total + 1))
   hit=0
   if [ -n "$verdicts" ]; then
@@ -116,10 +142,21 @@ while IFS="$(printf '\t')" read -r card ts; do
       END { }' )"
     [ -n "$hit" ] || hit=0
   fi
+  case "$from_status" in
+    planned) fresh_total=$((fresh_total + 1)) ;;
+    waiting) reopen_total=$((reopen_total + 1)) ;;
+  esac
   if [ "$hit" = "1" ]; then
     covered=$((covered + 1))
+    case "$from_status" in
+      planned) fresh_covered=$((fresh_covered + 1)) ;;
+      waiting) reopen_covered=$((reopen_covered + 1)) ;;
+    esac
   else
     missing_ids="$missing_ids $card"
+    if [ "$from_status" = "planned" ] && [ -z "$actor" ]; then
+      null_actor_missing=$((null_actor_missing + 1))
+    fi
   fi
 done <<EOF
 $events
@@ -128,10 +165,22 @@ EOF
 missing=$((total - covered))
 pct=0
 [ "$total" -gt 0 ] && pct=$(( covered * 100 / total ))
+fresh_missing=$((fresh_total - fresh_covered))
+fresh_pct=0
+[ "$fresh_total" -gt 0 ] && fresh_pct=$(( fresh_covered * 100 / fresh_total ))
+reopen_missing=$((reopen_total - reopen_covered))
+reopen_pct=0
+[ "$reopen_total" -gt 0 ] && reopen_pct=$(( reopen_covered * 100 / reopen_total ))
 
 if [ "$JSON" = "1" ]; then
-  printf '{"cutoff":%s,"window_seconds":%s,"dispatches":%s,"routed":%s,"missing":%s,"coverage_pct":%s,"missing_cards":[' \
+  printf '{"cutoff":%s,"window_seconds":%s,"dispatches":%s,"routed":%s,"missing":%s,"coverage_pct":%s,' \
     "$cutoff" "$WINDOW" "$total" "$covered" "$missing" "$pct"
+  printf '"fresh_dispatches":%s,"fresh_missing":%s,"fresh_coverage_pct":%s,' \
+    "$fresh_total" "$fresh_missing" "$fresh_pct"
+  printf '"reopen_dispatches":%s,"reopen_missing":%s,"reopen_coverage_pct":%s,' \
+    "$reopen_total" "$reopen_missing" "$reopen_pct"
+  printf '"excluded_parent_count":%s,"null_actor_missing_count":%s,"missing_cards":[' \
+    "$excluded_parent" "$null_actor_missing"
   sep=""
   for m in $missing_ids; do printf '%s"%s"' "$sep" "$m"; sep=","; done
   printf ']}\n'
@@ -139,6 +188,12 @@ else
   printf 'route-check-audit: %s dispatch(es) since %s -- %s routed, %s MISSING (%s%% coverage)\n' \
     "$total" "$(date -d "@$cutoff" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$cutoff")" \
     "$covered" "$missing" "$pct"
+  printf '  fresh (planned->in_progress): %s, %s missing (%s%% coverage)\n' \
+    "$fresh_total" "$fresh_missing" "$fresh_pct"
+  printf '  reopen (waiting->in_progress, gate-FAIL bounce-back): %s, %s missing (%s%% coverage)\n' \
+    "$reopen_total" "$reopen_missing" "$reopen_pct"
+  [ "$excluded_parent" -gt 0 ] && printf '  excluded %s Fázis/parent dispatch(es) -- nobody builds those directly\n' "$excluded_parent"
+  [ "$null_actor_missing" -gt 0 ] && printf '  %s of the missing fresh dispatches had NO actor recorded\n' "$null_actor_missing"
   if [ "$missing" -gt 0 ]; then
     printf '  dispatched without a route verdict (rule 16 step 4b skipped):\n'
     for m in $missing_ids; do printf '    %s\n' "$m"; done

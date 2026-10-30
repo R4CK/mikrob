@@ -8,7 +8,7 @@
 // files under STORE_DIR (routing config, active-model file, the decision log), so a plain import
 // would read/depend on the LIVE install's actual state instead of a controlled fixture.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { vi } from 'vitest'
@@ -29,6 +29,7 @@ vi.mock('../config.js', async (orig) => {
 const {
   readRoutingOverrides,
   readRecentDecisions,
+  readRouteCoverage,
   RoutingConfigUnreadableError,
   tryHandleLocalLlm,
 } = await import('../web/routes/local-llm.js')
@@ -36,13 +37,22 @@ const {
 const ROUTING_FILE = join(SANDBOX_STORE, 'local-llm-model-routing.json')
 const MODEL_FILE = join(SANDBOX_STORE, 'local-llm-model')
 const LOG_FILE = join(SANDBOX_STORE, 'card-build-route.log')
+const AUDIT_SCRIPT = join(SANDBOX_STORE, 'route-check-audit.sh')
 
 function rm(...paths: string[]) {
   for (const p of paths) rmSync(p, { recursive: true, force: true })
 }
 
+// Writes a throwaway "audit script" that just echoes a fixed JSON payload, so the endpoint test
+// does not depend on a real sqlite db existing -- the handler only cares that SOMETHING runs at
+// this path and prints JSON on stdout with exit 0, exactly like route-check-audit.sh --json does.
+function writeFakeAudit(json: string) {
+  writeFileSync(AUDIT_SCRIPT, `#!/usr/bin/env bash\ncat <<'EOF'\n${json}\nEOF\n`)
+  chmodSync(AUDIT_SCRIPT, 0o755)
+}
+
 beforeEach(() => {
-  rm(ROUTING_FILE, MODEL_FILE, LOG_FILE)
+  rm(ROUTING_FILE, MODEL_FILE, LOG_FILE, AUDIT_SCRIPT)
 })
 
 afterAll(() => {
@@ -168,6 +178,49 @@ describe('readRecentDecisions', () => {
   })
 })
 
+// --- readRouteCoverage (card 64f56f97) -------------------------------------------------------------
+
+describe('readRouteCoverage', () => {
+  it('available:false when the script is missing, not a thrown error', async () => {
+    const { coverage, available } = await readRouteCoverage(AUDIT_SCRIPT)
+    expect(available).toBe(false)
+    expect(coverage).toBeNull()
+  })
+
+  it('available:false when the script exits non-zero', async () => {
+    writeFileSync(AUDIT_SCRIPT, '#!/usr/bin/env bash\necho "broken" >&2\nexit 3\n')
+    chmodSync(AUDIT_SCRIPT, 0o755)
+    const { coverage, available } = await readRouteCoverage(AUDIT_SCRIPT)
+    expect(available).toBe(false)
+    expect(coverage).toBeNull()
+  })
+
+  it('available:false when the script prints non-JSON', async () => {
+    writeFileSync(AUDIT_SCRIPT, '#!/usr/bin/env bash\necho "not json"\n')
+    chmodSync(AUDIT_SCRIPT, 0o755)
+    const { coverage, available } = await readRouteCoverage(AUDIT_SCRIPT)
+    expect(available).toBe(false)
+    expect(coverage).toBeNull()
+  })
+
+  it('maps every snake_case field from route-check-audit.sh --json to its camelCase name', async () => {
+    writeFakeAudit(JSON.stringify({
+      cutoff: 1, window_seconds: 900, dispatches: 10, routed: 7, missing: 3, coverage_pct: 70,
+      fresh_dispatches: 8, fresh_missing: 3, fresh_coverage_pct: 62,
+      reopen_dispatches: 2, reopen_missing: 0, reopen_coverage_pct: 100,
+      excluded_parent_count: 5, null_actor_missing_count: 2, missing_cards: ['a', 'b', 'c'],
+    }))
+    const { coverage, available } = await readRouteCoverage(AUDIT_SCRIPT)
+    expect(available).toBe(true)
+    expect(coverage).toEqual({
+      dispatches: 10, routed: 7, missing: 3, coveragePct: 70,
+      freshDispatches: 8, freshMissing: 3, freshCoveragePct: 62,
+      reopenDispatches: 2, reopenMissing: 0, reopenCoveragePct: 100,
+      excludedParentCount: 5, nullActorMissingCount: 2, missingCards: ['a', 'b', 'c'],
+    })
+  })
+})
+
 // --- GET /api/local-llm/routing --------------------------------------------------------------------
 
 function get(pathname: string): Promise<{ status: number; body: any }> {
@@ -267,5 +320,28 @@ describe('GET /api/local-llm/routing', () => {
       expect(typeof p.count).toBe('number')
       expect(p.lastTs === null || typeof p.lastTs === 'number').toBe(true)
     }
+  })
+
+  // Card 64f56f97: the route-verdict coverage gap rides on the SAME endpoint the existing
+  // card-build-route.sh decisions already use, rather than a second round-trip.
+  it('routeCoverageAvailable:false and routeCoverage:null when the audit script is absent', async () => {
+    const { body } = await get('/api/local-llm/routing')
+    expect(body.routeCoverageAvailable).toBe(false)
+    expect(body.routeCoverage).toBeNull()
+  })
+
+  it('routeCoverage carries the audit script JSON, camelCased, when it is present', async () => {
+    writeFakeAudit(JSON.stringify({
+      dispatches: 4, routed: 1, missing: 3, coverage_pct: 25,
+      fresh_dispatches: 3, fresh_missing: 2, fresh_coverage_pct: 33,
+      reopen_dispatches: 1, reopen_missing: 1, reopen_coverage_pct: 0,
+      excluded_parent_count: 1, null_actor_missing_count: 1, missing_cards: ['x', 'y'],
+    }))
+    const { body } = await get('/api/local-llm/routing')
+    expect(body.routeCoverageAvailable).toBe(true)
+    expect(body.routeCoverage).toMatchObject({
+      freshMissing: 2, freshDispatches: 3, reopenMissing: 1, excludedParentCount: 1,
+      nullActorMissingCount: 1, missingCards: ['x', 'y'],
+    })
   })
 })

@@ -170,6 +170,10 @@ const VRAM_GUARD_STATE_FILE = join(STORE_DIR, 'vram-guard-state.json')
 // Append-only, card-independent routing-decision audit trail (store/card-build-route.sh). Never
 // carries card TEXT, only its length -- see that script's own header.
 const CARD_BUILD_ROUTE_LOG_FILE = join(STORE_DIR, 'card-build-route.log')
+// Card 64f56f97 (route-verdict coverage): soft, report-only audit of how many planned->in_progress
+// dispatches skipped card-build-route.sh entirely -- see that script's own header for why this is
+// a separate, never-blocking process rather than enforcement baked into the move endpoint itself.
+const ROUTE_CHECK_AUDIT_SCRIPT = join(STORE_DIR, 'route-check-audit.sh')
 // The one catalogue schema this build knows how to read (card 4117f98e). It is compared, not
 // assumed: a document from another version may have moved the very fields read below.
 const CATALOG_SCHEMA_VERSION = 1
@@ -808,6 +812,71 @@ export function readRecentDecisions(
     })
   }
   return { rows, available: true }
+}
+
+/** store/route-check-audit.sh --json, shaped for the routing-visibility endpoint (card 64f56f97). */
+export interface RouteCoverage {
+  dispatches: number
+  routed: number
+  missing: number
+  coveragePct: number
+  freshDispatches: number
+  freshMissing: number
+  freshCoveragePct: number
+  reopenDispatches: number
+  reopenMissing: number
+  reopenCoveragePct: number
+  excludedParentCount: number
+  nullActorMissingCount: number
+  missingCards: string[]
+}
+
+/**
+ * Shell out to store/route-check-audit.sh --json (card 64f56f97, requirement 2: make the dispatch
+ * route-verdict gap VISIBLE on the panel that already shows card-build-route.sh's own verdicts).
+ * The audit is already soft-by-construction (never blocks, see that script's own header) and cheap
+ * (a couple of sqlite3 queries against the live kanban db) -- the same cost class as bridgeActive()'s
+ * per-request systemctl call below, so no caching layer is added here either.
+ *
+ * `available: false` covers every way the audit can fail to answer (missing sqlite3, missing db,
+ * a non-JSON stdout) -- the panel must say "can't tell you" rather than render zeros that look like
+ * a clean 100% coverage.
+ */
+export async function readRouteCoverage(
+  script = ROUTE_CHECK_AUDIT_SCRIPT,
+): Promise<{ coverage: RouteCoverage | null; available: boolean }> {
+  const r = await runCmd('bash', [script, '--json'], { timeoutMs: 10_000 })
+  if (r.timedOut || r.code !== 0) {
+    logger.warn({ code: r.code, stderr: r.stderr.slice(0, 500) }, 'readRouteCoverage: audit script failed')
+    return { coverage: null, available: false }
+  }
+  let doc: Record<string, unknown>
+  try {
+    doc = JSON.parse(r.stdout)
+  } catch (err) {
+    logger.warn({ err, stdout: r.stdout.slice(0, 500) }, 'readRouteCoverage: non-JSON output')
+    return { coverage: null, available: false }
+  }
+  const num = (k: string): number => (typeof doc[k] === 'number' ? (doc[k] as number) : 0)
+  const cards = Array.isArray(doc.missing_cards) ? doc.missing_cards.filter((c): c is string => typeof c === 'string') : []
+  return {
+    available: true,
+    coverage: {
+      dispatches: num('dispatches'),
+      routed: num('routed'),
+      missing: num('missing'),
+      coveragePct: num('coverage_pct'),
+      freshDispatches: num('fresh_dispatches'),
+      freshMissing: num('fresh_missing'),
+      freshCoveragePct: num('fresh_coverage_pct'),
+      reopenDispatches: num('reopen_dispatches'),
+      reopenMissing: num('reopen_missing'),
+      reopenCoveragePct: num('reopen_coverage_pct'),
+      excludedParentCount: num('excluded_parent_count'),
+      nullActorMissingCount: num('null_actor_missing_count'),
+      missingCards: cards,
+    },
+  }
 }
 
 async function bridgeActive(): Promise<boolean> {
@@ -2211,6 +2280,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       }
     })
     const decisions = readRecentDecisions(CARD_BUILD_ROUTE_LOG_FILE)
+    const routeCoverage = await readRouteCoverage()
     json(res, {
       defaultModel,
       overrides,
@@ -2218,6 +2288,8 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       presets,
       recentDecisions: decisions.rows,
       decisionsLogAvailable: decisions.available,
+      routeCoverage: routeCoverage.coverage,
+      routeCoverageAvailable: routeCoverage.available,
     })
     return true
   }
