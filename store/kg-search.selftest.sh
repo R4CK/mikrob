@@ -26,24 +26,40 @@ cp "$SCRIPT_DIR/kg-search.sh" "$WORKDIR/kg-search.sh"
 printf '%s' "$FAKE_TOKEN" > "$WORKDIR/.dashboard-token"
 
 CAPTURE_LOG="$WORKDIR/capture.log"
+PATH_LOG="$WORKDIR/path.log"
 : > "$CAPTURE_LOG"
+: > "$PATH_LOG"
 PORT=$(( (RANDOM % 5000) + 21000 ))
 
-python3 - "$PORT" "$CAPTURE_LOG" > "$WORKDIR/server.log" 2>&1 <<'PYEOF' &
+python3 - "$PORT" "$CAPTURE_LOG" "$PATH_LOG" > "$WORKDIR/server.log" 2>&1 <<'PYEOF' &
 import http.server
 import json
 import sys
 
 port = int(sys.argv[1])
 log_path = sys.argv[2]
+path_log_path = sys.argv[3]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         with open(log_path, "a") as f:
             f.write((self.headers.get("Authorization") or "") + "\n")
-        body = json.dumps({"error": "kg_disabled"}).encode()
-        self.send_response(404)
+        with open(path_log_path, "a") as f:
+            f.write(self.path + "\n")
+
+        # F6/pretty-printer selftest: a search request for q=prettytest gets a real "results"
+        # payload back, so the non-json _pretty() code path actually runs end to end.
+        if self.path.startswith("/api/kg/search") and "q=prettytest" in self.path:
+            body = json.dumps({
+                "meta": {"scope": "all", "hits": 1, "relaxed": False, "strict": False},
+                "results": [{"type": "card", "id": "abc123", "score": 0.5, "status": "done",
+                             "title": "T", "why": "W"}],
+            }).encode()
+            self.send_response(200)
+        else:
+            body = json.dumps({"error": "kg_disabled"}).encode()
+            self.send_response(404)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -110,6 +126,31 @@ rc=$?
 set -e
 [ "$rc" -ne 0 ]
 check "$?" "F3: non-digit --k is rejected (exit $rc)"
+
+# F1 MEDIUM (card 34c2d2a2, WhiteHat comment 24241): an unencoded "/" in the for-card ID let
+# `for-card '../../memories'` resolve one directory level up from /api/kg/for-card/, reaching
+# /api/memories with the Bearer token attached. Assert the server never saw that path.
+: > "$PATH_LOG"
+KG_SEARCH_API="http://127.0.0.1:$PORT" bash "$WORKDIR/kg-search.sh" for-card '../../memories' --json \
+  >/dev/null 2>"$WORKDIR/f1id.err"
+rc=$?
+seen_path=$(cat "$PATH_LOG")
+case "$seen_path" in
+  *api/memories*) ok=1 ;;
+  *) ok=0 ;;
+esac
+[ "$ok" = "0" ] && [ -n "$seen_path" ]
+check "$?" "F1: for-card '../../memories' never reaches /api/memories (server saw: $seen_path)"
+
+# F6 (card 34c2d2a2, WhiteHat comment 24241, since 409dded5): the default (non --json) human
+# summary crashed with a Python SyntaxError on every real result -- backslash-escaped quotes
+# inside an f-string's {} expression are invalid Python, {} braces or not.
+set +e
+out=$(KG_SEARCH_API="http://127.0.0.1:$PORT" bash "$WORKDIR/kg-search.sh" search --q prettytest --project x 2>"$WORKDIR/f6.err")
+rc=$?
+set -e
+[ "$rc" = "0" ] && ! grep -qi "SyntaxError" "$WORKDIR/f6.err" && [ -n "$out" ]
+check "$?" "F6: plain (non --json) output exits 0 with readable text, no SyntaxError (exit $rc)"
 
 if [ "$FAILS" -gt 0 ]; then
   echo "$FAILS check(s) failed"

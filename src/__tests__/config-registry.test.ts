@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
-import { SETTINGS_REGISTRY, getSettingDefinition, listSettingModules, validateSettingValue } from '../config-registry.js'
+import { SETTINGS_REGISTRY, getSettingDefinition, listSettingModules, validateSettingValue, validateUnitFloat } from '../config-registry.js'
 
 describe('config-registry', () => {
   it('registers the kanban WIP keys as non-secret, hot-reloadable, module=kanban', () => {
@@ -69,6 +69,29 @@ describe('config-registry', () => {
   it('registers each key at most once', () => {
     const keys = SETTINGS_REGISTRY.map((s) => s.key)
     expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  // QA2 24234 (card 34c2d2a2): KG_MIN_SCORE's validator had no unit test.
+  describe('validateUnitFloat', () => {
+    it('accepts 0', () => {
+      expect(validateUnitFloat('0')).toBeNull()
+    })
+
+    it('accepts 1', () => {
+      expect(validateUnitFloat('1')).toBeNull()
+    })
+
+    it('rejects below 0', () => {
+      expect(validateUnitFloat('-0.1')).not.toBeNull()
+    })
+
+    it('rejects above 1', () => {
+      expect(validateUnitFloat('1.1')).not.toBeNull()
+    })
+
+    it('rejects NaN', () => {
+      expect(validateUnitFloat('NaN')).not.toBeNull()
+    })
   })
 
   describe('validateSettingValue', () => {
