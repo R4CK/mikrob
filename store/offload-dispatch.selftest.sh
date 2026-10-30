@@ -38,7 +38,7 @@ cat > "$TMPDIR/fixture.json" <<'EOF'
   {"id":"leafDone","title":"lepes done","description":"mar kesz","status":"done","assignee":"backend","project":"MikroB","parent_id":"parentA","sort_order":4,"archived_at":null,"labels":[]},
   {"id":"leafArchived","title":"lepes archived","description":"archivalt","status":"planned","assignee":"backend","project":"MikroB","parent_id":"parentA","sort_order":5,"archived_at":1700000000,"labels":[]},
   {"id":"loneCard","title":"[FE] Onallo kartya gyerek nelkul","description":"Nincs bontva.","status":"planned","assignee":"fron-ted","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
-  {"id":"decompCard","title":"[marveen][INFRA][SEC] Architektura donteshez teszt es i18n is kell","description":"A kontraktus (architektura) modosul. Kell hozza unit test es a hu/de i18n string forditasok is.","status":"planned","assignee":"backend2","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
+  {"id":"decompCard","title":"[marveen][INFRA] Architektura donteshez teszt es i18n is kell","description":"A kontraktus (architektura) modosul. Kell hozza unit test es a hu/de i18n string forditasok is.","status":"planned","assignee":"backend2","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
   {"id":"singleRealChild","title":"[BE] Egy valos gyerekkel rendelkezo Feladat","description":"Ez a szulokartya, van egy valodi nyitott gyereke.","status":"planned","assignee":"backend","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
   {"id":"onlyChildOfSingle","title":"lepes 1: unit test irasa","description":"Ird meg a tesztet.","status":"planned","assignee":"backend","project":"MikroB","parent_id":"singleRealChild","sort_order":1,"archived_at":null,"labels":[]}
 ]
@@ -150,34 +150,63 @@ check "SAFETY: every synthetic leaf description carries the PARENT description t
   "$decomp_desc_carries_parent" "True"
 
 # --- VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f; narrowed by Peti 12838 "Tiltas"
-# after CYBERSEC GO 26252 F1+F2) -----------------------------------------------------------------
-# The veto now fires ONLY when the router's ONLINE REASON is a security path (route-classify-
-# security, deterministic-money, deterministic-auth-tenant-scope, deterministic-sec-label) -- not
-# on the bare ONLINE token. Every other ONLINE reason must leave veto_online False, so a fragment
-# of such a parent keeps the ORIGINAL 501c489f behaviour (its own local attempt on its own text).
+# after CYBERSEC GO 26252 F1+F2; round 2 after CYBERSEC GO 26557 F1) ------------------------------
+# The veto fires on an INDEPENDENT security-signal check (card-build-route.sh --security-signal:
+# money / auth-tenant-scope / sec-label gates, or the route-classify.sh SECURITY verdict) run over
+# the full, untruncated text -- NOT on the router's bare FIRST-MATCH ONLINE reason (round 1's
+# mistake, CYBERSEC GO 26557 F1: an earlier-stage match like deterministic-multi-decision could mask
+# a genuine security word appearing later in the same text). A parent with NO security signal
+# anywhere must leave veto_online False, so its fragments keep the ORIGINAL 501c489f behaviour
+# (their own local attempt on their own text).
 python3 -c "
 import json
 base = 'A kontraktus (architektura) modosul. Kell hozza unit test es a hu/de i18n string forditasok is. '
 filler_unit = 'padding szoveg ide. '
-pad_len = 699 - len(base) - len('authorizat')
+pad_len = 699 - len(base)
 filler = (filler_unit * (pad_len // len(filler_unit) + 1))[:pad_len]
-desc = base + filler + 'authorizat kerdes a vegen.'
-assert desc.index('authorizat') > 600, 'fixture must place the signal past the old 600-char cut'
-cards = [{'id':'vetoCard','title':'[marveen][INFRA][SEC] Architektura donteshez teszt es i18n is kell','description':desc,'status':'planned','assignee':'backend2','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[]}]
+desc = base + filler + 'meg egy mondat a vegen.'
+cards = [{'id':'vetoCard','title':'[marveen][INFRA] Architektura donteshez teszt es i18n is kell','description':desc,'status':'planned','assignee':'backend2','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[]}]
 json.dump(cards, open('$TMPDIR/fixture-veto.json', 'w'))
 "
 veto_ids="$(CARD=vetoCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-veto.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))')"
 check "vetoCard still decomposes into its synthetic fragments (the veto does not change WHICH fragments exist)" \
   "$veto_ids" "vetoCard~i18n-keys,vetoCard~test-scaffold"
 
-# EXCLUDED REASON #1 (CYBERSEC GO 26252 F1: this fixture's ONLINE verdict actually comes from
-# deterministic-multi-decision -- "architektura"/"kontraktus" -- NOT from the authz word; measured
-# directly against card-build-route.sh with CARD_BUILD_ROUTE_SHOW_REASON=1). Under the narrowed
-# rule this must NOT veto: multi-decision parents keep the 501c489f fragment-local-attempt
+# EXCLUDED REASON #1 (round 2: fixture now carries NO security word anywhere, not even past char
+# 600 -- round 1's fixture was contaminated by a [SEC] title tag AND an "authorizat" word, so this
+# row was actually exercising the DISCRIMINATING REPRO case under round 1's reason-string check, not
+# the pure-multi-decision case it claimed to be). Under this rule a parent whose ONLY ONLINE reason
+# is multi-decision must NOT veto: multi-decision parents keep the 501c489f fragment-local-attempt
 # behaviour (Peti 9159).
 veto_flags="$(CARD=vetoCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-veto.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(sorted(str(l.get("veto_online")) for l in d)))')"
-check "EXCLUDED REASON (deterministic-multi-decision): fragments do NOT inherit a veto, even though the parent is ONLINE" \
+check "EXCLUDED REASON (deterministic-multi-decision, no security word anywhere): fragments do NOT inherit a veto" \
   "$veto_flags" "False,False"
+
+# MIXED PARENTS (CYBERSEC GO 26557 F1, cybersec's own measured list): a parent whose text matches
+# BOTH an earlier-stage, non-security reason AND a security gate must still veto -- the whole point
+# of asking the security question independently of which reason the router would have reported
+# first. One row per case cybersec measured as wrongly un-vetoed under round 1.
+mixed_case() { # $1 = id, $2 = title, $3 = description -> prints veto_online for the single fragment
+  python3 -c "
+import json
+cards = [{'id':'$1','title':'$2','description':'$3','status':'planned','assignee':'backend2','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[]}]
+json.dump(cards, open('$TMPDIR/fixture-mixed-$1.json', 'w'))
+"
+  CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-mixed-$1.json" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(sorted(str(l.get("veto_online")) for l in d)))' 2>/dev/null
+}
+check "MIXED (authz + migration): still vetoes" \
+  "$(mixed_case mixedAuthzMigration '[marveen][INFRA] authorizat kerdes' 'Kell egy migracios lepes es authorizat ellenorzes is. Unit test is kell hozza.')" "True"
+check "MIXED (authz + architektura): still vetoes" \
+  "$(mixed_case mixedAuthzArch '[marveen][INFRA] authorizat kerdes' 'Az architektura modosul, es authorizat ellenorzes is kell hozza. Unit test is kell.')" "True"
+check "MIXED (tenant scope + refactor): still vetoes" \
+  "$(mixed_case mixedTenantRefactor '[marveen][INFRA] tenant scope kerdes' 'A kodot refaktoralni kell, es tenant scope szerinti szures is kell hozza. Unit test is kell.')" "True"
+check "MIXED ([SEC] + schema): still vetoes" \
+  "$(mixed_case mixedSecSchema '[marveen][INFRA][SEC] sema valtozas' 'A DB schema modosul, migraciora van szukseg. Unit test is kell hozza.')" "True"
+check "MIXED (authz + checksum): still vetoes" \
+  "$(mixed_case mixedAuthzChecksum '[marveen][INFRA] authorizat kerdes' 'Egy checksum ellenorzest kell irni, es authorizat kerdes is felmerul. Unit test is kell.')" "True"
+check "MIXED (authz + validation): still vetoes" \
+  "$(mixed_case mixedAuthzValidation '[marveen][INFRA] authorizat kerdes' 'A kliens altal kuldott erteket validalni kell, es authorizat kerdes is felmerul. Unit test is kell.')" "True"
 
 # EXCLUDED REASON #2: vram-hold (ambient/transient capacity state, Peti 12838/MikroB direction) --
 # must not veto and must not permanently lock the fragment out across a transient GPU hold.
