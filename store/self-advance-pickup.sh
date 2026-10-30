@@ -245,4 +245,13 @@ if [ "$HTTP_CODE" != "200" ]; then
   exit 1
 fi
 echo "self-advance-pickup: $CARD_ID -> in_progress (actor=$AGENT)"
+
+# MT-07 (card 1a350f22): print the KG for-card block (if KG_INJECT_ENABLED=on and the card has any
+# offered nodes) so the picking agent sees it on its own stdout, right alongside the pickup
+# confirmation above. kg-for-card-block.sh is silent-closed on every error path and on
+# KG_INJECT_ENABLED=off, so this call is unconditional and never changes this script's exit code.
+KG_BLOCK_SCRIPT="${SELF_ADVANCE_PICKUP_KG_BLOCK:-$HERE/kg-for-card-block.sh}"
+if [ -x "$KG_BLOCK_SCRIPT" ]; then
+  bash "$KG_BLOCK_SCRIPT" "$CARD_ID" 2>/dev/null || true
+fi
 exit 0

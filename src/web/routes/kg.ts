@@ -9,6 +9,7 @@ import { json } from '../http-helpers.js'
 import { openKgDb, kgDbPath } from '../../kg/store.js'
 import { hybridKgSearch, KgSearchError } from '../../kg/search.js'
 import { buildForCardPackage } from '../../kg/for-card.js'
+import { recordKgOffered } from '../../kg/usage.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
@@ -133,6 +134,19 @@ export async function tryHandleKg(ctx: RouteContext): Promise<boolean> {
       expandHops: numberSetting('KG_EXPAND_HOPS', 1),
       maxChars: numberSetting('KG_INJECT_MAX_CHARS', 3000),
     })
+    // MT-08 (card 1a350f22): every node actually served here is "offered" to this card, so a
+    // later `Megoldás-tár:` REVIEW line can be checked against it (anti-inflation gate in
+    // kg/usage.ts). Best-effort: a usage-write failure must never break the package response
+    // itself -- the agent still gets its for-card answer either way.
+    try {
+      const offeredIds = [...pkg.solutions, ...pkg.known_pitfalls, ...pkg.decisions].map((e) => e.card_id)
+      if (offeredIds.length > 0) {
+        const agent = ctx.auth?.kind === 'token' ? ctx.auth.agent ?? 'unknown' : 'unknown'
+        recordKgOffered(kgDb(), cardId, offeredIds, agent)
+      }
+    } catch (err) {
+      logger.warn({ err }, 'kg-for-card: recordKgOffered failed, package still served')
+    }
     json(res, pkg)
     return true
   }
