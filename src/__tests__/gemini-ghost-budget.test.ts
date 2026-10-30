@@ -202,22 +202,44 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
       return (cardId: string) => mod.releaseGhostCallSlot(cardId, sandboxedSegedHivo)
     }
 
-    it('a simulated 503 (release right after reserve) frees the slot for a 6th reservation under the default limit of 5', async () => {
+    // Cybersec2 NO-GO F1 (card 5cb861e6, comment 26900): before this fix, releasing a slot freed
+    // it for ANOTHER agy-ghost reservation too, not just for other engines sharing the budget --
+    // this is the exact defect the next two tests pin the correction of (gross attempt count
+    // below, distinct from the SPEND count 'used').
+    it('a simulated 503 (release right after reserve) does NOT reopen a 6th agy-ghost reservation in the same hour', async () => {
       const reserveGhostCallSlot = await freshReserveGhostCallSlot()
       const releaseGhostCallSlot = await freshReleaseGhostCallSlot()
       for (let i = 0; i < 4; i++) expect(reserveGhostCallSlot('card1')).toBe(true)
       // 5th reservation simulates a 503: reserve (spends the slot), then immediately release it.
       expect(reserveGhostCallSlot('card5')).toBe(true)
       expect(releaseGhostCallSlot('card5')).toBe(true)
-      // Without the release, this would be the 6th spend against a limit of 5 and be refused.
-      expect(reserveGhostCallSlot('card6')).toBe(true)
+      // Before the fix, releasing card5 freed 'used' back to 4 and this 6th reservation was
+      // wrongly granted -- the gross agy-ghost attempt count (5 in this hour, regardless of
+      // release) now blocks it instead.
+      expect(reserveGhostCallSlot('card6')).toBe(false)
       const rows = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
       // card5's ORIGINAL row keeps its 'ok' status (release appends a new row, never rewrites in
-      // place -- see this module's own comment on why); the budget's own count (calls_of(), which
-      // dedupes by hivas_id and keeps the LAST row) is what actually excludes it, already proven
-      // by card6's admission above. This just pins that a 'blocked' row for card5 exists at all.
+      // place -- see this module's own comment on why); pins that a 'blocked' row for card5
+      // exists, i.e. the release itself did happen, it just no longer buys a 6th attempt.
       expect(rows.some((r) => r.kartya === 'card5' && r.status === 'blocked')).toBe(true)
     }, 30_000)
+
+    // The literal pin MikroB asked for (msg 15865): under a sustained provider outage, repeated
+    // 503s must not turn into repeated real network attempts -- at most `limit` (5, default) real
+    // calls go out in the hour no matter how many consecutive 503s follow. Measured on the
+    // pre-fix code: 40/40 granted (Cybersec2's own probe, comment 26900).
+    it('40 consecutive 503s (reserve then immediately release) grant at most 5 real calls in the hour', async () => {
+      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+      const releaseGhostCallSlot = await freshReleaseGhostCallSlot()
+      let granted = 0
+      for (let i = 0; i < 40; i++) {
+        if (reserveGhostCallSlot(`card${i}`)) {
+          granted++
+          releaseGhostCallSlot(`card${i}`)
+        }
+      }
+      expect(granted).toBe(5)
+    }, 120_000)
 
     it('without releasing, the same sequence hits the cap on the 6th reservation (control)', async () => {
       const reserveGhostCallSlot = await freshReserveGhostCallSlot()
@@ -239,15 +261,21 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
       expect(releaseGhostCallSlot('card1')).toBe(false)
     }, 20_000)
 
-    it('releasing frees exactly ONE slot, not the whole window', async () => {
+    // Replaces a pre-fix test that pinned "releasing frees exactly one slot, not the whole
+    // window" by observing a 6th agy-ghost reservation succeed -- that observation was the bug
+    // (F1 above). The correction still frees 'used' (the budget agy/agy-ghost/agy-heavy SHARE),
+    // just not agy-ghost's own gross hourly attempt count: demonstrated here against pre-existing
+    // 'agy' rows from a different engine, since a 6th agy-ghost reservation stays capped either way.
+    it('releasing frees the shared "used" spend for OTHER engines, not a 6th agy-ghost attempt', async () => {
+      for (let i = 0; i < 4; i++) appendRow(i * 60, 'ok', 'backend2') // 4 direct 'agy' rows: used=4
       const reserveGhostCallSlot = await freshReserveGhostCallSlot()
       const releaseGhostCallSlot = await freshReleaseGhostCallSlot()
-      for (let i = 0; i < 5; i++) expect(reserveGhostCallSlot(`card${i}`)).toBe(true)
-      expect(releaseGhostCallSlot('card2')).toBe(true)
-      // Exactly one slot is free again: the next reservation (by any cardId -- release is not
-      // tied to who spends the freed slot) succeeds, but the one after that is refused again.
-      expect(reserveGhostCallSlot('card5')).toBe(true)
-      expect(reserveGhostCallSlot('card6')).toBe(false)
+      expect(reserveGhostCallSlot('card1')).toBe(true) // used=5 (shared cap hit), ghost attempts=1
+      expect(releaseGhostCallSlot('card1')).toBe(true) // used back to 4; ghost attempts still 1
+      // used is free again (4 < 5) and the agy-ghost gross attempt count (1) is nowhere near its
+      // own 5/hour ceiling, so a second ghost reservation still succeeds -- this is what pins
+      // "release frees used", distinct from the gross cap the tests above pin.
+      expect(reserveGhostCallSlot('card2')).toBe(true)
     }, 30_000)
   })
 
