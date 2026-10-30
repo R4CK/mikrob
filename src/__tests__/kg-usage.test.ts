@@ -136,4 +136,30 @@ describe('parseMegoldasTarLines (MT-08 REVIEW template)', () => {
   it('does not match a bare mention of the phrase mid-sentence without the colon-id-verb shape', () => {
     expect(parseMegoldasTarLines('A Megoldás-tár koncepcio hasznos lehet.')).toEqual([])
   })
+
+  it('matches an indented line (list-item / quoted shape), not only a bare line start', () => {
+    expect(parseMegoldasTarLines('  Megoldás-tár: sol:1 felhasznalva')).toEqual([{ nodeId: 'sol:1', event: 'used' }])
+    expect(parseMegoldasTarLines('\tMegoldás-tár: sol:1 felhasznalva')).toEqual([{ nodeId: 'sol:1', event: 'used' }])
+  })
+
+  // RedHat NO-GO (gate 1a350f22, Gate-SHA 7871771e9): the leading class was `\s*` under the `m`
+  // flag, which also matches newlines -- at every blank-line start the engine backtracks through
+  // every remaining blank line before failing the literal match, which is quadratic in line count.
+  // A 100,000-char all-newline comment blocked the single-threaded dashboard event loop for ~8s.
+  // This test must stay red on that shape and green on the fixed [ \t]* leading class.
+  it('stays within a fixed time budget on a large blank-line body (ReDoS regression)', () => {
+    const hostile = '\n'.repeat(100_000)
+    const start = performance.now()
+    expect(parseMegoldasTarLines(hostile)).toEqual([])
+    const elapsedMs = performance.now() - start
+    expect(elapsedMs).toBeLessThan(50)
+  })
+
+  it('also stays within budget on an alternating space/newline body', () => {
+    const hostile = ' \n'.repeat(50_000)
+    const start = performance.now()
+    expect(parseMegoldasTarLines(hostile)).toEqual([])
+    const elapsedMs = performance.now() - start
+    expect(elapsedMs).toBeLessThan(50)
+  })
 })

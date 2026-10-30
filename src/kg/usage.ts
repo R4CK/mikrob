@@ -63,7 +63,13 @@ export function recordKgUsageFeedback(
 // three MT-07 REVIEW-template words (felhasznalva/nem illett/nincs talalat) do not cover it, and
 // kg_usage's own CHECK constraint (schema.ts) already reserves 'harmful' as a fourth value, so
 // this completes an existing contract rather than inventing a new one.
-const MEGOLDAS_TAR_LINE = /^\s*Megold[aá]s-t[aá]r:\s*(\S+)\s+(felhaszn[aá]lva|nem illett|nincs tal[aá]lat|[aá]rtalmas|harmful)/gim
+// Leading whitespace class is [ \t]* (horizontal only), NOT \s* -- with the m flag, \s* at a line
+// start also matches newlines, so the engine backtracks through every remaining blank line at
+// every line-start position, which is quadratic in the number of lines (RedHat NO-GO, gate
+// 1a350f22, Gate-SHA 7871771e9: 100,000 blank-line chars blocked the single-threaded dashboard
+// event loop for ~8s). A horizontal-only leading class cannot cross a newline, so it fails (or
+// matches zero-width) in O(1) at each blank line start instead of scanning forward.
+const MEGOLDAS_TAR_LINE = /^[ \t]*Megold[aá]s-t[aá]r:\s*(\S+)\s+(felhaszn[aá]lva|nem illett|nincs tal[aá]lat|[aá]rtalmas|harmful)/gim
 
 function normalizeVerb(raw: string): KgUsageFeedback | null {
   const v = raw.toLowerCase()
