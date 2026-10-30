@@ -92,18 +92,47 @@
     ],
     "~/marveen/agents/backend2/.claude/skills/secrets-vault-manager": [],
     "~/marveen/agents/backend2/.claude/skills/stripe-integration-expert": [],
+    "~/marveen/agents/backend3/.claude/skills/ai-evals": [],
+    "~/marveen/agents/backend3/.claude/skills/api-and-interface-design": [],
+    "~/marveen/agents/backend3/.claude/skills/building-with-llms": [],
+    "~/marveen/agents/backend3/.claude/skills/caveman": [],
     "~/marveen/agents/backend3/.claude/skills/chaos-engineering": [],
+    "~/marveen/agents/backend3/.claude/skills/ci-cd-and-automation": [],
+    "~/marveen/agents/backend3/.claude/skills/crafter-intent-layer": [],
+    "~/marveen/agents/backend3/.claude/skills/deprecation-and-migration": [],
+    "~/marveen/agents/backend3/.claude/skills/domain-modeling": [],
+    "~/marveen/agents/backend3/.claude/skills/doubt-driven-development": [
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47",
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a"
+    ],
+    "~/marveen/agents/backend3/.claude/skills/evaluating-new-technology": [],
+    "~/marveen/agents/backend3/.claude/skills/evaluating-trade-offs": [],
     "~/marveen/agents/backend3/.claude/skills/feature-flags-architect": [],
+    "~/marveen/agents/backend3/.claude/skills/feature-orchestrator": [],
+    "~/marveen/agents/backend3/.claude/skills/grill-with-docs": [],
+    "~/marveen/agents/backend3/.claude/skills/grilling": [],
     "~/marveen/agents/backend3/.claude/skills/interview-me": [
       "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
     ],
+    "~/marveen/agents/backend3/.claude/skills/managing-tech-debt": [],
     "~/marveen/agents/backend3/.claude/skills/mcp-builder": [],
     "~/marveen/agents/backend3/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
       "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
     ],
+    "~/marveen/agents/backend3/.claude/skills/problem-definition": [],
+    "~/marveen/agents/backend3/.claude/skills/running-design-reviews": [],
+    "~/marveen/agents/backend3/.claude/skills/scoping-cutting": [],
     "~/marveen/agents/backend3/.claude/skills/secrets-vault-manager": [],
+    "~/marveen/agents/backend3/.claude/skills/shipping-products": [],
     "~/marveen/agents/backend3/.claude/skills/stripe-integration-expert": [],
+    "~/marveen/agents/backend3/.claude/skills/technical-roadmaps": [],
+    "~/marveen/agents/backend3/.claude/skills/unlazy": [],
+    "~/marveen/agents/backend3/.claude/skills/usability-testing": [],
+    "~/marveen/agents/backend3/.claude/skills/working-backwards": [],
+    "~/marveen/agents/backend3/.claude/skills/writing-north-star-metrics": [],
+    "~/marveen/agents/backend3/.claude/skills/writing-prds": [],
+    "~/marveen/agents/backend3/.claude/skills/writing-specs-designs": [],
     "~/marveen/agents/cybered/.claude/skills/analyzing-supply-chain-malware-artifacts": [
       "changed:SKILL.md@e6ff40ea37f62898d0817f1f6dc15b17cdfc9064e2f669d4d180c15238a0ab88"
     ],
@@ -150,12 +179,17 @@
     "~/marveen/agents/cybersec/.claude/skills/analyzing-supply-chain-malware-artifacts": [
       "changed:SKILL.md@e6ff40ea37f62898d0817f1f6dc15b17cdfc9064e2f669d4d180c15238a0ab88"
     ],
+    "~/marveen/agents/cybersec/.claude/skills/caveman": [],
     "~/marveen/agents/cybersec/.claude/skills/dependency-auditor": [],
     "~/marveen/agents/cybersec/.claude/skills/detecting-indirect-prompt-injection": [
       "changed:SKILL.md@7987c760107c9eff38e246cf2a2f5ac5373c029040532612fcc811fc63afed56"
     ],
     "~/marveen/agents/cybersec/.claude/skills/detecting-typosquatting-packages-in-npm-pypi": [
       "changed:SKILL.md@b95693ebed46bca6bfad93c187e8fb8b65c7e09fa358044889f28e8e9fe6f7e8"
+    ],
+    "~/marveen/agents/cybersec/.claude/skills/doubt-driven-development": [
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47",
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a"
     ],
     "~/marveen/agents/cybersec/.claude/skills/env-secrets-manager": [
       "changed:references/validation-detection-rotation.md@987d10efb44c09a631a8017ec14092fa57992fafbb60acb6d6d8ded359283b2a",
@@ -201,15 +235,21 @@
     "~/marveen/agents/cybersec/.claude/skills/testing-oauth2-implementation-flaws": [
       "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
     ],
+    "~/marveen/agents/cybersec/.claude/skills/unlazy": [],
     "~/marveen/agents/cybersec2/.claude/skills/analyzing-supply-chain-malware-artifacts": [
       "changed:SKILL.md@e6ff40ea37f62898d0817f1f6dc15b17cdfc9064e2f669d4d180c15238a0ab88"
     ],
+    "~/marveen/agents/cybersec2/.claude/skills/caveman": [],
     "~/marveen/agents/cybersec2/.claude/skills/dependency-auditor": [],
     "~/marveen/agents/cybersec2/.claude/skills/detecting-indirect-prompt-injection": [
       "changed:SKILL.md@7987c760107c9eff38e246cf2a2f5ac5373c029040532612fcc811fc63afed56"
     ],
     "~/marveen/agents/cybersec2/.claude/skills/detecting-typosquatting-packages-in-npm-pypi": [
       "changed:SKILL.md@b95693ebed46bca6bfad93c187e8fb8b65c7e09fa358044889f28e8e9fe6f7e8"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/doubt-driven-development": [
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47",
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a"
     ],
     "~/marveen/agents/cybersec2/.claude/skills/env-secrets-manager": [
       "changed:references/validation-detection-rotation.md@987d10efb44c09a631a8017ec14092fa57992fafbb60acb6d6d8ded359283b2a",
@@ -255,6 +295,7 @@
     "~/marveen/agents/cybersec2/.claude/skills/testing-oauth2-implementation-flaws": [
       "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
     ],
+    "~/marveen/agents/cybersec2/.claude/skills/unlazy": [],
     "~/marveen/agents/elemzo/.claude/skills/interview-me": [
       "changed:SKILL.md@91148f4794d3a34d229af3ab1051d434faf6449cf074efaf6507c124acb86891"
     ],
