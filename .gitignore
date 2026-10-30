@@ -86,6 +86,11 @@ Ingatlan/token*
 # (Python) load, so the two tools' verdict parsers cannot drift apart silently again. Nothing
 # writes it; same reasoning as watched-repos.json/load-guard-config.json above.
 !store/gate-verdict-corpus.json
+# Frozen designation-parity corpus (card ba25db04): a snapshot of the live board's distinct
+# Gate: lines paired with gate_designation.py's own designation for each, so
+# src/__tests__/kanban-gate-completeness-guard.test.ts can assert the TS parser agrees with the
+# Python reference without a live DB dependency. Same reasoning as gate-verdict-corpus.json above.
+!store/gate-designation-corpus.json
 # Sanctioned vendored-skill deltas (card 3c73a420) -- a security DECISION record, not runtime
 # state: each entry says "this difference from the claimed upstream commit is known and accepted".
 # Unversioned it would be worse than absent, because a fresh checkout starts with no baseline and

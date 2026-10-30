@@ -1,0 +1,6934 @@
+[
+  {
+    "id": "0d02133d",
+    "gateLine": "QA  Pair-FE: nincs  backend2 lelete (1d4cdcaa REVIEW, 2026-08-23, komment 15627): a crafter-intent-layer skill VALODI hiany, nincs adoptalva -- a CleanCore kb. 30 csomagjahoz per-modul AGENTS.md fajlok hianyoznak,…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "11ace752",
+    "gateLine": "QA plusz Cybersec  Cybered F-4 (0755e234 gate, komment). KEEP=72 orankenti dump = 3 nap, egyetlen szinten, napi/heti fokozat nelkul. Assume-breach kerdes: ha egy csendes rontas (hibas UPDATE, bennfentes torles,…",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1289ef6b",
+    "gateLine": "QA  Cybered F-5 (0755e234 gate, komment). /etc/cron.d/cleancore-backup CSAK a hoszton el, a repoban nincs (a harom commit negy fajlt erint, cron-sablon nincs koztuk). Egy hoszt-ujraepites vagy image-csere nemán…",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1cfb6b8b",
+    "gateLine": "QA  f7ab6266 4. resze. A README mar aktivan karbantartott, nagy \"Egyedi fork-fejlesztesek\" szekcioval (kb. 50 tetel). Ellenorizd, hogy minden a legutobbi kartyakig (2026-08-16, 17dd9a23 fazis) naprakesz-e; ha…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2a3d06a6",
+    "gateLine": "QA  557a7e9c (slice 40) zarasakor kiderult: a Gate-SHA (d86324b3) commit letezett a lokalis develop branch-en, de SOHA nem lett git push origin develop-elve -- a REVIEW-komment landolt allapotot allitott, holott…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "38f78562",
+    "gateLine": "QA  f7ab6266 2. resze. A CLAUDE.md \"Teljes funkciolista karbantartas\" szabalya szerint: minden MikroB-funkciora (memoria, kanban, heartbeat, dashboard, napi naplo, inter-agent, foderacio, skill-rendszer,…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4be26be5",
+    "gateLine": "QA  f7ab6266 3. resze. Kulon szekcio, a Complete feature list-tol elkulonitve: minden RBAC-szereprol (mikrob orchestrator, role-agent -- backend/qa/cybersec/stb., Peti mint dashboard-felhasznalo/owner) es minden…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "78f85eb1",
+    "gateLine": "QA  Cybersec megfigyelese (398f351b gate, msg 19287): harom egymas utani kartya (fed9409f, ced9ce80, 398f351b) BUKOTT QA-n KIZAROLAG a hianyzo DECISIONS.md bejegyzes miatt, mikozben a kod maga mindharomszor…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7fa76442",
+    "gateLine": "QA  CleanCore main CI (run 31967494424, head 167b907c) Static gates job PIROS -- UJ jel, elter a korabban ismert prettier/Format-check hibatol (az mar javitva van, 470d14dc/21aef8fb).  Uj hiba:…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9c346672",
+    "gateLine": "QA plusz Cybersec  Cybered F-5 (d0b4f003 gate, komment). Minden mas step-up-os akcio ATMENETI hatasu; a jelszo-iras TARTOS (tuleli a session-t es a TOTP-kodot is). Aki egy elo sessiont ES egy TOTP-kodot megszerez…",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9db6b151",
+    "gateLine": "QA + Cybersec…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b04c47e5",
+    "gateLine": "QA plusz Cybersec  Cybered eredeti F-3-a (0755e234 gate) + Cybersec megerositese (msg 19371): a 0755e234 fazis 1 lezarul, DE ez a negy feltetel MEG NINCS rogzitve tartosan sehol es TULELNIE kell a lezart kartyat…",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "cb3ab480",
+    "gateLine": "QA  f7ab6266 1. resze. Ellenorizd sorban: env-valtozok (.env.example vs README), szkriptek/parancsok (package.json scripts, store/*.sh hivatkozasok), portok (WEB_PORT=3420 stb.), mappa-struktura,…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ea65fbf4",
+    "gateLine": "QA  2ac06b76 vizsgalata soran derult ki (MikroB): env/.env.prod.example SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASSWORD/SMTP_FROM blokkja HOLT -- semmi a kodban nem olvassa (a valodi levelkuldes Resend API-n megy,…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f37fecfb",
+    "gateLine": "QA  MikroB megfigyelese (d0b4f003 zaras, force:true-val kellett zarni). A kartya zaras-ellenorzoje azt jelezte, hogy QA-tol nincs friss verdikt a bc7ceddc-re, holott VOLT (1787477207, QA PASS, Gate-SHA: bc7ceddc…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fdb6e49d",
+    "gateLine": "QA plusz Cybersec  Cybered F-6 (0755e234 gate, komment, sajat resze). A dump es az audit-lanc horgonyat alairo HMAC-kulcs UGYANAZON a hoszton van. Egy hoszt-szintu tamado nemcsak torolni tud: at tudja irni a…",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "00a92edf",
+    "gateLine": "QA + Cybersec Gate-SHA: 2a1c1ef6  Cybersec kovetokartya-kerese (2a37a4df GO mellett, komment 9820): a tamper-evident audit-lanc jelenlegi alakja (GlobalAuditEntry: id/event/tenantId/meta/at, nincs outcome/status…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "28f76678",
+    "gateLine": "QA (tiszta belso/infra mechanikus lepes…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2c28ecee",
+    "gateLine": "QA + Cybersec (nincs trust-boundary, de meresi/GPU-lock eszkoz -- 4. szabaly szerint)  Peti masodlagos celja: ellenorizni hogy adott hardveren tobb egyidejü feladat fut-e biztonsagosan, vagy csak egy…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "339cd617",
+    "gateLine": "QA + Cybersec + Cybered (tier-emeles, MikroB dontes: a…",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "49649349",
+    "gateLine": "QA+Cybersec (publikus vegpont).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "51273fc0",
+    "gateLine": "QA + Cybersec (publikus webhook-vegpont, szolgaltatoi alairas-hitelesites -- auth trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8192b9ee",
+    "gateLine": "qa+cybersec  A mar letezo local-llm-tune.sh alkalmazas-mechanizmusara epitve, de parameterezve. Plan-grilling kotelezo: (3) regresszio-vedelem ERDEMI margoval a dokumentalt GTX 1660 Ti alaphoz kepest -- az…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "85c87024",
+    "gateLine": "QA  d4a2130d zarasakor (2026-08-17) a PUT /api/kanban/<id> status:done VISSZAUTASITOTTA a zarast \"QA verdikt hianyzik\" indoklassal, holott QA mar PASS-t adott (komment, Gate-SHA teljes 40-karakteres alakban:…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "943d2a8d",
+    "gateLine": "QA  Cybersec jelzese (00a92edf gate-kor, komment 14046, 2026-08-16): findAuditConfigDrift() (a k-anon audit-lanc olcso detekcioja) KIZAROLAG a teszt-fajlban letezik, semmilyen production fogyasztoja nincs (nincs…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d4e83a2c",
+    "gateLine": "QA + Cybersec (retention/torles-vedelem trust-boundary, bizonyitek-adat) Elozmeny: Cybersec MEDIUM-kent jelezte a 9d730dfd (STORAGE_* elo aktivalas) gate soran: a cleancore-app-prod service accountnak DeleteObject…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fb556cc5",
+    "gateLine": "QA (docs-only, nincs trust-boundary)  Az uj, altalanositott eszkozok hasznalata (README karbantartas szabaly: env-valtozok, scriptek, hasznalat naprakeszen). A meglevo local-llm-tune.sh fejlec-kommentjeinek is…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fe5d7967",
+    "gateLine": "QA (a scope tisztazas alatt all -- ha a vegleges scope PII/geo-adat-kezelest vagy uj backend-vegpontot hoz, Cybersec-et be kell vonni REVIEW-kor).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b8be683c",
+    "gateLine": "QA + Cybersec (RBAC-akcio-szetvalasztas + penzugyi ajanlat-kikuldes = trust-boundary, 4. munkavegzesi szabaly) Pair-BE: b016b5f1 Peti GO (2026-08-20): kulon OffersSend/OffersApprove akcio a kikuldeshez,…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2be5ec8f",
+    "gateLine": "QA plusz Cybersec | verdict:QA PASS@2026-08-26T10:10:38.285Z | verdict:QA PASS@2026-08-26T10:11:01.034Z | verdict:QA…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "389c9b86",
+    "gateLine": "edit-check hianyzo migrations-dir eseten SIKERT jelent, nem SKIP-et | Komment: REVIEW -- AZ EREDMENY ROVIDEN | verdict:QA…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "41eb880c",
+    "gateLine": "QA + Cybersec (kimeno egress kulso geokodolo szolgaltatashoz + felhasznaloi cim-adat harmadik felnek, Cybered kerese, 2026-09-11)  Pair-FE: KESOBB (a FE-kartya majd erre hivatkozik)  A listings tabla bovitese lat/lon (REAL, NULL-able) oszloppal. Ket lehetseges forras, GitHub-first (10. szabaly) ellenorizendo elobb: 1. Az ingatlan.com…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "55af560d",
+    "gateLine": "sor parser a KIZARAST jelolesnek olvassa -- a kizart gate-et ebreszti fel",
+    "expected": null
+  },
+  {
+    "id": "5c6fe8df",
+    "gateLine": "QA + Cybersec (Claude Code eszkoz-jogosultsag enforcement mechanizmus -- biztonsagi kontroll).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6b440e42",
+    "gateLine": "QA + Cybered (a lelet maga Cybered-tol jott, event-loop-blokkolasi/rendelkezesre-allasi kockazat). | Komment: REVIEW…",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "87e5ad4d",
+    "gateLine": "QA + Cybersec  Pair-FE: nincs  Cybersec lelete (1e461a8a gate, 2026-08-23, komment 19710), NEM regresszio: a kimondott U+FE00..FE0F kivetel indoklasa a megjelenites (\"emoji a display name-ben\"), de UGYANEZ a…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bb919fae",
+    "gateLine": "QA + Cybersec (belso local-LLM katalogus-integritas, nem trust-boundary user-facing, de SEC-erintettsegu) Cybersec lelete (d297f26f, msg 14123, pont 2): a qwen2.5-coder:7b-instruct-q4_K_M (a flotta draft-modellje…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ee92e7f7",
+    "gateLine": "QA + Cybersec | verdict:QA PASS@2026-08-24T13:47:55.326Z | verdict:QA PASS@2026-08-24T13:47:55.379Z | verdict:QA PASS@2026-08-24T13:48:00.350Z | verdict:QA…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6096c7b5",
+    "gateLine": "QA + Cybersec (publikus, bejelentkezes nelkuli beviteli-ut validalo predikatuma). | verdict:QA…",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "67a5ee01",
+    "gateLine": "QA + X\" designacio` próza MEGNEVEZ egy szerepet, tehát nem ez az osztály. A valódi kártya utolsó…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "22abd5a1",
+    "gateLine": "QA (utolagos ellenorzes -- a fiokkal tenyleg be lehet-e jelentkezni, a superadmin jogosultsag tenyleg aktiv-e). A jelszo azonnali…",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "36d17bb3",
+    "gateLine": "nincs -- adminisztratív követési kártya, nincs valós deliverable/REVIEW gate-eléshez (MikroB, Cybersec no-review megértősével egyezően). A jogi oldal XSS-kutatás (lásd kommentek) beszáít kutatási memória, nyitva marad követésre, ez nem gate-jelolt.",
+    "expected": null
+  },
+  {
+    "id": "3bcc1242",
+    "gateLine": "QA + Cybersec.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6338afe3",
+    "gateLine": "QA + Cybersec",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4df3e8e8",
+    "gateLine": "QA + Cybersec (biztonsag-erzekeny klasszifikaciós logikát érint)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "30a82c61",
+    "gateLine": "QA",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bb11f4b1",
+    "gateLine": "QA + Cybersec (biztonsag-erzekeny klasszifikacios logikat erint)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "036a0913",
+    "gateLine": "a (a)-ba zart kartyakat QA MINTAVETELESEN ellenorzi (nem mind egyenkent) -- a te feladatod pontos, ellenorizheto bizonyitekot hagyni minden zarasnal, hogy a mintavetel megbizhato legyen.,",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7da45e54",
+    "gateLine": "QA (mintaellenorzes)",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "56329de7",
+    "gateLine": "(te magad vagy a gate, ez QA sajat sign-off feladata -- a kartyakat NEM a keszito zarja, hanem a rekonstrukcio-audit, ez nem uj munka hanem tortenelmi allapot-helyreallitas)",
+    "expected": null
+  },
+  {
+    "id": "4d233223",
+    "gateLine": "(sajat sign-off, lasd a testver-kartya leirasat a teljes eljarasert)",
+    "expected": null
+  },
+  {
+    "id": "1cd9fa94",
+    "gateLine": "Cybersec + QA",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "eb8606a5",
+    "gateLine": "QA + Cybersec (fuggosegi biztonsagi advisory-kat erint)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "39c7357c",
+    "gateLine": "sort\" script ugyanabba a csapdaba setal. Eloszor mereni, aztan egyenkent.",
+    "expected": null
+  },
+  {
+    "id": "12dc8a5c",
+    "gateLine": "QA + Cybersec (auth-key kezeles + telepito-szintu jogosultsag miatt).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "90e4cbdf",
+    "gateLine": "QA + Cybersec (ugyanaz a kockazati kategoria, ami a szulo kartyat trigerelte: fajl-jogosultsag/infra-config).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d19c8ff3",
+    "gateLine": "QA + Cybersec (kod-pontossag + biztonsagi dokumentacio-hitelesseg).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4916687a",
+    "gateLine": "QA (a javitott eszkoz uj kimenete legalabb a fenti 4 pelda-kartyan ellenorizve helyes legyen).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dfd0e8b2",
+    "gateLine": "QA (a javitas utan aeda9f15/9d13747b parra mar ne jelezzen egyezest, valodi duplikatumnal viszont igen).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1d146276",
+    "gateLine": "QA + Cybersec (trust-boundary: superadmin auth-detekcio).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e678e7e9",
+    "gateLine": "QA (a javitott lista nehany ismert pelda-esetet, pl. f923328d/41aef3f0, helyesen talaljon meg).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1338e68b",
+    "gateLine": "QA + Cybersec (ugyanaz a kockazati kor, mint a szulo fazisen).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6bdfc006",
+    "gateLine": "QA (tiszta belso teszt-javitas, nincs uj tamadasi felulet).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e6f35e7e",
+    "gateLine": "QA + Cybersec (biztonsagi detekcios mechanizmus).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4aab803b",
+    "gateLine": "QA + Cybersec (detekcios/riasztasi mechanizmus).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7e7ac40c",
+    "gateLine": "QA + Cybersec (megosztott gate-infra megbizhatosagat erinti, minden ugynok fugg tole).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1800af90",
+    "gateLine": "QA + Cybersec (trust-boundary: penz, jogilag kotelezo bejelentes, elojel-invarians felnyitasa).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d2f4b273",
+    "gateLine": "QA + Cybersec (script-viselkedes, hamis biztonsagi jelzes -- nem uj tamadasi felulet, de a \"security tooling ad hamis zoldet\" osztaly miatt Cybersec is nezze at).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "15bf10e6",
+    "gateLine": "QA + Cybersec + Cybered (auth + domain, magas kockazat, Fazis-szintu dontes).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "249c6c6f",
+    "gateLine": "QA + Cybersec + Cybered.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1eb26ce0",
+    "gateLine": "QA + Cybersec (infra-atallas, nem kozvetlen production-erintett).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3fd562de",
+    "gateLine": "QA + Cybersec + Cybered MIND A 3 (production DB + penzugyi/tenant-adat + auth egyszerre erintve).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1d1171ad",
+    "gateLine": "QA + Cybersec + Cybered MIND A 3 (deploy elesben, teljes rename lezarasa).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9ecdddee",
+    "gateLine": "QA (adatintegritas -- egyetlen kartya se veszitse el a beleragadt regi verdikt-informaciot, egyetlen se maradjon felelos nelkul).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4b9688f6",
+    "gateLine": "QA+Cybersec+Cybered (a fazis magas kockazatu besorolasa oroklodik).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3c73a420",
+    "gateLine": "QA + Cybered (Cybersec sajat eszkozet irta, nem gate-elheti a sajat munkajat)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "504ec76f",
+    "gateLine": "QA (belső governance-mechanizmus, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "39e3c1c0",
+    "gateLine": "QA + Cybered (publikus landing, alacsony kockazat, rotacioban Cybered viszi a biztonsagi gate-et).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "27e86233",
+    "gateLine": "QA + Cybersec + Cybered (magas kockazat -- superadmin, RBAC, multi-tenant scope, cross-tenant view; MikroB dontese, Cybered eszkalaciojara).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "78608158",
+    "gateLine": "QA + Cybersec (auth-erintett env-valtozasok miatt).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f7c87ea4",
+    "gateLine": "ez maga a Cybersec-review, kulon QA/Cybered gate nem szukseges a vizsgalathoz -- a pin-bump VEGREHAJTASA (ha GO) mar normal BE-kartyakent menjen a szokasos gate-eken.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d2c26e32",
+    "gateLine": "QA (flow + reszponzivitás) + Cybersec/Cybered rotálva a Fázis szerint.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0b3a3084",
+    "gateLine": "QA (belső orchesztráció, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "76c3a1fb",
+    "gateLine": "QA (belso infra-config, ugyanaz a mintacsalad mint e804262d es 90e4cbdf, de a hivo/wrapper szinten, nem uj trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ea0d3236",
+    "gateLine": "QA + Cybersec/Cybered rotalva (sitewide UI-regresszio, publikus felulet).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7bb39672",
+    "gateLine": "QA + Cybersec (Cybered eszrevetele, 2026-09-11: a merge-be tartozo store/fleet-test.sh a marveen-landolasi kapu, nem sima teszt-infra -- hamis zold ott landolasi kockazat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f557213d",
+    "gateLine": "QA (belso teszt-infrastruktura/token-higienia/tooling-fegyelem, nincs uj trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3006af86",
+    "gateLine": "QA + Cybersec + Cybered (superadmin + RBAC trust-boundary, azonos tier mint 27e86233).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2640a668",
+    "gateLine": "QA (belso infra-hardening, nincs uj trust-boundary a mostani allapothoz kepest -- mind a harom mar meglevo LOW kockazatot szukit).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b1812c5c",
+    "gateLine": "QA.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b2ab04a7",
+    "gateLine": "QA + Cybersec (uj iras-vegpont, tenant-scope RBAC erintve).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e4e83c32",
+    "gateLine": "QA + Cybersec + Cybered (RBAC-erintett FE-logika, a tenylegesen felhasznalo-lathato szures itt landol -- parhuzamos a 3006af86 BE-fele 3-gates tierrel, Cybered kerese, 2026-09-11).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f39c49e2",
+    "gateLine": "QA + Cybersec (session-security core logika).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "28fa5ad5",
+    "gateLine": "QA + Cybersec + Cybered (production deploy, migraciok, magas kockazat).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c64bafdc",
+    "gateLine": "QA + Cybersec + Cybered (trust-boundary: publikus S3-vegpont route-olasa, file-upload; a 28fa5ad5 URGENT VPS-kartyat blokkolja zarasban, Cybered sajat NO-GO-jat javitja). Ez a 28fa5ad5 kartyat blokkolja zarasban.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "85823628",
+    "gateLine": "QA (belső teszt-infra, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4b72ef85",
+    "gateLine": "QA (logika-hiba, nincs uj trust-boundary, de a gate-mechanizmus sajat integritasat erinti).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d3a2ecfc",
+    "gateLine": "QA (tooling/CI), MikroB gate-eli a döntés szerint.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "88a0a5e1",
+    "gateLine": "QA (infra-eszkoz, nincs uj trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "47e6ed1e",
+    "gateLine": "QA + Cybersec (RBAC-erintett, penzugyi/jogi adat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9caff605",
+    "gateLine": "QA (belső eszköz, nincs trust-boundary; nem módosít kártya-státuszt, csak kommentel).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f1ababa4",
+    "gateLine": "QA (teszt-infrastruktura, nincs uj trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "667e809b",
+    "gateLine": "QA (nincs uj trust-boundary, tiszta test-tooling javitas).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "29609ec6",
+    "gateLine": "QA + Cybersec (fo-ugynok inditasi szkript + auth/token-folyam erintve, megosztott fajl).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bddcc9df",
+    "gateLine": "QA (hogy a hotfix nem tort-e mas email-utat, pl. SUPERADMIN_MAIL_FROM erintetlen maradt) + Cybersec (a sandbox-domainrol kuldott auth-email nem hordoz-e uj kockazatot, pl. spoofing/kikuldott domain reputacio).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b38fa5f4",
+    "gateLine": "QA (a linkek tenylegesen mukodnek-e vegponttol vegpontig) + Cybersec (halott/felrevezeto domain link auth-emailben -- phishing-hasonlosagi kockazat, spam-filter hatas is idetartozhat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dadeab30",
+    "gateLine": "QA (a javitas nem hoz-e letre uj false-positive-ot a watchdogban) + Cybersec (a plugin-restart nem biztonsagi incidens jele-e -- pl. tulterheles/tamadas).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "acf0f004",
+    "gateLine": "Cybersec + QA.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1bd7debf",
+    "gateLine": "Cybersec (fuggetlen megerositese hogy a javitas tenyleg csokkenti-e az attribualatlan irast) + QA.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1ef0ebfd",
+    "gateLine": "Cybersec (megerositi hogy a uj horgony tenyleg kizarja a bizonyitott tamado alakot es nem termel uj false-positive-ot) + QA.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fc1bdadd",
+    "gateLine": "QA (a stamp tenyleg a helyes shat mutatja-e egy teszt-deploy utan) + Cybersec (nem szivarogtat-e erzekeny build-infot).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "cfbd52ec",
+    "gateLine": "QA (ellenorzi hogy a piros futas tenyleg piros volt es a zold visszaallt utana) + Cybersec.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ca9445b0",
+    "gateLine": "QA + Cybersec (a guard tenyleges PASS-kepesseget is nezze, ne csak a FAIL-kepesseget -- lasd a-gate-script-must-be-proven-to-PASS memoria).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8d67047d",
+    "gateLine": "QA (a besorolas helyesseget nezze at mintavetelesen).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e498502e",
+    "gateLine": "QA (a periodikus ellenorzes tenylegesen elkapja-e a kesobbi nyomast, ne csak az indulasit).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7dd3a8f7",
+    "gateLine": "QA (ellenorizze hogy a CI valoban lefuttatja-e a superadmin buildjet, es hogy egy szandekosan betort import tenyleg elbukna-e vele).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f6db6978",
+    "gateLine": "Cybersec + Cybered (halozati kilepes-korlatozas, biztonsagi mechanizmus).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2"
+    ]
+  },
+  {
+    "id": "e3f0e4ed",
+    "gateLine": "Cybersec (halozati olvasas hook-idoben, email-kikuldesi ut).",
+    "expected": [
+      "cybersec",
+      "cybersec2"
+    ]
+  },
+  {
+    "id": "854182c7",
+    "gateLine": "Cybersec + Cybered (biztonsagi kontroll tervezese), plan-grilling KOTELEZO dispatch elott (1b. szabaly, magas kockazatu biztonsagi mechanizmus).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2"
+    ]
+  },
+  {
+    "id": "9b224eec",
+    "gateLine": "QA (belso teszt-infrastruktura, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "66ad1f95",
+    "gateLine": "Cybersec (biztonsag-relevans dontesek csendes visszaallasa a valodi kockazat).",
+    "expected": [
+      "cybersec",
+      "cybersec2"
+    ]
+  },
+  {
+    "id": "43dada5b",
+    "gateLine": "Cybersec (a valasztott irany a prompt-injection felszint erinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2"
+    ]
+  },
+  {
+    "id": "bf2bf691",
+    "gateLine": "QA + Cybersec (sajat lelete alapjan, QA mindig kotelezo).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5acd21ea",
+    "gateLine": "QA + Cybersec (gate-eszkoz sajat megbizhatosaga).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "cdb0b1b2",
+    "gateLine": "QA + Cybersec (destruktiv admin-muvelet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6e1b2be6",
+    "gateLine": "Cybersec (destruktiv admin-muvelet, tenant-adat sorsat erinti) + QA.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e21b816b",
+    "gateLine": "Cybersec (sajat leletet ellenorzi vissza).",
+    "expected": [
+      "cybersec",
+      "cybersec2"
+    ]
+  },
+  {
+    "id": "ac24bf98",
+    "gateLine": "QA + Cybersec (superadmin admin-felulet, trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "55f7387b",
+    "gateLine": "QA + Cybersec (superadmin trust-boundary, tenant-lifecycle allapot-valtoztatas).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "747dd929",
+    "gateLine": "QA (tiszta belso karbantartas, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dc80686e",
+    "gateLine": "QA + Cybersec (proof-photo forensic-integritas, ugyanaz a hatokor mint a800c006).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "234306ca",
+    "gateLine": "QA + Cybersec (a kapu a helyi-modell dispatch egyetlen kapacitas-vedelme).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2f1cbaf1",
+    "gateLine": "Cybersec (a refuzalasok tobbsege biztonsag-relevans dontes).",
+    "expected": [
+      "cybersec",
+      "cybersec2"
+    ]
+  },
+  {
+    "id": "291ebafa",
+    "gateLine": "QA (funkcionalis: a vedelem tenyleg blokkolja-e a nem-hitelesitett elerest, es hogy eles inditaskor tenyleg egy lepesben levehetot-e) + Cybersec (trust-boundary: publikus endpoint, nem szivarogtathat infot a vedelem mogul).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a1891e6b",
+    "gateLine": "QA + Cybersec (auth/privilegizalt endpoint erintve).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0ded9d1e",
+    "gateLine": "QA (belso tooling, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ff3bc772",
+    "gateLine": "QA (belso tooling).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6eed8678",
+    "gateLine": "QA + Cybersec (gate-integritas, sajat vedelmi mechanizmus megbizhatosaga).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7204cda9",
+    "gateLine": "QA (belso tooling szoveg-pontossag, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e806bc8a",
+    "gateLine": "QA + Cybersec (publikus, hitelesites nelkuli vegpont, potencialisan customer-facing torottseg).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b0bc2fb1",
+    "gateLine": "QA (belso infra-megfigyeles).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7ece0b6a",
+    "gateLine": "QA + Cybersec (CI-integritas, biztonsagi kontroll megbizhatosaga).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1ef7bd9c",
+    "gateLine": "QA + Cybersec (audit-integritas, adat-visszaallithatosag).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "728179d1",
+    "gateLine": "QA + Cybersec (a vendorolt skill-fa a flotta minden ugynokenek betoltodo utasitas-felulet;",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ff7e1b0a",
+    "gateLine": "QA + Cybersec (a fa-mutalas altalanositasi kerdesere QA kifejezetten Cybersec velemenyt kert).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e792cfea",
+    "gateLine": "QA + Cybersec + Cybered (superadmin + auth/session trust-boundary -- MikroB risk-tiering korrekcio 2026-09-17: a rule 4 szerint superadmin+auth mindig magas-tetu, a korabbi 2-gate kimaradas, nem tudatos dontes volt).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "284b44c4",
+    "gateLine": "Cybersec + Cybered (biztonsagi kontroll javitasa).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2"
+    ]
+  },
+  {
+    "id": "2f533044",
+    "gateLine": "QA + Cybersec (fuggoseg-verzio bump biztonsagi vonatkozassal, de nem uj trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7d92a775",
+    "gateLine": "risk-tiering plan-grilling UTAN dontendo (val. QA + Cybersec/Cybered, mert auth-kritikus utvonalat erint).",
+    "expected": null
+  },
+  {
+    "id": "ae071239",
+    "gateLine": "QA + Cybersec (a rendszerfrissites/rollback biztonsagi utvonalat erinti, lasd update-safety skill).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b846acf3",
+    "gateLine": "QA + Cybersec. (Cybersec en vagyok a bejelento -- a sajat leletemet nem en gate-elem, ha ez a",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ba97642f",
+    "gateLine": "nincs kulon gate-tier itt (marveen sajat repo, belso eszkoz), de a szokasos QA-atnezes ajanlott mielott landol.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "576b072e",
+    "gateLine": "QA (tisztán riportoló, olvasó eszköz -- nincs trust-boundary, ugyanaz a tier mint az a857b3db-n).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "33093fbe",
+    "gateLine": "QA + Cybersec (a landolasi ut integritasat erinti; ez a fuggveny irja at a DECISIONS.md-t emberi felulvizsgalat nelkul).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1fc4e410",
+    "gateLine": "QA + Cybersec + Cybered (uj tabla, RLS multi-tenant hatarvonal, meglevo async-vs-sync port modositasa, production-wiring-csere).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "617d6234",
+    "gateLine": "QA (teszt-infrastruktúra, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "211686ab",
+    "gateLine": "QA + Cybersec (kis kockazatu, belso infra-eszkoz javitas, de a fazis-lezarasi mechanizmust erinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a7290694",
+    "gateLine": "QA (teszt-infrastruktura, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e6dffb8d",
+    "gateLine": "nincs meg (plan-grilling utan QA, teszt-infrastruktura, nincs trust-boundary).",
+    "expected": null
+  },
+  {
+    "id": "40d2d2f9",
+    "gateLine": "QA (funkcionális + a dry-run bizonyíték ellenőrzése).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "970166ce",
+    "gateLine": "QA + Cybersec (biztonsági hook módosítása, trust-boundary-t érint).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "21597530",
+    "gateLine": "QA + Cybersec (SZŰKÍTVE a MikroB plan-grilling verdikt szerint, komment 6020: a Cybered-et a #1305 flotta-szintű hook-átdrótozása indokolta, ami már adf2c30a-ban landolt, így kikerült a hatókörből). Eredeti: gate-tier volt: QA + Cybersec + Cybered (magas-kockázat: publikus write path nem érintett, DE fleet-wide security-critical hook-drótozás minden ügynökre -- 3 gate indokolt a 4. munkavégzési szabály szerint).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c6d8d599",
+    "gateLine": "QA (funkcionális, mobil+desktop reszponzivitás a 13. munkavégzési szabály szerint, mivel dashboard-UI).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1c810029",
+    "gateLine": "QA + Cybersec (a rotate endpoint írási művelet, authz-ellenőrzés kell: ki válthat aktív tervet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a629cc36",
+    "gateLine": "QA (dokumentum-teljesseg, minden dontesnel indoklas).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e6b0d08c",
+    "gateLine": "QA (a besorolas/relevancia dontes ellenorzese) + Cybersec MAGA VEGZI a biztonsagi atvizsgalast, tehat a sajat munkajat masik gate-tag (pl. Cybered) nezze at, ne csak QA.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2779e1ac",
+    "gateLine": "QA + Cybersec (DB-kapcsolat-eletciklus, backend2 es Cybersec sajat javaslata a 38f3af51 alatt).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "96b27014",
+    "gateLine": "QA + Cybersec (secret-detection es outbound-copy-gate logika).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5369b463",
+    "gateLine": "QA + Cybersec (adat-biztonsag, jogosultsagok).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3291145c",
+    "gateLine": "QA + Cybersec (settings-iras + auth-erintett installer-logika).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "81b824fe",
+    "gateLine": "QA + Cybersec (hitelesito-adat/elofizetes-rotacios logika).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3753f7ae",
+    "gateLine": "QA + Cybersec + Cybered (superadmin/auth trust boundary + production-erintettseg, CLAUDE.md 4. szabaly Cybered-triggere explicit 'superadmin').",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f72ee333",
+    "gateLine": "QA + Cybersec (auth/production trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ec6b1176",
+    "gateLine": "QA + Cybersec (auth/production trust boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1ef23826",
+    "gateLine": "QA + Cybersec (production infra + database-halozatot erinto valtoztatas).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "80e3df95",
+    "gateLine": "QA + Cybersec (dolgozoi munkaido/ber-adjacent adat exportja -- PII trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "87d1022a",
+    "gateLine": "QA (a lista teljessége/pontossága finding-köteles). Pair-FE: nincs (a FE már létezik, dde53709 duplikátumként zárva).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d21c5e9f",
+    "gateLine": "sor a leirasaban, csendben 2-gate-re degradalt (lasd e792cfea eset).",
+    "expected": null
+  },
+  {
+    "id": "c65cf7b3",
+    "gateLine": "QA + Cybersec + Cybered (auth/session/OAuth trust-boundary, tenant login -- rule 4 magas-tetu).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "613daa42",
+    "gateLine": "QA + Cybersec (Cybered mar adott iranyt, de a vegso fixet o maga is nezze at delta-gate-kent).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "75d05613",
+    "gateLine": "QA + Cybersec (rombolo, tenant-adat vegleges torlese).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bf9c03ff",
+    "gateLine": "QA + Cybersec (auth/step-up trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6e14642e",
+    "gateLine": "QA + Cybersec + Cybered (auth/redirect trust-boundary, tobb erintett felulet).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "26b739a1",
+    "gateLine": "nincs, mig a dontes nem kesz -- utana a dontesnek megfelelo implementacios kartya kapja a gate-et.",
+    "expected": null
+  },
+  {
+    "id": "05f1513c",
+    "gateLine": "nincs kodvaltozas ehhez a doksi-frissiteshez, QA nezze at hogy a leiras pontos.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3a3fdb4b",
+    "gateLine": "QA + Cybered (a seam-check integritasat erinti). NEM Cybersec: Cybersec a sajat konkret javitasi javaslatat (_fmt_seam_safe fuggveny, harom esetre lemerve) irta a kartyara -- ha backend3 azt lenyegeben ugyanugy implementalja, Cybersec gate-elese sajat munkajanak ellenorzese lenne (4. szabaly tiltja). Cybered rotal be helyette (MikroB dontese, 2026-09-17).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1d0dda52",
+    "gateLine": "nincs kodvaltozas, dokumentacios/konvencios frissites -- QA nezze at, hogy a leiras pontos es a REVIEW-sablon konzisztens.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e817e11f",
+    "gateLine": "QA + Cybersec (fizetesi utvonal integritasat erinti, HIGH).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a7b429a8",
+    "gateLine": "QA + Cybersec (attekintes + dokumentacio, nem kockazatos kodmodositas onmagaban -- az egyes talalt esetek majd sajat kartyat/gate-et kapnak kockazat szerint).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "57f4f5f1",
+    "gateLine": "QA + Cybersec (megbizhatosagi/infra-integritas, megosztott eroforrast erint).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b2f71cdc",
+    "gateLine": "QA + Cybersec (flotta-orchestracios megbizhatosag, nem trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3cc1cd55",
+    "gateLine": "QA (nincs uj trust-boundary, teszt-only javitas egy mar landolt, szandekos viselkedeshez).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "08eb6402",
+    "gateLine": "QA (infra/landolasi-lanc valtoztatas, nincs uj trust-boundary, de a teljes flotta landolasi kepesseget erinti -- QA nezze at hogy a fail-closed viselkedes NEM blokkolja feleslegesen a normal landolast, es hogy a hatra-kompatibilitasi kikotes tenyleg mukodik).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0019c1bb",
+    "gateLine": "QA + Cybersec (a fajl production compose, bar a valtozas komment-only).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9fe450bf",
+    "gateLine": "QA + Cybersec (a codemod a repo tartalmat iro eszkoz, az exclude-lista annak a hatokore).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d95f71c9",
+    "gateLine": "QA + Cybersec (Cybersec a saját leletét ellenőrzi vissza, a javítást nem ő írja). Repo: marveen, saját worktree (agent-worktree-marveen.sh), landolás marveen-land.sh-val, Gate-SHA a landolt merge sha.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9ce3181c",
+    "gateLine": "QA + Cybersec (a guard a zárás integritás-kontrollja). Repo: marveen, saját worktree, marveen-land.sh.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "195c7d7d",
+    "gateLine": "QA + Cybersec (pénz: számla-alap, PII). Repo CleanCore, saját worktree, célzott teszt; teljes suite csak ADMIT után.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "915a71d9",
+    "gateLine": "QA + Cybersec (superadmin write path, pénz) + Cybered (superadmin, magas tét) -- 3 gate. Repo CleanCore, saját worktree.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9f53f907",
+    "gateLine": "QA (flow-teljesség, reszponzivitás) + Cybersec (superadmin felület). Repo CleanCore, saját worktree.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4ec15263",
+    "gateLine": "QA (a bekötés tényleges, nem próza).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9ab4c3b3",
+    "gateLine": "QA + Cybersec (supply-chain: a compressor a tool-leírásokat írja át, prompt-injekciós felület).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "26c07c33",
+    "gateLine": "QA + Cybersec + Cybered (supply-chain, host-szintu vegrehajtas, elevacio).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f5b0e82e",
+    "gateLine": "QA + Cybersec (a router a biztonsági kártyák online-tartását őrzi, ez trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3e1502ec",
+    "gateLine": "QA. Repo marveen, sajat worktree, marveen-land.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "da158ef9",
+    "gateLine": "QA + Cybersec ahol trust-boundary. HOLD alatt nem indul, ADMIT utan a Fazis elsobbseget kap.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "57f88a75",
+    "gateLine": "QA + Cybersec (file-upload presign = trust boundary, 4. szabály). Repo CleanCore, saját worktree, célzott tesztek; teljes suite csak ADMIT után.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "50235498",
+    "gateLine": "QA. Repo CleanCore, sajat worktree.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fd2b2c4a",
+    "gateLine": "QA + Cybersec (a reaper a fő ügynök process-fáját öli; SEC-releváns). Kockázat-tier: magas (fleet-wide blast radius). Rule 3 (sebészi): csak a reap-szűrő és a selftest változik.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e41f39b8",
+    "gateLine": "QA (a mondat tényleg betöltődik-e).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6dc50a41",
+    "gateLine": "QA + Cybersec (bot-token trust boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8c94283b",
+    "gateLine": "QA + Cybered (MikroB 4043-as dontese: a megoldas alakjat Cybersec javasolta, ezert o nem fuggetlen gate; a cim is ezt mondja). Nem user-facing, nincs Pair-FE.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c375238d",
+    "gateLine": "QA + Cybersec (token-kezelés + expozíció). Nem user-facing. A javítást NE a self-audit végezze (4. szabály): a készítő nem ellenőrzi magát.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f9bc6f08",
+    "gateLine": "QA + Cybersec (a compaction a context-integritás trust boundary). Kapcsolódik: context-tömörítés 75% szabály.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a6abb230",
+    "gateLine": "QA (a seed-paritás + a drift-check mérhető: minden klón-család union-ban van-e, és a check tényleg jelzi-e a mesterségesen kivett skillt). Nem user-facing. A skillek egy része biztonsági (leak-safe-secret-probe, shared-checkout-safe-commit), de ez config-paritás, nem trust-boundary változás.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "197947ae",
+    "gateLine": "QA + Cybersec (ne nyisson új írót a megosztott fára).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4fb2549e",
+    "gateLine": "QA + Cybersec (uj publikus write-path + tenant-scope + unguessable-token trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3654d723",
+    "gateLine": "QA + Cybersec (PII/privacy -- EXIF GPS-koordinatakat is tartalmazhat, lasd docs/04 par5).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "32dbac1e",
+    "gateLine": "QA + Cybersec (a rename ne nyisson rést a gate/dispatch-szűrőkön, és a symlink-átmenet ne hagyjon árva hivatkozást). A card-title bulk-rename lépést MikroB zárja.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "01dea2f0",
+    "gateLine": "QA + Cybersec (env trust boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dac2e52b",
+    "gateLine": "QA + Cybersec (MikroB gate-tier módosítás, komment 6713 előtti MikroB-komment: a Cybered-et a biztonsági szűrő megállította, Peti döntése szerint nem kerüljük meg; boot-warning, nincs új publikus write-path). Eredetileg: QA + Cybersec + Cybered.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b1db3e38",
+    "gateLine": "QA (a szabály tényleg fog-e). Nem user-facing.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1b02ed3a",
+    "gateLine": "QA + Cybersec (kanban write-path érintett). Gate-SHA a marveen-land.sh által adott develop sha.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "647ea02a",
+    "gateLine": "QA + Cybersec (17. szabály suite-szemafor érintett).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3c075d74",
+    "gateLine": "QA + Cybersec (a klasszifikáció biztonsági kártyákat érint).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a5c8b39e",
+    "gateLine": "QA + Cybersec (Cybered méréssel rendelkezésre áll a 'tényleg köt-e' kérdésre).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "830a7d3d",
+    "gateLine": "nincs (operatív deploy Peti GO-val, MikroB smoke).",
+    "expected": null
+  },
+  {
+    "id": "921a5ece",
+    "gateLine": "QA + Cybersec (a gate-bizonyíték integritása).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3988106e",
+    "gateLine": "QA (+ Cybersec a sanitizálásra, ha a QA kéri).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "24443862",
+    "gateLine": "QA + Cybersec (fejléc-baseline, e0cd77e0 lelet: egy location-ből kimaradó baseline védtelen utat ad).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "24304e70",
+    "gateLine": "QA + Cybersec (auth-felület) + Cybered (superadmin, magas tét).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "78f7acd3",
+    "gateLine": "QA + Cybersec + Cybered (superadmin, cross-tenant olvasás).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fbf00857",
+    "gateLine": "QA (végigkattintva élesben) + Cybersec.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "df1b2d5b",
+    "gateLine": "QA + Cybersec + Cybered (superadmin, entitlement = pénz).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f101d903",
+    "gateLine": "QA (végigkattintva élesben, egy bérlőn modul be/ki) + Cybersec + Cybered.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8849cd6d",
+    "gateLine": "QA (élesben egy teszt-bérlő létrehozása + offboard) + Cybersec + Cybered (provisioning + pénz).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b1305c97",
+    "gateLine": "QA + Cybersec + Cybered (superadmin fiókok = legmagasabb tét).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0c43821d",
+    "gateLine": "QA (funkcionalis -- a mezo helyesen jelzi-e dev/statikus-bearer kornyezetben true-t, prod-szeru kornyezetben false-ot). Cybersec nem szukseges (tisztan egy mar letezo, nem-titkos konfiguraios teny felfedese, ugyanaz a kockazati szint mint a google mezo, ami mar gate nelkul ment).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "da47b612",
+    "gateLine": "QA + Cybered (a készítő cybersec nem gate-el).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ed9d42ea",
+    "gateLine": "QA + Cybersec (audit/auth trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fb76a0d3",
+    "gateLine": "QA (+ Cybersec csak ha a hibaszöveg-leképezés belső részletet érinthet).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "728bd10d",
+    "gateLine": "QA (rule 7: a meglévő marveen-land tesztek nem gyengülhetnek). Kapcsolódó, de más hiba: ba97642f (stale mikrob branch fleet-test bukás merge-en).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e2631058",
+    "gateLine": "QA + Cybersec (auth-ajtó szövege, no-oracle elv).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "80cb3a51",
+    "gateLine": "QA + Cybersec + Cybered (superadmin write path, 3 gate). Pair-FE: a f101d903 StepUpModal már létezik, új FE csak ha a step-up UX változik.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "24d1543f",
+    "gateLine": "QA + Cybersec (a landoló út integritása).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a624f539",
+    "gateLine": "QA + Cybersec + Cybered (superadmin, trust-boundary).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "500f0e3c",
+    "gateLine": "QA + Cybered (a titok-kezelés a Cybersec saját munkája, a másik biztonsági gate ellenőrzi).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9ff184d8",
+    "gateLine": "QA2 + Cybered. (A leletet a QA adta, ezért a QA-oldalt a QA2 nézi; a 4. szabály szerinti második, független gate a RedHat, MikroB 2026-10-11.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3f956997",
+    "gateLine": "QA + Cybersec (auth-ajtó szövege, no-oracle).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1831bf89",
+    "gateLine": "QA + Cybered (a lelet Cybered-é).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5b06720f",
+    "gateLine": "QA + Cybersec (a megosztott fa integritása).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "101f1702",
+    "gateLine": "QA + Cybersec (RBAC, trust-boundary). Cybered a lelet tulajdonosa, verdiktje opcionális.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c3d7a917",
+    "gateLine": "QA + Cybersec (no-oracle: a szöveg ne mondjon többet, mint a nyilvános GET /auth/methods).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e311b459",
+    "gateLine": "QA (rule 7 alapvonal) + Cybersec rotálva helyett Cybered NEM kell, tiszta belső törlés: QA + Cybersec (a STATUS_BY_NAME módosítás HTTP-válasz-térképet érint).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d548f945",
+    "gateLine": "QA + Cybersec (tenant-határ).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "16acfe43",
+    "gateLine": "QA + Cybersec + Cybered (új publikus write-path + trust-boundary, 4. szabály magas-kockázat).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8afdcf6d",
+    "gateLine": "QA + Cybersec (output-escaping SVG/PNG, injected-port-adapters skill szabályai).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e36c9f6d",
+    "gateLine": "QA (flow-teljesség + végigkattintva valós BE-vel, 8b) + Cybersec.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "12a2fcfa",
+    "gateLine": "QA + Cybersec (gate-bemenet integritása).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f0477176",
+    "gateLine": "QA + Cybersec (a saját LOW-ja zárása).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6a68f0e4",
+    "gateLine": "QA + Cybersec (RBAC) + Cybered (a saját lelete zárása, impersonation = top-risk akció).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "84fed4ee",
+    "gateLine": "QA + Cybersec (gate-integritás eszköz).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c5ac73ce",
+    "gateLine": "QA + Cybered (MikroB risk-tiering: a lelet a WhiteHat-é, ezért a javítást a RedHat gate-eli, nem a lelet tulajdonosa).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "726dca6b",
+    "gateLine": "QA + Cybersec (a lelet tulajdonosa, update-biztonsag).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f5ff1d5a",
+    "gateLine": "QA (qa, ne qa2 -- sajat munkat ne) + Cybersec (kanban write-path).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "758e06dd",
+    "gateLine": "QA + Cybersec (rövid, a lelet tulajdonosa). Marveen saját worktree (agent-worktree-marveen.sh), marveen-land.sh, Gate-SHA a REVIEW-ban.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e037291b",
+    "gateLine": "QA (rövid) + Cybered (a lelet tulajdonosa, rövid).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f861a357",
+    "gateLine": "QA + Cybersec (a lelet tulajdonosa). CleanCore/mopsion saját worktree.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b79078b5",
+    "gateLine": "QA + Cybersec (a landolas-or merge-integritasi trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "451e1fc0",
+    "gateLine": "QA + Cybersec (auth/redirect trust boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2fc54ae7",
+    "gateLine": "QA + Cybersec (riport-integritas: egy 'synced' cimke, ami nem irt, ugyanaz az osztaly, mint a 222fdc5e-ben mert hamis csend, csak forditott iranyban).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bbd0c4dd",
+    "gateLine": "QA + Cybersec (indító útvonal, env-átadás: lásd env-passthrough memória).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f268629c",
+    "gateLine": "QA + Cybersec (külső forrás olvasása, quarantine-reader kötelező).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b9a657e6",
+    "gateLine": "QA + Cybersec (indító útvonal, env-átadás).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8b588834",
+    "gateLine": "QA + Cybersec + Cybered (host-szintű telepítés, supply-chain).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f026f46d",
+    "gateLine": "QA + Cybersec (auth/session trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "813eeee9",
+    "gateLine": "QA + Cybersec (a pane-writer ut kozos infrastruktura, a send-lock erintett).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1cdac111",
+    "gateLine": "QA + Cybersec (auth/identitas trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "14931e4e",
+    "gateLine": "QA (doksi-pontossag). Jo jelolt a helyi modellnek (local-llm-offload) draftra.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e3846ccc",
+    "gateLine": "QA (selftest 21+2 zöld a gated shán).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "844f71e4",
+    "gateLine": "QA + Cybersec (a szivárgás-zárás nem nyílhat vissza). Szülő: 127479fa.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6e5ae6ea",
+    "gateLine": "QA + Cybersec (auth/session). Szülő: 127479fa.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "00a01ea3",
+    "gateLine": "QA (a FE-BE kontraktus végigkattintva) + Cybersec rövid (impersonation-cél kiválasztás megjelenítése). Szülő: 127479fa.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "283fbd91",
+    "gateLine": "QA + Cybersec. Szülő: 127479fa.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "20e6265f",
+    "gateLine": "QA + Cybersec rövid. Szülő: 127479fa.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "344f8744",
+    "gateLine": "QA + Cybersec (a 2. pont a durable-write osztályozás, trust-boundary: superadmin pénz-beállítás tartóssága).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "527c9584",
+    "gateLine": "QA (a térkép teljessége: minden skill legalább egy szerephez rendelve vagy explicit \"nem szerep-specifikus\"), + Cybersec rövid (a skill-security-auditor lefedi-e a vendorolt skilleket).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "793268fa",
+    "gateLine": "QA (a hozzárendelés teljessége) -- nincs trust-boundary, Cybered rotál be.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a78e1acb",
+    "gateLine": "QA + Cybersec (production DB, role-jogosultság) a TERVRE; a végrehajtás gate-je a 3fd562de-n mind a 3.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3d0b54a6",
+    "gateLine": "QA + Cybersec (wiring-manifest = fail-closed őr).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a0fb2a4e",
+    "gateLine": "QA + Cybersec (a fail-closed őr lefedettsége).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3f4545ab",
+    "gateLine": "QA + Cybersec rotációban Cybered.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "40cd4214",
+    "gateLine": "QA + Cybersec (a Cybered javasolta, ezért nem gate-eli a saját tervét).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3b90fe5d",
+    "gateLine": "QA + Cybered rotációban.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0a6080bb",
+    "gateLine": "QA + Cybersec + Cybered (migráció + jogosultság).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b1e4b0bd",
+    "gateLine": "QA + Cybersec (tenant-tagság, trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "39b958a4",
+    "gateLine": "QA + Cybersec + Cybered (MikroB 2026-10-14: a RedHat NO-GO 19024 leletei miatt a delta-gate-en a RedHat is kötelező).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bc1e7ef2",
+    "gateLine": "QA + Cybered (deletes on shared box; the fix lines were proposed by both WhiteHat and WhiteHat2, so the security re-gate is RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "eea8a2cb",
+    "gateLine": "QA + Cybered (a javítást a Cybersec tervezte, ezért a biztonsági gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "501c489f",
+    "gateLine": "QA + Cybersec (a steering/injection-kapu és a security-routing érintett).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "90424157",
+    "gateLine": "QA + Cybersec (credential-kezelés).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c00d5429",
+    "gateLine": "QA + Cybersec (a fő ügynök biztonsági kontrolljai).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3ab52018",
+    "gateLine": "QA + Cybered (a javítás iránya a WhiteHat F1 leletéből jön, ezért a biztonsági gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4369e3eb",
+    "gateLine": "QA (+ Cybersec rotáció nem kell, nincs trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dece9fea",
+    "gateLine": "QA + Cybersec. (Cybered helyett: a lelet az ő 6091-es NO-GO-jából jött, MikroB 2026-10-16.)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bd5241b7",
+    "gateLine": "sora ... cybersec-gate-scan.py ...') a 'last match wins' szabaly miatt felulirja a valodi Gate: sort, es hamis Cybersec-gate kovetelmenyt ad.",
+    "expected": null
+  },
+  {
+    "id": "3d82297f",
+    "gateLine": "QA + Cybersec (uj domain + config-iras, belso, de penzugyi hatasa van a payroll-exportra).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e36248c0",
+    "gateLine": "QA + Cybersec (penzugyi szamitas).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f9ede77b",
+    "gateLine": "QA + Cybersec (penzugyi export-mezo).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8a80ebdb",
+    "gateLine": "QA + Cybersec (bérszámfejtésbe menő konfiguráció írása).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5298134d",
+    "gateLine": "QA + Cybered (a javítást a WhiteHat javasolta, ezért a biztonsági gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f005c6af",
+    "gateLine": "QA + Cybersec + Cybered (auth/session, internet-facing).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a5ef4771",
+    "gateLine": "QA + Cybered. (A 61ab40f0 delta a WhiteHat2 javítási irányát valósítja meg, ezért a biztonsági gate RedHat; MikroB 19827-es döntése landolási kapu-verdiktet nem helyettesít.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "613a8142",
+    "gateLine": "QA + Cybered.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "85521c7e",
+    "gateLine": "QA + Cybersec (közös-instrukció felület).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "090ab223",
+    "gateLine": "QA + Cybersec (a meglévő kapu levétele a kockázatos rész).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fd0b2180",
+    "gateLine": "QA + Cybered. (2026-10-10 15:0x: a javitas iranyat a WhiteHat adta (728179d1 F1), ezert a biztonsagi gate a Cybered)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "99a4a2d4",
+    "gateLine": "QA + Cybered. (MikroB kijelölés, komment 23710: a javítás a WhiteHat saját leleteit valósítja meg)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e3d14be9",
+    "gateLine": "QA + Cybered. (A javitast a Cybersec tervezte a 01dea2f0 GO-ban, ezert a biztonsagi gate a RedHat, MikroB 2026-10-17.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "09d54e88",
+    "gateLine": "QA + Cybersec (biztonsag-relevans terulet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0b5492b7",
+    "gateLine": "QA + Cybered. (MikroB: a javítás alakja a Cybersec b846acf3 GO leleteiből jön, ezért a biztonsági gate a RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7e70144e",
+    "gateLine": "QA + Cybersec (Cybersec a két korábbi NO-GO szerzője, ő ítéli meg, visszajön-e a hiba).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1df528e0",
+    "gateLine": "QA + Cybersec (supply-chain).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2564e877",
+    "gateLine": "QA + Cybersec (a gépi titkok trust boundary-ja).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a2cb71f1",
+    "gateLine": "QA + Cybered (email-kuldes trust boundary; a javitas nagy resze a Cybersec es a cybersec2 javaslata, ezert a biztonsagi gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f4cd1783",
+    "gateLine": "Cybersec (az audit maga) + QA a vendorolás után.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e344e366",
+    "gateLine": "QA + Cybersec (a hook-regisztracio biztonsag-relevans -- uj agensek vedelem nelkul indulnanak, ha egy hook csendben kimaradna).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3026a591",
+    "gateLine": "QA + Cybersec (a fallback-kuldesi utvonal fail-open resze -- egy rossz chat-id-re postolas informacio-szivargas lehet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "965b0b2b",
+    "gateLine": "QA + Cybersec (uj route-ok, uj scheduled runner, hitelesito-adat-kezeles erinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "453d64cc",
+    "gateLine": "QA + Cybersec (flotta-szintű skill).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6b10a6b8",
+    "gateLine": "QA + Cybersec (auth/model-valasztas erinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5aaf7209",
+    "gateLine": "QA + Cybersec (uj API-vegpont + validacio-valtozas).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fd8ae23f",
+    "gateLine": "QA (megjelenites-pontossag + uj kvota-metrika, nem trust-boundary -- Cybersec nem kotelezo, de MikroB dontse el a kockazat szerint).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "16e60d3c",
+    "gateLine": "QA + Cybersec (biztonsag-relevans -- memoria-kereses, kanban-write, embedding-integritas).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b5e1d7df",
+    "gateLine": "QA + Cybersec (memoria-iras-nyom attribucio + migracios adatminoseg erinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9b1ccbca",
+    "gateLine": "QA + Cybered. (MikroB 2026-10-17: min. 2 gate; a kanban PUT-ot 409-cel blokkoló új őr, a biztonsági gate a RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "806707fa",
+    "gateLine": "QA + Cybersec (a guard gyengítése biztonsági kontroll).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "223d03c2",
+    "gateLine": "QA + Cybersec (a POST vegpont iras-muvelet, egy CLI-frissites futtatasat inditja -- authz-ellenorzes kell).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4dc7d966",
+    "gateLine": "QA + Cybersec (folyamat-ölés, a flotta rendelkezésre állása).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e0f004c8",
+    "gateLine": "QA (UI, rule 12/13) + Cybersec (a dispatch-döntést vezérlő beállítás írása).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "986cea8e",
+    "gateLine": "QA + Cybersec + Cybered (superadmin, audit-integritás, élesítés előtt).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b92996f5",
+    "gateLine": "QA (végigkattintva) + Cybersec (superadmin, tenant-szűrés).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0a0a6d48",
+    "gateLine": "QA (v4 flag alatt végigkattintva, mobil+desktop).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "438c2791",
+    "gateLine": "QA + Cybersec (tenant-scope).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "664b6962",
+    "gateLine": "QA (végigkattintva) + Cybersec.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c1e7a818",
+    "gateLine": "QA + Cybersec (superadmin export, CSV-injekció).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "15b94e1d",
+    "gateLine": "QA + Cybersec + Cybered (audit-integritás, magas tét).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a11682db",
+    "gateLine": "QA + Cybersec + Cybered (tenant-adat kiadás, superadmin, visszafordíthatatlan lánc része).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "61b6d4b1",
+    "gateLine": "QA + Cybersec (landolási út).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ddf43dfd",
+    "gateLine": "QA + Cybersec (a 64d6bdfa biztonsági boot-útja érintett lehet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bda2b3e4",
+    "gateLine": "QA + Cybersec (a rule-12 no-oracle/error-surfacing trust-boundaryt erinti, class-vs-message allowlist minta).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f4f4944f",
+    "gateLine": "QA + Cybersec (tenant-határ, RBAC, publikus write path).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "530c3b3f",
+    "gateLine": "QA (+ Cybersec rövid átnézés: jogosultság-rejtés a UI-ban).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ba80f1ac",
+    "gateLine": "QA + Cybersec (tenant-határ, írási út).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "23ddf0b4",
+    "gateLine": "QA + Cybersec. A javítás a ddf43dfd és az a11682db main.ts-változásaira épüljön (azok landolása után húzd be a main-t).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "816e22fb",
+    "gateLine": "QA + Cybersec (a 64d6bdfa mintaja szerint, architektura-erinto biztonsagi alapertelmezes-valtas).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5cfe04a7",
+    "gateLine": "QA + Cybersec + Cybered (billing-adjacent table drop).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d7effe6b",
+    "gateLine": "QA + rotate 2nd gate.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7c46fbd1",
+    "gateLine": "QA + Cybersec + Cybered (brute-force/auth defense).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "90987cfa",
+    "gateLine": "QA + Cybersec + Cybered (auth token issuance).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "013ee742",
+    "gateLine": "QA + Cybersec + Cybered (session-revocation integrity).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9c489ef2",
+    "gateLine": "QA + Cybersec + Cybered + explicit backup checkpoint.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dab878c6",
+    "gateLine": "QA + Cybersec + Cybered (auth/session, publikus unauth végpont).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "521e5f7c",
+    "gateLine": "QA (flow-teljesség, végigkattintva).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d4ba6ff8",
+    "gateLine": "QA + Cybersec (hook/guard réteg).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "79aeaeb1",
+    "gateLine": "QA + Cybersec (dispatch-útválasztás).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6ec3ea9e",
+    "gateLine": "n/a amig a dontes meg nem szuletett (ez maga egy interview-me tipusu tisztazando kartya).",
+    "expected": null
+  },
+  {
+    "id": "fd10c70b",
+    "gateLine": "QA + Cybersec (csatorna-hitelesites/token-kezeles erintett).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "35dc6dbe",
+    "gateLine": "QA + Cybersec (egress/copy-gate/hook-reteg mind biztonsagi hatasu).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a4767438",
+    "gateLine": "QA (a nagy tobbseg kockazatmentes/dokumentacios; a security-relevans reszek -- vault/email-gate/tool-log -- Cybersec-et is kapjanak).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5bc36520",
+    "gateLine": "QA + Cybersec (a beállító felület RBAC-os írást érint).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7e15d40d",
+    "gateLine": "QA + Cybersec (új nyilvános, hitelesítés nélküli olvasó végpont + RBAC-os írás, tenant-határ).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ac44409a",
+    "gateLine": "QA + Cybersec (pénz + RBAC + superadmin).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6e730b11",
+    "gateLine": "QA (+ Cybersec a superadmin rész miatt).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d0a01cf3",
+    "gateLine": "QA + Cybersec (superadmin + tenant-határ).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e9cf8a26",
+    "gateLine": "QA + Cybersec (a tároló-tartósságot érinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "057ad243",
+    "gateLine": "QA + Cybersec (biztonsagi hatasu -- egress-vedelem).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9b781fe4",
+    "gateLine": "QA + Cybersec (inter-agent bizalmi hatar + federacios felulet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "971f7d4f",
+    "gateLine": "QA + Cybersec (hook-regisztracio biztonsagi hatasu -- lasd 14/15. munkavegzesi szabaly).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "51162702",
+    "gateLine": "QA (+Cybersec, ha auth/RBAC-felületet érint).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "375a81c1",
+    "gateLine": "QA + Cybered (a landolási pipeline adatvesztés-védelmét érinti).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e6a93c6e",
+    "gateLine": "QA + Cybersec (séma-integritás).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8ed79764",
+    "gateLine": "QA + Cybersec (exfil-vektor, szerepek közötti injekció).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f22cf4f4",
+    "gateLine": "QA + Cybered (infra, a landolási és folyamatkezelési utat érinti).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9482013e",
+    "gateLine": "QA + Cybersec (a landolási integritási utat érinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e7f65129",
+    "gateLine": "QA + Cybersec + Cybered (magas-tetu auth, mind3). Ez PREDECESSOR-a a 871a1d46 lezarasanak.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "cfb30062",
+    "gateLine": "QA (tiszta belső store-bekötés, nincs új trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "18055f83",
+    "gateLine": "QA + Cybersec + Cybered (egress-kontroll, internet-facing kockázat).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e2ee64c0",
+    "gateLine": "QA + Cybersec + Cybered (auth/session).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b0396aa1",
+    "gateLine": "QA + Cybersec + Cybered (auth, internet-facing).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a4164e95",
+    "gateLine": "QA + Cybersec (kötelező, kifelé ható művelet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "498d53c1",
+    "gateLine": "QA + Cybersec (kifelé ható művelet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "50344c78",
+    "gateLine": "QA + Cybersec (superadmin írási útvonal).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d276f728",
+    "gateLine": "QA + Cybersec + Cybered (publikus, nem hitelesített belépési pont, tenant-határ).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c30b963b",
+    "gateLine": "QA + Cybersec + Cybered (publikus, nem hitelesített belépési pont).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dc249deb",
+    "gateLine": "QA + Cybersec (bérszámfejtést érint).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5368e12b",
+    "gateLine": "QA + Cybersec + Cybered (helyadat, PII).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2b75f3de",
+    "gateLine": "QA + Cybersec (a token e-mailben utazik).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d39fc5e7",
+    "gateLine": "QA, Cybered (RedHat; Cybersec helyett: a B1-B2 javitasi iranyat a WhiteHat adta, 17176)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dc624686",
+    "gateLine": "QA (végigkattintva) + Cybersec + Cybered (auth/session).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7bad1e8c",
+    "gateLine": "QA + Cybersec (auth).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "42d9e252",
+    "gateLine": "QA + Cybersec + Cybered (élesben futó biztonsági riasztás).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b82af340",
+    "gateLine": "QA + Cybersec (tenant-határ, helyadat = PII).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3ff50ddf",
+    "gateLine": "QA + Cybersec (superadmin-írás, DoS-határ).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a85e0d09",
+    "gateLine": "QA (végigkattintással).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e38749bc",
+    "gateLine": "QA + Cybersec (penz + tenant-hatar).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "34704407",
+    "gateLine": "QA + Cybersec + Cybered (auth).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "35790f22",
+    "gateLine": "QA + Cybersec (pénzügyi hatás).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e83f2d21",
+    "gateLine": "QA + Cybersec (PII + tenant-határ).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "79311937",
+    "gateLine": "QA + Cybersec (landolási biztonsági út).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7c47074d",
+    "gateLine": "QA + Cybersec + Cybered. Pair-FE: n/a (belső infra).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c4148504",
+    "gateLine": "QA + Cybersec (RBAC). A javítás után a main-en a piros szám 4-re álljon vissza (mérd a merge eredményén).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "da926d76",
+    "gateLine": "QA + Cybersec + Cybered (auth, mint az adb6f84e).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "45b4e58b",
+    "gateLine": "QA (+Cybersec, ha az erintett modal auth/RBAC-felületet mutat -- ellenorizendo egyenkent).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e65d5aee",
+    "gateLine": "QA (+Cybersec, ha auth-űrlapot érint).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "505d42ea",
+    "gateLine": "QA + Cybersec (uj env-alapu PATH-modositas, biztonsagi felulvizsgalatot erdemel -- PATH-injekcio tamadasi felulet, ha a shell-aktiv karakter szures hianyos lenne).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d3f94987",
+    "gateLine": "QA + Cybersec (titok-kezelés, kimenő hívás).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a3694f71",
+    "gateLine": "QA + Cybersec (merge-only, a 7355910f tartalmát Cybersec a 60beb636-on már átnézte: tenant-szűrés változatlan, e2e cleancore_app alatt zöld, revert piros).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b77bf25f",
+    "gateLine": "QA (merge-only, nulla tartalom-változás, csak mode 100644 -> 100755).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0daf0033",
+    "gateLine": "QA + Cybersec (a gép hardveres leállítását érinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a714c1ec",
+    "gateLine": "QA + Cybersec (a kiosk device-token mock nem szivárogtathat valódi tokent).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "38462d19",
+    "gateLine": "QA + Cybersec (RBAC/route-policy).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e5c178ba",
+    "gateLine": "QA + Cybersec + Cybered. Az első éles futás Peti jóváhagyásához kötött.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "14256aac",
+    "gateLine": "QA + Cybered (MikroB 2026-10-10 13:1x: a Cybersec NO-GO F1/F2 javítását Cybersec javasolta, ezért a további delta-gate QA + Cybered; a Cybersec 8ae5ddd9-es GO-ja a köteg többi részére áll).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "517fdcc5",
+    "gateLine": "QA + Cybered. (MikroB 2026-10-11: a delta #3 javítását WhiteHat javasolta, ezért a biztonsági gate RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8a3a1e84",
+    "gateLine": "QA, Cybered, cybersec2 (WhiteHat2; a B1 javítási irányát a WhiteHat adta, 17467)",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "986b96ba",
+    "gateLine": "QA + Cybersec (auth-redirect határ: nem nyílhat meg védett útvonal anonimnak).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c6506303",
+    "gateLine": "QA + Cybersec + Cybered, ugyanaz a tier, mint a b59ebc74-é (adattörlés, PII).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2b0bd3ae",
+    "gateLine": "QA (nem blokkolo risk-tier, Cybersec mar minositette LOW-nak).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "29f697a7",
+    "gateLine": "QA (Lighthouse ujra-meres a javitas utan, ugyanazzal a modszertannal: v4 flag, mobil form-factor, lantern throttling).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0809b85a",
+    "gateLine": "QA + Cybersec (PII, tenant-scope).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "66a3f978",
+    "gateLine": "QA + Cybersec (bérhez kötött szám).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "922a7ada",
+    "gateLine": "QA + Cybersec (biztonsági állítás).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2727b124",
+    "gateLine": "QA (no-op kártya, kódváltozás nélkül; MikroB kijelölés 18692).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0fe0f35d",
+    "gateLine": "QA + Cybersec + Cybered (partner-sík, publikus belépés).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b581b905",
+    "gateLine": "QA + Cybersec (SDS: fájlfeltöltés).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a8814bf5",
+    "gateLine": "QA + Cybersec (anonimitás, harmadik fél adata).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d2542e48",
+    "gateLine": "QA + Cybersec + Cybered (superadmin, audit).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e927afdf",
+    "gateLine": "QA + Cybersec + Cybered (pénz, jogi megőrzés).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d4da2c68",
+    "gateLine": "QA + WhiteHat.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "945c7f9b",
+    "gateLine": "QA + WhiteHat + RedHat. Predecessor: 82f05633.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3f111a31",
+    "gateLine": "QA (szerződés-tesztek) + WhiteHat (PX, AU, HR-PII szerződések)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "249b1e64",
+    "gateLine": "QA + WhiteHat",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3fcadfac",
+    "gateLine": "QA + WhiteHat + RedHat",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "eeb946e7",
+    "gateLine": "QA + WhiteHat (publikus, nem hitelesített végpont: enumeráció és rate-limit).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fb8ad8ec",
+    "gateLine": "QA + WhiteHat (supply chain).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ea38e1d3",
+    "gateLine": "QA + WhiteHat (superadmin, tenant-határ). Élesítés hotfixként Peti jóváhagyásával.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f9d87c8d",
+    "gateLine": "QA (végigkattintva, mobil+desktop) + WhiteHat (secret-kezelés, nincs külső QR-szolgáltatás, rate-limit a verify-on).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3b4361fa",
+    "gateLine": "QA (végigkattintva két böngészővel).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "440234b1",
+    "gateLine": "QA (végigkattintva).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dc1844c8",
+    "gateLine": "QA + WhiteHat. Élesítés gate után azonnal (Peti előzetes jóváhagyása a tenant-hotfixre, Telegram 10168).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a483636e",
+    "gateLine": "QA + WhiteHat (a 3-4. pont hibaüzenet-szivárgás).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "97cfd641",
+    "gateLine": "QA + WhiteHat + RedHat.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "26f5531c",
+    "gateLine": "QA (flow-teljesség, reszponzivitás, végigkattintva) + WhiteHat (tenant-határ, PII).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c43c79c6",
+    "gateLine": "QA + WhiteHat (kulcs-kezeles, redukcio ne szivarogjon).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ccb3b6d5",
+    "gateLine": "QA (minden oldal mindkét nyelven, nincs nyers kulcs, nincs keveredés) + WhiteHat (nyelvválasztó nem nyit új támadási felületet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e783dcb6",
+    "gateLine": "QA + WhiteHat (bérszámítást érint, tenant-scope).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "09b112e3",
+    "gateLine": "QA + WhiteHat (nyelvvalaszto nem nyit uj tamadasi feluletet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a07ae6c5",
+    "gateLine": "QA + WhiteHat + RedHat (superadmin auth = magas tét).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9f317f44",
+    "gateLine": "QA + WhiteHat (a vizsgálati jelentésre).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ec3ac42a",
+    "gateLine": "QA + WhiteHat (könnyű).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2581ac09",
+    "gateLine": "QA + WhiteHat (RBAC/tenant-scope).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "94259867",
+    "gateLine": "QA (+ WhiteHat könnyű).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fd6a4bdb",
+    "gateLine": "QA + WhiteHat + RedHat (auth/session).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9a7f2126",
+    "gateLine": "QA + WhiteHat (RLS policy-k is erintettek).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "06f2bd43",
+    "gateLine": "QA + WhiteHat (superadmin iras-ut, tenant-hatar).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "06aef027",
+    "gateLine": "QA + RedHat.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9117d510",
+    "gateLine": "QA + WhiteHat + RedHat (superadmin auth).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d4bbcf93",
+    "gateLine": "QA + WhiteHat (auth-felulet).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d48e34ef",
+    "gateLine": "QA + WhiteHat (a RedHat-hatokort tovabbra is WhiteHat viszi, Peti 10318).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "320ef054",
+    "gateLine": "QA + WhiteHat + RedHat (lifecycle/allapotgep-bovites, 26156599 kockazati tierje).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f5e5bfa3",
+    "gateLine": "QA + WhiteHat (RedHat-hatokor a WhiteHat, Peti 10318).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c0d13e97",
+    "gateLine": "QA + WhiteHat + RedHat-hatokor (WhiteHat viszi, Peti 10318), mert superadmin auth.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f98c79ed",
+    "gateLine": "QA + WhiteHat (Peti 10318).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7b5c76ab",
+    "gateLine": "QA + WhiteHat + RedHat (auth/session, internet-facing; ha a RedHat session nem fut, a WhiteHat viszi a RedHat-reszt, Peti 10318). DECISIONS.md bejegyzes a fajl VEGERE.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5507db24",
+    "gateLine": "QA (vegigkattintva) + WhiteHat.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2845625c",
+    "gateLine": "QA + WhiteHat (superadmin write path, enumeracio).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b0833b4d",
+    "gateLine": "QA + WhiteHat (superadmin write path).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "88322cf4",
+    "gateLine": "QA + WhiteHat + RedHat (superadmin auth, magas tet).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "97804a77",
+    "gateLine": "QA + WhiteHat (secret-kezeles, internet-facing).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7940456c",
+    "gateLine": "QA (vegigkattintva) + WhiteHat + RedHat.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7960d861",
+    "gateLine": "QA + WhiteHat (a RedHat-resszel).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "339d29a5",
+    "gateLine": "QA + WhiteHat (supply-chain).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1bb57483",
+    "gateLine": "QA + Cybered. (MikroB, 2026-10-24: a javítás a WhiteHat saját leleteit valósítja meg, ezért a biztonsági gate RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5d1bb755",
+    "gateLine": "QA + WhiteHat. A Peti-fókusz (upstream-szinkron + figyelt repók) miatt blokkolva, Peti döntésére.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "54f3f2cd",
+    "gateLine": "QA + Cybersec (WhiteHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ed4926a3",
+    "gateLine": "QA + WhiteHat (vagy RedHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4ed64b20",
+    "gateLine": "QA + RedHat (a WhiteHat ezt a temat tartalomszuro miatt nem tudja gate-elni).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "de3b0069",
+    "gateLine": "QA (+ WhiteHat, mert hookok/szabalyok erintettek).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8eca67f0",
+    "gateLine": "QA + Cybersec (measurement card, RedHat authored it; WhiteHat2 reproduces the numbers, QA2 checks accuracy).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "96c00ee5",
+    "gateLine": "QA + Cybersec (uj per-agent config-mezo + launch-env erintheti az auth-ot).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "28923621",
+    "gateLine": "QA (belso viselkedes, nincs uj tamadasi felulet).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2f05b3e3",
+    "gateLine": "QA + Cybersec (WhiteHat) (supply-chain: lockfile-diff, új tranzitív függőségek).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a55315be",
+    "gateLine": "QA + Cybersec (ugyanaz az osztaly, mint 3026a591: a fallback-riaszto csatorna erinti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f1800242",
+    "gateLine": "QA + Cybersec (WhiteHat) KÖTELEZŐ.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "466decff",
+    "gateLine": "QA + Cybersec (WhiteHat; supply-chain: npm ci a lock alapján, integrity).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "91188f92",
+    "gateLine": "QA + Cybered (RedHat). (A javítás irányát a WhiteHat adta a 96c00ee5 leletben, ezért a biztonsági gate a RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "594da483",
+    "gateLine": "QA (+WhiteHat rotálva).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7b0b822f",
+    "gateLine": "QA + Cybersec (uj API-vegpont + a mar meglevo stuck-detektalasi logika lehetseges duplikalasa/szetesese -- a ket mechanizmus divergenciaja magaban is biztonsagi/megbizhatosagi kockazat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8c6f30fb",
+    "gateLine": "QA (infra/host-move megbizhatosag, nincs uj trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3caa7e9f",
+    "gateLine": "QA (restart/rollback megbizhatosagi javitas, nincs uj trust-boundary).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "06b48bd0",
+    "gateLine": "QA + Cybersec (credential-kezeles, trust-boundary -- uj hitelesitesi forras ugynokenkent).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0c3c3796",
+    "gateLine": "QA + Cybersec (MCP-szerver-orokles = kepesseg-kor, trust-boundary erintett).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a65f3777",
+    "gateLine": "QA + Cybersec (trust boundary: direktíva-hitelesítés).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d4675258",
+    "gateLine": "QA + Cybered (MikroB dontese 2026-10-10: az I1/I3 javitas iranyat Cybersec adta a 2f05b3e3 GO-jaban, ezert o nem fuggetlen).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e6df15da",
+    "gateLine": "QA + Cybered (MikroB dontese 2026-10-10: az N1/N2 javitas alakjat Cybersec adta az 5d365589 13863-as kommentjeben, ezert o nem fuggetlen).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fcd8b794",
+    "gateLine": "QA + Cybered (MikroB dontese 2026-10-10: a javitasok alakjat Cybersec adta meg a 13877-es kommentben, ezert o nem fuggetlen gate).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0dab76a3",
+    "gateLine": "QA + Cybered (MikroB 2026-10-10: az 1-2. tétel javítását Cybersec adta a 087e4418 13912-es GO-jában, ezért ő nem független).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "cf8d047a",
+    "gateLine": "QA + Cybered (MikroB dontese 2026-10-10: a jelzofajlos javitas alakjat Cybersec adta a 3caa7e9f F1-ben, ezert o nem fuggetlen gate).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "006b506b",
+    "gateLine": "QA + Cybersec (delta-kor, MikroB 2026-10-10: a Cybered a modell biztonsagi szuroje miatt nem tudott verdiktet adni; az elso kor Cybered NO-GO 14160 fuggetlen volt).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "779b9660",
+    "gateLine": "QA + Cybered (MikroB dontese 2026-10-10: az F1 javitas alakjat Cybersec adta a fd10c70b 13977-es kommentben, ezert o nem fuggetlen; a biztonsagi oldalt a Cybered viszi). Nem user-facing, nincs Pair-FE.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d9f33249",
+    "gateLine": "QA + Cybersec (rollback-biztonsági út).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d2666c85",
+    "gateLine": "QA (a leltár teljessége, hivatkozások valósak). Kódváltozás nincs.",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1d31cfcc",
+    "gateLine": "QA + Cybered. (2026-10-10 15:5x: a leleteket es a javitas iranyat a WhiteHat adta (0c3c3796 F1-F4), ezert a biztonsagi gate a Cybered) Nem user-facing, nincs Pair-FE.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7e01b349",
+    "gateLine": "QA + Cybered (a javítás alakja ismét a gate-lelet, a RedHat a független ellenőr).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "59cfcb21",
+    "gateLine": "QA + Cybered (Cybersec NO-GO 14385 után; a javítás irányát Cybersec adta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3c779d18",
+    "gateLine": "QA + Cybersec (credential-kezelés, --dangerously-skip-permissions sandbox).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3adca529",
+    "gateLine": "QA + Cybersec (identitás/attribúció, közös konfiguráció).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bc32d233",
+    "gateLine": "QA + Cybered. (2026-10-10 14:55: a javitast a WhiteHat tervezte, ezert a biztonsagi gate a Cybered, szukitett kod-olvasasos keretben)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "68254bd7",
+    "gateLine": "QA + Cybered. (2026-10-10 18:2x: a Cybersec NO-GO 10270 utan a javitas iranyat a WhiteHat adta, ezert a delta-gate a Cybered lett; QA PASS + CYBERED GO eab0e16f)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8c2bb2a1",
+    "gateLine": "QA + Cybered (RedHat, rotalt biztonsagi gate, min. 2 gate szabaly).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "466f21fe",
+    "gateLine": "QA + Cybered (a javítás irányát Cybersec adta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "93b76f52",
+    "gateLine": "QA (a vélemény teljessége, a hivatkozott tények ellenőrzése).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0fb92c16",
+    "gateLine": "QA + Cybersec. (2026-10-10 18:3x: a fullstack a RedHat leleteit követte, ezért a független biztonsági gate a Cybersec/WhiteHat.)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "656158fb",
+    "gateLine": "QA + Cybersec (a javítás irányát RedHat adta).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5d9731cd",
+    "gateLine": "QA + Cybersec (landolási út, develop push).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0a34377f",
+    "gateLine": "QA + Cybered. (2026-10-10 16:1x: a delta-javitas iranyat a WhiteHat adta (NO-GO 42dce6d6), ezert a kovetkezo biztonsagi gate a Cybered)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "508153a9",
+    "gateLine": "QA + Cybersec. (2026-10-10 19:1x: a javitas iranyat a RedHat adta (Cybered osszeferhetetlenseg, msg 10427), ezert a fuggetlen biztonsagi gate a Cybersec)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "657b32f2",
+    "gateLine": "QA + Cybered. (a leleteket a WhiteHat adta, f1800242 F1-F4, ezert a biztonsagi gate a Cybered)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e3b6a5d6",
+    "gateLine": "QA + Cybered. (2026-10-10 19:4x: a javitas iranyat a WhiteHat adta (d69b54fd GO, msg 10325), ezert a fuggetlen biztonsagi gate a Cybered)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "67e73b48",
+    "gateLine": "QA + Cybered. (2026-10-10 19:2x: a delta N1 javitasi iranyat a WhiteHat adta (NO-GO msg 10434), ezert a delta biztonsagi gate-je a Cybered)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "079c13d8",
+    "gateLine": "QA + RedHat (a javítási irányt a WhiteHat adta, 7e70144e/14901; MikroB döntés 2026-10-11).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "af3cd669",
+    "gateLine": "QA + Cybered (a javítás irányát a WhiteHat adta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c40385b1",
+    "gateLine": "QA + Cybersec. (ügynök-instrukciós felület: minden ügynök ebből tölt skillt)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e6b2742b",
+    "gateLine": "QA + Cybered. (2026-10-10 19:0x: a javitas TERVET a WhiteHat irta elo a 0a34377f NO-GO-ban (komment 14926), ezert a fuggetlen biztonsagi gate a Cybered; WhiteHat objekcio msg 10419)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a9878e3e",
+    "gateLine": "QA + Cybered\"-et ír -> új, fájl VÉGÉRE írt korrekciós bejegyzés (ne a meglévőt szerkeszd).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "86d5de34",
+    "gateLine": "QA + Cybersec. (az R1-R4 előfeltételeket RedHat szabta, a független biztonsági gate a Cybersec)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "eb26a3e4",
+    "gateLine": "QA + Cybersec. (a leletet RedHat adta)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c5f98f82",
+    "gateLine": "QA + Cybered. (a leleteket WhiteHat adta)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "eaf56df5",
+    "gateLine": "QA + Cybersec. (a leleteket RedHat adta)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "34f972bb",
+    "gateLine": "QA + Cybersec (a javítás irányát a RedHat adta, ezért a biztonsági gate a WhiteHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e25a549a",
+    "gateLine": "QA + RedHat (a javítási irányt a WhiteHat adta, 10562).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d57d8a01",
+    "gateLine": "QA + WhiteHat (új írható végpont).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "54e6f4c8",
+    "gateLine": "QA + RedHat (a fix-irányt a RedHat adta, ezért itt nem WhiteHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "cdcd0f5b",
+    "gateLine": "QA + RedHat (+ WhiteHat, ha a proxy auth-útját érinti).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9835e4ff",
+    "gateLine": "QA + Cybersec. (ügynök-instrukciós felület: a DevO seed-sablon az infra-korlátokat, restart/update-tilalmat rögzíti)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "21abfe0b",
+    "gateLine": "QA + RedHat (a WhiteHat-szerepet érinti, ezért nem WhiteHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3ae2411d",
+    "gateLine": "QA + WhiteHat2 (független).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4ba3d4b5",
+    "gateLine": "QA + WhiteHat2 (bázisvonal = biztonsági kontroll).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b8ac0ef1",
+    "gateLine": "a gyerekeken.",
+    "expected": null
+  },
+  {
+    "id": "cd3e577b",
+    "gateLine": "QA + RedHat (landolási út, nehezen visszafordítható).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2bfa4c67",
+    "gateLine": "QA + WhiteHat (trust boundary) + RedHat (auth-közeli, magas tét).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "81452ce2",
+    "gateLine": "QA + WhiteHat2 (ügynök-instrukciós felület).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2520b85a",
+    "gateLine": "QA + WhiteHat + RedHat (hitelesítés, flotta-szintű trust boundary).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "335fb927",
+    "gateLine": "QA + RedHat (parancs-injekció ügynökök közt, a javítási irányt a WhiteHat2 adta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "93ed929a",
+    "gateLine": "QA + Cybered. (a javítási irányt a WhiteHat adta, a re-gate RedHaté)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "25aaada5",
+    "gateLine": "qa, cybered",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "83416786",
+    "gateLine": "qa, cybersec",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ccbb718a",
+    "gateLine": "qa, cybersec, cybered",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "60aeca01",
+    "gateLine": "qa, cybersec2",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6eca461e",
+    "gateLine": "QA + Cybersec. (Cybered helyett: a lelet az ő 16876-os re-gate-jéből jött, MikroB 2026-10-16.)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e2368d0a",
+    "gateLine": "QA2 + Cybered.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e87eef21",
+    "gateLine": "QA + Cybered. (A javítás irányát a WhiteHat adta, a re-gate RedHat vagy WhiteHat2.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c7abdf57",
+    "gateLine": "QA + Cybersec + Cybered (kimenő adat külső szolgáltatóhoz).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a92e9913",
+    "gateLine": "QA, RedHat, WhiteHat2 (WhiteHat helyett: a 17320 javitasi iranyat a WhiteHat adta)",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "49960046",
+    "gateLine": "QA + Cybersec (MikroB 2026-10-16: a lelet és a javítási irány RedHaté, ezért a biztonsági gate WhiteHat; RedHat provenance-ként kimarad).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "970a90c3",
+    "gateLine": "QA, Cybersec",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9482a764",
+    "gateLine": "QA + WhiteHat (külső hálózati bemenet, ami később telepítési döntést vezérel).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9c7ad372",
+    "gateLine": "QA + RedHat. (MikroB 2026-10-17: a javítást WhiteHat2 tervezte (2bfa4c67 O1/O2/O5), ezért a 12556 szabály szerint ő nem gate-el; komment INFO-ONLY.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d7e1d611",
+    "gateLine": "QA + Cybersec + Cybered (MikroB risk-tier 2026-10-15: DASHOPERATOR1005 operator-scope/credential-mint + VOICEREPLY1005 prompt-injection guard kivétel).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f61156b9",
+    "gateLine": "QA + Cybered. (2026-10-15: a Cybersec kikerült, mert az 1-2. javítási irányt ő adta, msg 12678.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f3dd0c65",
+    "gateLine": "QA + Cybered. (MikroB kijelölés, 20062-es komment)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "31131dc5",
+    "gateLine": "QA, Cybered",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3eddc9a8",
+    "gateLine": "QA, cybersec2 (WhiteHat2; a javitasi iranyt a RedHat adta, 17386)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "626df838",
+    "gateLine": "QA + Cybersec + Cybered (MikroB risk-tier 2026-10-14: draft-tartalom kimegy külső szolgáltatásra, titokszűrő + fail-closed, ezért mindhárom gate).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "40d2a253",
+    "gateLine": "QA + WhiteHat2.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6d0775bb",
+    "gateLine": "QA + Cybersec (ütemező, ügynök-vezérlés). A re-gate-et a WhiteHat2 (cybersec2) végzi, mert a 17654-es NO-GO javítási tervét a WhiteHat (cybersec) adta.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "43d98136",
+    "gateLine": "QA + Cybersec + Cybered",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "81f202bd",
+    "gateLine": "QA + Cybered",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e87e7520",
+    "gateLine": "QA + Cybersec (Gemini kimenő szűrő, trust boundary). Re-gate a 17848-as NO-GO után: a biztonsági gate a WhiteHat2 (cybersec2), mert a fix-tervet a WhiteHat (cybersec) adta.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "58badae1",
+    "gateLine": "QA + Cybersec (Windows-oldali VM-vezérlés).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1c8f6d25",
+    "gateLine": "QA + WhiteHat2 (prompt-injekciós felület).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "18a19118",
+    "gateLine": "QA + WhiteHat2 (a helyi modellnek/Gemininek kimenő kontextust bővíti).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "36a6fdf7",
+    "gateLine": "QA + WhiteHat (kill-switch út).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "035d02fc",
+    "gateLine": "QA + Cybered (éles Windows-oldali változás).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "33047d3f",
+    "gateLine": "QA + Cybered. (MikroB 2026-10-13: a C1-C3 a WhiteHat2 GO 17900 leletei, ezért a biztonsági gate RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "376ed33e",
+    "gateLine": "QA + RedHat (biztonsági ügynök skill-készlete; a WhiteHat2 nem gate-elheti a saját skilljeit). Repo: marveen, saját worktree, marveen-land.sh.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d7051429",
+    "gateLine": "QA + RedHat (a lelet tőle jött). Repo: marveen, saját worktree.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e20066df",
+    "gateLine": "QA2 + Cybered",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b3ce0a88",
+    "gateLine": "QA2 + Cybersec + Cybered (a d2dd388a delta-gate-en a WhiteHat2 visszalépett, mert a javítás az ő prototípusa; msg 11881).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "64788453",
+    "gateLine": "QA + WhiteHat (adat kifelé megy, jail).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2bf0d884",
+    "gateLine": "QA + Cybersec (a javaslat RedHaté, a biztonsági gate ezért WhiteHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e45945a2",
+    "gateLine": "QA + Cybersec (a javítás irányát RedHat adta, ezért a biztonsági gate WhiteHat/WhiteHat2).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a020247b",
+    "gateLine": "QA + Cybered (új homokozó-kijárat; a javítás irányát a WhiteHat2 NO-GO 19540 adta, ezért a független biztonsági delta-gate a RedHat, MikroB 2026-10-15).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "09117e0a",
+    "gateLine": "QA + Cybersec (a javaslatok WhiteHattől jöttek, ezért a biztonsági gate WhiteHat2 vagy RedHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "76ccc887",
+    "gateLine": "QA + RedHat (a javítást a WhiteHat javasolta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5177720d",
+    "gateLine": "QA + Cybered (a javaslat a WhiteHaté).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c8a6e1da",
+    "gateLine": "QA + Cybered (a javítás irányát most a WhiteHat adta, ezért a biztonsági gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c23ea72f",
+    "gateLine": "QA + Cybersec. (RedHat nem független: a javítás irányát ő adta, c8a6e1da komment 18638.)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "612058c2",
+    "gateLine": "QA + Cybersec + Cybered (kimenő adat külső szolgáltatóhoz, felügyelet nélküli futás).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1aeed1ca",
+    "gateLine": "qa + cybered (a javítást WhiteHat2 javasolta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f6f67dff",
+    "gateLine": "QA + RedHat (a javaslatok WhiteHat2-tol jottek, COI).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "86c1372a",
+    "gateLine": "QA + Cybersec (a javitast a RedHat javasolta, ezert a biztonsagi gate a WhiteHat/WhiteHat2).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4d923262",
+    "gateLine": "QA + Cybersec + Cybered (magas tet: biztonsagi kontroll integritasa, privilegizalt irasi ut).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "651ee11f",
+    "gateLine": "QA + Cybered (a javitast a WhiteHat2 javasolta, ezert a biztonsagi gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "085444e9",
+    "gateLine": "QA + WhiteHat (dxgkrnl-őr, GPU-stabilitás).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0e5bbc65",
+    "gateLine": "QA + Cybered (a leleteket a WhiteHat2 adta, ezért a biztonsági gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e73b17ef",
+    "gateLine": "QA2 + WhiteHat2 (cybersec2) -- token-kezelés, trust-boundary.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5d9eeaf8",
+    "gateLine": "QA + Cybersec (hook-/gate-/email-kapu változások biztonsági érintettséggel).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bbe99069",
+    "gateLine": "QA + Cybersec + Cybered (draft-tartalom kimegy külső szolgáltatásra).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "73b500f9",
+    "gateLine": "QA + Cybered (MikroB risk-tiering, a gép-leállító .exe útvonal miatt).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0c508c7b",
+    "gateLine": "QA + WhiteHat (auth).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "48f9dc8b",
+    "gateLine": "QA + WhiteHat. A watched-repos.json ütközhet a 9710bdfd-vel (DevO), ezért landolás előtt rebase kell.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "49b9e7d0",
+    "gateLine": "QA + Cybersec (4. delta, 064cd5bc: a javitas iranyat a RedHat adta (19740), ezert a WhiteHat gate-el; az elozo iranyt a WhiteHat2 adta, igy o sem fuggetlen).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f3997c0e",
+    "gateLine": "QA + Cybersec (pin-only, nincs új támadási felület).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "784a9325",
+    "gateLine": "QA + Cybersec (WhiteHat; a leletet a RedHat adta, javítás-irányt nem).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "42309353",
+    "gateLine": "QA + Cybersec (a javításon).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0c086979",
+    "gateLine": "QA + Cybersec (WhiteHat2/QA2 a javításon; a javítási irányt a WhiteHat és a RedHat adta, ezért ők nem gate-elhetik COI miatt).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "548a92ee",
+    "gateLine": "QA + RedHat. Pair-FE: n/a (belso infra). Mutans/kezi futas CSAK semlegesitett masolaton.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b11b788e",
+    "gateLine": "QA + WhiteHat (fleet-instrukció cél).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "78f89bc1",
+    "gateLine": "QA + Cybersec (WhiteHat) -- update.sh miatt a frissítés-kódutat érinti, cybersec kötelező (603f917d terv szerint).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1b08cf10",
+    "gateLine": "QA + RedHat (a javítás irányát a WhiteHat adta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "deab5615",
+    "gateLine": "QA + Cybersec (MikroB 2026-10-15: a leletek a RedHat-eie, ezert a biztonsagi gate a WhiteHat, nem a RedHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ccbfece8",
+    "gateLine": "QA + Cybered (MikroB delta-kijelölés @ d8db49ad: qa2, cybered).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "58e8cd74",
+    "gateLine": "QA + RedHat (a leleteket a RedHat adta, a javítás tervét a DevO).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6fa7f860",
+    "gateLine": "QA + Cybersec (WhiteHat; a leletet a WhiteHat adta, javítás-irányt nem).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e4d38c2b",
+    "gateLine": "QA + RedHat (a leleteket a WhiteHat talalta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ed4ffbf7",
+    "gateLine": "QA + RedHat (a leletet a WhiteHat találta, ezért a biztonsági gate RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e4457f3a",
+    "gateLine": "QA + WhiteHat (prompt-sablon, ami helyi modellnek megy, a kimenet draft).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f0b3b674",
+    "gateLine": "QA + WhiteHat + RedHat (külső szolgáltatásnak menő adat).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "19ef0eca",
+    "gateLine": "QA + RedHat (a javitas iranyat WhiteHat2 javasolta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b30ad7e6",
+    "gateLine": "qa, cybersec (a javítás irányát RedHat javasolta, ezért a biztonsági gate WhiteHat)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "dfb1f873",
+    "gateLine": "QA + Cybered (a javitas a WhiteHat F1/F2 lelete, ezert a biztonsagi gate a RedHat; MikroB kijelolese @ 321894a9).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "154cbbd0",
+    "gateLine": "QA, cybered",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a7f206a5",
+    "gateLine": "QA + Cybered (a javítás irányát a WhiteHat adta, ezért a biztonsági gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ed570dc6",
+    "gateLine": "QA + Cybered. (A lelet a WhiteHaté, ezért a biztonsági gate a RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c65add5a",
+    "gateLine": "QA + WhiteHat minden gyereken; RedHat az F3-on és az F8-on (ügynök-promptba injektál).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1a350f22",
+    "gateLine": "QA + WhiteHat + RedHat (ügynök-promptba injektál).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "7c9be2d8",
+    "gateLine": "QA + Cybered. (MikroB kijelölés, rotáció: cybersec a f809b24c-n)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9d8bf673",
+    "gateLine": "QA + RedHat (a javítás a gép-leállító út közelében van; a lelet RedHaté, ezért a biztonsági gate is RedHat marad, mert a javítást nem ő tervezi).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "85a668aa",
+    "gateLine": "QA + RedHat (a lelet WhiteHaté).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c10a38a2",
+    "gateLine": "QA + Cybered (a leletek WhiteHaté).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2d4c7943",
+    "gateLine": "QA + Cybersec (a leletek RedHaté).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "44091907",
+    "gateLine": "QA + Cybersec (a lelet RedHaté).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c188f357",
+    "gateLine": "QA + RedHat + Cybersec. A WhiteHat2 nem gate-el, mert az előd javítást ő tervezte.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9906af70",
+    "gateLine": "QA + RedHat (titok-kezelés; a javítás irányát a WhiteHat2 adta, ezért a biztonsági gate a RedHat, MikroB 21681).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "eeb57483",
+    "gateLine": "QA + RedHat (a feltételeket a WhiteHat adta, a delta-gate az övé is lehet, de a független biztonsági gate RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "debba303",
+    "gateLine": "QA + Cybersec (trust-boundary). A biztonsági gate-et ne az X1 megtalálója (cybersec2) vigye, hanem a cybersec vagy RedHat.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4193b50a",
+    "gateLine": "QA + RedHat (a fix-tervet WhiteHat2 adta).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3b5bf8d6",
+    "gateLine": "QA + RedHat (az építő WhiteHat). Az aktiválás (első kör --alert-dryrun) csak e kártya done-ja után jöhet.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "240ee54d",
+    "gateLine": "QA + RedHat. (A javítás irányát a WhiteHat2 adta, ezért a biztonsági gate a RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "153a2799",
+    "gateLine": "QA + WhiteHat2 (a javítást a RedHat javasolta, ezért a biztonsági gate WhiteHat2).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a071cfbe",
+    "gateLine": "QA + RedHat (RedHat leletei, DevO építette).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "21df3822",
+    "gateLine": "QA + RedHat (a javítás irányát a WhiteHat2 adta, a kódot a cybersec írja).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0deb6893",
+    "gateLine": "QA + WhiteHat (a leletet a RedHat adta).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1e763f16",
+    "gateLine": "QA + RedHat (a javítás irányát a RedHat adta, a biztonsági re-gate WhiteHat vagy WhiteHat2).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2e10de7c",
+    "gateLine": "QA + RedHat + Cybersec.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "1839b327",
+    "gateLine": "QA + RedHat (a lelet WhiteHat2-é, ezért a biztonsági gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "799322f9",
+    "gateLine": "QA + RedHat (a javítás irányát a Cybersec adta, ezért a biztonsági gate a RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "807b84e2",
+    "gateLine": "QA + Cybersec (WhiteHat2, cybersec2). Az eredeti guardot a Cybersec írta, a javítási irányt a RedHat adta, ezért a független biztonsági gate a WhiteHat2.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8eba27e6",
+    "gateLine": "QA + RedHat. A Cybersec nem gate-el, mert ő javasolta a javítást.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "412b2d35",
+    "gateLine": "QA + RedHat. A Cybersec nem gate-el, mert a leleteket ő adta és a transcript-guard az ő kódja.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2a80c6cb",
+    "gateLine": "QA + WhiteHat + RedHat (auth/hitelesítő, internet-facing letöltés).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9529d46e",
+    "gateLine": "QA + RedHat (a tartalmat a WhiteHat határozta meg, ezért a biztonsági szem RedHat vagy WhiteHat2).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "35e1d876",
+    "gateLine": "QA + WhiteHat + RedHat (folyamat-ölés, flotta-szintű hatás).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2ace4db9",
+    "gateLine": "QA + Cybered (a fix-irányt a WhiteHat adta, ezért a biztonsági re-gate RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4e107efe",
+    "gateLine": "QA + WhiteHat (a CLAUDE.md a flotta governance-felülete).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "79d67d31",
+    "gateLine": "QA + WhiteHat (a parkolás-felülírás korábban WhiteHat NO-GO osztály volt, 17673).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a4689243",
+    "gateLine": "QA + WhiteHat (biztonsági kontroll megkerülése).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8d625ccd",
+    "gateLine": "QA + Cybersec. (2026-10-23: a CYBERED NO-GO 22524 javítási irányát a RedHat tervezte, ezért a re-gate biztonsági tagja WhiteHat.)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "63206155",
+    "gateLine": "QA (minimum), WhiteHat ha a klasszifikacios input (local-llm hivas) uj trust-boundaryt nyit.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "fa57aa48",
+    "gateLine": "QA + RedHat (a javítás iránya a WhiteHat leletéből jön).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "49b96b30",
+    "gateLine": "QA + Cybered (a javítási irányt WhiteHat adta, ezért a biztonsági gate RedHat; MikroB 23234).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "de7f9830",
+    "gateLine": "QA + WhiteHat (ellátási lánc).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "46ad2933",
+    "gateLine": "QA + RedHat (a vizsgálatot WhiteHat végzi).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "13b2648e",
+    "gateLine": "QA + Cybersec (MikroB 22646: a RedHat tervezte a 644e8442 javítási irányát, ezért a biztonsági gate WhiteHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f4327e3d",
+    "gateLine": "QA + Cybersec (WhiteHat), env-vezérelt kódvégrehajtás (trust-boundary).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "eb12a5dd",
+    "gateLine": "QA + Cybersec (WhiteHat) + Cybered (RedHat): rendszergazdai jogú driver-telepítés, magas tét.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "61348647",
+    "gateLine": "QA + Cybered (RedHat), per MikroB 24976.",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b89fbac6",
+    "gateLine": "QA + Cybersec (delta-gate 2026-10-24: a hívás-rögzítés irányát és a javító teszteket a RedHat tervezte, 22524/22527/23465, ezért a biztonsági gate a WhiteHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3629e133",
+    "gateLine": "QA + WhiteHat (kis kockázat, belső teszt-infra).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "417e2343",
+    "gateLine": "QA + WhiteHat + RedHat (auth/session/federation, magas tét).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "40b5038f",
+    "gateLine": "QA + Cybered (a javítási irányt a WhiteHat adta a 4a769a34 22988-as kommentjében, ezért a biztonsági gate RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2c54029d",
+    "gateLine": "QA + Cybered (RedHat), a javítás iránya WhiteHat-független.",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9518b377",
+    "gateLine": "QA + WhiteHat + RedHat (sandbox-határ).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "761bf6ec",
+    "gateLine": "QA + RedHat (a backfill tömegesen ír a tudásgráfba).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "363130a0",
+    "gateLine": "QA + Cybersec (a leletek forrása RedHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f4dbfc13",
+    "gateLine": "QA + WhiteHat (a javítás irányát a WhiteHat adta, ezért ha ő tervezi a fixet, a biztonsági gate a RedHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d886e9c2",
+    "gateLine": "QA + Cybersec (a javítás irányát MikroB adta, a RedHat jóváhagyta, ezért a független biztonsági gate a WhiteHat; MikroB 2026-10-24, komment 23754).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "988e18f3",
+    "gateLine": "QA + WhiteHat (a leleteket a RedHat adta).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "445e9515",
+    "gateLine": "QA + RedHat (a recept RedHaté, a javítást nem ő tervezi).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e8a8bf68",
+    "gateLine": "QA + WhiteHat (trust-boundary: izolacios garancia).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "6a371039",
+    "gateLine": "QA + Cybered (RedHat). (A javítás alakját, a támadó n.node.id-s tesztet, a WhiteHat javasolta a 23880 F1-ben, ezért a biztonsági gate a RedHat.)",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "5baf33cb",
+    "gateLine": "QA + WhiteHat + RedHat (sandbox-hatar).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2337e4b0",
+    "gateLine": "QA + Cybersec (MikroB designation 2026-10-25, comment on card: the security-relevant part is a trust-boundary fix, WhiteHat fits; originally QA + RedHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3bf6a01a",
+    "gateLine": "QA2 (nem QA, mert QA a saját definícióját is érinti -- a QA-oldalt QA2, a security-oldalt nem a saját család nézi: a WhiteHat-részt RedHat, a RedHat-részt WhiteHat2 is átolvassa a verdikthez).",
+    "expected": [
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "784e3809",
+    "gateLine": "QA + WhiteHat (külső skill átvétele = ellátási lánc).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d28888cd",
+    "gateLine": "QA + WhiteHat (titok-kezelés).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ba065168",
+    "gateLine": "QA + Cybersec (MikroB 2026-10-25, comment 25038: WhiteHat queue empty, RedHat busy; fix designed by backend3). Original: QA + RedHat.",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "077970fc",
+    "gateLine": "QA + Cybered (RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "bf03aaa1",
+    "gateLine": "QA + WhiteHat (megosztott instrukció-cél, minden ügynököt érint). plan-grilling kötelező dispatch előtt (elemzo).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "9ed32347",
+    "gateLine": "QA + RedHat (WhiteHat proposed the finding).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "43dad36d",
+    "gateLine": "QA + WhiteHat (the fix direction was proposed by RedHat, so RedHat does not gate it).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d2d47a92",
+    "gateLine": "QA + WhiteHat (agent provisioning + supply-chain surface: one bad global skill edit now reaches every agent).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a1eceda6",
+    "gateLine": "QA + RedHat (fix direction proposed by WhiteHat, so WhiteHat does not gate it).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "4f5e43e6",
+    "gateLine": "QA + RedHat (upstream-sync biztonsagi relevanciaja miatt, a 2337e4b0 mintat kovetve).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f532db2a",
+    "gateLine": "QA + WhiteHat (WhiteHat designed the fix direction -> security gate is RedHat if WhiteHat proposes the patch).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "0cd716f3",
+    "gateLine": "QA + Cybersec (WhiteHat). (A javítás alakját a RedHat adta, ezért a biztonsági gate a WhiteHat.)",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "c69a8da2",
+    "gateLine": "QA + WhiteHat (changes the tool surface of every agent).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "d4c89ff1",
+    "gateLine": "QA + Cybersec (fix direction by RedHat, so the security gate is WhiteHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "b768770a",
+    "gateLine": "QA + WhiteHat + RedHat (kifelé menő adat, jail, külső szolgáltató).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "2d7add1c",
+    "gateLine": "QA + WhiteHat (külső függőség, kulcskezelés).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "92b76ff0",
+    "gateLine": "QA + WhiteHat + RedHat (új külső adatkiáramlási út).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "e3ab83e8",
+    "gateLine": "QA + RedHat (secret handling; findings came from WhiteHat2 on b21a7ff7, so the security gate is RedHat, MikroB 25364).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "8f1c9795",
+    "gateLine": "QA + RedHat (the requirements come from WhiteHat 25728, so the security gate is RedHat or WhiteHat2, not WhiteHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3c9c3a10",
+    "gateLine": "QA + RedHat (fix direction came from WhiteHat2, so the security seat is RedHat).",
+    "expected": [
+      "cybered",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a2db9d8f",
+    "gateLine": "QA + Cybersec (fix direction came from RedHat, so the security seat is WhiteHat).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ea7efe12",
+    "gateLine": "QA + WhiteHat + RedHat (when built).",
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3a324707",
+    "gateLine": "QA + Cybersec (supply-chain evaluation of a third-party repo).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "3f2886d8",
+    "gateLine": "QA + Cybersec (touches update.sh / systemd install path).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "50665beb",
+    "gateLine": "QA + Cybersec (routes text to the local model).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "f93fe76a",
+    "gateLine": "QA + Cybersec (shared instruction surface: CLAUDE.md and a global skill).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "ba25db04",
+    "gateLine": "QA + Cybersec (closure control).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  }
+]

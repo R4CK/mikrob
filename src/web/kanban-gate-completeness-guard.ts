@@ -136,8 +136,27 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
   // "cybersec-gate-scan.py" is itself the extension's dot, so truncating the clause first would
   // cut the ".py" suffix off and leave the bare "cybersec-gate-scan" token looking unshaped.
   const stripped = stripFilenameShapedTokens(gateLine)
-  const clauseEnd = /[.(!?]/.exec(stripped)
-  const clause = clauseEnd ? stripped.slice(0, clauseEnd.index) : stripped
+  // REMOVE PARENTHESISED PARTS FIRST, innermost-first until the text stops changing, THEN cut at
+  // sentence-ending punctuation (card ba25db04, found by cybersec on bd5241b7's own gate, comment
+  // 26589) -- ported from gate_designation.py's designated_from_gate_line verbatim, because this
+  // file had drifted from it once already (see the widenCybersec comment above). The OLD single
+  // regex `/[.(!?]/` cut the clause at the FIRST of '.', '(', '!', '?' -- so "QA (vegigkattintva) +
+  // WhiteHat." truncated at the '(' and lost "+ WhiteHat" entirely, designating QA alone and
+  // silently dropping the security gate from the server-side done-guard. A parenthetical is
+  // explanatory context, not the end of the clause; only real sentence-ending punctuation is.
+  // Innermost-first (not a single non-nested-paren regex) so NESTED parentheses cannot leave a
+  // stray closing/opening fragment behind -- the same reasoning gate_designation.py's own comment
+  // gives. Measured against the live board (723-line frozen corpus, store/gate-designation-
+  // corpus.json, built from gate_designation.py as the reference): the old clause-truncation
+  // disagreed with the Python side on 42 of 723 real Gate: lines; this port disagrees on 0.
+  let withoutParens = stripped
+  for (let i = 0; i < 8; i++) {
+    const next = withoutParens.replace(/\([^()]*\)/g, '')
+    if (next === withoutParens) break
+    withoutParens = next
+  }
+  const clauseEnd = /[.!?]/.exec(withoutParens)
+  const clause = clauseEnd ? withoutParens.slice(0, clauseEnd.index) : withoutParens
   const low = clause.toLowerCase()
   const names = new Set<GateAgent>()
   if (/\bqa2\b/.test(low)) names.add('qa2')
