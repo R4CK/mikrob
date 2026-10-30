@@ -16,14 +16,22 @@ strings -- tag-exact-match is the right tool there, stem-matching free text is t
 title/description; offload-dispatch.sh makes the same split for the same reason).
 
 This is deliberately proportionate: it reuses SENS_RE's stem coverage rather than inventing a
-weaker new one, but does not port offload-dispatch.sh's homoglyph table -- that hardening defends a
-materially different, larger threat surface (routing untrusted-looking content to a local, less-
-trusted model); here the threat is a caller's plain-text mismatch against its own declared "safe".
+weaker new one, and does not port offload-dispatch.sh's homoglyph TABLE (mapping specific known
+homoglyphs back to their ASCII letter) -- that hardening defends a materially different, larger
+threat surface (routing untrusted-looking content to a local, less-trusted model); here the threat
+is a caller's plain-text mismatch against its own declared "safe". It DOES, however, carry
+offload-dispatch.sh's fail-closed GUARANTEE (CYBERED NO-GO 25494, card c5f2d6c9): norm()'s final
+.encode("ascii", "ignore") silently DROPS any letter it cannot map, so an unmapped non-ASCII
+letter (Greek omicron in "mopsion", Cyrillic in "token:", ...) vanished instead of blocking --
+the stem/label checks below never saw it. has_unmapped_letter() runs on the RAW text before norm()
+erases the evidence, and fails closed (exit 2, "cannot verify") the same way an invalid-JSON card
+already does.
 
 Prints the first matched category name (security|auth|finance|mopsion) on stdout, or nothing if
 clean. Exit 0 = parsed fine (stdout is authoritative; empty stdout = no signal found). Exit 2 = the
-input was not valid card JSON (unreadable/empty/malformed) -- the caller MUST treat this as "cannot
-verify" and fail closed, not as "no signal found".
+input was not valid card JSON (unreadable/empty/malformed), or the title/description carries an
+unmapped non-ASCII letter -- the caller MUST treat this as "cannot verify" and fail closed, not as
+"no signal found".
 """
 import json
 import re
@@ -64,6 +72,17 @@ def norm(s: str) -> str:
     return stripped.casefold().encode("ascii", "ignore").decode()
 
 
+# CYBERED NO-GO 25494 (card c5f2d6c9), mirrors offload-dispatch.sh's has_unmapped_letter() fix
+# (card e87e7520): after NFKD decomposition, an accented Hungarian letter decomposes into a plain
+# ASCII base letter + a COMBINING MARK (category Mn), so ordinary Hungarian text is unaffected.
+# A homoglyph/foreign-script letter (Greek, Cyrillic, Armenian, ...) has no such decomposition and
+# survives as a non-ASCII character of category L* (Lu/Ll/Lo/...) -- that is the fail-closed
+# signal norm()'s later .encode("ascii", "ignore") would otherwise silently erase.
+def has_unmapped_letter(s: str) -> bool:
+    decomposed = unicodedata.normalize("NFKD", s)
+    return any(ord(ch) > 127 and unicodedata.category(ch).startswith("L") for ch in decomposed)
+
+
 def label_tokens_of(text: str):
     return [t for t in re.split(r"[^a-z0-9]+", norm(text)) if t]
 
@@ -92,8 +111,14 @@ def main() -> int:
         if not isinstance(title_raw, str) or not title_raw.strip():
             return 2
 
+    desc_raw = card.get("description")
+    # Must run on the RAW text, before norm() silently ascii-drops the evidence (see
+    # has_unmapped_letter() docstring / CYBERED NO-GO 25494).
+    if has_unmapped_letter(str(title_raw or "")) or has_unmapped_letter(str(desc_raw or "")):
+        return 2  # cannot verify -- fail closed (unmapped homoglyph/script letter)
+
     title_n = norm(str(title_raw or ""))
-    desc_n = norm(str(card.get("description") or ""))
+    desc_n = norm(str(desc_raw or ""))
     for rx, cat in STEM_CATEGORY:
         if rx.search(title_n) or rx.search(desc_n):
             print(cat)

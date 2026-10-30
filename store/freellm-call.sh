@@ -163,6 +163,19 @@ def _fold(s):
         and not _is_default_ignorable(ch)
     )
 
+# CYBERED NO-GO (comment 25494, Gate-SHA 39284c8a): _fold() above was ported from
+# gemini-offload-call.sh without its matching fail-closed backstop -- a homoglyph letter
+# outside the 12-entry map (e.g. Greek omicron) survives folding untouched, defeating the
+# keyword-based SECRET_PATTERNS/PII_PATTERNS alternations below while reaching the provider
+# verbatim. Mirrors _has_unmapped_letter() in gemini-offload-call.sh: fail closed on any
+# non-ASCII letter the table does not map away.
+def _has_unmapped_letter(s):
+    decomposed = unicodedata.normalize("NFKD", s.translate(_HOMOGLYPH_MAP))
+    return any(ord(ch) > 127 and unicodedata.category(ch).startswith("L") for ch in decomposed)
+
+if _has_unmapped_letter(text):
+    sys.exit(1)
+
 scan_text = _fold(text)
 
 SECRET_PATTERNS = [
