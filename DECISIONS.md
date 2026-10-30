@@ -22401,3 +22401,15 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** backend3 (merge-konfliktus feloldás és landolás).
 
 **Hivatkozás:** kártya 0ef630d7 (szülő e5c46e87), merge-commit `57aa711a5`, root-cause fix `81117ef62`, drift-rögzítés `07da2f094`, Gate-SHA `4af08cd81ec5fccc25d3712892775c8b91a08253`.
+
+## 2026-10-30: 1a350f22 -- MT F3 (MT-07/MT-08) framing location + anti-inflation gate + shared dispatch-helper (MikroB decision 26148)
+
+**Döntés:** a `Megoldás-tár:` prompt-keretezés/escape-elés a KONZUMENS oldalán él (`store/kg-for-card-block.sh` + `kg-for-card-block-render.py`), nem a `/api/kg/for-card` szerver-végponton -- a szerver nyers JSON-t ad, mert a `sanitizeKgText` csak storage-időben, titok/control-char ellen fut, nem prompt-keret-escapelés. Egyetlen megosztott helper script-et építettünk a self-advance (`self-advance-pickup.sh`) ÉS MikroB kézi dispatch-ei számára is, nem két külön implementációt. A `kg_usage` 'offered' sorokat a for-card route írja MINDEN kiszolgált csomópontra (nem csak `KG_INJECT_ENABLED=on` mellett), a visszajelzés (`Megoldás-tár:` REVIEW-sor parszolása, `src/web/routes/kanban.ts`) anti-inflation-kapuval zár: csak olyan (kártya, csomópont) párra ír used/not_relevant/harmful sort, amihez MÁR létezik 'offered' sor.
+
+**Miért:** (1) a keretezés konzumens-oldali elhelyezése azért indokolt, mert két konzumens van (self-advance + manuális dispatch), és a szerver maga nem tudja, melyik keretbe (prompt vs. dashboard-megjelenítés) kerül a válasz -- egy implementáció, egyszer tesztelve (EK-MT-9), nem kettő. (2) Az anti-inflation kapu nélkül egy REVIEW-komment tetszőleges csomópont-azonosítóra tudna felhasználási/ártalmas jelzést írni, amit a kártyához sosem ajánlottak fel -- ez meghamisítaná az MT-12 mérést. (3) Egy megosztott helper script azért jobb két külön implementációnál, mint egy harmadik dispatch-message-builder megépítése helyett egy skill-konvenció (ami csak prózában élne) -- a parancs legalább copy-paste-elhető, nem csak leírt szabály.
+
+**Mit ellenőriztem:** `src/__tests__/kg-usage.test.ts` (17 teszt, mutáció-ellenőrzött: az anti-inflation kapu kikapcsolása 3 tesztet piros-ra visz). `store/kg-for-card-block.selftest.sh` (4 ellenőrzés: KG_INJECT_ENABLED unset/off -> nulla hálózati hívás; flag on -> keretezett blokk; EK-MT-9 mutáció -- az escape-logika kivétele piros-ra viszi a lookalike-marker tesztet). `npx tsc --noEmit` tiszta. A kapcsolódó meglévő tesztek (kg-for-card, kg-search-route, kg-schema, kanban-comment-*) mind zöldek maradtak.
+
+**Ki döntött:** MikroB (A/B/C döntés, komment 26148, a backend3 terve -- komment 26143 -- alapján) + backend3 (implementáció).
+
+**Hivatkozás:** kártya 1a350f22 (szülő c65add5a), komment 26143 (terv), 26148 (MikroB döntés), `src/kg/usage.ts`, `store/kg-for-card-block.sh`.
