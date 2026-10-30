@@ -22551,3 +22551,15 @@ QA2 FAIL (26706) jogosan jelezte, hogy a kártya saját "Kész, ha:" 4. pontja (
 **Who decided:** DevO (fullstack) -- investigation + implementation; Peti's original Telegram 9836 report and MikroB's card description set the requirements.
 
 **Reference:** card 64f56f97, `store/route-check-audit.sh`, `store/route-check-audit.selftest.sh`, `src/web/routes/local-llm.ts` (`readRouteCoverage`), `web/app-local-llm.js`, `web/lang/hu.js`+`en.js`.
+
+## 2026-10-30: 3c9c3a10 -- freellm google_ai_studio mapped to upstream "google", 4 WhiteHat2 LOWs closed
+
+**Döntés:** a freellm key-surface backend (card 08d1aa90) FE-provider ID `google_ai_studio` mostantól egy explicit map-en keresztül fordítódik a valós freellmapi platform enum `google` értékére a POST/GET/DELETE útvonalakon (`src/web/routes/freellm-keys.ts`, `PROVIDER_TO_UPSTREAM_PLATFORM`) -- korábban a route a `google_ai_studio` stringet küldte közvetlenül az upstreamnek, ami 400-at adott, tehát a Google sor sosem volt menthető a dashboardról (WhiteHat2 delta GO 25837 finding 1, Gate-SHA bdba0423).
+
+Négy LOW ugyanezen a kártyán zárva: (1) a POST sorrendje megfordult (előbb add, utána törli a régi sor(oka)t, nem fordítva) -- egy sikertelen add többé nem veszi el a korábban működő kulcsot; (2) egy per-provider in-process async lock (`withProviderLock`) sorosítja az egyazon providerre menő konkurens POST/DELETE hívásokat -- a korábbi unconditional-INSERT race miatt 2 konkurens POST 2 sort hagyott; (3) a `freellmapi-client.ts` mindkét fetch hívása (`login`, az autentikált kérés) `redirect:'error'`-t ad, egy redirect a hitelesítő adatot/kulcsot máshova küldhette volna; (4) a login-sikertelenség backoff 60s->240s, hogy a freellmapi 5-bad-login/15-min lockoutja alatt maradjunk (mérve: 60s-cal 6 bad login fért 15 percbe, 240s-cal legfeljebb 4).
+
+**Mit ellenőriztem:** élő probe a futó freellmapi ellen (127.0.0.1:3001), valódi route handler, eldobható dummy kulccsal: POST google_ai_studio -> 201, GET -> listázza, DELETE -> töröl, végső GET -> 0 sor. Minden javítást egyenként mutáció-teszteltem (a javítás visszavonása pirosra fordítja a hozzá tartozó pin-tesztet, visszaállítás zöldre).
+
+**Ki döntött:** WhiteHat2 (delta GO 25837, a hibák azonosítása + a LOW-1 javítási irány javaslata), MikroB (dispatch, msg 15838), backend (végrehajtás).
+
+**Hivatkozás:** kártya 3c9c3a10, Gate-SHA 66effef3acfe34bc203ca1567233a8402e687163, commit 03e6b743c, `src/web/routes/freellm-keys.ts`, `src/web/freellmapi-client.ts`.
