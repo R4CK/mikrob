@@ -170,6 +170,53 @@ describe('parseGateDesignation (ported from gate-dispatch-check.sh, same fixture
   it('bd5241b7: a path reference ("scripts/cybersec/x.sh") is excluded the same way a bare filename is', () => {
     expect(parseGateDesignation('lasd scripts/cybersec/x.sh')).toBeNull()
   })
+
+  // CYBERSEC NO-GO 26331 on the bd5241b7 fix above: the first version's "contains '/'" check took
+  // "QA/Cybersec" as ONE token and blanked BOTH names, a done-guard fail-open (null designation ==
+  // allowUnverified, no verdict required at all). A slash-joined list with NO file extension at
+  // the end must keep designating every name it names.
+  it('bd5241b7 NO-GO 26331: "QA/Cybersec" designates both, not neither', () => {
+    expect(parseGateDesignation('QA/Cybersec')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  it('bd5241b7 NO-GO 26331: "WhiteHat/RedHat" designates both display-name aliases', () => {
+    expect(parseGateDesignation('WhiteHat/RedHat')).toEqual(new Set(['cybersec', 'cybersec2', 'cybered']))
+  })
+
+  it('bd5241b7 NO-GO 26331: "qa/cybersec/cybered" (three slash-joined names) designates all three', () => {
+    expect(parseGateDesignation('qa/cybersec/cybered')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']))
+  })
+
+  it('bd5241b7 NO-GO 26331: "QA + Cybersec/RedHat" does not drop the slash-joined pair', () => {
+    expect(parseGateDesignation('QA + Cybersec/RedHat')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']))
+  })
+
+  it('bd5241b7 NO-GO 26331: "QA + x/Cybersec" (path-shaped but no extension) still designates Cybersec', () => {
+    expect(parseGateDesignation('QA + x/Cybersec')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  // The first version's generic \.[a-z]{1,4}$/i shape matched ordinary short English words after a
+  // period as if they were file extensions, and had no requirement that the token look path-like
+  // (a hyphen or a slash) before stripping it -- a bare "Cybersec.Then" is prose punctuation, not a
+  // filename, and must keep designating Cybersec.
+  it('bd5241b7 NO-GO 26331: "Cybersec.Then more text" is prose punctuation, not a filename', () => {
+    expect(parseGateDesignation('QA + Cybersec.Then more text')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  it('bd5241b7 NO-GO 26331: "Cybersec.Next" is prose punctuation, not a filename', () => {
+    expect(parseGateDesignation('QA, Cybersec.Next')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  // A bare word plus a REAL extension, but with NO hyphen and NO slash, is still not a path
+  // reference on its own (the genuine false positive, cybersec-gate-scan.py, is a HYPHENATED
+  // compound) -- it must keep designating.
+  it('bd5241b7 NO-GO 26331: "Cybersec.py" (bare word + known extension, no separator) still designates', () => {
+    expect(parseGateDesignation('QA + Cybersec.py')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  it('bd5241b7 NO-GO 26331: "Cybersec.md" (bare word + known extension, no separator) still designates', () => {
+    expect(parseGateDesignation('QA + Cybersec.md')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
 })
 
 describe('gateCompletenessGuardVerdict', () => {
