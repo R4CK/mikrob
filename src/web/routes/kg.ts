@@ -20,9 +20,8 @@ const MAX_Q_LEN = 2000
 const MAX_LIST_PARAMS = 32
 
 /** Clamps a caller-supplied `k` to the KG_TOPK registry's own [min,max] -- same bound the
- *  default already respects, now also enforced on an explicit value. Exported test-only (same
- *  pattern as resetKgRouteDbSingletonForTest below) so the clamp itself can be asserted directly,
- *  not just inferred from a 200 that didn't crash. */
+ *  default already respects, now also enforced on an explicit value. Exported test-only so the
+ *  clamp itself can be asserted directly, not just inferred from a 200 that didn't crash. */
 export function resolveK(kRaw: string | null): number {
   const fallback = numberSetting('KG_TOPK', 3)
   if (kRaw === null) return fallback
@@ -61,14 +60,6 @@ let kgDbSingleton: ReturnType<typeof openKgDb> | null = null
 function kgDb(): ReturnType<typeof openKgDb> {
   if (!kgDbSingleton) kgDbSingleton = openKgDb(kgDbPath())
   return kgDbSingleton
-}
-
-/** Test-only: drop the cached handle so a test can point a fresh one at a disposable file. */
-export function resetKgRouteDbSingletonForTest(): void {
-  if (kgDbSingleton) {
-    kgDbSingleton.close()
-    kgDbSingleton = null
-  }
 }
 
 export async function tryHandleKg(ctx: RouteContext): Promise<boolean> {
