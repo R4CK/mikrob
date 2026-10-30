@@ -31,6 +31,8 @@ import {
 } from '../../db.js'
 import { isForceActor, forceActors } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { parseMegoldasTarLines, recordKgUsageFeedback } from '../../kg/usage.js'
+import { openKgDb, kgDbPath } from '../../kg/store.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
@@ -1820,6 +1822,30 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // automated (card 5aaf7209 item 5 / 16e60d3c item 5): a bulk/machine writer's self-reported
     // flag, so a stuck-card detector does not read its own comment as human work-trace.
     const comment = addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent, automated === true)
+    // MT-08 (card 1a350f22, MikroB decision 26148): parse `Megoldás-tár:` feedback lines out of
+    // the just-created comment and record used/not_relevant/harmful against kg_usage,
+    // anti-inflation-gated by recordKgUsageFeedback (a node needs an 'offered' row for THIS
+    // card already, see kg/usage.ts and the for-card route). Fail-open: a KG-side failure here
+    // must never break comment creation, same posture as measureAgentIdentityClaim above.
+    try {
+      const megoldasTarLines = parseMegoldasTarLines(normalizedContent)
+      if (megoldasTarLines.length > 0) {
+        const kgAgent = normalizeCommentAuthor(author)
+        const kgConn = openKgDb(kgDbPath())
+        for (const { nodeId, event } of megoldasTarLines) {
+          const recorded = recordKgUsageFeedback(kgConn, cardId, nodeId, kgAgent, event)
+          if (recorded && event === 'harmful') {
+            createAgentMessage(
+              'kg-usage',
+              'mikrob',
+              `[KG-HARMFUL] ${kgAgent} "artalmas"-nak jelolte a ${nodeId} megoldas-tar csomopontot a ${cardId} kartya REVIEW-jaban (comment ${comment.id}). MODULTERV 11. szakasz: archivalas csak MikroB vagy Peti megerositesevel.`,
+            )
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'kg-usage: Megoldas-tar feedback parse/write failed, comment still created')
+    }
     json(res, { ...comment, ...archivedNote(card) })
     return true
   }
