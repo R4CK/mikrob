@@ -51,14 +51,10 @@ TOKEN="$(cat "$TOKEN_FILE")"
 # reassignment and leak the real token into the curl/mktemp children spawned below.
 declare +x TOKEN
 
-# SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): 0600 temp
-# header file instead of a curl argv (/proc/<pid>/cmdline is world-readable).
-HDR_FILE="$(mktemp)"; chmod 600 "$HDR_FILE"
-trap 'rm -f "$HDR_FILE"' EXIT
-printf 'Authorization: Bearer %s\n' "$TOKEN" > "$HDR_FILE"
+. "$(dirname "$0")/lib/curl-tok.sh"
 
 # Fetch agents (name + running) from the dashboard.
-agents_json="$(curl -s --max-time 10 -H @"$HDR_FILE" "$DASH/api/agents" 2>/dev/null)"
+agents_json="$(curl_tok "$TOKEN" -s --max-time 10 "$DASH/api/agents" 2>/dev/null)"
 [[ -z "$agents_json" ]] && { log "could not reach $DASH/api/agents"; exit 1; }
 
 # Emit "name running" lines. running is true/false.
@@ -92,7 +88,7 @@ start_one() {
   fi
   local body='{}'; (( FRESH )) && body='{"fresh":true}'
   local ok
-  ok="$(curl -s --max-time 30 -X POST -H @"$HDR_FILE" -H "Content-Type: application/json" \
+  ok="$(curl_tok "$TOKEN" -s --max-time 30 -X POST -H "Content-Type: application/json" \
         -d "$body" "$DASH/api/agents/$name/start" 2>/dev/null)"
   if printf '%s' "$ok" | grep -q '"ok":true'; then
     log "started: $name"; return 0

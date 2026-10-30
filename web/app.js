@@ -325,11 +325,11 @@
 //  loadKanban() is called from switchPage and startKanbanRefresh() in app.js.
 //  app-kanban.js is loaded AFTER this file in index.html.)
 //
-// Upstream batch 8 (94765127) re-introduces the full, un-modularised kanban section inline here
-// (thousands of lines) -- not adopted structurally: this fork's app-kanban.js module split
-// (slice 30) stands. Any genuinely NEW upstream kanban-UI behaviour from that block is a separate,
-// frontend-owned review (not attempted line-by-line in this backend merge card) -- flagged to
-// MikroB/Fron Ted rather than guessed at.
+// Upstream batch 8 (94765127) and batch 21 (24ba58622) both re-introduce the full,
+// un-modularised kanban section inline here (thousands of lines) -- not adopted structurally:
+// this fork's app-kanban.js module split (slice 30) stands. Any genuinely NEW upstream
+// kanban-UI behaviour from that block is a separate, frontend-owned review (not attempted
+// line-by-line in this backend merge card) -- flagged to MikroB/Fron Ted rather than guessed at.
 /* STUB -- content removed */
 
 // ============================================================

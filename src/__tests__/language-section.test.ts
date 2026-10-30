@@ -79,20 +79,15 @@ describe('language section: what it says', () => {
   })
 
   // N3 (card d4c89ff1): function replacer prevents String.replace special-pattern injection.
-  // If `existing.replace(RE, block)` used a string replacer, a block containing `$&` / `$'` / `$\``
-  // would expand to the matched text / suffix / prefix, duplicating content.
-  it('ensureLanguageSection does not duplicate content when block contains $& (function-replacer guard)', () => {
-    // We cannot inject a $& into USER_LANGUAGE via the mock (config is already imported),
-    // so we test the underlying replace directly by exercising the idempotent-replace path.
-    // The test verifies the existing block is replaced once, not expanded.
-    setup('agent-inject', `# X\n\n${BEGIN}\n$& $' \`old\`\n${END}\n\ntail\n`)
-    ensureLanguageSection('agent-inject')
-    const out = read('agent-inject')
-    // After replacement the old block (containing $&) must be gone and no duplication of 'tail'
-    expect(out).not.toContain('$&')
-    expect(out.split('tail').length - 1).toBe(1) // 'tail' appears exactly once
-    expect(out.split(BEGIN).length - 1).toBe(1)
-  })
+  // QA2 FAIL (comment 25659) on the first version of this test: JS String.replace only
+  // interprets $&/$'/$` on the REPLACEMENT side, never the matched/searched text -- a $& planted
+  // in the pre-existing file content (the match side, as the old test here did) is inert and the
+  // test was 11/11 green even with the vulnerable string replacer restored. The real regression
+  // coverage (replacement-side injection via a hostile USER_LANGUAGE value) lives in
+  // language-section-replacer-injection.test.ts, in its own file because this file's USER_LANGUAGE
+  // mock is fixed at module scope (vi.mock is hoisted) and the injection test needs a different,
+  // hostile value -- vi.resetModules()-ing just for one test here would invalidate every other
+  // test's already-imported module instance.
 })
 
 describe('language section: idempotent insert and update', () => {

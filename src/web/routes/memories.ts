@@ -388,6 +388,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
 
     let results: Memory[]
+    // Per-row provenance for the keyword branches:
+    // 'strict' (the AND pass), 'relaxed' (the OR pass), 'substring' (the LIKE
+    // fallback). Hybrid rows carry their own match_kind from hybridSearch.
+    let keywordMatchKind: 'strict' | 'relaxed' | 'substring' | undefined
     // GH #1025: a hybrid answer built entirely by the vector branch looks the
     // same as one with lexical support. The trace rides the response so the
     // caller can tell them apart.
@@ -407,10 +411,12 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory, selfAuthenticatedOnly)
     } else if (q && agentId) {
       results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory)
+      keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
         // Same content-shape exclusion as searchAgentMemories itself (card 3bcc1242 part 1) --
         // this is its own fallback for the identical agent-scoped search, not a different
         // feature, so it must not reopen the gap the primary query just closed.
+        keywordMatchKind = 'substring'
         // Substring fallback. It is NOT a second relaxation: LIKE %q% still
         // requires the query to appear literally, so a query that matches
         // nothing still returns nothing.
@@ -436,8 +442,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
             ).all(agentId, `%${q}%`, `%${q}%`, ...shapeFilter.params, limit)) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory)
+      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory, searchTrace)
+      keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
+        keywordMatchKind = 'substring'
         const db2 = getDb()
         results = (searchCategory
           // MEMKWSEARCH1018: keywords joins the fallback here, as it already
@@ -485,21 +493,22 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       return {
         ...m,
         content,
+        ...(keywordMatchKind ? { match_kind: keywordMatchKind } : {}),
         embedding: undefined,
         created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
         accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       }
     })
-    // MERGE UNION (B-wave, card 42938a74): the fork's progressive-retrieval map above
-    // (card 0c5423fc) is kept -- upstream's side of this hunk rebuilds the same map
-    // WITHOUT the truncation -- and upstream's trace header is appended after it.
     // The body of this endpoint is a bare array and several callers index into
     // it, so the trace rides a header rather than changing the shape.
     if (q && mode === 'hybrid') {
       res.setHeader(
         'X-Memory-Search',
         `fts=${hybridTrace.ftsHits}; vector=${hybridTrace.vectorHits};` +
-          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly}`,
+          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly};` +
+          // Appended, not inserted: a caller matching the earlier fields keeps
+          // working. Vector-only rows dropped below the similarity floor.
+          ` vector-dropped=${hybridTrace.vectorDropped ?? 0}`,
       )
     } else if (q) {
       // The label the endpoint owed its callers. `relaxed=true` means no row

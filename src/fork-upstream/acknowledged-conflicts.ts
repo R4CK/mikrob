@@ -3123,6 +3123,19 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "imports SECRET_PATTERNS/DENIED_PATH_PATTERNS from src/security/secret-gate.ts, both already " +
     "exported there with matching shapes; smoke-tested against a secret-bearing and a clean diff " +
     "(src/__tests__/pre-pr-review-scan.test.ts, 5 cases, CLI-level).",
+
+  // Koteg 21 (card 0ef630d7, backend3, upstream 08bfe387..24ba58622 #2041): upstream added a
+  // shared scripts/lib/curl-tok.sh (curl_tok()), replacing the fork's own per-script 0600 temp
+  // header-file pattern (mktemp+chmod+trap+printf before every curl call) with one function doing
+  // the same thing (stdin-piped curl -K config, token never in argv/ps). Same security property,
+  // less duplication -- adopted wholesale in both call sites.
+  'scripts/agent-inbox.sh':
+    'ADOPT curl_tok() (scripts/lib/curl-tok.sh) in place of the fork\'s manual mktemp/chmod/trap ' +
+    'header-file block -- same stdin-piped-token property, no fork-specific logic lost.',
+  'scripts/fleet-safe-start.sh':
+    'ADOPT curl_tok() (scripts/lib/curl-tok.sh) at both call sites (agents list fetch, agent start ' +
+    'POST), dropping the now-dead HDR_FILE mktemp/chmod/trap block -- same stdin-piped-token ' +
+    'property, no fork-specific logic lost.',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -3514,6 +3527,8 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/routes/connectors.ts': '02df0b232a6469f4851925499f6785411514a408',
   'scripts/hooks/email-approval-gate.py': '655ab24bc6da3da1d095b0de879b5dcbd1df6af9',
   'src/web/channel-poller-reap.ts': '03452582d4a0bcd9fd93b7e42dd684d26d5ea916',
+  'scripts/agent-inbox.sh': '256ae53dad78baad27f3dc341743b52bc89db4e1',
+  'scripts/fleet-safe-start.sh': 'd24aff1b93ea2f773f9bff4c86099e37f92eb56a',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
