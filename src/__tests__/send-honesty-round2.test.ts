@@ -31,7 +31,18 @@ function stageTree(scriptNames: string[]): { bin: string } {
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),
-    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then\n  echo "curl: (6) Could not resolve host for https://api.telegram.org/bot${CURL_STUB_TOKEN:-}/x" >&2\n  exit "${CURL_STUB_EXIT}"\nfi\nprintf \'%s\' "${CURL_STUB_BODY:-{\\"ok\\":true}}"\n')
+    // card 0b7375ab: real curl reads its `-K -` stdin (the url= config line) before making
+    // the request. This stub did not -- it could exit (success OR CURL_STUB_EXIT failure)
+    // before telegram_api_call's `printf ... | curl -K - ...` finished writing, closing the
+    // pipe's read end early and killing printf with SIGPIPE. Under CPU scheduling pressure
+    // (measured: fleet-wide parallel landings) that race wins often enough to be observed --
+    // `set -o pipefail` then reports printf's SIGPIPE exit (141) as the pipeline's status, so
+    // a send that actually succeeded (stub printed ok:true) was logged as a transport failure
+    // and the cooldown stamp was never written, even though the script's own verdict (exit
+    // 10) was unaffected. `cat >/dev/null` drains stdin exactly like real curl would, so the
+    // writer always completes before this stub acts. Repro: 10/50 runs red under 14-way CPU
+    // stress before this line; 0/50 after (both against unstaged vs this fix).\n' +
+    '#!/bin/bash\ncat >/dev/null\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then\n  echo "curl: (6) Could not resolve host for https://api.telegram.org/bot${CURL_STUB_TOKEN:-}/x" >&2\n  exit "${CURL_STUB_EXIT}"\nfi\nprintf \'%s\' "${CURL_STUB_BODY:-{\\"ok\\":true}}"\n')
   writeFileSync(join(bin, 'sleep'), '#!/bin/bash\nexit 0\n') // set-bot-menu sleeps 15s; irrelevant here
   writeFileSync(join(bin, 'tmux'), '#!/bin/bash\necho "$@" >> "${TMUX_ARGV_LOG:-/dev/null}"\nexit 0\n')
   for (const b of ['curl', 'sleep', 'tmux']) chmodSync(join(bin, b), 0o755)

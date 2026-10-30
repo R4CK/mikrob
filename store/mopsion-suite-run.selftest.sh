@@ -1140,5 +1140,37 @@ else
   bad "M2: a casefold-variant project spelling should not have been refused" "rc=$rc out=$out"
 fi
 
+# --- _token_file resolves to its OWN repo's token file, not the caller's cwd (card 56b14f14
+# round 2, qa2 comment 26511) -------------------------------------------------------------------
+# `--path-format=absolute` is already in place at the git-common-dir call, but gate-worktree-
+# pattern/fleet-test.sh always run this script from inside a LINKED WORKTREE, where
+# --git-common-dir is already absolute with or without that flag (a worktree's .git is a FILE
+# pointing at an absolute gitdir) -- so running this selftest from the worktree alone cannot tell
+# the fix apart from the pre-fix line. Build a REAL (non-worktree) repo via `git init`, with $HERE
+# pointed at a directory WITHOUT a local .dashboard-token beside it (so the fallback branch, the
+# one this card's fix touches, actually runs instead of taking the short-circuit at line ~249),
+# and call from an UNRELATED repo's cwd so a caller-cwd dependency cannot coincidentally resolve
+# right anyway. _token_file is pure (no side effects beyond the lookup), so it is sourced directly
+# out of the live script rather than duplicated here.
+token_file_cwd_pin="$(
+  MAIN_REPO="$(mktemp -d)"; MAIN_REPO="$(cd "$MAIN_REPO" && pwd -P)"
+  CALLER_REPO="$(mktemp -d)"
+  trap 'rm -rf "$MAIN_REPO" "$CALLER_REPO"' EXIT
+  git init -q "$MAIN_REPO"
+  mkdir -p "$MAIN_REPO/other-dir" "$MAIN_REPO/store"
+  printf 'main-repo-token' > "$MAIN_REPO/store/.dashboard-token"
+  git init -q "$CALLER_REPO"
+  cd "$CALLER_REPO" || exit 1
+  HERE="$MAIN_REPO/other-dir"
+  source <(sed -n '/^_token_file() {/,/^}/p' "$RUN")
+  tf="$(_token_file)"
+  [ "$tf" = "$MAIN_REPO/store/.dashboard-token" ] && echo "OK" || echo "BROKEN:$tf"
+)"
+if [[ "$token_file_cwd_pin" == "OK" ]]; then
+  ok "_token_file resolves to its own repo's token file from a real (non-worktree) checkout, called from an unrelated repo's cwd"
+else
+  bad "_token_file resolves to its own repo's token file from a real (non-worktree) checkout, called from an unrelated repo's cwd" "$token_file_cwd_pin"
+fi
+
 echo "mopsion-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

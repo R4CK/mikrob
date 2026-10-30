@@ -1012,21 +1012,26 @@ $ltags" 2>/dev/null | head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD")"
   # network/model call, so this costs nothing extra for the common (non-vetoed) case.
   #
   # SECURITY-REASONS ONLY (Peti 12838, "Tiltas", narrowing the above after CYBERSEC GO 26252 F2):
-  # the veto fires ONLY when the router's ONLINE reason is one of the security paths below -- NOT
-  # on the bare "ONLINE" token. Every other ONLINE reason (deterministic-multi-decision,
-  # model-complex, route-classify-abstained, model-unknown/busy, and the ambient/transient ones:
-  # vram-hold, not-installed, local-first-draft-off, kill-switch, ...) must NOT veto a fragment and
-  # must NOT write the persistent categorical-online/exhausted mark -- those keep the ORIGINAL
-  # 501c489f behaviour (fragments still get their own local attempt on their own text), because the
-  # veto exists to stop a SECURITY signal from being hidden by truncation, not to broaden every
-  # online-for-any-reason parent into a blanket fragment lockout (that reversed a working feature
-  # for ambient/transient reasons, which rule 5 forbids without Peti's say).
+  # the veto fires ONLY on a security signal (route-classify-security, deterministic-money,
+  # deterministic-auth-tenant-scope, deterministic-sec-label) -- NOT on the bare "ONLINE" token.
+  # Every other ONLINE reason (deterministic-multi-decision, model-complex, route-classify-abstained,
+  # model-unknown/busy, and the ambient/transient ones: vram-hold, not-installed,
+  # local-first-draft-off, kill-switch, ...) must NOT veto a fragment and must NOT write the
+  # persistent categorical-online/exhausted mark -- those keep the ORIGINAL 501c489f behaviour
+  # (fragments still get their own local attempt on their own text), because the veto exists to stop
+  # a SECURITY signal from being hidden by truncation, not to broaden every online-for-any-reason
+  # parent into a blanket fragment lockout (that reversed a working feature for ambient/transient
+  # reasons, which rule 5 forbids without Peti's say).
+  #
+  # ROUND 2 (MikroB 26567, after CYBERSEC GO 26557 F1): round 1 asked the router's bare FIRST-MATCH
+  # reason, which an earlier, non-security stage (deterministic-multi-decision fires before the
+  # security gates) could mask -- a [SEC]/authz parent that ALSO said "migration"/"architecture"
+  # reported the earlier reason and was never vetoed, contrary to Peti 12838. card-build-route.sh's
+  # --security-signal mode asks the security question directly and independently of stage order; the
+  # main route call (the LOCAL/ONLINE verdict itself) is untouched.
   local parent_veto_online="false"
-  local route_out route_reason
-  route_out="$(CARD_BUILD_ROUTE_SHOW_REASON=1 bash "$HERE/card-build-route.sh" --text "$ltitle
-$ldesc" 2>/dev/null)"
-  read -r _ route_reason <<< "$route_out"
-  if [[ "$route_out" == ONLINE* ]] && printf '%s' "$route_reason" | grep -Eq '^(route-classify-security|deterministic-money|deterministic-auth-tenant-scope|deterministic-sec-label)$'; then
+  if [[ "$(bash "$HERE/card-build-route.sh" --security-signal "$ltitle
+$ldesc" 2>/dev/null)" == "yes" ]]; then
     parent_veto_online="true"
   fi
 

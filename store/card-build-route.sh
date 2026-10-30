@@ -41,6 +41,16 @@ TIMEOUT="${CARD_BUILD_ROUTE_TIMEOUT:-45}"
 API="${CARD_BUILD_ROUTE_API:-http://localhost:3420}"
 TOKEN_FILE="${CARD_BUILD_ROUTE_TOKEN_FILE:-$HERE/.dashboard-token}"
 
+# SHARED SECURITY-SIGNAL PATTERNS (card e11167c5 round 2, MikroB 26567/CYBERSEC GO 26557 F1): these
+# three patterns are used BOTH by the deterministic ONLINE gates below AND by the --security-signal
+# query mode further down. A single copy, not two, because two copies of the same regex is exactly
+# the divergence class this card exists to close (round 1 shipped a reason-string allow-list that
+# only asked "what did the router match FIRST", which a non-security earlier-stage match, e.g.
+# deterministic-multi-decision, could mask).
+SECURITY_MONEY_RE='dijfizet|díjfizet|fizetes|fizetés|billing|checkout|webhook|invoice|szaml|száml|subscription|elofizet|előfizet|payment|stripe|lemonsqueezy|refund|price|arazas|árazás'
+SECURITY_AUTH_TENANT_RE='jogosults|hozzaferes|hozzáférés|\brbac\b|authorizat|authentikac|authenticat|permission|access[- ]control|multi-tenant|multitenant|tenant[- ]?isolat|tenant[- ]?scope|szemelyes adat|személyes adat|\bpii\b|\bgdpr\b|systemd|unit file|tulajdon.{0,20}ellenor|ellenor.{0,20}tulajdon|(berlo|bérlő).{0,40}(elkulonit|elkülönít|szetvalaszt|szétválaszt)|(elkulonit|elkülönít|szetvalaszt|szétválaszt).{0,40}(berlo|bérlő)'
+SECURITY_SEC_LABEL_RE='\[SEC[^]]*\]'
+
 # EVIDENCE THAT THE CONTROL RAN, same reasoning as route-classify.sh's log: a dead classifier and a
 # classifier that ran and said ONLINE are otherwise byte-identical (both leave the dispatch alone),
 # so the one thing this file must never do is fail invisibly. Every path writes a verdict.
@@ -105,6 +115,33 @@ online() { # $1 = reason, $2 = model calls (optional)
   fi
   exit 0
 }
+
+# --- SECURITY-SIGNAL QUERY MODE (card e11167c5 round 2) ----------------------------------------
+# Answers "does ANY security gate match this text", independent of the main router's FIRST-MATCH
+# stage order. CYBERSEC GO 26557 F1: the router returns whichever stage matches FIRST, so a parent
+# that carries BOTH a security word and an earlier-stage word (deterministic-multi-decision fires
+# before the security gates below) reports the earlier reason -- a round-1 veto keyed on that single
+# reason string never saw the security signal at all. This mode re-asks the security question on its
+# own, over the full text, so the answer cannot be masked by stage order.
+#
+# Deliberately skips every capacity/ambient gate (kill-switch, VRAM, installed, the model): this is
+# a pure content question ("is there a security signal anywhere in this text"), not a "who builds
+# this" routing decision -- the main route call above/below is untouched and still decides
+# LOCAL/ONLINE exactly as before. offload-dispatch.sh calls this as a SECOND, independent check,
+# used only to decide whether a decomposed fragment inherits its parent's veto.
+if [ "${1:-}" = "--security-signal" ]; then
+  SIGTEXT="$(printf '%s' "${2:-}" | tr '\n' ' ')"
+  SIG=no
+  printf '%s' "$SIGTEXT" | grep -Eqi "$SECURITY_MONEY_RE" && SIG=yes
+  printf '%s' "$SIGTEXT" | grep -Eqi "$SECURITY_AUTH_TENANT_RE" && SIG=yes
+  printf '%s' "$SIGTEXT" | grep -Eq "$SECURITY_SEC_LABEL_RE" && SIG=yes
+  if [ "$SIG" = no ] && { [ -x "$CLASSIFY" ] || [ -f "$CLASSIFY" ]; }; then
+    SIGSEC="$(timeout "$TIMEOUT" bash "$CLASSIFY" "$SIGTEXT" 2>/dev/null | tr -d '[:space:]')"
+    case "$SIGSEC" in *SECURITY*) SIG=yes ;; esac
+  fi
+  echo "$SIG"
+  exit 0
+fi
 
 TEXT=""
 PRIORITY=""
@@ -340,8 +377,7 @@ if printf '%s' "$MULTI_TEXT" | grep -Eqi \
 fi
 
 # Money. A wrong draft here is not a slow review, it is a billing defect.
-if printf '%s' "$FULL" | grep -Eqi \
-  'dijfizet|díjfizet|fizetes|fizetés|billing|checkout|webhook|invoice|szaml|száml|subscription|elofizet|előfizet|payment|stripe|lemonsqueezy|refund|price|arazas|árazás'; then
+if printf '%s' "$FULL" | grep -Eqi "$SECURITY_MONEY_RE"; then
   online deterministic-money
 fi
 
@@ -384,8 +420,7 @@ fi
 #   literal "tenant" token. Bare "berlo" alone is too broad (also means a literal building tenant), so
 #   it is required to co-occur with a separation/isolation verb, the same pattern shape as the
 #   existing tulajdon.{0,20}ellenor rule just above.
-if printf '%s' "$FULL" | grep -Eqi \
-  'jogosults|hozzaferes|hozzáférés|\brbac\b|authorizat|authentikac|authenticat|permission|access[- ]control|multi-tenant|multitenant|tenant[- ]?isolat|tenant[- ]?scope|szemelyes adat|személyes adat|\bpii\b|\bgdpr\b|systemd|unit file|tulajdon.{0,20}ellenor|ellenor.{0,20}tulajdon|(berlo|bérlő).{0,40}(elkulonit|elkülönít|szetvalaszt|szétválaszt)|(elkulonit|elkülönít|szetvalaszt|szétválaszt).{0,40}(berlo|bérlő)'; then
+if printf '%s' "$FULL" | grep -Eqi "$SECURITY_AUTH_TENANT_RE"; then
   online deterministic-auth-tenant-scope
 fi
 
@@ -446,7 +481,7 @@ fi
 # biztonsagi kockazat", "IRANY: BIZTONSAGOS") -- measured live: 8 of the cards a bare word-match
 # would have caught were self-declared NON-risks, not trust-boundary work. `\[SEC[^]]*\]` matches
 # the deliberate tag (`[SEC]`, `[SEC-GATE-KOTELEZO]`) and nothing that merely mentions the word.
-if printf '%s' "$FULL" | grep -Eq '\[SEC[^]]*\]'; then
+if printf '%s' "$FULL" | grep -Eq "$SECURITY_SEC_LABEL_RE"; then
   online deterministic-sec-label
 fi
 

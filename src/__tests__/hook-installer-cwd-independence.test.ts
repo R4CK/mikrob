@@ -47,6 +47,11 @@ const INSTALLERS = [
     guard: join('.git', 'hooks', 'pre-push.d', '30-review-gate'),
     dispatcher: join('.git', 'hooks', 'pre-push'),
   },
+  {
+    script: 'install-token-push-guard-hook.sh',
+    guard: join('.git', 'hooks', 'pre-push.d', '20-no-dashboard-token-in-push'),
+    dispatcher: join('.git', 'hooks', 'pre-push'),
+  },
 ] as const
 
 /** Files an installer needs next to it besides itself (it copies the hook from the repo and
