@@ -149,6 +149,32 @@ decomp_desc_carries_parent="$(CARD=decompCard bash "$DISPATCH" --test-resolve-de
 check "SAFETY: every synthetic leaf description carries the PARENT description text (routeTask sees the real risk signal)" \
   "$decomp_desc_carries_parent" "True"
 
+# --- VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f) ------------------------------------
+# REPRO for the exact described defect: an authz signal ("authorizat") sitting past character 600 of
+# the parent description. Before the fix, every synthetic fragment's description was unconditionally
+# truncated to desc[:600], so the signal never reached any fragment at all, and the whole card (which
+# card-build-route.sh correctly vetoes ONLINE on its own full text) would have routed every fragment
+# as if it were plain mechanical work. After the fix, the veto is decided ONCE on the parent's full
+# text and every fragment inherits it via an explicit "veto_online" field.
+python3 -c "
+import json
+base = 'A kontraktus (architektura) modosul. Kell hozza unit test es a hu/de i18n string forditasok is. '
+filler_unit = 'padding szoveg ide. '
+pad_len = 699 - len(base) - len('authorizat')
+filler = (filler_unit * (pad_len // len(filler_unit) + 1))[:pad_len]
+desc = base + filler + 'authorizat kerdes a vegen.'
+assert desc.index('authorizat') > 600, 'fixture must place the signal past the old 600-char cut'
+cards = [{'id':'vetoCard','title':'[marveen][INFRA][SEC] Architektura donteshez teszt es i18n is kell','description':desc,'status':'planned','assignee':'backend2','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[]}]
+json.dump(cards, open('$TMPDIR/fixture-veto.json', 'w'))
+"
+veto_ids="$(CARD=vetoCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-veto.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))')"
+check "vetoCard still decomposes into its synthetic fragments (the veto does not change WHICH fragments exist)" \
+  "$veto_ids" "vetoCard~i18n-keys,vetoCard~test-scaffold"
+
+veto_flags="$(CARD=vetoCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-veto.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(sorted(str(l.get("veto_online")) for l in d)))')"
+check "REPRO (THE POINT OF THE CARD): every fragment inherits the parent veto, even though the authz signal sits past char 600 of the truncated copy" \
+  "$veto_flags" "True,True"
+
 # CONTROL: no mechanical shape in the text -> the wrapper is a no-op, byte-identical to resolve_leaves alone.
 lone_via_wrapper="$(decompose_ids loneCard)"
 check "CONTROL: loneCard (no mechanical shape) -> unchanged fallback, same as --test-resolve" "$lone_via_wrapper" "loneCard"
