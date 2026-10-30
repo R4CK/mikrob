@@ -17,6 +17,35 @@ import type { RouteContext } from './types.js'
 const ALLOWED_PROVIDERS = new Set(['groq', 'cerebras', 'google_ai_studio', 'openrouter', 'mistral'])
 const MAX_KEY_LENGTH = 512
 
+// WhiteHat2 GO 25458 finding 1 (card 3c9c3a10): the real freellmapi platform
+// enum has `google`, not `google_ai_studio` -- the FE/route's provider id is
+// cosmetic (matches the FE's label), the upstream call always needs `google`.
+// Measured live against the running freellmapi: POST platform:"google_ai_studio"
+// -> 400, POST platform:"google" -> 201.
+const PROVIDER_TO_UPSTREAM_PLATFORM: Record<string, string> = { google_ai_studio: 'google' }
+const UPSTREAM_PLATFORM_TO_PROVIDER: Record<string, string> = Object.fromEntries(
+  Object.entries(PROVIDER_TO_UPSTREAM_PLATFORM).map(([provider, platform]) => [platform, provider]),
+)
+function toUpstreamPlatform(provider: string): string {
+  return PROVIDER_TO_UPSTREAM_PLATFORM[provider] ?? provider
+}
+function fromUpstreamPlatform(platform: string): string {
+  return UPSTREAM_PLATFORM_TO_PROVIDER[platform] ?? platform
+}
+
+// WhiteHat2 GO 25458 LOW-2 (card 3c9c3a10): two concurrent POSTs for the same
+// provider each saw no existing row and both inserted, leaving 2 rows (the
+// upstream add is an unconditional INSERT, not an upsert). Serialize same-
+// provider requests in this process so the second one's cleanup sees the
+// first one's new row.
+const providerLocks = new Map<string, Promise<unknown>>()
+function withProviderLock<T>(upstreamPlatform: string, fn: () => Promise<T>): Promise<T> {
+  const prior = providerLocks.get(upstreamPlatform) ?? Promise.resolve()
+  const run = prior.then(fn, fn)
+  providerLocks.set(upstreamPlatform, run.catch(() => undefined))
+  return run
+}
+
 interface UpstreamKeyRow {
   id: number
   platform: string
@@ -95,38 +124,48 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
       if (typeof key !== 'string' || !key.trim() || key.length > MAX_KEY_LENGTH) {
         json(res, { error: `key must be a non-empty string of at most ${MAX_KEY_LENGTH} characters` }, 400); return true
       }
+      const upstreamPlatform = toUpstreamPlatform(provider)
 
-      // RedHat NO-GO 25444 F1: freellmapi's /api/keys add is an unconditional INSERT,
-      // not an upsert -- a second POST for the same provider left two rows instead
-      // of replacing the first, so "rotating" a key did not retire the old one.
-      // Enforce exactly one row per provider here: remove every existing row for
-      // this provider BEFORE adding the new one.
-      const existing = await freellmapiRequest('GET', '/api/keys')
-      if (existing.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
-      const existingRows = Array.isArray(existing.data) ? (existing.data as UpstreamKeyRow[]) : []
-      for (const row of existingRows.filter((r) => r.platform === provider)) {
-        const del = await freellmapiRequest('DELETE', `/api/keys/${row.id}`)
-        if (del.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
-      }
+      const handled = await withProviderLock(upstreamPlatform, async (): Promise<boolean> => {
+        // RedHat NO-GO 25444 F1 / WhiteHat2 GO 25458 LOW-1 (card 3c9c3a10): the
+        // upstream add is an unconditional INSERT, not an upsert -- enforce exactly
+        // one row per provider by removing every OTHER existing row for this
+        // provider. Capture which rows are stale BEFORE adding the new one (not
+        // delete-then-add): if the add fails, a previously working key survives
+        // instead of being lost first.
+        const before = await freellmapiRequest('GET', '/api/keys')
+        if (before.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
+        const beforeRows = Array.isArray(before.data) ? (before.data as UpstreamKeyRow[]) : []
+        const staleIds = beforeRows.filter((r) => r.platform === upstreamPlatform).map((r) => r.id)
 
-      const upstream = await freellmapiRequest('POST', '/api/keys', { platform: provider, key })
-      if (upstream.status >= 400) {
-        // WhiteHat2 GO 25458 L2: do not reflect the upstream's error text verbatim
-        // (it echoed `upstream.data?.error?.message`, which could be anything the
-        // upstream decides to put there, including a non-string value) -- log the
-        // upstream detail server-side and answer with our own fixed message.
-        logger.warn({ status: upstream.status, upstreamError: upstream.data?.error }, 'freellm-keys: upstream rejected the key')
-        json(res, { error: 'freellm_upstream_rejected', message: 'A freellmapi elutasította a kulcsot.' }, upstream.status === 401 ? 502 : upstream.status)
+        const upstream = await freellmapiRequest('POST', '/api/keys', { platform: upstreamPlatform, key })
+        if (upstream.status >= 400) {
+          // WhiteHat2 GO 25458 L2: do not reflect the upstream's error text verbatim
+          // (it echoed `upstream.data?.error?.message`, which could be anything the
+          // upstream decides to put there, including a non-string value) -- log the
+          // upstream detail server-side and answer with our own fixed message.
+          logger.warn({ status: upstream.status, upstreamError: upstream.data?.error }, 'freellm-keys: upstream rejected the key')
+          json(res, { error: 'freellm_upstream_rejected', message: 'A freellmapi elutasította a kulcsot.' }, upstream.status === 401 ? 502 : upstream.status)
+          return true
+        }
+
+        for (const id of staleIds) {
+          const del = await freellmapiRequest('DELETE', `/api/keys/${id}`)
+          if (del.status >= 400) {
+            logger.warn({ status: del.status, id }, 'freellm-keys: failed to clean up a stale row after a successful add')
+          }
+        }
+
+        const addedMaskedKey: unknown = upstream.data?.maskedKey
+        json(res, {
+          provider,
+          setBy: 'admin',
+          since: Math.floor(Date.now() / 1000),
+          ...normalizeUpstreamMask(typeof addedMaskedKey === 'string' ? addedMaskedKey : undefined),
+        }, 201)
         return true
-      }
-      const addedMaskedKey: unknown = upstream.data?.maskedKey
-      json(res, {
-        provider,
-        setBy: 'admin',
-        since: Math.floor(Date.now() / 1000),
-        ...normalizeUpstreamMask(typeof addedMaskedKey === 'string' ? addedMaskedKey : undefined),
-      }, 201)
-      return true
+      })
+      return handled
     }
 
     // GET /api/freellm/keys
@@ -138,7 +177,7 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
       }
       const rows = Array.isArray(upstream.data) ? (upstream.data as UpstreamKeyRow[]) : []
       json(res, rows.map((row) => ({
-        provider: row.platform,
+        provider: fromUpstreamPlatform(row.platform),
         setBy: 'admin',
         since: parseUpstreamCreatedAt(row.createdAt),
         ...normalizeUpstreamMask(row.maskedKey),
@@ -161,22 +200,26 @@ export async function tryHandleFreellmKeys(ctx: RouteContext): Promise<boolean> 
       if (!ALLOWED_PROVIDERS.has(provider)) {
         json(res, { error: 'provider must be one of the supported providers' }, 400); return true
       }
+      const upstreamPlatform = toUpstreamPlatform(provider)
 
-      const list = await freellmapiRequest('GET', '/api/keys')
-      if (list.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
-      const rows = Array.isArray(list.data) ? (list.data as UpstreamKeyRow[]) : []
-      const matching = rows.filter((r) => r.platform === provider)
-      if (matching.length === 0) { json(res, { error: `provider "${provider}" has no key set` }, 404); return true }
+      const handled = await withProviderLock(upstreamPlatform, async (): Promise<boolean> => {
+        const list = await freellmapiRequest('GET', '/api/keys')
+        if (list.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
+        const rows = Array.isArray(list.data) ? (list.data as UpstreamKeyRow[]) : []
+        const matching = rows.filter((r) => r.platform === upstreamPlatform)
+        if (matching.length === 0) { json(res, { error: `provider "${provider}" has no key set` }, 404); return true }
 
-      // RedHat NO-GO 25444 F1: delete EVERY row for this provider, not just the
-      // first match -- the prior unconditional-INSERT bug (same finding) could
-      // have left more than one row, and "deleted: true" must mean no row remains.
-      for (const row of matching) {
-        const del = await freellmapiRequest('DELETE', `/api/keys/${row.id}`)
-        if (del.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
-      }
-      json(res, { provider, deleted: true })
-      return true
+        // RedHat NO-GO 25444 F1: delete EVERY row for this provider, not just the
+        // first match -- the prior unconditional-INSERT bug (same finding) could
+        // have left more than one row, and "deleted: true" must mean no row remains.
+        for (const row of matching) {
+          const del = await freellmapiRequest('DELETE', `/api/keys/${row.id}`)
+          if (del.status >= 400) { json(res, { error: 'freellm_upstream_error' }, 502); return true }
+        }
+        json(res, { provider, deleted: true })
+        return true
+      })
+      return handled
     }
   } catch (err) {
     if (err instanceof FreellmapiUnavailableError) {

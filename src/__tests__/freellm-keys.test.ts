@@ -64,8 +64,8 @@ describe('freellm-keys proxy', () => {
     // Real upstream shape for a >8-char key (server/src/lib/crypto.ts maskKey,
     // measured against the installed freellmapi): first4 + "..." + last4.
     freellmapiRequestMock
-      .mockResolvedValueOnce({ status: 200, data: [] }) // F1: pre-POST existing-row check
-      .mockResolvedValueOnce({ status: 201, data: { maskedKey: 'gsk_...3c7a' } })
+      .mockResolvedValueOnce({ status: 200, data: [] }) // F1: pre-add existing-row check
+      .mockResolvedValueOnce({ status: 201, data: { id: 9, maskedKey: 'gsk_...3c7a' } })
     const { ctx, out } = mkRequest('/api/freellm/keys', 'POST', { provider: 'groq', key: SECRET_KEY })
     const handled = await tryHandleFreellmKeys(ctx)
     expect(handled).toBe(true)
@@ -76,16 +76,18 @@ describe('freellm-keys proxy', () => {
   })
 
   it('POST replaces an existing row for the provider instead of appending a second one (RedHat F1, comment 25444)', async () => {
+    // WhiteHat2 GO 25458 LOW-1: add the new key FIRST, delete the stale row after
+    // (a failed add never destroys a previously working key).
     freellmapiRequestMock
       .mockResolvedValueOnce({ status: 200, data: [{ id: 11, platform: 'groq', maskedKey: '****9b2e' }] })
-      .mockResolvedValueOnce({ status: 200, data: { deleted: true } }) // delete the old row first
-      .mockResolvedValueOnce({ status: 201, data: { maskedKey: 'gsk_...xd07' } })
+      .mockResolvedValueOnce({ status: 201, data: { id: 12, maskedKey: 'gsk_...xd07' } })
+      .mockResolvedValueOnce({ status: 200, data: { deleted: true } }) // delete the old row after
     const { ctx, out } = mkRequest('/api/freellm/keys', 'POST', { provider: 'groq', key: SECRET_KEY })
     await tryHandleFreellmKeys(ctx)
     expect(out.status).toBe(201)
     expect(freellmapiRequestMock).toHaveBeenNthCalledWith(1, 'GET', '/api/keys')
-    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(2, 'DELETE', '/api/keys/11')
-    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(3, 'POST', '/api/keys', { platform: 'groq', key: SECRET_KEY })
+    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(2, 'POST', '/api/keys', { platform: 'groq', key: SECRET_KEY })
+    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(3, 'DELETE', '/api/keys/11')
     expect(freellmapiRequestMock).toHaveBeenCalledTimes(3)
   })
 
@@ -99,15 +101,76 @@ describe('freellm-keys proxy', () => {
           { id: 3, platform: 'groq', maskedKey: '****cccc' },
         ],
       })
+      .mockResolvedValueOnce({ status: 201, data: { id: 4, maskedKey: 'gsk_...dddd' } })
       .mockResolvedValueOnce({ status: 200, data: { deleted: true } })
       .mockResolvedValueOnce({ status: 200, data: { deleted: true } })
-      .mockResolvedValueOnce({ status: 201, data: { maskedKey: 'gsk_...dddd' } })
     const { ctx, out } = mkRequest('/api/freellm/keys', 'POST', { provider: 'groq', key: SECRET_KEY })
     await tryHandleFreellmKeys(ctx)
     expect(out.status).toBe(201)
-    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(2, 'DELETE', '/api/keys/1')
-    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(3, 'DELETE', '/api/keys/3')
+    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(3, 'DELETE', '/api/keys/1')
+    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(4, 'DELETE', '/api/keys/3')
     expect(freellmapiRequestMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('maps google_ai_studio to the real freellmapi platform "google" on add, list and delete (WhiteHat2 GO 25458 finding 1, card 3c9c3a10)', async () => {
+    freellmapiRequestMock
+      .mockResolvedValueOnce({ status: 200, data: [] })
+      .mockResolvedValueOnce({ status: 201, data: { id: 20, maskedKey: '****g00g' } })
+    const post = mkRequest('/api/freellm/keys', 'POST', { provider: 'google_ai_studio', key: SECRET_KEY })
+    await tryHandleFreellmKeys(post.ctx)
+    expect(post.out.status).toBe(201)
+    expect(post.out.body.provider).toBe('google_ai_studio')
+    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(2, 'POST', '/api/keys', { platform: 'google', key: SECRET_KEY })
+
+    freellmapiRequestMock.mockReset()
+    freellmapiRequestMock.mockResolvedValueOnce({
+      status: 200,
+      data: [{ id: 20, platform: 'google', maskedKey: '****g00g', createdAt: '2026-10-30 10:00:00' }],
+    })
+    const get = mkRequest('/api/freellm/keys', 'GET')
+    await tryHandleFreellmKeys(get.ctx)
+    expect(get.out.body).toEqual([
+      { provider: 'google_ai_studio', setBy: 'admin', since: Math.floor(Date.parse('2026-10-30T10:00:00Z') / 1000), set: true, hint: 'g00g', error: null },
+    ])
+
+    freellmapiRequestMock.mockReset()
+    freellmapiRequestMock
+      .mockResolvedValueOnce({ status: 200, data: [{ id: 20, platform: 'google', maskedKey: '****g00g' }] })
+      .mockResolvedValueOnce({ status: 200, data: { deleted: true } })
+    const del = mkRequest('/api/freellm/keys/google_ai_studio', 'DELETE')
+    await tryHandleFreellmKeys(del.ctx)
+    expect(del.out.body).toEqual({ provider: 'google_ai_studio', deleted: true })
+    expect(freellmapiRequestMock).toHaveBeenNthCalledWith(2, 'DELETE', '/api/keys/20')
+  })
+
+  it('a Promise.all of concurrent POSTs for the same provider leaves exactly one row (WhiteHat2 GO 25458 LOW-2, card 3c9c3a10)', async () => {
+    // Simulates the real upstream's unconditional-INSERT behaviour against an
+    // in-memory row set, through the route's own lock -- not through the client
+    // mock call sequence (two concurrent requests interleave their GET/POST/DELETE
+    // calls, so asserting call order is not meaningful; asserting the END STATE is).
+    let nextId = 1
+    let rows: Array<{ id: number; platform: string; maskedKey: string }> = []
+    freellmapiRequestMock.mockImplementation(async (method: string, path: string, body?: unknown) => {
+      if (method === 'GET') return { status: 200, data: rows.map((r) => ({ ...r })) }
+      if (method === 'POST') {
+        const b = body as { platform: string; key: string }
+        const row = { id: nextId++, platform: b.platform, maskedKey: `****${b.key.slice(-4)}` }
+        rows.push(row)
+        return { status: 201, data: { id: row.id, maskedKey: row.maskedKey } }
+      }
+      if (method === 'DELETE') {
+        const id = Number(path.split('/').pop())
+        rows = rows.filter((r) => r.id !== id)
+        return { status: 200, data: { deleted: true } }
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+    const post = (key: string) => {
+      const { ctx } = mkRequest('/api/freellm/keys', 'POST', { provider: 'groq', key })
+      return tryHandleFreellmKeys(ctx)
+    }
+    await Promise.all([post('concurrent-key-aaaa'), post('concurrent-key-bbbb'), post('concurrent-key-cccc')])
+    expect(rows.filter((r) => r.platform === 'groq')).toHaveLength(1)
   })
 
   it('maps every real upstream mask shape to set/hint/error (card fd5fcc2c D1)', async () => {

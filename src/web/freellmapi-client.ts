@@ -57,11 +57,13 @@ function readCredential(filePath: string): Credential {
 
 let cachedToken: string | null = null
 
-// WhiteHat2 GO 25458 L4: freellmapi locks the admin account out for 15 minutes
-// after 5 bad logins. Without a back-off, a stale credential file turns every
-// dashboard request into another failed-login attempt, hitting that lockout
-// after a handful of clicks. Fail fast instead of retrying login immediately.
-const LOGIN_FAILURE_BACKOFF_MS = 60_000
+// WhiteHat2 GO 25458 L4 / LOW-4 (card 3c9c3a10): freellmapi locks the admin
+// account out for 15 minutes after 5 bad logins. A 60s back-off still allowed
+// 6 bad logins inside that 15-minute window (measured: 7 requests 60s apart ->
+// 6 upstream logins), tripping the lockout. At 240s, at most 4 attempts land
+// inside any 900s window (attempts at +0/+240/+480/+720, the 5th at +960 is
+// outside it) -- comfortably under the 5-login threshold.
+const LOGIN_FAILURE_BACKOFF_MS = 240_000
 let loginFailureUntil: number | null = null
 
 async function login(): Promise<string> {
@@ -75,6 +77,10 @@ async function login(): Promise<string> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
+      // WhiteHat2 GO 25458 LOW-3 (card 3c9c3a10): a redirect from whatever is
+      // listening on the base URL was followed, re-sending the credential to the
+      // redirect target. Never follow a redirect here.
+      redirect: 'error',
     })
   } catch {
     // Never interpolate the caught error verbatim here: a connection-refused message can
@@ -121,6 +127,10 @@ export async function freellmapiRequest(
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
+        // WhiteHat2 GO 25458 LOW-3: same rationale as the login fetch above --
+        // a redirect would re-send the submitted key body to whatever the
+        // redirect target is.
+        redirect: 'error',
       })
     } catch {
       throw new FreellmapiUnavailableError('freellmapi is not reachable')
