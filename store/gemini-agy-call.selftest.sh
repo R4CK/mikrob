@@ -652,6 +652,31 @@ match_out="$(echo '{"id":"deadbeef","title":"Clean","description":"x","labels":[
   | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || match_rc=$?
 [ "$match_rc" = 0 ] && [ -z "$match_out" ] || fails+=("category-check: matching id + non-empty clean title must return 0 with no signal, got rc=$match_rc out='$match_out'")
 
+# --- N4 (CYBERED NO-GO 25494, card c5f2d6c9): unmapped homoglyph/script letter must fail closed --
+n=$((n + 1))
+omicron_rc=0
+omicron_out="$(printf '{"id":"deadbeef","title":"m\xcf\x8fpsion feature","description":"x","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || omicron_rc=$?
+[ "$omicron_rc" = 2 ] && [ -z "$omicron_out" ] || fails+=("category-check: Greek-omicron 'mopsion' in title must return 2 (cannot verify), got rc=$omicron_rc out='$omicron_out'")
+
+n=$((n + 1))
+cyrillic_rc=0
+cyrillic_out="$(printf '{"id":"deadbeef","title":"safe feature","description":"t\xd0\xbeken: abc123","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || cyrillic_rc=$?
+[ "$cyrillic_rc" = 2 ] && [ -z "$cyrillic_out" ] || fails+=("category-check: Cyrillic in description's 'token:' must return 2 (cannot verify), got rc=$cyrillic_rc out='$cyrillic_out'")
+
+n=$((n + 1))
+hu_rc=0
+hu_out="$(printf '{"id":"deadbeef","title":"\xc3\xa1raj\xc3\xa1nlat sz\xc3\xa1m\xc3\xadt\xc3\xa1s","description":"semmi erzekeny","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || hu_rc=$?
+[ "$hu_rc" = 0 ] && [ -z "$hu_out" ] || fails+=("category-check: ordinary accented Hungarian text must still pass clean (NFKD decomposes to ASCII+combining-mark), got rc=$hu_rc out='$hu_out'")
+
+n=$((n + 1))
+mopsion_rc=0
+mopsion_out="$(echo '{"id":"deadbeef","title":"mopsion feature","description":"ok","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || mopsion_rc=$?
+[ "$mopsion_rc" = 0 ] && [ "$mopsion_out" = "mopsion" ] || fails+=("category-check: plain ASCII 'mopsion' must still be detected, got rc=$mopsion_rc out='$mopsion_out'")
+
 # --- N3: a malformed --kartya must be refused BEFORE any URL/HTTP use ---------------------------
 : > "$LOG"
 for bad in "not-hex!" "../../etc/passwd" "ab" "" "deadbeef; rm -rf /"; do
