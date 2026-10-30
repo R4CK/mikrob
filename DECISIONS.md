@@ -22334,3 +22334,19 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** RedHat (cybered) lelete (komment 25494), a javítás iránya WhiteHat2 eredeti F2-designjából (gemini-offload-call.sh backstopja), backend2 végrehajtása MikroB dispatch (trusted-peer msg_id:15284) alapján.
 
 **Hivatkozás:** kártya ad6b183f (szülő fd5fcc2c), komment 25494 (CYBERED NO-GO), store/freellm-call.sh, store/freellm-call.selftest.sh, store/gemini-offload-call.sh (_has_unmapped_letter forrás).
+
+## 2026-10-25 11:50 -- Dashboard-token rotálása (Peti 11991)
+
+**Döntés:** Az URGENT c786213d commit előfeltétele (titok-őr csendes ágak zárása, már DONE) teljesült. Most a közös dashboard-token rotálása végrehajtva.
+
+**Technikai lépések:**
+1. Felmérés: csak store/.dashboard-token fájl, env-en nincs; systemd unit (mikrob-dashboard.service) és watchdog (timer) futó.
+2. Új token generálva: 32 byte hex, atomikus írás (0600).
+3. Dashboard restart: systemctl --user restart (watchdog helyre tudja állítani, MikroB sessionök NEM haltak meg).
+4. Tesztelés: régi token → 401, új token → 200, inter-agent üzenet OK.
+
+**Miért:** Peti biztonsági direktívája (Telegram 11991): token-rotálás most.
+
+**Ki döntött:** Peti (direktíva) + DevO (végrehajtás).
+
+**Hivatkozás:** kártya 7dde8ebc (dashboard-token rotálása), 21df3822 (titok-őr előfeltétel, már DONE).
