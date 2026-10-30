@@ -22423,3 +22423,13 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Ki döntött:** backend (self-advance pickup, Karpathy loop).
 
 **Hivatkozás:** kártya 5760a278 (forrás: RedHat GO 35e1d876, WhiteHat2 GO 25902), src/web/channel-poller-reap.ts, src/__tests__/channel-poller-reap-foreign-main-integration.test.ts.
+
+## 2026-10-30: 3629e133 -- fleet-test flake fixes (card-build-route port, rea-bwrap-sandbox timing, venv-gate timeout)
+
+**Döntés:** három, ugyanazon a napon 4 alkalommal landolást/gate-et buktató false-red flake megszüntetve. (1) `store/card-build-route.selftest.sh`: a két fake-dashboard helper (`vram_fake_dashboard`, `decompose_run`) eddig egy fix `20000 + RANDOM % 20000` tartományból húzott portot bind nélküli próba nélkül -- ütközéskor "Address already in use". Mostantól a python HTTP-szerverek `('127.0.0.1', 0)`-ra bindolnak (kernel adja a szabad portot) és kiírják azt stdout-ra; a shell oldal ezt olvassa vissza, nem találja ki. (2) `store/rea-bwrap-sandbox.selftest.sh` `check_die_with_parent`: a bwrap-settle-wait (75 x 0.2s) és a halál-poll (10 x 0.5s) budget 4x szélesítve (300 x 0.2s, 30 x 0.5s) -- QA mérése szerint (msg 15664) a teszt CPU-éheztetett (4 egyidejű fleet-test) host alatt pirosra vált, önállóan és egy második vitest-körben mindig zöld. (3) `src/__tests__/install-voice-venv-gate.test.ts`: mind a 4 eset explicit 30s per-test timeoutot kapott (eddig a vitest 5s default-ján futott, mérve ~2.2s standalone egy valódi `python3 -m venv`-re -- kontenció alatt ez a default alá szoríthat).
+
+**Mit ellenőriztem:** `card-build-route.selftest.sh` 70/70 standalone, 70/70 x2 párhuzamos futásban, 20/20 egymás utáni futásban nulla piros (lásd REVIEW a kártyán a pontos számért). `rea-bwrap-sandbox.selftest.sh` 55/55 standalone (a "Killed" stderr-sor a sajátmaga-kill-9 cleanup normál zaja, nem hibajel -- igazolva: ugyanaz a sor mindkét `check_die_with_parent` híváson megjelenik, pass esetén is). A teljes fix a `marveen-land.sh` saját `fleet-test.sh` futásán ment át, ami pont a kontenciós körülményt reprodukálja (párhuzamos landolások/gate-ek).
+
+**Ki döntött:** backend (self-advance pickup, Karpathy loop), forrás: WhiteHat 14121 (13b2648e delta-gate) + MikroB komment 26343 (rea-bwrap pulled forward) + QA komment 26355 (msg 15664, check_die_with_parent narrowing).
+
+**Hivatkozás:** kártya 3629e133, store/card-build-route.selftest.sh, store/rea-bwrap-sandbox.selftest.sh, src/__tests__/install-voice-venv-gate.test.ts.

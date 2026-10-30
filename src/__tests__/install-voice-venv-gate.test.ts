@@ -109,6 +109,11 @@ describe('install-voice.sh step 2 venv gate', () => {
     }
   })
 
+  // Card 3629e133 (WhiteHat 14121): each case below runs a REAL `python3 -m venv`, measured
+  // ~2.2s standalone -- comfortably under vitest's 5s default timeout normally, but tight
+  // enough to blow it under concurrent fleet-test/selftest CPU contention. Explicit 30s
+  // per-test timeout (the existing fork pattern for slow tests, see vitest.config.ts) gives
+  // contention headroom without masking a genuinely hung step 2.
   it('rebuilds a venv that exists but has no pip (the 09-21 regression)', () => {
     const dest = tmpDest('voice-broken-')
     makeBrokenVenv(dest)
@@ -121,7 +126,7 @@ describe('install-voice.sh step 2 venv gate', () => {
     // Step 3 calls venv/bin/pip directly; that is the only outcome that counts.
     expect(existsSync(join(dest, 'venv', 'bin', 'pip'))).toBe(true)
     expect(r.out).not.toContain('[SKIP] venv exists')
-  })
+  }, 30000)
 
   it('keeps the downloaded voice models when it rebuilds the venv', () => {
     const dest = tmpDest('voice-scope-')
@@ -137,7 +142,7 @@ describe('install-voice.sh step 2 venv gate', () => {
     expect(existsSync(join(dest, 'venv', 'bin', 'pip'))).toBe(true)
     expect(existsSync(model)).toBe(true)
     expect(readFileSync(model, 'utf-8')).toBe('expensive bytes\n')
-  })
+  }, 30000)
 
   it('leaves a working venv untouched (idempotency is still the point)', () => {
     const dest = tmpDest('voice-ok-')
@@ -149,7 +154,7 @@ describe('install-voice.sh step 2 venv gate', () => {
     expect(r.out).toContain('[SKIP] venv exists')
     // A rebuild would have wiped the directory, sentinel and all.
     expect(existsSync(join(dest, 'venv', 'SENTINEL'))).toBe(true)
-  })
+  }, 30000)
 
   it('creates the venv when nothing is there yet', () => {
     const dest = tmpDest('voice-empty-')
@@ -158,5 +163,5 @@ describe('install-voice.sh step 2 venv gate', () => {
 
     expect(r.code).toBe(0)
     expect(existsSync(join(dest, 'venv', 'bin', 'pip'))).toBe(true)
-  })
+  }, 30000)
 })

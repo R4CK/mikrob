@@ -490,14 +490,18 @@ check_die_with_parent() {
   local pidfile="$WORK/die-wrap-pid-$RANDOM.txt"
   ( env -i "${BASE_ENV[@]}" bash "$probe" & echo $! > "$pidfile"; wait ) &
   local intermediate=$!
+  # Card 3629e133 (QA 15664): under concurrent fleet-test/selftest load the host can be CPU-starved
+  # enough that bwrap's own setup (fork/exec into the sandbox) takes longer than these budgets --
+  # measured false-red on 3 gate/land runs, always green standalone or on a second vitest round.
+  # Budgets widened (4x) for that contention headroom; still well inside the 180s per-test timeout.
   local wrap_pid="" tries=0
-  while [ "$tries" -lt 20 ] && [ -z "$wrap_pid" ]; do
+  while [ "$tries" -lt 80 ] && [ -z "$wrap_pid" ]; do
     sleep 0.2
     wrap_pid="$(cat "$pidfile" 2>/dev/null || echo "")"
     tries=$((tries + 1))
   done
   local settle=0
-  while [ "$settle" -lt 75 ] && [ -n "$wrap_pid" ] && [ "$(cat "/proc/$wrap_pid/comm" 2>/dev/null || echo "")" != "bwrap" ]; do
+  while [ "$settle" -lt 300 ] && [ -n "$wrap_pid" ] && [ "$(cat "/proc/$wrap_pid/comm" 2>/dev/null || echo "")" != "bwrap" ]; do
     sleep 0.2
     settle=$((settle + 1))
   done
@@ -533,8 +537,9 @@ check_die_with_parent() {
     [ "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || echo "")" = "$id" ]
   }
   local survived=0 t=0
-  # Poll for death over up to 5s instead of a single fixed-delay check (avoids a timing race).
-  while [ "$t" -lt 10 ]; do
+  # Poll for death over up to 15s (widened for contention, card 3629e133) instead of a single
+  # fixed-delay check (avoids a timing race).
+  while [ "$t" -lt 30 ]; do
     sleep 0.5
     survived=0
     if _die_probe_alive "$wrap_pid" "$wrap_id"; then
