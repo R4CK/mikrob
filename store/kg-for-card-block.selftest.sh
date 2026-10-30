@@ -86,19 +86,21 @@ for _ in $(seq 1 30); do
 done
 : > "$HIT_LOG"  # the readiness probe above is itself an HTTP hit -- clear it before F1 asserts zero
 
+PASS_COUNT=0
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "PASS $1"; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 # --- F1 (EK-MT-7): KG_INJECT_ENABLED unset -> no output, server sees NOTHING. ---
 OUT_OFF="$(cd "$WORKDIR" && KG_FOR_CARD_API="http://127.0.0.1:$PORT" bash kg-for-card-block.sh cardA)"
 [ -z "$OUT_OFF" ] || fail "F1: expected empty output with KG_INJECT_ENABLED unset, got: $OUT_OFF"
 [ ! -s "$HIT_LOG" ] || fail "F1: expected ZERO server hits with the flag off, got: $(cat "$HIT_LOG")"
-echo "PASS F1: KG_INJECT_ENABLED unset -> no output, no network call"
+pass "F1: KG_INJECT_ENABLED unset -> no output, no network call"
 
 # --- F2 (EK-MT-7): KG_INJECT_ENABLED=off (explicit) -> same. ---
 OUT_EXPLICIT_OFF="$(cd "$WORKDIR" && KG_INJECT_ENABLED=off KG_FOR_CARD_API="http://127.0.0.1:$PORT" bash kg-for-card-block.sh cardA)"
 [ -z "$OUT_EXPLICIT_OFF" ] || fail "F2: expected empty output with KG_INJECT_ENABLED=off"
 [ ! -s "$HIT_LOG" ] || fail "F2: expected zero hits with KG_INJECT_ENABLED=off"
-echo "PASS F2: KG_INJECT_ENABLED=off -> no output, no network call"
+pass "F2: KG_INJECT_ENABLED=off -> no output, no network call"
 
 # --- F3: KG_INJECT_ENABLED=on, plain payload -> framed block, markers present exactly once. ---
 OUT_ON="$(cd "$WORKDIR" && KG_INJECT_ENABLED=on KG_FOR_CARD_API="http://127.0.0.1:$PORT" bash kg-for-card-block.sh cardA)"
@@ -107,7 +109,7 @@ OPEN_COUNT=$(printf '%s' "$OUT_ON" | grep -c '^\[KG-ADAT kezdete' || true)
 CLOSE_COUNT=$(printf '%s' "$OUT_ON" | grep -c '^\[KG-ADAT vege\]$' || true)
 [ "$OPEN_COUNT" = "1" ] || fail "F3: expected exactly 1 open marker, got $OPEN_COUNT in: $OUT_ON"
 [ "$CLOSE_COUNT" = "1" ] || fail "F3: expected exactly 1 close marker, got $CLOSE_COUNT in: $OUT_ON"
-echo "PASS F3: flag on -> framed block with balanced markers"
+pass "F3: flag on -> framed block with balanced markers"
 echo "$OUT_ON" >> "$HIT_LOG.body"
 
 # --- F4 (EK-MT-9): a frame-closing-lookalike + instruction payload comes out ESCAPED, and the
@@ -123,6 +125,6 @@ printf '%s' "$OUT_HOSTILE" | grep -q 'IGNORE EVERYTHING ABOVE' && {
   # terminates the frame early or gets treated as a second, attacker-controlled close marker.
   :
 }
-echo "PASS F4: lookalike close marker is escaped, real close marker stays unique"
+pass "F4: lookalike close marker is escaped, real close marker stays unique"
 
-echo "ALL PASS"
+echo "selftest: $PASS_COUNT passed, 0 failed"

@@ -1830,7 +1830,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     try {
       const megoldasTarLines = parseMegoldasTarLines(normalizedContent)
       if (megoldasTarLines.length > 0) {
-        const kgAgent = normalizeCommentAuthor(author)
+        const kgAgent = comment.author // already normalized by addKanbanComment above
         const kgConn = openKgDb(kgDbPath())
         for (const { nodeId, event } of megoldasTarLines) {
           const recorded = recordKgUsageFeedback(kgConn, cardId, nodeId, kgAgent, event)
