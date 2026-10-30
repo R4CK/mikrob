@@ -3277,6 +3277,96 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "upstream's case-insensitivity cases (review #2001 round 3). Verified the gate implementation " +
     'already lower-cases the basename before comparing, so the case-insensitivity test already ' +
     'passes against current code -- a missing test, not a missing feature. No real conflict.',
+
+  // Card c8f33954 (non-trust-boundary drift re-decision, sibling of 417e2343, parent 7f0efce3).
+  // All of the following verified against the fork's ACTUAL current source (not assumed from the
+  // hunk text alone) -- each HEAD-side test/assertion was checked to still match today's code, or
+  // the real feature (module, function) it depends on was confirmed present/absent.
+  'src/__tests__/claude-plans-probe-route.test.ts':
+    "KEEP FORK -- verified src/web/routes/claude-plans.ts imports rejectIfNotHumanAuth from " +
+    "./auth.js (./auth-gate.js chain), matching the STORE_DIR mock HEAD expects; upstream's APP_TZ " +
+    'mock reflects a different config shape not needed here. Ran the test as-is: 12/12 pass ' +
+    'against current code.',
+  'src/__tests__/host-move-proof-recipes.test.ts':
+    "KEEP FORK -- verified src/web/agent-scaffold.ts's CURRENT INSTALL_ANCHORED_SUFFIXES is " +
+    "['/store/.dashboard-token', '/scripts/hooks/', '/scripts/skill-index.sh', " +
+    "'/scripts/skill-lint.mjs'], matching HEAD's expected subset exactly. Upstream's expected " +
+    "'/scripts/marveen-api.sh'/'/scripts/recipient-ledger.mjs' do not exist in the fork's list -- " +
+    'already a known deferral (see the HOSTMOVE923/ensureProjectRootInClaudeMd entry above: ' +
+    "fork's suffix list is its OWN enumeration, not a port of upstream's).",
+  'src/__tests__/install-voice-venv-gate.test.ts':
+    "KEEP FORK -- verified the test file's current helper is named tmpDest (not tempDest), " +
+    'matching HEAD. Both sides solve the same temp-dir-cleanup problem (fork: array + afterAll ' +
+    "sweep; upstream: array + afterEach splice) -- functionally equivalent, no behaviour delta, " +
+    'keeping current naming avoids a pointless rename.',
+  // quota-week-segments.test.ts: already extensively self-documented (SKIPPED 2026-10-15, backend3
+  // card f3dd0c65) -- the weekSegments()/weekly-row port onto the fork's modularised
+  // renderQuotaStrip is a real frontend adoption, correctly left as a standing follow-up rather
+  // than attempted here. Formalizing the existing note, not making a new decision.
+  'src/__tests__/quota-week-segments.test.ts':
+    'KEEP FORK -- the two weekSegments-dependent describes stay SKIPPED per the existing, ' +
+    "self-documented note (card f3dd0c65, 2026-10-15): the feature lives in web/app.js's still-" +
+    'monolithic kanban/updates region, kept as the STUB scaffold by the standing web/app.js ' +
+    'policy. The CSS half already landed and that half of the test stays active. Porting the ' +
+    "JS half onto the fork's modularised renderQuotaStrip is a real frontend adoption, already " +
+    'flagged as a follow-up, not attempted here (no upstream merge, per this card).',
+  'src/__tests__/restart-dev-channels-dialog.test.ts':
+    "KEEP FORK -- verified agent-process.ts's current restart wrapper is restartAgentProcess " +
+    '(withLifecycleLock) calling restartAgentProcessUnlocked(name, opts), matching HEAD exactly; ' +
+    "upstream's willWake/ownsResume wake-ownership refactor does not exist in the fork.",
+  'src/__tests__/restart-race-lock.test.ts':
+    'KEEP FORK -- withLifecycleLock (card 28eb8340) unifies the stop/start critical section by ' +
+    "design (verified present, src/web/agent-process.ts), already extensively self-documented in " +
+    "the test's own comment as a deliberate fork adaptation of a different mechanism than " +
+    "upstream's beginRestart/endRestart, not a missing fix.",
+  'src/__tests__/restart-wake.test.ts':
+    "KEEP FORK -- verified no willWake variable exists in src/web/agent-process.ts; the fork " +
+    "has not adopted upstream's wake-ownership refactor (willWake/ownsResume), so HEAD's test " +
+    'correctly pins current behaviour.',
+  'src/__tests__/schedule-runner-precheck-async.test.ts':
+    "KEEP FORK -- verified src/web/schedule-runner.ts's current function is runPreCheck (not " +
+    "runPreCheckAsync) and its spawn call is literally spawn('bash', [scriptPath], ...), matching " +
+    "HEAD's assertion byte for byte. Upstream's preCheckInvocation/inv.args shape does not exist " +
+    'in the fork.',
+  'src/__tests__/tmux-exact-target.test.ts':
+    "KEEP FORK -- the symlink-to-/bin/bash fix (not /bin/sleep) is a measured, cross-platform " +
+    'workaround for uutils-coreutils multicall dispatch rejecting an unknown applet name ' +
+    '(DEVCITMUX1022-class flake, independently reproduced on this host). A symlink to /bin/sleep ' +
+    "reintroduces the flake on any host where /bin/sleep is the uutils multicall binary.",
+  'src/costops/ledger.ts':
+    "KEEP FORK -- verified src/costops/agent-budgets.ts does not exist; upstream's " +
+    "evaluateAgentBudgets/per-agent token_prices feature is not built in this fork, which has its " +
+    'own complete weekly-quota cost system (weekly-limit.ts/weekly-threshold.ts/weekly-hard-' +
+    'stop.ts/apply-offload-ramp.ts). Adopting the import would require building a feature this ' +
+    'fork does not have -- a feature decision, out of this no-merge card.',
+  // channel-mcp-reconnect.ts + background-tasks.ts: both use makeLazyBinResolver('tmux'), the
+  // fork's PREVAILING tmux-invocation idiom -- verified 8 call sites across the codebase
+  // (agent-process.ts, agent-worker.ts, channel-monitor.ts, channel-plugin-unlock.ts,
+  // context-restart-gate-runner.ts, reauth-healer.ts, stuck-tool-call-watcher.ts, and these two),
+  // including agent-process.ts itself, which ALSO has the newer tmuxInvocationFor (used only in
+  // its own restart path, per the already-decided 'src/web/routes/agent-terminal.ts' entry above).
+  // tmuxInvocationFor exists now where that entry said it didn't -- but it has not replaced the
+  // lazy-resolver idiom fleet-wide, it coexists for one specific call site. Adopting upstream's
+  // ad-hoc promisified pattern for just these two files would fragment the convention without a
+  // corresponding fork-wide migration decision.
+  'src/web/channel-mcp-reconnect.ts':
+    "KEEP FORK -- makeLazyBinResolver('tmux') is the fork's prevailing tmux-invocation idiom " +
+    '(verified 8 call sites fleet-wide); adopting the one-off promisified pattern here would ' +
+    "fragment the convention without a fork-wide migration decision. tmuxInvocationFor (the real " +
+    "own-OS-user fix from the agent-terminal.ts entry above) coexists for ONE specific call site, " +
+    "it has not replaced the lazy resolver fleet-wide.",
+  'src/web/routes/background-tasks.ts':
+    "KEEP FORK -- same reasoning as src/web/channel-mcp-reconnect.ts above: makeLazyBinResolver " +
+    "is the fork's prevailing idiom, verified at 8 call sites.",
+  'src/web/routes/daily-log.ts':
+    "KEEP FORK -- verified agentKeyToAgentId (../auth-device-keys.js) is actually called here " +
+    "(authenticatedAgentId resolution for device-key auth), core to this fork's auth system. " +
+    "Upstream's containsSuspiciousContent (./memories.js) does not exist in the fork -- a " +
+    'different, unbuilt content-screening feature, not a competing fix for the same problem.',
+  'src/web/routes/recall.ts':
+    "KEEP FORK -- verified agentKeyToAgentId is actually called here, same as daily-log.ts above. " +
+    "Upstream's parseDateExpr (../../date-range.js) does not exist in the fork -- a different, " +
+    'unbuilt date-expression feature.',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -3686,6 +3776,21 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/__tests__/bash-egress-parser.test.ts': '73bfec2ab10467163394143c0a911683f60eacb0',
   'src/__tests__/hook-fail-closed.test.ts': '71f2eed6b8bf16a9b97fd308819496a7b46cdda4',
   'src/__tests__/egress-allowlist-selfedit.test.ts': '4729d8baf78a6fb10084078338a674769e0e8e5f',
+  // Card c8f33954, see the matching ACKNOWLEDGED_CONFLICTS entries above.
+  'src/__tests__/claude-plans-probe-route.test.ts': '9141370ad881f668575c76902486607ab3ff22bc',
+  'src/__tests__/host-move-proof-recipes.test.ts': '840fd3d0478c6c7c78c6ae707b429e72dd5e5c04',
+  'src/__tests__/install-voice-venv-gate.test.ts': 'ccae8db1588835a1e31ef6d13fc8ec2256b3b79c',
+  'src/__tests__/quota-week-segments.test.ts': 'a741d7e0f0256f8a6f702bc7cd5c83aecb45e7b1',
+  'src/__tests__/restart-dev-channels-dialog.test.ts': '1596a6f4672a220581b363747ed499d9158978be',
+  'src/__tests__/restart-race-lock.test.ts': '0d9950642e914fb14375bf01b5137d09a0825661',
+  'src/__tests__/restart-wake.test.ts': '1174a129da899428c97451956e46f139d6ffff27',
+  'src/__tests__/schedule-runner-precheck-async.test.ts': '745ec1c4901b3665488abb496104a439ff445285',
+  'src/__tests__/tmux-exact-target.test.ts': 'f5cd0056c59bfd01656fa5cf1a35ee01a76d4e77',
+  'src/costops/ledger.ts': '4ee772e3388fb0c56af0b9654f5fcff1428a6549',
+  'src/web/channel-mcp-reconnect.ts': 'd449934034981403bf6869bc6179eced0dba9c90',
+  'src/web/routes/background-tasks.ts': '2fd4ead9456bc32d1e4123778dfbd251d7c78f6b',
+  'src/web/routes/daily-log.ts': '6ae150a4c448c24acf087b8e980cfd736d40fab3',
+  'src/web/routes/recall.ts': 'de5abbb2846d0db8c171988f6f4b2c31ed0a7882',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -4605,6 +4710,18 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "parser.mjs' key above -- this is the TEST for that un-adopted hook. If ensureBashEgressParser " +
       "appears, the hook was adopted without re-deciding the duplication (same anchor, same file) " +
       "-- re-read both entries before adopting this test too.",
+  },
+  // Card c8f33954: the fork's restart-wake behaviour (no willWake/ownsResume) is pinned by
+  // src/__tests__/restart-wake.test.ts above; verified the symbol is absent today.
+  'src/__tests__/restart-wake.test.ts': {
+    needle: 'willWake',
+    file: 'src/web/agent-process.ts',
+    expect: 'absent',
+    because:
+      "Card c8f33954: KEEP FORK, because the fork has not adopted upstream's willWake/ownsResume " +
+      "wake-ownership refactor (verified absent). If willWake appears in agent-process.ts, the " +
+      "refactor landed and this test's HEAD-side assertions need re-deciding against the new code, " +
+      "not assumed still correct.",
   },
 
   // Card 26083811 (WhiteHat L2 from the 405a6da0 gate): mentionsRefusal widened to also catch the
