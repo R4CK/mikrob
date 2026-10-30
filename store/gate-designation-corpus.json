@@ -378,7 +378,10 @@
   {
     "id": "36d17bb3",
     "gateLine": "nincs -- adminisztratív követési kártya, nincs valós deliverable/REVIEW gate-eléshez (MikroB, Cybersec no-review megértősével egyezően). A jogi oldal XSS-kutatás (lásd kommentek) beszáít kutatási memória, nyitva marad követésre, ez nem gate-jelolt.",
-    "expected": null
+    "expected": [
+      "cybersec",
+      "cybersec2"
+    ]
   },
   {
     "id": "3bcc1242",
@@ -447,7 +450,10 @@
   {
     "id": "56329de7",
     "gateLine": "(te magad vagy a gate, ez QA sajat sign-off feladata -- a kartyakat NEM a keszito zarja, hanem a rekonstrukcio-audit, ez nem uj munka hanem tortenelmi allapot-helyreallitas)",
-    "expected": null
+    "expected": [
+      "qa",
+      "qa2"
+    ]
   },
   {
     "id": "4d233223",
@@ -1367,7 +1373,13 @@
   {
     "id": "7d92a775",
     "gateLine": "risk-tiering plan-grilling UTAN dontendo (val. QA + Cybersec/Cybered, mert auth-kritikus utvonalat erint).",
-    "expected": null
+    "expected": [
+      "cybered",
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
   },
   {
     "id": "ae071239",
@@ -1455,7 +1467,10 @@
   {
     "id": "e6dffb8d",
     "gateLine": "nincs meg (plan-grilling utan QA, teszt-infrastruktura, nincs trust-boundary).",
-    "expected": null
+    "expected": [
+      "qa",
+      "qa2"
+    ]
   },
   {
     "id": "40d2d2f9",
@@ -2870,7 +2885,10 @@
   {
     "id": "bd5241b7",
     "gateLine": "sora ... cybersec-gate-scan.py ...') a 'last match wins' szabaly miatt felulirja a valodi Gate: sort, es hamis Cybersec-gate kovetelmenyt ad.",
-    "expected": null
+    "expected": [
+      "cybersec",
+      "cybersec2"
+    ]
   },
   {
     "id": "3d82297f",
@@ -6924,6 +6942,16 @@
   {
     "id": "ba25db04",
     "gateLine": "QA + Cybersec (closure control).",
+    "expected": [
+      "cybersec",
+      "cybersec2",
+      "qa",
+      "qa2"
+    ]
+  },
+  {
+    "id": "a44dbe22",
+    "gateLine": "QA + Cybersec (integrity control).",
     "expected": [
       "cybersec",
       "cybersec2",

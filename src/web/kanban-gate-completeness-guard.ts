@@ -128,6 +128,19 @@ function stripFilenameShapedTokens(text: string): string {
   })
 }
 
+// Pure name-matching, no truncation and no widening -- shared by the clause-scoped primary parse
+// and the fail-closed fallback below, so the two never drift on which tokens count as a gate name.
+function namesInText(text: string): Set<GateAgent> {
+  const low = text.toLowerCase()
+  const names = new Set<GateAgent>()
+  if (/\bqa2\b/.test(low)) names.add('qa2')
+  if (/\bqa\b/.test(low)) names.add('qa')
+  if (/\bcybersec\b/.test(low) || /\bwhitehat\b/.test(low)) names.add('cybersec')
+  if (/\bcybersec2\b/.test(low) || /\bwhitehat2\b/.test(low)) names.add('cybersec2')
+  if (/\bcybered\b/.test(low) || /\bredhat\b/.test(low)) names.add('cybered')
+  return names
+}
+
 /** Which gate agents a Gate: line actually designates -- `null` if it names none (an unparseable or
  *  free-text line makes no verifiable claim, so this guard has nothing to check, same silent-vs-
  *  verified split as the landing guard's `allowUnverified`). */
@@ -157,10 +170,6 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
   }
   const clauseEnd = /[.!?]/.exec(withoutParens)
   const clause = clauseEnd ? withoutParens.slice(0, clauseEnd.index) : withoutParens
-  const low = clause.toLowerCase()
-  const names = new Set<GateAgent>()
-  if (/\bqa2\b/.test(low)) names.add('qa2')
-  if (/\bqa\b/.test(low)) names.add('qa')
   // WHITEHAT/REDHAT (card cf0a8c0b, WhiteHat F1): display-name aliases for the same cybersec/
   // cybered roles. Without this, a "Gate: QA + WhiteHat" line designated QA alone, and a
   // "Gate: WhiteHat" line (or any line naming ONLY the new display name) designated nothing at
@@ -168,17 +177,28 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
   // (this function's own docstring), so the SERVER-SIDE done-guard let the card close without the
   // security gate's verdict, force-free. Measured live on the real function: "QA + WhiteHat" ->
   // {qa, qa2}, "WhiteHat" alone -> null.
-  if (/\bcybersec\b/.test(low) || /\bwhitehat\b/.test(low)) names.add('cybersec')
   // WhiteHat2/cybersec2 (card 21abfe0b, RedHat NO-GO B1): bare `\bcybersec\b`/`\bwhitehat\b` above
   // never matched "cybersec2"/"whitehat2" at all -- the trailing digit is a word character, so the
   // `\b` after the base word never found a boundary there. Measured on the real function before
   // this fix: "QA + WhiteHat2" -> {qa, qa2} (Cybersec silently dropped), "WhiteHat2" ALONE -> null
   // (no gate recognised at all, so the guard allowed ANY close, force-free -- the fail-open this
-  // NO-GO is about). Added as its own clause, same shape as the qa2 clause above.
-  if (/\bcybersec2\b/.test(low) || /\bwhitehat2\b/.test(low)) names.add('cybersec2')
-  if (/\bcybered\b/.test(low) || /\bredhat\b/.test(low)) names.add('cybered')
-  if (names.size === 0) return null
-  return widenQa(widenCybersec(names))
+  // NO-GO is about).
+  const names = namesInText(clause)
+  if (names.size > 0) return widenQa(widenCybersec(names))
+  // FAIL-CLOSED FALLBACK (card d8074d78, N3 on ba25db04's own gate, cybersec2 comment 26643,
+  // non-blocking but fixed here): the clause-scoped parse above can legitimately find no names at
+  // all even though a gate name IS written somewhere on the line -- either because it sits entirely
+  // inside a parenthetical ("(QA + Cybersec)"), or because 8+ layers of nesting with a '.' inside
+  // outlive the removal loop's cap and the stray '.' cuts the clause before any name is reached.
+  // Returning null in either case reads as "no verifiable claim, nothing to check" (this function's
+  // own docstring) -- the SAME fail-open direction every alias fix above this comment already
+  // closed for a different cause. A Gate: line that names a gate ANYWHERE must never silently
+  // designate nothing. So: if the clause-scoped parse is empty, fall back to scanning `stripped`
+  // (filename-tokens already removed, same protection as the primary parse -- but parens and
+  // sentence punctuation still intact, unlike `clause`) for the same names, and if that finds any,
+  // require ALL of them -- fail closed, not a null that lets the done-guard skip every gate.
+  const fallbackNames = namesInText(stripped)
+  return fallbackNames.size > 0 ? widenQa(widenCybersec(fallbackNames)) : null
 }
 
 // `m` (multiline): a comment conventionally opens with `Gate-SHA: ...` on its OWN first line (root
