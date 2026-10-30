@@ -83,7 +83,7 @@ check "$(get "d['language_share']['unknown']")" "1" "protocol-token-only message
 check "$(get "d['language_share']['english_share_pct']")" "50.0" "english share of classified (hu+en) only"
 
 echo
-echo "token-opt-adoption-report.selftest.sh: $PASS passed, $FAIL failed"
+echo "selftest: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then
   printf '  FAILED: %s\n' "${FAILED[@]}"
   exit 1
