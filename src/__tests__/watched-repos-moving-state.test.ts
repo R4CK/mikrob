@@ -576,6 +576,104 @@ describe('watched-repos-record-review.sh -- GO follow-up survivors (card 8aed798
     execFileSync('bash', ['-c', 'umask 022 && exec python3 "$0" "$@"', mutantModePy, target])
     expect(statSync(target).mode & 0o777).toBe(0o644)
   })
+
+  // Delta (MikroB comment 26578, after CYBERSEC2 GO 26576 found two survivor mutants on the
+  // original 4 pins above): the R3 pin is satisfied even by a mutant that swaps os.replace() for
+  // an in-place write, because the pre-replace sleep hook sits BEFORE the in-place write starts --
+  // the target is never torn during the delay, so the torn-read assertion never fires. An atomic
+  // rename always gives the path a NEW inode (the old one is unlinked); an in-place write keeps
+  // reusing the SAME inode. Pin the actual mechanism, not just the symptom R3 already covers.
+  it('atomic swap: a second write replaces the state file\'s inode, not its content in place', () => {
+    execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'deadbee0', '--registry', registryPath, '--state', statePath])
+    const inodeBefore = statSync(statePath).ino
+    execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'deadbee1', '--registry', registryPath, '--state', statePath])
+    const inodeAfter = statSync(statePath).ino
+    expect(inodeAfter).not.toBe(inodeBefore)
+  })
+
+  // MUTATION CHECK: swapping os.replace(tmp_path, state_path) for an in-place write (the exact
+  // survivor mutant CYBERSEC2 demonstrated, comment 26576) genuinely keeps the same inode across
+  // a rewrite -- proving the pin above is non-vacuous.
+  it('MUTATION: os.replace swapped for an in-place write genuinely keeps the same inode', () => {
+    const mutantSh = join(dir, 'watched-repos-record-review-inplace.sh')
+    const src = readFileSync(RECORD_SH, 'utf-8')
+    const mutated = src.replace('os.replace(tmp_path, state_path)', 'open(state_path, "w").write(open(tmp_path).read())')
+    expect(mutated).not.toBe(src) // the replace actually matched something
+    writeFileSync(mutantSh, mutated)
+
+    execFileSync('bash', [mutantSh, 'demo', '--sha', 'deadbee0', '--registry', registryPath, '--state', statePath])
+    const inodeBefore = statSync(statePath).ino
+    execFileSync('bash', [mutantSh, 'demo', '--sha', 'deadbee1', '--registry', registryPath, '--state', statePath])
+    const inodeAfter = statSync(statePath).ino
+    expect(inodeAfter).toBe(inodeBefore)
+  })
+
+  // Delta (MikroB comment 26578): CYBERSEC2's GO also found HEX_SHA_RE's pin was not
+  // mutation-resistant -- dropping the trailing `$` anchor left all tests green while the script
+  // went on to accept hostile shas with trailing junk appended to a valid hex prefix. Feed the
+  // three exact hostile shapes CYBERSEC2 demonstrated getting accepted on that mutant.
+  it('rejects a --sha with trailing junk after a valid hex prefix (hex end-anchor pin)', () => {
+    const hostile = ['abcdef1 --output=x', 'abcdef1\n--x', 'abcdef1;id']
+    for (const sha of hostile) {
+      let threw = false
+      let stderr = ''
+      try {
+        execFileSync('bash', [RECORD_SH, 'demo', '--sha', sha, '--registry', registryPath, '--state', statePath], { stdio: 'pipe' })
+      } catch (err) {
+        threw = true
+        stderr = String((err as { stderr?: Buffer }).stderr ?? '')
+      }
+      expect(threw).toBe(true)
+      expect(stderr).toContain('invalid --sha')
+    }
+    expect(() => readFileSync(statePath, 'utf-8')).toThrow() // never created
+  })
+
+  // MUTATION CHECK: dropping the trailing `$` from HEX_SHA_RE (CYBERSEC2's actual survivor
+  // mutant, comment 26576) genuinely accepts all three hostile shas above and writes them into
+  // the state file verbatim -- proving the pin above is non-vacuous.
+  it('MUTATION: HEX_SHA_RE without the trailing end-anchor genuinely accepts the three hostile shas', () => {
+    const mutantSh = join(dir, 'watched-repos-record-review-noanchor.sh')
+    const src = readFileSync(RECORD_SH, 'utf-8')
+    const mutated = src.replace("HEX_SHA_RE='^[0-9a-f]{7,40}$'", "HEX_SHA_RE='^[0-9a-f]{7,40}'")
+    expect(mutated).not.toBe(src) // the replace actually matched something
+    writeFileSync(mutantSh, mutated)
+
+    const hostile = ['abcdef1 --output=x', 'abcdef1\n--x', 'abcdef1;id']
+    for (const sha of hostile) {
+      writeFileSync(statePath, JSON.stringify({}))
+      execFileSync('bash', [mutantSh, 'demo', '--sha', sha, '--registry', registryPath, '--state', statePath])
+      const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+      expect(state.demo.last_sha).toBe(sha)
+    }
+  })
+
+  // LOW (MikroB comment 26578): the registry tmp had no chmod at all (unlike the state file,
+  // fixed earlier in this describe block) -- os.replace handed it whatever mode the caller's
+  // umask produced. Mirrors the state-file preservation test above, for the registry write path.
+  it('preserves the registry file\'s existing mode across a note-append rewrite even under a loose umask', () => {
+    chmodSync(registryPath, 0o600)
+    execFileSync('bash', ['-c', 'umask 022 && exec "$0" "$@"', RECORD_SH, 'demo', '--sha', 'deadbee0', '--note-append', 'x', '--registry', registryPath, '--state', statePath])
+    expect(statSync(registryPath).mode & 0o777).toBe(0o600)
+  })
+
+  // MUTATION CHECK: without the chmod preservation just added to the registry write path, the
+  // same loose umask loosens the registry tmp file to 0644 before the swap -- proving the pin
+  // above is non-vacuous.
+  it('MUTATION: a registry tmp without the chmod preservation genuinely ends up 0644 under umask 022', () => {
+    const mutantSh = join(dir, 'watched-repos-record-review-regmode.sh')
+    const src = readFileSync(RECORD_SH, 'utf-8')
+    const mutated = src.replace(
+      '    os.chmod(tmp_path, _mode)\n    # Test-only hook (card 9710bdfd GO follow-up R3), same reasoning as the state-write twin above.\n',
+      '    # Test-only hook (card 9710bdfd GO follow-up R3), same reasoning as the state-write twin above.\n',
+    )
+    expect(mutated).not.toBe(src) // the replace actually matched something
+    writeFileSync(mutantSh, mutated)
+    chmodSync(mutantSh, 0o755) // `exec "$0"` below needs the execute bit; writeFileSync doesn't set it
+    chmodSync(registryPath, 0o600)
+    execFileSync('bash', ['-c', 'umask 022 && exec "$0" "$@"', mutantSh, 'demo', '--sha', 'deadbee0', '--note-append', 'x', '--registry', registryPath, '--state', statePath])
+    expect(statSync(registryPath).mode & 0o777).toBe(0o644)
+  })
 })
 
 describe('git-repo-watcher.sh rejects a non-hex/too-short last_sha instead of using it for the prefix match (card ffca678d)', () => {
