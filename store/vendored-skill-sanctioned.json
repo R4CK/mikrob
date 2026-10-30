@@ -136,12 +136,17 @@
     "~/marveen/agents/cybered/.claude/skills/analyzing-supply-chain-malware-artifacts": [
       "changed:SKILL.md@e6ff40ea37f62898d0817f1f6dc15b17cdfc9064e2f669d4d180c15238a0ab88"
     ],
+    "~/marveen/agents/cybered/.claude/skills/caveman": [],
     "~/marveen/agents/cybered/.claude/skills/chaos-engineering": [],
     "~/marveen/agents/cybered/.claude/skills/detecting-indirect-prompt-injection": [
       "changed:SKILL.md@7987c760107c9eff38e246cf2a2f5ac5373c029040532612fcc811fc63afed56"
     ],
     "~/marveen/agents/cybered/.claude/skills/detecting-typosquatting-packages-in-npm-pypi": [
       "changed:SKILL.md@b95693ebed46bca6bfad93c187e8fb8b65c7e09fa358044889f28e8e9fe6f7e8"
+    ],
+    "~/marveen/agents/cybered/.claude/skills/doubt-driven-development": [
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47",
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a"
     ],
     "~/marveen/agents/cybered/.claude/skills/exploiting-broken-function-level-authorization": [
       "changed:SKILL.md@bffaa27f8274f83cbcd6f6048ac0e6fbaf3cc2f45b4c247d123bcf436dbd8030"
@@ -176,6 +181,7 @@
     "~/marveen/agents/cybered/.claude/skills/testing-oauth2-implementation-flaws": [
       "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
     ],
+    "~/marveen/agents/cybered/.claude/skills/unlazy": [],
     "~/marveen/agents/cybersec/.claude/skills/analyzing-supply-chain-malware-artifacts": [
       "changed:SKILL.md@e6ff40ea37f62898d0817f1f6dc15b17cdfc9064e2f669d4d180c15238a0ab88"
     ],
@@ -374,8 +380,28 @@
       "changed:SKILL.md@0f2f2540d3cf3575d29696cbe25082a8915c5b769cb19090c2b84e703859ffca"
     ],
     "~/marveen/agents/qa/.claude/skills/a11y-audit": [],
+    "~/marveen/agents/qa/.claude/skills/browser-testing-with-devtools": [
+      "changed:SKILL.md@956cc4fb3057b93e733dca1617f0dc3bb9dc604c0f0d59d3423638f1a19b2179"
+    ],
+    "~/marveen/agents/qa/.claude/skills/caveman": [],
+    "~/marveen/agents/qa/.claude/skills/ci-cd-and-automation": [],
+    "~/marveen/agents/qa/.claude/skills/doubt-driven-development": [
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47",
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a"
+    ],
+    "~/marveen/agents/qa/.claude/skills/unlazy": [],
     "~/marveen/agents/qa/.claude/skills/webapp-testing": [],
     "~/marveen/agents/qa2/.claude/skills/a11y-audit": [],
+    "~/marveen/agents/qa2/.claude/skills/browser-testing-with-devtools": [
+      "changed:SKILL.md@956cc4fb3057b93e733dca1617f0dc3bb9dc604c0f0d59d3423638f1a19b2179"
+    ],
+    "~/marveen/agents/qa2/.claude/skills/caveman": [],
+    "~/marveen/agents/qa2/.claude/skills/ci-cd-and-automation": [],
+    "~/marveen/agents/qa2/.claude/skills/doubt-driven-development": [
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47",
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a"
+    ],
+    "~/marveen/agents/qa2/.claude/skills/unlazy": [],
     "~/marveen/agents/qa2/.claude/skills/webapp-testing": [],
     "~/marveen/agents/teszter/.claude/skills/webapp-testing": [],
     "~/marveen/seed-fleet-agents/backend/.claude/skills/interview-me": [],
