@@ -22324,3 +22324,20 @@ A CYBERED NO-GO (komment 25502) rámutatott, hogy ennek a regexnek NINCS felső 
 **Who decided:** RedHat (finding, NO-GO 25494, WhiteHat2 owns the original F2 fix direction per the card) + backend (implementation, following the already-proven offload-dispatch.sh pattern rather than inventing a new one).
 
 **Reference:** card c5f2d6c9, CYBERED NO-GO comment 25494, parent card 92b76ff0.
+
+## 2026-10-25 11:50 -- Dashboard-token rotálása (Peti 11991)
+
+**Döntés:** Az URGENT c786213d commit előfeltétele (titok-őr csendes ágak zárása, már DONE) teljesült. Most a közös dashboard-token rotálása végrehajtva.
+
+**Technikai lépések:**
+1. Felmérés: csak store/.dashboard-token fájl, env-en nincs; systemd unit (mikrob-dashboard.service) és watchdog (timer) futó.
+2. Új token generálva: 32 byte hex, atomikus írás (0600).
+3. Dashboard restart: systemctl --user restart (watchdog helyre tudja állítani, MikroB sessionök NEM haltak meg).
+4. Tesztelés: régi token → 401, új token → 200, inter-agent üzenet OK.
+
+**Miért:** Peti biztonsági direktívája (Telegram 11991): token-rotálás most.
+
+**Ki döntött:** Peti (direktíva) + DevO (végrehajtás).
+
+**Hivatkozás:** kártya 7dde8ebc (dashboard-token rotálása), 21df3822 (titok-őr előfeltétel, már DONE).
+
