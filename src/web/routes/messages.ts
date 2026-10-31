@@ -726,6 +726,29 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Cybersec N1 MEDIUM (card 799322f9, debba303 delta-gate): mirror the GET
+    // /api/messages/:id owner check above -- an agent-key caller may only close a row
+    // ADDRESSED TO IT (the recipient completing its own delegated/incoming message), never
+    // someone else's row. Measured before this fix: an agent key closed a foreign row (200,
+    // the row's status became done). 404, not 403, same no-existence-oracle convention as
+    // the GET handler: a foreign id must look identical to one that was never there. The
+    // shared dashboard token (no device auth) is unaffected.
+    // Cybersec N1 MEDIUM (card 799322f9, debba303 delta-gate): mirror the GET
+    // /api/messages/:id owner check above -- an agent-key caller may only close a row
+    // ADDRESSED TO IT (the recipient completing its own delegated/incoming message), never
+    // someone else's row. Measured before this fix: an agent key closed a foreign row (200,
+    // the row's status became done). 404, not 403, same no-existence-oracle convention as
+    // the GET handler: a foreign id must look identical to one that was never there. The
+    // shared dashboard token (no device auth) is unaffected.
+    const authenticatedAgentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
+    if (authenticatedAgentId) {
+      const target = getAgentMessage(id)
+      if (!target || target.to_agent !== authenticatedAgentId) {
+        json(res, { error: 'Message not found' }, 404)
+        return true
+      }
+    }
+
     // Only an OPEN message is closed here (closeOpenMessage checks and writes in one
     // UPDATE). A second close of a done/failed row is refused with 409 and changes
     // nothing: it used to overwrite the stored result and send a second completion
