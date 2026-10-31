@@ -3168,8 +3168,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // an imported/created agent named 'hanna' cannot send AS hanna. The real residual is a NAME
   // COLLISION (messages TO 'hanna' route to the voice mailbox; create/import do not refuse the
   // name) -- a separate, LOW follow-up card for reserved agent NAMES on the create/import/scaffold
-  // paths, not a fix to isReservedSenderId/RESERVED_SENDER_IDS (widening that would 403 the
-  // legitimate voice relay).
+  // paths (card 13999f11, opened for exactly this gap), not a fix to
+  // isReservedSenderId/RESERVED_SENDER_IDS (widening that would 403 the legitimate voice relay).
   'src/web/fleet-transfer.ts':
     "KEEP FORK -- isReservedSenderId (the 'fourth door', card b46a4b7e) closes a real self-" +
     'escalation route upstream names differently (RESERVED_AGENT_IDS/VOICECHANNELID1022). Traced ' +
@@ -3178,7 +3178,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "full message-send path, card 417e2343 comment 26763: POST /api/messages 403s from='hanna' " +
     'unless an out-of-band allowlisted device key is presented, card 7503bb31). Do NOT widen ' +
     'RESERVED_SENDER_IDS for this -- open a separate LOW code card for reserved agent NAMES on the ' +
-    'create/import/scaffold paths instead.',
+    'create/import/scaffold paths instead (card 13999f11).',
   'src/__tests__/fleet-transfer.test.ts':
     "KEEP FORK -- pins the 'fourth door' fix in src/web/fleet-transfer.ts above.",
   // approvals.ts: fork's consumeEmailSendApproval + its separate generic consumeApproval (db.ts,
@@ -3193,7 +3193,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'consumeCategoryApproval is EQUALLY hash-bound (content_hash IS ? in its UPDATE), so adopting ' +
     'it is not a security upgrade -- it would only add exclusion-list machinery ' +
     '(SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) no current fork caller needs ' +
-    '(WhiteHat, card 417e2343 comment 26763, confirmed by reading upstream/develop:src/db.ts).',
+    '(verified by backend3, re-verified by WhiteHat at 56d302fd1, card 417e2343 comment 26763, ' +
+    'confirmed by reading upstream/develop:src/db.ts).',
   'src/__tests__/approvals-delivery.test.ts':
     'KEEP FORK -- pins the current single-arg notifyOwner(approval) call shape matching ' +
     'src/web/routes/approvals.ts above.',
@@ -3367,6 +3368,164 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "KEEP FORK -- verified agentKeyToAgentId is actually called here, same as daily-log.ts above. " +
     "Upstream's parseDateExpr (../../date-range.js) does not exist in the fork -- a different, " +
     'unbuilt date-expression feature.',
+
+  // Card 4eb41f64 (backend3, 2026-10-31), the 15 files still nobody-decided out of c8f33954's
+  // scope (WhiteHat pre-opinion comment 27159 on this card's own plan, comment 27153). Each
+  // decision below was corrected against WhiteHat's measurements before being written here --
+  // see 27159 for the full reasoning this records.
+  //
+  // GROUP A -- upstream-only, fork does not have the file at all. NOT ADOPTED, each a separate
+  // follow-up adoption card (per WhiteHat: a deferral with no card id turns nobody-decided into
+  // decided-and-forgotten).
+  'scripts/hooks/credential-gate.py':
+    "ADOPTED (card 42d952bc, Gate-SHA f163d6cc921ff98bcd99ef858dfe623f881408c3) -- a PreToolUse " +
+    'hook blocking outgoing letters that carry a credential (password/PIN/WiFi key), with a ' +
+    "shared-value list, cross-recipient dedup, and a one-shot acknowledgement CLI. Overlap check " +
+    "(this card's own Kesz-ha point 1) confirmed zero hits for password/credential/PIN/wifi terms " +
+    "in email-approval-gate.py and outgoing-copy-gate.py -- neither existing gate inspects letter " +
+    'content for a credential, so this is net-new coverage, not a duplicate. Ported with two ' +
+    'fork adaptations (documented in the file\'s own docstring): classify_mail_tool replaced with ' +
+    'a local _is_mcp_send() helper reusing outgoing-copy-gate.py\'s existing deny-by-default ' +
+    'classifier, and collect_mcp_body\'s arity matched to this fork\'s actual 1-arg signature. ' +
+    'Wired into .claude/settings.json with the same 7 static PreToolUse matchers as ' +
+    'email-approval-gate.py.',
+  'scripts/__tests__/credential-gate.test.py':
+    'ADOPTED (card 42d952bc, Gate-SHA f163d6cc921ff98bcd99ef858dfe623f881408c3) -- ported ' +
+    'alongside scripts/hooks/credential-gate.py above, same reasoning. One upstream test case ' +
+    '(bash_send() with a `< file` redirect) was changed to an inline --body literal, because this ' +
+    "fork's email_extract.py (TOCTOU924, card 14256aac) deliberately treats any `< file` " +
+    'redirect as unreadable_reason; a separate HTML-body case was routed through an MCP ' +
+    'tool_input call instead of a Bash command string for the same reason. All PASS.',
+  'scripts/recipient-ledger.mjs':
+    "NOT ADOPTED (deferred, card 251ba892) -- a verified-recipient ledger backing an " +
+    "outbound-address gate, preventing sends to an invented/unverified address. The fork does " +
+    'not have this gate today. WhiteHat did not rank the overlap with the fork\'s existing ' +
+    'outbound gates -- that check is part of card 251ba892.',
+  'scripts/__tests__/morning-stamp-gate.test.sh':
+    'NOT ADOPTED -- the fork already has the production fix this test describes (the ' +
+    'delivery-proof SENTINEL in scripts/morning-briefing.sh: SENTINEL=MORNING_SENT_OK_$(date ' +
+    '+%s)_$$, stamp only when the sentinel is the last line AND every chunk sent ok=true), with ' +
+    'its own equivalent coverage already in the fork (morning-briefing-slack-delivery.test.sh, ' +
+    'morning-briefing-no-poller.test.sh -- verified these assert the exact same ' +
+    'not-stamped-unless-delivered invariant across Slack/Telegram combos). Duplicate coverage ' +
+    'under a different harness, not a gap. Consistent with this same file\'s drift entry ' +
+    '(morning-stamp-gate, line ~1648) naming it as a script the fork does not ship at that path.',
+  'scripts/__tests__/morning-timer-park.test.sh':
+    'NOT ADOPTED -- tests park_morning_timer, a function already explicitly NOT ADOPTED on ' +
+    'this fork\'s update.sh (card c2aeefa5, re-confirmed and actually REMOVED after leaking in ' +
+    'via a merge per card ef6a8031 -- see update.sh:692-701). A test for a function the fork ' +
+    'deliberately does not call stays un-adopted too.',
+
+  // GROUP B -- both sides have the file, content differs.
+  'docs/config-reference.md':
+    'NOT ADOPTED -- two reasons: (a) most of the diff documents upstream-only features the ' +
+    'fork has not built (extra-hooks.json, OSS_INVENTORY_* settings, AGENT_TOKENS, agent-config ' +
+    'profileId rename from securityProfile, PERMISSION_ALERT_MARKS, daily-log memory mirror) -- ' +
+    'adopting the docs without the features would describe nonexistent functionality; (b) the ' +
+    'GET/POST /api/settings curl recipe hunk reverts the fork\'s own piped-bearer-token idiom ' +
+    "(printf ... | curl -H @-) to the insecure inline-argv form (curl -H \"Authorization: " +
+    'Bearer $(cat ...)\"), the exact anti-pattern this file\'s own existing entry requires ' +
+    'rewriting OUT of adopted upstream content, not into it. Pure docs, no anchor possible.',
+  'scripts/channel-outage-alarm.sh':
+    "NOT ADOPTED (deferred, card 363339b4, LOW) -- upstream adds a real small hardening on top " +
+    "of the same safe piped-curl idiom the fork already uses: rejects a bot token containing a " +
+    "quote/backslash/newline before building the -K config line, preventing config-injection " +
+    'via an unusual token value. Low-risk, worthwhile, but implementing it is a merge, out of ' +
+    'this drift card\'s scope.',
+  'scripts/channel-watchdog.sh':
+    'KEEP FORK (reliability surface, not a security one -- corrected per WhiteHat 27159: ' +
+    "upstream's RESPAWN_CMD DOES carry IS_SANDBOX=1 too, ROOTRESPAWN1001 is upstream's own " +
+    '#1665; only the three MCP_* vars are fork-only). The fork\'s RESPAWN_CMD carries ' +
+    'MCP_SERVER_CONNECTION_BATCH_SIZE/MCP_CONNECTION_NONBLOCKING/MCP_TIMEOUT (card d95f71c9, ' +
+    'closes an MCP-registration-timeout outage) which upstream has none of. Taking upstream ' +
+    'wholesale would silently reopen the outage the watchdog exists to recover from. Anchor ' +
+    "below pins all three vars together, so dropping NONBLOCKING or TIMEOUT alone is also red.",
+  'scripts/doctor.sh':
+    'KEEP FORK (the fork\'s own checks); upstream\'s Spotlight (macOS) diagnostic block ' +
+    'flagged as an independent, non-conflicting follow-up candidate (different, unrelated ' +
+    'check; MERGE would be safe later but is out of scope now). The fork\'s own blocks here are ' +
+    'real security/supply-chain checks run against the LIVE installed tree (card ec5173a5: ' +
+    'bearer-token-in-curl-argv check on installed agents; card f39dd8fb: seed-skills/ ' +
+    'untracked-files check) -- doctor.sh is explicitly the ONLY place these can run (the vitest ' +
+    'guard cannot see a live install). Losing them silently would remove real coverage. Anchor ' +
+    "below pins the argv check only (per WhiteHat 27159: the seed-skills check is fork-only too " +
+    "but this map allows one anchor per entry key) -- f39dd8fb's check is NOT pinned by this " +
+    'anchor and that gap is accepted, not hidden.',
+  'scripts/hooks/email_extract.py':
+    "KEEP FORK, WITH AN ANCHOR (corrected per WhiteHat 27159 -- this was initially mis-scoped " +
+    "as NOT ADOPTED/no-anchor; it is a security surface, the shared extraction module behind " +
+    'email-approval-gate.py, outgoing-copy-gate.py and email-extract-parity.test.py, so by this ' +
+    "card's own rule it needs a KEEP FORK anchor like the other security surfaces). The plan's " +
+    'original claim that upstream "adds @file body reading" was wrong: the fork already has it ' +
+    '(collect_bash_body, GATEBINVAK916 @file/-F/--post-file/-T forms) plus fork-only fixes ' +
+    '(_BASH_ATTACH_RE, TOCTOU924). Upstream\'s _read_body_file/_payload_text is a DIFFERENT ' +
+    'implementation of the same thing, plus by-name tool detection in collect_mcp_body the fork ' +
+    'does not have (flagged as a follow-up candidate, dedicated review per this file\'s own ' +
+    "earlier entry that a security-audited function wants its own review, not a rider on a " +
+    'drift re-decision).',
+  'scripts/hooks/send-invocation-cases.json':
+    'ACKNOWLEDGE-ONLY -- large (863-line) shared test-fixture/contract file between the two ' +
+    'mail gates (outgoing-copy-gate.py, email-send-gate.mjs). The _comment difference documents ' +
+    'a prior explicit decision (INTERAGENTHOMOGLIF923, NOT adopted, cards ee7bc2ba/14256aac) ' +
+    'already recorded elsewhere in this same file; remaining content differences likely mirror ' +
+    'the same gate-shape divergence. VERIFIED (closing the gap WhiteHat 27159 flagged as ' +
+    'unverified): src/__tests__/send-invocation-conformance.test.ts reads this file\'s `cases` ' +
+    'array directly and runs BOTH outgoing-copy-gate.py and email-send-gate.mjs against every ' +
+    'case\'s expected verdict (grep-verified, readFileSync of this exact path). A wholesale ' +
+    'upstream swap of the cases array is therefore its own tripwire through that test, not ' +
+    'through this acknowledgement alone -- no separate anchor needed here. A full ' +
+    'line-by-line audit of the 863 lines for subtler per-case drift remains out of this ' +
+    "card's budget, deferred to a dedicated review.",
+  'scripts/hooks/telegram_progress_watchdog.py':
+    'NOT ADOPTED (deferred, card c6abbcf5) -- WhiteHat\'s strongest adoption candidate in this ' +
+    "batch (comment 27159). Upstream's change (#2269) distinguishes a CLI-written " +
+    'session-limit/API-error line from a real agent answer (stops the watchdog delivering the ' +
+    "CLI's own outage text as the agent's reply), adds a round_activity check so the " +
+    '15-minute wedged-backstop does not fire on a round still actively working, and ledgers ' +
+    'real sends. No fork-side anchor possible (the feature does not exist); recommended its own ' +
+    'dedicated card rather than a drift-card rider.',
+  'scripts/self-pace-gate.mjs':
+    'KEEP FORK, explicitly and firmly, for the decision itself -- but the decision text must ' +
+    'NOT claim the fork side is the stronger one (WhiteHat 27159 correction): upstream is AHEAD ' +
+    'on the self-pace schedule surface. Upstream\'s side removes the AST-divergence shadow-mode ' +
+    'mechanism (astMode/divergenceHead/recordAstDivergence, card f16b3165\'s dark-launch ' +
+    'instrumentation, two prior Cybersec F-findings on this exact mechanism) and replaces it ' +
+    'with a worker_threads-based approach this fork has never reviewed -- a wholesale swap ' +
+    'without dedicated WhiteHat/RedHat review would be reckless and is out of this card\'s scope ' +
+    'regardless. SEPARATELY, WhiteHat measured (archived scripts/ from both trees, synthetic ' +
+    'PreToolUse JSON, SELF_PACE_AST=off): the fork ALLOWS and upstream DENIES 6 self-scheduling ' +
+    'shapes (python3 -c urllib POST, node -e fetch POST, curl to /api/sch{e,}dules, a bare file ' +
+    'write directly under ~/.claude/scheduled-tasks/, cp /dev/null into that dir, native Write ' +
+    'to a file there) -- both sides allow a 7th, variable-composed shape, so upstream is not ' +
+    'complete either. This gap is recorded, not resolved, here: follow-up card 2e04a52e ports ' +
+    "upstream's scheduleSurfaceDeny as its own surgical merge (QA + Cybersec + Cybered gate, " +
+    'the control that stopped the autonom-kor incident). The anchor below pins the fork-only AST ' +
+    'cutover mechanism as a tripwire for the wholesale-swap decision -- it does NOT satisfy ' +
+    "\"every KEEP FORK on a security surface is protected\": there is no fork-only enforcement " +
+    'fact in this file to pin (SCHEDULE_STORE_RX, allowlistBashSegmentAllowed, ' +
+    'fileToolTargetsAllowlist all exist on both sides), and it says nothing about the 6-shape gap.',
+  'scripts/sms/seeme-send.py':
+    'KEEP FORK (corrected per WhiteHat 27159 -- the case is stronger than originally stated, ' +
+    'and the original description of upstream was wrong). The fork\'s approval-consumption is ' +
+    'content-hash-bound (content_hash = sha256(recipient+text)), single-use (atomic ' +
+    'consumed_at) and time-windowed (SEEME_APPROVAL_WINDOW_S) -- card 779b9660/fd10c70b WhiteHat ' +
+    'F1. Upstream\'s check_approval (line 194) tests only that the recipient digits occur as a ' +
+    'substring of the description, binds NO text at all, has no time window, and its consume ' +
+    'call echoes the row\'s own content_hash back (rec.get("content_hash"), line ~210) -- the ' +
+    'sender never compares the hash against the (recipient, text) it is about to send. This is ' +
+    'a materially weaker binding than "a substring recipient-text match", which is what the ' +
+    'original plan said. Named explicitly as a security surface by this card. Anchor below pins ' +
+    'the strongest binding fact (the recipient-string check inside _description_binds), not the ' +
+    "weakest control: the original \"if content_hash != anchor:\" needle dies on a wholesale " +
+    'upstream take but survives an in-place weakening (revert _description_binds to a substring ' +
+    'check, drop the APPROVAL_WINDOW_S test).',
+
+  // GROUP C -- fork-only, upstream does not have the file at all.
+  'scripts/test_garmin_run_gate.py':
+    'KEEP FORK (trivial) -- upstream does not have this file at all (deleted or never existed ' +
+    'there -- delete/modify conflict, no blob to pin per the drift tool\'s own report). ' +
+    'Fork-only test for a fork-only feature; no real upstream side to compare against, no ' +
+    'anchor needed since there is no shared content upstream could silently reopen.',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -3791,6 +3950,24 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/routes/background-tasks.ts': '2fd4ead9456bc32d1e4123778dfbd251d7c78f6b',
   'src/web/routes/daily-log.ts': '6ae150a4c448c24acf087b8e980cfd736d40fab3',
   'src/web/routes/recall.ts': 'de5abbb2846d0db8c171988f6f4b2c31ed0a7882',
+  // Card 4eb41f64 -- see the matching ACKNOWLEDGED_CONFLICTS entries above. GROUP A/B blobs are
+  // upstream/develop's real blob for the file (`git rev-parse upstream/develop:<path>`), measured
+  // 2026-10-31. GROUP C (fork-only) uses ABSENT_UPSTREAM_BLOB -- upstream genuinely has no blob.
+  'scripts/hooks/credential-gate.py': '80449c820ad9200e7fd4d7c05c0a9305ff58ca64',
+  'scripts/__tests__/credential-gate.test.py': '7468607469596eee158a9764a771b70e0dfdc273',
+  'scripts/recipient-ledger.mjs': '149106d5f87e3b36a48325da51c50b428f4cd34a',
+  'scripts/__tests__/morning-stamp-gate.test.sh': '575deba838060ed24a5d5f58bf863356002604c7',
+  'scripts/__tests__/morning-timer-park.test.sh': '31e54e67d170412edccb3577d1c827b3638442e1',
+  'docs/config-reference.md': 'c26430027e7ff7e7c951f2489baf80269812f8a8',
+  'scripts/channel-outage-alarm.sh': '770bc79814f7e67746868e0218e4643dd9a75a5f',
+  'scripts/channel-watchdog.sh': '1a4b536e6bd4473393770119b486aef95c9935ae',
+  'scripts/doctor.sh': '42dcac7f8646b10a81cc1cb519c115061929e16b',
+  'scripts/hooks/email_extract.py': '2c3ab2f4a2544ad75734658e585a17355868c986',
+  'scripts/hooks/send-invocation-cases.json': '76bb072c3b8e3f6f31ff5730eeea1fdd2b0e8cc4',
+  'scripts/hooks/telegram_progress_watchdog.py': 'e1e032b0370b4e66f839398710611f7b447440d8',
+  'scripts/self-pace-gate.mjs': '5a671866747074cf03d043295dc1e66bab69a9a4',
+  'scripts/sms/seeme-send.py': 'a8801ce9a6cecb33e0a6a4b91a196003ec529e3b',
+  'scripts/test_garmin_run_gate.py': ABSENT_UPSTREAM_BLOB,
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -5005,6 +5182,179 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "a plugin process carrying BOTH markers but failing the argv-shape check is spared...' and " +
       "'(vi) card b89fbac6, RedHat NO-GO 23465: a non-bun/node process whose argv literally contains " +
       "server.ts is spared...') fail red the moment it happens, independent of this anchor.",
+  },
+
+  // Card f1e7d14c (417e2343 follow-up, WhiteHat F1 MEDIUM, comment 26936): the mentionsRefusal
+  // regex above (card 66ad1f95 describe block) does not match the "KEEP FORK" / "MERGE" phrasing
+  // these six closed self-escalation entries use, so none of them were ever in the `refusing` set
+  // the coverage-ratchet test enforces -- an upstream history merge could reverse any of them with
+  // nothing firing. DELIBERATELY NOT widening mentionsRefusal to also match /KEEP FORK/i: that
+  // phrase appears in 26 entries across this file, most with no checkable production fact (style/
+  // naming parity, test-file-only decisions) -- pulling all 26 into the coverage ratchet would
+  // force a full backlog triage far outside this card's named scope, for files nobody has reported
+  // a reversal risk on. Instead, each of the six self-escalation paths below gets its OWN
+  // ACKNOWLEDGED_FORK_ANCHORS entry. That is enforced UNCONDITIONALLY by "every declared anchor
+  // holds on the CURRENT tree" (this file, describe block above) -- that test iterates
+  // Object.entries(ACKNOWLEDGED_FORK_ANCHORS) directly and does not consult mentionsRefusal at all,
+  // so these six are protected against the exact reversal-on-history-merge failure mode this card
+  // closes, without touching the regex or its 26-entry blast radius. Mutation-verified (see REVIEW
+  // on card f1e7d14c): deleting each needle from its file turns "every declared anchor holds on the
+  // CURRENT tree" red; restoring it turns the suite green again.
+  'src/web/routes/auth.ts': {
+    needle: "const CREDENTIAL_MINT_KINDS = ['session'] as const",
+    file: 'src/web/routes/auth.ts',
+    expect: 'present',
+    because:
+      'card 49960046 (RedHat 17005 X1/X3) retired the HTTP break-glass path -- both creating the ' +
+      "first dashboard user and resetting a password used to accept the shared fleet bearer, which " +
+      'could mint itself a session and self-escalate (chain 68254bd7/9655494c). Both mint paths now ' +
+      "gate on CREDENTIAL_MINT_KINDS = ['session'] only. Upstream still lets the bearer create the " +
+      "first user over HTTP; adopting that reopens the closed self-escalation chain. If this const " +
+      "widens to include a bearer-reachable kind, or the check it gates is removed, that path is " +
+      "reopened silently.",
+  },
+  'src/web/routes/security.ts': {
+    needle: "const ENROLL_KINDS = ['session'] as const",
+    file: 'src/web/routes/security.ts',
+    expect: 'present',
+    because:
+      "ENROLL_KINDS = ['session'] excludes 'token' from bridge-enroll, one of the three self-" +
+      'escalation routes the 68254bd7 chain closed -- a shared bearer could otherwise mint itself a ' +
+      "device credential through this door. Upstream's ['token', 'session'] reopens it. If 'token' " +
+      "is added back to this array, the door is open again.",
+  },
+  'src/web/fleet-transfer.ts': {
+    needle: "isReservedSenderId(String(agent.name ?? ''))",
+    file: 'src/web/fleet-transfer.ts',
+    expect: 'present',
+    because:
+      "isReservedSenderId (the 'fourth door', card b46a4b7e) is the fork's own self-escalation " +
+      "closure upstream names differently (RESERVED_AGENT_IDS/VOICECHANNELID1022) -- it refuses an " +
+      'imported/created agent whose name collides with a reserved system sender id. If this call is ' +
+      "dropped from agent creation/import validation, the fourth door reopens. (Residual name-" +
+      "collision hygiene gap for VOICE_CHANNEL_AGENT_ID = 'hanna', traced NOT privilege-escalating " +
+      "by WhiteHat comment 26763, tracked separately by card 13999f11 -- not a reason to touch this " +
+      "call.)",
+  },
+  'src/web/routes/fleet.ts': {
+    needle: "const FLEET_IMPORT_APPROVAL_CATEGORY = 'fleet_import_apply'",
+    file: 'src/web/routes/fleet.ts',
+    expect: 'present',
+    because:
+      'FLEET_IMPORT_APPROVAL_CATEGORY gates apply=true fleet imports behind a human-resolved, ' +
+      'payload-hash-bound, single-use approval -- the core deliverable of the 68254bd7 security-fix ' +
+      'chain for this endpoint (WhiteHat confirmed the gate in the code, card 417e2343 comment ' +
+      '26763). If this const or the approval check it gates is removed, apply=true fleet import ' +
+      'reopens as an unapproved bypass.',
+  },
+  'src/web/routes/daily-log.ts': {
+    needle: 'agentKeyToAgentId',
+    file: 'src/web/routes/daily-log.ts',
+    expect: 'present',
+    because:
+      "agentKeyToAgentId (../auth-device-keys.js) resolves the authenticated agent id for device-" +
+      "key auth here, core to this fork's auth system (card debba303 / WhiteHat2 X1: device-key " +
+      "identity must override a caller-supplied ?agent= on reads, not the other way round). " +
+      "Upstream's containsSuspiciousContent is a different, unbuilt content-screening feature, not " +
+      "a competing fix. If this call is dropped, the ?agent= override gap reopens.",
+  },
+  'src/web/routes/recall.ts': {
+    needle: 'agentKeyToAgentId',
+    file: 'src/web/routes/recall.ts',
+    expect: 'present',
+    because:
+      'same identity-override gap as src/web/routes/daily-log.ts above (card debba303 / WhiteHat2 ' +
+      "X1) -- agentKeyToAgentId must resolve the device-key identity here too. Upstream's " +
+      'parseDateExpr is a different, unbuilt date-expression feature, not a competing fix.',
+  },
+  // Card 4eb41f64 (backend3, 2026-10-31): the fork does not have park_morning_timer() at all
+  // (grep-verified: 0 occurrences of the call form anywhere in the fork, the only two hits are
+  // in explanatory `#` comments in update.sh, which the harness strips). This is the ONE file
+  // out of the 9 originally-unanchored new entries where a real, checkable production fact
+  // exists -- see UNANCHORED_BACKLOG below for the other 8, where it genuinely does not.
+  'scripts/__tests__/morning-timer-park.test.sh': {
+    needle: 'park_morning_timer()',
+    file: 'update.sh',
+    expect: 'absent',
+    because:
+      'this test exercises park_morning_timer, a function this fork deliberately does not call ' +
+      '(card c2aeefa5, re-confirmed and actually REMOVED after leaking in via a merge per card ' +
+      "ef6a8031 -- update.sh:692/715 name it only inside NOT-ADOPTED comments, which the " +
+      "harness strips). If park_morning_timer() appears as a real call again, that decision " +
+      'was silently reversed by a later auto-merge and this test-skip needs re-reading.',
+  },
+  // Card 4eb41f64 (backend3, 2026-10-31), the 5 anchors WhiteHat's pre-opinion (comment 27159)
+  // asked for on the KEEP-FORK security-surface decisions above. All 5 needles verified fork=1
+  // / upstream=0 (git show upstream/develop:<path> | grep -c <needle>) before being written here,
+  // and verified to sit on a CODE line, not inside a comment the harness strips (code-quality
+  // rule 12).
+  'scripts/channel-watchdog.sh': {
+    needle: 'MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000',
+    file: 'scripts/channel-watchdog.sh',
+    expect: 'present',
+    because:
+      "the fork's RESPAWN_CMD carries these three vars (card d95f71c9, closes an " +
+      "MCP-registration-timeout outage); upstream's RESPAWN_CMD has none of them (upstream DOES " +
+      "carry IS_SANDBOX=1 too, so that flag is not what this anchor is about -- WhiteHat " +
+      'correction 27159). Taking upstream wholesale, or dropping any one of the three vars, ' +
+      'would silently reopen the outage the watchdog exists to recover from. All three are ' +
+      'pinned together so dropping NONBLOCKING or TIMEOUT alone is also caught, not just a ' +
+      'wholesale swap.',
+  },
+  'scripts/doctor.sh': {
+    needle: 'store/sync-agent-templates.sh --check',
+    file: 'scripts/doctor.sh',
+    expect: 'present',
+    because:
+      "card ec5173a5's bearer-token-in-curl-argv check on installed agents, run against the " +
+      'LIVE installed tree -- doctor.sh is the only place this can run (the vitest guard cannot ' +
+      'see a live install). NOTE (WhiteHat 27159): card f39dd8fb\'s seed-skills/ untracked-files ' +
+      'check (store/seed-skills-untracked-check.sh) is a second fork-only live-tree check in ' +
+      'this same file and is NOT pinned by this anchor -- accepted gap, not hidden, because this ' +
+      'map allows one anchor per entry key.',
+  },
+  'scripts/self-pace-gate.mjs': {
+    needle: 'function astMode()',
+    file: 'scripts/self-pace-gate.mjs',
+    expect: 'present',
+    because:
+      'pins the fork-only AST dark-launch cutover mechanism (astMode/divergenceHead/' +
+      'recordAstDivergence, card f16b3165, heredocOwnerSpans/SELF_PACE_AST fork 4 / upstream 0) ' +
+      'as a tripwire for the wholesale-rewrite decision, NOT an enforcement control -- it reads ' +
+      "the dark-launch FLAG (default 'shadow'), the walker still decides, and it will correctly " +
+      "trip on a wholesale upstream take but will ALSO trip on a legitimate cutover to 'on'. " +
+      'This anchor does NOT satisfy "every KEEP FORK on a security surface is protected": there ' +
+      'is no fork-only enforcement fact in this file to pin (SCHEDULE_STORE_RX, ' +
+      'allowlistBashSegmentAllowed, fileToolTargetsAllowlist all exist on both sides), and it ' +
+      'says nothing about the 6-shape self-pace-schedule gap WhiteHat measured (follow-up card ' +
+      '2e04a52e).',
+  },
+  'scripts/sms/seeme-send.py': {
+    needle: 'f"Cimzett: {to_number}" in lines',
+    file: 'scripts/sms/seeme-send.py',
+    expect: 'present',
+    because:
+      'pins the STRONGEST of the fork\'s three approval-binding controls (content-hash-bound, ' +
+      'single-use, time-windowed -- card 779b9660/fd10c70b WhiteHat F1): the recipient-string ' +
+      'check inside _description_binds. The weaker, originally-proposed needle ' +
+      '(`if content_hash != anchor:`) dies on a wholesale upstream take but survives an ' +
+      'in-place weakening (revert _description_binds to a substring check, drop the ' +
+      'APPROVAL_WINDOW_S test) -- WhiteHat correction 27159. Upstream\'s check_approval binds no ' +
+      'text at all and echoes the row\'s own content_hash back instead of comparing it against ' +
+      'the (recipient, text) about to be sent.',
+  },
+  'scripts/hooks/email_extract.py': {
+    needle: '_BASH_ATTACH_RE',
+    file: 'scripts/hooks/email_extract.py',
+    expect: 'present',
+    because:
+      'fork-only fix (GATEBINVAK916 @file/-F/--post-file/-T forms, TOCTOU924) in the shared ' +
+      'extraction module behind email-approval-gate.py, outgoing-copy-gate.py and ' +
+      'email-extract-parity.test.py -- a security surface, corrected into KEEP-FORK-with-anchor ' +
+      'per WhiteHat 27159 after the original plan mis-scoped it as a plain, unanchored ' +
+      'deferral. Upstream\'s _read_body_file/_payload_text is a different implementation of the ' +
+      'same @file-reading idea; losing this fork-only regex would reopen the TOCTOU/attach-form ' +
+      'gaps it closes.',
   },
 }
 
