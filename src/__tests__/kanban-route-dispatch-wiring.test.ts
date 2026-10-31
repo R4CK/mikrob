@@ -19,7 +19,7 @@ import type http from 'node:http'
 // drops the `detached` option in this environment -- see that file's own header). The fake child
 // here emits 'exit' on the next microtask, mirroring the old queueMicrotask(cb) timing.
 const { mockSpawn } = vi.hoisted(() => ({
-  mockSpawn: vi.fn((_cmd: string, _args: readonly string[], _opts: unknown) => {
+  mockSpawn: vi.fn<(cmd: string, args: readonly string[], opts: unknown) => EventEmitter & { pid: number; stdout: EventEmitter }>(() => {
     const child = new EventEmitter() as EventEmitter & { pid: number; stdout: EventEmitter }
     child.pid = 12345
     child.stdout = new EventEmitter()
