@@ -22747,3 +22747,13 @@ backend (a javítás).
 **Ki dontott:** backend3 (4eb41f64 PLAN, komment 27153, item 12: NOT ADOPTED deferred, de eros ajanlassal); WhiteHat (komment 27159: "a legerosebb adoptalasi jelolt"); MikroB (c6abbcf5 kartya-nyitas, dispatch msg_id:16083); DevO (fullstack) a tenyleges portolas es a hatokor-dontes a FALLBACKEGYSZER1019-gap kihagyasarol.
 
 **Hivatkozas:** kartya c6abbcf5 (parent 7f0efce3), kartya 4eb41f64 komment 27153/27159, upstream commit a21f3e5b52f1619e4a356d79a34a0840b5c1b962, `scripts/hooks/telegram_progress_watchdog.py`, `scripts/hooks/telegram_progress_clear.py`, `scripts/__tests__/telegram-watchdog-synthetic.test.sh`.
+
+## 2026-10-31: 7a0aa34d -- cpu-pool test leak isolation + HOLDERS leak follow-up
+
+**Döntés:** card 7a0aa34d required fleet-test.sh/marveen-land.sh test runs to never leak fake kanban comments onto the real card, and (follow-up from MikroB's live heartbeat evidence, comment 27444) a leaked fake-midrun selftest process to be reaped. Fix 1 (commit b21602316): scrubbed FLEET_TEST_AGENT/KANBAN_COMMENT_AGENT/KANBAN_COMMENT_API/KANBAN_COMMENT_TOKEN_FILE in `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`, pinned KANBAN_COMMENT_API/KANBAN_COMMENT_TOKEN_FILE to unreachable values in `src/__tests__/agent-worktree-marveen.test.ts`. Fix 2 (commit eea9080cb): `store/mopsion-suite-run.selftest.sh`'s own `HOLDERS` array, read by its `trap cleanup EXIT`, never tracked 7 background pids the selftest itself spawns to simulate mopsion-suite-run.sh -- if the selftest is interrupted before its own `wait`, cleanup() has nothing to kill. Added `HOLDERS+=("$<pid>")` after each of the 7 captures.
+
+**Mit ellenőriztem:** fleet-test.sh on b21602316: 1289/1290 files, 38086/38216 tests green. Mutation-verified in an isolated scratchpad reproduction of the HOLDERS+trap pattern: SIGTERM before the parent's own wait leaks the child without the fix, reaps it with the fix. fleet-test.sh on the eea9080cb merge result (judged by marveen-land.sh): 1292/1293 files, 38201/38331 tests green, lint-ratchet holds.
+
+**Ki döntött:** MikroB (comment 27444, live evidence + Kesz-ha suggestion), backend2 (root-cause + fix + verification).
+
+**Hivatkozás:** kártya 7a0aa34d, comment 27444, `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`, `src/__tests__/agent-worktree-marveen.test.ts`, `store/mopsion-suite-run.selftest.sh`.
