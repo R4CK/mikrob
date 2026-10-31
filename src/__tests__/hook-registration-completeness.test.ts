@@ -68,6 +68,8 @@ const EXEMPT: Record<string, string> = {
     'shared library: the one memory-frontmatter check, imported by memory-frontmatter-gate.py (Write/Edit) and memory-frontmatter-bash-gate.py (Bash, KAPUEGYUT918); not itself a hook',
   'email_extract.py':
     'shared library imported by outgoing-copy-gate.py (and the level-2 email approval gate, EMAILKAPU901 PR2); not itself a hook',
+  'credential_lib.py':
+    'shared library (CREDGATE1003, card 42d952bc) imported by credential-gate.py and credential-gate-cli.py: config/key/state/detector helpers; not itself a hook',
   'memory-save.sh':
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':
@@ -177,6 +179,8 @@ function registrationCorpus(): string {
 const CHECKOUT_ONLY: Record<string, string> = {
   'email-approval-gate.py':
     'level-aware email gate for the MAIN agent (EMAILKAPU901 PR2, #1149): its docstring scopes it to sessions rooted at PROJECT_ROOT, and sub-agents keep their unconditional hard-deny (email-send-gate.mjs), behind which this gate would be a no-op',
+  'credential-gate.py':
+    'credential-leak gate for outgoing letters (CREDGATE1003, card 42d952bc): wired statically in the checkout settings the same way as its closest sibling, email-approval-gate.py (same letter-content surface), not via the role-agent template; sub-agents keep the same hard-deny coverage from email-send-gate.mjs for the send-decision itself, behind which this content-level gate would be a no-op',
   'inbox-drain.py':
     'main-agent inbox PULL (#506): sub-agents are fed by the message router\'s tmux-push path, and draining them here too would double-deliver (docstring: "Main-agent ONLY")',
   'ledger-capture.py':
