@@ -116,6 +116,48 @@ else
   echo "  FAIL backend has no unlanded work, should not warn -> $out"; fail=1
 fi
 
+# card 3adca529, F2 (QA FAIL 27188 + WhiteHat M1, msg 15982): zero automated coverage existed for
+# the identity-isolation block itself -- both gate members mutated it OUT by hand and the OLD
+# selftest kept passing. This case pins it: the fixture MAIN's shared [user] is s@s (set above), so
+# WITHOUT the three identity lines, both agents' commits would author as "s" -- this case goes RED
+# if those lines are removed.
+n=$((n + 1))
+run alice >/dev/null
+run bob >/dev/null
+echo a > "$ROOT/alice/a.txt"; git -C "$ROOT/alice" add a.txt
+git -C "$ROOT/alice" commit -qm "alice's commit"
+echo b > "$ROOT/bob/b.txt"; git -C "$ROOT/bob" add b.txt
+git -C "$ROOT/bob" commit -qm "bob's commit"
+alice_author="$(git -C "$ROOT/alice" log -1 --format='%an <%ae>')"
+bob_author="$(git -C "$ROOT/bob" log -1 --format='%an <%ae>')"
+if [ "$alice_author" = "alice <alice@marveen.local>" ] && [ "$bob_author" = "bob <bob@marveen.local>" ]; then
+  echo "  ok   two worktrees' own commits author as their own agent, not the shared [user]=s"
+else
+  echo "  FAIL expected alice/bob identities, got alice=[$alice_author] bob=[$bob_author]"; fail=1
+fi
+
+n=$((n + 1))
+# An unscoped write in ONE tree must not leak into the OTHER, and -- measured live, stronger than
+# the card's own wording assumed -- it does not even change the WRITER's own tree once that tree
+# has a --worktree override: config.worktree takes precedence over the shared .git/config for a
+# key either side sets. The write still lands in the SHARED config (verified below), which is
+# exactly the residual exposure for any NOT-yet-converged worktree -- the root of WhiteHat/QA's F1.
+# If the mutant removes the identity lines, both agents fall back to the fixture's shared "s" and
+# this case's first assertion fails exactly like the previous one.
+git -C "$ROOT/bob" config user.name intruder
+echo c > "$ROOT/bob/c.txt"; git -C "$ROOT/bob" add c.txt
+git -C "$ROOT/bob" commit -qm "bob's second commit, after an unscoped write in his own tree"
+echo d > "$ROOT/alice/d.txt"; git -C "$ROOT/alice" add d.txt
+git -C "$ROOT/alice" commit -qm "alice's second commit"
+alice_author2="$(git -C "$ROOT/alice" log -1 --format='%an')"
+bob_author2="$(git -C "$ROOT/bob" log -1 --format='%an')"
+main_shared_name="$(git -C "$MAIN" config user.name)"
+if [ "$alice_author2" = "alice" ] && [ "$bob_author2" = "bob" ] && [ "$main_shared_name" = "intruder" ]; then
+  echo "  ok   bob's unscoped write stays confined to the SHARED config; both converged trees keep their own identity"
+else
+  echo "  FAIL expected alice=alice bob=bob shared=intruder, got alice=[$alice_author2] bob=[$bob_author2] shared=[$main_shared_name]"; fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""

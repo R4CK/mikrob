@@ -17,6 +17,7 @@ import {
   sessionExistsOnHost,
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
+  reapOrphanedLocalTmuxServerBeforeLaunch,
 } from './agent-process.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
@@ -665,6 +666,10 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     `${ROOT_SANDBOX_ENV}; ` +
     `cd ${shArg(ctx.home)} && ` +
     `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`
+  // D4902522 KC4: worker sessions bind to the same shared default tmux socket
+  // as the main agent launch -- reap any orphan there first (see
+  // reapOrphanedLocalTmuxServerBeforeLaunch's comment in agent-process.ts).
+  reapOrphanedLocalTmuxServerBeforeLaunch({ host: null, runAsUser: null })
   execFileSync(tmuxBin(), ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --

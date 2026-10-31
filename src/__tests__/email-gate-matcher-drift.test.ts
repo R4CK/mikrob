@@ -28,7 +28,7 @@ const CANONICAL = EMAIL_GATE_MATCHER.split('|')
 // telegram reply tool -- that is an allowed EXTRA surface, not email drift,
 // so the assertion is coverage (every canonical alternative present), not
 // set-equality.
-const EMAIL_HOOKS = ['outgoing-copy-gate.py', 'email-approval-gate.py']
+const EMAIL_HOOKS = ['outgoing-copy-gate.py', 'email-approval-gate.py', 'credential-gate.py']
 
 function matcherAlternativesFor(script: string): string[] {
   const entries = SETTINGS.hooks?.PreToolUse ?? []

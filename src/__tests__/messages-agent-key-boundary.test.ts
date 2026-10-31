@@ -4,7 +4,8 @@
 // key, or every agent's traffic fleet-wide via the global list. A dashboard-token/session caller
 // (the human operator) is unaffected.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import { initDatabase, createAgentMessage } from '../db.js'
+import { EventEmitter } from 'node:events'
+import { initDatabase, createAgentMessage, getAgentMessage } from '../db.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -29,6 +30,29 @@ function makeCtx(pathWithQuery: string): { ctx: RouteContext; getBody: () => any
     ctx: { req: { headers: {} } as any, res: res as any, path: url.pathname, method: 'GET', url },
     getBody: () => (responseBody ? JSON.parse(responseBody) : null),
   }
+}
+
+async function putStatus(id: number, body: unknown, auth?: { kind: 'device'; device: string }): Promise<{ statusCode: number; json: any }> {
+  const req = new EventEmitter() as unknown as RouteContext['req']
+  ;(req as unknown as { headers: Record<string, string> }).headers = {}
+  const state = { statusCode: 0, body: '' }
+  const res = {
+    writeHead(code: number) { state.statusCode = code; return res },
+    end(data?: unknown) { state.body = String(data ?? '') },
+    setHeader() {},
+  } as unknown as RouteContext['res']
+  process.nextTick(() => {
+    ;(req as unknown as EventEmitter).emit('data', Buffer.from(JSON.stringify(body)))
+    ;(req as unknown as EventEmitter).emit('end')
+  })
+  const ctx = {
+    req, res, path: `/api/messages/${id}`, method: 'PUT',
+    url: new URL(`http://localhost/api/messages/${id}`), fedPeer: null,
+  } as unknown as RouteContext
+  if (auth) (ctx as any).auth = auth
+  const handled = await tryHandleMessages(ctx)
+  expect(handled).toBe(true)
+  return { statusCode: state.statusCode || 200, json: state.body ? JSON.parse(state.body) : null }
 }
 
 let victimOutboundId: number
@@ -144,6 +168,46 @@ describe('GET /api/messages/:id -- agent-key boundary (Cybersec NO-GO F1, card d
     expect(handled).toBe(true)
     const body = getBody()
     expect(body.content).toBe('victim private outbound message')
+  })
+})
+
+describe('PUT /api/messages/:id -- agent-key boundary (Cybersec N1 MEDIUM, card 799322f9)', () => {
+  it('a device key for a DIFFERENT agent gets 404 (not found) closing a row addressed to the victim, and the row stays open', async () => {
+    const row = createAgentMessage('someone-else', 'victim', 'foreign close attempt target')
+    const { statusCode, json } = await putStatus(row.id, { status: 'done' }, { kind: 'device', device: 'agent:attacker' })
+    expect(statusCode).toBe(404)
+    expect(json).toEqual({ error: 'Message not found' })
+    expect(getAgentMessage(row.id)?.status).toBe('pending')
+  })
+
+  it('a device key for a DIFFERENT, non-existent id gets the byte-identical 404 -- no existence oracle', async () => {
+    const { statusCode, json } = await putStatus(999999999, { status: 'done' }, { kind: 'device', device: 'agent:attacker' })
+    expect(statusCode).toBe(404)
+    expect(json).toEqual({ error: 'Message not found' })
+  })
+
+  it('the owning device key (the recipient, to_agent) CAN close its own row', async () => {
+    const row = createAgentMessage('someone-else', 'victim', 'owned close attempt target')
+    const { statusCode, json } = await putStatus(row.id, { status: 'done', notify: false }, { kind: 'device', device: 'agent:victim' })
+    expect(statusCode).toBe(200)
+    expect(json).toEqual({ ok: true })
+    expect(getAgentMessage(row.id)?.status).toBe('done')
+  })
+
+  it('a device key CANNOT close a row it only SENT (from_agent), not addressed to it -- only the recipient closes', async () => {
+    const row = createAgentMessage('victim', 'someone-else', 'victim is the sender here, not the recipient')
+    const { statusCode, json } = await putStatus(row.id, { status: 'done' }, { kind: 'device', device: 'agent:victim' })
+    expect(statusCode).toBe(404)
+    expect(json).toEqual({ error: 'Message not found' })
+    expect(getAgentMessage(row.id)?.status).toBe('pending')
+  })
+
+  it('a shared-token caller (no device key) is UNCHANGED -- can still close a foreign row', async () => {
+    const row = createAgentMessage('someone-else', 'victim', 'shared-token close attempt target')
+    const { statusCode, json } = await putStatus(row.id, { status: 'done', notify: false })
+    expect(statusCode).toBe(200)
+    expect(json).toEqual({ ok: true })
+    expect(getAgentMessage(row.id)?.status).toBe('done')
   })
 })
 

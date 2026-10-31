@@ -531,6 +531,7 @@ chmod +x "$MIDRUN_WT/node_modules/.bin/vitest"
       bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
       >"$TMP/midrun-out.txt" 2>&1 ) &
 midrun_pid=$!
+HOLDERS+=("$midrun_pid")  # card 7a0aa34d: if THIS script dies before its own `wait`, cleanup() must still reach it
 sleep 1.5   # let the start-time check pass and the fake vitest actually start
 write_mem 500000   # drop below the floor WHILE it is "running"
 wait "$midrun_pid"; midrun_rc=$?
@@ -575,6 +576,7 @@ write_mem 9000000
       bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
       >"$TMP/midrun-kill-out.txt" 2>&1 ) &
 midrun_kill_pid=$!
+HOLDERS+=("$midrun_kill_pid")  # card 7a0aa34d: same untracked-orphan risk as midrun_pid above
 sleep 1.5
 write_mem 500000
 wait "$midrun_kill_pid"; midrun_kill_rc=$?
@@ -602,6 +604,7 @@ write_mem 9000000
       bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
       >"$TMP/midrun-off-out.txt" 2>&1 ) &
 midrun_off_pid=$!
+HOLDERS+=("$midrun_off_pid")  # card 7a0aa34d: same untracked-orphan risk as midrun_pid above
 sleep 1
 write_mem 500000
 wait "$midrun_off_pid"; midrun_off_rc=$?
@@ -640,6 +643,7 @@ write_mem 9000000
       bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
       >"$TMP/orphan-out.txt" 2>&1 ) &
 orphan_wrapper_pid=$!
+HOLDERS+=("$orphan_wrapper_pid")  # card 7a0aa34d: same untracked-orphan risk as midrun_pid above
 # POLL for the pidfile, rather than a fixed sleep -- under the heavy concurrent load this file's own
 # fixtures create (several `sleep 300` holders plus whatever else the fleet is doing), a fixed sleep
 # risks firing before vitest has started, which would make the assertion below vacuously true for
@@ -682,6 +686,7 @@ chmod +x "$MIDRUN_WT/node_modules/.bin/vitest"
       bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
       >"$TMP/orphan-done-out.txt" 2>&1 ) &
 orphan_done_pid=$!
+HOLDERS+=("$orphan_done_pid")  # card 7a0aa34d: same untracked-orphan risk as midrun_pid above
 sleep 2   # vitest has long finished; this script is now doing the flake/skip-report/exit tail
 kill -TERM "$orphan_done_pid" 2>/dev/null
 wait "$orphan_done_pid" 2>/dev/null
@@ -723,6 +728,7 @@ if ! flock -n 8; then
 else
   ( exec 8>"$REAL_TREE_LOCK"; flock 8; sleep 25 ) &
   tree_lock_pid=$!
+  HOLDERS+=("$tree_lock_pid")  # card 7a0aa34d: cleanup_case15 only runs if this script reaches it
   exec 8>&-
   sleep 0.3
 
@@ -730,6 +736,7 @@ else
     FLEET_TEST_LOCK_WAIT=20 \
     bash "$HERE/fleet-test.sh" --ref HEAD >"$TMP/case15-fleet-test.out" 2>&1 &
   fleet_test_pid=$!
+  HOLDERS+=("$fleet_test_pid")  # card 7a0aa34d: cleanup_case15 only runs if this script reaches it
   sleep 2   # let the real script acquire its CPU slot and start waiting on the real tree lock
 
   # CONTROL FIRST: with only ONE of the two slots taken (by the real fleet-test.sh), the OTHER slot

@@ -66,10 +66,27 @@ let cachedToken: string | null = null
 const LOGIN_FAILURE_BACKOFF_MS = 240_000
 let loginFailureUntil: number | null = null
 
+// RedHat LOW F1 (card 375f7595, follow-up to 3c9c3a10): the back-off check above ran
+// before the `await`, so N concurrent callers all read loginFailureUntil as not-yet-set
+// and all started their own upstream login -- 8 concurrent calls measured against a
+// rejecting stub produced 8 upstream logins, enough alone to trip freellmapi's 5-login
+// lockout. A single in-flight login promise, shared by every concurrent caller, makes
+// one real attempt stand for all of them; the back-off state (loginFailureUntil) is still
+// updated exactly once per real attempt, inside that shared promise.
+let inFlightLogin: Promise<string> | null = null
+
 async function login(): Promise<string> {
   if (loginFailureUntil !== null && Date.now() < loginFailureUntil) {
     throw new FreellmapiUnavailableError('freellmapi admin login recently failed; backing off before retrying')
   }
+  if (inFlightLogin) return inFlightLogin
+  inFlightLogin = performLogin().finally(() => {
+    inFlightLogin = null
+  })
+  return inFlightLogin
+}
+
+async function performLogin(): Promise<string> {
   const { email, password } = readCredential(FREELLMAPI_ADMIN_CREDENTIAL_FILE)
   let res: Response
   try {

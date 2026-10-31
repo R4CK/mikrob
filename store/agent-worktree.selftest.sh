@@ -201,6 +201,47 @@ out="$(run testagent 2>&1)"; rc=$?
   && ok "the unresolvable entry falls back to a link (not silently dropped)" \
   || bad "the unresolvable entry vanished instead of falling back"
 
+# --- 10. IDENTITY ISOLATION (card 3adca529, F2: QA FAIL 27188 + WhiteHat M2, msg 15982) --------------
+# Zero automated coverage existed for the identity-isolation block before this: both gate members
+# mutated the three lines out by hand and the OLD suite (cases 1-9 above) kept passing. MAIN's shared
+# [user] is set to s@s here, mirroring the real incident (measured: the live shared config held
+# user.name=s before this card). Without the identity lines, both agents' commits would author as
+# "s" -- these cases go RED under that mutant.
+git -C "$MAIN" config user.email s@s
+git -C "$MAIN" config user.name s
+run alice >/dev/null 2>&1
+run bob >/dev/null 2>&1
+echo a > "$WORKTREES/alice/a.txt"; git -C "$WORKTREES/alice" add a.txt
+git -C "$WORKTREES/alice" commit -qm "alice's commit"
+echo b > "$WORKTREES/bob/b.txt"; git -C "$WORKTREES/bob" add b.txt
+git -C "$WORKTREES/bob" commit -qm "bob's commit"
+alice_author="$(git -C "$WORKTREES/alice" log -1 --format='%an <%ae>')"
+bob_author="$(git -C "$WORKTREES/bob" log -1 --format='%an <%ae>')"
+if [ "$alice_author" = "alice <alice@mopsion.local>" ] && [ "$bob_author" = "bob <bob@mopsion.local>" ]; then
+  ok "two worktrees' own commits author as their own agent (F3: \`@mopsion.local\`, not \`@marveen.local\`), not the shared [user]=s"
+else
+  bad "expected alice/bob @mopsion.local identities" "alice=[$alice_author] bob=[$bob_author]"
+fi
+
+# An unscoped write in bob's own tree lands in the SHARED config (verified) but does not change
+# EITHER converged tree's resolved identity -- config.worktree takes precedence over the shared
+# .git/config for a key either side sets (measured live; stronger than the card's own wording
+# assumed). This is the residual exposure WhiteHat/QA's F1 is about: it still affects any NOT-yet-
+# converged worktree reading the shared config.
+git -C "$WORKTREES/bob" config user.name intruder
+echo c > "$WORKTREES/bob/c.txt"; git -C "$WORKTREES/bob" add c.txt
+git -C "$WORKTREES/bob" commit -qm "bob's second commit, after an unscoped write in his own tree"
+echo d > "$WORKTREES/alice/d.txt"; git -C "$WORKTREES/alice" add d.txt
+git -C "$WORKTREES/alice" commit -qm "alice's second commit"
+alice_author2="$(git -C "$WORKTREES/alice" log -1 --format='%an')"
+bob_author2="$(git -C "$WORKTREES/bob" log -1 --format='%an')"
+main_shared_name="$(git -C "$MAIN" config user.name)"
+if [ "$alice_author2" = "alice" ] && [ "$bob_author2" = "bob" ] && [ "$main_shared_name" = "intruder" ]; then
+  ok "bob's unscoped write stays confined to the SHARED config; both converged trees keep their own identity"
+else
+  bad "expected alice=alice bob=bob shared=intruder" "alice=[$alice_author2] bob=[$bob_author2] shared=[$main_shared_name]"
+fi
+
 echo
 echo "agent-worktree.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

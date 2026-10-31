@@ -227,10 +227,29 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
    *  on a response that cannot be produced until the child exits. Measured: each comment burned its
    *  full `curl --max-time 10`, two of them, and the case died at 22s against a 20s budget. Running
    *  the child asynchronously keeps the loop free to serve it. */
+  /** card 7a0aa34d: FLEET_TEST_AGENT / KANBAN_COMMENT_AGENT / KANBAN_COMMENT_API /
+   *  KANBAN_COMMENT_TOKEN_FILE are stripped from the inherited env before any per-call `env` is
+   *  applied on top. Without this, a vitest process itself running INSIDE a real marveen-land.sh
+   *  invocation inherits the landing agent's real identity and the live dashboard's API/token --
+   *  and `{...process.env, ...env}` alone would pass that straight through to this nested
+   *  fleet-test.sh, which posts PAUSED-SEMAPHORE / GIVING-UP comments onto the landing agent's REAL
+   *  in_progress card (measured 2026-10-31: 1291 such comments fleet-wide, 50 in 24h). Each case
+   *  below either explicitly sets its own throwaway identity (the two withFakeDashboard cases) or
+   *  wants no identity at all (the plain "gives up loudly" case) -- neither should ever see the
+   *  live one. */
+  function scrubbedBaseEnv(): NodeJS.ProcessEnv {
+    const base = { ...process.env }
+    delete base.FLEET_TEST_AGENT
+    delete base.KANBAN_COMMENT_AGENT
+    delete base.KANBAN_COMMENT_API
+    delete base.KANBAN_COMMENT_TOKEN_FILE
+    return base
+  }
+
   function runPastCpuSlotAsync(env: NodeJS.ProcessEnv): Promise<{ stderr: string }> {
     return new Promise((resolve) => {
       const p = spawn('bash', [SCRIPT, '--ref', 'HEAD'], {
-        env: { ...process.env, FLEET_TEST_LOCK_WAIT: '1', ...env },
+        env: { ...scrubbedBaseEnv(), FLEET_TEST_LOCK_WAIT: '1', ...env },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       let stderr = ''
@@ -244,7 +263,7 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
     try {
       execFileSync('bash', [SCRIPT, '--ref', 'HEAD'], {
         encoding: 'utf-8',
-        env: { ...process.env, FLEET_TEST_LOCK_WAIT: '1', ...env },
+        env: { ...scrubbedBaseEnv(), FLEET_TEST_LOCK_WAIT: '1', ...env },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     } catch (e: any) {
@@ -362,6 +381,43 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
       // run that never happened reads on the card exactly like one that passed.
       expect(bodies).toMatch(/GIVING UP/)
       expect(bodies).toMatch(/NEM teszt-eredmeny/)
+    })
+  }, 20000)
+
+  // Card 7a0aa34d: reproduces the incident's actual trigger -- a REAL marveen-land.sh invocation
+  // exports FLEET_TEST_AGENT/KANBAN_COMMENT_API onto ITS OWN process env, which vitest (and this
+  // test file) then inherits. Simulated here by setting them directly on `process.env` (restored
+  // after), standing in for "this suite happens to be running nested inside a real landing."
+  it('CONTROL: an inherited FLEET_TEST_AGENT/KANBAN_COMMENT_* identity from the parent process env never leaks into a run given no explicit identity', async () => {
+    await withFakeDashboard('probe-leak', async (base, seen) => {
+      mkdirSync(`${anchor}/store`, { recursive: true })
+      holdSlot(1, 4)
+      holdSlot(2, 4)
+      const prev = {
+        FLEET_TEST_AGENT: process.env.FLEET_TEST_AGENT,
+        KANBAN_COMMENT_API: process.env.KANBAN_COMMENT_API,
+        KANBAN_COMMENT_TOKEN_FILE: process.env.KANBAN_COMMENT_TOKEN_FILE,
+      }
+      process.env.FLEET_TEST_AGENT = 'probe-leak'
+      process.env.KANBAN_COMMENT_API = base
+      process.env.KANBAN_COMMENT_TOKEN_FILE = throwawayToken()
+      try {
+        await runPastCpuSlotAsync({
+          MARVEEN_MAIN: anchor,
+          CLEANCORE_SUITE_WAIT_MAX_S: '2',
+          CLEANCORE_SUITE_POLL_S: '1',
+        })
+      } finally {
+        for (const [k, v] of Object.entries(prev)) {
+          if (v === undefined) delete (process.env as Record<string, string | undefined>)[k]
+          else process.env[k] = v
+        }
+      }
+      const bodies = await waitFor(seen, 'probe-leak', () => false, 1200)
+      expect(
+        bodies,
+        'a run given no explicit identity must never inherit one from the parent process env',
+      ).toBe('')
     })
   }, 20000)
 
