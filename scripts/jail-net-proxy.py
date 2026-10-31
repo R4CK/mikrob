@@ -30,19 +30,46 @@ call (see run_helper()) and torn down when that call finishes; it is not a long-
 A disallowed host/parse error/timeout always means "close the connection", never "forward anyway"
 -- fail closed, matching eedb2871/WhiteHat2's state-write pattern elsewhere in this repo.
 """
+import json
 import os
 import socket
 import socketserver
 import sys
 import threading
+import time
 
 CONNECT_TIMEOUT_S = 10
 IDLE_TIMEOUT_S = 120
 MAX_HEADER_BYTES = 8192
 
+# Card cdcd0f5b (8ffa0c8a plan, step 1-2): agent attribution + a named, versioned report file
+# (destination, agent, count), not just stderr lines. The stderr log() calls below are kept for
+# interactive debugging, but seged-hivo.py spawns this with stderr=DEVNULL (run_helper), so in
+# production NOTHING below ever reached a file before this change -- this is the actual fix.
+LOG_PATH = os.environ.get("JAIL_NET_PROXY_LOG") or str(
+    __import__("pathlib").Path(__file__).resolve().parent.parent / "store" / "jail-net-proxy.log")
+
 
 def log(msg):
     print(f"jail-net-proxy: {msg}", file=sys.stderr, flush=True)
+
+
+def log_decision(agent, host, port, decision):
+    """JSON-line log, 0600 (same schema style as store/bash-egress.log: ts/agent/decision fields),
+    created by THIS process so the mode is ours -- not a shell redirect's."""
+    line = json.dumps({
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "agent": agent or "",
+        "host": host,
+        "port": port,
+        "decision": decision,
+    }, ensure_ascii=False)
+    try:
+        fd = os.open(LOG_PATH, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass  # a proxy that cannot log must still relay -- logging failure is not fail-closed here
 
 
 def parse_allowlist(csv):
@@ -136,6 +163,7 @@ class Handler(socketserver.BaseRequestHandler):
         host, port, is_connect = parsed
         if (host, port) not in self.server.allowlist:
             log(f"DENIED {host}:{port} (not in allowlist)")
+            log_decision(self.server.agent, host, port, "denied")
             try:
                 conn.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
             except OSError:
@@ -151,6 +179,7 @@ class Handler(socketserver.BaseRequestHandler):
                 pass
             return
         log(f"ALLOWED {host}:{port}")
+        log_decision(self.server.agent, host, port, "allowed")
         try:
             if is_connect:
                 conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -171,15 +200,18 @@ class UnixThreadingServer(socketserver.ThreadingUnixStreamServer):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("usage: jail-net-proxy.py <uds-path> <allowlist: host:port,host:port,...>", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print("usage: jail-net-proxy.py <uds-path> <allowlist: host:port,host:port,...> [agent-id]",
+              file=sys.stderr)
         return 2
     uds_path, allowlist_csv = sys.argv[1], sys.argv[2]
+    agent = sys.argv[3] if len(sys.argv) == 4 else ""
     allowlist = parse_allowlist(allowlist_csv)
     if os.path.exists(uds_path):
         os.unlink(uds_path)
     server = UnixThreadingServer(uds_path, Handler)
     server.allowlist = allowlist
+    server.agent = agent
     log(f"listening on {uds_path}, allowlist={sorted(allowlist)}")
     try:
         server.serve_forever()
