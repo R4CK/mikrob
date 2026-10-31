@@ -749,6 +749,20 @@ reap_orphaned_tmux_servers() {
   local proc_root="${CHANNELS_REAP_PROC_ROOT:-/proc}"
   local net_unix="${CHANNELS_REAP_NET_UNIX:-$proc_root/net/unix}"
   sockdir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+  # 749d4125 MikroB follow-up (comment 27655): TMUX_TMPDIR unset means this
+  # pass is about to inspect/kill on the REAL default socket dir -- exactly
+  # what an ad hoc manual invocation of --reap-orphaned-tmux-servers did on
+  # 2026-10-31 19:42:45, killing the live mikrob-channels tmux server (pid
+  # 1003923) and taking the whole fleet down. Refuse unless the caller opted
+  # in explicitly (CHANNELS_REAP_LIVE=1): the real production boot path (the
+  # bare `channels.sh` call site, further down) sets this itself right before
+  # calling in, so normal unattended operation is unaffected; a manual/ad hoc
+  # `channels.sh --reap-orphaned-tmux-servers` invocation does not set it, so
+  # it must be set explicitly to touch anything beyond a scratch TMUX_TMPDIR.
+  if [ -z "${TMUX_TMPDIR:-}" ] && [ "${CHANNELS_REAP_LIVE:-}" != "1" ]; then
+    echo "WARN: reap_orphaned_tmux_servers: TMUX_TMPDIR unset and CHANNELS_REAP_LIVE!=1 -- refusing to touch the default socket dir, exiting without scanning (749d4125)" >&2
+    return 0
+  fi
   [ -d "$sockdir" ] || return 0
   my_uid="$(id -u)"
   # Resolve the tmux binary directly, never from the identically-named $TMUX
@@ -1751,7 +1765,12 @@ wait_for_channel_hosts $(channel_wait_hosts "$CHANNEL_PROVIDER" $CHANNEL_PLUGINS
 # the socket directory, before deciding whether THIS kill-session+new-session
 # below is reusing the real surviving server or (silently, via tmux's own
 # fallback) starting a second one. See reap_orphaned_tmux_servers() above.
-reap_orphaned_tmux_servers
+# CHANNELS_REAP_LIVE=1 (749d4125 follow-up): this IS the real production call
+# site (reached only past LAUNCHGATE1008, i.e. an actual install), so it opts
+# itself in to touching the default socket dir -- the opt-in the function
+# otherwise requires exists precisely to keep a manual/ad hoc invocation of
+# --reap-orphaned-tmux-servers from reaching this same default socket dir.
+CHANNELS_REAP_LIVE=1 reap_orphaned_tmux_servers
 $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # TMUXSERVERREAP929: create the session WITHOUT this shell's state-dir var in
 # the tmux client's environment. The export above is meant for THIS session's
