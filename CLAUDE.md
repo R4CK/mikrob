@@ -861,3 +861,28 @@ printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-t
 A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem
 történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.
 <!-- END GENERATED: message-close -->
+
+<!-- BEGIN GENERATED: agent-id-header (auto-generated, do not edit by hand) -->
+## Ki hívta az API-t: az `X-Agent-Id` fejléc
+
+A flotta EGYETLEN közös Bearer tokent használ, ezért a dashboard nem látja, melyik
+ágens hívta. A memória-írásoknál (`PUT` / `DELETE /api/memories/<id>`) küldd el a saját
+nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:
+
+```bash
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" \
+| curl -H @- -s -X PUT http://localhost:3420/api/memories/<id> \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Id: mikrob" \
+  -d '{"content":"..."}'
+```
+
+Amit tudni kell róla, mert könnyű félreérteni: ez ÖNBEVALLOTT azonosítás, nem
+hitelesítés. A fejléc nélkül a hívás ugyanúgy sikerül, és ha idegen emléket írsz,
+a szerver FIGYELMEZTET (`owner_mismatch` a válaszban), de NEM állít meg. Tehát a
+fejléc nem véd meg attól, hogy rossz sort írj -- csak láthatóvá teszi. A tényleges
+védelem a verziózás, de CSAK FELÜLÍRÁSNÁL: minden felülírás előtt eltárolódik az
+előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEGES: a sorral
+együtt a verzióit is törli, így utána semmiből nem állítható vissza. Ha mégis törölnöd kell,
+előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).
+<!-- END GENERATED: agent-id-header -->

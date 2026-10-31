@@ -4029,11 +4029,17 @@ export function buildAgentIdHeaderBody(name: string): string {
   ].join('\n')
 }
 
-// Same five-rule idempotency contract as ensureSystemDirectiveAuthSection.
+// Same five-rule idempotency contract as ensureFleetAuthSection -- EXCEPT for the main agent:
+// its target would be PROJECT_ROOT/CLAUDE.md, a git-tracked file, and a runtime write there
+// fights the --ff-only pull that keeps the live checkout current (card 2dd28b5d/99fccbcf,
+// the same regression WhiteHat found again on card 965b0b2b, caught live here on f22ef741's
+// collector test: the block was committed to agentDir(name)/CLAUDE.md, this function kept
+// writing it to the live PROJECT_ROOT/CLAUDE.md on every boot). The block is committed there
+// statically instead (same content this function would otherwise write); this function
+// no-ops for the main agent on purpose.
 export function ensureAgentIdHeaderSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(name)}\n${AGENT_ID_HEADER_END}`
