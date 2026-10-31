@@ -63,13 +63,22 @@ describe('agent-process.ts never spawns a process just to wait (card 873c48df)',
   // installRootTrustKey(), which memoizes by root in installRootTrustCache -- the synchronous
   // cost is paid AT MOST ONCE per process per root, not per agent start/request, unlike the four
   // reviewed tmux/ssh calls this pin already covers.
+  //
+  // SIXTH call, justified (card d4902522, RedHat delta 27363 KC4):
+  // reapOrphanedLocalTmuxServerBeforeLaunch()'s bounded (5s timeout) `channels.sh
+  // --reap-orphaned-tmux-servers`, run once per `new-session` call right before it, on the LOCAL
+  // socket path only (no-op for a remote/runAsUser target). Without it, startAgentProcess could
+  // silently launch a full second agent set on an orphaned-then-replaced default tmux socket --
+  // the exact incident shape, triggered from the dashboard's own reconcile tick instead of a
+  // channels restart.
   it('the remaining synchronous children stay at the reviewed count', () => {
     const matches = code().match(/\b(?:spawnSync|execSync|execFileSync)\(/g) ?? []
     expect(
       matches.length,
-      'agent-process.ts changed its number of synchronous child calls. Five are reviewed (four tmux/ssh ' +
-        'wrappers and probes, plus the once-per-process-per-root memoized git toplevel lookup); a SIXTH ' +
-        'needs justification, and a smaller number means this pin is stale.',
-    ).toBe(5)
+      'agent-process.ts changed its number of synchronous child calls. Six are reviewed (four tmux/ssh ' +
+        'wrappers and probes, the once-per-process-per-root memoized git toplevel lookup, and the ' +
+        'pre-launch orphaned-tmux-server reap); a SEVENTH needs justification, and a smaller number means ' +
+        'this pin is stale.',
+    ).toBe(6)
   })
 })

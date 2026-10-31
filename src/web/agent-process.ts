@@ -2105,6 +2105,31 @@ export function tmuxNeedsIndirection(tmuxArgs: string[], target: string | null |
   return host != null || runAsUser != null
 }
 
+// D4902522 KC4 (RedHat 27363): before starting a LOCAL agent session (no host,
+// no runAsUser -- the shared default tmux socket channels.sh itself launches
+// into), reap any orphaned tmux server bound to that exact socket first.
+// reconcileDesiredAgents() calls startAgentProcess() for every agent on every
+// tick; if the default socket's directory entry has gone stale (see
+// channels.sh's reap_orphaned_tmux_servers() comment for how), isAgentRunning()
+// reads "not running" on the resulting NEW server and this `new-session` call
+// would otherwise launch a full second agent set on it -- exactly the 08:20
+// incident shape, just triggered from the dashboard side instead of a channels
+// restart. Shells out to channels.sh's own reap seam (single source of truth
+// for the /proc/net/unix matching, not re-derived here) and is a no-op for a
+// remote/per-user target, since reap only ever touches this process's own
+// uid+socket. Best-effort: a reap failure must never block a launch.
+export function reapOrphanedLocalTmuxServerBeforeLaunch(target: TmuxTarget): void {
+  if (target.host || target.runAsUser) return
+  try {
+    execFileSync('bash', [join(PROJECT_ROOT, 'scripts', 'channels.sh'), '--reap-orphaned-tmux-servers'], {
+      timeout: 5000,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+  } catch (err) {
+    logger.warn({ err }, 'pre-launch orphaned-tmux-server reap failed (non-fatal, launch proceeds)')
+  }
+}
+
 function runTmux(target: string | null | TmuxTarget, tmuxArgs: string[], opts: { timeout?: number } = {}): void {
   const { host } = resolveTarget(target, tmuxArgs)
   const inv = tmuxInvocationFor(tmuxArgs, target)
@@ -3200,6 +3225,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
+    reapOrphanedLocalTmuxServerBeforeLaunch(startTarget)
     runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
     // Card 466f21fe F1: bump the generation on EVERY launch (continue or fresh), captured below
     // before the verify window opens. See the Map's own comment for the full reasoning.
@@ -3300,6 +3326,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
                 symlinkSync(agentSettingsJson, join(fallbackCwd, '.claude', 'settings.json'))
               } catch { /* degrade to hook-less, same as before this fix */ }
             }
+            reapOrphanedLocalTmuxServerBeforeLaunch(resolveTarget(null, ['-s', session]))
             runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
             logger.warn({ name, session, fallbackCwd }, 'Agent --channels EPERM in trusted dir; relaunched from /tmp fallback')
           } catch (err) {
