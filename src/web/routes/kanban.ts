@@ -294,8 +294,8 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `    -d '{"author":"${target}","content":"REVIEW -- AZ EREDMENY ROVIDEN"}'`,
     '',
     `2) Állítsd a kártyát waiting-re -- a kész terméket SOHA nem teszed magad done-ba, a lezárás ${escalateTo} (vagy a kijelölt gate) lépése a REVIEW komment után:`,
-    `  curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${moveUrl} \\`,
-    `    ${auth} \\`,
+    `  ${auth}`,
+    `  | curl -s -w '\\nHTTP %{http_code}\\n' -H @- -X POST '${moveUrl}' \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"waiting","actor":"${target}","expected_status":"in_progress"}'`,
     // UPSTREAM-SYNC Koteg 22 (e2199840, upstream #2068): the dispatch close used to be
@@ -317,8 +317,8 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     // is indistinguishable from an assignment, and the dispatcher echoes the
     // task back at the agent that just started it.
     `Az "actor":"${target}" mezőt MINDEN mozgatásnál küldd el (ez mondja meg a táblának, hogy te mozgattad). Ha te magad veszed fel a kártyát in_progress-re, ott is:`,
-    `  curl -s -X POST ${moveUrl} \\`,
-    `    ${auth} \\`,
+    `  ${auth}`,
+    `  | curl -s -H @- -X POST '${moveUrl}' \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"in_progress","actor":"${target}"}'`,
     '',

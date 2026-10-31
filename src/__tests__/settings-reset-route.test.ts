@@ -48,7 +48,10 @@ function call(method: string, path: string, body?: unknown): { ctx: RouteContext
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path, method, url: new URL(`http://localhost${path}`) } as unknown as RouteContext, out }
+  // Card bd32ad68 (RedHat Finding 1): DELETE now requires a human credential, same as POST
+  // (card 6eca461e). This file is about the reset mechanics, not the auth gate itself (that is
+  // settings-post-human-gate.test.ts's job), so every call carries a real session by default.
+  return { ctx: { req, res, path, method, url: new URL(`http://localhost${path}`), auth: { kind: 'session', user: 'test' } } as unknown as RouteContext, out }
 }
 
 async function listed(key: string): Promise<any> {

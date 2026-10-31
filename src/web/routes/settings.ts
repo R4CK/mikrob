@@ -105,6 +105,9 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
   // .env lands on the .env value, and the page has to say so.
   const resetMatch = /^\/api\/settings\/([A-Z][A-Z0-9_]*)$/.exec(path)
   if (resetMatch && method === 'DELETE') {
+    // Card bd32ad68 (RedHat NO-GO, Finding 1): same human-only posture as POST above -- this
+    // route can also flip CLAUDE_ROTATION_ENABLED and reset any other registry override.
+    if (rejectIfNotHumanAuth(ctx)) return true
     try {
       const key = resetMatch[1]
       const def = SETTINGS_REGISTRY.find((s) => s.key === key)
