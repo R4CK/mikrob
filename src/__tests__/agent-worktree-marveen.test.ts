@@ -104,7 +104,20 @@ async function runLand(
   try {
     const { stdout, stderr } = await execFileP('bash', [LAND_SH, ...args], {
       encoding: 'utf-8',
-      env: { ...process.env, MARVEEN_MAIN: main, MARVEEN_LAND_TEST: testCmd, ...extraEnv },
+      // card 7a0aa34d: these runs pass REAL agent names ("backend", "fullstack") as marveen-land.sh's
+      // own agent argument, which it maps straight onto KANBAN_COMMENT_AGENT regardless of anything
+      // inherited here. Without an explicit, unreachable KANBAN_COMMENT_API/TOKEN_FILE, a lock-queue
+      // wait (land_lock_announced's "PAUSED-SEMAPHORE" comment) would hit the LIVE dashboard under
+      // that real agent's name and post onto its actual in_progress card. Pinned below the spread so
+      // a future call can still override it on purpose.
+      env: {
+        ...process.env,
+        MARVEEN_MAIN: main,
+        MARVEEN_LAND_TEST: testCmd,
+        KANBAN_COMMENT_API: 'http://127.0.0.1:1',
+        KANBAN_COMMENT_TOKEN_FILE: '/nonexistent/no-token',
+        ...extraEnv,
+      },
     })
     return { status: 0, out: stdout + stderr }
   } catch (e) {
