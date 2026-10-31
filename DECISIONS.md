@@ -22625,3 +22625,17 @@ Négy LOW ugyanezen a kártyán zárva: (1) a POST sorrendje megfordult (előbb 
 **Ki dontott:** DevO (fullstack), kartya cdcd0f5b (a plan-grillingelt 8ffa0c8a terv 1-2. lepese, harom gate mar GO/PASS az iranyra).
 
 **Hivatkozas:** kartya cdcd0f5b, 8ffa0c8a (szulo terv), 5229ea1e (a jail-net-proxy eredeti kartyaja), 18055f83 (a bash-egress-guard agent-mezoje, ahonnan a resolver mintat vettem), `scripts/jail-net-proxy.py`, `scripts/seged-hivo.py`, `store/egress-destination-report.sh`.
+
+## 2026-10-31 10:25 -- cdcd0f5b delta: a cwd-alapu agent-attribucio hibas volt, es a G4 kore bovitve (MikroB korrekcioi)
+
+**Kontextus:** a fenti (10:15-os) bejegyzesben leirt elso megoldas a `ledger_lib.agent_id_from_cwd(os.getcwd())`-et hasznalta a jail-net-proxy ugynok-mezojenek feltoltesere. Ez HIBAS volt: a `seged-hivo.py`-t a hivo ugynok sajat Bash-hivasabol inditjak, `gemini-agy-call.sh --hivo AGENT` formaban, amely MAR tartalmaz egy explicit, validalt ugynok-azonositot (`a.hivo`, a `main()` mar ellenorzi a `agents/` mappak ellen) -- a cwd-alapu kitalalas felesleges es tortekenyebb visszaeses lett volna, nem a helyes forras.
+
+**Dontes:** `run_helper()` mostantol `caller=a.hivo`-t kap, es `start_jail_net_proxy(agent)` ezt adja at a proxynak -- nincs tobbe `ledger_lib` import vagy cwd-feltalalas a jail-net-proxy utjaban.
+
+**G4 kor-bovites (MikroB msg 15975):** a G4 NEM csak a codex/agy jailra vonatkozik, hanem a SAJAT Node-folyamatainkra (dashboard `src/web`, `scripts/*.ts|mjs`, MCP szerverek), amik `fetch()`-et hasznalnak. Elo meres (nem feltetelezes): egy Node 22 `fetch()` hivas `HTTP_PROXY`-val, de `NODE_USE_ENV_PROXY=1` NELKUL, SOHA nem erinti a proxyt (egy figyelo TCP-socketet allitottam a proxy-cim mogé: nulla kapcsolat erkezett, a fetch egyenesen a celhoz probalt csatlakozni). `NODE_USE_ENV_PROXY=1`-gyel a proxy VALOBAN megkapja a kapcsolatot (ugyanaz a figyelo socket most jelezte a hitet). Grep a teljes `src/`+`scripts/`+`develop-only/src/` fan: ~20 fajl hasznal `fetch()`-et (dashboard route-ok, csatorna-kliensek, stb.), de a repoban ESETLEG SEHOL nem allitodik `HTTP_PROXY`/`HTTPS_PROXY` NEKIK -- az egyetlen hely, ahol ez tenylegesen megtortenik, a `jail_cmd()` (`scripts/seged-hivo.py`), az agy/codex jailra. Tehat a bypass-tengely jelenleg NULLA sajat `fetch()`-hivot erint (nincs nekik mit megkerulniok), a `codex` motor viszont (Node-alapu, erintett LENNE) nincs telepitve ezen a gepen -- ez nyitva marad, kovetkezo lepes amikor telepitve lesz. A `store/egress-destination-report.sh` mostantol egy `g4_node_fetch_proxy_bypass` szekciot ir a riportba, a grep-eket MINDEN futasnal ujra lefuttatva (nem egyszeri pillanatkep).
+
+**Teszt:** a live proxy-probe (ket TCP figyelo socket, egyik a proxy helyen, masik a cel helyen) megismetelheto, a `store/egress-destination-report.selftest.sh` 6/6 esete tovabbra is zold az uj mezo mellett is.
+
+**Ki dontott:** DevO (fullstack) a javitas, MikroB (msg 15975) a G4 kor-korrekcio es a cwd-vs-explicit-hivo eszrevetel forrasa.
+
+**Hivatkozas:** kartya cdcd0f5b, `scripts/seged-hivo.py`, `store/egress-destination-report.sh`.
