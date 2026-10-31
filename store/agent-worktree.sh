@@ -252,13 +252,17 @@ fi
 git -C "$TREE" config --worktree core.hooksPath "$OWN_HOOKS"
 echo "hooks own-copied: $hooks_copied"
 
-# GIT IDENTITY ISOLATION (card 3adca529), same mechanism as the hooksPath isolation just above
-# (extensions.worktreeConfig is already set true a few lines up): without a per-worktree
-# user.name/user.email, every worktree shares the ONE [user] section in $MAIN/.git/config, so any
-# agent's `git config user.name` call rewrites the author every OTHER agent's next commit gets, in
-# any worktree. Idempotent top-up, same shape as the hooks block above.
+# GIT IDENTITY ISOLATION (card 3adca529, F3 fix per QA/WhiteHat's delta-gate finding), same
+# mechanism as the hooksPath isolation just above (extensions.worktreeConfig is already set true a
+# few lines up): without a per-worktree user.name/user.email, every worktree shares the ONE [user]
+# section in $MAIN/.git/config, so any agent's `git config user.name` call rewrites the author every
+# OTHER agent's next commit gets, in any worktree. Idempotent top-up, same shape as the hooks block
+# above. Email domain is `@mopsion.local`, NOT `@marveen.local` -- measured against this repo's own
+# last 300 non-merge commits (216 backend2, 78 backend3, 5 fullstack, all @mopsion.local); the
+# marveen-side script (agent-worktree-marveen.sh) correctly uses @marveen.local for ITS repo, this
+# one was a copy-paste of the wrong domain across the two scripts.
 git -C "$TREE" config --worktree user.name "$AGENT"
-git -C "$TREE" config --worktree user.email "${AGENT}@marveen.local"
+git -C "$TREE" config --worktree user.email "${AGENT}@mopsion.local"
 
 echo "path:   $TREE"
 echo "branch: $(git -C "$TREE" rev-parse --abbrev-ref HEAD) @ $(git -C "$TREE" rev-parse --short HEAD)"
