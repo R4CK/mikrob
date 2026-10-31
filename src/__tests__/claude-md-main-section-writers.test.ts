@@ -23,6 +23,7 @@ import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { agentDir } from '../web/agent-config.js'
 import * as agentScaffold from '../web/agent-scaffold.js'
+import { buildAgentIdHeaderBody } from '../web/agent-scaffold.js'
 
 const WEB_TS_PATH = join(PROJECT_ROOT, 'src', 'web.ts')
 const ROOT_CLAUDE_MD_PATH = join(PROJECT_ROOT, 'CLAUDE.md')
@@ -85,5 +86,21 @@ describe('f22ef741: every MAIN-branch CLAUDE.md section-writer gives 0 diff on t
         rmSync(agentClaudeMdPath, { force: true })
       }
     }
+  })
+})
+
+describe('f22ef741: the ensureAgentIdHeaderSection static commit matches its own generator (half 1 of the no-op fix)', () => {
+  // The hard no-op guard (half 2, tested above) means this writer will NEVER regenerate
+  // its block for MAIN_AGENT_ID at boot anymore -- so the only thing that can still pin
+  // the STATIC TEXT itself is comparing it directly against buildAgentIdHeaderBody(), the
+  // same function the committed block was generated from (card e8eec571a). Markers are
+  // the module's own private BEGIN/END constants, inlined here since they are not exported.
+  const AGENT_ID_HEADER_BEGIN = '<!-- BEGIN GENERATED: agent-id-header (auto-generated, do not edit by hand) -->'
+  const AGENT_ID_HEADER_END = '<!-- END GENERATED: agent-id-header -->'
+
+  it('the committed root CLAUDE.md contains the exact block buildAgentIdHeaderBody(MAIN_AGENT_ID) renders', () => {
+    const expectedBlock = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(MAIN_AGENT_ID)}\n${AGENT_ID_HEADER_END}`
+    const root = readFileSync(ROOT_CLAUDE_MD_PATH, 'utf-8')
+    expect(root, 'the agent-id-header block is missing or drifted from its own generator').toContain(expectedBlock)
   })
 })
