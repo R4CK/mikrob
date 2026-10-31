@@ -3397,7 +3397,9 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'a local _is_mcp_send() helper reusing outgoing-copy-gate.py\'s existing deny-by-default ' +
     'classifier, and collect_mcp_body\'s arity matched to this fork\'s actual 1-arg signature. ' +
     'Wired into .claude/settings.json with the same 7 static PreToolUse matchers as ' +
-    'email-approval-gate.py.',
+    'email-approval-gate.py. (This GROUP A heading above, added by card 4eb41f64/backend3 while ' +
+    'this adoption landed concurrently, still correctly describes OTHER files in this block -- ' +
+    'only this one and its test below are no longer GROUP A.)',
   'scripts/__tests__/credential-gate.test.py':
     'ADOPTED (card 42d952bc, Gate-SHA f163d6cc921ff98bcd99ef858dfe623f881408c3) -- ported ' +
     'alongside scripts/hooks/credential-gate.py above, same reasoning. One upstream test case ' +

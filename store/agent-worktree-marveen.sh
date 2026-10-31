@@ -161,6 +161,23 @@ else
   fi
 fi
 
+# GIT IDENTITY ISOLATION (card 3adca529, mirrors the hooksPath isolation above on the mopsion
+# side (store/agent-worktree.sh, card 420ef7b4) -- same `extensions.worktreeConfig` + `git config
+# --worktree` mechanism, applied to `user.name`/`user.email` instead of `core.hooksPath`). Without
+# this, every worktree shared the ONE [user] section in $MAIN/.git/config: any agent's `git config
+# user.name` call (or a stale/shared default) rewrote the author seen by every OTHER agent's NEXT
+# commit in ANY worktree, because `git config` with no --worktree/--local/--global flag writes to
+# the repository config, and worktrees share that file unless extensions.worktreeConfig splits it.
+# Measured: the shared [user] held user.name=s (not even an agent name) with extensions.worktreeConfig
+# unset, and landed commits on agent/backend/work and agent/fullstack/work carried author "s",
+# "fleet-agent-unattributed", or "MikroB" instead of the owning agent -- see DECISIONS.md for the
+# since-when measurement. Idempotent: re-running this on an existing worktree just re-asserts the
+# same two keys, matching the top-up shape of every other block in this script.
+git -C "$MAIN" config extensions.worktreeConfig true
+git -C "$TREE" config --worktree user.name "$AGENT"
+git -C "$TREE" config --worktree user.email "${AGENT}@marveen.local"
+
 echo "path:   $TREE"
 echo "branch: $(git -C "$TREE" rev-parse --abbrev-ref HEAD) @ $(git -C "$TREE" rev-parse --short HEAD)"
 echo "index:  $(git -C "$TREE" rev-parse --git-dir)/index   (own index -- peer commits/checkouts cannot reach it)"
+echo "identity: $(git -C "$TREE" config --worktree user.name) <$(git -C "$TREE" config --worktree user.email)>   (own worktree identity -- isolated from the shared [user] section)"

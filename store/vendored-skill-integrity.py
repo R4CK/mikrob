@@ -320,12 +320,31 @@ def main():
 def run(args):
     baseline = load_baseline(args.baseline)
     results, recorded = [], {}
-    for root in skill_roots(args.home):
+    roots = skill_roots(args.home)
+    aliases = []  # (symlink dir, real target dir) -- reported, never independently inspected
+    for root in roots:
         for name in sorted(os.listdir(root)):
             d = os.path.join(root, name)
             md = os.path.join(d, "VENDORED.md")
-            if os.path.isfile(md):
-                results.append(inspect(d, parse_vendored_md(md)))
+            if not os.path.isfile(md):
+                continue
+            if os.path.islink(d):
+                real = os.path.realpath(d)
+                if os.path.dirname(real) in roots:
+                    # Card a44dbe22: the skill-map provisioner symlinks an agent-local skill
+                    # dir to one of THIS run's own skill roots (normally the global one). The
+                    # bytes are identical by construction -- following the link and inspecting
+                    # it independently would recompute the SAME delta_keys as the target, but
+                    # under a brand-new per-agent baseline key with nothing sanctioned for it
+                    # yet, so a clean-but-already-sanctioned-at-the-target skill alerts again
+                    # on every newly provisioned agent. The target is listed under its own
+                    # root too and gets a normal inspect() below -- an unsanctioned delta there
+                    # fails the run ONCE, on the target, which is where the content actually
+                    # lives. A symlink whose realpath is NOT one of this tool's own roots falls
+                    # through to the inspect() below unchanged (still an independent finding).
+                    aliases.append((d, real))
+                    continue
+            results.append(inspect(d, parse_vendored_md(md)))
 
     failures = 0
     for res in results:
@@ -369,6 +388,12 @@ def run(args):
             fh.write("\n")
         print("\nbaseline written: %s (%d dirs)" % (args.baseline, len(recorded)))
         return 0
+
+    if aliases and not args.quiet:
+        print("=" * 76)
+        print("skill-root aliases (symlinks judged at their target, not independently): %d" % len(aliases))
+        for d, real in aliases:
+            print("    %s -> %s" % (d.replace(args.home, "~"), real.replace(args.home, "~")))
 
     print("=" * 76)
     print("vendored dirs: %d | clean or sanctioned: %d | needing attention: %d"
@@ -630,12 +655,84 @@ def selftest():
         check("a non-hex 'vendored commit' cell fails closed instead of reaching git archive",
               (False, True), (res["ok"], bool(res["unverifiable"])))
         check("...and the injected --output path is never created", False, os.path.exists(canary_path))
+
+        # 18. SYMALIAS924 (card a44dbe22): a new provisioner symlink to an ALREADY-SANCTIONED
+        #     global skill must not alert, with NO --record of its own agent-specific path --
+        #     the whole point is that a newly provisioned agent never needs a fresh baseline
+        #     entry for a symlink whose bytes are the target's, verified once.
+        alias_home = os.path.join(tmp, "alias-home")
+        global_skill = os.path.join(alias_home, ".claude", "skills", "demo")
+        os.makedirs(global_skill, exist_ok=True)
+        with open(os.path.join(global_skill, "SKILL.md"), "w") as fh:
+            fh.write("adapted body\n")  # deliberately differs from upstream -- a real sanctioned delta
+        with open(os.path.join(global_skill, "VENDORED.md"), "w") as fh:
+            fh.write("| vendored commit | `%s` |\n| subdir | skills/demo |\n"
+                     "| watch clone | %s |\n| source repo | x |\n" % (sha, clone))
+        global_key = global_skill.replace(alias_home, "~")
+        global_deltas = sorted(delta_keys(inspect(global_skill, parse_vendored_md(os.path.join(global_skill, "VENDORED.md")))))
+        alias_baseline = os.path.join(tmp, "alias-baseline.json")
+        with open(alias_baseline, "w", encoding="utf-8") as fh:
+            json.dump({"sanctioned": {global_key: global_deltas}}, fh)
+        agent_link = os.path.join(alias_home, "marveen", "agents", "cybersec", ".claude", "skills", "demo")
+        os.makedirs(os.path.dirname(agent_link), exist_ok=True)
+        os.symlink(global_skill, agent_link)
+        rc18, _out18 = run_captured(home=alias_home, baseline=alias_baseline)
+        check("a new symlink to an already-sanctioned global skill does not alert, unrecorded",
+              0, rc18)
+        old_stdout = sys.stdout
+        sys.stdout = buf18 = io.StringIO()
+        try:
+            run(argparse.Namespace(record=False, quiet=False, home=alias_home, baseline=alias_baseline))
+        finally:
+            sys.stdout = old_stdout
+        out18b = buf18.getvalue()
+        check("...and is reported as a skill-root alias in the non-quiet report, not inspected "
+              "on its own", True,
+              "skill-root aliases" in out18b and agent_link.replace(alias_home, "~") in out18b)
+
+        # 19. SYMALIAS924 negative control: a symlink to a dir OUTSIDE this tool's own skill
+        #     roots is NOT an alias -- it stays an independent finding and still alerts if
+        #     unsanctioned, same as before this card.
+        outside_dir = os.path.join(tmp, "outside-vendored")
+        os.makedirs(outside_dir, exist_ok=True)
+        with open(os.path.join(outside_dir, "SKILL.md"), "w") as fh:
+            fh.write("tampered body\n")
+        with open(os.path.join(outside_dir, "VENDORED.md"), "w") as fh:
+            fh.write("| vendored commit | `%s` |\n| subdir | skills/demo |\n"
+                     "| watch clone | %s |\n| source repo | x |\n" % (sha, clone))
+        outside_home = os.path.join(tmp, "outside-home")
+        outside_link = os.path.join(outside_home, "marveen", "agents", "cybersec", ".claude", "skills", "demo")
+        os.makedirs(os.path.dirname(outside_link), exist_ok=True)
+        os.symlink(outside_dir, outside_link)
+        rc19, _out19 = run_captured(home=outside_home, baseline=os.path.join(tmp, "nonexistent-baseline.json"))
+        check("a symlink to a dir outside the tool's own skill roots still alerts on its own",
+              1, rc19)
+
+        # 20. SYMALIAS924: the global skill's content is UNSANCTIONED (tampered, never
+        #     recorded), and TWO agent-local symlinks point at it. The run must fail (the
+        #     target's own delta), but exactly ONCE -- the two aliases must not each add their
+        #     own failure on top of the target's.
+        tamper_home = os.path.join(tmp, "tamper-home")
+        tamper_global = os.path.join(tamper_home, ".claude", "skills", "demo")
+        os.makedirs(tamper_global, exist_ok=True)
+        with open(os.path.join(tamper_global, "SKILL.md"), "w") as fh:
+            fh.write("tampered, never sanctioned\n")
+        with open(os.path.join(tamper_global, "VENDORED.md"), "w") as fh:
+            fh.write("| vendored commit | `%s` |\n| subdir | skills/demo |\n"
+                     "| watch clone | %s |\n| source repo | x |\n" % (sha, clone))
+        for agent in ("cybersec", "cybersec2"):
+            link = os.path.join(tamper_home, "marveen", "agents", agent, ".claude", "skills", "demo")
+            os.makedirs(os.path.dirname(link), exist_ok=True)
+            os.symlink(tamper_global, link)
+        rc20, out20 = run_captured(home=tamper_home, baseline=os.path.join(tmp, "nonexistent-baseline2.json"))
+        check("an unsanctioned global skill with two agent-local symlink aliases fails ONCE, "
+              "not three times", (1, True), (rc20, "needing attention: 1" in out20))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     for f in fails:
         print("FAIL: %s" % f)
-    print("selftest: %d checks, %d failed" % (19, len(fails)))
+    print("selftest: %d checks, %d failed" % (22, len(fails)))
     return 1 if fails else 0
 
 
