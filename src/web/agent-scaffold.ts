@@ -3532,7 +3532,15 @@ export function ensureAutonomySection(name: string): void {
 //      write, no mtime change (safe to call on every respawn).
 //   5. Any write             → goes through atomicWriteFileSync to avoid a
 //      torn file if the process is killed mid-write.
+// Card 7e202dbf (found via structural discovery while closing the 965b0b2b class):
+// MAIN_AGENT_ID is a hard no-op here, same reasoning as ensureThinChiefHandoffSection
+// above -- startAgentProcessUnlocked (agent-process.ts) calls this unconditionally
+// with its `name` argument, and in a deployment where agentDir(MAIN_AGENT_ID) exists
+// this would reach the git-tracked root CLAUDE.md. MAIN never gets a fleet-roster
+// section today (it already knows the roster; scaffold-section-sweeper.ts's own
+// main-agent branch confirms this by never calling it for MAIN).
 export function ensureFleetRosterSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
   const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
@@ -4303,10 +4311,16 @@ function buildThinChiefBody(name: string): string {
 
 // Same five-rule idempotency contract as ensureSkillsPathTrapSection; called on
 // every startAgentProcess() so a respawn re-asserts the standard.
+//
+// Card 7e202dbf (found while probing f22ef741/965b0b2b): MAIN_AGENT_ID is a hard
+// no-op here, same as ensureFleetAuthSection/ensureAgentIdHeaderSection -- a
+// runtime write to the git-tracked root CLAUDE.md fights the --ff-only pull
+// that keeps the live checkout current. Currently dormant either way (no
+// shipped profile sets thinChiefHandoff:true, see templates/profiles/*.json),
+// but agent-process.ts calls this for MAIN too once a profile ever does.
 export function ensureThinChiefHandoffSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${THIN_CHIEF_BEGIN}\n${buildThinChiefBody(name)}\n${THIN_CHIEF_END}`
