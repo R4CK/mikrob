@@ -463,15 +463,18 @@ def topic_of(entry):
     return {"message_thread_id": t} if isinstance(t, int) and t > 0 else {}
 
 
-def deliver(tok, chat_id, message_id, answer, progress_dir, topic=None, synthetic=False, sent=None):
+def deliver(tok, chat_id, message_id, answer, progress_dir, topic=None, answer_sent=False, synthetic=False, sent=None):
     """Deliver the real answer if we have one (sendMessage + drop the
     placeholder), else rewrite the placeholder into a generic error. Returns a
     short label for logging.
 
-    synthetic: a last text that is a CLI limit or error line is never sent: the placeholder becomes
-    OUTAGE_TEXT and stays, no ledger row (the question stays open). A real send is appended to
-    `sent`; handle_dir ledgers it after the marker is removed, so the bookkeeping can never stand
-    between a send and the cleanup that keeps it from repeating."""
+    answer_sent: this round's answer already reached this chat (and topic) through
+    an earlier entry, so only the placeholder is dropped (FALLBACKEGYSZER1019).
+    synthetic: a last text that is a CLI limit or error line is never sent: the
+    placeholder becomes OUTAGE_TEXT and stays, no ledger row (the question stays
+    open). A real send is appended to `sent`; handle_dir ledgers it after the
+    marker is removed, so the bookkeeping can never stand between a send and the
+    cleanup that keeps it from repeating."""
     if answer and synthetic:
         try:
             api(tok, "editMessageText",
@@ -480,18 +483,19 @@ def deliver(tok, chat_id, message_id, answer, progress_dir, topic=None, syntheti
             log(progress_dir, f"outage edit failed (mid={message_id}): {e}")
         return "synthetic-outage"
     if answer:
-        try:
-            res = api(tok, "sendMessage", {"chat_id": chat_id, "text": answer[:4000], **(topic or {})})
-        except Exception as e:
-            log(progress_dir, f"real-answer send failed (mid={message_id}): {e}")
-            return "send-failed"
-        if sent is not None:
-            sent.append((chat_id, answer[:4000], res))
+        if not answer_sent:
+            try:
+                res = api(tok, "sendMessage", {"chat_id": chat_id, "text": answer[:4000], **(topic or {})})
+            except Exception as e:
+                log(progress_dir, f"real-answer send failed (mid={message_id}): {e}")
+                return "send-failed"
+            if sent is not None:
+                sent.append((chat_id, answer[:4000], res))
         try:
             api(tok, "deleteMessage", {"chat_id": chat_id, "message_id": message_id})
         except Exception as e:
             log(progress_dir, f"placeholder delete failed (mid={message_id}): {e}")
-        return "real-answer"
+        return "placeholder-dropped" if answer_sent else "real-answer"
     # No recoverable answer -> generic error, keep the (edited) placeholder.
     try:
         api(tok, "editMessageText",
@@ -617,12 +621,22 @@ def handle_dir(progress_dir):
                               f"age={int(age)}s delivered=none")
             continue
 
+        # One entry per inbound MESSAGE: a batched delivery leaves several for
+        # one chat. The answer goes to each chat (and topic) once; a failed
+        # send is not counted, so the next entry of that chat retries it
+        # (FALLBACKEGYSZER1019).
         modes = []
+        dest_sent = set()
         sent = []
         for p in pend:
-            modes.append(deliver(tok, p.get("chat_id"), p.get("message_id"),
-                                 answer, progress_dir, topic_of(p),
-                                 synthetic=synthetic, sent=sent))
+            topic = topic_of(p)
+            dest = (str(p.get("chat_id")), topic.get("message_thread_id"))
+            mode = deliver(tok, p.get("chat_id"), p.get("message_id"),
+                           answer, progress_dir, topic,
+                           answer_sent=dest in dest_sent, synthetic=synthetic, sent=sent)
+            if mode == "real-answer":
+                dest_sent.add(dest)
+            modes.append(mode)
         try:
             os.remove(path)
         except Exception:

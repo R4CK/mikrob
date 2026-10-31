@@ -271,8 +271,16 @@ def main():
     tok = token(sd)
     sent = []
     if tok:
+        # One pending entry per inbound MESSAGE, not per chat: a batched delivery
+        # (several messages from one chat in one turn) leaves several entries for
+        # the same chat. The answer goes to each chat (and topic) ONCE; every
+        # placeholder is still deleted (FALLBACKEGYSZER1019). A failed send does
+        # not count as sent, so the next entry of that chat retries it.
+        dest_sent = set()
         for p in pend:
             cid, mid = p.get("chat_id"), p.get("message_id")
+            topic = topic_of(p)
+            dest = (str(cid), topic.get("message_thread_id"))
             if answer and synthetic:
                 # The turn ended on a CLI line, not an answer: the placeholder says the answer is
                 # late and stays.
@@ -280,9 +288,10 @@ def main():
                     api(tok, "editMessageText", {"chat_id": cid, "message_id": mid, "text": OUTAGE_TEXT})
                 except Exception as e:
                     log(sd, f"[enforce] outage edit failed: {e}")
-            elif answer:
+            elif answer and dest not in dest_sent:
                 try:
-                    res = api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000], **topic_of(p)})
+                    res = api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000], **topic})
+                    dest_sent.add(dest)
                     sent.append((cid, answer[:4000], res))
                 except Exception as e:
                     log(sd, f"[enforce] fallback send failed: {e}")

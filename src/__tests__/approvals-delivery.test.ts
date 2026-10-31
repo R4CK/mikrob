@@ -92,10 +92,13 @@ describe('wiring contracts on the route source', () => {
     // without a second HTTP round-trip) -- the POST handler now DELEGATES to it rather than
     // calling notifyOwner/notifyMainAgent inline. Pin both layers: the handler reaches the
     // shared function, and that function's OWN body still calls owner before main-agent.
+    // Koteg 22 (upstream #2066-class): the shared function now threads an optional
+    // chatApprovedMessageId through to notifyOwner (the "already approved in chat" feature),
+    // so the needle is notifyOwner(approval, chatApprovedMessageId), not the old no-arg call.
     const post = ROUTE.slice(ROUTE.indexOf("path === '/api/approvals' && method === 'POST'"))
     expect(post.indexOf('createAndNotifyApproval(')).toBeGreaterThan(0)
     const shared = ROUTE.slice(ROUTE.indexOf('export function createAndNotifyApproval('))
-    const owner = shared.indexOf('notifyOwner(approval)')
+    const owner = shared.indexOf('notifyOwner(approval, chatApprovedMessageId)')
     const main = shared.indexOf('notifyMainAgent(approval)')
     expect(owner).toBeGreaterThan(0)
     expect(main).toBeGreaterThan(owner)

@@ -622,7 +622,10 @@ describe('kg: CSS', () => {
 
   it('has a responsive breakpoint (rule 13) that collapses the two-column layout', () => {
     const idx = CSS.indexOf('.kg-layout')
-    const tailIdx = CSS.lastIndexOf('@media (max-width: 768px)')
+    // Koteg 22 added a LATER @media (max-width: 768px) block (Team notes), so the KG one is no
+    // longer the last in the file -- find the first breakpoint AFTER .kg-layout's own rules
+    // instead of assuming it is the file's final one.
+    const tailIdx = CSS.indexOf('@media (max-width: 768px)', idx)
     expect(tailIdx).toBeGreaterThan(idx)
     const slice = CSS.slice(tailIdx, tailIdx + 300)
     expect(slice).toContain('.kg-layout')

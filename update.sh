@@ -1900,6 +1900,20 @@ touch "$RESULT_FILE.started" 2>/dev/null || true
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
 
+# FINSTAGE930: the verdict has gone missing on installs where the finalizer
+# reaches the restart and then simply is not there any more, so nothing told
+# "died" apart from "never got to _write". These stage marks cost two echoes
+# and turn the next occurrence into a location.
+# The trap is deliberately NON-FATAL: a TERM/HUP/INT is logged with the stage
+# and the finalizer carries on, so a stray reaper TERM no longer costs the
+# verdict (measured: one still arrives in the field, source unknown). This
+# includes the rollback branch, git reset --hard included. The flip side: a
+# deliberate stop of a running finalizer needs SIGKILL, which leaves the last
+# stage= line as the marker.
+STAGE="boot"
+_stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
+trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
+
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 _write() { # status phase code message
   printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s}\n' \
@@ -1954,14 +1968,18 @@ _unit_drift() {
   return 0
 }
 
+_stage restart
 _restart
+_stage unit-drift
 UNIT_DRIFT="$(_unit_drift)"
 if [ -n "$UNIT_DRIFT" ]; then
   echo "FIGYELEM: enabled, de NEM active unit(ok) a restart utan: ${UNIT_DRIFT}" >&2
   echo "          A szolgaltatas valaszolhat a portjan, de a unitjan KIVUL fut:" >&2
   echo "          a Restart= es az OnFailure= ilyenkor NEM vonatkozik ra." >&2
 fi
+_stage health
 if _health; then
+  _stage write-verdict
   if [ -n "$UNIT_DRIFT" ]; then
     _finish success restart 0 "A frissites lement es a dashboard valaszol, DE enabled unit(ok) nem active: ${UNIT_DRIFT}. A szolgaltatas a unitjan kivul fut, tehat a Restart=/OnFailure= felugyelet nem ervenyes ra."
   fi
@@ -1976,6 +1994,7 @@ fi
 # reported as a successful rollback. A refused rollback is the safer failure --
 # it leaves a visibly broken version instead of a plausible two-week-old one.
 ROLLED_BACK=0
+_stage rollback
 if [ -n "$OLD_FULL" ]; then
   if [ -r "$INSTALL_DIR/store/rollback-guard.sh" ]; then
     . "$INSTALL_DIR/store/rollback-guard.sh"

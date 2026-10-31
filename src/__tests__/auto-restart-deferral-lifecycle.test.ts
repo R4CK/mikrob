@@ -34,6 +34,12 @@ vi.mock('../web/agent-process.js', () => ({
   agentSessionName: (n: string) => `agent-${n}`,
   restartAgentProcess: () => restartAgentProcess(),
   capturePane: () => capturePane(),
+  // Transitively required: context-guard-runner.ts (imported by auto-restart-runner.ts for
+  // getHardGuardPhase) pulls in stuck-tool-call-watcher.ts (shouldDeferForRecentRespawn), whose
+  // real, unmocked module imports isAgentRunning from this same module. Not exercised by this
+  // test's own assertions, so a fixed 'running' stand-in is enough.
+  isAgentRunning: () => true,
+  agentHasChannel: () => true,
 }))
 vi.mock('../web/agent-config.js', () => ({
   listAgentNames: () => ['a1'],

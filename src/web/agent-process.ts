@@ -31,6 +31,7 @@ import {
   mcpTrustAcceptKeys,
   devChannelsAcceptKeys,
   detectsBlockingMenu,
+  detectsHeldPeerMessage,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
@@ -3896,10 +3897,13 @@ export async function settleStartupGates(
 // The identity /rename is text followed by Enter. Typed into a dialog, the
 // text is dropped and the Enter CONFIRMS the highlighted option -- which is
 // how it used to answer the development-channels warning by accident (see
-// above). Never into a first-run gate or a blocking menu.
+// above). Never into a first-run gate, a blocking menu or a held peer
+// message: detectsBlockingMenu leaves the held-peer dialog out (so the menu
+// pass never Escapes it), and on that dialog the Enter would confirm the
+// highlighted "Deliver this message to Claude" on the user's behalf.
 export function paneRefusesIdentityCommand(pane: string | null): boolean {
   if (pane == null) return true
-  return detectsFirstRunGate(pane) != null || detectsBlockingMenu(pane)
+  return detectsFirstRunGate(pane) != null || detectsBlockingMenu(pane) || detectsHeldPeerMessage(pane)
 }
 
 // How many times the identity send retries when the pane's send lane is held
@@ -3996,6 +4000,14 @@ export async function scheduleIdentitySetup(session: string, displayName: string
             }
             try {
               for (const cmd of identitySlashCommands(displayName)) {
+                // RENAMEPARK1014: record the command before typing it. When the
+                // TUI swallows this Enter the line parks, and without a record
+                // the stuck-input watcher cannot tell our `/rename` from a human
+                // draft, so it holds (GH #717). Measured: agent-leanpublisher sat
+                // ~15.5h behind a parked `/rename Lean Publisher` (2026-10-14).
+                // With the record the parked scrape matches and the watcher
+                // submits it with a single Enter (reinject-recorded / enter).
+                recordInjectedPrompt(session, cmd)
                 runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), cmd, 'Enter'], { timeout: 5000 })
                 await delay(1000)
               }
@@ -4676,6 +4688,19 @@ export function paneCurrentCommand(session: string, host: string | null = null):
     const out = captureTmux(host, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_current_command}'])
     const first = out.split('\n').map(line => line.trim()).find(line => line.length > 0)
     return first ?? null
+  } catch {
+    return null
+  }
+}
+
+// capturePane plus the last `historyLines` of scrollback. For readers that need
+// something the dialog has pushed off the screen -- a permission card's header
+// sits above its diff (permission-prompt-alert.ts). NOT for state detection:
+// the detectors are written for the visible pane, and scrollback would feed
+// them footers and spinners that are no longer live.
+export function capturePaneWithHistory(session: string, historyLines = 500, host: string | null = null): string | null {
+  try {
+    return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p', '-S', `-${historyLines}`])))
   } catch {
     return null
   }

@@ -711,18 +711,50 @@ törlöd, az alapszöveg újra bekerül.)
 <!-- BEGIN GENERATED: skills-path-trap (auto-generated, do not edit by hand) -->
 ## Skill-útvonal csapda (KÖTELEZŐ elolvasni skill-írás előtt)
 
-A `.claude-config/skills` NEM a saját mappád: symlink a globális
-`~/.claude/skills`-re, tehát ami oda kerül, az a TELJES flottánál megjelenik
--- akkor is, ha a skill-futtatás base directory-ja ezt az utat mutatja.
-A saját, csak neked szóló vagy kipróbálatlan külső skill a munkakönyvtárad
-`.claude/skills/` mappájába megy. A globálisba írás tudatos, flotta-szintű
-döntés legyen, ne alapértelmezés.
+HÁROM hely van, nem kettő, és a különbség nem az, hogy melyik "globális",
+hanem hogy KI LÁTJA. Mielőtt skillt írsz vagy mozgatsz, MÉRD MEG, melyik
+config-gyökérből futsz:
+
+```bash
+echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; ls -ld "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+```
+
+Ha a `$CLAUDE_CONFIG_DIR` ÜRES (alapértelmezett telepítés, ahol a fő ágens
+izolált config-gyökér nélkül, a megosztott `~/.claude`-on fut), a gyökered
+maga a `~/.claude`, és annak `skills` mappája a globális: a lenti 1. pont,
+symlink nélkül. Izolált módban a gyökér NEVE ágensenként MÁS (a sub-ágenseké
+`agents/<név>/.claude-config`, a fő ágensé `<projekt-gyökér>/.channels-config`),
+ezért a NÉVRE emlékezni félrevezet, mindkét irányban: abból, hogy egy út NÁLAD
+nem létezik, semmi nem következik a flotta többi tagjára, és attól, hogy a
+gyökeredet másképp hívják, még nem a tiéd, ami benne van. A viselkedés
+mindenhol UGYANAZ, és pont ezt mutatja meg a fenti `ls -ld`: izolált
+módban a `$CLAUDE_CONFIG_DIR/skills` SYMLINK a globálisra, tehát az 1. pont,
+más néven; üres változónál maga a `~/.claude/skills` az. Vagyis a
+`.claude-config/skills` (vagy izolált főágensnél a `.channels-config/skills`)
+NEM a saját mappád: akármelyik néven futsz, a TELJES flottáé.
+
+1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide írni tudatos,
+   flotta-szintű döntés legyen, ne alapértelmezés. A skill-futtatás base
+   directory-ja a saját config-gyökeredet MUTATHATJA -- attól még a flottáé.
 
 A SYMLINK NEM AZ EGYETLEN AJTÓ, és a legtöbb ügynöknél nem is az a nyitva
 álló. A globális `~/.claude/skills` KÖZVETLENÜL is írható, abszolút úttal,
 symlink nélkül. A flotta-ügynököknél a `.claude-config/skills` út tipikusan
 nem is létezik, tehát rád nézve a közvetlen írás a valódi óvintézkedés
 tárgya. Bármelyik úton írsz oda, a TELJES flotta megkapja.
+2. A PROJEKT-GYÖKÉR `.claude/skills` mappája. **EZ NEKED NEM PRIVÁT.**
+   A munkakönyvtárad MAGA a projekt gyökere, a sub-ágenseké pedig
+   (`agents/<név>`) ezen BELÜL van, tehát ez a mappa az ŐSÜK: amit ide
+   írsz, az megjelenik a listájukban. Láthatóságban úgy viselkedik,
+   mint a globális.
+3. `agents/<név>/.claude/skills` -- egy SUB-ÁGENS saját mappája. Csak övé.
+   NEKED NINCS ilyen: az `agents/<sajat-neved>` mappa nem létezik, és egy
+   ott létrehozott mappa a te munkakönyvtárad GYEREKE lenne, nem az őse,
+   tehát te magad sem látnád.
+
+KÖVETKEZMÉNY: ezen a telepítésen NINCS olyan hely, ahova a fő ágens
+csak-magának írhat skillt. Ne feltételezd, hogy privát -- 2026-09-23-án
+ez a feltételezés dőlt meg, és nem magától: egy sub-ágens mérte meg.
 
 Ugyanez a csapda a MEMÓRIÁRA is áll: a `.claude-config/projects` lehet symlink
 a `~/.claude/projects`-re. Hogy melyik memória-könyvtár a tiéd, azt NE a
