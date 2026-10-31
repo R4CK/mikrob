@@ -22579,3 +22579,13 @@ Négy LOW ugyanezen a kártyán zárva: (1) a POST sorrendje megfordult (előbb 
 **Ki döntött:** Peti (a cél, Telegram 12371), MikroB (dispatch msg_id:15818, card 5cb861e6, child of phase c7abdf57), backend2 (root-cause measurement on the 503 budget bug + full implementation).
 
 **Hivatkozás:** kártya 5cb861e6 (szülő c7abdf57), `store/gemini-day-draft-tick.sh`, `store/gemini-day-draft-tick.selftest.sh`, `store/gemini-ghost-runner.sh`, `store/gemini-ghost-runner.selftest.sh`, `src/gemini-ghost-budget.ts`, `src/gemini-orchestrator.ts`, `src/gemini-orchestrator-draft-review.ts`, `scripts/install-guard-timers.sh`.
+
+## 2026-10-31: 5cb861e6 -- Cybersec NO-GO F1 fix (ghost_attempts_hour cap on 503-release budget bypass)
+
+**Döntés:** Cybersec NO-GO (comment 26900, msg 15865) on the daytime-mode build above: `releaseGhostCallSlot()` un-spent both the hourly and daily budget on every HTTP 503, with no ceiling, so a provider outage let every eligible drafted card make a real Gemini call per tick (measured: 40 consecutive 503s = 40 granted calls vs 5 without the release). Two-part fix, landed separately per MikroB's sequencing: (1) `scripts/install-guard-timers.sh` pulled `gemini-day-draft-tick` out of the unconditional enable loop into a `GEMINI_DAY_DRAFT_TICK_ENABLE=1`-gated block, off by default (Gate-SHA c21b4b625); (2) `src/gemini-ghost-budget.ts` RESERVE_SCRIPT gains a `ghost_attempts_hour` gross counter -- every `agy-ghost` reservation attempt in the hourly window, regardless of later release status -- capped (`CAPPED_ATTEMPTS`) ahead of the existing `used`/`ghost_today` checks. `reserveGhostCallSlot()` returning false already maps to `hourly_cap_reached` in the existing sweep-stop logic, so no change was needed in `gemini-orchestrator-draft-review.ts`/`gemini-orchestrator.ts`.
+
+**Mit ellenőriztem:** new test "40 consecutive 503s (reserve then immediately release) grant at most 5 real calls in the hour" asserts `granted === 5` (red on the pre-fix release logic). Two pre-fix tests pinning the exploitable behavior rewritten. `gemini-ghost-budget.test.ts` 31/31 passed; `gemini-orchestrator.test.ts` + `gemini-orchestrator-draft-review.test.ts` 154/154 passed; `lint-ratchet.sh`: no rule got worse, 443 findings baseline holds. All measured on the merge result (Gate-SHA fc8a622be), not a pre-merge branch.
+
+**Ki döntött:** Cybersec (NO-GO + finding), MikroB (dispatch msg 15865/15893, sequencing), backend2 (fix + tests).
+
+**Hivatkozás:** kártya 5cb861e6, `src/gemini-ghost-budget.ts`, `src/__tests__/gemini-ghost-budget.test.ts`, `scripts/install-guard-timers.sh`.
