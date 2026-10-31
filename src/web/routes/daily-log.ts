@@ -18,7 +18,7 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { agent_id?: string; content: string }
     if (!data.content?.trim()) { json(res, { error: 'Content required' }, 400); return true }
-    appendDailyLog(data.agent_id || MAIN_AGENT_ID, data.content.trim())
+    appendDailyLog(authenticatedAgentId || data.agent_id || MAIN_AGENT_ID, data.content.trim())
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816) -- see memories.ts.
     const homoglyphs = detectHomoglyphs(data.content)
     if (homoglyphs.length > 0) {

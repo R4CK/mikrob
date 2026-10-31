@@ -3,7 +3,8 @@
 // filter at all, so an agent:<id> device key could read ANY other agent's daily-log content
 // through its own key. A dashboard-token/session caller (the human operator) is unaffected.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import { initDatabase, appendDailyLog } from '../db.js'
+import { EventEmitter } from 'node:events'
+import { initDatabase, appendDailyLog, getDailyLog } from '../db.js'
 import { tryHandleDailyLog } from '../web/routes/daily-log.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -84,5 +85,49 @@ describe('GET /api/daily-log/dates -- agent-key boundary (card debba303)', () =>
     const handled = await tryHandleDailyLog(ctx)
     expect(handled).toBe(true)
     expect(getBody().length).toBeGreaterThan(0)
+  })
+})
+
+// CYBERSEC GO 26929 F2 (card a6b476cb): POST /api/daily-log used `data.agent_id || MAIN_AGENT_ID`
+// with no authenticatedAgentId override, so a device-key caller could write another agent's log --
+// the write side had none of the override the GET handlers above already apply.
+function makePostCtx(auth: any, body: unknown): { ctx: RouteContext; getBody: () => any } {
+  let responseBody = ''
+  const res: any = { writeHead: () => {}, end: (b?: string) => { responseBody = b || '' }, setHeader: () => {} }
+  const req: any = new EventEmitter()
+  req.headers = {}
+  const url = new URL('http://localhost:3420/api/daily-log')
+  const ctx = { req, res, path: url.pathname, method: 'POST', url, auth } as unknown as RouteContext
+  setImmediate(() => { req.emit('data', Buffer.from(JSON.stringify(body))); req.emit('end') })
+  return { ctx, getBody: () => (responseBody ? JSON.parse(responseBody) : null) }
+}
+
+describe('POST /api/daily-log -- agent-key boundary (card a6b476cb)', () => {
+  it('a device key for a DIFFERENT agent posting agent_id=victim lands in its OWN log, not the victim\'s', async () => {
+    const { ctx, getBody } = makePostCtx({ kind: 'device', device: 'agent:attacker' }, { agent_id: 'victim', content: 'spoofed entry' })
+    const handled = await tryHandleDailyLog(ctx)
+    expect(handled).toBe(true)
+    expect(getBody()).toEqual({ ok: true })
+    const today = new Date().toISOString().split('T')[0]
+    expect(JSON.stringify(getDailyLog('victim', today))).not.toContain('spoofed entry')
+    expect(JSON.stringify(getDailyLog('attacker', today))).toContain('spoofed entry')
+  })
+
+  it('the owning device key still writes its own log with an explicit agent_id', async () => {
+    const { ctx, getBody } = makePostCtx({ kind: 'device', device: 'agent:victim' }, { agent_id: 'victim', content: 'own entry via device key' })
+    const handled = await tryHandleDailyLog(ctx)
+    expect(handled).toBe(true)
+    expect(getBody()).toEqual({ ok: true })
+    const today = new Date().toISOString().split('T')[0]
+    expect(JSON.stringify(getDailyLog('victim', today))).toContain('own entry via device key')
+  })
+
+  it('a shared-token caller (no device key) is UNCHANGED -- agent_id=victim still writes to victim', async () => {
+    const { ctx, getBody } = makePostCtx(undefined, { agent_id: 'victim', content: 'shared-bearer entry' })
+    const handled = await tryHandleDailyLog(ctx)
+    expect(handled).toBe(true)
+    expect(getBody()).toEqual({ ok: true })
+    const today = new Date().toISOString().split('T')[0]
+    expect(JSON.stringify(getDailyLog('victim', today))).toContain('shared-bearer entry')
   })
 })
