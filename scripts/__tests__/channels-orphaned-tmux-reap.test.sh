@@ -54,13 +54,13 @@ fi
 
 TMPD="$(mktemp -d)"
 PIDA=""; PIDB=""; PIDC=""; PIDD=""; PIDE=""; PIDF=""; PIDG=""
-PIDH=""; PIDI=""; PIDJ=""; PIDK=""; PIDL=""; PIDM=""
+PIDH=""; PIDI=""; PIDJ=""; PIDK=""; PIDL=""; PIDM=""; PIDN=""
 cleanup() {
   for p in "$PIDA" "$PIDB" "$PIDC" "$PIDD" "$PIDE" "$PIDF" "$PIDG" \
-           "$PIDH" "$PIDI" "$PIDJ" "$PIDK" "$PIDL" "$PIDM"; do
+           "$PIDH" "$PIDI" "$PIDJ" "$PIDK" "$PIDL" "$PIDM" "$PIDN"; do
     [ -n "$p" ] && kill -KILL "$p" 2>/dev/null
   done
-  rm -rf "$TMPD" "${TMPD2:-}" "${TMPD3:-}" "${TMPD4_REAL:-}" "${TMPD4_LINK:-}" "${TMPD5:-}"
+  rm -rf "$TMPD" "${TMPD2:-}" "${TMPD3:-}" "${TMPD4_REAL:-}" "${TMPD4_LINK:-}" "${TMPD5:-}" "${TMPD6:-}"
 }
 trap cleanup EXIT
 
@@ -350,6 +350,43 @@ else
   rm -rf "$TMPD5"
 fi
 rm -f "$MUTANT_CHANNELS"
+
+# --- KC11 (749d4125 MikroB follow-up, comment 27655): TMUX_TMPDIR unset with
+# no CHANNELS_REAP_LIVE=1 opt-in must refuse to touch the default socket dir
+# AT ALL, before even resolving/calling the tmux binary -- this is the exact
+# ad hoc invocation shape that killed the live mikrob-channels tmux server on
+# 2026-10-31 19:42:45. A stub tmux_bin drops a sentinel the instant it is
+# invoked; with the guard working, the sentinel must never appear. This never
+# dereferences whatever the real /tmp/tmux-<uid>/default socket on the test
+# host currently holds (the stub never connects to it), so it is safe
+# regardless of host state -- `mkdir -p` only ensures the real default
+# socket DIRECTORY exists (harmless; tmux creates the same thing on first
+# use) so the case is deterministic across hosts that have never run tmux.
+mkdir -p "/tmp/tmux-$(id -u)"
+TMPD6="$(mktemp -d)"
+SENTINEL6="$TMPD6/tmux-bin-invoked"
+STUB_TMUX6="$TMPD6/stub-tmux-sentinel.sh"
+cat > "$STUB_TMUX6" <<STUB
+#!/bin/bash
+: > "$SENTINEL6"
+exit 0
+STUB
+chmod +x "$STUB_TMUX6"
+env -u TMUX_TMPDIR CHANNELS_REAP_TMUX_BIN="$STUB_TMUX6" \
+  bash "$CHANNELS" --reap-orphaned-tmux-servers >/dev/null 2>&1
+if [ -e "$SENTINEL6" ]; then
+  fail "KC11: TMUX_TMPDIR unset + no CHANNELS_REAP_LIVE opt-in refuses to touch the default socket dir" "tmux_bin never invoked" "tmux_bin invoked"
+else
+  pass "KC11: TMUX_TMPDIR unset + no CHANNELS_REAP_LIVE opt-in refuses to touch the default socket dir"
+fi
+rm -rf "$TMPD6"
+# KC12 (opt-in restores prior behaviour) is intentionally NOT tested against
+# the real default socket dir -- doing so would require spawning/reaping on
+# the box's actual live tmux-1000 socket, exactly what this card's own
+# constraint forbids (test only against private sockets, never the default
+# socket). The opt-in path (CHANNELS_REAP_LIVE=1) is otherwise a one-line
+# bypass of the guard above; every other case in this file (KC2/KC3/KC6-10)
+# already proves the unchanged scratch-TMUX_TMPDIR behaviour still holds.
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
