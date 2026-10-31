@@ -3545,6 +3545,34 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'there -- delete/modify conflict, no blob to pin per the drift tool\'s own report). ' +
     'Fork-only test for a fork-only feature; no real upstream side to compare against, no ' +
     'anchor needed since there is no shared content upstream could silently reopen.',
+
+  // Card 7f0efce3, DevO, 2026-10-31. Re-decided from the drift tool's live report, not from the
+  // card's own (now stale) file list -- the card named 7 files, the live report named only these 2.
+  'scripts/hooks/telegram_progress_clear.py':
+    'KEEP FORK (trivial) -- checked the conflicting hunks line by line: every one is comment-only ' +
+    'prose describing the OUTAGE_TEXT/no-answer logic this fork already ported from upstream #2269 ' +
+    '(card c6abbcf5). Both sides describe the IDENTICAL behaviour (same markers -- isApiErrorMessage, ' +
+    'the "<synthetic>" model, known prefixes; same ledger write rule) in different words: ours cites ' +
+    'the fork\'s own card, upstream cites its issue number. No code line differs. Nothing to merge.',
+  'src/web/agent-bundle.ts':
+    'KEEP FORK FOR NOW, real gap flagged for a follow-up card -- this fork\'s isReservedSenderId ' +
+    '(system-directive-id.ts) blocks naming an agent "system" or "system-directive" (the message-' +
+    'impersonation guard from card b46a4b7e; upstream has no equivalent check at all for the ' +
+    'system-directive channel, since that channel does not exist upstream). Upstream\'s competing ' +
+    'check, RESERVED_AGENT_IDS (= FIXED_RESERVED_AGENT_IDS from sanitize.ts, [\'system\', ' +
+    '\'heartbeat\', \'telegram-coordinator\', \'channel-coordinator\'] + an optional VOICE_CHANNEL_ID), ' +
+    'is a DIFFERENT, wider list this fork does not have at all -- verified by grep: no ' +
+    'RESERVED_AGENT_IDS/FIXED_RESERVED_AGENT_IDS/VOICE_CHANNEL_ID symbol exists anywhere in this ' +
+    'fork\'s config.ts or web/sanitize.ts. Adopting it is not a 2-line swap: it needs config.ts + ' +
+    'sanitize.ts additions AND a check for every OTHER place an agent name is validated (not just ' +
+    'bundle import), since a name like "heartbeat" or "telegram-coordinator" colliding with an ' +
+    'internal process is exactly the kind of bug that would NOT show up in this one file\'s tests. ' +
+    'Not resolving that port under drift-reconciliation time pressure (same reasoning as the ' +
+    'agent-terminal.ts TMUX entry above). Keeping the fork\'s own check as-is for now does not lose ' +
+    'anything upstream already had (upstream never had isReservedSenderId); it only leaves the ' +
+    'heartbeat/telegram-coordinator/channel-coordinator name-collision gap open, same as before ' +
+    'this round. Follow-up: port FIXED_RESERVED_AGENT_IDS + RESERVED_AGENT_IDS and wire it in ' +
+    'alongside (not instead of) isReservedSenderId at both call sites in this file.',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -3987,6 +4015,8 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'scripts/self-pace-gate.mjs': '5a671866747074cf03d043295dc1e66bab69a9a4',
   'scripts/sms/seeme-send.py': 'a8801ce9a6cecb33e0a6a4b91a196003ec529e3b',
   'scripts/test_garmin_run_gate.py': ABSENT_UPSTREAM_BLOB,
+  'scripts/hooks/telegram_progress_clear.py': 'b41a49ce35652eb671aaf4dcf916c3f8b6a7217d',
+  'src/web/agent-bundle.ts': 'd1942be7793e78b3438f4b78b745c8799049adb5',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
