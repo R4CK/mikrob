@@ -874,7 +874,7 @@ printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-t
 | curl -H @- -s -X PUT http://localhost:3420/api/memories/<id> \
   -H "Content-Type: application/json" \
   -H "X-Agent-Id: mikrob" \
-  -d '{"content":"CORRUPTED FOR MUTATION-PIN PROOF"}'
+  -d '{"content":"..."}'
 ```
 
 Amit tudni kell róla, mert könnyű félreérteni: ez ÖNBEVALLOTT azonosítás, nem
