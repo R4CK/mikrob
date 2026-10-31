@@ -252,7 +252,16 @@ fi
 git -C "$TREE" config --worktree core.hooksPath "$OWN_HOOKS"
 echo "hooks own-copied: $hooks_copied"
 
+# GIT IDENTITY ISOLATION (card 3adca529), same mechanism as the hooksPath isolation just above
+# (extensions.worktreeConfig is already set true a few lines up): without a per-worktree
+# user.name/user.email, every worktree shares the ONE [user] section in $MAIN/.git/config, so any
+# agent's `git config user.name` call rewrites the author every OTHER agent's next commit gets, in
+# any worktree. Idempotent top-up, same shape as the hooks block above.
+git -C "$TREE" config --worktree user.name "$AGENT"
+git -C "$TREE" config --worktree user.email "${AGENT}@marveen.local"
+
 echo "path:   $TREE"
 echo "branch: $(git -C "$TREE" rev-parse --abbrev-ref HEAD) @ $(git -C "$TREE" rev-parse --short HEAD)"
 echo "index:  $(git -C "$TREE" rev-parse --git-dir)/index   (own index -- peer commits cannot reach it)"
 echo "hooks:  $OWN_HOOKS   (own hooksPath -- isolated from the shared .git/hooks)"
+echo "identity: $(git -C "$TREE" config --worktree user.name) <$(git -C "$TREE" config --worktree user.email)>   (own worktree identity -- isolated from the shared [user] section)"
