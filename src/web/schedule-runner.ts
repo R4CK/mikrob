@@ -67,7 +67,7 @@ import {
   disableOnceTask,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { listAgentNames, readAgentRemoteHost, agentDir } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
 import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
@@ -572,9 +572,9 @@ const scheduleLastRun: Map<string, number> = new Map()
 
 function loadScheduleLastRun(): void {
   try {
-    const raw = JSON.parse(readFileSync(SCHEDULE_LAST_RUN_PATH, 'utf-8'))
+    const raw: unknown = JSON.parse(readFileSync(SCHEDULE_LAST_RUN_PATH, 'utf-8'))
     if (raw && typeof raw === 'object') {
-      for (const [name, ts] of Object.entries(raw)) {
+      for (const [name, ts] of Object.entries(raw as Record<string, unknown>)) {
         if (typeof ts === 'number' && Number.isFinite(ts)) scheduleLastRun.set(name, ts)
       }
     }
@@ -1447,7 +1447,7 @@ function sendUsageLimitNotice(agentName: string, session: string, banner: string
     'Az ütemezett feladatokat nem küldöm bele, mert úgysem tudná lefuttatni őket: a sűrűn futó (skipIfBusy) feladatok "skipped-usage-limit" státusszal kimaradnak, a többi "usage-limited" okkal a várakozó sorba kerül, és a próba vagy a keret visszatérése után lefut.',
     `${Math.round(USAGE_LIMIT_PROBE_INTERVAL_MS / 60_000)} percenként egy feladatot átengedek próbának (a következőt ${probeAt} után); amint a keret visszajön, a szokásos rend helyreáll.`,
   ].join('\n')
-  ;(async () => {
+  void (async () => {
     try {
       await sendSchedulerAlertMessage(token, ownerChat, text)
       logger.info({ agent: agentName, session }, 'usage-limit notice sent')
