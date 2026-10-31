@@ -4038,8 +4038,10 @@ export function buildAgentIdHeaderBody(name: string): string {
 // statically instead (same content this function would otherwise write); this function
 // no-ops for the main agent on purpose.
 export function ensureAgentIdHeaderSection(name: string): void {
-  if (name === MAIN_AGENT_ID) return
-  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  // MUTANT-PIN-TEST-TEMP: guard removed to prove f22ef741's collector test goes RED
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(name)}\n${AGENT_ID_HEADER_END}`
