@@ -869,9 +869,64 @@ def jail_net_selftest():
         except OSError:
             pass
 
+    # Case 6 (card cdcd0f5b delta, RedHat 27436 S3): case 5 above proved start_jail_net_proxy()
+    # itself threads the agent correctly, but called it directly -- a mutant that breaks the
+    # threading ONE LEVEL UP, inside run_helper() (e.g. hardcoding caller='' in its own call to
+    # start_jail_net_proxy instead of passing its own `caller` parameter through), stayed green.
+    # Monkeypatches the module-global start_jail_net_proxy to a recording stub (restored in
+    # `finally`) and calls run_helper() for real with a distinct caller string -- run_helper then
+    # tries to exec a nonexistent engine binary inside the jail (BWRAP itself runs fine; the engine
+    # binary need not exist, bwrap just reports the exec failure as a nonzero exit, which run_helper
+    # already handles as an ordinary 'error' result), so this stays fast and needs no real agy/codex.
+    seen_run_helper_caller = []
+    real_start_proxy = globals()['start_jail_net_proxy']
+
+    def _stub_start_proxy(agent=''):
+        seen_run_helper_caller.append(agent)
+        return None, None, None
+    globals()['start_jail_net_proxy'] = _stub_start_proxy
+    try:
+        with tempfile.TemporaryDirectory() as td2:
+            wd2 = Path(td2) / 'w'
+            wd2.mkdir()
+            run_helper('agy', 'no-such-model', wd2, 'probe prompt', 5, caller='selftest-run-helper-probe')
+    except Exception as e:
+        fails.append(f'run_helper() raised unexpectedly during the threading probe: '
+                     f'{type(e).__name__}: {e}')
+    finally:
+        globals()['start_jail_net_proxy'] = real_start_proxy
+    if seen_run_helper_caller != ['selftest-run-helper-probe']:
+        fails.append('run_helper() caller-threading broken: expected start_jail_net_proxy() to be '
+                     f"called with 'selftest-run-helper-probe', saw {seen_run_helper_caller!r}")
+
+    # Case 7 (card cdcd0f5b delta, RedHat 27436 S2): main() passes `caller=a.hivo` into
+    # dispatch_helper(), one level further up still -- a mutant hardcoding caller='' (or dropping
+    # a.hivo) at that call site stayed green too. Monkeypatches run_helper itself to a recording
+    # stub and drives dispatch_helper() with a minimal fake argparse-shaped namespace, the same seam
+    # main() actually calls through.
+    import argparse as _argparse
+    seen_dispatch_caller = []
+    real_run_helper = globals()['run_helper']
+
+    def _stub_run_helper(engine, model, workdir, prompt_text, timeout, caller=''):
+        seen_dispatch_caller.append(caller)
+        return {'exit': 0, 'status': 'ok', 'valasz': ''}, '', ''
+    globals()['run_helper'] = _stub_run_helper
+    try:
+        fake_a = _argparse.Namespace(hivo='selftest-dispatch-probe', timeout=5)
+        dispatch_helper(fake_a, 'agy', 'no-such-model', Path('/tmp'), 'probe prompt')
+    except Exception as e:
+        fails.append(f'dispatch_helper() raised unexpectedly during the threading probe: '
+                     f'{type(e).__name__}: {e}')
+    finally:
+        globals()['run_helper'] = real_run_helper
+    if seen_dispatch_caller != ['selftest-dispatch-probe']:
+        fails.append('dispatch_helper() caller-threading broken: expected run_helper() to be called '
+                     f"with caller='selftest-dispatch-probe', saw {seen_dispatch_caller!r}")
+
     for f in fails:
         print('FAIL:', f)
-    print(f'jail_net_selftest: {5 - len(fails)}/5 cases passed')
+    print(f'jail_net_selftest: {7 - len(fails)}/7 cases passed')
     return 1 if fails else 0
 
 
@@ -925,6 +980,16 @@ def agy_subtask_binds():
     return ['--ro-bind-try', str(SUBTASK_TOOL_SRC), str(HOME / '.local' / 'bin' / 'gemini-local-subtask'),
             '--bind', str(SUBTASK_LOG_SRC), f'{SUBTASK_JAIL_DIR}/calls.log',
             '--ro-bind-try', str(GATE_DIR), SUBTASK_GATE_JAIL_DIR]
+
+
+def dispatch_helper(a, engine, model, workdir, prompt_text):
+    """Thin seam between main()'s parsed args and run_helper(): kept as its own function (instead of
+    inlining `run_helper(..., caller=a.hivo)` directly in main()) so jail_net_selftest() can exercise
+    exactly how --hivo becomes run_helper's caller kwarg, WITHOUT needing main()'s full quota/lock/
+    gate machinery (card cdcd0f5b delta, RedHat comment 27436 S2: "main() passes caller='' to
+    run_helper" was an unpinned mutant -- this function is the one line that mutation targets, and
+    the selftest calls it directly with a fake `a`)."""
+    return run_helper(engine, model, workdir, prompt_text, a.timeout, caller=a.hivo)
 
 
 def run_helper(engine, model, workdir, prompt_text, timeout, caller=''):
@@ -1367,7 +1432,7 @@ def main():
     append_log({**row, 'status': 'started', 'exit': None, 'atnezett_fajl': scanned})
     mark_call()
     try:
-        res, out, err = run_helper(engine, model, workdir, prompt_text, a.timeout, caller=a.hivo)
+        res, out, err = dispatch_helper(a, engine, model, workdir, prompt_text)
     except Exception as e:  # a crash still gets its final row; a kill keeps the started row
         row.update(status='error', exit=None, okok=[f'{type(e).__name__}: {e}'[:400]], atnezett_fajl=scanned)
         append_log(row)
