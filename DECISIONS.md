@@ -22690,3 +22690,15 @@ backend (a javítás).
 **Ki dontott:** DevO (fullstack) a javitas, MikroB (msg 15975) a G4 kor-korrekcio es a cwd-vs-explicit-hivo eszrevetel forrasa.
 
 **Hivatkozas:** kartya cdcd0f5b, `scripts/seged-hivo.py`, `store/egress-destination-report.sh`.
+
+## 2026-10-31 12:46 -- 3adca529 delta: F1 rollout-teljesseg + F2 mutant-kill a per-worktree git-identitas javitashoz
+
+**Kontextus:** QA FAIL (27188) + CYBERSEC GO-with-MEDIUM (27172) a ee547fa10 Gate-SHA-n: a mechanizmus (extensions.worktreeConfig + per-worktree user.name/user.email) helyesnek bizonyult, de (F1) a meglevo worktree-k tobbsege meg nem volt konvergalva, es (F2) a selftest tulelte a mutalt (eltavolitott identitas-sorokkal futo) kodot.
+
+**F1 eredmeny:** marveen 15/15 regisztralt ugynok-worktree konvergalt (`git config --worktree --get user.name` == a sajat ugynoknev minden esetben, zero sor "s"), mopsion 9/9 regisztralt ugynok-worktree konvergalt (zero sor "t"). Negy mopsion-worktree-katalogus (mikrob, qa, qa2, teszter) a git sajat `worktree list` regiszteraben NEM szerepel (`.git/worktrees/<nev>` admin-mappa hianyzik) -- ez egy ELOZETES, FUGGETLEN orphaned-worktree-registration hiba, nem ennek a kartyanak a hatokoreben, es a fix semmit nem tudna konvergalni egy olyan fan, amit a git maga sem ismer fel.
+
+**F2 eredmeny:** mind a ket selftest (agent-worktree-marveen.selftest.sh, agent-worktree.selftest.sh) pirosra valt, amikor az identitas-sorok (`git config --worktree user.name/user.email`) kiveteve futottak -- a mutalt futason 2-2 eset bukott mindket suite-ban (12/12->10/12, 20/20->18/20), a hiba-uzenet kozvetlenul az elvart sajat-identitas helyett a megosztott visszaesest mutatja.
+
+**Ki dontott:** DevO (fullstack) a delta-javitas es a meres; QA + Cybersec a FAIL/GO-with-finding verdikt forrasa (27188, 27172).
+
+**Hivatkozas:** kartya 3adca529, `store/agent-worktree-marveen.sh`, `store/agent-worktree.sh`, `store/agent-worktree-marveen.selftest.sh`, `store/agent-worktree.selftest.sh`.
