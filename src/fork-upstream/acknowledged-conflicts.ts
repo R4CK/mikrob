@@ -1659,7 +1659,16 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "accident' for the reply-tool-naming feature this fork has not adopted) -- re-confirmed, not " +
     "re-opened. (3) hook-load-watch.test.py is NOT part of that bundle and is ALREADY wired (this " +
     "file, line 80) -- the upstream diff re-adds a step this fork already runs; no action. KEEP " +
-    "resolution unchanged at all points; blob bumped.",
+    "resolution unchanged at all points; blob bumped." +
+    " CORRECTION 2026-10-31 (backend, card 42d952bc, Cybersec F2/F5 comment 27301): the " +
+    "credential-gate test step in the (1) list above is now STALE -- card 42d952bc adopted " +
+    "scripts/hooks/credential-gate.py and scripts/__tests__/credential-gate.test.py, so " +
+    "'references a script that does not exist anywhere in this fork' is no longer true for that " +
+    "one step. Resolution for this one step only, unchanged for the other five: the step is still " +
+    "NOT adopted here (CI wiring for this test goes through a vitest wrapper, " +
+    "src/__tests__/credential-gate.test.ts, same as the other python hook suites, not a raw CI " +
+    "step mirroring upstream's). The other five scripts named in (1) remain genuinely absent; not " +
+    "re-verified this round.",
   'docs/telegram-progress-indicator.md':
     "ADOPT upstream in full (both hunks: the provider-gate explanation paragraph, and the 'Remove' section's `bash scripts/retire-progress-watchdog.sh telegram --force` in place of raw launchctl/systemctl commands) -- paired with scripts/install-telegram-progress-hook.sh's own ADOPT decision above (card 09d54e88 child 1/10): the doc must describe what the code now actually does, and the code side already adopted the provider-gate + retire_provider() mechanism.",
   'docs/token-usage.md':
@@ -3378,15 +3387,26 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // follow-up adoption card (per WhiteHat: a deferral with no card id turns nobody-decided into
   // decided-and-forgotten).
   'scripts/hooks/credential-gate.py':
-    "NOT ADOPTED (deferred, card 42d952bc) -- a PreToolUse hook blocking outgoing letters that " +
-    'carry a credential (password/PIN/WiFi key), with a shared-value list, cross-recipient ' +
-    "dedup, and a one-shot acknowledgement CLI. Genuinely valuable; the fork does not have this " +
-    'hook at all. WhiteHat did not rank how much of this risk the fork\'s existing ' +
-    "email-approval-gate.py/outgoing-copy-gate.py already cover -- that overlap check is part of " +
-    'card 42d952bc before adopting, not assumed here.',
+    "ADOPTED (card 42d952bc, Gate-SHA f163d6cc921ff98bcd99ef858dfe623f881408c3) -- a PreToolUse " +
+    'hook blocking outgoing letters that carry a credential (password/PIN/WiFi key), with a ' +
+    "shared-value list, cross-recipient dedup, and a one-shot acknowledgement CLI. Overlap check " +
+    "(this card's own Kesz-ha point 1) confirmed zero hits for password/credential/PIN/wifi terms " +
+    "in email-approval-gate.py and outgoing-copy-gate.py -- neither existing gate inspects letter " +
+    'content for a credential, so this is net-new coverage, not a duplicate. Ported with two ' +
+    'fork adaptations (documented in the file\'s own docstring): classify_mail_tool replaced with ' +
+    'a local _is_mcp_send() helper reusing outgoing-copy-gate.py\'s existing deny-by-default ' +
+    'classifier, and collect_mcp_body\'s arity matched to this fork\'s actual 1-arg signature. ' +
+    'Wired into .claude/settings.json with the same 7 static PreToolUse matchers as ' +
+    'email-approval-gate.py. (This GROUP A heading above, added by card 4eb41f64/backend3 while ' +
+    'this adoption landed concurrently, still correctly describes OTHER files in this block -- ' +
+    'only this one and its test below are no longer GROUP A.)',
   'scripts/__tests__/credential-gate.test.py':
-    'NOT ADOPTED (deferred, card 42d952bc) -- tests a feature the fork does not have, same ' +
-    'reasoning as scripts/hooks/credential-gate.py above.',
+    'ADOPTED (card 42d952bc, Gate-SHA f163d6cc921ff98bcd99ef858dfe623f881408c3) -- ported ' +
+    'alongside scripts/hooks/credential-gate.py above, same reasoning. One upstream test case ' +
+    '(bash_send() with a `< file` redirect) was changed to an inline --body literal, because this ' +
+    "fork's email_extract.py (TOCTOU924, card 14256aac) deliberately treats any `< file` " +
+    'redirect as unreadable_reason; a separate HTML-body case was routed through an MCP ' +
+    'tool_input call instead of a Bash command string for the same reason. All PASS.',
   'scripts/recipient-ledger.mjs':
     "NOT ADOPTED (deferred, card 251ba892) -- a verified-recipient ledger backing an " +
     "outbound-address gate, preventing sends to an invented/unverified address. The fork does " +
@@ -5346,6 +5366,17 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       'deferral. Upstream\'s _read_body_file/_payload_text is a different implementation of the ' +
       'same @file-reading idea; losing this fork-only regex would reopen the TOCTOU/attach-form ' +
       'gaps it closes.',
+  },
+  'scripts/hooks/credential-gate.py': {
+    needle: 'def _is_mcp_send',
+    file: 'scripts/hooks/credential-gate.py',
+    expect: 'present',
+    because:
+      "fork-only adaptation (card 42d952bc, Cybersec F2 comment 27301); upstream's " +
+      "credential-gate.py imports classify_mail_tool, which this fork's email_extract.py does " +
+      "not have, so taking it wholesale makes the hook exit 1 and the settings.json wrapper " +
+      "block every Bash call of the main agent (measured: ImportError, rc=1). If _is_mcp_send " +
+      "disappears, someone merged upstream's version over this fork's adaptation.",
   },
 }
 

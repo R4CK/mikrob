@@ -20,30 +20,93 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import ts from 'typescript'
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { agentDir } from '../web/agent-config.js'
 import * as agentScaffold from '../web/agent-scaffold.js'
 import { buildAgentIdHeaderBody } from '../web/agent-scaffold.js'
 
 const WEB_TS_PATH = join(PROJECT_ROOT, 'src', 'web.ts')
+const AGENT_PROCESS_TS_PATH = join(PROJECT_ROOT, 'src', 'web', 'agent-process.ts')
 const ROOT_CLAUDE_MD_PATH = join(PROJECT_ROOT, 'CLAUDE.md')
 
-function discoverMainSectionWriters(): string[] {
-  const src = readFileSync(WEB_TS_PATH, 'utf-8')
-  const re = /\b(ensure\w*Section)\(\s*MAIN_AGENT_ID\s*\)/g
-  const names = new Set<string>()
-  for (const m of src.matchAll(re)) names.add(m[1])
-  return [...names].sort()
+// Card 7e202dbf (RedHat F1, on f22ef741/965b0b2b): the ORIGINAL regex here
+// (`ensure\w*Section\(\s*MAIN_AGENT_ID\s*\)`) was blind to a mutant that keeps the
+// same call but wraps the argument (e.g. a cast, `MAIN_AGENT_ID as string`) -- the
+// enumeration would silently shrink and the test suite would stay green with less
+// coverage. Parsing with the TypeScript compiler and stripping parens/casts/non-null
+// before comparing the argument text closes that class structurally, not just for
+// this one shape.
+function stripWrappers(n: ts.Expression): ts.Expression {
+  if (ts.isParenthesizedExpression(n)) return stripWrappers(n.expression)
+  if (ts.isAsExpression(n) || ts.isNonNullExpression(n) || ts.isSatisfiesExpression(n)) return stripWrappers(n.expression)
+  return n
 }
 
-const writerNames = discoverMainSectionWriters()
+interface EnsureSectionCall { name: string; argText: string | null }
 
-describe('f22ef741: every MAIN-branch CLAUDE.md section-writer gives 0 diff on the committed root CLAUDE.md', () => {
+// Every call `ensure<...>Section(<arg?>)` in a source file, found by walking the real
+// AST (not a regex over the text) -- `argText` is the stripped first-argument source,
+// or null for a zero-arg call like ensureFederationClaudeMdSection().
+function findEnsureSectionCalls(filePath: string): EnsureSectionCall[] {
+  const src = readFileSync(filePath, 'utf-8')
+  const sf = ts.createSourceFile(filePath, src, ts.ScriptTarget.Latest, true)
+  const out: EnsureSectionCall[] = []
+  const visit = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && /^ensure\w*Section$/.test(n.expression.text)) {
+      const arg = n.arguments[0]
+      out.push({ name: n.expression.text, argText: arg ? stripWrappers(arg).getText(sf) : null })
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(sf)
+  return out
+}
+
+const webCalls = findEnsureSectionCalls(WEB_TS_PATH)
+// The original set: writers web.ts itself invokes with the literal MAIN_AGENT_ID
+// argument on the main-agent boot path.
+const writerNames = [...new Set(webCalls.filter((c) => c.argText === 'MAIN_AGENT_ID').map((c) => c.name))].sort()
+// Zero-argument writers (today: only the federation onboarding reconciler).
+const zeroArgWriterNames = [...new Set(webCalls.filter((c) => c.argText === null).map((c) => c.name))].sort()
+
+// Card 7e202dbf (original ask + RedHat F1): web.ts's literal-argument calls are not the
+// only way a writer reaches the main agent. agent-process.ts's startAgentProcessUnlocked
+// calls several of the SAME writer functions with a variable `name` -- unconditionally,
+// for whatever agent is being (re)started, including MAIN_AGENT_ID in deployments where
+// agentDir(MAIN_AGENT_ID) exists (this checkout's own early `if (!existsSync(dir)) return`
+// just happens to mask it here, the same reason this file's own fixture below exists).
+// Any writer found ONLY here (not already proven safe via web.ts) is a sibling of the
+// 965b0b2b class and must pass the exact same 0-diff test.
+const agentProcessCalls = findEnsureSectionCalls(AGENT_PROCESS_TS_PATH)
+const siblingWriterNames = [...new Set(agentProcessCalls.map((c) => c.name))].filter((n) => !writerNames.includes(n)).sort()
+
+// The union is what the mutation-pin test below actually exercises.
+const allNoOpWriterNames = [...new Set([...writerNames, ...siblingWriterNames])].sort()
+
+describe('f22ef741/7e202dbf: every MAIN-branch CLAUDE.md section-writer gives 0 diff on the committed root CLAUDE.md', () => {
   it('discovers at least one section-writer from web.ts (sanity: enumeration is not vacuous)', () => {
     expect(writerNames.length).toBeGreaterThan(0)
   })
 
-  it.each(writerNames)('%s(MAIN_AGENT_ID) leaves the committed root CLAUDE.md and agentDir(MAIN_AGENT_ID)/CLAUDE.md untouched', (name) => {
+  // Count floor (RedHat F1): a missed writer -- renamed call, dropped import, a wrapper
+  // the AST walk somehow still failed to see through -- must shrink this number and go
+  // RED, not silently pass with fewer writers checked.
+  it('the web.ts literal-MAIN_AGENT_ID writer count has not silently shrunk (count floor)', () => {
+    expect(writerNames.length).toBeGreaterThanOrEqual(10)
+  })
+
+  it('discovers the zero-argument federation writer from web.ts (RedHat F2)', () => {
+    expect(zeroArgWriterNames).toContain('ensureFederationClaudeMdSection')
+  })
+
+  it('discovers the agent-process.ts siblings not already covered via web.ts, by name (count floor)', () => {
+    expect(siblingWriterNames.length).toBeGreaterThanOrEqual(2)
+    expect(siblingWriterNames).toContain('ensureThinChiefHandoffSection')
+    expect(siblingWriterNames).toContain('ensureFleetRosterSection')
+  })
+
+  it.each(allNoOpWriterNames)('%s(MAIN_AGENT_ID) leaves the committed root CLAUDE.md and agentDir(MAIN_AGENT_ID)/CLAUDE.md untouched', (name) => {
     const fn = (agentScaffold as unknown as Record<string, unknown>)[name]
     expect(typeof fn, `${name} is not exported from agent-scaffold.js`).toBe('function')
 
@@ -118,3 +181,17 @@ describe('f22ef741: the ensureAgentIdHeaderSection static commit matches its own
     expect(normalize(root), 'the agent-id-header block is missing or drifted from its own generator').toContain(expectedBlock)
   })
 })
+
+// Card 7e202dbf (RedHat F2) scope note: ensureFederationClaudeMdSection() is deliberately
+// NOT given a 0-diff behavioral pin here. It is not the 965b0b2b bug class -- it has no
+// `name` argument, and when federation is enabled it is DESIGNED to reconcile a
+// delegation block into the committed root CLAUDE.md, so a MAIN no-op guard would just
+// break the feature. F2's own Kész-ha only asked for discovery (zeroArgWriterNames test
+// above) and a count floor, both met. While writing a candidate behavioral pin for this
+// writer I found that calling it with this worktree's own (disabled) federation config
+// against the real tracked root CLAUDE.md -- which was committed while federation was
+// ENABLED on the live install -- strips the whole federation section rather than leaving
+// it untouched: a config-driven re-dirty of the git-tracked file, gated by federation
+// enabled-state instead of MAIN_AGENT_ID. That is a real but separate finding (not
+// something a no-op guard fixes, since enabling federation legitimately needs the write);
+// flagging it in the REVIEW for a follow-up card rather than fixing it silently here.

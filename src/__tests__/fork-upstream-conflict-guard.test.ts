@@ -662,13 +662,16 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     // minus the one entry that DID get a real anchor (morning-timer-park.test.sh, see
     // ACKNOWLEDGED_FORK_ANCHORS). Each lacks a production fact in THIS fork to point an anchor
     // at, same shape as 'src/web/message-router-window.ts' and 'scripts/supabase-q.sh' above.
-    //   - scripts/hooks/credential-gate.py, scripts/__tests__/credential-gate.test.py,
-    //     scripts/recipient-ledger.mjs, scripts/hooks/telegram_progress_watchdog.py: the fork
+    //   - scripts/recipient-ledger.mjs, scripts/hooks/telegram_progress_watchdog.py: the fork
     //     does not have these features AT ALL (grep-verified, zero occurrences anywhere in the
     //     tree) -- there is no fork-side symbol whose presence/absence could watch a decision
-    //     that was never made either way. Each has its own follow-up adoption card (42d952bc,
-    //     251ba892, c6abbcf5) naming the gap, which is the thing that actually prevents
+    //     that was never made either way. Each has its own follow-up adoption card (251ba892,
+    //     c6abbcf5) naming the gap, which is the thing that actually prevents
     //     decided-and-forgotten here, not an anchor on nothing.
+    //     (scripts/hooks/credential-gate.py and scripts/__tests__/credential-gate.test.py were
+    //     ALSO on this list originally, but card 42d952bc adopted both while this batch was
+    //     being written -- removed from the backlog below, now anchored in
+    //     ACKNOWLEDGED_FORK_ANCHORS['scripts/hooks/credential-gate.py'] instead.)
     //   - scripts/__tests__/morning-stamp-gate.test.sh: grep-verified the SENTINEL="MORNING_SENT_
     //     OK_ mechanism it exercises exists IDENTICALLY on both sides (fork 1, upstream 1) --
     //     there is no divergence to track, this is a true duplicate-coverage case, not a refusal
@@ -685,8 +688,6 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     //     The real tripwire already exists one level up: src/__tests__/send-invocation-
     //     conformance.test.ts reads this exact file's `cases` array and runs both mail gates
     //     against every expected verdict, so a wholesale content swap fails THAT test directly.
-    'scripts/hooks/credential-gate.py',
-    'scripts/__tests__/credential-gate.test.py',
     'scripts/recipient-ledger.mjs',
     'scripts/hooks/telegram_progress_watchdog.py',
     'scripts/__tests__/morning-stamp-gate.test.sh',
