@@ -1,0 +1,84 @@
+// Card f22ef741, source: WhiteHat INFO 965b0b2b (Gate-SHA 1f6247e1).
+//
+// web.ts's main-agent boot block (`!webOnly`) calls several agent-scaffold.ts
+// `ensure*Section(MAIN_AGENT_ID)` functions. Each one is EITHER a hard no-op for
+// MAIN_AGENT_ID (the block is committed statically into the real root CLAUDE.md
+// instead, card 2dd28b5d/99fccbcf regression class: a runtime write to the
+// git-tracked root CLAUDE.md fights the --ff-only pull that keeps the live
+// checkout current), OR writes PROJECT_ROOT/CLAUDE.md idempotently and must
+// reproduce the already-committed block byte-for-byte.
+//
+// This test enumerates the writers FROM web.ts's own source (no hand-maintained
+// list -- a future `ensureXSection(MAIN_AGENT_ID)` call is picked up automatically)
+// and asserts each one gives 0 diff against the real committed root CLAUDE.md.
+//
+// It also seeds agentDir(MAIN_AGENT_ID)/CLAUDE.md so a writer that falls through
+// its MAIN no-op guard has something observable to dirty -- in this checkout that
+// directory does not exist for MAIN_AGENT_ID, which would otherwise mask exactly
+// the regression 965b0b2b found (removing the guard is a RED mutant only if the
+// write target exists to receive it).
+import { describe, it, expect } from 'vitest'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
+import { agentDir } from '../web/agent-config.js'
+import * as agentScaffold from '../web/agent-scaffold.js'
+
+const WEB_TS_PATH = join(PROJECT_ROOT, 'src', 'web.ts')
+const ROOT_CLAUDE_MD_PATH = join(PROJECT_ROOT, 'CLAUDE.md')
+
+function discoverMainSectionWriters(): string[] {
+  const src = readFileSync(WEB_TS_PATH, 'utf-8')
+  const re = /\b(ensure\w*Section)\(\s*MAIN_AGENT_ID\s*\)/g
+  const names = new Set<string>()
+  for (const m of src.matchAll(re)) names.add(m[1])
+  return [...names].sort()
+}
+
+const writerNames = discoverMainSectionWriters()
+
+describe('f22ef741: every MAIN-branch CLAUDE.md section-writer gives 0 diff on the committed root CLAUDE.md', () => {
+  it('discovers at least one section-writer from web.ts (sanity: enumeration is not vacuous)', () => {
+    expect(writerNames.length).toBeGreaterThan(0)
+  })
+
+  it.each(writerNames)('%s(MAIN_AGENT_ID) leaves the committed root CLAUDE.md and agentDir(MAIN_AGENT_ID)/CLAUDE.md untouched', (name) => {
+    const fn = (agentScaffold as unknown as Record<string, unknown>)[name]
+    expect(typeof fn, `${name} is not exported from agent-scaffold.js`).toBe('function')
+
+    const rootBefore = readFileSync(ROOT_CLAUDE_MD_PATH, 'utf-8')
+
+    const agentClaudeMdDir = agentDir(MAIN_AGENT_ID)
+    const agentClaudeMdPath = join(agentClaudeMdDir, 'CLAUDE.md')
+    const agentDirPreexisted = existsSync(agentClaudeMdDir)
+    const agentClaudeMdPreexisted = existsSync(agentClaudeMdPath)
+    const agentClaudeMdBackup = agentClaudeMdPreexisted ? readFileSync(agentClaudeMdPath, 'utf-8') : null
+
+    // Fixture: give the writer something to dirty if it falls through to
+    // agentDir(name) for MAIN_AGENT_ID (seeded with the root content so a byte
+    // mismatch is unambiguous either way).
+    mkdirSync(agentClaudeMdDir, { recursive: true })
+    writeFileSync(agentClaudeMdPath, rootBefore, 'utf-8')
+
+    try {
+      ;(fn as (n: string) => void)(MAIN_AGENT_ID)
+
+      const rootAfter = readFileSync(ROOT_CLAUDE_MD_PATH, 'utf-8')
+      expect(rootAfter, `${name} changed the committed root CLAUDE.md`).toBe(rootBefore)
+
+      const agentAfter = readFileSync(agentClaudeMdPath, 'utf-8')
+      expect(agentAfter, `${name} wrote into agentDir(MAIN_AGENT_ID)/CLAUDE.md`).toBe(rootBefore)
+    } finally {
+      // Always restore the real committed file byte-for-byte, regardless of outcome.
+      writeFileSync(ROOT_CLAUDE_MD_PATH, rootBefore, 'utf-8')
+
+      if (agentClaudeMdPreexisted && agentClaudeMdBackup !== null) {
+        writeFileSync(agentClaudeMdPath, agentClaudeMdBackup, 'utf-8')
+      } else if (!agentDirPreexisted) {
+        rmSync(agentClaudeMdDir, { recursive: true, force: true })
+      } else {
+        rmSync(agentClaudeMdPath, { force: true })
+      }
+    }
+  })
+})
