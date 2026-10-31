@@ -99,16 +99,22 @@ describe('f22ef741: the ensureAgentIdHeaderSection static commit matches its own
   const AGENT_ID_HEADER_END = '<!-- END GENERATED: agent-id-header -->'
 
   it('the committed root CLAUDE.md contains the exact block buildAgentIdHeaderBody(MAIN_AGENT_ID) renders', () => {
-    // buildAgentIdHeaderBody() bakes in `join(PROJECT_ROOT, 'store', '.dashboard-token')`, an
-    // ABSOLUTE path -- the committed block is pinned to the single real deployment
-    // (/home/neon/marveen), but fleet-test.sh runs this very assertion from a disposable
-    // worktree (/home/neon/marveen-test) whose own PROJECT_ROOT differs. Normalize that one
-    // deployment-path-dependent line out of both sides before comparing, so the pin still
-    // catches drift in the rest of the body (the part that is NOT checkout-location-specific)
-    // without being a deployment-path oracle.
+    // Two pieces of buildAgentIdHeaderBody()'s output are deployment-config-dependent, not
+    // body-prose: the PROJECT_ROOT-derived token path, and the `name` argument itself (MAIN_AGENT_ID
+    // resolves from .env, which a disposable fleet-test.sh worktree does not carry -- it defaults to
+    // 'marveen' there instead of the real deployment's 'mikrob'). The committed block is correctly
+    // pinned to the one real deployment's values; re-deriving them from THIS block itself (rather
+    // than importing the test process's own PROJECT_ROOT/MAIN_AGENT_ID) keeps the pin meaningful
+    // for drift in the surrounding prose without being a deployment-config oracle.
+    const root = readFileSync(ROOT_CLAUDE_MD_PATH, 'utf-8')
     const normalize = (s: string): string => s.replace(/cat [^ \n]*\/store\/\.dashboard-token/g, 'cat <PROJECT_ROOT>/store/.dashboard-token')
-    const expectedBlock = normalize(`${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(MAIN_AGENT_ID)}\n${AGENT_ID_HEADER_END}`)
-    const root = normalize(readFileSync(ROOT_CLAUDE_MD_PATH, 'utf-8'))
-    expect(root, 'the agent-id-header block is missing or drifted from its own generator').toContain(expectedBlock)
+    const begin = root.indexOf(AGENT_ID_HEADER_BEGIN)
+    expect(begin, 'agent-id-header block missing from committed root CLAUDE.md').toBeGreaterThanOrEqual(0)
+    const nameMatch = /X-Agent-Id: ([^"\s]+)/.exec(root.slice(begin))
+    expect(nameMatch, 'could not find the embedded X-Agent-Id name in the committed block').not.toBeNull()
+    const embeddedName = nameMatch![1]
+
+    const expectedBlock = normalize(`${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(embeddedName)}\n${AGENT_ID_HEADER_END}`)
+    expect(normalize(root), 'the agent-id-header block is missing or drifted from its own generator').toContain(expectedBlock)
   })
 })
