@@ -668,6 +668,23 @@ fi
 # /proc, and CHANNELS_REAP_KILL_RECORDER, when set, replaces every kill with an
 # append to that file -- so a test asserting on a broken/mutated filter can
 # never issue a real signal, regardless of what the filter matched.
+_reap_canon_path() {
+  # Canonicalise for comparison: resolve the DIRECTORY component only (the
+  # socket file itself need not exist -- the orphan's own directory entry may
+  # already be gone, that is the whole premise of this detector). A symlinked
+  # TMUX_TMPDIR (749d4125 follow-up 3) makes two textually-different paths
+  # point at the same real directory; realpath on the dirname collapses that
+  # before the string compare, so an orphan bound through the symlink and a
+  # relaunch computed through the resolved target (or vice versa) still match.
+  # Falls back to the literal path untouched if the directory cannot be
+  # resolved (e.g. it no longer exists at all) -- same as the pre-existing
+  # literal comparison in that case.
+  local p="$1" dir base real_dir
+  dir="$(dirname "$p")"
+  base="$(basename "$p")"
+  real_dir="$(realpath "$dir" 2>/dev/null)" || { printf '%s\n' "$p"; return; }
+  printf '%s/%s\n' "$real_dir" "$base"
+}
 _reap_resolve_bound_path() {
   # Resolve the AF_UNIX path a candidate pid's listening socket is bound to:
   # walk its fds to a socket inode, then look that inode up in net/unix's
@@ -694,6 +711,21 @@ _reap_resolve_bound_path() {
 }
 _reap_kill_with_escalation() {
   local pid="$1" waited=0 max_wait="${CHANNELS_REAP_KILL_WAIT_S:-5}"
+  # 749d4125 follow-up 4: test-only safety net. When a test sets this to the
+  # exact pids it spawned, a mutated/widened match in the loop above can
+  # still only ever name a pid here -- it can never cause a REAL signal to a
+  # pid outside that list (the 13:11 incident class: a broadened match
+  # reaching a real, unrelated tmux server). Unset in production, so this
+  # has no effect there.
+  if [ -n "${CHANNELS_REAP_KILL_ALLOWLIST:-}" ]; then
+    case " ${CHANNELS_REAP_KILL_ALLOWLIST} " in
+      *" $pid "*) ;;
+      *)
+        echo "WARN: _reap_kill_with_escalation: refusing to signal pid=$pid -- not in CHANNELS_REAP_KILL_ALLOWLIST (749d4125 follow-up 4 test safety net)" >&2
+        return 0
+        ;;
+    esac
+  fi
   if [ -n "${CHANNELS_REAP_KILL_RECORDER:-}" ]; then
     printf '%s\n' "$pid" >> "$CHANNELS_REAP_KILL_RECORDER"
     return 0
@@ -713,6 +745,7 @@ _reap_kill_with_escalation() {
 }
 reap_orphaned_tmux_servers() {
   local sockdir live_pid pid_dir pid owner_uid my_uid comm tmux_bin target_path bound_path
+  local target_path_canon bound_path_canon
   local proc_root="${CHANNELS_REAP_PROC_ROOT:-/proc}"
   local net_unix="${CHANNELS_REAP_NET_UNIX:-$proc_root/net/unix}"
   sockdir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
@@ -723,10 +756,26 @@ reap_orphaned_tmux_servers() {
   # socket descriptor string, not a binary path) -- this script unsets that
   # elsewhere, but this function is called from the --reap-orphaned-tmux-
   # servers test seam too, possibly before that unset has run.
-  tmux_bin="$(command -v tmux)"
+  tmux_bin="${CHANNELS_REAP_TMUX_BIN:-$(command -v tmux)}"
   [ -n "$tmux_bin" ] || return 0
-  live_pid="$("$tmux_bin" display-message -p '#{pid}' 2>/dev/null)"
   target_path="$sockdir/default"
+  # 749d4125 follow-up 1 (RedHat Fix-Direction, comment 27460): the query below
+  # MUST resolve to the exact socket we are about to launch into, never to
+  # wherever the CALLER's own $TMUX happens to point (a caller running this
+  # script from inside a different/private tmux pane would otherwise make
+  # display-message silently address that OTHER server). `-S "$target_path"`
+  # pins the client to the literal socket path, and unsetting TMUX removes the
+  # interference even if -S were ever dropped. If live_pid still comes back
+  # empty while a socket is actually bound there (the file exists -- a server
+  # that is NOT reachable this way is not the same as "no server exists"),
+  # fail closed: abort the whole pass rather than risk treating an unqueryable
+  # but possibly-healthy default-socket server as an orphan.
+  live_pid="$(env -u TMUX "$tmux_bin" -S "$target_path" display-message -p '#{pid}' 2>/dev/null)"
+  if [ -z "$live_pid" ] && [ -S "$target_path" ]; then
+    echo "WARN: reap_orphaned_tmux_servers: default socket $target_path exists but its own server could not be queried -- aborting the reap pass to avoid mistaking an unreachable-but-possibly-healthy server for an orphan (749d4125)" >&2
+    return 0
+  fi
+  target_path_canon="$(_reap_canon_path "$target_path")"
   for pid_dir in "$proc_root"/[0-9]*; do
     [ -d "$pid_dir" ] || continue
     pid="${pid_dir##*/}"
@@ -736,7 +785,8 @@ reap_orphaned_tmux_servers() {
     comm="$(cat "$pid_dir/comm" 2>/dev/null)" || continue
     [ "$comm" = "tmux: server" ] || continue
     bound_path="$(_reap_resolve_bound_path "$pid_dir" "$net_unix")" || continue
-    [ "$bound_path" = "$target_path" ] || continue  # different socket name/dir -- not ours, never touch it (KC3)
+    bound_path_canon="$(_reap_canon_path "$bound_path")"
+    [ "$bound_path_canon" = "$target_path_canon" ] || continue  # different socket name/dir -- not ours, never touch it (KC3)
     echo "WARN: orphaned tmux server pid=$pid (bound to $bound_path, not the server reachable at the default socket${live_pid:+ [pid=$live_pid]}) -- reaping it before relaunch (D4902522: prevents a second live agent set surviving on an unreachable server)" >&2
     _reap_kill_with_escalation "$pid"
     { echo "$(date '+%F %T') reaped orphaned tmux server pid=$pid (bound socket $bound_path) -- unreachable, would otherwise have kept a stale duplicate agent set alive" >> "$INSTALL_DIR/store/channels-respawn.log"; } 2>/dev/null || true
