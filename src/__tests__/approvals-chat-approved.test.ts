@@ -13,6 +13,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- signature must match sendTelegramMessage(token, chatId, text) for mock-call-arg assertions below
 const sendSpy = vi.hoisted(() => vi.fn(async (_token: string, _chatId: string, _text: string): Promise<number | null> => 4242))
 
 vi.mock('../config.js', async (importOriginal) => {
@@ -80,7 +81,7 @@ describe('POST /api/approvals with owner_approved_message_id', () => {
     expect(out.body.telegram_message_id).toBe(4001)
     expect(out.body.resolved_at).toBeGreaterThan(0)
 
-    const row = getApproval(out.body.id)!
+    const row = getApproval(out.body.id as string)!
     expect(row.status).toBe('approved')
     expect(row.resolved_by).toBe('telegram_text')
     expect(row.telegram_message_id).toBe(4001)
@@ -98,7 +99,7 @@ describe('POST /api/approvals with owner_approved_message_id', () => {
 
     // The owner's approving message id stays on the row: the note's own
     // message id must not overwrite it.
-    expect(getApproval(out.body.id)!.telegram_message_id).toBe(4001)
+    expect(getApproval(out.body.id as string)!.telegram_message_id).toBe(4001)
   })
 
   it('(b) a sub-agent that declares its own name is refused: 400, no row, nothing sent', async () => {
@@ -149,7 +150,7 @@ describe('POST /api/approvals with owner_approved_message_id', () => {
     expect(out.body.status).toBe('approved')
     expect(out.body.resolved_by).toBe('telegram_text')
     // telegram_message_id is an INTEGER column: a string id is not forced into it.
-    expect(getApproval(out.body.id)!.telegram_message_id).toBeNull()
+    expect(getApproval(out.body.id as string)!.telegram_message_id).toBeNull()
     const texts = sentTexts()
     expect(texts.length).toBe(1)
     expect(texts[0]).toContain('JÓVÁHAGYVA A CHATBEN')
@@ -170,7 +171,7 @@ describe('POST /api/approvals with owner_approved_message_id', () => {
     expect(texts[0]).toContain('[JÓVÁHAGYÁS KELL]')
     expect(texts[0]).not.toContain('JÓVÁHAGYVA A CHATBEN')
     // The question's message id is stamped onto the pending row, as before.
-    expect(getApproval(out.body.id)!.telegram_message_id).toBe(4242)
+    expect(getApproval(out.body.id as string)!.telegram_message_id).toBe(4242)
   })
 
   it('(c) no field, sub-agent: unchanged -- pending, question sent, main agent notified', async () => {
@@ -251,7 +252,7 @@ describe('email-approval-gate accepts a chat-approved row', () => {
     expect(created.status).toBe(201)
     const ok1 = runGate('Chatben jóváhagyva')
     expect(ok1.status, ok1.stderr).toBe(0)
-    expect(getApproval(created.body.id)!.consumed_at).not.toBeNull()
+    expect(getApproval(created.body.id as string)!.consumed_at).not.toBeNull()
     expect(runGate('Chatben jóváhagyva').status).toBe(2) // one-shot, as for any approval
 
     // Path 2: the pre-existing POST pending + PATCH approved route.
@@ -271,8 +272,8 @@ describe('email-approval-gate accepts a chat-approved row', () => {
     expect(ok2.status, ok2.stderr).toBe(0)
 
     // Same shape on the fields the gate reads.
-    const a = getApproval(created.body.id)!
-    const b = getApproval(pending.body.id)!
+    const a = getApproval(created.body.id as string)!
+    const b = getApproval(pending.body.id as string)!
     for (const r of [a, b]) {
       expect(r.status).toBe('approved')
       expect(r.resolved_by).toBe('telegram_text')

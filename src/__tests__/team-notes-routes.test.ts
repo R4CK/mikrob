@@ -99,19 +99,19 @@ describe('/api/notes', () => {
     const session = { kind: 'session', user: 'alex' } as RouteContext['auth']
     const post = await call('POST', '/api/notes', { assignee: 'cody', content: 'from the page' }, session)
     expect(post.status).toBe(200)
-    expect(getTeamNote(post.body.id)!.created_by).toBe('alex')
+    expect(getTeamNote(post.body.id as string)!.created_by).toBe('alex')
     expect((await call('POST', '/api/notes', { assignee: 'cody', content: 'x' }, { kind: 'token' } as RouteContext['auth'])).status).toBe(400)
     const del = await call('DELETE', `/api/notes/${post.body.id}`, { reason: 'done' }, session)
     expect(del.status).toBe(200)
-    expect(getTeamNote(post.body.id)).toMatchObject({ deleted_by: 'alex', delete_reason: 'done' })
+    expect(getTeamNote(post.body.id as string)).toMatchObject({ deleted_by: 'alex', delete_reason: 'done' })
     const device = await call('POST', '/api/notes', { assignee: 'cody', content: 'from a phone' }, { kind: 'device', device: 'Alex phone', deviceId: 1 } as RouteContext['auth'])
-    expect(getTeamNote(device.body.id)!.created_by).toBe('Alex phone')
+    expect(getTeamNote(device.body.id as string)!.created_by).toBe('Alex phone')
     // The signed-in user wins over a name in the body (the page sends the owner name).
     const named = await call('POST', '/api/notes', { assignee: 'cody', content: 'y', created_by: 'margo' }, session)
-    expect(getTeamNote(named.body.id)!.created_by).toBe('alex')
+    expect(getTeamNote(named.body.id as string)!.created_by).toBe('alex')
     // A token caller is named by the body.
     const agent = await call('POST', '/api/notes', { assignee: 'cody', content: 'z', created_by: 'margo' }, { kind: 'token' } as RouteContext['auth'])
-    expect(getTeamNote(agent.body.id)!.created_by).toBe('margo')
+    expect(getTeamNote(agent.body.id as string)!.created_by).toBe('margo')
   })
 
   it('a non-string author in the body is a 400 even when a session names the author', async () => {

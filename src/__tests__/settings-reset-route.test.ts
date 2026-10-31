@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import type { RouteContext } from '../web/routes/types.js'
 
 // Same enforced sandbox as settings-store.test.ts: STORE_DIR is baked into the
 // store at import time, so it has to be mocked in before anything loads.
@@ -34,7 +35,7 @@ vi.mock('../web/claude-rotation-heartbeat.js', () => ({
 const { OVERRIDES_PATH, setOverride, reloadOverridesForTest } = await import('../settings-store.js')
 const { tryHandleSettings } = await import('../web/routes/settings.js')
 
-function call(method: string, path: string, body?: unknown): { ctx: any; out: { status: number; body: any } } {
+function call(method: string, path: string, body?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -47,7 +48,7 @@ function call(method: string, path: string, body?: unknown): { ctx: any; out: { 
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path, method, url: new URL(`http://localhost${path}`) }, out }
+  return { ctx: { req, res, path, method, url: new URL(`http://localhost${path}`) } as unknown as RouteContext, out }
 }
 
 async function listed(key: string): Promise<any> {

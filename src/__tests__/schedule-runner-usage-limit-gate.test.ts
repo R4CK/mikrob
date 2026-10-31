@@ -128,7 +128,7 @@ vi.mock('../web/agent-process.js', () => ({
   sendPromptToSession: (...a: unknown[]) => mockSendPrompt(...(a as [])),
   startAgentProcess: vi.fn(async () => ({ ok: true })),
   sessionExistsOnHost: () => true,
-  capturePane: (..._a: unknown[]) => (captureCalls++ < gateCaptures ? gatePane : null),
+  capturePane: () => (captureCalls++ < gateCaptures ? gatePane : null),
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(async () => false),
   resolveAgentProvider: () => 'telegram',
