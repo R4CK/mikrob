@@ -4319,7 +4319,6 @@ function buildThinChiefBody(name: string): string {
 // shipped profile sets thinChiefHandoff:true, see templates/profiles/*.json),
 // but agent-process.ts calls this for MAIN too once a profile ever does.
 export function ensureThinChiefHandoffSection(name: string): void {
-  if (name === MAIN_AGENT_ID) return
   const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
