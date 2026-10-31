@@ -22747,3 +22747,16 @@ backend (a javítás).
 **Ki dontott:** backend3 (4eb41f64 PLAN, komment 27153, item 12: NOT ADOPTED deferred, de eros ajanlassal); WhiteHat (komment 27159: "a legerosebb adoptalasi jelolt"); MikroB (c6abbcf5 kartya-nyitas, dispatch msg_id:16083); DevO (fullstack) a tenyleges portolas es a hatokor-dontes a FALLBACKEGYSZER1019-gap kihagyasarol.
 
 **Hivatkozas:** kartya c6abbcf5 (parent 7f0efce3), kartya 4eb41f64 komment 27153/27159, upstream commit a21f3e5b52f1619e4a356d79a34a0840b5c1b962, `scripts/hooks/telegram_progress_watchdog.py`, `scripts/hooks/telegram_progress_clear.py`, `scripts/__tests__/telegram-watchdog-synthetic.test.sh`.
+---
+
+## 2026-10-31 -- Gemini-hívás átkötése REST-ről Antigravity CLI-re (kártya b768770a)
+
+**Döntés:** Az orchesztrátor (`src/gemini-orchestrator.ts`) és az offload-dispatch (`store/offload-dispatch.sh`) alapértelmezésként a `store/gemini-agy-call.sh` Antigravity CLI-wrappert használja a Gemini-hívásokhoz, nem a közvetlen REST API-t (`gemini-offload-call.sh` / `geminiGenerate`). A `store/gemini-rest-fallback-enabled` fájl jelenlétével a régi REST-útvonal visszaállítható.
+
+**Indok:** Az AI Pro előfizetéses `agy` bináris jobb kapacitást és nincs ingyenes-tier rate-limitet biztosít; a meglévő `gemini-agy-call.sh` wrapper már kezeli a kvótát (5/óra rolling window, flock), a kategória-gate-et (csak `safe`) és a bwrap sandboxot. A REST kulcsot a free-tier limitek korlátozták; az `agy` út ezt kiváltja.
+
+**Hatókör:** orchestrator agy-call a TypeScript-oldalon (`callGeminiViaAgy`, mappa: `~/seged-munka/orch-<ts>/`), offload-dispatch agy-call a shell-oldalon (`try_gemini_for_leaf`, `try_gemini_second_opinion_for_leaf`, mappa: `~/seged-munka/dispatch-XXXXX/`). Szintetikus leaf ID-k (`card~type`) `~type` suffixe le van vágva a `--kartya` arg előtt. Injektált `callGemini` (tesztek) nincs felülírva -- a teszt mockok az `=== geminiGenerate` összehasonlítás alapján érintetlenek maradnak.
+
+**Kész, ha:** `grep -n "gemini-agy-call" src/gemini-orchestrator.ts store/offload-dispatch.sh` mindkét fájlban talál; `isRestFallbackEnabled` + `callGeminiViaAgy` tesztek zöldek; `fleet-test.sh --ref <sha>` teljes suite zöld; README fork-szekció frissítve.
+
+**Hivatkozás:** kártya b768770a, backend agent, `src/gemini-orchestrator.ts`, `store/offload-dispatch.sh`, `src/__tests__/gemini-orchestrator.test.ts`.

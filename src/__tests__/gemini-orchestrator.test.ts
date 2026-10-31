@@ -5,8 +5,9 @@ import type { GeminiResult } from '../gemini-client.js'
 
 let killSwitchJson: string | null = null
 let fallbackStateJson: string | null = null
+let restFallbackPresent = false
 let writtenQueue: unknown = null
-let forcedSpawnResult: { status: number | null; error?: Error } | null = null
+let forcedSpawnResult: { status: number | null; stdout?: string; error?: Error } | null = null
 
 vi.mock('node:child_process', async (orig) => {
   const real = await orig<typeof import('node:child_process')>()
@@ -33,6 +34,10 @@ vi.mock('node:fs', async (orig) => {
         if (fallbackStateJson === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
         return fallbackStateJson
       }
+      if (p.endsWith('gemini-rest-fallback-enabled')) {
+        if (!restFallbackPresent) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        return ''
+      }
       return real.readFileSync(path)
     }),
     writeFileSync: vi.fn((path: string, data: string) => {
@@ -40,6 +45,8 @@ vi.mock('node:fs', async (orig) => {
         writtenQueue = JSON.parse(data)
       }
     }),
+    mkdirSync: vi.fn(),
+    rmSync: vi.fn(),
   }
 })
 
@@ -55,6 +62,8 @@ vi.mock('../db.js', () => ({
 
 import {
   isGeminiOrchestratorEnabled,
+  isRestFallbackEnabled,
+  callGeminiViaAgy,
   isEligibleForGeminiOrdering,
   buildOrderingMetadata,
   buildOrderingPrompt,
@@ -72,6 +81,7 @@ function card(over: Partial<OrchestratorCard> = {}): OrchestratorCard {
 beforeEach(() => {
   killSwitchJson = null
   fallbackStateJson = null
+  restFallbackPresent = false
   writtenQueue = null
   forcedSpawnResult = null
   vi.restoreAllMocks()
@@ -511,5 +521,85 @@ describe('runGeminiOrchestratorSweep (conditions 1+4+7: kill switch, route gate,
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota' }))
     await runGeminiOrchestratorSweep(loadCards, callGemini, () => true)
     expect(writtenQueue).toBeNull()
+  })
+})
+
+describe('isRestFallbackEnabled (card b768770a)', () => {
+  it('missing file -> false (agy is default)', () => {
+    restFallbackPresent = false
+    expect(isRestFallbackEnabled()).toBe(false)
+  })
+  it('file present -> true (REST path)', () => {
+    restFallbackPresent = true
+    expect(isRestFallbackEnabled()).toBe(true)
+  })
+})
+
+describe('callGeminiViaAgy (card b768770a)', () => {
+  it('agy exits 0 with output: returns ok:true with that text', async () => {
+    forcedSpawnResult = { status: 0, stdout: '["a","b"]\n' }
+    const result = await callGeminiViaAgy('order these', 'a1b2c3d4')
+    expect(result).toEqual({ ok: true, text: '["a","b"]' })
+  })
+  it('agy exits 5 (quota): returns ok:false reason:quota', async () => {
+    forcedSpawnResult = { status: 5, stdout: '' }
+    const result = await callGeminiViaAgy('order', 'a1b2c3d4')
+    expect(result).toEqual({ ok: false, reason: 'quota' })
+  })
+  it('agy exits 4 (timeout): returns ok:false reason:network', async () => {
+    forcedSpawnResult = { status: 4, stdout: '' }
+    const result = await callGeminiViaAgy('order', 'a1b2c3d4')
+    expect(result).toEqual({ ok: false, reason: 'network' })
+  })
+  it('agy exits 3 (blocked/auth): returns ok:false reason:auth', async () => {
+    forcedSpawnResult = { status: 3, stdout: '' }
+    const result = await callGeminiViaAgy('order', 'a1b2c3d4')
+    expect(result).toEqual({ ok: false, reason: 'auth' })
+  })
+  it('agy exits 1 (generic failure): returns ok:false reason:network', async () => {
+    forcedSpawnResult = { status: 1, stdout: '' }
+    const result = await callGeminiViaAgy('order', 'a1b2c3d4')
+    expect(result.ok).toBe(false)
+  })
+  it('agy exits null (crashed/killed): returns ok:false', async () => {
+    forcedSpawnResult = { status: null, stdout: '' }
+    const result = await callGeminiViaAgy('order', 'a1b2c3d4')
+    expect(result.ok).toBe(false)
+  })
+  it('passes --kategoria safe and --kartya args to gemini-agy-call.sh', async () => {
+    forcedSpawnResult = { status: 0, stdout: 'ok' }
+    await callGeminiViaAgy('prompt text', 'deadbeef')
+    const { spawnSync } = await import('node:child_process')
+    const lastCall = vi.mocked(spawnSync).mock.calls.at(-1)
+    const argv = lastCall?.[1] as string[]
+    expect(argv).toContain('--kategoria')
+    expect(argv[argv.indexOf('--kategoria') + 1]).toBe('safe')
+    expect(argv).toContain('--kartya')
+    expect(argv[argv.indexOf('--kartya') + 1]).toBe('deadbeef')
+  })
+})
+
+describe('runGeminiOrchestratorSweep agy routing (card b768770a)', () => {
+  it('REST fallback absent: injected callGemini is used as-is (no agy override for test mocks)', async () => {
+    // When a callGemini mock is injected, the sweep uses it directly regardless of REST toggle.
+    killSwitchJson = JSON.stringify({ enabled: true })
+    fallbackStateJson = JSON.stringify({ route: 'gemini' })
+    restFallbackPresent = false
+    const loadCards = vi.fn(() => [card({ id: 'x1', labels: ['gemini-ok'] })])
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["x1"]' }))
+    await runGeminiOrchestratorSweep(loadCards, callGemini, () => true)
+    expect(callGemini).toHaveBeenCalled()
+    expect(writtenQueue).toMatchObject({ order: ['x1'] })
+  })
+
+  it('REST fallback present: injected callGemini is still used (REST toggle only affects default geminiGenerate)', async () => {
+    killSwitchJson = JSON.stringify({ enabled: true })
+    fallbackStateJson = JSON.stringify({ route: 'gemini' })
+    restFallbackPresent = true
+    const loadCards = vi.fn(() => [card({ id: 'x2', labels: ['gemini-ok'] })])
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["x2"]' }))
+    await runGeminiOrchestratorSweep(loadCards, callGemini, () => true)
+    expect(callGemini).toHaveBeenCalled()
+    expect(writtenQueue).toMatchObject({ order: ['x2'] })
   })
 })

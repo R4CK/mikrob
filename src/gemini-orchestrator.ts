@@ -33,7 +33,8 @@
 // on isBlockedByLandedFilter below, and offload-dispatch.sh's content gate now also runs on tag
 // text, not just title/desc.
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -49,6 +50,8 @@ const STORE = join(ROOT, 'store')
 const KILL_SWITCH_PATH = join(STORE, 'gemini-orchestrator-enabled.json')
 const QUEUE_PATH = join(STORE, 'gemini-orchestrator-queue.json')
 const FALLBACK_STATE_PATH = join(STORE, 'gemini-fallback-state.json')
+/** Missing = OFF: agy is the default call path. Present = ON: REST path used instead. */
+const REST_FALLBACK_PATH = join(STORE, 'gemini-rest-fallback-enabled')
 
 /** Condition 1: default OFF. A missing file, invalid JSON, or anything but a literal `true` all
  *  read as disabled -- the safe direction for a kill switch is always "off". */
@@ -58,6 +61,46 @@ export function isGeminiOrchestratorEnabled(): boolean {
     return raw.enabled === true
   } catch {
     return false
+  }
+}
+
+/** Missing file = OFF (agy path). Present = ON (REST path). Fail-safe toward agy. */
+export function isRestFallbackEnabled(): boolean {
+  try { readFileSync(REST_FALLBACK_PATH); return true } catch { return false }
+}
+
+const AGY_CALL_SCRIPT = join(STORE, 'gemini-agy-call.sh')
+const AGY_TIMEOUT_MS = 120_000
+
+/**
+ * Call Gemini via the Antigravity CLI (agy) instead of the direct REST API.
+ * Uses a temp mappa under ~/seged-munka/ as required by gemini-agy-call.sh.
+ * The `apiKey` from GeminiCallOptions is intentionally ignored -- agy manages its own auth.
+ */
+export async function callGeminiViaAgy(prompt: string, cardId: string): Promise<GeminiResult> {
+  const mappaDir = join(homedir(), 'seged-munka', `orch-${Date.now()}`)
+  const promptFile = join(mappaDir, 'prompt.txt')
+  try {
+    mkdirSync(mappaDir, { recursive: true })
+    writeFileSync(promptFile, prompt, { mode: 0o600 })
+    const result = spawnSync('bash', [
+      AGY_CALL_SCRIPT,
+      '--hivo', 'mikrob',
+      '--kartya', cardId,
+      '--feladattipus', 'ordering',
+      '--kategoria', 'safe',
+      '--prompt', promptFile,
+      '--mappa', mappaDir,
+    ], { encoding: 'utf-8', timeout: AGY_TIMEOUT_MS })
+    if (result.status === 0 && result.stdout?.trim()) {
+      return { ok: true, text: result.stdout.trim() }
+    }
+    if (result.status === 5) return { ok: false, reason: 'quota' }
+    if (result.status === 4) return { ok: false, reason: 'network' }
+    if (result.status === 3) return { ok: false, reason: 'auth' }
+    return { ok: false, reason: 'network', detail: `agy exit ${result.status ?? 'null'}` }
+  } finally {
+    try { rmSync(mappaDir, { recursive: true, force: true }) } catch {}
   }
 }
 
@@ -273,9 +316,27 @@ export async function runGeminiOrchestratorSweep(
     return
   }
 
-  const apiKey = getSecret(GEMINI_VAULT_KEY_ID) ?? null
   const cards = loadCards()
-  const decision = await decideGeminiOrder(cards, apiKey, callGemini, reserveSlot, releaseSlot)
+
+  // Agy path: default when REST fallback toggle is absent. REST path when toggle is present.
+  // An injected callGemini (e.g. from tests) bypasses this routing and is used as-is.
+  let effectiveCallGemini = callGemini
+  let apiKey: string | null = null
+  if (callGemini === geminiGenerate && !isRestFallbackEnabled()) {
+    const firstEligible = cards.find(
+      (c) => (c.status === 'planned' || c.status === 'in_progress') && isEligibleForGeminiOrdering(c),
+    )
+    if (firstEligible) {
+      const ayCardId = firstEligible.id
+      effectiveCallGemini = (opts: GeminiCallOptions) => callGeminiViaAgy(opts.prompt, ayCardId)
+    }
+    // no eligible cards: effectiveCallGemini stays as geminiGenerate but decideGeminiOrder
+    // will return no_eligible_cards before making any call, so apiKey stays null (never used)
+  } else {
+    apiKey = getSecret(GEMINI_VAULT_KEY_ID) ?? null
+  }
+
+  const decision = await decideGeminiOrder(cards, apiKey, effectiveCallGemini, reserveSlot, releaseSlot)
 
   if (!decision.ok) {
     console.log(`[gemini-orchestrator] fail-closed, no action (reason=${decision.reason ?? 'unknown'}).`)
