@@ -99,8 +99,16 @@ describe('f22ef741: the ensureAgentIdHeaderSection static commit matches its own
   const AGENT_ID_HEADER_END = '<!-- END GENERATED: agent-id-header -->'
 
   it('the committed root CLAUDE.md contains the exact block buildAgentIdHeaderBody(MAIN_AGENT_ID) renders', () => {
-    const expectedBlock = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(MAIN_AGENT_ID)}\n${AGENT_ID_HEADER_END}`
-    const root = readFileSync(ROOT_CLAUDE_MD_PATH, 'utf-8')
+    // buildAgentIdHeaderBody() bakes in `join(PROJECT_ROOT, 'store', '.dashboard-token')`, an
+    // ABSOLUTE path -- the committed block is pinned to the single real deployment
+    // (/home/neon/marveen), but fleet-test.sh runs this very assertion from a disposable
+    // worktree (/home/neon/marveen-test) whose own PROJECT_ROOT differs. Normalize that one
+    // deployment-path-dependent line out of both sides before comparing, so the pin still
+    // catches drift in the rest of the body (the part that is NOT checkout-location-specific)
+    // without being a deployment-path oracle.
+    const normalize = (s: string): string => s.replace(/cat [^ \n]*\/store\/\.dashboard-token/g, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+    const expectedBlock = normalize(`${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(MAIN_AGENT_ID)}\n${AGENT_ID_HEADER_END}`)
+    const root = normalize(readFileSync(ROOT_CLAUDE_MD_PATH, 'utf-8'))
     expect(root, 'the agent-id-header block is missing or drifted from its own generator').toContain(expectedBlock)
   })
 })
