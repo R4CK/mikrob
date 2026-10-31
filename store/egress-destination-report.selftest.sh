@@ -56,6 +56,31 @@ OUT3=$(EGRESS_REPORT_LOG="$TMP/malformed.log" EGRESS_REPORT_OUT_DIR="$TMP/report
 TOTAL3=$(echo "$OUT3" | python3 -c "import json,sys; print(json.load(sys.stdin)['total_events'])")
 check "$TOTAL3" "1" "malformed line skipped, valid line still counted"
 
+# --- case 4: g4 scan picks up a store/*.sh setter and marks it unverified (card cdcd0f5b F2) -
+G4=$(EGRESS_REPORT_LOG="$TMP/does-not-exist2.log" EGRESS_REPORT_OUT_DIR="$TMP/reports4" bash "$SCRIPT" --stdout)
+PENTEST_RUNNER_SEEN=$(echo "$G4" | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+g4 = r['g4_node_fetch_proxy_bypass']
+print('yes' if 'store/pentest-tool-runner.sh' in g4['proxy_env_setters_in_repo'] else 'no')
+")
+check "$PENTEST_RUNNER_SEEN" "yes" "g4 scan finds the store/*.sh proxy-env setter"
+
+PENTEST_RUNNER_UNVERIFIED=$(echo "$G4" | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+g4 = r['g4_node_fetch_proxy_bypass']
+print('yes' if 'store/pentest-tool-runner.sh' in g4['unverified_setters'] else 'no')
+")
+check "$PENTEST_RUNNER_UNVERIFIED" "yes" "g4 marks the arbitrary-downstream setter unverified, not affected=0"
+
+KNOWN_ZERO=$(echo "$G4" | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+print(r['g4_node_fetch_proxy_bypass']['own_fetch_callers_affected_by_bypass_known_zero'])
+")
+check "$KNOWN_ZERO" "False" "affected-by-bypass is NOT asserted known-zero while an arbitrary-downstream setter exists"
+
 echo
 echo "selftest: $((PASS+FAIL)) case(s), PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -gt 0 ]; then

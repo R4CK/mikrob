@@ -22702,3 +22702,17 @@ backend (a javítás).
 **Ki dontott:** DevO (fullstack) a delta-javitas es a meres; QA + Cybersec a FAIL/GO-with-finding verdikt forrasa (27188, 27172).
 
 **Hivatkozas:** kartya 3adca529, `store/agent-worktree-marveen.sh`, `store/agent-worktree.sh`, `store/agent-worktree-marveen.selftest.sh`, `store/agent-worktree.selftest.sh`.
+
+## 2026-10-31 -- cdcd0f5b delta: CYBERED NO-GO fix (selftest mutant-vakság + g4 scan-kör hiánya)
+
+**Kontextus:** CYBERED NO-GO (komment 27277, Gate-SHA 8a66c8df4): ket hibat talalt a 10:15/10:25-os bejegyzesekben leirt megoldason. F1: `jail_net_selftest()` a jail-net-proxy.py-t kozvetlenul subprocess.Popen-nel hivta, SOHA nem a tenyleges `start_jail_net_proxy()` fuggvenyen keresztul -- egy mutalt, ami az `agent` parametert elveszti vagy osszemossa ket hivo kozott, zolden maradt volna. F2: a `g4_node_fetch_proxy_bypass` riport-mezo `own_fetch_callers_affected_by_bypass` erteke egy fix `0` literal volt, nem szamitott ertek, es a setter-keres grep csak `src/scripts/develop-only/src` alatt `.ts/.mjs/.js/.py`-t nezte -- kihagyva `store/pentest-tool-runner.sh`-t (*.sh, store/ alatt), ami TENYLEGESEN allit `HTTP_PROXY`/`HTTPS_PROXY`-t (es kisbetus `http_proxy`/`https_proxy`-t is) egy ONKENYES, hivaskor atadott parancsra.
+
+**F1 javitas:** `jail_net_selftest()` uj, 5. esete a globalis `JAIL_NET_ALLOWLIST`-et ideiglenesen a selftest sajat loopback-portjara allitja, majd KET KULONBOZO agent-azonositoval (`selftest-probe-A`/`-B`) ketszer hivja magat `start_jail_net_proxy()`-t, es a `JAIL_NET_PROXY_LOG` env-et egy sajat temp-fajlra allitva ellenorzi, hogy a ket halo-proxy folyamat logsoraiban a ket agent KULON, nem osszemosva jelenik meg. Mutant-proba: a `start_jail_net_proxy()`-ben az `agent` parametert egy fix `'merged-agent'`-re cserelve a selftest pirosra valt ("caller-attribution broken ... logged agents={'merged-agent'}"), eredetin visszaallitva zold (5/5).
+
+**F2 javitas:** a setter-kereso grep most `store/`-ot es `*.sh`-t is vegignezi, kis- es nagybetus `http_proxy`/`https_proxy`-t is illeszt (`grep -rli`), es kizarja a riport-fajlokat (`store/reports/`) es a sajat scriptjet a hamis onhivatkozas ellen. A riport mostantol egy `FIXED_DOWNSTREAM_SETTERS` halmazzal (jelenleg csak `scripts/seged-hivo.py`, mert a lehivott cel MINDIG agy/codex, sosem a sajat `fetch()`-hivonk) szamolja ki, mely setterek bizonyithatoan nem erintik a sajat `fetch()`-hivoinkat -- minden MAS talalt setter (pl. `store/pentest-tool-runner.sh`, amely egy ONKENYES, "-- <parancs>"-kent atadott parancsra allitja a proxy-env-et) `unverified_setters`-be kerul, es `own_fetch_callers_affected_by_bypass_known_zero: false`-t eredmenyez -- nincs tobbe hamis, statikusan nem bizonyithato `0`.
+
+**Teszt:** `store/egress-destination-report.selftest.sh` 9/9 PASS (4 uj eset: a store/*.sh setter megtalalasa, unverified-kent jelolese, a known-zero flag False-ra valtasa). `python3 scripts/seged-hivo.py --onteszt` -> `jail_net_selftest: 5/5 cases passed`. Mutant-proba mindket javitasra elvegezve, mindket esetben a megfelelo eset pirosra valt a hibas kodon, zoldre az eredetin.
+
+**Ki dontott:** DevO (fullstack) a javitas; Cybered (komment 27277) a NO-GO es a ket F-pont forrasa; MikroB (komment 27281/27306) a re-dispatch es a sorrend (3adca529 utan).
+
+**Hivatkozas:** kartya cdcd0f5b, komment 27277 (CYBERED NO-GO), `scripts/seged-hivo.py`, `store/egress-destination-report.sh`, `store/egress-destination-report.selftest.sh`.

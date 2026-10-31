@@ -818,9 +818,60 @@ def jail_net_selftest():
         allowed_srv.close()
         denied_srv.close()
 
+    # Case 5 (card cdcd0f5b, Cybered NO-GO comment 27277 F1): cases 1-4 above drive
+    # jail-net-proxy.py directly with subprocess.Popen, never through start_jail_net_proxy() --
+    # so a mutant that drops, ignores, or merges the `agent` argument inside
+    # start_jail_net_proxy() (or breaks its caller-threading) stayed green. This case calls
+    # start_jail_net_proxy() itself with two DISTINCT agent ids concurrently, and checks that the
+    # resulting jail-net-proxy.log decision lines carry the correct, un-merged agent for each.
+    global JAIL_NET_ALLOWLIST
+    saved_allowlist = JAIL_NET_ALLOWLIST
+    log_fd, log_path_str = tempfile.mkstemp(prefix='jail-net-selftest-attrib-')
+    os.close(log_fd)
+    saved_log_env = os.environ.get('JAIL_NET_PROXY_LOG')
+    os.environ['JAIL_NET_PROXY_LOG'] = log_path_str
+    try:
+        JAIL_NET_ALLOWLIST = f'127.0.0.1:{allowed_port}'
+        proc_a, dir_a, sock_a = start_jail_net_proxy('selftest-probe-A')
+        proc_b, dir_b, sock_b = start_jail_net_proxy('selftest-probe-B')
+        try:
+            if sock_a is None or sock_b is None:
+                fails.append('start_jail_net_proxy() returned no socket (JAIL_NET_ISOLATION off) -- '
+                              'attribution case cannot run')
+            else:
+                def hit_denied(sock_path):
+                    s = sk.socket(sk.AF_UNIX, sk.SOCK_STREAM)
+                    s.settimeout(3)
+                    s.connect(str(sock_path))
+                    s.sendall(f'CONNECT 127.0.0.1:{denied_port} HTTP/1.1\r\n\r\n'.encode())
+                    s.recv(200)
+                    s.close()
+                hit_denied(sock_a)
+                hit_denied(sock_b)
+                time.sleep(0.2)
+                with open(log_path_str, encoding='utf-8') as fh:
+                    rows = [json.loads(l) for l in fh if l.strip()]
+                agents_seen = {r['agent'] for r in rows if r.get('decision') == 'denied'}
+                if agents_seen != {'selftest-probe-A', 'selftest-probe-B'}:
+                    fails.append('start_jail_net_proxy() caller-attribution broken: expected '
+                                 f"{{'selftest-probe-A', 'selftest-probe-B'}}, logged agents={agents_seen!r}")
+        finally:
+            stop_jail_net_proxy(proc_a, dir_a)
+            stop_jail_net_proxy(proc_b, dir_b)
+    finally:
+        JAIL_NET_ALLOWLIST = saved_allowlist
+        if saved_log_env is None:
+            os.environ.pop('JAIL_NET_PROXY_LOG', None)
+        else:
+            os.environ['JAIL_NET_PROXY_LOG'] = saved_log_env
+        try:
+            os.unlink(log_path_str)
+        except OSError:
+            pass
+
     for f in fails:
         print('FAIL:', f)
-    print(f'jail_net_selftest: {4 - len(fails)}/4 cases passed')
+    print(f'jail_net_selftest: {5 - len(fails)}/5 cases passed')
     return 1 if fails else 0
 
 
