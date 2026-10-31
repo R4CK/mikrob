@@ -53,11 +53,12 @@ if [ -f "$(dirname "$CHANNELS")/../.env" ]; then
 fi
 
 TMPD="$(mktemp -d)"
-PIDA=""; PIDB=""
+PIDA=""; PIDB=""; PIDC=""; PIDD=""; PIDE=""; PIDF=""; PIDG=""
 cleanup() {
-  [ -n "$PIDA" ] && kill -KILL "$PIDA" 2>/dev/null
-  [ -n "$PIDB" ] && kill -KILL "$PIDB" 2>/dev/null
-  rm -rf "$TMPD"
+  for p in "$PIDA" "$PIDB" "$PIDC" "$PIDD" "$PIDE" "$PIDF" "$PIDG"; do
+    [ -n "$p" ] && kill -KILL "$p" 2>/dev/null
+  done
+  rm -rf "$TMPD" "${TMPD2:-}"
 }
 trap cleanup EXIT
 
@@ -101,6 +102,103 @@ if kill -0 "$PIDB" 2>/dev/null; then
   pass "live server B is left untouched"
 else
   fail "live server B is left untouched" "alive" "dead"
+fi
+
+# --- KC2 (RedHat 27363): orphan whose FIRST session is not $SESSION_NAME must
+# still be reaped -- detection is by SOCKET now, not by cmdline session name.
+# This is the live fleet's own boot order (dashboard starts the agent session
+# first, mikrob-channels is added to the same server later).
+PIDC=""
+rm -f "$DEFAULT_SOCK"
+TMUX_TMPDIR="$TMPD" tmux new-session -d -s "other-session-not-$SESSION_NAME" 'sleep 60'
+PIDC="$(TMUX_TMPDIR="$TMPD" tmux display-message -p '#{pid}' 2>/dev/null)"
+if [ -z "$PIDC" ]; then
+  echo "SETUP FAILED: could not start server C -- aborting KC2 case"
+else
+  rm -f "$DEFAULT_SOCK"  # orphan C: its first/only session is NOT $SESSION_NAME
+  TMUX_TMPDIR="$TMPD" tmux new-session -d -s "$SESSION_NAME" 'sleep 60'
+  PIDD="$(TMUX_TMPDIR="$TMPD" tmux display-message -p '#{pid}' 2>/dev/null)"
+  TMUX_TMPDIR="$TMPD" bash "$CHANNELS" --reap-orphaned-tmux-servers >/dev/null 2>&1
+  if kill -0 "$PIDC" 2>/dev/null; then
+    fail "KC2: orphan whose first session differs from \$SESSION is still reaped" "dead" "alive"
+    kill -KILL "$PIDC" 2>/dev/null
+  else
+    pass "KC2: orphan whose first session differs from \$SESSION is still reaped"
+  fi
+  [ -n "$PIDD" ] && kill -0 "$PIDD" 2>/dev/null && pass "KC2: the live replacement server is untouched"
+  [ -n "$PIDD" ] && { kill -KILL "$PIDD" 2>/dev/null; }
+fi
+
+# --- KC3 (RedHat 27363): a healthy server bound to a DIFFERENT socket (same
+# session name, different TMUX_TMPDIR) must never be touched -- kill scope is
+# the socket path, not the session name.
+TMPD2="$(mktemp -d)"
+TMUX_TMPDIR="$TMPD2" tmux new-session -d -s "$SESSION_NAME" 'sleep 60'
+PIDE="$(TMUX_TMPDIR="$TMPD2" tmux display-message -p '#{pid}' 2>/dev/null)"
+if [ -z "$PIDE" ]; then
+  echo "SETUP FAILED: could not start server E in a second socket dir -- aborting KC3 case"
+else
+  TMUX_TMPDIR="$TMPD" bash "$CHANNELS" --reap-orphaned-tmux-servers >/dev/null 2>&1
+  if kill -0 "$PIDE" 2>/dev/null; then
+    pass "KC3: a same-named server in a different socket dir is left untouched"
+  else
+    fail "KC3: a same-named server in a different socket dir is left untouched" "alive" "dead"
+  fi
+  kill -KILL "$PIDE" 2>/dev/null
+fi
+rm -rf "$TMPD2"
+
+# --- KC6 (RedHat 27363): a SIGSTOPped orphan must still die -- TERM alone is
+# queued but never delivered to a stopped process; reap must CONT then KILL.
+rm -f "$DEFAULT_SOCK"
+TMUX_TMPDIR="$TMPD" tmux new-session -d -s "$SESSION_NAME" 'sleep 60'
+PIDF="$(TMUX_TMPDIR="$TMPD" tmux display-message -p '#{pid}' 2>/dev/null)"
+if [ -z "$PIDF" ]; then
+  echo "SETUP FAILED: could not start server F -- aborting KC6 case"
+else
+  rm -f "$DEFAULT_SOCK"  # orphan F
+  kill -STOP "$PIDF" 2>/dev/null
+  TMUX_TMPDIR="$TMPD" tmux new-session -d -s "$SESSION_NAME" 'sleep 60'
+  PIDG="$(TMUX_TMPDIR="$TMPD" tmux display-message -p '#{pid}' 2>/dev/null)"
+  CHANNELS_REAP_KILL_WAIT_S=1 TMUX_TMPDIR="$TMPD" bash "$CHANNELS" --reap-orphaned-tmux-servers >/dev/null 2>&1
+  if kill -0 "$PIDF" 2>/dev/null; then
+    fail "KC6: a SIGSTOPped orphan is still reaped (CONT then KILL)" "dead" "alive"
+    kill -KILL "$PIDF" 2>/dev/null
+  else
+    pass "KC6: a SIGSTOPped orphan is still reaped (CONT then KILL)"
+  fi
+  [ -n "$PIDG" ] && kill -KILL "$PIDG" 2>/dev/null
+fi
+
+# --- Hermetic filter test (QA 27361): detection must be exercisable with ZERO
+# real process interaction, so a test of a BROKEN/mutated filter can never
+# act on a real pid regardless of what it matches. CHANNELS_REAP_PROC_ROOT /
+# CHANNELS_REAP_NET_UNIX point detection at a synthetic tree; the recorder
+# replaces every kill with a file append.
+FAKE_PROC="$TMPD/fakeproc"
+mkdir -p "$FAKE_PROC/9001/fd" "$FAKE_PROC/9002/fd"
+printf 'tmux: server\n' > "$FAKE_PROC/9001/comm"
+printf 'tmux: server\n' > "$FAKE_PROC/9002/comm"
+ln -s "socket:[111]" "$FAKE_PROC/9001/fd/3"
+ln -s "socket:[222]" "$FAKE_PROC/9002/fd/3"
+mkdir -p "$TMPD/tmux-$(id -u)"
+FAKE_TARGET="$TMPD/tmux-$(id -u)/default"
+FAKE_NET_UNIX="$TMPD/fake-net-unix"
+{
+  echo "Num       RefCount Protocol Flags    Type St Inode Path"
+  printf '0: 00000002 00000000 00010000 0001 01 111 %s\n' "$FAKE_TARGET"
+  printf '0: 00000002 00000000 00010000 0001 01 222 %s\n' "$TMPD/tmux-$(id -u)/other"
+} > "$FAKE_NET_UNIX"
+RECORDER="$TMPD/recorder.txt"
+: > "$RECORDER"
+CHANNELS_REAP_PROC_ROOT="$FAKE_PROC" CHANNELS_REAP_NET_UNIX="$FAKE_NET_UNIX" \
+  CHANNELS_REAP_KILL_RECORDER="$RECORDER" TMUX_TMPDIR="$TMPD" \
+  bash "$CHANNELS" --reap-orphaned-tmux-servers >/dev/null 2>&1
+GOT="$(cat "$RECORDER" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+if [ "$GOT" = "9001" ]; then
+  pass "hermetic: only the pid bound to the target socket is recorded (zero real kill)"
+else
+  fail "hermetic: only the pid bound to the target socket is recorded (zero real kill)" "9001" "$GOT"
 fi
 
 echo ""

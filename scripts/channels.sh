@@ -634,23 +634,87 @@ fi
 # pid, so the fix is to find and kill it by pid, before the new server exists,
 # not to try to reuse it.
 #
-# Detection:
+# Detection (revised, D4902522 RedHat delta, comment 27363):
 #   1. ask a REAL client to connect to the current default socket and report
 #      the server's own pid (`display-message -p '#{pid}'`) -- this is the
 #      one authoritative way to learn who is reachable right now, because the
 #      kernel resolves the connect() through the CURRENT directory entry, not
 #      through any cached path string;
 #   2. for every OTHER process (same uid) whose comm is exactly "tmux: server",
-#      check its cmdline (comm is always "tmux: server" regardless of session
-#      name, but cmdline keeps the ORIGINAL launch invocation (tmux's
-#      "new-session", "-d", "-s <name>" args) for the life of the process --
-#      confirmed on pid 900).
-#      Only one that was originally launched as "-s $SESSION" is touched: an
-#      unrelated tmux server (a human's own interactive session, or a scratch
-#      socket some other tool left behind) must never be killed just for
-#      existing under the same uid.
+#      resolve the socket PATH it is actually bound to -- NOT the session name
+#      in its cmdline. The first version matched by "-s $SESSION" in cmdline,
+#      which has two failure modes RedHat measured: (KC2) a server whose FIRST
+#      session (the only one cmdline retains) is not $SESSION, because
+#      $SESSION was attached to it LATER -- this is the live fleet's own boot
+#      order (dashboard starts first with -s agent-backend, mikrob-channels is
+#      added after) -- was skipped and stayed orphaned; (KC3) the match ran
+#      across ALL same-uid servers regardless of which socket directory they
+#      live in, so a healthy, unrelated server in a DIFFERENT TMUX_TMPDIR with
+#      the same session name got killed. Socket-path resolution is immune to
+#      both: a server's bound path is read once, at bind time, into
+#      /proc/net/unix, and that value is NEVER updated by a later unlink/
+#      replace of the directory entry (this is the exact fact that makes an
+#      orphan detectable at all -- see the long comment above). Only a server
+#      bound to the EXACT path we are about to launch into ("$sockdir/default"
+#      -- this script never passes -L, so that is always the path) is touched;
+#      a server bound to a different socket name or a different TMUX_TMPDIR is
+#      left alone no matter what its cmdline says.
+#   3. kill with escalation (KC6): a bare TERM is queued but never delivered to
+#      a process this fleet has SIGSTOPped, so wait, then CONT (in case
+#      stopped), then KILL if it is still alive.
+# Test injection (27361: a hermetic test must survive a BROKEN filter without
+# ever touching a real process): CHANNELS_REAP_PROC_ROOT/CHANNELS_REAP_NET_UNIX
+# let a test point detection at a synthetic directory tree instead of the real
+# /proc, and CHANNELS_REAP_KILL_RECORDER, when set, replaces every kill with an
+# append to that file -- so a test asserting on a broken/mutated filter can
+# never issue a real signal, regardless of what the filter matched.
+_reap_resolve_bound_path() {
+  # Resolve the AF_UNIX path a candidate pid's listening socket is bound to:
+  # walk its fds to a socket inode, then look that inode up in net/unix's
+  # Path column (field 8; present only for bound sockets). This is the one
+  # attribute of the socket object itself that a later directory-entry
+  # unlink/replace cannot change (see the comment above).
+  local pid_dir="$1" net_unix="$2" fd target inode path
+  [ -r "$net_unix" ] || return 1
+  for fd in "$pid_dir"/fd/*; do
+    target="$(readlink "$fd" 2>/dev/null)" || continue
+    case "$target" in
+      socket:\[*\]) : ;;
+      *) continue ;;
+    esac
+    inode="${target#socket:[}"
+    inode="${inode%]}"
+    path="$(awk -v want="$inode" '$7 == want && NF >= 8 { print $8; exit }' "$net_unix" 2>/dev/null)"
+    if [ -n "$path" ]; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+  done
+  return 1
+}
+_reap_kill_with_escalation() {
+  local pid="$1" waited=0 max_wait="${CHANNELS_REAP_KILL_WAIT_S:-5}"
+  if [ -n "${CHANNELS_REAP_KILL_RECORDER:-}" ]; then
+    printf '%s\n' "$pid" >> "$CHANNELS_REAP_KILL_RECORDER"
+    return 0
+  fi
+  kill -TERM "$pid" 2>/dev/null || return 0
+  while [ "$waited" -lt "$max_wait" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  kill -0 "$pid" 2>/dev/null || return 0
+  # Still alive after TERM -- may be SIGSTOPped (this fleet freezes processes
+  # with SIGSTOP, and a stopped process never runs its TERM handler), so CONT
+  # before the final KILL.
+  kill -CONT "$pid" 2>/dev/null || true
+  sleep 1
+  kill -KILL "$pid" 2>/dev/null || true
+}
 reap_orphaned_tmux_servers() {
-  local sockdir live_pid pid_dir pid owner_uid my_uid comm cmdline tmux_bin
+  local sockdir live_pid pid_dir pid owner_uid my_uid comm tmux_bin target_path bound_path
+  local proc_root="${CHANNELS_REAP_PROC_ROOT:-/proc}"
+  local net_unix="${CHANNELS_REAP_NET_UNIX:-$proc_root/net/unix}"
   sockdir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
   [ -d "$sockdir" ] || return 0
   my_uid="$(id -u)"
@@ -662,21 +726,20 @@ reap_orphaned_tmux_servers() {
   tmux_bin="$(command -v tmux)"
   [ -n "$tmux_bin" ] || return 0
   live_pid="$("$tmux_bin" display-message -p '#{pid}' 2>/dev/null)"
-  for pid_dir in /proc/[0-9]*; do
-    pid="${pid_dir#/proc/}"
+  target_path="$sockdir/default"
+  for pid_dir in "$proc_root"/[0-9]*; do
+    [ -d "$pid_dir" ] || continue
+    pid="${pid_dir##*/}"
     [ -n "$live_pid" ] && [ "$pid" = "$live_pid" ] && continue
     owner_uid="$(stat -c '%u' "$pid_dir" 2>/dev/null)" || continue
     [ "$owner_uid" = "$my_uid" ] || continue
     comm="$(cat "$pid_dir/comm" 2>/dev/null)" || continue
     [ "$comm" = "tmux: server" ] || continue
-    cmdline="$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null)" || continue
-    case "$cmdline" in
-      *" -s $SESSION "*|*" -s $SESSION") : ;;
-      *) continue ;;  # not our session's server -- e.g. the operator's own unrelated tmux -- never touch it
-    esac
-    echo "WARN: orphaned tmux server pid=$pid (launched as -s $SESSION, not the server reachable at the default socket${live_pid:+ [pid=$live_pid]}) -- killing it before relaunch (D4902522: prevents a second live agent set surviving on an unreachable server)" >&2
-    kill -TERM "$pid" 2>/dev/null || true
-    { echo "$(date '+%F %T') reaped orphaned tmux server pid=$pid (cmdline carried -s $SESSION) -- unreachable, would otherwise have kept a stale duplicate agent set alive" >> "$INSTALL_DIR/store/channels-respawn.log"; } 2>/dev/null || true
+    bound_path="$(_reap_resolve_bound_path "$pid_dir" "$net_unix")" || continue
+    [ "$bound_path" = "$target_path" ] || continue  # different socket name/dir -- not ours, never touch it (KC3)
+    echo "WARN: orphaned tmux server pid=$pid (bound to $bound_path, not the server reachable at the default socket${live_pid:+ [pid=$live_pid]}) -- reaping it before relaunch (D4902522: prevents a second live agent set surviving on an unreachable server)" >&2
+    _reap_kill_with_escalation "$pid"
+    { echo "$(date '+%F %T') reaped orphaned tmux server pid=$pid (bound socket $bound_path) -- unreachable, would otherwise have kept a stale duplicate agent set alive" >> "$INSTALL_DIR/store/channels-respawn.log"; } 2>/dev/null || true
   done
 }
 
