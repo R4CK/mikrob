@@ -79,6 +79,15 @@ CMD="${1:-}"; shift || true
 case "$CMD" in
   build)
     need_repo "${1:-}"
+    # Compensating control for GHSA-pcc4-rvhr-2pr8 (card b7540305, follow-up of fa4a875d): the
+    # pinned graphify version's Fortran extractor hardens #include with cpp, but that hardening is
+    # bypassable via an absolute path or ../ traversal, letting an indexed repo exfiltrate host
+    # files into graph.json. The real fix is the version bump (>=0.9.70); until that live-update
+    # window runs (Peti approval pending), refuse to build any tree carrying an uppercase-F
+    # (preprocessed) Fortran file at all, so the vulnerable code path is never reached here.
+    if find "$1" -type f \( -name '*.F' -o -name '*.F90' -o -name '*.F95' -o -name '*.F03' -o -name '*.F08' \) -print -quit | grep -q .; then
+      die 7 "refusing to build $1: contains an uppercase-F Fortran file (.F/.F90/.F95/.F03/.F08) -- the pinned graphify version is vulnerable to GHSA-pcc4-rvhr-2pr8 (Fortran #include path traversal) until the pin is bumped to >=0.9.70. See store/watched-repos.json (graphify entry) and card b7540305."
+    fi
     # --no-cluster = raw AST extraction only. Clustering is deterministic but its labeling step is
     # the LLM path; skipping it keeps this call provably code-only.
     run_graphify update "$1" --no-cluster
