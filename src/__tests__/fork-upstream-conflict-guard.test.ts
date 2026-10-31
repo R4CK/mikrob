@@ -658,6 +658,41 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     'src/__tests__/session-send-lock.test.ts',
     'web/lang/en.js',
     'src/__tests__/channel-poller-reap-live-pane.test.ts',
+    // The following 8 (card 4eb41f64, backend3, 2026-10-31) are the "nobody-decided" drift batch
+    // minus the one entry that DID get a real anchor (morning-timer-park.test.sh, see
+    // ACKNOWLEDGED_FORK_ANCHORS). Each lacks a production fact in THIS fork to point an anchor
+    // at, same shape as 'src/web/message-router-window.ts' and 'scripts/supabase-q.sh' above.
+    //   - scripts/hooks/credential-gate.py, scripts/__tests__/credential-gate.test.py,
+    //     scripts/recipient-ledger.mjs, scripts/hooks/telegram_progress_watchdog.py: the fork
+    //     does not have these features AT ALL (grep-verified, zero occurrences anywhere in the
+    //     tree) -- there is no fork-side symbol whose presence/absence could watch a decision
+    //     that was never made either way. Each has its own follow-up adoption card (42d952bc,
+    //     251ba892, c6abbcf5) naming the gap, which is the thing that actually prevents
+    //     decided-and-forgotten here, not an anchor on nothing.
+    //   - scripts/__tests__/morning-stamp-gate.test.sh: grep-verified the SENTINEL="MORNING_SENT_
+    //     OK_ mechanism it exercises exists IDENTICALLY on both sides (fork 1, upstream 1) --
+    //     there is no divergence to track, this is a true duplicate-coverage case, not a refusal
+    //     that could reverse.
+    //   - docs/config-reference.md: pure docs, no code symbol exists to anchor on, same shape as
+    //     the doc-only entries already acknowledged elsewhere in this file.
+    //   - scripts/channel-outage-alarm.sh: the deferred hardening (reject a malformed bot token
+    //     before building the -K config line) was never adopted either way -- there is no
+    //     existing fork-side state that could silently reverse, only a future opportunity (follow-
+    //     up card 363339b4).
+    //   - scripts/hooks/send-invocation-cases.json: the one candidate symbol-level marker
+    //     (INTERAGENTHOMOGLIF923) exists on BOTH sides (fork 1, upstream 1), so an anchor on it
+    //     would always read 'present' regardless of which decision holds -- not load-bearing.
+    //     The real tripwire already exists one level up: src/__tests__/send-invocation-
+    //     conformance.test.ts reads this exact file's `cases` array and runs both mail gates
+    //     against every expected verdict, so a wholesale content swap fails THAT test directly.
+    'scripts/hooks/credential-gate.py',
+    'scripts/__tests__/credential-gate.test.py',
+    'scripts/recipient-ledger.mjs',
+    'scripts/hooks/telegram_progress_watchdog.py',
+    'scripts/__tests__/morning-stamp-gate.test.sh',
+    'docs/config-reference.md',
+    'scripts/channel-outage-alarm.sh',
+    'scripts/hooks/send-invocation-cases.json',
     //   - src/web/routes/claude-plans.ts (card 4aa87fdf, 2026-10-17): the two "NOT adopted" items in
     //     this entry (mainRotationContinueVerdict and RESTARTWAKE927) were BOTH adopted on develop
     //     between our branch-cut and landing -- grep-verified on origin/develop. Any 'absent' anchor
