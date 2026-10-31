@@ -10,8 +10,10 @@ import { openKgDb, kgDbPath } from '../../kg/store.js'
 import { hybridKgSearch, KgSearchError } from '../../kg/search.js'
 import { buildForCardPackage } from '../../kg/for-card.js'
 import { recordKgOffered } from '../../kg/usage.js'
+import { OLLAMA_URL } from '../../config.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
+import type Database from 'better-sqlite3'
 
 // WhiteHat NO-GO F2 MEDIUM (card 34c2d2a2, comment 24103): `k` had no upper bound (the KG_TOPK
 // registry max only applied to the DEFAULT when the caller omitted `k`), and `q`/`path`/`types`
@@ -63,8 +65,68 @@ function kgDb(): ReturnType<typeof openKgDb> {
   return kgDbSingleton
 }
 
+// Card 9b13108b: the Megoldás-tár page (web/app-kg.js, kgLoadStats) already calls this
+// endpoint and reads the response defensively field-by-field -- its own header comment marks
+// the shape as a forward-compatible proposal pending BE confirmation, so this implementation
+// is that confirmation: counts grouped by type (excluding archived, which is a terminal,
+// deliberately-retired status, same reasoning store.ts's PROTECTED_STATUSES applies), a
+// used/offered usage rate from kg_usage (MT-08), and pending/done/total from the backfill queue
+// (MT-06, kg_capture_queue).
+interface KgStatsPayload {
+  ollama_available: boolean
+  nodes: Record<string, number>
+  usage: { rate: number } | null
+  backfill: { pending: number; done: number; total: number }
+}
+
+function computeKgStats(db: Database.Database): Omit<KgStatsPayload, 'ollama_available'> {
+  const nodeRows = db
+    .prepare(`SELECT type, COUNT(*) AS n FROM kg_nodes WHERE status != 'archived' GROUP BY type`)
+    .all() as { type: string; n: number }[]
+  const nodes: Record<string, number> = {}
+  for (const row of nodeRows) nodes[row.type] = row.n
+
+  const offered = (db.prepare(`SELECT COUNT(*) AS n FROM kg_usage WHERE event = 'offered'`).get() as { n: number }).n
+  const used = (db.prepare(`SELECT COUNT(*) AS n FROM kg_usage WHERE event = 'used'`).get() as { n: number }).n
+  const usage = offered > 0 ? { rate: used / offered } : null
+
+  const queueRows = db
+    .prepare(`SELECT state, COUNT(*) AS n FROM kg_capture_queue GROUP BY state`)
+    .all() as { state: string; n: number }[]
+  let pending = 0
+  let total = 0
+  let done = 0
+  for (const row of queueRows) {
+    total += row.n
+    if (row.state === 'pending') pending = row.n
+    if (row.state === 'done') done = row.n
+  }
+
+  return { nodes, usage, backfill: { pending, done, total } }
+}
+
+async function checkOllamaAvailable(): Promise<boolean> {
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(3000) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 export async function tryHandleKg(ctx: RouteContext): Promise<boolean> {
   const { path, method, url, res } = ctx
+
+  if (path === '/api/kg/stats' && method === 'GET') {
+    if (!kgEnabled()) {
+      json(res, { error: 'kg_disabled' }, 404)
+      return true
+    }
+    const ollama_available = await checkOllamaAvailable()
+    const { nodes, usage, backfill } = computeKgStats(kgDb())
+    json(res, { ollama_available, nodes, usage, backfill })
+    return true
+  }
 
   if (path === '/api/kg/search' && method === 'GET') {
     if (!kgEnabled()) {
