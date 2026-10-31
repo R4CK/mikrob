@@ -134,16 +134,40 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
     for (const name of ['backend', 'backend2', 'backend3']) expect(familySet).toContain(`'${name}'`)
   })
 
-  it('a non-backend role (e.g. cybered) still renders from SKILL_USAGE_DATA, unaffected', () => {
-    // BACKEND_FAMILY only has the three backend names (asserted above) -- anything else falls
-    // through to the pre-existing `const entries = SKILL_USAGE_DATA[name]` path, byte-for-byte
-    // the same code this card found already working for every other role.
+  it('QA_FAMILY, WHITEHAT_FAMILY, REDHAT_FAMILY sets are defined in the scaffold', () => {
+    expect(SCAFFOLD).toContain("const QA_FAMILY = new Set(")
+    expect(SCAFFOLD).toContain("const WHITEHAT_FAMILY = new Set(")
+    expect(SCAFFOLD).toContain("const REDHAT_FAMILY = new Set(")
+    for (const name of ['qa', 'qa2']) expect(SCAFFOLD).toContain(`'${name}'`)
+    for (const name of ['cybersec', 'cybersec2']) expect(SCAFFOLD).toContain(`'${name}'`)
+    expect(SCAFFOLD).toContain("'cybered'")
+  })
+
+  it('QA family roles route to buildQaFamilySkillUsageBody', () => {
     const dispatch = SCAFFOLD.slice(
       SCAFFOLD.indexOf('function buildSkillUsageBody('),
       SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
     )
-    expect(dispatch).toContain('const entries = SKILL_USAGE_DATA[name]')
-    expect(SKILL_USAGE_DATA['cybered']?.length ?? 0).toBeGreaterThan(0)
+    expect(dispatch).toContain('QA_FAMILY.has(name)')
+    expect(dispatch).toContain('buildQaFamilySkillUsageBody()')
+  })
+
+  it('WhiteHat family roles route to buildWhiteHatFamilySkillUsageBody', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('WHITEHAT_FAMILY.has(name)')
+    expect(dispatch).toContain('buildWhiteHatFamilySkillUsageBody()')
+  })
+
+  it('RedHat family routes to buildRedHatFamilySkillUsageBody, not SKILL_USAGE_DATA', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('REDHAT_FAMILY.has(name)')
+    expect(dispatch).toContain('buildRedHatFamilySkillUsageBody()')
   })
 
   it('marks a known self-claimed-but-unreferenced skill as gap for its role', () => {

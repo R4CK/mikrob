@@ -3384,6 +3384,72 @@ export function ensureEvidenceSection(name: string): void {
 // table text + the two Peti-12191 security/docs rows live here so the three roles render byte-
 // identically; the full catalog remains available via store/skill-role-map.md.
 const BACKEND_FAMILY = new Set(['backend', 'backend2', 'backend3'])
+const QA_FAMILY = new Set(['qa', 'qa2'])
+const WHITEHAT_FAMILY = new Set(['cybersec', 'cybersec2'])
+const REDHAT_FAMILY = new Set(['cybered'])
+
+function buildQaFamilySkillUsageBody(): string {
+  const rows = [
+    '| Minden gate | `qa-test-strategy` + `karpathy-guidelines` (Simplicity-elv) |',
+    '| Funkcionális teszt, happy path + edge case | `qa-test-strategy` |',
+    '| User-facing (böngészőben kattints végig) | `browser-testing-with-devtools` |',
+    '| Regresszió, bukó teszt, root-cause | `sp-systematic-debugging` |',
+    '| Bizonyíték kész-nyilatkozat előtt | `sp-verification-before-completion` |',
+    '| Kockázatos döntés, kétes finding | `doubt-driven-development` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 3bf6a01a)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
+function buildWhiteHatFamilySkillUsageBody(): string {
+  const rows = [
+    '| Minden gate | `white-hat-security-testing` + `defensive-security-analysis` (önellenőrzés) |',
+    '| Fenyegetés-modell a designra | `threat-modeling` |',
+    '| Auth/RBAC/trust-boundary | `rbac-authz-matrix-audit` |',
+    '| AI/LLM/agent biztonsági teszt | `ai-security-testing` |',
+    '| Cloud/konténer misconfig | `cloud-container-security` |',
+    '| Ellátási lánc, dependency tamper | `supplychainsecurity` |',
+    '| Aktív védelem tervezése | `active-defense-design` |',
+    '| Kockázatos döntés | `doubt-driven-development` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 3bf6a01a)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
+function buildRedHatFamilySkillUsageBody(): string {
+  const rows = [
+    '| Minden gate | `redteam` + friss `WebSearch` CVE/ATT&CK (KÖTELEZŐ minden gate előtt) |',
+    '| Kill-chain emuláció, MITRE ATT&CK | `redteam` |',
+    '| AI/LLM adverzariális | `ai-security-testing` |',
+    '| Cloud/konténer misconfig, IAM escalation | `cloud-container-security` |',
+    '| Ellátási lánc tamper | `supplychainsecurity` |',
+    '| Aktív incidens, assume-breach | `incident-response` |',
+    '| Kockázatos döntés | `doubt-driven-development` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 3bf6a01a)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
 
 function buildBackendFamilySkillUsageBody(): string {
   const rows = [
@@ -3424,6 +3490,9 @@ function buildBackendFamilySkillUsageBody(): string {
 // section -- ensureSkillUsageSection() below is a no-op for them.
 function buildSkillUsageBody(name: string): string | null {
   if (BACKEND_FAMILY.has(name)) return buildBackendFamilySkillUsageBody()
+  if (QA_FAMILY.has(name)) return buildQaFamilySkillUsageBody()
+  if (WHITEHAT_FAMILY.has(name)) return buildWhiteHatFamilySkillUsageBody()
+  if (REDHAT_FAMILY.has(name)) return buildRedHatFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null

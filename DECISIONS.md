@@ -22760,3 +22760,17 @@ backend (a javítás).
 **Kész, ha:** `grep -n "gemini-agy-call" src/gemini-orchestrator.ts store/offload-dispatch.sh` mindkét fájlban talál; `isRestFallbackEnabled` + `callGeminiViaAgy` tesztek zöldek; `fleet-test.sh --ref <sha>` teljes suite zöld; README fork-szekció frissítve.
 
 **Hivatkozás:** kártya b768770a, backend agent, `src/gemini-orchestrator.ts`, `store/offload-dispatch.sh`, `src/__tests__/gemini-orchestrator.test.ts`.
+
+---
+
+## 2026-10-31: Gate-family CLAUDE.md focus + skill table updates (kártya 3bf6a01a)
+
+**Döntés:** QA/QA2, WhiteHat/WhiteHat2 (cybersec/cybersec2), RedHat (cybered) ügynökök CLAUDE.md-jét frissítettük Peti Telegram 12188 szerint: kódminőség-fókusz (QA), defense-fókusz (WhiteHat), attack-fókusz (RedHat), phantom skillek (`cybered-gate-pattern`, `webapp-testing`) eltávolítva.
+
+**Változások:**
+- QA/QA2: `Simplicity:` 4. sor a gate-verdiktben; új Core skillek (`karpathy-guidelines`); eltávolítva: `full-value-audit`, `unlazy`, `sp-test-driven-development`, `ci-cd-and-automation`.
+- WhiteHat/WhiteHat2 (cybersec/cybersec2): `defensive-security-analysis`, `active-defense-design`, `rbac-authz-matrix-audit` hozzáadva; `full-value-audit`, `unlazy` eltávolítva. Az `active-defense-design` ÁTKERÜLT cybered-ről WhiteHathoz.
+- RedHat (cybered): `Methods:` 4. sor a gate-verdiktben (MITRE ATT&CK technika-ID-k + WebSearch forrás kötelező); `full-value-audit`, `unlazy`, `active-defense-design` eltávolítva.
+- `src/web/agent-scaffold.ts`: QA_FAMILY, WHITEHAT_FAMILY, REDHAT_FAMILY set-ek + 3 curated builder function a generátorban.
+
+**Hivatkozás:** kártya 3bf6a01a, backend agent, `seed-fleet-agents/*/CLAUDE.md`, `src/web/agent-scaffold.ts`, `src/__tests__/agent-scaffold-skill-usage.test.ts`.
