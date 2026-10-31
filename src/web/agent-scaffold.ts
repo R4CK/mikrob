@@ -3804,7 +3804,7 @@ export function buildFleetAuthBody(): string {
 // again here on card 965b0b2b). The block is committed there statically instead (same content this
 // function would otherwise write); this function no-ops for the main agent on purpose.
 export function ensureFleetAuthSection(name: string): void {
-  if (name === MAIN_AGENT_ID) return
+  // MUTANT-PIN-TEST-TEMP: guard removed to prove f22ef741's collector test goes RED (1f6247e1 class)
   const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
