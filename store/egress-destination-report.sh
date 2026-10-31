@@ -31,20 +31,21 @@ mkdir -p "$OUT_DIR"
 DATE="$(date -u +%Y%m%d)"
 OUT_FILE="$OUT_DIR/egress-destination-report-$DATE.json"
 
-# G4 (card cdcd0f5b): Node 22's built-in fetch ignores HTTP(S)_PROXY unless NODE_USE_ENV_PROXY=1
-# is set (live-probed once, see DECISIONS.md for the measurement). The only place this repo sets
-# HTTP_PROXY/HTTPS_PROXY as an egress-control mechanism is jail_cmd() in scripts/seged-hivo.py, for
-# the 'agy'/'codex' jail -- 'agy' is a Go binary (confirmed proxy-honoring, see jail-net-proxy.py's
-# own header). Everything else that calls fetch() in this repo runs with NO proxy env configured at
-# all, so the bypass axis does not apply to it (there is nothing for it to bypass). This grep is
-# re-run on every report so the "callers" list tracks the live tree, not a stale snapshot.
+# G4 (card cdcd0f5b, Cybered NO-GO comment 27277 F2): the scan used to only look under
+# src/scripts/develop-only/src for .ts/.mjs/.js/.py, which missed store/pentest-tool-runner.sh (a
+# *.sh file under store/) -- a REAL second HTTP_PROXY/HTTPS_PROXY setter (lowercase http_proxy/
+# https_proxy too), found only once Cybered pointed at it. Scan now covers store/ and *.sh, and
+# matches lower-case setter names, so a future setter in a shell script is not silently invisible.
+# This grep is re-run on every report so the "callers"/"setters" lists track the live tree, not a
+# stale snapshot.
 FETCH_CALLERS="$(grep -rl 'fetch(' "$MARVEEN_ROOT/src" "$MARVEEN_ROOT/scripts" "$MARVEEN_ROOT/develop-only/src" 2>/dev/null \
   --include='*.ts' --include='*.mjs' --include='*.js' 2>/dev/null \
   | grep -v node_modules | grep -v '__tests__' | grep -v '\.test\.' \
   | sed "s|^$MARVEEN_ROOT/||" | sort -u || true)"
-PROXY_ENV_REFS="$(grep -rl 'HTTP_PROXY\|HTTPS_PROXY' "$MARVEEN_ROOT/src" "$MARVEEN_ROOT/scripts" "$MARVEEN_ROOT/develop-only/src" 2>/dev/null \
-  --include='*.ts' --include='*.mjs' --include='*.js' --include='*.py' 2>/dev/null \
-  | grep -v node_modules | sed "s|^$MARVEEN_ROOT/||" | sort -u || true)"
+PROXY_ENV_REFS="$(grep -rli 'http_proxy\|https_proxy' "$MARVEEN_ROOT/src" "$MARVEEN_ROOT/scripts" "$MARVEEN_ROOT/develop-only/src" "$MARVEEN_ROOT/store" 2>/dev/null \
+  --include='*.ts' --include='*.mjs' --include='*.js' --include='*.py' --include='*.sh' 2>/dev/null \
+  | grep -v node_modules | grep -v '/reports/' | grep -v "$(basename "$0")" \
+  | sed "s|^$MARVEEN_ROOT/||" | sort -u || true)"
 
 REPORT_JSON="$(python3 - "$LOG" "$OUT_FILE" "$DATE" "$FETCH_CALLERS" "$PROXY_ENV_REFS" << 'PYEOF'
 import json, sys
@@ -79,6 +80,17 @@ rows = [
     for (dest, agent, decision), count in sorted(counts.items())
 ]
 
+# Card cdcd0f5b (Cybered NO-GO comment 27277 F2): "own_fetch_callers_affected_by_bypass" used to
+# be a hardcoded 0, computing nothing. A setter is only safely zero-rated if its downstream
+# command is FIXED in the repo (never one of our own fetch() callers) -- jail_cmd() in
+# scripts/seged-hivo.py always spawns the agy/codex binary, never a repo script. A setter whose
+# downstream command is ARBITRARY (passed in at invocation time, e.g. store/pentest-tool-runner.sh
+# "-- <command...>") could wrap one of our own fetch() callers and nothing here can prove
+# otherwise by static scan -- it is reported as unverified, not silently assumed safe.
+FIXED_DOWNSTREAM_SETTERS = {"scripts/seged-hivo.py"}
+unverified_setters = [s for s in proxy_env_refs if s not in FIXED_DOWNSTREAM_SETTERS]
+affected_known_zero = len(unverified_setters) == 0
+
 report = {
     "report": "egress-destination-report",
     "version": 1,
@@ -91,15 +103,19 @@ report = {
                     "set -- live-probed once (DECISIONS.md, card cdcd0f5b): without the flag, a "
                     "fetch() call connects DIRECTLY to the target, never touching the configured "
                     "proxy; with the flag, it correctly reaches the proxy first.",
-        "only_proxy_env_setters_in_repo": proxy_env_refs,
-        "note": "the only HTTP_PROXY/HTTPS_PROXY SETTER in this repo is jail_cmd() in "
-                "scripts/seged-hivo.py, for the agy/codex jail. agy is a Go binary, already "
-                "confirmed proxy-honoring. codex is Node-based but NOT installed on this host, so "
-                "it is unmeasured -- re-run this probe once codex is installed.",
+        "proxy_env_setters_in_repo": proxy_env_refs,
+        "fixed_downstream_setters": sorted(FIXED_DOWNSTREAM_SETTERS & set(proxy_env_refs)),
+        "note": "fixed_downstream_setters always spawn a known, non-fetch()-calling target "
+                "(jail_cmd() in scripts/seged-hivo.py only ever spawns the agy/codex binary -- agy "
+                "is Go, already confirmed proxy-honoring; codex is Node-based but NOT installed on "
+                "this host, unmeasured, re-run once installed). Any OTHER setter listed above takes "
+                "an arbitrary downstream command at invocation time (e.g. "
+                "store/pentest-tool-runner.sh's '-- <command...>') and is listed in "
+                "unverified_setters below, not assumed safe.",
         "own_fetch_callers_with_no_proxy_configured": fetch_callers,
-        "own_fetch_callers_affected_by_bypass": 0,
-        "why_zero": "none of these callers run under an environment where HTTP_PROXY/HTTPS_PROXY "
-                    "is set anywhere in this repo, so there is nothing for them to bypass.",
+        "unverified_setters": unverified_setters,
+        "own_fetch_callers_affected_by_bypass_known_zero": affected_known_zero,
+        "own_fetch_callers_affected_by_bypass": 0 if affected_known_zero else "unverified -- see unverified_setters",
     },
 }
 
