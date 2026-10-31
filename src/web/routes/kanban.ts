@@ -294,24 +294,34 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `    -d '{"author":"${target}","content":"REVIEW -- AZ EREDMENY ROVIDEN"}'`,
     '',
     `2) Állítsd a kártyát waiting-re -- a kész terméket SOHA nem teszed magad done-ba, a lezárás ${escalateTo} (vagy a kijelölt gate) lépése a REVIEW komment után:`,
-    `  ${auth}`,
-    `  | curl -s -H @- -X POST '${moveUrl}' \\`,
+    `  curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${moveUrl} \\`,
+    `    ${auth} \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"waiting"}'`,
+    `    -d '{"status":"waiting","actor":"${target}","expected_status":"in_progress"}'`,
+    // UPSTREAM-SYNC Koteg 22 (e2199840, upstream #2068): the dispatch close used to be
+    // unconditional, so a dispatch read a round late could still drag a card that had
+    // moved on to "waiting" even after someone else reviewed/reopened/reassigned it, and
+    // the board answered 200. `expected_status` makes the move a compare-and-set (one
+    // UPDATE ... WHERE status=?), already real and implemented in this fork's PUT
+    // handler (KANBAN_MOVE_FIELDS, adopted 2026-10-24) -- this template catches the
+    // generator up to document a feature it already ships, nothing new in the API.
+    // NOT adopted from upstream's hunk: the "program can give its cards their own
+    // closing status, substitute done for X" sentence -- card 64c455da (WhiteHat M1)
+    // found and removed exactly this sentence as a gate-bypass injection lever (a card
+    // description could talk an agent into skipping the always-waiting rule). That
+    // removal stands; `done` never appears as a self-set target in this template.
+    'Az "expected_status":"in_progress" mező feltételessé teszi a mozgatást: csak akkor lép, ha a kártya MÉG in_progress. Ha a válasz HTTP 409 ("status_conflict", a "current_status" mező mutatja, hol tart most), a kártya közben továbblépett: NE mozgasd újra feltétel nélkül, NE dolgozz rajta tovább, hanem jelezd a delegálódnak.',
     '',
-    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): upstream's version of this hunk added a
-    // "program-specific closing status" override sentence (substitute `done` for a
-    // card-specified status like `testing`) plus an "actor field on self-pickup" note.
-    // NOT adopted here, because both are anchored to upstream's OWN step 2 default
-    // (`"status":"done"`), which this fork's already-merged step 2 above does not use --
-    // this fork's workflow NEVER sets a closing status directly (the builder always
-    // moves to "waiting"; the escalateTo/gate decides the real final status after the
-    // REVIEW comment, per CLAUDE.md rule 4). "Substitute done for X in the call above"
-    // does not transplant onto a call that says "waiting", and importing it verbatim
-    // would hand every agent a sentence that contradicts the step right above it. The
-    // `actor` field itself is real and already used elsewhere in this file's API
-    // handlers; a correctly-scoped mention of it belongs in its own card, not folded
-    // into a closing-status sentence that does not apply to this fork's model.
+    // The "actor" field is not decoration: it is what tells the board WHO moved
+    // the card. Without it a self-pickup (agent -> in_progress on its own card)
+    // is indistinguishable from an assignment, and the dispatcher echoes the
+    // task back at the agent that just started it.
+    `Az "actor":"${target}" mezőt MINDEN mozgatásnál küldd el (ez mondja meg a táblának, hogy te mozgattad). Ha te magad veszed fel a kártyát in_progress-re, ott is:`,
+    `  curl -s -X POST ${moveUrl} \\`,
+    `    ${auth} \\`,
+    `    -H 'Content-Type: application/json' \\`,
+    `    -d '{"status":"in_progress","actor":"${target}"}'`,
+    '',
     `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz (a fenti "waiting"-be tétel MÁS eset -- az a KÉSZ munkára szól): ${isMainAgent ? 'HÁROM' : 'KÉT'} lépés kell EGYÜTT, a fenti 1-2 helyett:`,
     `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda, NE "REVIEW" előtaggal -- ez nem kész munka) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
     // Card e25a549a / RedHat NO-GO (komment 15997, B1): escalateTo itt MAIN_AGENT_ID, és a

@@ -217,7 +217,11 @@ run_guard() {
   # session); assigning the binary path to it corrupts server-socket detection.
   local MODE; MODE="$(resolve_mode)"
   [ "$MODE" = off ] && return 0
-  TMUX_BIN="$(command -v tmux)"; CLAUDE="$(command -v claude)"
+  # NATIVECLAUDEFIRST1011 (#1896): the native launcher first for the claude the
+  # respawn runs. An already installed Mac keeps its launchd plist (update.sh
+  # does not rewrite a loaded job), whose PATH puts /opt/homebrew/bin first.
+  TMUX_BIN="$(command -v tmux)"
+  CLAUDE="$HOME/.local/bin/claude"; [ -x "$CLAUDE" ] || CLAUDE="$(command -v claude)"
   if [ -z "$TMUX_BIN" ]; then log "tmux not on PATH; cannot act"; return 0; fi
 
   # Ensure the state dir exists BEFORE any stamp/lock write. Without it, a cold
@@ -413,7 +417,11 @@ run_guard() {
   # ROOTRESPAWN1001 (upstream #1665, batch 13): every claude launch on a root
   # host must carry IS_SANDBOX=1 too, same reasoning as channels.sh's own
   # respawn path -- a modal-unstick respawn is still a claude launch.
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+  # NATIVECLAUDEFIRST1011 (upstream #1896, Koteg 22): $HOME/.local/bin leads,
+  # same order as channels.sh's own boot PATH -- adopted on top of the
+  # fork-only MCP_* vars, not instead of them (same pattern as
+  # channel-watchdog.sh's RESPAWN_CMD).
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn

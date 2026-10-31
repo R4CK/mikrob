@@ -10,8 +10,19 @@ import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { estimateCostUsd, stripDateSuffix } from '../costops/model-pricing.js'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
+// mainConfigRoots/resolveMainAgentRotatedConfigDir (upstream) and toolInputPreview
+// (upstream, unrelated feature using tool-call blocks, not this file's text-content
+// preview) are not used -- see the TOKENVAK915 deferral note in discoverAgentSources().
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
+
+function realOrSelf(p: string): string {
+  try { return realpathSync(p) } catch { return p }
+}
+
+// mainAgentTranscriptRoots() (upstream, Koteg 22) is NOT adopted here -- see the
+// TOKENVAK915 deferral comment in discoverAgentSources() below for why. Removed
+// along with its only call site so this file carries no dead function.
 
 // The main agent's transcripts live under the directory Claude Code derives
 // from PROJECT_ROOT, regardless of what the agent calls itself. The encoder is
@@ -64,9 +75,16 @@ export function discoverAgentSources(
 ): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
   const sharedProjects = sharedRootOverride ?? PROJECTS_DIR
-  if (!existsSync(sharedProjects)) return sources
   const mainDirName = encodeClaudeProjectDir(PROJECT_ROOT)
-  for (const entry of readdirSync(sharedProjects)) {
+  // A missing shared root skips THIS loop only (Koteg 22, upstream fix). It used to
+  // return from the whole function, so an install whose agents all run on isolated
+  // config dirs -- the main agent included, which then never creates ~/.claude/projects
+  // -- reported nothing at all, never reaching the isolated loops below. Kept against
+  // `sharedProjects` (not the hardcoded PROJECTS_DIR upstream's hunk used), so the
+  // fork's sharedRootOverride test fixture still takes effect.
+  let sharedEntries: string[] = []
+  try { sharedEntries = readdirSync(sharedProjects) } catch { /* no shared root on this install */ }
+  for (const entry of sharedEntries) {
     const full = join(sharedProjects, entry)
     let stat
     try { stat = statSync(full) } catch { continue }
@@ -157,11 +175,19 @@ export function discoverAgentSources(
       sources.push({ agent: name, projectDir: full })
     }
   }
-  // TOKENVAK915 (upstream, mainConfigRoots()-based discovery of the main agent's OWN isolated
-  // config root): NOT adopted here, re-decided multiple rounds in a row (card b5b7eb6b child
-  // 577db3a7, 2026-09-25; see src/fork-upstream/acknowledged-conflicts.ts's entry for this file)
-  // -- a behaviour change deserving its own gated card, not a rider on an upstream-sync batch.
-  // Consistent with the same decision for context-guard-runner.ts's own configDirFor (card
+  // TOKENVAK915 (upstream, main-agent-own-isolated-config transcript discovery): NOT
+  // adopted here, re-decided multiple rounds in a row (card b5b7eb6b child 577db3a7,
+  // 2026-09-25; see src/fork-upstream/acknowledged-conflicts.ts's entry for this file)
+  // -- a behaviour change deserving its own gated card, not a rider on an upstream-sync
+  // batch. Koteg 22 (e2199840): upstream REVISED this to a more careful
+  // mainAgentTranscriptRoots()-based implementation (pooled/rotated-plan-dir dedup,
+  // realpath-safe), with real measured incident data behind it (a 30h main-agent
+  // token-usage gap on a 2026-09-15 install) -- a materially stronger case than the
+  // original proposal, but still a monitoring-attribution behaviour change on its own
+  // merits, not something to wave through as a merge side-effect. Deferred again,
+  // same reason, to its own follow-up card (this revision specifically, since the old
+  // card's text describes the superseded mainConfigRoots()-only approach). Consistent
+  // with the same decision for context-guard-runner.ts's own configDirFor (card
   // 5c134edf, supervised cutover, also deferred this batch).
   return sources
 }

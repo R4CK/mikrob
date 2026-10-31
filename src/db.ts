@@ -375,6 +375,16 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+  // Migration: planned start of the work, for the timeline view. Without it a
+  // bar ran from created_at, so a step planned for next week drew as if it had
+  // started the day it was filed. Must stay AFTER the testing migration above:
+  // that one recreates the table from a fixed column list, so a column added
+  // before it would be dropped again on an old database.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN start_date INTEGER')
+  } catch {
+    // column already exists
+  }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -1665,6 +1675,25 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE idea_box ADD COLUMN effort INTEGER') } catch { /* already exists */ }
   // Migration: existing idea boxes predate the work/personal boundary.
   try { db.exec("ALTER TABLE idea_box ADD COLUMN scope TEXT NOT NULL DEFAULT 'munka'") } catch { /* column already exists */ }
+
+  // --- Team notes ("Jegyzetek") ---
+  // Small follow-ups ("I'll check it tomorrow") kept off the kanban board.
+  // Deletion is soft: deleted_at/deleted_by/delete_reason keep the history
+  // auditable, and the UI shows the last 7 days of deletions.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS team_notes (
+      id TEXT PRIMARY KEY,
+      assignee TEXT NOT NULL,
+      content TEXT NOT NULL,
+      due_date TEXT,
+      created_at INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      deleted_at INTEGER,
+      deleted_by TEXT,
+      delete_reason TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_team_notes_active ON team_notes(deleted_at, due_date)`)
 
   // --- Idea Comments ---
   db.exec(`
@@ -3845,6 +3874,7 @@ export interface KanbanCard {
   project: string | null
   parent_id: string | null
   due_date: number | null
+  start_date?: number | null
   sort_order: number
   created_at: number
   updated_at: number
@@ -4099,6 +4129,58 @@ function assertValidAssignee(assignee: unknown): void {
   if (isForbiddenAssignee(assignee)) throw new Error(FORBIDDEN_ASSIGNEE_MESSAGE)
 }
 
+// start_date and due_date are INTEGER unix seconds and every reader does
+// `* 1000`, but SQLite is dynamically typed: a caller that sent "2026-09-12"
+// (the natural shape when an agent writes a date) stored a STRING, which read
+// back as NaN -- "Invalid Date" on the card and a card missing from the
+// timeline. Coerced once, on the way in, instead of at every read site.
+//
+// Exactly three shapes are accepted, everything else becomes null:
+//   1. epoch SECONDS, as a number or as digits in a string (also a decimal
+//      shape, "1790000000.0", which the INTEGER column would store as the same
+//      value -- kanban-field-events test), floored, below MAX_CARD_EPOCH_SECONDS
+//      so a millisecond timestamp is refused instead of stored as a date tens
+//      of thousands of years ahead;
+//   2. a bare "YYYY-MM-DD", as UTC midnight -- the same instant the dashboard's
+//      own <input type="date"> handler produces (`new Date(value)`). Local
+//      midnight would be off by one in the edit modal (which reads the value
+//      back with toISOString) for any timezone east of UTC, and saving the
+//      modal would then move the date a day earlier;
+//   3. a full ISO timestamp with an explicit offset ("Z" or "+02:00"), so the
+//      instant does not depend on the server's timezone.
+// No `Date.parse` fallback: V8's legacy formats read "12.09.2026" and
+// "12/09/2026" month-first, "2026.09.12" as local midnight, "-5" and "Sep 12"
+// as dates in 2001 -- a wrong date stored silently is worse than null. A day
+// that does not exist on the calendar ("2026-02-30", which V8 rolls over to
+// 2 March) is null too.
+export const MAX_CARD_EPOCH_SECONDS = 1e11 // year 5138; any ms timestamp after 1973 is above it
+
+const CARD_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
+const CARD_ISO_OFFSET_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/
+
+function isCalendarDay(y: string, m: string, d: string): boolean {
+  const dt = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)))
+  return dt.getUTCFullYear() === Number(y) && dt.getUTCMonth() === Number(m) - 1 && dt.getUTCDate() === Number(d)
+}
+
+function epochSecondsOrNull(n: number): number | null {
+  if (!Number.isFinite(n) || n < 0 || n >= MAX_CARD_EPOCH_SECONDS) return null
+  return Math.floor(n)
+}
+
+export function normaliseCardDate(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null
+  if (typeof v === 'number') return epochSecondsOrNull(v)
+  if (typeof v !== 'string') return null
+  const trimmed = v.trim()
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return epochSecondsOrNull(Number(trimmed))
+  const m = CARD_DATE_RE.exec(trimmed) ?? CARD_ISO_OFFSET_RE.exec(trimmed)
+  if (!m || !isCalendarDay(m[1], m[2], m[3])) return null
+  const ms = Date.parse(trimmed)
+  return Number.isNaN(ms) ? null : epochSecondsOrNull(ms / 1000)
+}
+
 // The fields createKanbanCard actually reads off its argument. Deliberately a
 // SUBSET of KANBAN_WRITABLE_FIELDS (the PUT/update set), not the same list:
 // creation computes its own `sort_order` (see below) and never accepts
@@ -4111,6 +4193,7 @@ function assertValidAssignee(assignee: unknown): void {
 // returned 200, stored `archived_at=null` and `sort_order=0`, logged nothing).
 export const KANBAN_CREATE_FIELDS = [
   'title', 'description', 'test_steps', 'status', 'assignee', 'priority', 'project', 'parent_id', 'due_date',
+  'start_date',
 ] as const
 
 export function createKanbanCard(card: {
@@ -4123,7 +4206,8 @@ export function createKanbanCard(card: {
   priority?: KanbanCard['priority']
   project?: string
   parent_id?: string
-  due_date?: number
+  due_date?: number | string | null
+  start_date?: number | string | null
 }): void {
   assertValidAssignee(card.assignee)
   const now = Math.floor(Date.now() / 1000)
@@ -4134,12 +4218,12 @@ export function createKanbanCard(card: {
   const sortOrder = (maxRow?.m ?? -1) + 1
 
   db.prepare(
-    `INSERT INTO kanban_cards (id, title, description, test_steps, status, assignee, priority, project, parent_id, due_date, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO kanban_cards (id, title, description, test_steps, status, assignee, priority, project, parent_id, due_date, start_date, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     card.id, card.title, card.description ?? null, card.test_steps ?? null, status,
     card.assignee ?? null, card.priority ?? 'normal',
-    card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
+    card.project ?? null, card.parent_id ?? null, normaliseCardDate(card.due_date), normaliseCardDate(card.start_date), sortOrder, now, now
   )
   // A card BORN in a status other than 'planned' gets its opening event row
   // here, because nothing else will ever write one for it: kanban_card_events
@@ -4382,7 +4466,11 @@ export function bulkAttributionRequired(
 // writers now; see the archived_at pin below.
 export const KANBAN_WRITABLE_FIELDS = [
   'title', 'description', 'test_steps', 'status', 'assignee', 'priority', 'project',
-  'parent_id', 'due_date', 'sort_order',
+  // Koteg 22 (upstream #1862): 'start_date' adopted -- a genuine new field (planned
+  // start date, drawn as the timeline bar start). 'archived_at' is deliberately NOT
+  // added back: see the comment above this array (card db3ff9bd, Cybersec+Cybered
+  // finding) -- re-adding it here would reopen the exact bypass that card closed.
+  'parent_id', 'due_date', 'start_date', 'sort_order',
 ] as const
 
 // The columns whose changes updateKanbanCard records in kanban_card_field_events
@@ -4430,10 +4518,16 @@ export function updateKanbanCard(
   // the sibling fix in moveKanbanCard (kanban-review-guard.test.ts pins the same contract there).
   const forcedFlag = blocked || depBlocked ? 1 : 0
   const now = Math.floor(Date.now() / 1000)
+  // Coerce only what the CALLER sent, never the merged record: normalising a
+  // legacy value already in the row would make an unrelated PUT look like a
+  // real change and stamp updated_at.
+  const incoming = { ...fields }
+  if ('due_date' in incoming) incoming.due_date = normaliseCardDate(incoming.due_date)
+  if ('start_date' in incoming) incoming.start_date = normaliseCardDate(incoming.start_date)
   // archived_at pinned to the CARD's own value, after the fields spread, so a caller's attempt to
   // change it (accidental round-trip or deliberate) can never take effect through this function --
   // see the KANBAN_WRITABLE_FIELDS comment above for why (card db3ff9bd).
-  const f = { ...card, ...fields, archived_at: card.archived_at, updated_at: now }
+  const f = { ...card, ...incoming, archived_at: card.archived_at, updated_at: now }
   // #1023: bump updated_at ONLY when a writable column actually changes. The
   // UPDATE below always matches the row, so a no-op PUT (an unknown field, or a
   // known field echoed back unchanged) used to stamp updated_at=now and report
@@ -4449,9 +4543,9 @@ export function updateKanbanCard(
   // left the card changed with no row saying who changed it.
   return db.transaction((): boolean => {
     const changed = db.prepare(
-      `UPDATE kanban_cards SET title=?, description=?, test_steps=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
+      `UPDATE kanban_cards SET title=?, description=?, test_steps=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, start_date=?, sort_order=?, updated_at=?, archived_at=?
        WHERE id=?`
-    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.start_date ?? null, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
     // Same dispatched_at rule as moveKanbanCard (kanbanWriteClearsDispatch). Before,
     // a card the PUT took out of in_progress kept its stamp, and the next /move to
     // in_progress woke nobody. The PUT only clears: it never dispatches.
@@ -8078,6 +8172,60 @@ export function deleteIdea(id: string): boolean {
 
 export function listIdeaCategories(): string[] {
   return (db.prepare('SELECT DISTINCT category FROM idea_box ORDER BY category').all() as { category: string }[]).map(r => r.category)
+}
+
+// --- Team notes ---
+
+export interface TeamNoteRow {
+  id: string
+  assignee: string
+  content: string
+  due_date: string | null
+  created_at: number
+  created_by: string
+  deleted_at: number | null
+  deleted_by: string | null
+  delete_reason: string | null
+}
+
+/**
+ * Active notes, due_date ascending with undated notes last, then oldest first.
+ * `assignee` narrows to that assignee's lines plus the 'mindenki' (everyone)
+ * lines. `includeDeletedSince` (unix s) also returns notes soft-deleted at or
+ * after that moment.
+ */
+export function listTeamNotes(opts?: { assignee?: string; includeDeletedSince?: number }): TeamNoteRow[] {
+  let q = 'SELECT * FROM team_notes WHERE '
+  const params: unknown[] = []
+  if (opts?.includeDeletedSince !== undefined) {
+    q += '(deleted_at IS NULL OR deleted_at >= ?)'
+    params.push(opts.includeDeletedSince)
+  } else {
+    q += 'deleted_at IS NULL'
+  }
+  // Case-insensitive: the API stores lower-case, but a row written before
+  // that (or straight into the table) must not fall out of the filter.
+  if (opts?.assignee) { q += " AND (lower(assignee) = lower(?) OR lower(assignee) = 'mindenki')"; params.push(opts.assignee) }
+  q += ' ORDER BY (due_date IS NULL), due_date ASC, created_at ASC, rowid ASC'
+  return db.prepare(q).all(...params) as TeamNoteRow[]
+}
+
+export function getTeamNote(id: string): TeamNoteRow | undefined {
+  return db.prepare('SELECT * FROM team_notes WHERE id = ?').get(id) as TeamNoteRow | undefined
+}
+
+export function createTeamNote(note: Pick<TeamNoteRow, 'id' | 'assignee' | 'content' | 'due_date' | 'created_by'>): void {
+  db.prepare(
+    `INSERT INTO team_notes (id, assignee, content, due_date, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(note.id, note.assignee, note.content, note.due_date ?? null, Math.floor(Date.now() / 1000), note.created_by)
+}
+
+/** Soft delete; returns false when missing or already deleted. */
+export function softDeleteTeamNote(id: string, by: string, reason: string | null): boolean {
+  return db.prepare(
+    'UPDATE team_notes SET deleted_at = ?, deleted_by = ?, delete_reason = ? WHERE id = ? AND deleted_at IS NULL'
+  ).run(Math.floor(Date.now() / 1000), by, reason, id).changes > 0
 }
 
 // --- Idea Comments ---
