@@ -1659,7 +1659,16 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "accident' for the reply-tool-naming feature this fork has not adopted) -- re-confirmed, not " +
     "re-opened. (3) hook-load-watch.test.py is NOT part of that bundle and is ALREADY wired (this " +
     "file, line 80) -- the upstream diff re-adds a step this fork already runs; no action. KEEP " +
-    "resolution unchanged at all points; blob bumped.",
+    "resolution unchanged at all points; blob bumped." +
+    " CORRECTION 2026-10-31 (backend, card 42d952bc, Cybersec F2/F5 comment 27301): the " +
+    "credential-gate test step in the (1) list above is now STALE -- card 42d952bc adopted " +
+    "scripts/hooks/credential-gate.py and scripts/__tests__/credential-gate.test.py, so " +
+    "'references a script that does not exist anywhere in this fork' is no longer true for that " +
+    "one step. Resolution for this one step only, unchanged for the other five: the step is still " +
+    "NOT adopted here (CI wiring for this test goes through a vitest wrapper, " +
+    "src/__tests__/credential-gate.test.ts, same as the other python hook suites, not a raw CI " +
+    "step mirroring upstream's). The other five scripts named in (1) remain genuinely absent; not " +
+    "re-verified this round.",
   'docs/telegram-progress-indicator.md':
     "ADOPT upstream in full (both hunks: the provider-gate explanation paragraph, and the 'Remove' section's `bash scripts/retire-progress-watchdog.sh telegram --force` in place of raw launchctl/systemctl commands) -- paired with scripts/install-telegram-progress-hook.sh's own ADOPT decision above (card 09d54e88 child 1/10): the doc must describe what the code now actually does, and the code side already adopted the provider-gate + retire_provider() mechanism.",
   'docs/token-usage.md':
@@ -5355,6 +5364,17 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       'deferral. Upstream\'s _read_body_file/_payload_text is a different implementation of the ' +
       'same @file-reading idea; losing this fork-only regex would reopen the TOCTOU/attach-form ' +
       'gaps it closes.',
+  },
+  'scripts/hooks/credential-gate.py': {
+    needle: 'def _is_mcp_send',
+    file: 'scripts/hooks/credential-gate.py',
+    expect: 'present',
+    because:
+      "fork-only adaptation (card 42d952bc, Cybersec F2 comment 27301); upstream's " +
+      "credential-gate.py imports classify_mail_tool, which this fork's email_extract.py does " +
+      "not have, so taking it wholesale makes the hook exit 1 and the settings.json wrapper " +
+      "block every Bash call of the main agent (measured: ImportError, rc=1). If _is_mcp_send " +
+      "disappears, someone merged upstream's version over this fork's adaptation.",
   },
 }
 

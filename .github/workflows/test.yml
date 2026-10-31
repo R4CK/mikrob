@@ -74,6 +74,12 @@ jobs:
       # for some of these merge into the tree anyway via non-conflicting file adds -- left in place,
       # unwired, same shape as the fork's own scripts/memory-link-audit.py already sitting unwired
       # from an earlier round. Available for a future adoption card.
+      # CORRECTION (card 42d952bc, Cybersec F5 comment 27301): the "same not-adopted new-security-gate
+      # cluster" line above is now STALE for credential-gate.test.py specifically -- card 42d952bc
+      # adopted scripts/hooks/credential-gate.py + this test file (Gate-SHA f163d6cc9). It is still
+      # not wired as a raw CI step here; its own vitest wrapper (src/__tests__/credential-gate.test.ts)
+      # runs it instead. agentGetsCredentialGate/injectCredentialGate remain a separate, genuinely
+      # un-adopted upstream feature (a different, profile-gated per-sub-agent design) -- unaffected.
       # 723bbb70 (3): the hook-load watcher is a DIFFERENT, already-adopted fork feature
       # (scripts/hook-load-watch.py already shipped before this batch) -- not part of the
       # NOT-ADOPTED bundle above. Its contract only ran by hand until now, so wiring the
