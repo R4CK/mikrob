@@ -9,6 +9,26 @@ description: Find and fix EN-copy violations in locale files (de/es/fr/it/pl). U
 - Parity test / CI fail: "EN-copy violation in de/es/fr/it/pl"
 - i18n fordítási sprint (df12479a-típusú kártyák)
 
+## Munkakönyvtár: eldobható worktree HEAD-en, NEM a megosztott klón (kártya 973ed6eb, qa2-javítás c4f431e4 v2 -- QA FAIL utáni fix)
+
+**A qa2-nek NINCS állandó worktree-je** (ellenőrizve: `store/agent-worktree.sh qa2 --path` létező
+lévén a NEVRE nem hoz létre semmit -- a `--path` ág mindig csak KISZÁMÍTJA az útvonalat, még ha az
+soha nem lett létrehozva, `ls .../CleanCore-worktrees/` szerint nincs `qa2` könyvtár). Az első
+verzió ezt a print-only útvonalat használta ellenőrzés nélkül, ami `cd`/fájlírásnál azonnal elszállt
+(FileNotFoundError) -- ezt QA FAIL-lel reprodukálta (kártya-komment c4f431e4). A qa-testvér skill
+(2a44d04d) ugyanígy nincs-worktree állapotban van, és ugyanezt a mintát alkalmazza: mivel ez a
+workflow ÚJ tartalmat ír (nem egy már felülvizsgált SHA-t ellenőriz), az elején nyitunk egy
+eldobható worktree-t HEAD-en, és a végén eldobjuk:
+
+```bash
+QA2_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+export QA2_WT="$(mktemp -d)"   # export: a lenti python is olvassa os.environ-ből
+git -C "$QA2_MAIN" worktree add "$QA2_WT" HEAD
+# ... dolgozz a $QA2_WT alatt (lásd lent) ...
+git -C "$QA2_MAIN" worktree remove "$QA2_WT"   # a végén, eldobható
+```
+
+Ha csak ELLENŐRZÖL és nem írsz (pl. gate-ként nézed, mi landolt), a fő klón a helyes hivatkozás
 ## Munkakönyvtár: a SAJÁT worktree-d, NEM a megosztott klón (kártya 973ed6eb)
 
 A CleanCore-t minden fejlesztő ügynök a saját git-worktree-jében szerkeszti; a megosztott klón
@@ -147,25 +167,12 @@ de a gate KÖTELEZŐEN visszaellenőrzi (lásd §QA gate: double-brace ICU).
 
 ### 2. Fordítás -- SINGLE PROCESS PATTERN (WSL2/NTFS kötelező!)
 
-**QA-nak nincs saját worktree-je** (kártya 973ed6eb / `qa-test-strategy` skill): a fejlesztő ügynökök
-mintája (`agent-worktree.sh <ügynök> --path`) itt nem alkalmazható -- az a QA névre nem hoz létre
-könyvtárat. Ha QA-t ténylegesen fordítás-írásra osztják be (nem csak a lenti gate-re), nyiss egy
-eldobható worktree-t a HEAD-en -- nem egy felülvizsgált SHA-n, mert itt ÚJ tartalmat írunk, nem egy
-meglévő commitot ellenőrzünk:
-```bash
-CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
-export QA_WT="$(mktemp -d)"   # export: a lenti python is olvassa os.environ-ből
-git -C "$CC" worktree add "$QA_WT" HEAD
-# ... dolgozz a $QA_WT alatt (lásd lent) ...
-git -C "$CC" worktree remove "$QA_WT"   # a végén, eldobható
-```
-
 **KRITIKUS:** WSL2-n a `/mnt/h/...` (NTFS 9P mount) caching miatt külön Python processzek elavult fájlt olvasnak. Mindig EGY processz tölt be mindent, módosít memóriában, és írja ki az összeset.
 
 ```python
 import json, pathlib, os
 
-BASE = pathlib.Path(os.environ['QA_WT']) / 'packages/i18n/messages'  # a fenti eldobható worktree
+BASE = pathlib.Path(os.environ['QA2_WT']) / 'packages/i18n/messages'  # a fenti eldobható worktree
 import json, pathlib
 
 BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
@@ -214,7 +221,7 @@ print('Done.')
 ### 3. Commit (namespace-enként vagy batch)
 
 ```bash
-cd "$QA_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
+cd "$QA2_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
 cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 git add packages/i18n/messages/de.json packages/i18n/messages/es.json \
         packages/i18n/messages/fr.json packages/i18n/messages/it.json \
@@ -229,7 +236,7 @@ git commit -m "feat(i18n): <namespace> translations — de/es/fr/it/pl"
 ### 4. Teszt
 
 ```bash
-cd "$QA_WT"   # ugyanaz az eldobható worktree
+cd "$QA2_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
 cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 npx vitest run apps/web/src/i18n-locale-guard.test.ts
 # 14/14 kell
@@ -281,15 +288,14 @@ Ha BÁRMELY locale-ban `{{...}}` dupla-brace van: **FAIL**. A verdikt-kommentbe 
 
 Amikor új user-facing string kerül a kódba és az összes locale-ba egyszerre kell bevenni:
 
-### Pattern: ordered-insert after anchor key
+QA2-nél ugyanaz a worktree-szabály, mint a 2. lépésnél: `$QA2_WT`, nem a megosztott fő klón.
 
-QA-nál ugyanaz a worktree-szabály, mint a 2. lépésnél: `$QA_WT`, nem a megosztott fő klón.
+### Pattern: ordered-insert after anchor key
 
 ```python
 import json, pathlib, os
 
-BASE = pathlib.Path(os.environ['QA_WT']) / 'packages/i18n/messages'
-```python
+BASE = pathlib.Path(os.environ['QA2_WT']) / 'packages/i18n/messages'
 import json, pathlib
 
 BASE = pathlib.Path(CC) / 'packages/i18n/messages'   # CC: a SAJÁT worktree-d, lásd fent
@@ -350,13 +356,13 @@ Languages that commonly differ from EN:
 
 ## Buktatók
 
+- **`agent-worktree.sh qa2 --path` önmagában NEM elég (valós QA FAIL, kártya c4f431e4)**: a `--path` ág a szkriptben MIELŐTT bármilyen létezés-ellenőrzés/mkdir/worktree-add futna, már kiszámolja és kiírja az elméleti útvonalat, majd kilép -- tehát akkor is sikeresen (exit 0) ad vissza egy utat, ha az a könyvtár SOSE lett létrehozva. A qa2-nek nincs állandó worktree-je (`ls .../CleanCore-worktrees/` szerint nincs `qa2` könyvtár, csak backend/backend2/fron-ted/fullstack/teszter -- akik tényleg dolgoznak a klónon). Az első verzió ezt a print-only utat használta ellenőrzés nélkül: a skillt szó szerint követve `cd`/fájlírásnál azonnal elszállt (FileNotFoundError). Ezért ez a skill a fenti eldobható-worktree-HEAD-en mintát használja, nem a fejlesztő-ügynökök állandó-worktree mintáját.
 - **WSL2/NTFS caching**: soha ne használj több Python processzt ugyanarra a locale fájlra. Egy session = egy processz = load-all/apply-all/write-all.
 - **git add -A tilos**: shared checkout, más agent módosíthatott más fájlokat. Csak a saját i18n fájljaidat addd.
 - **LEGIT_SAME false positive**: FR, IT, ES sok kognátot tartalmaz ami pontosan ugyanúgy íródik mint EN (Date, Description, Module, Finance, Photos stb.). Ezek NEM hibák. Frissítsd a LEGIT_WORDS listát ha új kategória kerül elő.
 - **Plural forms**: ICU MessageFormat (`{count, plural, one {...} other {...}}`) csak akkor fordítandó, ha a szöveg valóban más (pl. PL 4 formájú plurális). FR-ben `site`/`sites` ugyanaz.
 - **Template-only strings**: ha az EN value csupa `{placeholder}` és elválasztó (`{score} / 5`, `{value} m²`), ez LEGIT_SAME, nem fordítandó.
 - **Stale HEAD csapda**: ha a kártya egy korábbi commit hash-t jelöl, mindig `git show <sha>:file`-lal ellenőrizz -- a HEAD-en esetleg már javítva van, de a commit-en nem volt az! (Valós eset: 4573921 double-brace volt, a1d9f96 javította; HEAD-en check = téves PASS.)
-- **`agent-worktree.sh <ügynök> --path` önmagában NEM elég bizonyíték a worktree létezésére**: a `--path` ág a szkriptben MIELŐTT bármilyen létezés-ellenőrzés/mkdir/worktree-add futna, már kiszámolja és kiírja az elméleti útvonalat, majd kilép -- exit 0-val visszaad egy utat akkor is, ha az a könyvtár SOSE lett létrehozva (valós eset QA2-nél, kártya c4f431e4: a kiírt útvonalra `cd`-zve/írva azonnal FileNotFoundError). Ha a te ügynök-neved nem a fejlesztő-ügynökök állandó-worktree mintáját követi (nincs `.../CleanCore-worktrees/<neved>` könyvtár), nyiss előbb egy eldobható worktree-t a HEAD-en (lásd fent a `QA_WT` mintát), ne a `--path` kimenetére építs feltételezés nélkül.
 
 ## Ellenőrzés
 
