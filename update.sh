@@ -2016,6 +2016,18 @@ FINALIZE_LAUNCHED=1
 # dashboard-triggered run leaves it unset -> silent (the UI polls the status).
 FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}")
 XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
+if [ ! -d "$XDG_RUN" ]; then
+  # d9f33249 (QA2 FAIL 27050 / cybersec2 27053): the `:-` fallback above only
+  # kicks in when XDG_RUNTIME_DIR is unset/empty (the "service env sometimes
+  # trims it" case the comment at line 1882 already covers). A caller that
+  # sets it to a WRONG, non-empty value (stale/mismatched env) skips that
+  # fallback and used to fall straight into the elif/plain-setsid branch below
+  # -- no scope, no cgroup escape, killed by `systemctl --user restart` under
+  # any KillMode other than process. Re-derive the real default here so the
+  # scope-protected branch is still used whenever a working runtime dir
+  # genuinely exists, regardless of what the caller happened to set.
+  XDG_RUN="/run/user/$(id -u 2>/dev/null)"
+fi
 # ZAKARFELUGY921 (external report, 2026-09-21): the finalizer used to leave no
 # trace at all, so a run that died mid-restart looked identical to one that
 # never started. Every branch below writes here now.
@@ -2069,11 +2081,20 @@ if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
     fi
   ) &
 elif command -v setsid >/dev/null 2>&1; then
-  # macOS/launchd or no user-systemd: no cgroup self-kill. Detach in the
-  # background so a parent signal during restart cannot abort the health/
-  # rollback sequence and update.sh returns promptly.
+  # Reached only when systemd-run itself is not installed (true macOS/launchd
+  # or a non-systemd Linux) -- with no systemd-run binary there is no D-Bus
+  # user-session scope to create, and no portable, unguessed equivalent for
+  # it (d9f33249: explicitly not inventing a manual cgroupfs hack here). No
+  # cgroup self-kill protection: detach in the background so a parent signal
+  # during restart cannot abort the health/rollback sequence and update.sh
+  # returns promptly, but this child's survival depends entirely on the
+  # CALLING unit's own KillMode (process survives a restart, control-group/
+  # mixed does not -- measured, see d9f33249 REVIEW). Log it loudly so this
+  # is never a silent assumption.
+  echo "WARNING: finalizer launched without a systemd-run --user --scope (binary not found); it only survives a service restart if the calling unit has KillMode=process. Check with: systemctl --user show -p KillMode <unit>" >> "$FINALIZE_LOG"
   setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 else
+  echo "WARNING: finalizer launched with neither systemd-run nor setsid available; it only survives a service restart if the calling unit has KillMode=process." >> "$FINALIZE_LOG"
   bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 fi
 
