@@ -174,6 +174,22 @@ describe('freellmapi-client', () => {
     await new Promise<void>((resolve) => redirectTarget.close(() => resolve()))
   })
 
+  it('dedupes concurrent logins into a single upstream attempt (RedHat LOW F1, card 375f7595)', async () => {
+    process.env.FREELLMAPI_BASE_URL = 'http://127.0.0.1:3001'
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    const { freellmapiRequest, FreellmapiUpstreamError } = await freshClient()
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, () => freellmapiRequest('GET', '/api/keys')),
+    )
+    expect(results.every((r) => r.status === 'rejected')).toBe(true)
+    results.forEach((r) => {
+      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(FreellmapiUpstreamError)
+    })
+    const loginCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/api/auth/login'))
+    expect(loginCalls).toHaveLength(1)
+  })
+
   it('never logs the session token or the credential password', async () => {
     process.env.FREELLMAPI_BASE_URL = 'http://127.0.0.1:3001'
     const SESSION_TOKEN = 'super-secret-session-token-should-never-leak'
