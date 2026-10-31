@@ -11,17 +11,21 @@ const settings = new Map<string, string>()
 vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: (k: string) => settings.get(k) ?? '',
   setOverride: (k: string, v: unknown) => { settings.set(k, String(v)); return { ok: true } },
+  clearOverride: (k: string) => { const had = settings.has(k); settings.delete(k); return { ok: true, removed: had } },
+  getEffectiveSettingSource: (k: string) => ({ value: settings.get(k) ?? '', source: settings.has(k) ? 'override' : 'default' }),
 }))
 const logConfigChange = vi.fn()
 vi.mock('../db.js', () => ({ logConfigChange: (...args: unknown[]) => logConfigChange(...args) }))
 vi.mock('../store-watcher.js', () => ({ setStoreWriteActor: () => {} }))
-vi.mock('../web/claude-rotation-heartbeat.js', () => ({ syncRotationHeartbeatTask: () => 'unchanged' }))
+const syncRotationHeartbeatTask = vi.fn(() => 'unchanged')
+vi.mock('../web/claude-rotation-heartbeat.js', () => ({ syncRotationHeartbeatTask: () => syncRotationHeartbeatTask() }))
 
 const { tryHandleSettings } = await import('../web/routes/settings.js')
 
 beforeEach(() => {
   settings.clear()
   logConfigChange.mockClear()
+  syncRotationHeartbeatTask.mockClear()
 })
 
 function fakePost(
@@ -75,6 +79,62 @@ describe('POST /api/settings requires a human credential (card 6eca461e)', () =>
   // would instead succeed (200) and actually write the setting + log the config change.
   it('MUTATION PIN: the rejection is specifically the auth gate, not an unrelated failure', async () => {
     const { ctx, out } = fakePost(BODY, { kind: 'token' })
+    await tryHandleSettings(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body?.error).toContain('browser session or a device key')
+  })
+})
+
+function fakeDelete(
+  key: string,
+  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; device?: string },
+): { ctx: RouteContext; out: { status: number; body: any } } {
+  const out: { status: number; body: any } = { status: 0, body: null }
+  const res: any = {
+    writeHead(status: number) { out.status = status; return res },
+    end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
+  }
+  const req: any = { on(event: string, cb: (chunk?: Buffer) => void) { if (event === 'end') cb() } }
+  const path = `/api/settings/${key}`
+  return { ctx: { req, res, path, method: 'DELETE', url: new URL(`http://localhost${path}`), auth } as RouteContext, out }
+}
+
+// RedHat NO-GO on bd32ad68, Finding 1: the upstream merge added this DELETE route without the
+// same rejectIfNotHumanAuth gate POST above already carries -- the shared bearer or an agent
+// device key could reset CLAUDE_ROTATION_ENABLED (and 78 other registry overrides) with it.
+describe('DELETE /api/settings/<KEY> requires a human credential (card bd32ad68, RedHat Finding 1)', () => {
+  beforeEach(() => { settings.set('CLAUDE_ROTATION_ENABLED', '1') })
+
+  it.each([
+    ['the shared agent bearer (kind: token)', { kind: 'token' } as const],
+    ['no auth principal at all', undefined],
+    ['an agent-issued device key (agent:qa)', { kind: 'device', device: 'agent:qa' } as const],
+  ])('rejected (403) for %s, nothing removed, no rotation resync', async (_label, auth) => {
+    const { ctx, out } = fakeDelete('CLAUDE_ROTATION_ENABLED', auth)
+    expect(await tryHandleSettings(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(settings.get('CLAUDE_ROTATION_ENABLED')).toBe('1')
+    expect(logConfigChange).not.toHaveBeenCalled()
+    expect(syncRotationHeartbeatTask).not.toHaveBeenCalled()
+  })
+
+  it('succeeds for a real session', async () => {
+    const { ctx, out } = fakeDelete('CLAUDE_ROTATION_ENABLED', { kind: 'session' })
+    await tryHandleSettings(ctx)
+    expect(out.status).toBe(200)
+    expect(settings.has('CLAUDE_ROTATION_ENABLED')).toBe(false)
+  })
+
+  it('succeeds for a non-agent device key (phone pairing)', async () => {
+    const { ctx, out } = fakeDelete('CLAUDE_ROTATION_ENABLED', { kind: 'device', device: 'phone' })
+    await tryHandleSettings(ctx)
+    expect(out.status).toBe(200)
+  })
+
+  // MUTATION PIN: with rejectIfNotHumanAuth removed from this branch, the shared-token request
+  // would instead succeed (200) and actually clear the override + fire the rotation resync.
+  it('MUTATION PIN: the rejection is specifically the auth gate, not an unrelated failure', async () => {
+    const { ctx, out } = fakeDelete('CLAUDE_ROTATION_ENABLED', { kind: 'token' })
     await tryHandleSettings(ctx)
     expect(out.status).toBe(403)
     expect(out.body?.error).toContain('browser session or a device key')

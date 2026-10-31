@@ -186,4 +186,26 @@ describe('kanbanMoveInstructions', () => {
     const out = kanbanMoveInstructions('abc123', MAIN_AGENT_ID)
     expect(out).toContain(`"assignee":"${OWNER_NAME}"`)
   })
+
+  // RedHat NO-GO on bd32ad68, Finding 2: the upstream merge took the waiting-move and the
+  // self-pickup in_progress-move hunks as clean, which re-ordered them to `curl ... \` THEN
+  // `${auth} \` -- the auth printf became extra argv to curl (no `|`, no `-H @-`), the same
+  // class card 41d8e96f already fixed for the status probe above, just in two different blocks.
+  // This test is generic over every curl invocation in the template (not just the two that broke)
+  // so a future regression anywhere in this function fails loudly instead of needing its own pin.
+  it('EVERY curl invocation in the template is piped from its own auth line, never preceded by a curl line', () => {
+    const out = kanbanMoveInstructions('abc123', MAIN_AGENT_ID)
+    const lines = out.split('\n')
+    const curlLineIdx = lines
+      .map((l, i) => [l, i] as const)
+      .filter(([l]) => /\bcurl\b/.test(l))
+    expect(curlLineIdx.length).toBeGreaterThan(0)
+    for (const [line, i] of curlLineIdx) {
+      expect(line, `curl line ${i} must start with a pipe: ${JSON.stringify(line)}`).toMatch(/^\s*\|\s*curl\b/)
+      expect(line, `curl line ${i} must read the auth header from stdin: ${JSON.stringify(line)}`).toContain('-H @-')
+      const prev = lines[i - 1] ?? ''
+      expect(prev, `the line before curl line ${i} must be the auth printf, not another curl: ${JSON.stringify(prev)}`)
+        .toMatch(/^\s*printf 'Authorization: Bearer %s\\n' "\$\(cat .*\)" \\$/)
+    }
+  })
 })
