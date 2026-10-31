@@ -22607,3 +22607,20 @@ Három LOW is zárva ugyanitt: (3) a PUT-útvonal `specTemplatePrevStatus==='pla
 **Ki döntött:** WhiteHat (GO 26845, a hibák azonosítása + a javítási irányok javaslata), MikroB (dispatch, msg 15853), backend (végrehajtás).
 
 **Hivatkozás:** kártya 97f9ca58, szülő 64f56f97, commit ca8804272, `src/web/kanban-route-dispatch.ts`, `src/web/routes/local-llm.ts`, `store/route-check-audit.sh`.
+
+## 2026-10-31 08:14 -- Correction: 97f9ca58 Hivatkozás sor rossz commitot idézett (QA2 lelet, msg 15911/15912, comment 27028)
+
+**Döntés:** a fenti 2026-10-30 bejegyzés (97f9ca58, kanban route-dispatch cap/dedupe + route-coverage
+audit cache) `Hivatkozás` sora `commit ca8804272`-t idéz. Ez egy ELHAGYOTT, rebase-előtti objektum --
+ellenőrizve `git merge-base --is-ancestor ca8804272 b5a73e68a` (exit 1, nem ős) és
+`git cat-file -e ca8804272` (az objektum lokálisan létezik, de elérhetetlen semelyik élő ágból). A
+VALÓDI, landolt commitok: `80f394537` (F1-F5 implementáció + DECISIONS-bejegyzés) és `5d5130e7e`
+(lint-ratchet javítás a wiring-teszt mock-szignatúráján), mindkettő ellenőrizve ős-e
+(`git merge-base --is-ancestor <sha> b5a73e68a`, mindkettőre exit 0). A helyes Hivatkozás sor:
+
+**Hivatkozás (javított):** kártya 97f9ca58, szülő 64f56f97, commit 80f394537 + 5d5130e7e (landolva
+`b5a73e68aea24d0bd31e6f3fabfb8e643345a7dc`-ben), `src/web/kanban-route-dispatch.ts`,
+`src/web/routes/local-llm.ts`, `store/route-check-audit.sh`.
+
+**Ki döntött:** QA2 (lelet, komment 27028, QA2 PASS stands), MikroB (msg 15912, javítás kiosztása),
+backend (a javítás).
