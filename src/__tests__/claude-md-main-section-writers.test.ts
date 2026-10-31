@@ -54,11 +54,16 @@ describe('f22ef741: every MAIN-branch CLAUDE.md section-writer gives 0 diff on t
     const agentClaudeMdPreexisted = existsSync(agentClaudeMdPath)
     const agentClaudeMdBackup = agentClaudeMdPreexisted ? readFileSync(agentClaudeMdPath, 'utf-8') : null
 
-    // Fixture: give the writer something to dirty if it falls through to
-    // agentDir(name) for MAIN_AGENT_ID (seeded with the root content so a byte
-    // mismatch is unambiguous either way).
+    // Fixture: a freshly-scaffolded sub-agent CLAUDE.md stub, deliberately WITHOUT
+    // any of the GENERATED blocks yet. A full copy of the (already-matching) root
+    // CLAUDE.md would mask a guard removal here -- the function's own
+    // `if (updated === existing) return` idempotency check short-circuits the write
+    // whenever the generated block already happens to be present, so the guard's
+    // absence only becomes observable against content that does NOT have it yet
+    // (the realistic case: a brand-new agent directory).
+    const agentStub = '# stub agent CLAUDE.md for pin-test\n'
     mkdirSync(agentClaudeMdDir, { recursive: true })
-    writeFileSync(agentClaudeMdPath, rootBefore, 'utf-8')
+    writeFileSync(agentClaudeMdPath, agentStub, 'utf-8')
 
     try {
       ;(fn as (n: string) => void)(MAIN_AGENT_ID)
@@ -67,7 +72,7 @@ describe('f22ef741: every MAIN-branch CLAUDE.md section-writer gives 0 diff on t
       expect(rootAfter, `${name} changed the committed root CLAUDE.md`).toBe(rootBefore)
 
       const agentAfter = readFileSync(agentClaudeMdPath, 'utf-8')
-      expect(agentAfter, `${name} wrote into agentDir(MAIN_AGENT_ID)/CLAUDE.md`).toBe(rootBefore)
+      expect(agentAfter, `${name} wrote into agentDir(MAIN_AGENT_ID)/CLAUDE.md`).toBe(agentStub)
     } finally {
       // Always restore the real committed file byte-for-byte, regardless of outcome.
       writeFileSync(ROOT_CLAUDE_MD_PATH, rootBefore, 'utf-8')
