@@ -22785,3 +22785,12 @@ backend (a javítás).
 **Ki dontott:** MikroB (FÁZIS e5c46e87, batch-based process); backend3 (the merge conflict resolutions, the fallout fixes, the duplicate-wrapper removal); MikroB (root-cause correction on an initial one-off FAIL misread as host contention -- msg 16140, it was a statistical substring false-positive in `test_no_value_anywhere`, not a real leak, tracked separately as card 753ec2dd).
 
 **Hivatkozas:** kartya bd32ad68 (parent FÁZIS e5c46e87), REVIEW comment 27590, commits `95b53c94a`/`6f2eb9965`/`acb9e24cd`/`48f9fe10b`/`081764e62`/`d509c7f23`, Gate-SHA `0119a6d207bb23d9e02c695630acce5c7bdbde56`.
+
+## 2026-10-31 -- Upstream-drift round: 2 undecided files resolved, 1 stale blob bumped (card 7f0efce3)
+
+**Dontes:**
+- `scripts/hooks/telegram_progress_clear.py`: KEEP FORK -- comment-only diff, both sides describe identical already-ported #2269 behaviour with different attribution style.
+- `src/web/agent-bundle.ts`: KEEP FORK FOR NOW -- upstream's RESERVED_AGENT_IDS concept (heartbeat/telegram-coordinator/channel-coordinator) does not exist anywhere in this fork; adopting it is not a 2-line swap. Fork's isReservedSenderId (card b46a4b7e) stays; FIXED_RESERVED_AGENT_IDS porting is a follow-up.
+- `.claude/settings.json` blob bumped 7c692deff999->a4d62d48e5d8; four new upstream additions noted (permissions.deny block, hook script replacements), none adopted; UNDECIDED resolution unchanged.
+
+**Ki dontott:** DevO (fullstack), card 7f0efce3, Gate-SHA 59192f3e8b929cf84b5b410b511679efe7b976d4.
