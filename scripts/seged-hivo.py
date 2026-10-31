@@ -79,9 +79,6 @@ import urllib.request, uuid
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / 'hooks'))
-import ledger_lib  # noqa: E402 -- reuses the same cwd-based agent resolver as bash-egress-guard.py
-
 # F-A (card 09117e0a, WhiteHat2 NO-GO komment 18851): ROOT used to be MARVEEN_ROOT-overridable,
 # so a caller invoking this script directly (docs/seged-hivo-utmutato.md's own example does) could
 # point run_gate()'s titok-kapu.py lookup at an attacker-controlled tree with a no-op gate script,
@@ -660,17 +657,20 @@ def jail_cmd(engine, workdir, net_jail_dir=None):
     return jail
 
 
-def start_jail_net_proxy():
+def start_jail_net_proxy(agent=''):
     """Spawns the host-side allowlisting proxy (scripts/jail-net-proxy.py) on a fresh per-call UNIX
     domain socket. Returns (proc, socket_dir, socket_path) or (None, None, None) if isolation is off.
-    Caller MUST terminate proc and clean up socket_dir when the helper call finishes (see run_helper)."""
+    Caller MUST terminate proc and clean up socket_dir when the helper call finishes (see run_helper).
+
+    card cdcd0f5b: `agent` is the caller's OWN --hivo value (already validated against the known
+    agent folders by main(), see norm_caller/ap.error above) -- not a cwd-based guess. This script
+    is invoked directly by the calling role-agent's own Bash tool call (gemini-agy-call.sh's own
+    `--hivo AGENT` usage), so the explicit argument is already the ground truth, same principle as
+    ledger_lib.agent_id_from_payload being preferred over its own cwd fallback."""
     if not JAIL_NET_ISOLATION:
         return None, None, None
     socket_dir = Path(tempfile.mkdtemp(prefix='seged-net-'))
     socket_path = socket_dir / 'proxy.sock'
-    # card cdcd0f5b: same cwd-based resolver bash-egress-guard.py falls back to -- this call has no
-    # hook payload/transcript_path, so agent_id_from_cwd (not agent_id_from_payload) is the right one.
-    agent = ledger_lib.agent_id_from_cwd(os.getcwd())
     proc = subprocess.Popen([sys.executable, str(JAIL_NET_PROXY_SH), str(socket_path), JAIL_NET_ALLOWLIST, agent],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # Wait for the proxy to actually bind before handing the socket path to bwrap -- a race here
@@ -876,8 +876,8 @@ def agy_subtask_binds():
             '--ro-bind-try', str(GATE_DIR), SUBTASK_GATE_JAIL_DIR]
 
 
-def run_helper(engine, model, workdir, prompt_text, timeout):
-    net_proc, net_dir, net_sock = start_jail_net_proxy()
+def run_helper(engine, model, workdir, prompt_text, timeout, caller=''):
+    net_proc, net_dir, net_sock = start_jail_net_proxy(caller)
     jail = jail_cmd(engine, workdir, net_jail_dir=net_dir)
     if engine == 'codex':
         engine_argv = [BINS['codex'], 'exec', '-m', model, '-s', 'workspace-write', '-C', str(workdir),
@@ -1316,7 +1316,7 @@ def main():
     append_log({**row, 'status': 'started', 'exit': None, 'atnezett_fajl': scanned})
     mark_call()
     try:
-        res, out, err = run_helper(engine, model, workdir, prompt_text, a.timeout)
+        res, out, err = run_helper(engine, model, workdir, prompt_text, a.timeout, caller=a.hivo)
     except Exception as e:  # a crash still gets its final row; a kill keeps the started row
         row.update(status='error', exit=None, okok=[f'{type(e).__name__}: {e}'[:400]], atnezett_fajl=scanned)
         append_log(row)
