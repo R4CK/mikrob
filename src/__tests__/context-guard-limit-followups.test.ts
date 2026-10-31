@@ -89,10 +89,23 @@ vi.mock('../web/agent-config.js', () => ({
   listAgentNames: () => ['boni'],
   listAllAgentNames: () => ['boni'],
   agentDir: (n: string) => join(ROOT, 'agents', n),
+  // context-guard-runner.ts uses agentConfigRoot (not a local workingDirFor) at every one of its
+  // six working-dir call sites -- same MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name) shape, just
+  // imported rather than re-defined per file. Mocked here so the runner's own real import path
+  // keeps working, instead of each caller silently getting `undefined` and failing open/closed
+  // unnoticed.
+  agentConfigRoot: (n: string) => join(ROOT, 'agents', n),
   readAgentModel: () => null,
   readAgentRemoteHost: () => null,
 }))
 vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => undefined }))
+// context-guard-runner.ts's REAL, local configDirFor (not the stub above, which upstream's
+// unadopted module-split would have made the real one -- deferred, card 5c134edf) calls
+// resolveAgentConfigDirForRead(name) for every non-main agent. Unmocked, this hits the real
+// claude-plans.ts file-read path against this test's throwaway ROOT and throws, silently
+// skipping every call after it in the same sweep (the actual root cause of this file's original
+// failures, not the working-dir helper itself). boni has no isolated config dir in this harness.
+vi.mock('../web/claude-plans.js', () => ({ resolveAgentConfigDirForRead: () => null }))
 vi.mock('../web/active-model.js', async () => {
   const { vi } = await import('vitest')
   h.readTail = vi.fn(() => h.tail)

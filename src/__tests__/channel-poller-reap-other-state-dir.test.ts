@@ -59,6 +59,15 @@ const ROWS: Row[] = [
 const PANES = new Set([2000])
 const psEww = ROWS.map((r) => `${String(r.pid).padStart(6)} ?        S      0:00 ${r.argv} ${r.env}`).join('\n')
 const procs: ProcRow[] = ROWS.map((r) => ({ pid: r.pid, ppid: r.ppid, command: r.argv }))
+// Synthetic pids, never real processes: the default readArgv's /proc read would ENOENT on all
+// of them, silently dropping every candidate through the fork's own isPollerArgv/filterPollerPids
+// defence-in-depth layer (card 4aa87fdf/8d625ccd) before this file's own "other-state-dir" guard
+// ever runs. Same seam shape as channel-poller-reap-guards.test.ts's argvByPid: every plugin
+// poller pid in this fixture (live or orphaned) genuinely runs `bun server.ts`, regardless of
+// which launcher/worker argv string its ps -eww row shows for the env/marker regex scan above.
+const argvByPid = new Map<number, string[]>(
+  [2003, 3100, 3101, 3200, 3300, 3301].map((pid) => [pid, ['bun', 'server.ts']]),
+)
 
 function reapAgentA(botPid: number) {
   return reapAgent(AGENT_A, D_A, botPid)
@@ -75,6 +84,7 @@ function reapAgent(agentDir: string, stateDir: string, botPid: number) {
     tmuxServerPid: () => 500,
     ownUid: 1000,
     ownerOf: () => 1000,
+    argvOf: (pid: number) => argvByPid.get(pid) ?? null,
     kill: (pid, sig) => {
       if (gone.has(pid)) { const e = new Error('ESRCH') as NodeJS.ErrnoException; e.code = 'ESRCH'; throw e }
       if (sig !== 0) { signalled.add(pid); gone.add(pid) }

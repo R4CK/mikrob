@@ -12,12 +12,20 @@ import vm from 'node:vm'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const APP_JS = readFileSync(join(ROOT, 'web', 'app.js'), 'utf-8')
+// escapeHtml lives in app-helpers.js (card 1ba4997b modularisation, loaded before app.js in
+// index.html so app.js's own callers -- jsArg, escSnippet -- can use it as a page-global). The
+// Team-notes functions below are not modularised out -- they live in app.js, right after escSnippet.
+const APP_HELPERS_JS = readFileSync(join(ROOT, 'web', 'app-helpers.js'), 'utf-8')
+
+function sliceFrom(src: string, startMarker: string, endMarker: string): string {
+  const a = src.indexOf(startMarker)
+  const b = src.indexOf(endMarker, a)
+  if (a < 0 || b < 0) throw new Error(`marker not found: ${startMarker}`)
+  return src.slice(a, b)
+}
 
 function slice(startMarker: string, endMarker: string): string {
-  const a = APP_JS.indexOf(startMarker)
-  const b = APP_JS.indexOf(endMarker, a)
-  if (a < 0 || b < 0) throw new Error(`marker not found: ${startMarker}`)
-  return APP_JS.slice(a, b)
+  return sliceFrom(APP_JS, startMarker, endMarker)
 }
 
 const PAYLOAD = '<img src=x onerror="alert(1)"><script>alert(2)</script>'
@@ -59,7 +67,7 @@ async function renderNotes(rows: unknown[]) {
   vm.createContext(ctx)
   vm.runInContext(
     'let notesAssigneesLoaded = true\n' +
-      slice('function escapeHtml(str)', '\n}\n') + '\n}\n' +
+      sliceFrom(APP_HELPERS_JS, 'function escapeHtml(str)', '\n}\n') + '\n}\n' +
       slice('function notesLocalToday()', '\nasync function loadNotesAssignees(') +
       slice('async function loadNotesPage()', '\nlet notesPageWired') +
       '\nglobalThis.run = () => loadNotesPage()',

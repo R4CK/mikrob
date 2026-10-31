@@ -9,12 +9,21 @@ import vm from 'node:vm'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const APP_JS = readFileSync(join(ROOT, 'web', 'app.js'), 'utf-8')
+// kanbanMoveActor and ensureMarveenLoaded are modularised out (card 1ba4997b): the former
+// lives in app-kanban.js, the latter in app-messages.js, both loaded before app.js so
+// wireNotesPage() can call them as page-globals at runtime.
+const APP_KANBAN_JS = readFileSync(join(ROOT, 'web', 'app-kanban.js'), 'utf-8')
+const APP_MESSAGES_JS = readFileSync(join(ROOT, 'web', 'app-messages.js'), 'utf-8')
+
+function sliceFrom(src: string, startMarker: string, endMarker: string): string {
+  const a = src.indexOf(startMarker)
+  const b = src.indexOf(endMarker, a)
+  if (a < 0 || b < 0) throw new Error(`marker not found: ${startMarker}`)
+  return src.slice(a, b)
+}
 
 function slice(startMarker: string, endMarker: string): string {
-  const a = APP_JS.indexOf(startMarker)
-  const b = APP_JS.indexOf(endMarker, a)
-  if (a < 0 || b < 0) throw new Error(`marker not found: ${startMarker}`)
-  return APP_JS.slice(a, b)
+  return sliceFrom(APP_JS, startMarker, endMarker)
 }
 
 async function loadAssignees(agentsResponse: () => Promise<{ ok: boolean; json: () => Promise<unknown> }>, mainId = 'Boss') {
@@ -56,7 +65,7 @@ describe('Notes page: assignee picker', () => {
 })
 
 describe('Notes page: who the writes name', () => {
-  const wiring = slice('function wireNotesPage()', '\nasync function loadIdeasPage(')
+  const wiring = slice('function wireNotesPage()', '\nfunction safeHref(')
   it('the add form and the delete name the owner from the page config (as board moves do), never a fixed label', () => {
     expect(wiring).toContain('created_by: kanbanMoveActor()')
     expect(wiring).toContain('by: kanbanMoveActor()')
@@ -69,10 +78,10 @@ describe('Notes page opened first: the writes still name the owner', () => {
   // the notes page as the first page of a fresh load it is unset, so the writes
   // must resolve /api/marveen themselves before building their bodies.
   const helpers =
-    slice('function kanbanMoveActor()', '\n') + '\n' +
-    slice('async function ensureMarveenLoaded()', '\nasync function loadMessagesPage(') + '\n' +
+    sliceFrom(APP_KANBAN_JS, 'function kanbanMoveActor()', '\n') + '\n' +
+    sliceFrom(APP_MESSAGES_JS, 'async function ensureMarveenLoaded()', '\nasync function loadMessagesPage(') + '\n' +
     'let notesPageWired = false\n' +
-    slice('function wireNotesPage()', '\nasync function loadIdeasPage(')
+    slice('function wireNotesPage()', '\nfunction safeHref(')
 
   function setup() {
     const listeners: Record<string, (e: unknown) => Promise<void>> = {}

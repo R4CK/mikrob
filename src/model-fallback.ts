@@ -191,7 +191,7 @@ export function parseModelFallbackUpdate(body: unknown): Partial<ModelFallbackCo
 // the footer) when the plan budget is exhausted or nearly so. Match only the
 // live banner region so a message body or scrollback that merely quotes the
 // phrase does not trip a downgrade.
-const USAGE_LIMIT_BANNER_REGION_LINES = 15
+export const USAGE_LIMIT_BANNER_REGION_LINES = 15
 
 // Distinctive plan-limit phrasings. Deliberately NARROW: a generic "rate limit"
 // / "API Error: 429" (transient overload, handled elsewhere) must NOT match --
@@ -240,35 +240,17 @@ export const USAGE_LIMIT_FRAGMENTS = [
 ]
 const USAGE_LIMIT_RX = new RegExp(`(${USAGE_LIMIT_FRAGMENTS.join('|')})`, 'i')
 
-// SHAPE guard (card 381b6f49, Cybersec finding msg 14080/14088): a phrase match
-// alone also fires on a HEALTHY agent's own prose that happens to quote a
-// trigger phrase verbatim -- a gate verdict echoing the detector's own
-// documentation, a source comment pasted into a reply, a card description
-// read back. Those all render inside a session that is still alive, so the
-// live idle footer or a busy (mid-turn) indicator is STILL PRESENT in the same
-// tail region. A genuine plan-limit banner PAUSES the session and REPLACES the
-// footer with its own chrome (a numbered "1. Stop and wait..." choice per
-// store/quota-check.sh's header, commit 5fccf4f9) -- so neither is present.
-// Requiring their absence turns the raw phrase match into a real ALARM instead
-// of a keyword grep, without needing a captured real banner sample (none
-// exists in this repo -- see the 381b6f49 blocked-comment search) and without
-// growing a second guess-list (Cybersec explicitly ruled that out).
-//
-// Duplicated (NOT imported) from src/pane-state.ts's IDLE_FOOTER_RX / busy
-// signals -- MikroB decision 2026-08-16 (card 381b6f49, msg 13439): this
-// module's own header states zero fs/tmux/clock dependency, an architectural
-// boundary a SEC card does not get to quietly cross even though pane-state.ts
-// is equally dependency-free today. Kept in sync by hand; each duplicate line
-// names its pane-state.ts source so a future drift is a one-file grep away.
-//
-// Same shape as pane-state.ts IDLE_FOOTER_RX (mode name + "on" + shift+tab/·
-// hint, or the shortcuts hint).
-const LOCAL_IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
-// Same shape as pane-state.ts's tokens-down-arrow busy signal, live only
-// during an in-flight turn.
-const LOCAL_BUSY_TOKENS_RX = /\(\s*\d+s\s*·\s*↓\s*\d/
-// Same shape as pane-state.ts's BUSY_ESC_TO_INTERRUPT_RX.
-const LOCAL_ESC_TO_INTERRUPT_RX = /\besc to interrupt\b/
+// The region-wide SHAPE guard that used to live here (card 381b6f49: require
+// the absence of the live idle footer / busy indicator before trusting a
+// phrase match) is RETIRED as of Koteg 22 -- its premise ("footer present
+// means healthy, not limited") turned out to be false: Claude Code renders
+// the same idle footer underneath a real plan-limit banner too (measured
+// against two new upstream features that need usageLimitBannerLine to detect
+// a banner sitting right next to that exact footer). Replaced by a per-line
+// START anchor in usageLimitBannerLine below (a phrase only counts when it
+// opens its own line, right after the glyph prefix) -- same false-positive
+// case this guard was built for (a quoted/discussed mention never opens its
+// line that way), without the footer-presence assumption that broke.
 
 // The exhausted-extra-usage reply. Measured on the live install: the main
 // session answered 2798 turns with exactly this synthetic API-error message
@@ -299,32 +281,57 @@ export function detectsUsageLimit(pane: string): boolean {
   return usageLimitBannerLine(pane) !== null
 }
 
+// Leading pane glyphs a banner line can open with, before the phrase itself:
+// whitespace, the API-error reply markers (⎿, ●, >), or a paused-plan warning
+// glyph (⚠). Shared by the line-start anchor check and the trim below so the
+// two cannot drift (card 381b6f49-class risk otherwise).
+const BANNER_GLYPH_PREFIX_RX = /^[\s⎿●>⚠]*/
+
+// After the glyph prefix, a real banner's own SUBJECT may still sit before the
+// USAGE_LIMIT_FRAGMENTS match ("You have reached...", "You hit...", "Your limit
+// will..."), because the fragments are deliberately partial, not full sentences
+// (see the comment above USAGE_LIMIT_FRAGMENTS). This is the ONLY prose allowed
+// between the glyph prefix and the match: a discussion/analysis sentence ("the
+// detector matches...", "the card says...", "Quoting the source comment...")
+// never fits this narrow a shape, which is exactly the card 381b6f49 false
+// positive this anchor exists to keep excluding.
+const BANNER_SUBJECT_LEADIN_RX = /^(You|Your|You're|You've)?\s*(have|hit|reached)?\s*$/i
+
 /**
  * The banner line detectsUsageLimit() matched, trimmed and stripped of the
  * leading pane glyphs (e.g. "You're out of extra usage · resets 6am
  * (Europe/Budapest)"), or null when there is none. Lets a caller key a limit
  * episode by its wording and read the reset tail without re-deriving the
- * match. Same live-region restriction and anti-false-positive guards (busy
- * chrome / esc-to-interrupt / idle footer) as the fork's original
- * detectsUsageLimit -- Koteg 22 adopts upstream's per-line extraction (needed
- * for EXTRA_USAGE_EXHAUSTED_RX and the reset-tail text) but keeps the guards
- * upstream's version did not carry, tested against the same region as before.
+ * match.
+ *
+ * Koteg 22 (upstream) needed a per-line extraction (EXTRA_USAGE_EXHAUSTED_RX
+ * and the reset-tail text) that still detects a genuine banner sitting right
+ * next to the pane's NORMAL idle/busy footer -- which Claude Code renders
+ * underneath a real plan-limit screen too, so "footer present" never proved
+ * "healthy, not limited" to begin with (measured: the live idle footer and a
+ * real banner routinely co-occur). The fork's prior region-wide busy/idle
+ * guard (card 381b6f49) is replaced here with a STRICTER, per-line one that
+ * keeps its actual intent: a USAGE_LIMIT_RX hit only counts when the phrase
+ * opens its own line (immediately after the glyph prefix, nothing else before
+ * it) -- the same anchoring EXTRA_USAGE_EXHAUSTED_RX already uses. A quoted or
+ * discussed mention ("the detector matches \"usage limit reached\"...")
+ * never opens its line that way, so it still correctly does not match; a real
+ * banner line always does, footer or no footer.
  */
 export function usageLimitBannerLine(pane: string): string | null {
   if (!pane || !pane.trim()) return null
   const lines = pane.split('\n')
-  const region = lines.slice(-USAGE_LIMIT_BANNER_REGION_LINES).join('\n')
-  if (LOCAL_BUSY_TOKENS_RX.test(region) || LOCAL_ESC_TO_INTERRUPT_RX.test(region)) return null
-  if (LOCAL_IDLE_FOOTER_RX.test(region)) return null
   const regionLines = lines.slice(-USAGE_LIMIT_BANNER_REGION_LINES)
   // Bottom-up: the newest banner is the one that describes the live state.
   for (let i = regionLines.length - 1; i >= 0; i--) {
     const line = regionLines[i]
-    // Each regex is tested on a single line here. USAGE_LIMIT_RX has no
-    // multi-line alternative, and EXTRA_USAGE_EXHAUSTED_RX is line-anchored,
-    // so this is the same verdict the old whole-region test gave.
-    if (USAGE_LIMIT_RX.test(line) || EXTRA_USAGE_EXHAUSTED_RX.test(line)) {
-      return line.replace(/^[\s⎿●>]+/, '').trim()
+    if (EXTRA_USAGE_EXHAUSTED_RX.test(line)) {
+      return line.replace(BANNER_GLYPH_PREFIX_RX, '').trim()
+    }
+    const prefixLen = (line.match(BANNER_GLYPH_PREFIX_RX)?.[0] ?? '').length
+    const m = USAGE_LIMIT_RX.exec(line)
+    if (m && m.index >= prefixLen && BANNER_SUBJECT_LEADIN_RX.test(line.slice(prefixLen, m.index))) {
+      return line.replace(BANNER_GLYPH_PREFIX_RX, '').trim()
     }
   }
   return null

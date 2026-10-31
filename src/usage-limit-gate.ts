@@ -34,7 +34,17 @@
 // by detectsUsageLimit() (the model-fallback runner wants it), but it is not a
 // reason to stop the scheduler, so it is let through here.
 
-import { usageLimitBannerLine } from './model-fallback.js'
+import { usageLimitBannerLine, USAGE_LIMIT_BANNER_REGION_LINES } from './model-fallback.js'
+
+// Deliberately NOT the shared, security-sensitive USAGE_LIMIT_RX (model-fallback.ts):
+// that regex declined an unbounded word wildcard between "approaching" and
+// "weekly/usage limit" (model-fallback.test.ts, card tracked there) because a false
+// positive there costs a WRONGFUL MODEL DOWNGRADE at detectsUsageLimit's two live
+// callers. This gate's stakes are the opposite: classifying a line as a non-blocking
+// "approaching" warning only ever leads to `action: 'inject'` (the scheduler still
+// runs), never a skip/downgrade -- a false positive here is a no-op, not a safety
+// issue. So this local, looser pre-check lives here, never widening the shared regex.
+const APPROACHING_WARNING_RX = /\bapproaching\b.*\blimit\b/i
 
 /** How long one sighting holds injection back before a single probe goes through. */
 export const USAGE_LIMIT_PROBE_INTERVAL_MS = 30 * 60_000
@@ -70,9 +80,15 @@ export function decideUsageLimitGate(input: {
   if (pane == null) return { action: 'inject', reason: 'no-pane', episode }
 
   const banner = usageLimitBannerLine(pane)
-  // Banner gone: the episode is over, forget it so a later one notifies again.
-  if (!banner) return { action: 'inject', reason: 'no-banner', episode: null }
-  if (/approaching/i.test(banner)) return { action: 'inject', reason: 'warning-only', episode: null }
+  if (banner && /approaching/i.test(banner)) return { action: 'inject', reason: 'warning-only', episode: null }
+  // Banner gone (by the strict matcher): the episode is over, forget it so a later
+  // one notifies again -- unless the loose, local approaching-check below still
+  // finds a budget-left warning the strict matcher is not meant to catch.
+  if (!banner) {
+    const region = pane.split('\n').slice(-USAGE_LIMIT_BANNER_REGION_LINES).join('\n')
+    if (APPROACHING_WARNING_RX.test(region)) return { action: 'inject', reason: 'warning-only', episode: null }
+    return { action: 'inject', reason: 'no-banner', episode: null }
+  }
 
   if (!episode || episode.banner !== banner) {
     const skipUntilMs = nowMs + USAGE_LIMIT_PROBE_INTERVAL_MS

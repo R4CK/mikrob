@@ -160,12 +160,15 @@ describe('moveKanbanCard expectedStatus (db layer)', () => {
 
 // The dispatch message is what an assigned agent actually runs to close its
 // card, so the guard only helps if the recipe sends it. These tests take the
-// done payload exactly as the dispatch hands it over and send it to the real
-// route.
+// waiting payload exactly as the dispatch hands it over and send it to the
+// real route. NOT "done": this fork's workflow never self-closes a card to
+// done directly (card 64c455da, WhiteHat M1 -- see the kanban.ts
+// acknowledged-conflicts.ts entry) -- the builder always moves to "waiting",
+// MikroB or the designated gate makes the real closing decision afterwards.
 describe('dispatch recipe sends expected_status on the close', () => {
-  const donePayload = (): Record<string, unknown> => {
+  const waitingPayload = (): Record<string, unknown> => {
     const out = kanbanMoveInstructions('t-1', 'dex')
-    const line = out.split('\n').find((l) => l.includes(`-d '{"status":"done"`))
+    const line = out.split('\n').find((l) => l.includes(`-d '{"status":"waiting"`))
     expect(line).toBeDefined()
     return JSON.parse(line!.slice(line!.indexOf("'") + 1, line!.lastIndexOf("'"))) as Record<string, unknown>
   }
@@ -174,7 +177,7 @@ describe('dispatch recipe sends expected_status on the close', () => {
     createKanbanCard({ id: 't-1', title: 'Moved on', assignee: 'dex' })
     moveKanbanCard('t-1', 'testing', 0, 'orin')
 
-    const r = await move('t-1', donePayload())
+    const r = await move('t-1', waitingPayload())
 
     expect(r.status).toBe(409)
     expect(r.body).toMatchObject({ error: 'status_conflict', current_status: 'testing' })
@@ -185,10 +188,10 @@ describe('dispatch recipe sends expected_status on the close', () => {
     createKanbanCard({ id: 't-1', title: 'Still mine', assignee: 'dex' })
     moveKanbanCard('t-1', 'in_progress', 0, 'dex')
 
-    const r = await move('t-1', donePayload())
+    const r = await move('t-1', waitingPayload())
 
     expect(r.status).toBe(200)
-    expect(getKanbanCard('t-1')?.status).toBe('done')
+    expect(getKanbanCard('t-1')?.status).toBe('waiting')
   })
 
   it('tells the reader what a 409 means and to guard the waiting move too', () => {

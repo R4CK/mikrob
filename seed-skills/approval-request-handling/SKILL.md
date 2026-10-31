@@ -67,9 +67,9 @@ már igent mondott, ne kérdezd meg tőle újra: add meg a POST-ban a jóváhagy
 azonosítóját.
 
 ```bash
-curl -s -X POST "http://localhost:$PORT/api/approvals" \
+printf 'Authorization: Bearer %s\n' "$(cat <install>/store/.dashboard-token)" \
+| curl -s -H @- -X POST "http://localhost:$PORT/api/approvals" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
   --data-binary @payload.json   # {"agent_id":"<fő-ágens>","category":"<key>","action_description":"...","owner_approved_message_id":<id>}
 ```
 - A sor rögtön `approved` lesz (ugyanazon az úton, mint a PATCH), a tulajdonos kérdés helyett

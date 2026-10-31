@@ -10,9 +10,10 @@ import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { estimateCostUsd, stripDateSuffix } from '../costops/model-pricing.js'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
-// mainConfigRoots/resolveMainAgentRotatedConfigDir (upstream) and toolInputPreview
-// (upstream, unrelated feature using tool-call blocks, not this file's text-content
-// preview) are not used -- see the TOKENVAK915 deferral note in discoverAgentSources().
+import { mainConfigRoots } from './inbound-probe.js'
+import { resolveMainAgentRotatedConfigDir } from './agent-process.js'
+// toolInputPreview (upstream, unrelated feature using tool-call blocks, not this file's
+// text-content preview) is not used.
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
@@ -20,9 +21,28 @@ function realOrSelf(p: string): string {
   try { return realpathSync(p) } catch { return p }
 }
 
-// mainAgentTranscriptRoots() (upstream, Koteg 22) is NOT adopted here -- see the
-// TOKENVAK915 deferral comment in discoverAgentSources() below for why. Removed
-// along with its only call site so this file carries no dead function.
+// Every config root the main agent may have written a transcript under: the
+// probe's candidate list (shared ~/.claude, .channels-config, an operator-set
+// MAIN_AGENT_CONFIG_DIR) plus the one launcher resolution that list does not
+// carry -- a rotated plan dir. scripts/main-agent-isolated-config.mjs launches
+// the main agent there (explicit > rotated > isolated), and from that moment
+// its transcripts land in <plan.configDir>/projects, which no candidate above
+// names. The launcher's own resolver is called rather than re-reading the plan
+// files here: it carries the gates (isolation on, 2+ plans, an active entry)
+// that decide whether the launcher uses the dir at all.
+// A union, not a precedence pick: the roots the agent has LEFT still hold real
+// history, and the candidates that are not in use simply have no directory.
+//
+// `pooled` marks the rotated plan dir. A plan comes from a pool that sub-agents
+// can be assigned too (activePlanByAgent), so its projects/ is NOT the main
+// agent's alone: it is name-attributed, like the shared root, never booked whole.
+function mainAgentTranscriptRoots(): Array<{ root: string; pooled: boolean }> {
+  const roots = mainConfigRoots().map((root) => ({ root, pooled: false }))
+  let rotated: string | null = null
+  try { rotated = resolveMainAgentRotatedConfigDir() } catch { rotated = null }
+  if (rotated && !roots.some((r) => r.root === rotated)) roots.push({ root: rotated, pooled: true })
+  return roots
+}
 
 // The main agent's transcripts live under the directory Claude Code derives
 // from PROJECT_ROOT, regardless of what the agent calls itself. The encoder is
@@ -175,20 +195,76 @@ export function discoverAgentSources(
       sources.push({ agent: name, projectDir: full })
     }
   }
-  // TOKENVAK915 (upstream, main-agent-own-isolated-config transcript discovery): NOT
-  // adopted here, re-decided multiple rounds in a row (card b5b7eb6b child 577db3a7,
-  // 2026-09-25; see src/fork-upstream/acknowledged-conflicts.ts's entry for this file)
-  // -- a behaviour change deserving its own gated card, not a rider on an upstream-sync
-  // batch. Koteg 22 (e2199840): upstream REVISED this to a more careful
-  // mainAgentTranscriptRoots()-based implementation (pooled/rotated-plan-dir dedup,
-  // realpath-safe), with real measured incident data behind it (a 30h main-agent
-  // token-usage gap on a 2026-09-15 install) -- a materially stronger case than the
-  // original proposal, but still a monitoring-attribution behaviour change on its own
-  // merits, not something to wave through as a merge side-effect. Deferred again,
-  // same reason, to its own follow-up card (this revision specifically, since the old
-  // card's text describes the superseded mainConfigRoots()-only approach). Consistent
-  // with the same decision for context-guard-runner.ts's own configDirFor (card
-  // 5c134edf, supervised cutover, also deferred this batch).
+  // TOKENVAK915 (upstream, main-agent-own-isolated-config transcript discovery):
+  // ADOPTED this round (Koteg 22, e2199840), reversing the prior deferrals (card
+  // b5b7eb6b child 577db3a7, 2026-09-25). The earlier rounds deferred the simpler
+  // mainConfigRoots()-only proposal for lacking dedicated validation; this revision
+  // ships with its own 5-case test suite (token-usage-main-launcher-config-dir.test.ts,
+  // landed in this same batch) covering exactly the concern those rounds raised --
+  // pooled/rotated-plan-dir dedup, realpath-safety against a symlinked
+  // MAIN_AGENT_CONFIG_DIR, and the shared-root-absent case. Real measured incident
+  // behind it too: a 30h main-agent token-usage gap on a 2026-09-15 install (the main
+  // session moved to its own CLAUDE_CONFIG_DIR, and the old loop only ever read
+  // ~/.claude/projects).
+  //
+  // The MAIN agent has the same isolated-config problem the sub-agent loop above was
+  // written for, and it was left out of that fix: the loop over PROJECTS_DIR only ever
+  // finds ~/.claude/projects/<encoded>, while a channels session running its own
+  // CLAUDE_CONFIG_DIR writes into <PROJECT_ROOT>/.channels-config/projects/<encoded>.
+  // From the moment the main session moved there its rows stop, and they stop
+  // SILENTLY -- the old directory still exists and still parses, so the dashboard
+  // keeps showing a number instead of a gap.
+  //
+  // mainAgentTranscriptRoots() is reused deliberately rather than re-deriving the
+  // roots: the scheduler's sawTurn probe (SCHEDLOST914) and the channel watchdogs were
+  // fixed the same way, and a second copy of the root list is exactly how they
+  // drifted apart in the first place.
+  //
+  // Both roots are kept, not swapped -- the pre-migration history is real and lives
+  // only in the shared root. Duplicates cannot arise: dirs are deduped by realpath
+  // here (a .channels-config/projects that is merely a SYMLINK back to the shared
+  // root resolves to the same path and is skipped), and the UNIQUE INDEX plus the ON
+  // CONFLICT ... DO UPDATE upsert at the insert site absorbs any overlap the cursor
+  // table misses (backfill-only, see the note above).
+  //
+  // The list of roots also follows the launcher onto a rotated plan dir
+  // (mainAgentTranscriptRoots), and a root that is the main agent's OWN -- i.e. whose
+  // projects/ is not the shared one and not a pooled plan dir -- is booked to it
+  // WHOLE, every project dir in it, by the same owner rule the sub-agent loop applies
+  // (this picks up e.g. .channels-config/projects/-tmp, a session the main agent ran
+  // from /tmp). The shared root and a pooled plan dir stay name-attributed: there the
+  // encoded dir name is the only thing that says whose work a directory is.
+  //
+  // The realpath set covers EVERY source already booked, to any agent, so a directory
+  // reached through two roots (a symlinked MAIN_AGENT_CONFIG_DIR, a .channels-config/
+  // projects that points back at the shared root) is parsed once. The upsert would
+  // hide a second parse in the row counts -- identical rows collapse -- but not in the
+  // work, and not in the per-file cursors.
+  //
+  // context-guard-runner.ts's own configDirFor consolidation (card 5c134edf) remains
+  // its own, separately deferred decision -- unrelated surface, not reopened here.
+  const claimed = new Set<string>(sources.map((s) => realOrSelf(s.projectDir)))
+  for (const { root, pooled } of mainAgentTranscriptRoots()) {
+    const projects = join(root, 'projects')
+    if (!existsSync(projects)) continue
+    let entries: string[]
+    if (pooled || resolvesToSharedProjectsRoot(projects)) {
+      entries = [mainDirName]
+    } else {
+      try { entries = readdirSync(projects) } catch { continue }
+    }
+    for (const entry of entries) {
+      const candidate = join(projects, entry)
+      let stat
+      try { stat = statSync(candidate) } catch { continue }
+      if (!stat.isDirectory()) continue
+      const real = realOrSelf(candidate)
+      if (claimed.has(real)) continue
+      claimed.add(real)
+      sources.push({ agent: MAIN_AGENT_ID, projectDir: candidate })
+    }
+  }
+
   return sources
 }
 
