@@ -642,8 +642,9 @@ fi
 #      through any cached path string;
 #   2. for every OTHER process (same uid) whose comm is exactly "tmux: server",
 #      check its cmdline (comm is always "tmux: server" regardless of session
-#      name, but cmdline keeps the ORIGINAL `new-session -d -s <name> ...`
-#      invocation for the life of the process -- confirmed on pid 900).
+#      name, but cmdline keeps the ORIGINAL launch invocation (tmux's
+#      "new-session", "-d", "-s <name>" args) for the life of the process --
+#      confirmed on pid 900).
 #      Only one that was originally launched as "-s $SESSION" is touched: an
 #      unrelated tmux server (a human's own interactive session, or a scratch
 #      socket some other tool left behind) must never be killed just for
