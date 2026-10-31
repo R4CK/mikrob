@@ -43,16 +43,23 @@ describe('scripts/__tests__ suites', () => {
     expect(SUITES.length).toBeGreaterThan(20)
   })
 
-  // The email gate suite must stay reachable from here (it has no other CI
-  // entry now) and must not be re-run by a second wrapper.
-  it('runs the email approval gate suite here, and no other test file re-runs it', () => {
-    expect(SUITES).toContain('email-approval-gate.test.py')
-    const SRC_TESTS = join(ROOT, 'src', '__tests__')
-    const rerunners = readdirSync(SRC_TESTS)
-      .filter((f) => f.endsWith('.ts') && f !== 'script-tests-runner.test.ts')
-      .filter((f) => readFileSync(join(SRC_TESTS, f), 'utf-8').includes("'email-approval-gate.test.py'"))
-    expect(rerunners).toEqual([])
-  })
+  // These suites must stay reachable from here (they have no other CI entry)
+  // and must not be re-run by a second wrapper -- a second concurrent run of
+  // the same 300s-budget suite loads the host for both copies (observed on
+  // credential-gate.test.py under a full fleet-test run: a wrapper re-running
+  // it alongside this discovered run produced a one-off state-file leak this
+  // same suite never shows standalone or under synthetic load).
+  it.for(['email-approval-gate.test.py', 'credential-gate.test.py'])(
+    'runs %s here, and no other test file re-runs it',
+    (name) => {
+      expect(SUITES).toContain(name)
+      const SRC_TESTS = join(ROOT, 'src', '__tests__')
+      const rerunners = readdirSync(SRC_TESTS)
+        .filter((f) => f.endsWith('.ts') && f !== 'script-tests-runner.test.ts')
+        .filter((f) => readFileSync(join(SRC_TESTS, f), 'utf-8').includes(`'${name}'`))
+      expect(rerunners).toEqual([])
+    },
+  )
 
   // it.for, not it.each: the case function gets the test context, and ctx.skip() makes the
   // outcome a SKIPPED test that the reporter counts and shows. An early `return` from an `it`
