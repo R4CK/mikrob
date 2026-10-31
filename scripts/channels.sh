@@ -585,18 +585,110 @@ fi
 #     restarts it at its own cadence (systemd up to its start limit, launchd about
 #     every 30 s) instead of running a guessed session.
 # A new test seam must be added ABOVE this gate: below it, it gets exit 2.
+# EXCEPTION, documented here (D4902522): --reap-orphaned-tmux-servers is the
+# one seam that legitimately performs a kill (see reap_orphaned_tmux_servers()
+# just below the marker), so its "kill -TERM" text must live below the marker
+# -- the above-the-gate region must stay a provably inert text blob (the
+# channels-launch-gate contract test greps for exactly that). It is therefore
+# recognised HERE, by exact argument match, same as "restart", and also
+# exempted from the .env requirement below (its own function only acts on a
+# tmux server already carrying "-s $SESSION" in its original invocation, and
+# SESSION resolves to a usable default with no .env at all).
 case "$#:${1:-}" in
-  "0:"|"1:restart") : ;;
+  "0:"|"1:restart"|"1:--reap-orphaned-tmux-servers") : ;;
   *) printf 'channels.sh: unknown argument(s) %q -- nothing started (LAUNCHGATE1008)\n' "$*" >&2
      LAUNCHGATE_REFUSED=1
      exit 2 ;;
 esac
-if [ ! -f "$INSTALL_DIR/.env" ]; then
+if [ "${1:-}" != "--reap-orphaned-tmux-servers" ] && [ ! -f "$INSTALL_DIR/.env" ]; then
   echo "channels.sh: no $INSTALL_DIR/.env -- this checkout is not an install, nothing started (LAUNCHGATE1008)" >&2
   LAUNCHGATE_REFUSED=1
   exit 3
 fi
 # LAUNCHGATE1008-END: everything below launches.
+
+# --- orphaned tmux server reap (D4902522) -------------------------------------
+# Incident 2026-10-31 08:20: mikrob-channels.service restarted (KillMode=process,
+# by design -- a stop/restart must never cgroup-kill the shared tmux server, see
+# TMUXSERVERREAP929 below). The OLD server (pid 900) stayed alive and healthy,
+# still holding $SESSION plus the two interactive worker sessions -- but its
+# listening socket's directory entry was gone by the time the new channels.sh
+# ran `tmux new-session`, so tmux silently created a SECOND server+socket under
+# the same path. The dashboard reconcile then saw $SESSION "not running" on the
+# new server and auto-started a full second agent set: two live agent sets on
+# one host, both reading the same inbox (QA 27131 duplicate verdict, a gate GO
+# posted after a stand-down, interleaved commits from two backend sessions).
+#
+# A plain `$TMUX kill-session -t "=$SESSION:"` (further down) only ever reaches
+# whichever server the "default" socket path currently resolves to right now
+# -- it cannot see a server whose socket directory entry is gone. Such a
+# server is not "stale" in the reusable sense: once its bind path has no
+# directory entry, no future client can ever reconnect to it by that path
+# again (measured: pid 900's listening socket kept showing the ORIGINAL bind
+# path string in /proc/net/unix -- what `ss -xlp`/`fuser` read -- long after
+# that path's directory entry had been replaced by the new server's socket;
+# path-string matching alone cannot tell "still bound here" from "used to be
+# bound here"; filesystem inode of the path and the kernel's internal sockfs
+# inode for an fd are also two unrelated numbering spaces and can never be
+# compared directly). The only remaining interface to such a server is its
+# pid, so the fix is to find and kill it by pid, before the new server exists,
+# not to try to reuse it.
+#
+# Detection:
+#   1. ask a REAL client to connect to the current default socket and report
+#      the server's own pid (`display-message -p '#{pid}'`) -- this is the
+#      one authoritative way to learn who is reachable right now, because the
+#      kernel resolves the connect() through the CURRENT directory entry, not
+#      through any cached path string;
+#   2. for every OTHER process (same uid) whose comm is exactly "tmux: server",
+#      check its cmdline (comm is always "tmux: server" regardless of session
+#      name, but cmdline keeps the ORIGINAL `new-session -d -s <name> ...`
+#      invocation for the life of the process -- confirmed on pid 900).
+#      Only one that was originally launched as "-s $SESSION" is touched: an
+#      unrelated tmux server (a human's own interactive session, or a scratch
+#      socket some other tool left behind) must never be killed just for
+#      existing under the same uid.
+reap_orphaned_tmux_servers() {
+  local sockdir live_pid pid_dir pid owner_uid my_uid comm cmdline tmux_bin
+  sockdir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+  [ -d "$sockdir" ] || return 0
+  my_uid="$(id -u)"
+  # Resolve the tmux binary directly, never from the identically-named $TMUX
+  # CLIENT env var (set by tmux itself when running inside a pane, holding a
+  # socket descriptor string, not a binary path) -- this script unsets that
+  # elsewhere, but this function is called from the --reap-orphaned-tmux-
+  # servers test seam too, possibly before that unset has run.
+  tmux_bin="$(command -v tmux)"
+  [ -n "$tmux_bin" ] || return 0
+  live_pid="$("$tmux_bin" display-message -p '#{pid}' 2>/dev/null)"
+  for pid_dir in /proc/[0-9]*; do
+    pid="${pid_dir#/proc/}"
+    [ -n "$live_pid" ] && [ "$pid" = "$live_pid" ] && continue
+    owner_uid="$(stat -c '%u' "$pid_dir" 2>/dev/null)" || continue
+    [ "$owner_uid" = "$my_uid" ] || continue
+    comm="$(cat "$pid_dir/comm" 2>/dev/null)" || continue
+    [ "$comm" = "tmux: server" ] || continue
+    cmdline="$(tr '\0' ' ' < "$pid_dir/cmdline" 2>/dev/null)" || continue
+    case "$cmdline" in
+      *" -s $SESSION "*|*" -s $SESSION") : ;;
+      *) continue ;;  # not our session's server -- e.g. the operator's own unrelated tmux -- never touch it
+    esac
+    echo "WARN: orphaned tmux server pid=$pid (launched as -s $SESSION, not the server reachable at the default socket${live_pid:+ [pid=$live_pid]}) -- killing it before relaunch (D4902522: prevents a second live agent set surviving on an unreachable server)" >&2
+    kill -TERM "$pid" 2>/dev/null || true
+    { echo "$(date '+%F %T') reaped orphaned tmux server pid=$pid (cmdline carried -s $SESSION) -- unreachable, would otherwise have kept a stale duplicate agent set alive" >> "$INSTALL_DIR/store/channels-respawn.log"; } 2>/dev/null || true
+  done
+}
+
+# Test seam: `channels.sh --reap-orphaned-tmux-servers` runs the detection/kill
+# pass and exits, before touching anything else. TMUX_TMPDIR (a real tmux env
+# var, read by both this function and tmux itself) lets the test point the
+# whole pass at a throwaway socket directory instead of the live
+# /tmp/tmux-<uid>/ (src/__tests__ has no shell-level counterpart; the shell
+# contract test lives under scripts/__tests__/).
+if [ "${1:-}" = "--reap-orphaned-tmux-servers" ]; then
+  reap_orphaned_tmux_servers
+  exit 0
+fi
 
 # Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
 # before launch. A PR review-reset or branch-switch that reverts
@@ -1541,6 +1633,11 @@ fi
 # for 30 minutes. With the network up this is one lookup per host.
 # shellcheck disable=SC2046,SC2086
 wait_for_channel_hosts $(channel_wait_hosts "$CHANNEL_PROVIDER" $CHANNEL_PLUGINS_EXTRA) || true
+# D4902522: reap any OTHER live tmux server (same uid) that is unreachable via
+# the socket directory, before deciding whether THIS kill-session+new-session
+# below is reusing the real surviving server or (silently, via tmux's own
+# fallback) starting a second one. See reap_orphaned_tmux_servers() above.
+reap_orphaned_tmux_servers
 $TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # TMUXSERVERREAP929: create the session WITHOUT this shell's state-dir var in
 # the tmux client's environment. The export above is meant for THIS session's

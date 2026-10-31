@@ -35,6 +35,7 @@ import {
   shSingleQuote,
   fleetVenvPathPrefix,
 } from './agent-process.js'
+import { startWorkerSession } from './agent-worker.js'
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
@@ -3151,6 +3152,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // loop above only handles sessions that still exist with a dead plugin.
     // Staggered to avoid the simultaneous-start race that kills agents.
     void reconcileDesiredAgents()
+
+    // d4902522: the two interactive worker sessions are otherwise only
+    // started once, at dashboard process boot (web.ts) -- a channels-unit
+    // restart that lands on a FRESH tmux server (this process never
+    // restarted) leaves them missing with nothing to notice. startWorkerSession()
+    // is idempotent (workerSessionExists() guards each one), so calling it on
+    // this existing tick costs nothing when both are already alive.
+    try {
+      startWorkerSession()
+    } catch (err) {
+      logger.error({ err }, 'Failed to ensure interactive worker sessions during reconcile')
+    }
 
     // Periodic detached-channel-claude reap (CB6CF755). Throttled; reuses the
     // respawn-time reaper so orphans accumulating between respawns are cleaned
