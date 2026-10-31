@@ -104,24 +104,37 @@ window_start = time.time() - 3600
 today = datetime.datetime.now().astimezone().date().isoformat()
 used = 0
 ghost_today = 0
+ghost_attempts_hour = 0
 for row in sh.calls_of(sh.read_log()):
+    try:
+        ts = datetime.datetime.fromisoformat(str(row.get('ido', ''))).timestamp()
+    except ValueError:
+        ts = None
+    # Cybersec2 NO-GO F1 (card 5cb861e6, comment 26900): releaseGhostCallSlot() below un-spends
+    # 'used' on a 503 so a retriable provider failure does not block OTHER engines sharing this
+    # budget -- but counted alone, that let a 503 outage grant an UNBOUNDED number of real
+    # Gemini network attempts (measured: 40 consecutive 503s = 40 granted calls). This counts
+    # EVERY agy-ghost reservation attempt in the window, successful OR later released, so the
+    # gross number of real network attempts this engine makes per hour is capped at the same
+    # limit regardless of how many of them get released afterward.
+    if row.get('seged') == 'agy-ghost' and ts is not None and ts >= window_start:
+        ghost_attempts_hour += 1
     # H1 (RedHat NO-GO, card f0b3b674 komment 20369, Gate-SHA 44931ad6): 'agy-heavy' rows (the
     # heavy-second-opinion path, store/offload-dispatch.sh) must count toward this SAME shared
     # hourly window too, same reasoning as the 'agy-ghost' symmetry fix above (612058c2 F2) --
     # without this, 'used' here undercounts and a reservation can be granted past the real cap.
     if row.get('seged') not in ('agy', 'agy-ghost', 'agy-heavy') or row.get('status') == 'blocked':
         continue
-    try:
-        ts = datetime.datetime.fromisoformat(str(row.get('ido', ''))).timestamp()
-    except ValueError:
-        continue
-    if ts >= window_start:
+    if ts is not None and ts >= window_start:
         used += 1
     if row.get('seged') == 'agy-ghost' and str(row.get('ido', ''))[:10] == today:
         ghost_today += 1
 if ghost_today >= daily_ghost_limit:
     print('CAPPED_DAILY')
     sys.exit(3)
+if ghost_attempts_hour >= limit:
+    print('CAPPED_ATTEMPTS')
+    sys.exit(4)
 if used >= limit:
     print('CAPPED')
     sys.exit(2)
@@ -209,7 +222,13 @@ sys.exit(0)
 /**
  * Un-spends the SINGLE most recent, not-already-released reservation for this exact cardId (card
  * 5cb861e6): call this when the network call that followed a reserveGhostCallSlot() turned out to
- * be a retriable provider failure (HTTP 503), so it does not count against the shared hourly cap.
+ * be a retriable provider failure (HTTP 503), so it does not count against the SHARED hourly cap
+ * (freeing room for other engines -- 'agy'/'agy-heavy' -- sharing that same budget). It does NOT
+ * re-open room for another agy-ghost attempt in the same hour: RESERVE_SCRIPT's own
+ * ghost_attempts_hour counts every agy-ghost reservation in the window regardless of whether it
+ * was later released, so a string of 503s still caps out at `limit` real network attempts per
+ * hour (Cybersec2 NO-GO F1, card 5cb861e6 comment 26900 -- the un-bounded version measured 40
+ * consecutive 503s granting 40 real calls instead of 5).
  * Safe to call even when there is nothing to release (returns false, nothing is written twice).
  * Same flock as reserveGhostCallSlot -- the read-then-append here must not race a concurrent
  * reservation or release for the same cardId.

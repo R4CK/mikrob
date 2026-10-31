@@ -831,20 +831,22 @@ export interface RouteCoverage {
   missingCards: string[]
 }
 
-/**
- * Shell out to store/route-check-audit.sh --json (card 64f56f97, requirement 2: make the dispatch
- * route-verdict gap VISIBLE on the panel that already shows card-build-route.sh's own verdicts).
- * The audit is already soft-by-construction (never blocks, see that script's own header) and cheap
- * (a couple of sqlite3 queries against the live kanban db) -- the same cost class as bridgeActive()'s
- * per-request systemctl call below, so no caching layer is added here either.
- *
- * `available: false` covers every way the audit can fail to answer (missing sqlite3, missing db,
- * a non-JSON stdout) -- the panel must say "can't tell you" rather than render zeros that look like
- * a clean 100% coverage.
- */
-export async function readRouteCoverage(
-  script = ROUTE_CHECK_AUDIT_SCRIPT,
-): Promise<{ coverage: RouteCoverage | null; available: boolean }> {
+type RouteCoverageResult = { coverage: RouteCoverage | null; available: boolean }
+
+// Card 97f9ca58 (WhiteHat GO 26845, F2): the comment this replaces assumed the audit was cheap
+// (a couple of sqlite3 queries); measured on live data it is 11.5-12.1s wall / ~10 CPU-s (888
+// route-log lines, 1426 events) against this handler's own 10s timeout -- the GET times out,
+// the panel flaps between available and not, and the Local-LLM page blocks ~10s on load since
+// it awaits this fetch first. A 60s stale-while-revalidate cache with a single in-flight run:
+// a caller inside the window gets the last good (or last known-unavailable) answer immediately;
+// once it is stale, the FIRST caller after that triggers one background refresh and still gets
+// the stale value back (not blocked on it), every other concurrent caller piggybacks on that
+// same in-flight refresh instead of starting its own.
+const ROUTE_COVERAGE_CACHE_TTL_MS = 60_000
+let routeCoverageCache: { result: RouteCoverageResult; fetchedAt: number } | null = null
+let routeCoverageInFlight: Promise<RouteCoverageResult> | null = null
+
+async function fetchRouteCoverage(script: string): Promise<RouteCoverageResult> {
   const r = await runCmd('bash', [script, '--json'], { timeoutMs: 10_000 })
   if (r.timedOut || r.code !== 0) {
     logger.warn({ code: r.code, stderr: r.stderr.slice(0, 500) }, 'readRouteCoverage: audit script failed')
@@ -877,6 +879,43 @@ export async function readRouteCoverage(
       missingCards: cards,
     },
   }
+}
+
+function refreshRouteCoverageCache(script: string): Promise<RouteCoverageResult> {
+  if (!routeCoverageInFlight) {
+    routeCoverageInFlight = fetchRouteCoverage(script)
+      .then((result) => {
+        routeCoverageCache = { result, fetchedAt: Date.now() }
+        return result
+      })
+      .finally(() => {
+        routeCoverageInFlight = null
+      })
+  }
+  return routeCoverageInFlight
+}
+
+/**
+ * `available: false` covers every way the audit can fail to answer (missing sqlite3, missing db,
+ * a non-JSON stdout) -- the panel must say "can't tell you" rather than render zeros that look like
+ * a clean 100% coverage.
+ */
+export async function readRouteCoverage(script = ROUTE_CHECK_AUDIT_SCRIPT): Promise<RouteCoverageResult> {
+  if (routeCoverageCache && Date.now() - routeCoverageCache.fetchedAt < ROUTE_COVERAGE_CACHE_TTL_MS) {
+    return routeCoverageCache.result
+  }
+  if (routeCoverageCache) {
+    void refreshRouteCoverageCache(script)
+    return routeCoverageCache.result
+  }
+  return refreshRouteCoverageCache(script)
+}
+
+// Test-only: the cache above is module-level by design, so tests that need a fresh script
+// result per case (not the previous case's cached one) must clear it between cases.
+export function __resetRouteCoverageCacheForTests(): void {
+  routeCoverageCache = null
+  routeCoverageInFlight = null
 }
 
 async function bridgeActive(): Promise<boolean> {

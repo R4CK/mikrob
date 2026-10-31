@@ -22594,6 +22594,47 @@ Négy LOW ugyanezen a kártyán zárva: (1) a POST sorrendje megfordult (előbb 
 
 **Reference:** card 340585f6 (parent bf03aaa1), `agents/elemzo/reports/e060a794-installed-repo-inventory.md`, `store/skill-role-map.json` (card d2d47a92), `store/token-opt-adoption-report.sh` + `.selftest.sh`, `src/web/agent-scaffold.ts` (`generateClaudeMd`), `src/__tests__/agent-scaffold-claude-md-prompt.test.ts`.
 
+## 2026-10-30: 97f9ca58 -- kanban route-dispatch spawn cap/dedupe + route-coverage audit cache (WhiteHat GO 26845)
+
+**Döntés:** a 64f56f97-ben landolt szerver-oldali `card-build-route.sh` kikényszerítés (`src/web/kanban-route-dispatch.ts`) két MEDIUM elérhetőségi hiányt kapott: (1) nem volt korlát/sor/dedup a gyerek-process indításon -- mérve (stubbolt alsó becslés) 120 egymást követő átmenet +709 OS processt indított, és egy PUT `in_progress -> planned -> in_progress` ugyanazt a kártyát újra felfegyverzi; (2) a `/api/local-llm/routing` végpont minden GET-nél lefuttatta a `route-check-audit.sh --json`-t gyorsítótár nélkül, élő adaton mérve 11.5-12.1s, a handler saját 10s timeout-ja fölött -- a panel vakargatott, a Local-LLM oldal ~10s-et blokkolt betöltéskor.
+
+Javítás: (1) per-cardId in-flight Set (ugyanaz a kártya, amíg fut, nem indul újra), globális 3-as konkurencia-plafon 20-elemes korlátos sorral (felette dob+logol), a 60s timeout mostantól a TELJES process-csoportot öli (`spawn` + `detached:true` + `process.kill(-pid)`) -- mérve ÉLŐBEN, hogy az `execFile` ebben a sandboxban csendben NEM adja át a `detached` opciót (a gyerek pgid-je a szülőével egyezett, nem saját), ezért `spawn`-ra váltottunk; (2) 60s stale-while-revalidate cache egyetlen in-flight frissítéssel a `readRouteCoverage()`-ben; emellett a `route-check-audit.sh` saját per-log-sor `date -d` forkja gawk `mktime()`-ra váltott (in-process, nincs fork) -- mérve: azonos élő adaton 8.4s -> 5.0s, bájt-azonos JSON kimenet.
+
+Három LOW is zárva ugyanitt: (3) a PUT-útvonal `specTemplatePrevStatus==='planned'` őre eddig csak a `/move` oldalon volt pin-elve tesztben -- most mindkét hívási pontra van regressziós teszt; (5) `fireCardBuildRoute` törzse try/catch-be került, hogy egy szinkron spawn-hiba ne szökjön ki a kártya-írás után.
+
+**Mit ellenőriztem:** mind az öt javítást egyenként mutáció-teszteltem (visszavonás pirosra fordítja a pin-tesztet, visszaállítás zöldre). A konkurencia-plafont élőben mértem: egy stubbolt (saját STORE_DIR-re mutató, csak a config/logger import csere) másolaton 15 egymást követő hívás valós OS-process-számlálással max. 3 egyidejű futást mutatott. A process-csoport-ölést élőben mértem: egy belső subshell is eltűnt a 2s timeout-nál (rövidített timeout a teszthez), nem csak a top bash. A cache-et élő-sebességű stubbal (2s sleep) mértem: 1. hívás ~2000ms, az 5 további melegített hívás 0ms. A `route-check-audit.sh` fix kimenetét az ÉLŐ `claudeclaw.db` + `card-build-route.log` egy másolatán futtattam a régi és az új verzióval -- a JSON kimenet bájt-azonos volt.
+
+**Ki döntött:** WhiteHat (GO 26845, a hibák azonosítása + a javítási irányok javaslata), MikroB (dispatch, msg 15853), backend (végrehajtás).
+
+**Hivatkozás:** kártya 97f9ca58, szülő 64f56f97, commit ca8804272, `src/web/kanban-route-dispatch.ts`, `src/web/routes/local-llm.ts`, `store/route-check-audit.sh`.
+
+## 2026-10-31: 5cb861e6 -- Cybersec NO-GO F1 fix (ghost_attempts_hour cap on 503-release budget bypass)
+
+**Döntés:** Cybersec NO-GO (comment 26900, msg 15865) on the daytime-mode build above: `releaseGhostCallSlot()` un-spent both the hourly and daily budget on every HTTP 503, with no ceiling, so a provider outage let every eligible drafted card make a real Gemini call per tick (measured: 40 consecutive 503s = 40 granted calls vs 5 without the release). Two-part fix, landed separately per MikroB's sequencing: (1) `scripts/install-guard-timers.sh` pulled `gemini-day-draft-tick` out of the unconditional enable loop into a `GEMINI_DAY_DRAFT_TICK_ENABLE=1`-gated block, off by default (Gate-SHA c21b4b625); (2) `src/gemini-ghost-budget.ts` RESERVE_SCRIPT gains a `ghost_attempts_hour` gross counter -- every `agy-ghost` reservation attempt in the hourly window, regardless of later release status -- capped (`CAPPED_ATTEMPTS`) ahead of the existing `used`/`ghost_today` checks. `reserveGhostCallSlot()` returning false already maps to `hourly_cap_reached` in the existing sweep-stop logic, so no change was needed in `gemini-orchestrator-draft-review.ts`/`gemini-orchestrator.ts`.
+
+**Mit ellenőriztem:** new test "40 consecutive 503s (reserve then immediately release) grant at most 5 real calls in the hour" asserts `granted === 5` (red on the pre-fix release logic). Two pre-fix tests pinning the exploitable behavior rewritten. `gemini-ghost-budget.test.ts` 31/31 passed; `gemini-orchestrator.test.ts` + `gemini-orchestrator-draft-review.test.ts` 154/154 passed; `lint-ratchet.sh`: no rule got worse, 443 findings baseline holds. All measured on the merge result (Gate-SHA fc8a622be), not a pre-merge branch.
+
+**Ki döntött:** Cybersec (NO-GO + finding), MikroB (dispatch msg 15865/15893, sequencing), backend2 (fix + tests).
+
+**Hivatkozás:** kártya 5cb861e6, `src/gemini-ghost-budget.ts`, `src/__tests__/gemini-ghost-budget.test.ts`, `scripts/install-guard-timers.sh`.
+
+## 2026-10-31 08:14 -- Correction: 97f9ca58 Hivatkozás sor rossz commitot idézett (QA2 lelet, msg 15911/15912, comment 27028)
+
+**Döntés:** a fenti 2026-10-30 bejegyzés (97f9ca58, kanban route-dispatch cap/dedupe + route-coverage
+audit cache) `Hivatkozás` sora `commit ca8804272`-t idéz. Ez egy ELHAGYOTT, rebase-előtti objektum --
+ellenőrizve `git merge-base --is-ancestor ca8804272 b5a73e68a` (exit 1, nem ős) és
+`git cat-file -e ca8804272` (az objektum lokálisan létezik, de elérhetetlen semelyik élő ágból). A
+VALÓDI, landolt commitok: `80f394537` (F1-F5 implementáció + DECISIONS-bejegyzés) és `5d5130e7e`
+(lint-ratchet javítás a wiring-teszt mock-szignatúráján), mindkettő ellenőrizve ős-e
+(`git merge-base --is-ancestor <sha> b5a73e68a`, mindkettőre exit 0). A helyes Hivatkozás sor:
+
+**Hivatkozás (javított):** kártya 97f9ca58, szülő 64f56f97, commit 80f394537 + 5d5130e7e (landolva
+`b5a73e68aea24d0bd31e6f3fabfb8e643345a7dc`-ben), `src/web/kanban-route-dispatch.ts`,
+`src/web/routes/local-llm.ts`, `store/route-check-audit.sh`.
+
+**Ki döntött:** QA2 (lelet, komment 27028, QA2 PASS stands), MikroB (msg 15912, javítás kiosztása),
+backend (a javítás).
+
 ## 2026-10-31 09:22 -- 3adca529: per-worktree git identity (extensions.worktreeConfig + user.name/user.email)
 
 **Kontextus:** Forrás: fullstack (69699ab7 kapcsán, msg 10104), MikroB igazolta: a megosztott `/home/neon/marveen/.git/config` `[user]` szekciója (`user.name=s`, `user.email=s@s`) minden `marveen-agent-worktrees/*` worktree-vel OSZTOTT volt, mert `extensions.worktreeConfig` nem volt beállítva -- bármely ügynök `git config user.name ...` hívása (flag nélkül) a repository-szintű configba írt, és AZONNAL minden más worktree KÖVETKEZŐ commitjának szerzőjét is átírta, mert git a `user.*`-t a repository config-ból olvassa, ha nincs worktree-scope-olt felülírás.
@@ -22609,6 +22650,16 @@ Négy LOW ugyanezen a kártyán zárva: (1) a POST sorrendje megfordult (előbb 
 **Ki döntött:** a design Peti igazolt ténymegállapítása (fullstack 69699ab7/msg 10104 nyomán), MikroB dispatch (msg 15939, a landoló script identitásának explicit megtartása az ő kérdése volt, itt megválaszolva), DevO (fullstack) a megvalósítás és a mikrob-identitás-megtartás döntése.
 
 **Hivatkozás:** kártya 3adca529 (forrás 69699ab7, msg 10104), `store/agent-worktree-marveen.sh`, `store/agent-worktree.sh`, `store/marveen-land.sh` (változatlan), kártya 420ef7b4 (a hooksPath-izoláció mintája, amit ez a kártya a user.name/user.email-re terjeszt ki).
+
+## 2026-10-31: d9f33249 -- update.sh finalizer elif/no-scope fallback survival under non-process KillMode
+
+**Döntés:** QA2 (comment 27050) és cybersec2 (comment 27053) measured that under `KillMode=control-group`/`mixed` (the systemd default), the elif/plain-setsid fallback in update.sh's finalizer launcher does not survive a `systemctl --user restart` -- the earlier REVIEW (27042) had only measured the `KillMode=process` case, which is not what the card asked. MikroB (msg 15921/15925) required the fallback to route through the scope-protected mechanism whenever possible, and an explicit, loud warning (not a guessed workaround) for the residual case where no scope is possible at all. Root cause found: the `${XDG_RUNTIME_DIR:-default}` fallback only applies when that env var is unset/empty; a caller that sets it to a WRONG, non-empty value skips the fallback, fails the `-d` directory check, and falls into the unprotected elif branch even when a working runtime dir exists and the scope-wrapped launch would succeed. Fix: re-derive the real default (`/run/user/$(id -u)`) whenever the supplied value is not a usable directory, so the scope-protected branch runs whenever it genuinely can. For the truly-impossible residual case (no scope helper binary at all -- real macOS/launchd or non-systemd Linux), both remaining plain-setsid fallbacks now log a loud WARNING naming the KillMode dependency instead of silently assuming safety.
+
+**Mit ellenőriztem:** measured on a real transient systemd --user unit, `KillMode=control-group` (the default), with an identical bogus `XDG_RUNTIME_DIR` on both sides: the pre-fix finalizer-launch code's child was killed by the restart (`kill -0` rc=1); the fixed code's child, under the same restart, survived in its own scope (`kill -0` rc=0). New regression test `update-finalize-xdg-run-redrive.test.ts` (3 cases) mutation-verified: red against the pre-fix code, green against the fix. `update-finalize-launch.test.ts` (5) + `update-unit-maintenance-order.test.ts` + `update-preflight.test.ts` unaffected, 102/102 green total. All measured on the landed merge result (Gate-SHA 322f7e140a8620aaa405e232f7e91ff6cfa8f4df), not a pre-merge branch. Never restarted the live dashboard/channels units; never ran update.sh live.
+
+**Ki döntött:** QA2 (FAIL + measurement), cybersec2 (confirming measurement + GO on scope-deferred option), MikroB (dispatch msg 15921/15925, required the structural fix over the log-only option), backend2 (fix + test).
+
+**Hivatkozás:** kártya d9f33249, `update.sh`, `src/__tests__/update-finalize-xdg-run-redrive.test.ts`.
 
 ## 2026-10-31 10:15 -- cdcd0f5b: jail-net-proxy ugynok-attribucio + verziokovetett riport-fajl (8ffa0c8a terv, 1-2. lepes)
 

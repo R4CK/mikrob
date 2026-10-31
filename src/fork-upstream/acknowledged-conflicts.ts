@@ -3168,8 +3168,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // an imported/created agent named 'hanna' cannot send AS hanna. The real residual is a NAME
   // COLLISION (messages TO 'hanna' route to the voice mailbox; create/import do not refuse the
   // name) -- a separate, LOW follow-up card for reserved agent NAMES on the create/import/scaffold
-  // paths, not a fix to isReservedSenderId/RESERVED_SENDER_IDS (widening that would 403 the
-  // legitimate voice relay).
+  // paths (card 13999f11, opened for exactly this gap), not a fix to
+  // isReservedSenderId/RESERVED_SENDER_IDS (widening that would 403 the legitimate voice relay).
   'src/web/fleet-transfer.ts':
     "KEEP FORK -- isReservedSenderId (the 'fourth door', card b46a4b7e) closes a real self-" +
     'escalation route upstream names differently (RESERVED_AGENT_IDS/VOICECHANNELID1022). Traced ' +
@@ -3178,7 +3178,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "full message-send path, card 417e2343 comment 26763: POST /api/messages 403s from='hanna' " +
     'unless an out-of-band allowlisted device key is presented, card 7503bb31). Do NOT widen ' +
     'RESERVED_SENDER_IDS for this -- open a separate LOW code card for reserved agent NAMES on the ' +
-    'create/import/scaffold paths instead.',
+    'create/import/scaffold paths instead (card 13999f11).',
   'src/__tests__/fleet-transfer.test.ts':
     "KEEP FORK -- pins the 'fourth door' fix in src/web/fleet-transfer.ts above.",
   // approvals.ts: fork's consumeEmailSendApproval + its separate generic consumeApproval (db.ts,
@@ -3193,7 +3193,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'consumeCategoryApproval is EQUALLY hash-bound (content_hash IS ? in its UPDATE), so adopting ' +
     'it is not a security upgrade -- it would only add exclusion-list machinery ' +
     '(SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) no current fork caller needs ' +
-    '(WhiteHat, card 417e2343 comment 26763, confirmed by reading upstream/develop:src/db.ts).',
+    '(verified by backend3, re-verified by WhiteHat at 56d302fd1, card 417e2343 comment 26763, ' +
+    'confirmed by reading upstream/develop:src/db.ts).',
   'src/__tests__/approvals-delivery.test.ts':
     'KEEP FORK -- pins the current single-arg notifyOwner(approval) call shape matching ' +
     'src/web/routes/approvals.ts above.',
@@ -5005,6 +5006,90 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "a plugin process carrying BOTH markers but failing the argv-shape check is spared...' and " +
       "'(vi) card b89fbac6, RedHat NO-GO 23465: a non-bun/node process whose argv literally contains " +
       "server.ts is spared...') fail red the moment it happens, independent of this anchor.",
+  },
+
+  // Card f1e7d14c (417e2343 follow-up, WhiteHat F1 MEDIUM, comment 26936): the mentionsRefusal
+  // regex above (card 66ad1f95 describe block) does not match the "KEEP FORK" / "MERGE" phrasing
+  // these six closed self-escalation entries use, so none of them were ever in the `refusing` set
+  // the coverage-ratchet test enforces -- an upstream history merge could reverse any of them with
+  // nothing firing. DELIBERATELY NOT widening mentionsRefusal to also match /KEEP FORK/i: that
+  // phrase appears in 26 entries across this file, most with no checkable production fact (style/
+  // naming parity, test-file-only decisions) -- pulling all 26 into the coverage ratchet would
+  // force a full backlog triage far outside this card's named scope, for files nobody has reported
+  // a reversal risk on. Instead, each of the six self-escalation paths below gets its OWN
+  // ACKNOWLEDGED_FORK_ANCHORS entry. That is enforced UNCONDITIONALLY by "every declared anchor
+  // holds on the CURRENT tree" (this file, describe block above) -- that test iterates
+  // Object.entries(ACKNOWLEDGED_FORK_ANCHORS) directly and does not consult mentionsRefusal at all,
+  // so these six are protected against the exact reversal-on-history-merge failure mode this card
+  // closes, without touching the regex or its 26-entry blast radius. Mutation-verified (see REVIEW
+  // on card f1e7d14c): deleting each needle from its file turns "every declared anchor holds on the
+  // CURRENT tree" red; restoring it turns the suite green again.
+  'src/web/routes/auth.ts': {
+    needle: "const CREDENTIAL_MINT_KINDS = ['session'] as const",
+    file: 'src/web/routes/auth.ts',
+    expect: 'present',
+    because:
+      'card 49960046 (RedHat 17005 X1/X3) retired the HTTP break-glass path -- both creating the ' +
+      "first dashboard user and resetting a password used to accept the shared fleet bearer, which " +
+      'could mint itself a session and self-escalate (chain 68254bd7/9655494c). Both mint paths now ' +
+      "gate on CREDENTIAL_MINT_KINDS = ['session'] only. Upstream still lets the bearer create the " +
+      "first user over HTTP; adopting that reopens the closed self-escalation chain. If this const " +
+      "widens to include a bearer-reachable kind, or the check it gates is removed, that path is " +
+      "reopened silently.",
+  },
+  'src/web/routes/security.ts': {
+    needle: "const ENROLL_KINDS = ['session'] as const",
+    file: 'src/web/routes/security.ts',
+    expect: 'present',
+    because:
+      "ENROLL_KINDS = ['session'] excludes 'token' from bridge-enroll, one of the three self-" +
+      'escalation routes the 68254bd7 chain closed -- a shared bearer could otherwise mint itself a ' +
+      "device credential through this door. Upstream's ['token', 'session'] reopens it. If 'token' " +
+      "is added back to this array, the door is open again.",
+  },
+  'src/web/fleet-transfer.ts': {
+    needle: "isReservedSenderId(String(agent.name ?? ''))",
+    file: 'src/web/fleet-transfer.ts',
+    expect: 'present',
+    because:
+      "isReservedSenderId (the 'fourth door', card b46a4b7e) is the fork's own self-escalation " +
+      "closure upstream names differently (RESERVED_AGENT_IDS/VOICECHANNELID1022) -- it refuses an " +
+      'imported/created agent whose name collides with a reserved system sender id. If this call is ' +
+      "dropped from agent creation/import validation, the fourth door reopens. (Residual name-" +
+      "collision hygiene gap for VOICE_CHANNEL_AGENT_ID = 'hanna', traced NOT privilege-escalating " +
+      "by WhiteHat comment 26763, tracked separately by card 13999f11 -- not a reason to touch this " +
+      "call.)",
+  },
+  'src/web/routes/fleet.ts': {
+    needle: "const FLEET_IMPORT_APPROVAL_CATEGORY = 'fleet_import_apply'",
+    file: 'src/web/routes/fleet.ts',
+    expect: 'present',
+    because:
+      'FLEET_IMPORT_APPROVAL_CATEGORY gates apply=true fleet imports behind a human-resolved, ' +
+      'payload-hash-bound, single-use approval -- the core deliverable of the 68254bd7 security-fix ' +
+      'chain for this endpoint (WhiteHat confirmed the gate in the code, card 417e2343 comment ' +
+      '26763). If this const or the approval check it gates is removed, apply=true fleet import ' +
+      'reopens as an unapproved bypass.',
+  },
+  'src/web/routes/daily-log.ts': {
+    needle: 'agentKeyToAgentId',
+    file: 'src/web/routes/daily-log.ts',
+    expect: 'present',
+    because:
+      "agentKeyToAgentId (../auth-device-keys.js) resolves the authenticated agent id for device-" +
+      "key auth here, core to this fork's auth system (card debba303 / WhiteHat2 X1: device-key " +
+      "identity must override a caller-supplied ?agent= on reads, not the other way round). " +
+      "Upstream's containsSuspiciousContent is a different, unbuilt content-screening feature, not " +
+      "a competing fix. If this call is dropped, the ?agent= override gap reopens.",
+  },
+  'src/web/routes/recall.ts': {
+    needle: 'agentKeyToAgentId',
+    file: 'src/web/routes/recall.ts',
+    expect: 'present',
+    because:
+      'same identity-override gap as src/web/routes/daily-log.ts above (card debba303 / WhiteHat2 ' +
+      "X1) -- agentKeyToAgentId must resolve the device-key identity here too. Upstream's " +
+      'parseDateExpr is a different, unbuilt date-expression feature, not a competing fix.',
   },
 }
 

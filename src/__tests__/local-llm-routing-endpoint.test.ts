@@ -8,7 +8,7 @@
 // files under STORE_DIR (routing config, active-model file, the decision log), so a plain import
 // would read/depend on the LIVE install's actual state instead of a controlled fixture.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { vi } from 'vitest'
@@ -30,6 +30,7 @@ const {
   readRoutingOverrides,
   readRecentDecisions,
   readRouteCoverage,
+  __resetRouteCoverageCacheForTests,
   RoutingConfigUnreadableError,
   tryHandleLocalLlm,
 } = await import('../web/routes/local-llm.js')
@@ -53,6 +54,7 @@ function writeFakeAudit(json: string) {
 
 beforeEach(() => {
   rm(ROUTING_FILE, MODEL_FILE, LOG_FILE, AUDIT_SCRIPT)
+  __resetRouteCoverageCacheForTests()
 })
 
 afterAll(() => {
@@ -218,6 +220,73 @@ describe('readRouteCoverage', () => {
       reopenDispatches: 2, reopenMissing: 0, reopenCoveragePct: 100,
       excludedParentCount: 5, nullActorMissingCount: 2, missingCards: ['a', 'b', 'c'],
     })
+  })
+})
+
+// --- readRouteCoverage caching (card 97f9ca58, WhiteHat GO 26845 F2) --------------------------------
+// Live measurement showed the audit script itself takes 11.5-12.1s on real data, well past the
+// handler's own 10s timeout -- these tests pin the cache's SHAPE (TTL hit, stale-while-revalidate,
+// single in-flight run) with a near-instant fake script, independent of the script's own speed.
+
+function writeCountingAudit(countFile: string, json: string) {
+  writeFileSync(
+    AUDIT_SCRIPT,
+    `#!/usr/bin/env bash\necho -n x >> "${countFile}"\ncat <<'EOF'\n${json}\nEOF\n`,
+  )
+  chmodSync(AUDIT_SCRIPT, 0o755)
+}
+
+describe('readRouteCoverage caching (card 97f9ca58)', () => {
+  const COUNT_FILE = join(tmpRoot, 'audit-run-count')
+
+  beforeEach(() => {
+    rm(COUNT_FILE)
+  })
+
+  function runCount(): number {
+    try {
+      return readFileSync(COUNT_FILE, 'utf-8').length
+    } catch {
+      return 0
+    }
+  }
+
+  it('a repeat call within the TTL is served from cache -- RED (count 2) without the cache', async () => {
+    writeCountingAudit(COUNT_FILE, JSON.stringify({ dispatches: 1, coverage_pct: 100 }))
+    const first = await readRouteCoverage(AUDIT_SCRIPT)
+    const second = await readRouteCoverage(AUDIT_SCRIPT)
+    expect(second).toEqual(first)
+    // Wait past any background refresh a wrongly-stale check might have kicked off -- a TTL hit
+    // must not re-run the script at all, not merely "return the old value while also re-running".
+    await new Promise((r) => setTimeout(r, 50))
+    expect(runCount()).toBe(1)
+  })
+
+  it('after the TTL, the caller still gets the stale value immediately (does not wait on the refresh)', async () => {
+    writeCountingAudit(COUNT_FILE, JSON.stringify({ dispatches: 1, coverage_pct: 100 }))
+    await readRouteCoverage(AUDIT_SCRIPT)
+    expect(runCount()).toBe(1)
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000)
+    writeCountingAudit(COUNT_FILE, JSON.stringify({ dispatches: 2, coverage_pct: 50 }))
+    const stale = await readRouteCoverage(AUDIT_SCRIPT)
+    // Served the OLD (stale) value synchronously from cache, not the new script output.
+    expect(stale.coverage?.dispatches).toBe(1)
+    nowSpy.mockRestore()
+    // Let the background refresh this call triggered finish before the next test's own
+    // counting starts -- otherwise it can land its 'x' in that test's freshly-truncated file.
+    await new Promise((r) => setTimeout(r, 50))
+  })
+
+  it('concurrent callers past the TTL trigger exactly ONE background refresh, not one each -- RED (2 runs) without the single in-flight guard', async () => {
+    writeCountingAudit(COUNT_FILE, JSON.stringify({ dispatches: 1, coverage_pct: 100 }))
+    await readRouteCoverage(AUDIT_SCRIPT)
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000)
+    writeCountingAudit(COUNT_FILE, JSON.stringify({ dispatches: 2, coverage_pct: 50 }))
+    await Promise.all([readRouteCoverage(AUDIT_SCRIPT), readRouteCoverage(AUDIT_SCRIPT), readRouteCoverage(AUDIT_SCRIPT)])
+    // Give the one allowed background refresh's microtask/IO chain a tick to land.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(runCount()).toBe(2) // 1 initial fetch + 1 refresh, never 3 refreshes for 3 callers
+    nowSpy.mockRestore()
   })
 })
 
