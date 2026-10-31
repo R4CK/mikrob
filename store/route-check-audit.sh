@@ -111,14 +111,19 @@ events="$(sqlite3 -separator '	' "$DB" \
 
 # Route verdicts. Field 1 is 'YYYY-MM-DD HH:MM:SS' local time, field 2 the card id ('-' for a
 # --text run, which belongs to no card and is skipped).
+# Card 97f9ca58 (WhiteHat F2): the old version forked a `date -d` subprocess for EVERY log line
+# to parse its timestamp -- measured 11.5-12.1s wall / ~10 CPU-s on 888 live lines. gawk's own
+# mktime() parses "YYYY MM DD HH MM SS" in-process, no fork, same local-time semantics as the
+# date(1) call it replaces (card-build-route.sh writes the log line with `date` in local time too).
 verdicts=""
 if [ -f "$LOG" ]; then
   verdicts="$(awk -F'\t' 'NF>=2 && $2 != "-" {
-      cmd = "date -d \"" $1 "\" +%s 2>/dev/null"
-      cmd | getline ts
-      close(cmd)
-      if (ts != "") print $2 "\t" ts
-      ts = ""
+      n = split($1, dt, " ")
+      if (n != 2) next
+      split(dt[1], ymd, "-")
+      split(dt[2], hms, ":")
+      ts = mktime(ymd[1] " " ymd[2] " " ymd[3] " " hms[1] " " hms[2] " " hms[3])
+      if (ts > 0) print $2 "\t" ts
     }' "$LOG" 2>/dev/null)"
 fi
 

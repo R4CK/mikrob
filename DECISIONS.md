@@ -22593,3 +22593,17 @@ Négy LOW ugyanezen a kártyán zárva: (1) a POST sorrendje megfordult (előbb 
 **Who decided:** Peti (12303, the underlying ask) + MikroB (scope narrowing, comments 24520/24523/24596/24600, citing e060a794) + DevO (fullstack, this card's implementation and the scope read-through).
 
 **Reference:** card 340585f6 (parent bf03aaa1), `agents/elemzo/reports/e060a794-installed-repo-inventory.md`, `store/skill-role-map.json` (card d2d47a92), `store/token-opt-adoption-report.sh` + `.selftest.sh`, `src/web/agent-scaffold.ts` (`generateClaudeMd`), `src/__tests__/agent-scaffold-claude-md-prompt.test.ts`.
+
+## 2026-10-30: 97f9ca58 -- kanban route-dispatch spawn cap/dedupe + route-coverage audit cache (WhiteHat GO 26845)
+
+**Döntés:** a 64f56f97-ben landolt szerver-oldali `card-build-route.sh` kikényszerítés (`src/web/kanban-route-dispatch.ts`) két MEDIUM elérhetőségi hiányt kapott: (1) nem volt korlát/sor/dedup a gyerek-process indításon -- mérve (stubbolt alsó becslés) 120 egymást követő átmenet +709 OS processt indított, és egy PUT `in_progress -> planned -> in_progress` ugyanazt a kártyát újra felfegyverzi; (2) a `/api/local-llm/routing` végpont minden GET-nél lefuttatta a `route-check-audit.sh --json`-t gyorsítótár nélkül, élő adaton mérve 11.5-12.1s, a handler saját 10s timeout-ja fölött -- a panel vakargatott, a Local-LLM oldal ~10s-et blokkolt betöltéskor.
+
+Javítás: (1) per-cardId in-flight Set (ugyanaz a kártya, amíg fut, nem indul újra), globális 3-as konkurencia-plafon 20-elemes korlátos sorral (felette dob+logol), a 60s timeout mostantól a TELJES process-csoportot öli (`spawn` + `detached:true` + `process.kill(-pid)`) -- mérve ÉLŐBEN, hogy az `execFile` ebben a sandboxban csendben NEM adja át a `detached` opciót (a gyerek pgid-je a szülőével egyezett, nem saját), ezért `spawn`-ra váltottunk; (2) 60s stale-while-revalidate cache egyetlen in-flight frissítéssel a `readRouteCoverage()`-ben; emellett a `route-check-audit.sh` saját per-log-sor `date -d` forkja gawk `mktime()`-ra váltott (in-process, nincs fork) -- mérve: azonos élő adaton 8.4s -> 5.0s, bájt-azonos JSON kimenet.
+
+Három LOW is zárva ugyanitt: (3) a PUT-útvonal `specTemplatePrevStatus==='planned'` őre eddig csak a `/move` oldalon volt pin-elve tesztben -- most mindkét hívási pontra van regressziós teszt; (5) `fireCardBuildRoute` törzse try/catch-be került, hogy egy szinkron spawn-hiba ne szökjön ki a kártya-írás után.
+
+**Mit ellenőriztem:** mind az öt javítást egyenként mutáció-teszteltem (visszavonás pirosra fordítja a pin-tesztet, visszaállítás zöldre). A konkurencia-plafont élőben mértem: egy stubbolt (saját STORE_DIR-re mutató, csak a config/logger import csere) másolaton 15 egymást követő hívás valós OS-process-számlálással max. 3 egyidejű futást mutatott. A process-csoport-ölést élőben mértem: egy belső subshell is eltűnt a 2s timeout-nál (rövidített timeout a teszthez), nem csak a top bash. A cache-et élő-sebességű stubbal (2s sleep) mértem: 1. hívás ~2000ms, az 5 további melegített hívás 0ms. A `route-check-audit.sh` fix kimenetét az ÉLŐ `claudeclaw.db` + `card-build-route.log` egy másolatán futtattam a régi és az új verzióval -- a JSON kimenet bájt-azonos volt.
+
+**Ki döntött:** WhiteHat (GO 26845, a hibák azonosítása + a javítási irányok javaslata), MikroB (dispatch, msg 15853), backend (végrehajtás).
+
+**Hivatkozás:** kártya 97f9ca58, szülő 64f56f97, commit ca8804272, `src/web/kanban-route-dispatch.ts`, `src/web/routes/local-llm.ts`, `store/route-check-audit.sh`.

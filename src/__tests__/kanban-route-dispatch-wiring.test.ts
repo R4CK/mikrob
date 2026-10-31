@@ -12,15 +12,23 @@
 //      covered by its selftest) -- this file is only about WHEN the call fires, not who is exempt
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Readable } from 'node:stream'
+import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 
-const { mockExecFile } = vi.hoisted(() => ({
-  mockExecFile: vi.fn((_cmd: string, _args: readonly string[], _opts: unknown, cb: (e: Error | null, out: string) => void) => {
-    queueMicrotask(() => cb(null, 'ONLINE'))
+// Card 97f9ca58: kanban-route-dispatch.ts now calls spawn(), not execFile() (execFile silently
+// drops the `detached` option in this environment -- see that file's own header). The fake child
+// here emits 'exit' on the next microtask, mirroring the old queueMicrotask(cb) timing.
+const { mockSpawn } = vi.hoisted(() => ({
+  mockSpawn: vi.fn<(cmd: string, args: readonly string[], opts: unknown) => EventEmitter & { pid: number; stdout: EventEmitter }>(() => {
+    const child = new EventEmitter() as EventEmitter & { pid: number; stdout: EventEmitter }
+    child.pid = 12345
+    child.stdout = new EventEmitter()
+    queueMicrotask(() => child.emit('exit', 0, null))
+    return child
   }),
 }))
 
-vi.mock('node:child_process', () => ({ execFile: mockExecFile }))
+vi.mock('node:child_process', () => ({ spawn: mockSpawn }))
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -46,6 +54,7 @@ vi.mock('../web/agent-process.js', async (importOriginal) => ({
 
 import { initDatabase, createKanbanCard, getDb } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
+import { __resetRouteDispatchStateForTests } from '../web/kanban-route-dispatch.js'
 
 async function call(method: string, path: string, body: unknown): Promise<number> {
   const req = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
@@ -67,14 +76,15 @@ const move = (id: string, status: string, actor?: string) =>
   call('POST', `/api/kanban/${id}/move`, { status, sort_order: 0, actor, force: true })
 
 function routeCalls(): string[] {
-  return mockExecFile.mock.calls
-    .filter((c) => String(c[1]).includes('card-build-route.sh') || (c[1] as string[]).some((a) => String(a).includes('card-build-route.sh')))
+  return mockSpawn.mock.calls
+    .filter((c) => (c[1] as string[]).some((a) => String(a).includes('card-build-route.sh')))
     .map((c) => (c[1] as string[])[1]!)
 }
 
 beforeEach(() => {
-  mockExecFile.mockClear()
+  mockSpawn.mockClear()
   initDatabase(':memory:')
+  __resetRouteDispatchStateForTests()
 })
 
 describe('card-build-route.sh enforcement at the kanban write path (card 64f56f97)', () => {
@@ -93,23 +103,36 @@ describe('card-build-route.sh enforcement at the kanban write path (card 64f56f9
   it('a gate-FAIL reopen (waiting -> in_progress) does NOT re-fire card-build-route.sh', async () => {
     createKanbanCard({ id: 'routecard3', title: 'Reopen case', assignee: 'dex' })
     await move('routecard3', 'in_progress', 'dex')
-    mockExecFile.mockClear()
+    mockSpawn.mockClear()
     getDb().prepare("UPDATE kanban_cards SET status = 'waiting' WHERE id = ?").run('routecard3')
     await move('routecard3', 'in_progress', 'dex')
     expect(routeCalls()).not.toContain('routecard3')
   })
 
+  it('a gate-FAIL reopen via PUT (waiting -> in_progress) does NOT re-fire it either (card 97f9ca58 F3, pins mutant M1: dropping the planned-only PUT guard makes this RED)', async () => {
+    createKanbanCard({ id: 'routecard3b', title: 'Reopen case via PUT', assignee: 'dex' })
+    await move('routecard3b', 'in_progress', 'dex')
+    mockSpawn.mockClear()
+    getDb().prepare("UPDATE kanban_cards SET status = 'waiting' WHERE id = ?").run('routecard3b')
+    expect(await put('routecard3b', { status: 'in_progress', actor: 'dex', force: true })).toBe(200)
+    expect(routeCalls()).not.toContain('routecard3b')
+  })
+
   it('a card left in in_progress (no status change) does not re-fire it', async () => {
     createKanbanCard({ id: 'routecard4', title: 'No-op edit', assignee: 'dex' })
     await move('routecard4', 'in_progress', 'dex')
-    mockExecFile.mockClear()
+    mockSpawn.mockClear()
     expect(await put('routecard4', { title: 'No-op edit, renamed' })).toBe(200)
     expect(routeCalls()).not.toContain('routecard4')
   })
 
   it('never blocks or fails the move even if the script invocation errors', async () => {
-    mockExecFile.mockImplementationOnce((_c, _a, _o, cb: (e: Error | null, out: string) => void) => {
-      queueMicrotask(() => cb(new Error('boom'), ''))
+    mockSpawn.mockImplementationOnce(() => {
+      const child = new EventEmitter() as EventEmitter & { pid: number; stdout: EventEmitter }
+      child.pid = 54321
+      child.stdout = new EventEmitter()
+      queueMicrotask(() => child.emit('error', new Error('boom')))
+      return child
     })
     createKanbanCard({ id: 'routecard5', title: 'Script fails', assignee: 'dex' })
     expect(await put('routecard5', { status: 'in_progress' })).toBe(200)
