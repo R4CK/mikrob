@@ -114,19 +114,22 @@ $ExpectedSignerThumbprint = ''
 # implemented; Test-DownloadHostIsPinned fails closed while this is empty.
 $ExpectedDownloadHost = ''
 
-# F1: dashboard API the WSL-side trigger script also calls, and the SAME category/window
-# convention it uses (store/gpu-driver-silent-install-trigger.sh) -- the approval is a flotta-wide
-# resource, not scoped to one side of the WSL/Windows boundary.
+# F1 (card 2a80c6cb): scoped token for this category ONLY. This is NOT the shared fleet
+# .dashboard-token -- that file must NEVER be placed in C:\ProgramData\MikroB-Drivers. The scoped
+# token is provisioned separately (per-agent token plan, card 3fb0ef97) and is valid for
+# /api/approvals?category=gpu-driver-silent-install reads and /api/approvals/:id/consume-oneshot
+# calls only. gpu-driver-install-setup.ps1 Phase 2 verifies the ACL is narrowed (SYSTEM+Admin,
+# no Users) BEFORE placing this token.
 $ApprovalApiBase = 'http://localhost:3420'
 $ApprovalCategory = 'gpu-driver-silent-install'
 $ApprovalWindowSeconds = 3600
-# Token file: NOT committed, must be placed by hand alongside this script in C:\ProgramData\MikroB-Drivers
-# (same shared bearer the WSL trigger script already reads from store/.dashboard-token -- there is
-# no separate Windows-side secret to provision, only to copy once, by hand, like the script itself).
-$DashboardTokenPath = Join-Path $PSScriptRoot '.dashboard-token'
+$GpuDriverTokenPath = Join-Path $PSScriptRoot 'gpu-driver-approval.token'
 # F1: this script's OWN used-approval marker, independent of the WSL trigger's state file (see
 # file header) -- a direct schtasks bypass never touches the WSL side's state.
 $UsedApprovalsPath = Join-Path $PSScriptRoot 'gpu-driver-install-used-approvals.json'
+# F3: mutex name for atomic check-and-record (prevents concurrent schtasks runs consuming
+# the same approval independently).
+$ApprovalMutexName = 'Global\MikroB-GPU-Driver-ApprovalConsume'
 
 function Write-Log {
     param([string]$Message)
@@ -218,79 +221,162 @@ function Test-AuthenticodeIsNvidia {
     return $true
 }
 
-# F3: pins the download URL's host before any download is attempted. Not yet called from the main
-# block below because the download step itself is not wired yet (see file header TODO) -- added
-# now so the card that wires the download finds the guardrail already in place, same philosophy
-# as this file's existing fail-closed-by-default TODOs.
+# F4 (card 2a80c6cb): pins the download URL before any download is attempted.
+# Checks: (a) HTTPS-only, (b) INITIAL host matches pinned $ExpectedDownloadHost, (c) follows
+# redirects to the FINAL URI and re-checks the host (a cdn.geforce.com redirect from
+# international.download.nvidia.com is a known pattern; the final host must also be pinned),
+# (d) certificate public-key pin ($ExpectedCertPublicKeyPin, UNVERIFIED placeholder -- empty
+# means fail-closed, same convention as $ExpectedSignerThumbprint above). Not yet called from
+# the main block because the download step itself is not wired yet (see file header TODO).
+#
+# $ExpectedCertPublicKeyPin format: base64(SHA256(SubjectPublicKeyInfo DER bytes)) -- the
+# standard HPKP / curl --pinnedpubkey format. Populate with the real pin before first real run.
+$ExpectedCertPublicKeyPin = ''
+
 function Test-DownloadHostIsPinned {
     param([Parameter(Mandatory)][string]$Url)
     if ([string]::IsNullOrEmpty($ExpectedDownloadHost)) {
         Write-Log "download-host: FAIL-CLOSED -- `$ExpectedDownloadHost is not yet populated (see file header TODO) -- refusing $Url"
         return $false
     }
+    # (a) HTTPS-only: reject any non-https URL before making any network call.
     try {
-        $urlHost = ([Uri]$Url).Host
+        $parsedUri = [Uri]$Url
     } catch {
         Write-Log "download-host: could not parse '$Url' as a URL -- refusing"
         return $false
     }
-    if ($urlHost -ne $ExpectedDownloadHost) {
-        Write-Log "download-host: '$urlHost' does not match pinned '$ExpectedDownloadHost' -- refusing $Url"
+    if ($parsedUri.Scheme -ne 'https') {
+        Write-Log "download-host: '$Url' is not https -- refusing (only https downloads allowed)"
         return $false
     }
-    return $true
+    # (b) Initial host check.
+    if ($parsedUri.Host -ne $ExpectedDownloadHost) {
+        Write-Log "download-host: initial host '$($parsedUri.Host)' does not match pinned '$ExpectedDownloadHost' -- refusing $Url"
+        return $false
+    }
+    # (c) Follow redirects and re-check the FINAL URI host (cdn.geforce.com redirect pattern).
+    try {
+        $resp = Invoke-WebRequest -Uri $Url -Method Head -MaximumRedirection 10 -UseBasicParsing `
+            -TimeoutSec 15 -ErrorAction Stop
+        $finalHost = ([Uri]$resp.BaseResponse.ResponseUri.ToString()).Host
+    } catch {
+        Write-Log "download-host: FAIL-CLOSED -- redirect-follow HEAD call failed: $_ -- refusing $Url"
+        return $false
+    }
+    if ($finalHost -ne $ExpectedDownloadHost) {
+        Write-Log "download-host: final (post-redirect) host '$finalHost' does not match pinned '$ExpectedDownloadHost' -- refusing $Url"
+        return $false
+    }
+    # (d) Certificate public-key pin (fail-closed while placeholder is empty).
+    if ([string]::IsNullOrEmpty($ExpectedCertPublicKeyPin)) {
+        Write-Log "download-host: FAIL-CLOSED -- `$ExpectedCertPublicKeyPin is not yet populated (see file header TODO) -- refusing $Url"
+        return $false
+    }
+    # NOTE: PowerShell's Invoke-WebRequest does not expose the raw certificate in a
+    # cross-platform way; the caller of the download step must verify the chain/key pin
+    # using [System.Net.HttpWebRequest] with a custom ServerCertificateValidationCallback,
+    # or via certutil after download. This placeholder ensures the requirement is visible
+    # and fail-closed until the full implementation is wired.
+    Write-Log "download-host: FAIL-CLOSED -- certificate public-key pin verification not yet implemented -- refusing $Url"
+    return $false
 }
 
-# F1: the ps1-side approval check (see file header). Returns $true only if a FRESH, approved,
-# not-yet-used-by-THIS-script approval exists for $ApprovalCategory. Fail-closed on every
-# unexpected shape (no token, unreachable API, malformed response) -- same philosophy as every
-# other check in this file and as the WSL-side trigger script's own precondition 2.
+# F1/F2/F3 (card 2a80c6cb): the ps1-side approval check. Returns $true only if a FRESH,
+# approved, not-yet-used-by-THIS-script approval exists for $ApprovalCategory.
+# F1: uses $GpuDriverTokenPath (scoped token), NOT the shared fleet .dashboard-token.
+# F2: after local record, calls POST /api/approvals/:id/consume-oneshot for server-side
+#     atomic consumption; if the server returns 409 (already consumed), the approval is
+#     rejected even when the local state file was corrupt/missing (replay from a wiped state
+#     is blocked server-side).
+# F3: the check-and-record block runs under a named mutex to prevent concurrent schtasks
+#     runs from each independently consuming the same approval.
+# Fail-closed on every unexpected shape (no token, unreachable API, malformed response).
 function Test-FreshApproval {
-    if (-not (Test-Path $DashboardTokenPath)) {
-        Write-Log "approval: FAIL-CLOSED -- no dashboard token at $DashboardTokenPath"
+    if (-not (Test-Path $GpuDriverTokenPath)) {
+        Write-Log "approval: FAIL-CLOSED -- no scoped token at $GpuDriverTokenPath (must be provisioned separately from the shared fleet token; see file header F1)"
         return $false
     }
-    $token = (Get-Content -Path $DashboardTokenPath -Raw).Trim()
-    $usedIds = @()
-    if (Test-Path $UsedApprovalsPath) {
-        try {
-            $parsed = Get-Content -Path $UsedApprovalsPath -Raw | ConvertFrom-Json
-            if ($parsed.usedApprovalIds) { $usedIds = @($parsed.usedApprovalIds) }
-        } catch {
-            Write-Log "approval: could not parse $UsedApprovalsPath, treating as empty: $_"
-        }
-    }
+    $token = (Get-Content -Path $GpuDriverTokenPath -Raw).Trim()
 
-    $uri = "$ApprovalApiBase/api/approvals?category=$ApprovalCategory&status=approved&limit=5"
+    # F3: acquire the named mutex before reading usedIds, so two concurrent runs cannot
+    # each see the approval as fresh and both proceed.
+    $mutex = New-Object System.Threading.Mutex($false, $ApprovalMutexName)
+    $gotMutex = $false
     try {
-        $approvals = Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 10 -Headers @{ Authorization = "Bearer $token" }
-    } catch {
-        Write-Log "approval: FAIL-CLOSED -- /api/approvals call failed: $_"
+        $gotMutex = $mutex.WaitOne(5000)  # wait up to 5s; fail-closed if not acquired
+    } catch [System.Threading.AbandonedMutexException] {
+        $gotMutex = $true  # previous holder crashed; mutex is ours
+        Write-Log "approval: inherited abandoned mutex (previous holder crashed)"
+    }
+    if (-not $gotMutex) {
+        Write-Log "approval: FAIL-CLOSED -- could not acquire mutex $ApprovalMutexName within 5s (another install in progress?)"
+        $mutex.Dispose()
         return $false
     }
-    if (-not $approvals) {
-        Write-Log "approval: FAIL-CLOSED -- empty/unexpected /api/approvals response"
+    try {
+        $usedIds = @()
+        if (Test-Path $UsedApprovalsPath) {
+            try {
+                $parsed = Get-Content -Path $UsedApprovalsPath -Raw | ConvertFrom-Json
+                if ($parsed.usedApprovalIds) { $usedIds = @($parsed.usedApprovalIds) }
+            } catch {
+                Write-Log "approval: could not parse $UsedApprovalsPath, treating as empty: $_"
+            }
+        }
+
+        $uri = "$ApprovalApiBase/api/approvals?category=$ApprovalCategory&status=approved&limit=5"
+        try {
+            $approvals = Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 10 -Headers @{ Authorization = "Bearer $token" }
+        } catch {
+            Write-Log "approval: FAIL-CLOSED -- /api/approvals call failed: $_"
+            return $false
+        }
+        if (-not $approvals) {
+            Write-Log "approval: FAIL-CLOSED -- empty/unexpected /api/approvals response"
+            return $false
+        }
+
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        foreach ($a in @($approvals)) {
+            if ($a.status -ne 'approved') { continue }
+            if ($null -eq $a.resolved_at) { continue }
+            if (($now - [int64]$a.resolved_at) -gt $ApprovalWindowSeconds) { continue }
+            if (-not $a.id) { continue }
+            if ($usedIds -contains $a.id) { continue }
+
+            # F2: server-side atomic consume BEFORE local record. If 409, the server has
+            # already consumed this approval (replay from a wiped/corrupt local state file).
+            $consumeUri = "$ApprovalApiBase/api/approvals/$($a.id)/consume-oneshot"
+            try {
+                $consumeBody = [System.Text.Encoding]::UTF8.GetBytes(('{"category":"' + $ApprovalCategory + '"}'))
+                $consumeResp = Invoke-WebRequest -Uri $consumeUri -Method Post -TimeoutSec 10 `
+                    -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' } `
+                    -Body $consumeBody -UseBasicParsing -ErrorAction Stop
+                if ($consumeResp.StatusCode -ne 200) {
+                    Write-Log "approval: server-side consume returned $($consumeResp.StatusCode) for $($a.id) -- skipping"
+                    continue
+                }
+            } catch {
+                # A 409 from Invoke-WebRequest throws; any non-200 means do not proceed.
+                Write-Log "approval: FAIL-CLOSED -- server-side consume call failed for $($a.id): $_ -- skipping (replay blocked)"
+                continue
+            }
+
+            # Server accepted; record locally (belt-and-suspenders -- server-side is the
+            # authoritative guard, local file prevents a useless re-query on restart).
+            $usedIds += $a.id
+            $out = @{ usedApprovalIds = $usedIds } | ConvertTo-Json
+            Set-Content -Path $UsedApprovalsPath -Value $out
+            Write-Log "approval: fresh approval $($a.id) accepted and consumed server-side, recorded locally"
+            return $true
+        }
+        Write-Log "approval: no fresh, unused, approved request for category=$ApprovalCategory within ${ApprovalWindowSeconds}s"
         return $false
+    } finally {
+        if ($gotMutex) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
     }
-
-    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    foreach ($a in @($approvals)) {
-        if ($a.status -ne 'approved') { continue }
-        if ($null -eq $a.resolved_at) { continue }
-        if (($now - [int64]$a.resolved_at) -gt $ApprovalWindowSeconds) { continue }
-        if (-not $a.id) { continue }
-        if ($usedIds -contains $a.id) { continue }
-
-        # Fresh, unused approval found -- record it as used BEFORE returning true, so a crash or
-        # failure later in this script never leaves the same approval re-usable.
-        $usedIds += $a.id
-        $out = @{ usedApprovalIds = $usedIds } | ConvertTo-Json
-        Set-Content -Path $UsedApprovalsPath -Value $out
-        Write-Log "approval: fresh approval $($a.id) accepted, recorded as used"
-        return $true
-    }
-    Write-Log "approval: no fresh, unused, approved request for category=$ApprovalCategory within ${ApprovalWindowSeconds}s"
-    return $false
 }
 
 # Checkpoint before any install attempt (recovery-prev-version.sh's own pattern: preserve the
