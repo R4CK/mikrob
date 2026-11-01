@@ -63,6 +63,11 @@ TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 RAG="$HERE/local-llm-rag.sh"
 RESOLVE="$HERE/graphify-resolve.py"
 GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
+GEMINI_AGY_CALL="$HERE/gemini-agy-call.sh"
+
+# gemini_rest_fallback_enabled: returns 0 if the REST path is explicitly requested, 1 (agy) otherwise.
+# Missing file = OFF = agy is default; present = REST fallback.
+gemini_rest_fallback_enabled() { [[ -f "$HERE/gemini-rest-fallback-enabled" ]]; }
 
 # GEMINI ROUTE (card a92e9913): read the current route from the fallback state file.
 # Defaults to "claude" when the file is absent or malformed -- fail-safe toward the local path.
@@ -630,15 +635,32 @@ gemini_draft_comment_body() {
 ' "$review_header" "$leaf_title" "$content"
 }
 
-# try_gemini_for_leaf: call Gemini API for a leaf and post the draft comment.
-# Records a transient attempt on API failure so the dispatcher can track retries.
+# try_gemini_for_leaf: call Gemini (via agy by default, REST if toggle present) for a leaf and
+# post the draft comment. Records a transient attempt on API failure.
 try_gemini_for_leaf() {
   local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
 
-  [[ -x "$GEMINI_OFFLOAD" ]] || return 1
-
   local out rc=0
-  out="$(printf '%s' "$task" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
+  if gemini_rest_fallback_enabled; then
+    [[ -x "$GEMINI_OFFLOAD" ]] || return 1
+    out="$(printf '%s' "$task" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
+  else
+    [[ -x "$GEMINI_AGY_CALL" ]] || return 1
+    # Synthetic leaf IDs (e.g. "c65add5a~test-scaffold") strip the ~type suffix for --kartya.
+    local base_id="${leaf_id%%~*}"
+    local prompt_file mappa_dir
+    mappa_dir="$(mktemp -d "$HOME/seged-munka/dispatch-XXXXX")" || return 1
+    prompt_file="$mappa_dir/prompt.txt"
+    printf '%s' "$task" > "$prompt_file"
+    out="$(bash "$GEMINI_AGY_CALL" \
+      --hivo mikrob \
+      --kartya "$base_id" \
+      --feladattipus draft \
+      --kategoria safe \
+      --prompt "$prompt_file" \
+      --mappa "$mappa_dir" 2>/dev/null)" || rc=$?
+    rm -rf "$mappa_dir" 2>/dev/null || true
+  fi
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
     attempts_op success "$leaf_id" >/dev/null
@@ -676,10 +698,26 @@ gemini_second_opinion_comment_body() {
 try_gemini_second_opinion_for_leaf() {
   local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4"
 
-  [[ -x "$GEMINI_OFFLOAD" ]] || return 0
-
   local out rc=0
-  out="$(printf '%s' "$task" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
+  if gemini_rest_fallback_enabled; then
+    [[ -x "$GEMINI_OFFLOAD" ]] || return 0
+    out="$(printf '%s' "$task" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
+  else
+    [[ -x "$GEMINI_AGY_CALL" ]] || return 0
+    local base_id="${leaf_id%%~*}"
+    local prompt_file mappa_dir
+    mappa_dir="$(mktemp -d "$HOME/seged-munka/dispatch-XXXXX")" || return 0
+    prompt_file="$mappa_dir/prompt.txt"
+    printf '%s' "$task" > "$prompt_file"
+    out="$(bash "$GEMINI_AGY_CALL" \
+      --hivo mikrob \
+      --kartya "$base_id" \
+      --feladattipus draft \
+      --kategoria safe \
+      --prompt "$prompt_file" \
+      --mappa "$mappa_dir" 2>/dev/null)" || rc=$?
+    rm -rf "$mappa_dir" 2>/dev/null || true
+  fi
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
     local body; body="$(gemini_second_opinion_comment_body "$leaf_title" "$out")"

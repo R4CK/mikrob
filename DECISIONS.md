@@ -22785,3 +22785,31 @@ backend (a javítás).
 **Ki dontott:** MikroB (FÁZIS e5c46e87, batch-based process); backend3 (the merge conflict resolutions, the fallout fixes, the duplicate-wrapper removal); MikroB (root-cause correction on an initial one-off FAIL misread as host contention -- msg 16140, it was a statistical substring false-positive in `test_no_value_anywhere`, not a real leak, tracked separately as card 753ec2dd).
 
 **Hivatkozas:** kartya bd32ad68 (parent FÁZIS e5c46e87), REVIEW comment 27590, commits `95b53c94a`/`6f2eb9965`/`acb9e24cd`/`48f9fe10b`/`081764e62`/`d509c7f23`, Gate-SHA `0119a6d207bb23d9e02c695630acce5c7bdbde56`.
+
+---
+
+## 2026-10-31 -- Gemini-hívás átkötése REST-ről Antigravity CLI-re (kártya b768770a)
+
+**Döntés:** Az orchesztrátor (`src/gemini-orchestrator.ts`) és az offload-dispatch (`store/offload-dispatch.sh`) alapértelmezésként a `store/gemini-agy-call.sh` Antigravity CLI-wrappert használja a Gemini-hívásokhoz, nem a közvetlen REST API-t (`gemini-offload-call.sh` / `geminiGenerate`). A `store/gemini-rest-fallback-enabled` fájl jelenlétével a régi REST-útvonal visszaállítható.
+
+**Indok:** Az AI Pro előfizetéses `agy` bináris jobb kapacitást és nincs ingyenes-tier rate-limitet biztosít; a meglévő `gemini-agy-call.sh` wrapper már kezeli a kvótát (5/óra rolling window, flock), a kategória-gate-et (csak `safe`) és a bwrap sandboxot. A REST kulcsot a free-tier limitek korlátozták; az `agy` út ezt kiváltja.
+
+**Hatókör:** orchestrator agy-call a TypeScript-oldalon (`callGeminiViaAgy`, mappa: `~/seged-munka/orch-<ts>/`), offload-dispatch agy-call a shell-oldalon (`try_gemini_for_leaf`, `try_gemini_second_opinion_for_leaf`, mappa: `~/seged-munka/dispatch-XXXXX/`). Szintetikus leaf ID-k (`card~type`) `~type` suffixe le van vágva a `--kartya` arg előtt. Injektált `callGemini` (tesztek) nincs felülírva -- a teszt mockok az `=== geminiGenerate` összehasonlítás alapján érintetlenek maradnak.
+
+**Kész, ha:** `grep -n "gemini-agy-call" src/gemini-orchestrator.ts store/offload-dispatch.sh` mindkét fájlban talál; `isRestFallbackEnabled` + `callGeminiViaAgy` tesztek zöldek; `fleet-test.sh --ref <sha>` teljes suite zöld; README fork-szekció frissítve.
+
+**Hivatkozás:** kártya b768770a, backend agent, `src/gemini-orchestrator.ts`, `store/offload-dispatch.sh`, `src/__tests__/gemini-orchestrator.test.ts`.
+
+---
+
+## 2026-10-31: Gate-family CLAUDE.md focus + skill table updates (kártya 3bf6a01a)
+
+**Döntés:** QA/QA2, WhiteHat/WhiteHat2 (cybersec/cybersec2), RedHat (cybered) ügynökök CLAUDE.md-jét frissítettük Peti Telegram 12188 szerint: kódminőség-fókusz (QA), defense-fókusz (WhiteHat), attack-fókusz (RedHat), phantom skillek (`cybered-gate-pattern`, `webapp-testing`) eltávolítva.
+
+**Változások:**
+- QA/QA2: `Simplicity:` 4. sor a gate-verdiktben; új Core skillek (`karpathy-guidelines`); eltávolítva: `full-value-audit`, `unlazy`, `sp-test-driven-development`, `ci-cd-and-automation`.
+- WhiteHat/WhiteHat2 (cybersec/cybersec2): `defensive-security-analysis`, `active-defense-design`, `rbac-authz-matrix-audit` hozzáadva; `full-value-audit`, `unlazy` eltávolítva. Az `active-defense-design` ÁTKERÜLT cybered-ről WhiteHathoz.
+- RedHat (cybered): `Methods:` 4. sor a gate-verdiktben (MITRE ATT&CK technika-ID-k + WebSearch forrás kötelező); `full-value-audit`, `unlazy`, `active-defense-design` eltávolítva.
+- `src/web/agent-scaffold.ts`: QA_FAMILY, WHITEHAT_FAMILY, REDHAT_FAMILY set-ek + 3 curated builder function a generátorban.
+
+**Hivatkozás:** kártya 3bf6a01a, backend agent, `seed-fleet-agents/*/CLAUDE.md`, `src/web/agent-scaffold.ts`, `src/__tests__/agent-scaffold-skill-usage.test.ts`.

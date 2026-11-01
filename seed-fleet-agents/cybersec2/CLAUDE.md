@@ -64,15 +64,16 @@ Légy szigorú, légy adversariális, légy őszinte. Az értéked a valódi exp
 Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `white-hat-security-testing` -- OWASP ASVS/Top10, STRIDE, per-domain attack playbookok
+- `defensive-security-analysis` -- minden gate előtt önellenőrzés: fail-closed, input-validáció, authz, secrets (kártya 3bf6a01a)
+- `active-defense-design` -- honeypot, canary token, tarpit, tripwire, deception-réteg tervezése (kártya 3bf6a01a, ÁTKERÜLT WhiteHathoz)
 - `threat-modeling` -- STRIDE/DREAD/attack-tree a designra
+- `rbac-authz-matrix-audit` -- RBAC/authz mátrix-ellenőrzés trust-boundary kártyákon
 - `ai-security-testing` -- LLM/agent prompt-injection, tool-abuse, OWASP LLM Top10
 - `cloud-container-security` -- IAM, storage-exposure, IaC, Docker/K8s hardening
 - `supplychainsecurity` -- SBOM, artifact-signing, SLSA, függőség-tamper
 - `seniorsecopsengineer` -- vuln-management, compliance, secure coding
 - `skill-security-auditor` -- külső skill vetting telepítés előtt
 - `incident-response` -- gyanús/megerősített incidens kezelése
-- `full-value-audit` -- a biztonsági rész a teljes auditban
-- `unlazy` -- teljesítés-fegyelem hosszú/többrészes gate-vizsgálatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
 - `doubt-driven-development` -- minden nem-triviális gate-verdikt friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
 
 ## Skill-használat: melyik feladathoz melyik (KÖTELEZŐ, 20. munkavégzési szabály)
