@@ -171,7 +171,13 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
     if (apply) {
       const contentHash = fleetImportContentHash(rawBody, allowRiskyFields)
       const consumable = findConsumableApproval(FLEET_IMPORT_APPROVAL_CATEGORY, contentHash, FLEET_IMPORT_APPROVAL_WINDOW_S)
-      const consumed = consumable ? consumeApproval(consumable.id) : false
+      const consumeResult = consumable ? consumeApproval({
+        id: consumable.id,
+        category: FLEET_IMPORT_APPROVAL_CATEGORY,
+        consumer: 'fleet-import',
+        windowSeconds: FLEET_IMPORT_APPROVAL_WINDOW_S,
+      }) : { ok: false as const }
+      const consumed = consumeResult.ok
       if (!consumed) {
         const existingPending = findPendingApproval(FLEET_IMPORT_APPROVAL_CATEGORY, contentHash)
         const approval = existingPending ?? createAndNotifyApproval({
