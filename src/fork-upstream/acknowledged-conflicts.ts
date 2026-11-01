@@ -5417,6 +5417,25 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "block every Bash call of the main agent (measured: ImportError, rc=1). If _is_mcp_send " +
       "disappears, someone merged upstream's version over this fork's adaptation.",
   },
+  // Card 7f0efce3 (fullstack/DevO, 2026-10-31): agent-bundle.ts's entry above KEEPS FORK because
+  // this fork's isReservedSenderId (system-directive-id.ts) blocks system/system-directive
+  // impersonation, while upstream's competing check (RESERVED_AGENT_IDS = FIXED_RESERVED_AGENT_IDS
+  // from sanitize.ts) is a wider list this fork does not have. Adoption needs config.ts +
+  // sanitize.ts additions and a review of every name-validation site -- too large for a drift
+  // round. If FIXED_RESERVED_AGENT_IDS appears in sanitize.ts, the adoption was attempted and
+  // this refusal needs re-reading (is isReservedSenderId still the single authority?).
+  // Verified absent before writing (grep -c FIXED_RESERVED_AGENT_IDS src/web/sanitize.ts = 0).
+  'src/web/agent-bundle.ts': {
+    needle: 'FIXED_RESERVED_AGENT_IDS',
+    file: 'src/web/sanitize.ts',
+    expect: 'absent',
+    because:
+      "upstream's RESERVED_AGENT_IDS = FIXED_RESERVED_AGENT_IDS (sanitize.ts) widens " +
+      "the reserved-name check beyond this fork's isReservedSenderId; adoption was deferred " +
+      "(card 7f0efce3) because it needs config.ts + sanitize.ts additions, not just this file. " +
+      "If FIXED_RESERVED_AGENT_IDS appears in sanitize.ts, the adoption was started and the " +
+      "agent-bundle.ts refusal needs re-reading.",
+  },
 }
 
 /** An acknowledgement whose rule rests on a fork-side fact that is no longer true. */
