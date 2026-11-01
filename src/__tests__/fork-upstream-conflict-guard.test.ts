@@ -700,13 +700,7 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     // today, which is exactly the kind of present/absent fact an anchor watches. It now has one
     // (ACKNOWLEDGED_FORK_ANCHORS['package-lock.json'], needle 'parse5', expect absent), using the
     // same cross-file-anchor technique as 'src/web/routes/agents.ts' above.
-    //   - scripts/hooks/telegram_progress_clear.py (card 7f0efce3, fullstack/DevO, 2026-10-31):
-    //     KEEP FORK because the conflicting hunks are comment-only (both sides describe the same
-    //     OUTAGE_TEXT/no-answer logic in different words; no code line differs). There is no code
-    //     symbol unique to either side -- both carry identical behaviour -- so no anchor is
-    //     possible on a present/absent code token. This is the pure-comment-diff case, same shape
-    //     as the pure-docs entries above.
-    'scripts/hooks/telegram_progress_clear.py',
+
   ]
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
