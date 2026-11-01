@@ -229,7 +229,8 @@ if (-not (Test-TrustedOwner $TargetDir)) {
     Write-Log "FAIL: $TargetDir is not owned by Administrators/SYSTEM -- aborting for safety"
     exit 1
 }
-$expectedNames = @('setup.log', 'launcher.log', 'gpu-driver-install.ps1', 'gpu-driver-install-launcher.ps1', 'gpu-driver-install.sha256')
+$expectedNames = @('setup.log', 'launcher.log', 'gpu-driver-install.ps1', 'gpu-driver-install-launcher.ps1', 'gpu-driver-install.sha256',
+                   'gpu-driver-approval.token')  # F1 (2a80c6cb): scoped category token only; the shared fleet token must never appear here
 $existing = Get-ChildItem $TargetDir -Force -ErrorAction SilentlyContinue
 foreach ($item in @($existing)) {
     if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {

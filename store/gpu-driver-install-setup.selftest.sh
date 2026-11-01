@@ -271,6 +271,22 @@ check "X2 WSL path-existence pre-check present" "$OLD"     "DIREXISTS" absent
 echo "== X3: the REVIEW's HKLM claim must not be in the code (it never was; this pins that it still isn't) =="
 check "X3 no HKLM reference (hash travels on the task command line, per the header)" "$CURRENT" "HKLM" absent
 
+echo "== B3: scheduled-task hash read-back guard present in current, diagnostic logging absent from old =="
+# B3: the schtasks /Query read-back check ensures the task command line actually contains the hash
+# after the /Change call. A mutant removing this check (legacy migration path) would silently
+# complete Phase 2 even if schtasks /Change returned 0 but did not update the command line.
+# Positive: the guard must be structurally present in the current code.
+# Negative: the old fixture has the basic check but LACKS the diagnostic "Query output:" log line
+# added in card 2a80c6cb -- that line makes failures actionable and distinguishes the improved code.
+check "B3 task hash read-back guard present"             "$CURRENT" 'notmatch [regex]::Escape($hash)'  present
+check "B3 diagnostic output log present in current"      "$CURRENT" 'Write-Log "Query output:'         present
+check "B3 diagnostic output log absent in old fixture"   "$OLD"     'Write-Log "Query output:'         absent
+
+echo "== F1 (2a80c6cb): gpu-driver-approval.token must be in the allowlist, shared token must not =="
+# F1: the scoped token must appear in the Phase 2 allowlist; the shared fleet token must NOT.
+check "F1 scoped token in allowlist present"          "$CURRENT" "gpu-driver-approval.token"  present
+check "F1 shared fleet token not in allowlist"        "$CURRENT" '.dashboard-token'            absent
+
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"
   exit 0

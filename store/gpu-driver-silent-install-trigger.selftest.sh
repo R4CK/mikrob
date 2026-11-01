@@ -29,20 +29,30 @@ echo "token-fixture" > "$TMP/token"
 NOW="$(date -u +%s)"
 
 # Fake curl: routes on the trailing path+query in the URL argument (the last arg), returns a
-# canned JSON body. CURL_FIXTURE_APPROVALS / CURL_FIXTURE_INPROGRESS are files this test
-# (re)writes per-case; CURL_CALL_LOG records every invocation for inspection.
+# canned JSON body. CURL_FIXTURE_APPROVALS / CURL_FIXTURE_INPROGRESS / CURL_FIXTURE_CONSUME are
+# files this test (re)writes per-case; CURL_CALL_LOG records every invocation for inspection.
+# consume-oneshot must be matched BEFORE the general /api/approvals pattern (which also matches it).
 FAKE_CURL="$TMP/fake-curl.sh"
 cat > "$FAKE_CURL" <<'EOF'
 #!/usr/bin/env bash
 echo "$@" >> "$CURL_CALL_LOG"
 url="${@: -1}"
 case "$url" in
-  *"/api/approvals"*) cat "$CURL_FIXTURE_APPROVALS" ;;
-  *"/api/kanban"*)    cat "$CURL_FIXTURE_INPROGRESS" ;;
+  *"consume-oneshot"*)  cat "$CURL_FIXTURE_CONSUME" ;;
+  *"/api/approvals"*)   cat "$CURL_FIXTURE_APPROVALS" ;;
+  *"/api/kanban"*)      cat "$CURL_FIXTURE_INPROGRESS" ;;
   *) echo "{}" ;;
 esac
 EOF
 chmod +x "$FAKE_CURL"
+
+# Default consume-oneshot fixture: server accepts (ok=true).
+CONSUME_OK_FIXTURE="$TMP/consume-ok.json"
+printf '{"ok":true}' > "$CONSUME_OK_FIXTURE"
+# Consume-oneshot fixture that simulates server-side already-consumed (F2 replay scenario).
+CONSUME_ALREADY_FIXTURE="$TMP/consume-already.json"
+printf '{"ok":false,"reason":"already_consumed"}' > "$CONSUME_ALREADY_FIXTURE"
+CONSUME_FIXTURE="$CONSUME_OK_FIXTURE"
 
 # Fake schtasks: just records invocation + args, exits 0.
 FAKE_SCHTASKS="$TMP/fake-schtasks.sh"
@@ -85,6 +95,7 @@ run() { # sets RC, CURL_CALLS, SCHTASKS_CALLS, STATE_CONTENT
   CURL_CALL_LOG="$TMP/curl-calls.txt" \
   CURL_FIXTURE_APPROVALS="$APPROVALS_FIXTURE" \
   CURL_FIXTURE_INPROGRESS="$INPROGRESS_FIXTURE" \
+  CURL_FIXTURE_CONSUME="${CONSUME_FIXTURE:-$CONSUME_OK_FIXTURE}" \
   GPU_DRIVER_INSTALL_SCHTASKS_BIN="$FAKE_SCHTASKS" \
   SCHTASKS_CALL_LOG="$TMP/schtasks-calls.txt" \
   FAKE_SCHTASKS_EXIT="${FAKE_SCHTASKS_EXIT:-0}" \
@@ -287,6 +298,16 @@ write_fixtures '' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
 run
 check "M13 empty approvals from API: exit 1 (fail-closed)" "1" "$RC"
 check "M13 empty approvals from API: no schtasks call"      "" "$SCHTASKS_CALLS"
+
+# --- F2-server: consume-oneshot returns already_consumed -> no-op exit 0, no schtasks. --------
+# F2 server-side replay guard: if the local state file is deleted (or never written) but the
+# server says the approval was already consumed, the trigger must exit 0 (no-op) and NOT fire
+# schtasks -- the server-side record is authoritative for replay protection.
+write_fixtures '[{"id":"appr-f2s","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+CONSUME_FIXTURE="$CONSUME_ALREADY_FIXTURE" run
+check "F2-server-replay: exit 0"           "0" "$RC"
+check "F2-server-replay: no schtasks call" ""  "$SCHTASKS_CALLS"
+CONSUME_FIXTURE="$CONSUME_OK_FIXTURE"
 
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"

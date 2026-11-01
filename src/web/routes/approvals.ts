@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ } from '../../config.js'
 import {
   consumeEmailSendApproval,
+  consumeApproval,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
   createAgentMessage, setApprovalTelegramMessageId,
   type Approval,
@@ -452,6 +453,43 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       reason: result.reason,
       approval: a ? { id: a.id, status: a.status, consumed_at: a.consumed_at, consumed_by: a.consumed_by, consumed_ref: a.consumed_ref } : null,
     }, 409)
+    return true
+  }
+
+  // POST /api/approvals/:id/consume-oneshot -- 2a80c6cb: atomic one-shot consume
+  // for non-email categories (e.g. gpu-driver-silent-install). Callers: WSL trigger
+  // script and the Windows-side ps1, both as a server-side replay-guard companion
+  // to their local state files. Returns 200 on success, 409 if already consumed or
+  // category mismatch, 404 if not found.
+  const oneshotMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume-oneshot$/)
+  if (oneshotMatch && method === 'POST') {
+    let body: { category?: unknown }
+    try {
+      body = JSON.parse((await readBody(req)).toString())
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    if (typeof body.category !== 'string' || body.category.length === 0) {
+      json(res, { error: 'category is required' }, 400)
+      return true
+    }
+    const approval = getApproval(oneshotMatch[1])
+    if (!approval) {
+      json(res, { ok: false, reason: 'not_found' }, 404)
+      return true
+    }
+    if (approval.category !== body.category) {
+      json(res, { ok: false, reason: 'category_mismatch' }, 409)
+      return true
+    }
+    const consumed = consumeApproval(oneshotMatch[1])
+    if (consumed) {
+      logger.info({ id: oneshotMatch[1], category: body.category }, 'Approval consumed (oneshot)')
+      json(res, { ok: true })
+      return true
+    }
+    json(res, { ok: false, reason: 'already_consumed' }, 409)
     return true
   }
 
