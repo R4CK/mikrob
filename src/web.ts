@@ -85,6 +85,7 @@ import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanbanVerdicts } from './web/kanban-verdicts.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleKanbanProjects } from './web/routes/kanban-projects.js'
+import { tryHandleCardLandings } from './web/routes/card-landings.js'
 import { tryHandleHeartbeat } from './web/routes/heartbeat.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
 import { tryHandleConnectors } from './web/routes/connectors.js'
@@ -258,6 +259,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleKanbanVerdicts(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
       if (await tryHandleKanbanProjects(routeCtx)) return
+      if (await tryHandleCardLandings(routeCtx)) return
       if (await tryHandleHeartbeat(routeCtx)) return
       if (await tryHandleSchedules(routeCtx)) return
       if (await tryHandleConnectorsHu(routeCtx)) return
