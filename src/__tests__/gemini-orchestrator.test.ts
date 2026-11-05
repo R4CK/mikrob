@@ -589,6 +589,22 @@ describe('callGeminiViaAgy (card b768770a)', () => {
     expect(argv).toContain('--kartya')
     expect(argv[argv.indexOf('--kartya') + 1]).toBe('deadbeef')
   })
+  // Real-round regression (card b768770a, QA2 27856 Kesz-ha #2): a live call with
+  // --feladattipus 'ordering' failed with exit 2 before reaching Gemini at all --
+  // scripts/seged-hivo.py's --feladattipus is a closed enum that never included 'ordering'.
+  // No mocked-spawnSync test could have caught this (the mock does not validate argv against
+  // the real script), so this pins the corrected value against regressing back to a word that
+  // merely reads as plausible English.
+  it('--feladattipus is a valid scripts/seged-hivo.py task type, not an invented value', async () => {
+    forcedSpawnResult = { status: 0, stdout: 'ok' }
+    await callGeminiViaAgy('prompt text', 'deadbeef')
+    const { spawnSync } = await import('node:child_process')
+    const lastCall = vi.mocked(spawnSync).mock.calls.at(-1)
+    const argv = lastCall?.[1] as string[]
+    const validTaskTypes = ['kod', 'kod-atnezes', 'szoveg', 'kep', 'weboldal', 'kutatas', 'adat', 'egyeb']
+    expect(argv).toContain('--feladattipus')
+    expect(validTaskTypes).toContain(argv[argv.indexOf('--feladattipus') + 1])
+  })
 })
 
 describe('runGeminiOrchestratorSweep agy routing (card b768770a)', () => {
