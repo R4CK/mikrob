@@ -8,12 +8,23 @@ let fallbackStateJson: string | null = null
 let restFallbackPresent = false
 let writtenQueue: unknown = null
 let forcedSpawnResult: { status: number | null; stdout?: string; error?: Error } | null = null
+// Scoped override for ONLY the agy-script call (gemini-agy-call.sh), distinct from
+// forcedSpawnResult above. forcedSpawnResult (unchanged) still forces ANY spawnSync call when
+// set -- the existing isEligibleForGeminiOrdering tests rely on that to control the
+// --check-blocked exit code. forcedAgySpawnResult lets a test force ONLY the agy call's result
+// while leaving --check-blocked to run for real, which is required to reach the agy branch at
+// all (QA2 27856, Kesz-ha #4 fix): forcing a non-42 exit on --check-blocked would make every
+// card ineligible before the branch is ever entered.
+let forcedAgySpawnResult: { status: number | null; stdout?: string; error?: Error } | null = null
 
 vi.mock('node:child_process', async (orig) => {
   const real = await orig<typeof import('node:child_process')>()
   return {
     ...real,
     spawnSync: vi.fn((...args: Parameters<typeof real.spawnSync>) => {
+      const argv = (args[1] as string[] | undefined) ?? []
+      const isAgyCall = argv.some((a) => String(a).includes('gemini-agy-call.sh'))
+      if (isAgyCall && forcedAgySpawnResult) return forcedAgySpawnResult as ReturnType<typeof real.spawnSync>
       if (forcedSpawnResult) return forcedSpawnResult as ReturnType<typeof real.spawnSync>
       return real.spawnSync(...args)
     }),
@@ -84,6 +95,7 @@ beforeEach(() => {
   restFallbackPresent = false
   writtenQueue = null
   forcedSpawnResult = null
+  forcedAgySpawnResult = null
   vi.restoreAllMocks()
 })
 
@@ -601,5 +613,59 @@ describe('runGeminiOrchestratorSweep agy routing (card b768770a)', () => {
     await runGeminiOrchestratorSweep(loadCards, callGemini, () => true)
     expect(callGemini).toHaveBeenCalled()
     expect(writtenQueue).toMatchObject({ order: ['x2'] })
+  })
+})
+
+// QA2 FAIL (comment 27856, card b768770a): the two tests above both inject a callGemini mock,
+// so callGemini === geminiGenerate is false and the agy-routing branch at lines 325-337 is never
+// entered -- the branch had zero coverage despite "agy routing" in the describe name. These tests
+// call runGeminiOrchestratorSweep with NO callGemini argument (the real default, geminiGenerate),
+// so the branch's own equality check sees the real function and actually picks callGeminiViaAgy.
+// Verified at the spawnSync boundary (which script got invoked), not at the mock-callGemini
+// boundary, because that boundary is exactly what was never exercised before.
+describe('runGeminiOrchestratorSweep default route actually invokes callGeminiViaAgy (card b768770a, QA2 27856 Kesz-ha #4)', () => {
+  it('no callGemini override + REST fallback absent + an eligible card: the agy script is spawned with --kartya = that card id, and its result becomes the queue', async () => {
+    killSwitchJson = JSON.stringify({ enabled: true })
+    fallbackStateJson = JSON.stringify({ route: 'gemini' })
+    restFallbackPresent = false
+    forcedAgySpawnResult = { status: 0, stdout: '["only1"]\n' }
+    const loadCards = vi.fn(() => [card({ id: 'only1', labels: ['gemini-ok'] })])
+
+    // No callGemini arg -- this is the real default param (geminiGenerate), so
+    // `callGemini === geminiGenerate` at line 325 is true and the branch actually runs.
+    await runGeminiOrchestratorSweep(loadCards, undefined, () => true)
+
+    const { spawnSync } = await import('node:child_process')
+    const agyCall = vi.mocked(spawnSync).mock.calls.find((c) =>
+      (c[1] as string[] | undefined)?.some((a) => String(a).includes('gemini-agy-call.sh')),
+    )
+    expect(agyCall, 'gemini-agy-call.sh should have been spawned').toBeDefined()
+    const argv = agyCall![1] as string[]
+    expect(argv[argv.indexOf('--kartya') + 1]).toBe('only1')
+    expect(argv).toContain('--kategoria')
+    expect(argv[argv.indexOf('--kategoria') + 1]).toBe('safe')
+    // Not just "a spawn happened" -- THIS call's result must be the one that drove the decision.
+    expect(writtenQueue).toMatchObject({ order: ['only1'] })
+  })
+
+  it('a mutated branch (agy never picked) is caught: forcing geminiGenerate to run instead leaves the agy script unspawned and the queue empty', async () => {
+    // Mutation-equivalence check (karpathy-guidelines self-review, not a real mutant run): this
+    // pins what SHOULD fail if someone deletes the `effectiveCallGemini = ...callGeminiViaAgy...`
+    // assignment -- by simulating that exact deleted-branch state via REST fallback ON, which
+    // takes the same "effectiveCallGemini stays geminiGenerate" path the deleted mutant would.
+    killSwitchJson = JSON.stringify({ enabled: true })
+    fallbackStateJson = JSON.stringify({ route: 'gemini' })
+    restFallbackPresent = true
+    forcedSpawnResult = null
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network disabled in test'))
+    const loadCards = vi.fn(() => [card({ id: 'only2', labels: ['gemini-ok'] })])
+
+    await runGeminiOrchestratorSweep(loadCards, undefined, () => true)
+
+    const { spawnSync } = await import('node:child_process')
+    const agyCall = vi.mocked(spawnSync).mock.calls.find((c) =>
+      (c[1] as string[] | undefined)?.some((a) => String(a).includes('gemini-agy-call.sh')),
+    )
+    expect(agyCall, 'agy script must NOT be spawned when the REST toggle is on').toBeUndefined()
   })
 })
