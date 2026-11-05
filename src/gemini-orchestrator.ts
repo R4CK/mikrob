@@ -87,7 +87,13 @@ export async function callGeminiViaAgy(prompt: string, cardId: string): Promise<
       AGY_CALL_SCRIPT,
       '--hivo', 'mikrob',
       '--kartya', cardId,
-      '--feladattipus', 'ordering',
+      // 'adat' (data), not 'ordering': scripts/seged-hivo.py's --feladattipus is a closed
+      // argparse enum (kod|kod-atnezes|szoveg|kep|weboldal|kutatas|adat|egyeb) -- 'ordering'
+      // was never a valid member and every real call failed with exit 2 before reaching
+      // Gemini at all (caught by a real end-to-end round, card b768770a QA2 27856 Kesz-ha #2;
+      // no unit test could have caught this, since the mocked spawnSync never validates argv
+      // against the real script's argparse).
+      '--feladattipus', 'adat',
       '--kategoria', 'safe',
       '--prompt', promptFile,
       '--mappa', mappaDir,
