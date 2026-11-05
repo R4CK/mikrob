@@ -2271,7 +2271,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "UNDECIDED, deliberately -- linked to the src/web/agent-scaffold.ts entry's #1305 finding (main-agent hooks move to be repo-shipped in this exact tracked file instead of ~/.claude/settings.json). All ten-plus new upstream hooks already exist as scripts on disk here and most are already wired defensively in templates/settings.json.template, so this is a real, mostly-supported wiring gap -- but hand-editing it before #1305's write-target change is reviewed would fight the next ensureAgentHooks write, and swapping the Stop-hook liveness marker (touch mikrob-alive.heartbeat -> telegram_progress_clear.py) is its own behaviour-change decision. Raised together with #1305 on one follow-up card, not resolved here." +
     " STATUS UPDATE (card 21597530 / c00d5429, MikroB verdikt komment 6020, 2026-09-25): #1305 IS adopted (adf2c30a, 2026-09-13 -- see the corrected agent-scaffold.ts entry above), so the 'before #1305 is reviewed' precondition no longer blocks touching this file. The specific gap that precondition was protecting against -- this tracked file missing the PreToolUse security guards every sub-agent's settings.json already carried (git-protect/secret-write/npm-protect/cd-chain/noisy-command/bash-egress/blast-radius/big-file/pentest-tool-install/symlinked-node-modules) -- was measured live by MikroB and closed on its OWN card, c00d5429 (Gate-SHA bedac5dffe9223ad21a5c975323ad6082b46e79d), not this one. This entry stays UNDECIDED for what it was never about: whether the REMAINING upstream hooks/behaviour changes this comment lists (the Stop-hook liveness-marker swap, and a full line-by-line audit of which of the ten-plus channel/telegram hooks this file already carries vs. still needs) should be adopted -- that is a separate, narrower follow-up someone should open if it still matters, not assumed done by either card above." +
     " CORRECTION (QA, 21597530 komment, 2026-09-25): 'closed on its OWN card, c00d5429 (Gate-SHA bedac5df...)' above was premature -- that Gate-SHA drew a QA FAIL (missing DECISIONS.md entry) and a Cybersec F1 MEDIUM (script-only contract, matcher unpinned), so the card was still in_progress, not closed, when this file said so. Fixed on the delta-gate round (da349fed + cbf6cfd3) and re-gated against the new landed sha -- see the card's own REVIEW comments for that sha, not this file." +
-    " Re-decided 2026-09-25 (card c2aeefa5, backend, 4d5ddf273e76..7c692deff999): verified the two already-closed points first -- this fork's live .claude/settings.json (checked directly, not from history) still carries all 19 PreToolUse entries from c00d5429 (secret-write-guard, big-file-guard, and the seven governance-kapu Bash entries covering cd-chain/npm-protect/git-protect/noisy-command/bash-egress/blast-radius/pentest-tool-install/symlinked-node-modules), and the Stop block is exactly what the entry above already describes (telegram-reply-guard.py, touch mikrob-alive.heartbeat, telegram_progress_clear.py -- the heartbeat-swap decision is STILL not made, not silently resolved by either prior card). Still genuinely UNDECIDED, and this round's diff makes the undecided surface BIGGER, not smaller: upstream added a second channel provider's hook set wholesale (slack_progress.py / slack_progress_reply_clear.py / slack_progress_clear.py, mirroring every telegram_progress* hook one-for-one) plus a broadened PostToolUse reply matcher (`mcp__plugin_[^_]+_[^_]+__reply` instead of the telegram-only literal) and Discord copy-gate matchers -- all Slack/Discord-specific, and this fork is Telegram-only per its own root CLAUDE.md ('A Telegram kommunikációt a Claude Code Channels kezeli'), so NONE of the multi-channel additions are adopted here; they are out of scope for a drift re-decision the same way the Stop-hook swap always was. Separately, and NOT Slack-specific, four more additions were NOT investigated far enough to decide: a new PostToolUseFailure hook stage (tool-log-capture.py), memory-lookup-nudge.py (new UserPromptSubmit entry), memory-frontmatter-gate.py (new PreToolUse entry on Write|Edit|MultiEdit), and broadened email-related matchers (`.*[Gg]mail.*__.*`, `.*draft_email.*`) added to both outgoing-copy-gate.py and email-approval-gate.py sites -- whether this fork's disk already carries the two new script files, and whether the broadened matchers still make sense given this fork's own gmail MCP wiring, is exactly the 'full line-by-line audit' the original entry deferred, still deferred. Resolution unchanged (UNDECIDED); blob bumped to record this round's re-read.",
+    " Re-decided 2026-09-25 (card c2aeefa5, backend, 4d5ddf273e76..7c692deff999): verified the two already-closed points first -- this fork's live .claude/settings.json (checked directly, not from history) still carries all 19 PreToolUse entries from c00d5429 (secret-write-guard, big-file-guard, and the seven governance-kapu Bash entries covering cd-chain/npm-protect/git-protect/noisy-command/bash-egress/blast-radius/pentest-tool-install/symlinked-node-modules), and the Stop block is exactly what the entry above already describes (telegram-reply-guard.py, touch mikrob-alive.heartbeat, telegram_progress_clear.py -- the heartbeat-swap decision is STILL not made, not silently resolved by either prior card). Still genuinely UNDECIDED, and this round's diff makes the undecided surface BIGGER, not smaller: upstream added a second channel provider's hook set wholesale (slack_progress.py / slack_progress_reply_clear.py / slack_progress_clear.py, mirroring every telegram_progress* hook one-for-one) plus a broadened PostToolUse reply matcher (`mcp__plugin_[^_]+_[^_]+__reply` instead of the telegram-only literal) and Discord copy-gate matchers -- all Slack/Discord-specific, and this fork is Telegram-only per its own root CLAUDE.md ('A Telegram kommunikációt a Claude Code Channels kezeli'), so NONE of the multi-channel additions are adopted here; they are out of scope for a drift re-decision the same way the Stop-hook swap always was. Separately, and NOT Slack-specific, four more additions were NOT investigated far enough to decide: a new PostToolUseFailure hook stage (tool-log-capture.py), memory-lookup-nudge.py (new UserPromptSubmit entry), memory-frontmatter-gate.py (new PreToolUse entry on Write|Edit|MultiEdit), and broadened email-related matchers (`.*[Gg]mail.*__.*`, `.*draft_email.*`) added to both outgoing-copy-gate.py and email-approval-gate.py sites -- whether this fork's disk already carries the two new script files, and whether the broadened matchers still make sense given this fork's own gmail MCP wiring, is exactly the 'full line-by-line audit' the original entry deferred, still deferred. Resolution unchanged (UNDECIDED); blob bumped to record this round's re-read." +
+    " Re-measured 2026-10-31 (fullstack/DevO, card 7f0efce3, 7c692deff999..a4d62d48e5d8): four more upstream additions, none adopted. (1) New top-level permissions.deny block (ssh/aws/gnupg/.env Reads, sudo/rm-rf/curl-POST/force-push Bashes, browser_run_code_unsafe) -- potentially useful hardening, but this fork's PreToolUse deny list already covers the critical subset (git-protect, ssh-guard, secret-write-guard, pentest-tool-install) and adding an ADDITIONAL deny layer at the settings level while the PreToolUse guards also run is a surface that needs deliberate gate review, not a rider on a blob bump. (2) UserPromptSubmit claude-usage.py replaced by marveen-commands.py + taskstate-stub.py -- marveen-commands.py is in develop-only (not scripts/hooks), taskstate-stub.py does not exist anywhere on this fork; neither adopted. (3) PostToolUse: persona-change-notify.py (develop-only, NOT in scripts/hooks), browser-content-notice.py (EXISTS at scripts/hooks/browser-content-notice.py), memory-frontmatter-bash-gate.py (EXISTS at scripts/hooks/memory-frontmatter-bash-gate.py) added. The two existing scripts are candidates for wiring and each deserves its own card (a hook wired by a settings-drift bump with no gate is exactly the antipattern) -- not wired here. (4) PostToolUseFailure now also runs memory-frontmatter-bash-gate.py; same reasoning as (3). Resolution unchanged (UNDECIDED); blob bumped.",
 
   // Card 4f15966e (backend, 2026-09-07) already decided this file's EXEMPT list in-code, this
   // entry just records it. Upstream's diff REPLACES all 14 of the fork's EXEMPT entries (9
@@ -3545,6 +3546,34 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'there -- delete/modify conflict, no blob to pin per the drift tool\'s own report). ' +
     'Fork-only test for a fork-only feature; no real upstream side to compare against, no ' +
     'anchor needed since there is no shared content upstream could silently reopen.',
+
+  // Card 7f0efce3, DevO, 2026-10-31. Re-decided from the drift tool's live report, not from the
+  // card's own (now stale) file list -- the card named 7 files, the live report named only these 2.
+  'scripts/hooks/telegram_progress_clear.py':
+    'KEEP FORK (trivial) -- checked the conflicting hunks line by line: every one is comment-only ' +
+    'prose describing the OUTAGE_TEXT/no-answer logic this fork already ported from upstream #2269 ' +
+    '(card c6abbcf5). Both sides describe the IDENTICAL behaviour (same markers -- isApiErrorMessage, ' +
+    'the "<synthetic>" model, known prefixes; same ledger write rule) in different words: ours cites ' +
+    'the fork\'s own card, upstream cites its issue number. No code line differs. Nothing to merge.',
+  'src/web/agent-bundle.ts':
+    'KEEP FORK FOR NOW, real gap flagged for a follow-up card -- this fork\'s isReservedSenderId ' +
+    '(system-directive-id.ts) blocks naming an agent "system" or "system-directive" (the message-' +
+    'impersonation guard from card b46a4b7e; upstream has no equivalent check at all for the ' +
+    'system-directive channel, since that channel does not exist upstream). Upstream\'s competing ' +
+    'check, RESERVED_AGENT_IDS (= FIXED_RESERVED_AGENT_IDS from sanitize.ts, [\'system\', ' +
+    '\'heartbeat\', \'telegram-coordinator\', \'channel-coordinator\'] + an optional VOICE_CHANNEL_ID), ' +
+    'is a DIFFERENT, wider list this fork does not have at all -- verified by grep: no ' +
+    'RESERVED_AGENT_IDS/FIXED_RESERVED_AGENT_IDS/VOICE_CHANNEL_ID symbol exists anywhere in this ' +
+    'fork\'s config.ts or web/sanitize.ts. Adopting it is not a 2-line swap: it needs config.ts + ' +
+    'sanitize.ts additions AND a check for every OTHER place an agent name is validated (not just ' +
+    'bundle import), since a name like "heartbeat" or "telegram-coordinator" colliding with an ' +
+    'internal process is exactly the kind of bug that would NOT show up in this one file\'s tests. ' +
+    'Not resolving that port under drift-reconciliation time pressure (same reasoning as the ' +
+    'agent-terminal.ts TMUX entry above). Keeping the fork\'s own check as-is for now does not lose ' +
+    'anything upstream already had (upstream never had isReservedSenderId); it only leaves the ' +
+    'heartbeat/telegram-coordinator/channel-coordinator name-collision gap open, same as before ' +
+    'this round. Follow-up: port FIXED_RESERVED_AGENT_IDS + RESERVED_AGENT_IDS and wire it in ' +
+    'alongside (not instead of) isReservedSenderId at both call sites in this file.',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -3865,7 +3894,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // Six new pins, card 3602c2ae (backend3, 2026-09-15) -- see the matching ACKNOWLEDGED_CONFLICTS
   // entries above for the reasoning each was read against.
   'README.md': '27eccf3fd2869e59360e3a7e3230546ecd61b4c3',
-  '.claude/settings.json': '7c692deff999b0c72dffa59545629f46c1b0a0c5',
+  '.claude/settings.json': 'a4d62d48e5d86751c54fe30f1179a35429328103',
   'src/__tests__/hook-registration-completeness.test.ts': '5c5f73f28afdcd71d181bd045b5bd40b36e1a764',
   'src/__tests__/setup/assert-not-live-install.ts': '2e85acf6f9ee83b33159d66025b345cd0fc8ccf2',
   'src/__tests__/tmp-root-prefixes.test.ts': '88f3e11b6b3228466b996bdf55ea53c7c9982d82',
@@ -3987,6 +4016,8 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'scripts/self-pace-gate.mjs': '5a671866747074cf03d043295dc1e66bab69a9a4',
   'scripts/sms/seeme-send.py': 'a8801ce9a6cecb33e0a6a4b91a196003ec529e3b',
   'scripts/test_garmin_run_gate.py': ABSENT_UPSTREAM_BLOB,
+  'scripts/hooks/telegram_progress_clear.py': 'b41a49ce35652eb671aaf4dcf916c3f8b6a7217d',
+  'src/web/agent-bundle.ts': 'd1942be7793e78b3438f4b78b745c8799049adb5',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -5385,6 +5416,25 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "not have, so taking it wholesale makes the hook exit 1 and the settings.json wrapper " +
       "block every Bash call of the main agent (measured: ImportError, rc=1). If _is_mcp_send " +
       "disappears, someone merged upstream's version over this fork's adaptation.",
+  },
+  // Card 7f0efce3 (fullstack/DevO, 2026-10-31): agent-bundle.ts's entry above KEEPS FORK because
+  // this fork's isReservedSenderId (system-directive-id.ts) blocks system/system-directive
+  // impersonation, while upstream's competing check (RESERVED_AGENT_IDS = FIXED_RESERVED_AGENT_IDS
+  // from sanitize.ts) is a wider list this fork does not have. Adoption needs config.ts +
+  // sanitize.ts additions and a review of every name-validation site -- too large for a drift
+  // round. If FIXED_RESERVED_AGENT_IDS appears in sanitize.ts, the adoption was attempted and
+  // this refusal needs re-reading (is isReservedSenderId still the single authority?).
+  // Verified absent before writing (grep -c FIXED_RESERVED_AGENT_IDS src/web/sanitize.ts = 0).
+  'src/web/agent-bundle.ts': {
+    needle: 'FIXED_RESERVED_AGENT_IDS',
+    file: 'src/web/sanitize.ts',
+    expect: 'absent',
+    because:
+      "upstream's RESERVED_AGENT_IDS = FIXED_RESERVED_AGENT_IDS (sanitize.ts) widens " +
+      "the reserved-name check beyond this fork's isReservedSenderId; adoption was deferred " +
+      "(card 7f0efce3) because it needs config.ts + sanitize.ts additions, not just this file. " +
+      "If FIXED_RESERVED_AGENT_IDS appears in sanitize.ts, the adoption was started and the " +
+      "agent-bundle.ts refusal needs re-reading.",
   },
 }
 
