@@ -37,7 +37,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
 import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
 import { reserveGhostCallSlot, releaseGhostCallSlot } from './gemini-ghost-budget.js'
 import { getSecret } from './web/vault.js'
@@ -70,7 +70,13 @@ export function isRestFallbackEnabled(): boolean {
 }
 
 const AGY_CALL_SCRIPT = join(STORE, 'gemini-agy-call.sh')
-const AGY_TIMEOUT_MS = 120_000
+// WhiteHat M1 (card b768770a, comment 27860): the wrapper's own seged-hivo.py pause() can sleep up
+// to SEGED_SZUNET_MAX_S=720s before even starting the (default 120s) helper call, plus lock-wait on
+// the shared hourly flock -- 120_000 was shorter than that worst case, so a ranking call landing
+// inside the pause got killed here while the orphaned python child kept running, still spending a
+// slot of the 5/hour budget whose answer we then discarded. 900s = 720s pause + 120s helper + 60s
+// lock-wait margin.
+const AGY_TIMEOUT_MS = 900_000
 
 /**
  * Call Gemini via the Antigravity CLI (agy) instead of the direct REST API.
@@ -97,13 +103,26 @@ export async function callGeminiViaAgy(prompt: string, cardId: string): Promise<
       '--kategoria', 'safe',
       '--prompt', promptFile,
       '--mappa', mappaDir,
-    ], { encoding: 'utf-8', timeout: AGY_TIMEOUT_MS })
+      // `detached` IS honored by the native spawnSync implementation (verified: the child gets
+      // its own pgid, distinct from this process's), it is just missing from @types/node's
+      // SpawnSyncOptions typing -- cast narrowly for this one field rather than widening the call.
+    ], { encoding: 'utf-8', timeout: AGY_TIMEOUT_MS, detached: true } as unknown as SpawnSyncOptionsWithStringEncoding)
+    // WhiteHat M1: Node's built-in spawnSync timeout only signals the immediate bash pid, not its
+    // python grandchild -- bash was the orphan's session leader (not itself the problem), but on a
+    // real timeout the python side kept running and still completed the call. `detached: true`
+    // above makes bash the leader of its OWN process group, so once spawnSync returns with a null
+    // status (killed by the timeout, or any other signal), kill that whole group to guarantee the
+    // python child actually dies instead of silently finishing in the background.
+    if (result.status === null && result.pid) {
+      try { process.kill(-result.pid, 'SIGKILL') } catch { /* already gone */ }
+    }
     if (result.status === 0 && result.stdout?.trim()) {
       return { ok: true, text: result.stdout.trim() }
     }
     if (result.status === 5) return { ok: false, reason: 'quota' }
     if (result.status === 4) return { ok: false, reason: 'network' }
-    if (result.status === 3) return { ok: false, reason: 'auth' }
+    // exit 3 is the wrapper's own gate/category refusal (blocked), not a credential failure.
+    if (result.status === 3) return { ok: false, reason: 'blocked' }
     return { ok: false, reason: 'network', detail: `agy exit ${result.status ?? 'null'}` }
   } finally {
     try { rmSync(mappaDir, { recursive: true, force: true }) } catch {}
