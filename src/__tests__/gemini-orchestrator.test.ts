@@ -7,7 +7,7 @@ let killSwitchJson: string | null = null
 let fallbackStateJson: string | null = null
 let restFallbackPresent = false
 let writtenQueue: unknown = null
-let forcedSpawnResult: { status: number | null; stdout?: string; error?: Error } | null = null
+let forcedSpawnResult: { status: number | null; stdout?: string; error?: Error; pid?: number } | null = null
 // Scoped override for ONLY the agy-script call (gemini-agy-call.sh), distinct from
 // forcedSpawnResult above. forcedSpawnResult (unchanged) still forces ANY spawnSync call when
 // set -- the existing isEligibleForGeminiOrdering tests rely on that to control the
@@ -563,10 +563,21 @@ describe('callGeminiViaAgy (card b768770a)', () => {
     const result = await callGeminiViaAgy('order', 'a1b2c3d4')
     expect(result).toEqual({ ok: false, reason: 'network' })
   })
-  it('agy exits 3 (blocked/auth): returns ok:false reason:auth', async () => {
+  it('agy exits 3 (gate/category refusal): returns ok:false reason:blocked', async () => {
     forcedSpawnResult = { status: 3, stdout: '' }
     const result = await callGeminiViaAgy('order', 'a1b2c3d4')
-    expect(result).toEqual({ ok: false, reason: 'auth' })
+    expect(result).toEqual({ ok: false, reason: 'blocked' })
+  })
+  it('agy times out (status null, has a pid): kills the whole process group, not just bash', async () => {
+    // WhiteHat M1 (b768770a comment 27860): spawnSync's built-in timeout only signals the bash pid;
+    // detached:true makes it the leader of its own group, so a null status with a pid must trigger
+    // an explicit negative-pid kill to take the orphaned python grandchild down too.
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    forcedSpawnResult = { status: null, stdout: '', pid: 54321 }
+    const result = await callGeminiViaAgy('order', 'a1b2c3d4')
+    expect(result.ok).toBe(false)
+    expect(killSpy).toHaveBeenCalledWith(-54321, 'SIGKILL')
+    killSpy.mockRestore()
   })
   it('agy exits 1 (generic failure): returns ok:false reason:network', async () => {
     forcedSpawnResult = { status: 1, stdout: '' }

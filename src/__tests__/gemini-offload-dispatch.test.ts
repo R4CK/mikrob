@@ -2127,3 +2127,112 @@ describe('card f6f67dff R4: is_gemini_blocked python3 call resists PYTHONPATH/cw
     }
   })
 })
+
+// ── M2 (WhiteHat pre-gate finding, card b768770a comment 27860): the existing try_leaf()
+// end-to-end block above (T1) only proves WHETHER try_gemini_for_leaf/try_gemini_second_opinion_
+// for_leaf get called, never WHICH wrapper THEY call internally -- both are stubbed out entirely
+// there. A mutant inverting gemini_rest_fallback_enabled's check inside try_gemini_for_leaf (REST
+// becomes the default again instead of agy) therefore stayed green: measured by WhiteHat,
+// mutant 6ef028751 (that exact inversion) survived against baseline 389/389 passed. These tests
+// extract try_gemini_for_leaf and try_gemini_second_opinion_for_leaf themselves (not a stub) and
+// run them against stub GEMINI_AGY_CALL/GEMINI_OFFLOAD scripts that record which one fired.
+describe('try_gemini_for_leaf() / try_gemini_second_opinion_for_leaf(): agy vs REST routing (M2, card b768770a)', () => {
+  function runGeminiCall(
+    fnName: 'try_gemini_for_leaf' | 'try_gemini_second_opinion_for_leaf',
+    restFallbackEnabled: boolean,
+  ): { agyCalled: boolean; restCalled: boolean; agyArgs: string } {
+    const dispatchSrc = src(DISPATCH)
+    const fallbackFn = extractFn(dispatchSrc, 'gemini_rest_fallback_enabled')
+    const targetFn = extractFn(dispatchSrc, fnName)
+
+    const script = `
+set -uo pipefail
+HERE="$(mktemp -d)"
+${restFallbackEnabled ? 'touch "$HERE/gemini-rest-fallback-enabled"' : ''}
+GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
+GEMINI_AGY_CALL="$HERE/gemini-agy-call.sh"
+RECORD="$HERE/record"
+printf '#!/usr/bin/env bash\\necho REST >> "%s"\\necho "rest-output"\\n' "$RECORD" > "$GEMINI_OFFLOAD"
+printf '#!/usr/bin/env bash\\necho "AGY $*" >> "%s"\\necho "agy-output"\\n' "$RECORD" > "$GEMINI_AGY_CALL"
+chmod +x "$GEMINI_OFFLOAD" "$GEMINI_AGY_CALL"
+
+${fallbackFn}
+attempts_op() { :; }
+gemini_draft_comment_body() { :; }
+gemini_second_opinion_comment_body() { :; }
+DASH="http://unused.invalid"
+DRAFT_AUTHOR="test"
+hdr_file="$HERE/hdr"
+: > "$hdr_file"
+curl() { :; }
+post_id="unused"
+
+${targetFn}
+
+${fnName} "test-leaf-1" "Leaf title" "task text" "$post_id" >/dev/null 2>&1 || true
+
+cat "$RECORD" 2>/dev/null
+rm -rf "$HERE"
+`
+    const out = execFileSync('bash', ['-c', script], { encoding: 'utf-8' })
+    return {
+      agyCalled: out.includes('AGY '),
+      restCalled: out.includes('REST'),
+      agyArgs: out.trim(),
+    }
+  }
+
+  it('try_gemini_for_leaf: toggle ABSENT (default) calls the agy wrapper, never REST', () => {
+    const r = runGeminiCall('try_gemini_for_leaf', false)
+    expect(r.agyCalled).toBe(true)
+    expect(r.restCalled).toBe(false)
+  })
+
+  it('try_gemini_for_leaf: toggle PRESENT calls REST, never the agy wrapper', () => {
+    const r = runGeminiCall('try_gemini_for_leaf', true)
+    expect(r.agyCalled).toBe(false)
+    expect(r.restCalled).toBe(true)
+  })
+
+  it('try_gemini_for_leaf: agy call strips the ~type suffix from a synthetic leaf id before --kartya', () => {
+    const dispatchSrc = src(DISPATCH)
+    const fallbackFn = extractFn(dispatchSrc, 'gemini_rest_fallback_enabled')
+    const targetFn = extractFn(dispatchSrc, 'try_gemini_for_leaf')
+    const script = `
+set -uo pipefail
+HERE="$(mktemp -d)"
+GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
+GEMINI_AGY_CALL="$HERE/gemini-agy-call.sh"
+RECORD="$HERE/record"
+printf '#!/usr/bin/env bash\\necho "AGY $*" >> "%s"\\necho "agy-output"\\n' "$RECORD" > "$GEMINI_AGY_CALL"
+chmod +x "$GEMINI_AGY_CALL"
+${fallbackFn}
+attempts_op() { :; }
+gemini_draft_comment_body() { :; }
+DASH="http://unused.invalid"
+DRAFT_AUTHOR="test"
+hdr_file="$HERE/hdr"
+: > "$hdr_file"
+curl() { :; }
+${targetFn}
+try_gemini_for_leaf "c65add5a~test-scaffold" "Leaf title" "task text" "unused" >/dev/null 2>&1 || true
+cat "$RECORD" 2>/dev/null
+rm -rf "$HERE"
+`
+    const out = execFileSync('bash', ['-c', script], { encoding: 'utf-8' })
+    expect(out).toContain('--kartya c65add5a')
+    expect(out).not.toContain('~test-scaffold')
+  })
+
+  it('try_gemini_second_opinion_for_leaf: toggle ABSENT (default) calls the agy wrapper, never REST', () => {
+    const r = runGeminiCall('try_gemini_second_opinion_for_leaf', false)
+    expect(r.agyCalled).toBe(true)
+    expect(r.restCalled).toBe(false)
+  })
+
+  it('try_gemini_second_opinion_for_leaf: toggle PRESENT calls REST, never the agy wrapper', () => {
+    const r = runGeminiCall('try_gemini_second_opinion_for_leaf', true)
+    expect(r.agyCalled).toBe(false)
+    expect(r.restCalled).toBe(true)
+  })
+})

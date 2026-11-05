@@ -32,7 +32,7 @@ export interface GeminiResult {
   /** Model text on success. */
   text?: string
   /** Machine-readable failure class -- what the caller branches on. */
-  reason?: 'no_key' | 'auth' | 'quota' | 'model_missing' | 'network' | 'bad_response' | 'http'
+  reason?: 'no_key' | 'auth' | 'quota' | 'model_missing' | 'network' | 'bad_response' | 'http' | 'blocked'
   /** Human-readable detail, ALWAYS key-redacted. */
   detail?: string
   httpStatus?: number
