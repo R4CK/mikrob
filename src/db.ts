@@ -913,6 +913,36 @@ export function initDatabase(dbPathOverride?: string): void {
     `)
   }
 
+  // --- Card landings: git-ground-truth for "this card is landed" (card 8e99d55d, Fazis ed332869) --
+  //
+  // Written ONLY by the land scripts (marveen-land.sh / mopsion-land.sh, card a8a83d48) after the
+  // merge/push to origin/develop is VERIFIED -- never typed by an agent. The done-guard (F2.2) and
+  // gate-closure-check.py (F2.3) read this table instead of trusting a REVIEW comment's claimed sha,
+  // closing the fabricated-sha class measured this week (agents reporting landed shas that do not
+  // exist after /compact, 2026-11-01/05).
+  //
+  // One row per actual landing, not per card: a card can land more than once (delta-gate fix after a
+  // NO-GO), and one merge can carry more than one card's commits if an agent bundled several cards
+  // onto one branch before landing -- so no uniqueness on card_id alone, and none on merge_sha alone.
+  // The triple (repo, merge_sha, card_id) IS unique: a re-run of the land script against an
+  // already-landed push must not duplicate the row for the same card.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_landings (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id   TEXT NOT NULL REFERENCES kanban_cards(id),
+      work_sha  TEXT NOT NULL,
+      merge_sha TEXT NOT NULL,
+      repo      TEXT NOT NULL,
+      landed_at INTEGER NOT NULL CHECK (typeof(landed_at) = 'integer'),
+      landed_by TEXT NOT NULL
+    )
+  `)
+  // "Is card X landed" is the question every reader asks (done-guard, gate-closure-check, dashboard).
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_card_landings_card ON card_landings(card_id, landed_at)`)
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_card_landings_repo_merge_card ON card_landings(repo, merge_sha, card_id)`,
+  )
+
   // --- Stuck incidents: the DETECTION as a row, not as prose (card f92671df / ac28bc6e) ---
   //
   // WHAT WAS ACTUALLY MISSING, because it is not what the card first looks like. The fleet already
