@@ -154,16 +154,23 @@ run
 check "stale approval: no schtasks call" "" "$SCHTASKS_CALLS"
 
 # --- 5. Fresh approval, but board is BUSY (in_progress card exists) -> no-op, no schtasks. ---
+# QA non-verdict comment 27874: the old version of this test only asserted no SCHTASKS call --
+# a mutant moving the consume-oneshot call back to BEFORE this precondition (the pre-fix M1
+# order) still passed, because it only burns the approval without ever reaching schtasks. Assert
+# no consume-oneshot curl call either, so that exact reordering mutant is caught directly here
+# (not only incidentally, the way the new G1 case below happens to catch it).
 write_fixtures "$FRESH_APPROVED" "$BUSY_INPROGRESS" "$NEWER_AVAILABLE"
 run
 check "board busy: exit 0"           "0" "$RC"
 check "board busy: no schtasks call" ""  "$SCHTASKS_CALLS"
+check "board busy: no consume-oneshot call (M1 order pin)" "" "$(printf '%s' "$CURL_CALLS" | grep -o 'consume-oneshot' || true)"
 
 # --- 6. Fresh approval, board idle, but available is NOT newer -> no-op, no schtasks. --------
 write_fixtures "$FRESH_APPROVED" "$EMPTY_INPROGRESS" "$NOT_NEWER"
 run
 check "not newer: exit 0"           "0" "$RC"
 check "not newer: no schtasks call" ""  "$SCHTASKS_CALLS"
+check "not newer: no consume-oneshot call (M1 order pin)" "" "$(printf '%s' "$CURL_CALLS" | grep -o 'consume-oneshot' || true)"
 
 # --- 7. POSITIVE: every precondition holds -> schtasks called with ONLY /run /TN <name>. ----
 write_fixtures "$FRESH_APPROVED" "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
