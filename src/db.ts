@@ -9241,13 +9241,41 @@ export function findConsumableApproval(category: string, contentHash: string, wi
   `).get(category, contentHash, cutoff) as Approval | undefined
 }
 
-// Atomic: the WHERE clause's `consumed_at IS NULL` is what makes this race-safe -- two
-// concurrent callers can both SELECT the same row via findConsumableApproval above, but only
-// one UPDATE can win (changes > 0), so only one of them may proceed with the gated action.
-export function consumeApproval(id: string): boolean {
-  const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE approvals SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL')
-    .run(now, id).changes > 0
+// M2 (2a80c6cb): status/window/audit-guarded one-shot consume for non-email categories.
+// Mirrors consumeEmailSendApproval: the conditional UPDATE is the whole decision (race-safe),
+// approval_events row written on success AND refusal, status='approved' + resolved_at window
+// enforced inside the transaction.
+export function consumeApproval(params: {
+  id: string
+  category: string
+  consumer: string
+  windowSeconds: number
+  nowS?: number
+}): ApprovalConsumeResult {
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  return db.transaction((): ApprovalConsumeResult => {
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?
+       WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
+         AND resolved_at IS NOT NULL AND resolved_at >= ?
+    `).run(now, params.consumer, params.id, params.category, now - params.windowSeconds).changes
+    const event = db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const row = getApproval(params.id)
+    if (changes === 1) {
+      event.run(params.id, 'consumed', null, params.consumer, null, now)
+      return { ok: true, approval: row }
+    }
+    let reason: ApprovalConsumeRefusal
+    if (!row) reason = 'not_found'
+    else if (row.category !== params.category) reason = 'wrong_category'
+    else if (row.consumed_at != null) reason = 'already_consumed'
+    else if (row.status !== 'approved') reason = 'not_approved'
+    else reason = 'expired'
+    if (row) event.run(params.id, 'consume_refused', reason, params.consumer, null, now)
+    return { ok: false, reason, approval: row }
+  })()
 }
 
 // A pending request for the SAME category+hash already exists -- reused so a caller retrying

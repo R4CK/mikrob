@@ -457,13 +457,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   }
 
   // POST /api/approvals/:id/consume-oneshot -- 2a80c6cb: atomic one-shot consume
-  // for non-email categories (e.g. gpu-driver-silent-install). Callers: WSL trigger
-  // script and the Windows-side ps1, both as a server-side replay-guard companion
-  // to their local state files. Returns 200 on success, 409 if already consumed or
-  // category mismatch, 404 if not found.
+  // for non-email categories (e.g. gpu-driver-silent-install). Caller: WSL trigger
+  // script only (H1 fix: ps1 no longer calls this endpoint). Returns 200 on success,
+  // 409 if already consumed / category mismatch / not approved / expired, 404 if not found.
+  // M2 fix: delegates to consumeApproval which checks status='approved', resolved_at window,
+  // and writes approval_events on both success and refusal.
   const oneshotMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume-oneshot$/)
   if (oneshotMatch && method === 'POST') {
-    let body: { category?: unknown }
+    let body: { category?: unknown; window_seconds?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -474,22 +475,26 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'category is required' }, 400)
       return true
     }
-    const approval = getApproval(oneshotMatch[1])
-    if (!approval) {
-      json(res, { ok: false, reason: 'not_found' }, 404)
-      return true
-    }
-    if (approval.category !== body.category) {
-      json(res, { ok: false, reason: 'category_mismatch' }, 409)
-      return true
-    }
-    const consumed = consumeApproval(oneshotMatch[1])
-    if (consumed) {
+    const windowSeconds = typeof body.window_seconds === 'number' && body.window_seconds > 0
+      ? body.window_seconds
+      : 3600
+    const result = consumeApproval({
+      id: oneshotMatch[1],
+      category: body.category,
+      consumer: 'oneshot-api',
+      windowSeconds,
+    })
+    if (result.ok) {
       logger.info({ id: oneshotMatch[1], category: body.category }, 'Approval consumed (oneshot)')
       json(res, { ok: true })
       return true
     }
-    json(res, { ok: false, reason: 'already_consumed' }, 409)
+    logger.info({ id: oneshotMatch[1], category: body.category, reason: result.reason }, 'Approval consume-oneshot refused')
+    if (result.reason === 'not_found') {
+      json(res, { ok: false, reason: result.reason }, 404)
+      return true
+    }
+    json(res, { ok: false, reason: result.reason }, 409)
     return true
   }
 

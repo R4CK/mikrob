@@ -75,6 +75,9 @@ STATE="${GPU_DRIVER_INSTALL_STATE:-$HERE/gpu-driver-silent-install-trigger-state
 CHECK_BIN="${GPU_DRIVER_INSTALL_CHECK_BIN:-$HERE/gpu-driver-check.sh}"
 DRIVER_STATE="${GPU_DRIVER_INSTALL_DRIVER_STATE:-$HERE/gpu-driver-state.json}"
 LOCK_FILE="${GPU_DRIVER_INSTALL_LOCK_FILE:-$STATE.lock}"
+# M1/H1 fix (2a80c6cb): trigger receipt written AFTER consume succeeds + schtasks fires.
+# The ps1 reads this file instead of calling consume-oneshot -- no API call, no token on Windows.
+RECEIPT_PATH="${GPU_DRIVER_INSTALL_RECEIPT_PATH:-/mnt/c/ProgramData/MikroB-Drivers/gpu-driver-install-trigger-receipt.json}"
 
 log() { printf '[gpu-driver-silent-install-trigger %s] %s\n' "$(date -u +'%H:%M:%S')" "$1"; }
 
@@ -168,41 +171,6 @@ if [ -z "$APPROVAL_ID" ]; then
   exit 0
 fi
 
-# --- F2: server-side atomic consume (card 2a80c6cb) ------------------------------------------
-# Belt-and-suspenders: the flock above serialises same-WSL concurrent callers; this makes the
-# consume server-side-durable so a deleted/reset local state file cannot replay an already-consumed
-# approval on a fresh invocation. Fail-closed: any response other than ok=true or already_consumed
-# causes an exit 1 (refuse) rather than proceeding with an unverified approval.
-CONSUME_BODY="$(python3 -c "import json; print(json.dumps({'category': '${APPROVAL_CATEGORY}'}), end='')")"
-CONSUME_RESP="$("$CURL_BIN" -s --max-time 10 \
-  -H @"$hdr_file" -H 'Content-Type: application/json' \
-  -X POST --data-binary "$CONSUME_BODY" \
-  "$API/api/approvals/${APPROVAL_ID}/consume-oneshot" 2>/dev/null)"
-CONSUME_OUTCOME="$(printf '%s' "$CONSUME_RESP" | python3 -c "
-import json, sys
-try:
-    d = json.loads(sys.stdin.read())
-    if d.get('ok'):
-        print('ok')
-    else:
-        print(d.get('reason', 'error'))
-except Exception:
-    print('error')
-" 2>/dev/null)"
-case "$CONSUME_OUTCOME" in
-  ok)
-    log "server-side consume accepted for approval $APPROVAL_ID"
-    ;;
-  already_consumed)
-    log "server-side consume: approval $APPROVAL_ID already consumed -- no-op (replay blocked server-side)"
-    exit 0
-    ;;
-  *)
-    log "FAIL-CLOSED: server-side consume-oneshot returned unexpected outcome '$CONSUME_OUTCOME' ($CONSUME_RESP) -- refusing"
-    exit 1
-    ;;
-esac
-
 # --- precondition 3: board idle (the install ends with a full fleet wsl --shutdown) ----------
 IN_PROGRESS_JSON="$(http_get "/api/kanban?status=in_progress")"
 if [ -z "$IN_PROGRESS_JSON" ]; then
@@ -256,6 +224,42 @@ if [ "$CMP" != "gt" ]; then
   exit 0
 fi
 
+# --- F2: server-side atomic consume (M1/2a80c6cb) -- AFTER both board-idle and version checks
+# Belt-and-suspenders: the flock above serialises same-WSL concurrent callers; this makes the
+# consume server-side-durable so a deleted/reset local state file cannot replay an already-consumed
+# approval on a fresh invocation. Placed here (after preconditions 3+4) so the approval is only
+# burned when ALL preconditions have passed -- a busy board or no-newer-version run no longer
+# silently consumes and wastes the approval.
+CONSUME_BODY="$(python3 -c "import json; print(json.dumps({'category': '${APPROVAL_CATEGORY}', 'window_seconds': ${APPROVAL_WINDOW_S}}), end='')")"
+CONSUME_RESP="$("$CURL_BIN" -s --max-time 10 \
+  -H @"$hdr_file" -H 'Content-Type: application/json' \
+  -X POST --data-binary "$CONSUME_BODY" \
+  "$API/api/approvals/${APPROVAL_ID}/consume-oneshot" 2>/dev/null)"
+CONSUME_OUTCOME="$(printf '%s' "$CONSUME_RESP" | python3 -c "
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+    if d.get('ok'):
+        print('ok')
+    else:
+        print(d.get('reason', 'error'))
+except Exception:
+    print('error')
+" 2>/dev/null)"
+case "$CONSUME_OUTCOME" in
+  ok)
+    log "server-side consume accepted for approval $APPROVAL_ID"
+    ;;
+  already_consumed)
+    log "server-side consume: approval $APPROVAL_ID already consumed -- no-op (replay blocked server-side)"
+    exit 0
+    ;;
+  *)
+    log "FAIL-CLOSED: server-side consume-oneshot returned unexpected outcome '$CONSUME_OUTCOME' ($CONSUME_RESP) -- refusing"
+    exit 1
+    ;;
+esac
+
 # --- all four preconditions hold: fire the task, NO parameters passed ------------------------
 log "all preconditions hold (approval=$APPROVAL_ID, available=$AVAILABLE > installedHost=$INSTALLED_HOST) -- triggering $TASK_NAME"
 if [ -x "$WSL_INTEROP_RESOLVE_SH" ]; then
@@ -285,5 +289,30 @@ with open(tmp, 'w') as f:
     f.write('\n')
 os.replace(tmp, '$STATE')
 "
+
+# H1/M1 fix (2a80c6cb): write trigger receipt to Windows side so ps1 can verify without
+# calling consume-oneshot. Fail-closed: if the receipt cannot be written, the ps1 would
+# refuse (no receipt = no approval); log and continue -- the local state above is already
+# recorded so this run is durable.
+python3 -c "
+import json, os, sys
+receipt = {
+    'approvalId': '$APPROVAL_ID',
+    'consumedAt': $(date -u +%s),
+    'triggerVersion': 1,
+}
+path = '$RECEIPT_PATH'
+tmp = path + '.tmp'
+try:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(tmp, 'w') as f:
+        json.dump(receipt, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, path)
+    print('receipt written: ' + path)
+except Exception as e:
+    print('WARNING: could not write trigger receipt: ' + str(e), file=sys.stderr)
+" && log "trigger receipt written to $RECEIPT_PATH" || log "WARNING: could not write trigger receipt to $RECEIPT_PATH (ps1 will refuse -- check permissions)"
+
 log "triggered. approval $APPROVAL_ID recorded as used -- will not fire again on this same approval."
 exit 0

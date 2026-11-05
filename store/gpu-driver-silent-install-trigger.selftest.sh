@@ -107,6 +107,7 @@ run() { # sets RC, CURL_CALLS, SCHTASKS_CALLS, STATE_CONTENT
   GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S=3600 \
   GPU_DRIVER_INSTALL_STATE="$TMP/trigger-state.json" \
   GPU_DRIVER_INSTALL_DRIVER_STATE="$DRIVER_STATE_FIXTURE" \
+  GPU_DRIVER_INSTALL_RECEIPT_PATH="$TMP/trigger-receipt.json" \
   GPU_DRIVER_SILENT_INSTALL="${FLAG:-on}" \
     bash "$BIN" >"$TMP/stdout.txt" 2>&1 || RC=$?
   CURL_CALLS="$(cat "$TMP/curl-calls.txt")"
@@ -171,6 +172,7 @@ check "positive: exit 0"            "0" "$RC"
 check "positive: schtasks call, no extra params" "/run /TN MikroB-GPU-Driver-Install" "$SCHTASKS_CALLS"
 check "positive: approval recorded as used" "appr-1" "$(python3 -c "import json; print(json.load(open('$TMP/trigger-state.json')).get('lastTriggeredApprovalId'))" 2>/dev/null)"
 check "positive: approval recorded in usedApprovalIds set" "['appr-1']" "$(python3 -c "import json; print(json.load(open('$TMP/trigger-state.json')).get('usedApprovalIds'))" 2>/dev/null)"
+check "positive: receipt file written" "appr-1" "$(python3 -c "import json; print(json.load(open('$TMP/trigger-receipt.json')).get('approvalId'))" 2>/dev/null)"
 
 # --- 8. REPLAY GUARD: same approval, run again -> no-op, no second schtasks call. ------------
 run

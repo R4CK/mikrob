@@ -230,7 +230,10 @@ if (-not (Test-TrustedOwner $TargetDir)) {
     exit 1
 }
 $expectedNames = @('setup.log', 'launcher.log', 'gpu-driver-install.ps1', 'gpu-driver-install-launcher.ps1', 'gpu-driver-install.sha256',
-                   'gpu-driver-approval.token')  # F1 (2a80c6cb): scoped category token only; the shared fleet token must never appear here
+                   'gpu-driver-install-trigger-receipt.json', 'gpu-driver-install-used-approvals.json')
+# H1 fix (2a80c6cb delta): no token ever placed on the Windows side; ps1 verifies via the
+# trigger receipt written by the WSL trigger instead of calling consume-oneshot.
+# The shared fleet token must never appear in this directory.
 $existing = Get-ChildItem $TargetDir -Force -ErrorAction SilentlyContinue
 foreach ($item in @($existing)) {
     if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
