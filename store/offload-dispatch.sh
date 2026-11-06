@@ -1625,27 +1625,27 @@ fi
 # GPU-hold case, by name, drafting via freellm).
 if [[ "${1:-}" == "--test-capacity-route" ]]; then
   shift
-  while IFS='|' read -r b64id b64title b64desc; do
-    [[ -z "$b64id" ]] && continue
-    lid="$(printf '%s' "$b64id" | base64 -d)"
-    ltitle="$(printf '%s' "$b64title" | base64 -d)"
-    ldesc="$(printf '%s' "$b64desc" | base64 -d)"
-    ltask="$ltitle
-
-$ldesc"
-    out="$(printf '%s' "$ltask" | bash "$FREELLM_CALL" 2>/dev/null)"; rc=$?
-    case "$rc" in
-      0) if [[ -n "${out// }" ]]; then echo "$lid drafted"; else echo "$lid failed"; fi ;;
-      2) echo "$lid disabled" ;;
-      4) echo "$lid gate-refused" ;;
-      *) echo "$lid failed" ;;
-    esac
-  done < <(python3 -c '
-import json, sys, base64
-for l in json.load(sys.stdin):
-    fields = [l["id"], l["title"], l["description"]]
-    print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
-')
+  # Deliberately NOT the base64/pipe writer+reader shape the main leaf loop uses (see
+  # offload-draft-nudge.test.ts's single-writer/single-reader regression guard) -- this is a
+  # read-only test probe, so each leaf's freellm call is driven straight from python via
+  # subprocess, one process per leaf, no intermediate bash loop at all.
+  FREELLM_CALL="$FREELLM_CALL" python3 -c '
+import json, os, subprocess, sys
+leaves = json.load(sys.stdin)
+call = os.environ["FREELLM_CALL"]
+for l in leaves:
+    task = (l.get("title", "") + "\n\n" + l.get("description", "")).encode()
+    p = subprocess.run(["bash", call], input=task, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    out = p.stdout.decode(errors="replace")
+    if p.returncode == 0 and out.strip():
+        print(l["id"], "drafted")
+    elif p.returncode == 2:
+        print(l["id"], "disabled")
+    elif p.returncode == 4:
+        print(l["id"], "gate-refused")
+    else:
+        print(l["id"], "failed")
+'
   exit 0
 fi
 
@@ -1903,13 +1903,8 @@ $leaf_desc"
       elif gemini_heavy_second_opinion_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" && reserve_heavy_gemini_slot "$leaf_id"; then
         try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
       fi
-      # FREELLM FALLBACK when local attempts are exhausted (card 4eb3743e, "helyi -> freellm ->
-      # online"): independent of the Gemini switches above (both may be off, both may be on --
-      # whichever responds first with a usable draft wins; freellm-call.sh's own switch/content
-      # gate decide whether it even tries).
-      if try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic"; then
-        return 0
-      fi
+      # FREELLM FALLBACK (card 4eb3743e, "helyi -> freellm -> online"), independent of Gemini above.
+      try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
@@ -1926,44 +1921,18 @@ $leaf_desc"
 # failure of the sweep, and a non-zero exit here would make the heartbeat treat a healthy machine as
 # a broken one. Missing guard -> skipped; any non-zero exit from it -> stop, same direction as the
 # other two call sites.
+# CAPACITY_HOLD (card 4eb3743e): a vram/gpu-util hold used to mean an unconditional exit 0 here,
+# before the leaf loop even started. Now it instead sets a flag the SAME leaf loop below reads --
+# each leaf still goes through the one existing writer/reader (no second one, see
+# offload-draft-nudge.test.ts's single-writer/single-reader regression guard), just routed to
+# try_freellm_for_leaf instead of try_leaf. Still exits 0 either way (best-effort, see header).
+CAPACITY_HOLD=0
 VRAM_GUARD="${OFFLOAD_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
 if [[ -f "$VRAM_GUARD" ]]; then
   vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
   if [[ "$vram_rc" -ne 0 ]]; then
-    echo "offload-dispatch: the local model cannot take work now (${vram_line:-no output}, rc=$vram_rc)." >&2
-    # GPU-HOLD -> FREELLM (card 4eb3743e): a capacity hold (vram-hold/model-busy/gpu-util-hold) used
-    # to always mean "exit 0, nothing drafted". Now, before giving up, try freellm-call.sh for each
-    # leaf -- it is its own gate (switch + content check), so a disabled/refused leaf here costs
-    # nothing beyond the one subprocess call. Still exits 0 either way: a capacity hold with no
-    # freellm draft is exactly the prior (unconditional-skip) behaviour, not a new failure mode.
-    freellm_capacity_drafted=0
-    while IFS='|' read -r b64id b64title b64desc b64synthetic; do
-      [[ -z "$b64id" ]] && continue
-      lid="$(printf '%s' "$b64id" | base64 -d)"
-      precheck_status="$(attempts_op check "$lid" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status","pending"))' 2>/dev/null)"
-      [[ "$precheck_status" == "done" || "$precheck_status" == "exhausted" ]] && continue
-      ltitle="$(printf '%s' "$b64title" | base64 -d)"
-      ldesc="$(printf '%s' "$b64desc" | base64 -d)"
-      lsynthetic="$(printf '%s' "$b64synthetic" | base64 -d)"
-      lpost_id="${lid%%~*}"
-      ltask="$ltitle
-
-$ldesc"
-      if try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
-        freellm_capacity_drafted=$(( freellm_capacity_drafted + 1 ))
-      fi
-    done < <(printf '%s' "$LEAVES_JSON" | python3 -c '
-import json, sys, base64
-for l in json.load(sys.stdin):
-    fields = [l["id"], l["title"], l["description"], str(bool(l.get("synthetic", False))).lower()]
-    print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
-')
-    if [[ "$freellm_capacity_drafted" -gt 0 ]]; then
-      echo "offload-dispatch: $CARD -> GPU-hold, posted freellm draft(s) [$freellm_capacity_drafted leaf attempt(s)]" >&2
-    else
-      echo "offload-dispatch: $CARD -> GPU-hold, no freellm draft (disabled/refused/failed). Nothing was drafted; the card is untouched and goes online as usual." >&2
-    fi
-    exit 0
+    echo "offload-dispatch: the local model cannot take work now (${vram_line:-no output}, rc=$vram_rc) -- trying freellm per leaf instead of giving up." >&2
+    CAPACITY_HOLD=1
   fi
 fi
 
@@ -2028,7 +1997,16 @@ else:
     print(desc)
 ')"
   attempted=$(( attempted + 1 ))
-  if try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic" "$lveto"; then
+  # CAPACITY_HOLD (card 4eb3743e): under a GPU-hold the local path is skipped entirely in favor of
+  # freellm -- try_leaf() is never called on this tick (it would just re-measure the same hold).
+  if [[ "$CAPACITY_HOLD" -eq 1 ]]; then
+    ltask="$ltitle
+
+$ldesc"
+    if try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
+      drafted=$(( drafted + 1 ))
+    fi
+  elif try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic" "$lveto"; then
     drafted=$(( drafted + 1 ))
   fi
 done < <(printf '%s' "$LEAVES_JSON" | python3 -c '
