@@ -108,20 +108,33 @@ except FileNotFoundError:
 if rec_pid is None:
     print("no-started-record")
 elif caller_pid_start not in ("0", "") and str(rec_pid) == caller_pid and str(rec_pid_start) == caller_pid_start:
-    print("ok")
+    print(f"ok|{rec_pid}|{rec_pid_start}")
 else:
     print("mismatch")
 ' "$JOURNAL_FILE" "$run_id" "$caller_pid" "$caller_pid_start" 2>/dev/null)" || verdict="mismatch"
-    if [ "$verdict" != "ok" ]; then
-      echo "land-run-journal: REFUSED finish for run $run_id -- caller (process group $caller_pid) does not match the process that called start ($verdict). Not marking finished." >&2
-      exit 1
-    fi
+    case "$verdict" in
+      ok\|*) rec_pid="${verdict#ok|}"; rec_pid="${rec_pid%|*}"; rec_pid_start="${verdict##*|}" ;;
+      *)
+        echo "land-run-journal: REFUSED finish for run $run_id -- caller (process group $caller_pid) does not match the process that called start ($verdict). Not marking finished." >&2
+        exit 1
+        ;;
+    esac
+    # QA FAIL 28614 (card 88b67fb4 delta): a raw `echo '{"event":"finished",...}' >> journal` never
+    # goes through this script at all, so the caller-identity check above cannot see it. Embedding
+    # the VALIDATED pid/pid_start into the finished event itself lets the READER (land-run-stale-
+    # check.sh) reject a `finished` line whose pid/pid_start do not match its own `started` record --
+    # catching exactly the naive forgery QA demonstrated (a finished event with no matching pid
+    # data at all). This is NOT tamper-evidence against a forger who deliberately copies the
+    # started record's own pid/pid_start fields (same-uid readable, no secret involved) -- that
+    # residual gap needs an other-uid writer or a per-run secret never written to disk, per
+    # WhiteHat's own framing of M3 as crash detection, not tamper evidence.
     payload="$(python3 -c '
 import json, sys
 print(json.dumps({
     "run_id": sys.argv[1], "event": "finished", "ts": int(sys.argv[2]),
     "result": ("ok" if sys.argv[3] == "0" else "fail"), "exit_code": sys.argv[3], "note": sys.argv[4],
-}))' "$run_id" "$(_lrj_now)" "${code:-unknown}" "$note" 2>/dev/null)" || payload=""
+    "pid": int(sys.argv[5]), "pid_start": sys.argv[6],
+}))' "$run_id" "$(_lrj_now)" "${code:-unknown}" "$note" "$rec_pid" "$rec_pid_start" 2>/dev/null)" || payload=""
     [ -n "$payload" ] && _lrj_append "$payload"
     ;;
   *)

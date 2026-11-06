@@ -50,7 +50,7 @@ def is_valid(rec):
     return True
 
 try:
-    runs = {}  # run_id -> {started, finished, last_ts, script, agent, card}
+    records = []
     malformed = 0
 
     with open(journal_file, encoding="utf-8") as f:
@@ -66,23 +66,54 @@ try:
             if not is_valid(rec):
                 malformed += 1
                 continue
-            rid = str(rec.get("run_id"))
-            r = runs.setdefault(rid, {"last_ts": 0})
-            ts = rec.get("ts", 0) or 0
+            records.append(rec)
+
+    # First pass: collect the `started` pid/pid_start recorded for each run_id -- this is the only event the
+    # ORIGINATING land script itself ever writes with a verified identity (land-run-journal.sh
+    # binds it to the caller process group at write time). A `finished` line is only trustworthy
+    # if it carries the SAME pid/pid_start back (QA FAIL 28614, card 88b67fb4 delta): a raw
+    # a raw append of a fabricated finished line bypasses land-run-journal.sh entirely, so it
+    # never gets those fields filled in correctly, and is caught here instead.
+    started_identity = {}  # run_id -> (pid, pid_start)
+    runs = {}  # run_id -> {trusted_finished, last_ts, script, agent, card, started_ts}
+    for rec in records:
+        if rec.get("event") != "started":
+            continue
+        rid = str(rec.get("run_id"))
+        started_identity[rid] = (rec.get("pid"), rec.get("pid_start"))
+        r = runs.setdefault(rid, {"last_ts": 0})
+        ts = rec.get("ts", 0) or 0
+        r["last_ts"] = max(r["last_ts"], ts)
+        r["script"] = rec.get("script", "?")
+        r["agent"] = rec.get("agent", "?")
+        r["card"] = rec.get("card", "-")
+        r["started_ts"] = ts
+
+    untrusted_finish = 0
+    for rec in records:
+        event = rec.get("event")
+        if event == "started":
+            continue
+        rid = str(rec.get("run_id"))
+        r = runs.setdefault(rid, {"last_ts": 0})
+        ts = rec.get("ts", 0) or 0
+        if event == "heartbeat":
             r["last_ts"] = max(r["last_ts"], ts)
-            event = rec.get("event")
-            if event == "started":
-                r["script"] = rec.get("script", "?")
-                r["agent"] = rec.get("agent", "?")
-                r["card"] = rec.get("card", "-")
-                r["started_ts"] = ts
-            elif event == "finished":
-                r["finished"] = True
+        elif event == "finished":
+            want = started_identity.get(rid)
+            got = (rec.get("pid"), rec.get("pid_start"))
+            if want is not None and want == got and want[0] is not None:
+                r["trusted_finished"] = True
+                r["last_ts"] = max(r["last_ts"], ts)
+            else:
+                # Does NOT extend last_ts and does NOT count as finished -- an untrusted finished
+                # line must never make a genuinely stale/killed run look fresh or done.
+                untrusted_finish += 1
 
     now = time.time()
     stale = []
     for rid, r in runs.items():
-        if r.get("finished"):
+        if r.get("trusted_finished"):
             continue
         if "started_ts" not in r:
             continue  # a heartbeat/finished line with no matching started line -- nothing to flag
@@ -96,8 +127,10 @@ try:
 
     if malformed:
         print(f"MALFORMED count={malformed} -- one or more journal lines could not be parsed/validated; treated as a stale-equivalent signal")
+    if untrusted_finish:
+        print(f"UNTRUSTED-FINISH count={untrusted_finish} -- a finished line did not match the recorded pid/pid_start for its run; not honored as a finish")
 
-    print("ALERT:yes" if (stale or malformed) else "ALERT:no")
+    print("ALERT:yes" if (stale or malformed or untrusted_finish) else "ALERT:no")
 except Exception as e:
     print(f"ERROR: land-run-stale-check crashed: {e}", file=sys.stderr)
     print("ALERT:yes")

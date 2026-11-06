@@ -147,6 +147,58 @@ case "$out" in
   *) bad "malformed journal lines did not force ALERT:yes: $out" ;;
 esac
 
+# 6. QA FAIL 28614 delta: a RAW file append (not through land-run-journal.sh at all -- the exact
+#    technique QA demonstrated) of a fabricated `finished` event must not be honored. Start a run
+#    normally, age it past the threshold, confirm stale, then directly append a forged finished
+#    line with NO pid/pid_start fields (QA's own reproduction used the plain documented JSON shape,
+#    which had no such fields before this delta) and confirm the run is still reported stale.
+raw_rid="$(bash "$HERE/land-run-journal.sh" start marveen-land.sh backend2 cardRaw)"
+if [ -z "$raw_rid" ]; then
+  bad "raw-forgery-test start printed no run_id"
+else
+  python3 -c '
+import json, sys, time
+old_ts = int(time.time()) - 900
+path, rid = sys.argv[1], sys.argv[2]
+out = []
+with open(path, encoding="utf-8") as f:
+    for line in f:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            rec = json.loads(stripped)
+        except Exception:
+            rec = None
+        if not isinstance(rec, dict):
+            out.append(stripped)  # pass pre-existing malformed lines through unchanged
+            continue
+        if rec.get("run_id") == rid and rec.get("event") == "started":
+            rec["ts"] = old_ts
+        out.append(json.dumps(rec))
+with open(path, "w", encoding="utf-8") as f:
+    f.write("\n".join(out) + "\n")
+' "$LAND_RUN_JOURNAL_FILE" "$raw_rid"
+
+  # The forgery itself: a plain shell append, no knowledge of the pid/pid_start binding at all.
+  python3 -c '
+import json, sys, time
+with open(sys.argv[1], "a", encoding="utf-8") as f:
+    f.write(json.dumps({"run_id": sys.argv[2], "event": "finished", "ts": int(time.time()),
+                         "result": "ok", "exit_code": "0", "note": "forged"}) + "\n")
+' "$LAND_RUN_JOURNAL_FILE" "$raw_rid"
+
+  out="$(STALE_AFTER_SECONDS=600 bash "$HERE/land-run-stale-check.sh")"
+  case "$out" in
+    *"run_id=$raw_rid"*ALERT:yes*) ok "a raw-appended forged finished line (no pid binding) does not clear the stale flag" ;;
+    *) bad "a raw-appended forged finished line cleared the stale flag: $out" ;;
+  esac
+  case "$out" in
+    *"UNTRUSTED-FINISH count="*) ok "the untrusted finished line is reported as such" ;;
+    *) bad "the untrusted finished line was not flagged: $out" ;;
+  esac
+fi
+
 echo "land-run-journal selftest done"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"
