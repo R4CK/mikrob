@@ -614,17 +614,27 @@ done
 # commands can clobber the status the trap is reporting.
 _LAND_RUN_JOURNAL="$(dirname "$0")/land-run-journal.sh"
 _LAND_RUN_ID="$(bash "$_LAND_RUN_JOURNAL" start mopsion-land.sh "${LANDED_BY:-unknown}" "$CARD" 2>/dev/null || true)"
+_LAND_RUN_FINISHED=0
 cleanup() {
   local _rc=$?
   if [ -n "${WT:-}" ]; then
     git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1 || true
   fi
-  if [ -n "${_LAND_RUN_ID:-}" ]; then
+  if [ -n "${_LAND_RUN_ID:-}" ] && [ "$_LAND_RUN_FINISHED" != "1" ]; then
     bash "$_LAND_RUN_JOURNAL" finish "$_LAND_RUN_ID" "$_rc" >/dev/null 2>&1 || true
+    _LAND_RUN_FINISHED=1
   fi
   return "$_rc"
 }
 trap cleanup EXIT
+# card 88b67fb4, MikroB's live-D/5 gap 2 (msg_id:16818): a deliberate stop (SIGTERM, e.g. an
+# operator asking an agent to stop a land run) does not reliably run the EXIT trap -- bash only
+# guarantees that for SIGKILL being unreachable entirely, not for every signal reaching an explicit
+# `exit` call. Without this, a deliberate stop is indistinguishable from the fullstack crash this
+# whole mechanism exists to catch. This records it as "aborted" (not "fail") BEFORE exiting, and
+# marks _LAND_RUN_FINISHED so cleanup()'s EXIT trap does not also try to write a second, competing
+# finished line for the same run.
+trap '_LAND_RUN_FINISHED=1; if [ -n "${_LAND_RUN_ID:-}" ]; then bash "$_LAND_RUN_JOURNAL" finish "$_LAND_RUN_ID" 143 "deliberate stop (SIGTERM)" aborted >/dev/null 2>&1 || true; fi; exit 143' TERM
 
 # THE GATE VERDICT, checked against the board before anything else happens (card 9081d02d). Placed
 # here on purpose: it is the cheapest precondition in the script, so a landing that should not

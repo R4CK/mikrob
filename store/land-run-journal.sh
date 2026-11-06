@@ -14,7 +14,14 @@
 # about variable-name collisions with a sourced library):
 #   land-run-journal.sh start     <script> <agent> <card-or-dash>   -> prints a run_id to stdout
 #   land-run-journal.sh heartbeat <run_id>
-#   land-run-journal.sh finish    <run_id> <exit-code> [note]
+#   land-run-journal.sh finish    <run_id> <exit-code> [note] [result]
+#
+# [result] (card 88b67fb4, MikroB's live-D/5 gap 2, msg_id:16818): a deliberate stop (SIGTERM) is
+# not a crash, but without an explicit way to say so, land-run-stale-check.sh has no choice but to
+# treat it the same as a killed process -- a correct detection, but one that reads as an incident
+# when it was actually requested. If given, [result] OVERRIDES the exit-code-derived "ok"/"fail"
+# verbatim (e.g. "aborted"); the caller is expected to use this only for a genuinely deliberate
+# stop it is recording itself (a TERM trap), not to launder a real failure's exit code.
 #
 # Every call is BEST-EFFORT in the sense that a journal write failure must never fail the landing
 # it is watching (same principle as kanban-comment-lib.sh's functions) -- but `start` still prints
@@ -78,9 +85,10 @@ print(json.dumps({"run_id": sys.argv[1], "event": "heartbeat", "ts": int(sys.arg
     [ -n "$payload" ] && _lrj_append "$payload"
     ;;
   finish)
-    run_id="${2:?usage: land-run-journal.sh finish <run_id> <exit-code> [note]}"
+    run_id="${2:?usage: land-run-journal.sh finish <run_id> <exit-code> [note] [result]}"
     code="${3:-}"
     note="${4:-}"
+    result_override="${5:-}"
     [ -n "$run_id" ] || exit 0
     caller_pid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')"
     [ -n "$caller_pid" ] || caller_pid="$$"
@@ -130,11 +138,13 @@ else:
     # WhiteHat's own framing of M3 as crash detection, not tamper evidence.
     payload="$(python3 -c '
 import json, sys
+override = sys.argv[7]
 print(json.dumps({
     "run_id": sys.argv[1], "event": "finished", "ts": int(sys.argv[2]),
-    "result": ("ok" if sys.argv[3] == "0" else "fail"), "exit_code": sys.argv[3], "note": sys.argv[4],
+    "result": (override if override else ("ok" if sys.argv[3] == "0" else "fail")),
+    "exit_code": sys.argv[3], "note": sys.argv[4],
     "pid": int(sys.argv[5]), "pid_start": sys.argv[6],
-}))' "$run_id" "$(_lrj_now)" "${code:-unknown}" "$note" "$rec_pid" "$rec_pid_start" 2>/dev/null)" || payload=""
+}))' "$run_id" "$(_lrj_now)" "${code:-unknown}" "$note" "$rec_pid" "$rec_pid_start" "$result_override" 2>/dev/null)" || payload=""
     [ -n "$payload" ] && _lrj_append "$payload"
     ;;
   *)

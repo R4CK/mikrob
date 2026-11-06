@@ -35,6 +35,15 @@ case "$TRAP_BLOCK" in
   *"trap cleanup EXIT"*) : ;;
   *) echo "FATAL: extracted block does not end in 'trap cleanup EXIT'" >&2; exit 1 ;;
 esac
+
+# card 88b67fb4, MikroB's live-D/5 gap 2 (msg_id:16818): the TERM trap registered right after the
+# EXIT trap, extracted the same verbatim way -- a deliberate SIGTERM stop must record "aborted",
+# not read as a crash.
+FULL_BLOCK="$(sed -n '/^_LAND_RUN_JOURNAL="\$(dirname "\$0")\/land-run-journal\.sh"$/,/^trap .*TERM$/p' "$LAND_SCRIPT")"
+case "$FULL_BLOCK" in
+  *"' TERM"*) : ;;
+  *) echo "FATAL: could not extract the TERM trap line from $LAND_SCRIPT -- anchor moved" >&2; exit 1 ;;
+esac
 # Exactly one `trap ... EXIT` in the extracted block -- the regression this test exists to catch
 # is a SECOND one further down in mopsion-land.sh replacing this one; it must not sneak back into
 # the block between these two anchors either.
@@ -116,6 +125,61 @@ sys.exit(0 if found else 1)
     ok "case B (early exit 3, \$WT never set): journal has a finished/exit_code=3 line"
   else
     bad "case B: no finished line (exit_code=3) for run_id=$rid_b -- an early die() would read as STALE forever"
+  fi
+fi
+
+# Case C (card 88b67fb4, MikroB's live-D/5 gap 2): the REAL TERM trap, extracted verbatim, must
+# record "aborted" (not a crash/fail) when the process receives a deliberate SIGTERM, and must
+# still exit 143. Run the extracted block + a long sleep in a background process, then kill -TERM
+# it from here (simulating an operator stopping the land run), same as a real agent would.
+out_c_file="$WORK/case-c-rid.txt"
+rc_c_file="$WORK/case-c-rc.txt"
+bash -c '
+MAIN="/tmp/does-not-need-to-exist-for-this-test"
+CARD="cardC"
+LANDED_BY="backend"
+'"$FULL_BLOCK"'
+echo "$_LAND_RUN_ID" >"'"$out_c_file"'"
+sleep 30
+' "$LAND_SCRIPT" &
+bg_pid=$!
+# Give the background process a moment to actually reach the sleep (run_id file written).
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -s "$out_c_file" ] && break
+  sleep 0.2
+done
+kill -TERM "$bg_pid" 2>/dev/null || true
+wait "$bg_pid" 2>/dev/null; echo $? >"$rc_c_file"
+rid_c="$(cat "$out_c_file" 2>/dev/null)"
+rc_c="$(cat "$rc_c_file" 2>/dev/null)"
+if [ -z "$rid_c" ]; then
+  bad "case C printed no run_id (background process never reached the sleep)"
+else
+  if [ "$rc_c" = "143" ]; then
+    ok "case C: a SIGTERM'd land run exits 143"
+  else
+    bad "case C: a SIGTERM'd land run exited $rc_c, expected 143"
+  fi
+  if python3 -c '
+import json, sys
+rid = sys.argv[2]
+found = False
+with open(sys.argv[1], encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("run_id") == rid and rec.get("event") == "finished" and rec.get("result") == "aborted":
+            found = True
+sys.exit(0 if found else 1)
+' "$LAND_RUN_JOURNAL_FILE" "$rid_c"; then
+    ok "case C: journal has a finished/aborted line for the SIGTERM'd run -- not a crash, not a plain fail"
+  else
+    bad "case C: no finished/aborted line for run_id=$rid_c -- a deliberate stop would read as a killed process"
   fi
 fi
 
