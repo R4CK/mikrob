@@ -87,14 +87,28 @@ function sha256(buf: Buffer): string {
 // to catch a change made while nothing was running. This does not make the history dir the
 // source of truth in general (see the HONEST LIMIT above): an ongoing process still compares
 // only against its own in-memory `approved` baseline.
-function readLastHistoryEntry(historyDir: string): { sha: string; name: string } | null {
+//
+// Card 0e5bbc65 CYBERED NO-GO (comment 28194): the history dir is in the SAME trust domain as
+// the allowlist itself (same OS user), so a compromised agent can poison history.log (replace
+// it with a directory, chmod it unreadable, truncate/corrupt its last line, or delete it) to
+// make this read fail. Returns null ONLY when the history dir has never been created at all
+// (a genuine first-ever boot for this store dir -- "a true first-ever run... still stays
+// quiet" test) -- never for a read/parse failure on an EXISTING history dir, which signals
+// 'corrupt' instead so the caller treats it as an UNKNOWN prior (never throws, never silently
+// adopts the current bytes as if nothing happened).
+function readLastHistoryEntry(historyDir: string): { sha: string; name: string } | 'corrupt' | null {
+  if (!existsSync(historyDir)) return null
   const logFile = join(historyDir, 'history.log')
-  if (!existsSync(logFile)) return null
-  const lines = readFileSync(logFile, 'utf-8').split('\n').filter((l) => l.trim().length > 0)
-  if (lines.length === 0) return null
-  const parts = lines[lines.length - 1].split(' ')
-  if (parts.length < 4) return null
-  return { sha: parts[1], name: parts[3] }
+  try {
+    if (!existsSync(logFile)) return 'corrupt' // history dir exists, log missing -- deleted (S2)
+    const lines = readFileSync(logFile, 'utf-8').split('\n').filter((l) => l.trim().length > 0)
+    if (lines.length === 0) return 'corrupt'
+    const parts = lines[lines.length - 1].split(' ')
+    if (parts.length < 4) return 'corrupt' // malformed last line (S1)
+    return { sha: parts[1], name: parts[3] }
+  } catch {
+    return 'corrupt' // directory in its place (S4, EISDIR) or unreadable (S5, EACCES)
+  }
 }
 
 function readHistoryEntryBytes(historyDir: string, name: string): string | null {
@@ -170,13 +184,31 @@ export function checkEgressAllowlistBaseline(
   // baseline.
   const bootPrior = prev ? null : readLastHistoryEntry(historyDir)
 
-  mkdirSync(historyDir, { recursive: true })
   const name = `${stamp(now)}-${sha.slice(0, 12)}${bytes ? '.json' : '.missing'}`
-  writeFileSync(join(historyDir, name), bytes ?? '')
-  appendFileSync(join(historyDir, 'history.log'), `${now.toISOString()} ${sha} ${bytes ? bytes.length : 0} ${name}\n`)
+  // Card 0e5bbc65 CYBERED NO-GO (28194, S4/S5): history.log itself can be poisoned (replaced by
+  // a directory, chmod'd unreadable) by the same compromised-agent threat model readLastHistoryEntry
+  // above defends against. Recording to a broken history dir must not crash this check -- a failed
+  // recording still leaves the in-memory `approved` baseline set below and the report (if any) sent.
+  try {
+    mkdirSync(historyDir, { recursive: true })
+    writeFileSync(join(historyDir, name), bytes ?? '')
+    appendFileSync(join(historyDir, 'history.log'), `${now.toISOString()} ${sha} ${bytes ? bytes.length : 0} ${name}\n`)
+  } catch { /* detection must survive a poisoned history dir; recovery copies are best-effort */ }
 
   if (!prev) {
     approved.set(storeDir, { sha, bytes, historyName: name })
+    // Card 0e5bbc65 CYBERED NO-GO (28194): a history dir that exists but whose last entry
+    // cannot be read or parsed is itself suspicious -- report it instead of either throwing
+    // (which would disable every later check too, since watchEgressAllowlistBaseline's catch
+    // swallows it before the baseline is ever set) or silently adopting the current bytes.
+    if (bootPrior === 'corrupt') {
+      const report =
+        `[EGRESS-ALLOWLIST] store/egress-allowlist.json BOOT-TIME CHECK: the history log at store/${HISTORY_DIRNAME}/history.log is unreadable or malformed (missing, corrupted, or replaced), so the version from BEFORE this boot is UNKNOWN. ` +
+        `Recording the current bytes (sha ${sha.slice(0, 12)}) as a fresh baseline -- this cannot prove whether a change happened while nothing was running. ` +
+        'Investigate the history log directly.'
+      try { notify(report) } catch { /* the record above stands even if the report fails */ }
+      return { sha, previous: null, recorded: true, report }
+    }
     if (bootPrior && bootPrior.sha !== sha) {
       const before = bootPrior.sha === MISSING ? null : readHistoryEntryBytes(historyDir, bootPrior.name)
       const report =
