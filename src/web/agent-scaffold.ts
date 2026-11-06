@@ -1023,6 +1023,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectEgressGate(existing)
   injectGitProtectGuard(existing)
   injectNpmProtectGuard(existing)
+  injectDbWriteGuard(existing)
   injectSymlinkedNodeModulesGuard(existing)
   injectAgentKeySecretGuard(existing)
   injectBlastRadiusGuard(existing)
@@ -1705,6 +1706,54 @@ export function injectNpmProtectGuard(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('npm-protect-guard.py')),
     entry,
   ]
+}
+
+// Idempotently wire the db-write-guard PreToolUse hook (card c1766c6c, 7391f09a follow-up): blocks
+// a direct sqlite3/python3-sqlite3 INSERT/UPDATE/DELETE/REPLACE (or more destructive verb) against
+// store/claudeclaw.db's dashboard_users/auth_sessions/approvals tables -- the dashboard's own
+// auth/session/approval state, which the dashboard API hashes, validates and audit-logs on write; a
+// raw sqlite write bypasses all of that. Narrow, fork-shaped (same pattern as its git/npm siblings),
+// deliberately NOT upstream's db-write-gate.mjs (DECISIONS.md, 7391f09a REJECT: that file needs this
+// fork's self-pace-gate.mjs to carry a multi-surface-deny engine it does not have). Applied to EVERY
+// agent, main included, for the same reason as git-protect-guard: the database is shared.
+export function injectDbWriteGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-guard.py'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('db-write-guard.py')),
+    entry,
+  ]
+}
+
+// Same reasoning as ensureAgentKeySecretGuard: injectDbWriteGuard alone reaches an agent only
+// when its settings.json is regenerated, so this runs in the startup migration loop to arm
+// already-provisioned agents on a dashboard restart.
+export function ensureDbWriteGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-guard.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('db-write-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectDbWriteGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Idempotently wire the agent-key-secret-guard PreToolUse hook (card 9c7ad372, WhiteHat2 O5 on

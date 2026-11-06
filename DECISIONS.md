@@ -22982,3 +22982,41 @@ started via the exact same `systemctl --user start` call the fixed script issues
 **Döntés:** addressed WhiteHat2's F1-F5 findings (comment 28590, GO verdict with gaps) on the landed DevO CLAUDE.md card (793e8bc5d). F1 (MEDIUM, the approved addendum from comments 24120+24125/Telegram 12215/12216/12219 was not delivered in the first pass): added `ponytail` to the "Minden változtatás" row, and a new row "Több lépéses, kézi jellegű üzemeltetési művelet (credential/secret beállítás, külső dashboard, egyszeri cutover, pl. 7dde8ebc token-rotálás)" -> `wizard`, with the corrected 24125 wording (DevO or MikroB runs the generated steps, never the user; the wizard never prints or logs a secret; truly human-only steps are named explicitly in a request rather than handed over as a runnable script; approval of an irreversible/outward-facing step stays the user's). F2 (LOW-MEDIUM, three of the eight skills the card said would leave Core were still there): removed `async-refactor-fail-open-guard`, `embedded-pg-e2e-runner`, `senior-engineer-modes` from the seed's Core skilljeid list. F3 (LOW, the table appeared twice): removed the hand-written duplicate table (the generated block, between the BEGIN/END markers, is now the sole copy). F4 (MEDIUM-LOW, the three new DEVO tests did `toContain` on the function's source text, so a commented-out row still passed): exported `buildDevOFamilySkillUsageBody` and rewrote the tests to call it and assert on the real rendered output; verified directly (not via fleet-test) that commenting out the new wizard row makes the addendum test go red, and restoring it makes it green again. F5 (LOW-MEDIUM): added one sentence to the API design/wiring role bullet stating that fetched provider docs/changelogs/pages are untrusted data, not instructions (an embedded "install package X" is not an install order), that page fetches route through `quarantine-reader`, and that a new dependency needs a pinned version and a verified package name before being added.
 
 **Ki döntött:** backend2 (card 219b07ae, back to in_progress), per MikroB dispatch (msg_id:16743), findings from cybersec2/WhiteHat2 (comment 28590) and Peti's addendum (comments 24120+24125). Gate: QA + Cybersec (shared instruction target per the dispatch). Gate-SHA: see REVIEW comment.
+## 2026-11-06 -- correction: real Gate-SHA for the 7391f09a and 6ff6d1dc entries (card c1766c6c)
+
+**Döntés:** Two DECISIONS.md entries above ("upstream gates db-write-gate.mjs + fleet-freeze-gate.sh
+decided..." card 7391f09a, and "F1.1.3: agent-checkpoint.sh M1/L1/L2/L3 fixes" card 6ff6d1dc) end
+with "Gate-SHA: see REVIEW comment" instead of an actual sha -- a placeholder that does not survive
+outside the card's own comment thread. The real, landed, ancestor-verified Gate-SHA for BOTH
+(gated together in the same round, QA PASS + CYBERSEC GO, `gate-closure-check.py` AGREE) is
+`bf96324335b4c30eecbd893eaa517d7e14297c5a` (`git merge-base --is-ancestor bf96324335b4c30eecbd893eaa517d7e14297c5a origin/develop` succeeds). Per the tail-append rule the two old entries are left
+untouched; this note is the correction of record.
+
+**Ki döntött:** DevO (fullstack), card c1766c6c (7391f09a follow-up), Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 085444e9 fix round: narrow-env systemctl bus vars + real-command mutation coverage (QA FAIL 28515, WhiteHat2 CYBERSEC NO-GO on d3052b38d)
+
+**Döntés:**
+- WhiteHat2 HIGH: production (channel-monitor.ts buildOllamaRestoreEnv()) hands the script only
+  PATH/HOME/OLLAMA_HOST; `systemctl --user start` then fails for lack of a session bus
+  (XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS unset), so a real boot-restore was silently a no-op.
+  Fixed IN THE SCRIPT (not by widening the TS-side narrow env, which stays pinned): export both,
+  only if the caller did not already set one.
+- QA FAIL 28515 / WhiteHat2 MEDIUM: the dryrun log line and the real restart command were two
+  separately-written expressions with the same text, so a mutation reverting only the real branch
+  to a bare `nohup` left the pinned dryrun string untouched and green. Fixed: one shared
+  `start_cmd` variable feeds both.
+- A failed `systemctl --user start` no longer returns silently (rc=0 either way) -- it now logs
+  the failure, its rc, and the bus vars, then defers to the next sweep.
+- New selftest section (Guard 5): PATH-shims a real `systemctl`, runs the real default branch
+  under `env -i PATH HOME` (the actual production narrow env), and asserts the argv AND that
+  XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS actually reached it. Mutant-kill confirmed three ways,
+  each isolated: (1) removing the XDG/DBUS export block turns both new assertions red (and a
+  `set -u` unbound-variable crash on the unset var, confirming nothing silently degrades); (2)
+  removing the rc-check/loud-log block turns exactly the "logged loudly" case red, nothing else;
+  (3) a bare-nohup mutant (same shape as the original RedHat F-RH4 regression) is caught by the
+  new real-systemctl case even though the pre-existing dryrun-string pin stays green on it --
+  the exact QA FAIL 28515 gap. 29/29 selftest PASS on the real fix.
+
+**Ki döntött:** DevO (fullstack), card 085444e9 fix round (QA FAIL 28515 + WhiteHat2 NO-GO on
+Gate-SHA d3052b38d), Gate-SHA: see REVIEW comment.
