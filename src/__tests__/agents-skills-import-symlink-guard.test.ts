@@ -12,12 +12,12 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import {
-  mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, lstatSync, symlinkSync, existsSync,
+  mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, lstatSync, symlinkSync, existsSync, readdirSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
-import { tryHandleAgentsSkills } from '../web/routes/agents-skills.js'
+import { tryHandleAgentsSkills, validateStagingTree, moveStagingIntoSkillsDir } from '../web/routes/agents-skills.js'
 import { agentDir } from '../web/agent-config.js'
 import { scaffoldAgentDir } from '../web/agent-scaffold.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -48,6 +48,21 @@ function buildZipRawEntry(rawEntryPath: string, content: string): Buffer {
 import zipfile
 with zipfile.ZipFile(${JSON.stringify(zipPath)}, 'w') as z:
     z.writestr(${JSON.stringify(rawEntryPath)}, ${JSON.stringify(content)})
+`
+  execFileSync('python3', ['-I', '-c', py])
+  const data = readFileSync(zipPath)
+  rmSync(stageDir, { recursive: true, force: true })
+  return data
+}
+
+// Like buildZip but writes several literal (path, content) entries into one archive.
+function buildZipMultiEntry(entries: Array<[string, string]>): Buffer {
+  const stageDir = mkdtempSync(join(tmpdir(), 'skill-import-zip-'))
+  const zipPath = join(stageDir, 'skill.zip')
+  const py = `
+import zipfile
+with zipfile.ZipFile(${JSON.stringify(zipPath)}, 'w') as z:
+${entries.map(([p, c]) => `    z.writestr(${JSON.stringify(p)}, ${JSON.stringify(c)})`).join('\n')}
 `
   execFileSync('python3', ['-I', '-c', py])
   const data = readFileSync(zipPath)
@@ -238,5 +253,76 @@ describe('POST /api/agents/:name/skills/import -- symlink write-through guard (c
     expect(lstatSync(join(skillsDir, foreignLinkName)).isSymbolicLink()).toBe(false)
 
     rmSync(foreignDir, { recursive: true, force: true })
+  })
+})
+
+describe('POST /api/agents/:name/skills/import -- exact segment check + staging extraction (card 45a45700)', () => {
+  // Kesz-ha 1: a legitimate filename containing the SUBSTRING '..' (but no '..' PATH SEGMENT)
+  // must be accepted, not rejected by a naive entry.includes('..') check.
+  it('a file literally named SKILL..md inside a skill dir is accepted (200)', async () => {
+    mkdirSync(agentDir(AGENT), { recursive: true })
+    scaffoldAgentDir(AGENT)
+    const skillName = `dotdot-name-${process.pid}`
+    const zip = buildZipMultiEntry([
+      [`${skillName}/SKILL.md`, '# normal\n'],
+      [`${skillName}/SKILL..md`, '# literal dotdot filename\n'],
+    ])
+    const { status } = await importSkillZip(AGENT, zip)
+    expect(status).toBe(200)
+    const skillsDir = join(agentDir(AGENT), '.claude', 'skills')
+    expect(readFileSync(join(skillsDir, skillName, 'SKILL.md'), 'utf-8')).toBe('# normal\n')
+    expect(readFileSync(join(skillsDir, skillName, 'SKILL..md'), 'utf-8')).toBe('# literal dotdot filename\n')
+  })
+
+  // Kesz-ha 1 (negative side): an actual '..' path segment must still be rejected (400) -- the
+  // fix narrows the match, it does not remove it.
+  it('<name>/../SKILL.md is still rejected (400)', async () => {
+    mkdirSync(agentDir(AGENT), { recursive: true })
+    scaffoldAgentDir(AGENT)
+    const zip = buildZipRawEntry(`escape-${process.pid}/../SKILL.md`, 'BAD\n')
+    const { status } = await importSkillZip(AGENT, zip)
+    expect(status).toBe(400)
+  })
+
+  // Kesz-ha 2: proves nothing lands outside the target (skillsDir) when the staging tree, after
+  // extraction, does not match the checked listing -- the exact WhiteHat NO-GO 25187 concern
+  // (unzip -Z1's listing and what -o actually writes can disagree). Simulated directly against
+  // the staging-validate step rather than crafting a real unzip quirk: a staging dir containing
+  // an entry the (validated) listing never promised must be rejected wholesale, and
+  // moveStagingIntoSkillsDir must never be reached for it.
+  it('a staging tree with an entry outside the checked listing is rejected, and nothing is moved into skillsDir', () => {
+    const stagingDir = mkdtempSync(join(tmpdir(), 'skill-import-staging-test-'))
+    mkdirSync(join(stagingDir, 'expected-skill'), { recursive: true })
+    writeFileSync(join(stagingDir, 'expected-skill', 'SKILL.md'), '# ok\n')
+    // Written to disk but NOT in the expected set -- simulates a listing/write mismatch.
+    mkdirSync(join(stagingDir, 'unexpected-skill'), { recursive: true })
+    writeFileSync(join(stagingDir, 'unexpected-skill', 'SKILL.md'), '# should never land\n')
+
+    const result = validateStagingTree(stagingDir, new Set(['expected-skill']))
+    expect(result.ok).toBe(false)
+
+    const skillsDir = mkdtempSync(join(tmpdir(), 'skill-import-target-test-'))
+    // The route only calls moveStagingIntoSkillsDir when validation passed; confirm directly that
+    // skillsDir stays empty when the caller respects a failed validation (nothing moved at all).
+    if (result.ok) moveStagingIntoSkillsDir(stagingDir, skillsDir)
+    expect(readdirSync(skillsDir)).toEqual([])
+    expect(existsSync(join(skillsDir, 'unexpected-skill'))).toBe(false)
+    expect(existsSync(join(skillsDir, 'expected-skill'))).toBe(false)
+
+    rmSync(stagingDir, { recursive: true, force: true })
+    rmSync(skillsDir, { recursive: true, force: true })
+  })
+
+  // Kesz-ha 2 (symlink inside the staging tree, e.g. a zip-bundled symlink entry): also rejected.
+  it('a staging tree containing a symlink is rejected even if all top-level names were expected', () => {
+    const stagingDir = mkdtempSync(join(tmpdir(), 'skill-import-staging-test-'))
+    mkdirSync(join(stagingDir, 'target'), { recursive: true })
+    writeFileSync(join(stagingDir, 'target', 'secret.txt'), 'TOP-SECRET\n')
+    symlinkSync(join(stagingDir, 'target'), join(stagingDir, 'linked-skill'))
+
+    const result = validateStagingTree(stagingDir, new Set(['linked-skill', 'target']))
+    expect(result.ok).toBe(false)
+
+    rmSync(stagingDir, { recursive: true, force: true })
   })
 })

@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync, mkdtempSync, cpSync } from 'node:fs'
 import { join, posix } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { execShellAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
@@ -66,6 +66,52 @@ function scanSkillDir(dir: string, source: 'agent' | 'global', deletable: boolea
     }))
 }
 
+// Card 45a45700 (WhiteHat2 msg 15251, d2d47a92 follow-up) L1: the traversal check used
+// entry.includes('..') as a SUBSTRING match, so a legitimate filename like "SKILL..md" was
+// rejected (400) even though it has no '..' PATH SEGMENT. Reject only when a '/'-split segment
+// is exactly '..', matching what unzip itself treats as a parent-directory reference.
+function hasTraversalSegment(entry: string): boolean {
+  return entry.split('/').some((seg) => seg === '..')
+}
+
+// Card 45a45700 L2 (WhiteHat NO-GO 25187's sturdier fix): the old guard trusted that `unzip -Z1`'s
+// listing (what we validated) and what `unzip -o` actually writes to disk always agree. Instead of
+// extracting straight into the live skillsDir -- which can hold a provisioner-managed symlink
+// (skill-map-provisioner.ts) -- extract into a FRESH, disposable staging dir first. Because the
+// staging dir never pre-existed and holds nothing of ours, the write-through-symlink class of bug
+// cannot happen during extraction itself, regardless of whether the listing and the physical
+// write agree. Only a staging tree that re-validates clean (every top-level name was one the
+// listing actually promised, nothing inside it is a symlink) is moved into skillsDir afterward.
+export function validateStagingTree(
+  stagingDir: string,
+  expectedTopLevel: Set<string>,
+): { ok: true } | { ok: false; reason: string } {
+  let actualTopLevel: string[]
+  try { actualTopLevel = readdirSync(stagingDir) } catch { return { ok: false, reason: 'staging dir unreadable' } }
+  for (const name of actualTopLevel) {
+    if (!expectedTopLevel.has(name)) return { ok: false, reason: `extraction produced an entry the checked listing never promised: ${name}` }
+  }
+  const tainted = findSymlinkTaintedEntries(stagingDir, actualTopLevel)
+  if (tainted.length > 0) return { ok: false, reason: `symlink entries: ${tainted.join(', ')}` }
+  return { ok: true }
+}
+
+// Moves every validated top-level entry out of the staging dir and into skillsDir, one name at a
+// time. detachSkillSymlinkIfAny runs first so a provisioner-managed (or foreign) symlink at the
+// destination is converted to a real, agent-local directory before anything is written into it --
+// the merge that follows can then only ever land inside that real directory, never through a link.
+export function moveStagingIntoSkillsDir(stagingDir: string, skillsDir: string): string[] {
+  const moved: string[] = []
+  for (const name of readdirSync(stagingDir)) {
+    const target = join(skillsDir, name)
+    detachSkillSymlinkIfAny(target)
+    mkdirSync(target, { recursive: true })
+    cpSync(join(stagingDir, name), target, { recursive: true, force: true })
+    moved.push(name)
+  }
+  return moved
+}
+
 export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -85,57 +131,59 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
 
     const tmpPath = join(skillsDir, `_import_${randomUUID()}.zip`)
     const before = new Set(readdirSync(skillsDir))
+    let stagingDir: string | null = null
     try {
       writeFileSync(tmpPath, file.data)
       const listOutput = await execShellAsync(`unzip -Z1 ${shellEscape(tmpPath)} 2>&1`, { timeoutMs: 5000 })
-      // WhiteHat NO-GO 25187 (card d2d47a92): the check and the extraction must judge the
-      // SAME string. The previous version normalised (posix.normalize) BEFORE checking for
-      // '..', which collapses an entry like "core-a/../SKILL.md" to "SKILL.md" -- no '..'
-      // left, so it passed -- while unzip itself only strips the literal "../" component and
-      // still writes through core-a/ (a provisioner symlink into the shared global skill).
-      // Reject on the raw (slash-normalised only, NOT path-normalised) string first, so any
-      // '..' segment the archive actually carries is caught before extraction ever runs.
+      // Card d2d47a92 / WhiteHat NO-GO 25187: the check and the extraction must judge the SAME
+      // string. Reject on the raw (slash-normalised only, NOT path-normalised) string first, so
+      // any '..' PATH SEGMENT the archive actually carries is caught before extraction ever runs.
       const rawEntries = listOutput.split('\n').map((l) => l.trim()).filter(Boolean)
         .map((e) => e.replace(/\\/g, '/'))
       for (const entry of rawEntries) {
-        if (entry === '.' || entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
+        // Card 45a45700 L1: exact-segment check (hasTraversalSegment), not entry.includes('..')
+        // -- a legitimate filename like "SKILL..md" contains the substring '..' but carries no
+        // '..' path segment, and must be accepted.
+        if (entry === '.' || hasTraversalSegment(entry) || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
           unlinkSync(tmpPath)
           json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
           return true
         }
       }
       // Only AFTER the traversal check passes do we normalise (strips leading ./, resolves
-      // a/./b) to compute the top-level directory name for the symlink-detach step below --
-      // normalising here is safe because every entry already proved '..'-free above.
+      // a/./b) to compute the expected top-level directory names -- normalising here is safe
+      // because every entry already proved '..'-free above.
       const entries = rawEntries.map((e) => posix.normalize(e))
-      // Card d2d47a92 WhiteHat F1(b): a top-level entry name that pre-exists as a provisioner
-      // symlink into the shared global catalog is invisible to the `after`-diff taint check below
-      // (it was already in `before`), and `unzip -o` writes straight through it into the global
-      // skill, poisoning every agent that shares it. Detach any such symlink to a real,
-      // agent-local copy BEFORE extraction, so the extraction can only land in this agent's copy.
-      const topLevelNames = new Set(entries.map((e) => e.split('/')[0]).filter(Boolean))
-      for (const topName of topLevelNames) {
-        detachSkillSymlinkIfAny(join(skillsDir, topName))
-      }
-      await execShellAsync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeoutMs: 10000 })
+      const expectedTopLevel = new Set(entries.map((e) => e.split('/')[0]).filter(Boolean))
+
+      // Card 45a45700 L2: extract into a fresh staging dir, not the live skillsDir, so the
+      // write-through-symlink class of bug cannot happen during extraction itself.
+      stagingDir = mkdtempSync(join(tmpdir(), 'skill-import-staging-'))
+      await execShellAsync(`unzip -o ${shellEscape(tmpPath)} -d ${shellEscape(stagingDir)}`, { timeoutMs: 10000 })
       unlinkSync(tmpPath)
 
-      const after = readdirSync(skillsDir).filter((f) => !before.has(f))
-      const tainted = findSymlinkTaintedEntries(skillsDir, after)
-      if (tainted.length > 0) {
-        for (const f of after) {
-          try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
-        }
-        json(res, { error: 'Invalid skill file: symlink entries rejected' }, 400)
+      const validation = validateStagingTree(stagingDir, expectedTopLevel)
+      if (!validation.ok) {
+        rmSync(stagingDir, { recursive: true, force: true })
+        logger.warn({ name, reason: validation.reason }, 'skill-map-provisioner: staging validation rejected the extracted archive')
+        json(res, { error: 'Invalid skill file: extraction did not match the checked listing' }, 400)
         return true
       }
 
-      const extracted = after.filter(f => {
+      // Only a validated staging tree is moved into skillsDir, one top-level name at a time,
+      // detaching any symlink at the destination first (handles both the pre-existing-symlink
+      // and foreign-symlink cases the same way the old direct-extract flow did).
+      const moved = moveStagingIntoSkillsDir(stagingDir, skillsDir)
+      rmSync(stagingDir, { recursive: true, force: true })
+      stagingDir = null
+
+      const newlyCreated = moved.filter((f) => !before.has(f))
+      const extracted = moved.filter(f => {
         const p = join(skillsDir, f)
         try { return statSync(p).isDirectory() && existsSync(join(p, 'SKILL.md')) } catch { return false }
       })
       if (extracted.length === 0) {
-        for (const f of after) {
+        for (const f of newlyCreated) {
           try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
         }
         json(res, { error: 'No valid skill (SKILL.md) found in archive' }, 400)
@@ -147,6 +195,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       return true
     } catch (err) {
       try { unlinkSync(tmpPath) } catch { /* ignored */ }
+      if (stagingDir) { try { rmSync(stagingDir, { recursive: true, force: true }) } catch { /* ignored */ } }
       try {
         const leftover = readdirSync(skillsDir).filter(f => !before.has(f))
         for (const f of leftover) {
