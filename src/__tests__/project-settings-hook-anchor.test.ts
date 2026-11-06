@@ -71,6 +71,7 @@ const EXPECTED: Record<string, string[]> = {
     'outgoing-copy-gate.py @ .*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*',
     'outgoing-copy-gate.py @ .*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
     'outgoing-copy-gate.py @ .*draft_email.*',
+    'outgoing-copy-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*',
     'outgoing-copy-gate.py @ mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message',
     'outgoing-copy-gate.py @ mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__edit_message',
     'email-approval-gate.py @ Bash',
@@ -87,6 +88,12 @@ const EXPECTED: Record<string, string[]> = {
     'credential-gate.py @ .*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*',
     'credential-gate.py @ .*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
     'credential-gate.py @ .*draft_email.*',
+    // Koteg 23a (upstream #1995): the widened matcher kept ALONGSIDE the 7 narrower ones
+    // (union, not replacement), for BOTH gates -- credential-gate.py needs it for the same
+    // reason email-approval-gate.py does (a send_draft/reply_all/... tool on an off-brand
+    // server name never reached either hook's registration before this).
+    'credential-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*',
+    'email-approval-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*',
     'channel-image-resize.sh @ Read', 'egress-gate.mjs @ WebFetch', 'memory-frontmatter-gate.py @ Write|Edit|MultiEdit',
     'memory-frontmatter-bash-gate.py @ Bash',
     // Card c00d5429 (2026-09-25): the main agent's own session ran with none of the ten
@@ -155,6 +162,12 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'outgoing-copy-gate.py', matcher: '.*draft_email.*' },
   { script: 'outgoing-copy-gate.py', matcher: 'mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message' },
   { script: 'outgoing-copy-gate.py', matcher: 'mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__edit_message' },
+  // Koteg 23a (upstream #1995): the widened send_draft/update_draft/create_draft/reply_all/
+  // send_gmail_message/draft_gmail_message/generic-Gmail-verb matcher, kept ALONGSIDE the 7
+  // narrower ones (union, not replacement), for all three email hooks. outgoing-copy-gate.py's
+  // was a clean (non-conflicting) merge; credential-gate.py and email-approval-gate.py needed it
+  // added explicitly for the same reason.
+  { script: 'outgoing-copy-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*' },
   { script: 'email-approval-gate.py', matcher: 'Bash' },
   { script: 'email-approval-gate.py', matcher: '.*send_email.*' },
   { script: 'email-approval-gate.py', matcher: '.*manage_email.*' },
@@ -162,6 +175,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'email-approval-gate.py', matcher: '.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*' },
   { script: 'email-approval-gate.py', matcher: '.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*' },
   { script: 'email-approval-gate.py', matcher: '.*draft_email.*' },
+  { script: 'email-approval-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*' },
   { script: 'credential-gate.py', matcher: 'Bash' },
   { script: 'credential-gate.py', matcher: '.*send_email.*' },
   { script: 'credential-gate.py', matcher: '.*manage_email.*' },
@@ -169,6 +183,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'credential-gate.py', matcher: '.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*' },
   { script: 'credential-gate.py', matcher: '.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*' },
   { script: 'credential-gate.py', matcher: '.*draft_email.*' },
+  { script: 'credential-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*' },
   { script: 'channel-image-resize.sh', matcher: 'Read' },
   { script: 'egress-gate.mjs', matcher: 'WebFetch' },
   { script: 'secret-write-guard.py', matcher: 'Write|Edit|MultiEdit' },

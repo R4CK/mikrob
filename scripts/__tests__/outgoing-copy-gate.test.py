@@ -315,18 +315,27 @@ def main():
         # --- Card 498d53c1 (Cybersec MEDIUM on a4164e95): gmail__/resend__ deny-by-default ---
         # A tool-NAME list drifts -- send_draft (create_draft + send_draft pair) and the
         # hyphenated resend__send-email both slipped past name-list checks before this
-        # existed. Only search_*/get_*/list_*/read_*/create_draft is explicitly out of
-        # scope; everything else on either server is audited as a send now.
+        # existed. Only search_*/get_*/list_*/read_* is explicitly out of scope; everything
+        # else on either server is audited as a send now.
+        #
+        # Koteg 23a (upstream #1995) SUPERSEDES the send_draft expectation directly below:
+        # send_draft never carries new text (draftId only -- the draft's own text was audited
+        # when it was written), so an empty payload is "nothing of ours to check", not a
+        # fail-closed deny. See the dedicated prefix-loop tests further down for the corrected
+        # shape (exit 0), across every vendor prefix.
         code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__send_draft",
                                    "tool_input": {"draftId": "d1"}}, rules_file=active)
-        check("connector send_draft: unreadable body, fail-closed (exit 2)", code, 2)
+        check("connector send_draft: draftId only, nothing of ours to audit (exit 0)", code, 0)
         # Previously guessed-safe by shape alone -- narrowed out on purpose (see above).
         code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__label_message",
                                    "tool_input": {"q": "x — y"}}, rules_file=active)
         check("connector label_message: no longer on the safe list, unreadable body denies (exit 2)", code, 2)
+        # Koteg 23a: create_draft is no longer exempt BY NAME (it carries real draft content and
+        # must be audited like any send -- see the prefix-loop tests), but THIS payload has no
+        # body-bearing field at all ("q" is not one), so there is still nothing to audit.
         code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__create_draft",
                                    "tool_input": {"q": "x — y"}}, rules_file=active)
-        check("connector create_draft: on the explicit safe list, passes untouched (exit 0)", code, 0)
+        check("connector create_draft: no body field present, nothing of ours to audit (exit 0)", code, 0)
         # Real Resend tool names are hyphenated (resend/resend-mcp source, MIT) -- neither
         # .*send_email.* (underscore) nor the old gmail-only connector regex ever matched them.
         code, out, err = run_hook({"tool_name": "mcp__resend__send-email",
@@ -361,10 +370,12 @@ def main():
             code, out, err = run_hook({"tool_name": f"mcp__{server}__search_threads",
                                        "tool_input": {"q": "x — y"}}, rules_file=active)
             check(f"{server}: search_threads is a read: passes untouched (exit 0)", code, 0)
-        # "draft" as a VERB prefix (draft_email) is safe -- distinct from send_draft/update_draft.
+        # Koteg 23a: draft_email is no longer exempt BY NAME (see the prefix-loop tests below --
+        # it carries real draft content and is audited like any send), but THIS payload again has
+        # no body-bearing field, so there is still nothing to audit.
         code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__draft_email",
                                    "tool_input": {"q": "x — y"}}, rules_file=active)
-        check("connector draft_email (verb prefix): on the explicit safe list, passes untouched (exit 0)", code, 0)
+        check("connector draft_email: no body field present, nothing of ours to audit (exit 0)", code, 0)
 
         # --- Card bf7a7335 (Cybersec GO on 45b33b2b @bee4940b, msg 6253, LOW) ---
         # The safe-prefix match only looked at the name up to its FIRST separator, so a name that
@@ -485,6 +496,57 @@ def main():
             code, out, err = run_hook({"tool_name": f"mcp__claude_ai_Gmail__{tool}", "tool_input": {"q": "x — y"}},
                                       rules_file=active)
             check(f"connector {tool} is a read: passes untouched (exit 0)", code, 0)
+
+        # --- tool names are classified by SUFFIX ----------------------------
+        # vendor/gmail-mcp-fork prepends its tool prefix verbatim, so
+        # mcp__gmail__v2_reply_all / ...work-send_message must be audited
+        # exactly like the bare name. EMAIL_TOOL_RE's `gmail__(reply|...)$`
+        # missed every prefixed connector name, and reply_all on a server whose
+        # segment is not exactly "gmail" too, so their text went out unaudited.
+        dash = CLEAN_HU_OK + " — mégis."
+        for pre in ("", "v2_", "v2", "work-", "shared_inbox_", "v-2_"):
+            for base in ("send_email", "reply_all", "send_message", "reply", "forward",
+                         "draft_email", "create_draft", "update_draft"):
+                name = f"mcp__gmail__{pre}{base}"
+                code, out, err = run_hook({"tool_name": name, "tool_input": {
+                    "to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt", "body": dash}},
+                    rules_file=active)
+                check(f"prefix {pre!r}: {base} with em dash is audited and blocks (exit 2)", code, 2)
+                code, out, err = run_hook({"tool_name": name, "tool_input": {
+                    "to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt", "body": CLEAN_HU_OK}},
+                    rules_file=active)
+                check(f"prefix {pre!r}: {base} clean passes (exit 0)", code, 0)
+            code, out, err = run_hook({"tool_name": f"mcp__google-workspace__{pre}manage_email",
+                                       "tool_input": {"operation": "send", "to": "a@b.hu", "body": dash}},
+                                      rules_file=active)
+            check(f"prefix {pre!r}: manage_email send with em dash blocks (exit 2)", code, 2)
+            # send_draft carries only a draftId: nothing of ours to audit, and
+            # whether it may be SENT is the approval gate's level decision; the
+            # copy gate must not turn the empty payload into a hard deny.
+            code, out, err = run_hook({"tool_name": f"mcp__gmail__{pre}send_draft",
+                                       "tool_input": {"draftId": "r-1"}}, rules_file=active)
+            check(f"prefix {pre!r}: send_draft (draftId only) is not a copy-audit target (exit 0)", code, 0)
+            for base in ("search_emails", "read_email", "delete_draft", "list_drafts", "get_thread"):
+                code, out, err = run_hook({"tool_name": f"mcp__gmail__{pre}{base}",
+                                           "tool_input": {"query": "x — y", "body": dash}},
+                                          rules_file=active)
+                check(f"prefix {pre!r}: {base} is a read: passes untouched (exit 0)", code, 0)
+        for name in ("mcp__server-gmail-autoauth-mcp__reply_all", "mcp__workmail__v2_reply_all",
+                     "mcp__google_workspace__send_gmail_message", "mcp__google_workspace__draft_gmail_message"):
+            code, out, err = run_hook({"tool_name": name, "tool_input": {"messageId": "m1", "body": dash}},
+                                      rules_file=active)
+            check(f"{name} (no 'gmail__' before the base) is audited and blocks (exit 2)", code, 2)
+        for name in ("mcp__gmail__v2_forwarding_settings", "mcp__gmail__v2_send_drafts_list",
+                     "mcp__workmail__v2_forward", "mcp__plugin_discord_discord__v2_reply",
+                     "mcp__google-workspace__manage_emails_bulk"):
+            code, out, err = run_hook({"tool_name": name, "tool_input": {"operation": "send", "body": dash}},
+                                      rules_file=active)
+            check(f"look-alike {name} is not an outbound mail tool (exit 0)", code, 0)
+        # A non-dict tool_input on a PREFIXED send is still fail-closed (the
+        # non-dict net used the old regexes too).
+        code, out, err = run_hook({"tool_name": "mcp__gmail__v2_reply_all", "tool_input": 42},
+                                  rules_file=active)
+        check("prefixed reply_all with a non-dict tool_input blocks (exit 2)", code, 2)
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

@@ -922,7 +922,9 @@ describe.skipIf(REPO_UNDER_TMP)('injectEmailSendGate', () => {
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
     expect(hooks[0].matcher).toBe(
-      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
+      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
+      + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
+      + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*',
     )
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')

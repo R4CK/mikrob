@@ -15,6 +15,11 @@ import { gateDecision } from '../../scripts/email-send-gate.mjs'
 // checking the settings.json matcher coverage against the constant itself.
 // If the constant grows a new alternative, this goes red until settings.json
 // follows.
+//
+// Koteg 23a (upstream #1995): the file originally also carried a second describe block pinning
+// Python/JS parity for email_extract.classify_mail_tool / email-send-gate.mjs classifyMailTool.
+// NOT ADOPTED here (recipient-ledger precedent, Cybersec card afd64623) -- removed rather than
+// left red, since this fork's gateDecision/scope_kind never call either classifier.
 const ROOT = join(__dirname, '..', '..')
 const SETTINGS = JSON.parse(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf-8')) as {
   hooks?: { PreToolUse?: { matcher?: string; hooks?: { command?: string }[] }[] }

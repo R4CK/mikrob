@@ -22840,3 +22840,17 @@ MikroB 16423 ("24118 addendum", re-measured after QA2 PASS + Cybersec2 GO + Cybe
 Also folds in Cybered's GO 28044 INFO finding: the WhiteHat focus line ("every finding needs a concrete defensive fix") now states explicitly that the fix goes as prose inside the verdict, not a line-start `Fix-Direction:` line -- a line-start `Fix-Direction:` would record WhiteHat as proposer and self-exclude it from re-gating its own finding (root CLAUDE.md rule 4f).
 
 **Ki dontott:** backend (card 3bf6a01a), per MikroB 16423 + 16429 (Cybered GO 28044 addendum). Gate: QA2 + Cybered + Cybersec2.
+
+## 2026-11-06 -- card bb562959 (Koteg 23a, phase e5c46e87): upstream e2199840..a6325a498 merged, mail-gate classifier cluster closed inside the fork structure
+
+**Dontes:** valodi `git merge --no-ff a6325a498` az elozo tartomany (23) landolt csucsarol, 5 upstream commit (#1995 classify mail tools by base-name suffix; #2065 +476 accentless dictionary entries + accent-only identifier mask; #2084 no outgoing alert quotes a permission card's command line; #2085 accent check masks a trailing-slash directory/key=value/quoted token; #2081/MAILGATEVARARGS1020 variable script path is a send only with a recipient flag). Fork szerkezet maradt: `_EMAIL_SERVER_RE`/`_EMAIL_SAFE_TOOL_RE`/owner-CC/deny-by-default a sajat kodban, upstream `classify_mail_tool`/recipient-ledger NEM adoptalva (ledger korabban elutasitva, card afd64623/b5b7eb6b).
+
+A ket kotelezo bypass zarva a fork sajat szerkezeten belul:
+- `.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*` tipusu matcher-ek (EMAIL_GATE_MATCHER, `.claude/settings.json`) ES az `outgoing-copy-gate.py`/`email-approval-gate.py`/`email-send-gate.mjs` belso klasszifikatorai most vendor-prefixelt (`v2_`, `work-`, `shared_inbox_`, prefix-elkulonito nelkul is) es off-server (nincs "gmail"/"resend" a szerver-szegmentben, pl. `mcp__workmail__reply_all`) eszkoznevet is felismernek es auditalnak -- korabban mindegyik atcsuszott auditalatlanul.
+- `outgoing-copy-gate.py` `manage_email` dispatchje most vendor-prefixelt szervernevet is felismer, es a `create_draft`/`update_draft`/`draft_email` muveleteket tenylegesen auditalja (gondolatjelre tiltva), nem a NEV alapjan menti ki -- `send_draft` (csak draftId, nincs sajat szoveg) kivetel marad, "nincs mit auditalni" alapon, nem fail-closed tiltas alapon.
+
+Negativ teszt mindket bypass-ra (upstream uj tesztjei is zoldek): `scripts/__tests__/outgoing-copy-gate.test.py` 235/235, `scripts/__tests__/email-approval-gate.test.py` 213/214 (1 kozmetikai, dokumentalt eltérő-szoveg-eset), `scripts/__tests__/credential-gate.test.py` ALL PASS, `src/__tests__/email-send-gate.test.ts` + `email-gate-matcher-drift.test.ts` + `fork-upstream-conflict-guard.test.ts` + `send-invocation-conformance.test.ts` 489/489 vitest.
+
+`ACKNOWLEDGED_UPSTREAM_BLOBS` (src/fork-upstream/acknowledged-conflicts.ts) 7 bejegyzese frissitve az a6325a498-nal tenylegesen mert blobra: `.claude/settings.json`, `scripts/email-send-gate.mjs`, `scripts/hooks/outgoing-copy-gate.py`, `scripts/hooks/email-approval-gate.py`, `scripts/hooks/email_extract.py`, `scripts/hooks/credential-gate.py`, `src/web/agent-scaffold.ts`, `src/__tests__/email-send-gate.test.ts`, `src/__tests__/project-settings-hook-anchor.test.ts`.
+
+**Ki dontott:** backend3 (card bb562959), MikroB dontes 16480 (valodi merge --no-ff, contiguous tartomany) + a kartya sajat "ket meresi bypass a fork szerkezeten belul" kotelezo pontja. Gate: QA + Cybersec + Cybered.
