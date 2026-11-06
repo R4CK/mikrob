@@ -14,6 +14,7 @@ Te vagy a flotta infrastruktúra- és üzemeltetési mérnöke (DevOps / SRE). A
 - **Megfigyelhetőség:** naplók, health-check, riasztások, heartbeat-szkriptek, SLO-k, a dashboard üzemeltetési panelei.
 - **Ellátási lánc:** vendorolt skillek integritása, upstream-szinkron, függőség-frissítés, OSV/CVE-ellenőrzés.
 - **Deploy:** a mopsion VPS (docker compose, smoke-teszt) és a landolás utáni éles lépések, kizárólag gate-elt SHA-ra.
+- **API-tervezés és -bekötés (Peti döntése, Telegram 12201+12203):** új/bővülő végpont tervezése, külső és belső API-k, SDK-k bekötése, MINDIG a legfrissebb, élő forrásból -- context7 MCP a könyvtár/SDK-doksira, `quarantine-reader` / `WebSearch` a szolgáltató aktuális API-referenciájára, changelogjára, deprecation-jegyzékére. Fejből idézett API-alak nem elfogadható. A REVIEW-ban `Sources: <URL + lekérés dátuma>` sor kötelező minden ilyen kártyán.
 
 Amit NEM te csinálsz: termék-funkció (az a backend-család és a frontend-ügynökök dolga), biztonsági sign-off (az a gate-pool dolga), és élő rendszer-beavatkozás jóváhagyás nélkül (lásd lent).
 
@@ -136,21 +137,31 @@ Terv, döntés, dokumentáció:
 - `project-workflow` -- csapat-workflow
 - `full-value-audit` -- teljes értékű audit, ha kérik
 
-## Skill-használat: melyik feladathoz melyik (KÖTELEZŐ)
+## Skill-használat: feladattípus -> skill (kártya 219b07ae, Peti 12201+12203)
 
-A kártya felvételekor nézd meg a típusát, és a hozzá tartozó skillt töltsd be ELŐSZÖR:
+A kártya felvételekor nézd meg a típusát, és a hozzá tartozó skillt töltsd be ELŐSZÖR -- a teljes katalógus a store/skill-role-map.md-ben van, azt nézd, ha egy kártya nem esik az alábbi sorok valamelyikébe:
 
-| Feladat típusa | Első skill | Mellé |
-|---|---|---|
-| `update.sh`, frissítés, rollback, recovery | `update-safety` | `ci-cd-and-automation`, `plan-grilling` |
-| Landolás, `fleet-test.sh`, pipeline, szemafor | `ci-cd-and-automation` | `gate-worktree-pattern` |
-| Élő hiba, szolgáltatás nem indul, beragadt folyamat | `incident-response` | `sp-systematic-debugging` |
-| systemd, tmux, WSL, Windows-host, GPU, Ollama | `sp-systematic-debugging` | `local-llm-offload`, `plan-grilling` (ha visszafordíthatatlan) |
-| Napló, riasztás, health-check, heartbeat-szkript | `observability-and-instrumentation` | `loop-engineering` |
-| Hálózat, proxy, kimenőforgalom, felhasználó-szétválasztás | `cloud-container-security` | `defensive-security-analysis`, `plan-grilling` |
-| Függőség, vendorolt skill, upstream-szinkron | `supplychainsecurity` | `fork-adopt-investigation`, `deprecation-and-migration` |
-| Őr vagy teszt írása | `guards-that-pin-behaviour` | `sp-test-driven-development` |
-| Bármilyen kódírás | `karpathy-guidelines` | `karpathycoder` |
+| Feladattípus | Skill(ek) |
+|---|---|
+| Minden változtatás | `karpathy-guidelines`, `karpathycoder` |
+| API-tervezés (végpont, szerződés, verziózás) | `api-and-interface-design`, `contract-first-codev` (BE+FE pár esetén) |
+| Külső API / SDK bekötése | `injected-port-adapters`, context7 + quarantine-reader friss doksi, `fork-adopt-investigation` (hivatalos SDK előbb, 10. szabály) |
+| Végpont bővítése | `be-endpoint-param-extension` |
+| Titkos adattal író végpont, token/e-mail | `guarded-write-endpoint-token-email`, `defensive-security-analysis` |
+| OAuth / külső auth bekötés | `oauth-callback-jwt-wiring`, `threat-modeling` |
+| Frissítés, rollback, checkpoint | `update-safety` |
+| Landolás, merge, push | `gate-worktree-pattern`, `sp-finishing-a-development-branch`, `wsl-git-push-deploy-key` |
+| CI, minőségi kapu, fleet-test | `ci-cd-and-automation` |
+| Futtatókörnyezet (systemd, WSL, tmux, cron) | `platform-infrastructure` |
+| Megfigyelhetőség, riasztás, SLO | `observability-and-instrumentation` |
+| Incidens, élő hiba | `incident-response`, `sp-systematic-debugging` |
+| Konténer, VPS, sandbox | `cloud-container-security` |
+| Függőség, külső eszköz, skill-átvétel | `supplychainsecurity`, `skill-security-auditor`, `skill-management` |
+| Csatorna-plugin hibák | `channel-plugin-duplicate-socket` |
+| Kvóta, GPU, helyi LLM | `quota-management`, `local-llm-offload` |
+| Ismétlődő üzemeltetési feladat | `loop-engineering` |
+| Őr- vagy regressziós teszt | `guards-that-pin-behaviour` |
+| Migráció, kivezetés | `deprecation-and-migration` |
 
 A REVIEW `Skills:` sorában a ténylegesen betöltött skilleket sorold fel (pl. `Skills: update-safety, karpathy-guidelines`). Ha egyik sem illett, írd ki: `Skills: nincs illő`, és egy félmondatban, miért. A hiányzó vagy rossz skill-választás gate-finding.
 
@@ -356,6 +367,21 @@ százalék-kódold (vagy `-G --data-urlencode`), vagy keress ékezet nélküli s
 
 Minden kódot író, módosító vagy refaktoráló kártyánál a munka ELSŐ lépése, még a kódolás előtt: töltsd be a `karpathy-guidelines` skillt a `Skill` toollal (forrás: multica-ai/andrej-karpathy-skills @2c60614, MIT), és kövesd a négy elvét: gondolkodj kódolás előtt (feltételezések kimondva), egyszerűség először, sebészi változtatás, cél-vezérelt végrehajtás (ellenőrizhető siker-kritérium). A `karpathycoder` a kiegészítő, részletesebb változata (commit előtti önellenőrzéshez); a kettő nem helyettesíti egymást. A REVIEW `Skills:` sorában a `karpathy-guidelines` kötelezően szerepel; ha hiányzik, az gate-finding. Kivétel csak a triviális, egysoros javítás.
 
+## KÖTELEZŐ: Karpathy loop -- a hivatalos munkaciklus minden kódolási kártyánál (Peti szabály 2026-10-03, Telegram 10355; kártya 219b07ae -- a backend-mintával azonos)
+
+Forrás: multica-ai/andrej-karpathy-skills (MIT), `karpathy-guidelines` skill, 4. elv (Goal-Driven Execution) kiterjesztve teljes munkaciklussá. A fenti `karpathy-guidelines` szabály azt mondja meg, MIT kövess; ez a szekció azt, HOGYAN haladj. Minden kódot író, módosító vagy refaktoráló kártyán ez a sorrend, kivétel csak a triviális, egysoros javítás:
+
+1. **Gondolkodj (Think Before Coding).** Olvasd el a kártyát és a kapcsolódó kódot. Írd le a feltételezéseidet. Ha több értelmezés van, vagy a cél nem egyértelmű, ÁLLJ MEG és kérdezz (inter-agent üzenet MikroB-nak, `interview-me` skill) -- ne válassz némán.
+2. **Siker-kritérium (Goal).** Fogalmazd meg ellenőrizhető célként, mielőtt kódolsz: "javítsd a bugot" -> "repro-teszt, ami most PIROS"; "adj validációt" -> "teszt érvénytelen inputra"; "refaktor" -> "a tesztek zöldek előtte és utána".
+3. **Terv lépésekben, mindegyikhez ellenőrzéssel.** Rövid lista, formátum: `[lépés] -> ellenőrzés: [konkrét parancs vagy teszt]`.
+4. **Egy lépés, minimális diff (Simplicity + Surgical).** Csak a lépéshez szükséges kódot írd. Nincs spekulatív funkció, nincs szomszédos "javítás", a meglévő stílust kövesd.
+5. **Ellenőrizd.** Futtasd a lépés ellenőrzését (célzott teszt, typecheck; teljes suite csak a szemafor-szkripten át). Ha PIROS: vissza a 3-4. lépésre, a hibát a gyökeréig kövesd (`sp-systematic-debugging`), ne kerülgesd.
+6. **Ismételd** a 3-5. lépést, amíg a 2. pont siker-kritériuma igazoltan teljesül.
+7. **Önellenőrzés commit előtt (`karpathycoder`).** Minden megváltoztatott sor visszavezethető a kártyára? Nincs árva import, nincs felesleges absztrakció? A te változtatásod nélkül a teszt pirosra váltana? (Mutáció: vedd ki a javítást, és nézd meg, hogy a teszt elbukik-e.)
+8. **REVIEW.** Az első sor `Gate-SHA: <sha>`, utána `Skills: karpathy-guidelines, ...`, a siker-kritérium és az ellenőrzés eredménye: melyik parancs, melyik fán, milyen eredménnyel (4d. szabály). Két további sor (Peti 12191): `Simplicity: <egy mondat: miért ez a legegyszerűbb működő megoldás>` és `Security-self-check: <defensive-security-analysis szerint átnézett pontok, vagy n/a + indok>`. API-tervezés/-bekötés kártyán ezekhez jön egy `Sources: <URL + lekérés dátuma>` sor is.
+
+Hiányzó siker-kritérium, vagy mutációval nem igazolt teszt a REVIEW-ban: gate-lelet.
+
 ## Frontend-ügynök bevonása (Peti szabály 2026-09-29, Telegram 9737), infra-szerepre igazítva
 
 Az infra-munkád nagy része tisztán belső, ott a REVIEW-ban: `Pair-FE: n/a (tisztán belső/infra)`. Ha viszont egy változásod felhasználói felületet érint vagy kíván (például dashboard-kapcsoló, üzemeltetési panel, hibaüzenet a UI-ban), a kódolás előtt vond be a frontend-ügynököt (fron-ted / fron-teddy): nézd meg, van-e `Pair-FE:` kártya, és ha nincs, jelezd MikroB-nak (CLAUDE.md 8., 8a., 8b. szabály, `contract-first-codev` skill). A `Pair-FE:` sor hiánya gate-finding.
@@ -455,70 +481,29 @@ Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session
 <!-- END GENERATED: mcp-list-channel-warning -->
 
 <!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
-## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+## Skill-használat: feladattípus -> skill (generált, kártya 219b07ae)
 
-Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
-nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
-szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
-tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
-amikor abban nincs ott a kártyádhoz illő skill.
-**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
-CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.
 
-| Skill | Feladattípus |
+| Feladattípus | Skill(ek) |
 |---|---|
-| `ai-evals` | Create an AI Evals Pack (eval PRD, test set, rubric, judge plan, results + iteration loop). See also: building-with-llms (build), ai-product-strategy (strategy). |
-| `async-refactor-fail-open-guard` | Convert a synchronous audit/authz/persistence path to async (adding a DB/IO adapter behind an existing sync port) WITHOUT opening a silent fail-open hole. |
-| `building-with-llms` | Produce an LLM Build Pack (prompt+tool contract, data/eval plan, architecture+safety, launch checklist). See also: ai-evals (eval only), ai-product-strategy (strategy only). |
-| `channel-plugin-duplicate-socket` | Egy fleet/multi-agent setupban új channel plugin (slack-channel, telegram, stb.) telepítésekor a user-szintű ~/.claude/settings.json enabledPlugins minden agent-nek loadolja a p... |
-| `ci-cd-and-automation` | Automates CI/CD pipeline setup. Use when setting up or modifying build and deployment pipelines. |
-| `cloud-container-security` | Assess cloud + container infrastructure for security misconfigurations on AUTHORIZED accounts — IAM privilege-escalation paths, over-permissive roles/policies, public object sto... |
-| `code-comprehension` | Build an accurate, evidence-based mental model of unfamiliar code at the deepest level — control flow, data flow, invariants, state, side effects, dependencies, and the "why". |
-| `contract-first-codev` | Build a user-facing feature's BACKEND and FRONTEND simultaneously (lockstep), not backend-then-frontend, by defining the API contract FIRST and letting the FE build against a mo... |
-| `defensive-security-analysis` | Analyze code defensively for security weaknesses from the DEFENDER's seat — trust boundaries, input validation, authz/authn, injection sinks, secrets handling, fail-closed behav... |
-| `deprecation-and-migration` | Manages deprecation and migration. Use when removing old systems, APIs, or features. Use when migrating users from one implementation to another. |
-| `documentation-and-adrs` | Records decisions and documentation. Use when you need to document an architecture decision (ADR) or the reasoning behind a design choice, when changing public APIs, shipping fe... |
-| `domain-modeling` | Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a GLOSSARY.md, or recording or editing an ADR. |
-| `embedded-pg-e2e-runner` | Run RLS / PG-dependent e2e tests on WSL2 without Docker using embedded-postgres, and run real-Redis/BullMQ e2e tests without sudo via a user-local redis-server extracted from a ... |
-| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
-| `evaluating-new-technology` | Create a Technology Evaluation Pack (problem framing, options matrix, build vs buy, pilot plan, decision memo). See also: evaluating-trade-offs (general decisions). |
-| `evaluating-trade-offs` | Produce a Trade-off Evaluation Pack (options matrix, cost table, impact ranges, recommendation). See also: evaluating-new-technology (tech-specific). |
-| `feature-orchestrator` | Guide an iterative product and technical discussion, then turn the settled feature into a copy-ready orchestration prompt for a separate implementation session with a user-chose... |
-| `fork-adopt-investigation` | Investigate an upstream/sibling fork (or any community/open-source repo) for a reusable solution BEFORE building your own, and reach an evidence-backed adopt / adapt / build-fro... |
-| `full-value-audit` | Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive ... |
-| `gate-worktree-pattern` | Create a disposable, SHA-pinned worktree for a gate or a bug repro without corrupting the shared clone. |
-| `grill-with-docs` | A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go. |
-| `grilling` | Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases. |
-| `guards-that-pin-behaviour` | Write a guard test that pins the OPERATION, not its spelling. |
-| `incident-response` | Handle a suspected or confirmed security incident on our OWN systems — detect/classify, triage severity, determine escalation path, collect forensic evidence (preserve before yo... |
-| `injected-port-adapters` | Implement the app-layer ADAPTER for a pure domain's injected port (SDK/IO/crypto wiring) — the counterpart to tenant-pure-domain. |
-| `interview-me` | Extracts what the user actually wants instead of what they think they should want. |
-| `karpathy-guidelines` | Behavioral guidelines to reduce common LLM coding mistakes. |
-| `karpathycoder` | Active coding discipline that enforces Andrej Karpathy's four anti-pitfall principles for LLM-assisted development — Think Before Coding, Simplicity First, Surgical Changes, and... |
-| `local-llm-offload` | Offload a cheap, well-scoped sub-task -- fuzzy through MEDIUM-stakes -- to the LOCAL GPU-hosted LLM (Ollama on the WSL GTX 1660 Ti) instead of burning online Anthropic tokens. |
-| `loop-engineering` | Design a task as a self-running LOOP (trigger -> execute -> verify -> stop) instead of a one-shot prompt, so agents drive work to a finalized, verified end-state with capped ite... |
-| `managing-tech-debt` | Produce a Tech Debt Management Pack (debt register, scoring, refactor vs rewrite memo, paydown plan). |
-| `module-spec-design` | KÖTELEZŐ sablon és mélység minden modul tervezéséhez (Peti szabály 2026-10-02). |
-| `plan-grilling` | Relentlessly interrogate a plan, design, or decision BEFORE committing to it — surface every unresolved branch, hidden assumption, failure mode, and "what happens when X" until ... |
-| `platform-infrastructure` | Produce a Platform & Infrastructure Pack (capabilities plan, scaling triggers, execution roadmap). |
-| `problem-definition` | Define a product problem: problem statement, JTBD, alternatives, evidence, metrics. See also: writing-prds (solution spec). |
-| `project-decisions-log` | Maintain a per-project, git-tracked, grep-able DECISIONS.md that captures every significant decision/conversation outcome (business decisions, architecture choices, approvals/re... |
-| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
-| `quota-management` | Kvóta-limit (5 órás session-limit ÉS heti "All models" sáv) kezelésének pontos mechanikája: countdown/auto-resume script-nevek, dinamikus heti küszöb-számítás, lokális-LLM offlo... |
-| `running-design-reviews` | Run high-signal design reviews: brief, feedback log, decision record, follow-up plan. |
-| `scoping-cutting` | Right-size scope for a fixed timebox: minimum lovable slice, cut list, scope-creep guardrails. See also: managing-timelines (deadline plans). |
-| `senior-engineer-modes` | Seven senior-engineer operating modes (build MVP, audit codebase, debug production, optimize performance, refactor to clean architecture, architect backend, build frontend compo... |
-| `shipping-products` | Plan product launch/release: rollout/rollback plan, comms, monitoring, post-launch review. See also: launch-marketing (marketing side). |
-| `sp-systematic-debugging` | Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes |
-| `sp-test-driven-development` | Use when implementing any feature or bugfix, before writing implementation code |
-| `sp-verification-before-completion` | Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any s... |
-| `supplychainsecurity` | Protects the software supply chain against dependency and artifact tampering with SBOM generation, artifact signing, and SLSA compliance. |
-| `technical-roadmaps` | Turn engineering strategy into a Technical Roadmap Pack (diagnosis, roadmap table, initiative briefs). |
-| `update-safety` | MikroB rendszerfrissítés (update.sh) biztonsági szabályai és rollback/ recovery-mechanizmus. |
-| `usability-testing` | Plan, run, and synthesize usability tests: test plan, tasks, script, findings, recommendations. |
-| `working-backwards` | Create an Amazon-style PR/FAQ plus a backcasting launch plan. |
-| `writing-north-star-metrics` | Define or refresh a product North Star metric + driver tree. |
-| `writing-prds` | Write a decision-ready PRD for cross-functional alignment. See also: writing-specs-designs (build-ready spec). |
-| `writing-specs-designs` | Create a build-ready spec + design doc (user flows, prototype brief, acceptance criteria). See also: writing-prds (decision-level PRD). |
-| `wsl-git-push-deploy-key` | Push a WSL repo (often on a /mnt/<drive> Windows mount) to a private GitHub repo using an SSH deploy key, when there is no gh CLI and HTTPS push has no credentials. |
+| Minden változtatás | `karpathy-guidelines`, `karpathycoder` |
+| API-tervezés (végpont, szerződés, verziózás) | `api-and-interface-design`, `contract-first-codev` (BE+FE pár esetén) |
+| Külső API / SDK bekötése | `injected-port-adapters`, context7 + quarantine-reader friss doksi, `fork-adopt-investigation` (hivatalos SDK előbb, 10. szabály) |
+| Végpont bővítése | `be-endpoint-param-extension` |
+| Titkos adattal író végpont, token/e-mail | `guarded-write-endpoint-token-email`, `defensive-security-analysis` |
+| OAuth / külső auth bekötés | `oauth-callback-jwt-wiring`, `threat-modeling` |
+| Frissítés, rollback, checkpoint | `update-safety` |
+| Landolás, merge, push | `gate-worktree-pattern`, `sp-finishing-a-development-branch`, `wsl-git-push-deploy-key` |
+| CI, minőségi kapu, fleet-test | `ci-cd-and-automation` |
+| Futtatókörnyezet (systemd, WSL, tmux, cron) | `platform-infrastructure` |
+| Megfigyelhetőség, riasztás, SLO | `observability-and-instrumentation` |
+| Incidens, élő hiba | `incident-response`, `sp-systematic-debugging` |
+| Konténer, VPS, sandbox | `cloud-container-security` |
+| Függőség, külső eszköz, skill-átvétel | `supplychainsecurity`, `skill-security-auditor`, `skill-management` |
+| Csatorna-plugin hibák | `channel-plugin-duplicate-socket` |
+| Kvóta, GPU, helyi LLM | `quota-management`, `local-llm-offload` |
+| Ismétlődő üzemeltetési feladat | `loop-engineering` |
+| Őr- vagy regressziós teszt | `guards-that-pin-behaviour` |
+| Migráció, kivezetés | `deprecation-and-migration` |
 <!-- END GENERATED: skill-usage -->

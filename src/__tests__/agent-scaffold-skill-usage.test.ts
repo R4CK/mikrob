@@ -210,6 +210,52 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
     expect(curatedFn).toContain('store/skill-role-map.md')
   })
 
+  // Card 219b07ae: DevO (fullstack, internal id unchanged) gets a curated table mirroring
+  // BACKEND_FAMILY/FRONTEND_FAMILY, surfacing infra skills measured at 0 use (MikroB Telegram
+  // 12201) plus API design/wiring (Peti 12201+12203).
+  it('DEVO_FAMILY is defined and names fullstack', () => {
+    expect(SCAFFOLD).toContain("const DEVO_FAMILY = new Set(")
+    const familySet = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('const DEVO_FAMILY = new Set('),
+      SCAFFOLD.indexOf('const DEVO_FAMILY = new Set(') + 60,
+    )
+    expect(familySet).toContain("'fullstack'")
+  })
+
+  it('buildSkillUsageBody dispatches fullstack to the DevO curated table', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()')
+  })
+
+  it('DevO curated table carries API design/wiring and the previously-0-use infra skills, not the full catalog', () => {
+    const curatedFn = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildDevOFamilySkillUsageBody('),
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+    )
+    expect(curatedFn).toContain('karpathy-guidelines')
+    expect(curatedFn).toContain('api-and-interface-design')
+    expect(curatedFn).toContain('contract-first-codev')
+    expect(curatedFn).toContain('injected-port-adapters')
+    expect(curatedFn).toContain('be-endpoint-param-extension')
+    expect(curatedFn).toContain('guarded-write-endpoint-token-email')
+    expect(curatedFn).toContain('oauth-callback-jwt-wiring')
+    // The six measured-0-use infra skills (MikroB Telegram 12201) must be surfaced.
+    for (const infraSkill of [
+      'platform-infrastructure', 'observability-and-instrumentation', 'quota-management',
+      'loop-engineering', 'skill-management', 'deprecation-and-migration',
+    ]) {
+      expect(curatedFn).toContain(infraSkill)
+    }
+    // Catalog-only entries NOT in the curated table.
+    for (const catalogOnly of ['working-backwards', 'usability-testing', 'writing-north-star-metrics']) {
+      expect(curatedFn).not.toContain(catalogOnly)
+    }
+    expect(curatedFn).toContain('store/skill-role-map.md')
+  })
+
   it('marks a known self-claimed-but-unreferenced skill as gap for its role', () => {
     const cybered = SKILL_USAGE_DATA['cybered'] ?? []
     const redHatGate = cybered.find((e) => e.skill === 'redhat-gate-pattern')
