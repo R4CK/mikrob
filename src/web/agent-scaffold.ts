@@ -3393,6 +3393,13 @@ const REDHAT_FAMILY = new Set(['cybered'])
 // family) was too broad to surface the actually-used task types. Curated table mirrors the
 // BACKEND_FAMILY pattern.
 const FRONTEND_FAMILY = new Set(['fron-ted', 'fron-teddy'])
+// Card 219b07ae: DevO (internal id unchanged: fullstack) gets infra/SRE + API design and wiring
+// as Core (Peti Telegram 12201+12203: "DevO feladatai közé kerüljenek az API tervezések,
+// bekötések a legfrissebb interneten elérhető információk alapján"). Measured baseline (MikroB
+// Telegram 12201, 163 REVIEW / 30 days) found the infra skills (platform-infrastructure,
+// observability-and-instrumentation, quota-management, loop-engineering, skill-management,
+// deprecation-and-migration) at 0 uses; curated table mirrors the BACKEND_FAMILY pattern.
+const DEVO_FAMILY = new Set(['fullstack'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
@@ -3525,6 +3532,39 @@ function buildFrontendFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
+function buildDevOFamilySkillUsageBody(): string {
+  const rows = [
+    '| Minden változtatás | `karpathy-guidelines`, `karpathycoder` |',
+    '| API-tervezés (végpont, szerződés, verziózás) | `api-and-interface-design`, `contract-first-codev` (BE+FE pár esetén) |',
+    '| Külső API / SDK bekötése | `injected-port-adapters`, context7 + quarantine-reader friss doksi, `fork-adopt-investigation` (hivatalos SDK előbb, 10. szabály) |',
+    '| Végpont bővítése | `be-endpoint-param-extension` |',
+    '| Titkos adattal író végpont, token/e-mail | `guarded-write-endpoint-token-email`, `defensive-security-analysis` |',
+    '| OAuth / külső auth bekötés | `oauth-callback-jwt-wiring`, `threat-modeling` |',
+    '| Frissítés, rollback, checkpoint | `update-safety` |',
+    '| Landolás, merge, push | `gate-worktree-pattern`, `sp-finishing-a-development-branch`, `wsl-git-push-deploy-key` |',
+    '| CI, minőségi kapu, fleet-test | `ci-cd-and-automation` |',
+    '| Futtatókörnyezet (systemd, WSL, tmux, cron) | `platform-infrastructure` |',
+    '| Megfigyelhetőség, riasztás, SLO | `observability-and-instrumentation` |',
+    '| Incidens, élő hiba | `incident-response`, `sp-systematic-debugging` |',
+    '| Konténer, VPS, sandbox | `cloud-container-security` |',
+    '| Függőség, külső eszköz, skill-átvétel | `supplychainsecurity`, `skill-security-auditor`, `skill-management` |',
+    '| Csatorna-plugin hibák | `channel-plugin-duplicate-socket` |',
+    '| Kvóta, GPU, helyi LLM | `quota-management`, `local-llm-offload` |',
+    '| Ismétlődő üzemeltetési feladat | `loop-engineering` |',
+    '| Őr- vagy regressziós teszt | `guards-that-pin-behaviour` |',
+    '| Migráció, kivezetés | `deprecation-and-migration` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 219b07ae)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3537,6 +3577,7 @@ function buildSkillUsageBody(name: string): string | null {
   if (WHITEHAT_FAMILY.has(name)) return buildWhiteHatFamilySkillUsageBody()
   if (REDHAT_FAMILY.has(name)) return buildRedHatFamilySkillUsageBody()
   if (FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()
+  if (DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null
