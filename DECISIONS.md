@@ -22963,3 +22963,23 @@ masik hivo (db.ts, a teljes kg-* csomagcsalad) ellenorizve, valtozatlan.
 
 **Ki dontott:** backend3 (kartya 80ab5067), QA FAIL 28436 + MikroB 16656 dontese alapjan. Gate:
 QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 3: Cybersec GO 28465 L1 + I1 zarva
+
+**Dontes:**
+- L1 (LOW): U+115F (HANGUL CHOSEONG FILLER, lathatatlan, de \p{L}-kategoriaju) nevesitett teszt
+  a `kanban-assignee-guard.test.ts`-ben -- mar zart a fail-closed nem-ASCII-maradek szabaly altal
+  (lasd delta 1), Cybersec explicit pinnelest kert a general szabaly mellett.
+- I1 (INFO): `sanitizeKgText` NEM szigoruan idempotens, ha egy eltavolitott karakter egy alapbetu
+  es egy kombinalo jel KOZOTT ul (pl. ZWSP "e" es egy kombinalo ekezet kozott) -- az elso menet
+  NFKC-ja meg nem tudja osszevonni oket (nem szomszedosak), a masodik menet mar igen. Mindket
+  alak Unicode-kanonikusan egyenlo (azonos NFC-forma), es a folyamat FIX PONTRA jut a masodik
+  menet utan (harmadik menet = masodik menet). Elfogadva valtozatlanul: semelyik iro-ut nem lancolja
+  egymasba a `sanitizeKgText` hivasokat, tehat ez a rés gyakorlatban sosem jon elo; uj teszt
+  (`kg-store.test.ts`) pontosan ezt a konvergenciat pinneli.
+
+Teszt: a teljes kg-* csomagcsalad (22 fajl) + `kanban-assignee-guard.test.ts` + `db.test.ts`:
+383/383 zold. tsc clean.
+
+**Ki dontott:** backend3 (kartya 80ab5067), Cybersec GO 28465 L1/I1 pontjai alapjan (MikroB 16665
+dontese: fold in). Gate: QA + Cybersec.
