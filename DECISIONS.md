@@ -22823,3 +22823,11 @@ RedHat's three non-blocking findings on the agent-key CLI (comment 17142 on 9655
 Item 4 (RedHat 17142 N5, "/rotate still 200 with a token-created session") is a different, architecturally separate question (session-trust provenance on `/api/claude-plans/rotate`) that MikroB's 17006 decision already deferred to its own round -- split to card ed1f3e9c (MikroB decision, msg 16416), not fixed here.
 
 **Ki dontott:** backend (card 0244910e), fix scope per RedHat 17142 + MikroB msg 16416 (item-4 split). Gate: QA + RedHat.
+
+## 2026-11-06 -- card 3bf6a01a: 24118 addendum -- "Minden verdikt" row + ponytail + repomix.sh in gate-family skill tables
+
+MikroB 16423 ("24118 addendum", re-measured after QA2 PASS + Cybersec2 GO + Cybered GO 28044) found the generated QA/WhiteHat/RedHat skill-usage tables (`src/web/agent-scaffold.ts`) still missing the "Minden verdikt" row (`gate-worktree-pattern` + `atomic-fact-gate-protocol` for all three, plus `redhat-gate-pattern` for RedHat and `sp-verification-before-completion` for QA), `ponytail` in the QA simplicity row, and a `store/repomix.sh` row -- all measured 0 in the live `agents/*/CLAUDE.md` for qa, qa2, cybersec, cybersec2, cybered. Added all three to `buildQaFamilySkillUsageBody`/`buildWhiteHatFamilySkillUsageBody`/`buildRedHatFamilySkillUsageBody`, plus a pinning test in `src/__tests__/agent-scaffold-skill-usage.test.ts` (reverting the generator previously left 59/59 tests green; mutation-verified RED now).
+
+Also folds in Cybered's GO 28044 INFO finding: the WhiteHat focus line ("every finding needs a concrete defensive fix") now states explicitly that the fix goes as prose inside the verdict, not a line-start `Fix-Direction:` line -- a line-start `Fix-Direction:` would record WhiteHat as proposer and self-exclude it from re-gating its own finding (root CLAUDE.md rule 4f).
+
+**Ki dontott:** backend (card 3bf6a01a), per MikroB 16423 + 16429 (Cybered GO 28044 addendum). Gate: QA2 + Cybered + Cybersec2.
