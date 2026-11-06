@@ -30,6 +30,7 @@ import { mapProjectToPartition } from './project-map.js'
 import { parseEntries, referencedCardIds } from './import-decisions-log.js'
 import { GATE_AGENT_NAMES } from '../web/kanban-gate-completeness-guard.js'
 import { GENERATED_COMMENT_AUTHORS } from '../web/kanban-landed-guard.js'
+import { normalizeIdentityForMatch } from '../web/kanban-assignee-guard.js'
 
 export interface AntiPatternsImportReport {
   commentsScanned: number
@@ -175,9 +176,19 @@ export function importAntiPatterns(
   // eligible anti-pattern source -- a gate agent or a generated/automated comment author
   // (local-llm, gate-pretriage, ...) is not, same authority list capture-pipeline.ts already uses
   // for the analogous "whose comment counts as a legitimate signal" question.
+  //
+  // Card 80ab5067 (WhiteHat LOW on 4ecd75d0): the original bare `.toLowerCase()` deny-list
+  // membership test let a trailing space ("qa ") or a Cyrillic look-alike ("qа", Cyrillic а)
+  // through as "eligible" -- neither matches the set's literal "qa" string, even though both
+  // name the same gate agent to a human reader. Both the author AND the set members now go
+  // through the SAME NFKC + confusable-fold + letters/digits-only normalization
+  // kanban-assignee-guard.ts already uses for the analogous MikroB-impersonation check --
+  // normalizing only one side would break on "local-llm"'s own hyphen.
+  const NORMALIZED_INELIGIBLE_AUTHORS = new Set(
+    [...GATE_AGENT_NAMES, ...GENERATED_COMMENT_AUTHORS].map(normalizeIdentityForMatch),
+  )
   function isEligibleAuthor(author: string | null): boolean {
-    const a = (author ?? '').toLowerCase()
-    return !(GATE_AGENT_NAMES as ReadonlySet<string>).has(a) && !GENERATED_COMMENT_AUTHORS.has(a)
+    return !NORMALIZED_INELIGIBLE_AUTHORS.has(normalizeIdentityForMatch(author ?? ''))
   }
 
   // Coarse SQL pre-filter, precise match in JS (same split as import-findings.ts's verdict

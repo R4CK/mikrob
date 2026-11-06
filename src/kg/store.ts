@@ -101,13 +101,40 @@ function capLength(text: string | null | undefined, max: number): string | null 
 // the full Mongolian free-variation-selector block, and the Arabic/Syriac/Kaithi/Egyptian-
 // hieroglyph/shorthand format-control blocks. Carried forward here rather than re-landed on the
 // narrower pre-f66b3652 list.
+//
+// Card 80ab5067 (WhiteHat LOW on 4ecd75d0, Gate-SHA 45237719, F1): an AWS-key-shaped value
+// survived sanitize in 14 of 16 crafted variants, built from code points this list still missed:
+// - \u{E0000}-\u{E0FFF} widened from the two narrower sub-ranges this file already had
+//   (\u{E0000}-\u{E007F} tags, \u{E0100}-\u{E01EF} variation selectors supplement) to the WHOLE
+//   contiguous Supplementary Special-purpose Plane allocation (the reserved \u{E0080}-\u{E00FF}
+//   and \u{E01F0}-\u{E0FFF} gaps between and after them are Default_Ignorable too -- Unicode
+//   reserves the entire plane 14 range for this purpose, assigned or not).
+// - ￰-￸ added next to the existing ￹-￻ (deliberately still excludes
+//   ￼/�, OBJECT REPLACEMENT CHARACTER / REPLACEMENT CHARACTER -- those are visible
+//   mojibake markers, not invisible carriers).
+// - ￾￿ and one pair per astral plane (\u{xFFFE}-\u{xFFFF} for every plane 1-16) added:
+//   the full Unicode NONCHARACTER set (together with the existing ﷐-﷯ range below),
+//   66 code points total -- guaranteed never assigned a meaning, so a value using one to dodge a
+//   literal denylist is unambiguous.
+// - ⠀ (BRAILLE PATTERN BLANK) added: visually empty like the rest of this list even though
+//   it is a real assigned Lo-category letter, not Default_Ignorable -- the same practical risk
+//   (a "blank" separator inside a value that defeats a secret-shape regex) as the intentionally
+//   invisible characters above.
+// NFKC normalization runs in sanitizeKgText BEFORE this strip (not folded into the regex itself):
+// a compatibility-equivalent character that NFKC rewrites INTO one of the ranges here must still
+// be caught, and normalizing first is the only order that guarantees it.
 export const UNSAFE_CHARS_RX = new RegExp(
   '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00ad\\u061c' +
     '\\u0600-\\u0605\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180b-\\u180f' +
-    '\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\u3164\\ufeff' +
-    '\\u034f\\u115f\\u1160\\u17b4-\\u17b5\\u206a-\\u206f\\ufe00-\\ufe0f\\uffa0\\ufff9-\\ufffb' +
+    '\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\u2800\\u3164\\ufeff' +
+    '\\u034f\\u115f\\u1160\\u17b4-\\u17b5\\u206a-\\u206f\\ufe00-\\ufe0f\\uffa0' +
+    '\\ufdd0-\\ufdef\\ufff0-\\ufff8\\ufff9-\\ufffb\\ufffe\\uffff' +
+    '\\u{1fffe}-\\u{1ffff}\\u{2fffe}-\\u{2ffff}\\u{3fffe}-\\u{3ffff}\\u{4fffe}-\\u{4ffff}' +
+    '\\u{5fffe}-\\u{5ffff}\\u{6fffe}-\\u{6ffff}\\u{7fffe}-\\u{7ffff}\\u{8fffe}-\\u{8ffff}' +
+    '\\u{9fffe}-\\u{9ffff}\\u{afffe}-\\u{affff}\\u{bfffe}-\\u{bffff}\\u{cfffe}-\\u{cffff}' +
+    '\\u{dfffe}-\\u{dffff}\\u{efffe}-\\u{effff}\\u{ffffe}-\\u{fffff}\\u{10fffe}-\\u{10ffff}' +
     '\\u{110BD}\\u{110CD}\\u{13430}-\\u{1343F}\\u{1BCA0}-\\u{1BCA3}' +
-    '\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}\\u{1D173}-\\u{1D17A}]',
+    '\\u{E0000}-\\u{E0FFF}\\u{1D173}-\\u{1D17A}]',
   'u',
 )
 
@@ -115,10 +142,19 @@ export const UNSAFE_CHARS_RX = new RegExp(
  *  BIDI-override and control character from a kg_nodes text field. Exported so every kg-importer
  *  can apply the SAME sanitization to text that reaches upsertNode by a path other than its own
  *  string fields (e.g. a card title copied in as a `card` node's title) -- still cheap/idempotent
- *  to call twice. */
+ *  to call twice.
+ *
+ *  Card 80ab5067 (WhiteHat LOW on 4ecd75d0, F1): NFKC-normalizes FIRST, strips UNSAFE_CHARS_RX
+ *  second. Order matters both ways: a compatibility-equivalent character can NFKC-decompose INTO
+ *  one of the code points UNSAFE_CHARS_RX strips (stripping first would miss it), and normalizing
+ *  the text that is actually STORED (not a copy used only for a downstream check) closes the
+ *  compatibility-character half of the same gap the widened UNSAFE_CHARS_RX closes for the
+ *  literal-code-point half -- the two are independent escape routes to the same problem, so both
+ *  letters of the finding ("ranges" and "no NFKC") need a fix, not either alone. */
 export function sanitizeKgText<T extends string | null | undefined>(text: T): T {
   if (text == null) return text
-  return text.replace(new RegExp(UNSAFE_CHARS_RX.source, 'gu'), '') as T
+  const normalized = text.normalize('NFKC')
+  return normalized.replace(new RegExp(UNSAFE_CHARS_RX.source, 'gu'), '') as T
 }
 
 /** Reuses the SAME patterns the commit-time secret-gate scans diffs with (src/security/

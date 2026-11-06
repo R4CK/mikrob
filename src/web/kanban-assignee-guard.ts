@@ -71,6 +71,20 @@ function lettersAndDigitsOnly(s: string): string {
 }
 
 /**
+ * Card 80ab5067 (WhiteHat LOW on 4ecd75d0, Gate-SHA 45237719): the exact same NFKC + confusable
+ * + letters/digits-only pipeline this file already uses for "does this name MikroB", exported so
+ * any OTHER exact-identity-against-a-known-name comparison (e.g. import-anti-patterns.ts's
+ * author eligibility check) gets the same whitespace/homoglyph resistance instead of a bare
+ * `.toLowerCase()` deny-list membership test, which a trailing space or a Cyrillic look-alike
+ * sails through. Compare BOTH sides through this function -- normalizing only the input and
+ * matching it against un-normalized set members (e.g. "local-llm") breaks on the hyphen this
+ * function also strips.
+ */
+export function normalizeIdentityForMatch(value: string): string {
+  return lettersAndDigitsOnly(foldConfusables(value.normalize('NFKC'))).toLowerCase()
+}
+
+/**
  * True when `value` names MikroB -- any case/whitespace/punctuation variant, full-width form
  * (NFKC-folded), any formatting/invisible/combining character, or a look-alike letter (Cirill,
  * Gorog, Armenian, small-caps, Turkish dotless-i, Hangul filler -- WhiteHat F3 + RedHat delta B2).
@@ -78,8 +92,7 @@ function lettersAndDigitsOnly(s: string): string {
  */
 export function isForbiddenAssignee(value: unknown): boolean {
   if (typeof value !== 'string') return false
-  const folded = lettersAndDigitsOnly(foldConfusables(value.normalize('NFKC')))
-  return folded.toLowerCase() === FORBIDDEN_ASSIGNEE
+  return normalizeIdentityForMatch(value) === FORBIDDEN_ASSIGNEE
 }
 
 /**

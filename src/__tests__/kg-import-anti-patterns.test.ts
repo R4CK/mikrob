@@ -175,6 +175,51 @@ describe('importAntiPatterns (MT-10d, card 33e5e4ff)', () => {
     expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:4')).toBeTruthy()
   })
 
+  // Card 80ab5067 (Cybersec GO 23524 on 4ecd75d0: "the DECISIONS-row catch and the card-title
+  // catch survive rethrow-mutation -- 2 of 22 mutants, nothing here exercised them"). Both pin
+  // the SAME isolation property F-d already proved for comments, for the two remaining catch
+  // sites: linkToCard's card-node write (import-anti-patterns.ts ~line 148) and the
+  // decisionEntries loop's own upsertNode (~line 246).
+  it('F-d (card 80ab5067): a secret-shaped CARD TITLE is skipped (no card node, no link), the comment anti_pattern and every other row still import', () => {
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    // card1 is comment 1's card -- its TITLE (not the comment body) now carries a secret shape.
+    mainDb
+      .prepare(`UPDATE kanban_cards SET title = title || ' ghp_${'a'.repeat(36)}' WHERE id = 'card1'`)
+      .run()
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.rowsRejectedSecret).toBe(1)
+    expect(report.secretRejectedSources).toEqual(['kanban_cards:card1'])
+    // The comment's OWN anti_pattern node still exists -- only the card link is rejected.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+    expect(report.decisionAntiPatternsUpserted).toBe(2)
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:1')).toBeTruthy()
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('card:card1')).toBeUndefined()
+    expect(kgDb.prepare(`SELECT 1 FROM kg_edges WHERE src = 'anti_pattern:comment:1' AND rel = 'rejected_for'`).get()).toBeUndefined()
+  })
+
+  it('F-d (card 80ab5067): a secret-shaped DECISIONS entry body is skipped, every other DECISIONS row and every comment still import', () => {
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    const poisonedDecisions = SAMPLE_DECISIONS_MD.replace(
+      'ELUTASITVA, lásd cafebabe.** A javaslat egy másik, már megépült architektúrát duplikált\nvolna.',
+      `ELUTASITVA, lásd cafebabe.** A javaslat egy másik, már megépült architektúrát duplikált\nvolna. ghp_${'a'.repeat(36)}`,
+    )
+
+    const report = importAntiPatterns(mainDb, kgDb, poisonedDecisions, 'mikrob')
+
+    expect(report.rowsRejectedSecret).toBe(1)
+    expect(report.secretRejectedSources).toHaveLength(1)
+    expect(report.secretRejectedSources[0]).toMatch(/^DECISIONS\.md:L\d+$/)
+    // Only 1 of the 2 DECISIONS rejections survives; both comment anti_patterns are unaffected.
+    expect(report.decisionAntiPatternsUpserted).toBe(1)
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
+
   // F-b (card 4ecd75d0, source card description): a gate agent or a generated/automated comment
   // author is not an eligible anti-pattern source, even with a line-start ELUTASITVA marker.
   it('F-b: a Draft-Review: ELUTASITVA comment from a gate agent or a generated author is skipped', () => {
@@ -184,6 +229,31 @@ describe('importAntiPatterns (MT-10d, card 33e5e4ff)', () => {
         `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
            ('card1', 'cybersec', 'Draft-Review: ELUTASITVA\n\nGate agent, not a builder.', 2000),
            ('card1', 'local-llm', 'Draft-Review: ELUTASITVA\n\nGenerated comment author.', 2001)`,
+      )
+      .run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.commentsSkippedAuthor).toBe(2)
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:5')).toBeUndefined()
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:6')).toBeUndefined()
+    // The original, eligible-author comment still imports normally.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
+
+  // Card 80ab5067 (WhiteHat LOW on 4ecd75d0, F2): the bare `.toLowerCase()` deny-list membership
+  // test let a trailing space ('qa ') and a Cyrillic look-alike ('qа', Cyrillic а U+0430) through
+  // as "eligible", because neither matches the set's literal 'qa' string -- even though both name
+  // the same gate agent to a human reader.
+  it('F2: a whitespace- or homoglyph-disguised gate-agent name is still skipped as ineligible', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+           ('card1', 'qa ', 'Draft-Review: ELUTASITVA\n\nTrailing-space disguise.', 3000),
+           ('card1', 'qа', 'Draft-Review: ELUTASITVA\n\nCyrillic a disguise.', 3001)`,
       )
       .run()
     const kgDb = new Database(':memory:')
