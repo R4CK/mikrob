@@ -22865,3 +22865,34 @@ dokumentalt esetben. Mindket javitas kulon commitban (3da4aa767), ugyanaz a Gate
 teljes merge-landolast.
 
 **Ki dontott:** backend3 (card bb562959). Gate: QA + Cybersec + Cybered (valtozatlan).
+
+## 2026-11-06 -- card bb562959 delta-kor: QA FAIL 28338 + Cybered NO-GO 28354 (F1-F3) javitva
+
+**Dontes:** harom lelet zarva, mindegyikhez teszt ami piros a 9c18c2557-n es zold a javitason:
+- F1 (QA FAIL 28338, Cybered megerositve): `outgoing-copy-gate.py` manage_email dispatchje
+  `create_draft`/`update_draft`/`draft_email`/`draft` muveletekre most tenylegesen audital
+  (gondolatjelre tiltva), kulon `_MANAGE_EMAIL_DRAFT_OPS` halmazban, nem `_MANAGE_EMAIL_OUTBOUND_OPS`-ba
+  olvasztva (az mast jelent: "kuldes"). Ures test ("csak megvaltozott mezok") nem tiltas, hanem
+  "nincs mit auditalni".
+- F2 (Cybered NO-GO): a `_EMAIL_SAFE_TOOL_RE` (es ikerparjai `email-approval-gate.py`-ban es
+  `email-send-gate.mjs`-ben) negativ lookahead-je csak a VERB UTAN nezett -- egy veszelyes szo a
+  PREFIXBEN (send_and_get_thread, forward_get_x) lathatatlan volt neki. A lookahead a minta
+  ELEJERE mozgatva, a TELJES nevre nez. `email-approval-gate.py`-ban a `_CONNECTOR_SEND_VERB_RE`
+  is vegpont-horgonyrol token-mindenhol mintara valtott (forward_get_x).
+- F3 (Cybered NO-GO): `mcp__google_workspace__gmail_forward_message` "forward_message"-re
+  vegzodik, nem puszta "forward"-ra -- mindharom kapu (copy, approval, sub-agent) atengedte.
+  `_CONNECTOR_GENERIC_SUFFIXES` (email_extract.py) es a sub-agent kapu sajat off-brand mintaja
+  "forward_message"-szel bovult. Tovabba: a sub-agent kapu `manage_email` horgonya is
+  prefix-toleranssal bovult (ugyanaz a hiba, mint a Python ikreknel), es `outgoing-copy-gate.py`
+  off-brand szerver eseten most "gmail"+verb barmely sorrendben es off-server draft-op (pl.
+  `mcp__ws__create_draft`) is auditalt.
+
+Nem javitva, kulon kartyara halasztva (Cybersec GO 28369, M1/L1/L2/L3 jelzesei, nem blokkolo):
+`credential-gate.py` nem szelesitve off-brand nevekre (M1); Kesz-ha 3 (per-fajl tablazat) csak
+osszefoglalo szinten (L1); `classify_mail_tool` JS ikerje es a recipient-ledger valtozatlanul NEM
+adoptalva, de a dokumentacio pontositando (L2); ket look-alike nev (forwarding_settings,
+send_drafts_list) a copy kapun biztonsagosan at van engedve, az approval es sub-agent kapun meg
+tiltott (L3, fail-closed, nem lelet).
+
+**Ki dontott:** backend3 (card bb562959), QA FAIL 28338 + Cybered NO-GO 28354 alapjan. Gate: QA +
+Cybersec + Cybered.

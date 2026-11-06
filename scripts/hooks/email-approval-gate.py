@@ -153,13 +153,20 @@ _EMAIL_SERVER_RE = re.compile(r"__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__", re.
 # prefixed read/search/draft op -- measured: it fell through to require approval at level 1,
 # denying a pure read. `^[A-Za-z0-9]*[-_]?` tolerates one optional prefix segment (letters/digits,
 # then an optional separator) before the verb, matching the vendor's own "verbatim prepend, no
-# separator guaranteed" shape -- the negative lookahead's reach is UNCHANGED (still scans only
-# what follows the matched verb), so draft_and_send / v2_search_and_send_email stay correctly
-# unsafe. update_draft joins create_draft as a safe exact (suffixed) form, same reasoning as the
-# comment above: the verb update/create decides safety here, not the word "draft" as a substring.
+# separator guaranteed" shape. update_draft joins create_draft as a safe exact (suffixed) form,
+# same reasoning as the comment above: the verb update/create decides safety here, not the word
+# "draft" as a substring.
+#
+# Cybered NO-GO 28354 F2 (mirrors the copy-gate twin's finding): the ORIGINAL claim that "the
+# negative lookahead's reach is UNCHANGED, still scans only what follows the matched verb" was
+# itself the bug, not a safe invariant -- mcp__gmail__forward_get_x: prefix "forward_" fits the
+# single-segment form (letters, one separator), "get_" matches the safe verb, and nothing AFTER
+# "get_x" is send/reply/forward, so this read as SAFE even though the name starts with "forward".
+# Fixed the same way as outgoing-copy-gate.py's twin: the negative lookahead moved to the START
+# of the pattern, scanning the WHOLE name for a dangerous word, not just the tail after the verb.
 _EMAIL_SAFE_TOOL_RE = re.compile(
-    r"^[A-Za-z0-9]*[-_]?(?:search|get|list|read|draft)[-_](?!.*(?:send|reply|forward))"
-    r"|^[A-Za-z0-9]*[-_]?(?:create|update)[-_]draft$",
+    r"^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?(?:search|get|list|read|draft)[-_]"
+    r"|^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?(?:create|update)[-_]draft$",
     re.I,
 )
 
@@ -765,10 +772,18 @@ def main():
     # blocked/needed approval regardless, via the _EMAIL_SERVER_RE deny-by-default branch below
     # -- measured directly against this fork's own regexes, not assumed from upstream's prose;
     # neither mcp__gmail__v2_reply_all nor mcp__server-gmail-autoauth-mcp__reply_all bypasses
-    # that branch). Anchored at the END instead of the whole string, so a prefix no longer hides
-    # the verb; a verb-like SUFFIX on an unrelated read name (search_and_reply) still only costs
-    # an unnecessary owner-CC requirement, never a widened ALLOW.
-    _CONNECTOR_SEND_VERB_RE = re.compile(r"(?:^|_)(?:reply_all|replyall|reply|forward|send[-_]?message)$", re.I)
+    # that branch).
+    #
+    # Cybered NO-GO 28354 F2: END-anchoring (the comment above used to say "so a prefix no
+    # longer hides the verb") was itself incomplete -- it hides the verb from the OTHER side.
+    # mcp__gmail__forward_get_x: "forward" sits in the PREFIX, "get_x" is the trailing shape, so
+    # an end-anchored verb check never finds "forward" at all, is_connector_send stays False,
+    # the owner-CC requirement is skipped, and at level 3 the call reaches the plain allow with
+    # no check whatsoever (not even the lesser "unnecessary owner-CC requirement" the old comment
+    # assumed). Matched as a token ANYWHERE now (start, middle or end, delimited by "_" or string
+    # boundaries) -- the file's own stated direction ("only costs an unnecessary owner-CC
+    # requirement, never a widened ALLOW") applies just as well to a token found mid-name.
+    _CONNECTOR_SEND_VERB_RE = re.compile(r"(?:^|_)(?:reply_all|replyall|reply|forward|send[-_]?message)(?:_|$)", re.I)
     # Second OR term (scope_kind == "connector_send"): an off-brand server name
     # (mcp__workspace__send_gmail_message) has no "gmail"/"resend" for _EMAIL_SERVER_RE to find at
     # all -- measured live, that left the owner-CC check off AND the send itself unrequired-of-

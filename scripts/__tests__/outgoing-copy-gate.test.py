@@ -548,6 +548,57 @@ def main():
                                   rules_file=active)
         check("prefixed reply_all with a non-dict tool_input blocks (exit 2)", code, 2)
 
+        # --- Cybered NO-GO 28354 (delta round on Koteg 23a) -----------------
+
+        # F1: create_draft/update_draft/draft_email via the MULTIPLEXED manage_email dispatcher
+        # carry real outgoing text (the draft body) and must be audited the same way the
+        # direct-tool-name form already is -- they were NOT in _MANAGE_EMAIL_OUTBOUND_OPS, so the
+        # hook exited 0 before ever collecting the body.
+        for op in ("create_draft", "update_draft", "draft_email", "draft", "create-draft"):
+            code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email",
+                                       "tool_input": {"operation": op, "body": dash}},
+                                      rules_file=active)
+            check(f"F1: manage_email operation={op!r} with em dash blocks (exit 2)", code, 2)
+            code, out, err = run_hook({"tool_name": "mcp__google-workspace__manage_email",
+                                       "tool_input": {"operation": op, "body": CLEAN_HU_OK}},
+                                      rules_file=active)
+            check(f"F1: manage_email operation={op!r} clean passes (exit 0)", code, 0)
+        # update_draft may legitimately carry only the changed (non-text) fields -- no body at
+        # all is "nothing to audit yet", not a fail-closed deny.
+        code, out, err = run_hook({"tool_name": "mcp__gmail__manage_email",
+                                   "tool_input": {"operation": "update_draft", "draftId": "d1"}},
+                                  rules_file=active)
+        check("F1: manage_email update_draft with no body field is not a copy-audit target (exit 0)", code, 0)
+
+        # F2: a send/reply/forward word sitting in the PREFIX (before the matched safe verb) must
+        # still be audited -- the negative lookahead used to only scan what comes AFTER the verb.
+        for name in ("mcp__gmail__send_and_get_thread", "mcp__gmail__reply_and_list_thread",
+                     "mcp__gmail__forward_and_read_x", "mcp__gmail__send_message_and_read_back",
+                     "mcp__claude_ai_Gmail__send_and_get_thread"):
+            code, out, err = run_hook({"tool_name": name, "tool_input": {"to": ["a@b.hu"], "body": dash}},
+                                      rules_file=active)
+            check(f"F2: {name} (dangerous word in the prefix) is audited and blocks (exit 2)", code, 2)
+        # Control: a name with no safe-verb match at all (starts with "send", not search/get/
+        # list/read/delete) was already audited by the OLD regex too -- this must not regress.
+        code, out, err = run_hook({"tool_name": "mcp__gmail__send_then_search", "tool_input": {"q": "x"}},
+                                  rules_file=active)
+        check("F2 control: send_then_search (never matched a safe verb) stays audited, unreadable body denies (exit 2)", code, 2)
+
+        # F3: an off-brand server (no "gmail"/"resend" in the server segment) whose bare name has
+        # "gmail" and a send-shaped verb in EITHER order must still be audited.
+        for name in ("mcp__google_workspace__gmail_send_message", "mcp__google_workspace__gmail_reply",
+                     "mcp__google_workspace__gmail_forward_message"):
+            code, out, err = run_hook({"tool_name": name, "tool_input": {"messageId": "m1", "body": dash}},
+                                      rules_file=active)
+            check(f"F3: {name} (off-brand, gmail+verb either order) is audited and blocks (exit 2)", code, 2)
+        # F3: an off-server draft op (no gmail/resend hint anywhere) is still a draft by bare name.
+        code, out, err = run_hook({"tool_name": "mcp__ws__create_draft", "tool_input": {"body": dash}},
+                                  rules_file=active)
+        check("F3: off-server mcp__ws__create_draft with em dash blocks (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__ws__create_draft", "tool_input": {"body": CLEAN_HU_OK}},
+                                  rules_file=active)
+        check("F3: off-server mcp__ws__create_draft clean passes (exit 0)", code, 0)
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)

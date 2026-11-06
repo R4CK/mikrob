@@ -1212,6 +1212,24 @@ with tempfile.TemporaryDirectory() as td:
         check(f"level 3: {name} (no envelope) -> not owner-CC checked, allowed", code == 0,
               f"exit={code} err={err[:200]!r}")
 
+    # --- Cybered NO-GO 28354 F2: a dangerous connector verb (reply/forward) sitting in the
+    # PREFIX, not the suffix, must still require the owner-CC check -- the old end-anchored
+    # _CONNECTOR_SEND_VERB_RE never found it there. (This file's connector-verb set is reply/
+    # forward/send_message specifically, not bare "send" -- that is _SEND_TOOL's job via the
+    # literal "send_email"/"manage_email" substrings, a different check not touched by this fix.)
+    for name in ("mcp__gmail__forward_get_x", "mcp__gmail__reply_and_list_thread"):
+        code, _, err = run_gate(store, {"tool_name": name,
+                                        "tool_input": {"to": ["a@b.hu"], "subject": "x", "body": "y"}})
+        check(f"F2: {name} (dangerous word in the prefix) without the owner -> DENIED", code == 2 and OWNER in err,
+              f"exit={code} err={err[:200]!r}")
+
+    # --- Cybered NO-GO 28354 F3: mcp__google_workspace__gmail_forward_message ends in
+    # "forward_message", not bare "forward" -- it must still classify as a connector send.
+    code, _, err = run_gate(store, {"tool_name": "mcp__google_workspace__gmail_forward_message",
+                                    "tool_input": {"to": ["a@b.hu"], "subject": "x", "body": "y"}})
+    check("F3: mcp__google_workspace__gmail_forward_message without the owner -> DENIED", code == 2 and OWNER in err,
+          f"exit={code} err={err[:200]!r}")
+
     # The classifier lives in email_extract.py too: a broken extractor must not
     # change what levels 1 and 3 decide for a name-classified tool either.
     broken = copy_hook_tree(os.path.join(td, "broken-extract-names"))

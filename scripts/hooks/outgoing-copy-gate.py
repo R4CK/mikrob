@@ -2199,8 +2199,17 @@ _EMAIL_SERVER_RE = re.compile(r"__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__", re.
 # read-like op, no text of ours). A vendor tool-name PREFIX (v2_, work-, shared_inbox_, ...) now
 # also tolerated before the verb -- same fix and reasoning as the Python approval-gate twin's
 # copy of this regex, and as email-send-gate.mjs's EMAIL_SAFE_TOOL_RE.
+#
+# Cybered NO-GO 28354 F2: the negative lookahead `(?!.*(?:send|reply|forward))` only looks
+# FORWARD from the safe-verb match position, so a dangerous word sitting in the PREFIX (consumed
+# by the now-generic `[A-Za-z0-9_-]*`) was invisible to it -- send_and_get_thread's "send_and_"
+# satisfied the prefix, "get_" matched the safe verb, and nothing AFTER "get_thread" was
+# send/reply/forward, so it read as safe. Same class of bypass Cybersec bf7a7335 closed
+# originally, reopened by the Koteg 23a prefix widening. Fixed by moving the negative lookahead
+# to the START of the pattern, so it scans the WHOLE name for a dangerous word, not just the
+# tail after the verb.
 _EMAIL_SAFE_TOOL_RE = re.compile(
-    r"^[A-Za-z0-9_-]*(?:search|get|list|read|delete)[-_](?!.*(?:send|reply|forward))", re.I
+    r"^(?!.*(?:send|reply|forward))[A-Za-z0-9_-]*(?:search|get|list|read|delete)[-_]", re.I
 )
 # Koteg 23a: two curated look-alikes whose SUFFIX names a real read/settings noun, not a send,
 # even though a naive verb-prefix match would call them dangerous (forwarding_SETTINGS is not a
@@ -2225,6 +2234,19 @@ _EMAIL_DRAFT_OPTIONAL_RE = re.compile(
 _EMAIL_OFFBRAND_DANGEROUS_RE = re.compile(
     r"(?:^|_)(?:reply_all|send_gmail_message|draft_gmail_message)$", re.I
 )
+# Cybered NO-GO 28354 F3: the word order above (verb THEN "gmail") missed the reverse order a
+# real install uses too -- mcp__google_workspace__gmail_send_message / gmail_reply /
+# gmail_forward_message all have "gmail" FIRST. "gmail_send_message" already passed (ends in
+# "send_message", one of the generic suffixes below), but "gmail_forward_message" ends in
+# "forward_message", not bare "forward", and slipped through unaudited on all three gates at
+# once (copy, approval, sub-agent) -- the exact gap email_extract.py's _CONNECTOR_GENERIC_SUFFIXES
+# and email-send-gate.mjs's own off-brand check needed the same "forward_message" addition for.
+_EMAIL_OFFBRAND_GMAIL_VERB_RE = re.compile(
+    r"(?:^|_)gmail(?:_|$)", re.I
+)
+_EMAIL_OFFBRAND_VERB_SUFFIX_RE = re.compile(
+    r"(?:^|_)(?:send_message|reply|forward|forward_message)$", re.I
+)
 # COPYGATEMATCHER904 (upstream #1995, closed inside this fork's own dispatch rather than
 # adopting upstream's shared classifier): the multiplexed manage_email tool is registered on
 # this hook, but the old dispatch below only recognised a tool NAME containing "send_email" --
@@ -2234,6 +2256,15 @@ _EMAIL_OFFBRAND_DANGEROUS_RE = re.compile(
 # Own copy of the outbound-op set, same convention as email-approval-gate.py's
 # _MANAGE_EMAIL_SEND_OPS (this file keeps its own copy of everything, per the module docstring).
 _MANAGE_EMAIL_OUTBOUND_OPS = {"send", "reply", "reply_all", "replyall", "forward"}
+# QA FAIL 28338 + Cybered NO-GO 28354 F1: create_draft/update_draft/draft_email via the
+# MULTIPLEXED manage_email dispatcher carried real outgoing text (the draft body) but were not in
+# _MANAGE_EMAIL_OUTBOUND_OPS, so they exited 0 before collect_mcp_body ever ran -- the exact
+# install shape COPYGATEMATCHER904's own history already measured for sends. Kept as its OWN set,
+# not folded into _MANAGE_EMAIL_OUTBOUND_OPS (other logic, e.g. the bare-forward empty-note
+# check below, specifically means "is a send"): a draft op is audited the same way, but empty
+# text means "nothing of ours yet" (an update may carry only the changed fields), not a
+# fail-closed deny -- same treatment _EMAIL_DRAFT_OPTIONAL_RE gives the direct-tool-name form.
+_MANAGE_EMAIL_DRAFT_OPS = {"create_draft", "update_draft", "draft_email", "draft"}
 # The kinds whose payload carries OUR text and is audited here. send_draft is
 # deliberately NOT one of them: it carries only a draftId, so there is no text
 # of ours in the call (the draft's text was audited when it was written), and
@@ -2278,14 +2309,20 @@ def main():
     # through to sys.exit(0) with no audit at all.
     if re.search(r"(^|__)[A-Za-z0-9_-]*manage_email$", tool, re.I):
         op = str(tool_input.get("operation") or tool_input.get("action") or "").strip().lower().replace("-", "_")
-        if op not in _MANAGE_EMAIL_OUTBOUND_OPS:
+        if op in _MANAGE_EMAIL_DRAFT_OPS:
+            text = collect_mcp_body(tool_input)
+            if not text.strip():
+                sys.exit(0)  # a draft op whose body may legitimately be absent -- nothing to audit yet
+            unreadable = None
+        elif op not in _MANAGE_EMAIL_OUTBOUND_OPS:
             sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
-        # A bare forward carries someone else's text and an EMPTY note: there is
-        # nothing of ours to audit, and the fail-closed "unreadable" branch below
-        # would block it for no reason.
-        if op == "forward" and not str(tool_input.get("body") or "").strip():
-            sys.exit(0)
-        text, unreadable = collect_mcp_body(tool_input), None
+        else:
+            # A bare forward carries someone else's text and an EMPTY note: there is
+            # nothing of ours to audit, and the fail-closed "unreadable" branch below
+            # would block it for no reason.
+            if op == "forward" and not str(tool_input.get("body") or "").strip():
+                sys.exit(0)
+            text, unreadable = collect_mcp_body(tool_input), None
     # Card 498d53c1 (Cybersec MEDIUM on a4164e95): a tool-NAME list drifts -- send_draft and
     # the hyphenated resend__send-email both slipped past the name-list check below before
     # this existed. Deny-by-default for the whole gmail__/resend__ SERVER: any tool on it that
@@ -2308,9 +2345,27 @@ def main():
     elif re.search(r"send_email", tool, re.I):
         text, unreadable = collect_mcp_body(tool_input), None
     # Koteg 23a (upstream #1995 continued): off-brand server, no "gmail"/"resend" substring at
-    # all, but the bare name is one of the curated dangerous send-shaped verbs anyway.
-    elif _EMAIL_OFFBRAND_DANGEROUS_RE.search(_bare_tool_name(tool)):
+    # all, but the bare name is one of the curated dangerous send-shaped verbs anyway -- either
+    # an exact curated name, or "gmail"/"resend" and a send-shaped verb BOTH present as their own
+    # underscore-delimited words, in EITHER order (gmail_send_message as well as
+    # send_gmail_message).
+    elif (
+        _EMAIL_OFFBRAND_DANGEROUS_RE.search(_bare_tool_name(tool))
+        or (
+            _EMAIL_OFFBRAND_GMAIL_VERB_RE.search(_bare_tool_name(tool))
+            and _EMAIL_OFFBRAND_VERB_SUFFIX_RE.search(_bare_tool_name(tool))
+        )
+    ):
         text, unreadable = collect_mcp_body(tool_input), None
+    # Koteg 23a (upstream #1995 continued): a draft op's bare name (create_draft/update_draft/
+    # draft_email) is unambiguously email-draft-shaped regardless of server branding -- same
+    # reasoning as the curated dangerous-name set above, extended to the optional-body draft
+    # treatment _EMAIL_DRAFT_OPTIONAL_RE already gives the on-brand-server form.
+    elif _EMAIL_DRAFT_OPTIONAL_RE.search(_bare_tool_name(tool)):
+        text = collect_mcp_body(tool_input)
+        if not text.strip():
+            sys.exit(0)
+        unreadable = None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         # Card 74181db2: a Bot API send written in Bash is the ONLY Telegram route a role

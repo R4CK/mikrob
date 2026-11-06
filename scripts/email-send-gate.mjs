@@ -838,7 +838,12 @@ const EMAIL_SERVER_RE = /__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__/i
 // be trusted to edit it. A sub-agent may not draft-edit without going through the owner -- only
 // create_draft stays exempt here; update_draft falls through to deny-by-default on purpose (see
 // the dedicated "every OTHER tool... stays denied (reply_all, update_draft)" test).
-const EMAIL_SAFE_TOOL_RE = /^[A-Za-z0-9]*[-_]?(?:search|get|list|read|draft)[-_](?!.*(?:send|reply|forward))|^[A-Za-z0-9]*[-_]?create[-_]draft$/i
+//
+// Cybered NO-GO 28354 F2 (same root cause as both Python twins): a dangerous word sitting in the
+// PREFIX, before the matched safe verb, was invisible to a lookahead that only scanned what
+// comes AFTER the verb (forward_get_x read as safe). Moved the negative lookahead to the START
+// of each alternative so it scans the WHOLE name.
+const EMAIL_SAFE_TOOL_RE = /^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?(?:search|get|list|read|draft)[-_]|^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?create[-_]draft$/i
 
 function bareToolName(qualifiedName) {
   const idx = qualifiedName.lastIndexOf('__')
@@ -877,7 +882,10 @@ export function gateDecision(toolName, toolInput) {
   // draft-only-email safety policy, which blocks drafting too: that policy keys
   // on ctx.operation alone and never looks at draft:true, so with it enabled the
   // mailbox is effectively read-only (verified live, 2026-08-10).
-  if (/(^|__)manage_email$/i.test(name)) {
+  // Cybered NO-GO 28354 F3: vendor-prefixed manage_email (mcp__x__v2_manage_email) missed this
+  // anchor the same way the Python twins' old `(^|__)manage_email$` did before the Koteg 23a fix
+  // -- a prefixed name fell through to the default allow below with no governance deny at all.
+  if (/(^|__)[A-Za-z0-9_-]*manage_email$/i.test(name)) {
     const op = String(toolInput?.operation ?? '').toLowerCase()
     if (!MANAGE_EMAIL_SEND_OPS.has(op)) return { deny: false }
     // Fail safe: only an explicit draft request passes. A missing/ambiguous
@@ -920,7 +928,10 @@ export function gateDecision(toolName, toolInput) {
   // `..._telegram__reply` and must never deny here.
   if (
     /(^|_)(?:send_draft|reply_all|send_gmail_message|draft_gmail_message)$/i.test(name) ||
-    (/gmail/i.test(name) && /(^|_)(?:send_message|reply|forward)$/i.test(name))
+    // Cybered NO-GO 28354 F3: "forward_message" added -- mcp__google_workspace__gmail_forward_message
+    // ends in "forward_message", not bare "forward", so it missed this alternation (allowed, no
+    // deny at all) -- the same gap closed in email_extract.py's _CONNECTOR_GENERIC_SUFFIXES.
+    (/gmail/i.test(name) && /(^|_)(?:send_message|reply|forward|forward_message)$/i.test(name))
   ) {
     return { deny: true, kind: 'email-server-default-deny' }
   }

@@ -386,7 +386,11 @@ CONNECTOR_SEND_RE = re.compile(r"gmail__(reply|reply_all|send_message|forward)$"
 # a send: that false positive fails closed, the direction a mail gate may err
 # in. lowercase + endswith/in, no regex, so the two copies cannot drift on
 # `$`-before-newline semantics.
-_CONNECTOR_GENERIC_SUFFIXES = ("send_message", "reply", "forward")
+# Cybered NO-GO 28354 F3: "forward_message" added -- mcp__google_workspace__gmail_forward_message
+# ends in "forward_message", not bare "forward", so it missed every suffix here and classified
+# as None (not an outbound mail tool at all): unaudited by the copy gate, unapproved by the
+# approval gate, and allowed by the sub-agent governance gate -- all three at once.
+_CONNECTOR_GENERIC_SUFFIXES = ("send_message", "reply", "forward", "forward_message")
 _DRAFT_NAMES = ("draft_email", "create_draft", "update_draft", "draft_gmail_message")
 
 # Kinds (the same vocabulary as classifyMailTool in email-send-gate.mjs):
