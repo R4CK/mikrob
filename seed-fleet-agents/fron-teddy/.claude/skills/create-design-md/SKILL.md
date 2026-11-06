@@ -7,7 +7,7 @@ description: Create or update a DESIGN.md from an existing product repository or
 
 Create a `DESIGN.md` for one product or coherent website. Record the design language that governs it, not every value that happens to exist.
 
-> **Note (vendored copy, card 784e3809):** the `npx @google/design.md@0.4.0` validator calls below are OPTIONAL and for internal use only (spec/lint/export checks on your own draft) -- the `@google/design.md` package itself is Proprietary-licensed, is never vendored or redistributed by this fork, and its exact license terms are not fixed in this repo (cite "Nem található" rather than guessing the terms).
+> **Note (vendored copy, card 784e3809, license corrected card 76583edb/comment 24161):** the `npx @google/design.md@0.4.0` validator calls below are OPTIONAL and for internal use only (spec/lint/export checks on your own draft). The `@google/design.md` package is Apache-2.0 a tarball LICENSE szerint, a package.json license mezője hiányzik. It is never vendored or redistributed by this fork.
 
 ## Boundaries
 
@@ -113,7 +113,7 @@ Identify the repository's export target before writing frontmatter: `css-tailwin
 Check the installed DESIGN.md specification before encoding theme modes:
 
 ```bash
-npx @google/design.md@0.4.0 spec
+npm_config_ignore_scripts=true npm_config_before=2026-10-24 npx @google/design.md@0.4.0 spec
 ```
 
 If the specification supports `themes` and `default-theme`, use its theme-aware token syntax. Otherwise, put the default-theme value under each canonical semantic token and preserve exact alternate-theme values in a `## Themes` table. Do not create parallel `-light` and `-dark` token names, discard alternate-theme values, or use unreleased syntax. A fallback Themes table is documentation only; do not pretend it makes the frontmatter theme-aware.
@@ -222,13 +222,13 @@ Run one final no-op pass: remove vague advice such as “be thorough,” “keep
 Run structural linting:
 
 ```bash
-npx @google/design.md@0.4.0 lint DESIGN.md
+npm_config_ignore_scripts=true npm_config_before=2026-10-24 npx @google/design.md@0.4.0 lint DESIGN.md
 ```
 
 Then run one compatibility export using the target selected above:
 
 ```bash
-npx @google/design.md@0.4.0 export --format <format> DESIGN.md
+npm_config_ignore_scripts=true npm_config_before=2026-10-24 npx @google/design.md@0.4.0 export --format <format> DESIGN.md
 ```
 
 Inspect the output. Every populated frontmatter category supported by the target must emit its corresponding token category; an empty or missing category is a schema failure even when the command exits successfully. Rewrite the frontmatter and rerun validation until the category is emitted, unless the target genuinely cannot represent it. Do not report success while any populated category is missing from the export. Do not return the document while lint or export fails. Do not remove supported design information solely to satisfy an exporter limitation; report that limitation instead. Do not create or retain exported files.
@@ -238,7 +238,7 @@ For `css-tailwind`, verify these output families: `colors` → `--color-*`, `typ
 When updating an existing document, preserve its original contents temporarily and run:
 
 ```bash
-npx @google/design.md@0.4.0 diff <previous-file> DESIGN.md
+npm_config_ignore_scripts=true npm_config_before=2026-10-24 npx @google/design.md@0.4.0 diff <previous-file> DESIGN.md
 ```
 
 Restore any removed accepted decision unless current governing evidence or the user explicitly replaces it.
