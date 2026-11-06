@@ -4272,6 +4272,62 @@ export function createKanbanCard(card: {
   noteRelations(cardEdges({ id: card.id, description: card.description, parent_id: card.parent_id }))
 }
 
+/**
+ * Record a land script's VERIFIED landing of a card (F2.1.2, card a8a83d48 -- the write side of
+ * card_landings, F2.1.1/8e99d55d). Callers must only call this AFTER confirming the push landed
+ * (fetch + merge-base --is-ancestor against the remote) -- this function does no verification of
+ * its own, it only records what the caller already confirmed.
+ *
+ * landed_at is ALWAYS taken server-side (Math.floor(Date.now()/1000)), never from the caller: the
+ * whole point of this table is a timestamp nothing but the server can forge, and the CHECK
+ * constraint on the column exists for writers that bypass this function entirely (direct sqlite3).
+ *
+ * INSERT OR IGNORE, same reasoning as writeRelationEdges above: a land script that calls this
+ * twice for the same (repo, merge_sha, card_id) -- e.g. a retried HTTP call after a dropped
+ * response -- must not crash or duplicate the row; the unique index is the guarantee, not the
+ * caller's care. Returns false when the row already existed (not an error).
+ */
+export function recordCardLanding(landing: {
+  card_id: string
+  work_sha: string
+  merge_sha: string
+  repo: string
+  landed_by: string
+}): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const { changes } = db
+    .prepare(
+      `INSERT OR IGNORE INTO card_landings (card_id, work_sha, merge_sha, repo, landed_at, landed_by)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(landing.card_id, landing.work_sha, landing.merge_sha, landing.repo, now, landing.landed_by)
+  return changes > 0
+}
+
+/** Every recorded landing for a card, most recent first -- what the done-guard (F2.2) and
+ *  gate-closure-check.py (F2.3) ask when they need "is this sha actually landed". */
+export function listCardLandings(cardId: string): {
+  card_id: string
+  work_sha: string
+  merge_sha: string
+  repo: string
+  landed_at: number
+  landed_by: string
+}[] {
+  return db
+    .prepare(
+      `SELECT card_id, work_sha, merge_sha, repo, landed_at, landed_by
+       FROM card_landings WHERE card_id = ? ORDER BY landed_at DESC`,
+    )
+    .all(cardId) as {
+    card_id: string
+    work_sha: string
+    merge_sha: string
+    repo: string
+    landed_at: number
+    landed_by: string
+  }[]
+}
 
 /**
  * The last signal a card carries in its comments:
