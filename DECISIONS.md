@@ -23002,3 +23002,28 @@ tiltott. Teljes kg-* csaladok (23 fajl) + `kanban-assignee-guard.test.ts` + `db.
 `commands-read.test.ts`: 413/413. tsc+eslint clean.
 
 **Ki dontott:** backend3 (kartya 80ab5067), sajat fleet-test lelet alapjan. Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 5: QA FAIL 28510 -- magyar ekezet mint mikrob-hasonmas
+
+**Dontes:** QA FAIL 28510 (Gate-SHA 9ff085b4e): a delta 4-ben bevezetett magyar abc-kivetel
+(HUNGARIAN_LATIN_EXTRA) uj, szukebb rest nyitott -- a "mikrob" nevbe helyettesitett magyar
+ekezetes betu (mikrób, mikrőb, mikröb, míkrob) atmegy a maradek-szuresen (valodi magyar betu, nem
+hasonmas irasrendszer) ES nem egyezik szo szerint a "mikrob" cellal (az ekezet sosem tavolitodik
+el az osszehasonlitasnal) -- tehat `isForbiddenAssignee` mind a negyre `false`-t adott, teljesen
+megkerulve a mikrob-onkiosztas strukturalis blokkjat (Peti 10943). MikroB dontese szerint javitva:
+UJ fuggveny `deaccentedIdentityForMatch` (NFD + `\p{M}` eltavolitas `normalizeIdentityForMatch`
+utan) -- a magyar ekezetes betuk NFD alatt tisztan alapbetu+kombinalo-jelre bomlanak (pl. ó -> o +
+COMBINING ACUTE), tehat a kombinalo jel levetele visszaadja az alapbetut. `isForbiddenAssignee`
+ezt HARMADIK retegkent hasznalja (maradek-szures ES szo-szerinti egyezes UTAN); "andrás"
+deakcentalva "andras" != "mikrob", tehat a delta 4 regresszio nem nyilik vissza. Ugyanezt a
+hardenninget `import-anti-patterns.ts`'s `isEligibleAuthor`-ja is megkapta (MikroB pont 2: minden
+nev-osszevetes a tiltott/kizart halmaz ellen vegezze el a deakcentalt osszevetest is) -- pl.
+"cybéred" is ineligible marad.
+
+Teszt: `isForbiddenAssignee('mikrób'/'mikrőb'/'mikröb'/'míkrob'/'MIKRÓB')` mind `true`; "andrás"
+tovabbra is `false`. `isEligibleAuthor`-nal "cybéred"/"qá" is kizart marad. Mutacio-ellenorzes:
+a ket uj teszt PIROS a javitas nelkul (visszaallitott regi fajlokon), ZOLD a javitassal. Celzott
+tesztek (kanban-assignee-guard + kg-import-anti-patterns + commands-read + db + kg-store): 157/157.
+tsc + eslint clean.
+
+**Ki dontott:** MikroB (16699, QA FAIL 28510 alapjan), backend3 vegezte el. Gate: QA + Cybersec.

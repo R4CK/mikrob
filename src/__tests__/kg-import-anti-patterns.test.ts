@@ -298,4 +298,30 @@ describe('importAntiPatterns (MT-10d, card 33e5e4ff)', () => {
     // The original, eligible-author comment still imports normally.
     expect(report.commentAntiPatternsUpserted).toBe(2)
   })
+
+  // Card 80ab5067 round 5 (MikroB fix direction point 2, QA FAIL 28510): hardens isEligibleAuthor
+  // the same way as isForbiddenAssignee's deaccentedIdentityForMatch fix -- a Hungarian-diacritic
+  // substitution into a reserved gate-agent name must also stay ineligible, not just an exact
+  // Cyrillic/Greek/Armenian look-alike.
+  it('round 5: a Hungarian-diacritic substitution into a gate-agent name is still skipped as ineligible', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+           ('card1', 'cybéred', 'Draft-Review: ELUTASITVA\n\nHungarian e-acute disguise for cybered.', 5000),
+           ('card1', 'qá', 'Draft-Review: ELUTASITVA\n\nHungarian a-acute disguise for qa.', 5001)`,
+      )
+      .run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.commentsSkippedAuthor).toBe(2)
+    for (const id of [5, 6]) {
+      expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get(`anti_pattern:comment:${id}`)).toBeUndefined()
+    }
+    // The original, eligible-author comment still imports normally.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
 })

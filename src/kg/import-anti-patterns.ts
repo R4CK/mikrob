@@ -30,7 +30,7 @@ import { mapProjectToPartition } from './project-map.js'
 import { parseEntries, referencedCardIds } from './import-decisions-log.js'
 import { GATE_AGENT_NAMES } from '../web/kanban-gate-completeness-guard.js'
 import { GENERATED_COMMENT_AUTHORS } from '../web/kanban-landed-guard.js'
-import { normalizeIdentityForMatch, hasNonAsciiIdentityResidue } from '../web/kanban-assignee-guard.js'
+import { normalizeIdentityForMatch, hasNonAsciiIdentityResidue, deaccentedIdentityForMatch } from '../web/kanban-assignee-guard.js'
 
 export interface AntiPatternsImportReport {
   commentsScanned: number
@@ -194,10 +194,16 @@ export function importAntiPatterns(
   const NORMALIZED_INELIGIBLE_AUTHORS = new Set(
     [...GATE_AGENT_NAMES, ...GENERATED_COMMENT_AUTHORS].map(normalizeIdentityForMatch),
   )
+  // Card 80ab5067 round 5 (MikroB fix direction point 2, QA FAIL 28510): also compare the
+  // de-accented form, so a Hungarian-diacritic substitution into a reserved name (e.g.
+  // cybéred for cybered) cannot quietly become "eligible" if a future change widens the
+  // residue carve-out further -- same hardening as isForbiddenAssignee's deaccentedIdentityForMatch
+  // check, kept in sync deliberately.
   function isEligibleAuthor(author: string | null): boolean {
     const a = author ?? ''
     if (hasNonAsciiIdentityResidue(a)) return false
-    return !NORMALIZED_INELIGIBLE_AUTHORS.has(normalizeIdentityForMatch(a))
+    if (NORMALIZED_INELIGIBLE_AUTHORS.has(normalizeIdentityForMatch(a))) return false
+    return !NORMALIZED_INELIGIBLE_AUTHORS.has(deaccentedIdentityForMatch(a))
   }
 
   // Coarse SQL pre-filter, precise match in JS (same split as import-findings.ts's verdict

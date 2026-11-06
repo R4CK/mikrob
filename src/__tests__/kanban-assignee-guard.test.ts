@@ -96,6 +96,21 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee('Mónika')).toBe(false)
   })
 
+  // Card 80ab5067 round 5 (QA FAIL 28510): round 4's Hungarian carve-out in
+  // hasNonAsciiIdentityResidue let a Hungarian-letter substitution into "mikrob" survive the
+  // residue check (a real Hungarian letter, not a look-alike script) AND fail the literal
+  // normalizeIdentityForMatch equality (the accent is never stripped there) -- so none of these
+  // were forbidden before the deaccentedIdentityForMatch fix. De-accenting (NFD + strip \p{M})
+  // recovers the plain base letter and catches all of them, without affecting "andrás" above
+  // (de-accents to "andras", not "mikrob").
+  it('fails closed on a Hungarian-diacritic substitution into "mikrob" (QA FAIL 28510)', () => {
+    expect(isForbiddenAssignee('mikrób')).toBe(true) // o -> o-acute
+    expect(isForbiddenAssignee('mikrőb')).toBe(true) // o -> o-double-acute
+    expect(isForbiddenAssignee('mikröb')).toBe(true) // o -> o-umlaut
+    expect(isForbiddenAssignee('míkrob')).toBe(true) // i -> i-acute
+    expect(isForbiddenAssignee('MIKRÓB')).toBe(true) // uppercase variant
+  })
+
   // RedHat NO-GO delta B2 (komment 15997, kartya e25a549a): a korabbi, hatarolt INVISIBLE_RE
   // (6 kodpont) + Cirill/Gorog-only tablazat 21 tovabbi alakot hagyott at -- mert a tombositett
   // formazo/jel/elvalaszto karakterek es tovabbi hasonmas betuk (gorog iota/kappa, armeny o,

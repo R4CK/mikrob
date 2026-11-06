@@ -102,16 +102,37 @@ export function normalizeIdentityForMatch(value: string): string {
 }
 
 /**
+ * Card 80ab5067 delta (QA FAIL 28510, MikroB fix direction): {@link normalizeIdentityForMatch}
+ * plus stripping combining diacritics via NFD. QA found that round 4's HUNGARIAN_LATIN_EXTRA
+ * carve-out in {@link hasNonAsciiIdentityResidue} (needed so a real Hungarian name like "andrás"
+ * is not fail-closed) opened a NEW, narrower gap: substituting a Hungarian accented letter into
+ * "mikrob" -- mikrób, mikrőb, mikröb, míkrob -- survives the residue check (it's a real Hungarian
+ * letter, not a look-alike script) AND fails the LITERAL equality in normalizeIdentityForMatch
+ * (the accent is never stripped there), so isForbiddenAssignee returned false for all four,
+ * fully evading the structural mikrob-self-assignment block this file exists to enforce (Peti
+ * 10943). Hungarian's own precomposed accented letters decompose cleanly under NFD into their
+ * plain-ASCII base letter plus a combining mark (e.g. 'ó' -> 'o' + COMBINING ACUTE ACCENT), so
+ * stripping \p{M} after NFD recovers the base letter and closes this without reopening the round
+ * 4 regression: "andrás" de-accents to "andras", which is not "mikrob", so it stays unaffected.
+ */
+export function deaccentedIdentityForMatch(value: string): string {
+  return normalizeIdentityForMatch(value).normalize('NFD').replace(/\p{M}/gu, '')
+}
+
+/**
  * True when `value` names MikroB -- any case/whitespace/punctuation variant, full-width form
- * (NFKC-folded), any formatting/invisible/combining character, or ANY surviving non-ASCII
- * character at all (fail-closed, card 80ab5067 delta: no confusables table to keep extending,
- * see {@link hasNonAsciiIdentityResidue}). A non-string value is never forbidden here -- see
+ * (NFKC-folded), any formatting/invisible/combining character, ANY surviving non-ASCII character
+ * at all (fail-closed, card 80ab5067 delta: no confusables table to keep extending, see
+ * {@link hasNonAsciiIdentityResidue}), or a Hungarian-diacritic substitution into the literal
+ * name once de-accented (card 80ab5067 round 5, QA FAIL 28510, see
+ * {@link deaccentedIdentityForMatch}). A non-string value is never forbidden here -- see
  * isInvalidAssigneeShape for that check.
  */
 export function isForbiddenAssignee(value: unknown): boolean {
   if (typeof value !== 'string') return false
   if (hasNonAsciiIdentityResidue(value)) return true
-  return normalizeIdentityForMatch(value) === FORBIDDEN_ASSIGNEE
+  if (normalizeIdentityForMatch(value) === FORBIDDEN_ASSIGNEE) return true
+  return deaccentedIdentityForMatch(value) === FORBIDDEN_ASSIGNEE
 }
 
 /**
