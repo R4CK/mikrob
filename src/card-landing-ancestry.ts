@@ -14,10 +14,20 @@
 // non-sha string ("origin/develop", a 7-char prefix) was accepted and stored verbatim, and work_sha
 // was never checked at all. verifyCardLanding() below closes all three: full-hex format, each sha
 // resolved to a real commit object (rev-parse --verify --end-of-options <sha>^{commit}, which
-// rejects anything option-shaped and anything that isn't a commit), work_sha required to be an
-// ancestor of merge_sha, and the card id required to appear in a commit subject in the
-// work_sha^..merge_sha range (the convention this fleet's own commits already follow:
-// "type(cardId): ..." or prose "card <id>").
+// rejects anything option-shaped and anything that isn't a commit), and work_sha required to be an
+// ancestor of merge_sha.
+//
+// Cybersec2 NO-GO round 2 (Gate-SHA 77e8a3751, F4 HIGH + F5 MEDIUM): the first round's card-binding
+// step (now removed) built a RegExp from the caller-supplied card_id and ran it over every commit
+// subject in a caller-chosen range. That let a crafted card_id (e.g. '(.*)*z') hang the whole
+// single-process dashboard for 30+ seconds via catastrophic backtracking (F4), and even a benign
+// card_id could be bound to work that was never that card's, because a subject merely MENTIONING a
+// card counts the same as that card's own commit, and the range was caller-chosen (F5). Both are
+// closed the same way: card_id is validated against the board's real id shape (8 lowercase hex
+// chars) before anything else runs, no RegExp is ever built from it, and the binding proof is
+// structural rather than text-based -- work_sha must equal merge_sha's SECOND PARENT, i.e. exactly
+// the branch tip the land script itself merged in (see secondParent() below), not anything a
+// committer typed into a subject line.
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -34,6 +44,18 @@ function gitTimeoutMs(): number {
 }
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/i
+
+// Cybersec2 NO-GO (card a8a83d48, Gate-SHA 77e8a3751, F4 HIGH + F5 MEDIUM): cardBoundToRange()
+// below used to build a RegExp from the caller-supplied cardId and run it against every commit
+// subject in a caller-chosen range. Measured live: a pattern like '(.*)*z' against a real ~190-char
+// subject never returned (catastrophic backtracking blocks the single-process event loop -- no
+// timer-based guard can even fire), and the match itself was agent-typed: a subject merely
+// mentioning another card's id, or a caller-chosen wide range, bound a row to work that was never
+// that card's. Fixed by removing the regex-over-text check entirely: card_id is now validated
+// against the board's real id shape (8 lowercase hex chars, src/web/routes/kanban.ts's
+// `randomUUID().slice(0, 8)`) before anything else -- no RegExp is ever built from it -- and the
+// binding proof is structural instead of text-based (see secondParentOf below).
+const CARD_ID_RE = /^[0-9a-f]{8}$/
 
 /** Repo name -> {path, fallback default branch if origin/HEAD can't be read}.
  *
@@ -102,20 +124,21 @@ async function isAncestor(repoPath: string, ancestor: string, descendant: string
 }
 
 /**
- * True only if `cardId` is named in the subject of at least one commit in `fromSha^..toSha`
- * (inclusive of fromSha, exclusive of its parent) -- the range this landing's own work_sha and
- * merge_sha describe. Matches both this fleet's conventional-commit scope form
- * ("fix(a8a83d48): ...") and the prose form ("card a8a83d48", "Card a8a83d48:"): a hex-delimited
- * substring match, not an anchored regex, so either shape is caught by the same check. False on
- * any git failure (an unreadable range proves nothing).
+ * Resolves `mergeSha`'s SECOND parent (`<mergeSha>^2`) -- the branch tip that was merged IN --
+ * never a text match. A merge commit with only one parent (a fast-forward, or not a merge at
+ * all) has no second parent and `rev-parse` fails, which this treats as "not bound" rather than
+ * throwing. This is what both land scripts actually produce: marveen-land.sh captures
+ * work_sha from the card/agent branch tip BEFORE `git merge --no-ff "$branch"`, and
+ * mopsion-land.sh resolves GFULL from the gated sha BEFORE `git merge --no-ff "$SHA"` -- in both
+ * cases the merge's second parent IS that same work_sha by construction, so this check binds to
+ * what the land script itself did, not to anything a committer typed into a subject line.
  */
-async function cardBoundToRange(repoPath: string, cardId: string, fromSha: string, toSha: string): Promise<boolean> {
+async function secondParent(repoPath: string, mergeSha: string): Promise<string | null> {
   try {
-    const log = await git(repoPath, ['log', '--format=%s', `${fromSha}^..${toSha}`])
-    const needle = new RegExp(`(?:^|[^0-9a-f])${cardId}(?:[^0-9a-f]|$)`, 'i')
-    return log.split('\n').some((subject) => needle.test(subject))
+    const resolved = await git(repoPath, ['rev-parse', '--verify', '--end-of-options', `${mergeSha}^2`])
+    return FULL_SHA_RE.test(resolved) ? resolved.toLowerCase() : null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -138,6 +161,13 @@ export async function verifyCardLanding(
   workSha: string,
   mergeSha: string,
 ): Promise<CardLandingVerdict> {
+  // Checked FIRST, before any git call: a malformed/attack-shaped card_id must never reach a
+  // RegExp (there is none left below) or even a git subprocess. This is the fast, synchronous
+  // rejection the ReDoS finding (F4) requires -- no network fetch, no process spawn.
+  if (!CARD_ID_RE.test(cardId)) {
+    return { ok: false, reason: 'card_id must be an 8-character lowercase hex id' }
+  }
+
   const cfg = repoConfig(repo)
   if (!cfg) return { ok: false, reason: `unknown repo "${repo}"` }
 
@@ -162,8 +192,12 @@ export async function verifyCardLanding(
   if (!(await isAncestor(cfg.path, resolvedWork, resolvedMerge))) {
     return { ok: false, reason: 'work_sha is not an ancestor of merge_sha' }
   }
-  if (!(await cardBoundToRange(cfg.path, cardId, resolvedWork, resolvedMerge))) {
-    return { ok: false, reason: `card_id "${cardId}" is not named in any commit subject between work_sha and merge_sha` }
+  const resolvedSecondParent = await secondParent(cfg.path, resolvedMerge)
+  if (!resolvedSecondParent) {
+    return { ok: false, reason: 'merge_sha is not a merge commit (no second parent)' }
+  }
+  if (resolvedSecondParent !== resolvedWork) {
+    return { ok: false, reason: "work_sha is not merge_sha's second parent" }
   }
 
   return { ok: true, workSha: resolvedWork, mergeSha: resolvedMerge }
