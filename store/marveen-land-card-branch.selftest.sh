@@ -214,16 +214,22 @@ else
   fail=1
 fi
 
-# Card a8a83d48 (success -> row with both shas): the landing above must have called
-# POST /api/card-landings with the branch tip as work_sha and the confirmed-landed sha as
-# merge_sha.
+# Card a8a83d48 (success -> row with both shas), tightened after Cybersec2 NO-GO F3-M2 (card
+# a8a83d48, Gate-SHA 6cc529f3d): the old version only grepped for work_sha and repo, never for
+# merge_sha's VALUE -- a mutant sending merge_sha="WH2-NOT-A-SHA" still passed 41/41. This pins
+# merge_sha to the ACTUAL pushed origin/develop tip (full 40-hex), and requires it to differ from
+# work_sha (a mutant that reuses work_sha as merge_sha, never computing the real pushed sha, must
+# also go red here).
 n=$((n + 1))
+PUSHED_TIP_AAA111="$(git -C "$MAIN" fetch -q origin develop && git -C "$MAIN" rev-parse origin/develop)"
 if [ -f "$CAPTURE_DIR/landing-aaa111.ndjson" ] \
   && grep -q "\"work_sha\": \"$SHA_AAA111\"" "$CAPTURE_DIR/landing-aaa111.ndjson" \
+  && grep -qE "\"merge_sha\": \"[0-9a-f]{40}\"" "$CAPTURE_DIR/landing-aaa111.ndjson" \
+  && grep -q "\"merge_sha\": \"$PUSHED_TIP_AAA111\"" "$CAPTURE_DIR/landing-aaa111.ndjson" \
   && grep -q '"repo": "marveen"' "$CAPTURE_DIR/landing-aaa111.ndjson"; then
-  echo "  ok   a real --card landing recorded a card_landings row with work_sha=$SHA_AAA111"
+  echo "  ok   a real --card landing recorded a card_landings row with work_sha=$SHA_AAA111, merge_sha=$PUSHED_TIP_AAA111"
 else
-  echo "  FAIL --card landing should have called POST /api/card-landings with both shas:"
+  echo "  FAIL --card landing should have called POST /api/card-landings with both shas (merge_sha = the actual pushed tip $PUSHED_TIP_AAA111):"
   cat "$CAPTURE_DIR/landing-aaa111.ndjson" 2>/dev/null | sed 's/^/       /'
   fail=1
 fi
@@ -348,6 +354,18 @@ else
   echo "  FAIL an R1-refused landing should not have pushed anything"; fail=1
 fi
 
+# Card a8a83d48, Cybersec2 NO-GO F3-M1: a mutant that calls record_card_landing unconditionally
+# right after the work_sha capture (before any merge/push) left the OLD selftest green, because
+# nothing asserted the ABSENCE of a capture on a refused landing. This closes that gap.
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-ccc333.ndjson" ]; then
+  echo "  ok   the refused ungated landing recorded NO card_landings row (F3-M1)"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-ccc333.ndjson" | sed 's/^/       /'
+  fail=1
+fi
+
 n=$((n + 1))
 land_card ccc333 backend3 --allow-ungated
 if [ "$rc" = 0 ] && grep -q "LANDED card/ccc333 -> origin/develop" "$OUT_FILE"; then
@@ -426,6 +444,15 @@ if ! git -C "$MAIN" merge-base --is-ancestor card/eee555 origin/develop 2>/dev/n
   echo "  ok   the B1-refused landing pushed nothing"
 else
   echo "  FAIL a B1-refused landing should not have pushed anything"; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-eee555.ndjson" ]; then
+  echo "  ok   the B1-refused landing recorded NO card_landings row (F3-M1)"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-eee555.ndjson" | sed 's/^/       /'
+  fail=1
 fi
 
 # Now RedHat re-gates the ACTUAL sha with a GO: both designated gates agree, so the same card lands.
@@ -633,6 +660,15 @@ else
   echo "  FAIL a W2-refused landing should not have pushed anything"; fail=1
 fi
 
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-beeffa.ndjson" ]; then
+  echo "  ok   the W2-refused landing recorded NO card_landings row (F3-M1)"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-beeffa.ndjson" | sed 's/^/       /'
+  fail=1
+fi
+
 # N2: the "UNGATED LANDING" note must be posted ONLY after a successful merge+push -- not when the
 # gate-check tolerance was granted but the landing failed for an UNRELATED reason afterwards (here:
 # a forced fleet-test failure). Bypasses land_card() to override MARVEEN_LAND_TEST per-call.
@@ -660,6 +696,15 @@ if ! git -C "$MAIN" merge-base --is-ancestor card/face99 origin/develop 2>/dev/n
   echo "  ok   the fleet-test-refused landing pushed nothing"
 else
   echo "  FAIL a fleet-test-refused landing should not have pushed anything"; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-face99.ndjson" ]; then
+  echo "  ok   the fleet-test-refused landing recorded NO card_landings row (F3-M1)"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-face99.ndjson" | sed 's/^/       /'
+  fail=1
 fi
 
 n=$((n + 1))
