@@ -16,6 +16,19 @@ set -uo pipefail
 
 JOURNAL_FILE="${LAND_RUN_JOURNAL_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/land-runs.jsonl}"
 STALE_AFTER_SECONDS="${STALE_AFTER_SECONDS:-600}"
+# card 88b67fb4, MikroB's live-D/5 gap 1 (msg_id:16818): a `finished` line written BEFORE this
+# card's pid/pid_start fix has neither field at all (not a mismatch -- genuinely absent), so it
+# used to be indistinguishable from QA FAIL 28614's actual forgery and alerted as UNTRUSTED-FINISH
+# forever, on every run, until the journal file rotates away. This state file remembers which
+# run_ids were already reported once as LEGACY so a stale pre-fix line stops being news after its
+# first report, without ever being treated as untrusted (it is honored as a real finish).
+LEGACY_SEEN_FILE="${LAND_RUN_LEGACY_SEEN_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/land-run-legacy-seen.jsonl}"
+# A missing pid/pid_start pair is ONLY safely "pre-fix legacy" if the finished line itself is
+# OLDER than the commit that started always filling those fields in -- a missing pair written
+# AFTER that point is QA FAIL 28614's exact forgery shape (the raw-append technique has no reason
+# to know the field exists) and must stay UNTRUSTED-FINISH, never be waved through as legacy.
+# This epoch is this fix's own landing time (git show -s --format=%ct f2ec47ddb5722ba1369363de3a3bec7b02c3952c).
+PID_FIELDS_EPOCH="${LAND_RUN_PID_FIELDS_EPOCH:-1793995751}"
 
 if [ ! -f "$JOURNAL_FILE" ]; then
   echo "ALERT:no"
@@ -33,7 +46,7 @@ fi
 python3 -c '
 import json, sys, time
 
-journal_file, threshold = sys.argv[1], int(sys.argv[2])
+journal_file, threshold, legacy_seen_file, pid_fields_epoch = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
 
 def is_valid(rec):
     if not isinstance(rec, dict):
@@ -50,6 +63,20 @@ def is_valid(rec):
     return True
 
 try:
+    legacy_seen = set()
+    try:
+        with open(legacy_seen_file, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    legacy_seen.add(str(json.loads(line).get("run_id")))
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        pass
+
     records = []
     malformed = 0
 
@@ -90,6 +117,7 @@ try:
         r["started_ts"] = ts
 
     untrusted_finish = 0
+    new_legacy = []  # run_ids seeing their first-ever LEGACY report this run
     for rec in records:
         event = rec.get("event")
         if event == "started":
@@ -105,9 +133,22 @@ try:
             if want is not None and want == got and want[0] is not None:
                 r["trusted_finished"] = True
                 r["last_ts"] = max(r["last_ts"], ts)
+            elif got == (None, None) and ts and ts < pid_fields_epoch:
+                # LEGACY: a finished line OLDER than the commit that started always filling in
+                # pid/pid_start genuinely predates the field existing -- honor it as a real finish
+                # (it is not a forgery), but report it only once per run_id ever. A missing pair
+                # on a line AT OR AFTER that epoch does NOT qualify here (falls to the else branch
+                # below) -- it has no excuse not to carry the fields, so it stays untrusted.
+                r["trusted_finished"] = True
+                r["last_ts"] = max(r["last_ts"], ts)
+                if rid not in legacy_seen:
+                    new_legacy.append(rid)
+                    legacy_seen.add(rid)
+                # else: already reported before -- stay silent, per the "reported once" decision
             else:
-                # Does NOT extend last_ts and does NOT count as finished -- an untrusted finished
-                # line must never make a genuinely stale/killed run look fresh or done.
+                # pid/pid_start PRESENT but WRONG: a genuine mismatch, QA FAIL 28614s actual
+                # forgery shape. Does NOT extend last_ts and does NOT count as finished -- an
+                # untrusted finished line must never make a genuinely stale/killed run look fresh.
                 untrusted_finish += 1
 
     now = time.time()
@@ -129,9 +170,20 @@ try:
         print(f"MALFORMED count={malformed} -- one or more journal lines could not be parsed/validated; treated as a stale-equivalent signal")
     if untrusted_finish:
         print(f"UNTRUSTED-FINISH count={untrusted_finish} -- a finished line did not match the recorded pid/pid_start for its run; not honored as a finish")
+    if new_legacy:
+        legacy_ids_joined = ",".join(new_legacy)
+        print(f"LEGACY count={len(new_legacy)} run_ids={legacy_ids_joined} -- pre-fix finished line(s) with no pid/pid_start at all, honored as a real finish; reported once, will not repeat")
+        try:
+            with open(legacy_seen_file, "a", encoding="utf-8") as f:
+                for rid in new_legacy:
+                    f.write(json.dumps({"run_id": rid}) + "\n")
+        except Exception:
+            pass
 
+    # LEGACY is informational (a one-time notice about pre-fix data), not an incident -- it never
+    # forces ALERT:yes on its own, unlike a genuine stale run, a malformed line, or a real forgery.
     print("ALERT:yes" if (stale or malformed or untrusted_finish) else "ALERT:no")
 except Exception as e:
     print(f"ERROR: land-run-stale-check crashed: {e}", file=sys.stderr)
     print("ALERT:yes")
-' "$JOURNAL_FILE" "$STALE_AFTER_SECONDS"
+' "$JOURNAL_FILE" "$STALE_AFTER_SECONDS" "$LEGACY_SEEN_FILE" "$PID_FIELDS_EPOCH"

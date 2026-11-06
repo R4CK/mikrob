@@ -1074,18 +1074,33 @@ land_with_retry() {
   # card 88b67fb4, requirement 2: journal this run (started/heartbeat/finished) so a killed process
   # (fullstack's land run that nobody saw die) shows up as STALE later instead of leaving no trace
   # at all. Best-effort: a journal write failure must never fail or block a landing.
-  local _ljd _run_id
+  local _ljd _run_id _run_finished=0
   _ljd="$(dirname "$0")/land-run-journal.sh"
   _run_id="$(bash "$_ljd" start marveen-land.sh "$agent" "${LAND_CARD:--}" 2>/dev/null || true)"
+  # card 88b67fb4, MikroB's live-D/5 gap 2 (msg_id:16818): this function has no EXIT trap at all
+  # (by design -- a SIGKILL'd run leaving no "finished" line IS the stale signal D/5 exists to
+  # catch), so a deliberate SIGTERM stop (an operator asking an agent to stop a land run) would
+  # otherwise be indistinguishable from that same crash. This records it as "aborted" (not a crash,
+  # not a plain failure) before exiting, and sets _run_finished so none of the ordinary finish
+  # call sites below write a second, competing finished line for the same run.
+  trap '_run_finished=1; [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" 143 "deliberate stop (SIGTERM)" aborted >/dev/null 2>&1; exit 143' TERM
   while :; do
     land_one "$agent" "$dry" "$branch_override"; rc=$?
     if [ "$rc" -ne 5 ]; then
-      [ -n "$_run_id" ] && bash "$_ljd" finish "$_run_id" "$rc" >/dev/null 2>&1 || true
+      if [ -n "$_run_id" ] && [ "$_run_finished" != "1" ]; then
+        bash "$_ljd" finish "$_run_id" "$rc" >/dev/null 2>&1 || true
+        _run_finished=1
+      fi
+      trap - TERM
       return "$rc"
     fi
     if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
       echo "$agent: REFUSED -- lost the push race $attempt time(s) in a row; origin/$DEFAULT_BRANCH keeps moving during the merge+test window. Nothing pushed; $disp_branch is untouched."
-      [ -n "$_run_id" ] && bash "$_ljd" finish "$_run_id" 4 "lost push race $attempt times" >/dev/null 2>&1 || true
+      if [ -n "$_run_id" ] && [ "$_run_finished" != "1" ]; then
+        bash "$_ljd" finish "$_run_id" 4 "lost push race $attempt times" >/dev/null 2>&1 || true
+        _run_finished=1
+      fi
+      trap - TERM
       return 4
     fi
     attempt=$((attempt+1))
