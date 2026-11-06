@@ -4,10 +4,12 @@
 // points at a real temp dir so the CRUD round-trips through the actual
 // atomic-write path. hardRestartMarveenChannels/restartAgentProcess are
 // mocked -- this test must NEVER touch a real tmux session or process.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { Readable } from 'node:stream'
+import type { IncomingMessage } from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
@@ -81,6 +83,10 @@ vi.mock('../web/claude-plan-fleet-wiring.js', () => ({
 const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
 const { CLAUDE_PLANS_STATE_PATH } = await import('../web/claude-plans-state.js')
+const { initDatabase, getDb, createDashboardUser, getDashboardUser } = await import('../db.js')
+const { tryHandleAuth } = await import('../web/routes/auth.js')
+const { resolveAuth, SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
+const { hashPassword, verifyPassword } = await import('../web/password-hash.js')
 
 // Card 93ed929a: write/rotate now require a human credential (session or device key) --
 // `auth` defaults to a session caller so every PRE-EXISTING test in this file (written before
@@ -887,5 +893,123 @@ describe('POST /api/claude-plans/rotate with "continue" (8c338dc4)', () => {
     expect(out.body.error).toContain('main agent only')
     expect(stateOnDisk()).toBeNull()
     expect(restartAgentProcess).not.toHaveBeenCalled()
+  })
+})
+
+// Card ed1f3e9c (split from 0244910e N5, RedHat 17142): "/rotate still 200 for a token-bootstrap /
+// break-glass-reset session" (X1/X3, originally measured on 9655494c). By the time this card was
+// picked up, card 49960046 had independently closed the ROOT of that chain: POST /api/auth/users
+// (first-user bootstrap) and POST /api/auth/password (break-glass reset) both now require an
+// EXISTING human session (CREDENTIAL_MINT_KINDS=['session']), so the shared token can no longer
+// mint or hijack a session over HTTP at all -- there is no "token-bootstrap session" left to
+// construct. 49960046's own tests (auth-recovery.test.ts) stop at /auth/users and /auth/password;
+// this is the missing end-to-end link, carrying the chain through to /rotate itself, using the
+// REAL tryHandleAuth + resolveAuth + tryHandleClaudePlans handlers against a real in-memory DB (no
+// hand-asserted {kind:'session'} auth object for the positive case -- a genuine login cookie,
+// resolved the same way web.ts resolves one).
+describe('End-to-end: the X1/X3 chain cannot reach /rotate (card ed1f3e9c)', () => {
+  const GOOD_PW = 'super-secret-pw-123'
+
+  function mkAuthRes() {
+    return {
+      statusCode: 0,
+      headers: {} as Record<string, unknown>,
+      writeHead(status: number, headers?: Record<string, unknown>) {
+        this.statusCode = status
+        if (headers) Object.assign(this.headers, headers)
+        return this
+      },
+      setHeader(k: string, v: string) { this.headers[k] = v },
+      end() { /* body not needed here */ },
+    }
+  }
+
+  async function callAuth(
+    method: string,
+    path: string,
+    opts: { body?: unknown; auth?: { kind: string }; cookie?: string } = {},
+  ): Promise<{ statusCode: number; setCookie: string | undefined }> {
+    const payload = opts.body === undefined ? [] : [Buffer.from(JSON.stringify(opts.body))]
+    const req: any = Readable.from(payload)
+    req.headers = opts.cookie ? { cookie: opts.cookie } : {}
+    const res = mkAuthRes()
+    await tryHandleAuth({
+      req, res, path, method,
+      url: new URL(`http://127.0.0.1:3420${path}`),
+      auth: opts.auth,
+    } as unknown as RouteContext)
+    return { statusCode: res.statusCode, setCookie: res.headers['Set-Cookie'] as string | undefined }
+  }
+
+  beforeAll(() => {
+    initDatabase(':memory:')
+  })
+
+  beforeEach(() => {
+    const db = getDb()
+    db.prepare('DELETE FROM dashboard_users').run()
+    db.prepare('DELETE FROM auth_sessions').run()
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+    if (existsSync(CLAUDE_PLANS_STATE_PATH)) rmSync(CLAUDE_PLANS_STATE_PATH)
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
+  })
+
+  async function seedTwoPlansLocal() {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'pro' })).ctx)
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+  }
+
+  it('X1: the token cannot bootstrap the first user into existence, so it never obtains a session -- /rotate stays 403', async () => {
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM dashboard_users').get()).toEqual({ c: 0 })
+    const create = await callAuth('POST', '/api/auth/users', { auth: { kind: 'token' }, body: { username: 'alice', password: GOOD_PW } })
+    expect(create.statusCode).toBe(403)
+    expect(create.setCookie).toBeUndefined()
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM dashboard_users').get()).toEqual({ c: 0 })
+
+    // The attacker has nothing but the token it started with -- try it directly against /rotate.
+    await seedTwoPlansLocal()
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }, { kind: 'token' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+  })
+
+  it('X3: the token cannot break-glass-reset an existing owner password, so it never obtains a session -- /rotate stays 403', async () => {
+    const owner = createDashboardUser('owner', await hashPassword(GOOD_PW))
+    const reset = await callAuth('POST', '/api/auth/password', { auth: { kind: 'token' }, body: { username: 'owner', new_password: GOOD_PW + 'x' } })
+    expect(reset.statusCode).toBe(403)
+    expect(reset.setCookie).toBeUndefined()
+    // The owner's real password is untouched -- the token never got far enough to change it.
+    const stillOwner = getDashboardUser(owner.username)
+    expect(await verifyPassword(GOOD_PW, stillOwner!.password_hash)).toBe(true)
+
+    await seedTwoPlansLocal()
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }, { kind: 'token' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+  })
+
+  it('positive control: a genuinely CLI-created user, once logged in with a real cookie, DOES reach /rotate (200) -- the gate is session-based, not a blanket block', async () => {
+    createDashboardUser('owner2', await hashPassword(GOOD_PW))
+    const login = await callAuth('POST', '/api/auth/login', { body: { username: 'owner2', password: GOOD_PW } })
+    expect(login.statusCode).toBe(200)
+    expect(login.setCookie).toBeDefined()
+
+    // Resolve the cookie the exact way web.ts resolves an inbound request's auth, rather than
+    // hand-asserting {kind:'session'} -- this is the real missing link in the chain.
+    const cookieValue = new RegExp(`${SESSION_COOKIE_NAME}=([^;]+)`).exec(login.setCookie!)?.[1]
+    expect(cookieValue).toBeTruthy()
+    const fakeReq = { headers: { cookie: `${SESSION_COOKIE_NAME}=${cookieValue}` } } as Pick<IncomingMessage, 'headers'> as IncomingMessage
+    const resolved = resolveAuth(fakeReq, new URL('http://127.0.0.1:3420/api/claude-plans/rotate'), '/api/claude-plans/rotate', 'POST', 'irrelevant-dashboard-token')
+    expect(resolved.kind).toBe('session')
+
+    await seedTwoPlansLocal()
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }, resolved)
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
   })
 })

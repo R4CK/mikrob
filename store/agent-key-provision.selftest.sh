@@ -53,13 +53,17 @@ run() {
 }
 
 # --- mint: happy path ---
-echo "mint-secret-abc-20chars-min" > "$NPM_STDOUT_FILE"
+# Card 0244910e B2 (Cybered NO-GO 28168): the real key shape is `mvdk_` + base64url, which always
+# contains an underscore (and often a hyphen) -- every prior fixture here was hyphen-only, so a
+# mutant that dropped the underscore out of the filter's charset survived the whole suite. Use a
+# real-shaped key so that charset is actually pinned.
+echo "mvdk_Ab3xQ9z_Lp7-Rk2Y8W" > "$NPM_STDOUT_FILE"
 OUT="$(run backend)"
 echo "$OUT" | grep -q "minted agent:backend" && pass "mint: success message printed" || fail "mint: success message missing"
-[ "$(cat "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "mint-secret-abc-20chars-min" ] && pass "mint: key file holds exactly the CLI's stdout" || fail "mint: key file content wrong"
+[ "$(cat "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "mvdk_Ab3xQ9z_Lp7-Rk2Y8W" ] && pass "mint: key file holds exactly the CLI's stdout" || fail "mint: key file content wrong"
 [ "$(stat -c '%a' "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "600" ] && pass "mint: key file is 0600" || fail "mint: key file mode wrong"
 grep -q "agent-key:mint backend\$" "$CAPTURE_ARGV" && pass "mint: invoked agent-key:mint with no --rotate" || fail "mint: wrong invocation shape"
-echo "$OUT" | grep -q "mint-secret-abc-20chars-min" && fail "mint: the raw key leaked into this script's own stdout" || pass "mint: the raw key never reaches this script's own stdout"
+echo "$OUT" | grep -q "mvdk_Ab3xQ9z_Lp7-Rk2Y8W" && fail "mint: the raw key leaked into this script's own stdout" || pass "mint: the raw key never reaches this script's own stdout"
 
 # --- mint --rotate: flag forwarded ---
 echo "rotated-secret-def-20chars-min" > "$NPM_STDOUT_FILE"
@@ -83,6 +87,28 @@ else
   pass "mint-failure: script exits non-zero when the CLI call fails"
 fi
 [ ! -e "$AGENTS_ROOT/backend/.dashboard-agent-key" ] && pass "mint-failure: no key file created on failure" || fail "mint-failure: a key file was created despite the CLI failing"
+
+# --- B1 (Cybered NO-GO 28168 on 0244910e): a CLI that prints a valid, REAL-SHAPED key line and
+# THEN exits non-zero (e.g. it logs the key before a later step in the same invocation fails) must
+# still fail closed. This is NOT the empty/ambiguous-output case above -- the output here looks
+# exactly like a real key, so only the `|| die 4 "mint failed"` guard on the CLI's own exit code
+# catches it. Before this pin, removing that guard line survived the suite because the preceding
+# mint-failure case used empty stdout, which the newer empty-output guard (N2) also catches.
+rm -f "$AGENTS_ROOT/backend/.dashboard-agent-key"
+echo "mvdk_Zq8Lm2_Nx5-Vb9JhT3w" > "$NPM_STDOUT_FILE"
+echo 1 > "$NPM_EXIT_FILE"
+if PATH="$SHIM_DIR:$PATH" MARVEEN_MAIN="$MAIN_DIR" MARVEEN_AGENTS_ROOT="$AGENTS_ROOT" \
+    bash "$SCRIPT" backend > /dev/null 2>&1; then
+  fail "B1: script exited 0 despite the CLI failing, even though its stdout looked like a real key"
+else
+  RC=$?
+  [ "$RC" -eq 4 ] && pass "B1: a real-shaped key line followed by CLI failure still exits 4" \
+    || fail "B1: wrong exit code ($RC) on CLI failure with valid-looking output, expected 4"
+fi
+echo 0 > "$NPM_EXIT_FILE"
+[ ! -e "$AGENTS_ROOT/backend/.dashboard-agent-key" ] \
+  && pass "B1: no key file written when the CLI call failed, even with valid-looking output" \
+  || fail "B1: a key file was written despite the CLI call failing"
 
 # --- fail-closed: CLI revoke failure (exit code surfaces, no crash) ---
 echo 1 > "$NPM_EXIT_FILE"
