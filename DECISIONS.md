@@ -23027,3 +23027,22 @@ tesztek (kanban-assignee-guard + kg-import-anti-patterns + commands-read + db + 
 tsc + eslint clean.
 
 **Ki dontott:** MikroB (16699, QA FAIL 28510 alapjan), backend3 vegezte el. Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 5b: WhiteHat probe 16701 kiterjesztes -- tovabbi 4 nevre pin
+
+**Dontes:** MikroB addendum (16702) WhiteHat probe 16701 alapjan: a delta 5 javitasa
+(`deaccentedIdentityForMatch`) MINDEN GATE_AGENT_NAMES/GENERATED_COMMENT_AUTHORS nevre altalanosan
+mukodik (nem csak a ket QA altal nevezett esetre), de ez meg nem volt tesztben pinnelve a tobbi
+negy nevre (cybersec, local-llm, gate-pretriage, gemini-orch-review). Uj integracios teszt pinneli
+mind a negyet (`cybérsec`, `lócal-llm`, `gáte-pretriage`, `gémini-orch-review` -> ineligible), plusz
+egy harmadik "meg mindig megengedett" magyar nev (Péter) a `isForbiddenAssignee`-oldalon. Nincs
+kodvaltozas (delta 5 fuggvenye mar helyesen general), csak a pin-lefedettseg szelesedett.
+
+Teszt: mind a 4 uj eset PIROS a delta 5 ELOTTI kodon (ellenorizve `git show 9ff085b4e` ideiglenes
+visszaallitassal, majd `git checkout HEAD --` visszaallitva -- NEM `git stash`, mert a stash
+MEGOSZTOTT a repo osszes worktree-je kozott es egy korabbi, nem-kapcsolodo MikroB-backup stash-t
+majdnem belemergelt volna ebbe a worktree-be, lasd a kulon figyelmeztetest). Celzott csomag
+(kanban-assignee-guard + kg-import-anti-patterns + commands-read + db + kg-store): 158/158.
+eslint clean.
+
+**Ki dontott:** MikroB (16702, WhiteHat probe 16701 alapjan), backend3 vegezte el. Gate: QA + Cybersec.

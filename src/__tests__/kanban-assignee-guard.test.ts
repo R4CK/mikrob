@@ -94,6 +94,7 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee('andrás')).toBe(false)
     expect(isForbiddenAssignee('András')).toBe(false)
     expect(isForbiddenAssignee('Mónika')).toBe(false)
+    expect(isForbiddenAssignee('Péter')).toBe(false) // MikroB 16702 addendum pin
   })
 
   // Card 80ab5067 round 5 (QA FAIL 28510): round 4's Hungarian carve-out in
