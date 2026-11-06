@@ -23018,3 +23018,26 @@ Cybersec + Cybered.
 
 **Ki dontott:** backend3 (card bb562959), Cybersec GO 28369 M1/L1/L2/L3 pontjai alapjan (MikroB
 16614 dontese: fold in). Gate: QA + Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959: merge-rezolucios javitasok a landolas elott (farokba-iras + blob-pin)
+
+**Dontes:** a landolas harom korben visszautasitva, mindegyik javitva:
+1. `git merge --no-ff origin/develop` x2 (origin/develop gyorsan mozgott, tobb korben kellett
+   friss allaphoz igazitani): mindket merge tiszta volt (nincs konfliktus-jelzo), fleet-test zold.
+2. DECISIONS.md farokba-iras serules: a merge-ek a kartya 4 sajat bejegyzeset origin/develop
+   NOVEKVO vege KOZEPERE illesztettek (nem a VALODI vegre), mert minden merge csak a sajat,
+   korabbi kozos osre vonatkozo pozciot ismerte. Javitva: mind a 4 bejegyzes attelepitve origin/
+   develop jelenlegi tartalmanak VALODI vegere, `cmp`-vel ellenorizve byte-pontos prefix.
+3. `src/fork-upstream/acknowledged-conflicts.ts` `.claude/settings.json` pin hibas volt (MikroB
+   16683 lelete): az `ACKNOWLEDGED_UPSTREAM_BLOBS` map minden fajlt az UPSTREAM blob-jara pinnel
+   (a modul sajat fejlec-megjegyzese szerint), nem a fork sajat tartalmara -- az elso
+   konfliktus-feloldasom a FORK utani merge blob-jat (`git hash-object`) irta be hibasan. Javitva
+   a valodi upstream blob-ra, kozvetlenul ellenorizve: `git rev-parse upstream/main:.claude/settings.json`
+   = `37818edc2d8691a69ded224848eff767a04b4a3d`.
+
+Ezen a koron SEMMI nem erintette a kartya sajat gatet kapott fajljait (scripts/, src/kg/,
+src/web/kanban-assignee-guard.ts): `git diff --stat 7f7ff1243 <uj-sha> -- scripts/ src/kg/
+src/web/kanban-assignee-guard.ts` ures minden kozbenso commitra.
+
+**Ki dontott:** backend3 (card bb562959), MikroB 16683 lelete + sajat merge-feloldasi hibak
+javitasa. Gate: QA + Cybersec + Cybered (delta re-gate a vegso shara).
