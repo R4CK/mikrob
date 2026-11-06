@@ -37,6 +37,11 @@ cp "$WATCHDOG" "$FIXTURE_INSTALL/scripts/watchdog.sh"
 # install must carry it too, same as the watchdog script itself.
 cp "$REPO_DIR/scripts/lib/oauth_token_file_check.py" "$FIXTURE_INSTALL/scripts/lib/oauth_token_file_check.py"
 WD="$FIXTURE_INSTALL/scripts/watchdog.sh"
+# Card 3ae2411d round 2: needs-fleet-oauth.mjs resolves the compiled dist relative to its OWN
+# location (scripts/needs-fleet-oauth.mjs -> ../dist), which the fixture install does not carry.
+# Point watchdog.sh at the real repo's copy instead of copying it in -- the script takes the
+# target agent dir as an argv, so pointing at the real file works identically for a fixture dir.
+export NEEDS_FLEET_OAUTH_MJS="$REPO_DIR/scripts/needs-fleet-oauth.mjs"
 
 AGENT_ISO="$FIXTURE_INSTALL/agents/iso-agent"
 AGENT_PLAIN="$FIXTURE_INSTALL/agents/plain-agent"
@@ -431,6 +436,33 @@ case "$OUT" in
     pass "29: no agent-config.json at all -> still unaffected, fleet-token isolation" ;;
   *) fail "29: no agent-config.json at all -> still unaffected, fleet-token isolation" "$OUT" ;;
 esac
+
+# --- card 3ae2411d round 2 (MikroB msg_id:16839, WhiteHat2 F1): the retired Python predicate
+# read the raw `model` string instead of resolving it the way agent-process.ts does -- a model
+# ALIAS decided differently here than on the dashboard launch path. These two pin the fix. ---
+
+# 30) BLOCKING (round 2 repro): model alias "sonnet" resolves (via MODEL_ALIASES) to the real
+#     model id "claude-sonnet-5" -- isClaude must be TRUE, same as agent-process.ts's own
+#     resolveModelId call. The retired predicate read "sonnet".startswith("claude-") directly
+#     (False) and refused the token a plain fleet agent on this alias actually needs.
+printf '{"model": "sonnet", "authMode": "shared"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "30: model alias 'sonnet' resolves to claude- -> fleet-token export" ;;
+  *) fail "30: model alias 'sonnet' resolves to claude- -> fleet-token export" "$OUT" ;;
+esac
+
+# 31) customProvider set TOGETHER WITH an explicit claude- model string (WhiteHat2 F1): the
+#     customProvider must still win -- isClaude is false regardless of the model string, same as
+#     agent-process.ts:2546 (`!customProviderId && model.startsWith('claude-')`).
+printf '{"customProvider": "my-litellm-proxy", "model": "claude-sonnet-5"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "31: customProvider + claude- model string -> customProvider still wins, no export" ;;
+  *) fail "31: customProvider + claude- model string -> customProvider still wins, no export" "$OUT" ;;
+esac
+rm -f "$AGENT_BYO/agent-config.json"
 
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

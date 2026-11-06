@@ -87,6 +87,12 @@ fi
 # characters and a byte-identical COPY of the fleet token under another name (not just the same
 # inode) -- also delegated to the same script so the comparison never prints either token's value.
 OAUTH_TOKEN_FILE_CHECK_PY="${OAUTH_TOKEN_FILE_CHECK_PY:-$INSTALL_DIR/scripts/lib/oauth_token_file_check.py}"
+# Card 3ae2411d round 2: the needsFleetOauthFor mirror for the UNSET-field fallback below is a
+# node script, not a python one -- it needs the compiled dist to stay a single source of truth
+# with agent-process.ts (see needs-fleet-oauth.mjs's own header). NODE_BIN empty (node not on
+# PATH) fails closed below, same as a missing/crashing checker.
+NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
+NEEDS_FLEET_OAUTH_MJS="${NEEDS_FLEET_OAUTH_MJS:-$INSTALL_DIR/scripts/needs-fleet-oauth.mjs}"
 agent_launch_env() {
   local AGENT_DIR="$1"
   local CONFIG_VERDICT CONFIG_RC
@@ -153,10 +159,15 @@ agent_launch_env() {
   # the fleet token unconditionally, same as needsFleetOauthFor's src/web/agent-process.ts call
   # site had to be taught NOT to do for a BYO/customProvider agent (RedHat NO-GO B1, comment
   # 15850) -- a watchdog-triggered restart is a SECOND launch site for the exact same mistake.
-  # --needs-fleet-oauth mirrors needsFleetOauthFor/!customProviderId from that single predicate
-  # (oauth_token_file_check.py's own needs_fleet_oauth, kept in sync with the TS source).
-  if [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] \
-     && python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --needs-fleet-oauth "$AGENT_DIR" 2>/dev/null; then
+  #
+  # Round 2 (MikroB msg_id:16839, WhiteHat2 F1): a hand-written Python copy of the predicate
+  # (the former oauth_token_file_check.py --needs-fleet-oauth) drifted from needsFleetOauthFor
+  # on a model ALIAS ("sonnet") and a modelProfile-only config, because it read the raw `model`
+  # string instead of resolving it the way agent-process.ts does. Replaced with ONE source of
+  # truth: scripts/needs-fleet-oauth.mjs dynamically imports the compiled dist and calls the
+  # exact same functions agent-process.ts calls at its own launch site -- no second copy.
+  if [ -n "$NODE_BIN" ] && [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] \
+     && "$NODE_BIN" "$NEEDS_FLEET_OAUTH_MJS" "$AGENT_DIR" 2>/dev/null; then
     printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
   fi
 }
