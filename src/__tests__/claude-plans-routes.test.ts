@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:f
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Readable } from 'node:stream'
+import type { IncomingMessage } from 'node:http'
 import type { RouteContext } from '../web/routes/types.js'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
@@ -1001,7 +1002,7 @@ describe('End-to-end: the X1/X3 chain cannot reach /rotate (card ed1f3e9c)', () 
     // hand-asserting {kind:'session'} -- this is the real missing link in the chain.
     const cookieValue = new RegExp(`${SESSION_COOKIE_NAME}=([^;]+)`).exec(login.setCookie!)?.[1]
     expect(cookieValue).toBeTruthy()
-    const fakeReq: any = { headers: { cookie: `${SESSION_COOKIE_NAME}=${cookieValue}` } }
+    const fakeReq = { headers: { cookie: `${SESSION_COOKIE_NAME}=${cookieValue}` } } as Pick<IncomingMessage, 'headers'> as IncomingMessage
     const resolved = resolveAuth(fakeReq, new URL('http://127.0.0.1:3420/api/claude-plans/rotate'), '/api/claude-plans/rotate', 'POST', 'irrelevant-dashboard-token')
     expect(resolved.kind).toBe('session')
 
