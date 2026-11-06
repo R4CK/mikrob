@@ -3922,12 +3922,17 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // Six new pins, card 3602c2ae (backend3, 2026-09-15) -- see the matching ACKNOWLEDGED_CONFLICTS
   // entries above for the reasoning each was read against.
   'README.md': '27eccf3fd2869e59360e3a7e3230546ecd61b4c3',
-  // Merge of card/bb562959 into origin/develop (2026-11-06): both sides had bumped this pin to
-  // their OWN pre-merge blob (fd948818 from the a6325a498 Koteg 23a merge here, 37818edc from
-  // card 7391f09a's drift reconciliation on develop) -- the merge COMBINES both sides' actual
-  // settings.json content into a third blob, so neither stale value is correct. Pinned to the
-  // real post-merge blob (`git hash-object .claude/settings.json` on this merge commit).
-  '.claude/settings.json': 'aff576e598999e0e8721f0e2e49daedfa00f480f',
+  // Merge of card/bb562959 into origin/develop (2026-11-06), corrected (MikroB 16683): this map
+  // pins each file to its UPSTREAM blob (the module's own header: "ACKNOWLEDGED_UPSTREAM_BLOBS
+  // pins each rule to an UPSTREAM blob, so a re-measure round bumps the pin whenever UPSTREAM
+  // moves"), never the fork's own post-merge content -- the first resolution of this conflict
+  // wrongly pinned the FORK's merged blob (`git hash-object .claude/settings.json` on the merge
+  // commit, aff576e5...) instead. Both pre-merge sides HAD pinned to a value closer to the real
+  // target (fd948818 from the a6325a498 Koteg 23a merge here, which was itself upstream's blob
+  // at that commit; 37818edc from card 7391f09a's later drift reconciliation on develop, upstream
+  // having moved again since). The correct value is upstream's CURRENT blob, confirmed directly:
+  // `git rev-parse upstream/main:.claude/settings.json` = 37818edc2d8691a69ded224848eff767a04b4a3d.
+  '.claude/settings.json': '37818edc2d8691a69ded224848eff767a04b4a3d',
   'src/__tests__/hook-registration-completeness.test.ts': '5c5f73f28afdcd71d181bd045b5bd40b36e1a764',
   'src/__tests__/setup/assert-not-live-install.ts': '2e85acf6f9ee83b33159d66025b345cd0fc8ccf2',
   'src/__tests__/tmp-root-prefixes.test.ts': '88f3e11b6b3228466b996bdf55ea53c7c9982d82',
