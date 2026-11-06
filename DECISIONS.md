@@ -22878,3 +22878,15 @@ Cybered's L1 (informational, not actioned as code): `--rotate` revokes the old k
 
 **Ki dontott:** Cybered (NO-GO, comment 28168), fixed by backend (card 0244910e, re-gate round). Gate: QA + Cybered (per Cybered's own re-gate request).
 
+## 2026-11-06 -- card ed1f3e9c: correction to the 2026-11-06 "/rotate session policy" entry above (Cybered NO-GO, comment 28300)
+
+The earlier entry on this card (above, "POST /api/claude-plans/rotate session policy") said: "No further restriction is needed because the only path that could have produced a 'fake-human' session is gone." Cybered's NO-GO (28300) measured this to be false and it is corrected here, not edited in place.
+
+Card 49960046 did close the HTTP route into a fake-human session: `POST /api/auth/users` (first-user bootstrap) and `POST /api/auth/password` (break-glass reset) both now require an existing human session, so the shared dashboard token cannot mint or hijack a session over any HTTP endpoint. That part of the original entry stands and Cybered agreed with it.
+
+What the original entry missed: a fleet agent with shell access (not HTTP) can run the local `dashboard-user` CLI headlessly (`add` + a password on stdin) to create a dashboard user, then log in over HTTP with that user's credentials to obtain a genuine, real session cookie. Cybered measured this end to end in their probe: the CLI-created user's login returns 200 with a session cookie, and that session passes `/rotate`'s human gate (`rejectIfNotHumanAuth`) with the switch off (409 = gate passed). No hook in the repo blocks an agent from running the user-management subcommands of this CLI (the only guard found, `scripts/hooks/agent-key-secret-guard.py`, covers the agent-key subcommands, not the user ones). This is the same remaining trust root RedHat 17142 point 3 and card 9c7ad372 O5 already tracked.
+
+**Corrected decision:** the local `dashboard-user` CLI (headless `add` + HTTP login) is a second, still-open path to a human-shaped session that passes the `/rotate` gate -- it is not closed by 49960046, which only closes the HTTP mint routes. `CLAUDE_ROTATION_ENABLED` must stay off (it already is: `GET /api/claude-plans/readiness` on the live install still reads `CLAUDE_ROTATION_ENABLED=0`, re-measured 2026-11-06) until either this CLI path is closed (e.g. gated the same way the agent-key subcommands are, or restricted to a human operator shell) or Peti explicitly accepts the residual risk and approves enabling rotation with it open. No code change and no new test were made for this correction, per Cybered's own assessment (28300): the X1/X3/positive-control tests remain sound pins for the HTTP chain, and the gap is in the decision record, not in the code.
+
+**Ki dontott:** Cybered (NO-GO, comment 28300), corrected by backend (card ed1f3e9c, re-gate round). Gate: QA + Cybersec + Cybered (per the card's own gate line; Cybersec verdict on this sha still welcome as input per MikroB 28301).
+
