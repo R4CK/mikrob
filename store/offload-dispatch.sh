@@ -655,7 +655,7 @@ try_gemini_for_leaf() {
     out="$(bash "$GEMINI_AGY_CALL" \
       --hivo mikrob \
       --kartya "$base_id" \
-      --feladattipus draft \
+      --feladattipus adat \
       --kategoria safe \
       --prompt "$prompt_file" \
       --mappa "$mappa_dir" 2>/dev/null)" || rc=$?
@@ -671,7 +671,7 @@ try_gemini_for_leaf() {
     return 0
   fi
   echo "offload-dispatch: leaf $leaf_id -> Gemini call failed (rc=$rc)" >&2
-  attempts_op transient "$leaf_id" >/dev/null
+  attempts_op transient-fail "$leaf_id" >/dev/null
   return 1
 }
 
@@ -712,7 +712,7 @@ try_gemini_second_opinion_for_leaf() {
     out="$(bash "$GEMINI_AGY_CALL" \
       --hivo mikrob \
       --kartya "$base_id" \
-      --feladattipus draft \
+      --feladattipus adat \
       --kategoria safe \
       --prompt "$prompt_file" \
       --mappa "$mappa_dir" 2>/dev/null)" || rc=$?

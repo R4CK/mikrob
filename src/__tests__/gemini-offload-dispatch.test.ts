@@ -2235,4 +2235,93 @@ rm -rf "$HERE"
     expect(r.agyCalled).toBe(false)
     expect(r.restCalled).toBe(true)
   })
+
+  // ── B1 (RedHat NO-GO 27938, card b768770a): the M2 tests above stub GEMINI_AGY_CALL, so they
+  // cannot see that the REAL argv sent --feladattipus draft -- not a member of scripts/seged-hivo.py's
+  // TASK_TYPES -- which made every offload agy call exit 2 before reaching Gemini (same bug class as
+  // the earlier 'ordering' defect: invisible to a stub, visible only against the real argparse).
+  // This runs the REAL seged-hivo.py parser (no mocking) with the captured --feladattipus value.
+  it('try_gemini_for_leaf: the --feladattipus sent is rejected by the REAL argparse IFF it is the old broken value (regression pin)', () => {
+    // Direct check against the real parser's error text, independent of the helper above.
+    let stderr = ''
+    try {
+      execFileSync(
+        'python3',
+        ['scripts/seged-hivo.py', '--feladattipus', 'draft', '--seged', 'agy:test', '--hivo', 'test', '--kartya', 'test', '--mappa', '/tmp', '--prompt', '/tmp/x'],
+        { cwd: ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+    } catch (e: any) {
+      stderr = String(e.stderr ?? '')
+    }
+    expect(stderr).toContain("invalid choice: 'draft'")
+
+    const r = runGeminiCall('try_gemini_for_leaf', false)
+    const m = /--feladattipus (\S+)/.exec(r.agyArgs)
+    expect(m).not.toBeNull()
+    expect(m![1]).not.toBe('draft')
+    let realStderr = ''
+    try {
+      execFileSync(
+        'python3',
+        ['scripts/seged-hivo.py', '--feladattipus', m![1], '--seged', 'agy:test', '--hivo', 'test', '--kartya', 'test', '--mappa', '/tmp', '--prompt', '/tmp/x'],
+        { cwd: ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+    } catch (e: any) {
+      realStderr = String(e.stderr ?? '')
+    }
+    expect(realStderr).not.toContain('invalid choice')
+  })
+
+  it('try_gemini_second_opinion_for_leaf: the --feladattipus sent is accepted by the REAL argparse (regression pin, line 715)', () => {
+    const r = runGeminiCall('try_gemini_second_opinion_for_leaf', false)
+    const m = /--feladattipus (\S+)/.exec(r.agyArgs)
+    expect(m).not.toBeNull()
+    expect(m![1]).not.toBe('draft')
+    let realStderr = ''
+    try {
+      execFileSync(
+        'python3',
+        ['scripts/seged-hivo.py', '--feladattipus', m![1], '--seged', 'agy:test', '--hivo', 'test', '--kartya', 'test', '--mappa', '/tmp', '--prompt', '/tmp/x'],
+        { cwd: ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+    } catch (e: any) {
+      realStderr = String(e.stderr ?? '')
+    }
+    expect(realStderr).not.toContain('invalid choice')
+  })
+
+  // ── B2 (RedHat NO-GO 27938, card b768770a): try_gemini_for_leaf recorded failures with
+  // `attempts_op transient`, but attempts_op's own dispatcher only recognizes `transient-fail`
+  // (confirmed: every other call site in this file uses transient-fail) -- so a failing leaf's
+  // attempt count never advanced and the retry bound never exhausted. Captures the REAL op name
+  // attempts_op is invoked with on a failing agy call (stub wrapper exits non-zero).
+  it('try_gemini_for_leaf: a failed agy call records attempts_op transient-fail, not the unrecognized transient', () => {
+    const dispatchSrc = src(DISPATCH)
+    const fallbackFn = extractFn(dispatchSrc, 'gemini_rest_fallback_enabled')
+    const targetFn = extractFn(dispatchSrc, 'try_gemini_for_leaf')
+    const script = `
+set -uo pipefail
+HERE="$(mktemp -d)"
+GEMINI_AGY_CALL="$HERE/gemini-agy-call.sh"
+RECORD="$HERE/record"
+printf '#!/usr/bin/env bash\\nexit 1\\n' > "$GEMINI_AGY_CALL"
+chmod +x "$GEMINI_AGY_CALL"
+${fallbackFn}
+attempts_op() { printf 'OP %s\\n' "$1" >> "$RECORD"; }
+gemini_draft_comment_body() { :; }
+DASH="http://unused.invalid"
+DRAFT_AUTHOR="test"
+hdr_file="$HERE/hdr"
+: > "$hdr_file"
+curl() { :; }
+post_id="unused"
+${targetFn}
+try_gemini_for_leaf "test-leaf-1" "Leaf title" "task text" "$post_id" >/dev/null 2>&1 || true
+cat "$RECORD" 2>/dev/null
+rm -rf "$HERE"
+`
+    const out = execFileSync('bash', ['-c', script], { encoding: 'utf-8' })
+    expect(out).toContain('OP transient-fail')
+    expect(out).not.toContain('OP transient\n')
+  })
 })
