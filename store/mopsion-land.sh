@@ -599,6 +599,16 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# card 88b67fb4, requirement 2: journal this run (started/heartbeat/finished) so a killed process
+# shows up as STALE to heartbeat-consolidated later instead of leaving no trace at all. The EXIT
+# trap covers every exit path in the rest of this script (die(), a plain `exit N`, or falling off
+# the end) with one write -- best-effort, a journal failure must never fail or block a landing.
+_LAND_RUN_JOURNAL="$(dirname "$0")/land-run-journal.sh"
+_LAND_RUN_ID="$(bash "$_LAND_RUN_JOURNAL" start mopsion-land.sh "${LANDED_BY:-unknown}" "$CARD" 2>/dev/null || true)"
+if [ -n "$_LAND_RUN_ID" ]; then
+  trap 'bash "$_LAND_RUN_JOURNAL" finish "$_LAND_RUN_ID" "$?" >/dev/null 2>&1 || true' EXIT
+fi
+
 # THE GATE VERDICT, checked against the board before anything else happens (card 9081d02d). Placed
 # here on purpose: it is the cheapest precondition in the script, so a landing that should not
 # happen at all costs a single HTTP call rather than a full merge + typecheck first.
