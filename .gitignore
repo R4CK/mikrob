@@ -130,6 +130,10 @@ Ingatlan/token*
 !store/route-classify-validated-model
 !store/local-llm-skills/
 !store/local-llm-skills/*.txt
+# Per-project config (F6.1, card c661ace4): repo path, base branch, land script, on_create hook --
+# operational config consumed by project-config-schema.py, not runtime state.
+!store/projects/
+!store/projects/*.json
 workspace/
 # Anchored to repo root (card b11a9353): the unanchored form matched at any depth, silently
 # excluding tracked nested dirs named agents/ too -- e.g. seed-skills/wizard/agents/openai.yaml

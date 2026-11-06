@@ -117,13 +117,12 @@ $ExpectedDownloadHost = ''
 # F1 (card 2a80c6cb): scoped token for this category ONLY. This is NOT the shared fleet
 # .dashboard-token -- that file must NEVER be placed in C:\ProgramData\MikroB-Drivers. The scoped
 # token is provisioned separately (per-agent token plan, card 3fb0ef97) and is valid for
-# /api/approvals?category=gpu-driver-silent-install reads and /api/approvals/:id/consume-oneshot
-# calls only. gpu-driver-install-setup.ps1 Phase 2 verifies the ACL is narrowed (SYSTEM+Admin,
-# no Users) BEFORE placing this token.
-$ApprovalApiBase = 'http://localhost:3420'
 $ApprovalCategory = 'gpu-driver-silent-install'
 $ApprovalWindowSeconds = 3600
-$GpuDriverTokenPath = Join-Path $PSScriptRoot 'gpu-driver-approval.token'
+# H1 fix (2a80c6cb): no API calls, no token on the Windows side. The WSL trigger is the sole
+# server-side consumer. After firing schtasks, the trigger writes a receipt here; this script
+# reads it instead of calling consume-oneshot.
+$TriggerReceiptPath = Join-Path $PSScriptRoot 'gpu-driver-install-trigger-receipt.json'
 # F1: this script's OWN used-approval marker, independent of the WSL trigger's state file (see
 # file header) -- a direct schtasks bypass never touches the WSL side's state.
 $UsedApprovalsPath = Join-Path $PSScriptRoot 'gpu-driver-install-used-approvals.json'
@@ -282,25 +281,20 @@ function Test-DownloadHostIsPinned {
     return $false
 }
 
-# F1/F2/F3 (card 2a80c6cb): the ps1-side approval check. Returns $true only if a FRESH,
-# approved, not-yet-used-by-THIS-script approval exists for $ApprovalCategory.
-# F1: uses $GpuDriverTokenPath (scoped token), NOT the shared fleet .dashboard-token.
-# F2: after local record, calls POST /api/approvals/:id/consume-oneshot for server-side
-#     atomic consumption; if the server returns 409 (already consumed), the approval is
-#     rejected even when the local state file was corrupt/missing (replay from a wiped state
-#     is blocked server-side).
-# F3: the check-and-record block runs under a named mutex to prevent concurrent schtasks
-#     runs from each independently consuming the same approval.
-# Fail-closed on every unexpected shape (no token, unreachable API, malformed response).
+# H1/F2/F3 (card 2a80c6cb delta): the ps1-side approval check. Returns $true only if a FRESH,
+# not-yet-used-by-THIS-script trigger receipt exists (written by the WSL trigger after it
+# consumed the approval server-side and fired schtasks). No API calls, no token on this side.
+# H1 fix: the only consumer is the WSL trigger; this script verifies by reading the receipt.
+# F3: the check-and-record block still runs under the named mutex to prevent two concurrent
+# schtasks runs from each independently proceeding with the same receipt.
 function Test-FreshApproval {
-    if (-not (Test-Path $GpuDriverTokenPath)) {
-        Write-Log "approval: FAIL-CLOSED -- no scoped token at $GpuDriverTokenPath (must be provisioned separately from the shared fleet token; see file header F1)"
+    if (-not (Test-Path $TriggerReceiptPath)) {
+        Write-Log "approval: FAIL-CLOSED -- no trigger receipt at $TriggerReceiptPath (trigger has not fired yet, or receipt was not written)"
         return $false
     }
-    $token = (Get-Content -Path $GpuDriverTokenPath -Raw).Trim()
 
     # F3: acquire the named mutex before reading usedIds, so two concurrent runs cannot
-    # each see the approval as fresh and both proceed.
+    # each see the receipt as fresh and both proceed.
     $mutex = New-Object System.Threading.Mutex($false, $ApprovalMutexName)
     $gotMutex = $false
     try {
@@ -315,64 +309,54 @@ function Test-FreshApproval {
         return $false
     }
     try {
+        # Parse receipt -- fail-closed on any parse error or missing fields.
+        $receipt = $null
+        try {
+            $receipt = Get-Content -Path $TriggerReceiptPath -Raw | ConvertFrom-Json
+        } catch {
+            Write-Log "approval: FAIL-CLOSED -- could not parse $TriggerReceiptPath: $_"
+            return $false
+        }
+        if ($null -eq $receipt -or -not $receipt.approvalId -or $null -eq $receipt.consumedAt) {
+            Write-Log "approval: FAIL-CLOSED -- receipt missing approvalId or consumedAt"
+            return $false
+        }
+
+        # Verify the receipt is fresh (within window).
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $age = $now - [int64]$receipt.consumedAt
+        if ($age -gt $ApprovalWindowSeconds) {
+            Write-Log "approval: FAIL-CLOSED -- receipt for $($receipt.approvalId) is ${age}s old (window=${ApprovalWindowSeconds}s)"
+            return $false
+        }
+
+        # Verify not already used by THIS script (prevents a direct schtasks re-run with the same receipt).
+        # R1 fix (2a80c6cb delta, CYBERSEC NO-GO 27873): a parse failure used to be treated as an
+        # EMPTY used-list, i.e. fail-OPEN -- a truncated, corrupted, or externally-reset marker file
+        # let a receipt still within its freshness window be replayed as if never used. Fail CLOSED
+        # instead: a marker file that exists but cannot be parsed refuses the run, it does not
+        # silently reset the replay guard.
         $usedIds = @()
         if (Test-Path $UsedApprovalsPath) {
             try {
                 $parsed = Get-Content -Path $UsedApprovalsPath -Raw | ConvertFrom-Json
                 if ($parsed.usedApprovalIds) { $usedIds = @($parsed.usedApprovalIds) }
             } catch {
-                Write-Log "approval: could not parse $UsedApprovalsPath, treating as empty: $_"
+                Write-Log "approval: FAIL-CLOSED -- could not parse $UsedApprovalsPath, refusing rather than treating as empty: $_"
+                return $false
             }
         }
-
-        $uri = "$ApprovalApiBase/api/approvals?category=$ApprovalCategory&status=approved&limit=5"
-        try {
-            $approvals = Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 10 -Headers @{ Authorization = "Bearer $token" }
-        } catch {
-            Write-Log "approval: FAIL-CLOSED -- /api/approvals call failed: $_"
-            return $false
-        }
-        if (-not $approvals) {
-            Write-Log "approval: FAIL-CLOSED -- empty/unexpected /api/approvals response"
+        if ($usedIds -contains $receipt.approvalId) {
+            Write-Log "approval: FAIL-CLOSED -- approval $($receipt.approvalId) already recorded as used by this script"
             return $false
         }
 
-        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        foreach ($a in @($approvals)) {
-            if ($a.status -ne 'approved') { continue }
-            if ($null -eq $a.resolved_at) { continue }
-            if (($now - [int64]$a.resolved_at) -gt $ApprovalWindowSeconds) { continue }
-            if (-not $a.id) { continue }
-            if ($usedIds -contains $a.id) { continue }
-
-            # F2: server-side atomic consume BEFORE local record. If 409, the server has
-            # already consumed this approval (replay from a wiped/corrupt local state file).
-            $consumeUri = "$ApprovalApiBase/api/approvals/$($a.id)/consume-oneshot"
-            try {
-                $consumeBody = [System.Text.Encoding]::UTF8.GetBytes(('{"category":"' + $ApprovalCategory + '"}'))
-                $consumeResp = Invoke-WebRequest -Uri $consumeUri -Method Post -TimeoutSec 10 `
-                    -Headers @{ Authorization = "Bearer $token"; 'Content-Type' = 'application/json' } `
-                    -Body $consumeBody -UseBasicParsing -ErrorAction Stop
-                if ($consumeResp.StatusCode -ne 200) {
-                    Write-Log "approval: server-side consume returned $($consumeResp.StatusCode) for $($a.id) -- skipping"
-                    continue
-                }
-            } catch {
-                # A 409 from Invoke-WebRequest throws; any non-200 means do not proceed.
-                Write-Log "approval: FAIL-CLOSED -- server-side consume call failed for $($a.id): $_ -- skipping (replay blocked)"
-                continue
-            }
-
-            # Server accepted; record locally (belt-and-suspenders -- server-side is the
-            # authoritative guard, local file prevents a useless re-query on restart).
-            $usedIds += $a.id
-            $out = @{ usedApprovalIds = $usedIds } | ConvertTo-Json
-            Set-Content -Path $UsedApprovalsPath -Value $out
-            Write-Log "approval: fresh approval $($a.id) accepted and consumed server-side, recorded locally"
-            return $true
-        }
-        Write-Log "approval: no fresh, unused, approved request for category=$ApprovalCategory within ${ApprovalWindowSeconds}s"
-        return $false
+        # Receipt is fresh and unused; record locally.
+        $usedIds += $receipt.approvalId
+        $out = @{ usedApprovalIds = $usedIds } | ConvertTo-Json
+        Set-Content -Path $UsedApprovalsPath -Value $out
+        Write-Log "approval: fresh receipt for $($receipt.approvalId) accepted (age=${age}s), recorded locally"
+        return $true
     } finally {
         if ($gotMutex) { $mutex.ReleaseMutex() }
         $mutex.Dispose()

@@ -49,6 +49,33 @@ else
 fi
 
 n=$((n + 1))
+# card 20f2b522 (F4.2): --card must be IDEMPOTENT -- a second pickup of the same card reuses the
+# existing worktree/branch instead of erroring or creating a duplicate.
+reuse_out="$(run backend --card deadbeef12 2>&1)"
+reuse_rc=$?
+reuse_branch="$(git -C "$ROOT/card/deadbeef12" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+if [ "$reuse_rc" = 0 ] && printf '%s' "$reuse_out" | grep -q "worktree already present" && [ "$reuse_branch" = "card/deadbeef12" ]; then
+  echo "  ok   a second --card pickup of the same card reuses the existing worktree, no error"
+else
+  echo "  FAIL expected a clean reuse -> rc=$reuse_rc out=$reuse_out branch=$reuse_branch"; fail=1
+fi
+
+n=$((n + 1))
+# card 20f2b522 (F4.2): if the target path is occupied by something that is NOT a git worktree
+# (e.g. a leftover plain directory), the script must refuse loudly (exit 3) and leave the occupying
+# content untouched -- never `rm -rf` it to make room (same "fails loudly" contract the script's
+# own comment states for `git worktree add`).
+mkdir -p "$ROOT/card/baadf00d12"
+echo "not a worktree, do not delete me" > "$ROOT/card/baadf00d12/sentinel.txt"
+rollback_out="$(run backend --card baadf00d12 2>&1)"
+rollback_rc=$?
+if [ "$rollback_rc" != 0 ] && [ -f "$ROOT/card/baadf00d12/sentinel.txt" ]; then
+  echo "  ok   an occupied non-worktree path is refused (exit $rollback_rc), occupying content untouched"
+else
+  echo "  FAIL expected a loud refusal with the sentinel file intact -> rc=$rollback_rc out=$rollback_out"; fail=1
+fi
+
+n=$((n + 1))
 if out="$(run backend --card BADID 2>&1)"; rc=$?; [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "card id must be hex"; then
   echo "  ok   a non-hex card id is refused (exit 2), not silently accepted as a path component"
 else

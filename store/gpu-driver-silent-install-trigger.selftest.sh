@@ -52,6 +52,9 @@ printf '{"ok":true}' > "$CONSUME_OK_FIXTURE"
 # Consume-oneshot fixture that simulates server-side already-consumed (F2 replay scenario).
 CONSUME_ALREADY_FIXTURE="$TMP/consume-already.json"
 printf '{"ok":false,"reason":"already_consumed"}' > "$CONSUME_ALREADY_FIXTURE"
+# H2 (2a80c6cb delta, CYBERSEC NO-GO 27965): consume refused for any other reason (expired, etc).
+CONSUME_REFUSED_FIXTURE="$TMP/consume-refused.json"
+printf '{"ok":false,"reason":"expired"}' > "$CONSUME_REFUSED_FIXTURE"
 CONSUME_FIXTURE="$CONSUME_OK_FIXTURE"
 
 # Fake schtasks: just records invocation + args, exits 0.
@@ -107,6 +110,7 @@ run() { # sets RC, CURL_CALLS, SCHTASKS_CALLS, STATE_CONTENT
   GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S=3600 \
   GPU_DRIVER_INSTALL_STATE="$TMP/trigger-state.json" \
   GPU_DRIVER_INSTALL_DRIVER_STATE="$DRIVER_STATE_FIXTURE" \
+  GPU_DRIVER_INSTALL_RECEIPT_PATH="$TMP/trigger-receipt.json" \
   GPU_DRIVER_SILENT_INSTALL="${FLAG:-on}" \
     bash "$BIN" >"$TMP/stdout.txt" 2>&1 || RC=$?
   CURL_CALLS="$(cat "$TMP/curl-calls.txt")"
@@ -153,16 +157,23 @@ run
 check "stale approval: no schtasks call" "" "$SCHTASKS_CALLS"
 
 # --- 5. Fresh approval, but board is BUSY (in_progress card exists) -> no-op, no schtasks. ---
+# QA non-verdict comment 27874: the old version of this test only asserted no SCHTASKS call --
+# a mutant moving the consume-oneshot call back to BEFORE this precondition (the pre-fix M1
+# order) still passed, because it only burns the approval without ever reaching schtasks. Assert
+# no consume-oneshot curl call either, so that exact reordering mutant is caught directly here
+# (not only incidentally, the way the new G1 case below happens to catch it).
 write_fixtures "$FRESH_APPROVED" "$BUSY_INPROGRESS" "$NEWER_AVAILABLE"
 run
 check "board busy: exit 0"           "0" "$RC"
 check "board busy: no schtasks call" ""  "$SCHTASKS_CALLS"
+check "board busy: no consume-oneshot call (M1 order pin)" "" "$(printf '%s' "$CURL_CALLS" | grep -o 'consume-oneshot' || true)"
 
 # --- 6. Fresh approval, board idle, but available is NOT newer -> no-op, no schtasks. --------
 write_fixtures "$FRESH_APPROVED" "$EMPTY_INPROGRESS" "$NOT_NEWER"
 run
 check "not newer: exit 0"           "0" "$RC"
 check "not newer: no schtasks call" ""  "$SCHTASKS_CALLS"
+check "not newer: no consume-oneshot call (M1 order pin)" "" "$(printf '%s' "$CURL_CALLS" | grep -o 'consume-oneshot' || true)"
 
 # --- 7. POSITIVE: every precondition holds -> schtasks called with ONLY /run /TN <name>. ----
 write_fixtures "$FRESH_APPROVED" "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
@@ -171,6 +182,7 @@ check "positive: exit 0"            "0" "$RC"
 check "positive: schtasks call, no extra params" "/run /TN MikroB-GPU-Driver-Install" "$SCHTASKS_CALLS"
 check "positive: approval recorded as used" "appr-1" "$(python3 -c "import json; print(json.load(open('$TMP/trigger-state.json')).get('lastTriggeredApprovalId'))" 2>/dev/null)"
 check "positive: approval recorded in usedApprovalIds set" "['appr-1']" "$(python3 -c "import json; print(json.load(open('$TMP/trigger-state.json')).get('usedApprovalIds'))" 2>/dev/null)"
+check "positive: receipt file written" "appr-1" "$(python3 -c "import json; print(json.load(open('$TMP/trigger-receipt.json')).get('approvalId'))" 2>/dev/null)"
 
 # --- 8. REPLAY GUARD: same approval, run again -> no-op, no second schtasks call. ------------
 run
@@ -308,6 +320,114 @@ CONSUME_FIXTURE="$CONSUME_ALREADY_FIXTURE" run
 check "F2-server-replay: exit 0"           "0" "$RC"
 check "F2-server-replay: no schtasks call" ""  "$SCHTASKS_CALLS"
 CONSUME_FIXTURE="$CONSUME_OK_FIXTURE"
+
+# --- G1/L1 (2a80c6cb delta, CYBERED NO-GO 27872 / CYBERSEC NO-GO 27873): if the receipt cannot
+# be written, the trigger must FAIL CLOSED before consuming the approval -- no curl consume call,
+# no schtasks call, approval stays unburned for a later, correctly-configured run. This is also
+# the regression pin for the ordering fix: the OLD code consumed + fired schtasks FIRST and only
+# then tried to write the receipt, so this exact fixture (an unwritable receipt path) would have
+# shown schtasks fired and a server consume-oneshot curl call on the pre-fix script.
+write_fixtures '[{"id":"appr-g1","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+RC=0
+: > "$TMP/curl-calls.txt"
+: > "$TMP/schtasks-calls.txt"
+GPU_DRIVER_INSTALL_CURL_BIN="$FAKE_CURL" \
+CURL_CALL_LOG="$TMP/curl-calls.txt" \
+CURL_FIXTURE_APPROVALS="$APPROVALS_FIXTURE" \
+CURL_FIXTURE_INPROGRESS="$INPROGRESS_FIXTURE" \
+CURL_FIXTURE_CONSUME="$CONSUME_OK_FIXTURE" \
+GPU_DRIVER_INSTALL_SCHTASKS_BIN="$FAKE_SCHTASKS" \
+SCHTASKS_CALL_LOG="$TMP/schtasks-calls.txt" \
+GPU_DRIVER_INSTALL_CHECK_BIN="$FAKE_CHECK" \
+GPU_DRIVER_INSTALL_WSL_INTEROP_RESOLVE="$FAKE_INTEROP" \
+GPU_DRIVER_INSTALL_TOKEN_FILE="$TMP/token" \
+GPU_DRIVER_INSTALL_API="http://fake" \
+GPU_DRIVER_INSTALL_APPROVAL_CATEGORY="gpu-driver-silent-install" \
+GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S=3600 \
+GPU_DRIVER_INSTALL_STATE="$TMP/trigger-state.json" \
+GPU_DRIVER_INSTALL_DRIVER_STATE="$DRIVER_STATE_FIXTURE" \
+GPU_DRIVER_INSTALL_RECEIPT_PATH="$TMP/no-such-dir/trigger-receipt.json" \
+GPU_DRIVER_SILENT_INSTALL=on \
+  bash "$BIN" >"$TMP/stdout.txt" 2>&1 || RC=$?
+CURL_CALLS="$(cat "$TMP/curl-calls.txt")"
+SCHTASKS_CALLS="$(cat "$TMP/schtasks-calls.txt")"
+check "G1 unwritable receipt dir: exit 1 (fail-closed, no makedirs)" "1" "$RC"
+check "G1 unwritable receipt dir: no consume-oneshot call" "" "$(printf '%s' "$CURL_CALLS" | grep -o 'consume-oneshot' || true)"
+check "G1 unwritable receipt dir: no schtasks call"                 ""  "$SCHTASKS_CALLS"
+check "G1 unwritable receipt dir: directory NOT auto-created"       "0" "$([ -d "$TMP/no-such-dir" ] && echo 1 || echo 0)"
+
+# --- H2 (2a80c6cb delta, CYBERSEC NO-GO 27965): the receipt is written BEFORE consume (G1/L1
+# fix above), so every branch that does NOT end in a real, successful schtasks fire must remove
+# it again -- otherwise a valid-looking receipt sits next to the elevated task for up to
+# APPROVAL_WINDOW_S seconds after a run that never actually got approved-and-fired, and a direct
+# `schtasks /run` by any local process would pass the ps1's check on that stale evidence. Each
+# case below reuses the receipt path from the earlier cases (so it already has a receipt file
+# from a PRIOR real success) and checks it is GONE after the run.
+
+# H2a: server says already_consumed (replay) -> no-op, receipt must be removed.
+write_fixtures '[{"id":"appr-h2-ac","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+CONSUME_FIXTURE="$CONSUME_ALREADY_FIXTURE" run
+check "H2a already_consumed: exit 0"             "0" "$RC"
+check "H2a already_consumed: no schtasks call"   ""  "$SCHTASKS_CALLS"
+check "H2a already_consumed: receipt removed"    "0" "$([ -f "$TMP/trigger-receipt.json" ] && echo 1 || echo 0)"
+CONSUME_FIXTURE="$CONSUME_OK_FIXTURE"
+
+# H2b: server refuses for any other reason (expired, etc) -> FAIL-CLOSED exit 1, receipt removed.
+write_fixtures '[{"id":"appr-h2-ref","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+CONSUME_FIXTURE="$CONSUME_REFUSED_FIXTURE" run
+check "H2b consume refused: exit 1"              "1" "$RC"
+check "H2b consume refused: no schtasks call"    ""  "$SCHTASKS_CALLS"
+check "H2b consume refused: receipt removed"     "0" "$([ -f "$TMP/trigger-receipt.json" ] && echo 1 || echo 0)"
+CONSUME_FIXTURE="$CONSUME_OK_FIXTURE"
+
+# H2c: consume succeeds but schtasks itself fails -> exit 2, receipt must STILL be removed (the
+# task never actually ran, so the evidence that "it was about to" must not outlive the failure).
+write_fixtures '[{"id":"appr-h2-st","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+FAKE_SCHTASKS_EXIT=1 run
+check "H2c schtasks failure: exit 2"             "2" "$RC"
+check "H2c schtasks failure: receipt removed"    "0" "$([ -f "$TMP/trigger-receipt.json" ] && echo 1 || echo 0)"
+FAKE_SCHTASKS_EXIT=0
+
+# H2 positive control: a genuine success must still LEAVE the receipt in place (re-proves case 7
+# was not broken by the cleanup added above).
+write_fixtures '[{"id":"appr-h2-pos","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+run
+check "H2 positive control: schtasks fired" "/run /TN MikroB-GPU-Driver-Install" "$SCHTASKS_CALLS"
+check "H2 positive control: receipt still present" "appr-h2-pos" \
+  "$(python3 -c "import json; print(json.load(open('$TMP/trigger-receipt.json')).get('approvalId'))" 2>/dev/null)"
+
+# --- B4 (Cybered NO-GO 27974): the legacy-state migration (an OLDER state file that only ever
+# had lastTriggeredApprovalId, no usedApprovalIds list) is the ONLY replay guard for approvals
+# fired before the server-side consume existed, and no existing case exercises it -- a mutant
+# replacing the migration body with `pass` passes every case above unnoticed. Write a
+# legacy-FORMAT state file by hand (no usedApprovalIds key at all) naming an id, then present
+# that SAME id as a fresh approved row: it must be treated as already used, no schtasks call.
+LEGACY_STATE="$TMP/trigger-state-legacy.json"
+printf '{"lastTriggeredApprovalId":"appr-legacy","lastTriggeredAt":%s}' "$NOW" > "$LEGACY_STATE"
+write_fixtures '[{"id":"appr-legacy","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+RC=0
+: > "$TMP/curl-calls.txt"
+: > "$TMP/schtasks-calls.txt"
+GPU_DRIVER_INSTALL_CURL_BIN="$FAKE_CURL" \
+CURL_CALL_LOG="$TMP/curl-calls.txt" \
+CURL_FIXTURE_APPROVALS="$APPROVALS_FIXTURE" \
+CURL_FIXTURE_INPROGRESS="$INPROGRESS_FIXTURE" \
+CURL_FIXTURE_CONSUME="$CONSUME_OK_FIXTURE" \
+GPU_DRIVER_INSTALL_SCHTASKS_BIN="$FAKE_SCHTASKS" \
+SCHTASKS_CALL_LOG="$TMP/schtasks-calls.txt" \
+GPU_DRIVER_INSTALL_CHECK_BIN="$FAKE_CHECK" \
+GPU_DRIVER_INSTALL_WSL_INTEROP_RESOLVE="$FAKE_INTEROP" \
+GPU_DRIVER_INSTALL_TOKEN_FILE="$TMP/token" \
+GPU_DRIVER_INSTALL_API="http://fake" \
+GPU_DRIVER_INSTALL_APPROVAL_CATEGORY="gpu-driver-silent-install" \
+GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S=3600 \
+GPU_DRIVER_INSTALL_STATE="$LEGACY_STATE" \
+GPU_DRIVER_INSTALL_DRIVER_STATE="$DRIVER_STATE_FIXTURE" \
+GPU_DRIVER_INSTALL_RECEIPT_PATH="$TMP/trigger-receipt-legacy.json" \
+GPU_DRIVER_SILENT_INSTALL=on \
+  bash "$BIN" >"$TMP/stdout.txt" 2>&1 || RC=$?
+check "B4 legacy-state migration: exit 0 (no-op, already used)" "0" "$RC"
+check "B4 legacy-state migration: no schtasks call" "" "$(cat "$TMP/schtasks-calls.txt")"
 
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"

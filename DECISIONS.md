@@ -22814,6 +22814,15 @@ backend (a javítás).
 
 **Hivatkozás:** kártya 3bf6a01a, backend agent, `seed-fleet-agents/*/CLAUDE.md`, `src/web/agent-scaffold.ts`, `src/__tests__/agent-scaffold-skill-usage.test.ts`.
 
+## 2026-10-31 -- Upstream-drift round: 2 undecided files resolved, 1 stale blob bumped (card 7f0efce3)
+
+**Dontes:**
+- `scripts/hooks/telegram_progress_clear.py`: KEEP FORK -- comment-only diff, both sides describe identical already-ported #2269 behaviour with different attribution style.
+- `src/web/agent-bundle.ts`: KEEP FORK FOR NOW -- upstream's RESERVED_AGENT_IDS concept (heartbeat/telegram-coordinator/channel-coordinator) does not exist anywhere in this fork; adopting it is not a 2-line swap. Fork's isReservedSenderId (card b46a4b7e) stays; FIXED_RESERVED_AGENT_IDS porting is a follow-up.
+- `.claude/settings.json` blob bumped 7c692deff999->a4d62d48e5d8; four new upstream additions noted (permissions.deny block, hook script replacements), none adopted; UNDECIDED resolution unchanged.
+
+**Ki dontott:** DevO (fullstack), card 7f0efce3, Gate-SHA 59192f3e8b929cf84b5b410b511679efe7b976d4.
+
 ## 2026-11-06 -- card 0244910e: 9655494c F1-B1 RedHat non-blocking follow-ups (comment 17142), items 1-3
 
 RedHat's three non-blocking findings on the agent-key CLI (comment 17142 on 9655494c F1-B1) fixed:
@@ -22857,3 +22866,9 @@ Also folded in Cybered's optional LOW (L2): `store/agent-key-provision.sh` now s
 Cybered's L1 (informational, not actioned as code): `--rotate` revokes the old key in the DB at once, but a running dashboard process can keep trusting that key for up to 60s (the in-memory device-key cache's last-used debounce) -- "the old key stops working after rotation" is immediate for the DB row and within 60s for a live server process, not an instant kill switch against an already-leaked key still being used against a running server.
 
 **Ki dontott:** Cybered (NO-GO, comment 28168), fixed by backend (card 0244910e, re-gate round). Gate: QA + Cybered (per Cybered's own re-gate request).
+
+## 2026-11-06 -- F1.1 branchless checkpoint ref (card 3517b027, phase ed332869)
+
+**Döntés:** store/agent-checkpoint.sh landolva -- branchless checkpoint commit (GIT_INDEX_FILE temp index, add -A, write-tree, commit-tree -p HEAD, update-ref refs/mikrob/ckpt/<cardId>/<n>), ideas-only átvétel pingdotgg/t3code @37481f04-ből (MIT, nem kód-másolás). Refuse (exit 3), ha az agent worktree-je nem oldódik fel valós .git-re -- sosem esik vissza a megosztott klónra.
+
+**Ki döntött:** DevO (fullstack), card 3517b027, Gate-SHA 6aad0c4db.

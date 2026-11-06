@@ -913,6 +913,36 @@ export function initDatabase(dbPathOverride?: string): void {
     `)
   }
 
+  // --- Card landings: git-ground-truth for "this card is landed" (card 8e99d55d, Fazis ed332869) --
+  //
+  // Written ONLY by the land scripts (marveen-land.sh / mopsion-land.sh, card a8a83d48) after the
+  // merge/push to origin/develop is VERIFIED -- never typed by an agent. The done-guard (F2.2) and
+  // gate-closure-check.py (F2.3) read this table instead of trusting a REVIEW comment's claimed sha,
+  // closing the fabricated-sha class measured this week (agents reporting landed shas that do not
+  // exist after /compact, 2026-11-01/05).
+  //
+  // One row per actual landing, not per card: a card can land more than once (delta-gate fix after a
+  // NO-GO), and one merge can carry more than one card's commits if an agent bundled several cards
+  // onto one branch before landing -- so no uniqueness on card_id alone, and none on merge_sha alone.
+  // The triple (repo, merge_sha, card_id) IS unique: a re-run of the land script against an
+  // already-landed push must not duplicate the row for the same card.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_landings (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id   TEXT NOT NULL REFERENCES kanban_cards(id),
+      work_sha  TEXT NOT NULL,
+      merge_sha TEXT NOT NULL,
+      repo      TEXT NOT NULL,
+      landed_at INTEGER NOT NULL CHECK (typeof(landed_at) = 'integer'),
+      landed_by TEXT NOT NULL
+    )
+  `)
+  // "Is card X landed" is the question every reader asks (done-guard, gate-closure-check, dashboard).
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_card_landings_card ON card_landings(card_id, landed_at)`)
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_card_landings_repo_merge_card ON card_landings(repo, merge_sha, card_id)`,
+  )
+
   // --- Stuck incidents: the DETECTION as a row, not as prose (card f92671df / ac28bc6e) ---
   //
   // WHAT WAS ACTUALLY MISSING, because it is not what the card first looks like. The fleet already
@@ -9241,13 +9271,41 @@ export function findConsumableApproval(category: string, contentHash: string, wi
   `).get(category, contentHash, cutoff) as Approval | undefined
 }
 
-// Atomic: the WHERE clause's `consumed_at IS NULL` is what makes this race-safe -- two
-// concurrent callers can both SELECT the same row via findConsumableApproval above, but only
-// one UPDATE can win (changes > 0), so only one of them may proceed with the gated action.
-export function consumeApproval(id: string): boolean {
-  const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE approvals SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL')
-    .run(now, id).changes > 0
+// M2 (2a80c6cb): status/window/audit-guarded one-shot consume for non-email categories.
+// Mirrors consumeEmailSendApproval: the conditional UPDATE is the whole decision (race-safe),
+// approval_events row written on success AND refusal, status='approved' + resolved_at window
+// enforced inside the transaction.
+export function consumeApproval(params: {
+  id: string
+  category: string
+  consumer: string
+  windowSeconds: number
+  nowS?: number
+}): ApprovalConsumeResult {
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  return db.transaction((): ApprovalConsumeResult => {
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?
+       WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
+         AND resolved_at IS NOT NULL AND resolved_at >= ?
+    `).run(now, params.consumer, params.id, params.category, now - params.windowSeconds).changes
+    const event = db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const row = getApproval(params.id)
+    if (changes === 1) {
+      event.run(params.id, 'consumed', null, params.consumer, null, now)
+      return { ok: true, approval: row }
+    }
+    let reason: ApprovalConsumeRefusal
+    if (!row) reason = 'not_found'
+    else if (row.category !== params.category) reason = 'wrong_category'
+    else if (row.consumed_at != null) reason = 'already_consumed'
+    else if (row.status !== 'approved') reason = 'not_approved'
+    else reason = 'expired'
+    if (row) event.run(params.id, 'consume_refused', reason, params.consumer, null, now)
+    return { ok: false, reason, approval: row }
+  })()
 }
 
 // A pending request for the SAME category+hash already exists -- reused so a caller retrying

@@ -275,16 +275,49 @@ echo "== B3: scheduled-task hash read-back guard present in current, diagnostic 
 # B3: the schtasks /Query read-back check ensures the task command line actually contains the hash
 # after the /Change call. A mutant removing this check (legacy migration path) would silently
 # complete Phase 2 even if schtasks /Change returned 0 but did not update the command line.
-# Positive: the guard must be structurally present in the current code.
-# Negative: the old fixture has the basic check but LACKS the diagnostic "Query output:" log line
-# added in card 2a80c6cb -- that line makes failures actionable and distinguishes the improved code.
-check "B3 task hash read-back guard present"             "$CURRENT" 'notmatch [regex]::Escape($hash)'  present
-check "B3 diagnostic output log present in current"      "$CURRENT" 'Write-Log "Query output:'         present
-check "B3 diagnostic output log absent in old fixture"   "$OLD"     'Write-Log "Query output:'         absent
+# Positive: the guard AND its failure exit must be structurally present as code (not comments).
+# Negative: the old fixture LACKS the diagnostic "Query output:" log line added in card 2a80c6cb.
+# M3 fix (2a80c6cb delta, round 2 -- CYBERSEC NO-GO 27873 SM2/SM3): the first M3 fix only
+# stripped WHOLE-LINE comments ('^\s*#'), which a mutant defeats by keeping the original
+# condition as a TRAILING comment on the mutated line (SM2: `if ($false) {  # if (...)`) --
+# the line does not start with #, so it survived unstripped and the needle still matched.
+# Strip from the first '#' to end of EVERY line instead (verified: no line in this file uses
+# '#' inside a string literal, so this cannot eat real code -- checked by hand, 2a80c6cb).
+strip_comments() { sed -E 's/#.*$//' "$1"; }
+CURRENT_NOCOMMENT="$(strip_comments "$CURRENT")"
+OLD_NOCOMMENT="$(strip_comments "$OLD")"
 
-echo "== F1 (2a80c6cb): gpu-driver-approval.token must be in the allowlist, shared token must not =="
-# F1: the scoped token must appear in the Phase 2 allowlist; the shared fleet token must NOT.
-check "F1 scoped token in allowlist present"          "$CURRENT" "gpu-driver-approval.token"  present
+check_stripped() {
+  local label="$1" src_nocomment="$2" needle="$3" mode="$4"
+  if [ "$mode" = present ]; then
+    printf '%s\n' "$src_nocomment" | grep -qF "$needle" \
+      && echo "PASS: $label" || { echo "FAIL: $label (needle absent in code after stripping comments)"; fail=$((fail+1)); }
+  else
+    printf '%s\n' "$src_nocomment" | grep -qF "$needle" \
+      && { echo "FAIL: $label (needle present in code even after stripping comments)"; fail=$((fail+1)); } \
+      || echo "PASS: $label"
+  fi
+}
+check_stripped "B3 hash read-back guard present (comment-stripped)"  "$CURRENT_NOCOMMENT" 'notmatch [regex]::Escape($hash)'  present
+check_stripped "B3 diagnostic log present (comment-stripped)"        "$CURRENT_NOCOMMENT" 'Write-Log "Query output:'        present
+check_stripped "B3 diagnostic log absent from old (comment-stripped)" "$OLD_NOCOMMENT"    'Write-Log "Query output:'        absent
+
+# SM3 fix: 'exit 1' alone occurs 20+ times in this file for unrelated guards, so a mutant that
+# comments out (or removes) ONLY the B3 guard's own exit 1 still finds the needle elsewhere and
+# the old check passed anyway (fail-open blind spot). Anchor to the 2 lines following the
+# diagnostic log line -- that is this guard's own failure branch, not any other guard's.
+B3_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A2 -F 'Write-Log "Query output:')"
+if printf '%s\n' "$B3_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: B3 failure exit 1 present in the guard's own block (comment-stripped, anchored)"
+else
+  echo "FAIL: B3 failure exit 1 missing from the guard's own block (comment-stripped, anchored)"
+  fail=$((fail+1))
+fi
+
+echo "== F1 (2a80c6cb delta): gpu-driver-approval.token must NOT be in the allowlist (H1 fix) =="
+# H1 fix: no token ever goes to the Windows side; the allowlist must NOT include the old token name.
+check "F1 scoped token removed from allowlist"        "$CURRENT" "gpu-driver-approval.token"  absent
+check "F1 trigger-receipt in allowlist"               "$CURRENT" "gpu-driver-install-trigger-receipt.json"  present
 check "F1 shared fleet token not in allowlist"        "$CURRENT" '.dashboard-token'            absent
 
 if [ "$fail" -eq 0 ]; then

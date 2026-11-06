@@ -700,6 +700,7 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     // today, which is exactly the kind of present/absent fact an anchor watches. It now has one
     // (ACKNOWLEDGED_FORK_ANCHORS['package-lock.json'], needle 'parse5', expect absent), using the
     // same cross-file-anchor technique as 'src/web/routes/agents.ts' above.
+
   ]
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
