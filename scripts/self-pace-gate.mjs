@@ -773,7 +773,17 @@ function expandHome(p) {
   return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
 }
 function realOrSelf(p) {
-  try { return realpathSync(p) } catch { return p }
+  try { return realpathSync(p) } catch {
+    // Card 0e5bbc65 F3: a NEW (never-seen) leaf name has no realpath of its own, and the old
+    // bare fallback (return p unresolved) let a symlinked PARENT directory hide behind that
+    // new leaf -- a file-tool call naming a fresh file under the history dir, reached through
+    // a symlinked alias of the store dir, resolved to a path that never matched the (fully
+    // resolved) historyDir. Walk up to the nearest existing ancestor, resolve THAT, and
+    // reattach the still-unresolved tail.
+    const parent = dirname(p)
+    if (parent === p) return p // reached the filesystem root; nothing left to resolve
+    return join(realOrSelf(parent), basename(p))
+  }
 }
 
 // Does a native file-tool call target the allowlist, its history dir, or the Bash-side

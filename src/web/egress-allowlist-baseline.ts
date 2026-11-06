@@ -82,6 +82,27 @@ function sha256(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex')
 }
 
+// Card 0e5bbc65 F1: the LAST entry a prior process recorded in history.log, read from disk --
+// used only once, by the FIRST check of a fresh process (prev === null in the in-memory map),
+// to catch a change made while nothing was running. This does not make the history dir the
+// source of truth in general (see the HONEST LIMIT above): an ongoing process still compares
+// only against its own in-memory `approved` baseline.
+function readLastHistoryEntry(historyDir: string): { sha: string; name: string } | null {
+  const logFile = join(historyDir, 'history.log')
+  if (!existsSync(logFile)) return null
+  const lines = readFileSync(logFile, 'utf-8').split('\n').filter((l) => l.trim().length > 0)
+  if (lines.length === 0) return null
+  const parts = lines[lines.length - 1].split(' ')
+  if (parts.length < 4) return null
+  return { sha: parts[1], name: parts[3] }
+}
+
+function readHistoryEntryBytes(historyDir: string, name: string): string | null {
+  const p = join(historyDir, name)
+  if (!existsSync(p)) return null
+  try { return readFileSync(p, 'utf-8') } catch { return null }
+}
+
 type Lists = Record<string, string[] | string>
 function parseLists(text: string | null): Lists | null {
   if (text === null) return {}
@@ -143,6 +164,12 @@ export function checkEgressAllowlistBaseline(
   const prev = approved.get(storeDir) ?? null
   if (prev && prev.sha === sha) return { sha, previous: prev.sha, recorded: false, report: null }
 
+  // Card 0e5bbc65 F1: this is the FIRST check this process has ever done for this store dir --
+  // read what a PRIOR process last recorded, before we write our own entry below, so a change
+  // made while nothing was running is still reported instead of silently adopted as the new
+  // baseline.
+  const bootPrior = prev ? null : readLastHistoryEntry(historyDir)
+
   mkdirSync(historyDir, { recursive: true })
   const name = `${stamp(now)}-${sha.slice(0, 12)}${bytes ? '.json' : '.missing'}`
   writeFileSync(join(historyDir, name), bytes ?? '')
@@ -150,6 +177,16 @@ export function checkEgressAllowlistBaseline(
 
   if (!prev) {
     approved.set(storeDir, { sha, bytes, historyName: name })
+    if (bootPrior && bootPrior.sha !== sha) {
+      const before = bootPrior.sha === MISSING ? null : readHistoryEntryBytes(historyDir, bootPrior.name)
+      const report =
+        `[EGRESS-ALLOWLIST] store/egress-allowlist.json CHANGED WHILE NOTHING WAS RUNNING (BOOT-TIME check; ${describeAllowlistChange(before, bytes ? bytes.toString('utf-8') : null)}). ` +
+        `sha ${bootPrior.sha.slice(0, 12)} -> ${sha.slice(0, 12)}. Previous version: store/${HISTORY_DIRNAME}/${bootPrior.name}. ` +
+        'If you did not make or approve this change, restore the previous version and find out who wrote it: ' +
+        'sub-agents may not edit this file (EGRESSSELFEDIT824).'
+      try { notify(report) } catch { /* the record above stands even if the report fails */ }
+      return { sha, previous: bootPrior.sha, recorded: true, report }
+    }
     return { sha, previous: null, recorded: true, report: null }
   }
 

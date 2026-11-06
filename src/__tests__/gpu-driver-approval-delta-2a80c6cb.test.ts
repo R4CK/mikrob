@@ -4,6 +4,7 @@ import {
 } from '../db.js'
 import { tryHandleApprovals, ONESHOT_CONSUME_ALLOWED_CATEGORIES, oneshotConsumeWindowSeconds } from '../web/routes/approvals.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 // Card 2a80c6cb delta round: CYBERED NO-GO 27872 (P8) + CYBERSEC NO-GO 27873 (W1, W2). The
 // original M2 fix (consumeApproval atomicity) was already unit-tested by probe commits in a
@@ -26,6 +27,23 @@ function oneshotCtx(id: string, body: unknown): { ctx: RouteContext; out: { stat
     end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
   }
   const path = `/api/approvals/${id}/consume-oneshot`
+  const url = new URL(`http://localhost:3420${path}`)
+  const req: any = {
+    on(event: string, cb: (chunk?: Buffer) => void) {
+      if (event === 'data') cb(Buffer.from(JSON.stringify(body)))
+      if (event === 'end') cb()
+    },
+  }
+  return { ctx: { req, res, path, method: 'POST', url } as RouteContext, out }
+}
+
+function postCtx(body: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
+  const out: { status: number; body: any } = { status: 0, body: null }
+  const res: any = {
+    writeHead(status: number) { out.status = status; return res },
+    end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
+  }
+  const path = '/api/approvals'
   const url = new URL(`http://localhost:3420${path}`)
   const req: any = {
     on(event: string, cb: (chunk?: Buffer) => void) {
@@ -189,5 +207,52 @@ describe('P8 (CYBERED NO-GO 27872): approving gpu-driver-silent-install is hard 
     expect(getApproval('p8-5')!.status).toBe('pending')
     await tryHandleApprovals(oneshotCtx('p8-5', { category: GPU }).ctx)
     expect(getApproval('p8-5')!.consumed_at).toBeNull()
+  })
+
+  // H1 (Cybersec delta re-gate, comment 27965): the PATCH hard-refuse above has a second,
+  // unguarded door into the same "approved" state. Any holder of the shared bearer token can
+  // self-declare agent_id = MAIN_AGENT_ID (not a secret) on POST /api/approvals and attach
+  // owner_approved_message_id -- createAndNotifyApproval resolves the row 'approved' on that
+  // path alone, with no PATCH and no real check that the owner actually said anything.
+  // Measured by Cybersec on 403ee09bc: this reaches 201 {status:'approved'}, and the
+  // consume-oneshot that follows returns 200 -- the install fires with zero human in the loop.
+  it('H1: POST with agent_id=MAIN_AGENT_ID + owner_approved_message_id is refused for gpu-driver-silent-install, not born approved', async () => {
+    const { ctx, out } = postCtx({
+      agent_id: MAIN_AGENT_ID,
+      category: GPU,
+      action_description: 'install newer driver',
+      owner_approved_message_id: 4242,
+    })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toMatch(/gpu-driver-silent-install/)
+    // no row was created at all -- a caller probing this path learns nothing it can retry with
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM approvals WHERE category = ?').get(GPU) as { n: number }).toEqual({ n: 0 })
+  })
+
+  it('H1 end-to-end: the same POST path can never reach consumed either, same as the PATCH path above', async () => {
+    const { ctx, out } = postCtx({
+      agent_id: MAIN_AGENT_ID,
+      category: GPU,
+      action_description: 'install newer driver',
+      owner_approved_message_id: 4242,
+    })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(403)
+    // nothing exists to consume -- confirm no approved row of this category exists anywhere
+    const rows = getDb().prepare("SELECT status FROM approvals WHERE category = ?").all(GPU) as { status: string }[]
+    expect(rows.every(r => r.status !== 'approved')).toBe(true)
+  })
+
+  it('H1 control: a DIFFERENT category still gets born approved through the same POST field (no over-broad refusal)', async () => {
+    const { ctx, out } = postCtx({
+      agent_id: MAIN_AGENT_ID,
+      category: 'email_send',
+      action_description: 'send mail',
+      owner_approved_message_id: 4243,
+    })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(201)
+    expect(out.body.status).toBe('approved')
   })
 })

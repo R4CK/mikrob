@@ -86,6 +86,15 @@ export function oneshotConsumeWindowSeconds(env: NodeJS.ProcessEnv = process.env
 // whatever category string the request names.
 export const ONESHOT_CONSUME_ALLOWED_CATEGORIES = ['gpu-driver-silent-install'] as const
 
+// P8/H1 fix (2a80c6cb delta, CYBERSEC NO-GO 27965 H1): approving this category is hard
+// fail-closed on EVERY path that can resolve a row 'approved', not only PATCH. Module-scoped
+// (not local to one handler) so POST's owner_approved_message_id door below -- any shared-token
+// holder can self-declare agent_id = MAIN_AGENT_ID (not a secret) and attach the field, which
+// resolves the row 'approved' with no PATCH and no real check the owner said anything -- is
+// refused the same way, closing the second route into the state the PATCH guard already blocked.
+export const GPU_DRIVER_FAIL_CLOSED_CATEGORY = 'gpu-driver-silent-install'
+export const GPU_DRIVER_APPROVE_FAIL_CLOSED = true
+
 // The consumer names the sending tool in the audit trail. Printable only (no
 // control characters, checked by code point so the source carries no escape),
 // 1-120 characters after trimming.
@@ -397,6 +406,19 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       chatApprovedMessageId = owner_approved_message_id as number | string
     }
 
+    // H1 fix (2a80c6cb delta, CYBERSEC NO-GO 27965): a born-approved row via
+    // owner_approved_message_id is the same "approved" state the PATCH guard above hard-refuses
+    // for this category -- refuse it here too, before a row is even created, so a caller probing
+    // this path learns nothing it can retry with (no row, no id, nothing to consume).
+    if (chatApprovedMessageId != null && category.trim() === GPU_DRIVER_FAIL_CLOSED_CATEGORY && GPU_DRIVER_APPROVE_FAIL_CLOSED) {
+      logger.warn({ agent_id: agent_id.trim() },
+        'Approval POST hard-refused for gpu-driver-silent-install (owner_approved_message_id door, fail-closed pending card 3fb0ef97)')
+      json(res, {
+        error: 'Approving a gpu-driver-silent-install request is disabled until a non-forgeable approval channel ships (card 3fb0ef97). The GPU install switch stays off.',
+      }, 403)
+      return true
+    }
+
     const approval = createAndNotifyApproval({
       agent_id: agent_id.trim(),
       category: category.trim(),
@@ -574,9 +596,8 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // pattern. This also matches the card's own standing constraint that the GPU install switch
     // stays OFF: an approval for this category can never be approved via the API, so it can never
     // be consumed, so the trigger's consume-oneshot call always refuses and the task never fires.
-    const GPU_DRIVER_APPROVE_FAIL_CLOSED = true
     const target = getApproval(idMatch[1])
-    if (status === 'approved' && target && target.category === 'gpu-driver-silent-install' && GPU_DRIVER_APPROVE_FAIL_CLOSED) {
+    if (status === 'approved' && target && target.category === GPU_DRIVER_FAIL_CLOSED_CATEGORY && GPU_DRIVER_APPROVE_FAIL_CLOSED) {
       logger.warn({ id: idMatch[1], authKind: ctx.auth?.kind ?? 'none' },
         'Approval approve hard-refused for gpu-driver-silent-install (fail-closed pending card 3fb0ef97)')
       json(res, {

@@ -6,7 +6,8 @@
  *   4. wrapUntrustedFetch + generateFetchNonce in prompt-safety.ts
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, unlinkSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { importsValueBinding } from './setup/source-imports.js'
 import { fileURLToPath } from 'node:url'
@@ -582,6 +583,27 @@ describe('loadRuntimeAllowlist', () => {
     expect(after.length).toBeGreaterThan(before.length)
     const newLines = after.slice(before.length)
     expect(newLines).toMatch(/sha=(missing|[0-9a-f]{12})\n$/)
+  })
+
+  it('logs the REAL sha256 of the file content, not just "missing" (card 0e5bbc65 F4: the prior test ran in an environment with no allowlist file, so it only ever exercised the missing-file branch)', () => {
+    const allowlistPath = join(REPO_ROOT, 'store', 'egress-allowlist.json')
+    const readLog = join(REPO_ROOT, 'store', 'egress-allowlist-read.log')
+    const hadFileBefore = existsSync(allowlistPath)
+    const savedContent = hadFileBefore ? readFileSync(allowlistPath, 'utf-8') : null
+    try {
+      const content = JSON.stringify({ domains: ['f4-probe.example'] })
+      writeFileSync(allowlistPath, content, 'utf-8')
+      const expectedSha12 = createHash('sha256').update(content, 'utf-8').digest('hex').slice(0, 12)
+      const before = (() => { try { return readFileSync(readLog, 'utf-8') } catch { return '' } })()
+      loadRuntimeAllowlist()
+      const after = readFileSync(readLog, 'utf-8')
+      const newLines = after.slice(before.length)
+      expect(newLines).toContain(`sha=${expectedSha12}\n`)
+      expect(newLines).not.toContain('sha=missing')
+    } finally {
+      if (savedContent === null) { try { unlinkSync(allowlistPath) } catch { /* already gone */ } }
+      else writeFileSync(allowlistPath, savedContent, 'utf-8')
+    }
   })
 
   it('store/egress-allowlist.json is NOT committed (store/ is gitignored)', () => {

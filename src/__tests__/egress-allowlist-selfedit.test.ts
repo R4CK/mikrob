@@ -13,10 +13,11 @@ import {
   HISTORY_DIRNAME,
 } from '../web/egress-allowlist-baseline.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 let root: string
 let store: string
@@ -78,6 +79,18 @@ describe('gate: native file tools also cover the history dir and the Bash-side a
   )
   it('another file in store/ is still not affected', () => {
     expect(decide('Write', { file_path: join(store, 'other.json'), content: '{}' }).deny).toBe(false)
+  })
+
+  it('a NEW filename under the history dir, reached through a symlinked parent, is still denied (card 0e5bbc65 F3)', () => {
+    // historyDir must already exist for its OWN realpath to resolve -- the gap is specifically
+    // a NEW (never-seen) leaf filename, whose own realpathSync fails (ENOENT) and used to fall
+    // back to the literal, UNRESOLVED (symlinked) path instead of resolving its parent.
+    const historyDir = join(store, 'egress-allowlist.history')
+    mkdirSync(historyDir, { recursive: true })
+    const aliasRoot = join(root, 'alias-parent')
+    symlinkSync(root, aliasRoot)
+    const neverSeenViaAlias = join(aliasRoot, 'store', 'egress-allowlist.history', 'never-seen-before.json')
+    expect(decide('Write', { file_path: neverSeenViaAlias, content: '{}' })).toEqual({ deny: true, reason: 'egress-allowlist' })
   })
 })
 
@@ -294,6 +307,38 @@ describe('baseline: every change is recorded and reported, whatever the route', 
     } finally { stop() }
     expect(reports).toHaveLength(1)
     expect(reports[0]).toContain('+live.example')
+  })
+
+  it('a change made while the process was DOWN is still reported on the first check after restart (card 0e5bbc65 F1: boot-time report-only comparison with the persisted history)', () => {
+    // Simulate a PRIOR process: it recorded the original bytes as its approved baseline and
+    // then exited (its in-memory Map is gone, but the history dir/log it wrote survives on
+    // disk). We do NOT call checkEgressAllowlistBaseline yet for this store -- that call would
+    // itself populate the in-memory map and defeat the simulation.
+    const historyDir = join(store, HISTORY_DIRNAME)
+    mkdirSync(historyDir, { recursive: true })
+    const originalBytes = readFileSync(allowlist, 'utf-8')
+    const originalSha = createHash('sha256').update(originalBytes).digest('hex')
+    const priorName = '20261003T070000000Z-' + originalSha.slice(0, 12) + '.json'
+    writeFileSync(join(historyDir, priorName), originalBytes)
+    appendFileSync(join(historyDir, 'history.log'), `2026-10-03T07:00:00.000Z ${originalSha} ${originalBytes.length} ${priorName}\n`)
+
+    // the modification happens WHILE NOTHING IS RUNNING (no checkEgressAllowlistBaseline call)
+    writeFileSync(allowlist, JSON.stringify({ domains: ['a.example', 'b.example', 'offline-attacker.example'] }))
+
+    // the new process boots and runs its FIRST ever check for this store -- prev is null in the
+    // fresh in-memory map, exactly like a real restart.
+    const r = checkEgressAllowlistBaseline(store, notify)
+    expect(r.recorded).toBe(true)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toContain('+offline-attacker.example')
+    expect(reports[0]).toContain('BOOT')
+  })
+
+  it('a true first-ever run (no persisted history at all) still stays quiet', () => {
+    const r = checkEgressAllowlistBaseline(store, notify)
+    expect(r.recorded).toBe(true)
+    expect(r.previous).toBeNull()
+    expect(reports).toEqual([])
   })
 
   it('a decoy entry planted in the history dir does not silence a real later change (card 86c1372a, F-RH1 history-decoy bypass)', () => {
