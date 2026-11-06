@@ -22822,3 +22822,9 @@ backend (a javítás).
 - `.claude/settings.json` blob bumped 7c692deff999->a4d62d48e5d8; four new upstream additions noted (permissions.deny block, hook script replacements), none adopted; UNDECIDED resolution unchanged.
 
 **Ki dontott:** DevO (fullstack), card 7f0efce3, Gate-SHA 59192f3e8b929cf84b5b410b511679efe7b976d4.
+
+## 2026-11-06 -- F1.1 branchless checkpoint ref (card 3517b027, phase ed332869)
+
+**Döntés:** store/agent-checkpoint.sh landolva -- branchless checkpoint commit (GIT_INDEX_FILE temp index, add -A, write-tree, commit-tree -p HEAD, update-ref refs/mikrob/ckpt/<cardId>/<n>), ideas-only átvétel pingdotgg/t3code @37481f04-ből (MIT, nem kód-másolás). Refuse (exit 3), ha az agent worktree-je nem oldódik fel valós .git-re -- sosem esik vissza a megosztott klónra.
+
+**Ki döntött:** DevO (fullstack), card 3517b027, Gate-SHA 6aad0c4db.
