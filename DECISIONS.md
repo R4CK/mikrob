@@ -22813,3 +22813,13 @@ backend (a javítás).
 - `src/web/agent-scaffold.ts`: QA_FAMILY, WHITEHAT_FAMILY, REDHAT_FAMILY set-ek + 3 curated builder function a generátorban.
 
 **Hivatkozás:** kártya 3bf6a01a, backend agent, `seed-fleet-agents/*/CLAUDE.md`, `src/web/agent-scaffold.ts`, `src/__tests__/agent-scaffold-skill-usage.test.ts`.
+
+## 2026-11-06 -- card 0244910e: 9655494c F1-B1 RedHat non-blocking follow-ups (comment 17142), items 1-3
+
+RedHat's three non-blocking findings on the agent-key CLI (comment 17142 on 9655494c F1-B1) fixed:
+- N1/N2: `store/agent-key-provision.sh` now filters the captured `dashboard-user` CLI stdout to the single line matching the real key's shape, fails closed (exit 4) instead of writing a polluted or empty key file on a stray log line, empty output, or ambiguous multi-line output.
+- N3: `scripts/dashboard-user.ts` gained a test-only `DASHBOARD_USER_DB_OVERRIDE` hook (no-op in production); new `src/__tests__/dashboard-user-agent-key-cli.test.ts` runs the real CLI as a subprocess against an isolated DB, covering RedHat's 4 uncaught mutants (C1-C4).
+
+Item 4 (RedHat 17142 N5, "/rotate still 200 with a token-created session") is a different, architecturally separate question (session-trust provenance on `/api/claude-plans/rotate`) that MikroB's 17006 decision already deferred to its own round -- split to card ed1f3e9c (MikroB decision, msg 16416), not fixed here.
+
+**Ki dontott:** backend (card 0244910e), fix scope per RedHat 17142 + MikroB msg 16416 (item-4 split). Gate: QA + RedHat.
