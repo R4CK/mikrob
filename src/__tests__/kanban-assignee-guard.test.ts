@@ -84,6 +84,18 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee('miᅟkrob')).toBe(true)
   })
 
+  // Full-suite regression (card 80ab5067 round 4): the FIRST fail-closed version flagged every
+  // non-ASCII survivor, which broke real assignee values in this install -- "andrás"/"András" are
+  // genuine Hungarian owner names (src/__tests__/commands-read.test.ts's own fixtures), not
+  // look-alikes of anything. Hungarian's own accented letters are now explicitly allowed
+  // alongside ASCII; everything else (Cyrillic, Greek, Armenian, small-caps, Hangul filler) still
+  // fails closed, per the other cases in this describe block.
+  it('does NOT fail closed on a genuine Hungarian name (not a look-alike of anything)', () => {
+    expect(isForbiddenAssignee('andrás')).toBe(false)
+    expect(isForbiddenAssignee('András')).toBe(false)
+    expect(isForbiddenAssignee('Mónika')).toBe(false)
+  })
+
   // RedHat NO-GO delta B2 (komment 15997, kartya e25a549a): a korabbi, hatarolt INVISIBLE_RE
   // (6 kodpont) + Cirill/Gorog-only tablazat 21 tovabbi alakot hagyott at -- mert a tombositett
   // formazo/jel/elvalaszto karakterek es tovabbi hasonmas betuk (gorog iota/kappa, armeny o,

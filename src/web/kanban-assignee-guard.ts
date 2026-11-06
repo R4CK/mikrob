@@ -46,25 +46,44 @@ export const INVALID_ASSIGNEE_TYPE_MESSAGE =
 // CONFUSABLES tablazat TELJESEN megszunt. Helyette fail-closed szabaly: ha az NFKC + betu/szam-
 // csak szures UTAN BARMILYEN nem-ASCII karakter marad, az identitas sosem bizonyithato "biztosan
 // MAS, mint egy fenntartott nev hasonmasa" -- tehat EGYEZESKENT (forbidden/ineligible) kezelendo,
-// FUGGETLENUL attol, melyik konkret irasrendszerbol jon. Nincs tobbe karakterenkenti tablazat,
-// amit minden uj hasonmas-felfedezessel bovíteni kellene.
+// FUGGETLENUL attol, melyik konkret irasrendszerbol jon.
 function lettersAndDigitsOnly(s: string): string {
   return s.replace(/[^\p{L}\p{N}]/gu, '')
 }
 
-const ASCII_ALNUM_ONLY_RE = /^[a-zA-Z0-9]*$/
+// Full-suite regression (fleet-test, card 80ab5067 round 4): the FIRST version of this fail-closed
+// rule treated ANY non-ASCII survivor as forbidden, full stop -- which broke real
+// commands-read.test.ts fixtures using genuine Hungarian assignee names ("andrás", "András").
+// Assignee/author values in this install are NOT always plain-ASCII agent ids; a real human
+// owner's name is a legitimate value too, and Hungarian's own accented letters are not look-alikes
+// of anything -- "andrás" is not impersonating "andras", it is a different, complete word in its
+// own alphabet. Fix: allow Hungarian's own alphabet extension (a CLOSED, 9-letter set that will
+// never grow -- unlike the removed confusables table, this is not "every discovered look-alike",
+// it is simply the Hungarian alphabet) in ADDITION to plain ASCII; every other non-ASCII survivor
+// still fails closed. Verified against the full WhiteHat F3/RedHat delta B2/QA 28436 case list:
+// Cyrillic а/п/д, Greek ι/κ/ο/ρ, Armenian օ, Turkish ı/İ, small-caps (Lm-category, NOT excluded by
+// a Script=Latin approach that was tried and rejected for this exact reason), Hangul filler
+// (U+3164/U+115F) all still fail closed; "andrás"/"András" and a fullwidth NFKC-foldable name do not.
+const HUNGARIAN_LATIN_EXTRA = new Set([
+  'á', 'é', 'í', 'ó', 'ö', 'ő', 'ú', 'ü', 'ű',
+  'Á', 'É', 'Í', 'Ó', 'Ö', 'Ő', 'Ú', 'Ü', 'Ű',
+])
 
 /**
- * Card 80ab5067 delta (QA FAIL 28436): true when, after NFKC + letters/digits-only filtering,
- * `value` still carries a character outside plain ASCII a-zA-Z0-9. Every legitimate id this
- * fleet compares against (agent names, "mikrob", GATE_AGENT_NAMES/GENERATED_COMMENT_AUTHORS
- * members) is itself plain ASCII, so a survivor here can ONLY be a look-alike script, a
- * never-enumerated confusable, or an otherwise non-ASCII identity -- never a false alarm on a
- * real id. Callers treat `true` as "fail closed": never eligible, always a forbidden match,
- * without needing to know WHICH specific id it resembles.
+ * Card 80ab5067 delta (QA FAIL 28436, then fleet-test regression on commands-read.test.ts): true
+ * when, after NFKC + letters/digits-only filtering, `value` still carries a character outside
+ * plain ASCII a-zA-Z0-9 AND outside Hungarian's own closed alphabet extension. A survivor here
+ * can only be a look-alike script, a never-enumerated confusable, or an otherwise suspicious
+ * identity -- never a false alarm on a real ASCII or Hungarian id. Callers treat `true` as "fail
+ * closed": never eligible, always a forbidden match, without needing to know WHICH specific id
+ * it resembles.
  */
 export function hasNonAsciiIdentityResidue(value: string): boolean {
-  return !ASCII_ALNUM_ONLY_RE.test(lettersAndDigitsOnly(value.normalize('NFKC')))
+  const filtered = lettersAndDigitsOnly(value.normalize('NFKC'))
+  for (const ch of filtered) {
+    if (ch.codePointAt(0)! > 127 && !HUNGARIAN_LATIN_EXTRA.has(ch)) return true
+  }
+  return false
 }
 
 /**
