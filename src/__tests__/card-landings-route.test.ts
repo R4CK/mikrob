@@ -298,6 +298,80 @@ describe('verifyCardLanding (real git, no mocks)', () => {
     expect(verdict.ok).toBe(false)
     if (!verdict.ok) expect(verdict.reason).toMatch(/no second parent/)
   })
+
+  // --- Cybersec2 NO-GO round 3 (Gate-SHA 95d208c09, comment 28230, F6 + F7) ---------------------
+
+  it('CYBERSEC2 F6 pin: work_sha must bind against the real merge, not a one-parent version-bump child stacked on top', async () => {
+    // Exactly the production shape marveen-land.sh produces: a real --no-ff merge (two parents),
+    // then a SEPARATE one-parent "chore(version): bump" commit on top that becomes the new
+    // develop tip. Before the F6 fix, the caller passed the BUMP CHILD as merge_sha (it is what
+    // `git rev-parse HEAD` returns after the bump) -- that commit has no second parent at all, so
+    // every real landing's record_card_landing call 422'd silently.
+    process.env.MARVEEN_MAIN = workPath
+    const { workSha, mergeSha } = buildAndPushLanding('c1111111', 'a.txt')
+    const bumpSha = commitFile(workPath, 'package.json', '{"version":"1.0.0+mikrob.2"}', 'chore(version): bump to 1.0.0+mikrob.2')
+    git(workPath, ['push', '-q', 'origin', 'develop'])
+    const { verifyCardLanding } = await importFresh()
+
+    const bumpVerdict = await verifyCardLanding('marveen', 'c1111111', workSha, bumpSha)
+    expect(bumpVerdict.ok).toBe(false) // the bump child itself is not a merge commit
+    if (!bumpVerdict.ok) expect(bumpVerdict.reason).toMatch(/no second parent/)
+
+    const realVerdict = await verifyCardLanding('marveen', 'c1111111', workSha, mergeSha)
+    expect(realVerdict.ok).toBe(true) // the actual merge (what the land script must pass) still works
+  })
+
+  it('CYBERSEC2 F7 repro 1: a card named nowhere (ffffffff) cannot ride a genuine, unrelated landing', async () => {
+    process.env.MARVEEN_MAIN = workPath
+    const { verifyCardLanding } = await importFresh()
+    const { workSha, mergeSha } = buildAndPushLanding('aaaaaaaa', 'a.txt')
+    const verdict = await verifyCardLanding('marveen', 'ffffffff', workSha, mergeSha)
+    expect(verdict.ok).toBe(false)
+    if (!verdict.ok) expect(verdict.reason).toMatch(/is not named in merge_sha's own commit message/)
+  })
+
+  it('CYBERSEC2 F7 repro 2: a card only MENTIONED in a non-merge commit subject is still refused', async () => {
+    // card C's branch mentions bbbbbbbb in prose and eeeeeeee in scope form, same shape as the
+    // F5 repro -- but now the question is the MERGE commit's own message (what the land script
+    // wrote), which names only cccccccc.
+    process.env.MARVEEN_MAIN = workPath
+    git(workPath, ['checkout', '-q', '-b', 'card/cccccccc'])
+    commitFile(workPath, 'a.txt', 'one', 'feat(cccccccc): work C, follow-up to card bbbbbbbb')
+    const workSha = commitFile(workPath, 'b.txt', 'two', 'fix(eeeeeeee): sneaky scope-form id for another card')
+    git(workPath, ['checkout', '-q', 'develop'])
+    git(workPath, ['merge', '-q', '--no-ff', 'card/cccccccc', '-m', 'merge: card/cccccccc'])
+    const mergeSha = git(workPath, ['rev-parse', 'HEAD'])
+    git(workPath, ['push', '-q', 'origin', 'develop'])
+    const { verifyCardLanding } = await importFresh()
+
+    for (const mentioned of ['bbbbbbbb', 'eeeeeeee']) {
+      const verdict = await verifyCardLanding('marveen', mentioned, workSha, mergeSha)
+      expect(verdict.ok).toBe(false)
+      if (!verdict.ok) expect(verdict.reason).toMatch(/is not named in merge_sha's own commit message/)
+    }
+    const realVerdict = await verifyCardLanding('marveen', 'cccccccc', workSha, mergeSha)
+    expect(realVerdict.ok).toBe(true)
+  })
+
+  it('CYBERSEC2 F7: an agent-mode merge carrying a "Cards:" trailer is bound by it (marveen-land.sh agent-mode shape)', async () => {
+    // Agent-mode branches ("agent/<agent>/work") carry no card id in the branch name itself --
+    // the F7 fix has marveen-land.sh write a "Cards: <id> <id>" trailer into the merge message it
+    // creates. This is what that trailer's effect looks like server-side.
+    process.env.MARVEEN_MAIN = workPath
+    git(workPath, ['checkout', '-q', '-b', 'agent/backend3/work'])
+    const workSha = commitFile(workPath, 'a.txt', 'one', 'fix(d0000001): agent-mode work')
+    git(workPath, ['checkout', '-q', 'develop'])
+    git(workPath, ['merge', '-q', '--no-ff', 'agent/backend3/work',
+      '-m', 'merge: agent/backend3/work into develop (marveen-land, base @ xyz)\n\nCards: d0000001'])
+    const mergeSha = git(workPath, ['rev-parse', 'HEAD'])
+    git(workPath, ['push', '-q', 'origin', 'develop'])
+    const { verifyCardLanding } = await importFresh()
+
+    const verdict = await verifyCardLanding('marveen', 'd0000001', workSha, mergeSha)
+    expect(verdict.ok).toBe(true)
+    const wrongCard = await verifyCardLanding('marveen', 'eeeeeeee', workSha, mergeSha)
+    expect(wrongCard.ok).toBe(false)
+  })
 })
 
 describe('POST /api/card-landings (route-level, real git)', () => {

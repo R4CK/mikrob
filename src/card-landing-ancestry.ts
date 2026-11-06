@@ -142,6 +142,40 @@ async function secondParent(repoPath: string, mergeSha: string): Promise<string 
   }
 }
 
+/**
+ * True only if `cardId` (already validated as exactly 8 lowercase hex chars by CARD_ID_RE, so
+ * this can never backtrack) appears, hex-delimited, in `mergeSha`'s OWN commit message -- never
+ * the version-bump child, never a caller-chosen range. Cybersec2 NO-GO 28230 F7: removing the
+ * subject-range scan (F4/F5 fix) closed the ReDoS and the caller-chosen-range forgery, but left
+ * card_id completely unverified -- any holder of the shared fleet token could claim any real
+ * card_id for someone else's genuine landing. Both land scripts now put the card id INTO the
+ * merge commit they themselves create (card mode: "card/<id>" is already a substring of the
+ * merge subject; agent mode: an explicit "Cards: <id> <id>" trailer; mopsion-land.sh: "(card
+ * <id>, ...)"), so this checks what the land script wrote, not what a committer typed into an
+ * arbitrary commit along the way. Plain string scanning, not a RegExp built from input -- with
+ * cardId's shape already fixed-length and metacharacter-free this would be safe either way, but
+ * the F4 lesson (never build a RegExp from caller input, even "safe-looking" input) is kept as a
+ * blanket rule here, not re-litigated per call site.
+ */
+async function mergeMessageNamesCard(repoPath: string, mergeSha: string, cardId: string): Promise<boolean> {
+  try {
+    const body = await git(repoPath, ['log', '-1', '--format=%B', mergeSha])
+    const lower = body.toLowerCase()
+    const isHex = (c: string) => c >= '0' && c <= '9' || (c >= 'a' && c <= 'f')
+    let idx = lower.indexOf(cardId)
+    while (idx !== -1) {
+      const before = idx === 0 ? '' : lower[idx - 1]!
+      const afterPos = idx + cardId.length
+      const after = afterPos >= lower.length ? '' : lower[afterPos]!
+      if (!(before && isHex(before)) && !(after && isHex(after))) return true
+      idx = lower.indexOf(cardId, idx + 1)
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 export type CardLandingVerdict =
   | { ok: true; workSha: string; mergeSha: string }
   | { ok: false; reason: string }
@@ -198,6 +232,9 @@ export async function verifyCardLanding(
   }
   if (resolvedSecondParent !== resolvedWork) {
     return { ok: false, reason: "work_sha is not merge_sha's second parent" }
+  }
+  if (!(await mergeMessageNamesCard(cfg.path, resolvedMerge, cardId))) {
+    return { ok: false, reason: `card_id "${cardId}" is not named in merge_sha's own commit message` }
   }
 
   return { ok: true, workSha: resolvedWork, mergeSha: resolvedMerge }

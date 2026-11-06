@@ -763,6 +763,74 @@ else
   echo "  FAIL --all should not list an already-landed card/* branch -> $all_out"; fail=1
 fi
 
+# Cybersec2 NO-GO 28230 F6 (card a8a83d48): the shipped marveen-land.sh used to pass $merge_sha to
+# record_card_landing, but $merge_sha gets REASSIGNED to the +mikrob version-bump CHILD commit
+# once bump_fork_version succeeds (a one-parent commit) -- so the server's "work_sha == merge_sha's
+# second parent" check had no second parent to find, and every real landing's row silently 422'd.
+# None of the cases above caught this because $MAIN never had a package.json, so bump_fork_version
+# always failed closed (non-fatally) and merge_sha was never reassigned. Giving $MAIN one now, for
+# the FIRST time in this file, reproduces the real production shape for exactly this one case.
+echo '{"name":"marveen","version":"1.0.0+mikrob.1"}' > "$MAIN/package.json"
+cat > "$MAIN/package-lock.json" <<'LOCKEOF'
+{
+  "name": "marveen",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "marveen",
+      "version": "1.0.0"
+    }
+  }
+}
+LOCKEOF
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" add package.json package-lock.json
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "chore: add package.json for the bump fixture"
+git -C "$MAIN" push -q origin develop
+
+git -C "$MAIN" checkout -q -b card/fed00001 develop
+echo "fed00001 content" > "$MAIN/fed00001.txt"
+git -C "$MAIN" add fed00001.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card fed00001: add fed00001.txt"
+git -C "$MAIN" checkout -q develop
+SHA_FED00001="$(git -C "$MAIN" rev-parse card/fed00001)"
+set_gate_line fed00001 "QA"
+set_verdict fed00001 pass "$SHA_FED00001"
+
+n=$((n + 1))
+land_card fed00001 backend
+if [ "$rc" = 0 ] && grep -q "LANDED card/fed00001 -> origin/develop" "$OUT_FILE" && grep -q "version bumped to" "$OUT_FILE"; then
+  echo "  ok   a --card landing with a real version bump still lands and reports the bump (F6 fixture sanity)"
+else
+  echo "  FAIL fed00001 landing (with a real version bump) should succeed -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+n=$((n + 1))
+git -C "$MAIN" fetch -q origin develop
+TIP_FED00001="$(git -C "$MAIN" rev-parse origin/develop)"
+TIP_FED00001_PARENTS="$(git -C "$MAIN" log -1 --format=%P "$TIP_FED00001" | tr ' ' '\n' | grep -c .)"
+MERGE_FED00001="$(git -C "$MAIN" rev-parse "${TIP_FED00001}^1")"
+MERGE_FED00001_PARENTS="$(git -C "$MAIN" log -1 --format=%P "$MERGE_FED00001" | tr ' ' '\n' | grep -c .)"
+if [ "$TIP_FED00001_PARENTS" = "1" ] && [ "$MERGE_FED00001_PARENTS" = "2" ]; then
+  echo "  ok   the landed tip is a one-parent bump child on top of a real two-parent merge (F6 fixture sanity)"
+else
+  echo "  FAIL expected tip parents=1 (bump) and tip^1 parents=2 (merge), got $TIP_FED00001_PARENTS / $MERGE_FED00001_PARENTS"
+  fail=1
+fi
+
+n=$((n + 1))
+if [ -f "$CAPTURE_DIR/landing-fed00001.ndjson" ] \
+  && grep -q "\"merge_sha\": \"$MERGE_FED00001\"" "$CAPTURE_DIR/landing-fed00001.ndjson" \
+  && ! grep -q "\"merge_sha\": \"$TIP_FED00001\"" "$CAPTURE_DIR/landing-fed00001.ndjson"; then
+  echo "  ok   record_card_landing got the MERGE sha, not the version-bump child sha (F6)"
+else
+  echo "  FAIL record_card_landing should have been called with merge_sha=$MERGE_FED00001 (not the bump child $TIP_FED00001):"
+  cat "$CAPTURE_DIR/landing-fed00001.ndjson" 2>/dev/null | sed 's/^/       /'
+  fail=1
+fi
+
 # The brace-group mutation test (reverting the bare `exec {FD}>&- 2>/dev/null`, card cd3e577b B2)
 # does NOT belong here any more: R4 (MikroB decision 16324) made --all never call land_one/cleanup
 # at all, so the stderr-muting bug is structurally unreachable from --all now -- there is nothing
