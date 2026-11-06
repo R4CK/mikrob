@@ -22919,3 +22919,9 @@ What the original entry missed: a fleet agent with shell access (not HTTP) can r
 - Both fixes verified with `bash -n` + `--selftest` (14/14 PASS) before and after each mutant reversion.
 
 **Ki döntött:** DevO (fullstack), card 6ff6d1dc fix round, Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 3a644c6a: elemzo clean-room skill hardening (e0028cf4 follow-up)
+
+**Döntés:** per WhiteHat2's GO findings on e0028cf4, hardened `agents/elemzo/CLAUDE.md` section 2 and `clean-room-product-analysis/SKILL.md` (live + the tracked `seed-fleet-agents/elemzo/*` copy): crawled page content is now explicitly untrusted data, never passed into Bash/API calls (S1); state-changing/probing actions on the target require Peti's prior approval, closing the contradiction where a flow being "walkable" implied the submit step also needed no approval (S3); the minimal-quote allowance is removed entirely per Peti 11000 (ideas only, no text/asset copying) (S4); `mcp__playwright__browser_evaluate` is now denied in both the live and the previously-nonexistent seed settings.json (S2); evidence path + 30-day retention documented (S5). The mopsion.com trial-walk from e0028cf4 is still blocked (404 + TLS on the tenant subdomain, card 97804a77); `http://localhost:3420` is named as the explicit replacement target for the mechanics check.
+
+**Ki döntött:** backend2 (card 3a644c6a), per MikroB dispatch on the e0028cf4 WhiteHat2 GO. Gate: QA + Cybered.
