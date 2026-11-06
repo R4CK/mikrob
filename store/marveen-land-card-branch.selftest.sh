@@ -95,6 +95,15 @@ class H(http.server.BaseHTTPRequestHandler):
         if m:
             with open(f"{CAPTURE_DIR}/{m.group(1)}.ndjson", "a") as f:
                 f.write(body.decode() + "\n")
+        # Card a8a83d48: capture every POST /api/card-landings body too, keyed by card_id from the
+        # JSON payload itself (the path carries no card id for this endpoint).
+        if self.path.rstrip('/') == '/api/card-landings':
+            try:
+                cid = json.loads(body.decode()).get('card_id', 'unknown')
+            except Exception:
+                cid = 'unknown'
+            with open(f"{CAPTURE_DIR}/landing-{cid}.ndjson", "a") as f:
+                f.write(body.decode() + "\n")
         resp = json.dumps({"ok": True}).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -202,6 +211,20 @@ if [ "$rc" = 0 ] && grep -q "LANDED card/aaa111 -> origin/develop" "$OUT_FILE"; 
   echo "  ok   a real --card landing pushes to origin/develop"
 else
   echo "  FAIL --card landing should succeed -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+# Card a8a83d48 (success -> row with both shas): the landing above must have called
+# POST /api/card-landings with the branch tip as work_sha and the confirmed-landed sha as
+# merge_sha.
+n=$((n + 1))
+if [ -f "$CAPTURE_DIR/landing-aaa111.ndjson" ] \
+  && grep -q "\"work_sha\": \"$SHA_AAA111\"" "$CAPTURE_DIR/landing-aaa111.ndjson" \
+  && grep -q '"repo": "marveen"' "$CAPTURE_DIR/landing-aaa111.ndjson"; then
+  echo "  ok   a real --card landing recorded a card_landings row with work_sha=$SHA_AAA111"
+else
+  echo "  FAIL --card landing should have called POST /api/card-landings with both shas:"
+  cat "$CAPTURE_DIR/landing-aaa111.ndjson" 2>/dev/null | sed 's/^/       /'
   fail=1
 fi
 

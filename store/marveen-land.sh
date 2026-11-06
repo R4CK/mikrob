@@ -518,6 +518,12 @@ land_one() {
 
   g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 0; }
 
+  # Card a8a83d48 (F2.1.2): the branch tip BEFORE the merge commit -- what a REVIEW's Gate-SHA
+  # names and what a gate actually verdicted on (see the big comment near "Gate-SHA: $gate_sha"
+  # further down on why that is NOT the same as the pushed develop tip). Captured here, once, so
+  # every path below (including the retry loop re-entering land_one) uses the same value.
+  local work_sha; work_sha="$(g rev-parse "$branch")"
+
   LAND_LOCK_FD=""
   local land_lock_started land_lock_announced=0 land_lock_last_note land_lock_waited
   land_lock_started="$(date +%s)"; land_lock_last_note="$land_lock_started"
@@ -957,6 +963,20 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     "$(dirname "$0")/kg-check-landing.sh" --repo marveen --repo-dir "$wt" --base "$base_sha" \
       --sha "$merge_sha" --actor "marveen-land:$agent" --main-dist "$MAIN/dist" 2>&1 | sed 's/^/  /' || true
     echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH (develop tip $(git -C "$wt" rev-parse --short HEAD))"
+    # Card a8a83d48 (F2.1.2): record this VERIFIED landing. One row per card this push actually
+    # carries -- LAND_CARD alone in --card mode (that branch carries exactly one card, by
+    # construction), else every card named in down_log (the commits this push just merged). The
+    # server re-verifies merge_sha's ancestry itself before writing, so this call is informational,
+    # never a gate the push itself depends on -- a failed call leaves a gap 3b82961f's
+    # `--record-landing` repair flag closes, it does not undo an already-successful push.
+    if [ -n "$LAND_CARD" ]; then
+      record_card_landing "$LAND_CARD" "$work_sha" "$merge_sha" marveen "$agent"
+    else
+      local _lc
+      for _lc in $(printf '%s\n' "$down_log" | distinct_cards); do
+        record_card_landing "$_lc" "$work_sha" "$merge_sha" marveen "$agent"
+      done
+    fi
     # Card 0711c19b, reported three times before it got a card. This line used to print ONLY the
     # develop tip, and on every landing since the version bump was automated (ea8b9b95) that tip is
     # a `chore(version)` child holding one line of package.json -- none of the card's files. Taken

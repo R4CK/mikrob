@@ -93,3 +93,28 @@ import json,sys; print(json.dumps({"card_id":sys.argv[1],"author":sys.argv[2],"c
 kanban_comment() { # $1 = body. Silent no-op when there is no agent, card, token or API.
   kanban_comment_on "$(kanban_comment_card_id)" "$1"
 }
+
+# Card a8a83d48 (F2.1.2): record a VERIFIED landing after a land script has already confirmed the
+# push actually reached origin/<default branch> (the caller's job, not this function's -- the
+# server independently re-verifies merge_sha's ancestry before writing, see
+# src/card-landing-ancestry.ts). BEST-EFFORT, same as kanban_comment_on above: a landing that
+# already pushed successfully must never be treated as failed just because this HTTP call is slow,
+# refused, or the dashboard is down. card 3b82961f's `--record-landing` repair flag is the backstop
+# for exactly that gap.
+#
+# $1 = card id, $2 = work_sha (the pre-merge branch tip, what the gate verdicted on), $3 = merge_sha
+# (the sha confirmed landed on origin), $4 = repo ("marveen" or "mopsion"), $5 = landed_by (agent).
+record_card_landing() {
+  local card="$1" work_sha="$2" merge_sha="$3" repo="$4" landed_by="$5" tf payload
+  [ -n "$card" ] || return 0
+  tf="$(_kc_token_file)" || return 0
+  [ -f "$tf" ] || return 0
+  payload="$(python3 -c '
+import json,sys
+print(json.dumps({"card_id":sys.argv[1],"work_sha":sys.argv[2],"merge_sha":sys.argv[3],"repo":sys.argv[4],"landed_by":sys.argv[5]}))' \
+    "$card" "$work_sha" "$merge_sha" "$repo" "$landed_by")" || return 0
+  printf 'Authorization: Bearer %s\n' "$(cat "$tf")" \
+    | curl -s --max-time 10 -o /dev/null -H @- \
+      -X POST "$KANBAN_COMMENT_API/api/card-landings" -H 'Content-Type: application/json' \
+      --data-binary "$payload" 2>/dev/null || true
+}
