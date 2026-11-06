@@ -185,6 +185,26 @@ EOF
 assert_field "$out_legacy" decomposed_content 0 "CONTROL: a pre-card-501c489f log line (no decompose field) is not miscounted"
 
 echo
+echo "=== G. FREELLM_DRAFTED (card 4eb3743e) -- tagged by the draft's own header ==="
+cardL=4eb3743e00000000000000000000000000000a  # freellm-sourced draft, continued
+cardM=4eb3743e00000000000000000000000000000b  # plain local-RAG draft, continued -- must NOT count
+cat > "$TMP/comments/$cardL.json" <<JSON
+[{"author":"local-llm","content":"[LOCAL-LLM DRAFT | freellm] ...","created_at":$now_epoch},
+ {"author":"backend","content":"Draft-Review: ELFOGADVA, beepitve.","created_at":$((now_epoch+10))}]
+JSON
+cat > "$TMP/comments/$cardM.json" <<JSON
+[{"author":"local-llm","content":"[LOCAL-LLM DRAFT | dispatch-offload] ...","created_at":$now_epoch},
+ {"author":"backend","content":"Draft-Review: ELFOGADVA, beepitve.","created_at":$((now_epoch+10))}]
+JSON
+out="$(run --json <<EOF
+$(now_fmt "$now_epoch")	$cardL	LOCAL	ok	calls=1	chars=10
+$(now_fmt "$now_epoch")	$cardM	LOCAL	ok	calls=1	chars=10
+EOF
+)"
+assert_field "$out" drafted 2 "G: both cards got a draft comment"
+assert_field "$out" freellm_drafted 1 "G: only the freellm-headered draft counts toward freellm_drafted"
+
+echo
 echo "=== E. ENTRIES OUTSIDE THE WINDOW ARE EXCLUDED ==="
 cardF=eeee0000000000000000000000000000000006
 out="$(run --hours 24 --json <<EOF

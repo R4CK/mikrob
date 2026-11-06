@@ -705,6 +705,42 @@ check "two distinct real cards stay as two separate group lines" \
 check "an exhausted-only card's group line carries exhausted_count 1 and draft_count 0" \
   "$(printf '%s\n' "$distinct_group" | awk -F'\t' '$1=="cardB"')" "$(printf 'cardB\tbackend2\t0\t1\tcardB')"
 
+# --- card 4eb3743e: route=freellm (helyi -> freellm -> online) ------------------------------------
+# All three cases drive the REAL freellm-call.sh (not a mock) via --test-freellm-attempt /
+# --test-capacity-route, HTTP-free: the content gate (gemini-agy-category-check.py + secret/PII
+# scan) runs and rejects BEFORE any network attempt, and a missing/invalid switch file fails closed
+# before even that -- so a sensitive prompt and a disabled switch never reach the network, exactly
+# like the real route. FREELLM_SWITCH / FREELLM_AUTH_TOKEN_FILE are freellm-call.sh's own env
+# overrides (not an offload-dispatch.sh invention), pointed at scratch files under $TMPDIR.
+echo '{"enabled":true}' > "$TMPDIR/freellm-enabled.json"
+echo 'dummy-token' > "$TMPDIR/freellm-token.txt"
+
+# Case 1: switch off (missing switch file) -> freellm-call.sh exits 2, no attempt made.
+switch_off_out="$(FREELLM_SWITCH="$TMPDIR/freellm-does-not-exist.json" bash "$DISPATCH" --test-freellm-attempt "irj egy segedfuggvenyt" 2>/dev/null)"; switch_off_rc=$?
+check "freellm switch off -> --test-freellm-attempt prints disabled" "$switch_off_out" "disabled"
+check "freellm switch off -> exit code 2" "$switch_off_rc" "2"
+
+# Case 2: switch on, SENSITIVE content (stem "authz") -> freellm-call.sh's own content gate refuses
+# (exit 4), before any network call.
+sensitive_out="$(FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-token.txt" bash "$DISPATCH" --test-freellm-attempt "irj meg egy authz ellenorzest" 2>/dev/null)"; sensitive_rc=$?
+check "freellm sensitive card (authz stem) -> --test-freellm-attempt prints gate-refused" "$sensitive_out" "gate-refused"
+check "freellm sensitive card -> exit code 4" "$sensitive_rc" "4"
+
+# Case 3: GPU-hold -- the capacity-route sweep branch must try freellm per leaf, not just give up.
+# Fed two leaves with the switch ON but NO auth-token file: the plain leaf clears the content gate
+# and only then hits the (missing) auth-token check -> "disabled", still zero network calls; the
+# sensitive leaf is refused by the content gate BEFORE the auth-token check is ever reached ->
+# "gate-refused". The point of this case is the ROUTING, not the live API: both leaves got a
+# freellm ATTEMPT instead of the old unconditional skip, and the content gate still tells them apart.
+gpu_hold_out="$(printf '[{"id":"leafPlain","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafSensitive","title":"authz modul","description":"irj meg egy authz ellenorzest"}]' \
+  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-no-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
+check "GPU-hold case: both leaves got a freellm routing attempt (2 output lines, named by leaf id)" \
+  "$(printf '%s\n' "$gpu_hold_out" | wc -l | tr -d ' ')" "2"
+check "GPU-hold case: the plain leaf's freellm attempt is named (switch off here -> disabled)" \
+  "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafPlain disabled$')" "1"
+check "GPU-hold case: the sensitive leaf's freellm attempt is named (gate-refused, not disabled)" \
+  "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafSensitive gate-refused$')" "1"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
