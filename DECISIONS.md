@@ -22916,3 +22916,30 @@ outside the card's own comment thread. The real, landed, ancestor-verified Gate-
 untouched; this note is the correction of record.
 
 **Ki döntött:** DevO (fullstack), card c1766c6c (7391f09a follow-up), Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 085444e9 fix round: narrow-env systemctl bus vars + real-command mutation coverage (QA FAIL 28515, WhiteHat2 CYBERSEC NO-GO on d3052b38d)
+
+**Döntés:**
+- WhiteHat2 HIGH: production (channel-monitor.ts buildOllamaRestoreEnv()) hands the script only
+  PATH/HOME/OLLAMA_HOST; `systemctl --user start` then fails for lack of a session bus
+  (XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS unset), so a real boot-restore was silently a no-op.
+  Fixed IN THE SCRIPT (not by widening the TS-side narrow env, which stays pinned): export both,
+  only if the caller did not already set one.
+- QA FAIL 28515 / WhiteHat2 MEDIUM: the dryrun log line and the real restart command were two
+  separately-written expressions with the same text, so a mutation reverting only the real branch
+  to a bare `nohup` left the pinned dryrun string untouched and green. Fixed: one shared
+  `start_cmd` variable feeds both.
+- A failed `systemctl --user start` no longer returns silently (rc=0 either way) -- it now logs
+  the failure, its rc, and the bus vars, then defers to the next sweep.
+- New selftest section (Guard 5): PATH-shims a real `systemctl`, runs the real default branch
+  under `env -i PATH HOME` (the actual production narrow env), and asserts the argv AND that
+  XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS actually reached it. Mutant-kill confirmed three ways,
+  each isolated: (1) removing the XDG/DBUS export block turns both new assertions red (and a
+  `set -u` unbound-variable crash on the unset var, confirming nothing silently degrades); (2)
+  removing the rc-check/loud-log block turns exactly the "logged loudly" case red, nothing else;
+  (3) a bare-nohup mutant (same shape as the original RedHat F-RH4 regression) is caught by the
+  new real-systemctl case even though the pre-existing dryrun-string pin stays green on it --
+  the exact QA FAIL 28515 gap. 29/29 selftest PASS on the real fix.
+
+**Ki döntött:** DevO (fullstack), card 085444e9 fix round (QA FAIL 28515 + WhiteHat2 NO-GO on
+Gate-SHA d3052b38d), Gate-SHA: see REVIEW comment.

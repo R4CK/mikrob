@@ -220,20 +220,46 @@ main() {
     return 0
   fi
 
-  if [ "${OLLAMA_RESTORE_DRYRUN:-}" = "1" ]; then
-    log "DRYRUN: would run: ${OLLAMA_RESTORE_START_CMD_OVERRIDE:-systemctl --user start $UNIT_NAME}"
-    return 0
+  # WhiteHat2 HIGH (card 085444e9 fix round): the production caller (channel-monitor.ts's
+  # buildOllamaRestoreEnv(), pinned by ollama-boot-restore-narrow-env.test.ts) hands this script
+  # ONLY PATH, HOME and an optional OLLAMA_HOST -- deliberately, so the detached ollama daemon never
+  # inherits a secret from the dashboard process's full environment. But `systemctl --user` needs a
+  # session bus to talk to, and without XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS it fails outright
+  # ("Failed to connect to user scope bus ... XDG_RUNTIME_DIR not defined"), so every boot-restore
+  # attempt in production was silently a no-op -- reproduced by WhiteHat2 under `env -i PATH HOME`.
+  # Fixed here, in the script, NOT by widening channel-monitor.ts's narrow env (that pin stays): set
+  # both, only if the caller did not already supply one (never override a real session's own bus).
+  if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+  fi
+  if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
   fi
 
+  # ONE shared variable for both the dryrun message and the real call (QA FAIL 28515 / WhiteHat2
+  # MEDIUM, same fix round): the previous code built the dryrun log line and the executed command
+  # from two separately-written expressions with the same text, so a mutation reverting ONLY the
+  # real branch to a bare `nohup` left the dryrun string -- and the test pinning it -- unchanged and
+  # green, even though every real restart under test (OLLAMA_RESTORE_DRYRUN unset) had regressed.
   # Card 085444e9 (RedHat F-RH4, 39b958a4 comment 19024): go through the systemd --user unit, not a
   # bare `nohup ollama serve`, so OLLAMA_VULKAN=0 (the dxgkrnl mitigation drop-in) and the
   # flash-attention/KV-cache tuning (card 8192b9ee) come from the SAME single source the unit itself
   # uses -- a bare nohup skips the unit's Environment= lines and its drop-in entirely.
+  local start_cmd="${OLLAMA_RESTORE_START_CMD_OVERRIDE:-systemctl --user start $UNIT_NAME}"
+
+  if [ "${OLLAMA_RESTORE_DRYRUN:-}" = "1" ]; then
+    log "DRYRUN: would run: $start_cmd"
+    return 0
+  fi
+
   log "Ollama down, boot stable (${uptime}s), no dxgkrnl fault this boot, not masked -- restarting"
-  if [ -n "${OLLAMA_RESTORE_START_CMD_OVERRIDE:-}" ]; then
-    eval "$OLLAMA_RESTORE_START_CMD_OVERRIDE"
-  else
-    systemctl --user start "$UNIT_NAME"
+  eval "$start_cmd"
+  local start_rc=$?
+  if [ "$start_rc" -ne 0 ]; then
+    # Loud, not a silent rc=0 (WhiteHat2 MEDIUM, same round): a failed restart must be visible to
+    # whoever reads this script's log, not indistinguishable from "nothing needed doing".
+    log "restart command failed (rc=${start_rc}): $start_cmd -- XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS} -- giving up this cycle, next sweep will retry"
+    return 0
   fi
 
   local tries=0
