@@ -286,16 +286,24 @@ try:
 except Exception:
     print('error')
 " 2>/dev/null)"
+# H2 fix (2a80c6cb delta, CYBERSEC NO-GO 27965): the receipt above was written BEFORE this
+# consume call (G1/L1 fix), so every branch from here on that does NOT end in a real, successful
+# schtasks fire must remove it again -- otherwise a valid-looking receipt sits next to the
+# elevated task for up to APPROVAL_WINDOW_S seconds after a run that never actually got
+# approved-and-fired, and a direct `schtasks /run` by any local process would pass the ps1's
+# approval check on that stale evidence (re-opening the exact bypass the receipt exists to close).
 case "$CONSUME_OUTCOME" in
   ok)
     log "server-side consume accepted for approval $APPROVAL_ID"
     ;;
   already_consumed)
     log "server-side consume: approval $APPROVAL_ID already consumed -- no-op (replay blocked server-side)"
+    rm -f "$RECEIPT_PATH"
     exit 0
     ;;
   *)
     log "FAIL-CLOSED: server-side consume-oneshot returned unexpected outcome '$CONSUME_OUTCOME' ($CONSUME_RESP) -- refusing"
+    rm -f "$RECEIPT_PATH"
     exit 1
     ;;
 esac
@@ -308,6 +316,7 @@ if [ -x "$WSL_INTEROP_RESOLVE_SH" ]; then
 fi
 if ! "$SCHTASKS_BIN" /run /TN "$TASK_NAME"; then
   log "schtasks /run /TN $TASK_NAME FAILED"
+  rm -f "$RECEIPT_PATH"
   exit 2
 fi
 
