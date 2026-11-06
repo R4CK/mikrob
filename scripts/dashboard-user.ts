@@ -111,7 +111,10 @@ async function main(): Promise<void> {
   const fromStdin = rest.includes('--password-stdin')
   const positional = rest.filter((a) => !a.startsWith('--'))
 
-  initDatabase()
+  // DASHBOARD_USER_DB_OVERRIDE (test-only, card 0244910e N3): lets a test point this CLI at an
+  // isolated DB file instead of the real store/claudeclaw.db. Unset in production -> initDatabase
+  // falls back to its normal default, unchanged.
+  initDatabase(process.env.DASHBOARD_USER_DB_OVERRIDE)
 
   switch (cmd) {
     case 'add': {

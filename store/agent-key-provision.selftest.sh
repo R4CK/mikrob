@@ -53,19 +53,19 @@ run() {
 }
 
 # --- mint: happy path ---
-echo "mint-secret-abc" > "$NPM_STDOUT_FILE"
+echo "mint-secret-abc-20chars-min" > "$NPM_STDOUT_FILE"
 OUT="$(run backend)"
 echo "$OUT" | grep -q "minted agent:backend" && pass "mint: success message printed" || fail "mint: success message missing"
-[ "$(cat "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "mint-secret-abc" ] && pass "mint: key file holds exactly the CLI's stdout" || fail "mint: key file content wrong"
+[ "$(cat "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "mint-secret-abc-20chars-min" ] && pass "mint: key file holds exactly the CLI's stdout" || fail "mint: key file content wrong"
 [ "$(stat -c '%a' "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "600" ] && pass "mint: key file is 0600" || fail "mint: key file mode wrong"
 grep -q "agent-key:mint backend\$" "$CAPTURE_ARGV" && pass "mint: invoked agent-key:mint with no --rotate" || fail "mint: wrong invocation shape"
-echo "$OUT" | grep -q "mint-secret-abc" && fail "mint: the raw key leaked into this script's own stdout" || pass "mint: the raw key never reaches this script's own stdout"
+echo "$OUT" | grep -q "mint-secret-abc-20chars-min" && fail "mint: the raw key leaked into this script's own stdout" || pass "mint: the raw key never reaches this script's own stdout"
 
 # --- mint --rotate: flag forwarded ---
-echo "rotated-secret-def" > "$NPM_STDOUT_FILE"
+echo "rotated-secret-def-20chars-min" > "$NPM_STDOUT_FILE"
 run backend --rotate > /dev/null
 grep -q "agent-key:mint backend --rotate\$" "$CAPTURE_ARGV" && pass "rotate: --rotate flag forwarded to the CLI" || fail "rotate: flag not forwarded"
-[ "$(cat "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "rotated-secret-def" ] && pass "rotate: key file updated to the new key" || fail "rotate: key file not updated"
+[ "$(cat "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "rotated-secret-def-20chars-min" ] && pass "rotate: key file updated to the new key" || fail "rotate: key file not updated"
 
 # --- revoke: happy path ---
 run backend --revoke > /dev/null
@@ -125,12 +125,48 @@ fi
 
 # --- N1 (prior review's gap): nothing anywhere ever writes the raw key except the final key
 # file -- no copy in this script's own stdout/stderr across the whole happy-path run.
-echo "canary-secret-ghi" > "$NPM_STDOUT_FILE"
+echo "canary-secret-ghi-20chars-min" > "$NPM_STDOUT_FILE"
 FULL_OUT="$(PATH="$SHIM_DIR:$PATH" MARVEEN_MAIN="$MAIN_DIR" MARVEEN_AGENTS_ROOT="$AGENTS_ROOT" bash "$SCRIPT" backend 2>&1)"
-if echo "$FULL_OUT" | grep -q "canary-secret-ghi"; then
+if echo "$FULL_OUT" | grep -q "canary-secret-ghi-20chars-min"; then
   fail "N1: the raw key appeared in the script's combined stdout+stderr"
 else
   pass "N1: the raw key never appears in the script's combined stdout+stderr"
 fi
+
+# --- N1 (card 0244910e): a stray log line ahead of the real key on a fresh-migration first run
+# must NOT get written into the key file alongside it (regression pin on the fix).
+rm -f "$AGENTS_ROOT/backend/.dashboard-agent-key"
+printf '[WARN] some pending migration ran\nminted-after-migration-log-line-key\n' > "$NPM_STDOUT_FILE"
+run backend > /dev/null
+[ "$(cat "$AGENTS_ROOT/backend/.dashboard-agent-key")" = "minted-after-migration-log-line-key" ] \
+  && pass "N1: a stray log line ahead of the key is filtered out, key file holds only the key" \
+  || fail "N1: the key file was polluted by (or lost) the stray log line"
+
+# --- N2 (card 0244910e): empty CLI stdout must fail closed, not write an empty "minted" key file.
+rm -f "$AGENTS_ROOT/backend/.dashboard-agent-key"
+printf '' > "$NPM_STDOUT_FILE"
+if PATH="$SHIM_DIR:$PATH" MARVEEN_MAIN="$MAIN_DIR" MARVEEN_AGENTS_ROOT="$AGENTS_ROOT" \
+    bash "$SCRIPT" backend > /dev/null 2>&1; then
+  fail "N2: empty CLI stdout was accepted as a successful mint"
+else
+  pass "N2: empty CLI stdout is rejected (fail-closed)"
+fi
+[ ! -e "$AGENTS_ROOT/backend/.dashboard-agent-key" ] \
+  && pass "N2: no key file written on empty CLI stdout" \
+  || fail "N2: an (empty or polluted) key file was written on empty CLI stdout"
+
+# --- N2 variant: two key-shaped lines (e.g. two concurrent CLI runs' output got concatenated
+# by something upstream) is ambiguous -- refuse to guess which one is the real key.
+rm -f "$AGENTS_ROOT/backend/.dashboard-agent-key"
+printf 'first-key-shaped-line-20chars\nsecond-key-shaped-line-20chars\n' > "$NPM_STDOUT_FILE"
+if PATH="$SHIM_DIR:$PATH" MARVEEN_MAIN="$MAIN_DIR" MARVEEN_AGENTS_ROOT="$AGENTS_ROOT" \
+    bash "$SCRIPT" backend > /dev/null 2>&1; then
+  fail "N2: two ambiguous key-shaped lines were accepted"
+else
+  pass "N2: two ambiguous key-shaped lines are rejected (fail-closed)"
+fi
+[ ! -e "$AGENTS_ROOT/backend/.dashboard-agent-key" ] \
+  && pass "N2: no key file written on ambiguous CLI stdout" \
+  || fail "N2: a key file was written despite ambiguous CLI stdout"
 
 [ "$FAIL" -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
