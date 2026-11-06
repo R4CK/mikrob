@@ -107,6 +107,64 @@ release_land_lock_fd() {
   return 0
 }
 
+# Card 5d9731cd: acquire_land_lock's flock -n is NOT FIFO -- several waiters polling with `sleep`
+# tend to hand the lock to whoever happens to retry right after release, not to the one that has
+# been waiting longest (measured: a 106 min waiter lost the lock to arrivals 16-90 min behind it,
+# three separate times). A ticket queue orders the ATTEMPTS, not the mutex itself: each waiter
+# takes a numbered ticket (atomically, via a short flock on its own tiny counter file), and only
+# the waiter holding the oldest still-live ticket ever calls acquire_land_lock -- everyone else
+# just sleeps. acquire_land_lock/release_land_lock_fd (the actual flock on LAND_LOCK_FILE) are
+# unchanged; this only changes who is allowed to try them next. Defined here (BEFORE the
+# --selftest block below, same reasoning as release_land_lock_fd's own placement comment above)
+# so --selftest can call these SAME functions, and reads $LAND_LOCK_FILE fresh on every call
+# (never a load-time global) so a selftest run -- which overrides it before LAND_LOCK_FILE's own
+# real default assignment further down ever executes -- exercises the real code path.
+
+# Takes the next ticket (an empty file named "<12-digit seq>.<pid>" in "$LAND_LOCK_FILE.tickets")
+# and echoes its path. The sequence number comes from a tiny counter file, read-incremented-
+# written under its own short-lived flock so two waiters starting at the same instant never get
+# the same number (the FIFO property rests on this being atomic, not on wall-clock arrival order).
+land_lock_take_ticket() {
+  local ticket_dir="$LAND_LOCK_FILE.tickets"
+  mkdir -p "$ticket_dir" 2>/dev/null || return 1
+  local seq_lock_file="$LAND_LOCK_FILE.seq.lock" seq_file="$LAND_LOCK_FILE.seq"
+  local seq_fd n ticket
+  exec {seq_fd}>>"$seq_lock_file" || return 1
+  flock "$seq_fd" || { exec {seq_fd}>&-; return 1; }
+  n="$(cat "$seq_file" 2>/dev/null || echo 0)"
+  n=$((n + 1))
+  echo "$n" >"$seq_file"
+  { exec {seq_fd}>&-; } 2>/dev/null
+  printf -v ticket '%012d.%d' "$n" "$$"
+  : >"$ticket_dir/$ticket" || return 1
+  echo "$ticket_dir/$ticket"
+}
+
+# Removes any ticket whose pid is no longer alive (a waiter that crashed/was killed before it
+# could remove its own ticket). A pid can in theory be reused by an unrelated later process -- the
+# same inherent limitation as every other `kill -0` liveness check in this file -- but a live
+# lander's pid only exists for the few minutes it takes to queue, merge and push, so the window
+# for a collision is small.
+land_lock_reap_stale_tickets() {
+  local ticket_dir="$LAND_LOCK_FILE.tickets"
+  local f base pid
+  for f in "$ticket_dir"/*; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"; pid="${base##*.}"
+    kill -0 "$pid" 2>/dev/null || rm -f "$f" 2>/dev/null
+  done
+}
+
+# True (exit 0) only if $1 (this waiter's own ticket path) is the lowest-numbered ticket that
+# still has a live pid behind it -- i.e. this waiter is at the head of the FIFO queue and may call
+# acquire_land_lock. Reaps stale tickets first so a crashed head does not block the queue forever.
+land_lock_is_head() {
+  local my_ticket="$1" ticket_dir="$LAND_LOCK_FILE.tickets" head
+  land_lock_reap_stale_tickets
+  head="$(printf '%s\n' "$ticket_dir"/* 2>/dev/null | LC_ALL=C sort | head -n1)"
+  [ "$head" = "$my_ticket" ]
+}
+
 # card 02f462e1: a landing pushes from a DISPOSABLE worktree (land_one's $wt) that shares $MAIN's
 # .git, so `g fetch` above already refreshed $MAIN's origin/$DEFAULT_BRANCH ref -- but $MAIN's own
 # CHECKED-OUT branch and working-tree files do not follow along on their own. Left alone, that is
@@ -404,6 +462,90 @@ if [ "${1:-}" = "--selftest" ]; then
       ;;
   esac
 
+  # Card 5d9731cd: "Teszt: 3 parhuzamos szimulalt landolas, a sorrend = indulasi sorrend."
+  # Three REAL background processes (not three sequential calls in this one process) simulate 3
+  # concurrent landings: each races to take a ticket at the same instant, then stays alive
+  # (sleeping) exactly like a real land_one waiter would while it holds its ticket -- this is what
+  # proves land_lock_take_ticket's counter increment is atomic under genuine concurrency (not just
+  # a single-threaded simulation) AND that land_lock_is_head's pid-liveness reaping does not treat
+  # a still-queueing waiter as dead.
+  n=$((n + 1))
+  tq_base="$(mktemp -u)"
+  tq_out="$(mktemp -d)"
+  export -f land_lock_take_ticket >/dev/null 2>&1
+  tq_pids=()
+  for tq_i in 1 2 3; do
+    ( LAND_LOCK_FILE="$tq_base" bash -c 'land_lock_take_ticket >"$1"; sleep 20' _ "$tq_out/$tq_i" 2>/dev/null ) &
+    tq_pids+=("$!")
+  done
+  for _tq_wait in $(seq 1 100); do
+    [ -s "$tq_out/1" ] && [ -s "$tq_out/2" ] && [ -s "$tq_out/3" ] && break
+    sleep 0.05
+  done
+  tq_a="$(cat "$tq_out/1")"; tq_b="$(cat "$tq_out/2")"; tq_c="$(cat "$tq_out/3")"
+  tq_seqs="$(printf '%s\n' "$tq_a" "$tq_b" "$tq_c" | sed -E 's@.*/([0-9]{12})\.[0-9]+$@\1@' | LC_ALL=C sort | sed 's/^0*//')"
+  if [ "$tq_seqs" = "$(printf '1\n2\n3\n')" ] && [ -n "$tq_a" ] && [ -n "$tq_b" ] && [ -n "$tq_c" ]; then
+    echo "  ok   3 genuinely parallel (backgrounded) ticket-takers got distinct, gapless sequence numbers 1,2,3 -- the counter increment is atomic under real concurrency"
+  else
+    echo "  FAIL expected 3 parallel ticket-takers to get exactly {1,2,3}, got seqs=[$(printf '%s ' $tq_seqs)] tickets=[$tq_a][$tq_b][$tq_c]"; fail=1
+  fi
+  # Service order must follow TICKET order (ticket number = indulasi sorrend, the order the
+  # atomic counter assigned them), never arrival-of-retry luck: with all 3 tickets still live,
+  # only the lowest-numbered one may report itself head; once it is removed (simulating that
+  # waiter being served and moving on), the next-lowest becomes head, then the last one. The 3
+  # background waiters are still alive (sleeping) at this point, so this is a real check against
+  # land_lock_reap_stale_tickets too, not just against an already-empty queue.
+  n=$((n + 1))
+  LAND_LOCK_FILE="$tq_base"
+  tq_sorted="$(printf '%s\n' "$tq_a" "$tq_b" "$tq_c" | LC_ALL=C sort)"
+  tq_first="$(printf '%s\n' "$tq_sorted" | sed -n 1p)"
+  tq_second="$(printf '%s\n' "$tq_sorted" | sed -n 2p)"
+  tq_third="$(printf '%s\n' "$tq_sorted" | sed -n 3p)"
+  tq_order_ok=1
+  land_lock_is_head "$tq_first" || tq_order_ok=0
+  land_lock_is_head "$tq_second" && tq_order_ok=0
+  land_lock_is_head "$tq_third" && tq_order_ok=0
+  rm -f "$tq_first"
+  land_lock_is_head "$tq_second" || tq_order_ok=0
+  land_lock_is_head "$tq_third" && tq_order_ok=0
+  rm -f "$tq_second"
+  land_lock_is_head "$tq_third" || tq_order_ok=0
+  if [ "$tq_order_ok" -eq 1 ]; then
+    echo "  ok   with 3 simulated landings, service order (land_lock_is_head) follows ticket/indulasi sorrend exactly: lowest-numbered first, then the next, then the last"
+  else
+    echo "  FAIL service order did not follow ticket order -- land_lock_is_head picked a non-head ticket or missed the real head at some step"; fail=1
+  fi
+  for tq_pid in "${tq_pids[@]}"; do kill "$tq_pid" 2>/dev/null; done
+  # The two cases above pin land_lock_is_head/land_lock_take_ticket's OWN behavior, but land_one
+  # could still skip calling them -- e.g. revert to the old `while ! acquire_land_lock; do` and
+  # every waiter is back to racing the raw flock on retry, exactly the starvation this card fixes.
+  # Text-pin on land_one's actual wait-loop condition (same B2'-style call-site pin as
+  # release_land_lock_fd's, below), scoped to production code only.
+  n=$((n + 1))
+  if printf '%s\n' "$prod_src" | grep -qE 'while ! \{ land_lock_is_head "\$land_lock_ticket" && acquire_land_lock; \}; do'; then
+    echo "  ok   land_one's wait loop still gates acquire_land_lock on land_lock_is_head (card 5d9731cd)"
+  else
+    echo "  FAIL land_one's wait loop no longer gates acquire_land_lock on land_lock_is_head -- the FIFO fix for card 5d9731cd is not wired in"; fail=1
+  fi
+  # Sensitivity: confirm this pin actually catches the old bug class (anyone can be "head"), not
+  # just a renamed no-op. Mutates land_lock_is_head's OWN source extracted from $0 to the vacuous
+  # always-true shape and re-checks the ordering assertion above would then wrongly pass for the
+  # non-head ticket too.
+  n=$((n + 1))
+  real_head_src="$(awk '/^land_lock_is_head\(\) \{$/{p=1} p{print} p&&/^}$/{exit}' "$0")"
+  mutant_head_src="$(printf '%s\n' "$real_head_src" | sed 's/\[ "\$head" = "\$my_ticket" \]/true/')"
+  if [ -z "$real_head_src" ] || [ "$mutant_head_src" = "$real_head_src" ]; then
+    echo "  FAIL could not extract/mutate land_lock_is_head's real source from $0 -- selftest and production have drifted"; fail=1
+  else
+    ( eval "$mutant_head_src"; land_lock_is_head "$tq_second" )
+    if [ $? -eq 0 ]; then
+      echo "  ok   MUTATION CAUGHT: a vacuous (always-true) land_lock_is_head would wrongly let a non-head ticket proceed -- the real check does not"
+    else
+      echo "  FAIL the vacuous mutant should have returned true for a non-head ticket too; it did not, so this pin is not sensitive"; fail=1
+    fi
+  fi
+  rm -rf "$tq_base" "$tq_base.tickets" "$tq_base.seq" "$tq_base.seq.lock" "$tq_out" 2>/dev/null
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -527,9 +669,16 @@ land_one() {
   LAND_LOCK_FD=""
   local land_lock_started land_lock_announced=0 land_lock_last_note land_lock_waited
   land_lock_started="$(date +%s)"; land_lock_last_note="$land_lock_started"
-  while ! acquire_land_lock; do
+  # Card 5d9731cd: take a FIFO ticket before ever trying the mutex. Only the head of this queue
+  # (land_lock_is_head) is allowed to call acquire_land_lock -- everyone else sleeps without
+  # touching the flock at all, which is what makes service order follow ticket order instead of
+  # poll-retry luck.
+  local land_lock_ticket
+  land_lock_ticket="$(land_lock_take_ticket)" || die 3 "could not create a landing-queue ticket under '$LAND_LOCK_FILE.tickets' -- refusing to run rather than silently queueing forever."
+  while ! { land_lock_is_head "$land_lock_ticket" && acquire_land_lock; }; do
     land_lock_waited=$(( $(date +%s) - land_lock_started ))
     if [ "$land_lock_waited" -ge "$LAND_LOCK_WAIT_MAX_S" ]; then
+      rm -f "$land_lock_ticket" 2>/dev/null
       [ "$land_lock_announced" -eq 1 ] && kanban_comment "INFO-ONLY RESUMED-SEMAPHORE (GIVING UP)
 
 Nem kaptam landolasi zart ${LAND_LOCK_WAIT_MAX_S} masodperc alatt (kartya 24d1543f: egyszerre legfeljebb 1 landolas celozhatja origin/${DEFAULT_BRANCH}-ot). A landolas NEM futott le -- nincs pusholva, $branch erintetlen."
@@ -541,7 +690,7 @@ Nem kaptam landolasi zart ${LAND_LOCK_WAIT_MAX_S} masodperc alatt (kartya 24d154
       echo "$agent: another landing holds the develop lock -- queueing (cap ${LAND_LOCK_WAIT_MAX_S}s)" >&2
       kanban_comment "INFO-ONLY PAUSED-SEMAPHORE
 
-Egy masik landolas foglalja az origin/${DEFAULT_BRANCH}-ot celzo landolasi zart (kartya 24d1543f: egyszerre legfeljebb 1 landolas fut a merge+fleet-test+push ablakban, a tobbi var). Amint felszabadul, ez a landolas folytatodik, es RESUMED-SEMAPHORE kommentet kap.
+Egy masik landolas foglalja az origin/${DEFAULT_BRANCH}-ot celzo landolasi zart (kartya 24d1543f: egyszerre legfeljebb 1 landolas fut a merge+fleet-test+push ablakban, a tobbi var FIFO sorrendben, kartya 5d9731cd). Amint felszabadul, ez a landolas folytatodik, es RESUMED-SEMAPHORE kommentet kap.
 
 Ez a komment azert van itt, hogy az updated_at mozogjon: a 3. szabaly szerint egy nem mozdulo in_progress kartya beragadtnak szamit, a 3a. szerint 60 perc utan testverre szall."
     elif [ $(( $(date +%s) - land_lock_last_note )) -ge "$LAND_LOCK_KEEPALIVE_S" ]; then
@@ -550,6 +699,7 @@ Ez a komment azert van itt, hogy az updated_at mozogjon: a 3. szabaly szerint eg
     fi
     sleep "$LAND_LOCK_POLL_S"
   done
+  rm -f "$land_lock_ticket" 2>/dev/null
   if [ "$land_lock_announced" -eq 1 ]; then
     kanban_comment "INFO-ONLY RESUMED-SEMAPHORE
 
