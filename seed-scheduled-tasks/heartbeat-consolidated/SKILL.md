@@ -103,6 +103,10 @@ D/4. project-dispatch-priority.json KIZAROLAGOS ZAR 12 ORANAL TOVABB (Peti audit
   bash {{INSTALL_DIR}}/store/fleet-concurrency-checks.sh dispatch-lock-age
 `ALERT:no` -> csend. `ALERT:yes` -> EZ NEM HIBA-JAVITAS, csak TAJEKOZTATAS: kuldj EGY Telegram-uzenetet Petinek (reply chat_id {{CHAT_ID}}), hogy a kizarolagos dispatch-zar mar X oraja all a(z) <projekt(ek)> projekten, es kerdezd meg, akar-e tudatosan beavatkozni (pl. atmenetileg torolni/bovíteni a priority listat) vagy hagyja tovabb futni. A script onmaga NEM valtoztat semmit a zaron, es csak EGYSZER jelez ugyanarra a zarra (ujra jelez, ha a zar idokozben megujul/valtozik es megint atlepi a kuszobot).
 
+D/5. LAND-RUN FINALIZALASI BARRIER (kartya 88b67fb4): fullstack egy landolasa meghalt (killed process) es senki nem latta -- nem volt semmi, ami jelezte volna, hogy egy landolas egyaltalan ELINDULT. `store/marveen-land.sh` es `store/mopsion-land.sh` mostantol egy naploba (`store/land-runs.jsonl`) irja: started/heartbeat/finished. Futtasd:
+  bash {{INSTALL_DIR}}/store/land-run-stale-check.sh
+`ALERT:no` -> csend. `ALERT:yes` -> a kiirt `STALE run_id=... script=... agent=... card=... age_min=...` sorok mindegyikere: ez egy landolas, ami ELINDULT, de 10 percnel tovabb nem adott eletjelet es NEM is fejezodott be (tipikusan killelt processz). Ertesitsd az `agent=`-ben nevezett tulajdonost (inter-agent uzenet, ha fut az agense) ES Petit Telegramon EGYSZER erre a run_id-re (a kovetkezo korben ugyanaz a run_id mar ne jelezzen ismet, csak ha a `card=` kartyajan meg sincs nyoma annak, hogy valaki tudna rola). Ez NEM dontja el, hogy a landolas tenylegesen sikeres volt-e -- csak azt mondja, hogy valaki nezze meg kezzel, mert a script maga nem tudta vegigmondani a sajat sorsat.
+
 === KOZOS TOKEN-VEDELEM GUARD (Peti 2026-07-30, KOTELEZO -- vonatkozik B, C, D szekciora) ===
 MIELOTT barmely agentet megloksz VAGY egy kartyat re-dispatchelsz/nudge-olsz, futtasd:
   bash {{INSTALL_DIR}}/store/redispatch-guard.sh check <cardId> <agent>
