@@ -22872,3 +22872,9 @@ Cybered's L1 (informational, not actioned as code): `--rotate` revokes the old k
 **Döntés:** store/agent-checkpoint.sh landolva -- branchless checkpoint commit (GIT_INDEX_FILE temp index, add -A, write-tree, commit-tree -p HEAD, update-ref refs/mikrob/ckpt/<cardId>/<n>), ideas-only átvétel pingdotgg/t3code @37481f04-ből (MIT, nem kód-másolás). Refuse (exit 3), ha az agent worktree-je nem oldódik fel valós .git-re -- sosem esik vissza a megosztott klónra.
 
 **Ki döntött:** DevO (fullstack), card 3517b027, Gate-SHA 6aad0c4db.
+
+## 2026-11-06 -- F4.2: agent-worktree-marveen.sh --card mode selftest gap closed (card 20f2b522)
+
+**Döntés:** `--card` mode (create/reuse/path/node_modules symlink/unlanded-commit warning/git identity isolation) was already fully implemented in `store/agent-worktree-marveen.sh`. The gap was selftest coverage against this card's acceptance criteria: the existing selftest (12 cases) covered create/branch/--path but not reuse (idempotent second pickup) or rollback-on-error (occupied non-worktree path refused without deletion). Added exactly those two missing cases to `store/agent-worktree-marveen.selftest.sh` (14/14 PASS); no change to the script itself was needed.
+
+**Ki döntött:** DevO (fullstack), card 20f2b522, Gate-SHA 6403df5b506b3f1513faadadd4037cf6bbf878df.
