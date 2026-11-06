@@ -1733,6 +1733,29 @@ export function injectDbWriteGuard(existing: Record<string, unknown>): void {
   ]
 }
 
+// Same reasoning as ensureAgentKeySecretGuard: injectDbWriteGuard alone reaches an agent only
+// when its settings.json is regenerated, so this runs in the startup migration loop to arm
+// already-provisioned agents on a dashboard restart.
+export function ensureDbWriteGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-guard.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('db-write-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectDbWriteGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Idempotently wire the agent-key-secret-guard PreToolUse hook (card 9c7ad372, WhiteHat2 O5 on
 // 2bfa4c67): blocks a Bash command that would mint/read ANOTHER agent's `agent:<id>` dashboard
 // device key (the one the structured gate-verdict record trusts as "this caller IS that gate").

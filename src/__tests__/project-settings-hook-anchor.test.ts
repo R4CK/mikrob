@@ -87,6 +87,7 @@ const EXPECTED: Record<string, string[]> = {
     'credential-gate.py @ .*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*',
     'credential-gate.py @ .*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
     'credential-gate.py @ .*draft_email.*',
+    'db-write-guard.py @ Bash',
     'channel-image-resize.sh @ Read', 'egress-gate.mjs @ WebFetch', 'memory-frontmatter-gate.py @ Write|Edit|MultiEdit',
     'memory-frontmatter-bash-gate.py @ Bash',
     // Card c00d5429 (2026-09-25): the main agent's own session ran with none of the ten
@@ -169,6 +170,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'credential-gate.py', matcher: '.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*' },
   { script: 'credential-gate.py', matcher: '.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*' },
   { script: 'credential-gate.py', matcher: '.*draft_email.*' },
+  { script: 'db-write-guard.py', matcher: 'Bash' },
   { script: 'channel-image-resize.sh', matcher: 'Read' },
   { script: 'egress-gate.mjs', matcher: 'WebFetch' },
   { script: 'secret-write-guard.py', matcher: 'Write|Edit|MultiEdit' },
