@@ -69,13 +69,25 @@ agent_checkpoint() {
   # checkpoint. Passing the all-zero value as update-ref's OLD value means "this ref must not
   # already exist"; git then refuses (rc=128) if another run claimed this n first, and we retry
   # with n+1 instead of racing.
+  #
+  # M1 follow-up (Cybersec finding on 6ff6d1dc/3835c1054): a plain `2>/dev/null && break` cannot
+  # tell "ref already taken" apart from any OTHER update-ref failure (read-only refs dir, full
+  # disk, corrupt packed-refs) -- both give rc=128, so the old retry loop spun on n forever on a
+  # persistent failure, silently, with nothing printed. Capture stderr instead and only retry when
+  # git itself says the ref already exists; any other failure is fatal, with git's own message and
+  # a bounded attempt count so a persistent-but-unanticipated failure can never spin unbounded.
   local zero_oid
   zero_oid="$(printf '0%.0s' $(seq 1 ${#commit}))"
-  local n=1 ref
+  local n=1 ref max_attempts=1000 update_err
   while true; do
     ref="refs/mikrob/ckpt/$card/$n"
-    git -C "$wt" update-ref "$ref" "$commit" "$zero_oid" 2>/dev/null && break
+    update_err="$(git -C "$wt" update-ref "$ref" "$commit" "$zero_oid" 2>&1)" && break
+    case "$update_err" in
+      *"reference already exists"*) ;;
+      *) echo "$update_err" >&2; exit 1 ;;
+    esac
     n=$((n + 1))
+    [ "$n" -le "$max_attempts" ] || die 1 "update-ref: $max_attempts attempts, all claimed -- giving up"
   done
 
   echo "$ref $commit"
@@ -206,6 +218,72 @@ if [ "${1:-}" = "--selftest" ]; then
   [ "$conc_refs" = 6 ] && ok "6 concurrent checkpoints for the same card produce 6 distinct refs (no collision)" \
     || no "expected 6 distinct refs from 6 concurrent runs, got $conc_refs ($(cat "$conc_out"/*.out 2>/dev/null | awk '{print $1}' | sort | tr '\n' ' '))"
   rm -rf "$conc_out"
+
+  # L1 leak case (QA 28269 / Cybersec 28270, card 6ff6d1dc fix round): a forced mid-run failure
+  # must leave 0 temp index files in TMPDIR -- the EXIT trap's whole point over the old RETURN
+  # trap, which a mutant reverting it back would silently break. Forced via commit-tree failing
+  # on "no git identity anywhere" (rc=128): a dedicated fixture with NO [user] section at all --
+  # not even its own bootstrap commit goes through `git commit` (which would need an identity) --
+  # built with write-tree + commit-tree, author/committer supplied only as env for that one call,
+  # never written to config. The worktree's own per-worktree identity (agent-worktree-marveen.sh
+  # sets one) is unset too, and HOME/the author/committer env vars are isolated for the actual
+  # call under test so no ambient identity can leak in and make the failure flaky.
+  failmain="$tmp/failmain"
+  git init -q -b develop "$failmain"
+  echo base > "$failmain/notes.txt"
+  git -C "$failmain" add notes.txt
+  failtree0="$(git -C "$failmain" write-tree)"
+  failbase="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+    git -C "$failmain" commit-tree "$failtree0" -m base)"
+  git -C "$failmain" update-ref refs/heads/develop "$failbase"
+  failorigin="$tmp/failorigin.git"
+  git init -q --bare -b develop "$failorigin"
+  git -C "$failmain" remote add origin "$failorigin"
+  git -C "$failmain" push -q origin develop
+  git -C "$failmain" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+
+  failroot="$tmp/fail-worktrees"
+  MARVEEN_MAIN="$failmain" MARVEEN_WORKTREES="$failroot" bash "$HERE/agent-worktree-marveen.sh" failagent >/dev/null
+  failwt="$failroot/failagent"
+  git -C "$failwt" config --worktree --unset user.name
+  git -C "$failwt" config --worktree --unset user.email
+
+  failtmpdir="$tmp/forced-fail-tmpdir"
+  mkdir -p "$failtmpdir" "$tmp/emptyhome"
+  if out="$(env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL \
+      HOME="$tmp/emptyhome" TMPDIR="$failtmpdir" \
+      MARVEEN_MAIN="$failmain" MARVEEN_WORKTREES="$failroot" bash "$0" failagent beefcafe03 2>&1)"; then
+    no "expected the forced no-identity commit-tree failure to make the script exit non-zero, got success: $out"
+  else
+    leftover="$(find "$failtmpdir" -type f | wc -l)"
+    [ "$leftover" = 0 ] && ok "forced mid-run failure (commit-tree, no identity, rc=128) leaves 0 temp index files in TMPDIR" \
+      || no "expected 0 leaked temp index files in TMPDIR after a forced failure, found $leftover: $(find "$failtmpdir" -type f)"
+  fi
+
+  # M1 follow-up (Cybersec 28270): a PERSISTENT update-ref failure that is NOT "reference already
+  # exists" (e.g. a read-only refs directory -- stands in for a full disk or bad permissions) must
+  # exit promptly with git's own error, not spin retrying n forever in silence.
+  run_wt roagent >/dev/null
+  # Worktrees share the MAIN repo's refs dir (only HEAD/index are per-worktree) -- the read-only
+  # bit has to go on $TEST_MAIN's .git/refs, not the worktree's. -R: earlier cases already created
+  # refs/mikrob/ckpt/... under here, so the write permission that matters is on that subdirectory,
+  # not just the top-level "refs" entry.
+  chmod -R -w "$TEST_MAIN/.git/refs"
+  ro_start="$(date +%s)"
+  if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_WORKTREES="$TEST_ROOT" timeout 5 bash "$0" roagent facefeed04 2>"$tmp/ro.err")"; then
+    chmod -R +w "$TEST_MAIN/.git/refs"
+    no "expected a persistent update-ref failure (read-only refs dir) to exit non-zero, got success: $out"
+  else
+    ro_rc=$?
+    chmod -R +w "$TEST_MAIN/.git/refs"
+    ro_elapsed=$(( $(date +%s) - ro_start ))
+    ro_err="$(cat "$tmp/ro.err")"
+    if [ "$ro_rc" != 124 ] && [ -n "$ro_err" ] && [ "$ro_elapsed" -le 4 ]; then
+      ok "persistent update-ref failure (read-only refs dir) exits non-zero promptly (${ro_elapsed}s), stderr non-empty"
+    else
+      no "expected a prompt (<=4s, not a 124 timeout) non-zero exit with stderr, got rc=$ro_rc elapsed=${ro_elapsed}s stderr=$ro_err"
+    fi
+  fi
 
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
   exit "$fail"
