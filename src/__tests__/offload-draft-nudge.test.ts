@@ -355,3 +355,24 @@ describe('emit_card_nudges actually runs, and actually sends (card 240ee54d N1/N
     }
   })
 })
+
+// Card 392d7104, WhiteHat LOW (comment 28609 on 4eb3743e): "the production gate is not pinned --
+// --test-capacity-route is a simulator that re-implements the branch (it calls
+// --check-freellm-blocked itself), so removing the real is_freellm_blocked guard at either
+// production call site is invisible to it." These two pins read the ACTUAL call-site statements
+// (not the simulator) so that mutant A (the CAPACITY_HOLD branch's guard replaced with
+// `if false; then`) and mutant B (the is_freellm_blocked guard deleted at the try_leaf-exhausted
+// site, leaving an unconditional try_freellm_for_leaf) each break a different assertion here.
+describe('the freellm production call sites are pinned, not only the --test-capacity-route simulator (card 392d7104)', () => {
+  it('mutant B target: the try_leaf-exhausted site still gates try_freellm_for_leaf on is_freellm_blocked', () => {
+    expect(SRC).toMatch(
+      /is_freellm_blocked "\$leaf_project" "\$leaf_tags" "\$leaf_title" "\$leaf_desc" \|\|\s*\n\s*\{ try_freellm_for_leaf "\$leaf_id" "\$leaf_title" "\$task" "\$post_id" "\$synthetic" && return 0; \}/,
+    )
+  })
+
+  it('mutant A target: the CAPACITY_HOLD site still gates try_freellm_for_leaf on lveto OR is_freellm_blocked', () => {
+    expect(SRC).toMatch(
+      /if \[\[ "\$lveto" == "true" \]\] \|\| is_freellm_blocked "\$lproject" "\$ltags" "\$ltitle" "\$ldesc"; then\s*\n\s*attempts_op categorical-online "\$lid" >\/dev\/null/,
+    )
+  })
+})
