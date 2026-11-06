@@ -95,6 +95,15 @@ export const ONESHOT_CONSUME_ALLOWED_CATEGORIES = ['gpu-driver-silent-install'] 
 export const GPU_DRIVER_FAIL_CLOSED_CATEGORY = 'gpu-driver-silent-install'
 export const GPU_DRIVER_APPROVE_FAIL_CLOSED = true
 
+// Thrown by createAndNotifyApproval's own fail-closed check below; callers (the POST handler)
+// catch it to produce the same 403 the PATCH handler returns.
+export class ApprovalFailClosedError extends Error {
+  constructor(public readonly category: string) {
+    super(`Approving a ${category} request is disabled until a non-forgeable approval channel ships (card 3fb0ef97). The GPU install switch stays off.`)
+    this.name = 'ApprovalFailClosedError'
+  }
+}
+
 // The consumer names the sending tool in the audit trail. Printable only (no
 // control characters, checked by code point so the source carries no escape),
 // 1-120 characters after trimming.
@@ -306,6 +315,17 @@ export function createAndNotifyApproval(params: {
   // this shared function gets the same born-approved behaviour, not just the HTTP route.
   chatApprovedMessageId?: number | string | null
 }): Approval {
+  const chatApprovedMessageId = params.chatApprovedMessageId ?? null
+  // P8/H1/B1 fix, centralized (QA non-verdict 27981, Cybered NO-GO 27974 B1, Cybersec NO-GO
+  // 27965 H1): the fail-closed refusal for this category must live HERE, the one place that
+  // can resolve a row 'approved' via chatApprovedMessageId, not duplicated at each call site
+  // (the HTTP POST handler below, plus any OTHER in-process caller of this shared function --
+  // e.g. POST /api/fleet/import?apply=true, see the doc comment above) where per-call-site
+  // checks could drift apart again. Refuses BEFORE a row is even created: a caller probing
+  // this path learns nothing it can retry with.
+  if (chatApprovedMessageId != null && params.category === GPU_DRIVER_FAIL_CLOSED_CATEGORY && GPU_DRIVER_APPROVE_FAIL_CLOSED) {
+    throw new ApprovalFailClosedError(params.category)
+  }
   const id = randomUUID()
   const timeout_at = computeTimeoutAt(params.category, params.timeout_seconds)
   let approval = createApproval({
@@ -317,7 +337,6 @@ export function createAndNotifyApproval(params: {
     timeout_at,
     content_hash: params.content_hash ?? null,
   })
-  const chatApprovedMessageId = params.chatApprovedMessageId ?? null
   if (chatApprovedMessageId != null) {
     // Same resolve path as PATCH, so the row is indistinguishable from a
     // PATCH-approved one for every reader (e.g. the email-approval-gate).
@@ -406,28 +425,30 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       chatApprovedMessageId = owner_approved_message_id as number | string
     }
 
-    // H1 fix (2a80c6cb delta, CYBERSEC NO-GO 27965): a born-approved row via
-    // owner_approved_message_id is the same "approved" state the PATCH guard above hard-refuses
-    // for this category -- refuse it here too, before a row is even created, so a caller probing
-    // this path learns nothing it can retry with (no row, no id, nothing to consume).
-    if (chatApprovedMessageId != null && category.trim() === GPU_DRIVER_FAIL_CLOSED_CATEGORY && GPU_DRIVER_APPROVE_FAIL_CLOSED) {
-      logger.warn({ agent_id: agent_id.trim() },
-        'Approval POST hard-refused for gpu-driver-silent-install (owner_approved_message_id door, fail-closed pending card 3fb0ef97)')
-      json(res, {
-        error: 'Approving a gpu-driver-silent-install request is disabled until a non-forgeable approval channel ships (card 3fb0ef97). The GPU install switch stays off.',
-      }, 403)
-      return true
+    // H1/B1 fix (2a80c6cb delta, CYBERSEC NO-GO 27965 / CYBERED NO-GO 27974): the actual
+    // fail-closed check now lives inside createAndNotifyApproval itself (QA 27981's "one check
+    // at the data layer, not two call-site checks that can drift apart" simplification) -- this
+    // is just the HTTP-shape translation of that refusal into a 403.
+    let approval: Approval
+    try {
+      approval = createAndNotifyApproval({
+        agent_id: agent_id.trim(),
+        category: category.trim(),
+        action_description: action_description.trim(),
+        action_payload: typeof action_payload === 'string' ? action_payload : null,
+        timeout_seconds,
+        content_hash: typeof content_hash === 'string' ? content_hash : null,
+        chatApprovedMessageId,
+      })
+    } catch (err) {
+      if (err instanceof ApprovalFailClosedError) {
+        logger.warn({ agent_id: agent_id.trim() },
+          'Approval POST hard-refused for gpu-driver-silent-install (owner_approved_message_id door, fail-closed pending card 3fb0ef97)')
+        json(res, { error: err.message }, 403)
+        return true
+      }
+      throw err
     }
-
-    const approval = createAndNotifyApproval({
-      agent_id: agent_id.trim(),
-      category: category.trim(),
-      action_description: action_description.trim(),
-      action_payload: typeof action_payload === 'string' ? action_payload : null,
-      timeout_seconds,
-      content_hash: typeof content_hash === 'string' ? content_hash : null,
-      chatApprovedMessageId,
-    })
     json(res, approval, 201)
     return true
   }

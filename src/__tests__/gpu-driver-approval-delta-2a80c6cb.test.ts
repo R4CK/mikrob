@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   initDatabase, getDb, createApproval, resolveApproval, getApproval, consumeApproval, listApprovalEvents,
 } from '../db.js'
-import { tryHandleApprovals, ONESHOT_CONSUME_ALLOWED_CATEGORIES, oneshotConsumeWindowSeconds } from '../web/routes/approvals.js'
+import {
+  tryHandleApprovals, ONESHOT_CONSUME_ALLOWED_CATEGORIES, oneshotConsumeWindowSeconds,
+  createAndNotifyApproval, ApprovalFailClosedError,
+} from '../web/routes/approvals.js'
 import type { RouteContext } from '../web/routes/types.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -254,5 +257,31 @@ describe('P8 (CYBERED NO-GO 27872): approving gpu-driver-silent-install is hard 
     await tryHandleApprovals(ctx)
     expect(out.status).toBe(201)
     expect(out.body.status).toBe('approved')
+  })
+
+  // Cybered B1 (comment 27974): "the refusal has to cover every path that can produce
+  // status=approved for this category ... or live in resolveApproval itself" -- the HTTP POST
+  // handler is not the ONLY caller of createAndNotifyApproval (its own doc comment names POST
+  // /api/fleet/import?apply=true as a second one). Exercising the shared function DIRECTLY,
+  // bypassing the route entirely, proves the guard holds there too -- not just behind the one
+  // route this round happened to test.
+  it('H1 structural: createAndNotifyApproval itself refuses for this category, for ANY caller -- not only the HTTP POST route', () => {
+    expect(() => createAndNotifyApproval({
+      agent_id: 'some-other-caller',
+      category: GPU,
+      action_description: 'install newer driver',
+      chatApprovedMessageId: 9999,
+    })).toThrow(ApprovalFailClosedError)
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM approvals WHERE category = ?').get(GPU) as { n: number }).toEqual({ n: 0 })
+  })
+
+  it('H1 structural control: a different category is unaffected by the same direct call', () => {
+    const approval = createAndNotifyApproval({
+      agent_id: 'some-other-caller',
+      category: 'email_send',
+      action_description: 'send mail',
+      chatApprovedMessageId: 9998,
+    })
+    expect(approval.status).toBe('approved')
   })
 })
