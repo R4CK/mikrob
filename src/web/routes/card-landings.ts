@@ -1,5 +1,6 @@
 import { recordCardLanding, listCardLandings } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
+import { verifyLandedOnDefaultBranch } from '../../card-landing-ancestry.js'
 import type { RouteContext } from './types.js'
 
 // Card a8a83d48 (F2.1.2): the HTTP surface the land scripts (marveen-land.sh, mopsion-land.sh)
@@ -7,6 +8,11 @@ import type { RouteContext } from './types.js'
 // the same convention every other land-script write uses (kanban-comment-lib.sh) -- the Node
 // process holds the live WAL connection, a shell script writing around it risks lock contention
 // on the one table every card's done-guard (F2.2) will read on every close.
+//
+// MikroB rescope (comment 27940 point 6): this endpoint does NOT trust the caller's claim that a
+// push landed -- it independently re-verifies merge_sha against origin/<default branch> itself
+// (verifyLandedOnDefaultBranch) before writing. card_landings feeds F2.2's done-guard, so a row
+// writable by just asserting a sha would let anyone fabricate a "landed" record for any card.
 export async function tryHandleCardLandings(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -28,6 +34,11 @@ export async function tryHandleCardLandings(ctx: RouteContext): Promise<boolean>
       typeof landed_by !== 'string' || !landed_by
     ) {
       json(res, { error: 'card_id, work_sha, merge_sha, repo, landed_by are all required strings' }, 400)
+      return true
+    }
+    const verified = await verifyLandedOnDefaultBranch(repo, merge_sha)
+    if (!verified) {
+      json(res, { error: `merge_sha is not a verified ancestor of origin's default branch for repo "${repo}"` }, 422)
       return true
     }
     try {
