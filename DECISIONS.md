@@ -22941,3 +22941,25 @@ nem kap KgSecretError catch-et -- kulon problema, kulon kartyara, ha gyakorlatba
 
 **Ki dontott:** backend3 (kartya 80ab5067), 4ecd75d0 WhiteHat GO 23524 LOW leletei alapjan. Gate:
 QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta: QA FAIL 28436, a CONFUSABLES tablazat megszuntetve
+
+**Dontes:** a kanban-assignee-guard.ts-ben levo kezzel irt CONFUSABLES fold-tablazat (kb. 25
+Cirill/Gorog/Armeny/small-caps bejegyzes) csak a kartya altal eredetileg nevezett ket hasonmast
+fedte -- QA Cirill п (U+043F) es д (U+0434) hasonmasokkal demonstralta, hogy MINDEN tablazatban
+nem szereplo hasonmas atmegy. A javitas NEM egy bovebb tablazat: a CONFUSABLES tablazat TELJESEN
+megszunt. Uj export, `hasNonAsciiIdentityResidue`: ha az NFKC + betu/szam-csak szures UTAN
+BARMILYEN nem-ASCII karakter marad, az identitas fail-closed modon mindig egyezesnek (forbidden/
+ineligible) szamit, fuggetlenul attol, melyik konkret nevet probalja hasonmasolni -- nincs tobbe
+karakterenkenti tablazat, amit minden uj hasonmas-felfedezessel bovíteni kellene. Minden valodi,
+ebben a flottaban osszehasonlitott nev (ugynoknevek, "mikrob", GATE_AGENT_NAMES/
+GENERATED_COMMENT_AUTHORS tagjai) maga is sima ASCII, tehat egy nem-ASCII maradek sosem lehet
+hamis riasztas valodi nevre.
+
+Teszt (piros 861e426ba-n, zold itt): QA pontos hasonmasai (Cirill п `gemini-orch-review`-ban,
+Cirill д `cybered`-ben) plusz egy Gorog ρ (`gate-pretriage`) es egy Armeny օ (`local-llm`)
+hasonmas -- negy kulonbozo irasrendszer, nem csak a kartya altal eredetileg nevezett ketto. Minden
+masik hivo (db.ts, a teljes kg-* csomagcsalad) ellenorizve, valtozatlan.
+
+**Ki dontott:** backend3 (kartya 80ab5067), QA FAIL 28436 + MikroB 16656 dontese alapjan. Gate:
+QA + Cybersec.
