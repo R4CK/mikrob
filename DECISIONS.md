@@ -22882,3 +22882,25 @@ Also folds in Cybered's GO 28044 INFO finding: the WhiteHat focus line ("every f
 - Both fixes verified with `bash -n` + `--selftest` (14/14 PASS) before and after each mutant reversion.
 
 **Ki döntött:** DevO (fullstack), card 6ff6d1dc fix round, Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- ollama-boot-restore.sh starts via the systemd unit, not a bare nohup (card 085444e9)
+
+RedHat F-RH4 (39b958a4 comment 19024): `scripts/ollama-boot-restore.sh`'s restart path still ran
+`setsid nohup ollama serve` even though `~/.config/systemd/user/ollama.service` now exists (card
+8192b9ee) with the dxgkrnl mitigation drop-in (OLLAMA_VULKAN=0, card 53fffd74) and the
+flash-attention/KV-cache tuning (OLLAMA_FLASH_ATTENTION=1, OLLAMA_KV_CACHE_TYPE=q8_0) -- a bare
+nohup bypasses the unit's `Environment=` lines and its drop-in entirely, so a boot-restored Ollama
+ran without the dxgkrnl mitigation.
+
+Fix: default restart command is now `systemctl --user start "$UNIT_NAME"` (unit name configurable
+via `OLLAMA_RESTORE_UNIT_NAME`, default `ollama`) -- a single source for the environment, the unit
+itself, instead of duplicating the vars in the script. Added a hermetic regression test pinning the
+DRYRUN log line against the default command (red on the old bare-nohup default, green on the fix).
+
+Measured on a disposable test unit (`ollama-boot-restore-selftest.service`, NOT the live model):
+started via the exact same `systemctl --user start` call the fixed script issues, then
+`/proc/<pid>/environ` showed `OLLAMA_VULKAN=0`, `OLLAMA_FLASH_ATTENTION=1`,
+`OLLAMA_KV_CACHE_TYPE=q8_0` all present; test unit stopped and removed afterward; the live
+`ollama.service` (PID 421) was never stopped and kept answering `/api/tags` throughout.
+
+**Ki döntött:** DevO (fullstack), card 085444e9, Gate-SHA: see REVIEW comment.

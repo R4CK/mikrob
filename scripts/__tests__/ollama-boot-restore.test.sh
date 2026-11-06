@@ -143,6 +143,22 @@ else
   fail "all-clear case did not reach the restart step: $out"
 fi
 
+# --- Card 085444e9 (RedHat F-RH4, 39b958a4 comment 19024): the default restart path must go
+# through the systemd --user unit, not a bare `nohup ollama serve` -- a bare nohup skips the
+# unit's Environment= lines (OLLAMA_VULKAN=0, flash-attention/KV-cache) entirely. Pins the DEFAULT
+# command (no OLLAMA_RESTORE_START_CMD_OVERRIDE set) via the DRYRUN log line: RED on the old
+# `setsid nohup ollama serve` default, GREEN once it reads `systemctl --user start ollama`.
+if echo "$out" | grep -q 'would run: systemctl --user start ollama'; then
+  pass "default restart command goes through the systemd --user unit (single env source)"
+else
+  fail "default restart command does not go through the unit -- env (OLLAMA_VULKAN=0, flash/KV) would come from nowhere: $out"
+fi
+if echo "$out" | grep -q 'nohup ollama serve'; then
+  fail "default restart command still bypasses the unit with a bare nohup: $out"
+else
+  pass "default restart command no longer bypasses the unit with a bare nohup"
+fi
+
 # --- Guard 4, REAL journalctl code path (RedHat F-RH2, card 39b958a4, comment 19024) -------------
 # Everything above drives dxg_seen_this_boot() through the OLLAMA_RESTORE_DMESG_OVERRIDE seam, which
 # never executes the script's actual `journalctl -k -b 0 2>/dev/null` branch -- that production
