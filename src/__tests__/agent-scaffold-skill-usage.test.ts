@@ -188,4 +188,50 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
       expect(new Set(names).size, `${role} has duplicate skill rows`).toBe(names.length)
     }
   })
+
+  // Card 3bf6a01a, MikroB 16423 "24118 addendum": the "Minden verdikt" row (gate-worktree-pattern
+  // + atomic-fact-gate-protocol, plus redhat-gate-pattern for RedHat and
+  // sp-verification-before-completion for QA) was measured MISSING from all three generated
+  // family tables (gate-worktree-pattern=0, atomic-fact-gate-protocol=0 in all 5 live
+  // agents/*/CLAUDE.md), and nothing pinned it -- reverting the 4-file fix left 59/59 tests green.
+  // These assertions pin the row at the source-function level, the same technique the backend
+  // family test above (line ~103) already uses for its own curated table.
+  it('QA/WhiteHat/RedHat family tables each carry a "Minden verdikt" row naming their gate skills', () => {
+    const qaFn = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildQaFamilySkillUsageBody('),
+      SCAFFOLD.indexOf('function buildWhiteHatFamilySkillUsageBody('),
+    )
+    expect(qaFn).toMatch(/Minden verdikt.*gate-worktree-pattern.*atomic-fact-gate-protocol.*sp-verification-before-completion/)
+
+    const whiteHatFn = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildWhiteHatFamilySkillUsageBody('),
+      SCAFFOLD.indexOf('function buildRedHatFamilySkillUsageBody('),
+    )
+    expect(whiteHatFn).toMatch(/Minden verdikt.*gate-worktree-pattern.*atomic-fact-gate-protocol/)
+
+    const redHatFn = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildRedHatFamilySkillUsageBody('),
+      SCAFFOLD.indexOf('function buildBackendFamilySkillUsageBody('),
+    )
+    expect(redHatFn).toMatch(/Minden verdikt.*gate-worktree-pattern.*redhat-gate-pattern.*atomic-fact-gate-protocol/)
+  })
+
+  // Peti-approved addendum 24118: ponytail in the QA simplicity row, and a store/repomix.sh row
+  // in all three gate families -- measured 0 in all 5 live agents/*/CLAUDE.md before this fix.
+  it('QA simplicity row carries ponytail, and all three gate families carry a repomix.sh row', () => {
+    const qaFn = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildQaFamilySkillUsageBody('),
+      SCAFFOLD.indexOf('function buildWhiteHatFamilySkillUsageBody('),
+    )
+    expect(qaFn).toMatch(/Minden gate.*karpathy-guidelines.*ponytail/)
+
+    for (const [start, end] of [
+      ['function buildQaFamilySkillUsageBody(', 'function buildWhiteHatFamilySkillUsageBody('],
+      ['function buildWhiteHatFamilySkillUsageBody(', 'function buildRedHatFamilySkillUsageBody('],
+      ['function buildRedHatFamilySkillUsageBody(', 'function buildBackendFamilySkillUsageBody('],
+    ] as const) {
+      const fn = SCAFFOLD.slice(SCAFFOLD.indexOf(start), SCAFFOLD.indexOf(end))
+      expect(fn, `${start} is missing the repomix.sh row`).toContain('store/repomix.sh')
+    }
+  })
 })

@@ -3390,12 +3390,14 @@ const REDHAT_FAMILY = new Set(['cybered'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
-    '| Minden gate | `qa-test-strategy` + `karpathy-guidelines` (Simplicity-elv) |',
+    '| Minden verdikt | `gate-worktree-pattern`, `atomic-fact-gate-protocol`, `sp-verification-before-completion` |',
+    '| Minden gate | `qa-test-strategy` + `karpathy-guidelines`, `ponytail` (Simplicity-elv) |',
     '| Funkcionális teszt, happy path + edge case | `qa-test-strategy` |',
     '| User-facing (böngészőben kattints végig) | `browser-testing-with-devtools` |',
     '| Regresszió, bukó teszt, root-cause | `sp-systematic-debugging` |',
     '| Bizonyíték kész-nyilatkozat előtt | `sp-verification-before-completion` |',
     '| Kockázatos döntés, kétes finding | `doubt-driven-development` |',
+    '| Repo-csomagolás AI-elemzéshez | `store/repomix.sh` |',
   ]
   return [
     '## Skill-használat: feladattípus -> skill (generált, kártya 3bf6a01a)',
@@ -3410,14 +3412,19 @@ function buildQaFamilySkillUsageBody(): string {
 
 function buildWhiteHatFamilySkillUsageBody(): string {
   const rows = [
+    '| Minden verdikt | `gate-worktree-pattern`, `atomic-fact-gate-protocol` |',
     '| Minden gate | `white-hat-security-testing` + `defensive-security-analysis` (önellenőrzés) |',
     '| Fenyegetés-modell a designra | `threat-modeling` |',
     '| Auth/RBAC/trust-boundary | `rbac-authz-matrix-audit` |',
     '| AI/LLM/agent biztonsági teszt | `ai-security-testing` |',
     '| Cloud/konténer misconfig | `cloud-container-security` |',
     '| Ellátási lánc, dependency tamper | `supplychainsecurity` |',
+    '| Skill/hook/MCP átvétel | `skill-security-auditor` |',
+    '| Konténer, VPS, futtatókörnyezet | `seniorsecopsengineer` |',
+    '| Async authz/audit fail-open | `async-refactor-fail-open-guard` |',
     '| Aktív védelem tervezése | `active-defense-design` |',
     '| Kockázatos döntés | `doubt-driven-development` |',
+    '| Repo-csomagolás AI-elemzéshez | `store/repomix.sh` |',
   ]
   return [
     '## Skill-használat: feladattípus -> skill (generált, kártya 3bf6a01a)',
@@ -3432,6 +3439,7 @@ function buildWhiteHatFamilySkillUsageBody(): string {
 
 function buildRedHatFamilySkillUsageBody(): string {
   const rows = [
+    '| Minden verdikt | `gate-worktree-pattern`, `redhat-gate-pattern`, `atomic-fact-gate-protocol` |',
     '| Minden gate | `redteam` + friss `WebSearch` CVE/ATT&CK (KÖTELEZŐ minden gate előtt) |',
     '| Kill-chain emuláció, MITRE ATT&CK | `redteam` |',
     '| AI/LLM adverzariális | `ai-security-testing` |',
@@ -3439,6 +3447,7 @@ function buildRedHatFamilySkillUsageBody(): string {
     '| Ellátási lánc tamper | `supplychainsecurity` |',
     '| Aktív incidens, assume-breach | `incident-response` |',
     '| Kockázatos döntés | `doubt-driven-development` |',
+    '| Repo-csomagolás AI-elemzéshez | `store/repomix.sh` |',
   ]
   return [
     '## Skill-használat: feladattípus -> skill (generált, kártya 3bf6a01a)',
