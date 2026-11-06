@@ -272,6 +272,11 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
     expect(wizardRow).toBeDefined()
     expect(wizardRow).toContain('DevO')
     expect(wizardRow).not.toMatch(/Peti futtatja|a felhasználó futtatja/)
+    // mikrob msg_id:16765: the wizard row must also carry the truly-human-only clause --
+    // DevO names a 2FA/third-party-login step explicitly in a request, never hands over a
+    // runnable script for it.
+    expect(wizardRow).toMatch(/2FA.*böngészős bejelentkezés harmadik félnél/)
+    expect(wizardRow).toMatch(/explicit megnevezi egy kérésben/)
   })
 
   it('marks a known self-claimed-but-unreferenced skill as gap for its role', () => {
