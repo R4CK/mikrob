@@ -1023,6 +1023,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectEgressGate(existing)
   injectGitProtectGuard(existing)
   injectNpmProtectGuard(existing)
+  injectDbWriteGuard(existing)
   injectSymlinkedNodeModulesGuard(existing)
   injectAgentKeySecretGuard(existing)
   injectBlastRadiusGuard(existing)
@@ -1716,6 +1717,54 @@ export function injectNpmProtectGuard(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('npm-protect-guard.py')),
     entry,
   ]
+}
+
+// Idempotently wire the db-write-guard PreToolUse hook (card c1766c6c, 7391f09a follow-up): blocks
+// a direct sqlite3/python3-sqlite3 INSERT/UPDATE/DELETE/REPLACE (or more destructive verb) against
+// store/claudeclaw.db's dashboard_users/auth_sessions/approvals tables -- the dashboard's own
+// auth/session/approval state, which the dashboard API hashes, validates and audit-logs on write; a
+// raw sqlite write bypasses all of that. Narrow, fork-shaped (same pattern as its git/npm siblings),
+// deliberately NOT upstream's db-write-gate.mjs (DECISIONS.md, 7391f09a REJECT: that file needs this
+// fork's self-pace-gate.mjs to carry a multi-surface-deny engine it does not have). Applied to EVERY
+// agent, main included, for the same reason as git-protect-guard: the database is shared.
+export function injectDbWriteGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-guard.py'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('db-write-guard.py')),
+    entry,
+  ]
+}
+
+// Same reasoning as ensureAgentKeySecretGuard: injectDbWriteGuard alone reaches an agent only
+// when its settings.json is regenerated, so this runs in the startup migration loop to arm
+// already-provisioned agents on a dashboard restart.
+export function ensureDbWriteGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-guard.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('db-write-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectDbWriteGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Idempotently wire the agent-key-secret-guard PreToolUse hook (card 9c7ad372, WhiteHat2 O5 on
@@ -3404,6 +3453,13 @@ const REDHAT_FAMILY = new Set(['cybered'])
 // family) was too broad to surface the actually-used task types. Curated table mirrors the
 // BACKEND_FAMILY pattern.
 const FRONTEND_FAMILY = new Set(['fron-ted', 'fron-teddy'])
+// Card 219b07ae: DevO (internal id unchanged: fullstack) gets infra/SRE + API design and wiring
+// as Core (Peti Telegram 12201+12203: "DevO feladatai közé kerüljenek az API tervezések,
+// bekötések a legfrissebb interneten elérhető információk alapján"). Measured baseline (MikroB
+// Telegram 12201, 163 REVIEW / 30 days) found the infra skills (platform-infrastructure,
+// observability-and-instrumentation, quota-management, loop-engineering, skill-management,
+// deprecation-and-migration) at 0 uses; curated table mirrors the BACKEND_FAMILY pattern.
+const DEVO_FAMILY = new Set(['fullstack'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
@@ -3536,6 +3592,43 @@ function buildFrontendFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
+// Exported for test rendering (card 219b07ae, WhiteHat2 F4): callers assert on this function's
+// actual return value instead of slicing the source text, so a commented-out row shows up as a
+// missing row in the rendered table, not as a still-matching substring.
+export function buildDevOFamilySkillUsageBody(): string {
+  const rows = [
+    '| Minden változtatás | `karpathy-guidelines`, `ponytail`, `karpathycoder` |',
+    '| Több lépéses, kézi jellegű üzemeltetési művelet (credential/secret beállítás, külső dashboard, egyszeri cutover, pl. 7dde8ebc token-rotálás) | `wizard`: a generált lépéssort DevO (vagy MikroB) futtatja, a felhasználó nem; a varázsló soha nem ír ki és nem naplóz titkot; ami valóban csak emberi beavatkozással megy (2FA, böngészős bejelentkezés harmadik félnél), azt DevO explicit megnevezi egy kérésben, nem ad át futtatandó szkriptet; a visszafordíthatatlan/kifelé ható lépés jóváhagyása a felhasználóé marad |',
+    '| API-tervezés (végpont, szerződés, verziózás) | `api-and-interface-design`, `contract-first-codev` (BE+FE pár esetén) |',
+    '| Külső API / SDK bekötése | `injected-port-adapters`, context7 + quarantine-reader friss doksi, `fork-adopt-investigation` (hivatalos SDK előbb, 10. szabály) |',
+    '| Végpont bővítése | `be-endpoint-param-extension` |',
+    '| Titkos adattal író végpont, token/e-mail | `guarded-write-endpoint-token-email`, `defensive-security-analysis` |',
+    '| OAuth / külső auth bekötés | `oauth-callback-jwt-wiring`, `threat-modeling` |',
+    '| Frissítés, rollback, checkpoint | `update-safety` |',
+    '| Landolás, merge, push | `gate-worktree-pattern`, `sp-finishing-a-development-branch`, `wsl-git-push-deploy-key` |',
+    '| CI, minőségi kapu, fleet-test | `ci-cd-and-automation` |',
+    '| Futtatókörnyezet (systemd, WSL, tmux, cron) | `platform-infrastructure` |',
+    '| Megfigyelhetőség, riasztás, SLO | `observability-and-instrumentation` |',
+    '| Incidens, élő hiba | `incident-response`, `sp-systematic-debugging` |',
+    '| Konténer, VPS, sandbox | `cloud-container-security` |',
+    '| Függőség, külső eszköz, skill-átvétel | `supplychainsecurity`, `skill-security-auditor`, `skill-management` |',
+    '| Csatorna-plugin hibák | `channel-plugin-duplicate-socket` |',
+    '| Kvóta, GPU, helyi LLM | `quota-management`, `local-llm-offload` |',
+    '| Ismétlődő üzemeltetési feladat | `loop-engineering` |',
+    '| Őr- vagy regressziós teszt | `guards-that-pin-behaviour` |',
+    '| Migráció, kivezetés | `deprecation-and-migration` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 219b07ae)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3548,6 +3641,7 @@ function buildSkillUsageBody(name: string): string | null {
   if (WHITEHAT_FAMILY.has(name)) return buildWhiteHatFamilySkillUsageBody()
   if (REDHAT_FAMILY.has(name)) return buildRedHatFamilySkillUsageBody()
   if (FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()
+  if (DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null

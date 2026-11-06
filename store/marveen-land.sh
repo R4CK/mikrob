@@ -1071,14 +1071,25 @@ Designated: $_designated_note"
 land_with_retry() {
   local agent="$1" dry="$2" branch_override="${3:-}" attempt=1 rc
   local disp_branch="${branch_override:-agent/${agent}/work}"
+  # card 88b67fb4, requirement 2: journal this run (started/heartbeat/finished) so a killed process
+  # (fullstack's land run that nobody saw die) shows up as STALE later instead of leaving no trace
+  # at all. Best-effort: a journal write failure must never fail or block a landing.
+  local _ljd _run_id
+  _ljd="$(dirname "$0")/land-run-journal.sh"
+  _run_id="$(bash "$_ljd" start marveen-land.sh "$agent" "${LAND_CARD:--}" 2>/dev/null || true)"
   while :; do
     land_one "$agent" "$dry" "$branch_override"; rc=$?
-    [ "$rc" -eq 5 ] || return "$rc"
+    if [ "$rc" -ne 5 ]; then
+      [ -n "$_run_id" ] && bash "$_ljd" finish "$_run_id" "$rc" >/dev/null 2>&1 || true
+      return "$rc"
+    fi
     if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
       echo "$agent: REFUSED -- lost the push race $attempt time(s) in a row; origin/$DEFAULT_BRANCH keeps moving during the merge+test window. Nothing pushed; $disp_branch is untouched."
+      [ -n "$_run_id" ] && bash "$_ljd" finish "$_run_id" 4 "lost push race $attempt times" >/dev/null 2>&1 || true
       return 4
     fi
     attempt=$((attempt+1))
+    [ -n "$_run_id" ] && bash "$_ljd" heartbeat "$_run_id" >/dev/null 2>&1 || true
     say "$agent: another agent landed during the merge+test window -- re-merging onto the new origin/$DEFAULT_BRANCH and verifying again (attempt $attempt/$MAX_ATTEMPTS)"
   done
 }

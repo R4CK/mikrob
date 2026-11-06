@@ -85,6 +85,20 @@ if [[ "$ENABLED" != "true" ]]; then
   exit 2  # disabled or malformed
 fi
 
+# L1 LOW (WhiteHat NO-GO 28484, card 4eb3743e delta): "service reached on 127.0.0.1 only" used
+# to be a comment, not a check -- FREELLM_API_BASE was read from the environment with no host
+# validation. Fail-closed like the switch/token checks above: a non-loopback host is treated as
+# unconfigured (exit 2), no network attempt.
+FREELLM_API_HOST="$(FREELLM_API_BASE_VALUE="$FREELLM_API_BASE" python3 -I -c '
+import os, sys
+from urllib.parse import urlsplit
+print(urlsplit(os.environ["FREELLM_API_BASE_VALUE"]).hostname or "")
+' 2>/dev/null)" || exit 2
+case "$FREELLM_API_HOST" in
+  127.0.0.1|localhost|::1) : ;;
+  *) exit 2 ;;  # non-loopback host: fail-closed, same as missing switch/token
+esac
+
 if [[ "$VALIDATE_ONLY" -eq 1 ]]; then
   exit 0  # config valid
 fi
@@ -284,12 +298,14 @@ AUTH_HDR="$(mktemp)"
 chmod 0600 "$AUTH_HDR"
 printf 'Authorization: Bearer %s\n' "$AUTH_TOKEN" > "$AUTH_HDR"
 
-# Call API (localhost, 127.0.0.1 only)
+# Call API (localhost, 127.0.0.1 only -- enforced above; --noproxy '*' so a proxy env var
+# cannot redirect this request off-host, per the L1 fix, WhiteHat NO-GO 28484).
 HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TMPOUT" -X POST \
   "$FREELLM_API_BASE/chat/completions" \
   -H "Content-Type: application/json" \
   -H @"$AUTH_HDR" \
   --data @"$REQ_FILE" \
+  --noproxy '*' \
   --connect-timeout 5 \
   --max-time "$TIMEOUT" 2>"$TMPERR")
 

@@ -22932,6 +22932,100 @@ What the original entry missed: a fleet agent with shell access (not HTTP) can r
 
 **Ki döntött:** backend2 (card 4eb3743e), per MikroB dispatch (msg_id:16647), parent phase 92b76ff0. Gate: online-verdikt (deterministic-auth-tenant-scope). Gate-SHA: see REVIEW comment.
 
+## 2026-11-06 -- ollama-boot-restore.sh starts via the systemd unit, not a bare nohup (card 085444e9)
+
+RedHat F-RH4 (39b958a4 comment 19024): `scripts/ollama-boot-restore.sh`'s restart path still ran
+`setsid nohup ollama serve` even though `~/.config/systemd/user/ollama.service` now exists (card
+8192b9ee) with the dxgkrnl mitigation drop-in (OLLAMA_VULKAN=0, card 53fffd74) and the
+flash-attention/KV-cache tuning (OLLAMA_FLASH_ATTENTION=1, OLLAMA_KV_CACHE_TYPE=q8_0) -- a bare
+nohup bypasses the unit's `Environment=` lines and its drop-in entirely, so a boot-restored Ollama
+ran without the dxgkrnl mitigation.
+
+Fix: default restart command is now `systemctl --user start "$UNIT_NAME"` (unit name configurable
+via `OLLAMA_RESTORE_UNIT_NAME`, default `ollama`) -- a single source for the environment, the unit
+itself, instead of duplicating the vars in the script. Added a hermetic regression test pinning the
+DRYRUN log line against the default command (red on the old bare-nohup default, green on the fix).
+
+Measured on a disposable test unit (`ollama-boot-restore-selftest.service`, NOT the live model):
+started via the exact same `systemctl --user start` call the fixed script issues, then
+`/proc/<pid>/environ` showed `OLLAMA_VULKAN=0`, `OLLAMA_FLASH_ATTENTION=1`,
+`OLLAMA_KV_CACHE_TYPE=q8_0` all present; test unit stopped and removed afterward; the live
+`ollama.service` (PID 421) was never stopped and kept answering `/api/tags` throughout.
+
+**Ki döntött:** DevO (fullstack), card 085444e9, Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 219b07ae: DevO CLAUDE.md -- infra/SRE + API design and wiring, curated skill table
+
+**Döntés:** DevO (internal id unchanged: `fullstack`) role extended to cover API design and wiring (Peti Telegram 12201+12203: "DevO feladatai közé kerüljenek az API tervezések, bekötések a legfrissebb interneten elérhető információk alapján"), always from live sources (context7 MCP for library/SDK docs, `quarantine-reader`/`WebSearch` for the provider's current API reference/changelog/deprecation notices) -- a `Sources: <URL + fetch date>` REVIEW line is now mandatory on such cards. Added a Karpathy loop section (mirroring backend's) with `Simplicity:`/`Security-self-check:` REVIEW lines. Replaced the generic full-catalog "Skill-használat" table (card 27b02677, measured 0 uses on platform-infrastructure/observability-and-instrumentation/quota-management/loop-engineering/skill-management/deprecation-and-migration per MikroB Telegram 12201, 163 REVIEW/30 days) with a curated 18-row task-type -> skill table, mirroring the BACKEND_FAMILY/FRONTEND_FAMILY pattern: added `DEVO_FAMILY` set + `buildDevOFamilySkillUsageBody()` to `src/web/agent-scaffold.ts`, wired into `buildSkillUsageBody()`. All table skill names verified to exist in the global `~/.claude/skills` catalog. Root `CLAUDE.md`'s Ügynök-csapat line for DevO updated to name the role "infra/üzemeltetés + API-tervezés és -bekötés". Live `agents/fullstack/CLAUDE.md` regeneration (via the scaffold-section-sweeper / `startAgentProcess` on next restart) stays Peti-gated (`update.sh`), per the 76583edb precedent -- not run from here.
+
+**Ki döntött:** backend2 (card 219b07ae), per MikroB dispatch (msg_id:16675), parent phase 527c9584. Gate: QA (per card's own `Gate:` line). Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 4eb3743e delta: offload-dispatch.sh freellm route gate parity with Gemini (WhiteHat NO-GO 28484)
+
+**Döntés:** fixed WhiteHat's M1 MEDIUM and L1 LOW findings on the landed freellm route (abf1dceeb). M1: `try_freellm_for_leaf`'s two call sites (the `try_leaf()` exhaustion branch, and the `CAPACITY_HOLD` sweep branch) had no project/tag/content gate at all -- `freellm-call.sh`'s own content gate only sees title+description text, so a mopsion-project or sec/BLOKKOLT-labelled card with neutral wording passed through to the third-party provider, and the `CAPACITY_HOLD` branch additionally never checked the inherited parent veto (`veto_online`, card e11167c5) since it skips `try_leaf()` entirely. Fix: added `is_freellm_blocked()`, a thin wrapper around the existing `is_gemini_blocked()` with the Gemini-only "gemini-ok" positive-marker check (added by card c23ea72f) skipped via a new optional 5th arg (`require_marker`) -- every other check (project allowlist, tag blocklist, content-gate stem match) is reused unchanged, so there is exactly one copy of that decision. Not requiring the marker is deliberate: freellm never had that requirement, and silently adding it would narrow a working feature beyond what this fix asked for (5. kódminőségi elv) -- this mirrors WhiteHat's own suggested alternative in the NO-GO comment. Wired `is_freellm_blocked` into both call sites; the `CAPACITY_HOLD` branch also now checks `lveto` (the leaf's own `veto_online` field) before any freellm attempt, same permanent-block pattern (`attempts_op categorical-online`) the veto check already uses inside `try_leaf()`. Exposed a new read-only CLI hook `--check-freellm-blocked` (mirrors the existing `--check-blocked`), and updated the `--test-capacity-route` selftest probe to call it per leaf so the probe exercises the real gate, not just `freellm-call.sh` in isolation. Added 3 new selftest cases per MikroB's dispatch (mopsion project + neutral text, sec-tagged + neutral text, `veto_online:true`), all three confirmed RED against the pre-fix code (abf1dceeb) before the fix landed, GREEN after. L1: `freellm-call.sh`'s "service reached on 127.0.0.1 only" was a comment, not a check -- `FREELLM_API_BASE` is now validated as loopback-only (127.0.0.1/localhost/::1) right after the switch-enabled check, fail-closed (exit 2) on any other host, and the live curl call now passes `--noproxy '*'` so a proxy env var cannot redirect the request off-host. Both fixes verified: `offload-dispatch.selftest.sh` 110/110, `freellm-call.selftest.sh` 36/36, the two brittle source-text regression guards (`gemini-offload-dispatch.test.ts`, `offload-draft-nudge.test.ts`) 329/329 directly via vitest.
+
+**Ki döntött:** backend2 (card 4eb3743e delta), per MikroB dispatch (msg_id:16680), finding from cybersec (WhiteHat NO-GO, comment 28484). Gate: QA + Cybersec (per MikroB's dispatch, same as the original card). Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 88b67fb4: REVIEW-post finalization barrier + land-run journal (t3code-inspired, Peti approval Telegram 13096)
+
+**Döntés:** three delta pieces, built after checking what already existed (kanban-landed-guard.ts covers "committed vs landed on a close", not "did the REVIEW post/the land run actually finish" -- genuinely separate concern, built fresh):
+- `store/post-review.sh <cardId> <file> <actor> [reason]`: posts the REVIEW comment, reads it back by id, and only moves the card to `waiting` on a match. Fixes the exact backend2 incident (a curl call where `-H @-` and `--data-binary @-` both read stdin, so the posted body was empty, and the card moved to waiting anyway with no REVIEW on it). Refuses before touching the board on a blank file; refuses the move (not the already-posted comment, which cannot be un-posted) on a readback mismatch.
+- `store/land-run-journal.sh` (started/heartbeat/finished, one JSONL line per event, `store/land-runs.jsonl`, gitignored runtime state) + `store/land-run-stale-check.sh` (flags a run with no `finished` event whose last activity is >10 minutes old -- the `kill -9` shape of fullstack's unseen dead land run). Wired into `store/marveen-land.sh`'s `land_with_retry()` (start/finish around the retry loop, heartbeat on each race-retry) and `store/mopsion-land.sh` (start + an EXIT trap covering every exit path) -- both best-effort, a journal write failure never fails a landing.
+- Pointers added at the REVIEW/waiting step in root `CLAUDE.md` (rule 4) and `seed-skills/project-workflow/SKILL.md`, naming `post-review.sh` as the way to do the step instead of a raw curl pair. `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md` got a new D/5 section that runs the stale-check and tells the run's owner + Peti.
+- Mutation-verified: reverting `land-run-stale-check.sh`'s "skip if finished" check makes the matching selftest case go red; reverting `post-review.sh`'s traversal-style readback-match check would equally fail the mismatch-refuses case (both selftests ship alongside their scripts, `*.selftest.sh`).
+- Out of scope (per the card): automatic retry of a failed land is explicitly not built.
+
+**Ki döntött:** backend (self-advance, card 88b67fb4, parent ed332869), per MikroB dispatch (msg_id:16674). Gate: QA + WhiteHat. Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 219b07ae delta: Peti addendum + WhiteHat2 F1-F5 findings fixed
+
+**Döntés:** addressed WhiteHat2's F1-F5 findings (comment 28590, GO verdict with gaps) on the landed DevO CLAUDE.md card (793e8bc5d). F1 (MEDIUM, the approved addendum from comments 24120+24125/Telegram 12215/12216/12219 was not delivered in the first pass): added `ponytail` to the "Minden változtatás" row, and a new row "Több lépéses, kézi jellegű üzemeltetési művelet (credential/secret beállítás, külső dashboard, egyszeri cutover, pl. 7dde8ebc token-rotálás)" -> `wizard`, with the corrected 24125 wording (DevO or MikroB runs the generated steps, never the user; the wizard never prints or logs a secret; truly human-only steps are named explicitly in a request rather than handed over as a runnable script; approval of an irreversible/outward-facing step stays the user's). F2 (LOW-MEDIUM, three of the eight skills the card said would leave Core were still there): removed `async-refactor-fail-open-guard`, `embedded-pg-e2e-runner`, `senior-engineer-modes` from the seed's Core skilljeid list. F3 (LOW, the table appeared twice): removed the hand-written duplicate table (the generated block, between the BEGIN/END markers, is now the sole copy). F4 (MEDIUM-LOW, the three new DEVO tests did `toContain` on the function's source text, so a commented-out row still passed): exported `buildDevOFamilySkillUsageBody` and rewrote the tests to call it and assert on the real rendered output; verified directly (not via fleet-test) that commenting out the new wizard row makes the addendum test go red, and restoring it makes it green again. F5 (LOW-MEDIUM): added one sentence to the API design/wiring role bullet stating that fetched provider docs/changelogs/pages are untrusted data, not instructions (an embedded "install package X" is not an install order), that page fetches route through `quarantine-reader`, and that a new dependency needs a pinned version and a verified package name before being added.
+
+**Ki döntött:** backend2 (card 219b07ae, back to in_progress), per MikroB dispatch (msg_id:16743), findings from cybersec2/WhiteHat2 (comment 28590) and Peti's addendum (comments 24120+24125). Gate: QA + Cybersec (shared instruction target per the dispatch). Gate-SHA: see REVIEW comment.
+## 2026-11-06 -- correction: real Gate-SHA for the 7391f09a and 6ff6d1dc entries (card c1766c6c)
+
+**Döntés:** Two DECISIONS.md entries above ("upstream gates db-write-gate.mjs + fleet-freeze-gate.sh
+decided..." card 7391f09a, and "F1.1.3: agent-checkpoint.sh M1/L1/L2/L3 fixes" card 6ff6d1dc) end
+with "Gate-SHA: see REVIEW comment" instead of an actual sha -- a placeholder that does not survive
+outside the card's own comment thread. The real, landed, ancestor-verified Gate-SHA for BOTH
+(gated together in the same round, QA PASS + CYBERSEC GO, `gate-closure-check.py` AGREE) is
+`bf96324335b4c30eecbd893eaa517d7e14297c5a` (`git merge-base --is-ancestor bf96324335b4c30eecbd893eaa517d7e14297c5a origin/develop` succeeds). Per the tail-append rule the two old entries are left
+untouched; this note is the correction of record.
+
+**Ki döntött:** DevO (fullstack), card c1766c6c (7391f09a follow-up), Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 085444e9 fix round: narrow-env systemctl bus vars + real-command mutation coverage (QA FAIL 28515, WhiteHat2 CYBERSEC NO-GO on d3052b38d)
+
+**Döntés:**
+- WhiteHat2 HIGH: production (channel-monitor.ts buildOllamaRestoreEnv()) hands the script only
+  PATH/HOME/OLLAMA_HOST; `systemctl --user start` then fails for lack of a session bus
+  (XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS unset), so a real boot-restore was silently a no-op.
+  Fixed IN THE SCRIPT (not by widening the TS-side narrow env, which stays pinned): export both,
+  only if the caller did not already set one.
+- QA FAIL 28515 / WhiteHat2 MEDIUM: the dryrun log line and the real restart command were two
+  separately-written expressions with the same text, so a mutation reverting only the real branch
+  to a bare `nohup` left the pinned dryrun string untouched and green. Fixed: one shared
+  `start_cmd` variable feeds both.
+- A failed `systemctl --user start` no longer returns silently (rc=0 either way) -- it now logs
+  the failure, its rc, and the bus vars, then defers to the next sweep.
+- New selftest section (Guard 5): PATH-shims a real `systemctl`, runs the real default branch
+  under `env -i PATH HOME` (the actual production narrow env), and asserts the argv AND that
+  XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS actually reached it. Mutant-kill confirmed three ways,
+  each isolated: (1) removing the XDG/DBUS export block turns both new assertions red (and a
+  `set -u` unbound-variable crash on the unset var, confirming nothing silently degrades); (2)
+  removing the rc-check/loud-log block turns exactly the "logged loudly" case red, nothing else;
+  (3) a bare-nohup mutant (same shape as the original RedHat F-RH4 regression) is caught by the
+  new real-systemctl case even though the pre-existing dryrun-string pin stays green on it --
+  the exact QA FAIL 28515 gap. 29/29 selftest PASS on the real fix.
+
+**Ki döntött:** DevO (fullstack), card 085444e9 fix round (QA FAIL 28515 + WhiteHat2 NO-GO on
+Gate-SHA d3052b38d), Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 219b07ae delta 2: wizard row's human-only clause actually added (correction)
+
+**Döntés:** the previous delta entry above claimed the wizard row stated "truly human-only steps are named explicitly in a request rather than handed over as a runnable script" -- that clause was in the DECISIONS.md prose and the REVIEW text, but had NOT actually been written into the generator (`buildDevOFamilySkillUsageBody` in `src/web/agent-scaffold.ts`) or the seed's rendered block. QA (comment 28646 context) and WhiteHat2 both re-grepped for it on Gate-SHA a17bf838 and found 0 hits for the clause's wording; MikroB flagged it (msg_id:16765). Fixed: the wizard row now reads in full "...a varázsló soha nem ír ki és nem naplóz titkot; ami valóban csak emberi beavatkozással megy (2FA, böngészős bejelentkezés harmadik félnél), azt DevO explicit megnevezi egy kérésben, nem ad át futtatandó szkriptet; a visszafordíthatatlan/kifelé ható lépés jóváhagyása a felhasználóé marad", in both the generator and the seed. Extended the addendum test with two assertions on the wizard row (the 2FA/third-party-login phrase and the "explicit megnevezi egy kérésben" phrase); mutation-verified directly (removed the clause, test went red with the expected AssertionError; restored, test green again, 29/29).
+
+**Ki döntött:** backend2 (card 219b07ae, back to in_progress a second time), per MikroB dispatch (msg_id:16765), finding from QA (28646 context) + WhiteHat2, re-checking REVIEW 28644's claim against the actual Gate-SHA a17bf838 diff. Gate: delta check by QA + WhiteHat2 on this diff only, per the dispatch. Gate-SHA: see REVIEW comment.
 ## 2026-11-06 -- card bb562959 (Koteg 23a, phase e5c46e87): upstream e2199840..a6325a498 merged, mail-gate classifier cluster closed inside the fork structure
 
 **Dontes:** valodi `git merge --no-ff a6325a498` az elozo tartomany (23) landolt csucsarol, 5 upstream commit (#1995 classify mail tools by base-name suffix; #2065 +476 accentless dictionary entries + accent-only identifier mask; #2084 no outgoing alert quotes a permission card's command line; #2085 accent check masks a trailing-slash directory/key=value/quoted token; #2081/MAILGATEVARARGS1020 variable script path is a send only with a recipient flag). Fork szerkezet maradt: `_EMAIL_SERVER_RE`/`_EMAIL_SAFE_TOOL_RE`/owner-CC/deny-by-default a sajat kodban, upstream `classify_mail_tool`/recipient-ledger NEM adoptalva (ledger korabban elutasitva, card afd64623/b5b7eb6b).
@@ -23041,3 +23135,19 @@ src/web/kanban-assignee-guard.ts` ures minden kozbenso commitra.
 
 **Ki dontott:** backend3 (card bb562959), MikroB 16683 lelete + sajat merge-feloldasi hibak
 javitasa. Gate: QA + Cybersec + Cybered (delta re-gate a vegso shara).
+
+## 2026-11-06 -- card bb562959: delta 2 (second develop-conflict resolution, MikroB 16805)
+
+**Dontes:** `origin/develop` tovabb mozdult a kartya elozo (MikroB 16683) javitasa ota, ket uj
+konfliktus: DECISIONS.md (varhato tail-append utkozes, ugyanaz a mechanizmus mint az elozo
+korban -- a kartya sajat bejegyzesei a FEJLECBOL kinyerve, origin/develop AKTUALIS tartalmanak
+vegere fuzve, `cmp`-vel byte-pontosan ellenorizve) ES
+`src/__tests__/project-settings-hook-anchor.test.ts` (NEM varhato -- tenyleges masodik
+konfliktus). Diagnosztika: tisztan additiv/additiv latszat-konfliktus, nem design-utkozes --
+a kartya sajat 3 anchor-bejegyzese (credential-gate.py + email-approval-gate.py gmail-matcher
+kiszelesites) ES `origin/develop` fuggetlenul hozzaadott 1 bejegyzese (db-write-guard.py @ Bash,
+kartyak c1766c6c/c5243203e) ugyanazon ket ponton allt be. Feloldas MikroB jovahagyasaval
+(16805): mind a 4 uj bejegyzes megtartva, semmi mas nem valtozott a fajlban.
+
+**Ki dontott:** MikroB (16805), backend3 vegezte el. Gate: delta re-gate QA + Cybered, csak a
+666ae06a729ab3a63d2ed313e21d061f30ff1641 elleni diffre.

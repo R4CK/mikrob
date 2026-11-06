@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { SKILL_USAGE_DATA } from '../web/skill-usage-data.js'
+import { buildDevOFamilySkillUsageBody } from '../web/agent-scaffold.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCAFFOLD = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
@@ -208,6 +209,74 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
       expect(curatedFn).not.toContain(catalogOnly)
     }
     expect(curatedFn).toContain('store/skill-role-map.md')
+  })
+
+  // Card 219b07ae: DevO (fullstack, internal id unchanged) gets a curated table mirroring
+  // BACKEND_FAMILY/FRONTEND_FAMILY, surfacing infra skills measured at 0 use (MikroB Telegram
+  // 12201) plus API design/wiring (Peti 12201+12203).
+  it('DEVO_FAMILY is defined and names fullstack', () => {
+    expect(SCAFFOLD).toContain("const DEVO_FAMILY = new Set(")
+    const familySet = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('const DEVO_FAMILY = new Set('),
+      SCAFFOLD.indexOf('const DEVO_FAMILY = new Set(') + 60,
+    )
+    expect(familySet).toContain("'fullstack'")
+  })
+
+  it('buildSkillUsageBody dispatches fullstack to the DevO curated table', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()')
+  })
+
+  // Rendered-output assertions (card 219b07ae, WhiteHat2 F4): the previous version of this test
+  // did a toContain on the function's SOURCE TEXT, so a commented-out row still passed (the
+  // identifier stayed in the source even though the real generator would render zero rows for
+  // it -- the no-comment-matching lesson from CLAUDE.md principle 12 applies to a function body
+  // the same way it applies to a guard regex). Calling the real exported function and asserting
+  // on its return value means a removed/commented row shows up as an actually-missing row.
+  it('DevO curated table carries API design/wiring and the previously-0-use infra skills, not the full catalog', () => {
+    const rendered = buildDevOFamilySkillUsageBody()
+    expect(rendered).toContain('karpathy-guidelines')
+    expect(rendered).toContain('api-and-interface-design')
+    expect(rendered).toContain('contract-first-codev')
+    expect(rendered).toContain('injected-port-adapters')
+    expect(rendered).toContain('be-endpoint-param-extension')
+    expect(rendered).toContain('guarded-write-endpoint-token-email')
+    expect(rendered).toContain('oauth-callback-jwt-wiring')
+    // The six measured-0-use infra skills (MikroB Telegram 12201) must be surfaced.
+    for (const infraSkill of [
+      'platform-infrastructure', 'observability-and-instrumentation', 'quota-management',
+      'loop-engineering', 'skill-management', 'deprecation-and-migration',
+    ]) {
+      expect(rendered).toContain(infraSkill)
+    }
+    // Catalog-only entries NOT in the curated table.
+    for (const catalogOnly of ['working-backwards', 'usability-testing', 'writing-north-star-metrics']) {
+      expect(rendered).not.toContain(catalogOnly)
+    }
+    expect(rendered).toContain('store/skill-role-map.md')
+  })
+
+  // Peti's approved addendum (comments 24120 + 24125, Telegram 12215/12216/12219): ponytail next
+  // to karpathy-guidelines on the "every change" row, and a wizard row for multi-step manual ops
+  // (DevO/MikroB runs the generated steps, never the user; the wizard never prints/logs a
+  // secret). Rendered-output assertion for the same reason as the test above.
+  it('DevO curated table carries the Peti addendum: ponytail on every change, and a wizard row for manual multi-step ops', () => {
+    const rendered = buildDevOFamilySkillUsageBody()
+    expect(rendered).toContain('ponytail')
+    expect(rendered).toContain('`wizard`')
+    const wizardRow = rendered.split('\n').find((line) => line.includes('`wizard`'))
+    expect(wizardRow).toBeDefined()
+    expect(wizardRow).toContain('DevO')
+    expect(wizardRow).not.toMatch(/Peti futtatja|a felhasználó futtatja/)
+    // mikrob msg_id:16765: the wizard row must also carry the truly-human-only clause --
+    // DevO names a 2FA/third-party-login step explicitly in a request, never hands over a
+    // runnable script for it.
+    expect(wizardRow).toMatch(/2FA.*böngészős bejelentkezés harmadik félnél/)
+    expect(wizardRow).toMatch(/explicit megnevezi egy kérésben/)
   })
 
   it('marks a known self-claimed-but-unreferenced skill as gap for its role', () => {

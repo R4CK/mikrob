@@ -2291,7 +2291,18 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "reply matcher broadening (`mcp__plugin_[^_]+_[^_]+__reply`) is the same Slack/Discord-widening " +
     "already declined 2026-09-25; the new Gmail/resend-specific PreToolUse matcher variants and " +
     "credential-gate.py are this FORK's OWN governance-kapu additions (fork has them, upstream does " +
-    "not -- nothing to adopt, they already exist here). Resolution unchanged (UNDECIDED); blob bumped.",
+    "not -- nothing to adopt, they already exist here). Resolution unchanged (UNDECIDED); blob bumped." +
+    " CORRECTION (DevO/fullstack, card c1766c6c, 2026-11-06): 'upstream does not' above was too broad -- " +
+    "re-checked `git diff upstream/main -- .claude/settings.json` directly: upstream's OWN existing " +
+    "outgoing-copy-gate.py/email-approval-gate.py matcher (the giant send/draft/reply alternation) " +
+    "already embeds literal Gmail fragments (`.*[Gg][Mm][Aa][Ii][Ll].*send_message.*`, `...reply.*`, " +
+    "`...forward.*`), present on the upstream side of that diff (not added by this round). What the " +
+    "quoted sentence actually meant to say, and should have said, is narrower: upstream does not have " +
+    "THIS fork's credential-gate.py file or its specific SEPARATE Gmail/resend matcher set (`.*__[A-Za-z" +
+    "0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*` etc., confirmed absent from the upstream side of the same diff) " +
+    "-- that narrower claim still holds, the 'upstream does not [have any Gmail matcher at all]' reading " +
+    "does not. No resolution changes (still UNDECIDED, nothing newly adopted); this only corrects what " +
+    "the entry asserted about upstream's content.",
 
   // Card 4f15966e (backend, 2026-09-07) already decided this file's EXEMPT list in-code, this
   // entry just records it. Upstream's diff REPLACES all 14 of the fork's EXEMPT entries (9

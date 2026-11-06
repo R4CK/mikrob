@@ -143,6 +143,22 @@ else
   fail "all-clear case did not reach the restart step: $out"
 fi
 
+# --- Card 085444e9 (RedHat F-RH4, 39b958a4 comment 19024): the default restart path must go
+# through the systemd --user unit, not a bare `nohup ollama serve` -- a bare nohup skips the
+# unit's Environment= lines (OLLAMA_VULKAN=0, flash-attention/KV-cache) entirely. Pins the DEFAULT
+# command (no OLLAMA_RESTORE_START_CMD_OVERRIDE set) via the DRYRUN log line: RED on the old
+# `setsid nohup ollama serve` default, GREEN once it reads `systemctl --user start ollama`.
+if echo "$out" | grep -q 'would run: systemctl --user start ollama'; then
+  pass "default restart command goes through the systemd --user unit (single env source)"
+else
+  fail "default restart command does not go through the unit -- env (OLLAMA_VULKAN=0, flash/KV) would come from nowhere: $out"
+fi
+if echo "$out" | grep -q 'nohup ollama serve'; then
+  fail "default restart command still bypasses the unit with a bare nohup: $out"
+else
+  pass "default restart command no longer bypasses the unit with a bare nohup"
+fi
+
 # --- Guard 4, REAL journalctl code path (RedHat F-RH2, card 39b958a4, comment 19024) -------------
 # Everything above drives dxg_seen_this_boot() through the OLLAMA_RESTORE_DMESG_OVERRIDE seam, which
 # never executes the script's actual `journalctl -k -b 0 2>/dev/null` branch -- that production
@@ -278,6 +294,97 @@ elif echo "$out" | grep -q 'DRYRUN: would run'; then
   pass "J1 mutant (swallows journalctl's exit status) is caught: the mutated script wrongly proceeds past guard 4 instead of deferring"
 else
   fail "J1 mutant produced neither the defer message nor DRYRUN -- unexpected output, investigate: $out"
+fi
+
+# --- Guard 5, REAL systemctl code path under the PRODUCTION narrow env (WhiteHat2 HIGH + MEDIUM, --
+# card 085444e9 fix round). Every case above that reaches the restart step either DRYRUNs or uses
+# OLLAMA_RESTORE_START_CMD_OVERRIDE, so the real default `systemctl --user start $UNIT_NAME` branch
+# and the XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS export had ZERO coverage of their actually-executed
+# shape -- exactly the QA FAIL 28515 / WhiteHat2 MEDIUM gap (the old test only pinned the DRYRUN log
+# string, which a mutant could leave untouched while reverting only the real branch). These cases
+# PATH-shim a fake `systemctl` that records its argv and the env it actually saw, run under
+# `env -i PATH HOME` -- the same narrow env channel-monitor.ts's buildOllamaRestoreEnv() hands this
+# script in production (ollama-boot-restore-narrow-env.test.ts pins that narrowness on the TS side).
+SBIN_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_BASE" "$JBIN_DIR" "$SBIN_DIR"' EXIT
+
+write_fake_systemctl() {
+  # $1 = exit code for the shim to return.
+  cat > "$SBIN_DIR/systemctl" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" > "\$OLLAMA_TEST_SYSTEMCTL_CAPTURE/argv"
+printf '%s\n' "\${XDG_RUNTIME_DIR:-UNSET}" > "\$OLLAMA_TEST_SYSTEMCTL_CAPTURE/xdg"
+printf '%s\n' "\${DBUS_SESSION_BUS_ADDRESS:-UNSET}" > "\$OLLAMA_TEST_SYSTEMCTL_CAPTURE/dbus"
+exit $1
+EOF
+  chmod +x "$SBIN_DIR/systemctl"
+}
+
+run_real_systemctl() {
+  # Real journalctl (clean) + real systemctl (shimmed), under the exact production narrow env.
+  local state="$1" script="${2:-$SCRIPT}" capture="$3"
+  env -i PATH="$SBIN_DIR:$JBIN_DIR:/usr/bin:/bin" HOME="$HOME" \
+    OLLAMA_TEST_SYSTEMCTL_CAPTURE="$capture" \
+    OLLAMA_HOST="$DEAD_HOST" \
+    OLLAMA_RESTORE_STATE_DIR="$state" \
+    OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
+    OLLAMA_RESTORE_UPTIME_OVERRIDE="$state/uptime" \
+    bash "$script" 2>&1
+}
+
+d="$(fresh_case real-systemctl-narrow-env)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+CAP="$(mktemp -d)"
+write_fake_systemctl 0
+out="$(run_real_systemctl "$d" "$SCRIPT" "$CAP")"
+if [ -f "$CAP/argv" ] && grep -q -- '--user start ollama' "$CAP/argv"; then
+  pass "real systemctl invocation: argv is '--user start ollama' (the actual default command, not the dryrun string)"
+else
+  fail "real systemctl was not invoked with the expected argv: $(cat "$CAP/argv" 2>/dev/null || echo '<no capture file>')"
+fi
+if [ -f "$CAP/xdg" ] && [ "$(cat "$CAP/xdg")" != "UNSET" ] && [ "$(cat "$CAP/xdg")" != "" ]; then
+  pass "XDG_RUNTIME_DIR reached systemctl under a narrow (env -i PATH HOME) caller env, not UNSET"
+else
+  fail "XDG_RUNTIME_DIR did not reach systemctl: $(cat "$CAP/xdg" 2>/dev/null || echo '<no capture file>')"
+fi
+if [ -f "$CAP/dbus" ] && [ "$(cat "$CAP/dbus")" != "UNSET" ] && [ "$(cat "$CAP/dbus")" != "" ]; then
+  pass "DBUS_SESSION_BUS_ADDRESS reached systemctl under a narrow caller env, not UNSET"
+else
+  fail "DBUS_SESSION_BUS_ADDRESS did not reach systemctl: $(cat "$CAP/dbus" 2>/dev/null || echo '<no capture file>')"
+fi
+if echo "$out" | grep -q 'restart command failed'; then
+  fail "a systemctl shim that exits 0 was reported as a failed restart: $out"
+fi
+
+d="$(fresh_case real-systemctl-failure-is-loud)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+CAP2="$(mktemp -d)"
+write_fake_systemctl 1
+out="$(run_real_systemctl "$d" "$SCRIPT" "$CAP2")"
+if echo "$out" | grep -q 'restart command failed (rc=1)'; then
+  pass "a failed systemctl start is logged loudly with its rc, not a silent no-op"
+else
+  fail "a failed systemctl start was not reported loudly: $out"
+fi
+
+# --- Mutant-kill: reverting the real branch to a bare nohup, with the dryrun string UNCHANGED, ----
+# must be caught by the Guard-5 cases above even though the OLD dryrun-string-only test (further up
+# this file) would have stayed green (QA FAIL 28515's exact gap).
+MUTANT_SCRIPT="$TMPDIR_BASE/ollama-boot-restore-mutant-nohup.sh"
+sed 's#eval "\$start_cmd"#setsid nohup ollama serve >/dev/null 2>\&1 \&#' "$SCRIPT" > "$MUTANT_SCRIPT"
+chmod +x "$MUTANT_SCRIPT"
+d="$(fresh_case real-systemctl-mutant-nohup)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+CAP3="$(mktemp -d)"
+write_fake_systemctl 0
+out="$(run_real_systemctl "$d" "$MUTANT_SCRIPT" "$CAP3")"
+if [ -s "$CAP3/argv" ]; then
+  fail "mutant (bare nohup instead of eval \"\$start_cmd\") still invoked systemctl -- mutation did not take, test is vacuous"
+else
+  pass "mutant (bare nohup) is caught: systemctl was never invoked even though the DRYRUN string (unexercised here) is untouched"
 fi
 
 # --- Full restart+probe path, with a fake start command -------------------------------------------

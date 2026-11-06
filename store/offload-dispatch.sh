@@ -139,7 +139,7 @@ GEMINI_ROUTE="$(get_gemini_route)"
 #
 # Returns 1 (false/allowed) only when all four gates pass AND the classifier ran to completion.
 is_gemini_blocked() {
-  local project="$1" tags="$2" title="${3:-}" desc="${4:-}"
+  local project="$1" tags="$2" title="${3:-}" desc="${4:-}" require_marker="${5:-1}"
   local rc
   # Distinct "allowed" exit code (WhiteHat2 H2, matches the Python ALLOWED_RC constant below):
   # cannot collide with a bare Python exception (1) or any shell/OS failure code, so only a
@@ -151,6 +151,7 @@ import sys, unicodedata, re
 
 project  = sys.argv[1]
 tags_csv = sys.argv[2] if len(sys.argv) > 2 else ""
+require_marker = sys.argv[3] if len(sys.argv) > 3 else "1"
 ALLOWED_RC = 42  # must match the bash-side check below
 
 # title/desc come over stdin (WhiteHat2 H1): NUL-separated, no argv length ceiling, no cap needed
@@ -505,14 +506,28 @@ if any(SENS_RE.search(t) for t in tags_n):
 # obfuscation nobody thought to add to BLOCKED_TAGS/SENS_RE yet" (the denylist open-ended
 # weakness this card exists to close).
 GEMINI_OK_TAG = "gemini-ok"
-if not any(norm(tag) == GEMINI_OK_TAG for tag in all_tags):
+# FREELLM VARIANT (card 4eb3743e delta, WhiteHat NO-GO 28484 M1): freellm reuses every other
+# gate above (project allowlist, tag block, content gate) but does NOT require the Gemini-only
+# "gemini-ok" positive marker -- that marker is specific to the Gemini routes own allowlist
+# design (card c23ea72f) and freellm never had it as a requirement; adding it now would silently
+# narrow a working feature (5. kodminosegi elv) beyond what this fix asked for. require_marker="0"
+# (passed only by is_freellm_blocked, below) skips this ONE check; every other check still blocks.
+if require_marker != "0" and not any(norm(tag) == GEMINI_OK_TAG for tag in all_tags):
     sys.exit(0)  # blocked -- no explicit positive marker
 
 sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, completed "allowed" verdict
-' "$project" "$tags"
+' "$project" "$tags" "$require_marker"
   rc=$?
   [[ "$rc" -eq 42 ]] && return 1  # must match the Python-side ALLOWED_RC constant above
   return 0
+}
+
+# is_freellm_blocked PROJECT TAGS [TITLE [DESC]]: freellm's own gate (card 4eb3743e delta,
+# WhiteHat NO-GO 28484 M1) -- is_gemini_blocked with the Gemini-only "gemini-ok" positive-marker
+# check (5. above) skipped, every other check (project allowlist, tag block, content gate) kept.
+# Same return convention as is_gemini_blocked: 0 (bash-true) = blocked, 1 (bash-false) = allowed.
+is_freellm_blocked() {
+  is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" 0
 }
 
 # gemini_route_enabled: returns 0 (true) when the Gemini route is active.
@@ -1584,6 +1599,17 @@ if [[ "${1:-}" == "--check-blocked" ]]; then
   exit 42  # is_gemini_blocked returned 1 (bash-false) -- the ONE deliberate ALLOWED outcome
 fi
 
+# --check-freellm-blocked PROJECT TAGS [TITLE [DESC]]: exposes is_freellm_blocked (card 4eb3743e
+# delta, WhiteHat NO-GO 28484) to external callers the same way --check-blocked exposes
+# is_gemini_blocked above -- same exit-code convention (42 = allowed, 0 = every other outcome).
+if [[ "${1:-}" == "--check-freellm-blocked" ]]; then
+  shift
+  if is_freellm_blocked "${1:-}" "${2:-}" "${3:-}" "${4:-}"; then
+    exit 0
+  fi
+  exit 42
+fi
+
 # --test-heavy-enabled: prints "on"/"off" per gemini_heavy_second_opinion_enabled() (card f0b3b674).
 if [[ "${1:-}" == "--test-heavy-enabled" ]]; then
   if gemini_heavy_second_opinion_enabled; then echo "on"; else echo "off"; fi
@@ -1618,23 +1644,42 @@ if [[ "${1:-}" == "--test-freellm-attempt" ]]; then
   esac
 fi
 
-# --test-capacity-route: stdin = a leaves JSON array (same id/title/description shape as LEAVES_JSON).
-# Simulates the GPU-hold (capacity) sweep branch's per-leaf freellm routing decision WITHOUT a live
-# dashboard or attempts-file write -- same FREELLM_CALL classification as --test-freellm-attempt
-# above, applied per leaf. Prints "<leafId> <outcome>" per line (card 4eb3743e, "Kesz, ha" 1/2: the
-# GPU-hold case, by name, drafting via freellm).
+# --test-capacity-route: stdin = a leaves JSON array (same id/title/description shape as LEAVES_JSON,
+# plus optional "project", "tags", "veto_online" fields). Simulates the GPU-hold (capacity) sweep
+# branch's per-leaf freellm routing decision WITHOUT a live dashboard or attempts-file write -- same
+# FREELLM_CALL classification as --test-freellm-attempt above, applied per leaf. Prints
+# "<leafId> <outcome>" per line (card 4eb3743e, "Kesz, ha" 1/2: the GPU-hold case, by name, drafting
+# via freellm).
+#
+# GATE PARITY (WhiteHat NO-GO 28484, M1, card 4eb3743e delta): mirrors the production CAPACITY_HOLD
+# branch exactly -- veto_online=true OR is_gemini_blocked(project, tags, title, desc) means the leaf
+# never reaches freellm-call.sh at all ("blocked"), checked via the SAME --check-freellm-blocked
+# sub-command this script exposes (no second copy of the gate decision).
 if [[ "${1:-}" == "--test-capacity-route" ]]; then
   shift
   # Deliberately NOT the base64/pipe writer+reader shape the main leaf loop uses (see
   # offload-draft-nudge.test.ts's single-writer/single-reader regression guard) -- this is a
-  # read-only test probe, so each leaf's freellm call is driven straight from python via
-  # subprocess, one process per leaf, no intermediate bash loop at all.
-  FREELLM_CALL="$FREELLM_CALL" python3 -c '
+  # read-only test probe, so each leaf's gate check and freellm call are driven straight from
+  # python via subprocess, one process per leaf, no intermediate bash loop at all.
+  FREELLM_CALL="$FREELLM_CALL" SELF_SCRIPT="${BASH_SOURCE[0]}" python3 -c '
 import json, os, subprocess, sys
 leaves = json.load(sys.stdin)
 call = os.environ["FREELLM_CALL"]
+self_script = os.environ["SELF_SCRIPT"]
 for l in leaves:
-    task = (l.get("title", "") + "\n\n" + l.get("description", "")).encode()
+    project = l.get("project", "")
+    tags = l.get("tags", "")
+    title = l.get("title", "")
+    desc = l.get("description", "")
+    blocked = bool(l.get("veto_online", False))
+    if not blocked:
+        bp = subprocess.run(["bash", self_script, "--check-freellm-blocked", project, tags, title, desc],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        blocked = bp.returncode != 42  # 42 is the ONE deliberate "allowed" outcome
+    if blocked:
+        print(l["id"], "blocked")
+        continue
+    task = (title + "\n\n" + desc).encode()
     p = subprocess.run(["bash", call], input=task, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     out = p.stdout.decode(errors="replace")
     if p.returncode == 0 and out.strip():
@@ -1903,8 +1948,9 @@ $leaf_desc"
       elif gemini_heavy_second_opinion_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" && reserve_heavy_gemini_slot "$leaf_id"; then
         try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
       fi
-      # FREELLM FALLBACK (card 4eb3743e, "helyi -> freellm -> online"), independent of Gemini above.
-      try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+      # FREELLM FALLBACK (card 4eb3743e, gate parity: WhiteHat NO-GO 28484 M1).
+      is_freellm_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" ||
+        { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
@@ -2003,7 +2049,15 @@ else:
     ltask="$ltitle
 
 $ldesc"
-    if try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
+    # GATE PARITY (WhiteHat NO-GO 28484, M1): this branch never calls try_leaf, so neither the
+    # inherited parent veto (lveto, card e11167c5 -- the router's own security-signal verdict on
+    # the full parent text) nor the project/tag/content gate (is_freellm_blocked) is applied
+    # anywhere else here. Apply both before any freellm attempt, and mark categorical-online on a
+    # block -- same permanent-block pattern as the veto check inside try_leaf.
+    if [[ "$lveto" == "true" ]] || is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
+      attempts_op categorical-online "$lid" >/dev/null
+      echo "offload-dispatch: leaf $lid -> freellm blocked under capacity hold (veto=$lveto, project=$lproject), no attempt" >&2
+    elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
       drafted=$(( drafted + 1 ))
     fi
   elif try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic" "$lveto"; then

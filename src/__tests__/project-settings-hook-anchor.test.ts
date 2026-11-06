@@ -94,6 +94,7 @@ const EXPECTED: Record<string, string[]> = {
     // server name never reached either hook's registration before this).
     'credential-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*',
     'email-approval-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*',
+    'db-write-guard.py @ Bash',
     'channel-image-resize.sh @ Read', 'egress-gate.mjs @ WebFetch', 'memory-frontmatter-gate.py @ Write|Edit|MultiEdit',
     'memory-frontmatter-bash-gate.py @ Bash',
     // Card c00d5429 (2026-09-25): the main agent's own session ran with none of the ten
@@ -184,6 +185,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'credential-gate.py', matcher: '.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*' },
   { script: 'credential-gate.py', matcher: '.*draft_email.*' },
   { script: 'credential-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*' },
+  { script: 'db-write-guard.py', matcher: 'Bash' },
   { script: 'channel-image-resize.sh', matcher: 'Read' },
   { script: 'egress-gate.mjs', matcher: 'WebFetch' },
   { script: 'secret-write-guard.py', matcher: 'Write|Edit|MultiEdit' },
