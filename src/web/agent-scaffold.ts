@@ -3532,9 +3532,13 @@ function buildFrontendFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
-function buildDevOFamilySkillUsageBody(): string {
+// Exported for test rendering (card 219b07ae, WhiteHat2 F4): callers assert on this function's
+// actual return value instead of slicing the source text, so a commented-out row shows up as a
+// missing row in the rendered table, not as a still-matching substring.
+export function buildDevOFamilySkillUsageBody(): string {
   const rows = [
-    '| Minden változtatás | `karpathy-guidelines`, `karpathycoder` |',
+    '| Minden változtatás | `karpathy-guidelines`, `ponytail`, `karpathycoder` |',
+    '| Több lépéses, kézi jellegű üzemeltetési művelet (credential/secret beállítás, külső dashboard, egyszeri cutover, pl. 7dde8ebc token-rotálás) | `wizard`: a generált lépéssort DevO (vagy MikroB) futtatja, a felhasználó nem; a varázsló soha nem ír ki és nem naplóz titkot; a visszafordíthatatlan/kifelé ható lépés jóváhagyása a felhasználóé marad |',
     '| API-tervezés (végpont, szerződés, verziózás) | `api-and-interface-design`, `contract-first-codev` (BE+FE pár esetén) |',
     '| Külső API / SDK bekötése | `injected-port-adapters`, context7 + quarantine-reader friss doksi, `fork-adopt-investigation` (hivatalos SDK előbb, 10. szabály) |',
     '| Végpont bővítése | `be-endpoint-param-extension` |',
