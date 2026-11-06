@@ -573,6 +573,14 @@ def test_fork_mcp_send_classification():
     r = gate(store, "mcp__resend__send", {"to": "ugyfel@example.invalid", "subject": "x", "body": LETTER})
     check("a resend__ server send is in scope and denied", r.returncode == 2, r.stderr)
 
+    # Cybersec GO 28369 M1: an off-brand server (no "gmail"/"resend" in the SERVER segment) whose
+    # bare name is one of the copy gate's curated dangerous send-shaped verbs used to classify as
+    # "not a mail tool" here and exit 0, even with a credential in the body.
+    r = gate(store, "mcp__workmail__reply_all", {"messageId": "m1", "body": LETTER})
+    check("F-M1: off-brand mcp__workmail__reply_all is in scope and denied", r.returncode == 2, r.stderr)
+    r = gate(store, "mcp__google_workspace__send_gmail_message", {"to": "ugyfel@example.invalid", "body": LETTER})
+    check("F-M1: off-brand mcp__google_workspace__send_gmail_message is in scope and denied", r.returncode == 2, r.stderr)
+
 
 if __name__ == "__main__":
     os.environ.pop("CREDENTIAL_GATE_STORE", None)

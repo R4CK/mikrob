@@ -86,10 +86,23 @@ def _is_mcp_send(tool: str) -> bool:
     deny-by-default branch (card 498d53c1) and its GMAILCONNECTOR914 fast
     path -- loaded from that module, not re-implemented, so a future fix to
     the classifier (a new server name, a new safe verb) only has to land
-    once."""
+    once.
+
+    Cybersec GO 28369 M1: this used to stop at _EMAIL_SERVER_RE, so an
+    off-brand name (mcp__workmail__reply_all, mcp__google_workspace__
+    send_gmail_message) -- no "gmail"/"resend" in the SERVER segment --
+    classified as "not a mail tool" and exited 0 here even though the copy
+    gate, the approval gate and the sub-agent gate all deny it. Reuses the
+    same off-brand regexes outgoing-copy-gate.py exports, same reasoning as
+    above: one classifier, loaded, not re-implemented."""
     mod = _load("outgoing_copy_gate", "outgoing-copy-gate.py")
+    bare = mod._bare_tool_name(tool)
     if mod._EMAIL_SERVER_RE.search(tool):
-        return not mod._EMAIL_SAFE_TOOL_RE.search(mod._bare_tool_name(tool))
+        return not mod._EMAIL_SAFE_TOOL_RE.search(bare)
+    if mod._EMAIL_OFFBRAND_DANGEROUS_RE.search(bare):
+        return True
+    if mod._EMAIL_OFFBRAND_GMAIL_VERB_RE.search(bare) and mod._EMAIL_OFFBRAND_VERB_SUFFIX_RE.search(bare):
+        return True
     return bool(re.search(r"send_email", tool, re.I))
 
 

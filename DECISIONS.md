@@ -22896,3 +22896,34 @@ tiltott (L3, fail-closed, nem lelet).
 
 **Ki dontott:** backend3 (card bb562959), QA FAIL 28338 + Cybered NO-GO 28354 alapjan. Gate: QA +
 Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959: Cybersec GO 28369 M1 javitva + L2 korrekcio a korabbi bejegyzeshez
+
+**Dontes:**
+- M1 (MEDIUM-LOW): `credential-gate.py` `_is_mcp_send`-je csak az `_EMAIL_SERVER_RE` (gmail/resend
+  a szerver-szegmentben) agat nezte -- egy off-brand nev (`mcp__workmail__reply_all`,
+  `mcp__google_workspace__send_gmail_message`) "nem email-tool"-kent 0-t adott, holott a masik
+  harom kapu mar tiltja. Javitva: ugyanazt a harom off-brand regexet hasznalja, amit
+  `outgoing-copy-gate.py` mar exportal (`_EMAIL_OFFBRAND_DANGEROUS_RE`,
+  `_EMAIL_OFFBRAND_GMAIL_VERB_RE`, `_EMAIL_OFFBRAND_VERB_SUFFIX_RE`), nem ujraimplementalva. Ket
+  uj eset `scripts/__tests__/credential-gate.test.py`-ban, piros a 62f4c6ae0-n, zold itt.
+- L2 KORREKCIO a fentebbi, 2026-11-06-i "upstream e2199840..a6325a498 merged" bejegyzeshez: az ott
+  irt "upstream `classify_mail_tool`/recipient-ledger NEM adoptalva" mondat FELREVEZETO volt.
+  A valosag (Cybersec GO 28369 L2 lelete, en mertem utana): `classify_mail_tool` MAGA a Python
+  oldalon ADOPTALVA van (`email_extract.py` definialja, `email-approval-gate.py` hasznalja
+  `scope_kind`/`classify_tool` neven), csak a JS ikerpar (`classifyMailTool`
+  `email-send-gate.mjs`-ben) es a hozza tartozo recipient-ledger funkcio NEM adoptalt -- a kettot
+  korabban osszemostam. A kodban nincs mit javitani (a viselkedes mar helyes volt), csak a
+  dokumentacios allitas volt pontatlan; ezzel a bejegyzessel javitva, a korabbi sor VALTOZATLANUL
+  marad (farokba-iras szabaly, nem szerkesztjuk at a regi bejegyzest).
+- L3 (nem javitva, szandekosan): a ket look-alike nev (`forwarding_settings`, `send_drafts_list`)
+  a copy kapun kivetelezett (olvasas-szeru), az approval es sub-agent kapun meg tiltott marad --
+  fail-closed iranyu inkonzisztencia (egy sub-agent olvasas-celu hivasa feleslegesen tiltott), nem
+  biztonsagi lyuk. Kulon kartyara halasztva, ha zavaro lesz a gyakorlatban.
+- L1 (reszben): a konfliktusok dontese a REVIEW-ban es a DECISIONS-bejegyzesekben felsorolva,
+  de nem fajlonkenti tablazat formaban -- ez a bejegyzes es a fentebbi REVIEW/DECISIONS-sorok
+  egyutt adjak a teljes listat (7 ACKNOWLEDGED_UPSTREAM_BLOBS fajl + a ket mandatory bypass + F1-F3
+  + M1), kulon tablazat nem keszult.
+
+**Ki dontott:** backend3 (card bb562959), Cybersec GO 28369 M1/L1/L2/L3 pontjai alapjan (MikroB
+16614 dontese: fold in). Gate: QA + Cybersec + Cybered.
