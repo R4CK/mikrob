@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   migrate, openKgDb, rebuild, upsertNode, upsertEdge, setNodeStatus, getNode, KgSecretError,
-  KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState,
+  KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState, sanitizeKgText,
 } from '../kg/store.js'
 
 const dirs: string[] = []
@@ -138,6 +138,30 @@ describe('kg store CRUD', () => {
     ).toThrow(KgSecretError)
     expect(db.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
     db.close()
+  })
+
+  // Cybersec GO 28465 I1 (INFO, on 861e426ba): sanitizeKgText is NOT strictly idempotent in one
+  // narrow case -- a stripped character sitting BETWEEN a base letter and a combining mark (e.g.
+  // a ZWSP between "e" and a combining acute accent) blocks NFKC composition on the FIRST pass
+  // (normalize runs before the strip, and the two are not yet adjacent), so pass 1 leaves the
+  // base letter and the combining mark as two separate code points. On a SECOND pass they ARE
+  // now adjacent, so NFKC composes them into the single precomposed character. Both forms are
+  // Unicode canonically equivalent (render identically, NFC-normalize to the same string) and the
+  // process is a bounded fixed point, not a loop: verified here that a THIRD pass changes
+  // nothing further. Accepted as-is rather than looping sanitize to a fixed point internally --
+  // every write path calls it exactly once per field per upsertNode call, never chains its own
+  // output back in, so the one-extra-pass gap never surfaces in practice; recorded here so a
+  // future caller that DOES chain sanitizeKgText calls knows to normalize once at the end, not
+  // assume pass 1 is already stable.
+  it('sanitizeKgText converges within two passes (not strictly idempotent on pass 1, Cybersec I1)', () => {
+    const splitBaseAndMark = 'e' + '​' + '́' + 'x' // "e" + ZWSP + combining acute + "x"
+    const pass1 = sanitizeKgText(splitBaseAndMark)
+    const pass2 = sanitizeKgText(pass1)
+    const pass3 = sanitizeKgText(pass2)
+    expect(pass1).not.toBe(pass2) // the documented one-extra-pass gap
+    expect(pass1.normalize('NFC')).toBe(pass2.normalize('NFC')) // canonically equivalent regardless
+    expect(pass2).toBe(pass3) // but it IS a fixed point from pass 2 onward
+    expect(pass2).toBe('éx') // precomposed "é" + "x"
   })
 
   it('upsertEdge is idempotent: a second identical edge changes nothing', () => {

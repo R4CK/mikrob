@@ -74,6 +74,16 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee('backend2')).toBe(false) // plain ASCII, no residue at all
   })
 
+  // Cybersec GO 28465 L1 (on 861e426ba): U+115F (HANGUL CHOSEONG FILLER) is invisible but
+  // \p{L}-category, so it survived the old letters-and-digits-only filter as a distinct,
+  // un-enumerated character -- "mi" + U+115F + "krob" looked like plain "mikrob" visually but
+  // was NOT equal to it after the old fold (an extra, un-mapped letter), so the OLD code read it
+  // as NOT forbidden. The fail-closed rule (any non-ASCII survivor) catches it without having to
+  // name it specifically.
+  it('fails closed on an invisible-but-letter-category code point (U+115F, Cybersec 28465 L1)', () => {
+    expect(isForbiddenAssignee('miᅟkrob')).toBe(true)
+  })
+
   // RedHat NO-GO delta B2 (komment 15997, kartya e25a549a): a korabbi, hatarolt INVISIBLE_RE
   // (6 kodpont) + Cirill/Gorog-only tablazat 21 tovabbi alakot hagyott at -- mert a tombositett
   // formazo/jel/elvalaszto karakterek es tovabbi hasonmas betuk (gorog iota/kappa, armeny o,
