@@ -12,6 +12,14 @@
 # Env overrides (tests only -- production uses the real marveen checkout):
 #   MARVEEN_MAIN   default /home/neon/marveen (passed through to agent-worktree-marveen.sh)
 #
+# L3 decision (card 6ff6d1dc, Cybersec finding on 3517b027): `git add -A` intentionally captures
+# ALL untracked files in the worktree, including an unguarded secret file (.env, id_rsa,
+# credentials.json) if one is sitting there -- this is ACCEPTED, not a gap, because the resulting
+# commit lives ONLY under refs/mikrob/ckpt/<cardId>/<n>, a ref this script and
+# agent-worktree-marveen.sh never push, fetch, or expose to any remote. The checkpoint is
+# local-only by construction. If a future change ever pushes or syncs these refs, an exclusion
+# list must be added before this script can be reused as-is.
+#
 # Exit: 0 ok | 2 bad usage | 3 worktree path does not resolve to a real git worktree
 set -euo pipefail
 
@@ -36,9 +44,13 @@ agent_checkpoint() {
   local head
   head="$(git -C "$wt" rev-parse HEAD)"
 
-  local tmp_index
+  # Not `local`: an EXIT trap fires after this function's scope is gone, so the trap body needs a
+  # variable that survives past the function -- a local here would be unbound by then under `set -u`.
   tmp_index="$(mktemp -u)"
-  trap 'rm -f "$tmp_index"' RETURN
+  # L1 (Cybersec finding on 3517b027): a RETURN trap does not fire when `set -e` aborts the whole
+  # script on a failing command inside this function -- the script exits before the function ever
+  # "returns", leaking tmp_index into TMPDIR. EXIT fires on every process exit, including that one.
+  trap 'rm -f "$tmp_index"' EXIT
 
   # Blank temp index + add -A: git populates it from the CURRENT WORKING TREE (tracked, modified
   # and untracked-but-not-ignored paths), which is exactly the full snapshot a checkpoint wants --
@@ -51,12 +63,20 @@ agent_checkpoint() {
   tree="$(GIT_INDEX_FILE="$tmp_index" git -C "$wt" write-tree)"
   commit="$(git -C "$wt" commit-tree "$tree" -p "$head" -m "checkpoint $card")"
 
-  local n=1
-  while git -C "$wt" show-ref --verify --quiet "refs/mikrob/ckpt/$card/$n"; do
+  # M1 (Cybersec finding on 3517b027): create-only ref update, not check-then-act. The old code
+  # found a free n with `show-ref`, then did an unconditional `update-ref` -- two concurrent runs
+  # can both see the same free n, and the second overwrites the first's ref, silently losing a
+  # checkpoint. Passing the all-zero value as update-ref's OLD value means "this ref must not
+  # already exist"; git then refuses (rc=128) if another run claimed this n first, and we retry
+  # with n+1 instead of racing.
+  local zero_oid
+  zero_oid="$(printf '0%.0s' $(seq 1 ${#commit}))"
+  local n=1 ref
+  while true; do
+    ref="refs/mikrob/ckpt/$card/$n"
+    git -C "$wt" update-ref "$ref" "$commit" "$zero_oid" 2>/dev/null && break
     n=$((n + 1))
   done
-  local ref="refs/mikrob/ckpt/$card/$n"
-  git -C "$wt" update-ref "$ref" "$commit"
 
   echo "$ref $commit"
 }
@@ -141,6 +161,10 @@ if [ "${1:-}" = "--selftest" ]; then
   git -C "$WT" cat-file -e "$sha" 2>/dev/null && ok "checkpoint commit object exists" \
     || no "checkpoint commit $sha does not exist"
 
+  [ "$(git -C "$WT" rev-parse "$sha^")" = "$before_head" ] \
+    && ok "checkpoint commit's parent is HEAD (-p HEAD pin)" \
+    || no "checkpoint parent should be pre-checkpoint HEAD $before_head, got $(git -C "$WT" rev-parse "$sha^" 2>&1)"
+
   [ "$before_index_hash" = "$after_index_hash" ] && ok "real index file untouched (byte-identical)" \
     || no "index file CHANGED: $before_index_hash -> $after_index_hash"
   [ "$before_head" = "$after_head" ] && ok "HEAD untouched" || no "HEAD changed: $before_head -> $after_head"
@@ -163,6 +187,25 @@ if [ "${1:-}" = "--selftest" ]; then
   ref2="$(echo "$out2" | awk '{print $1}')"
   [ "$ref2" = "refs/mikrob/ckpt/cafebabe01/2" ] && ok "a second checkpoint for the same card is numbered /2" \
     || no "expected refs/mikrob/ckpt/cafebabe01/2, got $ref2"
+
+  # M1 (card 6ff6d1dc): >=4 concurrent checkpoints for the SAME card must end with that many
+  # DISTINCT ref numbers -- fails on the pre-fix (Gate-SHA 6858f2bbf) check-then-act version, and
+  # on a mutant that drops the old-value argument from update-ref, because two racing runs can
+  # then read the same free n and the second silently overwrites the first instead of being
+  # refused.
+  run_wt concuragent >/dev/null
+  conc_out="$(mktemp -d)"
+  conc_pids=()
+  for i in 1 2 3 4 5 6; do
+    ( MARVEEN_MAIN="$TEST_MAIN" MARVEEN_WORKTREES="$TEST_ROOT" bash "$0" concuragent deadc0de01 \
+        >"$conc_out/$i.out" 2>"$conc_out/$i.err" ) &
+    conc_pids+=("$!")
+  done
+  for p in "${conc_pids[@]}"; do wait "$p" || true; done
+  conc_refs="$(cat "$conc_out"/*.out 2>/dev/null | awk '{print $1}' | sort -u | wc -l)"
+  [ "$conc_refs" = 6 ] && ok "6 concurrent checkpoints for the same card produce 6 distinct refs (no collision)" \
+    || no "expected 6 distinct refs from 6 concurrent runs, got $conc_refs ($(cat "$conc_out"/*.out 2>/dev/null | awk '{print $1}' | sort | tr '\n' ' '))"
+  rm -rf "$conc_out"
 
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
   exit "$fail"
