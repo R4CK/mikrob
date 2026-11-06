@@ -19,6 +19,11 @@ set -euo pipefail
 
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 AGENTS_ROOT="${MARVEEN_AGENTS_ROOT:-/home/neon/marveen/agents}"
+# Cybered NO-GO 28168 L2 (non-blocking, card 0244910e): DASHBOARD_USER_DB_OVERRIDE is a test-only
+# hook into `dashboard-user` (scripts/dashboard-user.ts). This wrapper never needs it, so scrub it
+# from the environment before calling the CLI -- if it were set in the operator's own shell, an
+# inherited override could make a revoke/mint silently act on the wrong database.
+unset DASHBOARD_USER_DB_OVERRIDE
 
 die() { echo "agent-key-provision.sh: $2" >&2; exit "$1"; }
 
