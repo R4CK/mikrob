@@ -3587,7 +3587,7 @@ function buildFrontendFamilySkillUsageBody(): string {
 export function buildDevOFamilySkillUsageBody(): string {
   const rows = [
     '| Minden változtatás | `karpathy-guidelines`, `ponytail`, `karpathycoder` |',
-    '| Több lépéses, kézi jellegű üzemeltetési művelet (credential/secret beállítás, külső dashboard, egyszeri cutover, pl. 7dde8ebc token-rotálás) | `wizard`: a generált lépéssort DevO (vagy MikroB) futtatja, a felhasználó nem; a varázsló soha nem ír ki és nem naplóz titkot; a visszafordíthatatlan/kifelé ható lépés jóváhagyása a felhasználóé marad |',
+    '| Több lépéses, kézi jellegű üzemeltetési művelet (credential/secret beállítás, külső dashboard, egyszeri cutover, pl. 7dde8ebc token-rotálás) | `wizard`: a generált lépéssort DevO (vagy MikroB) futtatja, a felhasználó nem; a varázsló soha nem ír ki és nem naplóz titkot; ami valóban csak emberi beavatkozással megy (2FA, böngészős bejelentkezés harmadik félnél), azt DevO explicit megnevezi egy kérésben, nem ad át futtatandó szkriptet; a visszafordíthatatlan/kifelé ható lépés jóváhagyása a felhasználóé marad |',
     '| API-tervezés (végpont, szerződés, verziózás) | `api-and-interface-design`, `contract-first-codev` (BE+FE pár esetén) |',
     '| Külső API / SDK bekötése | `injected-port-adapters`, context7 + quarantine-reader friss doksi, `fork-adopt-investigation` (hivatalos SDK előbb, 10. szabály) |',
     '| Végpont bővítése | `be-endpoint-param-extension` |',

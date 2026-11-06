@@ -23020,3 +23020,9 @@ untouched; this note is the correction of record.
 
 **Ki döntött:** DevO (fullstack), card 085444e9 fix round (QA FAIL 28515 + WhiteHat2 NO-GO on
 Gate-SHA d3052b38d), Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 219b07ae delta 2: wizard row's human-only clause actually added (correction)
+
+**Döntés:** the previous delta entry above claimed the wizard row stated "truly human-only steps are named explicitly in a request rather than handed over as a runnable script" -- that clause was in the DECISIONS.md prose and the REVIEW text, but had NOT actually been written into the generator (`buildDevOFamilySkillUsageBody` in `src/web/agent-scaffold.ts`) or the seed's rendered block. QA (comment 28646 context) and WhiteHat2 both re-grepped for it on Gate-SHA a17bf838 and found 0 hits for the clause's wording; MikroB flagged it (msg_id:16765). Fixed: the wizard row now reads in full "...a varázsló soha nem ír ki és nem naplóz titkot; ami valóban csak emberi beavatkozással megy (2FA, böngészős bejelentkezés harmadik félnél), azt DevO explicit megnevezi egy kérésben, nem ad át futtatandó szkriptet; a visszafordíthatatlan/kifelé ható lépés jóváhagyása a felhasználóé marad", in both the generator and the seed. Extended the addendum test with two assertions on the wizard row (the 2FA/third-party-login phrase and the "explicit megnevezi egy kérésben" phrase); mutation-verified directly (removed the clause, test went red with the expected AssertionError; restored, test green again, 29/29).
+
+**Ki döntött:** backend2 (card 219b07ae, back to in_progress a second time), per MikroB dispatch (msg_id:16765), finding from QA (28646 context) + WhiteHat2, re-checking REVIEW 28644's claim against the actual Gate-SHA a17bf838 diff. Gate: delta check by QA + WhiteHat2 on this diff only, per the dispatch. Gate-SHA: see REVIEW comment.
