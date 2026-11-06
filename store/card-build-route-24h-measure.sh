@@ -43,7 +43,7 @@ done
 # purpose, rather than silently miscounted as a content decision.
 CAPACITY_REGEX='^(vram-hold|model-busy|kill-switch|no-token|card-unreadable|card-unparseable|empty-text|too-long|bad-card-id|no-argument|route-check-failed|not-installed)$'
 
-[ -f "$LOG" ] || { [ "$JSON" = 1 ] && printf '{"hours":%s,"dispatches":0,"capacity_skipped":0,"content_considered":0,"drafted":0,"continued_with_draft":0,"rejected_draft":0,"exhausted_no_draft":0,"pending_review":0,"dispatcher_self_advance":0,"dispatcher_orchestrator_dispatch":0,"dispatcher_unattributed":0,"decomposed_content":0,"decompose_subtasks_total":0,"decompose_subtasks_drafted":0}\n' "$HOURS" || printf 'card-build-route-24h-measure: no log at %s -- nothing to measure yet\n' "$LOG"; exit 0; }
+[ -f "$LOG" ] || { [ "$JSON" = 1 ] && printf '{"hours":%s,"dispatches":0,"capacity_skipped":0,"content_considered":0,"drafted":0,"freellm_drafted":0,"continued_with_draft":0,"rejected_draft":0,"exhausted_no_draft":0,"pending_review":0,"dispatcher_self_advance":0,"dispatcher_orchestrator_dispatch":0,"dispatcher_unattributed":0,"decomposed_content":0,"decompose_subtasks_total":0,"decompose_subtasks_drafted":0}\n' "$HOURS" || printf 'card-build-route-24h-measure: no log at %s -- nothing to measure yet\n' "$LOG"; exit 0; }
 
 now="$(date +%s)"
 cutoff=$(( now - HOURS * 3600 ))
@@ -110,6 +110,7 @@ EOF
 # and it fails soft -- a card whose comments could not be read counts as "pending_review", never as a
 # false positive in either direction.
 drafted=0
+freellm_drafted=0  # card 4eb3743e: of the above, how many came from the freellm route (vs plain local-RAG)
 continued_with_draft=0
 rejected_draft=0
 pending_review=0
@@ -169,13 +170,19 @@ except Exception:
 if not isinstance(comments, list):
     comments = comments.get("comments", []) if isinstance(comments, dict) else []
 draft_at = None
+draft_body = ""
 for c in comments:
     if (c.get("author") or "").lower() == "local-llm" and "LOCAL-LLM DRAFT" in (c.get("content") or ""):
         at = c.get("created_at") or 0
         if draft_at is None or at > draft_at:
             draft_at = at
+            draft_body = c.get("content") or ""
 if draft_at is None:
     print("no-draft"); raise SystemExit
+# card 4eb3743e: the LATEST draft comment header says its source -- "| freellm]" for the freellm
+# route, anything else (plain local-RAG, or the Gemini-orch file-sink variant) is "other". Tagged
+# alongside the outcome word (space-separated) so this stays a single network read, no second pass.
+freellm_tag = "freellm" if "| freellm]" in draft_body else "other"
 rx = re.compile(r"^[ \t]*Draft-Review[ \t]*:[ \t]*(ELFOGADVA|ELUTAS[IÍ]TVA|R[EÉ]SZBEN|ACCEPTED|REJECTED|PARTIAL)\b", re.I | re.M)
 verdict = None
 for c in comments:
@@ -187,33 +194,35 @@ for c in comments:
     if m:
         verdict = m.group(1).upper()
 if verdict is None:
-    print("draft-pending"); raise SystemExit
+    print("draft-pending " + freellm_tag); raise SystemExit
 if verdict in ("ELUTASITVA", "ELUTASÍTVA", "REJECTED"):
-    print("draft-rejected")
+    print("draft-rejected " + freellm_tag)
 else:
-    print("draft-continued")
+    print("draft-continued " + freellm_tag)
 ' 2>/dev/null)"
-  case "$outcome" in
+  read -r outcome_word outcome_tag <<< "$outcome"
+  case "$outcome_word" in
     no-draft) : ;;
     draft-continued) drafted=$((drafted + 1)); continued_with_draft=$((continued_with_draft + 1)) ;;
     draft-rejected)  drafted=$((drafted + 1)); rejected_draft=$((rejected_draft + 1)) ;;
     draft-pending)   drafted=$((drafted + 1)); pending_review=$((pending_review + 1)) ;;
     *) : ;;  # unreadable / network failure -- counted in neither direction
   esac
+  [ "$outcome_tag" = "freellm" ] && freellm_drafted=$((freellm_drafted + 1))
 done
 
 exhausted_no_draft=$(( content_considered - drafted ))
 [ "$exhausted_no_draft" -ge 0 ] || exhausted_no_draft=0
 
 if [ "$JSON" = 1 ]; then
-  printf '{"hours":%s,"dispatches":%s,"capacity_skipped":%s,"content_considered":%s,"drafted":%s,"continued_with_draft":%s,"rejected_draft":%s,"exhausted_no_draft":%s,"pending_review":%s,"dispatcher_self_advance":%s,"dispatcher_orchestrator_dispatch":%s,"dispatcher_unattributed":%s,"decomposed_content":%s,"decompose_subtasks_total":%s,"decompose_subtasks_drafted":%s}\n' \
-    "$HOURS" "$dispatches" "$capacity_skipped" "$content_considered" "$drafted" "$continued_with_draft" "$rejected_draft" "$exhausted_no_draft" "$pending_review" \
+  printf '{"hours":%s,"dispatches":%s,"capacity_skipped":%s,"content_considered":%s,"drafted":%s,"freellm_drafted":%s,"continued_with_draft":%s,"rejected_draft":%s,"exhausted_no_draft":%s,"pending_review":%s,"dispatcher_self_advance":%s,"dispatcher_orchestrator_dispatch":%s,"dispatcher_unattributed":%s,"decomposed_content":%s,"decompose_subtasks_total":%s,"decompose_subtasks_drafted":%s}\n' \
+    "$HOURS" "$dispatches" "$capacity_skipped" "$content_considered" "$drafted" "$freellm_drafted" "$continued_with_draft" "$rejected_draft" "$exhausted_no_draft" "$pending_review" \
     "$dispatcher_self_advance" "$dispatcher_orchestrator_dispatch" "$dispatcher_unattributed" \
     "$decomposed_content" "$decompose_subtasks_total" "$decompose_subtasks_drafted"
 else
   printf 'card-build-route-24h-measure: last %sh -- %s dispatch(es) routed\n' "$HOURS" "$dispatches"
   printf '  %s kapacitas-okbol draft-kiserlet nelkul (GPU/router nem volt elerheto, nem a kartya tartalma miatt)\n' "$capacity_skipped"
-  printf '  %s tartalmi dontes (draft-kiserlet ELVART), ebbol %s kapott tenylegesen LOCAL-LLM DRAFT kommentet\n' "$content_considered" "$drafted"
+  printf '  %s tartalmi dontes (draft-kiserlet ELVART), ebbol %s kapott tenylegesen LOCAL-LLM DRAFT kommentet (ebbol %s a freellm uton, card 4eb3743e)\n' "$content_considered" "$drafted" "$freellm_drafted"
   printf '    %s a drafttal dolgozott tovabb (Draft-Review: ELFOGADVA/RESZBEN)\n' "$continued_with_draft"
   printf '    %s elutasitotta a draftot es nullarol irta meg (Draft-Review: ELUTASITVA)\n' "$rejected_draft"
   printf '    %s meg nincs elbiralva (draft all, review meg nem erkezett)\n' "$pending_review"

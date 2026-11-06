@@ -64,6 +64,15 @@ RAG="$HERE/local-llm-rag.sh"
 RESOLVE="$HERE/graphify-resolve.py"
 GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
 GEMINI_AGY_CALL="$HERE/gemini-agy-call.sh"
+# FREELLM ROUTE (card 4eb3743e, Peti 12494 "legyen moduralis, kikapcsolhato"): a second, independent
+# fallback for when the LOCAL (7B) path is out for a CAPACITY reason (vram-hold/model-busy/
+# gpu-util-hold, see the VRAM_GUARD sweep-level check below) or local attempts are exhausted on a
+# leaf -- "helyi -> freellm -> online". freellm-call.sh (card ae565be0 pin) owns its own switch
+# (store/freellm-enabled.json, strict {"enabled":true}, missing/invalid = OFF, fail-closed) and its
+# own content gate (gemini-agy-category-check.py + secret/PII scan) -- this script never duplicates
+# either, it only calls it and interprets the exit code (0=draft, 2=disabled, 4=content gate
+# refused, else=call failure). OFFLOAD_FREELLM_CALL overrides the path for tests.
+FREELLM_CALL="${OFFLOAD_FREELLM_CALL:-$HERE/freellm-call.sh}"
 
 # gemini_rest_fallback_enabled: returns 0 if the REST path is explicitly requested, 1 (agy) otherwise.
 # Missing file = OFF = agy is default; present = REST fallback.
@@ -671,6 +680,67 @@ try_gemini_for_leaf() {
     return 0
   fi
   echo "offload-dispatch: leaf $leaf_id -> Gemini call failed (rc=$rc)" >&2
+  attempts_op transient-fail "$leaf_id" >/dev/null
+  return 1
+}
+
+# freellm_draft_comment_body: same contract as gemini_draft_comment_body but for a freellm-sourced
+# draft (card 4eb3743e). Header literally contains "LOCAL-LLM DRAFT | freellm" so (a) it is picked
+# up by card-build-route-24h-measure.sh's existing author=local-llm + "LOCAL-LLM DRAFT" substring
+# match for the general drafted/Draft-Review bookkeeping, and (b) the "| freellm]" tag lets that
+# same script tell it apart from a plain local-RAG draft for the dedicated freellm_drafted field.
+freellm_draft_comment_body() {
+  local leaf_title="$1" content="$2" synthetic="${3:-false}"
+  local review_header=""
+  if [[ "$synthetic" == "true" ]]; then
+    review_header="MECHANIKUS RESZFELADAT (card 501c489f) -- KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT.
+
+"
+  fi
+  printf '%s[LOCAL-LLM DRAFT | freellm] A helyi (7B) ut kapacitas-okbol (vram-hold/model-busy/gpu-util-hold) nem tudta vallalni ezt, vagy kimerultek a helyi probalkozasok -- a freellmapi szabad modelljetol jott ez a draft (card 4eb3743e, Peti 12494). DRAFT-ONLY: a felelos agent reviewlje es integralja, ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): '"'"'Draft-Review: ELFOGADVA'"'"' / '"'"'RESZBEN'"'"' / '"'"'ELUTASITVA'"'"' / '"'"'FELESLEGES'"'"' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b).
+
+#### %s
+%s
+' "$review_header" "$leaf_title" "$content"
+}
+
+# try_freellm_for_leaf: call the free LLM API for a leaf and post the draft comment. Mirrors
+# try_gemini_for_leaf's shape exactly. freellm-call.sh's own exit codes drive the outcome:
+#   0        -> drafted, attempts_op success, post the comment.
+#   4        -> content gate (category or secret/PII) refused -- NOT retryable, mark
+#               categorical-online so this leaf never goes local/freellm again for a reason that
+#               will not change (same reasoning as is_gemini_blocked's veto elsewhere in this file).
+#   2        -> disabled (missing/invalid switch or auth token) -- not an attempt, no bookkeeping,
+#               same as "the route is simply off".
+#   anything else -> transient (quota/auth/network/malformed response), counts toward the leaf's
+#               existing 2-strikes ceiling so a genuinely broken freellm backend does not retry it
+#               forever on every sweep either.
+try_freellm_for_leaf() {
+  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
+  [[ -x "$FREELLM_CALL" ]] || return 1
+
+  local out rc=0
+  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
+
+  if [[ $rc -eq 0 && -n "${out// }" ]]; then
+    attempts_op success "$leaf_id" >/dev/null
+    local body; body="$(freellm_draft_comment_body "$leaf_title" "$out" "$synthetic")"
+    curl -s -X POST "$DASH/api/kanban/$post_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
+    echo "offload-dispatch: leaf $leaf_id -> posted FREELLM DRAFT" >&2
+    return 0
+  fi
+
+  if [[ $rc -eq 2 ]]; then
+    echo "offload-dispatch: leaf $leaf_id -> freellm route is OFF (missing/invalid switch or auth token), no attempt" >&2
+    return 1
+  fi
+  if [[ $rc -eq 4 ]]; then
+    attempts_op categorical-online "$leaf_id" >/dev/null
+    echo "offload-dispatch: leaf $leaf_id -> freellm content gate refused (sensitive), no retry" >&2
+    return 1
+  fi
+  echo "offload-dispatch: leaf $leaf_id -> freellm call failed (rc=$rc)" >&2
   attempts_op transient-fail "$leaf_id" >/dev/null
   return 1
 }
@@ -1529,6 +1599,56 @@ if [[ "${1:-}" == "--test-heavy-reserve" ]]; then
   if reserve_heavy_gemini_slot "${1:-}"; then echo "ok"; exit 0; else echo "capped"; exit 1; fi
 fi
 
+# --test-freellm-attempt [TASK]: calls FREELLM_CALL (overridable via OFFLOAD_FREELLM_CALL; the
+# switch/token/auth-token-file paths freellm-call.sh itself reads are overridable via the SAME env
+# vars a caller would use for the real binary -- FREELLM_SWITCH, FREELLM_AUTH_TOKEN_FILE, etc.) with
+# TASK (arg, else stdin) and classifies the REAL exit code, with NO curl/attempts_op side effect --
+# this is the pure decision try_freellm_for_leaf wraps, exposed read-only like --check-blocked above
+# (card 4eb3743e, "Kesz, ha" 1: switch-off + sensitive-card selftest cases). Prints one word and
+# exits distinctly: "drafted"(0), "disabled"(2), "gate-refused"(4), "failed"(1, anything else).
+if [[ "${1:-}" == "--test-freellm-attempt" ]]; then
+  shift
+  task="${1:-$(cat)}"
+  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>/dev/null)"; rc=$?
+  case "$rc" in
+    0) if [[ -n "${out// }" ]]; then echo "drafted"; exit 0; fi; echo "failed"; exit 1 ;;
+    2) echo "disabled"; exit 2 ;;
+    4) echo "gate-refused"; exit 4 ;;
+    *) echo "failed"; exit 1 ;;
+  esac
+fi
+
+# --test-capacity-route: stdin = a leaves JSON array (same id/title/description shape as LEAVES_JSON).
+# Simulates the GPU-hold (capacity) sweep branch's per-leaf freellm routing decision WITHOUT a live
+# dashboard or attempts-file write -- same FREELLM_CALL classification as --test-freellm-attempt
+# above, applied per leaf. Prints "<leafId> <outcome>" per line (card 4eb3743e, "Kesz, ha" 1/2: the
+# GPU-hold case, by name, drafting via freellm).
+if [[ "${1:-}" == "--test-capacity-route" ]]; then
+  shift
+  while IFS='|' read -r b64id b64title b64desc; do
+    [[ -z "$b64id" ]] && continue
+    lid="$(printf '%s' "$b64id" | base64 -d)"
+    ltitle="$(printf '%s' "$b64title" | base64 -d)"
+    ldesc="$(printf '%s' "$b64desc" | base64 -d)"
+    ltask="$ltitle
+
+$ldesc"
+    out="$(printf '%s' "$ltask" | bash "$FREELLM_CALL" 2>/dev/null)"; rc=$?
+    case "$rc" in
+      0) if [[ -n "${out// }" ]]; then echo "$lid drafted"; else echo "$lid failed"; fi ;;
+      2) echo "$lid disabled" ;;
+      4) echo "$lid gate-refused" ;;
+      *) echo "$lid failed" ;;
+    esac
+  done < <(python3 -c '
+import json, sys, base64
+for l in json.load(sys.stdin):
+    fields = [l["id"], l["title"], l["description"]]
+    print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
+')
+  exit 0
+fi
+
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
@@ -1783,6 +1903,13 @@ $leaf_desc"
       elif gemini_heavy_second_opinion_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" && reserve_heavy_gemini_slot "$leaf_id"; then
         try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
       fi
+      # FREELLM FALLBACK when local attempts are exhausted (card 4eb3743e, "helyi -> freellm ->
+      # online"): independent of the Gemini switches above (both may be off, both may be on --
+      # whichever responds first with a usable draft wins; freellm-call.sh's own switch/content
+      # gate decide whether it even tries).
+      if try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic"; then
+        return 0
+      fi
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
@@ -1803,7 +1930,39 @@ VRAM_GUARD="${OFFLOAD_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
 if [[ -f "$VRAM_GUARD" ]]; then
   vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
   if [[ "$vram_rc" -ne 0 ]]; then
-    echo "offload-dispatch: SKIPPED -- the local model cannot take work now (${vram_line:-no output}, rc=$vram_rc). Nothing was drafted; the cards are untouched and go online as usual." >&2
+    echo "offload-dispatch: the local model cannot take work now (${vram_line:-no output}, rc=$vram_rc)." >&2
+    # GPU-HOLD -> FREELLM (card 4eb3743e): a capacity hold (vram-hold/model-busy/gpu-util-hold) used
+    # to always mean "exit 0, nothing drafted". Now, before giving up, try freellm-call.sh for each
+    # leaf -- it is its own gate (switch + content check), so a disabled/refused leaf here costs
+    # nothing beyond the one subprocess call. Still exits 0 either way: a capacity hold with no
+    # freellm draft is exactly the prior (unconditional-skip) behaviour, not a new failure mode.
+    freellm_capacity_drafted=0
+    while IFS='|' read -r b64id b64title b64desc b64synthetic; do
+      [[ -z "$b64id" ]] && continue
+      lid="$(printf '%s' "$b64id" | base64 -d)"
+      precheck_status="$(attempts_op check "$lid" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status","pending"))' 2>/dev/null)"
+      [[ "$precheck_status" == "done" || "$precheck_status" == "exhausted" ]] && continue
+      ltitle="$(printf '%s' "$b64title" | base64 -d)"
+      ldesc="$(printf '%s' "$b64desc" | base64 -d)"
+      lsynthetic="$(printf '%s' "$b64synthetic" | base64 -d)"
+      lpost_id="${lid%%~*}"
+      ltask="$ltitle
+
+$ldesc"
+      if try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
+        freellm_capacity_drafted=$(( freellm_capacity_drafted + 1 ))
+      fi
+    done < <(printf '%s' "$LEAVES_JSON" | python3 -c '
+import json, sys, base64
+for l in json.load(sys.stdin):
+    fields = [l["id"], l["title"], l["description"], str(bool(l.get("synthetic", False))).lower()]
+    print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
+')
+    if [[ "$freellm_capacity_drafted" -gt 0 ]]; then
+      echo "offload-dispatch: $CARD -> GPU-hold, posted freellm draft(s) [$freellm_capacity_drafted leaf attempt(s)]" >&2
+    else
+      echo "offload-dispatch: $CARD -> GPU-hold, no freellm draft (disabled/refused/failed). Nothing was drafted; the card is untouched and goes online as usual." >&2
+    fi
     exit 0
   fi
 fi
