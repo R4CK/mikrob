@@ -396,6 +396,39 @@ check "H2 positive control: schtasks fired" "/run /TN MikroB-GPU-Driver-Install"
 check "H2 positive control: receipt still present" "appr-h2-pos" \
   "$(python3 -c "import json; print(json.load(open('$TMP/trigger-receipt.json')).get('approvalId'))" 2>/dev/null)"
 
+# --- B4 (Cybered NO-GO 27974): the legacy-state migration (an OLDER state file that only ever
+# had lastTriggeredApprovalId, no usedApprovalIds list) is the ONLY replay guard for approvals
+# fired before the server-side consume existed, and no existing case exercises it -- a mutant
+# replacing the migration body with `pass` passes every case above unnoticed. Write a
+# legacy-FORMAT state file by hand (no usedApprovalIds key at all) naming an id, then present
+# that SAME id as a fresh approved row: it must be treated as already used, no schtasks call.
+LEGACY_STATE="$TMP/trigger-state-legacy.json"
+printf '{"lastTriggeredApprovalId":"appr-legacy","lastTriggeredAt":%s}' "$NOW" > "$LEGACY_STATE"
+write_fixtures '[{"id":"appr-legacy","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+RC=0
+: > "$TMP/curl-calls.txt"
+: > "$TMP/schtasks-calls.txt"
+GPU_DRIVER_INSTALL_CURL_BIN="$FAKE_CURL" \
+CURL_CALL_LOG="$TMP/curl-calls.txt" \
+CURL_FIXTURE_APPROVALS="$APPROVALS_FIXTURE" \
+CURL_FIXTURE_INPROGRESS="$INPROGRESS_FIXTURE" \
+CURL_FIXTURE_CONSUME="$CONSUME_OK_FIXTURE" \
+GPU_DRIVER_INSTALL_SCHTASKS_BIN="$FAKE_SCHTASKS" \
+SCHTASKS_CALL_LOG="$TMP/schtasks-calls.txt" \
+GPU_DRIVER_INSTALL_CHECK_BIN="$FAKE_CHECK" \
+GPU_DRIVER_INSTALL_WSL_INTEROP_RESOLVE="$FAKE_INTEROP" \
+GPU_DRIVER_INSTALL_TOKEN_FILE="$TMP/token" \
+GPU_DRIVER_INSTALL_API="http://fake" \
+GPU_DRIVER_INSTALL_APPROVAL_CATEGORY="gpu-driver-silent-install" \
+GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S=3600 \
+GPU_DRIVER_INSTALL_STATE="$LEGACY_STATE" \
+GPU_DRIVER_INSTALL_DRIVER_STATE="$DRIVER_STATE_FIXTURE" \
+GPU_DRIVER_INSTALL_RECEIPT_PATH="$TMP/trigger-receipt-legacy.json" \
+GPU_DRIVER_SILENT_INSTALL=on \
+  bash "$BIN" >"$TMP/stdout.txt" 2>&1 || RC=$?
+check "B4 legacy-state migration: exit 0 (no-op, already used)" "0" "$RC"
+check "B4 legacy-state migration: no schtasks call" "" "$(cat "$TMP/schtasks-calls.txt")"
+
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"
   exit 0
