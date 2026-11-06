@@ -83,6 +83,21 @@ rc=0; run "card2" "$WORK/good2.txt" "backend" >"$WORK/out3.txt" 2>&1 || rc=$?
 t_ok "$rc" 2 "mismatched readback refuses with exit 2"
 grep -q "/move" "$WORK/calls.log" && { echo "  FAIL move was attempted despite a mismatched readback"; fail=1; } || echo "  ok   move was never attempted after a mismatch"
 
+# 4. L1 delta: invisible-only / too-short bodies refuse before touching the board, same as a
+#    fully blank file -- a visually-empty REVIEW should not sail through just because it has a
+#    stray byte in it.
+printf '\xe2\x80\x8b\xe2\x80\x8b\xe2\x80\x8b' >"$WORK/invisible.txt"   # three U+200B zero-width spaces
+: >"$WORK/calls.log"
+rc=0; run "card3" "$WORK/invisible.txt" "backend" >"$WORK/out4.txt" 2>&1 || rc=$?
+t_ok "$rc" 1 "invisible-only (U+200B) body refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL invisible-only file still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   invisible-only file never touched the board"; fi
+
+printf 'x' >"$WORK/onechar.txt"
+: >"$WORK/calls.log"
+rc=0; run "card4" "$WORK/onechar.txt" "backend" >"$WORK/out5.txt" 2>&1 || rc=$?
+t_ok "$rc" 1 "1-character body refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL 1-char file still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   1-char file never touched the board"; fi
+
 echo "post-review.sh selftest: $n checks"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"

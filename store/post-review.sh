@@ -37,8 +37,26 @@ if [ -z "$card" ] || [ -z "$file" ] || [ -z "$actor" ]; then
   exit 1
 fi
 
-if [ ! -r "$file" ] || ! grep -q '[^[:space:]]' "$file"; then
-  echo "REFUSED: $file is missing or blank -- no comment posted, card $card untouched." >&2
+if [ ! -r "$file" ]; then
+  echo "REFUSED: $file is missing -- no comment posted, card $card untouched." >&2
+  exit 1
+fi
+
+# WhiteHat L1 (card 88b67fb4 delta): the old check was ASCII-whitespace-only (`grep [^[:space:]]`),
+# so a file holding only invisible/format characters (U+200B zero-width space, U+FEFF BOM, NBSP)
+# or a single stray character read as non-blank and sailed through to waiting -- the same
+# visually-empty REVIEW the incident this script exists for, just dressed differently. Strip
+# whitespace AND Unicode format/control/separator categories (Cf/Cc/Zs) before measuring, and
+# require a minimum of real content, not just non-zero length.
+_meaningful_len="$(python3 -c '
+import sys, unicodedata
+with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
+    text = f.read()
+stripped = "".join(ch for ch in text if not (ch.isspace() or unicodedata.category(ch) in ("Cf", "Cc", "Zs")))
+print(len(stripped))
+' "$file" 2>/dev/null)"
+if [ -z "$_meaningful_len" ] || [ "$_meaningful_len" -lt 10 ] 2>/dev/null; then
+  echo "REFUSED: $file is blank, whitespace/invisible-only, or too short (meaningful length ${_meaningful_len:-0} < 10) -- no comment posted, card $card untouched." >&2
   exit 1
 fi
 

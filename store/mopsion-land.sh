@@ -603,11 +603,28 @@ done
 # shows up as STALE to heartbeat-consolidated later instead of leaving no trace at all. The EXIT
 # trap covers every exit path in the rest of this script (die(), a plain `exit N`, or falling off
 # the end) with one write -- best-effort, a journal failure must never fail or block a landing.
+#
+# WhiteHat M1 (delta re-gate): `cleanup()` below ALSO sets `trap cleanup EXIT` once $WT exists,
+# and bash keeps only ONE handler per signal -- that second registration used to silently replace
+# this one, so the journal's `finish` line never ran for any landing that got as far as creating
+# the worktree, i.e. every healthy run. `cleanup` is defined and bound to EXIT ONCE, here, before
+# anything else can register its own EXIT trap, and does both jobs itself: worktree removal
+# (guarded on $WT being set -- it is not yet, this early) and the journal finish (guarded on
+# $_LAND_RUN_ID). The exit status is captured as the very first statement so neither job's own
+# commands can clobber the status the trap is reporting.
 _LAND_RUN_JOURNAL="$(dirname "$0")/land-run-journal.sh"
 _LAND_RUN_ID="$(bash "$_LAND_RUN_JOURNAL" start mopsion-land.sh "${LANDED_BY:-unknown}" "$CARD" 2>/dev/null || true)"
-if [ -n "$_LAND_RUN_ID" ]; then
-  trap 'bash "$_LAND_RUN_JOURNAL" finish "$_LAND_RUN_ID" "$?" >/dev/null 2>&1 || true' EXIT
-fi
+cleanup() {
+  local _rc=$?
+  if [ -n "${WT:-}" ]; then
+    git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${_LAND_RUN_ID:-}" ]; then
+    bash "$_LAND_RUN_JOURNAL" finish "$_LAND_RUN_ID" "$_rc" >/dev/null 2>&1 || true
+  fi
+  return "$_rc"
+}
+trap cleanup EXIT
 
 # THE GATE VERDICT, checked against the board before anything else happens (card 9081d02d). Placed
 # here on purpose: it is the cheapest precondition in the script, so a landing that should not
@@ -711,8 +728,10 @@ fi
 
 rm -rf "$WT"
 git -C "$MAIN" worktree add --detach -q "$WT" origin/main || die 3 "could not create the landing worktree"
-cleanup() { git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1; }
-trap cleanup EXIT
+# cleanup() and its EXIT trap are already registered above (near the journal `start` call) --
+# registering `trap cleanup EXIT` a second time here used to silently replace that first binding
+# instead of adding to it (WhiteHat M1), which is exactly why it is not repeated now. $WT is set
+# just above, which is all the earlier registration needed to also start removing the worktree.
 
 # DECISIONS.md TAIL-APPEND PRE-CHECK (card 375a81c1), on the CARD BRANCH ALONE, before the merge is
 # even attempted. $WT's HEAD is origin/main right now (just checked out above), so its merge-base
