@@ -1023,6 +1023,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectEgressGate(existing)
   injectGitProtectGuard(existing)
   injectNpmProtectGuard(existing)
+  injectDbWriteGuard(existing)
   injectSymlinkedNodeModulesGuard(existing)
   injectAgentKeySecretGuard(existing)
   injectBlastRadiusGuard(existing)
@@ -1703,6 +1704,31 @@ export function injectNpmProtectGuard(existing: Record<string, unknown>): void {
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('npm-protect-guard.py')),
+    entry,
+  ]
+}
+
+// Idempotently wire the db-write-guard PreToolUse hook (card c1766c6c, 7391f09a follow-up): blocks
+// a direct sqlite3/python3-sqlite3 INSERT/UPDATE/DELETE/REPLACE (or more destructive verb) against
+// store/claudeclaw.db's dashboard_users/auth_sessions/approvals tables -- the dashboard's own
+// auth/session/approval state, which the dashboard API hashes, validates and audit-logs on write; a
+// raw sqlite write bypasses all of that. Narrow, fork-shaped (same pattern as its git/npm siblings),
+// deliberately NOT upstream's db-write-gate.mjs (DECISIONS.md, 7391f09a REJECT: that file needs this
+// fork's self-pace-gate.mjs to carry a multi-surface-deny engine it does not have). Applied to EVERY
+// agent, main included, for the same reason as git-protect-guard: the database is shared.
+export function injectDbWriteGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-guard.py'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('db-write-guard.py')),
     entry,
   ]
 }

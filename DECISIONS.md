@@ -22904,3 +22904,15 @@ started via the exact same `systemctl --user start` call the fixed script issues
 `ollama.service` (PID 421) was never stopped and kept answering `/api/tags` throughout.
 
 **Ki döntött:** DevO (fullstack), card 085444e9, Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- correction: real Gate-SHA for the 7391f09a and 6ff6d1dc entries (card c1766c6c)
+
+**Döntés:** Two DECISIONS.md entries above ("upstream gates db-write-gate.mjs + fleet-freeze-gate.sh
+decided..." card 7391f09a, and "F1.1.3: agent-checkpoint.sh M1/L1/L2/L3 fixes" card 6ff6d1dc) end
+with "Gate-SHA: see REVIEW comment" instead of an actual sha -- a placeholder that does not survive
+outside the card's own comment thread. The real, landed, ancestor-verified Gate-SHA for BOTH
+(gated together in the same round, QA PASS + CYBERSEC GO, `gate-closure-check.py` AGREE) is
+`bf96324335b4c30eecbd893eaa517d7e14297c5a` (`git merge-base --is-ancestor bf96324335b4c30eecbd893eaa517d7e14297c5a origin/develop` succeeds). Per the tail-append rule the two old entries are left
+untouched; this note is the correction of record.
+
+**Ki döntött:** DevO (fullstack), card c1766c6c (7391f09a follow-up), Gate-SHA: see REVIEW comment.
