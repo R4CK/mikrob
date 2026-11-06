@@ -22854,3 +22854,14 @@ Negativ teszt mindket bypass-ra (upstream uj tesztjei is zoldek): `scripts/__tes
 `ACKNOWLEDGED_UPSTREAM_BLOBS` (src/fork-upstream/acknowledged-conflicts.ts) 7 bejegyzese frissitve az a6325a498-nal tenylegesen mert blobra: `.claude/settings.json`, `scripts/email-send-gate.mjs`, `scripts/hooks/outgoing-copy-gate.py`, `scripts/hooks/email-approval-gate.py`, `scripts/hooks/email_extract.py`, `scripts/hooks/credential-gate.py`, `src/web/agent-scaffold.ts`, `src/__tests__/email-send-gate.test.ts`, `src/__tests__/project-settings-hook-anchor.test.ts`.
 
 **Ki dontott:** backend3 (card bb562959), MikroB dontes 16480 (valodi merge --no-ff, contiguous tartomany) + a kartya sajat "ket meresi bypass a fork szerkezeten belul" kotelezo pontja. Gate: QA + Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959 kiegeszites: fleet-test utojavitas
+
+A fenti merge (c6dc3c0be) utani `fleet-test.sh --ref` lelete ket apro, viselkedest nem erinto hibat
+talalt: 2 uj teszt-fajl (`outgoing-copy-gate-ekezet1018.test.py`, `-kapues1018-hatar.test.py`) nem
+futtathato bitkent volt nyilvantartva (`git update-index --chmod=+x`), es az `email-approval-gate.py`
+egyik kozmetikai uzenete nem nevezte meg az `email_extract.py` modult egy mar korabban is ismert,
+dokumentalt esetben. Mindket javitas kulon commitban (3da4aa767), ugyanaz a Gate-SHA erinti a
+teljes merge-landolast.
+
+**Ki dontott:** backend3 (card bb562959). Gate: QA + Cybersec + Cybered (valtozatlan).
