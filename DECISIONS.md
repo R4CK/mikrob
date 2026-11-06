@@ -22813,3 +22813,12 @@ backend (a javítás).
 - `src/web/agent-scaffold.ts`: QA_FAMILY, WHITEHAT_FAMILY, REDHAT_FAMILY set-ek + 3 curated builder function a generátorban.
 
 **Hivatkozás:** kártya 3bf6a01a, backend agent, `seed-fleet-agents/*/CLAUDE.md`, `src/web/agent-scaffold.ts`, `src/__tests__/agent-scaffold-skill-usage.test.ts`.
+
+## 2026-10-31 -- Upstream-drift round: 2 undecided files resolved, 1 stale blob bumped (card 7f0efce3)
+
+**Dontes:**
+- `scripts/hooks/telegram_progress_clear.py`: KEEP FORK -- comment-only diff, both sides describe identical already-ported #2269 behaviour with different attribution style.
+- `src/web/agent-bundle.ts`: KEEP FORK FOR NOW -- upstream's RESERVED_AGENT_IDS concept (heartbeat/telegram-coordinator/channel-coordinator) does not exist anywhere in this fork; adopting it is not a 2-line swap. Fork's isReservedSenderId (card b46a4b7e) stays; FIXED_RESERVED_AGENT_IDS porting is a follow-up.
+- `.claude/settings.json` blob bumped 7c692deff999->a4d62d48e5d8; four new upstream additions noted (permissions.deny block, hook script replacements), none adopted; UNDECIDED resolution unchanged.
+
+**Ki dontott:** DevO (fullstack), card 7f0efce3, Gate-SHA 59192f3e8b929cf84b5b410b511679efe7b976d4.
