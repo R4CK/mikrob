@@ -22983,3 +22983,22 @@ Teszt: a teljes kg-* csomagcsalad (22 fajl) + `kanban-assignee-guard.test.ts` + 
 
 **Ki dontott:** backend3 (kartya 80ab5067), Cybersec GO 28465 L1/I1 pontjai alapjan (MikroB 16665
 dontese: fold in). Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 4: fleet-test regresszio -- valodi magyar nev tiltva hibasan
+
+**Dontes:** a teljes `fleet-test.sh --ref` lelete: a delta 1 fail-closed szabalya (BARMILYEN
+nem-ASCII maradek = tiltott) valodi regressziot okozott -- `src/__tests__/commands-read.test.ts`
+sajat fixturai valodi magyar tulajdonos-neveket hasznalnak assignee-kent ("andrás", "András"),
+amik nem hasonmasai semminek, csak sima magyar szavak. Javitas: a magyar abc sajat, ZART
+kiterjesztese (á é í ó ö ő ú ü ű + nagybetus parjaik, 9 betu, sosem novekszik) megengedett az
+ASCII mellett; minden mas nem-ASCII maradek tovabbra is tiltott. Egy `Script=Latin`-alapu
+alternativat is kiprobaltam es elvetettem: a small-caps fonetikus-kiterjesztes hasonmasok
+(ᴍɪᴋʀᴏʙ) Unicode szerint Script=Latin-kent vannak besorolva, tehat egy ilyen szures csendben
+visszanyitotta volna pont azt a resest, amit a WhiteHat F3/RedHat delta B2 korabban zart.
+
+Teszt: valodi magyar nevek ("andrás", "András", "Mónika") nem tiltottak; minden korabbi eset
+(Cirill а/п/д, Gorog ι/κ/ο/ρ, Armeny օ, Torok ı/İ, small-caps, Hangul filler/U+115F) tovabbra is
+tiltott. Teljes kg-* csaladok (23 fajl) + `kanban-assignee-guard.test.ts` + `db.test.ts` +
+`commands-read.test.ts`: 413/413. tsc+eslint clean.
+
+**Ki dontott:** backend3 (kartya 80ab5067), sajat fleet-test lelet alapjan. Gate: QA + Cybersec.
