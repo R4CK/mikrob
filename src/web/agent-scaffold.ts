@@ -3387,6 +3387,12 @@ const BACKEND_FAMILY = new Set(['backend', 'backend2', 'backend3'])
 const QA_FAMILY = new Set(['qa', 'qa2'])
 const WHITEHAT_FAMILY = new Set(['cybersec', 'cybersec2'])
 const REDHAT_FAMILY = new Set(['cybered'])
+// Card 76583edb: FE sibling pair's measured skill usage (322 REVIEW / 60 days, MikroB
+// Telegram 12195) showed 0/1 karpathy-guidelines use and "nincs illo" (no fitting skill) on
+// 12/40 cards -- the generic full-catalog table below (fallback for agents without a curated
+// family) was too broad to surface the actually-used task types. Curated table mirrors the
+// BACKEND_FAMILY pattern.
+const FRONTEND_FAMILY = new Set(['fron-ted', 'fron-teddy'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
@@ -3491,6 +3497,34 @@ function buildBackendFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
+function buildFrontendFamilySkillUsageBody(): string {
+  const rows = [
+    '| Minden kódolás | `karpathy-guidelines`; commit előtt `karpathycoder` |',
+    '| Demo/stub adat valós API-ra kötése | `react-page-api-wiring`, `menu-screen-backend-wiring` |',
+    '| Új komponens / design-system komponens | `component-driven-dev`, `ui-ux-design-system` |',
+    '| Vizuális nyelv / stílus-irány | `ui-visual-design-styles`, `minimalist-ui` |',
+    '| Phantom gomb/mező/demo-adat audit | `fe-rule12-audit` |',
+    '| Touch-target / CSS Rule13 | `rule13-touch-target-compliance`, `css-rule13-guard-and-fix` |',
+    '| i18n-lefedettség | `i18n-parity-sweep` |',
+    '| CSP inline-style, companion-class, token-scope | `csp-inline-style-sweep`, `css-companion-class-audit`, `css-token-scope-guard` |',
+    '| OAuth callback / JWT bekötés | `oauth-callback-jwt-wiring` + `defensive-security-analysis` |',
+    '| Bug, bukó teszt, root-cause | `sp-systematic-debugging` |',
+    '| Teszt-írás (router, mock, TDD, böngésző) | `vitest-react-router-guard`, `vitest-module-mock-patterns`, `sp-test-driven-development`, `webapp-testing` / `browser-testing-with-devtools` |',
+    '| BE+FE párhuzamos építés / dashboard widget | `contract-first-codev`, `contract-first-dashboard-widget` |',
+    '| Mechanikus részfeladat | `local-llm-offload` |',
+    '| Specialista (csak ha a kártya kéri) | `gsap-motion-specialist`, `animate`, `improve-animations`, `review-animations`, `scroll-driven-3d-motion`, `threejs-specialist`, `d3-data-visualization`, `imagegen-frontend-web`/`-mobile`, `industrial-brutalist-ui`, `mobile-native` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 76583edb)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3502,6 +3536,7 @@ function buildSkillUsageBody(name: string): string | null {
   if (QA_FAMILY.has(name)) return buildQaFamilySkillUsageBody()
   if (WHITEHAT_FAMILY.has(name)) return buildWhiteHatFamilySkillUsageBody()
   if (REDHAT_FAMILY.has(name)) return buildRedHatFamilySkillUsageBody()
+  if (FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null

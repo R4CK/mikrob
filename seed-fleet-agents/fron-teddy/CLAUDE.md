@@ -265,6 +265,24 @@ Ha egy kártya új user-facing funkciót vagy nagyobb bővítést kér, és a k�
 - `feature-orchestrator` (nagy, többlépéses funkció átgondolása és átadó prompt), a flottára IGAZÍTVA: a subagent-roster MINDEN szerepre fixen `sonnet`/`medium` (18. szabály, ne kérdezz opust); a Session-2 reviewer csak önellenőrzés, a sign-off a gate-poolé (4. szabály); szállítás REVIEW + waiting + gate + landoló script, nem PR-javaslat; a Session-1 eredménye a PRD-be / modultervbe és a kanban-bontásba megy.
 - A REVIEW `Skills:` sorában jelöld, ha használtad.
 
+## KÖTELEZŐ: Karpathy loop + design-mockup folyamat minden UI-kártyánál (Peti szabály 2026-10-24, Telegram 12196/12215/12216, kártya 76583edb)
+
+Minden kódot író/módosító kártya ELSŐ lépése, még a kódolás előtt: töltsd be a `karpathy-guidelines` skillt a `Skill` toollal, és kövesd a négy elvét (gondolkodj kódolás előtt -- feltételezések kimondva; egyszerűség először; sebészi változtatás; cél-vezérelt végrehajtás -- ellenőrizhető siker-kritérium). Commit előtt a `karpathycoder` önellenőrzés. Kivétel csak a triviális, egysoros javítás.
+
+**DESIGN-MOCKUP FOLYAMAT** (új képernyő vagy érdemi UI-változás; triviális tweaknél kihagyandó):
+1. Flow + IA: `user-flow-menu-design`, `menu-system-architect`.
+2. Kutatás + irány: `frontend-design-research`, taste-folyamat (`taste-skill` / `design-taste-frontend` dial-ek + pre-flight; dashboardnál a taste-skill saját kizárása szerint csak az irány-részt), `emil-design-eng`, `apple-design`, `pick-ui-library`.
+3. Mockup: Stitch (`stitch-cloud-upload` + Stitch MCP) ÉS/VAGY Claude Design (Artifact design típus); több változat: `prototype`. Ha a Claude Design az ügynök sessionjében nem érhető el, azt a REVIEW mondja ki ("Claude Design: Nem található ebben a sessionben"), és a Stitch az út.
+4. **BEMUTATÁS ÉS TISZTÁZÁS.** A mockup linkje/képe a kártyára + inter-agent üzenet MikroB-nak, aki Petinek továbbítja. Tisztázó kérdések: egyesével, ha egy válasz elágaztatja a flow-t; csomagban, ha függetlenek (Peti 12181). **Amíg nincs jóváhagyás, tegyél a kártyára egy `MOCKUP-JÓVÁHAGYÁS-VÁR` kommentet, és a kódolás NEM indul.**
+5. Kódolás a Karpathy loop szerint.
+6. Polish (ibelick + meglévő): `baseline-ui`, `improve-ui`, `fixing-accessibility`, `fixing-motion-performance`, `wcag-overlay-patterns`, `a11y-audit`; projekt-szinten `create-design-md` (DESIGN.md). A `redesign-skill` CSAK Peti kifejezett jóváhagyásával futhat már élesben működő, kész felületre, mockup-jóváhagyás után (5. kódminőségi alapelv). Külső placeholder-kép (picsum/Unsplash/Pexels) éles kódba NEM kerülhet (CSP + adatvédelem) -- helyette `data:` URI vagy saját `/assets`.
+
+**REVIEW formátum** (a Gate-SHA:/Skills: sorok mellett, a backend-mintájú kódíró fókusz kiterjesztése):
+- `Simplicity: <egy mondat: a legegyszerűbb módszer, ami megoldja a problémát -- vagy "n/a, ha a kártyán nincs kódminőségi lelet">`
+- `Security-self-check: <egy mondat a defensive-security-analysis önellenőrzésről -- az érintett XSS/CSP/authz pont, vagy "n/a" indokkal, ha nincs ilyen érintett pont>`
+
+**FELADATTÍPUS -> SKILL TÁBLA**: lásd a lenti generált szekciót (kártya 76583edb).
+
 ## UI-polish és animáció: Emil Kowalski skillek (Peti szabály 2026-10-05, Telegram 10502)
 
 Saját skill-mappádban (`.claude/skills/`) vannak, csak a frontend-ügynököknek. Minden UI-kártyánál használd őket, a feladat szerint:
@@ -278,67 +296,24 @@ Saját skill-mappádban (`.claude/skills/`) vannak, csak a frontend-ügynökökn
 - A REVIEW `Skills:` sorában nevezd meg, melyiket használtad.
 
 <!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
-## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+## Skill-használat: feladattípus -> skill (generált, kártya 76583edb)
 
-Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
-nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
-szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
-tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
-amikor abban nincs ott a kártyádhoz illő skill.
-**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
-CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.
 
-| Skill | Feladattípus |
+| Feladattípus | Skill(ek) |
 |---|---|
-| `3dwebsiteoperatingsystem` | A complete operating system for designing and building premium, agency-quality 3D animated websites — information architecture, visual identity, 3D interaction system, animation... |
-| `ai-evals` | Create an AI Evals Pack (eval PRD, test set, rubric, judge plan, results + iteration loop). See also: building-with-llms (build), ai-product-strategy (strategy). |
-| `building-with-llms` | Produce an LLM Build Pack (prompt+tool contract, data/eval plan, architecture+safety, launch checklist). See also: ai-evals (eval only), ai-product-strategy (strategy only). |
-| `cinematic3dexperience` | Transforms an ordinary website into a cinematic, story-driven 3D journey using interactive scenes, camera movements, scroll-driven storytelling, parallax layers, lighting effect... |
-| `d3-data-visualization` | Build interactive, accessible data visualizations with D3.js -- bar/line/area/pie/scatter, time series, maps/choropleth, network graphs, with tooltips, zoom/pan/brush, and respo... |
-| `documentation-and-adrs` | Records decisions and documentation. Use when you need to document an architecture decision (ADR) or the reasoning behind a design choice, when changing public APIs, shipping fe... |
-| `domain-modeling` | Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a GLOSSARY.md, or recording or editing an ADR. |
-| `doubt-driven-development` | Subjects every non-trivial decision to a fresh-context adversarial review before it stands. |
-| `evaluating-new-technology` | Create a Technology Evaluation Pack (problem framing, options matrix, build vs buy, pilot plan, decision memo). See also: evaluating-trade-offs (general decisions). |
-| `evaluating-trade-offs` | Produce a Trade-off Evaluation Pack (options matrix, cost table, impact ranges, recommendation). See also: evaluating-new-technology (tech-specific). |
-| `feature-orchestrator` | Guide an iterative product and technical discussion, then turn the settled feature into a copy-ready orchestration prompt for a separate implementation session with a user-chose... |
-| `frontend-design-research` | Research current web design on awwwards.com and dribbble.com and translate it into a modern, production-grade frontend implementation. |
-| `grill-with-docs` | A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go. |
-| `grilling` | Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases. |
-| `gsap-motion-specialist` | Deep GSAP motion engineering -- tweens, timelines, eases, stagger, ScrollTrigger (scrub/pin/snap), SVG animation (stroke draw, morph, motion path), text reveals, sequencing, and... |
-| `humanize-writing` | AI-generált szöveget emberi hangzásúvá alakít -- AI-kliséket felismer és eltávolít, ritmust variál, specifikusságot injektál, brand-voice-t alkalmaz. |
-| `imagegen-frontend-mobile` | Elite mobile app image-generation skill for creating premium, app-native screen concepts and flows. Designed for iOS, Android, and cross-platform mobile products. |
-| `imagegen-frontend-web` | Elite frontend image-direction skill for generating premium, conversion-aware website design references. |
-| `industrial-brutalist-ui` | Raw mechanical interfaces fusing Swiss typographic print with military terminal aesthetics. |
-| `interview-me` | Extracts what the user actually wants instead of what they think they should want. |
-| `managing-tech-debt` | Produce a Tech Debt Management Pack (debt register, scoring, refactor vs rewrite memo, paydown plan). |
-| `minimalist-ui` | Clean editorial-style interfaces. Warm monochrome palette, typographic contrast, flat bento grids, muted pastels. No gradients, no heavy shadows. |
-| `module-spec-design` | KÖTELEZŐ sablon és mélység minden modul tervezéséhez (Peti szabály 2026-10-02). |
-| `premiumuimotionsystemprompt` | Acts as an award-winning product designer to design a complete luxury interface and motion system for a website — typography, spacing, grids, color, glassmorphism, cards, button... |
-| `problem-definition` | Define a product problem: problem statement, JTBD, alternatives, evidence, metrics. See also: writing-prds (solution spec). |
-| `running-design-reviews` | Run high-signal design reviews: brief, feedback log, decision record, follow-up plan. |
-| `scoping-cutting` | Right-size scope for a fixed timebox: minimum lovable slice, cut list, scope-creep guardrails. See also: managing-timelines (deadline plans). |
-| `scroll-driven-3d-motion` | Build creative, high-end motion and 3D web experiences -- scroll storytelling, Three.js/WebGL scenes, GSAP + ScrollTrigger scrubbed timelines, camera paths, fly-throughs and roo... |
-| `seniorfrontenddeveloper` | Senior frontend engineering for React/Next.js — scaffolds projects, generates typed components/hooks with tests and Storybook, analyzes bundle size, and enforces performance, ac... |
-| `shipping-products` | Plan product launch/release: rollout/rollback plan, comms, monitoring, post-launch review. See also: launch-marketing (marketing side). |
-| `technical-roadmaps` | Turn engineering strategy into a Technical Roadmap Pack (diagnosis, roadmap table, initiative briefs). |
-| `threejs-specialist` | Deep Three.js / WebGL engineering -- scene graph, cameras, lights & shadows, PBR materials, geometry, textures, the render loop, raycasting/interaction, GLTF/GLB loading, custom... |
-| `ui-ux-design-system` | Architect and audit a real design SYSTEM and run a gold-standard interface review -- token→primitive→component→pattern layering, UX heuristics (Nielsen), visual hierarchy, color... |
-| `ui-ux-pro-max` | GENESIS UI/UX Gold Standard. 28 award-winning techniques, 5 engines, 24 CSV databases. Design intelligence + creative execution + modern CSS-native + micro-interactions. |
-| `ui-visual-design-styles` | Apply modern web visual-design languages -- UI/UX fundamentals, design-token systems, glassmorphism (glassify) and flat / flat-2.0 design -- with concrete CSS recipes and when-t... |
-| `unlazy` | Enforces completion discipline for substantial autonomous work by writing acceptance gates before execution, decomposing work with the Depth Tree, running approved checks, and r... |
-| `usability-testing` | Plan, run, and synthesize usability tests: test plan, tasks, script, findings, recommendations. |
-| `user-flow-menu-design` | Design (Fron Ted) and verify (QA) the COMPLETE user flow and menu/navigation system of a web app from its foundational website structure plus its feature/module set. |
-| `wcag-overlay-patterns` | Build WCAG-AA accessible overlay components -- modal dialogs, bottom sheets, drawer panels, lightboxes -- with correct focus trap, aria-modal, role=dialog, Escape-to-close, safe... |
-| `working-backwards` | Create an Amazon-style PR/FAQ plus a backcasting launch plan. |
-| `writing-north-star-metrics` | Define or refresh a product North Star metric + driver tree. |
-| `writing-prds` | Write a decision-ready PRD for cross-functional alignment. See also: writing-specs-designs (build-ready spec). |
-| `writing-specs-designs` | Create a build-ready spec + design doc (user flows, prototype brief, acceptance criteria). See also: writing-prds (decision-level PRD). |
-| `brand-identity-stress-test` | Stress-test a visual identity across five real-world contexts -- phone screen, printed business card, embroidered on a shirt, tiny browser favicon, and black-and-white print -- ... **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `brand-logo-concepts` | Propose four distinct logo concepts (wordmark, monogram, symbol, combination mark) based on brand positioning and visual direction, describing form language, typography directio... **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `brand-starter-template-system` | Build a starter template system for a brand's first month -- prioritized materials for social media, presentations, documents, email and business collateral, each with sizes, la... **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `brand-visual-identity-direction` | Define the visual identity direction for a brand -- color palette with HEX codes, typography style, logo design direction, photography style, graphic elements, spacing/whitespac... **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `fe-rule12-audit` | Systematic frontend Rule 12 audit: detect phantom buttons, phantom form fields, SVG placeholders instead of real images, demo data in real API calls, and silent error swallowing. **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `impeccable` | Anti-AI-slop design guard for frontend work. **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `react-page-api-wiring` | Wire a React page from demo/stub data to a real REST API endpoint. **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `rule13-touch-target-compliance` | Fix and pre-empt Rule 13 touch target violations (min 44px on all interactive elements at every breakpoint). **(ÚJ -- KÖTELEZŐ-GAP)** |
+| Minden kódolás | `karpathy-guidelines`; commit előtt `karpathycoder` |
+| Demo/stub adat valós API-ra kötése | `react-page-api-wiring`, `menu-screen-backend-wiring` |
+| Új komponens / design-system komponens | `component-driven-dev`, `ui-ux-design-system` |
+| Vizuális nyelv / stílus-irány | `ui-visual-design-styles`, `minimalist-ui` |
+| Phantom gomb/mező/demo-adat audit | `fe-rule12-audit` |
+| Touch-target / CSS Rule13 | `rule13-touch-target-compliance`, `css-rule13-guard-and-fix` |
+| i18n-lefedettség | `i18n-parity-sweep` |
+| CSP inline-style, companion-class, token-scope | `csp-inline-style-sweep`, `css-companion-class-audit`, `css-token-scope-guard` |
+| OAuth callback / JWT bekötés | `oauth-callback-jwt-wiring` + `defensive-security-analysis` |
+| Bug, bukó teszt, root-cause | `sp-systematic-debugging` |
+| Teszt-írás (router, mock, TDD, böngésző) | `vitest-react-router-guard`, `vitest-module-mock-patterns`, `sp-test-driven-development`, `webapp-testing` / `browser-testing-with-devtools` |
+| BE+FE párhuzamos építés / dashboard widget | `contract-first-codev`, `contract-first-dashboard-widget` |
+| Mechanikus részfeladat | `local-llm-offload` |
+| Specialista (csak ha a kártya kéri) | `gsap-motion-specialist`, `animate`, `improve-animations`, `review-animations`, `scroll-driven-3d-motion`, `threejs-specialist`, `d3-data-visualization`, `imagegen-frontend-web`/`-mobile`, `industrial-brutalist-ui`, `mobile-native` |
 <!-- END GENERATED: skill-usage -->
