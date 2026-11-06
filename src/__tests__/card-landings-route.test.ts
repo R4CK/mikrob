@@ -27,6 +27,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import net from 'node:net'
+import type { RouteContext } from '../web/routes/types.js'
 
 let tmpRoot: string
 let originPath: string
@@ -375,7 +376,7 @@ describe('verifyCardLanding (real git, no mocks)', () => {
 })
 
 describe('POST /api/card-landings (route-level, real git)', () => {
-  function fakeCtx(bodyObj: unknown): { ctx: any; out: { status: number; body: any } } {
+  function fakeCtx(bodyObj: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
     const out = { status: 0, body: null as any }
     const res: any = {
       writeHead(status: number) { out.status = status; return res },
@@ -387,7 +388,8 @@ describe('POST /api/card-landings (route-level, real git)', () => {
       req.emit('data', Buffer.from(JSON.stringify(bodyObj)))
       req.emit('end')
     })
-    return { ctx: { req, res, path: '/api/card-landings', method: 'POST', url: new URL('http://localhost/api/card-landings') }, out }
+    const ctx = { req, res, path: '/api/card-landings', method: 'POST', url: new URL('http://localhost/api/card-landings') } as unknown as RouteContext
+    return { ctx, out }
   }
 
   it('writes the row (both shas, resolved) only after independently verifying the full binding', async () => {
