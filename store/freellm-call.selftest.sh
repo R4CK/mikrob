@@ -27,6 +27,9 @@
 # 10. content gate: benign prompt is NOT refused (passes both gates)
 # 11. validate-key with enabled switch = exit 0
 # 12. validate-key with disabled switch = exit 2
+# 12b. (L1, WhiteHat NO-GO 28484, card 4eb3743e delta) a non-loopback FREELLM_API_BASE fails
+#      closed (exit 2), zero network requests -- the host check runs before the switch/token
+#      network call, so a proxy or a reconfigured host cannot reach a real request through.
 # 13. happy path: valid switch + safe prompt reaches the mock, exit 0, Authorization present
 # 14. F1 regression: a prompt that closes a Python triple-quote and calls os.system() does
 #     NOT execute -- no marker file appears, and the mock receives the payload as the exact,
@@ -256,6 +259,14 @@ export FREELLM_SWITCH="$DISABLED_SWITCH"
 test_case "validate-key with disabled switch" 2 \
   bash "$SCRIPT" --validate-key
 export FREELLM_SWITCH="$ENABLED_SWITCH"
+
+# ---- Test 12b (L1, WhiteHat NO-GO 28484): non-loopback FREELLM_API_BASE = exit 2, no attempt --
+clear_mock_requests
+export FREELLM_API_BASE="https://example.com/v1"
+test_case "L1: non-loopback FREELLM_API_BASE fails closed" 2 \
+  bash "$SCRIPT" "benign prompt"
+assert_true "L1: non-loopback host made zero network requests to the mock" "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
+export FREELLM_API_BASE="http://127.0.0.1:$MOCK_PORT/v1"
 
 # ---- Test 13: happy path -- mock receives the request, Authorization header present ----
 clear_mock_requests

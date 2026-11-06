@@ -727,19 +727,47 @@ check "freellm sensitive card (authz stem) -> --test-freellm-attempt prints gate
 check "freellm sensitive card -> exit code 4" "$sensitive_rc" "4"
 
 # Case 3: GPU-hold -- the capacity-route sweep branch must try freellm per leaf, not just give up.
-# Fed two leaves with the switch ON but NO auth-token file: the plain leaf clears the content gate
-# and only then hits the (missing) auth-token check -> "disabled", still zero network calls; the
-# sensitive leaf is refused by the content gate BEFORE the auth-token check is ever reached ->
-# "gate-refused". The point of this case is the ROUTING, not the live API: both leaves got a
-# freellm ATTEMPT instead of the old unconditional skip, and the content gate still tells them apart.
-gpu_hold_out="$(printf '[{"id":"leafPlain","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafSensitive","title":"authz modul","description":"irj meg egy authz ellenorzest"}]' \
+# Fed two leaves with project "mikrob" (so they clear the is_freellm_blocked project gate), switch
+# ON, NO auth-token file: the plain leaf clears every gate and only then hits the (missing)
+# auth-token check -> "disabled", still zero network calls; the sensitive leaf (title contains the
+# "authz" stem) is now caught by is_freellm_blocked's OWN content gate (M1 fix, WhiteHat NO-GO
+# 28484) BEFORE freellm-call.sh is even invoked -> "blocked". The point of this case is the
+# ROUTING, not the live API: both leaves got a freellm routing DECISION instead of the old
+# unconditional skip, and the gate still tells them apart.
+gpu_hold_out="$(printf '[{"id":"leafPlain","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafSensitive","project":"mikrob","title":"authz modul","description":"irj meg egy authz ellenorzest"}]' \
   | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-no-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
-check "GPU-hold case: both leaves got a freellm routing attempt (2 output lines, named by leaf id)" \
+check "GPU-hold case: both leaves got a freellm routing decision (2 output lines, named by leaf id)" \
   "$(printf '%s\n' "$gpu_hold_out" | wc -l | tr -d ' ')" "2"
 check "GPU-hold case: the plain leaf's freellm attempt is named (switch off here -> disabled)" \
   "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafPlain disabled$')" "1"
-check "GPU-hold case: the sensitive leaf's freellm attempt is named (gate-refused, not disabled)" \
-  "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafSensitive gate-refused$')" "1"
+check "GPU-hold case: the sensitive leaf is blocked by is_freellm_blocked's own content gate, before freellm-call.sh" \
+  "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafSensitive blocked$')" "1"
+
+# Case 4 (WhiteHat NO-GO 28484, M1 fix -- mopsion project, neutral text): a card in the mopsion
+# project with NEUTRAL wording (no sensitive stem) used to pass freellm-call.sh's own text-only
+# content gate and reach the network -- is_freellm_blocked's project allowlist now catches it
+# BEFORE any freellm attempt, regardless of how neutral the text is.
+mopsion_out="$(printf '[{"id":"leafMopsion","project":"mopsion","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"}]' \
+  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
+check "M1 fix: mopsion project + neutral text is blocked under capacity hold (never reaches freellm-call.sh)" \
+  "$mopsion_out" "leafMopsion blocked"
+
+# Case 5 (WhiteHat NO-GO 28484, M1 fix -- sec label, neutral text): a card tagged "sec" with
+# NEUTRAL wording used to pass the same way -- is_freellm_blocked's tag block catches it.
+seclabel_out="$(printf '[{"id":"leafSecTag","project":"mikrob","tags":"sec","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"}]' \
+  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
+check "M1 fix: sec-tagged card + neutral text is blocked under capacity hold (never reaches freellm-call.sh)" \
+  "$seclabel_out" "leafSecTag blocked"
+
+# Case 6 (WhiteHat NO-GO 28484, M1 fix -- CAPACITY_HOLD with veto_online=true): a synthetic
+# fragment whose parent was vetoed ONLINE on the parent's full (untruncated) text must never get
+# a freellm attempt either, even under GPU-hold where try_leaf (which checks this inline) is
+# never called -- --test-capacity-route reads the leaf's own "veto_online" field the same way the
+# real CAPACITY_HOLD branch reads lveto, and must block regardless of project/tags/content.
+veto_check_out="$(printf '[{"id":"leafVetoed","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt","veto_online":true}]' \
+  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
+check "M1 fix: a veto_online=true leaf is blocked under capacity hold (parent-level security veto honored)" \
+  "$veto_check_out" "leafVetoed blocked"
 
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
