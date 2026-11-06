@@ -10,9 +10,15 @@
 # Incident (2026-09-19): WSL down 22:25-07:21, the desired-agent reconciler (channel-monitor.ts's
 # reconcileDesiredAgents(), the "boot-reconciler" this script's caller wraps) brought the 7 desired
 # agents back by 07:26, but nothing restarted Ollama -- every local-first route fell back to ONLINE
-# until Peti started it by hand at 08:22 (setsid nohup ollama serve; there is no systemd unit for
-# ollama on this box today, despite local-llm.sh's ollama_start_hint() assuming `systemctl --user
-# start ollama` would work).
+# until Peti started it by hand at 08:22 (setsid nohup ollama serve; there was no systemd unit for
+# ollama on this box at the time, despite local-llm.sh's ollama_start_hint() assuming `systemctl
+# --user start ollama` would work).
+#
+# UPDATE (card 085444e9): the unit this script's own comment above wished for now exists
+# (~/.config/systemd/user/ollama.service, card 8192b9ee, plus the OLLAMA_VULKAN=0 drop-in from card
+# 53fffd74) -- but this script still started a bare `nohup ollama serve`, bypassing it (RedHat F-RH4,
+# card 39b958a4 comment 19024), so a boot-restore started Ollama WITHOUT the dxgkrnl mitigation and
+# the flash-attention/KV-cache tuning. Fixed below: restart now goes through the unit.
 #
 # Intended caller: channel-monitor.ts's periodic sweep (~60s cadence, same one that runs
 # reconcileDesiredAgents()), invoked ONCE per sweep, BEFORE agents are reconciled -- so a sub-agent's
@@ -50,7 +56,8 @@
 #   OLLAMA_RESTORE_UPTIME_OVERRIDE - path to a file standing in for /proc/uptime's first field (test)
 #   OLLAMA_RESTORE_DMESG_OVERRIDE  - path to a file standing in for `journalctl -k -b 0` (test seam)
 #   OLLAMA_RESTORE_PORT_CHECK_OVERRIDE - "up" or "down", stands in for the pid/port check (test seam)
-#   OLLAMA_RESTORE_START_CMD_OVERRIDE  - command to run instead of `setsid nohup ollama serve` (test)
+#   OLLAMA_RESTORE_START_CMD_OVERRIDE  - command to run instead of `systemctl --user start <unit>` (test)
+#   OLLAMA_RESTORE_UNIT_NAME       - the systemd --user unit to start (default ollama)
 #   OLLAMA_RESTORE_ALERT_DRYRUN    - if 1, print "ALERT_DRYRUN: <msg>" instead of a real Telegram send
 #   OLLAMA_HOST                    - Ollama base URL (default http://127.0.0.1:11434)
 #
@@ -66,6 +73,7 @@ MASKED_FLAG="$STATE_DIR/.gpu-crashloop-guard-masked.json"
 MASK_ALERTED_STAMP="$STATE_DIR/.ollama-boot-restore-mask-alerted"
 TG_ENV="$HOME/.claude/channels/telegram/.env"
 MODEL_FILE="$STATE_DIR/local-llm-model"
+UNIT_NAME="${OLLAMA_RESTORE_UNIT_NAME:-ollama}"
 
 log() { echo "ollama-boot-restore: $*"; }
 
@@ -213,16 +221,19 @@ main() {
   fi
 
   if [ "${OLLAMA_RESTORE_DRYRUN:-}" = "1" ]; then
-    log "DRYRUN: would run: ${OLLAMA_RESTORE_START_CMD_OVERRIDE:-setsid nohup ollama serve >/dev/null 2>&1 &}"
+    log "DRYRUN: would run: ${OLLAMA_RESTORE_START_CMD_OVERRIDE:-systemctl --user start $UNIT_NAME}"
     return 0
   fi
 
+  # Card 085444e9 (RedHat F-RH4, 39b958a4 comment 19024): go through the systemd --user unit, not a
+  # bare `nohup ollama serve`, so OLLAMA_VULKAN=0 (the dxgkrnl mitigation drop-in) and the
+  # flash-attention/KV-cache tuning (card 8192b9ee) come from the SAME single source the unit itself
+  # uses -- a bare nohup skips the unit's Environment= lines and its drop-in entirely.
   log "Ollama down, boot stable (${uptime}s), no dxgkrnl fault this boot, not masked -- restarting"
   if [ -n "${OLLAMA_RESTORE_START_CMD_OVERRIDE:-}" ]; then
     eval "$OLLAMA_RESTORE_START_CMD_OVERRIDE"
   else
-    setsid nohup ollama serve >/dev/null 2>&1 &
-    disown
+    systemctl --user start "$UNIT_NAME"
   fi
 
   local tries=0
