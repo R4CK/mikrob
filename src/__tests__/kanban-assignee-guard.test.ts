@@ -61,8 +61,17 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee('мikrob')).toBe(true) // Cyrillic м (U+043C) in place of m
   })
 
-  it('does not fold an unrelated real agent name into a false positive', () => {
-    expect(isForbiddenAssignee('bаckend2')).toBe(false) // Cyrillic а folded to "a" -> "backend2", still not mikrob
+  // Card 80ab5067 delta (QA FAIL 28436 on 861e426ba): this used to assert the OPPOSITE --
+  // 'bаckend2' (Cyrillic а) folded to "backend2" via a hand-curated confusables table and was
+  // judged NOT forbidden, since "backend2" != "mikrob". That table missed every look-alike it had
+  // not enumerated (QA demonstrated Cyrillic п/д survive untouched), so the fix removed the table
+  // entirely: ANY non-ASCII survivor after NFKC+filtering is now fail-closed forbidden, whichever
+  // real id it superficially resembles -- assignee values in this fleet are always plain ASCII,
+  // so a non-ASCII residue of ANY kind is itself the signal, not a specific resemblance to
+  // "mikrob". A truly plain-ASCII "backend2" (no disguise at all) still passes, confirmed below.
+  it('fails closed on ANY non-ASCII residue, even one that superficially resembles an unrelated agent name', () => {
+    expect(isForbiddenAssignee('bаckend2')).toBe(true) // Cyrillic а -- fail-closed, not "folds to backend2"
+    expect(isForbiddenAssignee('backend2')).toBe(false) // plain ASCII, no residue at all
   })
 
   // RedHat NO-GO delta B2 (komment 15997, kartya e25a549a): a korabbi, hatarolt INVISIBLE_RE

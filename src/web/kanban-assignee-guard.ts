@@ -31,67 +31,67 @@ export const INVALID_ASSIGNEE_TYPE_MESSAGE =
 // VS/ALM/invisible-times/VS16/TAG/Hangul filler/braille blank/NUL, dotless i, kiskapitalis,
 // gorog iota+kappa, armeny o, kombinalo pont, torok nagy I) hagyott at (merve: a guard fuggveny
 // kozvetlen hivasa a Gate-SHA fajan, mind a 21 PASS volt). Javitas RedHat sajat javaslata szerint:
-// az osszevetes alakja "csak betu/szam" -- NFKC, hasonmas-fold, majd MINDEN nem betu/szam karakter
-// (formazo \p{Cf}, jel \p{M}, elvalaszto \p{Z}, pontozas/szimbolum) eltavolitasa, kisbetus, es
-// azzal egyenlo-e "mikrob". Ez a @/. formakat es az osszes formazo/lathatatlan karaktert EGYSZERRE
+// az osszevetes alakja "csak betu/szam" -- NFKC, majd MINDEN nem betu/szam karakter (formazo
+// \p{Cf}, jel \p{M}, elvalaszto \p{Z}, pontozas/szimbolum) eltavolitasa, kisbetus, es azzal
+// egyenlo-e "mikrob". Ez a @/. formakat es az osszes formazo/lathatatlan karaktert EGYSZERRE
 // viszi, kategoria szerint, nem kodpontonkent felsorolva -- jovobeli hasonlo karakter is elkapva
-// marad. A CONFUSABLES tablazat csak azokra a hasonmasokra kell, amik MAGUK betu-kategoriaba
-// tartoznak (a kategoria-alapu szures ezeket nem tavolitja el onmagaban), plusz a Hangul filler
-// (U+3164), ami Unicode szerint Lo (betu) kategoriaju, noha vizualisan ures.
-const CONFUSABLES: Record<string, string> = {
-  'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c',
-  'у': 'y', 'х': 'x', 'і': 'i', 'ј': 'j', 'ѕ': 's',
-  'к': 'k', 'м': 'm',
-  'А': 'A', 'Е': 'E', 'О': 'O', 'Р': 'P', 'С': 'C',
-  'У': 'Y', 'Х': 'X', 'І': 'I', 'Ј': 'J', 'Ѕ': 'S',
-  'К': 'K', 'М': 'M',
-  'ο': 'o', 'Ο': 'O', // Greek omicron
-  'ι': 'i', 'κ': 'k', // Greek iota, kappa (RedHat delta B2)
-  'ı': 'i', 'İ': 'I', // Turkish dotless/dotted i
-  'ᴍ': 'm', 'ɪ': 'i', 'ᴋ': 'k', 'ʀ': 'r', 'ᴏ': 'o', 'ʙ': 'b', // small-caps lookalikes
-  'օ': 'o', // Armenian o
-  // Hangul filler, Lo category, visually blank, not caught by the letter/digit keep-filter below.
-  // NFKC runs BEFORE this fold and rewrites U+3164 to U+1160 (Hangul Jungseong Filler) -- the key
-  // has to be the POST-normalize codepoint, not the one a caller would type.
-  'ᅠ': '',
-}
-
-function foldConfusables(s: string): string {
-  let out = ''
-  for (const ch of s) out += CONFUSABLES[ch] ?? ch
-  return out
-}
-
-// Keep only letters and digits (Unicode-aware) after confusable folding -- this single filter
-// drops every format/mark/separator/punctuation/symbol character category at once (\p{Cf}, \p{M},
-// \p{Z}, and everything else outside \p{L}/\p{N}), including combining marks that NFKC leaves
-// attached (e.g. Turkish İ decomposes to I + combining-dot-above, the mark falls here).
+// marad.
+//
+// Card 80ab5067 delta (QA FAIL 28436 on 861e426ba): a hand-curated CONFUSABLES fold table (a
+// ~25-entry Cirill/Gorog/Armeny/small-caps lista) ZART, es EZERT mindig egy lepessel a VALODI
+// Unicode hasonmas-keszlet mogott jar -- QA Cirill п (U+043F) es д (U+0434) hasonmasokkal
+// demonstralta: nincsenek a tablaban, igy betu-kategoriajukent eletben maradnak a letter/digit
+// szures utan, es a sima string-egyenloseg nem egyezik a cel nevvel -- ELIGIBLE/NEM-FORBIDDEN
+// lesz, holott egy ember szemenek ugyanaz a nev. A javitas NEM egy nagyobb tablazat: a
+// CONFUSABLES tablazat TELJESEN megszunt. Helyette fail-closed szabaly: ha az NFKC + betu/szam-
+// csak szures UTAN BARMILYEN nem-ASCII karakter marad, az identitas sosem bizonyithato "biztosan
+// MAS, mint egy fenntartott nev hasonmasa" -- tehat EGYEZESKENT (forbidden/ineligible) kezelendo,
+// FUGGETLENUL attol, melyik konkret irasrendszerbol jon. Nincs tobbe karakterenkenti tablazat,
+// amit minden uj hasonmas-felfedezessel bovíteni kellene.
 function lettersAndDigitsOnly(s: string): string {
   return s.replace(/[^\p{L}\p{N}]/gu, '')
 }
 
+const ASCII_ALNUM_ONLY_RE = /^[a-zA-Z0-9]*$/
+
 /**
- * Card 80ab5067 (WhiteHat LOW on 4ecd75d0, Gate-SHA 45237719): the exact same NFKC + confusable
- * + letters/digits-only pipeline this file already uses for "does this name MikroB", exported so
- * any OTHER exact-identity-against-a-known-name comparison (e.g. import-anti-patterns.ts's
- * author eligibility check) gets the same whitespace/homoglyph resistance instead of a bare
- * `.toLowerCase()` deny-list membership test, which a trailing space or a Cyrillic look-alike
- * sails through. Compare BOTH sides through this function -- normalizing only the input and
- * matching it against un-normalized set members (e.g. "local-llm") breaks on the hyphen this
- * function also strips.
+ * Card 80ab5067 delta (QA FAIL 28436): true when, after NFKC + letters/digits-only filtering,
+ * `value` still carries a character outside plain ASCII a-zA-Z0-9. Every legitimate id this
+ * fleet compares against (agent names, "mikrob", GATE_AGENT_NAMES/GENERATED_COMMENT_AUTHORS
+ * members) is itself plain ASCII, so a survivor here can ONLY be a look-alike script, a
+ * never-enumerated confusable, or an otherwise non-ASCII identity -- never a false alarm on a
+ * real id. Callers treat `true` as "fail closed": never eligible, always a forbidden match,
+ * without needing to know WHICH specific id it resembles.
+ */
+export function hasNonAsciiIdentityResidue(value: string): boolean {
+  return !ASCII_ALNUM_ONLY_RE.test(lettersAndDigitsOnly(value.normalize('NFKC')))
+}
+
+/**
+ * Card 80ab5067 (WhiteHat LOW on 4ecd75d0, Gate-SHA 45237719): the same NFKC + letters/digits-only
+ * pipeline this file already uses for "does this name MikroB", exported so any OTHER
+ * exact-identity-against-a-known-name comparison (e.g. import-anti-patterns.ts's author
+ * eligibility check) gets the same whitespace resistance a bare `.toLowerCase()` deny-list
+ * membership test lacks. ONLY meaningful when {@link hasNonAsciiIdentityResidue} is false --
+ * callers must check that FIRST and treat `true` there as an unconditional match, never fall
+ * through to comparing this function's result against anything. Compare BOTH sides through this
+ * function -- normalizing only the input and matching it against un-normalized set members (e.g.
+ * "local-llm") breaks on the hyphen this function also strips.
  */
 export function normalizeIdentityForMatch(value: string): string {
-  return lettersAndDigitsOnly(foldConfusables(value.normalize('NFKC'))).toLowerCase()
+  return lettersAndDigitsOnly(value.normalize('NFKC')).toLowerCase()
 }
 
 /**
  * True when `value` names MikroB -- any case/whitespace/punctuation variant, full-width form
- * (NFKC-folded), any formatting/invisible/combining character, or a look-alike letter (Cirill,
- * Gorog, Armenian, small-caps, Turkish dotless-i, Hangul filler -- WhiteHat F3 + RedHat delta B2).
- * A non-string value is never forbidden here -- see isInvalidAssigneeShape for that check.
+ * (NFKC-folded), any formatting/invisible/combining character, or ANY surviving non-ASCII
+ * character at all (fail-closed, card 80ab5067 delta: no confusables table to keep extending,
+ * see {@link hasNonAsciiIdentityResidue}). A non-string value is never forbidden here -- see
+ * isInvalidAssigneeShape for that check.
  */
 export function isForbiddenAssignee(value: unknown): boolean {
   if (typeof value !== 'string') return false
+  if (hasNonAsciiIdentityResidue(value)) return true
   return normalizeIdentityForMatch(value) === FORBIDDEN_ASSIGNEE
 }
 

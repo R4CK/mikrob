@@ -267,4 +267,35 @@ describe('importAntiPatterns (MT-10d, card 33e5e4ff)', () => {
     // The original, eligible-author comment still imports normally.
     expect(report.commentAntiPatternsUpserted).toBe(2)
   })
+
+  // Card 80ab5067 delta (QA FAIL 28436 on 861e426ba): the F2 test above only covered the two
+  // EXACT look-alikes the card description named ('qa ', Cyrillic 'qа'), both of which happened
+  // to be in the old hand-curated CONFUSABLES table. QA demonstrated that ANY look-alike outside
+  // that table (Cyrillic п/д) still sailed through as "eligible" -- the fix removes the table
+  // entirely (hasNonAsciiIdentityResidue, kanban-assignee-guard.ts) rather than extending it, so
+  // this pins FOUR distinct scripts, including the two QA used verbatim, to prove the fix is not
+  // just "two more entries in the same table".
+  it('F2 delta: a non-ASCII look-alike from ANY script is skipped, not just the two the card named', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+           ('card1', 'gemiпi-orch-review', 'Draft-Review: ELUTASITVA\n\nCyrillic п (QA 28436 exact spoof).', 4000),
+           ('card1', 'cybereд', 'Draft-Review: ELUTASITVA\n\nCyrillic д (QA 28436 exact spoof).', 4001),
+           ('card1', 'gate-ρretriage', 'Draft-Review: ELUTASITVA\n\nGreek rho lookalike for p.', 4002),
+           ('card1', 'lօcal-llm', 'Draft-Review: ELUTASITVA\n\nArmenian o lookalike.', 4003)`,
+      )
+      .run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.commentsSkippedAuthor).toBe(4)
+    for (const id of [5, 6, 7, 8]) {
+      expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get(`anti_pattern:comment:${id}`)).toBeUndefined()
+    }
+    // The original, eligible-author comment still imports normally.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
 })

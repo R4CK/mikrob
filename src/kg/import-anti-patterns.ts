@@ -30,7 +30,7 @@ import { mapProjectToPartition } from './project-map.js'
 import { parseEntries, referencedCardIds } from './import-decisions-log.js'
 import { GATE_AGENT_NAMES } from '../web/kanban-gate-completeness-guard.js'
 import { GENERATED_COMMENT_AUTHORS } from '../web/kanban-landed-guard.js'
-import { normalizeIdentityForMatch } from '../web/kanban-assignee-guard.js'
+import { normalizeIdentityForMatch, hasNonAsciiIdentityResidue } from '../web/kanban-assignee-guard.js'
 
 export interface AntiPatternsImportReport {
   commentsScanned: number
@@ -181,14 +181,23 @@ export function importAntiPatterns(
   // membership test let a trailing space ("qa ") or a Cyrillic look-alike ("qа", Cyrillic а)
   // through as "eligible" -- neither matches the set's literal "qa" string, even though both
   // name the same gate agent to a human reader. Both the author AND the set members now go
-  // through the SAME NFKC + confusable-fold + letters/digits-only normalization
-  // kanban-assignee-guard.ts already uses for the analogous MikroB-impersonation check --
-  // normalizing only one side would break on "local-llm"'s own hyphen.
+  // through the SAME NFKC + letters/digits-only normalization kanban-assignee-guard.ts already
+  // uses for the analogous MikroB-impersonation check -- normalizing only one side would break on
+  // "local-llm"'s own hyphen.
+  //
+  // Card 80ab5067 delta (QA FAIL 28436): a hand-curated confusables table (now removed from
+  // kanban-assignee-guard.ts) only covered the two look-alikes the ORIGINAL card named --
+  // Cyrillic п/д (and every other un-enumerated script) survived the old fold and stayed
+  // ELIGIBLE. hasNonAsciiIdentityResidue checked FIRST, fail-closed: any non-ASCII survivor after
+  // NFKC+filtering is never eligible, whichever reserved name it might resemble, so there is no
+  // table left to be a step behind.
   const NORMALIZED_INELIGIBLE_AUTHORS = new Set(
     [...GATE_AGENT_NAMES, ...GENERATED_COMMENT_AUTHORS].map(normalizeIdentityForMatch),
   )
   function isEligibleAuthor(author: string | null): boolean {
-    return !NORMALIZED_INELIGIBLE_AUTHORS.has(normalizeIdentityForMatch(author ?? ''))
+    const a = author ?? ''
+    if (hasNonAsciiIdentityResidue(a)) return false
+    return !NORMALIZED_INELIGIBLE_AUTHORS.has(normalizeIdentityForMatch(a))
   }
 
   // Coarse SQL pre-filter, precise match in JS (same split as import-findings.ts's verdict
