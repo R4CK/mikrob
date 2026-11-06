@@ -170,6 +170,46 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
     expect(dispatch).toContain('buildRedHatFamilySkillUsageBody()')
   })
 
+  // Card 76583edb: FE sibling pair (fron-ted/fron-teddy) gets a curated table mirroring
+  // BACKEND_FAMILY, replacing the generic full-catalog fallback -- measured 0/1 karpathy-guidelines
+  // use and "nincs illo" on 12/40 REVIEW "Skills:" lines (MikroB Telegram 12195).
+  it('FRONTEND_FAMILY is defined and names both fron-ted and fron-teddy', () => {
+    expect(SCAFFOLD).toContain("const FRONTEND_FAMILY = new Set(")
+    const familySet = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('const FRONTEND_FAMILY = new Set('),
+      SCAFFOLD.indexOf('const FRONTEND_FAMILY = new Set(') + 80,
+    )
+    for (const name of ['fron-ted', 'fron-teddy']) expect(familySet).toContain(`'${name}'`)
+  })
+
+  it('buildSkillUsageBody dispatches both frontend-family names to the curated table', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()')
+  })
+
+  it('frontend family curated table carries karpathy-guidelines and the 14 measured task-type groups, not the full catalog', () => {
+    const curatedFn = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildFrontendFamilySkillUsageBody('),
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+    )
+    expect(curatedFn).toContain('karpathy-guidelines')
+    expect(curatedFn).toContain('react-page-api-wiring')
+    expect(curatedFn).toContain('fe-rule12-audit')
+    expect(curatedFn).toContain('rule13-touch-target-compliance')
+    expect(curatedFn).toContain('i18n-parity-sweep')
+    expect(curatedFn).toContain('oauth-callback-jwt-wiring')
+    expect(curatedFn).toContain('contract-first-codev')
+    expect(curatedFn).toContain('local-llm-offload')
+    // Catalog-only entries NOT in the curated table.
+    for (const catalogOnly of ['working-backwards', 'usability-testing', 'writing-north-star-metrics']) {
+      expect(curatedFn).not.toContain(catalogOnly)
+    }
+    expect(curatedFn).toContain('store/skill-role-map.md')
+  })
+
   it('marks a known self-claimed-but-unreferenced skill as gap for its role', () => {
     const cybered = SKILL_USAGE_DATA['cybered'] ?? []
     const redHatGate = cybered.find((e) => e.skill === 'redhat-gate-pattern')
