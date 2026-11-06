@@ -149,7 +149,14 @@ agent_launch_env() {
       ;;
   esac
 
-  if [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+  # Card 3ae2411d (RedHat GO 617d136d, comment 16008): this UNSET-field fallback used to export
+  # the fleet token unconditionally, same as needsFleetOauthFor's src/web/agent-process.ts call
+  # site had to be taught NOT to do for a BYO/customProvider agent (RedHat NO-GO B1, comment
+  # 15850) -- a watchdog-triggered restart is a SECOND launch site for the exact same mistake.
+  # --needs-fleet-oauth mirrors needsFleetOauthFor/!customProviderId from that single predicate
+  # (oauth_token_file_check.py's own needs_fleet_oauth, kept in sync with the TS source).
+  if [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] \
+     && python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --needs-fleet-oauth "$AGENT_DIR" 2>/dev/null; then
     printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
   fi
 }

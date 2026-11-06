@@ -136,6 +136,63 @@ def same_as_fleet_token(own_path: str, fleet_token_path: str) -> bool:
     return own == fleet and own != ""
 
 
+_VALID_AUTH_MODES = ("shared", "own_team", "api")
+
+
+def needs_fleet_oauth(agent_dir: str) -> bool:
+    """Mirrors needsFleetOauthFor (src/web/agent-process.ts): `isClaude && authMode != 'api' &&
+    !isOwnTeam && !customProviderId`, with isClaude = !customProviderId && model.startswith
+    ('claude-') and isOwnTeam = isClaude && authMode == 'own_team' -- the single predicate card
+    3ae2411d asks the watchdog's unconditional fleet-token fallback to also honor, so a
+    BYO/customProvider agent (or one on its own /login via authMode 'own_team') never gets the
+    fleet's CLAUDE_CODE_OAUTH_TOKEN exported on a watchdog-triggered restart either.
+
+    Card bc32d233's own-token-file config-read already distinguishes ENOENT (truly absent) from
+    any other read/parse failure; this predicate deliberately does NOT -- a config this guard
+    cannot read cleanly defaults to the CURRENT, pre-existing behaviour (export the fleet token),
+    same posture as every other field reader in this fork's agent-config.ts (a bare `except:
+    fall through` to the default). customProviderId is the actual security boundary this card
+    exists to close (an agent with one must NEVER get the fleet token, full stop); authMode is a
+    narrower, already-opt-in exclusion on top of that. A config this guard cannot parse at all
+    has no customProvider value to find either, so this only ever affects the SAME agents the
+    pre-existing code already exported the fleet token to -- it does not newly refuse anyone.
+
+    The `model` field is read directly rather than replicating agent-config.ts's full alias/
+    model-profile resolution (resolveAgentModelFromConfig): per readAgentModel's own contract
+    comment, "for every config that names a `model` -- which is all of them today -- this
+    returns byte-identically what it returned before"; an absent field defaults to isClaude=True
+    (the fleet's own DISTRIBUTION_DEFAULT_AGENT_MODEL is 'claude-opus-5'), matching today's
+    behaviour for the common case of an agent with no `model` key at all.
+    """
+    config_path = os.path.join(agent_dir, "agent-config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
+            raw = f.read()
+        config = json.loads(raw)
+        if not isinstance(config, dict):
+            config = {}
+    except FileNotFoundError:
+        config = {}
+    except OSError:
+        return True  # unreadable config: same as the pre-existing unconditional fallback
+    except Exception:
+        return True  # unparseable config: same as the pre-existing unconditional fallback
+
+    custom_provider = config.get("customProvider")
+    has_custom_provider = isinstance(custom_provider, str) and custom_provider.strip() != ""
+
+    model = config.get("model")
+    model_str = model if isinstance(model, str) and model.strip() else "claude-opus-5"
+    is_claude = (not has_custom_provider) and model_str.startswith("claude-")
+
+    auth_mode = config.get("authMode")
+    if auth_mode not in _VALID_AUTH_MODES:
+        auth_mode = "shared"
+
+    is_own_team = is_claude and auth_mode == "own_team"
+    return is_claude and auth_mode != "api" and (not is_own_team) and (not has_custom_provider)
+
+
 def has_bad_content_characters(path: str) -> bool:
     """Mirrors checkOauthTokenFile's content-bad-characters check: a setup-token never contains
     whitespace or control characters; one that does would reach the environment verbatim and fail
@@ -152,7 +209,8 @@ def _usage() -> None:
     print(
         "usage: oauth_token_file_check.py <agent-dir>\n"
         "   or: oauth_token_file_check.py --same-as-fleet-token <own-path> <fleet-token-path>\n"
-        "   or: oauth_token_file_check.py --bad-content-characters <path>",
+        "   or: oauth_token_file_check.py --bad-content-characters <path>\n"
+        "   or: oauth_token_file_check.py --needs-fleet-oauth <agent-dir>",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -163,6 +221,11 @@ if __name__ == "__main__":
         sys.exit(0 if same_as_fleet_token(sys.argv[2], sys.argv[3]) else 1)
     elif len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
         sys.exit(0 if has_bad_content_characters(sys.argv[2]) else 1)
+    elif len(sys.argv) == 3 and sys.argv[1] == "--needs-fleet-oauth":
+        try:
+            sys.exit(0 if needs_fleet_oauth(sys.argv[2]) else 1)
+        except Exception:
+            sys.exit(0)  # same unconditional-fallback posture as an unreadable config, above
     elif len(sys.argv) == 2 and not sys.argv[1].startswith("--"):
         # Belt-and-suspenders (card bc32d233): resolve() is written to never raise for any
         # condition it anticipates, but an exception from a cause nobody anticipated (OOM, a

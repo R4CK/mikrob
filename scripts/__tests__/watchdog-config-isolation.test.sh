@@ -367,5 +367,70 @@ esac
 rm -rf "$AGENT_OWN/agent-config.json"
 write_own_config
 
+# --- card 3ae2411d (RedHat GO 617d136d, comment 16008): the UNSET-field fallback (no
+# oauthTokenFile configured at all) must honor the SAME predicate as needsFleetOauthFor
+# (src/web/agent-process.ts) -- a BYO/customProvider agent, an own_team agent, or an agent on a
+# non-claude model must never get the fleet's CLAUDE_CODE_OAUTH_TOKEN exported on a
+# watchdog-triggered restart either. These agents have NO oauthTokenFile field (that branch is
+# already covered above); this is the OTHER branch, the one this card's bug lived in. ---
+
+AGENT_BYO="$FIXTURE_INSTALL/agents/byo-agent"
+mkdir -p "$AGENT_BYO/.claude-config"
+
+# 24) BLOCKING (this card's repro): customProvider set, no oauthTokenFile field -> no isolation
+#     (the fleet token must NOT be exported). Before this fix, this fell straight to the
+#     unconditional fallback and printed "isolation=yes" with the fleet token in the prefix.
+printf '{"customProvider": "my-ollama-endpoint"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "24: customProvider set, no oauthTokenFile -> no fleet-token export" ;;
+  *) fail "24: customProvider set, no oauthTokenFile -> no fleet-token export" "$OUT" ;;
+esac
+
+# 25) authMode 'own_team' (agent authenticates via its own /login credential) -> no isolation,
+#     same exclusion as needsFleetOauthFor's isOwnTeam branch.
+printf '{"authMode": "own_team"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "25: authMode own_team -> no fleet-token export" ;;
+  *) fail "25: authMode own_team -> no fleet-token export" "$OUT" ;;
+esac
+
+# 26) authMode 'api' (agent authenticates via its own ANTHROPIC_API_KEY) -> no isolation.
+printf '{"authMode": "api"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "26: authMode api -> no fleet-token export" ;;
+  *) fail "26: authMode api -> no fleet-token export" "$OUT" ;;
+esac
+
+# 27) Explicit non-claude model, no customProvider -> no isolation (isClaude is false either way).
+printf '{"model": "deepseek-chat"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "27: non-claude model, no customProvider -> no fleet-token export" ;;
+  *) fail "27: non-claude model, no customProvider -> no fleet-token export" "$OUT" ;;
+esac
+
+# 28) MUTATION PIN: an explicit claude model, authMode 'shared' (the default), no customProvider
+#     -> STILL gets isolation (this fix must not regress the common case).
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "28: claude model, authMode shared, no customProvider -> still isolated/fleet-token" ;;
+  *) fail "28: claude model, authMode shared, no customProvider -> still isolated/fleet-token" "$OUT" ;;
+esac
+
+# 29) MUTATION PIN: no agent-config.json at all (AGENT_ISO, re-checked here after the BYO cases
+#     above) -> unaffected, same as test 3/12 -- this fix must not touch the no-config default.
+rm -f "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_ISO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "29: no agent-config.json at all -> still unaffected, fleet-token isolation" ;;
+  *) fail "29: no agent-config.json at all -> still unaffected, fleet-token isolation" "$OUT" ;;
+esac
+
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
