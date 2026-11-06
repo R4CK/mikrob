@@ -57,5 +57,5 @@ case "$out" in
 esac
 
 echo "land-run-journal selftest done"
-[ "$fail" -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
+[ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"

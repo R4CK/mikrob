@@ -84,5 +84,5 @@ t_ok "$rc" 2 "mismatched readback refuses with exit 2"
 grep -q "/move" "$WORK/calls.log" && { echo "  FAIL move was attempted despite a mismatched readback"; fail=1; } || echo "  ok   move was never attempted after a mismatch"
 
 echo "post-review.sh selftest: $n checks"
-[ "$fail" -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
+[ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"
