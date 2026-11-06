@@ -1,0 +1,6 @@
+{
+  "repo": "/home/neon/marveen",
+  "base_branch": "develop",
+  "land_script": "store/marveen-land.sh",
+  "on_create_script": null
+}

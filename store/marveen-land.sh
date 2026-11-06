@@ -518,6 +518,12 @@ land_one() {
 
   g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 0; }
 
+  # Card a8a83d48 (F2.1.2): the branch tip BEFORE the merge commit -- what a REVIEW's Gate-SHA
+  # names and what a gate actually verdicted on (see the big comment near "Gate-SHA: $gate_sha"
+  # further down on why that is NOT the same as the pushed develop tip). Captured here, once, so
+  # every path below (including the retry loop re-entering land_one) uses the same value.
+  local work_sha; work_sha="$(g rev-parse "$branch")"
+
   LAND_LOCK_FD=""
   local land_lock_started land_lock_announced=0 land_lock_last_note land_lock_waited
   land_lock_started="$(date +%s)"; land_lock_last_note="$land_lock_started"
@@ -668,7 +674,25 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     fi
   fi
 
+  # Cybersec2 NO-GO 28230 F7 on card a8a83d48: card_id in a card_landings row used to be bound to
+  # a commit SUBJECT the server could scan, which the fix for F4/F5 removed (text scan = ReDoS +
+  # forgeable range). The replacement binding is structural (work_sha == merge_sha's second
+  # parent) but said nothing about WHICH card -- any caller could claim any real card_id for a
+  # genuine, unrelated landing. --card mode already carries its card id in $branch itself
+  # ("card/<id>", a substring of $msg below); agent mode's branch name ("agent/<agent>/work")
+  # never did, so this is the one place that needs an explicit line. Built from the SAME down_log
+  # the dispatch above already computed (before the merge), not from anything the committer typed.
+  local merge_cards=""
+  if [ -z "$LAND_CARD" ]; then
+    merge_cards="$(printf '%s\n' "$down_log" | distinct_cards | tr '\n' ' ')"
+    merge_cards="${merge_cards% }"
+  fi
   local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land, base @ $(git -C "$wt" rev-parse --short HEAD))"
+  if [ -n "$merge_cards" ]; then
+    msg="$msg
+
+Cards: $merge_cards"
+  fi
   local merge_err
   if ! merge_err="$(git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob \
                     merge --no-ff "$branch" -m "$msg" 2>&1)"; then
@@ -957,6 +981,27 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     "$(dirname "$0")/kg-check-landing.sh" --repo marveen --repo-dir "$wt" --base "$base_sha" \
       --sha "$merge_sha" --actor "marveen-land:$agent" --main-dist "$MAIN/dist" 2>&1 | sed 's/^/  /' || true
     echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH (develop tip $(git -C "$wt" rev-parse --short HEAD))"
+    # Card a8a83d48 (F2.1.2): record this VERIFIED landing. One row per card this push actually
+    # carries -- LAND_CARD alone in --card mode (that branch carries exactly one card, by
+    # construction), else every card named in down_log (the commits this push just merged). The
+    # server re-verifies merge_sha's ancestry itself before writing, so this call is informational,
+    # never a gate the push itself depends on -- a failed call leaves a gap 3b82961f's
+    # `--record-landing` repair flag closes, it does not undo an already-successful push.
+    #
+    # Cybersec2 NO-GO 28230 F6: this MUST be $gate_sha, not $merge_sha. $merge_sha gets reassigned
+    # above (line ~811) to the +mikrob version-bump CHILD commit once one is made; $gate_sha keeps
+    # its original meaning, the actual merge that carries this card's files. The server's
+    # second-parent check (work_sha == merge_sha^2) has no second parent on a one-parent bump
+    # child, so passing $merge_sha here made every normal landing's record_card_landing call 422,
+    # silently swallowed by the caller's best-effort curl.
+    if [ -n "$LAND_CARD" ]; then
+      record_card_landing "$LAND_CARD" "$work_sha" "$gate_sha" marveen "$agent"
+    else
+      local _lc
+      for _lc in $(printf '%s\n' "$down_log" | distinct_cards); do
+        record_card_landing "$_lc" "$work_sha" "$gate_sha" marveen "$agent"
+      done
+    fi
     # Card 0711c19b, reported three times before it got a card. This line used to print ONLY the
     # develop tip, and on every landing since the version bump was automated (ea8b9b95) that tip is
     # a `chore(version)` child holding one line of package.json -- none of the card's files. Taken

@@ -13,7 +13,7 @@ import {
   HISTORY_DIRNAME,
 } from '../web/egress-allowlist-baseline.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, appendFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, appendFileSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -332,6 +332,92 @@ describe('baseline: every change is recorded and reported, whatever the route', 
     expect(reports).toHaveLength(1)
     expect(reports[0]).toContain('+offline-attacker.example')
     expect(reports[0]).toContain('BOOT')
+  })
+
+  it('card 0e5bbc65 CYBERED NO-GO (28194): a malformed last line in history.log (S1) still sets the baseline and reports "unreadable or malformed", not silence', () => {
+    const historyDir = join(store, HISTORY_DIRNAME)
+    mkdirSync(historyDir, { recursive: true })
+    const originalBytes = readFileSync(allowlist, 'utf-8')
+    const originalSha = createHash('sha256').update(originalBytes).digest('hex')
+    const priorName = '20261003T070000000Z-' + originalSha.slice(0, 12) + '.json'
+    writeFileSync(join(historyDir, priorName), originalBytes)
+    appendFileSync(join(historyDir, 'history.log'), `2026-10-03T07:00:00.000Z ${originalSha} ${originalBytes.length} ${priorName}\n`)
+    appendFileSync(join(historyDir, 'history.log'), 'junk\n')
+    writeFileSync(allowlist, JSON.stringify({ domains: ['a.example', 'b.example', 'offline-attacker.example'] }))
+    const r = checkEgressAllowlistBaseline(store, notify)
+    expect(r.recorded).toBe(true)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatch(/unreadable|malformed/i)
+  })
+
+  it('card 0e5bbc65 CYBERED NO-GO (28194): history.log deleted (S2) still sets the baseline and reports "unreadable or malformed"', () => {
+    const historyDir = join(store, HISTORY_DIRNAME)
+    mkdirSync(historyDir, { recursive: true })
+    const originalBytes = readFileSync(allowlist, 'utf-8')
+    const originalSha = createHash('sha256').update(originalBytes).digest('hex')
+    const priorName = '20261003T070000000Z-' + originalSha.slice(0, 12) + '.json'
+    writeFileSync(join(historyDir, priorName), originalBytes)
+    const logFile = join(historyDir, 'history.log')
+    appendFileSync(logFile, `2026-10-03T07:00:00.000Z ${originalSha} ${originalBytes.length} ${priorName}\n`)
+    unlinkSync(logFile)
+    writeFileSync(allowlist, JSON.stringify({ domains: ['a.example', 'b.example', 'offline-attacker.example'] }))
+    const r = checkEgressAllowlistBaseline(store, notify)
+    expect(r.recorded).toBe(true)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatch(/unreadable|malformed/i)
+  })
+
+  it('card 0e5bbc65 CYBERED NO-GO (28194): history.log replaced by a directory (S4) does not throw, still sets the baseline and reports', () => {
+    const historyDir = join(store, HISTORY_DIRNAME)
+    mkdirSync(historyDir, { recursive: true })
+    const logFile = join(historyDir, 'history.log')
+    appendFileSync(logFile, 'placeholder\n')
+    unlinkSync(logFile)
+    mkdirSync(logFile)
+    writeFileSync(allowlist, JSON.stringify({ domains: ['a.example', 'b.example', 'offline-attacker.example'] }))
+    let threw: unknown = null
+    let r: ReturnType<typeof checkEgressAllowlistBaseline> | null = null
+    try { r = checkEgressAllowlistBaseline(store, notify) } catch (e) { threw = e }
+    expect(threw).toBeNull()
+    expect(r?.recorded).toBe(true)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatch(/unreadable|malformed/i)
+  })
+
+  it('card 0e5bbc65 CYBERED NO-GO (28194): history.log mode 000 (S5, unreadable) does not throw, still sets the baseline and reports', () => {
+    const historyDir = join(store, HISTORY_DIRNAME)
+    mkdirSync(historyDir, { recursive: true })
+    const logFile = join(historyDir, 'history.log')
+    appendFileSync(logFile, 'placeholder\n')
+    chmodSync(logFile, 0o000)
+    writeFileSync(allowlist, JSON.stringify({ domains: ['a.example', 'b.example', 'offline-attacker.example'] }))
+    let threw: unknown = null
+    let r: ReturnType<typeof checkEgressAllowlistBaseline> | null = null
+    try { r = checkEgressAllowlistBaseline(store, notify) } catch (e) { threw = e }
+    chmodSync(logFile, 0o600)
+    expect(threw).toBeNull()
+    expect(r?.recorded).toBe(true)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatch(/unreadable|malformed/i)
+  })
+
+  it('card 0e5bbc65 CYBERED NO-GO (28194): after a poisoned (directory) history.log at boot (S6), the running watcher still catches a LIVE edit', async () => {
+    const historyDir = join(store, HISTORY_DIRNAME)
+    mkdirSync(historyDir, { recursive: true })
+    const logFile = join(historyDir, 'history.log')
+    appendFileSync(logFile, 'placeholder\n')
+    unlinkSync(logFile)
+    mkdirSync(logFile)
+    const stop = watchEgressAllowlistBaseline(store, notify, 50)
+    try {
+      await new Promise((r) => setTimeout(r, 100))
+      reports.length = 0 // discard the boot-time "unreadable" report, we only care about the LIVE edit below
+      writeFileSync(allowlist, JSON.stringify({ domains: ['a.example', 'b.example', 'live-attacker.example'] }))
+      const deadline = Date.now() + 3000
+      while (reports.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20))
+    } finally { stop() }
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toContain('+live-attacker.example')
   })
 
   it('a true first-ever run (no persisted history at all) still stays quiet', () => {

@@ -22927,3 +22927,87 @@ Cybersec + Cybered.
 
 **Ki dontott:** backend3 (card bb562959), Cybersec GO 28369 M1/L1/L2/L3 pontjai alapjan (MikroB
 16614 dontese: fold in). Gate: QA + Cybersec + Cybered.
+## 2026-11-06 -- F1.1 branchless checkpoint ref (card 3517b027, phase ed332869)
+
+**Döntés:** store/agent-checkpoint.sh landolva -- branchless checkpoint commit (GIT_INDEX_FILE temp index, add -A, write-tree, commit-tree -p HEAD, update-ref refs/mikrob/ckpt/<cardId>/<n>), ideas-only átvétel pingdotgg/t3code @37481f04-ből (MIT, nem kód-másolás). Refuse (exit 3), ha az agent worktree-je nem oldódik fel valós .git-re -- sosem esik vissza a megosztott klónra.
+
+**Ki döntött:** DevO (fullstack), card 3517b027, Gate-SHA 6aad0c4db.
+
+## 2026-11-06 -- F4.2: agent-worktree-marveen.sh --card mode selftest gap closed (card 20f2b522)
+
+**Döntés:** `--card` mode (create/reuse/path/node_modules symlink/unlanded-commit warning/git identity isolation) was already fully implemented in `store/agent-worktree-marveen.sh`. The gap was selftest coverage against this card's acceptance criteria: the existing selftest (12 cases) covered create/branch/--path but not reuse (idempotent second pickup) or rollback-on-error (occupied non-worktree path refused without deletion). Added exactly those two missing cases to `store/agent-worktree-marveen.selftest.sh` (14/14 PASS); no change to the script itself was needed.
+
+**Ki döntött:** DevO (fullstack), card 20f2b522, Gate-SHA 6403df5b506b3f1513faadadd4037cf6bbf878df.
+
+## 2026-11-06 -- F1.1.3: agent-checkpoint.sh M1/L1/L2/L3 fixes (card 6ff6d1dc, phase ed332869)
+
+**Döntés:** Closed the Cybersec findings on `store/agent-checkpoint.sh` from the 3517b027 gate (Gate-SHA 6858f2bbf):
+- M1 MEDIUM: replaced the check-then-act `show-ref` loop + unconditional `update-ref` with a create-only `update-ref <ref> <commit> <all-zero-old-value>` retry loop -- a concurrent run that already claimed the same `n` now gets refused (rc=128) instead of silently overwriting it. Proven with a 6-concurrent-run selftest case (6 distinct refs); confirmed the case goes red on the pre-fix code (4 distinct refs, collisions on `/1`).
+- L1 LOW: `trap ... RETURN` does not fire when `set -e` aborts the script -- switched to `trap ... EXIT` on a non-local `tmp_index` (a local would be unbound by the time an EXIT trap fires after the function's scope ends).
+- L2 LOW: selftest now asserts `git rev-parse <ckpt>^ == HEAD` (the `-p HEAD` pin).
+- L3 INFO (`git add -A` can capture an unguarded secret file): ACCEPTED, documented in the script header -- the checkpoint ref is local-only by construction (never pushed/fetched/exposed), so this is not a gap unless a future change starts syncing these refs.
+
+**Ki döntött:** DevO (fullstack), card 6ff6d1dc (Gate-SHA on the card's REVIEW comment).
+## 2026-11-06 -- card ed1f3e9c: POST /api/claude-plans/rotate session policy (split from 0244910e N5, RedHat 9655494c 17005/17142 X1/X3)
+
+RedHat's N5 (17142, on top of the original 17005 X1/X3 finding) said a session created via a token-bootstrapped first user or a token break-glass password reset still reached `POST /api/claude-plans/rotate`: 200. By the time this card was picked up, card 49960046 had independently closed the ROOT of that chain: `POST /api/auth/users` (first-user bootstrap) and `POST /api/auth/password` (break-glass reset) both now require an EXISTING human session (`CREDENTIAL_MINT_KINDS=['session']`), so the shared dashboard token can no longer mint or hijack a session over HTTP at all. There is no "token-bootstrap session" left to construct, so `/rotate`'s existing session gate (`rejectIfNotHumanAuth`, card 93ed929a: `kind==='session'` or a non-agent `kind==='device'`, never `kind==='token'`) is sufficient as-is -- no new session-provenance tracking (a "tainted" flag, RedHat 17005's candidate #2) is needed, because the attack it would guard against is already unreachable one hop earlier.
+
+**Decision: which session types may call `/rotate`.** Any valid browser session belonging to a dashboard user (`kind==='session'`), or a non-agent device key (`kind==='device'`, excluding any key `agentKeyToAgentId` resolves to a fleet agent id) -- the same `rejectIfNotHumanAuth` allowlist every other write/rotate route in this file already uses. The shared dashboard token (`kind==='token'`) is never allowed, and since 49960046 it cannot forge its way into a session either. No further restriction is needed because the only path that could have produced a "fake-human" session is gone.
+
+**Measured live switch state (read-only, `GET /api/claude-plans/readiness`):** `CLAUDE_ROTATION_ENABLED=0` on the live install. Not changed by this card, per MikroB's standing constraint (17005/17006/17142) that the switch stays off until this class of finding is closed.
+
+**New regression test (the missing end-to-end link):** `src/__tests__/claude-plans-routes.test.ts`, describe block "End-to-end: the X1/X3 chain cannot reach /rotate (card ed1f3e9c)" -- drives the REAL `tryHandleAuth` + `resolveAuth` + `tryHandleClaudePlans` handlers against a real in-memory DB (no hand-asserted `{kind:'session'}`; the positive case uses a genuine login cookie, resolved the same way `web.ts` resolves one). X1 and X3 negative tests, plus a positive control proving the gate is session-based, not a blanket block. Mutation-verified: reverting `CREDENTIAL_MINT_KINDS` to include `'token'` (X1) and reverting the break-glass branch of `POST /api/auth/password` to accept `kind==='token'` without a `current_password` proof (X3) each turned the corresponding new test (and, for X3, the pre-existing 49960046 test) RED with the exact expected status-code mismatch; both reverts restored byte-identical (`git diff` empty).
+
+**Ki dontott:** backend (card ed1f3e9c), per MikroB 17006/17142 N5 split and the independently-landed root fix in card 49960046. Gate: QA + Cybersec + Cybered (auth/session trust boundary, per the card's own gate line).
+
+## 2026-11-06 -- card 0244910e: Cybered NO-GO (comment 28168) -- test power closed, no code change needed
+
+Cybered's NO-GO on the 0244910e fix round (Gate-SHA 780995cbd) found the code itself correct (no way to make `store/agent-key-provision.sh` write a polluted/empty key, and `--rotate` does revoke the old key) but found the selftest's mutation coverage weaker than the card's own changes implied:
+- B1: removing the `|| die 4 "mint failed"` guard on the CLI call's own exit code survived the selftest, because the prior mint-failure fixture used empty stdout, which the newer empty-output guard (N2, added by this same card) also happens to catch -- a false sense of coverage on a line this card itself touched.
+- B2: every selftest fixture was hyphen-only (`mint-secret-abc-20chars-min` style); the real key shape is `mvdk_` + base64url, which always contains an underscore, so a mutant dropping the underscore out of the filter's charset (`[A-Za-z0-9_-]` -> `[A-Za-z0-9-]`) survived -- that one-character regression would fail every real mint in production while the selftest stayed green.
+
+Fix (test-only, no production code change beyond the optional L2 hardening below): `store/agent-key-provision.selftest.sh` gained a new case (a CLI that prints a valid, real-shaped key line and THEN exits 1 -- asserts no key file and exit 4, not just "non-zero"), and the happy-path mint fixture now uses a real-shaped key (`mvdk_Ab3xQ9z_Lp7-Rk2Y8W`) instead of a hyphen-only one, so the charset is actually pinned. Both mutants Cybered named (B1, B2) confirmed RED against the updated selftest; the production script (`store/agent-key-provision.sh`) was confirmed byte-identical before/after the mutation probes.
+
+Also folded in Cybered's optional LOW (L2): `store/agent-key-provision.sh` now scrubs `DASHBOARD_USER_DB_OVERRIDE` from its own environment before invoking the `dashboard-user` CLI, so an inherited test-only override in the operator's shell can no longer make a revoke/mint silently act on the wrong database.
+
+Cybered's L1 (informational, not actioned as code): `--rotate` revokes the old key in the DB at once, but a running dashboard process can keep trusting that key for up to 60s (the in-memory device-key cache's last-used debounce) -- "the old key stops working after rotation" is immediate for the DB row and within 60s for a live server process, not an instant kill switch against an already-leaked key still being used against a running server.
+
+**Ki dontott:** Cybered (NO-GO, comment 28168), fixed by backend (card 0244910e, re-gate round). Gate: QA + Cybered (per Cybered's own re-gate request).
+
+## 2026-11-06 -- card ed1f3e9c: correction to the 2026-11-06 "/rotate session policy" entry above (Cybered NO-GO, comment 28300)
+
+The earlier entry on this card (above, "POST /api/claude-plans/rotate session policy") said: "No further restriction is needed because the only path that could have produced a 'fake-human' session is gone." Cybered's NO-GO (28300) measured this to be false and it is corrected here, not edited in place.
+
+Card 49960046 did close the HTTP route into a fake-human session: `POST /api/auth/users` (first-user bootstrap) and `POST /api/auth/password` (break-glass reset) both now require an existing human session, so the shared dashboard token cannot mint or hijack a session over any HTTP endpoint. That part of the original entry stands and Cybered agreed with it.
+
+What the original entry missed: a fleet agent with shell access (not HTTP) can run the local `dashboard-user` CLI headlessly (`add` + a password on stdin) to create a dashboard user, then log in over HTTP with that user's credentials to obtain a genuine, real session cookie. Cybered measured this end to end in their probe: the CLI-created user's login returns 200 with a session cookie, and that session passes `/rotate`'s human gate (`rejectIfNotHumanAuth`) with the switch off (409 = gate passed). No hook in the repo blocks an agent from running the user-management subcommands of this CLI (the only guard found, `scripts/hooks/agent-key-secret-guard.py`, covers the agent-key subcommands, not the user ones). This is the same remaining trust root RedHat 17142 point 3 and card 9c7ad372 O5 already tracked.
+
+**Corrected decision:** the local `dashboard-user` CLI (headless `add` + HTTP login) is a second, still-open path to a human-shaped session that passes the `/rotate` gate -- it is not closed by 49960046, which only closes the HTTP mint routes. `CLAUDE_ROTATION_ENABLED` must stay off (it already is: `GET /api/claude-plans/readiness` on the live install still reads `CLAUDE_ROTATION_ENABLED=0`, re-measured 2026-11-06) until either this CLI path is closed (e.g. gated the same way the agent-key subcommands are, or restricted to a human operator shell) or Peti explicitly accepts the residual risk and approves enabling rotation with it open. No code change and no new test were made for this correction, per Cybered's own assessment (28300): the X1/X3/positive-control tests remain sound pins for the HTTP chain, and the gap is in the decision record, not in the code.
+
+**Ki dontott:** Cybered (NO-GO, comment 28300), corrected by backend (card ed1f3e9c, re-gate round). Gate: QA + Cybersec + Cybered (per the card's own gate line; Cybersec verdict on this sha still welcome as input per MikroB 28301).
+
+## 2026-11-06 -- upstream gates db-write-gate.mjs + fleet-freeze-gate.sh decided, settings.json ack corrected (card 7391f09a)
+
+**Döntés:**
+- `scripts/hooks/db-write-gate.mjs` (upstream PreToolUse, APPROVALDBGATE1030): REJECT for now, own follow-up card. It imports `scheduleSurfaceDeny`/`scheduleSurfaceVariants` and other generic surface-matching exports from upstream's `scripts/self-pace-gate.mjs` -- but this fork's `scripts/self-pace-gate.mjs` is an older, self-pace-only file (blocks ScheduleWakeup/CronCreate/tmux send-keys self-injection) with no multi-surface engine at all. Adopting db-write-gate.mjs wholesale first requires porting/merging upstream's generalized surface-deny engine into the fork's self-pace gate, a real refactor of a security-critical file, not a drive-by adoption.
+- `scripts/hooks/fleet-freeze-gate.sh` (upstream PreToolUse `*` matcher, KILLSWITCH1022): REJECT for now, own follow-up card. The script itself is an 11-line, dependency-free killswitch (denies every tool call while `store/fleet-freeze.json` exists), but it is useless without its other half -- upstream's dashboard `POST /api/fleet/freeze` / `/api/fleet/unfreeze` routes and a UI red button, which this fork does not have. A genuinely useful owner safety feature, worth building, but a new dashboard API surface is its own card, not a settings.json drift bump.
+- `.claude/settings.json` acknowledgement (src/fork-upstream/acknowledged-conflicts.ts): corrected -- the 2026-10-31 round (card 7f0efce3) never named db-write-gate.mjs or fleet-freeze-gate.sh at all, despite both differing in the same diff it measured. Also found and named a third previously-unnamed difference, `scripts/hooks/shell-rescan-guard.py` (refuses a Bash command whose own text gets re-scanned by the shell -- backtick-in-double-quotes, unquoted heredoc with backtick/$(), eval; does not exist on this fork), left UNDECIDED pending its own card. Blob pin bumped a4d62d48e5d8 -> 37818edc2d86 (current upstream/main).
+- `scripts/hooks/telegram_progress_clear.py` acknowledgement: corrected -- the 2026-10-31 (and earlier) claim "No code line differs" was false. Re-read line by line: mostly comment rewording, but a real variable rename (`sent_to` -> `dest_sent`) and a `continue`+separate-`if` -> `if/elif` refactor ride along. Both are behaviourally equivalent to what they replaced, so the KEEP FORK resolution itself is unchanged -- only the "nothing is code" claim is withdrawn.
+- DECISIONS.md sha correction: the 2026-10-31 entry (line ~22824 at the time of this writing, "Upstream-drift round: 2 undecided files resolved, 1 stale blob bumped", card 7f0efce3) cites Gate-SHA `59192f3e8b929cf84b5b410b511679efe7b976d4`, which is NOT an ancestor of `origin/develop` (`git merge-base --is-ancestor` fails) -- it was a pre-land branch commit, rewritten away during landing. The actual landed commit carrying that round's content is `049e213c9` (`docs(7f0efce3): re-append lost DECISIONS.md entry at tail (recovered from ab35d3b6f)`), verified `git merge-base --is-ancestor 049e213c9 origin/develop` succeeds. Per the tail-append rule the old entry is left untouched; this note is the correction of record.
+
+**Ki döntött:** DevO (fullstack), card 7391f09a (parent 7f0efce3), Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 6ff6d1dc fix round: TMPDIR-leak regression test + update-ref persistent-failure fix (QA FAIL 28269, Cybersec NO-GO 28270 on Gate-SHA 3835c1054)
+
+**Döntés:**
+- Added the missing selftest case for L1 (Kész-ha point 3): forces `commit-tree` to fail with "no git identity anywhere" (rc=128, via a fixture with no `[user]` config section at all) and asserts 0 leftover temp index files in a private TMPDIR. Mutant-kill confirmed: reverting the EXIT trap back to the RETURN trap (3517b027's original) leaves 1 leaked file -- case goes red.
+- Fixed the NEW defect Cybersec found (28270): the update-ref retry loop treated every failure as "ref already taken" and spun on `n` forever on a persistent failure (e.g. a read-only refs directory), with empty stderr. Now captures stderr and only retries when git says "reference already exists"; any other failure exits non-zero with git's own message, plus a 1000-attempt hard cap. Added a selftest case (read-only refs dir) asserting a prompt (<=4s) non-zero exit with non-empty stderr. Mutant-kill confirmed: reverting to the old unconditional retry makes this case go red (times out at 5s, rc=124, empty stderr -- the exact defect reported).
+- Both fixes verified with `bash -n` + `--selftest` (14/14 PASS) before and after each mutant reversion.
+
+**Ki döntött:** DevO (fullstack), card 6ff6d1dc fix round, Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 3a644c6a: elemzo clean-room skill hardening (e0028cf4 follow-up)
+
+**Döntés:** per WhiteHat2's GO findings on e0028cf4, hardened `agents/elemzo/CLAUDE.md` section 2 and `clean-room-product-analysis/SKILL.md` (live + the tracked `seed-fleet-agents/elemzo/*` copy): crawled page content is now explicitly untrusted data, never passed into Bash/API calls (S1); state-changing/probing actions on the target require Peti's prior approval, closing the contradiction where a flow being "walkable" implied the submit step also needed no approval (S3); the minimal-quote allowance is removed entirely per Peti 11000 (ideas only, no text/asset copying) (S4); `mcp__playwright__browser_evaluate` is now denied in both the live and the previously-nonexistent seed settings.json (S2); evidence path + 30-day retention documented (S5). The mopsion.com trial-walk from e0028cf4 is still blocked (404 + TLS on the tenant subdomain, card 97804a77); `http://localhost:3420` is named as the explicit replacement target for the mechanics check.
+
+**Ki döntött:** backend2 (card 3a644c6a), per MikroB dispatch on the e0028cf4 WhiteHat2 GO. Gate: QA + Cybered.

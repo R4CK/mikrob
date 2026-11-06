@@ -122,6 +122,10 @@ migration_number_check() {
 # opposite ends of the landing, and that asymmetry is documented in the helper's own header.
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$(dirname "$0")/landing-gate-verdict-check.sh"
+# record_card_landing (card a8a83d48): shared with marveen-land.sh, same convention as
+# kanban_comment_on below -- best-effort, never fails the caller.
+# shellcheck source=./kanban-comment-lib.sh
+. "$(dirname "$0")/kanban-comment-lib.sh"
 # find_conflict_markers (card 4b4c89eb): shared with marveen-land.sh, same reason as above.
 # shellcheck source=./conflict-marker-check.sh
 . "$(dirname "$0")/conflict-marker-check.sh"
@@ -656,6 +660,9 @@ BRANCH="$(git -C "$MAIN" branch -a --contains "$SHA" 2>/dev/null | pick_branch "
 [ -n "$BRANCH" ] || die 3 "no branch contains $SHA"
 TIP="$(git -C "$MAIN" rev-parse --short "$BRANCH" 2>/dev/null)"
 GSHORT="$(git -C "$MAIN" rev-parse --short "$SHA")"
+# Card a8a83d48: the canonical full sha for card_landings' work_sha column -- $SHA as the caller
+# typed it may be abbreviated.
+GFULL="$(git -C "$MAIN" rev-parse "$SHA")"
 [ "$TIP" = "$GSHORT" ] || die 3 "branch $BRANCH tip is $TIP but the GATED sha is $GSHORT -- the extra commits are ungated"
 say "branch $BRANCH, tip == gated sha ($GSHORT)"
 
@@ -1168,6 +1175,7 @@ fi
 git -C "$MAIN" fetch origin --quiet
 if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
   MERGE="$(git -C "$WT" rev-parse --short HEAD)"
+  MERGE_FULL="$(git -C "$WT" rev-parse HEAD)"
   # What we just compiled IS the new main, so it is the next landing's baseline -- carried over so a
   # queue of landings pays for one baseline typecheck, not one per card. Keyed by the new sha, so a
   # main that moves underneath us (someone else pushing) simply misses the cache and re-measures.
@@ -1189,6 +1197,12 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
   # shows nothing until the command EXITS. So the script must also RETURN promptly, which is what
   # the detached graphify below is for.
   echo "LANDED $CARD: $GSHORT -> origin/main (merge $MERGE)"
+
+  # Card a8a83d48 (F2.1.2): record this VERIFIED landing. $SHA is the gated sha (what the REVIEW's
+  # Gate-SHA names), $MERGE_FULL is the actual pushed-and-ancestry-confirmed sha. The server
+  # re-verifies merge_sha's ancestry itself before writing, so a failed call here only leaves a gap
+  # for 3b82961f's `--record-landing` repair flag -- it never undoes the already-successful push.
+  record_card_landing "$CARD" "$GFULL" "$MERGE_FULL" mopsion "$LANDED_BY"
 
   # Keep the blast-radius graph in step with the main clone. A stale graph makes
   # the PreToolUse guard go silent (by design -- it must not report confident wrong

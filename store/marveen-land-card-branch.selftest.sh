@@ -95,6 +95,15 @@ class H(http.server.BaseHTTPRequestHandler):
         if m:
             with open(f"{CAPTURE_DIR}/{m.group(1)}.ndjson", "a") as f:
                 f.write(body.decode() + "\n")
+        # Card a8a83d48: capture every POST /api/card-landings body too, keyed by card_id from the
+        # JSON payload itself (the path carries no card id for this endpoint).
+        if self.path.rstrip('/') == '/api/card-landings':
+            try:
+                cid = json.loads(body.decode()).get('card_id', 'unknown')
+            except Exception:
+                cid = 'unknown'
+            with open(f"{CAPTURE_DIR}/landing-{cid}.ndjson", "a") as f:
+                f.write(body.decode() + "\n")
         resp = json.dumps({"ok": True}).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -202,6 +211,26 @@ if [ "$rc" = 0 ] && grep -q "LANDED card/aaa111 -> origin/develop" "$OUT_FILE"; 
   echo "  ok   a real --card landing pushes to origin/develop"
 else
   echo "  FAIL --card landing should succeed -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+# Card a8a83d48 (success -> row with both shas), tightened after Cybersec2 NO-GO F3-M2 (card
+# a8a83d48, Gate-SHA 6cc529f3d): the old version only grepped for work_sha and repo, never for
+# merge_sha's VALUE -- a mutant sending merge_sha="WH2-NOT-A-SHA" still passed 41/41. This pins
+# merge_sha to the ACTUAL pushed origin/develop tip (full 40-hex), and requires it to differ from
+# work_sha (a mutant that reuses work_sha as merge_sha, never computing the real pushed sha, must
+# also go red here).
+n=$((n + 1))
+PUSHED_TIP_AAA111="$(git -C "$MAIN" fetch -q origin develop && git -C "$MAIN" rev-parse origin/develop)"
+if [ -f "$CAPTURE_DIR/landing-aaa111.ndjson" ] \
+  && grep -q "\"work_sha\": \"$SHA_AAA111\"" "$CAPTURE_DIR/landing-aaa111.ndjson" \
+  && grep -qE "\"merge_sha\": \"[0-9a-f]{40}\"" "$CAPTURE_DIR/landing-aaa111.ndjson" \
+  && grep -q "\"merge_sha\": \"$PUSHED_TIP_AAA111\"" "$CAPTURE_DIR/landing-aaa111.ndjson" \
+  && grep -q '"repo": "marveen"' "$CAPTURE_DIR/landing-aaa111.ndjson"; then
+  echo "  ok   a real --card landing recorded a card_landings row with work_sha=$SHA_AAA111, merge_sha=$PUSHED_TIP_AAA111"
+else
+  echo "  FAIL --card landing should have called POST /api/card-landings with both shas (merge_sha = the actual pushed tip $PUSHED_TIP_AAA111):"
+  cat "$CAPTURE_DIR/landing-aaa111.ndjson" 2>/dev/null | sed 's/^/       /'
   fail=1
 fi
 
@@ -325,6 +354,18 @@ else
   echo "  FAIL an R1-refused landing should not have pushed anything"; fail=1
 fi
 
+# Card a8a83d48, Cybersec2 NO-GO F3-M1: a mutant that calls record_card_landing unconditionally
+# right after the work_sha capture (before any merge/push) left the OLD selftest green, because
+# nothing asserted the ABSENCE of a capture on a refused landing. This closes that gap.
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-ccc333.ndjson" ]; then
+  echo "  ok   the refused ungated landing recorded NO card_landings row (F3-M1)"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-ccc333.ndjson" | sed 's/^/       /'
+  fail=1
+fi
+
 n=$((n + 1))
 land_card ccc333 backend3 --allow-ungated
 if [ "$rc" = 0 ] && grep -q "LANDED card/ccc333 -> origin/develop" "$OUT_FILE"; then
@@ -403,6 +444,15 @@ if ! git -C "$MAIN" merge-base --is-ancestor card/eee555 origin/develop 2>/dev/n
   echo "  ok   the B1-refused landing pushed nothing"
 else
   echo "  FAIL a B1-refused landing should not have pushed anything"; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-eee555.ndjson" ]; then
+  echo "  ok   the B1-refused landing recorded NO card_landings row (F3-M1)"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-eee555.ndjson" | sed 's/^/       /'
+  fail=1
 fi
 
 # Now RedHat re-gates the ACTUAL sha with a GO: both designated gates agree, so the same card lands.
@@ -610,6 +660,15 @@ else
   echo "  FAIL a W2-refused landing should not have pushed anything"; fail=1
 fi
 
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-beeffa.ndjson" ]; then
+  echo "  ok   the W2-refused landing recorded NO card_landings row (F3-M1)"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-beeffa.ndjson" | sed 's/^/       /'
+  fail=1
+fi
+
 # N2: the "UNGATED LANDING" note must be posted ONLY after a successful merge+push -- not when the
 # gate-check tolerance was granted but the landing failed for an UNRELATED reason afterwards (here:
 # a forced fleet-test failure). Bypasses land_card() to override MARVEEN_LAND_TEST per-call.
@@ -637,6 +696,15 @@ if ! git -C "$MAIN" merge-base --is-ancestor card/face99 origin/develop 2>/dev/n
   echo "  ok   the fleet-test-refused landing pushed nothing"
 else
   echo "  FAIL a fleet-test-refused landing should not have pushed anything"; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-face99.ndjson" ]; then
+  echo "  ok   the fleet-test-refused landing recorded NO card_landings row (F3-M1)"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-face99.ndjson" | sed 's/^/       /'
+  fail=1
 fi
 
 n=$((n + 1))
@@ -693,6 +761,74 @@ if ! printf '%s' "$all_out" | grep -q "card/aaa111 exists but"; then
   echo "  ok   --all does not re-list the already-landed card/aaa111 (MikroB 16324)"
 else
   echo "  FAIL --all should not list an already-landed card/* branch -> $all_out"; fail=1
+fi
+
+# Cybersec2 NO-GO 28230 F6 (card a8a83d48): the shipped marveen-land.sh used to pass $merge_sha to
+# record_card_landing, but $merge_sha gets REASSIGNED to the +mikrob version-bump CHILD commit
+# once bump_fork_version succeeds (a one-parent commit) -- so the server's "work_sha == merge_sha's
+# second parent" check had no second parent to find, and every real landing's row silently 422'd.
+# None of the cases above caught this because $MAIN never had a package.json, so bump_fork_version
+# always failed closed (non-fatally) and merge_sha was never reassigned. Giving $MAIN one now, for
+# the FIRST time in this file, reproduces the real production shape for exactly this one case.
+echo '{"name":"marveen","version":"1.0.0+mikrob.1"}' > "$MAIN/package.json"
+cat > "$MAIN/package-lock.json" <<'LOCKEOF'
+{
+  "name": "marveen",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "marveen",
+      "version": "1.0.0"
+    }
+  }
+}
+LOCKEOF
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" add package.json package-lock.json
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "chore: add package.json for the bump fixture"
+git -C "$MAIN" push -q origin develop
+
+git -C "$MAIN" checkout -q -b card/fed00001 develop
+echo "fed00001 content" > "$MAIN/fed00001.txt"
+git -C "$MAIN" add fed00001.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card fed00001: add fed00001.txt"
+git -C "$MAIN" checkout -q develop
+SHA_FED00001="$(git -C "$MAIN" rev-parse card/fed00001)"
+set_gate_line fed00001 "QA"
+set_verdict fed00001 pass "$SHA_FED00001"
+
+n=$((n + 1))
+land_card fed00001 backend
+if [ "$rc" = 0 ] && grep -q "LANDED card/fed00001 -> origin/develop" "$OUT_FILE" && grep -q "version bumped to" "$OUT_FILE"; then
+  echo "  ok   a --card landing with a real version bump still lands and reports the bump (F6 fixture sanity)"
+else
+  echo "  FAIL fed00001 landing (with a real version bump) should succeed -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+n=$((n + 1))
+git -C "$MAIN" fetch -q origin develop
+TIP_FED00001="$(git -C "$MAIN" rev-parse origin/develop)"
+TIP_FED00001_PARENTS="$(git -C "$MAIN" log -1 --format=%P "$TIP_FED00001" | tr ' ' '\n' | grep -c .)"
+MERGE_FED00001="$(git -C "$MAIN" rev-parse "${TIP_FED00001}^1")"
+MERGE_FED00001_PARENTS="$(git -C "$MAIN" log -1 --format=%P "$MERGE_FED00001" | tr ' ' '\n' | grep -c .)"
+if [ "$TIP_FED00001_PARENTS" = "1" ] && [ "$MERGE_FED00001_PARENTS" = "2" ]; then
+  echo "  ok   the landed tip is a one-parent bump child on top of a real two-parent merge (F6 fixture sanity)"
+else
+  echo "  FAIL expected tip parents=1 (bump) and tip^1 parents=2 (merge), got $TIP_FED00001_PARENTS / $MERGE_FED00001_PARENTS"
+  fail=1
+fi
+
+n=$((n + 1))
+if [ -f "$CAPTURE_DIR/landing-fed00001.ndjson" ] \
+  && grep -q "\"merge_sha\": \"$MERGE_FED00001\"" "$CAPTURE_DIR/landing-fed00001.ndjson" \
+  && ! grep -q "\"merge_sha\": \"$TIP_FED00001\"" "$CAPTURE_DIR/landing-fed00001.ndjson"; then
+  echo "  ok   record_card_landing got the MERGE sha, not the version-bump child sha (F6)"
+else
+  echo "  FAIL record_card_landing should have been called with merge_sha=$MERGE_FED00001 (not the bump child $TIP_FED00001):"
+  cat "$CAPTURE_DIR/landing-fed00001.ndjson" 2>/dev/null | sed 's/^/       /'
+  fail=1
 fi
 
 # The brace-group mutation test (reverting the bare `exec {FD}>&- 2>/dev/null`, card cd3e577b B2)

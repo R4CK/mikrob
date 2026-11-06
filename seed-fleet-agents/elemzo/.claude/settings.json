@@ -1,0 +1,57 @@
+{
+  "enabledPlugins": {
+    "telegram@claude-plugins-official": false,
+    "slack-channel@marveen-marketplace": false,
+    "discord@claude-plugins-official": false,
+    "googlechat@claude-channel-googlechat": false,
+    "teams@marveen-marketplace": false
+  },
+  "effortLevel": "high",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 __MARVEEN_INSTALL_DIR__/scripts/hooks/taskstate-replay.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [],
+    "deny": [
+      "Read(//home/neon/.ssh/**)",
+      "Read(//home/neon/.aws/**)",
+      "Read(//home/neon/.gnupg/**)",
+      "Bash(sudo:*)",
+      "Bash(rm -rf /home/neon:*)",
+      "Bash(rm -rf /:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "ScheduleWakeup",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "RemoteTrigger",
+      "AskUserQuestion",
+      "Bash(wget *)",
+      "Bash(*/wget *)",
+      "Bash(nc *)",
+      "Bash(*/nc *)",
+      "Bash(ncat *)",
+      "Bash(*/ncat *)",
+      "Bash(telnet *)",
+      "Bash(*/telnet *)",
+      "Read(//home/neon/.env)",
+      "Read(**/.env)",
+      "Bash(*/sudo *)",
+      "Bash(curl -X POST:*)",
+      "mcp__playwright__browser_run_code_unsafe",
+      "mcp__playwright__browser_evaluate"
+    ]
+  }
+}
