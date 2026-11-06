@@ -22919,3 +22919,25 @@ What the original entry missed: a fleet agent with shell access (not HTTP) can r
 - Both fixes verified with `bash -n` + `--selftest` (14/14 PASS) before and after each mutant reversion.
 
 **Ki döntött:** DevO (fullstack), card 6ff6d1dc fix round, Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- kártya 80ab5067: KG sanitize Unicode-rések, NFKC, szerző-szűrő, túlélő mutánsok
+
+**Döntés:** a 4ecd75d0 WhiteHat GO (Gate-SHA 45237719) LOW leletei zárva:
+- sanitizeKgText (src/kg/store.ts) NFKC-normalizál a strip ELŐTT; UNSAFE_CHARS_RX kibővült a teljes
+  Supplementary Special-purpose Plane-re (U+E0000-E0FFF), U+FFF0-FFF8-ra, a teljes Unicode
+  non-character halmazra (66 kódpont) és U+2800-ra (BRAILLE PATTERN BLANK).
+- import-anti-patterns.ts szerző-eligibility-je a kanban-assignee-guard.ts-ben már meglévő NFKC +
+  hasonmás-fold + betű/szám-csak normalizáción megy át (exportálva onnan
+  `normalizeIdentityForMatch` néven), mindkét oldalon (a deny-lista sajat kötőjeles neveit -- pl.
+  "local-llm" -- is ugyanúgy kell foldolni, kulonben eltér a ket oldal).
+- A ket tulelo mutans (kartya-cim catch linkToCard-ban, DECISIONS-sor catch) mindegyikéhez dedikalt
+  teszt, piros a 45237719-en, zold a javitason.
+
+Tesztek: kg-store.test.ts +1, kg-import-anti-patterns.test.ts +3, teljes kg-* csalad +
+kanban-assignee-guard.test.ts 326/326, tsc+eslint clean.
+
+Nem erintve (a kartya hatokorén kivul): import-from-relations.ts sajat card-title upsertNode-ja
+nem kap KgSecretError catch-et -- kulon problema, kulon kartyara, ha gyakorlatban zavaro lesz.
+
+**Ki dontott:** backend3 (kartya 80ab5067), 4ecd75d0 WhiteHat GO 23524 LOW leletei alapjan. Gate:
+QA + Cybersec.
