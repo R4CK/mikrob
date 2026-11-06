@@ -22852,6 +22852,16 @@ Also folds in Cybered's GO 28044 INFO finding: the WhiteHat focus line ("every f
 **Döntés:** `--card` mode (create/reuse/path/node_modules symlink/unlanded-commit warning/git identity isolation) was already fully implemented in `store/agent-worktree-marveen.sh`. The gap was selftest coverage against this card's acceptance criteria: the existing selftest (12 cases) covered create/branch/--path but not reuse (idempotent second pickup) or rollback-on-error (occupied non-worktree path refused without deletion). Added exactly those two missing cases to `store/agent-worktree-marveen.selftest.sh` (14/14 PASS); no change to the script itself was needed.
 
 **Ki döntött:** DevO (fullstack), card 20f2b522, Gate-SHA 6403df5b506b3f1513faadadd4037cf6bbf878df.
+
+## 2026-11-06 -- F1.1.3: agent-checkpoint.sh M1/L1/L2/L3 fixes (card 6ff6d1dc, phase ed332869)
+
+**Döntés:** Closed the Cybersec findings on `store/agent-checkpoint.sh` from the 3517b027 gate (Gate-SHA 6858f2bbf):
+- M1 MEDIUM: replaced the check-then-act `show-ref` loop + unconditional `update-ref` with a create-only `update-ref <ref> <commit> <all-zero-old-value>` retry loop -- a concurrent run that already claimed the same `n` now gets refused (rc=128) instead of silently overwriting it. Proven with a 6-concurrent-run selftest case (6 distinct refs); confirmed the case goes red on the pre-fix code (4 distinct refs, collisions on `/1`).
+- L1 LOW: `trap ... RETURN` does not fire when `set -e` aborts the script -- switched to `trap ... EXIT` on a non-local `tmp_index` (a local would be unbound by the time an EXIT trap fires after the function's scope ends).
+- L2 LOW: selftest now asserts `git rev-parse <ckpt>^ == HEAD` (the `-p HEAD` pin).
+- L3 INFO (`git add -A` can capture an unguarded secret file): ACCEPTED, documented in the script header -- the checkpoint ref is local-only by construction (never pushed/fetched/exposed), so this is not a gap unless a future change starts syncing these refs.
+
+**Ki döntött:** DevO (fullstack), card 6ff6d1dc (Gate-SHA on the card's REVIEW comment).
 ## 2026-11-06 -- card ed1f3e9c: POST /api/claude-plans/rotate session policy (split from 0244910e N5, RedHat 9655494c 17005/17142 X1/X3)
 
 RedHat's N5 (17142, on top of the original 17005 X1/X3 finding) said a session created via a token-bootstrapped first user or a token break-glass password reset still reached `POST /api/claude-plans/rotate`: 200. By the time this card was picked up, card 49960046 had independently closed the ROOT of that chain: `POST /api/auth/users` (first-user bootstrap) and `POST /api/auth/password` (break-glass reset) both now require an EXISTING human session (`CREDENTIAL_MINT_KINDS=['session']`), so the shared dashboard token can no longer mint or hijack a session over HTTP at all. There is no "token-bootstrap session" left to construct, so `/rotate`'s existing session gate (`rejectIfNotHumanAuth`, card 93ed929a: `kind==='session'` or a non-agent `kind==='device'`, never `kind==='token'`) is sufficient as-is -- no new session-provenance tracking (a "tainted" flag, RedHat 17005's candidate #2) is needed, because the attack it would guard against is already unreachable one hop earlier.
