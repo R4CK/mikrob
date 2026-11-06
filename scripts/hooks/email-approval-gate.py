@@ -849,10 +849,16 @@ def main():
     if re.search(r"send_draft", tool, re.I):
         # The call carries only a draftId: the gate sees neither the recipient
         # nor the text, so there is nothing an approval could be anchored to.
+        # This deny fires BEFORE the shared classifier (email_extract.py) is ever
+        # consulted -- the gmail__/resend__ deny-by-default branch above short-circuits
+        # send_draft unconditionally, broken classifier or not. Named here anyway (Koteg
+        # 23a, upstream #1995's broken-classifier test) so the message stays accurate about
+        # where the real classification would have happened had this path not already decided.
         deny(prefix +
              "email_send level 2 (CHECK-BEFORE-SEND): a send_draft nem horgonyozhato. "
              "A hivas csak egy draftId-t visz, a piszkozat cimzettjet es szoveget a kapu "
-             "nem latja, igy nincs mihez jovahagyast kotni.\n"
+             "nem latja, igy nincs mihez jovahagyast kotni (email_extract.py classify_mail_tool "
+             "sem segit itt: a draftId-only hivasnak nincs tartalma, amit osztalyozni lehetne).\n"
              "Kuldd a levelet send_email-lel, TELJES boritekkal (to + cc + bcc + subject + "
              "body, ugyanaz, ami a piszkozatban van): arra a kapu kiadja a tartalom-horgonyt, "
              "azzal kerj jovahagyast, es a jovahagyas utan ugyanaz a hivas atmegy.")
