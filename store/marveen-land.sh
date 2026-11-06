@@ -1076,7 +1076,7 @@ land_with_retry() {
   # at all. Best-effort: a journal write failure must never fail or block a landing.
   local _ljd _run_id _run_finished=0
   _ljd="$(dirname "$0")/land-run-journal.sh"
-  _run_id="$(bash "$_ljd" start marveen-land.sh "$agent" "${LAND_CARD:--}" 2>/dev/null || true)"
+  _run_id="$(bash "$_ljd" start marveen-land.sh "$agent" "${LAND_CARD:--}" "$$" 2>/dev/null || true)"
   # card 88b67fb4, MikroB's live-D/5 gap 2 (msg_id:16818): this function has no EXIT trap at all
   # (by design -- a SIGKILL'd run leaving no "finished" line IS the stale signal D/5 exists to
   # catch), so a deliberate SIGTERM stop (an operator asking an agent to stop a land run) would

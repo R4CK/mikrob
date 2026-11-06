@@ -613,7 +613,7 @@ done
 # $_LAND_RUN_ID). The exit status is captured as the very first statement so neither job's own
 # commands can clobber the status the trap is reporting.
 _LAND_RUN_JOURNAL="$(dirname "$0")/land-run-journal.sh"
-_LAND_RUN_ID="$(bash "$_LAND_RUN_JOURNAL" start mopsion-land.sh "${LANDED_BY:-unknown}" "$CARD" 2>/dev/null || true)"
+_LAND_RUN_ID="$(bash "$_LAND_RUN_JOURNAL" start mopsion-land.sh "${LANDED_BY:-unknown}" "$CARD" "$$" 2>/dev/null || true)"
 _LAND_RUN_FINISHED=0
 cleanup() {
   local _rc=$?
