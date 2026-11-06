@@ -154,16 +154,23 @@ run
 check "stale approval: no schtasks call" "" "$SCHTASKS_CALLS"
 
 # --- 5. Fresh approval, but board is BUSY (in_progress card exists) -> no-op, no schtasks. ---
+# QA non-verdict comment 27874: the old version of this test only asserted no SCHTASKS call --
+# a mutant moving the consume-oneshot call back to BEFORE this precondition (the pre-fix M1
+# order) still passed, because it only burns the approval without ever reaching schtasks. Assert
+# no consume-oneshot curl call either, so that exact reordering mutant is caught directly here
+# (not only incidentally, the way the new G1 case below happens to catch it).
 write_fixtures "$FRESH_APPROVED" "$BUSY_INPROGRESS" "$NEWER_AVAILABLE"
 run
 check "board busy: exit 0"           "0" "$RC"
 check "board busy: no schtasks call" ""  "$SCHTASKS_CALLS"
+check "board busy: no consume-oneshot call (M1 order pin)" "" "$(printf '%s' "$CURL_CALLS" | grep -o 'consume-oneshot' || true)"
 
 # --- 6. Fresh approval, board idle, but available is NOT newer -> no-op, no schtasks. --------
 write_fixtures "$FRESH_APPROVED" "$EMPTY_INPROGRESS" "$NOT_NEWER"
 run
 check "not newer: exit 0"           "0" "$RC"
 check "not newer: no schtasks call" ""  "$SCHTASKS_CALLS"
+check "not newer: no consume-oneshot call (M1 order pin)" "" "$(printf '%s' "$CURL_CALLS" | grep -o 'consume-oneshot' || true)"
 
 # --- 7. POSITIVE: every precondition holds -> schtasks called with ONLY /run /TN <name>. ----
 write_fixtures "$FRESH_APPROVED" "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
@@ -310,6 +317,41 @@ CONSUME_FIXTURE="$CONSUME_ALREADY_FIXTURE" run
 check "F2-server-replay: exit 0"           "0" "$RC"
 check "F2-server-replay: no schtasks call" ""  "$SCHTASKS_CALLS"
 CONSUME_FIXTURE="$CONSUME_OK_FIXTURE"
+
+# --- G1/L1 (2a80c6cb delta, CYBERED NO-GO 27872 / CYBERSEC NO-GO 27873): if the receipt cannot
+# be written, the trigger must FAIL CLOSED before consuming the approval -- no curl consume call,
+# no schtasks call, approval stays unburned for a later, correctly-configured run. This is also
+# the regression pin for the ordering fix: the OLD code consumed + fired schtasks FIRST and only
+# then tried to write the receipt, so this exact fixture (an unwritable receipt path) would have
+# shown schtasks fired and a server consume-oneshot curl call on the pre-fix script.
+write_fixtures '[{"id":"appr-g1","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+RC=0
+: > "$TMP/curl-calls.txt"
+: > "$TMP/schtasks-calls.txt"
+GPU_DRIVER_INSTALL_CURL_BIN="$FAKE_CURL" \
+CURL_CALL_LOG="$TMP/curl-calls.txt" \
+CURL_FIXTURE_APPROVALS="$APPROVALS_FIXTURE" \
+CURL_FIXTURE_INPROGRESS="$INPROGRESS_FIXTURE" \
+CURL_FIXTURE_CONSUME="$CONSUME_OK_FIXTURE" \
+GPU_DRIVER_INSTALL_SCHTASKS_BIN="$FAKE_SCHTASKS" \
+SCHTASKS_CALL_LOG="$TMP/schtasks-calls.txt" \
+GPU_DRIVER_INSTALL_CHECK_BIN="$FAKE_CHECK" \
+GPU_DRIVER_INSTALL_WSL_INTEROP_RESOLVE="$FAKE_INTEROP" \
+GPU_DRIVER_INSTALL_TOKEN_FILE="$TMP/token" \
+GPU_DRIVER_INSTALL_API="http://fake" \
+GPU_DRIVER_INSTALL_APPROVAL_CATEGORY="gpu-driver-silent-install" \
+GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S=3600 \
+GPU_DRIVER_INSTALL_STATE="$TMP/trigger-state.json" \
+GPU_DRIVER_INSTALL_DRIVER_STATE="$DRIVER_STATE_FIXTURE" \
+GPU_DRIVER_INSTALL_RECEIPT_PATH="$TMP/no-such-dir/trigger-receipt.json" \
+GPU_DRIVER_SILENT_INSTALL=on \
+  bash "$BIN" >"$TMP/stdout.txt" 2>&1 || RC=$?
+CURL_CALLS="$(cat "$TMP/curl-calls.txt")"
+SCHTASKS_CALLS="$(cat "$TMP/schtasks-calls.txt")"
+check "G1 unwritable receipt dir: exit 1 (fail-closed, no makedirs)" "1" "$RC"
+check "G1 unwritable receipt dir: no consume-oneshot call" "" "$(printf '%s' "$CURL_CALLS" | grep -o 'consume-oneshot' || true)"
+check "G1 unwritable receipt dir: no schtasks call"                 ""  "$SCHTASKS_CALLS"
+check "G1 unwritable receipt dir: directory NOT auto-created"       "0" "$([ -d "$TMP/no-such-dir" ] && echo 1 || echo 0)"
 
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"

@@ -331,13 +331,19 @@ function Test-FreshApproval {
         }
 
         # Verify not already used by THIS script (prevents a direct schtasks re-run with the same receipt).
+        # R1 fix (2a80c6cb delta, CYBERSEC NO-GO 27873): a parse failure used to be treated as an
+        # EMPTY used-list, i.e. fail-OPEN -- a truncated, corrupted, or externally-reset marker file
+        # let a receipt still within its freshness window be replayed as if never used. Fail CLOSED
+        # instead: a marker file that exists but cannot be parsed refuses the run, it does not
+        # silently reset the replay guard.
         $usedIds = @()
         if (Test-Path $UsedApprovalsPath) {
             try {
                 $parsed = Get-Content -Path $UsedApprovalsPath -Raw | ConvertFrom-Json
                 if ($parsed.usedApprovalIds) { $usedIds = @($parsed.usedApprovalIds) }
             } catch {
-                Write-Log "approval: could not parse $UsedApprovalsPath, treating as empty: $_"
+                Write-Log "approval: FAIL-CLOSED -- could not parse $UsedApprovalsPath, refusing rather than treating as empty: $_"
+                return $false
             }
         }
         if ($usedIds -contains $receipt.approvalId) {

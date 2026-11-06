@@ -75,7 +75,8 @@ STATE="${GPU_DRIVER_INSTALL_STATE:-$HERE/gpu-driver-silent-install-trigger-state
 CHECK_BIN="${GPU_DRIVER_INSTALL_CHECK_BIN:-$HERE/gpu-driver-check.sh}"
 DRIVER_STATE="${GPU_DRIVER_INSTALL_DRIVER_STATE:-$HERE/gpu-driver-state.json}"
 LOCK_FILE="${GPU_DRIVER_INSTALL_LOCK_FILE:-$STATE.lock}"
-# M1/H1 fix (2a80c6cb): trigger receipt written AFTER consume succeeds + schtasks fires.
+# M1/H1 fix (2a80c6cb), reordered by the G1/L1 delta fix: trigger receipt is now written BEFORE
+# consume-oneshot and before schtasks fires, and a write failure aborts (no consume, no fire).
 # The ps1 reads this file instead of calling consume-oneshot -- no API call, no token on Windows.
 RECEIPT_PATH="${GPU_DRIVER_INSTALL_RECEIPT_PATH:-/mnt/c/ProgramData/MikroB-Drivers/gpu-driver-install-trigger-receipt.json}"
 
@@ -224,6 +225,45 @@ if [ "$CMP" != "gt" ]; then
   exit 0
 fi
 
+# --- G1/L1 fix (2a80c6cb delta, CYBERSEC NO-GO 27873 / CYBERED NO-GO 27872): write the trigger
+# receipt BEFORE consuming the approval or firing schtasks, and refuse (no consume, no fire) if it
+# cannot be written. Two defects this closes:
+#   - Ordering hazard (L1): the old code fired schtasks and consumed the approval FIRST, then wrote
+#     the receipt. A ps1 run that started in that window found no receipt and refused, with the
+#     approval already burned -- an unrecoverable, silent loss. Writing the receipt first means the
+#     ps1 can only ever see a receipt that is already valid evidence this run intends to proceed.
+#   - Squat/deadlock (G1): the receipt directory is the SAME admin-only, ACL-protected directory
+#     that gpu-driver-install-setup.ps1 Phase 1 requires neon CANNOT write (otherwise Phase 1 itself
+#     fails). On a correctly set-up host this write can never succeed, so continuing afterward (old
+#     code) burned the approval on every single invocation for no possible benefit -- a self-made
+#     deadlock, not a security control. Refusing BEFORE consuming means a misconfigured/not-yet-set-up
+#     host now fails loudly and cheaply (no wasted approval) instead of silently and repeatedly. The
+#     `os.makedirs` call is also removed: this script must never create that directory itself --
+#     doing so from neon is exactly the pre-squat setup's own Phase 1 Test-TrustedOwner check exists
+#     to catch, just from the other side.
+if ! python3 -c "
+import json, os, sys
+receipt = {
+    'approvalId': '$APPROVAL_ID',
+    'consumedAt': $(date -u +%s),
+    'triggerVersion': 1,
+}
+path = '$RECEIPT_PATH'
+tmp = path + '.tmp'
+try:
+    with open(tmp, 'w') as f:
+        json.dump(receipt, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, path)
+except Exception as e:
+    print('could not write trigger receipt: ' + str(e), file=sys.stderr)
+    sys.exit(1)
+"; then
+  log "FAIL-CLOSED: could not write trigger receipt to $RECEIPT_PATH -- refusing before consuming the approval (host not set up for this yet, or directory is correctly admin-protected)"
+  exit 1
+fi
+log "trigger receipt written to $RECEIPT_PATH"
+
 # --- F2: server-side atomic consume (M1/2a80c6cb) -- AFTER both board-idle and version checks
 # Belt-and-suspenders: the flock above serialises same-WSL concurrent callers; this makes the
 # consume server-side-durable so a deleted/reset local state file cannot replay an already-consumed
@@ -289,30 +329,8 @@ with open(tmp, 'w') as f:
     f.write('\n')
 os.replace(tmp, '$STATE')
 "
-
-# H1/M1 fix (2a80c6cb): write trigger receipt to Windows side so ps1 can verify without
-# calling consume-oneshot. Fail-closed: if the receipt cannot be written, the ps1 would
-# refuse (no receipt = no approval); log and continue -- the local state above is already
-# recorded so this run is durable.
-python3 -c "
-import json, os, sys
-receipt = {
-    'approvalId': '$APPROVAL_ID',
-    'consumedAt': $(date -u +%s),
-    'triggerVersion': 1,
-}
-path = '$RECEIPT_PATH'
-tmp = path + '.tmp'
-try:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(tmp, 'w') as f:
-        json.dump(receipt, f, indent=2)
-        f.write('\n')
-    os.replace(tmp, path)
-    print('receipt written: ' + path)
-except Exception as e:
-    print('WARNING: could not write trigger receipt: ' + str(e), file=sys.stderr)
-" && log "trigger receipt written to $RECEIPT_PATH" || log "WARNING: could not write trigger receipt to $RECEIPT_PATH (ps1 will refuse -- check permissions)"
+# The trigger receipt was already written (and the write already verified to succeed) BEFORE the
+# consume-oneshot call above -- see the G1/L1 fix comment there. Nothing further to do here.
 
 log "triggered. approval $APPROVAL_ID recorded as used -- will not fire again on this same approval."
 exit 0

@@ -65,6 +65,27 @@ export function approvalWindowSeconds(env: NodeJS.ProcessEnv = process.env): num
   return Number.isFinite(v) && v > 0 ? v : 1800
 }
 
+// W1 fix (2a80c6cb delta, CYBERSEC NO-GO 27873 / CYBERED NO-GO 27872): consume-oneshot used to
+// take window_seconds straight from the request body (any authenticated caller holds the shared
+// bearer, so this was fully caller-controlled) -- a 10-day-stale approval that the default window
+// correctly refused was consumed anyway by resending the SAME call with window_seconds=1e9. The
+// replay-protection window for a one-shot consume must be a property of the SERVER, not a request
+// parameter: the caller names which approval, never how stale it is allowed to be. Mirrors
+// approvalWindowSeconds above (same env-var pattern, its own var so the two consume paths can be
+// tuned independently).
+export function oneshotConsumeWindowSeconds(env: NodeJS.ProcessEnv = process.env): number {
+  const v = Number.parseInt(env.ONESHOT_APPROVAL_WINDOW_S ?? '', 10)
+  return Number.isFinite(v) && v > 0 ? v : 3600
+}
+
+// W2 fix (2a80c6cb delta, same NO-GOs): consume-oneshot was category-GENERIC -- any caller could
+// pass category: 'email_send' (or any other real category) and burn an approved row of a DIFFERENT
+// feature's approval chain through this route, without ever touching that feature's own consume
+// endpoint or its content-hash check. Only one caller has ever legitimately used this route
+// (store/gpu-driver-silent-install-trigger.sh); allowlist it explicitly rather than accepting
+// whatever category string the request names.
+export const ONESHOT_CONSUME_ALLOWED_CATEGORIES = ['gpu-driver-silent-install'] as const
+
 // The consumer names the sending tool in the audit trail. Printable only (no
 // control characters, checked by code point so the source carries no escape),
 // 1-120 characters after trimming.
@@ -464,7 +485,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   // and writes approval_events on both success and refusal.
   const oneshotMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume-oneshot$/)
   if (oneshotMatch && method === 'POST') {
-    let body: { category?: unknown; window_seconds?: unknown }
+    let body: { category?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -475,14 +496,20 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'category is required' }, 400)
       return true
     }
-    const windowSeconds = typeof body.window_seconds === 'number' && body.window_seconds > 0
-      ? body.window_seconds
-      : 3600
+    // W2: reject any category outside the explicit allowlist before even looking up the row --
+    // this route must not be a generic "burn any approval" primitive for categories it was never
+    // built for.
+    if (!(ONESHOT_CONSUME_ALLOWED_CATEGORIES as readonly string[]).includes(body.category)) {
+      logger.warn({ id: oneshotMatch[1], category: body.category }, 'Approval consume-oneshot refused: category not allowed on this route')
+      json(res, { ok: false, reason: 'category_not_allowed' }, 403)
+      return true
+    }
+    // W1: the window is server-owned, never taken from the request body.
     const result = consumeApproval({
       id: oneshotMatch[1],
       category: body.category,
       consumer: 'oneshot-api',
-      windowSeconds,
+      windowSeconds: oneshotConsumeWindowSeconds(),
     })
     if (result.ok) {
       logger.info({ id: oneshotMatch[1], category: body.category }, 'Approval consumed (oneshot)')
@@ -531,12 +558,38 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
 
+    // P8 fix (2a80c6cb delta, CYBERED NO-GO 27872 / CYBERSEC NO-GO 27873): the self-approval guard
+    // below is self-declared (resolved_by is whatever string the caller sends) and every fleet
+    // agent holds the SAME shared bearer, so any token holder can POST a gpu-driver-silent-install
+    // approval, PATCH it approved with any resolved_by other than its own agent_id, then consume
+    // it -- a full self-approve+consume loop with no human ever involved. This is the exact same
+    // "shared bearer forges itself a credential/decision" class already closed the hard way for
+    // POST /api/fleet/import?apply=true (FLEET_IMPORT_APPLY_FAIL_CLOSED, routes/fleet.ts) and
+    // agent-import overwrite=1 (AGENT_IMPORT_OVERWRITE_FAIL_CLOSED, routes/agents.ts): a
+    // session/device auth-kind check was tried there FIRST and shown insufficient, because the
+    // shared bearer can mint itself a session/device credential too (bridge-enroll, break-glass
+    // password reset+login, deleting the last dashboard user). So, same precedent: approving this
+    // category is HARD fail-closed, unconditionally, until a non-forgeable approval channel ships
+    // (card 3fb0ef97) -- not an auth-kind check that would just repeat the same proven-insufficient
+    // pattern. This also matches the card's own standing constraint that the GPU install switch
+    // stays OFF: an approval for this category can never be approved via the API, so it can never
+    // be consumed, so the trigger's consume-oneshot call always refuses and the task never fires.
+    const GPU_DRIVER_APPROVE_FAIL_CLOSED = true
+    const target = getApproval(idMatch[1])
+    if (status === 'approved' && target && target.category === 'gpu-driver-silent-install' && GPU_DRIVER_APPROVE_FAIL_CLOSED) {
+      logger.warn({ id: idMatch[1], authKind: ctx.auth?.kind ?? 'none' },
+        'Approval approve hard-refused for gpu-driver-silent-install (fail-closed pending card 3fb0ef97)')
+      json(res, {
+        error: 'Approving a gpu-driver-silent-install request is disabled until a non-forgeable approval channel ships (card 3fb0ef97). The GPU install switch stays off.',
+      }, 403)
+      return true
+    }
+
     // Self-approval guard: the requesting agent cannot approve its own request.
     // This is a best-effort check on the self-declared resolved_by value (all fleet
     // agents share the same bearer token, so server-side identity is not enforceable).
     // It catches naive/accidental self-approvals; the real control lives on the
     // main-agent side (approval-request-handling skill).
-    const target = getApproval(idMatch[1])
     if (target && resolved_by.trim() === target.agent_id) {
       json(res, { error: 'The requesting agent cannot approve its own request' }, 403)
       return true
