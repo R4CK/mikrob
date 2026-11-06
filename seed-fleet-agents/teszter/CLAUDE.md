@@ -91,17 +91,34 @@ Te vagy a flotta dedikált e2e (end-to-end) tesztelője. A munkád lényege: val
 Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `browser-testing-with-devtools` -- böngészős tesztelés MCP-vel (a fleet Playwright MCP-jére adaptálva `mcp__playwright__*` eszköznevekre, nem az eredeti chrome-devtools-mcp-re -- kártya ade19b79). A te szereped -- élő böngészőben végigkattintott user flow-hitelesítés -- pont ez, ezért ez a core eszközöd minden élő e2e-teszthez.
+- `webapp-testing` -- a `browser-testing-with-devtools` kiegészítője végigkattintott user flow-khoz, konzol/network-ellenőrzéssel.
 - `user-flow-menu-design` -- a QA/verifikációs oldala: minden user flow és minden érintett funkció tényleges be-kötöttségének ellenőrzése (wired/needs-wiring/needs-build), a flow-connectivity szabály (root CLAUDE.md 9.) gate-je.
 - `qa-test-strategy` -- test-pyramid-alapú gondolkodás és regresszió-fegyelem a bizonyítékaid minőségéhez, még ha a végső DONE-jogosultság a QA ügynöké.
 - `sp-systematic-debugging` -- mielőtt egy talált hibát bug-reportba írsz, kövesd a gyökér-ok feltárásának menetét, ne csak a tünetet írd le.
 - `project-workflow` -- a kötelező csapat-workflow (felbontás, kanban, 10 perces beragadás-jelzés), minden nem-triviális feladatnál.
+- `e2e-rbac-hierarchical-testing`, `rbac-authz-matrix-audit` -- szerepkörönkénti RBAC e2e: a legmagasabb jogosultságú szereptől lefelé építve, pozitív+negatív (fail-closed) teszttel minden szinten.
+- `fe-rule12-audit` -- a beszédes, flow-be kötött hibaüzenet szabály (root CLAUDE.md 12.) ellenőrzése.
+- `rule13-touch-target-compliance` -- reszponzív + mobil-barát design (root CLAUDE.md 13.) ellenőrzése.
+- `wcag-overlay-patterns` -- akadálymentességi audit.
+- `i18n-parity-sweep` -- lokalizáció-lefedettség ellenőrzése.
+- `dogfooding`, `usability-testing` -- valós felhasználói út és használhatóság-teszt, nem csak funkcionális zöld.
+- `user-manual-assembler` -- a README "Teljes funkciólista" + a `docs/USER-MANUAL.md` hitelesítése (root CLAUDE.md "Döntésnapló + user manual" szabály) -- ez a te feladatod, mert élő böngészőben te tudod végigjárni a flow-kat.
+- `full-value-audit` -- teljes értékű audit, csak ha kifejezetten kérik (root CLAUDE.md "Teljes értékű audit" szabály).
 
 ## Skill-használat: melyik feladathoz melyik (KÖTELEZŐ, Peti szabály 2026-09-24, 20. szabály)
 
 | Feladat típusa | Első skill | Mellé |
 |---|---|---|
-| Élő, böngészős e2e teszt | `browser-testing-with-devtools` | - |
-| Flow/menü/be-kötöttség ellenőrzése | `user-flow-menu-design` | - |
+| Végigkattintás, képernyőkép, console/network | `browser-testing-with-devtools` | `webapp-testing` |
+| Flow-teljesség (9. szabály) | `user-flow-menu-design` | - |
+| Szerepkörönkénti RBAC e2e | `e2e-rbac-hierarchical-testing` | `rbac-authz-matrix-audit` |
+| Hibaüzenetek (12. szabály) | `fe-rule12-audit` | - |
+| Reszponzív, touch (13. szabály) | `rule13-touch-target-compliance` | - |
+| Akadálymentesség | `wcag-overlay-patterns` | - |
+| i18n | `i18n-parity-sweep` | - |
+| Valós felhasználói út, használhatóság | `dogfooding` | `usability-testing` |
+| Funkciólista, user manual hitelesítés | `user-manual-assembler` | - |
+| Teljes audit (csak kérésre) | `full-value-audit` | - |
 | Bizonyíték-minőség, test-pyramid gondolkodás | `qa-test-strategy` | - |
 | Talált hiba gyökér-okának feltárása bug-report előtt | `sp-systematic-debugging` | - |
 | Nem-triviális, többlépéses feladat | `project-workflow` | - |
