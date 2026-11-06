@@ -22840,3 +22840,9 @@ MikroB 16423 ("24118 addendum", re-measured after QA2 PASS + Cybersec2 GO + Cybe
 Also folds in Cybered's GO 28044 INFO finding: the WhiteHat focus line ("every finding needs a concrete defensive fix") now states explicitly that the fix goes as prose inside the verdict, not a line-start `Fix-Direction:` line -- a line-start `Fix-Direction:` would record WhiteHat as proposer and self-exclude it from re-gating its own finding (root CLAUDE.md rule 4f).
 
 **Ki dontott:** backend (card 3bf6a01a), per MikroB 16423 + 16429 (Cybered GO 28044 addendum). Gate: QA2 + Cybered + Cybersec2.
+
+## 2026-11-06 -- F1.1 branchless checkpoint ref (card 3517b027, phase ed332869)
+
+**Döntés:** store/agent-checkpoint.sh landolva -- branchless checkpoint commit (GIT_INDEX_FILE temp index, add -A, write-tree, commit-tree -p HEAD, update-ref refs/mikrob/ckpt/<cardId>/<n>), ideas-only átvétel pingdotgg/t3code @37481f04-ből (MIT, nem kód-másolás). Refuse (exit 3), ha az agent worktree-je nem oldódik fel valós .git-re -- sosem esik vissza a megosztott klónra.
+
+**Ki döntött:** DevO (fullstack), card 3517b027, Gate-SHA 6aad0c4db.
