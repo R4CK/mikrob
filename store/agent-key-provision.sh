@@ -52,8 +52,22 @@ MINT_ARGS=("$AGENT")
 # The raw key exists ONLY in this command's stdout, once. Write it straight to the agent's own
 # config directory at 0600 -- never echo it, never let it land in this script's own stderr/log.
 KEY_FILE="$AGENT_DIR/.dashboard-agent-key"
-RAW_KEY="$(npm run --prefix "$MARVEEN_MAIN" --silent dashboard-user -- agent-key:mint "${MINT_ARGS[@]}")" \
+RAW_OUTPUT="$(npm run --prefix "$MARVEEN_MAIN" --silent dashboard-user -- agent-key:mint "${MINT_ARGS[@]}")" \
   || die 4 "mint failed"
+# A pending DB migration on the first run of a day can put a log line (pino/pino-pretty go to
+# stdout, ANSI codes and all) alongside the key in this same capture -- card 0244910e N1/N2.
+# Keep only the line(s) shaped like the real key (mintAgentDeviceKey's output: KEY_PREFIX +
+# base64url, charset [A-Za-z0-9_-]), and fail closed instead of silently writing a polluted or
+# empty key file.
+KEY_CANDIDATES="$(printf '%s\n' "$RAW_OUTPUT" | grep -E '^[A-Za-z0-9_-]{20,}$' || true)"
+unset RAW_OUTPUT
+CANDIDATE_COUNT="$(printf '%s\n' "$KEY_CANDIDATES" | grep -c . || true)"
+case "$CANDIDATE_COUNT" in
+  1) RAW_KEY="$KEY_CANDIDATES" ;;
+  0) die 4 "mint produced no key-shaped output line (unexpected CLI output)" ;;
+  *) die 4 "mint produced multiple key-shaped output lines, refusing to guess which is the key" ;;
+esac
+unset KEY_CANDIDATES
 install -m 600 /dev/null "$KEY_FILE"
 printf '%s' "$RAW_KEY" > "$KEY_FILE"
 unset RAW_KEY
