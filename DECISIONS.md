@@ -22873,3 +22873,12 @@ Also folds in Cybered's GO 28044 INFO finding: the WhiteHat focus line ("every f
 - DECISIONS.md sha correction: the 2026-10-31 entry (line ~22824 at the time of this writing, "Upstream-drift round: 2 undecided files resolved, 1 stale blob bumped", card 7f0efce3) cites Gate-SHA `59192f3e8b929cf84b5b410b511679efe7b976d4`, which is NOT an ancestor of `origin/develop` (`git merge-base --is-ancestor` fails) -- it was a pre-land branch commit, rewritten away during landing. The actual landed commit carrying that round's content is `049e213c9` (`docs(7f0efce3): re-append lost DECISIONS.md entry at tail (recovered from ab35d3b6f)`), verified `git merge-base --is-ancestor 049e213c9 origin/develop` succeeds. Per the tail-append rule the old entry is left untouched; this note is the correction of record.
 
 **Ki döntött:** DevO (fullstack), card 7391f09a (parent 7f0efce3), Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card 6ff6d1dc fix round: TMPDIR-leak regression test + update-ref persistent-failure fix (QA FAIL 28269, Cybersec NO-GO 28270 on Gate-SHA 3835c1054)
+
+**Döntés:**
+- Added the missing selftest case for L1 (Kész-ha point 3): forces `commit-tree` to fail with "no git identity anywhere" (rc=128, via a fixture with no `[user]` config section at all) and asserts 0 leftover temp index files in a private TMPDIR. Mutant-kill confirmed: reverting the EXIT trap back to the RETURN trap (3517b027's original) leaves 1 leaked file -- case goes red.
+- Fixed the NEW defect Cybersec found (28270): the update-ref retry loop treated every failure as "ref already taken" and spun on `n` forever on a persistent failure (e.g. a read-only refs directory), with empty stderr. Now captures stderr and only retries when git says "reference already exists"; any other failure exits non-zero with git's own message, plus a 1000-attempt hard cap. Added a selftest case (read-only refs dir) asserting a prompt (<=4s) non-zero exit with non-empty stderr. Mutant-kill confirmed: reverting to the old unconditional retry makes this case go red (times out at 5s, rc=124, empty stderr -- the exact defect reported).
+- Both fixes verified with `bash -n` + `--selftest` (14/14 PASS) before and after each mutant reversion.
+
+**Ki döntött:** DevO (fullstack), card 6ff6d1dc fix round, Gate-SHA: see REVIEW comment.
