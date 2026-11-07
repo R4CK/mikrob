@@ -23161,3 +23161,38 @@ kartyak c1766c6c/c5243203e) ugyanazon ket ponton allt be. Feloldas MikroB jovaha
 
 **Ki dontott:** MikroB (16805), backend3 vegezte el. Gate: delta re-gate QA + Cybered, csak a
 666ae06a729ab3a63d2ed313e21d061f30ff1641 elleni diffre.
+
+## 2026-11-07 -- kartya 0120d19a: scheduleSurfaceDeny elfogadja a kanonikus printf | curl -H @- GET-et
+
+**Dontes:** a 4f3c0287 (Koteg 23b, upstream #1999) mergelesekor kiderult, hogy KET, egymasnak
+ellentmondo biztonsagi szabaly all fenn ugyanarra a mintara. Az upstream uj scheduleSurfaceDeny
+olvasasi feherlistaja (isPlainCurlGet/headerValueIsInert) KIZAROLAG a beagyazott
+`-H "Authorization: Bearer $(cat <TOKEN>)"` alakot fogadja el (TOKEN_NONCE-szubsztitucioval
+ellenorizve), es sajat megjegyzese szerint SZANDEKOSAN elutasitja a `-H @file`/`-H @-` alakot
+(nem tudja ellenorizni, mi van a fajlban/stdin-en). A fork sajat, regota elo
+token-in-argv-guard.test.ts-e (edb7559f-lancolat) pontosan ezt a beagyazott alakot tiltja
+flotta-szinten (/proc/<pid>/cmdline-szivargas). Egyik curl-alak sem elegitette ki mindket
+szabalyt egyszerre -- backend3 merese (msg 17069), MikroB dontese: a fork argv-szivargas-szabalya
+nyer, NINCS kivetel/elfogadott-kockazat mentesites. A megoldas a feherlista BOVITESE: egy uj,
+szukosen felismert, bizalmi mechanizmus (isTrustedTokenPrintf, scripts/self-pace-gate.mjs)
+ELFOGADJA a `-H @-`-t, DE KIZAROLAG akkor, ha a kozvetlenul megelozo pipe-szegmens PONTOSAN
+`printf 'Authorization: Bearer %s\n' "$(cat <elfogadott token-fajl>)"` -- semmi mas a printf-ben,
+semmi mas a pipe-ban (segs.length===2 -- mind a "plusz pipe-szegmens elotte", mind "utana" eset
+ettol bukik), a fajl pedig a mar meglevo acceptedTokenFile()/TOKEN_NONCE infrastrukturaval
+ellenorizve ugyanugy, mint a beagyazott alaknal. A ket tanitott minta (self-pace-gate.mjs
+GATE_MSG, src/web/agent-scaffold.ts generator-sora) at van irva `printf ... | curl -q -s -H @- ...`
+alakra. 10 uj nevesitett negativ teszt (governance-gates.test.ts + 6 uj
+agent-scaffold-schedule-section.test.ts eset): rossz fajl, plusz pipe-szegmens elotte/utana,
+plusz printf-argumentum, mas formatum-string, `-H @<valodi fajl>` (nem stdin), hianyzo -q,
+nem-GET metodus a bizalmas pipe-on -- mind tiltva marad. token-in-argv-guard.test.ts es a
+scheduleSurfaceDeny-suite egyszerre zold ugyanazon a fan.
+
+**Miert:** a fork sajat lecke (tobbszoros, mar kijavitott argv-szivargas eset, card edb7559f-tol)
+sulyosabb, azonnal kihasznalhato kockazat (BARMELY lokalis folyamat olvashatja a
+/proc/<pid>/cmdline-t), mint az upstream sajat, kimondottan "residual, not closed" kockazata
+(egy @file tartalmat nem tudja ellenorizni a kapu) -- MikroB es backend3 kozos ertekelese
+szerint ez utobbi szukosen, bizonyithatoan zarhato egy pipe-szegmens-szintu ellenorzessel,
+ahelyett hogy a szigorubb szabalyt gyengitenenk.
+
+**Ki dontott:** MikroB (2026-11-07, msg 17070, backend3 merese alapjan). Gate: QA + Cybersec +
+Cybered (uj biztonsagi logika egy 3-gate-es fajlban).

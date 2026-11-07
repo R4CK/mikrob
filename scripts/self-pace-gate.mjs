@@ -3200,19 +3200,49 @@ function parseCurl(words) {
 // inside the "GET". (A CR/LF in the URL is refused by curl itself, exit 3,
 // measured the same way.) So a header value may contain no control character,
 // no $'...' part, and no expansion other than the dashboard token file; and
-// not the `@file` form, which reads header lines from a file this gate cannot
-// see. (Residual, not closed: the token FILE's own content is trusted.) The
-// token nonce (the resolved `$(cat store/.dashboard-token)`) is stripped FIRST;
-// then any control char -- a NUL from a non-token substitution, or a real
-// CR/LF -- and any surviving `$` (a literal `${DASHBOARD_TOKEN}` the agent
-// wrote, or any other expansion) make the value non-inert.
-function headerValueIsInert(h) {
-  if (h.ansi || h.value.startsWith('@')) return false
+// not the `@file` form in general, which reads header lines from a file this
+// gate cannot see. The ONE exception is `@-` (stdin), and ONLY when the caller
+// has already proven (trustedStdin) that stdin is fed by nothing but the
+// fork's own canonical token-printf (isTrustedTokenPrintf, below) -- the
+// fork's token-in-argv-guard forbids the alternative (the token typed into
+// curl's own argv), so this form has to be trusted some other way, not
+// rejected outright (card 0120d19a, MikroB decision 2026-11-07: the fork's
+// argv-leak rule wins, fix the allowlist instead of exempting the inline
+// form). `@` followed by anything else (a real file, `@-` without a proven
+// source) stays rejected, same as before. The token nonce (the resolved
+// `$(cat store/.dashboard-token)`) is stripped FIRST; then any control char --
+// a NUL from a non-token substitution, or a real CR/LF -- and any surviving
+// `$` (a literal `${DASHBOARD_TOKEN}` the agent wrote, or any other
+// expansion) make the value non-inert.
+function headerValueIsInert(h, trustedStdin = false) {
+  if (h.ansi) return false
+  if (h.value.startsWith('@')) return trustedStdin && h.value === '@-'
   const stripped = h.value.split(TOKEN_NONCE).join('')
   if (/[\x00-\x1f\x7f]/.test(stripped)) return false
   return !stripped.includes('$')
 }
-//
+
+// The fork's own sanctioned shape for feeding curl a Bearer header without
+// ever putting the token in curl's argv (card 0120d19a): the token read from
+// an ACCEPTED file, formatted, and piped to stdin -- nothing else in the
+// printf, nothing else in the pipe. Checked on the RAW segment text, which by
+// the time shellSegments runs has already had an accepted `$(cat <file>)`
+// replaced by TOKEN_NONCE (resolveCatSubst, above) -- so this never reads a
+// file itself, it only recognises that substitution already happened.
+// Exactly 3 words (printf, format, value): a 4th word -- an extra flag, an
+// extra argument, trailing junk -- is refused by construction, not by a
+// separate check.
+// Literal backslash+n (2 chars), NOT an actual newline: a single-quoted shell word's VALUE is the
+// raw text between the quotes, unescaped by the shell -- printf interprets \n as a newline only
+// when IT runs, at which point this gate has already made its decision on the raw characters.
+const TRUSTED_PRINTF_FORMAT = 'Authorization: Bearer %s\\n'
+function isTrustedTokenPrintf(segOwn) {
+  const words = shellWords(segOwn)
+  if (!words || words.length !== 3 || words.redirects.length) return false
+  if (commandName(words) !== 'printf') return false
+  return words[1].value === TRUSTED_PRINTF_FORMAT && words[2].value === TOKEN_NONCE
+}
+
 // curl reads ~/.curlrc (or $CURL_HOME/.curlrc, $XDG_CONFIG_HOME/curlrc) before
 // its command line, and a curlrc can say `request = POST` / `data = ...` /
 // `output = ...`. Form (a) therefore requires -q as the FIRST argument (the
@@ -3220,11 +3250,11 @@ function headerValueIsInert(h) {
 // a curlrc exists: that guess could not see one written earlier in the same
 // command. The scheme must be a literal http(s)://: without one, curl guesses
 // the protocol from the host name (ftp., dict., ...).
-function isPlainCurlGet(words) {
+function isPlainCurlGet(words, trustedStdin = false) {
   const p = parseCurl(words)
   if (!p || !p.noCurlrc) return false
   for (const k of p.kinds) if (k !== 'header' && k !== 'safe') return false
-  if (!p.sent.every(headerValueIsInert)) return false
+  if (!p.sent.every((h) => headerValueIsInert(h, trustedStdin))) return false
   if (p.urls.length !== 1) return false
   const u = p.urls[0]
   if (u.star) return false
@@ -3542,7 +3572,13 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
     // accepted there -- whatever the consumer (message carriers included).
     if (seg.bodies.length && refsIn(seg.bodies.join('\n')) && words.redirects.some((t) => t.value !== '/dev/null')) return true
     if (!refsIn(dataResidue(view, words, name))) continue // (c) only message data mentions it
-    if (name === 'curl' && isPlainCurlGet(words)) continue // (a)
+    // Form (a), stdin-fed variant (card 0120d19a): trusted ONLY when this is
+    // EXACTLY the two-segment pipeline `<trusted printf> | curl ... -H @- ...`
+    // -- nothing before the printf, nothing after the curl, nothing else piped
+    // in between. segs.length === 2 makes "extra pipe segments" fail by
+    // construction, not by a separate named check.
+    const trustedStdin = segs.length === 2 && k === 1 && segs[0].sep === '|' && isTrustedTokenPrintf(segs[0].own)
+    if (name === 'curl' && isPlainCurlGet(words, trustedStdin)) continue // (a)
     if (isReadOnlyFsCommand(words, name) && pipesOnlyIntoSinks(segs, k, redirectsOk)) continue // (b)
     // the registry tool's read-only subcommands, and git on its source
     const r = scheduleSurfaceRefs(view.text, opts)
@@ -3844,8 +3880,8 @@ const GATE_MSG =
   'Self-pace TILTOTT (governance hard-gate). Sub-agentkent NEM utemezhetsz sajat ' +
   'jovobeli turn-t: se ScheduleWakeup/Cron*/RemoteTrigger, se tmux send-keys, se ' +
   'scheduled_tasks.json iras, se /api/schedules iras (semmilyen klienssel: curl, python, node, ' +
-  'wget, httpie...; olvasasra csak a `curl -q -s -H "Authorization: Bearer $(cat <TOKEN>)" ' +
-  'http://...` GET megy at: -q ELSO argumentumkent, <TOKEN> pedig SZO SZERINT a repo-gyoker abszolut ' +
+  'wget, httpie...; olvasasra csak a `printf \'Authorization: Bearer %s\\n\' "$(cat <TOKEN>)" | ' +
+  'curl -q -s -H @- http://...` GET megy at: -q ELSO argumentumkent, <TOKEN> pedig SZO SZERINT a repo-gyoker abszolut ' +
   '<repo>/store/.dashboard-token, vagy a sajat <repo>/agents/<nev>/.dashboard-token utja -- relativ ut, ~ vagy ' +
   '$HOME nem), se ~/.claude/scheduled-tasks/ iras (olvasni ls/cat/grep/sed -n lehet, ' +
   'de NE cd-vel a store-ba -- abszolut uttal hivatkozz ra), se schedule-registry-cli register/unregister ' +

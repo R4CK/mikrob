@@ -1186,6 +1186,54 @@ describe('self-pace-gate: schedule API writes through any HTTP client', () => {
   })
 })
 
+// Card 0120d19a: upstream's own GET-allowlist (isPlainCurlGet/headerValueIsInert, above) accepts
+// only the INLINE `-H "Authorization: Bearer $(cat <TOKEN>)"` form, verified via TOKEN_NONCE
+// substitution, and rejects `-H @file`/`-H @-` outright (its own stated reason: it cannot verify
+// what such a file/stdin contains). The fork's OWN token-in-argv-guard.test.ts forbids that exact
+// inline form fleet-wide (a /proc/<pid>/cmdline leak) -- no curl shape satisfied both until this
+// card. MikroB's decision: the fork's argv-leak rule wins; teach and accept the ONE shape that
+// satisfies both instead of exempting either guard: the token read from an accepted file, piped
+// into curl's stdin via `-H @-`, with the prior pipe segment PROVEN (not merely hoped) to be
+// nothing but that trusted printf.
+const TRUSTED_PIPE = `printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules`
+describe('self-pace-gate: the trusted printf | curl -H @- GET pipeline (card 0120d19a)', () => {
+  it('ALLOWS the canonical two-segment pipeline', () => {
+    expect(deny(TRUSTED_PIPE)).toBe(false)
+  })
+  it('still ALLOWS the upstream inline form too (unaffected by this change)', () => {
+    expect(deny(`curl -q -s ${TOKEN_H} http://localhost:3420/api/schedules`)).toBe(false)
+  })
+  it('DENIES -H @- with no prior segment at all', () => {
+    expect(deny(`curl -q -s -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES -H @- fed by a printf reading a DIFFERENT (non-accepted) file', () => {
+    const otherFile = join(GATE_ROOT, 'store', 'not-the-token')
+    writeFileSync(otherFile, 'example-token_0123\n')
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${otherFile})" | curl -q -s -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES an EXTRA pipe segment before the trusted printf', () => {
+    expect(deny(`echo hi | printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES an EXTRA pipe segment after the curl', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules | head -1`)).toBe(true)
+  })
+  it('DENIES a printf with an EXTRA argument (anything beyond the format and the token)', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" extra | curl -q -s -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES a printf with a DIFFERENT format string', () => {
+    expect(deny(`printf 'X: %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES -H @<a real file> fed by the trusted printf -- only stdin (@-) is trusted, never a path', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @/tmp/headers.txt http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES the pipeline without -q as the first curl argument (curlrc still a hole otherwise)', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -s -q -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES a non-GET method riding the trusted pipeline (the trust covers the header, not the verb)', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -X POST -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+})
+
 describe('self-pace-gate: the scheduled-tasks store', () => {
   it('denies Bash writes into the store: cp, redirect, tee, python open, a glob', () => {
     expect(deny(`cp /tmp/t.json ~/.claude/scheduled-tasks/x/task-config.json`)).toBe(true)
