@@ -23482,3 +23482,128 @@ customProvider+explicit-claude-model shapes -- all 10 pass. tsc clean.
 
 **Ki döntött:** DevO (fullstack), card 3ae2411d round 2, per MikroB dispatch (msg_id:16839, then
 msg_id:16862 for the safe-point resume). Gate: QA + WhiteHat2. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- c1766c6c (DB write guard) re-gate round 6: heredoc-piped-into-shell fix (R1b)
+
+CYBERSEC NO-GO 28763 on round 5 (ae57d48f4): QA PASS, but WhiteHat found one shape round 5's R1
+fix left open, R1b, that WhiteHat had already named in the original NO-GO 28743 and round 3 used
+to block -- `cat <<'EOF' | bash` / `| sh -s`, a heredoc whose `cat` body is piped into a shell that
+then runs the real sqlite3 write from inside it, plus `. /dev/stdin <<EOF` (bash's dot-source
+synonym for `source`). Root cause: `_split_top_level`'s `heredoc_keep` decision (does the
+interpreter-keyword scan see this heredoc's body, round 4/5's P1/R1 fix) was computed ONLY from
+the opener text BEFORE `<<MARK` -- a consumer named AFTER the marker, still on the same physical
+opener line, was never checked, so a bare `cat` opener kept `heredoc_keep=False` even though the
+line's own pipe fed the body into `bash`/`sh -s`.
+
+Decision (per MikroB dispatch msg_id:16879, scope narrowed to R1b only; the other open items --
+false `<<` markers like `<<<`/arithmetic, quote-concatenation obfuscation, pipe wrappers, and the
+LOW false-blocks from round 5's widened keep-list -- stay residuals on card 85a668aa): also scan
+the opener-line text AFTER `<<MARK` (collected up to that line's own closing newline) for the same
+interpreter keywords, OR'd into the existing keep decision; add dot-sourcing (`. ` followed by
+whitespace) to the keep-list alongside the existing `source`/`eval`/`ssh` entries.
+
+Verified: red-before/green-after confirmed against ae57d48f4 for all 3 probes WhiteHat named in
+28763 (`cat <<'EOF' | bash`, `| sh -s`, `. /dev/stdin <<EOF`) -- all ALLOW on the pre-fix code, all
+BLOCK on the fix. Added 3 selftest cases (91 -> 94, all pass). Re-confirmed the residuals explicitly
+out of scope stay ALLOW, unchanged. `tsc --noEmit -p .` clean. The 3 wiring tests
+(db-write-guard-wiring, hook-registration-completeness, project-settings-hook-anchor): 22/22 pass.
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 6, per MikroB dispatch (msg_id:16879,
+following WhiteHat's CYBERSEC NO-GO 28763). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- b2f7ede4: shared-memory-inject hook wired for backend2/backend3/logs (86d5de34 F3)
+
+WhiteHat's CYBERSEC GO on 86d5de34 (msg 10474) named F3: `store/session-memory-inject-agents.json`'s
+`enabled_agents` list includes backend2, backend3 and logs, but none of the three had the
+shared-memory-inject.py SessionStart hook wired into their settings.json -- the enabled-list flag
+was inert for all three, since the hook that reads it never ran.
+
+Root cause, two paths: backend2 has its own `seed-fleet-agents/backend2/.claude/settings.json`, but
+it only ever carried `taskstate-replay.py`, never `shared-memory-inject.py` (unlike e.g. backend's
+seed, which has both). backend3 and logs have NO `seed-fleet-agents` directory of their own at all,
+so they were scaffolded from `templates/settings.json.template` (the generic brand-new-agent path,
+`scaffoldAgentDir`), and that template never had the hook either.
+
+Decision: fix all three surfaces, following the project's established "migration fixes today, the
+seed/template decides tomorrow" split (same shape as `ensureTaskstateReplayMatcher` for card
+1ce3fd90): (1) add the missing SessionStart entry to backend2's own seed; (2) add the same entry to
+`templates/settings.json.template`, so any agent scaffolded without its own seed directory gets it
+from day one; (3) a new `ensureSharedMemoryInject(name)` boot-time migration in `agent-scaffold.ts`,
+the non-gate counterpart to the existing `ensureGateSharedMemoryInjectAgentArg` -- wires the hook
+from scratch into an ALREADY-scaffolded agent's live settings.json if missing, so backend3 and logs
+get it on their next restart without needing a fresh scaffold. Deliberately kept separate from the
+gate function rather than merged, so the gate roster's own exclusion history stays in one place.
+
+Added `src/__tests__/shared-memory-inject-wiring-gap.test.ts`: unit tests for the new backfill
+function (wires from scratch, idempotent, skips gate agents, skips malformed/missing settings), a
+static check that the generic template and every enabled seed carry the hook, and a test reading
+the REAL `session-memory-inject-agents.json` that fails if any enabled, non-gate agent's own seed
+exists but is missing the hook -- the regression guard the card asked for ("egy teszt, ami jelez,
+ha egy flag-listás ügynöknél hiányzik a hook").
+
+Verified: new test file 12/13 (1 skip, the config-file-absent fallback branch, not reachable on
+this checkout since the file exists). The 3 related existing suites (taskstate-replay-matcher,
+shared-memory-inject-gate-exclusion, session-memory-inject-own-curated) 54/55 (1 skip), unaffected.
+`tsc --noEmit -p .` clean.
+
+**Ki döntött:** DevO (fullstack), card b2f7ede4, self-advance pick after c1766c6c round 6 went to
+waiting (per MikroB msg_id:16873). Gate: QA + Cybered (per card dispatch, WhiteHat found the
+original lelet). Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- af5bf43b: Telegram-watchdog WEDGED_SEC clamped to 60..(stale_sec-1)
+
+WhiteHat2 F1 LOW on dadeab30 (komment 15980): `TELEGRAM_WATCHDOG_WEDGED_SEC`'s `_env_int()` parser
+already floors a 0/negative/garbage value to the 900s default, but never bounded a POSITIVE value.
+A huge value (e.g. 99999999) silently disabled the wedged backstop entirely -- `age > wedged_sec()`
+never fires, because `stale_sec()` drops the round as dead long before that age is reached, so the
+operator would never know the backstop stopped working. A value of 1 fired false alarms on
+ordinary, healthy turns.
+
+Decision: clamp the backstop to `[60, stale_sec() - 1]`, computed once per `handle_dir()` call
+(`clamped_wedged_sec`), with a log line when the env value actually gets clamped (not every call --
+an in-range value is silent, matching the module's existing style). 60s is below every measured
+normal-turn duration; `stale_sec() - 1` keeps the backstop strictly inside the window stale-drop
+already owns, so the two mechanisms never fight over the same age range. A pathologically tiny
+`stale_sec()` still leaves the 60s floor intact rather than producing an inverted range.
+
+Verified: 4 new selftest cases (5 -> 9): huge value clamps down, tiny value clamps up, an in-range
+value passes through unchanged, tiny-stale_sec doesn't invert the range. Red-before confirmed
+against the pre-fix commit: no `clamped_wedged_sec` existed, and `wedged_sec()` itself returned
+99999999 unclamped with that env var set. `python3 telegram_progress_watchdog.selftest.py` -> "OK:
+9 cases passed".
+
+**Ki döntött:** DevO (fullstack), card af5bf43b, self-advance pick after b2f7ede4 went to waiting.
+Gate: QA (LOW, per card). Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- ac0bf02d (3ae2411d F4): watchdog restart builds a BYO/customProvider agent's own env
+
+WhiteHat2 GO on 3ae2411d round 1 (a879697c0/a1ebf6bca) named F4: the fleet-token-leak fix stopped
+watchdog.sh from exporting the shared fleet token to a BYO/customProvider agent on restart, but it
+set NONE of that agent's own provider env either -- the restarted agent came up as plain Claude
+with no credentials at all (no live impact today since no BYO agent exists, but a correctness gap
+in the restart path).
+
+Decision: single source with the dashboard start path, same pattern as 3ae2411d's own fix
+(scripts/needs-fleet-oauth.mjs). New scripts/watchdog-provider-env.mjs dynamically imports the
+compiled dist and calls the EXACT resolveProviderEnv function agent-process.ts calls at its own
+launch site, using the same vault-backed launchSecretRef for secrets -- no second hand-written
+copy of the provider-env logic. watchdog.sh's agent_launch_env now computes the fleet-oauth-needed
+verdict as its own, independent step (previously folded into one short-circuited `&&` chain with
+the fleet-token-file/.claude-config existence checks), so "needs fleet oauth but the token file is
+unusable" and "does not need fleet oauth at all" stay two distinguishable branches -- only the
+second one reaches the new script.
+
+Verified: new parity test (watchdog-provider-env-parity.test.ts) comparing resolveProviderEnv
+called directly from TS source against the dist-based CLI, 5 fixtures (deepseek, openrouter-shaped,
+claude-alias with no provider env expected, an unregistered customProvider where both sides must
+refuse identically, and plain claude/shared with no provider env from either side) -- all 5 pass.
+watchdog-config-isolation.test.sh: added 4 new cases (openrouter model gets its own env and never
+the fleet token; authMode own_team/claude stays unaffected; an unregistered customProvider fails
+closed with nothing exported; an agent that genuinely needs fleet oauth but lacks .claude-config
+still gets nothing, not a guessed provider env) and updated the existing deepseek case to assert
+the new correct behavior instead of the old silent-nothing one -- 43/43 pass (up from 31). Red-
+before confirmed: the two new openrouter/deepseek assertions genuinely fail (isolation=no) against
+the pre-fix watchdog.sh. `tsc --noEmit -p .` clean.
+
+**Ki döntött:** DevO (fullstack), card ac0bf02d, per MikroB dispatch (msg_id:16905, following up on
+3ae2411d's own F4 finding). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
