@@ -110,6 +110,10 @@ Input:  the card's comments JSON on stdin (the /api/kanban/<id>/comments shape).
         card's latest REVIEW `Gate-SHA:` line; `--no-expect` disables the check entirely.
         Optional --no-landed: skip the "is it on the main branch" check (card e65c480a). For a
         caller that has no clones, or is deliberately asking only about verdict consistency.
+        Optional --card <id>: also check card_landings for an authoritative row naming the judged
+        sha (card 634a188c). Omitted -> only the git-ancestry check runs, exactly as before this
+        card. A card whose latest REVIEW/comment carries a line-initial `Landing: n/a` is exempt
+        from BOTH the card_landings and the git-ancestry checks (no code to land).
         Optional argv[1] gates omitted -> inferred from the verdicts present, and the output says
         so, because an UNSTATED designation is exactly how a missing third gate goes unnoticed.
 Output: exactly one line.
@@ -142,6 +146,13 @@ Output: exactly one line.
                                      clone holds the commit, the ref does not resolve, git failed),
                                      which is fail-closed for the same reason UNRESOLVED is. The
                                      `why` says which of the two. `--no-landed` disables the check.
+        NOT-LANDED|<sha>|<why>       (needs --card) card_landings carries no row for this card
+                                     naming the judged sha -- either no row at all, or rows exist
+                                     for other work. Stronger than UNLANDED: nothing but a real
+                                     marveen-land.sh/mopsion-land.sh run writes a row, so this
+                                     cannot be fooled by a sha that merely happens to resolve in a
+                                     clone. Checked BEFORE the git-ancestry check and short-circuits
+                                     it; a `landed` row does not skip the git check that follows.
         UNREADABLE|<why>
 Exit:   0 always. The caller decides -- this is a readout, not a gate on the gate.
 """
@@ -284,6 +295,25 @@ _RETRACTION_LINE = re.compile(r"^\s*(?:VISSZAVONVA|RETRACTED)\s*:\s*(.+)$", re.I
 
 # _SHARED_CHURN and PASSING (card ec34c025) now live in sha_content_equivalence.py and
 # gate_verdict_tokens.py respectively, imported at the top of this file.
+
+# `Landing: n/a` (card 634a188c): the same documented spelling rule 4e already established for
+# `Gate-SHA: n/a (config-only)` -- a card with no code to land (config-only, research) has nothing
+# a card_landings row or a git-ancestry check could ever confirm, and both checks below must be
+# told so explicitly rather than guessing from an empty result. Line-initial, same convention.
+_LANDING_LINE = re.compile(r"^\s*Landing\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+
+
+def _landing_exempt(comments):
+    """Does any comment carry a line-initial `Landing: n/a` -- skips BOTH the card_landings and the
+    git-ancestry landed checks for this card, the same way `--no-landed` does for the caller."""
+    for c in comments:
+        content = (c or {}).get("content")
+        if not isinstance(content, str):
+            continue
+        for m in _LANDING_LINE.finditer(content):
+            if m.group(1).strip().lower().startswith("n/a"):
+                return True
+    return False
 
 
 def _line_shas(content):
@@ -880,8 +910,74 @@ def _unlanded_line(verdict):
     return "UNLANDED|%s|the gates agree, but the delivery is not on the main branch (%s)" % (sha, why)
 
 
-def _landed_or(enabled, candidates, agree_line):
-    """AGREE only survives if the delivery is actually on the main branch (card e65c480a).
+# Card 634a188c (F2.1's authoritative record, F2 Fazis: "Landed state from git, not from the
+# agent"). card_landings is written by marveen-land.sh/mopsion-land.sh ONLY after a verified push
+# (src/card-landing-ancestry.ts re-verifies server-side before the row is written), so a row naming
+# the judged sha is stronger evidence than the UNLANDED check above -- that one can only ask git
+# ABOUT a sha a human or an agent typed, never whether a land SCRIPT actually ran. The row's absence
+# closes the gap the Fazis context names directly: "cards close on Gate-SHAs typed into comments;
+# marveen-land.sh prints a sha but does not write it anywhere authoritative" -- a post-/compact
+# fabricated landing sha (measured live, 2026-11-01) can still happen to resolve in a clone and pass
+# the ancestry check below; it cannot also have a card_landings row, because nothing but a real
+# land-script run writes one.
+_DEFAULT_LANDINGS_DB = os.environ.get("GATE_CLOSURE_DB", "/home/neon/marveen/store/claudeclaw.db")
+
+
+def _card_landing_rows(card_id, db_path=None):
+    """[(work_sha, merge_sha), ...] recorded for `card_id`, or None if the table could not be read
+    AT ALL (missing db file, missing table, sqlite error) -- distinct from an empty list, which
+    means the table WAS read and genuinely holds no row for this card yet."""
+    import sqlite3 as _sqlite3
+    path = db_path or _DEFAULT_LANDINGS_DB
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        conn = _sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=5)
+    except _sqlite3.Error:
+        return None
+    try:
+        cur = conn.execute("SELECT work_sha, merge_sha FROM card_landings WHERE card_id = ?", (card_id,))
+        return [(r[0], r[1]) for r in cur.fetchall()]
+    except _sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _db_landed_verdict(card_id, candidates, db_path=None):
+    """('landed'|'not-landed'|'unresolvable', why|None) for whether card_landings backs up one of
+    `candidates` (the judged shas) for `card_id`.
+
+    MikroB's own requirement on this card (comment 28281, a8a83d48's Cybersec2 GO): never accept a
+    row on card_id alone -- a commit subject merely MENTIONING a card ("see card ffffffff") used to
+    mint a row for it before the write side closed that hole, so a row's presence for this card_id
+    is checked FURTHER, against the sha the gates actually judged, not trusted on its own.
+    """
+    rows = _card_landing_rows(card_id, db_path)
+    if rows is None:
+        return "unresolvable", "card_landings could not be read"
+    if not rows:
+        return "not-landed", (
+            "no card_landings row exists for card %s -- marveen-land.sh/mopsion-land.sh have not "
+            "recorded a verified push for it yet" % card_id)
+    for work_sha, merge_sha in rows:
+        if any(shas_agree(cand, work_sha) or shas_agree(cand, merge_sha) for cand in candidates):
+            return "landed", None
+    recorded = ", ".join(sorted({s for pair in rows for s in pair}))
+    return "not-landed", (
+        "card_landings has %d landing(s) for card %s but none name the judged sha(s) %s "
+        "(recorded: %s)" % (len(rows), card_id, ",".join(candidates), recorded))
+
+
+def _not_landed_line(sha, why):
+    """NOT-LANDED|<sha>|<why>. Distinct from UNLANDED: this is the card_landings table saying so,
+    not a git-ancestry guess."""
+    return "NOT-LANDED|%s|%s" % (sha, why)
+
+
+def _landed_or(enabled, candidates, agree_line, card_id=None, comments=None):
+    """AGREE only survives if the delivery is actually on the main branch (card e65c480a) AND,
+    when a card id is given, if card_landings backs that up (card 634a188c).
 
     Card e21b816b, Cybersec F-2: with the check skipped (`--no-landed`) an AGREE used to come out
     byte-identical to one that actually verified the branch, and a non-default `GATE_CLOSURE_MAIN_REF`
@@ -889,9 +985,22 @@ def _landed_or(enabled, candidates, agree_line):
     trace either -- a reader could not tell "verified on the branch" from "the question was never
     asked" or "asked against some other ref than the usual one". Both now say so in the AGREE line
     itself, not in a side channel the caller has to know to check.
+
+    THE DB CHECK RUNS FIRST AND CAN SHORT-CIRCUIT, THE GIT CHECK CANNOT BE SHORT-CIRCUITED BY IT.
+    A `not-landed` DB verdict is authoritative (nothing but a real land-script run writes a row) and
+    returns immediately. A `landed` DB verdict does NOT skip the existing git-ancestry check below --
+    this file's own established pattern (UNRESOLVED/UNLANDED) is fail-closed when a check cannot be
+    made, so an `unresolvable` DB verdict (no `--card`, missing db, sqlite error) falls through to the
+    unchanged git check rather than silently blocking or silently passing.
     """
     if not enabled:
         return agree_line + " [landed-check skipped: --no-landed]"
+    if comments is not None and _landing_exempt(comments):
+        return agree_line + " [landed-check skipped: Landing: n/a]"
+    if card_id:
+        state, why = _db_landed_verdict(card_id, candidates)
+        if state == "not-landed":
+            return _not_landed_line(candidates[0], why)
     verdict = landed_verdict(candidates)
     if verdict is not None:
         return _unlanded_line(verdict)
@@ -905,7 +1014,7 @@ def _landed_or(enabled, candidates, agree_line):
 # (see "WHY THE COMPARISON IS NOT SHA EQUALITY") already explains at length.
 
 
-def check(comments, designated=None, expect=None, use_declared=True, check_landed=True):
+def check(comments, designated=None, expect=None, use_declared=True, check_landed=True, card_id=None):
     latest, undecidable = _gate_state(comments)
     unverified = unattributed_gates(comments)
     inferred = designated is None
@@ -1004,7 +1113,8 @@ def check(comments, designated=None, expect=None, use_declared=True, check_lande
         why = ("no --expect given" if source == "--no-expect"
                else "no REVIEW comment declares a Gate-SHA, so the delivered commit is unchecked")
         return _landed_or(check_landed, shas[0],
-                          "AGREE|%s|%s%s (%s)" % (_fmt_shas(shas[0]), detail, suffix, why))
+                          "AGREE|%s|%s%s (%s)" % (_fmt_shas(shas[0]), detail, suffix, why),
+                          card_id, comments)
 
     if sha_sets_agree(shas[0], declared):
         # CARD cb8ef4f5: the EQUAL-sha branch never asked content_verdict's question at all, because
@@ -1024,7 +1134,8 @@ def check(comments, designated=None, expect=None, use_declared=True, check_lande
                    "NEW REVIEW should not produce it going forward)" % (
                        _fmt_shas(shas[0]), agreed, hint_s)
         return _landed_or(check_landed, list(shas[0]) + list(declared),
-                          "AGREE|%s|%s%s" % (_fmt_shas(shas[0]), detail, suffix))
+                          "AGREE|%s|%s%s" % (_fmt_shas(shas[0]), detail, suffix),
+                          card_id, comments)
 
     # The sha differs from the declared one. On this board that is usually benign -- a work commit
     # versus the landing that carried it -- so the difference is judged by CONTENT before it is
@@ -1034,7 +1145,8 @@ def check(comments, designated=None, expect=None, use_declared=True, check_lande
     if kind == "same":
         return _landed_or(check_landed, list(shas[0]) + list(declared),
                           "AGREE|%s|%s%s (differs from %s per %s, but %s)" % (
-                              _fmt_shas(shas[0]), detail, suffix, joined, source, why))
+                              _fmt_shas(shas[0]), detail, suffix, joined, source, why),
+                          card_id, comments)
     if kind == "differs":
         # Deliberately NOT "the gates are stale". Measured on card edd4c3bf, the opposite happens
         # too: the deliverable moved on in an INFO-ONLY comment that says "nem uj REVIEW", the gates
@@ -1067,9 +1179,19 @@ def main():
     expect = None
     use_declared = True
     check_landed = True
+    # Distinct from `card_id` below (--card-id, the unrelated checkpoint-coverage feature, card
+    # <checkpoint>): this one feeds the card_landings-backed NOT-LANDED check (card 634a188c).
+    landing_card_id = None
     if "--no-landed" in argv:
         check_landed = False
         argv = [a for a in argv if a != "--no-landed"]
+    if "--card" in argv:
+        i = argv.index("--card")
+        if i + 1 >= len(argv) or not argv[i + 1].strip():
+            print("UNREADABLE|--card needs a card id")
+            return
+        landing_card_id = argv[i + 1].strip()
+        del argv[i:i + 2]
     if "--no-expect" in argv:
         use_declared = False
         argv = [a for a in argv if a != "--no-expect"]
@@ -1114,7 +1236,7 @@ def main():
             print("UNREADABLE|not a gate name: %s" % ", ".join(unknown))
             return
 
-    result = check(comments, designated, expect, use_declared, check_landed)
+    result = check(comments, designated, expect, use_declared, check_landed, landing_card_id)
 
     if card_id and db_path:
         rev_shas = declared_shas(comments)

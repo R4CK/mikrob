@@ -17,6 +17,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -1299,6 +1300,61 @@ if _repo_ok:
          "not read as landed just because develop's lines are (trivially) present on develop",
          [c("backend2", R % SYNC_MERGE), c("qa", L % SYNC_MERGE)], "UNLANDED",
          gates="qa", env=ENV, landed=True)
+
+    # --- NOT-LANDED: does card_landings back up the judged sha? (card 634a188c) -----------------
+    # Reuses the SAME landing-fixture repo (SHIPPED/STRANDED, etc.) so these cases exercise the real
+    # `--card` path end to end, not a mock. A fresh scratch sqlite db keeps them independent of each
+    # other and of the real store/claudeclaw.db.
+    _landings_dir = tempfile.mkdtemp(prefix="gcc-landings-")
+    _landings_db = os.path.join(_landings_dir, "card-landings-selftest.db")
+    _ldb = sqlite3.connect(_landings_db)
+    _ldb.execute(
+        "CREATE TABLE card_landings (id INTEGER PRIMARY KEY, card_id TEXT, work_sha TEXT, "
+        "merge_sha TEXT, repo TEXT, landed_at INTEGER, landed_by TEXT)"
+    )
+    _ldb.commit()
+
+    def _put_landing(card_id, work_sha, merge_sha):
+        _ldb.execute(
+            "INSERT INTO card_landings (card_id, work_sha, merge_sha, repo, landed_at, landed_by) "
+            "VALUES (?, ?, ?, 'marveen', 0, 'test')", (card_id, work_sha, merge_sha))
+        _ldb.commit()
+
+    DB_ENV = dict(ENV, GATE_CLOSURE_DB=_landings_db)
+
+    _put_landing("aaaaaaaa", SHIPPED, TIP)
+    case("a card_landings row naming the judged sha: not NOT-LANDED (falls through to AGREE)",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "AGREE",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "aaaaaaaa"])
+
+    case("no card_landings row at all for this card id: NOT-LANDED, even though git ancestry "
+         "would call it AGREE",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "bbbbbbbb"])
+
+    _put_landing("cccccccc", STRANDED, STRANDED)
+    case("a card_landings row exists for this card id, but names a DIFFERENT sha: NOT-LANDED, "
+         "not a silent pass on card_id alone (MikroB's requirement, comment 28281)",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "cccccccc"])
+
+    case("CONTROL: no --card given -- the DB check never runs, pre-card behaviour (AGREE)",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "AGREE",
+         gates="qa", env=DB_ENV, landed=True)
+
+    case("CONTROL: a missing/unreadable card_landings db falls through to the git check, "
+         "fail-open on THIS check only (not a silent block)",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "AGREE",
+         gates="qa", env=dict(ENV, GATE_CLOSURE_DB="/nonexistent-landings.db"), landed=True,
+         extra=["--card", "dddddddd"])
+
+    case("Landing: n/a exempts a config-only card from BOTH checks, even with no row at all",
+         [c("backend2", "REVIEW: kesz.\nGate-SHA: %s\nLanding: n/a (config-only)" % STRANDED),
+          c("qa", L % STRANDED)], "AGREE",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "eeeeeeee"])
+
+    _ldb.close()
+    shutil.rmtree(_landings_dir, ignore_errors=True)
 
     shutil.rmtree(_landed_repo, ignore_errors=True)
 
