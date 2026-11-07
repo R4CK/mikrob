@@ -93,6 +93,7 @@ OAUTH_TOKEN_FILE_CHECK_PY="${OAUTH_TOKEN_FILE_CHECK_PY:-$INSTALL_DIR/scripts/lib
 # PATH) fails closed below, same as a missing/crashing checker.
 NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
 NEEDS_FLEET_OAUTH_MJS="${NEEDS_FLEET_OAUTH_MJS:-$INSTALL_DIR/scripts/needs-fleet-oauth.mjs}"
+WATCHDOG_PROVIDER_ENV_MJS="${WATCHDOG_PROVIDER_ENV_MJS:-$INSTALL_DIR/scripts/watchdog-provider-env.mjs}"
 agent_launch_env() {
   local AGENT_DIR="$1"
   local CONFIG_VERDICT CONFIG_RC
@@ -166,9 +167,36 @@ agent_launch_env() {
   # string instead of resolving it the way agent-process.ts does. Replaced with ONE source of
   # truth: scripts/needs-fleet-oauth.mjs dynamically imports the compiled dist and calls the
   # exact same functions agent-process.ts calls at its own launch site -- no second copy.
-  if [ -n "$NODE_BIN" ] && [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] \
-     && "$NODE_BIN" "$NEEDS_FLEET_OAUTH_MJS" "$AGENT_DIR" 2>/dev/null; then
-    printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+  #
+  # The verdict is computed on its own (not short-circuited together with the .claude-config/
+  # fleet-token-file checks below) so F4's provider-env branch further down can tell "this agent
+  # does not need the fleet token" apart from "it needs it but the fleet token file/isolated
+  # config happen to be unusable right now" -- the latter still falls through to empty output,
+  # same as before this card, it just does so for its own, distinct reason.
+  local FLEET_OAUTH_NEEDED=0
+  if [ -n "$NODE_BIN" ] && "$NODE_BIN" "$NEEDS_FLEET_OAUTH_MJS" "$AGENT_DIR" 2>/dev/null; then
+    FLEET_OAUTH_NEEDED=1
+  fi
+
+  if [ "$FLEET_OAUTH_NEEDED" = 1 ]; then
+    if [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+      printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+    fi
+    return
+  fi
+
+  # Card 3ae2411d F4 (WhiteHat2 GO on a879697c0/a1ebf6bca): needs-fleet-oauth.mjs just said this
+  # agent does NOT need the fleet token (a BYO/customProvider agent, or Claude on its own vault
+  # API key) -- which used to mean this function printed nothing at all, so the restarted agent
+  # came up as plain Claude with no credentials of its own. Single source with the dashboard start
+  # path: resolveProviderEnv via watchdog-provider-env.mjs (same dynamic-dist-import pattern as
+  # needs-fleet-oauth.mjs). Fails closed (no env addition) if node or dist is unavailable, or if
+  # the dist throws (e.g. a customProvider with a missing vault key) -- same posture as above,
+  # never a silent fallback to plain-Claude credentials for an agent that needs its own.
+  if [ -n "$NODE_BIN" ]; then
+    local AGENT_NAME
+    AGENT_NAME=$(basename "$AGENT_DIR")
+    "$NODE_BIN" "$WATCHDOG_PROVIDER_ENV_MJS" "$AGENT_DIR" "$AGENT_NAME" 2>/dev/null
   fi
 }
 

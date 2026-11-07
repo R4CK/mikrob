@@ -42,6 +42,9 @@ WD="$FIXTURE_INSTALL/scripts/watchdog.sh"
 # Point watchdog.sh at the real repo's copy instead of copying it in -- the script takes the
 # target agent dir as an argv, so pointing at the real file works identically for a fixture dir.
 export NEEDS_FLEET_OAUTH_MJS="$REPO_DIR/scripts/needs-fleet-oauth.mjs"
+# Card 3ae2411d F4: same reasoning, for the provider-env script that fills in what the
+# UNSET-field fallback used to leave empty for a BYO/customProvider agent.
+export WATCHDOG_PROVIDER_ENV_MJS="$REPO_DIR/scripts/watchdog-provider-env.mjs"
 
 AGENT_ISO="$FIXTURE_INSTALL/agents/iso-agent"
 AGENT_PLAIN="$FIXTURE_INSTALL/agents/plain-agent"
@@ -409,12 +412,20 @@ case "$OUT" in
   *) fail "26: authMode api -> no fleet-token export" "$OUT" ;;
 esac
 
-# 27) Explicit non-claude model, no customProvider -> no isolation (isClaude is false either way).
+# 27) Explicit non-claude model, no customProvider -> never the fleet token (isClaude is false
+#     either way). Card 3ae2411d F4: this used to print "isolation=no" (nothing at all); now it
+#     gets its OWN provider env (ANTHROPIC_BASE_URL/ANTHROPIC_MODEL for deepseek), never the fleet
+#     token -- the fix this card's F4 asked for, not a regression of this case.
 printf '{"model": "deepseek-chat"}' > "$AGENT_BYO/agent-config.json"
 OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
 case "$OUT" in
-  isolation=no) pass "27: non-claude model, no customProvider -> no fleet-token export" ;;
-  *) fail "27: non-claude model, no customProvider -> no fleet-token export" "$OUT" ;;
+  "isolation=yes prefix="*"ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic"*"ANTHROPIC_MODEL='deepseek-chat'"*)
+    pass "27: non-claude model, no customProvider -> own provider env, no fleet token" ;;
+  *) fail "27: non-claude model, no customProvider -> own provider env, no fleet token" "$OUT" ;;
+esac
+case "$OUT" in
+  *"CLAUDE_CODE_OAUTH_TOKEN"*) fail "27: fleet token NOT exported for a BYO model" "$OUT" ;;
+  *) pass "27: fleet token NOT exported for a BYO model" ;;
 esac
 
 # 28) MUTATION PIN: an explicit claude model, authMode 'shared' (the default), no customProvider
@@ -463,6 +474,63 @@ case "$OUT" in
   *) fail "31: customProvider + claude- model string -> customProvider still wins, no export" "$OUT" ;;
 esac
 rm -f "$AGENT_BYO/agent-config.json"
+
+# --- card 3ae2411d F4 (WhiteHat2 GO on a879697c0/a1ebf6bca): a BYO/customProvider agent restarted
+# by the watchdog used to come up as plain Claude with NO credentials of its own -- the fleet-
+# token leak was fixed (tests 24-27, 31 above), but nothing replaced it. These pin the actual fix:
+# the restarted agent gets its OWN provider env, single source with the dashboard start path. ---
+
+# 32) BLOCKING (this follow-up's own repro): an openrouter-shaped model (contains '/') with no
+#     customProvider -> own provider env (ANTHROPIC_BASE_URL=https://openrouter.ai/api), never the
+#     fleet token.
+printf '{"model": "meta-llama/llama-3.1-8b"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*"ANTHROPIC_BASE_URL=https://openrouter.ai/api"*)
+    pass "32: openrouter-shaped model -> own provider env" ;;
+  *) fail "32: openrouter-shaped model -> own provider env" "$OUT" ;;
+esac
+case "$OUT" in
+  *"CLAUDE_CODE_OAUTH_TOKEN"*) fail "32: fleet token NOT exported for an openrouter model" "$OUT" ;;
+  *) pass "32: fleet token NOT exported for an openrouter model" ;;
+esac
+rm -f "$AGENT_BYO/agent-config.json"
+
+# 33) authMode 'own_team' or plain shared/claude still get NO provider env from this new branch
+#     (their credentials are the own-setup-token / fleet-token paths above this function, not
+#     resolveProviderEnv's job) -- mutation pin so a too-eager rewrite of the new branch does not
+#     start emitting a provider env for the common case.
+printf '{"authMode": "own_team"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "33: authMode own_team -> still no provider env (unaffected by F4)" ;;
+  *) fail "33: authMode own_team -> still no provider env (unaffected by F4)" "$OUT" ;;
+esac
+rm -f "$AGENT_BYO/agent-config.json"
+
+# 34) customProvider pointing at an UNREGISTERED id -> fail-closed refuse (no export at all),
+#     never a partial/guessed export -- same posture as the dashboard start path's own throw
+#     (agent-process.ts: "customProvider: agent NOT started (fail-closed)").
+printf '{"customProvider": "definitely-not-a-registered-provider-fixture"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "34: unregistered customProvider -> fail-closed, no export" ;;
+  *) fail "34: unregistered customProvider -> fail-closed, no export" "$OUT" ;;
+esac
+rm -f "$AGENT_BYO/agent-config.json"
+
+# 35) MUTATION PIN: needs-fleet-oauth.mjs still wins when the agent DOES need the fleet token but
+#     the fleet token file/isolated config happen to be unusable (card af5bf43b's own class of
+#     "needed but unusable" case, re-checked here so F4's new branch cannot be reached for an
+#     agent that actually needs fleet oauth) -- a claude/shared agent with NO .claude-config dir
+#     gets no export at all, not a provider env guess.
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_PLAIN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_PLAIN")"
+case "$OUT" in
+  isolation=no) pass "35: claude/shared agent with no .claude-config -> still no export (not F4's branch)" ;;
+  *) fail "35: claude/shared agent with no .claude-config -> still no export (not F4's branch)" "$OUT" ;;
+esac
+rm -f "$AGENT_PLAIN/agent-config.json"
 
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
