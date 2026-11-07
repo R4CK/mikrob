@@ -23427,3 +23427,30 @@ pins for the unaffected common case); 35/35 total pass. tsc clean.
 **Ki döntött:** DevO (fullstack), card 3ae2411d, self-advanced per MikroB dispatch
 (msg_id:16812, picked up while the land queue is paused for Koteg 23a). Gate: QA + WhiteHat2.
 Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 3ae2411d round 2: single source of truth for the fleet-oauth predicate
+
+WhiteHat2 F1 (card 3ae2411d): round 1's fix (a1ebf6bca) gave watchdog.sh's UNSET-field fallback a
+hand-ported Python copy of needsFleetOauthFor (`oauth_token_file_check.py`'s own
+`needs_fleet_oauth()`), even though the card's own fix line promised "the same predicate ... from
+a single source". That copy read the raw `model` string instead of resolving it the way
+`src/web/agent-process.ts` actually does, so a model ALIAS ("sonnet") and a modelProfile-only
+config decided differently on the watchdog path than on the dashboard launch path.
+
+Decision: remove the Python predicate entirely; replace it with `scripts/needs-fleet-oauth.mjs`, a
+dynamic-import-from-compiled-dist CLI that calls the EXACT functions agent-process.ts calls at its
+own launch site (resolveAgentModelFromConfig -> resolveModelId -> resolveOpenRouterModel ->
+needsFleetOauthFor). This mirrors `scripts/main-agent-isolated-config.mjs`'s own established
+pattern for the same problem class, rather than inventing a new shared-data-file mechanism.
+Fails closed (no token export) if node or dist is unavailable -- a deliberate tightening vs. the
+retired predicate's crash-defaults-to-True posture, since this card exists specifically to stop
+over-exporting the fleet token.
+
+Verified: regression cases 30-31 added to watchdog-config-isolation.test.sh (37/37 pass); case 30
+confirmed genuinely red against the retired predicate at a1ebf6bca (exit 1/wrong there, exit
+0/correct on the fix). New parity test (needs-fleet-oauth-parity.test.ts, 10 fixtures) asserts the
+TS-source path and the dist CLI agree across the alias, modelProfile-only (both directions), and
+customProvider+explicit-claude-model shapes -- all 10 pass. tsc clean.
+
+**Ki döntött:** DevO (fullstack), card 3ae2411d round 2, per MikroB dispatch (msg_id:16839, then
+msg_id:16862 for the safe-point resume). Gate: QA + WhiteHat2. Gate-SHA: see REVIEW comment.
