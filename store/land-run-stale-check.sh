@@ -37,9 +37,60 @@ fi
 # whole body also runs under one more try/except so a bug here can never again come back as a
 # missing final line.
 python3 -c '
-import json, sys, time
+import json, os, subprocess, sys, time
 
 journal_file = sys.argv[1]
+
+# WhiteHat NO-GO 28823 (card 88b67fb4, re-gate of 28731), B-new BLOCKING: the age-only threshold
+# flags most HEALTHY landings as STALE, because the land scripts write no periodic heartbeat (a
+# heartbeat only happens on a lost-push-race retry) and a real landing commonly runs 13-23 minutes,
+# well past the 600s default -- paging the owner + Peti for ordinary, still-running work. Fix: a
+# run with a recorded owner pid/pid_start is "alive" when `kill -0 <pid>` succeeds AND the current
+# /proc/<pid> creation stamp still matches the one recorded at start time (rules out a reused pid
+# taken over by an unrelated later process) -- an alive, matching owner is NEVER stale regardless
+# of age. A confirmed-DEAD owner is stale IMMEDIATELY, not after waiting out the threshold (this
+# also catches a killed lander at the next sweep instead of up to 10 minutes later). Only when
+# liveness cannot be determined at all (no pid recorded -- e.g. a line written directly, not
+# through land-run-journal.sh) does this fall back to the original age-based check.
+def _pid_start_now(pid):
+    try:
+        out = subprocess.run(["stat", "-c", "%Y", f"/proc/{pid}"], capture_output=True, text=True, timeout=2)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip()
+
+def _pid_alive(pid):
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_int <= 0:
+        return False  # pid 0/negative is never a real owner; signalling 0 hits our own process group
+    try:
+        os.kill(pid_int, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # process exists (we just cannot signal it -- different uid), still alive
+    except Exception:
+        return False
+    return True
+
+def owner_liveness(pid, pid_start):
+    # Returns True (confirmed alive, same process), False (confirmed dead/replaced), or None
+    # (cannot determine -- caller falls back to the age-based check).
+    if pid is None:
+        return None
+    if not _pid_alive(pid):
+        return False
+    if not pid_start or pid_start in ("0", 0, ""):
+        return None  # no trustworthy start-stamp recorded -- cannot confirm identity, not liveness
+    cur = _pid_start_now(pid)
+    if cur is None:
+        return None
+    return str(cur) == str(pid_start)
 
 def is_valid(rec):
     if not isinstance(rec, dict):
@@ -130,6 +181,14 @@ try:
         if "started_ts" not in r:
             continue  # a heartbeat/finished line with no matching started line -- nothing to flag
         age = now - r["last_ts"]
+        pid, pid_start = started_identity.get(rid, (None, None))
+        alive = owner_liveness(pid, pid_start)
+        if alive is True:
+            continue  # confirmed alive, same process as started it -- never stale, regardless of age
+        if alive is False:
+            stale.append((rid, r, age))  # confirmed dead/replaced -- stale now, not after the threshold
+            continue
+        # alive is None: liveness undeterminable (no pid recorded) -- fall back to age alone
         if age > threshold:
             stale.append((rid, r, age))
 

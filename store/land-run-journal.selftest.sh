@@ -72,7 +72,14 @@ esac
 # forked it, same as a plain direct call. `--fork` makes setsid ALWAYS fork and detach the child
 # into a new session regardless of leadership, reliably producing a $PPID the recorded pid can
 # never match (measured: the detached child's PPID becomes a session-reaper pid, e.g. 300 here).
-dead_rid="$(bash "$HERE/land-run-journal.sh" start mopsion-land.sh backend2 cardDead "$$")"
+# WhiteHat NO-GO 28823 (B-new): the owner-liveness check means a run's OWN process must actually be
+# dead for this "stale before any forge attempt" premise to hold -- the selftest's own $$ stays
+# alive for the whole script, so a dummy short-lived process stands in as the "owner" that gets
+# killed, exactly like a real `kill -9` on a land script.
+sleep 30 & dead_owner_pid=$!
+dead_rid="$(bash "$HERE/land-run-journal.sh" start mopsion-land.sh backend2 cardDead "$dead_owner_pid")"
+kill -9 "$dead_owner_pid" 2>/dev/null
+wait "$dead_owner_pid" 2>/dev/null
 if [ -z "$dead_rid" ]; then
   bad "start printed no run_id"
 else
@@ -166,7 +173,12 @@ esac
 #    normally, age it past the threshold, confirm stale, then directly append a forged finished
 #    line with NO pid/pid_start fields (QA's own reproduction used the plain documented JSON shape,
 #    which had no such fields before this delta) and confirm the run is still reported stale.
-raw_rid="$(bash "$HERE/land-run-journal.sh" start marveen-land.sh backend2 cardRaw "$$")"
+# Same owner-liveness consideration as test 4: the owner must actually be dead for the "ages past
+# the threshold" premise to produce a stale run under the new liveness-aware check.
+sleep 30 & raw_owner_pid=$!
+raw_rid="$(bash "$HERE/land-run-journal.sh" start marveen-land.sh backend2 cardRaw "$raw_owner_pid")"
+kill -9 "$raw_owner_pid" 2>/dev/null
+wait "$raw_owner_pid" 2>/dev/null
 if [ -z "$raw_rid" ]; then
   bad "raw-forgery-test start printed no run_id"
 else
@@ -302,6 +314,52 @@ l2b_out="$(bash "$HERE/land-run-stale-check.sh")"
 case "$l2b_out" in
   *"NO-JOURNAL"*ALERT:no*) ok "a missing journal file is reported distinctly (NO-JOURNAL), not a bare ALERT:no" ;;
   *) bad "a missing journal file did not say NO-JOURNAL: $l2b_out" ;;
+esac
+
+# 10. WhiteHat NO-GO 28823 (B-new, BLOCKING): a run whose OWNER PROCESS IS STILL ALIVE must never
+#     be reported stale, no matter how old it is -- this is the actual fleet incident (a real
+#     landing routinely runs 13-23 minutes with zero heartbeats, well past the 10-minute default,
+#     and was paging the owner + Peti for perfectly healthy work).
+rm -f "$LAND_RUN_JOURNAL_FILE"
+sleep 30 & alive_owner_pid=$!
+alive_rid="$(bash "$HERE/land-run-journal.sh" start marveen-land.sh backend cardAlive "$alive_owner_pid")"
+python3 -c '
+import json, sys, time
+old_ts = int(time.time()) - 1200  # 20 minutes old -- well past any default threshold
+path, rid = sys.argv[1], sys.argv[2]
+out = []
+with open(path, encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        rec = json.loads(line)
+        if rec.get("run_id") == rid and rec.get("event") == "started":
+            rec["ts"] = old_ts
+        out.append(json.dumps(rec))
+with open(path, "w", encoding="utf-8") as f:
+    f.write("\n".join(out) + "\n")
+' "$LAND_RUN_JOURNAL_FILE" "$alive_rid"
+out="$(STALE_AFTER_SECONDS=600 bash "$HERE/land-run-stale-check.sh")"
+kill "$alive_owner_pid" 2>/dev/null
+wait "$alive_owner_pid" 2>/dev/null
+case "$out" in
+  *"run_id=$alive_rid"*) bad "B-new: a 20-minute-old run with a LIVE, matching owner was reported STALE: $out" ;;
+  *) ok "B-new: a long-running but still-alive owner is never reported stale (card 88b67fb4, NO-GO 28823)" ;;
+esac
+
+# 11. WhiteHat NO-GO 28823 (B-new): the mirror case -- a DEAD owner is reported stale IMMEDIATELY,
+#     even well WITHIN the threshold (catches a killed lander at the next sweep, not up to 10
+#     minutes later).
+rm -f "$LAND_RUN_JOURNAL_FILE"
+sleep 30 & fresh_dead_owner_pid=$!
+fresh_dead_rid="$(bash "$HERE/land-run-journal.sh" start marveen-land.sh backend cardFreshDead "$fresh_dead_owner_pid")"
+kill -9 "$fresh_dead_owner_pid" 2>/dev/null
+wait "$fresh_dead_owner_pid" 2>/dev/null
+out="$(STALE_AFTER_SECONDS=600 bash "$HERE/land-run-stale-check.sh")"
+case "$out" in
+  *"run_id=$fresh_dead_rid"*ALERT:yes*) ok "B-new: a dead owner is reported stale immediately, well within the 600s threshold" ;;
+  *) bad "B-new: a dead owner (0s old) was not reported stale: $out" ;;
 esac
 
 echo "land-run-journal selftest done"
