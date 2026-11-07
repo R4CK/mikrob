@@ -3460,6 +3460,14 @@ const FRONTEND_FAMILY = new Set(['fron-ted', 'fron-teddy'])
 // observability-and-instrumentation, quota-management, loop-engineering, skill-management,
 // deprecation-and-migration) at 0 uses; curated table mirrors the BACKEND_FAMILY pattern.
 const DEVO_FAMILY = new Set(['fullstack'])
+// Card 17eeebe6: Teszter gets an e2e-tester-specific curated table (Peti Telegram 12208+12210:
+// "nem kell hogy parkoljon, nyugodtan meg lehet hívni"). Measured baseline (MikroB Telegram
+// 12208): no comment since Oct 4, Core only 5 entries, white-hat-security-testing in the local
+// skillset despite sign-off belonging to WhiteHat/WhiteHat2 only, and user-manual-assembler
+// (README feature-list/USER-MANUAL.md cross-check, root CLAUDE.md's own user-manual rule) not
+// in Core even though that verification is Teszter's own job. Curated table mirrors the
+// BACKEND_FAMILY pattern.
+const TESZTER_FAMILY = new Set(['teszter'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
@@ -3629,6 +3637,33 @@ export function buildDevOFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
+// Exported for test rendering (card 17eeebe6, mirrors the DevO precedent, WhiteHat2 F4): callers
+// assert on this function's actual return value instead of slicing the source text, so a
+// commented-out row shows up as a missing row, not as a still-matching substring.
+export function buildTesterFamilySkillUsageBody(): string {
+  const rows = [
+    '| Végigkattintás, képernyőkép, console/network | `browser-testing-with-devtools`, `webapp-testing` |',
+    '| Flow-teljesség (9. szabály) | `user-flow-menu-design` |',
+    '| Szerepkörönkénti RBAC e2e | `e2e-rbac-hierarchical-testing`, `rbac-authz-matrix-audit` |',
+    '| Hibaüzenetek (12. szabály) | `fe-rule12-audit` |',
+    '| Reszponzív, touch (13. szabály) | `rule13-touch-target-compliance` |',
+    '| Akadálymentesség | `wcag-overlay-patterns` |',
+    '| i18n | `i18n-parity-sweep` |',
+    '| Valós felhasználói út, használhatóság | `dogfooding`, `usability-testing` |',
+    '| Funkciólista, user manual hitelesítés | `user-manual-assembler` |',
+    '| Teljes audit (csak kérésre) | `full-value-audit` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 17eeebe6)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3642,6 +3677,7 @@ function buildSkillUsageBody(name: string): string | null {
   if (REDHAT_FAMILY.has(name)) return buildRedHatFamilySkillUsageBody()
   if (FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()
   if (DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()
+  if (TESZTER_FAMILY.has(name)) return buildTesterFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null

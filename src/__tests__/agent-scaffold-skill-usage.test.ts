@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { SKILL_USAGE_DATA } from '../web/skill-usage-data.js'
-import { buildDevOFamilySkillUsageBody } from '../web/agent-scaffold.js'
+import { buildDevOFamilySkillUsageBody, buildTesterFamilySkillUsageBody } from '../web/agent-scaffold.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCAFFOLD = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
@@ -102,9 +102,14 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
   // backend3 ONLY. These assertions read the rendered output the way the card's own "Kész, ha" 1
   // does (grep counts on the written CLAUDE.md), via buildBackendFamilySkillUsageBody's source.
   it('backend family gets the curated table, not the full catalog, for all three roles', () => {
+    // Slice ends at the NEXT family builder (frontend), not at the shared buildSkillUsageBody(
+    // marker -- card 17eeebe6: a slice to that shared marker silently swept in every later
+    // family builder's body too (frontend/DevO/Tester), so a later family introducing a
+    // catalog-only term (e.g. Tester's legitimate usability-testing row) broke this assertion
+    // for a function that never contained it.
     const curatedFn = SCAFFOLD.slice(
       SCAFFOLD.indexOf('function buildBackendFamilySkillUsageBody('),
-      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('function buildFrontendFamilySkillUsageBody('),
     )
     // Present: a representative curated-table row.
     expect(curatedFn).toContain('fork-adopt-investigation')
@@ -192,9 +197,11 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
   })
 
   it('frontend family curated table carries karpathy-guidelines and the 14 measured task-type groups, not the full catalog', () => {
+    // Slice ends at the NEXT family builder (DevO), not at the shared buildSkillUsageBody(
+    // marker -- see the comment on the backend-family test above for why.
     const curatedFn = SCAFFOLD.slice(
       SCAFFOLD.indexOf('function buildFrontendFamilySkillUsageBody('),
-      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function buildDevOFamilySkillUsageBody('),
     )
     expect(curatedFn).toContain('karpathy-guidelines')
     expect(curatedFn).toContain('react-page-api-wiring')
@@ -277,6 +284,49 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
     // runnable script for it.
     expect(wizardRow).toMatch(/2FA.*böngészős bejelentkezés harmadik félnél/)
     expect(wizardRow).toMatch(/explicit megnevezi egy kérésben/)
+  })
+
+  // Card 17eeebe6: Teszter (e2e-tester role) gets a curated table mirroring BACKEND_FAMILY/
+  // DEVO_FAMILY, surfacing RBAC-e2e/rule12/rule13/i18n/accessibility/usability skills measured
+  // at 0 use plus user-manual-assembler (Peti Telegram 12208+12210).
+  it('TESZTER_FAMILY is defined and names teszter', () => {
+    expect(SCAFFOLD).toContain("const TESZTER_FAMILY = new Set(")
+    const familySet = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('const TESZTER_FAMILY = new Set('),
+      SCAFFOLD.indexOf('const TESZTER_FAMILY = new Set(') + 60,
+    )
+    expect(familySet).toContain("'teszter'")
+  })
+
+  it('buildSkillUsageBody dispatches teszter to the Tester curated table', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('TESZTER_FAMILY.has(name)) return buildTesterFamilySkillUsageBody()')
+  })
+
+  // Rendered-output assertion (same technique as the DevO test above, card 219b07ae WhiteHat2
+  // F4 precedent): assert on the real function's return value, not source text.
+  it('Tester curated table carries e2e/RBAC/accessibility/i18n/usability skills, including the previously-missing user-manual-assembler', () => {
+    const rendered = buildTesterFamilySkillUsageBody()
+    expect(rendered).toContain('browser-testing-with-devtools')
+    expect(rendered).toContain('webapp-testing')
+    expect(rendered).toContain('user-flow-menu-design')
+    expect(rendered).toContain('e2e-rbac-hierarchical-testing')
+    expect(rendered).toContain('rbac-authz-matrix-audit')
+    expect(rendered).toContain('fe-rule12-audit')
+    expect(rendered).toContain('rule13-touch-target-compliance')
+    expect(rendered).toContain('wcag-overlay-patterns')
+    expect(rendered).toContain('i18n-parity-sweep')
+    expect(rendered).toContain('dogfooding')
+    expect(rendered).toContain('usability-testing')
+    expect(rendered).toContain('user-manual-assembler')
+    expect(rendered).toContain('full-value-audit')
+    // white-hat-security-testing is WhiteHat/WhiteHat2's sign-off tool, not Teszter's --
+    // must not be in the curated table (card 17eeebe6: removed from the local skillset).
+    expect(rendered).not.toContain('white-hat-security-testing')
+    expect(rendered).toContain('store/skill-role-map.md')
   })
 
   it('marks a known self-claimed-but-unreferenced skill as gap for its role', () => {
