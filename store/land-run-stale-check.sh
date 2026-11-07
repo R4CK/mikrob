@@ -17,7 +17,13 @@ set -uo pipefail
 JOURNAL_FILE="${LAND_RUN_JOURNAL_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/land-runs.jsonl}"
 STALE_AFTER_SECONDS="${STALE_AFTER_SECONDS:-600}"
 
+# WhiteHat NO-GO 28731, L2: a missing journal (or a directory in its place, which `-f` also
+# excludes) used to print a bare "ALERT:no" -- indistinguishable from "checked, genuinely zero
+# runs". A deleted journal is a DIFFERENT fact (nothing to check at all, possibly covering up an
+# incident) and must say so, even though the verdict itself stays ALERT:no (there is nothing to
+# be stale).
 if [ ! -f "$JOURNAL_FILE" ]; then
+  echo "NO-JOURNAL path=$JOURNAL_FILE -- no journal file found, nothing to check (not the same as a checked, zero-runs journal)"
   echo "ALERT:no"
   exit 0
 fi
@@ -33,7 +39,7 @@ fi
 python3 -c '
 import json, sys, time
 
-journal_file, threshold = sys.argv[1], int(sys.argv[2])
+journal_file = sys.argv[1]
 
 def is_valid(rec):
     if not isinstance(rec, dict):
@@ -50,6 +56,12 @@ def is_valid(rec):
     return True
 
 try:
+    # WhiteHat NO-GO 28731, L2: STALE_AFTER_SECONDS=<non-numeric> used to crash here with an
+    # unhandled ValueError, OUTSIDE this try block -- no ALERT line at all, the exact "crashed
+    # silently" failure mode M2 already fixed for malformed journal LINES, just reachable through
+    # a different input. Parsing it inside the try makes a bad threshold land in the same
+    # guaranteed-final-ALERT-line path as every other internal failure.
+    threshold = int(sys.argv[2])
     records = []
     malformed = 0
 

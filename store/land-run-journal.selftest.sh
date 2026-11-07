@@ -56,12 +56,22 @@ case "$out" in
   *) ok "a recently-heartbeating run is not reported stale" ;;
 esac
 
-# 4. M3 delta (WhiteHat): finish is bound to the process GROUP that called start. Start a run
-#    normally (owner = this test script's own process group), age it past the threshold, confirm
-#    it reads as stale, then attempt a FORGED finish via `setsid` -- which puts the forging process
-#    in a BRAND NEW, distinct process group/session, exactly simulating "any [other] process" (a
-#    separate agent/shell on the same box, same uid, no relation to the one that called start) --
-#    and confirm it is refused and the run is still stale afterward.
+# 4. M3 delta (WhiteHat), rebound in the B1 round (28731) to the land script's OWN pid via $PPID
+#    instead of its process group. Start a run normally (owner = this test script's own pid), age
+#    it past the threshold, confirm it reads as stale, then attempt a FORGED finish from a
+#    genuinely DIFFERENT parent process -- simulating "any [other] process" (a separate
+#    agent/shell on the same box, same uid, no relation to the one that called start) -- and
+#    confirm it is refused and the run is still stale afterward.
+#
+# MUST use `setsid --fork`, not bare `setsid` or a backgrounded subshell: a plain `setsid cmd`
+# does NOTHING (runs cmd as a normal direct child, same $PPID as the caller) when the invoking
+# shell is already its own process-group leader -- measured to vary by invocation context (a
+# one-off standalone command vs. running inside this very selftest script), making a bare
+# `setsid` an unreliable forgery simulation. A backgrounded subshell (`( cmd ) &`) does not help
+# either: $PPID is the OS-level parent, and a backgrounded job's parent is still the shell that
+# forked it, same as a plain direct call. `--fork` makes setsid ALWAYS fork and detach the child
+# into a new session regardless of leadership, reliably producing a $PPID the recorded pid can
+# never match (measured: the detached child's PPID becomes a session-reaper pid, e.g. 300 here).
 dead_rid="$(bash "$HERE/land-run-journal.sh" start mopsion-land.sh backend2 cardDead "$$")"
 if [ -z "$dead_rid" ]; then
   bad "start printed no run_id"
@@ -90,12 +100,16 @@ with open(path, "w", encoding="utf-8") as f:
     *) bad "the run was not stale before the forge attempt: $out" ;;
   esac
 
-  forge_rc=0
-  setsid bash "$HERE/land-run-journal.sh" finish "$dead_rid" 0 >"$WORK/forge.out" 2>&1 || forge_rc=$?
-  if [ "$forge_rc" -eq 0 ]; then
-    bad "forged finish (called from a different process group via setsid) was ACCEPTED: $(cat "$WORK/forge.out")"
+  # `setsid --fork` detaches immediately and always returns 0 itself (it does not wait for the
+  # detached child) -- so success here is judged by the JOURNAL CONTENT (no new finished line),
+  # not by this command's own exit code. The sleep gives the detached child time to run and
+  # write (or refuse to write) before we check.
+  setsid --fork bash "$HERE/land-run-journal.sh" finish "$dead_rid" 0 >"$WORK/forge.out" 2>&1
+  sleep 0.5
+  if grep -q "\"run_id\": *\"$dead_rid\".*\"event\": *\"finished\"" "$LAND_RUN_JOURNAL_FILE" 2>/dev/null; then
+    bad "forged finish (called from a different parent process) was ACCEPTED: $(cat "$WORK/forge.out")"
   else
-    ok "forged finish (different process group) was refused (exit $forge_rc): $(cat "$WORK/forge.out")"
+    ok "forged finish (different parent process) was refused: $(cat "$WORK/forge.out")"
   fi
 
   out="$(STALE_AFTER_SECONDS=600 bash "$HERE/land-run-stale-check.sh")"
@@ -240,6 +254,55 @@ if [ "$plain_result" = "fail" ]; then
 else
   bad "finish with no override wrote result='$plain_result' instead of 'fail'"
 fi
+
+# 8. WhiteHat NO-GO 28731, B1 (BLOCKING): a land script launched in the BACKGROUND (the shape of
+#    `nohup bash marveen-land.sh <agent> > log 2>&1 &`, measured at ~348 such invocations across
+#    the fleet's own history) whose LAUNCHING shell exits before the land script's own finish
+#    must still be honored -- a healthy backgrounded landing is not a forgery. Simulates the
+#    launcher exiting (`disown` + not waiting on it) while the land script itself (a `bash -c`
+#    subshell standing in for the long-lived land script) does its own start+finish.
+rm -f "$LAND_RUN_JOURNAL_FILE"
+rid_file="$WORK/b1-rid.txt"
+bash -c '
+_ljd="'"$HERE"'/land-run-journal.sh"
+rid="$(bash "$_ljd" start marveen-land.sh backend cardBG "$$")"
+sleep 0.5
+bash "$_ljd" finish "$rid" 0
+echo "$rid" >"'"$rid_file"'"
+' &
+launcher_pid=$!
+sleep 0.2
+disown "$launcher_pid" 2>/dev/null
+wait "$launcher_pid" 2>/dev/null
+sleep 0.8
+b1_rid="$(cat "$rid_file" 2>/dev/null)"
+if [ -z "$b1_rid" ]; then
+  bad "B1 simulation: the backgrounded land script never reached finish"
+else
+  out="$(STALE_AFTER_SECONDS=600 bash "$HERE/land-run-stale-check.sh")"
+  case "$out" in
+    *"run_id=$b1_rid"*) bad "B1: a cleanly-finished backgrounded land run was reported STALE: $out" ;;
+    *) ok "B1: a backgrounded land run (launcher already exited) finishes cleanly, not STALE" ;;
+  esac
+fi
+
+# 9. WhiteHat NO-GO 28731, L2: a non-numeric STALE_AFTER_SECONDS must not crash with no ALERT
+#    line (it used to raise an unhandled ValueError before the try block, rc 0, empty stdout).
+l2_rc=0
+l2_out="$(STALE_AFTER_SECONDS=abc bash "$HERE/land-run-stale-check.sh" 2>"$WORK/l2.err")" || l2_rc=$?
+case "$l2_out" in
+  *ALERT:yes*) ok "a non-numeric STALE_AFTER_SECONDS still produces a final ALERT line (yes)" ;;
+  *) bad "a non-numeric STALE_AFTER_SECONDS produced no ALERT line: [$l2_out] stderr=[$(cat "$WORK/l2.err")]" ;;
+esac
+
+# L2, second half: a missing journal file must say so distinctly, not just a bare ALERT:no that
+# looks identical to "checked, genuinely zero runs".
+rm -f "$LAND_RUN_JOURNAL_FILE"
+l2b_out="$(bash "$HERE/land-run-stale-check.sh")"
+case "$l2b_out" in
+  *"NO-JOURNAL"*ALERT:no*) ok "a missing journal file is reported distinctly (NO-JOURNAL), not a bare ALERT:no" ;;
+  *) bad "a missing journal file did not say NO-JOURNAL: $l2b_out" ;;
+esac
 
 echo "land-run-journal selftest done"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"

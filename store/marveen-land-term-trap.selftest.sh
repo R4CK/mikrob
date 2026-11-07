@@ -89,6 +89,74 @@ sys.exit(0 if found else 1)
   fi
 fi
 
+# WhiteHat NO-GO 28731, L4: `land_one` can call `die()` (marveen-land.sh lines 569/579ish), which
+# is a plain `exit N` -- no signal involved -- that used to terminate the whole script before any
+# of land_with_retry's finish call sites (which only run AFTER land_one RETURNS) ever got a
+# chance, so a clean refusal read as STALE forever. The EXIT trap fixes this: it fires on ANY
+# shell exit, including an internal `exit N` from a function still on the call stack.
+case "$FN_SRC" in
+  *"' EXIT"*) : ;;
+  *) echo "FATAL: extracted land_with_retry has no EXIT trap (L4 fix missing)" >&2; exit 1 ;;
+esac
+
+rm -f "$LAND_RUN_JOURNAL_FILE"
+die_rc=0
+bash -c '
+MAX_ATTEMPTS=5
+die() { echo "REFUSED: $2" >&2; exit "$1"; }
+land_one() { die 3 "simulated hard refusal mid-landing"; }
+say() { :; }
+'"$FN_SRC"'
+land_with_retry backend 0 ""
+' "$LAND_SCRIPT" || die_rc=$?
+
+if [ "$die_rc" = "3" ]; then
+  ok "L4: land_one's die() still propagates its own exit code (3) out of land_with_retry"
+else
+  bad "L4: expected land_with_retry to exit 3 after land_one's die(), got $die_rc"
+fi
+
+die_rid="$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("event") == "started":
+            print(rec.get("run_id"))
+            break
+' "$LAND_RUN_JOURNAL_FILE" 2>/dev/null)"
+if [ -z "$die_rid" ]; then
+  bad "L4: no started record found -- land_with_retry never reached land_one"
+else
+  if python3 -c '
+import json, sys
+rid = sys.argv[2]
+found = False
+with open(sys.argv[1], encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("run_id") == rid and rec.get("event") == "finished" and rec.get("exit_code") == "3":
+            found = True
+sys.exit(0 if found else 1)
+' "$LAND_RUN_JOURNAL_FILE" "$die_rid"; then
+    ok "L4: journal has a finished/exit_code=3 line for land_one's die() -- the EXIT trap caught it"
+  else
+    bad "L4: no finished line (exit_code=3) for run_id=$die_rid -- die() would read as STALE forever"
+  fi
+fi
+
 echo "marveen-land.sh land_with_retry TERM-trap selftest done"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"

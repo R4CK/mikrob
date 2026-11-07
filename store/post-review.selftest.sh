@@ -98,6 +98,32 @@ rc=0; run "card4" "$WORK/onechar.txt" "backend" >"$WORK/out5.txt" 2>&1 || rc=$?
 t_ok "$rc" 1 "1-character body refuses with exit 1"
 if [ -s "$WORK/calls.log" ]; then echo "  FAIL 1-char file still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   1-char file never touched the board"; fi
 
+# 5. L1b (WhiteHat NO-GO 28731 delta): the Cf/Cc/Zs-only filter let 6 of 9 invisible probes
+#    through -- repeating each probe 12x (WhiteHat's own count) so it clears the old length-10
+#    floor and would have sailed through before this fix.
+assert_refused() { # $1 label, $2 file, $3 card
+  : >"$WORK/calls.log"
+  rc=0; run "$3" "$2" "backend" >"$WORK/out-$3.txt" 2>&1 || rc=$?
+  t_ok "$rc" 1 "$1 refuses with exit 1"
+  if [ -s "$WORK/calls.log" ]; then echo "  FAIL $1 still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   $1 never touched the board"; fi
+}
+python3 -c "open(r'$WORK/braille.txt','wb').write('⠀'.encode()*12)"
+assert_refused "Braille-blank-only (U+2800 x12) body" "$WORK/braille.txt" card5
+python3 -c "open(r'$WORK/hangulfiller.txt','wb').write('ㅤ'.encode()*12)"
+assert_refused "Hangul-filler-only (U+3164 x12) body" "$WORK/hangulfiller.txt" card6
+python3 -c "open(r'$WORK/choseong.txt','wb').write('ᅟ'.encode()*12)"
+assert_refused "Hangul-choseong-filler-only (U+115F x12) body" "$WORK/choseong.txt" card7
+python3 -c "open(r'$WORK/combining.txt','wb').write(('̀͏️'*4).encode())"
+assert_refused "combining-marks-only (U+0300/U+034F/U+FE0F) body" "$WORK/combining.txt" card8
+
+# Visible content must still pass -- this is the non-vacuity check for L1b: ten visible dots
+# (WhiteHat's own counter-example) must NOT be refused.
+printf '..........' >"$WORK/dots.txt"
+: >"$WORK/calls.log"
+MATCH_MODE=match
+rc=0; run "card9" "$WORK/dots.txt" "backend" >"$WORK/out-card9.txt" 2>&1 || rc=$?
+t_ok "$rc" 0 "ten visible dots (real content) are still accepted, not treated as blank"
+
 echo "post-review.sh selftest: $n checks"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"

@@ -45,14 +45,33 @@ fi
 # WhiteHat L1 (card 88b67fb4 delta): the old check was ASCII-whitespace-only (`grep [^[:space:]]`),
 # so a file holding only invisible/format characters (U+200B zero-width space, U+FEFF BOM, NBSP)
 # or a single stray character read as non-blank and sailed through to waiting -- the same
-# visually-empty REVIEW the incident this script exists for, just dressed differently. Strip
-# whitespace AND Unicode format/control/separator categories (Cf/Cc/Zs) before measuring, and
-# require a minimum of real content, not just non-zero length.
+# visually-empty REVIEW the incident this script exists for, just dressed differently.
+#
+# L1b (WhiteHat NO-GO 28731 delta): the Cf/Cc/Zs-only filter still let 6 of 9 invisible probes
+# through -- U+0300/U+034F/U+FE0F are COMBINING marks (category Mn: zero visual width WITHOUT a
+# preceding base character, but Mn is not Cf/Cc/Zs so the old filter kept them as "meaningful");
+# U+2800 (Braille blank) and U+3164/U+115F (Hangul fillers) are categorized So/Lo (ordinary
+# symbol/letter categories) despite being KNOWN, deliberately blank-rendering code points. Fix:
+# strip the WHOLE Mark category (M*) and Separator/Other (Z*/C*) generally, not just Cf/Cc/Zs,
+# PLUS an explicit blocklist for the known visible-category blanks that no broad category rule
+# catches. `..........` (ten visible dots, category Po) still passes -- punctuation is real,
+# rendered content, not blank.
 _meaningful_len="$(python3 -c '
 import sys, unicodedata
+KNOWN_BLANK_FILLERS = {
+    "⠀",  # BRAILLE PATTERN BLANK (category So, renders as nothing)
+    "ㅤ",  # HANGUL FILLER (category Lo, renders as nothing)
+    "ᅟ",  # HANGUL CHOSEONG FILLER (category Lo, renders as nothing)
+    "ﾠ",  # HALFWIDTH HANGUL FILLER (category Lo, renders as nothing)
+}
 with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
     text = f.read()
-stripped = "".join(ch for ch in text if not (ch.isspace() or unicodedata.category(ch) in ("Cf", "Cc", "Zs")))
+def is_blank(ch):
+    if ch.isspace() or ch in KNOWN_BLANK_FILLERS:
+        return True
+    cat = unicodedata.category(ch)
+    return cat[0] in ("M", "Z", "C")  # Mark / Separator / Other -- not real rendered content
+stripped = "".join(ch for ch in text if not is_blank(ch))
 print(len(stripped))
 ' "$file" 2>/dev/null)"
 if [ -z "$_meaningful_len" ] || [ "$_meaningful_len" -lt 10 ] 2>/dev/null; then
