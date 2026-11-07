@@ -53,6 +53,21 @@ const RECIPE_PRINTERS: Record<string, string> = {
 }
 const isExemptPrinter = (rel: string) => rel in RECIPE_PRINTERS
 
+// Hooks that actually FETCH memories (unlike RECIPE_PRINTERS, which never touch the network) but
+// are the deliberate exception the scaffold text below names: a designed PUSH of the SHARED tier
+// (and, pilot-flagged, the agent's own curated hot/warm/cold) at SessionStart, not an accidental
+// leak (Peti 2026-07-19; card 5a4bea2e part A for the own-curated half). Card b2f7ede4 wired this
+// hook into templates/settings.json.template for backend2/backend3/logs, which is what makes this
+// describe block see it for the first time -- other agents already carried it via their own
+// per-agent seed, invisible to this test's two file paths. Each entry's own it.each below proves
+// the exemption is not a loophole: GET-only, never a write.
+const MEMORY_PUSH_HOOKS: Record<string, string> = {
+  'scripts/hooks/shared-memory-inject.py':
+    'SessionStart push of the shared tier (always) and the agent\'s own curated hot/warm/cold ' +
+    '(pilot-flagged, fullstack only) -- the scaffold text says so explicitly',
+}
+const isExemptPush = (rel: string) => rel in MEMORY_PUSH_HOOKS
+
 // Each mention of the endpoint, with the curl command it sits in (same line), or
 // the bare line when no curl precedes it there.
 function memoryMentions(text: string): string[] {
@@ -111,7 +126,7 @@ describe('...and that stays true (update the scaffold sentence if one of these f
     const scripts = new Set<string>()
     for (const h of hookCommands(join(ROOT, file))) for (const m of h.text.matchAll(/scripts\/[\w./-]+\.(?:py|sh|mjs|js|ts)/g)) scripts.add(m[0])
     expect(scripts.size, 'no script path parsed from the hooks: the parser is blind').toBeGreaterThan(0)
-    const hits = [...scripts].filter((rel) => existsSync(join(ROOT, rel)) && !isExemptPrinter(rel) && /api\/memories/.test(readFileSync(join(ROOT, rel), 'utf-8')))
+    const hits = [...scripts].filter((rel) => existsSync(join(ROOT, rel)) && !isExemptPrinter(rel) && !isExemptPush(rel) && /api\/memories/.test(readFileSync(join(ROOT, rel), 'utf-8')))
     expect(hits).toEqual([])
   })
 
@@ -121,6 +136,19 @@ describe('...and that stays true (update the scaffold sentence if one of these f
     const src = readFileSync(join(ROOT, rel), 'utf-8')
     expect(src).toMatch(/api\/memories/) // stale-exemption guard: drop the entry when this stops holding
     expect(src).not.toMatch(/urlopen|urllib|http\.client|HTTPConnection|(?:from|import)\s+http\b|httplib|socket|sqlite3|subprocess|\brequests\b|os\.system|os\.popen|os\.exec|os\.spawn|popen|__import__|importlib|asyncio|open_connection|\b(?:exec|eval|compile)\s*\(/)
+  })
+
+  // A push exemption must not become a write loophole either: it may fetch, but every request it
+  // makes must be a GET (no urllib.request.Request(..., data=...) and no explicit write method).
+  it.each(Object.keys(MEMORY_PUSH_HOOKS))('exempt %s only reads: every urllib.request.Request call is a bare GET', (rel) => {
+    const src = readFileSync(join(ROOT, rel), 'utf-8')
+    expect(src).toMatch(/api\/memories/) // stale-exemption guard: drop the entry when this stops holding
+    const calls = [...src.matchAll(/urllib\.request\.Request\(([^)]*)\)/g)]
+    expect(calls.length, 'no urllib.request.Request(...) call found: the parser is blind').toBeGreaterThan(0)
+    // A write would show up as a second argument (data=...) or an explicit method= kwarg inside
+    // the call's own parens -- a bare `Request(url)` has neither.
+    const writeShaped = calls.filter((m) => /(?:^|,)\s*(?:data|method)\s*=/.test(m[1]))
+    expect(writeShaped.map((m) => m[0])).toEqual([])
   })
 })
 
