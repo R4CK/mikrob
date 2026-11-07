@@ -35,6 +35,8 @@ MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mops
 # same reasoning as fleet-test.sh's own --path/--cpu-slot-path.
 [ "${1:-}" = "--main-path" ] && { echo "$MAIN"; exit 0; }
 CACHE_DIR="$(env_compat_get MIKROB_PREGATE_CACHE CLEANCORE_PREGATE_CACHE "$HOME/.cache/cleancore-pregate")"
+# card 22835648 round 4 (MikroB msg 17083/17102): same diagnostic-flag pattern as --main-path.
+[ "${1:-}" = "--cache-path" ] && { echo "$CACHE_DIR"; exit 0; }
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
@@ -152,6 +154,16 @@ FAKETSC
   n=$((n+1))
   out="$(MOPSION_MAIN=/tmp/mt-x CLEANCORE_MAIN=/tmp/mt-y bash "$0" --main-path 2>/dev/null)"
   [ "$out" = "/tmp/mt-x" ] || { echo "  FAIL MOPSION_MAIN should win over CLEANCORE_MAIN: got [$out]"; fail=1; }
+
+  # Card 22835648 round 4 (MikroB msg 17083/17102, Cybered NO-GO 28967): same precedence proof as
+  # --main-path above, now for this script's OTHER env_compat_get read (CACHE_DIR), which round
+  # 2/B2 migrated but never pinned with a call-site test.
+  n=$((n+1))
+  out="$(MIKROB_PREGATE_CACHE=/tmp/pc-x env -u CLEANCORE_PREGATE_CACHE bash "$0" --cache-path 2>/dev/null)"
+  [ "$out" = "/tmp/pc-x" ] || { echo "  FAIL MIKROB_PREGATE_CACHE (new name) not read: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(env -u MIKROB_PREGATE_CACHE CLEANCORE_PREGATE_CACHE=/tmp/pc-y bash "$0" --cache-path 2>/dev/null)"
+  [ "$out" = "/tmp/pc-y" ] || { echo "  FAIL CLEANCORE_PREGATE_CACHE fallback broken: got [$out]"; fail=1; }
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail

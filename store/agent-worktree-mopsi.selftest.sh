@@ -52,6 +52,19 @@ else
   bad "stale CLEANCORE_* override" "got [$out]"
 fi
 
+# --- card 22835648 round 4 (Cybered NO-GO 28967): a pre-set ambient MOPSION_MAIN/
+# MOPSION_WORKTREES (the NEW name agent-worktree.sh now reads first) must ALSO be overwritten by
+# the wrapper, not just the old CLEANCORE_* pair above -- the actual regression this round fixes
+# was the wrapper exporting only CLEANCORE_* while agent-worktree.sh checks MOPSION_* first, so an
+# ambient MOPSION_MAIN silently beat the wrapper's intended Mopsi path. ----------------------------
+out="$(MOPSION_MAIN=/should/not/survive MOPSION_WORKTREES=/should/not/survive \
+  MOPSI_MAIN="$TMP/main" MOPSI_WORKTREES="$TMP/worktrees" bash "$RUN" backend3 --path 2>/dev/null)"
+if [ "$out" = "$TMP/worktrees/backend3" ]; then
+  ok "wrapper overwrites an ambient MOPSION_* (the new name) too, not just CLEANCORE_*"
+else
+  bad "ambient MOPSION_* override" "got [$out]"
+fi
+
 echo
 echo "agent-worktree-mopsi.selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

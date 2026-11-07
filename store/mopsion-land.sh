@@ -52,6 +52,9 @@ MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mops
 [ "${1:-}" = "--main-path" ] && { echo "$MAIN"; exit 0; }
 TSC_TIMEOUT="${TSC_TIMEOUT:-900}"
 CACHE_DIR="$(env_compat_get MIKROB_LAND_CACHE CLEANCORE_LAND_CACHE "$HOME/.cache/cleancore-land")"
+# card 22835648 round 4 (MikroB msg 17083/17102): same diagnostic-flag pattern as --main-path
+# above, for the two other env_compat_get reads this script makes that had no pinning test.
+[ "${1:-}" = "--cache-path" ] && { echo "$CACHE_DIR"; exit 0; }
 say() { echo "  $*"; }
 # Prettier's `--check` prints one `[warn] <path>` line per unclean file and then a `[warn] Code style
 # issues found...` SUMMARY line, which is not a path. Named and selftested rather than inlined,
@@ -275,6 +278,8 @@ _fmt_skeleton() { sed -e 's/^[[:space:]]*//' -e '/^$/d'; }
 # the honest answer, and is printed rather than omitted so a reader can tell "not detectable" apart
 # from "this script is too old to record it".
 AGENT_WORKTREE_ROOT="$(env_compat_get MOPSION_WORKTREES CLEANCORE_WORKTREES /mnt/h/LM_Studio_Workdir/CleanCore-worktrees)"
+# card 22835648 round 4 (MikroB msg 17083/17102): same diagnostic-flag pattern as --main-path.
+[ "${1:-}" = "--worktree-path" ] && { echo "$AGENT_WORKTREE_ROOT"; exit 0; }
 
 landed_by_from_worktrees() {
   local branch="$1" list="$2" root="${3:-$AGENT_WORKTREE_ROOT}" path name
@@ -591,6 +596,22 @@ if [ "${1:-}" = "--selftest" ]; then
   n=$((n+1))
   out="$(MOPSION_MAIN=/tmp/mt-x CLEANCORE_MAIN=/tmp/mt-y bash "$0" --main-path 2>/dev/null)"
   [ "$out" = "/tmp/mt-x" ] || { echo "  FAIL MOPSION_MAIN should win over CLEANCORE_MAIN: got [$out]"; fail=1; }
+
+  # Card 22835648 round 4 (MikroB msg 17083/17102, Cybered NO-GO 28967): same precedence proof as
+  # --main-path above, now for this script's two OTHER env_compat_get reads (CACHE_DIR,
+  # AGENT_WORKTREE_ROOT), which round 2/B2 migrated but never pinned with a call-site test.
+  n=$((n+1))
+  out="$(MIKROB_LAND_CACHE=/tmp/lc-x env -u CLEANCORE_LAND_CACHE bash "$0" --cache-path 2>/dev/null)"
+  [ "$out" = "/tmp/lc-x" ] || { echo "  FAIL MIKROB_LAND_CACHE (new name) not read: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(env -u MIKROB_LAND_CACHE CLEANCORE_LAND_CACHE=/tmp/lc-y bash "$0" --cache-path 2>/dev/null)"
+  [ "$out" = "/tmp/lc-y" ] || { echo "  FAIL CLEANCORE_LAND_CACHE fallback broken: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(MOPSION_WORKTREES=/tmp/wt-x env -u CLEANCORE_WORKTREES bash "$0" --worktree-path 2>/dev/null)"
+  [ "$out" = "/tmp/wt-x" ] || { echo "  FAIL MOPSION_WORKTREES (new name) not read: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(env -u MOPSION_WORKTREES CLEANCORE_WORKTREES=/tmp/wt-y bash "$0" --worktree-path 2>/dev/null)"
+  [ "$out" = "/tmp/wt-y" ] || { echo "  FAIL CLEANCORE_WORKTREES fallback broken: got [$out]"; fail=1; }
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail

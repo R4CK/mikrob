@@ -45,6 +45,18 @@ out="$(MIKROB_SUITE_SLOTS=3 CLEANCORE_SUITE_SLOTS=9 "$RUN" --cpu-slots 2>/dev/nu
 [ "$out" = "3" ] && ok "the new name wins over the old one when both are set" \
   || bad "precedence" "got [$out]"
 
+# Card 22835648 round 4 (MikroB msg 17083/17102, Cybered NO-GO 28967): this file only covered
+# CPU_SLOTS (MIKROB_SUITE_SLOTS); fleet-test.sh's OTHER env_compat_get read, CPU_LOCK_PREFIX
+# (MIKROB_SUITE_LOCK_PREFIX/CLEANCORE_SUITE_LOCK_PREFIX, via --cpu-slot-path), had no pinning test
+# at all.
+out="$(MIKROB_SUITE_LOCK_PREFIX=/tmp/lp-x env -u CLEANCORE_SUITE_LOCK_PREFIX "$RUN" --cpu-slot-path 2>/dev/null)"
+[ "$out" = "/tmp/lp-x" ] && ok "MIKROB_SUITE_LOCK_PREFIX (new name) is actually read" \
+  || bad "lock-prefix new name" "got [$out]"
+
+out="$(env -u MIKROB_SUITE_LOCK_PREFIX CLEANCORE_SUITE_LOCK_PREFIX=/tmp/lp-y "$RUN" --cpu-slot-path 2>/dev/null)"
+[ "$out" = "/tmp/lp-y" ] && ok "the retired CLEANCORE_SUITE_LOCK_PREFIX still works as a fallback" \
+  || bad "lock-prefix old name fallback" "got [$out]"
+
 echo
 echo "fleet-test-cpu-slot-env.selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

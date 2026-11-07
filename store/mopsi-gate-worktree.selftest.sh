@@ -84,6 +84,21 @@ else
   bad "default gate root fallback" "got [$out] want [$want_default]"
 fi
 
+# --- card 22835648 round 4 (Cybered NO-GO 28967): an ambient MOPSION_MAIN (the new name
+# mopsion-gate-worktree.sh now reads first) must be overwritten by the wrapper's own MOPSI_MAIN,
+# not win over it -- the regression this round fixes was the wrapper exporting only the old
+# CLEANCORE_MAIN while the wrapped script checks MOPSION_MAIN first. ------------------------------
+out="$(env -u CLEANCORE_MAIN -u CC_GATE_ROOT \
+  MOPSION_MAIN=/should/not/survive \
+  MOPSI_MAIN="$TMP/main" MOPSI_GATE_ROOT="$TMP/gates" \
+  bash "$RUN" --agent selftest --path cardz "$SHA" 2>/dev/null)"
+want_z="$TMP/gates/cc-gate-cardz-selftest-${SHA:0:7}"
+if [ "$out" = "$want_z" ]; then
+  ok "wrapper overwrites an ambient MOPSION_MAIN (the new name) too, not just CLEANCORE_MAIN"
+else
+  bad "ambient MOPSION_MAIN override" "got [$out] want [$want_z]"
+fi
+
 echo
 echo "mopsi-gate-worktree.selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

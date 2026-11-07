@@ -68,6 +68,10 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // regression under exactly the CPU-contention conditions rule 17 already documents.
     const cc = caseCount(selftest('cleancore-land.sh').out)
     const mv = caseCount(selftest('marveen-land.sh').out)
+    // 49 since card 22835648 round 4 (Cybered NO-GO 28967) added 4 more selftest cases (the
+    // --cache-path/--worktree-path MIKROB_LAND_CACHE/CLEANCORE_LAND_CACHE and MOPSION_WORKTREES/
+    // CLEANCORE_WORKTREES precedence pins) -- again mopsion-land.sh's own env-compat reads, not
+    // part of the shared downward-check lib.
     // 45 since card 22835648 B2 added 4 new selftest cases (the --main-path MOPSION_MAIN/
     // CLEANCORE_MAIN precedence pin) -- mopsion-land.sh's own env-compat read, not part of the
     // shared downward-check lib, so it does not touch marveen-land.sh's own count.
@@ -101,9 +105,11 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     //
     // cc's floor moves 41 -> 45 with card 22835648 B2 (the --main-path MOPSION_MAIN/
     // CLEANCORE_MAIN precedence pin, 4 cases) -- mopsion-land.sh's own env-compat read, not part
-    // of the shared downward-check lib, so it does not touch marveen-land.sh's own count.
-    expect(cc).toBeGreaterThan(45) // 45 = cleancore-land.sh's own cases
+    // of the shared downward-check lib, so it does not touch marveen-land.sh's own count. Then
+    // 45 -> 49 with card 22835648 round 4 (Cybered NO-GO 28967 fix: Mopsi bridge precedence +
+    // Python env reads, 4 more cases) -- same category, mopsion-land.sh's own block only.
+    expect(cc).toBeGreaterThan(49) // 49 = cleancore-land.sh's own cases
     expect(mv).toBeGreaterThan(33) // 33 = marveen-land.sh's own cases
-    expect(cc - 45).toBe(mv - 33) // the same shared block, in both
+    expect(cc - 49).toBe(mv - 33) // the same shared block, in both
   })
 })
