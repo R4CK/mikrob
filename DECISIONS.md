@@ -23409,3 +23409,31 @@ Also (WhiteHat I1): each of the 6 engineering agents' `search-first` wiring line
 New test (`src/__tests__/settings-row-desc-fallback.test.ts`), house idiom (real function extracted from the shipped JS, run against a minimal hand-rolled DOM stub): confirms KG_ENABLED has no `settings.desc.KG_ENABLED` lang entry in the shipped `hu.js` (the root-cause premise), renders its settings row and asserts the registry description text is shown (not the raw key), asserts no row shows a literal "settings.desc." string, and a sanity case confirms a key WITH a real translation still uses it (the fix does not break the hit path). Verified red on the pre-fix code (reverted the fix in a scratch copy, confirmed exactly 2 of 4 cases fail with the expected `settings.desc.KG_ENABLED` value, restored).
 
 **Ki döntött:** backend2 (self-advance pickup, card d96f1418, MikroB dispatch msg_id:16904). Gate: QA, per the card. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- f67ce51e: ollama-boot-restore.sh respects the local-first-draft kill switch
+
+WhiteHat2's finding off the d57d8a01 gate (comment 16744): the boot-restore started Ollama
+regardless of the local-first-draft switch -- if Peti switched local-first OFF, a reboot flipped it
+back ON every time, which defeats the point of a switch Peti needs fully honoured before the local
+LLM can be re-enabled at all.
+
+Decision: added a fifth guard (after the existing pid/port, masked, uptime and dxgkrnl guards,
+immediately before the actual restart) that reuses the SAME STORE_DIR-based reader card d57d8a01
+already fixed for every other local-first caller (`local-first-draft-check.sh`'s
+`local_first_draft_enabled`), pointed directly at this install's own `STATE_DIR` -- no worktree-
+resolution ambiguity needed, since this script always runs from the live install, never a worktree
+copy. Switch OFF defers with a named log line; switch ON, or the flag file absent entirely
+(fail-open, the same convention the switch's own header already documents), is unaffected. An
+explicit override exists too: `OLLAMA_RESTORE_IGNORE_LOCAL_FIRST_SWITCH=1`, logged when used -- the
+card's own named alternative ("vagy csak explicit felülírással, naplózva").
+
+Verified: 5 new cases in `ollama-boot-restore.test.sh` (30 -> 35): switch OFF defers and never
+reaches the restart step; switch ON still reaches it (mutation pin against over-blocking); no flag
+file at all still defaults to ON (regression guard); the explicit override logs and starts anyway
+despite switch OFF. Red-before confirmed by hand: ran the exact switch-OFF fixture against the
+pre-fix script directly -- it still printed "DRYRUN: would run: systemctl --user start ollama",
+exactly the bug this card names. `tsc --noEmit -p .` clean (shell-only change);
+`ollama-boot-restore-narrow-env.test.ts`: 3/3 pass, unaffected.
+
+**Ki döntött:** DevO (fullstack), card f67ce51e, self-advance pick (oldest unblocked planned card).
+Gate: QA + Cybersec2 (per card). Gate-SHA: see REVIEW comment.

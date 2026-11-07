@@ -159,6 +159,71 @@ else
   pass "default restart command no longer bypasses the unit with a bare nohup"
 fi
 
+# --- Guard 5 (card f67ce51e, WhiteHat2 16744 off d57d8a01): the local-first-draft kill switch --
+# a boot-restore must not flip it back ON every time the box reboots. ---
+
+# BLOCKING (this card's repro): switch OFF -> must NOT start Ollama, even with every other guard
+# clear (same fresh fixture shape as the "all guards clear" case above).
+d="$(fresh_case local-first-off)"
+echo "600.0 1200.0" > "$d/uptime"
+echo "kernel: nothing interesting here" > "$d/dmesg"
+printf '{"enabled": false}' > "$d/local-first-draft.json"
+out="$(run "$d" down "$d/uptime" "$d/dmesg" env OLLAMA_RESTORE_DRYRUN=1)"
+if echo "$out" | grep -q 'local-first-draft switch is OFF'; then
+  pass "local-first-draft switch OFF defers the restart"
+else
+  fail "local-first-draft switch OFF did not defer: $out"
+fi
+if echo "$out" | grep -q 'DRYRUN: would run'; then
+  fail "local-first-draft switch OFF still reached the restart step: $out"
+else
+  pass "local-first-draft switch OFF never reaches the restart step"
+fi
+
+# MUTATION PIN: switch explicitly ON -> old behaviour (reaches the restart step), proving the new
+# guard does not block the normal case.
+d="$(fresh_case local-first-on)"
+echo "600.0 1200.0" > "$d/uptime"
+echo "kernel: nothing interesting here" > "$d/dmesg"
+printf '{"enabled": true}' > "$d/local-first-draft.json"
+out="$(run "$d" down "$d/uptime" "$d/dmesg" env OLLAMA_RESTORE_DRYRUN=1)"
+if echo "$out" | grep -q 'DRYRUN: would run'; then
+  pass "local-first-draft switch ON still reaches the restart step"
+else
+  fail "local-first-draft switch ON did not reach the restart step: $out"
+fi
+
+# REGRESSION GUARD: no flag file at all (the existing "all guards clear" case above has none) --
+# absence defaults to ON, same convention local-first-draft-check.sh's own header documents, and
+# that earlier case already proves this reaches DRYRUN; this just names the reason explicitly.
+d="$(fresh_case local-first-absent)"
+echo "600.0 1200.0" > "$d/uptime"
+echo "kernel: nothing interesting here" > "$d/dmesg"
+out="$(run "$d" down "$d/uptime" "$d/dmesg" env OLLAMA_RESTORE_DRYRUN=1)"
+if echo "$out" | grep -q 'DRYRUN: would run'; then
+  pass "no local-first-draft.json at all -> defaults to ON, reaches the restart step"
+else
+  fail "no local-first-draft.json at all did not default to ON: $out"
+fi
+
+# Explicit override: OLLAMA_RESTORE_IGNORE_LOCAL_FIRST_SWITCH=1 starts anyway, logged (card's own
+# "vagy csak explicit felulirassal, naplozva" alternative).
+d="$(fresh_case local-first-off-override)"
+echo "600.0 1200.0" > "$d/uptime"
+echo "kernel: nothing interesting here" > "$d/dmesg"
+printf '{"enabled": false}' > "$d/local-first-draft.json"
+out="$(run "$d" down "$d/uptime" "$d/dmesg" env OLLAMA_RESTORE_DRYRUN=1 OLLAMA_RESTORE_IGNORE_LOCAL_FIRST_SWITCH=1)"
+if echo "$out" | grep -q 'OLLAMA_RESTORE_IGNORE_LOCAL_FIRST_SWITCH=1 -- starting'; then
+  pass "explicit override logs that it is ignoring the switch"
+else
+  fail "explicit override did not log: $out"
+fi
+if echo "$out" | grep -q 'DRYRUN: would run'; then
+  pass "explicit override reaches the restart step despite switch OFF"
+else
+  fail "explicit override did not reach the restart step: $out"
+fi
+
 # --- Guard 4, REAL journalctl code path (RedHat F-RH2, card 39b958a4, comment 19024) -------------
 # Everything above drives dxg_seen_this_boot() through the OLLAMA_RESTORE_DMESG_OVERRIDE seam, which
 # never executes the script's actual `journalctl -k -b 0 2>/dev/null` branch -- that production

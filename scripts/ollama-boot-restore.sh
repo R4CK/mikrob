@@ -220,6 +220,29 @@ main() {
     return 0
   fi
 
+  # Guard 5 (card f67ce51e, WhiteHat2 16744 off the d57d8a01 gate): this restore used to start
+  # Ollama regardless of the local-first-draft kill switch -- if Peti switched local-first OFF,
+  # the boot-restore flipped it back ON every time the box rebooted, which defeats the point of a
+  # switch. Reuses the SAME STORE_DIR-based reader card d57d8a01 fixed for every other caller
+  # (local-first-draft-check.sh's local_first_draft_enabled), pointed at THIS install's own
+  # STATE_DIR directly -- no worktree-resolution ambiguity here, since this script always runs
+  # from the live install, never a copy in an agent worktree.
+  if [ -z "${OLLAMA_RESTORE_IGNORE_LOCAL_FIRST_SWITCH:-}" ]; then
+    local lfd_lib="$INSTALL_DIR/store/local-first-draft-check.sh"
+    if [ -r "$lfd_lib" ]; then
+      # shellcheck source=/dev/null
+      . "$lfd_lib"
+      if ! LOCAL_FIRST_DRAFT_FLAG_FILE="$STATE_DIR/local-first-draft.json" local_first_draft_enabled; then
+        log "local-first-draft switch is OFF ($STATE_DIR/local-first-draft.json) -- not starting Ollama (override: OLLAMA_RESTORE_IGNORE_LOCAL_FIRST_SWITCH=1, logged if used)"
+        return 0
+      fi
+    else
+      log "WARN: $lfd_lib not found -- cannot check the local-first-draft switch, proceeding as if ON (same fail-open default that file's own absence case uses)"
+    fi
+  else
+    log "OLLAMA_RESTORE_IGNORE_LOCAL_FIRST_SWITCH=1 -- starting Ollama regardless of the local-first-draft switch"
+  fi
+
   # WhiteHat2 HIGH (card 085444e9 fix round): the production caller (channel-monitor.ts's
   # buildOllamaRestoreEnv(), pinned by ollama-boot-restore-narrow-env.test.ts) hands this script
   # ONLY PATH, HOME and an optional OLLAMA_HOST -- deliberately, so the detached ollama daemon never
