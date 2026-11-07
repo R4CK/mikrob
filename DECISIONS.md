@@ -23437,3 +23437,48 @@ exactly the bug this card names. `tsc --noEmit -p .` clean (shell-only change);
 
 **Ki döntött:** DevO (fullstack), card f67ce51e, self-advance pick (oldest unblocked planned card).
 Gate: QA + Cybersec2 (per card). Gate-SHA: see REVIEW comment.
+## 2026-11-06 -- card 3ae2411d: watchdog.sh must honor needsFleetOauthFor on restart, not just agent-process.ts (RedHat GO 617d136d, comment 16008)
+
+**Döntés:** `scripts/watchdog.sh`'s `agent_launch_env` UNSET-oauthTokenFile fallback branch
+exported the fleet `CLAUDE_CODE_OAUTH_TOKEN` to every `.claude-config`-isolated agent on a
+watchdog-triggered restart, including a BYO/customProvider agent -- card 617d136d's fix to
+`src/web/agent-process.ts`'s own launch path (`needsFleetOauthFor` excluding
+`customProviderId`) did not carry over to this second launch site. No live effect today (no
+BYO/custom-provider agent is currently configured). Fix: the fallback now also calls a new
+`oauth_token_file_check.py --needs-fleet-oauth <agent-dir>` predicate, mirroring
+`needsFleetOauthFor`'s exact formula from the single TS source
+(`isClaude && authMode != 'api' && !isOwnTeam && !customProviderId`), read directly from
+`agent-config.json`'s `customProvider`/`model`/`authMode` fields. 6 new selftest cases in
+`watchdog-config-isolation.test.sh` (4 confirmed red against the pre-fix script, 2 mutation
+pins for the unaffected common case); 35/35 total pass. tsc clean.
+
+**Ki döntött:** DevO (fullstack), card 3ae2411d, self-advanced per MikroB dispatch
+(msg_id:16812, picked up while the land queue is paused for Koteg 23a). Gate: QA + WhiteHat2.
+Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 3ae2411d round 2: single source of truth for the fleet-oauth predicate
+
+WhiteHat2 F1 (card 3ae2411d): round 1's fix (a1ebf6bca) gave watchdog.sh's UNSET-field fallback a
+hand-ported Python copy of needsFleetOauthFor (`oauth_token_file_check.py`'s own
+`needs_fleet_oauth()`), even though the card's own fix line promised "the same predicate ... from
+a single source". That copy read the raw `model` string instead of resolving it the way
+`src/web/agent-process.ts` actually does, so a model ALIAS ("sonnet") and a modelProfile-only
+config decided differently on the watchdog path than on the dashboard launch path.
+
+Decision: remove the Python predicate entirely; replace it with `scripts/needs-fleet-oauth.mjs`, a
+dynamic-import-from-compiled-dist CLI that calls the EXACT functions agent-process.ts calls at its
+own launch site (resolveAgentModelFromConfig -> resolveModelId -> resolveOpenRouterModel ->
+needsFleetOauthFor). This mirrors `scripts/main-agent-isolated-config.mjs`'s own established
+pattern for the same problem class, rather than inventing a new shared-data-file mechanism.
+Fails closed (no token export) if node or dist is unavailable -- a deliberate tightening vs. the
+retired predicate's crash-defaults-to-True posture, since this card exists specifically to stop
+over-exporting the fleet token.
+
+Verified: regression cases 30-31 added to watchdog-config-isolation.test.sh (37/37 pass); case 30
+confirmed genuinely red against the retired predicate at a1ebf6bca (exit 1/wrong there, exit
+0/correct on the fix). New parity test (needs-fleet-oauth-parity.test.ts, 10 fixtures) asserts the
+TS-source path and the dist CLI agree across the alias, modelProfile-only (both directions), and
+customProvider+explicit-claude-model shapes -- all 10 pass. tsc clean.
+
+**Ki döntött:** DevO (fullstack), card 3ae2411d round 2, per MikroB dispatch (msg_id:16839, then
+msg_id:16862 for the safe-point resume). Gate: QA + WhiteHat2. Gate-SHA: see REVIEW comment.

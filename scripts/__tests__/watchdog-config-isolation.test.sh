@@ -37,6 +37,11 @@ cp "$WATCHDOG" "$FIXTURE_INSTALL/scripts/watchdog.sh"
 # install must carry it too, same as the watchdog script itself.
 cp "$REPO_DIR/scripts/lib/oauth_token_file_check.py" "$FIXTURE_INSTALL/scripts/lib/oauth_token_file_check.py"
 WD="$FIXTURE_INSTALL/scripts/watchdog.sh"
+# Card 3ae2411d round 2: needs-fleet-oauth.mjs resolves the compiled dist relative to its OWN
+# location (scripts/needs-fleet-oauth.mjs -> ../dist), which the fixture install does not carry.
+# Point watchdog.sh at the real repo's copy instead of copying it in -- the script takes the
+# target agent dir as an argv, so pointing at the real file works identically for a fixture dir.
+export NEEDS_FLEET_OAUTH_MJS="$REPO_DIR/scripts/needs-fleet-oauth.mjs"
 
 AGENT_ISO="$FIXTURE_INSTALL/agents/iso-agent"
 AGENT_PLAIN="$FIXTURE_INSTALL/agents/plain-agent"
@@ -366,6 +371,98 @@ case "$OUT" in
 esac
 rm -rf "$AGENT_OWN/agent-config.json"
 write_own_config
+
+# --- card 3ae2411d (RedHat GO 617d136d, comment 16008): the UNSET-field fallback (no
+# oauthTokenFile configured at all) must honor the SAME predicate as needsFleetOauthFor
+# (src/web/agent-process.ts) -- a BYO/customProvider agent, an own_team agent, or an agent on a
+# non-claude model must never get the fleet's CLAUDE_CODE_OAUTH_TOKEN exported on a
+# watchdog-triggered restart either. These agents have NO oauthTokenFile field (that branch is
+# already covered above); this is the OTHER branch, the one this card's bug lived in. ---
+
+AGENT_BYO="$FIXTURE_INSTALL/agents/byo-agent"
+mkdir -p "$AGENT_BYO/.claude-config"
+
+# 24) BLOCKING (this card's repro): customProvider set, no oauthTokenFile field -> no isolation
+#     (the fleet token must NOT be exported). Before this fix, this fell straight to the
+#     unconditional fallback and printed "isolation=yes" with the fleet token in the prefix.
+printf '{"customProvider": "my-ollama-endpoint"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "24: customProvider set, no oauthTokenFile -> no fleet-token export" ;;
+  *) fail "24: customProvider set, no oauthTokenFile -> no fleet-token export" "$OUT" ;;
+esac
+
+# 25) authMode 'own_team' (agent authenticates via its own /login credential) -> no isolation,
+#     same exclusion as needsFleetOauthFor's isOwnTeam branch.
+printf '{"authMode": "own_team"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "25: authMode own_team -> no fleet-token export" ;;
+  *) fail "25: authMode own_team -> no fleet-token export" "$OUT" ;;
+esac
+
+# 26) authMode 'api' (agent authenticates via its own ANTHROPIC_API_KEY) -> no isolation.
+printf '{"authMode": "api"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "26: authMode api -> no fleet-token export" ;;
+  *) fail "26: authMode api -> no fleet-token export" "$OUT" ;;
+esac
+
+# 27) Explicit non-claude model, no customProvider -> no isolation (isClaude is false either way).
+printf '{"model": "deepseek-chat"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "27: non-claude model, no customProvider -> no fleet-token export" ;;
+  *) fail "27: non-claude model, no customProvider -> no fleet-token export" "$OUT" ;;
+esac
+
+# 28) MUTATION PIN: an explicit claude model, authMode 'shared' (the default), no customProvider
+#     -> STILL gets isolation (this fix must not regress the common case).
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "28: claude model, authMode shared, no customProvider -> still isolated/fleet-token" ;;
+  *) fail "28: claude model, authMode shared, no customProvider -> still isolated/fleet-token" "$OUT" ;;
+esac
+
+# 29) MUTATION PIN: no agent-config.json at all (AGENT_ISO, re-checked here after the BYO cases
+#     above) -> unaffected, same as test 3/12 -- this fix must not touch the no-config default.
+rm -f "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_ISO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "29: no agent-config.json at all -> still unaffected, fleet-token isolation" ;;
+  *) fail "29: no agent-config.json at all -> still unaffected, fleet-token isolation" "$OUT" ;;
+esac
+
+# --- card 3ae2411d round 2 (MikroB msg_id:16839, WhiteHat2 F1): the retired Python predicate
+# read the raw `model` string instead of resolving it the way agent-process.ts does -- a model
+# ALIAS decided differently here than on the dashboard launch path. These two pin the fix. ---
+
+# 30) BLOCKING (round 2 repro): model alias "sonnet" resolves (via MODEL_ALIASES) to the real
+#     model id "claude-sonnet-5" -- isClaude must be TRUE, same as agent-process.ts's own
+#     resolveModelId call. The retired predicate read "sonnet".startswith("claude-") directly
+#     (False) and refused the token a plain fleet agent on this alias actually needs.
+printf '{"model": "sonnet", "authMode": "shared"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "30: model alias 'sonnet' resolves to claude- -> fleet-token export" ;;
+  *) fail "30: model alias 'sonnet' resolves to claude- -> fleet-token export" "$OUT" ;;
+esac
+
+# 31) customProvider set TOGETHER WITH an explicit claude- model string (WhiteHat2 F1): the
+#     customProvider must still win -- isClaude is false regardless of the model string, same as
+#     agent-process.ts:2546 (`!customProviderId && model.startsWith('claude-')`).
+printf '{"customProvider": "my-litellm-proxy", "model": "claude-sonnet-5"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "31: customProvider + claude- model string -> customProvider still wins, no export" ;;
+  *) fail "31: customProvider + claude- model string -> customProvider still wins, no export" "$OUT" ;;
+esac
+rm -f "$AGENT_BYO/agent-config.json"
 
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
