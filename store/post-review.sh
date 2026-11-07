@@ -138,6 +138,13 @@ KNOWN_BLANK_FILLERS = {
     "ㅤ",  # HANGUL FILLER (category Lo, renders as nothing)
     "ᅟ",  # HANGUL CHOSEONG FILLER (category Lo, renders as nothing)
     "ﾠ",  # HALFWIDTH HANGUL FILLER (category Lo, renders as nothing)
+    # Card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 4): three more blank-rendering code points
+    # that still passed the old filter -- none are Mark/Separator/Other, so the broad category
+    # rule in is_blank() below never caught them either.
+    "ᅠ",  # HANGUL JUNGSEONG FILLER (category Lo, renders as nothing, same family as above)
+    "￼",  # OBJECT REPLACEMENT CHARACTER (category So, placeholder for an embedded object --
+               # renders as nothing/an invisible anchor, not visible text)
+    "\U0001D159",  # MUSICAL SYMBOL NULL NOTEHEAD (category So, a deliberately blank glyph)
 }
 with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
     text = f.read()

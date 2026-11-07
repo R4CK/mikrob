@@ -37,7 +37,7 @@ fi
 # whole body also runs under one more try/except so a bug here can never again come back as a
 # missing final line.
 python3 -c '
-import json, os, subprocess, sys, time
+import json, os, sys, time
 
 journal_file = sys.argv[1]
 
@@ -52,14 +52,24 @@ journal_file = sys.argv[1]
 # also catches a killed lander at the next sweep instead of up to 10 minutes later). Only when
 # liveness cannot be determined at all (no pid recorded -- e.g. a line written directly, not
 # through land-run-journal.sh) does this fall back to the original age-based check.
+# Card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 3): the inode mtime of /proc/<pid> (what
+# `stat -c %Y` reads, the previous implementation here) is NOT the real process start time --
+# measured: 36 of 217 live pids differed from the real starttime while each individual reading
+# stayed STABLE over a 90s window, so this was not transient noise, just the wrong signal.
+# /proc/<pid>/stat field 22 (starttime, clock ticks since boot) is the kernel own, unambiguous
+# answer, and land-run-journal.sh `start`/`finish` now record THAT value, so this read must use
+# the identical derivation or every recorded pid_start would mismatch the current one on its very
+# first comparison. The comm field (2nd, in parens) can itself contain spaces or parentheses, so
+# this splits on the LAST closing paren rather than counting raw whitespace-separated fields from
+# the start of the line -- same reasoning as land-run-journal.sh _lrj_proc_starttime.
 def _pid_start_now(pid):
     try:
-        out = subprocess.run(["stat", "-c", "%Y", f"/proc/{pid}"], capture_output=True, text=True, timeout=2)
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            data = f.read()
+        rest = data.rsplit(")", 1)[1].split()
+        return rest[19]
     except Exception:
         return None
-    if out.returncode != 0:
-        return None
-    return out.stdout.strip()
 
 def _pid_alive(pid):
     try:

@@ -362,6 +362,32 @@ case "$out" in
   *) bad "B-new: a dead owner (0s old) was not reported stale: $out" ;;
 esac
 
+# 12. card 9d1ee327 LOW item 3 (CYBERSEC NO-GO 28823): pid_start now comes from /proc/<pid>/stat
+#     field 22 (clock ticks since boot), not the /proc/<pid> inode mtime (what the old `stat -c
+#     %Y` read) -- stable for the same live pid over time, and distinguishes two different
+#     processes (stand-in for "differs for a recycled pid": a pid number later reused by an
+#     unrelated process must never read as the same owner). _procstart is a test-only CLI entry
+#     point onto the private _lrj_proc_starttime function (the file is never sourced for real use).
+sleep 4 & p1=$!
+s1="$(bash "$HERE/land-run-journal.sh" _procstart "$p1")"
+sleep 2
+s1b="$(bash "$HERE/land-run-journal.sh" _procstart "$p1")"
+if [ -n "$s1" ] && [ "$s1" = "$s1b" ]; then
+  ok "proc starttime (field 22) is stable for the same live pid across 2s"
+else
+  bad "proc starttime drifted for the same live pid: '$s1' -> '$s1b'"
+fi
+wait "$p1" 2>/dev/null
+
+sleep 4 & p2=$!
+s2="$(bash "$HERE/land-run-journal.sh" _procstart "$p2")"
+wait "$p2" 2>/dev/null
+if [ -n "$s2" ] && [ "$s1" != "$s2" ]; then
+  ok "two different processes get different starttimes (recycled-pid discrimination)"
+else
+  bad "two different processes got the same starttime: '$s1' vs '$s2' (would fail to catch a recycled pid)"
+fi
+
 echo "land-run-journal selftest done"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"

@@ -116,6 +116,16 @@ assert_refused "Hangul-choseong-filler-only (U+115F x12) body" "$WORK/choseong.t
 python3 -c "open(r'$WORK/combining.txt','wb').write(('̀͏️'*4).encode())"
 assert_refused "combining-marks-only (U+0300/U+034F/U+FE0F) body" "$WORK/combining.txt" card8
 
+# card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 4): 3 more blank-rendering characters that still
+# passed before this fix -- none are Mark/Separator/Other category, so the old broad-category
+# rule alone never caught them, same gap class as L1b above.
+python3 -c "open(r'$WORK/hanguljungseong.txt','wb').write('ᅠ'.encode()*12)"
+assert_refused "Hangul-jungseong-filler-only (U+1160 x12) body" "$WORK/hanguljungseong.txt" card10
+python3 -c "open(r'$WORK/objreplace.txt','wb').write('￼'.encode()*12)"
+assert_refused "object-replacement-character-only (U+FFFC x12) body" "$WORK/objreplace.txt" card11
+python3 -c "open(r'$WORK/nullnotehead.txt','wb').write('\U0001D159'.encode()*12)"
+assert_refused "musical-null-notehead-only (U+1D159 x12) body" "$WORK/nullnotehead.txt" card12
+
 # Visible content must still pass -- this is the non-vacuity check for L1b: ten visible dots
 # (WhiteHat's own counter-example) must NOT be refused.
 printf '..........\nGate-SHA: n/a (config-only)\n' >"$WORK/dots.txt"
