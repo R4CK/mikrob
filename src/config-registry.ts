@@ -395,7 +395,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KG_ENABLED',
     type: 'boolean',
-    default: '1',
+    default: '0',
     description: 'Platform-szintű fő kapcsoló (MODULTERV 6. szakasz). Bekapcsolva (alapértelmezés, Peti döntés 2026-11-07, Telegram 13239). Kikapcsolva: a GET /api/kg/search és /api/kg/for-card 404-et ad, store/kg-search.sh jelzi és kilép -- nincs tudásgráf-lekérdezés.',
     module: 'knowledge-graph',
     secret: false,
