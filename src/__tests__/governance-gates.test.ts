@@ -1251,6 +1251,18 @@ describe('self-pace-gate: the trusted printf | curl -H @- GET pipeline (card 012
   it('still ALLOWS the trusted pipeline with no redirect at all (control for the four cases above)', () => {
     expect(deny(TRUSTED_PIPE)).toBe(false)
   })
+  // MikroB dispatch 17164 on Cybersec's T1 finding (comment 29073): three checks already in the
+  // code had no named test that would fail if they were removed -- mutating each away left the
+  // suite green. Each case below pins exactly one of them.
+  it('DENIES the printf and curl joined by ";" instead of "|" (kills the segs[0].sep === "|" mutant)', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" ; curl -q -s -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES the trusted printf when IT ALSO redirects its own stdout (kills the printf words.redirects mutant)', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" > /tmp/pf-out | curl -q -s -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  it('DENIES a non-printf command producing the identical two words (kills the commandName !== "printf" mutant)', () => {
+    expect(deny(`echo 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules`)).toBe(true)
+  })
 })
 
 describe('self-pace-gate: the scheduled-tasks store', () => {
