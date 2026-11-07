@@ -33,7 +33,13 @@ const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const SCRIPT = join(REPO_ROOT, 'scripts', 'needs-fleet-oauth.mjs')
 const PROFILE_MAP_PATH = join(REPO_ROOT, 'store', 'model-profile-map.json')
 
-function groundTruth(config: AgentModelConfig): boolean {
+// AgentModelConfig (model-profiles.ts) only names `model`/`modelProfile` -- it is deliberately
+// scoped to the model-resolution layer. customProvider/authMode are separate, sibling fields on
+// the SAME agent-config.json read by their own functions elsewhere (readAgentCustomProvider/
+// readAgentAuthMode) -- this fixture type is the superset this test actually writes to disk.
+type FixtureConfig = AgentModelConfig & { customProvider?: string; authMode?: string }
+
+function groundTruth(config: FixtureConfig): boolean {
   const resolved = resolveAgentModelFromConfig(config, readModelProfileMap(), DEFAULT_MODEL, resolveModelId)
   const model = resolveOpenRouterModel(resolved.model)
   const customProviderId =
@@ -59,11 +65,10 @@ function watchdogPath(dir: string): boolean {
 }
 
 describe('needs-fleet-oauth parity: ground truth (TS source) vs watchdog path (dist CLI)', () => {
-  let tmp: string
   let profileMapExisted: boolean
   let profileMapBackup: Buffer | undefined
 
-  const FIXTURES: { name: string; config: AgentModelConfig; expected: boolean }[] = [
+  const FIXTURES: { name: string; config: FixtureConfig; expected: boolean }[] = [
     { name: 'explicit claude model, authMode shared (baseline true)', config: { model: 'claude-sonnet-5', authMode: 'shared' }, expected: true },
     { name: 'model alias "sonnet" resolves to claude- (round-2 repro)', config: { model: 'sonnet' }, expected: true },
     { name: 'customProvider set, no explicit model', config: { customProvider: 'my-litellm-proxy' }, expected: false },
@@ -76,10 +81,13 @@ describe('needs-fleet-oauth parity: ground truth (TS source) vs watchdog path (d
     { name: 'modelProfile-only, resolves to a claude model via the profile map', config: { modelProfile: 'build_strong' }, expected: true },
   ]
 
-  it('sets up a fixture model-profile-map.json so the modelProfile-only fixtures are decidable', () => {
+  beforeAll(() => {
+    // A fixture model-profile-map.json so the modelProfile-only fixtures are decidable --
+    // store/ is gitignored and deployment-local, so this deployment may have none at all
+    // (confirmed: absent here). Backed up and restored, never left mutated for other tests.
     profileMapExisted = existsSync(PROFILE_MAP_PATH)
     if (profileMapExisted) {
-      profileMapBackup = require('node:fs').readFileSync(PROFILE_MAP_PATH)
+      profileMapBackup = readFileSync(PROFILE_MAP_PATH)
     }
     writeFileSync(
       PROFILE_MAP_PATH,
@@ -93,29 +101,30 @@ describe('needs-fleet-oauth parity: ground truth (TS source) vs watchdog path (d
       }),
     )
     invalidateModelProfileMapCache()
-    expect(existsSync(PROFILE_MAP_PATH)).toBe(true)
   })
 
-  it.each(FIXTURES)('$name', ({ config, expected }) => {
-    tmp = mkdtempSync(join(tmpdir(), 'needs-fleet-oauth-parity-'))
-    writeFileSync(join(tmp, 'agent-config.json'), JSON.stringify(config))
-
-    const truth = groundTruth(config)
-    const watchdog = watchdogPath(tmp)
-
-    expect(truth).toBe(expected)
-    expect(watchdog).toBe(expected)
-    expect(watchdog).toBe(truth) // the actual parity assertion, independent of the `expected` column above
-
-    rmSync(tmp, { recursive: true, force: true })
-  })
-
-  it('restores the real deployment state of store/model-profile-map.json', () => {
+  afterAll(() => {
     if (profileMapExisted && profileMapBackup) {
       writeFileSync(PROFILE_MAP_PATH, profileMapBackup)
     } else {
       rmSync(PROFILE_MAP_PATH, { force: true })
     }
     invalidateModelProfileMapCache()
+  })
+
+  it.each(FIXTURES)('$name', ({ config, expected }) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'needs-fleet-oauth-parity-'))
+    try {
+      writeFileSync(join(tmp, 'agent-config.json'), JSON.stringify(config))
+
+      const truth = groundTruth(config)
+      const watchdog = watchdogPath(tmp)
+
+      expect(truth).toBe(expected)
+      expect(watchdog).toBe(expected)
+      expect(watchdog).toBe(truth) // the actual parity assertion, independent of the `expected` column above
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
   })
 })
