@@ -16,8 +16,25 @@
 #   <actor>       who is posting -- used as both the comment author and the move actor.
 #   [reason]      move reason; defaults to a fixed string naming this script.
 #
+# GATE-SHA VALIDATION (card 2a15eb5f, 88b67fb4 S1 follow-up). WhiteHat S1 (comment 28612): this
+# script used to exit 0 and move the card to waiting no matter what the `Gate-SHA:` line said --
+# a nonexistent sha, an unlanded sha, another card's id mistaken for a sha, or a body with no
+# Gate-SHA line at all all sailed through (45a45700's REVIEW named the wrong merge, ed13f8548,
+# and only QA caught it afterwards). Now, before posting:
+#   - no `Gate-SHA:` line at all                -> REFUSE (exit 1), unless rule 4e's explicit
+#                                                   `Gate-SHA: n/a (config-only)` is present.
+#   - the value has no sha and isn't `n/a ...`  -> REFUSE (exit 1).
+#   - a named sha does not exist as a commit in either clone (includes a kanban card id
+#     mistaken for a sha -- same shape, never a commit) -> REFUSE (exit 1).
+#   - a named sha exists but is not yet an ancestor of its repo's landed branch (unlanded)
+#     -> WARNING only (card-mode gate REVIEWs legitimately name a commit before it lands).
+#   - a named sha's diff touches none of the files any other commit mentioning this card id
+#     ever touched -> WARNING only (weak signal, not proof of a wrong sha).
+# Lookup is by gate-sha-repo.sh (cat-file -e against both clones), not by declaration.
+#
 # Exit 0  comment posted, verified by readback, card moved to waiting.
-# Exit 1  refused BEFORE touching the board (blank file, bad usage) -- card untouched.
+# Exit 1  refused BEFORE touching the board (blank file, bad usage, failed Gate-SHA validation)
+#         -- card untouched.
 # Exit 2  comment posted but the readback did not match it (or carried no id) -- card stays
 #         wherever it was, NOT moved. The comment itself cannot be un-posted, but the barrier
 #         blocks exactly the status flip the empty-body incident needed blocked.
@@ -26,6 +43,82 @@ set -uo pipefail
 
 POST_REVIEW_API="${POST_REVIEW_API:-http://127.0.0.1:3420}"
 POST_REVIEW_TOKEN_FILE="${POST_REVIEW_TOKEN_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.dashboard-token}"
+GATE_SHA_REPO_SCRIPT="${GATE_SHA_REPO_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gate-sha-repo.sh}"
+
+# Which branch counts as "landed" for a repo gate-sha-repo.sh names.
+_landed_branch_for() {
+  case "$1" in
+    marveen) echo "origin/develop" ;;
+    cleancore) echo "origin/main" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Validates EVERY `Gate-SHA:`-shaped line in $1 (the review body) for card $2 -- not just the
+# first (Cybersec N1, comment 29011): gate-closure-check.py's _GATE_SHA_LINE
+# (`^\s*Gate-SHA\s*:\s*(.+)$`, IGNORECASE|MULTILINE) and gate-dispatch-check.sh's gate_sha_rx
+# (optional bullet prefix, case-insensitive) both read every matching line in the comment, so a
+# valid first line followed by a second, differently-cased, differently-spaced, or bulleted
+# `Gate-SHA:` line carrying a bogus sha reached waiting with the old `grep -m1` single-line check.
+# The regex below is a superset of both consumers' patterns. Prints REFUSED/WARNING lines to
+# stderr. Returns 1 on anything that must block the post, 0 otherwise (including when only
+# warnings were printed).
+validate_gate_sha() {
+  local content="$1" card="$2"
+  local gate_line_rx='^[[:space:]]*([-*#]+[[:space:]]*)?[Gg][Aa][Tt][Ee]-[Ss][Hh][Aa][[:space:]]*:'
+  local lines; lines="$(printf '%s\n' "$content" | grep -iE "$gate_line_rx" || true)"
+  if [ -z "$lines" ]; then
+    echo "REFUSED: no 'Gate-SHA:' line found in the review body (rule 4b/4e) -- card $card untouched." >&2
+    return 1
+  fi
+  local line value na_hex shas sha repo rc branch repo_path card_files diff_files overlap
+  while IFS= read -r line; do
+    value="$(printf '%s' "$line" | sed -E "s/${gate_line_rx}[[:space:]]*//")"
+    case "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" in
+      n/a*)
+        # rule 4e's n/a means the VALUE is n/a, not "starts with n/a" (Cybersec N1b): a trailing
+        # sha-shaped token after the n/a marker must still refuse.
+        na_hex="$(printf '%s' "$value" | grep -oE '[0-9a-fA-F]{7,40}' || true)"
+        if [ -n "$na_hex" ]; then
+          echo "REFUSED: Gate-SHA line marked n/a but also carries a sha-shaped token ('$value') -- card $card untouched." >&2
+          return 1
+        fi
+        continue
+        ;;
+    esac
+    shas="$(printf '%s' "$value" | grep -oE '[0-9a-fA-F]{7,40}' || true)"
+    if [ -z "$shas" ]; then
+      echo "REFUSED: Gate-SHA line has no sha and no 'n/a' marker ('$value') -- card $card untouched." >&2
+      return 1
+    fi
+    for sha in $shas; do
+      repo="$("$GATE_SHA_REPO_SCRIPT" "$sha" 2>/dev/null)"; rc=$?
+      if [ "$rc" -eq 4 ]; then
+        echo "REFUSED: Gate-SHA $sha is a kanban CARD ID, not a commit ($repo) -- card $card untouched." >&2
+        return 1
+      fi
+      if [ "$rc" -ne 0 ]; then
+        echo "REFUSED: Gate-SHA $sha does not exist as a commit in any known repo -- card $card untouched." >&2
+        return 1
+      fi
+      branch="$(_landed_branch_for "$repo")"
+      repo_path="$("$GATE_SHA_REPO_SCRIPT" "$sha" --path 2>/dev/null)"
+      [ -n "$branch" ] && [ -n "$repo_path" ] || continue
+      if ! git -C "$repo_path" merge-base --is-ancestor "$sha" "$branch" 2>/dev/null; then
+        echo "WARNING: Gate-SHA $sha ($repo) is not yet an ancestor of $branch -- unlanded. Card-mode gate REVIEWs may legitimately name this; verify by hand." >&2
+      fi
+      card_files="$(git -C "$repo_path" log --all --grep="$card" --name-only --pretty=format: 2>/dev/null | sed '/^$/d' | sort -u)"
+      if [ -n "$card_files" ]; then
+        diff_files="$(git -C "$repo_path" show --name-only --pretty=format: "$sha" 2>/dev/null | sed '/^$/d' | sort -u)"
+        overlap="$(comm -12 <(printf '%s\n' "$card_files") <(printf '%s\n' "$diff_files"))"
+        if [ -z "$overlap" ]; then
+          echo "WARNING: Gate-SHA $sha ($repo) touches none of the files any other commit mentioning card $card ever touched -- possibly the wrong sha." >&2
+        fi
+      fi
+    done
+  done <<< "$lines"
+  return 0
+}
 
 card="${1:-}"
 file="${2:-}"
@@ -63,6 +156,13 @@ KNOWN_BLANK_FILLERS = {
     "ㅤ",  # HANGUL FILLER (category Lo, renders as nothing)
     "ᅟ",  # HANGUL CHOSEONG FILLER (category Lo, renders as nothing)
     "ﾠ",  # HALFWIDTH HANGUL FILLER (category Lo, renders as nothing)
+    # Card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 4): three more blank-rendering code points
+    # that still passed the old filter -- none are Mark/Separator/Other, so the broad category
+    # rule in is_blank() below never caught them either.
+    "ᅠ",  # HANGUL JUNGSEONG FILLER (category Lo, renders as nothing, same family as above)
+    "￼",  # OBJECT REPLACEMENT CHARACTER (category So, placeholder for an embedded object --
+               # renders as nothing/an invisible anchor, not visible text)
+    "\U0001D159",  # MUSICAL SYMBOL NULL NOTEHEAD (category So, a deliberately blank glyph)
 }
 with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
     text = f.read()
@@ -82,6 +182,8 @@ fi
 _auth_header() { printf 'Authorization: Bearer %s\n' "$(cat "$POST_REVIEW_TOKEN_FILE")"; }
 
 content="$(cat "$file")"
+
+validate_gate_sha "$content" "$card" || exit 1
 
 post_payload="$(python3 -c '
 import json, sys

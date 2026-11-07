@@ -63,6 +63,26 @@ _lrj_append() { # $1 = one-line JSON object (already built)
 
 _lrj_now() { date -u +%s; }
 
+# Card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 3): the inode mtime of /proc/<pid> (what `stat -c
+# %Y` reads) is NOT the real process start time -- measured: 36 of 217 live pids differed from
+# the real starttime while each individual reading stayed STABLE over a 90s window, so this was
+# not transient noise, just the wrong signal. /proc/<pid>/stat field 22 (starttime, clock ticks
+# since boot) is the kernel's own, unambiguous answer. The comm field (2nd, in parens) can itself
+# contain spaces or even parentheses, so this splits on the LAST ')' rather than counting raw
+# whitespace-separated fields from the start of the line.
+_lrj_proc_starttime() {
+  python3 -c '
+import sys
+try:
+    with open(f"/proc/{sys.argv[1]}/stat", encoding="utf-8") as f:
+        data = f.read()
+    rest = data.rsplit(")", 1)[1].split()
+    print(rest[19])
+except Exception:
+    print(0)
+' "$1" 2>/dev/null
+}
+
 cmd="${1:-}"
 case "$cmd" in
   start)
@@ -78,7 +98,8 @@ case "$cmd" in
       ''|*[!0-9]*) owner_pid="" ;;
     esac
     run_id="$(_lrj_now)-${owner_pid:-$$}-$RANDOM"
-    owner_pid_start="$([ -n "$owner_pid" ] && stat -c %Y "/proc/$owner_pid" 2>/dev/null || echo 0)"
+    owner_pid_start="$([ -n "$owner_pid" ] && _lrj_proc_starttime "$owner_pid" || echo 0)"
+    [ -n "$owner_pid_start" ] || owner_pid_start=0
     payload="$(python3 -c '
 import json, sys
 print(json.dumps({
@@ -107,7 +128,8 @@ print(json.dumps({"run_id": sys.argv[1], "event": "heartbeat", "ts": int(sys.arg
     # $PPID: finish is always invoked as a plain, unwrapped command (never inside `$(...)`), so
     # this bash builtin IS the land script's own pid directly -- see the file header.
     caller_pid="$PPID"
-    caller_pid_start="$(stat -c %Y "/proc/$caller_pid" 2>/dev/null || echo 0)"
+    caller_pid_start="$(_lrj_proc_starttime "$caller_pid")"
+    [ -n "$caller_pid_start" ] || caller_pid_start=0
     verdict="$(python3 -c '
 import json, sys
 journal_file, run_id, caller_pid, caller_pid_start = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -161,6 +183,12 @@ print(json.dumps({
     "pid": int(sys.argv[5]), "pid_start": sys.argv[6],
 }))' "$run_id" "$(_lrj_now)" "${code:-unknown}" "$note" "$rec_pid" "$rec_pid_start" "$result_override" 2>/dev/null)" || payload=""
     [ -n "$payload" ] && _lrj_append "$payload"
+    ;;
+  _procstart)
+    # Test/diagnostic entry point only -- exposes _lrj_proc_starttime over the CLI so a selftest
+    # can exercise it without sourcing this file (the file header's own "never sourced" rule).
+    pid="${2:?usage: land-run-journal.sh _procstart <pid>}"
+    _lrj_proc_starttime "$pid"
     ;;
   *)
     echo "usage: land-run-journal.sh start|heartbeat|finish ..." >&2

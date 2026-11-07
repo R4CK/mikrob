@@ -86,6 +86,30 @@ set -uo pipefail
 MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
+
+# Card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 1): a signal received while bash blocks on a
+# FOREGROUND subshell or pipeline is deferred until that subshell exits -- non-interactive bash
+# only acts on a pending trap between commands, not while synchronously waiting on a child via
+# waitpid(2) (measured on the real fleet-test call: 10s vs 0s -- the TERM trap in
+# land_with_retry() below did not fire until the foreground fleet-test child finished). The
+# `wait` builtin behaves differently: per the bash manual, if bash is blocked in `wait` and a
+# signal arrives for which a trap is set, `wait` returns immediately and the trap runs right
+# then, regardless of call-stack depth. This backgrounds $2 inside $1, records its pid in a
+# global the already-registered TERM trap can act on immediately, and blocks on `wait` instead
+# of a plain synchronous subshell.
+run_fg_killable_pid=""
+run_fg_killable() { # $1 = working dir, $2 = command string (already eval-safe)
+  local dir="$1" cmd="$2" rc
+  # card 81c6fbb5 Q3: close this subshell's OWN copy of LAND_LOCK_FD before cd/eval, same as the
+  # old inline-subshell call sites did -- a subshell close never touches the parent's fd, and a
+  # kill -9'd lander whose wrapped command survives no longer keeps the develop lock held.
+  ( cd "$dir" && release_land_lock_fd && eval "$cmd" ) &
+  run_fg_killable_pid=$!
+  wait "$run_fg_killable_pid"
+  rc=$?
+  run_fg_killable_pid=""
+  return "$rc"
+}
 g() { git -C "$MAIN" "$@"; }
 
 # release_land_lock_fd (card cd3e577b, RedHat NO-GO 16401 finding B2): land_one's cleanup() calls
@@ -901,15 +925,19 @@ if [ "${1:-}" = "--selftest" ]; then
   # card 81c6fbb5 Q3 (CYBERSEC NO-GO 28862, "I do NOT accept the residual as written"): the three
   # fleet-test subshells in land_one must close their OWN copy of LAND_LOCK_FD before running
   # fleet-test (and its vitest workers), so a kill -9'd lander no longer leaves the develop lock
-  # held by a surviving grandchild. Text pin, scoped to production code: the literal
-  # `cd "$wt" && release_land_lock_fd && eval "...fleet-test.sh --ref $merge_sha"` shape must
-  # appear exactly 3 times (the TEST_CMD override is a 4th, separate call site with the same fix
-  # but a different literal command, not counted here).
+  # held by a surviving grandchild. Card 9d1ee327 (TERM-deferral fix) moved all 4 of these
+  # subshells behind run_fg_killable() (a backgrounded subshell + `wait`, interruptible instead of
+  # a plain foreground subshell) -- the FD-close moved WITH them, into run_fg_killable's own body
+  # (one place now, not re-typed per call site), so the pin checks two things: that
+  # run_fg_killable's body still closes the fd before cd/eval, and that the 3 fleet-test call
+  # sites (the TEST_CMD override is a 4th, separate call site, not counted here) actually go
+  # through run_fg_killable with the fleet-test command.
   n=$((n + 1))
-  q3_fleet_test_fd_close_count="$(printf '%s\n' "$prod_src" | grep -cF 'cd "$wt" && release_land_lock_fd && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"')"
-  q3_fleet_test_fd_close_count=$((q3_fleet_test_fd_close_count + $(printf '%s\n' "$prod_src" | grep -cF 'cd "$wt" && release_land_lock_fd && eval "$wt/store/fleet-test.sh --ref $merge_sha"')))
-  if [ "$q3_fleet_test_fd_close_count" -ge 3 ]; then
-    echo "  ok   all 3 fleet-test subshells in land_one close their own copy of LAND_LOCK_FD before running fleet-test (card 81c6fbb5 Q3)"
+  q3_fd_close_in_wrapper="$(printf '%s\n' "$prod_src" | grep -cF 'cd "$dir" && release_land_lock_fd && eval "$cmd"')"
+  q3_fleet_test_fd_close_count="$(printf '%s\n' "$prod_src" | grep -cF 'run_fg_killable "$wt" "$MAIN/store/fleet-test.sh --ref $merge_sha"')"
+  q3_fleet_test_fd_close_count=$((q3_fleet_test_fd_close_count + $(printf '%s\n' "$prod_src" | grep -cF 'run_fg_killable "$wt" "$wt/store/fleet-test.sh --ref $merge_sha"')))
+  if [ "$q3_fd_close_in_wrapper" -ge 1 ] && [ "$q3_fleet_test_fd_close_count" -ge 3 ]; then
+    echo "  ok   all 3 fleet-test subshells in land_one close their own copy of LAND_LOCK_FD before running fleet-test, via run_fg_killable (card 81c6fbb5 Q3, card 9d1ee327)"
   else
     echo "  FAIL expected all 3 fleet-test subshell call sites to close LAND_LOCK_FD before eval, found $q3_fleet_test_fd_close_count"; fail=1
   fi
@@ -1414,7 +1442,7 @@ Cards: $merge_cards"
   if [ -n "$TEST_CMD" ]; then
     # Env override wins outright (selftest stub) -- exactly the old, single-judge behaviour.
     # shellcheck disable=SC2086 -- TEST_CMD is an intentional word-split command prefix
-    if ! (cd "$wt" && release_land_lock_fd && eval "$TEST_CMD $merge_sha"); then
+    if ! run_fg_killable "$wt" "$TEST_CMD $merge_sha"; then
       echo "$agent: REFUSED -- fleet-test failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
@@ -1422,7 +1450,7 @@ Cards: $merge_cards"
   elif [ -z "$touched_fleet_test" ]; then
     # THE SAFE DEFAULT, UNCHANGED FROM BEFORE THIS CARD PAIR: the branch has no reason to be its
     # own judge, so the judge stays the ALREADY-REVIEWED live copy at $MAIN.
-    if ! (cd "$wt" && release_land_lock_fd && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"); then
+    if ! run_fg_killable "$wt" "$MAIN/store/fleet-test.sh --ref $merge_sha"; then
       echo "$agent: REFUSED -- fleet-test failed on the merge result (judged by \$MAIN's already-reviewed copy). Nothing pushed; $branch is untouched."
       return 4
     fi
@@ -1434,12 +1462,12 @@ Cards: $merge_cards"
     # works. Twice the cost, paid only on the rare landing that touches this one file, in exchange
     # for closing the "the fox guards the henhouse" hole Cybersec measured (comment 3431).
     say "$agent: $branch touches store/fleet-test.sh -- requiring BOTH the trusted \$MAIN copy AND the branch's own copy to pass (Cybersec NO-GO, cards 88a0a5e1/03cff5c1)"
-    if ! (cd "$wt" && release_land_lock_fd && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"); then
+    if ! run_fg_killable "$wt" "$MAIN/store/fleet-test.sh --ref $merge_sha"; then
       echo "$agent: REFUSED -- fleet-test (the trusted \$MAIN copy) failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
     say "$agent: fleet-test (the trusted \$MAIN copy) green"
-    if ! (cd "$wt" && release_land_lock_fd && eval "$wt/store/fleet-test.sh --ref $merge_sha"); then
+    if ! run_fg_killable "$wt" "$wt/store/fleet-test.sh --ref $merge_sha"; then
       echo "$agent: REFUSED -- fleet-test (the branch's OWN fleet-test.sh) failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
@@ -1630,7 +1658,7 @@ land_with_retry() {
   # records it as "aborted" (not a crash, not a plain failure) BEFORE exiting, and sets
   # _run_finished so the EXIT trap below (which also fires after this `exit 143`) does not write a
   # second, competing finished line for the same run.
-  trap '_run_finished=1; [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" 143 "deliberate stop (SIGTERM)" aborted >/dev/null 2>&1; exit 143' TERM
+  trap '_run_finished=1; [ -n "${run_fg_killable_pid:-}" ] && kill -TERM "$run_fg_killable_pid" 2>/dev/null; [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" 143 "deliberate stop (SIGTERM)" aborted >/dev/null 2>&1; exit 143' TERM
   # WhiteHat NO-GO 28731, L4: `land_one` can call `die()` (an internal `exit N`, not a signal) if
   # it hits a hard refusal mid-landing -- that used to terminate the whole script immediately,
   # skipping every finish call site below entirely (they only run AFTER land_one RETURNS), so a

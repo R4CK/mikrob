@@ -69,7 +69,7 @@ t_ok "$rc" 1 "blank review file refuses with exit 1"
 if [ -s "$WORK/calls.log" ]; then echo "  FAIL blank file still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   blank file never touched the board"; fi
 
 # 2. Good content, readback matches -> moves to waiting, exit 0.
-echo "REVIEW: all good, Gate-SHA: deadbeef" >"$WORK/good.txt"
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/good.txt"
 MATCH_MODE=match
 rc=0; run "card1" "$WORK/good.txt" "backend" "gate ready" >"$WORK/out2.txt" 2>&1 || rc=$?
 t_ok "$rc" 0 "matching readback moves the card to waiting"
@@ -77,7 +77,7 @@ grep -q "/move" "$WORK/calls.log" || { echo "  FAIL move was never attempted on 
 
 # 3. Readback does NOT match what was posted (simulated garbled/empty body on the board's side) ->
 #    refuses, exit 2, and move must NEVER be attempted.
-echo "REVIEW: all good" >"$WORK/good2.txt"
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/good2.txt"
 MATCH_MODE=mismatch
 rc=0; run "card2" "$WORK/good2.txt" "backend" >"$WORK/out3.txt" 2>&1 || rc=$?
 t_ok "$rc" 2 "mismatched readback refuses with exit 2"
@@ -116,13 +116,149 @@ assert_refused "Hangul-choseong-filler-only (U+115F x12) body" "$WORK/choseong.t
 python3 -c "open(r'$WORK/combining.txt','wb').write(('̀͏️'*4).encode())"
 assert_refused "combining-marks-only (U+0300/U+034F/U+FE0F) body" "$WORK/combining.txt" card8
 
+# card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 4): 3 more blank-rendering characters that still
+# passed before this fix -- none are Mark/Separator/Other category, so the old broad-category
+# rule alone never caught them, same gap class as L1b above.
+python3 -c "open(r'$WORK/hanguljungseong.txt','wb').write('ᅠ'.encode()*12)"
+assert_refused "Hangul-jungseong-filler-only (U+1160 x12) body" "$WORK/hanguljungseong.txt" card10
+python3 -c "open(r'$WORK/objreplace.txt','wb').write('￼'.encode()*12)"
+assert_refused "object-replacement-character-only (U+FFFC x12) body" "$WORK/objreplace.txt" card11
+python3 -c "open(r'$WORK/nullnotehead.txt','wb').write('\U0001D159'.encode()*12)"
+assert_refused "musical-null-notehead-only (U+1D159 x12) body" "$WORK/nullnotehead.txt" card12
+
 # Visible content must still pass -- this is the non-vacuity check for L1b: ten visible dots
 # (WhiteHat's own counter-example) must NOT be refused.
-printf '..........' >"$WORK/dots.txt"
+printf '..........\nGate-SHA: n/a (config-only)\n' >"$WORK/dots.txt"
 : >"$WORK/calls.log"
 MATCH_MODE=match
 rc=0; run "card9" "$WORK/dots.txt" "backend" >"$WORK/out-card9.txt" 2>&1 || rc=$?
 t_ok "$rc" 0 "ten visible dots (real content) are still accepted, not treated as blank"
+
+# 6. Gate-SHA validation (card 2a15eb5f, 88b67fb4 S1 follow-up, WhiteHat S1 comment 28612).
+# Builds a small, local, throwaway git repo so gate-sha-repo.sh's cat-file/merge-base lookups are
+# real (not a fake curl), and points MARVEEN_MAIN/CLEANCORE_MAIN at it instead of the live clones.
+# GATE_SHA_REPO_NO_BOARD=1 skips the live-board card-id lookup -- a non-commit sha then just comes
+# back "unlanded" (rc 3) and is refused as nonexistent, which is the outcome this fixture needs.
+GFIX="$WORK/gitfix"
+mkdir -p "$GFIX"
+git -C "$GFIX" init -q
+git -C "$GFIX" config user.email "t@test"
+git -C "$GFIX" config user.name "t"
+echo "a" >"$GFIX/foo.txt"
+git -C "$GFIX" add foo.txt
+git -C "$GFIX" commit -q -m "fix(cardA): seed foo"
+LANDED_SHA="$(git -C "$GFIX" rev-parse HEAD)"
+git -C "$GFIX" update-ref refs/remotes/origin/develop "$LANDED_SHA"
+echo "b" >"$GFIX/bar.txt"
+git -C "$GFIX" add bar.txt
+git -C "$GFIX" commit -q -m "fix(cardA): unlanded follow-up"
+UNLANDED_SHA="$(git -C "$GFIX" rev-parse HEAD)"
+echo "c" >"$GFIX/baz.txt"
+git -C "$GFIX" add baz.txt
+git -C "$GFIX" commit -q -m "fix(cardB): unrelated card, different files"
+OTHER_CARD_SHA="$(git -C "$GFIX" rev-parse HEAD)"
+NONEXISTENT_SHA="0123456789abcdef0123456789abcdef01234567"
+
+echo "fake-token" >"$WORK/fake-token"
+
+run_gs() { # $1 label, $2 content, $3 cardId
+  : >"$WORK/calls.log"
+  printf '%s' "$2" >"$WORK/gs.txt"
+  MATCH_MODE=match
+  rc=0
+  MARVEEN_MAIN="$GFIX" CLEANCORE_MAIN="$GFIX" GATE_SHA_REPO_NO_BOARD=1 \
+    POST_REVIEW_TOKEN_FILE="$WORK/fake-token" \
+    run "$3" "$WORK/gs.txt" "backend" >"$WORK/out-gs-$3.txt" 2>&1 || rc=$?
+}
+
+# 6a. Missing Gate-SHA line entirely -> refuse, board untouched.
+run_gs "missing Gate-SHA line" "REVIEW: did the thing, no sha line at all." gsA
+t_ok "$rc" 1 "missing Gate-SHA line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL missing-Gate-SHA still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   missing-Gate-SHA never touched the board"; fi
+
+# 6b. Nonexistent sha -> refuse, board untouched.
+run_gs "nonexistent sha" "REVIEW: done.
+Gate-SHA: $NONEXISTENT_SHA" gsB
+t_ok "$rc" 1 "nonexistent Gate-SHA refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL nonexistent-sha still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   nonexistent-sha never touched the board"; fi
+
+# 6c. Another card's id, written where a sha belongs -> same shape as a sha, not a commit ->
+# refused as nonexistent (with GATE_SHA_REPO_NO_BOARD=1 there is no live board to confirm it is
+# a real card id, so it falls through to "unlanded/not-found" exactly like 6b -- same required
+# outcome: refuse, board untouched).
+run_gs "another card's id instead of a sha" "REVIEW: done.
+Gate-SHA: deadbee1" gsC
+t_ok "$rc" 1 "card-id-as-sha refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL card-id-as-sha still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   card-id-as-sha never touched the board"; fi
+
+# 6d. Explicit config-only n/a (rule 4e) -> accepted, no warning, posts and moves normally.
+run_gs "n/a (config-only)" "REVIEW: config change only.
+Gate-SHA: n/a (config-only)" gsD
+t_ok "$rc" 0 "n/a (config-only) Gate-SHA is accepted"
+grep -qi "WARNING\|REFUSED" "$WORK/out-gs-gsD.txt" && { echo "  FAIL n/a (config-only) produced a warning/refusal: $(cat "$WORK/out-gs-gsD.txt")"; fail=1; } || echo "  ok   n/a (config-only) produced no warning"
+
+# 6e. Unlanded sha (real commit, not yet an ancestor of origin/develop) -> WARNING only, still
+# posts and moves to waiting (exit 0).
+run_gs "unlanded sha" "REVIEW: done.
+Gate-SHA: $UNLANDED_SHA" gsE
+t_ok "$rc" 0 "unlanded Gate-SHA still moves to waiting (warning only)"
+grep -q "/move" "$WORK/calls.log" || { echo "  FAIL unlanded-sha never attempted the move"; fail=1; }
+grep -qi "WARNING.*unlanded" "$WORK/out-gs-gsE.txt" && echo "  ok   unlanded-sha produced the unlanded warning" || { echo "  FAIL unlanded-sha produced no unlanded warning: $(cat "$WORK/out-gs-gsE.txt")"; fail=1; }
+
+# 6f. Landed sha, but its diff touches none of the files any other commit mentioning THIS card
+# id ever touched (it is actually cardB's commit, cited on cardA's review by mistake) -> WARNING
+# only, still posts and moves (exit 0).
+run_gs "sha touches none of the card's files" "REVIEW: done.
+Gate-SHA: $OTHER_CARD_SHA" cardA
+t_ok "$rc" 0 "wrong-card sha still moves to waiting (warning only)"
+grep -q "/move" "$WORK/calls.log" || { echo "  FAIL wrong-card-sha never attempted the move"; fail=1; }
+grep -qi "WARNING.*touches none" "$WORK/out-gs-cardA.txt" && echo "  ok   wrong-card-sha produced the touches-none-of-the-files warning" || { echo "  FAIL wrong-card-sha produced no touches-none warning: $(cat "$WORK/out-gs-cardA.txt")"; fail=1; }
+
+# 6g. Non-vacuity: a correctly-landed sha that DOES touch the card's own files -> no warnings.
+run_gs "landed sha touching the card's own files" "REVIEW: done.
+Gate-SHA: $LANDED_SHA" cardA
+t_ok "$rc" 0 "correctly-landed, correctly-attributed sha moves cleanly"
+grep -qi "WARNING\|REFUSED" "$WORK/out-gs-cardA.txt" && { echo "  FAIL correct sha produced a warning/refusal: $(cat "$WORK/out-gs-cardA.txt")"; fail=1; } || echo "  ok   correct sha produced no warning"
+
+# 6h-6m (Cybersec NO-GO 29011, N1/N1b): validate_gate_sha used to check only the FIRST
+# `Gate-SHA:` line (grep -m1), but gate-closure-check.py's _GATE_SHA_LINE and
+# gate-dispatch-check.sh's gate_sha_rx both read EVERY matching line, case-insensitively, with an
+# optional bullet prefix and optional space before the colon. A valid first line plus a bogus
+# second line in any of those shapes used to pass (rc=0); each must now refuse.
+run_gs "second Gate-SHA line bogus" "REVIEW: done.
+Gate-SHA: $LANDED_SHA
+Gate-SHA: $NONEXISTENT_SHA" cardA
+t_ok "$rc" 1 "a bogus second Gate-SHA line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL second-line-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   second-line-bogus never touched the board"; fi
+
+run_gs "second line lower-case gate-sha: bogus" "REVIEW: done.
+Gate-SHA: $LANDED_SHA
+gate-sha: $NONEXISTENT_SHA" cardA
+t_ok "$rc" 1 "a lower-case 'gate-sha:' bogus line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL lower-case-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   lower-case-bogus never touched the board"; fi
+
+run_gs "second line spaced colon Gate-SHA : bogus" "REVIEW: done.
+Gate-SHA: $LANDED_SHA
+Gate-SHA : $NONEXISTENT_SHA" cardA
+t_ok "$rc" 1 "a spaced-colon 'Gate-SHA :' bogus line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL spaced-colon-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   spaced-colon-bogus never touched the board"; fi
+
+run_gs "second line bulleted - Gate-SHA: bogus" "REVIEW: done.
+Gate-SHA: $LANDED_SHA
+- Gate-SHA: $NONEXISTENT_SHA" cardA
+t_ok "$rc" 1 "a bulleted '- Gate-SHA:' bogus line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL bulleted-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   bulleted-bogus never touched the board"; fi
+
+run_gs "n/a (config-only) with a trailing bogus sha on the same line" "REVIEW: config change only.
+Gate-SHA: n/a (config-only) $NONEXISTENT_SHA" gsL
+t_ok "$rc" 1 "n/a plus a trailing sha-shaped token refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL n/a-plus-hex still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   n/a-plus-hex never touched the board"; fi
+
+run_gs "n/a on line 1, bogus Gate-SHA on line 2" "REVIEW: config change only.
+Gate-SHA: n/a (config-only)
+Gate-SHA: $NONEXISTENT_SHA" gsM
+t_ok "$rc" 1 "n/a on line 1 plus a bogus Gate-SHA on line 2 refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL n/a-then-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   n/a-then-bogus never touched the board"; fi
 
 echo "post-review.sh selftest: $n checks"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
