@@ -1232,6 +1232,25 @@ describe('self-pace-gate: the trusted printf | curl -H @- GET pipeline (card 012
   it('DENIES a non-GET method riding the trusted pipeline (the trust covers the header, not the verb)', () => {
     expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -X POST -H @- http://localhost:3420/api/schedules`)).toBe(true)
   })
+  // card 0120d19a NO-GO F1 (WhiteHat + RedHat independently): the curl segment's own stdin was
+  // never checked, so `-H @-` could read header lines from a redirect/heredoc instead of the
+  // proven printf -- measured live to inject an attacker-chosen Authorization value and extra
+  // headers. Each shape below must deny even though the printf side is exactly the trusted one.
+  it('DENIES the trusted pipeline when curl also redirects its OWN stdin from a file (< file)', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules < /tmp/evil-headers`)).toBe(true)
+  })
+  it('DENIES the trusted pipeline with an explicit fd-0 input redirect (0< file)', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules 0< /tmp/evil-headers`)).toBe(true)
+  })
+  it('DENIES the trusted pipeline with an fd duplication onto stdin (<&N)', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules <&3`)).toBe(true)
+  })
+  it('DENIES the trusted pipeline with a heredoc attached to the curl segment', () => {
+    expect(deny(`printf 'Authorization: Bearer %s\\n' "$(cat ${TOKEN_PATH})" | curl -q -s -H @- http://localhost:3420/api/schedules <<${Q}EOF${Q}\nX-Injected: yes\nEOF`)).toBe(true)
+  })
+  it('still ALLOWS the trusted pipeline with no redirect at all (control for the four cases above)', () => {
+    expect(deny(TRUSTED_PIPE)).toBe(false)
+  })
 })
 
 describe('self-pace-gate: the scheduled-tasks store', () => {

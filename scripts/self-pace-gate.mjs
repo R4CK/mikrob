@@ -3020,8 +3020,10 @@ export function shellSegments(command, opts) {
 // null when the segment is not a plain word list: a command or process
 // substitution, grouping, brace expansion, a here-string. Redirections are
 // parsed, not rejected: an output target lands on `words.redirects` (the caller
-// decides whether it may be written), an fd dup (2>&1) and an input redirect
-// are dropped.
+// decides whether it may be written); an fd dup (2>&1/0<&3) and an input
+// redirect's target are dropped, but their mere PRESENCE is recorded on
+// `words.hasInputRedirect` (card 0120d19a NO-GO F1) -- isPlainCurlGet needs to
+// know whether curl's own stdin is still the pipe it was trusted for.
 const HEREDOC_OP_RX = /<<-?\s*(?:'[^']*'|"[^"]*"|[A-Za-z_]\w*)/g
 const REDIRECT_OP_RX = /^(?:\d|&)?(?:>>|>\||>|<(?![<(]))/
 
@@ -3078,6 +3080,15 @@ function shellWords(text) {
   const s = String(text).replace(HEREDOC_OP_RX, ' ')
   const words = []
   words.redirects = []
+  // card 0120d19a, WhiteHat F1 / RedHat F1 (both NO-GO on the same gap): an INPUT redirect
+  // (`< file`, `0< file`, `<&N`) was parsed (so it never broke tokenising) but never recorded
+  // anywhere -- isPlainCurlGet's trustedStdin check only ever asked what feeds the PIPE into curl,
+  // never whether curl's own stdin was then overridden by a later redirect on the same segment.
+  // That let `printf TRUSTED | curl -q -s -H @- URL < evil-headers` read `-H @-`'s header lines
+  // from the redirect instead of the proven printf, measured live to inject an attacker-chosen
+  // Authorization value and extra headers. Tracked as a bare boolean, not the target: the mere
+  // presence of a non-default stdin source is disqualifying here, the target text is irrelevant.
+  words.hasInputRedirect = false
   let i = 0
   while (i < s.length) {
     while (i < s.length && /\s/.test(s[i])) i++
@@ -3085,11 +3096,16 @@ function shellWords(text) {
     const op = REDIRECT_OP_RX.exec(s.slice(i))
     if (op) {
       i += op[0].length
-      if (s[i] === '&' && /\d/.test(s[i + 1] ?? '')) { i += 2; continue } // 2>&1: fd dup, no file
+      const isOutput = op[0].includes('>')
+      if (s[i] === '&' && /\d/.test(s[i + 1] ?? '')) { // 2>&1 / 0<&3: fd dup, no file
+        if (!isOutput) words.hasInputRedirect = true
+        i += 2; continue
+      }
       while (i < s.length && /\s/.test(s[i])) i++
       const t = readWord(s, i)
       if (!t || !t.word.value) return null
-      if (op[0].includes('>')) words.redirects.push(t.word) // output: a file gets written
+      if (isOutput) words.redirects.push(t.word) // output: a file gets written
+      else words.hasInputRedirect = true // input: stdin no longer comes from the pipe/terminal
       i = t.i
       continue
     }
@@ -3251,6 +3267,10 @@ function isTrustedTokenPrintf(segOwn) {
 // command. The scheme must be a literal http(s)://: without one, curl guesses
 // the protocol from the host name (ftp., dict., ...).
 function isPlainCurlGet(words, trustedStdin = false) {
+  // card 0120d19a NO-GO F1: a plain GET never needs its own stdin source, trusted or not -- the
+  // ONLY reason stdin matters at all is `-H @-` consuming the PIPE that fed this segment, and an
+  // extra `< file`/`<&N` redirect on the curl segment itself replaces that pipe's stdin silently.
+  if (words.hasInputRedirect) return false
   const p = parseCurl(words)
   if (!p || !p.noCurlrc) return false
   for (const k of p.kinds) if (k !== 'header' && k !== 'safe') return false
@@ -3578,7 +3598,11 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
     // in between. segs.length === 2 makes "extra pipe segments" fail by
     // construction, not by a separate named check.
     const trustedStdin = segs.length === 2 && k === 1 && segs[0].sep === '|' && isTrustedTokenPrintf(segs[0].own)
-    if (name === 'curl' && isPlainCurlGet(words, trustedStdin)) continue // (a)
+    // A heredoc attached to the curl segment itself (`curl ... -H @- URL <<'EOF' ... EOF`) feeds
+    // curl's stdin from the heredoc body, not the trusted pipe -- `shellWords(seg.own)` never sees
+    // it (HEREDOC_OP_RX blanks the operator before tokenising), so it is checked here, on `seg`,
+    // not inside isPlainCurlGet (card 0120d19a NO-GO F1, both WhiteHat and RedHat).
+    if (name === 'curl' && !seg.bodies.length && isPlainCurlGet(words, trustedStdin)) continue // (a)
     if (isReadOnlyFsCommand(words, name) && pipesOnlyIntoSinks(segs, k, redirectsOk)) continue // (b)
     // the registry tool's read-only subcommands, and git on its source
     const r = scheduleSurfaceRefs(view.text, opts)
