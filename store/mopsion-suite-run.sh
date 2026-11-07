@@ -98,10 +98,12 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SLOTS="${CLEANCORE_SUITE_SLOTS:-2}"
-WAIT_MAX_S="${CLEANCORE_SUITE_WAIT_MAX_S:-7200}"   # 2h: two 60-90min runs can legitimately be ahead
-POLL_S="${CLEANCORE_SUITE_POLL_S:-20}"
-KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"  # < the 10-minute stuck threshold, with margin
+# shellcheck source=./env-compat-lib.sh
+. "$HERE/env-compat-lib.sh"
+SLOTS="$(env_compat_get MIKROB_SUITE_SLOTS CLEANCORE_SUITE_SLOTS 2)"
+WAIT_MAX_S="$(env_compat_get MIKROB_SUITE_WAIT_MAX_S CLEANCORE_SUITE_WAIT_MAX_S 7200)"   # 2h: two 60-90min runs can legitimately be ahead
+POLL_S="$(env_compat_get MIKROB_SUITE_POLL_S CLEANCORE_SUITE_POLL_S 20)"
+KEEPALIVE_S="$(env_compat_get MIKROB_SUITE_KEEPALIVE_S CLEANCORE_SUITE_KEEPALIVE_S 300)"  # < the 10-minute stuck threshold, with margin
 
 # THE SLOT CAP DOES NOT BOUND MEMORY EITHER (card 7e7ac40c, backend3's OOM finding 2026-09-10). A
 # full suite was killed BEFORE IT STARTED with 474 MB available of 24032 MB, and an OOM kill looks
@@ -136,10 +138,10 @@ KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"  # < the 10-minute stuck thres
 # sends Telegram alerts as a side effect of answering, which is wrong per suite start. Decisive:
 # fork-upstream records it as "adopt upstream wholesale -- no fork-specific logic in this file", so
 # every upstream merge replaces it, and a fork script parsing its output would break silently.
-MEMINFO="${CLEANCORE_SUITE_MEMINFO:-/proc/meminfo}"
-MIN_AVAIL_MB="${CLEANCORE_SUITE_MIN_AVAIL_MB:-4096}"
-MID_RUN_POLL_S="${CLEANCORE_SUITE_MID_RUN_POLL_S:-45}"
-MID_RUN_TERM_GRACE_S="${CLEANCORE_SUITE_MID_RUN_TERM_GRACE_S:-10}"
+MEMINFO="$(env_compat_get MIKROB_SUITE_MEMINFO CLEANCORE_SUITE_MEMINFO /proc/meminfo)"
+MIN_AVAIL_MB="$(env_compat_get MIKROB_SUITE_MIN_AVAIL_MB CLEANCORE_SUITE_MIN_AVAIL_MB 4096)"
+MID_RUN_POLL_S="$(env_compat_get MIKROB_SUITE_MID_RUN_POLL_S CLEANCORE_SUITE_MID_RUN_POLL_S 45)"
+MID_RUN_TERM_GRACE_S="$(env_compat_get MIKROB_SUITE_MID_RUN_TERM_GRACE_S CLEANCORE_SUITE_MID_RUN_TERM_GRACE_S 10)"
 # A sentinel run_vitest() returns instead of vitest's own exit code, when the mid-run memory watch
 # (below) had to stop the suite itself. 99 is outside vitest's own range (0 pass, 1 fail, 130/143
 # on a signal) so it cannot be mistaken for a real result.
@@ -169,8 +171,8 @@ mem_available_mb() {
 # and following the fleet's one anchor convention beats inventing a second one for a case that does
 # not exist. If a second install ever appears, this is the line to change.
 MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
-LOCK_PREFIX="${CLEANCORE_SUITE_LOCK_PREFIX:-$MAIN/store/.cleancore-suite-slot}"
-API="${CLEANCORE_SUITE_API:-http://localhost:3420}"
+LOCK_PREFIX="$(env_compat_get MIKROB_SUITE_LOCK_PREFIX CLEANCORE_SUITE_LOCK_PREFIX "$MAIN/store/.cleancore-suite-slot")"
+API="$(env_compat_get MIKROB_SUITE_API CLEANCORE_SUITE_API http://localhost:3420)"
 
 usage() { echo "usage: mopsion-suite-run.sh [--worktree <path>] <agent> [-- <vitest args>]" >&2; exit 2; }
 
@@ -209,7 +211,7 @@ shift || true
 # CLEANCORE_SUITE_ALLOW_NO_CARD -- that override is for "no live mopsion card", a different
 # precondition; a marveen test never belongs in this script's lock regardless of override).
 MARVEEN_MAIN_DIR="${MARVEEN_MAIN:-/home/neon/marveen}"
-MARVEEN_WORKTREES_DIR="${CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR:-/home/neon/marveen-agent-worktrees}"
+MARVEEN_WORKTREES_DIR="$(env_compat_get MIKROB_SUITE_MARVEEN_WORKTREES_DIR CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR /home/neon/marveen-agent-worktrees)"
 CALLER_PWD="$(pwd -P)"
 # The cwd half is skipped for --worktree callers: that flag already names an explicit, pinned
 # mopsion worktree for a specific prepared commit (card 08eb6402's prepare/suite/land design,
@@ -436,7 +438,7 @@ sys.exit(1)
 # log file of its own (the usage note above has every caller redirect stderr to one), so a stable
 # word is what lets a reader -- or card-build-route-24h-measure.sh's family of measurement scripts
 # -- COUNT refusals across whatever log captured them, which is the card's own second requirement.
-NO_CARD_OVERRIDE="${CLEANCORE_SUITE_ALLOW_NO_CARD:-0}"
+NO_CARD_OVERRIDE="$(env_compat_get MIKROB_SUITE_ALLOW_NO_CARD CLEANCORE_SUITE_ALLOW_NO_CARD 0)"
 if [ "$NO_CARD_OVERRIDE" = "1" ]; then
   echo "mopsion-suite-run: NO-CARD-OVERRIDE-USED -- CLEANCORE_SUITE_ALLOW_NO_CARD=1, skipping the live-mopsion-card check (card c0408a1c)" >&2
 else
@@ -603,7 +605,7 @@ cd "$WT" || exit 3
 CORES="$(nproc 2>/dev/null || echo 1)"
 DEFAULT_MAX_WORKERS=$((CORES / SLOTS))
 [ "$DEFAULT_MAX_WORKERS" -lt 1 ] && DEFAULT_MAX_WORKERS=1
-MAX_WORKERS="${CLEANCORE_SUITE_MAX_WORKERS:-$DEFAULT_MAX_WORKERS}"
+MAX_WORKERS="$(env_compat_get MIKROB_SUITE_MAX_WORKERS CLEANCORE_SUITE_MAX_WORKERS "$DEFAULT_MAX_WORKERS")"
 
 # Card d247e499 (QA measurement, msg 7237): `--dir <path>` forwarded straight to vitest's own CLI
 # is a NO-OP here, measured in source -- the root vitest.config.ts defines `test.projects[]`, and

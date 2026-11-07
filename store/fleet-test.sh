@@ -79,14 +79,16 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # reads (not same-shaped new ones) and defaults to the exact same lock-file prefix, so the two scripts
 # are provably contending on the same files rather than two same-looking pools that quietly drift
 # apart. See the acquisition block below (right before the tree lock) for the full reasoning.
-CPU_SLOTS="${CLEANCORE_SUITE_SLOTS:-2}"
-CPU_LOCK_PREFIX="${CLEANCORE_SUITE_LOCK_PREFIX:-${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot}"
-CPU_WAIT_MAX_S="${CLEANCORE_SUITE_WAIT_MAX_S:-7200}"
-CPU_POLL_S="${CLEANCORE_SUITE_POLL_S:-20}"
+# shellcheck source=./env-compat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
+CPU_SLOTS="$(env_compat_get MIKROB_SUITE_SLOTS CLEANCORE_SUITE_SLOTS 2)"
+CPU_LOCK_PREFIX="$(env_compat_get MIKROB_SUITE_LOCK_PREFIX CLEANCORE_SUITE_LOCK_PREFIX "${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot")"
+CPU_WAIT_MAX_S="$(env_compat_get MIKROB_SUITE_WAIT_MAX_S CLEANCORE_SUITE_WAIT_MAX_S 7200)"
+CPU_POLL_S="$(env_compat_get MIKROB_SUITE_POLL_S CLEANCORE_SUITE_POLL_S 20)"
 # < the 10-minute stuck threshold, with margin -- same value and same reason as
-# cleancore-suite-run.sh's KEEPALIVE_S: the point of the refresh is to move `updated_at` before the
+# mopsion-suite-run.sh's KEEPALIVE_S: the point of the refresh is to move `updated_at` before the
 # monitor decides the card is dead, so it has to be shorter than that window, not merely periodic.
-CPU_KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"
+CPU_KEEPALIVE_S="$(env_compat_get MIKROB_SUITE_KEEPALIVE_S CLEANCORE_SUITE_KEEPALIVE_S 300)"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 

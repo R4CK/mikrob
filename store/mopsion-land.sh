@@ -43,9 +43,11 @@
 # Exit: 0 landed (or dry-run clean) | 2 bad usage | 3 refused a precondition | 4 merge/push failed
 set -uo pipefail
 
+# shellcheck source=./env-compat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
 MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 TSC_TIMEOUT="${TSC_TIMEOUT:-900}"
-CACHE_DIR="${CLEANCORE_LAND_CACHE:-$HOME/.cache/cleancore-land}"
+CACHE_DIR="$(env_compat_get MIKROB_LAND_CACHE CLEANCORE_LAND_CACHE "$HOME/.cache/cleancore-land")"
 say() { echo "  $*"; }
 # Prettier's `--check` prints one `[warn] <path>` line per unclean file and then a `[warn] Code style
 # issues found...` SUMMARY line, which is not a path. Named and selftested rather than inlined,
