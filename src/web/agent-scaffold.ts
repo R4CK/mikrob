@@ -2214,6 +2214,44 @@ export function ensureGateSharedMemoryInjectAgentArg(name: string): boolean {
   return true
 }
 
+// Card 86d5de34 F3 (WhiteHat CYBERSEC GO, msg 10474): store/session-memory-inject-agents.json's
+// enabled_agents list includes backend2, backend3 and logs, but none of the three had the
+// shared-memory-inject.py SessionStart hook wired into their live settings.json -- backend2's own
+// seed-fleet-agents entry never carried it (only taskstate-replay.py), and backend3/logs have no
+// seed-fleet-agents directory at all, so templates/settings.json.template (the brand-new-agent
+// path, scaffoldAgentDir) is what they got, and that template never had the hook either. The flag
+// is therefore inert for all three: being on the enabled list does nothing if the hook that reads
+// it never runs.
+//
+// This is the same idempotent boot-backfill shape as ensureGateSharedMemoryInjectAgentArg above,
+// narrowed to non-gate agents (the gate roster has its own function, with its own --agent
+// requirement and its own exclusion history -- duplicating that logic here would be a second place
+// for the two to disagree). A non-gate agent's command carries no --agent flag, matching every
+// already-correctly-wired non-gate seed (e.g. backend).
+export function ensureSharedMemoryInject(name: string): boolean {
+  if ((SHARED_MEMORY_GATE_AGENT_NAMES as readonly string[]).includes(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const entries = Array.isArray(hooks.SessionStart) ? hooks.SessionStart as unknown[] : []
+  if (entries.some((e) => JSON.stringify(e).includes('shared-memory-inject.py'))) return false
+
+  const command = `python3 ${join(PROJECT_ROOT, 'scripts/hooks/shared-memory-inject.py')}`
+  entries.push({
+    matcher: 'startup|resume|compact|clear',
+    hooks: [{ type: 'command', command, timeout: 15 }],
+  })
+  hooks.SessionStart = entries
+  settings.hooks = hooks
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Idempotent migration: ensure every agent's settings.json carries the egress
 // gate hook. Called at server startup (alongside ensureAgentStalenessHook) so
 // the hook is applied to both existing and newly-created agents without a full
