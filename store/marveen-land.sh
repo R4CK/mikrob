@@ -100,7 +100,10 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 run_fg_killable_pid=""
 run_fg_killable() { # $1 = working dir, $2 = command string (already eval-safe)
   local dir="$1" cmd="$2" rc
-  ( cd "$dir" && eval "$cmd" ) &
+  # card 81c6fbb5 Q3: close this subshell's OWN copy of LAND_LOCK_FD before cd/eval, same as the
+  # old inline-subshell call sites did -- a subshell close never touches the parent's fd, and a
+  # kill -9'd lander whose wrapped command survives no longer keeps the develop lock held.
+  ( cd "$dir" && release_land_lock_fd && eval "$cmd" ) &
   run_fg_killable_pid=$!
   wait "$run_fg_killable_pid"
   rc=$?
@@ -922,15 +925,19 @@ if [ "${1:-}" = "--selftest" ]; then
   # card 81c6fbb5 Q3 (CYBERSEC NO-GO 28862, "I do NOT accept the residual as written"): the three
   # fleet-test subshells in land_one must close their OWN copy of LAND_LOCK_FD before running
   # fleet-test (and its vitest workers), so a kill -9'd lander no longer leaves the develop lock
-  # held by a surviving grandchild. Text pin, scoped to production code: the literal
-  # `cd "$wt" && release_land_lock_fd && eval "...fleet-test.sh --ref $merge_sha"` shape must
-  # appear exactly 3 times (the TEST_CMD override is a 4th, separate call site with the same fix
-  # but a different literal command, not counted here).
+  # held by a surviving grandchild. Card 9d1ee327 (TERM-deferral fix) moved all 4 of these
+  # subshells behind run_fg_killable() (a backgrounded subshell + `wait`, interruptible instead of
+  # a plain foreground subshell) -- the FD-close moved WITH them, into run_fg_killable's own body
+  # (one place now, not re-typed per call site), so the pin checks two things: that
+  # run_fg_killable's body still closes the fd before cd/eval, and that the 3 fleet-test call
+  # sites (the TEST_CMD override is a 4th, separate call site, not counted here) actually go
+  # through run_fg_killable with the fleet-test command.
   n=$((n + 1))
-  q3_fleet_test_fd_close_count="$(printf '%s\n' "$prod_src" | grep -cF 'cd "$wt" && release_land_lock_fd && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"')"
-  q3_fleet_test_fd_close_count=$((q3_fleet_test_fd_close_count + $(printf '%s\n' "$prod_src" | grep -cF 'cd "$wt" && release_land_lock_fd && eval "$wt/store/fleet-test.sh --ref $merge_sha"')))
-  if [ "$q3_fleet_test_fd_close_count" -ge 3 ]; then
-    echo "  ok   all 3 fleet-test subshells in land_one close their own copy of LAND_LOCK_FD before running fleet-test (card 81c6fbb5 Q3)"
+  q3_fd_close_in_wrapper="$(printf '%s\n' "$prod_src" | grep -cF 'cd "$dir" && release_land_lock_fd && eval "$cmd"')"
+  q3_fleet_test_fd_close_count="$(printf '%s\n' "$prod_src" | grep -cF 'run_fg_killable "$wt" "$MAIN/store/fleet-test.sh --ref $merge_sha"')"
+  q3_fleet_test_fd_close_count=$((q3_fleet_test_fd_close_count + $(printf '%s\n' "$prod_src" | grep -cF 'run_fg_killable "$wt" "$wt/store/fleet-test.sh --ref $merge_sha"')))
+  if [ "$q3_fd_close_in_wrapper" -ge 1 ] && [ "$q3_fleet_test_fd_close_count" -ge 3 ]; then
+    echo "  ok   all 3 fleet-test subshells in land_one close their own copy of LAND_LOCK_FD before running fleet-test, via run_fg_killable (card 81c6fbb5 Q3, card 9d1ee327)"
   else
     echo "  FAIL expected all 3 fleet-test subshell call sites to close LAND_LOCK_FD before eval, found $q3_fleet_test_fd_close_count"; fail=1
   fi
@@ -1435,7 +1442,7 @@ Cards: $merge_cards"
   if [ -n "$TEST_CMD" ]; then
     # Env override wins outright (selftest stub) -- exactly the old, single-judge behaviour.
     # shellcheck disable=SC2086 -- TEST_CMD is an intentional word-split command prefix
-    if ! run_fg_killable "$wt" "release_land_lock_fd && $TEST_CMD $merge_sha"; then
+    if ! run_fg_killable "$wt" "$TEST_CMD $merge_sha"; then
       echo "$agent: REFUSED -- fleet-test failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
@@ -1443,7 +1450,7 @@ Cards: $merge_cards"
   elif [ -z "$touched_fleet_test" ]; then
     # THE SAFE DEFAULT, UNCHANGED FROM BEFORE THIS CARD PAIR: the branch has no reason to be its
     # own judge, so the judge stays the ALREADY-REVIEWED live copy at $MAIN.
-    if ! run_fg_killable "$wt" "release_land_lock_fd && $MAIN/store/fleet-test.sh --ref $merge_sha"; then
+    if ! run_fg_killable "$wt" "$MAIN/store/fleet-test.sh --ref $merge_sha"; then
       echo "$agent: REFUSED -- fleet-test failed on the merge result (judged by \$MAIN's already-reviewed copy). Nothing pushed; $branch is untouched."
       return 4
     fi
@@ -1455,12 +1462,12 @@ Cards: $merge_cards"
     # works. Twice the cost, paid only on the rare landing that touches this one file, in exchange
     # for closing the "the fox guards the henhouse" hole Cybersec measured (comment 3431).
     say "$agent: $branch touches store/fleet-test.sh -- requiring BOTH the trusted \$MAIN copy AND the branch's own copy to pass (Cybersec NO-GO, cards 88a0a5e1/03cff5c1)"
-    if ! run_fg_killable "$wt" "release_land_lock_fd && $MAIN/store/fleet-test.sh --ref $merge_sha"; then
+    if ! run_fg_killable "$wt" "$MAIN/store/fleet-test.sh --ref $merge_sha"; then
       echo "$agent: REFUSED -- fleet-test (the trusted \$MAIN copy) failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
     say "$agent: fleet-test (the trusted \$MAIN copy) green"
-    if ! run_fg_killable "$wt" "release_land_lock_fd && $wt/store/fleet-test.sh --ref $merge_sha"; then
+    if ! run_fg_killable "$wt" "$wt/store/fleet-test.sh --ref $merge_sha"; then
       echo "$agent: REFUSED -- fleet-test (the branch's OWN fleet-test.sh) failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
