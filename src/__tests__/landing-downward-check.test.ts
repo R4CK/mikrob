@@ -84,10 +84,13 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // behavioral flock-release case, and the Designated: unknown-sentinel case), then
     // 10 -> 14 with card 5d9731cd (FIFO ticket queue for the develop lock: atomic parallel
     // ticket-sequencing, ordering-follows-ticket-order + mutation check, and the land_one
-    // call-site pin on the new wait-loop condition) -- all touch marveen-land.sh's own
-    // --selftest block only, not the shared lib or cleancore-land.sh's own.
+    // call-site pin on the new wait-loop condition), then 14 -> 20 with card 81c6fbb5
+    // (5d9731cd follow-up: recycled-pid/pid-0 reaping red-then-green pairs, the seq-reset floor
+    // red-then-green pair, and the two T1 ticket-cleanup pins + two T1 reap-call mutation
+    // checks) -- all touch marveen-land.sh's own --selftest block only, not the shared lib or
+    // cleancore-land.sh's own.
     expect(cc).toBeGreaterThan(41) // 41 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(14) // 14 = marveen-land.sh's own cases
-    expect(cc - 41).toBe(mv - 14) // the same shared block, in both
+    expect(mv).toBeGreaterThan(20) // 20 = marveen-land.sh's own cases
+    expect(cc - 41).toBe(mv - 20) // the same shared block, in both
   })
 })
