@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Selftest for store/kg-for-card-block.sh (card 1a350f22, MT-07/EK-MT-7/EK-MT-9).
 #
-# EK-MT-7: KG_INJECT_ENABLED unset/off -> no output, and the local HTTP server never sees a
-# request at all (the gate runs before the network call, not after).
+# EK-MT-7 (updated for card 70973ca7, 2026-11-07: KG_INJECT_ENABLED default flipped 0->1): unset
+# now means ON (the block is printed); an explicit KG_INJECT_ENABLED=off or =0 means no output, and
+# the local HTTP server never sees a request at all (the gate runs before the network call, not
+# after).
 # EK-MT-9: a frame-closing-lookalike payload inside a node's "why" field comes out ESCAPED in the
 # printed block, and the block's own open/close markers each appear exactly once.
 #
@@ -90,17 +92,21 @@ PASS_COUNT=0
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "PASS $1"; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-# --- F1 (EK-MT-7): KG_INJECT_ENABLED unset -> no output, server sees NOTHING. ---
-OUT_OFF="$(cd "$WORKDIR" && KG_FOR_CARD_API="http://127.0.0.1:$PORT" bash kg-for-card-block.sh cardA)"
-[ -z "$OUT_OFF" ] || fail "F1: expected empty output with KG_INJECT_ENABLED unset, got: $OUT_OFF"
-[ ! -s "$HIT_LOG" ] || fail "F1: expected ZERO server hits with the flag off, got: $(cat "$HIT_LOG")"
-pass "F1: KG_INJECT_ENABLED unset -> no output, no network call"
+# --- F1 (EK-MT-7, new default): KG_INJECT_ENABLED unset -> block IS printed, server sees a hit. ---
+OUT_UNSET="$(cd "$WORKDIR" && KG_FOR_CARD_API="http://127.0.0.1:$PORT" bash kg-for-card-block.sh cardA)"
+[ -n "$OUT_UNSET" ] || fail "F1: expected a non-empty block with KG_INJECT_ENABLED unset (new default is ON)"
+[ -s "$HIT_LOG" ] || fail "F1: expected a server hit with KG_INJECT_ENABLED unset (new default is ON)"
+: > "$HIT_LOG"
+pass "F1: KG_INJECT_ENABLED unset -> block printed (default ON, card 70973ca7)"
 
-# --- F2 (EK-MT-7): KG_INJECT_ENABLED=off (explicit) -> same. ---
+# --- F2 (EK-MT-7): KG_INJECT_ENABLED=off / =0 (explicit) -> no output, server sees NOTHING. ---
 OUT_EXPLICIT_OFF="$(cd "$WORKDIR" && KG_INJECT_ENABLED=off KG_FOR_CARD_API="http://127.0.0.1:$PORT" bash kg-for-card-block.sh cardA)"
 [ -z "$OUT_EXPLICIT_OFF" ] || fail "F2: expected empty output with KG_INJECT_ENABLED=off"
 [ ! -s "$HIT_LOG" ] || fail "F2: expected zero hits with KG_INJECT_ENABLED=off"
-pass "F2: KG_INJECT_ENABLED=off -> no output, no network call"
+OUT_EXPLICIT_ZERO="$(cd "$WORKDIR" && KG_INJECT_ENABLED=0 KG_FOR_CARD_API="http://127.0.0.1:$PORT" bash kg-for-card-block.sh cardA)"
+[ -z "$OUT_EXPLICIT_ZERO" ] || fail "F2: expected empty output with KG_INJECT_ENABLED=0"
+[ ! -s "$HIT_LOG" ] || fail "F2: expected zero hits with KG_INJECT_ENABLED=0"
+pass "F2: KG_INJECT_ENABLED=off / =0 -> no output, no network call"
 
 # --- F3: KG_INJECT_ENABLED=on, plain payload -> framed block, markers present exactly once. ---
 OUT_ON="$(cd "$WORKDIR" && KG_INJECT_ENABLED=on KG_FOR_CARD_API="http://127.0.0.1:$PORT" bash kg-for-card-block.sh cardA)"

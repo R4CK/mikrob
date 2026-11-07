@@ -375,8 +375,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KG_CAPTURE_ENABLED',
     type: 'boolean',
-    default: '0',
-    description: 'Bekapcsolva: egy kártya done-ra zárásakor (MT-05) a tudásgráf capture-sorba kerül, és a helyi LLM draftol belőle megoldás-csomópontot. Kikapcsolva (alapértelmezés) a kártya-zárás viselkedése bájtra azonos a mai állapottal -- a sorba írás meg sem történik.',
+    default: '1',
+    description: 'Bekapcsolva (alapértelmezés, Peti döntés 2026-11-07, Telegram 13239): egy kártya done-ra zárásakor (MT-05) a tudásgráf capture-sorba kerül, és a helyi LLM draftol belőle megoldás-csomópontot. Kikapcsolva: a kártya-zárás viselkedése bájtra azonos a capture nélküli állapottal -- a sorba írás meg sem történik.',
     module: 'knowledge-graph',
     secret: false,
     requiresRestart: false,
@@ -395,8 +395,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KG_ENABLED',
     type: 'boolean',
-    default: '0',
-    description: 'Platform-szintű fő kapcsoló (MODULTERV 6. szakasz). Kikapcsolva (alapértelmezés): a GET /api/kg/search és /api/kg/for-card 404-et ad, store/kg-search.sh jelzi és kilép -- nincs tudásgráf-lekérdezés.',
+    default: '1',
+    description: 'Platform-szintű fő kapcsoló (MODULTERV 6. szakasz). Bekapcsolva (alapértelmezés, Peti döntés 2026-11-07, Telegram 13239). Kikapcsolva: a GET /api/kg/search és /api/kg/for-card 404-et ad, store/kg-search.sh jelzi és kilép -- nincs tudásgráf-lekérdezés.',
     module: 'knowledge-graph',
     secret: false,
     requiresRestart: false,
@@ -404,8 +404,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KG_INJECT_ENABLED',
     type: 'boolean',
-    default: '0',
-    description: 'MT-07 (card 1a350f22): bekapcsolva a store/kg-for-card-block.sh lekéri a /api/kg/for-card csomagot és kiírja a keretezett blokkot. Kikapcsolva (alapértelmezés): a szkript a hívás ELŐTT kilép -- nincs hálózati hívás, self-advance-pickup.sh kimenete bájtra azonos a mai állapottal (EK-MT-7).',
+    default: '1',
+    description: 'MT-07 (card 1a350f22): bekapcsolva (alapértelmezés, Peti döntés 2026-11-07, Telegram 13239) a store/kg-for-card-block.sh lekéri a /api/kg/for-card csomagot és kiírja a keretezett blokkot. Kikapcsolva: a szkript a hívás ELŐTT kilép -- nincs hálózati hívás, self-advance-pickup.sh kimenete bájtra azonos a KG nélküli állapottal (EK-MT-7).',
     module: 'knowledge-graph',
     secret: false,
     requiresRestart: false,

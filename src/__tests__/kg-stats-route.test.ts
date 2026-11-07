@@ -86,7 +86,7 @@ describe('GET /api/kg/stats (card 9b13108b)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('KG_ENABLED off (default): 404 kg_disabled, same posture as search/for-card', async () => {
+  it('KG_ENABLED=0 (explicit off): 404 kg_disabled, same posture as search/for-card', async () => {
     const { ctx, body, status } = makeCtx('/api/kg/stats')
     await expect(tryHandleKg(ctx)).resolves.toBe(true)
     expect(status()).toBe(404)

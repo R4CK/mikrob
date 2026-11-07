@@ -1,6 +1,9 @@
 // MT-05 (card c991508f): the route-layer glue must be byte-identical-behaviour when
-// KG_CAPTURE_ENABLED is off (the MODULTERV's "kapcsolo mogott, alapbol OFF" rule) -- it must not
-// even open the kg database file in that case.
+// KG_CAPTURE_ENABLED is off -- it must not even open the kg database file in that case. The
+// registry default flipped 0->1 (card 70973ca7, Peti 2026-11-07, Telegram 13239), but the
+// behind-a-flag gate itself is unchanged: this suite still pins both the explicit OFF path (this
+// test) and the ON path (the rest of the suite) against the real `getEffectiveSettingValue` value,
+// not the registry default directly.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 let settingValue = '0'

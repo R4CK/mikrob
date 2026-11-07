@@ -4,10 +4,14 @@
 # store/self-advance-pickup.sh (automated self-advance) and MikroB's own manual dispatch messages
 # call this SAME script, so the injection-framing logic (EK-MT-9) is implemented and tested once.
 #
-# BEHIND KG_INJECT_ENABLED, DEFAULT OFF: reads the flag FIRST, before any network call. Off means
-# this script prints nothing and exits 0 -- the caller's own output stays byte-identical to the
-# pre-MT-07 state (EK-MT-7). This follows the existing shell convention (store/kg-check-landing.sh
-# reads KG_ENABLED the same way, straight off the process environment, not through settings-store).
+# BEHIND KG_INJECT_ENABLED, DEFAULT ON (card 70973ca7, Peti döntés 2026-11-07, Telegram 13239,
+# matching the KG_INJECT_ENABLED registry default): reads the flag FIRST, before any network call.
+# Off (KG_INJECT_ENABLED=off, explicit) means this script prints nothing and exits 0 -- the
+# caller's own output stays byte-identical to the pre-MT-07/no-KG state (EK-MT-7). This script
+# reads the flag straight off the process environment, not through settings-store (same convention
+# as store/kg-check-landing.sh's own KG_ENABLED read) -- there is no wiring that forwards the
+# registry's effective value into this process's env, so this default is the actual on/off switch
+# for self-advance-pickup.sh's KG block, independent of the registry value.
 #
 # FAIL SILENT-CLOSED: any error (missing token, unreachable API, malformed JSON, empty package)
 # prints NOTHING and exits 0. A broken KG lookup must never block whatever is calling this script
@@ -35,11 +39,11 @@ if ! printf '%s' "$CARD_ID" | grep -Eq '^[0-9a-zA-Z_-]{1,64}$'; then
   exit 0
 fi
 
-# KG_INJECT_ENABLED gate -- FIRST, before anything else. Off (the default, unset counts as off)
-# means exit now: no HTTP call, no token read, no output.
-if [ "${KG_INJECT_ENABLED:-off}" != "on" ]; then
-  exit 0
-fi
+# KG_INJECT_ENABLED gate -- FIRST, before anything else. On (the default, unset counts as on) is
+# the normal path; an explicit "off" or "0" means exit now: no HTTP call, no token read, no output.
+case "${KG_INJECT_ENABLED:-on}" in
+  off|0) exit 0 ;;
+esac
 
 KG_API="${KG_FOR_CARD_API:-http://localhost:3420}"
 if ! [[ "$KG_API" =~ ^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$ ]]; then

@@ -68,7 +68,10 @@ describe('GET /api/kg/search and /api/kg/for-card (MT-04, card 34c2d2a2)', () =>
     topK = 3
   })
 
-  it('KG_ENABLED off (default): both routes 404 with kg_disabled, byte-stable even with valid params', async () => {
+  // The registry default flipped 0->1 (card 70973ca7, Peti 2026-11-07, Telegram 13239) -- this
+  // suite mocks getEffectiveSettingValue directly, so it never exercised the registry default
+  // either way; this case still pins the explicit OFF value (now the non-default path).
+  it('KG_ENABLED=0 (explicit off): both routes 404 with kg_disabled, byte-stable even with valid params', async () => {
     const { ctx: s, body: sBody, status: sStatus } = makeCtx('/api/kg/search', { q: 'fix' })
     await expect(tryHandleKg(s)).resolves.toBe(true)
     expect(sStatus()).toBe(404)
