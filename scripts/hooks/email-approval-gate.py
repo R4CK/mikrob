@@ -16,6 +16,15 @@ The `email_send.level` in store/autonomy-config.json becomes a real switch:
               re-sent to a different recipient -- hence every recipient field, bcc included (msg 17936, EMAILBCCHORGONY903).
   level 3  -> allow (autonomous; the outgoing-copy-gate still audits copy).
 
+Tool scope comes from the shared name classifier
+(email_extract.classify_mail_tool), which keys on the base-name suffix, so a
+tool prefix (mcp__gmail__v2_reply_all) or a server of any name
+(mcp__server-gmail-autoauth-mcp__reply_all) is in scope like the bare name.
+send_draft carries only a draftId, so no envelope can be anchored: level 1
+deny, level 2 deny with a pointer to send_email with the full envelope (which
+the anchor CAN pin), level 3 allow. A draft tool puts nothing on the wire and
+stays out of scope.
+
 At level 2 there is ONE narrow bypass, the standing recipient list
 (store/email-standing-recipients.json, EMAILALLANDOCIMZETT926): a letter whose
 sole recipient is on that list, with no cc and no bcc, is allowed without an
@@ -138,8 +147,27 @@ _EMAIL_SERVER_RE = re.compile(r"__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__", re.
 # search_and_send_email all matched a "safe" verb at position 0 and passed, even though the rest
 # of the name names the actual send/reply/forward. Negative lookahead added: a safe-prefix match
 # is only safe if NOTHING later in the name is send/reply/forward.
+#
+# Koteg 23a (upstream #1995): a vendor tool-name PREFIX (v2_, work-, ...) sits before even the
+# safe verb (v2_read_email, work-update_draft), so the `^` anchor on the verb missed every
+# prefixed read/search/draft op -- measured: it fell through to require approval at level 1,
+# denying a pure read. `^[A-Za-z0-9]*[-_]?` tolerates one optional prefix segment (letters/digits,
+# then an optional separator) before the verb, matching the vendor's own "verbatim prepend, no
+# separator guaranteed" shape. update_draft joins create_draft as a safe exact (suffixed) form,
+# same reasoning as the comment above: the verb update/create decides safety here, not the word
+# "draft" as a substring.
+#
+# Cybered NO-GO 28354 F2 (mirrors the copy-gate twin's finding): the ORIGINAL claim that "the
+# negative lookahead's reach is UNCHANGED, still scans only what follows the matched verb" was
+# itself the bug, not a safe invariant -- mcp__gmail__forward_get_x: prefix "forward_" fits the
+# single-segment form (letters, one separator), "get_" matches the safe verb, and nothing AFTER
+# "get_x" is send/reply/forward, so this read as SAFE even though the name starts with "forward".
+# Fixed the same way as outgoing-copy-gate.py's twin: the negative lookahead moved to the START
+# of the pattern, scanning the WHOLE name for a dangerous word, not just the tail after the verb.
 _EMAIL_SAFE_TOOL_RE = re.compile(
-    r"^(?:search|get|list|read|draft)[-_](?!.*(?:send|reply|forward))|^create[-_]draft$", re.I
+    r"^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?(?:search|get|list|read|draft)[-_]"
+    r"|^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?(?:create|update)[-_]draft$",
+    re.I,
 )
 
 
@@ -160,6 +188,10 @@ def _bare_tool_name(name):
 # passes, drafts included (MANAGEDRAFT905). Fail-closed on doubt: a missing or
 # unreadable operation counts as a send, because that is the case where we
 # cannot prove it is not one. `send_email` needs no such test -- it only sends.
+#
+# Koteg 23a: upstream's own clean (non-conflicting) merge deleted this definition in favor of
+# scope_kind/classify_tool, but this fork's kept dispatch (is_mcp_draft/is_mcp_send, the
+# deny-by-default elif chain) still calls it -- restored, unchanged from HEAD.
 _MULTIPLEX_TOOL = re.compile(r"manage_email", re.I)
 _MANAGE_EMAIL_SEND_OPS = {"send", "reply", "reply_all", "replyall", "forward"}
 
@@ -220,6 +252,50 @@ def owner_cc_missing(tool_input: dict, owner: str) -> bool:
             if raw:
                 found.update(a.lower().rstrip(".") for a in _ADDR.findall(str(raw)))
     return owner not in found
+
+
+# The pre-classifier send-name test, kept ONLY for owner_cc_scope when the
+# extractor does not load (classify_tool -> "unclassified"), so a broken
+# email_extract.py cannot switch the owner-CC check off at level 3.
+_OWNER_CC_SEND_FALLBACK = re.compile(r"send_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
+
+
+def owner_cc_scope(tool: str, kind, tool_input: dict):
+    """(is_mcp_draft, is_mcp_send) for the MAILCCGATE1016 check, from the
+    shared classifier's kind. A draft is a draft-writing tool other than
+    update_draft (an update may carry only the changed fields) or an explicit
+    manage_email draft; a send is every address-carrying or connector send and
+    a manage_email send. send_draft is neither: it carries only a draft id, and
+    its letter was checked where the draft was written."""
+    if kind == "unclassified":
+        return bool(_DRAFT_TOOL.search(tool)), bool(_OWNER_CC_SEND_FALLBACK.search(tool))
+    is_draft = (kind == "draft" and bool(_DRAFT_TOOL.search(tool))) or (
+        kind == "manage_email" and _is_explicit_draft(tool_input))
+    is_send = kind in ("send_email", "connector_send") or (
+        kind == "manage_email" and manage_email_is_send(tool_input))
+    return is_draft, is_send
+
+
+def owner_cc_gate(tool_input: dict, is_draft_only: bool) -> None:
+    """Deny (exit 2) when MAIL_OWNER_CC is set and the owner is in none of the
+    call's to / cc / bcc. Returns normally when the check is off or passes."""
+    owner = owner_cc_address()
+    if not owner or not owner_cc_missing(tool_input, owner):
+        return
+    what = "piszkozat" if is_draft_only else "level"
+    no_fields = not any(tool_input.get(f) for f in ("to", "cc", "bcc"))
+    if no_fields and tool_input.get("messageId"):
+        # A messageId-addressed reply/forward has no recipient field at
+        # all, so "put the owner in cc" cannot be followed there.
+        how = (f"Ez a hivas az eredeti uzenetre valaszol (messageId), cimzett-mezo "
+               f"nelkul, igy a cc nem adhato hozza. Valaszolj send_email-lel: "
+               f"threadId / inReplyTo + a teljes boritek (to, subject, body), "
+               f"a cc-ben {owner}.")
+    else:
+        how = f"Tedd a cc-be ({owner}), aztan kuldd ujra."
+    deny(f"A gazda masolata hianyzik: a {what} cimzettjei kozott (to, cc, bcc) "
+         f"nincs ott a(z) {owner} cim.\n{how}\nA gazda minden kimeno "
+         "levelrol masolatot ker (MAIL_OWNER_CC az install .env-jeben).")
 
 
 def manage_email_is_send(tool_input: dict) -> bool:
@@ -599,20 +675,51 @@ def deny(msg: str):
     sys.exit(2)
 
 
-def _load_collect_email_envelope():
-    """The extractor, loaded where the gate first needs it (HOOKDEPLOAD1008).
-    A module-level import of a broken email_extract.py (a syntax error, a
-    conflicted merge) raised before the __main__ net: exit 1, which PreToolUse
-    treats as NON-blocking, so the letter went out UNCHECKED. Here any load
-    failure is a deny with the reason, and a call that is not a send never
-    needs the module."""
+def _load_email_extract():
+    """The extractor module, loaded where the gate first needs it
+    (HOOKDEPLOAD1008). A module-level import of a broken email_extract.py (a
+    syntax error, a conflicted merge) raised before the __main__ net: exit 1,
+    which PreToolUse treats as NON-blocking, so the letter went out UNCHECKED.
+    Here any load failure is a deny with the reason, and a call that is not a
+    send never needs the module."""
     try:
         sys.path.insert(0, _HERE)
-        from email_extract import collect_email_envelope
+        import email_extract
+        email_extract.collect_email_envelope  # noqa: B018 -- a stub without it is a load failure
+        email_extract.classify_mail_tool  # noqa: B018
     except Exception as exc:  # noqa: BLE001 -- SyntaxError, ImportError, anything: fail-closed
         deny(f"A kapu fuggosege (scripts/hooks/email_extract.py) nem toltheto be ({exc!r}) "
              "-- fail-closed: a level nem mehet ki, amig a modul nem javul.")
-    return collect_email_envelope
+    return email_extract
+
+
+def _load_collect_email_envelope():
+    return _load_email_extract().collect_email_envelope
+
+
+def classify_tool(tool: str):
+    """The tool's mail kind (email_extract.classify_mail_tool), or
+    "unclassified" when the extractor does not load. Levels 1 and 3 never read
+    the letter, so a broken extractor must not change their decision
+    (HOOKDEPLOAD1008): such a call is treated as a SEND -- level 1 denies,
+    level 3 allows as before, and level 2 meets the extractor's own load deny.
+    A manage_email call keeps its operation test, as before the classifier."""
+    try:
+        sys.path.insert(0, _HERE)
+        import email_extract
+        return email_extract.classify_mail_tool(tool)
+    except Exception:  # noqa: BLE001 -- the level-2 path names the load failure
+        return "manage_email" if "manage_email" in tool.lower() else "unclassified"
+
+
+def scope_kind(tool: str):
+    """The kind this gate acts on: the shared classifier, plus the substring
+    `manage_email` this gate's scope always matched (a look-alike such as
+    manage_emails_bulk stays in scope here, judged by its operation)."""
+    kind = classify_tool(tool)
+    if kind is None and "manage_email" in tool.lower():
+        return "manage_email"
+    return kind
 
 
 def summarize(env: dict) -> str:
@@ -657,11 +764,43 @@ def main():
     # to the owner. Scoped to the bare verbs GMAILCONNECTOR914 itself named (reply/forward/
     # send_message and their aliases) -- NOT the whole "not in _EMAIL_SAFE_TOOL_RE" surface,
     # which also catches update_draft (a draft edit, not a send; see the dedicated test for it).
-    _CONNECTOR_SEND_VERB_RE = re.compile(r"^(?:reply|reply_all|replyall|forward|send[-_]?message)$", re.I)
+    #
+    # Koteg 23a (upstream #1995): vendor/gmail-mcp-fork prepends a version prefix to the bare
+    # tool name verbatim (v2_reply_all, v2_send_message, ...), so the EXACT match this regex
+    # used to require missed every prefixed connector send -- is_connector_send came back False,
+    # so the OWNER-CC copy requirement was skipped for that one call (the send itself was still
+    # blocked/needed approval regardless, via the _EMAIL_SERVER_RE deny-by-default branch below
+    # -- measured directly against this fork's own regexes, not assumed from upstream's prose;
+    # neither mcp__gmail__v2_reply_all nor mcp__server-gmail-autoauth-mcp__reply_all bypasses
+    # that branch).
+    #
+    # Cybered NO-GO 28354 F2: END-anchoring (the comment above used to say "so a prefix no
+    # longer hides the verb") was itself incomplete -- it hides the verb from the OTHER side.
+    # mcp__gmail__forward_get_x: "forward" sits in the PREFIX, "get_x" is the trailing shape, so
+    # an end-anchored verb check never finds "forward" at all, is_connector_send stays False,
+    # the owner-CC requirement is skipped, and at level 3 the call reaches the plain allow with
+    # no check whatsoever (not even the lesser "unnecessary owner-CC requirement" the old comment
+    # assumed). Matched as a token ANYWHERE now (start, middle or end, delimited by "_" or string
+    # boundaries) -- the file's own stated direction ("only costs an unnecessary owner-CC
+    # requirement, never a widened ALLOW") applies just as well to a token found mid-name.
+    _CONNECTOR_SEND_VERB_RE = re.compile(r"(?:^|_)(?:reply_all|replyall|reply|forward|send[-_]?message)(?:_|$)", re.I)
+    # Second OR term (scope_kind == "connector_send"): an off-brand server name
+    # (mcp__workspace__send_gmail_message) has no "gmail"/"resend" for _EMAIL_SERVER_RE to find at
+    # all -- measured live, that left the owner-CC check off AND the send itself unrequired-of-
+    # approval (see the matching fallback a few lines below). classify_tool fails closed on a
+    # broken extractor (returns "unclassified", never "connector_send"), so this OR term can only
+    # add scope, never remove it.
     is_connector_send = bool(_EMAIL_SERVER_RE.search(tool)) and bool(
         _CONNECTOR_SEND_VERB_RE.search(_bare_tool_name(tool)))
+    is_connector_send = is_connector_send or scope_kind(tool) == "connector_send"
     is_mcp_send = is_connector_send or (bool(_SEND_TOOL.search(tool)) and not (
         _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input)))
+    # Koteg 23a: an off-brand server name (mcp__workspace__send_gmail_message) is classified
+    # "send_email" by scope_kind but matches NEITHER is_connector_send (not a bare verb) NOR
+    # _SEND_TOOL (no "send_email"/"manage_email" substring -- "send_gmail_message" is a
+    # different word) -- without this OR term the owner-CC check was skipped AND (see the
+    # matching `else` branch further down) the level gate itself never required approval.
+    is_mcp_send = is_mcp_send or scope_kind(tool) == "send_email"
     if is_mcp_draft or is_mcp_send:
         owner = owner_cc_address()
         if owner:
@@ -701,7 +840,17 @@ def main():
         if not _load_is_send_invocation()(cmd):
             sys.exit(0)
     else:
-        sys.exit(0)
+        # Koteg 23a (upstream #1995): none of the three branches above matched --
+        # _EMAIL_SERVER_RE needs "gmail"/"resend" IN THE SERVER NAME, which an off-brand
+        # multiplexer (mcp__workspace__send_gmail_message, mcp__workspace__draft_gmail_message,
+        # or a bare reply_all/send_message/forward on any other server name) never has. Measured
+        # live: without this branch such a call fell through to the level check unclassified,
+        # and at level 3 that is an unconditional ALLOW with no owner-CC and no approval ever
+        # required -- a full bypass, not just a narrowed owner-CC check. Falls back to the shared
+        # classifier (fail-closed: a broken email_extract.py returns "unclassified", treated as
+        # in-scope here, same direction as the existing level-2 envelope-load deny).
+        if scope_kind(tool) in (None, "draft"):
+            sys.exit(0)  # not a send, or a safe draft write
 
     level, note = read_email_level()
     prefix = f"({note})\n" if note else ""
@@ -712,6 +861,22 @@ def main():
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
              "Jelezd a gazdanak inter-agent uzenettel vagy a dashboardon; a szint "
              "emelese a store/autonomy-config.json-ban a gazda dontese.")
+    if re.search(r"send_draft", tool, re.I):
+        # The call carries only a draftId: the gate sees neither the recipient
+        # nor the text, so there is nothing an approval could be anchored to.
+        # This deny fires BEFORE the shared classifier (email_extract.py) is ever
+        # consulted -- the gmail__/resend__ deny-by-default branch above short-circuits
+        # send_draft unconditionally, broken classifier or not. Named here anyway (Koteg
+        # 23a, upstream #1995's broken-classifier test) so the message stays accurate about
+        # where the real classification would have happened had this path not already decided.
+        deny(prefix +
+             "email_send level 2 (CHECK-BEFORE-SEND): a send_draft nem horgonyozhato. "
+             "A hivas csak egy draftId-t visz, a piszkozat cimzettjet es szoveget a kapu "
+             "nem latja, igy nincs mihez jovahagyast kotni (email_extract.py classify_mail_tool "
+             "sem segit itt: a draftId-only hivasnak nincs tartalma, amit osztalyozni lehetne).\n"
+             "Kuldd a levelet send_email-lel, TELJES boritekkal (to + cc + bcc + subject + "
+             "body, ugyanaz, ami a piszkozatban van): arra a kapu kiadja a tartalom-horgonyt, "
+             "azzal kerj jovahagyast, es a jovahagyas utan ugyanaz a hivas atmegy.")
 
     # level 2: CHECK-BEFORE-SEND
     if _WINDOW_ERR:

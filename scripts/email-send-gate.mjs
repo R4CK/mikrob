@@ -529,15 +529,33 @@ function commandHeads(toksIn, d = 0) {
 //   - send.py by basename + a recipient flag: a send (as before, now from any
 //     operand position, interpreter spelling and flag spelling);
 //   - a script operand that cannot be resolved statically (glob or brace
-//     characters, or a `$` expansion) + a recipient flag or another `$` token:
-//     a send, because what runs is undecidable here;
+//     characters, or a `$` expansion) + a recipient flag: a send, because what
+//     runs is undecidable here (until MAILGATEVARARGS1020 also "or another `$`
+//     token", see below);
 //   - a program read from stdin (`-`, or no script operand and a `<` redirect)
 //     + a recipient flag: a send (a heredoc-fed program is judged by its body,
 //     heredocProgramSends, as before).
 // Anything else stays allowed: `python3 -u other.py`, `python3 -c "print(1)"`,
-// `for f in *.py; do python3 $f; done`, `python3 x.py --to-date ...`.
+// `for f in *.py; do python3 $f; done`, `python3 x.py --to-date ...`,
+// `python3 "$DIR/gen.py" "$OUT"`.
 // Mirrors _python_head_sends in hooks/outgoing-copy-gate.py; the shared
 // send-invocation-cases.json binds the two.
+//
+// MAILGATEVARARGS1020 (measured on a production install, 2026-10-19): the
+// "or another `$` token" half denied ordinary scripted work. In one day 26
+// sub-agent Bash calls, across four agents, were denied as mail sends; none
+// of them was one (no recipient flag, no sender, no mail program). Each was a
+// script run from a variable path with a variable argument:
+// `python3 "$SP/gen.py" "$SP/out.json"`, `python3 "$L" /dev/null "$SP/o.txt"`,
+// `python3 $A/check.py $S/x.json && python3 $A/stamp.py --note-file "$A/n.json"`.
+// The agents lost turns on rewrites and workarounds. The extra `$` rule also
+// guarded nothing the rest of the gate guards: a literal sender path with a
+// variable argument (`python3 scripts/support-mail/send.py $ARGS`) has always
+// passed, because a recipient flag inside a variable is not visible statically
+// on ANY branch. So this branch now asks what the send.py and the stdin
+// branches ask: is there a recipient flag. A variable path WITH one
+// (`python3 $P --to ...`) is still a send; `python3 $SENDER $ARGS` passes,
+// pinned as a documented limit in send-invocation-cases.json.
 const PY_OPT_WITH_ARG = new Set(['-X', '-W', '--check-hash-based-pycs'])
 const RECIPIENT_FLAG = /^--to?(=|$)/
 const UNDECIDABLE_PATH = /[*?[{$]/
@@ -603,9 +621,7 @@ function pythonHeadSends(rest) {
   const recipient = rest.some((t) => RECIPIENT_FLAG.test(t))
   const { script, stdin, stdinRedirect } = pythonScriptOperand(rest)
   if (script !== null && SENDPY.test(basename(script))) return recipient
-  if (script !== null && UNDECIDABLE_PATH.test(script)) {
-    return recipient || rest.some((t) => t !== script && t.includes('$'))
-  }
+  if (script !== null && UNDECIDABLE_PATH.test(script)) return recipient // MAILGATEVARARGS1020
   if (stdin || (script === null && stdinRedirect)) return recipient
   return false
 }
@@ -812,7 +828,22 @@ const EMAIL_SERVER_RE = /__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__/i
 // search_and_send_email all matched a "safe" verb at position 0 and passed, even though the rest
 // of the name names the actual send/reply/forward. Negative lookahead added: a safe-prefix match
 // is only safe if NOTHING later in the name is send/reply/forward.
-const EMAIL_SAFE_TOOL_RE = /^(?:search|get|list|read|draft)[-_](?!.*(?:send|reply|forward))|^create[-_]draft$/i
+//
+// Koteg 23a (upstream #1995): a vendor tool-name PREFIX (v2_, work-, ...) sits before even the
+// safe verb -- same fix and reasoning as the Python twins' copy of this regex.
+//
+// Deliberately NOT a verbatim copy of the Python twins' _EMAIL_SAFE_TOOL_RE: this file gates
+// SUB-AGENTS, not the main agent. email-approval-gate.py treats update_draft as safe (a draft
+// edit, verb decides safety, not the noun "draft") because the MAIN agent owns the draft and can
+// be trusted to edit it. A sub-agent may not draft-edit without going through the owner -- only
+// create_draft stays exempt here; update_draft falls through to deny-by-default on purpose (see
+// the dedicated "every OTHER tool... stays denied (reply_all, update_draft)" test).
+//
+// Cybered NO-GO 28354 F2 (same root cause as both Python twins): a dangerous word sitting in the
+// PREFIX, before the matched safe verb, was invisible to a lookahead that only scanned what
+// comes AFTER the verb (forward_get_x read as safe). Moved the negative lookahead to the START
+// of each alternative so it scans the WHOLE name.
+const EMAIL_SAFE_TOOL_RE = /^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?(?:search|get|list|read|draft)[-_]|^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?create[-_]draft$/i
 
 function bareToolName(qualifiedName) {
   const idx = qualifiedName.lastIndexOf('__')
@@ -851,7 +882,10 @@ export function gateDecision(toolName, toolInput) {
   // draft-only-email safety policy, which blocks drafting too: that policy keys
   // on ctx.operation alone and never looks at draft:true, so with it enabled the
   // mailbox is effectively read-only (verified live, 2026-08-10).
-  if (/(^|__)manage_email$/i.test(name)) {
+  // Cybered NO-GO 28354 F3: vendor-prefixed manage_email (mcp__x__v2_manage_email) missed this
+  // anchor the same way the Python twins' old `(^|__)manage_email$` did before the Koteg 23a fix
+  // -- a prefixed name fell through to the default allow below with no governance deny at all.
+  if (/(^|__)[A-Za-z0-9_-]*manage_email$/i.test(name)) {
     const op = String(toolInput?.operation ?? '').toLowerCase()
     if (!MANAGE_EMAIL_SEND_OPS.has(op)) return { deny: false }
     // Fail safe: only an explicit draft request passes. A missing/ambiguous
@@ -883,6 +917,23 @@ export function gateDecision(toolName, toolInput) {
     // additive, no overlap with the isSendInvocation/heredoc composition above.
     const cmd = String(toolInput?.command ?? '')
     if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
+  }
+  // Koteg 23a (upstream #1995): an off-brand server name (mcp__workspace__send_gmail_message,
+  // mcp__workmail__reply_all, ...) has no "gmail"/"resend" for EMAIL_SERVER_RE to find and no
+  // "send_email" substring either -- measured live, such a call fell through to the default
+  // ALLOW above with no governance deny at all. Same bare-verb set the widened
+  // EMAIL_GATE_MATCHER (agent-scaffold.ts) uses to make sure the hook even fires; this is the
+  // matching fix on the sub-agent governance-deny side of that same gap. The three generic
+  // connector words stay tied to "gmail" case-insensitively -- the Telegram plugin's tool is
+  // `..._telegram__reply` and must never deny here.
+  if (
+    /(^|_)(?:send_draft|reply_all|send_gmail_message|draft_gmail_message)$/i.test(name) ||
+    // Cybered NO-GO 28354 F3: "forward_message" added -- mcp__google_workspace__gmail_forward_message
+    // ends in "forward_message", not bare "forward", so it missed this alternation (allowed, no
+    // deny at all) -- the same gap closed in email_extract.py's _CONNECTOR_GENERIC_SUFFIXES.
+    (/gmail/i.test(name) && /(^|_)(?:send_message|reply|forward|forward_message)$/i.test(name))
+  ) {
+    return { deny: true, kind: 'email-server-default-deny' }
   }
   return { deny: false }
 }

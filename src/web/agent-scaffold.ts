@@ -1109,17 +1109,28 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // required the literal string "gmail__"/"resend__" -- no hyphen before it (google-gmail__), no
 // suffix after it (gmail-mcp__). Either shape skipped the matcher entirely, so the hooks never
 // even ran (not "ran and allowed" -- never reached). Widened to match the word as a substring
-// anywhere in the server segment, hyphens included on both sides. VERIFIED (upstream-sync batch
-// 6, node -e test) this ALREADY matches upstream's own cited regression case,
-// mcp__server-gmail-autoauth-mcp__draft_email -- MATCHERGMAILSEG920's independent fix for the
-// same underlying gap was against an OLDER, narrower matcher this fork had already widened.
-// Upstream's draft-verb catch-all alternative (paired with its recipient-ledger feature) is NOT
-// adopted here: the ledger itself is NOT ADOPTED, in any form (Cybersec, card afd64623, HIGH --
-// addRecipient() validates the source STRING'S FORMAT only, never that the evidence is real, so
-// an agent can self-certify any address with --source owner). See
-// ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
+// anywhere in the server segment, hyphens included on both sides.
+//
+// Koteg 23a (upstream #1995, ADOPTED -- a pure string-constant widening, no classify_mail_tool/
+// recipient-ledger dependency pulled in): `.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*` still
+// requires "gmail"/"resend" IN THE SERVER SEGMENT -- a mail MCP registered under an unrelated
+// server name (e.g. a Google Workspace multiplexer) whose TOOL itself is named send_gmail_message,
+// draft_gmail_message, reply_all, send_draft, update_draft or create_draft skipped the matcher
+// entirely, so the sub-agent's email-send-gate.mjs never even ran for it (measured: none of these
+// six verbs require "gmail"/"resend" to appear with a bounding "__" on both sides, which is what
+// the fork's own pattern demands). Each such base is now its own bare alternative, with no server
+// name requirement at all. The three GENERIC connector words (send_message/reply/forward) stay
+// tied to "gmail" case-insensitively (including a "gmail" sitting in a tool PREFIX, which
+// `[Gg]mail.*__` alone would miss) -- the Telegram plugin's tool is `..._telegram__reply`, and the
+// email gates must never fire on it. Recipient-ledger itself is NOT ADOPTED, in any form
+// (Cybersec, card afd64623, HIGH -- addRecipient() validates the source STRING'S FORMAT only,
+// never that the evidence is real, so an agent can self-certify any address with --source owner).
+// See ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
+// Kept a FLAT alternation (no inner `|`): the drift test splits it on '|'.
 export const EMAIL_GATE_MATCHER =
-  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*'
+  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
+  + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
+  + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets

@@ -198,6 +198,36 @@ describe('gateDecision', () => {
   })
 })
 
+// Cybered NO-GO 28354 (delta round on Koteg 23a)
+describe('gateDecision: Cybered NO-GO 28354 F2/F3', () => {
+  // F2: a dangerous word sitting in the PREFIX, before the matched safe verb, must still deny --
+  // the old lookahead in EMAIL_SAFE_TOOL_RE only scanned what came AFTER the verb match. This
+  // file's prefix form is single-segment (one word + one separator), so the vulnerable shape is
+  // exactly one intervening word before the safe verb (forward_get_x), not a multi-word prefix
+  // (send_and_get_thread never matched the single-segment prefix at all, pre- or post-fix).
+  it('F2: a send/reply/forward word in the prefix is audited, not waved through as safe', () => {
+    for (const name of ['forward_get_x', 'reply_get_thread']) {
+      const verdict = gateDecision(`mcp__gmail__${name}`, { to: ['a@b.hu'], body: 'x' })
+      expect(verdict.deny, name).toBe(true)
+    }
+  })
+
+  // F3: a vendor-prefixed manage_email (mcp__x__v2_manage_email) must still be recognized -- the
+  // old anchor `(^|__)manage_email$` missed it the same way the Python twins' did before the
+  // Koteg 23a fix, leaving an unapproved send with no governance deny at all.
+  it('F3: a vendor-prefixed manage_email send is still denied', () => {
+    expect(gateDecision('mcp__x__v2_manage_email', { operation: 'send' }).deny).toBe(true)
+    expect(gateDecision('mcp__x__v2_manage_email', { operation: 'search' }).deny).toBe(false)
+  })
+
+  // F3: mcp__google_workspace__gmail_forward_message ends in "forward_message", not bare
+  // "forward" -- it missed the off-brand gmail+verb alternation entirely (allowed, no deny).
+  it('F3: an off-brand gmail_forward_message (verb-as-suffix, not bare "forward") is denied', () => {
+    expect(gateDecision('mcp__google_workspace__gmail_forward_message', { messageId: 'm1', body: 'x' }).deny).toBe(true)
+    expect(gateDecision('mcp__google_workspace__gmail_send_message', { messageId: 'm1', body: 'x' }).deny).toBe(true)
+  })
+})
+
 // Card a2cb71f1, task item 3 ("a test that compares EVERY email package in the catalog's
 // (pinned-version) sending tool names against the settings matchers, so that the NEXT package
 // swap cannot silently reopen the same gap"). This is a fixture pin, not a live network re-fetch
@@ -922,7 +952,9 @@ describe.skipIf(REPO_UNDER_TMP)('injectEmailSendGate', () => {
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
     expect(hooks[0].matcher).toBe(
-      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
+      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
+      + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
+      + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*',
     )
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')

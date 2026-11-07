@@ -254,10 +254,12 @@ describe('the real security gates on a disposable copy', () => {
     const entries = (settings.hooks.PreToolUse as { matcher: string; hooks: { command: string }[] }[])
       .flatMap((e) => e.hooks.map((h) => ({ matcher: e.matcher, command: h.command })))
     const security = entries.filter((e) => /outgoing-copy-gate\.py|email-approval-gate\.py|egress-gate\.mjs/.test(e.command))
-    // 17 (up from 13, upstream Köteg 17, 0e681c83..9845015f): Discord reply|edit_message added for
-    // outgoing-copy-gate, plus the broader gmail regex and draft_email kept ALONGSIDE the fork's
-    // existing narrower patterns (union, not replacement -- neither side's matcher coverage is lost).
-    expect(security.length).toBe(17)
+    // 19 (up from 17, Koteg 23a, upstream #1995): the widened send_draft/update_draft/create_draft/
+    // reply_all/send_gmail_message/draft_gmail_message/generic-Gmail-verb matcher is kept ALONGSIDE
+    // the fork's existing narrower patterns (union, not replacement) for email-approval-gate.py --
+    // outgoing-copy-gate.py already carried it (clean merge, no conflict). Measured directly against
+    // the resolved settings.json, not assumed.
+    expect(security.length).toBe(19)
     for (const e of security) {
       expect(e.command, e.matcher).toContain(GATE_FAIL_CLOSED_TAG)
       const rel = e.command.match(/scripts\/(hooks\/[a-z-]+\.(?:py|mjs))/)![1]

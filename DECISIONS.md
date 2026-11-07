@@ -23036,3 +23036,128 @@ Gate-SHA d3052b38d), Gate-SHA: see REVIEW comment.
 - Live sync per MikroB's addendum: the live global project-workflow skill now mentions `post-review.sh`, closing QA's BLOCKING 3. The live heartbeat-consolidated scheduled task is NOT synced -- blocked by the governance hard-gate forbidding non-MikroB writes under that path; the drafted D/5 text was handed to MikroB separately, since MikroB is the one who can apply it. QA's BLOCKING 2 (alert not live today) stays open until that happens.
 - Mutation-verified: reverting any of the M1/M2/M3/L1 fixes individually makes its matching selftest case fail.
 **Ki döntött:** backend (self-advance, card 88b67fb4, parent ed332869), per MikroB dispatch (msg_id:16755/16757). Gate: QA + WhiteHat. Gate-SHA: see REVIEW comment.
+## 2026-11-06 -- card bb562959 (Koteg 23a, phase e5c46e87): upstream e2199840..a6325a498 merged, mail-gate classifier cluster closed inside the fork structure
+
+**Dontes:** valodi `git merge --no-ff a6325a498` az elozo tartomany (23) landolt csucsarol, 5 upstream commit (#1995 classify mail tools by base-name suffix; #2065 +476 accentless dictionary entries + accent-only identifier mask; #2084 no outgoing alert quotes a permission card's command line; #2085 accent check masks a trailing-slash directory/key=value/quoted token; #2081/MAILGATEVARARGS1020 variable script path is a send only with a recipient flag). Fork szerkezet maradt: `_EMAIL_SERVER_RE`/`_EMAIL_SAFE_TOOL_RE`/owner-CC/deny-by-default a sajat kodban, upstream `classify_mail_tool`/recipient-ledger NEM adoptalva (ledger korabban elutasitva, card afd64623/b5b7eb6b).
+
+A ket kotelezo bypass zarva a fork sajat szerkezeten belul:
+- `.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*` tipusu matcher-ek (EMAIL_GATE_MATCHER, `.claude/settings.json`) ES az `outgoing-copy-gate.py`/`email-approval-gate.py`/`email-send-gate.mjs` belso klasszifikatorai most vendor-prefixelt (`v2_`, `work-`, `shared_inbox_`, prefix-elkulonito nelkul is) es off-server (nincs "gmail"/"resend" a szerver-szegmentben, pl. `mcp__workmail__reply_all`) eszkoznevet is felismernek es auditalnak -- korabban mindegyik atcsuszott auditalatlanul.
+- `outgoing-copy-gate.py` `manage_email` dispatchje most vendor-prefixelt szervernevet is felismer, es a `create_draft`/`update_draft`/`draft_email` muveleteket tenylegesen auditalja (gondolatjelre tiltva), nem a NEV alapjan menti ki -- `send_draft` (csak draftId, nincs sajat szoveg) kivetel marad, "nincs mit auditalni" alapon, nem fail-closed tiltas alapon.
+
+Negativ teszt mindket bypass-ra (upstream uj tesztjei is zoldek): `scripts/__tests__/outgoing-copy-gate.test.py` 235/235, `scripts/__tests__/email-approval-gate.test.py` 213/214 (1 kozmetikai, dokumentalt eltérő-szoveg-eset), `scripts/__tests__/credential-gate.test.py` ALL PASS, `src/__tests__/email-send-gate.test.ts` + `email-gate-matcher-drift.test.ts` + `fork-upstream-conflict-guard.test.ts` + `send-invocation-conformance.test.ts` 489/489 vitest.
+
+`ACKNOWLEDGED_UPSTREAM_BLOBS` (src/fork-upstream/acknowledged-conflicts.ts) 7 bejegyzese frissitve az a6325a498-nal tenylegesen mert blobra: `.claude/settings.json`, `scripts/email-send-gate.mjs`, `scripts/hooks/outgoing-copy-gate.py`, `scripts/hooks/email-approval-gate.py`, `scripts/hooks/email_extract.py`, `scripts/hooks/credential-gate.py`, `src/web/agent-scaffold.ts`, `src/__tests__/email-send-gate.test.ts`, `src/__tests__/project-settings-hook-anchor.test.ts`.
+
+**Ki dontott:** backend3 (card bb562959), MikroB dontes 16480 (valodi merge --no-ff, contiguous tartomany) + a kartya sajat "ket meresi bypass a fork szerkezeten belul" kotelezo pontja. Gate: QA + Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959 kiegeszites: fleet-test utojavitas
+
+A fenti merge (c6dc3c0be) utani `fleet-test.sh --ref` lelete ket apro, viselkedest nem erinto hibat
+talalt: 2 uj teszt-fajl (`outgoing-copy-gate-ekezet1018.test.py`, `-kapues1018-hatar.test.py`) nem
+futtathato bitkent volt nyilvantartva (`git update-index --chmod=+x`), es az `email-approval-gate.py`
+egyik kozmetikai uzenete nem nevezte meg az `email_extract.py` modult egy mar korabban is ismert,
+dokumentalt esetben. Mindket javitas kulon commitban (3da4aa767), ugyanaz a Gate-SHA erinti a
+teljes merge-landolast.
+
+**Ki dontott:** backend3 (card bb562959). Gate: QA + Cybersec + Cybered (valtozatlan).
+
+## 2026-11-06 -- card bb562959 delta-kor: QA FAIL 28338 + Cybered NO-GO 28354 (F1-F3) javitva
+
+**Dontes:** harom lelet zarva, mindegyikhez teszt ami piros a 9c18c2557-n es zold a javitason:
+- F1 (QA FAIL 28338, Cybered megerositve): `outgoing-copy-gate.py` manage_email dispatchje
+  `create_draft`/`update_draft`/`draft_email`/`draft` muveletekre most tenylegesen audital
+  (gondolatjelre tiltva), kulon `_MANAGE_EMAIL_DRAFT_OPS` halmazban, nem `_MANAGE_EMAIL_OUTBOUND_OPS`-ba
+  olvasztva (az mast jelent: "kuldes"). Ures test ("csak megvaltozott mezok") nem tiltas, hanem
+  "nincs mit auditalni".
+- F2 (Cybered NO-GO): a `_EMAIL_SAFE_TOOL_RE` (es ikerparjai `email-approval-gate.py`-ban es
+  `email-send-gate.mjs`-ben) negativ lookahead-je csak a VERB UTAN nezett -- egy veszelyes szo a
+  PREFIXBEN (send_and_get_thread, forward_get_x) lathatatlan volt neki. A lookahead a minta
+  ELEJERE mozgatva, a TELJES nevre nez. `email-approval-gate.py`-ban a `_CONNECTOR_SEND_VERB_RE`
+  is vegpont-horgonyrol token-mindenhol mintara valtott (forward_get_x).
+- F3 (Cybered NO-GO): `mcp__google_workspace__gmail_forward_message` "forward_message"-re
+  vegzodik, nem puszta "forward"-ra -- mindharom kapu (copy, approval, sub-agent) atengedte.
+  `_CONNECTOR_GENERIC_SUFFIXES` (email_extract.py) es a sub-agent kapu sajat off-brand mintaja
+  "forward_message"-szel bovult. Tovabba: a sub-agent kapu `manage_email` horgonya is
+  prefix-toleranssal bovult (ugyanaz a hiba, mint a Python ikreknel), es `outgoing-copy-gate.py`
+  off-brand szerver eseten most "gmail"+verb barmely sorrendben es off-server draft-op (pl.
+  `mcp__ws__create_draft`) is auditalt.
+
+Nem javitva, kulon kartyara halasztva (Cybersec GO 28369, M1/L1/L2/L3 jelzesei, nem blokkolo):
+`credential-gate.py` nem szelesitve off-brand nevekre (M1); Kesz-ha 3 (per-fajl tablazat) csak
+osszefoglalo szinten (L1); `classify_mail_tool` JS ikerje es a recipient-ledger valtozatlanul NEM
+adoptalva, de a dokumentacio pontositando (L2); ket look-alike nev (forwarding_settings,
+send_drafts_list) a copy kapun biztonsagosan at van engedve, az approval es sub-agent kapun meg
+tiltott (L3, fail-closed, nem lelet).
+
+**Ki dontott:** backend3 (card bb562959), QA FAIL 28338 + Cybered NO-GO 28354 alapjan. Gate: QA +
+Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959: Cybersec GO 28369 M1 javitva + L2 korrekcio a korabbi bejegyzeshez
+
+**Dontes:**
+- M1 (MEDIUM-LOW): `credential-gate.py` `_is_mcp_send`-je csak az `_EMAIL_SERVER_RE` (gmail/resend
+  a szerver-szegmentben) agat nezte -- egy off-brand nev (`mcp__workmail__reply_all`,
+  `mcp__google_workspace__send_gmail_message`) "nem email-tool"-kent 0-t adott, holott a masik
+  harom kapu mar tiltja. Javitva: ugyanazt a harom off-brand regexet hasznalja, amit
+  `outgoing-copy-gate.py` mar exportal (`_EMAIL_OFFBRAND_DANGEROUS_RE`,
+  `_EMAIL_OFFBRAND_GMAIL_VERB_RE`, `_EMAIL_OFFBRAND_VERB_SUFFIX_RE`), nem ujraimplementalva. Ket
+  uj eset `scripts/__tests__/credential-gate.test.py`-ban, piros a 62f4c6ae0-n, zold itt.
+- L2 KORREKCIO a fentebbi, 2026-11-06-i "upstream e2199840..a6325a498 merged" bejegyzeshez: az ott
+  irt "upstream `classify_mail_tool`/recipient-ledger NEM adoptalva" mondat FELREVEZETO volt.
+  A valosag (Cybersec GO 28369 L2 lelete, en mertem utana): `classify_mail_tool` MAGA a Python
+  oldalon ADOPTALVA van (`email_extract.py` definialja, `email-approval-gate.py` hasznalja
+  `scope_kind`/`classify_tool` neven), csak a JS ikerpar (`classifyMailTool`
+  `email-send-gate.mjs`-ben) es a hozza tartozo recipient-ledger funkcio NEM adoptalt -- a kettot
+  korabban osszemostam. A kodban nincs mit javitani (a viselkedes mar helyes volt), csak a
+  dokumentacios allitas volt pontatlan; ezzel a bejegyzessel javitva, a korabbi sor VALTOZATLANUL
+  marad (farokba-iras szabaly, nem szerkesztjuk at a regi bejegyzest).
+- L3 (nem javitva, szandekosan): a ket look-alike nev (`forwarding_settings`, `send_drafts_list`)
+  a copy kapun kivetelezett (olvasas-szeru), az approval es sub-agent kapun meg tiltott marad --
+  fail-closed iranyu inkonzisztencia (egy sub-agent olvasas-celu hivasa feleslegesen tiltott), nem
+  biztonsagi lyuk. Kulon kartyara halasztva, ha zavaro lesz a gyakorlatban.
+- L1 (reszben): a konfliktusok dontese a REVIEW-ban es a DECISIONS-bejegyzesekben felsorolva,
+  de nem fajlonkenti tablazat formaban -- ez a bejegyzes es a fentebbi REVIEW/DECISIONS-sorok
+  egyutt adjak a teljes listat (7 ACKNOWLEDGED_UPSTREAM_BLOBS fajl + a ket mandatory bypass + F1-F3
+  + M1), kulon tablazat nem keszult.
+
+**Ki dontott:** backend3 (card bb562959), Cybersec GO 28369 M1/L1/L2/L3 pontjai alapjan (MikroB
+16614 dontese: fold in). Gate: QA + Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959: merge-rezolucios javitasok a landolas elott (farokba-iras + blob-pin)
+
+**Dontes:** a landolas harom korben visszautasitva, mindegyik javitva:
+1. `git merge --no-ff origin/develop` x2 (origin/develop gyorsan mozgott, tobb korben kellett
+   friss allaphoz igazitani): mindket merge tiszta volt (nincs konfliktus-jelzo), fleet-test zold.
+2. DECISIONS.md farokba-iras serules: a merge-ek a kartya 4 sajat bejegyzeset origin/develop
+   NOVEKVO vege KOZEPERE illesztettek (nem a VALODI vegre), mert minden merge csak a sajat,
+   korabbi kozos osre vonatkozo pozciot ismerte. Javitva: mind a 4 bejegyzes attelepitve origin/
+   develop jelenlegi tartalmanak VALODI vegere, `cmp`-vel ellenorizve byte-pontos prefix.
+3. `src/fork-upstream/acknowledged-conflicts.ts` `.claude/settings.json` pin hibas volt (MikroB
+   16683 lelete): az `ACKNOWLEDGED_UPSTREAM_BLOBS` map minden fajlt az UPSTREAM blob-jara pinnel
+   (a modul sajat fejlec-megjegyzese szerint), nem a fork sajat tartalmara -- az elso
+   konfliktus-feloldasom a FORK utani merge blob-jat (`git hash-object`) irta be hibasan. Javitva
+   a valodi upstream blob-ra, kozvetlenul ellenorizve: `git rev-parse upstream/main:.claude/settings.json`
+   = `37818edc2d8691a69ded224848eff767a04b4a3d`.
+
+Ezen a koron SEMMI nem erintette a kartya sajat gatet kapott fajljait (scripts/, src/kg/,
+src/web/kanban-assignee-guard.ts): `git diff --stat 7f7ff1243 <uj-sha> -- scripts/ src/kg/
+src/web/kanban-assignee-guard.ts` ures minden kozbenso commitra.
+
+**Ki dontott:** backend3 (card bb562959), MikroB 16683 lelete + sajat merge-feloldasi hibak
+javitasa. Gate: QA + Cybersec + Cybered (delta re-gate a vegso shara).
+
+## 2026-11-06 -- card bb562959: delta 2 (second develop-conflict resolution, MikroB 16805)
+
+**Dontes:** `origin/develop` tovabb mozdult a kartya elozo (MikroB 16683) javitasa ota, ket uj
+konfliktus: DECISIONS.md (varhato tail-append utkozes, ugyanaz a mechanizmus mint az elozo
+korban -- a kartya sajat bejegyzesei a FEJLECBOL kinyerve, origin/develop AKTUALIS tartalmanak
+vegere fuzve, `cmp`-vel byte-pontosan ellenorizve) ES
+`src/__tests__/project-settings-hook-anchor.test.ts` (NEM varhato -- tenyleges masodik
+konfliktus). Diagnosztika: tisztan additiv/additiv latszat-konfliktus, nem design-utkozes --
+a kartya sajat 3 anchor-bejegyzese (credential-gate.py + email-approval-gate.py gmail-matcher
+kiszelesites) ES `origin/develop` fuggetlenul hozzaadott 1 bejegyzese (db-write-guard.py @ Bash,
+kartyak c1766c6c/c5243203e) ugyanazon ket ponton allt be. Feloldas MikroB jovahagyasaval
+(16805): mind a 4 uj bejegyzes megtartva, semmi mas nem valtozott a fajlban.
+
+**Ki dontott:** MikroB (16805), backend3 vegezte el. Gate: delta re-gate QA + Cybered, csak a
+666ae06a729ab3a63d2ed313e21d061f30ff1641 elleni diffre.
