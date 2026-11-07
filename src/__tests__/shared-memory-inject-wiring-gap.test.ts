@@ -9,7 +9,7 @@
 // Same shape as taskstate-replay-matcher.test.ts: a sandboxed unit-test section for the boot
 // backfill function, then a static-file section that reads the REAL seed templates and the
 // generic template so drift here is caught without needing a live install.
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -18,7 +18,12 @@ const SANDBOX = mkdtempSync(join(tmpdir(), 'shared-mem-inject-wiring-'))
 
 vi.mock('../config.js', async (orig) => {
   const actual = await orig<typeof import('../config.js')>()
-  return { ...actual, PROJECT_ROOT: SANDBOX, MAIN_AGENT_ID: 'marveen' }
+  // STORE_DIR is a top-level `const` in config.ts (join(PROJECT_ROOT, 'store')), computed once
+  // when the REAL module body runs above (via `orig()`) -- overriding PROJECT_ROOT alone does NOT
+  // retroactively move it, so it must be overridden explicitly too, or ensureSharedMemoryInject's
+  // enabled_agents read falls through to the REAL (gitignored, often-absent-in-a-worktree)
+  // store/session-memory-inject-agents.json instead of this test's sandboxed one.
+  return { ...actual, PROJECT_ROOT: SANDBOX, STORE_DIR: join(SANDBOX, 'store'), MAIN_AGENT_ID: 'marveen' }
 })
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -48,10 +53,24 @@ function taskstateOnlyEntry() {
   return { matcher: 'startup|resume|compact|clear', hooks: [{ type: 'command', command: 'python3 /opt/marveen/scripts/hooks/taskstate-replay.py', timeout: 15 }] }
 }
 
+// RedHat NO-GO on f1309aae4 (dispatch 16908), F2: the backfill must only wire an agent that is
+// actually on store/session-memory-inject-agents.json's enabled_agents list -- wiring an
+// unlisted agent (elemzo, in the real fleet) contradicted this very test file's own
+// "correctly bare" claim for it. Sandbox the config file the same way agent settings are
+// sandboxed, so the unit tests below control exactly who is "enabled" instead of depending on
+// the real fleet's list.
+function seedEnabledAgents(names: string[]): void {
+  mkdirSync(join(SANDBOX, 'store'), { recursive: true })
+  writeFileSync(join(SANDBOX, 'store', 'session-memory-inject-agents.json'), JSON.stringify({ enabled_agents: names }))
+}
+
 afterAll(() => rmSync(SANDBOX, { recursive: true, force: true }))
 
 describe('ensureSharedMemoryInject (boot backfill, card 86d5de34 F3)', () => {
-  beforeEach(() => rmSync(join(SANDBOX, 'agents'), { recursive: true, force: true }))
+  beforeEach(() => {
+    rmSync(join(SANDBOX, 'agents'), { recursive: true, force: true })
+    seedEnabledAgents(['backend2'])
+  })
 
   it('wires the hook from scratch for a non-gate agent that has none (backend2 repro)', () => {
     const p = seedAgent('backend2', [taskstateOnlyEntry()])
@@ -82,6 +101,7 @@ describe('ensureSharedMemoryInject (boot backfill, card 86d5de34 F3)', () => {
   })
 
   it.each(GATE_AGENTS)('never touches a gate agent (%s): the gate-specific function owns that', (agent) => {
+    seedEnabledAgents(['backend2', agent]) // enabled or not, a gate agent is excluded either way
     seedAgent(agent, [taskstateOnlyEntry()])
     expect(ensureSharedMemoryInject(agent)).toBe(false)
     expect(JSON.stringify(readSettings(settingsPath(agent)))).not.toContain('shared-memory-inject.py')
@@ -98,6 +118,72 @@ describe('ensureSharedMemoryInject (boot backfill, card 86d5de34 F3)', () => {
     writeFileSync(p, '{ this is not json')
     expect(ensureSharedMemoryInject('broken')).toBe(false)
     expect(readFileSync(p, 'utf8')).toBe('{ this is not json')
+  })
+
+  // RedHat F2 (dispatch 16908), red-first: an agent NOT on enabled_agents must stay untouched,
+  // even though it otherwise qualifies (non-gate, has a settings.json, no hook yet) -- this is
+  // elemzo's exact live shape.
+  it('F2: an agent not on enabled_agents is left untouched (elemzo repro)', () => {
+    seedEnabledAgents(['backend2']) // elemzo deliberately absent
+    const p = seedAgent('elemzo', [taskstateOnlyEntry()])
+    const before = readFileSync(p, 'utf8')
+    expect(ensureSharedMemoryInject('elemzo')).toBe(false)
+    expect(readFileSync(p, 'utf8')).toBe(before)
+  })
+
+  // RedHat F2, the fail-safe-off default: a missing/unreadable config file means nobody is
+  // enabled, same posture as shared-memory-inject.py's own _feature_enabled_agents().
+  it('F2: a missing session-memory-inject-agents.json means nobody is enabled', () => {
+    rmSync(join(SANDBOX, 'store', 'session-memory-inject-agents.json'), { force: true })
+    const p = seedAgent('backend2', [taskstateOnlyEntry()])
+    const before = readFileSync(p, 'utf8')
+    expect(ensureSharedMemoryInject('backend2')).toBe(false)
+    expect(readFileSync(p, 'utf8')).toBe(before)
+  })
+})
+
+// RedHat F1 (dispatch 16908), the #1305 class: this backfill must never reach the owner's
+// user-global ~/.claude/settings.json, same refusal every other scaffold hook writer has
+// (hook-scope-main-refusal.test.ts). agentSettingsPath(MAIN_AGENT_ID) resolves through
+// node:os homedir() -- NOT PROJECT_ROOT -- so HOME itself is redirected per test (same pattern
+// as hook-scope-main-refusal.test.ts), never the real operator home.
+describe('ensureSharedMemoryInject refuses the main agent (RedHat F1 on f1309aae4)', () => {
+  let fakeHome: string
+  let realHome: string | undefined
+
+  beforeEach(() => {
+    realHome = process.env.HOME
+    fakeHome = mkdtempSync(join(tmpdir(), 'shared-mem-inject-mainrefusal-'))
+    process.env.HOME = fakeHome
+    mkdirSync(join(fakeHome, '.claude'), { recursive: true })
+  })
+
+  afterEach(() => {
+    process.env.HOME = realHome
+    rmSync(fakeHome, { recursive: true, force: true })
+  })
+
+  function mainSettingsPath(): string {
+    return join(fakeHome, '.claude', 'settings.json')
+  }
+
+  it('red-first: even when the main agent IS on enabled_agents, the write is refused', () => {
+    // Deliberately enabling 'marveen' proves the refusal is explicit (refuseMainAgentHookWrite),
+    // not an accidental side effect of it never being on the list.
+    seedEnabledAgents(['marveen'])
+    const p = mainSettingsPath()
+    writeFileSync(p, JSON.stringify({ hooks: { SessionStart: [taskstateOnlyEntry()] } }))
+    const before = readFileSync(p, 'utf8')
+    expect(ensureSharedMemoryInject('marveen')).toBe(false)
+    expect(readFileSync(p, 'utf8')).toBe(before)
+  })
+
+  it('mutation control: a sub-agent in the same sandbox still gets wired', () => {
+    seedEnabledAgents(['marveen', 'backend2'])
+    rmSync(join(SANDBOX, 'agents'), { recursive: true, force: true })
+    const p = seedAgent('backend2', [taskstateOnlyEntry()])
+    expect(ensureSharedMemoryInject('backend2')).toBe(true)
+    expect(JSON.stringify(readSettings(p))).toContain('shared-memory-inject.py')
   })
 })
 
@@ -131,20 +217,48 @@ describe('the generic template and every seed that has its own SessionStart bloc
   // elemzo) is correctly bare -- that is not this card's bug. A gate seed's --agent-qualified
   // entry is covered by the gate function's own tests, not this one.
   const configPath = join(REPO_ROOT, 'store', 'session-memory-inject-agents.json')
-  const enabledSet: Set<string> = existsSync(configPath)
-    ? new Set(
-        (JSON.parse(readFileSync(configPath, 'utf8')) as { enabled_agents?: unknown }).enabled_agents as string[] ?? [],
-      )
-    : new Set()
-  it.each(seeds.filter((s) => !GATE_AGENTS.includes(s) && enabledSet.has(s)))('%s: shared-memory-inject is wired', (agent) => {
-    const d = JSON.parse(readFileSync(join(seedDir, agent, '.claude', 'settings.json'), 'utf8')) as {
-      hooks?: { SessionStart?: { hooks?: { command?: string }[] }[] }
-    }
-    const entries = (d.hooks?.SessionStart ?? []).filter((e) =>
-      (e.hooks ?? []).some((h) => (h.command ?? '').includes('shared-memory-inject.py')),
+  // Card 2aaa447e's own class, folded in here per MikroB dispatch 16908 (same file): when the
+  // config is absent, `it.each` on an empty array silently reports ZERO test cases -- indistinguishable
+  // from "ran and passed" in a report, which is how RedHat's F3 found the per-seed guard weaker
+  // than claimed in a disposable gate worktree (the gitignored config file does not exist there).
+  // A named, visible it.skip makes the degenerate case show up in the test list instead of just
+  // vanishing.
+  if (!existsSync(configPath)) {
+    it.skip('store/session-memory-inject-agents.json is absent on this checkout -- per-seed enabled check skipped visibly', () => {})
+  } else {
+    const enabledSet: Set<string> = new Set(
+      (JSON.parse(readFileSync(configPath, 'utf8')) as { enabled_agents?: unknown }).enabled_agents as string[] ?? [],
     )
-    expect(entries.length).toBeGreaterThanOrEqual(1)
-  })
+    it.each(seeds.filter((s) => !GATE_AGENTS.includes(s) && enabledSet.has(s)))('%s: shared-memory-inject is wired', (agent) => {
+      const d = JSON.parse(readFileSync(join(seedDir, agent, '.claude', 'settings.json'), 'utf8')) as {
+        hooks?: { SessionStart?: { hooks?: { command?: string }[] }[] }
+      }
+      const entries = (d.hooks?.SessionStart ?? []).filter((e) =>
+        (e.hooks ?? []).some((h) => (h.command ?? '').includes('shared-memory-inject.py')),
+      )
+      expect(entries.length).toBeGreaterThanOrEqual(1)
+    })
+  }
+
+  // Card 2aaa447e: the it.each above depends on a gitignored, often-absent-in-a-gate-worktree
+  // live file -- exactly the three agents THIS card (86d5de34 F3) is about (backend2, backend3,
+  // logs) therefore need a guard that does NOT depend on it. Hardcoded by name (not derived from
+  // the config file), so it runs identically whether or not session-memory-inject-agents.json
+  // exists on this checkout.
+  it.each(['backend2', 'backend3', 'logs'])(
+    '%s: either its own seed carries the hook, or it has no seed of its own (template-provisioned) -- independent of the live config file',
+    (agent) => {
+      const seedSettings = join(seedDir, agent, '.claude', 'settings.json')
+      if (!existsSync(seedSettings)) return // no seed of its own -- the generic-template test above covers it
+      const d = JSON.parse(readFileSync(seedSettings, 'utf8')) as {
+        hooks?: { SessionStart?: { hooks?: { command?: string }[] }[] }
+      }
+      const wired = (d.hooks?.SessionStart ?? []).some((e) =>
+        (e.hooks ?? []).some((h) => (h.command ?? '').includes('shared-memory-inject.py')),
+      )
+      expect(wired).toBe(true)
+    },
+  )
 })
 
 // ---------------------------------------------------------------------------

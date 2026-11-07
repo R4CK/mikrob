@@ -2228,8 +2228,33 @@ export function ensureGateSharedMemoryInjectAgentArg(name: string): boolean {
 // requirement and its own exclusion history -- duplicating that logic here would be a second place
 // for the two to disagree). A non-gate agent's command carries no --agent flag, matching every
 // already-correctly-wired non-gate seed (e.g. backend).
+// Card ac0bf02d is unrelated; this is b2f7ede4's own re-gate (RedHat NO-GO on f1309aae4, dispatch
+// 16908). F2: reads the SAME enabled_agents list the hook itself checks at runtime
+// (_feature_enabled_agents() in shared-memory-inject.py) -- wiring the hook into an agent's
+// settings.json for an agent NOT on that list would make the backfill's own effect invisible (the
+// hook would run but immediately no-op), while actively rewiring an agent the operator explicitly
+// chose to exclude (this card's own test already expected elemzo to stay bare; the backfill
+// function contradicted its own test). Missing/unreadable file -> nobody enabled, same fail-safe-off
+// default the Python side uses.
+function readSharedMemoryInjectEnabledAgents(): Set<string> {
+  try {
+    const raw = readFileSync(join(STORE_DIR, 'session-memory-inject-agents.json'), 'utf-8')
+    const parsed = JSON.parse(raw) as { enabled_agents?: unknown }
+    return new Set(Array.isArray(parsed.enabled_agents) ? parsed.enabled_agents.filter((a): a is string => typeof a === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
 export function ensureSharedMemoryInject(name: string): boolean {
+  // F1: the #1305 class -- this function must never reach the owner's user-global
+  // ~/.claude/settings.json. The main agent was never part of the approved rollout (Peti 10914)
+  // and is not in enabled_agents either, but the exclusion is explicit here (not left to the list
+  // check alone) because a memory-INJECTING hook firing in the owner's own, unrelated sessions is
+  // exactly the harm refuseMainAgentHookWrite exists to block, same as the other four callers.
+  if (refuseMainAgentHookWrite(name, 'ensureSharedMemoryInject')) return false
   if ((SHARED_MEMORY_GATE_AGENT_NAMES as readonly string[]).includes(name)) return false
+  if (!readSharedMemoryInjectEnabledAgents().has(name)) return false
   const settingsPath = agentSettingsPath(name)
   if (!existsSync(settingsPath)) return false
   let settings: Record<string, unknown> = {}
