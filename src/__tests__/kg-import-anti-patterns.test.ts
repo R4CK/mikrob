@@ -175,6 +175,51 @@ describe('importAntiPatterns (MT-10d, card 33e5e4ff)', () => {
     expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:4')).toBeTruthy()
   })
 
+  // Card 80ab5067 (Cybersec GO 23524 on 4ecd75d0: "the DECISIONS-row catch and the card-title
+  // catch survive rethrow-mutation -- 2 of 22 mutants, nothing here exercised them"). Both pin
+  // the SAME isolation property F-d already proved for comments, for the two remaining catch
+  // sites: linkToCard's card-node write (import-anti-patterns.ts ~line 148) and the
+  // decisionEntries loop's own upsertNode (~line 246).
+  it('F-d (card 80ab5067): a secret-shaped CARD TITLE is skipped (no card node, no link), the comment anti_pattern and every other row still import', () => {
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    // card1 is comment 1's card -- its TITLE (not the comment body) now carries a secret shape.
+    mainDb
+      .prepare(`UPDATE kanban_cards SET title = title || ' ghp_${'a'.repeat(36)}' WHERE id = 'card1'`)
+      .run()
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.rowsRejectedSecret).toBe(1)
+    expect(report.secretRejectedSources).toEqual(['kanban_cards:card1'])
+    // The comment's OWN anti_pattern node still exists -- only the card link is rejected.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+    expect(report.decisionAntiPatternsUpserted).toBe(2)
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:1')).toBeTruthy()
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('card:card1')).toBeUndefined()
+    expect(kgDb.prepare(`SELECT 1 FROM kg_edges WHERE src = 'anti_pattern:comment:1' AND rel = 'rejected_for'`).get()).toBeUndefined()
+  })
+
+  it('F-d (card 80ab5067): a secret-shaped DECISIONS entry body is skipped, every other DECISIONS row and every comment still import', () => {
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    const poisonedDecisions = SAMPLE_DECISIONS_MD.replace(
+      'ELUTASITVA, lásd cafebabe.** A javaslat egy másik, már megépült architektúrát duplikált\nvolna.',
+      `ELUTASITVA, lásd cafebabe.** A javaslat egy másik, már megépült architektúrát duplikált\nvolna. ghp_${'a'.repeat(36)}`,
+    )
+
+    const report = importAntiPatterns(mainDb, kgDb, poisonedDecisions, 'mikrob')
+
+    expect(report.rowsRejectedSecret).toBe(1)
+    expect(report.secretRejectedSources).toHaveLength(1)
+    expect(report.secretRejectedSources[0]).toMatch(/^DECISIONS\.md:L\d+$/)
+    // Only 1 of the 2 DECISIONS rejections survives; both comment anti_patterns are unaffected.
+    expect(report.decisionAntiPatternsUpserted).toBe(1)
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
+
   // F-b (card 4ecd75d0, source card description): a gate agent or a generated/automated comment
   // author is not an eligible anti-pattern source, even with a line-start ELUTASITVA marker.
   it('F-b: a Draft-Review: ELUTASITVA comment from a gate agent or a generated author is skipped', () => {
@@ -194,6 +239,117 @@ describe('importAntiPatterns (MT-10d, card 33e5e4ff)', () => {
     expect(report.commentsSkippedAuthor).toBe(2)
     expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:5')).toBeUndefined()
     expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:6')).toBeUndefined()
+    // The original, eligible-author comment still imports normally.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
+
+  // Card 80ab5067 (WhiteHat LOW on 4ecd75d0, F2): the bare `.toLowerCase()` deny-list membership
+  // test let a trailing space ('qa ') and a Cyrillic look-alike ('qа', Cyrillic а U+0430) through
+  // as "eligible", because neither matches the set's literal 'qa' string -- even though both name
+  // the same gate agent to a human reader.
+  it('F2: a whitespace- or homoglyph-disguised gate-agent name is still skipped as ineligible', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+           ('card1', 'qa ', 'Draft-Review: ELUTASITVA\n\nTrailing-space disguise.', 3000),
+           ('card1', 'qа', 'Draft-Review: ELUTASITVA\n\nCyrillic a disguise.', 3001)`,
+      )
+      .run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.commentsSkippedAuthor).toBe(2)
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:5')).toBeUndefined()
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('anti_pattern:comment:6')).toBeUndefined()
+    // The original, eligible-author comment still imports normally.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
+
+  // Card 80ab5067 delta (QA FAIL 28436 on 861e426ba): the F2 test above only covered the two
+  // EXACT look-alikes the card description named ('qa ', Cyrillic 'qа'), both of which happened
+  // to be in the old hand-curated CONFUSABLES table. QA demonstrated that ANY look-alike outside
+  // that table (Cyrillic п/д) still sailed through as "eligible" -- the fix removes the table
+  // entirely (hasNonAsciiIdentityResidue, kanban-assignee-guard.ts) rather than extending it, so
+  // this pins FOUR distinct scripts, including the two QA used verbatim, to prove the fix is not
+  // just "two more entries in the same table".
+  it('F2 delta: a non-ASCII look-alike from ANY script is skipped, not just the two the card named', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+           ('card1', 'gemiпi-orch-review', 'Draft-Review: ELUTASITVA\n\nCyrillic п (QA 28436 exact spoof).', 4000),
+           ('card1', 'cybereд', 'Draft-Review: ELUTASITVA\n\nCyrillic д (QA 28436 exact spoof).', 4001),
+           ('card1', 'gate-ρretriage', 'Draft-Review: ELUTASITVA\n\nGreek rho lookalike for p.', 4002),
+           ('card1', 'lօcal-llm', 'Draft-Review: ELUTASITVA\n\nArmenian o lookalike.', 4003)`,
+      )
+      .run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.commentsSkippedAuthor).toBe(4)
+    for (const id of [5, 6, 7, 8]) {
+      expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get(`anti_pattern:comment:${id}`)).toBeUndefined()
+    }
+    // The original, eligible-author comment still imports normally.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
+
+  // Card 80ab5067 round 5 (MikroB fix direction point 2, QA FAIL 28510): hardens isEligibleAuthor
+  // the same way as isForbiddenAssignee's deaccentedIdentityForMatch fix -- a Hungarian-diacritic
+  // substitution into a reserved gate-agent name must also stay ineligible, not just an exact
+  // Cyrillic/Greek/Armenian look-alike.
+  it('round 5: a Hungarian-diacritic substitution into a gate-agent name is still skipped as ineligible', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+           ('card1', 'cybéred', 'Draft-Review: ELUTASITVA\n\nHungarian e-acute disguise for cybered.', 5000),
+           ('card1', 'qá', 'Draft-Review: ELUTASITVA\n\nHungarian a-acute disguise for qa.', 5001)`,
+      )
+      .run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.commentsSkippedAuthor).toBe(2)
+    for (const id of [5, 6]) {
+      expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get(`anti_pattern:comment:${id}`)).toBeUndefined()
+    }
+    // The original, eligible-author comment still imports normally.
+    expect(report.commentAntiPatternsUpserted).toBe(2)
+  })
+
+  // Card 80ab5067 round 5 addendum (MikroB 16702, WhiteHat probe 16701 on 9ff085b4e): the probe
+  // found the gap wider than the first two names -- ALL four GATE_AGENT_NAMES/GENERATED_COMMENT_
+  // AUTHORS reserved names were bypassable via a Hungarian-diacritic substitution, not just
+  // 'cybered'/'qa'. Pins the remaining four named by the probe (cybersec, local-llm,
+  // gate-pretriage, gemini-orch-review) in one test, since the mechanism is identical.
+  it('round 5 addendum: the same Hungarian-diacritic bypass closed for every other reserved name (MikroB 16702)', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb
+      .prepare(
+        `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+           ('card1', 'cybérsec', 'Draft-Review: ELUTASITVA\n\nHungarian e-acute disguise for cybersec.', 6000),
+           ('card1', 'lócal-llm', 'Draft-Review: ELUTASITVA\n\nHungarian o-acute disguise for local-llm.', 6001),
+           ('card1', 'gáte-pretriage', 'Draft-Review: ELUTASITVA\n\nHungarian a-acute disguise for gate-pretriage.', 6002),
+           ('card1', 'gémini-orch-review', 'Draft-Review: ELUTASITVA\n\nHungarian e-acute disguise for gemini-orch-review.', 6003)`,
+      )
+      .run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    const report = importAntiPatterns(mainDb, kgDb, SAMPLE_DECISIONS_MD, 'mikrob')
+
+    expect(report.commentsSkippedAuthor).toBe(4)
+    for (const id of [5, 6, 7, 8]) {
+      expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get(`anti_pattern:comment:${id}`)).toBeUndefined()
+    }
     // The original, eligible-author comment still imports normally.
     expect(report.commentAntiPatternsUpserted).toBe(2)
   })

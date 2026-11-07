@@ -1109,17 +1109,28 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // required the literal string "gmail__"/"resend__" -- no hyphen before it (google-gmail__), no
 // suffix after it (gmail-mcp__). Either shape skipped the matcher entirely, so the hooks never
 // even ran (not "ran and allowed" -- never reached). Widened to match the word as a substring
-// anywhere in the server segment, hyphens included on both sides. VERIFIED (upstream-sync batch
-// 6, node -e test) this ALREADY matches upstream's own cited regression case,
-// mcp__server-gmail-autoauth-mcp__draft_email -- MATCHERGMAILSEG920's independent fix for the
-// same underlying gap was against an OLDER, narrower matcher this fork had already widened.
-// Upstream's draft-verb catch-all alternative (paired with its recipient-ledger feature) is NOT
-// adopted here: the ledger itself is NOT ADOPTED, in any form (Cybersec, card afd64623, HIGH --
-// addRecipient() validates the source STRING'S FORMAT only, never that the evidence is real, so
-// an agent can self-certify any address with --source owner). See
-// ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
+// anywhere in the server segment, hyphens included on both sides.
+//
+// Koteg 23a (upstream #1995, ADOPTED -- a pure string-constant widening, no classify_mail_tool/
+// recipient-ledger dependency pulled in): `.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*` still
+// requires "gmail"/"resend" IN THE SERVER SEGMENT -- a mail MCP registered under an unrelated
+// server name (e.g. a Google Workspace multiplexer) whose TOOL itself is named send_gmail_message,
+// draft_gmail_message, reply_all, send_draft, update_draft or create_draft skipped the matcher
+// entirely, so the sub-agent's email-send-gate.mjs never even ran for it (measured: none of these
+// six verbs require "gmail"/"resend" to appear with a bounding "__" on both sides, which is what
+// the fork's own pattern demands). Each such base is now its own bare alternative, with no server
+// name requirement at all. The three GENERIC connector words (send_message/reply/forward) stay
+// tied to "gmail" case-insensitively (including a "gmail" sitting in a tool PREFIX, which
+// `[Gg]mail.*__` alone would miss) -- the Telegram plugin's tool is `..._telegram__reply`, and the
+// email gates must never fire on it. Recipient-ledger itself is NOT ADOPTED, in any form
+// (Cybersec, card afd64623, HIGH -- addRecipient() validates the source STRING'S FORMAT only,
+// never that the evidence is real, so an agent can self-certify any address with --source owner).
+// See ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
+// Kept a FLAT alternation (no inner `|`): the drift test splits it on '|'.
 export const EMAIL_GATE_MATCHER =
-  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*'
+  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
+  + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
+  + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
@@ -3449,6 +3460,14 @@ const FRONTEND_FAMILY = new Set(['fron-ted', 'fron-teddy'])
 // observability-and-instrumentation, quota-management, loop-engineering, skill-management,
 // deprecation-and-migration) at 0 uses; curated table mirrors the BACKEND_FAMILY pattern.
 const DEVO_FAMILY = new Set(['fullstack'])
+// Card 17eeebe6: Teszter gets an e2e-tester-specific curated table (Peti Telegram 12208+12210:
+// "nem kell hogy parkoljon, nyugodtan meg lehet hívni"). Measured baseline (MikroB Telegram
+// 12208): no comment since Oct 4, Core only 5 entries, white-hat-security-testing in the local
+// skillset despite sign-off belonging to WhiteHat/WhiteHat2 only, and user-manual-assembler
+// (README feature-list/USER-MANUAL.md cross-check, root CLAUDE.md's own user-manual rule) not
+// in Core even though that verification is Teszter's own job. Curated table mirrors the
+// BACKEND_FAMILY pattern.
+const TESZTER_FAMILY = new Set(['teszter'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
@@ -3618,6 +3637,33 @@ export function buildDevOFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
+// Exported for test rendering (card 17eeebe6, mirrors the DevO precedent, WhiteHat2 F4): callers
+// assert on this function's actual return value instead of slicing the source text, so a
+// commented-out row shows up as a missing row, not as a still-matching substring.
+export function buildTesterFamilySkillUsageBody(): string {
+  const rows = [
+    '| Végigkattintás, képernyőkép, console/network | `browser-testing-with-devtools`, `webapp-testing` |',
+    '| Flow-teljesség (9. szabály) | `user-flow-menu-design` |',
+    '| Szerepkörönkénti RBAC e2e | `e2e-rbac-hierarchical-testing`, `rbac-authz-matrix-audit` |',
+    '| Hibaüzenetek (12. szabály) | `fe-rule12-audit` |',
+    '| Reszponzív, touch (13. szabály) | `rule13-touch-target-compliance` |',
+    '| Akadálymentesség | `wcag-overlay-patterns` |',
+    '| i18n | `i18n-parity-sweep` |',
+    '| Valós felhasználói út, használhatóság | `dogfooding`, `usability-testing` |',
+    '| Funkciólista, user manual hitelesítés | `user-manual-assembler` |',
+    '| Teljes audit (csak kérésre) | `full-value-audit` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 17eeebe6)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3631,6 +3677,7 @@ function buildSkillUsageBody(name: string): string | null {
   if (REDHAT_FAMILY.has(name)) return buildRedHatFamilySkillUsageBody()
   if (FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()
   if (DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()
+  if (TESZTER_FAMILY.has(name)) return buildTesterFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null

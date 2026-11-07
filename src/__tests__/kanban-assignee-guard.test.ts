@@ -61,8 +61,55 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee('мikrob')).toBe(true) // Cyrillic м (U+043C) in place of m
   })
 
-  it('does not fold an unrelated real agent name into a false positive', () => {
-    expect(isForbiddenAssignee('bаckend2')).toBe(false) // Cyrillic а folded to "a" -> "backend2", still not mikrob
+  // Card 80ab5067 delta (QA FAIL 28436 on 861e426ba): this used to assert the OPPOSITE --
+  // 'bаckend2' (Cyrillic а) folded to "backend2" via a hand-curated confusables table and was
+  // judged NOT forbidden, since "backend2" != "mikrob". That table missed every look-alike it had
+  // not enumerated (QA demonstrated Cyrillic п/д survive untouched), so the fix removed the table
+  // entirely: ANY non-ASCII survivor after NFKC+filtering is now fail-closed forbidden, whichever
+  // real id it superficially resembles -- assignee values in this fleet are always plain ASCII,
+  // so a non-ASCII residue of ANY kind is itself the signal, not a specific resemblance to
+  // "mikrob". A truly plain-ASCII "backend2" (no disguise at all) still passes, confirmed below.
+  it('fails closed on ANY non-ASCII residue, even one that superficially resembles an unrelated agent name', () => {
+    expect(isForbiddenAssignee('bаckend2')).toBe(true) // Cyrillic а -- fail-closed, not "folds to backend2"
+    expect(isForbiddenAssignee('backend2')).toBe(false) // plain ASCII, no residue at all
+  })
+
+  // Cybersec GO 28465 L1 (on 861e426ba): U+115F (HANGUL CHOSEONG FILLER) is invisible but
+  // \p{L}-category, so it survived the old letters-and-digits-only filter as a distinct,
+  // un-enumerated character -- "mi" + U+115F + "krob" looked like plain "mikrob" visually but
+  // was NOT equal to it after the old fold (an extra, un-mapped letter), so the OLD code read it
+  // as NOT forbidden. The fail-closed rule (any non-ASCII survivor) catches it without having to
+  // name it specifically.
+  it('fails closed on an invisible-but-letter-category code point (U+115F, Cybersec 28465 L1)', () => {
+    expect(isForbiddenAssignee('miᅟkrob')).toBe(true)
+  })
+
+  // Full-suite regression (card 80ab5067 round 4): the FIRST fail-closed version flagged every
+  // non-ASCII survivor, which broke real assignee values in this install -- "andrás"/"András" are
+  // genuine Hungarian owner names (src/__tests__/commands-read.test.ts's own fixtures), not
+  // look-alikes of anything. Hungarian's own accented letters are now explicitly allowed
+  // alongside ASCII; everything else (Cyrillic, Greek, Armenian, small-caps, Hangul filler) still
+  // fails closed, per the other cases in this describe block.
+  it('does NOT fail closed on a genuine Hungarian name (not a look-alike of anything)', () => {
+    expect(isForbiddenAssignee('andrás')).toBe(false)
+    expect(isForbiddenAssignee('András')).toBe(false)
+    expect(isForbiddenAssignee('Mónika')).toBe(false)
+    expect(isForbiddenAssignee('Péter')).toBe(false) // MikroB 16702 addendum pin
+  })
+
+  // Card 80ab5067 round 5 (QA FAIL 28510): round 4's Hungarian carve-out in
+  // hasNonAsciiIdentityResidue let a Hungarian-letter substitution into "mikrob" survive the
+  // residue check (a real Hungarian letter, not a look-alike script) AND fail the literal
+  // normalizeIdentityForMatch equality (the accent is never stripped there) -- so none of these
+  // were forbidden before the deaccentedIdentityForMatch fix. De-accenting (NFD + strip \p{M})
+  // recovers the plain base letter and catches all of them, without affecting "andrás" above
+  // (de-accents to "andras", not "mikrob").
+  it('fails closed on a Hungarian-diacritic substitution into "mikrob" (QA FAIL 28510)', () => {
+    expect(isForbiddenAssignee('mikrób')).toBe(true) // o -> o-acute
+    expect(isForbiddenAssignee('mikrőb')).toBe(true) // o -> o-double-acute
+    expect(isForbiddenAssignee('mikröb')).toBe(true) // o -> o-umlaut
+    expect(isForbiddenAssignee('míkrob')).toBe(true) // i -> i-acute
+    expect(isForbiddenAssignee('MIKRÓB')).toBe(true) // uppercase variant
   })
 
   // RedHat NO-GO delta B2 (komment 15997, kartya e25a549a): a korabbi, hatarolt INVISIBLE_RE

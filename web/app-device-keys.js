@@ -519,7 +519,12 @@ function buildSettingRow(def) {
 
   const desc = document.createElement('div')
   desc.className = 'settings-row-desc'
-  desc.textContent = t('settings.desc.' + def.key) || def.description
+  // t() returns the key itself on a miss (app.js:19-24), which is truthy, so `|| def.description`
+  // never ran -- card d96f1418. Compare against the key, the same miss signal t()'s own dev-mode
+  // warning already uses, instead of a falsy check.
+  const descKey = 'settings.desc.' + def.key
+  const descText = t(descKey)
+  desc.textContent = descText === descKey ? def.description : descText
   info.appendChild(desc)
 
   const meta = document.createElement('div')

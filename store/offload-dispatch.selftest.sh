@@ -727,19 +727,23 @@ check "freellm sensitive card (authz stem) -> --test-freellm-attempt prints gate
 check "freellm sensitive card -> exit code 4" "$sensitive_rc" "4"
 
 # Case 3: GPU-hold -- the capacity-route sweep branch must try freellm per leaf, not just give up.
-# Fed two leaves with project "mikrob" (so they clear the is_freellm_blocked project gate), switch
-# ON, NO auth-token file: the plain leaf clears every gate and only then hits the (missing)
-# auth-token check -> "disabled", still zero network calls; the sensitive leaf (title contains the
-# "authz" stem) is now caught by is_freellm_blocked's OWN content gate (M1 fix, WhiteHat NO-GO
-# 28484) BEFORE freellm-call.sh is even invoked -> "blocked". The point of this case is the
-# ROUTING, not the live API: both leaves got a freellm routing DECISION instead of the old
-# unconditional skip, and the gate still tells them apart.
-gpu_hold_out="$(printf '[{"id":"leafPlain","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafSensitive","project":"mikrob","title":"authz modul","description":"irj meg egy authz ellenorzest"}]' \
+# Fed three leaves with project "mikrob" (so they clear the is_freellm_blocked project gate),
+# switch ON, NO auth-token file: leafPlain carries no "gemini-ok" marker and is now (card 392d7104,
+# Peti 13201) BLOCKED by is_freellm_blocked's marker check before freellm-call.sh is even invoked;
+# leafWithMarker carries the marker, clears the gate, and only then hits the (missing) auth-token
+# check -> "disabled", still zero network calls; the sensitive leaf (title contains the "authz"
+# stem) is blocked by is_freellm_blocked's OWN content gate (M1 fix, WhiteHat NO-GO 28484) --
+# doubly so now, since it also lacks the marker. The point of this case is the ROUTING, not the
+# live API: every leaf got a freellm routing DECISION instead of the old unconditional skip, and
+# the gate still tells them apart.
+gpu_hold_out="$(printf '[{"id":"leafPlain","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafWithMarker","project":"mikrob","tags":"gemini-ok","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafSensitive","project":"mikrob","title":"authz modul","description":"irj meg egy authz ellenorzest"}]' \
   | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-no-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
-check "GPU-hold case: both leaves got a freellm routing decision (2 output lines, named by leaf id)" \
-  "$(printf '%s\n' "$gpu_hold_out" | wc -l | tr -d ' ')" "2"
-check "GPU-hold case: the plain leaf's freellm attempt is named (switch off here -> disabled)" \
-  "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafPlain disabled$')" "1"
+check "GPU-hold case: all three leaves got a freellm routing decision (3 output lines, named by leaf id)" \
+  "$(printf '%s\n' "$gpu_hold_out" | wc -l | tr -d ' ')" "3"
+check "card 392d7104 (Peti 13201): a clean leaf WITHOUT the gemini-ok marker never reaches freellm-call.sh (blocked)" \
+  "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafPlain blocked$')" "1"
+check "card 392d7104 (Peti 13201): the SAME leaf WITH the gemini-ok marker clears the gate and reaches freellm-call.sh (switch off here -> disabled)" \
+  "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafWithMarker disabled$')" "1"
 check "GPU-hold case: the sensitive leaf is blocked by is_freellm_blocked's own content gate, before freellm-call.sh" \
   "$(printf '%s\n' "$gpu_hold_out" | grep -c '^leafSensitive blocked$')" "1"
 

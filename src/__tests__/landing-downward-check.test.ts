@@ -81,10 +81,18 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // marveen-land.sh's own-case constant moved 3 -> 7 with card cd3e577b (F1 per-card
     // worktree/branch: card_designated_gates_agree + --card/--all gate-requirement cases), then
     // 7 -> 10 with card 3731c807 (cd3e577b follow-up: the acquire_land_lock call-site pin, the
-    // behavioral flock-release case, and the Designated: unknown-sentinel case) -- all three only
-    // touch marveen-land.sh's own --selftest block, not the shared lib or cleancore-land.sh's own.
+    // behavioral flock-release case, and the Designated: unknown-sentinel case), then
+    // 10 -> 14 with card 5d9731cd (FIFO ticket queue for the develop lock: atomic parallel
+    // ticket-sequencing, ordering-follows-ticket-order + mutation check, and the land_one
+    // call-site pin on the new wait-loop condition), then 14 -> 20 with card 81c6fbb5
+    // (5d9731cd follow-up: recycled-pid/pid-0 reaping red-then-green pairs, the seq-reset floor
+    // red-then-green pair, and the two T1 ticket-cleanup pins + two T1 reap-call mutation
+    // checks), then 20 -> 25 with the same card's re-gate round (CYBERSEC NO-GO 28862: the N1
+    // stray-file floor-scan crash, the N2 zero-padded-pid and N3 legacy-ticket reaping pairs,
+    // the Q3 fd-close call-site pin, and the N4 independent-field-parse pin) -- all touch
+    // marveen-land.sh's own --selftest block only, not the shared lib or cleancore-land.sh's own.
     expect(cc).toBeGreaterThan(41) // 41 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(10) // 10 = marveen-land.sh's own cases
-    expect(cc - 41).toBe(mv - 10) // the same shared block, in both
+    expect(mv).toBeGreaterThan(25) // 25 = marveen-land.sh's own cases
+    expect(cc - 41).toBe(mv - 25) // the same shared block, in both
   })
 })

@@ -23036,6 +23036,287 @@ Gate-SHA d3052b38d), Gate-SHA: see REVIEW comment.
 - Live sync per MikroB's addendum: the live global project-workflow skill now mentions `post-review.sh`, closing QA's BLOCKING 3. The live heartbeat-consolidated scheduled task is NOT synced -- blocked by the governance hard-gate forbidding non-MikroB writes under that path; the drafted D/5 text was handed to MikroB separately, since MikroB is the one who can apply it. QA's BLOCKING 2 (alert not live today) stays open until that happens.
 - Mutation-verified: reverting any of the M1/M2/M3/L1 fixes individually makes its matching selftest case fail.
 **Ki döntött:** backend (self-advance, card 88b67fb4, parent ed332869), per MikroB dispatch (msg_id:16755/16757). Gate: QA + WhiteHat. Gate-SHA: see REVIEW comment.
+## 2026-11-06 -- card bb562959 (Koteg 23a, phase e5c46e87): upstream e2199840..a6325a498 merged, mail-gate classifier cluster closed inside the fork structure
+
+**Dontes:** valodi `git merge --no-ff a6325a498` az elozo tartomany (23) landolt csucsarol, 5 upstream commit (#1995 classify mail tools by base-name suffix; #2065 +476 accentless dictionary entries + accent-only identifier mask; #2084 no outgoing alert quotes a permission card's command line; #2085 accent check masks a trailing-slash directory/key=value/quoted token; #2081/MAILGATEVARARGS1020 variable script path is a send only with a recipient flag). Fork szerkezet maradt: `_EMAIL_SERVER_RE`/`_EMAIL_SAFE_TOOL_RE`/owner-CC/deny-by-default a sajat kodban, upstream `classify_mail_tool`/recipient-ledger NEM adoptalva (ledger korabban elutasitva, card afd64623/b5b7eb6b).
+
+A ket kotelezo bypass zarva a fork sajat szerkezeten belul:
+- `.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*` tipusu matcher-ek (EMAIL_GATE_MATCHER, `.claude/settings.json`) ES az `outgoing-copy-gate.py`/`email-approval-gate.py`/`email-send-gate.mjs` belso klasszifikatorai most vendor-prefixelt (`v2_`, `work-`, `shared_inbox_`, prefix-elkulonito nelkul is) es off-server (nincs "gmail"/"resend" a szerver-szegmentben, pl. `mcp__workmail__reply_all`) eszkoznevet is felismernek es auditalnak -- korabban mindegyik atcsuszott auditalatlanul.
+- `outgoing-copy-gate.py` `manage_email` dispatchje most vendor-prefixelt szervernevet is felismer, es a `create_draft`/`update_draft`/`draft_email` muveleteket tenylegesen auditalja (gondolatjelre tiltva), nem a NEV alapjan menti ki -- `send_draft` (csak draftId, nincs sajat szoveg) kivetel marad, "nincs mit auditalni" alapon, nem fail-closed tiltas alapon.
+
+Negativ teszt mindket bypass-ra (upstream uj tesztjei is zoldek): `scripts/__tests__/outgoing-copy-gate.test.py` 235/235, `scripts/__tests__/email-approval-gate.test.py` 213/214 (1 kozmetikai, dokumentalt eltérő-szoveg-eset), `scripts/__tests__/credential-gate.test.py` ALL PASS, `src/__tests__/email-send-gate.test.ts` + `email-gate-matcher-drift.test.ts` + `fork-upstream-conflict-guard.test.ts` + `send-invocation-conformance.test.ts` 489/489 vitest.
+
+`ACKNOWLEDGED_UPSTREAM_BLOBS` (src/fork-upstream/acknowledged-conflicts.ts) 7 bejegyzese frissitve az a6325a498-nal tenylegesen mert blobra: `.claude/settings.json`, `scripts/email-send-gate.mjs`, `scripts/hooks/outgoing-copy-gate.py`, `scripts/hooks/email-approval-gate.py`, `scripts/hooks/email_extract.py`, `scripts/hooks/credential-gate.py`, `src/web/agent-scaffold.ts`, `src/__tests__/email-send-gate.test.ts`, `src/__tests__/project-settings-hook-anchor.test.ts`.
+
+**Ki dontott:** backend3 (card bb562959), MikroB dontes 16480 (valodi merge --no-ff, contiguous tartomany) + a kartya sajat "ket meresi bypass a fork szerkezeten belul" kotelezo pontja. Gate: QA + Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959 kiegeszites: fleet-test utojavitas
+
+A fenti merge (c6dc3c0be) utani `fleet-test.sh --ref` lelete ket apro, viselkedest nem erinto hibat
+talalt: 2 uj teszt-fajl (`outgoing-copy-gate-ekezet1018.test.py`, `-kapues1018-hatar.test.py`) nem
+futtathato bitkent volt nyilvantartva (`git update-index --chmod=+x`), es az `email-approval-gate.py`
+egyik kozmetikai uzenete nem nevezte meg az `email_extract.py` modult egy mar korabban is ismert,
+dokumentalt esetben. Mindket javitas kulon commitban (3da4aa767), ugyanaz a Gate-SHA erinti a
+teljes merge-landolast.
+
+**Ki dontott:** backend3 (card bb562959). Gate: QA + Cybersec + Cybered (valtozatlan).
+
+## 2026-11-06 -- card bb562959 delta-kor: QA FAIL 28338 + Cybered NO-GO 28354 (F1-F3) javitva
+
+**Dontes:** harom lelet zarva, mindegyikhez teszt ami piros a 9c18c2557-n es zold a javitason:
+- F1 (QA FAIL 28338, Cybered megerositve): `outgoing-copy-gate.py` manage_email dispatchje
+  `create_draft`/`update_draft`/`draft_email`/`draft` muveletekre most tenylegesen audital
+  (gondolatjelre tiltva), kulon `_MANAGE_EMAIL_DRAFT_OPS` halmazban, nem `_MANAGE_EMAIL_OUTBOUND_OPS`-ba
+  olvasztva (az mast jelent: "kuldes"). Ures test ("csak megvaltozott mezok") nem tiltas, hanem
+  "nincs mit auditalni".
+- F2 (Cybered NO-GO): a `_EMAIL_SAFE_TOOL_RE` (es ikerparjai `email-approval-gate.py`-ban es
+  `email-send-gate.mjs`-ben) negativ lookahead-je csak a VERB UTAN nezett -- egy veszelyes szo a
+  PREFIXBEN (send_and_get_thread, forward_get_x) lathatatlan volt neki. A lookahead a minta
+  ELEJERE mozgatva, a TELJES nevre nez. `email-approval-gate.py`-ban a `_CONNECTOR_SEND_VERB_RE`
+  is vegpont-horgonyrol token-mindenhol mintara valtott (forward_get_x).
+- F3 (Cybered NO-GO): `mcp__google_workspace__gmail_forward_message` "forward_message"-re
+  vegzodik, nem puszta "forward"-ra -- mindharom kapu (copy, approval, sub-agent) atengedte.
+  `_CONNECTOR_GENERIC_SUFFIXES` (email_extract.py) es a sub-agent kapu sajat off-brand mintaja
+  "forward_message"-szel bovult. Tovabba: a sub-agent kapu `manage_email` horgonya is
+  prefix-toleranssal bovult (ugyanaz a hiba, mint a Python ikreknel), es `outgoing-copy-gate.py`
+  off-brand szerver eseten most "gmail"+verb barmely sorrendben es off-server draft-op (pl.
+  `mcp__ws__create_draft`) is auditalt.
+
+Nem javitva, kulon kartyara halasztva (Cybersec GO 28369, M1/L1/L2/L3 jelzesei, nem blokkolo):
+`credential-gate.py` nem szelesitve off-brand nevekre (M1); Kesz-ha 3 (per-fajl tablazat) csak
+osszefoglalo szinten (L1); `classify_mail_tool` JS ikerje es a recipient-ledger valtozatlanul NEM
+adoptalva, de a dokumentacio pontositando (L2); ket look-alike nev (forwarding_settings,
+send_drafts_list) a copy kapun biztonsagosan at van engedve, az approval es sub-agent kapun meg
+tiltott (L3, fail-closed, nem lelet).
+
+**Ki dontott:** backend3 (card bb562959), QA FAIL 28338 + Cybered NO-GO 28354 alapjan. Gate: QA +
+Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959: Cybersec GO 28369 M1 javitva + L2 korrekcio a korabbi bejegyzeshez
+
+**Dontes:**
+- M1 (MEDIUM-LOW): `credential-gate.py` `_is_mcp_send`-je csak az `_EMAIL_SERVER_RE` (gmail/resend
+  a szerver-szegmentben) agat nezte -- egy off-brand nev (`mcp__workmail__reply_all`,
+  `mcp__google_workspace__send_gmail_message`) "nem email-tool"-kent 0-t adott, holott a masik
+  harom kapu mar tiltja. Javitva: ugyanazt a harom off-brand regexet hasznalja, amit
+  `outgoing-copy-gate.py` mar exportal (`_EMAIL_OFFBRAND_DANGEROUS_RE`,
+  `_EMAIL_OFFBRAND_GMAIL_VERB_RE`, `_EMAIL_OFFBRAND_VERB_SUFFIX_RE`), nem ujraimplementalva. Ket
+  uj eset `scripts/__tests__/credential-gate.test.py`-ban, piros a 62f4c6ae0-n, zold itt.
+- L2 KORREKCIO a fentebbi, 2026-11-06-i "upstream e2199840..a6325a498 merged" bejegyzeshez: az ott
+  irt "upstream `classify_mail_tool`/recipient-ledger NEM adoptalva" mondat FELREVEZETO volt.
+  A valosag (Cybersec GO 28369 L2 lelete, en mertem utana): `classify_mail_tool` MAGA a Python
+  oldalon ADOPTALVA van (`email_extract.py` definialja, `email-approval-gate.py` hasznalja
+  `scope_kind`/`classify_tool` neven), csak a JS ikerpar (`classifyMailTool`
+  `email-send-gate.mjs`-ben) es a hozza tartozo recipient-ledger funkcio NEM adoptalt -- a kettot
+  korabban osszemostam. A kodban nincs mit javitani (a viselkedes mar helyes volt), csak a
+  dokumentacios allitas volt pontatlan; ezzel a bejegyzessel javitva, a korabbi sor VALTOZATLANUL
+  marad (farokba-iras szabaly, nem szerkesztjuk at a regi bejegyzest).
+- L3 (nem javitva, szandekosan): a ket look-alike nev (`forwarding_settings`, `send_drafts_list`)
+  a copy kapun kivetelezett (olvasas-szeru), az approval es sub-agent kapun meg tiltott marad --
+  fail-closed iranyu inkonzisztencia (egy sub-agent olvasas-celu hivasa feleslegesen tiltott), nem
+  biztonsagi lyuk. Kulon kartyara halasztva, ha zavaro lesz a gyakorlatban.
+- L1 (reszben): a konfliktusok dontese a REVIEW-ban es a DECISIONS-bejegyzesekben felsorolva,
+  de nem fajlonkenti tablazat formaban -- ez a bejegyzes es a fentebbi REVIEW/DECISIONS-sorok
+  egyutt adjak a teljes listat (7 ACKNOWLEDGED_UPSTREAM_BLOBS fajl + a ket mandatory bypass + F1-F3
+  + M1), kulon tablazat nem keszult.
+
+**Ki dontott:** backend3 (card bb562959), Cybersec GO 28369 M1/L1/L2/L3 pontjai alapjan (MikroB
+16614 dontese: fold in). Gate: QA + Cybersec + Cybered.
+
+## 2026-11-06 -- card bb562959: merge-rezolucios javitasok a landolas elott (farokba-iras + blob-pin)
+
+**Dontes:** a landolas harom korben visszautasitva, mindegyik javitva:
+1. `git merge --no-ff origin/develop` x2 (origin/develop gyorsan mozgott, tobb korben kellett
+   friss allaphoz igazitani): mindket merge tiszta volt (nincs konfliktus-jelzo), fleet-test zold.
+2. DECISIONS.md farokba-iras serules: a merge-ek a kartya 4 sajat bejegyzeset origin/develop
+   NOVEKVO vege KOZEPERE illesztettek (nem a VALODI vegre), mert minden merge csak a sajat,
+   korabbi kozos osre vonatkozo pozciot ismerte. Javitva: mind a 4 bejegyzes attelepitve origin/
+   develop jelenlegi tartalmanak VALODI vegere, `cmp`-vel ellenorizve byte-pontos prefix.
+3. `src/fork-upstream/acknowledged-conflicts.ts` `.claude/settings.json` pin hibas volt (MikroB
+   16683 lelete): az `ACKNOWLEDGED_UPSTREAM_BLOBS` map minden fajlt az UPSTREAM blob-jara pinnel
+   (a modul sajat fejlec-megjegyzese szerint), nem a fork sajat tartalmara -- az elso
+   konfliktus-feloldasom a FORK utani merge blob-jat (`git hash-object`) irta be hibasan. Javitva
+   a valodi upstream blob-ra, kozvetlenul ellenorizve: `git rev-parse upstream/main:.claude/settings.json`
+   = `37818edc2d8691a69ded224848eff767a04b4a3d`.
+
+Ezen a koron SEMMI nem erintette a kartya sajat gatet kapott fajljait (scripts/, src/kg/,
+src/web/kanban-assignee-guard.ts): `git diff --stat 7f7ff1243 <uj-sha> -- scripts/ src/kg/
+src/web/kanban-assignee-guard.ts` ures minden kozbenso commitra.
+
+**Ki dontott:** backend3 (card bb562959), MikroB 16683 lelete + sajat merge-feloldasi hibak
+javitasa. Gate: QA + Cybersec + Cybered (delta re-gate a vegso shara).
+
+## 2026-11-06 -- card bb562959: delta 2 (second develop-conflict resolution, MikroB 16805)
+
+**Dontes:** `origin/develop` tovabb mozdult a kartya elozo (MikroB 16683) javitasa ota, ket uj
+konfliktus: DECISIONS.md (varhato tail-append utkozes, ugyanaz a mechanizmus mint az elozo
+korban -- a kartya sajat bejegyzesei a FEJLECBOL kinyerve, origin/develop AKTUALIS tartalmanak
+vegere fuzve, `cmp`-vel byte-pontosan ellenorizve) ES
+`src/__tests__/project-settings-hook-anchor.test.ts` (NEM varhato -- tenyleges masodik
+konfliktus). Diagnosztika: tisztan additiv/additiv latszat-konfliktus, nem design-utkozes --
+a kartya sajat 3 anchor-bejegyzese (credential-gate.py + email-approval-gate.py gmail-matcher
+kiszelesites) ES `origin/develop` fuggetlenul hozzaadott 1 bejegyzese (db-write-guard.py @ Bash,
+kartyak c1766c6c/c5243203e) ugyanazon ket ponton allt be. Feloldas MikroB jovahagyasaval
+(16805): mind a 4 uj bejegyzes megtartva, semmi mas nem valtozott a fajlban.
+
+**Ki dontott:** MikroB (16805), backend3 vegezte el. Gate: delta re-gate QA + Cybered, csak a
+666ae06a729ab3a63d2ed313e21d061f30ff1641 elleni diffre.
+
+## 2026-11-06 -- kártya 80ab5067: KG sanitize Unicode-rések, NFKC, szerző-szűrő, túlélő mutánsok
+
+**Döntés:** a 4ecd75d0 WhiteHat GO (Gate-SHA 45237719) LOW leletei zárva:
+- sanitizeKgText (src/kg/store.ts) NFKC-normalizál a strip ELŐTT; UNSAFE_CHARS_RX kibővült a teljes
+  Supplementary Special-purpose Plane-re (U+E0000-E0FFF), U+FFF0-FFF8-ra, a teljes Unicode
+  non-character halmazra (66 kódpont) és U+2800-ra (BRAILLE PATTERN BLANK).
+- import-anti-patterns.ts szerző-eligibility-je a kanban-assignee-guard.ts-ben már meglévő NFKC +
+  hasonmás-fold + betű/szám-csak normalizáción megy át (exportálva onnan
+  `normalizeIdentityForMatch` néven), mindkét oldalon (a deny-lista sajat kötőjeles neveit -- pl.
+  "local-llm" -- is ugyanúgy kell foldolni, kulonben eltér a ket oldal).
+- A ket tulelo mutans (kartya-cim catch linkToCard-ban, DECISIONS-sor catch) mindegyikéhez dedikalt
+  teszt, piros a 45237719-en, zold a javitason.
+
+Tesztek: kg-store.test.ts +1, kg-import-anti-patterns.test.ts +3, teljes kg-* csalad +
+kanban-assignee-guard.test.ts 326/326, tsc+eslint clean.
+
+Nem erintve (a kartya hatokorén kivul): import-from-relations.ts sajat card-title upsertNode-ja
+nem kap KgSecretError catch-et -- kulon problema, kulon kartyara, ha gyakorlatban zavaro lesz.
+
+**Ki dontott:** backend3 (kartya 80ab5067), 4ecd75d0 WhiteHat GO 23524 LOW leletei alapjan. Gate:
+QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta: QA FAIL 28436, a CONFUSABLES tablazat megszuntetve
+
+**Dontes:** a kanban-assignee-guard.ts-ben levo kezzel irt CONFUSABLES fold-tablazat (kb. 25
+Cirill/Gorog/Armeny/small-caps bejegyzes) csak a kartya altal eredetileg nevezett ket hasonmast
+fedte -- QA Cirill п (U+043F) es д (U+0434) hasonmasokkal demonstralta, hogy MINDEN tablazatban
+nem szereplo hasonmas atmegy. A javitas NEM egy bovebb tablazat: a CONFUSABLES tablazat TELJESEN
+megszunt. Uj export, `hasNonAsciiIdentityResidue`: ha az NFKC + betu/szam-csak szures UTAN
+BARMILYEN nem-ASCII karakter marad, az identitas fail-closed modon mindig egyezesnek (forbidden/
+ineligible) szamit, fuggetlenul attol, melyik konkret nevet probalja hasonmasolni -- nincs tobbe
+karakterenkenti tablazat, amit minden uj hasonmas-felfedezessel bovíteni kellene. Minden valodi,
+ebben a flottaban osszehasonlitott nev (ugynoknevek, "mikrob", GATE_AGENT_NAMES/
+GENERATED_COMMENT_AUTHORS tagjai) maga is sima ASCII, tehat egy nem-ASCII maradek sosem lehet
+hamis riasztas valodi nevre.
+
+Teszt (piros 861e426ba-n, zold itt): QA pontos hasonmasai (Cirill п `gemini-orch-review`-ban,
+Cirill д `cybered`-ben) plusz egy Gorog ρ (`gate-pretriage`) es egy Armeny օ (`local-llm`)
+hasonmas -- negy kulonbozo irasrendszer, nem csak a kartya altal eredetileg nevezett ketto. Minden
+masik hivo (db.ts, a teljes kg-* csomagcsalad) ellenorizve, valtozatlan.
+
+**Ki dontott:** backend3 (kartya 80ab5067), QA FAIL 28436 + MikroB 16656 dontese alapjan. Gate:
+QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 3: Cybersec GO 28465 L1 + I1 zarva
+
+**Dontes:**
+- L1 (LOW): U+115F (HANGUL CHOSEONG FILLER, lathatatlan, de \p{L}-kategoriaju) nevesitett teszt
+  a `kanban-assignee-guard.test.ts`-ben -- mar zart a fail-closed nem-ASCII-maradek szabaly altal
+  (lasd delta 1), Cybersec explicit pinnelest kert a general szabaly mellett.
+- I1 (INFO): `sanitizeKgText` NEM szigoruan idempotens, ha egy eltavolitott karakter egy alapbetu
+  es egy kombinalo jel KOZOTT ul (pl. ZWSP "e" es egy kombinalo ekezet kozott) -- az elso menet
+  NFKC-ja meg nem tudja osszevonni oket (nem szomszedosak), a masodik menet mar igen. Mindket
+  alak Unicode-kanonikusan egyenlo (azonos NFC-forma), es a folyamat FIX PONTRA jut a masodik
+  menet utan (harmadik menet = masodik menet). Elfogadva valtozatlanul: semelyik iro-ut nem lancolja
+  egymasba a `sanitizeKgText` hivasokat, tehat ez a rés gyakorlatban sosem jon elo; uj teszt
+  (`kg-store.test.ts`) pontosan ezt a konvergenciat pinneli.
+
+Teszt: a teljes kg-* csomagcsalad (22 fajl) + `kanban-assignee-guard.test.ts` + `db.test.ts`:
+383/383 zold. tsc clean.
+
+**Ki dontott:** backend3 (kartya 80ab5067), Cybersec GO 28465 L1/I1 pontjai alapjan (MikroB 16665
+dontese: fold in). Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 4: fleet-test regresszio -- valodi magyar nev tiltva hibasan
+
+**Dontes:** a teljes `fleet-test.sh --ref` lelete: a delta 1 fail-closed szabalya (BARMILYEN
+nem-ASCII maradek = tiltott) valodi regressziot okozott -- `src/__tests__/commands-read.test.ts`
+sajat fixturai valodi magyar tulajdonos-neveket hasznalnak assignee-kent ("andrás", "András"),
+amik nem hasonmasai semminek, csak sima magyar szavak. Javitas: a magyar abc sajat, ZART
+kiterjesztese (á é í ó ö ő ú ü ű + nagybetus parjaik, 9 betu, sosem novekszik) megengedett az
+ASCII mellett; minden mas nem-ASCII maradek tovabbra is tiltott. Egy `Script=Latin`-alapu
+alternativat is kiprobaltam es elvetettem: a small-caps fonetikus-kiterjesztes hasonmasok
+(ᴍɪᴋʀᴏʙ) Unicode szerint Script=Latin-kent vannak besorolva, tehat egy ilyen szures csendben
+visszanyitotta volna pont azt a resest, amit a WhiteHat F3/RedHat delta B2 korabban zart.
+
+Teszt: valodi magyar nevek ("andrás", "András", "Mónika") nem tiltottak; minden korabbi eset
+(Cirill а/п/д, Gorog ι/κ/ο/ρ, Armeny օ, Torok ı/İ, small-caps, Hangul filler/U+115F) tovabbra is
+tiltott. Teljes kg-* csaladok (23 fajl) + `kanban-assignee-guard.test.ts` + `db.test.ts` +
+`commands-read.test.ts`: 413/413. tsc+eslint clean.
+
+**Ki dontott:** backend3 (kartya 80ab5067), sajat fleet-test lelet alapjan. Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 5: QA FAIL 28510 -- magyar ekezet mint mikrob-hasonmas
+
+**Dontes:** QA FAIL 28510 (Gate-SHA 9ff085b4e): a delta 4-ben bevezetett magyar abc-kivetel
+(HUNGARIAN_LATIN_EXTRA) uj, szukebb rest nyitott -- a "mikrob" nevbe helyettesitett magyar
+ekezetes betu (mikrób, mikrőb, mikröb, míkrob) atmegy a maradek-szuresen (valodi magyar betu, nem
+hasonmas irasrendszer) ES nem egyezik szo szerint a "mikrob" cellal (az ekezet sosem tavolitodik
+el az osszehasonlitasnal) -- tehat `isForbiddenAssignee` mind a negyre `false`-t adott, teljesen
+megkerulve a mikrob-onkiosztas strukturalis blokkjat (Peti 10943). MikroB dontese szerint javitva:
+UJ fuggveny `deaccentedIdentityForMatch` (NFD + `\p{M}` eltavolitas `normalizeIdentityForMatch`
+utan) -- a magyar ekezetes betuk NFD alatt tisztan alapbetu+kombinalo-jelre bomlanak (pl. ó -> o +
+COMBINING ACUTE), tehat a kombinalo jel levetele visszaadja az alapbetut. `isForbiddenAssignee`
+ezt HARMADIK retegkent hasznalja (maradek-szures ES szo-szerinti egyezes UTAN); "andrás"
+deakcentalva "andras" != "mikrob", tehat a delta 4 regresszio nem nyilik vissza. Ugyanezt a
+hardenninget `import-anti-patterns.ts`'s `isEligibleAuthor`-ja is megkapta (MikroB pont 2: minden
+nev-osszevetes a tiltott/kizart halmaz ellen vegezze el a deakcentalt osszevetest is) -- pl.
+"cybéred" is ineligible marad.
+
+Teszt: `isForbiddenAssignee('mikrób'/'mikrőb'/'mikröb'/'míkrob'/'MIKRÓB')` mind `true`; "andrás"
+tovabbra is `false`. `isEligibleAuthor`-nal "cybéred"/"qá" is kizart marad. Mutacio-ellenorzes:
+a ket uj teszt PIROS a javitas nelkul (visszaallitott regi fajlokon), ZOLD a javitassal. Celzott
+tesztek (kanban-assignee-guard + kg-import-anti-patterns + commands-read + db + kg-store): 157/157.
+tsc + eslint clean.
+
+**Ki dontott:** MikroB (16699, QA FAIL 28510 alapjan), backend3 vegezte el. Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 5b: WhiteHat probe 16701 kiterjesztes -- tovabbi 4 nevre pin
+
+**Dontes:** MikroB addendum (16702) WhiteHat probe 16701 alapjan: a delta 5 javitasa
+(`deaccentedIdentityForMatch`) MINDEN GATE_AGENT_NAMES/GENERATED_COMMENT_AUTHORS nevre altalanosan
+mukodik (nem csak a ket QA altal nevezett esetre), de ez meg nem volt tesztben pinnelve a tobbi
+negy nevre (cybersec, local-llm, gate-pretriage, gemini-orch-review). Uj integracios teszt pinneli
+mind a negyet (`cybérsec`, `lócal-llm`, `gáte-pretriage`, `gémini-orch-review` -> ineligible), plusz
+egy harmadik "meg mindig megengedett" magyar nev (Péter) a `isForbiddenAssignee`-oldalon. Nincs
+kodvaltozas (delta 5 fuggvenye mar helyesen general), csak a pin-lefedettseg szelesedett.
+
+Teszt: mind a 4 uj eset PIROS a delta 5 ELOTTI kodon (ellenorizve `git show 9ff085b4e` ideiglenes
+visszaallitassal, majd `git checkout HEAD --` visszaallitva -- NEM `git stash`, mert a stash
+MEGOSZTOTT a repo osszes worktree-je kozott es egy korabbi, nem-kapcsolodo MikroB-backup stash-t
+majdnem belemergelt volna ebbe a worktree-be, lasd a kulon figyelmeztetest). Celzott csomag
+(kanban-assignee-guard + kg-import-anti-patterns + commands-read + db + kg-store): 158/158.
+eslint clean.
+
+**Ki dontott:** MikroB (16702, WhiteHat probe 16701 alapjan), backend3 vegezte el. Gate: QA + Cybersec.
+
+## 2026-11-06 -- card 392d7104: freellm route now requires the gemini-ok marker too (Peti 13201, reverses the 4eb3743e delta)
+
+**Döntés:** on card 4eb3743e (WhiteHat GO 28609, I1 INFO), the freellm route's `is_freellm_blocked()` deliberately skipped the Gemini route's "gemini-ok" positive-marker check -- every other gate (project allowlist, tag blocklist, content gate) was reused, only the marker was dropped, because freellm never had it as a requirement and adding it unasked would have narrowed a working feature. WhiteHat flagged this as an open owner decision: a clean, untagged MikroB card would reach a third-party provider once the freellm switch is turned on, with no marker to opt in first. Peti's answer (Telegram 13200 proposal, 13201 "Igen"): require the same marker for freellm as for Gemini. Fixed: `is_freellm_blocked()` in `store/offload-dispatch.sh` now passes `require_marker=1` by default (same default `is_gemini_blocked()` already had); a new opt-out switch file (`store/freellm-skip-gemini-ok-check`, override via `OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK`) can disable only this one check, absence of the file keeps it ON. Both production call sites (`is_freellm_blocked ... || { try_freellm_for_leaf ...}` at the try_leaf-exhausted site, and `[[ "$lveto" == "true" ]] || is_freellm_blocked ...` at the CAPACITY_HOLD sweep site) were already routed through this one function, so no second gate copy was needed.
+
+Also closed WhiteHat's LOW finding from the same comment (28609): "the production gate is not pinned -- `--test-capacity-route` is a simulator that re-implements the branch via its own `--check-freellm-blocked` subprocess call, so removing the real `is_freellm_blocked` guard at either call site is invisible to it." Added two source-text pins in `src/__tests__/offload-draft-nudge.test.ts` that match the literal call-site statements (not the simulator). Mutation-verified: mutant A (CAPACITY_HOLD guard replaced with `if false; then`) turned exactly the mutant-A pin red, 20/21 still green; mutant B (the `is_freellm_blocked ||` guard removed at the try_leaf-exhausted site, leaving an unconditional call) turned exactly the mutant-B pin red, 20/21 still green; restored, 21/21 both times.
+
+New/updated bash selftest cases in `store/offload-dispatch.selftest.sh` (Kész, ha 1/2): a clean `mikrob`-project leaf with no `gemini-ok` tag is now `blocked` under the capacity-hold route (was `disabled`, i.e. it used to reach `freellm-call.sh`); the same leaf shape WITH the `gemini-ok` tag clears the gate and reaches `freellm-call.sh` (`disabled` here only because no auth-token file is given in the test, not because of the marker). offload-dispatch.selftest.sh: 111/111 (was 110, +1 case). offload-draft-nudge.test.ts: 21/21 (was 19, +2 pins).
+
+**Ki döntött:** Peti (Telegram 13201, "Igen" on the 13200 proposal), implemented by backend2 (self-advance pickup, card 392d7104, MikroB dispatch msg_id:16766/16782/16791). Gate: QA + Cybersec, per the card.
+
+## 2026-11-07 -- card 81c6fbb5: FIFO develop-lock follow-up (CYBERSEC GO 28780 non-blocking findings on 5d9731cd)
+
+**Döntés:** CYBERSEC GO 28780 on card 5d9731cd's FIFO ticket queue (Gate-SHA 4aa472b37) passed but flagged 6 non-blocking findings. Fixed in `store/marveen-land.sh`: (Q2a) a recycled pid looked alive forever to `kill -0`, so `land_lock_take_ticket` now records each pid's `/proc/<pid>/stat` start time alongside the pid, and `land_lock_reap_stale_tickets` reaps a live-pid ticket whose recorded start time no longer matches; (Q2b) a ticket named with pid part "0" was immortal because `kill -0 0` targets the caller's own process group and always succeeds -- any non-positive-integer pid part is now reaped unconditionally; (Q1a/Q1b) a deleted seq counter file used to reset the next ticket to 1 (outranking already-queued waiters), and the ticket file used to be created after releasing the counter's flock -- both the floor computation and the ticket-file write now happen inside the same critical section as the sequence increment. (Q3) the lock fd being inherited by children (a kill-9'd lander whose fleet-test child survives keeps holding the flock) is accepted as residual: pre-existing, untouched by 5d9731cd or this card, and fixing it needs FD_CLOEXEC which plain bash cannot set on an already-open fd without extra tooling.
+
+T1 (4 surviving selftest mutants) closed: context-anchored text pins on both `rm -f "$land_lock_ticket"` call sites (success path, give-up path -- anchored on unique surrounding lines since the literal string appears at both sites), and two behavioral mutation checks (dead-ticket-plus-live-ticket fixture) proving a dead ticket permanently blocks a live one if either the reap call is removed from `land_lock_is_head` or `land_lock_reap_stale_tickets` itself is gutted into a no-op.
+
+Each Q-item used the file's own red-before-fix pattern: the pre-fix function is extracted directly from commit 4aa472b37 via `git show` (same object store as this worktree, no network) and shown to fail on the exact fixture the fix then passes. `store/marveen-land.sh --selftest`: 70/70 (was 64). Full `fleet-test.sh --ref 0c5dd9b11`: 1316/1317 test files, 39621/39751 tests, 0 failures. `src/__tests__/landing-downward-check.test.ts`'s own-case floor bumped 14 -> 20 for the 6 new selftest cases (same ratchet pattern as cd3e577b/3731c807/5d9731cd before it).
+
+**Ki döntött:** backend2 (self-advance pickup, card 81c6fbb5, MikroB dispatch msg_id:16904). Gate: QA + Cybersec, per the card. Gate-SHA: see REVIEW comment.
+## 2026-11-07 -- card 81c6fbb5 re-gate: N1 stray-file crash, N2 zero-padded pid, N3 legacy-ticket misreap, Q3 fd-close
+
+**Döntés:** CYBERSEC NO-GO 28862 re-gated my own GO-round commit 2d9a0e50f (QA PASS 28858 stood) on the FIFO develop lock. Fixed in `store/marveen-land.sh`: (N1, MEDIUM regression) `land_lock_take_ticket`'s new floor-scan loop ran base-10 arithmetic on every file in the ticket directory before validating it, so a single stray non-numeric file made take_ticket fail and `land_one` refuse every landing until someone deleted the file by hand -- now any entry whose seq-looking prefix is not purely digits is skipped; (N2) the Q2b pid-0 fix only matched the literal string "0", so zero-padded spellings ("00", a dotless all-zero name) still reached `kill -0`'s own-process-group semantics and survived -- now compared numerically; (N3) a LIVE ticket written by this card's own PREVIOUS (two-field) format was misread by the new reaper and wrongly reaped during a mixed-version rollout -- now the ticket's dot count decides whether a start-time comparison even applies, a two-field name is treated as an explicit "unknown". Q3: WhiteHat explicitly rejected the prior round's "needs a C/Python shim" argument as factually wrong (a subshell can close its own fd with plain bash) -- the 3 fleet-test subshells in `land_one` now close their own copy of `LAND_LOCK_FD` (via the existing `release_land_lock_fd`) before `cd`/`eval`, so a kill -9'd lander no longer leaves a surviving fleet-test child holding the lock.
+
+N4 (test gap): added a case comparing `land_lock_pid_starttime`'s output against an independent python3 `/proc/<pid>/stat` parse, closing the wrong-stat-field mutant WhiteHat found undetected. Deferred, not attempted this round: the Q1b race-window reproduction WhiteHat described by hand (a delayed-write mutant) -- the underlying fix (ticket-file creation strictly inside the counter's critical section) is unchanged from the GO round and already closes the window by construction; a dedicated reproduction was judged lower priority than the four findings above.
+
+Each Q/N item uses the same red-before-fix pattern as the original round, but against 2d9a0e50f (the commit that actually has these bugs; 4aa472b37 predates the affected code and cannot demonstrate them). `store/marveen-land.sh --selftest`: 75/75 (was 70). Q3's text pin mutation-verified by hand: reverting one of the three call sites produces exactly one new FAIL, restored. `src/__tests__/landing-downward-check.test.ts`'s own-case floor bumped 20 -> 25.
+
+**Ki döntött:** backend2, fixing CYBERSEC NO-GO 28862 on card 81c6fbb5 (MikroB dispatch msg_id:16960). Gate: QA + Cybersec, per the card. Gate-SHA: see REVIEW comment.
 
 ## 2026-11-07 -- card 88b67fb4 round 2: WhiteHat NO-GO 28731 fixed (B1, M-test, L1b, L2, L4)
 **Döntés:** third round on card 88b67fb4, after WhiteHat's CYBERSEC NO-GO 28731 (msg_id:16824):
@@ -23137,3 +23418,11 @@ Also (WhiteHat I1): each of the 6 engineering agents' `search-first` wiring line
 - 6 new selftest cases added (post-review.selftest.sh), one per bypass shape named above (duplicate bogus line, lower-case, spaced colon, bulleted, n/a-plus-trailing-hex, n/a-then-bogus-line), each confirmed red against the pre-fix sha (92a708606) by checking that script out into a scratch copy and re-running the identical selftest file unmodified: all 6 came back exit 0 and called curl (would have moved to waiting) before the fix, exit 1 with no curl call after. All 26 checks (20 pre-existing + 6 new) pass on the fixed script.
 - Scope kept narrow per WhiteHat's own framing ("a two-line-level fix... I will re-gate only that function plus the new cases") and MikroB's instruction: only `validate_gate_sha()` and its selftest cases changed. The other findings in NO-GO 29011 (N2 wrong-repo-silent, N3 ref-named-like-a-sha, N4 warnings not surfaced on the card, N5 cold-clone latency, N6 cross-reference to 11d3ca5d) were explicitly non-blocking and are not addressed in this delta.
 **Ki döntött:** backend (card 2a15eb5f, 88b67fb4 S1 follow-up, re-gate of NO-GO 29011), per MikroB dispatch (msg_id:17129). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- card d96f1418: Settings page description fallback actually runs now
+
+**Döntés:** the Settings page showed the literal string "settings.desc.<KEY>" for every setting key without a lang entry (Peti screenshot, Telegram 13228/13229: WORKER_AUTOUPDATE, AGENT_INHERITED_MCP_SERVERS, DEFAULT_AGENT_MODEL, KG_CAPTURE_ENABLED, KG_ENABLED, KG_INJECT_ENABLED, KG_MAX_SOLUTIONS_PER_CARD). Root cause: `web/app-device-keys.js` `buildSettingRow` read `t('settings.desc.' + def.key) || def.description` -- `t()` (`web/app.js`) returns the key itself on a miss, which is truthy, so the `||` fallback to the registry description never ran. Fixed: compare the result against the key string (the same miss signal `t()`'s own dev-mode console warning already uses) instead of a falsy check, and fall back to `def.description` (`src/config-registry.ts`) only on an actual miss.
+
+New test (`src/__tests__/settings-row-desc-fallback.test.ts`), house idiom (real function extracted from the shipped JS, run against a minimal hand-rolled DOM stub): confirms KG_ENABLED has no `settings.desc.KG_ENABLED` lang entry in the shipped `hu.js` (the root-cause premise), renders its settings row and asserts the registry description text is shown (not the raw key), asserts no row shows a literal "settings.desc." string, and a sanity case confirms a key WITH a real translation still uses it (the fix does not break the hit path). Verified red on the pre-fix code (reverted the fix in a scratch copy, confirmed exactly 2 of 4 cases fail with the expected `settings.desc.KG_ENABLED` value, restored).
+
+**Ki döntött:** backend2 (self-advance pickup, card d96f1418, MikroB dispatch msg_id:16904). Gate: QA, per the card. Gate-SHA: see REVIEW comment.
