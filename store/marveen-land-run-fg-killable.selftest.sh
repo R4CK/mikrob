@@ -81,6 +81,76 @@ case "$out" in
   *) bad "run_fg_killable did not pass through output/exit code correctly: $out" ;;
 esac
 
+# 4-5. Regression test (card 07f1fe6e, CYBERSEC GO 29154 M1 + M2): a TERM to the process running
+#    run_fg_killable must kill the WHOLE process group the wrapped command runs in, not just the
+#    one subshell -- otherwise the wrapped command's own children (the fleet-test/vitest tree in
+#    production) survive as orphans, reparented but alive, holding a CPU slot (measured). Pulls
+#    the REAL production TERM trap line out of marveen-land.sh (same extraction discipline as the
+#    function bodies above), so a future edit that drops the group-kill breaks this test too.
+TRAP_SRC="$(command grep -F "trap '_run_finished=1;" "$LAND_SCRIPT")"
+[ -n "$TRAP_SRC" ] || { echo "FATAL: could not extract the production TERM trap from $LAND_SCRIPT -- anchor moved" >&2; exit 1; }
+
+WRAPPED_CMD_SCRIPT="/tmp/run-fg-killable-selftest-wrapped.$$.sh"
+cat >"$WRAPPED_CMD_SCRIPT" <<'WRAPPED'
+#!/usr/bin/env bash
+sleep 20 &
+echo "$!" >"$1"
+wait
+WRAPPED
+chmod +x "$WRAPPED_CMD_SCRIPT"
+
+# $1 = the trap source line to use (real or a hand-built mutant); echoes 0 if the grandchild died
+# (fixed behavior), 1 if it survived (the bug this card fixes).
+run_orphan_probe() {
+  local trap_src="$1" gc_mark outer_pid gc_pid result
+  gc_mark="/tmp/run-fg-killable-selftest-gc.$$.$RANDOM"
+  rm -f "$gc_mark"
+  bash -c '
+'"$FN_SRC"'
+'"$trap_src"'
+run_fg_killable "/tmp" "bash '"$WRAPPED_CMD_SCRIPT"' '"$gc_mark"'"
+' &
+  outer_pid=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ -s "$gc_mark" ] && break; sleep 0.2; done
+  gc_pid="$(cat "$gc_mark" 2>/dev/null)"
+  if [ -z "$gc_pid" ]; then
+    kill -9 "$outer_pid" 2>/dev/null
+    rm -f "$gc_mark"
+    echo "NOGRANDCHILD"
+    return
+  fi
+  kill -TERM "$outer_pid" 2>/dev/null
+  sleep 1
+  if kill -0 "$gc_pid" 2>/dev/null; then
+    result=1
+    kill -9 "$gc_pid" 2>/dev/null
+  else
+    result=0
+  fi
+  rm -f "$gc_mark"
+  echo "$result"
+}
+
+real_result="$(run_orphan_probe "$TRAP_SRC")"
+case "$real_result" in
+  0) ok "TERM to the wrapper kills the wrapped command's own child too (no surviving orphan)" ;;
+  NOGRANDCHILD) bad "grandchild never started in the real-trap probe -- cannot test the regression" ;;
+  *) bad "TERM left the wrapped command's child running as an orphan -- process-group kill not effective" ;;
+esac
+
+# M2 mutant pin: a trap that forwards TERM to just run_fg_killable_pid (the OLD, pre-fix single-pid
+# form, no leading `-- -`) must leave the probe's grandchild alive -- proving the real selftest
+# above is actually sensitive to the group-kill and would catch a regression back to the old form.
+MUTANT_TRAP_SRC='trap '"'"'[ -n "${run_fg_killable_pid:-}" ] && kill -TERM "$run_fg_killable_pid" 2>/dev/null'"'"' TERM'
+mutant_result="$(run_orphan_probe "$MUTANT_TRAP_SRC")"
+case "$mutant_result" in
+  1) ok "M2 mutant pin confirmed: the pre-fix single-pid TERM (no process-group kill) leaves the grandchild running -- the real test above is sensitive to this" ;;
+  NOGRANDCHILD) bad "grandchild never started in the mutant probe -- cannot confirm the M2 pin" ;;
+  *) bad "M2 mutant pin did NOT reproduce the orphan -- the probe itself may be vacuous (mutant_result=$mutant_result)" ;;
+esac
+
+rm -f "$WRAPPED_CMD_SCRIPT"
+
 echo "marveen-land.sh run_fg_killable selftest done"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"
