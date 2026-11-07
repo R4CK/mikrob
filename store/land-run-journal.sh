@@ -12,9 +12,14 @@
 #
 # Usage (always a subcommand, never sourced -- keeps the two land scripts from needing to worry
 # about variable-name collisions with a sourced library):
-#   land-run-journal.sh start     <script> <agent> <card-or-dash>   -> prints a run_id to stdout
+#   land-run-journal.sh start     <script> <agent> <card-or-dash> <caller-pid>  -> prints a run_id
 #   land-run-journal.sh heartbeat <run_id>
 #   land-run-journal.sh finish    <run_id> <exit-code> [note] [result]
+#
+# <caller-pid> (WhiteHat NO-GO 28731, B1, msg_id:16824): the LAND SCRIPT's own $$, passed in by
+# the call site itself -- the one value it can state about itself with certainty, since $$ is
+# unchanged across any depth of synchronous command substitution. See the binding note below for
+# why this replaced the earlier process-group approach.
 #
 # [result] (card 88b67fb4, MikroB's live-D/5 gap 2, msg_id:16818): a deliberate stop (SIGTERM) is
 # not a crash, but without an explicit way to say so, land-run-stale-check.sh has no choice but to
@@ -29,20 +34,25 @@
 # calls stay harmless no-ops instead of operating on an empty id.
 #
 # FINISH IS BOUND TO THE ORIGINATING PROCESS (card 88b67fb4 delta, WhiteHat M3: "any process can
-# call finish and flip a stale run to ALERT:no"). The binding uses the PROCESS GROUP id, not
-# $PPID: both land scripts call `start` as `_RID="$(bash land-run-journal.sh start ... 2>/dev/null
-# || true)"`. The `|| true` after a command inside `$(...)` stops bash's own "exec the last
-# command instead of forking" optimization from applying, so that command substitution forks a
-# REAL, short-lived subshell whose $PPID (as seen from inside `start`) is that transient
-# subshell's pid, already gone by the time `finish` runs minutes later -- not the long-lived land
-# script's pid. The process GROUP id does not have this problem: a synchronous subshell/command-
-# substitution chain never starts a new process group (that only happens for a backgrounded job or
-# a new session), so `ps -o pgid= -p $$` returns the SAME value -- the original land script's own
-# pid -- at every depth of that chain, verified end to end before shipping this fix. `start`
-# records that pgid plus its /proc creation time; `finish` recomputes its own pgid the same way and
-# refuses (no `finished` line written) unless both match what `start` recorded. A forged `finish`
-# from an unrelated process, or one called after the real land script already died, lands in a
-# different process group and is refused.
+# call finish and flip a stale run to ALERT:no"). `start` records the land script's OWN pid (the
+# <caller-pid> argument above) plus its /proc creation time; `finish` -- called as a PLAIN,
+# UNWRAPPED command (`bash land-run-journal.sh finish ...`, never inside `$(...)`) -- is therefore
+# a DIRECT CHILD of the land script, and its own $PPID bash variable IS that land script's pid,
+# with zero ambiguity: refuse unless $PPID matches the recorded pid AND that pid's /proc creation
+# time still matches (rules out a later, unrelated process recycling the same numeric pid after
+# the real land script has exited). A forged `finish` from an unrelated process has a different
+# parent and is refused outright.
+#
+# WHY NOT THE PROCESS GROUP (the previous approach, WhiteHat NO-GO 28731 B1): a process's pgid is
+# shared with whoever LAUNCHED it into that group, and a land script started in the background
+# (`nohup bash marveen-land.sh <agent> > log 2>&1 &`, `setsid ... &`, measured at ~348 such
+# invocations across the fleet's own history) often shares its pgid with a launching shell that
+# exits moments later. Once that pgid's original leader pid is gone, `/proc/<pgid>`'s creation
+# time read at finish-time can no longer be confirmed, and the match was designed to refuse in
+# that exact ambiguous case -- correctly rejecting a genuinely unrelated forger, but ALSO a
+# perfectly healthy backgrounded land run, which then read as a false STALE 10 minutes later. The
+# land script's own $$ never has this problem: it identifies ONE specific process (itself), not a
+# group that can outlive or be shared with something else.
 set -u
 
 JOURNAL_FILE="${LAND_RUN_JOURNAL_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/land-runs.jsonl}"
@@ -56,15 +66,19 @@ _lrj_now() { date -u +%s; }
 cmd="${1:-}"
 case "$cmd" in
   start)
-    script="${2:?usage: land-run-journal.sh start <script> <agent> <card-or-dash>}"
+    script="${2:?usage: land-run-journal.sh start <script> <agent> <card-or-dash> <caller-pid>}"
     agent="${3:-unknown}"
     card="${4:--}"
-    run_id="$(_lrj_now)-$$-$RANDOM"
-    # Process GROUP id of $$, not $PPID -- see the file header. This equals the long-lived land
-    # script's own pid regardless of how many command-substitution layers sit between it and us.
-    owner_pid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')"
-    [ -n "$owner_pid" ] || owner_pid="$$"
-    owner_pid_start="$(stat -c %Y "/proc/$owner_pid" 2>/dev/null || echo 0)"
+    owner_pid="${5:-}"
+    # The land script's OWN $$, passed in by the caller (see file header) -- not computed here,
+    # since `start` itself is invoked via `$(...)`, so ITS OWN $$ is a transient subshell pid, not
+    # the land script's. Numeric-validate; an empty/non-numeric value is a caller bug, not a
+    # reason to guess at a value that would only ever be wrong.
+    case "$owner_pid" in
+      ''|*[!0-9]*) owner_pid="" ;;
+    esac
+    run_id="$(_lrj_now)-${owner_pid:-$$}-$RANDOM"
+    owner_pid_start="$([ -n "$owner_pid" ] && stat -c %Y "/proc/$owner_pid" 2>/dev/null || echo 0)"
     payload="$(python3 -c '
 import json, sys
 print(json.dumps({
@@ -90,8 +104,9 @@ print(json.dumps({"run_id": sys.argv[1], "event": "heartbeat", "ts": int(sys.arg
     note="${4:-}"
     result_override="${5:-}"
     [ -n "$run_id" ] || exit 0
-    caller_pid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')"
-    [ -n "$caller_pid" ] || caller_pid="$$"
+    # $PPID: finish is always invoked as a plain, unwrapped command (never inside `$(...)`), so
+    # this bash builtin IS the land script's own pid directly -- see the file header.
+    caller_pid="$PPID"
     caller_pid_start="$(stat -c %Y "/proc/$caller_pid" 2>/dev/null || echo 0)"
     verdict="$(python3 -c '
 import json, sys
@@ -123,7 +138,7 @@ else:
     case "$verdict" in
       ok\|*) rec_pid="${verdict#ok|}"; rec_pid="${rec_pid%|*}"; rec_pid_start="${verdict##*|}" ;;
       *)
-        echo "land-run-journal: REFUSED finish for run $run_id -- caller (process group $caller_pid) does not match the process that called start ($verdict). Not marking finished." >&2
+        echo "land-run-journal: REFUSED finish for run $run_id -- caller's parent (pid $caller_pid) does not match the process that called start ($verdict). Not marking finished." >&2
         exit 1
         ;;
     esac

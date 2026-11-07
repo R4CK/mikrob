@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # MT-04 (card 34c2d2a2): CLI wrapper around GET /api/kg/search and GET /api/kg/for-card/:id.
 #
-# BEHIND KG_ENABLED, DEFAULT OFF: the route itself answers 404 (kg_disabled) when the setting is
-# off, same posture as every other MT-* entry point (kg-check-landing.sh, kg-backfill.sh) -- this
-# script does not duplicate that check, it just surfaces the route's own answer.
+# BEHIND KG_ENABLED, DEFAULT ON (card 70973ca7, Peti döntés 2026-11-07, Telegram 13239): the route
+# itself answers 404 (kg_disabled) when the setting is off -- this script does not duplicate that
+# check, it just surfaces the route's own answer.
 #
 # Token handling follows the CLAUDE.md house pattern (printf | curl -H @-): the dashboard token
 # never goes into curl's argv (readable from /proc/<pid>/cmdline for as long as the process runs)

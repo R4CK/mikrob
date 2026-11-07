@@ -16,21 +16,14 @@ set -uo pipefail
 
 JOURNAL_FILE="${LAND_RUN_JOURNAL_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/land-runs.jsonl}"
 STALE_AFTER_SECONDS="${STALE_AFTER_SECONDS:-600}"
-# card 88b67fb4, MikroB's live-D/5 gap 1 (msg_id:16818): a `finished` line written BEFORE this
-# card's pid/pid_start fix has neither field at all (not a mismatch -- genuinely absent), so it
-# used to be indistinguishable from QA FAIL 28614's actual forgery and alerted as UNTRUSTED-FINISH
-# forever, on every run, until the journal file rotates away. This state file remembers which
-# run_ids were already reported once as LEGACY so a stale pre-fix line stops being news after its
-# first report, without ever being treated as untrusted (it is honored as a real finish).
-LEGACY_SEEN_FILE="${LAND_RUN_LEGACY_SEEN_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/land-run-legacy-seen.jsonl}"
-# A missing pid/pid_start pair is ONLY safely "pre-fix legacy" if the finished line itself is
-# OLDER than the commit that started always filling those fields in -- a missing pair written
-# AFTER that point is QA FAIL 28614's exact forgery shape (the raw-append technique has no reason
-# to know the field exists) and must stay UNTRUSTED-FINISH, never be waved through as legacy.
-# This epoch is this fix's own landing time (git show -s --format=%ct f2ec47ddb5722ba1369363de3a3bec7b02c3952c).
-PID_FIELDS_EPOCH="${LAND_RUN_PID_FIELDS_EPOCH:-1793995751}"
 
+# WhiteHat NO-GO 28731, L2: a missing journal (or a directory in its place, which `-f` also
+# excludes) used to print a bare "ALERT:no" -- indistinguishable from "checked, genuinely zero
+# runs". A deleted journal is a DIFFERENT fact (nothing to check at all, possibly covering up an
+# incident) and must say so, even though the verdict itself stays ALERT:no (there is nothing to
+# be stale).
 if [ ! -f "$JOURNAL_FILE" ]; then
+  echo "NO-JOURNAL path=$JOURNAL_FILE -- no journal file found, nothing to check (not the same as a checked, zero-runs journal)"
   echo "ALERT:no"
   exit 0
 fi
@@ -44,9 +37,60 @@ fi
 # whole body also runs under one more try/except so a bug here can never again come back as a
 # missing final line.
 python3 -c '
-import json, sys, time
+import json, os, subprocess, sys, time
 
-journal_file, threshold, legacy_seen_file, pid_fields_epoch = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+journal_file = sys.argv[1]
+
+# WhiteHat NO-GO 28823 (card 88b67fb4, re-gate of 28731), B-new BLOCKING: the age-only threshold
+# flags most HEALTHY landings as STALE, because the land scripts write no periodic heartbeat (a
+# heartbeat only happens on a lost-push-race retry) and a real landing commonly runs 13-23 minutes,
+# well past the 600s default -- paging the owner + Peti for ordinary, still-running work. Fix: a
+# run with a recorded owner pid/pid_start is "alive" when `kill -0 <pid>` succeeds AND the current
+# /proc/<pid> creation stamp still matches the one recorded at start time (rules out a reused pid
+# taken over by an unrelated later process) -- an alive, matching owner is NEVER stale regardless
+# of age. A confirmed-DEAD owner is stale IMMEDIATELY, not after waiting out the threshold (this
+# also catches a killed lander at the next sweep instead of up to 10 minutes later). Only when
+# liveness cannot be determined at all (no pid recorded -- e.g. a line written directly, not
+# through land-run-journal.sh) does this fall back to the original age-based check.
+def _pid_start_now(pid):
+    try:
+        out = subprocess.run(["stat", "-c", "%Y", f"/proc/{pid}"], capture_output=True, text=True, timeout=2)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip()
+
+def _pid_alive(pid):
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_int <= 0:
+        return False  # pid 0/negative is never a real owner; signalling 0 hits our own process group
+    try:
+        os.kill(pid_int, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # process exists (we just cannot signal it -- different uid), still alive
+    except Exception:
+        return False
+    return True
+
+def owner_liveness(pid, pid_start):
+    # Returns True (confirmed alive, same process), False (confirmed dead/replaced), or None
+    # (cannot determine -- caller falls back to the age-based check).
+    if pid is None:
+        return None
+    if not _pid_alive(pid):
+        return False
+    if not pid_start or pid_start in ("0", 0, ""):
+        return None  # no trustworthy start-stamp recorded -- cannot confirm identity, not liveness
+    cur = _pid_start_now(pid)
+    if cur is None:
+        return None
+    return str(cur) == str(pid_start)
 
 def is_valid(rec):
     if not isinstance(rec, dict):
@@ -63,20 +107,12 @@ def is_valid(rec):
     return True
 
 try:
-    legacy_seen = set()
-    try:
-        with open(legacy_seen_file, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    legacy_seen.add(str(json.loads(line).get("run_id")))
-                except Exception:
-                    continue
-    except FileNotFoundError:
-        pass
-
+    # WhiteHat NO-GO 28731, L2: STALE_AFTER_SECONDS=<non-numeric> used to crash here with an
+    # unhandled ValueError, OUTSIDE this try block -- no ALERT line at all, the exact "crashed
+    # silently" failure mode M2 already fixed for malformed journal LINES, just reachable through
+    # a different input. Parsing it inside the try makes a bad threshold land in the same
+    # guaranteed-final-ALERT-line path as every other internal failure.
+    threshold = int(sys.argv[2])
     records = []
     malformed = 0
 
@@ -117,7 +153,6 @@ try:
         r["started_ts"] = ts
 
     untrusted_finish = 0
-    new_legacy = []  # run_ids seeing their first-ever LEGACY report this run
     for rec in records:
         event = rec.get("event")
         if event == "started":
@@ -133,22 +168,9 @@ try:
             if want is not None and want == got and want[0] is not None:
                 r["trusted_finished"] = True
                 r["last_ts"] = max(r["last_ts"], ts)
-            elif got == (None, None) and ts and ts < pid_fields_epoch:
-                # LEGACY: a finished line OLDER than the commit that started always filling in
-                # pid/pid_start genuinely predates the field existing -- honor it as a real finish
-                # (it is not a forgery), but report it only once per run_id ever. A missing pair
-                # on a line AT OR AFTER that epoch does NOT qualify here (falls to the else branch
-                # below) -- it has no excuse not to carry the fields, so it stays untrusted.
-                r["trusted_finished"] = True
-                r["last_ts"] = max(r["last_ts"], ts)
-                if rid not in legacy_seen:
-                    new_legacy.append(rid)
-                    legacy_seen.add(rid)
-                # else: already reported before -- stay silent, per the "reported once" decision
             else:
-                # pid/pid_start PRESENT but WRONG: a genuine mismatch, QA FAIL 28614s actual
-                # forgery shape. Does NOT extend last_ts and does NOT count as finished -- an
-                # untrusted finished line must never make a genuinely stale/killed run look fresh.
+                # Does NOT extend last_ts and does NOT count as finished -- an untrusted finished
+                # line must never make a genuinely stale/killed run look fresh or done.
                 untrusted_finish += 1
 
     now = time.time()
@@ -159,6 +181,14 @@ try:
         if "started_ts" not in r:
             continue  # a heartbeat/finished line with no matching started line -- nothing to flag
         age = now - r["last_ts"]
+        pid, pid_start = started_identity.get(rid, (None, None))
+        alive = owner_liveness(pid, pid_start)
+        if alive is True:
+            continue  # confirmed alive, same process as started it -- never stale, regardless of age
+        if alive is False:
+            stale.append((rid, r, age))  # confirmed dead/replaced -- stale now, not after the threshold
+            continue
+        # alive is None: liveness undeterminable (no pid recorded) -- fall back to age alone
         if age > threshold:
             stale.append((rid, r, age))
 
@@ -170,20 +200,9 @@ try:
         print(f"MALFORMED count={malformed} -- one or more journal lines could not be parsed/validated; treated as a stale-equivalent signal")
     if untrusted_finish:
         print(f"UNTRUSTED-FINISH count={untrusted_finish} -- a finished line did not match the recorded pid/pid_start for its run; not honored as a finish")
-    if new_legacy:
-        legacy_ids_joined = ",".join(new_legacy)
-        print(f"LEGACY count={len(new_legacy)} run_ids={legacy_ids_joined} -- pre-fix finished line(s) with no pid/pid_start at all, honored as a real finish; reported once, will not repeat")
-        try:
-            with open(legacy_seen_file, "a", encoding="utf-8") as f:
-                for rid in new_legacy:
-                    f.write(json.dumps({"run_id": rid}) + "\n")
-        except Exception:
-            pass
 
-    # LEGACY is informational (a one-time notice about pre-fix data), not an incident -- it never
-    # forces ALERT:yes on its own, unlike a genuine stale run, a malformed line, or a real forgery.
     print("ALERT:yes" if (stale or malformed or untrusted_finish) else "ALERT:no")
 except Exception as e:
     print(f"ERROR: land-run-stale-check crashed: {e}", file=sys.stderr)
     print("ALERT:yes")
-' "$JOURNAL_FILE" "$STALE_AFTER_SECONDS" "$LEGACY_SEEN_FILE" "$PID_FIELDS_EPOCH"
+' "$JOURNAL_FILE" "$STALE_AFTER_SECONDS"

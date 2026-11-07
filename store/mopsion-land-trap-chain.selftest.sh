@@ -50,6 +50,19 @@ esac
 trap_count="$(printf '%s\n' "$TRAP_BLOCK" | grep -c '^trap .* EXIT$')"
 [ "$trap_count" -eq 1 ] || bad "extracted block registers $trap_count EXIT traps, expected exactly 1"
 
+# WhiteHat NO-GO 28731, M-test (BLOCKING): the sed range above stops at the FIRST `trap cleanup
+# EXIT`, so a SECOND registration placed further down the WHOLE FILE (e.g. right after the
+# `git worktree add` call, the exact shape of the original M1 defect) sits OUTSIDE that range and
+# is invisible to the check above -- WhiteHat reproduced this directly: restoring the original
+# two-trap shape still left cases A/B green. This checks the WHOLE FILE, not just the extracted
+# range, so a second trap anywhere in mopsion-land.sh is caught regardless of where it is.
+whole_file_trap_count="$(grep -c '^trap .* EXIT$' "$LAND_SCRIPT")"
+if [ "$whole_file_trap_count" -eq 1 ]; then
+  ok "mopsion-land.sh registers exactly 1 'trap ... EXIT' line in the WHOLE FILE (M-test, WhiteHat 28731)"
+else
+  bad "mopsion-land.sh registers $whole_file_trap_count 'trap ... EXIT' lines in the WHOLE FILE, expected exactly 1 (a second one downstream silently replaces the first at runtime -- bash keeps only the last EXIT trap)"
+fi
+
 # Case A: the extracted block runs, WT gets set (simulating "worktree created"), then the process
 # exits 0 normally -- the journal must show a `finished` line, result ok.
 out_a="$(bash -c '

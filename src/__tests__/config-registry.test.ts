@@ -71,6 +71,22 @@ describe('config-registry', () => {
     expect(new Set(keys).size).toBe(keys.length)
   })
 
+  // Card 70973ca7 (Peti döntés 2026-11-07, Telegram 13239): the knowledge graph must be ON by
+  // default fleet-wide, not opt-in -- pin the three registry defaults directly so a future revert
+  // to '0' fails this test instead of silently shipping.
+  it.each(['KG_ENABLED', 'KG_CAPTURE_ENABLED', 'KG_INJECT_ENABLED'])(
+    'registers %s as on by default (card 70973ca7)',
+    (key) => {
+      const def = getSettingDefinition(key)
+      expect(def).toBeDefined()
+      expect(def!.type).toBe('boolean')
+      expect(def!.default).toBe('1')
+      expect(def!.module).toBe('knowledge-graph')
+      // the explicit OFF path must still validate and coerce to canonical '0'
+      expect(validateSettingValue(def!, false)).toEqual({ ok: true, value: '0' })
+    },
+  )
+
   // QA2 24234 (card 34c2d2a2): KG_MIN_SCORE's validator had no unit test.
   describe('validateUnitFloat', () => {
     it('accepts 0', () => {
