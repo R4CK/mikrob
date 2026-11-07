@@ -153,6 +153,10 @@ while [ $# -gt 0 ]; do
     # per-tree lock). Exits before any lock is taken, so asking is free and never queues.
     --lock-path) echo "$LOCK_FILE"; exit 0 ;;
     --cpu-slot-path) echo "$CPU_LOCK_PREFIX"; exit 0 ;;
+    # Card 22835648 B2 (MikroB msg 17042): prints the resolved slot COUNT, same reasoning as
+    # --cpu-slot-path above -- a guard test can assert the actual env_compat_get result instead of
+    # pattern-matching source text, and exits before any lock is taken.
+    --cpu-slots) echo "$CPU_SLOTS"; exit 0 ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
   esac

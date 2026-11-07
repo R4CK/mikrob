@@ -33,9 +33,12 @@ git -C "$TMP/main" commit -q -m base
 SHA="$(git -C "$TMP/main" rev-parse HEAD)"
 
 # --- --path resolves under MOPSI_GATE_ROOT, not the wrapped script's own default ($HOME) ----------
+# stderr dropped (not merged): card 22835648 made the wrapped script warn on stderr when it falls
+# back to the retired CLEANCORE_MAIN name, which this wrapper always triggers (it only ever exports
+# CLEANCORE_MAIN, never MOPSION_MAIN) -- this case checks the resolved PATH only, on stdout.
 out="$(env -u CLEANCORE_MAIN -u CC_GATE_ROOT \
   MOPSI_MAIN="$TMP/main" MOPSI_GATE_ROOT="$TMP/gates" \
-  bash "$RUN" --agent selftest --path cardx "$SHA" 2>&1)"
+  bash "$RUN" --agent selftest --path cardx "$SHA" 2>/dev/null)"
 want="$TMP/gates/cc-gate-cardx-selftest-${SHA:0:7}"
 if [ "$out" = "$want" ]; then
   ok "MOPSI_GATE_ROOT override reaches mopsion-gate-worktree.sh as CC_GATE_ROOT"
@@ -73,7 +76,7 @@ fi
 # default let this wrapper's --remove accept a mopsion gate-worktree path by accident, since both
 # used the identical "cc-gate-<card>-<agent>-<sha>" name under the same root) ----------------------
 out="$(env -u CLEANCORE_MAIN -u CC_GATE_ROOT -u MOPSI_GATE_ROOT \
-  MOPSI_MAIN="$TMP/main" bash "$RUN" --agent selftest --path cardy "$SHA" 2>&1)"
+  MOPSI_MAIN="$TMP/main" bash "$RUN" --agent selftest --path cardy "$SHA" 2>/dev/null)"
 want_default="$HOME/mopsi-gates/cc-gate-cardy-selftest-${SHA:0:7}"
 if [ "$out" = "$want_default" ]; then
   ok "unset MOPSI_GATE_ROOT falls back to the wrapper's OWN \$HOME/mopsi-gates, not the shared \$HOME"

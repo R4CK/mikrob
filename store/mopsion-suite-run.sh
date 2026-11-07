@@ -575,7 +575,7 @@ fi
 # deps do not change package.json exports mid-day) but must be VISIBLE, not just true. This does not
 # block: a [SKEW] line is a fact for the reader of the log, not a verdict this script is qualified to
 # make on its own.
-CLEANCORE_MAIN_DIR="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+CLEANCORE_MAIN_DIR="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
 # `git rev-parse HEAD` on an unborn branch (no commits yet) prints the literal string "HEAD" to
 # STDOUT before failing -- `$(cmd || echo unknown)` would capture BOTH ("HEAD" then "unknown" on the
 # next line) into one multi-line variable, since the fallback still shares the command substitution

@@ -30,7 +30,10 @@ set -uo pipefail
 
 # shellcheck source=./env-compat-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
+# Card 22835648 B2 (MikroB msg 17042): prints the resolved $MAIN and exits before anything else,
+# same reasoning as fleet-test.sh's own --path/--cpu-slot-path.
+[ "${1:-}" = "--main-path" ] && { echo "$MAIN"; exit 0; }
 CACHE_DIR="$(env_compat_get MIKROB_PREGATE_CACHE CLEANCORE_PREGATE_CACHE "$HOME/.cache/cleancore-pregate")"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
@@ -134,6 +137,22 @@ FAKETSC
     "$(grep -cE 'TEST MEASUREMENT MISSING: [$]f' "$0")" "1"
 
   rm -rf "$tmp"
+
+  # Card 22835648 B2 (MikroB msg 17042): proves THIS caller's own $MAIN read actually uses the
+  # shared precedence helper, via the --main-path diagnostic flag (no lock/side effect).
+  n=$((n+1))
+  out="$(env -u MOPSION_MAIN -u CLEANCORE_MAIN bash "$0" --main-path 2>/dev/null)"
+  [ "$out" = "/mnt/h/LM_Studio_Workdir/mopsion" ] || { echo "  FAIL MAIN default: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(MOPSION_MAIN=/tmp/mt-x env -u CLEANCORE_MAIN bash "$0" --main-path 2>/dev/null)"
+  [ "$out" = "/tmp/mt-x" ] || { echo "  FAIL MOPSION_MAIN (new name) not read: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(env -u MOPSION_MAIN CLEANCORE_MAIN=/tmp/mt-y bash "$0" --main-path 2>/dev/null)"
+  [ "$out" = "/tmp/mt-y" ] || { echo "  FAIL CLEANCORE_MAIN fallback broken: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(MOPSION_MAIN=/tmp/mt-x CLEANCORE_MAIN=/tmp/mt-y bash "$0" --main-path 2>/dev/null)"
+  [ "$out" = "/tmp/mt-x" ] || { echo "  FAIL MOPSION_MAIN should win over CLEANCORE_MAIN: got [$out]"; fail=1; }
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi

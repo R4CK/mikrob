@@ -20,7 +20,10 @@ ok()  { printf '  [ok ] %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  [FAIL] %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
 # --- defaults, unset env: --path exits before agent-worktree.sh ever needs a real clone to exist ---
-out="$(env -u MOPSI_MAIN -u MOPSI_WORKTREES -u CLEANCORE_MAIN -u CLEANCORE_WORKTREES bash "$RUN" backend3 --path 2>&1)"
+# stderr dropped (not merged): card 22835648 made agent-worktree.sh warn on stderr when it falls
+# back to the retired CLEANCORE_* name, which this wrapper always triggers (it only ever exports
+# CLEANCORE_*, never MOPSION_*) -- these cases check the resolved PATH only, on stdout.
+out="$(env -u MOPSI_MAIN -u MOPSI_WORKTREES -u CLEANCORE_MAIN -u CLEANCORE_WORKTREES bash "$RUN" backend3 --path 2>/dev/null)"
 if [ "$out" = "/mnt/h/LM_Studio_Workdir/Mopsi-worktrees/backend3" ]; then
   ok "default MOPSI_WORKTREES resolves to the documented path"
 else
@@ -31,7 +34,7 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 out="$(env -u CLEANCORE_MAIN -u CLEANCORE_WORKTREES \
-  MOPSI_MAIN="$TMP/main" MOPSI_WORKTREES="$TMP/worktrees" bash "$RUN" backend3 --path 2>&1)"
+  MOPSI_MAIN="$TMP/main" MOPSI_WORKTREES="$TMP/worktrees" bash "$RUN" backend3 --path 2>/dev/null)"
 if [ "$out" = "$TMP/worktrees/backend3" ]; then
   ok "MOPSI_WORKTREES override reaches agent-worktree.sh as CLEANCORE_WORKTREES"
 else
@@ -42,7 +45,7 @@ fi
 # defaulted-if-unset -- the wrapper is Mopsi-specific and must not silently inherit a caller's
 # mopsion-pointed env from an earlier `export` in the same shell session. ---------------------------
 out="$(CLEANCORE_MAIN=/should/not/survive CLEANCORE_WORKTREES=/should/not/survive \
-  MOPSI_MAIN="$TMP/main" MOPSI_WORKTREES="$TMP/worktrees" bash "$RUN" backend3 --path 2>&1)"
+  MOPSI_MAIN="$TMP/main" MOPSI_WORKTREES="$TMP/worktrees" bash "$RUN" backend3 --path 2>/dev/null)"
 if [ "$out" = "$TMP/worktrees/backend3" ]; then
   ok "wrapper overwrites a stale CLEANCORE_* already set in the caller's environment"
 else

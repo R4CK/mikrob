@@ -45,7 +45,11 @@ set -uo pipefail
 
 # shellcheck source=./env-compat-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
+# Card 22835648 B2 (MikroB msg 17042): prints the resolved $MAIN and exits before anything else,
+# same reasoning as fleet-test.sh's own --path/--cpu-slot-path -- a guard test can assert the
+# actual env_compat_get result instead of pattern-matching source text.
+[ "${1:-}" = "--main-path" ] && { echo "$MAIN"; exit 0; }
 TSC_TIMEOUT="${TSC_TIMEOUT:-900}"
 CACHE_DIR="$(env_compat_get MIKROB_LAND_CACHE CLEANCORE_LAND_CACHE "$HOME/.cache/cleancore-land")"
 say() { echo "  $*"; }
@@ -270,7 +274,7 @@ _fmt_skeleton() { sed -e 's/^[[:space:]]*//' -e '/^$/d'; }
 # `landing-*` scratch trees that are not agents either. Anything else answers `unknown` -- which is
 # the honest answer, and is printed rather than omitted so a reader can tell "not detectable" apart
 # from "this script is too old to record it".
-AGENT_WORKTREE_ROOT="${CLEANCORE_WORKTREES:-/mnt/h/LM_Studio_Workdir/CleanCore-worktrees}"
+AGENT_WORKTREE_ROOT="$(env_compat_get MOPSION_WORKTREES CLEANCORE_WORKTREES /mnt/h/LM_Studio_Workdir/CleanCore-worktrees)"
 
 landed_by_from_worktrees() {
   local branch="$1" list="$2" root="${3:-$AGENT_WORKTREE_ROOT}" path name
@@ -571,6 +575,22 @@ if [ "${1:-}" = "--selftest" ]; then
   MSTILL_RC=$?
   t "merge-retry: still faulted after the retry returns 4 (REFUSED)" "$MSTILL_RC" "4"
   rm -f "$MBASE_CLEAN2" "$MERR2"
+
+  # Card 22835648 B2 (MikroB msg 17042): the shared precedence logic is already exhaustively
+  # unit-tested in env-compat-lib.selftest.sh; this proves THIS caller's own $MAIN read actually
+  # uses it, via the --main-path diagnostic flag (added alongside this card, no lock/side effect).
+  n=$((n+1))
+  out="$(env -u MOPSION_MAIN -u CLEANCORE_MAIN bash "$0" --main-path 2>/dev/null)"
+  [ "$out" = "/mnt/h/LM_Studio_Workdir/mopsion" ] || { echo "  FAIL MAIN default: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(MOPSION_MAIN=/tmp/mt-x env -u CLEANCORE_MAIN bash "$0" --main-path 2>/dev/null)"
+  [ "$out" = "/tmp/mt-x" ] || { echo "  FAIL MOPSION_MAIN (new name) not read: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(env -u MOPSION_MAIN CLEANCORE_MAIN=/tmp/mt-y bash "$0" --main-path 2>/dev/null)"
+  [ "$out" = "/tmp/mt-y" ] || { echo "  FAIL CLEANCORE_MAIN fallback broken: got [$out]"; fail=1; }
+  n=$((n+1))
+  out="$(MOPSION_MAIN=/tmp/mt-x CLEANCORE_MAIN=/tmp/mt-y bash "$0" --main-path 2>/dev/null)"
+  [ "$out" = "/tmp/mt-x" ] || { echo "  FAIL MOPSION_MAIN should win over CLEANCORE_MAIN: got [$out]"; fail=1; }
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail

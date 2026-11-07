@@ -29,7 +29,9 @@ set -uo pipefail
 
 HOME_DIR="${WSL_HOME_CLEANUP_HOME:-/home/neon}"
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
-CLEANCORE_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+# shellcheck source=./env-compat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
+CLEANCORE_MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
 MIN_AGE_HOURS="${WSL_HOME_CLEANUP_MIN_AGE_HOURS:-24}"
 DASHBOARD_URL="${WSL_HOME_CLEANUP_DASHBOARD_URL:-http://localhost:3420}"
 DASHBOARD_TOKEN_FILE="${WSL_HOME_CLEANUP_TOKEN_FILE:-$MARVEEN_MAIN/store/.dashboard-token}"
