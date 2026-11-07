@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   migrate, openKgDb, rebuild, upsertNode, upsertEdge, setNodeStatus, getNode, KgSecretError,
-  KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState,
+  KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState, sanitizeKgText,
 } from '../kg/store.js'
 
 const dirs: string[] = []
@@ -93,6 +93,75 @@ describe('kg store CRUD', () => {
     ).toThrow(KgSecretError)
     expect(db.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
     db.close()
+  })
+
+  // Card 80ab5067 (WhiteHat LOW on 4ecd75d0, F1): an AWS-key-shaped value survived sanitize in 14
+  // of 16 crafted variants -- these are the specific code points/forms that were missing.
+  it('upsertNode sanitizes BEFORE the secret-shape check for every F1-named code point and NFKC form', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    const akia = `AKIA${'ABCDEFGHIJKLMNOP'}`
+    const smugglers: Record<string, string> = {
+      'U+FFF0 (Default_Ignorable unassigned)': '\u{FFF0}',
+      'U+FFF8 (Default_Ignorable unassigned, range end)': '\u{FFF8}',
+      'U+E0080 (tags-block reserved gap)': '\u{E0080}',
+      'U+E00FF (tags-block reserved gap, range end)': '\u{E00FF}',
+      'U+E01F0 (reserved after variation selectors supplement)': '\u{E01F0}',
+      'U+E0FFF (reserved after variation selectors supplement, range end)': '\u{E0FFF}',
+      'U+2800 (BRAILLE PATTERN BLANK)': '\u{2800}',
+      'U+FDD0 (noncharacter, BMP)': '\u{FDD0}',
+      'U+FFFE (noncharacter, plane 0)': '\u{FFFE}',
+      'U+1FFFF (noncharacter, plane 1)': '\u{1FFFF}',
+      'U+10FFFE (noncharacter, plane 16)': '\u{10FFFE}',
+    }
+    for (const [label, ch] of Object.entries(smugglers)) {
+      const smuggled = akia.slice(0, 4) + ch + akia.slice(4)
+      expect(
+        () =>
+          upsertNode(db, {
+            id: 'sol:leak-f1', type: 'solution', project: 'marveen', title: 'fix',
+            body: `use ${smuggled} as the key`, source_ref: 'kanban_comments:3',
+            extractor: 'manual',
+          }),
+        label,
+      ).toThrow(KgSecretError)
+    }
+    // NFKC form: fullwidth Latin letters (U+FF21-FF3A etc.) NFKC-fold to plain ASCII -- a
+    // fullwidth-rendered copy of the same key must still be caught, not just the literal one.
+    const fullwidthAkia = 'ＡＫＩＡ' + 'ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰ'
+    expect(() =>
+      upsertNode(db, {
+        id: 'sol:leak-f1-nfkc', type: 'solution', project: 'marveen', title: 'fix',
+        body: `use ${fullwidthAkia} as the key`, source_ref: 'kanban_comments:4',
+        extractor: 'manual',
+      }),
+    ).toThrow(KgSecretError)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  // Cybersec GO 28465 I1 (INFO, on 861e426ba): sanitizeKgText is NOT strictly idempotent in one
+  // narrow case -- a stripped character sitting BETWEEN a base letter and a combining mark (e.g.
+  // a ZWSP between "e" and a combining acute accent) blocks NFKC composition on the FIRST pass
+  // (normalize runs before the strip, and the two are not yet adjacent), so pass 1 leaves the
+  // base letter and the combining mark as two separate code points. On a SECOND pass they ARE
+  // now adjacent, so NFKC composes them into the single precomposed character. Both forms are
+  // Unicode canonically equivalent (render identically, NFC-normalize to the same string) and the
+  // process is a bounded fixed point, not a loop: verified here that a THIRD pass changes
+  // nothing further. Accepted as-is rather than looping sanitize to a fixed point internally --
+  // every write path calls it exactly once per field per upsertNode call, never chains its own
+  // output back in, so the one-extra-pass gap never surfaces in practice; recorded here so a
+  // future caller that DOES chain sanitizeKgText calls knows to normalize once at the end, not
+  // assume pass 1 is already stable.
+  it('sanitizeKgText converges within two passes (not strictly idempotent on pass 1, Cybersec I1)', () => {
+    const splitBaseAndMark = 'e' + '​' + '́' + 'x' // "e" + ZWSP + combining acute + "x"
+    const pass1 = sanitizeKgText(splitBaseAndMark)
+    const pass2 = sanitizeKgText(pass1)
+    const pass3 = sanitizeKgText(pass2)
+    expect(pass1).not.toBe(pass2) // the documented one-extra-pass gap
+    expect(pass1.normalize('NFC')).toBe(pass2.normalize('NFC')) // canonically equivalent regardless
+    expect(pass2).toBe(pass3) // but it IS a fixed point from pass 2 onward
+    expect(pass2).toBe('éx') // precomposed "é" + "x"
   })
 
   it('upsertEdge is idempotent: a second identical edge changes nothing', () => {

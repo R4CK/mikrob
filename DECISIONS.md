@@ -23161,3 +23161,130 @@ kartyak c1766c6c/c5243203e) ugyanazon ket ponton allt be. Feloldas MikroB jovaha
 
 **Ki dontott:** MikroB (16805), backend3 vegezte el. Gate: delta re-gate QA + Cybered, csak a
 666ae06a729ab3a63d2ed313e21d061f30ff1641 elleni diffre.
+
+## 2026-11-06 -- kártya 80ab5067: KG sanitize Unicode-rések, NFKC, szerző-szűrő, túlélő mutánsok
+
+**Döntés:** a 4ecd75d0 WhiteHat GO (Gate-SHA 45237719) LOW leletei zárva:
+- sanitizeKgText (src/kg/store.ts) NFKC-normalizál a strip ELŐTT; UNSAFE_CHARS_RX kibővült a teljes
+  Supplementary Special-purpose Plane-re (U+E0000-E0FFF), U+FFF0-FFF8-ra, a teljes Unicode
+  non-character halmazra (66 kódpont) és U+2800-ra (BRAILLE PATTERN BLANK).
+- import-anti-patterns.ts szerző-eligibility-je a kanban-assignee-guard.ts-ben már meglévő NFKC +
+  hasonmás-fold + betű/szám-csak normalizáción megy át (exportálva onnan
+  `normalizeIdentityForMatch` néven), mindkét oldalon (a deny-lista sajat kötőjeles neveit -- pl.
+  "local-llm" -- is ugyanúgy kell foldolni, kulonben eltér a ket oldal).
+- A ket tulelo mutans (kartya-cim catch linkToCard-ban, DECISIONS-sor catch) mindegyikéhez dedikalt
+  teszt, piros a 45237719-en, zold a javitason.
+
+Tesztek: kg-store.test.ts +1, kg-import-anti-patterns.test.ts +3, teljes kg-* csalad +
+kanban-assignee-guard.test.ts 326/326, tsc+eslint clean.
+
+Nem erintve (a kartya hatokorén kivul): import-from-relations.ts sajat card-title upsertNode-ja
+nem kap KgSecretError catch-et -- kulon problema, kulon kartyara, ha gyakorlatban zavaro lesz.
+
+**Ki dontott:** backend3 (kartya 80ab5067), 4ecd75d0 WhiteHat GO 23524 LOW leletei alapjan. Gate:
+QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta: QA FAIL 28436, a CONFUSABLES tablazat megszuntetve
+
+**Dontes:** a kanban-assignee-guard.ts-ben levo kezzel irt CONFUSABLES fold-tablazat (kb. 25
+Cirill/Gorog/Armeny/small-caps bejegyzes) csak a kartya altal eredetileg nevezett ket hasonmast
+fedte -- QA Cirill п (U+043F) es д (U+0434) hasonmasokkal demonstralta, hogy MINDEN tablazatban
+nem szereplo hasonmas atmegy. A javitas NEM egy bovebb tablazat: a CONFUSABLES tablazat TELJESEN
+megszunt. Uj export, `hasNonAsciiIdentityResidue`: ha az NFKC + betu/szam-csak szures UTAN
+BARMILYEN nem-ASCII karakter marad, az identitas fail-closed modon mindig egyezesnek (forbidden/
+ineligible) szamit, fuggetlenul attol, melyik konkret nevet probalja hasonmasolni -- nincs tobbe
+karakterenkenti tablazat, amit minden uj hasonmas-felfedezessel bovíteni kellene. Minden valodi,
+ebben a flottaban osszehasonlitott nev (ugynoknevek, "mikrob", GATE_AGENT_NAMES/
+GENERATED_COMMENT_AUTHORS tagjai) maga is sima ASCII, tehat egy nem-ASCII maradek sosem lehet
+hamis riasztas valodi nevre.
+
+Teszt (piros 861e426ba-n, zold itt): QA pontos hasonmasai (Cirill п `gemini-orch-review`-ban,
+Cirill д `cybered`-ben) plusz egy Gorog ρ (`gate-pretriage`) es egy Armeny օ (`local-llm`)
+hasonmas -- negy kulonbozo irasrendszer, nem csak a kartya altal eredetileg nevezett ketto. Minden
+masik hivo (db.ts, a teljes kg-* csomagcsalad) ellenorizve, valtozatlan.
+
+**Ki dontott:** backend3 (kartya 80ab5067), QA FAIL 28436 + MikroB 16656 dontese alapjan. Gate:
+QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 3: Cybersec GO 28465 L1 + I1 zarva
+
+**Dontes:**
+- L1 (LOW): U+115F (HANGUL CHOSEONG FILLER, lathatatlan, de \p{L}-kategoriaju) nevesitett teszt
+  a `kanban-assignee-guard.test.ts`-ben -- mar zart a fail-closed nem-ASCII-maradek szabaly altal
+  (lasd delta 1), Cybersec explicit pinnelest kert a general szabaly mellett.
+- I1 (INFO): `sanitizeKgText` NEM szigoruan idempotens, ha egy eltavolitott karakter egy alapbetu
+  es egy kombinalo jel KOZOTT ul (pl. ZWSP "e" es egy kombinalo ekezet kozott) -- az elso menet
+  NFKC-ja meg nem tudja osszevonni oket (nem szomszedosak), a masodik menet mar igen. Mindket
+  alak Unicode-kanonikusan egyenlo (azonos NFC-forma), es a folyamat FIX PONTRA jut a masodik
+  menet utan (harmadik menet = masodik menet). Elfogadva valtozatlanul: semelyik iro-ut nem lancolja
+  egymasba a `sanitizeKgText` hivasokat, tehat ez a rés gyakorlatban sosem jon elo; uj teszt
+  (`kg-store.test.ts`) pontosan ezt a konvergenciat pinneli.
+
+Teszt: a teljes kg-* csomagcsalad (22 fajl) + `kanban-assignee-guard.test.ts` + `db.test.ts`:
+383/383 zold. tsc clean.
+
+**Ki dontott:** backend3 (kartya 80ab5067), Cybersec GO 28465 L1/I1 pontjai alapjan (MikroB 16665
+dontese: fold in). Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 4: fleet-test regresszio -- valodi magyar nev tiltva hibasan
+
+**Dontes:** a teljes `fleet-test.sh --ref` lelete: a delta 1 fail-closed szabalya (BARMILYEN
+nem-ASCII maradek = tiltott) valodi regressziot okozott -- `src/__tests__/commands-read.test.ts`
+sajat fixturai valodi magyar tulajdonos-neveket hasznalnak assignee-kent ("andrás", "András"),
+amik nem hasonmasai semminek, csak sima magyar szavak. Javitas: a magyar abc sajat, ZART
+kiterjesztese (á é í ó ö ő ú ü ű + nagybetus parjaik, 9 betu, sosem novekszik) megengedett az
+ASCII mellett; minden mas nem-ASCII maradek tovabbra is tiltott. Egy `Script=Latin`-alapu
+alternativat is kiprobaltam es elvetettem: a small-caps fonetikus-kiterjesztes hasonmasok
+(ᴍɪᴋʀᴏʙ) Unicode szerint Script=Latin-kent vannak besorolva, tehat egy ilyen szures csendben
+visszanyitotta volna pont azt a resest, amit a WhiteHat F3/RedHat delta B2 korabban zart.
+
+Teszt: valodi magyar nevek ("andrás", "András", "Mónika") nem tiltottak; minden korabbi eset
+(Cirill а/п/д, Gorog ι/κ/ο/ρ, Armeny օ, Torok ı/İ, small-caps, Hangul filler/U+115F) tovabbra is
+tiltott. Teljes kg-* csaladok (23 fajl) + `kanban-assignee-guard.test.ts` + `db.test.ts` +
+`commands-read.test.ts`: 413/413. tsc+eslint clean.
+
+**Ki dontott:** backend3 (kartya 80ab5067), sajat fleet-test lelet alapjan. Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 5: QA FAIL 28510 -- magyar ekezet mint mikrob-hasonmas
+
+**Dontes:** QA FAIL 28510 (Gate-SHA 9ff085b4e): a delta 4-ben bevezetett magyar abc-kivetel
+(HUNGARIAN_LATIN_EXTRA) uj, szukebb rest nyitott -- a "mikrob" nevbe helyettesitett magyar
+ekezetes betu (mikrób, mikrőb, mikröb, míkrob) atmegy a maradek-szuresen (valodi magyar betu, nem
+hasonmas irasrendszer) ES nem egyezik szo szerint a "mikrob" cellal (az ekezet sosem tavolitodik
+el az osszehasonlitasnal) -- tehat `isForbiddenAssignee` mind a negyre `false`-t adott, teljesen
+megkerulve a mikrob-onkiosztas strukturalis blokkjat (Peti 10943). MikroB dontese szerint javitva:
+UJ fuggveny `deaccentedIdentityForMatch` (NFD + `\p{M}` eltavolitas `normalizeIdentityForMatch`
+utan) -- a magyar ekezetes betuk NFD alatt tisztan alapbetu+kombinalo-jelre bomlanak (pl. ó -> o +
+COMBINING ACUTE), tehat a kombinalo jel levetele visszaadja az alapbetut. `isForbiddenAssignee`
+ezt HARMADIK retegkent hasznalja (maradek-szures ES szo-szerinti egyezes UTAN); "andrás"
+deakcentalva "andras" != "mikrob", tehat a delta 4 regresszio nem nyilik vissza. Ugyanezt a
+hardenninget `import-anti-patterns.ts`'s `isEligibleAuthor`-ja is megkapta (MikroB pont 2: minden
+nev-osszevetes a tiltott/kizart halmaz ellen vegezze el a deakcentalt osszevetest is) -- pl.
+"cybéred" is ineligible marad.
+
+Teszt: `isForbiddenAssignee('mikrób'/'mikrőb'/'mikröb'/'míkrob'/'MIKRÓB')` mind `true`; "andrás"
+tovabbra is `false`. `isEligibleAuthor`-nal "cybéred"/"qá" is kizart marad. Mutacio-ellenorzes:
+a ket uj teszt PIROS a javitas nelkul (visszaallitott regi fajlokon), ZOLD a javitassal. Celzott
+tesztek (kanban-assignee-guard + kg-import-anti-patterns + commands-read + db + kg-store): 157/157.
+tsc + eslint clean.
+
+**Ki dontott:** MikroB (16699, QA FAIL 28510 alapjan), backend3 vegezte el. Gate: QA + Cybersec.
+
+## 2026-11-06 -- kartya 80ab5067 delta 5b: WhiteHat probe 16701 kiterjesztes -- tovabbi 4 nevre pin
+
+**Dontes:** MikroB addendum (16702) WhiteHat probe 16701 alapjan: a delta 5 javitasa
+(`deaccentedIdentityForMatch`) MINDEN GATE_AGENT_NAMES/GENERATED_COMMENT_AUTHORS nevre altalanosan
+mukodik (nem csak a ket QA altal nevezett esetre), de ez meg nem volt tesztben pinnelve a tobbi
+negy nevre (cybersec, local-llm, gate-pretriage, gemini-orch-review). Uj integracios teszt pinneli
+mind a negyet (`cybérsec`, `lócal-llm`, `gáte-pretriage`, `gémini-orch-review` -> ineligible), plusz
+egy harmadik "meg mindig megengedett" magyar nev (Péter) a `isForbiddenAssignee`-oldalon. Nincs
+kodvaltozas (delta 5 fuggvenye mar helyesen general), csak a pin-lefedettseg szelesedett.
+
+Teszt: mind a 4 uj eset PIROS a delta 5 ELOTTI kodon (ellenorizve `git show 9ff085b4e` ideiglenes
+visszaallitassal, majd `git checkout HEAD --` visszaallitva -- NEM `git stash`, mert a stash
+MEGOSZTOTT a repo osszes worktree-je kozott es egy korabbi, nem-kapcsolodo MikroB-backup stash-t
+majdnem belemergelt volna ebbe a worktree-be, lasd a kulon figyelmeztetest). Celzott csomag
+(kanban-assignee-guard + kg-import-anti-patterns + commands-read + db + kg-store): 158/158.
+eslint clean.
+
+**Ki dontott:** MikroB (16702, WhiteHat probe 16701 alapjan), backend3 vegezte el. Gate: QA + Cybersec.
