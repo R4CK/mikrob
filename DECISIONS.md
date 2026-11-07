@@ -23409,3 +23409,21 @@ Also (WhiteHat I1): each of the 6 engineering agents' `search-first` wiring line
 New test (`src/__tests__/settings-row-desc-fallback.test.ts`), house idiom (real function extracted from the shipped JS, run against a minimal hand-rolled DOM stub): confirms KG_ENABLED has no `settings.desc.KG_ENABLED` lang entry in the shipped `hu.js` (the root-cause premise), renders its settings row and asserts the registry description text is shown (not the raw key), asserts no row shows a literal "settings.desc." string, and a sanity case confirms a key WITH a real translation still uses it (the fix does not break the hit path). Verified red on the pre-fix code (reverted the fix in a scratch copy, confirmed exactly 2 of 4 cases fail with the expected `settings.desc.KG_ENABLED` value, restored).
 
 **Ki döntött:** backend2 (self-advance pickup, card d96f1418, MikroB dispatch msg_id:16904). Gate: QA, per the card. Gate-SHA: see REVIEW comment.
+## 2026-11-06 -- card 3ae2411d: watchdog.sh must honor needsFleetOauthFor on restart, not just agent-process.ts (RedHat GO 617d136d, comment 16008)
+
+**Döntés:** `scripts/watchdog.sh`'s `agent_launch_env` UNSET-oauthTokenFile fallback branch
+exported the fleet `CLAUDE_CODE_OAUTH_TOKEN` to every `.claude-config`-isolated agent on a
+watchdog-triggered restart, including a BYO/customProvider agent -- card 617d136d's fix to
+`src/web/agent-process.ts`'s own launch path (`needsFleetOauthFor` excluding
+`customProviderId`) did not carry over to this second launch site. No live effect today (no
+BYO/custom-provider agent is currently configured). Fix: the fallback now also calls a new
+`oauth_token_file_check.py --needs-fleet-oauth <agent-dir>` predicate, mirroring
+`needsFleetOauthFor`'s exact formula from the single TS source
+(`isClaude && authMode != 'api' && !isOwnTeam && !customProviderId`), read directly from
+`agent-config.json`'s `customProvider`/`model`/`authMode` fields. 6 new selftest cases in
+`watchdog-config-isolation.test.sh` (4 confirmed red against the pre-fix script, 2 mutation
+pins for the unaffected common case); 35/35 total pass. tsc clean.
+
+**Ki döntött:** DevO (fullstack), card 3ae2411d, self-advanced per MikroB dispatch
+(msg_id:16812, picked up while the land queue is paused for Koteg 23a). Gate: QA + WhiteHat2.
+Gate-SHA: see REVIEW comment.
