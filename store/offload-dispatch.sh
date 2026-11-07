@@ -506,12 +506,12 @@ if any(SENS_RE.search(t) for t in tags_n):
 # obfuscation nobody thought to add to BLOCKED_TAGS/SENS_RE yet" (the denylist open-ended
 # weakness this card exists to close).
 GEMINI_OK_TAG = "gemini-ok"
-# FREELLM VARIANT (card 4eb3743e delta, WhiteHat NO-GO 28484 M1): freellm reuses every other
-# gate above (project allowlist, tag block, content gate) but does NOT require the Gemini-only
-# "gemini-ok" positive marker -- that marker is specific to the Gemini routes own allowlist
-# design (card c23ea72f) and freellm never had it as a requirement; adding it now would silently
-# narrow a working feature (5. kodminosegi elv) beyond what this fix asked for. require_marker="0"
-# (passed only by is_freellm_blocked, below) skips this ONE check; every other check still blocks.
+# FREELLM VARIANT (card 392d7104, Peti 13201 -- REVERSES the card 4eb3743e delta): freellm now
+# requires the SAME "gemini-ok" positive marker as the Gemini route by default, so a clean,
+# untagged MikroB card does not reach a third-party provider once the freellm switch is on
+# (WhiteHat owner-decision note I2/28609 on 4eb3743e flagged this as an open owner choice; Peti
+# answered "Igen"). is_freellm_blocked, below, only passes require_marker="0" when the explicit
+# opt-out switch file is present -- default (file absent) keeps this check ON.
 if require_marker != "0" and not any(norm(tag) == GEMINI_OK_TAG for tag in all_tags):
     sys.exit(0)  # blocked -- no explicit positive marker
 
@@ -522,12 +522,17 @@ sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, complet
   return 0
 }
 
-# is_freellm_blocked PROJECT TAGS [TITLE [DESC]]: freellm's own gate (card 4eb3743e delta,
-# WhiteHat NO-GO 28484 M1) -- is_gemini_blocked with the Gemini-only "gemini-ok" positive-marker
-# check (5. above) skipped, every other check (project allowlist, tag block, content gate) kept.
+# is_freellm_blocked PROJECT TAGS [TITLE [DESC]]: freellm's own gate -- is_gemini_blocked with
+# every check (project allowlist, tag block, content gate, AND the "gemini-ok" positive-marker
+# check) kept. Card 392d7104 (Peti 13201): the marker check is now ON by default, same as the
+# Gemini route. FREELLM_SKIP_GEMINI_OK_CHECK file (opt-out switch, absence = check stays ON) lets
+# the marker check be disabled for freellm alone without touching the Gemini route's own gate.
 # Same return convention as is_gemini_blocked: 0 (bash-true) = blocked, 1 (bash-false) = allowed.
+FREELLM_SKIP_GEMINI_OK_CHECK="${OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK:-$HERE/freellm-skip-gemini-ok-check}"
 is_freellm_blocked() {
-  is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" 0
+  local require_marker=1
+  [[ -f "$FREELLM_SKIP_GEMINI_OK_CHECK" ]] && require_marker=0
+  is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" "$require_marker"
 }
 
 # gemini_route_enabled: returns 0 (true) when the Gemini route is active.
