@@ -89,6 +89,14 @@ DOWN_GRACE_SEC = 120        # agent down + placeholder older than this -> fire
 # (dadeab30, RedHat/QA gate question #3) so a live install can lower it without
 # a code change, same as wedged_up_sec()/stale_sec() below.
 DEFAULT_WEDGED_SEC = 15 * 60
+# Lower clamp bound for the (env-tunable) wedged backstop (card af5bf43b, WhiteHat2 F1 LOW on
+# dadeab30, komment 15980): _env_int() already floors a 0/negative/garbage
+# TELEGRAM_WATCHDOG_WEDGED_SEC to the default, but it never bounded a POSITIVE value. A huge
+# value (e.g. 99999999) silently disables the backstop -- age > wedged_sec() never fires because
+# stale_sec() drops the round first, long before that age is reached. A tiny value like 1 fires
+# false alarms on ordinary turns. 60s is below every measured normal-turn duration and well under
+# the 180s/900s defaults either side of it.
+WEDGED_SEC_MIN = 60
 # UPPER age bound (TGORPHAN908): a marker older than this marks a DEAD round,
 # not a stuck one -- there is no question behind it that needs an answer today.
 # Deliver NOTHING; drop the marker. Without this bound, a fleet restart after a
@@ -210,6 +218,21 @@ def wedged_sec():
 
 def stale_sec():
     return _env_int("TELEGRAM_WATCHDOG_STALE_SEC", DEFAULT_STALE_SEC)
+
+
+def clamped_wedged_sec(stale_seconds, progress_dir=None):
+    """wedged_sec(), clamped into [WEDGED_SEC_MIN, stale_seconds - 1] (card af5bf43b). An
+    out-of-range env value is a misconfiguration, not a silent feature toggle: logs once, when
+    the raw value actually gets clamped."""
+    raw = wedged_sec()
+    lo = WEDGED_SEC_MIN
+    hi = max(lo, stale_seconds - 1)
+    clamped = max(lo, min(raw, hi))
+    if clamped != raw and progress_dir is not None:
+        log(progress_dir,
+            f"TELEGRAM_WATCHDOG_WEDGED_SEC={raw} out of range, clamped to {clamped} "
+            f"(allowed {lo}..{hi}, stale_sec={stale_seconds})")
+    return clamped
 
 
 def token(state_dir):
@@ -520,6 +543,7 @@ def handle_dir(progress_dir):
     tok = None
     up_sec = wedged_up_sec()
     max_age = stale_sec()
+    backstop_sec = clamped_wedged_sec(max_age, progress_dir)
     for path in glob.glob(os.path.join(progress_dir, "*.json")):
         try:
             age = now - os.path.getmtime(path)
@@ -577,11 +601,11 @@ def handle_dir(progress_dir):
         elif reply_hung and age > up_sec:
             fire = True
             reason = "reply-hung"
-        elif age > wedged_sec():
+        elif age > backstop_sec:
             # An open round that wrote a line within WEDGED_SEC is working, not wedged; anything
             # that cannot be told (no timestamps, no anchor, an ended round) fires as before.
             last, round_open = round_activity(transcript_path, now - age)
-            if round_open and last is not None and now - last < wedged_sec():
+            if round_open and last is not None and now - last < backstop_sec:
                 fire = False
                 reason = ""
             else:
