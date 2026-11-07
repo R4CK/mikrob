@@ -23090,3 +23090,20 @@ Gate-SHA d3052b38d), Gate-SHA: see REVIEW comment.
 - Mutation-verified all four: reverting F1's allowlist to the old exact-match loses the 14-off-spelling table test; skipping the F2 settings read (simulating the pre-fix no-reader state) turns the "unset env, platform ON" case red (fails closed instead of defaulting on); removing `collapse_lines` from `fmt_entry` turns the F7 line-count assertion red (4 lines becomes 6); removing `cap_why` turns F8 red (2000-char why reaches the output untouched). All four restored to green afterward.
 - `kg-for-card-block.selftest.sh` grew from 6 to 11 passing cases (2 for F1/F2's settings-store wiring, 2 table-driven for F1's full on/off-spelling matrix, 1 for F3's line-collapse across all four characters, 1 for the why-cap) and one existing case (F6, truncation) was reworked from a single 5000-char why to 30 entries of 280 chars each, since the new per-entry why cap would otherwise make the old single-giant-why premise impossible to reach the overall-block-truncation code path at all.
 **Ki döntött:** backend (card 6dfae8e7), per MikroB dispatch (msg_id:16955), per WhiteHat's CYBERSEC GO 28859 fix requirements. Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- card 48a4506c addendum: the nine per-file sha256 hashes (WhiteHat CYBERSEC GO 28873 L1)
+**Döntés:** WhiteHat's CYBERSEC GO 28873 (L1 LOW) found that Kész-ha 1 asked for "sha256 per file listed in the REVIEW", but the REVIEW (comment 28863) only pointed at this DECISIONS.md entry's commit (43600f91c), which itself held zero hashes -- a dead reference. WhiteHat independently computed the same nine hashes and listed them in 28873; recorded here so a future drift check has something to compare against. Verified these match what I computed myself at deployment time, byte for byte.
+- tdd-workflow: `1e0091befec059224b49ef6d16f3a679cc111e6785dfc923f9e115ebb1957155`
+- verification-loop: `2efc99c1e4e3162142959e85c625ae2df6423c06248780129411e4a3f99c0571`
+- search-first: `8b739b091ee6e36892bb1d00f4afd360d44c0517b77647a8ca454e94e3224c26`
+- api-design: `61f2cae49d4b73c18369e2961ebfc7fd745e3c60d17bd4a245afe9e0b8cb8eeb`
+- database-migrations: `da729d42a72be22950250158c795003d45f250b13cc8c1552712be57dc924d63`
+- postgres-patterns: `fd670875961f3d844f08908726a8b6695845618c573f274f14d0be13e39c6ca2`
+- architecture-decision-records: `ccf77985efa32aef11760bd79556e5e9e1e75064f70646e24f3595a82965f6b5`
+- hexagonal-architecture: `c4f7fd33d8d0d103daee5e40a5553bd8ecef1c2da0181445436f8155131f0a20`
+- context-budget: `36aa452b2d608970becd8f6e07f07bbd00bb61192d85184e7d067825109d76e6`
+
+Same hash on all 6 deployed agent copies per file (byte-identical, confirmed independently by WhiteHat and by me at deployment time).
+
+Also (WhiteHat I1): each of the 6 engineering agents' `search-first` wiring line in their own `CLAUDE.md` got one added sentence pointing at `supplychainsecurity` for pin-and-verify-package-name before actually installing anything the skill's worked examples suggest (its examples use bare `npm install <pkg>`, no pin, no typosquat check).
+**Ki döntött:** backend (card 48a4506c, already closed; record-keeping addendum only, no behavior change), per MikroB dispatch (msg_id:16971), per WhiteHat's CYBERSEC GO 28873 L1/I1. Gate-SHA: n/a (config-only, `/agents/` gitignored; this entry documents hashes already computed, not a new change).
