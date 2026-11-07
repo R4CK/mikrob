@@ -89,10 +89,12 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // red-then-green pair, and the two T1 ticket-cleanup pins + two T1 reap-call mutation
     // checks), then 20 -> 25 with the same card's re-gate round (CYBERSEC NO-GO 28862: the N1
     // stray-file floor-scan crash, the N2 zero-padded-pid and N3 legacy-ticket reaping pairs,
-    // the Q3 fd-close call-site pin, and the N4 independent-field-parse pin) -- all touch
-    // marveen-land.sh's own --selftest block only, not the shared lib or cleancore-land.sh's own.
+    // the Q3 fd-close call-site pin, and the N4 independent-field-parse pin), then 25 -> 27 with
+    // card 1ce1059a (81c6fbb5 round 2 residual, Q1b: the land_lock_take_ticket write-before-
+    // release ordering pin plus its reorder-mutant-caught case) -- all touch marveen-land.sh's
+    // own --selftest block only, not the shared lib or cleancore-land.sh's own.
     expect(cc).toBeGreaterThan(41) // 41 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(25) // 25 = marveen-land.sh's own cases
-    expect(cc - 41).toBe(mv - 25) // the same shared block, in both
+    expect(mv).toBeGreaterThan(27) // 27 = marveen-land.sh's own cases
+    expect(cc - 41).toBe(mv - 27) // the same shared block, in both
   })
 })
