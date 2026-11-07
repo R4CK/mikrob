@@ -220,6 +220,46 @@ Gate-SHA: $LANDED_SHA" cardA
 t_ok "$rc" 0 "correctly-landed, correctly-attributed sha moves cleanly"
 grep -qi "WARNING\|REFUSED" "$WORK/out-gs-cardA.txt" && { echo "  FAIL correct sha produced a warning/refusal: $(cat "$WORK/out-gs-cardA.txt")"; fail=1; } || echo "  ok   correct sha produced no warning"
 
+# 6h-6m (Cybersec NO-GO 29011, N1/N1b): validate_gate_sha used to check only the FIRST
+# `Gate-SHA:` line (grep -m1), but gate-closure-check.py's _GATE_SHA_LINE and
+# gate-dispatch-check.sh's gate_sha_rx both read EVERY matching line, case-insensitively, with an
+# optional bullet prefix and optional space before the colon. A valid first line plus a bogus
+# second line in any of those shapes used to pass (rc=0); each must now refuse.
+run_gs "second Gate-SHA line bogus" "REVIEW: done.
+Gate-SHA: $LANDED_SHA
+Gate-SHA: $NONEXISTENT_SHA" cardA
+t_ok "$rc" 1 "a bogus second Gate-SHA line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL second-line-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   second-line-bogus never touched the board"; fi
+
+run_gs "second line lower-case gate-sha: bogus" "REVIEW: done.
+Gate-SHA: $LANDED_SHA
+gate-sha: $NONEXISTENT_SHA" cardA
+t_ok "$rc" 1 "a lower-case 'gate-sha:' bogus line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL lower-case-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   lower-case-bogus never touched the board"; fi
+
+run_gs "second line spaced colon Gate-SHA : bogus" "REVIEW: done.
+Gate-SHA: $LANDED_SHA
+Gate-SHA : $NONEXISTENT_SHA" cardA
+t_ok "$rc" 1 "a spaced-colon 'Gate-SHA :' bogus line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL spaced-colon-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   spaced-colon-bogus never touched the board"; fi
+
+run_gs "second line bulleted - Gate-SHA: bogus" "REVIEW: done.
+Gate-SHA: $LANDED_SHA
+- Gate-SHA: $NONEXISTENT_SHA" cardA
+t_ok "$rc" 1 "a bulleted '- Gate-SHA:' bogus line refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL bulleted-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   bulleted-bogus never touched the board"; fi
+
+run_gs "n/a (config-only) with a trailing bogus sha on the same line" "REVIEW: config change only.
+Gate-SHA: n/a (config-only) $NONEXISTENT_SHA" gsL
+t_ok "$rc" 1 "n/a plus a trailing sha-shaped token refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL n/a-plus-hex still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   n/a-plus-hex never touched the board"; fi
+
+run_gs "n/a on line 1, bogus Gate-SHA on line 2" "REVIEW: config change only.
+Gate-SHA: n/a (config-only)
+Gate-SHA: $NONEXISTENT_SHA" gsM
+t_ok "$rc" 1 "n/a on line 1 plus a bogus Gate-SHA on line 2 refuses with exit 1"
+if [ -s "$WORK/calls.log" ]; then echo "  FAIL n/a-then-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   n/a-then-bogus never touched the board"; fi
+
 echo "post-review.sh selftest: $n checks"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"
