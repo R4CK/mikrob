@@ -120,38 +120,135 @@ release_land_lock_fd() {
 # (never a load-time global) so a selftest run -- which overrides it before LAND_LOCK_FILE's own
 # real default assignment further down ever executes -- exercises the real code path.
 
-# Takes the next ticket (an empty file named "<12-digit seq>.<pid>" in "$LAND_LOCK_FILE.tickets")
-# and echoes its path. The sequence number comes from a tiny counter file, read-incremented-
-# written under its own short-lived flock so two waiters starting at the same instant never get
-# the same number (the FIFO property rests on this being atomic, not on wall-clock arrival order).
+# card 81c6fbb5 (5d9731cd follow-up, CYBERSEC GO 28780 Q2a): a pid is not a stable identity on its
+# own -- the OS can recycle it, and a recycled-pid ticket then looks alive forever (kill -0 succeeds
+# against the NEW, unrelated process), blocking every later arrival until the 7200s cap. Linux keeps
+# a process's start time (field 22 of /proc/<pid>/stat, clock ticks since boot) stable for that
+# pid's whole life and different across any two processes that ever shared a pid, so a ticket
+# records it alongside the pid and a reap compares both. $2 onward in /proc/<pid>/stat is the comm
+# field in parens, which can itself contain spaces/parens, so field-count splitting is unsafe --
+# this instead strips up to the LAST ")" and counts from there (same technique the kernel docs
+# recommend for exactly this reason). Echoes nothing (not even a blank line) if the pid does not
+# exist or /proc is unavailable, so callers must treat empty as "unknown", never as "0".
+land_lock_pid_starttime() {
+  local pid="$1" stat_line rest
+  stat_line="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 1
+  [ -n "$stat_line" ] || return 1
+  rest="${stat_line##*) }"
+  set -- $rest
+  # state=1 ppid=2 pgrp=3 session=4 tty_nr=5 tpgid=6 flags=7 minflt=8 cminflt=9 majflt=10
+  # cmajflt=11 utime=12 stime=13 cutime=14 cstime=15 priority=16 nice=17 num_threads=18
+  # itrealvalue=19 starttime=20 (this file's own field-20-after-comm, i.e. overall field 22)
+  [ "$#" -ge 20 ] || return 1
+  echo "${20}"
+}
+
+# Takes the next ticket (a file named "<12-digit seq>.<pid>.<starttime>" in
+# "$LAND_LOCK_FILE.tickets", content irrelevant) and echoes its path. The sequence number comes
+# from a tiny counter file, read-incremented-written under its own short-lived flock so two
+# waiters starting at the same instant never get the same number (the FIFO property rests on this
+# being atomic, not on wall-clock arrival order).
+#
+# card 81c6fbb5 Q1a/Q1b fixes, both inside the SAME critical section as the increment (not two
+# separate operations with a gap between them):
+#   Q1a: the floor for the next number is max(counter file, any ticket already on disk) + 1, not
+#   just the counter file alone -- a deleted/corrupted counter file used to fall back to 0, so the
+#   very next arrival could outrank every waiter already queued (which all have ticket numbers
+#   higher than a reset-to-0 counter). Scanning the ticket directory is safe here only because it
+#   happens under the same flock that serializes every other write to that directory.
+#   Q1b: the ticket FILE is created before the flock is released, not after -- closes the window
+#   where a lower-numbered ticket's own allocation has completed (so land_lock_is_head could in
+#   principle be asked about it) but the file proving it exists has not been written yet.
 land_lock_take_ticket() {
   local ticket_dir="$LAND_LOCK_FILE.tickets"
   mkdir -p "$ticket_dir" 2>/dev/null || return 1
   local seq_lock_file="$LAND_LOCK_FILE.seq.lock" seq_file="$LAND_LOCK_FILE.seq"
-  local seq_fd n ticket
+  local seq_fd n floor existing ticket start
   exec {seq_fd}>>"$seq_lock_file" || return 1
   flock "$seq_fd" || { exec {seq_fd}>&-; return 1; }
   n="$(cat "$seq_file" 2>/dev/null || echo 0)"
-  n=$((n + 1))
+  floor="$n"
+  for existing in "$ticket_dir"/*; do
+    [ -e "$existing" ] || continue
+    existing="$(basename "$existing")"
+    existing="${existing%%.*}"
+    # card 81c6fbb5 N1 (CYBERSEC NO-GO 28862, regression): a stray non-numeric file in the ticket
+    # directory (garbage, a half-written ticket, anything) used to hit `$((10#$existing))` on an
+    # invalid base-10 literal, which made take_ticket return 1 and land_one `die 3` for EVERY
+    # landing until someone deleted the file -- a hit under the pre-fix code (any file's name
+    # fragment was fine, since the old code never did arithmetic on the ticket directory at all).
+    # Skip anything whose seq-looking prefix is not purely digits instead of crashing on it.
+    case "$existing" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    existing=$((10#$existing))
+    [ "$existing" -gt "$floor" ] && floor="$existing"
+  done
+  n=$((floor + 1))
   echo "$n" >"$seq_file"
-  { exec {seq_fd}>&-; } 2>/dev/null
-  printf -v ticket '%012d.%d' "$n" "$$"
-  : >"$ticket_dir/$ticket" || return 1
-  echo "$ticket_dir/$ticket"
+  start="$(land_lock_pid_starttime "$$")" || start="unknown"
+  printf -v ticket '%012d.%d.%s' "$n" "$$" "$start"
+  if : >"$ticket_dir/$ticket"; then
+    { exec {seq_fd}>&-; } 2>/dev/null
+    echo "$ticket_dir/$ticket"
+  else
+    { exec {seq_fd}>&-; } 2>/dev/null
+    return 1
+  fi
 }
 
-# Removes any ticket whose pid is no longer alive (a waiter that crashed/was killed before it
-# could remove its own ticket). A pid can in theory be reused by an unrelated later process -- the
-# same inherent limitation as every other `kill -0` liveness check in this file -- but a live
-# lander's pid only exists for the few minutes it takes to queue, merge and push, so the window
-# for a collision is small.
+# Removes any ticket that is no longer a live waiter:
+#   - pid part is not a positive integer (card 81c6fbb5 Q2b: a malformed/empty pid part used to
+#     fall through to `kill -0 "$pid"` as-is; `kill -0 0` sends to the CALLER's own process group
+#     and always succeeds, which made a ticket with pid part "0" immortal -- it could never be
+#     reaped no matter how long it sat there) -- removed unconditionally, no liveness check
+#     needed. CYBERSEC NO-GO 28862 N2: a bare `case ... 0)` only matched the single character
+#     "0", so zero-padded spellings ("00", "000000000000") still reached `kill -0` with THEIR OWN
+#     process-group semantics and survived -- the pid part is now compared NUMERICALLY (any
+#     all-digit string base-10-equal to zero is reaped), not string-matched.
+#   - pid is not alive (kill -0 fails) -- the original crash/kill-9 case this already covered.
+#   - pid IS alive but its recorded start time no longer matches the live process's current start
+#     time (card 81c6fbb5 Q2a) -- the pid was recycled by an unrelated later process; the ticket's
+#     original owner is long gone. A ticket with no recorded start time ("unknown", from a
+#     take_ticket call where /proc was unavailable) cannot be checked this way and keeps the old,
+#     weaker pid-only liveness check -- same inherent limitation as before this card, not widened.
+#     CYBERSEC NO-GO 28862 N3: a LIVE ticket written by the PRE-this-card format (two
+#     dot-separated fields, "seq.pid", no third start-time field) used to be misread here --
+#     `${base##*.}` then returns the pid itself as "recorded_start", which almost never equals
+#     the live start time, so a still-running old-format waiter got reaped out from under
+#     itself. Field COUNT (dots in the basename), not just the last field's content, now decides
+#     whether a start-time comparison even applies: a two-field name is treated the same as an
+#     explicit "unknown" (pid-liveness only), never compared against a start time that was never
+#     recorded for it.
 land_lock_reap_stale_tickets() {
   local ticket_dir="$LAND_LOCK_FILE.tickets"
-  local f base pid
+  local f base pid dots recorded_start live_start
   for f in "$ticket_dir"/*; do
     [ -e "$f" ] || continue
-    base="$(basename "$f")"; pid="${base##*.}"
-    kill -0 "$pid" 2>/dev/null || rm -f "$f" 2>/dev/null
+    base="$(basename "$f")"
+    pid="${base#*.}"; pid="${pid%%.*}"
+    case "$pid" in
+      ''|*[!0-9]*)
+        rm -f "$f" 2>/dev/null
+        continue
+        ;;
+    esac
+    if [ "$((10#$pid))" -le 0 ]; then
+      rm -f "$f" 2>/dev/null
+      continue
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$f" 2>/dev/null
+      continue
+    fi
+    dots="${base//[^.]/}"
+    [ "${#dots}" -lt 2 ] && continue
+    recorded_start="${base##*.}"
+    [ "$recorded_start" = "unknown" ] && continue
+    live_start="$(land_lock_pid_starttime "$pid")" || live_start=""
+    if [ -n "$live_start" ] && [ "$live_start" != "$recorded_start" ]; then
+      rm -f "$f" 2>/dev/null
+    fi
   done
 }
 
@@ -483,7 +580,7 @@ if [ "${1:-}" = "--selftest" ]; then
     sleep 0.05
   done
   tq_a="$(cat "$tq_out/1")"; tq_b="$(cat "$tq_out/2")"; tq_c="$(cat "$tq_out/3")"
-  tq_seqs="$(printf '%s\n' "$tq_a" "$tq_b" "$tq_c" | sed -E 's@.*/([0-9]{12})\.[0-9]+$@\1@' | LC_ALL=C sort | sed 's/^0*//')"
+  tq_seqs="$(printf '%s\n' "$tq_a" "$tq_b" "$tq_c" | sed -E 's@.*/([0-9]{12})\.[0-9]+\.[^.]+$@\1@' | LC_ALL=C sort | sed 's/^0*//')"
   if [ "$tq_seqs" = "$(printf '1\n2\n3\n')" ] && [ -n "$tq_a" ] && [ -n "$tq_b" ] && [ -n "$tq_c" ]; then
     echo "  ok   3 genuinely parallel (backgrounded) ticket-takers got distinct, gapless sequence numbers 1,2,3 -- the counter increment is atomic under real concurrency"
   else
@@ -545,6 +642,299 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
   fi
   rm -rf "$tq_base" "$tq_base.tickets" "$tq_base.seq" "$tq_base.seq.lock" "$tq_out" 2>/dev/null
+
+  # card 81c6fbb5 (5d9731cd follow-up, CYBERSEC GO 28780 Q2b): a ticket named with pid part "0"
+  # used to be immortal, because `kill -0 0` sends to the CALLER's own process group and always
+  # succeeds. Red-on-4aa472b37 + green-on-the-fix, both against the REAL functions of each commit
+  # (not a hand-reconstructed copy), extracted via `git show` from this same object store (the
+  # worktree shares .git with $MAIN, so the pre-fix blob is reachable without a network fetch).
+  n=$((n + 1))
+  q2b_base="$(mktemp -u)"
+  mkdir -p "$q2b_base.tickets"
+  : >"$q2b_base.tickets/000000000001.0"
+  old_reap_src="$(git -C "$MAIN" show 4aa472b37:store/marveen-land.sh 2>/dev/null | awk '/^land_lock_reap_stale_tickets\(\) \{$/{p=1} p{print} p&&/^}$/{exit}')"
+  if [ -z "$old_reap_src" ]; then
+    echo "  FAIL could not extract the pre-fix land_lock_reap_stale_tickets from commit 4aa472b37 -- cannot prove red-before-fix"; fail=1
+  else
+    ( LAND_LOCK_FILE="$q2b_base"; eval "$old_reap_src"; land_lock_reap_stale_tickets )
+    if [ -e "$q2b_base.tickets/000000000001.0" ]; then
+      echo "  ok   RED CONFIRMED ON 4aa472b37: a pid-0 ticket survives the pre-fix reap (kill -0 0 always succeeds)"
+    else
+      echo "  FAIL the pre-fix reap should have left the pid-0 ticket in place (it did not -- the red-before-fix premise is wrong)"; fail=1
+    fi
+  fi
+  rm -rf "$q2b_base.tickets"
+  mkdir -p "$q2b_base.tickets"
+  : >"$q2b_base.tickets/000000000001.0.unknown"
+  ( LAND_LOCK_FILE="$q2b_base"; land_lock_reap_stale_tickets )
+  if [ -e "$q2b_base.tickets/000000000001.0.unknown" ]; then
+    echo "  FAIL the fixed land_lock_reap_stale_tickets should have removed the pid-0 ticket, it did not"; fail=1
+  else
+    echo "  ok   GREEN ON THE FIX: a pid-0 ticket is removed unconditionally, no kill -0 0 self-group false-alive (card 81c6fbb5 Q2b)"
+  fi
+  rm -rf "$q2b_base.tickets" "$q2b_base.seq" "$q2b_base.seq.lock" 2>/dev/null
+
+  # card 81c6fbb5 Q2a: a ticket whose pid was recycled (the pid is alive, but belongs to a DIFFERENT
+  # process than the one that took the ticket) must still be reaped. Simulated with this process's
+  # own pid ($$, genuinely alive) but a deliberately WRONG recorded start time -- exactly what a
+  # ticket looks like after its pid got reused, since the new owner's start time never matches the
+  # old ticket's recorded one. A positive control (this process's OWN correct ticket) proves the fix
+  # is not just "remove everything live-pid".
+  n=$((n + 1))
+  q2a_base="$(mktemp -u)"
+  mkdir -p "$q2a_base.tickets"
+  : >"$q2a_base.tickets/000000000001.$$"
+  old_reap_src="$(git -C "$MAIN" show 4aa472b37:store/marveen-land.sh 2>/dev/null | awk '/^land_lock_reap_stale_tickets\(\) \{$/{p=1} p{print} p&&/^}$/{exit}')"
+  if [ -z "$old_reap_src" ]; then
+    echo "  FAIL could not extract the pre-fix land_lock_reap_stale_tickets from commit 4aa472b37 -- cannot prove red-before-fix"; fail=1
+  else
+    ( LAND_LOCK_FILE="$q2a_base"; eval "$old_reap_src"; land_lock_reap_stale_tickets )
+    if [ -e "$q2a_base.tickets/000000000001.$$" ]; then
+      echo "  ok   RED CONFIRMED ON 4aa472b37: the pre-fix reap only checks pid liveness, so a recycled-pid ticket (same pid, wrong owner) survives forever"
+    else
+      echo "  FAIL the pre-fix reap should have left this live-pid ticket in place (it did not -- the red-before-fix premise is wrong)"; fail=1
+    fi
+  fi
+  rm -rf "$q2a_base.tickets"
+  mkdir -p "$q2a_base.tickets"
+  own_start="$(land_lock_pid_starttime "$$")" || own_start="unknown"
+  : >"$q2a_base.tickets/000000000001.$$.999999999999"
+  : >"$q2a_base.tickets/000000000002.$$.$own_start"
+  ( LAND_LOCK_FILE="$q2a_base"; land_lock_reap_stale_tickets )
+  q2a_ok=1
+  [ -e "$q2a_base.tickets/000000000001.$$.999999999999" ] && q2a_ok=0
+  [ -e "$q2a_base.tickets/000000000002.$$.$own_start" ] || q2a_ok=0
+  if [ "$q2a_ok" -eq 1 ]; then
+    echo "  ok   GREEN ON THE FIX: a recycled-pid ticket (wrong recorded start time) is reaped, a ticket with the correct start time for the same live pid survives (card 81c6fbb5 Q2a)"
+  else
+    echo "  FAIL expected the wrong-start-time ticket reaped and the correct-start-time ticket kept; got wrong-start exists=$([ -e "$q2a_base.tickets/000000000001.$$.999999999999" ] && echo yes || echo no), correct-start exists=$([ -e "$q2a_base.tickets/000000000002.$$.$own_start" ] && echo yes || echo no)"; fail=1
+  fi
+  rm -rf "$q2a_base.tickets" "$q2a_base.seq" "$q2a_base.seq.lock" 2>/dev/null
+
+  # card 81c6fbb5 Q1a: a deleted/corrupted seq counter file must not let a new arrival outrank
+  # tickets already queued -- the floor for the next number is max(counter, any ticket already on
+  # disk) + 1, not the counter alone. Red-on-4aa472b37 first (same extraction technique as Q2a/Q2b
+  # above), then green on the fix, against the same fixture.
+  n=$((n + 1))
+  q1a_base="$(mktemp -u)"
+  mkdir -p "$q1a_base.tickets"
+  : >"$q1a_base.tickets/000000000005.1"
+  rm -f "$q1a_base.seq" 2>/dev/null
+  old_take_src="$(git -C "$MAIN" show 4aa472b37:store/marveen-land.sh 2>/dev/null | awk '/^land_lock_take_ticket\(\) \{$/{p=1} p{print} p&&/^}$/{exit}')"
+  if [ -z "$old_take_src" ]; then
+    echo "  FAIL could not extract the pre-fix land_lock_take_ticket from commit 4aa472b37 -- cannot prove red-before-fix"; fail=1
+  else
+    old_ticket="$( ( LAND_LOCK_FILE="$q1a_base"; eval "$old_take_src"; land_lock_take_ticket ) )"
+    old_seq="$(basename "$old_ticket" 2>/dev/null | sed -E 's/^([0-9]{12})\..*/\1/' | sed 's/^0*//')"
+    rm -f "$old_ticket" 2>/dev/null
+    if [ "${old_seq:-0}" -le 5 ]; then
+      echo "  ok   RED CONFIRMED ON 4aa472b37: a missing seq file resets the counter to 0, so the pre-fix next ticket (seq $old_seq) outranks the already-queued seq-5 ticket"
+    else
+      echo "  FAIL the pre-fix land_lock_take_ticket should have produced seq <= 5 on a missing counter file, got $old_seq -- the red-before-fix premise is wrong"; fail=1
+    fi
+  fi
+  q1a_new_ticket="$(LAND_LOCK_FILE="$q1a_base" land_lock_take_ticket)"
+  q1a_new_seq="$(basename "$q1a_new_ticket" | sed -E 's/^([0-9]{12})\..*/\1/' | sed 's/^0*//')"
+  if [ "${q1a_new_seq:-0}" -gt 5 ]; then
+    echo "  ok   GREEN ON THE FIX: a missing seq counter file does not let a new arrival outrank an already-queued higher ticket (got seq $q1a_new_seq, card 81c6fbb5 Q1a)"
+  else
+    echo "  FAIL expected the new ticket's seq to be > 5 (the existing queued ticket), got $q1a_new_seq"; fail=1
+  fi
+  rm -rf "$q1a_base.tickets" "$q1a_base.seq" "$q1a_base.seq.lock" 2>/dev/null
+
+  # card 81c6fbb5 T1, mutant 1/4: the post-acquire ticket cleanup (land_one, success path) must run
+  # right after the wait loop exits, BEFORE the announced-check -- without it, a land_with_retry
+  # retry takes a NEW ticket while the OLD one (still on disk, same live pid) outranks it forever,
+  # since nothing is polling to remove the old one. Context-anchored (the bare string
+  # `rm -f "$land_lock_ticket" 2>/dev/null` appears twice in production code -- this one and the
+  # give-up one below -- so each pin is scoped to its own surrounding block, not a bare count).
+  n=$((n + 1))
+  postacq_block="$(printf '%s\n' "$prod_src" | awk '/^    sleep "\$LAND_LOCK_POLL_S"$/{p=1} p{print} p&&/^  if \[ "\$land_lock_announced" -eq 1 \]; then$/{exit}')"
+  if printf '%s\n' "$postacq_block" | grep -qF 'rm -f "$land_lock_ticket" 2>/dev/null'; then
+    echo "  ok   land_one removes its own ticket right after the wait loop exits (success path), before the announced-check (card 81c6fbb5 T1)"
+  else
+    echo "  FAIL land_one's success path no longer removes its own ticket right after the wait loop -- a retry would queue behind its own live ticket until the cap"; fail=1
+  fi
+
+  # T1, mutant 2/4: same cleanup on the give-up (timeout) path, so an agent that stops waiting does
+  # not leave a ghost ticket blocking everyone behind it for up to LAND_LOCK_WAIT_MAX_S more.
+  n=$((n + 1))
+  giveup_block="$(printf '%s\n' "$prod_src" | awk '/if \[ "\$land_lock_waited" -ge "\$LAND_LOCK_WAIT_MAX_S" \]; then$/{p=1} p{print} p&&/GIVING UP/{exit}')"
+  if printf '%s\n' "$giveup_block" | grep -qF 'rm -f "$land_lock_ticket" 2>/dev/null'; then
+    echo "  ok   land_one removes its own ticket on the give-up (timeout) path too (card 81c6fbb5 T1)"
+  else
+    echo "  FAIL land_one's give-up path no longer removes its own ticket -- a timed-out waiter would leave a ghost ticket blocking the queue"; fail=1
+  fi
+
+  # T1, mutants 3/4 and 4/4: land_lock_is_head must actually reap before checking who is head --
+  # tested behaviorally (not just a text pin), against two shapes of the same regression: the CALL
+  # being removed from is_head's body, and the call staying but land_lock_reap_stale_tickets itself
+  # being gutted into a no-op. Both must leave a dead ticket permanently blocking a live one.
+  n=$((n + 1))
+  t1_base="$(mktemp -u)"
+  mkdir -p "$t1_base.tickets"
+  ( : ) & t1_dead_pid=$!
+  wait "$t1_dead_pid" 2>/dev/null
+  : >"$t1_base.tickets/000000000001.$t1_dead_pid.unknown"
+  : >"$t1_base.tickets/000000000002.$$.$own_start"
+  t1_live_ticket="$t1_base.tickets/000000000002.$$.$own_start"
+  # mutant 3/4: the reap call removed from is_head's body.
+  real_is_head_src="$(awk '/^land_lock_is_head\(\) \{$/{p=1} p{print} p&&/^}$/{exit}' "$0")"
+  mutant_no_call_src="$(printf '%s\n' "$real_is_head_src" | grep -vF 'land_lock_reap_stale_tickets')"
+  if [ -z "$real_is_head_src" ] || [ "$mutant_no_call_src" = "$real_is_head_src" ]; then
+    echo "  FAIL could not extract/mutate land_lock_is_head's real source from $0 -- selftest and production have drifted"; fail=1
+  else
+    mutant3_result="$( ( LAND_LOCK_FILE="$t1_base"; eval "$mutant_no_call_src"; land_lock_is_head "$t1_live_ticket" && echo yes || echo no ) )"
+    if [ "$mutant3_result" = "no" ]; then
+      echo "  ok   MUTATION CAUGHT: removing the reap call from land_lock_is_head leaves a dead ticket permanently blocking a live one (card 81c6fbb5 T1, mutant 3/4)"
+    else
+      echo "  FAIL removing the reap call from land_lock_is_head should have left the dead ticket blocking the live one; it did not reproduce"; fail=1
+    fi
+  fi
+  # mutant 4/4: the call stays, but land_lock_reap_stale_tickets itself is gutted into a no-op.
+  mutant4_result="$( ( LAND_LOCK_FILE="$t1_base"; land_lock_reap_stale_tickets() { :; }; land_lock_is_head "$t1_live_ticket" && echo yes || echo no ) )"
+  if [ "$mutant4_result" = "no" ]; then
+    echo "  ok   MUTATION CAUGHT: gutting land_lock_reap_stale_tickets into a no-op leaves the same dead ticket permanently blocking a live one (card 81c6fbb5 T1, mutant 4/4)"
+  else
+    echo "  FAIL gutting land_lock_reap_stale_tickets into a no-op should have left the dead ticket blocking the live one; it did not reproduce"; fail=1
+  fi
+  # Sanity: the REAL (unmutated) functions must resolve this same fixture correctly -- otherwise the
+  # two mutation checks above would be vacuous (always "no" regardless of the mutation).
+  real_result="$( ( LAND_LOCK_FILE="$t1_base"; land_lock_is_head "$t1_live_ticket" && echo yes || echo no ) )"
+  if [ "$real_result" != "yes" ]; then
+    echo "  FAIL the real (unmutated) land_lock_is_head should resolve the live ticket as head once the dead one is reaped -- it did not, so mutants 3/4 and 4/4 above are vacuous"; fail=1
+  fi
+  rm -rf "$t1_base.tickets" "$t1_base.seq" "$t1_base.seq.lock" 2>/dev/null
+
+  # card 81c6fbb5 N1 (CYBERSEC NO-GO 28862, regression caught in re-gate): a stray non-numeric
+  # file in the ticket directory must not crash the floor-scan arithmetic and refuse to issue a
+  # new ticket. Red-on-2d9a0e50f (the PREVIOUS round's commit, not 4aa472b37 -- the floor-scan
+  # loop that has this bug did not exist until this card, so 4aa472b37 cannot demonstrate it).
+  n=$((n + 1))
+  n1_base="$(mktemp -u)"
+  mkdir -p "$n1_base.tickets"
+  : >"$n1_base.tickets/notes.txt"
+  : >"$n1_base.tickets/abc.1.x"
+  : >"$n1_base.tickets/12abc.5.x"
+  : >"$n1_base.tickets/-5.1.x"
+  old_take_src="$(git -C "$MAIN" show 2d9a0e50f:store/marveen-land.sh 2>/dev/null | awk '/^land_lock_take_ticket\(\) \{$/{p=1} p{print} p&&/^}$/{exit}')"
+  if [ -z "$old_take_src" ]; then
+    echo "  FAIL could not extract the pre-N1-fix land_lock_take_ticket from commit 2d9a0e50f -- cannot prove red-before-fix"; fail=1
+  else
+    old_n1_result="$( ( LAND_LOCK_FILE="$n1_base"; eval "$old_take_src"; land_lock_take_ticket 2>/dev/null; echo "rc=$?" ) )"
+    if printf '%s\n' "$old_n1_result" | grep -q 'rc=0'; then
+      echo "  FAIL the pre-fix take_ticket should have failed (rc!=0) with a stray non-numeric file in the ticket dir -- the red-before-fix premise is wrong, got: $old_n1_result"; fail=1
+    else
+      echo "  ok   RED CONFIRMED ON 2d9a0e50f: a stray non-numeric file in the ticket dir crashes the pre-fix floor-scan arithmetic, take_ticket fails"
+    fi
+  fi
+  n1_new_ticket="$(LAND_LOCK_FILE="$n1_base" land_lock_take_ticket)"
+  if [ -n "$n1_new_ticket" ] && [ -e "$n1_new_ticket" ]; then
+    echo "  ok   GREEN ON THE FIX: stray non-numeric files in the ticket dir are skipped (not crashed on) by the floor scan, take_ticket still issues a ticket (card 81c6fbb5 N1)"
+  else
+    echo "  FAIL take_ticket should still have issued a ticket with stray non-numeric files present, got: [$n1_new_ticket]"; fail=1
+  fi
+  rm -rf "$n1_base.tickets" "$n1_base.seq" "$n1_base.seq.lock" 2>/dev/null
+
+  # card 81c6fbb5 N2 (CYBERSEC NO-GO 28862): the pid-0 fix (Q2b) only matched the single
+  # character "0" by string comparison -- zero-padded spellings ("00", a dotless all-zero name)
+  # still reach `kill -0` with the caller's own process-group semantics and survive. Red-on-
+  # 2d9a0e50f, same extraction technique as N1.
+  n=$((n + 1))
+  n2_base="$(mktemp -u)"
+  mkdir -p "$n2_base.tickets"
+  : >"$n2_base.tickets/000000000001.00.unknown"
+  : >"$n2_base.tickets/000000000000"
+  old_reap_src="$(git -C "$MAIN" show 2d9a0e50f:store/marveen-land.sh 2>/dev/null | awk '/^land_lock_reap_stale_tickets\(\) \{$/{p=1} p{print} p&&/^}$/{exit}')"
+  if [ -z "$old_reap_src" ]; then
+    echo "  FAIL could not extract the pre-N2-fix land_lock_reap_stale_tickets from commit 2d9a0e50f -- cannot prove red-before-fix"; fail=1
+  else
+    ( LAND_LOCK_FILE="$n2_base"; eval "$old_reap_src"; land_lock_reap_stale_tickets )
+    if [ -e "$n2_base.tickets/000000000001.00.unknown" ] || [ -e "$n2_base.tickets/000000000000" ]; then
+      echo "  ok   RED CONFIRMED ON 2d9a0e50f: a zero-padded (\"00\") or dotless-zero pid ticket survives the pre-fix string-only \"0\" check"
+    else
+      echo "  FAIL the pre-fix reap should have left at least one zero-padded/dotless-zero ticket in place -- the red-before-fix premise is wrong"; fail=1
+    fi
+  fi
+  rm -rf "$n2_base.tickets"
+  mkdir -p "$n2_base.tickets"
+  : >"$n2_base.tickets/000000000001.00.unknown"
+  : >"$n2_base.tickets/000000000000"
+  ( LAND_LOCK_FILE="$n2_base"; land_lock_reap_stale_tickets )
+  if [ -e "$n2_base.tickets/000000000001.00.unknown" ] || [ -e "$n2_base.tickets/000000000000" ]; then
+    echo "  FAIL the fixed reap should have removed every zero-valued pid spelling (zero-padded, dotless), at least one survived"; fail=1
+  else
+    echo "  ok   GREEN ON THE FIX: zero-padded and dotless-zero pid tickets are reaped via a numeric comparison, not a bare string match (card 81c6fbb5 N2)"
+  fi
+  rm -rf "$n2_base.tickets" "$n2_base.seq" "$n2_base.seq.lock" 2>/dev/null
+
+  # card 81c6fbb5 N3 (CYBERSEC NO-GO 28862): a LIVE ticket written by the format this card's
+  # PREVIOUS round shipped (two fields, "seq.pid", no third start-time field) must not be
+  # misread as "recorded_start = the pid itself" and reaped out from under a still-queueing
+  # waiter running the older code during a mixed-version rollout. Red-on-2d9a0e50f.
+  n=$((n + 1))
+  n3_base="$(mktemp -u)"
+  mkdir -p "$n3_base.tickets"
+  : >"$n3_base.tickets/000000000001.$$"
+  old_reap_src="$(git -C "$MAIN" show 2d9a0e50f:store/marveen-land.sh 2>/dev/null | awk '/^land_lock_reap_stale_tickets\(\) \{$/{p=1} p{print} p&&/^}$/{exit}')"
+  if [ -z "$old_reap_src" ]; then
+    echo "  FAIL could not extract the pre-N3-fix land_lock_reap_stale_tickets from commit 2d9a0e50f -- cannot prove red-before-fix"; fail=1
+  else
+    ( LAND_LOCK_FILE="$n3_base"; eval "$old_reap_src"; land_lock_reap_stale_tickets )
+    if [ -e "$n3_base.tickets/000000000001.$$" ]; then
+      echo "  FAIL the pre-fix reap should have wrongly removed this live legacy-format ticket -- the red-before-fix premise is wrong"; fail=1
+    else
+      echo "  ok   RED CONFIRMED ON 2d9a0e50f: a LIVE two-field legacy ticket (no start-time field) is wrongly reaped (recorded_start misread as the pid itself, mismatches the live start)"
+    fi
+  fi
+  rm -rf "$n3_base.tickets"
+  mkdir -p "$n3_base.tickets"
+  : >"$n3_base.tickets/000000000001.$$"
+  ( LAND_LOCK_FILE="$n3_base"; land_lock_reap_stale_tickets )
+  if [ -e "$n3_base.tickets/000000000001.$$" ]; then
+    echo "  ok   GREEN ON THE FIX: a live two-field legacy ticket survives (dots-count detects the missing start field, pid-liveness-only check applies) (card 81c6fbb5 N3)"
+  else
+    echo "  FAIL the fixed reap should have kept this live legacy-format ticket, it removed it instead"; fail=1
+  fi
+  rm -rf "$n3_base.tickets" "$n3_base.seq" "$n3_base.seq.lock" 2>/dev/null
+
+  # card 81c6fbb5 Q3 (CYBERSEC NO-GO 28862, "I do NOT accept the residual as written"): the three
+  # fleet-test subshells in land_one must close their OWN copy of LAND_LOCK_FD before running
+  # fleet-test (and its vitest workers), so a kill -9'd lander no longer leaves the develop lock
+  # held by a surviving grandchild. Text pin, scoped to production code: the literal
+  # `cd "$wt" && release_land_lock_fd && eval "...fleet-test.sh --ref $merge_sha"` shape must
+  # appear exactly 3 times (the TEST_CMD override is a 4th, separate call site with the same fix
+  # but a different literal command, not counted here).
+  n=$((n + 1))
+  q3_fleet_test_fd_close_count="$(printf '%s\n' "$prod_src" | grep -cF 'cd "$wt" && release_land_lock_fd && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"')"
+  q3_fleet_test_fd_close_count=$((q3_fleet_test_fd_close_count + $(printf '%s\n' "$prod_src" | grep -cF 'cd "$wt" && release_land_lock_fd && eval "$wt/store/fleet-test.sh --ref $merge_sha"')))
+  if [ "$q3_fleet_test_fd_close_count" -ge 3 ]; then
+    echo "  ok   all 3 fleet-test subshells in land_one close their own copy of LAND_LOCK_FD before running fleet-test (card 81c6fbb5 Q3)"
+  else
+    echo "  FAIL expected all 3 fleet-test subshell call sites to close LAND_LOCK_FD before eval, found $q3_fleet_test_fd_close_count"; fail=1
+  fi
+
+  # card 81c6fbb5 N4 (CYBERSEC NO-GO 28862, test gap): land_lock_pid_starttime must read the
+  # CORRECT /proc/<pid>/stat field (22 overall, field 20 after the comm paren) -- a wrong-field
+  # mutant (e.g. field 19 instead of 20) was not caught by any existing case, because every
+  # fixture compared the helper's OWN output against itself (self-consistent but not externally
+  # verified). This compares against an INDEPENDENT parse of the same /proc file (python3, not
+  # the function under test) for this process's own pid, so a field-index mutation in either
+  # implementation would disagree with the other.
+  n=$((n + 1))
+  n4_own_start="$(land_lock_pid_starttime "$$")"
+  n4_independent_start="$(python3 -I -c "
+import sys
+with open('/proc/$$/stat') as f:
+    line = f.read()
+rest = line.rsplit(')', 1)[1].split()
+print(rest[19])
+" 2>/dev/null)"
+  if [ -n "$n4_own_start" ] && [ "$n4_own_start" = "$n4_independent_start" ]; then
+    echo "  ok   land_lock_pid_starttime reads the same field an INDEPENDENT /proc/<pid>/stat parse does -- a wrong-field mutation would disagree (card 81c6fbb5 N4)"
+  else
+    echo "  FAIL land_lock_pid_starttime ([$n4_own_start]) disagrees with an independent /proc/\$\$/stat parse ([$n4_independent_start])"; fail=1
+  fi
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -1013,10 +1403,18 @@ Cards: $merge_cards"
   # what the BRANCH changed.
   local touched_fleet_test
   touched_fleet_test="$(g diff --name-only "$mb..$branch" -- store/fleet-test.sh)"
+  # card 81c6fbb5 (CYBERSEC NO-GO 28862, Q3): fleet-test (and its vitest workers) used to inherit
+  # LAND_LOCK_FD across these subshells -- a kill -9'd lander whose fleet-test child survives kept
+  # the develop lock held with nobody left to release it, until the 7200s give-up cap. Each
+  # subshell below now closes ITS OWN copy of the fd (release_land_lock_fd, the same real
+  # fd-close land_one's own cleanup() uses -- a subshell close never touches the parent's fd) as
+  # the FIRST thing it does, before cd or eval; `&&` means a cd failure still short-circuits
+  # exactly as before (release_land_lock_fd always returns 0, so it never changes which branch
+  # the surrounding `if !` takes).
   if [ -n "$TEST_CMD" ]; then
     # Env override wins outright (selftest stub) -- exactly the old, single-judge behaviour.
     # shellcheck disable=SC2086 -- TEST_CMD is an intentional word-split command prefix
-    if ! (cd "$wt" && eval "$TEST_CMD $merge_sha"); then
+    if ! (cd "$wt" && release_land_lock_fd && eval "$TEST_CMD $merge_sha"); then
       echo "$agent: REFUSED -- fleet-test failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
@@ -1024,7 +1422,7 @@ Cards: $merge_cards"
   elif [ -z "$touched_fleet_test" ]; then
     # THE SAFE DEFAULT, UNCHANGED FROM BEFORE THIS CARD PAIR: the branch has no reason to be its
     # own judge, so the judge stays the ALREADY-REVIEWED live copy at $MAIN.
-    if ! (cd "$wt" && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"); then
+    if ! (cd "$wt" && release_land_lock_fd && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"); then
       echo "$agent: REFUSED -- fleet-test failed on the merge result (judged by \$MAIN's already-reviewed copy). Nothing pushed; $branch is untouched."
       return 4
     fi
@@ -1036,12 +1434,12 @@ Cards: $merge_cards"
     # works. Twice the cost, paid only on the rare landing that touches this one file, in exchange
     # for closing the "the fox guards the henhouse" hole Cybersec measured (comment 3431).
     say "$agent: $branch touches store/fleet-test.sh -- requiring BOTH the trusted \$MAIN copy AND the branch's own copy to pass (Cybersec NO-GO, cards 88a0a5e1/03cff5c1)"
-    if ! (cd "$wt" && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"); then
+    if ! (cd "$wt" && release_land_lock_fd && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"); then
       echo "$agent: REFUSED -- fleet-test (the trusted \$MAIN copy) failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
     say "$agent: fleet-test (the trusted \$MAIN copy) green"
-    if ! (cd "$wt" && eval "$wt/store/fleet-test.sh --ref $merge_sha"); then
+    if ! (cd "$wt" && release_land_lock_fd && eval "$wt/store/fleet-test.sh --ref $merge_sha"); then
       echo "$agent: REFUSED -- fleet-test (the branch's OWN fleet-test.sh) failed on the merge result. Nothing pushed; $branch is untouched."
       return 4
     fi
