@@ -20,6 +20,12 @@ bad() { echo "  FAIL $1"; fail=1; }
 FN_SRC="$(awk '/^run_fg_killable_pid=""$/{p=1} p{print} p&&/^}$/{exit}' "$LAND_SCRIPT")"
 [ -n "$FN_SRC" ] || { echo "FATAL: could not extract run_fg_killable from $LAND_SCRIPT -- anchors moved" >&2; exit 1; }
 
+# run_fg_killable's own body calls release_land_lock_fd (card 81c6fbb5 Q3 fix) -- extract it too,
+# or the isolated bash -c below has no such command and run_fg_killable's subshell fails.
+RELEASE_FD_SRC="$(awk '/^release_land_lock_fd\(\) \{$/{p=1} p{print} p&&/^}$/{exit}' "$LAND_SCRIPT")"
+[ -n "$RELEASE_FD_SRC" ] || { echo "FATAL: could not extract release_land_lock_fd from $LAND_SCRIPT -- anchors moved" >&2; exit 1; }
+FN_SRC="$RELEASE_FD_SRC"$'\n'"$FN_SRC"
+
 SLEEP_S=6
 
 # 1. RED baseline: the OLD pattern this card replaced (a plain foreground subshell) defers the
