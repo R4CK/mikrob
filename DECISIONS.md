@@ -23637,3 +23637,33 @@ This closes the last open child of 03f15aca.
 - Fix: a second regex anchored to the START of the subject, matching `type(<id>[+,<id>]*):` and `type(card[s] <id>...):`, combined with the existing prose extraction and deduplicated (order-preserving `awk`, not `sort -u`, since sort would have reordered multi-id results and broken existing tests pinning that order).
 - 11 new selftest cases added to `downward_selftest_cases` (shared by both landers), including a direct repro of the exact f4ac79a94 commit shapes: a branch with 2a15eb5f's scope-form commits and 9d1ee327's scope-form commits underneath now refuses without `--allow-stacked` and proceeds with it. 84/84 `marveen-land.sh --selftest` cases pass; `cleancore-land.sh --selftest` (100/100, sources the same shared file) unaffected.
 **Ki döntött:** DevO (fullstack), card 603bfce8, per MikroB dispatch (msg_id:17276). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 46194693 delta: F1 (behavioral land-lock-release selftest) added, F2 superseded by 81c6fbb5
+
+**Döntés:** card 46194693's gated commit (489c1ef40, WhiteHat 17020 F1/F2, QA PASS + CYBERED GO)
+never landed -- its branch sat only on agent/fullstack/work. By the time this card was rebuilt
+(MikroB decision msg 17343/17349), a later, already-landed card (81c6fbb5) had restructured
+every fleet-test call site in store/marveen-land.sh into a shared `run_fg_killable()` wrapper
+that already calls `release_land_lock_fd()` inside the subshell before `eval` -- the exact
+guarantee F2 asked for ({LAND_LOCK_FD}>&- on each inline subshell), now done once instead of at
+three call sites. Confirmed by an existing, already-passing --selftest case: "all 3 fleet-test
+subshells in land_one close their own copy of LAND_LOCK_FD before running fleet-test, via
+run_fg_killable (card 81c6fbb5 Q3, card 9d1ee327)". Applying 489c1ef40's F2 hunks verbatim would
+have been redundant with, and risked conflicting with, that single-source wrapper.
+
+F1 (the new behavioral selftest hook, `--selftest-land-lock-release` /
+`--selftest-land-lock-release-inner`, calling the real `land_one` through a disposable git
+fixture and checking the OS-level flock afterward, not a text-pin) did NOT exist yet after
+81c6fbb5's refactor and applies cleanly in its originally-intended position (right after
+`land_one`/`land_with_retry` are defined). Verified standalone: 3/3 PASS (case A: already-landed
+exit path releases the lock; case B: fleet-test-failure exit path releases the lock and removes
+the disposable worktree). Full `--selftest` suite re-run after this delta: 86/86 PASS, no FAIL,
+no regression.
+
+This card's delivered content therefore DIFFERS from the originally-gated 489c1ef40 (F2's hunks
+intentionally omitted as superseded) -- a delta, not a tree-identical rebuild like 313c8a71 and
+22835648. A fresh REVIEW/gate round is required on the new sha; the old QA PASS/CYBERED GO
+verdicts on 489c1ef40 do not carry over.
+
+**Ki döntött:** DevO (fullstack), per MikroB msg 17349/17351. Gate: QA + Cybered (fresh round,
+dispatched by MikroB on the new sha).
