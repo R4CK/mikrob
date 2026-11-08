@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events'
 import {
   initDatabase, createKanbanCard, deleteKanbanCard,
   addKanbanCheckpoint, getKanbanCheckpoints,
+  migrateCardCheckpoints, dropCardCheckpoints,
 } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -15,6 +16,9 @@ import type { RouteContext } from '../web/routes/types.js'
 // A SHA that actually exists in the repo (HEAD of the main clone or the worktree).
 const REAL_SHA = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
 const FAKE_SHA  = '0'.repeat(40) // syntactically valid, almost certainly absent
+// A SHA that exists but is NOT a commit (the tree object of HEAD).
+const TREE_SHA  = execFileSync('git', ['cat-file', '-p', 'HEAD'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] })
+  .split('\n')[0].replace(/^tree /, '').trim()
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -65,16 +69,21 @@ describe('addKanbanCheckpoint / getKanbanCheckpoints (db layer)', () => {
   })
 })
 
-// --- Down + re-up migration (table survives a re-init) ---
+// --- Down + re-up migration on the SAME db handle (M1, MikroB 29419) ---
 
-describe('migration idempotency', () => {
-  it('CREATE TABLE IF NOT EXISTS is idempotent across two initDatabase calls', () => {
-    createKanbanCard({ id: 'ck-6', title: 'Migration test' })
+describe('card_checkpoints migration down + re-up (same handle)', () => {
+  it('drop then re-create removes rows but table is usable again', () => {
+    // beforeEach gave us a fresh :memory: db via initDatabase(':memory:')
+    createKanbanCard({ id: 'ck-6', title: 'Down migration test' })
     addKanbanCheckpoint('ck-6', REAL_SHA, REAL_SHA, 'backend')
-    // Second init on same in-memory db (no-op due to IF NOT EXISTS).
-    initDatabase(':memory:') // fresh db -- table must still be created
-    createKanbanCard({ id: 'ck-7', title: 'Migration test 2' })
-    const row = addKanbanCheckpoint('ck-7', REAL_SHA, REAL_SHA, 'backend')
+    expect(getKanbanCheckpoints('ck-6').length).toBe(1)
+    // down: remove the table from the CURRENT in-memory handle
+    dropCardCheckpoints()
+    // re-up: re-create the table on the SAME handle
+    migrateCardCheckpoints()
+    // row is gone (new empty table), table is usable
+    expect(getKanbanCheckpoints('ck-6')).toEqual([])
+    const row = addKanbanCheckpoint('ck-6', REAL_SHA, REAL_SHA, 'backend')
     expect(row.n).toBe(1)
   })
 })
@@ -160,6 +169,33 @@ describe('POST /api/kanban/:id/checkpoints', () => {
     const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r5/checkpoints', JSON.stringify({
       sha: FAKE_SHA, head_sha: REAL_SHA, agent: 'backend',
     }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+  })
+
+  it('400s when sha exists but is not a commit object (M2)', async () => {
+    createKanbanCard({ id: 'ck-r6', title: 'Non-commit sha test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r6/checkpoints', JSON.stringify({
+      sha: TREE_SHA, head_sha: REAL_SHA, agent: 'backend',
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toMatch(/commit/)
+  })
+
+  it('400s when head_sha exists but is not a commit object (M2)', async () => {
+    createKanbanCard({ id: 'ck-r7', title: 'Non-commit head_sha test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r7/checkpoints', JSON.stringify({
+      sha: REAL_SHA, head_sha: TREE_SHA, agent: 'backend',
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toMatch(/commit/)
+  })
+
+  it('400s on malformed JSON body (LOW)', async () => {
+    createKanbanCard({ id: 'ck-r8', title: 'Malformed JSON test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r8/checkpoints', 'not-json{')
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(400)
   })

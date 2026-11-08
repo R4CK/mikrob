@@ -29,7 +29,7 @@ import {
   queryKanbanRelations, cardsTouchingFile, filesTouchedByCard,
   RELATION_FILTER_COLUMNS, type RelationFilterColumn, type RelationQuery,
   getStuckKanbanCards,
-  addKanbanCheckpoint, getKanbanCheckpoints,
+  addKanbanCheckpoint, getKanbanCheckpoints, countKanbanCheckpoints,
 } from '../../db.js'
 import { isForceActor, forceActors } from '../../kanban-force-actors.js'
 import { fireCardBuildRoute } from '../kanban-route-dispatch.js'
@@ -1911,18 +1911,51 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCheckpointsMatch && method === 'POST') {
     const cardId = decodeURIComponent(kanbanCheckpointsMatch[1])
     if (!getKanbanCard(cardId)) { json(res, { error: `Kártya nem található: ${cardId}` }, 404); return true }
+    // Row cap: prevent unbounded growth (LOW, MikroB 29419).
+    const CHECKPOINT_CAP = 100
+    if (countKanbanCheckpoints(cardId) >= CHECKPOINT_CAP) {
+      json(res, { error: `Elérted a checkpoint limitet (${CHECKPOINT_CAP}/kártya)` }, 400); return true
+    }
     const body = await readBody(req)
-    const { sha, head_sha, agent } = JSON.parse(body.toString()) as { sha: string; head_sha: string; agent: string }
+    // Malformed JSON -> 400 (LOW, MikroB 29419).
+    let parsed: { sha: string; head_sha: string; agent: string }
+    try {
+      parsed = JSON.parse(body.toString()) as { sha: string; head_sha: string; agent: string }
+    } catch {
+      json(res, { error: 'Érvénytelen JSON kérés' }, 400); return true
+    }
+    const { sha, head_sha, agent } = parsed
     if (!sha || !head_sha || !agent) {
       json(res, { error: 'sha, head_sha és agent kötelező' }, 400); return true
     }
     if (!/^[0-9a-f]{40}$/i.test(sha) || !/^[0-9a-f]{40}$/i.test(head_sha)) {
       json(res, { error: 'sha és head_sha pontosan 40 hex karakter kell' }, 400); return true
     }
+    // M2 (MikroB 29419): validate sha is a commit object, not just any object.
+    // head_sha and agent are descriptive metadata stored verbatim; both are behind
+    // the global auth gate so spoofability is bounded to authenticated callers.
+    // n is serialised by better-sqlite3's synchronous MAX(n)+1 -- no git ref needed.
+    let shaType: string
     try {
-      execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-e', sha], { stdio: 'ignore' })
+      shaType = execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', sha], {
+        encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
     } catch {
-      json(res, { error: `A sha objektum nem létezik a repóban: ${sha}` }, 400); return true
+      json(res, { error: `sha nem létezik a repóban: ${sha}` }, 400); return true
+    }
+    if (shaType !== 'commit') {
+      json(res, { error: `sha nem commit objektum (${shaType}): ${sha}` }, 400); return true
+    }
+    let headShaType: string
+    try {
+      headShaType = execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', head_sha], {
+        encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+    } catch {
+      json(res, { error: `head_sha nem létezik a repóban: ${head_sha}` }, 400); return true
+    }
+    if (headShaType !== 'commit') {
+      json(res, { error: `head_sha nem commit objektum (${headShaType}): ${head_sha}` }, 400); return true
     }
     json(res, addKanbanCheckpoint(cardId, sha, head_sha, agent), 201)
     return true

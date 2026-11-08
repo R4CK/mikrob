@@ -2260,6 +2260,17 @@ export function initDatabase(dbPathOverride?: string): void {
   // REFERENCES kanban_cards(id): better-sqlite3 enforces FKs, so a checkpoint row
   // cannot outlive its card; deleteKanbanCard must sweep this table first (same
   // pattern as kanban_dependencies).
+  migrateCardCheckpoints()
+}
+
+// Exported so tests can run a down+re-up cycle on the same db handle (MikroB M1).
+// The INDEX is on the table so it is dropped automatically with the table.
+export function dropCardCheckpoints(): void {
+  db.exec('DROP TABLE IF EXISTS card_checkpoints')
+}
+
+// Called from initDatabase() and from tests for the down+re-up cycle.
+export function migrateCardCheckpoints(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS card_checkpoints (
       card_id    TEXT    NOT NULL REFERENCES kanban_cards(id),
@@ -6052,6 +6063,12 @@ export function getKanbanCheckpoints(cardId: string): CardCheckpoint[] {
   return db.prepare<[string], CardCheckpoint>(
     `SELECT * FROM card_checkpoints WHERE card_id = ? ORDER BY n ASC`,
   ).all(cardId)
+}
+
+export function countKanbanCheckpoints(cardId: string): number {
+  return (db.prepare<[string], { c: number }>(
+    `SELECT COUNT(*) as c FROM card_checkpoints WHERE card_id = ?`,
+  ).get(cardId) as { c: number }).c
 }
 
 export interface KanbanCardEvent {
