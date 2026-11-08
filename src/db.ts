@@ -2251,6 +2251,27 @@ export function initDatabase(dbPathOverride?: string): void {
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
   migrateTaskRunsFromJson()
+
+  // --- Card checkpoints (card 8b9c2d40, Fazis 295ae6a3 F1.2) ---
+  // Persist the git checkpoint commit + HEAD sha produced by store/agent-checkpoint.sh
+  // per card. sha is the branchless commit under refs/mikrob/ckpt/<cardId>/<n>;
+  // head_sha is the worktree HEAD at the moment the checkpoint was taken.
+  // n counts from 1 within each card; PRIMARY KEY prevents duplicates.
+  // REFERENCES kanban_cards(id): better-sqlite3 enforces FKs, so a checkpoint row
+  // cannot outlive its card; deleteKanbanCard must sweep this table first (same
+  // pattern as kanban_dependencies).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_checkpoints (
+      card_id    TEXT    NOT NULL REFERENCES kanban_cards(id),
+      n          INTEGER NOT NULL,
+      sha        TEXT    NOT NULL,
+      head_sha   TEXT    NOT NULL,
+      agent      TEXT    NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (card_id, n)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_card_checkpoints_card ON card_checkpoints(card_id)`)
 }
 
 function migrateTaskRunsFromJson(): void {
@@ -5285,6 +5306,7 @@ export function deleteKanbanCard(id: string, actor?: string): boolean {
         "DELETE FROM kanban_relations WHERE (from_type = 'card' AND from_id = ?) OR (to_type = 'card' AND to_id = ?)",
       )
       .run(cardId, cardId)
+    db.prepare('DELETE FROM card_checkpoints WHERE card_id = ?').run(cardId)
     return db.prepare('DELETE FROM kanban_cards WHERE id = ?').run(cardId).changes > 0
   })(id, actor, Math.floor(Date.now() / 1000)) as boolean
 }
@@ -5997,6 +6019,39 @@ export function getKanbanLineComments(cardId: string, sha?: string): KanbanLineC
   return db.prepare(
     'SELECT * FROM kanban_line_comments WHERE card_id = ? ORDER BY created_at ASC'
   ).all(cardId) as KanbanLineComment[]
+}
+
+// --- Card checkpoint rows (card 8b9c2d40, Fazis 295ae6a3 F1.2) ---
+
+export interface CardCheckpoint {
+  card_id: string
+  n: number
+  sha: string
+  head_sha: string
+  agent: string
+  created_at: number
+}
+
+/** Insert a checkpoint row for a card. n is auto-assigned as MAX(n)+1 within the card's scope;
+ *  the INSERT is atomic (SQLite single-writer), so no TOCTOU race. */
+export function addKanbanCheckpoint(
+  cardId: string,
+  sha: string,
+  headSha: string,
+  agent: string,
+  now = Math.floor(Date.now() / 1000),
+): CardCheckpoint {
+  return db.prepare<[string, string, string, string, string, number], CardCheckpoint>(
+    `INSERT INTO card_checkpoints (card_id, n, sha, head_sha, agent, created_at)
+     VALUES (?, (SELECT COALESCE(MAX(n), 0) + 1 FROM card_checkpoints WHERE card_id = ?), ?, ?, ?, ?)
+     RETURNING *`,
+  ).get(cardId, cardId, sha, headSha, agent, now)!
+}
+
+export function getKanbanCheckpoints(cardId: string): CardCheckpoint[] {
+  return db.prepare<[string], CardCheckpoint>(
+    `SELECT * FROM card_checkpoints WHERE card_id = ? ORDER BY n ASC`,
+  ).all(cardId)
 }
 
 export interface KanbanCardEvent {

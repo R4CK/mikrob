@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
@@ -28,6 +29,7 @@ import {
   queryKanbanRelations, cardsTouchingFile, filesTouchedByCard,
   RELATION_FILTER_COLUMNS, type RelationFilterColumn, type RelationQuery,
   getStuckKanbanCards,
+  addKanbanCheckpoint, getKanbanCheckpoints,
 } from '../../db.js'
 import { isForceActor, forceActors } from '../../kanban-force-actors.js'
 import { fireCardBuildRoute } from '../kanban-route-dispatch.js'
@@ -35,7 +37,7 @@ import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseMegoldasTarLines, recordKgUsageFeedback } from '../../kg/usage.js'
 import { openKgDb, kgDbPath } from '../../kg/store.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME, PROJECT_ROOT } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
@@ -1894,6 +1896,35 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
     json(res, addKanbanLineComment(cardId, sha, file, line, normalizeCommentAuthor(author), normalizedContent))
+    return true
+  }
+
+  // Card 8b9c2d40 (F1.2): branchless checkpoint commits recorded by store/agent-checkpoint.sh.
+  // POST stores a (sha, head_sha, agent) row; GET returns them ordered by n.
+  const kanbanCheckpointsMatch = path.match(/^\/api\/kanban\/([^/]+)\/checkpoints$/)
+  if (kanbanCheckpointsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(kanbanCheckpointsMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: `Kártya nem található: ${cardId}` }, 404); return true }
+    json(res, getKanbanCheckpoints(cardId))
+    return true
+  }
+  if (kanbanCheckpointsMatch && method === 'POST') {
+    const cardId = decodeURIComponent(kanbanCheckpointsMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: `Kártya nem található: ${cardId}` }, 404); return true }
+    const body = await readBody(req)
+    const { sha, head_sha, agent } = JSON.parse(body.toString())
+    if (!sha || !head_sha || !agent) {
+      json(res, { error: 'sha, head_sha és agent kötelező' }, 400); return true
+    }
+    if (!/^[0-9a-f]{40}$/i.test(sha) || !/^[0-9a-f]{40}$/i.test(head_sha)) {
+      json(res, { error: 'sha és head_sha pontosan 40 hex karakter kell' }, 400); return true
+    }
+    try {
+      execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-e', sha], { stdio: 'ignore' })
+    } catch {
+      json(res, { error: `A sha objektum nem létezik a repóban: ${sha}` }, 400); return true
+    }
+    json(res, addKanbanCheckpoint(cardId, sha, head_sha, agent), 201)
     return true
   }
 
