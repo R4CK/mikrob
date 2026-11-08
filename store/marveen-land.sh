@@ -1833,9 +1833,12 @@ if [ "${1:-}" = "--selftest-land-lock-release-inner" ]; then
   if flock_is_free; then echo "  ok   case B (fleet-test failure, second cleanup()): lock is free after land_one returns"
   else echo "  FAIL case B: lock STILL HELD after land_one returned (out: $(cat "$LFTMP/out-b"))"; fail=1; fi
   n=$((n+1))
-  if ls -d /home/neon/marveen-land-fixture-b-* >/dev/null 2>&1; then
+  # F2 fix (Cybered NO-GO 29382): use the EXACT path -- marveen-land-fixture-b-$$ -- not a glob.
+  # A glob matches every concurrent run's fixture worktree: 8-parallel test measured 1/8 false FAILs
+  # and rm -rf on the glob deletes another run's live worktree mid-run.
+  if ls -d "/home/neon/marveen-land-fixture-b-$$" >/dev/null 2>&1; then
     echo "  FAIL case B: the disposable landing worktree was not removed"; fail=1
-    rm -rf /home/neon/marveen-land-fixture-b-* 2>/dev/null
+    rm -rf "/home/neon/marveen-land-fixture-b-$$" 2>/dev/null
   else
     echo "  ok   case B: the disposable landing worktree was removed (second cleanup() ran)"
   fi

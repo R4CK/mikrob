@@ -55,6 +55,35 @@ describe.each([
   })
 })
 
+// Card 46194693 F1 (Cybered NO-GO 29382): --selftest-land-lock-release existed but nothing ran it
+// in vitest, so WhiteHat's three named mutants (dead-branch false&&, name-in-comment) stayed green
+// in every automated run. This case makes the hook part of the suite and verifies the count so
+// that removing one of its cases fails here, not silently.
+describe('marveen-land.sh --selftest-land-lock-release', () => {
+  it('passes all 3 cases and reports the count', { timeout: 60_000 }, () => {
+    let status = 0
+    let out = ''
+    try {
+      out = execFileSync('bash', [join(REPO, 'store', 'marveen-land.sh'), '--selftest-land-lock-release'], {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        cwd: REPO,
+      })
+    } catch (e) {
+      const err = e as { status?: number; stdout?: string; stderr?: string }
+      status = err.status ?? -1
+      out = String(err.stdout ?? '') + String(err.stderr ?? '')
+    }
+    expect(status).toBe(0)
+    expect(out).toContain('PASS')
+    expect(out).not.toContain('FAIL')
+    // Floor on the case count: a mutant that removes a case leaves rc=0 but drops the number.
+    const m = /selftest-land-lock-release: (\d+) case\(s\)/.exec(out)
+    expect(m).not.toBeNull()
+    expect(Number(m?.[1] ?? 0)).toBeGreaterThanOrEqual(3)
+  })
+})
+
 describe('the shared downward-check cases run from BOTH landers, not just one', () => {
   // The point of putting them in store/landing-downward-check.sh was that the two landers cannot
   // end up testing different things about the same code. If one lander stops sourcing the lib, its
