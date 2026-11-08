@@ -1912,7 +1912,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const cardId = decodeURIComponent(kanbanCheckpointsMatch[1])
     if (!getKanbanCard(cardId)) { json(res, { error: `Kártya nem található: ${cardId}` }, 404); return true }
     const body = await readBody(req)
-    const { sha, head_sha, agent } = JSON.parse(body.toString())
+    const { sha, head_sha, agent } = JSON.parse(body.toString()) as { sha: string; head_sha: string; agent: string }
     if (!sha || !head_sha || !agent) {
       json(res, { error: 'sha, head_sha és agent kötelező' }, 400); return true
     }
