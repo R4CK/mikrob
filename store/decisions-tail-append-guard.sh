@@ -453,6 +453,70 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     ok "mutant: tampered archive is REFUSED"
   fi
 
+  # pin-b: archive grew but existing archive bytes were falsified -> REFUSE (condition b).
+  # Without the (b) prefix check, (c) passes because the removed block still matches the NEW bytes at
+  # the end of the archive, and (d) passes with remainder_len=0.  The tampered prefix goes undetected.
+  mk_repo
+  base_sha="$(git -C "$R" rev-parse HEAD)"
+  archive_f="$R/DECISIONS-ARCHIVE-2026-Q1.md"
+  printf 'HISTORICAL_ENTRY_STUB_X\n' >"$archive_f"
+  git -C "$R" add "$archive_f"
+  git -C "$R" commit -qam "pin-b: seed archive at base"
+  base2_sha="$(git -C "$R" rev-parse HEAD)"
+  stub_len="$(git -C "$R" cat-file -s "${base2_sha}:DECISIONS-ARCHIVE-2026-Q1.md")"
+  # Archive grows: tampered prefix (same length) + old DECISIONS content appended.
+  printf 'FALSIFIED_ENTRY_STUB_X\n' | head -c "$stub_len" >"$archive_f"
+  git -C "$R" cat-file blob "${base2_sha}:DECISIONS.md" >>"$archive_f"
+  printf '## 2026-04-01 -- new entry\n\nNew.\n' >"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md "$archive_f"
+  git -C "$R" commit -qam "pin-b: archive grew but existing bytes falsified"
+  tip_sha="$(git -C "$R" rev-parse HEAD)"
+  if decisions_tail_append_ok "$R" "$base2_sha" "$tip_sha" DECISIONS.md 1 >/dev/null 2>&1; then
+    no "pin-b: falsified archive prefix should be REFUSED (condition b)"
+  else
+    ok "pin-b: falsified archive prefix is REFUSED (condition b)"
+  fi
+
+  # pin-d: partial archiving but kept entries silently rewritten in tip -> REFUSE (condition d).
+  # Without the (d) check, (a)/(b)/(c) all pass, and the tampered kept entries reach develop.
+  mk_repo
+  printf '\n## 2026-02-01 -- kept entry\n\nKept: something important.\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "pin-d: seed kept entry"
+  base_sha="$(git -C "$R" rev-parse HEAD)"
+  archive_f="$R/DECISIONS-ARCHIVE-2026-Q1.md"
+  # Archive receives the first (old) entry exactly.
+  first_len="$(printf '# DECISIONS\n\n## 2026-01-01 -- old entry\n\nDontes: Peti NO-GO a Z ugyre.\n\n' | wc -c)"
+  git -C "$R" cat-file blob "${base_sha}:DECISIONS.md" | head -c "$first_len" >"$archive_f"
+  # Tip DECISIONS.md starts with the kept entry BUT with tampered content.
+  printf '## 2026-02-01 -- kept entry\n\nKept: SOMETHING CHANGED.\n\n## 2026-04-01 -- new\n\nNew.\n' \
+    >"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md "$archive_f"
+  git -C "$R" commit -qam "pin-d: kept entries modified in tip"
+  tip_sha="$(git -C "$R" rev-parse HEAD)"
+  if decisions_tail_append_ok "$R" "$base_sha" "$tip_sha" DECISIONS.md 1 >/dev/null 2>&1; then
+    no "pin-d: modified kept entries should be REFUSED (condition d)"
+  else
+    ok "pin-d: modified kept entries is REFUSED (condition d)"
+  fi
+
+  # pin-anchor: correct content but archive at a non-root path -> REFUSE (^ anchor in grep).
+  # Without the ^ anchor the grep matches sub/dir/DECISIONS-ARCHIVE-2026-Q1.md, (c)+(d) pass trivially
+  # (remainder_len=0), and the guard incorrectly accepts.
+  mk_repo
+  base_sha="$(git -C "$R" rev-parse HEAD)"
+  mkdir -p "$R/sub/dir"
+  archive_f="$R/sub/dir/DECISIONS-ARCHIVE-2026-Q1.md"
+  git -C "$R" cat-file blob "${base_sha}:DECISIONS.md" >"$archive_f"
+  printf '## 2026-04-01 -- new entry\n\nNew.\n' >"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md sub/
+  git -C "$R" commit -qam "pin-anchor: archive at non-root path sub/dir/"
+  tip_sha="$(git -C "$R" rev-parse HEAD)"
+  if decisions_tail_append_ok "$R" "$base_sha" "$tip_sha" DECISIONS.md 1 >/dev/null 2>&1; then
+    no "pin-anchor: non-root archive should be REFUSED (^ anchor)"
+  else
+    ok "pin-anchor: non-root archive is REFUSED (^ anchor)"
+  fi
+
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
   exit "$fail"
 fi

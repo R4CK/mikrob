@@ -1226,7 +1226,8 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # is even attempted. $wt's HEAD is origin/$DEFAULT_BRANCH right now (just checked out above), so
   # its merge-base with $branch is exactly the branch's own fork point.
   local _dtag_mb; _dtag_mb="$(git -C "$wt" merge-base HEAD "$branch" 2>/dev/null)"
-  if [ -n "$_dtag_mb" ] && ! decisions_tail_append_ok "$wt" "$_dtag_mb" "$branch" "DECISIONS.md"; then
+  [ "$ALLOW_ARCHIVE" -eq 1 ] && say "$agent: allow-archive: 90-day distillation accepted on $branch (explicitly passed by caller)"
+  if [ -n "$_dtag_mb" ] && ! decisions_tail_append_ok "$wt" "$_dtag_mb" "$branch" "DECISIONS.md" "$ALLOW_ARCHIVE"; then
     echo "$agent: REFUSED -- DECISIONS.md on $branch is not a pure tail append (see the lines above)."
     echo "$agent: Move the new/continued entry to the file's own end, referencing the parent entry"
     echo "$agent: by date/title, and re-push."
@@ -1759,7 +1760,7 @@ land_with_retry() {
   done
 }
 
-DRY=0; LAND_CARD=""; ALLOW_STACKED=""
+DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0
 TARGET="${1:-}"; [ $# -gt 0 ] && shift
 
 # card cd3e577b (F1): `marveen-land.sh --card <id> --agent <agent> [--dry-run]` lands the card's OWN
@@ -1807,6 +1808,9 @@ while [ $# -gt 0 ]; do
     # Not a --force: the operator NAMES the foreign cards they are taking on purpose.
     --allow-stacked) shift; [ $# -gt 0 ] || die 2 "--allow-stacked needs a card id list"; ALLOW_STACKED="$1" ;;
     --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
+    # 90-day distillation commits move entries from DECISIONS.md's beginning into an archive file,
+    # breaking the byte-exact-prefix invariant.  Only MikroB passes this explicitly (card acffb1d6).
+    --allow-archive) ALLOW_ARCHIVE=1 ;;
     *) die 2 "unknown option: $1" ;;
   esac
   shift
