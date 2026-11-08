@@ -17,6 +17,7 @@
 let kgSelectedNodeId = null
 let kgGraphMode = false
 let kgSearchDebounce = null
+let kgTotalNodes = null
 
 const KG_TYPES = ['solution', 'anti_pattern', 'decision', 'finding', 'lesson', 'card', 'commit', 'file', 'symbol', 'skill', 'error_class']
 
@@ -100,7 +101,7 @@ async function kgRunSearch() {
   const meta = kgEl('kgResultsMeta')
   const { q, project, types, strict } = kgCurrentQuery()
 
-  if (!q && types.length === 0) {
+  if (!q) {
     body.innerHTML = `<p class="kg-empty" data-i18n="kg.empty.type_to_search">${escapeHtml(t('kg.empty.type_to_search'))}</p>`
     meta.innerHTML = ''
     return
@@ -154,7 +155,8 @@ function kgRenderResults(results, meta) {
   metaEl.innerHTML = metaBits.join(' · ')
 
   if (!results.length) {
-    body.innerHTML = `<p class="kg-empty">${escapeHtml(t('kg.empty.no_results'))}</p>`
+    const key = kgTotalNodes === 0 ? 'kg.empty.store_empty' : 'kg.empty.no_results'
+    body.innerHTML = `<p class="kg-empty">${escapeHtml(t(key))}</p>`
     return
   }
 
@@ -296,6 +298,7 @@ async function kgLoadStats() {
   }
 
   const counts = data.nodes && typeof data.nodes === 'object' ? data.nodes : {}
+  kgTotalNodes = Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0)
   const tiles = Object.keys(counts).map((type) => `
     <div class="kg-stat-tile">
       <div class="kg-stat-value">${escapeHtml(String(counts[type]))}</div>

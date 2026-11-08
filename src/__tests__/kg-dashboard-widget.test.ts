@@ -489,6 +489,27 @@ describe('kg: search fetch contract', () => {
     expect(renderSrc).toContain('kg.meta.relaxed')
     expect(renderSrc).toContain('kg.meta.hits')
   })
+
+  // Card 00b6eed3: selecting a type filter with an empty search box used to send a q-less
+  // request (GET /api/kg/search?types=...&project=...), which the route 400s
+  // (q_or_path_required) because it only accepts q OR path as the search anchor, not types --
+  // the FE showed the generic error instead. Fix: types-without-q is "type to search", same as
+  // no-query-no-types, and never calls the API.
+  it('a type filter selected with an empty search box does not call the API or show an error', async () => {
+    let fetchCalled = false
+    const harness = loadKgRenderModule(() => {
+      fetchCalled = true
+      return Promise.resolve(fakeResponse(400, { error: 'q_or_path_required' }))
+    })
+    harness.fakeEl('kgSearchInput').value = ''
+    harness.fakeEl('kgProjectSelect').value = '*'
+    harness.fakeEl('kgTypeFilter').selectedOptions = [{ value: 'solution' }]
+    harness.fakeEl('kgStrictToggle').checked = false
+    await harness.mod.kgRunSearch()
+    expect(fetchCalled).toBe(false)
+    expect(harness.fakeEl('kgResultsBody').innerHTML).not.toContain('kg-error')
+    expect(harness.fakeEl('kgResultsBody').innerHTML).toContain('kg.empty.type_to_search')
+  })
 })
 
 describe('kg: node detail fetch contract', () => {
