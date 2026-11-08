@@ -389,6 +389,20 @@ describe('self-pace-gate gateDecision', () => {
     expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/scheduled_tasks.json' }).deny).toBe(false)
     expect(selfPaceDecision('Bash', { command: 'grep poll ~/.claude/scheduled_tasks.json' }).deny).toBe(false)
   })
+  // Cybersec M1 (card 4f3c0287 comment 29313): the Koteg-23b merge's own WRITE_INTENT_RX
+  // fix (excluding a digit-prefixed redirect so `cat ref 2>/dev/null` reads as a read,
+  // not a write) used a blanket `(?<!\d)`, which ALSO excluded every OTHER
+  // digit-prefixed fd -- 1>, 3>, 9> are real stdout writes, not stderr. Fixed to
+  // `(?<!\b2)`, which excludes only fd 2.
+  it('denies a WRITE to the self-schedule store via a digit-prefixed STDOUT redirect (M1)', () => {
+    expect(selfPaceDecision('Bash', { command: 'echo "{}" 1> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'echo "{}" 3> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'echo "{}" 9> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+  })
+  it('ALLOWS a STDERR redirect (fd 2) of the self-schedule store -- the control M1 fixes around (F4)', () => {
+    expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/scheduled_tasks.json 2>/dev/null' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'cat ref 2>/dev/null' }).deny).toBe(false)
+  })
   it('denies a WRITE method to the dashboard schedule API', () => {
     expect(selfPaceDecision('Bash', { command: 'curl -X POST http://localhost:3420/api/schedules -d @x.json' }).deny).toBe(true)
   })

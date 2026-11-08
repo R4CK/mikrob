@@ -707,12 +707,16 @@ const UNANCHORED_SCHEDULER_READ_RX_G = new RegExp(UNANCHORED_SCHEDULER_READ_RX.s
 // file under a named task subdirectory is blocked, not only task-config.json.
 const SCHEDULE_STORE_RX = /(?:scheduled_tasks\.json|[\\/]scheduled-tasks[\\/][^\\/]+[\\/])/i
 // Write-intent shell tokens (redirect / tee / in-place edit / dd / copy-move).
-// The redirect branch excludes a digit-prefixed fd (2>, 2>>, 2>&1): that duplicates or
-// redirects STDERR, it never writes the referenced path -- `cat ref 2>/dev/null` is a
-// read, not a write, and a bare `>>?` without this exclusion denied it (measured:
-// card 4f3c0287 merge, governance-gates.test.ts "ALLOWS reads... " + "does NOT
-// over-fire..." both failed on this exact shape before the fix).
-const WRITE_INTENT_RX = /((?<!\d)>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
+// The redirect branch excludes ONLY fd 2 (2>, 2>>, 2>&1): that duplicates or redirects
+// STDERR, it never writes the referenced path -- `cat ref 2>/dev/null` is a read, not a
+// write, and a bare `>>?` without this exclusion denied it (measured: card 4f3c0287
+// merge, governance-gates.test.ts "ALLOWS reads... " + "does NOT over-fire..." both
+// failed on this exact shape before the first fix). A blanket `(?<!\d)` also excluded
+// every OTHER digit-prefixed fd -- 1>, 3>, 9> -- so `echo ... 1> ~/.claude/scheduled_tasks.json`
+// was allowed again (Cybersec M1, card 4f3c0287 comment 29313): those ARE stdout writes.
+// `(?<!\b2)` excludes only a literal "2" immediately before the redirect, leaving every
+// other digit-prefixed fd (a real write target) covered.
+const WRITE_INTENT_RX = /((?<!\b2)>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
 // Dashboard schedule API, curl spelling only. A WRITE method (POST/PUT/PATCH/
 // DELETE) creates/edits a self-paced cron; a GET is legit diagnostics. This pair
 // never saw any other HTTP client -- see scheduleSurfaceDeny,
