@@ -68,6 +68,8 @@ describe('marveen-land.sh --selftest-land-lock-release', () => {
         encoding: 'utf-8',
         stdio: 'pipe',
         cwd: REPO,
+        timeout: 50_000,
+        env: { ...process.env, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' },
       })
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string }
