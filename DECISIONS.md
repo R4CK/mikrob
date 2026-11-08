@@ -23196,3 +23196,31 @@ ahelyett hogy a szigorubb szabalyt gyengitenenk.
 
 **Ki dontott:** MikroB (2026-11-07, msg 17070, backend3 merese alapjan). Gate: QA + Cybersec +
 Cybered (uj biztonsagi logika egy 3-gate-es fajlban).
+
+## 2026-11-07 -- 0120d19a delta: reject a curl stdin override on the trusted-printf GET pipeline
+
+WhiteHat (comment 29073) es RedHat (comment 29075) NO-GO-t adott a ca55d2949-es
+`isTrustedTokenPrintf`/`isPlainCurlGet` bovitesre (lasd a fenti bejegyzest): a bizalmi dontes
+csak azt nezte, mi FOLYIK BELE a curl-szegmens elotti pipe-on, soha nem azt, hogy a curl SAJAT
+stdin-jet felulirja-e egy kesobbi redirect UGYANAZON a szegmensen. Egy `-H @-` igy a bizonyitott
+printf helyett egy `< fajl` / `0< fajl` / `<&N` / heredoc altal adott, tamado altal valaszthato
+header-sort is beolvashatott volna -- mindket gate egy lokalis loopback HTTP szerverrel merte
+elo.
+
+**Javitas (scripts/self-pace-gate.mjs):** `shellWords()` mostantol rogziti `words.hasInputRedirect`-et
+(igaz BARMELY `<`/`0<`/`<&N`-re a szegmensen, a cel ertektelen -- csak a jelenlet szamit, mert
+egy sima GET-nek soha nincs jogos oka sajat stdin-forrasra). `isPlainCurlGet` ezt felteve
+elutasitja, fuggetlenul mindentol mastol. A heredoc a curl-szegmensen lathatatlan a
+`shellWords`-nek (a `HEREDOC_OP_RX` kiuritI az operatort tokenizalas elott), ezert ezt kulon,
+a hivasi helyen `seg.bodies.length`-tel ellenorizzuk. 7 uj nevesitett teszt
+(governance-gates.test.ts): 4 alak (`< fajl`, `0< fajl`, `<&N`, heredoc) + 1 kontroll + 3
+mutant-olo teszt a Cybersec T1 leletere (3 meglevo ellenorzesnek korabban nem volt olyan
+tesztje, ami bukna, ha az ellenorzest kivennenk).
+
+**Miert:** a bizalmi mechanizmus csak akkor zar valodi rest, ha a "mi van a pipe elott" mellett
+a "mi van a curl SAJAT stdin-jen" kerdest is lezarja -- a ket gate gyakorlati exploittal merte,
+nem feltetelezte.
+
+**Ki dontott:** MikroB (2026-11-07, msg 17164, Cybersec/RedHat T1 leletei alapjan, backend3
+implementalta). Gate-SHA: fe449c6250436e419f1de0c4b2bbe3a474ac9d52. Gate: QA + Cybersec (WhiteHat)
++ Cybered (RedHat), delta re-gate card 0120d19a-n.
