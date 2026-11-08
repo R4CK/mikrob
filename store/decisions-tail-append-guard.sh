@@ -37,12 +37,23 @@
 # API (source this file to get the function):
 #   decisions_tail_append_ok <repo> <base-sha> <tip-sha> [<file>]
 #     0 (true)  if <file> did not exist at <base-sha> (nothing to violate), OR the file at
-#               <base-sha> is a byte-exact prefix of the file at <tip-sha>.
+#               <base-sha> is a byte-exact prefix of the file at <tip-sha>, OR
+#               DECISIONS_ARCHIVE_PASS=1 is set AND at least one DECISIONS-ARCHIVE-*.md file
+#               exists at <tip-sha> (archiving exception -- see card acffb1d6).
 #     1 (false) otherwise -- prints the first line at which the two diverge, and the reminder to
 #               move the new entry to the tail, to stderr.
 #
+# ARCHIVING EXCEPTION (card acffb1d6): the project-decisions-log skill prescribes that entries
+# older than 90 days are moved from DECISIONS.md's beginning into a DECISIONS-ARCHIVE-<YYYY>-Q<N>.md
+# file.  After that move the merge-base is no longer a byte-exact prefix of the branch file, so the
+# guard would refuse the archiving commit.  To allow it, the caller sets DECISIONS_ARCHIVE_PASS=1
+# before invoking the guard (or passes --allow-archive on the CLI).  Fail-closed: even with the
+# flag, the guard refuses unless at least one DECISIONS-ARCHIVE-*.md file exists at <tip-sha>
+# (entries removed without a matching archive file → REFUSE).
+#
 # CLI:
 #   decisions-tail-append-guard.sh --check-branch <repo> <base-sha> <tip-sha> [<file>]
+#   decisions-tail-append-guard.sh --check-branch --allow-archive <repo> <base-sha> <tip-sha> [<file>]
 #   decisions-tail-append-guard.sh --selftest
 set -u
 
@@ -66,18 +77,42 @@ decisions_tail_append_ok() {
      cmp -s - <(git -C "$repo" cat-file blob "$tip:$f" 2>/dev/null | head -c "$base_len"); then
     return 0
   fi
+  # ARCHIVING EXCEPTION (card acffb1d6): entries distilled from the beginning of DECISIONS.md
+  # into a DECISIONS-ARCHIVE-*.md file break the byte-exact prefix invariant.  Accept this iff
+  # DECISIONS_ARCHIVE_PASS=1 AND at least one archive file exists at tip (fail-closed).
+  if [ "${DECISIONS_ARCHIVE_PASS:-0}" = "1" ]; then
+    local archive_files
+    archive_files="$(git -C "$repo" ls-tree -r --name-only "$tip" 2>/dev/null \
+      | grep -E 'DECISIONS-ARCHIVE-[0-9].*\.md$' || true)"
+    if [ -n "$archive_files" ]; then
+      printf '    DECISIONS_ARCHIVE_PASS=1: archiving commit accepted (%s)\n' \
+        "$(printf '%s' "$archive_files" | head -1)" >&2
+      return 0
+    fi
+    echo "    DECISIONS_ARCHIVE_PASS=1 set but no DECISIONS-ARCHIVE-*.md found at $tip" >&2
+    echo "    Archiving commit requires a dated archive file. Fail-closed." >&2
+    return 1
+  fi
   echo "    DECISIONS.md tail-append violation: $tip's version of $f does not have $base's" >&2
   echo "    content as a byte-exact prefix -- something was inserted, removed, or reordered" >&2
   echo "    BEFORE the base's own end, not appended strictly after it." >&2
   echo "    Fix: move the new/continued entry to the VERY END of the file, referencing the" >&2
   echo "    parent entry by its date/title instead of inserting next to it." >&2
+  echo "    If this is a 90-day distillation commit (project-decisions-log skill), set" >&2
+  echo "    DECISIONS_ARCHIVE_PASS=1 (or pass --allow-archive on the CLI) and ensure a" >&2
+  echo "    DECISIONS-ARCHIVE-*.md file is included in the commit." >&2
   return 1
 }
 
 # CLI DISPATCH ONLY WHEN EXECUTED, NEVER WHEN SOURCED (same guard as the sibling DECISIONS.md
 # scripts -- BASH_SOURCE differs from $0 only when the file is read via `.`/`source`).
 if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--check-branch" ]; then
-  decisions_tail_append_ok "$2" "$3" "$4" "${5:-DECISIONS.md}"
+  shift  # consume --check-branch
+  if [ "${1:-}" = "--allow-archive" ]; then
+    export DECISIONS_ARCHIVE_PASS=1
+    shift
+  fi
+  decisions_tail_append_ok "$1" "$2" "$3" "${4:-DECISIONS.md}"
   exit $?
 fi
 
@@ -205,6 +240,44 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     ok "an empty base file PASSES (trivially a prefix)"
   else
     no "an empty base file should pass"
+  fi
+
+  # 8. archiving commit (entries removed from beginning, moved to archive file) + flag -> PASS.
+  mk_repo
+  base_sha="$(git -C "$R" rev-parse HEAD)"
+  # Simulate 90-day distillation: remove old entry, write it to archive, add comment at top.
+  old_entry="$(cat "$R/DECISIONS.md")"
+  archive_f="$R/DECISIONS-ARCHIVE-2026-Q1.md"
+  printf '%s\n' "$old_entry" >"$archive_f"
+  printf '<!-- Korábbi bejegyzések: DECISIONS-ARCHIVE-2026-Q1.md -->\n\n' >"$R/DECISIONS.md"
+  printf '## 2026-04-01 -- new entry after distillation\n\nSomething new.\n' >>"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md "$archive_f"
+  git -C "$R" commit -qam "docs(decisions): distill entries older than 90 days into archive"
+  tip_sha="$(git -C "$R" rev-parse HEAD)"
+  if DECISIONS_ARCHIVE_PASS=1 decisions_tail_append_ok "$R" "$base_sha" "$tip_sha" >/dev/null 2>&1; then
+    ok "archiving commit with DECISIONS_ARCHIVE_PASS=1 PASSES"
+  else
+    no "archiving commit with DECISIONS_ARCHIVE_PASS=1 should pass"
+  fi
+
+  # 9. same archiving commit WITHOUT flag -> REFUSE.
+  if DECISIONS_ARCHIVE_PASS=0 decisions_tail_append_ok "$R" "$base_sha" "$tip_sha" >/dev/null 2>&1; then
+    no "archiving commit without DECISIONS_ARCHIVE_PASS should be REFUSED"
+  else
+    ok "archiving commit without DECISIONS_ARCHIVE_PASS is REFUSED"
+  fi
+
+  # 10. DECISIONS_ARCHIVE_PASS=1 but no archive file at tip -> REFUSE (fail-closed).
+  mk_repo
+  base_sha="$(git -C "$R" rev-parse HEAD)"
+  printf '<!-- Korábbi bejegyzések: DECISIONS-ARCHIVE-2026-Q1.md -->\n\n' >"$R/DECISIONS.md"
+  printf '## 2026-04-01 -- new entry\n\nSomething.\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "entries removed but NOT placed in archive file"
+  tip_sha="$(git -C "$R" rev-parse HEAD)"
+  if DECISIONS_ARCHIVE_PASS=1 decisions_tail_append_ok "$R" "$base_sha" "$tip_sha" >/dev/null 2>&1; then
+    no "DECISIONS_ARCHIVE_PASS=1 but no archive file should be REFUSED"
+  else
+    ok "DECISIONS_ARCHIVE_PASS=1 without archive file is REFUSED"
   fi
 
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
