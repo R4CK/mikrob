@@ -667,6 +667,71 @@ if [ "${1:-}" = "--selftest" ]; then
   fi
   rm -rf "$tq_base" "$tq_base.tickets" "$tq_base.seq" "$tq_base.seq.lock" "$tq_out" 2>/dev/null
 
+  # card 1ce1059a (81c6fbb5 round 2 residual, QA2 28921 + CYBERSEC GO 28925 Q1b): the ticket FILE
+  # write must happen BEFORE the seq-lock is released -- land_lock_take_ticket already does this,
+  # but nothing pinned the ORDER itself; a regression that swapped them (release first, write
+  # second) would pass every test above untouched. Splices an injected (test-only) sleep into the
+  # REAL source extracted from $0 (not a hand-reconstructed copy, same technique as the
+  # land_lock_is_head mutant above), runs it in the background, and polls mid-delay: the real
+  # order must show the ticket file already present AND the seq lock still held; the reorder
+  # mutant (release, then the same delay, then the write) must NOT.
+  n=$((n + 1))
+  real_tt_src="$(awk '/^land_lock_take_ticket\(\) \{$/{p=1} p{print} p&&/^}$/{exit}' "$0")"
+  tt_if_idx=-1; tt_release_idx=-1
+  if [ -n "$real_tt_src" ]; then
+    mapfile -t tt_lines <<<"$real_tt_src"
+    for tt_i in "${!tt_lines[@]}"; do
+      case "${tt_lines[$tt_i]}" in
+        *'if : >"$ticket_dir/$ticket"; then'*) [ "$tt_if_idx" -lt 0 ] && tt_if_idx="$tt_i" ;;
+        *'{ exec {seq_fd}>&-; } 2>/dev/null'*) [ "$tt_if_idx" -ge 0 ] && [ "$tt_release_idx" -lt 0 ] && tt_release_idx="$tt_i" ;;
+      esac
+    done
+  fi
+  if [ "$tt_if_idx" -lt 0 ] || [ "$tt_release_idx" -ne $((tt_if_idx + 1)) ]; then
+    echo "  FAIL could not locate the write-then-release adjacency in land_lock_take_ticket -- selftest and production have drifted"; fail=1
+  else
+    tt_real_delayed=("${tt_lines[@]:0:$((tt_if_idx + 1))}" '    sleep "$TQ_DELAY"' "${tt_lines[@]:$((tt_if_idx + 1))}")
+    tt_mutant=("${tt_lines[@]:0:$tt_if_idx}" "${tt_lines[$tt_release_idx]}" '    sleep "$TQ_DELAY"' "${tt_lines[$tt_if_idx]}" "${tt_lines[@]:$((tt_release_idx + 1))}")
+    real_tt_delayed_src="$(printf '%s\n' "${tt_real_delayed[@]}")"
+    mutant_tt_src="$(printf '%s\n' "${tt_mutant[@]}")"
+    if [ "$real_tt_delayed_src" = "$mutant_tt_src" ]; then
+      echo "  FAIL the reorder mutant is identical to the delayed-real source -- this pin is not sensitive"; fail=1
+    else
+      tt_base="$(mktemp -u)"
+      ( eval "$real_tt_delayed_src"; LAND_LOCK_FILE="$tt_base" TQ_DELAY=3 land_lock_take_ticket >/dev/null 2>&1 ) &
+      tt_real_pid=$!
+      sleep 1
+      tt_real_ticket_exists=0; [ -n "$(ls "$tt_base.tickets" 2>/dev/null)" ] && tt_real_ticket_exists=1
+      exec {tt_fd}>>"$tt_base.seq.lock"
+      if flock -n "$tt_fd"; then tt_real_lock_held=0; flock -u "$tt_fd"; else tt_real_lock_held=1; fi
+      exec {tt_fd}>&-
+      kill "$tt_real_pid" 2>/dev/null; wait "$tt_real_pid" 2>/dev/null
+      rm -rf "$tt_base.tickets" "$tt_base.seq" "$tt_base.seq.lock" 2>/dev/null
+      if [ "$tt_real_ticket_exists" -eq 1 ] && [ "$tt_real_lock_held" -eq 1 ]; then
+        echo "  ok   land_lock_take_ticket writes the ticket file before releasing the seq lock (mid-delay: ticket present, lock still held)"
+      else
+        echo "  FAIL expected the ticket file to exist AND the seq lock to still be held mid-delay (ticket_exists=$tt_real_ticket_exists lock_held=$tt_real_lock_held)"; fail=1
+      fi
+
+      n=$((n + 1))
+      tt_base2="$(mktemp -u)"
+      ( eval "$mutant_tt_src"; LAND_LOCK_FILE="$tt_base2" TQ_DELAY=3 land_lock_take_ticket >/dev/null 2>&1 ) &
+      tt_mut_pid=$!
+      sleep 1
+      tt_mut_ticket_exists=0; [ -n "$(ls "$tt_base2.tickets" 2>/dev/null)" ] && tt_mut_ticket_exists=1
+      exec {tt_fd2}>>"$tt_base2.seq.lock"
+      if flock -n "$tt_fd2"; then tt_mut_lock_held=0; flock -u "$tt_fd2"; else tt_mut_lock_held=1; fi
+      exec {tt_fd2}>&-
+      kill "$tt_mut_pid" 2>/dev/null; wait "$tt_mut_pid" 2>/dev/null
+      rm -rf "$tt_base2.tickets" "$tt_base2.seq" "$tt_base2.seq.lock" 2>/dev/null
+      if [ "$tt_mut_ticket_exists" -eq 1 ] && [ "$tt_mut_lock_held" -eq 1 ]; then
+        echo "  FAIL MUTATION NOT CAUGHT: the release-before-write reorder mutant should have shown the lock already free and/or the ticket not yet written mid-delay, but it matched the real (good) state"; fail=1
+      else
+        echo "  ok   MUTATION CAUGHT: swapping write and release (release first) leaves the lock free and/or the ticket missing mid-delay -- the real ordering does not"
+      fi
+    fi
+  fi
+
   # card 81c6fbb5 (5d9731cd follow-up, CYBERSEC GO 28780 Q2b): a ticket named with pid part "0"
   # used to be immortal, because `kill -0 0` sends to the CALLER's own process group and always
   # succeeds. Red-on-4aa472b37 + green-on-the-fix, both against the REAL functions of each commit
