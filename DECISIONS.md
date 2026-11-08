@@ -23256,3 +23256,32 @@ valtozatlan baseline).
 **Ki dontott:** MikroB (msg 17171/17306, backend3 vegezte a merget es a fixet). Gate: QA +
 Cybersec (WhiteHat) + Cybered (RedHat), delta re-gate a vegso Gate-SHA-ra
 (d057a018beba222174b2efcab0b962dda1378967), nevben lefedve mindket kartyat (0120d19a + 4f3c0287).
+
+## 2026-11-08 -- 4f3c0287 M1 delta: fd-2-only exclusion still wrong, RedHat's correction
+
+**Dontes:** a fenti (2026-11-08-i) 4f3c0287 bejegyzes `(?<!\b2)` javitasa (Cybersec M1,
+comment 29313) MAGA IS hibas volt: RedHat (msg 17335/17336, MikroB altal megerositve)
+kimutatta, hogy a `2> <valodi fajl>` alak IS iras-szandek, nem csak az 1>/3>/9> -- a
+valodi bash a redirect CELJAT O_WRONLY|O_CREAT|O_TRUNC-dal nyitja meg FUGGETLENUL attol,
+melyik fd-t iranyitja at, tehat a `true 2> fajl` is nullazza/letrehozza a celt, akkor is,
+ha soha semmi nem iratik bele. Fuggetlenul reprodukalva: egy 19 byte-os fixture fajl 0
+byte-ra csokkent `true 2> fajl` utan. Az EGYETLEN bizonyithatoan biztonsagos alak egy
+fd-fd dup (`N>&M`, nem nyit fajlt) vagy a literalis `2>/dev/null` (`2>` a null-nyelore).
+
+Javitas (`hasWriteIntent(seg, nextSeg)` fuggveny a korabbi `WRITE_INTENT_RX` lookbehind
+helyett, scripts/self-pace-gate.mjs): csak a ket bizonyithatoan biztos alakot tavolitja
+el, utana barmilyen maradek `>`-t iras-szandeknak szamit. Kulon bonyolito tenyezo: a
+`splitSegments` a sima `&`-t is job-control-szeparatornak veszi, tehat `N>&M` KET
+szegmensre hasad a hatarán (`'cat f 2>&1 | grep x'` -> `['cat f 2>', '1', 'grep x']`) --
+`nextSeg`-gel a hivo visszaadja a kovetkezo szegmenst, hogy egy szethasadt dup
+visszaalljon egy string-be a biztos-alak-szures ELOTT, kulonben egy jogos stderr-dup
+pipeline (`cat f 2>&1 | grep x`) hamisan tiltodna. Teljes RedHat-fele alaklista
+lefedve (1>, 1>f, 2> f, 3> f, exec 1> f, heredoc fd-n keresztul, ~/\$HOME/abszolut/relativ
+irasmod), plusz kontroll (2>/dev/null, 2>&1 pipeline). Mindket iranyban ellenorizve
+NEM-vakum: a fd-2-csak kivetelre visszamutalva a `2> fajl` pin piros lesz; a
+dup-egyesito lookahead kikapcsolasaval a `2>&1` kontroll-pin piros lesz. Mindket eset
+visszaallitva, 259/259 zold. Testver-suite-ok erintetlenek (18332 passed, 98 skipped,
+4 fajl).
+
+**Ki dontott:** MikroB (msg 17336/17339, RedHat merese alapjan, backend3 vegezte).
+Gate-SHA: ujra-gate ehhez a kommit vegso tip-jehez (lasd a kartya REVIEW-jat).
