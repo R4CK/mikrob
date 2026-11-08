@@ -76,11 +76,28 @@
 # is still ignored (its own selftest case below). On the 2400 measured subjects the cost was
 # zero. A false POSITIVE here costs one `--allow-stacked` argument; the false NEGATIVE it
 # replaces cost a refused landing on a correct branch.
+#
+# SECOND SHAPE, card 603bfce8 (the f4ac79a94 incident). The prose `card <id>` form above was
+# measured against CleanCore's history and assumed representative -- it is not. Re-measured on
+# 500 real marveen+CleanCore subjects: only 12 use the prose form this function already caught,
+# while 113 use the fleet's actual dominant convention, a conventional-commit SCOPE:
+# `type(<id>):` at the very start of the subject (`fix(9d1ee327): ...`), sometimes with several
+# ids (`docs(2ba98cac+4d367048):`, `docs(2ba98cac,4d367048):`) or the word `card` inside the
+# parens (`chore(card 0abcaba3):`). None of these were recognised at all -- cards_in_subject
+# returned empty for them, so foreign_commits (decision 1 below) filed them as "names no card",
+# not "foreign", and a foreign card's commits rode along a --card landing unrefused. Anchored to
+# the START of the subject (a scope is always the first token) so a hex-shaped word appearing
+# later in the subject is still ignored, same anchoring discipline as the prose form.
 cards_in_subject() {
-  printf '%s\n' "${1:-}" \
-    | grep -oiE '\bcards?[[:space:]]+[0-9a-f]{8}\b([[:space:]]*[/,][[:space:]]*[0-9a-f]{8}\b)*' \
-    | grep -oiE '\b[0-9a-f]{8}\b' \
-    | tr 'A-F' 'a-f'
+  local s="${1:-}"
+  {
+    printf '%s\n' "$s" \
+      | grep -oiE '\bcards?[[:space:]]+[0-9a-f]{8}\b([[:space:]]*[/,][[:space:]]*[0-9a-f]{8}\b)*'
+    printf '%s\n' "$s" \
+      | grep -oiE '^[a-zA-Z0-9_.-]+\((cards?[[:space:]]+)?[0-9a-f]{8}([+,][0-9a-f]{8})*\)[[:space:]]*:'
+  } | grep -oiE '\b[0-9a-f]{8}\b' \
+    | tr 'A-F' 'a-f' \
+    | awk '!seen[$0]++'
 }
 
 # Every card id named in the log, unique and sorted. Reads "sha<TAB>subject" lines on stdin.
@@ -317,6 +334,38 @@ downward_selftest_cases() {
     "c3201ba7 ad78347c "
   t "the slash form did not regress" \
     "$(cards_in_subject 'docs: proto (card e90505bb / 96ff46d4)' | tr '\n' ' ')" "e90505bb 96ff46d4 "
+
+  # Card 603bfce8 (the f4ac79a94 incident, reproduced from the real subjects): the fleet's
+  # dominant commit convention is a conventional-commit SCOPE, not the prose `card <id>` form
+  # above -- cards_in_subject used to return EMPTY for every one of these, so foreign_commits
+  # filed them as "names no card" (decision 1) instead of foreign, and a foreign card rode along
+  # a --card landing with no refusal at all.
+  t "scope form: type(cardId): is recognised" \
+    "$(cards_in_subject 'fix(9d1ee327): 88b67fb4 follow-up LOWs -- SIGTERM deferral, pid_start, 3 blank chars (CYBERSEC NO-GO 28823)')" \
+    "9d1ee327"
+  t "scope form: the OWN card's scope is recognised too (it used to be invisible, same as the foreign one)" \
+    "$(cards_in_subject 'fix(2a15eb5f): validate Gate-SHA before post-review.sh moves a card to waiting (88b67fb4 S1)')" \
+    "2a15eb5f"
+  t "scope form: a trailing unrelated hex-shaped token (88b67fb4, a review id, not card-prefixed) is not also pulled in" \
+    "$(cards_in_subject 'fix(2a15eb5f): validate Gate-SHA before post-review.sh moves a card to waiting (88b67fb4 S1)' | tr '\n' ' ')" \
+    "2a15eb5f "
+  t "scope form: the + separator names both cards" \
+    "$(cards_in_subject 'docs(2ba98cac+4d367048): HU user stories for D+E' | tr '\n' ' ')" \
+    "2ba98cac 4d367048 "
+  t "scope form: card <id> inside the parens is still recognised" \
+    "$(cards_in_subject 'chore(card 0abcaba3): re-acknowledge fork drift')" "0abcaba3"
+  t "scope form: a non-hex scope (no card at all) still names nothing" \
+    "$(cards_in_subject 'fix(self-pace-gate): close two live NO-GO bypasses')" ""
+
+  # The exact incident shape: own card's commits use the scope form, a SECOND card's commits
+  # (also scope form) ride along underneath, no --allow-stacked given.
+  L="$(printf 'aaa1111\tfix(2a15eb5f): validate Gate-SHA before post-review.sh moves a card to waiting\nbbb2222\tdocs(2a15eb5f): DECISIONS.md tail entry\nccc3333\tfix(9d1ee327): 88b67fb4 follow-up LOWs\nddd4444\tdocs(9d1ee327): DECISIONS.md tail entry\n')"
+  t "f4ac79a94 repro: a foreign card's SCOPE-form commits now refuse without --allow-stacked" \
+    "$(rc_of "$L" 2a15eb5f)" "1"
+  t "...and names the foreign card" \
+    "$(printf '%s\n' "$L" | foreign_cards 2a15eb5f '' | tr '\n' ' ')" "9d1ee327 "
+  t "...--allow-stacked naming it releases the refusal, same as the prose form" \
+    "$(rc_of "$L" 2a15eb5f 9d1ee327)" "0"
 
   # The BOUNDARY, pinned on purpose rather than left for someone to trip over. Widening the separator
   # to a comma also widens what can follow one: an 8-hex token after `card <id>,` IS taken as a card,
