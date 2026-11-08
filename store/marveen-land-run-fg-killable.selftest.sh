@@ -87,8 +87,14 @@ esac
 #    production) survive as orphans, reparented but alive, holding a CPU slot (measured). Pulls
 #    the REAL production TERM trap line out of marveen-land.sh (same extraction discipline as the
 #    function bodies above), so a future edit that drops the group-kill breaks this test too.
-TRAP_SRC="$(command grep -F "trap '_run_finished=1;" "$LAND_SCRIPT")"
-[ -n "$TRAP_SRC" ] || { echo "FATAL: could not extract the production TERM trap from $LAND_SCRIPT -- anchor moved" >&2; exit 1; }
+SIG_FN_SRC="$(awk '/^  _land_sig_stop\(\) \{/{p=1} p{print} p&&/^  \}$/{exit}' "$LAND_SCRIPT")"
+[ -n "$SIG_FN_SRC" ] || { echo "FATAL: could not extract _land_sig_stop from $LAND_SCRIPT -- anchor moved" >&2; exit 1; }
+TERM_TRAP_LINE="$(command grep -F "trap '_land_sig_stop TERM" "$LAND_SCRIPT")"
+[ -n "$TERM_TRAP_LINE" ] || { echo "FATAL: could not extract the production TERM trap registration from $LAND_SCRIPT -- anchor moved" >&2; exit 1; }
+HUP_TRAP_LINE="$(command grep -F "trap '_land_sig_stop HUP" "$LAND_SCRIPT")"
+[ -n "$HUP_TRAP_LINE" ] || { echo "FATAL: could not extract the production HUP trap registration from $LAND_SCRIPT -- anchor moved" >&2; exit 1; }
+TRAP_SRC="$SIG_FN_SRC"$'\n'"$TERM_TRAP_LINE"
+HUP_TRAP_SRC="$SIG_FN_SRC"$'\n'"$HUP_TRAP_LINE"
 
 WRAPPED_CMD_SCRIPT="/tmp/run-fg-killable-selftest-wrapped.$$.sh"
 cat >"$WRAPPED_CMD_SCRIPT" <<'WRAPPED'
@@ -99,10 +105,10 @@ wait
 WRAPPED
 chmod +x "$WRAPPED_CMD_SCRIPT"
 
-# $1 = the trap source line to use (real or a hand-built mutant); echoes 0 if the grandchild died
-# (fixed behavior), 1 if it survived (the bug this card fixes).
+# $1 = signal to send (TERM/HUP), $2 = the trap source to use (real or a hand-built mutant);
+# echoes 0 if the grandchild died (fixed behavior), 1 if it survived (the bug this card fixes).
 run_orphan_probe() {
-  local trap_src="$1" gc_mark outer_pid gc_pid result
+  local sig="$1" trap_src="$2" gc_mark outer_pid gc_pid result
   gc_mark="/tmp/run-fg-killable-selftest-gc.$$.$RANDOM"
   rm -f "$gc_mark"
   bash -c '
@@ -119,7 +125,7 @@ run_fg_killable "/tmp" "bash '"$WRAPPED_CMD_SCRIPT"' '"$gc_mark"'"
     echo "NOGRANDCHILD"
     return
   fi
-  kill -TERM "$outer_pid" 2>/dev/null
+  kill -"$sig" "$outer_pid" 2>/dev/null
   sleep 1
   if kill -0 "$gc_pid" 2>/dev/null; then
     result=1
@@ -131,7 +137,7 @@ run_fg_killable "/tmp" "bash '"$WRAPPED_CMD_SCRIPT"' '"$gc_mark"'"
   echo "$result"
 }
 
-real_result="$(run_orphan_probe "$TRAP_SRC")"
+real_result="$(run_orphan_probe TERM "$TRAP_SRC")"
 case "$real_result" in
   0) ok "TERM to the wrapper kills the wrapped command's own child too (no surviving orphan)" ;;
   NOGRANDCHILD) bad "grandchild never started in the real-trap probe -- cannot test the regression" ;;
@@ -142,11 +148,24 @@ esac
 # form, no leading `-- -`) must leave the probe's grandchild alive -- proving the real selftest
 # above is actually sensitive to the group-kill and would catch a regression back to the old form.
 MUTANT_TRAP_SRC='trap '"'"'[ -n "${run_fg_killable_pid:-}" ] && kill -TERM "$run_fg_killable_pid" 2>/dev/null'"'"' TERM'
-mutant_result="$(run_orphan_probe "$MUTANT_TRAP_SRC")"
+mutant_result="$(run_orphan_probe TERM "$MUTANT_TRAP_SRC")"
 case "$mutant_result" in
   1) ok "M2 mutant pin confirmed: the pre-fix single-pid TERM (no process-group kill) leaves the grandchild running -- the real test above is sensitive to this" ;;
   NOGRANDCHILD) bad "grandchild never started in the mutant probe -- cannot confirm the M2 pin" ;;
   *) bad "M2 mutant pin did NOT reproduce the orphan -- the probe itself may be vacuous (mutant_result=$mutant_result)" ;;
+esac
+
+# HUP pin (card 07f1fe6e delta, CYBERSEC GO 29326 L1): a HUP sent to the wrapper's own pid (not
+# the whole group -- the lander itself only ever gets a lander-pid-directed signal from an
+# external sender; the group-directed variant Cybersec measured is a different threat than this
+# selftest's harness can address without changing run_orphan_probe's shape) must now also kill the
+# wrapped command's own child, proving the new HUP trap (_land_sig_stop HUP 129) is wired the same
+# way as TERM and is not a no-op.
+hup_result="$(run_orphan_probe HUP "$HUP_TRAP_SRC")"
+case "$hup_result" in
+  0) ok "HUP to the wrapper kills the wrapped command's own child too (no surviving orphan)" ;;
+  NOGRANDCHILD) bad "grandchild never started in the HUP probe -- cannot test the regression" ;;
+  *) bad "HUP left the wrapped command's child running as an orphan -- HUP trap not effective" ;;
 esac
 
 rm -f "$WRAPPED_CMD_SCRIPT"
