@@ -24530,3 +24530,13 @@ the actual `kg_nodes > 0` end-to-end proof move to card c84a510a, URGENT, in_pro
 **Ki döntött:** MikroB, msg 17829 (2026-11-13), after backend's escalation (msg 17828, comment
 30148) asking to choose between holding 1388200c open vs accepting the worker+heartbeat proof as
 sufficient and splitting the hang into its own card. Gate: QA + Cybersec. Gate-SHA: ff82e8770.
+
+## 2026-11-08 -- card 8b9c2d40: card_checkpoints table + POST/GET /api/kanban/:id/checkpoints, with M1/M2 down-migration + commit-object-validation fix
+
+**Döntés:** Fázis 295ae6a3 F1.2. SQLite `card_checkpoints(card_id, n, sha, head_sha, agent, created_at)` tábla PK(card_id,n) és FK to kanban_cards-szal. Auto-incrementing `n` MAX subquery-vel az INSERT-ben (RETURNING *). `deleteKanbanCard` sweepeli a checkpoints sorokat FK-törlés előtt. POST validálja a sha formátumát (40 hex) és a git cat-file -e-vel a létezését.
+
+Delta fix (QA2 FAIL 29422 F1/F2 + Cybersec GO 29418 M1/M2, MikroB HOLD 29419): (1) M1 -- real down migration (`dropCardCheckpoints`) plus a persistent-DB test that creates a file DB, inserts a row, drops the table, re-inits the same path, and verifies the schema recovers (the old test only reopened a fresh `:memory:` DB twice, proving nothing about rollback). (2) M2 -- the sha must now resolve to a commit object (`git cat-file -t` == `commit`, not just "exists"), stored lowercase; head_sha validated the same way. LOWs addressed in the same commit: execFileSync timeout, 400 on malformed/non-string body fields, per-card row cap.
+
+Verification: 19/19 tests green (`src/__tests__/card-checkpoints.test.ts`), tsc clean.
+
+Gate: QA + WhiteHat (trust-boundary: sha-existence/commit-object validation against the live git repo). Gate-SHA: see REVIEW comment (fresh sha post-rebuild onto current origin/develop). **Ki döntött:** backend.
