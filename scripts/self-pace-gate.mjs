@@ -707,16 +707,42 @@ const UNANCHORED_SCHEDULER_READ_RX_G = new RegExp(UNANCHORED_SCHEDULER_READ_RX.s
 // file under a named task subdirectory is blocked, not only task-config.json.
 const SCHEDULE_STORE_RX = /(?:scheduled_tasks\.json|[\\/]scheduled-tasks[\\/][^\\/]+[\\/])/i
 // Write-intent shell tokens (redirect / tee / in-place edit / dd / copy-move).
-// The redirect branch excludes ONLY fd 2 (2>, 2>>, 2>&1): that duplicates or redirects
-// STDERR, it never writes the referenced path -- `cat ref 2>/dev/null` is a read, not a
-// write, and a bare `>>?` without this exclusion denied it (measured: card 4f3c0287
-// merge, governance-gates.test.ts "ALLOWS reads... " + "does NOT over-fire..." both
-// failed on this exact shape before the first fix). A blanket `(?<!\d)` also excluded
-// every OTHER digit-prefixed fd -- 1>, 3>, 9> -- so `echo ... 1> ~/.claude/scheduled_tasks.json`
-// was allowed again (Cybersec M1, card 4f3c0287 comment 29313): those ARE stdout writes.
-// `(?<!\b2)` excludes only a literal "2" immediately before the redirect, leaving every
-// other digit-prefixed fd (a real write target) covered.
-const WRITE_INTENT_RX = /((?<!\b2)>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
+//
+// A redirect is safe to exclude ONLY when it provably never opens the referenced path
+// for writing: an fd-to-fd dup (`N>&M`, no file touched) or `2>/dev/null` (stderr to the
+// null sink). Any OTHER `>` -- including `2> <real path>` -- IS write intent: real bash
+// opens the target O_WRONLY|O_CREAT|O_TRUNC for ANY redirect target regardless of which
+// fd is being redirected, so `true 2> f` truncates/creates `f` even though nothing is
+// ever written to it (RedHat's finding, card 4f3c0287 comment on msg 17335/17336,
+// independently reproduced: a 19-byte file becomes 0 bytes after `true 2> file`).
+// A prior, narrower fix here first tried excluding every digit-prefixed fd (`(?<!\d)`,
+// motivated by `cat ref 2>/dev/null` wrongly denied -- governance-gates.test.ts "ALLOWS
+// reads..." + "does NOT over-fire..." both failed on that shape before any fix), which
+// wrongly allowed `1>`/`3>`/`9>` too (Cybersec M1, comment 29313); narrowing that to
+// "only fd 2" (`(?<!\b2)`) was STILL wrong, because it allowed `2> <real file>`.
+// hasWriteIntent() below strips only the two PROVABLY-safe redirect shapes before
+// testing for a remaining `>` -- everything else, any fd, stays write intent.
+//
+// naiveSegs (splitSegments, used by every caller of this function) splits on a BARE
+// `&` too -- it is also valid shell background-job syntax -- so `N>&M` (the dup form)
+// is split into `"...N>"` and `"M..."` ACROSS a segment boundary before this function
+// ever sees it (measured: splitSegments('cat f 2>&1 | grep x') ->
+// ['cat f 2>', '1', 'grep x']). `nextSeg` lets the caller hand over the following
+// segment so a split dup can be reunited before the safe-redirect strip; without it,
+// `2>&1` reads as a bare `2>` (still write intent after this fix) and a legitimate
+// stderr-dup pipeline would be denied.
+const SAFE_REDIRECT_RX = /\d*>&\d+|2>\s*\/dev\/null/g
+const WRITE_TOKEN_RX = />>?/
+const OTHER_WRITE_TOKENS_RX = /\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b/i
+const DUP_TAIL_RX = /\d*>$/
+function hasWriteIntent(seg, nextSeg) {
+  if (OTHER_WRITE_TOKENS_RX.test(seg)) return true
+  let probe = seg
+  if (DUP_TAIL_RX.test(seg.trimEnd()) && nextSeg != null && /^\d/.test(nextSeg)) {
+    probe = seg.trimEnd() + '&' + nextSeg
+  }
+  return WRITE_TOKEN_RX.test(probe.replace(SAFE_REDIRECT_RX, ' '))
+}
 // Dashboard schedule API, curl spelling only. A WRITE method (POST/PUT/PATCH/
 // DELETE) creates/edits a self-paced cron; a GET is legit diagnostics. This pair
 // never saw any other HTTP client -- see scheduleSurfaceDeny,
@@ -3773,7 +3799,7 @@ function decide(toolName, toolInput, opts = {}) {
       // dropped the detection of this gate's own founding incident vector.
       if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(normalizeShellEvasion(seg)))) return { deny: true }
       // self-schedule store: block WRITE only (a read/grep is legit diagnostics)
-      if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
+      if (SCHEDULE_STORE_RX.test(seg) && hasWriteIntent(seg, naiveSegs[i + 1])) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
       // the egress allowlist: a plain read only (EGRESSSELFEDIT824). splitSegments

@@ -389,18 +389,39 @@ describe('self-pace-gate gateDecision', () => {
     expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/scheduled_tasks.json' }).deny).toBe(false)
     expect(selfPaceDecision('Bash', { command: 'grep poll ~/.claude/scheduled_tasks.json' }).deny).toBe(false)
   })
-  // Cybersec M1 (card 4f3c0287 comment 29313): the Koteg-23b merge's own WRITE_INTENT_RX
-  // fix (excluding a digit-prefixed redirect so `cat ref 2>/dev/null` reads as a read,
-  // not a write) used a blanket `(?<!\d)`, which ALSO excluded every OTHER
-  // digit-prefixed fd -- 1>, 3>, 9> are real stdout writes, not stderr. Fixed to
-  // `(?<!\b2)`, which excludes only fd 2.
+  // Cybersec M1 (card 4f3c0287 comment 29313) + RedHat's follow-up (comment, msg
+  // 17335/17336): the Koteg-23b merge's own WRITE_INTENT_RX fix (excluding a
+  // digit-prefixed redirect so `cat ref 2>/dev/null` reads as a read, not a write) first
+  // tried a blanket `(?<!\d)` (allowed 1>/3>/9>, Cybersec M1), then a narrower
+  // "fd-2-only" exclusion (?<!\b2) (STILL wrong: RedHat showed `2> <real file>`
+  // truncates/creates the target in real bash even though nothing is written to it --
+  // reproduced independently, a 19-byte fixture file becomes 0 bytes after `true 2>
+  // file`). The only provably-safe shapes are an fd-to-fd dup (no file touched) or
+  // `2>/dev/null` (stderr to the null sink); every other `>`, on any fd, is write intent.
   it('denies a WRITE to the self-schedule store via a digit-prefixed STDOUT redirect (M1)', () => {
     expect(selfPaceDecision('Bash', { command: 'echo "{}" 1> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'echo "{}" 1>~/.claude/scheduled_tasks.json' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'echo "{}" 3> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
     expect(selfPaceDecision('Bash', { command: 'echo "{}" 9> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    // absolute $HOME and relative spellings, not only the tilde form
+    expect(selfPaceDecision('Bash', { command: 'echo "{}" 1> $HOME/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'echo "{}" 1> /home/agent/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'cd /tmp && echo "{}" 1> ../home/agent/.claude/scheduled_tasks.json' }).deny).toBe(true)
   })
-  it('ALLOWS a STDERR redirect (fd 2) of the self-schedule store -- the control M1 fixes around (F4)', () => {
+  it('denies "true/exec/heredoc through fd 2 (or any digit fd) into a REAL path" -- RedHat F1', () => {
+    // RedHat's core finding: a redirect through fd 2 still opens the target for
+    // writing (O_WRONLY|O_CREAT|O_TRUNC) even though nothing is ever WRITTEN to it --
+    // "2> <real path>" is write intent, unlike "2>/dev/null".
+    expect(selfPaceDecision('Bash', { command: 'true 2> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'true 3> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: 'exec 1> ~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', { command: "cat 1> ~/.claude/scheduled_tasks.json <<'EOF'\nx\nEOF" }).deny).toBe(true)
+  })
+  it('ALLOWS only the provably-safe redirect shapes around the self-schedule store (F4 control)', () => {
     expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/scheduled_tasks.json 2>/dev/null' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/scheduled_tasks.json 2> /dev/null' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'cat ~/.claude/scheduled_tasks.json 2>&1 | grep name' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'grep name ~/.claude/scheduled_tasks.json 2>&1' }).deny).toBe(false)
     expect(selfPaceDecision('Bash', { command: 'cat ref 2>/dev/null' }).deny).toBe(false)
   })
   it('denies a WRITE method to the dashboard schedule API', () => {
