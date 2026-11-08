@@ -23224,3 +23224,35 @@ nem feltetelezte.
 **Ki dontott:** MikroB (2026-11-07, msg 17164, Cybersec/RedHat T1 leletei alapjan, backend3
 implementalta). Gate-SHA: fe449c6250436e419f1de0c4b2bbe3a474ac9d52. Gate: QA + Cybersec (WhiteHat)
 + Cybered (RedHat), delta re-gate card 0120d19a-n.
+
+## 2026-11-08 -- 4f3c0287: Koteg 23b (a6325a498..a328d3b41) landolas-zarasa
+
+**Dontes:** a Koteg 23 (7c79badc) tartomanybontasabol a 4f3c0287 reszkartya a6325a498..a328d3b41
+tartomanyat (upstream #1999, scheduleSurfaceDeny: a dashboard schedule-felulet megtagadasa
+MINDEN klienstol, nem csak curl-tol) valodi `git merge --no-ff`-fel egyesitette a fork sajat
+self-pace-hardening agaval (AST heredoc-felismeres, bypass-zaro kartyak ec20dd23/4f32f1f9/
+40704cb1/46c4ad4a/f7b10fec/4638c14c, upstream worker-thread decision-deadline wrapper atvetele).
+4 fajlos konfliktus (reszletes fajlonkenti feloldas a merge-commit `a18a9179b` uzenteben):
+`src/web/agent-scaffold.ts` (upstream szigorubb szovege verbatim), `src/__tests__/governance-gates.test.ts`
+(import-listak osszefesulve, mindket oldal uj teszt-blokkja megtartva), `scripts/self-pace-gate.mjs`
+(additiv/additiv a fork heredoc-fuggvenyei + upstream uj schedule-surface helperei, egy diff3
+hibas hunk-hatarat javitva, upstream gate-uzenet verbatim, fork hook-lib import megtartva,
+upstream worker-thread wrapper atvetele). Mergeles kozben, mindket oldaltol fuggetlenul, egy
+elozetes hiba is kiderult es javitva lett: a write-intent detektor szam-prefixu stderr-redirectet
+irasnak nezett egy sima olvasasnal (negative lookbehind javitotta).
+
+A 0120d19a kartya (lasd a fenti, 2026-11-07-i bejegyzest) UGYANEZEN a `card/4f3c0287` branch-en
+epult es ugyanitt landol: a scheduleSurfaceDeny feherlistajanak WhiteHat/RedHat altal talalt
+curl-stdin-override reset (F1 javitas) a Koteg 23b mergeles UTAN derult ki, es csak ennek a
+branch-nek a tetejen volt ertelmezheto (a ket kartya commitjai elkulonitve cherry-pick-kel nem
+alkalmazhatok a jelenlegi origin/develop-re -- probalva, konfliktus, lasd a 0120d19a kartya
+17305 inter-agent uzenete) -- ezert a ket kartya EGYUTT landol egy merge-ben.
+
+**Kesz, ha ellenorzes:** `git merge-base --is-ancestor a328d3b41 origin/develop` hamis a landolas
+elott (igaz utana); teljes `fleet-test.sh --ref d057a018beba222174b2efcab0b962dda1378967` 0 FAIL
+(40097 passed, 130 skipped, log 20261108-072519-642358.log); lint-ratchet tart (441 lelet,
+valtozatlan baseline).
+
+**Ki dontott:** MikroB (msg 17171/17306, backend3 vegezte a merget es a fixet). Gate: QA +
+Cybersec (WhiteHat) + Cybered (RedHat), delta re-gate a vegso Gate-SHA-ra
+(d057a018beba222174b2efcab0b962dda1378967), nevben lefedve mindket kartyat (0120d19a + 4f3c0287).
