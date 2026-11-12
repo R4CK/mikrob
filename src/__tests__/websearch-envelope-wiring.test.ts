@@ -110,7 +110,7 @@ describe('WebSearch envelope: where it lands', () => {
     // a browser-only operator matcher does NOT cover WebSearch: ours is added
     const s4: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'mcp__playwright__browser_.*', hooks: [theirEnvelope] }] } }
     expect(injectWebSearchEnvelope(s4)).toBe(true)
-    expect(envelopeGroups(s4 as any).map((g) => g.matcher)).toEqual(['mcp__playwright__browser_.*', 'WebSearch'])
+    expect(envelopeGroups(s4 as { hooks: Record<string, Group[]> }).map((g) => g.matcher)).toEqual(['mcp__playwright__browser_.*', 'WebSearch'])
   })
 
   it('never writes the main agent: its entry is in the repo-shipped project settings instead', () => {

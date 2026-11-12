@@ -4,7 +4,7 @@ import {
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   saveFailedEpisode, listFailedEpisodes, auditMemoryRecall,
   excludeToolLogShapeSql,
-  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval, listApprovals,
+  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval, listApprovals, getApproval,
   type Memory, type MemoryRow,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ } from '../../config.js'
@@ -1042,6 +1042,17 @@ Respond ONLY with JSON, nothing else:
             ? `Jóváhagyva. Ugyanez a kérés ?approval_id=${approval.id} paraméterrel törli; az azonosító egyszer használható.`
             : `A törlés jóváhagyásra vár (Dashboard -> Jóváhagyások, id: ${approval.id}). Jóváhagyás után ugyanez a kérés ?approval_id=${approval.id} paraméterrel törli; az azonosító egyszer használható, és csak erre az emlékre, ebben a tartalmi állapotban érvényes.`,
         }, 409)
+        return true
+      }
+      // MARVEENGAPS1020 (a): the approval is bound to THIS memory in THIS content state, checked
+      // BEFORE consuming (not after) so a hash mismatch never burns a one-shot approval id that
+      // might still be valid once the content reverts or against a fresh approval. The fork's
+      // own consumeApproval() has no content_hash parameter (card 16145418), so the anchor is
+      // checked here against the stored approval row.
+      const existingApproval = getApproval(approvalId)
+      if (existingApproval && existingApproval.category === 'data_delete' && existingApproval.content_hash !== anchor) {
+        logger.warn({ memoryId: id, approvalId, reason: 'hash_mismatch' }, 'Memory delete refused: approval not usable')
+        json(res, { error: 'approval_not_usable', reason: 'hash_mismatch' }, 409)
         return true
       }
       const consumed = consumeApproval({

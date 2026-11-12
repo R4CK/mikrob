@@ -1555,17 +1555,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // PUT to in_progress clears but does not dispatch; /move remains the only
     // dispatch path (KARTYADISPATCH1010). updateKanbanCard applies the shared
     // dispatched_at clear (kanbanWriteClearsDispatch, db.ts); no fireKanbanDispatch call belongs here.
-    // Koteg 23c (card 16145418, 2026-11-12): upstream's statusChangeExtras (claim_warning,
-    // evidence_warning, unblocked) is NOT adopted on this call site -- its 'done' branch calls
-    // unblockDependentsOf(), which ACTIVELY moves a blocked card waiting -> planned, whereas this
-    // fork's notifyUnblockedCards() (called below) only reads kanban_card_blockers and posts a
-    // notification comment, never mutating status. Adopting both would double-process the same
-    // done-transition (two system comments, one of them also writing a status change this fork's
-    // workflow has never had). The claim_warning half alone IS genuinely new and additive, but
-    // splitting it out of statusChangeExtras here risks drifting from upstream's own composition --
-    // flagged as a follow-up (whether to adopt the active-unblock behavior, and if so how it
-    // interacts with notifyUnblockedCards) rather than decided inside this drift merge.
-    const statusBefore = getKanbanCard(id)?.status
+    // Koteg 23c (card 16145418, 2026-11-12): statusChangeExtras (claim_warning, evidence_warning,
+    // unblocked) IS adopted here, reusing the already-resolved `actor` (no second kanbanWriteActor
+    // call). Its 'done' branch calls unblockDependentsOf(), which ACTIVELY moves a blocked card
+    // waiting -> planned AND posts its own system comment -- the kanban-claim.test.ts suite's own
+    // comment confirms this runs ALONGSIDE this fork's notifyUnblockedCards (#2027) by design:
+    // "Two system notes land on the freed card: this unblock's own, and the hand-off notice from
+    // notifyUnblockedCards". Not a duplicate-wire hazard, verified by that test.
+    const before = getKanbanCard(id)
     if (updateKanbanCard(id, normalizeProjectName(data), { actor, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, data.status, actor)
@@ -1576,8 +1573,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       onKanbanCardStatusChanged(id, specTemplatePrevStatus, data.status)
       const after = getKanbanCard(id)
       // Card 08bf8326 (#567): a card this one blocked may now be free to go.
-      if (statusBefore !== 'done' && after?.status === 'done') notifyUnblockedCards(id, actor)
-      json(res, { ok: true, ...archivedNote(after) }); return true
+      if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, actor)
+      json(res, { ok: true, ...archivedNote(after), ...statusChangeExtras(id, before, data.status, actor) }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
     // caller learns what to do instead of retrying blindly.
@@ -1802,7 +1799,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     // See the sibling comment in the PUT handler (card 81452ce2 delta-gate F1): captured BEFORE
     // any mutation, the guard itself fires only AFTER moveKanbanCard actually succeeds below.
-    const specTemplatePrevStatus = getKanbanCard(id)?.status
+    // `before` (the full row, Koteg 23c card 16145418) is for statusChangeExtras -- same reuse-the
+    // -already-resolved-actor reasoning as the PUT handler's sibling comment.
+    const before = getKanbanCard(id)
+    const specTemplatePrevStatus = before?.status
     {
       const v = dependencyBlockBody(id, status, force === true, actor)
       if (v.blocked) { json(res, v.body!, 409); return true }
@@ -1836,7 +1836,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // real transition to done frees the cards waiting on this one.
       const moved = getKanbanCard(id)
       if (specTemplatePrevStatus !== 'done' && moved?.status === 'done') notifyUnblockedCards(id, actor)
-      json(res, { ok: true, ...archivedNote(moved) })
+      json(res, { ok: true, ...archivedNote(moved), ...statusChangeExtras(id, before, status, actor) })
       return true
     }
     // Nothing changed: a missing card stays the old 404; an existing card means either the

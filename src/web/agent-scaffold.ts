@@ -1044,12 +1044,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // non-overlapping BASH_EGRESS_DENY whole-tool-name deny list (wget/nc/ncat/telnet, below) IS
   // adopted -- it is a safe blunt backstop, not a substring-matched pattern, so it does not carry
   // the false-positive risk our own hook's docstring measured against `settings.permissions.deny`.
-  // Koteg 23c (card 16145418, 2026-11-12): injectWebSearchEnvelope (MARVEENGAPS1020, an
-  // untrusted-content envelope for WebSearch tool output) is NOT adopted here either -- verified
-  // this fork has no equivalent wrapping mechanism for WebSearch specifically (it is a genuinely
-  // new fleet-wide hook-wiring security gate, same class as ensureChildClaudeGuard above), so
-  // adopting it blind inside a drift merge would be the adoption decision by accident. Raised as
-  // its own follow-up rather than decided here.
+  // MARVEENGAPS1020: WebSearch results reach every agent framed as untrusted content
+  // (browser-content-notice.py, WEBSEARCH_ENVELOPE_SCRIPT below). The main agent's entry lives in
+  // the repo-shipped project .claude/settings.json instead (never written here).
+  if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 

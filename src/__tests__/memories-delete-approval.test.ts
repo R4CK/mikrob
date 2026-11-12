@@ -29,7 +29,16 @@ vi.mock('../web/autonomy-level.js', async (orig) => {
 const { initDatabase, saveAgentMemory, getMemoryById, getApproval, resolveApproval, listApprovals, createApproval, updateMemory, getDb } = await import('../db.js')
 const { tryHandleMemories } = await import('../web/routes/memories.js')
 
-async function del(id: number, approvalId?: string, caller = 'leanscout') {
+type DelBody = {
+  approval_id?: string
+  error?: string
+  status?: string
+  level?: number
+  reason?: string
+  [key: string]: unknown
+}
+
+async function del(id: number, approvalId?: string, caller = 'leanscout'): Promise<{ status: number; body: DelBody }> {
   const url = new URL(`http://localhost:3420/api/memories/${id}`)
   if (approvalId) url.searchParams.set('approval_id', approvalId)
   let status = 200
@@ -37,7 +46,7 @@ async function del(id: number, approvalId?: string, caller = 'leanscout') {
   const res = { writeHead: (c: number) => { status = c }, end: (b?: string) => { body = b || '' } }
   const ctx: RouteContext = { req: Readable.from([]) as any, res: res as any, path: url.pathname, method: 'DELETE', url, auth: { kind: 'token', agent: caller } }
   expect(await tryHandleMemories(ctx)).toBe(true)
-  return { status, body: body ? JSON.parse(body) : null }
+  return { status, body: body ? (JSON.parse(body) as DelBody) : {} }
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
@@ -55,7 +64,7 @@ describe('data_delete below level 3: the delete needs an approval', () => {
     expect(r.status).toBe(409)
     expect(r.body).toMatchObject({ error: 'approval_required', status: 'pending', level: 1 })
     expect(getMemoryById(id)).toBeDefined()
-    const a = getApproval(r.body.approval_id)!
+    const a = getApproval(r.body.approval_id!)!
     expect(a).toMatchObject({ category: 'data_delete', agent_id: 'leanscout', status: 'pending' })
     expect(a.action_description).toContain(`#${id}`)
     expect(a.action_description).toContain('Stale note about the old deploy runbook')
@@ -82,7 +91,7 @@ describe('data_delete below level 3: the delete needs an approval', () => {
 
   it('a pending approval does not delete; an approved one deletes once, and only once', async () => {
     const { id } = saveAgentMemory('leanscout', 'to go', 'hot')
-    const approvalId = (await del(id)).body.approval_id
+    const approvalId = (await del(id)).body.approval_id!
     const pending = await del(id, approvalId)
     expect(pending).toMatchObject({ status: 409, body: { error: 'approval_not_usable', reason: 'not_approved' } })
     expect(getMemoryById(id)).toBeDefined()
@@ -104,7 +113,7 @@ describe('data_delete below level 3: the delete needs an approval', () => {
 
   it('an owner-approved delete of a long warm memory needs no confirm_overwrite on top', async () => {
     const { id } = saveAgentMemory('leanscout', 'W'.repeat(1900), 'warm')
-    const approvalId = (await del(id)).body.approval_id
+    const approvalId = (await del(id)).body.approval_id!
     resolveApproval(approvalId, 'approved', 'owner')
     const r = await del(id, approvalId)
     expect(r.status).toBe(200)
@@ -113,7 +122,7 @@ describe('data_delete below level 3: the delete needs an approval', () => {
 
   it('an edit after the approval voids it: the anchor is the content version', async () => {
     const { id } = saveAgentMemory('leanscout', 'version one', 'hot')
-    const approvalId = (await del(id)).body.approval_id
+    const approvalId = (await del(id)).body.approval_id!
     resolveApproval(approvalId, 'approved', 'owner')
     updateMemory(id, 'version two')
     const r = await del(id, approvalId)
@@ -123,7 +132,7 @@ describe('data_delete below level 3: the delete needs an approval', () => {
 
   it('an approval of another category, or an unknown id, does not delete', async () => {
     const { id } = saveAgentMemory('leanscout', 'x', 'hot')
-    const anchor = getApproval((await del(id)).body.approval_id)!.content_hash!
+    const anchor = getApproval((await del(id)).body.approval_id!)!.content_hash!
     createApproval({ id: 'mail-1', agent_id: 'leanscout', category: 'email_send', action_description: 'a letter', content_hash: anchor })
     resolveApproval('mail-1', 'approved', 'owner')
     expect((await del(id, 'mail-1')).body.reason).toBe('wrong_category')
@@ -133,7 +142,7 @@ describe('data_delete below level 3: the delete needs an approval', () => {
 
   it('an approved request older than the consume window is not offered again; a fresh one is filed', async () => {
     const { id } = saveAgentMemory('leanscout', 'x', 'hot')
-    const first = (await del(id)).body.approval_id
+    const first = (await del(id)).body.approval_id!
     resolveApproval(first, 'approved', 'owner')
     getDb().prepare('UPDATE approvals SET resolved_at = resolved_at - 100000 WHERE id = ?').run(first)
     const r = await del(id)

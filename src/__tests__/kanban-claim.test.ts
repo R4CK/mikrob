@@ -272,9 +272,9 @@ describe('claim is race-free across connections (the double-pickup guarantee)', 
       let onRead!: () => void
       ready.push(new Promise<void>((r) => { onReady = r }))
       read.push(new Promise<void>((r) => { onRead = r }))
-      done.push(new Promise((resolve, reject) => {
+      done.push(new Promise<{ agent: string; changes: number }>((resolve, reject) => {
         w.on('error', reject)
-        w.on('message', (m) => {
+        w.on('message', (m: { ready?: boolean; read?: boolean; agent: string; changes: number }) => {
           if (m.ready) onReady()
           else if (m.read) onRead()
           else resolve(m)

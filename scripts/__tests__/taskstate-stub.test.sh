@@ -109,7 +109,7 @@ if [ -n "$TOKEN" ] && [ "${TASKSTATE_LIVE_API_TEST:-0}" = "1" ]; then
     # Restore even on an unexpected exit between here and the manual cleanup.
     trap 'rm -f "$REAL_STATE_DIR/testagent.json"; [ -f "$BACKUP" ] && mv "$BACKUP" "$REAL_STATE_DIR/testagent.json"' EXIT
     cp "$FAKE_STATE_DIR/testagent.json" "$REAL_STATE_DIR/testagent.json"
-    REPLAY_RESP="$(curl -s -H "Authorization: Bearer $TOKEN" \
+    REPLAY_RESP="$(printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -s -H @- \
         "$API/api/agent-taskstate/testagent/replay?source=startup" 2>/dev/null)"
     REPLAY_CTX="$(printf '%s' "$REPLAY_RESP" \
         | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('additionalContext') or '')" 2>/dev/null)"
