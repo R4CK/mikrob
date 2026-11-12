@@ -575,8 +575,8 @@ if [ "${1:-}" = "--selftest" ]; then
 fi
 
 CARD="${1:-}"; SHA="${2:-}"; shift 2 2>/dev/null
-[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--prepare-only] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
-DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0; PREPARE_ONLY=0
+[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--prepare-only] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]] [--allow-archive]" >&2; exit 2; }
+DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0; PREPARE_ONLY=0; ALLOW_ARCHIVE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY="--dry-run" ;;
@@ -594,6 +594,9 @@ while [ $# -gt 0 ]; do
     # guard would stop meaning anything.
     --allow-stacked) shift; [ $# -gt 0 ] || { echo "--allow-stacked needs a card id list" >&2; exit 2; }; ALLOW_STACKED="$1" ;;
     --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
+    # 90-day distillation commits move entries from DECISIONS.md's beginning into an archive file,
+    # breaking the byte-exact-prefix invariant.  Only MikroB passes this explicitly (card acffb1d6).
+    --allow-archive) ALLOW_ARCHIVE=1 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -749,7 +752,8 @@ git -C "$MAIN" worktree add --detach -q "$WT" origin/main || die 3 "could not cr
 # failures shared (9d3ebe9e, fc11dd82, 2cd88790, 3f4545ab, 6e730b11): a pure addition, but spliced
 # next to the entry it continues instead of appended at the file's own end.
 _dtag_mb="$(git -C "$WT" merge-base HEAD "$SHA" 2>/dev/null)"
-if [ -n "$_dtag_mb" ] && ! decisions_tail_append_ok "$WT" "$_dtag_mb" "$SHA" "DECISIONS.md"; then
+[ "$ALLOW_ARCHIVE" -eq 1 ] && say "allow-archive: 90-day distillation accepted on $BRANCH (explicitly passed by caller)"
+if [ -n "$_dtag_mb" ] && ! decisions_tail_append_ok "$WT" "$_dtag_mb" "$SHA" "DECISIONS.md" "$ALLOW_ARCHIVE"; then
   die 4 "DECISIONS.md on $BRANCH is not a pure tail append (see the lines above) -- move the new/continued entry to the file's own end, referencing the parent entry by date/title, and re-push"
 fi
 

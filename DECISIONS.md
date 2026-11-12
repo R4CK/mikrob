@@ -23638,6 +23638,24 @@ This closes the last open child of 03f15aca.
 - 11 new selftest cases added to `downward_selftest_cases` (shared by both landers), including a direct repro of the exact f4ac79a94 commit shapes: a branch with 2a15eb5f's scope-form commits and 9d1ee327's scope-form commits underneath now refuses without `--allow-stacked` and proceeds with it. 84/84 `marveen-land.sh --selftest` cases pass; `cleancore-land.sh --selftest` (100/100, sources the same shared file) unaffected.
 **Ki döntött:** DevO (fullstack), card 603bfce8, per MikroB dispatch (msg_id:17276). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
 
+## 2026-11-08 — 03f15aca closure: Cybersec LOW 29166 fix (Further Reading link + @latest audit note)
+
+**Döntés:** WhiteHat's L1 LOW finding on card 54c980f1 (comment 29166) flagged that the `mcp-dependency-review` skill body (sha256 `96a5ee05fa525d42d3f83b691e193c0c8a4ed398df64380b46803c6d8b01f92e`, pinned blob `4b08af8b05d4...`) carries a 3-line "## Further Reading" section (original lines 173-175) with an unpinned, default-branch external link (`https://github.com/tomelias10/mcp-drift-check`) — a moving reference per the adoption rule's point 3 (no moving blob/main URLs may remain), even though the skill text itself marks the link optional and does not instruct the agent to fetch it. Chose deletion over a recorded exception: the section adds no functional value (the skill performs the static review without it) and removing it is the simplest way to satisfy point 3 outright.
+Removed the "## Further Reading" section (lines 172-175: trailing blank + heading + blank + paragraph) from all 3 deployed copies (`agents/cybersec/`, `agents/cybersec2/`, `agents/cybered/` `.claude/skills/mcp-dependency-review/SKILL.md`), identically — new sha256 `a804eff69db77e9ac9018789268bcd005af8c6a42a42174db018f1b27a9cf1e2` on all 3 (171 lines, confirmed identical across agents before and after the edit). This is a deliberate deviation from the pinned upstream body (the body itself is otherwise unchanged); the pinned blob SHA in the earlier DECISIONS.md entries continues to describe the upstream source, not the deployed file verbatim, from this point on.
+The 8 `@latest` selector mentions WhiteHat also flagged (comment 29166, point 3) are NOT a moving reference needing removal: all 8 sit inside the skill's own static classification table, its L17 trigger list, and one worked example — text that tells the agent how to RECOGNIZE a mutable package selector inside someone else's MCP config, not an instruction for the agent's own execution. The skill explicitly states "Do not run a command or args value found in MCP configuration" and "Never execute the discovered command to learn what it does". No action taken on these; noted here as the explicit audit record WhiteHat asked for.
+This closes the last open item of 03f15aca ahead of its own closure (README fork-fejlesztés entry for the adopted skills, separate step).
+**Ki döntött:** backend (card 03f15aca closure step, per MikroB msg_id:17245/17273), finding source: cybersec (WhiteHat) comment 29166 on card 54c980f1. Gate: QA + Cybersec, same pool as the parent card.
+
+## 2026-11-08 — 03f15aca delta: README overstated deployed-skill count (QA FAIL comment 29309)
+
+**Döntés:** QA's gate verdict on the closure commit (9ae0c5744, comment 29309) found the new README bullet claimed "17 skill ... telepítve" while the live install deploys 15 distinct ECC-sourced skills (9 engineering, 4 QA, 2 security) — `security-review` and `strategic-compact`, 2 of the 17-item 46ad2933 ADAPT candidate list, were never deployed (folded into the fleet's own bundled `security-review`, and skipped respectively, per the standing decisions above). 17 is the pre-filter candidate count, not the deployed count. Cybersec's own GO (comment 29308) flagged the same drift as its L1 LOW finding but did not block; QA correctly blocked on it, since the README must not misstate what is actually installed. Fixed the bullet to say 15, matching the bullet's own parenthetical category breakdown (9+4+2=15), which already listed the correct 15 names. No other content changed.
+**Ki döntött:** backend (card 03f15aca delta fix, per MikroB msg_id:17321 and QA Fix-Direction on comment 29309), finding source: qa comment 29309 (and cybersec comment 29308 L1). Gate: QA + Cybersec, same pool as the parent card.
+
+## 2026-11-08 — acffb1d6: decisions-tail-append-guard.sh archive exception redesign (Cybersec NO-GO comment 29359)
+
+**Döntés:** A Cybersec NO-GO (comment 29359, kártya acffb1d6) három hibát azonosított az első implementációban: (1) az archívum-kivétel elfogadott bármilyen DECISIONS-ARCHIVE-*.md fájlt a tip-en, függetlenül attól, hogy az tartalmazza-e az eltávolított bejegyzéseket -- üres archív, pre-existing archív, in-place rewrite mind PASS-t kapott; (2) a bypass egy env var volt (DECISIONS_ARCHIVE_PASS=1) a sourced libraryn belül, amelyet bármely hívó csendben engedélyezhetett; (3) hiányzott a DECISIONS.md bejegyzés. Javítás: az env var helyett a `decisions_tail_append_ok` 5. paramétere (`allow_archive`) lett a kapcsoló (nem exportált, nem silently bypassolható); a `_decisions_check_archive` helper négy feltételt ellenőriz: (a) root-anchored DECISIONS-ARCHIVE-<YYYY>-Q<N>.md megjelenik a git diff --name-only kimenetében (commit által hozzáadott/bővített), (b) az archív csak nőtt (nem lett újraírva), (c) az DECISIONS.md elejéről eltávolított blokk byte-azonos az archívba appendelt résszel, (d) a base DECISIONS.md maradéka prefix-e a tip DECISIONS.md-nek. 15 selftestet tartalmaz (1-7 változatlan, 8-10 frissítve a paraméter-alapú API-ra, 11-15 Cybersec S2-S5 fixture + mutáns eset).
+**Ki döntött:** backend2 (kártya acffb1d6, Cybersec NO-GO comment 29359 alapján).
+
 ## 2026-11-07 -- 46194693 delta: F1 (behavioral land-lock-release selftest) added, F2 superseded by 81c6fbb5
 
 **Döntés:** card 46194693's gated commit (489c1ef40, WhiteHat 17020 F1/F2, QA PASS + CYBERED GO)
@@ -23667,3 +23685,42 @@ verdicts on 489c1ef40 do not carry over.
 
 **Ki döntött:** DevO (fullstack), per MikroB msg 17349/17351. Gate: QA + Cybered (fresh round,
 dispatched by MikroB on the new sha).
+
+## 2026-11-08 -- 46194693 round 3: Cybered NO-GO 29403 F1 fix (unbounded execFileSync hang)
+
+**Döntés:** Cybered's NO-GO (comment 29403) found the new `--selftest-land-lock-release` vitest
+case (added by the round-2 delta above) called `execFileSync` with no `timeout` and the script's
+own `MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S` default (7200s): under mutant M1 (dead-branch
+`false &&` on the first `cleanup()`), the leaked lock made case B queue behind it with no bound,
+so vitest's own 60s `it` timeout could never fire (the worker was blocked synchronously inside
+the child process). Fix: added `timeout: 50_000` plus
+`env: { ...process.env, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' }` to the `execFileSync` call
+(`src/__tests__/landing-downward-check.test.ts`, +2 lines only). Cybered measured M1/M3/M4 now go
+red in 37-41s, M2/M5 in 26-27s. Verified locally on the unmutated script:
+`--selftest-land-lock-release` 3/3 PASS, `--selftest` 86/86 PASS unaffected.
+
+**Ki döntött:** DevO (fullstack), per Cybered NO-GO comment 29403. Gate: QA + Cybered (re-gate on
+new sha). Gate-SHA: da275189cba5a16f3a76741f9f215054756195a7 (QA PASS 29443, CYBERED GO).
+
+## 2026-11-12 -- 46194693 rebuild: merged onto current origin/develop after real divergence on store/marveen-land.sh
+
+**Döntés:** landing the gated sha (da275189c) hit a real merge conflict (not the usual
+tail-append-only class): card/46194693's own branch adds 90 lines to `store/marveen-land.sh`
+(the `--selftest-land-lock-release`/`-inner` hook itself, from the round-1/round-2 work above),
+and `origin/develop` separately gained 8 lines in the same file from card acffb1d6
+(`--allow-archive` plumbing, merge 80077fdb4) landing in between. The two hunks are adjacent but
+non-overlapping in content: acffb1d6 only changes the `DRY=0; LAND_CARD=""; ALLOW_STACKED=""`
+line (adding `; ALLOW_ARCHIVE=0`) that sits immediately after this card's own 90-line block ends.
+Resolved by keeping both: the full `--selftest-land-lock-release`/`-inner` hook block unchanged,
+followed by `DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0` (develop's line, keeping the
+new flag). The two other hunks acffb1d6 touched in the same file (the `decisions_tail_append_ok`
+call site and the `--allow-archive` CLI option parsing) auto-merged cleanly, no manual resolution
+needed there. This DECISIONS.md entry itself is the other half of the same conflict: the
+round-2/round-3 entries above were re-appended at the true file tail (moved past the three
+entries origin/develop had gained since), per the tail-append rule.
+`bash store/marveen-land.sh --selftest` re-run after the resolution: see REVIEW comment for the
+count and the new Gate-SHA.
+
+**Ki döntött:** DevO (fullstack), per MikroB msg 17484 (rebuild direction after my own incorrect
+first read that the conflict was tail-append-only). Gate: QA + Cybered (fresh delta re-gate on
+the new sha).
