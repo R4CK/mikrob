@@ -105,6 +105,36 @@ describe('scaffold memory section says what actually loads (HOTMEMHAMIS925)', ()
     expect(memo).toContain('Magától a CLAUDE.md, a Claude Code saját fájl-memóriája')
     expect(memo).toContain('a SessionStart hookok saját blokkjai')
   })
+
+  // CYBERED NO-GO F2 (card b2f7ede4): the file's own header promises "two pins, tied together",
+  // but only the negative claim above was pinned -- the exception sentence that makes the
+  // scaffold honest again (shared tier DOES auto-load, via this one named hook) had nothing
+  // requiring it to exist, name the hook, or stay true. Measured: deleting the sentence, pointing
+  // it at a nonexistent script, or claiming the agent's own curated tiers always load (false,
+  // pilot-flag only) all left this describe block green before this test existed.
+  it('states the SessionStart exception (shared tier auto-loads via the named hook)', () => {
+    expect(memo).toContain('EGY SZÁNDÉKOS KIVÉTEL van')
+    for (const key of Object.keys(MEMORY_PUSH_HOOKS)) expect(memo).toContain(key)
+  })
+
+  // CYBERED NO-GO F3 (card b2f7ede4): the exception sentence was partly wrong. (a) the hook
+  // excludes GATE_AGENT_NAMES entirely (shared-memory-inject-gate-exclusion.test.ts), but the
+  // sentence read as if every agent gets the push; (b) the template matcher is
+  // startup|resume|compact|clear, the sentence named only three of the four; (c) "kurátort
+  // emlékeid" is not valid Hungarian for "curated" (kurált).
+  it('names the gate-agent exception, all four SessionStart sources, and spells "kurált" correctly', () => {
+    expect(memo).toContain('gate-ügynököknél (qa, qa2, cybersec, cybersec2, cybered) nem fut')
+    expect(memo).toContain('session-induláskor/resume-nál/compact-nál/clear-nél')
+    expect(memo).toContain('kurált emlékeid')
+    expect(memo).not.toMatch(/kurátort emlékeid/)
+  })
+
+  // The exception paragraph's own trailing claim (own-curated hot/warm/cold does NOT also
+  // auto-load, pilot flag aside) is a separate sentence from the general claim pinned above --
+  // measured S4: flipping just this sentence to "always loads" left the general-claim pin green.
+  it('states that own-curated hot/warm/cold does not also auto-load (pilot flag aside)', () => {
+    expect(memo).toContain('NEM töltődnek be magától (kivéve pilot-flaggel')
+  })
 })
 
 describe('...and that stays true (update the scaffold sentence if one of these fails)', () => {
@@ -138,17 +168,76 @@ describe('...and that stays true (update the scaffold sentence if one of these f
     expect(src).not.toMatch(/urlopen|urllib|http\.client|HTTPConnection|(?:from|import)\s+http\b|httplib|socket|sqlite3|subprocess|\brequests\b|os\.system|os\.popen|os\.exec|os\.spawn|popen|__import__|importlib|asyncio|open_connection|\b(?:exec|eval|compile)\s*\(/)
   })
 
-  // A push exemption must not become a write loophole either: it may fetch, but every request it
-  // makes must be a GET (no urllib.request.Request(..., data=...) and no explicit write method).
-  it.each(Object.keys(MEMORY_PUSH_HOOKS))('exempt %s only reads: every urllib.request.Request call is a bare GET', (rel) => {
+  // A push exemption must not become a write loophole either. CYBERED NO-GO (card b2f7ede4 F1)
+  // found eight ways past a keyword-spelling check (data=/method= inside Request(...)): a second
+  // positional argument, a nested call hiding the keyword, urlopen(url, data=...) with no
+  // Request() at all, a post-construction .data/.method assignment, subprocess/http.client, a
+  // **kwargs splat, and a GET to a DIFFERENT host carrying the dashboard token in the URL -- all
+  // GREEN under the old check. This is now an allow-list: only urllib.request/urllib.parse for
+  // network, every urlopen() call takes a Request (never a raw URL), every Request(...) call
+  // takes exactly one argument with no keyword or splat, nothing touches .data/.method after
+  // construction, and every http(s):// host literal in the file is the dashboard itself.
+  function topLevelArgs(argStr: string): string[] {
+    const args: string[] = []
+    let depth = 0
+    let cur = ''
+    let quote: string | null = null
+    for (let i = 0; i < argStr.length; i++) {
+      const ch = argStr[i]
+      if (quote) {
+        cur += ch
+        if (ch === '\\') { cur += argStr[++i] ?? ''; continue }
+        if (ch === quote) quote = null
+        continue
+      }
+      if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue }
+      if (ch === '(' || ch === '[' || ch === '{') { depth++; cur += ch; continue }
+      if (ch === ')' || ch === ']' || ch === '}') { depth--; cur += ch; continue }
+      if (ch === ',' && depth === 0) { args.push(cur.trim()); cur = ''; continue }
+      cur += ch
+    }
+    if (cur.trim()) args.push(cur.trim())
+    return args
+  }
+
+  it.each(Object.keys(MEMORY_PUSH_HOOKS))('exempt %s only reads: allow-list, not a spelling check (CYBERED NO-GO, card b2f7ede4 F1)', (rel) => {
     const src = readFileSync(join(ROOT, rel), 'utf-8')
     expect(src).toMatch(/api\/memories/) // stale-exemption guard: drop the entry when this stops holding
-    const calls = [...src.matchAll(/urllib\.request\.Request\(([^)]*)\)/g)]
-    expect(calls.length, 'no urllib.request.Request(...) call found: the parser is blind').toBeGreaterThan(0)
-    // A write would show up as a second argument (data=...) or an explicit method= kwarg inside
-    // the call's own parens -- a bare `Request(url)` has neither.
-    const writeShaped = calls.filter((m) => /(?:^|,)\s*(?:data|method)\s*=/.test(m[1]))
-    expect(writeShaped.map((m) => m[0])).toEqual([])
+
+    // No network/exec surface beyond urllib.request + urllib.parse.
+    expect(src).not.toMatch(/urllib3|http\.client|HTTPConnection|(?:from|import)\s+http\b|httplib|\bsocket\b|subprocess|\brequests\b|os\.system|os\.popen|os\.exec|os\.spawn|\bpopen\b|__import__|importlib|asyncio|open_connection|\b(?:exec|eval|compile)\s*\(/)
+
+    // No splat, and no post-construction .data/.method/.add_data mutation -- .add_header stays
+    // allowed (that is how the Authorization header is legitimately attached).
+    expect(src).not.toMatch(/\*\*\w/)
+    expect(src).not.toMatch(/\.(?:method|data|add_data)\s*=/)
+
+    // Every urlopen() call takes a Request object (first arg is not a raw string literal), and
+    // never carries a write-shaped kwarg itself.
+    const urlopenCalls = [...src.matchAll(/\burlopen\(((?:[^()]|\([^()]*\))*)\)/g)]
+    expect(urlopenCalls.length, 'no urlopen(...) call found: the parser is blind').toBeGreaterThan(0)
+    for (const call of urlopenCalls) {
+      const firstArg = topLevelArgs(call[1])[0] ?? ''
+      expect(firstArg, `urlopen() first arg is a raw literal, not a Request object: ${call[0]}`).not.toMatch(/^['"]/)
+      expect(call[1], `urlopen() call carries a write-shaped kwarg: ${call[0]}`).not.toMatch(/(?:^|,)\s*(?:data|method)\s*=/)
+    }
+
+    // Every Request(...) call takes EXACTLY ONE argument: no second positional, no nested call
+    // hiding a keyword after it, no keyword, no splat.
+    const requestCalls = [...src.matchAll(/urllib\.request\.Request\(((?:[^()]|\([^()]*\))*)\)/g)]
+    expect(requestCalls.length, 'no urllib.request.Request(...) call found: the parser is blind').toBeGreaterThan(0)
+    for (const call of requestCalls) {
+      const args = topLevelArgs(call[1])
+      expect(args.length, `Request() takes more than one argument: ${call[0]}`).toBe(1)
+      expect(args[0], `Request()'s one argument has a keyword or splat: ${call[0]}`).not.toMatch(/[=*]/)
+    }
+
+    // Every http(s):// host literal in the file is the dashboard itself -- a bare GET to a
+    // different host is still a leak if the dashboard token rides along in the URL.
+    const hostLiterals = [...src.matchAll(/https?:\/\/[^"'\s%]+/g)].map((m) => m[0])
+    for (const host of hostLiterals) {
+      expect(host, `non-dashboard host literal: ${host}`).toMatch(/^http:\/\/localhost:/)
+    }
   })
 })
 
