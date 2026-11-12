@@ -92,9 +92,11 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // the Q3 fd-close call-site pin, and the N4 independent-field-parse pin), then 25 -> 27 with
     // card 1ce1059a (81c6fbb5 round 2 residual, Q1b: the land_lock_take_ticket write-before-
     // release ordering pin plus its reorder-mutant-caught case) -- all touch marveen-land.sh's
-    // own --selftest block only, not the shared lib or cleancore-land.sh's own.
+    // own --selftest block only, not the shared lib or cleancore-land.sh's own. Then 27 -> 33
+    // with card 07f1fe6e (9d1ee327 follow-up: the six HUP/INT group-kill parity cases) --
+    // marveen-only own-block cases again, cleancore-land.sh untouched.
     expect(cc).toBeGreaterThan(41) // 41 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(27) // 27 = marveen-land.sh's own cases
-    expect(cc - 41).toBe(mv - 27) // the same shared block, in both
+    expect(mv).toBeGreaterThan(33) // 33 = marveen-land.sh's own cases
+    expect(cc - 41).toBe(mv - 33) // the same shared block, in both
   })
 })
