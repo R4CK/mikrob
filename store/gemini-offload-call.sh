@@ -24,6 +24,24 @@ GEMINI_API_BASE="https://generativelanguage.googleapis.com/v1beta"
 TIMEOUT="${GEMINI_OFFLOAD_TIMEOUT:-60}"
 DRY_RUN=0
 
+# Card e96d56c5 (F4): same env-var-driven caller/task identity + fail-open ledger logging as
+# freellm-call.sh's _freellm_ledger_log -- see that script's comment for the reasoning.
+GEMINI_CALLER="${GEMINI_CALLER:-unknown}"
+GEMINI_TASK_LABEL="${GEMINI_TASK_LABEL:-offload}"
+GEMINI_CARD_ID="${GEMINI_CARD_ID:-}"
+_GEMINI_START_MS=$(date +%s%3N 2>/dev/null || echo 0)
+_gemini_ledger_log() { # $1=ok|fail  $2=fail_reason (optional)
+  local now_ms elapsed
+  now_ms=$(date +%s%3N 2>/dev/null || echo 0)
+  elapsed=$(( now_ms - _GEMINI_START_MS ))
+  (( elapsed < 0 )) && elapsed=0  # clock jitter guard, never a negative latency
+  local ok_flag=(--ok); [[ "$1" == ok ]] || ok_flag=(--fail --fail-reason "${2:-unknown}")
+  local card_flag=(); [[ -n "$GEMINI_CARD_ID" ]] && card_flag=(--card "$GEMINI_CARD_ID")
+  python3 "$ROOT/store/llm-ledger-append.py" --agent "$GEMINI_CALLER" --task-type "$GEMINI_TASK_LABEL" \
+    --provider gemini --model "$GEMINI_MODEL" "${ok_flag[@]}" --latency-ms "$elapsed" "${card_flag[@]}" \
+    >/dev/null 2>&1 || true
+}
+
 # ---- arg parsing ---------------------------------------------------------------
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=1
@@ -402,15 +420,19 @@ except Exception as e:
     # Redact the response before emitting (card a92e9913 B4): the model may echo
     # fragments from the prompt that slipped through input redaction.
     printf '%s' "$text" | redact_prompt
+    _gemini_ledger_log ok
     exit 0
   else
     echo "gemini-offload-call: empty response from API" >&2
+    _gemini_ledger_log fail empty_response
     exit 1
   fi
 elif [[ "$http_status" == "429" || "$http_status" == "401" || "$http_status" == "403" ]]; then
   echo "gemini-offload-call: API auth/quota error (HTTP $http_status)" >&2
+  _gemini_ledger_log fail "http_${http_status}"
   exit 3
 else
   echo "gemini-offload-call: API error (HTTP $http_status)" >&2
+  _gemini_ledger_log fail "http_${http_status}"
   exit 1
 fi

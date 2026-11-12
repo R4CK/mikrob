@@ -39,6 +39,25 @@ CATEGORY_CHECK="${FREELLM_CATEGORY_CHECK_OVERRIDE:-$ROOT/store/gemini-agy-catego
 TIMEOUT="${FREELLM_TIMEOUT:-60}"
 DRY_RUN=0
 
+# Card e96d56c5 (F4): caller/task identity travels via env var, not a new positional flag
+# (keeps the existing "prompt as arg or stdin" usage unchanged). Same fail-open philosophy
+# as local-llm.sh's log_usage -- a logging failure never blocks the actual API call.
+FREELLM_CALLER="${FREELLM_CALLER:-unknown}"
+FREELLM_TASK_LABEL="${FREELLM_TASK_LABEL:-offload}"
+FREELLM_CARD_ID="${FREELLM_CARD_ID:-}"
+_FREELLM_START_MS=$(date +%s%3N 2>/dev/null || echo 0)
+_freellm_ledger_log() { # $1=ok|fail  $2=fail_reason (optional)
+  local now_ms elapsed
+  now_ms=$(date +%s%3N 2>/dev/null || echo 0)
+  elapsed=$(( now_ms - _FREELLM_START_MS ))
+  (( elapsed < 0 )) && elapsed=0  # clock jitter guard, never a negative latency
+  local ok_flag=(--ok); [[ "$1" == ok ]] || ok_flag=(--fail --fail-reason "${2:-unknown}")
+  local card_flag=(); [[ -n "$FREELLM_CARD_ID" ]] && card_flag=(--card "$FREELLM_CARD_ID")
+  python3 "$ROOT/store/llm-ledger-append.py" --agent "$FREELLM_CALLER" --task-type "$FREELLM_TASK_LABEL" \
+    --provider freellm --model "$FREELLM_MODEL" "${ok_flag[@]}" --latency-ms "$elapsed" "${card_flag[@]}" \
+    >/dev/null 2>&1 || true
+}
+
 # ---- arg parsing ---------------------------------------------------------------
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=1
@@ -324,18 +343,22 @@ try:
 except (json.JSONDecodeError, KeyError, IndexError):
     exit(1)
 PYEOF
+    _freellm_ledger_log ok
     exit 0
     ;;
   401|403)
     # Auth failure
+    _freellm_ledger_log fail "auth_${HTTP_CODE}"
     exit 3
     ;;
   429)
     # Quota
+    _freellm_ledger_log fail quota_429
     exit 3
     ;;
   *)
     # Other API failure
+    _freellm_ledger_log fail "http_${HTTP_CODE}"
     exit 1
     ;;
 esac
