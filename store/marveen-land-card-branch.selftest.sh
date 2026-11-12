@@ -838,6 +838,41 @@ fi
 # reassigning the whole script's stderr vs. the brace-group scoping it to one close) is tested
 # directly, isolated from git/network, in marveen-land.sh's own --selftest block.
 
+# Card 507e8167 (backend3 msg 17459): a STALE card/<id> ref -- one that happens to already be an
+# ancestor of origin/develop for a completely UNRELATED reason (e.g. left over from an old card
+# that reused the id, or never advanced after a re-push) -- used to satisfy the plain ancestor
+# check below and get reported as "already fully landed", even though the card's own latest
+# REVIEW names a sha the ref never contained. ddd444's commit (defined above, never landed because
+# its verdict was FAILED) stands in for "the card's real gated commit, sitting elsewhere".
+git -C "$MAIN" fetch -q origin develop
+git -C "$MAIN" branch -f card/aaa999 origin/develop
+printf '[{"author":"backend3","content":"REVIEW: ready\\nGate-SHA: %s"}]' "$SHA_DDD444" > "$GET_DIR/aaa999.json"
+set_gate_line aaa999 "QA"
+
+n=$((n + 1))
+land_card aaa999 backend3
+if [ "$rc" != 0 ] && grep -q "looks stale" "$OUT_FILE" && grep -q "$SHA_DDD444" "$OUT_FILE"; then
+  echo "  ok   a stale card/aaa999 ref already-ancestor-of-develop for an unrelated reason is refused, not declared landed (507e8167)"
+else
+  echo "  FAIL expected a stale-ref refusal naming the REVIEW's Gate-SHA $SHA_DDD444 -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if ! grep -q "already fully landed" "$OUT_FILE"; then
+  echo "  ok   the refusal did not fall through to the old 'already fully landed' message (507e8167)"
+else
+  echo "  FAIL should not have reported 'already fully landed' on a stale ref"; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-aaa999.ndjson" ]; then
+  echo "  ok   the stale-ref refusal recorded NO card_landings row"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-aaa999.ndjson" | sed 's/^/       /'
+  fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""

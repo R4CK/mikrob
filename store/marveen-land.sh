@@ -1202,6 +1202,35 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   g fetch -q origin "$DEFAULT_BRANCH" || die 3 "could not fetch origin/$DEFAULT_BRANCH"
   local base_sha; base_sha="$(g rev-parse "origin/$DEFAULT_BRANCH")"
 
+  # Card 507e8167: before trusting "$branch is already an ancestor of origin/$DEFAULT_BRANCH" as
+  # proof the card's own work is landed, check that $branch actually CONTAINS the sha the card's
+  # latest REVIEW claims to be landing. A stale/leftover card/<id> ref (left over from an older,
+  # unrelated card that reused the id, or never updated after a re-push) can be an ancestor of
+  # develop for a completely different reason -- it happens to sit on some old, already-landed
+  # commit -- and the plain ancestor check below could not tell the two apart. Only runs in
+  # --card mode (LAND_CARD set); the ordinary agent/<agent>/work path has no single card to name.
+  if [ -n "$LAND_CARD" ]; then
+    local _review_verdict; _review_verdict="$(card_review_gate_sha "$LAND_CARD")"
+    if [ "${_review_verdict%%|*}" = "OK" ]; then
+      local _review_shas="${_review_verdict#*|}" _review_sha _review_sha_ok=0
+      IFS=',' read -ra _review_sha_list <<<"$_review_shas"
+      for _review_sha in "${_review_sha_list[@]}"; do
+        if g cat-file -e "${_review_sha}^{commit}" 2>/dev/null \
+          && g merge-base --is-ancestor "$_review_sha" "$branch" 2>/dev/null; then
+          _review_sha_ok=1
+          break
+        fi
+      done
+      if [ "$_review_sha_ok" -eq 0 ]; then
+        echo "$agent: REFUSED -- $branch (tip $(g rev-parse --short "$branch")) does not contain" >&2
+        echo "         card $LAND_CARD's latest REVIEW Gate-SHA ($_review_shas). This card/<id>" >&2
+        echo "         ref looks stale (card 507e8167) -- it may point at an old, unrelated" >&2
+        echo "         commit. Refusing rather than risk a false \"already landed\"." >&2
+        return 4
+      fi
+    fi
+  fi
+
   if g merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
     say "$agent: $branch already fully landed on origin/$DEFAULT_BRANCH -- nothing to do"
     return 0
