@@ -873,6 +873,94 @@ else
   fail=1
 fi
 
+# CYBERSEC NO-GO 29485, round 2: three more cases, cut from the exact comment shapes measured live
+# on the board (fixtures below are copied byte-for-byte in structure from comments 29254/29461 on
+# 0120d19a/4f3c0287), not one hand-written shape -- the NO-GO's own point.
+
+# V1: the REAL REVIEW shape (Gate-SHA line first, then Skills, THEN the REVIEW text -- no literal
+# "REVIEW" word before the Gate-SHA line at all). The first version of this fix's own parser only
+# recognised a comment whose FIRST line started with the word REVIEW and missed this shape
+# entirely (NONE), which fell through to the old "already fully landed" bug unchanged.
+git -C "$MAIN" fetch -q origin develop
+git -C "$MAIN" branch -f card/bbb998 origin/develop
+printf '[{"author":"backend","content":"Gate-SHA: %s\\nSkills: karpathy-guidelines\\n\\nREVIEW for bbb998 (stale-ref V1 fixture)."}]' \
+  "$SHA_DDD444" > "$GET_DIR/bbb998.json"
+set_gate_line bbb998 "QA"
+
+n=$((n + 1))
+land_card bbb998 backend3
+if [ "$rc" != 0 ] && grep -q "looks stale" "$OUT_FILE" && grep -q "$SHA_DDD444" "$OUT_FILE"; then
+  echo "  ok   V1: Gate-SHA-first/Skills-second REVIEW shape (no REVIEW word) is still read, stale ref refused (507e8167 round 2)"
+else
+  echo "  FAIL V1 expected a stale-ref refusal naming $SHA_DDD444 -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if ! grep -q "already fully landed" "$OUT_FILE"; then
+  echo "  ok   V1: did not fall through to 'already fully landed'"
+else
+  echo "  FAIL V1 should not have reported 'already fully landed' on a stale ref"; fail=1
+fi
+
+# V2: a multi-commit Gate-SHA line (rule 4b: "<sha>, <sha>") where the FIRST listed sha
+# (SHA_FED00001) is already an ancestor of develop for an unrelated reason, and the SECOND
+# (SHA_DDD444, the card's real work) is not. The old "ANY sha is an ancestor" loop broke on the
+# first token and never looked at the second -- this must now require ALL of them.
+git -C "$MAIN" fetch -q origin develop
+git -C "$MAIN" branch -f card/ccc996 origin/develop
+printf '[{"author":"backend","content":"Gate-SHA: %s, %s\\nSkills: karpathy-guidelines\\n\\nREVIEW for ccc996 (stale-ref V2 multi-sha fixture)."}]' \
+  "$SHA_FED00001" "$SHA_DDD444" > "$GET_DIR/ccc996.json"
+set_gate_line ccc996 "QA"
+
+n=$((n + 1))
+land_card ccc996 backend3
+if [ "$rc" != 0 ] && grep -q "looks stale" "$OUT_FILE" && grep -q "$SHA_DDD444" "$OUT_FILE"; then
+  echo "  ok   V2: a multi-sha Gate-SHA line with one already-landed sha and one real unreachable sha is refused, not OR-satisfied (507e8167 round 2)"
+else
+  echo "  FAIL V2 expected a stale-ref refusal naming $SHA_DDD444 -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if ! grep -q "already fully landed" "$OUT_FILE"; then
+  echo "  ok   V2: did not fall through to 'already fully landed'"
+else
+  echo "  FAIL V2 should not have reported 'already fully landed' on a stale ref"; fail=1
+fi
+
+# V3: the board is unreadable for this card (no REVIEW fixture at all -> NONE). The old code only
+# acted inside the `if OK` branch, so NONE fell straight through to the plain ancestor check below
+# and reported "already fully landed" with no refusal at all -- the fail-open the NO-GO measured.
+git -C "$MAIN" fetch -q origin develop
+git -C "$MAIN" branch -f card/eee995 origin/develop
+rm -f "$GET_DIR/eee995.json"
+set_gate_line eee995 "QA"
+
+n=$((n + 1))
+land_card eee995 backend3
+if [ "$rc" != 0 ] && ! grep -q "already fully landed" "$OUT_FILE"; then
+  echo "  ok   V3: an unreadable/no-REVIEW card refuses rather than silently reporting 'already fully landed' (507e8167 round 2)"
+else
+  echo "  FAIL V3 expected a refusal, not a silent pass-through -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+land_card eee995 backend3 --allow-ungated
+if [ "$rc" = 0 ] && grep -q "already fully landed" "$OUT_FILE" && grep -q "TOLERATED by --allow-ungated" "$OUT_FILE"; then
+  echo "  ok   V3: --allow-ungated tolerates the unreadable REVIEW and proceeds to the ordinary ancestor check"
+else
+  echo "  FAIL V3 with --allow-ungated should have proceeded and said so -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+# eee995's --allow-ungated run is EXPECTED to no-op ("already fully landed" never calls
+# record_card_landing), same as bbb998/ccc996's refusals -- none of the three should ever post here.
+if [ ! -f "$CAPTURE_DIR/landing-bbb998.ndjson" ] && [ ! -f "$CAPTURE_DIR/landing-ccc996.ndjson" ] && [ ! -f "$CAPTURE_DIR/landing-eee995.ndjson" ]; then
+  echo "  ok   V1/V2/V3: no refused or tolerated-no-op landing recorded a card_landings row"
+else
+  echo "  FAIL a refused or no-op landing must never call POST /api/card-landings"
+  fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""

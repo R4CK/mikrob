@@ -8,32 +8,36 @@ ref actually points at the commit the card's own REVIEW claims to be landing. A 
 and the landing silently no-opped -- reported "already landed" on a card whose real gated commit
 was never pushed.
 
-This mirrors landing-gate-verdict-parse.py's Gate-SHA line parsing, but answers a different
-question: not "does a verdict cover sha X", but "what sha does this card's own latest REVIEW name".
-Rule 4c: the verdict word is a comment's first line; the REVIEW comment is written by the engineer
-BEFORE any gate speaks (rule 4), so "latest REVIEW" is well-defined even once gate verdicts follow.
+CYBERSEC NO-GO 29485, round 2: the first version of this file rolled its own "find the latest
+REVIEW" parser (first line starts with `REVIEW`), which misses the live convention entirely --
+rule 4b/4c put `Gate-SHA:` on the REVIEW comment's first line, not the word REVIEW, so on live
+cards (0120d19a, 4f3c0287, 8b9c2d40) the parser returned NONE, and on others (07f1fe6e, acffb1d6)
+it matched a stale comment whose first line happened to start with REVIEW and missed the real,
+Gate-SHA-first one. "Do not write a third parser" (MikroB's instruction): gate-closure-check.py's
+own `declared_shas()` already solves exactly this -- it is the function `--expect`'s default reads
+from, already handles both comment orders via `_LEAD_SKIP`, already skips generated-author drafts,
+already honours a `VISSZAVONVA:`/`RETRACTED:` marker -- so this file imports and calls it instead
+of re-deriving any of that.
 
 Usage:  landing-review-gate-sha-parse.py < comments.json
 Prints exactly one line: OK|<sha>[,<sha>...]   or   NONE|<reason>
 """
+import importlib.util
 import json
-import re
+import os
 import sys
 
-GATE_SHA_LINE = re.compile(r"^\s*Gate-SHA:\s*(.+)", re.I)
-HEX = re.compile(r"[0-9a-f]{7,40}", re.I)
-REVIEW_FIRST_LINE = re.compile(r"^REVIEW\b", re.I)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_GCC_PATH = os.path.join(_HERE, "gate-closure-check.py")
 
 
-def shas_in(text):
-    found = []
-    for line in text.split("\n"):
-        m = GATE_SHA_LINE.match(line)
-        if m:
-            for tok in HEX.findall(m.group(1)):
-                if tok.lower() not in found:
-                    found.append(tok.lower())
-    return found
+def _load_gate_closure_check():
+    if _HERE not in sys.path:
+        sys.path.insert(0, _HERE)  # gate-closure-check.py's own `import gate_author_role` needs this
+    spec = importlib.util.spec_from_file_location("gate_closure_check", _GCC_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def main():
@@ -47,22 +51,15 @@ def main():
         print("NONE|unexpected response shape")
         return 0
 
-    # Comments come back in creation order (oldest first), same as every other reader in this
-    # tree (landing-gate-verdict-parse.py included) assumes -- so the LAST match below is the
-    # latest REVIEW, not the first.
-    latest_shas = None
-    for c in comments:
-        if not isinstance(c, dict):
-            continue
-        text = (c.get("content") or "").strip()
-        first = text.split("\n")[0].strip()
-        if REVIEW_FIRST_LINE.match(first):
-            shas = shas_in(text)
-            if shas:
-                latest_shas = shas
+    try:
+        gcc = _load_gate_closure_check()
+        shas = gcc.declared_shas(comments)
+    except Exception as exc:
+        print(f"NONE|gate-closure-check.py import/call failed: {exc}")
+        return 0
 
-    if latest_shas:
-        print("OK|" + ",".join(latest_shas))
+    if shas:
+        print("OK|" + ",".join(shas))
     else:
         print("NONE|no REVIEW comment with a Gate-SHA line found")
     return 0
