@@ -92,14 +92,49 @@ clear_mock_requests() {
 }
 
 # ---- start the mock server on a free loopback port -----------------------------------
+# Card af8ddbf0: the mock now ALSO serves GET /v1/models (a real catalog) and enforces both
+# the expected auth token and model-catalog membership on POST /v1/chat/completions -- the
+# old mock accepted any model/token unconditionally, which could never have reproduced the
+# live incident (a stale default model and a drifted token both 404/401'd for real). Both
+# the catalog and the expected token are read fresh from small files on every request (args
+# 4 and 5), so a test can change either mid-run without restarting the server.
 cat > "$TMPDIR_TEST/mock_server.py" << 'PYEOF'
 import http.server, json, sys, os, time
 
 LOGDIR = sys.argv[1]
 PORT = int(sys.argv[2])
 DELAY = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
+EXPECTED_TOKEN_FILE = sys.argv[4]
+MODELS_FILE = sys.argv[5]
+
+def _expected_token():
+    try:
+        with open(EXPECTED_TOKEN_FILE) as f:
+            return f.read()
+    except Exception:
+        return None
+
+def _catalog_ids():
+    try:
+        with open(MODELS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def _send_json(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.rstrip('/') == '/v1/models':
+            self._send_json(200, {"data": [{"id": m} for m in _catalog_ids()]})
+            return
+        self._send_json(404, {"error": "not found"})
+
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length)
@@ -110,10 +145,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         n = len(existing)
         with open(os.path.join(LOGDIR, f'req-{n}.json'), 'w') as f:
             json.dump({'path': self.path, 'auth': auth, 'body': body.decode('utf-8', 'replace')}, f)
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps({"choices": [{"message": {"content": "mock response"}}]}).encode())
+
+        expected = _expected_token()
+        if expected is not None and auth != f"Bearer {expected}":
+            self._send_json(401, {"error": {"message": "invalid api key"}})
+            return
+
+        try:
+            model = json.loads(body.decode('utf-8', 'replace')).get('model')
+        except Exception:
+            model = None
+        catalog = _catalog_ids()
+        if catalog and model not in catalog:
+            self._send_json(404, {"error": {"message": f"model '{model}' not found"}})
+            return
+
+        self._send_json(200, {"choices": [{"message": {"content": "mock response"}}]})
 
     def log_message(self, *a):
         pass
@@ -121,6 +168,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 httpd = http.server.HTTPServer(('127.0.0.1', PORT), Handler)
 httpd.serve_forever()
 PYEOF
+
+EXPECTED_TOKEN_FILE="$TMPDIR_TEST/expected-token.txt"
+printf '%s' "FAKE-SELFTEST-TOKEN-9f2b7c1e" > "$EXPECTED_TOKEN_FILE"
+MODELS_FILE="$TMPDIR_TEST/models-catalog.json"
+printf '["auto"]' > "$MODELS_FILE"
 
 # Port 0 trick to find a free port, then start the real server on it.
 MOCK_PORT="$(python3 -c '
@@ -130,7 +182,7 @@ s.bind(("127.0.0.1", 0))
 print(s.getsockname()[1])
 s.close()
 ')"
-python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0 &
+python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" &
 MOCK_PID=$!
 # Poll until the mock accepts connections (no fixed sleep -- startup time varies).
 for _ in $(seq 1 50); do
@@ -282,6 +334,50 @@ fi
 REQ_AUTH="$(python3 -c "import json; print(json.load(open('$MOCK_LOGDIR/req-0.json'))['auth'])" 2>/dev/null || echo "")"
 assert_true "happy path: Authorization header was sent to the mock" "$([[ "$REQ_AUTH" == Bearer* ]] && echo 1 || echo 0)"
 
+# ---- Test 13b (card af8ddbf0): default-model -- no FREELLM_MODEL set resolves against the
+# provider's /v1/models catalog and succeeds. The OLD default ("gpt-3.5-turbo") is not in the
+# catalog served by this mock (same shape as the live freellmapi catalog) and would 404; this
+# is RED on the pre-fix script (old default, exit 1, no message) and GREEN once the default
+# becomes "auto" (confirmed present in the catalog below) and the call succeeds end to end.
+clear_mock_requests
+CATALOG_IDS="$(curl -s "http://127.0.0.1:$MOCK_PORT/v1/models" | python3 -c "import json,sys; print(','.join(m['id'] for m in json.load(sys.stdin)['data']))")"
+assert_true "default-model: the provider catalog (stub) includes 'auto'" "$([[ ",$CATALOG_IDS," == *,auto,* ]] && echo 1 || echo 0)"
+unset FREELLM_MODEL
+OUT="$(bash "$SCRIPT" "benign default-model prompt" 2>/dev/null)"
+RC=$?
+assert_true "default-model: no FREELLM_MODEL set still succeeds (exit 0)" "$([[ "$RC" -eq 0 ]] && echo 1 || echo 0)"
+SENT_MODEL="$(python3 -c "import json; print(json.loads(json.load(open('$MOCK_LOGDIR/req-0.json'))['body'])['model'])" 2>/dev/null || echo "")"
+assert_true "default-model: the request sent model='auto' (not the old gpt-3.5-turbo)" "$([[ "$SENT_MODEL" == "auto" ]] && echo 1 || echo 0)"
+
+# ---- Test 13c (card af8ddbf0): a model the provider rejects (404) is reported as a model
+# error, not silently. The pre-fix script had no 404-specific branch (fell into the generic
+# `*) exit 1` case with zero stderr output) -- RED there (no message), GREEN after the fix
+# names the model and the HTTP code.
+clear_mock_requests
+export FREELLM_MODEL="gpt-3.5-turbo"
+ERR_OUT="$(bash "$SCRIPT" "benign prompt" 2>&1 1>/dev/null)"
+RC=$?
+assert_true "model-404: rejected model exits 1 (not silently as the generic other-failure code is already 1, but NAMED below)" "$([[ "$RC" -eq 1 ]] && echo 1 || echo 0)"
+assert_true "model-404: stderr names the rejected model and the HTTP code, not silent" \
+  "$([[ "$ERR_OUT" == *"gpt-3.5-turbo"* ]] && [[ "$ERR_OUT" == *"404"* ]] && echo 1 || echo 0)"
+unset FREELLM_MODEL
+
+# ---- Test 13d (card af8ddbf0): token-mismatch -- an auth token the provider rejects (401)
+# is reported as a clear, named mismatch, not silently. The pre-fix script's 401|403 branch
+# was a bare `exit 3` with zero stderr output -- RED there, GREEN once the branch names the
+# token file and the HTTP code (the exact live incident: a drifted token file went unnoticed
+# until MikroB diagnosed it by hand).
+clear_mock_requests
+WRONG_TOKEN_FIXTURE="$TMPDIR_TEST/wrong-auth-token"
+printf '%s' "THIS-DOES-NOT-MATCH-THE-SERVER" > "$WRONG_TOKEN_FIXTURE"
+export FREELLM_AUTH_TOKEN_FILE="$WRONG_TOKEN_FIXTURE"
+ERR_OUT="$(bash "$SCRIPT" "benign prompt" 2>&1 1>/dev/null)"
+RC=$?
+assert_true "token-mismatch: a rejected token exits 3" "$([[ "$RC" -eq 3 ]] && echo 1 || echo 0)"
+assert_true "token-mismatch: stderr names the token file and the HTTP code, not silent" \
+  "$([[ "$ERR_OUT" == *"$WRONG_TOKEN_FIXTURE"* ]] && [[ "$ERR_OUT" == *"401"* ]] && echo 1 || echo 0)"
+export FREELLM_AUTH_TOKEN_FILE="$AUTH_TOKEN_FIXTURE"
+
 # ---- Test 14 (F1 CRITICAL regression): heredoc-injection RCE payload does not execute --
 clear_mock_requests
 MARKER_FILE="$TMPDIR_TEST/PWNED-marker"
@@ -342,9 +438,12 @@ assert_true "F1: ordinary triple-quote/backslash prompts round-trip byte-for-byt
 clear_mock_requests
 SECRET_TOKEN_VALUE="ZZZ-DO-NOT-LEAK-ME-$$-UNIQUE"
 printf '%s' "$SECRET_TOKEN_VALUE" > "$AUTH_TOKEN_FIXTURE"
+# The mock must accept this new value too (card af8ddbf0: it now enforces a match), or this
+# test's own "call succeeded" assertion would fail for an unrelated reason.
+printf '%s' "$SECRET_TOKEN_VALUE" > "$EXPECTED_TOKEN_FILE"
 # Give the mock an artificial delay so there is a window to sample `ps` mid-call.
 rm -f "$MOCK_LOGDIR"/req-*.json
-python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0.6 &
+python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0.6 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" &
 kill "$MOCK_PID" 2>/dev/null
 MOCK_PID=$!
 for _ in $(seq 1 50); do
