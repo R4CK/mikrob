@@ -2,16 +2,32 @@
 // The POST route validates sha format (40 hex) and existence via `git cat-file -e`.
 // A real repo SHA (HEAD) is used for the happy path; a syntactically-valid but non-existent SHA
 // tests the cat-file rejection.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   initDatabase, createKanbanCard, deleteKanbanCard,
   addKanbanCheckpoint, getKanbanCheckpoints,
-  migrateCardCheckpoints, dropCardCheckpoints,
+  migrateCardCheckpoints, dropCardCheckpoints, getDb,
 } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+// Persistent DB for the down+re-up case that must survive a real redeploy (QA2 FAIL 29422 F2):
+// `:memory:` cannot serve it -- initDatabase() opens a NEW in-memory database each time, so
+// "drop the table, call initDatabase again" on :memory: silently tests a fresh DB and proves
+// nothing. Same pattern as stuck-incidents-schema.test.ts's persistentDb().
+const tmpDirs: string[] = []
+function persistentDb(): { path: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'card-checkpoints-'))
+  tmpDirs.push(dir)
+  const path = join(dir, 'test.db')
+  initDatabase(path)
+  return { path }
+}
 
 // A SHA that actually exists in the repo (HEAD of the main clone or the worktree).
 const REAL_SHA = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
@@ -22,6 +38,16 @@ const TREE_SHA  = execFileSync('git', ['cat-file', '-p', 'HEAD'], { encoding: 'u
 
 beforeEach(() => {
   initDatabase(':memory:')
+})
+
+afterEach(() => {
+  while (tmpDirs.length > 0) {
+    try {
+      rmSync(tmpDirs.pop()!, { recursive: true, force: true })
+    } catch {
+      // best-effort cleanup
+    }
+  }
 })
 
 // --- DB layer ---
@@ -85,6 +111,50 @@ describe('card_checkpoints migration down + re-up (same handle)', () => {
     expect(getKanbanCheckpoints('ck-6')).toEqual([])
     const row = addKanbanCheckpoint('ck-6', REAL_SHA, REAL_SHA, 'backend')
     expect(row.n).toBe(1)
+  })
+})
+
+// --- Down + re-up on a PERSISTENT file DB via the real redeploy path (QA2 FAIL 29422, F1+F2) ---
+// `:memory:` cannot prove this: initDatabase() opens a NEW in-memory database each call, so
+// "drop, call initDatabase again" on :memory: silently tests a fresh DB. A tmpdir FILE plus a
+// second initDatabase(path) call on the SAME path is the actual redeploy-after-rollback shape --
+// same pattern QA2 pointed at in stuck-incidents-schema.test.ts lines 261-286.
+
+describe('card_checkpoints DOWN migration on a persistent DB (code-quality rule 11)', () => {
+  it('DOWN: the table can be dropped, and the rest of the schema still works', () => {
+    persistentDb()
+    const db = getDb()
+    db.exec('DROP TABLE card_checkpoints')
+    expect(db.prepare(`SELECT name FROM sqlite_master WHERE name='card_checkpoints'`).get()).toBeUndefined()
+    // Neighbouring tables card_checkpoints' FK depends on are untouched.
+    expect(db.prepare(`SELECT name FROM sqlite_master WHERE name='kanban_cards'`).get()).toBeTruthy()
+  })
+
+  it('DOWN then UP (redeploy) restores the table on the SAME persistent db file', () => {
+    const { path } = persistentDb()
+    createKanbanCard({ id: 'ck-down-1', title: 'Persistent down+up test' })
+    addKanbanCheckpoint('ck-down-1', REAL_SHA, REAL_SHA, 'backend')
+    expect(getKanbanCheckpoints('ck-down-1').length).toBe(1)
+
+    // down: drop the table on the persistent file
+    getDb().exec('DROP TABLE card_checkpoints')
+
+    // up: the real redeploy path -- re-run initDatabase on the SAME path, not a fresh handle
+    initDatabase(path)
+
+    // the row written before the drop is gone (new table), but the table is back and usable,
+    // and the card itself (a different table) survived the whole cycle untouched.
+    expect(getKanbanCheckpoints('ck-down-1')).toEqual([])
+    const row = addKanbanCheckpoint('ck-down-1', REAL_SHA, REAL_SHA, 'backend')
+    expect(row.n).toBe(1)
+  })
+
+  it('DROPPING the table does not break reading cards (logging fault is not a reason to stop the control)', () => {
+    persistentDb()
+    createKanbanCard({ id: 'ck-down-2', title: 'Card survives checkpoint table loss' })
+    getDb().exec('DROP TABLE card_checkpoints')
+    const row = getDb().prepare(`SELECT id FROM kanban_cards WHERE id = ?`).get('ck-down-2')
+    expect(row).toEqual({ id: 'ck-down-2' })
   })
 })
 
