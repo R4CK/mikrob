@@ -923,6 +923,85 @@ CARD_ROUTE_MODE=shadow OFFLOAD_CARD_ROUTE_TABLE="$TMPDIR/does-not-exist.sh" OFFL
 check "shadow mode with a missing table script: no log line is written at all (fail-safe, no crash)" \
   "$([[ -f "$SHADOW_LOG" ]] && echo exists || echo absent)" "absent"
 
+# ============================================================================================
+# Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named stderr (model 404, token
+# mismatch, or any other failure message) used to be thrown away by try_freellm_for_leaf's
+# `2>/dev/null` -- surfaced now in BOTH offload-dispatch's own log line and a card-visible
+# failure comment. A minimal stub dashboard (POST-capturing only) stands in for the real board.
+# ============================================================================================
+M1_STUB_LOGDIR="$TMPDIR/m1-dash-reqs"
+mkdir -p "$M1_STUB_LOGDIR"
+cat > "$TMPDIR/m1-dash-stub.py" << 'PYEOF'
+import http.server, json, sys, os
+
+LOGDIR = sys.argv[1]
+PORT = int(sys.argv[2])
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length)
+        n = len([f for f in os.listdir(LOGDIR) if f.startswith('post-')])
+        with open(os.path.join(LOGDIR, f'post-{n}.json'), 'w') as f:
+            f.write(body.decode('utf-8', 'replace'))
+        resp = b'{"ok":true}'
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(resp)))
+        self.end_headers()
+        self.wfile.write(resp)
+    def log_message(self, *a):
+        pass
+
+srv = http.server.HTTPServer(('127.0.0.1', PORT), H)
+srv.serve_forever()
+PYEOF
+M1_PORT="$(python3 -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+')"
+python3 -I "$TMPDIR/m1-dash-stub.py" "$M1_STUB_LOGDIR" "$M1_PORT" &
+M1_STUB_PID=$!
+for _ in $(seq 1 50); do
+  (exec 3<>"/dev/tcp/127.0.0.1/$M1_PORT") 2>/dev/null && { exec 3>&- 3<&-; break; }
+  sleep 0.05
+done
+
+M1_FREELLM_STUB="$TMPDIR/m1-freellm-stub.sh"
+cat > "$M1_FREELLM_STUB" << 'EOF'
+#!/usr/bin/env bash
+echo "FREELLM: model 'bogus-model-xyz' was rejected by the provider (HTTP 404) -- check it against http://127.0.0.1:3001/v1/models." >&2
+exit 1
+EOF
+chmod +x "$M1_FREELLM_STUB"
+
+M1_OUT="$TMPDIR/m1-out.txt"
+OFFLOAD_FREELLM_CALL="$M1_FREELLM_STUB" DASHBOARD_URL="http://127.0.0.1:$M1_PORT" \
+  bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "M1 teszt cim" "M1 teszt leiras" m1leaf "task text" m1leaf false \
+  >/dev/null 2>"$M1_OUT"
+
+check "M1: offload-dispatch's own log line surfaces freellm-call.sh's named stderr (model id)" \
+  "$(grep -c "bogus-model-xyz" "$M1_OUT")" "1"
+check "M1: the log line also names the HTTP code" \
+  "$(grep -c "404" "$M1_OUT")" "1"
+
+M1_POST_FILE="$M1_STUB_LOGDIR/post-0.json"
+check "M1: a card-visible failure comment was posted (exactly one POST reached the stub dashboard)" \
+  "$(ls "$M1_STUB_LOGDIR"/post-*.json 2>/dev/null | wc -l | tr -d ' ')" "1"
+if [[ -f "$M1_POST_FILE" ]]; then
+  M1_COMMENT_CONTENT="$(python3 -c "import json; print(json.load(open('$M1_POST_FILE')).get('content',''))" 2>/dev/null || echo "")"
+  check "M1: the posted comment names the model id (not a generic 'failed' message)" \
+    "$([[ "$M1_COMMENT_CONTENT" == *"bogus-model-xyz"* ]] && echo yes || echo no)" "yes"
+  check "M1: the posted comment carries the LOCAL-LLM DRAFT freellm tag (same convention as a success draft)" \
+    "$([[ "$M1_COMMENT_CONTENT" == *"LOCAL-LLM DRAFT | freellm"* ]] && echo yes || echo no)" "yes"
+fi
+
+kill "$M1_STUB_PID" 2>/dev/null
+wait "$M1_STUB_PID" 2>/dev/null
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

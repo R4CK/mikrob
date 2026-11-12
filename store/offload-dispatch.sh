@@ -801,8 +801,26 @@ try_freellm_for_leaf() {
   local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
   [[ -x "$FREELLM_CALL" ]] || return 1
 
-  local out rc=0
-  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
+  local out rc=0 errfile
+  errfile="$(mktemp)"
+  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
+  # Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named error messages (model
+  # 404, token mismatch) used to be thrown away right here by this call's `2>/dev/null` -- the
+  # one thing that script fixed (naming instead of staying silent), this caller immediately
+  # undid. Redacted defensively (freellm-call.sh's own messages never carry a secret value,
+  # only a file path or model id, but a raw curl diagnostic might) and capped to one line so
+  # neither the log nor the card comment below can be flooded.
+  local err_redacted
+  err_redacted="$(FREELLM_ERR_FILE="$errfile" python3 -I -c '
+import os, re
+with open(os.environ["FREELLM_ERR_FILE"]) as f:
+    text = f.read()
+text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+text = re.sub(r"[A-Za-z0-9_-]{32,}", "[REDACTED]", text)
+text = " | ".join(line.strip() for line in text.splitlines() if line.strip())
+print(text[:300])
+' 2>/dev/null)"
+  rm -f "$errfile"
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
     attempts_op success "$leaf_id" >/dev/null
@@ -822,7 +840,20 @@ try_freellm_for_leaf() {
     echo "offload-dispatch: leaf $leaf_id -> freellm content gate refused (sensitive), no retry" >&2
     return 1
   fi
-  echo "offload-dispatch: leaf $leaf_id -> freellm call failed (rc=$rc)" >&2
+  local err_suffix=""
+  [[ -n "$err_redacted" ]] && err_suffix=" -- $err_redacted"
+  echo "offload-dispatch: leaf $leaf_id -> freellm call failed (rc=$rc)$err_suffix" >&2
+  if [[ -n "$err_redacted" ]]; then
+    # Card 555419a8 (M1): a card-visible failure comment, not just a log line -- the responsible
+    # agent sees WHY the local-llm/freellm route failed without grepping a log, same visibility
+    # the success path already gets via freellm_draft_comment_body. Capped once more by curl's
+    # own 300-char-limited $err_redacted; no retry bookkeeping here, attempts_op below is unchanged.
+    local fail_body
+    fail_body="$(printf '[LOCAL-LLM DRAFT | freellm FAILED] A freellm hivas sikertelen volt (rc=%s) a "%s" leveleen.\n\nHiba: %s' \
+      "$rc" "$leaf_title" "$err_redacted")"
+    curl -s -X POST "$DASH/api/kanban/$post_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$fail_body")" >/dev/null 2>&1
+  fi
   attempts_op transient-fail "$leaf_id" >/dev/null
   return 1
 }
