@@ -24530,3 +24530,19 @@ the actual `kg_nodes > 0` end-to-end proof move to card c84a510a, URGENT, in_pro
 **Ki döntött:** MikroB, msg 17829 (2026-11-13), after backend's escalation (msg 17828, comment
 30148) asking to choose between holding 1388200c open vs accepting the worker+heartbeat proof as
 sufficient and splitting the hang into its own card. Gate: QA + Cybersec. Gate-SHA: ff82e8770.
+
+## 2026-11-13: npm audit -- close 2 high + 4 moderate in production deps (card 4e7fc07f)
+
+**Döntés:** bump the `overrides`/`pnpm.overrides` floors for 6 transitive dependencies pulled in
+by `@anthropic-ai/claude-agent-sdk` (none are direct dependencies, none imported anywhere in
+`src/`): body-parser 2.3.0->2.4.0 (GHSA-27r3-jxmh-p828, high), fast-uri 3.1.8->3.1.9 (4 GHSA
+advisories, moderate), qs 6.16.0->6.17.1 (GHSA-6pq8-jhm2-2vcw, moderate), hono 4.13.13->4.13.18
+(GHSA-4h7h-rv7c-7m2v, moderate), zod 4.4.3->4.6.7 (GHSA-mrhx-c7xc-m3w5, high, new override added),
+@hono/node-server 2.1.1->2.1.8 (GHSA-jpvv-r467-5p4w + GHSA-qv5m-9pm6-hqp3, moderate, new override
+added). All within semver-minor/patch of the previous floor, each fixed version taken directly
+from OSV. `npm audit --omit=dev` before: 2 high + 4 moderate. After: 0.
+
+**Miért:** these were flagged on the production dependency tree; the card's own Kesz-ha required
+closing them with a scoped diff and a green `fleet-test.sh` run on the landed sha.
+
+**Ki döntött:** DevO (fullstack), card 4e7fc07f (assignee fullstack, gate QA + Cybersec).
