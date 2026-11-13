@@ -838,6 +838,55 @@ fi
 # reassigning the whole script's stderr vs. the brace-group scoping it to one close) is tested
 # directly, isolated from git/network, in marveen-land.sh's own --selftest block.
 
+# card 78339a8a R2 (Cybersec GO 30203): --allow-stacked was wired into the --card parse branch, but
+# nothing above actually drives a stacked-foreign-commit scenario through --card mode end to end --
+# every case above either carries no foreign commit at all, or never passes --allow-stacked. Deleting
+# the two --allow-stacked parse lines in that branch left every case above green, which is exactly
+# the gap. Card ids need to be real 8-hex (landing-downward-check.sh's cards_in_subject only matches
+# `[0-9a-f]{8}`, unlike --card's own >=6 floor) so the stacked commit is actually RECOGNISED as
+# foreign, not merely unattributed.
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/ab120099 develop
+echo "ab120099 content" > "$MAIN/ab120099.txt"
+git -C "$MAIN" add ab120099.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card ab120099: add ab120099.txt"
+# A STACKED foreign commit on top -- the self-advance-onto-the-next-card shape this whole downward
+# check exists for (store/landing-cherry-pick-vs-branch-merge.md), named via the conventional-commit
+# scope form so cards_in_subject actually catches it.
+echo "cd340077 content" > "$MAIN/cd340077.txt"
+git -C "$MAIN" add cd340077.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "fix(cd340077): unrelated stacked work"
+SHA_AB120099="$(git -C "$MAIN" rev-parse card/ab120099)"
+set_gate_line ab120099 "QA"
+set_verdict ab120099 pass "$SHA_AB120099"
+
+n=$((n + 1))
+land_card ab120099 backend
+if [ "$rc" != 0 ] && grep -q "REFUSED -- commits belonging to OTHER cards" "$OUT_FILE"; then
+  echo "  ok   --card mode refuses a stacked foreign commit (cd340077) with no --allow-stacked"
+else
+  echo "  FAIL expected a downward-check refusal for the stacked cd340077 commit -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+n=$((n + 1))
+land_card ab120099 backend --allow-stacked ff000099
+if [ "$rc" != 0 ] && grep -q "REFUSED -- commits belonging to OTHER cards" "$OUT_FILE"; then
+  echo "  ok   --card mode --allow-stacked with the WRONG id still refuses (ff000099 != cd340077)"
+else
+  echo "  FAIL expected a refusal when --allow-stacked names the wrong card -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+n=$((n + 1))
+land_card ab120099 backend --allow-stacked cd340077
+if [ "$rc" = 0 ] && grep -q "LANDED card/ab120099 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   --card mode --allow-stacked cd340077 lands past the named foreign commit (card 78339a8a R2)"
+else
+  echo "  FAIL expected --allow-stacked cd340077 to let ab120099 land -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""
