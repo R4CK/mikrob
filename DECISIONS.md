@@ -24265,3 +24265,19 @@ owned-file list must be compared.
 - F4 INFO: the gated sha (9d2970c68) was a stack tip on `agent/fullstack/work` (50 commits, 45 not this card's), and its pre-compact test hunk conflicted (modify/delete) with `src/__tests__/agent-start-pre-compact.test.ts` being deleted on origin/develop (belongs to the unlanded card d2c3a940). Rebuilt on a fresh `card/b2f7ede4` branch from origin/develop: cherry-picked 301a13c83 (round 1), a8163396f (round 2) and 9d2970c68 (round 3, with the pre-compact hunk dropped -- the file stays deleted, left to d2c3a940). Verified on the rebuilt sha: tsc clean; the 21 related test files (scaffold/shared-memory-inject/memory-load/taskstate/session-memory-inject) 342 passed, 2 skipped, matching RedHat's own T2 measurement; `no-unused-vars` lint ratchet holds at 278 (151/12 for the other two rules), matching RedHat's T2 figures exactly.
 
 **Ki döntött:** DevO (fullstack), per MikroB dispatch (msg_id:17485), closing CYBERED NO-GO comment 29475. Gate: QA + Cybered (fresh round on the new sha, since the branch was rebuilt). 2aaa447e closes with this card.
+
+## 2026-11-13: npm audit -- close 2 high + 4 moderate in production deps (card 4e7fc07f)
+
+**Döntés:** bump the `overrides`/`pnpm.overrides` floors for 6 transitive dependencies pulled in
+by `@anthropic-ai/claude-agent-sdk` (none are direct dependencies, none imported anywhere in
+`src/`): body-parser 2.3.0->2.4.0 (GHSA-27r3-jxmh-p828, high), fast-uri 3.1.8->3.1.9 (4 GHSA
+advisories, moderate), qs 6.16.0->6.17.1 (GHSA-6pq8-jhm2-2vcw, moderate), hono 4.13.13->4.13.18
+(GHSA-4h7h-rv7c-7m2v, moderate), zod 4.4.3->4.6.7 (GHSA-mrhx-c7xc-m3w5, high, new override added),
+@hono/node-server 2.1.1->2.1.8 (GHSA-jpvv-r467-5p4w + GHSA-qv5m-9pm6-hqp3, moderate, new override
+added). All within semver-minor/patch of the previous floor, each fixed version taken directly
+from OSV. `npm audit --omit=dev` before: 2 high + 4 moderate. After: 0.
+
+**Miért:** these were flagged on the production dependency tree; the card's own Kesz-ha required
+closing them with a scoped diff and a green `fleet-test.sh` run on the landed sha.
+
+**Ki döntött:** DevO (fullstack), card 4e7fc07f (assignee fullstack, gate QA + Cybersec).
