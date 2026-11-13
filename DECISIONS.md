@@ -23748,3 +23748,41 @@ count and the new Gate-SHA.
 **Ki döntött:** DevO (fullstack), per MikroB msg 17484 (rebuild direction after my own incorrect
 first read that the conflict was tail-append-only). Gate: QA + Cybered (fresh delta re-gate on
 the new sha).
+
+## 2026-11-13 -- b7d8ecc4: fleet-test.sh throughput, priority lane for lands (chosen over N test trees)
+
+**Döntés:** measured 0 successful landings in the 90 minutes before this card (land-runs.jsonl,
+last 24h: 87 finished runs, 41 ok / 45 fail / 1 aborted; recent fail durations 1572-9268s before
+giving up). Root cause (MikroB comment 29829): `marveen-land.sh`'s `land_one()` acquires its own
+exclusive develop-push lock BEFORE running `fleet-test.sh` on the merge result, and holds it for
+the entire fleet-test wait -- so every land queued behind the single `fleet-test.sh` tree-mutex
+(shared with gate/targeted runs, card 2f0c7d24) blocks EVERY OTHER land too, even though those
+other lands have nothing to do with that particular fleet-test call. Measured one real
+fleet-test.sh run with no contention: 616s (10.3 min, `--ref 3f8918cb0`), correcting the script's
+stale "~40s" header claim.
+
+Of the three options the card listed (N test trees; priority lane for land-held runs; targeted
+runs skip the lock), chose the priority lane: `fleet-test.sh` now takes a FIFO ticket
+(`fleet_test_take_ticket`/`fleet_test_is_head`, modeled on `marveen-land.sh`'s own
+`land_lock_take_ticket`/`land_lock_is_head`, card 5d9731cd) before its tree-mutex `flock`, tagged
+by `FLEET_TEST_PRIORITY` (land=0, normal=1 -- lower sorts first); `marveen-land.sh` exports
+`FLEET_TEST_PRIORITY=land` once in `land_one()`, inherited by every fleet-test.sh child it runs.
+A land ticket now always sorts ahead of a normal (gate/targeted) ticket regardless of arrival
+order, so a land waits behind at most the one run already holding the lock when it arrives, never
+behind a run that was merely queued. Rejected the N-test-trees option: the single machine-wide
+lock was deliberately introduced by card 2f0c7d24 (Peti approved) to stop CPU-starvation false
+reds (two full suites on two trees still start one vitest worker per core each and starve each
+other); reverting to per-tree locking would reopen that exact, already-measured regression. The
+CPU_SLOTS=2 / single-tree-lock policy is otherwise untouched -- still at most one fleet-test run
+holds the tree at a time, only WHO goes next among waiters changes.
+
+Verification: `fleet-test-priority-lane.selftest.sh` (new), 5/5 PASS, including a behavioral case
+with a real `flock` held by a simulated already-running holder and three real background waiters
+-- a land waiter arriving last is still served before two normal waiters that queued earlier.
+Mutation check: flipping the land->rank mapping to resolve to the same rank as normal turns 3 of
+the 5 cases red. `marveen-land.sh --selftest`: 92/92 PASS, unaffected by the one-line
+`export FLEET_TEST_PRIORITY=land` addition.
+
+**Ki döntött:** MikroB (dispatch msg_id:17746, card text listing the three options) + backend2
+(measurement and choice among them, per the card's "measure first, then pick one, simplest that
+works"). Gate: QA + Cybersec.

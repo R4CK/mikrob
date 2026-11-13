@@ -44,8 +44,10 @@ case "$TEST_TREE" in
   /*) : ;;
   *) TEST_TREE="$PWD/$TEST_TREE" ;;
 esac
-# How long to queue behind another agent's run before giving up. A full suite is ~40s including the
-# build, so this is many runs deep; it exists so a stuck holder fails loudly instead of hanging.
+# How long to queue behind another agent's run before giving up. A full suite with lint-ratchet
+# measured ~616s (10.3 min, card b7d8ecc4, QA gate run on ref 3f8918cb0, 2026-11-13) -- the "~40s"
+# this comment used to claim was stale; 900s is roughly 1.5 runs deep, not "many". It exists so a
+# stuck holder fails loudly instead of hanging.
 LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
 # The serialisation anchor, resolved here so `--lock-path` can print it before anything is locked.
 # Deliberately NOT derived from $TEST_TREE -- see the block above the flock call for why. Beside the
@@ -53,6 +55,30 @@ LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
 # the same path the shared tree's lock already used, so a run started before card 2f0c7d24 and a run
 # started after it still contend on one file.
 LOCK_FILE="${ROOT}-test.lock"
+
+# PRIORITY LANE FOR LANDS (card b7d8ecc4). marveen-land.sh holds its own exclusive develop-push
+# lock for the ENTIRE duration of this script's run (merge -> fleet-test -> push), so every minute
+# a land's fleet-test call sits in the plain FIFO queue below is a minute EVERY OTHER land is
+# blocked too, even though they have nothing to do with this call. Measured 2026-11-13: 0 landings
+# in 90 min while 7+ land runs queued behind a mix of land and non-land (gate/targeted) fleet-test
+# calls. marveen-land.sh sets FLEET_TEST_PRIORITY=land (exported once in land_one, inherited by
+# every fleet-test.sh child it runs); every other caller is "normal" by default. A land ticket
+# always sorts ahead of a normal ticket regardless of arrival order, so a land can wait behind at
+# most the ONE run already holding the lock when it arrives, never behind a run that was merely
+# queued -- see fleet_test_is_head below. This does not touch CPU_SLOTS or the single-lock CPU
+# policy (card 2f0c7d24): still at most one fleet-test run holds the tree at a time, only WHO goes
+# next among waiters changes.
+# A function, not an inline case, so the selftest can extract and exercise the REAL mapping
+# instead of hand-setting PRIORITY_RANK and skipping it.
+fleet_test_resolve_priority_rank() {
+  case "$1" in
+    land) echo 0 ;;
+    *) echo 1 ;;
+  esac
+}
+FLEET_TEST_PRIORITY="${FLEET_TEST_PRIORITY:-normal}"
+[ "$FLEET_TEST_PRIORITY" = land ] || FLEET_TEST_PRIORITY=normal
+PRIORITY_RANK="$(fleet_test_resolve_priority_rank "$FLEET_TEST_PRIORITY")"
 
 # RUN-SCOPED TMPDIR ON THE MAIN DISK, NOT THE SHARED /tmp TMPFS (card a4a6a5e5). Node's
 # os.tmpdir() (what mkdtempSync(tmpdir(), ...) in test files resolves to) is TMPDIR if set, else
@@ -89,6 +115,57 @@ CPU_POLL_S="${CLEANCORE_SUITE_POLL_S:-20}"
 CPU_KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
+
+# Priority ticket queue for the tree mutex (card b7d8ecc4), modeled on marveen-land.sh's own
+# land_lock_take_ticket/land_lock_is_head (card 5d9731cd) -- same reason: a plain `flock -n`
+# retry-loop is not FIFO and hands the lock to whoever happens to poll right after release, not to
+# whoever has waited longest. Ticket name is "<rank>-<012d seq>.<pid>": lexicographic sort puts
+# rank 0 (land) tickets before ALL rank 1 (normal) tickets, and orders same-rank tickets by arrival.
+fleet_test_take_ticket() {
+  local ticket_dir="${LOCK_FILE}.tickets" seq_lock="${LOCK_FILE}.seq.lock" seq_file="${LOCK_FILE}.seq"
+  mkdir -p "$ticket_dir" 2>/dev/null || return 1
+  local seq_fd n ticket
+  exec {seq_fd}>>"$seq_lock" || return 1
+  flock "$seq_fd" || { exec {seq_fd}>&-; return 1; }
+  n="$(cat "$seq_file" 2>/dev/null || echo 0)"
+  n=$((n + 1))
+  echo "$n" >"$seq_file"
+  printf -v ticket '%d-%012d.%d' "$PRIORITY_RANK" "$n" "$$"
+  if : >"$ticket_dir/$ticket"; then
+    { exec {seq_fd}>&-; } 2>/dev/null
+    echo "$ticket_dir/$ticket"
+  else
+    { exec {seq_fd}>&-; } 2>/dev/null
+    return 1
+  fi
+}
+
+# Drops any ticket whose pid is no longer alive. Weaker than marveen-land.sh's pid+starttime check
+# (no recycled-pid protection) -- acceptable here: the cost of a rare false "still alive" is a
+# normal-priority waiter sitting a bit longer behind a dead ticket, not a lock held forever (the
+# tree mutex flock itself is unaffected either way, since the dead ticket's owner never held it).
+fleet_test_reap_stale_tickets() {
+  local ticket_dir="${LOCK_FILE}.tickets" f base pid
+  for f in "$ticket_dir"/*; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"
+    pid="${base##*.}"
+    case "$pid" in
+      ''|*[!0-9]*) rm -f "$f" 2>/dev/null; continue ;;
+    esac
+    kill -0 "$pid" 2>/dev/null || rm -f "$f" 2>/dev/null
+  done
+}
+
+# True only if $1 (this waiter's own ticket path) is the lexicographically lowest live ticket --
+# i.e. this waiter may attempt the flock next. Reaps stale tickets first so a crashed head does
+# not block the queue forever.
+fleet_test_is_head() {
+  local my_ticket="$1" ticket_dir="${LOCK_FILE}.tickets" head
+  fleet_test_reap_stale_tickets
+  head="$(ls "$ticket_dir" 2>/dev/null | sort | head -1)"
+  [ -n "$head" ] && [ "$ticket_dir/$head" = "$my_ticket" ]
+}
 
 # root_node_modules_is_stale (card d1641163, source: e6df15da RedHat N3; extracted into
 # store/node-modules-stale-check.py by card 508153a9 so update.sh's npm-ci decision can share the
@@ -265,9 +342,18 @@ fi
 # reaching this point. Its independence from $TEST_TREE is the whole point of the change above.
 exec 9>"$LOCK_FILE" || die 3 "cannot open the lock file $LOCK_FILE"
 if ! flock -n 9; then
-  echo "fleet-test.sh: another suite run holds the fleet lock -- waiting (up to ${LOCK_WAIT_SECONDS}s)" >&2
-  flock -w "$LOCK_WAIT_SECONDS" 9 \
-    || die 3 "timed out after ${LOCK_WAIT_SECONDS}s waiting for the fleet suite lock ($LOCK_FILE). Another run is stuck: find it with 'fuser -v $LOCK_FILE' and deal with THAT run. A private FLEET_TEST_TREE is no longer a way around the queue (card 2f0c7d24)."
+  TICKET="$(fleet_test_take_ticket)" || die 3 "could not create a fleet-test queue ticket under ${LOCK_FILE}.tickets"
+  TICKET_START="$(date +%s)"
+  echo "fleet-test.sh: another suite run holds the fleet lock -- queueing as $FLEET_TEST_PRIORITY priority (up to ${LOCK_WAIT_SECONDS}s)" >&2
+  while ! { fleet_test_is_head "$TICKET" && flock -n 9; }; do
+    TICKET_WAITED=$(( $(date +%s) - TICKET_START ))
+    if [ "$TICKET_WAITED" -ge "$LOCK_WAIT_SECONDS" ]; then
+      rm -f "$TICKET" 2>/dev/null
+      die 3 "timed out after ${LOCK_WAIT_SECONDS}s waiting for the fleet suite lock ($LOCK_FILE). Another run is stuck: find it with 'fuser -v $LOCK_FILE' and deal with THAT run. A private FLEET_TEST_TREE is no longer a way around the queue (card 2f0c7d24)."
+    fi
+    sleep 1
+  done
+  rm -f "$TICKET" 2>/dev/null
 fi
 
 # Create once, reuse forever. `git worktree add --detach` fails if the path exists, so the
