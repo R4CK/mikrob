@@ -14,6 +14,15 @@ vi.mock('../config.js', async () => {
   return { ...actual, MAIN_AGENT_ID: 'agent-a', ALLOWED_CHAT_ID: 'test-chat', OLLAMA_URL: '' }
 })
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() } }))
+// Card 16145418 (Köteg 23c upstream sync): data_delete is now approval-gated below
+// autonomy level 3 (MARVEENGAPS1020 (a), its own dedicated coverage in
+// memories-delete-approval.test.ts). This file's scope is the device-key
+// OWNERSHIP boundary (9655494c F2), an orthogonal concern -- force level 3 so
+// the one DELETE case here keeps testing ownership, not the approval gate.
+vi.mock('../web/autonomy-level.js', async (orig) => {
+  const actual = await (orig as () => Promise<typeof import('../web/autonomy-level.js')>)()
+  return { ...actual, readAutonomyLevel: () => ({ level: 3 as const, source: 'config' as const }) }
+})
 
 function call(pathWithQuery: string, method: string, auth: any, body?: unknown) {
   const url = new URL(`http://localhost:3420${pathWithQuery}`)
