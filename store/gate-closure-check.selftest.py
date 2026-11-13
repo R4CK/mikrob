@@ -381,6 +381,15 @@ try:
          [c("backend", R % WORK), c("qa", V % OTHER)], "UNRESOLVED",
          env={"MARVEEN_MAIN": "/nonexistent-marveen", "CLEANCORE_MAIN": "/nonexistent-cleancore"})
 
+    # --- card 22835648 round 4 (Cybered NO-GO 28967): this file used to read CLEANCORE_MAIN
+    # directly with os.environ.get, no fallback precedence at all, so a session with only
+    # MOPSION_MAIN set (the new name every other read point already honours) looked at the
+    # hardcoded default clone instead -- a real, correctly-scoped miss, not covered by the
+    # CLEANCORE_MAIN-only ENV fixture above. ------------------------------------------------------
+    case("MOPSION_MAIN (the new name) resolves the clone when CLEANCORE_MAIN is unset",
+         [c("backend", R % WORK), c("qa", V % LAND)], "AGREE",
+         env={"MARVEEN_MAIN": "/nonexistent-marveen", "MOPSION_MAIN": _TMP})
+
     # --- card 74aa46a5: the churn subtraction must not empty the comparison into a pass ---------
     case("a REVIEW naming a VERSION BUMP delivers only package.json, so ignoring churn compares "
          "nothing -- that is unresolved, not agreement",

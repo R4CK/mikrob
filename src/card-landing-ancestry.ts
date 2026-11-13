@@ -31,6 +31,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { envCompatGet } from './env-compat.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -71,7 +72,7 @@ function repoConfig(repo: string): { path: string; fallbackBranch: string } | nu
   }
   if (repo === 'mopsion') {
     return {
-      path: process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/mopsion',
+      path: envCompatGet('MOPSION_MAIN', 'CLEANCORE_MAIN', '/mnt/h/LM_Studio_Workdir/mopsion'),
       fallbackBranch: 'main',
     }
   }

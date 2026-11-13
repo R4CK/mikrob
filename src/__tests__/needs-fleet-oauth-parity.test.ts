@@ -26,7 +26,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { resolveOpenRouterModel } from '../web/openrouter-models.js'
 import { readModelProfileMap, resolveModelId, DEFAULT_MODEL, invalidateModelProfileMapCache } from '../web/agent-config.js'
-import { needsFleetOauthFor } from '../web/agent-process.js'
+import { needsFleetOauthFor, isClaudeAgent } from '../web/agent-process.js'
 import { resolveAgentModelFromConfig, type AgentModelConfig } from '../model-profiles.js'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
@@ -48,7 +48,13 @@ function groundTruth(config: FixtureConfig): boolean {
     typeof config.authMode === 'string' && ['shared', 'own_team', 'api'].includes(config.authMode)
       ? (config.authMode as 'shared' | 'own_team' | 'api')
       : 'shared'
-  const isClaude = !customProviderId && model.startsWith('claude-')
+  // Card 313c8a71 F1 (WhiteHat2, comment 28768): this used to retype `!customProviderId &&
+  // model.startsWith('claude-')` a THIRD time (the launch site and needs-fleet-oauth.mjs each had
+  // their own copy too) -- a mutation to the real launch site's expression left this "ground
+  // truth" green because it was its own, independent computation, not actually grounded in the
+  // launch site's logic. Now imported from the TS source directly, same function the launch site
+  // and the dist-based CLI both call.
+  const isClaude = isClaudeAgent(model, customProviderId)
   const isOwnTeam = isClaude && authMode === 'own_team'
   return needsFleetOauthFor(isClaude, authMode, isOwnTeam, customProviderId)
 }
