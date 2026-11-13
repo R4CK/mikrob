@@ -5,7 +5,6 @@ import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, c
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, APP_TZ, MAIN_AGENT_ID, EMBED_URL, EMBED_MODEL, EMBED_DIMS } from './config.js'
 import { isSearchStopword } from './memory-search-stopwords.js'
 import { getEffectiveSettingValue } from './settings-store.js'
-import { getSettingDefinition } from './config-registry.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from './schema/agent-messages-ddl.js'
