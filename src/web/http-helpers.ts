@@ -39,17 +39,36 @@ export function readBody(
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0
-    req.on('data', (c: Buffer) => {
+    let overLimit = false
+    const onData = (c: Buffer) => {
+      if (overLimit) return
       total += c.length
       if (total > maxBytes) {
-        req.destroy()
+        overLimit = true
+        // card 1a3c6459 (MikroB F1, off WhiteHat2's live-wire probe on the llm-ledger budget
+        // route): req.destroy() here used to kill the connection BEFORE the caller's catch
+        // block ever got to write a 413 -- IncomingMessage#_destroy destroys the underlying
+        // socket when the body isn't fully read, so the client saw ECONNRESET, never a status
+        // line (measured at 4128B/70KB/1MB, chunked and Content-Length alike). Stop
+        // accumulating and drain-and-discard the rest instead of destroying: req.resume() keeps
+        // the stream flowing (bounded memory, nothing pushed to `chunks` any more) without
+        // touching the socket, so the caller's res.writeHead(413)/res.end() still reaches the
+        // wire. readBody is shared by every POST/PUT route in the dashboard, so this fixes the
+        // same gap everywhere at once, not just the ledger budget route.
+        req.off('data', onData)
+        req.off('end', onEnd)
+        req.off('error', onError)
+        req.resume()
         reject(new RequestBodyTooLargeError(maxBytes))
         return
       }
       chunks.push(c)
-    })
-    req.on('end', () => resolve(Buffer.concat(chunks)))
-    req.on('error', reject)
+    }
+    const onEnd = () => resolve(Buffer.concat(chunks))
+    const onError = (err: Error) => reject(err)
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('error', onError)
   })
 }
 
