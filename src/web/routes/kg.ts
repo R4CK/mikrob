@@ -10,6 +10,7 @@ import { openKgDb, kgDbPath } from '../../kg/store.js'
 import { hybridKgSearch, KgSearchError } from '../../kg/search.js'
 import { buildForCardPackage } from '../../kg/for-card.js'
 import { recordKgOffered } from '../../kg/usage.js'
+import { getWorkerHeartbeat, isWorkerActive } from '../../kg/worker-heartbeat.js'
 import { OLLAMA_URL } from '../../config.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
@@ -76,10 +77,14 @@ interface KgStatsPayload {
   ollama_available: boolean
   nodes: Record<string, number>
   usage: { rate: number } | null
-  backfill: { pending: number; done: number; total: number }
+  backfill: { pending: number; done: number; total: number; workerActive: boolean }
 }
 
-function computeKgStats(db: Database.Database): Omit<KgStatsPayload, 'ollama_available'> {
+// Card 1388200c root cause: the UI showed "backfill running: X/Y" whenever pending > 0, with no
+// signal for whether anything was actually draining the queue -- store/kg-capture-worker.sh, the
+// file the enqueue side's own comment named, never existed. workerActive answers that question
+// from the worker's own liveness stamp (worker-heartbeat.ts), not from the queue depth.
+function computeKgStats(db: Database.Database, now: number): Omit<KgStatsPayload, 'ollama_available'> {
   const nodeRows = db
     .prepare(`SELECT type, COUNT(*) AS n FROM kg_nodes WHERE status != 'archived' GROUP BY type`)
     .all() as { type: string; n: number }[]
@@ -102,7 +107,9 @@ function computeKgStats(db: Database.Database): Omit<KgStatsPayload, 'ollama_ava
     if (row.state === 'done') done = row.n
   }
 
-  return { nodes, usage, backfill: { pending, done, total } }
+  const workerActive = isWorkerActive(getWorkerHeartbeat(db), now)
+
+  return { nodes, usage, backfill: { pending, done, total, workerActive } }
 }
 
 async function checkOllamaAvailable(): Promise<boolean> {
@@ -123,7 +130,7 @@ export async function tryHandleKg(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const ollama_available = await checkOllamaAvailable()
-    const { nodes, usage, backfill } = computeKgStats(kgDb())
+    const { nodes, usage, backfill } = computeKgStats(kgDb(), Math.floor(Date.now() / 1000))
     json(res, { ollama_available, nodes, usage, backfill })
     return true
   }

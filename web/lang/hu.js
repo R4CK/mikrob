@@ -2175,6 +2175,7 @@ window._i18n.hu = {
   'kg.empty.no_results':        'Nincs találat.',
   'kg.empty.store_empty':       'A megoldás-tár még üres (a visszamenőleges feltöltés folyamatban van).',
   'kg.empty.backfill_running':  'Még nincs bejegyzés, a visszamenőleges feltöltés fut: {done}/{total}',
+  'kg.empty.backfill_stalled':  'Még nincs bejegyzés. Nincs aktív munkás, {pending} elem vár feldolgozásra.',
   'kg.error.generic':           'Hiba történt a megoldás-tár lekérdezésekor. Próbáld újra.',
   'kg.error.network':           'Nem sikerült kapcsolódni a szerverhez. Ellenőrizd a kapcsolatot.',
   'kg.error.project_or_card_id_required': 'Adj meg projektet vagy kártya-azonosítót a keresés hatókörének meghatározásához.',

@@ -22,7 +22,14 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { getSettingDefinition, validateSettingValue, type SettingDefinition } from '../config-registry.js'
 import { openKgDb, kgDbPath } from './store.js'
 import { runCapture, defaultDeps as defaultCaptureDeps, type CaptureDeps } from './capture-pipeline.js'
-import { runBackfillBatch, defaultListCandidates, defaultGpuGate, defaultCaptureEnabled } from './backfill.js'
+import {
+  runBackfillBatch,
+  defaultListCandidates,
+  defaultListPendingCandidates,
+  defaultGpuGate,
+  defaultCaptureEnabled,
+} from './backfill.js'
+import { recordWorkerHeartbeat } from './worker-heartbeat.js'
 
 export function flagValue(argv: readonly string[], name: string): string | undefined {
   const i = argv.indexOf(name)
@@ -85,12 +92,32 @@ export interface BackfillCliDeps {
   kgDbPath: () => string
   runBackfillBatch: typeof runBackfillBatch
   listCandidates: (mainDb: Database.Database, kgDb: Database.Database, limit: number) => readonly string[]
+  listPendingCandidates: (kgDb: Database.Database, limit: number) => readonly string[]
+  recordHeartbeat: (kgDb: Database.Database, now: number) => void
   gpuGate: typeof defaultGpuGate
   runCapture: typeof runCapture
   captureDeps: () => CaptureDeps
   now: () => number
   log: (msg: string) => void
   warn: (msg: string) => void
+}
+
+/** One combined candidate source for the batch loop: already-enqueued rows (any reason -- this
+ *  is the drain the live hook's queue never had a reader for) FIRST, then whatever budget remains
+ *  goes to discovering 'done' cards never queued at all (the original backfill-only behaviour).
+ *  A pure function over its deps so the pending-first/fill-remainder combination is unit-testable
+ *  without a real database (see kg-backfill-cli.test.ts). */
+export function buildListCandidates(
+  deps: Pick<BackfillCliDeps, 'listPendingCandidates' | 'listCandidates'>,
+  mainDb: Database.Database,
+  kgDb: Database.Database,
+): (limit: number) => readonly string[] {
+  return (limit: number): readonly string[] => {
+    const pending = deps.listPendingCandidates(kgDb, limit)
+    if (pending.length >= limit) return pending
+    const discovered = deps.listCandidates(mainDb, kgDb, limit - pending.length)
+    return [...pending, ...discovered]
+  }
 }
 
 export function defaultBackfillCliDeps(): BackfillCliDeps {
@@ -104,6 +131,8 @@ export function defaultBackfillCliDeps(): BackfillCliDeps {
     kgDbPath,
     runBackfillBatch,
     listCandidates: defaultListCandidates,
+    listPendingCandidates: defaultListPendingCandidates,
+    recordHeartbeat: recordWorkerHeartbeat,
     gpuGate: defaultGpuGate,
     runCapture,
     captureDeps: defaultCaptureDeps,
@@ -135,6 +164,11 @@ export function runBackfillCli(argv: readonly string[], deps: BackfillCliDeps): 
   const mainDb = deps.getDb()
   const kgDb = deps.openKgDb(kgDbPathArg ?? deps.kgDbPath())
 
+  // Stamp liveness BEFORE processing anything, including a zero-candidate run -- the point is to
+  // prove the worker ran at all (card 1388200c: the UI had no way to tell "running" from "never
+  // existed"), not to report an exact count.
+  deps.recordHeartbeat(kgDb, deps.now())
+
   const batchDef = deps.getSettingDefinition('KG_BACKFILL_BATCH')
   const limit = resolveLimit(batchDef, deps.getEffectiveSettingValue('KG_BACKFILL_BATCH'), limitArg, deps.warn)
 
@@ -143,7 +177,7 @@ export function runBackfillCli(argv: readonly string[], deps: BackfillCliDeps): 
 
   const report = deps.runBackfillBatch(kgDb, limit, {
     captureEnabled: deps.captureEnabled,
-    listCandidates: (n) => deps.listCandidates(mainDb, kgDb, n),
+    listCandidates: buildListCandidates(deps, mainDb, kgDb),
     gpuGate: deps.gpuGate,
     runOne: (cardId) => deps.runCapture(mainDb, kgDb, cardId, maxSolutions, captureDeps),
     now: deps.now,

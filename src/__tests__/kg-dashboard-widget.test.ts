@@ -167,6 +167,7 @@ function loadKgRenderModule(fetchImpl?: (path: string) => Promise<{ status: numb
     'kg.result.why': '{why}',
     'kg.detail.source_card': 'Forráskártya: {id}',
     'kg.empty.backfill_running': 'Még nincs bejegyzés, a visszamenőleges feltöltés fut: {done}/{total}',
+    'kg.empty.backfill_stalled': 'Nincs aktív munkás, {pending} elem vár feldolgozásra.',
   }
   const tStub = (key: string, params: Record<string, unknown> = {}) => {
     const template = KG_I18N_TEMPLATES[key] ?? key
@@ -391,7 +392,14 @@ describe('kg: remaining escape/guard pins (WhiteHat LOW, card 08302d67)', () => 
   })
 
   it('kgLoadStats escapes the backfill-running message interpolation', async () => {
-    const harness = loadKgRenderModule(() => Promise.resolve(fakeResponse(200, { backfill: { pending: 1, done: XSS, total: 10 } })))
+    const harness = loadKgRenderModule(() => Promise.resolve(fakeResponse(200, { backfill: { pending: 1, done: XSS, total: 10, workerActive: true } })))
+    harness.fakeEl('kgSearchInput').value = ''
+    await harness.mod.kgLoadStats()
+    expect(harness.fakeEl('kgResultsBody').innerHTML).not.toContain('<img')
+  })
+
+  it('kgLoadStats escapes the backfill-stalled message interpolation (card 1388200c)', async () => {
+    const harness = loadKgRenderModule(() => Promise.resolve(fakeResponse(200, { backfill: { pending: XSS, done: 0, total: 10, workerActive: false } })))
     harness.fakeEl('kgSearchInput').value = ''
     await harness.mod.kgLoadStats()
     expect(harness.fakeEl('kgResultsBody').innerHTML).not.toContain('<img')

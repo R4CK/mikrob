@@ -6,7 +6,7 @@ import { migrate, migrateDown } from '../kg/store.js'
 // same file reproduces the identical schema -- the "rm + rebuild" recovery path (MODULTERV
 // section 4) is just this twice in a row on a real file, tested for real here via :memory:.
 
-const KG_TABLES = ['kg_nodes', 'kg_edges', 'kg_anchors', 'kg_usage', 'kg_capture_queue', 'kg_audit']
+const KG_TABLES = ['kg_nodes', 'kg_edges', 'kg_anchors', 'kg_usage', 'kg_capture_queue', 'kg_audit', 'kg_worker_heartbeat']
 
 function tableNames(db: Database.Database): string[] {
   return (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'kg_%'").all() as {
