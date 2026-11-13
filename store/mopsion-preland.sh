@@ -35,7 +35,9 @@
 # hand at any time.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+# shellcheck source=./env-compat-lib.sh
+. "$HERE/env-compat-lib.sh"
+MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
 LAND="${PRELAND_LAND_SCRIPT:-$HERE/mopsion-land.sh}"
 EVIDENCE="$HERE/suite-evidence-record.py"
 LOCK_DIR="${PRELAND_LOCK_DIR:-$HERE}"

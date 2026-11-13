@@ -23749,6 +23749,365 @@ count and the new Gate-SHA.
 first read that the conflict was tail-append-only). Gate: QA + Cybered (fresh delta re-gate on
 the new sha).
 
+## 2026-11-07 -- 22835648 (Rename 1/3): MIKROB_*/MOPSION_* env names, SUITE/CACHE family migrated
+
+Peti 2026-10-11 (Telegram 11045, jóváhagyva 11048): MikroB saját beállításai MikroB-nevet kapjanak,
+a mopsionra mutató változók MOPSION_* nevet. A parent FÁZIS (d3191c84) felmérése: 22 CLEANCORE_*
+env-név, 324 előfordulás, 71 fájl. Ez a kártya a 3 lépéses terv 1. lépése: új nevek olvasása ELŐSZÖR,
+régi név fallback figyelmeztetéssel, fájl/skill/CLAUDE.md-átállás még NEM (2-3. lépés).
+
+Decision: egy közös helper a 71 kézi duplikáció helyett -- `store/env-compat-lib.sh`
+(`env_compat_get <new> <old> [default]`) és a TS megfelelője (`src/env-compat.ts`). A figyelmeztetés
+NEM de-duplikált hívásonként: a függvény természetes hívási alakja (`VAR="$(env_compat_get ...)")`)
+egy command substitution, azaz subshell -- bármilyen "már figyelmeztettem" állapot a hívás végén
+elvesztődne, és egy valódi de-dup tempfile-plusz-cleanup mechanizmust igényelne egy olyan
+követelményhez ("egyszeri figyelmeztetés"), amit egy normál, változónkénti-egy-hívás szkript már
+magától is kielégít.
+
+Ebben a körben migrálva (a SUITE_* család, a szülő FÁZIS saját elosztási listájából MIKROB_SUITE_*
++ PREGATE_CACHE/LAND_CACHE mint MIKROB_PREGATE_CACHE/MIKROB_LAND_CACHE): `store/mopsion-suite-run.sh`
+(12 változó -- a lista 2 tagja, ALLOW_NO_CARD és MARVEEN_WORKTREES_DIR, nem szerepelt a d3191c84
+eredeti listájában, később érkeztek a c0408a1c kártyával; a SUITE_* prefix-minta konzisztensen
+kiterjesztve rájuk is, itt dokumentálva, nem csendben), `store/fleet-test.sh` (ugyanaz az 5 változó,
+amit szándékosan AZONOS néven olvas, mint a mopsion-suite-run.sh, hogy a két szkript bizonyíthatóan
+ugyanazokon a lock-fájlokon versengjen), `store/mopsion-pregate.sh` és `store/mopsion-land.sh` (saját
+cache-dir változójuk).
+
+Saját hibát is talált és javított ugyanebben a körben: `mopsion-suite-run.selftest.sh` 5 helyen
+`cp`-zi a szkriptet egy izolált tmp-be -- az `env-compat-lib.sh` most már valódi függősége a
+szkriptnek, nem csak kényelmi forrás, és a hiányzó könyvtártárs 25 tesztesetet buktatott az ELSŐ
+futáson; mind az 5 helyre pótolva a lib-másolást, mielőtt a kártya lezárásra került.
+
+**NEM kész ebben a körben, explicit módon kimondva (nem csendes szűkítés):** a MOPSION_* család
+(MAIN, MAIN_DIR, WORKTREES, REPO, BRANCH, VPS, SSH_KEY, CONTACT_EMAIL -- kb. 33 fájl, és a
+CLEANCORE_MAIN önmagában a legszélesebben hivatkozott változó a teljes mért halmazban) egy
+lényegesen nagyobb migráció a SUITE/CACHE családnál, és saját kört igényel.
+
+Verified: `env-compat-lib.selftest.sh` (új) 7/7, `env-compat.test.ts` (új) 7/7,
+`mopsion-suite-run.selftest.sh` 65/65 (63 régi + 2 új eset: MIKROB_SUITE_SLOTS nyer
+CLEANCORE_SUITE_SLOTS felett, ha mindkettő be van állítva, és a régi név figyelmeztetéssel tovább
+is működik), `mopsion-pregate.sh --selftest` 17/17, `mopsion-land.sh --selftest` 91/91,
+`mopsion-preland.selftest.sh` 6/6, `fleet-test-incomplete-run.selftest.sh` 5/5. Kézzel ellenőrizve
+(direkt hívással) a MIKROB_PREGATE_CACHE/MIKROB_LAND_CACHE elsőbbség és a CLEANCORE_* fallback
+figyelmeztetés mindkettőre, mivel a saját `--selftest` blokkjaik tiszta segédfüggvényeket tesztelnek,
+nem az env-olvasó sorokat. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** DevO (fullstack), card 22835648, self-advance pick (oldest unblocked planned card).
+Gate: QA + Cybered (per card). Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 22835648 round 2: MOPSION_* family migrated, call-site tests added (B2)
+
+Round 1 (180468be8/f0d80f87c) only migrated the MIKROB_* (SUITE/CACHE) family; MikroB's re-read of
+the parent FAZIS d3191c84 (msg 17039/17042) found the MOPSION_* family (CLEANCORE_MAIN,
+CLEANCORE_WORKTREES, CLEANCORE_REPO, CLEANCORE_BRANCH, CLEANCORE_SSH_KEY, CLEANCORE_VPS) is also
+step 1, not a later round. Migrated here, same env_compat_get/envCompatGet helper, across
+agent-worktree.sh, mopsion-land.sh, mopsion-pregate.sh, mopsion-seam-sweep.sh, mopsion-preland.sh,
+mopsion-gate-worktree.sh, wsl-cleanup.sh, offload-dispatch.sh, reconstruction-landed-sweep.sh,
+unlanded-branch-sweep.sh, wsl-home-cleanup.sh, mopsion-suite-run.sh, gate-sha-repo.sh,
+deploy-freshness-check.sh, kanban-relations-git.ts, card-landing-ancestry.ts, kanban-landed-guard.ts.
+
+Explicitly out of scope: gate-pretriage-card.sh's CLEANCORE_REPO/MIKROB_REPO are hardcoded literal
+constants (no env read to migrate); the mopsi-*.sh family's CLEANCORE_MAIN export is a DIFFERENT,
+unrelated sibling-project bridge (MOPSI_*, not MOPSION_*); CLEANCORE_CONTACT_EMAIL does not exist
+in the codebase.
+
+B2 (no test pinned the new-name read in mopsion-land.sh/mopsion-pregate.sh/fleet-test.sh): added a
+--main-path flag to the first two and --cpu-slots to fleet-test.sh (mirroring the existing
+--path/--cpu-slot-path pattern), plus call-site cases, all mutation-proven red-before.
+
+**Ki döntött:** DevO (fullstack), card 22835648 round 2, per MikroB msg 17039/17042 (QA FAIL
+28923, CYBERED NO-GO). Gate: QA + Cybered.
+Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- card 22835648 round 3: re-pin 4 suites after round 2's MOPSION_* migration
+**Döntés:** same `fleet-test.sh --ref 9d6d918be` run surfaced 4 more stale pins, all caused by round 2's own MOPSION_* migration and B2 --main-path fix: `token-argv-doc-sweep.test.ts` (allowlist line 258->260, shifted by round 2's own 2-line addition to `mopsion-suite-run.sh`), `landing-downward-check.test.ts` ("own cases" floor constant 41->45, both assertions, from round 2's 4 new `--selftest` cases per lander, 91->95), `offload-dispatch.selftest.sh` (the sed-extracted `graph_repo_for()` body now calls `env_compat_get` directly; sourced `env-compat-lib.sh` before extraction in both occurrences), `store-selftests-all-run.test.ts` (added an `OK_SHAPES` regex matching `env-compat-lib.selftest.sh`'s actual "selftest: all N cases pass." output shape). All verified individually green; `store-selftests-all-run.test.ts` re-run clean against this tree (145/145, no dirty-tree flags).
+**Ki döntött:** DevO (fullstack), card 22835648 round 3, per MikroB msg 17047/17039. Gate: QA + Cybered.
+Gate-SHA: bd221181a.
+
+## 2026-11-07 -- card 22835648 round 4: fix Cybered NO-GO 28967 (Mopsi bridge precedence + 2 unmigrated Python reads)
+
+**Döntés:** Cybered's round-2 NO-GO (28967), independently reproduced by QA's own correction
+(28970), found one new regression and two still-missing reads that round 2/3 did not cover:
+
+1. `agent-worktree-mopsi.sh` and `mopsi-gate-worktree.sh` exported only the old
+   `CLEANCORE_MAIN`/`CLEANCORE_WORKTREES` to steer the generic scripts at the Mopsi clone. Those
+   generic scripts now resolve via `env_compat_get MOPSION_MAIN CLEANCORE_MAIN ...` (new name
+   wins), so an ambient `MOPSION_MAIN`/`MOPSION_WORKTREES` in the caller's environment silently
+   beat the wrapper's intended value, and the "Mopsi" wrapper resolved the mopsion clone instead.
+   Fixed by exporting the new names too, overriding any ambient value.
+2. `store/gate-closure-check.py:649` and `store/nmr-git-evidence.py:56` read `CLEANCORE_MAIN`
+   directly via `os.environ.get`, with no `MOPSION_MAIN` fallback at all -- never touched by
+   round 2/3's migration. Added `store/env_compat_lib.py` (Python counterpart of the bash/TS
+   `env_compat_get` helpers) and wired both files to it.
+3. Pinned three already-correct but untested `env_compat_get` reads named in msg 17083/17102:
+   `fleet-test.sh` CPU_LOCK_PREFIX, `mopsion-land.sh` CACHE_DIR/WORKTREES, `mopsion-pregate.sh`
+   CACHE_DIR -- new `--cache-path`/`--worktree-path` diagnostic flags plus selftest cases proving
+   the precedence, mirroring the existing `--main-path` pattern.
+
+All fixes mutation-proven (red-before via pre-fix file reconstruction from `git show HEAD:<path>`,
+green-after via full selftest runs). `landing-downward-check.test.ts`'s "own cases" floor constant
+bumped 45->49 (mopsion-land.sh's own `--selftest` count moved 95->99 with the 4 new cases).
+`tsc --noEmit` clean; `lint-ratchet.sh --show` unchanged at baseline (441 findings: 12/151/278).
+`store-selftests-all-run.test.ts` re-run clean against this commit (145/145, no dirty-tree flags).
+
+**Ki döntött:** DevO (fullstack), card 22835648 round 4, per MikroB msg 17083/17102 (CYBERED
+NO-GO 28967). Gate: QA + Cybered.
+Gate-SHA: af69d1bd9.
+
+## 2026-11-13 -- card 22835648: rebuilt by cherry-pick after Cybered NO-GO 29641 (reconstruction-from-old-base revert)
+
+**Döntés:** The earlier reconstruction on `card/22835648` (Gate-SHA 9c05c571a) was built with
+`git checkout af69d1bd9 -- <files>`, a whole-file copy from a base 116 commits behind current
+`origin/develop`. Cybered's NO-GO (29641) found this silently reverted 4 files' worth of work that
+landed on develop after the stack diverged: card 392d7104 (Peti 13201, the freellm gemini-ok
+marker requirement) in `store/offload-dispatch.sh`/`.selftest.sh`, the WhiteHat M1 single-EXIT-trap
+`cleanup()` fix (card 88b67fb4) in `store/mopsion-land.sh`, and the marveen-land own-case floor
+constants (cards 81c6fbb5/1ce1059a/07f1fe6e) in `src/__tests__/landing-downward-check.test.ts`.
+`landing-downward-check.test.ts` itself failed on the reconstruction's own tree (1 failed, 4 passed).
+
+Fix (per Cybered's Fix-Direction): rebuilt on a fresh `card/22835648` branch off CURRENT
+`origin/develop` (a4e2228d8) by cherry-picking the card's 4 owned code commits in order
+(f0d80f87c, 73d134aef, bd221181a, af69d1bd9), not by checking out files from the old sha. One
+conflict both times in `landing-downward-check.test.ts`'s shared-block floor constants (expected,
+the same spot Cybered's own rebuild hit): resolved by advancing the floor on top of develop's
+current value instead of reverting to the card's old one (cc 41->45->49, mv stays develop's 33),
+each resolution verified against the actual `--selftest` case counts. Also fixed a drive-by: the
+cherry-pick lost the executable bit on `store/env-compat-lib.sh`/`.selftest.sh` (a DrvFs/
+core.fileMode=false mount issue, caught by `shebang-files-executable.test.ts`) -- fixed via
+`git update-index --chmod=+x`, not a filesystem `chmod` alone, in its own small commit.
+
+Verification: diff vs the gated `af69d1bd9` on all 37 owned non-DECISIONS.md files -- 33
+byte-identical, 4 differ, each difference confirmed to be develop's later-landed content correctly
+PRESERVED (not reverted): the 392d7104 marker check, the WhiteHat M1 trap fix, and the expected
+floor-constant bump. `tsc --noEmit` clean. Targeted vitest: `landing-downward-check.test.ts` 5/5,
+`env-compat.test.ts` + `token-argv-doc-sweep.test.ts` 9/9. Full `fleet-test.sh --ref <rebuilt sha>`:
+see REVIEW comment for the number.
+
+**Ki döntött:** DevO (fullstack), card 22835648 rebuild, per MikroB msg_id:17609 and Cybered
+NO-GO 29641 (Fix-Direction). Gate: QA + Cybered. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 313c8a71: 3ae2411d follow-up F1 (single source) + F2 (fail-closed test) + F3 (silent loss)
+
+WhiteHat2's own CYBERSEC GO on 3ae2411d round 2 (comment 28768, Gate-SHA 5d9c784ea) named three
+non-blocking findings to close as a follow-up card.
+
+**F1 MEDIUM-LOW, single source was partial:** `const isClaude = !customProviderId &&
+model.startsWith('claude-')` was retyped three times -- the dashboard launch site
+(agent-process.ts), the watchdog's needs-fleet-oauth.mjs, and that script's own parity test's
+"ground truth". WhiteHat2's mutant D1 (change the launch site's copy) left the parity test green
+on both sides, because neither side actually CALLED the launch site's logic -- they each had their
+own independent copy that happened to still agree. Decision: extract one exported pure function,
+`isClaudeAgent(model, customProviderId)`, in agent-process.ts; the launch site, needs-fleet-oauth.mjs
+(dist import), watchdog-provider-env.mjs (same duplication class, found while fixing this -- it was
+introduced this session for card ac0bf02d) and the parity test's ground truth (TS source import) all
+call this ONE function now instead of retyping the expression.
+
+**F2 MEDIUM-LOW, fail-closed unpinned:** the mjs's catch (exit 2, "undecidable") was never
+exercised by any test -- WhiteHat2's mutant M5 (catch exits 0, fail OPEN) left the whole shell
+suite green. Decision: two new cases, per WhiteHat2's own suggested direction -- a project root
+with no `dist/` (the dynamic import throws inside the try block, caught, exit 2) and a bogus
+`NODE_BIN` (command not found, exit 127) -- both must still produce `isolation=no`.
+
+**F3 LOW-MEDIUM, silent availability loss:** when node or the dist is unavailable (e.g. mid-rebuild
+during an update), `agent_launch_env` silently fell through to "no export" for EVERY restarted
+agent that needed the fleet token, not only BYO ones -- nothing logged, no alert, a real restart
+would just degrade quietly. Decision: the verdict computation now distinguishes exit 1 ("not
+needed", the ordinary ns-fleet-oauth.mjs decision) from any other exit code ("undecidable" -- dist
+missing, node missing, mjs crashed), writes a named `UNDECIDABLE` line to the watchdog log in the
+latter case, and a new rate-limited `alert_owner_fleet_oauth_undecidable` (1-hour cooldown via a
+sentinel file, same direct-Bot-API pattern duplicated across ollama-boot-restore.sh/
+disk-space-guard.sh/build-freshness-guard.sh/stuck-modal-guard.sh) pings the owner from the restart
+loop.
+
+**Known residual, explicitly not fixed here** (narrower than the named scenario, not reachable via
+a normal install): a missing/corrupt `needs-fleet-oauth.mjs` SCRIPT FILE itself (as opposed to a
+missing `dist/`, which IS correctly caught inside the try block) also exits 1 at node's own
+module-loader level, colliding with the ordinary "not needed" exit code -- verified by hand
+(`node <missing-file>` exits 1, not 2 or 127, since the loader fails before any of the script's own
+try/catch runs). The dist-missing scenario WhiteHat2 actually named (mid-rebuild) is fully fixed;
+this edge case is a candidate for 85a668aa-style residual tracking if it ever matters in practice.
+
+Verified: F1 red-before/green-after by hand -- temporarily mutated `isClaudeAgent`'s body
+(`return false && ...`), re-ran `needs-fleet-oauth-parity.test.ts`: 4/10 FAIL; reverted, rebuilt
+dist: 10/10 pass again. `watchdog-config-isolation.test.sh`: added cases 36-39, 48/48 pass (up from
+43); red-before confirmed against the pre-fix `watchdog.sh` (cases 37/38's log-line assertions
+genuinely fail there). `needs-fleet-oauth-parity.test.ts` + `watchdog-provider-env-parity.test.ts`:
+15/15 pass, unaffected by the `isClaudeAgent` extraction. `tsc --noEmit -p .` clean.
+
+**Ki döntött:** DevO (fullstack), card 313c8a71, self-advance pick (MikroB flagged it in msg_id:16905
+as a never-dispatched planned card on my name). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 313c8a71 scope extension: refuse restart when provider env is unavailable
+
+MikroB decision (msg_id:16928), following WhiteHat GO 28831 F1/F2 on ac0bf02d: "fails closed" in
+`watchdog-provider-env.mjs` meant "exports nothing", not "does not restart". Every failure of that
+branch (node missing, dist missing, a customProvider's vault key gone, an unregistered
+customProvider) ended in an EMPTY prefix, and the restart loop only skips a restart for a `REFUSE:`
+prefix -- so the agent was restarted anyway, silently, on whatever default login the shared
+`~/.claude` holds. No BYO agent exists live today, but the gap was real and WhiteHat explicitly
+recommended refusing.
+
+Decision: `agent_launch_env` now captures `watchdog-provider-env.mjs`'s actual exit code. A
+non-zero exit (or node missing) emits `REFUSE:provider-env-unavailable` (the restart loop already
+generically skips any `REFUSE:*` prefix, same mechanism the `oauthTokenFile` backstop uses) and
+logs a named line. An agent with genuinely nothing to export BY DESIGN (`authMode: own_team`: exit
+0, empty output) is unaffected -- it still restarts normally; only an actual failure refuses.
+
+Updated 4 existing shell-test cases (24, 31, 34, 38) whose fixture configs now correctly refuse
+instead of silently restarting with no credentials, and added 2 new ones: a dedicated missing-dist
+scenario for `watchdog-provider-env.mjs` itself (the scope extension's actual target) and a
+mutation pin confirming the `own_team` legitimate-empty-output case never refuses. 51/51 pass (up
+from 48). Red-before confirmed against the pre-extension `watchdog.sh`: all 6 new/changed
+assertions genuinely fail there.
+
+**Ki döntött:** DevO (fullstack), card 313c8a71 scope extension, per MikroB dispatch (msg_id:16928).
+Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 313c8a71: undecidable fleet-oauth verdict refuses for EVERY agent, not only BYO
+
+MikroB (msg_id:16938, explicit: "if you think a plain Claude agent should also be refused on
+UNDECIDABLE, say so in the REVIEW, do not decide silently"): the prior fix only refused the restart
+when `watchdog-provider-env.mjs` itself failed -- an undecidable fleet-oauth verdict (dist/node
+unavailable) for a PLAIN CLAUDE agent still fell through to the provider-env branch, which has no
+opinion on whether the fleet token specifically was needed. It would likely still succeed there
+(since that branch, for a plain claude/shared config, legitimately has nothing to export) and
+restart the agent silently missing a token it may have actually required. The two scripts share the
+same dist/node, so in practice an undecidable dist/node failure usually hits both together -- but
+that was incidental, not a guarantee the code actually made.
+
+Decision: made the dependency explicit rather than relying on the incidental shared-dist coupling.
+An undecidable fleet-oauth verdict (exit code neither 0 "needed" nor 1 "not needed") now returns
+`REFUSE:fleet-oauth-undecidable` immediately, before the provider-env branch is ever reached -- for
+every agent, not only BYO/customProvider ones. The `UNDECIDABLE` log line and the rate-limited owner
+alert from the prior round are unchanged.
+
+Verified: updated cases 36/38 (a plain claude/shared fixture in both, already in place from the
+prior round) to expect `refuse reason=fleet-oauth-undecidable` instead of the old `isolation=no` /
+`provider-env-unavailable` -- these directly prove the new behavior for a plain Claude agent, no new
+case needed. 51/51 pass (same count as the prior commit; 36/38 re-targeted, not added). Red-before
+confirmed against the pre-fix `watchdog.sh`: both updated assertions genuinely fail there (one gets
+the old silent `isolation=no`, the other gets the wrong refuse reason).
+
+**Ki döntött:** DevO (fullstack), card 313c8a71, per MikroB dispatch (msg_id:16938). Gate: QA +
+Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 313c8a71 round 3: F1 (dead alert), F2 (script-missing), F3 (corrupt config), F4 (log text)
+
+WhiteHat2 CYBERSEC GO 28868 + QA2 FAIL 28874 on 789ef1856/b4fea21f4, four findings on the same
+fleet-oauth-undecidable scope extension.
+
+**F1 (the owner alert was dead code, two independent reasons):** `FLEET_OAUTH_UNDECIDABLE` was set
+inside `agent_launch_env`, called via command substitution (`$(...)`) -- a variable set inside a
+subshell never survives back to the parent shell, confirmed by direct reproduction (a standalone
+3-line repro: the parent reads the variable back as its own never-set default, 0, even though the
+subshell set it to 1). The REFUSE case also already `continue`s before the old post-case alert
+check could ever run, a second, independent reason the line was unreachable. Fixed: the alert now
+fires directly inside the REFUSE case, decided from the REASON STRING itself (the one piece of the
+decision that does cross the subshell boundary, since it is the function's own print-and-return
+value, not a side-channel variable). Extracted the decision into a single shared
+`maybe_alert_for_refuse_reason()`, called both from the main loop and a new
+`--selftest-refuse-alert` self-test hook (same pattern as the file's existing `--launch-env` and
+`--check-scaffolded` hooks) -- added specifically because `--launch-env` can never reach the main
+loop's REFUSE case, and driving the real loop needs a live tmux session, the dashboard and the
+main-agent channel setup, too much fixture weight for one case/alert assertion.
+
+**F2 (a missing/syntax-broken needs-fleet-oauth.mjs collided with "not needed"):** node's own
+module loader exits 1 on a missing script file or a syntax error -- the EXACT code the script's
+real "not needed" decision uses, so exit code alone could not tell a genuine decision from the
+script never having run its own logic at all. Fixed: the script now also prints a stdout sentinel
+(`"needed"`/`"not-needed"`) the instant it reaches its own decision; `watchdog.sh` now requires
+BOTH the exit code AND the matching sentinel to accept a verdict -- any other combination (rc=2,
+rc=127, or rc=0/1 without the sentinel) is undecidable, same fail-closed posture as before.
+
+**F3 (a present-but-corrupt agent-config.json restarted WITH the fleet token):** both
+`needs-fleet-oauth.mjs` and `watchdog-provider-env.mjs` used to default a present-but-unparseable
+config (non-JSON text, truncated JSON, a UTF-8 BOM, a JSON array) to `{}` the same way a genuinely
+MISSING file does -- and `{}` resolves to the claude- install default, so a corrupt config silently
+got the fleet token despite possibly naming a customProvider that never got read. Fixed: a missing
+file (ENOENT) still defaults to `{}`; anything else that fails to parse to a plain JSON object now
+throws, caught by the existing outer try/catch (exit 2, undecidable), in both scripts.
+
+**F4 (misleading REFUSE log text):** "oauthTokenFile set but unusable (`<reason>`)" named
+oauthTokenFile for reasons that have nothing to do with it. Fixed: the log line now just names the
+refusal itself ("restart refused (`<reason>`)"), the reason string already carries the actual cause.
+
+Verified, in two commits (a73d8b5a7 landed the fixes; 6df224799 + e1666255f added the missing test
+coverage for F2/F3 and F1 respectively, after a self-review flagged the gap before re-dispatching
+for gate): `watchdog-config-isolation.test.sh` 62/62 pass (up from 51 -- cases 43-45 for F2, 46-50
+for F3, 51-52 for F1). Red-before confirmed for every finding: F2 by hand against `a73d8b5a7~1`'s
+`watchdog.sh` (silently proceeds instead of refusing); F3 by running the OLD `needs-fleet-oauth.mjs`
+standalone against the exact corrupt config the new code refuses (exits 0 "needed" there, exits 2
+here); F1 by the subshell-variable repro above, since `a73d8b5a7` shipped with no test entry point
+for it at all. `tsc --noEmit -p .` clean throughout; `needs-fleet-oauth-parity` +
+`watchdog-provider-env-parity`: 15/15 pass, unaffected by any of this round's changes.
+
+**Ki döntött:** DevO (fullstack), card 313c8a71 round 3, per WhiteHat2 CYBERSEC GO 28868 + QA2 FAIL
+28874. Gate: QA2 + Cybersec (WhiteHat2's own seat). Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 313c8a71 round 4: F1 test gap closed (QA2 FAIL 28906)
+
+QA2 FAIL 28906 (Gate-SHA f921f7fb9): the previous round's cases 51-52 only drove
+`--selftest-refuse-alert`, which calls `maybe_alert_for_refuse_reason()` directly -- they never
+exercised the REAL main restart loop's own call site. QA2 measured directly: commenting out that
+one real line still left the full 62-case `watchdog-config-isolation.test.sh` suite green, because
+none of those cases ever runs the main loop at all.
+
+Decision: a new, separate test file (`watchdog-main-loop-refuse-alert.test.sh`) drives the ACTUAL
+main loop (`watchdog.sh` with no arguments) through a fake `tmux`/`ps` PATH shim -- `tmux
+has-session` answers false for the fixture agent (so it reaches the restart logic) and true for
+`marveen-channels` (so that unrelated branch is skipped entirely); `ps` reports a dashboard PID so
+the dashboard-restart branch is skipped too. No live tmux session, dashboard or channel state is
+touched. Confirms the real, unmodified script alerts the owner on an undecidable fleet-oauth
+verdict driven through the real loop, and that a python-written mutant removing specifically the
+real main-loop call site (not the hook's own call, the SECOND occurrence of the function call in
+the file) is caught -- no alert fires without it. Run 4 times total to rule out shim flakiness.
+
+**Ki döntött:** DevO (fullstack), card 313c8a71 round 4, per QA2 FAIL 28906. Gate: QA2 + Cybersec.
+Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 313c8a71 round 5: mutant test fixture depth fixed (Cybersec F1)
+
+Cybersec F1 on round 4's new watchdog-main-loop-refuse-alert.test.sh (itself added to close QA2
+FAIL 28906): the mutant copy was written loose at $TMP's own top, one directory shallower than the
+real script copy ($FIXTURE_INSTALL/scripts/watchdog.sh). watchdog.sh's INSTALL_DIR is
+"$(dirname "$0")/..", so the mutant's wrong location made INSTALL_DIR resolve to /tmp itself,
+causing the test to attempt real actions (npm start, scripts/channels.sh) against the real
+filesystem, and making the case vacuous (an unmutated copy at that same wrong depth failed
+identically, proving nothing about the mutation).
+
+Fix: write the mutant inside $FIXTURE_INSTALL/scripts/, matching the real copy's depth.
+
+**Ki döntött:** DevO (fullstack), card 313c8a71 round 5, per Cybersec F1. Gate: QA2 + Cybersec.
+Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- card 313c8a71 round 6: re-pin agent-oauth-token-file after F1's isClaudeAgent extraction
+**Döntés:** found via a fresh `fleet-test.sh --ref 9d6d918be` run (card 3ae2411d/ac0bf02d's commit): `src/__tests__/agent-oauth-token-file.test.ts` had two text-pins still searching for the pre-313c8a71-F1 inline expression `const isClaude = !customProviderId && model.startsWith('claude-')`, which F1 replaced with `const isClaude = isClaudeAgent(model, customProviderId)`. Both pins updated to the new call-site text; verified 76/76 pass.
+**Ki döntött:** DevO (fullstack), card 313c8a71 round 6, per MikroB msg 17047 (named this file's regression, assigned to the smallest/first fix round). Gate: QA + Cybersec.
+Gate-SHA: 1cc7dfbf9.
+
+## 2026-11-07 -- card 313c8a71 round 7: fix Cybersec NO-GO 28997 (N1 cooldown vacuity, N2 npm escape, T3 indexOf)
+
+**Döntés:** Cybersec's NO-GO 28997 found round 5's case 3 was vacuous (the cooldown sentinel
+written by case 1 suppressed the alert on an UNMODIFIED script too, so the mutant and the
+original gave the same "no alert" result) and that the dashboard-restart branch could reach a
+real `npm` which walks up to a host ancestor's `package.json` -- the existing tmux/ps/claude
+fakes only "worked" because this host's real `ps` happens to find the real live dashboard
+process, not because the fakes were consulted at all (watchdog.sh:364 rebuilds PATH itself with
+several real system dirs ahead of whatever PATH the test passed in). Fixed: cleared the cooldown
+sentinel before the mutant run and added a control case proving discrimination; moved every fake
+binary into a fixture HOME's `.local/bin` (the first, HOME-relative entry in watchdog.sh's own
+PATH rebuild) and added a forced-dashboard-down case proving the npm stub intercepts before any
+real ancestor package.json runs. Also fixed T3: `agent-oauth-token-file.test.ts`'s backstop test
+computed `isClaudeAt` via `indexOf` but never checked it against -1, so a mutant removing the
+discriminator line passed vacuously; added `expect(isClaudeAt).toBeGreaterThan(-1)`.
+
+All three mutation-proven red-before/green-after. Also fixed a DrvFs mode-bit regression from
+this round's own first commit (the shebang test file landed as 644 despite being chmod +x on
+disk) -- restored to 755 in the index as a separate mode-only commit.
+
+**Ki döntött:** DevO (fullstack), card 313c8a71 round 7, per MikroB msg 17117/17122 (CYBERSEC
+NO-GO 28997). Gate: QA2 + Cybersec.
+Gate-SHA: 5349628e7.
 ## 2026-11-13 -- kártya 78339a8a: --allow-stacked --card módba, LANDING_DOWNWARD_CHECK szűkítve
 
 **Döntés:** a `marveen-land.sh --card <id> --agent <agent>` mód option-parsere eddig csak

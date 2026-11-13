@@ -58,6 +58,8 @@ set -uo pipefail
 DRAFT_AUTHOR="local-llm"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./env-compat-lib.sh
+. "$HERE/env-compat-lib.sh"
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 RAG="$HERE/local-llm-rag.sh"
@@ -1776,7 +1778,7 @@ graph_repo_for() {
     # "$HERE" -- a caller outside the repo (or in a different repo) silently jumps to the wrong
     # place or fails. Asking git for an absolute path removes the ambiguity entirely.
     MikroB)              { gcd="$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && dirname "$gcd"; } || echo "" ;;
-    CleanCore|mopsion)    echo "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}" ;;
+    CleanCore|mopsion)    env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion ;;
     # Explicit fail-safe default (Cybersec, card 1b02ed3a comment 4864): an unrecognised project
     # already fell through to this same empty output before this arm existed -- stated here rather
     # than left implicit, so a reader (or a future case arm added above it) cannot mistake the
