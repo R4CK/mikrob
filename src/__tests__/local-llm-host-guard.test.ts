@@ -24,6 +24,12 @@ describe('OLLAMA_HOST loopback guard (card 0d2be5e5)', () => {
     expect(existsSync(join(STORE, 'local-llm-host-guard.selftest.sh')), 'selftest missing').toBe(true)
   })
 
+  // card 368395d4: the selftest itself is pure bash with no network/sleep (confirmed: every case
+  // is a plain function call), so under idle load this runs in well under a second -- the ~12 s
+  // seen under CPU contention is subprocess-spawn scheduling delay, not slow work. The 120_000ms
+  // execFileSync timeout already allows for that; vitest's own default test timeout was the one
+  // actually too short to let it. Matching the two (one real child, generously bounded) instead of
+  // raising the suite-wide default.
   it('its selftest passes, and reports a COUNTED number of cases', () => {
     const out = execFileSync('bash', [join(STORE, 'local-llm-host-guard.selftest.sh')], {
       encoding: 'utf-8',
@@ -32,7 +38,7 @@ describe('OLLAMA_HOST loopback guard (card 0d2be5e5)', () => {
     // A counted number, not a literal: a harness that reports success with zero cases run is worse
     // than no harness.
     expect(out).toMatch(/selftest: [1-9]\d* case\(s\), PASS/)
-  })
+  }, 120_000)
 
   // The half a selftest cannot prove about itself: that the check is INVOKED, not merely defined.
   // A guard function nobody calls passes every one of its own unit cases.
