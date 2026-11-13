@@ -1804,6 +1804,100 @@ land_with_retry() {
   done
 }
 
+# Self-test hook, card 46194693 F1 (WhiteHat 17020): the EXISTING --selftest block (above, in
+# this same file) only ever exercises release_land_lock_fd/acquire_land_lock in isolation -- it
+# `exit`s before land_one's own definition is reached, so it structurally CANNOT call the real
+# function. WhiteHat measured exactly that gap: 3 mutants of the cleanup() call sites (a
+# dead-branch `false &&` guard, and the call moved into a comment) left that block's own
+# text-pin checks green. This hook runs AFTER land_one/land_with_retry are defined, so it can call
+# land_one FOR REAL, through a real git fixture, and verify the OS-level flock with an
+# independent, real `flock -n` afterward -- not a text search.
+if [ "${1:-}" = "--selftest-land-lock-release" ]; then
+  # $MAIN (and everything derived from it, like $LAND_LOCK_FILE's default) was already fixed at
+  # this file's own top (line ~86, from $MARVEEN_MAIN) BEFORE this hook's code runs -- so the
+  # fixture's own path has to be known and exported into MARVEEN_MAIN BEFORE this script starts,
+  # not set from inside it. Build the fixture first, under a plain, git-only subshell (no `g`
+  # helper needed yet), then re-exec THIS SAME script with MARVEEN_MAIN now pointing at it.
+  LFTMP="$(mktemp -d)"
+  git init -q --bare "$LFTMP/origin.git"
+  git init -q "$LFTMP/seed"
+  git -C "$LFTMP/seed" checkout -q -b develop
+  git -C "$LFTMP/seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m seed
+  git -C "$LFTMP/seed" remote add origin "$LFTMP/origin.git"
+  git -C "$LFTMP/seed" push -q origin develop
+  git -C "$LFTMP/origin.git" symbolic-ref HEAD refs/heads/develop
+  git clone -q "$LFTMP/origin.git" "$LFTMP/main" 2>/dev/null
+  git -C "$LFTMP/main" checkout -q develop
+  mkdir -p "$LFTMP/main/store"
+  # KANBAN_COMMENT_API dead so no real dashboard call can ever happen (the lock-file default
+  # below already resolves correctly off MARVEEN_MAIN, no separate override needed for it).
+  exec env MARVEEN_MAIN="$LFTMP/main" MARVEEN_LAND_SELFTEST_TMP="$LFTMP" \
+    KANBAN_COMMENT_API="http://127.0.0.1:1" \
+    bash "$0" --selftest-land-lock-release-inner
+fi
+
+if [ "${1:-}" = "--selftest-land-lock-release-inner" ]; then
+  fail=0; n=0
+  LFTMP="$MARVEEN_LAND_SELFTEST_TMP"
+  trap 'rm -rf "$LFTMP"' EXIT
+  # This hook calls land_one() directly, bypassing the main dispatch's own arg-parsing (line
+  # ~1186) which normally sets these before land_one is ever reachable. Under `set -u` an unset
+  # LAND_CARD at line ~608 (downward_check) is a fatal "unbound variable" that kills the whole
+  # script with no RETURN-trap cleanup -- a test-fixture gap, not a real land_one bug. ALLOW_ARCHIVE
+  # joined this list when card acffb1d6 wired it into the same decisions_tail_append_ok call site
+  # that case B's land_one actually reaches (case A returns before that point, which is why it
+  # passed while this was still missing).
+  LAND_CARD=""
+  ALLOW_STACKED=""
+  ALLOW_ARCHIVE=0
+
+  flock_is_free() { # 0 = free (lock acquired and released by THIS probe), 1 = still held
+    (
+      exec 8>>"$LAND_LOCK_FILE"
+      flock -n 8
+    ) 2>/dev/null
+  }
+
+  # --- case A: the CHEAP exit path through the FIRST cleanup() (lock-only, no worktree yet) ----
+  # "already fully landed" (land_one:572) returns 0 before any worktree is created.
+  git -C "$LFTMP/main" branch -q "agent/fixture-a/work" develop
+  land_one fixture-a false > "$LFTMP/out-a" 2>&1
+  n=$((n+1))
+  if flock_is_free; then echo "  ok   case A (already-landed, first cleanup()): lock is free after land_one returns"
+  else echo "  FAIL case A: lock STILL HELD after land_one returned (out: $(cat "$LFTMP/out-a"))"; fail=1; fi
+
+  # --- case B: a REAL failure AFTER the worktree is created, through the SECOND cleanup() (lock
+  # + worktree removal) -- MARVEEN_LAND_TEST=false forces fleet-test to "fail" without running it.
+  git -C "$LFTMP/main" checkout -q -b "agent/fixture-b/work" develop
+  echo change > "$LFTMP/main/fixture-b-file.txt"
+  git -C "$LFTMP/main" add fixture-b-file.txt
+  git -C "$LFTMP/main" -c user.email=t@t -c user.name=t commit -q -m "fixture-b change"
+  git -C "$LFTMP/main" checkout -q develop
+  n=$((n+1))
+  # TEST_CMD is read ONCE from MARVEEN_LAND_TEST at this script's own top (line ~422, long before
+  # this hook runs) -- a per-call env prefix on a shell FUNCTION call does not retroactively change
+  # an already-computed global, so it is reassigned directly here instead.
+  TEST_CMD=false
+  land_one fixture-b false > "$LFTMP/out-b" 2>&1
+  if flock_is_free; then echo "  ok   case B (fleet-test failure, second cleanup()): lock is free after land_one returns"
+  else echo "  FAIL case B: lock STILL HELD after land_one returned (out: $(cat "$LFTMP/out-b"))"; fail=1; fi
+  n=$((n+1))
+  # F2 fix (Cybered NO-GO 29382): use the EXACT path -- marveen-land-fixture-b-$$ -- not a glob.
+  # A glob matches every concurrent run's fixture worktree: 8-parallel test measured 1/8 false FAILs
+  # and rm -rf on the glob deletes another run's live worktree mid-run.
+  if ls -d "/home/neon/marveen-land-fixture-b-$$" >/dev/null 2>&1; then
+    echo "  FAIL case B: the disposable landing worktree was not removed"; fail=1
+    rm -rf "/home/neon/marveen-land-fixture-b-$$" 2>/dev/null
+  else
+    echo "  ok   case B: the disposable landing worktree was removed (second cleanup() ran)"
+  fi
+
+  echo
+  if [ "$fail" -eq 0 ]; then echo "selftest-land-lock-release: $n case(s), PASS"; exit 0
+  else echo "selftest-land-lock-release: $n case(s), FAIL"; exit 1
+  fi
+fi
+
 DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0
 TARGET="${1:-}"; [ $# -gt 0 ] && shift
 

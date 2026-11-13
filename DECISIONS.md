@@ -23679,3 +23679,72 @@ Verification: `marveen-land-run-fg-killable.selftest.sh` -- 5/5 PASS (the 2 pre-
 - I1: rebased `agent/backend/work` onto the then-current `origin/develop` (`77af80889`, 7 commits ahead of this branch's old base), dropping `12ef99313` (its content is `405e75179`, already on develop, confirmed via `git diff <sha>^..<sha> -- DECISIONS.md` on both commits producing identical patch text modulo line offset). `d51ba75ba`'s own content (the M1/M2 fix) is unaffected by the drop; only the duplicate docs commit under it is gone.
 Verification: `marveen-land-run-fg-killable.selftest.sh` standalone -- 6/6 PASS (incl. the new HUP pin). `marveen-land.sh --selftest` -- 81/81 PASS (75 pre-existing + 6 from the now-wired file). `fleet-test.sh --ref <new sha>` -- see REVIEW comment for the number and which sha it ran on.
 **Ki döntött:** backend (card 07f1fe6e delta fix, per MikroB msg_id:17358), finding source: cybersec (WhiteHat) comment 29326. Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 46194693 delta: F1 (behavioral land-lock-release selftest) added, F2 superseded by 81c6fbb5
+
+**Döntés:** card 46194693's gated commit (489c1ef40, WhiteHat 17020 F1/F2, QA PASS + CYBERED GO)
+never landed -- its branch sat only on agent/fullstack/work. By the time this card was rebuilt
+(MikroB decision msg 17343/17349), a later, already-landed card (81c6fbb5) had restructured
+every fleet-test call site in store/marveen-land.sh into a shared `run_fg_killable()` wrapper
+that already calls `release_land_lock_fd()` inside the subshell before `eval` -- the exact
+guarantee F2 asked for ({LAND_LOCK_FD}>&- on each inline subshell), now done once instead of at
+three call sites. Confirmed by an existing, already-passing --selftest case: "all 3 fleet-test
+subshells in land_one close their own copy of LAND_LOCK_FD before running fleet-test, via
+run_fg_killable (card 81c6fbb5 Q3, card 9d1ee327)". Applying 489c1ef40's F2 hunks verbatim would
+have been redundant with, and risked conflicting with, that single-source wrapper.
+
+F1 (the new behavioral selftest hook, `--selftest-land-lock-release` /
+`--selftest-land-lock-release-inner`, calling the real `land_one` through a disposable git
+fixture and checking the OS-level flock afterward, not a text-pin) did NOT exist yet after
+81c6fbb5's refactor and applies cleanly in its originally-intended position (right after
+`land_one`/`land_with_retry` are defined). Verified standalone: 3/3 PASS (case A: already-landed
+exit path releases the lock; case B: fleet-test-failure exit path releases the lock and removes
+the disposable worktree). Full `--selftest` suite re-run after this delta: 86/86 PASS, no FAIL,
+no regression.
+
+This card's delivered content therefore DIFFERS from the originally-gated 489c1ef40 (F2's hunks
+intentionally omitted as superseded) -- a delta, not a tree-identical rebuild like 313c8a71 and
+22835648. A fresh REVIEW/gate round is required on the new sha; the old QA PASS/CYBERED GO
+verdicts on 489c1ef40 do not carry over.
+
+**Ki döntött:** DevO (fullstack), per MikroB msg 17349/17351. Gate: QA + Cybered (fresh round,
+dispatched by MikroB on the new sha).
+
+## 2026-11-08 -- 46194693 round 3: Cybered NO-GO 29403 F1 fix (unbounded execFileSync hang)
+
+**Döntés:** Cybered's NO-GO (comment 29403) found the new `--selftest-land-lock-release` vitest
+case (added by the round-2 delta above) called `execFileSync` with no `timeout` and the script's
+own `MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S` default (7200s): under mutant M1 (dead-branch
+`false &&` on the first `cleanup()`), the leaked lock made case B queue behind it with no bound,
+so vitest's own 60s `it` timeout could never fire (the worker was blocked synchronously inside
+the child process). Fix: added `timeout: 50_000` plus
+`env: { ...process.env, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' }` to the `execFileSync` call
+(`src/__tests__/landing-downward-check.test.ts`, +2 lines only). Cybered measured M1/M3/M4 now go
+red in 37-41s, M2/M5 in 26-27s. Verified locally on the unmutated script:
+`--selftest-land-lock-release` 3/3 PASS, `--selftest` 86/86 PASS unaffected.
+
+**Ki döntött:** DevO (fullstack), per Cybered NO-GO comment 29403. Gate: QA + Cybered (re-gate on
+new sha). Gate-SHA: da275189cba5a16f3a76741f9f215054756195a7 (QA PASS 29443, CYBERED GO).
+
+## 2026-11-12 -- 46194693 rebuild: merged onto current origin/develop after real divergence on store/marveen-land.sh
+
+**Döntés:** landing the gated sha (da275189c) hit a real merge conflict (not the usual
+tail-append-only class): card/46194693's own branch adds 90 lines to `store/marveen-land.sh`
+(the `--selftest-land-lock-release`/`-inner` hook itself, from the round-1/round-2 work above),
+and `origin/develop` separately gained 8 lines in the same file from card acffb1d6
+(`--allow-archive` plumbing, merge 80077fdb4) landing in between. The two hunks are adjacent but
+non-overlapping in content: acffb1d6 only changes the `DRY=0; LAND_CARD=""; ALLOW_STACKED=""`
+line (adding `; ALLOW_ARCHIVE=0`) that sits immediately after this card's own 90-line block ends.
+Resolved by keeping both: the full `--selftest-land-lock-release`/`-inner` hook block unchanged,
+followed by `DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0` (develop's line, keeping the
+new flag). The two other hunks acffb1d6 touched in the same file (the `decisions_tail_append_ok`
+call site and the `--allow-archive` CLI option parsing) auto-merged cleanly, no manual resolution
+needed there. This DECISIONS.md entry itself is the other half of the same conflict: the
+round-2/round-3 entries above were re-appended at the true file tail (moved past the three
+entries origin/develop had gained since), per the tail-append rule.
+`bash store/marveen-land.sh --selftest` re-run after the resolution: see REVIEW comment for the
+count and the new Gate-SHA.
+
+**Ki döntött:** DevO (fullstack), per MikroB msg 17484 (rebuild direction after my own incorrect
+first read that the conflict was tail-append-only). Gate: QA + Cybered (fresh delta re-gate on
+the new sha).
