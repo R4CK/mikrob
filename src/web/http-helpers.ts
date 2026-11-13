@@ -31,6 +31,17 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+// card 1a3c6459 N1 (WhiteHat2 30355, off MikroB's dispatch): once a body crosses maxBytes it
+// must still be DRAINED, not destroyed outright, so the caller's catch block gets a chance to
+// write a 413 before the socket closes (see the req.destroy()-killed-the-socket history below).
+// But draining with no cap of its own let a client that keeps streaming past the limit force the
+// server to read the whole thing anyway -- measured: an 8KB-cap route reading all of a 512MB body
+// a client declared as 2GB, 532ms CPU, connection held open, bounded only by Node's own 300s
+// requestTimeout. DRAIN_SLACK_BYTES is the hard ceiling on how much MORE the server will ever
+// read after the limit is crossed, independent of maxBytes, the caller's own response timing, or
+// any per-route header -- every readBody() caller gets this bound for free.
+const DRAIN_SLACK_BYTES = 64 * 1024
+
 export function readBody(
   req: http.IncomingMessage,
   opts: { maxBytes?: number } = {},
@@ -40,25 +51,31 @@ export function readBody(
     const chunks: Buffer[] = []
     let total = 0
     let overLimit = false
+    let drained = 0
     const onData = (c: Buffer) => {
-      if (overLimit) return
+      if (overLimit) {
+        // card 1a3c6459 (MikroB F1 / N1): req.destroy() here used to kill the connection
+        // BEFORE the caller's catch block ever got to write a 413 -- IncomingMessage#_destroy
+        // destroys the underlying socket when the body isn't fully read, so the client saw
+        // ECONNRESET, never a status line (measured at 4128B/70KB/1MB, chunked and
+        // Content-Length alike). Keep draining (bounded memory, nothing pushed to `chunks`
+        // any more) so the wire-level 413 can still go out, but only up to DRAIN_SLACK_BYTES
+        // more -- past that, destroy for real. By then the caller's res.writeHead(413)/
+        // res.end() has already run (the reject() microtask below fires, and the route
+        // handler's await/catch resolves, before this listener sees another 'data' event),
+        // so destroying here no longer races the response the way the original bug did.
+        drained += c.length
+        if (drained > DRAIN_SLACK_BYTES) {
+          req.off('data', onData)
+          req.off('end', onEnd)
+          req.off('error', onError)
+          req.destroy()
+        }
+        return
+      }
       total += c.length
       if (total > maxBytes) {
         overLimit = true
-        // card 1a3c6459 (MikroB F1, off WhiteHat2's live-wire probe on the llm-ledger budget
-        // route): req.destroy() here used to kill the connection BEFORE the caller's catch
-        // block ever got to write a 413 -- IncomingMessage#_destroy destroys the underlying
-        // socket when the body isn't fully read, so the client saw ECONNRESET, never a status
-        // line (measured at 4128B/70KB/1MB, chunked and Content-Length alike). Stop
-        // accumulating and drain-and-discard the rest instead of destroying: req.resume() keeps
-        // the stream flowing (bounded memory, nothing pushed to `chunks` any more) without
-        // touching the socket, so the caller's res.writeHead(413)/res.end() still reaches the
-        // wire. readBody is shared by every POST/PUT route in the dashboard, so this fixes the
-        // same gap everywhere at once, not just the ledger budget route.
-        req.off('data', onData)
-        req.off('end', onEnd)
-        req.off('error', onError)
-        req.resume()
         reject(new RequestBodyTooLargeError(maxBytes))
         return
       }

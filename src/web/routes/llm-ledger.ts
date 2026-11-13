@@ -68,12 +68,11 @@ export async function tryHandleLlmLedger(ctx: RouteContext): Promise<boolean> {
       body = await readBody(ctx.req, { maxBytes: BUDGET_BODY_MAX_BYTES })
     } catch (err) {
       if (err instanceof RequestBodyTooLargeError) {
-        // card 1a3c6459 (MikroB F1): Connection: close tells Node not to try reusing this
-        // keep-alive socket for a next request -- readBody() no longer destroys the socket
-        // (so the 413 below reaches the wire), but the oversized body may still be draining
-        // in the background when this response ends, which would otherwise desync HTTP
-        // framing for whatever request a reused socket received next.
-        res.setHeader('Connection', 'close')
+        // card 1a3c6459 (MikroB N1): this route used to set Connection: close here as its own
+        // bound on the post-413 drain -- it was the only readBody() caller in src/web doing so,
+        // which left every OTHER caller draining without limit. readBody() itself now caps the
+        // drain (DRAIN_SLACK_BYTES in http-helpers.ts), so every caller gets the same bound and
+        // this route no longer needs a header of its own.
         json(res, { error: `Request body too large (max ${err.limit} bytes)` }, 413)
         return true
       }
