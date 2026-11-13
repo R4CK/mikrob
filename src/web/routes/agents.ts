@@ -126,6 +126,7 @@ import {
   delay,
   resolveAgentProvider,
   sharedEnvAuthKeysCopiedTo,
+  isSessionReadyForPrompt,
 } from '../agent-process.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -137,7 +138,7 @@ import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } 
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
 import { readContextGuardConfig, mergeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
-import { getContextGuardStatus } from '../context-guard-runner.js'
+import { getContextGuardStatus, measureContextPctForAgent } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
 // Derived from the DEFAULT config objects, not hand-listed: a field added to
@@ -2433,6 +2434,49 @@ function compactPrompt(): string {
     return true
   }
 
+  // Card d2c3a940: a parked agent restarted with --continue resumes whatever context its PRIOR
+  // session left behind, and the very first dispatch message can push it over the ceiling before
+  // context-compact-monitor.sh's own periodic sweep (which does not even cover every agent) gets
+  // to it. Measured on jogász, 2026-10-11 12:06: started, got one message, "Context limit
+  // reached" immediately, the card never got picked up.
+  //
+  // Checked right after a --continue start, BEFORE the caller's own next request (typically the
+  // queued dispatch) can reach the pane: if the resumed session is already at or above the
+  // threshold, compact it here, synchronously, so by the time this call returns the session that
+  // goes on to receive the next message is the POST-compact one. A fresh start has no prior
+  // session to resume, so there is nothing to check.
+  const START_COMPACT_THRESHOLD_PCT = 0.75
+  const START_COMPACT_READY_POLL_MS = 1500
+  const START_COMPACT_READY_MAX_POLLS = 6
+  async function compactIfResumedNearCeiling(name: string): Promise<void> {
+    let pct: number | null
+    try {
+      pct = await measureContextPctForAgent(name)
+    } catch (err) {
+      logger.warn({ err, name }, 'pre-start context check failed (continuing without a pre-emptive compact)')
+      return
+    }
+    if (pct === null || pct < START_COMPACT_THRESHOLD_PCT) return
+
+    const session = agentSessionName(name)
+    const host = readAgentRemoteHost(name)
+    let ready = false
+    for (let i = 0; i < START_COMPACT_READY_MAX_POLLS; i++) {
+      if (await isSessionReadyForPrompt(session, host, { saturationLog: 'debug' })) { ready = true; break }
+      await delay(START_COMPACT_READY_POLL_MS)
+    }
+    if (!ready) {
+      logger.warn({ name, pct }, 'pre-start compact skipped: session never became ready to prompt')
+      return
+    }
+    try {
+      await sendPromptToSession(session, compactPrompt(), host)
+      logger.info({ name, pct: Math.round(pct * 100) }, 'pre-start compact sent: resumed session was already near the context ceiling')
+    } catch (err) {
+      logger.warn({ err, name }, 'pre-start compact send failed (continuing without one)')
+    }
+  }
+
   const startMatch = path.match(/^\/api\/agents\/([^/]+)\/start$/)
   if (startMatch && method === 'POST') {
     const name = decodeURIComponent(startMatch[1])
@@ -2450,7 +2494,11 @@ function compactPrompt(): string {
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'Agent is already running') addDesiredAgent(name)
-    if (result.ok) { json(res, { ok: true }); return true }
+    if (result.ok) {
+      if (!startFresh) await compactIfResumedNearCeiling(name)
+      json(res, { ok: true })
+      return true
+    }
     json(res, { error: result.error }, 400)
     return true
   }
