@@ -24119,3 +24119,21 @@ Gate-SHA: 5349628e7.
 
 **Döntés:** QA2 helyesen FAIL-elte a 2026-11-13-i e96d56c5 bejegyzésben idézett "Migráció-visszaállítás tesztelve" állítást (comment 29600): a teszt `initDatabase(':memory:')`-t hívott kétszer, ami két EGYMÁSTÓL FÜGGETLEN friss in-memory adatbázist nyit, tehát a "drop majd re-init" sosem futott egy valódi, meglévő store-on. Javítás a repóban már bevezetett `persistentDb()` mintára (`src/__tests__/stuck-incidents-schema.test.ts`): valódi tmpdir-fájl, `initDatabase(path)` kétszer UGYANAZON az útvonalon, egy a drop előtt beszúrt, nem kapcsolódó (`kanban_cards`) sor bizonyítja, hogy a második init tényleg a MEGLÉVŐ store-t állítja helyre, nem egy újat. Commit `10bbe831c`, csak a teszt-fájl módosult (+43/-7, egyetlen fájl). Fleet-test teljes futás a 10bbe831c-n: 1321 fájl / 40235 teszt zöld, exit 0.
 **Ki döntött:** backend3 (kártya e96d56c5), QA2 Fix-Direction alapján (comment 29600). Gate: QA2 re-gate + Cybersec delta. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-13 — kártya 1a3c6459: F4 ledger hardening (WhiteHat2 F1-F3 az e96d56c5 gate-jéről)
+
+**Döntés:** WhiteHat2 CYBERSEC GO 29597 (Gate-SHA 3e1152142) F1-F3 leletei a `PUT
+/api/llm-ledger/budget/:agentId` útvonalon és a `llm_ledger` séma numerikus oszlopain. F1: a
+`daily_budget` felső korlátja a `LLM_LEDGER_DEFAULT_DAILY_BUDGET` registry-bejegyzés saját
+`max`-ára esik (nem egy második, kódba égetett plafon), az `updated_by` a `ctx.auth`-ból jön
+(session user / device név), sosem a body-ból, és a PUT mostantól session/device principal-t
+igényel (megosztott flotta-token/federation peer 403-at kap). F2: a body-méret 4KB-ra sapkázva
+(`readBody`/`RequestBodyTooLargeError` -> 413), az agent-id 64 karakterre korlátozva az
+`isKnownAgent` fájlrendszer-stat ELŐTT, ismeretlen agent-id 404 GET-en és PUT-on is. F3: a
+`llm_ledger` séma `latency_ms`/`prompt_chars`/`response_chars`/`claude_token_equiv` oszlopai
+`CHECK(>= 0)`-ot kaptak -- egy negatív érték beszúráskor dob, a python CLI (az egyetlen
+nem-megbízható hívó) ezt már eddig is fail-open-nel kezeli. Az `agent_id` attribúció, nem
+hitelesítés jellege dokumentálva (kódkomment), ahogy WhiteHat2 is fogalmazta. Hatókörön kívül
+(a kártya Kész-ha listája szerint): F4 (DEFAULT_DB hardcode) és F5 (argparse furcsaságok) --
+ezek WhiteHat2 leletei, de nem szerepelnek a kártya elfogadási kritériumában.
+**Ki döntött:** backend3, MikroB dispatch alapján (msg 17943). Gate: QA + Cybersec.
