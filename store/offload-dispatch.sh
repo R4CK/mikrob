@@ -530,10 +530,31 @@ sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, complet
 # Gemini route. FREELLM_SKIP_GEMINI_OK_CHECK file (opt-out switch, absence = check stays ON) lets
 # the marker check be disabled for freellm alone without touching the Gemini route's own gate.
 # Same return convention as is_gemini_blocked: 0 (bash-true) = blocked, 1 (bash-false) = allowed.
+#
+# L2 (card 5aa686f0, WhiteHat LOW 28818): the opt-out used to be PRESENCE-only -- `[[ -f ... ]]`
+# ignored the file's content entirely, so a file literally containing "off" or
+# `{"enabled": false}` (both read, by anyone creating one, as "keep the check ON") still disabled
+# it, the opposite of what the file says. Now the content must be the SAME strict JSON boolean
+# shape freellm-call.sh's own switch already requires (`{"enabled": true}`, `is True` not a
+# truthy/string compare) -- missing file, empty, malformed JSON, {"enabled": false}, or
+# {"enabled": "True"} (a JSON string) all keep the marker check ON, fail-closed like every other
+# switch in this file.
 FREELLM_SKIP_GEMINI_OK_CHECK="${OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK:-$HERE/freellm-skip-gemini-ok-check}"
 is_freellm_blocked() {
   local require_marker=1
-  [[ -f "$FREELLM_SKIP_GEMINI_OK_CHECK" ]] && require_marker=0
+  local skip_enabled
+  skip_enabled="$(FREELLM_SKIP_PATH="$FREELLM_SKIP_GEMINI_OK_CHECK" python3 -I << 'PYEOF' 2>/dev/null
+import json, os, sys
+try:
+    with open(os.environ["FREELLM_SKIP_PATH"]) as f:
+        d = json.load(f)
+except Exception:
+    print("false")
+    sys.exit(0)
+print("true" if isinstance(d, dict) and d.get("enabled") is True else "false")
+PYEOF
+)"
+  [[ "$skip_enabled" == "true" ]] && require_marker=0
   is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" "$require_marker"
 }
 
@@ -841,8 +862,11 @@ OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
 # shellcheck source=./decompose-sample-context.sh
 . "$HERE/decompose-sample-context.sh"
 
-ATTEMPTS_FILE="$HERE/offload-attempts.json"
-ATTEMPTS_LOCK="$HERE/.offload-attempts.lock"
+# card 5aa686f0: env-overridable (default unchanged) so a test can point attempts_op at a
+# scratch file instead of the shared, real offload-attempts.json -- same pattern as every other
+# path/switch override in this file (FREELLM_CALL, OFFLOAD_VRAM_GUARD, DASHBOARD_URL, ...).
+ATTEMPTS_FILE="${ATTEMPTS_FILE:-$HERE/offload-attempts.json}"
+ATTEMPTS_LOCK="${ATTEMPTS_LOCK:-$HERE/.offload-attempts.lock}"
 EXHAUSTED_TTL_SECONDS="${EXHAUSTED_TTL_SECONDS:-86400}"
 # Card 501c489f, MikroB verdikt komment 6007, requirement 6: 3 -> 2. Only the TRANSIENT-failure
 # threshold moves; categorical-online (router says ONLINE) was already a single-call jump straight
@@ -914,6 +938,37 @@ with open(tmp, "w") as f:
 os.replace(tmp, path)
 print(json.dumps(entry))
 PY
+}
+
+# FREELLM FALLBACK GUARDS, EXTRACTED INTO NAMED FUNCTIONS (card 5aa686f0, WhiteHat LOW 28818 L1 on
+# 392d7104's own fix). 392d7104 pinned these two production call sites with a TS regex matching the
+# raw source text ("the production gate is not pinned" -- WhiteHat 28609) -- but a regex on the
+# file's TEXT cannot tell a REACHABLE guard from a disabled one: a comment-kept
+# `if false; then # <guard>`, a `false && is_freellm_blocked ...` short-circuit, or an earlier
+# always-true branch placed before it all leave the literal guard text intact while the real
+# control flow never reaches it. Only running the guard can catch that. Pulling each site's exact
+# logic into its own function (behavior byte-for-byte unchanged) makes it directly callable from
+# --test-freellm-fallback-site below, so a mutation test exercises the REAL function, not its text.
+
+# Mutant-B target (the try_leaf-exhausted site, below).
+freellm_fallback_exhausted_site() {
+  local leaf_project="$1" leaf_tags="$2" leaf_title="$3" leaf_desc="$4" leaf_id="$5" task="$6" post_id="$7" synthetic="$8"
+  is_freellm_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" ||
+    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }
+  return 1
+}
+
+# Mutant-A target (the CAPACITY_HOLD sweep site, further down).
+freellm_fallback_capacity_hold_site() {
+  local lveto="$1" lproject="$2" ltags="$3" ltitle="$4" ldesc="$5" lid="$6" ltask="$7" lpost_id="$8" lsynthetic="$9"
+  if [[ "$lveto" == "true" ]] || is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
+    attempts_op categorical-online "$lid" >/dev/null
+    echo "offload-dispatch: leaf $lid -> freellm blocked under capacity hold (veto=$lveto, project=$lproject), no attempt" >&2
+    return 1
+  elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
+    return 0
+  fi
+  return 1
 }
 
 # --- resolve the leaf set: $CARD's open descendants with no open children of their own, or $CARD
@@ -1701,6 +1756,27 @@ for l in leaves:
   exit 0
 fi
 
+# --test-freellm-fallback-site SITE ARGS... : calls the REAL extracted guard function directly
+# (card 5aa686f0, WhiteHat LOW 28818 L1) -- not a reimplementation like --test-capacity-route
+# above. SITE is "exhausted" (freellm_fallback_exhausted_site, 8 args) or "capacity-hold"
+# (freellm_fallback_capacity_hold_site, 9 args). hdr_file is not yet set at this point in a real
+# run (that happens further down) -- set a throwaway one so try_freellm_for_leaf's own best-effort
+# curl (already failure-tolerant, output discarded) has something to read instead of an empty
+# "-H @" argument.
+if [[ "${1:-}" == "--test-freellm-fallback-site" ]]; then
+  shift
+  hdr_file="$(mktemp)"
+  site="${1:-}"; shift
+  case "$site" in
+    exhausted) freellm_fallback_exhausted_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" ;;
+    capacity-hold) freellm_fallback_capacity_hold_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-false}" ;;
+    *) echo "usage: --test-freellm-fallback-site exhausted|capacity-hold <args...>" >&2; exit 2 ;;
+  esac
+  rc=$?
+  rm -f "$hdr_file"
+  exit "$rc"
+fi
+
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
@@ -1955,9 +2031,9 @@ $leaf_desc"
       elif gemini_heavy_second_opinion_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" && reserve_heavy_gemini_slot "$leaf_id"; then
         try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
       fi
-      # FREELLM FALLBACK (card 4eb3743e, gate parity: WhiteHat NO-GO 28484 M1).
-      is_freellm_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" ||
-        { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }
+      # FREELLM FALLBACK (card 4eb3743e, gate parity: WhiteHat NO-GO 28484 M1). Extracted to
+      # freellm_fallback_exhausted_site (card 5aa686f0) -- see that function's own header.
+      freellm_fallback_exhausted_site "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" "$leaf_id" "$task" "$post_id" "$synthetic" && return 0
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
@@ -2060,11 +2136,9 @@ $ldesc"
     # inherited parent veto (lveto, card e11167c5 -- the router's own security-signal verdict on
     # the full parent text) nor the project/tag/content gate (is_freellm_blocked) is applied
     # anywhere else here. Apply both before any freellm attempt, and mark categorical-online on a
-    # block -- same permanent-block pattern as the veto check inside try_leaf.
-    if [[ "$lveto" == "true" ]] || is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
-      attempts_op categorical-online "$lid" >/dev/null
-      echo "offload-dispatch: leaf $lid -> freellm blocked under capacity hold (veto=$lveto, project=$lproject), no attempt" >&2
-    elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
+    # block -- same permanent-block pattern as the veto check inside try_leaf. Extracted to
+    # freellm_fallback_capacity_hold_site (card 5aa686f0) -- see that function's own header.
+    if freellm_fallback_capacity_hold_site "$lveto" "$lproject" "$ltags" "$ltitle" "$ldesc" "$lid" "$ltask" "$lpost_id" "$lsynthetic"; then
       drafted=$(( drafted + 1 ))
     fi
   elif try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic" "$lveto"; then

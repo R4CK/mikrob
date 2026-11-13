@@ -24385,3 +24385,51 @@ konstansa a korábbi marveen-only bővítések mintáját követve 33-ról 34-re
 teszt-szám-frissítés, nincs viselkedés-változás. Commit 1005d780.
 
 **Ki döntött:** backend3 (önálló, mechanikus teszt-korrekció). Gate: QA + Cybersec.
+## 2026-11-12 — 5aa686f0: 392d7104 follow-up, WhiteHat LOW 28818 -- behavioral pins for the freellm marker gate + explicit opt-out
+
+**Döntés:** WhiteHat GO 28818 (Gate-SHA b492be07a) két LOW leletet hagyott nyitva a 392d7104 javításon. L1: a két production hívási hely (`is_freellm_blocked`, a try_leaf-exhausted és a CAPACITY_HOLD sweep ágon) csak egy TS forrás-szöveg regex-szel volt pinnelve -- ez nem tudja megkülönböztetni az ELÉRHETŐ guardot egy NEUTRALIZÁLTTÓL: egy komment-tartó `if false; then # <guard>`, egy `false && is_freellm_blocked ...` rövidzár, vagy egy korábbi mindig-igaz ág, ami elérhetetlenné teszi a valódi sort, mindhárom megtartja a regex által keresett szöveget, miközben a viselkedés megváltozik. L2: az opt-out kapcsolófájl (`freellm-skip-gemini-ok-check`) csak a LÉTEZÉSÉT nézte (`[[ -f ... ]]`), a TARTALMÁT nem -- egy `off` vagy `{"enabled": false}` tartalmú fájl is kikapcsolta a marker-ellenőrzést, pont az ellentétét annak, amit a tartalom állít.
+Javítás: (L1) a két hívási hely logikáját `freellm_fallback_exhausted_site` és `freellm_fallback_capacity_hold_site` néven nevesített függvénybe emeltem ki (viselkedés byte-azonos), és egy új `--test-freellm-fallback-site` teszt-kapu hívja ezeket KÖZVETLENÜL, valós kóddal (nem szimulátorral, mint a régi `--test-capacity-route`). (L2) a kapcsolófájl tartalmát a `freellm-call.sh` saját switch-ellenőrzésével azonos szigorú JSON-boolean mintával (`{"enabled": true}`, `is True`, nem truthy/string-összehasonlítás) ellenőrzöm -- hiányzó fájl, üres, hibás JSON, `{"enabled": false}` vagy `{"enabled": "True"}` (string) mind BEKAPCSOLVA tartja a marker-ellenőrzést.
+Teszt: `offload-dispatch.selftest.sh` 6 új L2 esettel (minden tartalom-variáns) + 2 új L1 "baseline" esettel (a VALÓDI `offload-dispatch.sh`-ra futtatva, a `--test-freellm-fallback-site` kapun át, egy marker-fájlos FREELLM_CALL stubbal: a marker léte = a guard átengedett egy próbálkozást). 113 -> 119/119 zöld. Mutáció-ellenőrzés (egyszeri, nem a permanens selftest-be sütve, lásd a REVIEW-t a teljes kimenetért): mindhárom nevesített mutáns (if-false-komment, false&&-rövidzár, korábbi always-true ág) MINDKÉT hívási helyen "leaked"-et ad egy ideiglenes fájlmásolaton, a valódi (nem mutált) fájl "clean"-t ad -- a permanens pin (a "clean" baseline-check a valódi fájlon) pirosra váltana, ha bármelyik mutáns bekerülne a termelésbe.
+**Ki döntött:** backend2 (önjáró felvétel, kártya 5aa686f0, MikroB dispatch msg_id:17479), forrás: WhiteHat GO 28818 LOW leletei a 392d7104-en. Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-13 -- 5aa686f0 follow-up: fixed window-based test that broke on the card's own merge
+
+**Döntés:** the gated sha (757aa895a) landed on fleet-test with 2 failures. `gemini-offload-dispatch.test.ts`'s
+`'calls try_gemini_for_leaf when exhausted attempts'` case asserted `try_gemini_for_leaf` inside a fixed
+400-char window before `post_exhausted_notice`'s call site -- this card's own 2-line
+`freellm_fallback_exhausted_site` call+comment, inserted right before that call site, pushed the real
+`try_gemini_for_leaf` call to 437 chars away, outside the window, with no behavior change at all (confirmed
+by reading `try_leaf()`'s body directly: the call still runs before the fallback, just father back in the
+file now). Fixed by asserting the actual invariant instead of a window: extract `try_leaf()`'s own function
+body, compare the string index of the (last) `try_gemini_for_leaf` call against `post_exhausted_notice`'s
+call index, with a self-contained mutation check (rotate the body so `post_exhausted_notice` comes first,
+confirm the same comparison then disagrees) proving the assertion is order-sensitive, not just
+presence-checking. `offload-batch-health.test.ts`'s own failure (15s timeout on a closed-port curl fast-fail,
+unrelated file) did not reproduce when re-run alone on the merged tree -- confirmed as a load-induced flake
+from the concurrent land/gate contention this same card's parent card (b7d8ecc4) targets, not a regression.
+
+Verified: `gemini-offload-dispatch.test.ts` + `offload-batch-health.test.ts` together, 324/324 pass.
+`offload-dispatch.selftest.sh`: 119/119, unaffected (only the vitest file changed). Merged current
+`origin/develop` (eda2bae70) after the fix; only conflict was the DECISIONS.md tail-append shape, resolved
+by keeping develop's content as-is and appending this card's entries strictly after (verified: develop's
+DECISIONS.md is a byte-exact prefix of the resolved file).
+
+**Ki döntött:** MikroB (msg_id:17798/17807, directed to fix the real invariant rather than widen the magic
+number) + backend2 (the fix). Gate: re-gate QA + Cybersec on the new sha (see REVIEW comment).
+
+## 2026-11-13 -- 5aa686f0 re-merge round: re-synced with origin/develop, triaged full-suite fleet-test
+
+**Döntés:** re-merged current origin/develop (547f773bb, includes cards c1766c6c + b2f7ede4 landed
+since the prior base) into card/5aa686f0 as merge c402ad6cb -- only conflict was DECISIONS.md,
+resolved by keeping develop's content as-is and appending this card's entries strictly after (verified
+byte-exact prefix). `fleet-test.sh --ref c402ad6cb` on the merge result ran the full suite and reported
+3 failed files / 5 failed tests: offload-batch-health.test.ts:172 and main-config-dir-wiring.test.ts both
+went green on a standalone rerun (load flakes); store-selftests-all-run.test.ts's local-llm-parallel-bench
+sub-case also went green standalone (load flake); its local-llm-model-routing sub-case reproduced twice
+standalone with `gpu-util-hold 4969/6144 MiB (80.9%)` -- this file is untouched by this card's diff and
+the sibling card b7d8ecc4's clean round-5 full run minutes earlier on the same box showed 0 failures, so
+this looks like current, real GPU VRAM pressure elsewhere on the box rather than a regression from this
+card; flagged to MikroB as a separate, unresolved observation rather than claimed as disproven.
+
+**Ki döntött:** backend2 (re-merge + triage, kártya 5aa686f0). Gate: delta re-gate QA + Cybersec on
+Gate-SHA (see REVIEW comment).
