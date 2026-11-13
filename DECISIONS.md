@@ -24433,3 +24433,21 @@ card; flagged to MikroB as a separate, unresolved observation rather than claime
 
 **Ki döntött:** backend2 (re-merge + triage, kártya 5aa686f0). Gate: delta re-gate QA + Cybersec on
 Gate-SHA (see REVIEW comment).
+
+## 2026-11-13 -- kártya 368395d4 delta: branch rebuild origin/develop-ra, foreign-commit kizárás
+
+**Döntés:** a `card/368395d4` ág eredetileg `card/c84a510a` HEAD-jéről indult, ezért a 6
+load-sensitive teszt fixje (commit `7e7f3e3c7`) mellett magával hordozta `c84a510a` két
+UNGATED commitját is (`d9b6c36f2` kg draft timeout, `d350b96c1` fence strip). Ez landoláskor
+foreign-card-commitot eredményezett volna (`marveen-land.sh` refuse-olta volna), vagy
+`--allow-stacked c84a510a`-val az ungated kódot pusholta volna. MikroB jelezte (msg 18009).
+
+**Javítás:** az ág újraépítve a jelenlegi `origin/develop` (`b913354e0`) tetejéről,
+KIZÁRÓLAG `7e7f3e3c7` cherry-pickelve (új sha: `6ae23d797`), a két kg-commit nélkül. A 6
+teszt (offload-batch-health, local-llm-host-guard, self-pace-wrapper-and-keyword-positions,
+agent-process-reap-before-launch, hookstripfleet-channel-hooks, local-llm-model-routing
+selftest) a kg-commitok nélkül is zölden fut (182/182 + 1/1). `git diff --stat` ugyanazt a 6
+fájlt mutatja, mint korábban -- a rebuild tartalmilag nem változtatott a fixen, csak a
+foreign-commit örökséget vágta le.
+
+**Ki döntött:** MikroB (msg 18009), backend végezte. Gate: QA + Cybersec.

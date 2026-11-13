@@ -195,7 +195,12 @@ describe('HOOKSTRIPFLEET913: the four channel hooks survive the #1307 strip', ()
       // Effect 2: the agent is told, via additionalContext, where the full-res is.
       const parsed = JSON.parse(out) as { hookSpecificOutput?: { additionalContext?: string } }
       expect(parsed.hookSpecificOutput?.additionalContext ?? '').toContain('original')
-    })
+    // card 368395d4: two real ffmpeg encodes (build the fixture, then the hook's own resize) --
+    // real CPU-bound subprocess work, no network/sleep, but under CPU contention (e.g. two
+    // parallel fleet-test runs) that work can take longer than vitest's 5s default even though
+    // nothing is actually broken. A generous per-test timeout for this real child chain, not a
+    // blanket raise.
+    }, 30_000)
 
     it('channel-image-resize.sh is a clean no-op for a non-inbox Read (does nothing, exit 0)', () => {
       const f = join(tmp, 'plain.txt')
