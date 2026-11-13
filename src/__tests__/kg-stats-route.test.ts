@@ -102,7 +102,7 @@ describe('GET /api/kg/stats (card 9b13108b)', () => {
     expect(b.nodes.solution).toBe(2) // archived one excluded
     expect(b.nodes.decision).toBe(1)
     expect(b.usage).toEqual({ rate: 0.5 }) // 1 used / 2 offered
-    expect(b.backfill).toEqual({ pending: 1, done: 1, total: 2 })
+    expect(b.backfill).toEqual({ pending: 1, done: 1, total: 2, workerActive: false })
     expect(b.ollama_available).toBe(true)
   })
 
@@ -113,6 +113,17 @@ describe('GET /api/kg/stats (card 9b13108b)', () => {
     await expect(tryHandleKg(ctx)).resolves.toBe(true)
     expect(body().ollama_available).toBe(false)
     expect(body().nodes.solution).toBe(2)
+  })
+
+  it('card 1388200c: workerActive true after a recent heartbeat stamp', async () => {
+    kgEnabledValue = '1'
+    testDb.prepare(
+      `INSERT INTO kg_worker_heartbeat (id, last_run_at, last_processed) VALUES (1, ?, 0)
+       ON CONFLICT(id) DO UPDATE SET last_run_at = excluded.last_run_at`,
+    ).run(Math.floor(Date.now() / 1000))
+    const { ctx, body } = makeCtx('/api/kg/stats')
+    await expect(tryHandleKg(ctx)).resolves.toBe(true)
+    expect(body().backfill.workerActive).toBe(true)
   })
 
   it('an unrelated path is not handled', async () => {

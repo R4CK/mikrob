@@ -4,7 +4,7 @@
 // Drives the REAL runBackfillCli() with every collaborator mocked: no DB, no IO, no LLM call.
 import { describe, it, expect, vi } from 'vitest'
 import type Database from 'better-sqlite3'
-import { runBackfillCli, resolveLimit, type BackfillCliDeps } from '../kg/backfill-cli.js'
+import { runBackfillCli, resolveLimit, buildListCandidates, type BackfillCliDeps } from '../kg/backfill-cli.js'
 import { getSettingDefinition } from '../config-registry.js'
 import type { BackfillBatchResult } from '../kg/backfill.js'
 
@@ -42,6 +42,8 @@ function makeDeps(overrides: Partial<BackfillCliDeps> = {}): { deps: BackfillCli
     kgDbPath: () => '/fake/kg.db',
     runBackfillBatch: vi.fn(() => report),
     listCandidates: vi.fn(() => []),
+    listPendingCandidates: vi.fn(() => []),
+    recordHeartbeat: vi.fn(),
     gpuGate: vi.fn(() => ({ admit: true, detail: 'ok' })),
     runCapture: vi.fn(),
     captureDeps: vi.fn(() => ({ closureCheck: vi.fn(), draftFn: vi.fn(), now: () => 0, extractor: 'x' })) as unknown as BackfillCliDeps['captureDeps'],
@@ -102,6 +104,21 @@ describe('runBackfillCli', () => {
     expect(deps.openKgDb).toHaveBeenCalledWith('/tmp/x-kg.db')
   })
 
+  it('card 1388200c: stamps the worker heartbeat before the batch runs, even with zero candidates', () => {
+    const { deps } = makeDeps()
+    runBackfillCli([], deps)
+    expect(deps.recordHeartbeat).toHaveBeenCalledWith(expect.anything(), 1000)
+    const heartbeatOrder = (deps.recordHeartbeat as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    const batchOrder = (deps.runBackfillBatch as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]
+    expect(heartbeatOrder).toBeLessThan(batchOrder)
+  })
+
+  it('--help touches no heartbeat either (nothing read or written)', () => {
+    const { deps } = makeDeps()
+    runBackfillCli(['--help'], deps)
+    expect(deps.recordHeartbeat).not.toHaveBeenCalled()
+  })
+
   it('prints the report fields on a normal run', () => {
     const { deps, logs } = makeDeps({
       runBackfillBatch: vi.fn(
@@ -121,6 +138,39 @@ describe('runBackfillCli', () => {
     runBackfillCli([], deps)
     expect(logs.join('\n')).toContain('candidates:  3')
     expect(logs.join('\n')).toContain('HALTED')
+  })
+})
+
+describe('buildListCandidates (card 1388200c: drain pending queue first, then discover new cards)', () => {
+  function fakeKgDb(): Database.Database {
+    return {} as Database.Database
+  }
+  function fakeMainDb(): Database.Database {
+    return {} as Database.Database
+  }
+
+  it('returns pending rows alone when they already fill the limit', () => {
+    const listPendingCandidates = vi.fn(() => ['p1', 'p2', 'p3'])
+    const listCandidates = vi.fn(() => ['never-called'])
+    const combined = buildListCandidates({ listPendingCandidates, listCandidates }, fakeMainDb(), fakeKgDb())
+    expect(combined(3)).toEqual(['p1', 'p2', 'p3'])
+    expect(listCandidates).not.toHaveBeenCalled()
+  })
+
+  it('fills the remaining budget with newly-discovered done cards after the pending ones', () => {
+    const listPendingCandidates = vi.fn(() => ['p1', 'p2'])
+    const listCandidates = vi.fn(() => ['d1', 'd2', 'd3'])
+    const combined = buildListCandidates({ listPendingCandidates, listCandidates }, fakeMainDb(), fakeKgDb())
+    expect(combined(5)).toEqual(['p1', 'p2', 'd1', 'd2', 'd3'])
+    expect(listCandidates).toHaveBeenCalledWith(expect.anything(), expect.anything(), 3)
+  })
+
+  it('an empty pending queue falls through entirely to discovery, same as the old backfill-only behaviour', () => {
+    const listPendingCandidates = vi.fn(() => [])
+    const listCandidates = vi.fn(() => ['d1'])
+    const combined = buildListCandidates({ listPendingCandidates, listCandidates }, fakeMainDb(), fakeKgDb())
+    expect(combined(4)).toEqual(['d1'])
+    expect(listCandidates).toHaveBeenCalledWith(expect.anything(), expect.anything(), 4)
   })
 })
 

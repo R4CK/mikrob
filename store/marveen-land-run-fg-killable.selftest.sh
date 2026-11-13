@@ -81,6 +81,28 @@ case "$out" in
   *) bad "run_fg_killable did not pass through output/exit code correctly: $out" ;;
 esac
 
+# 3b. Regression test (card 78339a8a): LANDING_DOWNWARD_CHECK=off, exported into marveen-land.sh's
+#    own process (the usual way an operator overrides the downward check for one landing), must
+#    NOT survive into the command run_fg_killable executes -- that command is fleet-test.sh in
+#    production, and its own vitest run spawns marveen-land.sh --selftest as a child, whose
+#    downward-check selftest cases read the same env var. Measured on a real land (4f3c0287,
+#    2026-11-13): the override leaked all the way down and flipped 5 "foreign commit refuses"
+#    selftest cases from PASS to FAIL, with nothing wrong in the merged content itself.
+leak_out="$(
+bash -c '
+'"$FN_SRC"'
+export LANDING_DOWNWARD_CHECK=off
+run_fg_killable "/tmp" "echo \"child=[\${LANDING_DOWNWARD_CHECK:-UNSET}]\""
+echo "parent=[$LANDING_DOWNWARD_CHECK]"
+' 2>&1
+)"
+case "$leak_out" in
+  *"child=[UNSET]"*"parent=[off]"*)
+    ok "run_fg_killable's subshell does not inherit an exported LANDING_DOWNWARD_CHECK override (parent keeps it for its own downward_check() call)" ;;
+  *)
+    bad "LANDING_DOWNWARD_CHECK leaked into run_fg_killable's wrapped command: $leak_out" ;;
+esac
+
 # 4-5. Regression test (card 07f1fe6e, CYBERSEC GO 29154 M1 + M2): a TERM to the process running
 #    run_fg_killable must kill the WHOLE process group the wrapped command runs in, not just the
 #    one subshell -- otherwise the wrapped command's own children (the fleet-test/vitest tree in

@@ -10,7 +10,7 @@
 // one it cannot see: fired, then died immediately.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,6 +35,23 @@ function stubInstalled(dir: string, installed: boolean): string {
   const script = join(dir, 'installed-stub.sh')
   writeFileSync(script, installed ? '#!/bin/sh\necho installed\nexit 0\n' : '#!/bin/sh\necho "not-installed: stub"\nexit 1\n')
   return script
+}
+
+// card 368395d4: the NORMAL-exit test below needs curl to fail the same way a refused TCP
+// connect does (exit 7, no stdout -- see offload-batch-run.sh's `curl ... | python3` pipeline,
+// which treats empty stdin as zero candidates and still reaches BATCH_END_STATUS="ok"). Pointing
+// DASHBOARD_URL at a closed port got that same observable result from a REAL network round-trip,
+// whose wall-clock cost is process-scheduling-dependent under CPU contention, not network-dependent
+// (loopback connection-refused is itself instant; what varies is how long the kernel takes to run
+// the curl binary at all when the box is saturated). A PATH-shadowing `curl` stub produces the
+// identical exit-7/empty-stdout behavior without any socket, removing that variable outright.
+function stubCurlRefused(dir: string): string {
+  const binDir = join(dir, 'curl-stub-bin')
+  mkdirSync(binDir, { recursive: true })
+  const bin = join(binDir, 'curl')
+  writeFileSync(bin, '#!/bin/sh\nexit 7\n')
+  chmodSync(bin, 0o755)
+  return binDir
 }
 
 function run(
@@ -181,7 +198,7 @@ describe('offload batch health signal (card 5f00664c)', () => {
       writeFileSync(join(dir, '.dashboard-token'), marker)
 
       const r = run(copy, [], {
-        DASHBOARD_URL: 'http://127.0.0.1:1',
+        PATH: `${stubCurlRefused(dir)}:${process.env.PATH}`,
         OFFLOAD_BATCH_INSTALLED: stubInstalled(dir, true),
       })
       expect(r.status).toBe(0)
@@ -203,7 +220,10 @@ describe('offload batch health signal (card 5f00664c)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  }, 15_000) // card 2f05b3e3: the curl round-trip + subprocess here can exceed vitest 5's 5000ms default.
+  // The curl stub above removes the network variable, but this path still spawns several real
+  // children (bash, the stub, python3, mktemp) -- a generous timeout for that real subprocess
+  // chain under CPU contention (card 368395d4), not a blanket suite-wide raise.
+  }, 30_000)
 
   // INSTALLED GATE (card 5595afa7): the batch must not spend a board-fetch plus a per-candidate
   // draft-check HTTP round-trip when the local LLM is not installed/masked -- it should bail with

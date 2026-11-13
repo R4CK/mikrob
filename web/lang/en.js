@@ -2172,6 +2172,7 @@ window._i18n.en = {
   'kg.empty.no_results':        'No results.',
   'kg.empty.store_empty':       'The solution store is still empty (backfill pending).',
   'kg.empty.backfill_running':  'No entries yet, the backfill is running: {done}/{total}',
+  'kg.empty.backfill_stalled':  'No entries yet. No active worker; {pending} item(s) waiting to be processed.',
   'kg.error.generic':           'Something went wrong querying the solution store. Try again.',
   'kg.error.network':           'Could not reach the server. Check your connection.',
   'kg.error.project_or_card_id_required': 'Provide a project or a card id to scope the search.',

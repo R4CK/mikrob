@@ -74,6 +74,18 @@ GPU_LOCK_WAIT="${LOCAL_LLM_LOCK_WAIT:-600}"
 DASH_API="http://127.0.0.1:${WEB_PORT:-3420}/api/local-llm/queue"
 DASH_TOKEN_FILE="${LOCAL_LLM_DASH_TOKEN_FILE:-$STATE_DIR/.dashboard-token}"
 
+# GATEWAY MODE (card f3f4b571, F2): Ollama is registered as a freellmapi custom provider
+# (store/local-llm.sh's README/DECISIONS entry has the registration call). This switch lets
+# this script route generate calls through that gateway ($GATEWAY_API_BASE's /chat/completions,
+# OpenAI-compatible) INSTEAD OF Ollama's native /api/generate directly, below. OFF by default
+# (absence of the switch file = OFF, same fail-closed-to-the-old-behaviour direction as
+# gemini_route_enabled()'s file-presence switch elsewhere in this fleet) -- F3 is the card that
+# will actually flip this on in production routing; this card only has to build it, gated, and
+# prove the OFF path stays byte-identical (selftest).
+GATEWAY_SWITCH_FILE="${LOCAL_LLM_GATEWAY_SWITCH:-$STATE_DIR/local-llm-gateway-enabled.json}"
+GATEWAY_API_BASE="${LOCAL_LLM_GATEWAY_API_BASE:-http://127.0.0.1:3001/v1}"
+GATEWAY_AUTH_TOKEN_FILE="${LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE:-/home/neon/.config/freellmapi/auth-token}"
+
 # --- host-platform detection (card b097b578) -----------------------------------------------------
 # The Ollama HTTP API is identical on every platform, so ONLY the operator-facing "how do I start it"
 # hint differs. Detection is `uname -s` plus the WSL marker, and it is used for MESSAGES ONLY -- no
@@ -503,7 +515,33 @@ except Exception:
   PROMPT="${USER_TPL//\{\{INPUT\}\}/${ESCAPED_INPUT//&/\\&}}"
 fi
 
-ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)$(gpu_guard_mask_note)"
+# GATEWAY MODE (card f3f4b571, F2): a pure switch-file read, no dependency on anything defined
+# later in the script -- safe to resolve this early. The actual branch (which DOES depend on
+# _elapsed/_queue_finish/log_usage, all defined below) sits right before GEN_CMD further down.
+# `|| true` is NOT decoration: this script runs under `set -e`, and when the switch file is
+# absent (the default, every call until F3) the `[[ -f ]] &&` chain short-circuits with exit 1 --
+# that status is what a plain `VAR="$(...)"` assignment propagates, which would abort the WHOLE
+# script right here on every single call. Measured: without `|| true`, the existing (unrelated)
+# normal-call-path vitest regressed from pass to fail the moment this line was added.
+GATEWAY_ENABLED="$([[ -f "$GATEWAY_SWITCH_FILE" ]] && GATEWAY_SWITCH_PATH="$GATEWAY_SWITCH_FILE" python3 -I << 'PYEOF' 2>/dev/null
+import json, os, sys
+try:
+    with open(os.environ["GATEWAY_SWITCH_PATH"]) as f:
+        data = f.read(4097)
+    if len(data) > 4096:
+        raise ValueError("switch file exceeds the 4096-byte cap")
+    d = json.loads(data)
+except Exception:
+    print("false")
+    sys.exit(0)
+print("true" if isinstance(d, dict) and d.get("enabled") is True else "false")
+PYEOF
+)" || true
+GATEWAY_ENABLED="${GATEWAY_ENABLED:-false}"
+
+if [[ "$GATEWAY_ENABLED" != "true" ]]; then
+  ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)$(gpu_guard_mask_note)"
+fi
 
 # Build request JSON safely via python (handles all escaping)
 #
@@ -600,6 +638,75 @@ _queue_finish() { # $1=complete|fail
     -H "Content-Type: application/json" -d "$body" >/dev/null 2>&1 || true
 }
 
+if [[ "$GATEWAY_ENABLED" == "true" ]]; then
+  # GATEWAY MODE (card f3f4b571, F2): route through the freellmapi custom provider (OpenAI-
+  # compatible /chat/completions) instead of Ollama's native /api/generate. The registered
+  # custom-provider model id IS the raw Ollama model string (verified live: freellmapi forwards
+  # it unchanged to the custom endpoint), so $MODEL needs no translation here. Produces $RESP in
+  # the SAME shape the direct path below produces it (response/eval_count/prompt_eval_count/
+  # eval_duration) -- a single seam, so the shared success tail after this if/else (token
+  # accounting, log_usage, final echo) needs no knowledge of which path ran.
+  [[ -r "$GATEWAY_AUTH_TOKEN_FILE" ]] || die 2 "gateway mode is ON but $GATEWAY_AUTH_TOKEN_FILE is not readable -- no auth token available"
+  GATEWAY_AUTH_TOKEN="$(tr -d '\n' < "$GATEWAY_AUTH_TOKEN_FILE")"
+  [[ -n "$GATEWAY_AUTH_TOKEN" ]] || die 2 "gateway mode is ON but $GATEWAY_AUTH_TOKEN_FILE is empty"
+  GATEWAY_AUTH_HDR="$(mktemp)"; chmod 0600 "$GATEWAY_AUTH_HDR"
+  printf 'Authorization: Bearer %s\n' "$GATEWAY_AUTH_TOKEN" > "$GATEWAY_AUTH_HDR"
+
+  # Same sampling-parameter contract as the direct path, minus "think" (an Ollama
+  # /api/generate-specific field with no OpenAI chat-completions equivalent) and minus "seed"
+  # (not guaranteed to round-trip through every OpenAI-compatible backend) -- a known, narrower
+  # parity gap versus the direct path, acceptable because this branch is OFF by default; F3 (the
+  # card that turns it on) owns deciding whether that gap matters for its callers.
+  GATEWAY_REQ=$(SYSTEM="$SYSTEM" MODEL="$MODEL" PROMPT="$PROMPT" python3 -c '
+import json, os
+messages = []
+s = os.environ.get("SYSTEM", "")
+if s: messages.append({"role": "system", "content": s})
+messages.append({"role": "user", "content": os.environ["PROMPT"]})
+d = {"model": os.environ["MODEL"], "messages": messages}
+t = os.environ.get("LOCAL_LLM_TEMPERATURE", "").strip()
+if t:
+    try: d["temperature"] = float(t)
+    except ValueError: pass
+print(json.dumps(d))')
+
+  GATEWAY_CMD=(flock -w "$GPU_LOCK_WAIT" "$GPU_LOCK" curl -fsS -m "$TIMEOUT" -X POST "$GATEWAY_API_BASE/chat/completions" \
+    -H "Content-Type: application/json" -H "@$GATEWAY_AUTH_HDR" --noproxy '*' -d "$GATEWAY_REQ")
+  if command -v timeout >/dev/null 2>&1; then
+    GATEWAY_CMD=(timeout -k 5 "$(( GPU_LOCK_WAIT + TIMEOUT + 10 ))" "${GATEWAY_CMD[@]}")
+  fi
+  GATEWAY_RESP=$("${GATEWAY_CMD[@]}" 2>/dev/null) || {
+    gen_rc=$?
+    rm -f "$GATEWAY_AUTH_HDR"
+    log_usage "$([[ "$gen_rc" -eq 1 ]] && echo busy || echo err)" "$(_elapsed)"
+    _queue_finish fail
+    if [[ "$gen_rc" -eq 1 ]]; then
+      die 6 "gpu lock busy -- could not acquire within ${GPU_LOCK_WAIT}s (not a generation failure)"
+    fi
+    die 5 "gateway api error (timeout ${TIMEOUT}s or server error) at $GATEWAY_API_BASE"
+  }
+  rm -f "$GATEWAY_AUTH_HDR"
+
+  # eval_duration has no gateway equivalent (the gateway does not report generation-only time
+  # separately from total request time); approximated here as the full elapsed wall time, which
+  # is a safe over-estimate (never understates generation time, never divides by zero downstream).
+  RESP="$(ELAPSED_MS="$(_elapsed)" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+    content = d["choices"][0]["message"]["content"]
+    usage = d.get("usage", {})
+    out = {
+        "response": content,
+        "eval_count": usage.get("completion_tokens", 0),
+        "prompt_eval_count": usage.get("prompt_tokens", 0),
+        "eval_duration": int(os.environ.get("ELAPSED_MS", "0")) * 1_000_000,
+    }
+except Exception as e:
+    out = {"error": f"gateway response parse failed: {e}"}
+print(json.dumps(out))
+' <<< "$GATEWAY_RESP")"
+else
 # INTERNAL SAFETY-NET TIMEOUT (card cea524b1): a CALLER wrapping this whole script in its own
 # `timeout N` is not reliable enforcement on its own. Measured directly: a bash process with an
 # EXIT trap installed (the header-file cleanup trap above) that is blocked in a foreground command
@@ -648,6 +755,7 @@ RESP=$("${GEN_CMD[@]}" 2>/dev/null) || {
   fi
   die 5 "ollama api error (timeout ${TIMEOUT}s or server error)"
 }
+fi
 # Exact local token accounting (Ollama returns eval_count=out, prompt_eval_count=in) plus
 # eval_duration (ns, generation-only time -- excludes prompt processing and GPU-lock wait), the
 # same figure LM Studio/llama.cpp's own "[generation: ... speed=N tokens/s]" log line is computed

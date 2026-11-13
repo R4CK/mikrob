@@ -139,8 +139,13 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // of the shared downward-check lib, so it does not touch marveen-land.sh's own count. Then
     // 45 -> 49 with card 22835648 round 4 (Cybered NO-GO 28967 fix: Mopsi bridge precedence +
     // Python env reads, 4 more cases) -- same category, mopsion-land.sh's own block only.
+    //
+    // mv's own-case constant moved 33 -> 34 with card 78339a8a (the LANDING_DOWNWARD_CHECK leak
+    // fix: one new case in marveen-land-run-fg-killable.selftest.sh, folded into marveen-land.sh's
+    // own --selftest total the same way the HUP/INT cases above were) -- marveen-only own-block,
+    // cleancore-land.sh untouched, same category as every other bump in this comment history.
     expect(cc).toBeGreaterThan(49) // 49 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(33) // 33 = marveen-land.sh's own cases
-    expect(cc - 49).toBe(mv - 33) // the same shared block, in both
+    expect(mv).toBeGreaterThan(34) // 34 = marveen-land.sh's own cases
+    expect(cc - 49).toBe(mv - 34) // the same shared block, in both
   })
 })

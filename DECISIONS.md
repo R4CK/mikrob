@@ -24108,3 +24108,441 @@ disk) -- restored to 755 in the index as a separate mode-only commit.
 **Ki döntött:** DevO (fullstack), card 313c8a71 round 7, per MikroB msg 17117/17122 (CYBERSEC
 NO-GO 28997). Gate: QA2 + Cybersec.
 Gate-SHA: 5349628e7.
+
+## 2026-11-06 -- card c1766c6c re-gate round 2: M1/M2/M3/L1 fixes + symlink/env-var + Write/Edit blind spot (CYBERSEC NO-GO 28672, QA FAIL 28673)
+
+**Döntés:**
+- M1a: `_TABLE_RX` gained `re.IGNORECASE` (SQL table names are case-insensitive; confirmed by
+  actually creating `dashboard_users` and inserting via `DASHBOARD_USERS` -- the row lands in the
+  same table, so the old case-sensitive match was a real, not theoretical, bypass).
+- M1b: dropped the command-position anchor on the sqlite3/python invocation regexes and added
+  node (`better-sqlite3`/`node:sqlite`) and perl (`DBI->connect` + `dbi:SQLite`) detection, searched
+  anywhere in a top-level statement rather than requiring same-line proximity. Statements are now
+  split on `;`/`&&`/`||`/newline WITHOUT splitting inside a quoted span or a heredoc body, so
+  `/usr/bin/sqlite3`, `env sqlite3`, `timeout 5 sqlite3`, `\sqlite3`, `bash -c '...'`/`sh -c "..."`
+  wrapping, and a `python3 - <<'PY'` heredoc all still reach the check.
+- M1c: `sqlite3 db < file`, `.read file` and `.import file table` (SQL this guard cannot read at
+  all) now block outright against the protected db, fail-closed on the unverifiable case.
+- M2: the escape hatch (`DB_WRITE_GUARD_ALLOW=1`) must now be the literal leading token of the
+  exact statement doing the write -- a trailing shell comment, a preceding unrelated `echo`, and
+  the token sitting inside a quoted SQL string no longer disarm the guard.
+- M3: write-verb search now runs against a copy of the statement with unquoted `#`-comments and
+  SQL string literals after a comparison operator (`LIKE`/`=`/`<>`/`!=`/`<=`/`>=`/`<`/`>`/`IN`)
+  blanked out, and `REPLACE` is only a write when not immediately followed by `(` (the SQL
+  function). Fixes false blocks on `LIKE '%delete%'`, `category='insert'`, `SELECT replace(...)`,
+  a `# replace later` trailing comment, and an unrelated verb word after a `;` (`curl -X DELETE`).
+- L1 (MikroB decision): an internal error scanning a well-formed command now fails CLOSED if that
+  command names a protected table or the protected db literally; a malformed PreToolUse payload
+  itself (no command text at all) still fails open, unchanged.
+- QA FAIL 28673 addendum 1: a db-path argument resolves via `os.path.realpath` -- a filesystem
+  symlink aliasing the protected db under another name now counts as the protected db; a `$VAR`
+  db-path argument this guard cannot resolve from the command text alone now BLOCKS (not allows)
+  when the rest of the statement already names a protected table and a write verb, since the guard
+  cannot prove it is a different database.
+- QA FAIL 28673 addendum 2: a `Write`/`Edit`/`MultiEdit` tool call whose `file_path` resolves to
+  the protected db file is now blocked unconditionally (no SQL text to inspect, no escape hatch).
+- 52/52 selftest cases pass (31 new cases added for this round, one per named finding plus the
+  read-only false-block regressions).
+- DECISIONS correction entry hygiene (L3): the 2026-11-06 "correction: real Gate-SHA..." entry for
+  this same card (above) itself ends with the placeholder it was written to fix -- left untouched
+  per the tail-append rule, since it is now historical record of an earlier round, not this one.
+  This entry's own `Ki döntött:` line will be updated to the real, ancestor-verified Gate-SHA for
+  THIS round once it lands (same convention as every other entry in this file).
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 2, per MikroB dispatch
+(msg_id:16779/16780). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card c1766c6c re-gate round 3: runtime env-var indirection + pipe side-channel (QA FAIL 28716 on dd074f2c9)
+
+**Döntés:**
+- Round 2's "unresolvable db-path variable fails closed" posture (QA FAIL 28673 addendum 1)
+  only implemented the shell-level `sqlite3 "$VAR" ...` shape. QA FAIL 28716 found it did not
+  generalize to the python/node/perl runtimes' OWN env-var accessors (`os.environ[...]`/
+  `os.getenv(...)`/`$ENV{...}`/`process.env...`), even though round 2 added write-detection
+  signatures for exactly those three runtimes in the same round. Added `_RUNTIME_ENV_VAR_RX`,
+  folded into the same `db_unresolvable` fail-closed branch: a protected table + write verb
+  visible in the command text, with the db target resolved only through one of these accessors,
+  now BLOCKs on the same "cannot prove it is a different database" reasoning already used for
+  the shell $VAR case.
+- A plain pipe into `sqlite3` (`cat file | sqlite3 db`) is the same unreadable-SQL-source class
+  M1c already closed for `<`/`.read`/`.import` (round 2), left uncovered. Added
+  `_PIPE_INTO_SQLITE_RX` to the same side-channel check, blocking outright against the protected
+  db regardless of whether a table/verb is visible in the command text (the SQL lives in the
+  piped file, not usually visible there at all).
+- 8 new selftest cases (4 env-var BLOCK across python/node/perl, 1 env-var-without-protected-
+  table ALLOW regression guard confirming the indirection alone is not sufficient to block, 3
+  pipe-into-sqlite3 BLOCK across bare/env/timeout wrapper forms). 60/60 selftest cases pass.
+  tsc clean. The three wiring tests (db-write-guard-wiring, hook-registration-completeness,
+  project-settings-hook-anchor): 22/22 passed, no regression.
+- QA's round-3 verdict (28716) also confirmed all round-1 bypasses stayed closed under re-probe
+  (not just the shipped selftest) -- no regression on any previously-fixed finding.
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 3, per MikroB dispatch
+(msg_id:16807). Gate: QA + Cybersec (Cybersec's verdict on dd074f2c9 was still running at
+dispatch time; MikroB's direction is to fold its findings into this same round rather than a
+round 4). Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card c1766c6c re-gate round 4: N1 embedded-write literal, N2 Write/Edit/MultiEdit matcher, P1 pipe false-blocks, P4 raw docstring (CYBERSEC NO-GO 28718 + 28723)
+
+**Döntés:** MikroB's round-4 scope decision (comment 28727, msg_id:16815): close exactly N1, N2,
+P1 (+ P4 trivial) from WhiteHat 28718/28723; any further shape found after this round is logged
+as a residual on card 85a668aa (local shell as a trust boundary, OS level), not a 5th round here
+-- this hook is a guardrail against accidental/naive direct writes, not a security boundary.
+- N1 (regression vs round 1): round 2's M3 literal-blanking hid a write stored INSIDE a literal
+  rather than compared against one (`q='DELETE FROM approvals'`, a shell `$VAR` holding the SQL,
+  and a backslash-quote the hook's old regex misread as an escape when SQLite itself has none).
+  Fixed the literal regex to SQLite's real escaping rule (doubled quote only), and added a
+  second check: any single-quoted literal anywhere in the command whose OWN content names a
+  protected table and a write verb together blocks, gated to commands that also reference the
+  protected db.
+- N2: Write/Edit/MultiEdit protection was dead code (hook registered with matcher "Bash" only).
+  Fixed at both sites (.claude/settings.json, injectDbWriteGuard), matcher now
+  "Bash|Write|Edit|MultiEdit"; wiring test now asserts the matcher string explicitly.
+- P1: the pipe rule matched "sqlite3" anywhere after a pipe, false-blocking `lsof ... | grep
+  sqlite3` and `sqlite3 ... | grep -c sqlite3`. Fixed to require sqlite3 as the piped-to command
+  itself; a readable echo/printf pipe source no longer forces a block. Also fixed a live
+  false-block MikroB hit mid-session: a heredoc writing an unrelated message file, sharing a
+  top-level command with a real SELECT, is no longer scanned as if its body were SQL.
+- P4: docstring is now a raw string (contained `\sqlite3`, SyntaxWarning under Python 3.14).
+- 75/75 selftest cases pass (15 new this round). tsc clean. 22/22 wiring tests pass.
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 4, per MikroB dispatch
+(msg_id:16815). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- c1766c6c (DB write guard) re-gate round 5: heredoc opener-line + readable-pipe-source fixes
+
+CYBERSEC NO-GO 28743 on round 4's own sha (828428142), scope narrowed by MikroB to R1+R2
+(msg_id:16862: "fix WhiteHat NO-GO 28743 R1+R2 regressions"); R3/R4 logged as residuals for card
+85a668aa, same posture as round 4's own P2/P3/P5 handling.
+
+- R1 (MEDIUM-HIGH, regression vs round 4's own P1 heredoc fix): the heredoc body-consuming branch
+  began at the FIRST newline after `<<MARK`, which also blanked the REST OF THE OPENER'S OWN
+  LINE as if it were body text -- `cat <<'EOF' | sqlite3 store/claudeclaw.db` lost the
+  `| sqlite3 ...` text entirely, and a `;`-separated write on the same opener line never reached
+  `_split_top_level`'s own statement-boundary handling at all. Fixed: text up to the opener's own
+  real newline is processed by the ordinary character loop; only that newline hands off into
+  heredoc-body mode. Widened the heredoc-keep interpreter list to bash/sh/zsh/dash/eval/source/ssh
+  (alongside sqlite3/python/node/perl) -- a shell-wrapper opener can run a real write from its
+  body text too; non-executing openers (`cat`) still have their body blanked.
+- R2 (MEDIUM): the "readable echo/printf pipe source" check only verified the command name, never
+  what followed it -- a shell variable, a command substitution, or an escape-interpreting
+  flag/format (`echo -e`, printf `%b`, `\xHH`) all matched as "readable" while actually hiding or
+  transforming the real bytes. Fixed: readable now requires the entire span between the command
+  name and the pipe to be a plain literal (no `$`, backtick, backslash, or `%b`).
+- 91/91 selftest cases pass (16 new this round, including explicit red-before verification against
+  the retired 828428142 code for 4 of the 5 new BLOCK cases). No TS files touched this round, so
+  tsc/wiring tests are unaffected (unchanged from round 4's 22/22).
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 5, per MikroB dispatch
+(msg_id:16862). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-13 07:10 -- c1766c6c: db-write-guard matcher wiring restored after a reconstruction regression
+
+**Döntés:** the ab8a0bdc2 card/c1766c6c reconstruction (REVIEW ADDENDUM 29368, off origin/develop)
+kept scripts/hooks/db-write-guard.py byte-identical to the gated round 6 (48df2ec27), but silently
+regressed its REGISTRATION back to matcher "Bash" alone in .claude/settings.json and
+injectDbWriteGuard() (src/web/agent-scaffold.ts) -- re-opening N2 (CYBERSEC NO-GO 28718/28723,
+round 4: the hook's own Write/Edit/MultiEdit branch is dead code when the harness never calls it
+for those tools). The wiring tests had been rewritten to match the regressed value, so the suite
+stayed green while the protection was off. Cybersec caught this with CYBERSEC NO-GO 29548 (tree-
+identity check was blob-only, did not check wiring). Fix (commit 126061290, card/c1766c6c branch):
+restored matcher 'Bash|Write|Edit|MultiEdit' + the N2 comment in all three places (settings.json,
+agent-scaffold.ts, db-write-guard-wiring.test.ts, project-settings-hook-anchor.test.ts), surgically
+-- left the unrelated Koteg 23a email-gate widening and the Teszter skill-table addition (both
+from other cards landed on origin/develop since round 6) untouched.
+**Miért:** a reconstruction off a moving base branch can diff-identical on the hook file itself
+while losing its registration -- blob comparison alone is not proof of tree-identity; the whole
+owned-file list must be compared.
+**Ki döntött:** DevO (fullstack), per MikroB dispatch msg_id:17558 following Cybersec's NO-GO
+29548. Gate: QA + Cybersec. Gate-SHA: 126061290.
+
+## 2026-11-12 -- card b2f7ede4 round 4: CYBERED NO-GO 29475 F1-F4 fix + rebuild from origin/develop
+
+**Döntés:** CYBERED NO-GO (comment 29475) on the round-3 HOLD fix (9d2970c68) found four issues, all closed in this round:
+- F1 MEDIUM: the "only reads" vitest case for the shared-memory-inject.py exemption matched only one write spelling (`data=`/`method=` keywords inside `urllib.request.Request(...)`). RedHat measured 8 bypasses (X1-X8: second positional arg, nested call before the keyword, `urlopen(url, data=...)` with no `Request()`, post-construction `.data`/`.method` assignment, subprocess, http.client, `**kwargs` splat, a GET to a foreign host carrying the token). Rewritten as an allow-list: only `urllib.request`/`urllib.parse` for network, every `urlopen()` call takes a `Request` object, every `Request(...)` call takes exactly one argument with no keyword/splat, no post-construction `.data`/`.method`, and every `http(s)://` host literal must be the dashboard (localhost). All 10 of RedHat's named mutants (X0, X0b, X1-X8) now red; the real script stays green.
+- F2 LOW: the scaffold's "EGY SZÁNDÉKOS KIVÉTEL van" sentence (the exemption's positive claim) was pinned by nothing -- only the negative claim ("EGYIK tierje sem töltődik be magától") had a test. Added two pins: the exception sentence names the hook, and the hot/warm/cold non-auto-load clause is asserted on its own. RedHat's S1 (deleted), S2 (wrong hook name) and S4 (claims own-curated tiers always load) mutants now red.
+- F3 LOW: the sentence itself was partly wrong -- missing the gate-agent exclusion clause (qa/qa2/cybersec/cybersec2/cybered never get this push, per `GATE_AGENT_NAMES`/`shared-memory-inject-gate-exclusion.test.ts`), missing `compact` from the SessionStart source list (matcher is `startup|resume|compact|clear`), and "kurátort emlékeid" is not valid Hungarian for "curated" (kurált). Fixed all three in the sentence, each pinned by its own assertion.
+- F4 INFO: the gated sha (9d2970c68) was a stack tip on `agent/fullstack/work` (50 commits, 45 not this card's), and its pre-compact test hunk conflicted (modify/delete) with `src/__tests__/agent-start-pre-compact.test.ts` being deleted on origin/develop (belongs to the unlanded card d2c3a940). Rebuilt on a fresh `card/b2f7ede4` branch from origin/develop: cherry-picked 301a13c83 (round 1), a8163396f (round 2) and 9d2970c68 (round 3, with the pre-compact hunk dropped -- the file stays deleted, left to d2c3a940). Verified on the rebuilt sha: tsc clean; the 21 related test files (scaffold/shared-memory-inject/memory-load/taskstate/session-memory-inject) 342 passed, 2 skipped, matching RedHat's own T2 measurement; `no-unused-vars` lint ratchet holds at 278 (151/12 for the other two rules), matching RedHat's T2 figures exactly.
+
+**Ki döntött:** DevO (fullstack), per MikroB dispatch (msg_id:17485), closing CYBERED NO-GO comment 29475. Gate: QA + Cybered (fresh round on the new sha, since the branch was rebuilt). 2aaa447e closes with this card.
+## 2026-11-13 -- b7d8ecc4: fleet-test.sh throughput, priority lane for lands (chosen over N test trees)
+
+**Döntés:** measured 0 successful landings in the 90 minutes before this card (land-runs.jsonl,
+last 24h: 87 finished runs, 41 ok / 45 fail / 1 aborted; recent fail durations 1572-9268s before
+giving up). Root cause (MikroB comment 29829): `marveen-land.sh`'s `land_one()` acquires its own
+exclusive develop-push lock BEFORE running `fleet-test.sh` on the merge result, and holds it for
+the entire fleet-test wait -- so every land queued behind the single `fleet-test.sh` tree-mutex
+(shared with gate/targeted runs, card 2f0c7d24) blocks EVERY OTHER land too, even though those
+other lands have nothing to do with that particular fleet-test call. Measured one real
+fleet-test.sh run with no contention: 616s (10.3 min, `--ref 3f8918cb0`), correcting the script's
+stale "~40s" header claim.
+
+Of the three options the card listed (N test trees; priority lane for land-held runs; targeted
+runs skip the lock), chose the priority lane: `fleet-test.sh` now takes a FIFO ticket
+(`fleet_test_take_ticket`/`fleet_test_is_head`, modeled on `marveen-land.sh`'s own
+`land_lock_take_ticket`/`land_lock_is_head`, card 5d9731cd) before its tree-mutex `flock`, tagged
+by `FLEET_TEST_PRIORITY` (land=0, normal=1 -- lower sorts first); `marveen-land.sh` exports
+`FLEET_TEST_PRIORITY=land` once in `land_one()`, inherited by every fleet-test.sh child it runs.
+A land ticket now always sorts ahead of a normal (gate/targeted) ticket regardless of arrival
+order, so a land waits behind at most the one run already holding the lock when it arrives, never
+behind a run that was merely queued. Rejected the N-test-trees option: the single machine-wide
+lock was deliberately introduced by card 2f0c7d24 (Peti approved) to stop CPU-starvation false
+reds (two full suites on two trees still start one vitest worker per core each and starve each
+other); reverting to per-tree locking would reopen that exact, already-measured regression. The
+CPU_SLOTS=2 / single-tree-lock policy is otherwise untouched -- still at most one fleet-test run
+holds the tree at a time, only WHO goes next among waiters changes.
+
+Verification: `fleet-test-priority-lane.selftest.sh` (new), 5/5 PASS, including a behavioral case
+with a real `flock` held by a simulated already-running holder and three real background waiters
+-- a land waiter arriving last is still served before two normal waiters that queued earlier.
+Mutation check: flipping the land->rank mapping to resolve to the same rank as normal turns 3 of
+the 5 cases red. `marveen-land.sh --selftest`: 92/92 PASS, unaffected by the one-line
+`export FLEET_TEST_PRIORITY=land` addition.
+
+**Ki döntött:** MikroB (dispatch msg_id:17746, card text listing the three options) + backend2
+(measurement and choice among them, per the card's "measure first, then pick one, simplest that
+works"). Gate: QA + Cybersec.
+
+## 2026-11-13 -- b7d8ecc4 round 2: priority queue moved to the real contention point (CPU slots), N1-N4
+
+**Döntés:** Cybersec NO-GO 30007 on round 1 (sha 3ea43c816), confirmed correct on re-reading the
+code and re-measuring live: round 1 only ordered the TREE mutex, but `acquire_cpu_slot` (2 slots,
+shared with the mopsion suite pool) runs BEFORE it and every holder keeps its slot until it exits
+-- so at most 2 runs are ever past the slot stage (the running holder plus one waiter), and a
+queue of one has nothing to prioritise (N1). Cybersec's live read confirmed this: a land run was
+already past the slot stage and sitting ALONE behind one running gate holder at the tree mutex --
+priority cannot help there, because there was no second waiter to leapfrog.
+
+Fix: generalised `fleet_test_take_ticket`/`fleet_test_reap_stale_tickets`/`fleet_test_is_head` to
+take a `ticket_dir` parameter, and applied the SAME priority queue to BOTH stages -- the CPU-slot
+acquisition loop (`acquire_cpu_slot`, where the real multi-way contention forms) and the tree
+mutex (unchanged in kind from round 1). Three further fixes from the same NO-GO: N2 (a ticket
+whose recorded pid was reused by an unrelated live process wedged the whole queue -- added the
+pid+start-time liveness check `marveen-land.sh`'s own reaper already uses, via a duplicated
+`fleet_test_pid_starttime`); N3 (a fresh arrival could "barge" a queued ticket in the window
+between a release and the queued waiter's next poll, because round 1 only took a ticket AFTER an
+immediate `flock -n`/`acquire_cpu_slot` attempt failed -- now every caller takes a ticket
+unconditionally, before ever trying the resource, at both stages); N4 (no aging -- a normal run
+could be starved indefinitely by a continuous stream of land arrivals -- added
+`FLEET_TEST_AGING_S` (default 180s): a normal ticket older than this is treated as rank 0 for
+ordering, without renaming the ticket file itself, so the waiter's own ticket-path reference
+never goes stale across repeated `fleet_test_is_head` calls).
+
+Not fixed, deliberately out of scope: a RUNNING holder cannot be preempted by a later-arriving
+land -- no ticket-ordering scheme can change that without killing in-flight work, which the
+dispatch explicitly forbade. Reserving a CPU slot exclusively for lands was considered (MikroB's
+question) and rejected for this card: the slot pool is shared with `mopsion-suite-run.sh`, which
+is not ticket-aware, so a marveen-side-only reservation would need cross-script coordination
+(changing `mopsion-suite-run.sh` too) to actually hold -- out of scope, and `CLEANCORE_SUITE_SLOTS`
+can already be raised as a lower-risk capacity lever if contention stays high after this fix lands.
+Also flagged, not fixed here: the live gate run Cybersec observed held slot+tree for 37 minutes,
+well over the 616s uncontended measurement -- consistent with CPU contention slowing the run
+itself (the exact false-red risk card 2f0c7d24's single lock exists to prevent), worth its own
+follow-up measurement once this fix is live and the queue is shorter.
+
+Verification: `fleet-test-priority-lane.selftest.sh` rewritten for the 2-arg signatures, 13/13
+PASS, covering: ticket ordering (Test A), the SLOT stage specifically with 2 simulated slots and 3
+real waiters (Test B, N1), pid-recycle reaping with a live control (Test C, N2), a structural pin
+against the barge shape in both wait loops (Test D, N3), and bounded aging with a non-aged control
+(Test E, N4). Each of N1/N2/N3/N4's fixes individually mutation-checked (reverting just that fix
+turns the matching case(s) red, confirmed by hand for all four, not just asserted).
+`marveen-land.sh --selftest`: 92/92 PASS, unaffected (marveen-land.sh itself untouched this round).
+
+**Ki döntött:** Cybersec (NO-GO 30007, the four findings) + backend2 (the fix, re-measured and
+re-verified per-finding). Gate: QA + Cybersec (re-gate on the new sha).
+## 2026-11-13 -- kártya 78339a8a: --allow-stacked --card módba, LANDING_DOWNWARD_CHECK szűkítve
+
+**Döntés:** a `marveen-land.sh --card <id> --agent <agent>` mód option-parsere eddig csak
+`--dry-run`/`--agent`/`--allow-ungated*`-et fogadott el, az `--allow-stacked`-et nem (backend3
+msg 17594, 4f3c0287 landolási kísérletből) -- az egyetlen út egy szándékosan stackelt idegen
+kártya kommitjain át a teljes `LANDING_DOWNWARD_CHECK=off` kill switch volt, ami NEM a névre
+szóló kártyát engedi át, hanem a teljes downward check-et kapcsolja ki. Mostantól a `--card` mód
+is elfogadja az `--allow-stacked <id>[,<id>...]`-t, ugyanazt a globális `ALLOW_STACKED` változót
+töltve, mint az agent-cél mód.
+
+Második hiba, ugyanazon landolási kísérletből mérve: a `LANDING_DOWNWARD_CHECK=off` a shell
+prefixben exportolva MINDEN gyerek-folyamatba öröklődik, beleértve a `run_fg_killable()` által
+futtatott `fleet-test.sh`-t és annak vitest-worker-eit is -- ezek közül egy
+(`landing-downward-check.test.ts`) saját maga hívja a `marveen-land.sh --selftest`-et, és AZ a
+gyerek-folyamat is kikapcsolva találta a downward check-et, 5 "foreign commit refuses" selftest
+esetet FAIL-re fordítva, teljesen a mergelt tartalomtól függetlenül (a 4f3c0287 land ezen a hamis
+piroson refuse-olt). Javítás: `run_fg_killable()` a saját subshell-jében `unset
+LANDING_DOWNWARD_CHECK`-et futtat `cd`/`eval` előtt -- a szülő-script saját `downward_check()`
+hívása még látja a változót, a gyerek (fleet-test.sh és minden, amit az indít) már nem.
+
+Új selftest-eset a `marveen-land-run-fg-killable.selftest.sh`-ban a VALÓDI, kinyert
+`run_fg_killable` forráson bizonyítja a javítást (piros a javítás előtti testen, zöld utána).
+
+**Ki döntött:** MikroB (msg 17699, backend3 gyökér-okos jelentése alapján, msg 17698), backend3
+végezte. Gate: QA + Cybersec.
+
+## 2026-11-13 -- kártya 78339a8a delta: landing-downward-check.test.ts floor-konstans frissítve
+
+**Döntés:** a saját rfk-selftest-eset (LANDING_DOWNWARD_CHECK-szivárgás pin) hozzáadása a
+marveen-land.sh --selftest teljes esetszámát 92-ről 93-ra emelte, ami elrontotta a
+landing-downward-check.test.ts megosztott-blokk egyenlőség-ellenőrzését (mv saját-blokk
+konstansa a korábbi marveen-only bővítések mintáját követve 33-ról 34-re emelve). Tisztán
+teszt-szám-frissítés, nincs viselkedés-változás. Commit 1005d780.
+
+**Ki döntött:** backend3 (önálló, mechanikus teszt-korrekció). Gate: QA + Cybersec.
+## 2026-11-12 — 5aa686f0: 392d7104 follow-up, WhiteHat LOW 28818 -- behavioral pins for the freellm marker gate + explicit opt-out
+
+**Döntés:** WhiteHat GO 28818 (Gate-SHA b492be07a) két LOW leletet hagyott nyitva a 392d7104 javításon. L1: a két production hívási hely (`is_freellm_blocked`, a try_leaf-exhausted és a CAPACITY_HOLD sweep ágon) csak egy TS forrás-szöveg regex-szel volt pinnelve -- ez nem tudja megkülönböztetni az ELÉRHETŐ guardot egy NEUTRALIZÁLTTÓL: egy komment-tartó `if false; then # <guard>`, egy `false && is_freellm_blocked ...` rövidzár, vagy egy korábbi mindig-igaz ág, ami elérhetetlenné teszi a valódi sort, mindhárom megtartja a regex által keresett szöveget, miközben a viselkedés megváltozik. L2: az opt-out kapcsolófájl (`freellm-skip-gemini-ok-check`) csak a LÉTEZÉSÉT nézte (`[[ -f ... ]]`), a TARTALMÁT nem -- egy `off` vagy `{"enabled": false}` tartalmú fájl is kikapcsolta a marker-ellenőrzést, pont az ellentétét annak, amit a tartalom állít.
+Javítás: (L1) a két hívási hely logikáját `freellm_fallback_exhausted_site` és `freellm_fallback_capacity_hold_site` néven nevesített függvénybe emeltem ki (viselkedés byte-azonos), és egy új `--test-freellm-fallback-site` teszt-kapu hívja ezeket KÖZVETLENÜL, valós kóddal (nem szimulátorral, mint a régi `--test-capacity-route`). (L2) a kapcsolófájl tartalmát a `freellm-call.sh` saját switch-ellenőrzésével azonos szigorú JSON-boolean mintával (`{"enabled": true}`, `is True`, nem truthy/string-összehasonlítás) ellenőrzöm -- hiányzó fájl, üres, hibás JSON, `{"enabled": false}` vagy `{"enabled": "True"}` (string) mind BEKAPCSOLVA tartja a marker-ellenőrzést.
+Teszt: `offload-dispatch.selftest.sh` 6 új L2 esettel (minden tartalom-variáns) + 2 új L1 "baseline" esettel (a VALÓDI `offload-dispatch.sh`-ra futtatva, a `--test-freellm-fallback-site` kapun át, egy marker-fájlos FREELLM_CALL stubbal: a marker léte = a guard átengedett egy próbálkozást). 113 -> 119/119 zöld. Mutáció-ellenőrzés (egyszeri, nem a permanens selftest-be sütve, lásd a REVIEW-t a teljes kimenetért): mindhárom nevesített mutáns (if-false-komment, false&&-rövidzár, korábbi always-true ág) MINDKÉT hívási helyen "leaked"-et ad egy ideiglenes fájlmásolaton, a valódi (nem mutált) fájl "clean"-t ad -- a permanens pin (a "clean" baseline-check a valódi fájlon) pirosra váltana, ha bármelyik mutáns bekerülne a termelésbe.
+**Ki döntött:** backend2 (önjáró felvétel, kártya 5aa686f0, MikroB dispatch msg_id:17479), forrás: WhiteHat GO 28818 LOW leletei a 392d7104-en. Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-13 -- 5aa686f0 follow-up: fixed window-based test that broke on the card's own merge
+
+**Döntés:** the gated sha (757aa895a) landed on fleet-test with 2 failures. `gemini-offload-dispatch.test.ts`'s
+`'calls try_gemini_for_leaf when exhausted attempts'` case asserted `try_gemini_for_leaf` inside a fixed
+400-char window before `post_exhausted_notice`'s call site -- this card's own 2-line
+`freellm_fallback_exhausted_site` call+comment, inserted right before that call site, pushed the real
+`try_gemini_for_leaf` call to 437 chars away, outside the window, with no behavior change at all (confirmed
+by reading `try_leaf()`'s body directly: the call still runs before the fallback, just father back in the
+file now). Fixed by asserting the actual invariant instead of a window: extract `try_leaf()`'s own function
+body, compare the string index of the (last) `try_gemini_for_leaf` call against `post_exhausted_notice`'s
+call index, with a self-contained mutation check (rotate the body so `post_exhausted_notice` comes first,
+confirm the same comparison then disagrees) proving the assertion is order-sensitive, not just
+presence-checking. `offload-batch-health.test.ts`'s own failure (15s timeout on a closed-port curl fast-fail,
+unrelated file) did not reproduce when re-run alone on the merged tree -- confirmed as a load-induced flake
+from the concurrent land/gate contention this same card's parent card (b7d8ecc4) targets, not a regression.
+
+Verified: `gemini-offload-dispatch.test.ts` + `offload-batch-health.test.ts` together, 324/324 pass.
+`offload-dispatch.selftest.sh`: 119/119, unaffected (only the vitest file changed). Merged current
+`origin/develop` (eda2bae70) after the fix; only conflict was the DECISIONS.md tail-append shape, resolved
+by keeping develop's content as-is and appending this card's entries strictly after (verified: develop's
+DECISIONS.md is a byte-exact prefix of the resolved file).
+
+**Ki döntött:** MikroB (msg_id:17798/17807, directed to fix the real invariant rather than widen the magic
+number) + backend2 (the fix). Gate: re-gate QA + Cybersec on the new sha (see REVIEW comment).
+
+## 2026-11-13 -- 5aa686f0 re-merge round: re-synced with origin/develop, triaged full-suite fleet-test
+
+**Döntés:** re-merged current origin/develop (547f773bb, includes cards c1766c6c + b2f7ede4 landed
+since the prior base) into card/5aa686f0 as merge c402ad6cb -- only conflict was DECISIONS.md,
+resolved by keeping develop's content as-is and appending this card's entries strictly after (verified
+byte-exact prefix). `fleet-test.sh --ref c402ad6cb` on the merge result ran the full suite and reported
+3 failed files / 5 failed tests: offload-batch-health.test.ts:172 and main-config-dir-wiring.test.ts both
+went green on a standalone rerun (load flakes); store-selftests-all-run.test.ts's local-llm-parallel-bench
+sub-case also went green standalone (load flake); its local-llm-model-routing sub-case reproduced twice
+standalone with `gpu-util-hold 4969/6144 MiB (80.9%)` -- this file is untouched by this card's diff and
+the sibling card b7d8ecc4's clean round-5 full run minutes earlier on the same box showed 0 failures, so
+this looks like current, real GPU VRAM pressure elsewhere on the box rather than a regression from this
+card; flagged to MikroB as a separate, unresolved observation rather than claimed as disproven.
+
+**Ki döntött:** backend2 (re-merge + triage, kártya 5aa686f0). Gate: delta re-gate QA + Cybersec on
+Gate-SHA (see REVIEW comment).
+
+## 2026-11-13 -- kártya 368395d4 delta: branch rebuild origin/develop-ra, foreign-commit kizárás
+
+**Döntés:** a `card/368395d4` ág eredetileg `card/c84a510a` HEAD-jéről indult, ezért a 6
+load-sensitive teszt fixje (commit `7e7f3e3c7`) mellett magával hordozta `c84a510a` két
+UNGATED commitját is (`d9b6c36f2` kg draft timeout, `d350b96c1` fence strip). Ez landoláskor
+foreign-card-commitot eredményezett volna (`marveen-land.sh` refuse-olta volna), vagy
+`--allow-stacked c84a510a`-val az ungated kódot pusholta volna. MikroB jelezte (msg 18009).
+
+**Javítás:** az ág újraépítve a jelenlegi `origin/develop` (`b913354e0`) tetejéről,
+KIZÁRÓLAG `7e7f3e3c7` cherry-pickelve (új sha: `6ae23d797`), a két kg-commit nélkül. A 6
+teszt (offload-batch-health, local-llm-host-guard, self-pace-wrapper-and-keyword-positions,
+agent-process-reap-before-launch, hookstripfleet-channel-hooks, local-llm-model-routing
+selftest) a kg-commitok nélkül is zölden fut (182/182 + 1/1). `git diff --stat` ugyanazt a 6
+fájlt mutatja, mint korábban -- a rebuild tartalmilag nem változtatott a fixen, csak a
+foreign-commit örökséget vágta le.
+
+**Ki döntött:** MikroB (msg 18009), backend végezte. Gate: QA + Cybersec.
+## 2026-11-13 — f3f4b571: F2 -- local Ollama registered as a freellmapi custom provider, local-llm.sh gains a gateway mode behind a switch (default OFF until F3)
+**Kontextus:** Peti Telegram 13647 (2026-11-12, "start it, highest priority"), proposal https://claude.ai/artifact/6CGZ1mxhJ1fB38nPqjHjMT, measured audit card-build-route.log 0/471 LOCAL in 30 days + offload-batch 0/140 drafts in 7 days + freellmapi 0 successful calls before af8ddbf0. Phase 82a113ba (multi-LLM routing).
+**Döntés:** Registered the local Ollama instance (127.0.0.1:11434) as a freellmapi custom provider via the admin API (`POST /api/keys/custom`, keyId 21), exposing qwen2.5-coder:7b-instruct-q4_K_M, hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M, hf.co/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-GGUF:Q4_K_M (chat) and nomic-embed-text:latest (embedding). freellmapi's own catalog assigns stable slugs from the display name ("local-qwen-coder-7b", "local-qwen3.8-distill", "local-sushi-coder") -- the raw Ollama model id also works unchanged (freellmapi forwards whichever id was requested straight to the custom endpoint, verified live), so no alias-translation layer was needed on our side. `store/local-llm.sh` gains a gateway mode, switch file `local-llm-gateway-enabled.json` (dashboard/STATE_DIR convention, same strict-JSON-boolean fail-closed shape as the other switches in this file) -- absence (the shipped default) keeps the direct-Ollama `/api/generate` path byte-identical; ON routes the SAME GPU-locked, timeout-bounded call through freellmapi's `/chat/completions` (OpenAI-compatible) instead, normalizing the response into the same `response`/`eval_count`/`prompt_eval_count`/`eval_duration` shape the rest of the script already parses, so nothing downstream needs to know which path ran. Known, accepted parity gap: the gateway path drops `think:false` (no OpenAI-chat equivalent) and `seed` (not guaranteed to round-trip through every OpenAI-compatible backend) -- F3 (which will flip the switch) owns deciding whether that gap matters for its callers.
+**Hiba fejlesztés közben, javítva:** a switch-fájl olvasó sor (`GATEWAY_ENABLED="$([[ -f ... ]] && python3 ...)"`) `set -e` alatt a TELJES szkriptet megszakította, amikor a switch-fájl HIÁNYZOTT (az alapértelmezett eset, minden hívásnál F3-ig) -- egy sikertelen `[[ -f ]]` short-circuitöl az `&&` láncban, és ez a kilépési kód öröklődik a plain `VAR="$(...)"` hozzárendelésre. A meglévő `local-llm-sh-generate-timeout-safety-net.test.ts` "normal-call-path" tesztje ezt azonnal regresszióként elkapta. Javítás: `|| true` a hozzárendelés után + explicit `GATEWAY_ENABLED="${GATEWAY_ENABLED:-false}"` default.
+Teszt: új `src/__tests__/local-llm-gateway-mode.test.ts` (4 teszt: OFF-path nem szakít meg, ON-path a gateway-n megy át és NEM éri el Ollamát közvetlenül, hiányzó auth-token fail-closed die 2, `{"enabled":false}` OFF-on marad) -- mind a 4 PIROS a `|| true` fix NÉLKÜL (a `set -e` hiba, mérve), mind a 8 (a 4 új + a meglévő 4 timeout-safety-net teszt) ZÖLD a fixszel. Élő ellenőrzés: `freellmapi` adminon regisztrálva (201, 4 modell), `/v1/models` listázza a stabil slugokat (Kész-ha #1); valódi `freellm-call.sh` hívás `model=local-qwen-coder-7b`-vel HTTP 200-at ad, az Ollama journal (`journalctl`) megerősíti a `/v1/chat/completions` kérést (200, 10.4s); valódi `local-llm.sh` hívás a gateway-kapcsolóval ON HTTP 200-at ad a gateway-n át (Ollama journal: 200, 53.1s, a direkt Ollama-hívás SOHA nem futott -- ollamaHit=false a tesztben is), a kapcsoló OFF állapotban (alapértelmezett) a direkt Ollama-hívás változatlanul működik (Kész-ha #2, #3). `ss -ltnp` szerint 11434 és 3001 is csak 127.0.0.1-en figyel, nem adtam hozzá új listenert (Kész-ha #4).
+**Megfigyelés, nem ezen a kártyán javítva:** a GTX1660Ti-n a 7-9B modellek hideg-betöltése/generálása ezen a hoszton 10s-120s között ingadozott éles teszteléskor (GPU-megosztás más ügynökök egyidejű helyi hívásaival, és egy múló "llama-server GPU discovery watchdog timed out" hiba, ami magától helyreállt) -- ez host-szintű, megosztott-GPU jelenség, nem ennek a kártyának a regressziója; a meglévő `vram-guard-check.sh`/GPU_LOCK mechanizmus pont ezt kezeli.
+Nincs benne: a kapcsoló élesben bekapcsolása (F3 feladata, routing-döntés); embedding modell (nomic-embed-text) gateway-n keresztüli útja (nincs ilyen hívó jelenleg, csak regisztrálva).
+**Ki döntött:** backend2 (kártya f3f4b571, szülő 82a113ba), MikroB dispatch (trusted-peer msg_id:17542), forrás: Peti 13647. Gate: QA + Cybersec.
+
+## 2026-11-13 — f3f4b571: QA FAIL (comment 29623) fix -- gateway-mode test server handler type
+**Kontextus:** QA FAIL comment 29623 on Gate-SHA b0b99ec77: `startServer(handler: Parameters<typeof createServer>[0])` resolved to node:http's `ServerOptions` overload (createServer is overloaded), not `RequestListener` -- 15 tsc errors at every `(req, res) => void` call site, `fleet-test.sh` refused to run the suite against a stale dist/. QA's own live-functionality check was correct; only the build/type issue blocked.
+**Döntés:** `import type { RequestListener } from 'node:http'`, annotate `startServer`'s parameter with it explicitly instead of extracting a parameter type from an overloaded signature. No behavioral code touched.
+**Ellenőrzés:** `tsc --noEmit` clean (0 errors, was 15); reverting the fix reproduces exactly 15 errors (mutation-proven). `fleet-test.sh --ref <this sha>` on the two affected files: Test Files 2 passed (2), Tests 8 passed (8), exit 0.
+**Ki döntött:** backend2 (kártya f3f4b571), MikroB instruction (msg_id:17604/17606). Gate: QA + Cybersec (delta re-check needed on comment 29593's GO, which named the pre-fix sha b0b99ec77).
+
+## 2026-11-07 -- d2c3a940: pre-emptive /compact on start when a resumed session is near the ceiling
+
+Measured on jogász, 2026-10-11 12:06 (card's own description): MikroB started the agent, its first
+dispatch immediately hit "Context limit reached", and the card (a046302b) was never picked up.
+`context-compact-monitor.sh` never saw it at all (jogász is not in its hardcoded `TARGET_AGENTS`,
+and its 15-minute sweep cadence is far too slow for a race that plays out on the very first turn
+after start). Root cause: a `--continue` restart resumes whatever context the PRIOR session left
+behind, and nothing checked that context before the caller's own next request (the queued dispatch)
+could reach the pane.
+
+Decision: `POST /api/agents/<name>/start` (non-fresh only) now checks the resumed session's context
+percentage right after launch, via a new `measureContextPctForAgent(name)` in
+`context-guard-runner.ts` -- a single-agent wrapper around the SAME calibrated `measurePct` the
+guard's own periodic sweep already uses, not a second, independent computation. At or above 75%
+(Peti's established threshold, CLAUDE.md 2026-08-14 -- the same percentage
+`context-compact-monitor.sh`'s own `COMPACT_PCT` default already uses), it polls briefly for the
+session to become ready to prompt and sends `/compact` BEFORE the route returns `ok:true`. Fails
+open (no compact, start still succeeds) on any measurement error, an unmeasurable/null reading, or
+a session that never becomes ready -- this can only ever ADD a compact, never block a start.
+
+Scope decision, stated explicitly rather than silently narrowed: the card's item 2 ("recognize
+'Context limit reached' panel text in the monitor or fleet-nudger, automatic /compact") was NOT
+implemented. Two existing mechanisms already cover that shape for an ALREADY-RUNNING agent: this
+module's own periodic sweep (`checkAgent`, every 5 minutes, covers every agent including jogász via
+`guardSweepAgentNames` -- unlike the bash monitor's hardcoded 5-agent list) and
+`message-router.ts`'s per-delivery `isSessionReadyForPrompt` check (which already calls
+`saturationRefusesDispatch`/`paneShowsContextSaturation` before typing into any pane). Neither can
+close THIS card's actual measured race (hit mid-turn, on the very first message after a cold
+restart, faster than any periodic sweep or pre-send check could ever catch) -- which is exactly why
+this fix is proactive and start-time instead. A bash-monitor/fleet-nudger-level redundant check for
+the already-running case, if still wanted, is a separate, narrower follow-up.
+
+Verified: new `src/__tests__/agent-start-pre-compact.test.ts`, 8 cases (integration-style through
+`tryHandleAgents`, matching this route file's existing test pattern) -- synthetic 90%-full session
+compacts before returning ok; well-under-threshold does not; exactly-75% still fires (inclusive
+boundary); null/unmeasurable context skips the compact; a fresh start skips the check entirely; a
+session that never becomes ready skips the compact; a measurement error does not fail the whole
+start request; `startAgentProcess` itself failing skips the check entirely. Red-before confirmed by
+hand (commenting out the new call fails 2 of the 8 cases). `tsc --noEmit -p .` clean. Re-ran the
+related context-guard test suites (context-guard-resume-prompt, context-guard-saturation-mismatch,
+context-guard-limit-followups, context-guard-daily-tier) plus several agent-dir/restart suites:
+176 total, all pass, unaffected by the new export (relocated once after the saturation-mismatch
+suite's own source-slice test caught the first placement sitting inside its scanned range).
+
+**Ki döntött:** DevO (fullstack), card d2c3a940, self-advance pick (oldest unblocked planned card).
+Gate: QA. Gate-SHA: see REVIEW comment.
+
+## 2026-11-13 -- 1388200c: worker card closes narrowed, end-to-end kg_nodes proof split to c84a510a
+
+**Döntés:** card 1388200c ("F5 Knowledge graph: make capture work or switch it off") closes as
+the backfill WORKER card, not as the end-to-end capture proof. Root cause of kg_nodes staying 0
+was found and is NOT a worker bug: `local-llm.sh --task kg-capture` hangs/times out on the
+configured model (bigatuna/Qwen3.5-9b-Sushi-Coder-RL-GGUF) regardless of input size (90s on a
+1-line input, 300s on a real 2402-char REVIEW), while `--task summarize` on the same model
+answers in 21.7s under comparable GPU load (card comment 30148). The worker itself (drain loop +
+heartbeat, commit ff82e8770) was proven correct over 5 live backfill rounds against the real
+main-DB files: rows transitioned to `failed`/`skipped` correctly, the GPU-hold halt fired
+correctly, and `kg_worker_heartbeat` recorded a live row each run. The unresolved generation-hang
+(unverified suspicion: `think:false` not honoured by this template, same class as baf1b1b0) and
+the actual `kg_nodes > 0` end-to-end proof move to card c84a510a, URGENT, in_progress.
+
+**Ki döntött:** MikroB, msg 17829 (2026-11-13), after backend's escalation (msg 17828, comment
+30148) asking to choose between holding 1388200c open vs accepting the worker+heartbeat proof as
+sufficient and splitting the hang into its own card. Gate: QA + Cybersec. Gate-SHA: ff82e8770.
+
+## 2026-11-13: npm audit -- close 2 high + 4 moderate in production deps (card 4e7fc07f)
+
+**Döntés:** bump the `overrides`/`pnpm.overrides` floors for 6 transitive dependencies pulled in
+by `@anthropic-ai/claude-agent-sdk` (none are direct dependencies, none imported anywhere in
+`src/`): body-parser 2.3.0->2.4.0 (GHSA-27r3-jxmh-p828, high), fast-uri 3.1.8->3.1.9 (4 GHSA
+advisories, moderate), qs 6.16.0->6.17.1 (GHSA-6pq8-jhm2-2vcw, moderate), hono 4.13.13->4.13.18
+(GHSA-4h7h-rv7c-7m2v, moderate), zod 4.4.3->4.6.7 (GHSA-mrhx-c7xc-m3w5, high, new override added),
+@hono/node-server 2.1.1->2.1.8 (GHSA-jpvv-r467-5p4w + GHSA-qv5m-9pm6-hqp3, moderate, new override
+added). All within semver-minor/patch of the previous floor, each fixed version taken directly
+from OSV. `npm audit --omit=dev` before: 2 high + 4 moderate. After: 0.
+
+**Miért:** these were flagged on the production dependency tree; the card's own Kesz-ha required
+closing them with a scoped diff and a green `fleet-test.sh` run on the landed sha.
+
+**Ki döntött:** DevO (fullstack), card 4e7fc07f (assignee fullstack, gate QA + Cybersec).

@@ -779,6 +779,72 @@ veto_check_out="$(printf '[{"id":"leafVetoed","project":"mikrob","title":"egysze
 check "M1 fix: a veto_online=true leaf is blocked under capacity hold (parent-level security veto honored)" \
   "$veto_check_out" "leafVetoed blocked"
 
+# ============================================================================================
+# Card 5aa686f0 (392d7104 follow-up, WhiteHat LOW 28818): L1 (behavioral pins for the freellm
+# marker-gate guards, replacing the old TS source-text regex pins) + L2 (opt-out file must be an
+# explicit {"enabled": true}, not merely present).
+# ============================================================================================
+
+# ---- L2: the opt-out file's CONTENT decides, not its mere presence --------------------------
+SKIP_FILE="$TMPDIR/freellm-skip-gemini-ok-check"
+check_marker_blocked() { # $1 = label, $2 = expected ("blocked"|"allowed")
+  local label="$1" want="$2" rc
+  DASHBOARD_URL="http://127.0.0.1:1" OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$SKIP_FILE" \
+    bash "$DISPATCH" --check-freellm-blocked mikrob "" "egyszeru feladat" "irj egy fuggvenyt" >/dev/null 2>&1
+  rc=$?
+  local got="blocked"; [[ "$rc" -eq 42 ]] && got="allowed"
+  check "L2 opt-out content ($label)" "$got" "$want"
+}
+rm -f "$SKIP_FILE"
+check_marker_blocked "file absent" "blocked"
+: > "$SKIP_FILE"
+check_marker_blocked "empty file" "blocked"
+printf 'off' > "$SKIP_FILE"
+check_marker_blocked "content is the bare word 'off'" "blocked"
+printf '{"enabled": false}' > "$SKIP_FILE"
+check_marker_blocked 'content is {"enabled": false}' "blocked"
+printf '{"enabled": "True"}' > "$SKIP_FILE"
+check_marker_blocked 'content is {"enabled": "True"} (string, type confusion)' "blocked"
+printf '{"enabled": true}' > "$SKIP_FILE"
+check_marker_blocked 'content is {"enabled": true} (the only disabling value)' "allowed"
+rm -f "$SKIP_FILE"
+
+# ---- L1: behavioral pins for the two production freellm-fallback guard sites ----------------
+# Not a source-text regex (that is exactly what 28818's L1 found too weak): each case here RUNS
+# the real --test-freellm-fallback-site hook, which calls the real extracted guard function
+# directly. FREELLM_CALL points at a stub that writes a marker file and exits 2 ("switch off") --
+# the marker file's existence is the signal "the guard let an attempt through", independent of
+# the final exit code (which can still be 1/blocked even when the attempt itself leaked through
+# an upstream always-true branch, mutant 3's exact shape).
+FREELLM_STUB="$TMPDIR/freellm-stub.sh"
+MARKER="$TMPDIR/freellm-attempt-marker"
+cat > "$FREELLM_STUB" << 'EOF'
+#!/usr/bin/env bash
+touch "$FREELLM_ATTEMPT_MARKER"
+exit 2
+EOF
+chmod +x "$FREELLM_STUB"
+
+run_fallback_site() { # $1=script path, $2=site, $3..=site args -> sets $rc, writes/clears $MARKER first
+  rm -f "$MARKER"
+  FREELLM_ATTEMPT_MARKER="$MARKER" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" DASHBOARD_URL="http://127.0.0.1:1" \
+    bash "$1" --test-freellm-fallback-site "${@:2}" >/dev/null 2>&1
+  rc=$?
+}
+
+# Baseline args per site: NO "gemini-ok" marker, project "mikrob" -- is_freellm_blocked blocks
+# this shape by default (no skip file), so the REAL guard must never let the stub run.
+EXHAUSTED_ARGS=(exhausted mikrob "" "egyszeru feladat" "irj egy fuggvenyt" leaf1 "task text" leaf1 false)
+CAPHOLD_ARGS=(capacity-hold false mikrob "" "title" "desc" leaf2 "task" leaf2 false)
+
+run_fallback_site "$DISPATCH" "${EXHAUSTED_ARGS[@]}"
+check "L1 baseline (exhausted site, real code): blocked shape never reaches freellm-call.sh" \
+  "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
+run_fallback_site "$DISPATCH" "${CAPHOLD_ARGS[@]}"
+check "L1 baseline (capacity-hold site, real code): blocked shape never reaches freellm-call.sh" \
+  "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
+
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

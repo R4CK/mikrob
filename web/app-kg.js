@@ -313,11 +313,16 @@ async function kgLoadStats() {
       </div>`
     : ''
 
+  // Card 1388200c: `pending > 0` alone used to always claim "backfill_running" -- true only while
+  // a worker is actually draining the queue (workerActive, from the worker's own liveness stamp).
+  // Without one, the honest message is "nothing is running", not an assumed one.
   const backfill = data.backfill && typeof data.backfill === 'object' ? data.backfill : null
   if (backfill && typeof backfill.pending === 'number' && backfill.pending > 0) {
     const body = kgEl('kgResultsBody')
     if (body && !kgSelectedNodeId && !(kgEl('kgSearchInput').value || '').trim()) {
-      body.innerHTML = `<p class="kg-empty">${escapeHtml(t('kg.empty.backfill_running', { done: backfill.done ?? 0, total: backfill.total ?? 0 }))}</p>`
+      body.innerHTML = backfill.workerActive
+        ? `<p class="kg-empty">${escapeHtml(t('kg.empty.backfill_running', { done: backfill.done ?? 0, total: backfill.total ?? 0 }))}</p>`
+        : `<p class="kg-empty">${escapeHtml(t('kg.empty.backfill_stalled', { pending: backfill.pending }))}</p>`
     }
   }
 

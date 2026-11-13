@@ -415,6 +415,24 @@ async function measurePct(name: string, cfgLimit: number | null): Promise<number
   return tokens / limit
 }
 
+/**
+ * Card d2c3a940: a parked agent restarted with --continue resumes a near-full prior session, and
+ * the first dispatch message pushed it over the ceiling before context-compact-monitor.sh's own
+ * 15-minute sweep (which does not even include every agent) got around to it -- measured on
+ * jogász, 2026-10-11 12:06, "Context limit reached" on the very first turn after a manual start.
+ *
+ * Single-agent wrapper around the SAME calibrated measurePct this guard's own periodic sweep uses
+ * (readContextGuardConfig's limitTokens override, or contextLimitForModel + the persisted
+ * per-(agent, model) highwater calibration) -- not a second, independent percentage computation.
+ * Exported so the start route can ask "is THIS agent already near the ceiling" synchronously,
+ * right after launch and before any queued message is allowed to reach the pane.
+ */
+export async function measureContextPctForAgent(name: string): Promise<number | null> {
+  const cfg = readContextGuardConfig(name)
+  if (!cfg.enabled) return null
+  return measurePct(name, cfg.limitTokens)
+}
+
 async function performRestart(name: string): Promise<void> {
   if (name === MAIN_AGENT_ID) {
     // Platform-correct main-session restart. This was a hardcoded

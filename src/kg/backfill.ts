@@ -12,7 +12,7 @@
 import type Database from 'better-sqlite3'
 import { execFileSync } from 'node:child_process'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { enqueueCapture, markCaptureFailed } from './capture.js'
+import { enqueueCapture, markCaptureFailed, listPendingCaptures } from './capture.js'
 import type { CaptureRunResult } from './capture-pipeline.js'
 
 const MARVEEN_MAIN = process.env.MARVEEN_MAIN || '/home/neon/marveen'
@@ -116,6 +116,19 @@ export function defaultGpuGate(scriptPath: string = `${MARVEEN_MAIN}/store/vram-
         : String(err)
     return { admit: false, detail }
   }
+}
+
+/** Rows already enqueued (ANY reason -- 'closed'/'reopen' from the live hook, or a still-pending
+ *  'backfill' row), oldest-first. This is the drain half of EK-MT-12's sibling card (1388200c):
+ *  src/web/kg-capture-hook.ts only ever writes a row here, it never had a reader -- a card that
+ *  closes and enqueues as 'closed' was, until this function existed, invisible to
+ *  defaultListCandidates (which deliberately EXCLUDES anything already queued, by design, for the
+ *  opposite question "which done cards were never queued at all"). Both lists are combined by
+ *  buildListCandidates (backfill-cli.ts) into one batch: drain first, discover new ones with
+ *  whatever budget is left. */
+export function defaultListPendingCandidates(kgDb: Database.Database, limit: number): readonly string[] {
+  if (!Number.isInteger(limit) || limit <= 0) return []
+  return listPendingCaptures(kgDb, limit).map((r) => r.card_id)
 }
 
 function tallyNodeStatuses(kgDb: Database.Database, ids: readonly string[]): { active: number; draft: number } {
