@@ -24152,3 +24152,30 @@ alakjában jön létre először. Ha ez a sorrend megszakad (pl. e96d56c5 landol
 már nem javítja -- akkor egy táblaépítés (create+copy-with-clamp+swap) kártya kell, tesztelt
 rollbackkel, nem egyszerű landolás.
 **Ki döntött:** MikroB (msg 18043), WhiteHat2 CYBERSEC GO 30319 F2 nyomán. Gate: QA + Cybersec2.
+
+## 2026-11-13 — kártya 1a3c6459 delta: N1 readBody drain-cap (WhiteHat2 30355)
+
+**Döntés:** WhiteHat2 N1 lelete (komment 30355): az F1 drain-helyett-destroy javítás eltávolította
+az egyetlen korlátot, ami a limiten túli olvasást valaha is megállította -- a régi `req.destroy()`
+magát. Mérve: egy 8KB-sapkás route (a POST /api/auth/login alakja) egy 512MB testet teljesen
+beolvasott, miközben a kliens 2GB-ot deklarált, 532ms CPU, a kapcsolat nyitva marad. Csak a ledger
+budget route volt védett, és csak amiatt, hogy a `Connection: close` fejlécet is kitette -- ez volt
+az EGYETLEN hívóhely a readBody ~73 importere közül, ami ezt tette. MikroB döntése (msg 18087):
+a readBody()-ba kerüljön egy saját, minden hívóra egyformán érvényes korlát a limit-utáni
+olvasásra, a per-route `Connection: close` ezután feleslegessé válik. Megoldás: `DRAIN_SLACK_BYTES`
+(64KB) a src/web/http-helpers.ts-ben -- a limit átlépése után legfeljebb ennyit olvas tovább a
+szerver, mielőtt tényleg destroy()-olna; a ledger route saját `Connection: close`-ja törölve, a
+teszt nélküle is zöld (bizonyítva, hogy a korlát magában a helperben van, nem egy route-specifikus
+mellékhatásban).
+**Ellenőrzés:** új teszt-fájl (`src/__tests__/http-helpers-read-body-drain-cap.test.ts`): egy
+direkt readBody()-teszt és egy valódi, hitelesítés nélküli POST /api/auth/login route elleni
+teszt, mindkettő egy deklaráltan túlméretezett testet streamel valódi socketen, és méri, hogy a
+szerver a teljes test alatt megáll-e az olvasással (mindkettő < 1MB a 4-8MB deklarált mérethez
+képest). A login route jelenlegi viselkedése (a `RequestBodyTooLargeError` a catch-all 400
+"Invalid JSON"-ba olvad, nem 413-ba) VÁLTOZATLAN marad és ekként van asszertálva -- ez eltér a
+dispatch szó szerinti "413"-megfogalmazásától, mert ez a route korábban sem adott 413-at, ezt itt
+rögzítem, nem némán felülírom a kérést. 21/21 teszt zöld (llm-ledger.test.ts 19 + az új fájl 2),
+tsc clean. Teljes fleet-test.sh ezen a shán NEM futott le ebben a körben (kvóta/idő miatt) -- a
+célzott teszt+tsc lefedettség a bizonyíték ebben a deltában, a gate saját, független futtatása adja
+a végső megerősítést.
+**Ki döntött:** MikroB (msg 18087), WhiteHat2 30355 N1 nyomán. Gate: QA + Cybersec2 (WhiteHat2).
