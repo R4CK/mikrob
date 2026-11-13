@@ -24465,3 +24465,48 @@ Nincs benne: a kapcsoló élesben bekapcsolása (F3 feladata, routing-döntés);
 **Döntés:** `import type { RequestListener } from 'node:http'`, annotate `startServer`'s parameter with it explicitly instead of extracting a parameter type from an overloaded signature. No behavioral code touched.
 **Ellenőrzés:** `tsc --noEmit` clean (0 errors, was 15); reverting the fix reproduces exactly 15 errors (mutation-proven). `fleet-test.sh --ref <this sha>` on the two affected files: Test Files 2 passed (2), Tests 8 passed (8), exit 0.
 **Ki döntött:** backend2 (kártya f3f4b571), MikroB instruction (msg_id:17604/17606). Gate: QA + Cybersec (delta re-check needed on comment 29593's GO, which named the pre-fix sha b0b99ec77).
+
+## 2026-11-13 — c60e229a: CLAUDE.md split into index + docs/rules/ part files
+
+**Kontextus:** CLAUDE.md 146,193 bájt, minden ágens-session bootjánál betöltődik -- a legnagyobb
+álló token-költség (Multi-LLM javaslat, artifact 6CGZ1mxhJ1fB38nPqjHjMT, 2026-11-12, item 4; Peti
+13733, 2026-11-13: oldd meg az ott felsorolt problémákat). Két szekció (Munkavégzési szabályok
+64,659 B + Kódminőségi alapelvek 14,132 B) önmagában a fájl 54%-a.
+
+**Döntés:** 13 kézzel írt prózai szekció (a két mega-szekció + 11 közepes) VERBATIM áthelyezve a
+`docs/rules/*.md` alá, CLAUDE.md-ben egyetlen "## Szabály-index" szekció váltja fel mindegyik
+helyét: félkövér cím (változatlan, a meglévő kereszthivatkozások -- "lásd a 4b. szabályt" -- így
+is feloldódnak) + egy mondatos, a szekció saját legerősebb KÖTELEZŐ/TILOS mondatát idéző gist +
+SIMA markdown link (nem Claude Code `@file` import -- az visszatöltené a teljes tartalmat,
+ellentétben a token-cél-lal). A 8 gépi-generált BEGIN/END blokk (agent-scaffold.ts
+ensureXSection() család) és a 13 rövid (< ~3 KB) kézzel írt szekció ÉRINTETLEN marad, eredeti
+helyén -- a gépi blokkok mozgatása élő TS-kódot érintene, amit ez a kártya kifejezetten nem
+vállal (lásd a terv kockázat-elemzését, kártya-komment 30322). A "Teljes értékű audit" szekció
+(506 B) a tervből kimaradt felsorolásból (se mozgatandó, se bennmaradó listán nem szerepelt
+explicit) -- bennmaradt, mert mérete (506 B) a "rövid, inline marad" kategóriába esik, ezt a
+döntést itt rögzítem, nem a terv implicit hallgatásaként hagyom.
+
+**Méret:** CLAUDE.md 146,193 B -> 33,141 B (cél: 40 KB alatt -- teljesül). A 13 áthelyezett
+szekció összesen 117,723 B-ot (saját fejlécükkel együtt) tesz ki a `docs/rules/` alatt.
+
+**Ellenőrzés:** `scripts/claude-md-split-reachability-check.py` (új script, ez a kártya hozta
+létre) a pre-split CLAUDE.md (origin/develop, sha 61a258e38) minden KÖTELEZ/TILOS/MUST sorát
+kivonja, és mindegyiket megkeresi az új CLAUDE.md + minden `docs/rules/*.md` összefűzött
+szövegében: 39 sor ellenőrizve, 0 hiányzik. A 13 áthelyezett fájl byte-pontosan egyezik a
+pre-split szekciójával (section-by-section diff, 0 eltérés) -- nincs csonkolás, nincs duplikált
+maradék a régi helyén (a fennmaradó CLAUDE.md-szöveg, az index-blokk nélkül, whitespace-
+normalizáltan pontosan egyezik az eredeti fájl "mozgatott szekciók nélküli" maradékával).
+
+**Nincs benne:** az `agents/<név>/CLAUDE.md` per-agent fájlok (a kártya kifejezetten a gyökér
+CLAUDE.md-t nevezi meg, egyes számban); a 8 gépi-generált blokk mozgatása (Phase 2 jelölve, nem
+ebben a kártyában); a felfedezhetőségi reziduális kockázat (egy ügynök a pillanatban nem gondol
+arra, hogy a linkelt fájlt el kell olvasnia) -- ez NYITOTT, ELFOGADOTT kockázat, nem zárt: a
+reachability-script a SZÖVEG meglétét bizonyítja, nem azt, hogy egy ügynök gondolni fog rá. Egy
+valós, friss-session context-token mérés (előtte/utána) a kártya Kész-ha listájának harmadik
+pontja -- ezt a gate-fázisban (QA/MikroB egy valódi session-indítással) kell elvégezni, ez a
+kártya maga egy durva becslést ad (bájt-arányos, NEM mért tény): kb. 146,193/4 ≈ 36,500 token
+helyett kb. 33,141/4 ≈ 8,300 token -- ez TIPP, a karakterek/token arány modellfüggő, a valós
+mérést a gate adja.
+
+**Ki döntött:** backend3 (fázis 82a113ba), terv Peti-jóváhagyással (Telegram 13738, MikroB msg
+18052). Gate: QA + Cybersec.
