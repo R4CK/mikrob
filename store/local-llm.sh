@@ -649,6 +649,21 @@ if [[ "$GATEWAY_ENABLED" == "true" ]]; then
   [[ -r "$GATEWAY_AUTH_TOKEN_FILE" ]] || die 2 "gateway mode is ON but $GATEWAY_AUTH_TOKEN_FILE is not readable -- no auth token available"
   GATEWAY_AUTH_TOKEN="$(tr -d '\n' < "$GATEWAY_AUTH_TOKEN_FILE")"
   [[ -n "$GATEWAY_AUTH_TOKEN" ]] || die 2 "gateway mode is ON but $GATEWAY_AUTH_TOKEN_FILE is empty"
+
+  # F1 FIX (Cybersec MEDIUM, comment 29593 on Gate-SHA b0b99ec77, card cdde2666 precondition
+  # 29595/17584): the direct path below refuses any $MODEL Ollama has not pulled (the
+  # "model not pulled" check further down), but that check only runs on a FAILED direct call --
+  # this gateway branch never ran it at all, so $MODEL went to freellmapi's /chat/completions
+  # VERBATIM. Live-measured: `--model auto` with gateway ON reached openrouter (freellmapi
+  # req 34, platform=openrouter), while the direct path refuses "auto" outright (exit 3, zero
+  # request). Fixed by requiring $MODEL to be present in Ollama's OWN /api/tags listing before
+  # any gateway request is built -- the SAME source of truth the direct path's pull-check uses,
+  # not a second, maybe-stale hardcoded allowlist. Ollama unreachable -> fail closed (die 2):
+  # an unverifiable model is never treated as safe.
+  ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)$(gpu_guard_mask_note)"
+  curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | grep -q "${MODEL%%:*}" \
+    || die 3 "model '$MODEL' not pulled -- run: ollama pull $MODEL (gateway mode only forwards models Ollama has actually pulled, same as the direct path)"
+
   GATEWAY_AUTH_HDR="$(mktemp)"; chmod 0600 "$GATEWAY_AUTH_HDR"
   printf 'Authorization: Bearer %s\n' "$GATEWAY_AUTH_TOKEN" > "$GATEWAY_AUTH_HDR"
 

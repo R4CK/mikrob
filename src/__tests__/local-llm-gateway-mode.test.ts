@@ -80,16 +80,27 @@ describe('local-llm.sh gateway mode (card f3f4b571)', () => {
     expect(r.stdout.trim()).toBe('direct-ollama-reply')
   })
 
-  it('ON (switch file present, {"enabled":true}): routes through the gateway, not Ollama directly', async () => {
+  it('ON (switch file present, {"enabled":true}): routes GENERATION through the gateway, not Ollama directly -- but still verifies the model against what Ollama has actually pulled (F1 fix, Cybersec MEDIUM, comment 29593)', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
     const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
     writeFileSync(switchFile, '{"enabled": true}')
     try {
-      let ollamaHit = false
+      let tagsHit = false
+      let generateHit = false
       const ollamaPort = await startServer((req, res) => {
-        ollamaHit = true
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ response: 'should-not-be-used', eval_count: 1, prompt_eval_count: 1 }))
+        if (req.url === '/api/tags') {
+          tagsHit = true
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ models: [{ name: 'test-model' }] }))
+          return
+        }
+        if (req.url === '/api/generate') {
+          generateHit = true
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ response: 'should-not-be-used', eval_count: 1, prompt_eval_count: 1 }))
+          return
+        }
+        res.writeHead(404); res.end()
       })
       const gatewayPort = await startServer((req, res) => {
         if (req.url === '/chat/completions' && req.method === 'POST') {
@@ -113,7 +124,75 @@ describe('local-llm.sh gateway mode (card f3f4b571)', () => {
       }))
       expect(r.status).toBe(0)
       expect(r.stdout.trim()).toBe('gateway-reply')
-      expect(ollamaHit).toBe(false)
+      // The GUARANTEE this test pins: generation never bypasses the gateway by calling Ollama's
+      // native /api/generate directly. A lightweight /api/tags verification call IS now expected
+      // (the F1 fix below) -- that is not a bypass, it never runs the model.
+      expect(generateHit).toBe(false)
+      expect(tagsHit).toBe(true)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('ON, --model is NOT one Ollama has pulled (e.g. a catalog/cloud id like "auto"): refuses before any gateway request (F1 fix, Cybersec MEDIUM, comment 29593 -- live-measured: gateway mode used to forward "auto" straight to freellmapi, which routed it to openrouter)', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      const ollamaPort = await startServer((req, res) => {
+        if (req.url === '/api/tags') {
+          // "auto" is deliberately absent -- only "test-model" (a DIFFERENT model than the one
+          // requested below) is pulled.
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ models: [{ name: 'test-model' }] }))
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+      let gatewayHit = false
+      const gatewayPort = await startServer((_req, res) => {
+        gatewayHit = true
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'should-not-be-used' } }], usage: {} }))
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const r = await run(baseEnv({
+        OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }), ['--model', 'auto', 'hello'])
+      expect(r.status).toBe(3)
+      expect(gatewayHit).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('ON, Ollama is unreachable: fails closed (die 2) rather than trusting an unverifiable model, never calls the gateway (F1 fix)', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      let gatewayHit = false
+      const gatewayPort = await startServer((_req, res) => {
+        gatewayHit = true
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'should-not-be-used' } }], usage: {} }))
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const r = await run(baseEnv({
+        OLLAMA_HOST: 'http://127.0.0.1:1',
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }))
+      expect(r.status).toBe(2)
+      expect(gatewayHit).toBe(false)
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
     }
