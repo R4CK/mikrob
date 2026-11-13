@@ -1091,17 +1091,33 @@ describe('try_leaf() Gemini fallback paths (card a92e9913)', () => {
     expect(src(DISPATCH)).not.toContain('GEMINI FALLBACK for ONLINE-category leaves')
   })
 
-  it('calls try_gemini_for_leaf when exhausted attempts', () => {
+  it('calls try_gemini_for_leaf before post_exhausted_notice on the exhausted-attempts path', () => {
+    // A fixed-char-window check (the prior version of this test) is fragile: any unrelated line
+    // added between the two calls (e.g. card 5aa686f0's freellm_fallback_exhausted_site call)
+    // pushes try_gemini_for_leaf out of the window without the actual invariant -- try_gemini is
+    // tried before giving up -- ever breaking. Assert the invariant directly: inside try_leaf()'s
+    // own function body, the (last) try_gemini_for_leaf call site sits BEFORE the
+    // post_exhausted_notice call site, by string index.
     const dispatchSrc = src(DISPATCH)
-    // There must be a try_gemini_for_leaf call near OFFLOAD_LEAF_MAX_ATTEMPTS / post_exhausted_notice
-    const exhaustIdx = dispatchSrc.indexOf('post_exhausted_notice')
-    expect(exhaustIdx).toBeGreaterThan(-1)
-    // Look in a window before the first post_exhausted_notice call (the call site, not the def)
-    // Find the second occurrence (first is the function definition)
-    const secondIdx = dispatchSrc.indexOf('post_exhausted_notice', exhaustIdx + 1)
-    const windowStart = Math.max(0, secondIdx - 400)
-    const nearExhausted = dispatchSrc.slice(windowStart, secondIdx + 100)
-    expect(nearExhausted).toContain('try_gemini_for_leaf')
+    const fnStart = dispatchSrc.indexOf('try_leaf() {')
+    expect(fnStart).toBeGreaterThan(-1)
+    const fnEnd = dispatchSrc.indexOf('\n}\n', fnStart)
+    expect(fnEnd).toBeGreaterThan(fnStart)
+    const fnBody = dispatchSrc.slice(fnStart, fnEnd)
+
+    const geminiIdx = fnBody.lastIndexOf('try_gemini_for_leaf')
+    const exhaustedIdx = fnBody.indexOf('post_exhausted_notice')
+    expect(geminiIdx).toBeGreaterThan(-1)
+    expect(exhaustedIdx).toBeGreaterThan(-1)
+    expect(geminiIdx).toBeLessThan(exhaustedIdx)
+
+    // Mutation check: rotate the body around the post_exhausted_notice call so it comes FIRST.
+    // The same index comparison must then disagree -- proves this assertion is actually sensitive
+    // to call order, not just to both strings being present somewhere in the file.
+    const swapped = fnBody.slice(exhaustedIdx) + fnBody.slice(0, exhaustedIdx)
+    const swappedGeminiIdx = swapped.lastIndexOf('try_gemini_for_leaf')
+    const swappedExhaustedIdx = swapped.indexOf('post_exhausted_notice')
+    expect(swappedGeminiIdx).toBeGreaterThan(swappedExhaustedIdx)
   })
 
   it('fast-path when LOCAL_LLM_AVAILABLE=0: skip RAG, go straight to Gemini', () => {
