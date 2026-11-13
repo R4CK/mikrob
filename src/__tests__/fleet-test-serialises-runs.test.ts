@@ -79,7 +79,14 @@ function code(text: string): string {
 function withoutLockMachinery(txt: string): string {
   return txt
     .replace(/\ncommand -v flock[^\n]*\n/, '\n')
-    .replace(/\nexec 9>"\$LOCK_FILE"[\s\S]*?\nfi\n/, '\n')
+    // Card b7d8ecc4 (round 3): the tree lock became a ticket-aware WHILE loop, which nests an
+    // inner `fi` (the announce-once branch) before the loop's own close. Stopping at the first
+    // `\nfi\n` (the old anchor, right for the earlier single-statement shape) now stops inside the
+    // loop body and leaves the loop's own `flock -n 9` call standing -- measured: it silently made
+    // the two tests below vacuous again, the exact class this file's own history already names.
+    // Anchored on the loop's `\ndone\n` instead, which is unambiguous: this is the only while-loop
+    // between `exec 9>"$LOCK_FILE"` and the worktree-creation block that follows it.
+    .replace(/\nexec 9>"\$LOCK_FILE"[\s\S]*?\ndone\n/, '\n')
 }
 
 function problems(source: string): string[] {
@@ -99,6 +106,11 @@ function problems(source: string): string[] {
   const vitest = at('npx vitest')
 
   if (lock < 0) found.push('no lock at all')
+  // Cybersec F1 (card b7d8ecc4 round 3, comment 30174): `exec 9>` alone (opening the fd) satisfied
+  // the `lock` check above even with the tree mutex's own ticket-loop `flock -n 9` call deleted --
+  // the fd being open is not the same as the lock being taken. Anchored on the loop actually
+  // calling flock on that fd, not just opening it.
+  if (!/while !.*flock -n 9/.test(text)) found.push('the tree mutex is never actually taken')
   if (checkout < 0 || vitest < 0) found.push('this test is looking at the wrong file')
   // The critical section must START before the first mutation. A lock taken after the checkout
   // would leave the exact window this card is about wide open.
@@ -119,11 +131,15 @@ function problems(source: string): string[] {
   if (/LOCK_FILE="\$\{?TEST_TREE\}?\//.test(text)) found.push('the lock file lives inside the tree git clean wipes')
 
   // A wait with no bound hangs the fleet on one stuck holder; a wait that is not fatal on timeout
-  // silently proceeds into the unsynchronised case.
-  const wait = at(/flock -w "\$LOCK_WAIT_SECONDS"/)
-  if (wait < 0) found.push('the wait is unbounded')
-  // `die` has to follow the bounded wait, allowing for the line continuation between them.
-  else if (!/\|\|\s*die/.test(text.slice(wait, wait + 160))) found.push('a lock timeout is not fatal')
+  // silently proceeds into the unsynchronised case. Card b7d8ecc4 (round 3): the single blocking
+  // `flock -w "$LOCK_WAIT_SECONDS"` call became a polling loop (ticket queue, N3 fix) so a waiter
+  // can re-check ticket-head between attempts -- anchored on the bounded, fatal TIMEOUT BRANCH
+  // itself now, not on one literal flock invocation, the same narrowing the CPU-pool guard already
+  // made for its own analogous loop (card 492a6d5c's Cybersec delta).
+  const timeoutBranch = at(/-ge "\$LOCK_WAIT_SECONDS"/)
+  if (timeoutBranch < 0) found.push('the wait is unbounded')
+  else if (!/\bdie\b/.test(text.slice(timeoutBranch, text.indexOf('\n  fi', timeoutBranch) + 1)))
+    found.push('a lock timeout is not fatal')
   if (!/command -v flock/.test(text)) found.push('a missing flock is not detected')
 
   return found
@@ -168,6 +184,16 @@ describe('fleet-test.sh serialises suite runs machine-wide (cards 85faec1b, 2f0c
     // checkout contains every string this file looks for and leaves the bug intact.
     const late = withoutLockMachinery(text).replace('npx vitest run', 'flock -n 9\nnpx vitest run')
     expect(problems(late)).toContain('the lock is taken AFTER the checkout')
+  })
+
+  it('CONTROL: the tree mutex fd being OPENED is not the same as it being TAKEN (Cybersec F1, 30174)', () => {
+    // exec 9>"$LOCK_FILE" alone satisfies the `lock` anchor above -- opening the fd is not taking
+    // the lock. This mutant deletes only the actual flock call from the ticket-loop's condition,
+    // leaving the fd-open line and everything else intact: no machine-wide exclusion happens, but
+    // every other check in this file stayed green on it before this round's fix.
+    const neverTaken = text.replace('&& flock -n 9; }; do', '&& true; }; do')
+    expect(neverTaken, 'the mutation did not apply -- the ticket-loop condition was not found').toContain('&& true; }; do')
+    expect(problems(neverTaken)).toContain('the tree mutex is never actually taken')
   })
 
   // --- The resolved value, not the source text (card 43ecdbe6) -------------------------------

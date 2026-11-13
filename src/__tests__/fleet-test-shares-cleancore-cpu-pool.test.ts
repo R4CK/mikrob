@@ -119,7 +119,12 @@ function problems(source: string): string[] {
 
   // A wait with no bound hangs a landing on one stuck holder forever; a wait that is not fatal on
   // timeout silently proceeds unsynchronised, which is the exact bug this card fixes.
-  const waitLoop = at(/while ! acquire_cpu_slot/)
+  // Card b7d8ecc4 (round 3, N3 fix): the loop head gained a ticket-head check ahead of the
+  // acquire call (`while ! { fleet_test_is_head ... && acquire_cpu_slot; }`), so the bare
+  // `while ! acquire_cpu_slot` anchor no longer matches. Widened to find the call anywhere on
+  // the loop-head line -- still a narrowing relative to matching it anywhere in the file, since
+  // `while !` pins it to a loop condition specifically.
+  const waitLoop = at(/while !.*acquire_cpu_slot/)
   if (waitLoop < 0) found.push('the CPU-slot wait is not a bounded retry loop')
   else if (!/CPU_WAIT_MAX_S/.test(t.slice(waitLoop, waitLoop + 400))) found.push('the CPU-slot wait has no bound')
   else {

@@ -1163,6 +1163,11 @@ land_one() {
   # Scoped to this landing: --all lands several agents in one run, and a stale name here would post
   # one agent's queueing notice onto another agent's card.
   export FLEET_TEST_AGENT="$agent"
+  # Card b7d8ecc4: every fleet-test.sh call this function runs (below) holds the develop-push lock
+  # for its whole wait, so it must jump fleet-test's own queue ahead of non-land callers -- see
+  # fleet-test.sh's FLEET_TEST_PRIORITY/fleet_test_is_head for why. Exported once here, inherited
+  # by every run_fg_killable subshell/eval in this function.
+  export FLEET_TEST_PRIORITY=land
   KANBAN_COMMENT_AGENT="$agent"
 
   g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 0; }
