@@ -59,9 +59,13 @@
 #   OLLAMA_RESTORE_START_CMD_OVERRIDE  - command to run instead of `systemctl --user start <unit>` (test)
 #   OLLAMA_RESTORE_UNIT_NAME       - the systemd --user unit to start (default ollama)
 #   OLLAMA_RESTORE_ALERT_DRYRUN    - if 1, print "ALERT_DRYRUN: <msg>" instead of a real Telegram send
-#   (a failed restart alerts via the same alert_owner() + OLLAMA_RESTORE_ALERT_DRYRUN seam, rate-
-#   limited by $STATE_DIR/.ollama-boot-restore-fail-alerted -- one alert per failure streak, cleared
-#   on the next successful start)
+#   OLLAMA_RESTORE_ALERT_FAIL_OVERRIDE - if 1, alert_owner() simulates a failed send (returns 1, no
+#                                         network) without touching OLLAMA_RESTORE_ALERT_DRYRUN (test)
+#   OLLAMA_RESTORE_PROBE_SLEEP_SEC - seconds between post-restart /api/tags probes (default 2, test)
+#   (a failed restart -- nonzero start_rc OR a successful start that never answers /api/tags --
+#   alerts via alert_owner(), rate-limited by $STATE_DIR/.ollama-boot-restore-fail-alerted: one
+#   alert per failure streak, set only on a CONFIRMED send, cleared whenever Ollama is next found
+#   healthy -- by this script's own restart or by anyone else's manual fix)
 #   OLLAMA_HOST                    - Ollama base URL (default http://127.0.0.1:11434)
 #
 # CLI: ollama-boot-restore.sh   -- one cycle (what the caller runs every sweep)
@@ -89,17 +93,50 @@ alert_owner() {
   if [ "${OLLAMA_RESTORE_ALERT_DRYRUN:-}" = "1" ]; then
     echo "ALERT_DRYRUN: $msg"; return 0
   fi
+  if [ "${OLLAMA_RESTORE_ALERT_FAIL_OVERRIDE:-}" = "1" ]; then
+    log "ALERT sendMessage FAILED (test override): $msg"; return 1
+  fi
   token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
   chat="$(grep -E '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
   [ -z "$chat" ] && chat="$(grep -E '^TELEGRAM_CHAT_ID=' "$TG_ENV" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "ALERT (no bot token or owner chat id configured, could not Telegram): $msg"; return 1
   fi
-  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$token" \
+  # Card a49d1e1a F3: the old `cmd && log A || log B` shape returned the exit status of whichever
+  # `log` (a bare echo) ran, which is always 0 -- so this function reported success even when curl
+  # failed. The caller's rate-limit stamp depended on that lie: it was written unconditionally on
+  # any alert attempt, so a genuinely undelivered alert still silenced every later sweep. Fixed to
+  # propagate curl's actual exit status.
+  if printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$token" \
     | curl -s -m 10 -o /dev/null -K - \
-    --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}" \
-    && log "owner alerted via direct Bot API" || log "ALERT sendMessage FAILED: $msg"
+    --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}"; then
+    log "owner alerted via direct Bot API"
+    return 0
+  else
+    log "ALERT sendMessage FAILED: $msg"
+    return 1
+  fi
 }
+
+# Card a49d1e1a F3: set the rate-limit stamp ONLY after alert_owner confirms delivery (DRYRUN counts
+# as delivered, same as everywhere else in this script). An undelivered alert must not silence the
+# next sweep's retry.
+alert_failure_once() {
+  local msg="$1"
+  if [ -f "$FAIL_ALERTED_STAMP" ]; then
+    return 0
+  fi
+  if alert_owner "$msg"; then
+    mkdir -p "$STATE_DIR"
+    touch "$FAIL_ALERTED_STAMP"
+  fi
+}
+
+# Card a49d1e1a F2: whoever actually fixed Ollama (this script's own restart, or a manual
+# intervention this script merely notices on a later sweep) must reopen the alert for the NEXT
+# failure streak -- a stamp that only this script's own successful restart clears stays stuck
+# silent forever after a manual fix.
+clear_fail_alert_stamp() { rm -f "$FAIL_ALERTED_STAMP"; }
 
 ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 
@@ -184,11 +221,13 @@ except Exception:
 main() {
   if already_running_or_listening; then
     log "Ollama already up (port/pid check) -- nothing to do"
+    clear_fail_alert_stamp
     return 0
   fi
 
   if ollama_up; then
     log "Ollama already answering /api/tags -- nothing to do"
+    clear_fail_alert_stamp
     return 0
   fi
 
@@ -292,26 +331,28 @@ main() {
     # alert-once-per-streak shape as the mask alert above (detected_at vs. a plain stamp file,
     # since a failure streak has no distinct identity to key on): alert once, then stay silent
     # until a start succeeds again.
-    if [ ! -f "$FAIL_ALERTED_STAMP" ]; then
-      alert_owner "Ollama boot-restore sikertelen (rc=${start_rc}): $start_cmd -- a kovetkezo sweep ujra probalja, tovabbi ertesites csak sikeres inditas utan jon."
-      mkdir -p "$STATE_DIR"
-      touch "$FAIL_ALERTED_STAMP"
-    fi
+    alert_failure_once "Ollama boot-restore sikertelen (rc=${start_rc}): $start_cmd -- a következő sweep újra próbálja, további értesítés csak sikeres indítás után jön."
     return 0
   fi
-  rm -f "$FAIL_ALERTED_STAMP"
 
-  local tries=0
+  local tries=0 probe_sleep="${OLLAMA_RESTORE_PROBE_SLEEP_SEC:-2}"
   while [ "$tries" -lt 10 ]; do
-    sleep 2
+    sleep "$probe_sleep"
     if ollama_up; then break; fi
     tries=$((tries + 1))
   done
 
   if ! ollama_up; then
+    # Card a49d1e1a F1 (WhiteHat2 CYBERSEC GO on 84181422, finding not blocking that card): the
+    # systemctl start itself can return 0 while Ollama never actually comes up and answers --
+    # the usual systemd failure shape (unit starts, process dies or hangs) -- and the previous
+    # code only alerted on a nonzero start_rc, so this case gave 0 alerts no matter how many
+    # sweeps it repeated across.
     log "restart attempted but /api/tags still not answering after ${tries} probes -- giving up this cycle, next sweep will retry"
+    alert_failure_once "Ollama boot-restore: a start parancs sikeres volt (rc=0), de az Ollama ${tries} próbálkozás után sem válaszol -- a következő sweep újra próbálja, további értesítés csak sikeres indítás után jön."
     return 0
   fi
+  clear_fail_alert_stamp
   log "/api/tags answering -- Ollama is back up"
 
   # Best-effort 1-token generate probe. Non-fatal either way: a missing/misconfigured model file must

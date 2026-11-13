@@ -25381,3 +25381,39 @@ VALÓDI saját commitja (e3787f5d8, tartalom-azonos a fenti négy fájlon) friss
 cherry-pickelve, a DECISIONS.md bejegyzés (ez a blokk) kézzel újra a fájl VÉGÉRE fűzve, mert az
 eredeti append pozíciója (akkori sor 23770) közben elavult. A verdikt áthozva, nem újra-reviewolva --
 lásd a landoló komment a pontos per-fájl blob-azonosság igazolással.
+
+## 2026-11-13 -- ollama-boot-restore alert gaps closed: health-probe failure, stale stamp, undelivered send (card a49d1e1a)
+
+**Döntés:** four alert gaps flagged by WhiteHat2's CYBERSEC GO on card 84181422 @e74c7b399 (msg 18055,
+not blocking that card) are closed in `scripts/ollama-boot-restore.sh`:
+- **F1:** a start that returns rc=0 but Ollama never answers the post-restart probe now calls
+  `alert_failure_once()` too (previously only rc!=0 alerted) -- a new `OLLAMA_RESTORE_PROBE_SLEEP_SEC`
+  env seam (default 2s, unchanged) lets tests exercise the full retry loop fast.
+- **F2:** `clear_fail_alert_stamp()` now runs at the TOP of `main()` on both early-return health checks
+  (pid/port override already up, or the real probe already up), not only after this script's own
+  successful restart -- so a manual recovery noticed on a later sweep also reopens the alert for the
+  next failure streak, instead of leaving a stale stamp that silences it.
+- **F3:** `alert_owner()`'s old `cmd && log A || log B` shape always returned 0 (the exit status of
+  whichever `log` ran), so the stamp was set unconditionally on any alert attempt, even an undelivered
+  one. Rewritten to propagate curl's real exit status; `alert_failure_once()` now only touches the
+  stamp if `alert_owner` returned 0. New test seam `OLLAMA_RESTORE_ALERT_FAIL_OVERRIDE` simulates a
+  failed send with no network call; it is checked right after the DRYRUN check, before any real
+  token/chat lookup, so the simulated failure is deterministic regardless of whether this box has
+  Telegram configured (an earlier version placed it after the token lookup, which hid the override
+  behind this box's own "no token configured" branch in testing).
+- **F4:** the owner-facing failure alert text is accented Hungarian (spelling rule for Peti-facing
+  text), confirmed by a new test that greps the script source for the literal alert strings and
+  asserts an accented character is present.
+
+4 new tests added, all confirmed non-vacuous by reverting the script fix and watching exactly these
+tests go red (6 failures: the F1/F2/F3 assertions plus the F4 accent check) while the rest of the
+45-test suite stayed green. A separate bug was found and fixed in the test file itself during this
+round: `start_ok_server()` (added for F1/F2, a real loopback HTTP server simulating Ollama genuinely
+answering) backgrounded its python3 server inside a `$(...)` command substitution without redirecting
+its stdout -- the server inherited the substitution's pipe and, since a server never exits, the
+substitution never saw EOF and the whole test run hung indefinitely (measured: stuck 15+ minutes with
+zero output after "syntax OK"). Fixed by redirecting the backgrounded server's stdout/stderr to
+`/dev/null` explicitly.
+
+**Ki döntött:** DevO (fullstack), card a49d1e1a, off WhiteHat2's CYBERSEC GO findings on 84181422.
+Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
