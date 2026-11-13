@@ -24401,3 +24401,23 @@ discarding an in-flight local draft on switch-back.
 
 **Ki döntött:** Peti (Telegram 13663), dispatched by MikroB, built by backend2. Gate: QA +
 Cybersec.
+
+## 2026-11-13 -- card 7f112c2f delta: Cybersec NO-GO f859c361b fixed (H1/M1/M2/M3)
+
+**Decision:** replaced the GPU-lock-wait-then-leave-running switch-back fallback with a
+stop-file gemini-ghost-runner.sh's own loop checks between ticks, plus waiting on the actual
+process handle exiting (quota-bridge.py's request_ghost_stop/wait_for_ghost_exit) -- H1 (HIGH):
+the superseded version could leave the ghost runner's `while true` loop alive unmanaged forever
+once the 10 min GPU-lock wait timed out, since it never consults the outage marker or its
+parent; removed gpu_lock_held/wait_for_local_job as now-unused. Extracted quota-resume.sh's
+backoff writer into its own quota-resume-backoff-write.py calling
+quota_switchback.compute_backoff_sec directly, and made sched-precheck-quota-reset-resume.sh's
+paths/clock env-overridable, so the Kesz-ha 1 selftest drives the real production code instead
+of a private copy (M1). Added mutation-proven wiring tests for confirm_switchback and the new
+H1 functions inside outage_loop() to quota-bridge.selftest.py, fixing three pre-existing cases
+(F-RH-V4, F1, Y1) that silently assumed pre-hysteresis "single probe recovers" behaviour and
+would otherwise spin forever once run (M2). Added a >=300s-span OK/LIMITED/OK regression case
+to both the Python and TS confirm_switchback selftests (M3).
+
+**Ki döntött:** Cybersec NO-GO (comment 30315, Gate-SHA f859c361b), fixed by backend2. Gate:
+QA2 + Cybersec.
