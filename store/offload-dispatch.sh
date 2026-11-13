@@ -558,6 +558,45 @@ PYEOF
   is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" "$require_marker"
 }
 
+# --- F3 ROUTING-TABLE SHADOW LOGGING (card cdde2666, MikroB plan-grilling verdict comments
+# 29500/29506/29589) -----------------------------------------------------------------------------
+# THIS CARD'S SCOPE IS SHADOW-LOGGING ONLY. CARD_ROUTE_MODE legacy|shadow|table, default legacy.
+# legacy: this function returns immediately, touches no file, calls no process -- byte-identical
+# to before this card existed.
+# shadow / table: computes what the routing TABLE would pick for a non-sensitive mechanical
+# fragment and appends ONE log line next to the LEGACY decision this file already made elsewhere
+# -- it never changes attempted/drafted or which branch runs. "table" is accepted as a value so a
+# caller does not have to guess it exists, but it is deliberately INERT here (identical to
+# shadow): turning it into an actual routing change needs the measured shadow results plus Peti's
+# approval (comment 29506 point 2), not given yet.
+#
+# NO SECOND SENSITIVITY CLASSIFIER: this reuses the EXACT SAME is_freellm_blocked()/lveto this
+# file already calls for the real decision -- the sensitivity detector does not get a second,
+# possibly-diverging copy just because a log line wants its own opinion.
+CARD_ROUTE_TABLE="${OFFLOAD_CARD_ROUTE_TABLE:-$HERE/card-route-table.sh}"
+CARD_ROUTE_SHADOW_LOG="${OFFLOAD_CARD_ROUTE_SHADOW_LOG:-$HERE/card-route-shadow.log}"
+card_route_shadow_log() { # $1=lid $2=ltitle $3=ldesc $4=ltags $5=lproject $6=lveto $7=lsynthetic $8=lpost_id
+  case "${CARD_ROUTE_MODE:-legacy}" in
+    shadow|table) ;;
+    *) return 0 ;;
+  esac
+  [[ -x "$CARD_ROUTE_TABLE" || -f "$CARD_ROUTE_TABLE" ]] || return 0
+  local lid="$1" ltitle="$2" ldesc="$3" ltags="$4" lproject="$5" lveto="$6" lsynthetic="$7" lpost_id="${8:-$1}"
+  # Fragment TYPE comes from the synthetic leaf id's "~type" suffix (card 501c489f's own
+  # decompose naming, "$realCardId~$type"); a real, non-decomposed leaf has none, logged as "leaf".
+  local ftype=leaf
+  [[ "$lsynthetic" == *'~'* ]] && ftype="${lsynthetic##*~}"
+  local sensitive=non-sensitive
+  if [[ "$lveto" == "true" ]] || is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
+    sensitive=sensitive
+  fi
+  local chain; chain="$(bash "$CARD_ROUTE_TABLE" --type "$ftype" 2>/dev/null)"
+  [[ -n "${chain// }" ]] || chain="-"
+  printf '%s\tcard=%s\tleaf=%s\ttype=%s\tsensitive=%s\ttable-chain=%s\tmode=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$lpost_id" "$lid" "$ftype" "$sensitive" "$chain" "${CARD_ROUTE_MODE:-legacy}" \
+    >> "$CARD_ROUTE_SHADOW_LOG" 2>/dev/null || true
+}
+
 # gemini_route_enabled: returns 0 (true) when the Gemini route is active.
 # Fail-closed: the flag file must EXPLICITLY exist; absence = disabled.
 # Default ship state: disabled (store/gemini-offload-enabled does not exist).
@@ -1672,6 +1711,17 @@ if [[ "${1:-}" == "--check-freellm-blocked" ]]; then
   exit 42
 fi
 
+# --test-route-shadow LID TITLE DESC TAGS PROJECT VETO SYNTHETIC [POSTID]: exposes
+# card_route_shadow_log() directly (card cdde2666), the same function and only call site the main
+# leaf loop uses -- no reimplementation to test against. Lets the selftest drive it without a live
+# dashboard or the base64/pipe leaf-loop shape. Always exits 0 (the real call site never checks a
+# return value either -- this is log-only, best-effort).
+if [[ "${1:-}" == "--test-route-shadow" ]]; then
+  shift
+  card_route_shadow_log "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"
+  exit 0
+fi
+
 # --test-heavy-enabled: prints "on"/"off" per gemini_heavy_second_opinion_enabled() (card f0b3b674).
 if [[ "${1:-}" == "--test-heavy-enabled" ]]; then
   if gemini_heavy_second_opinion_enabled; then echo "on"; else echo "off"; fi
@@ -2125,6 +2175,10 @@ if len(body.strip()) < 30:
 else:
     print(desc)
 ')"
+  # F3 SHADOW LOGGING (card cdde2666): one call site shared by BOTH branches below, placed before
+  # either runs so the shadow log always reflects the same ldesc (post boilerplate-filter) the
+  # real is_freellm_blocked call in whichever branch runs will see. legacy mode (default): no-op.
+  card_route_shadow_log "$lid" "$ltitle" "$ldesc" "$ltags" "$lproject" "$lveto" "$lsynthetic" "$lpost_id"
   attempted=$(( attempted + 1 ))
   # CAPACITY_HOLD (card 4eb3743e): under a GPU-hold the local path is skipped entirely in favor of
   # freellm -- try_leaf() is never called on this tick (it would just re-measure the same hold).
