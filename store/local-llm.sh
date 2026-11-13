@@ -140,6 +140,43 @@ die() { echo "local-llm: $2" >&2; exit "$1"; }
 
 ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 
+# model_pulled MODEL: exact-match check against Ollama's OWN /api/tags listing (fed on stdin),
+# replacing the `grep -q "${MODEL%%:*}"` substring test (Cybersec GO 29776 F-A / Cybered NO-GO
+# 29789 F-B, card cdde2666, MikroB dispatch msg 17674). The old test searched the needle
+# (everything before the model's first colon, as an unanchored basic regex) anywhere in the
+# RAW /api/tags response body -- matching JSON keys/digests/families/quantization strings, not
+# just model names, and matching ANY locally-pulled model whose name happened to start with that
+# prefix. Measured exploitable shape: a locally-pulled model literally named
+# "starcoder2-autocomplete" makes "auto" and "auto:chain" pass the old check, and freellmapi's
+# own router treats exactly those two strings as "route to the cloud" (isAutoModel: "auto" or an
+# "auto:" prefix) -- Cybersec's original F1 (comment 29593) reproduced under one ordinary local
+# install. An empty or "." needle matched everything unconditionally.
+# This instead: rejects any name containing a character outside the safe set first (defense in
+# depth, independent of what Ollama happens to have pulled); canonicalises a missing ":latest"
+# suffix the exact way model_switch_state() already does above (so "qwen2.5-coder" and
+# "qwen2.5-coder:latest" are the same model on both sides of the comparison); and only accepts an
+# EXACT set-membership match against the real model names /api/tags returned, never a substring
+# or regex search over the response body.
+model_pulled() {
+  MODEL="$1" python3 -c '
+import json, os, re, sys
+name = os.environ["MODEL"]
+if not name or not re.fullmatch(r"[A-Za-z0-9._/:-]+", name):
+    sys.exit(1)
+canon = name if ":" in name else name + ":latest"
+try:
+    doc = json.load(sys.stdin)
+    names = set()
+    for m in doc.get("models", []):
+        n = m.get("name", "")
+        if n:
+            names.add(n if ":" in n else n + ":latest")
+    sys.exit(0 if canon in names else 1)
+except Exception:
+    sys.exit(1)
+'
+}
+
 # card 10c3fbeb: an "ollama down" banner alone can't tell a caller (or a human) whether Ollama
 # crashed, or gpu-crashloop-guard.sh deliberately stopped+masked it after a real GPU crash-loop.
 # Those are different situations -- one needs `systemctl --user start ollama`, the other needs the
@@ -649,6 +686,21 @@ if [[ "$GATEWAY_ENABLED" == "true" ]]; then
   [[ -r "$GATEWAY_AUTH_TOKEN_FILE" ]] || die 2 "gateway mode is ON but $GATEWAY_AUTH_TOKEN_FILE is not readable -- no auth token available"
   GATEWAY_AUTH_TOKEN="$(tr -d '\n' < "$GATEWAY_AUTH_TOKEN_FILE")"
   [[ -n "$GATEWAY_AUTH_TOKEN" ]] || die 2 "gateway mode is ON but $GATEWAY_AUTH_TOKEN_FILE is empty"
+
+  # F1 FIX (Cybersec MEDIUM, comment 29593 on Gate-SHA b0b99ec77, card cdde2666 precondition
+  # 29595/17584): the direct path below refuses any $MODEL Ollama has not pulled (the
+  # "model not pulled" check further down), but that check only runs on a FAILED direct call --
+  # this gateway branch never ran it at all, so $MODEL went to freellmapi's /chat/completions
+  # VERBATIM. Live-measured: `--model auto` with gateway ON reached openrouter (freellmapi
+  # req 34, platform=openrouter), while the direct path refuses "auto" outright (exit 3, zero
+  # request). Fixed by requiring $MODEL to be present in Ollama's OWN /api/tags listing before
+  # any gateway request is built -- the SAME source of truth the direct path's pull-check uses,
+  # not a second, maybe-stale hardcoded allowlist. Ollama unreachable -> fail closed (die 2):
+  # an unverifiable model is never treated as safe.
+  ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)$(gpu_guard_mask_note)"
+  curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | model_pulled "$MODEL" \
+    || die 3 "model '$MODEL' not pulled -- run: ollama pull $MODEL (gateway mode only forwards models Ollama has actually pulled, same as the direct path)"
+
   GATEWAY_AUTH_HDR="$(mktemp)"; chmod 0600 "$GATEWAY_AUTH_HDR"
   printf 'Authorization: Bearer %s\n' "$GATEWAY_AUTH_TOKEN" > "$GATEWAY_AUTH_HDR"
 
@@ -750,7 +802,7 @@ RESP=$("${GEN_CMD[@]}" 2>/dev/null) || {
     die 6 "gpu lock busy -- could not acquire within ${GPU_LOCK_WAIT}s (not a generation failure)"
   fi
   # distinguish model-missing from generic error
-  if ollama_up && ! curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | grep -q "${MODEL%%:*}"; then
+  if ollama_up && ! curl -fsS -m 5 "$OLLAMA_HOST/api/tags" | model_pulled "$MODEL"; then
     die 3 "model '$MODEL' not pulled -- run: ollama pull $MODEL"
   fi
   die 5 "ollama api error (timeout ${TIMEOUT}s or server error)"

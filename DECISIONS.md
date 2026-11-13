@@ -24546,3 +24546,47 @@ from OSV. `npm audit --omit=dev` before: 2 high + 4 moderate. After: 0.
 closing them with a scoped diff and a green `fleet-test.sh` run on the landed sha.
 
 **Ki döntött:** DevO (fullstack), card 4e7fc07f (assignee fullstack, gate QA + Cybersec).
+
+## 2026-11-13 — cdde2666 (F3): routing-table réteg SHADOW MODE-ban, nincs tényleges routing-váltás
+
+**Döntés:** F3 eredeti javaslata ("sensitive -> local first" + teljes routing-tábla LOCAL/ONLINE helyett) MikroB plan-grilling verdiktje (komment 29500, Peti jóváhagyás 29506) alapján VISSZAVONVA: az érzékenység és a nehézség két külön tengely, a mai ONLINE-okok többsége (multi-decision, vram-hold) nehézség/kapacitás, nem érzékenység -- a "sensitive -> local" sor megfordította volna a szándékos pénz/auth/tenant online-vétót. ÚJ, SZŰKEBB HATÓKÖR: a meglévő kapuk (card-build-route.sh determinisztikus okai, is_freellm_blocked/is_gemini_blocked tartalmi kapu, gemini-agy-category-check.py) MARADNAK az érzékenység-detektor; a routing-tábla réteg kizárólag azt dönti el, HOVA menjen egy már NEM-érzékenynek talált mechanikus töredék (freellm -> local -> Claude). MikroB átruházás (msg_id:17579) a hatókört tovább szűkítette: EBBEN a kártyában KIZÁRÓLAG a shadow-logolás épül, tényleges routing-döntés-változás nem.
+Megépült: (1) `store/card-route-table.json` -- adat-fájl, 4 töredék-típus (test-scaffold, i18n-keys, doc-update, type-def, a `card-decompose-templates.sh` valós listája) -> `["freellm","local","online"]` lánc. (2) `store/card-route-table.sh --type <t>` -- táblakeresés, hiányzó/hibás fájlnál vagy ismeretlen típusnál a `default` láncra esik vissza, soha nem hibázik. (3) `store/offload-dispatch.sh`: új `card_route_shadow_log()` függvény, EGYETLEN hívási pont a fő leaf-loopban (a CAPACITY_HOLD és a normál try_leaf ág közös pontján) -- `CARD_ROUTE_MODE` env var, legacy|shadow|table, alapérték legacy. Legacy: a függvény azonnal visszatér, semmit nem olvas/hív (bájt-azonos viselkedés, mutációs teszttel igazolva: a táblaszkript hívása nélkül is ugyanaz). Shadow/table: a MEGLÉVŐ is_freellm_blocked()/lveto hívással (nincs második, esetleg eltérő érzékenység-ellenőrzés) megállapítja érzékeny/nem-érzékeny, kikeresi a táblából a láncot, egy sort ír a `store/card-route-shadow.log`-ba -- a tényleges attempted/drafted kimenetet SOHA nem változtatja meg. A "table" mód mint kapcsoló-érték létezik, de SZÁNDÉKOSAN TETSZŐLEGES hatás nélkül (ugyanaz a log-only viselkedés, mint shadow) -- a tényleges routing-váltáshoz Peti jóváhagyása kell a mért shadow-eredmények alapján (komment 29506, 2. pont), ez még nem történt meg.
+(4) `store/card-route-table-replay.sh` -- a retro-check (MikroB msg_id:17579: "retro check that zero money/auth/security cards would have left"). A meglévő `store/card-build-route.log`-ban minden ONLINE-verdiktet, amelynek oka tartalmi-érzékeny (deterministic-sec-label/money/auth-tenant-scope/client-supplied-value/object-integrity/document-assembly -- a nehézség/kapacitás-okok, pl. multi-decision/vram-hold, szándékosan KIMARADNAK, más tengely), újra lekér a tábláról, és lefuttatja rajta a `gemini-agy-category-check.py`-t (a VALÓDI, tiszta tartalmi szűrő, ami minden freellm/Gemini kimenő hívást kapuz -- nem az is_freellm_blocked, mert az projekt-allowlistet és "gemini-ok" jelölőt IS kér, ami érdemi tartalmi ellenőrzés nélkül is "blokkolt"-at adna, és semmit nem bizonyítana). Élő futás a valódi logon (2026-11-13): checked=146, skipped=0, violations=0 -- a card-build-route.sh soha nem jelölt tartalmi-érzékenynek olyan kártyát, amit a tényleges egress-szűrő tisztának látna.
+Teszt: `card-route-table.selftest.sh` 11/11, `offload-dispatch.selftest.sh` 120/120 (8 új eset, mutációs teszttel igazolva: a shadow-log hívás kivételével 5 új eset pirosra vált), `card-route-table-replay.selftest.sh` 11/11 (mutációs teszttel igazolva).
+Nincs ebben a kártyában (következő lépés, csak table mód éles bekapcsolása után): a "gemini-ok" jelölő elhagyása freellm-hopoknál (Peti jóváhagyás 29506 1. pont, csak table módhoz kötve), hop-timeoutok/audit-ledger/embedding-fallback-tilalom (shadow módban nincs tényleges kimenő hívás, amin ezek érvényesülhetnének).
+**Ki döntött:** backend2 (kártya cdde2666, MikroB plan-grilling verdiktje 29500/29506 + átruházás msg_id:17579). Gate: QA + Cybersec + Cybered. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-13 — cdde2666 delta: local-llm.sh gateway-mode modell-allowlist (Cybersec MEDIUM F1, komment 29593)
+
+**Döntés:** Cybersec GO-ja F2-n (f3f4b571, Gate-SHA b0b99ec77, komment 29593) egy MEDIUM feltételt hagyott nyitva: gateway módban a `--model auto` (vagy bármilyen katalógus-/felhő-azonosító) a freellmapi-n keresztül a külső openrouter-re jutott (req 34, platform=openrouter), míg a direkt Ollama-út ugyanezt elutasítja (exit 3, nulla kérés). Ok: a direkt út "nincs lepullozva" ellenőrzése csak egy SIKERTELEN direkt hívás hibaágán fut, a gateway-ág ezt sosem futtatta, tehát `$MODEL` szó szerint ment a `/chat/completions`-nak. MikroB ezt a cdde2666 kártya előfeltételévé tette (komment 29595, msg_id:17584/17593): a javítás NE önálló kártyán, hanem ide kerüljön, egy Gate-SHA fedje mindkettőt.
+Javítás: a gateway-ág elején (az auth-token ellenőrzés UTÁN, bármilyen kimenő kérés ELŐTT) `ollama_up` + egy `curl .../api/tags | grep` ellenőrzés -- UGYANAZ a forrás (Ollama saját lepullozott-modell listája), amit a direkt út pull-check-je is használ, nem egy második, esetleg elavuló hardcode-olt lista. Ollama elérhetetlen -> fail-closed (`die 2`, "nem lehet ellenőrizni = nem biztonságos"); nem-lepullozott modell -> `die 3`, ugyanaz a hibaüzenet-konvenció mint a direkt útnál.
+Teszt (`src/__tests__/local-llm-gateway-mode.test.ts`, F2-ről cherry-pickelve + bővítve): a meglévő "routes through the gateway" eset most `/api/tags`-et IS elvárja (a modell-ellenőrzés miatt), de a VALÓDI garanciát (a generálás soha nem kerüli meg a gateway-t a natív `/api/generate`-en) külön `generateHit`/`tagsHit` jelzővel választja el. 2 ÚJ eset: `--model auto` gateway módban -> exit 3, nulla gateway-kérés (ez a Cybersec által élőben mért hiba pontos pinje); Ollama elérhetetlen gateway módban -> exit 2, nulla gateway-kérés. Mutációs ellenőrzés: a fix 3 sorának eltávolítása a 3 új/bővített esetet pirosra viszi (3/6 piros), vissza-visszaállítva 6/6 zöld. A meglévő timeout-safety-net teszt (4/4) és a direkt út változatlan marad.
+Nincs benne: a gateway-kapcsoló éles bekapcsolása (változatlanul Peti jóváhagyására vár), a cdde2666 shadow-logolási munkája (lásd fentebb) nem változott, nem is érinti ezt a fájlt.
+**Ki döntött:** backend2 (kártya cdde2666, Cybersec MEDIUM F1 komment 29593 + MikroB komment 29595/msg 17584/17593 alapján). Gate: QA + Cybersec + Cybered. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-13 -- card cdde2666: branch rebuild on origin/develop, drop stale F2 commit (MikroB msg 18090)
+
+**Kontextus:** F2 (card f3f4b571) landed for real into develop via 7ba464a5a (commit b0b99ec77).
+card/cdde2666's branch still carried its own F2 cherry-pick (d65b65ead), which is not an ancestor
+of develop (reconstructed branch) -- marveen-land.sh refused the land (19:48, MikroB msg 18090).
+
+**Döntés:** rebuilt card/cdde2666 from current origin/develop (61a258e38), dropping d65b65ead
+(confirmed byte-identical content to develop's own b0b99ec77 on the F2-only files,
+store/local-llm.sh and src/__tests__/local-llm-gateway-mode.test.ts -- empty diff). Cherry-picked
+the 3 genuine F3 commits on top: 364fe4a55 (routing-table layer, shadow-only) -> 17a1b0d7e,
+d7d837756 (gateway-mode model allowlist fix) -> 88e0a4cf6, 3f8918cb0 (real egress-gate replay +
+exact model-id allowlist) -> d4d42e166 (new sha, this commit's parent). 98f15d3fe (a pure type-fix)
+came through empty after the d7d837756 auto-merge already carried its change, skipped. The two
+pure-DECISIONS.md tail commits (4bd3605c5, 31040d4b1) are replaced by this single consolidated
+entry instead of being replayed (their content is already folded into the entries above, carried
+by the cherry-picks).
+
+Scoped diff against the previously-gated sha (31040d4b1, QA PASS 29895 / Cybersec GO 29896 /
+Cybered GO 29900): store/local-llm.sh, the three card-route-table* files, and
+src/__tests__/local-llm-gateway-mode.test.ts are byte-identical. store/offload-dispatch.sh and
+store/offload-dispatch.selftest.sh differ only by develop's own independent, unrelated changes to
+the same file since this branch's old base (card 5aa686f0's L1/L2 pins, card 22835648's
+env-compat-lib sourcing) -- confirmed by diff, nothing this card shipped was reverted or altered.
+
+**Ki döntött:** MikroB (msg 18090), rebuilt by backend2. Gate: delta re-stamp needed from QA,
+Cybersec, Cybered on the new tip (see REVIEW comment for the sha).

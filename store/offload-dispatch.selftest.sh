@@ -844,6 +844,84 @@ run_fallback_site "$DISPATCH" "${CAPHOLD_ARGS[@]}"
 check "L1 baseline (capacity-hold site, real code): blocked shape never reaches freellm-call.sh" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
 
+# --- F3 routing-table shadow logging (card cdde2666) -------------------------------------------
+# --test-route-shadow calls card_route_shadow_log() directly, the SAME function and only call
+# site the main leaf loop uses -- not a reimplementation.
+SHADOW_LOG="$TMPDIR/card-route-shadow.log"
+
+# Case 7: CARD_ROUTE_MODE unset (the default) is byte-identical to before this card -- the
+# function must return before even checking whether the table script exists. Proven by pointing
+# CARD_ROUTE_TABLE at a script that WOULD fail loudly if ever invoked; legacy mode must never call it.
+rm -f "$SHADOW_LOG" "$TMPDIR/table-must-not-run.sh"
+cat > "$TMPDIR/table-must-not-run.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "SHOULD NEVER RUN" >&2
+exit 7
+EOF
+chmod +x "$TMPDIR/table-must-not-run.sh"
+OFFLOAD_CARD_ROUTE_TABLE="$TMPDIR/table-must-not-run.sh" OFFLOAD_CARD_ROUTE_SHADOW_LOG="$SHADOW_LOG" \
+  bash "$DISPATCH" --test-route-shadow leafA "readme fix" "small readme fix" "" mikrob false "card1~doc-update" card1
+check "legacy mode (CARD_ROUTE_MODE unset): no shadow log file is created" \
+  "$([[ -f "$SHADOW_LOG" ]] && echo exists || echo absent)" "absent"
+
+# Case 8: CARD_ROUTE_MODE=legacy (explicit) is the same as unset.
+rm -f "$SHADOW_LOG"
+CARD_ROUTE_MODE=legacy OFFLOAD_CARD_ROUTE_TABLE="$TMPDIR/table-must-not-run.sh" OFFLOAD_CARD_ROUTE_SHADOW_LOG="$SHADOW_LOG" \
+  bash "$DISPATCH" --test-route-shadow leafA "readme fix" "small readme fix" "" mikrob false "card1~doc-update" card1
+check "legacy mode (explicit): no shadow log file is created" \
+  "$([[ -f "$SHADOW_LOG" ]] && echo exists || echo absent)" "absent"
+
+# Case 9: shadow mode logs a non-sensitive mechanical fragment, with the table chain, without
+# acting on it (the function never returns a routing decision to anything).
+rm -f "$SHADOW_LOG"
+CARD_ROUTE_MODE=shadow OFFLOAD_CARD_ROUTE_SHADOW_LOG="$SHADOW_LOG" \
+  bash "$DISPATCH" --test-route-shadow leafA "readme fix" "small readme fix" "gemini-ok" mikrob false "card1~doc-update" card1
+check "shadow mode: logs type=doc-update sensitive=non-sensitive" \
+  "$(grep -c 'type=doc-update.*sensitive=non-sensitive' "$SHADOW_LOG" 2>/dev/null)" "1"
+check "shadow mode: logs the real table chain" \
+  "$(grep -c 'table-chain=freellm,local,online' "$SHADOW_LOG" 2>/dev/null)" "1"
+
+# Case 10: shadow mode on a sensitive fragment (inherited parent veto) logs sensitive=sensitive --
+# same gate this file already uses (lveto), not a weaker shadow-only check.
+rm -f "$SHADOW_LOG"
+CARD_ROUTE_MODE=shadow OFFLOAD_CARD_ROUTE_SHADOW_LOG="$SHADOW_LOG" \
+  bash "$DISPATCH" --test-route-shadow leafB "billing fix" "stripe webhook" "" mikrob true "card2~test-scaffold" card2
+check "shadow mode: a veto'd fragment logs sensitive=sensitive" \
+  "$(grep -c 'type=test-scaffold.*sensitive=sensitive' "$SHADOW_LOG" 2>/dev/null)" "1"
+
+# Case 11: shadow mode on a fragment that is sensitive by CONTENT (not veto) also logs
+# sensitive=sensitive -- proves is_freellm_blocked's own content gate is consulted, not just lveto.
+rm -f "$SHADOW_LOG"
+CARD_ROUTE_MODE=shadow OFFLOAD_CARD_ROUTE_SHADOW_LOG="$SHADOW_LOG" \
+  bash "$DISPATCH" --test-route-shadow leafC "authz check" "irj meg egy authz ellenorzest" "" mikrob false "card3~type-def" card3
+check "shadow mode: content-sensitive fragment (no veto) logs sensitive=sensitive" \
+  "$(grep -c 'type=type-def.*sensitive=sensitive' "$SHADOW_LOG" 2>/dev/null)" "1"
+
+# Case 12: a real (non-decomposed) leaf id, no "~type" suffix, logs type=leaf.
+rm -f "$SHADOW_LOG"
+CARD_ROUTE_MODE=shadow OFFLOAD_CARD_ROUTE_SHADOW_LOG="$SHADOW_LOG" \
+  bash "$DISPATCH" --test-route-shadow leafPlain "small helper" "small helper plus tests" "" mikrob false "false" leafPlain
+check "shadow mode: a non-decomposed leaf (synthetic=false) logs type=leaf" \
+  "$(grep -c 'type=leaf\b' "$SHADOW_LOG" 2>/dev/null)" "1"
+
+# Case 13: table mode is DELIBERATELY INERT in this card -- identical log-only behaviour as
+# shadow, never a different routing outcome (there is no routing outcome at all from this
+# function in either mode).
+rm -f "$SHADOW_LOG" "$TMPDIR/shadow-mode.log"
+CARD_ROUTE_MODE=shadow OFFLOAD_CARD_ROUTE_SHADOW_LOG="$TMPDIR/shadow-mode.log" \
+  bash "$DISPATCH" --test-route-shadow leafA "readme fix" "small readme fix" "" mikrob false "card1~doc-update" card1
+CARD_ROUTE_MODE=table OFFLOAD_CARD_ROUTE_SHADOW_LOG="$SHADOW_LOG" \
+  bash "$DISPATCH" --test-route-shadow leafA "readme fix" "small readme fix" "" mikrob false "card1~doc-update" card1
+check "table mode is inert this card: same log line content as shadow mode (mode field aside)" \
+  "$(sed 's/mode=table/mode=shadow/' "$SHADOW_LOG" | cut -f2-)" "$(cut -f2- "$TMPDIR/shadow-mode.log")"
+
+# Case 14: a missing/broken table script falls through safely (table-chain "-"), never errors the
+# whole leaf loop -- the function's own failure mode is "log less information", not "crash".
+rm -f "$SHADOW_LOG"
+CARD_ROUTE_MODE=shadow OFFLOAD_CARD_ROUTE_TABLE="$TMPDIR/does-not-exist.sh" OFFLOAD_CARD_ROUTE_SHADOW_LOG="$SHADOW_LOG" \
+  bash "$DISPATCH" --test-route-shadow leafA "readme fix" "small readme fix" "" mikrob false "card1~doc-update" card1
+check "shadow mode with a missing table script: no log line is written at all (fail-safe, no crash)" \
+  "$([[ -f "$SHADOW_LOG" ]] && echo exists || echo absent)" "absent"
 
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"

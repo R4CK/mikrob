@@ -1,0 +1,9 @@
+{
+  "default": ["freellm", "local", "online"],
+  "types": {
+    "test-scaffold": ["freellm", "local", "online"],
+    "i18n-keys": ["freellm", "local", "online"],
+    "doc-update": ["freellm", "local", "online"],
+    "type-def": ["freellm", "local", "online"]
+  }
+}
