@@ -24296,3 +24296,20 @@ DECISIONS.md is a byte-exact prefix of the resolved file).
 
 **Ki döntött:** MikroB (msg_id:17798/17807, directed to fix the real invariant rather than widen the magic
 number) + backend2 (the fix). Gate: re-gate QA + Cybersec on the new sha (see REVIEW comment).
+
+## 2026-11-13 -- 5aa686f0 re-merge round: re-synced with origin/develop, triaged full-suite fleet-test
+
+**Döntés:** re-merged current origin/develop (547f773bb, includes cards c1766c6c + b2f7ede4 landed
+since the prior base) into card/5aa686f0 as merge c402ad6cb -- only conflict was DECISIONS.md,
+resolved by keeping develop's content as-is and appending this card's entries strictly after (verified
+byte-exact prefix). `fleet-test.sh --ref c402ad6cb` on the merge result ran the full suite and reported
+3 failed files / 5 failed tests: offload-batch-health.test.ts:172 and main-config-dir-wiring.test.ts both
+went green on a standalone rerun (load flakes); store-selftests-all-run.test.ts's local-llm-parallel-bench
+sub-case also went green standalone (load flake); its local-llm-model-routing sub-case reproduced twice
+standalone with `gpu-util-hold 4969/6144 MiB (80.9%)` -- this file is untouched by this card's diff and
+the sibling card b7d8ecc4's clean round-5 full run minutes earlier on the same box showed 0 failures, so
+this looks like current, real GPU VRAM pressure elsewhere on the box rather than a regression from this
+card; flagged to MikroB as a separate, unresolved observation rather than claimed as disproven.
+
+**Ki döntött:** backend2 (re-merge + triage, kártya 5aa686f0). Gate: delta re-gate QA + Cybersec on
+Gate-SHA (see REVIEW comment).
