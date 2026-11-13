@@ -302,6 +302,10 @@ const OK_SHAPES: readonly RegExp[] = [
   // freellm-call.selftest.sh style (card ad6b183f): `PASSED: N` then `FAILED: 0` on the next
   // line. Captured non-zero N keeps the non-vacuous guarantee: `PASSED: 0` does not match.
   /PASSED: ([1-9]\d*)\nFAILED: 0/,
+  // env-compat-lib.selftest.sh style (card 22835648): `<name> selftest: all N cases pass.` --
+  // distinct from the local-llm-rag entry above ("all N checks passed", no period, different
+  // noun). Captured non-zero N keeps the non-vacuous guarantee: `all 0 cases pass.` does not match.
+  /selftest: all ([1-9]\d*) cases pass\./,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {

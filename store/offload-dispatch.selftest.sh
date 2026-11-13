@@ -378,6 +378,10 @@ graph_repo_pin="$(
   # Set HERE explicitly so graph_repo_for's MikroB arm (which calls git -C "$HERE") resolves
   # the repo root correctly regardless of the caller's cwd (d39fc5e7 QA isolation finding).
   HERE="$(dirname "$(realpath "$DISPATCH")")"
+  # Card 22835648: graph_repo_for now calls env_compat_get (MOPSION_MAIN/CLEANCORE_MAIN), a
+  # separate function this extraction does not pull in on its own.
+  # shellcheck source=./env-compat-lib.sh
+  source "$HERE/env-compat-lib.sh"
   source <(sed -n '/^graph_repo_for() {/,/^}/p' "$DISPATCH")
   cc="$(graph_repo_for CleanCore)"
   mo="$(graph_repo_for mopsion)"
@@ -423,6 +427,8 @@ graph_repo_cwd_pin="$(
   git init -q "$CALLER_REPO"
   cd "$CALLER_REPO" || exit 1
   HERE="$MAIN_REPO/store"
+  # shellcheck source=./env-compat-lib.sh
+  source "$(dirname "$(realpath "$DISPATCH")")/env-compat-lib.sh"
   source <(sed -n '/^graph_repo_for() {/,/^}/p' "$DISPATCH")
   mk="$(graph_repo_for MikroB)"
   [[ "$mk" == "$MAIN_REPO" ]] && echo "OK" || echo "BROKEN:$mk"
