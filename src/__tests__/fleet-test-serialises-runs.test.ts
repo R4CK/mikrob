@@ -106,6 +106,11 @@ function problems(source: string): string[] {
   const vitest = at('npx vitest')
 
   if (lock < 0) found.push('no lock at all')
+  // Cybersec F1 (card b7d8ecc4 round 3, comment 30174): `exec 9>` alone (opening the fd) satisfied
+  // the `lock` check above even with the tree mutex's own ticket-loop `flock -n 9` call deleted --
+  // the fd being open is not the same as the lock being taken. Anchored on the loop actually
+  // calling flock on that fd, not just opening it.
+  if (!/while !.*flock -n 9/.test(text)) found.push('the tree mutex is never actually taken')
   if (checkout < 0 || vitest < 0) found.push('this test is looking at the wrong file')
   // The critical section must START before the first mutation. A lock taken after the checkout
   // would leave the exact window this card is about wide open.
@@ -179,6 +184,16 @@ describe('fleet-test.sh serialises suite runs machine-wide (cards 85faec1b, 2f0c
     // checkout contains every string this file looks for and leaves the bug intact.
     const late = withoutLockMachinery(text).replace('npx vitest run', 'flock -n 9\nnpx vitest run')
     expect(problems(late)).toContain('the lock is taken AFTER the checkout')
+  })
+
+  it('CONTROL: the tree mutex fd being OPENED is not the same as it being TAKEN (Cybersec F1, 30174)', () => {
+    // exec 9>"$LOCK_FILE" alone satisfies the `lock` anchor above -- opening the fd is not taking
+    // the lock. This mutant deletes only the actual flock call from the ticket-loop's condition,
+    // leaving the fd-open line and everything else intact: no machine-wide exclusion happens, but
+    // every other check in this file stayed green on it before this round's fix.
+    const neverTaken = text.replace('&& flock -n 9; }; do', '&& true; }; do')
+    expect(neverTaken, 'the mutation did not apply -- the ticket-loop condition was not found').toContain('&& true; }; do')
+    expect(problems(neverTaken)).toContain('the tree mutex is never actually taken')
   })
 
   // --- The resolved value, not the source text (card 43ecdbe6) -------------------------------
