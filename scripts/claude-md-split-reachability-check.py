@@ -17,20 +17,29 @@ WRONG file, which breaks the marker-pair idempotency contract every ensureXSecti
 relies on (a missing BEGIN reads as "no block yet", so a future non-no-op writer would append a
 second, duplicate block instead of recognizing the existing one).
 
-Exit 0 if every gating line is found AND every marker pair matches, 1 otherwise.
+Also runs a full non-empty-LINE MULTISET conservation check (WhiteHat2 NO-GO 30400, L1): every
+non-empty line of the OLD CLAUDE.md must occur in the new corpus (new CLAUDE.md + docs/rules/*.md)
+at least as many times as it did in the old file. This is strictly stronger than the keyword
+check -- it catches ANY line dropped during the split, not only ones containing a gating word --
+and was measured against mutants WhiteHat2's keyword-only version missed: a whole default-deny
+sentence deleted from a docs/rules file (missed by keyword-substring, caught here because the
+exact line vanishes from the corpus multiset).
 
-KOTELEZ/MEGSZEGHETETLEN/SOHA/MINDIG are also extracted and reported, informationally only
-(not gating): several existing section titles already use those words in a non-rule sense,
-so they are not a reliable substring signal on their own.
+Exit 0 if every gating line is found, every marker pair matches, AND the line-multiset
+conservation check is clean. 1 otherwise.
+
+KOTELEZ/TILOS/MUST/MEGSZEGHETETLEN/SOHA/MINDIG are ALL gating now (card c60e229a QA/WhiteHat2
+NO-GO round: SOHA/MEGSZEGHETETLEN/MINDIG used to be informational-only, which L1 flagged as a
+real gap -- promoted to gating here; the line-conservation check below also does not care which
+specific word a line contains, so this mainly affects what the per-word report prints).
 """
 import re
 import subprocess
 import sys
-import unicodedata
+from collections import Counter
 from pathlib import Path
 
-GATING_TOKENS = ["KOTELEZ", "KÖTELEZ", "TILOS", "MUST"]
-INFO_TOKENS = ["MEGSZEGHETETLEN", "SOHA", "MINDIG"]
+GATING_TOKENS = ["KOTELEZ", "KÖTELEZ", "TILOS", "MUST", "MEGSZEGHETETLEN", "SOHA", "MINDIG"]
 
 
 def normalize(s: str) -> str:
@@ -71,7 +80,6 @@ def main() -> int:
     corpus = normalize("\n".join(corpus_parts))
 
     gating_hits = extract_lines(old_text, GATING_TOKENS)
-    info_hits = extract_lines(old_text, INFO_TOKENS)
 
     missing = [(ln, line) for ln, line in gating_hits if line not in corpus]
 
@@ -81,10 +89,23 @@ def main() -> int:
         for ln, line in missing:
             print(f"  L{ln}: {line}", file=sys.stderr)
 
-    if info_hits:
-        print(f"\n{len(info_hits)} informational lines (MEGSZEGHETETLEN/SOHA/MINDIG, not gating):")
-        info_missing = [(ln, line) for ln, line in info_hits if line not in corpus]
-        print(f"  {len(info_missing)} of those not found in the new corpus (informational only)")
+    # --- full non-empty-line multiset conservation (WhiteHat2 L1) ---
+    old_lines_norm = [normalize(l) for l in old_text.split("\n") if normalize(l)]
+    old_counts = Counter(old_lines_norm)
+    corpus_lines_norm = [normalize(l) for l in "\n".join(corpus_parts).split("\n") if normalize(l)]
+    new_counts = Counter(corpus_lines_norm)
+    conservation_missing = []
+    for line, cnt in old_counts.items():
+        have = new_counts.get(line, 0)
+        if have < cnt:
+            conservation_missing.append((cnt - have, line))
+    print(f"\nline-conservation: {len(old_counts)} distinct non-empty lines in the old file, "
+          f"{len(conservation_missing)} short in the new corpus")
+    if conservation_missing:
+        print("\nCONSERVATION SHORTFALL (old file had more copies than the new corpus has):",
+              file=sys.stderr)
+        for short_by, line in conservation_missing[:50]:
+            print(f"  -{short_by}: {line}", file=sys.stderr)
 
     old_begins = set(re.findall(r"BEGIN GENERATED:\s*(\S+)", old_text))
     old_ends = set(re.findall(r"END GENERATED:\s*(\S+)", old_text))
@@ -106,7 +127,7 @@ def main() -> int:
         for p in marker_problems:
             print(f"  {p}", file=sys.stderr)
 
-    return 1 if (missing or marker_problems) else 0
+    return 1 if (missing or marker_problems or conservation_missing) else 0
 
 
 if __name__ == "__main__":
