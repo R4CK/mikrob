@@ -24385,3 +24385,19 @@ konstansa a korábbi marveen-only bővítések mintáját követve 33-ról 34-re
 teszt-szám-frissítés, nincs viselkedés-változás. Commit 1005d780.
 
 **Ki döntött:** backend3 (önálló, mechanikus teszt-korrekció). Gate: QA + Cybersec.
+
+## 2026-11-13 -- card 7f112c2f: F7 quota switch-back hysteresis + resume backoff
+
+**Decision:** switch-back from a degraded route (Ghost/Gemini) back to Claude now requires 2
+consecutive OK probes at least 5 minutes apart (SWITCHBACK-HYSTERESIS-V1,
+store/switchback-hysteresis.json), applied identically by quota-bridge.py's
+confirm_switchback() and src/gemini-fallback.ts's confirmSwitchback(). Fixes the 12 s
+OUTAGE->recovered flap measured in quota-bridge.log 2026-11-11 (23:15:41 -> 23:15:53). Added a
+15/30/60 min (capped) backoff on quota-resume.sh's post-deadline retries (was a flat retry every
+schedule tick), gated by store/quota-resume-backoff.json via
+sched-precheck-quota-reset-resume.sh. quota-bridge.py's Ghost retirement now waits up to 10 min
+for /tmp/local-llm-gpu.lock to clear before killing the ghost-runner process group, instead of
+discarding an in-flight local draft on switch-back.
+
+**Ki döntött:** Peti (Telegram 13663), dispatched by MikroB, built by backend2. Gate: QA +
+Cybersec.
