@@ -165,6 +165,28 @@ def main() -> int:
             bad("an unreadable CleanCore repo refuses",
                 f"exit={proc.returncode} err={proc.stderr[-200:]}")
 
+        # 7. card 22835648 round 4 (Cybered NO-GO 28967): this tool used to read CLEANCORE_MAIN
+        #    directly with no fallback at all, so a session with only MOPSION_MAIN set (the new
+        #    name) could not resolve the CleanCore clone. MOPSION_MAIN alone, no CLEANCORE_MAIN,
+        #    must find the same citation as case 1.
+        env = {**os.environ,
+               "NMR_MARVEEN_REPO": str(mv), "MOPSION_MAIN": str(cc),
+               "NMR_STRICT_RECHECK": "/nonexistent-strict-recheck.jsonl"}
+        proc = subprocess.run(
+            [sys.executable, str(TOOL), "--ids", "bbbbbbbb", "--jsonl", str(out)],
+            capture_output=True, text=True, env=env, timeout=300)
+        rows = {}
+        if out.exists():
+            for line in out.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    o = json.loads(line)
+                    rows[o["id"]] = o
+        r = rows.get("bbbbbbbb", {})
+        if r.get("verdict") == "cited_strict" and r.get("repos") == ["cleancore"]:
+            ok("MOPSION_MAIN (the new name) alone resolves the CleanCore clone")
+        else:
+            bad("MOPSION_MAIN alone resolves the CleanCore clone", f"{r}\n{proc.stdout[-300:]} {proc.stderr[-300:]}")
+
     print(f"\nselftest: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
 

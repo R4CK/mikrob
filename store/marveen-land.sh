@@ -103,8 +103,16 @@ run_fg_killable() { # $1 = working dir, $2 = command string (already eval-safe)
   # card 81c6fbb5 Q3: close this subshell's OWN copy of LAND_LOCK_FD before cd/eval, same as the
   # old inline-subshell call sites did -- a subshell close never touches the parent's fd, and a
   # kill -9'd lander whose wrapped command survives no longer keeps the develop lock held.
+  # card 07f1fe6e (CYBERSEC GO 29154 M1/M2): `set -m` makes bash put this backgrounded subshell
+  # in its OWN process group (pgid == this subshell's own pid, not the script's pgid) instead of
+  # the script's. Without this, the eval'd command's own children (the fleet-test/vitest tree)
+  # stay in the SCRIPT's process group -- a TERM to just this one pid leaves them running as
+  # orphans, reparented but alive, holding a CPU slot (measured). The TERM trap below sends the
+  # signal to the whole group (`kill -- -<pgid>`), which this pgid assignment makes possible.
+  set -m
   ( cd "$dir" && release_land_lock_fd && eval "$cmd" ) &
   run_fg_killable_pid=$!
+  set +m
   wait "$run_fg_killable_pid"
   rc=$?
   run_fg_killable_pid=""
@@ -1029,6 +1037,22 @@ print(rest[19])
     echo "  FAIL land_lock_pid_starttime ([$n4_own_start]) disagrees with an independent /proc/\$\$/stat parse ([$n4_independent_start])"; fail=1
   fi
 
+  # card 07f1fe6e delta (CYBERSEC GO 29326 L2): marveen-land-run-fg-killable.selftest.sh was not
+  # referenced from here, from package.json, or from any src/ test -- its TERM/M2/HUP pins never
+  # ran unless someone invoked the file by hand. It exercises real signals and timing (not inline
+  # assertions like the cases above), so it runs as a subprocess and its PASS/FAIL folds into this
+  # run's totals.
+  rfk_script="$(dirname "$0")/marveen-land-run-fg-killable.selftest.sh"
+  if [ -f "$rfk_script" ]; then
+    rfk_out="$(bash "$rfk_script" 2>&1)"
+    rfk_cases=$(printf '%s\n' "$rfk_out" | grep -c '^  ok \|^  FAIL ')
+    n=$((n + rfk_cases))
+    printf '%s\n' "$rfk_out" | grep '^  ok \|^  FAIL '
+    printf '%s\n' "$rfk_out" | grep -q '^  FAIL ' && fail=1
+  else
+    echo "  FAIL marveen-land-run-fg-killable.selftest.sh not found next to $0 -- wiring broken"; fail=1
+  fi
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -1724,7 +1748,27 @@ land_with_retry() {
   # records it as "aborted" (not a crash, not a plain failure) BEFORE exiting, and sets
   # _run_finished so the EXIT trap below (which also fires after this `exit 143`) does not write a
   # second, competing finished line for the same run.
-  trap '_run_finished=1; [ -n "${run_fg_killable_pid:-}" ] && kill -TERM "$run_fg_killable_pid" 2>/dev/null; [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" 143 "deliberate stop (SIGTERM)" aborted >/dev/null 2>&1; exit 143' TERM
+  # card 07f1fe6e (CYBERSEC GO 29154 M1): kill the WHOLE process group run_fg_killable put the
+  # wrapped command in (`kill -- -<pgid>`, the negative-pid form), not just that one subshell pid
+  # -- a plain `kill -TERM "$run_fg_killable_pid"` leaves the eval'd command's own children (the
+  # fleet-test/vitest tree) running as orphans, reparented but alive, holding a CPU slot.
+  # card 07f1fe6e delta (CYBERSEC GO 29326 L1): the group-kill fix above only covers TERM to the
+  # LANDER's pid. Measured: HUP and KILL sent to the lander's whole PROCESS GROUP used to kill the
+  # wrapped tree (no job-control subshell to reparent onto) and now orphan it instead -- a
+  # regression in the opposite direction from M1. HUP and INT are trappable, so they get the same
+  # group-kill as TERM. KILL cannot be trapped by any shell (SIGKILL always goes straight to
+  # default disposition) -- a group-directed KILL kills every process in the group including the
+  # wrapped tree itself, so nothing orphans; a lander-pid-only KILL still orphans the tree, same
+  # inherent gap TERM had before this fix and with no code-level mitigation possible.
+  _land_sig_stop() { # $1 = signal name (TERM/HUP/INT), $2 = its POSIX exit code (128+signum)
+    _run_finished=1
+    [ -n "${run_fg_killable_pid:-}" ] && kill -"$1" -- "-$run_fg_killable_pid" 2>/dev/null
+    [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" "$2" "deliberate stop (SIG$1)" aborted >/dev/null 2>&1
+    exit "$2"
+  }
+  trap '_land_sig_stop TERM 143' TERM
+  trap '_land_sig_stop HUP 129' HUP
+  trap '_land_sig_stop INT 130' INT
   # WhiteHat NO-GO 28731, L4: `land_one` can call `die()` (an internal `exit N`, not a signal) if
   # it hits a hard refusal mid-landing -- that used to terminate the whole script immediately,
   # skipping every finish call site below entirely (they only run AFTER land_one RETURNS), so a
@@ -1742,7 +1786,7 @@ land_with_retry() {
         bash "$_ljd" finish "$_run_id" "$rc" >/dev/null 2>&1 || true
         _run_finished=1
       fi
-      trap - TERM EXIT
+      trap - TERM HUP INT EXIT
       return "$rc"
     fi
     if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
@@ -1751,7 +1795,7 @@ land_with_retry() {
         bash "$_ljd" finish "$_run_id" 4 "lost push race $attempt times" >/dev/null 2>&1 || true
         _run_finished=1
       fi
-      trap - TERM EXIT
+      trap - TERM HUP INT EXIT
       return 4
     fi
     attempt=$((attempt+1))
@@ -1759,6 +1803,100 @@ land_with_retry() {
     say "$agent: another agent landed during the merge+test window -- re-merging onto the new origin/$DEFAULT_BRANCH and verifying again (attempt $attempt/$MAX_ATTEMPTS)"
   done
 }
+
+# Self-test hook, card 46194693 F1 (WhiteHat 17020): the EXISTING --selftest block (above, in
+# this same file) only ever exercises release_land_lock_fd/acquire_land_lock in isolation -- it
+# `exit`s before land_one's own definition is reached, so it structurally CANNOT call the real
+# function. WhiteHat measured exactly that gap: 3 mutants of the cleanup() call sites (a
+# dead-branch `false &&` guard, and the call moved into a comment) left that block's own
+# text-pin checks green. This hook runs AFTER land_one/land_with_retry are defined, so it can call
+# land_one FOR REAL, through a real git fixture, and verify the OS-level flock with an
+# independent, real `flock -n` afterward -- not a text search.
+if [ "${1:-}" = "--selftest-land-lock-release" ]; then
+  # $MAIN (and everything derived from it, like $LAND_LOCK_FILE's default) was already fixed at
+  # this file's own top (line ~86, from $MARVEEN_MAIN) BEFORE this hook's code runs -- so the
+  # fixture's own path has to be known and exported into MARVEEN_MAIN BEFORE this script starts,
+  # not set from inside it. Build the fixture first, under a plain, git-only subshell (no `g`
+  # helper needed yet), then re-exec THIS SAME script with MARVEEN_MAIN now pointing at it.
+  LFTMP="$(mktemp -d)"
+  git init -q --bare "$LFTMP/origin.git"
+  git init -q "$LFTMP/seed"
+  git -C "$LFTMP/seed" checkout -q -b develop
+  git -C "$LFTMP/seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m seed
+  git -C "$LFTMP/seed" remote add origin "$LFTMP/origin.git"
+  git -C "$LFTMP/seed" push -q origin develop
+  git -C "$LFTMP/origin.git" symbolic-ref HEAD refs/heads/develop
+  git clone -q "$LFTMP/origin.git" "$LFTMP/main" 2>/dev/null
+  git -C "$LFTMP/main" checkout -q develop
+  mkdir -p "$LFTMP/main/store"
+  # KANBAN_COMMENT_API dead so no real dashboard call can ever happen (the lock-file default
+  # below already resolves correctly off MARVEEN_MAIN, no separate override needed for it).
+  exec env MARVEEN_MAIN="$LFTMP/main" MARVEEN_LAND_SELFTEST_TMP="$LFTMP" \
+    KANBAN_COMMENT_API="http://127.0.0.1:1" \
+    bash "$0" --selftest-land-lock-release-inner
+fi
+
+if [ "${1:-}" = "--selftest-land-lock-release-inner" ]; then
+  fail=0; n=0
+  LFTMP="$MARVEEN_LAND_SELFTEST_TMP"
+  trap 'rm -rf "$LFTMP"' EXIT
+  # This hook calls land_one() directly, bypassing the main dispatch's own arg-parsing (line
+  # ~1186) which normally sets these before land_one is ever reachable. Under `set -u` an unset
+  # LAND_CARD at line ~608 (downward_check) is a fatal "unbound variable" that kills the whole
+  # script with no RETURN-trap cleanup -- a test-fixture gap, not a real land_one bug. ALLOW_ARCHIVE
+  # joined this list when card acffb1d6 wired it into the same decisions_tail_append_ok call site
+  # that case B's land_one actually reaches (case A returns before that point, which is why it
+  # passed while this was still missing).
+  LAND_CARD=""
+  ALLOW_STACKED=""
+  ALLOW_ARCHIVE=0
+
+  flock_is_free() { # 0 = free (lock acquired and released by THIS probe), 1 = still held
+    (
+      exec 8>>"$LAND_LOCK_FILE"
+      flock -n 8
+    ) 2>/dev/null
+  }
+
+  # --- case A: the CHEAP exit path through the FIRST cleanup() (lock-only, no worktree yet) ----
+  # "already fully landed" (land_one:572) returns 0 before any worktree is created.
+  git -C "$LFTMP/main" branch -q "agent/fixture-a/work" develop
+  land_one fixture-a false > "$LFTMP/out-a" 2>&1
+  n=$((n+1))
+  if flock_is_free; then echo "  ok   case A (already-landed, first cleanup()): lock is free after land_one returns"
+  else echo "  FAIL case A: lock STILL HELD after land_one returned (out: $(cat "$LFTMP/out-a"))"; fail=1; fi
+
+  # --- case B: a REAL failure AFTER the worktree is created, through the SECOND cleanup() (lock
+  # + worktree removal) -- MARVEEN_LAND_TEST=false forces fleet-test to "fail" without running it.
+  git -C "$LFTMP/main" checkout -q -b "agent/fixture-b/work" develop
+  echo change > "$LFTMP/main/fixture-b-file.txt"
+  git -C "$LFTMP/main" add fixture-b-file.txt
+  git -C "$LFTMP/main" -c user.email=t@t -c user.name=t commit -q -m "fixture-b change"
+  git -C "$LFTMP/main" checkout -q develop
+  n=$((n+1))
+  # TEST_CMD is read ONCE from MARVEEN_LAND_TEST at this script's own top (line ~422, long before
+  # this hook runs) -- a per-call env prefix on a shell FUNCTION call does not retroactively change
+  # an already-computed global, so it is reassigned directly here instead.
+  TEST_CMD=false
+  land_one fixture-b false > "$LFTMP/out-b" 2>&1
+  if flock_is_free; then echo "  ok   case B (fleet-test failure, second cleanup()): lock is free after land_one returns"
+  else echo "  FAIL case B: lock STILL HELD after land_one returned (out: $(cat "$LFTMP/out-b"))"; fail=1; fi
+  n=$((n+1))
+  # F2 fix (Cybered NO-GO 29382): use the EXACT path -- marveen-land-fixture-b-$$ -- not a glob.
+  # A glob matches every concurrent run's fixture worktree: 8-parallel test measured 1/8 false FAILs
+  # and rm -rf on the glob deletes another run's live worktree mid-run.
+  if ls -d "/home/neon/marveen-land-fixture-b-$$" >/dev/null 2>&1; then
+    echo "  FAIL case B: the disposable landing worktree was not removed"; fail=1
+    rm -rf "/home/neon/marveen-land-fixture-b-$$" 2>/dev/null
+  else
+    echo "  ok   case B: the disposable landing worktree was removed (second cleanup() ran)"
+  fi
+
+  echo
+  if [ "$fail" -eq 0 ]; then echo "selftest-land-lock-release: $n case(s), PASS"; exit 0
+  else echo "selftest-land-lock-release: $n case(s), FAIL"; exit 1
+  fi
+fi
 
 DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0
 TARGET="${1:-}"; [ $# -gt 0 ] && shift

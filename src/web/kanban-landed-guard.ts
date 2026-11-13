@@ -36,6 +36,7 @@ import { existsSync } from 'node:fs'
 import { getKanbanCard, getKanbanComments } from '../db.js'
 import { PROJECT_ROOT } from '../config.js'
 import { logger } from '../logger.js'
+import { envCompatGet } from '../env-compat.js'
 
 /**
  * project -> git checkout. Parametric because the kanban DB serves several repos and the guard must
@@ -53,7 +54,7 @@ export interface RepoTarget {
 }
 
 const CLEANCORE: RepoTarget = {
-  root: process.env['CLEANCORE_MAIN'] ?? '/mnt/h/LM_Studio_Workdir/mopsion',
+  root: envCompatGet('MOPSION_MAIN', 'CLEANCORE_MAIN', '/mnt/h/LM_Studio_Workdir/mopsion'),
   mainRef: 'origin/main',
 }
 // marveen integrates on DEVELOP and has no origin/main at all (Cybersec, card 84091afd). The first

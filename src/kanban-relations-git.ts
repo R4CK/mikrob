@@ -10,6 +10,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { PROJECT_ROOT } from './config.js'
+import { envCompatGet } from './env-compat.js'
 import type { RelationEdge } from './kanban-relations.js'
 import { NODE_FILE, NODE_REPO, NODE_SHA, REL_RESOLVED_IN, REL_TOUCHES_FILE } from './kanban-relations.js'
 
@@ -32,7 +33,7 @@ export function defaultRepos(): { name: string; path: string }[] {
     { name: 'marveen', path: PROJECT_ROOT },
     {
       name: 'cleancore',
-      path: process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/mopsion',
+      path: envCompatGet('MOPSION_MAIN', 'CLEANCORE_MAIN', '/mnt/h/LM_Studio_Workdir/mopsion'),
     },
   ]
 }

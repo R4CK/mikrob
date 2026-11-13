@@ -48,12 +48,16 @@ from pathlib import Path
 
 import os
 
+from env_compat_lib import env_compat_get
+
 # Overridable so the selftest can point at throwaway repos. Defaults are the live checkouts; the
 # CleanCore default matches CLEANCORE_MAIN's documented value, and honouring the env var means an
 # install that moved the clone is not silently reported as "no evidence" -- the failure this file
-# exists to end.
+# exists to end. MOPSION_MAIN read first (card 22835648 round 4, Cybered NO-GO 28967): this was
+# still reading only the retired CLEANCORE_MAIN name directly, so a session with only MOPSION_MAIN
+# set looked at the default clone while the landing scripts looked at the real one.
 MARVEEN = Path(os.environ.get("NMR_MARVEEN_REPO", "/home/neon/marveen"))
-CLEANCORE = Path(os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/mopsion"))
+CLEANCORE = Path(env_compat_get("MOPSION_MAIN", "CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/mopsion"))
 BATCH_DIR = Path(os.environ.get("NMR_BATCH_DIR", str(MARVEEN / "store" / "review-batches")))
 BATCHES = [
     ("036a0913", "nmr-backend2.jsonl"),
