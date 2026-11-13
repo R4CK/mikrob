@@ -21,6 +21,7 @@ const AGENT = 'precompacttest-d2c3a940'
 
 const startAgentProcessMock = vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true }))
 const isSessionReadyForPromptMock = vi.fn(async () => true)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- signature must match sendPromptToSession(session, prompt, host) for mock-call-arg assertions below
 const sendPromptToSessionMock = vi.fn(async (_session: string, _prompt: string, _host: string | null) => {})
 const measureContextPctForAgentMock = vi.fn(async (): Promise<number | null> => null)
 
