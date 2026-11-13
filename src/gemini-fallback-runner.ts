@@ -58,6 +58,7 @@ import {
 import { readEnvFile } from './env.js'
 import { getSecret } from './web/vault.js'
 import { runDraftCleanupSweep } from './gemini-orchestrator-draft-cleanup.js'
+import { initDatabase } from './db.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
@@ -324,9 +325,24 @@ export async function runGeminiFallbackCheck(
   }
 }
 
-// Entry point when run directly: node dist/gemini-fallback-runner.js
-if (process.argv[1] && fileURLToPath(import.meta.url).endsWith(process.argv[1].replace(/^.*[/\\]/, '/'))) {
+/**
+ * Entry-point body, extracted (card 4b6002f3, mirrors gemini-orchestrator.ts's runAsEntryPoint)
+ * so initDatabase-before-the-DB-read is directly testable -- the guard below is gated on
+ * `process.argv[1]` at module-load time, so a test that merely imports this module can never
+ * reach it. Without initDatabase() here, this process never opens the DB handle, and
+ * runDraftCleanupSweep's default getComments (db.js's getKanbanComments) throws
+ * "Cannot read properties of undefined (reading 'prepare')" on every tick that finds a
+ * store/drafts/<cardId>/ directory -- the cleanup sweep never runs, so adjudicated drafts are
+ * never deleted after switch-back.
+ */
+export function runAsEntryPoint(): void {
+  initDatabase()
   runGeminiFallbackCheck()
     .then(() => process.exit(0))
     .catch(err => { console.error('[gemini-runner] Fatal:', err); process.exit(1) })
+}
+
+// Entry point when run directly: node dist/gemini-fallback-runner.js
+if (process.argv[1] && fileURLToPath(import.meta.url).endsWith(process.argv[1].replace(/^.*[/\\]/, '/'))) {
+  runAsEntryPoint()
 }

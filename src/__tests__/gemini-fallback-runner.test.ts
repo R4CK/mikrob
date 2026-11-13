@@ -98,6 +98,12 @@ vi.mock('../env.js', () => ({
   })),
 }))
 
+vi.mock('../db.js', () => ({
+  initDatabase: vi.fn(),
+  getKanbanComments: vi.fn(() => []),
+  addKanbanComment: vi.fn(),
+}))
+
 // Capture Telegram sends without a real HTTP call
 const realFetch = globalThis.fetch
 beforeEach(() => {
@@ -130,7 +136,7 @@ beforeEach(() => {
 
 // ----- Tests --------------------------------------------------------------
 
-import { runGeminiFallbackCheck } from '../gemini-fallback-runner.js'
+import { runGeminiFallbackCheck, runAsEntryPoint } from '../gemini-fallback-runner.js'
 
 describe('runGeminiFallbackCheck -- engage path', () => {
   it('engages when weekly is exhausted and key is valid', async () => {
@@ -491,5 +497,24 @@ describe('CYBERED NO-GO fixes (comment 17031)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// Card 4b6002f3: store/gemini-fallback-runner.log showed, on every tick, "[gemini-orchestrator-
+// draft-cleanup] could not read comments for <cardId>: TypeError: Cannot read properties of
+// undefined (reading 'prepare')" -- this process never called initDatabase(), so db.js's module-
+// level `db` handle stayed undefined and getKanbanComments() threw the moment the cleanup sweep
+// found any store/drafts/<cardId>/ directory. The cleanup sweep never ran, so adjudicated drafts
+// were never deleted after switch-back.
+describe('runAsEntryPoint (card 4b6002f3): initDatabase before the draft-cleanup sweep reads it', () => {
+  it('calls initDatabase before runGeminiFallbackCheck would read from the DB', async () => {
+    const { initDatabase } = await import('../db.js')
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+    runAsEntryPoint()
+    // runGeminiFallbackCheck is async; let its promise chain settle before asserting exit/order.
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(initDatabase).toHaveBeenCalled()
+    exitSpy.mockRestore()
   })
 })
