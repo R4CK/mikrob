@@ -23748,3 +23748,21 @@ count and the new Gate-SHA.
 **Ki döntött:** DevO (fullstack), per MikroB msg 17484 (rebuild direction after my own incorrect
 first read that the conflict was tail-append-only). Gate: QA + Cybered (fresh delta re-gate on
 the new sha).
+
+## 2026-11-13 -- 1388200c: worker card closes narrowed, end-to-end kg_nodes proof split to c84a510a
+
+**Döntés:** card 1388200c ("F5 Knowledge graph: make capture work or switch it off") closes as
+the backfill WORKER card, not as the end-to-end capture proof. Root cause of kg_nodes staying 0
+was found and is NOT a worker bug: `local-llm.sh --task kg-capture` hangs/times out on the
+configured model (bigatuna/Qwen3.5-9b-Sushi-Coder-RL-GGUF) regardless of input size (90s on a
+1-line input, 300s on a real 2402-char REVIEW), while `--task summarize` on the same model
+answers in 21.7s under comparable GPU load (card comment 30148). The worker itself (drain loop +
+heartbeat, commit ff82e8770) was proven correct over 5 live backfill rounds against the real
+main-DB files: rows transitioned to `failed`/`skipped` correctly, the GPU-hold halt fired
+correctly, and `kg_worker_heartbeat` recorded a live row each run. The unresolved generation-hang
+(unverified suspicion: `think:false` not honoured by this template, same class as baf1b1b0) and
+the actual `kg_nodes > 0` end-to-end proof move to card c84a510a, URGENT, in_progress.
+
+**Ki döntött:** MikroB, msg 17829 (2026-11-13), after backend's escalation (msg 17828, comment
+30148) asking to choose between holding 1388200c open vs accepting the worker+heartbeat proof as
+sufficient and splitting the hang into its own card. Gate: QA + Cybersec. Gate-SHA: ff82e8770.
