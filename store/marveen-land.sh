@@ -33,7 +33,7 @@
 #                                         # downward report into a refusal; --allow-stacked names
 #                                         # the foreign cards you are taking on purpose.
 #   marveen-land.sh --card <id> --agent <agent> [--dry-run] [--allow-ungated]
-#                   [--allow-ungated-reason <text>]
+#                   [--allow-ungated-reason <text>] [--allow-stacked <id>[,<id>...]]
 #                                         # land that card's OWN card/<id> branch (card cd3e577b).
 #                                         # REQUIRES a passing QA verdict AND an AGREE from every
 #                                         # gate the card's own "Gate:" line/labels designate, on
@@ -44,6 +44,12 @@
 #                                         # FAILING one, and leaves an "UNGATED LANDING" comment on
 #                                         # the card (who/when/why); --allow-ungated-reason supplies
 #                                         # the why in the open instead of a generic placeholder.
+#                                         # --allow-stacked names the foreign card(s) you are
+#                                         # knowingly taking on (card 78339a8a) -- same meaning as
+#                                         # the agent-target mode's flag above; before this it was
+#                                         # unknown-option-rejected here, forcing the full
+#                                         # LANDING_DOWNWARD_CHECK=off kill switch for one stacked
+#                                         # commit.
 #   marveen-land.sh --all [--dry-run]     # REPORT ONLY (card cd3e577b, MikroB decision 16324): lists
 #                                         # every agent/*/work and card/* branch that is not yet an
 #                                         # ancestor of origin/develop. Lands NOTHING any more -- the
@@ -66,7 +72,10 @@
 #                       step entirely and says so in the output.
 #   MARVEEN_LAND_MAX_ATTEMPTS  default 3 -- how many full merge+verify+push attempts before giving
 #                       up on a repeatedly-raced push (card 65657bad).
-#   LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely (card dfff9b37).
+#   LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely (card dfff9b37). Scoped
+#                       to THIS script's own downward_check() call only (card 78339a8a) -- it does
+#                       NOT reach fleet-test.sh or anything it spawns, because run_fg_killable()
+#                       unsets it inside its own subshell before running the verification command.
 #   MARVEEN_LAND_DEVELOP_LOCK_FILE  default $MAIN/store/.marveen-land-develop.lock -- machine-wide
 #                       flock serialising the merge+fleet-test+push window across ALL marveen-land.sh
 #                       invocations, not just within one --all sweep (card 24d1543f). Override is for
@@ -109,8 +118,15 @@ run_fg_killable() { # $1 = working dir, $2 = command string (already eval-safe)
   # stay in the SCRIPT's process group -- a TERM to just this one pid leaves them running as
   # orphans, reparented but alive, holding a CPU slot (measured). The TERM trap below sends the
   # signal to the whole group (`kill -- -<pgid>`), which this pgid assignment makes possible.
+  # card 78339a8a: LANDING_DOWNWARD_CHECK=off, if exported at script invocation, otherwise
+  # inherits into this subshell and everything it execs (fleet-test.sh, vitest workers, and any
+  # selftest a test spawns) -- so a landing override meant for THIS script's own downward_check()
+  # call also disables the kill switch inside the fleet-test run that verifies the merge, flipping
+  # landing-downward-check.test.ts's own selftest cases (measured: 4f3c0287 land, 2026-11-13).
+  # Unset it before cd/eval, not between release_land_lock_fd and eval, so the existing Q3 pin
+  # (grep -cF 'cd "$dir" && release_land_lock_fd && eval "$cmd"') still matches byte-for-byte.
   set -m
-  ( cd "$dir" && release_land_lock_fd && eval "$cmd" ) &
+  ( unset LANDING_DOWNWARD_CHECK; cd "$dir" && release_land_lock_fd && eval "$cmd" ) &
   run_fg_killable_pid=$!
   set +m
   wait "$run_fg_killable_pid"
@@ -1930,6 +1946,13 @@ if [ "$TARGET" = "--card" ]; then
       --allow-ungated) CARD_ALLOW_UNGATED=1 ;;
       --allow-ungated-reason) shift; [ $# -gt 0 ] || die 2 "--allow-ungated-reason needs text"; CARD_ALLOW_UNGATED_REASON="$1" ;;
       --allow-ungated-reason=*) CARD_ALLOW_UNGATED_REASON="${1#--allow-ungated-reason=}" ;;
+      # card 78339a8a: wired into --card mode too, same meaning as the agent-target mode's
+      # --allow-stacked -- the operator names the foreign card(s) they are knowingly taking on.
+      # Before this, the only way through a stacked-commit refusal here was the kill switch
+      # LANDING_DOWNWARD_CHECK=off, which disables the ENTIRE downward check, not just the
+      # named card (backend3 msg 17594).
+      --allow-stacked) shift; [ $# -gt 0 ] || die 2 "--allow-stacked needs a card id list"; ALLOW_STACKED="$1" ;;
+      --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
       *) die 2 "unknown option: $1" ;;
     esac
     shift

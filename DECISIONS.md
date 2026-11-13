@@ -24350,3 +24350,38 @@ turns the matching case(s) red, confirmed by hand for all four, not just asserte
 
 **Ki döntött:** Cybersec (NO-GO 30007, the four findings) + backend2 (the fix, re-measured and
 re-verified per-finding). Gate: QA + Cybersec (re-gate on the new sha).
+## 2026-11-13 -- kártya 78339a8a: --allow-stacked --card módba, LANDING_DOWNWARD_CHECK szűkítve
+
+**Döntés:** a `marveen-land.sh --card <id> --agent <agent>` mód option-parsere eddig csak
+`--dry-run`/`--agent`/`--allow-ungated*`-et fogadott el, az `--allow-stacked`-et nem (backend3
+msg 17594, 4f3c0287 landolási kísérletből) -- az egyetlen út egy szándékosan stackelt idegen
+kártya kommitjain át a teljes `LANDING_DOWNWARD_CHECK=off` kill switch volt, ami NEM a névre
+szóló kártyát engedi át, hanem a teljes downward check-et kapcsolja ki. Mostantól a `--card` mód
+is elfogadja az `--allow-stacked <id>[,<id>...]`-t, ugyanazt a globális `ALLOW_STACKED` változót
+töltve, mint az agent-cél mód.
+
+Második hiba, ugyanazon landolási kísérletből mérve: a `LANDING_DOWNWARD_CHECK=off` a shell
+prefixben exportolva MINDEN gyerek-folyamatba öröklődik, beleértve a `run_fg_killable()` által
+futtatott `fleet-test.sh`-t és annak vitest-worker-eit is -- ezek közül egy
+(`landing-downward-check.test.ts`) saját maga hívja a `marveen-land.sh --selftest`-et, és AZ a
+gyerek-folyamat is kikapcsolva találta a downward check-et, 5 "foreign commit refuses" selftest
+esetet FAIL-re fordítva, teljesen a mergelt tartalomtól függetlenül (a 4f3c0287 land ezen a hamis
+piroson refuse-olt). Javítás: `run_fg_killable()` a saját subshell-jében `unset
+LANDING_DOWNWARD_CHECK`-et futtat `cd`/`eval` előtt -- a szülő-script saját `downward_check()`
+hívása még látja a változót, a gyerek (fleet-test.sh és minden, amit az indít) már nem.
+
+Új selftest-eset a `marveen-land-run-fg-killable.selftest.sh`-ban a VALÓDI, kinyert
+`run_fg_killable` forráson bizonyítja a javítást (piros a javítás előtti testen, zöld utána).
+
+**Ki döntött:** MikroB (msg 17699, backend3 gyökér-okos jelentése alapján, msg 17698), backend3
+végezte. Gate: QA + Cybersec.
+
+## 2026-11-13 -- kártya 78339a8a delta: landing-downward-check.test.ts floor-konstans frissítve
+
+**Döntés:** a saját rfk-selftest-eset (LANDING_DOWNWARD_CHECK-szivárgás pin) hozzáadása a
+marveen-land.sh --selftest teljes esetszámát 92-ről 93-ra emelte, ami elrontotta a
+landing-downward-check.test.ts megosztott-blokk egyenlőség-ellenőrzését (mv saját-blokk
+konstansa a korábbi marveen-only bővítések mintáját követve 33-ról 34-re emelve). Tisztán
+teszt-szám-frissítés, nincs viselkedés-változás. Commit 1005d780.
+
+**Ki döntött:** backend3 (önálló, mechanikus teszt-korrekció). Gate: QA + Cybersec.
