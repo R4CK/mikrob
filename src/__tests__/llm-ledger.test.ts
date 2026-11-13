@@ -254,17 +254,38 @@ describe('llm_ledger: route GET/PUT /api/llm-ledger/budget/:agent', () => {
     expect((await route('GET', `/api/llm-ledger/budget/${longId}`)).status).toBe(404)
   })
 
-  it('PUT rejects an oversized body (413) without buffering it into memory (F2)', async () => {
-    const before = process.memoryUsage().rss
-    const huge = { daily_budget: 1, padding: 'x'.repeat(10 * 1024 * 1024) }
-    const out = await putAs(SESSION, 'backend3', huge)
+  it('PUT rejects an oversized body (413) and stops reading the stream well under the body size (F2)', async () => {
+    // process.memoryUsage().rss is too noisy for this (GC timing, and the TEST's own fixture
+    // construction dwarfs anything the route does) -- so this measures the actual guarantee
+    // directly: how many bytes the route's readBody() PULLS from the stream before giving up.
+    // A generator yields 1MB chunks lazily (never materializing the full body at once); if
+    // readBody buffered the whole thing before rejecting, bytesPulled would reach the full 20MB.
+    const CHUNK = 1024 * 1024
+    const TOTAL_CHUNKS = 20
+    let bytesPulled = 0
+    async function* chunks() {
+      for (let i = 0; i < TOTAL_CHUNKS; i++) {
+        bytesPulled += CHUNK
+        yield Buffer.alloc(CHUNK, 'x')
+      }
+    }
+    const out: { status: number; body: any } = { status: 200, body: null }
+    const res: any = {
+      writeHead(status: number) { out.status = status; return res },
+      setHeader() { return res },
+      end(chunk?: string | Buffer) { if (chunk) out.body = JSON.parse(chunk.toString()) },
+    }
+    const req: any = Readable.from(chunks())
+    req.headers = {}
+    const url = new URL('http://localhost:3420/api/llm-ledger/budget/backend3')
+    const ctx = withAuth({ req, res, path: url.pathname, method: 'PUT', url } as RouteContext, SESSION)
+    expect(await tryHandleLlmLedger(ctx)).toBe(true)
     expect(out.status).toBe(413)
     // No budget row should have been written off a refused oversized body.
     expect(getAgentLlmBudget('backend3').source).toBe('platform')
-    const after = process.memoryUsage().rss
-    // Generous bound (the test harness itself allocates): a true full-buffer-then-reject of a
-    // 10MB body would show up as tens of MB; readBody's cap aborts well under 1MB in.
-    expect(after - before).toBeLessThan(5 * 1024 * 1024)
+    // BUDGET_BODY_MAX_BYTES is 4KB; readBody destroys the stream on the chunk that crosses it, so
+    // at most ~1 chunk (1MB) is ever pulled, nowhere near the full 20MB body.
+    expect(bytesPulled).toBeLessThan(2 * CHUNK)
   })
 })
 
