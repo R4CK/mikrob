@@ -539,15 +539,28 @@ sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, complet
 # truthy/string compare) -- missing file, empty, malformed JSON, {"enabled": false}, or
 # {"enabled": "True"} (a JSON string) all keep the marker check ON, fail-closed like every other
 # switch in this file.
+#
+# M2 (card 555419a8, CYBERED MEDIUM 25494 on 5aa686f0): the content check above dropped the OLD
+# `[[ -f ... ]]` regular-file test along with the presence-only behaviour it was fixing -- python's
+# plain open() does not care whether the path is a FIFO or a device. Measured: pointing this at a
+# FIFO hangs --check-freellm-blocked until killed; a symlink to /dev/zero reads until memory runs
+# out. Anyone who can write into store/ (every agent) could park the whole dispatcher on it. Fixed
+# two ways: `[[ -f ]]` in front of the python call (true only for a regular file, false for a FIFO
+# or a device, even through a symlink) so neither ever reaches open(), and a 4096-byte read cap
+# inside python as a second layer (an opt-out file is a one-line JSON boolean; anything that does
+# not fit is treated as malformed, same fail-closed "false" as today).
 FREELLM_SKIP_GEMINI_OK_CHECK="${OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK:-$HERE/freellm-skip-gemini-ok-check}"
 is_freellm_blocked() {
   local require_marker=1
   local skip_enabled
-  skip_enabled="$(FREELLM_SKIP_PATH="$FREELLM_SKIP_GEMINI_OK_CHECK" python3 -I << 'PYEOF' 2>/dev/null
+  skip_enabled="$([[ -f "$FREELLM_SKIP_GEMINI_OK_CHECK" ]] && FREELLM_SKIP_PATH="$FREELLM_SKIP_GEMINI_OK_CHECK" python3 -I << 'PYEOF' 2>/dev/null
 import json, os, sys
 try:
     with open(os.environ["FREELLM_SKIP_PATH"]) as f:
-        d = json.load(f)
+        data = f.read(4097)
+    if len(data) > 4096:
+        raise ValueError("opt-out file exceeds the 4096-byte cap")
+    d = json.loads(data)
 except Exception:
     print("false")
     sys.exit(0)

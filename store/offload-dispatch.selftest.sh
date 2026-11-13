@@ -809,6 +809,28 @@ printf '{"enabled": true}' > "$SKIP_FILE"
 check_marker_blocked 'content is {"enabled": true} (the only disabling value)' "allowed"
 rm -f "$SKIP_FILE"
 
+# ---- M2 (card 555419a8, CYBERED MEDIUM 25494): a FIFO or a device must not be opened at all ------
+# Both run under `timeout`: before the fix, a FIFO hung the whole check open and a /dev/zero symlink
+# read until memory ran out -- either is a dispatcher-wide stall, not just a wrong verdict, so the
+# pass condition is "returns at all, blocked" not merely "returns blocked".
+FIFO_FILE="$TMPDIR/freellm-skip-fifo"
+rm -f "$FIFO_FILE"; mkfifo "$FIFO_FILE"
+fifo_rc_out="$(timeout 8 env OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$FIFO_FILE" DASHBOARD_URL="http://127.0.0.1:1" \
+  bash "$DISPATCH" --check-freellm-blocked mikrob "" "egyszeru feladat" "irj egy fuggvenyt" >/dev/null 2>&1; echo $?)"
+check "M2: opt-out path is a FIFO -- returns within 8s instead of hanging" "$([[ "$fifo_rc_out" == "124" ]] && echo TIMED-OUT || echo "returned($fifo_rc_out)")" "returned(0)"
+rm -f "$FIFO_FILE"
+
+DEVZERO_LINK="$TMPDIR/freellm-skip-devzero"
+rm -f "$DEVZERO_LINK"; ln -s /dev/zero "$DEVZERO_LINK"
+devzero_rc_out="$(timeout 8 env OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$DEVZERO_LINK" DASHBOARD_URL="http://127.0.0.1:1" \
+  bash "$DISPATCH" --check-freellm-blocked mikrob "" "egyszeru feladat" "irj egy fuggvenyt" >/dev/null 2>&1; echo $?)"
+check "M2: opt-out path is a symlink to /dev/zero -- returns within 8s, blocked (fail-closed)" "$([[ "$devzero_rc_out" == "124" ]] && echo TIMED-OUT || echo "returned($devzero_rc_out)")" "returned(0)"
+rm -f "$DEVZERO_LINK"
+
+python3 -c 'print("{\"enabled\": true, \"pad\": \"" + "x"*5000 + "\"}")' > "$SKIP_FILE"
+check_marker_blocked "M2: opt-out file is valid JSON (enabled:true) but over the 4096-byte cap" "blocked"
+rm -f "$SKIP_FILE"
+
 # ---- L1: behavioral pins for the two production freellm-fallback guard sites ----------------
 # Not a source-text regex (that is exactly what 28818's L1 found too weak): each case here RUNS
 # the real --test-freellm-fallback-site hook, which calls the real extracted guard function
@@ -922,6 +944,113 @@ CARD_ROUTE_MODE=shadow OFFLOAD_CARD_ROUTE_TABLE="$TMPDIR/does-not-exist.sh" OFFL
   bash "$DISPATCH" --test-route-shadow leafA "readme fix" "small readme fix" "" mikrob false "card1~doc-update" card1
 check "shadow mode with a missing table script: no log line is written at all (fail-safe, no crash)" \
   "$([[ -f "$SHADOW_LOG" ]] && echo exists || echo absent)" "absent"
+
+# ---- M1 (card 555419a8, CYBERED MEDIUM 25494 on 5aa686f0): pin the WIRING, not just the guard
+# functions' own content ---------------------------------------------------------------------
+# RedHat's own finding: the L1 baseline above (via --test-freellm-fallback-site) proves the
+# extracted guard FUNCTIONS behave correctly in isolation -- it does NOT prove the PRODUCTION call
+# sites (the main leaf loop) actually invoke those functions rather than calling
+# try_freellm_for_leaf directly (mutants W1/W2: the production call site is replaced wholesale).
+# Two layers, matching what each is actually good at:
+#   (a) a BEHAVIORAL run through the REAL entry point (bash "$DISPATCH" "$CARD", not the
+#       --test-* hook) for the capacity-hold site -- this is the one of the two sites reachable
+#       without a built local-llm-router.js (a stub dashboard + a "GPU busy" VRAM_GUARD stub
+#       routes straight to the capacity-hold branch, no RAG/router call at all). The marker file
+#       is the same tell as L1: a leak means the attempt reached freellm-call.sh.
+#   (b) a STRUCTURAL pin, for BOTH sites, that the only two places in the whole script calling
+#       try_freellm_for_leaf (word-boundary, outside its own "() {" definition and comments) are
+#       inside the bodies of the two guard functions themselves -- a mutant that replaces either
+#       production call site with a direct try_freellm_for_leaf call puts a THIRD call outside
+#       both bodies, which this immediately flags. This is a call-SITE-location check, not the
+#       presence/substring check 28818 already found too weak (that one looked for the guard
+#       TEXT inside the function; this one looks at every CALL across the whole file).
+M1_CAP_KANBAN="$TMPDIR/m1cap-kanban.json"
+cat > "$M1_CAP_KANBAN" << 'EOF'
+[{"id":"m1caphold","title":"[BE] egyszeru feladat","description":"irj egy fuggvenyt","status":"planned","assignee":"backend2","project":"mikrob","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]}]
+EOF
+cat > "$TMPDIR/m1cap-stub.py" << 'PYEOF'
+import http.server, sys, os
+LOGDIR = sys.argv[1]; PORT = int(sys.argv[2]); KANBAN_FILE = sys.argv[3]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith('/api/kanban'):
+            body = open(KANBAN_FILE, 'rb').read()
+            self.send_response(200); self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+        else:
+            self.send_response(404); self.end_headers()
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0)); self.rfile.read(length)
+        n = len([f for f in os.listdir(LOGDIR) if f.startswith('post-')])
+        open(os.path.join(LOGDIR, f'post-{n}.json'), 'w').close()
+        resp = b'{"ok":true}'
+        self.send_response(200); self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(resp))); self.end_headers(); self.wfile.write(resp)
+    def log_message(self, *a):
+        pass
+http.server.HTTPServer(('127.0.0.1', PORT), H).serve_forever()
+PYEOF
+M1_CAP_LOGDIR="$TMPDIR/m1cap-postlog"; mkdir -p "$M1_CAP_LOGDIR"
+M1_CAP_PORT="$(python3 -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+')"
+python3 -I "$TMPDIR/m1cap-stub.py" "$M1_CAP_LOGDIR" "$M1_CAP_PORT" "$M1_CAP_KANBAN" &
+M1_CAP_SRV_PID=$!
+for _ in $(seq 1 50); do
+  (exec 3<>"/dev/tcp/127.0.0.1/$M1_CAP_PORT") 2>/dev/null && { exec 3>&- 3<&-; break; }
+  sleep 0.05
+done
+
+M1_CAP_INSTALLED="$TMPDIR/m1cap-installed-yes.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$M1_CAP_INSTALLED"; chmod +x "$M1_CAP_INSTALLED"
+M1_CAP_VRAM_BUSY="$TMPDIR/m1cap-vram-busy.sh"
+printf '#!/usr/bin/env bash\necho busy\nexit 1\n' > "$M1_CAP_VRAM_BUSY"; chmod +x "$M1_CAP_VRAM_BUSY"
+
+rm -f "$MARKER"
+timeout 20 env DASHBOARD_URL="http://127.0.0.1:$M1_CAP_PORT" OFFLOAD_INSTALLED="$M1_CAP_INSTALLED" \
+  OFFLOAD_VRAM_GUARD="$M1_CAP_VRAM_BUSY" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" FREELLM_ATTEMPT_MARKER="$MARKER" \
+  ATTEMPTS_FILE="$TMPDIR/m1cap-attempts.json" ATTEMPTS_LOCK="$TMPDIR/m1cap-attempts.lock" \
+  bash "$DISPATCH" m1caphold >/dev/null 2>&1
+check "M1 (a): real entry point (bash DISPATCH <card>, not --test-* hook), capacity-hold branch: blocked shape never reaches freellm-call.sh" \
+  "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
+
+kill "$M1_CAP_SRV_PID" 2>/dev/null
+wait "$M1_CAP_SRV_PID" 2>/dev/null
+
+m1_wiring_check="$(python3 - "$DISPATCH" << 'PYEOF'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+stripped = re.sub(r"(?m)^\s*#.*$", "", src)
+lines = stripped.splitlines()
+
+def body_range(fn_name):
+    start = next(i for i, l in enumerate(lines) if re.match(rf"^{fn_name}\(\)\s*\{{", l))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].rstrip() == "}")
+    return start, end
+
+exhausted_range = body_range("freellm_fallback_exhausted_site")
+caphold_range = body_range("freellm_fallback_capacity_hold_site")
+
+call_re = re.compile(r"\btry_freellm_for_leaf\b\s*\"")
+offenders = []
+for i, l in enumerate(lines):
+    if not call_re.search(l):
+        continue
+    if re.match(r"^try_freellm_for_leaf\(\)\s*\{", l):
+        continue  # the definition line itself
+    if exhausted_range[0] <= i <= exhausted_range[1] or caphold_range[0] <= i <= caphold_range[1]:
+        continue
+    offenders.append(i + 1)
+
+print("OK" if not offenders else f"CALL-OUTSIDE-GUARD-AT-LINE:{offenders}")
+PYEOF
+)"
+check "M1 (b): every call to try_freellm_for_leaf in the whole file sits inside one of the two guard-function bodies" \
+  "$m1_wiring_check" "OK"
 
 # ============================================================================================
 # Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named stderr (model 404, token
