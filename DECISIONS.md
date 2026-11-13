@@ -24489,3 +24489,23 @@ total across the three files) to confirm no regression in the sibling/consumer m
 **Ki döntött:** DevO (fullstack), card 4b6002f3, off Peti Telegram 13663 (freellmapi switch-back
 design) + the measured gemini-fallback-runner.log baseline. Gate: QA + Cybersec on Gate-SHA (see
 REVIEW comment).
+
+## 2026-11-13 -- 4b6002f3 delta: pinned initDatabase ORDER, not just "was called"
+
+**Döntés:** MikroB held the card out of the land queue (msg 18092) over one gap: the repro test
+only asserted `initDatabase` was called at all, not that it runs FIRST -- a mutant that moves it
+into the `.then()` callback (after `runGeminiFallbackCheck()` already ran) still passes 38/38 while
+the real production TypeError would still reproduce, since the DB read inside the cleanup sweep
+happens during the synchronous portion of `runGeminiFallbackCheck`, before any `.then()` ever runs.
+Fixed by tracking call ORDER: a shared `callOrder` array is pushed to by both the `initDatabase`
+mock and the `readFileSync` mock (`readState()` calls `readFileSync` synchronously as its literal
+first statement inside `runGeminiFallbackCheck`), and the new test asserts `initDatabase`'s index
+is strictly before `readFileSync`'s index -- both observable synchronously, no need to await the
+async tail. Confirmed non-vacuous by mutating the source exactly as MikroB described (moving
+`initDatabase()` into the `.then()`): the new order test went red (`expected -1 to be >= 0`,
+readFileSync ran but initDatabase hadn't yet) while the other 38 tests in the file stayed green;
+restored, 39/39. Ran `gemini-orchestrator-draft-cleanup.test.ts` + `gemini-orchestrator.test.ts`
+again too (150 tests total across the three files). `tsc --noEmit` clean.
+
+**Ki döntött:** DevO (fullstack), card 4b6002f3 delta round, off MikroB msg 18092. Gate: re-gate
+QA + Cybersec on the new Gate-SHA (see REVIEW comment).
