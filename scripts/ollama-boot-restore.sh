@@ -59,6 +59,9 @@
 #   OLLAMA_RESTORE_START_CMD_OVERRIDE  - command to run instead of `systemctl --user start <unit>` (test)
 #   OLLAMA_RESTORE_UNIT_NAME       - the systemd --user unit to start (default ollama)
 #   OLLAMA_RESTORE_ALERT_DRYRUN    - if 1, print "ALERT_DRYRUN: <msg>" instead of a real Telegram send
+#   (a failed restart alerts via the same alert_owner() + OLLAMA_RESTORE_ALERT_DRYRUN seam, rate-
+#   limited by $STATE_DIR/.ollama-boot-restore-fail-alerted -- one alert per failure streak, cleared
+#   on the next successful start)
 #   OLLAMA_HOST                    - Ollama base URL (default http://127.0.0.1:11434)
 #
 # CLI: ollama-boot-restore.sh   -- one cycle (what the caller runs every sweep)
@@ -71,6 +74,7 @@ OLLAMA_HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
 MIN_UPTIME_SEC="${OLLAMA_RESTORE_MIN_UPTIME_SEC:-300}"
 MASKED_FLAG="$STATE_DIR/.gpu-crashloop-guard-masked.json"
 MASK_ALERTED_STAMP="$STATE_DIR/.ollama-boot-restore-mask-alerted"
+FAIL_ALERTED_STAMP="$STATE_DIR/.ollama-boot-restore-fail-alerted"
 TG_ENV="$HOME/.claude/channels/telegram/.env"
 MODEL_FILE="$STATE_DIR/local-llm-model"
 UNIT_NAME="${OLLAMA_RESTORE_UNIT_NAME:-ollama}"
@@ -282,8 +286,20 @@ main() {
     # Loud, not a silent rc=0 (WhiteHat2 MEDIUM, same round): a failed restart must be visible to
     # whoever reads this script's log, not indistinguishable from "nothing needed doing".
     log "restart command failed (rc=${start_rc}): $start_cmd -- XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR} DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS} -- giving up this cycle, next sweep will retry"
+    # Card 84181422 (WhiteHat2 CYBERSEC GO on 085444e9, c5243203e): the log line above was the only
+    # trace -- channel-monitor.ts runs this script with stdio ignored, so a failing start was
+    # invisible in production and repeated every sweep without ever reaching the owner. Same
+    # alert-once-per-streak shape as the mask alert above (detected_at vs. a plain stamp file,
+    # since a failure streak has no distinct identity to key on): alert once, then stay silent
+    # until a start succeeds again.
+    if [ ! -f "$FAIL_ALERTED_STAMP" ]; then
+      alert_owner "Ollama boot-restore sikertelen (rc=${start_rc}): $start_cmd -- a kovetkezo sweep ujra probalja, tovabbi ertesites csak sikeres inditas utan jon."
+      mkdir -p "$STATE_DIR"
+      touch "$FAIL_ALERTED_STAMP"
+    fi
     return 0
   fi
+  rm -f "$FAIL_ALERTED_STAMP"
 
   local tries=0
   while [ "$tries" -lt 10 ]; do
