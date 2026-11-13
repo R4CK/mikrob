@@ -29,7 +29,7 @@ import {
   queryKanbanRelations, cardsTouchingFile, filesTouchedByCard,
   RELATION_FILTER_COLUMNS, type RelationFilterColumn, type RelationQuery,
   getStuckKanbanCards,
-  addKanbanCheckpoint, getKanbanCheckpoints, countKanbanCheckpoints,
+  getKanbanCheckpoints, tryAddKanbanCheckpoint,
 } from '../../db.js'
 import { isForceActor, forceActors } from '../../kanban-force-actors.js'
 import { fireCardBuildRoute } from '../kanban-route-dispatch.js'
@@ -1911,53 +1911,78 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCheckpointsMatch && method === 'POST') {
     const cardId = decodeURIComponent(kanbanCheckpointsMatch[1])
     if (!getKanbanCard(cardId)) { json(res, { error: `Kártya nem található: ${cardId}` }, 404); return true }
-    // Row cap: prevent unbounded growth (LOW, MikroB 29419).
-    const CHECKPOINT_CAP = 100
-    if (countKanbanCheckpoints(cardId) >= CHECKPOINT_CAP) {
-      json(res, { error: `Elérted a checkpoint limitet (${CHECKPOINT_CAP}/kártya)` }, 400); return true
-    }
     const body = await readBody(req)
     // Malformed JSON -> 400 (LOW, MikroB 29419).
-    let parsed: { sha: string; head_sha: string; agent: string }
+    let parsed: unknown
     try {
-      parsed = JSON.parse(body.toString()) as { sha: string; head_sha: string; agent: string }
+      parsed = JSON.parse(body.toString())
     } catch {
       json(res, { error: 'Érvénytelen JSON kérés' }, 400); return true
     }
-    const { sha, head_sha, agent } = parsed
+    // F1 (Cybersec2 30439): all three fields must be STRINGS before anything else touches them --
+    // a truthiness check alone (the old `!sha || !head_sha || !agent`) passes an object, array,
+    // number or boolean straight through to a regex .test() (coerces harmlessly) or, for `agent`
+    // which had no further check at all, straight into the SQL bind, where better-sqlite3 throws
+    // on a non-primitive and the route returns an uncaught 500 instead of a 400.
+    const { sha, head_sha, agent } = (parsed ?? {}) as Record<string, unknown>
+    if (typeof sha !== 'string' || typeof head_sha !== 'string' || typeof agent !== 'string') {
+      json(res, { error: 'sha, head_sha és agent string kell legyen' }, 400); return true
+    }
     if (!sha || !head_sha || !agent) {
       json(res, { error: 'sha, head_sha és agent kötelező' }, 400); return true
     }
     if (!/^[0-9a-f]{40}$/i.test(sha) || !/^[0-9a-f]{40}$/i.test(head_sha)) {
       json(res, { error: 'sha és head_sha pontosan 40 hex karakter kell' }, 400); return true
     }
+    // F1: agent is attacker-controlled free text (self-asserted, any bearer holder) stored
+    // verbatim and later rendered -- an unbounded string let through 100,000-char values,
+    // control/escape bytes, and an unescaped-render XSS/log-injection shape. Same roster-style
+    // allowlist agent-checkpoint.sh itself already enforces client-side ([a-z0-9-]+) before it
+    // ever calls this route, now also enforced server-side (never trust the client-side check
+    // alone).
+    if (!/^[a-z0-9-]{1,64}$/.test(agent)) {
+      json(res, { error: 'agent csak [a-z0-9-] karaktereket tartalmazhat, max 64 hosszan' }, 400); return true
+    }
+    // F1: lowercase BEFORE any further use -- an uppercase sha/head_sha used to be accepted and
+    // stored verbatim (the /i regex flag only relaxes matching, it does not normalise the value),
+    // so two checkpoints referring to the same commit by different case would never string-match
+    // for any consumer that compares them directly.
+    const shaLower = sha.toLowerCase()
+    const headShaLower = head_sha.toLowerCase()
     // M2 (MikroB 29419): validate sha is a commit object, not just any object.
     // head_sha and agent are descriptive metadata stored verbatim; both are behind
     // the global auth gate so spoofability is bounded to authenticated callers.
     // n is serialised by better-sqlite3's synchronous MAX(n)+1 -- no git ref needed.
     let shaType: string
     try {
-      shaType = execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', sha], {
+      shaType = execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', shaLower], {
         encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
       }).trim()
     } catch {
-      json(res, { error: `sha nem létezik a repóban: ${sha}` }, 400); return true
+      json(res, { error: `sha nem létezik a repóban: ${shaLower}` }, 400); return true
     }
     if (shaType !== 'commit') {
-      json(res, { error: `sha nem commit objektum (${shaType}): ${sha}` }, 400); return true
+      json(res, { error: `sha nem commit objektum (${shaType}): ${shaLower}` }, 400); return true
     }
     let headShaType: string
     try {
-      headShaType = execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', head_sha], {
+      headShaType = execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', headShaLower], {
         encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
       }).trim()
     } catch {
-      json(res, { error: `head_sha nem létezik a repóban: ${head_sha}` }, 400); return true
+      json(res, { error: `head_sha nem létezik a repóban: ${headShaLower}` }, 400); return true
     }
     if (headShaType !== 'commit') {
-      json(res, { error: `head_sha nem commit objektum (${headShaType}): ${head_sha}` }, 400); return true
+      json(res, { error: `head_sha nem commit objektum (${headShaType}): ${headShaLower}` }, 400); return true
     }
-    json(res, addKanbanCheckpoint(cardId, sha, head_sha, agent), 201)
+    // F2 (Cybersec2 30439): cap check + insert in one atomic statement -- see tryAddKanbanCheckpoint's
+    // own doc comment for why the old separate-SELECT-then-INSERT order was racy.
+    const CHECKPOINT_CAP = 100
+    const row = tryAddKanbanCheckpoint(cardId, shaLower, headShaLower, agent, CHECKPOINT_CAP)
+    if (!row) {
+      json(res, { error: `Elérted a checkpoint limitet (${CHECKPOINT_CAP}/kártya)` }, 400); return true
+    }
+    json(res, row, 201)
     return true
   }
 

@@ -6059,6 +6059,35 @@ export function addKanbanCheckpoint(
   ).get(cardId, cardId, sha, headSha, agent, now)!
 }
 
+/** F2 (Cybersec2 30439): the route's own cap check used to run as a separate SELECT before the
+ *  request body was even read -- a client that opens many requests and sends the body slowly
+ *  (any authenticated caller, no special timing needed) can land far more rows than the cap
+ *  before any of them sees an up-to-date count (measured: 150 slow-body requests on a 99-row card
+ *  -> 249 rows past a cap of 100). The count and the insert must be ONE statement: COUNT(*) and
+ *  MAX(n) are computed from the same read as the INSERT, inside SQLite's single-writer
+ *  serialisation, so no two concurrent calls can both pass the HAVING check for the same slot.
+ *  A bare aggregate query with no GROUP BY still returns exactly one row even when zero rows
+ *  match the WHERE (COUNT=0, MAX=NULL), so this also covers a card's very first checkpoint.
+ *  Returns null when the cap is already met (nothing inserted) -- the caller turns that into a
+ *  400, same error shape as before. */
+export function tryAddKanbanCheckpoint(
+  cardId: string,
+  sha: string,
+  headSha: string,
+  agent: string,
+  cap: number,
+  now = Math.floor(Date.now() / 1000),
+): CardCheckpoint | null {
+  const row = db.prepare<[string, string, string, string, number, string, number], CardCheckpoint>(
+    `INSERT INTO card_checkpoints (card_id, n, sha, head_sha, agent, created_at)
+     SELECT ?, COALESCE(MAX(n), 0) + 1, ?, ?, ?, ?
+     FROM card_checkpoints WHERE card_id = ?
+     HAVING COUNT(*) < ?
+     RETURNING *`,
+  ).get(cardId, sha, headSha, agent, now, cardId, cap)
+  return row ?? null
+}
+
 export function getKanbanCheckpoints(cardId: string): CardCheckpoint[] {
   return db.prepare<[string], CardCheckpoint>(
     `SELECT * FROM card_checkpoints WHERE card_id = ? ORDER BY n ASC`,

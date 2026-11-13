@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   initDatabase, createKanbanCard, deleteKanbanCard,
-  addKanbanCheckpoint, getKanbanCheckpoints,
+  addKanbanCheckpoint, getKanbanCheckpoints, tryAddKanbanCheckpoint,
   migrateCardCheckpoints, dropCardCheckpoints, getDb,
 } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
@@ -160,7 +160,12 @@ describe('card_checkpoints DOWN migration on a persistent DB (code-quality rule 
 
 // --- HTTP route layer ---
 
-function fakeCtx(method: string, path: string, body?: string): { ctx: RouteContext; out: { status: number; body: any } } {
+function fakeCtx(
+  method: string,
+  path: string,
+  body?: string,
+  delayMs = 0,
+): { ctx: RouteContext; out: { status: number; body: any } } {
   const req = new EventEmitter() as unknown as RouteContext['req']
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
@@ -169,10 +174,12 @@ function fakeCtx(method: string, path: string, body?: string): { ctx: RouteConte
   }
   const url = new URL(`http://localhost:3420${path}`)
   if (body !== undefined) {
-    process.nextTick(() => {
+    const emit = () => {
       ;(req as unknown as EventEmitter).emit('data', Buffer.from(body))
       ;(req as unknown as EventEmitter).emit('end')
-    })
+    }
+    if (delayMs > 0) setTimeout(emit, delayMs)
+    else process.nextTick(emit)
   }
   const ctx = { req, res, path: url.pathname, method, url } as RouteContext
   return { ctx, out }
@@ -268,5 +275,134 @@ describe('POST /api/kanban/:id/checkpoints', () => {
     const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r8/checkpoints', 'not-json{')
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(400)
+  })
+
+  // --- F1 (Cybersec2 30439): type + case + agent-pattern validation ---
+
+  it('F1: sha/head_sha are stored LOWERCASE even when submitted uppercase', async () => {
+    createKanbanCard({ id: 'ck-f1-case', title: 'Uppercase sha test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-f1-case/checkpoints', JSON.stringify({
+      sha: REAL_SHA.toUpperCase(), head_sha: REAL_SHA.toUpperCase(), agent: 'backend',
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(201)
+    expect(out.body.sha).toBe(REAL_SHA.toLowerCase())
+    expect(out.body.head_sha).toBe(REAL_SHA.toLowerCase())
+  })
+
+  it('F1: a non-string agent (object) 400s instead of an uncaught 500', async () => {
+    createKanbanCard({ id: 'ck-f1-obj', title: 'Non-string agent test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-f1-obj/checkpoints', JSON.stringify({
+      sha: REAL_SHA, head_sha: REAL_SHA, agent: {},
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+  })
+
+  it('F1: a non-string agent (number) 400s instead of silently coercing to a string', async () => {
+    createKanbanCard({ id: 'ck-f1-num', title: 'Numeric agent test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-f1-num/checkpoints', JSON.stringify({
+      sha: REAL_SHA, head_sha: REAL_SHA, agent: 5,
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+  })
+
+  it('F1: sha/head_sha as a single-element array 400s (typeof check, not just the hex regex)', async () => {
+    createKanbanCard({ id: 'ck-f1-arr', title: 'Array sha test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-f1-arr/checkpoints', JSON.stringify({
+      sha: [REAL_SHA], head_sha: REAL_SHA, agent: 'backend',
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+  })
+
+  it('F1: an agent value with control/XSS characters 400s', async () => {
+    createKanbanCard({ id: 'ck-f1-xss', title: 'XSS agent test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-f1-xss/checkpoints', JSON.stringify({
+      sha: REAL_SHA, head_sha: REAL_SHA, agent: '<img src=x onerror=alert(1)>',
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+  })
+
+  it('F1: an agent value over 64 characters 400s', async () => {
+    createKanbanCard({ id: 'ck-f1-long', title: 'Long agent test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-f1-long/checkpoints', JSON.stringify({
+      sha: REAL_SHA, head_sha: REAL_SHA, agent: 'a'.repeat(65),
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+  })
+})
+
+// --- F2 (Cybersec2 30439): cap + insert must be one atomic statement ---
+
+describe('tryAddKanbanCheckpoint (F2: atomic cap check)', () => {
+  it('inserts while under the cap and returns the row', () => {
+    createKanbanCard({ id: 'ck-cap-1', title: 'Under cap' })
+    const row = tryAddKanbanCheckpoint('ck-cap-1', REAL_SHA, REAL_SHA, 'backend', 100)
+    expect(row).not.toBeNull()
+    expect(row!.n).toBe(1)
+  })
+
+  it('refuses (returns null) once the cap is reached, inserting nothing', () => {
+    createKanbanCard({ id: 'ck-cap-2', title: 'At cap' })
+    tryAddKanbanCheckpoint('ck-cap-2', REAL_SHA, REAL_SHA, 'backend', 1)
+    const second = tryAddKanbanCheckpoint('ck-cap-2', REAL_SHA, REAL_SHA, 'backend', 1)
+    expect(second).toBeNull()
+    expect(getKanbanCheckpoints('ck-cap-2').length).toBe(1)
+  })
+
+  it('a burst of calls past the cap never exceeds it (no TOCTOU window)', () => {
+    createKanbanCard({ id: 'ck-cap-3', title: 'Burst test' })
+    const cap = 5
+    let accepted = 0
+    for (let i = 0; i < 20; i++) {
+      if (tryAddKanbanCheckpoint('ck-cap-3', REAL_SHA, REAL_SHA, 'backend', cap)) accepted++
+    }
+    expect(accepted).toBe(cap)
+    expect(getKanbanCheckpoints('ck-cap-3').length).toBe(cap)
+  })
+
+  it('the route enforces the same cap end-to-end (CHECKPOINT_CAP=100, exercised via a low cap substitute is not needed -- this proves the wiring, not the constant)', async () => {
+    createKanbanCard({ id: 'ck-cap-route', title: 'Route cap wiring' })
+    // Fill to the cap via the db layer directly (faster than 100 HTTP round-trips), then one more
+    // request through the real route must 400.
+    for (let i = 0; i < 100; i++) tryAddKanbanCheckpoint('ck-cap-route', REAL_SHA, REAL_SHA, 'backend', 100)
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-cap-route/checkpoints', JSON.stringify({
+      sha: REAL_SHA, head_sha: REAL_SHA, agent: 'backend',
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toMatch(/limit/)
+  })
+
+  // F2 regression (Cybersec2 30439): reproduces the measured exploit shape directly against the
+  // real route -- many concurrent requests whose bodies all arrive with the SAME delay (a slow
+  // body client, any authenticated caller, no special timing needed) must never land more rows
+  // than the cap. The old code checked the cap with a plain SELECT BEFORE awaiting the body, so
+  // every one of these requests would see the same stale pre-body count; this is why the cap
+  // check now runs inside the same statement as the insert, after the body is read.
+  it('F2: many concurrent slow-body requests never exceed the cap (reproduces the measured race)', async () => {
+    createKanbanCard({ id: 'ck-cap-race', title: 'Concurrent cap test' })
+    const almostFull = 98
+    for (let i = 0; i < almostFull; i++) tryAddKanbanCheckpoint('ck-cap-race', REAL_SHA, REAL_SHA, 'backend', 100)
+
+    const CONCURRENT_REQUESTS = 20
+    const results = await Promise.all(
+      Array.from({ length: CONCURRENT_REQUESTS }, () => {
+        const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-cap-race/checkpoints', JSON.stringify({
+          sha: REAL_SHA, head_sha: REAL_SHA, agent: 'backend',
+        }), 10) // all 20 bodies arrive ~simultaneously, 10ms out
+        return tryHandleKanban(ctx).then(() => out)
+      }),
+    )
+
+    const accepted = results.filter((r) => r.status === 201).length
+    const refused = results.filter((r) => r.status === 400).length
+    expect(accepted).toBe(2) // exactly enough to reach the cap of 100 from 98
+    expect(refused).toBe(CONCURRENT_REQUESTS - 2)
+    expect(getKanbanCheckpoints('ck-cap-race').length).toBe(100)
   })
 })
