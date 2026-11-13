@@ -37,7 +37,9 @@ MIN_AGE_MIN="${WSL_CLEANUP_MIN_AGE_MIN:-120}"       # throwaway worktrees: 2h
 TMP_MIN_AGE_MIN="${WSL_CLEANUP_TMP_MIN_AGE_MIN:-2880}" # /tmp entries: 48h
 
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
-CLEANCORE_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+# shellcheck source=./env-compat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
+CLEANCORE_MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
 
 say() { echo "wsl-cleanup: $*"; }
 run() { if [ "$DRY_RUN" = 1 ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }

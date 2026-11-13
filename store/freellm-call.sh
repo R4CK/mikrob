@@ -33,7 +33,11 @@ ROOT="$(cd "$HERE/.." && pwd)"
 
 FREELLM_SWITCH="${FREELLM_SWITCH:-$ROOT/store/freellm-enabled.json}"
 FREELLM_API_BASE="${FREELLM_API_BASE:-http://127.0.0.1:3001/v1}"
-FREELLM_MODEL="${FREELLM_MODEL:-gpt-3.5-turbo}"
+# Card af8ddbf0 (MikroB live measurement, 2026-11-12): "gpt-3.5-turbo" is not in the real
+# freellmapi catalog (284 models) -> every call 404'd by default, since offload-dispatch.sh
+# never sets FREELLM_MODEL. "auto" IS in the catalog (the provider's own router) and was
+# confirmed live to return 200. Callers that need a specific model still set FREELLM_MODEL.
+FREELLM_MODEL="${FREELLM_MODEL:-auto}"
 FREELLM_AUTH_TOKEN_FILE="${FREELLM_AUTH_TOKEN_FILE:-/home/neon/.config/freellmapi/auth-token}"
 CATEGORY_CHECK="${FREELLM_CATEGORY_CHECK_OVERRIDE:-$ROOT/store/gemini-agy-category-check.py}"
 TIMEOUT="${FREELLM_TIMEOUT:-60}"
@@ -347,9 +351,22 @@ PYEOF
     exit 0
     ;;
   401|403)
-    # Auth failure
+    # Card af8ddbf0 (MikroB live incident): the auth token file silently drifted from the
+    # server's configured key (64 chars on disk vs 59 in server/data/freeapi.db) and nobody
+    # noticed until a live call was manually diagnosed -- this used to be a bare `exit 3`,
+    # indistinguishable from any other auth problem. Name the mismatch and where to look.
+    echo "FREELLM: auth token in $FREELLM_AUTH_TOKEN_FILE was rejected by the provider (HTTP $HTTP_CODE) -- the token file does not match the server's configured key." >&2
     _freellm_ledger_log fail "auth_${HTTP_CODE}"
     exit 3
+    ;;
+  404)
+    # Card af8ddbf0: a model id the provider's catalog does not have (the old gpt-3.5-turbo
+    # default's own failure mode) used to fall into the generic `*` branch below and exit 1
+    # with no message at all -- silent, despite 404 being specific. Named separately so a
+    # bad FREELLM_MODEL is reported as what it is, not folded into "other API failure".
+    echo "FREELLM: model '$FREELLM_MODEL' was rejected by the provider (HTTP 404) -- check it against ${FREELLM_API_BASE}/models." >&2
+    _freellm_ledger_log fail "http_${HTTP_CODE}"
+    exit 1
     ;;
   429)
     # Quota

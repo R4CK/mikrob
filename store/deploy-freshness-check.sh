@@ -21,10 +21,12 @@
 # NO SECRETS: read-only git + ssh (key auth) + docker inspect. Nothing written.
 set -uo pipefail
 
-REPO="${CLEANCORE_REPO:-/mnt/h/LM_Studio_Workdir/mopsion}"
-BRANCH="${CLEANCORE_BRANCH:-main}"
-SSH_KEY="${CLEANCORE_SSH_KEY:-/home/neon/.ssh/cleancore_deploy}"
-VPS="${CLEANCORE_VPS:-root@72.62.35.139}"
+# shellcheck source=./env-compat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
+REPO="$(env_compat_get MOPSION_REPO CLEANCORE_REPO /mnt/h/LM_Studio_Workdir/mopsion)"
+BRANCH="$(env_compat_get MOPSION_BRANCH CLEANCORE_BRANCH main)"
+SSH_KEY="$(env_compat_get MOPSION_SSH_KEY CLEANCORE_SSH_KEY /home/neon/.ssh/cleancore_deploy)"
+VPS="$(env_compat_get MOPSION_VPS CLEANCORE_VPS root@72.62.35.139)"
 SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15 $VPS"
 
 [[ -d "$REPO/.git" ]] || { echo "ERROR:no-repo-at-$REPO"; exit 2; }

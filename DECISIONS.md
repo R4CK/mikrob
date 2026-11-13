@@ -23666,3 +23666,232 @@ This closes the last open item of 03f15aca ahead of its own closure (README fork
 
 **Döntés:** QA2 helyesen FAIL-elte a 2026-11-13-i e96d56c5 bejegyzésben idézett "Migráció-visszaállítás tesztelve" állítást (comment 29600): a teszt `initDatabase(':memory:')`-t hívott kétszer, ami két EGYMÁSTÓL FÜGGETLEN friss in-memory adatbázist nyit, tehát a "drop majd re-init" sosem futott egy valódi, meglévő store-on. Javítás a repóban már bevezetett `persistentDb()` mintára (`src/__tests__/stuck-incidents-schema.test.ts`): valódi tmpdir-fájl, `initDatabase(path)` kétszer UGYANAZON az útvonalon, egy a drop előtt beszúrt, nem kapcsolódó (`kanban_cards`) sor bizonyítja, hogy a második init tényleg a MEGLÉVŐ store-t állítja helyre, nem egy újat. Commit `10bbe831c`, csak a teszt-fájl módosult (+43/-7, egyetlen fájl). Fleet-test teljes futás a 10bbe831c-n: 1321 fájl / 40235 teszt zöld, exit 0.
 **Ki döntött:** backend3 (kártya e96d56c5), QA2 Fix-Direction alapján (comment 29600). Gate: QA2 re-gate + Cybersec delta. Gate-SHA: lásd REVIEW komment.
+## 2026-11-12 — af8ddbf0: freellm path never produced a successful call (default model 404 + token drift, Peti 13622 top priority)
+
+**Döntés:** MikroB élő mérése (2026-11-12 21:1x): a freellm út soha nem adott egyetlen sikeres hívást. Két független ok: (1) `store/freellm-call.sh` a `FREELLM_MODEL` default-ját `gpt-3.5-turbo`-nak állította, ami NINCS a valódi freellmapi katalógusban (284 modell + egy `auto` router) -> minden hívás 404-et kapott, és az `offload-dispatch.sh` sosem állítja be a `FREELLM_MODEL`-t, tehát az út alapból holt volt; (2) a `/home/neon/.config/freellmapi/auth-token` fájl (64 karakter) nem egyezett a szerver `server/data/freeapi.db`-ben tárolt `unified_api_key`-jével (59 karakter) -> 401, amit MikroB élőben kézzel javított (backup `auth-token.bak-20261112`, 0600).
+Javítás: (a) a default `FREELLM_MODEL` `auto`-ra váltott (élőben igazolt: 200 OK, `google/gemini-3.6-flash`-re routolva); (b) a válasz-kezelő `case` ág két korábban néma esete most nevesített hibát ír stderr-re -- `404` (rossz modell, megnevezi a modellt + a katalógus URL-t) és `401|403` (token-mismatch, megnevezi a token-fájlt), hogy a jövőben ne kelljen kézzel diagnosztizálni, mint most. Mindkettő a meglévő exit-kód táblát tartja (1 ill. 3), csak a NÉMASÁGOT szünteti meg.
+Selftest (`freellm-call.selftest.sh`): a mock szerver most GET `/v1/models` katalógust szolgál ki és a POST `/v1/chat/completions`-on tényleges token+modell-egyezést követel (a régi mock mindent elfogadott, ami sosem tudta volna reprodukálni az élő hibát). 3 új eset: default-model (a régi default a mock katalógusán is 404-et kapna, PIROS a javítás előtti kódon; `auto` a katalógusban van, ZÖLD utána), model-404 (nevesített hibaüzenet), token-mismatch (nevesített hibaüzenet). Mutációs ellenőrzés: `git stash` a javításon 9/43 tesztet pirosra visz (a 3 új + 6 meglévő happy-path eset, mert az új, szigorúbb mock a teljes régi default-útvonalat elbuktatja), a javítással 43/43 zöld. Élő végpont-hívás (`echo hi | FREELLM_SWITCH=<on> bash store/freellm-call.sh`, nincs `FREELLM_MODEL` megadva) a valódi szerver ellen: exit 0, "Hey there! 👋 How can I help you today?" válasz.
+Nincs benne (a kártya korlátja szerint): a kapcsoló bekapcsolása (tulajdonos lépése a gate-ek után), új providerek, 5aa686f0 (LOW pinnek, külön kártya).
+**Ki döntött:** backend2 (kártya af8ddbf0, Peti Telegram 13622 alapján sürgősségi átdolgozás, MikroB dispatch msg_id:17468), forrás: MikroB élő mérése. Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-07 -- card 07f1fe6e: run_fg_killable's wrapped command no longer survives TERM as an orphan (CYBERSEC GO 29154 M1/M2 on 9d1ee327)
+**Kontextus:** WhiteHat's retro-gate GO on 9d1ee327 (comment 29154, Gate-SHA 98df307b7) flagged two MEDIUM follow-ups on `run_fg_killable()` in `store/marveen-land.sh`: M1, a SIGTERM to the lander killed only the backgrounded subshell `run_fg_killable_pid`, not the eval'd command's own children -- measured with the real production trap shape: the lander exits 143, but the wrapped fleet-test/vitest tree keeps running as an orphan (reparented, lock fd already closed, but still holding a CPU slot). M2, the TERM-forwarding line in the trap was unpinned: a mutant removing it passed all 3 existing selftests.
+**Döntés:** `run_fg_killable()` now wraps the backgrounded subshell in `set -m` / `set +m` around the `( ... ) &`, which makes bash give that subshell its OWN process group (pgid == the subshell's own pid, not the script's pgid) -- confirmed by direct measurement (`ps -o pgid=`) before and after: without `set -m` the wrapped command's children share the script's own pgid; with it, they land in the new group. `land_one`'s TERM trap now does `kill -TERM -- "-$run_fg_killable_pid"` (the leading `--` plus a `-`-prefixed pid is the POSIX negative-pid form that targets the whole process group), not a plain single-pid kill. Measured end-to-end: a 4-level test (script -> run_fg_killable's subshell -> a wrapped inner script -> a backgrounded grandchild) showed the grandchild surviving under the OLD code and dying under the NEW code, for the exact same TERM-to-the-top-level-pid stimulus.
+New selftest (`marveen-land-run-fg-killable.selftest.sh`, cases 4-5): extracts the REAL production TERM trap line (not a hand-typed copy) and a REAL wrapped-command script that starts its own background grandchild and records its pid; sends TERM to the harness process and asserts the grandchild is gone. The M2 pin: the same probe re-run with a hand-built MUTANT trap (the old pre-fix single-pid `kill -TERM "$run_fg_killable_pid"`, no process-group form) is asserted to leave the grandchild ALIVE, proving the new test is actually sensitive to this exact regression, not just checking that *some* kill happens.
+Verification: `marveen-land-run-fg-killable.selftest.sh` -- 5/5 PASS (the 2 pre-existing deferral cases, the non-vacuity case, the new orphan-kill case, and the M2 mutant pin). Full `store/marveen-land.sh --selftest` -- 75/75 PASS (unchanged count, this card only touches run_fg_killable + its own dedicated selftest file, no new top-level selftest cases added to the main suite).
+**Ki döntött:** backend (card 07f1fe6e, reassigned via self-advance per rule 11, following the 9d1ee327 retro-gate GO), fix shape proposed by WhiteHat (comment 29154). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-08 -- card 07f1fe6e delta: HUP/INT group-kill, selftest wiring, drop duplicate commit (CYBERSEC GO 29326 L1/L2/I1)
+**Kontextus:** Cybersec's GO on the M1/M2 fix (comment 29326, Gate-SHA d51ba75ba) found 3 follow-ups, none of which regress the card's own TERM trigger: L1, the process-group fix traded one gap for another -- a group-directed HUP or KILL (not TERM) used to kill the wrapped fleet-test tree (no job-control subshell to reparent onto) and now orphans it, because the job-control group isolates the wrapped tree from signals that are not specifically forwarded into it. L2, `marveen-land-run-fg-killable.selftest.sh` was referenced nowhere (not `--selftest`, not `package.json`, not any `src/` test) -- its pins protected nothing unless run by hand. I1, the branch carried `12ef99313` (a DECISIONS.md tail entry for card 54c980f1) which origin/develop already has, landed separately as `405e75179` with byte-identical patch content -- landing both as-is would duplicate the entry or trip the downward-check on the foreign card id.
+**Döntés:**
+- L1: `land_with_retry`'s single TERM trap is now three traps (TERM, HUP, INT) that all call a new `_land_sig_stop` helper with the same `kill -- -<pgid>` group-kill `run_fg_killable_pid` gets. HUP and INT are trappable by bash, so they get full parity with TERM. **KILL is a documented, inherent limit, not a gap left open by choice**: SIGKILL cannot be caught by any shell trap (always goes straight to default disposition, per POSIX). A KILL sent to the lander's whole process group still kills the wrapped tree too (every process in the group gets it directly, nothing is left to orphan); a KILL sent to the lander's own pid only still orphans the wrapped tree, exactly the same gap TERM itself had before this card's first fix -- there is no trap-based mitigation for that case, because there is no trap to run. New selftest case (HUP pin, same file): the real-trap probe re-run with `kill -HUP` instead of `kill -TERM`, using the production `_land_sig_stop`/HUP-trap pair extracted the same way the TERM case already was, asserting the grandchild dies. No equivalent pin exists for KILL since there is nothing to pin (trap never fires).
+- L2: `marveen-land.sh --selftest` now runs `marveen-land-run-fg-killable.selftest.sh` as a subprocess (it exercises real signals/timing, not inline assertions, so it stays its own file) and folds its ok/FAIL lines and count into the parent run's total. Measured: `marveen-land.sh --selftest` went from 75 to 81 cases (the file's 6 cases: 2 deferral, 1 non-vacuity, TERM orphan-kill, M2 mutant pin, new HUP orphan-kill), all PASS.
+- I1: rebased `agent/backend/work` onto the then-current `origin/develop` (`77af80889`, 7 commits ahead of this branch's old base), dropping `12ef99313` (its content is `405e75179`, already on develop, confirmed via `git diff <sha>^..<sha> -- DECISIONS.md` on both commits producing identical patch text modulo line offset). `d51ba75ba`'s own content (the M1/M2 fix) is unaffected by the drop; only the duplicate docs commit under it is gone.
+Verification: `marveen-land-run-fg-killable.selftest.sh` standalone -- 6/6 PASS (incl. the new HUP pin). `marveen-land.sh --selftest` -- 81/81 PASS (75 pre-existing + 6 from the now-wired file). `fleet-test.sh --ref <new sha>` -- see REVIEW comment for the number and which sha it ran on.
+**Ki döntött:** backend (card 07f1fe6e delta fix, per MikroB msg_id:17358), finding source: cybersec (WhiteHat) comment 29326. Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 46194693 delta: F1 (behavioral land-lock-release selftest) added, F2 superseded by 81c6fbb5
+
+**Döntés:** card 46194693's gated commit (489c1ef40, WhiteHat 17020 F1/F2, QA PASS + CYBERED GO)
+never landed -- its branch sat only on agent/fullstack/work. By the time this card was rebuilt
+(MikroB decision msg 17343/17349), a later, already-landed card (81c6fbb5) had restructured
+every fleet-test call site in store/marveen-land.sh into a shared `run_fg_killable()` wrapper
+that already calls `release_land_lock_fd()` inside the subshell before `eval` -- the exact
+guarantee F2 asked for ({LAND_LOCK_FD}>&- on each inline subshell), now done once instead of at
+three call sites. Confirmed by an existing, already-passing --selftest case: "all 3 fleet-test
+subshells in land_one close their own copy of LAND_LOCK_FD before running fleet-test, via
+run_fg_killable (card 81c6fbb5 Q3, card 9d1ee327)". Applying 489c1ef40's F2 hunks verbatim would
+have been redundant with, and risked conflicting with, that single-source wrapper.
+
+F1 (the new behavioral selftest hook, `--selftest-land-lock-release` /
+`--selftest-land-lock-release-inner`, calling the real `land_one` through a disposable git
+fixture and checking the OS-level flock afterward, not a text-pin) did NOT exist yet after
+81c6fbb5's refactor and applies cleanly in its originally-intended position (right after
+`land_one`/`land_with_retry` are defined). Verified standalone: 3/3 PASS (case A: already-landed
+exit path releases the lock; case B: fleet-test-failure exit path releases the lock and removes
+the disposable worktree). Full `--selftest` suite re-run after this delta: 86/86 PASS, no FAIL,
+no regression.
+
+This card's delivered content therefore DIFFERS from the originally-gated 489c1ef40 (F2's hunks
+intentionally omitted as superseded) -- a delta, not a tree-identical rebuild like 313c8a71 and
+22835648. A fresh REVIEW/gate round is required on the new sha; the old QA PASS/CYBERED GO
+verdicts on 489c1ef40 do not carry over.
+
+**Ki döntött:** DevO (fullstack), per MikroB msg 17349/17351. Gate: QA + Cybered (fresh round,
+dispatched by MikroB on the new sha).
+
+## 2026-11-08 -- 46194693 round 3: Cybered NO-GO 29403 F1 fix (unbounded execFileSync hang)
+
+**Döntés:** Cybered's NO-GO (comment 29403) found the new `--selftest-land-lock-release` vitest
+case (added by the round-2 delta above) called `execFileSync` with no `timeout` and the script's
+own `MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S` default (7200s): under mutant M1 (dead-branch
+`false &&` on the first `cleanup()`), the leaked lock made case B queue behind it with no bound,
+so vitest's own 60s `it` timeout could never fire (the worker was blocked synchronously inside
+the child process). Fix: added `timeout: 50_000` plus
+`env: { ...process.env, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' }` to the `execFileSync` call
+(`src/__tests__/landing-downward-check.test.ts`, +2 lines only). Cybered measured M1/M3/M4 now go
+red in 37-41s, M2/M5 in 26-27s. Verified locally on the unmutated script:
+`--selftest-land-lock-release` 3/3 PASS, `--selftest` 86/86 PASS unaffected.
+
+**Ki döntött:** DevO (fullstack), per Cybered NO-GO comment 29403. Gate: QA + Cybered (re-gate on
+new sha). Gate-SHA: da275189cba5a16f3a76741f9f215054756195a7 (QA PASS 29443, CYBERED GO).
+
+## 2026-11-12 -- 46194693 rebuild: merged onto current origin/develop after real divergence on store/marveen-land.sh
+
+**Döntés:** landing the gated sha (da275189c) hit a real merge conflict (not the usual
+tail-append-only class): card/46194693's own branch adds 90 lines to `store/marveen-land.sh`
+(the `--selftest-land-lock-release`/`-inner` hook itself, from the round-1/round-2 work above),
+and `origin/develop` separately gained 8 lines in the same file from card acffb1d6
+(`--allow-archive` plumbing, merge 80077fdb4) landing in between. The two hunks are adjacent but
+non-overlapping in content: acffb1d6 only changes the `DRY=0; LAND_CARD=""; ALLOW_STACKED=""`
+line (adding `; ALLOW_ARCHIVE=0`) that sits immediately after this card's own 90-line block ends.
+Resolved by keeping both: the full `--selftest-land-lock-release`/`-inner` hook block unchanged,
+followed by `DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0` (develop's line, keeping the
+new flag). The two other hunks acffb1d6 touched in the same file (the `decisions_tail_append_ok`
+call site and the `--allow-archive` CLI option parsing) auto-merged cleanly, no manual resolution
+needed there. This DECISIONS.md entry itself is the other half of the same conflict: the
+round-2/round-3 entries above were re-appended at the true file tail (moved past the three
+entries origin/develop had gained since), per the tail-append rule.
+`bash store/marveen-land.sh --selftest` re-run after the resolution: see REVIEW comment for the
+count and the new Gate-SHA.
+
+**Ki döntött:** DevO (fullstack), per MikroB msg 17484 (rebuild direction after my own incorrect
+first read that the conflict was tail-append-only). Gate: QA + Cybered (fresh delta re-gate on
+the new sha).
+
+## 2026-11-07 -- 22835648 (Rename 1/3): MIKROB_*/MOPSION_* env names, SUITE/CACHE family migrated
+
+Peti 2026-10-11 (Telegram 11045, jóváhagyva 11048): MikroB saját beállításai MikroB-nevet kapjanak,
+a mopsionra mutató változók MOPSION_* nevet. A parent FÁZIS (d3191c84) felmérése: 22 CLEANCORE_*
+env-név, 324 előfordulás, 71 fájl. Ez a kártya a 3 lépéses terv 1. lépése: új nevek olvasása ELŐSZÖR,
+régi név fallback figyelmeztetéssel, fájl/skill/CLAUDE.md-átállás még NEM (2-3. lépés).
+
+Decision: egy közös helper a 71 kézi duplikáció helyett -- `store/env-compat-lib.sh`
+(`env_compat_get <new> <old> [default]`) és a TS megfelelője (`src/env-compat.ts`). A figyelmeztetés
+NEM de-duplikált hívásonként: a függvény természetes hívási alakja (`VAR="$(env_compat_get ...)")`)
+egy command substitution, azaz subshell -- bármilyen "már figyelmeztettem" állapot a hívás végén
+elvesztődne, és egy valódi de-dup tempfile-plusz-cleanup mechanizmust igényelne egy olyan
+követelményhez ("egyszeri figyelmeztetés"), amit egy normál, változónkénti-egy-hívás szkript már
+magától is kielégít.
+
+Ebben a körben migrálva (a SUITE_* család, a szülő FÁZIS saját elosztási listájából MIKROB_SUITE_*
++ PREGATE_CACHE/LAND_CACHE mint MIKROB_PREGATE_CACHE/MIKROB_LAND_CACHE): `store/mopsion-suite-run.sh`
+(12 változó -- a lista 2 tagja, ALLOW_NO_CARD és MARVEEN_WORKTREES_DIR, nem szerepelt a d3191c84
+eredeti listájában, később érkeztek a c0408a1c kártyával; a SUITE_* prefix-minta konzisztensen
+kiterjesztve rájuk is, itt dokumentálva, nem csendben), `store/fleet-test.sh` (ugyanaz az 5 változó,
+amit szándékosan AZONOS néven olvas, mint a mopsion-suite-run.sh, hogy a két szkript bizonyíthatóan
+ugyanazokon a lock-fájlokon versengjen), `store/mopsion-pregate.sh` és `store/mopsion-land.sh` (saját
+cache-dir változójuk).
+
+Saját hibát is talált és javított ugyanebben a körben: `mopsion-suite-run.selftest.sh` 5 helyen
+`cp`-zi a szkriptet egy izolált tmp-be -- az `env-compat-lib.sh` most már valódi függősége a
+szkriptnek, nem csak kényelmi forrás, és a hiányzó könyvtártárs 25 tesztesetet buktatott az ELSŐ
+futáson; mind az 5 helyre pótolva a lib-másolást, mielőtt a kártya lezárásra került.
+
+**NEM kész ebben a körben, explicit módon kimondva (nem csendes szűkítés):** a MOPSION_* család
+(MAIN, MAIN_DIR, WORKTREES, REPO, BRANCH, VPS, SSH_KEY, CONTACT_EMAIL -- kb. 33 fájl, és a
+CLEANCORE_MAIN önmagában a legszélesebben hivatkozott változó a teljes mért halmazban) egy
+lényegesen nagyobb migráció a SUITE/CACHE családnál, és saját kört igényel.
+
+Verified: `env-compat-lib.selftest.sh` (új) 7/7, `env-compat.test.ts` (új) 7/7,
+`mopsion-suite-run.selftest.sh` 65/65 (63 régi + 2 új eset: MIKROB_SUITE_SLOTS nyer
+CLEANCORE_SUITE_SLOTS felett, ha mindkettő be van állítva, és a régi név figyelmeztetéssel tovább
+is működik), `mopsion-pregate.sh --selftest` 17/17, `mopsion-land.sh --selftest` 91/91,
+`mopsion-preland.selftest.sh` 6/6, `fleet-test-incomplete-run.selftest.sh` 5/5. Kézzel ellenőrizve
+(direkt hívással) a MIKROB_PREGATE_CACHE/MIKROB_LAND_CACHE elsőbbség és a CLEANCORE_* fallback
+figyelmeztetés mindkettőre, mivel a saját `--selftest` blokkjaik tiszta segédfüggvényeket tesztelnek,
+nem az env-olvasó sorokat. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** DevO (fullstack), card 22835648, self-advance pick (oldest unblocked planned card).
+Gate: QA + Cybered (per card). Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 22835648 round 2: MOPSION_* family migrated, call-site tests added (B2)
+
+Round 1 (180468be8/f0d80f87c) only migrated the MIKROB_* (SUITE/CACHE) family; MikroB's re-read of
+the parent FAZIS d3191c84 (msg 17039/17042) found the MOPSION_* family (CLEANCORE_MAIN,
+CLEANCORE_WORKTREES, CLEANCORE_REPO, CLEANCORE_BRANCH, CLEANCORE_SSH_KEY, CLEANCORE_VPS) is also
+step 1, not a later round. Migrated here, same env_compat_get/envCompatGet helper, across
+agent-worktree.sh, mopsion-land.sh, mopsion-pregate.sh, mopsion-seam-sweep.sh, mopsion-preland.sh,
+mopsion-gate-worktree.sh, wsl-cleanup.sh, offload-dispatch.sh, reconstruction-landed-sweep.sh,
+unlanded-branch-sweep.sh, wsl-home-cleanup.sh, mopsion-suite-run.sh, gate-sha-repo.sh,
+deploy-freshness-check.sh, kanban-relations-git.ts, card-landing-ancestry.ts, kanban-landed-guard.ts.
+
+Explicitly out of scope: gate-pretriage-card.sh's CLEANCORE_REPO/MIKROB_REPO are hardcoded literal
+constants (no env read to migrate); the mopsi-*.sh family's CLEANCORE_MAIN export is a DIFFERENT,
+unrelated sibling-project bridge (MOPSI_*, not MOPSION_*); CLEANCORE_CONTACT_EMAIL does not exist
+in the codebase.
+
+B2 (no test pinned the new-name read in mopsion-land.sh/mopsion-pregate.sh/fleet-test.sh): added a
+--main-path flag to the first two and --cpu-slots to fleet-test.sh (mirroring the existing
+--path/--cpu-slot-path pattern), plus call-site cases, all mutation-proven red-before.
+
+**Ki döntött:** DevO (fullstack), card 22835648 round 2, per MikroB msg 17039/17042 (QA FAIL
+28923, CYBERED NO-GO). Gate: QA + Cybered.
+Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- card 22835648 round 3: re-pin 4 suites after round 2's MOPSION_* migration
+**Döntés:** same `fleet-test.sh --ref 9d6d918be` run surfaced 4 more stale pins, all caused by round 2's own MOPSION_* migration and B2 --main-path fix: `token-argv-doc-sweep.test.ts` (allowlist line 258->260, shifted by round 2's own 2-line addition to `mopsion-suite-run.sh`), `landing-downward-check.test.ts` ("own cases" floor constant 41->45, both assertions, from round 2's 4 new `--selftest` cases per lander, 91->95), `offload-dispatch.selftest.sh` (the sed-extracted `graph_repo_for()` body now calls `env_compat_get` directly; sourced `env-compat-lib.sh` before extraction in both occurrences), `store-selftests-all-run.test.ts` (added an `OK_SHAPES` regex matching `env-compat-lib.selftest.sh`'s actual "selftest: all N cases pass." output shape). All verified individually green; `store-selftests-all-run.test.ts` re-run clean against this tree (145/145, no dirty-tree flags).
+**Ki döntött:** DevO (fullstack), card 22835648 round 3, per MikroB msg 17047/17039. Gate: QA + Cybered.
+Gate-SHA: bd221181a.
+
+## 2026-11-07 -- card 22835648 round 4: fix Cybered NO-GO 28967 (Mopsi bridge precedence + 2 unmigrated Python reads)
+
+**Döntés:** Cybered's round-2 NO-GO (28967), independently reproduced by QA's own correction
+(28970), found one new regression and two still-missing reads that round 2/3 did not cover:
+
+1. `agent-worktree-mopsi.sh` and `mopsi-gate-worktree.sh` exported only the old
+   `CLEANCORE_MAIN`/`CLEANCORE_WORKTREES` to steer the generic scripts at the Mopsi clone. Those
+   generic scripts now resolve via `env_compat_get MOPSION_MAIN CLEANCORE_MAIN ...` (new name
+   wins), so an ambient `MOPSION_MAIN`/`MOPSION_WORKTREES` in the caller's environment silently
+   beat the wrapper's intended value, and the "Mopsi" wrapper resolved the mopsion clone instead.
+   Fixed by exporting the new names too, overriding any ambient value.
+2. `store/gate-closure-check.py:649` and `store/nmr-git-evidence.py:56` read `CLEANCORE_MAIN`
+   directly via `os.environ.get`, with no `MOPSION_MAIN` fallback at all -- never touched by
+   round 2/3's migration. Added `store/env_compat_lib.py` (Python counterpart of the bash/TS
+   `env_compat_get` helpers) and wired both files to it.
+3. Pinned three already-correct but untested `env_compat_get` reads named in msg 17083/17102:
+   `fleet-test.sh` CPU_LOCK_PREFIX, `mopsion-land.sh` CACHE_DIR/WORKTREES, `mopsion-pregate.sh`
+   CACHE_DIR -- new `--cache-path`/`--worktree-path` diagnostic flags plus selftest cases proving
+   the precedence, mirroring the existing `--main-path` pattern.
+
+All fixes mutation-proven (red-before via pre-fix file reconstruction from `git show HEAD:<path>`,
+green-after via full selftest runs). `landing-downward-check.test.ts`'s "own cases" floor constant
+bumped 45->49 (mopsion-land.sh's own `--selftest` count moved 95->99 with the 4 new cases).
+`tsc --noEmit` clean; `lint-ratchet.sh --show` unchanged at baseline (441 findings: 12/151/278).
+`store-selftests-all-run.test.ts` re-run clean against this commit (145/145, no dirty-tree flags).
+
+**Ki döntött:** DevO (fullstack), card 22835648 round 4, per MikroB msg 17083/17102 (CYBERED
+NO-GO 28967). Gate: QA + Cybered.
+Gate-SHA: af69d1bd9.
+
+## 2026-11-13 -- card 22835648: rebuilt by cherry-pick after Cybered NO-GO 29641 (reconstruction-from-old-base revert)
+
+**Döntés:** The earlier reconstruction on `card/22835648` (Gate-SHA 9c05c571a) was built with
+`git checkout af69d1bd9 -- <files>`, a whole-file copy from a base 116 commits behind current
+`origin/develop`. Cybered's NO-GO (29641) found this silently reverted 4 files' worth of work that
+landed on develop after the stack diverged: card 392d7104 (Peti 13201, the freellm gemini-ok
+marker requirement) in `store/offload-dispatch.sh`/`.selftest.sh`, the WhiteHat M1 single-EXIT-trap
+`cleanup()` fix (card 88b67fb4) in `store/mopsion-land.sh`, and the marveen-land own-case floor
+constants (cards 81c6fbb5/1ce1059a/07f1fe6e) in `src/__tests__/landing-downward-check.test.ts`.
+`landing-downward-check.test.ts` itself failed on the reconstruction's own tree (1 failed, 4 passed).
+
+Fix (per Cybered's Fix-Direction): rebuilt on a fresh `card/22835648` branch off CURRENT
+`origin/develop` (a4e2228d8) by cherry-picking the card's 4 owned code commits in order
+(f0d80f87c, 73d134aef, bd221181a, af69d1bd9), not by checking out files from the old sha. One
+conflict both times in `landing-downward-check.test.ts`'s shared-block floor constants (expected,
+the same spot Cybered's own rebuild hit): resolved by advancing the floor on top of develop's
+current value instead of reverting to the card's old one (cc 41->45->49, mv stays develop's 33),
+each resolution verified against the actual `--selftest` case counts. Also fixed a drive-by: the
+cherry-pick lost the executable bit on `store/env-compat-lib.sh`/`.selftest.sh` (a DrvFs/
+core.fileMode=false mount issue, caught by `shebang-files-executable.test.ts`) -- fixed via
+`git update-index --chmod=+x`, not a filesystem `chmod` alone, in its own small commit.
+
+Verification: diff vs the gated `af69d1bd9` on all 37 owned non-DECISIONS.md files -- 33
+byte-identical, 4 differ, each difference confirmed to be develop's later-landed content correctly
+PRESERVED (not reverted): the 392d7104 marker check, the WhiteHat M1 trap fix, and the expected
+floor-constant bump. `tsc --noEmit` clean. Targeted vitest: `landing-downward-check.test.ts` 5/5,
+`env-compat.test.ts` + `token-argv-doc-sweep.test.ts` 9/9. Full `fleet-test.sh --ref <rebuilt sha>`:
+see REVIEW comment for the number.
+
+**Ki döntött:** DevO (fullstack), card 22835648 rebuild, per MikroB msg_id:17609 and Cybered
+NO-GO 29641 (Fix-Direction). Gate: QA + Cybered. Gate-SHA: see REVIEW comment.
