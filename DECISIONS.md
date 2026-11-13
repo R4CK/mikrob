@@ -23748,3 +23748,140 @@ count and the new Gate-SHA.
 **Ki döntött:** DevO (fullstack), per MikroB msg 17484 (rebuild direction after my own incorrect
 first read that the conflict was tail-append-only). Gate: QA + Cybered (fresh delta re-gate on
 the new sha).
+
+## 2026-11-07 -- 22835648 (Rename 1/3): MIKROB_*/MOPSION_* env names, SUITE/CACHE family migrated
+
+Peti 2026-10-11 (Telegram 11045, jóváhagyva 11048): MikroB saját beállításai MikroB-nevet kapjanak,
+a mopsionra mutató változók MOPSION_* nevet. A parent FÁZIS (d3191c84) felmérése: 22 CLEANCORE_*
+env-név, 324 előfordulás, 71 fájl. Ez a kártya a 3 lépéses terv 1. lépése: új nevek olvasása ELŐSZÖR,
+régi név fallback figyelmeztetéssel, fájl/skill/CLAUDE.md-átállás még NEM (2-3. lépés).
+
+Decision: egy közös helper a 71 kézi duplikáció helyett -- `store/env-compat-lib.sh`
+(`env_compat_get <new> <old> [default]`) és a TS megfelelője (`src/env-compat.ts`). A figyelmeztetés
+NEM de-duplikált hívásonként: a függvény természetes hívási alakja (`VAR="$(env_compat_get ...)")`)
+egy command substitution, azaz subshell -- bármilyen "már figyelmeztettem" állapot a hívás végén
+elvesztődne, és egy valódi de-dup tempfile-plusz-cleanup mechanizmust igényelne egy olyan
+követelményhez ("egyszeri figyelmeztetés"), amit egy normál, változónkénti-egy-hívás szkript már
+magától is kielégít.
+
+Ebben a körben migrálva (a SUITE_* család, a szülő FÁZIS saját elosztási listájából MIKROB_SUITE_*
++ PREGATE_CACHE/LAND_CACHE mint MIKROB_PREGATE_CACHE/MIKROB_LAND_CACHE): `store/mopsion-suite-run.sh`
+(12 változó -- a lista 2 tagja, ALLOW_NO_CARD és MARVEEN_WORKTREES_DIR, nem szerepelt a d3191c84
+eredeti listájában, később érkeztek a c0408a1c kártyával; a SUITE_* prefix-minta konzisztensen
+kiterjesztve rájuk is, itt dokumentálva, nem csendben), `store/fleet-test.sh` (ugyanaz az 5 változó,
+amit szándékosan AZONOS néven olvas, mint a mopsion-suite-run.sh, hogy a két szkript bizonyíthatóan
+ugyanazokon a lock-fájlokon versengjen), `store/mopsion-pregate.sh` és `store/mopsion-land.sh` (saját
+cache-dir változójuk).
+
+Saját hibát is talált és javított ugyanebben a körben: `mopsion-suite-run.selftest.sh` 5 helyen
+`cp`-zi a szkriptet egy izolált tmp-be -- az `env-compat-lib.sh` most már valódi függősége a
+szkriptnek, nem csak kényelmi forrás, és a hiányzó könyvtártárs 25 tesztesetet buktatott az ELSŐ
+futáson; mind az 5 helyre pótolva a lib-másolást, mielőtt a kártya lezárásra került.
+
+**NEM kész ebben a körben, explicit módon kimondva (nem csendes szűkítés):** a MOPSION_* család
+(MAIN, MAIN_DIR, WORKTREES, REPO, BRANCH, VPS, SSH_KEY, CONTACT_EMAIL -- kb. 33 fájl, és a
+CLEANCORE_MAIN önmagában a legszélesebben hivatkozott változó a teljes mért halmazban) egy
+lényegesen nagyobb migráció a SUITE/CACHE családnál, és saját kört igényel.
+
+Verified: `env-compat-lib.selftest.sh` (új) 7/7, `env-compat.test.ts` (új) 7/7,
+`mopsion-suite-run.selftest.sh` 65/65 (63 régi + 2 új eset: MIKROB_SUITE_SLOTS nyer
+CLEANCORE_SUITE_SLOTS felett, ha mindkettő be van állítva, és a régi név figyelmeztetéssel tovább
+is működik), `mopsion-pregate.sh --selftest` 17/17, `mopsion-land.sh --selftest` 91/91,
+`mopsion-preland.selftest.sh` 6/6, `fleet-test-incomplete-run.selftest.sh` 5/5. Kézzel ellenőrizve
+(direkt hívással) a MIKROB_PREGATE_CACHE/MIKROB_LAND_CACHE elsőbbség és a CLEANCORE_* fallback
+figyelmeztetés mindkettőre, mivel a saját `--selftest` blokkjaik tiszta segédfüggvényeket tesztelnek,
+nem az env-olvasó sorokat. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** DevO (fullstack), card 22835648, self-advance pick (oldest unblocked planned card).
+Gate: QA + Cybered (per card). Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- 22835648 round 2: MOPSION_* family migrated, call-site tests added (B2)
+
+Round 1 (180468be8/f0d80f87c) only migrated the MIKROB_* (SUITE/CACHE) family; MikroB's re-read of
+the parent FAZIS d3191c84 (msg 17039/17042) found the MOPSION_* family (CLEANCORE_MAIN,
+CLEANCORE_WORKTREES, CLEANCORE_REPO, CLEANCORE_BRANCH, CLEANCORE_SSH_KEY, CLEANCORE_VPS) is also
+step 1, not a later round. Migrated here, same env_compat_get/envCompatGet helper, across
+agent-worktree.sh, mopsion-land.sh, mopsion-pregate.sh, mopsion-seam-sweep.sh, mopsion-preland.sh,
+mopsion-gate-worktree.sh, wsl-cleanup.sh, offload-dispatch.sh, reconstruction-landed-sweep.sh,
+unlanded-branch-sweep.sh, wsl-home-cleanup.sh, mopsion-suite-run.sh, gate-sha-repo.sh,
+deploy-freshness-check.sh, kanban-relations-git.ts, card-landing-ancestry.ts, kanban-landed-guard.ts.
+
+Explicitly out of scope: gate-pretriage-card.sh's CLEANCORE_REPO/MIKROB_REPO are hardcoded literal
+constants (no env read to migrate); the mopsi-*.sh family's CLEANCORE_MAIN export is a DIFFERENT,
+unrelated sibling-project bridge (MOPSI_*, not MOPSION_*); CLEANCORE_CONTACT_EMAIL does not exist
+in the codebase.
+
+B2 (no test pinned the new-name read in mopsion-land.sh/mopsion-pregate.sh/fleet-test.sh): added a
+--main-path flag to the first two and --cpu-slots to fleet-test.sh (mirroring the existing
+--path/--cpu-slot-path pattern), plus call-site cases, all mutation-proven red-before.
+
+**Ki döntött:** DevO (fullstack), card 22835648 round 2, per MikroB msg 17039/17042 (QA FAIL
+28923, CYBERED NO-GO). Gate: QA + Cybered.
+Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- card 22835648 round 3: re-pin 4 suites after round 2's MOPSION_* migration
+**Döntés:** same `fleet-test.sh --ref 9d6d918be` run surfaced 4 more stale pins, all caused by round 2's own MOPSION_* migration and B2 --main-path fix: `token-argv-doc-sweep.test.ts` (allowlist line 258->260, shifted by round 2's own 2-line addition to `mopsion-suite-run.sh`), `landing-downward-check.test.ts` ("own cases" floor constant 41->45, both assertions, from round 2's 4 new `--selftest` cases per lander, 91->95), `offload-dispatch.selftest.sh` (the sed-extracted `graph_repo_for()` body now calls `env_compat_get` directly; sourced `env-compat-lib.sh` before extraction in both occurrences), `store-selftests-all-run.test.ts` (added an `OK_SHAPES` regex matching `env-compat-lib.selftest.sh`'s actual "selftest: all N cases pass." output shape). All verified individually green; `store-selftests-all-run.test.ts` re-run clean against this tree (145/145, no dirty-tree flags).
+**Ki döntött:** DevO (fullstack), card 22835648 round 3, per MikroB msg 17047/17039. Gate: QA + Cybered.
+Gate-SHA: bd221181a.
+
+## 2026-11-07 -- card 22835648 round 4: fix Cybered NO-GO 28967 (Mopsi bridge precedence + 2 unmigrated Python reads)
+
+**Döntés:** Cybered's round-2 NO-GO (28967), independently reproduced by QA's own correction
+(28970), found one new regression and two still-missing reads that round 2/3 did not cover:
+
+1. `agent-worktree-mopsi.sh` and `mopsi-gate-worktree.sh` exported only the old
+   `CLEANCORE_MAIN`/`CLEANCORE_WORKTREES` to steer the generic scripts at the Mopsi clone. Those
+   generic scripts now resolve via `env_compat_get MOPSION_MAIN CLEANCORE_MAIN ...` (new name
+   wins), so an ambient `MOPSION_MAIN`/`MOPSION_WORKTREES` in the caller's environment silently
+   beat the wrapper's intended value, and the "Mopsi" wrapper resolved the mopsion clone instead.
+   Fixed by exporting the new names too, overriding any ambient value.
+2. `store/gate-closure-check.py:649` and `store/nmr-git-evidence.py:56` read `CLEANCORE_MAIN`
+   directly via `os.environ.get`, with no `MOPSION_MAIN` fallback at all -- never touched by
+   round 2/3's migration. Added `store/env_compat_lib.py` (Python counterpart of the bash/TS
+   `env_compat_get` helpers) and wired both files to it.
+3. Pinned three already-correct but untested `env_compat_get` reads named in msg 17083/17102:
+   `fleet-test.sh` CPU_LOCK_PREFIX, `mopsion-land.sh` CACHE_DIR/WORKTREES, `mopsion-pregate.sh`
+   CACHE_DIR -- new `--cache-path`/`--worktree-path` diagnostic flags plus selftest cases proving
+   the precedence, mirroring the existing `--main-path` pattern.
+
+All fixes mutation-proven (red-before via pre-fix file reconstruction from `git show HEAD:<path>`,
+green-after via full selftest runs). `landing-downward-check.test.ts`'s "own cases" floor constant
+bumped 45->49 (mopsion-land.sh's own `--selftest` count moved 95->99 with the 4 new cases).
+`tsc --noEmit` clean; `lint-ratchet.sh --show` unchanged at baseline (441 findings: 12/151/278).
+`store-selftests-all-run.test.ts` re-run clean against this commit (145/145, no dirty-tree flags).
+
+**Ki döntött:** DevO (fullstack), card 22835648 round 4, per MikroB msg 17083/17102 (CYBERED
+NO-GO 28967). Gate: QA + Cybered.
+Gate-SHA: af69d1bd9.
+
+## 2026-11-13 -- card 22835648: rebuilt by cherry-pick after Cybered NO-GO 29641 (reconstruction-from-old-base revert)
+
+**Döntés:** The earlier reconstruction on `card/22835648` (Gate-SHA 9c05c571a) was built with
+`git checkout af69d1bd9 -- <files>`, a whole-file copy from a base 116 commits behind current
+`origin/develop`. Cybered's NO-GO (29641) found this silently reverted 4 files' worth of work that
+landed on develop after the stack diverged: card 392d7104 (Peti 13201, the freellm gemini-ok
+marker requirement) in `store/offload-dispatch.sh`/`.selftest.sh`, the WhiteHat M1 single-EXIT-trap
+`cleanup()` fix (card 88b67fb4) in `store/mopsion-land.sh`, and the marveen-land own-case floor
+constants (cards 81c6fbb5/1ce1059a/07f1fe6e) in `src/__tests__/landing-downward-check.test.ts`.
+`landing-downward-check.test.ts` itself failed on the reconstruction's own tree (1 failed, 4 passed).
+
+Fix (per Cybered's Fix-Direction): rebuilt on a fresh `card/22835648` branch off CURRENT
+`origin/develop` (a4e2228d8) by cherry-picking the card's 4 owned code commits in order
+(f0d80f87c, 73d134aef, bd221181a, af69d1bd9), not by checking out files from the old sha. One
+conflict both times in `landing-downward-check.test.ts`'s shared-block floor constants (expected,
+the same spot Cybered's own rebuild hit): resolved by advancing the floor on top of develop's
+current value instead of reverting to the card's old one (cc 41->45->49, mv stays develop's 33),
+each resolution verified against the actual `--selftest` case counts. Also fixed a drive-by: the
+cherry-pick lost the executable bit on `store/env-compat-lib.sh`/`.selftest.sh` (a DrvFs/
+core.fileMode=false mount issue, caught by `shebang-files-executable.test.ts`) -- fixed via
+`git update-index --chmod=+x`, not a filesystem `chmod` alone, in its own small commit.
+
+Verification: diff vs the gated `af69d1bd9` on all 37 owned non-DECISIONS.md files -- 33
+byte-identical, 4 differ, each difference confirmed to be develop's later-landed content correctly
+PRESERVED (not reverted): the 392d7104 marker check, the WhiteHat M1 trap fix, and the expected
+floor-constant bump. `tsc --noEmit` clean. Targeted vitest: `landing-downward-check.test.ts` 5/5,
+`env-compat.test.ts` + `token-argv-doc-sweep.test.ts` 9/9. Full `fleet-test.sh --ref <rebuilt sha>`:
+see REVIEW comment for the number.
+
+**Ki döntött:** DevO (fullstack), card 22835648 rebuild, per MikroB msg_id:17609 and Cybered
+NO-GO 29641 (Fix-Direction). Gate: QA + Cybered. Gate-SHA: see REVIEW comment.

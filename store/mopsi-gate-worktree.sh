@@ -35,7 +35,12 @@
 # Exit: whatever mopsion-gate-worktree.sh exits (0 ok | 2 bad usage | 3 setup failed)
 set -euo pipefail
 
-export CLEANCORE_MAIN="${MOPSI_MAIN:-/mnt/h/LM_Studio_Workdir/Mopsi-main}"
+# card 22835648 round 4 (Cybered NO-GO 28967): same bridge-precedence fix as
+# agent-worktree-mopsi.sh -- mopsion-gate-worktree.sh now reads MOPSION_MAIN first
+# (env_compat_get), so export the new name too, overriding any ambient value, not just the old
+# CLEANCORE_MAIN this wrapper used to rely on alone.
+export MOPSION_MAIN="${MOPSI_MAIN:-/mnt/h/LM_Studio_Workdir/Mopsi-main}"
+export CLEANCORE_MAIN="$MOPSION_MAIN"
 export CC_GATE_ROOT="${MOPSI_GATE_ROOT:-$HOME/mopsi-gates}"
 mkdir -p "$CC_GATE_ROOT"
 
