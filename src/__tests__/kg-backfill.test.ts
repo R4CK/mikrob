@@ -3,7 +3,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { migrate } from '../kg/store.js'
-import { defaultListCandidates, runBackfillBatch, type BackfillDeps, type GpuGateResult } from '../kg/backfill.js'
+import {
+  defaultListCandidates,
+  defaultListPendingCandidates,
+  runBackfillBatch,
+  type BackfillDeps,
+  type GpuGateResult,
+} from '../kg/backfill.js'
+import { enqueueCapture } from '../kg/capture.js'
 import type { CaptureRunResult } from '../kg/capture-pipeline.js'
 
 function freshKgDb(): Database.Database {
@@ -61,6 +68,34 @@ describe('defaultListCandidates', () => {
     ])
     const kgDb = freshKgDb()
     expect(defaultListCandidates(mainDb, kgDb, 2)).toEqual(['c1', 'c2'])
+  })
+})
+
+describe('defaultListPendingCandidates (card 1388200c: the drain the live hook never had)', () => {
+  it('returns rows in state pending regardless of reason, oldest first', () => {
+    const kgDb = freshKgDb()
+    enqueueCapture(kgDb, 'c1', 'closed', 100)
+    enqueueCapture(kgDb, 'c2', 'reopen', 50)
+    enqueueCapture(kgDb, 'c3', 'backfill', 150)
+    const out = defaultListPendingCandidates(kgDb, 10)
+    expect(out).toEqual(['c2', 'c1', 'c3'])
+  })
+
+  it('excludes rows already done/failed/skipped', () => {
+    const kgDb = freshKgDb()
+    enqueueCapture(kgDb, 'c1', 'closed', 1)
+    kgDb.prepare(`UPDATE kg_capture_queue SET state = 'done' WHERE card_id = 'c1'`).run()
+    enqueueCapture(kgDb, 'c2', 'closed', 2)
+    expect(defaultListPendingCandidates(kgDb, 10)).toEqual(['c2'])
+  })
+
+  it('respects the limit and rejects a non-positive one', () => {
+    const kgDb = freshKgDb()
+    enqueueCapture(kgDb, 'c1', 'closed', 1)
+    enqueueCapture(kgDb, 'c2', 'closed', 2)
+    expect(defaultListPendingCandidates(kgDb, 1)).toEqual(['c1'])
+    expect(defaultListPendingCandidates(kgDb, 0)).toEqual([])
+    expect(defaultListPendingCandidates(kgDb, -1)).toEqual([])
   })
 })
 

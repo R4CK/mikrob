@@ -7,7 +7,7 @@
 // without wading through connection/CRUD code -- the pattern src/db.ts already uses for
 // src/schema/agent-messages-ddl.ts.
 
-export const KG_SCHEMA_VERSION = 1
+export const KG_SCHEMA_VERSION = 2
 
 export interface Migration {
   version: number
@@ -148,7 +148,23 @@ const V1_DOWN: readonly string[] = [
   `DROP TABLE IF EXISTS kg_nodes`,
 ]
 
-export const MIGRATIONS: readonly Migration[] = [{ version: 1, up: V1_UP, down: V1_DOWN }]
+// V2 (card 1388200c): a single-row liveness stamp for the capture-queue drain worker (see
+// worker-heartbeat.ts) -- the UI needs to tell "pending items, worker running" apart from
+// "pending items, nothing has ever drained them", which the queue table alone cannot answer.
+const V2_UP: readonly string[] = [
+  `CREATE TABLE kg_worker_heartbeat (
+    id             INTEGER PRIMARY KEY CHECK(id = 1),
+    last_run_at    INTEGER NOT NULL,
+    last_processed INTEGER NOT NULL
+  )`,
+]
+
+const V2_DOWN: readonly string[] = [`DROP TABLE IF EXISTS kg_worker_heartbeat`]
+
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, up: V1_UP, down: V1_DOWN },
+  { version: 2, up: V2_UP, down: V2_DOWN },
+]
 
 export const KG_NODE_TYPES = [
   'card', 'solution', 'anti_pattern', 'decision', 'finding', 'error_class', 'lesson', 'commit',
