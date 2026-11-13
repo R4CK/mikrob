@@ -20,6 +20,21 @@ import { homedir } from 'node:os'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 
+// Card c60e229a moved several CLAUDE.md sections verbatim into docs/rules/*.md, replacing each
+// with a one-line index entry -- both recipes this file checks (the pairing escalation and the
+// morning kick-off) now live there, not in CLAUDE.md's own text. Same corpus as the split's own
+// reachability-check script.
+function readClaudeMdCorpus(): string {
+  const rulesDir = join(REPO_ROOT, 'docs', 'rules')
+  const parts = [readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')]
+  if (existsSync(rulesDir)) {
+    for (const f of readdirSync(rulesDir)) {
+      if (f.endsWith('.md')) parts.push(readFileSync(join(rulesDir, f), 'utf-8'))
+    }
+  }
+  return parts.join('\n')
+}
+
 /**
  * Does this line INSTRUCT an agent to pass 0 as the chat id?
  *
@@ -80,13 +95,13 @@ describe('the `chat_id: 0` recipe is gone from everything the fleet reads', () =
 
   // --- repo-owned facts: these hold on any checkout, no environment needed -----------------
   it('the root CLAUDE.md no longer tells anyone to pass 0', () => {
-    const md = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
+    const md = readClaudeMdCorpus()
     const bad = md.split('\n').filter(instructsChatIdZero)
     expect(bad, `CLAUDE.md still instructs chat_id 0:\n${bad.join('\n')}`).toEqual([])
   })
 
   it('the CLAUDE.md Telegram recipes name a real numeric chat id instead', () => {
-    const md = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
+    const md = readClaudeMdCorpus()
     // Both call sites the card touched: the unknown-sender pairing escalation and the morning
     // kick-off. If someone reverts either to 0, this fails alongside the check above.
     //
