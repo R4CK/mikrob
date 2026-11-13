@@ -24133,3 +24133,13 @@ hívása még látja a változót, a gyerek (fleet-test.sh és minden, amit az i
 
 **Ki döntött:** MikroB (msg 17699, backend3 gyökér-okos jelentése alapján, msg 17698), backend3
 végezte. Gate: QA + Cybersec.
+
+## 2026-11-13 -- kártya 78339a8a delta: landing-downward-check.test.ts floor-konstans frissítve
+
+**Döntés:** a saját rfk-selftest-eset (LANDING_DOWNWARD_CHECK-szivárgás pin) hozzáadása a
+marveen-land.sh --selftest teljes esetszámát 92-ről 93-ra emelte, ami elrontotta a
+landing-downward-check.test.ts megosztott-blokk egyenlőség-ellenőrzését (mv saját-blokk
+konstansa a korábbi marveen-only bővítések mintáját követve 33-ról 34-re emelve). Tisztán
+teszt-szám-frissítés, nincs viselkedés-változás. Commit 1005d780.
+
+**Ki döntött:** backend3 (önálló, mechanikus teszt-korrekció). Gate: QA + Cybersec.
