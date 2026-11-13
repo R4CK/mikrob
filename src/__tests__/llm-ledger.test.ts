@@ -1,6 +1,7 @@
 // Card e96d56c5 (F4): per-call LLM ledger + per-agent budget.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest'
 import { Readable } from 'node:stream'
+import http from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -283,9 +284,70 @@ describe('llm_ledger: route GET/PUT /api/llm-ledger/budget/:agent', () => {
     expect(out.status).toBe(413)
     // No budget row should have been written off a refused oversized body.
     expect(getAgentLlmBudget('backend3').source).toBe('platform')
-    // BUDGET_BODY_MAX_BYTES is 4KB; readBody destroys the stream on the chunk that crosses it, so
-    // at most ~1 chunk (1MB) is ever pulled, nowhere near the full 20MB body.
-    expect(bytesPulled).toBeLessThan(2 * CHUNK)
+    // BUDGET_BODY_MAX_BYTES is 4KB, so overLimit fires on the very first 'data' event -- but a
+    // Node Readable built from an async generator prefetches one chunk ahead of what it has
+    // delivered, so 2 chunks (2MB) is the real floor here, not 1. The bound is 5x that (10MB,
+    // half the full 20MB body) specifically so this does not re-couple to that internal
+    // prefetch-depth implementation detail; the property under test is "nowhere near the full
+    // body", not "exactly N chunks".
+    expect(bytesPulled).toBeLessThan(10 * CHUNK)
+  })
+})
+
+// card 1a3c6459 (MikroB F1, off WhiteHat2 30319): the fake-stream tests above read the error
+// object straight off a rejected promise -- they pass even when the real socket is destroyed
+// before a response can be written, because nothing in them is listening on a real wire. This
+// block runs the actual route behind a real http.Server (same pattern as video-review.test.ts),
+// so a client that never gets a response IS a failure here, not a false green.
+describe('llm_ledger: route PUT /api/llm-ledger/budget/:agent over a real socket (1a3c6459 F1)', () => {
+  let server: http.Server
+  let origin = ''
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      void (async () => {
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        // Minimal auth-kind injection for this test only: a real client cannot forge this
+        // header past the dashboard's actual auth gate (not under test here), but it lets this
+        // test drive tryHandleLlmLedger's own session/device/token branches over a real socket
+        // without standing up the whole auth-gate stack.
+        const authKind = req.headers['x-test-auth-kind']
+        const ctx: RouteContext = {
+          req, res, path: url.pathname, method: req.method ?? 'GET', url,
+          auth: authKind === 'session' ? { kind: 'session', user: 'peti' }
+            : authKind === 'device' ? { kind: 'device', device: 'bridge-1' }
+              : authKind === 'token' ? { kind: 'token', agent: 'backend3' } : undefined,
+        }
+        if (!(await tryHandleLlmLedger(ctx))) { res.writeHead(404); res.end() }
+      })()
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    origin = `http://127.0.0.1:${(server.address() as any).port}`
+  })
+  afterAll(() => { server.close() })
+  beforeEach(() => { initDatabase(':memory:') })
+
+  it('an over-cap PUT body gets a real 413 status line, not a dropped connection', async () => {
+    const huge = JSON.stringify({ daily_budget: 1, padding: 'x'.repeat(1024 * 1024) }) // 1MB, over the 4KB cap
+    const res = await fetch(`${origin}/api/llm-ledger/budget/backend3`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-test-auth-kind': 'session' },
+      body: huge,
+    })
+    expect(res.status).toBe(413)
+    const data = await res.json() as { error: string }
+    expect(data.error).toMatch(/too large/)
+    expect(getAgentLlmBudget('backend3').source).toBe('platform') // nothing written
+  })
+
+  it('an in-cap PUT over the real socket still succeeds (the fix did not break the happy path)', async () => {
+    const res = await fetch(`${origin}/api/llm-ledger/budget/backend3`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-test-auth-kind': 'session' },
+      body: JSON.stringify({ daily_budget: 5000 }),
+    })
+    expect(res.status).toBe(200)
+    expect(getAgentLlmBudget('backend3')).toEqual({ daily_budget: 5000, source: 'override' })
   })
 })
 
