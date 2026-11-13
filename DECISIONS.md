@@ -23786,3 +23786,51 @@ the 5 cases red. `marveen-land.sh --selftest`: 92/92 PASS, unaffected by the one
 **Ki döntött:** MikroB (dispatch msg_id:17746, card text listing the three options) + backend2
 (measurement and choice among them, per the card's "measure first, then pick one, simplest that
 works"). Gate: QA + Cybersec.
+
+## 2026-11-13 -- b7d8ecc4 round 2: priority queue moved to the real contention point (CPU slots), N1-N4
+
+**Döntés:** Cybersec NO-GO 30007 on round 1 (sha 3ea43c816), confirmed correct on re-reading the
+code and re-measuring live: round 1 only ordered the TREE mutex, but `acquire_cpu_slot` (2 slots,
+shared with the mopsion suite pool) runs BEFORE it and every holder keeps its slot until it exits
+-- so at most 2 runs are ever past the slot stage (the running holder plus one waiter), and a
+queue of one has nothing to prioritise (N1). Cybersec's live read confirmed this: a land run was
+already past the slot stage and sitting ALONE behind one running gate holder at the tree mutex --
+priority cannot help there, because there was no second waiter to leapfrog.
+
+Fix: generalised `fleet_test_take_ticket`/`fleet_test_reap_stale_tickets`/`fleet_test_is_head` to
+take a `ticket_dir` parameter, and applied the SAME priority queue to BOTH stages -- the CPU-slot
+acquisition loop (`acquire_cpu_slot`, where the real multi-way contention forms) and the tree
+mutex (unchanged in kind from round 1). Three further fixes from the same NO-GO: N2 (a ticket
+whose recorded pid was reused by an unrelated live process wedged the whole queue -- added the
+pid+start-time liveness check `marveen-land.sh`'s own reaper already uses, via a duplicated
+`fleet_test_pid_starttime`); N3 (a fresh arrival could "barge" a queued ticket in the window
+between a release and the queued waiter's next poll, because round 1 only took a ticket AFTER an
+immediate `flock -n`/`acquire_cpu_slot` attempt failed -- now every caller takes a ticket
+unconditionally, before ever trying the resource, at both stages); N4 (no aging -- a normal run
+could be starved indefinitely by a continuous stream of land arrivals -- added
+`FLEET_TEST_AGING_S` (default 180s): a normal ticket older than this is treated as rank 0 for
+ordering, without renaming the ticket file itself, so the waiter's own ticket-path reference
+never goes stale across repeated `fleet_test_is_head` calls).
+
+Not fixed, deliberately out of scope: a RUNNING holder cannot be preempted by a later-arriving
+land -- no ticket-ordering scheme can change that without killing in-flight work, which the
+dispatch explicitly forbade. Reserving a CPU slot exclusively for lands was considered (MikroB's
+question) and rejected for this card: the slot pool is shared with `mopsion-suite-run.sh`, which
+is not ticket-aware, so a marveen-side-only reservation would need cross-script coordination
+(changing `mopsion-suite-run.sh` too) to actually hold -- out of scope, and `CLEANCORE_SUITE_SLOTS`
+can already be raised as a lower-risk capacity lever if contention stays high after this fix lands.
+Also flagged, not fixed here: the live gate run Cybersec observed held slot+tree for 37 minutes,
+well over the 616s uncontended measurement -- consistent with CPU contention slowing the run
+itself (the exact false-red risk card 2f0c7d24's single lock exists to prevent), worth its own
+follow-up measurement once this fix is live and the queue is shorter.
+
+Verification: `fleet-test-priority-lane.selftest.sh` rewritten for the 2-arg signatures, 13/13
+PASS, covering: ticket ordering (Test A), the SLOT stage specifically with 2 simulated slots and 3
+real waiters (Test B, N1), pid-recycle reaping with a live control (Test C, N2), a structural pin
+against the barge shape in both wait loops (Test D, N3), and bounded aging with a non-aged control
+(Test E, N4). Each of N1/N2/N3/N4's fixes individually mutation-checked (reverting just that fix
+turns the matching case(s) red, confirmed by hand for all four, not just asserted).
+`marveen-land.sh --selftest`: 92/92 PASS, unaffected (marveen-land.sh itself untouched this round).
+
+**Ki döntött:** Cybersec (NO-GO 30007, the four findings) + backend2 (the fix, re-measured and
+re-verified per-finding). Gate: QA + Cybersec (re-gate on the new sha).
