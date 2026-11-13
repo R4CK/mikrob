@@ -241,6 +241,26 @@ describe('POST /api/kanban/:id/checkpoints', () => {
     expect(out.status).toBe(400)
   })
 
+  // QA2 addendum (msg 18196, on card 8b9c2d40): `git cat-file -t` happily resolves a short,
+  // UNAMBIGUOUS abbreviation of a real commit -- the 40-hex regex is what actually rejects it,
+  // and until now nothing proved that case specifically (every other "bad sha" test used a
+  // syntactically-unrelated string, not a genuinely resolvable short form of a REAL sha).
+  it('400s when sha is a short (7-char) abbreviation of a REAL, resolvable commit', async () => {
+    createKanbanCard({ id: 'ck-r4-short', title: 'Short sha abbreviation test' })
+    const shortSha = REAL_SHA.slice(0, 7)
+    // Sanity: confirm the harness picked a genuinely resolvable abbreviation, so a false pass
+    // here cannot be blamed on an ambiguous/unresolvable prefix.
+    expect(() =>
+      execFileSync('git', ['cat-file', '-t', shortSha], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    ).not.toThrow()
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r4-short/checkpoints', JSON.stringify({
+      sha: shortSha, head_sha: REAL_SHA, agent: 'backend',
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toMatch(/40 hex/)
+  })
+
   it('400s when sha is syntactically valid but does not exist in the repo', async () => {
     createKanbanCard({ id: 'ck-r5', title: 'Nonexistent sha test' })
     const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r5/checkpoints', JSON.stringify({
