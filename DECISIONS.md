@@ -24510,3 +24510,29 @@ mérést a gate adja.
 
 **Ki döntött:** backend3 (fázis 82a113ba), terv Peti-jóváhagyással (Telegram 13738, MikroB msg
 18052). Gate: QA + Cybersec.
+
+## 2026-11-13 — kártya c60e229a delta: QA FAIL 30388 fix -- elcsúszott autonomy-wiring BEGIN marker
+
+**Kontextus:** QA FAIL (komment 30388): a "Reggeli napindító" szekció utolsó prózai sora
+közvetlenül a következő blokk `<!-- BEGIN GENERATED: autonomy-wiring -->` markerébe futott,
+üres sor/heading nélkül közöttük -- a heading-tól-következő-headingig mozgató script ezért a
+markert is a "Reggeli napindító" tartalmába sorolta, és áthelyezte a docs/rules/reggeli-napindito.md
+fájl VÉGÉRE. CLAUDE.md-ben így egy END marker maradt BEGIN nélkül -- a reachability-script
+részsztring-ellenőrzése ezt nem látta (a sor valahol a korpuszban megvan), de ez megtöri a
+BEGIN/END páros egyezést, amin minden ensureXSection() író idempotencia-ellenőrzése áll (ha a
+MAIN-kivétel bármikor megszűnik, vagy bármi más eszköz a gyökér CLAUDE.md-t páros markerekre
+olvasná, egy hiányzó BEGIN "nincs még blokk" eredményt adna, és egy második, duplikált
+autonomy-wiring blokk kerülne be).
+
+**Döntés:** a marker-sor visszakerült CLAUDE.md-be, a "## Autonómia és jóváhagyás" cím elé
+(pontosan ahol az eredeti fájlban volt). A reachability-script kiegészült egy marker-páros
+ellenőrzéssel: minden BEGIN/END GENERATED névnek MIND a BEGIN-je, MIND az END-je jelen kell
+legyen az ÚJ CLAUDE.md-ben (nem csak valahol a korpuszban) -- mutáció-bizonyított: a hiba
+visszaállítva a script 1-es kóddal lép ki, a javított fájlon 0-val.
+
+**Ellenőrzés:** 16 GENERATED marker CLAUDE.md-ben, 8 egyező pár, 0 elkóborolt marker a
+docs/rules/ alatt (programozottan ellenőrizve). claude-md-main-section-writers.test.ts +
+agent-scaffold-main-claude-md-zero-diff.test.ts + autonomy-section.test.ts: 38/38 zöld.
+CLAUDE.md mérete a javítás után: 33,221 B (a cél 40 KB alatt marad).
+
+**Ki döntött:** backend3, QA FAIL 30388 nyomán. Gate: QA + Cybersec (delta re-check).
