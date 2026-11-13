@@ -14,7 +14,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createServer } from 'node:http'
-import type { Server } from 'node:http'
+import type { RequestListener, Server } from 'node:http'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
@@ -29,7 +29,7 @@ afterEach(async () => {
   servers = []
 })
 
-async function startServer(handler: Parameters<typeof createServer>[0]): Promise<number> {
+async function startServer(handler: RequestListener): Promise<number> {
   const server = createServer(handler)
   servers.push(server)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
