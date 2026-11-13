@@ -143,6 +143,15 @@ describe('confirmSwitchback (card 7f112c2f)', () => {
   it('confirmProbes < 1 never confirms', () => {
     expect(confirmSwitchback([probe(true, 0), probe(true, 999_000)], 0, 300)).toBe(false)
   })
+
+  // M3 (Cybersec NO-GO f859c361b): the 12s-flap case above is rejected by the gap check alone
+  // (span < minGapSec either way) -- this case's span is >=300s, so only "a non-ok probe resets
+  // the trailing run" rejects it. A mutant that lets a non-ok probe not reset the run would wrongly
+  // confirm here.
+  it('a non-ok probe straddling a >=minGapSec span still breaks the run', () => {
+    const log = [probe(true, 0), probe(false, 150_000), probe(true, 310_000)]
+    expect(confirmSwitchback(log, 2, 300)).toBe(false)
+  })
 })
 
 describe('recordProbe (card 7f112c2f)', () => {

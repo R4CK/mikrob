@@ -35,11 +35,17 @@ MARVEEN = "/home/neon/marveen"
 STORE = f"{MARVEEN}/store"
 
 # SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): the "N consecutive OK probes >= gap seconds apart"
-# switch-back confirmation rule and the GPU-lock-aware wait, shared with src/gemini-fallback.ts's
-# confirmSwitchback (grep SWITCHBACK-HYSTERESIS-V1 to see both sides). Loaded via importlib, not a
-# plain `import`, because the module filename has a hyphen (quota-switchback.py, matching this
-# file's own naming convention, not a valid Python identifier).
-_qsb_spec = importlib.util.spec_from_file_location("quota_switchback", f"{STORE}/quota-switchback.py")
+# switch-back confirmation rule, shared with src/gemini-fallback.ts's confirmSwitchback (grep
+# SWITCHBACK-HYSTERESIS-V1 to see both sides). Loaded via importlib, not a plain `import`, because
+# the module filename has a hyphen (quota-switchback.py, matching this file's own naming
+# convention, not a valid Python identifier). Resolved from THIS file's own directory, not the
+# hardcoded STORE constant above -- STORE is intentionally the live install path for every other
+# runtime file this script touches (token, countdown, outage marker), but that would make this
+# one sibling-module load fail whenever quota-bridge.py itself is loaded from elsewhere (a gate
+# worktree, the selftest) -- the two happen to be the same path in production, since this script
+# only ever actually RUNS from the live install.
+_qsb_spec = importlib.util.spec_from_file_location(
+    "quota_switchback", os.path.join(os.path.dirname(os.path.abspath(__file__)), "quota-switchback.py"))
 quota_switchback = importlib.util.module_from_spec(_qsb_spec)
 _qsb_spec.loader.exec_module(quota_switchback)
 def _telegram_state_dir():
@@ -84,6 +90,11 @@ LOCAL_LLM = f"{STORE}/local-llm.sh"
 # cf757409 Gemini-fallback pipeline (it is only ever invoked from MikroB's own heartbeat/scheduled-
 # task prompts). SESSION_OUTAGE_FILE tells gemini-fallback-runner.ts's readClaudeExhausted() that a
 # SESSION-level outage (not just the weekly newDevStop/hard-stop threshold) is active, and
+# H1 (Cybersec NO-GO @f859c361b): GHOST_RUNNER_STOP_FILE asks gemini-ghost-runner.sh's own loop to
+# exit after its CURRENT tick instead of SIGTERM-ing the whole process group outright (see
+# request_ghost_stop/wait_for_ghost_exit below).
+GHOST_RUNNER_STOP_FILE = f"{STORE}/gemini-ghost-runner.stop"
+
 # GHOST_RUNNER_SCRIPT is the background driver started for the outage's duration -- see both
 # functions' own comments below.
 SESSION_OUTAGE_FILE = f"{STORE}/mikrob-session-outage.json"
@@ -482,6 +493,36 @@ def stop_ghost_runner(proc):
         pass
 
 
+def request_ghost_stop():
+    """H1 (Cybersec NO-GO @f859c361b): ask gemini-ghost-runner.sh's own `while true` loop to exit
+    after its CURRENT tick, instead of SIGTERM-ing the whole process group outright. The loop
+    (gemini-ghost-runner.sh) only checks this file BETWEEN ticks, so any tick already in flight --
+    including an in-flight local-llm.sh draft holding /tmp/local-llm-gpu.lock -- always finishes
+    first, which is the original point of the superseded GPU-lock wait this replaces. Best-effort,
+    same posture as every other function here."""
+    tmp = GHOST_RUNNER_STOP_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write("stop")
+        os.replace(tmp, GHOST_RUNNER_STOP_FILE)
+    except OSError as e:
+        log(f"could not write ghost-runner stop file: {e}")
+
+
+def wait_for_ghost_exit(proc, max_wait_sec=600, poll_sec=2, sleep_fn=time.sleep, now_fn=time.time):
+    """H1: poll the Popen handle ITSELF (not the GPU lock -- clearing the lock only proves the
+    draft step finished, not that the loop noticed the stop file and returned) for up to
+    max_wait_sec. True once the process has actually exited; a None proc (start_ghost_runner
+    failed) counts as already gone. `sleep_fn`/`now_fn` are injection points for the selftest's
+    fake clock."""
+    if proc is None:
+        return True
+    deadline = now_fn() + max_wait_sec
+    while proc.poll() is None and now_fn() < deadline:
+        sleep_fn(poll_sec)
+    return proc.poll() is not None
+
+
 def outage_loop(token, state):
     """Own getUpdates and answer with the local model until MikroB recovers."""
     global _active_ghost_runner
@@ -565,21 +606,25 @@ def outage_loop(token, state):
         # Card 612058c2 acceptance: "kilépéskor a runner leáll" -- runs on the recovery return path
         # AND on any unexpected exception, so the runner never outlives Ghost's own outage handling.
         #
-        # Card 7f112c2f point 3: stop_ghost_runner() SIGTERMs the WHOLE process group, which would
-        # also kill any in-flight local-llm.sh generation the ghost runner's own draft pipeline
-        # started (store/local-llm.sh holds /tmp/local-llm-gpu.lock for the duration of that call).
-        # Switching back must not discard a draft that is seconds from finishing. Wait up to 10 min
-        # for the lock to clear; if it is still held after that, leave the runner alive and let the
-        # job finish unmanaged in the background rather than kill it.
+        # H1 (Cybersec NO-GO @f859c361b): the superseded version SIGTERMed the whole process group
+        # immediately on switch-back, which could kill an in-flight local-llm.sh draft the ghost
+        # runner's own tick started (holds /tmp/local-llm-gpu.lock for the call's duration) -- or,
+        # in the "wait up to 10 min for the GPU lock, then leave it running" fallback that used to
+        # live here, left the runner's `while true` loop alive UNMANAGED forever once the wait
+        # timed out: it never consults the outage marker or its own parent, so nothing could ever
+        # stop it again, and each later outage started a second one, accumulating real Gemini
+        # calls indefinitely. Fix: ask the runner to stop its own loop (stop-file, honoured only
+        # BETWEEN ticks in gemini-ghost-runner.sh) so any tick already in flight -- including that
+        # same in-flight draft -- finishes normally, then wait for the PROCESS ITSELF to exit, not
+        # for the GPU lock to clear (clearing the lock only proves the draft step finished, not
+        # that the loop noticed the stop file and returned). If it has not exited on its own within
+        # max_wait_sec, fall back to the hard process-group kill below -- so nothing is EVER left
+        # running unmanaged, unlike the superseded path.
         # A `return` inside `finally` would swallow any exception that triggered it -- use a flag
-        # instead so an exception propagates normally when the lock is not an issue.
-        leave_running = False
-        if quota_switchback.gpu_lock_held():
-            log("GPU lock held -> waiting up to 10 min for the in-flight local job before stopping the ghost runner")
-            if not quota_switchback.wait_for_local_job(max_wait_sec=600):
-                log("local job still running after 10 min -> leaving the ghost runner running in the background (not killed)")
-                leave_running = True
-        if not leave_running:
+        # instead so an exception propagates normally when the wait succeeds.
+        request_ghost_stop()
+        if not wait_for_ghost_exit(ghost_runner, max_wait_sec=600):
+            log("ghost runner did not exit within 10 min of the stop request -> force-killing its process group")
             stop_ghost_runner(ghost_runner)
         clear_session_outage()
         _active_ghost_runner = None

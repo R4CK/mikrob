@@ -106,6 +106,44 @@ case_ "of two concurrent ticks, exactly one runs and the other is skipped by the
 # Restore the normal (non-sleeping) stub for any later case in this file.
 stub "$TD/store/run-gemini-fallback.sh" 0
 
+# --- case 5: the stop-file (H1, card 7f112c2f, Cybersec NO-GO @f859c361b) is honoured BETWEEN
+# ticks, not mid-tick, and the loop then exits on its own without anyone SIGTERM-ing it ----------
+rm -f "$TD/store/gemini-ghost-runner.log"
+# Slow first-step stub so there is a real window between "a tick is running" and "the tick
+# finished" to touch the stop file WHILE the tick is still in flight -- proving it is honoured
+# only between ticks, not mid-tick (which would be the "kill an in-flight draft" regression).
+printf '#!/bin/bash\nsleep 0.5\necho "STUB-RAN: run-gemini-fallback.sh"\nexit 0\n' > "$TD/store/run-gemini-fallback.sh"
+chmod +x "$TD/store/run-gemini-fallback.sh"
+GHOST_STOP="$TD/store/gemini-ghost-runner.stop"
+rm -f "$GHOST_STOP"
+(
+  export MARVEEN_ROOT="$TD" GEMINI_GHOST_RUNNER_STOP_FILE="$GHOST_STOP" GEMINI_GHOST_TICK_INTERVAL_S=60
+  exec "$SUT"
+) &
+loop_pid=$!
+for _ in $(seq 1 50); do
+  grep -q 'RUN tick' "$TD/store/gemini-ghost-runner.log" 2>/dev/null && break
+  sleep 0.1
+done
+touch "$GHOST_STOP"   # written WHILE the tick (still sleeping 0.5s) is in flight
+exited=1
+for _ in $(seq 1 50); do
+  if ! kill -0 "$loop_pid" 2>/dev/null; then exited=0; break; fi
+  sleep 0.1
+done
+wait "$loop_pid" 2>/dev/null
+stub "$TD/store/run-gemini-fallback.sh" 0   # restore for any later case
+case_ "the loop exits on its own after the stop file appears (no SIGTERM needed)" "$exited"
+case_ "the in-flight tick finished normally (was not killed mid-flight by the stop request)" \
+  "$(grep -q 'STUB-RAN: run-gemini-fallback.sh' "$TD/store/gemini-ghost-runner.log" \
+     && grep -q 'tick finished: ok' "$TD/store/gemini-ghost-runner.log" && echo 0 || echo 1)"
+case_ "the loop logs the stop request" \
+  "$(grep -q 'stop requested' "$TD/store/gemini-ghost-runner.log" && echo 0 || echo 1)"
+case_ "the loop ran exactly one tick (did not start a second one after the stop file appeared)" \
+  "$([ "$(grep -c 'RUN tick' "$TD/store/gemini-ghost-runner.log")" -eq 1 ] && echo 0 || echo 1)"
+case_ "the stop file is removed once honoured (does not block the NEXT outage's runner)" \
+  "$([ ! -f "$GHOST_STOP" ] && echo 0 || echo 1)"
+
 echo
 echo "selftest: $n case(s), $([ ${#failures[@]} -eq 0 ] && echo PASS || echo FAIL)"
 for f in "${failures[@]:-}"; do

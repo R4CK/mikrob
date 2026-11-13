@@ -79,32 +79,7 @@ if echo "$out" | grep -q '^CURRENT:$'; then
   rm -f "$BACKOFF"
 else
   echo "RESULT:STILL-LIMITED (reset not yet; will retry)"
-  python3 - "$BACKOFF" "$early_probe" <<'PY' 2>/dev/null
-import json, sys, time
-backoff_path, early_probe = sys.argv[1], sys.argv[2] == "1"
-BASE_SEC, CAP_SEC = 15 * 60, 60 * 60
-try:
-    with open(backoff_path) as f:
-        state = json.load(f)
-except (OSError, ValueError):
-    state = {}
-if early_probe:
-    # The early deadline-3min probe does not count toward the post-deadline backoff --
-    # it just marks itself spent so the precheck gate does not run it again before the
-    # deadline actually passes.
-    state["earlyProbeDone"] = True
-    state.setdefault("consecutiveStillLimited", 0)
-    state.setdefault("nextProbeAt", 0)
-else:
-    n = state.get("consecutiveStillLimited", 0) + 1
-    backoff_sec = min(CAP_SEC, BASE_SEC * (2 ** (n - 1)))
-    state["consecutiveStillLimited"] = n
-    state["nextProbeAt"] = time.time() + backoff_sec
-    state.setdefault("earlyProbeDone", True)
-tmp = backoff_path + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(state, f)
-import os
-os.replace(tmp, backoff_path)
-PY
+  # M1 (Cybersec NO-GO @f859c361b): delegated to its own script so the selftest can drive this
+  # EXACT code path (quota-resume-backoff-write.py), not a private reimplementation of it.
+  python3 "$STORE/quota-resume-backoff-write.py" "$BACKOFF" "$early_probe" 2>/dev/null
 fi

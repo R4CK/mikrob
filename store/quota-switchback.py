@@ -15,19 +15,27 @@ Also covers (1) of the same card: quota-resume.sh retried the dashboard every 15
 no backoff once the deadline passed and the reset had not actually landed yet. compute_backoff_sec
 gives 15 -> 30 -> 60 min (capped) based on how many STILL-LIMITED results have been seen in a row.
 
-Every function here is pure (no clock, no filesystem, no network) except the two explicitly
-marked I/O helpers at the bottom (load_hysteresis_config, gpu_lock_held) -- kept pure for exactly
-the reason quota-bridge.py's own docstrings give for its fail-safe functions: this is the easiest
-code to unit-test with a fake clock, and the hardest code to safely get wrong.
+Every function here is pure (no clock, no filesystem, no network) except the one explicitly
+marked I/O helper at the bottom (load_hysteresis_config) -- kept pure for exactly the reason
+quota-bridge.py's own docstrings give for its fail-safe functions: this is the easiest code to
+unit-test with a fake clock, and the hardest code to safely get wrong.
+
+H1 (Cybersec NO-GO @f859c361b): this module used to also carry gpu_lock_held()/
+wait_for_local_job(), used by quota-bridge.py's outage_loop() to wait for an in-flight local-LLM
+draft before stopping the ghost runner. That wait only proved the GPU lock had cleared, not that
+the runner's own `while true` loop had actually exited -- if it was still held after the 10 min
+budget, the fix left the WHOLE loop running unmanaged forever (it never consults the outage
+marker or its parent), which is worse than the flap it was meant to avoid. Replaced by a
+stop-file the loop itself checks between ticks (gemini-ghost-runner.sh) plus waiting on the
+actual process handle (quota-bridge.py's wait_for_ghost_exit) -- removed here rather than left
+unused, since they were introduced by this same card and are now fully superseded.
 """
 import json
 import os
-import subprocess
 import time
 
 STORE = os.path.dirname(os.path.abspath(__file__))
 HYSTERESIS_CONFIG = f"{STORE}/switchback-hysteresis.json"
-GPU_LOCK_DEFAULT = "/tmp/local-llm-gpu.lock"
 
 # Resume backoff (card 7f112c2f point 1): 15 -> 30 -> 60 min, capped. Only used AFTER the known
 # reset deadline has already passed and a resume attempt came back STILL-LIMITED -- before the
@@ -96,29 +104,3 @@ def compute_backoff_sec(consecutive_still_limited):
     return min(BACKOFF_CAP_SEC, BACKOFF_BASE_SEC * (2 ** (consecutive_still_limited - 1)))
 
 
-def gpu_lock_held(lock_path=GPU_LOCK_DEFAULT):
-    """I/O: True if another process currently holds the local-llm GPU flock (store/local-llm.sh's
-    GEN_CMD wraps its ollama call in `flock "$GPU_LOCK"`). Non-blocking probe via the same `flock`
-    binary the generation path uses, so this never contends for or waits on the lock itself.
-    A missing lock FILE (nothing has ever generated) is not held."""
-    if not os.path.exists(lock_path):
-        return False
-    try:
-        r = subprocess.run(["flock", "-n", lock_path, "true"], capture_output=True, timeout=5)
-        return r.returncode != 0
-    except (OSError, subprocess.TimeoutExpired):
-        # Cannot determine -> assume held (fail toward NOT interrupting a possibly-running job).
-        return True
-
-
-def wait_for_local_job(max_wait_sec=600, poll_sec=2, lock_path=GPU_LOCK_DEFAULT,
-                        sleep_fn=time.sleep, now_fn=time.time, held_fn=None):
-    """Card 7f112c2f point 3: poll up to max_wait_sec for the GPU lock to clear. Returns True if
-    it cleared in time, False if it is still held after max_wait_sec (caller must then NOT kill
-    the holder -- "continues in background"). `held_fn`/`sleep_fn`/`now_fn` are injection points
-    for the selftest's fake clock; production calls use the real gpu_lock_held/time.sleep/time.time."""
-    held_fn = held_fn or (lambda: gpu_lock_held(lock_path))
-    deadline = now_fn() + max_wait_sec
-    while held_fn() and now_fn() < deadline:
-        sleep_fn(poll_sec)
-    return not held_fn()

@@ -40,6 +40,14 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >>"$LOG"; }
 # queue up and wait, because the next random/scheduled tick is only minutes away either way.
 GHOST_RUNNER_LOCK="${GEMINI_GHOST_RUNNER_LOCK:-$STORE/gemini-ghost-runner.lock}"
 
+# STOP-FILE (card 7f112c2f, H1 Cybersec NO-GO @f859c361b): quota-bridge.py's outage_loop() writes
+# this instead of SIGTERM-ing the process group outright on switch-back, specifically so an
+# in-flight tick (its own in-flight local-llm.sh draft, under the GPU lock) always gets to finish --
+# the check below only runs BETWEEN ticks, never mid-tick. Without this, the superseded fallback
+# either killed a draft seconds from finishing, or (if it waited instead) could leave this loop
+# running forever with no parent able to stop it once the wait timed out.
+GHOST_RUNNER_STOP_FILE="${GEMINI_GHOST_RUNNER_STOP_FILE:-$STORE/gemini-ghost-runner.stop}"
+
 run_tick() {
   exec 8>"$GHOST_RUNNER_LOCK"
   if ! flock -n 8; then
@@ -64,9 +72,17 @@ if ! (return 0 2>/dev/null); then
     run_tick
     exit 0
   fi
+  rm -f "$GHOST_RUNNER_STOP_FILE"
   log "gemini-ghost-runner started (tick=${TICK_INTERVAL_S}s, per-call budget enforced in-pipeline)"
   while true; do
     run_tick
+    # Checked AFTER run_tick, not before: the stop request is honoured only BETWEEN ticks, so a
+    # tick already in flight always finishes first (see GHOST_RUNNER_STOP_FILE above).
+    if [ -f "$GHOST_RUNNER_STOP_FILE" ]; then
+      log "stop requested -> exiting after this tick"
+      rm -f "$GHOST_RUNNER_STOP_FILE"
+      exit 0
+    fi
     sleep "$TICK_INTERVAL_S"
   done
 fi

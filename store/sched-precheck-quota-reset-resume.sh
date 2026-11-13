@@ -27,14 +27,17 @@
 # when this gate lets it through.
 set -uo pipefail
 STORE="/home/neon/marveen/store"
-CD="$STORE/quota-reset-countdown.json"
-BACKOFF="$STORE/quota-resume-backoff.json"
+# M1 (Cybersec NO-GO @f859c361b): overridable so the selftest can drive this EXACT script
+# against a scratch dir and a fake clock, instead of a private reimplementation of its decision
+# logic (which could not catch a mutation here).
+CD="${QUOTA_COUNTDOWN_FILE:-$STORE/quota-reset-countdown.json}"
+BACKOFF="${QUOTA_RESUME_BACKOFF_FILE:-$STORE/quota-resume-backoff.json}"
 
 # No active countdown -> nothing for the LLM to do.
 [ -f "$CD" ] || { echo SKIP; exit 0; }
 
 decision=$(python3 - "$CD" "$BACKOFF" <<'PY' 2>/dev/null
-import json, sys, time
+import json, os, sys, time
 cd_path, backoff_path = sys.argv[1], sys.argv[2]
 EARLY_PROBE_WINDOW_SEC = 180
 
@@ -45,7 +48,7 @@ try:
 except (OSError, ValueError):
     print("SKIP"); sys.exit(0)
 
-now = time.time()
+now = float(os.environ.get("QUOTA_PRECHECK_FAKE_NOW") or time.time())
 remaining = deadline - now
 
 try:

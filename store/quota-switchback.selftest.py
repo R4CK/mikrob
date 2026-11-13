@@ -57,53 +57,20 @@ check(
     qs.confirm_switchback(far_ok_log, confirm_probes=2, min_gap_sec=300) is True,
 )
 
-# --- Kesz-ha 3: switch-back with the GPU lock held leaves the local job running, draft posted --
-# Case A: lock held the whole time -> wait_for_local_job must return False (still running) after
-# the max wait, having polled via the fake clock rather than sleeping for real.
-fake_now = [5_000_000.0]
-fake_sleeps = []
-
-
-def fake_sleep(s):
-    fake_sleeps.append(s)
-    fake_now[0] += s
-
-
-def fake_now_fn():
-    return fake_now[0]
-
-
-still_held = qs.wait_for_local_job(
-    max_wait_sec=600, poll_sec=2, sleep_fn=fake_sleep, now_fn=fake_now_fn, held_fn=lambda: True
-)
-check("lock held past max_wait -> wait_for_local_job returns False (job kept running)", still_held is False)
-check("wait_for_local_job actually polled (did not busy-spin with zero sleeps)", len(fake_sleeps) > 0)
+# M3 (Cybersec NO-GO @f859c361b): a non-ok probe straddling a >=min_gap_sec span must still
+# break the run. The 12s-flap case above is only rejected by the gap check (span < min_gap_sec
+# either way); this case's span is >=300s, so only the "a non-ok probe resets the trailing run"
+# logic (the `break`, not `continue`, in confirm_switchback) rejects it -- a mutant that lets a
+# non-ok probe not reset the run passes the 12s case but wrongly confirms this one.
+straddling_log = [
+    {"ok": True, "ts": t0},
+    {"ok": False, "ts": t0 + 150},
+    {"ok": True, "ts": t0 + 310},
+]
 check(
-    "wait_for_local_job stopped polling at/after the max_wait deadline, not before",
-    fake_now[0] >= 5_000_000.0 + 600,
+    "OK, LIMITED, OK spanning >=300s straddling the LIMITED does not confirm (M3)",
+    qs.confirm_switchback(straddling_log, confirm_probes=2, min_gap_sec=300) is False,
 )
-
-# Case B: lock clears after a few polls -> returns True, and stops polling as soon as it clears
-# (does not wait out the full budget).
-fake_now2 = [5_000_000.0]
-poll_count = [0]
-
-
-def fake_sleep2(s):
-    fake_now2[0] += s
-
-
-def held_then_clears():
-    poll_count[0] += 1
-    return poll_count[0] < 3  # held for first 2 checks, clear on the 3rd
-
-
-cleared = qs.wait_for_local_job(
-    max_wait_sec=600, poll_sec=2, sleep_fn=fake_sleep2, now_fn=lambda: fake_now2[0], held_fn=held_then_clears
-)
-check("lock clears within max_wait -> wait_for_local_job returns True", cleared is True)
-check("wait_for_local_job returns promptly once cleared, not after the full budget",
-      fake_now2[0] < 5_000_000.0 + 600)
 
 # --- Kesz-ha 4: quota-bridge.py and gemini-fallback-runner share the SAME confirmation rule -----
 PY_SRC = f"{STORE}/quota-bridge.py"

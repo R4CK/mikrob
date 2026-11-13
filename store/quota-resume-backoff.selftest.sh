@@ -1,64 +1,35 @@
 #!/usr/bin/env bash
 # Selftest for card 7f112c2f Kesz-ha 1: "3 consecutive STILL-LIMITED produce probe gaps
-# 15/30/60 min (fake clock)". Drives sched-precheck-quota-reset-resume.sh's own decision logic
-# directly (same algorithm, lifted out so this can fake the clock without faking `time.time()`
-# process-wide) against synthetic countdown/backoff JSON files in a scratch dir -- never touches
-# the real store/quota-reset-countdown.json or store/quota-resume-backoff.json.
+# 15/30/60 min (fake clock)".
+#
+# M1 (Cybersec NO-GO @f859c361b): this used to drive its OWN embedded copies of the precheck's
+# decide() logic and the backoff writer -- a mutation to the REAL formula in quota-resume.sh
+# (backoff cap removed) or sched-precheck-quota-reset-resume.sh (RUN/SKIP inverted) left this
+# selftest 10/10 green, because it never ran the production code at all. It now drives the real
+# scripts (sched-precheck-quota-reset-resume.sh and quota-resume-backoff-write.py, the latter the
+# exact script quota-resume.sh itself calls) against synthetic countdown/backoff files in a
+# scratch dir, with QUOTA_COUNTDOWN_FILE/QUOTA_RESUME_BACKOFF_FILE/QUOTA_PRECHECK_FAKE_NOW env
+# overrides -- never touches the real store/quota-reset-countdown.json or
+# store/quota-resume-backoff.json, and the fake clock never has to fake time.time() process-wide.
 set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-CD="$TMP/quota-reset-countdown.json"
-BACKOFF="$TMP/quota-resume-backoff.json"
+export QUOTA_COUNTDOWN_FILE="$TMP/quota-reset-countdown.json"
+export QUOTA_RESUME_BACKOFF_FILE="$TMP/quota-resume-backoff.json"
 pass=0; fail=0
 
-decide() { # $1 = now (fake epoch)
-  python3 - "$CD" "$BACKOFF" "$1" <<'PY'
-import json, sys
-cd_path, backoff_path, now = sys.argv[1], sys.argv[2], float(sys.argv[3])
-EARLY_PROBE_WINDOW_SEC = 180
-try:
-    with open(cd_path) as f:
-        cd = json.load(f)
-    deadline = cd.get("deadline", 9e18)
-except (OSError, ValueError):
-    print("SKIP"); sys.exit(0)
-remaining = deadline - now
-try:
-    with open(backoff_path) as f:
-        backoff = json.load(f)
-    next_probe_at = backoff.get("nextProbeAt", 0)
-    early_probe_done = backoff.get("earlyProbeDone", False)
-except (OSError, ValueError):
-    next_probe_at, early_probe_done = 0, False
-if remaining > EARLY_PROBE_WINDOW_SEC:
-    print("SKIP")
-elif remaining > 0:
-    print("SKIP" if early_probe_done else "RUN")
-else:
-    print("SKIP" if now < next_probe_at else "RUN")
-PY
+decide() { # $1 = now (fake epoch) -- normalizes the real script's protocol (stdout "SKIP", or
+           # EMPTY stdout meaning "run normally", per its own header comment) to SKIP/RUN for
+           # this test's comparisons; the decision itself is the real script's, not reimplemented.
+  local out
+  out=$(QUOTA_PRECHECK_FAKE_NOW="$1" bash "$SCRIPT_DIR/sched-precheck-quota-reset-resume.sh")
+  if [ "$out" = "SKIP" ]; then echo "SKIP"; else echo "RUN"; fi
 }
 
 record_still_limited() { # $1 = now, $2 = early_probe (0/1)
-  python3 - "$BACKOFF" "$2" <<PY
-import json, time, os, sys
-backoff_path, early_probe = "$BACKOFF", "$2" == "1"
-BASE_SEC, CAP_SEC = 15 * 60, 60 * 60
-try:
-    with open(backoff_path) as f: state = json.load(f)
-except (OSError, ValueError): state = {}
-if early_probe:
-    state["earlyProbeDone"] = True
-    state.setdefault("consecutiveStillLimited", 0)
-    state.setdefault("nextProbeAt", 0)
-else:
-    n = state.get("consecutiveStillLimited", 0) + 1
-    backoff_sec = min(CAP_SEC, BASE_SEC * (2 ** (n - 1)))
-    state["consecutiveStillLimited"] = n
-    state["nextProbeAt"] = $1 + backoff_sec
-    state.setdefault("earlyProbeDone", True)
-with open(backoff_path, "w") as f: json.dump(state, f)
-PY
+  QUOTA_PRECHECK_FAKE_NOW="$1" python3 "$SCRIPT_DIR/quota-resume-backoff-write.py" \
+    "$QUOTA_RESUME_BACKOFF_FILE" "$2" 2>/dev/null
 }
 
 check() {
@@ -68,7 +39,7 @@ check() {
 
 NOW=1000000
 DEADLINE=$((NOW + 1000))
-python3 -c "import json; json.dump({'deadline': $DEADLINE}, open('$CD', 'w'))"
+python3 -c "import json; json.dump({'deadline': $DEADLINE}, open('$QUOTA_COUNTDOWN_FILE', 'w'))"
 
 # Before the early-probe window: SKIP.
 check "outside early-probe window" "$(decide $NOW)" "SKIP"
@@ -83,20 +54,20 @@ check "at deadline-3min again, probe already spent" "$(decide $EARLY)" "SKIP"
 D1=$DEADLINE
 check "at deadline, due" "$(decide $D1)" "RUN"
 record_still_limited "$D1" 0
-gap1=$(python3 -c "import json;print(int(json.load(open('$BACKOFF'))['nextProbeAt'] - $D1))")
+gap1=$(python3 -c "import json;print(int(json.load(open('$QUOTA_RESUME_BACKOFF_FILE'))['nextProbeAt'] - $D1))")
 check "1st STILL-LIMITED backoff gap" "$gap1" "900"
 
 check "before 1st backoff elapses" "$(decide $((D1 + 100)))" "SKIP"
 D2=$((D1 + gap1))
 check "exactly at 1st backoff -> RUN" "$(decide $D2)" "RUN"
 record_still_limited "$D2" 0
-gap2=$(python3 -c "import json;print(int(json.load(open('$BACKOFF'))['nextProbeAt'] - $D2))")
+gap2=$(python3 -c "import json;print(int(json.load(open('$QUOTA_RESUME_BACKOFF_FILE'))['nextProbeAt'] - $D2))")
 check "2nd STILL-LIMITED backoff gap" "$gap2" "1800"
 
 D3=$((D2 + gap2))
 check "exactly at 2nd backoff -> RUN" "$(decide $D3)" "RUN"
 record_still_limited "$D3" 0
-gap3=$(python3 -c "import json;print(int(json.load(open('$BACKOFF'))['nextProbeAt'] - $D3))")
+gap3=$(python3 -c "import json;print(int(json.load(open('$QUOTA_RESUME_BACKOFF_FILE'))['nextProbeAt'] - $D3))")
 check "3rd STILL-LIMITED backoff gap" "$gap3" "3600"
 
 echo
