@@ -103,8 +103,16 @@ run_fg_killable() { # $1 = working dir, $2 = command string (already eval-safe)
   # card 81c6fbb5 Q3: close this subshell's OWN copy of LAND_LOCK_FD before cd/eval, same as the
   # old inline-subshell call sites did -- a subshell close never touches the parent's fd, and a
   # kill -9'd lander whose wrapped command survives no longer keeps the develop lock held.
+  # card 07f1fe6e (CYBERSEC GO 29154 M1/M2): `set -m` makes bash put this backgrounded subshell
+  # in its OWN process group (pgid == this subshell's own pid, not the script's pgid) instead of
+  # the script's. Without this, the eval'd command's own children (the fleet-test/vitest tree)
+  # stay in the SCRIPT's process group -- a TERM to just this one pid leaves them running as
+  # orphans, reparented but alive, holding a CPU slot (measured). The TERM trap below sends the
+  # signal to the whole group (`kill -- -<pgid>`), which this pgid assignment makes possible.
+  set -m
   ( cd "$dir" && release_land_lock_fd && eval "$cmd" ) &
   run_fg_killable_pid=$!
+  set +m
   wait "$run_fg_killable_pid"
   rc=$?
   run_fg_killable_pid=""
@@ -1029,6 +1037,22 @@ print(rest[19])
     echo "  FAIL land_lock_pid_starttime ([$n4_own_start]) disagrees with an independent /proc/\$\$/stat parse ([$n4_independent_start])"; fail=1
   fi
 
+  # card 07f1fe6e delta (CYBERSEC GO 29326 L2): marveen-land-run-fg-killable.selftest.sh was not
+  # referenced from here, from package.json, or from any src/ test -- its TERM/M2/HUP pins never
+  # ran unless someone invoked the file by hand. It exercises real signals and timing (not inline
+  # assertions like the cases above), so it runs as a subprocess and its PASS/FAIL folds into this
+  # run's totals.
+  rfk_script="$(dirname "$0")/marveen-land-run-fg-killable.selftest.sh"
+  if [ -f "$rfk_script" ]; then
+    rfk_out="$(bash "$rfk_script" 2>&1)"
+    rfk_cases=$(printf '%s\n' "$rfk_out" | grep -c '^  ok \|^  FAIL ')
+    n=$((n + rfk_cases))
+    printf '%s\n' "$rfk_out" | grep '^  ok \|^  FAIL '
+    printf '%s\n' "$rfk_out" | grep -q '^  FAIL ' && fail=1
+  else
+    echo "  FAIL marveen-land-run-fg-killable.selftest.sh not found next to $0 -- wiring broken"; fail=1
+  fi
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -1724,7 +1748,27 @@ land_with_retry() {
   # records it as "aborted" (not a crash, not a plain failure) BEFORE exiting, and sets
   # _run_finished so the EXIT trap below (which also fires after this `exit 143`) does not write a
   # second, competing finished line for the same run.
-  trap '_run_finished=1; [ -n "${run_fg_killable_pid:-}" ] && kill -TERM "$run_fg_killable_pid" 2>/dev/null; [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" 143 "deliberate stop (SIGTERM)" aborted >/dev/null 2>&1; exit 143' TERM
+  # card 07f1fe6e (CYBERSEC GO 29154 M1): kill the WHOLE process group run_fg_killable put the
+  # wrapped command in (`kill -- -<pgid>`, the negative-pid form), not just that one subshell pid
+  # -- a plain `kill -TERM "$run_fg_killable_pid"` leaves the eval'd command's own children (the
+  # fleet-test/vitest tree) running as orphans, reparented but alive, holding a CPU slot.
+  # card 07f1fe6e delta (CYBERSEC GO 29326 L1): the group-kill fix above only covers TERM to the
+  # LANDER's pid. Measured: HUP and KILL sent to the lander's whole PROCESS GROUP used to kill the
+  # wrapped tree (no job-control subshell to reparent onto) and now orphan it instead -- a
+  # regression in the opposite direction from M1. HUP and INT are trappable, so they get the same
+  # group-kill as TERM. KILL cannot be trapped by any shell (SIGKILL always goes straight to
+  # default disposition) -- a group-directed KILL kills every process in the group including the
+  # wrapped tree itself, so nothing orphans; a lander-pid-only KILL still orphans the tree, same
+  # inherent gap TERM had before this fix and with no code-level mitigation possible.
+  _land_sig_stop() { # $1 = signal name (TERM/HUP/INT), $2 = its POSIX exit code (128+signum)
+    _run_finished=1
+    [ -n "${run_fg_killable_pid:-}" ] && kill -"$1" -- "-$run_fg_killable_pid" 2>/dev/null
+    [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" "$2" "deliberate stop (SIG$1)" aborted >/dev/null 2>&1
+    exit "$2"
+  }
+  trap '_land_sig_stop TERM 143' TERM
+  trap '_land_sig_stop HUP 129' HUP
+  trap '_land_sig_stop INT 130' INT
   # WhiteHat NO-GO 28731, L4: `land_one` can call `die()` (an internal `exit N`, not a signal) if
   # it hits a hard refusal mid-landing -- that used to terminate the whole script immediately,
   # skipping every finish call site below entirely (they only run AFTER land_one RETURNS), so a
@@ -1742,7 +1786,7 @@ land_with_retry() {
         bash "$_ljd" finish "$_run_id" "$rc" >/dev/null 2>&1 || true
         _run_finished=1
       fi
-      trap - TERM EXIT
+      trap - TERM HUP INT EXIT
       return "$rc"
     fi
     if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
@@ -1751,7 +1795,7 @@ land_with_retry() {
         bash "$_ljd" finish "$_run_id" 4 "lost push race $attempt times" >/dev/null 2>&1 || true
         _run_finished=1
       fi
-      trap - TERM EXIT
+      trap - TERM HUP INT EXIT
       return 4
     fi
     attempt=$((attempt+1))
