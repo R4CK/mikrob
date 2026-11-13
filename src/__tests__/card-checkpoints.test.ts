@@ -261,6 +261,22 @@ describe('POST /api/kanban/:id/checkpoints', () => {
     expect(out.body.error).toMatch(/40 hex/)
   })
 
+  // F5b (Cybersec2 30495, msg 18230): the F5 test above only covered `sha` -- head_sha had no
+  // length test at all, so a mutant that checks sha's length but not head_sha's would still pass.
+  it('400s when head_sha is a short (7-char) abbreviation of a REAL, resolvable commit', async () => {
+    createKanbanCard({ id: 'ck-r4-short-hs', title: 'Short head_sha abbreviation test' })
+    const shortSha = REAL_SHA.slice(0, 7)
+    expect(() =>
+      execFileSync('git', ['cat-file', '-t', shortSha], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }),
+    ).not.toThrow()
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r4-short-hs/checkpoints', JSON.stringify({
+      sha: REAL_SHA, head_sha: shortSha, agent: 'backend',
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toMatch(/40 hex/)
+  })
+
   it('400s when sha is syntactically valid but does not exist in the repo', async () => {
     createKanbanCard({ id: 'ck-r5', title: 'Nonexistent sha test' })
     const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-r5/checkpoints', JSON.stringify({
@@ -350,6 +366,17 @@ describe('POST /api/kanban/:id/checkpoints', () => {
     createKanbanCard({ id: 'ck-f1-long', title: 'Long agent test' })
     const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-f1-long/checkpoints', JSON.stringify({
       sha: REAL_SHA, head_sha: REAL_SHA, agent: 'a'.repeat(65),
+    }))
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+  })
+
+  // F6 (Cybersec2 30495): nothing pinned that the agent allowlist is lowercase-only -- a mutant
+  // widening /^[a-z0-9-]{1,64}$/ to /^[a-zA-Z0-9-]{1,64}$/ stayed green against the suite.
+  it('F6: an agent value with an uppercase letter 400s', async () => {
+    createKanbanCard({ id: 'ck-f6-upper', title: 'Uppercase agent test' })
+    const { ctx, out } = fakeCtx('POST', '/api/kanban/ck-f6-upper/checkpoints', JSON.stringify({
+      sha: REAL_SHA, head_sha: REAL_SHA, agent: 'Backend',
     }))
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(400)

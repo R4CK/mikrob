@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileAsync } from '../exec-async.js'
 import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
@@ -1953,25 +1953,24 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // head_sha and agent are descriptive metadata stored verbatim; both are behind
     // the global auth gate so spoofability is bounded to authenticated callers.
     // n is serialised by better-sqlite3's synchronous MAX(n)+1 -- no git ref needed.
-    let shaType: string
-    try {
-      shaType = execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', shaLower], {
-        encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim()
-    } catch {
+    // F4 (Cybersec2 30495): execFileAsync, not execFileSync -- a sync git child in a request
+    // path blocks the whole dashboard event loop for the call's duration (scheduler-tick-nonblocking
+    // guard). The cap-race fix (F2 above) stays closed with this await in place: the cap check and
+    // insert in tryAddKanbanCheckpoint are still one synchronous statement with no await between
+    // them, it is just that the git calls now happen earlier, before readBody's result is used here.
+    const shaTypeResult = await execFileAsync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', shaLower], { timeoutMs: 5000 })
+    if (shaTypeResult.status !== 0) {
       json(res, { error: `sha nem létezik a repóban: ${shaLower}` }, 400); return true
     }
+    const shaType = shaTypeResult.stdout.trim()
     if (shaType !== 'commit') {
       json(res, { error: `sha nem commit objektum (${shaType}): ${shaLower}` }, 400); return true
     }
-    let headShaType: string
-    try {
-      headShaType = execFileSync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', headShaLower], {
-        encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim()
-    } catch {
+    const headShaTypeResult = await execFileAsync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', headShaLower], { timeoutMs: 5000 })
+    if (headShaTypeResult.status !== 0) {
       json(res, { error: `head_sha nem létezik a repóban: ${headShaLower}` }, 400); return true
     }
+    const headShaType = headShaTypeResult.stdout.trim()
     if (headShaType !== 'commit') {
       json(res, { error: `head_sha nem commit objektum (${headShaType}): ${headShaLower}` }, 400); return true
     }
