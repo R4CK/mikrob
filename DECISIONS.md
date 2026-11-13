@@ -24137,3 +24137,18 @@ hitelesítés jellege dokumentálva (kódkomment), ahogy WhiteHat2 is fogalmazta
 (a kártya Kész-ha listája szerint): F4 (DEFAULT_DB hardcode) és F5 (argparse furcsaságok) --
 ezek WhiteHat2 leletei, de nem szerepelnek a kártya elfogadási kritériumában.
 **Ki döntött:** backend3, MikroB dispatch alapján (msg 17943). Gate: QA + Cybersec.
+
+## 2026-11-13 — kártya 1a3c6459 delta: F2 CHECK csak CREATE TABLE IF NOT EXISTS-ben, landolási sorrend kötve
+
+**Döntés:** WhiteHat2 F2 lelete (komment 30319): az új `CHECK(>= 0)` kényszerek a `llm_ledger`
+táblán csak a `CREATE TABLE IF NOT EXISTS` DDL-ben élnek -- ha az e96d56c5 tábla már létezik (akár
+a CHECK nélküli alakban landolva külön), ez a kártya nem javítja utólag, a séma változatlan marad.
+Élesben jelenleg NINCS `llm_ledger`/`agent_llm_budget` tábla (ellenőrzött, read-only look), és
+sem e96d56c5, sem 1a3c6459 nincs még a developon -- ezért MikroB döntése: nincs migráció, a két
+kártyát EGYMÁS UTÁN, UGYANABBAN a frissítésben kell landolni és deployolni (e96d56c5 előbb, majd
+1a3c6459 közvetlenül utána, mielőtt bármilyen deploy/restart megy), így a tábla CSAK a CHECK-es
+alakjában jön létre először. Ha ez a sorrend megszakad (pl. e96d56c5 landol, deploy megy, és
+1a3c6459 csúszik), a tábla a régi, CHECK nélküli alakban létezik élesben, és ez a kártya önmagában
+már nem javítja -- akkor egy táblaépítés (create+copy-with-clamp+swap) kártya kell, tesztelt
+rollbackkel, nem egyszerű landolás.
+**Ki döntött:** MikroB (msg 18043), WhiteHat2 CYBERSEC GO 30319 F2 nyomán. Gate: QA + Cybersec2.
