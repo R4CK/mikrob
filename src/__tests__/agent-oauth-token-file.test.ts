@@ -643,7 +643,10 @@ describe('launcher wiring (agent-process.ts)', () => {
     // Same predicate the launcher uses further down. WhiteHat NO-GO (comment 15852, card
     // 617d136d): isClaude also excludes customProviderId now, matching upstream's own
     // `!isCustom && ...` shape (00140c57) that the Köteg 9 merge had dropped.
-    expect(FN).toContain("const isClaude = !customProviderId && model.startsWith('claude-')")
+    // Card 313c8a71 F1: the inline expression was extracted into the single-source
+    // isClaudeAgent(model, customProviderId) -- see that function's own implementation for the
+    // same !customProviderId && model.startsWith('claude-') guarantee, proven by its own tests.
+    expect(FN).toContain('const isClaude = isClaudeAgent(model, customProviderId)')
   })
 
   // Card f1800242: the decision AND the launcher's own backstop check both see the same
@@ -672,8 +675,12 @@ describe('launcher wiring (agent-process.ts)', () => {
   })
 
   it('backstop: an own token on an agent the launcher sees as non-Claude refuses before any export', () => {
-    const isClaudeAt = FN.indexOf("const isClaude = !customProviderId && model.startsWith('claude-')")
+    const isClaudeAt = FN.indexOf('const isClaude = isClaudeAgent(model, customProviderId)')
     const guardAt = FN.indexOf('if (ownTokenFile && (!isClaude || customProviderId)) {')
+    // Cybersec NO-GO 28997 T3 (card 313c8a71 round 7): without this, a mutant that removes the
+    // isClaude discriminator line makes isClaudeAt == -1, and guardAt > -1 holds trivially for any
+    // real guardAt, so the "comes after" assertion below passes vacuously on the mutant.
+    expect(isClaudeAt).toBeGreaterThan(-1)
     expect(guardAt).toBeGreaterThan(isClaudeAt)
     expect(guardAt).toBeLessThan(FN.indexOf('oauthTokenEnv = '))
     expect(FN.slice(guardAt, guardAt + 500)).toMatch(/return \{ ok: false, error: 'oauthTokenFile: not a Claude OAuth agent' \}/)

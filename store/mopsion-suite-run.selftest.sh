@@ -50,6 +50,25 @@ hold_slot() { # $1 = slot number -- takes it and sleeps until killed
 bash "$RUN" >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "no agent -> exit 2 (usage)" || bad "no-agent exit $rc, want 2"
 
+# --- 1b. card 22835648 (Rename 1/3): MIKROB_SUITE_* wins over CLEANCORE_SUITE_*, and the retired
+# name still works with a warning. The shared precedence logic itself is exhaustively unit-tested
+# in env-compat-lib.selftest.sh; this just proves THIS caller actually wired it in, using SLOTS as
+# the representative (all 12 SUITE_* vars go through the exact same env_compat_get call shape).
+out="$(env "${env_common[@]}" MIKROB_SUITE_SLOTS=1 CLEANCORE_SUITE_SLOTS=99 MIKROB_SUITE_WAIT_MAX_S=5 \
+  bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree'; then
+  ok "MIKROB_SUITE_SLOTS (new name) is actually read, not ignored in favour of the old one"
+else
+  bad "new name MIKROB_SUITE_SLOTS did not take effect" "rc=$rc out=$out"
+fi
+
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if echo "$out" | grep -q 'CLEANCORE_SUITE_LOCK_PREFIX is deprecated, use \$MIKROB_SUITE_LOCK_PREFIX'; then
+  ok "the retired CLEANCORE_SUITE_* name still works and warns which new name to use"
+else
+  bad "retired name did not warn as expected" "out=$out"
+fi
+
 # --- 2. a FREE slot is taken, and taken SILENTLY ----------------------------------------------
 # The routine case must not comment: a notice that fires on healthy traffic is one people learn to
 # skip. Proven by the absence of the queueing line, with acquisition proven by the worktree error.
@@ -118,6 +137,7 @@ ok "comments are best-effort: every case above ran with the API unreachable"
 ANCHOR="$TMP/anchor"
 mkdir -p "$ANCHOR/store" "$TMP/co-a/store" "$TMP/co-b/store"
 cp "$RUN" "$TMP/co-a/store/" && cp "$RUN" "$TMP/co-b/store/"
+cp "$HERE/env-compat-lib.sh" "$TMP/co-a/store/" && cp "$HERE/env-compat-lib.sh" "$TMP/co-b/store/"
 COPY_A="$TMP/co-a/store/$(basename "$RUN")"
 COPY_B="$TMP/co-b/store/$(basename "$RUN")"
 
@@ -171,6 +191,7 @@ RUN_WT="$TMP/fake-run"
 mkdir -p "$RUN_WT/node_modules/.bin" "$RUN_WT/store"
 FAKE_RUN="$RUN_WT/store/$(basename "$RUN")"
 cp "$RUN" "$FAKE_RUN"
+cp "$HERE/env-compat-lib.sh" "$RUN_WT/store/"
 cat > "$RUN_WT/store/agent-worktree.sh" <<EOF
 #!/usr/bin/env bash
 echo "$RUN_WT"
@@ -328,6 +349,7 @@ echo
 EVWT="$TMP/fake-evidence-wt"
 mkdir -p "$EVWT/node_modules/.bin" "$EVWT/store"
 cp "$RUN" "$EVWT/store/$(basename "$RUN")"
+cp "$HERE/env-compat-lib.sh" "$EVWT/store/"
 cat > "$EVWT/store/agent-worktree.sh" <<EOF
 #!/usr/bin/env bash
 echo "$EVWT"
@@ -496,6 +518,7 @@ fi
 MIDRUN_WT="$TMP/fake-midrun"
 mkdir -p "$MIDRUN_WT/node_modules/.bin" "$MIDRUN_WT/store"
 cp "$RUN" "$MIDRUN_WT/store/$(basename "$RUN")"
+cp "$HERE/env-compat-lib.sh" "$MIDRUN_WT/store/"
 cat > "$MIDRUN_WT/store/agent-worktree.sh" <<EOF
 #!/usr/bin/env bash
 echo "$MIDRUN_WT"
@@ -785,6 +808,7 @@ git -C "$PROV_WT" init -q && git -C "$PROV_WT" -c user.email=t@t -c user.name=t 
 git -C "$PROV_MAIN" init -q
 FAKE_RUN_PROV="$PROV_WT/store/$(basename "$RUN")"
 cp "$RUN" "$FAKE_RUN_PROV"
+cp "$HERE/env-compat-lib.sh" "$PROV_WT/store/"
 mkdir -p "$PROV_WT/node_modules/.bin"
 cat > "$PROV_WT/store/agent-worktree.sh" <<EOF
 #!/usr/bin/env bash

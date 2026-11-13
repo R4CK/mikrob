@@ -1733,8 +1733,13 @@ export function injectDbWriteGuard(existing: Record<string, unknown>): void {
     : (existing.hooks = {})) as Record<string, unknown>
   const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'db-write-guard.py'))
   if (isUnsafeHookCommand(command)) return
+  // N2 (CYBERSEC NO-GO 28718/28723, card c1766c6c re-gate round 4): the hook's own
+  // Write/Edit/MultiEdit protection (QA FAIL 28673 addendum 2) was dead code in the running
+  // fleet -- this was the ONLY matcher, so the harness never called the hook for those tools.
+  // "Bash" alone matched the pre-existing behaviour exactly; this now also reaches the hook for
+  // a direct raw-byte write to the protected db file via Write/Edit/MultiEdit.
   const entry = {
-    matcher: 'Bash',
+    matcher: 'Bash|Write|Edit|MultiEdit',
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []

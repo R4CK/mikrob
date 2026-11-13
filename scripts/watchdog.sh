@@ -12,6 +12,54 @@ WEB_PORT="${WEB_PORT:-3420}"
 
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
+# Card 313c8a71 F3: same direct-Bot-API alert pattern as ollama-boot-restore.sh/disk-space-guard.sh
+# (duplicated on purpose -- no shared module between these standalone cron scripts). Cooldown via a
+# sentinel file so a persistently-missing dist/node does not re-alert on every 5-minute tick; the
+# log line in agent_launch_env still fires every time, this just rate-limits the Telegram ping.
+WATCHDOG_ALERT_COOLDOWN_SEC="${WATCHDOG_ALERT_COOLDOWN_SEC:-3600}"
+WATCHDOG_FLEET_OAUTH_ALERT_SENTINEL="$INSTALL_DIR/store/.watchdog-fleet-oauth-undecidable-alert"
+alert_owner() {
+  local msg="$1" token chat tg_env="$HOME/.claude/channels/telegram/.env"
+  if [ "${WATCHDOG_ALERT_DRYRUN:-}" = "1" ]; then
+    echo "ALERT_DRYRUN: $msg"; return 0
+  fi
+  token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$tg_env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
+  chat="$(grep -E '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r ')"
+  if [ -z "$token" ] || [ -z "$chat" ]; then
+    echo "$(timestamp) [watchdog] ALERT (no bot token or owner chat id configured, could not Telegram): $msg" >> "$LOG"
+    return 1
+  fi
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$token" \
+    | curl -s -m 10 -o /dev/null -K - \
+    --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}" \
+    && echo "$(timestamp) [watchdog] owner alerted via direct Bot API: $msg" >> "$LOG" \
+    || echo "$(timestamp) [watchdog] ALERT sendMessage FAILED: $msg" >> "$LOG"
+}
+
+# Single source for "which REFUSE reasons page the owner", called from both the main restart
+# loop's REFUSE case and the --selftest-refuse-alert hook below -- so the two cannot drift apart
+# the way the dead post-case check (card 313c8a71 F1) and this logic once would have.
+maybe_alert_for_refuse_reason() {
+  case "$1" in
+    fleet-oauth-undecidable|provider-env-unavailable) alert_owner_fleet_oauth_undecidable ;;
+  esac
+}
+
+# Rate-limited wrapper for the F3 alert specifically: at most once per WATCHDOG_ALERT_COOLDOWN_SEC,
+# regardless of how many agents hit the undecidable branch in the same run.
+alert_owner_fleet_oauth_undecidable() {
+  local now last=0
+  now=$(date +%s)
+  [ -f "$WATCHDOG_FLEET_OAUTH_ALERT_SENTINEL" ] && last=$(cat "$WATCHDOG_FLEET_OAUTH_ALERT_SENTINEL" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt "$WATCHDOG_ALERT_COOLDOWN_SEC" ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$WATCHDOG_FLEET_OAUTH_ALERT_SENTINEL")"
+  printf '%s' "$now" > "$WATCHDOG_FLEET_OAUTH_ALERT_SENTINEL"
+  alert_owner "⚠️ watchdog: the needs-fleet-oauth predicate (node/dist) is undecidable on this restart -- at least one agent's fleet-token decision could not be computed and defaulted to NOT exporting it. Check node is on PATH and dist/ is built (see $LOG)."
+}
+
 # Resolve which channel an agent must be respawned on, from its OWN
 # agent-config.json channelProvider -- the same field src/web/agent-process.ts
 # launches from. Sets AGENT_PROVIDER / TOKEN_VAR / STATE_ENV_VAR.
@@ -173,9 +221,42 @@ agent_launch_env() {
   # does not need the fleet token" apart from "it needs it but the fleet token file/isolated
   # config happen to be unusable right now" -- the latter still falls through to empty output,
   # same as before this card, it just does so for its own, distinct reason.
-  local FLEET_OAUTH_NEEDED=0
-  if [ -n "$NODE_BIN" ] && "$NODE_BIN" "$NEEDS_FLEET_OAUTH_MJS" "$AGENT_DIR" 2>/dev/null; then
+  # Card 313c8a71 F3 (WhiteHat2, comment 28768): needs-fleet-oauth.mjs's own contract is exit 0
+  # (needed), exit 1 (not needed), exit 2 (undecidable -- caught error). A missing NODE_BIN is the
+  # same "undecidable" bucket (rc=127, same shell convention as "command not found"). Both used to
+  # collapse into "not needed" here with nothing logged -- the actual availability loss this F3
+  # exists to surface: a mid-rebuild dist, or node missing from PATH, silently strips the fleet
+  # token from EVERY restarted agent that needs it, not only BYO ones.
+  # Card 313c8a71 F2 (WhiteHat2): a missing/deleted needs-fleet-oauth.mjs, or one with a syntax
+  # error, never reaches its own logic -- node's module loader fails first and exits 1, the EXACT
+  # same code the script's real "not needed" decision uses. Exit code alone cannot tell these
+  # apart. The script now also prints a stdout sentinel ("needed"/"not-needed") the instant it
+  # reaches that decision; its ABSENCE on an exit-1 run proves the script never actually ran its
+  # own logic, so that case is undecidable too, not a real decision.
+  local FLEET_OAUTH_NEEDED=0 FLEET_OAUTH_RC FLEET_OAUTH_OUT
+  if [ -n "$NODE_BIN" ]; then
+    FLEET_OAUTH_OUT="$("$NODE_BIN" "$NEEDS_FLEET_OAUTH_MJS" "$AGENT_DIR" 2>/dev/null)"
+    FLEET_OAUTH_RC=$?
+  else
+    FLEET_OAUTH_OUT=""
+    FLEET_OAUTH_RC=127
+  fi
+  if [ "$FLEET_OAUTH_RC" = 0 ] && [ "$FLEET_OAUTH_OUT" = "needed" ]; then
     FLEET_OAUTH_NEEDED=1
+  elif [ "$FLEET_OAUTH_RC" = 1 ] && [ "$FLEET_OAUTH_OUT" = "not-needed" ]; then
+    : # genuinely not needed -- FLEET_OAUTH_NEEDED stays 0, falls through to the provider-env branch
+  else
+    echo "$(timestamp) [watchdog] $(basename "$AGENT_DIR"): needs-fleet-oauth predicate UNDECIDABLE (rc=$FLEET_OAUTH_RC, out='$FLEET_OAUTH_OUT', node=${NODE_BIN:-missing}) -- refusing restart rather than guessing whether this agent needs the fleet token" >> "$LOG"
+    # MikroB decision (msg_id:16938, explicit: do not decide this silently): an undecidable
+    # fleet-oauth verdict refuses for EVERY agent, not only BYO/customProvider ones -- falling
+    # through to the provider-env branch below would, for a plain Claude agent, likely still
+    # succeed there (that script has no opinion on whether the fleet token specifically was
+    # needed) and restart it silently missing a token it may have actually required. The same
+    # undecidable cause (dist/node unavailable) usually makes BOTH scripts fail together in
+    # practice, but this makes that NOT incidental -- a plain Claude agent refuses here directly,
+    # before the provider-env branch is ever reached.
+    printf '%s' "REFUSE:fleet-oauth-undecidable"
+    return
   fi
 
   if [ "$FLEET_OAUTH_NEEDED" = 1 ]; then
@@ -190,14 +271,33 @@ agent_launch_env() {
   # API key) -- which used to mean this function printed nothing at all, so the restarted agent
   # came up as plain Claude with no credentials of its own. Single source with the dashboard start
   # path: resolveProviderEnv via watchdog-provider-env.mjs (same dynamic-dist-import pattern as
-  # needs-fleet-oauth.mjs). Fails closed (no env addition) if node or dist is unavailable, or if
-  # the dist throws (e.g. a customProvider with a missing vault key) -- same posture as above,
-  # never a silent fallback to plain-Claude credentials for an agent that needs its own.
+  # needs-fleet-oauth.mjs).
+  #
+  # Card 313c8a71 (MikroB decision on ac0bf02d's own WhiteHat GO 28831 F1/F2): "fails closed" here
+  # used to mean "exports nothing", NOT "does not restart" -- every failure of this branch (node
+  # missing, dist missing, a customProvider's vault key gone, an unregistered customProvider, an
+  # unreadable agent-config.json) ended in an EMPTY prefix, and the restart loop only skips a
+  # restart for a `REFUSE:` prefix, so the agent was restarted anyway, silently, on whatever default
+  # login the shared ~/.claude holds. An agent on authMode own_team genuinely has nothing to export
+  # here (exit 0, empty output BY DESIGN -- its credentials are its own /login) and must still
+  # restart normally; only a NON-ZERO exit (an actual failure, not a legitimate empty decision) now
+  # refuses the restart, matching the existing oauthTokenFile REFUSE mechanism already used above.
+  local PROVIDER_ENV_OUT PROVIDER_ENV_RC
   if [ -n "$NODE_BIN" ]; then
     local AGENT_NAME
     AGENT_NAME=$(basename "$AGENT_DIR")
-    "$NODE_BIN" "$WATCHDOG_PROVIDER_ENV_MJS" "$AGENT_DIR" "$AGENT_NAME" 2>/dev/null
+    PROVIDER_ENV_OUT="$("$NODE_BIN" "$WATCHDOG_PROVIDER_ENV_MJS" "$AGENT_DIR" "$AGENT_NAME" 2>/dev/null)"
+    PROVIDER_ENV_RC=$?
+  else
+    PROVIDER_ENV_OUT=""
+    PROVIDER_ENV_RC=127
   fi
+  if [ "$PROVIDER_ENV_RC" != 0 ]; then
+    echo "$(timestamp) [watchdog] $(basename "$AGENT_DIR"): watchdog-provider-env UNAVAILABLE (rc=$PROVIDER_ENV_RC, node=${NODE_BIN:-missing}) -- refusing restart rather than launching with no credentials of its own" >> "$LOG"
+    printf '%s' "REFUSE:provider-env-unavailable"
+    return
+  fi
+  printf '%s' "$PROVIDER_ENV_OUT"
 }
 
 # Self-test hook, mirroring --resolve-provider: print the launch-env prefix
@@ -210,6 +310,29 @@ if [ "${1:-}" = "--launch-env" ]; then
     REFUSE:*) echo "isolation=refuse reason=${ENV_PREFIX#REFUSE:}" ;;
     "") echo "isolation=no" ;;
     *) echo "isolation=yes prefix=$ENV_PREFIX" ;;
+  esac
+  exit 0
+fi
+
+# Self-test hook, card 313c8a71 F1 (WhiteHat2 CYBERSEC GO 28868 + QA2 FAIL 28874): the owner
+# alert lives in the MAIN RESTART LOOP's REFUSE case (below, in the per-agent for-loop), not in
+# agent_launch_env itself -- --launch-env above calls only the latter, so it can never exercise
+# the alert wiring. Driving the real main loop needs a live tmux session, the dashboard process
+# and the main-agent channel setup, none of which a disposable fixture should have to fake just
+# to prove one case/alert call. This hook reproduces the EXACT case statement and alert call the
+# main loop runs on $ISO_ENV, nothing else, so the fixture test can prove the alert actually fires
+# (or does not) without touching tmux, the dashboard or any channel state.
+if [ "${1:-}" = "--selftest-refuse-alert" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --selftest-refuse-alert <agent-dir>" >&2; exit 2; }
+  ISO_ENV="$(agent_launch_env "$2")"
+  case "$ISO_ENV" in
+    REFUSE:*)
+      REFUSE_REASON="${ISO_ENV#REFUSE:}"
+      maybe_alert_for_refuse_reason "$REFUSE_REASON"
+      echo "refused reason=$REFUSE_REASON"
+      ;;
+    "") echo "no-export" ;;
+    *) echo "export-prefix" ;;
   esac
   exit 0
 fi
@@ -386,7 +509,25 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   ISO_ENV="$(agent_launch_env "$AGENT_DIR")"
   case "$ISO_ENV" in
     REFUSE:*)
-      echo "$(timestamp) [watchdog] $AGENT_ID: oauthTokenFile set but unusable (${ISO_ENV#REFUSE:}) -- NOT restarted (fail-closed, no fallback to the fleet token)" >> "$LOG"
+      REFUSE_REASON="${ISO_ENV#REFUSE:}"
+      # Card 313c8a71 F1 (WhiteHat2 + QA2 FAIL 28874): the alert used to live AFTER this case
+      # block, gated on $FLEET_OAUTH_UNDECIDABLE -- dead code twice over. That variable is set
+      # INSIDE agent_launch_env, which this line runs as a command SUBSTITUTION (a subshell), so
+      # the assignment never survives back to this parent shell; and this REFUSE case already
+      # `continue`s, so the line after it was unreachable regardless of the variable's scope. The
+      # alert now fires HERE, decided from the REASON STRING itself (the one piece of
+      # agent_launch_env's decision that does cross the subshell boundary), for both undecidable
+      # causes (the fleet-oauth predicate itself, and the provider-env script for a BYO agent).
+      # maybe_alert_for_refuse_reason is the single source for this decision -- also called from
+      # the --selftest-refuse-alert hook above, so a fixture test can prove it without tmux.
+      maybe_alert_for_refuse_reason "$REFUSE_REASON"
+      # Card 313c8a71 F4 (WhiteHat2): "oauthTokenFile set but unusable" is misleading for a reason
+      # that has nothing to do with oauthTokenFile -- an operator chasing that field on a
+      # fleet-oauth-undecidable or provider-env-unavailable refusal would look in the wrong place.
+      # The reason string alone already names the actual cause (oauthTokenFile's own REFUSE
+      # reasons -- missing-or-symlink, mode-not-0600, etc. -- are still self-explanatory on their
+      # own, same as before).
+      echo "$(timestamp) [watchdog] $AGENT_ID: restart refused ($REFUSE_REASON) -- NOT restarted (fail-closed, no fallback to the fleet token)" >> "$LOG"
       continue
       ;;
   esac

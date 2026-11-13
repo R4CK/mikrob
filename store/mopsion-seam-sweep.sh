@@ -20,7 +20,9 @@
 # look, not proof of a defect.
 set -uo pipefail
 
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+# shellcheck source=./env-compat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
+MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
 WT="${1:-}"; shift || true
 [ -n "$WT" ] && [ -d "$WT" ] || { echo "usage: mopsion-seam-sweep.sh <worktree> <ref> <ref> [...]" >&2; exit 2; }
 [ "$#" -ge 2 ] || { echo "need at least two refs -- a seam has two sides" >&2; exit 2; }

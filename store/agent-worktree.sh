@@ -20,8 +20,11 @@
 # Exit: 0 ok | 2 bad usage | 3 setup failed
 set -euo pipefail
 
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
-ROOT="${CLEANCORE_WORKTREES:-/mnt/h/LM_Studio_Workdir/CleanCore-worktrees}"
+# shellcheck source=./env-compat-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
+
+MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
+ROOT="$(env_compat_get MOPSION_WORKTREES CLEANCORE_WORKTREES /mnt/h/LM_Studio_Workdir/CleanCore-worktrees)"
 # The workspace npm scope every packages/*/package.json declares under. A VARIABLE, not a literal
 # repeated at each use site -- see the card b846acf3 comment on link_node_modules_for below for why
 # that repetition already broke once, silently, across an entire rename.

@@ -388,11 +388,15 @@ mkdir -p "$AGENT_BYO/.claude-config"
 # 24) BLOCKING (this card's repro): customProvider set, no oauthTokenFile field -> no isolation
 #     (the fleet token must NOT be exported). Before this fix, this fell straight to the
 #     unconditional fallback and printed "isolation=yes" with the fleet token in the prefix.
+#     "my-ollama-endpoint" is not a registered customProvider, so watchdog-provider-env.mjs's own
+#     getCustomProviderOrThrow throws (exit 2) -- card 313c8a71's own F1 fix on ac0bf02d's WhiteHat
+#     GO 28831: a non-zero exit from that script now REFUSES the restart rather than restarting
+#     with no credentials (the fleet token is still never exported, same as before).
 printf '{"customProvider": "my-ollama-endpoint"}' > "$AGENT_BYO/agent-config.json"
 OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
 case "$OUT" in
-  isolation=no) pass "24: customProvider set, no oauthTokenFile -> no fleet-token export" ;;
-  *) fail "24: customProvider set, no oauthTokenFile -> no fleet-token export" "$OUT" ;;
+  "isolation=refuse reason=provider-env-unavailable") pass "24: customProvider set, no oauthTokenFile -> refuse (no credentials available), no fleet-token export" ;;
+  *) fail "24: customProvider set, no oauthTokenFile -> refuse (no credentials available), no fleet-token export" "$OUT" ;;
 esac
 
 # 25) authMode 'own_team' (agent authenticates via its own /login credential) -> no isolation,
@@ -466,12 +470,13 @@ esac
 
 # 31) customProvider set TOGETHER WITH an explicit claude- model string (WhiteHat2 F1): the
 #     customProvider must still win -- isClaude is false regardless of the model string, same as
-#     agent-process.ts:2546 (`!customProviderId && model.startsWith('claude-')`).
+#     isClaudeAgent's own contract (`!customProviderId && model.startsWith('claude-')`).
+#     "my-litellm-proxy" is unregistered too, so this is the same refuse path as case 24.
 printf '{"customProvider": "my-litellm-proxy", "model": "claude-sonnet-5"}' > "$AGENT_BYO/agent-config.json"
 OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
 case "$OUT" in
-  isolation=no) pass "31: customProvider + claude- model string -> customProvider still wins, no export" ;;
-  *) fail "31: customProvider + claude- model string -> customProvider still wins, no export" "$OUT" ;;
+  "isolation=refuse reason=provider-env-unavailable") pass "31: customProvider + claude- model string -> customProvider still wins, refuse (unregistered)" ;;
+  *) fail "31: customProvider + claude- model string -> customProvider still wins, refuse (unregistered)" "$OUT" ;;
 esac
 rm -f "$AGENT_BYO/agent-config.json"
 
@@ -508,14 +513,17 @@ case "$OUT" in
 esac
 rm -f "$AGENT_BYO/agent-config.json"
 
-# 34) customProvider pointing at an UNREGISTERED id -> fail-closed refuse (no export at all),
-#     never a partial/guessed export -- same posture as the dashboard start path's own throw
-#     (agent-process.ts: "customProvider: agent NOT started (fail-closed)").
+# 34) customProvider pointing at an UNREGISTERED id -> fail-closed REFUSE (no export, no restart),
+#     never a partial/guessed export and never a silent restart-with-nothing -- same posture as the
+#     dashboard start path's own throw (agent-process.ts: "customProvider: agent NOT started
+#     (fail-closed)"). Card 313c8a71 (MikroB decision on WhiteHat GO 28831 F1): restart-with-
+#     nothing was the actual gap -- this agent now does not restart at all until the provider is
+#     registered or removed from its config.
 printf '{"customProvider": "definitely-not-a-registered-provider-fixture"}' > "$AGENT_BYO/agent-config.json"
 OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
 case "$OUT" in
-  isolation=no) pass "34: unregistered customProvider -> fail-closed, no export" ;;
-  *) fail "34: unregistered customProvider -> fail-closed, no export" "$OUT" ;;
+  "isolation=refuse reason=provider-env-unavailable") pass "34: unregistered customProvider -> fail-closed REFUSE (no export, no restart)" ;;
+  *) fail "34: unregistered customProvider -> fail-closed REFUSE (no export, no restart)" "$OUT" ;;
 esac
 rm -f "$AGENT_BYO/agent-config.json"
 
@@ -531,6 +539,237 @@ case "$OUT" in
   *) fail "35: claude/shared agent with no .claude-config -> still no export (not F4's branch)" "$OUT" ;;
 esac
 rm -f "$AGENT_PLAIN/agent-config.json"
+
+# --- card 313c8a71 F2/F3 (WhiteHat2, comment 28768): the mjs's fail-closed catch (exit 2) was
+# never exercised by this suite, and nothing distinguished "undecidable" (dist/node missing) from
+# the ordinary "not needed" case -- a restart silently stripped the fleet token from EVERY agent
+# that needed it, with zero log trace. These pin both the fail-closed behavior itself and the new
+# distinct log line. ---
+
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_BYO/agent-config.json"
+
+# 36) BLOCKING (F2 repro): needs-fleet-oauth.mjs's own project root has no dist/ -- the dynamic
+#     import throws inside its try block, caught, exit 2. Must still be fail-closed, never a
+#     guessed/fallback export, proving the catch is pinned, not just "whatever happens". Card
+#     313c8a71 scope extension (MikroB msg_id:16938, explicit: do not decide this silently): an
+#     undecidable fleet-oauth verdict now REFUSES the restart outright for THIS plain-claude agent
+#     too, rather than falling through to the (here, unrelated and still-working) provider-env
+#     branch and restarting it anyway without knowing if it needed the fleet token.
+BROKEN_INSTALL="$TMP/broken-install"
+mkdir -p "$BROKEN_INSTALL/scripts"
+cp "$REPO_DIR/scripts/needs-fleet-oauth.mjs" "$BROKEN_INSTALL/scripts/needs-fleet-oauth.mjs"
+# deliberately NO dist/ under $BROKEN_INSTALL -- projectRoot resolves to dirname(this script)/.. ,
+# i.e. $BROKEN_INSTALL, which has no dist at all.
+OUT="$(NEEDS_FLEET_OAUTH_MJS="$BROKEN_INSTALL/scripts/needs-fleet-oauth.mjs" bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "36: missing dist -> mjs exits 2, refuse (fleet-oauth undecidable)" ;;
+  *) fail "36: missing dist -> mjs exits 2, refuse (fleet-oauth undecidable)" "$OUT" ;;
+esac
+
+# 37) F3: the SAME missing-dist restart must leave a named, grep-able UNDECIDABLE log line --
+#     not silence. Driven through the actual restart-loop entrypoint would need a live tmux/API
+#     fixture this suite does not have; agent_launch_env itself (called identically by both entry
+#     points) already writes the line, so this checks the REAL log file the --launch-env run above
+#     just wrote to.
+if grep -q "UNDECIDABLE" "$FIXTURE_INSTALL/logs/watchdog.log" 2>/dev/null; then
+  pass "37: missing dist -> UNDECIDABLE log line written (F3)"
+else
+  fail "37: missing dist -> UNDECIDABLE log line written (F3)" "$(cat "$FIXTURE_INSTALL/logs/watchdog.log" 2>/dev/null)"
+fi
+
+# 38) F3: NODE_BIN itself unavailable is the SAME "undecidable" bucket (rc=127), not silently
+#     folded into "not needed" -- a fleet-oauth-needing agent restarted with no node on PATH used
+#     to just lose its token with nothing logged. A bogus (non-empty) NODE_BIN is used rather than
+#     an empty one: watchdog.sh's own `${NODE_BIN:-$(command -v node)}` fallback treats EMPTY the
+#     same as UNSET and would silently rediscover the real node, defeating the point of this probe.
+#     Node being unavailable makes the FLEET-OAUTH decision itself undecidable (reached first) --
+#     refuses right there, same reason as case 36.
+rm -f "$FIXTURE_INSTALL/logs/watchdog.log"
+OUT="$(NODE_BIN="/nonexistent/no-such-node-binary-xyz" bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "38: node unavailable -> refuse (fleet-oauth undecidable)" ;;
+  *) fail "38: node unavailable -> refuse (fleet-oauth undecidable)" "$OUT" ;;
+esac
+if grep -q "UNDECIDABLE" "$FIXTURE_INSTALL/logs/watchdog.log" 2>/dev/null; then
+  pass "38: node unavailable -> UNDECIDABLE log line written (F3)"
+else
+  fail "38: node unavailable -> UNDECIDABLE log line written (F3)" "$(cat "$FIXTURE_INSTALL/logs/watchdog.log" 2>/dev/null)"
+fi
+
+# 39) MUTATION PIN: the ordinary "not needed" case (BYO model, real dist, real node) must NOT log
+#     UNDECIDABLE -- a too-eager rewrite of the branch split must not treat every non-export as
+#     undecidable.
+rm -f "$FIXTURE_INSTALL/logs/watchdog.log"
+printf '{"model": "deepseek-chat"}' > "$AGENT_BYO/agent-config.json"
+bash "$WD" --launch-env "$AGENT_BYO" > /dev/null
+if grep -q "UNDECIDABLE" "$FIXTURE_INSTALL/logs/watchdog.log" 2>/dev/null; then
+  fail "39: ordinary not-needed case must NOT log UNDECIDABLE" "$(cat "$FIXTURE_INSTALL/logs/watchdog.log")"
+else
+  pass "39: ordinary not-needed case does not log UNDECIDABLE"
+fi
+rm -f "$AGENT_BYO/agent-config.json" "$FIXTURE_INSTALL/logs/watchdog.log"
+
+# --- card 313c8a71 scope extension (MikroB decision on ac0bf02d's own WhiteHat GO 28831 F1/F2):
+# "fails closed" in watchdog-provider-env.mjs used to mean "exports nothing", not "does not
+# restart" -- a BYO agent whose provider env could not be built was restarted anyway, silently, on
+# whatever default login the shared ~/.claude holds. These pin the dist-missing case for THIS
+# script specifically (cases 24/31/34/38 above already pin the registered-provider and node-missing
+# shapes via the real repo script). ---
+
+# 40) BLOCKING: watchdog-provider-env.mjs's own project root has no dist/ -- same shape as case 36
+#     for needs-fleet-oauth.mjs, but for the script this scope extension actually targets. A BYO
+#     config (deepseek) is used so FLEET_OAUTH_NEEDED is false and this branch is reached at all.
+BROKEN_PROVIDER_INSTALL="$TMP/broken-provider-install"
+mkdir -p "$BROKEN_PROVIDER_INSTALL/scripts"
+cp "$REPO_DIR/scripts/watchdog-provider-env.mjs" "$BROKEN_PROVIDER_INSTALL/scripts/watchdog-provider-env.mjs"
+printf '{"model": "deepseek-chat"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(WATCHDOG_PROVIDER_ENV_MJS="$BROKEN_PROVIDER_INSTALL/scripts/watchdog-provider-env.mjs" bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=provider-env-unavailable") pass "40: watchdog-provider-env missing dist -> refuse (no export, no restart)" ;;
+  *) fail "40: watchdog-provider-env missing dist -> refuse (no export, no restart)" "$OUT" ;;
+esac
+
+# 41) same run must leave a named, grep-able log line distinct from the fleet-oauth one (37/38).
+if grep -q "watchdog-provider-env UNAVAILABLE" "$FIXTURE_INSTALL/logs/watchdog.log" 2>/dev/null; then
+  pass "41: watchdog-provider-env missing dist -> named log line written"
+else
+  fail "41: watchdog-provider-env missing dist -> named log line written" "$(cat "$FIXTURE_INSTALL/logs/watchdog.log" 2>/dev/null)"
+fi
+
+# 42) MUTATION PIN: authMode own_team genuinely has NOTHING to export here (its credentials are
+#     its own /login, exit 0 with empty output BY DESIGN) -- this must still restart normally
+#     (isolation=no), never REFUSE, or a too-eager "any empty output is a failure" rewrite would
+#     wrongly block every own_team agent from ever restarting.
+rm -f "$FIXTURE_INSTALL/logs/watchdog.log"
+printf '{"authMode": "own_team"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  isolation=no) pass "42: authMode own_team -> legitimate empty output still restarts normally (no refuse)" ;;
+  *) fail "42: authMode own_team -> legitimate empty output still restarts normally (no refuse)" "$OUT" ;;
+esac
+rm -f "$AGENT_BYO/agent-config.json" "$FIXTURE_INSTALL/logs/watchdog.log"
+
+# --- card 313c8a71, round 3 (WhiteHat2 CYBERSEC GO 28868 + QA2 FAIL 28874): F1 (dead alert, needs
+# the main loop -- NOT testable via --launch-env, see watchdog-main-loop-alert.test.sh instead),
+# F2 (a missing/syntax-broken needs-fleet-oauth.mjs collides with "not needed"), F3 (a present-
+# but-corrupt agent-config.json restarted WITH the fleet token). These pin F2 and F3. ---
+
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_BYO/agent-config.json"
+
+# 43) BLOCKING (F2 repro): needs-fleet-oauth.mjs DELETED entirely (not just its dist) -- node's own
+#     module loader fails with exit 1, the SAME code the script's real "not needed" decision uses.
+#     Before this round, this silently restarted the agent WITHOUT the fleet token (identical to a
+#     real BYO decision). Now: the missing stdout sentinel makes this undecidable -> refuse.
+MISSING_MJS_INSTALL="$TMP/missing-mjs-install"
+mkdir -p "$MISSING_MJS_INSTALL/scripts"
+# deliberately do NOT create scripts/needs-fleet-oauth.mjs here
+OUT="$(NEEDS_FLEET_OAUTH_MJS="$MISSING_MJS_INSTALL/scripts/needs-fleet-oauth.mjs" bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "43: needs-fleet-oauth.mjs missing entirely -> refuse (undecidable), not silent not-needed" ;;
+  *) fail "43: needs-fleet-oauth.mjs missing entirely -> refuse (undecidable), not silent not-needed" "$OUT" ;;
+esac
+
+# 44) BLOCKING (F2 repro, the other half): a SYNTAX-BROKEN needs-fleet-oauth.mjs -- node's loader
+#     fails before the script's own try/catch (and its stdout sentinel) ever runs. Same exit code
+#     (1) as a real "not needed", same fix: the missing sentinel makes it undecidable -> refuse.
+BROKEN_SYNTAX_INSTALL="$TMP/broken-syntax-install"
+mkdir -p "$BROKEN_SYNTAX_INSTALL/scripts"
+printf 'this is not valid node syntax ][[' > "$BROKEN_SYNTAX_INSTALL/scripts/needs-fleet-oauth.mjs"
+OUT="$(NEEDS_FLEET_OAUTH_MJS="$BROKEN_SYNTAX_INSTALL/scripts/needs-fleet-oauth.mjs" bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "44: needs-fleet-oauth.mjs syntax-broken -> refuse (undecidable), not silent not-needed" ;;
+  *) fail "44: needs-fleet-oauth.mjs syntax-broken -> refuse (undecidable), not silent not-needed" "$OUT" ;;
+esac
+
+# 45) MUTATION PIN: the REAL script, unmodified, on the SAME plain-claude fixture, still decides
+#     normally (fleet-token export) -- cases 43/44 must not have broken the ordinary path.
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "45: real needs-fleet-oauth.mjs, same fixture -> still a normal fleet-token decision" ;;
+  *) fail "45: real needs-fleet-oauth.mjs, same fixture -> still a normal fleet-token decision" "$OUT" ;;
+esac
+
+# 46) BLOCKING (F3 repro, needs-fleet-oauth.mjs side): a PRESENT but non-JSON agent-config.json.
+#     Before this round, readConfig's catch defaulted this to {} -- which resolves to the claude-
+#     install default, so the agent restarted WITH the fleet token despite its config naming a
+#     customProvider that never got read. Now: readConfig throws, exit 2, refuse.
+printf 'this is not json at all' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "46: non-JSON agent-config.json -> refuse (undecidable), not a silent {} default" ;;
+  *) fail "46: non-JSON agent-config.json -> refuse (undecidable), not a silent {} default" "$OUT" ;;
+esac
+
+# 47) F3 repro: a JSON ARRAY (valid JSON, wrong shape) -- same silent-{}-default bug, same fix.
+printf '[1,2,3]' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "47: agent-config.json is a JSON array -> refuse (undecidable)" ;;
+  *) fail "47: agent-config.json is a JSON array -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 48) F3 repro: a UTF-8 BOM prefix with a customProvider -- the exact shape WhiteHat2 named.
+printf '\xef\xbb\xbf{"customProvider": "my-byo-endpoint"}' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "48: agent-config.json has a UTF-8 BOM -> refuse (undecidable)" ;;
+  *) fail "48: agent-config.json has a UTF-8 BOM -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 49) F3 repro: TRUNCATED JSON (mid-write crash shape) with a customProvider.
+printf '{"customProvider": "my-byo-endp' > "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "49: truncated agent-config.json -> refuse (undecidable)" ;;
+  *) fail "49: truncated agent-config.json -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 50) MUTATION PIN: a genuinely MISSING agent-config.json (not present-but-corrupt) must still
+#     default to {} and decide normally -- round 3's fix must not turn a legitimate "no config
+#     yet" first-write state into a refusal.
+rm -f "$AGENT_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "50: no agent-config.json at all (missing, not corrupt) -> still a normal default decision" ;;
+  *) fail "50: no agent-config.json at all (missing, not corrupt) -> still a normal default decision" "$OUT" ;;
+esac
+
+# 51) BLOCKING (F1 repro): the owner alert must actually fire on an undecidable fleet-oauth
+#     verdict. --selftest-refuse-alert drives the EXACT case/alert logic the main restart loop
+#     runs on $ISO_ENV (maybe_alert_for_refuse_reason), without needing a live tmux session, the
+#     dashboard or any channel setup -- --launch-env alone cannot reach this code at all, which is
+#     exactly how the dead-code bug went unnoticed through 51 passing cases.
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_BYO/agent-config.json"
+rm -f "$FIXTURE_INSTALL/store/.watchdog-fleet-oauth-undecidable-alert"
+OUT="$(WATCHDOG_ALERT_DRYRUN=1 NEEDS_FLEET_OAUTH_MJS="$MISSING_MJS_INSTALL/scripts/needs-fleet-oauth.mjs" bash "$WD" --selftest-refuse-alert "$AGENT_BYO")"
+case "$OUT" in
+  *"ALERT_DRYRUN:"*"undecidable"*) pass "51: undecidable fleet-oauth verdict -> owner alert actually fires" ;;
+  *) fail "51: undecidable fleet-oauth verdict -> owner alert actually fires" "$OUT" ;;
+esac
+case "$OUT" in
+  *"refused reason=fleet-oauth-undecidable"*) pass "51: same run also reports the refuse reason" ;;
+  *) fail "51: same run also reports the refuse reason" "$OUT" ;;
+esac
+
+# 52) MUTATION PIN: a REFUSE reason unrelated to the undecidable causes (oauthTokenFile's own
+#     reasons, e.g. mode-not-0600) must NOT page the owner -- only fleet-oauth-undecidable and
+#     provider-env-unavailable are alert-worthy.
+AGENT_OWN_ALERT="$FIXTURE_INSTALL/agents/own-token-alert-agent"
+mkdir -p "$AGENT_OWN_ALERT/.claude-config"
+OWN_ALERT_TOKEN_FILE="$TMP/own-alert-agent.token"
+printf '%s' "sk-ant-oat-fake" > "$OWN_ALERT_TOKEN_FILE"
+chmod 644 "$OWN_ALERT_TOKEN_FILE" # wrong mode -> REFUSE:mode-not-0600, not an undecidable cause
+printf '{"oauthTokenFile": "%s"}\n' "$OWN_ALERT_TOKEN_FILE" > "$AGENT_OWN_ALERT/agent-config.json"
+rm -f "$FIXTURE_INSTALL/store/.watchdog-fleet-oauth-undecidable-alert"
+OUT="$(WATCHDOG_ALERT_DRYRUN=1 bash "$WD" --selftest-refuse-alert "$AGENT_OWN_ALERT")"
+case "$OUT" in
+  *"ALERT_DRYRUN"*) fail "52: an unrelated REFUSE reason (mode-not-0600) must NOT alert the owner" "$OUT" ;;
+  "refused reason=mode-not-0600") pass "52: an unrelated REFUSE reason (mode-not-0600) does not alert the owner" ;;
+  *) fail "52: an unrelated REFUSE reason (mode-not-0600) does not alert the owner" "$OUT" ;;
+esac
+rm -f "$AGENT_BYO/agent-config.json" "$FIXTURE_INSTALL/store/.watchdog-fleet-oauth-undecidable-alert"
 
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

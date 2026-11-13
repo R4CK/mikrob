@@ -23,19 +23,24 @@ if (!agentDir || !agentName) {
   process.exit(2)
 }
 
+// Card 313c8a71 F3 (WhiteHat2 + QA2 FAIL 28874): a PRESENT but corrupt agent-config.json used to
+// default to {} the same way a genuinely MISSING file does -- see needs-fleet-oauth.mjs's own
+// readConfig for the full reasoning (same fix, same file shape, both scripts read the same file).
+// A missing file is a legitimate default; a present-but-unreadable one is undecidable and must
+// throw (caught by the outer try/catch below, exit 2), never a silent {}.
 function readConfig(dir) {
-  let raw = '{}'
+  let raw
   try {
     raw = readFileSync(join(dir, 'agent-config.json'), 'utf-8')
-  } catch {
-    raw = '{}'
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return {}
+    throw err
   }
-  try {
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  } catch {
-    return {}
+  const parsed = JSON.parse(raw)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('agent-config.json did not parse to a JSON object')
   }
+  return parsed
 }
 
 const VALID_AUTH_MODES = new Set(['shared', 'own_team', 'api'])
@@ -46,7 +51,9 @@ try {
     join(projectRoot, 'dist', 'web', 'agent-config.js')
   )
   const { resolveOpenRouterModel } = await import(join(projectRoot, 'dist', 'web', 'openrouter-models.js'))
-  const { resolveProviderEnv, launchSecretRef } = await import(join(projectRoot, 'dist', 'web', 'agent-process.js'))
+  const { resolveProviderEnv, launchSecretRef, isClaudeAgent } = await import(
+    join(projectRoot, 'dist', 'web', 'agent-process.js')
+  )
   const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
 
   const config = readConfig(agentDir)
@@ -56,7 +63,8 @@ try {
     typeof config.customProvider === 'string' && config.customProvider.trim() ? config.customProvider.trim() : null
   const authMode =
     typeof config.authMode === 'string' && VALID_AUTH_MODES.has(config.authMode) ? config.authMode : 'shared'
-  const isClaude = !customProviderId && model.startsWith('claude-')
+  // Card 313c8a71 F1: single source with the launch site and needs-fleet-oauth.mjs, same function.
+  const isClaude = isClaudeAgent(model, customProviderId)
 
   let out = ''
   if (isClaude && authMode === 'api') {
