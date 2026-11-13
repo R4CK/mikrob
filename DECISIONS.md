@@ -24482,3 +24482,30 @@ Javítás: a gateway-ág elején (az auth-token ellenőrzés UTÁN, bármilyen k
 Teszt (`src/__tests__/local-llm-gateway-mode.test.ts`, F2-ről cherry-pickelve + bővítve): a meglévő "routes through the gateway" eset most `/api/tags`-et IS elvárja (a modell-ellenőrzés miatt), de a VALÓDI garanciát (a generálás soha nem kerüli meg a gateway-t a natív `/api/generate`-en) külön `generateHit`/`tagsHit` jelzővel választja el. 2 ÚJ eset: `--model auto` gateway módban -> exit 3, nulla gateway-kérés (ez a Cybersec által élőben mért hiba pontos pinje); Ollama elérhetetlen gateway módban -> exit 2, nulla gateway-kérés. Mutációs ellenőrzés: a fix 3 sorának eltávolítása a 3 új/bővített esetet pirosra viszi (3/6 piros), vissza-visszaállítva 6/6 zöld. A meglévő timeout-safety-net teszt (4/4) és a direkt út változatlan marad.
 Nincs benne: a gateway-kapcsoló éles bekapcsolása (változatlanul Peti jóváhagyására vár), a cdde2666 shadow-logolási munkája (lásd fentebb) nem változott, nem is érinti ezt a fájlt.
 **Ki döntött:** backend2 (kártya cdde2666, Cybersec MEDIUM F1 komment 29593 + MikroB komment 29595/msg 17584/17593 alapján). Gate: QA + Cybersec + Cybered. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-13 -- card cdde2666: branch rebuild on origin/develop, drop stale F2 commit (MikroB msg 18090)
+
+**Kontextus:** F2 (card f3f4b571) landed for real into develop via 7ba464a5a (commit b0b99ec77).
+card/cdde2666's branch still carried its own F2 cherry-pick (d65b65ead), which is not an ancestor
+of develop (reconstructed branch) -- marveen-land.sh refused the land (19:48, MikroB msg 18090).
+
+**Döntés:** rebuilt card/cdde2666 from current origin/develop (61a258e38), dropping d65b65ead
+(confirmed byte-identical content to develop's own b0b99ec77 on the F2-only files,
+store/local-llm.sh and src/__tests__/local-llm-gateway-mode.test.ts -- empty diff). Cherry-picked
+the 3 genuine F3 commits on top: 364fe4a55 (routing-table layer, shadow-only) -> 17a1b0d7e,
+d7d837756 (gateway-mode model allowlist fix) -> 88e0a4cf6, 3f8918cb0 (real egress-gate replay +
+exact model-id allowlist) -> d4d42e166 (new sha, this commit's parent). 98f15d3fe (a pure type-fix)
+came through empty after the d7d837756 auto-merge already carried its change, skipped. The two
+pure-DECISIONS.md tail commits (4bd3605c5, 31040d4b1) are replaced by this single consolidated
+entry instead of being replayed (their content is already folded into the entries above, carried
+by the cherry-picks).
+
+Scoped diff against the previously-gated sha (31040d4b1, QA PASS 29895 / Cybersec GO 29896 /
+Cybered GO 29900): store/local-llm.sh, the three card-route-table* files, and
+src/__tests__/local-llm-gateway-mode.test.ts are byte-identical. store/offload-dispatch.sh and
+store/offload-dispatch.selftest.sh differ only by develop's own independent, unrelated changes to
+the same file since this branch's old base (card 5aa686f0's L1/L2 pins, card 22835648's
+env-compat-lib sourcing) -- confirmed by diff, nothing this card shipped was reverted or altered.
+
+**Ki döntött:** MikroB (msg 18090), rebuilt by backend2. Gate: delta re-stamp needed from QA,
+Cybersec, Cybered on the new tip (see REVIEW comment for the sha).
