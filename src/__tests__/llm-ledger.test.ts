@@ -1,6 +1,9 @@
 // Card e96d56c5 (F4): per-call LLM ledger + per-agent budget.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Readable } from 'node:stream'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { RouteContext } from '../web/routes/types.js'
 import {
   initDatabase, appendLlmLedgerRow, markLlmLedgerDraftAccepted, getLlmLedgerSummary,
@@ -8,6 +11,25 @@ import {
 } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { tryHandleLlmLedger } from '../web/routes/llm-ledger.js'
+
+// `:memory:` cannot serve a rollback test: initDatabase() opens a NEW in-memory database every
+// call, so "drop the table, re-init" on memory would silently test a fresh DB and prove nothing
+// about an existing store (same pitfall + fix as src/__tests__/stuck-incidents-schema.test.ts,
+// caught here by QA2 comment 29600 on this card's first REVIEW). A temp FILE, re-initDatabase'd
+// on the SAME path, is also the real deployment shape.
+const tmpDirs: string[] = []
+function persistentDbPath(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'llm-ledger-'))
+  tmpDirs.push(dir)
+  const path = join(dir, 'test.db')
+  initDatabase(path)
+  return path
+}
+afterEach(() => {
+  while (tmpDirs.length > 0) {
+    try { rmSync(tmpDirs.pop()!, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+})
 
 function call(method: string, path: string, body?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 200, body: null }
@@ -98,17 +120,31 @@ describe('llm_ledger: DB layer', () => {
 })
 
 describe('llm_ledger: migration rollback (card e96d56c5 requirement)', () => {
-  it('both new tables can be dropped and are cleanly re-created on the next initDatabase', () => {
-    initDatabase(':memory:')
+  it('DROP on a PERSISTENT store, re-init on the SAME path restores both tables without touching other data', () => {
+    const path = persistentDbPath()
+    // A pre-existing row in an UNRELATED table proves the re-init below really is the SAME store,
+    // not a fresh one (the exact defect QA2 caught: two initDatabase(':memory:') calls are two
+    // independent databases, so a passing assertion there proves nothing about recovery).
+    getDb().prepare(
+      `INSERT INTO kanban_cards (id, title, status, created_at, updated_at) VALUES (?,?,?,?,?)`,
+    ).run('c-pre', 'pre-existing card', 'planned', 1_700_000_000, 1_700_000_000)
     appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true })
     setAgentLlmBudget('backend3', 100)
+
     getDb().exec('DROP TABLE llm_ledger')
     getDb().exec('DROP TABLE agent_llm_budget')
     expect(() => appendLlmLedgerRow({ agentId: 'x', taskType: 'y', provider: 'local', ok: true })).toThrow()
-    // Re-running the schema setup (what a real rollback-then-reapply would do) recreates both
-    // tables empty and functional -- the down-migration loses only this table's own data, as
-    // expected for a brand-new table with no prior-release content to preserve.
-    initDatabase(':memory:')
+
+    // The redeploy after a rollback: re-run the initialiser on the SAME file.
+    initDatabase(path)
+    const restored = getDb()
+    expect(restored.prepare(`SELECT name FROM sqlite_master WHERE name='llm_ledger'`).get()).toBeTruthy()
+    expect(restored.prepare(`SELECT name FROM sqlite_master WHERE name='agent_llm_budget'`).get()).toBeTruthy()
+    // Pre-existing, unrelated data survived -- this really is the same store recovering, not a
+    // fresh database that happens to also pass the same assertions.
+    expect(restored.prepare(`SELECT id FROM kanban_cards WHERE id='c-pre'`).get()).toEqual({ id: 'c-pre' })
+    // The down-migration loses only THIS table's own prior rows (a brand-new table with no
+    // prior-release content to preserve) -- but the tables themselves are functional again.
     expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true })).not.toThrow()
     expect(getLlmLedgerSummary(7).totals.calls).toBe(1)
     expect(getAgentLlmBudget('backend3').source).toBe('platform')
