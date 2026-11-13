@@ -2219,6 +2219,69 @@ export function ensureGateSharedMemoryInjectAgentArg(name: string): boolean {
   return true
 }
 
+// Card 86d5de34 F3 (WhiteHat CYBERSEC GO, msg 10474): store/session-memory-inject-agents.json's
+// enabled_agents list includes backend2, backend3 and logs, but none of the three had the
+// shared-memory-inject.py SessionStart hook wired into their live settings.json -- backend2's own
+// seed-fleet-agents entry never carried it (only taskstate-replay.py), and backend3/logs have no
+// seed-fleet-agents directory at all, so templates/settings.json.template (the brand-new-agent
+// path, scaffoldAgentDir) is what they got, and that template never had the hook either. The flag
+// is therefore inert for all three: being on the enabled list does nothing if the hook that reads
+// it never runs.
+//
+// This is the same idempotent boot-backfill shape as ensureGateSharedMemoryInjectAgentArg above,
+// narrowed to non-gate agents (the gate roster has its own function, with its own --agent
+// requirement and its own exclusion history -- duplicating that logic here would be a second place
+// for the two to disagree). A non-gate agent's command carries no --agent flag, matching every
+// already-correctly-wired non-gate seed (e.g. backend).
+// Card ac0bf02d is unrelated; this is b2f7ede4's own re-gate (RedHat NO-GO on f1309aae4, dispatch
+// 16908). F2: reads the SAME enabled_agents list the hook itself checks at runtime
+// (_feature_enabled_agents() in shared-memory-inject.py) -- wiring the hook into an agent's
+// settings.json for an agent NOT on that list would make the backfill's own effect invisible (the
+// hook would run but immediately no-op), while actively rewiring an agent the operator explicitly
+// chose to exclude (this card's own test already expected elemzo to stay bare; the backfill
+// function contradicted its own test). Missing/unreadable file -> nobody enabled, same fail-safe-off
+// default the Python side uses.
+function readSharedMemoryInjectEnabledAgents(): Set<string> {
+  try {
+    const raw = readFileSync(join(STORE_DIR, 'session-memory-inject-agents.json'), 'utf-8')
+    const parsed = JSON.parse(raw) as { enabled_agents?: unknown }
+    return new Set(Array.isArray(parsed.enabled_agents) ? parsed.enabled_agents.filter((a): a is string => typeof a === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+export function ensureSharedMemoryInject(name: string): boolean {
+  // F1: the #1305 class -- this function must never reach the owner's user-global
+  // ~/.claude/settings.json. The main agent was never part of the approved rollout (Peti 10914)
+  // and is not in enabled_agents either, but the exclusion is explicit here (not left to the list
+  // check alone) because a memory-INJECTING hook firing in the owner's own, unrelated sessions is
+  // exactly the harm refuseMainAgentHookWrite exists to block, same as the other four callers.
+  if (refuseMainAgentHookWrite(name, 'ensureSharedMemoryInject')) return false
+  if ((SHARED_MEMORY_GATE_AGENT_NAMES as readonly string[]).includes(name)) return false
+  if (!readSharedMemoryInjectEnabledAgents().has(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const entries = Array.isArray(hooks.SessionStart) ? hooks.SessionStart as unknown[] : []
+  if (entries.some((e) => JSON.stringify(e).includes('shared-memory-inject.py'))) return false
+
+  const command = `python3 ${join(PROJECT_ROOT, 'scripts/hooks/shared-memory-inject.py')}`
+  entries.push({
+    matcher: 'startup|resume|compact|clear',
+    hooks: [{ type: 'command', command, timeout: 15 }],
+  })
+  hooks.SessionStart = entries
+  settings.hooks = hooks
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Idempotent migration: ensure every agent's settings.json carries the egress
 // gate hook. Called at server startup (alongside ensureAgentStalenessHook) so
 // the hook is applied to both existing and newly-created agents without a full
@@ -4919,6 +4982,7 @@ Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állít�
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 
 A dashboard-memória EGYIK tierje sem töltődik be magától a kontextusodba, se session-induláskor, se üzenetenként: csak az kerül be, amit te magad lekérdezel, és csak abba a fordulóba. Magától a CLAUDE.md, a Claude Code saját fájl-memóriája (a MEMORY.md index és a memory/*.md fájlok) és a SessionStart hookok saját blokkjai töltődnek be. A lezárt sort mégis át kell sorolni: a hot a te "mi van most folyamatban" listád (az alábbi 1. lépés ezt kérdezi le), és egy lezárt sor ott hamis aktív feladatnak látszik.
+EGY SZÁNDÉKOS KIVÉTEL van (nem bug): a shared tier egy SessionStart hook-on (scripts/hooks/shared-memory-inject.py) keresztül automatikusan BETÖLTŐDIK session-induláskor/resume-nál/compact-nál/clear-nél, pontosan azért, mert a fenti "amit te magad lekérdezel" minta nem megbízható egy másik ágens frissen rögzített, rád vonatkozó bejegyzésére (Peti 2026-07-19). Ez a kivétel a gate-ügynököknél (qa, qa2, cybersec, cybersec2, cybered) nem fut: ők ezt az automatikus betöltést semmilyen körülmények között nem kapják meg. A hot/warm/cold saját, kurált emlékeid ettől függetlenül NEM töltődnek be magától (kivéve pilot-flaggel, lásd a hook saját dokumentációját).
 Az átsorolás memory_maintenance = level 3, AUTONÓM: a SAJÁT emlékeiden magadtól megteheted.
 
 1. Kell az ID -- a listázó ÉS a kereső ág is visszaadja:
