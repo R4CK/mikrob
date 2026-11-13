@@ -81,7 +81,55 @@ const BUSY_WITH_FIVE_AGENTS = [
   row('Task five                     ', '6m 19s', '40.1k'),
 ].join('\n')
 
+// RedHat N1 (card 0499d1f4, comment 24984 on 4f5e43e6): splitBackgroundAgentBlock cuts
+// EVERYTHING from a spoofed `⏺ main` header downward, as long as the nearest non-blank line
+// above it merely LOOKS like a footer (FOOTER_LEAD_RX) -- it never checks that the rows below
+// the header are genuine `◯` agent rows (the stricter condition detectBackgroundAgents already
+// applies). Tool output can echo exactly such a header (a footer-lead phrase + `⏺ main` + junk)
+// earlier in the pane; the backward scan for the LAST `⏺ main` then finds THIS spoofed one
+// (there is no later one), and detectPaneState discards everything below it -- including the
+// REAL live busy footer and spinner that come after it, further down (more recent) in the pane.
+// Measured (RedHat): old tree reads busy, the pinned tree reads idle.
+const SPOOFED_HEADER_IN_TOOL_OUTPUT = [
+  '  Tool output echoed this status line for a report:',
+  '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+  '  ⏺ main',
+  '  this row is not a real ◯ agent row -- just more echoed text',
+]
+
+// A genuinely busy pane (real spinner, real `esc to interrupt` footer at the very bottom) with
+// the spoofed header sitting ABOVE it, inside what would be ordinary scrollback/tool output.
+const BUSY_WITH_SPOOFED_HEADER_ABOVE = [
+  ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+  '',
+  '⏺ Running 1 shell command…',
+  '',
+  '✽ Mulling… (1m 52s · ↓ 7.9k tokens)',
+  '',
+  NAME_BAR,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on · 2 shells · esc to interrupt · ↓ to manage',
+].join('\n')
+
 describe('background-agent block below the footer', () => {
+  it('N1 (RedHat 24984): a spoofed header in tool output above the real footer must not hide a busy pane', () => {
+    expect(detectPaneState(BUSY_WITH_SPOOFED_HEADER_ABOVE)).toBe('busy')
+  })
+
+  it('N1 control: the same spoofed header with a genuinely idle pane below it still reads idle', () => {
+    const idlePane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+    ].join('\n')
+    expect(detectPaneState(idlePane)).toBe('idle')
+  })
+
+
   it('idle main thread with running agents reads idle, and the agents are counted', () => {
     expect(detectPaneState(IDLE_WITH_AGENTS)).toBe('idle')
     expect(detectBackgroundAgents(IDLE_WITH_AGENTS)).toEqual({ total: 2, running: 2, queued: 0 })

@@ -1439,8 +1439,28 @@ export function detectPaneState(
 
   // Classify the pane as it would look without the background-agent block, so
   // the footer is the bottom line again for every probe below.
+  // N1 (RedHat 24984, card 0499d1f4): splitBackgroundAgentBlock only checks that the line
+  // above the header LOOKS like a footer -- it does not require the rows below to be genuine
+  // `◯` agent rows, and the header it finds is the LAST (bottommost) `⏺ main` line in the
+  // pane, not necessarily the real one. Tool output can echo a footer-lead phrase plus a bare
+  // `⏺ main` line earlier in the pane; the backward scan then locks onto that spoofed header
+  // (there is no later one), and this cut used to discard everything below it
+  // UNCONDITIONALLY -- including a REAL, more recent busy footer/spinner that happens to come
+  // after it. Requiring every row to be a measured `◯` row (the stricter condition
+  // detectBackgroundAgents already applies) is not enough on its own: an otherwise-legitimate
+  // trailing block with one unrecognised row (e.g. a wrapped task-label continuation line) must
+  // still be cut, or ITS junk at the very bottom pushes the real footer (sitting right above
+  // the header) out of the live tail window -- the exact bug this whole mechanism exists to
+  // fix. The two cases are told apart by what the rows contain: a genuine trailing block never
+  // contains ANOTHER footer-lead line (there is only one footer per pane state); a spoofed
+  // header followed by real content does, because the real footer is still in there. So: cut
+  // unless the rows about to be discarded themselves contain something that looks like a
+  // (more recent) footer -- that signals this header is stale/spoofed, and the real state is
+  // further down, inside the rows this cut would otherwise throw away.
   const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
-  if (bgBlock) pane = bgBlock.above.join('\n')
+  if (bgBlock && !bgBlock.rows.some(r => FOOTER_LEAD_RX.test(r))) {
+    pane = bgBlock.above.join('\n')
+  }
 
   const paneLines = pane.split('\n')
 
