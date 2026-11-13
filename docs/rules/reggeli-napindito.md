@@ -34,5 +34,3 @@ Utasítások:
 - `--task board-reconcile` -- a `waiting` kártyák állapot-összefoglalója.
 
 Mindháromra ugyanaz a szabály áll, mint az 5. pontban: a draft a szerkezetet és a hangnemet adja, a TÉNYEKÉRT te felelsz.
-
-<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->

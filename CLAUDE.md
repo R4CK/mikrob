@@ -243,6 +243,7 @@ MINDIG a megfelelő lokális időt használd (Europe/Budapest CEST/CET).
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: `date` Bash parancs az elemzés ELŐTT.
 
+<!-- BEGIN GENERATED: autonomy-wiring (auto-generated, do not edit by hand) -->
 ## Autonómia és jóváhagyás
 
 Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.

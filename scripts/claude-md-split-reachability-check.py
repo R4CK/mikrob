@@ -6,7 +6,18 @@ sentence. Reads the OLD CLAUDE.md at <old-claude-md-git-ref> (ground truth, pre-
 extracts every LINE containing (case-insensitively) KOTELEZ, TILOS or MUST, and checks each
 is a substring of the concatenation of the NEW CLAUDE.md and every docs/rules/*.md file.
 
-Exit 0 if every gating line is found, 1 if any is missing.
+Also checks that every machine-generated BEGIN/END marker pair (<!-- BEGIN GENERATED: name -->
+... <!-- END GENERATED: name -->) that exists in the OLD CLAUDE.md has BOTH its BEGIN and its
+END present in the NEW CLAUDE.md file itself -- not merely "somewhere in the corpus". QA FAIL
+30388 (card c60e229a) found a boundary bug the plain substring check could not: a moved
+section's text ran directly into the next block's BEGIN marker with no blank line between them,
+so the move script swept that marker into the moved file, leaving CLAUDE.md with an END marker
+and no matching BEGIN -- a line the substring check still finds (so "0 missing"), but in the
+WRONG file, which breaks the marker-pair idempotency contract every ensureXSection() writer
+relies on (a missing BEGIN reads as "no block yet", so a future non-no-op writer would append a
+second, duplicate block instead of recognizing the existing one).
+
+Exit 0 if every gating line is found AND every marker pair matches, 1 otherwise.
 
 KOTELEZ/MEGSZEGHETETLEN/SOHA/MINDIG are also extracted and reported, informationally only
 (not gating): several existing section titles already use those words in a non-rule sense,
@@ -75,7 +86,27 @@ def main() -> int:
         info_missing = [(ln, line) for ln, line in info_hits if line not in corpus]
         print(f"  {len(info_missing)} of those not found in the new corpus (informational only)")
 
-    return 1 if missing else 0
+    old_begins = set(re.findall(r"BEGIN GENERATED:\s*(\S+)", old_text))
+    old_ends = set(re.findall(r"END GENERATED:\s*(\S+)", old_text))
+    old_names = old_begins | old_ends
+    new_begins = set(re.findall(r"BEGIN GENERATED:\s*(\S+)", new_text))
+    new_ends = set(re.findall(r"END GENERATED:\s*(\S+)", new_text))
+
+    marker_problems = []
+    for name in sorted(old_names):
+        if name not in new_begins:
+            marker_problems.append(f"{name}: BEGIN marker missing from CLAUDE.md (in old file)")
+        if name not in new_ends:
+            marker_problems.append(f"{name}: END marker missing from CLAUDE.md (in old file)")
+
+    print(f"\n{len(old_names)} generated marker names checked for a matched BEGIN/END pair "
+          f"in the new CLAUDE.md, {len(marker_problems)} problem(s)")
+    if marker_problems:
+        print("\nMARKER PAIR PROBLEMS:", file=sys.stderr)
+        for p in marker_problems:
+            print(f"  {p}", file=sys.stderr)
+
+    return 1 if (missing or marker_problems) else 0
 
 
 if __name__ == "__main__":
