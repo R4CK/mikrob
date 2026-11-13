@@ -28,11 +28,20 @@ alive then) and is deliberately ignored here.
 No secrets are hardcoded: the bot token is read from the telegram channel .env,
 the dashboard token from store/.dashboard-token, both at call time.
 """
-import json, os, re, subprocess, sys, time, urllib.request, urllib.parse, urllib.error, signal
+import importlib.util, json, os, re, subprocess, sys, time, urllib.request, urllib.parse, urllib.error, signal
 
 HOME = os.path.expanduser("~")
 MARVEEN = "/home/neon/marveen"
 STORE = f"{MARVEEN}/store"
+
+# SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): the "N consecutive OK probes >= gap seconds apart"
+# switch-back confirmation rule and the GPU-lock-aware wait, shared with src/gemini-fallback.ts's
+# confirmSwitchback (grep SWITCHBACK-HYSTERESIS-V1 to see both sides). Loaded via importlib, not a
+# plain `import`, because the module filename has a hyphen (quota-switchback.py, matching this
+# file's own naming convention, not a valid Python identifier).
+_qsb_spec = importlib.util.spec_from_file_location("quota_switchback", f"{STORE}/quota-switchback.py")
+quota_switchback = importlib.util.module_from_spec(_qsb_spec)
+_qsb_spec.loader.exec_module(quota_switchback)
 def _telegram_state_dir():
     """The telegram channel state dir. On the fleet the channels session runs with
     CLAUDE_CONFIG_DIR isolated, so the real dir is under the marveen checkout, not
@@ -480,6 +489,7 @@ def outage_loop(token, state):
     mark_session_outage()
     ghost_runner = start_ghost_runner()
     _active_ghost_runner = ghost_runner
+    confirm_probes, min_gap_sec = quota_switchback.load_hysteresis_config()
     try:
         if not state.get("notified_outage"):
             send(token, PETI_CHAT_ID,
@@ -497,18 +507,33 @@ def outage_loop(token, state):
             # probe can only flap there, and each flap sends Peti a handover and a recovery
             # message. Message serving below is untouched -- the Ghost stays fully useful, it just
             # stops announcing.
+            #
+            # SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): a single clear probe used to switch back
+            # INSTANTLY -- that is exactly the 23:15:41 OUTAGE -> 23:15:53 recovered 12s flap in
+            # quota-bridge.log 2026-11-11. Every probe (clear or not) is now recorded, and recovery
+            # only fires once quota_switchback.confirm_switchback() agrees: `confirm_probes`
+            # consecutive clear probes, the oldest and newest of that run at least `min_gap_sec`
+            # apart. src/gemini-fallback.ts's confirmSwitchback applies the identical rule from the
+            # same store/switchback-hysteresis.json for its own Claude<->Gemini switch-back.
             if not recovery_probe_due():
                 if not probe_suppressed:
                     log("known reset deadline still far off -> suppressing recovery probe (no flapping)")
                     probe_suppressed = True
-            elif not mikrob_down():
-                log("MikroB recovered -> relinquishing channel")
-                send(token, PETI_CHAT_ID,
-                     "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
-                     "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
-                state["phase"] = "healthy"; state["banner_streak"] = 0; state["notified_outage"] = False
+            else:
+                probe_ok = not mikrob_down()
+                state["probe_log"] = quota_switchback.record_probe(
+                    state.get("probe_log", []), ok=probe_ok, ts=time.time())
                 save_state(state)
-                return
+                if probe_ok and quota_switchback.confirm_switchback(
+                        state["probe_log"], confirm_probes, min_gap_sec):
+                    log("MikroB recovered (confirmed by hysteresis) -> relinquishing channel")
+                    send(token, PETI_CHAT_ID,
+                         "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
+                         "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
+                    state["phase"] = "healthy"; state["banner_streak"] = 0
+                    state["notified_outage"] = False; state["probe_log"] = []
+                    save_state(state)
+                    return
             # Y1 (RedHat GO, card 612058c2 Teendo @6b9f61eb, comment 19993): refresh the heartbeat
             # ONCE PER LOOP ITERATION, unconditionally, BEFORE the getUpdates call -- not only on
             # the success branch below. The old placement (after the message-processing block) was
@@ -539,7 +564,23 @@ def outage_loop(token, state):
     finally:
         # Card 612058c2 acceptance: "kilépéskor a runner leáll" -- runs on the recovery return path
         # AND on any unexpected exception, so the runner never outlives Ghost's own outage handling.
-        stop_ghost_runner(ghost_runner)
+        #
+        # Card 7f112c2f point 3: stop_ghost_runner() SIGTERMs the WHOLE process group, which would
+        # also kill any in-flight local-llm.sh generation the ghost runner's own draft pipeline
+        # started (store/local-llm.sh holds /tmp/local-llm-gpu.lock for the duration of that call).
+        # Switching back must not discard a draft that is seconds from finishing. Wait up to 10 min
+        # for the lock to clear; if it is still held after that, leave the runner alive and let the
+        # job finish unmanaged in the background rather than kill it.
+        # A `return` inside `finally` would swallow any exception that triggered it -- use a flag
+        # instead so an exception propagates normally when the lock is not an issue.
+        leave_running = False
+        if quota_switchback.gpu_lock_held():
+            log("GPU lock held -> waiting up to 10 min for the in-flight local job before stopping the ghost runner")
+            if not quota_switchback.wait_for_local_job(max_wait_sec=600):
+                log("local job still running after 10 min -> leaving the ghost runner running in the background (not killed)")
+                leave_running = True
+        if not leave_running:
+            stop_ghost_runner(ghost_runner)
         clear_session_outage()
         _active_ghost_runner = None
 

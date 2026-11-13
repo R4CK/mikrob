@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   decideGeminiFallback,
   switchNotification,
+  confirmSwitchback,
+  recordProbe,
+  loadHysteresisConfigSync,
   type GeminiFallbackFacts,
+  type SwitchbackProbe,
 } from '../gemini-fallback.js'
 import {
   classifyGeminiFailure,
@@ -108,6 +112,68 @@ describe('switchNotification (card requirement 3)', () => {
 
   it('no message for a no-op (we never spam Peti on a non-switch)', () => {
     expect(switchNotification({ kind: 'none' }, 'm')).toBeNull()
+  })
+})
+
+// SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): the same rule store/quota-switchback.py's
+// confirm_switchback() implements (grep SWITCHBACK-HYSTERESIS-V1 for both sides). Fixes the
+// 23:15:41 OUTAGE -> 23:15:53 recovered 12s flap: a single clear probe must not switch back.
+describe('confirmSwitchback (card 7f112c2f)', () => {
+  const probe = (ok: boolean, ts: number): SwitchbackProbe => ({ ok, ts })
+
+  it('requires at least confirmProbes entries', () => {
+    expect(confirmSwitchback([probe(true, 0)], 2, 300)).toBe(false)
+  })
+
+  it('a single non-ok probe inside the trailing window breaks the run (the 12s-flap case)', () => {
+    const log = [probe(true, 0), probe(false, 6_000), probe(true, 12_000)]
+    expect(confirmSwitchback(log, 2, 300)).toBe(false)
+  })
+
+  it('two consecutive ok probes that are too close in time do not confirm', () => {
+    const log = [probe(true, 0), probe(true, 12_000)]
+    expect(confirmSwitchback(log, 2, 300)).toBe(false)
+  })
+
+  it('two consecutive ok probes >= minGapSec apart DO confirm', () => {
+    const log = [probe(true, 0), probe(true, 301_000)]
+    expect(confirmSwitchback(log, 2, 300)).toBe(true)
+  })
+
+  it('confirmProbes < 1 never confirms', () => {
+    expect(confirmSwitchback([probe(true, 0), probe(true, 999_000)], 0, 300)).toBe(false)
+  })
+})
+
+describe('recordProbe (card 7f112c2f)', () => {
+  it('appends without mutating the input array', () => {
+    const log: SwitchbackProbe[] = [{ ok: true, ts: 1 }]
+    const next = recordProbe(log, false, 2)
+    expect(log).toHaveLength(1)
+    expect(next).toEqual([{ ok: true, ts: 1 }, { ok: false, ts: 2 }])
+  })
+
+  it('trims to maxLen, keeping the newest entries', () => {
+    const log: SwitchbackProbe[] = [{ ok: true, ts: 1 }, { ok: true, ts: 2 }]
+    const next = recordProbe(log, true, 3, 2)
+    expect(next).toEqual([{ ok: true, ts: 2 }, { ok: true, ts: 3 }])
+  })
+})
+
+describe('loadHysteresisConfigSync (card 7f112c2f)', () => {
+  it('reads valid confirmProbes/minGapSec from the file', () => {
+    const cfg = loadHysteresisConfigSync(() => JSON.stringify({ confirmProbes: 3, minGapSec: 120 }), 'x')
+    expect(cfg).toEqual({ confirmProbes: 3, minGapSec: 120 })
+  })
+
+  it('missing/unreadable file falls back to the documented defaults', () => {
+    const cfg = loadHysteresisConfigSync(() => { throw new Error('ENOENT') }, 'x')
+    expect(cfg).toEqual({ confirmProbes: 2, minGapSec: 300 })
+  })
+
+  it('out-of-range values fall back to the defaults rather than being trusted', () => {
+    const cfg = loadHysteresisConfigSync(() => JSON.stringify({ confirmProbes: 0, minGapSec: -1 }), 'x')
+    expect(cfg).toEqual({ confirmProbes: 2, minGapSec: 300 })
   })
 })
 

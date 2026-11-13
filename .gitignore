@@ -96,6 +96,11 @@ Ingatlan/token*
 # Unversioned it would be worse than absent, because a fresh checkout starts with no baseline and
 # the next --record blesses whatever is on disk at that moment, a tamper included.
 !store/vendored-skill-sanctioned.json
+# Shared switch-back hysteresis rule parameters (card 7f112c2f): one CONFIG file both
+# quota-bridge.py (Python) and src/gemini-fallback.ts (TS) read, so the "N consecutive OK
+# probes >= gap seconds apart" confirmation rule cannot drift between the two independently
+# of each other. Same reasoning as gate-verdict-corpus.json above.
+!store/switchback-hysteresis.json
 !store/stitch-tools/fetch-pngs.mjs
 !store/stitch-tools/package.json
 # Gate-sweep scanners are operational scripts (named, not a blanket *.py rule,

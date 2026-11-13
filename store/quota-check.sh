@@ -85,13 +85,14 @@ done
 
 # Countdown + dedup: only CONFIRMED (real) limits count. Recovered stale modals
 # are logged, not reported, and never start a countdown.
-python3 - "$prev" "$STATE" "$COUNTDOWN" "$reset_epoch" "$(IFS=,; echo "${confirmed[*]:-}")" "$(IFS=,; echo "${recovered[*]:-}")" <<'PY'
+python3 - "$prev" "$STATE" "$COUNTDOWN" "$reset_epoch" "$(IFS=,; echo "${confirmed[*]:-}")" "$(IFS=,; echo "${recovered[*]:-}")" "$STORE/quota-resume-backoff.json" <<'PY'
 import json,sys,time,os
 prev=set(json.loads(sys.argv[1] or "[]"))
 statepath, countdownpath = sys.argv[2], sys.argv[3]
 reset_epoch=float(sys.argv[4] or 0)
 confirmed=[x for x in sys.argv[5].split(",") if x]
 recovered=[x for x in sys.argv[6].split(",") if x]
+backoffpath=sys.argv[7]
 new=[s for s in confirmed if s not in prev]
 json.dump(confirmed, open(statepath,"w"))
 FIVE_H_FIVE_M=5*3600+5*60
@@ -101,6 +102,11 @@ if confirmed:
         dl=min(blind, reset_epoch+120) if reset_epoch>0 else blind
         src="banner" if (reset_epoch>0 and dl<blind) else "blind-5h05m"
         json.dump({"hit_at":t,"deadline":dl,"deadline_source":src,"limited":confirmed}, open(countdownpath,"w"))
+        # Card 7f112c2f point 1: a fresh countdown starts a fresh backoff cycle -- a stale
+        # backoff file left over from a PREVIOUS outage must not carry its consecutive-count
+        # or nextProbeAt into this one.
+        try: os.remove(backoffpath)
+        except OSError: pass
     else:
         try:
             cd=json.load(open(countdownpath)); cd["limited"]=confirmed; json.dump(cd,open(countdownpath,"w"))
@@ -111,6 +117,8 @@ else:
     if os.path.exists(countdownpath):
         try: os.remove(countdownpath)
         except Exception: pass
+    try: os.remove(backoffpath)
+    except OSError: pass
 if recovered:
     print("RECOVERED-STALE:"+",".join(recovered))
 print("NEW:"+",".join(new) if new else "NEW:")

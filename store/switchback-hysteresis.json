@@ -1,0 +1,5 @@
+{
+  "rule": "SWITCHBACK-HYSTERESIS-V1",
+  "confirmProbes": 2,
+  "minGapSec": 300
+}
