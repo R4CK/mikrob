@@ -823,12 +823,31 @@ try_freellm_for_leaf() {
   # undid. Redacted defensively (freellm-call.sh's own messages never carry a secret value,
   # only a file path or model id, but a raw curl diagnostic might) and capped to one line so
   # neither the log nor the card comment below can be flooded.
+  #
+  # Card f054fa3f (555419a8 follow-up, item 3): the 32+-char catch-all alone misses shorter,
+  # still-secret-shaped runs -- an AWS access key id is 20 chars, a JWT's three dot-separated
+  # segments each individually under 32 chars, a labeled `token=...`/`api_key=...` value can be
+  # arbitrarily short, and a URL's `user:pass@` userinfo is neither Bearer- nor length-shaped at
+  # all. Each gets its own pass, in this order, before the generic 32+ catch-all mops up anything
+  # still unlabeled and long.
   local err_redacted
   err_redacted="$(FREELLM_ERR_FILE="$errfile" python3 -I -c '
 import os, re
 with open(os.environ["FREELLM_ERR_FILE"]) as f:
     text = f.read()
 text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+# URL userinfo: scheme://user:pass@host
+text = re.sub(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", text)
+# labeled key=value / key: value token shapes, value can be any length
+text = re.sub(r"(?i)\b(api[_-]?key|token|secret|passwd|password|auth)\s*[:=]\s*\S+", r"\1=[REDACTED]", text)
+# dotted token shapes (JWT-like: 3+ dot-separated base64url segments)
+text = re.sub(r"\b[A-Za-z0-9_-]{6,}(?:\.[A-Za-z0-9_-]{6,}){2,}\b", "[REDACTED]", text)
+# short, prefix-shaped provider keys the 32+ catch-all below would miss (same shapes as
+# store/secret-shape-scan.py -- duplicated here on purpose, same reasoning as the header of that
+# file: a shared import would need sys.path reach-through under python3 -I)
+text = re.sub(r"\b(?:AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA|APKA|A3T)[0-9A-Z]{16}\b", "[REDACTED]", text)
+text = re.sub(r"\bxox[baprs]-[0-9A-Za-z-]{10,}", "[REDACTED]", text)
+# any remaining long opaque run
 text = re.sub(r"[A-Za-z0-9_-]{32,}", "[REDACTED]", text)
 text = " | ".join(line.strip() for line in text.splitlines() if line.strip())
 print(text[:300])
@@ -845,7 +864,14 @@ print(text[:300])
   fi
 
   if [[ $rc -eq 2 ]]; then
-    echo "offload-dispatch: leaf $leaf_id -> freellm route is OFF (missing/invalid switch or auth token), no attempt" >&2
+    # Card f054fa3f (item 1): rc=2 ("disabled") used to discard $err_redacted entirely -- a
+    # freellm-call.sh exit-2 path that NAMES the reason (e.g. the token-file mode/owner check,
+    # card 555419a8 L3) still never reached the log. Surface it the same way the generic-failure
+    # branch below already does, only when non-empty -- the common "switch file simply absent"
+    # case stays exactly as terse as before.
+    local disabled_suffix=""
+    [[ -n "$err_redacted" ]] && disabled_suffix=" -- $err_redacted"
+    echo "offload-dispatch: leaf $leaf_id -> freellm route is OFF (missing/invalid switch or auth token), no attempt$disabled_suffix" >&2
     return 1
   fi
   if [[ $rc -eq 4 ]]; then

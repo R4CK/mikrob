@@ -111,6 +111,12 @@ MODELS_FILE = sys.argv[5]
 # can simulate the provider-health endpoint reporting 401/403/429 without touching the token or
 # model-catalog files those other checks already own.
 PROVIDERS_STATUS_FILE = sys.argv[6] if len(sys.argv) > 6 else None
+# Card f054fa3f (item 2): the real POST /v1/chat/completions path's own 429 handling (distinct
+# exit 5, same as the preflight's) had ZERO test coverage -- every existing 429 case goes through
+# the startup preflight (GET /v1/providers), a different code path entirely. Configurable, read
+# fresh per request like PROVIDERS_STATUS_FILE; 200 (default/absent) means "run the normal
+# token/model-catalog logic below", any other value short-circuits straight to that HTTP code.
+POST_STATUS_FILE = sys.argv[7] if len(sys.argv) > 7 else None
 
 def _expected_token():
     try:
@@ -156,6 +162,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self._send_json(404, {"error": "not found"})
 
+    def _post_status(self):
+        if not POST_STATUS_FILE:
+            return 200
+        try:
+            with open(POST_STATUS_FILE) as f:
+                return int(f.read().strip())
+        except Exception:
+            return 200
+
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length)
@@ -166,6 +181,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         n = len(existing)
         with open(os.path.join(LOGDIR, f'req-{n}.json'), 'w') as f:
             json.dump({'path': self.path, 'auth': auth, 'body': body.decode('utf-8', 'replace')}, f)
+
+        forced = self._post_status()
+        if forced != 200:
+            self._send_json(forced, {"error": {"message": f"mock forced status {forced}"}})
+            return
 
         expected = _expected_token()
         if expected is not None and auth != f"Bearer {expected}":
@@ -196,6 +216,8 @@ MODELS_FILE="$TMPDIR_TEST/models-catalog.json"
 printf '["auto"]' > "$MODELS_FILE"
 PROVIDERS_STATUS_FILE="$TMPDIR_TEST/providers-status.txt"
 printf '200' > "$PROVIDERS_STATUS_FILE"
+POST_STATUS_FILE="$TMPDIR_TEST/post-status.txt"
+printf '200' > "$POST_STATUS_FILE"
 
 # Port 0 trick to find a free port, then start the real server on it.
 MOCK_PORT="$(python3 -c '
@@ -205,7 +227,7 @@ s.bind(("127.0.0.1", 0))
 print(s.getsockname()[1])
 s.close()
 ')"
-python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" "$PROVIDERS_STATUS_FILE" &
+python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" "$PROVIDERS_STATUS_FILE" "$POST_STATUS_FILE" &
 MOCK_PID=$!
 # Poll until the mock accepts connections (no fixed sleep -- startup time varies).
 for _ in $(seq 1 50); do
@@ -467,7 +489,7 @@ printf '%s' "$SECRET_TOKEN_VALUE" > "$AUTH_TOKEN_FIXTURE"
 printf '%s' "$SECRET_TOKEN_VALUE" > "$EXPECTED_TOKEN_FILE"
 # Give the mock an artificial delay so there is a window to sample `ps` mid-call.
 rm -f "$MOCK_LOGDIR"/req-*.json
-python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0.6 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" "$PROVIDERS_STATUS_FILE" &
+python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0.6 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" "$PROVIDERS_STATUS_FILE" "$POST_STATUS_FILE" &
 kill "$MOCK_PID" 2>/dev/null
 MOCK_PID=$!
 for _ in $(seq 1 50); do
@@ -554,6 +576,24 @@ assert_true "startup preflight (500, soft-fail): the real call still reached the
   "$([[ "$(mock_request_count)" -eq 1 ]] && echo 1 || echo 0)"
 printf '200' > "$PROVIDERS_STATUS_FILE"
 
+# Test 19b (card f054fa3f, item 2): the REAL call path's own 429 handling (exit 5, a NAMED
+# quota message) had zero coverage -- every 429 test above goes through the startup preflight
+# (GET /v1/providers), a different code path. Here the preflight stays healthy (200) and the
+# chat-completions POST itself is forced to 429 via POST_STATUS_FILE, which the preflight never
+# touches. Mutation-proof: reverting store/freellm-call.sh's 429 case back to `exit 3` (merging
+# it with 401/403, as it was before card 555419a8) makes this case fail (got 3, wanted 5).
+clear_mock_requests
+printf '429' > "$POST_STATUS_FILE"
+ERR_OUT="$(bash "$SCRIPT" "benign prompt" 2>&1 1>/dev/null)"
+assert_true "real call (429): stderr names quota exhaustion, not silent" \
+  "$([[ "$ERR_OUT" == *"429"* ]] && echo 1 || echo 0)"
+assert_true "real call (429): the request DID reach POST /v1/chat/completions (distinguishes this from the preflight's own 429 case)" \
+  "$([[ "$(mock_request_count)" -eq 1 ]] && echo 1 || echo 0)"
+clear_mock_requests
+test_case "real call: provider reports 429 on POST /v1/chat/completions -> exit 5 (own code, own path from the preflight's)" 5 \
+  bash "$SCRIPT" "benign prompt"
+printf '200' > "$POST_STATUS_FILE"
+
 # Test 20: --validate-key now exercises the SAME preflight (M2: "verified at startup" needs an
 # actual startup entry point) -- a 401 at validate-key time must refuse too, not just the real call.
 clear_mock_requests
@@ -574,6 +614,37 @@ assert_true "L3: a 0644 token file is refused (exit 2)" "$([[ "$RC" -eq 2 ]] && 
 assert_true "L3: stderr names the token file, not silent" "$([[ "$ERR_OUT" == *"$BAD_MODE_TOKEN"* ]] && echo 1 || echo 0)"
 assert_true "L3: zero network requests (not even the preflight)" "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
 chmod 600 "$BAD_MODE_TOKEN"
+
+# Test 22 (card f054fa3f, item 2): L3's mode_ok check is pinned above (test 21), but owner_ok
+# (st.st_uid == os.getuid()) never is -- the token file is always self-owned in this environment,
+# so a mutant that drops "and owner_ok" entirely is behaviorally invisible to every test above
+# (mode_ok alone already decides the same outcome every time). Without root, the only way to make
+# a FILE's real on-disk owner differ from the CALLING PROCESS's own uid is `fakeroot`: both the
+# chown below and freellm-call.sh's own `os.stat()`/`os.getuid()` calls run under the same
+# LD_PRELOAD shim, so the mismatch it reports is real to the process, not simulated data fed in.
+# SKIP (not FAIL) when fakeroot is not installed, so this still runs clean elsewhere.
+if command -v fakeroot >/dev/null 2>&1; then
+  clear_mock_requests
+  OWNER_MISMATCH_TOKEN="$TMPDIR_TEST/owner-mismatch-token"
+  printf '%s' "FAKE-SELFTEST-TOKEN-9f2b7c1e" > "$OWNER_MISMATCH_TOKEN"
+  chmod 0600 "$OWNER_MISMATCH_TOKEN"
+  OWNER_ERR_FILE="$TMPDIR_TEST/owner-mismatch-err.txt"
+  fakeroot bash -c '
+    chown 9999:9999 "$1"
+    FREELLM_AUTH_TOKEN_FILE="$1" bash "$2" "benign prompt" >/dev/null 2>"$3"
+    exit $?
+  ' _ "$OWNER_MISMATCH_TOKEN" "$SCRIPT" "$OWNER_ERR_FILE"
+  OWNER_RC=$?
+  OWNER_ERR_OUT="$(cat "$OWNER_ERR_FILE" 2>/dev/null)"
+  assert_true "owner check: a 0600 but NOT-self-owned token file is refused (exit 2)" \
+    "$([[ "$OWNER_RC" -eq 2 ]] && echo 1 || echo 0)"
+  assert_true "owner check: stderr names the token file, not silent" \
+    "$([[ "$OWNER_ERR_OUT" == *"$OWNER_MISMATCH_TOKEN"* ]] && echo 1 || echo 0)"
+  assert_true "owner check: zero network requests (not even the preflight)" \
+    "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
+else
+  echo "[SKIP] owner check: fakeroot not installed, cannot fake a non-self-owned file without root"
+fi
 
 # Summary
 echo ""

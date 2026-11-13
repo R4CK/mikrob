@@ -1035,7 +1035,12 @@ def body_range(fn_name):
 exhausted_range = body_range("freellm_fallback_exhausted_site")
 caphold_range = body_range("freellm_fallback_capacity_hold_site")
 
-call_re = re.compile(r"\btry_freellm_for_leaf\b\s*\"")
+#   card f054fa3f (item 4): the old regex required a quote right after the name, so a mutant
+#   that swaps a production call site for an UNQUOTED direct call (try_freellm_for_leaf $lid ...,
+#   no leading quote) slipped past this pin entirely -- it never matched call_re, so it never
+#   became a "third call outside both bodies" offender. Match the bare name instead; the
+#   definition line is still excluded explicitly below (it has no space before its own "()").
+call_re = re.compile(r"\btry_freellm_for_leaf\b(?!\(\))")
 offenders = []
 for i, l in enumerate(lines):
     if not call_re.search(l):
@@ -1051,6 +1056,50 @@ PYEOF
 )"
 check "M1 (b): every call to try_freellm_for_leaf in the whole file sits inside one of the two guard-function bodies" \
   "$m1_wiring_check" "OK"
+
+# ---- card f054fa3f (item 4): mutation-prove the widened call_re actually catches an UNQUOTED
+# direct call, which the old regex (required a quote right after the name) missed entirely. Runs
+# the SAME wiring-check logic against a MUTATED COPY of the real file (never the file itself),
+# where the exhausted-site guard call is replaced by a bare, unquoted direct call. ------------------
+M1_MUTANT_DISPATCH="$TMPDIR/offload-dispatch-mutant.sh"
+python3 - "$DISPATCH" "$M1_MUTANT_DISPATCH" << 'PYEOF'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+old = '    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }'
+new = '  }\n}\ntry_freellm_for_leaf_direct_bypass() {\n    { try_freellm_for_leaf $leaf_id $leaf_title $task $post_id $synthetic && return 0; }'
+assert old in src, "fixture line not found -- production call site text changed, update the mutant"
+open(sys.argv[2], "w", encoding="utf-8").write(src.replace(old, new, 1))
+PYEOF
+m1_mutant_check="$(python3 - "$M1_MUTANT_DISPATCH" << 'PYEOF'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+stripped = re.sub(r"(?m)^\s*#.*$", "", src)
+lines = stripped.splitlines()
+
+def body_range(fn_name):
+    start = next(i for i, l in enumerate(lines) if re.match(rf"^{fn_name}\(\)\s*\{{", l))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].rstrip() == "}")
+    return start, end
+
+exhausted_range = body_range("freellm_fallback_exhausted_site")
+caphold_range = body_range("freellm_fallback_capacity_hold_site")
+
+call_re = re.compile(r"\btry_freellm_for_leaf\b(?!\(\))")
+offenders = []
+for i, l in enumerate(lines):
+    if not call_re.search(l):
+        continue
+    if re.match(r"^try_freellm_for_leaf\(\)\s*\{", l):
+        continue
+    if exhausted_range[0] <= i <= exhausted_range[1] or caphold_range[0] <= i <= caphold_range[1]:
+        continue
+    offenders.append(i + 1)
+
+print("OK" if not offenders else "CALL-OUTSIDE-GUARD-DETECTED")
+PYEOF
+)"
+check "M1 (b) mutant proof: an unquoted direct call outside both guard bodies turns the pin red" \
+  "$m1_mutant_check" "CALL-OUTSIDE-GUARD-DETECTED"
 
 # ============================================================================================
 # Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named stderr (model 404, token
@@ -1127,6 +1176,71 @@ if [[ -f "$M1_POST_FILE" ]]; then
   check "M1: the posted comment carries the LOCAL-LLM DRAFT freellm tag (same convention as a success draft)" \
     "$([[ "$M1_COMMENT_CONTENT" == *"LOCAL-LLM DRAFT | freellm"* ]] && echo yes || echo no)" "yes"
 fi
+
+# ---- card f054fa3f (item 1): rc=2 ("disabled") used to discard $err_redacted entirely -- pin
+# that a NAMED rc=2 stderr message (e.g. the token-file mode/owner refusal, card 555419a8 L3)
+# now reaches the dispatch log. ----------------------------------------------------------------
+M1_RC2_STUB="$TMPDIR/m1-rc2-freellm-stub.sh"
+cat > "$M1_RC2_STUB" << 'EOF'
+#!/usr/bin/env bash
+echo "FREELLM: /home/neon/.config/freellmapi/auth-token is not 0600 and owned by the current user -- refusing to use it until permissions/ownership are fixed." >&2
+exit 2
+EOF
+chmod +x "$M1_RC2_STUB"
+M1_RC2_OUT="$TMPDIR/m1-rc2-out.txt"
+OFFLOAD_FREELLM_CALL="$M1_RC2_STUB" DASHBOARD_URL="http://127.0.0.1:$M1_PORT" \
+  bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "M1 rc2 cim" "M1 rc2 leiras" m1rc2leaf "task text" m1rc2leaf false \
+  >/dev/null 2>"$M1_RC2_OUT"
+check "item 1: rc=2 (disabled) with named stderr now shows that text in the dispatch log" \
+  "$(grep -c "not 0600 and owned" "$M1_RC2_OUT")" "1"
+
+# ---- card f054fa3f (item 3): widen the redaction beyond the 32+-char catch-all. Each case stubs
+# freellm-call.sh with a generic (non-2, non-4) failure so $err_redacted reaches BOTH the log and
+# the card comment, carrying one of the four shapes the old regex pair missed. ------------------
+m1_redact_case() {
+  local desc="$1" raw_secret="$2" stderr_line="$3" leaf_id="$4"
+  local stub="$TMPDIR/m1-redact-$leaf_id.sh" out="$TMPDIR/m1-redact-$leaf_id-out.txt"
+  printf '#!/usr/bin/env bash\necho %q >&2\nexit 1\n' "$stderr_line" > "$stub"
+  chmod +x "$stub"
+  rm -f "$M1_STUB_LOGDIR"/post-*.json
+  OFFLOAD_FREELLM_CALL="$stub" DASHBOARD_URL="http://127.0.0.1:$M1_PORT" \
+    bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "M1 redact cim" "M1 redact leiras" "$leaf_id" "task text" "$leaf_id" false \
+    >/dev/null 2>"$out"
+  check "item 3 ($desc): the log line does NOT contain the raw secret" \
+    "$(grep -c "$raw_secret" "$out")" "0"
+  check "item 3 ($desc): the log line DOES contain [REDACTED]" \
+    "$(grep -c '\[REDACTED\]' "$out")" "1"
+  local post_file; post_file="$(ls "$M1_STUB_LOGDIR"/post-*.json 2>/dev/null | head -1)"
+  if [[ -n "$post_file" ]]; then
+    local comment; comment="$(python3 -c "import json; print(json.load(open('$post_file')).get('content',''))" 2>/dev/null || echo "")"
+    check "item 3 ($desc): the card comment does NOT contain the raw secret" \
+      "$([[ "$comment" == *"$raw_secret"* ]] && echo leaked || echo clean)" "clean"
+  fi
+}
+
+m1_redact_case "dotted (JWT-like)" \
+  "dGhpc2lzYXNpZ25hdHVyZXZhbHVl" \
+  "FREELLM: unexpected response: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGhpc2lzYXNpZ25hdHVyZXZhbHVl" \
+  "m1redactdotted"
+
+# The documented AWS example access key id (AKIAIOSFODNN7 + EXAMPLE, same value
+# store/secret-shape-scan.py's own EXAMPLE_VALUES allowlists) -- a real secret-shaped string
+# would trip the repo's own secret-write-guard hook on this file, so this is the one shape-exact
+# value safe to write literally.
+m1_redact_case "short (AWS access key id, 20 chars, under the 32+ catch-all)" \
+  "AKIAIOSFODNN7EXAMPLE" \
+  "FREELLM: curl diagnostic mentioned AKIAIOSFODNN7EXAMPLE in the response" \
+  "m1redactshort"
+
+m1_redact_case "key=value (labeled, short value)" \
+  "abc123xyz" \
+  "FREELLM: provider rejected request, token=abc123xyz was not recognized" \
+  "m1redactkv"
+
+m1_redact_case "userinfo (URL user:pass@host)" \
+  "supersecretpass" \
+  "curl: (22) The requested URL returned error: 401 for http://produser:supersecretpass@127.0.0.1:9999/foo" \
+  "m1redactuserinfo"
 
 kill "$M1_STUB_PID" 2>/dev/null
 wait "$M1_STUB_PID" 2>/dev/null
