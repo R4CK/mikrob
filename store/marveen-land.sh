@@ -109,8 +109,15 @@ run_fg_killable() { # $1 = working dir, $2 = command string (already eval-safe)
   # stay in the SCRIPT's process group -- a TERM to just this one pid leaves them running as
   # orphans, reparented but alive, holding a CPU slot (measured). The TERM trap below sends the
   # signal to the whole group (`kill -- -<pgid>`), which this pgid assignment makes possible.
+  # card 78339a8a: LANDING_DOWNWARD_CHECK=off, if exported at script invocation, otherwise
+  # inherits into this subshell and everything it execs (fleet-test.sh, vitest workers, and any
+  # selftest a test spawns) -- so a landing override meant for THIS script's own downward_check()
+  # call also disables the kill switch inside the fleet-test run that verifies the merge, flipping
+  # landing-downward-check.test.ts's own selftest cases (measured: 4f3c0287 land, 2026-11-13).
+  # Unset it before cd/eval, not between release_land_lock_fd and eval, so the existing Q3 pin
+  # (grep -cF 'cd "$dir" && release_land_lock_fd && eval "$cmd"') still matches byte-for-byte.
   set -m
-  ( cd "$dir" && release_land_lock_fd && eval "$cmd" ) &
+  ( unset LANDING_DOWNWARD_CHECK; cd "$dir" && release_land_lock_fd && eval "$cmd" ) &
   run_fg_killable_pid=$!
   set +m
   wait "$run_fg_killable_pid"
@@ -1925,6 +1932,13 @@ if [ "$TARGET" = "--card" ]; then
       --allow-ungated) CARD_ALLOW_UNGATED=1 ;;
       --allow-ungated-reason) shift; [ $# -gt 0 ] || die 2 "--allow-ungated-reason needs text"; CARD_ALLOW_UNGATED_REASON="$1" ;;
       --allow-ungated-reason=*) CARD_ALLOW_UNGATED_REASON="${1#--allow-ungated-reason=}" ;;
+      # card 78339a8a: wired into --card mode too, same meaning as the agent-target mode's
+      # --allow-stacked -- the operator names the foreign card(s) they are knowingly taking on.
+      # Before this, the only way through a stacked-commit refusal here was the kill switch
+      # LANDING_DOWNWARD_CHECK=off, which disables the ENTIRE downward check, not just the
+      # named card (backend3 msg 17594).
+      --allow-stacked) shift; [ $# -gt 0 ] || die 2 "--allow-stacked needs a card id list"; ALLOW_STACKED="$1" ;;
+      --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
       *) die 2 "unknown option: $1" ;;
     esac
     shift
