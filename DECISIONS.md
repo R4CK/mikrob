@@ -25417,3 +25417,46 @@ zero output after "syntax OK"). Fixed by redirecting the backgrounded server's s
 
 **Ki döntött:** DevO (fullstack), card a49d1e1a, off WhiteHat2's CYBERSEC GO findings on 84181422.
 Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
+
+## 2026-11-13 -- a49d1e1a delta round: closed F1-real (weak curl check) and F2-real (server leak) that WhiteHat2/QA2 found on 7ba3dac90
+
+**Döntés:** QA2 FAIL (comment 30353) + WhiteHat2 CYBERSEC GO with 3 unresolved items (comment 30347)
+on 7ba3dac90 found real gaps the previous round's own tests did not catch:
+- **F2 (QA2 FAIL, the blocking one):** `start_ok_server()` was invoked as `OK_HOST="$(start_ok_server)"`
+  -- a command substitution, which runs the ENTIRE function, including `OK_SERVER_PIDS+=("$!")`, in a
+  SUBSHELL. Bash does not propagate array mutations out of a subshell, so the real server's pid was
+  appended to a throwaway copy of the array that vanished the instant the subshell exited -- the
+  top-level `OK_SERVER_PIDS` the EXIT trap reads never got the pid, and every suite run leaked one
+  long-lived python3 HTTP server. Fixed by having `start_ok_server` print `"<url> <pid>"` and having
+  the caller `read` both and append the pid to the array AT THE TOP LEVEL, outside any subshell.
+  Also found (same root class) two pre-existing `trap ... EXIT` REASSIGNMENTS further down the file
+  (for `$JBIN_DIR`/`$SBIN_DIR` cleanup) that REPLACE the whole-script trap set at line 21 rather than
+  chain onto it -- these would have dropped `stop_ok_servers` even with the pid-tracking fix, since
+  `start_ok_server` is called after both reassignments. Both now include `stop_ok_servers` too.
+- **F1-real (WhiteHat2, MEDIUM-LOW):** `alert_owner()`'s curl call used `-o /dev/null` with no
+  `--fail`, so curl exits 0 on ANY HTTP response, including Telegram's own 401/400/429/500 error
+  replies (measured against a loopback server) -- a rejected send (rotated token, wrong chat id,
+  rate limit) was being treated as delivered and silenced the retry; only a transport failure
+  (timeout, DNS, refused) was ever actually caught. Fixed by adding `--fail` to the curl call, so
+  curl itself exits nonzero on any HTTP status >= 400. New test seam
+  `OLLAMA_RESTORE_TELEGRAM_API_BASE_OVERRIDE` lets a test point `alert_owner` at a loopback server
+  that replies with a real HTTP status, exercising the REAL curl branch (not the
+  `ALERT_FAIL_OVERRIDE` seam, which bypasses curl entirely) -- a fully synthetic `$HOME` with a fake
+  Telegram token/chat id is used so the test never touches this box's real credentials, and the
+  override always targets the loopback server regardless of what token/chat get interpolated into
+  the URL.
+- **F4 vacuity (WhiteHat2 F3 note):** the old F4 test (`grep -o ... | grep -q '[accented chars]'`)
+  passed if ANY ONE of the two known owner-facing alert strings had an accent, so it stayed green
+  even with accents stripped from one of them. Fixed to require BOTH known strings present (asserts
+  the population, not just "found something" -- guards-that-pin-behaviour principle) AND each one
+  individually accented.
+
+4 new/fixed tests, full suite 48/48 green (was 45), confirmed non-vacuous for each: reverting only
+the `--fail` flag reproduced exactly the 2 new F1-real assertions red, rest green; reverting only the
+pid-tracking fix (reading just the URL, dropping the pid line) reproduced a leaked python3 process
+after every run, confirmed on a live `ps aux` check. Ran the suite twice in a row post-fix to confirm
+no leak recurrence. `tsc --noEmit -p .` clean (shell-only diff).
+
+**Ki döntött:** DevO (fullstack), card a49d1e1a delta round, off QA2 FAIL (comment 30353) + WhiteHat2
+CYBERSEC GO items (comment 30347). Gate: re-gate QA2 + WhiteHat2 on the new Gate-SHA (see REVIEW
+comment).

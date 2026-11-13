@@ -62,6 +62,12 @@
 #   OLLAMA_RESTORE_ALERT_FAIL_OVERRIDE - if 1, alert_owner() simulates a failed send (returns 1, no
 #                                         network) without touching OLLAMA_RESTORE_ALERT_DRYRUN (test)
 #   OLLAMA_RESTORE_PROBE_SLEEP_SEC - seconds between post-restart /api/tags probes (default 2, test)
+#   OLLAMA_RESTORE_TELEGRAM_API_BASE_OVERRIDE - base URL to POST sendMessage to instead of
+#                                         https://api.telegram.org (test seam, card a49d1e1a F1:
+#                                         lets a test point alert_owner at a loopback server that
+#                                         replies with a real HTTP error status, proving curl's
+#                                         --fail flag -- not just the FAIL_OVERRIDE seam -- turns a
+#                                         rejected send into a real failure)
 #   (a failed restart -- nonzero start_rc OR a successful start that never answers /api/tags --
 #   alerts via alert_owner(), rate-limited by $STATE_DIR/.ollama-boot-restore-fail-alerted: one
 #   alert per failure streak, set only on a CONFIRMED send, cleared whenever Ollama is next found
@@ -107,8 +113,14 @@ alert_owner() {
   # failed. The caller's rate-limit stamp depended on that lie: it was written unconditionally on
   # any alert attempt, so a genuinely undelivered alert still silenced every later sweep. Fixed to
   # propagate curl's actual exit status.
-  if printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$token" \
-    | curl -s -m 10 -o /dev/null -K - \
+  # WhiteHat2 F1 (QA2-confirmed, comment 30347): `-o /dev/null` with no `--fail` means curl exits 0
+  # on ANY HTTP response, including Telegram's own 401/400/429/500 error replies (measured against
+  # a loopback server) -- a rejected send (rotated token, wrong chat id, rate limit) was being
+  # treated as delivered and silenced the retry. `--fail` makes curl itself exit nonzero on any
+  # HTTP status >= 400, so a rejected send now propagates as a real failure.
+  local api_base="${OLLAMA_RESTORE_TELEGRAM_API_BASE_OVERRIDE:-https://api.telegram.org}"
+  if printf 'url = "%s/bot%s/sendMessage"\n' "$api_base" "$token" \
+    | curl -s -f -m 10 -o /dev/null -K - \
     --data-urlencode "chat_id=${chat}" --data-urlencode "text=${msg}"; then
     log "owner alerted via direct Bot API"
     return 0
