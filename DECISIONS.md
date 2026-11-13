@@ -23679,3 +23679,50 @@ Verification: `marveen-land-run-fg-killable.selftest.sh` -- 5/5 PASS (the 2 pre-
 - I1: rebased `agent/backend/work` onto the then-current `origin/develop` (`77af80889`, 7 commits ahead of this branch's old base), dropping `12ef99313` (its content is `405e75179`, already on develop, confirmed via `git diff <sha>^..<sha> -- DECISIONS.md` on both commits producing identical patch text modulo line offset). `d51ba75ba`'s own content (the M1/M2 fix) is unaffected by the drop; only the duplicate docs commit under it is gone.
 Verification: `marveen-land-run-fg-killable.selftest.sh` standalone -- 6/6 PASS (incl. the new HUP pin). `marveen-land.sh --selftest` -- 81/81 PASS (75 pre-existing + 6 from the now-wired file). `fleet-test.sh --ref <new sha>` -- see REVIEW comment for the number and which sha it ran on.
 **Ki döntött:** backend (card 07f1fe6e delta fix, per MikroB msg_id:17358), finding source: cybersec (WhiteHat) comment 29326. Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- d2c3a940: pre-emptive /compact on start when a resumed session is near the ceiling
+
+Measured on jogász, 2026-10-11 12:06 (card's own description): MikroB started the agent, its first
+dispatch immediately hit "Context limit reached", and the card (a046302b) was never picked up.
+`context-compact-monitor.sh` never saw it at all (jogász is not in its hardcoded `TARGET_AGENTS`,
+and its 15-minute sweep cadence is far too slow for a race that plays out on the very first turn
+after start). Root cause: a `--continue` restart resumes whatever context the PRIOR session left
+behind, and nothing checked that context before the caller's own next request (the queued dispatch)
+could reach the pane.
+
+Decision: `POST /api/agents/<name>/start` (non-fresh only) now checks the resumed session's context
+percentage right after launch, via a new `measureContextPctForAgent(name)` in
+`context-guard-runner.ts` -- a single-agent wrapper around the SAME calibrated `measurePct` the
+guard's own periodic sweep already uses, not a second, independent computation. At or above 75%
+(Peti's established threshold, CLAUDE.md 2026-08-14 -- the same percentage
+`context-compact-monitor.sh`'s own `COMPACT_PCT` default already uses), it polls briefly for the
+session to become ready to prompt and sends `/compact` BEFORE the route returns `ok:true`. Fails
+open (no compact, start still succeeds) on any measurement error, an unmeasurable/null reading, or
+a session that never becomes ready -- this can only ever ADD a compact, never block a start.
+
+Scope decision, stated explicitly rather than silently narrowed: the card's item 2 ("recognize
+'Context limit reached' panel text in the monitor or fleet-nudger, automatic /compact") was NOT
+implemented. Two existing mechanisms already cover that shape for an ALREADY-RUNNING agent: this
+module's own periodic sweep (`checkAgent`, every 5 minutes, covers every agent including jogász via
+`guardSweepAgentNames` -- unlike the bash monitor's hardcoded 5-agent list) and
+`message-router.ts`'s per-delivery `isSessionReadyForPrompt` check (which already calls
+`saturationRefusesDispatch`/`paneShowsContextSaturation` before typing into any pane). Neither can
+close THIS card's actual measured race (hit mid-turn, on the very first message after a cold
+restart, faster than any periodic sweep or pre-send check could ever catch) -- which is exactly why
+this fix is proactive and start-time instead. A bash-monitor/fleet-nudger-level redundant check for
+the already-running case, if still wanted, is a separate, narrower follow-up.
+
+Verified: new `src/__tests__/agent-start-pre-compact.test.ts`, 8 cases (integration-style through
+`tryHandleAgents`, matching this route file's existing test pattern) -- synthetic 90%-full session
+compacts before returning ok; well-under-threshold does not; exactly-75% still fires (inclusive
+boundary); null/unmeasurable context skips the compact; a fresh start skips the check entirely; a
+session that never becomes ready skips the compact; a measurement error does not fail the whole
+start request; `startAgentProcess` itself failing skips the check entirely. Red-before confirmed by
+hand (commenting out the new call fails 2 of the 8 cases). `tsc --noEmit -p .` clean. Re-ran the
+related context-guard test suites (context-guard-resume-prompt, context-guard-saturation-mismatch,
+context-guard-limit-followups, context-guard-daily-tier) plus several agent-dir/restart suites:
+176 total, all pass, unaffected by the new export (relocated once after the saturation-mismatch
+suite's own source-slice test caught the first placement sitting inside its scanned range).
+
+**Ki döntött:** DevO (fullstack), card d2c3a940, self-advance pick (oldest unblocked planned card).
+Gate: QA. Gate-SHA: see REVIEW comment.
