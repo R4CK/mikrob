@@ -23166,9 +23166,10 @@ kartyak c1766c6c/c5243203e) ugyanazon ket ponton allt be. Feloldas MikroB jovaha
 
 **Dontes:** a 4f3c0287 (Koteg 23b, upstream #1999) mergelesekor kiderult, hogy KET, egymasnak
 ellentmondo biztonsagi szabaly all fenn ugyanarra a mintara. Az upstream uj scheduleSurfaceDeny
-olvasasi feherlistaja (isPlainCurlGet/headerValueIsInert) KIZAROLAG a beagyazott
-`-H "Authorization: Bearer $(cat <TOKEN>)"` alakot fogadja el (TOKEN_NONCE-szubsztitucioval
-ellenorizve), es sajat megjegyzese szerint SZANDEKOSAN elutasitja a `-H @file`/`-H @-` alakot
+olvasasi feherlistaja (isPlainCurlGet/headerValueIsInert) KIZAROLAG azt a beagyazott format
+fogadja el, ahol a `-H` kapcsolo erteke argv-ben allo `Authorization: Bearer <token>` fejlec
+(`$(cat <TOKEN>)` substitucioval, TOKEN_NONCE-vel ellenorizve), es sajat megjegyzese szerint
+SZANDEKOSAN elutasitja a `-H @file`/`-H @-` alakot
 (nem tudja ellenorizni, mi van a fajlban/stdin-en). A fork sajat, regota elo
 token-in-argv-guard.test.ts-e (edb7559f-lancolat) pontosan ezt a beagyazott alakot tiltja
 flotta-szinten (/proc/<pid>/cmdline-szivargas). Egyik curl-alak sem elegitette ki mindket
