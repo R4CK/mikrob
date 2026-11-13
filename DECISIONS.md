@@ -23748,3 +23748,150 @@ count and the new Gate-SHA.
 **Ki döntött:** DevO (fullstack), per MikroB msg 17484 (rebuild direction after my own incorrect
 first read that the conflict was tail-append-only). Gate: QA + Cybered (fresh delta re-gate on
 the new sha).
+
+## 2026-11-06 -- card c1766c6c re-gate round 2: M1/M2/M3/L1 fixes + symlink/env-var + Write/Edit blind spot (CYBERSEC NO-GO 28672, QA FAIL 28673)
+
+**Döntés:**
+- M1a: `_TABLE_RX` gained `re.IGNORECASE` (SQL table names are case-insensitive; confirmed by
+  actually creating `dashboard_users` and inserting via `DASHBOARD_USERS` -- the row lands in the
+  same table, so the old case-sensitive match was a real, not theoretical, bypass).
+- M1b: dropped the command-position anchor on the sqlite3/python invocation regexes and added
+  node (`better-sqlite3`/`node:sqlite`) and perl (`DBI->connect` + `dbi:SQLite`) detection, searched
+  anywhere in a top-level statement rather than requiring same-line proximity. Statements are now
+  split on `;`/`&&`/`||`/newline WITHOUT splitting inside a quoted span or a heredoc body, so
+  `/usr/bin/sqlite3`, `env sqlite3`, `timeout 5 sqlite3`, `\sqlite3`, `bash -c '...'`/`sh -c "..."`
+  wrapping, and a `python3 - <<'PY'` heredoc all still reach the check.
+- M1c: `sqlite3 db < file`, `.read file` and `.import file table` (SQL this guard cannot read at
+  all) now block outright against the protected db, fail-closed on the unverifiable case.
+- M2: the escape hatch (`DB_WRITE_GUARD_ALLOW=1`) must now be the literal leading token of the
+  exact statement doing the write -- a trailing shell comment, a preceding unrelated `echo`, and
+  the token sitting inside a quoted SQL string no longer disarm the guard.
+- M3: write-verb search now runs against a copy of the statement with unquoted `#`-comments and
+  SQL string literals after a comparison operator (`LIKE`/`=`/`<>`/`!=`/`<=`/`>=`/`<`/`>`/`IN`)
+  blanked out, and `REPLACE` is only a write when not immediately followed by `(` (the SQL
+  function). Fixes false blocks on `LIKE '%delete%'`, `category='insert'`, `SELECT replace(...)`,
+  a `# replace later` trailing comment, and an unrelated verb word after a `;` (`curl -X DELETE`).
+- L1 (MikroB decision): an internal error scanning a well-formed command now fails CLOSED if that
+  command names a protected table or the protected db literally; a malformed PreToolUse payload
+  itself (no command text at all) still fails open, unchanged.
+- QA FAIL 28673 addendum 1: a db-path argument resolves via `os.path.realpath` -- a filesystem
+  symlink aliasing the protected db under another name now counts as the protected db; a `$VAR`
+  db-path argument this guard cannot resolve from the command text alone now BLOCKS (not allows)
+  when the rest of the statement already names a protected table and a write verb, since the guard
+  cannot prove it is a different database.
+- QA FAIL 28673 addendum 2: a `Write`/`Edit`/`MultiEdit` tool call whose `file_path` resolves to
+  the protected db file is now blocked unconditionally (no SQL text to inspect, no escape hatch).
+- 52/52 selftest cases pass (31 new cases added for this round, one per named finding plus the
+  read-only false-block regressions).
+- DECISIONS correction entry hygiene (L3): the 2026-11-06 "correction: real Gate-SHA..." entry for
+  this same card (above) itself ends with the placeholder it was written to fix -- left untouched
+  per the tail-append rule, since it is now historical record of an earlier round, not this one.
+  This entry's own `Ki döntött:` line will be updated to the real, ancestor-verified Gate-SHA for
+  THIS round once it lands (same convention as every other entry in this file).
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 2, per MikroB dispatch
+(msg_id:16779/16780). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card c1766c6c re-gate round 3: runtime env-var indirection + pipe side-channel (QA FAIL 28716 on dd074f2c9)
+
+**Döntés:**
+- Round 2's "unresolvable db-path variable fails closed" posture (QA FAIL 28673 addendum 1)
+  only implemented the shell-level `sqlite3 "$VAR" ...` shape. QA FAIL 28716 found it did not
+  generalize to the python/node/perl runtimes' OWN env-var accessors (`os.environ[...]`/
+  `os.getenv(...)`/`$ENV{...}`/`process.env...`), even though round 2 added write-detection
+  signatures for exactly those three runtimes in the same round. Added `_RUNTIME_ENV_VAR_RX`,
+  folded into the same `db_unresolvable` fail-closed branch: a protected table + write verb
+  visible in the command text, with the db target resolved only through one of these accessors,
+  now BLOCKs on the same "cannot prove it is a different database" reasoning already used for
+  the shell $VAR case.
+- A plain pipe into `sqlite3` (`cat file | sqlite3 db`) is the same unreadable-SQL-source class
+  M1c already closed for `<`/`.read`/`.import` (round 2), left uncovered. Added
+  `_PIPE_INTO_SQLITE_RX` to the same side-channel check, blocking outright against the protected
+  db regardless of whether a table/verb is visible in the command text (the SQL lives in the
+  piped file, not usually visible there at all).
+- 8 new selftest cases (4 env-var BLOCK across python/node/perl, 1 env-var-without-protected-
+  table ALLOW regression guard confirming the indirection alone is not sufficient to block, 3
+  pipe-into-sqlite3 BLOCK across bare/env/timeout wrapper forms). 60/60 selftest cases pass.
+  tsc clean. The three wiring tests (db-write-guard-wiring, hook-registration-completeness,
+  project-settings-hook-anchor): 22/22 passed, no regression.
+- QA's round-3 verdict (28716) also confirmed all round-1 bypasses stayed closed under re-probe
+  (not just the shipped selftest) -- no regression on any previously-fixed finding.
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 3, per MikroB dispatch
+(msg_id:16807). Gate: QA + Cybersec (Cybersec's verdict on dd074f2c9 was still running at
+dispatch time; MikroB's direction is to fold its findings into this same round rather than a
+round 4). Gate-SHA: see REVIEW comment.
+
+## 2026-11-06 -- card c1766c6c re-gate round 4: N1 embedded-write literal, N2 Write/Edit/MultiEdit matcher, P1 pipe false-blocks, P4 raw docstring (CYBERSEC NO-GO 28718 + 28723)
+
+**Döntés:** MikroB's round-4 scope decision (comment 28727, msg_id:16815): close exactly N1, N2,
+P1 (+ P4 trivial) from WhiteHat 28718/28723; any further shape found after this round is logged
+as a residual on card 85a668aa (local shell as a trust boundary, OS level), not a 5th round here
+-- this hook is a guardrail against accidental/naive direct writes, not a security boundary.
+- N1 (regression vs round 1): round 2's M3 literal-blanking hid a write stored INSIDE a literal
+  rather than compared against one (`q='DELETE FROM approvals'`, a shell `$VAR` holding the SQL,
+  and a backslash-quote the hook's old regex misread as an escape when SQLite itself has none).
+  Fixed the literal regex to SQLite's real escaping rule (doubled quote only), and added a
+  second check: any single-quoted literal anywhere in the command whose OWN content names a
+  protected table and a write verb together blocks, gated to commands that also reference the
+  protected db.
+- N2: Write/Edit/MultiEdit protection was dead code (hook registered with matcher "Bash" only).
+  Fixed at both sites (.claude/settings.json, injectDbWriteGuard), matcher now
+  "Bash|Write|Edit|MultiEdit"; wiring test now asserts the matcher string explicitly.
+- P1: the pipe rule matched "sqlite3" anywhere after a pipe, false-blocking `lsof ... | grep
+  sqlite3` and `sqlite3 ... | grep -c sqlite3`. Fixed to require sqlite3 as the piped-to command
+  itself; a readable echo/printf pipe source no longer forces a block. Also fixed a live
+  false-block MikroB hit mid-session: a heredoc writing an unrelated message file, sharing a
+  top-level command with a real SELECT, is no longer scanned as if its body were SQL.
+- P4: docstring is now a raw string (contained `\sqlite3`, SyntaxWarning under Python 3.14).
+- 75/75 selftest cases pass (15 new this round). tsc clean. 22/22 wiring tests pass.
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 4, per MikroB dispatch
+(msg_id:16815). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-07 -- c1766c6c (DB write guard) re-gate round 5: heredoc opener-line + readable-pipe-source fixes
+
+CYBERSEC NO-GO 28743 on round 4's own sha (828428142), scope narrowed by MikroB to R1+R2
+(msg_id:16862: "fix WhiteHat NO-GO 28743 R1+R2 regressions"); R3/R4 logged as residuals for card
+85a668aa, same posture as round 4's own P2/P3/P5 handling.
+
+- R1 (MEDIUM-HIGH, regression vs round 4's own P1 heredoc fix): the heredoc body-consuming branch
+  began at the FIRST newline after `<<MARK`, which also blanked the REST OF THE OPENER'S OWN
+  LINE as if it were body text -- `cat <<'EOF' | sqlite3 store/claudeclaw.db` lost the
+  `| sqlite3 ...` text entirely, and a `;`-separated write on the same opener line never reached
+  `_split_top_level`'s own statement-boundary handling at all. Fixed: text up to the opener's own
+  real newline is processed by the ordinary character loop; only that newline hands off into
+  heredoc-body mode. Widened the heredoc-keep interpreter list to bash/sh/zsh/dash/eval/source/ssh
+  (alongside sqlite3/python/node/perl) -- a shell-wrapper opener can run a real write from its
+  body text too; non-executing openers (`cat`) still have their body blanked.
+- R2 (MEDIUM): the "readable echo/printf pipe source" check only verified the command name, never
+  what followed it -- a shell variable, a command substitution, or an escape-interpreting
+  flag/format (`echo -e`, printf `%b`, `\xHH`) all matched as "readable" while actually hiding or
+  transforming the real bytes. Fixed: readable now requires the entire span between the command
+  name and the pipe to be a plain literal (no `$`, backtick, backslash, or `%b`).
+- 91/91 selftest cases pass (16 new this round, including explicit red-before verification against
+  the retired 828428142 code for 4 of the 5 new BLOCK cases). No TS files touched this round, so
+  tsc/wiring tests are unaffected (unchanged from round 4's 22/22).
+
+**Ki döntött:** DevO (fullstack), card c1766c6c re-gate round 5, per MikroB dispatch
+(msg_id:16862). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-13 07:10 -- c1766c6c: db-write-guard matcher wiring restored after a reconstruction regression
+
+**Döntés:** the ab8a0bdc2 card/c1766c6c reconstruction (REVIEW ADDENDUM 29368, off origin/develop)
+kept scripts/hooks/db-write-guard.py byte-identical to the gated round 6 (48df2ec27), but silently
+regressed its REGISTRATION back to matcher "Bash" alone in .claude/settings.json and
+injectDbWriteGuard() (src/web/agent-scaffold.ts) -- re-opening N2 (CYBERSEC NO-GO 28718/28723,
+round 4: the hook's own Write/Edit/MultiEdit branch is dead code when the harness never calls it
+for those tools). The wiring tests had been rewritten to match the regressed value, so the suite
+stayed green while the protection was off. Cybersec caught this with CYBERSEC NO-GO 29548 (tree-
+identity check was blob-only, did not check wiring). Fix (commit 126061290, card/c1766c6c branch):
+restored matcher 'Bash|Write|Edit|MultiEdit' + the N2 comment in all three places (settings.json,
+agent-scaffold.ts, db-write-guard-wiring.test.ts, project-settings-hook-anchor.test.ts), surgically
+-- left the unrelated Koteg 23a email-gate widening and the Teszter skill-table addition (both
+from other cards landed on origin/develop since round 6) untouched.
+**Miért:** a reconstruction off a moving base branch can diff-identical on the hook file itself
+while losing its registration -- blob comparison alone is not proof of tree-identity; the whole
+owned-file list must be compared.
+**Ki döntött:** DevO (fullstack), per MikroB dispatch msg_id:17558 following Cybersec's NO-GO
+29548. Gate: QA + Cybersec. Gate-SHA: 126061290.
