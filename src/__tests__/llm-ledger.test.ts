@@ -1,5 +1,5 @@
 // Card e96d56c5 (F4): per-call LLM ledger + per-agent budget.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Readable } from 'node:stream'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,6 +10,16 @@ import {
   getAgentLlmBudget, setAgentLlmBudget, getDb,
 } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { getSettingDefinition } from '../config-registry.js'
+
+// card 1a3c6459 (F2): isKnownAgent stats agents/<name> on disk, which the repo deliberately does
+// not track (see /agents/ in .gitignore) -- a fixed fixture roster keeps this test independent of
+// whatever agent directories happen to exist on whichever checkout it runs in.
+const KNOWN_TEST_AGENTS = new Set(['backend3', 'fron-ted'])
+vi.mock('../web/agent-config.js', () => ({
+  isKnownAgent: (name: string) => KNOWN_TEST_AGENTS.has(name),
+}))
+
 import { tryHandleLlmLedger } from '../web/routes/llm-ledger.js'
 
 // `:memory:` cannot serve a rollback test: initDatabase() opens a NEW in-memory database every
@@ -180,19 +190,97 @@ describe('llm_ledger: route GET /api/llm-ledger/summary', () => {
 describe('llm_ledger: route GET/PUT /api/llm-ledger/budget/:agent', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
-  it('GET returns the platform default when unset, PUT sets an override GET then reflects', async () => {
+  // card 1a3c6459 (F1): PUT now requires an authenticated session/device principal -- `call()`'s
+  // bare RouteContext has no `auth` at all, so these helpers attach one explicitly per case.
+  function withAuth(ctx: RouteContext, auth: RouteContext['auth']): RouteContext {
+    return { ...ctx, auth }
+  }
+  async function putAs(auth: RouteContext['auth'], agent: string, body: unknown) {
+    const { ctx, out } = call('PUT', `/api/llm-ledger/budget/${agent}`, body)
+    expect(await tryHandleLlmLedger(withAuth(ctx, auth))).toBe(true)
+    return out
+  }
+  const SESSION = { kind: 'session', user: 'peti' } as const
+  const DEVICE = { kind: 'device', device: 'bridge-1' } as const
+  const TOKEN = { kind: 'token', agent: 'backend3' } as const
+
+  it('GET returns the platform default when unset, PUT (as a session) sets an override GET then reflects', async () => {
     const before = await route('GET', '/api/llm-ledger/budget/backend3')
     expect(before.body.source).toBe('platform')
-    const put = await route('PUT', '/api/llm-ledger/budget/backend3', { daily_budget: 8000, actor: 'mikrob' })
+    const put = await putAs(SESSION, 'backend3', { daily_budget: 8000 })
     expect(put.status).toBe(200)
     expect(put.body).toMatchObject({ ok: true, agent_id: 'backend3', daily_budget: 8000 })
     const after = await route('GET', '/api/llm-ledger/budget/backend3')
     expect(after.body).toEqual({ daily_budget: 8000, source: 'override' })
   })
 
-  it('PUT rejects a non-integer or negative budget', async () => {
-    expect((await route('PUT', '/api/llm-ledger/budget/backend3', { daily_budget: -1 })).status).toBe(400)
-    expect((await route('PUT', '/api/llm-ledger/budget/backend3', { daily_budget: 1.5 })).status).toBe(400)
-    expect((await route('PUT', '/api/llm-ledger/budget/backend3', { daily_budget: 'lots' })).status).toBe(400)
+  it('PUT rejects a non-integer, negative, non-finite, or above-platform-max budget (400), red on the pre-fix 3e1152142 code', async () => {
+    const platformMax = Number(getSettingDefinition('LLM_LEDGER_DEFAULT_DAILY_BUDGET')!.max)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: -1 })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: 1.5 })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: 'lots' })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: Number.NaN })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: Number.POSITIVE_INFINITY })).status).toBe(400)
+    // The 3e1152142 defect, measured live by WhiteHat2: 1e300, 1e15 and a value one past the
+    // platform max were all accepted because Number.isInteger(1e300) is true and there was no
+    // upper bound at all.
+    expect((await putAs(SESSION, 'backend3', { daily_budget: 1e300 })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: platformMax + 1 })).status).toBe(400)
+    const atMax = await putAs(SESSION, 'backend3', { daily_budget: platformMax })
+    expect(atMax.status).toBe(200)
+  })
+
+  it('PUT refuses a shared fleet token (403) -- only a session or device principal may write (F1)', async () => {
+    const asToken = await putAs(TOKEN, 'backend3', { daily_budget: 100 })
+    expect(asToken.status).toBe(403)
+    expect(getAgentLlmBudget('backend3').source).toBe('platform') // nothing written
+    const asDevice = await putAs(DEVICE, 'backend3', { daily_budget: 100 })
+    expect(asDevice.status).toBe(200)
+  })
+
+  it('PUT takes updated_by from the authenticated principal, never from the request body (F1)', async () => {
+    await putAs(SESSION, 'backend3', { daily_budget: 100, actor: 'mikrob (forged)' })
+    const row = getDb().prepare('SELECT updated_by FROM agent_llm_budget WHERE agent_id = ?').get('backend3') as { updated_by: string }
+    expect(row.updated_by).toBe('peti')
+    await putAs(DEVICE, 'fron-ted', { daily_budget: 200, actor: 'anyone' })
+    const row2 = getDb().prepare('SELECT updated_by FROM agent_llm_budget WHERE agent_id = ?').get('fron-ted') as { updated_by: string }
+    expect(row2.updated_by).toBe('bridge-1')
+  })
+
+  it('GET and PUT refuse an unknown agent id (404) and an over-length id never reaches isKnownAgent (F2)', async () => {
+    expect((await route('GET', '/api/llm-ledger/budget/no-such-agent-xyz')).status).toBe(404)
+    expect((await putAs(SESSION, 'no-such-agent-xyz', { daily_budget: 100 })).status).toBe(404)
+    const longId = 'a'.repeat(5000)
+    expect((await route('GET', `/api/llm-ledger/budget/${longId}`)).status).toBe(404)
+  })
+
+  it('PUT rejects an oversized body (413) without buffering it into memory (F2)', async () => {
+    const before = process.memoryUsage().rss
+    const huge = { daily_budget: 1, padding: 'x'.repeat(10 * 1024 * 1024) }
+    const out = await putAs(SESSION, 'backend3', huge)
+    expect(out.status).toBe(413)
+    // No budget row should have been written off a refused oversized body.
+    expect(getAgentLlmBudget('backend3').source).toBe('platform')
+    const after = process.memoryUsage().rss
+    // Generous bound (the test harness itself allocates): a true full-buffer-then-reject of a
+    // 10MB body would show up as tens of MB; readBody's cap aborts well under 1MB in.
+    expect(after - before).toBeLessThan(5 * 1024 * 1024)
+  })
+})
+
+describe('llm_ledger: negative counts refused at the DB layer (F3, 1a3c6459)', () => {
+  beforeEach(() => { initDatabase(':memory:') })
+
+  it('a negative latency_ms, prompt_chars, response_chars or claude_token_equiv throws, nothing is stored', () => {
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true, latencyMs: -5 })).toThrow()
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true, promptChars: -1 })).toThrow()
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true, responseChars: -1 })).toThrow()
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true, claudeTokenEquiv: -99_999_999 })).toThrow()
+    expect(getLlmLedgerSummary(7).totals.calls).toBe(0)
+  })
+
+  it('a NULL (omitted) numeric field is still accepted -- the CHECK does not require every column', () => {
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true })).not.toThrow()
+    expect(getLlmLedgerSummary(7).totals.calls).toBe(1)
   })
 })
