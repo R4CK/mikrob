@@ -79,7 +79,11 @@ describe('reapOrphanedLocalTmuxServerBeforeLaunch (card d4902522 KC4)', () => {
 
     expect(alive(pidA), 'orphaned server A is killed by the TS call').toBe(false)
     expect(alive(pidB), 'live server B is untouched').toBe(true)
-  })
+  // card 368395d4: this spawns several real tmux servers plus a shell-out to channels.sh's reap
+  // pass -- no network, no sleep, but real process creation, which under CPU contention (e.g. two
+  // parallel fleet-test runs) can take longer than vitest's 5s default even though the work itself
+  // is small. A generous per-test timeout for this real subprocess chain, not a blanket raise.
+  }, 30_000)
 
   it('is a no-op for a remote or runAsUser target (reap only ever applies to this process\'s own uid/socket)', () => {
     // No TMUX_TMPDIR override, no real orphan set up -- if this did anything other than return

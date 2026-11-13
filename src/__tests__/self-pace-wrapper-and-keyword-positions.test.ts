@@ -37,6 +37,19 @@ const LC = 'launch' + 'ctl'
 const NL = String.fromCharCode(10)
 const bash = (command: string): boolean => Boolean(gateDecision('Bash', { command }).deny)
 
+// card 368395d4: the anti-backtracking checks below pin that gateDecision/executableStrings stay
+// LINEAR on pathological input (no catastrophic regex backtracking), by budgeting wall time for a
+// pure in-process regex call. Date.now() measures how long the WORLD took, which includes time
+// this process spent preempted by other CPU-hungry processes (two parallel fleet-test runs) -- a
+// genuinely linear ~20-35ms of real work can still read as a multi-second wall-clock gap under
+// load, with nothing wrong in the code. process.cpuUsage() counts only CPU time this process
+// actually consumed, so it still catches a real exponential blowup (which burns CPU, not just
+// wall time) without being defeated by scheduling delay from unrelated load.
+function cpuMsSince(start: NodeJS.CpuUsage): number {
+  const diff = process.cpuUsage(start)
+  return (diff.user + diff.system) / 1000
+}
+
 describe('a shell KEYWORD is a command position too (card ec20dd23)', () => {
   const KEYWORDS: Array<[string, string]> = [
     ['then arm (reported)', `if true; then ${CT} -; fi`],
@@ -241,10 +254,10 @@ describe('round 2: the three shapes both gates found still open (card ec20dd23)'
   it('NOT A DoS SURFACE: the added option run has nested quantifiers', () => {
     // A governance gate that can be stalled is a way past it. Measured on the shapes that would
     // trigger catastrophic backtracking if the quantifiers were badly nested.
-    const started = Date.now()
+    const started = process.cpuUsage()
     bash('bash' + ' --opt val'.repeat(2000) + ` -c "${CT} -"`)
     bash('$('.repeat(500) + `${CT} -` + ')'.repeat(500))
-    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(cpuMsSince(started)).toBeLessThan(5_000)
   })
 })
 
@@ -388,11 +401,11 @@ describe('round 3: the three shapes Cybersec found still open (card ec20dd23)', 
       ['long here-string filler with no <<<', `bash ${'2>&1 '.repeat(6000)}`],
       ['long filler with no process substitution', `bash ${'2>&1 '.repeat(6000)}x`],
     ])('%s completes promptly', (_name, cmd) => {
-      const t0 = Date.now()
+      const t0 = process.cpuUsage()
       bash(cmd)
       // Two orders of magnitude of headroom over the measured 20-35ms, and still far below the
-      // hook's 10s registration timeout -- a backtracking blowup does not finish in 2s.
-      expect(Date.now() - t0).toBeLessThan(2000)
+      // hook's 10s registration timeout -- a backtracking blowup does not finish in 2s of CPU time.
+      expect(cpuMsSince(t0)).toBeLessThan(2000)
     })
   })
 
@@ -485,9 +498,9 @@ describe('round 4: ANSI-C escape obfuscation (QA FAIL on 223ac1f8)', () => {
     // pattern had been rewritten to remove one round earlier. `$'...'` now belongs solely to the
     // ANSI-C branch, `'...'` solely to the plain one.
     const cmd = `bash -c ${`${D}'a'`.repeat(20000)}(`
-    const t0 = Date.now()
+    const t0 = process.cpuUsage()
     bash(cmd)
-    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(cpuMsSince(t0)).toBeLessThan(2000)
   })
 })
 
@@ -543,9 +556,9 @@ describe('round 5: ANSI-C decoding on the stdin-shell branch (Cybersec NO-GO on 
     // alternative: manually advancing lastIndex past readAnsiC's return point is what keeps them from
     // overlapping. 20000 repeats must stay fast, not merely correct.
     const cmd = `echo ${ansi('a').repeat(20000)} | bash(`
-    const t0 = Date.now()
+    const t0 = process.cpuUsage()
     bash(cmd)
-    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(cpuMsSince(t0)).toBeLessThan(2000)
   })
 })
 
@@ -661,9 +674,9 @@ describe('round 7: an UNQUOTED payload is executable text too (card ec20dd23)', 
     // Same budget the sibling quadratic suites enforce. The word pattern's alternatives are disjoint
     // on their first character, so no position has two ways to match -- but that is the claim, and
     // this is the measurement.
-    const t0 = Date.now()
+    const t0 = process.cpuUsage()
     bash(`echo ${'a'.repeat(400000)} | sh`)
-    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(cpuMsSince(t0)).toBeLessThan(2000)
   })
 })
 
@@ -774,11 +787,11 @@ describe('round 8: printf format semantics and source/. execution (card ec20dd23
   })
 
   it('both new paths grow LINEARLY, not quadratically', () => {
-    const t0 = Date.now()
+    const t0 = process.cpuUsage()
     bash(`source <(echo ${'a'.repeat(400000)})`)
-    expect(Date.now() - t0).toBeLessThan(2000)
-    const t1 = Date.now()
+    expect(cpuMsSince(t0)).toBeLessThan(2000)
+    const t1 = process.cpuUsage()
     bash(`printf ${SQ}%s${SQ} ${'a'.repeat(400000)} | sh`)
-    expect(Date.now() - t1).toBeLessThan(2000)
+    expect(cpuMsSince(t1)).toBeLessThan(2000)
   })
 })

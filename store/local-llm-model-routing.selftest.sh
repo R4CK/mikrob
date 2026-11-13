@@ -136,12 +136,25 @@ cat > "$TMPCFG" <<JSON
 {"overrides": {"board-reconcile": "$FAKE_MODEL"}}
 JSON
 
+# card 368395d4: local-llm.sh's `generate` mode runs vram-guard-check.sh as a choke point BEFORE
+# it ever reaches the routing/model-pull-check logic this file is actually testing (see the "this
+# call belongs online" exit 6 in local-llm.sh). Under real GPU contention (e.g. two parallel
+# fleet-test runs sharing the GPU) that guard correctly HOLDs, and cases 1/3 below then see the
+# generic "belongs online" refusal instead of the routed-model error they are checking for --
+# wrongly read as a routing defect when nothing about routing is broken. VRAM admission is its own,
+# already-covered concern (local-llm-vram-choke-point.test.ts); routing has no business depending
+# on live GPU load, so this selftest stubs the choke point via local-llm.sh's own documented
+# LOCAL_LLM_VRAM_GUARD override (the same seam each dispatcher already uses) to always ADMIT.
+VRAM_STUB="$(mktemp)"
+printf '#!/bin/sh\nexit 0\n' > "$VRAM_STUB"
+chmod +x "$VRAM_STUB"
+
 # --- 0. parses -------------------------------------------------------------------------------
 if bash -n "$SCRIPT" 2>/dev/null; then ok "local-llm.sh parses (bash -n)"; else bad "parses" ""; fi
 
 run() { # $1 = extra env (space-separated VAR=val), rest = args to local-llm.sh
   local envs="$1"; shift
-  env $envs bash "$SCRIPT" "$@" 2>&1
+  env $envs LOCAL_LLM_VRAM_GUARD="$VRAM_STUB" bash "$SCRIPT" "$@" 2>&1
 }
 
 # --- 1. a --task with a routing-config override picks that model, not the plain default -------
@@ -152,7 +165,7 @@ run() { # $1 = extra env (space-separated VAR=val), rest = args to local-llm.sh
 # local-llm.sh now honours LOCAL_LLM_MODEL_ROUTING_FILE, so every case below points at a temp file
 # and the live config is never opened, let alone written. That is what made wiring this safe.
 ENVCFG="LOCAL_LLM_MODEL_ROUTING_FILE=$TMPCFG"
-cleanup() { rm -f "$TMPCFG"; }
+cleanup() { rm -f "$TMPCFG" "$VRAM_STUB"; }
 trap cleanup EXIT
 
 # NEEDS OLLAMA TO ANSWER: the proof is that the "model not pulled" error names the routed model,
