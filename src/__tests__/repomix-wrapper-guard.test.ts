@@ -65,7 +65,10 @@ describe('store/repomix.sh -- Cybersec conditions stay enforced (card b41c3dd3)'
     // (upstream security release; the ReDoS-hardened redaction also runs on the local pack path).
     // Bumped 1.18.0 -> 1.18.1 with card 1df528e0 (upstream git-config hardening in log/diff/
     // rev-parse subprocesses against an untrusted repo's .git/config).
-    expect(pin?.[1]).toBe('1.18.1')
+    // Bumped 1.18.1 -> 1.19.0 with card b19055b4 (website/i18n + --compress correctness fixes;
+    // @modelcontextprotocol/sdk replaced by @modelcontextprotocol/server, confirmed legitimate
+    // same-org monorepo split; --remote/--no-security-check still refused, Cybersec GO 30192).
+    expect(pin?.[1]).toBe('1.19.0')
     expect(WRAPPER).not.toContain('repomix@latest')
   })
 
