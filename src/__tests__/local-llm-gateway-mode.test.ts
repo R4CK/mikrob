@@ -222,6 +222,80 @@ describe('local-llm.sh gateway mode (card f3f4b571)', () => {
     }
   })
 
+  it('ON, Ollama has pulled a model whose name CONTAINS "auto" as a substring (e.g. "starcoder2-autocomplete"): requesting --model auto still refuses -- exact match, not substring (Cybersec GO 29776 F-A / Cybered NO-GO 29789 F-B, card cdde2666: the old `grep -q "${MODEL%%:*}"` check forwarded "auto" to the gateway under exactly this ordinary local-install shape, and freellmapi routes "auto" straight to a cloud provider)', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      const ollamaPort = await startServer((req, res) => {
+        if (req.url === '/api/tags') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ models: [{ name: 'test-model' }, { name: 'starcoder2-autocomplete' }] }))
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+      let gatewayHit = false
+      const gatewayPort = await startServer((_req, res) => {
+        gatewayHit = true
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'should-not-be-used' } }], usage: {} }))
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const base = {
+        OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }
+      const rAuto = await run(baseEnv(base), ['--model', 'auto', 'hello'])
+      expect(rAuto.status).toBe(3)
+      const rAutoColon = await run(baseEnv(base), ['--model', 'auto:x', 'hello'])
+      expect(rAutoColon.status).toBe(3)
+      expect(gatewayHit).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('ON, --model is empty or a bare "." : refuses before any gateway request, even though both used to match every /api/tags response as a substring needle', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      const ollamaPort = await startServer((req, res) => {
+        if (req.url === '/api/tags') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ models: [{ name: 'test-model' }] }))
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+      let gatewayHit = false
+      const gatewayPort = await startServer((_req, res) => {
+        gatewayHit = true
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'should-not-be-used' } }], usage: {} }))
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const base = {
+        OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }
+      const rDot = await run(baseEnv(base), ['--model', '.', 'hello'])
+      expect(rDot.status).toBe(3)
+      expect(gatewayHit).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('ON with a malformed switch file ({"enabled": false}): stays OFF, routes direct to Ollama', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
     const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
@@ -249,5 +323,11 @@ describe('local-llm.sh gateway mode (card f3f4b571)', () => {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
     }
+  })
+
+  it('the default gateway base is pinned static text, not left to drift unnoticed (Cybered NO-GO 29789 F-B, mutant G5: every other test here overrides LOCAL_LLM_GATEWAY_API_BASE, so a changed default was caught by nothing)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(SCRIPT, 'utf-8')
+    expect(src).toContain('GATEWAY_API_BASE="${LOCAL_LLM_GATEWAY_API_BASE:-http://127.0.0.1:3001/v1}"')
   })
 })
