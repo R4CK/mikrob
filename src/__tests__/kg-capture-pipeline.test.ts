@@ -141,6 +141,33 @@ describe('runCapture', () => {
     kgDb.close()
   })
 
+  // Card c84a510a (comment 30214, real repro from the 03f15aca paired-model measurement): the
+  // default model occasionally wraps its JSON array in a ```json fence despite the template
+  // instructing against it. This is the EXACT text that model produced for a real card.
+  const FENCED_DRAFT_FIXTURE = '```json\n[\n    {\n        "title": "README overstated skill count",\n        "body": "The README fork-dev bullet incorrectly stated \'17 skill\' were installed; the live install actually deploys 15 distinct ECC-sourced skills (9 engineering, 4 QA, 2 security). The fix involved changing the number in the README from 17 to 15.",\n        "keywords": "README, skill count, documentation, bugfix"\n    },\n    {\n        "title": "DECISIONS.md rebase conflict",\n        "body": "The origin/develop branch of DECISIONS.md had gained commits since the card\'s old base. The fix involved rebasing the card onto origin/develop to resolve conflicts, keeping both existing entries in their respective positions and adding a new tail entry recording this specific delta fix.",\n        "keywords": "merge conflict, rebase, DECISIONS.md"\n    }\n]\n```'
+
+  it('a draft wrapped in a single ```json fence (real 03f15aca repro) still parses after stripping exactly one fence pair', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({ draftFn: () => FENCED_DRAFT_FIXTURE }))
+    expect(result.outcome).toBe('captured')
+    expect(result.solutionIds).toHaveLength(2)
+    const titles = kgDb
+      .prepare('SELECT title FROM kg_nodes WHERE id IN (?, ?)')
+      .all(result.solutionIds[0]!, result.solutionIds[1]!) as Array<{ title: string }>
+    expect(titles.map((t) => t.title)).toContain('README overstated skill count')
+    kgDb.close()
+  })
+
+  it('control: a plain JSON draft with no fence parses the same as before (no regression from the fence strip)', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: () => JSON.stringify([{ title: 'plain, no fence', body: 'unchanged by the strip' }]),
+    }))
+    expect(result.outcome).toBe('captured')
+    expect(result.solutionIds).toHaveLength(1)
+    kgDb.close()
+  })
+
   it('no REVIEW comment on the card -> skipped, not a failure', () => {
     const kgDb = freshKgDb()
     comments = [{ id: 3, author: 'backend', content: 'just a status update, no REVIEW', created_at: 500, automated: false }]

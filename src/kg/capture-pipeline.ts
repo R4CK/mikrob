@@ -210,13 +210,29 @@ function isSafeDraftField(value: string, maxLen: number): boolean {
   return value.length <= maxLen && !UNSAFE_CHARS_RX.test(value)
 }
 
+/** Card c84a510a (paired model-comparison measurement, comment 30214): the draft occasionally
+ *  wraps its JSON array in a markdown fence (```json ... ``` or ``` ... ```) despite the template
+ *  instructing "no markdown fences" -- measured on the current default model, not a reason to
+ *  switch models. Strips exactly ONE leading fence line and, only if a leading fence was found,
+ *  ONE trailing fence line -- nothing more lenient (no regex scan for an embedded [...] inside
+ *  prose): a draft that is not JSON after this must still fail to parse, not be guessed at. */
+function stripOneFence(raw: string): string {
+  const s = raw.trim()
+  const leadingFenceRx = /^```(?:json)?[ \t]*\r?\n/
+  const match = leadingFenceRx.exec(s)
+  if (!match) return s
+  const afterLeading = s.slice(match[0].length)
+  const trailingFenceRx = /\r?\n```[ \t]*$/
+  return trailingFenceRx.test(afterLeading) ? afterLeading.replace(trailingFenceRx, '') : afterLeading
+}
+
 /** Parses the local-LLM draft's JSON array, validated against KG_MAX_SOLUTIONS_PER_CARD and
  *  against non-empty titles -- malformed output is a capture failure, not a best-effort guess at a
  *  single node, so a confused draft never silently ships a low-quality node. */
 function parseDraft(raw: string, maxSolutions: number): DraftSolution[] | null {
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw.trim())
+    parsed = JSON.parse(stripOneFence(raw))
   } catch {
     return null
   }
