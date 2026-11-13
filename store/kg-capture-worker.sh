@@ -11,7 +11,25 @@
 # retryable 'backfill' failure) and only then discovers 'done' cards never queued at all
 # (src/kg/backfill-cli.ts's buildListCandidates). One batch, one pipeline, one local-LLM-only path
 # (MODULTERV section 5 -- never falls back online on a GPU hold).
+#
+# G2 (card c84a510a): a batch of up to KG_BACKFILL_BATCH cards, each allowing up to
+# KG_DRAFT_MAX_ATTEMPTS(2) local-LLM calls at up to DRAFT_CALL_TIMEOUT_MS(300s) apiece, can run far
+# longer than the worker's own schedule cadence (10 min) -- measured directly on this card (a
+# drain run still mid-batch when the next scheduled tick would fire). Without a lock, a second
+# scheduled run starts concurrently, doubling GPU contention for both and starving whichever row
+# either one is on (the exact failure class this card's FINDING comments reproduced). flock -n
+# (same nonblocking-try pattern fleet-test.sh/mopsion-suite-run.sh use for their own single-flight
+# guards) on a dedicated lock file: if another worker invocation already holds it, this run exits
+# immediately without touching the queue, rather than queueing -- the next cron tick is the retry.
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+LOCK_FILE="${KG_CAPTURE_WORKER_LOCK:-$HERE/kg-capture-worker.lock}"
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "kg-capture-worker: another run already holds the lock -- skipping this cycle." >&2
+  exit 0
+fi
+
 exec bash "$HERE/kg-backfill.sh" "$@"

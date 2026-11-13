@@ -50,6 +50,36 @@ export function listPendingCaptures(kgDb: Database.Database, limit: number = 20)
     .all(limit) as CaptureQueueRow[]
 }
 
+// G1 (card c84a510a): a row the live hook enqueued ('closed'/'reopen') that then failed (a
+// transient draftFn/write error, same class markCaptureFailed already tracks for 'backfill' rows)
+// used to be permanently stuck -- listPendingCaptures only reads state='pending', and
+// defaultListCandidates (backfill.ts) excludes anything already in the queue regardless of
+// reason. A capture-worker drain cycle during sustained GPU contention (measured on this card:
+// three consecutive first-row failures) would silently and permanently drop that card's capture,
+// with no re-arm path short of the one-off manual scripts used during this investigation
+// (kg-reset-hang-victims.ts/kg-rearm-contention-failures.ts). Same bounded-retry shape the
+// 'backfill' reason already has (defaultListCandidates' MAX_BACKFILL_RETRY_ATTEMPTS): capped, not
+// unbounded or "never".
+export const MAX_CLOSED_RETRY_ATTEMPTS = 2
+
+/** Failed rows whose reason is 'closed' or 'reopen' (the live hook's own enqueues, never
+ *  'backfill' -- that reason already has its own retry path via defaultListCandidates), with
+ *  attempts still under the cap. Oldest-first, same ordering convention as listPendingCaptures. */
+export function listRetryableClosedCaptures(
+  kgDb: Database.Database,
+  limit: number = 20,
+  maxAttempts: number = MAX_CLOSED_RETRY_ATTEMPTS,
+): CaptureQueueRow[] {
+  if (!Number.isInteger(limit) || limit <= 0) return []
+  return kgDb
+    .prepare(
+      `SELECT * FROM kg_capture_queue
+       WHERE state = 'failed' AND reason IN ('closed', 'reopen') AND attempts < ?
+       ORDER BY created_at ASC LIMIT ?`,
+    )
+    .all(maxAttempts, limit) as CaptureQueueRow[]
+}
+
 // All three mark* functions below UPSERT rather than plain-UPDATE: a plain UPDATE is a silent
 // no-op when no row exists yet (0 rows affected, no error), which would hide a real call-order bug
 // behind "nothing happened" instead of surfacing it -- the row this call describes must exist
