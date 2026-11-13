@@ -24536,3 +24536,47 @@ agent-scaffold-main-claude-md-zero-diff.test.ts + autonomy-section.test.ts: 38/3
 CLAUDE.md mérete a javítás után: 33,221 B (a cél 40 KB alatt marad).
 
 **Ki döntött:** backend3, QA FAIL 30388 nyomán. Gate: QA + Cybersec (delta re-check).
+
+## 2026-11-13 — kártya c60e229a delta: CYBERSEC NO-GO 30400 fix -- per-szabály index, protokoll-tokenek verbatim, abszolút linkek
+
+**Kontextus:** WhiteHat2 (cybersec2) NO-GO-t adott dcfff1474-en (komment 30400), MikroB
+rendezte (msg 18166): H1 (HIGH) a kártya saját scope-ja ("protokoll-tokenek verbatim maradnak
+CLAUDE.md-ben") nem teljesült -- a teljes "Munkavégzési szabályok" szekció kimozgatásával a
+QA PASS/CYBERSEC GO/NO-GO/CYBERED GO/Gate-SHA:/Fix-Direction:/Pair-FE:/Pair-BE:/BLOKKOLT-/
+ELUTASÍTVA/Kész-ha/allowFrom előfordulások 0-ra estek a mindig betöltött fájlban. H2 (HIGH) a
+Peti-jóváhagyott terv ("egy binding index-sor szabályonként") nem így épült -- egy index-sor
+szekciónkét, nem szabályonként (64 kötelező sor helyett 13 volt). H3 (MEDIUM-HIGH) a
+`docs/rules/<fájl>.md` relatív link egy sub-agent cwd-jéből (agents/<név>) nem oldódik fel.
+M1 (MEDIUM): a kódban/skillekben hivatkozott szabályszámok (4b, 4c, 10) nem voltak megtalálhatók.
+L1 (LOW): a reachability-script csak KÖTELEZ/TILOS/MUST-ot kapuzta, SOHA/MEGSZEGHETETLEN/MINDIG
+csak informatív volt, és egy teljes mondat törlését nem fogta meg (mutáció-bizonyítva
+WhiteHat2 által).
+
+**Döntés:** teljes átépítés H1-H3 + M1 + L1 mentén.
+- A "Munkavégzési szabályok" (1-22, a betűs alszabályokkal: 1b-1e, 3a, 4a-4f, 6a/6b, 8a/8b --
+  37 sor), a "Kódminőségi alapelvek" (1-15) és az "Ellenőrizhető munka" (1-12) szekciók egy
+  index-sort kapnak MINDEN SZÁMOZOTT SZABÁLYRA (64 sor összesen), a szabály saját, programozottan
+  kivont bold-vezetőmondatát idézve verbatim -- ez a protokoll-tokeneket (Gate-SHA:, Fix-Direction:,
+  a verdikt-szavak, Pair-FE:/Pair-BE:, BLOKKOLT-tisztázás) a hozzájuk tartozó szabály sorában
+  automatikusan visszahozza, két kivonat (19., 8a.) kézzel pótolva, ahol a kivonás a tokenen
+  kívül vágott.
+- "Személyiség" és "Inter-agent kommunikáció" index-sora kifejezetten idézi a protokoll-token
+  listát / az `allowFrom` szót, mivel ezek nem számozott szabály-listák.
+- Minden link REPO-GYÖKÉR-ABSZOLÚT (`/home/neon/marveen/docs/rules/...`), nem relatív.
+- scripts/claude-md-split-reachability-check.py: (a) SOHA/MEGSZEGHETETLEN/MINDIG mostantól
+  kapuzó, nem csak informatív; (b) ÚJ teljes nem-üres-sor MULTISET megőrzés-ellenőrzés -- minden
+  régi sornak legalább ugyanannyiszor kell előfordulnia az új korpuszban. Mutáció-bizonyítva:
+  egy default-deny mondat törlése az inter-agent-kommunikacio.md-ből (pont az az osztály, amit
+  WhiteHat2 saját mutánsa fogott, és a régi kulcsszó-ellenőrzés nem) -- az új ellenőrzés exit
+  1-et ad és megnevezi a sort; visszaállítva, tiszta.
+- Ellenőrzés a szülő commit (origin/develop, 61a258e38) ellen: 74 KÖTELEZ/TILOS/MUST/SOHA/
+  MEGSZEGHETETLEN/MINDIG sor, 0 hiányzik; 661 egyedi nem-üres sor az eredeti fájlban, 0 hiányzik
+  az új korpuszból; 8 generált marker-pár, 0 hiba.
+
+**Méret:** 33,221 -> 58,867 bájt. Ez MEGHALADJA az eredeti 40 KB célt, de továbbra is ~60%-os
+csökkenés az eredeti 146,193 bájthoz képest. WhiteHat2 saját Direction-je ("a méretcél túlélheti
+ezt, vagy mondd ki a deltát") ezt a kimenetet kifejezetten elfogadhatónak jelölte -- a helyesség
+(H1/H2) elsőbbséget kapott a szigorú méret-cél felett, a delta itt rögzítve, nem elhallgatva.
+
+**Ki döntött:** backend3, CYBERSEC NO-GO 30400 (WhiteHat2) nyomán, MikroB útmutatása szerint
+(msg 18166). Gate: QA2 + Cybersec2 (MikroB reroute, msg 18155/18166).
