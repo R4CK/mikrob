@@ -30,7 +30,16 @@
 # Exit: whatever agent-worktree.sh exits (0 ok | 2 bad usage | 3 setup failed)
 set -euo pipefail
 
-export CLEANCORE_MAIN="${MOPSI_MAIN:-/mnt/h/LM_Studio_Workdir/Mopsi-main}"
-export CLEANCORE_WORKTREES="${MOPSI_WORKTREES:-/mnt/h/LM_Studio_Workdir/Mopsi-worktrees}"
+# card 22835648 round 4 (Cybered NO-GO 28967): agent-worktree.sh now reads MOPSION_MAIN/
+# MOPSION_WORKTREES FIRST (env_compat_get, new-name-wins). This wrapper used to export only the
+# old CLEANCORE_* names to steer it at the Mopsi clone -- if the CALLER's environment happened to
+# already have MOPSION_MAIN/MOPSION_WORKTREES set (pointing at the real mopsion clone), that
+# ambient value won over this wrapper's CLEANCORE_* export, and the "Mopsi" wrapper silently
+# resolved the mopsion worktree instead. Export the NEW names too, so this wrapper's own value
+# always wins regardless of what the caller's environment already set.
+export MOPSION_MAIN="${MOPSI_MAIN:-/mnt/h/LM_Studio_Workdir/Mopsi-main}"
+export MOPSION_WORKTREES="${MOPSI_WORKTREES:-/mnt/h/LM_Studio_Workdir/Mopsi-worktrees}"
+export CLEANCORE_MAIN="$MOPSION_MAIN"
+export CLEANCORE_WORKTREES="$MOPSION_WORKTREES"
 
 exec "$(dirname "$0")/agent-worktree.sh" "$@"

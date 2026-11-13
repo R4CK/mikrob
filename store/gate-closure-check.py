@@ -153,6 +153,7 @@ import sys
 
 # The role names and the author->role fold both live in gate_author_role.py, so that the tool
 # which PERMITS a landing and this one, which only advises, cannot drift apart (card 48b0dd36).
+from env_compat_lib import env_compat_get  # noqa: E402  (sits with the constants it defines)
 from gate_author_role import GATE_ROLES, author_role, canonical_gate  # noqa: E402  (sits with the constants it defines)
 
 GATES = GATE_ROLES
@@ -656,9 +657,12 @@ def _fmt_shas(shas):
 
 # (name, clone path, the ref that IS the shipped product). A gate-approved commit that is not an
 # ancestor of this ref exists only on a branch (card e65c480a).
+# MOPSION_MAIN read first (card 22835648 round 4, Cybered NO-GO 28967): this was reading only the
+# retired CLEANCORE_MAIN name directly, so a session with only MOPSION_MAIN set decided
+# landed/UNLANDED/UNRESOLVED against the default clone while the landing scripts used the real one.
 _CLONES = (
     ("marveen", os.environ.get("MARVEEN_MAIN", "/home/neon/marveen"), "origin/develop"),
-    ("cleancore", os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/mopsion"), "origin/main"),
+    ("cleancore", env_compat_get("MOPSION_MAIN", "CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/mopsion"), "origin/main"),
 )
 # One knob, for replaying a past state (the selftest points this at the sha main stood on when the
 # founding case closed) or for a clone whose default branch is named differently. Empty = per-clone

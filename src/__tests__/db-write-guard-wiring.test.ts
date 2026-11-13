@@ -18,13 +18,16 @@ const guardEntries = (s: Record<string, unknown>): unknown[] =>
   preToolUse(s).filter((e) => JSON.stringify(e).includes('db-write-guard.py'))
 
 describe.skipIf(REPO_UNDER_TMP)('injectDbWriteGuard', () => {
-  it('adds a Bash-matched PreToolUse hook pointing at the guard', () => {
+  it('adds a Bash|Write|Edit|MultiEdit-matched PreToolUse hook pointing at the guard', () => {
     const s: Record<string, unknown> = {}
     injectDbWriteGuard(s)
     const entries = guardEntries(s)
     expect(entries).toHaveLength(1)
     expect(JSON.stringify(entries[0])).toContain('db-write-guard.py')
-    expect((entries[0] as { matcher: string }).matcher).toBe('Bash')
+    // N2 (CYBERSEC NO-GO 28718/28723, card c1766c6c re-gate round 4): "Bash" alone made the
+    // hook's own Write/Edit/MultiEdit protection dead code -- the harness never called it for
+    // those tools. This assertion fails if the matcher ever regresses back to "Bash" alone.
+    expect((entries[0] as { matcher: string }).matcher).toBe('Bash|Write|Edit|MultiEdit')
   })
 
   it('is IDEMPOTENT -- a respawn re-runs it and must not accumulate duplicates', () => {

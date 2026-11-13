@@ -2342,6 +2342,20 @@ export function needsFleetOauthFor(
   return isClaude && authMode !== 'api' && !isOwnTeam && !customProviderId
 }
 
+/**
+ * Card 313c8a71 F1 (WhiteHat2 on 3ae2411d round 2, comment 28768): needsFleetOauthFor above was
+ * already the single source for the DECISION, but the EXPRESSION that feeds its `isClaude`
+ * argument -- `!customProviderId && model.startsWith('claude-')` -- was retyped three times: here
+ * at the launch site, again in scripts/needs-fleet-oauth.mjs, and a third time in that script's own
+ * parity test's "ground truth". Measured: mutating the launch site's inline copy of this expression
+ * left the parity test green on both sides, because neither side actually called the launch site's
+ * logic -- they each had their own copy that happened to still agree. Extracted so the launch site,
+ * the watchdog's dist import, and the parity test's ground truth all call this ONE function instead.
+ */
+export function isClaudeAgent(model: string, customProviderId: string | null | undefined): boolean {
+  return !customProviderId && model.startsWith('claude-')
+}
+
 async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
@@ -2543,7 +2557,9 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // resolveProviderEnv points it at a third-party ANTHROPIC_BASE_URL. Every downstream use of
     // isClaude in this function (the oauthTokenFile backstop below, and needsFleetOauthFor via
     // needsFleetOauth) now correctly treats a customProvider agent as non-Claude for auth purposes.
-    const isClaude = !customProviderId && model.startsWith('claude-')
+    // Card 313c8a71 F1: isClaudeAgent is the single source for this expression -- see its own
+    // doc comment (this card's own repro mutated this exact line and nothing caught it).
+    const isClaude = isClaudeAgent(model, customProviderId)
     // oauthTokenFile backstop: the decision above already refused a non-Claude agent (or, now, a
     // custom-provider agent -- card f1800242) with its own token. Re-checked on the launcher's own
     // isClaude/customProviderId, so a drift between these and the decision's predicates refuses
