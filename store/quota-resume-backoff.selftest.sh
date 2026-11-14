@@ -71,5 +71,5 @@ gap3=$(python3 -c "import json;print(int(json.load(open('$QUOTA_RESUME_BACKOFF_F
 check "3rd STILL-LIMITED backoff gap" "$gap3" "3600"
 
 echo
-echo "$pass passed, $fail failed"
+echo "quota-resume-backoff.selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

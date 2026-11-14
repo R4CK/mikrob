@@ -24490,3 +24490,21 @@ develop's DECISIONS.md is a byte-exact prefix of the resolved file).
 
 **Ki döntött:** Cybersec NO-GO (comment 30315, Gate-SHA f859c361b), fixed by backend2. Gate:
 QA2 + Cybersec.
+
+## 2026-11-14 -- card 7f112c2f delta: fleet-test REFUSED the merge, fixed (OK_SHAPES wording + exec bit)
+
+**Decision:** landing attempt (marveen-land.sh --card 7f112c2f) was REFUSED: fleet-test.sh on
+the merge result failed 3 tests, none in this card's own logic. (1) `shebang-files-executable.test.ts`:
+`quota-resume-backoff.selftest.sh`, `quota-switchback.selftest.py` and `quota-switchback.py` were
+tracked 100644 despite carrying a `#!` shebang -- fixed with `git update-index --chmod=+x` on all
+three (the DrvFs/core.fileMode=false mount does not let a plain `chmod +x` reach the index). (2)
+`store-selftests-all-run.test.ts > quota-resume-backoff passes` and `> quota-switchback passes`:
+both selftests printed their summary as a bare `N passed, M failed`, which matches none of the
+file's OK_SHAPES regexes (the closest, `/selftest: ([1-9]\d*) passed, 0 failed/`, requires the
+`selftest:` prefix) -- same wording-convention bug class as card 4cd2a0fc's
+freellm-call-retry.selftest.sh fix earlier today. Fixed by prefixing each script's own name:
+`quota-resume-backoff.selftest: $pass passed, $fail failed` and
+`quota-switchback.selftest: {passed} passed, {failed} failed`. Verified standalone: both exit 0
+with the new wording (10 passed / 13 passed, 0 failed each).
+
+**Ki döntött:** backend2 (card 7f112c2f, fleet-test REFUSED finding, fixed same-day before re-landing).

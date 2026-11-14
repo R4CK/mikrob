@@ -84,5 +84,5 @@ check("gemini-fallback.ts references SWITCHBACK-HYSTERESIS-V1", "SWITCHBACK-HYST
 check("quota-bridge.py imports quota_switchback (shared Python module)", "quota_switchback" in py_text)
 check("gemini-fallback.ts implements confirmSwitchback (shared-rule mirror)", "confirmSwitchback" in ts_text)
 
-print(f"\n{passed} passed, {failed} failed")
+print(f"\nquota-switchback.selftest: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
