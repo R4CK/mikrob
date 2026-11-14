@@ -517,7 +517,14 @@ if [ "${1:-}" = "--selftest" ]; then
     in_fn { if ($0 == "}") { in_fn = 0 }; next }
     { print }
   ' "$0" | grep -v '^[[:space:]]*#')"
-  if printf '%s\n' "$prod_src" | grep -qE 'exec \{LAND_LOCK_FD\}>&-'; then
+  # M3 (WhiteHat2 NO-GO 30647): `grep -qE` exits the instant it finds a match, closing its end of
+  # the pipe -- under `set -o pipefail` (this file's own top line), the printf writer then dies of
+  # SIGPIPE (rc 141) and pipefail reports the PIPELINE's status as that 141, not grep's 0, flipping
+  # a genuine match to "not found". Measured: with land_batch's own +384 lines added, $prod_src grew
+  # past the point where this flips, and this pin went flaky-false-negative on an ACTUAL regression
+  # (the thing it exists to catch). `grep -c` never exits early -- it reads to EOF to count matching
+  # lines -- so the pipe never closes underneath printf. Same fix at line ~674 below.
+  if [ "$(printf '%s\n' "$prod_src" | grep -cE 'exec \{LAND_LOCK_FD\}>&-')" -gt 0 ]; then
     echo "  FAIL found a bare 'exec {LAND_LOCK_FD}>&-' in production code outside release_land_lock_fd (B2')"; fail=1
   else
     echo "  ok   no bare exec {LAND_LOCK_FD}>&- exists outside release_land_lock_fd anywhere in production code (B2')"
@@ -671,7 +678,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # Text-pin on land_one's actual wait-loop condition (same B2'-style call-site pin as
   # release_land_lock_fd's, below), scoped to production code only.
   n=$((n + 1))
-  if printf '%s\n' "$prod_src" | grep -qE 'while ! \{ land_lock_is_head "\$land_lock_ticket" && acquire_land_lock; \}; do'; then
+  # M3: same SIGPIPE/pipefail hazard as the B2' pin above -- `grep -c` instead of `grep -q`.
+  if [ "$(printf '%s\n' "$prod_src" | grep -cE 'while ! \{ land_lock_is_head "\$land_lock_ticket" && acquire_land_lock; \}; do')" -gt 0 ]; then
     echo "  ok   land_one's wait loop still gates acquire_land_lock on land_lock_is_head (card 5d9731cd)"
   else
     echo "  FAIL land_one's wait loop no longer gates acquire_land_lock on land_lock_is_head -- the FIFO fix for card 5d9731cd is not wired in"; fail=1
@@ -1871,9 +1879,30 @@ land_batch() {
   _run_id="$(bash "$_ljd" start marveen-land.sh "$batch_tag" "$cards_csv" "$$" 2>/dev/null || true)"
   trap '_exit_rc=$?; if [ -n "${_run_id:-}" ] && [ "${_run_finished:-0}" != "1" ]; then bash "$_ljd" finish "$_run_id" "$_exit_rc" >/dev/null 2>&1 || true; _run_finished=1; fi' EXIT
 
+  # M4 (WhiteHat2 NO-GO 30647): land_with_retry has had group-kill TERM/HUP/INT traps since card
+  # 07f1fe6e; land_batch had none. Measured: TERM to an untrapped land_batch orphaned the wrapped
+  # fleet-test (reparented, still holding a CPU slot), left the disposable worktree behind, and
+  # (since the only EXIT-trap write is the journal finish above) recorded the killed run as a plain
+  # "finished" with no "aborted" marker. Same fix, same shape: kill the wrapped command's whole
+  # process group (not just land_batch's own pid), mark the journal run aborted BEFORE exiting, and
+  # run cleanup() explicitly -- a RETURN trap (set further down, once $wt exists) never fires on a
+  # signal-forced exit, only on a normal function return.
+  _batch_sig_stop() { # $1 = signal name (TERM/HUP/INT), $2 = its POSIX exit code (128+signum)
+    _run_finished=1
+    [ -n "${run_fg_killable_pid:-}" ] && kill -"$1" -- "-$run_fg_killable_pid" 2>/dev/null
+    [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" "$2" "deliberate stop (SIG$1)" aborted >/dev/null 2>&1
+    declare -F cleanup >/dev/null 2>&1 && cleanup 2>/dev/null
+    trap - EXIT
+    exit "$2"
+  }
+  trap '_batch_sig_stop TERM 143' TERM
+  trap '_batch_sig_stop HUP 129' HUP
+  trap '_batch_sig_stop INT 130' INT
+
   local _batch_start_ts; _batch_start_ts="$(date +%s)"
   local -a survivors=() drop_cards=() drop_reasons=()
-  local -A surv_agent=() surv_work_sha=() surv_gate_sha=()
+  local -A surv_agent=() surv_work_sha=() surv_gate_sha=() surv_ungated_reason=()
+  local ALLOW_UNGATED_CARDS="${ALLOW_UNGATED_CARDS:-}"
   local fleet_test_result="" batch_outcome="" first_failing_file="" bump_note="none"
 
   _batch_finish() { # $1 = fleet_test "green"/"red"/"-", $2 = result, $3 = exit code
@@ -1900,6 +1929,24 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     fi
   }
 
+  # L1 (WhiteHat2 NO-GO 30647): every fallback site used to `return 0` unconditionally, so a caller
+  # could not tell "the batch fell back and every survivor still landed one-by-one" from "it fell
+  # back and NOTHING landed" -- both read as success. Shared by all four fallback sites below.
+  _fallback_land_all() { # $1 = fleet_test tag for the journal, $2 = result label
+    local any_landed=0 fb_rc
+    for card in "${survivors[@]}"; do
+      LAND_CARD="$card" land_with_retry "${surv_agent[$card]}" 0 "card/$card"
+      fb_rc=$?
+      [ "$fb_rc" -eq 0 ] && any_landed=1
+    done
+    if [ "$any_landed" = 1 ]; then
+      _batch_finish "$1" "$2" 0
+      return 0
+    fi
+    _batch_finish "$1" "$2" 4
+    return 4
+  }
+
   g fetch -q origin "$DEFAULT_BRANCH" || die 3 "could not fetch origin/$DEFAULT_BRANCH"
 
   # Lock the batch WINDOW, same FIFO-ticket + flock as a single landing (card 5d9731cd/24d1543f) --
@@ -1914,7 +1961,7 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
       rm -f "$land_lock_ticket" 2>/dev/null
       echo "batch: REFUSED -- could not acquire the landing lock after $((land_lock_waited / 60)) min. Nothing pushed." >&2
       _batch_finish "-" "lock-timeout" 4
-      trap - EXIT
+      trap - TERM HUP INT EXIT
       return 4
     fi
     if [ "$land_lock_announced" -eq 0 ]; then
@@ -1979,20 +2026,34 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     fi
 
     land_sha="$(git -C "$wt" rev-parse "$branch" 2>/dev/null)" || land_sha="$branch"
-    GATE_CHECK_OVERRIDE_ARMED="$CARD_ALLOW_UNGATED" gate_verdict_check "$card" "$land_sha" refuse >/dev/null 2>&1
+    # M1 (WhiteHat2 NO-GO 30647): --allow-ungated used to be CARD_ALLOW_UNGATED, the SAME global
+    # land_one's single-card path reads -- so one flag tolerated EVERY card in the batch, silently.
+    # Scoped per-card here: a card only rides ungated if its own id is named in ALLOW_UNGATED_CARDS
+    # (CSV, --allow-ungated-cards), same naming-not-blanket shape as --allow-stacked.
+    local card_ungated_ok=0
+    case ",$(printf '%s' "$ALLOW_UNGATED_CARDS" | tr 'A-F' 'a-f' | tr -d '[:space:]')," in
+      *",$card,"*) card_ungated_ok=1 ;;
+    esac
+    GATE_CHECK_OVERRIDE_ARMED="$card_ungated_ok" gate_verdict_check "$card" "$land_sha" refuse >/dev/null 2>&1
     gate_rc=$?
     if [ "$gate_rc" -eq 2 ]; then
       _batch_drop "$card" "FAILING gate verdict for $land_sha"; continue
-    elif [ "$gate_rc" -ne 0 ] && [ "$CARD_ALLOW_UNGATED" != "1" ]; then
+    elif [ "$gate_rc" -ne 0 ] && [ "$card_ungated_ok" != "1" ]; then
       _batch_drop "$card" "no passing gate verdict for $land_sha"; continue
+    elif [ "$gate_rc" -ne 0 ]; then
+      say "batch: $card gate-check: no usable verdict, TOLERATED by --allow-ungated-cards -- this card lands deliberately ungated"
+      surv_ungated_reason[$card]="no usable QA verdict for $land_sha"
     fi
 
     card_designated_gates_agree "$card" "$land_sha" >/dev/null 2>&1
     desig_rc=$?
     if [ "$desig_rc" -eq 2 ]; then
       _batch_drop "$card" "FAILING designated-gate verdict for $land_sha"; continue
-    elif [ "$desig_rc" -ne 0 ] && [ "$CARD_ALLOW_UNGATED" != "1" ]; then
+    elif [ "$desig_rc" -ne 0 ] && [ "$card_ungated_ok" != "1" ]; then
       _batch_drop "$card" "designated gates do not AGREE for $land_sha"; continue
+    elif [ "$desig_rc" -ne 0 ]; then
+      say "batch: $card designated-gate-check: no AGREE from the card's designated gates, TOLERATED by --allow-ungated-cards"
+      surv_ungated_reason[$card]="${surv_ungated_reason[$card]:+${surv_ungated_reason[$card]}; }the card's designated gates do not all AGREE on $land_sha"
     fi
 
     local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land --batch $batch_tag, card $card)"
@@ -2057,14 +2118,14 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
   if [ "${#survivors[@]}" -eq 0 ]; then
     say "batch: no survivors -- nothing to land"
     _batch_finish "-" "nothing-to-land" 0
-    trap - EXIT
+    trap - TERM HUP INT EXIT
     return 0
   fi
 
   if [ "$dry" = "1" ]; then
     say "batch: DRY-RUN -- survivors: ${survivors[*]}, dropped: ${drop_cards[*]:-none} -- not testing, not pushing"
     _batch_finish "-" "dry-run" 0
-    trap - EXIT
+    trap - TERM HUP INT EXIT
     return 0
   fi
 
@@ -2076,12 +2137,9 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     say "$NPM_LF_OUT"
     git -C "$wt" worktree 2>/dev/null; # no-op, cleanup() below removes it
     cleanup
-    trap - RETURN EXIT
-    for card in "${survivors[@]}"; do
-      land_with_retry "${surv_agent[$card]}" 0 "card/$card"
-    done
-    _batch_finish "-" "fallback-one-by-one (npm lockfile drift)" 0
-    return 0
+    trap - TERM HUP INT RETURN EXIT
+    _fallback_land_all "-" "fallback-one-by-one (npm lockfile drift)"
+    return $?
   fi
 
   # A2: exactly ONE version-bump commit per batch, after the last merge.
@@ -2126,12 +2184,9 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     rm -f "$ft_log" 2>/dev/null
     say "batch: fleet-test RED on the combined result (first failing file: ${first_failing_file:-unknown}) -- abandoning the batch, falling back to land_with_retry one card at a time (no bisection in v1)"
     cleanup
-    trap - RETURN EXIT
-    for card in "${survivors[@]}"; do
-      land_with_retry "${surv_agent[$card]}" 0 "card/$card"
-    done
-    _batch_finish red "fallback-one-by-one" 0
-    return 0
+    trap - TERM HUP INT RETURN EXIT
+    _fallback_land_all red "fallback-one-by-one"
+    return $?
   fi
   rm -f "$ft_log" 2>/dev/null
   say "batch: fleet-test GREEN on the combined result ($(git -C "$wt" diff --name-only "$base_sha..$combined_head" | wc -l) file(s) changed since $DEFAULT_BRANCH base)"
@@ -2142,12 +2197,9 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     echo "$conflict_markers" | sed 's/^/    /'
     git -C "$wt" reset -q --hard "$base_sha"
     cleanup
-    trap - RETURN EXIT
-    for card in "${survivors[@]}"; do
-      land_with_retry "${surv_agent[$card]}" 0 "card/$card"
-    done
-    _batch_finish red "fallback-one-by-one (conflict markers)" 0
-    return 0
+    trap - TERM HUP INT RETURN EXIT
+    _fallback_land_all red "fallback-one-by-one (conflict markers)"
+    return $?
   fi
 
   local push_err
@@ -2155,14 +2207,25 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     say "batch: PUSH FAILED (likely lost a race against another landing) -- abandoning the batch, falling back one-by-one, which re-merges onto the new tip itself:"
     echo "$push_err" | sed 's/^/    /'
     cleanup
-    trap - RETURN EXIT
-    for card in "${survivors[@]}"; do
-      land_with_retry "${surv_agent[$card]}" 0 "card/$card"
-    done
-    _batch_finish green "fallback-one-by-one (lost push race)" 0
-    return 0
+    trap - TERM HUP INT RETURN EXIT
+    _fallback_land_all green "fallback-one-by-one (lost push race)"
+    return $?
   fi
   g fetch -q origin "$DEFAULT_BRANCH"
+
+  # L2 (WhiteHat2 NO-GO 30647): land_one runs these four steps after every single-card push so the
+  # live checkout, blast-radius graph, code-graph and (if src/ moved) dist/ follow the landed state
+  # -- land_batch pushed too, but never ran them, so a batch push left all four one landing stale
+  # until the next single --card landing happened to refresh them. Once, for the combined result,
+  # same order (sync BEFORE index) and same non-fatal-by-construction shape as land_one's copy.
+  sync_live_install
+  "$(dirname "$0")/blast-radius-check.py" --refresh "$MAIN" 2>&1 | sed 's/^/  /' || true
+  "$(dirname "$0")/graphify.sh" build "$MAIN" 2>&1 | tail -1 | sed 's/^/  graphify: /' || true
+  if git -C "$wt" diff --name-only "$base_sha..$combined_head" -- src/ | grep -q .; then
+    rebuild_live_install
+  fi
+  "$(dirname "$0")/kg-check-landing.sh" --repo marveen --repo-dir "$wt" --base "$base_sha" \
+    --sha "$combined_head" --actor "marveen-land:batch" --main-dist "$MAIN/dist" 2>&1 | sed 's/^/  /' || true
 
   say "batch: LANDED -- ${#survivors[@]} card(s) (${survivors[*]}) -> origin/$DEFAULT_BRANCH (develop tip $(git -C "$wt" rev-parse --short HEAD))"
   echo "Gate-SHA: n/a -- see per-card Merge-SHA below, each card's own merge commit"
@@ -2208,8 +2271,16 @@ print(json.dumps({"mode":"batch-landed-unrecorded","cards":sys.argv[1].split(","
     [ -n "$urec_line" ] && printf '%s\n' "$urec_line" >>"$(dirname "$0")/land-runs.jsonl" 2>/dev/null
   fi
 
+  # M1 (WhiteHat2 NO-GO 30647): post the SAME "UNGATED LANDING" note land_one posts, per card that
+  # actually rode ungated -- only AFTER the push is confirmed (N2's own reasoning: a note posted
+  # before the push is confirmed could end up on a card that never actually landed).
+  for card in "${survivors[@]}"; do
+    [ -n "${surv_ungated_reason[$card]:-}" ] || continue
+    _note_ungated_landing "${surv_agent[$card]}" "$card" "${surv_ungated_reason[$card]}"
+  done
+
   _batch_finish green pushed 0
-  trap - EXIT
+  trap - TERM HUP INT EXIT
   return 0
 }
 
@@ -2346,12 +2417,16 @@ if [ "${1:-}" = "--selftest-land-batch-inner" ]; then
   LBTMP="$MARVEEN_LAND_BATCH_SELFTEST_TMP"
   trap 'rm -rf "$LBTMP"' EXIT
   LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0
-  # --allow-ungated's EQUIVALENT, armed for every case: GATE_CHECK_TOKEN_FILE above is deliberately
-  # unreadable, so every card's gate/designated-gate check comes back "no usable verdict" (rc 1) --
-  # this is what land_one's own --allow-ungated tolerates, same meaning here. A FAILING verdict
-  # (rc 2, never overridable) is not exercised by this fixture; the shared helper that produces it
-  # is land_one's own dependency, already covered by that function's existing selftests.
-  CARD_ALLOW_UNGATED=1
+  # M2 (WhiteHat2 NO-GO 30647): this used to set CARD_ALLOW_UNGATED=1 BLANKET for every case, which
+  # (with GATE_CHECK_TOKEN_FILE below deliberately unreadable) made every per-card refusal path --
+  # FAILING verdict, no-AGREE designated gates, the downward/DECISIONS/seam-loss drops -- untestable
+  # by construction: measured, 12 of those mutants survived --selftest-land-batch unchanged.
+  # CARD_ALLOW_UNGATED stays 0 (its real default); each case below sets ALLOW_UNGATED_CARDS to
+  # exactly its own survivors' ids -- the SAME scoped tolerance M1 now requires in production -- so
+  # cases A-F keep tolerating their own fixture's unreadable-token "no usable verdict", but ONLY for
+  # the cards actually in that call, never as a side effect of some other case's cards. Case G below
+  # runs with a REAL gate stub and NO blanket tolerance at all, proving the drops are real.
+  CARD_ALLOW_UNGATED=0
   ORIGIN="$LBTMP/origin.git"
 
   _lb_mkmain() { # $1 = subdir name; returns (echoes) the new $MAIN
@@ -2389,6 +2464,14 @@ exit 0
 EOS
   chmod +x "$LBTMP/stub-first-red.sh"
 
+  # Always red -- the combined run AND every fallback attempt fail (card I, L1).
+  cat >"$LBTMP/stub-always-red.sh" <<'EOS'
+#!/usr/bin/env bash
+echo "FAIL in always-red.test.ts"
+exit 1
+EOS
+  chmod +x "$LBTMP/stub-always-red.sh"
+
   # --- case A: green batch, 2 cards -- ONE fleet-test call, ONE push, both land -----------------
   # Also pins A2 (exactly one version-bump commit for the WHOLE batch, not per card) and A3 (the
   # journal's started/heartbeat/finished triple + the batch line, both land in land-runs.jsonl) --
@@ -2402,6 +2485,7 @@ EOS
   _JRNL="$(dirname "$0")/land-runs.jsonl"
   _jrnl_before="$(wc -l <"$_JRNL" 2>/dev/null || echo 0)"
   _a_base="$(git -C "$MAIN" rev-parse origin/develop)"
+  ALLOW_UNGATED_CARDS="a1,a2"
   land_batch 0 "a1:fixture" "a2:fixture" >"$LBTMP/out-a.txt" 2>&1
   out_a="$(cat "$LBTMP/out-a.txt")"
   calls_a="$(cat "$STUB_COUNTER_FILE" 2>/dev/null || echo 0)"
@@ -2431,12 +2515,20 @@ ok = ("started" in events and "finished" in events
       and batch_line.get("result") == "pushed")
 sys.exit(0 if ok else 1)
 '; then a3_ok=1; fi
-  if [ "$calls_a" = "1" ] && [ "$bumps_a" = "1" ] && [ "$a3_ok" = "1" ] \
+  # L2 (WhiteHat2 NO-GO 30647): land_one runs sync_live_install/blast-radius/graphify/kg-check
+  # after every single-card push; land_batch pushed too but never ran them. Both leave a line in
+  # this fixture's output (no API keys configured, so blast-radius/graphify/kg-check degrade to a
+  # one-line "skipped"/"tip" message rather than erroring -- still proof the step was REACHED).
+  l2_ok=0
+  printf '%s' "$out_a" | grep -q "fast-forwarded to origin/develop" \
+    && printf '%s' "$out_a" | grep -q "graphify:" \
+    && l2_ok=1
+  if [ "$calls_a" = "1" ] && [ "$bumps_a" = "1" ] && [ "$a3_ok" = "1" ] && [ "$l2_ok" = "1" ] \
      && git -C "$MAIN" merge-base --is-ancestor "card/a1" "origin/develop" \
      && git -C "$MAIN" merge-base --is-ancestor "card/a2" "origin/develop"; then
-    echo "  ok   case A: green batch -- 1 fleet-test call, 1 version-bump commit (A2), journal triple + batch line present under one run_id (A3), both cards landed"
+    echo "  ok   case A: green batch -- 1 fleet-test call, 1 version-bump commit (A2), journal triple + batch line present under one run_id (A3), both cards landed, post-push sync_live_install+graphify ran once (L2)"
   else
-    echo "  FAIL case A: fleet-test calls=$calls_a (want 1), bump commits=$bumps_a (want 1), journal-ok=$a3_ok; output:"; echo "$out_a" | sed 's/^/    /'; fail=1
+    echo "  FAIL case A: fleet-test calls=$calls_a (want 1), bump commits=$bumps_a (want 1), journal-ok=$a3_ok, l2-ok=$l2_ok; output:"; echo "$out_a" | sed 's/^/    /'; fail=1
   fi
 
   # --- case B: a card with no branch is dropped and named, the other still lands ----------------
@@ -2445,6 +2537,7 @@ sys.exit(0 if ok else 1)
   n=$((n+1))
   export STUB_COUNTER_FILE="$LBTMP/caseB-count"
   TEST_CMD="$LBTMP/stub-ok.sh"
+  ALLOW_UNGATED_CARDS="b1,doesnotexist"
   land_batch 0 "b1:fixture" "doesnotexist:fixture" >"$LBTMP/out-b.txt" 2>&1
   out_b="$(cat "$LBTMP/out-b.txt")"
   if git -C "$MAIN" merge-base --is-ancestor "card/b1" "origin/develop" \
@@ -2464,6 +2557,7 @@ sys.exit(0 if ok else 1)
   export STUB_COUNTER_FILE="$LBTMP/caseC-count"
   TEST_CMD="$LBTMP/stub-first-red.sh"
   _jrnl_before="$(wc -l <"$_JRNL" 2>/dev/null || echo 0)"
+  ALLOW_UNGATED_CARDS="c1,c2"
   land_batch 0 "c1:fixture" "c2:fixture" >"$LBTMP/out-c.txt" 2>&1
   out_c="$(cat "$LBTMP/out-c.txt")"
   calls_c="$(cat "$STUB_COUNTER_FILE" 2>/dev/null || echo 0)"
@@ -2480,13 +2574,24 @@ for l in sys.stdin:
     if o.get("mode") == "batch":
         print(o.get("first_failing_file") or "")
 ' 2>/dev/null | tail -1)"
+  # H1 (WhiteHat2 NO-GO 30647): the fallback MUST re-run land_one's own per-card gate-check for
+  # EACH card it lands one-by-one, not just merge whatever the branch tip is now. The giveaway is
+  # land_one's OWN "gate-check:" line (distinct from land_batch's "batch: cX gate-check:" line
+  # above, which only proves the BATCH-level check ran, not the fallback's) -- it is printed ONLY
+  # from inside land_one's `if [ -n "$LAND_CARD" ]` block, so it appears once per fallback card iff
+  # the four fallback loops actually set LAND_CARD before calling land_with_retry. Mutating that
+  # one `LAND_CARD="$card"` prefix back out (verified by hand) drops this count to 0 while every
+  # other assertion in this case stays green -- this is the dedicated pin H1's own fix-direction
+  # asked for ("it needs a selftest that fails without it").
+  h1_gatecheck_lines="$(printf '%s' "$out_c" | grep -c 'skipped (report mode)')"
   if [ "$calls_c" -ge 2 ] && [ "$c_fff" = "cross-card.test.ts" ] \
      && git -C "$MAIN" merge-base --is-ancestor "card/c1" "origin/develop" \
      && git -C "$MAIN" merge-base --is-ancestor "card/c2" "origin/develop" \
-     && printf '%s' "$out_c" | grep -q "falling back"; then
-    echo "  ok   case C: RED combined run fell back -- both landed one-by-one ($calls_c fleet-test calls), first_failing_file=$c_fff (A5)"
+     && printf '%s' "$out_c" | grep -q "falling back" \
+     && [ "$h1_gatecheck_lines" -ge 2 ]; then
+    echo "  ok   case C: RED combined run fell back -- both landed one-by-one ($calls_c fleet-test calls), first_failing_file=$c_fff (A5), land_one's own gate-check ran for both fallback cards, $h1_gatecheck_lines time(s) (H1)"
   else
-    echo "  FAIL case C: fleet-test calls=$calls_c, first_failing_file=[$c_fff] (want cross-card.test.ts); output:"; echo "$out_c" | sed 's/^/    /'; fail=1
+    echo "  FAIL case C: fleet-test calls=$calls_c, first_failing_file=[$c_fff] (want cross-card.test.ts), H1 gate-check lines=$h1_gatecheck_lines (want >=2); output:"; echo "$out_c" | sed 's/^/    /'; fail=1
   fi
 
   # --- case D (A1): a card landed directly while the batch was forming is dropped, not re-merged -
@@ -2500,6 +2605,7 @@ for l in sys.stdin:
   n=$((n+1))
   export STUB_COUNTER_FILE="$LBTMP/caseD-count"
   TEST_CMD="$LBTMP/stub-ok.sh"
+  ALLOW_UNGATED_CARDS="d1,d2"
   land_batch 0 "d1:fixture" "d2:fixture" >"$LBTMP/out-d.txt" 2>&1
   out_d="$(cat "$LBTMP/out-d.txt")"
   if printf '%s' "$out_d" | grep -qi "already landed" \
@@ -2555,6 +2661,7 @@ EOS
   TEST_CMD="$LBTMP/stub-ok.sh"
   _jrnl_before="$(wc -l <"$_JRNL" 2>/dev/null || echo 0)"
   _f_base="$(git -C "$MAIN" rev-parse origin/develop)"
+  ALLOW_UNGATED_CARDS="f1,f2"
   KANBAN_COMMENT_API="http://127.0.0.1:${stub_port}" KANBAN_COMMENT_TOKEN_FILE="$LBTMP/dummy-token" \
     land_batch 0 "f1:fixture" "f2:fixture" >"$LBTMP/out-f.txt" 2>&1
   out_f="$(cat "$LBTMP/out-f.txt")"
@@ -2581,6 +2688,188 @@ for l in sys.stdin:
     echo "  FAIL case F: unrecorded=[$f_unrec] (want f2), bump commits=$bumps_f (want 1); output:"; echo "$out_f" | sed 's/^/    /'; fail=1
   fi
 
+  # --- case I (L1, WhiteHat2 NO-GO 30647): the combined run is red AND every fallback attempt is
+  # ALSO refused (TEST_CMD always fails) -- land_batch used to `return 0` unconditionally from the
+  # fallback sites, so a caller could not tell this apart from "fell back and everything landed".
+  n=$((n+1))
+  MAIN="$(_lb_mkmain caseI)"
+  _lb_mkcard i1 i1.txt hello
+  _lb_mkcard i2 i2.txt world
+  export STUB_COUNTER_FILE="$LBTMP/caseI-count"
+  TEST_CMD="$LBTMP/stub-always-red.sh"
+  ALLOW_UNGATED_CARDS="i1,i2"
+  _i_base="$(git -C "$MAIN" rev-parse origin/develop)"
+  land_batch 0 "i1:fixture" "i2:fixture" >"$LBTMP/out-i.txt" 2>&1
+  rc_i=$?
+  out_i="$(cat "$LBTMP/out-i.txt")"
+  if [ "$rc_i" -ne 0 ] \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/i1" "origin/develop" 2>/dev/null \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/i2" "origin/develop" 2>/dev/null \
+     && [ "$(git -C "$MAIN" rev-parse origin/develop)" = "$_i_base" ]; then
+    echo "  ok   case I (L1): combined run red + every fallback attempt refused -- land_batch exits non-zero ($rc_i), nothing landed, develop tip unchanged"
+  else
+    echo "  FAIL case I: rc=$rc_i (want non-zero), develop moved=$([ "$(git -C "$MAIN" rev-parse origin/develop)" = "$_i_base" ] && echo no || echo yes); output:"; echo "$out_i" | sed 's/^/    /'; fail=1
+  fi
+
+  # --- case J (M4, WhiteHat2 NO-GO 30647): TERM mid-batch -- the wrapped fleet-test's whole
+  # process group must die (no orphan), the disposable worktree must be removed, and the journal
+  # must record the run as "aborted", not a plain "finished"/exit 0. Runs land_batch as a genuinely
+  # separate process (see the --selftest-land-batch-case-j-run hook above) so the signal lands on
+  # the SAME process that set the trap -- backgrounding a function call in THIS shell would not.
+  n=$((n+1))
+  MAIN="$(_lb_mkmain caseJ)"
+  _lb_mkcard j1 j1.txt hello
+  cat >"$LBTMP/stub-sleep.sh" <<'EOS'
+#!/usr/bin/env bash
+sleep 300
+EOS
+  chmod +x "$LBTMP/stub-sleep.sh"
+  : >"$LBTMP/caseJ-count"
+  _jrnl_before="$(wc -l <"$_JRNL" 2>/dev/null || echo 0)"
+  bash "$0" --selftest-land-batch-case-j-run "$MAIN" "$LBTMP/stub-sleep.sh" "j1" "$LBTMP/caseJ-count" \
+    >"$LBTMP/out-j.txt" 2>&1 &
+  lb_pid=$!
+  worktree_path="/home/neon/marveen-land-batch-${lb_pid}"
+  for _i in $(seq 1 100); do
+    pgrep -f "stub-sleep.sh" >/dev/null 2>&1 && [ -d "$worktree_path" ] && break
+    sleep 0.1
+  done
+  sleep_pid="$(pgrep -f 'stub-sleep.sh' | head -1)"
+  kill -TERM "$lb_pid" 2>/dev/null
+  wait "$lb_pid" 2>/dev/null
+  rc_j=$?
+  sleep 0.3
+  out_j="$(cat "$LBTMP/out-j.txt" 2>/dev/null)"
+  sleep_dead=0
+  { [ -n "$sleep_pid" ] && ! kill -0 "$sleep_pid" 2>/dev/null; } && sleep_dead=1
+  wt_gone=0
+  [ ! -d "$worktree_path" ] && wt_gone=1
+  j_aborted="$(tail -n "+$((_jrnl_before + 1))" "$_JRNL" 2>/dev/null | python3 -c '
+import sys, json
+for l in sys.stdin:
+    l = l.strip()
+    if not l:
+        continue
+    try:
+        o = json.loads(l)
+    except Exception:
+        continue
+    if o.get("event") == "finished":
+        print(o.get("result") or "")
+' 2>/dev/null | tail -1)"
+  if [ "$rc_j" = "143" ] && [ "$sleep_dead" = "1" ] && [ "$wt_gone" = "1" ] && [ "$j_aborted" = "aborted" ]; then
+    echo "  ok   case J (M4): TERM mid-batch kills the wrapped fleet-test's process group ($sleep_pid, no orphan), removes the disposable worktree, journal records the run as aborted (rc 143)"
+  else
+    echo "  FAIL case J: rc=$rc_j (want 143), sleep_pid=$sleep_pid dead=$sleep_dead (want 1), worktree_gone=$wt_gone (want 1), journal_result=[$j_aborted] (want aborted); output:"; echo "$out_j" | sed 's/^/    /'; fail=1
+  fi
+
+  # --- case G (M2, WhiteHat2 NO-GO 30647): a REAL gate stub (not a dead port), no blanket
+  # tolerance at all -- proves the per-card drops are real, not just "untested because every check
+  # was overridden". Five cards in ONE batch call: g1 has a QA PASS + a matching "qa" designated
+  # gate -> lands clean; g2 has no verdict at all and is NOT in ALLOW_UNGATED_CARDS -> dropped; g3
+  # has a QA FAIL -> dropped (never overridable); g4 has a QA PASS but designates "qa, cybersec"
+  # with no cybersec verdict -> dropped (designated gates do not AGREE); g5 has no verdict either,
+  # but IS named in ALLOW_UNGATED_CARDS -> lands, and (M1) gets its OWN "UNGATED LANDING" comment,
+  # naming only g5, never g2/g3/g4/g1.
+  cat >"$LBTMP/stub-dashboard-gates.py" <<'EOS'
+import http.server, json, os, re, socketserver, sys
+KANBAN_LIST = json.load(open(os.environ["STUB_KANBAN_LIST_FILE"]))
+COMMENTS = json.load(open(os.environ["STUB_COMMENTS_FILE"]))
+LOG_FILE = os.environ.get("STUB_POST_LOG", "")
+class H(http.server.BaseHTTPRequestHandler):
+    def _json(self, obj, code=200):
+        b = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        if self.path == "/api/kanban":
+            self._json(KANBAN_LIST); return
+        m = re.match(r"^/api/kanban/([^/]+)/comments$", self.path)
+        if m:
+            self._json(COMMENTS.get(m.group(1), [])); return
+        self._json([], 404)
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        if LOG_FILE:
+            with open(LOG_FILE, "a") as f:
+                f.write(self.path + "\t" + body.decode(errors="replace") + "\n")
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a):
+        pass
+with socketserver.TCPServer(("127.0.0.1", 0), H) as httpd:
+    print(httpd.server_address[1]); sys.stdout.flush()
+    httpd.serve_forever()
+EOS
+  n=$((n+1))
+  MAIN="$(_lb_mkmain caseG)"
+  _lb_mkcard g1 g1.txt g1
+  _lb_mkcard g2 g2.txt g2
+  _lb_mkcard g3 g3.txt g3
+  _lb_mkcard g4 g4.txt g4
+  _lb_mkcard g5 g5.txt g5
+  g_sha1="$(git -C "$MAIN" rev-parse card/g1)"
+  g_sha3="$(git -C "$MAIN" rev-parse card/g3)"
+  g_sha4="$(git -C "$MAIN" rev-parse card/g4)"
+  python3 -c '
+import json, sys
+print(json.dumps([
+  {"id": "g1", "description": "Gate: qa"},
+  {"id": "g2", "description": "Gate: qa"},
+  {"id": "g3", "description": "Gate: qa"},
+  {"id": "g4", "description": "Gate: qa, cybersec"},
+  {"id": "g5", "description": "Gate: qa"},
+]))' >"$LBTMP/caseG-kanban.json"
+  python3 -c '
+import json, sys
+sha1, sha3, sha4 = sys.argv[1], sys.argv[2], sys.argv[3]
+print(json.dumps({
+  "g1": [{"author": "qa", "content": f"QA PASS\nGate-SHA: {sha1}"}],
+  "g2": [],
+  "g3": [{"author": "qa", "content": f"QA FAIL\nGate-SHA: {sha3}"}],
+  "g4": [{"author": "qa", "content": f"QA PASS\nGate-SHA: {sha4}"}],
+  "g5": [],
+}))' "$g_sha1" "$g_sha3" "$g_sha4" >"$LBTMP/caseG-comments.json"
+  : >"$LBTMP/caseG-post-log"
+  : >"$LBTMP/caseG-gate-port"
+  STUB_KANBAN_LIST_FILE="$LBTMP/caseG-kanban.json" STUB_COMMENTS_FILE="$LBTMP/caseG-comments.json" \
+    STUB_POST_LOG="$LBTMP/caseG-post-log" python3 "$LBTMP/stub-dashboard-gates.py" \
+    >"$LBTMP/caseG-gate-port" 2>/dev/null &
+  gate_stub_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$LBTMP/caseG-gate-port" ] && break
+    sleep 0.2
+  done
+  gate_stub_port="$(cat "$LBTMP/caseG-gate-port" 2>/dev/null)"
+  echo dummy >"$LBTMP/caseG-token"
+  export STUB_COUNTER_FILE="$LBTMP/caseG-count"
+  TEST_CMD="$LBTMP/stub-ok.sh"
+  ALLOW_UNGATED_CARDS="g5"
+  GATE_CHECK_API="http://127.0.0.1:${gate_stub_port}" GATE_CHECK_TOKEN_FILE="$LBTMP/caseG-token" \
+    KANBAN_COMMENT_API="http://127.0.0.1:${gate_stub_port}" KANBAN_COMMENT_TOKEN_FILE="$LBTMP/caseG-token" \
+    land_batch 0 "g1:fixture" "g2:fixture" "g3:fixture" "g4:fixture" "g5:fixture" \
+    >"$LBTMP/out-g.txt" 2>&1
+  out_g="$(cat "$LBTMP/out-g.txt")"
+  kill "$gate_stub_pid" 2>/dev/null; wait "$gate_stub_pid" 2>/dev/null
+  g_ungated_log="$(grep -c 'UNGATED LANDING' "$LBTMP/caseG-post-log" 2>/dev/null || echo 0)"
+  g_ungated_for_g5="$(grep -c '^/api/kanban/g5/comments.*UNGATED LANDING' "$LBTMP/caseG-post-log" 2>/dev/null || echo 0)"
+  if git -C "$MAIN" merge-base --is-ancestor "card/g1" "origin/develop" \
+     && git -C "$MAIN" merge-base --is-ancestor "card/g5" "origin/develop" \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/g2" "origin/develop" 2>/dev/null \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/g3" "origin/develop" 2>/dev/null \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/g4" "origin/develop" 2>/dev/null \
+     && printf '%s' "$out_g" | grep -q "dropping g2 -- no passing gate verdict" \
+     && printf '%s' "$out_g" | grep -q "dropping g3 -- FAILING gate verdict" \
+     && printf '%s' "$out_g" | grep -q "dropping g4 -- designated gates do not AGREE" \
+     && [ "$g_ungated_log" = "1" ] && [ "$g_ungated_for_g5" = "1" ]; then
+    echo "  ok   case G (M2): real gate stub, no blanket tolerance -- g1 (AGREE) and g5 (scoped --allow-ungated-cards) land, g2 (no verdict)/g3 (FAILING)/g4 (designated gates disagree) are genuinely dropped, exactly one UNGATED LANDING note posted and it names g5"
+  else
+    echo "  FAIL case G: g_ungated_log=$g_ungated_log g_ungated_for_g5=$g_ungated_for_g5; output:"; echo "$out_g" | sed 's/^/    /'; fail=1
+  fi
+
   # --- case E: --batch is the ONLY entry point -- its absence leaves land_one/land_with_retry's
   # own code path untouched (flag off = byte-identical to today, per the design). Proven by the
   # EXISTING --selftest-land-lock-release cases above still passing unmodified -- restated here as
@@ -2598,7 +2887,25 @@ for l in sys.stdin:
   fi
 fi
 
-DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0
+# M4 (WhiteHat2 NO-GO 30647) test harness only: case J (inside --selftest-land-batch-inner) needs
+# to send a real signal to a land_batch run and see that IT, not some subshell layer, catches it.
+# Backgrounding `land_batch ... &` from inside the inner test would run it in a forked SUBSHELL of
+# that process -- the exact "$$ preserved, caller's real PPID is the subshell's own pid" mismatch
+# QA FAIL 30639 already found for this file's OWN selftest capture (fixed there by not using
+# command substitution at all). Backgrounding cannot avoid the fork, so this hook makes land_batch
+# the TOP of a genuinely separate `bash "$0" ...` process instead -- same shape as a real
+# `marveen-land.sh --batch` invocation, where $$ really is that process's own pid throughout.
+if [ "${1:-}" = "--selftest-land-batch-case-j-run" ]; then
+  MAIN="$2"
+  TEST_CMD="$3"
+  ALLOW_UNGATED_CARDS="$4"
+  export STUB_COUNTER_FILE="$5"
+  LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0; CARD_ALLOW_UNGATED=0
+  land_batch 0 "j1:fixture"
+  exit $?
+fi
+
+DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0; ALLOW_UNGATED_CARDS=""
 TARGET="${1:-}"; [ $# -gt 0 ] && shift
 
 # card cd3e577b (F1): `marveen-land.sh --card <id> --agent <agent> [--dry-run]` lands the card's OWN
@@ -2654,7 +2961,15 @@ if [ "$TARGET" = "--batch" ]; then
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) DRY=1 ;;
-      --allow-ungated) CARD_ALLOW_UNGATED=1 ;;
+      # M1 (WhiteHat2 NO-GO 30647): a bare --allow-ungated used to set the SAME global land_one's
+      # single-card path reads, tolerating EVERY card in the batch silently. --batch refuses it
+      # outright rather than keep a flag that lies about its own scope -- the caller names the
+      # specific survivor(s) instead.
+      --allow-ungated) die 2 "--batch does not accept --allow-ungated (that would tolerate every card in the batch silently) -- use --allow-ungated-cards <id>[,<id>...] to name the specific survivor(s)" ;;
+      --allow-ungated-cards) shift; [ $# -gt 0 ] || die 2 "--allow-ungated-cards needs a card id list"; ALLOW_UNGATED_CARDS="$1" ;;
+      --allow-ungated-cards=*) ALLOW_UNGATED_CARDS="${1#--allow-ungated-cards=}" ;;
+      --allow-ungated-reason) shift; [ $# -gt 0 ] || die 2 "--allow-ungated-reason needs text"; CARD_ALLOW_UNGATED_REASON="$1" ;;
+      --allow-ungated-reason=*) CARD_ALLOW_UNGATED_REASON="${1#--allow-ungated-reason=}" ;;
       --allow-stacked) shift; [ $# -gt 0 ] || die 2 "--allow-stacked needs a card id list"; ALLOW_STACKED="$1" ;;
       --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
       *) die 2 "unknown option: $1" ;;

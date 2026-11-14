@@ -24769,3 +24769,66 @@ utan kerul a kartyara.
 
 **Ki dontott:** MikroB (plan-grilling GO, msg 18291/komment 30593, a terv komment 30551).
 Gate: QA + Cybersec (WhiteHat), landolasi ut. Epitette: fullstack (DevO).
+
+## 2026-11-14 -- 6ec8e9d8 delta: CYBERSEC NO-GO 30647 (H1 gate-bypass a fallback-ban) fix
+
+WhiteHat2 (cybersec2) NO-GO-t adott a 2b5ffd680 sham, H1 HIGH: a negy fallback-ag
+(piros kombinalt fleet-test, npm-lockfile-drift, konfliktus-jelek, elvesztett push-verseny)
+`land_with_retry`-t LAND_CARD URESEN hivta, ami `land_one`-ban a teljes kapu-ellenorzo
+blokkot (`if [ -n "$LAND_CARD" ]`) kihagyja -- egy olyan kartya, amit az egykartyas ut
+elutasitana, a fallback-on at ellenorzes NELKUL landolhatott ra (merve: egy keso commit
+a batch-ellenorzes UTAN ragadt rajta egy landolt kartyan, LANDOLVA komment nelkul).
+Javitas: `LAND_CARD="$card"` mind a negy fallback-hivas elott.
+
+Egyutt javitva (MikroB osszevonta egy korbe, uzenet 18319/18324):
+- **M1**: `--batch ... --allow-ungated` eddig a `land_one` egykartyas globaljat (`CARD_ALLOW_UNGATED`)
+  allitotta, tehat EGY zaszlo az EGESZ batch-et tolerantta tette, nema UNGATED LANDING komment
+  nelkul. Mostantol `--batch` a sima `--allow-ungated`-et elutasitja, es a kartyankent
+  megnevezett `--allow-ungated-cards <id>[,<id>...]`-t kivanja (ugyanaz a CSV-megnevezes-minta,
+  mint `--allow-stacked`-nel) -- csak a nevezett kartya kap toleranciat, es csak push UTAN,
+  csak a tenylegesen landolt kartyara posztolodik az UNGATED LANDING komment.
+- **M2**: a `--selftest-land-batch` korabban `CARD_ALLOW_UNGATED=1`-et allitott BLANKET-ul,
+  es egy olvashatatlan gate-tokennel futott -- minden kartyankenti elutasitasi ag
+  (FAILING verdikt, nem-AGREE kijelolt gate, no-verdict) emiatt tesztelhetetlen volt
+  SZERKEZETILEG (merve: 12 mutans eletben maradt). Uj `case G`: valodi HTTP gate-stub,
+  nulla blanket-tolerancia -- 5 kartya egy batch-ben, kulon-kulon bizonyitva: AGREE-s
+  kartya landol, FAILING/no-verdict/nem-AGREE-kijelolt kartyak eldobva, es egy
+  `--allow-ungated-cards`-ban megnevezett no-verdict kartya landol, SAJAT UNGATED LANDING
+  kommentjevel.
+- **M3**: a B2' es az "A5d9731cd wait loop" szoveg-pin `grep -qE` + `set -o pipefail` alatt
+  SIGPIPE-re bukhatott (a `$prod_src` 54 KB-ra nott land_batch +384 soraval, a grep korai
+  kilepese a printf-et SIGPIPE-eli, a pipeline rc-je 141 lesz, nem a grep sajat rc-je) --
+  a pin HAMISAN FAIL-elt egy VALODI egyezesen. Javitas: `grep -c` (nem lep ki korabban),
+  mindket helyen.
+- **M4**: TERM/HUP/INT a batch kozepen eddig orokolt (nincs csoport-kill, a worktree
+  nem torlodik, a naplo "finished"/"ok"-kent rogzitette a megolt futast). Uj
+  `_batch_sig_stop` trap `land_batch`-ban, ugyanaz a minta, mint `land_with_retry`-e
+  (card 07f1fe6e): csoport-kill a becsomagolt parancsnak, `land-run-journal.sh finish
+  ... aborted`, explicit `cleanup()` hivas (a RETURN-trap jel miatt nem tuzel szignalra).
+- **L1**: a negy fallback-ag korabban mindig `return 0`-t adott, akkor is, ha EGYETLEN
+  kartya sem landolt a one-by-one probalkozas alatt -- a hivo nem tudta megkulonboztetni
+  "mindenki landolt egyesevel" es "senki nem landolt" kozott. Uj `_fallback_land_all`
+  segedfuggveny: ha legalabb egy kartya landolt, 0; ha semelyik, 4.
+- **L2**: `land_one` minden egykartyas push utan `sync_live_install`/blast-radius-refresh/
+  graphify/`rebuild_live_install` (ha `src/` mozdult)/`kg-check-landing.sh`-t futtat --
+  `land_batch` pusholt, de ezeket soha nem hivta, egy batch-push utan a live checkout es
+  a grafok egy landolassal lemaradtak a kovetkezo egykartyas landolasig. Most egyszer,
+  a kombinalt eredmenyre, ugyanabban a sorrendben (sync ELOBB, aztan index).
+
+Uj selftest-esetek (`--selftest-land-batch`, 9-re nott 5-rol/7-rol): H1 pin case C-ben
+(land_one SAJAT "gate-check:" soranak megjelenese a fallback alatt -- mutalva/visszaallitva,
+a mutans 0-ra viszi a szamlalot), `case I` (L1, kombinalt piros + minden fallback elutasitva
+-> nem-nulla kilepokod), `case J` (M4, valodi SIGTERM egy KULON `bash "$0" ...` folyamatnak --
+backgroundolt fuggvenyhivas NEM eleg, mert az uj subshell $$-ja nem egyezik a `start()`
+altal rogzitettel, ugyanaz a csapda, amit a QA FAIL 30639 kore mar egyszer megtalalt),
+`case G` (M2, fent). Mind mutacio-tesztelve (a megfelelo javitas kikapcsolasaval piros).
+
+Megjegyzes: WhiteHat2 M3-reszenek egy allitasa ("`--selftest` nincs vitest-be kotve")
+nem allt meg ellenorzeskor -- az UTOLSO valodi meres szerint `src/__tests__/landing-
+downward-check.test.ts` MAR a card 46194693-tol kotve futtatja (`describe.each`, 29-es
+padlo marveen-land.sh-ra), jóval e kartya bazisa elott landolva. Csak a `--selftest-
+land-batch` volt valoban bekotetlen (csak `--selftest-land-lock-release` volt az); ez
+nem valtozott ebben a delta-ban, kulon kartya lehet, ha MikroB kivanja.
+
+**Ki dontott:** MikroB (18319/18324). Gate: qa2 + cybersec2 (uj Gate-SHA ezen a delta-n).
+Epitette: fullstack (DevO).
