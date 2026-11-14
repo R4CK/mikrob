@@ -387,6 +387,10 @@ EOF
 
 run_real_systemctl() {
   # Real journalctl (clean) + real systemctl (shimmed), under the exact production narrow env.
+  # OLLAMA_RESTORE_ALERT_DRYRUN=1 is load-bearing, not cosmetic: a failed shimmed systemctl now
+  # triggers alert_owner() (card 84181422), and without this the real HOME above would make
+  # alert_owner read this box's REAL ~/.claude/channels/telegram/.env and send a REAL Telegram
+  # message every time this test runs.
   local state="$1" script="${2:-$SCRIPT}" capture="$3"
   env -i PATH="$SBIN_DIR:$JBIN_DIR:/usr/bin:/bin" HOME="$HOME" \
     OLLAMA_TEST_SYSTEMCTL_CAPTURE="$capture" \
@@ -394,6 +398,7 @@ run_real_systemctl() {
     OLLAMA_RESTORE_STATE_DIR="$state" \
     OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
     OLLAMA_RESTORE_UPTIME_OVERRIDE="$state/uptime" \
+    OLLAMA_RESTORE_ALERT_DRYRUN=1 \
     bash "$script" 2>&1
 }
 
@@ -432,6 +437,49 @@ if echo "$out" | grep -q 'restart command failed (rc=1)'; then
   pass "a failed systemctl start is logged loudly with its rc, not a silent no-op"
 else
   fail "a failed systemctl start was not reported loudly: $out"
+fi
+
+# --- Card 84181422: a failed start must alert the owner, rate-limited to once per failure streak -
+d="$(fresh_case failure-streak-alerts-once)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+write_fake_systemctl 1
+CAP4="$(mktemp -d)"
+ALERTS=0
+for sweep in 1 2 3; do
+  out="$(run_real_systemctl "$d" "$SCRIPT" "$CAP4")"
+  if echo "$out" | grep -q 'ALERT_DRYRUN'; then ALERTS=$((ALERTS + 1)); fi
+done
+if [ "$ALERTS" -eq 1 ]; then
+  pass "a failing systemctl shim across 3 sweeps alerts the owner exactly once (rate-limited)"
+else
+  fail "expected exactly 1 alert_owner call across 3 failing sweeps, got $ALERTS"
+fi
+if [ -f "$d/.ollama-boot-restore-fail-alerted" ]; then
+  pass "a failure streak leaves a rate-limit stamp behind"
+else
+  fail "failure streak did not leave the expected .ollama-boot-restore-fail-alerted stamp"
+fi
+
+# --- Card 84181422: a success after a failure streak clears the stamp ---------------------------
+write_fake_systemctl 0
+CAP5="$(mktemp -d)"
+out="$(run_real_systemctl "$d" "$SCRIPT" "$CAP5")"
+if [ -f "$d/.ollama-boot-restore-fail-alerted" ]; then
+  fail "a successful start did not clear the fail-alerted stamp: $out"
+else
+  pass "a successful start after a failure streak clears the fail-alerted stamp"
+fi
+
+# A fresh failure after the stamp was cleared must alert again (streak restarted, not permanently
+# silenced by the earlier stamp).
+write_fake_systemctl 1
+CAP6="$(mktemp -d)"
+out="$(run_real_systemctl "$d" "$SCRIPT" "$CAP6")"
+if echo "$out" | grep -q 'ALERT_DRYRUN'; then
+  pass "a NEW failure streak (after a clearing success) alerts again"
+else
+  fail "a new failure streak after a cleared stamp did not alert: $out"
 fi
 
 # --- Mutant-kill: reverting the real branch to a bare nohup, with the dryrun string UNCHANGED, ----

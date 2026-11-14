@@ -24777,3 +24777,21 @@ mindkettő a merge-elt kódon futtatva, regresszió nélkül.
 
 **Ki döntött:** MikroB (msg 18037), backend végezte. Gate: QA + Cybersec (delta re-stamp a
 merge-elt shára).
+
+## 2026-11-13 -- ollama-boot-restore alerts the owner on a failed start (card 84181422)
+
+**Döntés:** a failed `systemctl --user start ollama` inside `scripts/ollama-boot-restore.sh` now
+calls the script's existing `alert_owner()` once per failure streak (rate-limited by a plain stamp
+file, `.ollama-boot-restore-fail-alerted` in STATE_DIR), instead of only logging loudly. Before this,
+channel-monitor.ts runs the script with stdio ignored, so a repeatedly-failing restart was invisible
+in production and silently retried every sweep (WhiteHat2 CYBERSEC GO on card 085444e9, c5243203e,
+flagged this gap). The stamp clears on the next successful start, so a later failure streak alerts
+again. 3 new acceptance tests added (`scripts/__tests__/ollama-boot-restore.test.sh`): exactly 1
+alert across 3 failing sweeps, a success clears the stamp, a new failure after clearing alerts again
+-- confirmed non-vacuous by reverting the fix and watching all 3 go red while the rest of the suite
+stayed green. Also fixed the test helper `run_real_systemctl()` to pass
+`OLLAMA_RESTORE_ALERT_DRYRUN=1`: without it, the new alert call on a shimmed systemctl failure would
+have read this box's real Telegram credentials (the helper deliberately keeps a real `HOME`) and sent
+a real message every time the pre-existing failure test ran.
+
+**Ki döntött:** DevO (fullstack), card 84181422. Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
