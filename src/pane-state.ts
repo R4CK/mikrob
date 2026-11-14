@@ -510,6 +510,75 @@ const BG_AGENT_ROW_RX = /^\s+◯ \S/
 // The footer's lead: the mode words + `on`, then the shift+tab hint and/or the
 // first `·` segment; or the no-mode `? for shortcuts` footer.
 const FOOTER_LEAD_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))?(?: · |\s*$)|\? for shortcuts/
+// RedHat NO-GO 30564 (card 0499d1f4, delta on N1): FOOTER_LEAD_RX is the right test for "does
+// the line ABOVE the header look like a footer" (used by splitBackgroundAgentBlock itself to
+// FIND the header), but it is the WRONG test for "do the discarded ROWS below the header
+// contain a more-recent live signal that must stop the cut" (used right below, in
+// detectPaneState). Two opposite failures came from reusing it there:
+//   F1: a REAL current footer that is clipped (tmux width cut) before reaching the literal `on`
+//       -- e.g. `bypass permissi…`, `on (shift+t…`, or a bare `esc to interrupt` with no
+//       `... on` prefix at all -- never matches FOOTER_LEAD_RX, so the override never fires and
+//       the cut discards it, same as the live spinner line sitting right next to it. A genuinely
+//       busy pane reads idle.
+//   F2: FOOTER_LEAD_RX is unanchored to footer chrome -- ANY 1-3 words ending the row in the
+//       bare word `on` matches (prose like "... that depends on", "... based on", or a wrapped
+//       sub-agent label ending the same way). That wrongly fires the override on a genuinely
+//       mechanical trailing block (no real additional state below it), which SKIPS the cut it
+//       should have performed -- and skipping is exactly the original bug this whole mechanism
+//       exists to prevent: the real footer/spinner sitting just above the header gets pushed out
+//       of the live tail window by the kept rows. A genuinely busy pane reads idle, the other way.
+// Fix: key the override on the three things that can ACTUALLY carry a more-recent live signal --
+// an intact idle footer (IDLE_FOOTER_RX), the `esc to interrupt` busy phrase (always literal,
+// never clipped mid-word in the corpus), or a live spinner/token-counter line (BUSY_INDICATORS[0]
+// -- the parenthesised `(Ns · ↓` tail, which sits on its own line, separate from the footer, so a
+// clipped footer next to it still gets caught via the spinner). None of these match ordinary
+// prose ending in a bare "on" with nothing (or the wrong thing) after it.
+//
+// QA FAIL 30874 (QA2): IDLE_FOOTER_RX itself is unanchored, so its `· ...ctrl+t` alternative
+// (no special glyph required, unlike the `↓ to manage`/`← for agents` tails) matched as a
+// substring anywhere in a row -- ordinary prose mentioning a keyboard shortcut ("... relies on
+// · press ctrl+t to jump") satisfied it. Every real footer row, by contrast, ENDS right at its
+// tail keyword -- there is never trailing content after it. Anchoring the match to the end of
+// the row rejects prose that continues past the matched substring, without touching
+// IDLE_FOOTER_RX itself (used elsewhere against full multi-line pane text; changing its global
+// behaviour is out of scope for this row-scoped guard).
+const ROW_IDLE_FOOTER_ANCHORED_RX = new RegExp(`(?:${IDLE_FOOTER_RX.source})\\s*$`)
+const ROW_LIVE_SIGNAL_RX = new RegExp(
+  `${ROW_IDLE_FOOTER_ANCHORED_RX.source}|${BUSY_ESC_TO_INTERRUPT_RX.source}|${BUSY_INDICATORS[0].source}`,
+)
+
+// QA FAIL 30874 (QA1): the override's three signals above all require EITHER an intact
+// `esc to interrupt` OR a separate spinner/token-counter row. A footer clipped mid-`esc to
+// interrupt` (`esc to int…`) with no nearby spinner line matched none of them, so the override
+// never fired and the cut discarded the clipped-but-genuinely-busy footer. BUSY_ESC_CLIPPED_RX on
+// its own (it already requires the literal `· e` lead plus a nested prefix of "sc to interrupt"
+// ending in the truncation ellipsis -- distinctive on its own, no extra AND needed) recognises
+// this clipped shape regardless of how many `·`-separated segments precede it, which a one-`·`
+// shape (RedHat 8b8bc092 B(i): "· e…" with no spinner tail at all) needs: the FOOTER_TRUNCATED_RX
+// AND this function used until now required TWO `·` segments and missed that one-separator case.
+//
+// RedHat 8b8bc092 B(iii): a paste placeholder (`[Pasted text #N]`) sitting in the trailing block
+// behind a spoofed header is itself a busy signal (PENDING_PASTE_RX), and so is the idle-looking
+// but background-shells-running footer shape (FOOTER_SHELL_TAIL_RX) that often accompanies it --
+// neither was in the signal set, so the cut discarded both along with the real state.
+//
+// RedHat 8b8bc092 C: a REGRESSION against the parent -- a genuine (unspoofed) trailing block
+// where a sub-agent's own task LABEL happens to quote a footer/busy phrase (`esc to interrupt`,
+// `plan mode on (shift+tab to cycle)`, `bypass permissions on · ctrl+t`) wrongly fired the
+// override, skipping a cut that a genuine trailing block (no more state below it) always needs --
+// the exact wrong-direction bug this whole mechanism exists to prevent. A label lives inside a
+// real `◯` agent row (BG_AGENT_ROW_RX); no genuine live-state signal is ever rendered on one (the
+// footer/spinner/placeholder always render on their own, non-`◯` line), so excluding `◯` rows from
+// every check below closes this without weakening detection of an actual trailing live signal.
+function rowCarriesLiveSignal(row: string): boolean {
+  if (BG_AGENT_ROW_RX.test(row)) return false
+  return (
+    ROW_LIVE_SIGNAL_RX.test(row) ||
+    BUSY_ESC_CLIPPED_RX.test(row) ||
+    FOOTER_SHELL_TAIL_RX.test(row) ||
+    PENDING_PASTE_RX.test(row)
+  )
+}
 // The row tail is `[elapsed, tokens, "N queued"]` joined with ` · ` (read from
 // the Claude Code 2.1.301 source; empty parts are dropped). A running agent's
 // elapsed is a clock (`18m 5s`); an idle one shows a word (`waiting`, `idle`)
@@ -1439,8 +1508,28 @@ export function detectPaneState(
 
   // Classify the pane as it would look without the background-agent block, so
   // the footer is the bottom line again for every probe below.
+  // N1 (RedHat 24984, card 0499d1f4): splitBackgroundAgentBlock only checks that the line
+  // above the header LOOKS like a footer -- it does not require the rows below to be genuine
+  // `◯` agent rows, and the header it finds is the LAST (bottommost) `⏺ main` line in the
+  // pane, not necessarily the real one. Tool output can echo a footer-lead phrase plus a bare
+  // `⏺ main` line earlier in the pane; the backward scan then locks onto that spoofed header
+  // (there is no later one), and this cut used to discard everything below it
+  // UNCONDITIONALLY -- including a REAL, more recent busy footer/spinner that happens to come
+  // after it. Requiring every row to be a measured `◯` row (the stricter condition
+  // detectBackgroundAgents already applies) is not enough on its own: an otherwise-legitimate
+  // trailing block with one unrecognised row (e.g. a wrapped task-label continuation line) must
+  // still be cut, or ITS junk at the very bottom pushes the real footer (sitting right above
+  // the header) out of the live tail window -- the exact bug this whole mechanism exists to
+  // fix. The two cases are told apart by what the rows contain: a genuine trailing block never
+  // contains ANOTHER footer-lead line (there is only one footer per pane state); a spoofed
+  // header followed by real content does, because the real footer is still in there. So: cut
+  // unless the rows about to be discarded themselves contain something that looks like a
+  // (more recent) footer -- that signals this header is stale/spoofed, and the real state is
+  // further down, inside the rows this cut would otherwise throw away.
   const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
-  if (bgBlock) pane = bgBlock.above.join('\n')
+  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal)) {
+    pane = bgBlock.above.join('\n')
+  }
 
   const paneLines = pane.split('\n')
 
@@ -1466,7 +1555,12 @@ export function detectPaneState(
   const footerRegion = liveTailRegion(paneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
   const lastLine = footerRegion.slice(footerRegion.lastIndexOf('\n') + 1)
-  if (BUSY_ESC_CLIPPED_RX.test(lastLine) && FOOTER_TRUNCATED_RX.test(lastLine)) return 'busy'
+  // RedHat 8b8bc092 B(i): requiring FOOTER_TRUNCATED_RX's two `·`-separated segments on top of
+  // BUSY_ESC_CLIPPED_RX missed the one-separator clip ("on · e…", no spinner, no extra chrome
+  // segment) -- BUSY_ESC_CLIPPED_RX is already distinctive on its own (literal `· e` lead plus a
+  // nested prefix of "sc to interrupt" ending in the truncation ellipsis; see its own comment:
+  // "no idle footer segment starts with `e`"), so the AND added nothing but a gap.
+  if (BUSY_ESC_CLIPPED_RX.test(lastLine)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
   // stub sits in the live input box; the footer below it is version-dependent

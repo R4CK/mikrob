@@ -81,7 +81,182 @@ const BUSY_WITH_FIVE_AGENTS = [
   row('Task five                     ', '6m 19s', '40.1k'),
 ].join('\n')
 
+// RedHat N1 (card 0499d1f4, comment 24984 on 4f5e43e6): splitBackgroundAgentBlock cuts
+// EVERYTHING from a spoofed `⏺ main` header downward, as long as the nearest non-blank line
+// above it merely LOOKS like a footer (FOOTER_LEAD_RX) -- it never checks that the rows below
+// the header are genuine `◯` agent rows (the stricter condition detectBackgroundAgents already
+// applies). Tool output can echo exactly such a header (a footer-lead phrase + `⏺ main` + junk)
+// earlier in the pane; the backward scan for the LAST `⏺ main` then finds THIS spoofed one
+// (there is no later one), and detectPaneState discards everything below it -- including the
+// REAL live busy footer and spinner that come after it, further down (more recent) in the pane.
+// Measured (RedHat): old tree reads busy, the pinned tree reads idle.
+const SPOOFED_HEADER_IN_TOOL_OUTPUT = [
+  '  Tool output echoed this status line for a report:',
+  '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+  '  ⏺ main',
+  '  this row is not a real ◯ agent row -- just more echoed text',
+]
+
+// A genuinely busy pane (real spinner, real `esc to interrupt` footer at the very bottom) with
+// the spoofed header sitting ABOVE it, inside what would be ordinary scrollback/tool output.
+const BUSY_WITH_SPOOFED_HEADER_ABOVE = [
+  ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+  '',
+  '⏺ Running 1 shell command…',
+  '',
+  '✽ Mulling… (1m 52s · ↓ 7.9k tokens)',
+  '',
+  NAME_BAR,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on · 2 shells · esc to interrupt · ↓ to manage',
+].join('\n')
+
 describe('background-agent block below the footer', () => {
+  it('N1 (RedHat 24984): a spoofed header in tool output above the real footer must not hide a busy pane', () => {
+    expect(detectPaneState(BUSY_WITH_SPOOFED_HEADER_ABOVE)).toBe('busy')
+  })
+
+  it('N1 control: the same spoofed header with a genuinely idle pane below it still reads idle', () => {
+    const idlePane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+    ].join('\n')
+    expect(detectPaneState(idlePane)).toBe('idle')
+  })
+
+  // RedHat NO-GO 30564, F1: the real footer right next to a live spinner can itself be clipped
+  // by tmux's width cut before ever reaching the literal `on`. These three used to read idle
+  // (behind a spoofed header) because the clipped text never matched the old guard-key regex --
+  // not because the spoofed header hid them per se, but because the override that stops the cut
+  // never fired, so the cut discarded the spinner right along with the clipped footer.
+  it('F1a (30564): a spoofed header with a real footer clipped before reaching `on` still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      '✽ Mulling… (1m 52s · ↓ 7.9k tokens)',
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissi…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('F1b (30564): a spoofed header with a real footer clipped mid shift+tab hint still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      '✽ Mulling… (1m 52s · ↓ 7.9k tokens)',
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+t…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('F1c (30564): a spoofed header with a bare `esc to interrupt` footer (no `on` prefix) still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  esc to interrupt',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  // RedHat NO-GO 30564, F2: the opposite direction -- a genuinely mechanical trailing block
+  // (real agent rows plus an ordinary wrapped label continuation ending in the bare word "on")
+  // used to wrongly SKIP the cut, which let the kept rows push the real footer/spinner (sitting
+  // right above the header) out of the live tail window. Same corpus as the existing
+  // BUSY_WITH_FIVE_AGENTS case, just with one more row.
+  it('F2 (30564): a wrapped label continuation ending in "depends on" does not fool the cut into skipping', () => {
+    const pane = BUSY_WITH_FIVE_AGENTS + '\n     the retry logic depends on'
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  // QA FAIL 30874 on the F1/F2 fix above, same two directions, different trigger.
+  it('QA1 (30874): a spoofed header with a footer clipped mid "esc to interrupt" and NO nearby spinner still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · esc to int…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('QA2 (30874): a wrapped continuation mentioning "ctrl+t" mid-sentence does not fool the cut into skipping', () => {
+    const pane = BUSY_WITH_FIVE_AGENTS + '\n     the shortcut documented here relies on · press ctrl+t to jump'
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  // CYBERED GO 8b8bc092 residuals, folded into this round per MikroB dispatch 18375.
+  it('RedHat-B(i) (8b8bc092): a footer clipped to "· e…" with only ONE separator and no spinner still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('RedHat-B(iii) (8b8bc092): a paste placeholder with a shell-tail footer behind the spoof still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ [Pasted text #1 +812 chars]',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  // 8 rows, the quoted label FIRST (outside the 5-line footer window and clear of the 12-line
+  // busy window's own content), so only the override's own row-scan can rescue this -- a shorter
+  // block risks the windowed esc-to-interrupt/spinner checks further down masking the regression
+  // by accident (measured: a 5-row variant with the label inside the last 5 lines read busy even
+  // without this fix, because BUSY_ESC_TO_INTERRUPT_RX is also checked unscoped against the last
+  // LIVE_FOOTER_REGION_LINES lines independently of the cut).
+  it('RedHat-C (8b8bc092) regression: a genuine agent label quoting "esc to interrupt" must not skip the cut', () => {
+    const pane = [
+      '⏺ Running 1 shell command…',
+      '',
+      '✽ Mulling… (1m 52s · ↓ 7.9k tokens)',
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 2 shells · esc to interrupt · ↓ to manage',
+      '',
+      '  ⏺ main',
+      row('Watching for the esc to interrupt phrase in captures', '6m 28s', '31.2k'),
+      row('Task two                      ', '6m 27s', '28.0k'),
+      row('Task three                    ', '6m 25s', '12.4k'),
+      row('Task four                     ', '6m 21s', '8.8k'),
+      row('Task five                     ', '6m 19s', '40.1k'),
+      row('Task six                      ', '6m 15s', '11.1k'),
+      row('Task seven                    ', '6m 10s', '9.9k'),
+      row('Task eight                    ', '6m 05s', '7.7k'),
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
   it('idle main thread with running agents reads idle, and the agents are counted', () => {
     expect(detectPaneState(IDLE_WITH_AGENTS)).toBe('idle')
     expect(detectBackgroundAgents(IDLE_WITH_AGENTS)).toEqual({ total: 2, running: 2, queued: 0 })
