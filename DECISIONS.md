@@ -24740,3 +24740,40 @@ production kódban). Gate: QA + Cybersec.
 
 **Döntés:** QA2 helyesen FAIL-elte a 2026-11-13-i e96d56c5 bejegyzésben idézett "Migráció-visszaállítás tesztelve" állítást (comment 29600): a teszt `initDatabase(':memory:')`-t hívott kétszer, ami két EGYMÁSTÓL FÜGGETLEN friss in-memory adatbázist nyit, tehát a "drop majd re-init" sosem futott egy valódi, meglévő store-on. Javítás a repóban már bevezetett `persistentDb()` mintára (`src/__tests__/stuck-incidents-schema.test.ts`): valódi tmpdir-fájl, `initDatabase(path)` kétszer UGYANAZON az útvonalon, egy a drop előtt beszúrt, nem kapcsolódó (`kanban_cards`) sor bizonyítja, hogy a második init tényleg a MEGLÉVŐ store-t állítja helyre, nem egy újat. Commit `10bbe831c`, csak a teszt-fájl módosult (+43/-7, egyetlen fájl). Fleet-test teljes futás a 10bbe831c-n: 1321 fájl / 40235 teszt zöld, exit 0.
 **Ki döntött:** backend3 (kártya e96d56c5), QA2 Fix-Direction alapján (comment 29600). Gate: QA2 re-gate + Cybersec delta. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-12 — 507e8167: marveen-land.sh --card nem bízhat egy elavult card/<id> ref ancestor-ellenőrzésében (backend3 üzenet 17459)
+
+**Döntés:** backend3 jelentése (üzenet 17459): `marveen-land.sh --card 0120d19a --agent backend3` "already fully landed"-et jelentett, mert a lokális `card/0120d19a` ref egy régi, a kártyához nem tartozó, már landolt commitra (791624a42) mutatott -- a kártya valódi gate-elt commitja (d057a018b) egy másik ágon, `card/4f3c0287`-en élt. A `land_one` "already fully landed" ellenőrzése (`g merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH"`) ezt csendben "landed"-nek jelentette volna, anélkül, hogy egyszer is megnézte volna, a ref tényleg a kártya saját munkáját hordozza-e.
+Javítás: `--card` módban, az ancestor-ellenőrzés ELŐTT, a lander lekéri a kártya legfrissebb REVIEW-jának `Gate-SHA:` sorát (új `store/landing-review-gate-sha-parse.py` + `card_review_gate_sha()` a `landing-gate-verdict-check.sh`-ban, ugyanaz a komment-elemzési forma, mint a meglévő verdikt-parsernek) és megköveteli, hogy ez a sha mind létező commit-objektum legyen, mind a landolandó ág őse. Ha nem: REFUSED (rc 4), a hibaüzenet megnevezi az ág tipjét és a REVIEW shaját. Ha nincs REVIEW/Gate-SHA (olvashatatlan board, vagy még nem posztolt REVIEW), a kiegészítő ellenőrzés no-op -- a régi viselkedésre esik vissza, nincs új hamis refúzió azokon a kártyákon, ahol ez a hiba sosem jelentkezett.
+Új selftest eset (`marveen-land-card-branch.selftest.sh`): egy `card/<id>` ág `origin/develop`-ra force-resetelve (ancestor egy teljesen független okból), REVIEW egy más, el nem érhető shával -- a javítás előtti kódon PIROS (ugyanazt a "already fully landed" szöveget adja, mint backend3 incidense), utána ZÖLD. 51/51 selftest PASS, a `marveen-land.sh --selftest` (86/86) és `landing-gate-verdict-check.selftest.sh` (52/52) változatlan, regresszió nélkül.
+**Ki döntött:** backend2 (kártya 507e8167, MikroB dispatch msg_id:17466), forrás: backend3 üzenet 17459. Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-12 — 507e8167 round 2: a fenti fix maga is three hamis-biztonságú volt (Cybersec NO-GO komment 29485)
+
+**Döntés:** Cybersec NO-GO (komment 29485) három konkrét rést mért a fenti (529453427) fixen, mind élő kártya-adaton reprodukálva. (1) `landing-review-gate-sha-parse.py` saját parsere csak azt a kommentet ismerte fel REVIEW-nak, aminek az ELSŐ sora a szó `REVIEW`-val kezdődik -- a karpathy-loop konvenció (backend CLAUDE.md 8. lépés) viszont `Gate-SHA:` sort tesz elsőnek, `Skills:` sort másodiknak, és csak utána jön a REVIEW szöveg (élő minta: 0120d19a komment 29254, 4f3c0287 komment 29461) -- ezeken a parser NONE-t adott, a hiba, amit a fix épp be akart zárni, változatlanul reprodukálódott volna rajtuk. (2) a többsoros `Gate-SHA: <sha>, <sha>` sorra a régi "ANY ős" ciklus az ELSŐ, már-landolt (és ezért triviálisan ős) shán megállt, a valódi, el nem érhető második shát sosem nézte meg -- OR a helyes AND helyett. (3) olvashatatlan board vagy REVIEW-nélküli kártya esetén az egész ellenőrző blokk kimaradt (az `if OK`-nak nem volt `else` ága), és az sima ancestor-check ellenőrzés nélkül futott -- pontosan az a kérdés maradt megválaszolatlan, amiért ez a kártya létezik.
+Javítás: (1) `landing-review-gate-sha-parse.py` mostantól NEM ír saját parsert, hanem `importlib`-bal betölti `gate-closure-check.py`-t és annak `declared_shas()` függvényét hívja (ugyanaz a minta, mint `gate-closure-check.selftest.py` saját importja) -- "ne írj harmadik parsert" (MikroB döntése). Eközben kiderült, hogy `gate-closure-check.py` saját `_LEAD_SKIP` regexe SEM kezelte a `Gate-SHA:` + `Skills:` + REVIEW-szöveg sorrendet (a `Skills:` sort nem ugrotta át), tehát ez a hiba magában a megosztott logikában is élt -- csak nem vette észre senki, mert a hívó (`check()` `main()`-je) a `declared_shas()` üres találata esetén a GATE VERDIKT saját Gate-SHA sorára esik vissza, és azon a sor sosem hiányzott. `card_review_gate_sha()`-nak nincs mire visszaesnie, ezért nála a hiba csupasz NONE-ként jelent meg. Fix: `_LEAD_SKIP` immár a `Skills:` sort is átugorja (csak `declared_shas()`/`verdict_of()` REVIEW-oldalát érinti, a verdikt-szó-első szabály miatt a VERDIKT-oldalt soha). (2) a `marveen-land.sh` ág immár MINDEN felsorolt shát megkövetel ősnek, nem csak az elsőt. (3) a stale-ref ellenőrzés hatóköre átkerült: csak akkor fut, ha `$branch` MÁR ősnek látszik (`g merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH"`) -- így a rendes, még nem landolt kártyák landolását (ahol ez a kérdés fel sem merül) nem érinti, miközben a NONE/olvashatatlan esetben MOST refuse-ol (rc 4), `--allow-ungated`-del felülírhatóan, ugyanúgy mint a kártya minden más `--card`-módos gate-ellenőrzése.
+Három új selftest eset (V1/V2/V3), mindegyik a NO-GO saját, élő komment-alakjaiból másolva (nem kézzel kitalált forma): V1 a Gate-SHA-első/Skills-második/REVIEW-harmadik alak, V2 a kétsoros Gate-SHA (régi-ős + valódi-elérhetetlen) alak, V3 a REVIEW-nélküli/olvashatatlan alak. Mindhárom PIROS a kiindulási kódon (V2/V3 "already fully landed"-et jelentett refúzió helyett, mutációval igazolva: a marveen-land.sh pre-fix verziójára visszaállítva), ZÖLD a fixszal. `gate-closure-check.selftest.py` (165/165), `marveen-land-card-branch.selftest.sh` (58/58), `marveen-land.sh --selftest` (86/86), `landing-gate-verdict-check.selftest.sh` (52/52), `mopsion-land-verdict-recheck.selftest.sh` (3/3) -- mind PASS, regresszió nélkül.
+**Ki döntött:** backend (kártya 507e8167, reassignolva backend2-től, MikroB dispatch msg_id:17503), forrás: cybersec (WhiteHat) NO-GO komment 29485. Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-13 -- kártya 507e8167 delta: land refúzió feloldva, merge a jelenlegi origin/develop-ra
+
+**Döntés:** a kártya landolása a MikroB sorban 18:36-kor REFUSED-ot kapott: a `card/507e8167` ág
+elavult volt, a jelenlegi `origin/develop`-dal (a 78339a8a landolás, ami a
+`marveen-land-card-branch.selftest.sh`-t bővítette) merge CONFLICTOT adott a `DECISIONS.md`-ben
+és a selftest-fájlban. MikroB jelezte (msg 18037).
+
+**Javítás:** `origin/develop` mergelve a kártya ágába. `DECISIONS.md`: develop tartalma marad
+elöl, a kártya saját két bejegyzése (507e8167 round 1/2) a fájl VÉGÉRE került (tail-append
+konvenció, `decisions-tail-append-guard.sh` RC=0 a merge-base és a merge-commit között). A
+selftest-fájlban mindkét oldal önálló, egymást követő teszt-blokkja megmaradt (507e8167
+stale-ref V1/V2/V3 esetek, majd 78339a8a R2 --allow-stacked esetek) -- a konfliktus-régió
+véletlenül elnyelte az első blokk saját záró `fail=1`/`fi`-jét (mert a második blokk UGYANAZT a
+közös záró szöveget hozta a `>>>>>>>` jelölő után), ezt pótoltuk, mielőtt a második blokk
+következett.
+
+Ellenőrzés a merge-commiten (`c2b6dc5e2`): `marveen-land-card-branch.selftest.sh` 61/61 PASS
+(az 58 korábbi + 3 új `ab120099` stacked-commit eset), `marveen-land.sh --selftest` 93/93 PASS,
+mindkettő a merge-elt kódon futtatva, regresszió nélkül.
+
+**Ki döntött:** MikroB (msg 18037), backend végezte. Gate: QA + Cybersec (delta re-stamp a
+merge-elt shára).

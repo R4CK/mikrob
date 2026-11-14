@@ -111,3 +111,25 @@ gate_verdict_check() {
 
 # The landers define say(); a bare source in a selftest may not.
 say_or_echo() { if declare -F say >/dev/null 2>&1; then say "$*"; else echo "$*"; fi; }
+
+# card_review_gate_sha -- what sha does this card's own latest REVIEW comment claim to be landing?
+#
+#   card_review_gate_sha <cardId>
+#
+# Prints "OK|<sha>[,<sha>...]" or "NONE|<reason>" on stdout, same shape as gate_verdict_check's
+# internal $verdict so callers can split on the first "|" the same way. Used by marveen-land.sh
+# (card 507e8167) to catch a stale `card/<id>` ref BEFORE trusting its "already an ancestor of
+# origin/develop" answer -- see that file's header comment for the incident this closes.
+card_review_gate_sha() {
+  local card="$1"
+  if [ ! -r "$GATE_CHECK_TOKEN_FILE" ]; then
+    echo "NONE|cannot read $GATE_CHECK_TOKEN_FILE"
+    return 0
+  fi
+  local body
+  body="$(printf 'Authorization: Bearer %s\n' "$(cat "$GATE_CHECK_TOKEN_FILE")" \
+    | curl -sS -m 20 -H @- "$GATE_CHECK_API/api/kanban/$card/comments" 2>/dev/null)" || body=""
+  local parser
+  parser="$(dirname "${BASH_SOURCE[0]}")/landing-review-gate-sha-parse.py"
+  printf '%s' "$body" | python3 "$parser" 2>/dev/null || echo "NONE|parser failed"
+}
