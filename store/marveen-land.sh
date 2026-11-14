@@ -2315,7 +2315,18 @@ if [ "${1:-}" = "--selftest-land-batch" ]; then
   git init -q --bare "$LBTMP/origin.git"
   git init -q "$LBTMP/seed"
   git -C "$LBTMP/seed" checkout -q -b develop
-  git -C "$LBTMP/seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m seed
+  # A real package.json (QA FAIL 30639, Fix-Direction A2): without one, bump_fork_version silently
+  # skips (no file to bump), and the version-bump amendment goes completely unexercised.
+  printf '{\n  "name": "fixture",\n  "version": "0.0.1+mikrob.1",\n  "private": true\n}\n' >"$LBTMP/seed/package.json"
+  # package-lock.json too (QA FAIL 30639 debugging note, not in the original card but needed for a
+  # faithful fixture): `git add package.json package-lock.json` is atomic across its own arguments
+  # -- a missing package-lock.json makes git refuse to stage EITHER file, so bump_fork_version's own
+  # "commit -q" (land_one's pre-existing pattern, line ~1509, copied unchanged into land_batch)
+  # silently produces no commit. Real landings never hit this because package-lock.json always
+  # exists; the fixture needs it too, or the fixture lies about what production actually does.
+  printf '{\n  "name": "fixture",\n  "version": "0.0.1",\n  "lockfileVersion": 3,\n  "packages": {"": {"name": "fixture", "version": "0.0.1"}}\n}\n' >"$LBTMP/seed/package-lock.json"
+  git -C "$LBTMP/seed" add package.json package-lock.json
+  git -C "$LBTMP/seed" -c user.email=t@t -c user.name=t commit -q -m seed
   git -C "$LBTMP/seed" remote add origin "$LBTMP/origin.git"
   git -C "$LBTMP/seed" push -q origin develop
   git -C "$LBTMP/origin.git" symbolic-ref HEAD refs/heads/develop
@@ -2379,20 +2390,53 @@ EOS
   chmod +x "$LBTMP/stub-first-red.sh"
 
   # --- case A: green batch, 2 cards -- ONE fleet-test call, ONE push, both land -----------------
+  # Also pins A2 (exactly one version-bump commit for the WHOLE batch, not per card) and A3 (the
+  # journal's started/heartbeat/finished triple + the batch line, both land in land-runs.jsonl) --
+  # QA FAIL 30639: neither was asserted before, and mutating either out stayed green.
   MAIN="$(_lb_mkmain caseA)"
   _lb_mkcard a1 a1.txt hello
   _lb_mkcard a2 a2.txt world
   n=$((n+1))
   export STUB_COUNTER_FILE="$LBTMP/caseA-count"
   TEST_CMD="$LBTMP/stub-ok.sh"
-  out_a="$(land_batch 0 "a1:fixture" "a2:fixture" 2>&1)"
+  _JRNL="$(dirname "$0")/land-runs.jsonl"
+  _jrnl_before="$(wc -l <"$_JRNL" 2>/dev/null || echo 0)"
+  _a_base="$(git -C "$MAIN" rev-parse origin/develop)"
+  land_batch 0 "a1:fixture" "a2:fixture" >"$LBTMP/out-a.txt" 2>&1
+  out_a="$(cat "$LBTMP/out-a.txt")"
   calls_a="$(cat "$STUB_COUNTER_FILE" 2>/dev/null || echo 0)"
-  if [ "$calls_a" = "1" ] \
+  bumps_a="$(git -C "$MAIN" log --oneline "${_a_base}..origin/develop" 2>/dev/null | grep -c 'chore(version): bump')"
+  _jrnl_new="$(tail -n "+$((_jrnl_before + 1))" "$_JRNL" 2>/dev/null)"
+  a3_ok=0
+  if printf '%s\n' "$_jrnl_new" | python3 -c '
+import sys, json
+lines = [l for l in sys.stdin if l.strip()]
+events = []
+run_ids = set()
+batch_line = None
+for l in lines:
+    try:
+        o = json.loads(l)
+    except Exception:
+        continue
+    if o.get("mode") == "batch":
+        batch_line = o
+        continue
+    if "event" in o:
+        events.append(o["event"])
+        if o.get("run_id"):
+            run_ids.add(o["run_id"])
+ok = ("started" in events and "finished" in events
+      and len(run_ids) == 1 and batch_line is not None
+      and batch_line.get("result") == "pushed")
+sys.exit(0 if ok else 1)
+'; then a3_ok=1; fi
+  if [ "$calls_a" = "1" ] && [ "$bumps_a" = "1" ] && [ "$a3_ok" = "1" ] \
      && git -C "$MAIN" merge-base --is-ancestor "card/a1" "origin/develop" \
      && git -C "$MAIN" merge-base --is-ancestor "card/a2" "origin/develop"; then
-    echo "  ok   case A: green batch -- exactly 1 fleet-test call, both cards landed"
+    echo "  ok   case A: green batch -- 1 fleet-test call, 1 version-bump commit (A2), journal triple + batch line present under one run_id (A3), both cards landed"
   else
-    echo "  FAIL case A: fleet-test calls=$calls_a (want 1); output:"; echo "$out_a" | sed 's/^/    /'; fail=1
+    echo "  FAIL case A: fleet-test calls=$calls_a (want 1), bump commits=$bumps_a (want 1), journal-ok=$a3_ok; output:"; echo "$out_a" | sed 's/^/    /'; fail=1
   fi
 
   # --- case B: a card with no branch is dropped and named, the other still lands ----------------
@@ -2401,7 +2445,8 @@ EOS
   n=$((n+1))
   export STUB_COUNTER_FILE="$LBTMP/caseB-count"
   TEST_CMD="$LBTMP/stub-ok.sh"
-  out_b="$(land_batch 0 "b1:fixture" "doesnotexist:fixture" 2>&1)"
+  land_batch 0 "b1:fixture" "doesnotexist:fixture" >"$LBTMP/out-b.txt" 2>&1
+  out_b="$(cat "$LBTMP/out-b.txt")"
   if git -C "$MAIN" merge-base --is-ancestor "card/b1" "origin/develop" \
      && printf '%s' "$out_b" | grep -q "doesnotexist"; then
     echo "  ok   case B: card with no branch dropped and named by id, survivor still landed"
@@ -2410,21 +2455,38 @@ EOS
   fi
 
   # --- case C: a RED combined run falls back to landing survivors one at a time ------------------
+  # Also pins A5 (first_failing_file in the batch's land-runs.jsonl line names the ACTUAL injected
+  # failing test file, not just "a fallback happened" -- QA FAIL 30639).
   MAIN="$(_lb_mkmain caseC)"
   _lb_mkcard c1 c1.txt hello
   _lb_mkcard c2 c2.txt world
   n=$((n+1))
   export STUB_COUNTER_FILE="$LBTMP/caseC-count"
   TEST_CMD="$LBTMP/stub-first-red.sh"
-  out_c="$(land_batch 0 "c1:fixture" "c2:fixture" 2>&1)"
+  _jrnl_before="$(wc -l <"$_JRNL" 2>/dev/null || echo 0)"
+  land_batch 0 "c1:fixture" "c2:fixture" >"$LBTMP/out-c.txt" 2>&1
+  out_c="$(cat "$LBTMP/out-c.txt")"
   calls_c="$(cat "$STUB_COUNTER_FILE" 2>/dev/null || echo 0)"
-  if [ "$calls_c" -ge 2 ] \
+  c_fff="$(tail -n "+$((_jrnl_before + 1))" "$_JRNL" 2>/dev/null | python3 -c '
+import sys, json
+for l in sys.stdin:
+    l = l.strip()
+    if not l:
+        continue
+    try:
+        o = json.loads(l)
+    except Exception:
+        continue
+    if o.get("mode") == "batch":
+        print(o.get("first_failing_file") or "")
+' 2>/dev/null | tail -1)"
+  if [ "$calls_c" -ge 2 ] && [ "$c_fff" = "cross-card.test.ts" ] \
      && git -C "$MAIN" merge-base --is-ancestor "card/c1" "origin/develop" \
      && git -C "$MAIN" merge-base --is-ancestor "card/c2" "origin/develop" \
      && printf '%s' "$out_c" | grep -q "falling back"; then
-    echo "  ok   case C: RED combined run fell back -- both landed one-by-one ($calls_c fleet-test calls)"
+    echo "  ok   case C: RED combined run fell back -- both landed one-by-one ($calls_c fleet-test calls), first_failing_file=$c_fff (A5)"
   else
-    echo "  FAIL case C: fleet-test calls=$calls_c; output:"; echo "$out_c" | sed 's/^/    /'; fail=1
+    echo "  FAIL case C: fleet-test calls=$calls_c, first_failing_file=[$c_fff] (want cross-card.test.ts); output:"; echo "$out_c" | sed 's/^/    /'; fail=1
   fi
 
   # --- case D (A1): a card landed directly while the batch was forming is dropped, not re-merged -
@@ -2438,12 +2500,85 @@ EOS
   n=$((n+1))
   export STUB_COUNTER_FILE="$LBTMP/caseD-count"
   TEST_CMD="$LBTMP/stub-ok.sh"
-  out_d="$(land_batch 0 "d1:fixture" "d2:fixture" 2>&1)"
+  land_batch 0 "d1:fixture" "d2:fixture" >"$LBTMP/out-d.txt" 2>&1
+  out_d="$(cat "$LBTMP/out-d.txt")"
   if printf '%s' "$out_d" | grep -qi "already landed" \
      && git -C "$MAIN" merge-base --is-ancestor "card/d2" "origin/develop"; then
     echo "  ok   case D: a card landed concurrently is dropped as already-landed, never merged twice"
   else
     echo "  FAIL case D: output:"; echo "$out_d" | sed 's/^/    /'; fail=1
+  fi
+
+  # --- case F (A4): push succeeds, but the LANDOLVA comment/card-landings POST for the SECOND
+  # survivor comes back non-2xx -- the push must NOT be retried, and the card must be named in a
+  # "batch-landed-unrecorded" journal line. QA FAIL 30639: this amendment had no dedicated case at
+  # all before. A tiny real HTTP stub (not a mock of record_card_landing/kanban_comment_on --
+  # those functions run FOR REAL and make a real HTTP call, just to this stub) distinguishes the
+  # two cards by id, so only f2's calls fail.
+  cat >"$LBTMP/stub-dashboard.py" <<'EOS'
+import http.server, json, os, socketserver, sys
+FAIL_CARD = os.environ.get("STUB_FAIL_CARD", "")
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        bad = bool(FAIL_CARD) and (FAIL_CARD in self.path)
+        if FAIL_CARD and not bad:
+            try:
+                data = json.loads(body or b"{}")
+                bad = data.get("card_id") == FAIL_CARD
+            except Exception:
+                pass
+        self.send_response(500 if bad else 200)
+        self.end_headers()
+    def log_message(self, *a):
+        pass
+with socketserver.TCPServer(("127.0.0.1", 0), H) as httpd:
+    print(httpd.server_address[1])
+    sys.stdout.flush()
+    httpd.serve_forever()
+EOS
+  n=$((n+1))
+  MAIN="$(_lb_mkmain caseF)"
+  _lb_mkcard f1 f1.txt hello
+  _lb_mkcard f2 f2.txt world
+  : >"$LBTMP/stub-dash-port"
+  STUB_FAIL_CARD=f2 python3 "$LBTMP/stub-dashboard.py" >"$LBTMP/stub-dash-port" 2>/dev/null &
+  stub_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$LBTMP/stub-dash-port" ] && break
+    sleep 0.2
+  done
+  stub_port="$(cat "$LBTMP/stub-dash-port" 2>/dev/null)"
+  echo dummy >"$LBTMP/dummy-token"
+  export STUB_COUNTER_FILE="$LBTMP/caseF-count"
+  TEST_CMD="$LBTMP/stub-ok.sh"
+  _jrnl_before="$(wc -l <"$_JRNL" 2>/dev/null || echo 0)"
+  _f_base="$(git -C "$MAIN" rev-parse origin/develop)"
+  KANBAN_COMMENT_API="http://127.0.0.1:${stub_port}" KANBAN_COMMENT_TOKEN_FILE="$LBTMP/dummy-token" \
+    land_batch 0 "f1:fixture" "f2:fixture" >"$LBTMP/out-f.txt" 2>&1
+  out_f="$(cat "$LBTMP/out-f.txt")"
+  kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null
+  bumps_f="$(git -C "$MAIN" log --oneline "${_f_base}..origin/develop" 2>/dev/null | grep -c 'chore(version): bump')"
+  f_unrec="$(tail -n "+$((_jrnl_before + 1))" "$_JRNL" 2>/dev/null | python3 -c '
+import sys, json
+for l in sys.stdin:
+    l = l.strip()
+    if not l:
+        continue
+    try:
+        o = json.loads(l)
+    except Exception:
+        continue
+    if o.get("mode") == "batch-landed-unrecorded":
+        print(",".join(o.get("cards", [])))
+' 2>/dev/null | tail -1)"
+  if [ "$f_unrec" = "f2" ] && [ "$bumps_f" = "1" ] \
+     && git -C "$MAIN" merge-base --is-ancestor "card/f1" "origin/develop" \
+     && git -C "$MAIN" merge-base --is-ancestor "card/f2" "origin/develop"; then
+    echo "  ok   case F (A4): both cards landed (1 push, bump commits=$bumps_f), f2's record/comment failure named in a batch-landed-unrecorded line, push not retried"
+  else
+    echo "  FAIL case F: unrecorded=[$f_unrec] (want f2), bump commits=$bumps_f (want 1); output:"; echo "$out_f" | sed 's/^/    /'; fail=1
   fi
 
   # --- case E: --batch is the ONLY entry point -- its absence leaves land_one/land_with_retry's
