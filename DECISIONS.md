@@ -24850,3 +24850,7 @@ szerkeszteni, a javítás egy ÚJ, a fájl végén álló bejegyzés, ami vissza
 **Ki döntött:** DevO (fullstack), card b2401b1c, Gate-SHA erre a bejegyzésre lásd a REVIEW kommentet.
 Gate: qa2 + Cybersec delta-review (QA FAIL szerzője, qa, a 4f. szabály szerint nem gate-eli saját
 NO-GO/FAIL-ja utáni re-gate-et Fix-Direction-sor birtokában -- MikroB kijelölése, msg 18396).
+
+**Delta (card b2401b1c):** Cybersec NO-GO (msg 18405) on the entry above found its go.mod claim
+wrong (measured from a stale checkout, not the pinned clone at the cited SHAs); fixed in place
+per MikroB's confirmation that this is permitted for a still-unlanded entry of my own.
