@@ -1952,6 +1952,9 @@ land_batch() {
     [ -n "${run_fg_killable_pid:-}" ] && kill -"$1" -- "-$run_fg_killable_pid" 2>/dev/null
     [ -n "${_run_id:-}" ] && bash "$_ljd" finish "$_run_id" "$2" "deliberate stop (SIG$1)" aborted >/dev/null 2>&1
     declare -F cleanup >/dev/null 2>&1 && cleanup 2>/dev/null
+    # Cybersec2 NO-GO 31317 L1: a signal mid-fleet-test exits here before the normal RED/GREEN
+    # paths below ever reach their own `rm -f "$ft_log"` -- one leaked mktemp file per killed run.
+    rm -f "${ft_log:-}" 2>/dev/null
     trap - EXIT
     exit "$2"
   }
@@ -2445,14 +2448,54 @@ fi
 # --selftest-land-lock-release above: build a fixture, re-exec THIS script with MARVEEN_MAIN
 # pointing at it so land_batch's own definition is reachable and real, then run against it.
 if [ "${1:-}" = "--selftest-land-batch" ]; then
+  # Cybersec2 NO-GO 31317 H2 (blocker): the SELFTEST_BATCH_NESTED skip-guard in case N (below) is
+  # the ONLY thing stopping recursion -- a mutant that breaks it (e.g. the match value changed so
+  # it never equals "1") lets every nested invocation reach case N again and spawn two more of
+  # itself (1 -> 2 -> 4 -> 8 ...), with NOTHING going red: no case fails, there is no summary
+  # line, the process only stops because someone kills it by hand (measured: 41+ live processes,
+  # 15 leaked LBTMP dirs with full caseA fixtures). This cap is INDEPENDENT of that skip-guard, so
+  # it still stops the recursion even if the guard above it is the thing that broke: once a
+  # SECOND level of nesting is reached (depth >= 2, i.e. a nested run's own nested run), refuse
+  # immediately, before building anything.
+  if [ "${SELFTEST_BATCH_DEPTH:-0}" -ge 2 ]; then
+    echo "FAIL: --selftest-land-batch recursion depth ${SELFTEST_BATCH_DEPTH} >= 2 -- the case N SELFTEST_BATCH_NESTED skip-guard failed to stop recursion" >&2
+    exit 3
+  fi
   LBTMP="$(mktemp -d)"
   # MikroB 18453 (2026-11-14): a failure anywhere in this fixture build (git init/clone/push, all
   # under `set -e`) used to exit with NO trap installed yet -- the trap below only existed inside
   # --selftest-land-batch-inner, AFTER the exec that follows this block. Under disk pressure every
   # one of these git calls can fail, and each failure leaked this LBTMP permanently (175 such dirs,
   # ~4000 files each, is what filled /tmp to 100% and took every agent's Bash down with ENOSPC).
-  # Covers INT/TERM/HUP too, not just EXIT -- see the same reasoning on the inner trap below.
-  trap 'rm -rf "$LBTMP"' EXIT INT TERM HUP
+  trap 'rm -rf "$LBTMP"' EXIT
+  # Cybersec2 NO-GO 31317 H1(b): a bare `rm -rf "$LBTMP"` trap on INT/TERM/HUP runs the cleanup
+  # and then the SCRIPT CONTINUES -- a trap handler only runs an action, it does not exit on its
+  # own -- so a TERM mid-fixture-build (measured: 0.6s in) removed LBTMP once and the build then
+  # recreated it. Exit explicitly, with the conventional 128+signum code, so the signal actually
+  # stops the script instead of being silently swallowed.
+  _outer_sig_stop() { rm -rf "$LBTMP"; exit "$1"; }
+  trap '_outer_sig_stop 143' TERM
+  trap '_outer_sig_stop 129' HUP
+  trap '_outer_sig_stop 130' INT
+  # Cybersec2 NO-GO 31317 H1 (blocker): traps are process-global and get silently cleared by
+  # every land_one/land_batch call inside this run (lines ~1862-1891, ~1958-2039), and even where
+  # a trap DOES survive, a caught TERM/INT/HUP just runs the trap action and then the script
+  # CONTINUES (a trap handler does not exit on its own) -- measured: a TERM 0.6s into the fixture
+  # build above removed LBTMP once, then the script carried on and recreated it. Fixed at the
+  # source, not by chasing every call site: a detached janitor that watches THIS pid from outside
+  # the script's own signal handling and removes LBTMP once that pid is gone, no matter how it
+  # died (normal exit, a caught signal that gets cleared later, or a signal that reaches this
+  # process despite the ignores below). Ignoring TERM/INT/HUP inside the janitor itself matters
+  # because a process-group-wide kill (which the wired vitest's execFileSync timeout, and a human
+  # `kill -- -$pgid`, both can send) would otherwise kill the janitor at the same moment it kills
+  # the thing it is watching. The EXIT trap above stays as the fast path for a normal exit.
+  _land_batch_janitor_watch_pid=$$
+  (
+    trap '' TERM INT HUP
+    while kill -0 "$_land_batch_janitor_watch_pid" 2>/dev/null; do sleep 0.2; done
+    rm -rf "$LBTMP"
+  ) >/dev/null 2>&1 &
+  disown $! 2>/dev/null || true
   git init -q --bare "$LBTMP/origin.git"
   git init -q "$LBTMP/seed"
   git -C "$LBTMP/seed" checkout -q -b develop
@@ -3443,9 +3486,12 @@ print(json.dumps({
     echo "  ok   case N (P7): skipped -- already running as a nested --selftest-land-batch invocation"
   else
     n=$((n+1))
-    SELFTEST_BATCH_NESTED=1 bash "$0" --selftest-land-batch >"$LBTMP/out-n1.txt" 2>&1 &
+    # Cybersec2 NO-GO 31317 H2: SELFTEST_BATCH_DEPTH travels with SELFTEST_BATCH_NESTED on both
+    # spawn lines so the hard depth cap at the top of this block (independent of this skip-guard)
+    # can tell a legitimate depth-1 nested run from a depth-2+ recursion if this guard ever breaks.
+    SELFTEST_BATCH_NESTED=1 SELFTEST_BATCH_DEPTH=$(( ${SELFTEST_BATCH_DEPTH:-0} + 1 )) bash "$0" --selftest-land-batch >"$LBTMP/out-n1.txt" 2>&1 &
     n1_pid=$!
-    SELFTEST_BATCH_NESTED=1 bash "$0" --selftest-land-batch >"$LBTMP/out-n2.txt" 2>&1 &
+    SELFTEST_BATCH_NESTED=1 SELFTEST_BATCH_DEPTH=$(( ${SELFTEST_BATCH_DEPTH:-0} + 1 )) bash "$0" --selftest-land-batch >"$LBTMP/out-n2.txt" 2>&1 &
     n2_pid=$!
     wait "$n1_pid"; n1_rc=$?
     wait "$n2_pid"; n2_rc=$?
