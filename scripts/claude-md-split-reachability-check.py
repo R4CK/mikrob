@@ -25,13 +25,44 @@ and was measured against mutants WhiteHat2's keyword-only version missed: a whol
 sentence deleted from a docs/rules file (missed by keyword-substring, caught here because the
 exact line vanishes from the corpus multiset).
 
-Exit 0 if every gating line is found, every marker pair matches, AND the line-multiset
-conservation check is clean. 1 otherwise.
+Exit 0 if every gating line is found, every marker pair matches, the line-multiset
+conservation check is clean, AND the index-structure check below is clean. 1 otherwise.
 
 KOTELEZ/TILOS/MUST/MEGSZEGHETETLEN/SOHA/MINDIG are ALL gating now (card c60e229a QA/WhiteHat2
 NO-GO round: SOHA/MEGSZEGHETETLEN/MINDIG used to be informational-only, which L1 flagged as a
 real gap -- promoted to gating here; the line-conservation check below also does not care which
 specific word a line contains, so this mainly affects what the per-word report prints).
+
+Card cc72cb3e (CYBERED GO 30478 on c60e229a, Gate-SHA b9ee959cb): the checks above are a
+one-way "was anything REMOVED" conservation proof -- RedHat ran 10 additive/structural mutants
+through them that all exit 0 ("0 missing") while weakening a binding rule, because none of them
+remove the old line, they add/hide/misdirect around it. check_index_structure() below adds
+checks that do not depend on the old-ref diff at all, closing each of the 10 (A1-A10, RedHat's
+own numbering, comment 30478):
+  - A3/A10 (wrap a bullet in an HTML comment / code fence to hide it from a rendered read):
+    strip_inert_markup() removes both before anything below looks at the text, so a hidden
+    bullet simply does not exist for this check -- same effect as A6 (delete it outright).
+  - A6 (delete the whole index bullet) / A3 / A10: the bullet count check requires >= 64
+    VISIBLE numbered per-rule bullets (37 + 15 + 12, the three indexed sections).
+  - A1 (append a contradicting exception into the index bullet itself) / A2 (prepend a
+    qualifying sentence to the index bullet) / A5 (invert the index bullet's meaning): the
+    verbatim-substring check requires each bullet's bold lead sentence to be found, unchanged,
+    inside its OWN linked rule file -- added or inverted text does not exist there.
+  - A4 (move the rule to an unlinked docs/rules file): the orphan-file check requires every
+    docs/rules/*.md file to be linked from somewhere in CLAUDE.md; an unlinked file is flagged.
+    The verbatim check also fails independently, since the bullet's own linked file no longer
+    contains the (moved-away) text.
+  - A7 (corrupt a protocol token in the index): a protocol-token floor check requires each of
+    the 14 H1 tokens to occur at least once in CLAUDE.md -- this catches a corruption of the
+    LAST remaining occurrence of a token (what RedHat's probe actually hit); it is a floor, not
+    a full per-occurrence diff, and says so below.
+  - A8 (link to a file that does not exist) / A9 (a relative link instead of the repo-root-
+    absolute convention): checked directly per bullet.
+Residual, NOT claimed closed: a contradiction or qualifier added as its own SEPARATE bullet or
+paragraph (not touching the original bullet's own text) is still invisible to every check here,
+same as to the one-way conservation check -- this is RedHat's own stated limit (memory:
+a-one-way-conservation-check-proves-nothing-was-lost-not-that-nothing-was-weakened), not
+something this card closes.
 """
 import re
 import subprocess
@@ -63,6 +94,110 @@ def extract_lines(text: str, tokens: list[str]) -> list[tuple[int, str]]:
             if norm:
                 hits.append((i, norm))
     return hits
+
+
+# Protocol tokens (WhiteHat2 H1, komment 30400): must stay verbatim, inline, in CLAUDE.md
+# itself. A floor check (>=1 occurrence), not a full per-occurrence diff -- see module docstring.
+H1_TOKENS = [
+    "QA PASS", "CYBERSEC GO", "CYBERSEC NO-GO", "CYBERED GO", "CYBERED NO-GO",
+    "Gate-SHA:", "Fix-Direction:", "Pair-FE:", "Pair-BE:", "BLOKKOLT-",
+    "ELUTASÍTVA", "Kész, ha:", "allowFrom", "DEFAULT-DENY",
+]
+
+# Per-rule index bullets whose lead sentence is a hand-written paraphrase, not a verbatim
+# substring of the rule file (RedHat F3, comment 30478) -- accepted, not re-opened here.
+VERBATIM_ALLOWLIST = {"8a", "19"}
+
+RULE_BULLET_RE = re.compile(
+    r"^\s*-\s+\*\*([0-9]+[a-z]?)\.\*\*\s+\*\*(.+?)\*\*(.*)\((/home/neon/marveen/docs/rules/[^)]+\.md)\)\s*$"
+)
+
+
+def strip_inert_markup(text: str) -> str:
+    """Remove HTML comments and fenced code blocks: a bullet hidden inside either renders as
+    invisible to an agent reading the file, so it must also be invisible to every check below
+    (RedHat A3/A10) -- the raw text being technically still in the file is not enough."""
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    text = re.sub(r"```.*?```", "", text, flags=re.S)
+    return text
+
+
+def find_rule_bullets(visible_claude_md: str) -> list[tuple[str, str, str, str]]:
+    """Returns (rule_num, lead_sentence, rest_of_bullet, link_path) for every VISIBLE numbered
+    per-rule index bullet (the "- **N.** **Lead.** rest ... (path)" lines under the three
+    indexed sections)."""
+    out = []
+    for line in visible_claude_md.split("\n"):
+        m = RULE_BULLET_RE.match(line)
+        if m:
+            out.append((m.group(1), m.group(2), m.group(3), m.group(4)))
+    return out
+
+
+def check_index_structure(new_text: str, rules_dir: Path) -> list[str]:
+    problems = []
+    visible = strip_inert_markup(new_text)
+
+    bullets = find_rule_bullets(visible)
+    # 37 munkavegzesi (1-22 + letters) + 5 (22a-22e, card cc72cb3e F1) + 15 kodminosegi +
+    # 12 ellenorizheto-munka + 2 szemelyiseg (card cc72cb3e F1) = 71. A floor, not an exact
+    # count: a future card adding MORE bullets should not need to touch this number, only one
+    # removing/hiding a bullet without replacing it should.
+    MIN_BULLETS = 71
+    if len(bullets) < MIN_BULLETS:
+        problems.append(
+            f"only {len(bullets)} visible numbered per-rule index bullets found, want >= {MIN_BULLETS}"
+        )
+
+    linked_files = set()
+    for num, lead, rest, link in bullets:
+        linked_files.add(Path(link).name)
+        if not link.startswith("/home/neon/marveen/docs/rules/"):
+            problems.append(f"rule {num}: link is not repo-root-absolute under docs/rules/: {link}")
+            continue
+        target = Path(link)
+        if not target.is_file():
+            problems.append(f"rule {num}: link target does not exist: {link}")
+            continue
+        if num in VERBATIM_ALLOWLIST:
+            continue
+        # Check the WHOLE bullet (lead + the rest of the line up to the link), not only the
+        # bold lead: RedHat A5 inverted "Peti jóváhagyása kell" to "...NEM kell" in the
+        # NON-bold tail of an index bullet, which a lead-only check never looks at. Many
+        # bullets deliberately truncate with a trailing ellipsis (RedHat F3) -- that is a
+        # legitimate cut, not new content, so it is stripped before comparing, never treated
+        # as part of the text that must match.
+        full = (lead + rest).strip()
+        full = re.sub(r"[…]+\s*$", "", full)  # trailing "…"
+        full = re.sub(r"\.{3,}\s*$", "", full)  # trailing "..."
+        # Strip bold markers before comparing: a bullet's bold span does not have to start/end
+        # at the exact same character offset in CLAUDE.md as in the source rule file (e.g. the
+        # index bullet bolds a longer lead-in than the rule file does), which would otherwise
+        # plant a stray "**" inside an otherwise-matching run of text and break a literal
+        # substring match for no semantic reason -- bold markers are invisible to a reader either way.
+        full_norm = normalize(full.replace("**", ""))
+        rule_text_norm = normalize(target.read_text(encoding="utf-8").replace("**", ""))
+        if full_norm not in rule_text_norm:
+            problems.append(
+                f"rule {num}: index bullet text is not a verbatim substring of {link}: "
+                f"{full_norm!r}"
+            )
+
+    for tok in H1_TOKENS:
+        if tok not in visible:
+            problems.append(f"protocol token has 0 occurrences in CLAUDE.md: {tok}")
+
+    # Every docs/rules/*.md file must be linked from SOMEWHERE in CLAUDE.md -- not only from a
+    # numbered bullet (several sections, e.g. Szemelyiseg/Inter-agent, link via their own single
+    # pointer line rather than a per-rule bullet).
+    for m in re.finditer(r"/home/neon/marveen/docs/rules/[^)\s`]+\.md", visible):
+        linked_files.add(Path(m.group(0)).name)
+    if rules_dir.is_dir():
+        for f in sorted(rules_dir.glob("*.md")):
+            if f.name not in linked_files:
+                problems.append(f"docs/rules file is not linked from anywhere in CLAUDE.md: {f.name}")
+
+    return problems
 
 
 def main() -> int:
@@ -127,7 +262,15 @@ def main() -> int:
         for p in marker_problems:
             print(f"  {p}", file=sys.stderr)
 
-    return 1 if (missing or marker_problems or conservation_missing) else 0
+    # --- index structure (card cc72cb3e, closes RedHat's A1-A10, see module docstring) ---
+    index_problems = check_index_structure(new_text, rules_dir)
+    print(f"\nindex structure: {len(index_problems)} problem(s)")
+    if index_problems:
+        print("\nINDEX STRUCTURE PROBLEMS:", file=sys.stderr)
+        for p in index_problems:
+            print(f"  {p}", file=sys.stderr)
+
+    return 1 if (missing or marker_problems or conservation_missing or index_problems) else 0
 
 
 if __name__ == "__main__":
