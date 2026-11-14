@@ -17,10 +17,23 @@
 #
 # TMP_GUARD_ROOT defaults to /tmp; the selftest overrides it to a sandbox so it never
 # mutates the real /tmp (which other agents' live processes are using concurrently).
+#
+# Cybersec LOW-3 (31235): a non-numeric or <=0 age env makes `find -mmin` fail silently
+# (stderr discarded), which this script used to read as "nothing fresh" and delete FRESH
+# dirs. _valid_min rejects anything that is not a positive integer and falls back to the
+# built-in default instead; a bad TMP_GUARD_ALERT_PCT falls back the same way. A `find`
+# failure for any OTHER reason (permissions, odd filesystem) also fails CLOSED below: the
+# dir is kept, never deleted, when find's exit code is non-zero.
 set -u
+_valid_min() { case "$1" in ''|*[!0-9]*|0) return 1 ;; esac; }
+
 ROOT="${TMP_GUARD_ROOT:-/tmp}"
 MAX_AGE_MIN="${TMP_GUARD_MAX_AGE_MIN:-120}"
+_valid_min "$MAX_AGE_MIN" || MAX_AGE_MIN=120
+LEAK_AGE_MIN="${TMP_GUARD_LEAK_AGE_MIN:-10}"
+_valid_min "$LEAK_AGE_MIN" || LEAK_AGE_MIN=10
 ALERT_PCT="${TMP_GUARD_ALERT_PCT:-80}"
+case "$ALERT_PCT" in ''|*[!0-9]*) ALERT_PCT=80 ;; esac
 ME="$(id -u)"
 S="$(cd "$(dirname "$0")" && pwd)"
 
@@ -35,9 +48,12 @@ for d in "$ROOT"/tmp.*; do
   # marveen-land.sh --selftest-land-batch leaks a ~4,000-file dir per run (caseA..caseQ);
   # those go after LEAK_AGE_MIN (default 10) untouched minutes, not the general window.
   win="$MAX_AGE_MIN"
-  [ -e "$d/caseA" ] && win="${TMP_GUARD_LEAK_AGE_MIN:-10}"
-  # keep if the dir itself or anything inside changed within the window
-  if [ -n "$(find "$d" -mmin "-$win" -print -quit 2>/dev/null)" ]; then
+  [ -e "$d/caseA" ] && win="$LEAK_AGE_MIN"
+  # keep if the dir itself or anything inside changed within the window, OR if find itself
+  # errored (fail-closed: an unreadable entry must not be read as "nothing is fresh").
+  fresh="$(find "$d" -mmin "-$win" -print -quit 2>/dev/null)"
+  find_rc=$?
+  if [ "$find_rc" -ne 0 ] || [ -n "$fresh" ]; then
     kept=$((kept + 1))
     continue
   fi

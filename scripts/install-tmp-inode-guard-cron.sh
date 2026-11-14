@@ -17,8 +17,29 @@ LINE="*/5 * * * * /bin/bash $GUARD >> $LOG 2>&1"
 
 command -v crontab >/dev/null 2>&1 || { echo "install-tmp-inode-guard-cron: no crontab on this host" >&2; exit 1; }
 
-existing="$(crontab -l 2>/dev/null || true)"
-if printf '%s\n' "$existing" | grep -qF "$GUARD"; then
+# Cybersec LOW-4 (31235): `crontab -l 2>/dev/null || true` treated ANY failure as "empty
+# crontab", so a transient `-l` error would make the write below REPLACE the whole real
+# crontab with just this one line. Only "no crontab for <user>" (the real empty-crontab
+# case, message/wording varies by cron implementation) is treated as empty; any other
+# failure aborts without touching the crontab.
+err_file="$(mktemp)"
+existing="$(crontab -l 2>"$err_file")"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  if grep -qi "no crontab for" "$err_file" 2>/dev/null; then
+    existing=""
+  else
+    echo "install-tmp-inode-guard-cron: 'crontab -l' failed unexpectedly, aborting without touching the crontab: $(cat "$err_file")" >&2
+    rm -f "$err_file"
+    exit 1
+  fi
+fi
+rm -f "$err_file"
+
+# Cybersec LOW-4: a commented-out line still contains $GUARD as a substring, so a plain
+# grep -F would report "already installed" for a line that is actually disabled. Strip
+# comment lines before checking.
+if printf '%s\n' "$existing" | grep -vE '^[[:space:]]*#' | grep -qF "$GUARD"; then
   echo "install-tmp-inode-guard-cron: already installed"
   exit 0
 fi

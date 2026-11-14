@@ -31,17 +31,38 @@ else
   bad "tmp.old survived the sweep"
 fi
 
-# --- 2. a dir with a FRESH file inside is kept, even if the dir itself is old -----------------------
+# --- 2. a dir with a FRESH file inside is kept, even if the dir itself is old (Cybersec LOW-2,
+# 31235): creating a NEW file inside a dir refreshes the DIR's own mtime too (a directory-entry
+# side effect), so the old ordering (age the dir, then create the file) made this vacuous against
+# a `find -maxdepth 0` (dir-only) mutant -- that mutant also saw a fresh dir and passed by
+# accident. Creating the file FIRST and THEN aging the dir's own mtime means only the file stays
+# fresh, so only a RECURSIVE walk of the dir's contents can see it.
 mkdir -p "$SANDBOX/tmp.active"
-touch -d '3 hours ago' "$SANDBOX/tmp.active"
 echo x > "$SANDBOX/tmp.active/still-writing"
+touch -d '3 hours ago' "$SANDBOX/tmp.active"
 run
 if [ -d "$SANDBOX/tmp.active" ]; then
-  ok "a dir with a fresh file inside is kept"
+  ok "a dir with a fresh file inside is kept (dir's own mtime is old, only the file is fresh)"
 else
   bad "tmp.active was removed despite a fresh file inside"
 fi
 rm -rf "$SANDBOX/tmp.active"
+
+# --- 2b. same shape, nested two levels deep, APPENDED to (not created) -- appending to an
+# EXISTING file never touches any parent directory's mtime, which is the realistic "a long test
+# is still writing its log" case the script's own header comment describes.
+mkdir -p "$SANDBOX/tmp.deep/a/b"
+echo "old line" > "$SANDBOX/tmp.deep/a/b/log"
+find "$SANDBOX/tmp.deep" -exec touch -d '5 hours ago' {} \;
+touch -d '5 hours ago' "$SANDBOX/tmp.deep"
+echo "new line" >> "$SANDBOX/tmp.deep/a/b/log"
+run
+if [ -d "$SANDBOX/tmp.deep" ]; then
+  ok "appending to a nested, existing file keeps the whole dir chain"
+else
+  bad "tmp.deep was removed despite a just-appended nested file"
+fi
+rm -rf "$SANDBOX/tmp.deep"
 
 # --- 3. a dir owned by another uid is kept, even if old ---------------------------------------------
 # No real second uid is available in this sandbox (no root/sudo here), so the ownership check
@@ -92,6 +113,77 @@ if [ ! -e "$SANDBOX/tmp.leak" ]; then
 else
   bad "tmp.leak survived past the short leak window"
 fi
+
+# --- 5b. Cybersec LOW-1 (31235): the LOWER bound of each default window was unpinned -- a mutant
+# shrinking the default (120->5, 10->1) still passed 8/8, because every other case used ages far
+# outside either value. These pin the defaults from the inside.
+mkdir -p "$SANDBOX/tmp.midage"
+touch -d '60 minutes ago' "$SANDBOX/tmp.midage"
+find "$SANDBOX/tmp.midage" -exec touch -d '60 minutes ago' {} \;
+run
+if [ -d "$SANDBOX/tmp.midage" ]; then
+  ok "a 60-minute-old plain dir is kept (pins the general window near its real 120-min default)"
+else
+  bad "tmp.midage (60 min old) was removed -- the general window shrank below 60"
+fi
+rm -rf "$SANDBOX/tmp.midage"
+
+mkdir -p "$SANDBOX/tmp.midleak/caseA"
+touch -d '5 minutes ago' "$SANDBOX/tmp.midleak"
+find "$SANDBOX/tmp.midleak" -exec touch -d '5 minutes ago' {} \;
+run
+if [ -d "$SANDBOX/tmp.midleak" ]; then
+  ok "a 5-minute-old caseA dir is kept (pins the leak window near its real 10-min default)"
+else
+  bad "tmp.midleak (5 min old) was removed -- the leak window shrank below 5"
+fi
+rm -rf "$SANDBOX/tmp.midleak"
+
+# --- 5c. Cybersec LOW-3 (31235): a garbage/zero/negative age env must fall back to the built-in
+# default, not silently delete something fresh. Without validation, `find -mmin -abc` errors,
+# stderr is discarded, the empty output reads as "nothing fresh", and a dir holding a file
+# written THIS SECOND gets rm -rf'd.
+mkdir -p "$SANDBOX/tmp.freshcfg"
+touch -d '3 hours ago' "$SANDBOX/tmp.freshcfg"
+echo x > "$SANDBOX/tmp.freshcfg/just-written"
+TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_DRYRUN=1 TMP_GUARD_MAX_AGE_MIN=abc bash "$RUN" >/dev/null
+if [ -d "$SANDBOX/tmp.freshcfg" ]; then
+  ok "a non-numeric TMP_GUARD_MAX_AGE_MIN falls back to the default, fresh content survives"
+else
+  bad "a fresh dir was deleted because TMP_GUARD_MAX_AGE_MIN=abc was accepted"
+fi
+rm -rf "$SANDBOX/tmp.freshcfg"
+
+mkdir -p "$SANDBOX/tmp.zerocfg"
+touch -d '3 hours ago' "$SANDBOX/tmp.zerocfg"
+echo x > "$SANDBOX/tmp.zerocfg/just-written"
+TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_DRYRUN=1 TMP_GUARD_MAX_AGE_MIN=0 TMP_GUARD_LEAK_AGE_MIN=-5 \
+  bash "$RUN" >/dev/null
+if [ -d "$SANDBOX/tmp.zerocfg" ]; then
+  ok "TMP_GUARD_MAX_AGE_MIN=0 / TMP_GUARD_LEAK_AGE_MIN=-5 fall back to the defaults too"
+else
+  bad "a fresh dir was deleted with a 0/negative age window"
+fi
+rm -rf "$SANDBOX/tmp.zerocfg"
+
+# A `find` failure for a reason OTHER than the age argument (permissions, odd filesystem) must
+# also fail closed: stub `find` on PATH to always error, confirm nothing gets removed.
+FINDSTUB="$(mktemp -d)"
+cat > "$FINDSTUB/find" <<'STUB'
+#!/usr/bin/env bash
+echo "find: stubbed failure" >&2
+exit 2
+STUB
+chmod +x "$FINDSTUB/find"
+mkdir -p "$SANDBOX/tmp.findfail"
+touch -d '3 hours ago' "$SANDBOX/tmp.findfail"
+PATH="$FINDSTUB:$PATH" run
+if [ -d "$SANDBOX/tmp.findfail" ]; then
+  ok "a find failure fails CLOSED -- the dir is kept, not removed"
+else
+  bad "a find failure still let the dir be removed"
+fi
+rm -rf "$FINDSTUB" "$SANDBOX/tmp.findfail"
 
 # --- 6. the ALERT line fires at/above the threshold, and dispatches to MikroB -----------------------
 # A real inode-% reading is not controllable from a unit test, so ALERT_PCT is driven to 0 --
