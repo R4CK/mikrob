@@ -25439,3 +25439,83 @@ commitok kimaradtak, mert már a landolt cdde2666-ban/f3f4b571-ben megvannak).
 
 **Ki döntött:** backend2 (kártya 9b25cc84, MikroB dispatch msg_id:17942). Gate: QA + Cybersec +
 RedHat (routing to external providers).
+
+
+## 2026-11-13 -- card 29ceef23: F3 switch-ON blockers closed (RedHat standing condition on 9b25cc84)
+
+**Döntés:** a cdde2666 RedHat GO maradék LOW leletei (H3 prefix-membership, H6 parse-error
+fail-open, a reserved/catalog-id-nevek auto/fusion/qwen3-coder/command-r ütközése), amelyeket a
+9b25cc84 REVIEW addendum (komment 30282) a 29ceef23-ra halasztott, itt záródnak: `model_pulled()`
+kap egy RESERVED_MODEL_NAMES denylistet (auto, auto:*, fusion, qwen3-coder, command-r) a
+pulled-ellenőrzés ELŐTT, úgy hogy egy ilyen pontos névvel lepullozott lokális modell soha nem
+kerülhet továbbításra a gateway-nek -- lezárva a 9b25cc84 G3 elfogadott résének ezen négy konkrét
+nevét (nem egy általános served-platform ellenőrzés, csak a RedHat által mért nevek). H3 és H6 már
+helyesen viselkedett a szállított kódban, csak nem volt pin-teszt rajtuk -- most van, mindkettő
+egyedileg mutáció-bizonyítva (a startswith-mutáns pontosan a H3 tesztet, a fail-open-mutáns
+pontosan a H6 tesztet viszi pirosra; eredeti visszaállítva, diff tiszta).
+
+**Teszt:** `local-llm-gateway-mode.test.ts` 12 -> 19/19 zöld (7 új: 5 reserved-name eset, 1 H3, 1
+H6, plusz egy negatív kontroll ami megerősíti hogy a denylist EXACT match, nem substring).
+`local-llm-guard-sanctioned-skip.test.ts` 9/9 (nincs regresszió). `tsc --noEmit` tiszta.
+
+**Ki döntött:** RedHat standing condition (Cybered GO 30273 a 9b25cc84-en), built by backend2,
+dispatched by MikroB (msg 17983). Gate: QA + Cybersec + Cybered -- a 29ceef23 Kész-ha harmadik
+pontja (Cybered megerősíti, hogy a standing condition feloldva) külön gate-verdikt, nem ez a
+commit zárja.
+
+## 2026-11-13 -- card 29ceef23 delta: CYBERED NO-GO 30288 -- denylist replaced with structural custom: prefix fix
+
+**Döntés:** az előző kör (fenti bejegyzés) egy 4-elemű statikus denylistet rakott a
+`model_pulled()`-be (auto/auto:*/fusion/qwen3-coder/command-r). CYBERED NO-GO 30288 megmutatta,
+hogy ez se a `fusion:<tag>` alakot (fusion:7b, fusion:chain), se a 881 egyéb,
+gateway-feloldható stringet (pl. command-a, mistral-nemo, codestral, a `groq:openai/gpt-oss-120b`
+platform:model_id alak) nem fedi. A javítás STRUKTURÁLIS, nem egy bővített denylist: a
+gateway-módú kérés vezetékes `"model"` mezője mostantól `"custom:$MODEL"`, nem a nyers Ollama-név.
+Freellmapi saját `isAutoModel`/`isFusionModel` (string-egyezés/prefix) és semelyik katalógus
+platform model-id-je nem tud illeszkedni egy `"custom:"`-tal kezdődő stringre -- ez az ÜTKÖZÉSEK
+TELJES OSZTÁLYÁT zárja, nem egy névlistát.
+
+**LIVE-ELLENŐRZÉS a futó freellmapi ellen** (loopback, csak olvasó megfigyelés az
+`X-Routed-Via` válaszfejlécen, SEMMI más kódút nem futott, a már élesben használt
+gateway-auth-tokennel, admin-hitelesítő adat NEM került felhasználásra): a valós pullozott modell
+`"custom:<valós név>"` alakban UGYANARRA a custom endpointra oldódik fel, mint eddig a nyers
+névvel; `"custom:auto"`, `"custom:fusion"`, `"custom:qwen3-coder"` mindhárom 404 "not in the
+catalog"-ot ad -- sehova máshova nem megy. Ez bizonyítja, hogy a virtuális-modell és katalógus
+ellenőrzések nem látnak át a `"custom:"` prefixen.
+
+**Teszt:** `local-llm-gateway-mode.test.ts` 19 -> 21/21 zöld (az előző kör 7 denylist-tesztje
+átírva: mostantól azt ellenőrzik, hogy MINDEN gateway-kérés vezetékes model mezője
+`"custom:"`-tal kezdődik, nem azt, hogy bizonyos nevek refusálva vannak). Mutáció-bizonyítva: a
+`GATEWAY_WIRE_MODEL="custom:$MODEL"` sor `GATEWAY_WIRE_MODEL="$MODEL"`-re cserélve pontosan a 8 új
+tesztet viszi pirosra, a többi 13 zöld marad. `local-llm-guard-sanctioned-skip.test.ts` 9/9,
+`tsc --noEmit` tiszta.
+
+**Ki döntött:** RedHat direction (CYBERED NO-GO 30288), built by backend2, dispatched by MikroB
+(msg 17992). Gate: QA + Cybersec + Cybered -- Cybered re-ellenőrzi, hogy a standing condition
+(GO 30273) ezúttal feloldható.
+
+## 2026-11-13 -- card 29ceef23 delta: QA FAIL 30293 explicit regression tests (fusion:chain, case-fold)
+
+**Döntés:** QA FAIL 30293 (a round-1 denylistre, mielőtt a round-2 struktúrális javítás megtörtént)
+megmutatta, hogy a `fusion:` prefix alak (freellmapi `isFusionModel` -- ugyanaz a `lower==fusion
+|| startswith(fusion:)` forma mint `isAutoModel`) a round-1 denylistből hiányzott. A round-2
+`custom:` prefix javítás ezt már strukturálisan zárja, de MikroB (msg 17997) kérte, hogy ettől
+függetlenül legyen explicit regressziós teszt: `fusion:chain` és `auto:chain` bekerült a
+collision-it.each listába, plusz egy dedikált mixed-case (`Auto`, `FUSION`, `Qwen3-Coder`)
+it.each, ami bizonyítja hogy a `custom:` prefix kis- és nagybetű-függetlenül megmarad.
+
+**Teszt:** `local-llm-gateway-mode.test.ts` 21 -> 25/25 zöld. Mutáció-bizonyítva: a
+`GATEWAY_WIRE_MODEL="custom:$MODEL"` visszaállítása a nem-prefixelt alakra pontosan a 12 új/érintett
+tesztet viszi pirosra, 13 érintetlen zöld marad. `tsc --noEmit` tiszta.
+
+**Ki döntött:** MikroB (msg 17997, QA FAIL 30293 alapján), built by backend2. Gate: QA +
+Cybersec + Cybered.
+
+**Rebuild note (2026-11-14, MikroB msg 18628):** this card's branch was rebuilt a second time,
+this time directly on current origin/develop (e1f43d02c7a) via the 9b25cc84-rebuild2 branch,
+replacing the earlier card/29ceef23-rebuild which was still 143 commits behind develop (built on
+the stale 077c16bda base). Own code delta carried over verbatim: the `custom:` wire-prefix fix in
+`store/local-llm.sh` and its regression tests in `local-llm-gateway-mode.test.ts`. The three
+DECISIONS.md-only entries above were re-added as new tail entries (not cherry-picked), per the
+tail-append invariant; git cherry against card/9b25cc84-rebuild2 shows only this card's own
+commit on top.
