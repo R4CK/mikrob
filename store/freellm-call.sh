@@ -41,6 +41,20 @@ FREELLM_MODEL="${FREELLM_MODEL:-auto}"
 FREELLM_AUTH_TOKEN_FILE="${FREELLM_AUTH_TOKEN_FILE:-/home/neon/.config/freellmapi/auth-token}"
 CATEGORY_CHECK="${FREELLM_CATEGORY_CHECK_OVERRIDE:-$ROOT/store/gemini-agy-category-check.py}"
 TIMEOUT="${FREELLM_TIMEOUT:-60}"
+# Card 4cd2a0fc (MikroB live probe comment 30552, 2026-11-14): a single slow
+# upstream (observed: google/gemini-3.7-flash) used to get the WHOLE $TIMEOUT
+# budget on one attempt -- when it hung, curl's own --max-time fired at
+# exactly $TIMEOUT, the proxy logged "client disconnected mid-attempt ...
+# stopping without benching", and no second attempt ever ran. Splitting the
+# same overall budget into several SHORTER attempts means one stalled
+# upstream only burns its own slice; freellmapi re-routes fresh on every
+# call (FREELLM_MODEL=auto), so a retry has a real chance of landing on a
+# different, responsive provider instead of the one that just hung.
+FREELLM_MAX_ATTEMPTS="${FREELLM_MAX_ATTEMPTS:-2}"
+# Default: TIMEOUT split three ways, not two -- so even FREELLM_MAX_ATTEMPTS
+# attempts in a row leave headroom under $TIMEOUT for connect time and our
+# own request-building overhead, instead of exactly summing to it.
+FREELLM_ATTEMPT_TIMEOUT="${FREELLM_ATTEMPT_TIMEOUT:-$(( TIMEOUT / 3 > 0 ? TIMEOUT / 3 : 1 ))}"
 DRY_RUN=0
 
 # ---- arg parsing ---------------------------------------------------------------
@@ -304,14 +318,32 @@ printf 'Authorization: Bearer %s\n' "$AUTH_TOKEN" > "$AUTH_HDR"
 
 # Call API (localhost, 127.0.0.1 only -- enforced above; --noproxy '*' so a proxy env var
 # cannot redirect this request off-host, per the L1 fix, WhiteHat NO-GO 28484).
-HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TMPOUT" -X POST \
-  "$FREELLM_API_BASE/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H @"$AUTH_HDR" \
-  --data @"$REQ_FILE" \
-  --noproxy '*' \
-  --connect-timeout 5 \
-  --max-time "$TIMEOUT" 2>"$TMPERR")
+# Each attempt gets only a SLICE of $TIMEOUT (see FREELLM_ATTEMPT_TIMEOUT above);
+# curl exit 28 is "operation timeout" -- no response at all arrived -- and is
+# the ONLY case retried: every other failure (bad response, refused
+# connection, TLS error) is deterministic and a retry would just repeat it.
+attempt=1
+HTTP_CODE=""
+while [[ "$attempt" -le "$FREELLM_MAX_ATTEMPTS" ]]; do
+  HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TMPOUT" -X POST \
+    "$FREELLM_API_BASE/chat/completions" \
+    -H "Content-Type: application/json" \
+    -H @"$AUTH_HDR" \
+    --data @"$REQ_FILE" \
+    --noproxy '*' \
+    --connect-timeout 5 \
+    --max-time "$FREELLM_ATTEMPT_TIMEOUT" 2>"$TMPERR")
+  curl_rc=$?
+  if [[ "$curl_rc" -eq 28 && "$attempt" -lt "$FREELLM_MAX_ATTEMPTS" ]]; then
+    echo "FREELLM: attempt $attempt/$FREELLM_MAX_ATTEMPTS stalled (no response within ${FREELLM_ATTEMPT_TIMEOUT}s) -- retrying" >&2
+    attempt=$((attempt + 1))
+    continue
+  fi
+  if [[ "$curl_rc" -eq 28 ]]; then
+    echo "FREELLM: all $FREELLM_MAX_ATTEMPTS attempts stalled (no response within ${FREELLM_ATTEMPT_TIMEOUT}s each) -- giving up" >&2
+  fi
+  break
+done
 
 # ---- handle API response ---------------------------------------------------------------
 case "$HTTP_CODE" in

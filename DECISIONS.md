@@ -24715,3 +24715,39 @@ visszaallitva, 259/259 zold. Testver-suite-ok erintetlenek (18332 passed, 98 ski
 
 **Ki dontott:** MikroB (msg 17336/17339, RedHat merese alapjan, backend3 vegezte).
 Gate-SHA: ujra-gate ehhez a kommit vegso tip-jehez (lasd a kartya REVIEW-jat).
+
+## 2026-11-14 -- 4cd2a0fc: freellm-call.sh kliens-oldali retry, nem freellmapi-config
+
+**Dontes:** a card celja ("egy lassu upstream ne egye meg a teljes FREELLM_TIMEOUT
+budgetet") KLIENS-OLDALI megoldast kapott (store/freellm-call.sh uj FREELLM_MAX_ATTEMPTS/
+FREELLM_ATTEMPT_TIMEOUT valtozoi, alapertek 2 probalkozas x TIMEOUT/3), NEM a freellmapi
+szerver sajat PROVIDER_TIMEOUT_<PLATFORM>/fallback_time_budget_ms config-janak hangolasat.
+
+**Miert nem a szerver-config:** a freellmapi forras tenyleges vizsgalata (server/src/
+providers/index.ts, provider-timeout.ts) feltarta, hogy a legtobb katalogus-platform
+(pl. google: `new GoogleProvider({timeoutMs: 60_000})`) alapertek szerint PONTOSAN annyi
+(60000ms), mint a sajat kliensunk FREELLM_TIMEOUT-ja -- ez a tenyleges gyoker-ok a
+MikroB-probaban latott "client disconnected mid-attempt ... stopping without benching"
+jelensegre (a ket oldal verseng, es a kliens veszit). A platformok tucatjait egyenkent,
+tartosan PROVIDER_TIMEOUT_<PLATFORM>-pal pin-elni (es upstream-sync utan is karban
+tartani) terhes es a forras-draft ellen szol. Egy izolalt freellmapi-peldanyon
+(FREEAPI_DB_PATH temp DB, fix port) egy valodi custom-provider-parral REPRODUKALVA: az
+alapertek (custom: 120000ms) a kliens 60s/65s budgetje elott sosem jar le, a kliens
+ad fel elobb. Ugyanazon az izolalt peldanyon PROVIDER_TIMEOUT_CUSTOM=15000-tel a
+problema megoldhato volt szerver-oldalon IS -- de ez csak a 'custom' platformra VONT
+le, a tenyleges forgalmunk (FREELLM_MODEL=auto, tucatnyi katalogus-platform) nem ezt
+hasznalja, es a general megoldas (minden platform pin-elese) nem karbantarthato.
+
+**A valasztott fix:** freellm-call.sh a TIMEOUT-ot tobb, rovidebb probalkozasra bontja
+(alapertek: 2x TIMEOUT/3 masodperc); curl exit 28 (operation timeout, nincs valasz) az
+EGYETLEN ag, amit ujrapr obal -- minden mas hiba (HTTP-valasz, elutasitott kapcsolat)
+determinisztikus, ujraprobalas nem valtana semmit. A freellmapi "auto" router minden
+hivasnal frissen dont, tehat egy masodik probalkozasnak valodi esolye van egy masik,
+valaszolo providerre esni. Teszt: store/freellm-call-retry.selftest.sh, izolalt mock
+szerverrel (elso keres 90s-ig akad, utana azonnal valaszol) -- bizonyitja: a fallback
+valasz a FREELLM_TIMEOUT-on belul erkezik, a masodik probalkozas tenylegesen megtortenik
+(nem csendben eldobva), es FREELLM_MAX_ATTEMPTS=1-gyel (retry kikapcsolva) ugyanaz a
+forgatokonyv sikertelen -- a retry az, amin a kulonbseg all.
+
+**Ki dontott:** backend2 (kartya 4cd2a0fc, MikroB priority 13768, Peti-elsobbseg).
+Gate-SHA: lasd a kartya REVIEW-jat.
