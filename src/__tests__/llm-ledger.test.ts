@@ -1,6 +1,7 @@
 // Card e96d56c5 (F4): per-call LLM ledger + per-agent budget.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest'
 import { Readable } from 'node:stream'
+import http from 'node:http'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +11,16 @@ import {
   getAgentLlmBudget, setAgentLlmBudget, getDb,
 } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { getSettingDefinition } from '../config-registry.js'
+
+// card 1a3c6459 (F2): isKnownAgent stats agents/<name> on disk, which the repo deliberately does
+// not track (see /agents/ in .gitignore) -- a fixed fixture roster keeps this test independent of
+// whatever agent directories happen to exist on whichever checkout it runs in.
+const KNOWN_TEST_AGENTS = new Set(['backend3', 'fron-ted'])
+vi.mock('../web/agent-config.js', () => ({
+  isKnownAgent: (name: string) => KNOWN_TEST_AGENTS.has(name),
+}))
+
 import { tryHandleLlmLedger } from '../web/routes/llm-ledger.js'
 
 // `:memory:` cannot serve a rollback test: initDatabase() opens a NEW in-memory database every
@@ -180,19 +191,179 @@ describe('llm_ledger: route GET /api/llm-ledger/summary', () => {
 describe('llm_ledger: route GET/PUT /api/llm-ledger/budget/:agent', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
-  it('GET returns the platform default when unset, PUT sets an override GET then reflects', async () => {
+  // card 1a3c6459 (F1): PUT now requires an authenticated session/device principal -- `call()`'s
+  // bare RouteContext has no `auth` at all, so these helpers attach one explicitly per case.
+  function withAuth(ctx: RouteContext, auth: RouteContext['auth']): RouteContext {
+    return { ...ctx, auth }
+  }
+  async function putAs(auth: RouteContext['auth'], agent: string, body: unknown) {
+    const { ctx, out } = call('PUT', `/api/llm-ledger/budget/${agent}`, body)
+    expect(await tryHandleLlmLedger(withAuth(ctx, auth))).toBe(true)
+    return out
+  }
+  const SESSION = { kind: 'session', user: 'peti' } as const
+  const DEVICE = { kind: 'device', device: 'bridge-1' } as const
+  const TOKEN = { kind: 'token', agent: 'backend3' } as const
+
+  it('GET returns the platform default when unset, PUT (as a session) sets an override GET then reflects', async () => {
     const before = await route('GET', '/api/llm-ledger/budget/backend3')
     expect(before.body.source).toBe('platform')
-    const put = await route('PUT', '/api/llm-ledger/budget/backend3', { daily_budget: 8000, actor: 'mikrob' })
+    const put = await putAs(SESSION, 'backend3', { daily_budget: 8000 })
     expect(put.status).toBe(200)
     expect(put.body).toMatchObject({ ok: true, agent_id: 'backend3', daily_budget: 8000 })
     const after = await route('GET', '/api/llm-ledger/budget/backend3')
     expect(after.body).toEqual({ daily_budget: 8000, source: 'override' })
   })
 
-  it('PUT rejects a non-integer or negative budget', async () => {
-    expect((await route('PUT', '/api/llm-ledger/budget/backend3', { daily_budget: -1 })).status).toBe(400)
-    expect((await route('PUT', '/api/llm-ledger/budget/backend3', { daily_budget: 1.5 })).status).toBe(400)
-    expect((await route('PUT', '/api/llm-ledger/budget/backend3', { daily_budget: 'lots' })).status).toBe(400)
+  it('PUT rejects a non-integer, negative, non-finite, or above-platform-max budget (400), red on the pre-fix 3e1152142 code', async () => {
+    const platformMax = Number(getSettingDefinition('LLM_LEDGER_DEFAULT_DAILY_BUDGET')!.max)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: -1 })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: 1.5 })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: 'lots' })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: Number.NaN })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: Number.POSITIVE_INFINITY })).status).toBe(400)
+    // The 3e1152142 defect, measured live by WhiteHat2: 1e300, 1e15 and a value one past the
+    // platform max were all accepted because Number.isInteger(1e300) is true and there was no
+    // upper bound at all.
+    expect((await putAs(SESSION, 'backend3', { daily_budget: 1e300 })).status).toBe(400)
+    expect((await putAs(SESSION, 'backend3', { daily_budget: platformMax + 1 })).status).toBe(400)
+    const atMax = await putAs(SESSION, 'backend3', { daily_budget: platformMax })
+    expect(atMax.status).toBe(200)
+  })
+
+  it('PUT refuses a shared fleet token (403) -- only a session or device principal may write (F1)', async () => {
+    const asToken = await putAs(TOKEN, 'backend3', { daily_budget: 100 })
+    expect(asToken.status).toBe(403)
+    expect(getAgentLlmBudget('backend3').source).toBe('platform') // nothing written
+    const asDevice = await putAs(DEVICE, 'backend3', { daily_budget: 100 })
+    expect(asDevice.status).toBe(200)
+  })
+
+  it('PUT takes updated_by from the authenticated principal, never from the request body (F1)', async () => {
+    await putAs(SESSION, 'backend3', { daily_budget: 100, actor: 'mikrob (forged)' })
+    const row = getDb().prepare('SELECT updated_by FROM agent_llm_budget WHERE agent_id = ?').get('backend3') as { updated_by: string }
+    expect(row.updated_by).toBe('peti')
+    await putAs(DEVICE, 'fron-ted', { daily_budget: 200, actor: 'anyone' })
+    const row2 = getDb().prepare('SELECT updated_by FROM agent_llm_budget WHERE agent_id = ?').get('fron-ted') as { updated_by: string }
+    expect(row2.updated_by).toBe('bridge-1')
+  })
+
+  it('GET and PUT refuse an unknown agent id (404) and an over-length id never reaches isKnownAgent (F2)', async () => {
+    expect((await route('GET', '/api/llm-ledger/budget/no-such-agent-xyz')).status).toBe(404)
+    expect((await putAs(SESSION, 'no-such-agent-xyz', { daily_budget: 100 })).status).toBe(404)
+    const longId = 'a'.repeat(5000)
+    expect((await route('GET', `/api/llm-ledger/budget/${longId}`)).status).toBe(404)
+  })
+
+  it('PUT rejects an oversized body (413) and stops reading the stream well under the body size (F2)', async () => {
+    // process.memoryUsage().rss is too noisy for this (GC timing, and the TEST's own fixture
+    // construction dwarfs anything the route does) -- so this measures the actual guarantee
+    // directly: how many bytes the route's readBody() PULLS from the stream before giving up.
+    // A generator yields 1MB chunks lazily (never materializing the full body at once); if
+    // readBody buffered the whole thing before rejecting, bytesPulled would reach the full 20MB.
+    const CHUNK = 1024 * 1024
+    const TOTAL_CHUNKS = 20
+    let bytesPulled = 0
+    async function* chunks() {
+      for (let i = 0; i < TOTAL_CHUNKS; i++) {
+        bytesPulled += CHUNK
+        yield Buffer.alloc(CHUNK, 'x')
+      }
+    }
+    const out: { status: number; body: any } = { status: 200, body: null }
+    const res: any = {
+      writeHead(status: number) { out.status = status; return res },
+      setHeader() { return res },
+      end(chunk?: string | Buffer) { if (chunk) out.body = JSON.parse(chunk.toString()) },
+    }
+    const req: any = Readable.from(chunks())
+    req.headers = {}
+    const url = new URL('http://localhost:3420/api/llm-ledger/budget/backend3')
+    const ctx = withAuth({ req, res, path: url.pathname, method: 'PUT', url } as RouteContext, SESSION)
+    expect(await tryHandleLlmLedger(ctx)).toBe(true)
+    expect(out.status).toBe(413)
+    // No budget row should have been written off a refused oversized body.
+    expect(getAgentLlmBudget('backend3').source).toBe('platform')
+    // BUDGET_BODY_MAX_BYTES is 4KB, so overLimit fires on the very first 'data' event -- but a
+    // Node Readable built from an async generator prefetches one chunk ahead of what it has
+    // delivered, so 2 chunks (2MB) is the real floor here, not 1. The bound is 5x that (10MB,
+    // half the full 20MB body) specifically so this does not re-couple to that internal
+    // prefetch-depth implementation detail; the property under test is "nowhere near the full
+    // body", not "exactly N chunks".
+    expect(bytesPulled).toBeLessThan(10 * CHUNK)
+  })
+})
+
+// card 1a3c6459 (MikroB F1, off WhiteHat2 30319): the fake-stream tests above read the error
+// object straight off a rejected promise -- they pass even when the real socket is destroyed
+// before a response can be written, because nothing in them is listening on a real wire. This
+// block runs the actual route behind a real http.Server (same pattern as video-review.test.ts),
+// so a client that never gets a response IS a failure here, not a false green.
+describe('llm_ledger: route PUT /api/llm-ledger/budget/:agent over a real socket (1a3c6459 F1)', () => {
+  let server: http.Server
+  let origin = ''
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      void (async () => {
+        const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+        // Minimal auth-kind injection for this test only: a real client cannot forge this
+        // header past the dashboard's actual auth gate (not under test here), but it lets this
+        // test drive tryHandleLlmLedger's own session/device/token branches over a real socket
+        // without standing up the whole auth-gate stack.
+        const authKind = req.headers['x-test-auth-kind']
+        const ctx: RouteContext = {
+          req, res, path: url.pathname, method: req.method ?? 'GET', url,
+          auth: authKind === 'session' ? { kind: 'session', user: 'peti' }
+            : authKind === 'device' ? { kind: 'device', device: 'bridge-1' }
+              : authKind === 'token' ? { kind: 'token', agent: 'backend3' } : undefined,
+        }
+        if (!(await tryHandleLlmLedger(ctx))) { res.writeHead(404); res.end() }
+      })()
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    origin = `http://127.0.0.1:${(server.address() as any).port}`
+  })
+  afterAll(() => { server.close() })
+  beforeEach(() => { initDatabase(':memory:') })
+
+  it('an over-cap PUT body gets a real 413 status line, not a dropped connection', async () => {
+    const huge = JSON.stringify({ daily_budget: 1, padding: 'x'.repeat(1024 * 1024) }) // 1MB, over the 4KB cap
+    const res = await fetch(`${origin}/api/llm-ledger/budget/backend3`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-test-auth-kind': 'session' },
+      body: huge,
+    })
+    expect(res.status).toBe(413)
+    const data = await res.json() as { error: string }
+    expect(data.error).toMatch(/too large/)
+    expect(getAgentLlmBudget('backend3').source).toBe('platform') // nothing written
+  })
+
+  it('an in-cap PUT over the real socket still succeeds (the fix did not break the happy path)', async () => {
+    const res = await fetch(`${origin}/api/llm-ledger/budget/backend3`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-test-auth-kind': 'session' },
+      body: JSON.stringify({ daily_budget: 5000 }),
+    })
+    expect(res.status).toBe(200)
+    expect(getAgentLlmBudget('backend3')).toEqual({ daily_budget: 5000, source: 'override' })
+  })
+})
+
+describe('llm_ledger: negative counts refused at the DB layer (F3, 1a3c6459)', () => {
+  beforeEach(() => { initDatabase(':memory:') })
+
+  it('a negative latency_ms, prompt_chars, response_chars or claude_token_equiv throws, nothing is stored', () => {
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true, latencyMs: -5 })).toThrow()
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true, promptChars: -1 })).toThrow()
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true, responseChars: -1 })).toThrow()
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true, claudeTokenEquiv: -99_999_999 })).toThrow()
+    expect(getLlmLedgerSummary(7).totals.calls).toBe(0)
+  })
+
+  it('a NULL (omitted) numeric field is still accepted -- the CHECK does not require every column', () => {
+    expect(() => appendLlmLedgerRow({ agentId: 'backend3', taskType: 'code', provider: 'local', ok: true })).not.toThrow()
+    expect(getLlmLedgerSummary(7).totals.calls).toBe(1)
   })
 })

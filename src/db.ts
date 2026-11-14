@@ -1768,6 +1768,14 @@ export function initDatabase(dbPathOverride?: string): void {
   // cost table already exists (token_usage, above) for Claude itself. draft_accepted starts NULL
   // and is filled in later, read back from the card's own Draft-Review comment once a human/gate
   // judges the draft (not knowable at call time).
+  // card 1a3c6459 (WhiteHat2 F3 on e96d56c5): numeric columns CHECKed non-negative at the DB
+  // layer, not just at the one caller we control today -- the ledger is appended from several
+  // shell scripts (local-llm.sh, freellm-call.sh, gemini-offload-call.sh) plus a direct CLI
+  // (store/llm-ledger-append.py --agent ... --claude-token-equiv -99999999), and a negative
+  // "tokens saved" number silently corrupts the summary totals the local-LLM payoff decision
+  // reads. `IS NULL OR` because every one of these stays optional (not knowable for every call
+  // shape). INSERT/UPDATE violations throw; appendLlmLedgerRow's only caller with untrusted
+  // numbers (the python CLI) already fails open around exactly this kind of exception.
   db.exec(`
     CREATE TABLE IF NOT EXISTS llm_ledger (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1779,11 +1787,11 @@ export function initDatabase(dbPathOverride?: string): void {
       model               TEXT,
       ok                  INTEGER NOT NULL,
       fail_reason         TEXT,
-      latency_ms          INTEGER,
-      prompt_chars        INTEGER,
-      response_chars      INTEGER,
+      latency_ms          INTEGER CHECK(latency_ms IS NULL OR latency_ms >= 0),
+      prompt_chars        INTEGER CHECK(prompt_chars IS NULL OR prompt_chars >= 0),
+      response_chars      INTEGER CHECK(response_chars IS NULL OR response_chars >= 0),
       draft_accepted      INTEGER,
-      claude_token_equiv  INTEGER
+      claude_token_equiv  INTEGER CHECK(claude_token_equiv IS NULL OR claude_token_equiv >= 0)
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_llm_ledger_ts ON llm_ledger(ts)`)
@@ -9268,6 +9276,15 @@ export interface LlmLedgerRow {
 
 // One row per non-Claude call. ok/draft_accepted are stored as 0/1 (SQLite has
 // no boolean column type); draft_accepted is NULL until filled in later.
+//
+// card 1a3c6459 (WhiteHat2 F3 on e96d56c5): params.agentId is ATTRIBUTION, not AUTHENTICATION --
+// it comes verbatim from a shell caller's own --caller/--agent argument (local-llm.sh,
+// freellm-call.sh, gemini-offload-call.sh, or a direct llm-ledger-append.py invocation), and the
+// whole fleet runs under one shared OS user and one shared dashboard token, so there is no
+// identity this call site could check it against. The summary this feeds is advisory ("tokens
+// saved" totals a human reads to judge local-LLM payoff), not an enforcement input -- see the
+// PUT /api/llm-ledger/budget/:agentId handler for the one write path that DOES need, and now has,
+// a real authenticated writer (ctx.auth, never request-body-supplied).
 export function appendLlmLedgerRow(params: {
   agentId: string
   cardId?: string | null

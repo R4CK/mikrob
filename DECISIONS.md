@@ -24795,3 +24795,63 @@ have read this box's real Telegram credentials (the helper deliberately keeps a 
 a real message every time the pre-existing failure test ran.
 
 **Ki döntött:** DevO (fullstack), card 84181422. Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
+
+## 2026-11-13 — kártya 1a3c6459: F4 ledger hardening (WhiteHat2 F1-F3 az e96d56c5 gate-jéről)
+
+**Döntés:** WhiteHat2 CYBERSEC GO 29597 (Gate-SHA 3e1152142) F1-F3 leletei a `PUT
+/api/llm-ledger/budget/:agentId` útvonalon és a `llm_ledger` séma numerikus oszlopain. F1: a
+`daily_budget` felső korlátja a `LLM_LEDGER_DEFAULT_DAILY_BUDGET` registry-bejegyzés saját
+`max`-ára esik (nem egy második, kódba égetett plafon), az `updated_by` a `ctx.auth`-ból jön
+(session user / device név), sosem a body-ból, és a PUT mostantól session/device principal-t
+igényel (megosztott flotta-token/federation peer 403-at kap). F2: a body-méret 4KB-ra sapkázva
+(`readBody`/`RequestBodyTooLargeError` -> 413), az agent-id 64 karakterre korlátozva az
+`isKnownAgent` fájlrendszer-stat ELŐTT, ismeretlen agent-id 404 GET-en és PUT-on is. F3: a
+`llm_ledger` séma `latency_ms`/`prompt_chars`/`response_chars`/`claude_token_equiv` oszlopai
+`CHECK(>= 0)`-ot kaptak -- egy negatív érték beszúráskor dob, a python CLI (az egyetlen
+nem-megbízható hívó) ezt már eddig is fail-open-nel kezeli. Az `agent_id` attribúció, nem
+hitelesítés jellege dokumentálva (kódkomment), ahogy WhiteHat2 is fogalmazta. Hatókörön kívül
+(a kártya Kész-ha listája szerint): F4 (DEFAULT_DB hardcode) és F5 (argparse furcsaságok) --
+ezek WhiteHat2 leletei, de nem szerepelnek a kártya elfogadási kritériumában.
+**Ki döntött:** backend3, MikroB dispatch alapján (msg 17943). Gate: QA + Cybersec.
+
+## 2026-11-13 — kártya 1a3c6459 delta: F2 CHECK csak CREATE TABLE IF NOT EXISTS-ben, landolási sorrend kötve
+
+**Döntés:** WhiteHat2 F2 lelete (komment 30319): az új `CHECK(>= 0)` kényszerek a `llm_ledger`
+táblán csak a `CREATE TABLE IF NOT EXISTS` DDL-ben élnek -- ha az e96d56c5 tábla már létezik (akár
+a CHECK nélküli alakban landolva külön), ez a kártya nem javítja utólag, a séma változatlan marad.
+Élesben jelenleg NINCS `llm_ledger`/`agent_llm_budget` tábla (ellenőrzött, read-only look), és
+sem e96d56c5, sem 1a3c6459 nincs még a developon -- ezért MikroB döntése: nincs migráció, a két
+kártyát EGYMÁS UTÁN, UGYANABBAN a frissítésben kell landolni és deployolni (e96d56c5 előbb, majd
+1a3c6459 közvetlenül utána, mielőtt bármilyen deploy/restart megy), így a tábla CSAK a CHECK-es
+alakjában jön létre először. Ha ez a sorrend megszakad (pl. e96d56c5 landol, deploy megy, és
+1a3c6459 csúszik), a tábla a régi, CHECK nélküli alakban létezik élesben, és ez a kártya önmagában
+már nem javítja -- akkor egy táblaépítés (create+copy-with-clamp+swap) kártya kell, tesztelt
+rollbackkel, nem egyszerű landolás.
+**Ki döntött:** MikroB (msg 18043), WhiteHat2 CYBERSEC GO 30319 F2 nyomán. Gate: QA + Cybersec2.
+
+## 2026-11-13 — kártya 1a3c6459 delta: N1 readBody drain-cap (WhiteHat2 30355)
+
+**Döntés:** WhiteHat2 N1 lelete (komment 30355): az F1 drain-helyett-destroy javítás eltávolította
+az egyetlen korlátot, ami a limiten túli olvasást valaha is megállította -- a régi `req.destroy()`
+magát. Mérve: egy 8KB-sapkás route (a POST /api/auth/login alakja) egy 512MB testet teljesen
+beolvasott, miközben a kliens 2GB-ot deklarált, 532ms CPU, a kapcsolat nyitva marad. Csak a ledger
+budget route volt védett, és csak amiatt, hogy a `Connection: close` fejlécet is kitette -- ez volt
+az EGYETLEN hívóhely a readBody ~73 importere közül, ami ezt tette. MikroB döntése (msg 18087):
+a readBody()-ba kerüljön egy saját, minden hívóra egyformán érvényes korlát a limit-utáni
+olvasásra, a per-route `Connection: close` ezután feleslegessé válik. Megoldás: `DRAIN_SLACK_BYTES`
+(64KB) a src/web/http-helpers.ts-ben -- a limit átlépése után legfeljebb ennyit olvas tovább a
+szerver, mielőtt tényleg destroy()-olna; a ledger route saját `Connection: close`-ja törölve, a
+teszt nélküle is zöld (bizonyítva, hogy a korlát magában a helperben van, nem egy route-specifikus
+mellékhatásban).
+**Ellenőrzés:** új teszt-fájl (`src/__tests__/http-helpers-read-body-drain-cap.test.ts`): egy
+direkt readBody()-teszt és egy valódi, hitelesítés nélküli POST /api/auth/login route elleni
+teszt, mindkettő egy deklaráltan túlméretezett testet streamel valódi socketen, és méri, hogy a
+szerver a teljes test alatt megáll-e az olvasással (mindkettő < 1MB a 4-8MB deklarált mérethez
+képest). A login route jelenlegi viselkedése (a `RequestBodyTooLargeError` a catch-all 400
+"Invalid JSON"-ba olvad, nem 413-ba) VÁLTOZATLAN marad és ekként van asszertálva -- ez eltér a
+dispatch szó szerinti "413"-megfogalmazásától, mert ez a route korábban sem adott 413-at, ezt itt
+rögzítem, nem némán felülírom a kérést. 21/21 teszt zöld (llm-ledger.test.ts 19 + az új fájl 2),
+tsc clean. Teljes fleet-test.sh ezen a shán NEM futott le ebben a körben (kvóta/idő miatt) -- a
+célzott teszt+tsc lefedettség a bizonyíték ebben a deltában, a gate saját, független futtatása adja
+a végső megerősítést.
+**Ki döntött:** MikroB (msg 18087), WhiteHat2 30355 N1 nyomán. Gate: QA + Cybersec2 (WhiteHat2).
