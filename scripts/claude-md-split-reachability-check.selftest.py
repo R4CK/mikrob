@@ -267,15 +267,79 @@ try:
     else:
         bad("--update-baseline without --yes still wrote the baseline file", rc_noyes.stdout + rc_noyes.stderr)
 
-    rc_yes = subprocess.run(
+    # QA2 FAIL 31319: --yes alone must NOT bless a REWORD -- only --accept <hash> can.
+    rc_yes_only = subprocess.run(
         [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"],
         capture_output=True, text=True, cwd=str(REPO_ROOT),
     )
-    rc2, out2 = run_checker(claude_md, rules_dir)
-    if rc_yes.returncode == 0 and rc2 == 0:
-        ok("--update-baseline --yes records the reworded line; the checker is green again")
+    after_yes_only = baseline_file.read_text(encoding="utf-8") if baseline_file.exists() else None
+    if rc_yes_only.returncode != 0 and after_yes_only == before:
+        ok("31319: --yes alone REFUSES a REWORD with no --accept <hash>, writes nothing")
     else:
-        bad("checker still red after --update-baseline --yes", out2[-800:])
+        bad("31319: --yes alone blessed a REWORD with no --accept", rc_yes_only.stdout + rc_yes_only.stderr)
+
+    m = __import__("re").search(r"^\s+--accept (\S+)\s+#", rc_yes_only.stdout + rc_yes_only.stderr, __import__("re").M)
+    if not m:
+        bad("31319: the refusal did not print a usable --accept hash", rc_yes_only.stdout + rc_yes_only.stderr)
+    else:
+        reword_hash = m.group(1)
+        rc_yes = subprocess.run(
+            [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
+             "--yes", "--accept", reword_hash],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        rc2, out2 = run_checker(claude_md, rules_dir)
+        if rc_yes.returncode == 0 and rc2 == 0:
+            ok("--update-baseline --yes --accept <hash> records the reworded line; checker green again")
+        else:
+            bad("checker still red after --update-baseline --yes --accept <hash>", out2[-800:])
+finally:
+    shutil.rmtree(d)
+
+# --- QA2 FAIL 31319: a meaning-INVERTING edit classifies as REWORD by similarity (it keeps most
+# of the sentence) exactly like a harmless wording tweak -- --yes alone must refuse it the same
+# as any other reword, and it must only go through when its OWN printed hash is named. ----------
+d, claude_md, rules_dir = sandbox()
+try:
+    replace_once(
+        rules_dir / "szemelyiseg.md",
+        'Soha ne mondd: "Természetesen!", "Remek kérdés!", "Szívesen segítek", "Mint mesterséges intelligencia".',
+        'Néha mondhatod: "Természetesen!", "Remek kérdés!", "Szívesen segítek", "Mint mesterséges intelligencia".',
+        "31319-inversion",
+    )
+    rc, out = run_checker(claude_md, rules_dir)
+    if rc != 0:
+        ok("31319: the inverted ('Soha ne' -> 'Neha') line turns the checker red")
+    else:
+        bad("31319: the inversion did not turn the checker red", out[-500:])
+
+    baseline_file = rules_dir / ".reachability-baseline.json"
+    before = baseline_file.read_text(encoding="utf-8") if baseline_file.exists() else None
+    rc_yes_only = subprocess.run(
+        [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    after = baseline_file.read_text(encoding="utf-8") if baseline_file.exists() else None
+    if rc_yes_only.returncode != 0 and after == before:
+        ok("31319: --yes alone REFUSES the inversion (classified REWORD like any other)")
+    else:
+        bad("31319: --yes alone silently accepted the inversion", rc_yes_only.stdout + rc_yes_only.stderr)
+
+    m = __import__("re").search(r"^\s+--accept (\S+)\s+#", rc_yes_only.stdout + rc_yes_only.stderr, __import__("re").M)
+    if not m:
+        bad("31319: the inversion refusal did not print a usable --accept hash", rc_yes_only.stdout + rc_yes_only.stderr)
+    else:
+        h = m.group(1)
+        rc_allowed = subprocess.run(
+            [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
+             "--yes", "--accept", h],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        rc2, out2 = run_checker(claude_md, rules_dir)
+        if rc_allowed.returncode == 0 and rc2 == 0:
+            ok("31319: the EXACT printed hash via --accept lets the inversion through, checker green after")
+        else:
+            bad("31319: supplying the printed --accept hash did not clear the inversion", out2[-800:])
 finally:
     shutil.rmtree(d)
 

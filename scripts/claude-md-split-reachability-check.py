@@ -2,14 +2,19 @@
 """claude-md-split-reachability-check.py <old-claude-md-git-ref> <new-claude-md-path> <docs-rules-dir> [baseline-file]
 
 --update-baseline <old-ref> <claude-md> <docs-rules-dir> [baseline-file] [--yes]
-    [--allow-removal <hash>]... [--allow-pin-change <rule-id>]...
+    [--accept <hash>]... [--allow-removal <hash>]... [--allow-pin-change <rule-id>]...
   Records an intentional edit so the checks above do not flag it forever. Lists what it would
   accept (classified REWORD or REMOVED, by similarity to the current corpus) and writes nothing
-  without --yes. A REMOVED line (card cc72cb3e delta, RedHat NO-GO on 6f5045341) is refused
-  unless its own printed short hash is named via --allow-removal -- --yes alone never blesses an
-  outright-missing line with no similar replacement anywhere. A pinned bullet (19/8a) whose text
-  differs from what the baseline already recorded prints OLD and NEW and is refused the same way,
-  unless named via --allow-pin-change <rule-id>.
+  without --yes. --yes alone accepts NOTHING classified REWORD or REMOVED (QA2 FAIL 31319: --yes
+  alone used to bless every REWORD silently, which blessed a meaning-inverting edit -- "Soha ne
+  mondd" -> "Neha mondhatod" -- exactly as readily as a harmless rewording, since both keep most
+  of the sentence and read as similar). Every REWORD now prints its own short hash (OLD vs NEW
+  text) and is refused unless that hash is named via --accept, same mechanism as removals. A
+  REMOVED line (card cc72cb3e delta, RedHat NO-GO on 6f5045341) is refused unless its own printed
+  short hash is named via --allow-removal. A pinned bullet (19/8a) whose text differs from what
+  the baseline already recorded prints OLD and NEW and is refused the same way, unless named via
+  --allow-pin-change <rule-id>. --yes is only the final "I reviewed what's printed above" step;
+  it never substitutes for naming each line.
 
 Card c60e229a: proves that the CLAUDE.md -> docs/rules/ split did not drop any binding
 sentence. Reads the OLD CLAUDE.md at <old-claude-md-git-ref> (ground truth, pre-split),
@@ -387,6 +392,7 @@ def check_index_structure(new_text: str, rules_dir: Path, baseline: dict) -> lis
 def _parse_args(argv: list[str]):
     update = "--update-baseline" in argv
     yes = "--yes" in argv
+    accept: set[str] = set()
     allow_removal: set[str] = set()
     allow_pin_change: set[str] = set()
     pos: list[str] = []
@@ -394,6 +400,12 @@ def _parse_args(argv: list[str]):
     while i < len(argv):
         a = argv[i]
         if a in ("--update-baseline", "--yes"):
+            i += 1
+            continue
+        if a == "--accept":
+            i += 1
+            if i < len(argv):
+                accept.add(argv[i])
             i += 1
             continue
         if a == "--allow-removal":
@@ -414,7 +426,7 @@ def _parse_args(argv: list[str]):
         return None
     old_ref, new_claude_md_path, docs_rules_dir = pos[:3]
     baseline_path = Path(pos[3]) if len(pos) == 4 else Path(docs_rules_dir) / ".reachability-baseline.json"
-    return old_ref, new_claude_md_path, docs_rules_dir, baseline_path, update, yes, allow_removal, allow_pin_change
+    return old_ref, new_claude_md_path, docs_rules_dir, baseline_path, update, yes, accept, allow_removal, allow_pin_change
 
 
 def _compute(old_ref: str, new_claude_md_path: str, docs_rules_dir: str):
@@ -445,7 +457,7 @@ def _compute(old_ref: str, new_claude_md_path: str, docs_rules_dir: str):
 
 def _update_baseline(
     old_ref, new_claude_md_path, docs_rules_dir, baseline_path: Path, confirmed: bool,
-    allow_removal: set[str], allow_pin_change: set[str],
+    accept: set[str], allow_removal: set[str], allow_pin_change: set[str],
 ) -> int:
     """The one command MikroB's hold (31268) asked for: run this in the SAME commit as an
     intentional edit to a binding rule's wording.
@@ -453,12 +465,17 @@ def _update_baseline(
     RedHat NO-GO (re-gate on 6f5045341): the first version accepted EVERY currently-missing line
     uncritically, which blessed an outright REMOVED binding rule exactly as readily as a genuine
     REWORDING (his U2), and silently re-pinned an INVERTED bullet 19/8a with no visible diff
-    (his U3). Now: each candidate line is classified reword/removed by similarity to the current
-    corpus (classify_missing_line); a REMOVED line is refused unless its own short_hash is named
-    via --allow-removal. A pinned bullet whose text differs from what the baseline already has on
-    record prints OLD and NEW and is refused unless its rule number is named via
+    (his U3). Then QA2 FAIL 31319: even after U2/U3, a REWORD was still accepted by bare --yes
+    with no per-line confirmation -- a similarity-classified "reword" is not the same as a
+    SAFE rewording, and a meaning-inverting edit ("Soha ne mondd" -> "Neha mondhatod") keeps
+    most of the sentence, so it classifies as REWORD exactly like a harmless wording tweak.
+    Now: each candidate line is classified reword/removed by similarity to the current corpus
+    (classify_missing_line); EVERY reword prints its own short_hash (OLD vs NEW) and is refused
+    unless that hash is named via --accept -- the same per-line mechanism REMOVED already had
+    via --allow-removal. A pinned bullet whose text differs from what the baseline already has
+    on record prints OLD and NEW and is refused unless its rule number is named via
     --allow-pin-change -- there is no reliable way to tell a legitimate rewording from an
-    inversion by similarity alone (RedHat's own point), so EVERY pin change needs the explicit
+    inversion by similarity alone, so EVERY reword and EVERY pin change needs its own explicit
     flag, never just --yes. Nothing is written unless every line that needed a flag got one.
     """
     new_text, rules_dir, missing, conservation_missing, corpus_lines_norm = _compute(
@@ -468,20 +485,31 @@ def _update_baseline(
     corpus_set = set(corpus_lines_norm)
 
     candidate_lines = sorted({line for _, line in missing} | {line for _, line in conservation_missing})
-    rewords: list[str] = []
+    rewords: list[tuple[str, str]] = []  # (line, hash)
     removals: list[tuple[str, str]] = []  # (line, hash)
     for line in candidate_lines:
         others = [c for c in corpus_lines_norm if c != line] or corpus_lines_norm
         kind, best_match, ratio = classify_missing_line(line, others if line in corpus_set else corpus_lines_norm)
         if kind == "reword":
-            print(f"  REWORD ({ratio:.2f} similar to): {best_match!r}\n    <- was: {line!r}")
-            rewords.append(line)
+            h = short_hash(line)
+            print(f"  REWORD (hash {h}, {ratio:.2f} similar to): {best_match!r}\n    <- was: {line!r}")
+            rewords.append((line, h))
         else:
             h = short_hash(line)
             removals.append((line, h))
             print(f"  REMOVED (hash {h}, no similar line found): {line!r}")
 
+    blocked_rewords = [(line, h) for line, h in rewords if h not in accept]
     blocked_removals = [(line, h) for line, h in removals if h not in allow_removal]
+
+    if blocked_rewords:
+        print(
+            f"\n{len(blocked_rewords)} REWORD line(s) -- refusing without --accept <hash> for each "
+            f"one you intend (a similarity match is not proof the meaning survived):",
+            file=sys.stderr,
+        )
+        for line, h in blocked_rewords:
+            print(f"  --accept {h}   # {line!r}", file=sys.stderr)
 
     pin_changes: list[tuple[str, str, str]] = []  # (num, old, new)
     pins_to_write = dict(load_baseline(baseline_path).get("pinned_bullets", {}))
@@ -509,7 +537,7 @@ def _update_baseline(
         for line, h in blocked_removals:
             print(f"  --allow-removal {h}   # {line!r}", file=sys.stderr)
 
-    if blocked_removals or blocked_pins:
+    if blocked_rewords or blocked_removals or blocked_pins:
         print("\nNothing written.", file=sys.stderr)
         return 1
 
@@ -519,7 +547,12 @@ def _update_baseline(
 
     baseline_path.write_text(
         json.dumps(
-            {"accepted_missing_lines": sorted(set(rewords) | {line for line, _ in removals}), "pinned_bullets": pins_to_write},
+            {
+                "accepted_missing_lines": sorted(
+                    {line for line, _ in rewords} | {line for line, _ in removals}
+                ),
+                "pinned_bullets": pins_to_write,
+            },
             ensure_ascii=False, indent=2,
         )
         + "\n",
@@ -534,11 +567,12 @@ def main() -> int:
     if parsed is None:
         print(__doc__, file=sys.stderr)
         return 2
-    old_ref, new_claude_md_path, docs_rules_dir, baseline_path, update, confirmed, allow_removal, allow_pin_change = parsed
+    old_ref, new_claude_md_path, docs_rules_dir, baseline_path, update, confirmed, accept, allow_removal, allow_pin_change = parsed
 
     if update:
         return _update_baseline(
-            old_ref, new_claude_md_path, docs_rules_dir, baseline_path, confirmed, allow_removal, allow_pin_change
+            old_ref, new_claude_md_path, docs_rules_dir, baseline_path, confirmed,
+            accept, allow_removal, allow_pin_change,
         )
 
     baseline = load_baseline(baseline_path)
