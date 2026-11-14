@@ -24799,11 +24799,13 @@ a real message every time the pre-existing failure test ran.
 ## 2026-11-14 -- update-review sweep: 5 watched repos + 2 pipx drifts (card b2401b1c)
 
 **Döntés:** git-repo-watcher flagged 5 external code changes plus 2 PyPI drifts for review, no
-bumps. Verdicts: caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit/2 files, Go toolchain patch bump
-+ README cosmetic, vendored skills/caveman subdir untouched. emilkowalski-skill (f7ce8c02..0f2e23b3)
+bumps. Verdicts: caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit/1 file (README.md banner-clipping
+fix only; go.mod unchanged in this range -- the go.mod toolchain bump belongs to the prior round,
+ad473752..67968b7a), vendored skills/caveman subdir untouched. emilkowalski-skill (f7ce8c02..0f2e23b3)
 -- ADOPT, 2 commits/29 files, all prose/doc, no scripts/network/install change; vendored-copy sync
 deferred to a separate bump card. repomix (758c3d71..5beee248) -- NO-OP, 16 commits/15 files, CI
-workflow pins + minor dependency range bumps, no new dependency, pinned install (1.19.0) unaffected.
+workflow pins + dependency range bumps (including a major devDependency bump, jsdom ^30.1.3->^31.0.0,
+dev-only, no lifecycle scripts), no new dependency, pinned install (1.19.0) unaffected.
 agent-skills (aeac41d4..39b723ce) -- ADOPT, 379 commits/112 files, review scoped to the 5 adopted
 skills (doubt-driven-development, context-engineering, interview-me, idea-refine,
 documentation-and-adrs); 4/5 touched, all benign prose/doc; rest of the diff is plugin/CI machinery
