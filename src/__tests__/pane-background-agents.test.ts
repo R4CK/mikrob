@@ -391,4 +391,48 @@ describe('background-agent block below the footer', () => {
     ].join('\n')
     expect(detectPaneState(pane)).toBe('idle')
   })
+
+  // QA1 (card 8b8bc092, comment 31261, FAIL on the round-3 fix): the FOOTER_LEAD_RX gate was
+  // unanchored, so idle prose that happens to contain a "<word> on ·" shape anywhere in a
+  // sentence -- not just as the line's own chrome -- still read busy.
+  it('QA1: idle prose containing "...on ·" deep in a sentence stays idle, not busy', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      '  you can toggle it by typing turn it on · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // QA2/QA3 (card 8b8bc092, comment 31261): the indent cutoff (ROW_SIGNAL_MAX_INDENT=3) is a
+  // margin tuned to RedHat's own fixture (indent 5), not a structural guarantee -- the exact
+  // same coincidentally-matching text at indent 2 or 3 is still inside the cutoff and still
+  // tripped the (ungated) BUSY_ESC_CLIPPED_RX check in rowCarriesLiveSignal.
+  it('QA2/QA3: the same coincidental continuation at indent 2 or 3 must not block the cut either', () => {
+    const atIndent = (n: number) => [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      `${' '.repeat(n)}the retry logic depends on · e…`,
+    ].join('\n')
+    expect(detectPaneState(atIndent(2))).toBe('idle')
+    expect(detectPaneState(atIndent(3))).toBe('idle')
+  })
+
+  // RedHat LOW (card 8b8bc092, comment 31259, folded in per MikroB 31260): a clipped busy
+  // footer with no mode word at all (default permission mode) must still read busy -- the
+  // mode-lead requirement cannot be the ONLY accepted shape.
+  it('RedHat LOW: a mode-less clipped busy footer (default mode, no "on" word) still reads busy', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  1 shell, 1 monitor · /tasks to see subagents · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
 })
