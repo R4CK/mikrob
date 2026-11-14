@@ -25391,3 +25391,18 @@ anthropic-mcp-builder / anthropic-webapp-testing 2c5958ec..1780c5e5 (1 commit, 3
 A freellmapi/pipx driftek kihagyva a kartya leirasa szerint (kulon kartyak fedik).
 
 Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- card eccb1219 (follow-up): QA2 FAIL 31337 javitas -- hianyzo repomix note-sor
+
+**Dontes:** QA2 FAIL 31337 helyesen jelezte, hogy a repomix regisztry-bejegyzes nem kapott datumozott
+note-sort, pedig a d89f85b19 commit uzenete ezt allitotta mindharom bejegyzesre (repomix +
+anthropic-mcp-builder + anthropic-webapp-testing). Ujra-diffelve d89f85b19-et: a tenyleges valtozas
+(1 fajl, 4 insertion/4 deletion) csak a ket anthropic-skills bejegyzest erintette, a repomix note
+sosem kapta meg a sorat. Javitas (dd8f7d0e6): hozzafuzve a hianyzo 2026-11-14 note a repomix
+bejegyzeshez, ugyanazzal a tartalommal, mint a fenti (2026-11-14, eredeti eccb1219) bejegyzesben --
+nincs uj review-munka, csak a hianyzo nyilvantartasi sor.
+
+Cybersec2 B1 (MikroB msg_id:18606 relay): a watched-repos-record-review.sh futtatasat MikroB maga
+vegzi el mindharom bejegyzesre a kartya zarasakor, DevO nem futtatta.
+
+Gate: QA2 + Cybersec2, delta szabaly (csak store/watched-repos.json, egy sor). **Ki döntött:** DevO (fullstack).
