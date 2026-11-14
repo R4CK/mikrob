@@ -24751,3 +24751,36 @@ forgatokonyv sikertelen -- a retry az, amin a kulonbseg all.
 
 **Ki dontott:** backend2 (kartya 4cd2a0fc, MikroB priority 13768, Peti-elsobbseg).
 Gate-SHA: lasd a kartya REVIEW-jat.
+
+## 2026-11-14 -- 4cd2a0fc delta: FREELLM_TIMEOUT/MAX_ATTEMPTS/ATTEMPT_TIMEOUT validacio + budget-clamp
+
+**Dontes:** a WhiteHat2 (cybersec2) delta-gate lelete (komment 31204, F1 MEDIUM-LOW, F2 LOW) alapjan
+a freellm-call.sh harom uj konfig-valtozoja (FREELLM_TIMEOUT, FREELLM_MAX_ATTEMPTS,
+FREELLM_ATTEMPT_TIMEOUT) most validalva van (`^[1-9][0-9]*$` + hossz-korlat) MIELOTT bash
+aritmetikaba kerulnek, es egy magas FREELLM_MAX_ATTEMPTS x explicit FREELLM_ATTEMPT_TIMEOUT
+kombinacio mar a FREELLM_TIMEOUT budgetre van clamp-elve (TIMEOUT/attempts-re), nem haladhatja
+tul azt.
+
+**Miert:** F1 -- a regi kod a harom valtozot `$(( TIMEOUT / 3 ))` es `[[ "$attempt" -le
+"$FREELLM_MAX_ATTEMPTS" ]]` aritmetikaban hasznalta validacio nelkul; egy `FREELLM_TIMEOUT=
+'x[$(parancs)]'` alaku ertek a hivo oldalrol (akarki inditja a scriptet, ugyanaz a principal,
+nincs uj bizalmi hatar, de a script sajat header-je egy korabbi CRITICAL injection-t rogzit,
+es a validacio olcso) parancsot futtat a bash aritmetikai kiertekeles soran. F2 -- a validacio
+melleklete: FREELLM_ATTEMPT_TIMEOUT=0 (`curl --max-time 0` = korlatlan) mar `^[1-9]...` regex
+alatt elutasitva; egy magas FREELLM_MAX_ATTEMPTS x nagy FREELLM_ATTEMPT_TIMEOUT osszeg a
+budget felett is clamp-elve van (pl. 5 probalkozas x 2s a 6s budget felett -- most 1s/probalkozasra
+csokkentve a budget betartasahoz).
+
+**Amit a Kesz-ha (b) pontrol oszinten rogzitunk (cybersec2 31204, MikroB 18483):** a (b) pont
+("a lassu provider megjelenik a proxy logban, benchelve vagy szamolva, nem csendben eldobva")
+CSAK FELIG teljesul. A kliens oldalan a stall/retry stderr-re kerul (ez igaz), de a VALODI
+freellmapi proxy (server/src/lib/fallback-loop.ts:1546-1560, csak olvasva, nem modositva) egy
+kliens-oldali megszakitast "canceled" kerelemkent logol, es EZT KIFEJEZETTEN NEM szamitja
+provider-health szignalnak (nincs cooldown, nincs buntetes, a stats/scoring lekerdezesek
+kizarjak a 'canceled' sorokat). A stalled route tehat lathato a kerelem-tablaban, de a kliens-
+oldali retry soha nem benchel semmit szerver-oldalon -- ez egy ismert, dokumentalt korlat, nem
+hianyossag a mostani javitasban (a kartya celja a kliens-oldali budget betartasa volt, nem a
+szerver sajat benchelesi logikajanak megvaltoztatasa).
+
+**Ki dontott:** backend2 (kartya 4cd2a0fc delta, MikroB dispatch msg_id 18483, cybersec2 lelete
+31204 alapjan). Gate-SHA: lasd a kartya uj REVIEW-jat.

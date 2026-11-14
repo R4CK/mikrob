@@ -41,6 +41,21 @@ FREELLM_MODEL="${FREELLM_MODEL:-auto}"
 FREELLM_AUTH_TOKEN_FILE="${FREELLM_AUTH_TOKEN_FILE:-/home/neon/.config/freellmapi/auth-token}"
 CATEGORY_CHECK="${FREELLM_CATEGORY_CHECK_OVERRIDE:-$ROOT/store/gemini-agy-category-check.py}"
 TIMEOUT="${FREELLM_TIMEOUT:-60}"
+# F1 (WhiteHat2 MEDIUM-LOW, comment 31204, card 4cd2a0fc delta): FREELLM_TIMEOUT,
+# FREELLM_MAX_ATTEMPTS and FREELLM_ATTEMPT_TIMEOUT are each evaluated ARITHMETICALLY
+# below ($(( TIMEOUT / ... )) and the `-le "$FREELLM_MAX_ATTEMPTS"` test), and bash
+# arithmetic evaluates a command substitution reached through an unvalidated value
+# (e.g. FREELLM_TIMEOUT='x[$(cmd)]'). Validated here, before any arithmetic touches
+# them -- fail-closed (exit 2) like every other config check in this script. The
+# length cap (not just the regex) avoids a 64-bit arithmetic overflow on an oversized
+# digit string, same convention as store/skill-coverage-report.sh's RedHat N2 fix.
+_validate_positive_int() {
+  local value="$1" maxlen="$2"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || exit 2
+  (( ${#value} <= maxlen )) || exit 2
+}
+_validate_positive_int "$TIMEOUT" 4
+
 # Card 4cd2a0fc (MikroB live probe comment 30552, 2026-11-14): a single slow
 # upstream (observed: google/gemini-3.7-flash) used to get the WHOLE $TIMEOUT
 # budget on one attempt -- when it hung, curl's own --max-time fired at
@@ -51,10 +66,23 @@ TIMEOUT="${FREELLM_TIMEOUT:-60}"
 # call (FREELLM_MODEL=auto), so a retry has a real chance of landing on a
 # different, responsive provider instead of the one that just hung.
 FREELLM_MAX_ATTEMPTS="${FREELLM_MAX_ATTEMPTS:-2}"
+_validate_positive_int "$FREELLM_MAX_ATTEMPTS" 2
+
 # Default: TIMEOUT split three ways, not two -- so even FREELLM_MAX_ATTEMPTS
 # attempts in a row leave headroom under $TIMEOUT for connect time and our
 # own request-building overhead, instead of exactly summing to it.
 FREELLM_ATTEMPT_TIMEOUT="${FREELLM_ATTEMPT_TIMEOUT:-$(( TIMEOUT / 3 > 0 ? TIMEOUT / 3 : 1 ))}"
+_validate_positive_int "$FREELLM_ATTEMPT_TIMEOUT" 4
+# F2 (WhiteHat2 LOW, same comment): this rejects FREELLM_ATTEMPT_TIMEOUT=0 (unlimited
+# curl -- MikroB 18482) via the regex above, but an explicit FREELLM_ATTEMPT_TIMEOUT
+# combined with a high FREELLM_MAX_ATTEMPTS can still sum past FREELLM_TIMEOUT (e.g. 5
+# attempts x 2s at a 6s budget = 10s). Clamp to TIMEOUT/attempts so the total across all
+# attempts never exceeds the advertised budget, for every attempts/attempt-timeout
+# combination, not only the defaults.
+_SAFE_ATTEMPT_TIMEOUT=$(( TIMEOUT / FREELLM_MAX_ATTEMPTS > 0 ? TIMEOUT / FREELLM_MAX_ATTEMPTS : 1 ))
+if (( FREELLM_ATTEMPT_TIMEOUT > _SAFE_ATTEMPT_TIMEOUT )); then
+  FREELLM_ATTEMPT_TIMEOUT="$_SAFE_ATTEMPT_TIMEOUT"
+fi
 DRY_RUN=0
 
 # ---- arg parsing ---------------------------------------------------------------
