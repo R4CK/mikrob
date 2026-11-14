@@ -125,6 +125,8 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // with this merge -- scripts/hooks/clear-capture.py and clear-replay.py arrive as part of it).
   'clear-capture.py',
   'clear-replay.py',
+  // Prompt-arrival stub writer that backstops the PreCompact taskstate write.
+  'taskstate-stub.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept

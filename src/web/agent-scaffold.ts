@@ -1044,6 +1044,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // non-overlapping BASH_EGRESS_DENY whole-tool-name deny list (wget/nc/ncat/telnet, below) IS
   // adopted -- it is a safe blunt backstop, not a substring-matched pattern, so it does not carry
   // the false-positive risk our own hook's docstring measured against `settings.permissions.deny`.
+  // MARVEENGAPS1020: WebSearch results reach every agent framed as untrusted content
+  // (browser-content-notice.py, WEBSEARCH_ENVELOPE_SCRIPT below). The main agent's entry lives in
+  // the repo-shipped project .claude/settings.json instead (never written here).
+  if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -1944,6 +1948,81 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
   if (name === MAIN_AGENT_ID) return false
   const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
   return profileWantsDestructiveGate(p)
+}
+
+// MARVEENGAPS1020 (c): WebSearch result snippets are external text that no
+// allowlist chose, and nothing framed them on the way in (docs/security-
+// hardening.md, "What the URL gate does not cover"). The opt-in envelope hook
+// (#1426) is now wired by default as a PostToolUse hook on WebSearch for every
+// sub-agent; the main agent gets the same entry in the repo-shipped project
+// settings, which the scaffold never writes (#1305). WebSearch is in reach of
+// every sub-agent: three profiles allow WebSearch(*) by name and the permissive
+// ones run with the permission bypass, so the hook goes to all of them; it does
+// nothing until WebSearch is called. Its label tells the agent to use the
+// content's facts and only refuse its imperatives (BORITOOLVASAT921), so it
+// marks the payload instead of stopping the round. The hook never fails a tool
+// call (it exits 0 on any error), so it is a plain command, not a fail-closed
+// gate. Browser MCP matchers stay operator-wired (the doc shows how).
+export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
+export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch'
+
+// A settings.json hook command, not text in a CLAUDE.md: after a host move the
+// startup migration (ensureWebSearchEnvelope) sees the command no longer wired
+// and writes it again from the new PROJECT_ROOT, so it needs no entry in
+// INSTALL_ANCHORED_SUFFIXES.
+function webSearchEnvelopeCommand(): string {
+  const scriptPath = join(PROJECT_ROOT, 'scripts', 'hooks', WEBSEARCH_ENVELOPE_SCRIPT)
+  return `python3 "${scriptPath}"`
+}
+
+// Removes OUR envelope hook only (a hook in a group, not the group: an
+// operator's own hook sharing a WebSearch group stays), then adds the managed
+// group -- unless an operator already wired the envelope under a matcher that
+// covers WebSearch (e.g. the docs' "...|WebSearch" browser pattern), where a
+// second copy would run the hook twice. Returns whether anything changed.
+function matcherCoversWebSearch(matcher: unknown): boolean {
+  if (typeof matcher !== 'string' || matcher === '') return true // no matcher = every tool
+  try { return new RegExp(`^(?:${matcher})$`).test(WEBSEARCH_ENVELOPE_MATCHER) } catch { return false }
+}
+
+export function injectWebSearchEnvelope(existing: Record<string, unknown>): boolean {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = webSearchEnvelopeCommand()
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return false
+  const before = JSON.stringify(hooks.PostToolUse ?? null)
+  type G = { matcher?: unknown; hooks?: Array<{ command?: unknown }> }
+  const prev = (Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse : []) as G[]
+  const isEnvelope = (h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes(WEBSEARCH_ENVELOPE_SCRIPT)
+  const kept: G[] = []
+  for (const g of prev) {
+    if (g?.matcher !== WEBSEARCH_ENVELOPE_MATCHER || !Array.isArray(g.hooks)) { kept.push(g); continue }
+    const rest = g.hooks.filter((h) => !isEnvelope(h))
+    if (rest.length) kept.push({ ...g, hooks: rest })
+  }
+  const operatorWired = kept.some((g) => matcherCoversWebSearch(g?.matcher) && Array.isArray(g.hooks) && g.hooks.some(isEnvelope))
+  if (!operatorWired) {
+    kept.push({ matcher: WEBSEARCH_ENVELOPE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
+  }
+  hooks.PostToolUse = kept
+  return JSON.stringify(hooks.PostToolUse) !== before
+}
+
+// Startup migration twin for the EXISTING fleet (the scaffold rewrites a
+// sub-agent's settings only on spawn). A settings file that is not there is
+// not created. Returns true if written.
+export function ensureWebSearchEnvelope(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureWebSearchEnvelope')) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false
+  if (!injectWebSearchEnvelope(settings)) return false
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // CHILDCLAUDEPOLLER1010. Which agents get the child-claude channel guard: every

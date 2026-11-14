@@ -24715,3 +24715,17 @@ visszaallitva, 259/259 zold. Testver-suite-ok erintetlenek (18332 passed, 98 ski
 
 **Ki dontott:** MikroB (msg 17336/17339, RedHat merese alapjan, backend3 vegezte).
 Gate-SHA: ujra-gate ehhez a kommit vegso tip-jehez (lasd a kartya REVIEW-jat).
+
+## 2026-11-13 -- kártya 16145418 (Köteg 23c) delta: data_delete approval-gate teszt-javítás
+
+**Döntés:** a fleet-test a 00de5f978 merge-eredményen 1 valódi hibát talált:
+`memories-f2-all-routes.test.ts` DELETE/:id esete 200-at várt, 409-et kapott. Az upstream
+(b02e0afd9, ennek a kártyának a szinkron-tartománya) egy új `data_delete` jóváhagyás-kapu-t
+vezetett be a DELETE /api/memories/:id-n (MARVEENGAPS1020 (a)) -- ez a meglévő, 9655494c F2
+device-key tulajdonosi-határt tesztelő fájl szempontjából mellékes, és a kapu saját viselkedése
+már külön fedett (`memories-delete-approval.test.ts`). Javítás: `readAutonomyLevel` 3-as szintre
+mockolva csak ebben a fájlban, hogy a tulajdonosi teszt a tulajdonosi határt tesztelje tovább, ne
+a kaput. Izolált futás: 17/17 zöld. Commit: fc01f36c.
+
+**Ki döntött:** backend3 (önálló, mechanikus teszt-korrekció, nincs viselkedés-változás a
+production kódban). Gate: QA + Cybersec.
