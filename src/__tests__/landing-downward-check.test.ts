@@ -86,6 +86,41 @@ describe('marveen-land.sh --selftest-land-lock-release', () => {
   })
 })
 
+// Card 6ec8e9d8 delta (WhiteHat2 NO-GO 30647, M3): --selftest-land-batch existed but, same as
+// --selftest-land-lock-release before card 46194693, nothing ran it in vitest -- a mutant could
+// delete or break one of its 9 cases (H1/M1-M4/L1-L2/A2-A5 pins, several of them real-git-fixture
+// and real-signal regression tests) and no automated run would notice. Runs real git fixtures,
+// a tiny stub HTTP server and a genuine SIGTERM to a child process, so it is slower than the other
+// selftest hooks here -- the timeout is generous on purpose.
+describe('marveen-land.sh --selftest-land-batch', () => {
+  it('passes all cases and reports a floor count', { timeout: 180_000 }, () => {
+    let status = 0
+    let out = ''
+    try {
+      out = execFileSync('bash', [join(REPO, 'store', 'marveen-land.sh'), '--selftest-land-batch'], {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+        cwd: REPO,
+        timeout: 170_000,
+      })
+    } catch (e) {
+      const err = e as { status?: number; stdout?: string; stderr?: string }
+      status = err.status ?? -1
+      out = String(err.stdout ?? '') + String(err.stderr ?? '')
+    }
+    expect(status).toBe(0)
+    expect(out).toContain('PASS')
+    // A bare `not.toContain('FAIL')` would false-positive on this file's own case descriptions
+    // (e.g. case G's "g3 (FAILING)" prose) -- a reported failure always starts its own line with
+    // the two-space-indented "  FAIL " marker, so anchor on that instead.
+    expect(out).not.toMatch(/^ {2}FAIL /m)
+    // Floor on the case count: a mutant that deletes a case leaves rc=0 but drops the number.
+    const m = /selftest-land-batch: (\d+) case\(s\)/.exec(out)
+    expect(m).not.toBeNull()
+    expect(Number(m?.[1] ?? 0)).toBeGreaterThanOrEqual(9)
+  })
+})
+
 describe('the shared downward-check cases run from BOTH landers, not just one', () => {
   // The point of putting them in store/landing-downward-check.sh was that the two landers cannot
   // end up testing different things about the same code. If one lander stops sourcing the lib, its
