@@ -24590,3 +24590,128 @@ env-compat-lib sourcing) -- confirmed by diff, nothing this card shipped was rev
 
 **Ki döntött:** MikroB (msg 18090), rebuilt by backend2. Gate: delta re-stamp needed from QA,
 Cybersec, Cybered on the new tip (see REVIEW comment for the sha).
+
+## 2026-11-07 -- kartya 0120d19a: scheduleSurfaceDeny elfogadja a kanonikus printf | curl -H @- GET-et
+
+**Dontes:** a 4f3c0287 (Koteg 23b, upstream #1999) mergelesekor kiderult, hogy KET, egymasnak
+ellentmondo biztonsagi szabaly all fenn ugyanarra a mintara. Az upstream uj scheduleSurfaceDeny
+olvasasi feherlistaja (isPlainCurlGet/headerValueIsInert) KIZAROLAG azt a beagyazott format
+fogadja el, ahol a `-H` kapcsolo erteke argv-ben allo `Authorization: Bearer <token>` fejlec
+(`$(cat <TOKEN>)` substitucioval, TOKEN_NONCE-vel ellenorizve), es sajat megjegyzese szerint
+SZANDEKOSAN elutasitja a `-H @file`/`-H @-` alakot
+(nem tudja ellenorizni, mi van a fajlban/stdin-en). A fork sajat, regota elo
+token-in-argv-guard.test.ts-e (edb7559f-lancolat) pontosan ezt a beagyazott alakot tiltja
+flotta-szinten (/proc/<pid>/cmdline-szivargas). Egyik curl-alak sem elegitette ki mindket
+szabalyt egyszerre -- backend3 merese (msg 17069), MikroB dontese: a fork argv-szivargas-szabalya
+nyer, NINCS kivetel/elfogadott-kockazat mentesites. A megoldas a feherlista BOVITESE: egy uj,
+szukosen felismert, bizalmi mechanizmus (isTrustedTokenPrintf, scripts/self-pace-gate.mjs)
+ELFOGADJA a `-H @-`-t, DE KIZAROLAG akkor, ha a kozvetlenul megelozo pipe-szegmens PONTOSAN
+`printf 'Authorization: Bearer %s\n' "$(cat <elfogadott token-fajl>)"` -- semmi mas a printf-ben,
+semmi mas a pipe-ban (segs.length===2 -- mind a "plusz pipe-szegmens elotte", mind "utana" eset
+ettol bukik), a fajl pedig a mar meglevo acceptedTokenFile()/TOKEN_NONCE infrastrukturaval
+ellenorizve ugyanugy, mint a beagyazott alaknal. A ket tanitott minta (self-pace-gate.mjs
+GATE_MSG, src/web/agent-scaffold.ts generator-sora) at van irva `printf ... | curl -q -s -H @- ...`
+alakra. 10 uj nevesitett negativ teszt (governance-gates.test.ts + 6 uj
+agent-scaffold-schedule-section.test.ts eset): rossz fajl, plusz pipe-szegmens elotte/utana,
+plusz printf-argumentum, mas formatum-string, `-H @<valodi fajl>` (nem stdin), hianyzo -q,
+nem-GET metodus a bizalmas pipe-on -- mind tiltva marad. token-in-argv-guard.test.ts es a
+scheduleSurfaceDeny-suite egyszerre zold ugyanazon a fan.
+
+**Miert:** a fork sajat lecke (tobbszoros, mar kijavitott argv-szivargas eset, card edb7559f-tol)
+sulyosabb, azonnal kihasznalhato kockazat (BARMELY lokalis folyamat olvashatja a
+/proc/<pid>/cmdline-t), mint az upstream sajat, kimondottan "residual, not closed" kockazata
+(egy @file tartalmat nem tudja ellenorizni a kapu) -- MikroB es backend3 kozos ertekelese
+szerint ez utobbi szukosen, bizonyithatoan zarhato egy pipe-szegmens-szintu ellenorzessel,
+ahelyett hogy a szigorubb szabalyt gyengitenenk.
+
+**Ki dontott:** MikroB (2026-11-07, msg 17070, backend3 merese alapjan). Gate: QA + Cybersec +
+Cybered (uj biztonsagi logika egy 3-gate-es fajlban).
+
+## 2026-11-07 -- 0120d19a delta: reject a curl stdin override on the trusted-printf GET pipeline
+
+WhiteHat (comment 29073) es RedHat (comment 29075) NO-GO-t adott a ca55d2949-es
+`isTrustedTokenPrintf`/`isPlainCurlGet` bovitesre (lasd a fenti bejegyzest): a bizalmi dontes
+csak azt nezte, mi FOLYIK BELE a curl-szegmens elotti pipe-on, soha nem azt, hogy a curl SAJAT
+stdin-jet felulirja-e egy kesobbi redirect UGYANAZON a szegmensen. Egy `-H @-` igy a bizonyitott
+printf helyett egy `< fajl` / `0< fajl` / `<&N` / heredoc altal adott, tamado altal valaszthato
+header-sort is beolvashatott volna -- mindket gate egy lokalis loopback HTTP szerverrel merte
+elo.
+
+**Javitas (scripts/self-pace-gate.mjs):** `shellWords()` mostantol rogziti `words.hasInputRedirect`-et
+(igaz BARMELY `<`/`0<`/`<&N`-re a szegmensen, a cel ertektelen -- csak a jelenlet szamit, mert
+egy sima GET-nek soha nincs jogos oka sajat stdin-forrasra). `isPlainCurlGet` ezt felteve
+elutasitja, fuggetlenul mindentol mastol. A heredoc a curl-szegmensen lathatatlan a
+`shellWords`-nek (a `HEREDOC_OP_RX` kiuritI az operatort tokenizalas elott), ezert ezt kulon,
+a hivasi helyen `seg.bodies.length`-tel ellenorizzuk. 7 uj nevesitett teszt
+(governance-gates.test.ts): 4 alak (`< fajl`, `0< fajl`, `<&N`, heredoc) + 1 kontroll + 3
+mutant-olo teszt a Cybersec T1 leletere (3 meglevo ellenorzesnek korabban nem volt olyan
+tesztje, ami bukna, ha az ellenorzest kivennenk).
+
+**Miert:** a bizalmi mechanizmus csak akkor zar valodi rest, ha a "mi van a pipe elott" mellett
+a "mi van a curl SAJAT stdin-jen" kerdest is lezarja -- a ket gate gyakorlati exploittal merte,
+nem feltetelezte.
+
+**Ki dontott:** MikroB (2026-11-07, msg 17164, Cybersec/RedHat T1 leletei alapjan, backend3
+implementalta). Gate-SHA: fe449c6250436e419f1de0c4b2bbe3a474ac9d52. Gate: QA + Cybersec (WhiteHat)
++ Cybered (RedHat), delta re-gate card 0120d19a-n.
+
+## 2026-11-08 -- 4f3c0287: Koteg 23b (a6325a498..a328d3b41) landolas-zarasa
+
+**Dontes:** a Koteg 23 (7c79badc) tartomanybontasabol a 4f3c0287 reszkartya a6325a498..a328d3b41
+tartomanyat (upstream #1999, scheduleSurfaceDeny: a dashboard schedule-felulet megtagadasa
+MINDEN klienstol, nem csak curl-tol) valodi `git merge --no-ff`-fel egyesitette a fork sajat
+self-pace-hardening agaval (AST heredoc-felismeres, bypass-zaro kartyak ec20dd23/4f32f1f9/
+40704cb1/46c4ad4a/f7b10fec/4638c14c, upstream worker-thread decision-deadline wrapper atvetele).
+4 fajlos konfliktus (reszletes fajlonkenti feloldas a merge-commit `a18a9179b` uzenteben):
+`src/web/agent-scaffold.ts` (upstream szigorubb szovege verbatim), `src/__tests__/governance-gates.test.ts`
+(import-listak osszefesulve, mindket oldal uj teszt-blokkja megtartva), `scripts/self-pace-gate.mjs`
+(additiv/additiv a fork heredoc-fuggvenyei + upstream uj schedule-surface helperei, egy diff3
+hibas hunk-hatarat javitva, upstream gate-uzenet verbatim, fork hook-lib import megtartva,
+upstream worker-thread wrapper atvetele). Mergeles kozben, mindket oldaltol fuggetlenul, egy
+elozetes hiba is kiderult es javitva lett: a write-intent detektor szam-prefixu stderr-redirectet
+irasnak nezett egy sima olvasasnal (negative lookbehind javitotta).
+
+A 0120d19a kartya (lasd a fenti, 2026-11-07-i bejegyzest) UGYANEZEN a `card/4f3c0287` branch-en
+epult es ugyanitt landol: a scheduleSurfaceDeny feherlistajanak WhiteHat/RedHat altal talalt
+curl-stdin-override reset (F1 javitas) a Koteg 23b mergeles UTAN derult ki, es csak ennek a
+branch-nek a tetejen volt ertelmezheto (a ket kartya commitjai elkulonitve cherry-pick-kel nem
+alkalmazhatok a jelenlegi origin/develop-re -- probalva, konfliktus, lasd a 0120d19a kartya
+17305 inter-agent uzenete) -- ezert a ket kartya EGYUTT landol egy merge-ben.
+
+**Kesz, ha ellenorzes:** `git merge-base --is-ancestor a328d3b41 origin/develop` hamis a landolas
+elott (igaz utana); teljes `fleet-test.sh --ref d057a018beba222174b2efcab0b962dda1378967` 0 FAIL
+(40097 passed, 130 skipped, log 20261108-072519-642358.log); lint-ratchet tart (441 lelet,
+valtozatlan baseline).
+
+**Ki dontott:** MikroB (msg 17171/17306, backend3 vegezte a merget es a fixet). Gate: QA +
+Cybersec (WhiteHat) + Cybered (RedHat), delta re-gate a vegso Gate-SHA-ra
+(d057a018beba222174b2efcab0b962dda1378967), nevben lefedve mindket kartyat (0120d19a + 4f3c0287).
+
+## 2026-11-08 -- 4f3c0287 M1 delta: fd-2-only exclusion still wrong, RedHat's correction
+
+**Dontes:** a fenti (2026-11-08-i) 4f3c0287 bejegyzes `(?<!\b2)` javitasa (Cybersec M1,
+comment 29313) MAGA IS hibas volt: RedHat (msg 17335/17336, MikroB altal megerositve)
+kimutatta, hogy a `2> <valodi fajl>` alak IS iras-szandek, nem csak az 1>/3>/9> -- a
+valodi bash a redirect CELJAT O_WRONLY|O_CREAT|O_TRUNC-dal nyitja meg FUGGETLENUL attol,
+melyik fd-t iranyitja at, tehat a `true 2> fajl` is nullazza/letrehozza a celt, akkor is,
+ha soha semmi nem iratik bele. Fuggetlenul reprodukalva: egy 19 byte-os fixture fajl 0
+byte-ra csokkent `true 2> fajl` utan. Az EGYETLEN bizonyithatoan biztonsagos alak egy
+fd-fd dup (`N>&M`, nem nyit fajlt) vagy a literalis `2>/dev/null` (`2>` a null-nyelore).
+
+Javitas (`hasWriteIntent(seg, nextSeg)` fuggveny a korabbi `WRITE_INTENT_RX` lookbehind
+helyett, scripts/self-pace-gate.mjs): csak a ket bizonyithatoan biztos alakot tavolitja
+el, utana barmilyen maradek `>`-t iras-szandeknak szamit. Kulon bonyolito tenyezo: a
+`splitSegments` a sima `&`-t is job-control-szeparatornak veszi, tehat `N>&M` KET
+szegmensre hasad a hatarán (`'cat f 2>&1 | grep x'` -> `['cat f 2>', '1', 'grep x']`) --
+`nextSeg`-gel a hivo visszaadja a kovetkezo szegmenst, hogy egy szethasadt dup
+visszaalljon egy string-be a biztos-alak-szures ELOTT, kulonben egy jogos stderr-dup
+pipeline (`cat f 2>&1 | grep x`) hamisan tiltodna. Teljes RedHat-fele alaklista
+lefedve (1>, 1>f, 2> f, 3> f, exec 1> f, heredoc fd-n keresztul, ~/\$HOME/abszolut/relativ
+irasmod), plusz kontroll (2>/dev/null, 2>&1 pipeline). Mindket iranyban ellenorizve
+NEM-vakum: a fd-2-csak kivetelre visszamutalva a `2> fajl` pin piros lesz; a
+dup-egyesito lookahead kikapcsolasaval a `2>&1` kontroll-pin piros lesz. Mindket eset
+visszaallitva, 259/259 zold. Testver-suite-ok erintetlenek (18332 passed, 98 skipped,
+4 fajl).
+
+**Ki dontott:** MikroB (msg 17336/17339, RedHat merese alapjan, backend3 vegezte).
+Gate-SHA: ujra-gate ehhez a kommit vegso tip-jehez (lasd a kartya REVIEW-jat).

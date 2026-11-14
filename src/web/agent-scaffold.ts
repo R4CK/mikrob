@@ -4999,8 +4999,12 @@ TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id léte
 
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
-Feladat létrehozása API-n keresztül:
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/schedules -H "Content-Type: application/json" -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "AGENT_NAME", "type": "heartbeat"}'
+Ütemezést NEM hozhatsz létre, NEM módosíthatsz, NEM kapcsolhatsz ki/be és NEM törölhetsz magad: se az API-n (semmilyen klienssel: curl, python, node, wget...), se a ~/.claude/scheduled-tasks/ mappa írásával, se az SQLite táblában. A governance-kapu (self-pace-gate) ezeket megtagadja. Ha ütemezés kell, kérd ${BOT_NAME}-t (${MAIN_AGENT_ID}) inter-agent üzenetben (a lenti, idézett heredoces alakban): név, leírás, prompt, cron, ágens (AGENT_NAME), típus. Ő hozza létre vagy módosítja.
+
+Olvasni (listázni) szabad, PONTOSAN ebben az alakban:
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -q -s -H @- ${dashboardOrigin}/api/schedules
+
+A -q legyen az ELSŐ argumentum, a token útja SZÓ SZERINT ez az abszolút út (relatív út, ~ vagy $HOME esetén a kapu megtagadja), ne tegyél mellé -X, -d, -o vagy -w kapcsolót, és a printf elé/mögé semmi mást ne fűzz -- a kapu KIZÁRÓLAG ezt a két lépéses alakot ismeri fel biztonságosnak.
 
 Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól).
 Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00).
