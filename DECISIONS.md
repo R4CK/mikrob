@@ -25336,3 +25336,40 @@ Nincs benne: a LOW lelet (`ATTEMPTS_FILE`/`ATTEMPTS_LOCK` freellm-specifikus át
 **Döntés:** a landolás `store/freellm-call.sh` 429-ágán ÉS `DECISIONS.md`-n valódi konfliktust adott az origin/develop-ra közben landolt e96d56c5 (F4 ledger) ellen: e96d56c5 minden exit-ágra `_freellm_ledger_log fail ...` hívást tett (a 429-re is), míg ez a kártya ugyanazon az ágon saját exit kódra (5) váltott át, ledger-hívás nélkül. Feloldás: mindkettő megtartva -- a 429-ág a kártya saját exit 5 kódját és stderr-üzenetét tartja, PLUSZ felveszi az e96d56c5 `_freellm_ledger_log fail quota_429` hívását, ugyanúgy, mint a szomszédos 401/403/404 ágak már teszik. DECISIONS.md: develop oldala (0120d19a, 4f3c0287, 16145418, e96d56c5 x2) változatlan prefixként megtartva, ez a kártya két saját bejegyzése (2026-11-12, 2026-11-13 delta) a fájl VÉGÉRE került, a tail-append szabály szerint.
 
 **Ki döntött:** backend2 (kártya 555419a8, saját merge-konfliktus feloldása landolás közben, origin/develop e96d56c5-tel szemben).
+
+## 2026-11-13 10:17 -- f054fa3f (555419a8 follow-up): rc=2 stderr, redaction widening, bare call-site pin, 429/owner coverage
+
+**Döntés:** backend2 megépítette a 555419a8 follow-up négy pontját (Cybersec GO 29564 a 69286bbce-n,
+a 29546 MEDIUM-jaiból, non-blocking). (1) `offload-dispatch.sh` `try_freellm_for_leaf`: az `rc -eq 2`
+ág mostantól a redaktált stderr-t a dispatch-logba fűzi, ha nem üres (a token-mode disabled üzenet
+eddig némán elveszett). (2) `freellm-call.selftest.sh`: viselkedési teszt a VALÓDI hívási pont 429-ére
+(a preflight 429-étől elkülönítve, mock-server `POST_STATUS_FILE` felülírással) és az `owner_ok`
+feltételre külön (fakeroot `chown` más uid-ra) -- eddig semelyik teszt nem fedte ezeket. (3)
+`err_redacted`: a Bearer-token/32+-karakteres catch-all mellé URL userinfo (`user:pass@host`),
+címkézett `key=value`/`key:value` token (api_key, token, secret, passwd, password, auth), pontozott
+JWT-szerű alak, és rövid, prefix-alakú provider-kulcs (AWS access-key-id, Slack `xox-`, a
+`secret-shape-scan.py` alakjait újrahasznosítva). (4) `offload-dispatch.selftest.sh`: a strukturális
+call-site pin regexje mostantól a csupasz/idézetlen `try_freellm_for_leaf` hívást is elkapja (nem csak
+az idézettet), új mutáns-másolat teszttel igazolva. (5) `src/security/secret-gate.ts`: az
+`offload-dispatch.selftest.sh` felvéve az `ALLOWLISTED_PATHS`-ba (a 3. pont redakciós fixture-jei
+szándékos secret-alakú teszt-tárgyak, ugyanaz a minta mint `draft-quality-gate.selftest.py` /
+`activity-memory-capture.selftest.py` -- nincs `__tests__/` alatt, a `FIXTURE_EXCEPTIONS` nem
+alkalmazható).
+
+**Teszt:** `offload-dispatch.selftest.sh` 143 passed, 0 failed. `freellm-call.selftest.sh` 61 passed,
+0 failed. `tsc --noEmit` tiszta (card/f054fa3f ágon). Mutáció-bizonyítva egyenként (a javítás
+visszaállítva egy mentett másolaton, pontosan a megfelelő eset megy pirosra, visszaállítva, újra
+zöld): rc=2 stderr-fűzés, userinfo/key=value/dotted-JWT/short-AWS-key redakció, a 429 valódi-hívási
+mappingje, az `owner_ok` feltétel. A strukturális call-site mutáns a dedikált mutáns-másolat teszttel
+igazolva.
+
+**Ki döntött:** MikroB dispatch (msg_id:17670, self-advance pickup), backend2 végrehajtása.
+
+**Megjegyzés (cherry-pick re-gate, 2026-11-14):** eredetileg `card/f054fa3f` ágon épült (gate-sha
+47ac0803ad2483b95d696e8bab183e25c7e629d2, QA PASS 30261, CYBERSEC GO 30265), de az az ág a 555419a8
+kártya saját (akkor még nem landolt) commitjaira volt rárakva (69286bbce, be1b8da92), ami a landoláskor
+"foreign commits" hibát adott -- 555419a8 azóta más commit-azonossággal (fe136e6e) landolt. A kártya
+VALÓDI saját commitja (e3787f5d8, tartalom-azonos a fenti négy fájlon) friss `origin/develop` tetejére
+cherry-pickelve, a DECISIONS.md bejegyzés (ez a blokk) kézzel újra a fájl VÉGÉRE fűzve, mert az
+eredeti append pozíciója (akkori sor 23770) közben elavult. A verdikt áthozva, nem újra-reviewolva --
+lásd a landoló komment a pontos per-fájl blob-azonosság igazolással.
