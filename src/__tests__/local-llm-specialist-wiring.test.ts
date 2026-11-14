@@ -11,13 +11,23 @@
 // wiring at all -- see the measurement in CLAUDE.md: across three tg-draft samples the style rules
 // held perfectly (zero em dashes, zero AI cliches) while TWO INVERTED A FACT and one invented an
 // action nobody asked for. So the review obligation is pinned here alongside the call itself.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { PROJECT_ROOT } from '../config.js'
 
 const TASKS = ['morning-brief', 'tg-draft', 'daily-log', 'board-reconcile'] as const
-const claudeMd = readFileSync(join(PROJECT_ROOT, 'CLAUDE.md'), 'utf-8')
+// Card c60e229a split CLAUDE.md's prose into docs/rules/*.md, replacing each moved section's
+// body with a one-line index entry -- the content this test checks for (the Reggeli napindito
+// section's task-routing instructions) now lives in docs/rules/reggeli-napindito.md, not in
+// CLAUDE.md itself. The corpus is the same one the split's own reachability-check script reads.
+const rulesDir = join(PROJECT_ROOT, 'docs', 'rules')
+const claudeMd = [
+  readFileSync(join(PROJECT_ROOT, 'CLAUDE.md'), 'utf-8'),
+  ...(existsSync(rulesDir)
+    ? readdirSync(rulesDir).filter((f) => f.endsWith('.md')).map((f) => readFileSync(join(rulesDir, f), 'utf-8'))
+    : []),
+].join('\n')
 
 describe('the four specialist templates are wired into a real workflow (card 8417fa5e)', () => {
   it('CLAUDE.md names each task, so none of the four is left unreachable again', () => {

@@ -25201,3 +25201,118 @@ NO-GO/FAIL-ja utáni re-gate-et Fix-Direction-sor birtokában -- MikroB kijelöl
 **Delta (card b2401b1c):** Cybersec NO-GO (msg 18405) on the entry above found its go.mod claim
 wrong (measured from a stale checkout, not the pinned clone at the cited SHAs); fixed in place
 per MikroB's confirmation that this is permitted for a still-unlanded entry of my own.
+
+## 2026-11-13 — c60e229a: CLAUDE.md split into index + docs/rules/ part files
+
+**Kontextus:** CLAUDE.md 146,193 bájt, minden ágens-session bootjánál betöltődik -- a legnagyobb
+álló token-költség (Multi-LLM javaslat, artifact 6CGZ1mxhJ1fB38nPqjHjMT, 2026-11-12, item 4; Peti
+13733, 2026-11-13: oldd meg az ott felsorolt problémákat). Két szekció (Munkavégzési szabályok
+64,659 B + Kódminőségi alapelvek 14,132 B) önmagában a fájl 54%-a.
+
+**Döntés:** 13 kézzel írt prózai szekció (a két mega-szekció + 11 közepes) VERBATIM áthelyezve a
+`docs/rules/*.md` alá, CLAUDE.md-ben egyetlen "## Szabály-index" szekció váltja fel mindegyik
+helyét: félkövér cím (változatlan, a meglévő kereszthivatkozások -- "lásd a 4b. szabályt" -- így
+is feloldódnak) + egy mondatos, a szekció saját legerősebb KÖTELEZŐ/TILOS mondatát idéző gist +
+SIMA markdown link (nem Claude Code `@file` import -- az visszatöltené a teljes tartalmat,
+ellentétben a token-cél-lal). A 8 gépi-generált BEGIN/END blokk (agent-scaffold.ts
+ensureXSection() család) és a 13 rövid (< ~3 KB) kézzel írt szekció ÉRINTETLEN marad, eredeti
+helyén -- a gépi blokkok mozgatása élő TS-kódot érintene, amit ez a kártya kifejezetten nem
+vállal (lásd a terv kockázat-elemzését, kártya-komment 30322). A "Teljes értékű audit" szekció
+(506 B) a tervből kimaradt felsorolásból (se mozgatandó, se bennmaradó listán nem szerepelt
+explicit) -- bennmaradt, mert mérete (506 B) a "rövid, inline marad" kategóriába esik, ezt a
+döntést itt rögzítem, nem a terv implicit hallgatásaként hagyom.
+
+**Méret:** CLAUDE.md 146,193 B -> 33,141 B (cél: 40 KB alatt -- teljesül). A 13 áthelyezett
+szekció összesen 117,723 B-ot (saját fejlécükkel együtt) tesz ki a `docs/rules/` alatt.
+
+**Ellenőrzés:** `scripts/claude-md-split-reachability-check.py` (új script, ez a kártya hozta
+létre) a pre-split CLAUDE.md (origin/develop, sha 61a258e38) minden KÖTELEZ/TILOS/MUST sorát
+kivonja, és mindegyiket megkeresi az új CLAUDE.md + minden `docs/rules/*.md` összefűzött
+szövegében: 39 sor ellenőrizve, 0 hiányzik. A 13 áthelyezett fájl byte-pontosan egyezik a
+pre-split szekciójával (section-by-section diff, 0 eltérés) -- nincs csonkolás, nincs duplikált
+maradék a régi helyén (a fennmaradó CLAUDE.md-szöveg, az index-blokk nélkül, whitespace-
+normalizáltan pontosan egyezik az eredeti fájl "mozgatott szekciók nélküli" maradékával).
+
+**Nincs benne:** az `agents/<név>/CLAUDE.md` per-agent fájlok (a kártya kifejezetten a gyökér
+CLAUDE.md-t nevezi meg, egyes számban); a 8 gépi-generált blokk mozgatása (Phase 2 jelölve, nem
+ebben a kártyában); a felfedezhetőségi reziduális kockázat (egy ügynök a pillanatban nem gondol
+arra, hogy a linkelt fájlt el kell olvasnia) -- ez NYITOTT, ELFOGADOTT kockázat, nem zárt: a
+reachability-script a SZÖVEG meglétét bizonyítja, nem azt, hogy egy ügynök gondolni fog rá. Egy
+valós, friss-session context-token mérés (előtte/utána) a kártya Kész-ha listájának harmadik
+pontja -- ezt a gate-fázisban (QA/MikroB egy valódi session-indítással) kell elvégezni, ez a
+kártya maga egy durva becslést ad (bájt-arányos, NEM mért tény): kb. 146,193/4 ≈ 36,500 token
+helyett kb. 33,141/4 ≈ 8,300 token -- ez TIPP, a karakterek/token arány modellfüggő, a valós
+mérést a gate adja.
+
+**Ki döntött:** backend3 (fázis 82a113ba), terv Peti-jóváhagyással (Telegram 13738, MikroB msg
+18052). Gate: QA + Cybersec.
+
+## 2026-11-13 — kártya c60e229a delta: QA FAIL 30388 fix -- elcsúszott autonomy-wiring BEGIN marker
+
+**Kontextus:** QA FAIL (komment 30388): a "Reggeli napindító" szekció utolsó prózai sora
+közvetlenül a következő blokk `<!-- BEGIN GENERATED: autonomy-wiring -->` markerébe futott,
+üres sor/heading nélkül közöttük -- a heading-tól-következő-headingig mozgató script ezért a
+markert is a "Reggeli napindító" tartalmába sorolta, és áthelyezte a docs/rules/reggeli-napindito.md
+fájl VÉGÉRE. CLAUDE.md-ben így egy END marker maradt BEGIN nélkül -- a reachability-script
+részsztring-ellenőrzése ezt nem látta (a sor valahol a korpuszban megvan), de ez megtöri a
+BEGIN/END páros egyezést, amin minden ensureXSection() író idempotencia-ellenőrzése áll (ha a
+MAIN-kivétel bármikor megszűnik, vagy bármi más eszköz a gyökér CLAUDE.md-t páros markerekre
+olvasná, egy hiányzó BEGIN "nincs még blokk" eredményt adna, és egy második, duplikált
+autonomy-wiring blokk kerülne be).
+
+**Döntés:** a marker-sor visszakerült CLAUDE.md-be, a "## Autonómia és jóváhagyás" cím elé
+(pontosan ahol az eredeti fájlban volt). A reachability-script kiegészült egy marker-páros
+ellenőrzéssel: minden BEGIN/END GENERATED névnek MIND a BEGIN-je, MIND az END-je jelen kell
+legyen az ÚJ CLAUDE.md-ben (nem csak valahol a korpuszban) -- mutáció-bizonyított: a hiba
+visszaállítva a script 1-es kóddal lép ki, a javított fájlon 0-val.
+
+**Ellenőrzés:** 16 GENERATED marker CLAUDE.md-ben, 8 egyező pár, 0 elkóborolt marker a
+docs/rules/ alatt (programozottan ellenőrizve). claude-md-main-section-writers.test.ts +
+agent-scaffold-main-claude-md-zero-diff.test.ts + autonomy-section.test.ts: 38/38 zöld.
+CLAUDE.md mérete a javítás után: 33,221 B (a cél 40 KB alatt marad).
+
+**Ki döntött:** backend3, QA FAIL 30388 nyomán. Gate: QA + Cybersec (delta re-check).
+
+## 2026-11-13 — kártya c60e229a delta: CYBERSEC NO-GO 30400 fix -- per-szabály index, protokoll-tokenek verbatim, abszolút linkek
+
+**Kontextus:** WhiteHat2 (cybersec2) NO-GO-t adott dcfff1474-en (komment 30400), MikroB
+rendezte (msg 18166): H1 (HIGH) a kártya saját scope-ja ("protokoll-tokenek verbatim maradnak
+CLAUDE.md-ben") nem teljesült -- a teljes "Munkavégzési szabályok" szekció kimozgatásával a
+QA PASS/CYBERSEC GO/NO-GO/CYBERED GO/Gate-SHA:/Fix-Direction:/Pair-FE:/Pair-BE:/BLOKKOLT-/
+ELUTASÍTVA/Kész-ha/allowFrom előfordulások 0-ra estek a mindig betöltött fájlban. H2 (HIGH) a
+Peti-jóváhagyott terv ("egy binding index-sor szabályonként") nem így épült -- egy index-sor
+szekciónkét, nem szabályonként (64 kötelező sor helyett 13 volt). H3 (MEDIUM-HIGH) a
+`docs/rules/<fájl>.md` relatív link egy sub-agent cwd-jéből (agents/<név>) nem oldódik fel.
+M1 (MEDIUM): a kódban/skillekben hivatkozott szabályszámok (4b, 4c, 10) nem voltak megtalálhatók.
+L1 (LOW): a reachability-script csak KÖTELEZ/TILOS/MUST-ot kapuzta, SOHA/MEGSZEGHETETLEN/MINDIG
+csak informatív volt, és egy teljes mondat törlését nem fogta meg (mutáció-bizonyítva
+WhiteHat2 által).
+
+**Döntés:** teljes átépítés H1-H3 + M1 + L1 mentén.
+- A "Munkavégzési szabályok" (1-22, a betűs alszabályokkal: 1b-1e, 3a, 4a-4f, 6a/6b, 8a/8b --
+  37 sor), a "Kódminőségi alapelvek" (1-15) és az "Ellenőrizhető munka" (1-12) szekciók egy
+  index-sort kapnak MINDEN SZÁMOZOTT SZABÁLYRA (64 sor összesen), a szabály saját, programozottan
+  kivont bold-vezetőmondatát idézve verbatim -- ez a protokoll-tokeneket (Gate-SHA:, Fix-Direction:,
+  a verdikt-szavak, Pair-FE:/Pair-BE:, BLOKKOLT-tisztázás) a hozzájuk tartozó szabály sorában
+  automatikusan visszahozza, két kivonat (19., 8a.) kézzel pótolva, ahol a kivonás a tokenen
+  kívül vágott.
+- "Személyiség" és "Inter-agent kommunikáció" index-sora kifejezetten idézi a protokoll-token
+  listát / az `allowFrom` szót, mivel ezek nem számozott szabály-listák.
+- Minden link REPO-GYÖKÉR-ABSZOLÚT (`/home/neon/marveen/docs/rules/...`), nem relatív.
+- scripts/claude-md-split-reachability-check.py: (a) SOHA/MEGSZEGHETETLEN/MINDIG mostantól
+  kapuzó, nem csak informatív; (b) ÚJ teljes nem-üres-sor MULTISET megőrzés-ellenőrzés -- minden
+  régi sornak legalább ugyanannyiszor kell előfordulnia az új korpuszban. Mutáció-bizonyítva:
+  egy default-deny mondat törlése az inter-agent-kommunikacio.md-ből (pont az az osztály, amit
+  WhiteHat2 saját mutánsa fogott, és a régi kulcsszó-ellenőrzés nem) -- az új ellenőrzés exit
+  1-et ad és megnevezi a sort; visszaállítva, tiszta.
+- Ellenőrzés a szülő commit (origin/develop, 61a258e38) ellen: 74 KÖTELEZ/TILOS/MUST/SOHA/
+  MEGSZEGHETETLEN/MINDIG sor, 0 hiányzik; 661 egyedi nem-üres sor az eredeti fájlban, 0 hiányzik
+  az új korpuszból; 8 generált marker-pár, 0 hiba.
+
+**Méret:** 33,221 -> 58,867 bájt. Ez MEGHALADJA az eredeti 40 KB célt, de továbbra is ~60%-os
+csökkenés az eredeti 146,193 bájthoz képest. WhiteHat2 saját Direction-je ("a méretcél túlélheti
+ezt, vagy mondd ki a deltát") ezt a kimenetet kifejezetten elfogadhatónak jelölte -- a helyesség
+(H1/H2) elsőbbséget kapott a szigorú méret-cél felett, a delta itt rögzítve, nem elhallgatva.
+
+**Ki döntött:** backend3, CYBERSEC NO-GO 30400 (WhiteHat2) nyomán, MikroB útmutatása szerint
+(msg 18166). Gate: QA2 + Cybersec2 (MikroB reroute, msg 18155/18166).
