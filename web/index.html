@@ -1348,7 +1348,7 @@
       <!-- Master on/off switch (contract-first: GET/PUT /api/freellm/status) -->
       <div class="freellm-section">
         <h2 class="freellm-section-title" data-i18n="freellm.title">FreeAPI LLM offload</h2>
-        <p class="freellm-desc" data-i18n="freellm.desc">Harmadik féltől származó nyílt LLM szolgáltatás az offload útvonalhoz. Ki/be kapcsolható, és az összes kimenő tartalom szűrt (security/auth/finance/mopsion/PII soha).</p>
+        <p class="freellm-desc" data-i18n="freellm.desc">Harmadik féltől származó nyílt LLM szolgáltatás az offload útvonalhoz. Ki/be kapcsolható; a kimenő tartalom mopsion/PII miatt már nem blokkolt -- csak az észlelt hitelesítő adatok (token/kulcs/jelszó) vannak [REDACTED]-ként maszkolva, mielőtt a tartalom elhagyja a gépet.</p>
         <div class="freellm-control">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
             <input type="checkbox" id="freellmToggle" aria-describedby="freellmMsg" style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0;cursor:pointer;">
