@@ -24795,3 +24795,29 @@ have read this box's real Telegram credentials (the helper deliberately keeps a 
 a real message every time the pre-existing failure test ran.
 
 **Ki döntött:** DevO (fullstack), card 84181422. Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
+
+## 2026-11-14 -- update-review sweep: 5 watched repos + 2 pipx drifts (card b2401b1c)
+
+**Döntés:** git-repo-watcher flagged 5 external code changes plus 2 PyPI drifts for review, no
+bumps. Verdicts: caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit/2 files, Go toolchain patch bump
++ README cosmetic, vendored skills/caveman subdir untouched. emilkowalski-skill (f7ce8c02..0f2e23b3)
+-- ADOPT, 2 commits/29 files, all prose/doc, no scripts/network/install change; vendored-copy sync
+deferred to a separate bump card. repomix (758c3d71..5beee248) -- NO-OP, 16 commits/15 files, CI
+workflow pins + minor dependency range bumps, no new dependency, pinned install (1.19.0) unaffected.
+agent-skills (aeac41d4..39b723ce) -- ADOPT, 379 commits/112 files, review scoped to the 5 adopted
+skills (doubt-driven-development, context-engineering, interview-me, idea-refine,
+documentation-and-adrs); 4/5 touched, all benign prose/doc; rest of the diff is plugin/CI machinery
+never adopted. freellmapi (ae565be0..730ba794, 86 commits/351 files, +17250/-2512) -- DEFERRED, not
+reviewed in depth: our own live freellm service's upstream, too large for a side-note in a
+multi-repo sweep (same reasoning as the prior deferral on card b19055b4); last_sha intentionally NOT
+advanced. pipx drifts (code-review-graph 2.3.9->2.4.0, graphify 0.9.67->0.9.108) -- noted, not
+bumped, both already tracked by planned cards 2d5ad4d2 and 3a324707.
+
+**Miért a DECISIONS.md bejegyzés:** a kártya SEC-tag miatt a landolás-kapu (`decisions_entry_required`)
+ezt egy explicit sorhoz köti, még egy review-only (no-bump) kártyán is -- a watched-repos.json
+note-mezője önmagában nem elég a gate-closure guard számára.
+
+**Nyitott:** freellmapi-hoz dedikált havi-bump review kártya nyitása javasolt MikroB-nak (86
+commit/351 fájl túl nagy egy többrepós sweep melléktételéhez).
+
+**Ki döntött:** DevO (fullstack), card b2401b1c. Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
