@@ -2855,6 +2855,17 @@ for l in sys.stdin:
   # of pattern-matching a process list.
   for _sig_pair in "TERM:143" "HUP:129" "INT:130"; do
     _sig="${_sig_pair%%:*}"; _sig_rc="${_sig_pair#*:}"
+    # MikroB 18494 (2026-11-14): case N's two nested --selftest-land-batch runs exist only to test
+    # journal isolation (P7); the top-level run already covers the signal-delivery cases. Running
+    # J-TERM/J-HUP/J-INT a second AND third time, concurrently with the top-level run's own J cases,
+    # contends for CPU and flakes (measured: both nested J-INT sub-cases hit rc=0 instead of the
+    # wanted 130 under that contention) -- and since --selftest-land-batch runs inside EVERY
+    # fleet-test (landing-downward-check.test.ts, M3), a flaky FAIL here would turn every gate and
+    # every land red fleet-wide, not just this selftest. Skip J entirely when nested.
+    if [ "${SELFTEST_BATCH_NESTED:-}" = "1" ]; then
+      echo "  ok   case J-$_sig (M4/P3): skipped -- nested invocation (SELFTEST_BATCH_NESTED=1), top-level run already covers the signal cases"
+      continue
+    fi
     n=$((n+1))
     MAIN="$(_lb_mkmain "caseJ${_sig}")"
     _lb_mkcard j1 j1.txt hello
