@@ -25352,3 +25352,11 @@ Nincs benne: a LOW lelet (`ATTEMPTS_FILE`/`ATTEMPTS_LOCK` freellm-specifikus át
 Nincs viselkedésváltozás: a gate-closure-check.py kimenete bájtra egyezik 20 valós, friss kártyán régi/új szkripttel mérve (lista + mindkét kimenet a REVIEW-ban). gate-closure-check.selftest.py: 166/166 változatlan. Új selftestek: gate_verdict_tokens (11/11), sha_content_equivalence (9/9, valós git-repón), gate-verdict-token-list-single-source (4/4, mutáció-tesztelve: a literál visszaírása pirosra viszi).
 
 Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- card ec34c025: Cybersec NO-GO 31111 javítva -- shape-alapú allowlist-ratchet
+
+**Döntés:** a `gate-verdict-token-list-single-source.selftest.py` guard csak két PONTOS írásmódot (`_VERDICT = re.compile(...)`, `PASSING = {...}`) kapott el a gate-closure-check.py-ban -- egy átnevezés, egy `set()`/`frozenset()` visszakötés, egy annotált visszakötés vagy egy új fájl a repóban zöld maradt (Cybersec NO-GO 31111, Fix-Direction). Csere: SHAPE-alapú detektor (egy OUTCOME szó -- PASS/FAIL/GO/NO-GO -- egy GATE névvel -- QA/CYBERSEC/WHITEHAT/CYBERED/REDHAT -- egyazon regex-mintában vagy nevesített literálban, kommentek nélkül, szóhatárolt) + explicit ALLOWLIST, a `store/*.py`+`store/*.sh` (lapos) és az eredeti REVIEW által nevesített egyetlen TS fájl ((`src/web/kanban-gate-completeness-guard.ts`) hatókörén.
+
+Az ALLOWLIST-ot a detektor TÉNYLEGES futtatásával mértem a hatókörön, nem a NO-GO szálának "hat ismert másolat" listájából: a mért halmaz 9 fájl, nem 6 -- a `store/cybered-gate-scan.py`, `store/gate_scan_lib.py` és `store/unlanded-branch-sweep.sh` is hordozza a szókincset, ezeket a kártya eddig nem nevezte meg. Mutáció-tesztelve mind a 4, a NO-GO-ban listázott mutánsra (átnevezés, `set()` visszakötés, annotált visszakötés, új fájl) -- mind pirosra megy most; az eredeti 4 case változatlan marad (Fix-Direction kérése). `gate-closure-check.selftest.py` (166/166) és `tsc --noEmit` érintetlen -- a gate-closure-check.py maga nem módosult.
+
+Gate: QA + Cybersec, re-gate a 20af5b9dc Gate-SHA-n. **Ki döntött:** DevO (fullstack).
