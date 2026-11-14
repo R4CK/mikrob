@@ -533,9 +533,30 @@ const FOOTER_LEAD_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))?(
 // -- the parenthesised `(Ns · ↓` tail, which sits on its own line, separate from the footer, so a
 // clipped footer next to it still gets caught via the spinner). None of these match ordinary
 // prose ending in a bare "on" with nothing (or the wrong thing) after it.
+//
+// QA FAIL 30874 (QA2): IDLE_FOOTER_RX itself is unanchored, so its `· ...ctrl+t` alternative
+// (no special glyph required, unlike the `↓ to manage`/`← for agents` tails) matched as a
+// substring anywhere in a row -- ordinary prose mentioning a keyboard shortcut ("... relies on
+// · press ctrl+t to jump") satisfied it. Every real footer row, by contrast, ENDS right at its
+// tail keyword -- there is never trailing content after it. Anchoring the match to the end of
+// the row rejects prose that continues past the matched substring, without touching
+// IDLE_FOOTER_RX itself (used elsewhere against full multi-line pane text; changing its global
+// behaviour is out of scope for this row-scoped guard).
+const ROW_IDLE_FOOTER_ANCHORED_RX = new RegExp(`(?:${IDLE_FOOTER_RX.source})\\s*$`)
 const ROW_LIVE_SIGNAL_RX = new RegExp(
-  `${IDLE_FOOTER_RX.source}|${BUSY_ESC_TO_INTERRUPT_RX.source}|${BUSY_INDICATORS[0].source}`,
+  `${ROW_IDLE_FOOTER_ANCHORED_RX.source}|${BUSY_ESC_TO_INTERRUPT_RX.source}|${BUSY_INDICATORS[0].source}`,
 )
+
+// QA FAIL 30874 (QA1): the override's three signals above all require EITHER an intact
+// `esc to interrupt` OR a separate spinner/token-counter row. A footer clipped mid-`esc to
+// interrupt` (`esc to int…`) with no nearby spinner line matched none of them, so the override
+// never fired and the cut discarded the clipped-but-genuinely-busy footer. BUSY_ESC_CLIPPED_RX +
+// FOOTER_TRUNCATED_RX (already used together at the `esc to int…` call site below) recognise
+// exactly this clipped-prefix shape on its own row, without needing a spinner.
+function rowCarriesLiveSignal(row: string): boolean {
+  if (ROW_LIVE_SIGNAL_RX.test(row)) return true
+  return BUSY_ESC_CLIPPED_RX.test(row) && FOOTER_TRUNCATED_RX.test(row)
+}
 // The row tail is `[elapsed, tokens, "N queued"]` joined with ` · ` (read from
 // the Claude Code 2.1.301 source; empty parts are dropped). A running agent's
 // elapsed is a clock (`18m 5s`); an idle one shows a word (`waiting`, `idle`)
@@ -1484,7 +1505,7 @@ export function detectPaneState(
   // (more recent) footer -- that signals this header is stale/spoofed, and the real state is
   // further down, inside the rows this cut would otherwise throw away.
   const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
-  if (bgBlock && !bgBlock.rows.some(r => ROW_LIVE_SIGNAL_RX.test(r))) {
+  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal)) {
     pane = bgBlock.above.join('\n')
   }
 

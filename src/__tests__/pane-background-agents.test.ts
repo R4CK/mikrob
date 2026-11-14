@@ -184,6 +184,24 @@ describe('background-agent block below the footer', () => {
     expect(detectPaneState(pane)).toBe('busy')
   })
 
+  // QA FAIL 30874 on the F1/F2 fix above, same two directions, different trigger.
+  it('QA1 (30874): a spoofed header with a footer clipped mid "esc to interrupt" and NO nearby spinner still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · esc to int…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('QA2 (30874): a wrapped continuation mentioning "ctrl+t" mid-sentence does not fool the cut into skipping', () => {
+    const pane = BUSY_WITH_FIVE_AGENTS + '\n     the shortcut documented here relies on · press ctrl+t to jump'
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
   it('idle main thread with running agents reads idle, and the agents are counted', () => {
     expect(detectPaneState(IDLE_WITH_AGENTS)).toBe('idle')
     expect(detectBackgroundAgents(IDLE_WITH_AGENTS)).toEqual({ total: 2, running: 2, queued: 0 })
