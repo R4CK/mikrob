@@ -106,3 +106,67 @@ export function switchNotification(action: GeminiFallbackAction, model: string):
   }
   return null
 }
+
+// SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): the same switch-back confirmation rule
+// store/quota-bridge.py's confirm_switchback() applies (grep SWITCHBACK-HYSTERESIS-V1 to see both
+// sides), read from the same store/switchback-hysteresis.json. WHY: this runner's existing
+// MIN_ENGAGEMENT_MS anti-flap (gemini-fallback-runner.ts) only measures time-since-engaged, not
+// how the underlying signal (claudeExhausted) behaved across recent runs -- a single run where it
+// happens to read false is enough to revert once the window has elapsed, with no requirement that
+// the signal stayed clear. This rule adds that requirement on top: revert only once `confirmProbes`
+// consecutive runs recorded `ok: true` (claudeExhausted === false), with the oldest and newest of
+// that trailing run at least `minGapSec` apart.
+export interface SwitchbackProbe {
+  ok: boolean
+  ts: number
+}
+
+/** Pure mirror of store/quota-switchback.py's confirm_switchback(). Any behavioural change to one
+ * must be made to the other -- see that module's docstring for the exact semantics. */
+export function confirmSwitchback(
+  probeLog: readonly SwitchbackProbe[],
+  confirmProbes: number,
+  minGapSec: number,
+): boolean {
+  if (confirmProbes < 1) return false
+  const run: SwitchbackProbe[] = []
+  for (let i = probeLog.length - 1; i >= 0; i--) {
+    const entry = probeLog[i]
+    if (!entry.ok) break
+    run.push(entry)
+  }
+  if (run.length < confirmProbes) return false
+  const newestTs = run[0].ts
+  const oldestTs = run[confirmProbes - 1].ts
+  return newestTs - oldestTs >= minGapSec * 1000
+}
+
+/** Appends one probe result and trims to maxLen, mirroring store/quota-switchback.py's
+ * record_probe(). Returns a NEW array (no mutation). */
+export function recordProbe(
+  probeLog: readonly SwitchbackProbe[],
+  ok: boolean,
+  ts: number,
+  maxLen = 20,
+): SwitchbackProbe[] {
+  const next = [...probeLog, { ok, ts }]
+  return next.slice(-maxLen)
+}
+
+/** Reads store/switchback-hysteresis.json. Missing/corrupt -> the documented defaults (2
+ * confirmProbes, 300s minGapSec), mirroring quota_switchback.load_hysteresis_config()'s fail
+ * direction: toward the hysteresis rule's own defaults, not toward disabling it. */
+export function loadHysteresisConfigSync(
+  readFile: (path: string) => string,
+  path: string,
+): { confirmProbes: number; minGapSec: number } {
+  try {
+    const raw = JSON.parse(readFile(path)) as Record<string, unknown>
+    const confirmProbes = typeof raw.confirmProbes === 'number' ? raw.confirmProbes : 2
+    const minGapSec = typeof raw.minGapSec === 'number' ? raw.minGapSec : 300
+    if (confirmProbes < 1 || minGapSec < 0) throw new Error('out of range')
+    return { confirmProbes, minGapSec }
+  } catch {
+    return { confirmProbes: 2, minGapSec: 300 }
+  }
+}

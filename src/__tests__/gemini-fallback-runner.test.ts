@@ -25,6 +25,7 @@ const fakeState: GeminiFallbackState = {
   keyValid: false,
   lastRun: null,
   keyFingerprint: null,
+  probeLog: [],
 }
 let writtenState: GeminiFallbackState | null = null
 let telegramMessages: string[] = []
@@ -44,6 +45,8 @@ let sessionOutageRawText: string | null = null
 let engageConfigJson: string | null = null
 let apiKey = 'fake-api-key-that-is-long-enough'
 let keyValidResult: GeminiKeyValidation = { valid: true, modelCount: 50 }
+let hysteresisConfirmProbes = 2
+let hysteresisMinGapSec = 300
 
 /** Card 4b6002f3 (MikroB 18092): a bare "was initDatabase called" assertion passes even if it is
  *  moved to AFTER runGeminiFallbackCheck (e.g. into a .then()), because that still calls it at
@@ -76,6 +79,9 @@ vi.mock('node:fs', async (orig) => {
       if (p.endsWith('gemini-fallback-config.json')) {
         if (engageConfigJson === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
         return engageConfigJson
+      }
+      if (p.endsWith('switchback-hysteresis.json')) {
+        return JSON.stringify({ confirmProbes: hysteresisConfirmProbes, minGapSec: hysteresisMinGapSec })
       }
       return real.readFileSync(path)
     }),
@@ -134,6 +140,9 @@ beforeEach(() => {
   fakeState.keyValid = false
   fakeState.lastRun = null
   fakeState.keyFingerprint = null
+  fakeState.probeLog = []
+  hysteresisConfirmProbes = 2
+  hysteresisMinGapSec = 300
   globalThis.fetch = vi.fn(async (url: string, opts: RequestInit) => {
     if (String(url).includes('api.telegram.org')) {
       const body = JSON.parse(String(opts.body))
@@ -182,15 +191,30 @@ describe('runGeminiFallbackCheck -- revert path', () => {
   it('reverts when on Gemini but Claude has recovered', async () => {
     fakeState.route = 'gemini'
     fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // 50 min ago > 45 min anti-flap (F2)
+    // SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): a lone clear run is not enough any more -- seed a
+    // prior OK probe >= minGapSec ago so THIS run's own freshly-recorded probe is the 2nd
+    // confirming one (see confirmSwitchback's gap check against the newest 2 trailing OK probes).
+    fakeState.probeLog = [{ ok: true, ts: Date.now() - 310_000 }]
     weeklyActive = false
     await runGeminiFallbackCheck()
     expect(writtenState?.route).toBe('claude')
     expect(writtenState?.engagedAt).toBeNull()
   })
 
+  it('does NOT revert on a single clear probe, even past the anti-flap window (hysteresis, card 7f112c2f)', async () => {
+    fakeState.route = 'gemini'
+    fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // 50 min ago > 45 min anti-flap (F2)
+    fakeState.probeLog = []  // no prior probe to confirm against
+    weeklyActive = false
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+    expect(telegramMessages).toHaveLength(0)
+  })
+
   it('sends exactly ONE Telegram message on revert', async () => {
     fakeState.route = 'gemini'
     fakeState.engagedAt = Date.now() - 50 * 60 * 1000
+    fakeState.probeLog = [{ ok: true, ts: Date.now() - 310_000 }]
     weeklyActive = false
     await runGeminiFallbackCheck()
     expect(telegramMessages).toHaveLength(1)
@@ -288,6 +312,7 @@ describe('newDevStop engagement (card 3de7d530)', () => {
   it('reverts once both thresholds clear, same as the existing revert path', async () => {
     fakeState.route = 'gemini'
     fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // > 45 min anti-flap (F2)
+    fakeState.probeLog = [{ ok: true, ts: Date.now() - 310_000 }]  // SWITCHBACK-HYSTERESIS-V1
     weeklyActive = false
     weeklyNewDevStopActive = false
     await runGeminiFallbackCheck()
@@ -327,6 +352,7 @@ describe('session-outage engagement (card 612058c2)', () => {
   it('reverts once the session-outage marker clears, same as the existing revert path', async () => {
     fakeState.route = 'gemini'
     fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // > 45 min anti-flap (F2)
+    fakeState.probeLog = [{ ok: true, ts: Date.now() - 310_000 }]  // SWITCHBACK-HYSTERESIS-V1
     weeklyActive = false
     weeklyNewDevStopActive = false
     sessionOutageActive = false
@@ -477,6 +503,7 @@ describe('CYBERED NO-GO fixes (comment 17031)', () => {
   it('S6b: a FUTURE-dated engagedAt (tampered state) does not block an otherwise-eligible revert', async () => {
     fakeState.route = 'gemini'
     fakeState.engagedAt = Date.now() + 365 * 24 * 60 * 60 * 1000  // 1 year in the future
+    fakeState.probeLog = [{ ok: true, ts: Date.now() - 310_000 }]  // SWITCHBACK-HYSTERESIS-V1
     weeklyActive = false  // Claude has recovered
     await runGeminiFallbackCheck()
     expect(writtenState?.route).toBe('claude')

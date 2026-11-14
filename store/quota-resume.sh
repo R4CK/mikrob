@@ -7,9 +7,17 @@
 # limited panes, (2) (re)starts those agents, (3) re-runs quota-check to verify.
 # If the limit is truly gone, quota-check deletes the countdown -> RESUMED.
 # If still limited (reset not there yet), the countdown stays -> retried next run.
+#
+# Card 7f112c2f point 1: the retry after the deadline used to happen every 15 min flat
+# (whatever the `quota-reset-resume` schedule interval is), with no backoff. Each STILL-LIMITED
+# result now writes store/quota-resume-backoff.json with a 15 -> 30 -> 60 min (capped) backoff
+# before the NEXT attempt is allowed; sched-precheck-quota-reset-resume.sh reads it to decide
+# whether to wake this script at all. A single early probe is still allowed at deadline-3min
+# (EARLY_PROBE_WINDOW_SEC in store/quota-switchback.py), in case the reset landed a little early.
 set -u
 STORE="/home/neon/marveen/store"
 CD="$STORE/quota-reset-countdown.json"
+BACKOFF="$STORE/quota-resume-backoff.json"
 TOK="$(cat "$STORE/.dashboard-token" 2>/dev/null)"
 # Canonical phrase source, shared with src/model-fallback.ts and 5 other scripts (card 115c21e7).
 # Was a hand-typed 3-phrase subset before -- e.g. it never matched "hit your session limit"
@@ -28,8 +36,14 @@ trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 
 due=$(python3 -c "import json,time;d=json.load(open('$CD'));print(1 if time.time()>=d.get('deadline',9e18) else 0)" 2>/dev/null || echo 0)
-rem=$(python3 -c "import json,time;d=json.load(open('$CD'));s=int(d.get('deadline',0)-time.time());print(f'{max(0,s)//60}m')" 2>/dev/null || echo '?')
-if [ "$due" != "1" ]; then echo "STATE:counting (deadline in $rem)"; exit 0; fi
+rem_sec=$(python3 -c "import json,time;d=json.load(open('$CD'));print(int(d.get('deadline',0)-time.time()))" 2>/dev/null || echo 999999)
+rem="$((rem_sec>0 ? rem_sec/60 : 0))m"
+EARLY_PROBE_WINDOW_SEC=180
+if [ "$due" != "1" ] && [ "$rem_sec" -gt "$EARLY_PROBE_WINDOW_SEC" ]; then
+  echo "STATE:counting (deadline in $rem)"; exit 0
+fi
+early_probe=0
+[ "$due" != "1" ] && early_probe=1
 
 echo "STATE:due -- attempting resume"
 resumed=()
@@ -62,6 +76,10 @@ out=$(bash "$STORE/quota-check.sh" 2>/dev/null)
 echo "$out"
 if echo "$out" | grep -q '^CURRENT:$'; then
   echo "RESULT:RESUMED"
+  rm -f "$BACKOFF"
 else
   echo "RESULT:STILL-LIMITED (reset not yet; will retry)"
+  # M1 (Cybersec NO-GO @f859c361b): delegated to its own script so the selftest can drive this
+  # EXACT code path (quota-resume-backoff-write.py), not a private reimplementation of it.
+  python3 "$STORE/quota-resume-backoff-write.py" "$BACKOFF" "$early_probe" 2>/dev/null
 fi

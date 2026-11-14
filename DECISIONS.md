@@ -24899,3 +24899,60 @@ again too (150 tests total across the three files). `tsc --noEmit` clean.
 
 **Ki döntött:** DevO (fullstack), card 4b6002f3 delta round, off MikroB msg 18092. Gate: re-gate
 QA + Cybersec on the new Gate-SHA (see REVIEW comment).
+
+## 2026-11-13 -- card 7f112c2f: F7 quota switch-back hysteresis + resume backoff
+
+**Decision:** switch-back from a degraded route (Ghost/Gemini) back to Claude now requires 2
+consecutive OK probes at least 5 minutes apart (SWITCHBACK-HYSTERESIS-V1,
+store/switchback-hysteresis.json), applied identically by quota-bridge.py's
+confirm_switchback() and src/gemini-fallback.ts's confirmSwitchback(). Fixes the 12 s
+OUTAGE->recovered flap measured in quota-bridge.log 2026-11-11 (23:15:41 -> 23:15:53). Added a
+15/30/60 min (capped) backoff on quota-resume.sh's post-deadline retries (was a flat retry every
+schedule tick), gated by store/quota-resume-backoff.json via
+sched-precheck-quota-reset-resume.sh. quota-bridge.py's Ghost retirement now waits up to 10 min
+for /tmp/local-llm-gpu.lock to clear before killing the ghost-runner process group, instead of
+discarding an in-flight local draft on switch-back.
+
+**Ki döntött:** Peti (Telegram 13663), dispatched by MikroB, built by backend2. Gate: QA +
+Cybersec.
+
+## 2026-11-13 -- card 7f112c2f delta: Cybersec NO-GO f859c361b fixed (H1/M1/M2/M3)
+
+**Decision:** replaced the GPU-lock-wait-then-leave-running switch-back fallback with a
+stop-file gemini-ghost-runner.sh's own loop checks between ticks, plus waiting on the actual
+process handle exiting (quota-bridge.py's request_ghost_stop/wait_for_ghost_exit) -- H1 (HIGH):
+the superseded version could leave the ghost runner's `while true` loop alive unmanaged forever
+once the 10 min GPU-lock wait timed out, since it never consults the outage marker or its
+parent; removed gpu_lock_held/wait_for_local_job as now-unused. Extracted quota-resume.sh's
+backoff writer into its own quota-resume-backoff-write.py calling
+quota_switchback.compute_backoff_sec directly, and made sched-precheck-quota-reset-resume.sh's
+paths/clock env-overridable, so the Kesz-ha 1 selftest drives the real production code instead
+of a private copy (M1). Added mutation-proven wiring tests for confirm_switchback and the new
+H1 functions inside outage_loop() to quota-bridge.selftest.py, fixing three pre-existing cases
+(F-RH-V4, F1, Y1) that silently assumed pre-hysteresis "single probe recovers" behaviour and
+would otherwise spin forever once run (M2). Added a >=300s-span OK/LIMITED/OK regression case
+to both the Python and TS confirm_switchback selftests (M3). Merged current origin/develop
+(3cff911ff) after the fix; only conflict was the DECISIONS.md tail-append shape, resolved by
+keeping develop's content as-is and appending this card's entries strictly after (verified:
+develop's DECISIONS.md is a byte-exact prefix of the resolved file).
+
+**Ki döntött:** Cybersec NO-GO (comment 30315, Gate-SHA f859c361b), fixed by backend2. Gate:
+QA2 + Cybersec.
+
+## 2026-11-14 -- card 7f112c2f delta: fleet-test REFUSED the merge, fixed (OK_SHAPES wording + exec bit)
+
+**Decision:** landing attempt (marveen-land.sh --card 7f112c2f) was REFUSED: fleet-test.sh on
+the merge result failed 3 tests, none in this card's own logic. (1) `shebang-files-executable.test.ts`:
+`quota-resume-backoff.selftest.sh`, `quota-switchback.selftest.py` and `quota-switchback.py` were
+tracked 100644 despite carrying a `#!` shebang -- fixed with `git update-index --chmod=+x` on all
+three (the DrvFs/core.fileMode=false mount does not let a plain `chmod +x` reach the index). (2)
+`store-selftests-all-run.test.ts > quota-resume-backoff passes` and `> quota-switchback passes`:
+both selftests printed their summary as a bare `N passed, M failed`, which matches none of the
+file's OK_SHAPES regexes (the closest, `/selftest: ([1-9]\d*) passed, 0 failed/`, requires the
+`selftest:` prefix) -- same wording-convention bug class as card 4cd2a0fc's
+freellm-call-retry.selftest.sh fix earlier today. Fixed by prefixing each script's own name:
+`quota-resume-backoff.selftest: $pass passed, $fail failed` and
+`quota-switchback.selftest: {passed} passed, {failed} failed`. Verified standalone: both exit 0
+with the new wording (10 passed / 13 passed, 0 failed each).
+
+**Ki döntött:** backend2 (card 7f112c2f, fleet-test REFUSED finding, fixed same-day before re-landing).

@@ -47,8 +47,12 @@ import { fileURLToPath } from 'node:url'
 import {
   decideGeminiFallback,
   switchNotification,
+  confirmSwitchback,
+  recordProbe,
+  loadHysteresisConfigSync,
   type FallbackRoute,
   type GeminiFallbackFacts,
+  type SwitchbackProbe,
 } from './gemini-fallback.js'
 import {
   validateGeminiKey,
@@ -65,6 +69,7 @@ const ROOT = join(__dirname, '..')
 const STORE = join(ROOT, 'store')
 
 const STATE_PATH = join(STORE, 'gemini-fallback-state.json')
+const HYSTERESIS_CONFIG_PATH = join(STORE, 'switchback-hysteresis.json')
 const WEEKLY_HARD_STOP_PATH = join(STORE, 'weekly-hard-stop.json')
 const ENGAGE_CONFIG_PATH = join(STORE, 'gemini-fallback-config.json')
 const SESSION_OUTAGE_PATH = join(STORE, 'mikrob-session-outage.json')
@@ -98,6 +103,9 @@ export interface GeminiFallbackState {
   lastRun: number | null
   /** sha256 hex of the vault key the cached `keyValid` verdict actually applies to (F1). */
   keyFingerprint: string | null
+  /** SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): trailing probe history for confirmSwitchback --
+   * one entry per run, `ok: true` when claudeExhausted was false that run. */
+  probeLog: SwitchbackProbe[]
 }
 
 function fingerprintKey(key: string): string {
@@ -135,9 +143,20 @@ function readState(): GeminiFallbackState {
       keyValid: raw.keyValid === true,
       lastRun: typeof raw.lastRun === 'number' ? raw.lastRun : null,
       keyFingerprint: typeof raw.keyFingerprint === 'string' ? raw.keyFingerprint : null,
+      probeLog: Array.isArray(raw.probeLog)
+        ? (raw.probeLog as unknown[]).filter(
+            (e): e is SwitchbackProbe =>
+              typeof e === 'object' && e !== null &&
+              typeof (e as Record<string, unknown>).ok === 'boolean' &&
+              typeof (e as Record<string, unknown>).ts === 'number',
+          )
+        : [],
     }
   } catch {
-    return { route: 'claude', engagedAt: null, lastKeyCheck: null, keyValid: false, lastRun: null, keyFingerprint: null }
+    return {
+      route: 'claude', engagedAt: null, lastKeyCheck: null, keyValid: false, lastRun: null,
+      keyFingerprint: null, probeLog: [],
+    }
   }
 }
 
@@ -281,7 +300,24 @@ export async function runGeminiFallbackCheck(
     geminiUnavailable: false,
   }
 
-  const action = decideGeminiFallback(facts)
+  let action = decideGeminiFallback(facts)
+
+  // SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): store/quota-bridge.py's confirm_switchback()
+  // applies this same rule (grep SWITCHBACK-HYSTERESIS-V1) to its own Claude-recovery check --
+  // decideGeminiFallback's own MIN_ENGAGEMENT_MS anti-flap only measures time-since-engaged, not
+  // whether the underlying signal (claudeExhausted) has actually stayed clear across runs. Only
+  // the `claude_recovered` revert is gated here -- `gemini_unavailable` must stay immediate (see
+  // decideGeminiFallback's own comment: staying on a dead provider is worse than probing early).
+  const probeLog = recordProbe(state.probeLog, !claudeExhausted, now)
+  if (action.kind === 'revert' && action.reason === 'claude_recovered') {
+    const { confirmProbes, minGapSec } = loadHysteresisConfigSync(
+      p => readFileSync(p, 'utf-8'), HYSTERESIS_CONFIG_PATH)
+    if (!confirmSwitchback(probeLog, confirmProbes, minGapSec)) {
+      console.log('[gemini-runner] claude_recovered not yet confirmed by hysteresis -- staying on Gemini')
+      action = { kind: 'none' }
+    }
+  }
+
   console.log(`[gemini-runner] route=${state.route} exhausted=${claudeExhausted} engageOn=${engageOn} keyValid=${keyValid} action=${action.kind}`)
 
   const newState: GeminiFallbackState = {
@@ -290,6 +326,7 @@ export async function runGeminiFallbackCheck(
     lastKeyCheck: newLastKeyCheck,
     keyFingerprint: newFingerprint,
     lastRun: now,
+    probeLog,
   }
 
   if (action.kind === 'engage') {
@@ -302,6 +339,7 @@ export async function runGeminiFallbackCheck(
   } else if (action.kind === 'revert') {
     newState.route = 'claude'
     newState.engagedAt = null
+    newState.probeLog = []
     writeState(newState)
     const msg = switchNotification(action, DEFAULT_GEMINI_MODEL)
     if (msg) await sendTelegram(msg)

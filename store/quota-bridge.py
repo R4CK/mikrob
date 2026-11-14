@@ -28,11 +28,26 @@ alive then) and is deliberately ignored here.
 No secrets are hardcoded: the bot token is read from the telegram channel .env,
 the dashboard token from store/.dashboard-token, both at call time.
 """
-import json, os, re, subprocess, sys, time, urllib.request, urllib.parse, urllib.error, signal
+import importlib.util, json, os, re, subprocess, sys, time, urllib.request, urllib.parse, urllib.error, signal
 
 HOME = os.path.expanduser("~")
 MARVEEN = "/home/neon/marveen"
 STORE = f"{MARVEEN}/store"
+
+# SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): the "N consecutive OK probes >= gap seconds apart"
+# switch-back confirmation rule, shared with src/gemini-fallback.ts's confirmSwitchback (grep
+# SWITCHBACK-HYSTERESIS-V1 to see both sides). Loaded via importlib, not a plain `import`, because
+# the module filename has a hyphen (quota-switchback.py, matching this file's own naming
+# convention, not a valid Python identifier). Resolved from THIS file's own directory, not the
+# hardcoded STORE constant above -- STORE is intentionally the live install path for every other
+# runtime file this script touches (token, countdown, outage marker), but that would make this
+# one sibling-module load fail whenever quota-bridge.py itself is loaded from elsewhere (a gate
+# worktree, the selftest) -- the two happen to be the same path in production, since this script
+# only ever actually RUNS from the live install.
+_qsb_spec = importlib.util.spec_from_file_location(
+    "quota_switchback", os.path.join(os.path.dirname(os.path.abspath(__file__)), "quota-switchback.py"))
+quota_switchback = importlib.util.module_from_spec(_qsb_spec)
+_qsb_spec.loader.exec_module(quota_switchback)
 def _telegram_state_dir():
     """The telegram channel state dir. On the fleet the channels session runs with
     CLAUDE_CONFIG_DIR isolated, so the real dir is under the marveen checkout, not
@@ -75,6 +90,11 @@ LOCAL_LLM = f"{STORE}/local-llm.sh"
 # cf757409 Gemini-fallback pipeline (it is only ever invoked from MikroB's own heartbeat/scheduled-
 # task prompts). SESSION_OUTAGE_FILE tells gemini-fallback-runner.ts's readClaudeExhausted() that a
 # SESSION-level outage (not just the weekly newDevStop/hard-stop threshold) is active, and
+# H1 (Cybersec NO-GO @f859c361b): GHOST_RUNNER_STOP_FILE asks gemini-ghost-runner.sh's own loop to
+# exit after its CURRENT tick instead of SIGTERM-ing the whole process group outright (see
+# request_ghost_stop/wait_for_ghost_exit below).
+GHOST_RUNNER_STOP_FILE = f"{STORE}/gemini-ghost-runner.stop"
+
 # GHOST_RUNNER_SCRIPT is the background driver started for the outage's duration -- see both
 # functions' own comments below.
 SESSION_OUTAGE_FILE = f"{STORE}/mikrob-session-outage.json"
@@ -473,6 +493,36 @@ def stop_ghost_runner(proc):
         pass
 
 
+def request_ghost_stop():
+    """H1 (Cybersec NO-GO @f859c361b): ask gemini-ghost-runner.sh's own `while true` loop to exit
+    after its CURRENT tick, instead of SIGTERM-ing the whole process group outright. The loop
+    (gemini-ghost-runner.sh) only checks this file BETWEEN ticks, so any tick already in flight --
+    including an in-flight local-llm.sh draft holding /tmp/local-llm-gpu.lock -- always finishes
+    first, which is the original point of the superseded GPU-lock wait this replaces. Best-effort,
+    same posture as every other function here."""
+    tmp = GHOST_RUNNER_STOP_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write("stop")
+        os.replace(tmp, GHOST_RUNNER_STOP_FILE)
+    except OSError as e:
+        log(f"could not write ghost-runner stop file: {e}")
+
+
+def wait_for_ghost_exit(proc, max_wait_sec=600, poll_sec=2, sleep_fn=time.sleep, now_fn=time.time):
+    """H1: poll the Popen handle ITSELF (not the GPU lock -- clearing the lock only proves the
+    draft step finished, not that the loop noticed the stop file and returned) for up to
+    max_wait_sec. True once the process has actually exited; a None proc (start_ghost_runner
+    failed) counts as already gone. `sleep_fn`/`now_fn` are injection points for the selftest's
+    fake clock."""
+    if proc is None:
+        return True
+    deadline = now_fn() + max_wait_sec
+    while proc.poll() is None and now_fn() < deadline:
+        sleep_fn(poll_sec)
+    return proc.poll() is not None
+
+
 def outage_loop(token, state):
     """Own getUpdates and answer with the local model until MikroB recovers."""
     global _active_ghost_runner
@@ -480,6 +530,7 @@ def outage_loop(token, state):
     mark_session_outage()
     ghost_runner = start_ghost_runner()
     _active_ghost_runner = ghost_runner
+    confirm_probes, min_gap_sec = quota_switchback.load_hysteresis_config()
     try:
         if not state.get("notified_outage"):
             send(token, PETI_CHAT_ID,
@@ -497,18 +548,33 @@ def outage_loop(token, state):
             # probe can only flap there, and each flap sends Peti a handover and a recovery
             # message. Message serving below is untouched -- the Ghost stays fully useful, it just
             # stops announcing.
+            #
+            # SWITCHBACK-HYSTERESIS-V1 (card 7f112c2f): a single clear probe used to switch back
+            # INSTANTLY -- that is exactly the 23:15:41 OUTAGE -> 23:15:53 recovered 12s flap in
+            # quota-bridge.log 2026-11-11. Every probe (clear or not) is now recorded, and recovery
+            # only fires once quota_switchback.confirm_switchback() agrees: `confirm_probes`
+            # consecutive clear probes, the oldest and newest of that run at least `min_gap_sec`
+            # apart. src/gemini-fallback.ts's confirmSwitchback applies the identical rule from the
+            # same store/switchback-hysteresis.json for its own Claude<->Gemini switch-back.
             if not recovery_probe_due():
                 if not probe_suppressed:
                     log("known reset deadline still far off -> suppressing recovery probe (no flapping)")
                     probe_suppressed = True
-            elif not mikrob_down():
-                log("MikroB recovered -> relinquishing channel")
-                send(token, PETI_CHAT_ID,
-                     "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
-                     "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
-                state["phase"] = "healthy"; state["banner_streak"] = 0; state["notified_outage"] = False
+            else:
+                probe_ok = not mikrob_down()
+                state["probe_log"] = quota_switchback.record_probe(
+                    state.get("probe_log", []), ok=probe_ok, ts=time.time())
                 save_state(state)
-                return
+                if probe_ok and quota_switchback.confirm_switchback(
+                        state["probe_log"], confirm_probes, min_gap_sec):
+                    log("MikroB recovered (confirmed by hysteresis) -> relinquishing channel")
+                    send(token, PETI_CHAT_ID,
+                         "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
+                         "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
+                    state["phase"] = "healthy"; state["banner_streak"] = 0
+                    state["notified_outage"] = False; state["probe_log"] = []
+                    save_state(state)
+                    return
             # Y1 (RedHat GO, card 612058c2 Teendo @6b9f61eb, comment 19993): refresh the heartbeat
             # ONCE PER LOOP ITERATION, unconditionally, BEFORE the getUpdates call -- not only on
             # the success branch below. The old placement (after the message-processing block) was
@@ -539,7 +605,27 @@ def outage_loop(token, state):
     finally:
         # Card 612058c2 acceptance: "kilépéskor a runner leáll" -- runs on the recovery return path
         # AND on any unexpected exception, so the runner never outlives Ghost's own outage handling.
-        stop_ghost_runner(ghost_runner)
+        #
+        # H1 (Cybersec NO-GO @f859c361b): the superseded version SIGTERMed the whole process group
+        # immediately on switch-back, which could kill an in-flight local-llm.sh draft the ghost
+        # runner's own tick started (holds /tmp/local-llm-gpu.lock for the call's duration) -- or,
+        # in the "wait up to 10 min for the GPU lock, then leave it running" fallback that used to
+        # live here, left the runner's `while true` loop alive UNMANAGED forever once the wait
+        # timed out: it never consults the outage marker or its own parent, so nothing could ever
+        # stop it again, and each later outage started a second one, accumulating real Gemini
+        # calls indefinitely. Fix: ask the runner to stop its own loop (stop-file, honoured only
+        # BETWEEN ticks in gemini-ghost-runner.sh) so any tick already in flight -- including that
+        # same in-flight draft -- finishes normally, then wait for the PROCESS ITSELF to exit, not
+        # for the GPU lock to clear (clearing the lock only proves the draft step finished, not
+        # that the loop noticed the stop file and returned). If it has not exited on its own within
+        # max_wait_sec, fall back to the hard process-group kill below -- so nothing is EVER left
+        # running unmanaged, unlike the superseded path.
+        # A `return` inside `finally` would swallow any exception that triggered it -- use a flag
+        # instead so an exception propagates normally when the wait succeeds.
+        request_ghost_stop()
+        if not wait_for_ghost_exit(ghost_runner, max_wait_sec=600):
+            log("ghost runner did not exit within 10 min of the stop request -> force-killing its process group")
+            stop_ghost_runner(ghost_runner)
         clear_session_outage()
         _active_ghost_runner = None
 

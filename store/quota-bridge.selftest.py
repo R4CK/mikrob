@@ -408,6 +408,7 @@ def main() -> int:
         old = {
             "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
             "start_ghost_runner": m.start_ghost_runner, "stop_ghost_runner": m.stop_ghost_runner,
+            "request_ghost_stop": m.request_ghost_stop, "wait_for_ghost_exit": m.wait_for_ghost_exit,
             "clear_session_outage": m.clear_session_outage, "send": m.send,
             "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
             "mikrob_down": m.mikrob_down,
@@ -417,16 +418,32 @@ def main() -> int:
         m.mark_session_outage = lambda: None
         m.start_ghost_runner = lambda: (calls.__setitem__("start", calls["start"] + 1), "FAKE_PROC")[1]
         m.stop_ghost_runner = lambda proc: calls.__setitem__("stop", calls["stop"] + 1)
+        # H1 (Cybersec NO-GO @f859c361b): the finally block now asks nicely first
+        # (request_ghost_stop) and only calls stop_ghost_runner as a fallback once
+        # wait_for_ghost_exit reports the process did NOT exit on its own -- forced False here so
+        # this pin (which only cares that the cleanup pipeline ran exactly once per exit path)
+        # keeps exercising the hard-kill call it already counted on. "FAKE_PROC" is a plain string,
+        # not a real Popen, so wait_for_ghost_exit must never be left unmocked here (it would try
+        # "FAKE_PROC".poll() and crash).
+        m.request_ghost_stop = lambda: None
+        m.wait_for_ghost_exit = lambda proc, max_wait_sec=600: False
         m.clear_session_outage = lambda: calls.__setitem__("clear", calls["clear"] + 1)
         m.send = lambda token, chat_id, text: None
         m.save_state = lambda s: None
         try:
-            # Path A: the normal "MikroB recovered" return. recovery_probe_due=True (probe not
-            # suppressed) + mikrob_down=False (healthy) takes the `elif not mikrob_down(): ...
-            # return` branch on the FIRST loop iteration, before ever reaching tg_api.
+            # Path A: the normal "MikroB recovered" return. SWITCHBACK-HYSTERESIS-V1 means a
+            # single clear probe no longer returns on the first iteration by itself (that is the
+            # whole point of card 7f112c2f, pinned elsewhere by the M2 wiring test above) -- here
+            # confirm_switchback is force-mocked to True so THIS pin (the cleanup pipeline runs
+            # exactly once on the return path) stays isolated from that hysteresis behaviour.
+            old_confirm_a = m.quota_switchback.confirm_switchback
+            m.quota_switchback.confirm_switchback = lambda *a, **kw: True
             m.recovery_probe_due = lambda now=None: True
             m.mikrob_down = lambda: False
-            m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+            try:
+                m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+            finally:
+                m.quota_switchback.confirm_switchback = old_confirm_a
             if calls["start"] == 1 and calls["stop"] == 1 and calls["clear"] == 1:
                 ok("outage_loop()'s return path calls start/stop/clear exactly once each (F-RH-V4)")
             else:
@@ -466,6 +483,7 @@ def main() -> int:
     old2 = {
         "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
         "start_ghost_runner": m.start_ghost_runner, "stop_ghost_runner": m.stop_ghost_runner,
+        "request_ghost_stop": m.request_ghost_stop, "wait_for_ghost_exit": m.wait_for_ghost_exit,
         "clear_session_outage": m.clear_session_outage, "send": m.send,
         "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
         "mikrob_down": m.mikrob_down, "tg_api": m.tg_api,
@@ -476,6 +494,8 @@ def main() -> int:
     m.mark_session_outage = lambda: mark_calls.__setitem__("n", mark_calls["n"] + 1)
     m.start_ghost_runner = lambda: "FAKE_PROC"
     m.stop_ghost_runner = lambda proc: None
+    m.request_ghost_stop = lambda: None
+    m.wait_for_ghost_exit = lambda proc, max_wait_sec=600: True
     m.clear_session_outage = lambda: None
     m.send = lambda token, chat_id, text: None
     m.save_state = lambda s: None
@@ -487,6 +507,13 @@ def main() -> int:
         return down_calls["n"] == 1
 
     m.mikrob_down = _mikrob_down_once_then_recovered
+    # SWITCHBACK-HYSTERESIS-V1 means a single clear probe no longer confirms by itself (real
+    # wall-clock probes recorded microseconds apart across fast loop iterations would NEVER
+    # satisfy minGapSec, so the unmocked real function would spin forever here) -- this test is
+    # about the per-iteration heartbeat refresh, not the hysteresis rule (pinned elsewhere), so
+    # confirm_switchback is mocked back to the pre-hysteresis "latest probe decides" shape.
+    old_confirm_f1 = m.quota_switchback.confirm_switchback
+    m.quota_switchback.confirm_switchback = lambda probe_log, *a, **kw: bool(probe_log) and probe_log[-1]["ok"]
     try:
         m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
         if mark_calls["n"] >= 2:
@@ -496,6 +523,7 @@ def main() -> int:
             bad("outage_loop() should call mark_session_outage() at entry and per iteration",
                 f"mark_session_outage called {mark_calls['n']} time(s)")
     finally:
+        m.quota_switchback.confirm_switchback = old_confirm_f1
         for name, fn in old2.items():
             setattr(m, name, fn)
 
@@ -510,6 +538,7 @@ def main() -> int:
     old3 = {
         "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
         "start_ghost_runner": m.start_ghost_runner, "stop_ghost_runner": m.stop_ghost_runner,
+        "request_ghost_stop": m.request_ghost_stop, "wait_for_ghost_exit": m.wait_for_ghost_exit,
         "clear_session_outage": m.clear_session_outage, "send": m.send,
         "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
         "mikrob_down": m.mikrob_down, "tg_api": m.tg_api, "kill_pid_holder": m.kill_pid_holder,
@@ -521,6 +550,8 @@ def main() -> int:
     m.mark_session_outage = lambda: mark_calls3.__setitem__("n", mark_calls3["n"] + 1)
     m.start_ghost_runner = lambda: "FAKE_PROC"
     m.stop_ghost_runner = lambda proc: None
+    m.request_ghost_stop = lambda: None
+    m.wait_for_ghost_exit = lambda proc, max_wait_sec=600: True
     m.clear_session_outage = lambda: None
     m.send = lambda token, chat_id, text: None
     m.save_state = lambda s: None
@@ -539,6 +570,9 @@ def main() -> int:
         return down_calls3["n"] == 1
 
     m.mikrob_down = _mikrob_down_once_then_recovered3
+    # Same hysteresis-vs-isolated-pin reasoning as the F1 case above.
+    old_confirm_y1 = m.quota_switchback.confirm_switchback
+    m.quota_switchback.confirm_switchback = lambda probe_log, *a, **kw: bool(probe_log) and probe_log[-1]["ok"]
     try:
         m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
         if mark_calls3["n"] >= 2:
@@ -547,7 +581,112 @@ def main() -> int:
             bad("outage_loop() should refresh the heartbeat even when getUpdates fails",
                 f"mark_session_outage called {mark_calls3['n']} time(s)")
     finally:
+        m.quota_switchback.confirm_switchback = old_confirm_y1
         for name, fn in old3.items():
+            setattr(m, name, fn)
+
+    # --- M2 (Cybersec NO-GO @f859c361b): confirm_switchback's WIRING inside outage_loop was
+    # --- unpinned -- replacing the call with `True` passed 17/17 before, because nothing drove
+    # --- outage_loop() through a real recovery check and watched what it did BEFORE returning.
+    # --- Here mikrob_down() answers False (healthy) from the first iteration and
+    # --- recovery_probe_due() answers True always; the default hysteresis config requires 2
+    # --- confirmProbes, so correct wiring must NOT relinquish on the very first check -- it must
+    # --- fall through to at least one tg_api call. A `True`-replaced wiring returns before ever
+    # --- reaching tg_api, so tg_api never gets called 3 times and _StopTest is never raised.
+    class _StopTest(Exception):
+        pass
+
+    old4 = {
+        "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
+        "start_ghost_runner": m.start_ghost_runner, "request_ghost_stop": m.request_ghost_stop,
+        "wait_for_ghost_exit": m.wait_for_ghost_exit, "stop_ghost_runner": m.stop_ghost_runner,
+        "clear_session_outage": m.clear_session_outage, "send": m.send,
+        "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
+        "mikrob_down": m.mikrob_down, "tg_api": m.tg_api,
+    }
+    tg_calls4 = {"n": 0}
+
+    def _tg_api4(*a, **kw):
+        tg_calls4["n"] += 1
+        if tg_calls4["n"] >= 3:
+            raise _StopTest()
+        return {"ok": True, "result": []}
+
+    m.allowed_chats = lambda: {"1"}
+    m.mark_session_outage = lambda: None
+    m.start_ghost_runner = lambda: "FAKE_PROC"
+    m.request_ghost_stop = lambda: None
+    m.wait_for_ghost_exit = lambda proc, max_wait_sec=600: True
+    m.stop_ghost_runner = lambda proc: None
+    m.clear_session_outage = lambda: None
+    m.send = lambda token, chat_id, text: None
+    m.save_state = lambda s: None
+    m.recovery_probe_due = lambda now=None: True
+    m.mikrob_down = lambda: False
+    m.tg_api = _tg_api4
+    try:
+        try:
+            m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+            bad("M2: outage_loop() should not relinquish after a single clear probe "
+                "(confirm_switchback wiring unpinned)")
+        except _StopTest:
+            ok("M2: outage_loop() requires more than one clear probe before relinquishing "
+               "(confirm_switchback wiring pinned)")
+    finally:
+        for name, fn in old4.items():
+            setattr(m, name, fn)
+
+    # --- H1 fix wiring (Cybersec NO-GO @f859c361b): outage_loop()'s finally must ask the runner
+    # --- to stop (request_ghost_stop), then wait for it to actually exit (wait_for_ghost_exit) --
+    # --- and only fall back to the hard kill (stop_ghost_runner) when the wait times out. Pin
+    # --- both branches so "ignore the wait, always/never kill" mutants go red -- this is exactly
+    # --- the wiring whose absence let the superseded "leave_running" path go unnoticed at 17/17.
+    old5 = {
+        "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
+        "start_ghost_runner": m.start_ghost_runner, "request_ghost_stop": m.request_ghost_stop,
+        "wait_for_ghost_exit": m.wait_for_ghost_exit, "stop_ghost_runner": m.stop_ghost_runner,
+        "clear_session_outage": m.clear_session_outage, "send": m.send,
+        "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
+        "mikrob_down": m.mikrob_down,
+    }
+    calls5 = {"request": 0, "wait": 0, "kill": 0}
+    old_confirm = m.quota_switchback.confirm_switchback
+    m.allowed_chats = lambda: {"1"}
+    m.mark_session_outage = lambda: None
+    m.start_ghost_runner = lambda: "FAKE_PROC"
+    m.clear_session_outage = lambda: None
+    m.send = lambda token, chat_id, text: None
+    m.save_state = lambda s: None
+    m.recovery_probe_due = lambda now=None: True
+    m.mikrob_down = lambda: False
+    m.request_ghost_stop = lambda: calls5.__setitem__("request", calls5["request"] + 1)
+    m.stop_ghost_runner = lambda proc: calls5.__setitem__("kill", calls5["kill"] + 1)
+    m.quota_switchback.confirm_switchback = lambda *a, **kw: True  # force the return path
+    try:
+        # Case A: the runner exits on its own -> no hard kill needed.
+        m.wait_for_ghost_exit = lambda proc, max_wait_sec=600: (
+            calls5.__setitem__("wait", calls5["wait"] + 1), True)[1]
+        m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+        if calls5["request"] == 1 and calls5["wait"] == 1 and calls5["kill"] == 0:
+            ok("H1: runner exits on its own -> request_ghost_stop + wait, no hard kill (clean exit)")
+        else:
+            bad("H1: clean exit should call request_ghost_stop + wait_for_ghost_exit and skip the "
+                "hard kill", calls5)
+
+        # Case B: the runner does NOT exit within the wait -> must fall back to the hard kill, so
+        # nothing is EVER left running unmanaged (the exact regression H1 reported).
+        calls5["request"] = calls5["wait"] = calls5["kill"] = 0
+        m.wait_for_ghost_exit = lambda proc, max_wait_sec=600: (
+            calls5.__setitem__("wait", calls5["wait"] + 1), False)[1]
+        m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+        if calls5["request"] == 1 and calls5["wait"] == 1 and calls5["kill"] == 1:
+            ok("H1: runner still alive after the wait -> hard-killed as a fallback (never left "
+               "running unmanaged)")
+        else:
+            bad("H1: a runner that never exits on its own must still be hard-killed", calls5)
+    finally:
+        m.quota_switchback.confirm_switchback = old_confirm
+        for name, fn in old5.items():
             setattr(m, name, fn)
 
     # --- F1 (WhiteHat GO, comment 19967): main() must actually REGISTER the SIGTERM handler, not
