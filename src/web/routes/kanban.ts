@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { execFileAsync } from '../exec-async.js'
 import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
@@ -31,6 +32,7 @@ import {
   queryKanbanRelations, cardsTouchingFile, filesTouchedByCard,
   RELATION_FILTER_COLUMNS, type RelationFilterColumn, type RelationQuery,
   getStuckKanbanCards,
+  getKanbanCheckpoints, tryAddKanbanCheckpoint,
 } from '../../db.js'
 import { isForceActor, forceActors } from '../../kanban-force-actors.js'
 import { fireCardBuildRoute } from '../kanban-route-dispatch.js'
@@ -38,7 +40,7 @@ import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseMegoldasTarLines, recordKgUsageFeedback } from '../../kg/usage.js'
 import { openKgDb, kgDbPath } from '../../kg/store.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME, PROJECT_ROOT } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
@@ -2078,6 +2080,92 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
     json(res, addKanbanLineComment(cardId, sha, file, line, normalizeCommentAuthor(author), normalizedContent))
+    return true
+  }
+
+  // Card 8b9c2d40 (F1.2): branchless checkpoint commits recorded by store/agent-checkpoint.sh.
+  // POST stores a (sha, head_sha, agent) row; GET returns them ordered by n.
+  const kanbanCheckpointsMatch = path.match(/^\/api\/kanban\/([^/]+)\/checkpoints$/)
+  if (kanbanCheckpointsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(kanbanCheckpointsMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: `Kártya nem található: ${cardId}` }, 404); return true }
+    json(res, getKanbanCheckpoints(cardId))
+    return true
+  }
+  if (kanbanCheckpointsMatch && method === 'POST') {
+    const cardId = decodeURIComponent(kanbanCheckpointsMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: `Kártya nem található: ${cardId}` }, 404); return true }
+    const body = await readBody(req)
+    // Malformed JSON -> 400 (LOW, MikroB 29419).
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(body.toString())
+    } catch {
+      json(res, { error: 'Érvénytelen JSON kérés' }, 400); return true
+    }
+    // F1 (Cybersec2 30439): all three fields must be STRINGS before anything else touches them --
+    // a truthiness check alone (the old `!sha || !head_sha || !agent`) passes an object, array,
+    // number or boolean straight through to a regex .test() (coerces harmlessly) or, for `agent`
+    // which had no further check at all, straight into the SQL bind, where better-sqlite3 throws
+    // on a non-primitive and the route returns an uncaught 500 instead of a 400.
+    const { sha, head_sha, agent } = (parsed ?? {}) as Record<string, unknown>
+    if (typeof sha !== 'string' || typeof head_sha !== 'string' || typeof agent !== 'string') {
+      json(res, { error: 'sha, head_sha és agent string kell legyen' }, 400); return true
+    }
+    if (!sha || !head_sha || !agent) {
+      json(res, { error: 'sha, head_sha és agent kötelező' }, 400); return true
+    }
+    if (!/^[0-9a-f]{40}$/i.test(sha) || !/^[0-9a-f]{40}$/i.test(head_sha)) {
+      json(res, { error: 'sha és head_sha pontosan 40 hex karakter kell' }, 400); return true
+    }
+    // F1: agent is attacker-controlled free text (self-asserted, any bearer holder) stored
+    // verbatim and later rendered -- an unbounded string let through 100,000-char values,
+    // control/escape bytes, and an unescaped-render XSS/log-injection shape. Same roster-style
+    // allowlist agent-checkpoint.sh itself already enforces client-side ([a-z0-9-]+) before it
+    // ever calls this route, now also enforced server-side (never trust the client-side check
+    // alone).
+    if (!/^[a-z0-9-]{1,64}$/.test(agent)) {
+      json(res, { error: 'agent csak [a-z0-9-] karaktereket tartalmazhat, max 64 hosszan' }, 400); return true
+    }
+    // F1: lowercase BEFORE any further use -- an uppercase sha/head_sha used to be accepted and
+    // stored verbatim (the /i regex flag only relaxes matching, it does not normalise the value),
+    // so two checkpoints referring to the same commit by different case would never string-match
+    // for any consumer that compares them directly.
+    const shaLower = sha.toLowerCase()
+    const headShaLower = head_sha.toLowerCase()
+    // M2 (MikroB 29419): validate sha is a commit object, not just any object.
+    // head_sha and agent are descriptive metadata stored verbatim; both are behind
+    // the global auth gate so spoofability is bounded to authenticated callers.
+    // n is serialised by better-sqlite3's synchronous MAX(n)+1 -- no git ref needed.
+    // F4 (Cybersec2 30495): execFileAsync, not execFileSync -- a sync git child in a request
+    // path blocks the whole dashboard event loop for the call's duration (scheduler-tick-nonblocking
+    // guard). The cap-race fix (F2 above) stays closed with this await in place: the cap check and
+    // insert in tryAddKanbanCheckpoint are still one synchronous statement with no await between
+    // them, it is just that the git calls now happen earlier, before readBody's result is used here.
+    const shaTypeResult = await execFileAsync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', shaLower], { timeoutMs: 5000 })
+    if (shaTypeResult.status !== 0) {
+      json(res, { error: `sha nem létezik a repóban: ${shaLower}` }, 400); return true
+    }
+    const shaType = shaTypeResult.stdout.trim()
+    if (shaType !== 'commit') {
+      json(res, { error: `sha nem commit objektum (${shaType}): ${shaLower}` }, 400); return true
+    }
+    const headShaTypeResult = await execFileAsync('git', ['-C', PROJECT_ROOT, 'cat-file', '-t', headShaLower], { timeoutMs: 5000 })
+    if (headShaTypeResult.status !== 0) {
+      json(res, { error: `head_sha nem létezik a repóban: ${headShaLower}` }, 400); return true
+    }
+    const headShaType = headShaTypeResult.stdout.trim()
+    if (headShaType !== 'commit') {
+      json(res, { error: `head_sha nem commit objektum (${headShaType}): ${headShaLower}` }, 400); return true
+    }
+    // F2 (Cybersec2 30439): cap check + insert in one atomic statement -- see tryAddKanbanCheckpoint's
+    // own doc comment for why the old separate-SELECT-then-INSERT order was racy.
+    const CHECKPOINT_CAP = 100
+    const row = tryAddKanbanCheckpoint(cardId, shaLower, headShaLower, agent, CHECKPOINT_CAP)
+    if (!row) {
+      json(res, { error: `Elérted a checkpoint limitet (${CHECKPOINT_CAP}/kártya)` }, 400); return true
+    }
+    json(res, row, 201)
     return true
   }
 

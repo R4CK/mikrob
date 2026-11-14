@@ -25124,3 +25124,21 @@ Commit: `6029a2256` (branch `card/6ec8e9d8`, worktree-ben, meg landolas elott).
 
 **Ki dontott:** MikroB (18334/30735). Gate: qa2 + cybersec2 (re-gate ugyanarra a
 problemara, uj Gate-SHA ezen a delta-n). Epitette: fullstack (DevO).
+
+## 2026-11-08 -- card 8b9c2d40: card_checkpoints table + POST/GET /api/kanban/:id/checkpoints, with M1/M2 down-migration + commit-object-validation fix
+
+**Döntés:** Fázis 295ae6a3 F1.2. SQLite `card_checkpoints(card_id, n, sha, head_sha, agent, created_at)` tábla PK(card_id,n) és FK to kanban_cards-szal. Auto-incrementing `n` MAX subquery-vel az INSERT-ben (RETURNING *). `deleteKanbanCard` sweepeli a checkpoints sorokat FK-törlés előtt. POST validálja a sha formátumát (40 hex) és a git cat-file -e-vel a létezését.
+
+Delta fix (QA2 FAIL 29422 F1/F2 + Cybersec GO 29418 M1/M2, MikroB HOLD 29419): (1) M1 -- real down migration (`dropCardCheckpoints`) plus a persistent-DB test that creates a file DB, inserts a row, drops the table, re-inits the same path, and verifies the schema recovers (the old test only reopened a fresh `:memory:` DB twice, proving nothing about rollback). (2) M2 -- the sha must now resolve to a commit object (`git cat-file -t` == `commit`, not just "exists"), stored lowercase; head_sha validated the same way. LOWs addressed in the same commit: execFileSync timeout, 400 on malformed/non-string body fields, per-card row cap.
+
+Verification: 19/19 tests green (`src/__tests__/card-checkpoints.test.ts`), tsc clean.
+
+Gate: QA + WhiteHat (trust-boundary: sha-existence/commit-object validation against the live git repo). Gate-SHA: see REVIEW comment (fresh sha post-rebuild onto current origin/develop). **Ki döntött:** backend.
+
+## 2026-11-14 -- card 8b9c2d40 delta: async git child in the checkpoint route, head_sha/agent-case pins
+
+Delta fix (Cybersec2 30495, after NO-GO on 77b056e73): F4 -- the checkpoint POST route in kanban.ts called `execFileSync('git', ..., 'cat-file', ...)` twice inside a request handler, tripping `scheduler-tick-nonblocking` (a sync child in a request path blocks the dashboard event loop). Switched both calls to `execFileAsync` (`src/web/exec-async.ts`); the cap-check-then-insert in `tryAddKanbanCheckpoint` stays one synchronous statement with no await between them, the git calls just happen earlier in the handler. F5b/F6: added the missing head_sha short-sha pin (mirrors the existing sha one) and an uppercase-agent-value pin (allowlist regex is lowercase-only).
+
+Verification: tsc clean; card-checkpoints.test.ts 33/33; scheduler-tick-nonblocking.test.ts 85/85 (was 1 failed before this fix); kanban-delete-fk.test.ts 4/4 unaffected. Mutation-checked (loosening the hex regex turns F5/F5b red, widening the agent regex turns F6 red, reverting to execFileSync reproduces the scheduler-tick-nonblocking failure). Full suite green on 6ee105f50f75b51767d577077f5f41dc696a0f17 via `fleet-test.sh --ref`: 1326/1327 test files, 40583/40715 tests, lint-ratchet baseline holds.
+
+Gate: QA + Cybersec2. **Ki döntött:** backend.
