@@ -279,6 +279,107 @@ try:
 finally:
     shutil.rmtree(d)
 
+# --- RedHat NO-GO (re-gate on 6f5045341), U2: --update-baseline must not silently bless a
+# REMOVED binding line the way it blesses a REWORD -- delete the line outright (no replacement
+# anywhere in the corpus), confirm --update-baseline refuses without --allow-removal, confirm
+# the printed hash works when supplied. -------------------------------------------------------
+d, claude_md, rules_dir = sandbox()
+try:
+    removed_line = '- Nincs AI klisé. Soha ne mondd: "Természetesen!", "Remek kérdés!", "Szívesen segítek", "Mint mesterséges intelligencia".'
+    path = rules_dir / "szemelyiseg.md"
+    text = path.read_text(encoding="utf-8")
+    assert removed_line in text, "U2 setup: removed_line not found verbatim in szemelyiseg.md"
+    path.write_text(text.replace(removed_line + "\n", "", 1), encoding="utf-8")
+
+    rc, out = run_checker(claude_md, rules_dir)
+    if rc != 0:
+        ok("U2: an outright-removed binding line turns the checker red")
+    else:
+        bad("U2: removing the line did not turn the checker red", out[-500:])
+
+    baseline_file = rules_dir / ".reachability-baseline.json"
+    baseline_before = baseline_file.read_text(encoding="utf-8") if baseline_file.exists() else None
+    rc_blocked = subprocess.run(
+        [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    baseline_after = baseline_file.read_text(encoding="utf-8") if baseline_file.exists() else None
+    if rc_blocked.returncode != 0 and baseline_after == baseline_before:
+        ok("U2: --update-baseline --yes alone REFUSES a line with no similar replacement (no --allow-removal)")
+    else:
+        bad("U2: --yes alone blessed a removed line with no --allow-removal", rc_blocked.stdout + rc_blocked.stderr)
+
+    # the hash the refusal itself printed, from its per-line summary bullet (not the generic
+    # "<hash>" placeholder in the instructional sentence above it)
+    m = __import__("re").search(r"^\s+--allow-removal (\S+)\s+#", rc_blocked.stdout + rc_blocked.stderr, __import__("re").M)
+    if not m:
+        bad("U2: the refusal did not print a usable --allow-removal hash", rc_blocked.stdout + rc_blocked.stderr)
+    else:
+        h = m.group(1)
+        rc_allowed = subprocess.run(
+            [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
+             "--yes", "--allow-removal", h],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        rc2, out2 = run_checker(claude_md, rules_dir)
+        if rc_allowed.returncode == 0 and rc2 == 0:
+            ok("U2: the EXACT printed hash via --allow-removal lets the removal through, checker green after")
+        else:
+            bad("U2: supplying the printed hash did not clear the removal", out2[-800:])
+finally:
+    shutil.rmtree(d)
+
+# --- RedHat NO-GO, U3: --update-baseline must not silently RE-PIN a CHANGED bullet (19/8a) --
+# print old vs new and refuse without --allow-pin-change, even though nothing is "missing" in
+# the conservation sense (the bullet's own file untouched, only the CLAUDE.md index text changed).
+d, claude_md, rules_dir = sandbox()
+try:
+    # Establish a baseline FIRST (pins the real, un-inverted text) -- the thing U3 is about is a
+    # CHANGE relative to an existing recorded pin, not the first-ever recording of one.
+    rc_first = subprocess.run(
+        [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    if rc_first.returncode != 0:
+        bad("U3 setup: could not establish an initial baseline", rc_first.stdout + rc_first.stderr)
+
+    replace_once(
+        claude_md,
+        "- **19.** **Tisztázó kérdés, ha a feladat lényege vagy célja nem tiszta",
+        "- **19.** **SOHA ne kérdezz, ha a feladat lényege vagy célja nem tiszta",
+        "U3-invert-19",
+    )
+    rc, out = run_checker(claude_md, rules_dir)
+    if rc != 0 and "pinned bullet 19" in out:
+        ok("U3: inverting pinned bullet 19 (with an existing baseline) turns the checker red")
+    else:
+        bad("U3: inverting bullet 19 did not turn the checker red on the pinned-bullet check", out[-500:])
+
+    baseline_before = (rules_dir / ".reachability-baseline.json").read_text(encoding="utf-8")
+    rc_blocked = subprocess.run(
+        [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    baseline_after = (rules_dir / ".reachability-baseline.json").read_text(encoding="utf-8")
+    combined = rc_blocked.stdout + rc_blocked.stderr
+    if rc_blocked.returncode != 0 and baseline_after == baseline_before and "OLD:" in combined and "NEW:" in combined:
+        ok("U3: --yes alone REFUSES to re-pin a changed bullet, and prints OLD/NEW text")
+    else:
+        bad("U3: --yes alone silently re-pinned the inverted bullet, or did not show the diff", combined)
+
+    rc_allowed = subprocess.run(
+        [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
+         "--yes", "--allow-pin-change", "19"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    rc2, out2 = run_checker(claude_md, rules_dir)
+    if rc_allowed.returncode == 0 and rc2 == 0:
+        ok("U3: --allow-pin-change 19 lets the re-pin through, checker green after")
+    else:
+        bad("U3: --allow-pin-change 19 did not clear the pin change", out2[-800:])
+finally:
+    shutil.rmtree(d)
+
 print()
 print(f"claude-md-split-reachability-check.selftest: {pass_count} passed, {fail_count} failed")
 sys.exit(1 if fail_count else 0)

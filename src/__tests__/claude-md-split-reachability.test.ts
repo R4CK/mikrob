@@ -31,7 +31,13 @@ describe('claude-md-split-reachability-check.py: standing control (card cc72cb3e
     ).not.toThrow()
   })
 
-  it("RedHat's 10 mutants (comment 30478) + the in-place-weakening control still flip the checker red", () => {
-    expect(() => execFileSync('python3', [SELFTEST], { cwd: ROOT, encoding: 'utf-8' })).not.toThrow()
-  })
+  it(
+    "RedHat's 10 mutants (comment 30478) + the in-place-weakening control still flip the checker red",
+    () => {
+      // ~6s on a quiet machine: 26 cases, several spawning 2-3 of their own python3 subprocesses
+      // each (the --update-baseline round-trips). Default vitest timeout (5s) is too tight.
+      expect(() => execFileSync('python3', [SELFTEST], { cwd: ROOT, encoding: 'utf-8' })).not.toThrow()
+    },
+    30000,
+  )
 })
