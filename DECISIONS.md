@@ -24855,3 +24855,47 @@ tsc clean. Teljes fleet-test.sh ezen a shán NEM futott le ebben a körben (kvó
 célzott teszt+tsc lefedettség a bizonyíték ebben a deltában, a gate saját, független futtatása adja
 a végső megerősítést.
 **Ki döntött:** MikroB (msg 18087), WhiteHat2 30355 N1 nyomán. Gate: QA + Cybersec2 (WhiteHat2).
+
+## 2026-11-13 -- gemini-fallback-runner never called initDatabase(), draft-cleanup sweep threw every tick (card 4b6002f3)
+
+**Döntés:** `store/gemini-fallback-runner.log` showed, on every tick, "[gemini-orchestrator-draft-cleanup]
+could not read comments for <cardId>: TypeError: Cannot read properties of undefined (reading
+'prepare')". Root cause: `src/gemini-fallback-runner.ts`'s entry-point guard called
+`runGeminiFallbackCheck()` directly, which calls `runDraftCleanupSweep()` (default params use
+`db.js`'s `getKanbanComments`), but this standalone process (`node dist/gemini-fallback-runner.js`)
+never called `initDatabase()` -- `db.js`'s module-level `db` handle stayed `undefined`, so
+`db.prepare(...)` threw the moment the sweep found any `store/drafts/<cardId>/` directory. The
+cleanup sweep never ran, so adjudicated Gemini-orch drafts were never deleted after switch-back.
+Fix mirrors the identical fix already applied to the sibling file `gemini-orchestrator.ts` (F2 /
+RedHat N3, comment 17825): extracted the entry-point body into an exported `runAsEntryPoint()` that
+calls `initDatabase()` before `runGeminiFallbackCheck()`. 1 new test
+(`src/__tests__/gemini-fallback-runner.test.ts`, mirrors `gemini-orchestrator.test.ts`'s F2 test):
+asserts `initDatabase` was called by `runAsEntryPoint()`. Confirmed non-vacuous: reverting only the
+source fix (keeping the test) threw `TypeError: runAsEntryPoint is not a function` on the new test
+while the other 37 tests in the file stayed green; with the fix, all 38 pass. `tsc --noEmit` clean.
+Also ran `gemini-orchestrator-draft-cleanup.test.ts` + `gemini-orchestrator.test.ts` (149 tests
+total across the three files) to confirm no regression in the sibling/consumer modules.
+
+**Ki döntött:** DevO (fullstack), card 4b6002f3, off Peti Telegram 13663 (freellmapi switch-back
+design) + the measured gemini-fallback-runner.log baseline. Gate: QA + Cybersec on Gate-SHA (see
+REVIEW comment).
+
+## 2026-11-13 -- 4b6002f3 delta: pinned initDatabase ORDER, not just "was called"
+
+**Döntés:** MikroB held the card out of the land queue (msg 18092) over one gap: the repro test
+only asserted `initDatabase` was called at all, not that it runs FIRST -- a mutant that moves it
+into the `.then()` callback (after `runGeminiFallbackCheck()` already ran) still passes 38/38 while
+the real production TypeError would still reproduce, since the DB read inside the cleanup sweep
+happens during the synchronous portion of `runGeminiFallbackCheck`, before any `.then()` ever runs.
+Fixed by tracking call ORDER: a shared `callOrder` array is pushed to by both the `initDatabase`
+mock and the `readFileSync` mock (`readState()` calls `readFileSync` synchronously as its literal
+first statement inside `runGeminiFallbackCheck`), and the new test asserts `initDatabase`'s index
+is strictly before `readFileSync`'s index -- both observable synchronously, no need to await the
+async tail. Confirmed non-vacuous by mutating the source exactly as MikroB described (moving
+`initDatabase()` into the `.then()`): the new order test went red (`expected -1 to be >= 0`,
+readFileSync ran but initDatabase hadn't yet) while the other 38 tests in the file stayed green;
+restored, 39/39. Ran `gemini-orchestrator-draft-cleanup.test.ts` + `gemini-orchestrator.test.ts`
+again too (150 tests total across the three files). `tsc --noEmit` clean.
+
+**Ki döntött:** DevO (fullstack), card 4b6002f3 delta round, off MikroB msg 18092. Gate: re-gate
+QA + Cybersec on the new Gate-SHA (see REVIEW comment).

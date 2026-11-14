@@ -45,11 +45,20 @@ let engageConfigJson: string | null = null
 let apiKey = 'fake-api-key-that-is-long-enough'
 let keyValidResult: GeminiKeyValidation = { valid: true, modelCount: 50 }
 
+/** Card 4b6002f3 (MikroB 18092): a bare "was initDatabase called" assertion passes even if it is
+ *  moved to AFTER runGeminiFallbackCheck (e.g. into a .then()), because that still calls it at
+ *  some point -- it does not pin that it runs FIRST. This array is pushed to by both the
+ *  initDatabase mock below and the readFileSync mock (readState() calls readFileSync
+ *  synchronously as literally its first statement), so the ORDER of entries pins the real
+ *  invariant: initDatabase must appear before the first file read. */
+let callOrder: string[] = []
+
 vi.mock('node:fs', async (orig) => {
   const real = await orig<typeof import('node:fs')>()
   return {
     ...real,
     readFileSync: vi.fn((path: string) => {
+      callOrder.push('readFileSync')
       const p = String(path)
       if (p.endsWith('gemini-fallback-state.json')) {
         return JSON.stringify(fakeState)
@@ -98,9 +107,16 @@ vi.mock('../env.js', () => ({
   })),
 }))
 
+vi.mock('../db.js', () => ({
+  initDatabase: vi.fn(() => { callOrder.push('initDatabase') }),
+  getKanbanComments: vi.fn(() => []),
+  addKanbanComment: vi.fn(),
+}))
+
 // Capture Telegram sends without a real HTTP call
 const realFetch = globalThis.fetch
 beforeEach(() => {
+  callOrder = []
   telegramMessages = []
   writtenState = null
   weeklyActive = false
@@ -130,7 +146,7 @@ beforeEach(() => {
 
 // ----- Tests --------------------------------------------------------------
 
-import { runGeminiFallbackCheck } from '../gemini-fallback-runner.js'
+import { runGeminiFallbackCheck, runAsEntryPoint } from '../gemini-fallback-runner.js'
 
 describe('runGeminiFallbackCheck -- engage path', () => {
   it('engages when weekly is exhausted and key is valid', async () => {
@@ -491,5 +507,48 @@ describe('CYBERED NO-GO fixes (comment 17031)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// Card 4b6002f3: store/gemini-fallback-runner.log showed, on every tick, "[gemini-orchestrator-
+// draft-cleanup] could not read comments for <cardId>: TypeError: Cannot read properties of
+// undefined (reading 'prepare')" -- this process never called initDatabase(), so db.js's module-
+// level `db` handle stayed undefined and getKanbanComments() threw the moment the cleanup sweep
+// found any store/drafts/<cardId>/ directory. The cleanup sweep never ran, so adjudicated drafts
+// were never deleted after switch-back.
+describe('runAsEntryPoint (card 4b6002f3): initDatabase before the draft-cleanup sweep reads it', () => {
+  it('calls initDatabase before runGeminiFallbackCheck would read from the DB', async () => {
+    const { initDatabase } = await import('../db.js')
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+    runAsEntryPoint()
+    // runGeminiFallbackCheck is async; let its promise chain settle before asserting exit/order.
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(initDatabase).toHaveBeenCalled()
+    exitSpy.mockRestore()
+  })
+
+  // MikroB (msg 18092): "was initDatabase called" alone passes even if it is moved to run AFTER
+  // runGeminiFallbackCheck (e.g. into a .then()) -- it would still get called eventually, just too
+  // late to matter, and the real TypeError would still reproduce in production. This pins the
+  // actual invariant: initDatabase must be the FIRST entry in the call-order log, strictly before
+  // the first file read -- readState() calls readFileSync synchronously as its very first
+  // statement inside runGeminiFallbackCheck, so this order is observable without waiting for any
+  // async work to settle.
+  it('initDatabase runs strictly BEFORE the first state-file read (pins ORDER, not just "was called")', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+    runAsEntryPoint()
+    // Assert order on the SYNCHRONOUS portion of the call -- no await needed, since both pushes
+    // (initDatabase, and readState()'s readFileSync) already happened by the time runAsEntryPoint
+    // returns. The spy stays mocked until the async tail (runGeminiFallbackCheck's promise chain)
+    // settles, same as the sibling test above, so the real process.exit() is never reached.
+    const initIdx = callOrder.indexOf('initDatabase')
+    const readIdx = callOrder.indexOf('readFileSync')
+    expect(initIdx).toBeGreaterThanOrEqual(0)
+    expect(readIdx).toBeGreaterThanOrEqual(0)
+    expect(initIdx).toBeLessThan(readIdx)
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    exitSpy.mockRestore()
   })
 })
