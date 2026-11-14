@@ -24715,3 +24715,57 @@ visszaallitva, 259/259 zold. Testver-suite-ok erintetlenek (18332 passed, 98 ski
 
 **Ki dontott:** MikroB (msg 17336/17339, RedHat merese alapjan, backend3 vegezte).
 Gate-SHA: ujra-gate ehhez a kommit vegso tip-jehez (lasd a kartya REVIEW-jat).
+
+## 2026-11-14 -- 6ec8e9d8: batched landing (merge queue) for marveen-land.sh
+
+**Dontes:** `marveen-land.sh --batch <id1>:<agent1>,<id2>:<agent2>,...` -- uj `land_batch()`
+fuggveny, amely tobb gate-zold `card/<id>` agat EGY worktree-ben mergeli, EGY
+`fleet-test.sh`-t futtat a kombinalt eredmenyen, es EGY push-t csinal, a `land_one`/
+`land_with_retry` meglevo soros utjanak teljes valtozatlansaga mellett (a `--batch`
+kapcsolo hianya byte-azonos a mai viselkedessel, kulon env-switch nincs). GitHub-first
+(10. szabaly): a bors-ng staging-branch algoritmusat (egy kombinalt commit, egy teszt,
+zoldre fast-forward, pirosra bisect) vettem referenciakent -- kod nem kerult at (mas
+stack, PR-alapu nem branch-alapu), a bisect-reszt a kartya sajat "nincs bisect-trukk
+v1-ben" utasitasa szerint egyszerubb one-by-one fallback-re cserelve.
+
+MikroB plan-grilling GO-ja (msg 18291/komment 30593) hat modositast adott hozza a
+sajat tervemhez (komment 30551): (A1) mar-landolt/parhuzamos-landolas ujra-ellenorzes
+a zar ALATT, friss fetch utan, kartyankent; (A2) pontosan EGY verzio-bump commit
+batch-enkent, nem kartyankent; (A3) started/heartbeat/finished harmas egy run_id alatt
+a plusz batch-sorral egyutt; (A4) resz-rogzites-hiba (push sikeres, de a card-landings
+sor vagy a LANDOLVA komment HTTP-hivasa nem 2xx) nem ismetli meg a push-t, csak egy
+"landed-unrecorded" sort ir a land-runs.jsonl-be; (A5) piros kombinalt futasnal az ELSO
+elbukott tesztfajl neve is a batch-sorba kerul; (A6) v1-ben MikroB hivja kezzel 2-4
+kartyaval, nincs auto-trigger.
+
+Minden kartyankenti elutasitasi ellenorzes (decisions_tail_append_ok, downward_check,
+gate_verdict_check, card_designated_gates_agree, a ket auto-union segedfuggveny,
+seam-check) a `land_one`-bol MEGLEVO, megosztott fuggvenyeken fut at, nem ujraimplementalva
+-- egy kartya, amit az egykartyas ut elutasitana, a batch-bol is kiesik, nevvel ("dropping
+<card> -- <reason>"), a tobbi folytatodik. A seam-check merge-base-e a batch JELENLEGI
+fejehez kepest szamolodik (nem az eredeti bazishoz), mert egy kesobbi kartyat ahhoz kell
+merni, ami mar BENNE van a batch-ben. Konfliktus KET batch-tag kozott SOHA nem bukja meg
+a teljes batch-et: ugyanaz az auto-union-majd-eldobas ut fut, mint kartya-vs-develop
+konfliktusnal.
+
+Piros fleet-test vagy elvesztett push-verseny eseten: a batch worktree-t eldobva, a zarat
+felszabaditva, minden tulelo kartya a MAR BIZONYITOTT `land_with_retry` uton landol, egyesevel
+-- a piros batch ara egyetlen extra fleet-test-futas, uj hibamod nincs.
+
+Selftest (`marveen-land.sh --selftest-land-batch`, valodi git fixture-okon, 5 eset):
+zold batch (2 kartya, 1 fleet-test-hivas, mindketto landol), agak-nelkuli kartya eldobva es
+megnevezve (a tulelo landol), piros kombinalt futas -> one-by-one fallback (mindketto
+landol, >=2 fleet-test-hivas), parhuzamosan mar landolt kartya eldobva "already landed"-kent
+(A1), es `land_one`/`land_with_retry`/`land_batch` harom kulon, egymast nem helyettesito
+fuggveny. A meglevo `--selftest` (93 eset) es `--selftest-land-lock-release` (3 eset)
+valtozatlanul zold -- a `cleanup()`-ot gyarto szoveg-pin 2 -> 4 definiciora frissult (land_batch
+sajat ket cleanup()-lepcsoje ugyanazt a mintat koveti, mint `land_one`-e), a tenyleges
+biztonsagi invarianst (minden cleanup() hivja a release_land_lock_fd-t) megtartva.
+
+Nem fedett (kimondva, nem elhallgatva): nincs fuggosegi sorrend a batch-tagok kozott
+(a hivo adja a sorrendet), nincs resz-batch-retry okosabb, mint egyesevel, nincs parhuzamos
+batch. Egy mert valodi batch-futas (per-kartya falido a mai 12-38 perchez kepest) a landolas
+utan kerul a kartyara.
+
+**Ki dontott:** MikroB (plan-grilling GO, msg 18291/komment 30593, a terv komment 30551).
+Gate: QA + Cybersec (WhiteHat), landolasi ut. Epitette: fullstack (DevO).

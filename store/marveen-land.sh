@@ -532,10 +532,14 @@ if [ "${1:-}" = "--selftest" ]; then
   ')"
   cleanup_defs="$(printf '%s\n' "$cleanup_bodies" | grep -c 'cleanup() {')"
   cleanup_calls="$(printf '%s\n' "$cleanup_bodies" | grep -c 'release_land_lock_fd')"
-  if [ "$cleanup_defs" -eq 2 ] && [ "$cleanup_calls" -eq 2 ]; then
-    echo "  ok   both land_one cleanup() definitions call release_land_lock_fd, not an inline exec (B2')"
+  # Card 6ec8e9d8 added land_batch(), which defines its OWN two cleanup() stages (lock-only, then
+  # lock+worktree) on the same pattern as land_one's -- so the count grew from 2 to 4. The actual
+  # property this pin protects (no cleanup() closure skips release_land_lock_fd) is defs==calls,
+  # not a fixed headcount; >=2 keeps this from vacuously passing at 0.
+  if [ "$cleanup_defs" -ge 2 ] && [ "$cleanup_defs" -eq "$cleanup_calls" ]; then
+    echo "  ok   every cleanup() definition (land_one + land_batch) calls release_land_lock_fd, not an inline exec (B2', count=$cleanup_defs)"
   else
-    echo "  FAIL expected exactly 2 cleanup() definitions each calling release_land_lock_fd, got defs=$cleanup_defs calls=$cleanup_calls"; fail=1
+    echo "  FAIL expected every cleanup() definition to call release_land_lock_fd, got defs=$cleanup_defs calls=$cleanup_calls"; fail=1
   fi
 
   # Card 3731c807, QA2's own 4th mutant (cd3e577b comment 16517) vs. RedHat's Q1 (comment 16520):
@@ -1825,6 +1829,390 @@ land_with_retry() {
   done
 }
 
+# BATCHED LANDING (card 6ec8e9d8, MikroB plan-grilling GO msg 18291/comment 30593). Merges several
+# gate-green --card branches into ONE worktree, runs fleet-test.sh ONCE on the combined result, and
+# pushes ONCE -- instead of land_with_retry's one-card-at-a-time serial cost (measured 12-38 min per
+# card). Reuses land_one's own per-card refusal checks (gate_verdict_check, card_designated_gates_agree,
+# downward_check, decisions_tail_append_ok, the two auto-union helpers) rather than reimplementing
+# them, so a card that the single-card path would refuse is dropped here too, never silently landed.
+#
+# A conflict or a failed check for ONE card never fails the whole batch (MikroB's explicit question,
+# answered in the design comment 30551): it is dropped, named, and the batch continues with the rest
+# -- symmetric with how land_one refuses a single card today. Only a RED fleet-test (or a stale push)
+# abandons the whole batch, and even then the fallback is the already-proven land_with_retry path,
+# one survivor at a time, not a new failure mode.
+#
+# No bisection in v1 (card's own instruction) and no dependency-ordering between batch members: the
+# caller names the order, nothing here infers one.
+#
+# Usage: land_batch <dry 0|1> "<card1>:<agent1>" "<card2>:<agent2>" ...
+land_batch() {
+  local dry="$1"; shift
+  local -a items=("$@")
+  [ "${#items[@]}" -ge 1 ] || die 2 "--batch needs at least 1 card:agent pair"
+
+  local batch_tag="batch-$$"
+  export FLEET_TEST_AGENT="$batch_tag"
+  export FLEET_TEST_PRIORITY=land
+  KANBAN_COMMENT_AGENT="mikrob"
+
+  local cards_csv=""
+  local it
+  for it in "${items[@]}"; do
+    case "$it" in *:*) : ;; *) die 2 "--batch item must be <card>:<agent> (got: $it)" ;; esac
+    cards_csv="${cards_csv:+$cards_csv,}${it%%:*}"
+  done
+
+  # A3: started/heartbeat/finished triple under ONE run_id, same journal as a single landing, plus
+  # the batch's own extra land-runs.jsonl line (below) so land-run-stale-check sees a long batch as
+  # alive, not STALE, and a reader can still tell "this was a batch" from the plain journal alone.
+  local _ljd _run_id _run_finished=0
+  _ljd="$(dirname "$0")/land-run-journal.sh"
+  _run_id="$(bash "$_ljd" start marveen-land.sh "$batch_tag" "$cards_csv" "$$" 2>/dev/null || true)"
+  trap '_exit_rc=$?; if [ -n "${_run_id:-}" ] && [ "${_run_finished:-0}" != "1" ]; then bash "$_ljd" finish "$_run_id" "$_exit_rc" >/dev/null 2>&1 || true; _run_finished=1; fi' EXIT
+
+  local _batch_start_ts; _batch_start_ts="$(date +%s)"
+  local -a survivors=() drop_cards=() drop_reasons=()
+  local -A surv_agent=() surv_work_sha=() surv_gate_sha=()
+  local fleet_test_result="" batch_outcome="" first_failing_file="" bump_note="none"
+
+  _batch_finish() { # $1 = fleet_test "green"/"red"/"-", $2 = result, $3 = exit code
+    local wall; wall=$(( $(date +%s) - _batch_start_ts ))
+    local dropped_json
+    dropped_json="$(python3 -c '
+import json,sys
+cards=sys.argv[1].split(",") if sys.argv[1] else []
+reasons=sys.argv[2].split("\x1e") if sys.argv[2] else []
+print(json.dumps(dict(zip(cards,reasons))))' "$(IFS=,; echo "${drop_cards[*]:-}")" "$(IFS=$'\x1e'; echo "${drop_reasons[*]:-}")" 2>/dev/null)" || dropped_json="{}"
+    local line
+    line="$(python3 -c '
+import json,sys
+print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] else [],
+  "survivors":sys.argv[2].split(",") if sys.argv[2] else [],"dropped":json.loads(sys.argv[3]),
+  "fleet_test":sys.argv[4],"first_failing_file":sys.argv[5] or None,"result":sys.argv[6],
+  "wall_seconds":int(sys.argv[7])}))' \
+      "$cards_csv" "$(IFS=,; echo "${survivors[*]:-}")" "$dropped_json" "$1" "$first_failing_file" "$2" "$wall" \
+      2>/dev/null)" || line=""
+    [ -n "$line" ] && printf '%s\n' "$line" >>"$(dirname "$0")/land-runs.jsonl" 2>/dev/null
+    if [ -n "$_run_id" ] && [ "$_run_finished" != "1" ]; then
+      bash "$_ljd" finish "$_run_id" "$3" "batch: $2" >/dev/null 2>&1 || true
+      _run_finished=1
+    fi
+  }
+
+  g fetch -q origin "$DEFAULT_BRANCH" || die 3 "could not fetch origin/$DEFAULT_BRANCH"
+
+  # Lock the batch WINDOW, same FIFO-ticket + flock as a single landing (card 5d9731cd/24d1543f) --
+  # a batch is one landing-shaped unit from the lock's point of view, held once for every card in it.
+  LAND_LOCK_FD=""
+  local land_lock_started land_lock_announced=0 land_lock_last_note land_lock_waited land_lock_ticket
+  land_lock_started="$(date +%s)"; land_lock_last_note="$land_lock_started"
+  land_lock_ticket="$(land_lock_take_ticket)" || die 3 "could not create a landing-queue ticket under '$LAND_LOCK_FILE.tickets'"
+  while ! { land_lock_is_head "$land_lock_ticket" && acquire_land_lock; }; do
+    land_lock_waited=$(( $(date +%s) - land_lock_started ))
+    if [ "$land_lock_waited" -ge "$LAND_LOCK_WAIT_MAX_S" ]; then
+      rm -f "$land_lock_ticket" 2>/dev/null
+      echo "batch: REFUSED -- could not acquire the landing lock after $((land_lock_waited / 60)) min. Nothing pushed." >&2
+      _batch_finish "-" "lock-timeout" 4
+      trap - EXIT
+      return 4
+    fi
+    if [ "$land_lock_announced" -eq 0 ]; then
+      land_lock_announced=1
+      echo "batch ($cards_csv): another landing holds the develop lock -- queueing (cap ${LAND_LOCK_WAIT_MAX_S}s)" >&2
+    elif [ $(( $(date +%s) - land_lock_last_note )) -ge "$LAND_LOCK_KEEPALIVE_S" ]; then
+      land_lock_last_note="$(date +%s)"
+      [ -n "$_run_id" ] && bash "$_ljd" heartbeat "$_run_id" >/dev/null 2>&1 || true
+    fi
+    sleep "$LAND_LOCK_POLL_S"
+  done
+  rm -f "$land_lock_ticket" 2>/dev/null
+
+  cleanup() { release_land_lock_fd; }
+  trap cleanup RETURN
+
+  g fetch -q origin "$DEFAULT_BRANCH" || die 3 "could not fetch origin/$DEFAULT_BRANCH"
+  local base_sha; base_sha="$(g rev-parse "origin/$DEFAULT_BRANCH")"
+  local wt="/home/neon/marveen-land-${batch_tag}"
+  rm -rf "$wt"
+  g worktree add --detach -q "$wt" "origin/$DEFAULT_BRANCH" || die 3 "could not create the batch landing worktree"
+  cleanup() {
+    [ -n "${wt:-}" ] && g worktree remove --force "$wt" >/dev/null 2>&1
+    release_land_lock_fd
+    return 0
+  }
+
+  local card agent branch pre_head land_sha down_log mb merge_err conflicted gate_rc desig_rc work_sha
+
+  _batch_drop() { # $1 = card id, $2 = reason -- names the drop out loud, not just into the journal
+    drop_cards+=("$1"); drop_reasons+=("$2")
+    say "batch: dropping $1 -- $2"
+  }
+
+  for it in "${items[@]}"; do
+    card="${it%%:*}"; agent="${it#*:}"
+    branch="card/$card"
+
+    g show-ref --verify --quiet "refs/heads/$branch" || {
+      _batch_drop "$card" "no branch $branch"; continue
+    }
+
+    # A1: re-check "already landed" INSIDE the lock, after a fresh fetch -- a card another agent
+    # landed with a plain --card while THIS batch queued for the lock must never be merged twice.
+    g fetch -q origin "$DEFAULT_BRANCH" >/dev/null 2>&1
+    if g merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+      _batch_drop "$card" "already landed on origin/$DEFAULT_BRANCH (concurrent land while batch waited for the lock)"
+      continue
+    fi
+
+    work_sha="$(g rev-parse "$branch")"
+    pre_head="$(git -C "$wt" rev-parse HEAD)"
+
+    local _dtag_mb; _dtag_mb="$(git -C "$wt" merge-base HEAD "$branch" 2>/dev/null)"
+    if [ -n "$_dtag_mb" ] && ! decisions_tail_append_ok "$wt" "$_dtag_mb" "$branch" "DECISIONS.md" "$ALLOW_ARCHIVE" 2>/dev/null; then
+      _batch_drop "$card" "DECISIONS.md on $branch is not a pure tail append"; continue
+    fi
+
+    down_log="$(git -C "$wt" log --no-merges --format='%h%x09%s' "$pre_head..$branch")"
+    if ! downward_check "$down_log" "$card" "$ALLOW_STACKED" 1 "$agent" 2>/dev/null; then
+      _batch_drop "$card" "foreign-card commits on $branch (downward check)"; continue
+    fi
+
+    land_sha="$(git -C "$wt" rev-parse "$branch" 2>/dev/null)" || land_sha="$branch"
+    GATE_CHECK_OVERRIDE_ARMED="$CARD_ALLOW_UNGATED" gate_verdict_check "$card" "$land_sha" refuse >/dev/null 2>&1
+    gate_rc=$?
+    if [ "$gate_rc" -eq 2 ]; then
+      _batch_drop "$card" "FAILING gate verdict for $land_sha"; continue
+    elif [ "$gate_rc" -ne 0 ] && [ "$CARD_ALLOW_UNGATED" != "1" ]; then
+      _batch_drop "$card" "no passing gate verdict for $land_sha"; continue
+    fi
+
+    card_designated_gates_agree "$card" "$land_sha" >/dev/null 2>&1
+    desig_rc=$?
+    if [ "$desig_rc" -eq 2 ]; then
+      _batch_drop "$card" "FAILING designated-gate verdict for $land_sha"; continue
+    elif [ "$desig_rc" -ne 0 ] && [ "$CARD_ALLOW_UNGATED" != "1" ]; then
+      _batch_drop "$card" "designated gates do not AGREE for $land_sha"; continue
+    fi
+
+    local msg="merge: $branch into $DEFAULT_BRANCH (marveen-land --batch $batch_tag, card $card)"
+    if ! merge_err="$(git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob \
+                      merge --no-ff "$branch" -m "$msg" 2>&1)"; then
+      conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
+      if [ "$conflicted" = "DECISIONS.md" ] && try_append_union "$wt" "DECISIONS.md"; then
+        git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob commit --no-edit -q || {
+          _batch_drop "$card" "auto-unioned DECISIONS.md but the merge commit failed"; git -C "$wt" merge --abort 2>/dev/null; continue
+        }
+      elif [ "$conflicted" = "README.md" ] && try_readme_bullet_union "$wt" "README.md"; then
+        git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob commit --no-edit -q || {
+          _batch_drop "$card" "auto-unioned README.md but the merge commit failed"; git -C "$wt" merge --abort 2>/dev/null; continue
+        }
+      else
+        git -C "$wt" merge --abort 2>/dev/null
+        _batch_drop "$card" "merge conflict in: ${conflicted:-$merge_err}"; continue
+      fi
+    fi
+
+    # SEAM CHECK against the merge-base of this card's branch and the batch's CURRENT head (what it
+    # is actually merging onto, which already carries earlier survivors) -- not the original
+    # base_sha, per the design comment: a later card must be checked against what is already IN
+    # the batch.
+    mb="$(git -C "$wt" merge-base "$branch" "$pre_head")"
+    local branch_files main_files overlap lost=0 f line body
+    branch_files="$(git -C "$wt" diff --name-only "$mb..$branch")"
+    main_files="$(git -C "$wt" diff --name-only "$mb..$pre_head")"
+    overlap="$(comm -12 <(echo "$branch_files" | sort) <(echo "$main_files" | sort))"
+    if [ -n "$overlap" ]; then
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if [ ! -f "$wt/$f" ]; then
+          git -C "$wt" cat-file -e "$branch:$f" 2>/dev/null || git -C "$wt" cat-file -e "$pre_head:$f" 2>/dev/null || continue
+          lost=$((lost+1)); continue
+        fi
+        while IFS= read -r line; do
+          case "$line" in (''|'+++'*) continue ;; esac
+          body="${line#+}"; [ -n "${body// }" ] || continue
+          grep -qF -- "$body" "$wt/$f" || lost=$((lost+1))
+        done < <(git -C "$wt" diff "$mb..$branch" -- "$f" | grep '^+')
+        while IFS= read -r line; do
+          case "$line" in (''|'+++'*) continue ;; esac
+          body="${line#+}"; [ -n "${body// }" ] || continue
+          grep -qF -- "$body" "$wt/$f" || lost=$((lost+1))
+        done < <(git -C "$wt" diff "$mb..$pre_head" -- "$f" | grep '^+')
+      done < <(echo "$overlap")
+    fi
+    if [ "$lost" -gt 0 ]; then
+      git -C "$wt" reset -q --hard "$pre_head"
+      _batch_drop "$card" "$lost seam loss(es) against the batch-so-far"; continue
+    fi
+
+    local this_merge_sha; this_merge_sha="$(git -C "$wt" rev-parse HEAD)"
+    survivors+=("$card")
+    surv_agent[$card]="$agent"
+    surv_work_sha[$card]="$work_sha"
+    surv_gate_sha[$card]="$this_merge_sha"
+    say "batch: $card merged cleanly (own merge sha $(git -C "$wt" rev-parse --short HEAD))"
+  done
+
+  if [ "${#survivors[@]}" -eq 0 ]; then
+    say "batch: no survivors -- nothing to land"
+    _batch_finish "-" "nothing-to-land" 0
+    trap - EXIT
+    return 0
+  fi
+
+  if [ "$dry" = "1" ]; then
+    say "batch: DRY-RUN -- survivors: ${survivors[*]}, dropped: ${drop_cards[*]:-none} -- not testing, not pushing"
+    _batch_finish "-" "dry-run" 0
+    trap - EXIT
+    return 0
+  fi
+
+  # npm lockfile drift on the FINAL combined HEAD -- same check land_one runs, once here.
+  local NPM_LF_OUT; NPM_LF_OUT="$("$(dirname "$0")/npm-lockfile-sync-check.sh" --repo "$wt" --ref "$(git -C "$wt" rev-parse HEAD)" --base "origin/$DEFAULT_BRANCH" 2>&1)"
+  local npm_rc=$?
+  if [ "$npm_rc" -eq 1 ]; then
+    say "batch: npm lockfile drift on the combined result -- abandoning the batch, falling back one-by-one (that path re-checks per card)"
+    say "$NPM_LF_OUT"
+    git -C "$wt" worktree 2>/dev/null; # no-op, cleanup() below removes it
+    cleanup
+    trap - RETURN EXIT
+    for card in "${survivors[@]}"; do
+      land_with_retry "${surv_agent[$card]}" 0 "card/$card"
+    done
+    _batch_finish "-" "fallback-one-by-one (npm lockfile drift)" 0
+    return 0
+  fi
+
+  # A2: exactly ONE version-bump commit per batch, after the last merge.
+  local upstream_ver new_ver
+  if upstream_ver="$(bump_upstream_version "$wt" 2>&1)" && [[ "$upstream_ver" != unchanged:* ]]; then
+    say "batch: main version caught up to $upstream_ver"
+  fi
+  if new_ver="$(bump_fork_version "$wt" 2>&1)"; then
+    git -C "$wt" add package.json package-lock.json 2>/dev/null
+    if git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob \
+          commit -q -m "chore(version): bump to $new_ver (marveen-land --batch, $batch_tag)"; then
+      bump_note="$new_ver"
+      say "batch: version bumped to $new_ver (one commit for the whole batch)"
+    fi
+  fi
+
+  local combined_head; combined_head="$(git -C "$wt" rev-parse HEAD)"
+
+  # Dual-copy fleet-test.sh rule, same as land_one -- checked per SURVIVOR against the ORIGINAL
+  # batch base (not per-merge-step), per the design comment.
+  local touched_fleet_test="" c
+  for c in "${survivors[@]}"; do
+    [ -n "$(g diff --name-only "$base_sha..card/$c" -- store/fleet-test.sh)" ] && touched_fleet_test=1
+  done
+
+  # A5: tee the fleet-test output to a log so a red run's first failing test file can be named
+  # (run_fg_killable streams straight to the terminal, it captures nothing on its own).
+  local ft_log; ft_log="$(mktemp)"
+  local ft_ok=1
+  if [ -n "$TEST_CMD" ]; then
+    run_fg_killable "$wt" "$TEST_CMD $combined_head 2>&1 | tee $ft_log" || ft_ok=0
+  elif [ -z "$touched_fleet_test" ]; then
+    run_fg_killable "$wt" "$MAIN/store/fleet-test.sh --ref $combined_head 2>&1 | tee $ft_log" || ft_ok=0
+  else
+    say "batch: a survivor touches store/fleet-test.sh -- requiring both the trusted \$MAIN copy and the batch's own copy"
+    run_fg_killable "$wt" "$MAIN/store/fleet-test.sh --ref $combined_head 2>&1 | tee $ft_log" || ft_ok=0
+    [ "$ft_ok" -eq 1 ] && { run_fg_killable "$wt" "$wt/store/fleet-test.sh --ref $combined_head 2>&1 | tee $ft_log" || ft_ok=0; }
+  fi
+
+  if [ "$ft_ok" -ne 1 ]; then
+    first_failing_file="$(grep -m1 -oE '[A-Za-z0-9_./-]+\.test\.[jt]sx?' "$ft_log" 2>/dev/null || true)"
+    rm -f "$ft_log" 2>/dev/null
+    say "batch: fleet-test RED on the combined result (first failing file: ${first_failing_file:-unknown}) -- abandoning the batch, falling back to land_with_retry one card at a time (no bisection in v1)"
+    cleanup
+    trap - RETURN EXIT
+    for card in "${survivors[@]}"; do
+      land_with_retry "${surv_agent[$card]}" 0 "card/$card"
+    done
+    _batch_finish red "fallback-one-by-one" 0
+    return 0
+  fi
+  rm -f "$ft_log" 2>/dev/null
+  say "batch: fleet-test GREEN on the combined result ($(git -C "$wt" diff --name-only "$base_sha..$combined_head" | wc -l) file(s) changed since $DEFAULT_BRANCH base)"
+
+  local conflict_markers; conflict_markers="$(find_conflict_markers "$wt")"
+  if [ -n "$conflict_markers" ]; then
+    say "batch: unresolved conflict markers in the combined result -- abandoning the batch, falling back one-by-one"
+    echo "$conflict_markers" | sed 's/^/    /'
+    git -C "$wt" reset -q --hard "$base_sha"
+    cleanup
+    trap - RETURN EXIT
+    for card in "${survivors[@]}"; do
+      land_with_retry "${surv_agent[$card]}" 0 "card/$card"
+    done
+    _batch_finish red "fallback-one-by-one (conflict markers)" 0
+    return 0
+  fi
+
+  local push_err
+  if ! push_err="$(git -C "$wt" push origin "HEAD:$DEFAULT_BRANCH" 2>&1)"; then
+    say "batch: PUSH FAILED (likely lost a race against another landing) -- abandoning the batch, falling back one-by-one, which re-merges onto the new tip itself:"
+    echo "$push_err" | sed 's/^/    /'
+    cleanup
+    trap - RETURN EXIT
+    for card in "${survivors[@]}"; do
+      land_with_retry "${surv_agent[$card]}" 0 "card/$card"
+    done
+    _batch_finish green "fallback-one-by-one (lost push race)" 0
+    return 0
+  fi
+  g fetch -q origin "$DEFAULT_BRANCH"
+
+  say "batch: LANDED -- ${#survivors[@]} card(s) (${survivors[*]}) -> origin/$DEFAULT_BRANCH (develop tip $(git -C "$wt" rev-parse --short HEAD))"
+  echo "Gate-SHA: n/a -- see per-card Merge-SHA below, each card's own merge commit"
+
+  local unrecorded=()
+  for card in "${survivors[@]}"; do
+    # A4: if the push already succeeded, a record/comment failure must never trigger a retry of the
+    # push -- it only gets named so a sweep can repair it later. Checks BOTH the card_landings row
+    # and the LANDOLVA comment (record_card_landing itself is best-effort/fire-and-forget, same as
+    # land_one's single-card use of it, so the row's own status is captured separately here).
+    local tf; tf="$(_kc_token_file 2>/dev/null)"
+    local http_code="000" rec_code="000"
+    if [ -n "$tf" ] && [ -f "$tf" ]; then
+      local rpayload; rpayload="$(python3 -c '
+import json,sys
+print(json.dumps({"card_id":sys.argv[1],"work_sha":sys.argv[2],"merge_sha":sys.argv[3],"repo":"marveen","landed_by":sys.argv[4]}))' \
+        "$card" "${surv_work_sha[$card]}" "${surv_gate_sha[$card]}" "${surv_agent[$card]}" 2>/dev/null)"
+      rec_code="$(printf 'Authorization: Bearer %s\n' "$(cat "$tf")" \
+        | curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H @- \
+          -X POST "$KANBAN_COMMENT_API/api/card-landings" -H 'Content-Type: application/json' \
+          --data-binary "$rpayload" 2>/dev/null)" || rec_code="000"
+    fi
+    if [ -n "$tf" ] && [ -f "$tf" ]; then
+      local comment_body="LANDOLVA (automatikus, marveen-land.sh --batch $batch_tag)
+Merge-SHA: ${surv_gate_sha[$card]} (a gate altal mar verdiktelt Gate-SHA a korabbi REVIEW-ban all)
+Batch: ${survivors[*]}, version bump: $bump_note"
+      local cpayload; cpayload="$(python3 -c '
+import json,sys; print(json.dumps({"card_id":sys.argv[1],"author":"mikrob","content":sys.argv[2]}))' "$card" "$comment_body" 2>/dev/null)"
+      http_code="$(printf 'Authorization: Bearer %s\n' "$(cat "$tf")" \
+        | curl -s --max-time 10 -o /dev/null -w '%{http_code}' -H @- \
+          -X POST "$KANBAN_COMMENT_API/api/kanban/$card/comments" -H 'Content-Type: application/json' \
+          --data-binary "$cpayload" 2>/dev/null)" || http_code="000"
+    fi
+    case "$http_code" in 2??) : ;; *) unrecorded+=("$card"); continue ;; esac
+    case "$rec_code" in 2??) : ;; *) unrecorded+=("$card") ;; esac
+  done
+  if [ "${#unrecorded[@]}" -gt 0 ]; then
+    say "batch: landed but could not post the LANDOLVA comment for: ${unrecorded[*]} (dashboard unreachable?) -- named in the journal for a repair sweep, push was NOT retried"
+    local urec_line; urec_line="$(python3 -c '
+import json,sys
+print(json.dumps({"mode":"batch-landed-unrecorded","cards":sys.argv[1].split(","),"merge_head":sys.argv[2]}))' \
+      "$(IFS=,; echo "${unrecorded[*]}")" "$combined_head" 2>/dev/null)"
+    [ -n "$urec_line" ] && printf '%s\n' "$urec_line" >>"$(dirname "$0")/land-runs.jsonl" 2>/dev/null
+  fi
+
+  _batch_finish green pushed 0
+  trap - EXIT
+  return 0
+}
+
 # Self-test hook, card 46194693 F1 (WhiteHat 17020): the EXISTING --selftest block (above, in
 # this same file) only ever exercises release_land_lock_fd/acquire_land_lock in isolation -- it
 # `exit`s before land_one's own definition is reached, so it structurally CANNOT call the real
@@ -1919,6 +2307,162 @@ if [ "${1:-}" = "--selftest-land-lock-release-inner" ]; then
   fi
 fi
 
+# Self-test for land_batch (card 6ec8e9d8). Same two-step re-exec pattern as
+# --selftest-land-lock-release above: build a fixture, re-exec THIS script with MARVEEN_MAIN
+# pointing at it so land_batch's own definition is reachable and real, then run against it.
+if [ "${1:-}" = "--selftest-land-batch" ]; then
+  LBTMP="$(mktemp -d)"
+  git init -q --bare "$LBTMP/origin.git"
+  git init -q "$LBTMP/seed"
+  git -C "$LBTMP/seed" checkout -q -b develop
+  git -C "$LBTMP/seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m seed
+  git -C "$LBTMP/seed" remote add origin "$LBTMP/origin.git"
+  git -C "$LBTMP/seed" push -q origin develop
+  git -C "$LBTMP/origin.git" symbolic-ref HEAD refs/heads/develop
+  git clone -q "$LBTMP/origin.git" "$LBTMP/main" 2>/dev/null
+  git -C "$LBTMP/main" checkout -q develop
+  mkdir -p "$LBTMP/main/store"
+  # Dead-port overrides for BOTH the kanban-comment and gate-verdict API/token: real-dashboard
+  # calls must never happen from a selftest (same reasoning as --selftest-land-lock-release).
+  exec env MARVEEN_MAIN="$LBTMP/main" MARVEEN_LAND_BATCH_SELFTEST_TMP="$LBTMP" \
+    KANBAN_COMMENT_API="http://127.0.0.1:1" GATE_CHECK_API="http://127.0.0.1:1" \
+    GATE_CHECK_TOKEN_FILE="$LBTMP/no-such-token" \
+    bash "$0" --selftest-land-batch-inner
+fi
+
+if [ "${1:-}" = "--selftest-land-batch-inner" ]; then
+  fail=0; n=0
+  LBTMP="$MARVEEN_LAND_BATCH_SELFTEST_TMP"
+  trap 'rm -rf "$LBTMP"' EXIT
+  LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0
+  # --allow-ungated's EQUIVALENT, armed for every case: GATE_CHECK_TOKEN_FILE above is deliberately
+  # unreadable, so every card's gate/designated-gate check comes back "no usable verdict" (rc 1) --
+  # this is what land_one's own --allow-ungated tolerates, same meaning here. A FAILING verdict
+  # (rc 2, never overridable) is not exercised by this fixture; the shared helper that produces it
+  # is land_one's own dependency, already covered by that function's existing selftests.
+  CARD_ALLOW_UNGATED=1
+  ORIGIN="$LBTMP/origin.git"
+
+  _lb_mkmain() { # $1 = subdir name; returns (echoes) the new $MAIN
+    git clone -q "$ORIGIN" "$LBTMP/$1" 2>/dev/null
+    git -C "$LBTMP/$1" checkout -q develop
+    git -C "$LBTMP/$1" config user.email t@t
+    git -C "$LBTMP/$1" config user.name t
+    echo "$LBTMP/$1"
+  }
+  # Card branches are LOCAL refs in $MAIN, same as the real agent-worktree-marveen.sh --card
+  # convention land_one itself reads (`g show-ref --verify refs/heads/$branch`) -- NOT something
+  # fetched from origin.
+  _lb_mkcard() { # $1 = card id, $2 = filename, $3 = content -- branches off $MAIN's current develop
+    git -C "$MAIN" checkout -q -b "card/$1" develop
+    echo "$3" >"$MAIN/$2"
+    git -C "$MAIN" add "$2"
+    git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m "card $1"
+    git -C "$MAIN" checkout -q develop
+  }
+
+  cat >"$LBTMP/stub-ok.sh" <<'EOS'
+#!/usr/bin/env bash
+echo "$(( $(cat "$STUB_COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))" >"$STUB_COUNTER_FILE"
+exit 0
+EOS
+  chmod +x "$LBTMP/stub-ok.sh"
+  # First invocation (the combined batch run) fails; every later one (land_with_retry's one-by-one
+  # fallback) succeeds -- simulates a real cross-card interaction that only shows up combined.
+  cat >"$LBTMP/stub-first-red.sh" <<'EOS'
+#!/usr/bin/env bash
+n=$(( $(cat "$STUB_COUNTER_FILE" 2>/dev/null || echo 0) + 1 ))
+echo "$n" >"$STUB_COUNTER_FILE"
+if [ "$n" -eq 1 ]; then echo "FAIL in cross-card.test.ts"; exit 1; fi
+exit 0
+EOS
+  chmod +x "$LBTMP/stub-first-red.sh"
+
+  # --- case A: green batch, 2 cards -- ONE fleet-test call, ONE push, both land -----------------
+  MAIN="$(_lb_mkmain caseA)"
+  _lb_mkcard a1 a1.txt hello
+  _lb_mkcard a2 a2.txt world
+  n=$((n+1))
+  export STUB_COUNTER_FILE="$LBTMP/caseA-count"
+  TEST_CMD="$LBTMP/stub-ok.sh"
+  out_a="$(land_batch 0 "a1:fixture" "a2:fixture" 2>&1)"
+  calls_a="$(cat "$STUB_COUNTER_FILE" 2>/dev/null || echo 0)"
+  if [ "$calls_a" = "1" ] \
+     && git -C "$MAIN" merge-base --is-ancestor "card/a1" "origin/develop" \
+     && git -C "$MAIN" merge-base --is-ancestor "card/a2" "origin/develop"; then
+    echo "  ok   case A: green batch -- exactly 1 fleet-test call, both cards landed"
+  else
+    echo "  FAIL case A: fleet-test calls=$calls_a (want 1); output:"; echo "$out_a" | sed 's/^/    /'; fail=1
+  fi
+
+  # --- case B: a card with no branch is dropped and named, the other still lands ----------------
+  MAIN="$(_lb_mkmain caseB)"
+  _lb_mkcard b1 b1.txt hello
+  n=$((n+1))
+  export STUB_COUNTER_FILE="$LBTMP/caseB-count"
+  TEST_CMD="$LBTMP/stub-ok.sh"
+  out_b="$(land_batch 0 "b1:fixture" "doesnotexist:fixture" 2>&1)"
+  if git -C "$MAIN" merge-base --is-ancestor "card/b1" "origin/develop" \
+     && printf '%s' "$out_b" | grep -q "doesnotexist"; then
+    echo "  ok   case B: card with no branch dropped and named by id, survivor still landed"
+  else
+    echo "  FAIL case B: output:"; echo "$out_b" | sed 's/^/    /'; fail=1
+  fi
+
+  # --- case C: a RED combined run falls back to landing survivors one at a time ------------------
+  MAIN="$(_lb_mkmain caseC)"
+  _lb_mkcard c1 c1.txt hello
+  _lb_mkcard c2 c2.txt world
+  n=$((n+1))
+  export STUB_COUNTER_FILE="$LBTMP/caseC-count"
+  TEST_CMD="$LBTMP/stub-first-red.sh"
+  out_c="$(land_batch 0 "c1:fixture" "c2:fixture" 2>&1)"
+  calls_c="$(cat "$STUB_COUNTER_FILE" 2>/dev/null || echo 0)"
+  if [ "$calls_c" -ge 2 ] \
+     && git -C "$MAIN" merge-base --is-ancestor "card/c1" "origin/develop" \
+     && git -C "$MAIN" merge-base --is-ancestor "card/c2" "origin/develop" \
+     && printf '%s' "$out_c" | grep -q "falling back"; then
+    echo "  ok   case C: RED combined run fell back -- both landed one-by-one ($calls_c fleet-test calls)"
+  else
+    echo "  FAIL case C: fleet-test calls=$calls_c; output:"; echo "$out_c" | sed 's/^/    /'; fail=1
+  fi
+
+  # --- case D (A1): a card landed directly while the batch was forming is dropped, not re-merged -
+  MAIN="$(_lb_mkmain caseD)"
+  _lb_mkcard d1 d1.txt hello
+  _lb_mkcard d2 d2.txt world
+  git -C "$MAIN" fetch -q origin develop
+  git -C "$MAIN" checkout -q develop
+  git -C "$MAIN" merge --no-ff -q "card/d1" -m "pre-landed d1 (simulates a concurrent --card land)"
+  git -C "$MAIN" push -q origin develop
+  n=$((n+1))
+  export STUB_COUNTER_FILE="$LBTMP/caseD-count"
+  TEST_CMD="$LBTMP/stub-ok.sh"
+  out_d="$(land_batch 0 "d1:fixture" "d2:fixture" 2>&1)"
+  if printf '%s' "$out_d" | grep -qi "already landed" \
+     && git -C "$MAIN" merge-base --is-ancestor "card/d2" "origin/develop"; then
+    echo "  ok   case D: a card landed concurrently is dropped as already-landed, never merged twice"
+  else
+    echo "  FAIL case D: output:"; echo "$out_d" | sed 's/^/    /'; fail=1
+  fi
+
+  # --- case E: --batch is the ONLY entry point -- its absence leaves land_one/land_with_retry's
+  # own code path untouched (flag off = byte-identical to today, per the design). Proven by the
+  # EXISTING --selftest-land-lock-release cases above still passing unmodified -- restated here as
+  # an explicit assertion so this file's own grep-pin does not silently rot if that changes.
+  n=$((n+1))
+  if declare -F land_one >/dev/null 2>&1 && declare -F land_with_retry >/dev/null 2>&1 && declare -F land_batch >/dev/null 2>&1; then
+    echo "  ok   case E: land_one, land_with_retry and land_batch are all distinct, separately-callable functions"
+  else
+    echo "  FAIL case E: expected land_one, land_with_retry and land_batch to all be defined"; fail=1
+  fi
+
+  echo
+  if [ "$fail" -eq 0 ]; then echo "selftest-land-batch: $n case(s), PASS"; exit 0
+  else echo "selftest-land-batch: $n case(s), FAIL"; exit 1
+  fi
+fi
+
 DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0
 TARGET="${1:-}"; [ $# -gt 0 ] && shift
 
@@ -1961,6 +2505,31 @@ if [ "$TARGET" = "--card" ]; then
   LAND_CARD="$CARD_BRANCH_ID"
   CARD_BRANCH_MODE=1
   land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"
+  exit $?
+fi
+
+# Card 6ec8e9d8 (MikroB GO, msg 18291/comment 30593): `marveen-land.sh --batch <id1>:<agent1>,<id2>:<agent2>,...`
+# -- behind this explicit flag ONLY (no env-var auto-trigger, per the design comment: a batch never
+# silently forms). Absence of --batch is byte-identical to today: land_one/land_with_retry are
+# untouched, every other TARGET takes the exact same code path it always has.
+if [ "$TARGET" = "--batch" ]; then
+  BATCH_SPEC="${1:-}"
+  [ -n "$BATCH_SPEC" ] || die 2 "--batch needs a <card>:<agent>[,<card>:<agent>...] list"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY=1 ;;
+      --allow-ungated) CARD_ALLOW_UNGATED=1 ;;
+      --allow-stacked) shift; [ $# -gt 0 ] || die 2 "--allow-stacked needs a card id list"; ALLOW_STACKED="$1" ;;
+      --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
+      *) die 2 "unknown option: $1" ;;
+    esac
+    shift
+  done
+  CARD_BRANCH_MODE=1
+  IFS=',' read -r -a BATCH_ITEMS <<<"$BATCH_SPEC"
+  [ "${#BATCH_ITEMS[@]}" -ge 1 ] || die 2 "--batch item list is empty"
+  land_batch "$DRY" "${BATCH_ITEMS[@]}"
   exit $?
 fi
 
