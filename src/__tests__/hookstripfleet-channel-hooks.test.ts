@@ -123,12 +123,18 @@ describe('HOOKSTRIPFLEET913: the four channel hooks survive the #1307 strip', ()
 
   // --- Condition 2 (integration): strip runs, project scope survives -------
   describe('strip + survival: a channel agent keeps the four in its project scope', () => {
-    const PROBE = 'hsf913-probe'
-    const probeDir = join(PROJECT_ROOT, 'agents', PROBE)
+    // Per-process unique: a shared fixed path raced between two concurrent
+    // fleet-test runs (rmSync/mkdirSync of the same agents/hsf913-probe dir),
+    // reproduced 1/10 in concurrent runs. pid + random suffix keeps each run's
+    // probe dir distinct.
+    let PROBE: string
+    let probeDir: string
     let fakeHome: string
     let realHome: string | undefined
 
     beforeEach(() => {
+      PROBE = `hsf913-probe-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+      probeDir = join(PROJECT_ROOT, 'agents', PROBE)
       realHome = process.env.HOME
       fakeHome = mkdtempSync(join(tmpdir(), 'hsf913-'))
       process.env.HOME = fakeHome
