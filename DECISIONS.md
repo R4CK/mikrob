@@ -25381,3 +25381,13 @@ VALÓDI saját commitja (e3787f5d8, tartalom-azonos a fenti négy fájlon) friss
 cherry-pickelve, a DECISIONS.md bejegyzés (ez a blokk) kézzel újra a fájl VÉGÉRE fűzve, mert az
 eredeti append pozíciója (akkori sor 23770) közben elavult. A verdikt áthozva, nem újra-reviewolva --
 lásd a landoló komment a pontos per-fájl blob-azonosság igazolással.
+
+## 2026-11-14 -- card eccb1219: update-review (2) -- repomix dep bump, anthropic-mcp-builder/webapp-testing upstream
+
+**Döntés:** repomix 5beee248..813a886c (4 commit, 4 fájl) -- a package.json/package-lock.json fuggoseg-valtozas egy PATCH-bump egy mar meglevo fuggosegen (web-tree-sitter 0.27.1 -> 0.27.2), nincs uj csomag. OSV lekerdezes web-tree-sitter@0.27.2-re: nulla talalat. A tobbi src-valtozas (fileProcess.ts) egy Bun worker-pool meretezesi perf-javitas, nincs uj exec/network felulet. A regisztry-telepitett pin (npm, --ignore-scripts) marad 1.19.0, erintetlen. A store/repomix.sh altal megkovetelt tiltott flagek (--remote, --no-security-check) mindketto megvan a src/cli/cliRun.ts-ben az uj shan is. NO-OP a pinre, csak note-append (a repomix-nek nincs last_sha mezoje a regisztryben, note-on keresztul kovetve).
+
+anthropic-mcp-builder / anthropic-webapp-testing 2c5958ec..1780c5e5 (1 commit, 36 fajl, +3273/-622) -- teljesen skills/docx + skills/pdf + skills/pptx + skills/xlsx (document-skills validator/office-helper frissitesek), `git diff --name-only` szerint. `git diff --stat 2c5958ec..1780c5e5 -- skills/mcp-builder skills/webapp-testing` URES mindket vendorolt subdirre -- nulla atfedes. A vendorolt lokalis masolatok (agents/*/.claude/skills/mcp-builder, agents/*/.claude/skills/webapp-testing) byte-azonosak a klon jelenlegi skills/mcp-builder es skills/webapp-testing tartalmaval (csak a varakozott VENDORED.md/UPSTREAM-LICENSE pluszok es lokalis __pycache__ a kulonbseg). NO-OP: last_sha mindket regisztry-bejegyzesnel 1780c5e5-re mozgatva, datumozott note hozzafuzve mindkettohoz.
+
+A freellmapi/pipx driftek kihagyva a kartya leirasa szerint (kulon kartyak fedik).
+
+Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
