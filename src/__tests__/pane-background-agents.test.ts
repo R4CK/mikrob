@@ -202,6 +202,61 @@ describe('background-agent block below the footer', () => {
     expect(detectPaneState(pane)).toBe('busy')
   })
 
+  // CYBERED GO 8b8bc092 residuals, folded into this round per MikroB dispatch 18375.
+  it('RedHat-B(i) (8b8bc092): a footer clipped to "· e…" with only ONE separator and no spinner still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('RedHat-B(iii) (8b8bc092): a paste placeholder with a shell-tail footer behind the spoof still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ [Pasted text #1 +812 chars]',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  // 8 rows, the quoted label FIRST (outside the 5-line footer window and clear of the 12-line
+  // busy window's own content), so only the override's own row-scan can rescue this -- a shorter
+  // block risks the windowed esc-to-interrupt/spinner checks further down masking the regression
+  // by accident (measured: a 5-row variant with the label inside the last 5 lines read busy even
+  // without this fix, because BUSY_ESC_TO_INTERRUPT_RX is also checked unscoped against the last
+  // LIVE_FOOTER_REGION_LINES lines independently of the cut).
+  it('RedHat-C (8b8bc092) regression: a genuine agent label quoting "esc to interrupt" must not skip the cut', () => {
+    const pane = [
+      '⏺ Running 1 shell command…',
+      '',
+      '✽ Mulling… (1m 52s · ↓ 7.9k tokens)',
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 2 shells · esc to interrupt · ↓ to manage',
+      '',
+      '  ⏺ main',
+      row('Watching for the esc to interrupt phrase in captures', '6m 28s', '31.2k'),
+      row('Task two                      ', '6m 27s', '28.0k'),
+      row('Task three                    ', '6m 25s', '12.4k'),
+      row('Task four                     ', '6m 21s', '8.8k'),
+      row('Task five                     ', '6m 19s', '40.1k'),
+      row('Task six                      ', '6m 15s', '11.1k'),
+      row('Task seven                    ', '6m 10s', '9.9k'),
+      row('Task eight                    ', '6m 05s', '7.7k'),
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
   it('idle main thread with running agents reads idle, and the agents are counted', () => {
     expect(detectPaneState(IDLE_WITH_AGENTS)).toBe('idle')
     expect(detectBackgroundAgents(IDLE_WITH_AGENTS)).toEqual({ total: 2, running: 2, queued: 0 })

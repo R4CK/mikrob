@@ -550,12 +550,34 @@ const ROW_LIVE_SIGNAL_RX = new RegExp(
 // QA FAIL 30874 (QA1): the override's three signals above all require EITHER an intact
 // `esc to interrupt` OR a separate spinner/token-counter row. A footer clipped mid-`esc to
 // interrupt` (`esc to int…`) with no nearby spinner line matched none of them, so the override
-// never fired and the cut discarded the clipped-but-genuinely-busy footer. BUSY_ESC_CLIPPED_RX +
-// FOOTER_TRUNCATED_RX (already used together at the `esc to int…` call site below) recognise
-// exactly this clipped-prefix shape on its own row, without needing a spinner.
+// never fired and the cut discarded the clipped-but-genuinely-busy footer. BUSY_ESC_CLIPPED_RX on
+// its own (it already requires the literal `· e` lead plus a nested prefix of "sc to interrupt"
+// ending in the truncation ellipsis -- distinctive on its own, no extra AND needed) recognises
+// this clipped shape regardless of how many `·`-separated segments precede it, which a one-`·`
+// shape (RedHat 8b8bc092 B(i): "· e…" with no spinner tail at all) needs: the FOOTER_TRUNCATED_RX
+// AND this function used until now required TWO `·` segments and missed that one-separator case.
+//
+// RedHat 8b8bc092 B(iii): a paste placeholder (`[Pasted text #N]`) sitting in the trailing block
+// behind a spoofed header is itself a busy signal (PENDING_PASTE_RX), and so is the idle-looking
+// but background-shells-running footer shape (FOOTER_SHELL_TAIL_RX) that often accompanies it --
+// neither was in the signal set, so the cut discarded both along with the real state.
+//
+// RedHat 8b8bc092 C: a REGRESSION against the parent -- a genuine (unspoofed) trailing block
+// where a sub-agent's own task LABEL happens to quote a footer/busy phrase (`esc to interrupt`,
+// `plan mode on (shift+tab to cycle)`, `bypass permissions on · ctrl+t`) wrongly fired the
+// override, skipping a cut that a genuine trailing block (no more state below it) always needs --
+// the exact wrong-direction bug this whole mechanism exists to prevent. A label lives inside a
+// real `◯` agent row (BG_AGENT_ROW_RX); no genuine live-state signal is ever rendered on one (the
+// footer/spinner/placeholder always render on their own, non-`◯` line), so excluding `◯` rows from
+// every check below closes this without weakening detection of an actual trailing live signal.
 function rowCarriesLiveSignal(row: string): boolean {
-  if (ROW_LIVE_SIGNAL_RX.test(row)) return true
-  return BUSY_ESC_CLIPPED_RX.test(row) && FOOTER_TRUNCATED_RX.test(row)
+  if (BG_AGENT_ROW_RX.test(row)) return false
+  return (
+    ROW_LIVE_SIGNAL_RX.test(row) ||
+    BUSY_ESC_CLIPPED_RX.test(row) ||
+    FOOTER_SHELL_TAIL_RX.test(row) ||
+    PENDING_PASTE_RX.test(row)
+  )
 }
 // The row tail is `[elapsed, tokens, "N queued"]` joined with ` · ` (read from
 // the Claude Code 2.1.301 source; empty parts are dropped). A running agent's
@@ -1533,7 +1555,12 @@ export function detectPaneState(
   const footerRegion = liveTailRegion(paneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
   const lastLine = footerRegion.slice(footerRegion.lastIndexOf('\n') + 1)
-  if (BUSY_ESC_CLIPPED_RX.test(lastLine) && FOOTER_TRUNCATED_RX.test(lastLine)) return 'busy'
+  // RedHat 8b8bc092 B(i): requiring FOOTER_TRUNCATED_RX's two `·`-separated segments on top of
+  // BUSY_ESC_CLIPPED_RX missed the one-separator clip ("on · e…", no spinner, no extra chrome
+  // segment) -- BUSY_ESC_CLIPPED_RX is already distinctive on its own (literal `· e` lead plus a
+  // nested prefix of "sc to interrupt" ending in the truncation ellipsis; see its own comment:
+  // "no idle footer segment starts with `e`"), so the AND added nothing but a gap.
+  if (BUSY_ESC_CLIPPED_RX.test(lastLine)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
   // stub sits in the live input box; the footer below it is version-dependent
