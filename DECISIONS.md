@@ -25142,3 +25142,62 @@ Delta fix (Cybersec2 30495, after NO-GO on 77b056e73): F4 -- the checkpoint POST
 Verification: tsc clean; card-checkpoints.test.ts 33/33; scheduler-tick-nonblocking.test.ts 85/85 (was 1 failed before this fix); kanban-delete-fk.test.ts 4/4 unaffected. Mutation-checked (loosening the hex regex turns F5/F5b red, widening the agent regex turns F6 red, reverting to execFileSync reproduces the scheduler-tick-nonblocking failure). Full suite green on 6ee105f50f75b51767d577077f5f41dc696a0f17 via `fleet-test.sh --ref`: 1326/1327 test files, 40583/40715 tests, lint-ratchet baseline holds.
 
 Gate: QA + Cybersec2. **Ki döntött:** backend.
+
+## 2026-11-14 -- update-review sweep: 5 watched repos + 2 pipx drifts (card b2401b1c)
+
+**Döntés:** git-repo-watcher flagged 5 external code changes plus 2 PyPI drifts for review, no
+bumps. Verdicts: caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit/2 files, Go toolchain patch bump
++ README cosmetic, vendored skills/caveman subdir untouched. emilkowalski-skill (f7ce8c02..0f2e23b3)
+-- ADOPT, 2 commits/29 files, all prose/doc, no scripts/network/install change; vendored-copy sync
+deferred to a separate bump card. repomix (758c3d71..5beee248) -- NO-OP, 16 commits/15 files, CI
+workflow pins + minor dependency range bumps, no new dependency, pinned install (1.19.0) unaffected.
+agent-skills (aeac41d4..39b723ce) -- ADOPT, 379 commits/112 files, review scoped to the 5 adopted
+skills (doubt-driven-development, context-engineering, interview-me, idea-refine,
+documentation-and-adrs); 4/5 touched, all benign prose/doc; rest of the diff is plugin/CI machinery
+never adopted. freellmapi (ae565be0..730ba794, 86 commits/351 files, +17250/-2512) -- DEFERRED, not
+reviewed in depth: our own live freellm service's upstream, too large for a side-note in a
+multi-repo sweep (same reasoning as the prior deferral on card b19055b4); last_sha intentionally NOT
+advanced. pipx drifts (code-review-graph 2.3.9->2.4.0, graphify 0.9.67->0.9.108) -- noted, not
+bumped, both already tracked by planned cards 2d5ad4d2 and 3a324707.
+
+**Miért a DECISIONS.md bejegyzés:** a kártya SEC-tag miatt a landolás-kapu (`decisions_entry_required`)
+ezt egy explicit sorhoz köti, még egy review-only (no-bump) kártyán is -- a watched-repos.json
+note-mezője önmagában nem elég a gate-closure guard számára.
+
+**Nyitott:** freellmapi-hoz dedikált havi-bump review kártya nyitása javasolt MikroB-nak (86
+commit/351 fájl túl nagy egy többrepós sweep melléktételéhez).
+
+**Ki döntött:** DevO (fullstack), card b2401b1c. Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
+
+## 2026-11-14 -- correction to the caveman verdict in the update-review sweep (card b2401b1c)
+
+**Döntés:** QA FAIL 30965 and Cybersec NO-GO 30959 on card b2401b1c both found that the caveman
+verdict in the entry above ("2026-11-14 -- update-review sweep: 5 watched repos + 2 pipx drifts")
+is factually wrong about the FILE COUNT, and independently re-measured the actual diff. Correction,
+per the append-only convention (new entry, not an edit to the old one), measured with
+`git -C store/adopted/JuliusBrussee__caveman show <sha>:go.mod` against the pinned clone (not a
+working checkout): `git log --oneline 67968b7a..b4ee71d5` is exactly 1 commit (b4ee71d5,
+"fix(readme): stop GitHub clipping the Caveman Code banner (#1527)"); `git diff --stat
+67968b7a..b4ee71d5` is exactly 1 file (README.md), not 2. go.mod reads "go 1.26.10" at ad473752
+and "go 1.26.11" at both 67968b7a and b4ee71d5 -- so the 1.26.10->1.26.11 toolchain bump IS real,
+it happened in the EARLIER range ad473752..67968b7a (already reviewed under card b19055b4), and
+this range (67968b7a..b4ee71d5) carries no go.mod change at all. The actual, correct verdict is:
+caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit, 1 file (README.md cosmetic banner-clipping fix
+only), no go.mod change in THIS range (the toolchain bump belongs to the prior round), no new
+deps. The NO-OP verdict's substance was always correct; only the stated file count for this
+specific range was wrong. Also correcting 2 LOW items from the same entry: the repomix jsdom
+devDependency bump is MAJOR (^30.1.3->^31.0.0), not minor (still dev-only, no lifecycle scripts,
+no new dependency, pinned install 1.19.0 unaffected); the doubt-driven-development (agent-skills)
+clarification is 2 added lines, not 1.
+
+**Miért külön bejegyzés, nem szerkesztés:** QA Fix-Direction (30965) explicit kérése -- a
+DECISIONS.md append-only elve szerint egy korábbi bejegyzés hibás szövegét nem szabad helyben
+szerkeszteni, a javítás egy ÚJ, a fájl végén álló bejegyzés, ami visszahivatkozik a régire.
+
+**Ki döntött:** DevO (fullstack), card b2401b1c, Gate-SHA erre a bejegyzésre lásd a REVIEW kommentet.
+Gate: qa2 + Cybersec delta-review (QA FAIL szerzője, qa, a 4f. szabály szerint nem gate-eli saját
+NO-GO/FAIL-ja utáni re-gate-et Fix-Direction-sor birtokában -- MikroB kijelölése, msg 18396).
+
+**Delta (card b2401b1c):** Cybersec NO-GO (msg 18405) on the entry above found its go.mod claim
+wrong (measured from a stale checkout, not the pinned clone at the cited SHAs); fixed in place
+per MikroB's confirmation that this is permitted for a still-unlanded entry of my own.
