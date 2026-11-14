@@ -31,7 +31,7 @@ RX="$SESSION_LIMIT_RX"
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). write_auth_header refreshes a private 0600 header file
-# (curl -H @"$hdr_file" reads it) instead of interpolating "Authorization: Bearer $T" on the command
+# (curl -H @"$hdr_file" reads it) instead of putting the Bearer token literally on the command
 # line. Called once per suspect (T is re-read from disk each time, unchanged from the original
 # defensive per-iteration check); the ONE temp file is removed on EXIT.
 tok() { cat "$TOKEN_FILE" 2>/dev/null; }

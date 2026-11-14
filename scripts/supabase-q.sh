@@ -94,9 +94,10 @@ TOKEN_FILE="$ROOT/store/.dashboard-token"
 [ -r "$TOKEN_FILE" ] || { echo "supabase-q: FAIL-CLOSED, a dashboard-token nem olvashato: $TOKEN_FILE" >&2; exit 3; }
 
 # The vault call is localhost-only; the fetched value never reaches stdout.
-# The dashboard token itself goes to curl via a piped header, not argv (`-H
-# "Authorization: Bearer $(cat ...)"` would put it in `ps`'s view of this
-# script's own child, the same leak class this script exists to close).
+# The dashboard token itself goes to curl via a piped header, not argv (an
+# Authorization header built from command substitution directly on the curl
+# command line would put it in `ps`'s view of this script's own child, the
+# same leak class this script exists to close).
 PAT="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" \
        | curl -s -H @- "$DASH/api/vault/$VAULT_KEY" \
        | python3 -c 'import sys,json

@@ -47,7 +47,37 @@ function splitAtCurl(text: string, startLine: number): CurlInvocation[] {
   return parts.filter((p) => /\bcurl\b/.test(p)).map((p) => ({ text: p, startLine }))
 }
 
-/** Split a script into logical curl invocations (continuation lines joined), like bash would see them. */
+/**
+ * True iff the WHOLE line (trimmed) is nothing but one quoted string literal -- an optional
+ * 0-2 letter prefix (Python's `f`/`r`/`rb`/TS has none), a quote, anything, the SAME quote
+ * again, an optional trailing comma. Deliberately narrow: it says nothing about bash, heredocs,
+ * pipes or multi-statement lines, which is exactly why it is safe to use as a join signal --
+ * none of those shapes satisfy it.
+ */
+function isPureStringLiteralLine(line: string): boolean {
+  return /^[a-zA-Z]{0,2}(['"]).*\1,?$/.test(line.trim())
+}
+
+/**
+ * Split a script into logical curl invocations, like bash (or the interpreter building the
+ * command) would see them: joined across `\`-continued lines, AND across two ADJACENT lines that
+ * are each nothing but a quoted string literal (card 30ec2a39, C3, Cybersec comment 9058).
+ *
+ * C3's real shape is a Python/TS curl recipe built from several adjacent string literals inside
+ * a `(...)` group, one per physical line, with NO trailing `\` anywhere -- the shell-continuation
+ * join above never saw this as one invocation, so `curl ...` on one line and
+ * `-H "Authorization: Bearer $(cat ...)"` on the next were judged as two unrelated "lines",
+ * neither matching the leak shape alone.
+ *
+ * A GENERAL "join while any enclosing paren stays open" rule was tried first and reverted: it
+ * also swallowed supabase-q.sh's `3<<EOF ... EOF` heredoc BODY (curl config fed to `-K
+ * /dev/fd/3`, the SANCTIONED safe form) into the surrounding `$(...)` command substitution's
+ * buffer, because the heredoc sits inside that same still-open paren -- a real false positive,
+ * not hypothetical. The pure-string-literal check is deliberately narrower: a heredoc body line
+ * like `header = "Authorization: Bearer $PAT"` starts with 6 letters before any quote, so it
+ * does not match, and the join never fires for it. It only fires for exactly the shape C3 is
+ * about: two consecutive lines that are EACH wholly a string, nothing else on either line.
+ */
 function findCurlInvocations(source: string): CurlInvocation[] {
   const lines = source.split('\n')
   const out: CurlInvocation[] = []
@@ -63,7 +93,10 @@ function findCurlInvocations(source: string): CurlInvocation[] {
     }
     if (inCurl) {
       buf.push(line)
-      if (!line.trimEnd().endsWith('\\')) {
+      const next = lines[i + 1]
+      const implicitConcat = isPureStringLiteralLine(line) && next !== undefined && isPureStringLiteralLine(next)
+      const continues = line.trimEnd().endsWith('\\') || implicitConcat
+      if (!continues) {
         out.push(...splitAtCurl(buf.join('\n'), startLine))
         inCurl = false
       }
@@ -95,11 +128,14 @@ function findCurlInvocations(source: string): CurlInvocation[] {
  * `Bearer <token>` and `Bearer %s`, and inventing that on no evidence is how guards get disabled.
  */
 function leaksTokenInArgv(invocation: string): boolean {
-  if (!/Authorization:\s*Bearer\s*(\$(\(|\{|[A-Za-z_])|`)/.test(invocation)) return false
-  // The sanctioned form reads the header from a file (`-H @"$hdr_file"` / `-H @"$hdr"` / `-H @"$hf"`);
-  // that never matches the Bearer-in-argv pattern above in the first place, but keep this as an
-  // explicit second check so a future refactor that keeps BOTH forms in one invocation still trips.
-  return !/-H\s+@/.test(invocation)
+  // Card 30ec2a39, C4 (Cybersec comment 9058): this used to also require `!/-H\s+@/.test(...)`,
+  // which EXEMPTED the whole invocation the moment ANY `-H @` appeared anywhere in it -- so a
+  // MIXED call (`-H @-` for one header, a literal `Authorization: Bearer $VAR` for another) read
+  // as clean. The sanctioned `-H @file` form never produces an `Authorization:\s*Bearer\s*$...`
+  // match in the first place (the header's VALUE lives in the file, not on the command line), so
+  // that second check was never needed for the single-header case and only hid the mixed-header
+  // one. The match on its own is the leak, full stop.
+  return /Authorization:\s*Bearer\s*(\$(\(|\{|[A-Za-z_])|`)/.test(invocation)
 }
 
 /**
@@ -892,6 +928,41 @@ describe('the scanner itself catches what a naive single-line regex would miss',
       "  -d '{}'",
     ].join('\n')
     expect(findCurlInvocations(script)).toHaveLength(1)
+  })
+
+  // Card 30ec2a39, C3 (Cybersec comment 9058): a Python/TS curl recipe built across several
+  // ADJACENT STRING LITERALS inside a `(...)` group, one per physical line, with NO trailing `\`
+  // anywhere. This is the ORIGINAL 971f7d4f shape (QA's own canary, comment 9059): a Python
+  // f-string curl call and its `-H "Authorization: Bearer $(cat {token_path})"` header on the
+  // very next source line, joined only by Python's own implicit string concatenation inside
+  // parens -- not a shell `\`.
+  it('flags a curl recipe built across adjacent string literals inside parens (the 971f7d4f shape)', () => {
+    const script = [
+      'cmd = (',
+      "    f'curl -s -G -D /tmp/mem-fejlec-{agent}.txt '",
+      '    f\'-H "Authorization: Bearer $(cat {token_path})" \'',
+      "    f'\"{dash}/api/memories\"'",
+      ')',
+    ].join('\n')
+    const offenders = findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))
+    expect(offenders).toHaveLength(1)
+    expect(offenders[0]?.startLine).toBe(2) // the curl itself starts on line 2, the `(` opened on line 1
+  })
+
+  // Card 30ec2a39, C4 (Cybersec comment 9058): a MIXED call -- `-H @-` for one header, a literal
+  // argv Bearer for another, in the SAME invocation. The old rule exempted the whole invocation
+  // the moment ANY `-H @` appeared anywhere in it; the comment beside that code claimed the
+  // opposite ("a future refactor that keeps BOTH forms in one invocation still trips"), but the
+  // code did not implement that. This pins the comment's own stated intent.
+  it('flags a MIXED call: the sanctioned -H @ form does NOT excuse a second, real argv Bearer header', () => {
+    const script = '#!/usr/bin/env bash\ncurl -s -H @- -H "Authorization: Bearer $(cat tok)" "$DASH/api/x"\n'
+    const offenders = findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))
+    expect(offenders).toHaveLength(1)
+  })
+
+  it('still does NOT flag the pure sanctioned form with no second header at all', () => {
+    const script = '#!/usr/bin/env bash\nprintf \'Authorization: Bearer %s\\n\' "$(cat tok)" | curl -H @- -s "$DASH/api/x"\n'
+    expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
   })
 
   // A SKILL.md is prose with fenced bash, so the scanner must read it the same way it reads a

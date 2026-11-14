@@ -2670,7 +2670,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
   'seed-skills/approval-request-handling/SKILL.md':
     'keep fork (printf | curl -H @- stdin-header pattern, with the comment naming WHY) -- upstream reads WEB_PORT from .env via argv and has no Authorization header in this hunk at all; same reasoning as memoria-heartbeat/SKILL.md',
   'seed-skills/retrospective/SKILL.md':
-    'keep fork (printf | curl -H @- stdin-header pattern, both hunks) -- upstream puts the token directly into the `-H "Authorization: Bearer $(cat ...)"` argv flag, exactly the anti-pattern CLAUDE.md forbids',
+    'keep fork (printf | curl -H @- stdin-header pattern, both hunks) -- upstream builds the Authorization Bearer header from command substitution directly on the curl argv, exactly the anti-pattern CLAUDE.md forbids',
 
   // seed-scheduled-tasks/nap-zaro/task-config.json: upstream changes type task->heartbeat and adds
   // skipIfBusy:true + catchUpMaxAgeMinutes:180. Per root CLAUDE.md, type:"task" always reports via

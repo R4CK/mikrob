@@ -82,7 +82,7 @@ BROKEN_HU = "Szia, koszonom a turelmet, hamarosan kuldom a fajlt."  # accents st
 
 REAL_SEND = (
     'curl -s -X POST https://api.resend.com/emails '
-    '-H "Authorization: Bearer $KEY" '
+    '-H @"$hdr" '
     '--to client@example.com '
     '--body "{body}"'
 )
