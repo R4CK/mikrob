@@ -24540,3 +24540,11 @@ Delta fix (QA2 FAIL 29422 F1/F2 + Cybersec GO 29418 M1/M2, MikroB HOLD 29419): (
 Verification: 19/19 tests green (`src/__tests__/card-checkpoints.test.ts`), tsc clean.
 
 Gate: QA + WhiteHat (trust-boundary: sha-existence/commit-object validation against the live git repo). Gate-SHA: see REVIEW comment (fresh sha post-rebuild onto current origin/develop). **Ki döntött:** backend.
+
+## 2026-11-14 -- card 8b9c2d40 delta: async git child in the checkpoint route, head_sha/agent-case pins
+
+Delta fix (Cybersec2 30495, after NO-GO on 77b056e73): F4 -- the checkpoint POST route in kanban.ts called `execFileSync('git', ..., 'cat-file', ...)` twice inside a request handler, tripping `scheduler-tick-nonblocking` (a sync child in a request path blocks the dashboard event loop). Switched both calls to `execFileAsync` (`src/web/exec-async.ts`); the cap-check-then-insert in `tryAddKanbanCheckpoint` stays one synchronous statement with no await between them, the git calls just happen earlier in the handler. F5b/F6: added the missing head_sha short-sha pin (mirrors the existing sha one) and an uppercase-agent-value pin (allowlist regex is lowercase-only).
+
+Verification: tsc clean; card-checkpoints.test.ts 33/33; scheduler-tick-nonblocking.test.ts 85/85 (was 1 failed before this fix); kanban-delete-fk.test.ts 4/4 unaffected. Mutation-checked (loosening the hex regex turns F5/F5b red, widening the agent regex turns F6 red, reverting to execFileSync reproduces the scheduler-tick-nonblocking failure). Full suite green on 6ee105f50f75b51767d577077f5f41dc696a0f17 via `fleet-test.sh --ref`: 1326/1327 test files, 40583/40715 tests, lint-ratchet baseline holds.
+
+Gate: QA + Cybersec2. **Ki döntött:** backend.
