@@ -80,6 +80,14 @@ jobs:
       # not wired as a raw CI step here; its own vitest wrapper (src/__tests__/credential-gate.test.ts)
       # runs it instead. agentGetsCredentialGate/injectCredentialGate remain a separate, genuinely
       # un-adopted upstream feature (a different, profile-gated per-sub-agent design) -- unaffected.
+      # Koteg 23c (card 16145418, 2026-11-12): taskstate-stub.py (#946, early-crash taskstate
+      # continuity) IS adopted this round, unlike the NOT-ADOPTED bundle above -- it is wired into
+      # .claude/settings.json and templates/settings.json.template, and hook-registration-guard.ts /
+      # project-settings-hook-anchor.test.ts already expect it to exist. Same reasoning as upstream's
+      # own comment for this step: its load-bearing contract is the EXIT CODE (a non-zero
+      # UserPromptSubmit hook blocks every prompt), only asserted by this shell suite; the live-API
+      # case inside it stays opt-in, so this run touches nothing outside its fixtures.
+      - run: bash scripts/__tests__/taskstate-stub.test.sh
       # 723bbb70 (3): the hook-load watcher is a DIFFERENT, already-adopted fork feature
       # (scripts/hook-load-watch.py already shipped before this batch) -- not part of the
       # NOT-ADOPTED bundle above. Its contract only ran by hand until now, so wiring the

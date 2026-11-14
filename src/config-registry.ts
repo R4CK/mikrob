@@ -252,6 +252,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- Kanban claim lock (opt-in, hot-reload via settings-store) ---
+  {
+    key: 'KANBAN_CLAIM_LOCK',
+    type: 'boolean',
+    default: '0',
+    description: 'Kártya-foglalás (claim lock). Bekapcsolva a POST /api/kanban/:id/claim és /release végpont atomi foglalást ad: egy kártyát egyszerre egy ügynök foglalhat, a második 409-et kap. Kikapcsolva (alapértelmezés) a két végpont 404-et ad (reason: claim_lock_disabled), és semmi nem kéri, hogy az ügynök foglaljon, mielőtt dolgozik. A függőség-alapú feloldás és a done-bizonyíték figyelmeztetés ettől független.',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+  },
   // --- Kanban aging thresholds and colours (hot-reload via settings-store) ---
   {
     key: 'KANBAN_AGING_WARN_H',
@@ -695,6 +705,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     min: 7,
     max: 3650,
     description: 'A token-használati napló (token_usage tábla) részletes sorainak megőrzési ideje napokban. A napi sweep az ennél régebbi sorokat előbb napi összesítésbe (token_usage_daily: nap, ügynök, modell, projekt szerint) írja, majd törli, így a hosszú távú összegek megmaradnak, a tábla pedig nem nő korlátlanul. A modell-javaslat csak az utolsó 30 napot nézi.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  // --- LLM ledger module (card e96d56c5, F4) ---
+  {
+    key: 'LLM_LEDGER_DEFAULT_DAILY_BUDGET',
+    type: 'int',
+    default: 50000,
+    min: 0,
+    max: 10000000,
+    description: 'Platform-alapértelmezett napi büdzsé (becsült Claude-token-egyenérték, llm_ledger.claude_token_equiv összege) a nem-Claude LLM hívásokra (local/gemini/freellm) ügynökönként. Az agent_llm_budget táblában lévő per-agent override felülírja egy adott ügynökre; hiányzó sor esetén ez az alapérték érvényes.',
     module: 'system',
     secret: false,
     requiresRestart: false,

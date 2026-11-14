@@ -477,15 +477,86 @@ const WRAPPERS = new Map([
 ])
 const HEAD_DEPTH = 8
 
+// MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
+// see the full rationale at _LAUNCHERS in outgoing-copy-gate.py (the python twin).
+// name -> [subcommand, short flags taking a value, long flags taking a value,
+// module flags, flag lists measured as complete].
+const UV_RUN_LONG_VAL = ['extra', 'no-extra', 'group', 'no-group', 'only-group', 'env-file', 'with',
+  'with-editable', 'with-requirements', 'package', 'python-platform', 'index', 'default-index',
+  'index-url', 'extra-index-url', 'find-links', 'index-strategy', 'keyring-provider',
+  'upgrade-package', 'resolution', 'prerelease', 'fork-strategy', 'exclude-newer',
+  'exclude-newer-package', 'no-sources-package', 'reinstall-package', 'link-mode',
+  'config-setting', 'config-settings-package', 'no-build-isolation-package', 'no-build-package',
+  'no-binary-package', 'cache-dir', 'refresh-package', 'python', 'color', 'allow-insecure-host',
+  'directory', 'project', 'config-file']
+const LAUNCHERS = new Map([
+  ['uv', ['run', 'wifPCp', UV_RUN_LONG_VAL, ['-m', '--module'], true]],
+  ['pipx', ['run', '', ['index-url', 'pip-args', 'python', 'spec', 'with'], [], true]],
+  ...['poetry', 'pdm', 'hatch', 'pipenv', 'rye', 'conda', 'mamba', 'micromamba']
+    .map((n) => [n, ['run', '', [], [], false]]),
+])
+
+function launcherHeads(toks, spec, d) {
+  const [sub, shortVal, longVal, moduleFlags, complete] = spec
+  // The subcommand may follow the launcher's global options (`uv --directory d run`):
+  // every word before it is an option or the value right after one.
+  let j = -1
+  for (let x = 1; x < toks.length; x++) {
+    if (toks[x] === sub) { j = x; break }
+    if (!toks[x].startsWith('-') && !(x > 1 && toks[x - 1].startsWith('-'))) break
+  }
+  if (j < 0) return [toks]
+  const heads = []
+  if (!complete) {
+    // An unmeasured launcher's options are unknown, so every word in its option
+    // run that could be the program is judged as the program: the word after an
+    // option may be that option's value, or the command (Dani's #2086 review:
+    // `conda run --no-capture-output -n base python send.py` mixes a flag and a
+    // value option, which no single reading of all options fits).
+    for (let x = j + 1; x < toks.length; x++) {
+      if (toks[x] === '--') { heads.push(toks.slice(x + 1)); break }
+      if (toks[x].startsWith('-') && toks[x].length > 1) continue
+      heads.push(toks.slice(x))
+      if (!(x > j + 1 && toks[x - 1].startsWith('-') && toks[x - 1].length > 1)) break
+    }
+    if (!heads.length) heads.push([])
+    return heads.flatMap((h) => commandHeads(h, d + 1))
+  }
+  let i = j + 1
+  let head = null
+  while (i < toks.length) {
+    const t = toks[i]
+    if (t === '--') { i++; break }
+    if (moduleFlags.includes(t)) { head = ['python3', '-m', ...toks.slice(i + 1)]; break }
+    if (t.startsWith('--')) {
+      const eq = t.indexOf('=')
+      if (eq > 0 && moduleFlags.includes(t.slice(0, eq))) { head = ['python3', '-m', t.slice(eq + 1), ...toks.slice(i + 1)]; break }
+      i += eq < 0 && longVal.includes(t.slice(2)) ? 2 : 1
+      continue
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      let k = -1
+      for (let x = 1; x < t.length; x++) if (shortVal.includes(t[x])) { k = x; break }
+      i += k === t.length - 1 ? 2 : 1
+      continue
+    }
+    break
+  }
+  heads.push(head ?? toks.slice(i))
+  return heads.flatMap((h) => commandHeads(h, d + 1))
+}
+
 function commandHeads(toksIn, d = 0) {
   let toks = toksIn
   while (toks.length && (ENV_ASSIGN.test(toks[0]) || CMD_POSITION_KEYWORDS.has(toks[0]))) toks = toks.slice(1)
   if (!toks.length) return [toks]
   const w = basename(toks[0])
   // Still a wrapper at the depth bound: counts as a send (null), see the python twin.
-  if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
+  if (d >= HEAD_DEPTH) return (WRAPPERS.has(w) || LAUNCHERS.has(w) || w === 'function' || w === 'coproc') ? [null] : [toks]
   if (w === 'function') return commandHeads(toks.slice(2), d + 1)
   if (w === 'coproc') return [...commandHeads(toks.slice(1), d + 1), ...commandHeads(toks.slice(2), d + 1)]
+  const launcher = LAUNCHERS.get(w)
+  if (launcher) return launcherHeads(toks, launcher, d)
   const spec = WRAPPERS.get(w)
   if (!spec) return [toks]
   const [shortVal, longVal, positionals] = spec

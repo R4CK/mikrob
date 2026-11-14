@@ -58,6 +58,82 @@ function tightenDbPermissions(dbPath: string): void {
   }
 }
 
+// The claim lock's schema -- three columns on kanban_cards and the
+// triggers that release a claim. Exported (and handed the connection) so the
+// failure path can be tested on a handle whose ALTER fails.
+//
+// Columns: NULL claimed_by = unclaimed; a claim whose claim_expires_at is in the
+// past is treated as unclaimed by every reader and writer (TTL, so a crashed
+// agent cannot hold a card forever). Each column is added only when PRAGMA
+// table_info says it is missing (the conversation_log pattern), so the ALTER
+// never fails "normally" and a REAL failure (disk, lock, corrupt schema) is not
+// mistaken for "already exists": it is logged at error level. The triggers
+// reference NEW.claimed_by, so they are created ONLY when all three columns are
+// present -- a trigger over a missing column would break every later status
+// UPDATE on the board, a far worse outcome than a claim API that answers 500.
+//
+// Triggers (every writer: API, dashboard drag, raw SQL). A claim is released when
+//   - the card is done or archived (the work is over);
+//   - the card moves INTO waiting or testing (the documented handoff: a blocked
+//     agent reassigns the card and sets waiting; a review close sets testing --
+//     the next agent must be able to claim it, not get 409 for up to the TTL);
+//   - the assignee actually changes to someone other than the holder (a
+//     handoff by reassignment).
+// Kept on: in_progress <-> in_progress, renewals, sort reorders, and a whole-card
+// PUT that echoes the same assignee/status back. The inner UPDATEs touch only
+// the claim columns, so they cannot re-fire these or the updated_at triggers.
+export const KANBAN_CLAIM_COLUMNS = ['claimed_by TEXT', 'claimed_at INTEGER', 'claim_expires_at INTEGER'] as const
+
+export function ensureKanbanClaimSchema(d: Database.Database): boolean {
+  const present = () => new Set(
+    (d.prepare('PRAGMA table_info(kanban_cards)').all() as { name: string }[]).map((c) => c.name),
+  )
+  const have = present()
+  for (const col of KANBAN_CLAIM_COLUMNS) {
+    const name = col.split(' ')[0]
+    if (have.has(name)) continue
+    try {
+      d.exec(`ALTER TABLE kanban_cards ADD COLUMN ${col}`)
+    } catch (err) {
+      logger.error({ err, column: name }, 'kanban_cards claim-column migration FAILED -- claim lock disabled')
+    }
+  }
+  const after = present()
+  const missing = KANBAN_CLAIM_COLUMNS.map((c) => c.split(' ')[0]).filter((n) => !after.has(n))
+  if (missing.length > 0) {
+    logger.error({ missing }, 'kanban_cards claim columns missing -- claim release triggers NOT created')
+    return false
+  }
+  const clear = 'UPDATE kanban_cards SET claimed_by = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = NEW.id;'
+  // DROP + CREATE (not IF NOT EXISTS alone) so a changed definition reaches a DB
+  // that already carries an older one.
+  d.exec('DROP TRIGGER IF EXISTS kanban_cards_claim_clears_on_status')
+  d.exec(`
+    CREATE TRIGGER kanban_cards_claim_clears_on_status
+    AFTER UPDATE OF status, archived_at ON kanban_cards
+    FOR EACH ROW WHEN NEW.claimed_by IS NOT NULL AND (
+      NEW.status = 'done'
+      OR NEW.archived_at IS NOT NULL
+      OR (NEW.status != OLD.status AND NEW.status IN ('waiting', 'testing'))
+    )
+    BEGIN
+      ${clear}
+    END
+  `)
+  d.exec('DROP TRIGGER IF EXISTS kanban_cards_claim_clears_on_reassign')
+  d.exec(`
+    CREATE TRIGGER kanban_cards_claim_clears_on_reassign
+    AFTER UPDATE OF assignee ON kanban_cards
+    FOR EACH ROW WHEN NEW.claimed_by IS NOT NULL
+      AND lower(COALESCE(NEW.assignee, '')) != lower(COALESCE(OLD.assignee, ''))
+      AND lower(COALESCE(NEW.assignee, '')) != lower(NEW.claimed_by)
+    BEGIN
+      ${clear}
+    END
+  `)
+  return true
+}
+
 // dbPathOverride is for tests: pass ':memory:' (or a temp file path) to open an
 // isolated database instead of the real store/claudeclaw.db. ':memory:' has no
 // path to chmod, so the file-precreate (openSync 'wx') and tightenDbPermissions
@@ -385,6 +461,10 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+  // Claim lock columns + release triggers. Run AFTER the
+  // 'testing' table rebuild above on purpose: that rebuild copies an explicit
+  // column list, so a column added before it would be dropped on an old DB.
+  ensureKanbanClaimSchema(db)
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -1680,6 +1760,45 @@ export function initDatabase(dbPathOverride?: string): void {
       file_path TEXT PRIMARY KEY,
       last_line INTEGER NOT NULL DEFAULT 0,
       last_size INTEGER NOT NULL DEFAULT 0
+    )
+  `)
+
+  // --- LLM ledger (card e96d56c5, F4) ---
+  // One row per non-Claude LLM call (local Ollama, Gemini, freellmapi) -- the Claude-equivalent
+  // cost table already exists (token_usage, above) for Claude itself. draft_accepted starts NULL
+  // and is filled in later, read back from the card's own Draft-Review comment once a human/gate
+  // judges the draft (not knowable at call time).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_ledger (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts                  INTEGER NOT NULL,
+      agent_id            TEXT NOT NULL,
+      card_id             TEXT,
+      task_type           TEXT NOT NULL,
+      provider            TEXT NOT NULL CHECK(provider IN ('local','gemini','freellm')),
+      model               TEXT,
+      ok                  INTEGER NOT NULL,
+      fail_reason         TEXT,
+      latency_ms          INTEGER,
+      prompt_chars        INTEGER,
+      response_chars      INTEGER,
+      draft_accepted      INTEGER,
+      claude_token_equiv  INTEGER
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llm_ledger_ts ON llm_ledger(ts)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llm_ledger_provider_ts ON llm_ledger(provider, ts)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llm_ledger_agent_ts ON llm_ledger(agent_id, ts)`)
+
+  // Per-agent daily budget override (claude_token_equiv/day), platform default in config-registry
+  // (LLM_LEDGER_DEFAULT_DAILY_BUDGET). A missing row here means "use the platform default" --
+  // rule 14 two-tier settings, no business value hardcoded.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_llm_budget (
+      agent_id      TEXT PRIMARY KEY,
+      daily_budget  INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      updated_by    TEXT
     )
   `)
 
@@ -3926,6 +4045,13 @@ export interface KanbanCard {
   // 0 and must stay distinguishable -- 0 would claim a measurement we do not
   // have. Every reader must carry the distinction into what it renders.
   active_seconds?: number
+  // Claim lock. Written ONLY by claimKanbanCard /
+  // releaseKanbanCardClaim (and cleared by the release triggers in ensureKanbanClaimSchema); a claim whose
+  // claim_expires_at <= now is expired and counts as no claim. Optional in the
+  // type because rows built by hand in tests and older call sites omit them.
+  claimed_by?: string | null
+  claimed_at?: number | null
+  claim_expires_at?: number | null
 }
 
 // A card as referenced FROM another card (blocker links). Deliberately narrow:
@@ -6337,6 +6463,231 @@ export function getBlockersForAllCards(): Map<string, KanbanCardRef[]> {
     else map.set(card_id, [ref])
   }
   return map
+}
+
+// === Card claim lock ===
+// Two fleet agents must never both pick up the same card. Moving a card to
+// in_progress cannot guarantee that: two agents can each read "planned" and
+// each move it. A claim is the lock: exactly one agent holds a card at a time,
+// until it releases it, the card is closed or handed over (see the triggers in
+// ensureKanbanClaimSchema), or the TTL runs out.
+//
+// The TTL exists for the crash case: an agent whose session dies mid-task
+// cannot release, and without an expiry its card would stay locked forever.
+// The holder renews by claiming again (same agent = renewal, not a conflict).
+
+export const KANBAN_CLAIM_DEFAULT_TTL_SEC = 2 * 3600
+export const KANBAN_CLAIM_MIN_TTL_SEC = 60
+export const KANBAN_CLAIM_MAX_TTL_SEC = 24 * 3600
+
+// The compare-and-set. ONE conditional UPDATE, so the "is it free?" check and
+// the write are a single atomic step inside SQLite: two concurrent claimers,
+// even on separate connections or processes, cannot both see the card free and
+// both write -- the second UPDATE re-evaluates the WHERE against the first
+// one's committed row and matches nothing. Exported so the concurrency test can
+// race this exact statement from several connections.
+//
+// SQLite evaluates every SET expression against the OLD row, so the CASE sees
+// the previous holder: a renewal by the same agent keeps the original
+// claimed_at (when the work started), a fresh or taken-over claim restamps it.
+export const KANBAN_CLAIM_SQL = `
+  UPDATE kanban_cards
+     SET claimed_at = CASE
+                        WHEN claimed_by = @agent COLLATE NOCASE AND claim_expires_at > @now THEN claimed_at
+                        ELSE @now
+                      END,
+         claimed_by = @agent,
+         claim_expires_at = @expires
+   WHERE id = @id
+     AND archived_at IS NULL
+     AND status != 'done'
+     AND (claimed_by IS NULL
+          OR claimed_by = @agent COLLATE NOCASE
+          OR claim_expires_at IS NULL
+          OR claim_expires_at <= @now)`
+
+export interface KanbanClaimState {
+  claimed_by: string | null
+  claimed_at: number | null
+  claim_expires_at: number | null
+}
+
+export type KanbanClaimResult =
+  | (KanbanClaimState & { ok: true; renewed: boolean; took_over_from: string | null })
+  | (Partial<KanbanClaimState> & { ok: false; reason: 'not_found' | 'archived' | 'done' | 'held' })
+
+export type KanbanReleaseResult =
+  | { ok: true; released: boolean; previous: string | null }
+  | (Partial<KanbanClaimState> & { ok: false; reason: 'not_found' | 'held' })
+
+type ClaimRow = KanbanClaimState & { status: string; archived_at: number | null }
+
+function readClaimRow(id: string): ClaimRow | undefined {
+  return db.prepare(
+    'SELECT status, archived_at, claimed_by, claimed_at, claim_expires_at FROM kanban_cards WHERE id = ?'
+  ).get(id) as ClaimRow | undefined
+}
+
+function sameAgent(a: string | null | undefined, b: string | null | undefined): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase()
+}
+
+// A claim counts only while it is unexpired. Every reader goes through this so
+// "is this card held?" has one answer everywhere.
+export function isKanbanClaimActive(
+  card: Partial<KanbanClaimState> | undefined,
+  now: number = Math.floor(Date.now() / 1000),
+): boolean {
+  return !!card?.claimed_by && typeof card.claim_expires_at === 'number' && card.claim_expires_at > now
+}
+
+export function claimKanbanCard(
+  id: string,
+  agent: string,
+  ttlSec: number = KANBAN_CLAIM_DEFAULT_TTL_SEC,
+  now: number = Math.floor(Date.now() / 1000),
+): KanbanClaimResult {
+  // IMMEDIATE: take the write lock before the diagnostic read, so the
+  // before/after rows reported to the caller describe THIS claim and not a
+  // neighbour's interleaved write. Correctness does not depend on it -- the
+  // UPDATE is a compare-and-set on its own -- only the report does.
+  return db.transaction((): KanbanClaimResult => {
+    const before = readClaimRow(id)
+    if (!before) return { ok: false, reason: 'not_found' }
+    const changed = db.prepare(KANBAN_CLAIM_SQL).run({ id, agent, now, expires: now + ttlSec }).changes > 0
+    if (!changed) {
+      if (before.archived_at !== null) return { ok: false, reason: 'archived' }
+      if (before.status === 'done') return { ok: false, reason: 'done' }
+      return {
+        ok: false, reason: 'held',
+        claimed_by: before.claimed_by, claimed_at: before.claimed_at, claim_expires_at: before.claim_expires_at,
+      }
+    }
+    const after = readClaimRow(id)!
+    const wasActive = isKanbanClaimActive(before, now)
+    return {
+      ok: true,
+      claimed_by: after.claimed_by,
+      claimed_at: after.claimed_at,
+      claim_expires_at: after.claim_expires_at,
+      renewed: wasActive && sameAgent(before.claimed_by, agent),
+      // Only an EXPIRED foreign claim can be taken over (an active one fails
+      // the WHERE); naming it lets the route leave a trace on the card.
+      took_over_from: before.claimed_by && !sameAgent(before.claimed_by, agent) ? before.claimed_by : null,
+    }
+  }).immediate()
+}
+
+// Release by the holder. An expired claim may be cleared by anyone (it no
+// longer holds anything); `force` is the operator's override for a live claim
+// held by an agent that is not coming back.
+export function releaseKanbanCardClaim(
+  id: string,
+  agent: string,
+  opts: { force?: boolean } = {},
+  now: number = Math.floor(Date.now() / 1000),
+): KanbanReleaseResult {
+  return db.transaction((): KanbanReleaseResult => {
+    const before = readClaimRow(id)
+    if (!before) return { ok: false, reason: 'not_found' }
+    const changed = db.prepare(`
+      UPDATE kanban_cards SET claimed_by = NULL, claimed_at = NULL, claim_expires_at = NULL
+       WHERE id = @id
+         AND claimed_by IS NOT NULL
+         AND (@force = 1
+              OR claimed_by = @agent COLLATE NOCASE
+              OR claim_expires_at IS NULL
+              OR claim_expires_at <= @now)
+    `).run({ id, agent, now, force: opts.force ? 1 : 0 }).changes > 0
+    if (changed) return { ok: true, released: true, previous: before.claimed_by }
+    if (!before.claimed_by) return { ok: true, released: false, previous: null }
+    return {
+      ok: false, reason: 'held',
+      claimed_by: before.claimed_by, claimed_at: before.claimed_at, claim_expires_at: before.claim_expires_at,
+    }
+  }).immediate()
+}
+
+// === Dependency unblock ===
+// When a card reaches done, every card that was waiting ONLY on finished work
+// goes back to planned, with a comment saying why. Deliberately narrow:
+//   - only `waiting` cards move: a planned card is already pickable, and an
+//     in_progress one is someone's live work the board must not reshuffle;
+//   - only when EVERY blocker is done: a card that still waits on something
+//     else stays where it is (a partial clear is not an unblock);
+//   - an archived-but-unfinished blocker still blocks, same rule as
+//     getBlockersForCard.
+// The blocker links are kept: they are history, and the board already renders
+// a done blocker as cleared.
+export interface KanbanUnblocked {
+  id: string
+  seq?: number
+  title: string
+}
+
+export function unblockDependentsOf(doneCardId: string, actor = 'kanban-unblock'): KanbanUnblocked[] {
+  const blocker = getKanbanCard(doneCardId)
+  if (!blocker || blocker.status !== 'done') return []
+  const candidates = db.prepare(`
+    SELECT c.id, c.rowid AS seq, c.title
+      FROM kanban_card_blockers b
+      JOIN kanban_cards c ON c.id = b.card_id
+     WHERE b.blocker_id = ? AND c.status = 'waiting' AND c.archived_at IS NULL
+  `).all(doneCardId) as KanbanUnblocked[]
+  const openBlockers = db.prepare(`
+    SELECT COUNT(*) AS n
+      FROM kanban_card_blockers b
+      JOIN kanban_cards c ON c.id = b.blocker_id
+     WHERE b.card_id = ? AND c.status != 'done'
+  `)
+  const unblocked: KanbanUnblocked[] = []
+  for (const card of candidates) {
+    if ((openBlockers.get(card.id) as { n: number }).n > 0) continue
+    db.transaction(() => {
+      const maxResult = db.prepare(
+        "SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = 'planned' AND archived_at IS NULL"
+      ).get() as { m: number | null }
+      moveKanbanCard(card.id, 'planned', (maxResult.m ?? 0) + 100, actor)
+      const ref = blocker.seq ? `#${blocker.seq}` : doneCardId
+      // Entering waiting released any claim, but a card can be claimed WHILE
+      // waiting (someone reserving it for when it clears). That claim is kept --
+      // it was taken on purpose -- so the comment must not call the card free.
+      const now = Math.floor(Date.now() / 1000)
+      const held = getKanbanCard(card.id)
+      const pickup = held && isKanbanClaimActive(held, now)
+        ? `a kártyát ${held.claimed_by} foglalja (lejár: ${new Date(held.claim_expires_at! * 1000).toISOString()}).`
+        : 'a kártya felvehető.'
+      addKanbanComment(
+        card.id,
+        'system',
+        `Automatikus feloldás: a blokkoló kártya (${ref} "${blocker.title.slice(0, 120)}") elkészült, ` +
+        `más nyitott blokkoló nincs. Státusz: waiting -> planned, ${pickup}`,
+      )
+    })()
+    unblocked.push(card)
+  }
+  return unblocked
+}
+
+// === Done evidence ("no done without evidence") ===
+// Minimal, measurable form of the rule: a card closing as done should carry at
+// least one human/agent comment written since the work started (its latest
+// move to in_progress; its creation if it never went through in_progress).
+// Comments by `system` are machine notes (dispatch failures, auto-unblock) and
+// do not count as evidence. SOFT by design: the caller reports a warning, the
+// move itself is never refused -- no existing agent or the dashboard drag
+// breaks on it.
+export function getDoneEvidence(cardId: string): { since: number; comments: number } | undefined {
+  const card = getKanbanCard(cardId)
+  if (!card) return undefined
+  const started = db.prepare(
+    "SELECT MAX(created_at) AS t FROM kanban_card_events WHERE card_id = ? AND to_status = 'in_progress'"
+  ).get(cardId) as { t: number | null }
+  const since = started.t ?? card.created_at
+  const row = db.prepare(
+    "SELECT COUNT(*) AS n FROM kanban_comments WHERE card_id = ? AND created_at >= ? AND author != 'system'"
+  ).get(cardId, since) as { n: number }
+  return { since, comments: row.n }
 }
 
 // --- Heartbeat helpers ---
@@ -8896,6 +9247,160 @@ export function pruneTokenUsage(): number {
   return rollupAndDelete(cutoff)
 }
 
+// --- LLM ledger (card e96d56c5, F4) ---
+
+export interface LlmLedgerRow {
+  id: number
+  ts: number
+  agent_id: string
+  card_id: string | null
+  task_type: string
+  provider: 'local' | 'gemini' | 'freellm'
+  model: string | null
+  ok: number
+  fail_reason: string | null
+  latency_ms: number | null
+  prompt_chars: number | null
+  response_chars: number | null
+  draft_accepted: number | null
+  claude_token_equiv: number | null
+}
+
+// One row per non-Claude call. ok/draft_accepted are stored as 0/1 (SQLite has
+// no boolean column type); draft_accepted is NULL until filled in later.
+export function appendLlmLedgerRow(params: {
+  agentId: string
+  cardId?: string | null
+  taskType: string
+  provider: 'local' | 'gemini' | 'freellm'
+  model?: string | null
+  ok: boolean
+  failReason?: string | null
+  latencyMs?: number | null
+  promptChars?: number | null
+  responseChars?: number | null
+  claudeTokenEquiv?: number | null
+  nowS?: number
+}): number {
+  const ts = params.nowS ?? Math.floor(Date.now() / 1000)
+  const info = db.prepare(`
+    INSERT INTO llm_ledger (ts, agent_id, card_id, task_type, provider, model, ok, fail_reason,
+      latency_ms, prompt_chars, response_chars, claude_token_equiv)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    ts, params.agentId, params.cardId ?? null, params.taskType, params.provider, params.model ?? null,
+    params.ok ? 1 : 0, params.failReason ?? null, params.latencyMs ?? null, params.promptChars ?? null,
+    params.responseChars ?? null, params.claudeTokenEquiv ?? null,
+  )
+  return info.lastInsertRowid as number
+}
+
+// Fills in draft_accepted on the matching row, read back later from the card's own
+// Draft-Review comment once a human/gate judges the draft (not knowable at call time).
+export function markLlmLedgerDraftAccepted(id: number, accepted: boolean): boolean {
+  return db.prepare('UPDATE llm_ledger SET draft_accepted = ? WHERE id = ?').run(accepted ? 1 : 0, id).changes > 0
+}
+
+export interface LlmLedgerProviderSummary {
+  provider: string
+  calls: number
+  ok: number
+  fail: number
+  accepted: number
+  avg_latency_ms: number | null
+  claude_token_equiv_saved: number
+}
+
+export interface LlmLedgerTaskTypeSummary {
+  task_type: string
+  calls: number
+  ok: number
+  fail: number
+  accepted: number
+  claude_token_equiv_saved: number
+}
+
+export interface LlmLedgerAgentSummary {
+  agent_id: string
+  calls: number
+  ok: number
+  fail: number
+  claude_token_equiv_saved: number
+  daily_budget: number
+  budget_source: 'override' | 'platform'
+}
+
+export interface LlmLedgerSummary {
+  days: number
+  since: number
+  providers: LlmLedgerProviderSummary[]
+  task_types: LlmLedgerTaskTypeSummary[]
+  agents: LlmLedgerAgentSummary[]
+  totals: { calls: number; ok: number; fail: number; claude_token_equiv_saved: number }
+}
+
+export function getAgentLlmBudget(agentId: string): { daily_budget: number; source: 'override' | 'platform' } {
+  const row = db.prepare('SELECT daily_budget FROM agent_llm_budget WHERE agent_id = ?').get(agentId) as { daily_budget: number } | undefined
+  if (row) return { daily_budget: row.daily_budget, source: 'override' }
+  return { daily_budget: Number(getEffectiveSettingValue('LLM_LEDGER_DEFAULT_DAILY_BUDGET')), source: 'platform' }
+}
+
+export function setAgentLlmBudget(agentId: string, dailyBudget: number, updatedBy?: string | null): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO agent_llm_budget (agent_id, daily_budget, updated_at, updated_by) VALUES (?, ?, ?, ?)
+    ON CONFLICT(agent_id) DO UPDATE SET daily_budget = excluded.daily_budget, updated_at = excluded.updated_at, updated_by = excluded.updated_by
+  `).run(agentId, dailyBudget, now, updatedBy ?? null)
+}
+
+export function getLlmLedgerSummary(days: number): LlmLedgerSummary {
+  const since = Math.floor(Date.now() / 1000) - days * 86400
+  const providers = db.prepare(`
+    SELECT provider,
+      COUNT(*) AS calls,
+      SUM(ok) AS ok,
+      SUM(1 - ok) AS fail,
+      SUM(COALESCE(draft_accepted, 0)) AS accepted,
+      AVG(latency_ms) AS avg_latency_ms,
+      SUM(COALESCE(claude_token_equiv, 0)) AS claude_token_equiv_saved
+    FROM llm_ledger WHERE ts >= ? GROUP BY provider ORDER BY provider
+  `).all(since) as LlmLedgerProviderSummary[]
+
+  const taskTypes = db.prepare(`
+    SELECT task_type,
+      COUNT(*) AS calls,
+      SUM(ok) AS ok,
+      SUM(1 - ok) AS fail,
+      SUM(COALESCE(draft_accepted, 0)) AS accepted,
+      SUM(COALESCE(claude_token_equiv, 0)) AS claude_token_equiv_saved
+    FROM llm_ledger WHERE ts >= ? GROUP BY task_type ORDER BY task_type
+  `).all(since) as LlmLedgerTaskTypeSummary[]
+
+  const agentRows = db.prepare(`
+    SELECT agent_id,
+      COUNT(*) AS calls,
+      SUM(ok) AS ok,
+      SUM(1 - ok) AS fail,
+      SUM(COALESCE(claude_token_equiv, 0)) AS claude_token_equiv_saved
+    FROM llm_ledger WHERE ts >= ? GROUP BY agent_id ORDER BY agent_id
+  `).all(since) as Array<Omit<LlmLedgerAgentSummary, 'daily_budget' | 'budget_source'>>
+  const agents: LlmLedgerAgentSummary[] = agentRows.map((a) => {
+    const budget = getAgentLlmBudget(a.agent_id)
+    return { ...a, daily_budget: budget.daily_budget, budget_source: budget.source }
+  })
+
+  const totals = db.prepare(`
+    SELECT COUNT(*) AS calls, SUM(ok) AS ok, SUM(1 - ok) AS fail,
+      SUM(COALESCE(claude_token_equiv, 0)) AS claude_token_equiv_saved
+    FROM llm_ledger WHERE ts >= ?
+  `).get(since) as { calls: number; ok: number | null; fail: number | null; claude_token_equiv_saved: number }
+
+  return {
+    days, since, providers, task_types: taskTypes, agents,
+    totals: { calls: totals.calls, ok: totals.ok ?? 0, fail: totals.fail ?? 0, claude_token_equiv_saved: totals.claude_token_equiv_saved },
+  }
+}
+
 // The decay-sweep cadence. Lives HERE, beside the prune it drives, because
 // db.ts is what needs it for the lag tolerance below and memory.ts already
 // imports from db.ts -- putting it there would close an import cycle.
@@ -9440,15 +9945,19 @@ export function consumeEmailSendApproval(params: {
   messageId?: string | null
   windowSeconds: number
   nowS?: number
+  // MARVEENGAPS1020 (a): the memory delete consumes a data_delete approval on
+  // the same one-shot terms. Every existing caller is the email path.
+  category?: string
 }): ApprovalConsumeResult {
   const now = params.nowS ?? Math.floor(Date.now() / 1000)
   const ref = params.messageId ?? null
+  const category = params.category ?? 'email_send'
   return db.transaction((): ApprovalConsumeResult => {
     const changes = db.prepare(`
       UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
-       WHERE id = ? AND category = 'email_send' AND status = 'approved' AND consumed_at IS NULL
+       WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
          AND content_hash = ? AND resolved_at IS NOT NULL AND resolved_at >= ?
-    `).run(now, params.consumer, ref, params.id, params.contentHash, now - params.windowSeconds).changes
+    `).run(now, params.consumer, ref, params.id, category, params.contentHash, now - params.windowSeconds).changes
     const event = db.prepare(`
       INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
     `)
@@ -9459,7 +9968,7 @@ export function consumeEmailSendApproval(params: {
     }
     let reason: ApprovalConsumeRefusal
     if (!row) reason = 'not_found'
-    else if (row.category !== 'email_send') reason = 'wrong_category'
+    else if (row.category !== category) reason = 'wrong_category'
     else if (row.consumed_at != null) reason = 'already_consumed'
     else if (row.status !== 'approved') reason = 'not_approved'
     else if (row.content_hash !== params.contentHash) reason = 'hash_mismatch'
