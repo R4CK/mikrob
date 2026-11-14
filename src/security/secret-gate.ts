@@ -213,6 +213,11 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   // `zzzfixture-bearer-token-*` naming convention (clearly not credentials) and the file is not
   // under __tests__/, so FIXTURE_EXCEPTIONS (TEST_PATH-gated) cannot apply.
   { path: 'store/draft-quality-gate.selftest.py', reason: 'draft-quality-gate B3 selftest: synthetic Bearer/key-value fixtures are the subject under test for check_secret_leak()' },
+  // Card f054fa3f item 3: the selftest exercises offload-dispatch.sh's widened err_redacted
+  // redaction (JWT-like dotted shapes, the documented AWS example access key id, key=value
+  // tokens) by feeding synthetic secret-shaped strings through it and asserting they come out
+  // as [REDACTED]. Not under __tests__/, so FIXTURE_EXCEPTIONS (TEST_PATH-gated) cannot apply.
+  { path: 'store/offload-dispatch.selftest.sh', reason: 'card f054fa3f redaction selftest: synthetic JWT/AWS-key/key=value fixtures are the subject under test for err_redacted' },
 ];
 
 /**

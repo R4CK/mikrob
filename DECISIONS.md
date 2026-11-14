@@ -25344,3 +25344,40 @@ Nincs benne: a LOW lelet (`ATTEMPTS_FILE`/`ATTEMPTS_LOCK` freellm-specifikus át
 **Javítás:** `_content_on_branch` now checks, before computing any diff: is any parent OTHER than the first already an ancestor of `ref`? If so (the sync-merge shape), it returns `"unresolved"` instead of risking a false `"same"` -- fail-closed, matching every other unanswerable case in this function. Verified against the real repro (fe136e6e/d1634b47 vs origin/develop's real tip at 14:31, 42b70431...): before the fix, `_content_on_branch(fe136e6e)` returned `"same"`; after, `"unresolved"`, and the full `check()` call now returns `UNLANDED` instead of `AGREE`. One new permanent selftest case added (`gate-closure-check.selftest.py`, "SYNC-MERGE REVERSED"), reproducing the same shape with a synthetic fixture repo (since 555419a8 has since landed and the live repro window is gone). Full selftest: 167/167 PASS (166 before + 1 new), zero regressions. `marveen-land-card-branch.selftest.sh` 61/61 and `marveen-land.sh --selftest` 93/93 also re-run clean (both import/exercise this file's logic indirectly).
 
 **Ki döntött:** MikroB (kártya 88e2ffe1, dispatch msg 18442), forrás: QA PASS 31108 + Cybersec pointer 31111 on ec34c025 (the bug lives in the untouched UNLANDED machinery, not the new shared `content_verdict`). backend3 végezte a gyökér-ok azonosítást és a javítást. Gate: QA + Cybersec.
+
+## 2026-11-13 10:17 -- f054fa3f (555419a8 follow-up): rc=2 stderr, redaction widening, bare call-site pin, 429/owner coverage
+
+**Döntés:** backend2 megépítette a 555419a8 follow-up négy pontját (Cybersec GO 29564 a 69286bbce-n,
+a 29546 MEDIUM-jaiból, non-blocking). (1) `offload-dispatch.sh` `try_freellm_for_leaf`: az `rc -eq 2`
+ág mostantól a redaktált stderr-t a dispatch-logba fűzi, ha nem üres (a token-mode disabled üzenet
+eddig némán elveszett). (2) `freellm-call.selftest.sh`: viselkedési teszt a VALÓDI hívási pont 429-ére
+(a preflight 429-étől elkülönítve, mock-server `POST_STATUS_FILE` felülírással) és az `owner_ok`
+feltételre külön (fakeroot `chown` más uid-ra) -- eddig semelyik teszt nem fedte ezeket. (3)
+`err_redacted`: a Bearer-token/32+-karakteres catch-all mellé URL userinfo (`user:pass@host`),
+címkézett `key=value`/`key:value` token (api_key, token, secret, passwd, password, auth), pontozott
+JWT-szerű alak, és rövid, prefix-alakú provider-kulcs (AWS access-key-id, Slack `xox-`, a
+`secret-shape-scan.py` alakjait újrahasznosítva). (4) `offload-dispatch.selftest.sh`: a strukturális
+call-site pin regexje mostantól a csupasz/idézetlen `try_freellm_for_leaf` hívást is elkapja (nem csak
+az idézettet), új mutáns-másolat teszttel igazolva. (5) `src/security/secret-gate.ts`: az
+`offload-dispatch.selftest.sh` felvéve az `ALLOWLISTED_PATHS`-ba (a 3. pont redakciós fixture-jei
+szándékos secret-alakú teszt-tárgyak, ugyanaz a minta mint `draft-quality-gate.selftest.py` /
+`activity-memory-capture.selftest.py` -- nincs `__tests__/` alatt, a `FIXTURE_EXCEPTIONS` nem
+alkalmazható).
+
+**Teszt:** `offload-dispatch.selftest.sh` 143 passed, 0 failed. `freellm-call.selftest.sh` 61 passed,
+0 failed. `tsc --noEmit` tiszta (card/f054fa3f ágon). Mutáció-bizonyítva egyenként (a javítás
+visszaállítva egy mentett másolaton, pontosan a megfelelő eset megy pirosra, visszaállítva, újra
+zöld): rc=2 stderr-fűzés, userinfo/key=value/dotted-JWT/short-AWS-key redakció, a 429 valódi-hívási
+mappingje, az `owner_ok` feltétel. A strukturális call-site mutáns a dedikált mutáns-másolat teszttel
+igazolva.
+
+**Ki döntött:** MikroB dispatch (msg_id:17670, self-advance pickup), backend2 végrehajtása.
+
+**Megjegyzés (cherry-pick re-gate, 2026-11-14):** eredetileg `card/f054fa3f` ágon épült (gate-sha
+47ac0803ad2483b95d696e8bab183e25c7e629d2, QA PASS 30261, CYBERSEC GO 30265), de az az ág a 555419a8
+kártya saját (akkor még nem landolt) commitjaira volt rárakva (69286bbce, be1b8da92), ami a landoláskor
+"foreign commits" hibát adott -- 555419a8 azóta más commit-azonossággal (fe136e6e) landolt. A kártya
+VALÓDI saját commitja (e3787f5d8, tartalom-azonos a fenti négy fájlon) friss `origin/develop` tetejére
+cherry-pickelve, a DECISIONS.md bejegyzés (ez a blokk) kézzel újra a fájl VÉGÉRE fűzve, mert az
+eredeti append pozíciója (akkori sor 23770) közben elavult. A verdikt áthozva, nem újra-reviewolva --
+lásd a landoló komment a pontos per-fájl blob-azonosság igazolással.
