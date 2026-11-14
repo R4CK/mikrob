@@ -168,7 +168,19 @@ GATES = GATE_ROLES
 # The verdict must be the comment's OPENING word (rule 4c), with the `Gate-SHA:` header allowed to
 # come first -- both orders exist on the board and both are legitimate. Prose that merely MENTIONS
 # "QA PASS" mid-sentence is not a verdict, which is why this anchors rather than searches.
-_LEAD_SKIP = re.compile(r"^(?:\s*Gate-SHA:[^\n]*\n|\s*\n)*", re.IGNORECASE)
+#
+# `Skills:` is ALSO skipped (card 507e8167 round 2, CYBERSEC NO-GO 29485 point 1). The karpathy
+# loop convention (backend CLAUDE.md step 8) puts `Gate-SHA:` first, `Skills:` second, THEN the
+# REVIEW text -- measured live on 0120d19a/4f3c0287 (comments 29254/29461: "Gate-SHA: ...\nSkills:
+# karpathy-guidelines\n\nREVIEW for ..."). Without this, `_REVIEW_OPEN` landed on the literal
+# string "Skills: ..." after the Gate-SHA line was skipped, never matched, and declared_shas()
+# silently returned [] for exactly these REVIEWs -- this file's own `main()` happens to fall back
+# to the gate verdicts' own Gate-SHA in that case (see the `if not declared` branch), which is why
+# it was never noticed here; a caller with no verdict to fall back to (card 507e8167's new
+# landing-review-gate-sha-parse.py) has nothing to fall back to and got a bare NONE instead. Never
+# applies to `verdict_of()`'s match: rule 4c fixes the verdict word as the comment's absolute first
+# line, so a verdict comment never has `Skills:` before it.
+_LEAD_SKIP = re.compile(r"^(?:\s*Gate-SHA:[^\n]*\n|\s*Skills:[^\n]*\n|\s*\n)*", re.IGNORECASE)
 #
 # `(?![-\w])` rather than `\b`: `\b` matches between the S of PASS and the hyphen of
 # "QA PASS-eligible", so a BUILDER's own "QA PASS-eligible" line parsed as the QA gate's verdict.

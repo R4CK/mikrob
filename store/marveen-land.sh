@@ -1247,6 +1247,66 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   g fetch -q origin "$DEFAULT_BRANCH" || die 3 "could not fetch origin/$DEFAULT_BRANCH"
   local base_sha; base_sha="$(g rev-parse "origin/$DEFAULT_BRANCH")"
 
+  # Card 507e8167: before trusting "$branch is already an ancestor of origin/$DEFAULT_BRANCH" as
+  # proof the card's own work is landed, check that $branch actually CONTAINS the sha the card's
+  # latest REVIEW claims to be landing. A stale/leftover card/<id> ref (left over from an older,
+  # unrelated card that reused the id, or never updated after a re-push) can be an ancestor of
+  # develop for a completely different reason -- it happens to sit on some old, already-landed
+  # commit -- and the plain ancestor check below could not tell the two apart. Only runs in
+  # --card mode (LAND_CARD set); the ordinary agent/<agent>/work path has no single card to name.
+  #
+  # SCOPED TO THE "ALREADY LANDED" SHORTCUT ITSELF, not to every --card landing (CYBERSEC NO-GO
+  # 29485, round 2, point 3's own fix caused a regression here first: refusing on an unreadable
+  # REVIEW unconditionally broke every ordinary new landing too, most of which have no REVIEW
+  # comment in this file's own test fixtures and never needed one for THIS check -- if $branch is
+  # not yet an ancestor of develop, there is no "already landed" claim being made and nothing for
+  # a stale ref to fake). So the ancestor check runs FIRST, and the REVIEW/stale-ref verification
+  # only runs when it is about to matter: the branch already looks landed.
+  if [ -n "$LAND_CARD" ] && g merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+    local _review_verdict; _review_verdict="$(card_review_gate_sha "$LAND_CARD")"
+    local _review_kind="${_review_verdict%%|*}" _review_detail="${_review_verdict#*|}"
+    if [ "$_review_kind" = "OK" ]; then
+      # V2 (CYBERSEC NO-GO 29485): a multi-sha `Gate-SHA: <old-sha-already-on-develop>, <real-new-
+      # sha>` line satisfied the old "ANY sha is an ancestor" loop on the first, stale token,
+      # breaking before it ever looked at the real one. Rule 4b's multi-commit line names several
+      # commits this card's OWN work rides on together (comment 29465 on this very card: fix +
+      # docs commit), and both are expected to be on $branch -- so this requires ALL of them.
+      local _review_sha _review_sha_bad=""
+      IFS=',' read -ra _review_sha_list <<<"$_review_detail"
+      for _review_sha in "${_review_sha_list[@]}"; do
+        if ! g cat-file -e "${_review_sha}^{commit}" 2>/dev/null \
+          || ! g merge-base --is-ancestor "$_review_sha" "$branch" 2>/dev/null; then
+          _review_sha_bad="$_review_sha"
+          break
+        fi
+      done
+      if [ -n "$_review_sha_bad" ]; then
+        echo "$agent: REFUSED -- $branch (tip $(g rev-parse --short "$branch")) does not contain" >&2
+        echo "         card $LAND_CARD's latest REVIEW Gate-SHA $_review_sha_bad (full set:" >&2
+        echo "         $_review_detail). This card/<id> ref looks stale (card 507e8167) -- it may" >&2
+        echo "         point at an old, unrelated commit. Refusing rather than risk a false" >&2
+        echo "         \"already landed\"." >&2
+        return 4
+      fi
+    else
+      # V3 (CYBERSEC NO-GO 29485): an unreadable board or a card with no REVIEW at all used to let
+      # the "$branch is already an ancestor" verdict stand unchallenged -- exactly the one question
+      # this card is about, answered with no check at all. Refuse, same --allow-ungated escape
+      # hatch every other --card gate check in this file already uses.
+      if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
+        say "$agent: stale-ref check: no readable REVIEW Gate-SHA for card $LAND_CARD ($_review_detail), TOLERATED by --allow-ungated"
+        _note_ungated_landing "$agent" "$LAND_CARD" "stale-ref check (card 507e8167) could not read a REVIEW Gate-SHA ($_review_detail)"
+      else
+        echo "$agent: REFUSED -- $branch already looks like an ancestor of origin/$DEFAULT_BRANCH," >&2
+        echo "         but card $LAND_CARD's latest REVIEW Gate-SHA could not be read ($_review_detail)." >&2
+        echo "         Fails CLOSED: without it, a stale card/<id> ref cannot be told apart from a" >&2
+        echo "         genuinely landed one (card 507e8167, CYBERSEC NO-GO 29485 V3). Override with" >&2
+        echo "         --allow-ungated if this is deliberate (board down, or no REVIEW posted yet)." >&2
+        return 4
+      fi
+    fi
+  fi
+
   if g merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
     say "$agent: $branch already fully landed on origin/$DEFAULT_BRANCH -- nothing to do"
     return 0
