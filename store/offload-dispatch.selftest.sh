@@ -288,15 +288,18 @@ check "CONTROL: a real single open child is resolved as-is, never synthetically 
 off_ids="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=3 CARD_DECOMPOSE=off bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))')"
 check "MUTATION: CARD_DECOMPOSE=off -> the exact fixture that decomposed above now falls back to the whole card" "$off_ids" "decompCard"
 
-# GPU-BUDGET CAP (requirement 3, "javaslat: max 3"): a fixture whose text matches all four template
-# types, capped by OFFLOAD_DECOMPOSE_MAX_PER_CARD.
+# GPU-BUDGET CAP REMOVED (card 6d8ef952, Peti Telegram 13829/13838 "no limitation" -- the
+# per-card 3-leaf cap comment 31306 named as a gate to remove): a fixture whose text matches all
+# four template types now gets all four, by default, not capped to 3.
 cat > "$TMPDIR/fixture-allfour.json" <<'EOF'
 [{"id":"allFourCard","title":"[BE] Teszt, i18n, readme es interface egyszerre","description":"Kell unit test, i18n forditas, readme frissites es egy TypeScript interface type definition is.","status":"planned","assignee":"backend2","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]}]
 EOF
 all4_count="$(CARD=allFourCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-check "GPU-BUDGET CAP: 4 template types match, OFFLOAD_DECOMPOSE_MAX_PER_CARD default(3) caps it" "$all4_count" "3"
+check "NO CAP: 4 template types match, all 4 are returned by default (no limitation)" "$all4_count" "4"
 cap5_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-check "GPU-BUDGET CAP is CONFIGURABLE: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1, not a hardcoded 3" "$cap5_count" "1"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD remains settable as an explicit ops-side throttle: =1 caps to 1" "$cap5_count" "1"
+zero_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 means unbounded, not zero candidates (head -n 0 pitfall)" "$zero_count" "4"
 
 # --- attempts_op state machine -------------------------------------------------------------------
 AF="$TMPDIR/attempts.json"
@@ -769,15 +772,22 @@ seclabel_out="$(printf '[{"id":"leafSecTag","project":"mikrob","tags":"sec","tit
 check "M1 fix: sec-tagged card + neutral text is blocked under capacity hold (never reaches freellm-call.sh)" \
   "$seclabel_out" "leafSecTag blocked"
 
-# Case 6 (WhiteHat NO-GO 28484, M1 fix -- CAPACITY_HOLD with veto_online=true): a synthetic
-# fragment whose parent was vetoed ONLINE on the parent's full (untruncated) text must never get
-# a freellm attempt either, even under GPU-hold where try_leaf (which checks this inline) is
-# never called -- --test-capacity-route reads the leaf's own "veto_online" field the same way the
-# real CAPACITY_HOLD branch reads lveto, and must block regardless of project/tags/content.
-veto_check_out="$(printf '[{"id":"leafVetoed","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt","veto_online":true}]' \
+# Case 6 (card 6d8ef952, Peti Telegram 13829/13838 "no limitation", MikroB msg 18628/18638):
+# veto_online no longer skips the freellm attempt under capacity hold -- a synthetic fragment
+# whose parent was vetoed ONLINE on content/security grounds still gets a draft attempt; the
+# decision-shaped parent card itself stays ONLINE for review regardless (untouched by this).
+# Only is_freellm_blocked (project/tag/marker -- genuine "nothing to draft with") still blocks.
+veto_check_out="$(printf '[{"id":"leafVetoed","project":"mikrob","tags":"gemini-ok","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt","veto_online":true}]' \
   | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
-check "M1 fix: a veto_online=true leaf is blocked under capacity hold (parent-level security veto honored)" \
-  "$veto_check_out" "leafVetoed blocked"
+check "card 6d8ef952: a veto_online=true leaf is NOT blocked by the veto alone (only is_freellm_blocked gates it)" \
+  "$veto_check_out" "leafVetoed failed"
+
+# Case 6b: the same veto_online=true leaf, but WITHOUT the gemini-ok marker, IS still blocked --
+# proves the removal is specific to the security veto, not a blanket bypass of is_freellm_blocked.
+veto_no_marker_out="$(printf '[{"id":"leafVetoedNoMarker","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt","veto_online":true}]' \
+  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
+check "card 6d8ef952: veto_online=true WITHOUT the gemini-ok marker is still blocked (is_freellm_blocked, not the veto)" \
+  "$veto_no_marker_out" "leafVetoedNoMarker blocked"
 
 # ============================================================================================
 # Card 5aa686f0 (392d7104 follow-up, WhiteHat LOW 28818): L1 (behavioral pins for the freellm
@@ -858,12 +868,26 @@ run_fallback_site() { # $1=script path, $2=site, $3..=site args -> sets $rc, wri
 # this shape by default (no skip file), so the REAL guard must never let the stub run.
 EXHAUSTED_ARGS=(exhausted mikrob "" "egyszeru feladat" "irj egy fuggvenyt" leaf1 "task text" leaf1 false)
 CAPHOLD_ARGS=(capacity-hold false mikrob "" "title" "desc" leaf2 "task" leaf2 false)
+# card 6d8ef952 (real freellm_fallback_capacity_hold_site, not the --test-capacity-route
+# reimplementation above): lveto=true must NOT by itself block the real site function any more --
+# only is_freellm_blocked may. CAPHOLD_VETO_LEAKS has the gemini-ok marker (is_freellm_blocked
+# allows it) and must leak; CAPHOLD_VETO_BLOCKED has no marker (is_freellm_blocked still blocks
+# it) and must stay clean -- together they prove the veto argument is ignored while
+# is_freellm_blocked is still consulted, not a blanket bypass.
+CAPHOLD_VETO_LEAKS_ARGS=(capacity-hold true mikrob gemini-ok title desc leaf2c task leaf2c false)
+CAPHOLD_VETO_BLOCKED_ARGS=(capacity-hold true mikrob "" title desc leaf2d task leaf2d false)
 
 run_fallback_site "$DISPATCH" "${EXHAUSTED_ARGS[@]}"
 check "L1 baseline (exhausted site, real code): blocked shape never reaches freellm-call.sh" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
 run_fallback_site "$DISPATCH" "${CAPHOLD_ARGS[@]}"
 check "L1 baseline (capacity-hold site, real code): blocked shape never reaches freellm-call.sh" \
+  "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
+run_fallback_site "$DISPATCH" "${CAPHOLD_VETO_LEAKS_ARGS[@]}"
+check "card 6d8ef952 (real capacity-hold site): lveto=true + gemini-ok marker reaches freellm-call.sh (veto no longer gates it)" \
+  "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "leaked"
+run_fallback_site "$DISPATCH" "${CAPHOLD_VETO_BLOCKED_ARGS[@]}"
+check "card 6d8ef952 (real capacity-hold site): lveto=true WITHOUT the marker still blocked (is_freellm_blocked, not the veto)" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
 
 # --- F3 routing-table shadow logging (card cdde2666) -------------------------------------------
@@ -1424,6 +1448,17 @@ check "try_leaf's body contains a try_freellm_first_for_leaf call" "$([[ -n "$ff
 check "try_leaf's body contains the local RAG (\$RAG) call" "$([[ -n "$rag_line" ]] && echo yes || echo no)" "yes"
 check "try_leaf calls try_freellm_first_for_leaf BEFORE the local RAG (\$RAG) call" \
   "$([[ -n "$ff_line" && -n "$rag_line" && "$ff_line" -lt "$rag_line" ]] && echo yes || echo no)" "yes"
+
+# STRUCTURAL pin: try_leaf's body must NOT contain a synthetic+veto_online early-return before
+# try_freellm_first_for_leaf (card 6d8ef952, Peti "no limitation" -- the veto no longer skips the
+# attempt). A removed-then-reintroduced skip here would be invisible to any --test-capacity-route
+# or --test-freellm-fallback-site case above, since those exercise different code paths
+# (the capacity-hold sweep branch, not try_leaf's own synthetic-fragment branch).
+veto_skip_line="$(printf '%s\n' "$TRY_LEAF_BODY" | grep -n 'synthetic.*==.*true.*veto_online.*==.*true' | head -1 | cut -d: -f1)"
+check "try_leaf's body contains NO synthetic+veto_online early-return (the skip was removed, not just moved)" \
+  "$([[ -z "$veto_skip_line" ]] && echo yes || echo no)" "yes"
+check "if present, any such check would come before try_freellm_first_for_leaf (would short-circuit it) -- confirms removal, not reordering" \
+  "$([[ -z "$veto_skip_line" || ( -n "$ff_line" && "$veto_skip_line" -lt "$ff_line" ) ]] && echo yes || echo no)" "yes"
 
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"

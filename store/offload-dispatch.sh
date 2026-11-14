@@ -1118,11 +1118,14 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 
 # DECOMPOSE (card 501c489f, MikroB verdikt komment 6007). Per-card ceiling on SYNTHETIC (not real
 # kanban-child) subtasks the deterministic templates in card-decompose-templates.sh may generate for
-# a single card in one invocation -- the verdict's own suggested number ("javaslat: max 3"). This is
-# separate from OFFLOAD_MAX_SUBTASKS above (the whole-run GPU-call budget across every leaf); the two
-# only interact in that a card can never contribute more synthetic leaves than this ceiling, whatever
-# the run-wide budget allows elsewhere.
-OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
+# a single card in one invocation -- the verdict's own suggested number ("javaslat: max 3").
+# REMOVED (card 6d8ef952, Peti Telegram 13829/13838 "no limitation", MikroB msg 18628/18638): this
+# was the "per-card 3-leaf cap" comment 31306 named as a gate to remove -- a throttle on how many
+# mechanical fragments even get a draft attempt, not a security decision. Default is now unbounded
+# (card_decompose_candidates' own output, uncapped); OFFLOAD_DECOMPOSE_MAX_PER_CARD stays
+# settable for an ops-side GPU-call-volume throttle if ever needed, but no longer defaults to 3.
+# Still separate from OFFLOAD_MAX_SUBTASKS above (the whole-run GPU-call budget across every leaf).
+OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-0}"
 # shellcheck source=./card-decompose-templates.sh
 . "$HERE/card-decompose-templates.sh"
 # shellcheck source=./decompose-sample-context.sh
@@ -1225,9 +1228,15 @@ freellm_fallback_exhausted_site() {
 }
 
 # Mutant-A target (the CAPACITY_HOLD sweep site, further down).
+#
+# lveto (the inherited parent security-signal ONLINE verdict) no longer skips the attempt here
+# (card 6d8ef952, Peti Telegram 13829/13838, MikroB msg 18628/18638: "no limitation" -- a
+# content-ONLINE verdict decides who reviews/builds the card, not whether a draft is attempted).
+# Only is_freellm_blocked (project allowlist, explicit BLOKKOLT-* override, the gemini-ok marker
+# requirement -- genuine "nothing to draft with"/capacity-shaped reasons) still skips.
 freellm_fallback_capacity_hold_site() {
   local lveto="$1" lproject="$2" ltags="$3" ltitle="$4" ldesc="$5" lid="$6" ltask="$7" lpost_id="$8" lsynthetic="$9"
-  if [[ "$lveto" == "true" ]] || is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
+  if is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
     attempts_op categorical-online "$lid" >/dev/null
     echo "offload-dispatch: leaf $lid -> freellm blocked under capacity hold (veto=$lveto, project=$lproject), no attempt" >&2
     return 1
@@ -1448,7 +1457,13 @@ print("|".join(encoded))
   local candidates
   candidates="$(card_decompose_candidates "$ltitle
 $ldesc
-$ltags" 2>/dev/null | head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD")"
+$ltags" 2>/dev/null)"
+  # OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 (the default) means unbounded -- a positive value is an
+  # explicit ops-side throttle, applied only then (head -n 0 would print zero lines, the opposite
+  # of "no cap").
+  if [[ "$OFFLOAD_DECOMPOSE_MAX_PER_CARD" -gt 0 ]] 2>/dev/null; then
+    candidates="$(printf '%s' "$candidates" | head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD")"
+  fi
   [[ -n "${candidates// }" ]] || { printf '%s' "$raw"; return; }
 
   # VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f, Gate-SHA dad7994b): the per-fragment
@@ -1990,10 +2005,12 @@ fi
 # "<leafId> <outcome>" per line (card 4eb3743e, "Kesz, ha" 1/2: the GPU-hold case, by name, drafting
 # via freellm).
 #
-# GATE PARITY (WhiteHat NO-GO 28484, M1, card 4eb3743e delta): mirrors the production CAPACITY_HOLD
-# branch exactly -- veto_online=true OR is_gemini_blocked(project, tags, title, desc) means the leaf
-# never reaches freellm-call.sh at all ("blocked"), checked via the SAME --check-freellm-blocked
-# sub-command this script exposes (no second copy of the gate decision).
+# GATE PARITY (WhiteHat NO-GO 28484, M1, card 4eb3743e delta; veto_online stopped gating here per
+# card 6d8ef952, Peti "no limitation"): mirrors the production CAPACITY_HOLD branch exactly --
+# only is_gemini_blocked(project, tags, title, desc) means the leaf never reaches freellm-call.sh
+# ("blocked"), checked via the SAME --check-freellm-blocked sub-command this script exposes (no
+# second copy of the gate decision). veto_online is accepted on the leaf shape but no longer
+# consulted.
 if [[ "${1:-}" == "--test-capacity-route" ]]; then
   shift
   # Deliberately NOT the base64/pipe writer+reader shape the main leaf loop uses (see
@@ -2010,11 +2027,9 @@ for l in leaves:
     tags = l.get("tags", "")
     title = l.get("title", "")
     desc = l.get("description", "")
-    blocked = bool(l.get("veto_online", False))
-    if not blocked:
-        bp = subprocess.run(["bash", self_script, "--check-freellm-blocked", project, tags, title, desc],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        blocked = bp.returncode != 42  # 42 is the ONE deliberate "allowed" outcome
+    bp = subprocess.run(["bash", self_script, "--check-freellm-blocked", project, tags, title, desc],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    blocked = bp.returncode != 42  # 42 is the ONE deliberate "allowed" outcome
     if blocked:
         print(l["id"], "blocked")
         continue
@@ -2212,15 +2227,12 @@ try_leaf() {
 
 $leaf_desc"
 
-  # VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f): a synthetic fragment whose PARENT
-  # was vetoed ONLINE on the parent's own full (untruncated) text never gets a local attempt of its
-  # own -- the decision was already made, once, on text this fragment's own (necessarily bounded)
-  # copy may not even contain. Never re-derive it here from the fragment's truncated text.
-  if [[ "$synthetic" == "true" && "$veto_online" == "true" ]]; then
-    attempts_op categorical-online "$leaf_id" >/dev/null
-    echo "offload-dispatch: leaf $leaf_id -> categorical online (parent veto inherited), no local attempt" >&2
-    return 1
-  fi
+  # VETO INHERITANCE, NO LONGER A SKIP (card e11167c5 introduced this, card 6d8ef952 removes the
+  # skip: Peti Telegram 13829/13838 "no limitation", MikroB msg 18628/18638 confirming the reading
+  # -- a content-ONLINE verdict decides who reviews/builds the fragment's real card, not whether a
+  # draft is attempted). veto_online is accepted and still flows through (card_route_shadow_log
+  # measurement, callers unchanged) but no longer short-circuits here.
+  : "$veto_online"
 
   # FREELLM-FIRST ROUTE (card 6d8ef952, Peti Telegram 13820/13823): try freellm BEFORE local for
   # every leaf that reaches this point -- "minden munka menjen oda [freellmbe]". On drafted (rc=0)

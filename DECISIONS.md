@@ -25456,3 +25456,49 @@ ONLINE-verdict / priority / 3-leaf-cap skip-gates -- those live outside offload-
 are separate, larger pieces of work.
 
 **Ki döntött:** Peti (13829/13838) -> MikroB (comment 31309, card 6d8ef952) -> backend2 végrehajtása.
+
+## 2026-11-14 -- card 6d8ef952 delta: removed the remaining gates that skipped a draft attempt (comment 31306 point 2)
+
+**Kontextus:** Peti Telegram 13829/13838, MikroB comments 31306/31309/31314 (this card):
+"freellm/local every piece of work, no limitation" -- the gates that currently SKIP a draft
+attempt (not the gates that decide who builds/reviews the card) had to go. This increment closes
+the two such gates that lived inside `store/offload-dispatch.sh`:
+
+1. **Security-veto inheritance no longer skips the attempt.** A synthetic mechanical fragment
+   whose parent got a security-signal ONLINE verdict (deterministic-money/auth-tenant-scope/
+   sec-label, card e11167c5) used to short-circuit straight to `categorical-online`, with no
+   freellm or local attempt at all -- both in `try_leaf()` (the real per-leaf path) and in
+   `freellm_fallback_capacity_hold_site()` (the GPU-hold sweep branch). Both sites now ignore the
+   veto; only `is_freellm_blocked()` (project allowlist, explicit `BLOKKOLT-*` human override, the
+   `gemini-ok` marker requirement -- genuine "nothing to draft with" reasons) can still block. The
+   decision-shaped parent card itself is untouched: `card-build-route.sh`'s ONLINE verdict still
+   means the role agent does a full independent review, exactly as before (MikroB confirmation,
+   msg 18628/18638).
+2. **The per-card 3-leaf decompose cap is removed.** `OFFLOAD_DECOMPOSE_MAX_PER_CARD` (default 3,
+   "javaslat: max 3" per card 501c489f's original verdict) capped how many mechanical fragments of
+   a deterministic-ONLINE card could even get a draft attempt; a card matching 4+ template types
+   silently lost the 4th+. Default changed to 0 = unbounded (`head -n 0`'s "print nothing" pitfall
+   is explicitly guarded against -- the cap is only applied when the value is `>0`); the variable
+   stays settable as an explicit ops-side GPU-call-volume throttle if ever needed.
+
+**NOT in scope for store/offload-dispatch.sh (already handled elsewhere):** `self-advance-pickup.sh`
+already called `offload-dispatch.sh` regardless of the router's verdict (card 2be7e3e5, confirmed
+unchanged this session); `card-build-route.sh`'s own priority-based ONLINE gate was already removed
+in an earlier change (its own file comments, pre-dating this card); the "model-busy"/"too-long"/
+"route-check-failed" reasons MikroB asked about are card-build-route.sh verdict categories never
+consulted by offload-dispatch.sh's actual draft path at all, so there was nothing to remove there.
+heartbeat C 4b (the third dispatch site) is MikroB's own orchestration, done on their side (msg
+18628/18638, backup `/home/neon/marveen-backups/heartbeat-consolidated.SKILL.md.bak-20261114-2240`).
+
+**Teszt:** `offload-dispatch.selftest.sh` 186 -> 190/190 (4 new/changed cases: the real
+`freellm_fallback_capacity_hold_site` now leaks on `lveto=true`+marker and still blocks without
+the marker; a structural pin confirms `try_leaf`'s body has no synthetic+veto_online early-return
+before the freellm-first call; the 4-template-type fixture now returns all 4 by default, 1 with
+an explicit throttle, 0 proven to mean unbounded not zero). Mutation-proofed: each of the 3 code
+changes (capacity-hold site condition, try_leaf's removed block, the cap default) reverted
+individually -> exactly the matching new test(s) go red, rest green; restored after each. `tsc
+--noEmit`: pre-existing unrelated failures only (`parse5` module missing in
+`src/__tests__/app-js-html-sinks.test.ts` and its helper -- not touched by this change, not new).
+
+**Ki döntött:** Peti (13829/13838) -> MikroB (comment 31306, card 6d8ef952) -> backend2 végrehajtása,
+confirmed by MikroB inter-agent msg 18628/18638.
