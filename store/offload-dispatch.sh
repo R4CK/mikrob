@@ -539,15 +539,28 @@ sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, complet
 # truthy/string compare) -- missing file, empty, malformed JSON, {"enabled": false}, or
 # {"enabled": "True"} (a JSON string) all keep the marker check ON, fail-closed like every other
 # switch in this file.
+#
+# M2 (card 555419a8, CYBERED MEDIUM 25494 on 5aa686f0): the content check above dropped the OLD
+# `[[ -f ... ]]` regular-file test along with the presence-only behaviour it was fixing -- python's
+# plain open() does not care whether the path is a FIFO or a device. Measured: pointing this at a
+# FIFO hangs --check-freellm-blocked until killed; a symlink to /dev/zero reads until memory runs
+# out. Anyone who can write into store/ (every agent) could park the whole dispatcher on it. Fixed
+# two ways: `[[ -f ]]` in front of the python call (true only for a regular file, false for a FIFO
+# or a device, even through a symlink) so neither ever reaches open(), and a 4096-byte read cap
+# inside python as a second layer (an opt-out file is a one-line JSON boolean; anything that does
+# not fit is treated as malformed, same fail-closed "false" as today).
 FREELLM_SKIP_GEMINI_OK_CHECK="${OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK:-$HERE/freellm-skip-gemini-ok-check}"
 is_freellm_blocked() {
   local require_marker=1
   local skip_enabled
-  skip_enabled="$(FREELLM_SKIP_PATH="$FREELLM_SKIP_GEMINI_OK_CHECK" python3 -I << 'PYEOF' 2>/dev/null
+  skip_enabled="$([[ -f "$FREELLM_SKIP_GEMINI_OK_CHECK" ]] && FREELLM_SKIP_PATH="$FREELLM_SKIP_GEMINI_OK_CHECK" python3 -I << 'PYEOF' 2>/dev/null
 import json, os, sys
 try:
     with open(os.environ["FREELLM_SKIP_PATH"]) as f:
-        d = json.load(f)
+        data = f.read(4097)
+    if len(data) > 4096:
+        raise ValueError("opt-out file exceeds the 4096-byte cap")
+    d = json.loads(data)
 except Exception:
     print("false")
     sys.exit(0)
@@ -801,8 +814,26 @@ try_freellm_for_leaf() {
   local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
   [[ -x "$FREELLM_CALL" ]] || return 1
 
-  local out rc=0
-  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
+  local out rc=0 errfile
+  errfile="$(mktemp)"
+  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
+  # Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named error messages (model
+  # 404, token mismatch) used to be thrown away right here by this call's `2>/dev/null` -- the
+  # one thing that script fixed (naming instead of staying silent), this caller immediately
+  # undid. Redacted defensively (freellm-call.sh's own messages never carry a secret value,
+  # only a file path or model id, but a raw curl diagnostic might) and capped to one line so
+  # neither the log nor the card comment below can be flooded.
+  local err_redacted
+  err_redacted="$(FREELLM_ERR_FILE="$errfile" python3 -I -c '
+import os, re
+with open(os.environ["FREELLM_ERR_FILE"]) as f:
+    text = f.read()
+text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
+text = re.sub(r"[A-Za-z0-9_-]{32,}", "[REDACTED]", text)
+text = " | ".join(line.strip() for line in text.splitlines() if line.strip())
+print(text[:300])
+' 2>/dev/null)"
+  rm -f "$errfile"
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
     attempts_op success "$leaf_id" >/dev/null
@@ -822,7 +853,20 @@ try_freellm_for_leaf() {
     echo "offload-dispatch: leaf $leaf_id -> freellm content gate refused (sensitive), no retry" >&2
     return 1
   fi
-  echo "offload-dispatch: leaf $leaf_id -> freellm call failed (rc=$rc)" >&2
+  local err_suffix=""
+  [[ -n "$err_redacted" ]] && err_suffix=" -- $err_redacted"
+  echo "offload-dispatch: leaf $leaf_id -> freellm call failed (rc=$rc)$err_suffix" >&2
+  if [[ -n "$err_redacted" ]]; then
+    # Card 555419a8 (M1): a card-visible failure comment, not just a log line -- the responsible
+    # agent sees WHY the local-llm/freellm route failed without grepping a log, same visibility
+    # the success path already gets via freellm_draft_comment_body. Capped once more by curl's
+    # own 300-char-limited $err_redacted; no retry bookkeeping here, attempts_op below is unchanged.
+    local fail_body
+    fail_body="$(printf '[LOCAL-LLM DRAFT | freellm FAILED] A freellm hivas sikertelen volt (rc=%s) a "%s" leveleen.\n\nHiba: %s' \
+      "$rc" "$leaf_title" "$err_redacted")"
+    curl -s -X POST "$DASH/api/kanban/$post_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$fail_body")" >/dev/null 2>&1
+  fi
   attempts_op transient-fail "$leaf_id" >/dev/null
   return 1
 }

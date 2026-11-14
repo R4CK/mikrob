@@ -106,6 +106,11 @@ PORT = int(sys.argv[2])
 DELAY = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
 EXPECTED_TOKEN_FILE = sys.argv[4]
 MODELS_FILE = sys.argv[5]
+# Card 555419a8 (M2): the startup preflight hits GET /v1/providers -- configurable response
+# code via a small file (read fresh per request, default 200 when absent/unreadable) so a test
+# can simulate the provider-health endpoint reporting 401/403/429 without touching the token or
+# model-catalog files those other checks already own.
+PROVIDERS_STATUS_FILE = sys.argv[6] if len(sys.argv) > 6 else None
 
 def _expected_token():
     try:
@@ -121,6 +126,15 @@ def _catalog_ids():
     except Exception:
         return []
 
+def _providers_status():
+    if not PROVIDERS_STATUS_FILE:
+        return 200
+    try:
+        with open(PROVIDERS_STATUS_FILE) as f:
+            return int(f.read().strip())
+    except Exception:
+        return 200
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def _send_json(self, code, payload):
         body = json.dumps(payload).encode()
@@ -132,6 +146,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.rstrip('/') == '/v1/models':
             self._send_json(200, {"data": [{"id": m} for m in _catalog_ids()]})
+            return
+        if self.path.rstrip('/') == '/v1/providers':
+            code = _providers_status()
+            if code == 200:
+                self._send_json(200, {"providers": []})
+            else:
+                self._send_json(code, {"error": {"message": "mock providers status"}})
             return
         self._send_json(404, {"error": "not found"})
 
@@ -173,6 +194,8 @@ EXPECTED_TOKEN_FILE="$TMPDIR_TEST/expected-token.txt"
 printf '%s' "FAKE-SELFTEST-TOKEN-9f2b7c1e" > "$EXPECTED_TOKEN_FILE"
 MODELS_FILE="$TMPDIR_TEST/models-catalog.json"
 printf '["auto"]' > "$MODELS_FILE"
+PROVIDERS_STATUS_FILE="$TMPDIR_TEST/providers-status.txt"
+printf '200' > "$PROVIDERS_STATUS_FILE"
 
 # Port 0 trick to find a free port, then start the real server on it.
 MOCK_PORT="$(python3 -c '
@@ -182,7 +205,7 @@ s.bind(("127.0.0.1", 0))
 print(s.getsockname()[1])
 s.close()
 ')"
-python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" &
+python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" "$PROVIDERS_STATUS_FILE" &
 MOCK_PID=$!
 # Poll until the mock accepts connections (no fixed sleep -- startup time varies).
 for _ in $(seq 1 50); do
@@ -198,6 +221,7 @@ export FREELLM_CATEGORY_CHECK_OVERRIDE="$CATEGORY_CHECK"
 
 AUTH_TOKEN_FIXTURE="$TMPDIR_TEST/auth-token"
 printf '%s' "FAKE-SELFTEST-TOKEN-9f2b7c1e" > "$AUTH_TOKEN_FIXTURE"
+chmod 0600 "$AUTH_TOKEN_FIXTURE"
 export FREELLM_AUTH_TOKEN_FILE="$AUTH_TOKEN_FIXTURE"
 
 ENABLED_SWITCH="$TMPDIR_TEST/freellm-enabled.json"
@@ -443,7 +467,7 @@ printf '%s' "$SECRET_TOKEN_VALUE" > "$AUTH_TOKEN_FIXTURE"
 printf '%s' "$SECRET_TOKEN_VALUE" > "$EXPECTED_TOKEN_FILE"
 # Give the mock an artificial delay so there is a window to sample `ps` mid-call.
 rm -f "$MOCK_LOGDIR"/req-*.json
-python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0.6 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" &
+python3 -I "$TMPDIR_TEST/mock_server.py" "$MOCK_LOGDIR" "$MOCK_PORT" 0.6 "$EXPECTED_TOKEN_FILE" "$MODELS_FILE" "$PROVIDERS_STATUS_FILE" &
 kill "$MOCK_PID" 2>/dev/null
 MOCK_PID=$!
 for _ in $(seq 1 50); do
@@ -486,6 +510,70 @@ MOCK_AUTH="$(python3 -c "import json; print(json.load(open('$MOCK_LOGDIR/req-0.j
 assert_true "Kesz-ha 4: the token WAS actually sent to the mock (hiding, not forgetting)" \
   "$([[ "$MOCK_AUTH" == "Bearer $SECRET_TOKEN_VALUE" ]] && echo 1 || echo 0)"
 assert_true "Kesz-ha 4: the call itself still succeeded (exit 0)" "$([[ "$CALL_RC" -eq 0 ]] && echo 1 || echo 0)"
+
+# ---- Card 555419a8 (Cybersec M2 on af8ddbf0): startup preflight + distinct exit codes + token
+# file mode/owner check. All against the SAME mock, which now also serves GET /v1/providers.
+clear_mock_requests
+printf '200' > "$PROVIDERS_STATUS_FILE"
+
+# Test 17: preflight reports 401 -> exit 3, a NAMED message, and the real chat-completions
+# endpoint is NEVER reached (0 requests) -- this is the "verified at startup" requirement: the
+# auth problem is caught before any content gate or real call runs, not just on a later 401.
+printf '401' > "$PROVIDERS_STATUS_FILE"
+ERR_OUT="$(bash "$SCRIPT" "benign prompt" 2>&1 1>/dev/null)"; RC=$?
+test_case "startup preflight: provider reports 401 -> exit 3" 3 bash "$SCRIPT" "benign prompt"
+assert_true "startup preflight (401): stderr names 'startup check' and the token file, not silent" \
+  "$([[ "$ERR_OUT" == *"startup check"* ]] && [[ "$ERR_OUT" == *"$AUTH_TOKEN_FIXTURE"* ]] && echo 1 || echo 0)"
+assert_true "startup preflight (401): zero requests reached POST /v1/chat/completions" \
+  "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
+
+# Test 18: preflight reports 429 -> exit 5 (its OWN code, distinct from 401/403's exit 3), same
+# "caught at startup, zero real-call requests" shape.
+clear_mock_requests
+printf '429' > "$PROVIDERS_STATUS_FILE"
+ERR_OUT="$(bash "$SCRIPT" "benign prompt" 2>&1 1>/dev/null)"
+test_case "startup preflight: provider reports 429 -> exit 5 (distinct from 401/403's exit 3)" 5 bash "$SCRIPT" "benign prompt"
+assert_true "startup preflight (429): stderr names 'startup check' and quota, not silent" \
+  "$([[ "$ERR_OUT" == *"startup check"* ]] && [[ "$ERR_OUT" == *"429"* ]] && echo 1 || echo 0)"
+assert_true "startup preflight (429): zero requests reached POST /v1/chat/completions" \
+  "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
+printf '200' > "$PROVIDERS_STATUS_FILE"
+
+# Test 19: a non-401/403/429 preflight response (here, the mock's 404 default for any OTHER
+# unconfigured path -- simulated by pointing FREELLM_API_BASE at a path the mock does not
+# recognise as /v1/providers) must NOT hard-fail the call -- only a clear auth/quota signal
+# blocks at startup, not "the health endpoint behaved oddly". Re-use the main base (which DOES
+# serve /v1/providers normally) with status forced back to 200 is the common case already
+# covered by every other happy-path test above; this confirms the soft-fail direction (a code
+# outside {401,403,429}, here 500) still falls through to the real call instead of refusing.
+clear_mock_requests
+printf '500' > "$PROVIDERS_STATUS_FILE"
+test_case "startup preflight: an unexpected response code (500) does not block the real call" 0 \
+  bash "$SCRIPT" "benign prompt"
+assert_true "startup preflight (500, soft-fail): the real call still reached the mock" \
+  "$([[ "$(mock_request_count)" -eq 1 ]] && echo 1 || echo 0)"
+printf '200' > "$PROVIDERS_STATUS_FILE"
+
+# Test 20: --validate-key now exercises the SAME preflight (M2: "verified at startup" needs an
+# actual startup entry point) -- a 401 at validate-key time must refuse too, not just the real call.
+clear_mock_requests
+printf '401' > "$PROVIDERS_STATUS_FILE"
+test_case "validate-key also runs the startup preflight: 401 -> exit 3" 3 bash "$SCRIPT" --validate-key
+printf '200' > "$PROVIDERS_STATUS_FILE"
+
+# Test 21 (L3, token file mode/owner): a group/world-readable token file is refused before any
+# network attempt at all (not even the preflight), same fail-closed-and-cheapest-first ordering
+# as the switch/host checks.
+clear_mock_requests
+BAD_MODE_TOKEN="$TMPDIR_TEST/bad-mode-token"
+printf '%s' "FAKE-SELFTEST-TOKEN-9f2b7c1e" > "$BAD_MODE_TOKEN"
+chmod 644 "$BAD_MODE_TOKEN"
+ERR_OUT="$(FREELLM_AUTH_TOKEN_FILE="$BAD_MODE_TOKEN" bash "$SCRIPT" "benign prompt" 2>&1 1>/dev/null)"
+RC=$?
+assert_true "L3: a 0644 token file is refused (exit 2)" "$([[ "$RC" -eq 2 ]] && echo 1 || echo 0)"
+assert_true "L3: stderr names the token file, not silent" "$([[ "$ERR_OUT" == *"$BAD_MODE_TOKEN"* ]] && echo 1 || echo 0)"
+assert_true "L3: zero network requests (not even the preflight)" "$([[ "$(mock_request_count)" -eq 0 ]] && echo 1 || echo 0)"
+chmod 600 "$BAD_MODE_TOKEN"
 
 # Summary
 echo ""

@@ -9,7 +9,10 @@
 #   freellm-call.sh --dry-run "prompt"            # no API call, prints placeholder
 #   freellm-call.sh --validate-key                # check config, exit 0=valid
 #
-# EXIT CODES: 0 ok  |  2 disabled/invalid config  |  3 API quota/auth  |  1 other API failure  |  4 content gate refused
+# EXIT CODES: 0 ok  |  2 disabled/invalid config  |  3 API auth (401/403)  |  5 API quota (429)  |
+#             1 other API failure  |  4 content gate refused
+# (card 555419a8, Cybersec M1 on af8ddbf0: 401/403 and 429 used to share exit 3 -- a caller could
+# not tell "wrong token" from "rate limited" without reading stderr text.)
 #
 # SECURITY: no secret in argv, log, stdout. Content gate: real category check
 # (gemini-agy-category-check.py on a card-shaped wrapper of the prompt) plus secret/PII
@@ -122,8 +125,79 @@ case "$FREELLM_API_HOST" in
   *) exit 2 ;;  # non-loopback host: fail-closed, same as missing switch/token
 esac
 
+# ---- auth token: read EARLY (card 555419a8, Cybersec M2 on af8ddbf0) -----------------------
+# Moved up from right before the real call so (a) the mode/owner check below runs before any
+# content gate or network attempt, same fail-closed-first-and-cheapest ordering as the switch/
+# host checks above, and (b) the startup preflight just below can use the same AUTH_HDR --
+# "verified at startup", not just reactively on the real call's own 401.
+if [[ ! -r "$FREELLM_AUTH_TOKEN_FILE" ]]; then
+  exit 2  # no auth token available: fail-closed as unconfigured, no network attempt
+fi
+# L3 (Cybersec LOW on af8ddbf0): the token file's mode/owner were never checked -- a
+# group/world-readable file, or one owned by someone else, defeats the "0600, caller-owned"
+# convention documented at the top of this file without anyone noticing. Fail closed, same as
+# every other config check here.
+FREELLM_TOKEN_FILE_OK="$(FREELLM_TOKEN_PATH="$FREELLM_AUTH_TOKEN_FILE" python3 -I -c '
+import os, sys
+path = os.environ["FREELLM_TOKEN_PATH"]
+try:
+    st = os.stat(path)
+except Exception:
+    print("false")
+    sys.exit(0)
+mode_ok = (st.st_mode & 0o777) == 0o600
+owner_ok = st.st_uid == os.getuid()
+print("true" if mode_ok and owner_ok else "false")
+' 2>/dev/null)" || exit 2
+if [[ "$FREELLM_TOKEN_FILE_OK" != "true" ]]; then
+  echo "FREELLM: $FREELLM_AUTH_TOKEN_FILE is not 0600 and owned by the current user -- refusing to use it until permissions/ownership are fixed." >&2
+  exit 2
+fi
+AUTH_TOKEN="$(tr -d '\n' < "$FREELLM_AUTH_TOKEN_FILE")"
+if [[ -z "$AUTH_TOKEN" ]]; then
+  exit 2
+fi
+AUTH_HDR="$(mktemp)"
+chmod 0600 "$AUTH_HDR"
+printf 'Authorization: Bearer %s\n' "$AUTH_TOKEN" > "$AUTH_HDR"
+
+# freellm_startup_preflight: does the token actually work against the provider, cheaply, via a
+# GET (not a chat completion)? (card 555419a8, Cybersec M2.) The af8ddbf0 incident (token file
+# drifted from the server's configured key) was only ever caught REACTIVELY, by the real call's
+# own 401 handling, after building a request and running the content gates for nothing. Echoes
+# a named message and returns the SAME exit code the real call's response handling already uses
+# for the same HTTP codes (3 for 401/403, 5 for 429) so a caller cannot tell the two apart by
+# code alone; returns 0 on anything else (200/healthy, or unreachable/other) -- a flaky or
+# unreachable preflight endpoint must not block an otherwise-working chat-completions call,
+# which has its own, already-fixed, response handling for every other failure mode.
+#
+# CALLED FROM TWO PLACES, DELIBERATELY NOT RIGHT HERE: --validate-key has no prompt and no
+# content gate to run first, so it calls this immediately below. The real-call path calls it
+# AFTER the content gates (further down, right before the actual POST) -- a sensitive prompt
+# must be refused by the content gate regardless of whether the token/network happen to be
+# healthy, the same invariant the switch/host checks already preserve by running before this.
+freellm_startup_preflight() {
+  local preflight_out preflight_code
+  preflight_out="$(mktemp)"
+  preflight_code="$(curl -s -w "%{http_code}" -o "$preflight_out" -X GET "$FREELLM_API_BASE/providers" \
+    -H @"$AUTH_HDR" --noproxy '*' --connect-timeout 5 --max-time 10 2>/dev/null)"
+  rm -f "$preflight_out"
+  case "$preflight_code" in
+    401|403)
+      echo "FREELLM: startup check -- auth token in $FREELLM_AUTH_TOKEN_FILE was rejected by the provider (HTTP $preflight_code) -- the token file does not match the server's configured key." >&2
+      return 3
+      ;;
+    429)
+      echo "FREELLM: startup check -- the provider reports quota exhaustion (HTTP 429)." >&2
+      return 5
+      ;;
+    *) return 0 ;;
+  esac
+}
+
 if [[ "$VALIDATE_ONLY" -eq 1 ]]; then
-  exit 0  # config valid
+  freellm_startup_preflight || exit $?
+  exit 0  # config valid, token file well-formed, startup preflight did not report auth/quota
 fi
 
 # ---- read prompt ---------------------------------------------------------------
@@ -310,16 +384,14 @@ fi
 # session-token-file convention as store/freellm-catalog-sync.sh (card 08d1aa90 owns the
 # login/refresh flow for that token; this script only reads the cached value). Header goes
 # in a 0600 file passed to curl via -H @file, so it never appears in /proc/<pid>/cmdline.
-if [[ ! -r "$FREELLM_AUTH_TOKEN_FILE" ]]; then
-  exit 2  # no auth token available: fail-closed as unconfigured, no network attempt
-fi
-AUTH_TOKEN="$(tr -d '\n' < "$FREELLM_AUTH_TOKEN_FILE")"
-if [[ -z "$AUTH_TOKEN" ]]; then
-  exit 2
-fi
-AUTH_HDR="$(mktemp)"
-chmod 0600 "$AUTH_HDR"
-printf 'Authorization: Bearer %s\n' "$AUTH_TOKEN" > "$AUTH_HDR"
+# AUTH_TOKEN/AUTH_HDR are already built above (card 555419a8 moved this earlier, next to the
+# startup preflight function) -- nothing left to do here.
+
+# STARTUP PREFLIGHT, RUN HERE (card 555419a8, M2) -- after the content gates above, not before:
+# a sensitive prompt must be refused by the content gate regardless of token/network health
+# (the --validate-key path, which has no prompt, already ran this immediately after building
+# AUTH_HDR). Catches a drifted/rejected token before building and sending the real request.
+freellm_startup_preflight || exit $?
 
 # Call API (localhost, 127.0.0.1 only -- enforced above; --noproxy '*' so a proxy env var
 # cannot redirect this request off-host, per the L1 fix, WhiteHat NO-GO 28484).
@@ -369,9 +441,11 @@ PYEOF
     exit 1
     ;;
   429)
-    # Quota
+    # Card 555419a8 (Cybersec M1 on af8ddbf0): quota used to share exit 3 with auth -- a caller
+    # could not tell "wrong token" from "rate limited" without reading stderr text. Own code (5).
+    echo "FREELLM: the provider reports quota exhaustion (HTTP 429)." >&2
     _freellm_ledger_log fail quota_429
-    exit 3
+    exit 5
     ;;
   *)
     # Other API failure
