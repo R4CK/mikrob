@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectPaneState, detectBackgroundAgents, isReadyForPrompt } from '../pane-state.js'
+import { detectPaneState, detectBackgroundAgents, isReadyForPrompt, detectsPermissionDialog } from '../pane-state.js'
 
 // Background (sub-)agents render as a block BELOW the idle footer: a blank row,
 // a `⏺ main` row for the session's own thread, then one `◯ <type>  <label>
@@ -448,5 +448,64 @@ describe('background-agent block below the footer', () => {
       '  1 shell, 1 monitor · /tasks to see subagents · e…',
     ].join('\n')
     expect(detectPaneState(pane)).toBe('busy')
+  })
+})
+
+// RedHat class A (card 8e9828c9): idleFooterIndex picked the FIRST (oldest) matching line
+// in the whole pane, not the most recent one. A footer-lead line echoed earlier (e.g. inside
+// a spoofed background-agent block, SPOOFED_HEADER_IN_TOOL_OUTPUT) is OLDER -- a smaller array
+// index -- than the real, current footer further down, and the forward scan locked onto it,
+// corrupting everything downstream that anchors on footerIdx: the typing-box scan, the queued-
+// messages hint check, and (via the raw IDLE_FOOTER_RX.test(pane) bypass) detectsPermissionDialog
+// and detectsHeldPeerMessage. Fix: idleFooterIndex scans from the bottom (last match wins, the
+// same pattern detectsThinkingBlockError already used), and the two raw-test call sites were
+// migrated to hasIdleFooter() behind the same background-agent-block cut detectPaneState applies.
+describe('class A: typing/queued/dialog behind a spoofed background-agent block (idleFooterIndex most-recent-match)', () => {
+  it('a parked (typed but unsubmitted) input reads typing, not idle, behind a spoofed footer-lead line', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      SEP,
+      '❯ finish the review',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('typing')
+  })
+
+  it('a queued-messages hint reads busy, not idle, behind a spoofed footer-lead line', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      SEP,
+      '❯ Press up to edit queued messages',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('a real permission dialog is still detected behind a stale idle-footer line quoted in scrollback', () => {
+    const pane = [
+      '  ⏎  Earlier tool output quoted this status line for a report:',
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      '',
+      '',
+      '',
+      '─'.repeat(120),
+      ' Bash command',
+      '',
+      '   cat /etc/hostname',
+      '   Show system hostname',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. Yes, allow reading from /etc from this project',
+      '   3. No',
+      '',
+      ' Esc to cancel · Tab to amend',
+      '',
+    ].join('\n')
+    expect(detectsPermissionDialog(pane)).toBe(true)
   })
 })

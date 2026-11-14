@@ -111,10 +111,18 @@ const FOOTER_SHELL_TAIL_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycl
  * non-empty line, which is where the live footer is drawn. A dialog replaces
  * the input box and footer, so its last line is the dialog's own hint, never
  * a clipped footer.
+ *
+ * RedHat class A (card 8e9828c9): the live footer is only ever drawn at the
+ * bottom of the pane, so the MOST RECENT matching line is the real one -- a
+ * forward findIndex locked onto the FIRST (oldest) match instead, which a
+ * footer-lead phrase quoted in scrollback, or echoed inside a background-agent
+ * block, sits above and so wins the race. Scan from the bottom, same pattern
+ * detectsThinkingBlockError already uses for its own footer search.
  */
 function idleFooterIndex(lines: string[]): number {
-  const full = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
-  if (full >= 0) return full
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (IDLE_FOOTER_RX.test(lines[i])) return i
+  }
   let last = lines.length - 1
   while (last >= 0 && lines[last].trim() === '') last--
   return last >= 0 && (FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last])) ? last : -1
@@ -1298,6 +1306,14 @@ const HELD_PEER_MESSAGE_RX = /Held message from another session/
 
 export function detectsHeldPeerMessage(pane: string): boolean {
   if (!pane || !pane.trim()) return false
+  // RedHat class A (card 8e9828c9): cut a non-live background-agent block
+  // first, same as detectPaneState -- otherwise a spoofed footer-lead line
+  // inside an uncut block can sit below this title and win the idle-footer
+  // check further down, even though it is not the real, current footer.
+  const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
+  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal)) {
+    pane = bgBlock.above.join('\n')
+  }
   const lines = pane.split('\n')
   const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
@@ -1305,7 +1321,7 @@ export function detectsHeldPeerMessage(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  if (hasIdleFooter(lines)) return false
   return HELD_PEER_MESSAGE_RX.test(pane)
 }
 
@@ -1368,6 +1384,14 @@ const PERMISSION_YES_RX = /(?:^|\n)\s*[\u276f>]?\s*1\.\s*Yes\b/
  */
 export function detectsPermissionDialog(pane: string): boolean {
   if (!pane || !pane.trim()) return false
+  // RedHat class A (card 8e9828c9): cut a non-live background-agent block
+  // first, same as detectPaneState -- otherwise a spoofed footer-lead line
+  // inside an uncut block can win the idle-footer check below even though a
+  // real permission dialog is open above/around it.
+  const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
+  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal)) {
+    pane = bgBlock.above.join('\n')
+  }
   const lines = pane.split('\n')
   const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
@@ -1375,7 +1399,7 @@ export function detectsPermissionDialog(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  if (hasIdleFooter(lines)) return false
   return PERMISSION_AMEND_RX.test(footerRegion)
     || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
 }
