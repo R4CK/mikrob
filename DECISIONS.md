@@ -24832,3 +24832,54 @@ nem valtozott ebben a delta-ban, kulon kartya lehet, ha MikroB kivanja.
 
 **Ki dontott:** MikroB (18319/18324). Gate: qa2 + cybersec2 (uj Gate-SHA ezen a delta-n).
 Epitette: fullstack (DevO).
+
+## 2026-11-14: card 6ec8e9d8 re-gate -- cybersec2 NO-GO (30733) 5 pontjanak javitasa
+
+cybersec2 NO-GO-t adott a 6ec8e9d8-as batch-landing merge queue-ra (komment 30733,
+Gate-SHA d4950df2eb374a4a26ae03272cff97ac3ed03abc). MikroB dontese (komment 30735): F6,
+P1, P2, P3, P5 blokkolja a kartyat, P4/P6/P7 kulon, MikroB altal nyitando follow-up
+kartyara megy. Re-gate: qa2 + cybersec2.
+
+- **F6**: `src/__tests__/token-argv-doc-sweep.test.ts` ALLOWLIST `README.md` bejegyzese
+  `[228]` -> `[229]` -- ez a kartya sajat fork-fejlesztes bullet-je (affaan-m/ECC
+  skillek) eggyel lejjebb vitte a 228. soron allo anti-pattern-nevezo bulletet.
+- **P1**: uj `case K` a `--selftest-land-batch`-ben: valodi CLI dispatch
+  (`bash "$0" --batch ...`, nem kozvetlen `land_batch()` hivas) + valodi gate-stub --
+  egy kesoi commit, ami a card/k1 agra landol a piros kombinalt futas ALATT, a
+  fallback altal a ÚJ csucson lesz REFUSED, nem csak report-mode-ban logolva.
+- **P2**: uj `case M`: a batch push elveszti a versenyt (nem-fast-forward egy
+  konkurrens landolassal szemben) -- a push NEM ismetlodik vakon, a kod visszaesik
+  `land_with_retry`-ra kartyankent, ami az UJ csucsra ujramergeli oket; m1 es m2 is
+  landol, a konkurrens commit az `origin/develop` tortenet resze marad. Mutacio-
+  tesztelve: a push-sikeressegi ag inverzioja (`if push_err=...; then` a `if !
+  push_err=...; then` helyett) KIZAROLAG a case M-et viszi pirosra, a tobbi 13 esetet
+  nem erinti.
+- **P3**: a `case J` (TERM/HUP/INT) korabban idonkent BERAGADT -- a gyoker ket,
+  egymasra epulo bash-viselkedes volt, nem a process-group-kill logika hibaja: (1) a
+  stub-sleep fixture `sleep 300 &`-je egy job-control nelkuli bash-bol a SIGINT-et
+  automatikusan figyelmen kivul hagyja egy backgroundolt jobnal -- javitva
+  `( trap - INT HUP TERM; exec sleep 300 ) &`-ra; (2) EZ A MINTA EGY SZINTTEL FELJEBB
+  IS allt: a `case J` sajat kulso `bash "$0" --selftest-land-batch-case-j-run ... &`
+  hivasa UGYANEZT a bash-auto-SIGIGN-et szenvedte el a vizsgalt folyamatra, meg MIELOTT
+  az a sajat `trap '_batch_sig_stop INT 130' INT`-je (production kod) lefuthatott volna
+  -- egy orokolt SIG_IGN-t a gyerek sajat trap-je nem tudja felulirni, csak az orokolt
+  default-ot. Ket minimalis repro-script (`child-trap-repro.sh` + `parent-no-jobctrl.sh`
+  vs `parent-fix.sh`) bizonyitotta: `kill -INT` a backgroundolt gyerekre nem futtatta a
+  gyerek sajat trap-jet, amig a parent `( trap - INT HUP TERM; exec ... ) &` alakban
+  nem engedte at a szignalt. Javitva: a `case J` kulso hivasa is ugyanerre a mintara.
+  Mutacio-tesztelve: a `_batch_sig_stop` kill-sorat egy-pid-re szukitve (process-group
+  helyett) mindharom J-TERM/J-HUP/J-INT subcase pirosra valt (`dead=0`), a tobbi
+  valtozatlan marad.
+- **P5**: uj `case L`: `ALLOW_UNGATED_CARDS` vesszovel-hatarolt egyezes -- `l1` (nincs
+  listazva) REFUSED marad, holott literalis reszsztringje a listazott `l10`-nek; es
+  `bash "$0" --batch "l2:fixture" --allow-ungated` `die 2`-t ad ("does not accept
+  --allow-ungated") a `land_batch` meghivasa ELOTT, nem csak csendben ignoralt flag.
+
+Mind az ot pont megerositve a teljes `--selftest-land-batch` szuittel: 14 eset, PASS
+(A, B, C, D, F, I, J-TERM/HUP/INT, G, K, L, M, E). P4/P6/P7 szandekosan NEM resze ennek
+a delta-nak -- MikroB dontese szerint kulon follow-up kartyara mennek.
+
+Commit: `6029a2256` (branch `card/6ec8e9d8`, worktree-ben, meg landolas elott).
+
+**Ki dontott:** MikroB (18334/30735). Gate: qa2 + cybersec2 (re-gate ugyanarra a
+problemara, uj Gate-SHA ezen a delta-n). Epitette: fullstack (DevO).
