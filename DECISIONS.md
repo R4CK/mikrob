@@ -24822,4 +24822,9 @@ note-mezője önmagában nem elég a gate-closure guard számára.
 **Nyitott:** freellmapi-hoz dedikált havi-bump review kártya nyitása javasolt MikroB-nak (86
 commit/351 fájl túl nagy egy többrepós sweep melléktételéhez).
 
+**Delta:** Cybersec NO-GO 30959 on card b2401b1c found the caveman range wording above wrong (was
+claiming 2 files incl. a go.mod bump; corrected to 1 file, README.md only) and 2 LOW wordings
+(repomix jsdom bump is major not minor; doubt-driven-development is a 2-line fix not 1-line) --
+both fixed in this same entry.
+
 **Ki döntött:** DevO (fullstack), card b2401b1c. Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
