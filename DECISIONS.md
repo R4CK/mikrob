@@ -25142,3 +25142,31 @@ Delta fix (Cybersec2 30495, after NO-GO on 77b056e73): F4 -- the checkpoint POST
 Verification: tsc clean; card-checkpoints.test.ts 33/33; scheduler-tick-nonblocking.test.ts 85/85 (was 1 failed before this fix); kanban-delete-fk.test.ts 4/4 unaffected. Mutation-checked (loosening the hex regex turns F5/F5b red, widening the agent regex turns F6 red, reverting to execFileSync reproduces the scheduler-tick-nonblocking failure). Full suite green on 6ee105f50f75b51767d577077f5f41dc696a0f17 via `fleet-test.sh --ref`: 1326/1327 test files, 40583/40715 tests, lint-ratchet baseline holds.
 
 Gate: QA + Cybersec2. **Ki döntött:** backend.
+
+## 2026-11-14 -- card 24a12714 delta: Cybersec2 NO-GO 31317 H1 (LBTMP leak TERM alatt) + H2 (recursion-pin hianya) javitva
+
+Delta fix (Cybersec2 NO-GO 31317, Gate-SHA f7c154662-n): H1 -- a `_batch_sig_stop` es a
+`land_one`/`land_with_retry` torli a sajat signal-trapjeiket (a bash trap folyamat-globalis),
+a kulso fixture-build trap pedig csak `rm -rf "$LBTMP"`-t futtatott exit nelkul, igy egy TERM
+elnyelodott es a build folytatodott, ujra letrehozva a mappat (merve: 143-2841 fajl szivargott
+futasonkent). Javitas: explicit `_outer_sig_stop()` ami torol ES tenylegesen kilep
+TERM/HUP/INT-re, plusz egy leszakitott janitor-subshell (sajat maga ignoralja a TERM/INT/HUP-ot),
+ami `kill -0`-val varja a figyelt pid halalat es torli az LBTMP-t fuggetlenul a fo folyamat
+trap-allapotatol -- ezert tulel egy in-process trap-clobbert ES egy process-group-szintu kill-t
+is. H2 -- a case N `SELFTEST_BATCH_NESTED` skip-guardja nem volt pinnelve: a `PASSING`-hoz
+hasonloan BARMELY konstruktorral atirhato volt es nem jelzett semmit (merve: 15 leaked LBTMP,
+8 leaked worktree, 24 vs 9 folyamat, semmi piros). Javitas: kemeny `SELFTEST_BATCH_DEPTH` sapka
+(>=2 azonnal `FAIL`-t ad es kilep 3-mal, meg a fixture-epites ELOTT), ami fuggetlenul utazik a
+`SELFTEST_BATCH_NESTED`-tol mindket case-N spawn-soron. L1 -- a `_batch_sig_stop` elhagyta a sajat
+`ft_log` mktemp fajljat TERM/HUP/INT-nel; most torlodik a trap kilepese elott.
+
+Ellenorzes a VALODI szkripten (nem csak izolalt probakon), izolalt `TMPDIR`-rel: standard futas
+20/20 PASS rc=0 nulla szivargo fajllal; TERM 2s-nel es 8s-nel rc=143, nulla szivargas, nulla arva
+folyamat; H2 mutant (a `SELFTEST_BATCH_NESTED` check `"never"`-re torve) -- case N helyesen FAIL-t
+ad a mely-sapkan keresztul, nem korlatlan rekurzioval (csucs 8 folyamat a korabbi 24-41+-hoz
+kepest), nulla szivargo fajl.
+
+Commit: `e57c0ca74` (branch `fix/24a12714-batch-landing-pins`, elozo Gate-SHA `f7c154662`-re).
+
+**Ki dontott:** fullstack (DevO), Cybersec2 NO-GO 31317 nyoman. Gate: qa2 + cybersec2 re-gate
+ugyanarra a problemara, uj Gate-SHA ezen a delta-n.
