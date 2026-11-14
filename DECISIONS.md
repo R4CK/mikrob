@@ -25863,3 +25863,44 @@ Cybersec2 B1 (MikroB msg_id:18606 relay): a watched-repos-record-review.sh futta
 vegzi el mindharom bejegyzesre a kartya zarasakor, DevO nem futtatta.
 
 Gate: QA2 + Cybersec2, delta szabaly (csak store/watched-repos.json, egy sor). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14: card b64cfc09 -- GPU-driver launcher residuals after eb12a5dd
+
+Follow-up of eb12a5dd (CYBERED GO 30750, conditions). MikroB dispatch (msg 18353): pin the
+R2b fail-closed exits (each red under a semantic mutant), close the F2b pre-check race or
+write why it is safe, N2/N3/X4 only if small. Windows host measurement stays BLOKKOLT-Peti.
+Gates: QA + RedHat.
+
+- **R2b**: cybered's mut3.py (comment 30750) showed two unpinned selftest branches surviving
+  mutation -- "Phase 2 missing-state-file no longer exits 1" and "unparsable-state no longer
+  exits 1" -- both gate the owner/ACE divergence check that WAS already pinned. Added two
+  block-anchored checks to `gpu-driver-install-setup.selftest.sh`, same technique as the
+  existing divergence-block pin: extract the if/try block via `grep -A3`, assert `exit 1`
+  inside it. Mutation-tested each independently (dropping either exit 1 in the ps1 turns only
+  that check red, the other stays green); both restored, `git status --porcelain` empty,
+  `diff` confirmed byte-identical to the pre-mutation file after each restore.
+- **N2**: Phase 1's adoption loop (re-using a pre-existing `$TargetDir`) checked children for
+  owner but not reparse-point status -- Phase 2's own re-verification loop already checks
+  both. Added the same reparse-point check to Phase 1's loop, plus a matching selftest pin
+  (block-anchored, same technique), mutation-tested (dropping the exit 1 turns the new check
+  red, nothing else).
+- **F2b**: NOT code-fixed. Posted a safety argument as a kanban comment (30841) asking MikroB
+  to accept it: the hash-then-invoke race in the scheduled task's inline command requires an
+  attacker who already has Administrators/SYSTEM write access to the ACL-enforced target
+  directory to win it -- and an attacker at that privilege level does not need the race (they
+  can directly call Set-ScheduledTask to replace the pin, or run arbitrary code as themselves).
+  A structural fix (FileShare.None handle held across hash+invoke) exists but would touch
+  unverifiable SYSTEM-level Windows code with no host to test against; asked MikroB to accept
+  the residual rather than ship an untested change.
+- **N3** (pin without comparing to a gate-approved hash first) and **X4** (Write-Log can write
+  into TargetDir before the adoption guard confirms trust) are NOT small -- N3 needs a new
+  trusted-hash-source mechanism, X4 needs buffering of pre-guard log lines. Left open per the
+  card's own "only if small" scope note.
+- **Host measurement**: not run (no Windows host anywhere in the fleet, same limitation as
+  every prior round on this card family). Stays BLOKKOLT-Peti per MikroB's dispatch, not
+  faked.
+
+Measured: `gpu-driver-install-setup.selftest.sh` PASS (grew by 2 new block-anchored checks);
+`npx vitest run src/__tests__/graph-tooling-selftests.test.ts` 12/12 passed.
+
+**Ki döntött:** MikroB (msg 18353). Gate: QA + RedHat. Épitette: fullstack (DevO).
