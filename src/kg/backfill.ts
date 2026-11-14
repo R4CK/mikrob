@@ -12,7 +12,7 @@
 import type Database from 'better-sqlite3'
 import { execFileSync } from 'node:child_process'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { enqueueCapture, markCaptureFailed, listPendingCaptures } from './capture.js'
+import { enqueueCapture, markCaptureFailed, listPendingCaptures, listRetryableClosedCaptures } from './capture.js'
 import type { CaptureRunResult } from './capture-pipeline.js'
 
 const MARVEEN_MAIN = process.env.MARVEEN_MAIN || '/home/neon/marveen'
@@ -125,10 +125,19 @@ export function defaultGpuGate(scriptPath: string = `${MARVEEN_MAIN}/store/vram-
  *  defaultListCandidates (which deliberately EXCLUDES anything already queued, by design, for the
  *  opposite question "which done cards were never queued at all"). Both lists are combined by
  *  buildListCandidates (backfill-cli.ts) into one batch: drain first, discover new ones with
- *  whatever budget is left. */
+ *  whatever budget is left.
+ *
+ *  G1 (card c84a510a): a 'closed'/'reopen' row that then FAILED (transient draftFn/write error,
+ *  e.g. sustained GPU contention -- measured 3 consecutive first-row failures on this card) is
+ *  stuck in 'failed' forever otherwise -- this function only ever read 'pending' before. Appends
+ *  capped retryable failures (listRetryableClosedCaptures, same bounded shape as
+ *  MAX_BACKFILL_RETRY_ATTEMPTS below) after the genuinely-pending rows, still within `limit`. */
 export function defaultListPendingCandidates(kgDb: Database.Database, limit: number): readonly string[] {
   if (!Number.isInteger(limit) || limit <= 0) return []
-  return listPendingCaptures(kgDb, limit).map((r) => r.card_id)
+  const pending = listPendingCaptures(kgDb, limit).map((r) => r.card_id)
+  if (pending.length >= limit) return pending
+  const retryable = listRetryableClosedCaptures(kgDb, limit - pending.length).map((r) => r.card_id)
+  return [...pending, ...retryable]
 }
 
 function tallyNodeStatuses(kgDb: Database.Database, ids: readonly string[]): { active: number; draft: number } {

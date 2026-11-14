@@ -10,7 +10,7 @@ import {
   type BackfillDeps,
   type GpuGateResult,
 } from '../kg/backfill.js'
-import { enqueueCapture } from '../kg/capture.js'
+import { enqueueCapture, markCaptureFailed } from '../kg/capture.js'
 import type { CaptureRunResult } from '../kg/capture-pipeline.js'
 
 function freshKgDb(): Database.Database {
@@ -96,6 +96,46 @@ describe('defaultListPendingCandidates (card 1388200c: the drain the live hook n
     expect(defaultListPendingCandidates(kgDb, 1)).toEqual(['c1'])
     expect(defaultListPendingCandidates(kgDb, 0)).toEqual([])
     expect(defaultListPendingCandidates(kgDb, -1)).toEqual([])
+  })
+})
+
+describe('defaultListPendingCandidates (card c84a510a G1: a failed closed/reopen row is retryable, not stuck forever)', () => {
+  it('a closed row that failed once (attempts=1, below the cap) is a candidate again', () => {
+    const kgDb = freshKgDb()
+    enqueueCapture(kgDb, 'c1', 'closed', 1)
+    markCaptureFailed(kgDb, 'c1', 'draftFn timed out', 2)
+    expect(defaultListPendingCandidates(kgDb, 10)).toEqual(['c1'])
+  })
+
+  it('a reopen row that failed once is a candidate again', () => {
+    const kgDb = freshKgDb()
+    enqueueCapture(kgDb, 'c1', 'reopen', 1)
+    markCaptureFailed(kgDb, 'c1', 'write failed', 2)
+    expect(defaultListPendingCandidates(kgDb, 10)).toEqual(['c1'])
+  })
+
+  it('a closed row that failed twice (attempts=2, AT the cap) is excluded -- bounded, not unbounded retry', () => {
+    const kgDb = freshKgDb()
+    enqueueCapture(kgDb, 'c1', 'closed', 1)
+    markCaptureFailed(kgDb, 'c1', 'first failure', 2)
+    markCaptureFailed(kgDb, 'c1', 'second failure', 3)
+    expect(defaultListPendingCandidates(kgDb, 10)).toEqual([])
+  })
+
+  it('a failed backfill row is NOT surfaced here -- that retry path belongs to defaultListCandidates', () => {
+    const kgDb = freshKgDb()
+    enqueueCapture(kgDb, 'c1', 'backfill', 1)
+    markCaptureFailed(kgDb, 'c1', 'draftFn error', 2)
+    expect(defaultListPendingCandidates(kgDb, 10)).toEqual([])
+  })
+
+  it('genuinely pending rows are returned before retryable failed rows, within the limit', () => {
+    const kgDb = freshKgDb()
+    enqueueCapture(kgDb, 'c-failed', 'closed', 1)
+    markCaptureFailed(kgDb, 'c-failed', 'oops', 2)
+    enqueueCapture(kgDb, 'c-pending', 'closed', 3)
+    expect(defaultListPendingCandidates(kgDb, 1)).toEqual(['c-pending'])
+    expect(defaultListPendingCandidates(kgDb, 10)).toEqual(['c-pending', 'c-failed'])
   })
 })
 

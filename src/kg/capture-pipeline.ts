@@ -42,7 +42,15 @@ const MARVEEN_MAIN = process.env.MARVEEN_MAIN || '/home/neon/marveen'
 // F4: neither execFileSync call below had a timeout -- a hung gate-closure-check.py or
 // local-llm.sh subprocess would block the capture worker indefinitely.
 const CLOSURE_CHECK_TIMEOUT_MS = 10_000
-const DRAFT_CALL_TIMEOUT_MS = 120_000
+// Card c84a510a: 120_000 was refuted as the root cause of the kg-capture generation-hang -- a
+// direct streamed probe against the real ollama API (same model, same template, a real 2402-char
+// REVIEW) showed no stuck/hidden-reasoning generation (think:false already honoured, output
+// starts with the requested '[{"' immediately after prefill). It is genuinely just slow for this
+// template's token volume: prompt_eval_count=1055 took prompt_eval_duration=48.0s (~22 tok/s
+// prefill) and eval_count=371 took eval_duration=94.2s (~3.9 tok/s decode) on this GPU, for a
+// 160.2s total_duration even with the GPU gate reporting ADMIT (free VRAM/util) -- comfortably
+// past the old 120s cap on every run, not just contended ones.
+const DRAFT_CALL_TIMEOUT_MS = 300_000
 
 // F3 (card 2ace4db9, WhiteHat): draftFn shells out to a subprocess that can fail transiently
 // (model cold-start, brief Ollama hiccup) -- retry a bounded number of times before giving up,
@@ -202,13 +210,29 @@ function isSafeDraftField(value: string, maxLen: number): boolean {
   return value.length <= maxLen && !UNSAFE_CHARS_RX.test(value)
 }
 
+/** Card c84a510a (paired model-comparison measurement, comment 30214): the draft occasionally
+ *  wraps its JSON array in a markdown fence (```json ... ``` or ``` ... ```) despite the template
+ *  instructing "no markdown fences" -- measured on the current default model, not a reason to
+ *  switch models. Strips exactly ONE leading fence line and, only if a leading fence was found,
+ *  ONE trailing fence line -- nothing more lenient (no regex scan for an embedded [...] inside
+ *  prose): a draft that is not JSON after this must still fail to parse, not be guessed at. */
+function stripOneFence(raw: string): string {
+  const s = raw.trim()
+  const leadingFenceRx = /^```(?:json)?[ \t]*\r?\n/
+  const match = leadingFenceRx.exec(s)
+  if (!match) return s
+  const afterLeading = s.slice(match[0].length)
+  const trailingFenceRx = /\r?\n```[ \t]*$/
+  return trailingFenceRx.test(afterLeading) ? afterLeading.replace(trailingFenceRx, '') : afterLeading
+}
+
 /** Parses the local-LLM draft's JSON array, validated against KG_MAX_SOLUTIONS_PER_CARD and
  *  against non-empty titles -- malformed output is a capture failure, not a best-effort guess at a
  *  single node, so a confused draft never silently ships a low-quality node. */
 function parseDraft(raw: string, maxSolutions: number): DraftSolution[] | null {
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw.trim())
+    parsed = JSON.parse(stripOneFence(raw))
   } catch {
     return null
   }
@@ -324,10 +348,20 @@ export function defaultClosureCheck(cardId: string, comments: readonly KanbanCom
 }
 
 export function defaultDraftFn(reviewText: string): string {
+  // Card c84a510a round 2: DRAFT_CALL_TIMEOUT_MS only bounds THIS Node process's wait -- it does
+  // NOT reach the script's own curl call. local-llm.sh wraps ollama's /api/generate in `curl -m
+  // "$LOCAL_LLM_TIMEOUT"` (default 120, store/local-llm.sh:61), which fired and killed the real
+  // runs well under our 300s ceiling (measured: "ollama api error (timeout 120s or server
+  // error)" after ~120s, twice, on card 4306e862). Without this override the outer fix never
+  // takes effect because the inner curl always dies first.
   return execFileSync(
     `${MARVEEN_MAIN}/store/local-llm.sh`,
     ['--task', 'kg-capture', '--caller', 'kg-capture-worker', reviewText],
-    { encoding: 'utf8', timeout: DRAFT_CALL_TIMEOUT_MS },
+    {
+      encoding: 'utf8',
+      timeout: DRAFT_CALL_TIMEOUT_MS,
+      env: { ...process.env, LOCAL_LLM_TIMEOUT: String(DRAFT_CALL_TIMEOUT_MS / 1000 - 20) },
+    },
   )
 }
 
