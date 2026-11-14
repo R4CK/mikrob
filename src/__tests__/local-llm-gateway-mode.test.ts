@@ -260,6 +260,124 @@ describe('local-llm.sh gateway mode (card f3f4b571)', () => {
     }
   })
 
+  it('ON, a pulled model name CONTAINS the requested canon as a substring (not equal to it): refuses -- exact set membership, not substring-of-pulled-name (card 9b25cc84 G2, Cybersec GO 29890: `canon in n` for each pulled n would wrongly accept this, only `canon in names` as a set does not)', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      const ollamaPort = await startServer((req, res) => {
+        if (req.url === '/api/tags') {
+          // "myqwen:latest" contains "qwen:latest" as a literal substring starting at index 2,
+          // but is NOT equal to it -- a per-name substring test (`canon in n`) would match this;
+          // exact set membership correctly does not, since "qwen:latest" was never pulled.
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ models: [{ name: 'myqwen:latest' }] }))
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+      let gatewayHit = false
+      const gatewayPort = await startServer((_req, res) => {
+        gatewayHit = true
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'should-not-be-used' } }], usage: {} }))
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const r = await run(baseEnv({
+        OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }), ['--model', 'qwen', 'hello'])
+      expect(r.status).toBe(3)
+      expect(gatewayHit).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('ON, the requested model name contains a character outside the safe set: refuses even when a pulled model is byte-identical to it (card 9b25cc84 G2, Cybersec GO 29890: the character whitelist is defense in depth independent of what Ollama happens to have pulled -- without it, this exact-match-on-an-unsafe-name would wrongly pass)', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      const ollamaPort = await startServer((req, res) => {
+        if (req.url === '/api/tags') {
+          // Pulled name is BYTE-IDENTICAL to the requested model below (including the unsafe
+          // char) -- removing the character whitelist would make this an exact-match ACCEPT.
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ models: [{ name: 'qwen;rm:latest' }] }))
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+      let gatewayHit = false
+      const gatewayPort = await startServer((_req, res) => {
+        gatewayHit = true
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'should-not-be-used' } }], usage: {} }))
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const r = await run(baseEnv({
+        OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }), ['--model', 'qwen;rm', 'hello'])
+      expect(r.status).toBe(3)
+      expect(gatewayHit).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('PIN (known, accepted gap while the gateway switch is OFF -- card 9b25cc84 G3, Cybersec GO 29890): a pulled model literally named like a needsKey catalog id (e.g. "qwen3-coder") passes model_pulled and is forwarded to the gateway AS that id -- exact-name match proves Ollama has the model, not which platform the gateway string routes to. Documented here so a future change to this behaviour is visible, not silently reintroduced or silently fixed without updating this test.', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      const ollamaPort = await startServer((req, res) => {
+        if (req.url === '/api/tags') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ models: [{ name: 'qwen3-coder:latest' }] }))
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+      let forwardedModel: unknown
+      const gatewayPort = await startServer((req, res) => {
+        let body = ''
+        req.on('data', (c) => { body += c })
+        req.on('end', () => {
+          forwardedModel = JSON.parse(body).model
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ choices: [{ message: { content: 'gateway-reply' } }], usage: {} }))
+        })
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const r = await run(baseEnv({
+        OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }), ['--model', 'qwen3-coder', 'hello'])
+      expect(r.status).toBe(0)
+      // The known gap: the gateway forwards the catalog-id-shaped name VERBATIM. Closing this
+      // (a served-platform check) is explicitly deferred (Cybersec GO 29890 G3, LOW, latent
+      // while the switch is OFF) -- this test pins the current behaviour so the gap stays
+      // visible rather than silent.
+      expect(forwardedModel).toBe('qwen3-coder')
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
   it('ON, --model is empty or a bare "." : refuses before any gateway request, even though both used to match every /api/tags response as a substring needle', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
     const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')

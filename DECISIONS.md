@@ -25381,3 +25381,61 @@ VALÓDI saját commitja (e3787f5d8, tartalom-azonos a fenti négy fájlon) friss
 cherry-pickelve, a DECISIONS.md bejegyzés (ez a blokk) kézzel újra a fájl VÉGÉRE fűzve, mert az
 eredeti append pozíciója (akkori sor 23770) közben elavult. A verdikt áthozva, nem újra-reviewolva --
 lásd a landoló komment a pontos per-fájl blob-azonosság igazolással.
+
+
+## 2026-11-13 — cdde2666 delta (re-added): javítócsomag a Cybersec GO 29776 F-B és Cybered NO-GO 29789 F-A/F-B leletekre
+
+**Kontextus:** ez a bejegyzés eredetileg a 31040d4b1 commitban készült el a cdde2666 kártyán, de a
+cdde2666 Gate-SHA 8b637ff42 rebuildje (MikroB msg 18090, checkout -B origin/develop @ 61a258e38 +
+cherry-pick) nem vette át -- a scoped diff csak a kártya-tulajdonú KÓD-fájlokra lett ellenőrizve
+üresre a korábban gated 31040d4b1-gyel szemben, a DECISIONS.md tartalma nem. Cybered jelezte LOW-ként
+a 9b25cc84 delta-gate-en (fix round 29789 tartalma hiányzik a landolt fából). Újra felvéve, MOST a
+fájl VÉGÉRE (nem a kronológiai helyére), a tail-append invariáns szerint.
+
+**Kontextus:** Cybersec GO 29776 F-B (MEDIUM) és Cybered NO-GO 29789 F-A/F-B ugyanazt a két hibát azonosította a 4bd3605c5 shán: (1) `card-route-table-replay.sh` a régi, szűkebb `gemini-agy-category-check.py`-t hívta tartalmi szűrőként, és egy hitelesítés nélküli (401) vagy üres fetch-et is "checked"-ként, egy checker rc=2-t "nem sértés"-ként számolt el -- egy olyan futás, ami semmit nem ellenőrzött, ugyanazt a `checked=146 skipped=0 violations=0`-t írta ki, mint egy olyan, ami mindent ellenőrzött; (2) a gateway-mód F1 modell-ellenőrzése (`curl .../api/tags | grep -q "${MODEL%%:*}"`) nem allowlist, hanem egy horgony nélküli substring-egyezés a nyers JSON-blobon -- 4 valós modellnévvel (qwen2.5-coder, qwen2.5, qwen2, nomic-embed-text) és több szintetikus needle-lel (üres string, "auto", "auto:chain") átment, miközben none valódi katalógus-azonosító. MikroB dispatch (msg_id:17674): mindkettőt javítani ezen a kártyán, új REVIEW új Gate-SHA-val, QA + Cybersec + Cybered újra.
+**Döntés:**
+F-A: `card-route-table-replay.sh` átírva, hogy a VALÓS egress-kaput (`is_freellm_blocked()`) hívja a `store/offload-dispatch.sh --check-freellm-blocked` belépési ponton (ugyanaz, amit a `--test-capacity-route` is használ), hitelesítve a `store/.dashboard-token`-nel; a kártya-JSON és a label-fetch HTTP státuszkódot is néz (401/más nem-200 = hiba, 404 = skip, hiányzó checker = azonnali FATAL). A kilépési kód mostantól nem-nulla, ha violations>0 VAGY skipped>0 VAGY errors>0 -- egy futás, ami semmit nem tudott ellenőrizni, többé nem nézhet ki ugyanúgy, mint egy, ami mindent ellenőrzött.
+F-B: `local-llm.sh`-ba új `model_pulled()` függvény (az `ollama_up()` után) -- a `/api/tags` JSON-t elemzi, elutasítja az `[A-Za-z0-9._/:-]` halmazon kívüli karaktert tartalmazó vagy üres nevet, a hiányzó `:latest` utótagot a meglévő `model_switch_state()`-tel azonos módon kanonizálja, és a valódi `models[].name` értékek HALMAZÁHOZ VISZONYÍTOTT PONTOS egyezést végez (soha nem substring/regex a nyers törzsön). Mindkét hívási hely (gateway-mód előfeltétel-kapu, direkt-út diagnosztika) lecserélve.
+**Ellenőrzés:** élő, hitelesített replay-futás a valódi logon: `checked=146 skipped=0 errors=0 violations=0`, rc=0 -- a korábban "sértésnek" jelölt 14931e4e/200d2969/ba22ec48 a valós kapu alatt mind BLOKKOLT (legacy túl-blokkolás, nem szivárgás, Cybered saját spot-checkje is megerősíti). `card-route-table-replay.selftest.sh` 17/17 (10 eset, köztük a 401/404/hiányzó-checker/nincs-token reprodukció), `card-route-table.selftest.sh` 11/11, `offload-dispatch.selftest.sh` 120/120, `tsc --noEmit` 0 hiba. `fleet-test.sh --ref 3f8918cb0` (a tényleges merge-eligible shán): 9/9 teszt zöld (6 régi + 3 új a `local-llm-gateway-mode.test.ts`-ben: `--model auto`/`auto:x` elutasítva lepullozott "test-model"+"starcoder2-autocomplete" mellett is, `--model ''`/`.` elutasítva, statikus pin a `GATEWAY_API_BASE` default során). QA PASS 29882 + Cybersec GO 29890 ugyanezen a shán megerősítette mindkettőt mutációs teszttel.
+**Nincs benne (Cybersec GO 29890 G1-G3, külön kártyára kerül MikroB döntése szerint):** a replay zéró eredménye a "gemini-ok" jelölő MEGKÖVETELÉSÉHEZ kötött (marker-off állapotban 3 sértés jelenik meg, ugyanaz a 3 kártya, legacy túl-blokkolásként azonosítva) -- ez a feltétel nincs kimondva a REVIEW-ban; a `model_pulled()` substring/karakter-whitelist mutánsait nem fogja el teszt; az exact-name egyezés azt bizonyítja, hogy Ollama lepullozta a modellt, nem azt, hogy a gateway ARRA az útra küldi (egy lepullozott `qwen3-coder`/`command-r` nevű modell átmenne egy katalógus-azonosítóként).
+**Ki döntött:** backend2 (kártya cdde2666, Cybersec GO 29776 F-B + Cybered NO-GO 29789 F-A/F-B, MikroB dispatch msg_id:17674). Gate: QA + Cybersec + Cybered. Gate-SHA: lásd a cdde2666 REVIEW komment (8b637ff4284979889abc761d2923730fef933d2a, landed as 077c16bda806af24fd0bc51d7f77997901459057). Az eredeti bejegyzés a 31040d4b1 commitban készült, és Cybered LOW-ja (9b25cc84 delta-gate) jelezte a hiányát; MikroB (msg 18186) utasította az újrafelvételt a 9b25cc84 rebuildben.
+
+## 2026-11-13 -- 9b25cc84: cdde2666 Cybersec GO 29890 G1-G3 table-mode preconditions
+
+**Döntés:** Cybersec GO 29890 a cdde2666-n (3f8918cb0) három feltételt hagyott a table mode /
+switch ON előtt (nem landolási blokk a cdde2666-ra magára). G1 (MEDIUM): a replay zéró eredménye a
+"gemini-ok" jelölő MEGKÖVETELÉSÉHEZ kötött; marker-off állapotban (Peti 13651 feltétele, amin a
+table mode futna) a valódi replay 3 sértést ad. Reprodukálva élőben: `OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK`
+egy üres fájlra állítva + `card-route-table-replay.sh` a valódi logon -> checked=147 skipped=0
+errors=0 violations=3: 14931e4e, 200d2969, ba22ec48. Diszpozíció mindháromra: a card-build-route.log
+mindhármat a tartalmi osztályozó egy-egy kulcsszó-alapú okával jelölte (14931e4e és 200d2969:
+`deterministic-document-assembly`, egy README fork-fejlesztés bejegyzés-frissítés és egy
+skill-hozzárendelés doksi-feladat; ba22ec48: `deterministic-auth-tenant-scope`, egy
+`local-llm-installed` maszk-felismerési infra-bugfix), de a kártyák tényleges tartalma NEM
+money/auth/PII/tenant-határ-logikát hordoz -- mindhárom legacy túl-blokkolás (a nehézség-tengely és
+az érzékenység-tengely összekeveredése, RedHat eredeti olvasata), nem szivárgás. Nincs kódváltozás
+ehhez a ponthoz (a kártya Kész-ha-ja explicit megengedi a diszpozíciót ZERO helyett).
+
+G2 (LOW): két `model_pulled()` mutáns (substring-membership `canon in n` minden pulled névre, és a
+karakter-whitelist eltávolítása) túlélte a meglévő 13 gateway tesztet. Két új teszt a
+`local-llm-gateway-mode.test.ts`-ben: (1) egy pulled név, ami TARTALMAZZA a kért canont
+részsztringként, de nem egyezik vele ("myqwen:latest" vs kért "qwen") -- mutáció-bizonyítva: a
+substring-mutáns pontosan ezt a tesztet viszi pirosra, a többi 10 zöld marad. (2) egy kért modellnév
+tiltott karakterrel, byte-azonos egy pulled névvel (a tiltott karaktert is beleértve) --
+mutáció-bizonyítva: a karakter-whitelist eltávolítása pontosan ezt a tesztet viszi pirosra.
+
+G3 (LOW, látens amíg a kapcsoló OFF): a pontos-név egyezés azt bizonyítja, hogy Ollama lepullozta a
+modellt, nem azt, hogy a gateway MELYIK platformra küldi a stringet. Egy pulled modell, amit egy
+needsKey katalógus-azonosítóhoz hasonlóan neveztek el (qwen3-coder, command-r), átmegy és
+szó szerint továbbmegy. Új PIN teszt rögzíti a jelenlegi (elfogadott, nyitva hagyott) viselkedést --
+a lezárás (served-platform ellenőrzés) külön, elhalasztott munka, ezt a tesztet a jövőbeli változás
+látnivalóvá teszi, nem csendessé.
+
+**Teszt:** `local-llm-gateway-mode.test.ts` 9 -> 12/12 zöld. `card-route-table-replay.selftest.sh`
+17/17, `card-route-table.selftest.sh` 11/11, `offload-dispatch.selftest.sh` 120/120, `tsc --noEmit`
+tiszta. Rebuild (2026-11-13, MikroB msg 18186): a kártya ága a landolt cdde2666 tetejére (origin/develop
+@ 0032dd8d3) lett újraépítve -- csak a G1-G3 saját teszt-commit (a cdde2666/F2 duplikált közbenső
+commitok kimaradtak, mert már a landolt cdde2666-ban/f3f4b571-ben megvannak).
+
+**Ki döntött:** backend2 (kártya 9b25cc84, MikroB dispatch msg_id:17942). Gate: QA + Cybersec +
+RedHat (routing to external providers).
