@@ -187,6 +187,98 @@ def mut_a10(claude_md: Path, rules_dir: Path) -> None:
     claude_md.write_text(text[:start] + f"```\n{line}\n```" + text[end:], encoding="utf-8")
 case("A10: rule-14's bullet wrapped in a fenced code block", mut_a10)
 
+# --- QA1 (31269): delete rule 14's bullet, duplicate rule 13's in its place -- the raw bullet-
+# count floor is unchanged (one removed, one added), so only per-rule-number tracking catches it.
+def mut_qa1(claude_md: Path, rules_dir: Path) -> None:
+    text = claude_md.read_text(encoding="utf-8")
+    marker14 = "  - **14.** **ZAJOS PARANCS-KIMENET"
+    start = text.index(marker14)
+    end = text.index("\n", start) + 1
+    rule14_line = text[start:end]
+    marker13 = "  - **13.** **Üzleti adat"
+    start13 = text.index(marker13)
+    end13 = text.index("\n", start13) + 1
+    rule13_line = text[start13:end13]
+    text = text[:start] + rule13_line + text[end:]  # replace rule 14's bullet with a copy of 13's
+    claude_md.write_text(text, encoding="utf-8")
+case("QA1: rule-14 bullet deleted, rule-13 bullet duplicated in its place (count unchanged)", mut_qa1)
+
+# --- duplicate heading (RedHat gap): the Munkavegzesi section heading appears twice ---------------
+def mut_dup_heading(claude_md: Path, rules_dir: Path) -> None:
+    text = claude_md.read_text(encoding="utf-8")
+    marker = "- **Munkavégzési szabályok (csapat-workflow)**"
+    idx = text.index(marker)
+    end = text.index("\n", idx) + 1
+    heading_line = text[idx:end]
+    claude_md.write_text(text[:end] + heading_line + text[end:], encoding="utf-8")
+case("duplicate section heading (Munkavegzesi szabalyok appears twice)", mut_dup_heading)
+
+# --- inverted allowlisted bullet (RedHat gap): 19 and 8a skip the verbatim check entirely ---------
+def mut_pinned_19(claude_md: Path, rules_dir: Path) -> None:
+    replace_once(
+        claude_md,
+        "- **19.** **Tisztázó kérdés, ha a feladat lényege vagy célja nem tiszta",
+        "- **19.** **SOHA ne kérdezz, ha a feladat lényege vagy célja nem tiszta",
+        "pinned-19",
+    )
+case("inverted allowlisted bullet 19 (bypasses the verbatim check, caught by the pin instead)", mut_pinned_19)
+
+def mut_pinned_8a(claude_md: Path, rules_dir: Path) -> None:
+    replace_once(
+        claude_md,
+        "- **8a.** **A párosítás LÉTREJÖTTE legyen strukturális és lekérdezhető",
+        "- **8a.** **A párosítás LÉTREJÖTTE NEM kell legyen strukturális és lekérdezhető",
+        "pinned-8a",
+    )
+case("inverted allowlisted bullet 8a (bypasses the verbatim check, caught by the pin instead)", mut_pinned_8a)
+
+# --- missing baseline entry: a pinned bullet with nothing recorded yet must also be RED, not
+# silently skipped (a fresh checkout before the first --update-baseline run) --------------------
+def mut_no_baseline(claude_md: Path, rules_dir: Path) -> None:
+    (rules_dir / ".reachability-baseline.json").unlink(missing_ok=True)
+case("no baseline file at all (pinned bullets have nothing to compare against)", mut_no_baseline)
+
+# --- --update-baseline (MikroB hold 31268): the one-command path for an INTENTIONAL rewording
+# of a line that existed in the pre-split monolith -- must turn a legitimate edit back to GREEN,
+# and must refuse to write anything without --yes.
+d, claude_md, rules_dir = sandbox()
+try:
+    replace_once(
+        rules_dir / "munkavegzesi-szabalyok.md",
+        "a készítő SOHA nem ellenőrzi a sajátját",
+        "a készítő a kockázat-alapú tiering szerint ritkán ellenőrzi a sajátját (szándékos reword a selftesthez)",
+        "update-baseline-reword",
+    )
+    rc, out = run_checker(claude_md, rules_dir)
+    if rc != 0:
+        ok("a reworded binding line turns the checker red before --update-baseline")
+    else:
+        bad("the reworded line did not turn the checker red", out[-500:])
+
+    rc_noyes = subprocess.run(
+        [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir)],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    baseline_file = rules_dir / ".reachability-baseline.json"
+    before = baseline_file.read_text(encoding="utf-8")
+    after_noyes = baseline_file.read_text(encoding="utf-8") if baseline_file.exists() else None
+    if rc_noyes.returncode != 0 and after_noyes == before:
+        ok("--update-baseline without --yes writes nothing and exits non-zero")
+    else:
+        bad("--update-baseline without --yes still wrote the baseline file", rc_noyes.stdout + rc_noyes.stderr)
+
+    rc_yes = subprocess.run(
+        [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    rc2, out2 = run_checker(claude_md, rules_dir)
+    if rc_yes.returncode == 0 and rc2 == 0:
+        ok("--update-baseline --yes records the reworded line; the checker is green again")
+    else:
+        bad("checker still red after --update-baseline --yes", out2[-800:])
+finally:
+    shutil.rmtree(d)
+
 print()
 print(f"claude-md-split-reachability-check.selftest: {pass_count} passed, {fail_count} failed")
 sys.exit(1 if fail_count else 0)

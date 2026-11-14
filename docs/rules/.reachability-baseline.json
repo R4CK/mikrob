@@ -1,0 +1,7 @@
+{
+  "accepted_missing_lines": [],
+  "pinned_bullets": {
+    "19": "- **19.** **Tisztázó kérdés, ha a feladat lényege vagy célja nem tiszta -- az `interview-me` skillel (Peti szabály 2026-09-24, Telegram).** Mielőtt egy ügynök nekiáll egy kártyának/kérésnek, aminek a CÉLJA vagy a LÉNYEGE nem egyértelmű, futtassa az `interview-me` skillt; a válaszig a kártya `waiting`-re megy `BLOKKOLT-tisztázás` jelöléssel. (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)",
+    "8a": "- **8a.** **A párosítás LÉTREJÖTTE legyen strukturális és lekérdezhető, ne csak próza (kártya d03b3eea mérése, 2026-08-16).** A párosított kártyák leírásának első soraiban kötelező: a backend/domain kártyán `Pair-FE: <Fron Ted kártya ID>`, a Fron Ted kártyán `Pair-BE: <backend/domain kártya ID>`. (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)"
+  }
+}

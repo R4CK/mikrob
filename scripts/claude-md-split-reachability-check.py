@@ -63,7 +63,29 @@ paragraph (not touching the original bullet's own text) is still invisible to ev
 same as to the one-way conservation check -- this is RedHat's own stated limit (memory:
 a-one-way-conservation-check-proves-nothing-was-lost-not-that-nothing-was-weakened), not
 something this card closes.
+
+cc72cb3e delta (MikroB hold 31268 + QA FAIL 31269 on CYBERED GO 9300adbb): three more gaps.
+  - QA1 (bullet-COUNT floor defeated by delete+duplicate): deleting one rule's index bullet and
+    duplicating an adjacent one keeps the >=71 floor satisfied. Fixed by tracking rule NUMBERS
+    per section (not a raw count): a number appearing twice in one section is a duplicate; a
+    number present in the section's own docs/rules file but absent from CLAUDE.md's bullets for
+    that section is a gap (rule without an index line) -- both independent of the total count.
+  - RedHat gap (duplicate heading): each of the 4 section-heading anchors must appear exactly
+    once in CLAUDE.md.
+  - RedHat gap (inverted allowlisted bullet 19/8a): these two bypass the verbatim-substring
+    check (hand paraphrase, RedHat F3), so an inversion of THEM specifically was invisible to
+    everything else. PINNED_BULLETS stores their current exact text (baseline-tracked, see
+    below) and requires byte-for-byte equality, not just "skip".
+  - MikroB's operational hold: the conservation check (old_ref vs current corpus) has no path
+    for accepting an INTENTIONAL rewording of a line that existed in the original pre-split
+    file -- every future edit to one of those 661 lines turns the standing control red forever,
+    with no documented fix. `--update-baseline` (below) is the one command: it records the
+    CURRENT set of conservation-missing lines and the CURRENT text of the 19/8a pinned bullets
+    into docs/rules/.reachability-baseline.json, to be run in the SAME commit as an intentional
+    rule edit (after a human/agent has confirmed the newly-missing lines are a deliberate
+    rewording, not an accidental drop -- it does not judge that for you).
 """
+import json
 import re
 import subprocess
 import sys
@@ -105,12 +127,31 @@ H1_TOKENS = [
 ]
 
 # Per-rule index bullets whose lead sentence is a hand-written paraphrase, not a verbatim
-# substring of the rule file (RedHat F3, comment 30478) -- accepted, not re-opened here.
+# substring of the rule file (RedHat F3, comment 30478) -- accepted, not re-opened here. Their
+# exact text is instead pinned via the baseline file (PINNED_BULLET_KEYS, see check_pinned_bullets).
 VERBATIM_ALLOWLIST = {"8a", "19"}
+PINNED_BULLET_KEYS = VERBATIM_ALLOWLIST
 
 RULE_BULLET_RE = re.compile(
     r"^\s*-\s+\*\*([0-9]+[a-z]?)\.\*\*\s+\*\*(.+?)\*\*(.*)\((/home/neon/marveen/docs/rules/[^)]+\.md)\)\s*$"
 )
+
+# Every top-level rule-number marker a docs/rules file uses for ITS OWN numbering: either
+# "N. **Title**" (number outside the bold, flush left) or "   **Na. Title**" (number inside a
+# bold span that opened before it, indented sub-rule style -- e.g. 4a-4f under rule 4). Anchored
+# to the start of a line so it never matches an inline cross-reference like "(4b. szabály)"
+# inside running prose.
+SOURCE_RULE_NUM_RE = re.compile(r"(?:^([0-9]+[a-z]?)\.\s*\*\*|^\s*\*\*([0-9]+[a-z]?)\.\s)", re.M)
+
+# (section key, heading anchor as it appears in CLAUDE.md, the docs/rules file that section's
+# OWN numbering should be cross-checked against -- None where the file has no such numbering of
+# its own, e.g. Szemelyiseg's two bullets are CLAUDE.md-only additions).
+SECTION_ANCHORS = [
+    ("munkavegzesi", "**Munkavégzési szabályok", "munkavegzesi-szabalyok.md"),
+    ("kodminosegi", "**Kódminőségi alapelvek", "kodminosegi-alapelvek.md"),
+    ("ellenorizheto", "**Ellenőrizhető munka", "ellenorizheto-munka.md"),
+    ("szemelyiseg", "**Személyiség**", None),
+]
 
 
 def strip_inert_markup(text: str) -> str:
@@ -122,19 +163,115 @@ def strip_inert_markup(text: str) -> str:
     return text
 
 
-def find_rule_bullets(visible_claude_md: str) -> list[tuple[str, str, str, str]]:
-    """Returns (rule_num, lead_sentence, rest_of_bullet, link_path) for every VISIBLE numbered
-    per-rule index bullet (the "- **N.** **Lead.** rest ... (path)" lines under the three
-    indexed sections)."""
+def find_rule_bullets(visible_claude_md: str) -> list[tuple[str, str, str, str, str]]:
+    """Returns (section, rule_num, lead_sentence, rest_of_bullet, link_path) for every VISIBLE
+    numbered per-rule index bullet (the "- **N.** **Lead.** rest ... (path)" lines), tagged with
+    which of SECTION_ANCHORS it last saw a heading for."""
     out = []
+    section = None
     for line in visible_claude_md.split("\n"):
+        for key, anchor, _ in SECTION_ANCHORS:
+            if anchor in line:
+                section = key
+                break
         m = RULE_BULLET_RE.match(line)
         if m:
-            out.append((m.group(1), m.group(2), m.group(3), m.group(4)))
+            out.append((section, m.group(1), m.group(2), m.group(3), m.group(4)))
     return out
 
 
-def check_index_structure(new_text: str, rules_dir: Path) -> list[str]:
+def find_full_bullet_line(visible_claude_md: str, rule_num: str) -> str | None:
+    """The raw, normalized text of the index bullet LINE for a given rule number (used to pin
+    the exact text of allowlisted bullets like 8a/19, which skip the verbatim-substring check)."""
+    target = f"**{rule_num}.**"
+    for line in visible_claude_md.split("\n"):
+        m = RULE_BULLET_RE.match(line)
+        if m and m.group(1) == rule_num and target in line:
+            return normalize(line)
+    return None
+
+
+def check_pinned_bullets(visible: str, baseline: dict) -> list[str]:
+    """RedHat gap (inverted allowlisted bullet): 8a/19 skip the verbatim-substring check
+    entirely (hand paraphrase, F3), so an inversion of THEM is invisible to everything else.
+    Pins their exact current text via the baseline file instead."""
+    problems = []
+    pinned = baseline.get("pinned_bullets", {})
+    for num in sorted(PINNED_BULLET_KEYS):
+        current = find_full_bullet_line(visible, num)
+        if current is None:
+            problems.append(f"pinned bullet {num}: not found in CLAUDE.md at all")
+            continue
+        expected = pinned.get(num)
+        if expected is None:
+            problems.append(
+                f"pinned bullet {num}: no baseline entry yet -- run --update-baseline once to record it"
+            )
+        elif current != expected:
+            problems.append(
+                f"pinned bullet {num}: text changed from the baseline (inverted/edited without "
+                f"--update-baseline): now {current!r}"
+            )
+    return problems
+
+
+def check_section_numbering(bullets: list, rules_dir: Path) -> list[str]:
+    """QA FAIL 31269 (QA1): a disguised delete+duplicate swap keeps the raw bullet-count floor
+    satisfied. Tracks rule NUMBERS per section instead: a number appearing twice in one section
+    is a duplicate/renumbering; a number the section's own rule file defines but that has no
+    CLAUDE.md bullet is a gap (a rule with no index line at all)."""
+    problems = []
+    by_section: dict[str, list[str]] = {}
+    for section, num, _lead, _rest, _link in bullets:
+        by_section.setdefault(section, []).append(num)
+
+    for key, _anchor, rule_file in SECTION_ANCHORS:
+        nums_here = by_section.get(key, [])
+        for num, cnt in Counter(nums_here).items():
+            if cnt > 1:
+                problems.append(f"section {key}: rule {num} has {cnt} index bullets (duplicate or renumbered)")
+
+        if rule_file is None:
+            continue
+        rule_path = rules_dir / rule_file
+        if not rule_path.is_file():
+            continue
+        # Only the GAP direction is checked (a numbered rule the source file defines but that
+        # has no CLAUDE.md bullet) -- not the reverse. An index bullet with NO matching source
+        # number is not inherently a problem: card cc72cb3e's own 22a-22e bullets deliberately
+        # index rules that were previously UNNUMBERED prose in the source file (that absence of
+        # native numbering is exactly why they had no index line before), so a bullet having no
+        # source-side counterpart is a legitimate, additive pattern, not a defect.
+        source_nums = {
+            m.group(1) or m.group(2) for m in SOURCE_RULE_NUM_RE.finditer(rule_path.read_text(encoding="utf-8"))
+        }
+        claude_nums = set(nums_here)
+        for num in sorted(source_nums - claude_nums):
+            problems.append(f"section {key}: rule {num} exists in {rule_file} but has no CLAUDE.md index bullet")
+
+    return problems
+
+
+def check_duplicate_headings(visible: str) -> list[str]:
+    """RedHat gap (duplicate heading): two copies of a section heading would make bullets
+    between them ambiguous about which section (and which rule file) they belong to."""
+    problems = []
+    for _key, anchor, _rule_file in SECTION_ANCHORS:
+        cnt = visible.count(anchor)
+        if cnt == 0:
+            problems.append(f"section heading not found in CLAUDE.md: {anchor!r}")
+        elif cnt > 1:
+            problems.append(f"section heading appears {cnt} times (duplicate heading): {anchor!r}")
+    return problems
+
+
+def load_baseline(baseline_path: Path) -> dict:
+    if baseline_path.is_file():
+        return json.loads(baseline_path.read_text(encoding="utf-8"))
+    return {"accepted_missing_lines": [], "pinned_bullets": {}}
+
+
+def check_index_structure(new_text: str, rules_dir: Path, baseline: dict) -> list[str]:
     problems = []
     visible = strip_inert_markup(new_text)
 
@@ -142,15 +279,21 @@ def check_index_structure(new_text: str, rules_dir: Path) -> list[str]:
     # 37 munkavegzesi (1-22 + letters) + 5 (22a-22e, card cc72cb3e F1) + 15 kodminosegi +
     # 12 ellenorizheto-munka + 2 szemelyiseg (card cc72cb3e F1) = 71. A floor, not an exact
     # count: a future card adding MORE bullets should not need to touch this number, only one
-    # removing/hiding a bullet without replacing it should.
+    # removing/hiding a bullet without replacing it should. QA FAIL 31269: this floor alone can
+    # be satisfied by a delete+duplicate swap -- check_section_numbering() below is what
+    # actually catches that, this is just a cheap first-pass sanity floor.
     MIN_BULLETS = 71
     if len(bullets) < MIN_BULLETS:
         problems.append(
             f"only {len(bullets)} visible numbered per-rule index bullets found, want >= {MIN_BULLETS}"
         )
 
+    problems.extend(check_duplicate_headings(visible))
+    problems.extend(check_section_numbering(bullets, rules_dir))
+    problems.extend(check_pinned_bullets(visible, baseline))
+
     linked_files = set()
-    for num, lead, rest, link in bullets:
+    for section, num, lead, rest, link in bullets:
         linked_files.add(Path(link).name)
         if not link.startswith("/home/neon/marveen/docs/rules/"):
             problems.append(f"rule {num}: link is not repo-root-absolute under docs/rules/: {link}")
@@ -200,14 +343,21 @@ def check_index_structure(new_text: str, rules_dir: Path) -> list[str]:
     return problems
 
 
-def main() -> int:
-    if len(sys.argv) != 4:
-        print(__doc__, file=sys.stderr)
-        return 2
-    old_ref, new_claude_md_path, docs_rules_dir = sys.argv[1:4]
+def _parse_args(argv: list[str]):
+    update = "--update-baseline" in argv
+    yes = "--yes" in argv
+    pos = [a for a in argv if a not in ("--update-baseline", "--yes")]
+    if len(pos) not in (3, 4):
+        return None
+    old_ref, new_claude_md_path, docs_rules_dir = pos[:3]
+    baseline_path = Path(pos[3]) if len(pos) == 4 else Path(docs_rules_dir) / ".reachability-baseline.json"
+    return old_ref, new_claude_md_path, docs_rules_dir, baseline_path, update, yes
 
+
+def _compute(old_ref: str, new_claude_md_path: str, docs_rules_dir: str):
+    """Shared by the normal check and --update-baseline: everything that does not depend on
+    the baseline file itself."""
     old_text = git_show(old_ref, "CLAUDE.md")
-
     new_text = Path(new_claude_md_path).read_text(encoding="utf-8")
     rules_dir = Path(docs_rules_dir)
     rule_files = sorted(rules_dir.glob("*.md")) if rules_dir.is_dir() else []
@@ -215,16 +365,8 @@ def main() -> int:
     corpus = normalize("\n".join(corpus_parts))
 
     gating_hits = extract_lines(old_text, GATING_TOKENS)
-
     missing = [(ln, line) for ln, line in gating_hits if line not in corpus]
 
-    print(f"{len(gating_hits)} lines checked, {len(missing)} missing")
-    if missing:
-        print("\nMISSING (present in old CLAUDE.md, not found in new corpus):", file=sys.stderr)
-        for ln, line in missing:
-            print(f"  L{ln}: {line}", file=sys.stderr)
-
-    # --- full non-empty-line multiset conservation (WhiteHat2 L1) ---
     old_lines_norm = [normalize(l) for l in old_text.split("\n") if normalize(l)]
     old_counts = Counter(old_lines_norm)
     corpus_lines_norm = [normalize(l) for l in "\n".join(corpus_parts).split("\n") if normalize(l)]
@@ -234,14 +376,76 @@ def main() -> int:
         have = new_counts.get(line, 0)
         if have < cnt:
             conservation_missing.append((cnt - have, line))
-    print(f"\nline-conservation: {len(old_counts)} distinct non-empty lines in the old file, "
-          f"{len(conservation_missing)} short in the new corpus")
+
+    return new_text, rules_dir, missing, conservation_missing
+
+
+def _update_baseline(old_ref, new_claude_md_path, docs_rules_dir, baseline_path: Path, confirmed: bool) -> int:
+    """The one command MikroB's hold (31268) asked for: run this in the SAME commit as an
+    intentional edit to a binding rule's wording. Records the CURRENT conservation-missing
+    lines and the CURRENT text of the pinned (8a/19) bullets as the new accepted baseline --
+    it does NOT judge whether the newly-missing lines are a legitimate rewording or an
+    accidental drop; that judgment is the caller's, which is why --yes is required."""
+    new_text, rules_dir, missing, conservation_missing = _compute(old_ref, new_claude_md_path, docs_rules_dir)
+    visible = strip_inert_markup(new_text)
+
+    new_accepted = sorted({line for _, line in missing} | {line for _, line in conservation_missing})
+    pinned = {}
+    for num in sorted(PINNED_BULLET_KEYS):
+        line = find_full_bullet_line(visible, num)
+        if line is not None:
+            pinned[num] = line
+
+    print(f"About to accept {len(new_accepted)} currently-missing line(s) as intentional, and "
+          f"pin {len(pinned)} bullet(s) ({', '.join(sorted(pinned))}):")
+    for line in new_accepted:
+        print(f"  ACCEPT: {line}")
+    if not confirmed:
+        print("\nNothing written -- pass --yes after reviewing the list above.", file=sys.stderr)
+        return 1
+
+    baseline_path.write_text(
+        json.dumps({"accepted_missing_lines": new_accepted, "pinned_bullets": pinned}, ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"\nwrote {baseline_path}")
+    return 0
+
+
+def main() -> int:
+    parsed = _parse_args(sys.argv[1:])
+    if parsed is None:
+        print(__doc__, file=sys.stderr)
+        return 2
+    old_ref, new_claude_md_path, docs_rules_dir, baseline_path, update, confirmed = parsed
+
+    if update:
+        return _update_baseline(old_ref, new_claude_md_path, docs_rules_dir, baseline_path, confirmed)
+
+    baseline = load_baseline(baseline_path)
+    accepted = set(baseline.get("accepted_missing_lines", []))
+
+    new_text, rules_dir, missing, conservation_missing = _compute(old_ref, new_claude_md_path, docs_rules_dir)
+
+    accepted_count = sum(1 for _, line in missing if line in accepted)
+    missing = [(ln, line) for ln, line in missing if line not in accepted]
+    print(f"{accepted_count} previously-accepted line(s) skipped (see {baseline_path})" if accepted_count else "", end="")
+    print(f"{'; ' if accepted_count else ''}{len(missing)} missing (keyword check)")
+    if missing:
+        print("\nMISSING (present in old CLAUDE.md, not found in new corpus):", file=sys.stderr)
+        for ln, line in missing:
+            print(f"  L{ln}: {line}", file=sys.stderr)
+
+    conservation_missing = [(short, line) for short, line in conservation_missing if line not in accepted]
+    print(f"\nline-conservation: {len(conservation_missing)} short in the new corpus (after baseline exceptions)")
     if conservation_missing:
         print("\nCONSERVATION SHORTFALL (old file had more copies than the new corpus has):",
               file=sys.stderr)
         for short_by, line in conservation_missing[:50]:
             print(f"  -{short_by}: {line}", file=sys.stderr)
 
+    old_text = git_show(old_ref, "CLAUDE.md")
     old_begins = set(re.findall(r"BEGIN GENERATED:\s*(\S+)", old_text))
     old_ends = set(re.findall(r"END GENERATED:\s*(\S+)", old_text))
     old_names = old_begins | old_ends
@@ -263,7 +467,7 @@ def main() -> int:
             print(f"  {p}", file=sys.stderr)
 
     # --- index structure (card cc72cb3e, closes RedHat's A1-A10, see module docstring) ---
-    index_problems = check_index_structure(new_text, rules_dir)
+    index_problems = check_index_structure(new_text, rules_dir, baseline)
     print(f"\nindex structure: {len(index_problems)} problem(s)")
     if index_problems:
         print("\nINDEX STRUCTURE PROBLEMS:", file=sys.stderr)
