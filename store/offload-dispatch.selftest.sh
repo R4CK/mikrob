@@ -1319,22 +1319,84 @@ run_ff_first leafF5 "title" "desc" mikrob ""
 check "freellm-first rc=2 (disabled): prints fallthrough" "$out" "fallthrough"
 check "freellm-first rc=2 (disabled): no cooldown written" "$([[ -f "$FF_COOLDOWN" ]] && echo yes || echo no)" "no"
 
-# Case 6: project allowlist (mikrob only) is NOT widened -- a mopsion leaf never reaches the stub,
-# even with a clean, neutral, non-sensitive task text.
+# Case 6 (card 6d8ef952 scope change, Peti 13829/13838 "igen, vedd le"): the project allowlist is
+# WIDENED to mikrob+mopsion for freellm -- a mopsion leaf now DOES reach the stub and drafts.
 rm -f "$FF_MARKER" "$FF_COOLDOWN"
 make_ff_stub 0
 run_ff_first leafF6 "title" "desc" mopsion ""
-check "freellm-first project allowlist: mopsion leaf never reaches the stub" \
-  "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
-check "freellm-first project allowlist: mopsion leaf falls through" "$out" "fallthrough"
+check "freellm-first project allowlist: mopsion leaf now reaches the stub (widened, 6d8ef952)" \
+  "$([[ -f "$FF_MARKER" ]] && echo reached || echo missing)" "reached"
+check "freellm-first project allowlist: mopsion leaf drafts" "$out" "drafted"
 
-# Case 7: content gate (is_freellm_blocked's OWN prefilter, not freellm-call.sh's) still blocks a
-# sensitive mikrob leaf -- the content gate is not loosened by freellm-first.
+# Case 6b: an UNRELATED project (not mikrob, not mopsion) is still blocked -- the widening is
+# exactly two names, not a removal of the allowlist itself.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF6b "title" "desc" cleancore ""
+check "freellm-first project allowlist: unrelated project still blocked" \
+  "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
+check "freellm-first project allowlist: unrelated project falls through" "$out" "fallthrough"
+
+# Case 7 (card 6d8ef952 scope change): the category/PII content gate no longer REFUSES a freellm
+# card -- a sensitive-worded mikrob leaf now reaches the stub and drafts (masking of actual
+# credential VALUES, tested separately below, is the real protection now, not a refusal).
 rm -f "$FF_MARKER" "$FF_COOLDOWN"
 make_ff_stub 0
 run_ff_first leafF7 "authz check" "irj meg egy authz ellenorzest" mikrob ""
-check "freellm-first content gate (prefilter): sensitive leaf never reaches the stub" \
+check "freellm-first content gate (prefilter): sensitive leaf now reaches the stub (6d8ef952)" \
+  "$([[ -f "$FF_MARKER" ]] && echo reached || echo missing)" "reached"
+check "freellm-first content gate (prefilter): sensitive leaf drafts" "$out" "drafted"
+
+# Case 7b: an explicit BLOKKOLT-* tag is a human override, not a category inference -- it still
+# blocks even after the content-gate loosening above.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF7b "title" "desc" mikrob "BLOKKOLT-Peti-stop"
+check "freellm-first content gate: BLOKKOLT-* tag still blocks (human override, not category)" \
   "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
+check "freellm-first content gate: BLOKKOLT-* tag falls through" "$out" "fallthrough"
+
+# --- redact_secrets: a card with an embedded credential drafts (not refused), and the body the
+# stub actually RECEIVES never contains the raw secret -- the "Kesz, ha" pin from comment 31309
+# (MikroB decision on Peti 13838): "the outgoing request body contains [REDACTED:...] instead of
+# the token". FF_STUB_CAPTURE writes stdin to a file instead of discarding it, so the test can
+# inspect exactly what left the machine.
+FF_CAPTURED="$TMPDIR/ff-captured-body"
+make_ff_stub_capture() { # $1 = exit code to return
+  cat > "$FF_STUB" <<EOF
+#!/usr/bin/env bash
+touch "$FF_MARKER"
+cat > "$FF_CAPTURED"
+case "${1}" in
+  0) echo "ff-draft-output"; exit 0 ;;
+  *) exit ${1} ;;
+esac
+EOF
+  chmod +x "$FF_STUB"
+}
+rm -f "$FF_MARKER" "$FF_COOLDOWN" "$FF_CAPTURED"
+make_ff_stub_capture 0
+out="$(OFFLOAD_FREELLM_CALL="$FF_STUB" OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$FF_SKIP" \
+  OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN" DASHBOARD_URL="http://127.0.0.1:1" \
+  bash "$DISPATCH" --test-freellm-first-site leafF8 "credential leak" "live key, do not leak" mikrob "" \
+  "token: ghp_ABCDEFGHIJ1234567890abcdefghij" leafF8 false 2>/dev/null)"
+check "redact_secrets: sensitive leaf still drafts (not refused)" "$out" "drafted"
+check "redact_secrets: outgoing body does NOT contain the raw token" \
+  "$(grep -c "ghp_ABCDEFGHIJ1234567890abcdefghij" "$FF_CAPTURED" 2>/dev/null)" "0"
+check "redact_secrets: outgoing body contains the redaction marker instead" \
+  "$(grep -c "REDACTED:github-token" "$FF_CAPTURED" 2>/dev/null)" "1"
+
+# Case 9 (Peti 13838 "Igen, vedd le" -- PII is explicitly NOT masked, only credentials are): a
+# card with a personal email address drafts, and the email passes through the outgoing body
+# UNMASKED -- distinguishing the new credential-masking behaviour from a blanket PII scrub.
+rm -f "$FF_MARKER" "$FF_COOLDOWN" "$FF_CAPTURED"
+make_ff_stub_capture 0
+out="$(OFFLOAD_FREELLM_CALL="$FF_STUB" OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$FF_SKIP" \
+  OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN" DASHBOARD_URL="http://127.0.0.1:1" \
+  bash "$DISPATCH" --test-freellm-first-site leafF9 "contact update" "hivd vissza" mikrob "" \
+  "ugyfel email: ugyfel@example.com" leafF9 false 2>/dev/null)"
+check "redact_secrets: PII (email) is NOT masked, passes through unredacted" \
+  "$(grep -c "ugyfel@example.com" "$FF_CAPTURED" 2>/dev/null)" "1"
 
 # --- freellm_in_cooldown / freellm_start_cooldown direct pins (via --test-freellm-cooldown) ------
 FF_COOLDOWN2="$TMPDIR/ff-cooldown2"

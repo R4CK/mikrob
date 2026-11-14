@@ -25413,3 +25413,46 @@ saját prózai komment is tartalmazta a függvénynevet) hamisan zöld maradt, j
 kiszűrésével a vizsgált szövegből, mielőtt a mutáció-bizonyítás megismétlődött.
 
 **Ki döntött:** Peti (13820/13823) -> MikroB dispatch (msg_id:18560), backend2 végrehajtása.
+
+## 2026-11-14 -- freellm-first rework: mopsion allowlist widened, content gate stops refusing, credentials masked (card 6d8ef952, scope delta)
+
+Peti Telegram 13829 (19:09) + 13838 "Igen, vedd le" (answer to MikroB 13832): the freellm-first
+routing card's scope widened mid-flight. Two of its requirements landed in this increment
+(offload-dispatch.sh, `store/offload-dispatch.selftest.sh`):
+
+1. **Project allowlist widened to mikrob + mopsion for freellm only.** `is_gemini_blocked` gained
+   two additive parameters (`extra_projects_csv`, `skip_category`) that `is_freellm_blocked`
+   passes as `"mopsion"` / `"1"`; every other call site (Gemini's own routing) keeps the old
+   defaults, so Gemini's allowlist/content-gate behaviour is byte-identical to before -- verified
+   directly: `--check-blocked mopsion gemini-ok ...` still returns blocked (rc=0) after this
+   change, only `--check-freellm-blocked` returns allowed (rc=42).
+2. **Content gate (category/PII stem match, `SENS_RE`/`TENANT_ISOLATION_RE`/`BLOCKED_TAGS`) no
+   longer REFUSES a freellm card.** The explicit human-override tag `BLOKKOLT-*` is UNCHANGED and
+   still blocks (it is a deliberate instruction, not a category inference) -- split out of every
+   one of the four code sites that used to test it alongside `BLOCKED_TAGS` in the same
+   condition.
+3. **New `redact_secrets()` function** (pattern-based, best-effort by construction, not a
+   fail-closed guarantee like the gates above): masks recognizable credential SHAPES (JWT, AWS/
+   GitHub/GitLab/Slack/Google/npm/OpenAI key prefixes, bearer tokens, connection-string userinfo,
+   explicit `password=`/`token:`/`secret=` assignments) to `[REDACTED:<kind>]` on the exact text
+   piped into `FREELLM_CALL` from both real egress call sites (`try_freellm_for_leaf`,
+   `try_freellm_first_for_leaf`). Personal data (names/emails/phones) is explicitly NOT masked
+   (Peti 13838) -- pinned by a selftest case asserting an email address survives unredacted in the
+   captured outgoing body.
+
+Measured: `offload-dispatch.selftest.sh` 184/0 (10 new/changed cases: mopsion now reaches the
+stub and drafts, an unrelated project still does not, a sensitive-worded card now reaches the
+stub and drafts, a `BLOKKOLT-*` tag still blocks, a card with an embedded GitHub-token-shaped
+secret drafts with the raw token absent and `[REDACTED:github-token]` present in the captured
+stub body, a card with a plain email drafts with the email present unredacted). Mutation-proof:
+reverting the allowlist param to `""` flips exactly the 2 allowlist-widening cases back to
+blocked; removing `redact_secrets` from the two pipe sites flips exactly the 2 masking cases
+(raw token reappears, marker disappears). Gate parity: `--check-blocked` (Gemini) on the same
+mopsion/sensitive-content inputs is unchanged from before this commit.
+
+NOT done in this increment, still open on card 6d8ef952: the "every dispatch path" requirement
+(heartbeat C 4b, self-advance-pickup) and the removal of capacity-only routing / card-build-route
+ONLINE-verdict / priority / 3-leaf-cap skip-gates -- those live outside offload-dispatch.sh and
+are separate, larger pieces of work.
+
+**Ki döntött:** Peti (13829/13838) -> MikroB (comment 31309, card 6d8ef952) -> backend2 végrehajtása.

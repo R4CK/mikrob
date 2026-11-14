@@ -76,6 +76,71 @@ GEMINI_AGY_CALL="$HERE/gemini-agy-call.sh"
 # refused, else=call failure). OFFLOAD_FREELLM_CALL overrides the path for tests.
 FREELLM_CALL="${OFFLOAD_FREELLM_CALL:-$HERE/freellm-call.sh}"
 
+# redact_secrets (card 6d8ef952, Peti 13829/13838 comment 31309): the content gate above no
+# longer REFUSES a freellm card on category/PII grounds, but "a card with an embedded token is
+# drafted (not refused) and the outgoing request body contains [REDACTED:<kind>] instead of the
+# token" -- so a literal credential VALUE (not a category keyword) must never reach the stdin
+# piped into FREELLM_CALL. This is a SEPARATE, narrower problem than the category gate: pattern-
+# match known credential SHAPES and replace each match in place, leaving the rest of the text
+# (including personal data -- Peti 13838, PII is explicitly NOT masked) untouched. Best-effort by
+# construction (an arbitrary secret has no universal shape), not a fail-closed guarantee like the
+# project/tag/blokkolt gates above -- it catches the common, structurally-recognizable shapes
+# (bearer/JWT, well-known vendor key prefixes, connection-string userinfo, explicit
+# password/token/secret/api_key/connection-string assignments). Read via stdin, write via stdout,
+# same convention as the is_gemini_blocked title/desc pipe above (no argv length ceiling).
+redact_secrets() {
+  python3 -I -c '
+import re, sys
+
+text = sys.stdin.buffer.read().decode("utf-8", "replace")
+
+PATTERNS = [
+    ("jwt",            re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
+    ("aws-key",        re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("github-token",   re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("gitlab-token",   re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
+    ("slack-token",    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
+    ("npm-token",      re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b")),
+    ("openai-key",     re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    ("bearer-token",   re.compile(r"\bBearer\s+[A-Za-z0-9._-]{10,}", re.IGNORECASE)),
+    # scheme://user:password@host -- connection strings (postgres, mysql, mongodb, redis, amqp, ...)
+    ("connection-string",
+     re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+:([^\s/@]+)@")),
+    # explicit key=value / key: value / key = "value" assignment of a secret-shaped field,
+    # value quoted or bare, up to the next whitespace/quote/comma. Applied LAST (see the loop
+    # below) and the value excludes "[" / "]" so it never re-captures a "[REDACTED:...]" marker a
+    # preceding, more specific pattern already left behind -- without that exclusion "token:
+    # ghp_xxx" double-redacted into "token: [REDACTED:credential-assignment]", losing the more
+    # specific "github-token" kind the github-token pattern had already correctly identified.
+    ("credential-assignment",
+     re.compile(
+         r"\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token)"
+         r"\s*[:=]\s*[\"\x27]?([^\s\"\x27,;\[\]]{4,})",
+         re.IGNORECASE,
+     )),
+]
+
+def _mask(kind):
+    def _repl(m):
+        # connection-string / credential-assignment: keep the matched PREFIX (scheme://user: or
+        # "password=") AND SUFFIX (the trailing "@" of a connection string) intact, redacting only
+        # the captured secret VALUE group itself, so the surrounding structure (which is not
+        # itself a secret) stays legible.
+        if m.lastindex:
+            prefix = m.group(0)[: m.start(m.lastindex) - m.start(0)]
+            suffix = m.group(0)[m.end(m.lastindex) - m.start(0):]
+            return f"{prefix}[REDACTED:{kind}]{suffix}"
+        return f"[REDACTED:{kind}]"
+    return _repl
+
+for kind, pat in PATTERNS:
+    text = pat.sub(_mask(kind), text)
+
+sys.stdout.buffer.write(text.encode("utf-8"))
+'
+}
+
 # gemini_rest_fallback_enabled: returns 0 if the REST path is explicitly requested, 1 (agy) otherwise.
 # Missing file = OFF = agy is default; present = REST fallback.
 gemini_rest_fallback_enabled() { [[ -f "$HERE/gemini-rest-fallback-enabled" ]]; }
@@ -142,6 +207,7 @@ GEMINI_ROUTE="$(get_gemini_route)"
 # Returns 1 (false/allowed) only when all four gates pass AND the classifier ran to completion.
 is_gemini_blocked() {
   local project="$1" tags="$2" title="${3:-}" desc="${4:-}" require_marker="${5:-1}"
+  local extra_projects="${6:-}" skip_category="${7:-0}"
   local rc
   # Distinct "allowed" exit code (WhiteHat2 H2, matches the Python ALLOWED_RC constant below):
   # cannot collide with a bare Python exception (1) or any shell/OS failure code, so only a
@@ -154,6 +220,11 @@ import sys, unicodedata, re
 project  = sys.argv[1]
 tags_csv = sys.argv[2] if len(sys.argv) > 2 else ""
 require_marker = sys.argv[3] if len(sys.argv) > 3 else "1"
+# extra_projects / skip_category (card 6d8ef952, Peti 13829/13838): is_freellm_blocked passes
+# these two ADDITIONAL to is_gemini_blocked; the other, default-arg Gemini call sites are
+# untouched -- this widens ONLY the freellm route, never the shared Gemini one.
+extra_projects_csv = sys.argv[4] if len(sys.argv) > 4 else ""
+skip_category = (sys.argv[5] if len(sys.argv) > 5 else "0") == "1"
 ALLOWED_RC = 42  # must match the bash-side check below
 
 # title/desc come over stdin (WhiteHat2 H1): NUL-separated, no argv length ceiling, no cap needed
@@ -270,8 +341,9 @@ def has_unmapped_letter(s):
     decomposed = unicodedata.normalize("NFKD", s.translate(_HOMOGLYPH_MAP))
     return any(ord(ch) > 127 and unicodedata.category(ch).startswith("L") for ch in decomposed)
 
-# 1. Project allowlist (fail-closed: empty/unknown = blocked).
-ALLOWED_PROJECTS = {"mikrob"}
+# 1. Project allowlist (fail-closed: empty/unknown = blocked). extra_projects_csv (freellm only,
+# card 6d8ef952) adds to the set without changing the default Gemini call sites.
+ALLOWED_PROJECTS = {"mikrob"} | {norm(p) for p in extra_projects_csv.split(",") if p.strip()}
 if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
     sys.exit(0)  # blocked
 
@@ -352,8 +424,8 @@ for tag in all_tags:
     # equalled "sec". See tag_tokens_of()s own comment above for the mechanism.
     tag_tokens = tag_tokens_of(tag)
     if "blokkolt" in tag_tokens:
-        sys.exit(0)  # blocked
-    if any(tok in BLOCKED_TAGS for tok in tag_tokens):
+        sys.exit(0)  # blocked -- explicit human override, never skippable
+    if any(tok in BLOCKED_TAGS for tok in tag_tokens) and not skip_category:
         sys.exit(0)  # blocked
     # F2(c)/M3 (card c8a6e1da, RedHat NO-GO 2. kor, komment 18638): split-letter form ("[S E C]",
     # "[S.E.C]", "[S-E-C]", "[S EC]") writes a blocked word one letter (or short fragment) at a
@@ -414,15 +486,20 @@ for tag in all_tags:
                 continue
             _run_stripped = _run_joined[:_stripped_len]
             for _candidate in (_run_joined, _run_stripped):
-                if _candidate and (_candidate == "blokkolt" or _candidate in BLOCKED_TAGS):
+                if _candidate == "blokkolt":
+                    sys.exit(0)  # blocked -- explicit human override, never skippable
+                if _candidate and _candidate in BLOCKED_TAGS and not skip_category:
                     sys.exit(0)  # blocked
     # F2(d) (card c8a6e1da): digit-suffix form ("[SEC2]", "BLOKKOLT2", "MOPSION2") appends a bare
     # digit directly after the blocked word with no delimiter at all, so it never split into its
     # own token above in the first place -- strip a trailing digit run and re-check.
     for tok in tag_tokens:
         stripped = re.sub(r"[0-9]+$", "", tok)
-        if stripped and stripped != tok and (stripped == "blokkolt" or stripped in BLOCKED_TAGS):
-            sys.exit(0)  # blocked
+        if stripped and stripped != tok:
+            if stripped == "blokkolt":
+                sys.exit(0)  # blocked -- explicit human override, never skippable
+            if stripped in BLOCKED_TAGS and not skip_category:
+                sys.exit(0)  # blocked
 
 # 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
 # Leading-boundary-only stems (RedHat 17510 finding 1): matches a stem at the start of a word,
@@ -454,7 +531,9 @@ if has_unmapped_letter(title) or has_unmapped_letter(desc):
 # of the sec/blokkolt/mopsion shapes may be shielded.
 _whole_title_tokens = tag_tokens_of(title)
 for _tok in _whole_title_tokens:
-    if _tok == "blokkolt" or _tok in BLOCKED_TAGS:
+    if _tok == "blokkolt":
+        sys.exit(0)  # blocked -- explicit human override, never skippable
+    if _tok in BLOCKED_TAGS and not skip_category:
         sys.exit(0)  # blocked
 
 title_n = norm(title)
@@ -483,7 +562,12 @@ TENANT_ISOLATION_RE = re.compile(
     r"|(elkulonit|szetvalaszt|izol|szepara|elvalaszt|kulonvalaszt|kulonit).{0,40}berlo",
     re.DOTALL,
 )
-if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
+# skip_category (card 6d8ef952, Peti 13829/13838, freellm only): the category/PII inference
+# below (SENS_RE stems, tenant-isolation co-occurrence, per-tag stem match) is the "content gate
+# as a LIMIT" Peti ordered removed for freellm -- it stops REFUSING on these grounds. It stays
+# unchanged and still blocks Gemini (default skip_category=False) and the explicit project/
+# tag-category(BLOCKED_TAGS)/blokkolt/marker gates above and below, which are untouched.
+if not skip_category and (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
         or TENANT_ISOLATION_RE.search(title_n) or TENANT_ISOLATION_RE.search(desc_n)):
     sys.exit(0)  # blocked
 
@@ -492,7 +576,7 @@ if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
 # "[Biztonsag]" (the bracket-tag case from 1b) would otherwise sail through on tag-exact-match
 # alone, even though its own text names a sensitive stem. Measured: a neutral-titled card tagged
 # "jelszo-rotacio"/"szamla"/"[Biztonsag]" was previously ALLOWED through this gate.
-if any(SENS_RE.search(t) for t in tags_n):
+if not skip_category and any(SENS_RE.search(t) for t in tags_n):
     sys.exit(0)  # blocked
 
 # 5. POSITIVE MARKER REQUIRED (card c23ea72f, RedHat structural recommendation komment 18638 on
@@ -518,7 +602,7 @@ if require_marker != "0" and not any(norm(tag) == GEMINI_OK_TAG for tag in all_t
     sys.exit(0)  # blocked -- no explicit positive marker
 
 sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, completed "allowed" verdict
-' "$project" "$tags" "$require_marker"
+' "$project" "$tags" "$require_marker" "$extra_projects" "$skip_category"
   rc=$?
   [[ "$rc" -eq 42 ]] && return 1  # must match the Python-side ALLOWED_RC constant above
   return 0
@@ -568,7 +652,10 @@ print("true" if isinstance(d, dict) and d.get("enabled") is True else "false")
 PYEOF
 )"
   [[ "$skip_enabled" == "true" ]] && require_marker=0
-  is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" "$require_marker"
+  # mopsion allowlist widening + category/PII content-gate no longer refusing (card 6d8ef952,
+  # Peti 13829/13838 "igen, vedd le") -- freellm ONLY, via the two extra params above. Gemini's
+  # own gate (every other is_gemini_blocked call site) keeps the strict defaults untouched.
+  is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" "$require_marker" "mopsion" "1"
 }
 
 # FREELLM-FIRST COOLDOWN (card 6d8ef952, Peti Telegram 13820/13823): a quota/rate-exhausted freellm
@@ -837,7 +924,7 @@ try_freellm_for_leaf() {
 
   local out rc=0 errfile
   errfile="$(mktemp)"
-  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
+  out="$(printf '%s' "$task" | redact_secrets | bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
   # Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named error messages (model
   # 404, token mismatch) used to be thrown away right here by this call's `2>/dev/null` -- the
   # one thing that script fixed (naming instead of staying silent), this caller immediately
@@ -948,7 +1035,7 @@ try_freellm_first_for_leaf() {
   fi
 
   local out rc=0
-  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
+  out="$(printf '%s' "$task" | redact_secrets | bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
     attempts_op success "$leaf_id" >/dev/null
