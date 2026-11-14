@@ -1270,6 +1270,36 @@ if _repo_ok:
     if not _f2_ok2:
         failures.append(("F-2 main-ref marker", "AGREE line carries the override marker", _f2_override))
 
+    # --- SYNC-MERGE REVERSED (card 88e2ffe1, measured live on 555419a8 at 14:31): a merge pulling
+    # --- origin/develop's OWN content INTO the card's branch (the routine "rebase onto latest
+    # --- develop before landing" step) must not read as landed just because develop's own lines
+    # --- are (trivially) present on develop -- that first-parent diff is mostly develop's own
+    # --- content flowing onto the OTHER side, the mirror image of a landing merge's first-parent
+    # --- diff. The card's own real, still-unlanded work predates the sync and never appears in
+    # --- that diff at all, exactly how fe136e6e read "same"/AGREE while the card's actual work
+    # --- commit (d1634b47) correctly read "differs" on the live board. --------------------------
+    _g("checkout", "-q", "main")
+    _g("checkout", "-q", "-b", "develop-grows", "main")
+    with open(os.path.join(_landed_repo, "n.txt"), "w") as fh:
+        fh.write("develop's own line one\ndevelop's own line two\ndevelop's own line three\n")
+    _g("add", "-A"); _g("commit", "-qm", "develop grows on its own, unrelated to the card")
+    _g("checkout", "-q", "main")
+    _g("merge", "-q", "--ff-only", "develop-grows")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    _g("checkout", "-q", "-b", "card-x-stale", SHIPPED)  # forked BEFORE develop grew
+    with open(os.path.join(_landed_repo, "o.txt"), "w") as fh:
+        fh.write("the card's own real work, never landed\n")
+    _g("add", "-A"); _g("commit", "-qm", "the card's actual work (this never reaches develop)")
+    _g("merge", "-q", "--no-ff", "-m", "sync: pull origin/develop into card-x-stale", "main")
+    SYNC_MERGE = _rev("HEAD")
+    _g("checkout", "-q", "main")  # main/origin-develop never gets SYNC_MERGE
+
+    case("SYNC-MERGE REVERSED: a merge pulling develop's OWN content INTO the card branch must "
+         "not read as landed just because develop's lines are (trivially) present on develop",
+         [c("backend2", R % SYNC_MERGE), c("qa", L % SYNC_MERGE)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
     shutil.rmtree(_landed_repo, ignore_errors=True)
 
 

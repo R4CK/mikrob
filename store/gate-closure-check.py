@@ -803,7 +803,33 @@ def _content_on_branch(clone, ref, sha):
     for a merge commit, and a Gate-SHA naming a landing merge is one of the two shapes this board
     uses -- an empty file list would then read as "nothing differs", a vacuous pass on exactly the
     cards this exists for.
+
+    SYNC MERGES ARE THE MIRROR IMAGE OF LANDING MERGES, AND `--first-parent` CANNOT TELL THEM APART
+    (card 88e2ffe1, measured live on 555419a8 at 14:31: fe136e6e read "same"/AGREE while the card's
+    own real work commit, d1634b47, correctly read "differs" -- the false AGREE won only because it
+    was the one the gates had actually verdicted on). A LANDING merge (card branch merged --no-ff
+    INTO develop) has first parent = develop-before, second parent = card tip, so its first-parent
+    diff IS the card's own contribution -- exactly what this function is built to check. A SYNC
+    merge (develop merged INTO the card's own branch, the routine "rebase onto latest develop
+    before landing" step) has first parent = card-before, second parent = develop tip, so its
+    first-parent diff is mostly DEVELOP'S OWN content flowing onto the card branch -- "every added
+    line is present on develop" is then close to vacuously true, because most of those lines CAME
+    from develop, and the card's actual, still-unlanded work (which predates the sync and so never
+    shows up in a first-parent diff against it) is never examined at all. The tell: a sync merge's
+    SECOND parent is already reachable from `ref`; a landing merge's second parent (the unlanded
+    card tip) normally is not. Caught here and refused rather than risked as a false "same" --
+    fail-closed, like every other unanswerable case in this function.
     """
+    ok, parents = _git(clone, "log", "-1", "--format=%P", sha)
+    if ok:
+        parent_shas = parents.split()
+        for other_parent in parent_shas[1:]:
+            if _git(clone, "merge-base", "--is-ancestor", other_parent, ref)[0]:
+                return ("unresolved",
+                        "%s is a merge whose parent %s already includes %s's own content, so its "
+                        "first-parent diff is mostly %s's own content flowing onto the other side, "
+                        "not this card's contribution, and cannot be trusted either way"
+                        % (sha, other_parent, ref, ref))
     ok, out = _git(clone, "log", "-1", "--name-only", "--format=", "--first-parent", sha)
     if not ok:
         return "unresolved", "its file list could not be read"
