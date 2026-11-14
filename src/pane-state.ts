@@ -75,7 +75,16 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // scrollback still will not match; it needs the shift+tab hint or a `·`
 // separated idle action, which is UI chrome that prose does not carry.
 // `← for agents` is the FleetView tail on current builds; older tails kept.
-const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
+//
+// RedHat F2 (card 8e9828c9 NO-GO 31373): the shift+tab parenthetical and the
+// `·`-separated tail were mutually exclusive alternatives, so a real footer
+// carrying BOTH (`... on (shift+tab to cycle) · ctrl+t to hide tasks`) matched
+// neither and the row read as no-footer-at-all -- which, behind a spoofed
+// background-agent block, let rowCarriesLiveSignal reject that row as "no live
+// signal" and the cut discarded the real typing box along with the spoof.
+// The parenthetical is now optional before the `·` tail, not exclusive with it;
+// a bare `on` (both groups absent) still cannot match, same as before.
+const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?:(?: \(shift\+tab to cycle\))(?: · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))?| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
 
 // tmux clips the footer to the pane width and marks the cut with `…`, so on a
 // narrow pane the required tail arrives as `← for agen…` and IDLE_FOOTER_RX
@@ -118,14 +127,26 @@ const FOOTER_SHELL_TAIL_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycl
  * footer-lead phrase quoted in scrollback, or echoed inside a background-agent
  * block, sits above and so wins the race. Scan from the bottom, same pattern
  * detectsThinkingBlockError already uses for its own footer search.
+ *
+ * RedHat F2 (card 8e9828c9 NO-GO 31373): "most recent wins" still lost to an
+ * earlier match when the TRUE last line used the shell-tail/clipped form --
+ * the backward IDLE_FOOTER_RX scan ran across the WHOLE pane first and could
+ * find an older (possibly spoofed) IDLE_FOOTER_RX line before the loop ever
+ * reached the true bottom, and the shell-tail/clipped check only ran as a
+ * fallback when NO IDLE_FOOTER_RX match existed anywhere. The true last
+ * non-empty line is checked FIRST now, against all three footer shapes --
+ * the real bottom always outranks anything above it, spoofed or not.
  */
 function idleFooterIndex(lines: string[]): number {
+  let last = lines.length - 1
+  while (last >= 0 && lines[last].trim() === '') last--
+  if (last >= 0 && (IDLE_FOOTER_RX.test(lines[last]) || FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last]))) {
+    return last
+  }
   for (let i = lines.length - 1; i >= 0; i--) {
     if (IDLE_FOOTER_RX.test(lines[i])) return i
   }
-  let last = lines.length - 1
-  while (last >= 0 && lines[last].trim() === '') last--
-  return last >= 0 && (FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last])) ? last : -1
+  return -1
 }
 
 function hasIdleFooter(lines: string[]): boolean {
@@ -147,6 +168,18 @@ function hasIdleFooter(lines: string[]): boolean {
 function hasIdleFooterNear(lines: string[], regionLines: number): boolean {
   return hasIdleFooter(lines.slice(-regionLines))
 }
+
+// RedHat F4 (card 8e9828c9 NO-GO 31373, new false positive): BUSY_LIVE_REGION_LINES
+// (12) is tuned for the busy-indicator scan, not for how far a genuine idle footer
+// can sit from the true bottom. Trailing chrome AFTER the footer (e.g. a wrapped
+// banner) can push it past that window, so hasIdleFooterNear(lines, BUSY_LIVE_REGION_LINES)
+// missed a REAL footer and let stale dialog text quoted above it count as live,
+// flagging a dialog that is not there. detectsHeldPeerMessage/detectsPermissionDialog
+// use this wider, dedicated window instead -- still tail-scoped (so a dialog with
+// genuinely NO footer anywhere near the bottom is not rescued), just generous enough
+// to survive extra trailing chrome below the footer (measured against 30 trailing
+// lines, RedHat's repro).
+const DIALOG_FOOTER_SEARCH_LINES = 40
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.
@@ -1326,8 +1359,17 @@ export function detectsHeldPeerMessage(pane: string): boolean {
   // first, same as detectPaneState -- otherwise a spoofed footer-lead line
   // inside an uncut block can sit below this title and win the idle-footer
   // check further down, even though it is not the real, current footer.
+  //
+  // RedHat F1 (card 8e9828c9 NO-GO 31373): a spoofed `⏺ main` header sits
+  // ABOVE the real pane content by position, not only above a trailing block --
+  // splitBackgroundAgentBlock finds the LAST such header and treats everything
+  // below it (to the end of the pane) as "rows" to cut, which can be the real
+  // dialog itself. A dialog carries no live-elapsed/spinner signal
+  // (rowCarriesLiveSignal), so the cut discarded it outright. Do not cut when
+  // the dialog's own title is among the discarded rows -- that is the signal
+  // this detector exists to find, not noise to strip.
   const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
-  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal)) {
+  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal) && !HELD_PEER_MESSAGE_RX.test(bgBlock.rows.join('\n'))) {
     pane = bgBlock.above.join('\n')
   }
   const lines = pane.split('\n')
@@ -1337,7 +1379,7 @@ export function detectsHeldPeerMessage(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (hasIdleFooterNear(lines, BUSY_LIVE_REGION_LINES)) return false
+  if (hasIdleFooterNear(lines, DIALOG_FOOTER_SEARCH_LINES)) return false
   return HELD_PEER_MESSAGE_RX.test(pane)
 }
 
@@ -1404,8 +1446,20 @@ export function detectsPermissionDialog(pane: string): boolean {
   // first, same as detectPaneState -- otherwise a spoofed footer-lead line
   // inside an uncut block can win the idle-footer check below even though a
   // real permission dialog is open above/around it.
+  //
+  // RedHat F1 (card 8e9828c9 NO-GO 31373): a spoofed `⏺ main` header sits
+  // ABOVE the real pane content by position, not only above a trailing block --
+  // splitBackgroundAgentBlock finds the LAST such header and treats everything
+  // below it (to the end of the pane) as "rows" to cut, which can be the real
+  // dialog itself. A dialog carries no live-elapsed/spinner signal
+  // (rowCarriesLiveSignal), so the cut discarded it outright. Do not cut when
+  // the dialog's own markers are among the discarded rows -- that is the
+  // signal this detector exists to find, not noise to strip.
   const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
-  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal)) {
+  const bgRowsText = bgBlock ? bgBlock.rows.join('\n') : ''
+  const bgRowsHaveDialog = PERMISSION_AMEND_RX.test(bgRowsText)
+    || (PERMISSION_QUESTION_RX.test(bgRowsText) && PERMISSION_YES_RX.test(bgRowsText))
+  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal) && !bgRowsHaveDialog) {
     pane = bgBlock.above.join('\n')
   }
   const lines = pane.split('\n')
@@ -1415,7 +1469,9 @@ export function detectsPermissionDialog(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (hasIdleFooterNear(lines, BUSY_LIVE_REGION_LINES)) return false
+  // RedHat F4 (card 8e9828c9 NO-GO 31373): DIALOG_FOOTER_SEARCH_LINES, not
+  // BUSY_LIVE_REGION_LINES -- see its own comment.
+  if (hasIdleFooterNear(lines, DIALOG_FOOTER_SEARCH_LINES)) return false
   return PERMISSION_AMEND_RX.test(footerRegion)
     || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
 }
