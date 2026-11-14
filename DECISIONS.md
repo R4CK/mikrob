@@ -24799,13 +24799,11 @@ a real message every time the pre-existing failure test ran.
 ## 2026-11-14 -- update-review sweep: 5 watched repos + 2 pipx drifts (card b2401b1c)
 
 **Döntés:** git-repo-watcher flagged 5 external code changes plus 2 PyPI drifts for review, no
-bumps. Verdicts: caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit/1 file (README.md banner-clipping
-fix only; go.mod unchanged in this range -- the go.mod toolchain bump belongs to the prior round,
-ad473752..67968b7a), vendored skills/caveman subdir untouched. emilkowalski-skill (f7ce8c02..0f2e23b3)
+bumps. Verdicts: caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit/2 files, Go toolchain patch bump
++ README cosmetic, vendored skills/caveman subdir untouched. emilkowalski-skill (f7ce8c02..0f2e23b3)
 -- ADOPT, 2 commits/29 files, all prose/doc, no scripts/network/install change; vendored-copy sync
 deferred to a separate bump card. repomix (758c3d71..5beee248) -- NO-OP, 16 commits/15 files, CI
-workflow pins + dependency range bumps (including a major devDependency bump, jsdom ^30.1.3->^31.0.0,
-dev-only, no lifecycle scripts), no new dependency, pinned install (1.19.0) unaffected.
+workflow pins + minor dependency range bumps, no new dependency, pinned install (1.19.0) unaffected.
 agent-skills (aeac41d4..39b723ce) -- ADOPT, 379 commits/112 files, review scoped to the 5 adopted
 skills (doubt-driven-development, context-engineering, interview-me, idea-refine,
 documentation-and-adrs); 4/5 touched, all benign prose/doc; rest of the diff is plugin/CI machinery
@@ -24822,9 +24820,31 @@ note-mezője önmagában nem elég a gate-closure guard számára.
 **Nyitott:** freellmapi-hoz dedikált havi-bump review kártya nyitása javasolt MikroB-nak (86
 commit/351 fájl túl nagy egy többrepós sweep melléktételéhez).
 
-**Delta:** Cybersec NO-GO 30959 on card b2401b1c found the caveman range wording above wrong (was
-claiming 2 files incl. a go.mod bump; corrected to 1 file, README.md only) and 2 LOW wordings
-(repomix jsdom bump is major not minor; doubt-driven-development is a 2-line fix not 1-line) --
-both fixed in this same entry.
-
 **Ki döntött:** DevO (fullstack), card b2401b1c. Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
+
+## 2026-11-14 -- correction to the caveman verdict in the update-review sweep (card b2401b1c)
+
+**Döntés:** QA FAIL 30965 and Cybersec NO-GO 30959 on card b2401b1c both found that the caveman
+verdict in the entry above ("2026-11-14 -- update-review sweep: 5 watched repos + 2 pipx drifts")
+is factually wrong, and independently re-measured the actual diff. Correction, per the append-only
+convention (new entry, not an edit to the old one): `git log --oneline 67968b7a..b4ee71d5` is
+exactly 1 commit (b4ee71d5, "fix(readme): stop GitHub clipping the Caveman Code banner (#1527)");
+`git diff --stat 67968b7a..b4ee71d5` is exactly 1 file (README.md), not 2; go.mod does not appear
+in this diff at all -- its last touching commit is 82864c8f ("feat: ship Caveman 2.0.0"), outside
+this range, and the live clone's go.mod reads "go 1.26.5", not anything resembling "1.26.10" or
+"1.26.11". The claimed go.mod toolchain patch bump in the original entry did not happen in the
+cited range; the actual, correct verdict is: caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit, 1
+file (README.md cosmetic banner-clipping fix only), no go.mod/toolchain change, no new deps. The
+NO-OP verdict's substance was always correct; only the stated evidence for it was wrong. Also
+correcting 2 LOW items from the same entry: the repomix jsdom devDependency bump is MAJOR
+(^30.1.3->^31.0.0), not minor (still dev-only, no lifecycle scripts, no new dependency, pinned
+install 1.19.0 unaffected); the doubt-driven-development (agent-skills) clarification is 2 added
+lines, not 1.
+
+**Miért külön bejegyzés, nem szerkesztés:** QA Fix-Direction (30965) explicit kérése -- a
+DECISIONS.md append-only elve szerint egy korábbi bejegyzés hibás szövegét nem szabad helyben
+szerkeszteni, a javítás egy ÚJ, a fájl végén álló bejegyzés, ami visszahivatkozik a régire.
+
+**Ki döntött:** DevO (fullstack), card b2401b1c, Gate-SHA erre a bejegyzésre lásd a REVIEW kommentet.
+Gate: qa2 + Cybersec delta-review (QA FAIL szerzője, qa, a 4f. szabály szerint nem gate-eli saját
+NO-GO/FAIL-ja utáni re-gate-et Fix-Direction-sor birtokában -- MikroB kijelölése, msg 18396).
