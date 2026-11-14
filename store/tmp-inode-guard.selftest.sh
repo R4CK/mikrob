@@ -185,6 +185,105 @@ else
 fi
 rm -rf "$FINDSTUB" "$SANDBOX/tmp.findfail"
 
+# --- 5d. CYBERSEC NO-GO 31244: "00"/"000" are all-digit and non-empty, so the first-round
+# _valid_min accepted them as "valid" even though they are numerically zero -- same fail-open
+# as a bare "0" (find -mmin -00 matches nothing). Both age vars, both spellings.
+for v in 00 000; do
+  mkdir -p "$SANDBOX/tmp.zeropad"
+  touch -d '3 hours ago' "$SANDBOX/tmp.zeropad"
+  echo x > "$SANDBOX/tmp.zeropad/just-written"
+  TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_DRYRUN=1 TMP_GUARD_MAX_AGE_MIN="$v" bash "$RUN" >/dev/null
+  if [ -d "$SANDBOX/tmp.zeropad" ]; then
+    ok "TMP_GUARD_MAX_AGE_MIN=$v falls back to the default, fresh content survives"
+  else
+    bad "a fresh dir was deleted because TMP_GUARD_MAX_AGE_MIN=$v was accepted"
+  fi
+  rm -rf "$SANDBOX/tmp.zeropad"
+
+  mkdir -p "$SANDBOX/tmp.zeropadleak/caseA"
+  touch -d '3 hours ago' "$SANDBOX/tmp.zeropadleak"
+  echo x > "$SANDBOX/tmp.zeropadleak/caseA/just-written"
+  TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_DRYRUN=1 TMP_GUARD_LEAK_AGE_MIN="$v" bash "$RUN" >/dev/null
+  if [ -d "$SANDBOX/tmp.zeropadleak" ]; then
+    ok "TMP_GUARD_LEAK_AGE_MIN=$v falls back to the default, fresh caseA content survives"
+  else
+    bad "a fresh caseA dir was deleted because TMP_GUARD_LEAK_AGE_MIN=$v was accepted"
+  fi
+  rm -rf "$SANDBOX/tmp.zeropadleak"
+done
+
+# --- 5e. pin the FALLBACK VALUES themselves (120, 10), not just "falls back to something safe"
+# -- a garbage env plus an age that is fresh under 120 but stale under a smaller/larger wrong
+# fallback distinguishes the exact number.
+mkdir -p "$SANDBOX/tmp.fallback119"
+touch -d '119 minutes ago' "$SANDBOX/tmp.fallback119"
+find "$SANDBOX/tmp.fallback119" -exec touch -d '119 minutes ago' {} \;
+TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_DRYRUN=1 TMP_GUARD_MAX_AGE_MIN=garbage bash "$RUN" >/dev/null
+if [ -d "$SANDBOX/tmp.fallback119" ]; then
+  ok "garbage MAX_AGE_MIN falls back to exactly 120: a 119-min-old dir is kept"
+else
+  bad "garbage MAX_AGE_MIN did not fall back to 120 -- a 119-min-old dir was removed"
+fi
+rm -rf "$SANDBOX/tmp.fallback119"
+
+mkdir -p "$SANDBOX/tmp.fallback121"
+touch -d '121 minutes ago' "$SANDBOX/tmp.fallback121"
+find "$SANDBOX/tmp.fallback121" -exec touch -d '121 minutes ago' {} \;
+TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_DRYRUN=1 TMP_GUARD_MAX_AGE_MIN=garbage bash "$RUN" >/dev/null
+if [ ! -e "$SANDBOX/tmp.fallback121" ]; then
+  ok "garbage MAX_AGE_MIN falls back to exactly 120: a 121-min-old dir is removed"
+else
+  bad "garbage MAX_AGE_MIN did not fall back to 120 -- a 121-min-old dir was kept"
+fi
+
+mkdir -p "$SANDBOX/tmp.leakfallback9/caseA"
+touch -d '9 minutes ago' "$SANDBOX/tmp.leakfallback9"
+find "$SANDBOX/tmp.leakfallback9" -exec touch -d '9 minutes ago' {} \;
+TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_DRYRUN=1 TMP_GUARD_LEAK_AGE_MIN=garbage bash "$RUN" >/dev/null
+if [ -d "$SANDBOX/tmp.leakfallback9" ]; then
+  ok "garbage LEAK_AGE_MIN falls back to exactly 10: a 9-min-old caseA dir is kept"
+else
+  bad "garbage LEAK_AGE_MIN did not fall back to 10 -- a 9-min-old caseA dir was removed"
+fi
+rm -rf "$SANDBOX/tmp.leakfallback9"
+
+mkdir -p "$SANDBOX/tmp.leakfallback11/caseA"
+touch -d '11 minutes ago' "$SANDBOX/tmp.leakfallback11"
+find "$SANDBOX/tmp.leakfallback11" -exec touch -d '11 minutes ago' {} \;
+TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_DRYRUN=1 TMP_GUARD_LEAK_AGE_MIN=garbage bash "$RUN" >/dev/null
+if [ ! -e "$SANDBOX/tmp.leakfallback11" ]; then
+  ok "garbage LEAK_AGE_MIN falls back to exactly 10: an 11-min-old caseA dir is removed"
+else
+  bad "garbage LEAK_AGE_MIN did not fall back to 10 -- an 11-min-old caseA dir was kept"
+fi
+
+# --- 5f. pin the ALERT_PCT fallback (80) the same way: stub `df` to report a controlled inode
+# percentage either side of the real default, with a garbage TMP_GUARD_ALERT_PCT.
+DFSTUB="$(mktemp -d)"
+alert_at() { # $1 = fake inode percentage df should report
+  cat > "$DFSTUB/df" <<STUB
+#!/usr/bin/env bash
+echo "Filesystem Inodes IUsed IFree IUse% Mounted"
+echo "x 1 1 0 $1% /"
+STUB
+  chmod +x "$DFSTUB/df"
+  PATH="$DFSTUB:$PATH" TMP_GUARD_ROOT="$SANDBOX" TMP_GUARD_ALERT_PCT=garbage TMP_GUARD_ALERT_DRYRUN=1 \
+    bash "$RUN"
+}
+out="$(alert_at 79)"
+if ! echo "$out" | grep -q 'ALERT:'; then
+  ok "garbage ALERT_PCT falls back to exactly 80: 79% does not alert"
+else
+  bad "garbage ALERT_PCT did not fall back to 80 -- 79% alerted" "$out"
+fi
+out="$(alert_at 80)"
+if echo "$out" | grep -q 'ALERT:'; then
+  ok "garbage ALERT_PCT falls back to exactly 80: 80% alerts"
+else
+  bad "garbage ALERT_PCT did not fall back to 80 -- 80% did not alert" "$out"
+fi
+rm -rf "$DFSTUB"
+
 # --- 6. the ALERT line fires at/above the threshold, and dispatches to MikroB -----------------------
 # A real inode-% reading is not controllable from a unit test, so ALERT_PCT is driven to 0 --
 # "always alert" -- which exercises the exact same branch a real >=80% reading would take.

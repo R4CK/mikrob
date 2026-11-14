@@ -18,14 +18,22 @@
 # TMP_GUARD_ROOT defaults to /tmp; the selftest overrides it to a sandbox so it never
 # mutates the real /tmp (which other agents' live processes are using concurrently).
 #
-# Cybersec LOW-3 (31235): a non-numeric or <=0 age env makes `find -mmin` fail silently
-# (stderr discarded), which this script used to read as "nothing fresh" and delete FRESH
-# dirs. _valid_min rejects anything that is not a positive integer and falls back to the
-# built-in default instead; a bad TMP_GUARD_ALERT_PCT falls back the same way. A `find`
-# failure for any OTHER reason (permissions, odd filesystem) also fails CLOSED below: the
-# dir is kept, never deleted, when find's exit code is non-zero.
+# Cybersec LOW-3 (31235), re-dispatched after CYBERSEC NO-GO 31244: a non-numeric or <=0 age
+# env makes `find -mmin` fail silently (stderr discarded), which this script used to read as
+# "nothing fresh" and delete FRESH dirs. _valid_min rejects anything that is not a positive
+# integer and falls back to the built-in default instead; a bad TMP_GUARD_ALERT_PCT falls back
+# the same way. A `find` failure for any OTHER reason (permissions, odd filesystem) also fails
+# CLOSED below: the dir is kept, never deleted, when find's exit code is non-zero.
+# NO-GO 31244: the first version only rejected the literal string "0", not "00"/"000" -- both
+# are all-digit and non-empty, so they fell through every branch as "accepted" even though they
+# are numerically zero (`find -mmin -00` matches nothing, same fail-open as a bare "0"). The
+# `*[1-9]*` branch below requires at least one nonzero digit, so any all-zeros spelling is
+# rejected while a legitimately zero-padded positive value (e.g. "007") still passes.
 set -u
-_valid_min() { case "$1" in ''|*[!0-9]*|0) return 1 ;; esac; }
+_valid_min() {
+  case "$1" in ''|*[!0-9]*|0) return 1 ;; esac
+  case "$1" in *[1-9]*) ;; *) return 1 ;; esac
+}
 
 ROOT="${TMP_GUARD_ROOT:-/tmp}"
 MAX_AGE_MIN="${TMP_GUARD_MAX_AGE_MIN:-120}"
