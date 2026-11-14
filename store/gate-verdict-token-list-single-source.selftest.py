@@ -3,25 +3,155 @@
 ec34c025, Kesz-ha bullet 2: "a test fails if a second copy of the token list appears in the
 repo").
 
-SCOPED TO THE ONE FILE THIS CARD MIGRATED, not the whole repo. The other known copies
-(kanban-gate-completeness-guard.ts, landing-gate-verdict-parse.py, nmr-rederive.py,
-gate-pretriage-candidates.py, gate-dispatch-check.sh, heartbeat-scriptfirst.sh) are pre-existing
-and migrating them is explicitly out of scope here (MikroB's rescope names them as later cards,
-F5/F7/F8) -- a repo-wide zero-duplicates guard would fail on day one against work this card never
-touched. What this guard pins is narrower and load-bearing regardless: gate-closure-check.py
-specifically must not grow its OWN copy of the vocabulary back, since it is the one file this
-card proved produces byte-identical output via the shared module (20 real cards, see the REVIEW).
+Cases 1-4 (unchanged, kept per Cybersec NO-GO 31111's fix direction "keep the 4 existing cases"):
+narrow, name-anchored checks that gate-closure-check.py specifically has no inline `_VERDICT =
+re.compile(...)` / `PASSING = {...}` and imports both from gate_verdict_tokens.
 
-Mutation-tested: temporarily re-adding `_VERDICT = re.compile(r"...")` or
-`PASSING = {"PASS", "GO"}` to gate-closure-check.py turns this guard red (verified by hand before
-landing; not re-run automatically here, since that would mean editing the file under test).
+Cases 5+ (new, replacing the single-file scope): a SHAPE-based, repo-wide allowlist ratchet.
+Cybersec NO-GO 31111 on this guard's first version: it only matched the two EXACT spellings in
+ONE file, so a differently-named/differently-spelled copy (`_VERDICT_LOCAL`, `PASSING =
+set([...])`, an annotated rebinding, or a brand new file) stayed green. Verified failing:
+re-adding the exact spellings turned 2/4 red; the four other mutants (rename, set(), annotated
+rebind, new file) left the ORIGINAL guard fully green.
+
+The "shape" this matches is the NO-GO's own wording: an OUTCOME word (PASS/FAIL/GO/NO-GO)
+together with a GATE name (QA/CYBERSEC/WHITEHAT/CYBERED/REDHAT) inside one regex pattern string
+or one named literal (set/frozenset/list/tuple), comments stripped, word-bounded so "FAILSAFE" or
+a sentence mentioning "QA" and "GO" six lines apart does not count. A bare list of gate names
+alone (no outcome word) does NOT count -- that is a designation/role list (store/gate_author_role.py's
+GATE_ROLES), a different, legitimate, unrelated concept this guard must not flag.
+
+Repo-wide is scoped to where this vocabulary actually lives: store/*.py and store/*.sh (flat,
+not recursive -- matches where gate-closure-check.py and every known copy sit) plus the one TS
+file the original REVIEW named (src/web/kanban-gate-completeness-guard.ts). A full recursive
+scan of src/ is explicitly NOT attempted here: several other .ts files mention a gate name and an
+outcome word (kanban-verdicts.ts, message-router.ts, ...) and triaging each as duplicate-vs-
+unrelated is its own investigation, out of scope for this card.
+
+ALLOWLIST was measured by RUNNING this shape-detector against the whole scoped tree, not by
+trusting the original REVIEW/NO-GO's own list -- that list named 6 legacy files; the measured
+set has 9 (it also found store/cybered-gate-scan.py, store/gate_scan_lib.py, and
+store/unlanded-branch-sweep.sh, none of which were named). Mutation-verified (see bottom): a file
+entering the scanned set with the shape, or gate-closure-check.py regaining it, turns case 5 red;
+removing a file's shape (true migration, F5/F7/F8) without shrinking ALLOWLIST turns case 6 red,
+so the allowlist cannot silently go stale in the other direction either.
 """
 import os
 import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(HERE)
 TARGET = os.path.join(HERE, "gate-closure-check.py")
+
+GATE_TOKEN = r"(?:QA2?|CYBERSEC2?|WHITEHAT2?|CYBERED|REDHAT)"
+OUTCOME_TOKEN = r"(?:PASS|FAIL|NO-GO|GO)"
+GATE_BOUNDED = re.compile(r"(?<![A-Za-z0-9_])" + GATE_TOKEN + r"(?![A-Za-z0-9_])")
+OUTCOME_BOUNDED = re.compile(r"(?<![A-Za-z0-9_-])" + OUTCOME_TOKEN + r"(?![A-Za-z0-9_-])")
+
+# The one TS file named in the original REVIEW/NO-GO. Not a recursive src/ scan -- see docstring.
+NAMED_TS_FILE = os.path.join(REPO_ROOT, "src", "web", "kanban-gate-completeness-guard.ts")
+
+# Measured 2026-11-14 by running the shape-detector below against the full scoped tree (see
+# docstring). gate_verdict_tokens.py is the one TRUE source and is expected to have the shape;
+# every other entry is a pre-existing, out-of-scope-for-this-card legacy copy (F5/F7/F8).
+# gate-closure-check.py is deliberately NOT here: this card's whole point is that it has none.
+ALLOWLIST = frozenset(
+    {
+        "store/gate_verdict_tokens.py",
+        "store/cybered-gate-scan.py",
+        "store/gate-dispatch-check.sh",
+        "store/gate-pretriage-candidates.py",
+        "store/gate_scan_lib.py",
+        "store/heartbeat-scriptfirst.sh",
+        "store/landing-gate-verdict-parse.py",
+        "store/nmr-rederive.py",
+        "store/unlanded-branch-sweep.sh",
+        "src/web/kanban-gate-completeness-guard.ts",
+    }
+)
+
+
+def _strip_comments(path, text):
+    if path.endswith(".py") or path.endswith(".sh"):
+        return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    return "\n".join(re.sub(r"//.*$", "", line) for line in text.splitlines())
+
+
+def _regex_literals_py(code):
+    for m in re.finditer(r"re\.compile\(\s*((?:r?['\"].*?['\"]\s*\n?\s*)+)", code, re.DOTALL):
+        yield m.group(1)
+
+
+def _regex_literals_sh(code):
+    for m in re.finditer(
+        r"(?:grep\s+-[A-Za-z]*E[A-Za-z]*\s+['\"](.+?)['\"]|=~\s*['\"](.+?)['\"])", code
+    ):
+        yield m.group(1) or m.group(2)
+    for m in re.finditer(r"^\s*[A-Z][A-Z0-9_]*=['\"](.+?)['\"]\s*$", code, re.MULTILINE):
+        yield m.group(1)
+
+
+def _const_literals_py(code):
+    for m in re.finditer(
+        r"^([A-Z][A-Z0-9_]*)\s*(?::\s*\S+)?\s*=\s*(?:frozenset\(|set\(\[|[\{\[\(])(.*?)"
+        r"(?:\)\)|\]\)|[\}\]\)])\s*$",
+        code,
+        re.MULTILINE | re.DOTALL,
+    ):
+        yield m.group(1), m.group(2)
+
+
+def _shape_in_text(text):
+    return bool(GATE_BOUNDED.search(text) and OUTCOME_BOUNDED.search(text))
+
+
+def has_shape(path):
+    """True iff `path` contains the verdict-token SHAPE: an outcome word together with a gate
+    name in one regex pattern or one named literal, or 2+ outcome words together (a PASSING-like
+    set, which carries the vocabulary even with zero gate names in that one literal)."""
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        raw = f.read()
+    code = _strip_comments(path, raw)
+    if path.endswith(".py"):
+        for lit in _regex_literals_py(code):
+            if _shape_in_text(lit):
+                return True
+        for _name, body in _const_literals_py(code):
+            gates = GATE_BOUNDED.findall(body)
+            outcomes = OUTCOME_BOUNDED.findall(body)
+            if (gates and outcomes) or len(outcomes) >= 2:
+                return True
+        return False
+    if path.endswith(".sh"):
+        for lit in _regex_literals_sh(code):
+            if _shape_in_text(lit):
+                return True
+        for lit in _regex_literals_py(code):  # some .sh files embed python heredocs
+            if _shape_in_text(lit):
+                return True
+        return False
+    # .ts (only ever called on the one named file here)
+    return _shape_in_text(code)
+
+
+def scan_tree():
+    """Returns the set of repo-relative paths (within the scoped tree) that currently have the
+    shape. Scope: store/*.py + store/*.sh (flat), plus the one named TS file -- see docstring."""
+    found = set()
+    store_dir = os.path.join(REPO_ROOT, "store")
+    for fn in os.listdir(store_dir):
+        if not (fn.endswith(".py") or fn.endswith(".sh")):
+            continue
+        if "selftest" in fn:
+            continue
+        full = os.path.join(store_dir, fn)
+        if has_shape(full):
+            found.add("store/" + fn)
+    if os.path.isfile(NAMED_TS_FILE) and has_shape(NAMED_TS_FILE):
+        found.add("src/web/kanban-gate-completeness-guard.ts")
+    return found
+
 
 with open(TARGET, encoding="utf-8") as f:
     # Comments must not trip this: the file's own history (kept above the import line) quotes the
@@ -46,12 +176,11 @@ def check(label, cond):
         failures.append(label)
 
 
-# An ACTUAL regex-literal assignment to _VERDICT (not the import's `as _VERDICT` alias).
+# --- cases 1-4: unchanged (NO-GO 31111 fix direction: "keep the 4 existing cases") -------------
 check(
     "no inline _VERDICT = re.compile(...) in gate-closure-check.py",
     not re.search(r"^_VERDICT\s*=\s*re\.compile", source, re.MULTILINE),
 )
-# An ACTUAL set/frozenset literal assignment to PASSING (not the imported name).
 check(
     "no inline PASSING = {...} in gate-closure-check.py",
     not re.search(r"^PASSING\s*=\s*[{(]", source, re.MULTILINE),
@@ -63,6 +192,25 @@ check(
 check(
     "gate-closure-check.py imports PASSING from gate_verdict_tokens",
     bool(re.search(r"^from gate_verdict_tokens import\b.*\bPASSING\b", source, re.MULTILINE)),
+)
+
+# --- case 5+: the allowlist ratchet (new) --------------------------------------------------------
+_found = scan_tree()
+check(
+    "gate-closure-check.py carries no verdict-token shape of its own (shape-based, not spelling)",
+    "store/gate-closure-check.py" not in _found,
+)
+check(
+    "the set of files with the verdict-token shape equals the explicit allowlist "
+    "(found=%s)" % ",".join(sorted(_found - ALLOWLIST)) if (_found - ALLOWLIST) else
+    "the set of files with the verdict-token shape equals the explicit allowlist (no extras)",
+    not (_found - ALLOWLIST),
+)
+check(
+    "no allowlisted file has silently lost its shape without the allowlist shrinking "
+    "(stale=%s)" % ",".join(sorted(ALLOWLIST - _found)) if (ALLOWLIST - _found) else
+    "every allowlisted file still carries the shape (allowlist is not stale)",
+    not (ALLOWLIST - _found),
 )
 
 print()
