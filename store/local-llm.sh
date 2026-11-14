@@ -307,6 +307,14 @@ log_usage() { # $1=status(ok|err|busy)  $2=elapsed_ms  $3=eval_count  $4=prompt_
   { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(date +%s 2>/dev/null || echo 0)" "$c" "$t" "$m" "${2:-0}" "$1" "$s" "${3:-0}" "${4:-0}" "${5:-0}" \
       >> "$USAGE_LOG"; } 2>/dev/null || true
+  # Card e96d56c5 (F4): one llm_ledger row per call, same data already gathered above. eval_count +
+  # prompt_eval_count (actual local token counts) stands in for claude_token_equiv -- a documented
+  # 1:1 estimate, not a precise conversion (none exists yet, see card context). Fail-open by design
+  # (llm-ledger-append.py itself never raises); best-effort, never allowed to affect the real result.
+  local ledger_ok_flag=(--ok); [[ "$1" == ok ]] || ledger_ok_flag=(--fail --fail-reason "$1")
+  local ledger_equiv=$(( ${3:-0} + ${4:-0} ))
+  python3 "$HERE/llm-ledger-append.py" --agent "$c" --task-type "$t" --provider local --model "$m" \
+    "${ledger_ok_flag[@]}" --latency-ms "${2:-0}" --claude-token-equiv "$ledger_equiv" >/dev/null 2>&1 || true
 }
 
 MODEL=""; SYSTEM=""; TASK=""; MODE="generate"; CALLER=""; SOURCE="bare"; LOG_TASK=""; QUEUE_MANAGED=0

@@ -1763,6 +1763,45 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
 
+  // --- LLM ledger (card e96d56c5, F4) ---
+  // One row per non-Claude LLM call (local Ollama, Gemini, freellmapi) -- the Claude-equivalent
+  // cost table already exists (token_usage, above) for Claude itself. draft_accepted starts NULL
+  // and is filled in later, read back from the card's own Draft-Review comment once a human/gate
+  // judges the draft (not knowable at call time).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_ledger (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts                  INTEGER NOT NULL,
+      agent_id            TEXT NOT NULL,
+      card_id             TEXT,
+      task_type           TEXT NOT NULL,
+      provider            TEXT NOT NULL CHECK(provider IN ('local','gemini','freellm')),
+      model               TEXT,
+      ok                  INTEGER NOT NULL,
+      fail_reason         TEXT,
+      latency_ms          INTEGER,
+      prompt_chars        INTEGER,
+      response_chars      INTEGER,
+      draft_accepted      INTEGER,
+      claude_token_equiv  INTEGER
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llm_ledger_ts ON llm_ledger(ts)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llm_ledger_provider_ts ON llm_ledger(provider, ts)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_llm_ledger_agent_ts ON llm_ledger(agent_id, ts)`)
+
+  // Per-agent daily budget override (claude_token_equiv/day), platform default in config-registry
+  // (LLM_LEDGER_DEFAULT_DAILY_BUDGET). A missing row here means "use the platform default" --
+  // rule 14 two-tier settings, no business value hardcoded.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_llm_budget (
+      agent_id      TEXT PRIMARY KEY,
+      daily_budget  INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      updated_by    TEXT
+    )
+  `)
+
   // --- Idea Box ---
   db.exec(`
     CREATE TABLE IF NOT EXISTS idea_box (
@@ -9206,6 +9245,160 @@ export function pruneTokenUsage(): number {
     return db.prepare('DELETE FROM token_usage WHERE timestamp < ?').run(c).changes
   })
   return rollupAndDelete(cutoff)
+}
+
+// --- LLM ledger (card e96d56c5, F4) ---
+
+export interface LlmLedgerRow {
+  id: number
+  ts: number
+  agent_id: string
+  card_id: string | null
+  task_type: string
+  provider: 'local' | 'gemini' | 'freellm'
+  model: string | null
+  ok: number
+  fail_reason: string | null
+  latency_ms: number | null
+  prompt_chars: number | null
+  response_chars: number | null
+  draft_accepted: number | null
+  claude_token_equiv: number | null
+}
+
+// One row per non-Claude call. ok/draft_accepted are stored as 0/1 (SQLite has
+// no boolean column type); draft_accepted is NULL until filled in later.
+export function appendLlmLedgerRow(params: {
+  agentId: string
+  cardId?: string | null
+  taskType: string
+  provider: 'local' | 'gemini' | 'freellm'
+  model?: string | null
+  ok: boolean
+  failReason?: string | null
+  latencyMs?: number | null
+  promptChars?: number | null
+  responseChars?: number | null
+  claudeTokenEquiv?: number | null
+  nowS?: number
+}): number {
+  const ts = params.nowS ?? Math.floor(Date.now() / 1000)
+  const info = db.prepare(`
+    INSERT INTO llm_ledger (ts, agent_id, card_id, task_type, provider, model, ok, fail_reason,
+      latency_ms, prompt_chars, response_chars, claude_token_equiv)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    ts, params.agentId, params.cardId ?? null, params.taskType, params.provider, params.model ?? null,
+    params.ok ? 1 : 0, params.failReason ?? null, params.latencyMs ?? null, params.promptChars ?? null,
+    params.responseChars ?? null, params.claudeTokenEquiv ?? null,
+  )
+  return info.lastInsertRowid as number
+}
+
+// Fills in draft_accepted on the matching row, read back later from the card's own
+// Draft-Review comment once a human/gate judges the draft (not knowable at call time).
+export function markLlmLedgerDraftAccepted(id: number, accepted: boolean): boolean {
+  return db.prepare('UPDATE llm_ledger SET draft_accepted = ? WHERE id = ?').run(accepted ? 1 : 0, id).changes > 0
+}
+
+export interface LlmLedgerProviderSummary {
+  provider: string
+  calls: number
+  ok: number
+  fail: number
+  accepted: number
+  avg_latency_ms: number | null
+  claude_token_equiv_saved: number
+}
+
+export interface LlmLedgerTaskTypeSummary {
+  task_type: string
+  calls: number
+  ok: number
+  fail: number
+  accepted: number
+  claude_token_equiv_saved: number
+}
+
+export interface LlmLedgerAgentSummary {
+  agent_id: string
+  calls: number
+  ok: number
+  fail: number
+  claude_token_equiv_saved: number
+  daily_budget: number
+  budget_source: 'override' | 'platform'
+}
+
+export interface LlmLedgerSummary {
+  days: number
+  since: number
+  providers: LlmLedgerProviderSummary[]
+  task_types: LlmLedgerTaskTypeSummary[]
+  agents: LlmLedgerAgentSummary[]
+  totals: { calls: number; ok: number; fail: number; claude_token_equiv_saved: number }
+}
+
+export function getAgentLlmBudget(agentId: string): { daily_budget: number; source: 'override' | 'platform' } {
+  const row = db.prepare('SELECT daily_budget FROM agent_llm_budget WHERE agent_id = ?').get(agentId) as { daily_budget: number } | undefined
+  if (row) return { daily_budget: row.daily_budget, source: 'override' }
+  return { daily_budget: Number(getEffectiveSettingValue('LLM_LEDGER_DEFAULT_DAILY_BUDGET')), source: 'platform' }
+}
+
+export function setAgentLlmBudget(agentId: string, dailyBudget: number, updatedBy?: string | null): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO agent_llm_budget (agent_id, daily_budget, updated_at, updated_by) VALUES (?, ?, ?, ?)
+    ON CONFLICT(agent_id) DO UPDATE SET daily_budget = excluded.daily_budget, updated_at = excluded.updated_at, updated_by = excluded.updated_by
+  `).run(agentId, dailyBudget, now, updatedBy ?? null)
+}
+
+export function getLlmLedgerSummary(days: number): LlmLedgerSummary {
+  const since = Math.floor(Date.now() / 1000) - days * 86400
+  const providers = db.prepare(`
+    SELECT provider,
+      COUNT(*) AS calls,
+      SUM(ok) AS ok,
+      SUM(1 - ok) AS fail,
+      SUM(COALESCE(draft_accepted, 0)) AS accepted,
+      AVG(latency_ms) AS avg_latency_ms,
+      SUM(COALESCE(claude_token_equiv, 0)) AS claude_token_equiv_saved
+    FROM llm_ledger WHERE ts >= ? GROUP BY provider ORDER BY provider
+  `).all(since) as LlmLedgerProviderSummary[]
+
+  const taskTypes = db.prepare(`
+    SELECT task_type,
+      COUNT(*) AS calls,
+      SUM(ok) AS ok,
+      SUM(1 - ok) AS fail,
+      SUM(COALESCE(draft_accepted, 0)) AS accepted,
+      SUM(COALESCE(claude_token_equiv, 0)) AS claude_token_equiv_saved
+    FROM llm_ledger WHERE ts >= ? GROUP BY task_type ORDER BY task_type
+  `).all(since) as LlmLedgerTaskTypeSummary[]
+
+  const agentRows = db.prepare(`
+    SELECT agent_id,
+      COUNT(*) AS calls,
+      SUM(ok) AS ok,
+      SUM(1 - ok) AS fail,
+      SUM(COALESCE(claude_token_equiv, 0)) AS claude_token_equiv_saved
+    FROM llm_ledger WHERE ts >= ? GROUP BY agent_id ORDER BY agent_id
+  `).all(since) as Array<Omit<LlmLedgerAgentSummary, 'daily_budget' | 'budget_source'>>
+  const agents: LlmLedgerAgentSummary[] = agentRows.map((a) => {
+    const budget = getAgentLlmBudget(a.agent_id)
+    return { ...a, daily_budget: budget.daily_budget, budget_source: budget.source }
+  })
+
+  const totals = db.prepare(`
+    SELECT COUNT(*) AS calls, SUM(ok) AS ok, SUM(1 - ok) AS fail,
+      SUM(COALESCE(claude_token_equiv, 0)) AS claude_token_equiv_saved
+    FROM llm_ledger WHERE ts >= ?
+  `).get(since) as { calls: number; ok: number | null; fail: number | null; claude_token_equiv_saved: number }
+
+  return {
+    days, since, providers, task_types: taskTypes, agents,
+    totals: { calls: totals.calls, ok: totals.ok ?? 0, fail: totals.fail ?? 0, claude_token_equiv_saved: totals.claude_token_equiv_saved },
+  }
 }
 
 // The decay-sweep cadence. Lives HERE, beside the prune it drives, because

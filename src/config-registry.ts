@@ -709,6 +709,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- LLM ledger module (card e96d56c5, F4) ---
+  {
+    key: 'LLM_LEDGER_DEFAULT_DAILY_BUDGET',
+    type: 'int',
+    default: 50000,
+    min: 0,
+    max: 10000000,
+    description: 'Platform-alapértelmezett napi büdzsé (becsült Claude-token-egyenérték, llm_ledger.claude_token_equiv összege) a nem-Claude LLM hívásokra (local/gemini/freellm) ügynökönként. Az agent_llm_budget táblában lévő per-agent override felülírja egy adott ügynökre; hiányzó sor esetén ez az alapérték érvényes.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
   {
     key: 'CONVERSATION_LOG_RETENTION_DAYS',
     type: 'int',
