@@ -24826,20 +24826,22 @@ commit/351 fájl túl nagy egy többrepós sweep melléktételéhez).
 
 **Döntés:** QA FAIL 30965 and Cybersec NO-GO 30959 on card b2401b1c both found that the caveman
 verdict in the entry above ("2026-11-14 -- update-review sweep: 5 watched repos + 2 pipx drifts")
-is factually wrong, and independently re-measured the actual diff. Correction, per the append-only
-convention (new entry, not an edit to the old one): `git log --oneline 67968b7a..b4ee71d5` is
-exactly 1 commit (b4ee71d5, "fix(readme): stop GitHub clipping the Caveman Code banner (#1527)");
-`git diff --stat 67968b7a..b4ee71d5` is exactly 1 file (README.md), not 2; go.mod does not appear
-in this diff at all -- its last touching commit is 82864c8f ("feat: ship Caveman 2.0.0"), outside
-this range, and the live clone's go.mod reads "go 1.26.5", not anything resembling "1.26.10" or
-"1.26.11". The claimed go.mod toolchain patch bump in the original entry did not happen in the
-cited range; the actual, correct verdict is: caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit, 1
-file (README.md cosmetic banner-clipping fix only), no go.mod/toolchain change, no new deps. The
-NO-OP verdict's substance was always correct; only the stated evidence for it was wrong. Also
-correcting 2 LOW items from the same entry: the repomix jsdom devDependency bump is MAJOR
-(^30.1.3->^31.0.0), not minor (still dev-only, no lifecycle scripts, no new dependency, pinned
-install 1.19.0 unaffected); the doubt-driven-development (agent-skills) clarification is 2 added
-lines, not 1.
+is factually wrong about the FILE COUNT, and independently re-measured the actual diff. Correction,
+per the append-only convention (new entry, not an edit to the old one), measured with
+`git -C store/adopted/JuliusBrussee__caveman show <sha>:go.mod` against the pinned clone (not a
+working checkout): `git log --oneline 67968b7a..b4ee71d5` is exactly 1 commit (b4ee71d5,
+"fix(readme): stop GitHub clipping the Caveman Code banner (#1527)"); `git diff --stat
+67968b7a..b4ee71d5` is exactly 1 file (README.md), not 2. go.mod reads "go 1.26.10" at ad473752
+and "go 1.26.11" at both 67968b7a and b4ee71d5 -- so the 1.26.10->1.26.11 toolchain bump IS real,
+it happened in the EARLIER range ad473752..67968b7a (already reviewed under card b19055b4), and
+this range (67968b7a..b4ee71d5) carries no go.mod change at all. The actual, correct verdict is:
+caveman (67968b7a..b4ee71d5) -- NO-OP, 1 commit, 1 file (README.md cosmetic banner-clipping fix
+only), no go.mod change in THIS range (the toolchain bump belongs to the prior round), no new
+deps. The NO-OP verdict's substance was always correct; only the stated file count for this
+specific range was wrong. Also correcting 2 LOW items from the same entry: the repomix jsdom
+devDependency bump is MAJOR (^30.1.3->^31.0.0), not minor (still dev-only, no lifecycle scripts,
+no new dependency, pinned install 1.19.0 unaffected); the doubt-driven-development (agent-skills)
+clarification is 2 added lines, not 1.
 
 **Miért külön bejegyzés, nem szerkesztés:** QA Fix-Direction (30965) explicit kérése -- a
 DECISIONS.md append-only elve szerint egy korábbi bejegyzés hibás szövegét nem szabad helyben
