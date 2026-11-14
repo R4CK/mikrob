@@ -24,6 +24,7 @@ import { enqueueCapture } from '../kg/capture.js'
 import {
   runCapture,
   defaultClosureCheck,
+  defaultDraftFn,
   earliestGateCommentAt,
   coveredReviewComment,
   type CaptureDeps,
@@ -632,5 +633,28 @@ describe('defaultClosureCheck (the live, non-injected path)', () => {
     const node = kgDb.prepare('SELECT * FROM kg_nodes WHERE id = ?').get(result.solutionIds[0]!) as Record<string, unknown>
     expect(node.status).toBe('draft')
     kgDb.close()
+  })
+})
+
+// Cybersec NO-GO 30701 (card c84a510a): the headline fix for the kg-capture hang -- the outer
+// Node timeout raised to 300_000 AND the inner curl inside local-llm.sh capped by the
+// LOCAL_LLM_TIMEOUT env override -- had no test naming either value, so both mutants (deleting
+// the env override line, or reverting the outer timeout back to the old 120_000) shipped green.
+describe('defaultDraftFn', () => {
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReset()
+  })
+
+  it('passes the 300_000ms outer timeout and LOCAL_LLM_TIMEOUT=280 env override to local-llm.sh', () => {
+    vi.mocked(execFileSync).mockReturnValue('[]')
+    defaultDraftFn('a review')
+    expect(execFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('local-llm.sh'),
+      expect.arrayContaining(['--task', 'kg-capture']),
+      expect.objectContaining({
+        timeout: 300_000,
+        env: expect.objectContaining({ LOCAL_LLM_TIMEOUT: '280' }),
+      }),
+    )
   })
 })
