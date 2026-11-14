@@ -25863,3 +25863,13 @@ Cybersec2 B1 (MikroB msg_id:18606 relay): a watched-repos-record-review.sh futta
 vegzi el mindharom bejegyzesre a kartya zarasakor, DevO nem futtatta.
 
 Gate: QA2 + Cybersec2, delta szabaly (csak store/watched-repos.json, egy sor). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- 8e9828c9: idleFooterIndex region-scoped (most-recent-match), fixes class A (typing/queued/dialog behind a spoofed background-agent block)
+
+**Döntés:** Card 8e9828c9 is the split-out (a) finding from card 8b8bc092's scope (RedHat round-3 residual, comment 31136 on card 0499d1f4): the typing/queued/dialog override in `detectsHeldPeerMessage`/`detectsPermissionDialog` relied on `hasIdleFooter(lines)`, a whole-pane backward scan for an idle-footer-shaped line. A single stale or spoofed idle-footer-shaped line anywhere in scrollback could out-rank the real pane state even when no genuine footer existed to actually out-rank it, because the scan had no notion of "most recent" -- it just found the first match walking back from the end.
+
+**Fix:** added `hasIdleFooterNear(lines, regionLines)`, which bounds the backward scan to `lines.slice(-regionLines)` -- reusing the existing `BUSY_LIVE_REGION_LINES=12` constant, since the real footer is only ever drawn at the bottom of the pane. Replaced `hasIdleFooter(lines)` with `hasIdleFooterNear(lines, BUSY_LIVE_REGION_LINES)` at the two call sites in this card's scope: `detectsHeldPeerMessage` and `detectsPermissionDialog`. `detectsModelConsentDialog` has a structurally similar call but was not named in the card's scope -- left untouched (surgical change, not bundled in).
+
+**Teszt:** 3 new class A pin tests added to `src/__tests__/pane-background-agents.test.ts` (typing/queued/dialog behind a spoofed background-agent block each read busy/typing, not idle). `fleet-test.sh --ref card/8e9828c9 src/__tests__/pane-background-agents.test.ts`: 36/36 green (up from 33 on the parent card/8b8bc092 tip). Mutation-verified red-on-parent/green-on-fix per the card's own Kesz-ha: reverted only the `hasIdleFooterNear` addition + the 2 call-site replacements as a throwaway commit, re-ran the same test file -- exactly the 3 new pin tests went red, the other 33 stayed green (3 failed | 33 passed, 36 total), then discarded the throwaway commit (branch restored to the real fix commit, verified clean). Blast-radius: `fleet-test.sh --ref card/8e9828c9` across all 42 test files referencing `pane-state.ts` (superset of the card's named "38 importing files"): 42/42 files, 1356/1356 tests passed.
+
+**Ki döntött:** backend (kártya 8e9828c9, split out of 8b8bc092 per MikroB agreement). Gate: QA + RedHat (per card's own Gate line). Gate-SHA: lásd REVIEW komment.
