@@ -510,6 +510,32 @@ const BG_AGENT_ROW_RX = /^\s+◯ \S/
 // The footer's lead: the mode words + `on`, then the shift+tab hint and/or the
 // first `·` segment; or the no-mode `? for shortcuts` footer.
 const FOOTER_LEAD_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))?(?: · |\s*$)|\? for shortcuts/
+// RedHat NO-GO 30564 (card 0499d1f4, delta on N1): FOOTER_LEAD_RX is the right test for "does
+// the line ABOVE the header look like a footer" (used by splitBackgroundAgentBlock itself to
+// FIND the header), but it is the WRONG test for "do the discarded ROWS below the header
+// contain a more-recent live signal that must stop the cut" (used right below, in
+// detectPaneState). Two opposite failures came from reusing it there:
+//   F1: a REAL current footer that is clipped (tmux width cut) before reaching the literal `on`
+//       -- e.g. `bypass permissi…`, `on (shift+t…`, or a bare `esc to interrupt` with no
+//       `... on` prefix at all -- never matches FOOTER_LEAD_RX, so the override never fires and
+//       the cut discards it, same as the live spinner line sitting right next to it. A genuinely
+//       busy pane reads idle.
+//   F2: FOOTER_LEAD_RX is unanchored to footer chrome -- ANY 1-3 words ending the row in the
+//       bare word `on` matches (prose like "... that depends on", "... based on", or a wrapped
+//       sub-agent label ending the same way). That wrongly fires the override on a genuinely
+//       mechanical trailing block (no real additional state below it), which SKIPS the cut it
+//       should have performed -- and skipping is exactly the original bug this whole mechanism
+//       exists to prevent: the real footer/spinner sitting just above the header gets pushed out
+//       of the live tail window by the kept rows. A genuinely busy pane reads idle, the other way.
+// Fix: key the override on the three things that can ACTUALLY carry a more-recent live signal --
+// an intact idle footer (IDLE_FOOTER_RX), the `esc to interrupt` busy phrase (always literal,
+// never clipped mid-word in the corpus), or a live spinner/token-counter line (BUSY_INDICATORS[0]
+// -- the parenthesised `(Ns · ↓` tail, which sits on its own line, separate from the footer, so a
+// clipped footer next to it still gets caught via the spinner). None of these match ordinary
+// prose ending in a bare "on" with nothing (or the wrong thing) after it.
+const ROW_LIVE_SIGNAL_RX = new RegExp(
+  `${IDLE_FOOTER_RX.source}|${BUSY_ESC_TO_INTERRUPT_RX.source}|${BUSY_INDICATORS[0].source}`,
+)
 // The row tail is `[elapsed, tokens, "N queued"]` joined with ` · ` (read from
 // the Claude Code 2.1.301 source; empty parts are dropped). A running agent's
 // elapsed is a clock (`18m 5s`); an idle one shows a word (`waiting`, `idle`)
@@ -1458,7 +1484,7 @@ export function detectPaneState(
   // (more recent) footer -- that signals this header is stale/spoofed, and the real state is
   // further down, inside the rows this cut would otherwise throw away.
   const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
-  if (bgBlock && !bgBlock.rows.some(r => FOOTER_LEAD_RX.test(r))) {
+  if (bgBlock && !bgBlock.rows.some(r => ROW_LIVE_SIGNAL_RX.test(r))) {
     pane = bgBlock.above.join('\n')
   }
 

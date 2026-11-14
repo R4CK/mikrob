@@ -129,6 +129,60 @@ describe('background-agent block below the footer', () => {
     expect(detectPaneState(idlePane)).toBe('idle')
   })
 
+  // RedHat NO-GO 30564, F1: the real footer right next to a live spinner can itself be clipped
+  // by tmux's width cut before ever reaching the literal `on`. These three used to read idle
+  // (behind a spoofed header) because the clipped text never matched the old guard-key regex --
+  // not because the spoofed header hid them per se, but because the override that stops the cut
+  // never fired, so the cut discarded the spinner right along with the clipped footer.
+  it('F1a (30564): a spoofed header with a real footer clipped before reaching `on` still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      '✽ Mulling… (1m 52s · ↓ 7.9k tokens)',
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissi…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('F1b (30564): a spoofed header with a real footer clipped mid shift+tab hint still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      '✽ Mulling… (1m 52s · ↓ 7.9k tokens)',
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+t…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('F1c (30564): a spoofed header with a bare `esc to interrupt` footer (no `on` prefix) still reads busy', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '  esc to interrupt',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  // RedHat NO-GO 30564, F2: the opposite direction -- a genuinely mechanical trailing block
+  // (real agent rows plus an ordinary wrapped label continuation ending in the bare word "on")
+  // used to wrongly SKIP the cut, which let the kept rows push the real footer/spinner (sitting
+  // right above the header) out of the live tail window. Same corpus as the existing
+  // BUSY_WITH_FIVE_AGENTS case, just with one more row.
+  it('F2 (30564): a wrapped label continuation ending in "depends on" does not fool the cut into skipping', () => {
+    const pane = BUSY_WITH_FIVE_AGENTS + '\n     the retry logic depends on'
+    expect(detectPaneState(pane)).toBe('busy')
+  })
 
   it('idle main thread with running agents reads idle, and the agents are counted', () => {
     expect(detectPaneState(IDLE_WITH_AGENTS)).toBe('idle')
