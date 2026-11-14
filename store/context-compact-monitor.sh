@@ -79,11 +79,23 @@ CONTEXT_GUARD_JS="${CONTEXT_GUARD_JS:-$ROOT/dist/context-guard.js}"
 # Re-validated on every call, not once at script start: the selftest (and a real caller) sets
 # COMPACT_MAX_TOKENS as a prefix to a single function call within an already-running shell, which
 # would never re-run a one-shot top-level validation.
+#
+# CYBERSEC NO-GO + QA FAIL fix (31332): a 10+ digit value (up toward 2^63) passed the old
+# all-digits check and was echoed straight through -- large enough that pct_threshold (a real
+# window's 75%) is NEVER below it, so the cap silently stops capping anything, the opposite of
+# what this card exists to do. No real context window is anywhere near 9 digits (999999999),
+# so anything longer is rejected like non-numeric input. The surviving value is also re-parsed
+# with the 10# prefix (forced base-10), not echoed raw: a leading-zero value like "090000" is
+# valid decimal but bash arithmetic ($(( THRESHOLD / 1000 )) at the display line) reads a
+# leading 0 as octal and "090000" has a digit (9) invalid in octal, which aborts the script.
 compact_max_tokens() {
   local raw="${COMPACT_MAX_TOKENS:-200000}"
   case "$raw" in
-    ''|*[!0-9]*) echo 200000 ;;
-    *[1-9]*) echo "$raw" ;;
+    ''|*[!0-9]*) echo 200000; return ;;
+  esac
+  if [ "${#raw}" -gt 9 ]; then echo 200000; return; fi
+  case "$raw" in
+    *[1-9]*) echo "$((10#$raw))" ;;
     *) echo 200000 ;;
   esac
 }
@@ -390,6 +402,25 @@ if [ "${1:-}" = "--selftest" ]; then
     "$(COMPACT_MAX_TOKENS=00 threshold_tokens_for_model claude-opus-5)"
   s "an empty cap falls back to 200000" "200000" \
     "$(COMPACT_MAX_TOKENS= threshold_tokens_for_model claude-opus-5)"
+  # 31332 fix: mixed digit/garbage must still fall back, not parse the digit prefix/suffix.
+  s "letters-then-digits falls back to 200000" "200000" \
+    "$(COMPACT_MAX_TOKENS=abc5 threshold_tokens_for_model claude-opus-5)"
+  s "digits-then-letters falls back to 200000" "200000" \
+    "$(COMPACT_MAX_TOKENS=200000x threshold_tokens_for_model claude-opus-5)"
+  s "digits-then-unit-suffix falls back to 200000" "200000" \
+    "$(COMPACT_MAX_TOKENS=20k threshold_tokens_for_model claude-opus-5)"
+  s "a negative value falls back to 200000, not an always-uncapped -1" "200000" \
+    "$(COMPACT_MAX_TOKENS=-1 threshold_tokens_for_model claude-opus-5)"
+  # 31332 fix: a 10+ digit cap must not silently disable capping (it would always lose to
+  # pct_threshold, so the opus-5 75%-of-1M case below would wrongly read 750000, not 200000).
+  s "a 10-digit cap falls back to 200000, does not disable the cap" "200000" \
+    "$(COMPACT_MAX_TOKENS=9999999999 threshold_tokens_for_model claude-opus-5)"
+  s "a 9-digit cap is still honoured (boundary, not rejected)" "999999999" \
+    "$(COMPACT_MAX_TOKENS=999999999 compact_max_tokens)"
+  # 31332 fix: a leading-zero value must parse as decimal (10#), not break on bash's octal
+  # reading of a leading 0 downstream (the THRESHOLD_K display line divides by 1000).
+  s "a leading-zero cap parses as decimal, not octal" "90000" \
+    "$(COMPACT_MAX_TOKENS=090000 threshold_tokens_for_model claude-opus-5)"
   # And the derived number has to be the one the decision actually uses, at its boundary.
   s "at the derived (capped) threshold it acts"     "compact"         "$(should_compact 200000 200000 5 20 60 45)"
   s "one below the derived (capped) threshold it does not" "below-threshold" "$(should_compact 199999 200000 5 20 60 45)"
