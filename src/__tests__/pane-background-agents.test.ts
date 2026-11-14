@@ -361,4 +361,34 @@ describe('background-agent block below the footer', () => {
     )
     expect(detectPaneState(pane)).toBe('idle')
   })
+
+  // RedHat round-3 residual 1 (8b8bc092, comment 31136 on 07df3f995): a wrapped label
+  // continuation behind a spoofed header coincidentally matches BUSY_ESC_CLIPPED_RX (ends
+  // "on · e…", which also happens to satisfy FOOTER_LEAD_RX, so only the indent check in
+  // rowCarriesLiveSignal -- not the FOOTER_LEAD_RX gate below -- can reject it), wrongly
+  // blocking the cut that should discard this stale/spoofed trailing block.
+  it('RedHat round-3 residual: a wrapped continuation coincidentally matching a clipped busy footer must not block the cut', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '     the retry logic depends on · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // RedHat round-3 residual 2 (8b8bc092, comment 31136): BUSY_ESC_CLIPPED_RX alone matches any
+  // prose ending "· e…", even idle text with no mode-word lead at all ("see the docs · e…").
+  it('RedHat round-3 residual: an idle pane whose last line merely ends "· e…" with no mode-word lead stays idle', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      '  see the docs · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
 })

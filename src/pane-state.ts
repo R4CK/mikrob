@@ -570,8 +570,23 @@ const ROW_LIVE_SIGNAL_RX = new RegExp(
 // real `◯` agent row (BG_AGENT_ROW_RX); no genuine live-state signal is ever rendered on one (the
 // footer/spinner/placeholder always render on their own, non-`◯` line), so excluding `◯` rows from
 // every check below closes this without weakening detection of an actual trailing live signal.
+// RedHat round-3 residual 1 (8b8bc092, comment 31136): a wrapped label continuation line
+// (rendered at indent 5 in every captured fixture, e.g. test's
+// '     the retry logic depends on') can coincidentally match one of the loose row-level
+// regexes added for B(i)/B(iii) (BUSY_ESC_CLIPPED_RX, FOOTER_SHELL_TAIL_RX, PENDING_PASTE_RX)
+// or the pre-existing idle-footer/esc-interrupt forms, even though it carries no real signal --
+// every genuine signal row (footer, the `❯ ` box line, NAME_BAR/SEP separators, `◯` agent rows)
+// renders at indent 0-2. Rejecting anything deeper than that removes the false match without
+// touching a real signal.
+const ROW_SIGNAL_MAX_INDENT = 3
+
+function rowLeadingSpaces(row: string): number {
+  return row.length - row.trimStart().length
+}
+
 function rowCarriesLiveSignal(row: string): boolean {
   if (BG_AGENT_ROW_RX.test(row)) return false
+  if (rowLeadingSpaces(row) > ROW_SIGNAL_MAX_INDENT) return false
   return (
     ROW_LIVE_SIGNAL_RX.test(row) ||
     BUSY_ESC_CLIPPED_RX.test(row) ||
@@ -1560,7 +1575,13 @@ export function detectPaneState(
   // segment) -- BUSY_ESC_CLIPPED_RX is already distinctive on its own (literal `· e` lead plus a
   // nested prefix of "sc to interrupt" ending in the truncation ellipsis; see its own comment:
   // "no idle footer segment starts with `e`"), so the AND added nothing but a gap.
-  if (BUSY_ESC_CLIPPED_RX.test(lastLine)) return 'busy'
+  // RedHat round-3 residual 2 (8b8bc092, comment 31136): BUSY_ESC_CLIPPED_RX alone over-matches
+  // idle prose that happens to end in "· e…" without ever being a mode-word footer -- "see the
+  // docs · e…" or "Tips for getting started · e…" are not busy, they just end badly on a narrow
+  // pane. Every real busy-footer-clipped shape (the ones the regex exists for) also starts the
+  // trailing `on`-segment FOOTER_LEAD_RX requires ("bypass permissions on · e…", "... on · e…");
+  // requiring it here keeps the real shapes and drops the false ones.
+  if (BUSY_ESC_CLIPPED_RX.test(lastLine) && FOOTER_LEAD_RX.test(lastLine)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
   // stub sits in the live input box; the footer below it is version-dependent
