@@ -9,10 +9,16 @@
 #     secured directory. No payload (ps1/hash) is copied in Phase 1 -- fail-closed: if the write-test
 #     fails or errors, setup aborts (exit 1) before any content exists in the secured directory.
 #
-#   Phase 2: check for junctions/reparse points in the target directory, copy
-#     gpu-driver-install.ps1 and gpu-driver-install-launcher.ps1, pin the SHA-256, and update
-#     (+ verify by read-back) the scheduled task to call the launcher with the expected hash on the
-#     command line (F1: hash on the task command line, not next to the ps1 where neon can read it).
+#   Phase 2: re-check the directory against the state Phase 1 recorded (R2(b), eb12a5dd -- catches
+#     ACL drift between the two runs, not just reparse-points/owner), copy gpu-driver-install.ps1
+#     and gpu-driver-install-launcher.ps1, pin the SHA-256 of BOTH files, and update (+ verify by
+#     read-back) the scheduled task so its command line: (1) checks the LAUNCHER's own hash first
+#     (R1, eb12a5dd -- the launcher used to be unpinned itself: if the ACL is ever bypassed, a
+#     replaced launcher would simply ignore the hash argument), then (2) calls the launcher with
+#     the main script's expected hash (F1: hash on the task command line, not next to the ps1 where
+#     neon can read it). The launcher hash check uses a truncated 80-bit prefix, not the full
+#     SHA-256, because schtasks /TR has a real but inconsistently-documented length limit; see the
+#     comment at the task-command construction below for the measured budget.
 #
 # Run Phase 1 first, confirm neon is blocked, then run with -Phase 2.
 # -Phase 2 alone (without Phase 1) will fail if the directory does not exist yet.
@@ -141,6 +147,22 @@ if ($Phase -eq '1') {
     }
     Write-Log "ACL verified: $aceCount ACEs, $inherited inherited, owner=$ownerVal (SID $ownerSid)"
 
+    # --- 1c2. Record what THIS run measured, so Phase 2 can detect drift (R2(b), eb12a5dd) --
+    # Phase 2 used to only re-derive its OWN owner/reparse-point checks -- that catches those two
+    # specific tampers, but says nothing about a subtler ACL change (e.g. an extra ACE) between
+    # the Phase 1 and Phase 2 runs. Record the measured state inside the directory itself: it is
+    # only writable by Administrators/SYSTEM from this point on (the Set-Acl above already ran),
+    # so this file carries the same trust guarantee as the rest of the directory's contents.
+    $state = [ordered]@{
+        ownerSid      = $ownerSid
+        aceCount      = $aceCount
+        inherited     = $inherited
+        recordedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    $StatePath = Join-Path $TargetDir 'gpu-driver-install-state.json'
+    ($state | ConvertTo-Json -Compress) | Set-Content -Path $StatePath -NoNewline
+    Write-Log "Phase 1 state recorded: $StatePath"
+
     # --- 1d. Positive control: verify the WSL write-test MECHANISM works --------------------
     # Test on a path neon CAN write, to confirm the bash printf + WSL path conversion is working
     # BEFORE we test the secured directory. A failing positive control means the test itself is
@@ -230,7 +252,7 @@ if (-not (Test-TrustedOwner $TargetDir)) {
     exit 1
 }
 $expectedNames = @('setup.log', 'launcher.log', 'gpu-driver-install.ps1', 'gpu-driver-install-launcher.ps1', 'gpu-driver-install.sha256',
-                   'gpu-driver-install-trigger-receipt.json', 'gpu-driver-install-used-approvals.json')
+                   'gpu-driver-install-trigger-receipt.json', 'gpu-driver-install-used-approvals.json', 'gpu-driver-install-state.json')
 # H1 fix (2a80c6cb delta): no token ever placed on the Windows side; ps1 verifies via the
 # trigger receipt written by the WSL trigger instead of calling consume-oneshot.
 # The shared fleet token must never appear in this directory.
@@ -252,6 +274,32 @@ foreach ($item in @($existing)) {
 }
 Write-Log "Directory and contents verified (Administrators/SYSTEM owner, no unexpected entries)"
 
+# --- 2b2. Compare a FRESH ACL measurement against what Phase 1 recorded (R2(b), eb12a5dd) -----
+# The loop above re-derives its own owner/reparse-point checks (catches those two tampers); this
+# step additionally catches drift the loop above does not look for (e.g. an extra ACE) by
+# comparing against the state Phase 1 actually measured and wrote, inside the same
+# Administrators/SYSTEM-only directory.
+$StatePath = Join-Path $TargetDir 'gpu-driver-install-state.json'
+if (-not (Test-Path $StatePath)) {
+    Write-Log "FAIL: $StatePath not found -- Phase 1 state was never recorded (or was removed) -- aborting"
+    exit 1
+}
+try {
+    $recordedState = Get-Content $StatePath -Raw | ConvertFrom-Json
+} catch {
+    Write-Log "FAIL: could not parse $StatePath -- aborting: $_"
+    exit 1
+}
+$freshAcl       = Get-Acl $TargetDir
+$freshAceCount  = @($freshAcl.Access).Count
+$freshInherited = @($freshAcl.Access | Where-Object { $_.IsInherited }).Count
+$freshOwnerSid  = $freshAcl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+if ($freshOwnerSid -ne $recordedState.ownerSid -or $freshAceCount -ne $recordedState.aceCount -or $freshInherited -ne $recordedState.inherited) {
+    Write-Log "FAIL: ACL state diverged from Phase 1 recording -- recorded owner=$($recordedState.ownerSid) aceCount=$($recordedState.aceCount) inherited=$($recordedState.inherited); fresh owner=$freshOwnerSid aceCount=$freshAceCount inherited=$freshInherited"
+    exit 1
+}
+Write-Log "ACL state matches Phase 1 recording (owner=$freshOwnerSid, aceCount=$freshAceCount, inherited=$freshInherited)"
+
 # --- 2c. Copy scripts -------------------------------------------------------------------------
 foreach ($name in @('gpu-driver-install.ps1', 'gpu-driver-install-launcher.ps1')) {
     $src  = Join-Path $SrcDir $name
@@ -269,13 +317,36 @@ Write-Log "Hash pinned: $hash"
 # --- 2e. Update scheduled task and verify by read-back (B3) -----------------------------------
 $LauncherPath = Join-Path $TargetDir 'gpu-driver-install-launcher.ps1'
 $TaskName     = 'MikroB-GPU-Driver-Install'
-# F1: pass hash as the first argument on the task command line, so the launcher reads it from
-# $args[0] -- the hash file remains in the ACL-protected directory, but the expected value is
-# also verifiable from the task definition itself (not stored next to the ps1 where neon can't
-# write but also can't read from WSL -- the task command line is admin-only too).
-$TaskCommand  = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$LauncherPath`" $hash"
 
-Write-Log "Updating scheduled task '$TaskName' with hash $hash on command line..."
+# R1 fix (eb12a5dd, WhiteHat 22466 residual R1): the main script's hash travelled on the task
+# command line (F1), but the LAUNCHER itself was not pinned anywhere outside TargetDir -- if the
+# directory's ACL is ever bypassed, a replaced launcher just ignores the hash argument and runs
+# whatever it wants. Verify the launcher's OWN hash inline, in the task's own command line
+# (admin-only, outside TargetDir -- the SAME channel as F1, not a registry value: a prior
+# selftest, X3, already pins that this script must not reference the registry-key approach that
+# an earlier REVIEW incorrectly described), BEFORE invoking it.
+#
+# The launcher-hash comparison uses a truncated 20-hex-char (80-bit) prefix, not the full
+# SHA-256 -- schtasks /TR has a real but inconsistently documented length limit (public sources
+# disagree: 255, 260, 261 and 262 characters have all been cited; none could be confirmed as
+# the authoritative figure). Rather than trust any one of them, this script measures the actual
+# command length below and fails closed over a conservative 250-char budget. 80 bits of
+# preimage-search difficulty is far beyond what a non-elevated local process could brute-force in
+# any practical time; this truncation is a NEW, narrowly-scoped convention for this one check --
+# it does not touch the existing full-hash F1 check the launcher itself does on the main script.
+$launcherHash      = (Get-FileHash $LauncherPath -Algorithm SHA256).Hash.ToUpper()
+$launcherHashShort = $launcherHash.Substring(0, 20)
+Write-Log "Launcher hash computed: $launcherHash (pinned prefix: $launcherHashShort)"
+
+$InlineCheck = "`$p='$LauncherPath';if((Get-FileHash `$p).Hash.Substring(0,20)-ne'$launcherHashShort'){exit 1};&`$p '$hash'"
+$TaskCommand = "powershell.exe -nop -ep Bypass -c `"$InlineCheck`""
+
+if ($TaskCommand.Length -gt 250) {
+    Write-Log "FAIL: task command is $($TaskCommand.Length) chars, over the safe 250-char budget for schtasks /TR -- aborting before schtasks /Change"
+    exit 1
+}
+
+Write-Log "Updating scheduled task '$TaskName' with launcher-hash pre-check + main hash $hash on command line..."
 $changeOut = & schtasks /Change /TN $TaskName /TR $TaskCommand 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Log "FAIL: schtasks /Change exited $LASTEXITCODE -- $changeOut"
@@ -283,18 +354,26 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Log "schtasks /Change: $changeOut"
 
-# Read-back: confirm the task command line now contains the launcher path and the hash.
+# Read-back: confirm the task command line now contains BOTH the launcher-hash prefix and the
+# main-script hash -- a mutant that dropped the new launcher pre-check but kept the main hash
+# intact would still satisfy a read-back that only checked $hash, so both are checked
+# independently.
 $queryOut = & schtasks /Query /TN $TaskName /FO CSV /V 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Log "FAIL: schtasks /Query exited $LASTEXITCODE -- $queryOut"
     exit 1
 }
 $queryStr = $queryOut -join "`n"
-if ($queryStr -notmatch [regex]::Escape($hash)) {
-    Write-Log "FAIL: task command line does not contain expected hash $hash after update"
+if ($queryStr -notmatch [regex]::Escape($launcherHashShort)) {
+    Write-Log "FAIL: task command line does not contain expected launcher-hash prefix $launcherHashShort after update"
     Write-Log "Query output: $queryStr"
     exit 1
 }
-Write-Log "Task verified: hash $hash present in task command line"
+if ($queryStr -notmatch [regex]::Escape($hash)) {
+    Write-Log "FAIL: task command line does not contain expected main-script hash $hash after update"
+    Write-Log "Query output: $queryStr"
+    exit 1
+}
+Write-Log "Task verified: launcher-hash prefix $launcherHashShort and main hash $hash present in task command line"
 Write-Log "Phase 2 complete. Setup done."
 exit 0

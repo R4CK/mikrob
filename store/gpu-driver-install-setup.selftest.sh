@@ -320,6 +320,53 @@ check "F1 scoped token removed from allowlist"        "$CURRENT" "gpu-driver-app
 check "F1 trigger-receipt in allowlist"               "$CURRENT" "gpu-driver-install-trigger-receipt.json"  present
 check "F1 shared fleet token not in allowlist"        "$CURRENT" '.dashboard-token'            absent
 
+echo "== R1 (eb12a5dd): the launcher's OWN hash must be checked outside TargetDir, before invoking it =="
+# Old fixture has no such mechanism at all -- pure presence/absence against $OLD confirms this is
+# genuinely new, not a pre-existing check this test just started looking for.
+check_stripped "R1 launcher hash computed (comment-stripped)" "$CURRENT_NOCOMMENT" '$launcherHash' present
+check_stripped "R1 launcher hash computed (comment-stripped)" "$OLD_NOCOMMENT"     '$launcherHash' absent
+check_stripped "R1 task command built from an inline pre-check, not -File (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" '$InlineCheck' present
+check_stripped "R1 old -File invocation of the launcher is gone (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" ' -File `"$LauncherPath`" $hash' absent
+check "R1 old -File invocation present in old fixture" "$OLD" ' -File `"$LauncherPath`" $hash' present
+# R1's whole point is that the launcher hash check must run BEFORE the launcher is invoked --
+# anchor to the actual $InlineCheck line, not just "the words exist somewhere in the file".
+INLINECHECK_LINE="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -F '$InlineCheck =')"
+if printf '%s\n' "$INLINECHECK_LINE" | grep -qF 'Get-FileHash' && printf '%s\n' "$INLINECHECK_LINE" | grep -qF 'exit 1'; then
+  echo "PASS: R1 inline check line itself hashes the launcher and can exit before invoking it"
+else
+  echo "FAIL: R1 inline check line does not both hash and fail-closed in one place"
+  fail=$((fail+1))
+fi
+check_stripped "R1 read-back checks the launcher-hash prefix (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" 'launcherHashShort' present
+check "R1 length budget guard present (schtasks /TR limit)" "$CURRENT" 'TaskCommand.Length -gt 250' present
+
+echo "== R2(b) (eb12a5dd): Phase 2 must compare against Phase 1's RECORDED state, not just re-derive its own checks =="
+check_stripped "R2b state filename referenced (comment-stripped)"  "$CURRENT_NOCOMMENT" 'gpu-driver-install-state.json' present
+check_stripped "R2b state filename referenced (comment-stripped)"  "$OLD_NOCOMMENT"     'gpu-driver-install-state.json' absent
+# Anchor to the ACTUAL write statement, not just the filename -- a mutant that comments out only
+# the write (leaving $StatePath's own assignment line untouched) still has the filename string
+# present, so the check above alone would miss it.
+check_stripped "R2b Phase 1 actually WRITES the state (comment-stripped, anchored to the write call)" \
+  "$CURRENT_NOCOMMENT" 'ConvertTo-Json -Compress) | Set-Content -Path $StatePath' present
+check_stripped "R2b Phase 1 actually WRITES the state (comment-stripped, anchored to the write call)" \
+  "$OLD_NOCOMMENT" 'ConvertTo-Json -Compress) | Set-Content -Path $StatePath' absent
+check_stripped "R2b Phase 2 reads the recorded state (comment-stripped)" "$CURRENT_NOCOMMENT" 'recordedState' present
+check "R2b state file added to the filename allowlist" "$CURRENT" "'gpu-driver-install-state.json')" present
+# Anchor the comparison itself, not just "the word recordedState occurs somewhere": the actual
+# divergence check must compare all three recorded fields against a FRESH measurement and must
+# be able to exit 1 in the same block (mutation target: deleting the -or chain silently turns
+# this into an always-true-pass).
+R2B_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A3 -F 'if ($freshOwnerSid -ne $recordedState.ownerSid')"
+if printf '%s\n' "$R2B_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: R2b divergence check's own block can fail closed"
+else
+  echo "FAIL: R2b divergence check block missing its own exit 1"
+  fail=$((fail+1))
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"
   exit 0
