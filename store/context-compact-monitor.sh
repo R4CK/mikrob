@@ -67,7 +67,26 @@ TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-backend backend2 fullstack cybered cyber
 # (200k) rather than to the largest window -- under-estimating compacts too eagerly, which is loud
 # and cheap; over-estimating is silent and ends in the ceiling.
 COMPACT_PCT="${COMPACT_PCT:-75}"
+# HARD CAP (Peti 13835, card 5dd48e5d): token-usage measured 2026-11-14 (card 2ad5ba6c) showed each
+# compact re-reading 240-420k tokens on the 1M-window models -- the PERCENTAGE rule above (introduced
+# for the opposite reason: a fixed count is wrong for every model) still let a 1M-window model run all
+# the way to 750k before triggering, which is itself an expensive re-read. The threshold is now
+# whichever is SMALLER: COMPACT_PCT% of the window, or COMPACT_MAX_TOKENS. On a small-window model
+# the percentage still wins (never raised by the cap); only a large-window model is pulled down.
+# Validated like every other env-tunable numeric knob in this repo (card b1813ab2, the "00"/"000"
+# lesson): non-digit, empty, OR all-zero falls back to the default, never silently reads as "no cap".
 CONTEXT_GUARD_JS="${CONTEXT_GUARD_JS:-$ROOT/dist/context-guard.js}"
+# Re-validated on every call, not once at script start: the selftest (and a real caller) sets
+# COMPACT_MAX_TOKENS as a prefix to a single function call within an already-running shell, which
+# would never re-run a one-shot top-level validation.
+compact_max_tokens() {
+  local raw="${COMPACT_MAX_TOKENS:-200000}"
+  case "$raw" in
+    ''|*[!0-9]*) echo 200000 ;;
+    *[1-9]*) echo "$raw" ;;
+    *) echo 200000 ;;
+  esac
+}
 window_tokens_for_model() {
   local w
   w="$(node -e '
@@ -79,7 +98,12 @@ import(process.argv[1]).then(m => console.log(m.contextLimitForModel(process.arg
 # The live threshold, as its own function so the selftest exercises the SAME arithmetic the loop
 # uses rather than a copy of it -- put a token constant back anywhere in this chain and the
 # derived-value cases go red.
-threshold_tokens_for_model() { echo $(( $(window_tokens_for_model "$1") * COMPACT_PCT / 100 )); }
+threshold_tokens_for_model() {
+  local pct_threshold max_tokens
+  pct_threshold=$(( $(window_tokens_for_model "$1") * COMPACT_PCT / 100 ))
+  max_tokens="$(compact_max_tokens)"
+  if [ "$pct_threshold" -lt "$max_tokens" ]; then echo "$pct_threshold"; else echo "$max_tokens"; fi
+}
 COOLDOWN_MIN="${COMPACT_COOLDOWN_MIN:-45}"
 # Only trust a reading this fresh; a stale row means the agent is parked, and compacting a parked
 # session wakes it up for nothing.
@@ -351,15 +375,27 @@ if [ "${1:-}" = "--selftest" ]; then
   s "an unknown model is conservative"   "200000"  "$(window_tokens_for_model claude-future-9)"
   s "an unreadable dist falls back small" "200000" \
     "$(CONTEXT_GUARD_JS=/nonexistent/context-guard.js window_tokens_for_model claude-opus-5)"
-  s "75% of a 1M window"    "750000" "$(threshold_tokens_for_model claude-opus-5)"
-  s "75% of a 200k window"  "150000" "$(threshold_tokens_for_model claude-sonnet-5)"
-  s "the percentage is overridable" "500000" "$(COMPACT_PCT=50 threshold_tokens_for_model claude-opus-5)"
+  # Card 5dd48e5d (Peti 13835): 75% of a 1M window (750k) is now CAPPED at COMPACT_MAX_TOKENS
+  # (200k default) -- the percentage rule alone let a 1M-window model run to 750k before
+  # triggering, and each compact re-reads 240-420k tokens (card 2ad5ba6c), measured, not assumed.
+  s "75% of a 1M window, capped at 200k"  "200000" "$(threshold_tokens_for_model claude-opus-5)"
+  s "75% of a 200k window (below the cap, untouched)" "150000" "$(threshold_tokens_for_model claude-sonnet-5)"
+  s "the percentage is overridable, still capped" "200000" "$(COMPACT_PCT=50 threshold_tokens_for_model claude-opus-5)"
+  s "a smaller percentage can still land under the cap" "100000" "$(COMPACT_PCT=10 threshold_tokens_for_model claude-opus-5)"
+  s "the cap itself is overridable" "300000" \
+    "$(COMPACT_MAX_TOKENS=300000 threshold_tokens_for_model claude-opus-5)"
+  s "a non-numeric cap falls back to 200000" "200000" \
+    "$(COMPACT_MAX_TOKENS=garbage threshold_tokens_for_model claude-opus-5)"
+  s "a zero-only cap ('00') falls back to 200000, not an unreachable 0" "200000" \
+    "$(COMPACT_MAX_TOKENS=00 threshold_tokens_for_model claude-opus-5)"
+  s "an empty cap falls back to 200000" "200000" \
+    "$(COMPACT_MAX_TOKENS= threshold_tokens_for_model claude-opus-5)"
   # And the derived number has to be the one the decision actually uses, at its boundary.
-  s "at the derived threshold it acts"     "compact"         "$(should_compact 750000 750000 5 20 60 45)"
-  s "one below the derived threshold it does not" "below-threshold" "$(should_compact 749999 750000 5 20 60 45)"
+  s "at the derived (capped) threshold it acts"     "compact"         "$(should_compact 200000 200000 5 20 60 45)"
+  s "one below the derived (capped) threshold it does not" "below-threshold" "$(should_compact 199999 200000 5 20 60 45)"
   # The old constant must no longer be able to trigger on its own.
-  s "the old 350k constant is below the derived threshold" "below-threshold" \
-    "$(should_compact 350000 750000 5 20 60 45)"
+  s "the old 350k constant is now ABOVE the capped threshold (would wrongly fire if not derived)" "compact" \
+    "$(should_compact 350000 200000 5 20 60 45)"
 
   # --- THE QUERY (Cybered NO-GO finding 1) -----------------------------------------------------
   # A fixture DB with TWO sessions inside the same 2h window: a dead one that peaked at 998k and a
