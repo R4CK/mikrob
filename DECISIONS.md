@@ -25381,3 +25381,35 @@ VALÓDI saját commitja (e3787f5d8, tartalom-azonos a fenti négy fájlon) friss
 cherry-pickelve, a DECISIONS.md bejegyzés (ez a blokk) kézzel újra a fájl VÉGÉRE fűzve, mert az
 eredeti append pozíciója (akkori sor 23770) közben elavult. A verdikt áthozva, nem újra-reviewolva --
 lásd a landoló komment a pontos per-fájl blob-azonosság igazolással.
+
+## 2026-11-14: freellm-first routing az offload-dispatch.sh-ban (kártya 6d8ef952)
+
+**Döntés:** minden leaf-draft kísérlet ELŐSZÖR a freellmapi-n megy, csak utána a helyi (Ollama 7B),
+csak utána online -- az eddigi "helyi -> freellm (csak helyi-kimerülésnél) -> online" sorrend
+megfordítva. Peti Telegram 13820/13823 (2026-11-14 19:06): "freellmapi: bekapcsolva legyen és
+dolgozzon! ... Minden munka menjen oda! Ha elfogyott a keret, akkor marad a claude és a local-llm."
+
+**Mit:** új `try_freellm_first_for_leaf()` függvény a `try_leaf()` elején (a VETO INHERITANCE
+ellenőrzés UTÁN, a GEMINI ROUTE/helyi RAG hívás ELŐTT). Nem a meglévő `try_freellm_for_leaf()`
+újrahasznosítása: annak rc=4 ága `categorical-online`-t jelöl (teljesen kihagyva a helyi próbát is),
+ami ITT helytelen lenne, mert a helyi még nem futott -- a kártya saját "Kész, ha" pontja explicit
+kéri, hogy a content-gate elutasítás a helyi útra essen át, ne egy szűrtlenebb útra. Ezért az új
+függvény rc=0 (draft) / rc=3 (kvóta/429, cooldown-ot indít, `FREELLM_COOLDOWN_SECONDS`=300s
+alapértelmezett, env felülírható) / rc=2,4,egyéb (átesik a helyire, attempts_op-bejegyzés nélkül --
+a strike azé az úté, ami tényleg lefut és elbukik) ágakra bomlik, saját cooldown-fájllal
+(`freellm-cooldown-until`). A projekt-allowlist (csak mikrob) és a content gate (`is_freellm_blocked`,
+`freellm-call.sh` saját gate-je) VÁLTOZATLAN -- ezeket a kártya explicit tiltotta szélesíteni.
+
+**Mérés:** a meglévő `card-build-route-24h-measure.sh` már felismeri a `[LOCAL-LLM DRAFT | freellm]`
+fejlécet (saját selftest-fixture igazolja), tehát a freellm-first draftok a route-megoszlás mérésben
+minden kódváltás nélkül megjelennek.
+
+**Teszt:** `offload-dispatch.selftest.sh` 175 passed, 0 failed (18 új eset: siker, rc=3 cooldown-indítás,
+aktív cooldown alatt a stub SOHA nem hívódik, rc=4/rc=2 átesés cooldown nélkül, projekt-allowlist és
+content-gate változatlan maradása, cooldown-helper direkt pin-ek, strukturális sorrend-pin). Mutáció-
+bizonyítva: a `try_leaf()`-beli hívás kikommentezve, a két sorrend-pin pontosan pirosra vált (173/2),
+visszaállítva zöld (175/0) -- a mutáns ELSŐ verziója egy puszta substring-grep miatt (a hívás fölötti
+saját prózai komment is tartalmazta a függvénynevet) hamisan zöld maradt, javítva komment-sorok
+kiszűrésével a vizsgált szövegből, mielőtt a mutáció-bizonyítás megismétlődött.
+
+**Ki döntött:** Peti (13820/13823) -> MikroB dispatch (msg_id:18560), backend2 végrehajtása.

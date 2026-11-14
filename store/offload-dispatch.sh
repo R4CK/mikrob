@@ -571,6 +571,27 @@ PYEOF
   is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" "$require_marker"
 }
 
+# FREELLM-FIRST COOLDOWN (card 6d8ef952, Peti Telegram 13820/13823): a quota/rate-exhausted freellm
+# call (rc=3, see try_freellm_first_for_leaf below) parks the freellm-first route for this many
+# seconds so the SAME exhausted quota is not re-hit leaf-by-leaf for the rest of the sweep -- every
+# leaf in that window falls straight through to local instead. File holds one bare unix timestamp
+# ("resume trying freellm after this"); missing/malformed file = not in cooldown (fail-open on the
+# cooldown ITSELF is correct here, unlike a content gate: the worst case is one wasted freellm call,
+# not a security gap -- is_freellm_blocked's own gates still run first either way).
+FREELLM_COOLDOWN_FILE="${OFFLOAD_FREELLM_COOLDOWN_FILE:-$HERE/freellm-cooldown-until}"
+FREELLM_COOLDOWN_SECONDS="${OFFLOAD_FREELLM_COOLDOWN_SECONDS:-300}"
+freellm_in_cooldown() {
+  [[ -f "$FREELLM_COOLDOWN_FILE" ]] || return 1
+  local until; until="$(cat "$FREELLM_COOLDOWN_FILE" 2>/dev/null)"
+  [[ "$until" =~ ^[0-9]+$ ]] || return 1
+  (( $(date +%s) < until ))
+}
+freellm_start_cooldown() {
+  local until=$(( $(date +%s) + FREELLM_COOLDOWN_SECONDS ))
+  local tmp="$FREELLM_COOLDOWN_FILE.tmp.$$"
+  printf '%s' "$until" > "$tmp" 2>/dev/null && mv -f "$tmp" "$FREELLM_COOLDOWN_FILE" 2>/dev/null
+}
+
 # --- F3 ROUTING-TABLE SHADOW LOGGING (card cdde2666, MikroB plan-grilling verdict comments
 # 29500/29506/29589) -----------------------------------------------------------------------------
 # THIS CARD'S SCOPE IS SHADOW-LOGGING ONLY. CARD_ROUTE_MODE legacy|shadow|table, default legacy.
@@ -894,6 +915,55 @@ print(text[:300])
       -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$fail_body")" >/dev/null 2>&1
   fi
   attempts_op transient-fail "$leaf_id" >/dev/null
+  return 1
+}
+
+# try_freellm_first_for_leaf (card 6d8ef952, Peti Telegram 13820/13823): the FREELLM-FIRST route --
+# every eligible leaf tries freellm BEFORE local, not only as a fallback after local is exhausted.
+# Deliberately NOT a thin wrapper around try_freellm_for_leaf: that function's rc=4 branch marks
+# categorical-online (no retry, skip straight to the online agent) and its "anything else" branch
+# counts a strike toward OFFLOAD_LEAF_MAX_ATTEMPTS -- both are correct ONLY when local has already
+# been tried and this is the last resort. Here local has NOT been tried yet, so:
+#   rc=0            -> drafted. Same attempts_op success + post_draft as try_freellm_for_leaf.
+#   rc=3 (quota/429) -> start the cooldown (freellm_start_cooldown), fall through to local. NO
+#                       attempts_op call -- a quota-exhausted freellm is not this LEAF's failure.
+#   rc=4 (gate)     -> fall through to local. NO attempts_op categorical-online here: marking it
+#                       would skip the local attempt entirely, the opposite of "falls through to
+#                       local, never to a less-filtered path" (card Kesz-ha).
+#   rc=2 (disabled) or anything else (transient/network/auth) -> fall through to local, no bookkeeping
+#                       (same "route is simply off" or genuinely-broken-backend reasoning as
+#                       try_freellm_for_leaf's own rc=2/else branches, just without a strike here --
+#                       the strike belongs to whichever path actually gets tried and fails).
+# Returns 0 = drafted (caller returns immediately), 1 = try local next.
+try_freellm_first_for_leaf() {
+  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_project="$4" leaf_tags="$5" task="$6" post_id="$7" synthetic="${8:-false}"
+  [[ -x "$FREELLM_CALL" ]] || return 1
+  if freellm_in_cooldown; then
+    echo "offload-dispatch: leaf $leaf_id -> freellm-first skipped (cooldown active), trying local" >&2
+    return 1
+  fi
+  if is_freellm_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
+    echo "offload-dispatch: leaf $leaf_id -> freellm-first blocked (project/tag/content gate), trying local" >&2
+    return 1
+  fi
+
+  local out rc=0
+  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
+
+  if [[ $rc -eq 0 && -n "${out// }" ]]; then
+    attempts_op success "$leaf_id" >/dev/null
+    local body; body="$(freellm_draft_comment_body "$leaf_title" "$out" "$synthetic")"
+    curl -s -X POST "$DASH/api/kanban/$post_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
+    echo "offload-dispatch: leaf $leaf_id -> posted FREELLM DRAFT (freellm-first)" >&2
+    return 0
+  fi
+  if [[ $rc -eq 3 ]]; then
+    freellm_start_cooldown
+    echo "offload-dispatch: leaf $leaf_id -> freellm-first quota/rate exhausted (rc=3), cooldown ${FREELLM_COOLDOWN_SECONDS}s, trying local" >&2
+    return 1
+  fi
+  echo "offload-dispatch: leaf $leaf_id -> freellm-first skipped (rc=$rc), trying local" >&2
   return 1
 }
 
@@ -1897,6 +1967,29 @@ if [[ "${1:-}" == "--test-freellm-fallback-site" ]]; then
   exit "$rc"
 fi
 
+# --test-freellm-first-site LID TITLE DESC PROJECT TAGS TASK POSTID [SYNTHETIC] : calls the REAL
+# try_freellm_first_for_leaf directly (card 6d8ef952) -- same pattern as --test-freellm-fallback-site
+# above, no reimplementation. Prints "drafted"/"fallthrough" and exits 0/1.
+if [[ "${1:-}" == "--test-freellm-first-site" ]]; then
+  shift
+  hdr_file="$(mktemp)"
+  if try_freellm_first_for_leaf "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}"; then
+    echo "drafted"; rm -f "$hdr_file"; exit 0
+  fi
+  echo "fallthrough"; rm -f "$hdr_file"; exit 1
+fi
+
+# --test-freellm-cooldown : exercises freellm_in_cooldown/freellm_start_cooldown directly (card
+# 6d8ef952) against the overridable OFFLOAD_FREELLM_COOLDOWN_FILE/OFFLOAD_FREELLM_COOLDOWN_SECONDS
+# env vars, without ever calling freellm-call.sh. "start" calls freellm_start_cooldown then prints
+# "cooling"/"clear" per freellm_in_cooldown; "check" only prints "cooling"/"clear".
+if [[ "${1:-}" == "--test-freellm-cooldown" ]]; then
+  shift
+  [[ "${1:-}" == "start" ]] && freellm_start_cooldown
+  if freellm_in_cooldown; then echo "cooling"; else echo "clear"; fi
+  exit 0
+fi
+
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
@@ -2040,6 +2133,15 @@ $leaf_desc"
     attempts_op categorical-online "$leaf_id" >/dev/null
     echo "offload-dispatch: leaf $leaf_id -> categorical online (parent veto inherited), no local attempt" >&2
     return 1
+  fi
+
+  # FREELLM-FIRST ROUTE (card 6d8ef952, Peti Telegram 13820/13823): try freellm BEFORE local for
+  # every leaf that reaches this point -- "minden munka menjen oda [freellmbe]". On drafted (rc=0)
+  # return immediately; on quota/gate/disabled/other failure fall through to the existing local-RAG
+  # path below unchanged. try_freellm_first_for_leaf never touches attempts_op on a non-success exit
+  # (see its own header) -- the local attempt that follows still gets its normal bookkeeping.
+  if try_freellm_first_for_leaf "$leaf_id" "$leaf_title" "$leaf_desc" "$leaf_project" "$leaf_tags" "$task" "$post_id" "$synthetic"; then
+    return 0
   fi
 
   # GEMINI ROUTE, LOCAL LLM NOT AVAILABLE (card a92e9913): skip the RAG call entirely.

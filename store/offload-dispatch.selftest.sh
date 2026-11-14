@@ -1245,6 +1245,124 @@ m1_redact_case "userinfo (URL user:pass@host)" \
 kill "$M1_STUB_PID" 2>/dev/null
 wait "$M1_STUB_PID" 2>/dev/null
 
+# ---- card 6d8ef952: freellm-FIRST route (helyi -> freellm -> online REVERSED to freellm -> helyi
+# -> online, Peti Telegram 13820/13823) -------------------------------------------------------
+# All cases drive the REAL try_freellm_first_for_leaf via --test-freellm-first-site, and the real
+# cooldown helpers via --test-freellm-cooldown -- no reimplementation, same pattern as the L1
+# fallback-site tests above. A stub FREELLM_CALL (env OFFLOAD_FREELLM_CALL) stands in for the real
+# freellm-call.sh so these never touch the network; its own content/switch/token logic is covered
+# by freellm-call.sh's own selftest, not duplicated here.
+FF_SKIP="$TMPDIR/ff-skip-gemini-ok.json"
+echo '{"enabled": true}' > "$FF_SKIP"
+FF_COOLDOWN="$TMPDIR/ff-cooldown-until"
+FF_STUB="$TMPDIR/ff-stub.sh"
+FF_MARKER="$TMPDIR/ff-attempt-marker"
+
+make_ff_stub() { # $1 = exit code to return (0 drafts "ff-draft-output")
+  cat > "$FF_STUB" <<EOF
+#!/usr/bin/env bash
+touch "$FF_MARKER"
+cat >/dev/null
+if [[ "\$1" == "" && "${1}" == "0" ]]; then :; fi
+case "${1}" in
+  0) echo "ff-draft-output"; exit 0 ;;
+  *) exit ${1} ;;
+esac
+EOF
+  chmod +x "$FF_STUB"
+}
+
+run_ff_first() { # $1=leafId $2=title $3=desc $4=project $5=tags -> sets $rc, $out
+  out="$(OFFLOAD_FREELLM_CALL="$FF_STUB" OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$FF_SKIP" \
+    OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN" DASHBOARD_URL="http://127.0.0.1:1" \
+    bash "$DISPATCH" --test-freellm-first-site "$1" "$2" "$3" "$4" "$5" "task text" "$1" false 2>/dev/null)"
+  rc=$?
+}
+
+# Case 1: success -> "drafted", exit 0, attempt reaches the stub.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF1 "title" "desc" mikrob ""
+check "freellm-first success: prints drafted" "$out" "drafted"
+check "freellm-first success: exit 0" "$rc" "0"
+check "freellm-first success: stub was actually invoked" "$([[ -f "$FF_MARKER" ]] && echo yes || echo no)" "yes"
+
+# Case 2: rc=3 (quota/429) -> fallthrough, exit 1, and a cooldown file is written.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 3
+run_ff_first leafF2 "title" "desc" mikrob ""
+check "freellm-first rc=3 (quota): prints fallthrough" "$out" "fallthrough"
+check "freellm-first rc=3 (quota): exit 1" "$rc" "1"
+check "freellm-first rc=3 (quota): cooldown file written" "$([[ -f "$FF_COOLDOWN" ]] && echo yes || echo no)" "yes"
+
+# Case 3: cooldown active -> the leaf never reaches the stub at all (marker absent), fallthrough.
+rm -f "$FF_MARKER"
+make_ff_stub 0
+run_ff_first leafF3 "title" "desc" mikrob ""
+check "freellm-first under active cooldown: prints fallthrough" "$out" "fallthrough"
+check "freellm-first under active cooldown: stub NEVER invoked" "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
+
+# Case 4: rc=4 (content gate inside freellm-call.sh itself) -> fallthrough, exit 1, NO cooldown
+# written (a content-gate refusal is not a quota event -- it must not block the NEXT leaf's
+# freellm-first attempt).
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 4
+run_ff_first leafF4 "title" "desc" mikrob ""
+check "freellm-first rc=4 (content gate): prints fallthrough" "$out" "fallthrough"
+check "freellm-first rc=4 (content gate): exit 1" "$rc" "1"
+check "freellm-first rc=4 (content gate): no cooldown written" "$([[ -f "$FF_COOLDOWN" ]] && echo yes || echo no)" "no"
+
+# Case 5: rc=2 (disabled / switch off) -> fallthrough, exit 1, no cooldown.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 2
+run_ff_first leafF5 "title" "desc" mikrob ""
+check "freellm-first rc=2 (disabled): prints fallthrough" "$out" "fallthrough"
+check "freellm-first rc=2 (disabled): no cooldown written" "$([[ -f "$FF_COOLDOWN" ]] && echo yes || echo no)" "no"
+
+# Case 6: project allowlist (mikrob only) is NOT widened -- a mopsion leaf never reaches the stub,
+# even with a clean, neutral, non-sensitive task text.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF6 "title" "desc" mopsion ""
+check "freellm-first project allowlist: mopsion leaf never reaches the stub" \
+  "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
+check "freellm-first project allowlist: mopsion leaf falls through" "$out" "fallthrough"
+
+# Case 7: content gate (is_freellm_blocked's OWN prefilter, not freellm-call.sh's) still blocks a
+# sensitive mikrob leaf -- the content gate is not loosened by freellm-first.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF7 "authz check" "irj meg egy authz ellenorzest" mikrob ""
+check "freellm-first content gate (prefilter): sensitive leaf never reaches the stub" \
+  "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
+
+# --- freellm_in_cooldown / freellm_start_cooldown direct pins (via --test-freellm-cooldown) ------
+FF_COOLDOWN2="$TMPDIR/ff-cooldown2"
+rm -f "$FF_COOLDOWN2"
+check "cooldown helper: no file yet -> clear" \
+  "$(OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN2" bash "$DISPATCH" --test-freellm-cooldown check)" "clear"
+check "cooldown helper: start -> cooling" \
+  "$(OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN2" OFFLOAD_FREELLM_COOLDOWN_SECONDS=300 bash "$DISPATCH" --test-freellm-cooldown start)" "cooling"
+check "cooldown helper: already-expired timestamp -> clear" \
+  "$(echo 1 > "$FF_COOLDOWN2"; OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN2" bash "$DISPATCH" --test-freellm-cooldown check)" "clear"
+check "cooldown helper: malformed content -> clear (fail-open on the cooldown itself, not a gate)" \
+  "$(echo "not-a-number" > "$FF_COOLDOWN2"; OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN2" bash "$DISPATCH" --test-freellm-cooldown check)" "clear"
+
+# --- STRUCTURAL pin: try_leaf calls try_freellm_first_for_leaf BEFORE the GEMINI_ROUTE/local-RAG
+# branch (word-boundary source pin, same technique as the other "X calls Y" pins in this file --
+# card 6d8ef952's Kesz-ha is "every draft goes to freellm first", so the ORDER matters, not just
+# the function's existence). ----------------------------------------------------------------------
+# CODE-ONLY lines (comment lines stripped) -- a prose comment mentioning the function name by
+# name (which this file's own header comments do, deliberately, for readability) must never count
+# as the call the mutation proof needs to catch removal of.
+TRY_LEAF_BODY="$(awk '/^try_leaf\(\) \{/{found=1; next} found && /^\}$/{exit} found{print}' "$DISPATCH" | grep -v '^\s*#')"
+ff_line="$(printf '%s\n' "$TRY_LEAF_BODY" | grep -n 'try_freellm_first_for_leaf' | head -1 | cut -d: -f1)"
+rag_line="$(printf '%s\n' "$TRY_LEAF_BODY" | grep -n '"\$RAG" --auto' | head -1 | cut -d: -f1)"
+check "try_leaf's body contains a try_freellm_first_for_leaf call" "$([[ -n "$ff_line" ]] && echo yes || echo no)" "yes"
+check "try_leaf's body contains the local RAG (\$RAG) call" "$([[ -n "$rag_line" ]] && echo yes || echo no)" "yes"
+check "try_leaf calls try_freellm_first_for_leaf BEFORE the local RAG (\$RAG) call" \
+  "$([[ -n "$ff_line" && -n "$rag_line" && "$ff_line" -lt "$rag_line" ]] && echo yes || echo no)" "yes"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
