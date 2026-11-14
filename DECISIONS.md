@@ -24729,3 +24729,28 @@ a kaput. Izolált futás: 17/17 zöld. Commit: fc01f36c.
 
 **Ki döntött:** backend3 (önálló, mechanikus teszt-korrekció, nincs viselkedés-változás a
 production kódban). Gate: QA + Cybersec.
+
+## 2026-11-07 -- af5bf43b: Telegram-watchdog WEDGED_SEC clamped to 60..(stale_sec-1)
+
+WhiteHat2 F1 LOW on dadeab30 (komment 15980): `TELEGRAM_WATCHDOG_WEDGED_SEC`'s `_env_int()` parser
+already floors a 0/negative/garbage value to the 900s default, but never bounded a POSITIVE value.
+A huge value (e.g. 99999999) silently disabled the wedged backstop entirely -- `age > wedged_sec()`
+never fires, because `stale_sec()` drops the round as dead long before that age is reached, so the
+operator would never know the backstop stopped working. A value of 1 fired false alarms on
+ordinary, healthy turns.
+
+Decision: clamp the backstop to `[60, stale_sec() - 1]`, computed once per `handle_dir()` call
+(`clamped_wedged_sec`), with a log line when the env value actually gets clamped (not every call --
+an in-range value is silent, matching the module's existing style). 60s is below every measured
+normal-turn duration; `stale_sec() - 1` keeps the backstop strictly inside the window stale-drop
+already owns, so the two mechanisms never fight over the same age range. A pathologically tiny
+`stale_sec()` still leaves the 60s floor intact rather than producing an inverted range.
+
+Verified: 4 new selftest cases (5 -> 9): huge value clamps down, tiny value clamps up, an in-range
+value passes through unchanged, tiny-stale_sec doesn't invert the range. Red-before confirmed
+against the pre-fix commit: no `clamped_wedged_sec` existed, and `wedged_sec()` itself returned
+99999999 unclamped with that env var set. `python3 telegram_progress_watchdog.selftest.py` -> "OK:
+9 cases passed".
+
+**Ki döntött:** DevO (fullstack), card af5bf43b, self-advance pick after b2f7ede4 went to waiting.
+Gate: QA (LOW, per card). Gate-SHA: see REVIEW comment.
