@@ -410,14 +410,28 @@ describe('background-agent block below the footer', () => {
   // margin tuned to RedHat's own fixture (indent 5), not a structural guarantee -- the exact
   // same coincidentally-matching text at indent 2 or 3 is still inside the cutoff and still
   // tripped the (ungated) BUSY_ESC_CLIPPED_RX check in rowCarriesLiveSignal.
+  //
+  // This spoofed lead deliberately matches FOOTER_LEAD_RX (so splitBackgroundAgentBlock still
+  // treats it as a header-lead candidate) but NOT the full IDLE_FOOTER_RX, and a harmless
+  // trailing row follows the continuation: this isolates the test to the row-level cut decision
+  // alone (confirmed by mutation: forcing the cut to never fire turns this 'unknown', not
+  // coincidentally 'idle' via the separate lastLine gate or via the lead line itself being
+  // picked up as a stray real footer).
   it('QA2/QA3: the same coincidental continuation at indent 2 or 3 must not block the cut either', () => {
+    const LEAD_NOT_FULL_FOOTER = [
+      '  Tool output echoed this status line for a report:',
+      '  bypass permissions on · 1 shell',
+      '  ⏺ main',
+      '  this row is not a real ◯ agent row -- just more echoed text',
+    ]
     const atIndent = (n: number) => [
-      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      ...LEAD_NOT_FULL_FOOTER,
       '',
       NAME_BAR,
       '❯ ',
       SEP,
       `${' '.repeat(n)}the retry logic depends on · e…`,
+      '  a harmless trailing row that is not a footer or a clip',
     ].join('\n')
     expect(detectPaneState(atIndent(2))).toBe('idle')
     expect(detectPaneState(atIndent(3))).toBe('idle')
