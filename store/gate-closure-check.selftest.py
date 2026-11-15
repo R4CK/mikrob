@@ -215,6 +215,44 @@ if not _ok:
 case("a REVIEW with no Gate-SHA line is the same case: unchecked, and said out loud",
      [c("backend", "REVIEW: kesz, de nincs sha."), c("qa", V % "aaaa1111")], "AGREE")
 
+# Card 1aeed1ca (WhiteHat2 L1 + CYBERED NO-GO F2): an explicit "Gate-SHA: n/a" on the LATEST REVIEW
+# must RESET the expectation, not silently fall back to an EARLIER REVIEW's real sha. Before the
+# L1 fix, a REVIEW saying "n/a" produced no hex tokens and was skipped exactly like one with no
+# Gate-SHA line at all, so `found` kept the OLDER REVIEW's sha (aaaa1111) and the gates' AGREE on
+# that same old sha read as a normal match. CYBERED's F2 sharpened the expectation further: once
+# the reset is correct, THIS is no longer "unchecked, but AGREE" (that message is for silence) --
+# it is a STATED mismatch, because the gate verdicted on a REAL commit (aaaa1111) that the n/a
+# REVIEW explicitly says does not exist. The right answer is a non-AGREE verdict that says so.
+n += 1
+_out = run([c("backend", R % "aaaa1111"),
+            c("backend", "REVIEW: config-only, nincs tobbe commit.\nGate-SHA: n/a (config-only)"),
+            c("qa", V % "aaaa1111")], None, None)
+_ok = (not _out.startswith("AGREE")) and "n/a" in _out and "aaaa1111" in _out
+print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "mismatch", "mismatch" if _ok else "AGREE",
+                              "a later n/a REVIEW resets the expectation AND reads as a mismatch, not AGREE"))
+if not _ok:
+    failures.append(("n/a must reset to a mismatch, not AGREE", "not AGREE, mentions n/a and aaaa1111", _out))
+
+case("...and the reset does not block FORWARD progress: a real sha after the n/a round is used normally",
+     [c("backend", R % "aaaa1111"),
+      c("backend", "REVIEW: config-only kozbeeso lepes.\nGate-SHA: n/a (config-only)"),
+      c("backend", R % "bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+
+# CYBERED NO-GO on 1aeed1ca, F1 (GO condition 1): n/a must NOT reset a REAL sha that sits on the
+# SAME REVIEW. Three shapes of "n/a next to a real sha", each with a gate verdicting on a
+# DIFFERENT sha -- mirrors the plain "REVIEW names bbbb2222, QA verdicts on aaaa1111" base case
+# (line ~197, UNRESOLVED with no clone configured): if the n/a line wiped the real sha, declared
+# would become [] and this would read AGREE instead, exactly the bug being fixed.
+case("F1: a second, separate 'Gate-SHA: n/a' line next to a real one does not wipe the real sha",
+     [c("backend", "REVIEW: kesz.\nGate-SHA: bbbb2222\nGate-SHA: n/a"),
+      c("qa", V % "aaaa1111")], "UNRESOLVED")
+case("F1: upper-case 'N/A' on its own line next to a real sha does not wipe the real sha",
+     [c("backend", "REVIEW: kesz.\nGate-SHA: bbbb2222\nGate-SHA: N/A"),
+      c("qa", V % "aaaa1111")], "UNRESOLVED")
+case("F1: 'n/a <sha>' on ONE line is a real sha, not an n/a declaration",
+     [c("backend", "REVIEW: kesz.\nGate-SHA: n/a bbbb2222"),
+      c("qa", V % "aaaa1111")], "UNRESOLVED")
+
 # Cybered's condition 2: anchored exactly like the verdict, or a comment QUOTING a review supplies
 # the expectation -- the mirror image of gate-dispatch-check's documented false-positive class.
 case("a comment that merely QUOTES a REVIEW does not declare the expectation",
@@ -1340,6 +1378,95 @@ print(
 )
 if not _redos_ok:
     failures.append(("F2 ReDoS regression", "None in <0.5s", "%s in %.3fs" % (_redos_got, _redos_elapsed)))
+
+# --- F1 req-3: checkpoint coverage (_checkpoint_coverage and CLI --card-id/--db) ----------------
+import sqlite3 as _sql
+
+def _make_ckpt_db(path, rows):
+    """Create a minimal card_checkpoints DB at path, rows = [(card_id, head_sha)]."""
+    conn = _sql.connect(path)
+    conn.execute(
+        "CREATE TABLE card_checkpoints ("
+        "n INTEGER PRIMARY KEY, card_id TEXT, head_sha TEXT, "
+        "created_at TEXT, branch TEXT, agent TEXT, work_sha TEXT"
+        ")"
+    )
+    for i, (card_id, head_sha) in enumerate(rows):
+        conn.execute(
+            "INSERT INTO card_checkpoints (n, card_id, head_sha) VALUES (?, ?, ?)",
+            (i + 1, card_id, head_sha),
+        )
+    conn.commit()
+    conn.close()
+
+
+_ckpt_dir = tempfile.mkdtemp(prefix="gcc-ckpt-")
+_ckpt_db = os.path.join(_ckpt_dir, "ckpt.db")
+_KNOWN_SHA = "aabbccdd11223344aabbccdd11223344aabbccdd"
+_OTHER_SHA = "deadbeef00000000deadbeef00000000deadbeef"
+
+# Case A: no checkpoint rows exist for the card -> covered (fail-open / transitional)
+_make_ckpt_db(_ckpt_db, [])
+n += 1
+_cov_a, _reason_a = _gcc._checkpoint_coverage("cardXXXX", _KNOWN_SHA, _ckpt_db)
+_ok_a = _cov_a is True
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_a else "FAIL", "covered", "covered" if _cov_a else "NOT-covered",
+    "F1 ckpt: no rows -> fail-open (covered)"))
+if not _ok_a:
+    failures.append(("F1 ckpt: no rows -> fail-open", "covered=True", str(_cov_a)))
+os.unlink(_ckpt_db)
+
+# Case B: checkpoint exists for card, sha matches -> covered
+_make_ckpt_db(_ckpt_db, [("cardYYYY", _KNOWN_SHA)])
+n += 1
+_cov_b, _reason_b = _gcc._checkpoint_coverage("cardYYYY", _KNOWN_SHA, _ckpt_db)
+_ok_b = _cov_b is True
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_b else "FAIL", "covered", "covered" if _cov_b else "NOT-covered",
+    "F1 ckpt: sha matches -> covered"))
+if not _ok_b:
+    failures.append(("F1 ckpt: sha matches", "covered=True", str(_cov_b)))
+os.unlink(_ckpt_db)
+
+# Case C: checkpoint exists but sha NOT present -> not covered (CHECKPOINT_FAIL)
+_make_ckpt_db(_ckpt_db, [("cardZZZZ", _OTHER_SHA)])
+n += 1
+_cov_c, _reason_c = _gcc._checkpoint_coverage("cardZZZZ", _KNOWN_SHA, _ckpt_db)
+_ok_c = _cov_c is False and _reason_c and "not in any recorded checkpoint" in _reason_c
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_c else "FAIL", "NOT-cvrd", "covered" if _cov_c else "NOT-covered",
+    "F1 ckpt: sha missing -> CHECKPOINT_FAIL"))
+if not _ok_c:
+    failures.append(("F1 ckpt: sha missing -> CHECKPOINT_FAIL", "covered=False+reason",
+                     "covered=%s reason=%s" % (_cov_c, _reason_c)))
+
+# Case D: through CLI -- AGREE with --card-id/--db where sha NOT in checkpoints -> CHECKPOINT_FAIL
+# A REVIEW comment is required so declared_shas() returns the builder's sha for the check.
+n += 1
+_cli_env = dict(os.environ)
+_cli_env["MARVEEN_MAIN"] = "/nonexistent-marveen"
+_cli_env["CLEANCORE_MAIN"] = "/nonexistent-cleancore"
+_review_d = "REVIEW\nGate-SHA: %s" % _KNOWN_SHA
+_v_agree = "QA PASS\nGate-SHA: %s" % _KNOWN_SHA
+_s_agree = "CYBERSEC GO\nGate-SHA: %s" % _KNOWN_SHA
+_cli_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardZZZZ", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_d},
+                                   {"author": "qa", "content": _v_agree},
+                                   {"author": "cybersec", "content": _s_agree}]}),
+    capture_output=True, text=True, env=_cli_env,
+)
+_cli_verdict = _cli_p.stdout.strip().split("|", 1)[0]
+_ok_d = _cli_verdict == "CHECKPOINT_FAIL"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_d else "FAIL", "CKPT_FAIL", _cli_verdict,
+    "F1 ckpt: CLI AGREE->CHECKPOINT_FAIL when sha not in DB"))
+if not _ok_d:
+    failures.append(("F1 ckpt: CLI AGREE->CHECKPOINT_FAIL", "CHECKPOINT_FAIL",
+                     _cli_p.stdout.strip()))
+os.unlink(_ckpt_db)
+shutil.rmtree(_ckpt_dir, ignore_errors=True)
 
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))

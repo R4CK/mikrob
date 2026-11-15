@@ -45,6 +45,37 @@ try:
 
     os.environ[ENV_VAR] = "-30"
     check("negative rejected, falls back to default", wd.wedged_sec(), wd.DEFAULT_WEDGED_SEC)
+
+    # Card af5bf43b (WhiteHat2 F1 LOW on dadeab30, komment 15980): a huge positive value used to
+    # pass _env_int() unmodified and silently disable the backstop; a value of 1 gave false
+    # alarms. clamped_wedged_sec(stale_seconds) must clamp to [60, stale_seconds - 1].
+    os.environ[ENV_VAR] = "99999999"
+    check(
+        "huge value no longer disables the backstop: clamped to stale_sec - 1",
+        wd.clamped_wedged_sec(24 * 3600),
+        24 * 3600 - 1,
+    )
+
+    os.environ[ENV_VAR] = "1"
+    check(
+        "tiny value no longer fires false alarms: clamped to the 60s floor",
+        wd.clamped_wedged_sec(24 * 3600),
+        60,
+    )
+
+    os.environ[ENV_VAR] = "300"
+    check(
+        "an in-range value is passed through unchanged",
+        wd.clamped_wedged_sec(24 * 3600),
+        300,
+    )
+
+    os.environ[ENV_VAR] = "300"
+    check(
+        "a pathologically small stale_sec still leaves the 60s floor intact (never an empty range)",
+        wd.clamped_wedged_sec(30),
+        60,
+    )
 finally:
     if saved is None:
         os.environ.pop(ENV_VAR, None)
@@ -55,4 +86,4 @@ if failures:
     for f in failures:
         print(f"FAIL: {f}")
     sys.exit(1)
-print(f"OK: {5} cases passed")
+print(f"OK: {9} cases passed")

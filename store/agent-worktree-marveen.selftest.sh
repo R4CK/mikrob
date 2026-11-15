@@ -76,6 +76,35 @@ else
 fi
 
 n=$((n + 1))
+# card abd4970c (F4.2.1): `git worktree add -b card/<id> ...` can create the BRANCH successfully
+# and still fail the worktree-population step right after (exactly the fixture above -- the
+# target path is occupied) -- a failed create must leave NO branch behind for the next attempt
+# to silently inherit.
+if ! git -C "$MAIN" show-ref --verify --quiet "refs/heads/card/baadf00d12"; then
+  echo "  ok   a failed --card create leaves no dangling branch behind"
+else
+  echo "  FAIL a failed --card create left refs/heads/card/baadf00d12 dangling"; fail=1
+fi
+
+n=$((n + 1))
+# CONTROL, discriminating: the legitimate survivor case (a branch that already existed BEFORE
+# this call, from a worktree that was removed with `git worktree remove` but whose branch
+# survived) must NEVER be deleted by the new rollback -- only a branch THIS call just created.
+git -C "$MAIN" worktree add -q -b card/abcdef1912 "$ROOT/card/abcdef1912" develop >/dev/null
+git -C "$MAIN" worktree remove --force "$ROOT/card/abcdef1912" >/dev/null
+if git -C "$MAIN" show-ref --verify --quiet "refs/heads/card/abcdef1912"; then
+  survivor_out="$(run backend --card abcdef1912 2>&1)"
+  survivor_rc=$?
+  if [ "$survivor_rc" = 0 ] && git -C "$MAIN" show-ref --verify --quiet "refs/heads/card/abcdef1912"; then
+    echo "  ok   a pre-existing survivor branch is reused via the fallback, never rolled back"
+  else
+    echo "  FAIL survivor branch should be reused, not deleted -> rc=$survivor_rc out=$survivor_out"; fail=1
+  fi
+else
+  echo "  FAIL setup did not produce a survivor branch to test against"; fail=1
+fi
+
+n=$((n + 1))
 if out="$(run backend --card BADID 2>&1)"; rc=$?; [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "card id must be hex"; then
   echo "  ok   a non-hex card id is refused (exit 2), not silently accepted as a path component"
 else
