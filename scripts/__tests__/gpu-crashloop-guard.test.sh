@@ -607,6 +607,314 @@ if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
   pass "ioctl-noise: ioctl -22 noise is not a dxg-oops, guard stays silent"
 fi
 
+# ---------------------------------------------------------------------------
+# (y) F1 (card 31131dc5): a poweroff signal AND a real dxg oops in the SAME
+#     boot must still be DETECTED -- the oops overrides the clean-shutdown
+#     skip. Before the fix, is_clean_shutdown ran first and threw the boot
+#     away unconditionally, so a fault that happened during an otherwise
+#     orderly shutdown sequence was invisible to the guard.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(y) F1: poweroff signal + real dxg oops in the same boot -> DETECTED"
+ST="$(fresh_case y)"
+BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"; JOURNAL="$ST/journal.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+echo "dxgk_ioctl: dxgadapter_release_lock_shared" > "$KERN"
+echo "systemd-poweroff.service: Finished." > "$JOURNAL"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN" "$JOURNAL")"
+if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  pass "F1: a real oops during a poweroff sequence is still a crash-boot"; else
+  fail "F1: a poweroff signal hid a real dxg oops ($OUT)"
+fi
+
+# ---------------------------------------------------------------------------
+# (z) F2 (card 31131dc5): a MULTI-LINE oops -- "Call Trace:" (capital letters,
+#     the real kernel format) with the dxg frame several lines later, not on
+#     the same line as the header -- must be DETECTED. The symbol names here
+#     are deliberately NOT "dxgk_ioctl"/"dxgadapter_release_lock" so this test
+#     can only pass through the new multi-line window check, not the older
+#     single-line symbol check.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(z) F2: multi-line Call Trace (capitalized) with a dxg frame -> DETECTED"
+ST="$(fresh_case z)"
+BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+cat > "$KERN" <<'KEOF'
+[   12.345678] BUG: unable to handle kernel paging request
+[   12.345680] IP: do_something+0x10/0x20
+[   12.345690] Call Trace:
+[   12.345700]  dxgadapter_wait_fence+0x55/0x100 [dxgkrnl]
+[   12.345710]  dxgvmbuschannel_send+0x22/0x80 [dxgkrnl]
+KEOF
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  pass "F2: multi-line Call Trace + dxg frame recognised as a real oops"; else
+  fail "F2: a multi-line dxg oops was missed ($OUT)"
+fi
+
+# ---------------------------------------------------------------------------
+# (aa)-(ae) F3 (card 31131dc5): is_clean_shutdown()'s regex has 4 OR-branches.
+#     Through a full guard cycle its return value is NEVER observable on its
+#     own (detect_crashloop requires dxg_seen=1 for any non-silent verdict,
+#     and a no-oops kernel fixture leaves dxg_seen=0 regardless of what
+#     is_clean_shutdown decides) -- so a mutant on any one branch could
+#     survive every MASK_DRYRUN/ALERT_DRYRUN assertion above undetected.
+#     These call the new --debug-is-clean-shutdown seam directly, one per
+#     branch, plus a negative control.
+# ---------------------------------------------------------------------------
+debug_clean_shutdown() {
+  GPU_GUARD_JOURNAL_LOG_OVERRIDE="$1" bash "$GUARD" --debug-is-clean-shutdown -1
+}
+
+echo ""
+echo "(aa) F3: is_clean_shutdown branch 1 -- 'Deactivated successfully'"
+ST="$(fresh_case aa)"; echo "systemd-poweroff.service: Deactivated successfully" > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "clean" ] \
+  && pass "F3: 'Deactivated successfully' recognised as clean" \
+  || fail "F3: 'Deactivated successfully' not recognised as clean"
+
+echo ""
+echo "(ab) F3: is_clean_shutdown branch 2 -- 'Succeeded.'"
+ST="$(fresh_case ab)"; echo "systemd-poweroff.service: Succeeded." > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "clean" ] \
+  && pass "F3: 'Succeeded.' recognised as clean" \
+  || fail "F3: 'Succeeded.' not recognised as clean"
+
+echo ""
+echo "(ac) F3: is_clean_shutdown branch 3 -- 'Finished' with no trailing period"
+ST="$(fresh_case ac)"; echo "systemd-poweroff.service: Finished" > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "clean" ] \
+  && pass "F3: 'Finished' (no period) recognised as clean -- pins the optional \\.?" \
+  || fail "F3: 'Finished' without a period not recognised as clean"
+
+echo ""
+echo "(ad) F3: is_clean_shutdown branch 4 -- 'Reached target poweroff.target'"
+ST="$(fresh_case ad)"; echo "Reached target poweroff.target" > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "clean" ] \
+  && pass "F3: 'Reached target poweroff.target' recognised as clean" \
+  || fail "F3: 'Reached target poweroff.target' not recognised as clean"
+
+echo ""
+echo "(ae) F3: negative control -- unrelated text is NOT clean-shutdown"
+ST="$(fresh_case ae)"; echo "some unrelated kernel panic text" > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "not-clean" ] \
+  && pass "F3: unrelated text correctly NOT recognised as a clean shutdown" \
+  || fail "F3: unrelated text was wrongly recognised as a clean shutdown"
+
+# ---------------------------------------------------------------------------
+# (af)-(ah) F3, Cybered NO-GO on d988d5987: "delete the skip" mutant stayed
+#     53/53 green because every existing fixture gives EVERY scanned boot the
+#     SAME journal/kernel text -- there was no way to express "3 clean
+#     voluntary shutdowns, then one real crash", which is exactly what
+#     17325 asked to be pinned (3 clean poweroffs + 1 real fault must NOT
+#     mask/alert; only a genuinely counted short+oops boot should). These use
+#     the new per-boot override DIRECTORIES (GPU_GUARD_JOURNAL_LOG_DIR /
+#     GPU_GUARD_KERNEL_LOG_DIR) so each boot index gets its OWN content.
+# ---------------------------------------------------------------------------
+# Writes one file per (idx, content) pair into dir. Args: dir idx1 content1 [idx2 content2 ...]
+write_idx_files() {
+  local dir="$1"; shift
+  mkdir -p "$dir"
+  while [ $# -ge 2 ]; do
+    printf '%s' "$2" > "$dir/$1"
+    shift 2
+  done
+}
+
+run_guard_idx() {
+  GPU_GUARD_STATE_DIR="$1" GPU_GUARD_BOOTS_OVERRIDE="$2" \
+    GPU_GUARD_KERNEL_LOG_DIR="$3" GPU_GUARD_JOURNAL_LOG_DIR="$4" \
+    GPU_GUARD_ALERT_DRYRUN=1 GPU_GUARD_MASK_DRYRUN=1 bash "$GUARD" 2>&1
+}
+
+FRAME='[   12.345690] Call Trace:
+[   12.345700]  dxgadapter_wait_fence+0x55/0x100 [dxgkrnl]'
+
+echo ""
+echo "(af) F3: 3 clean poweroffs + 1 real crash boot -> only 1 short+oops boot (below MIN_SHORT_BOOTS) -> silent"
+ST="$(fresh_case af)"
+BOOTS="$ST/boots.txt"; KDIR="$ST/kern"; JDIR="$ST/journal"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+write_idx_files "$JDIR" -1 "systemd-poweroff.service: Finished." -2 "systemd-poweroff.service: Finished." -3 "systemd-poweroff.service: Finished." -4 "kernel panic abrupt stop, not a voluntary shutdown"
+write_idx_files "$KDIR" -1 "nothing of interest" -2 "nothing of interest" -3 "nothing of interest" -4 "$FRAME"
+OUT="$(run_guard_idx "$ST" "$BOOTS" "$KDIR" "$JDIR")"
+if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  fail "F3(a): 3 clean poweroffs + 1 real crash wrongly detected as a crash-loop ($OUT)"; else
+  pass "F3(a): 3 clean poweroffs + 1 genuine crash-boot stays silent (only 1 of MIN_SHORT_BOOTS=3)"
+fi
+
+echo ""
+echo "(ag) F3: MUTANT PROOF -- deleting the clean-shutdown skip turns (af) red"
+GUARD_MUT="$ST/guard-mutant.sh"
+sed 's/if \[ "\$has_oops" -eq 0 \] \&\& is_clean_shutdown "\$idx"; then continue; fi/: # MUTANT: skip deleted/' "$GUARD" > "$GUARD_MUT"
+chmod +x "$GUARD_MUT"
+MUT_STATE="$ST/af-mutant"
+mkdir -p "$MUT_STATE"
+echo "$(($(date +%s) - 3600))" > "$MUT_STATE/.gpu-crashloop-guard-baseline"   # a fresh state dir defaults to "first run" otherwise, never reaching detection at all
+OUT_MUT="$(GPU_GUARD_STATE_DIR="$MUT_STATE" GPU_GUARD_BOOTS_OVERRIDE="$BOOTS" \
+  GPU_GUARD_KERNEL_LOG_DIR="$KDIR" GPU_GUARD_JOURNAL_LOG_DIR="$JDIR" \
+  GPU_GUARD_ALERT_DRYRUN=1 GPU_GUARD_MASK_DRYRUN=1 bash "$GUARD_MUT" 2>&1)"
+if printf '%s' "$OUT_MUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  pass "F3(a) mutant proof: deleting the skip DOES flip (af) to DETECTED (3 clean + 1 crash -> 4 counted)"; else
+  fail "F3(a) mutant proof: the mutant should have made (af) detect, but it stayed silent ($OUT_MUT)"
+fi
+
+echo ""
+echo "(ah) F3: 4 clean poweroffs, no crash anywhere -> silent (RedHat's second named case)"
+ST="$(fresh_case ah)"
+BOOTS="$ST/boots.txt"; KDIR="$ST/kern"; JDIR="$ST/journal"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+write_idx_files "$JDIR" -1 "systemd-poweroff.service: Finished." -2 "systemd-poweroff.service: Finished." -3 "systemd-poweroff.service: Finished." -4 "systemd-poweroff.service: Finished."
+write_idx_files "$KDIR" -1 "nothing" -2 "nothing" -3 "nothing" -4 "nothing"
+OUT="$(run_guard_idx "$ST" "$BOOTS" "$KDIR" "$JDIR")"
+if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  fail "F3: 4 clean poweroffs with no fault wrongly detected ($OUT)"; else
+  pass "F3: 4 clean poweroffs with no fault anywhere stays silent"
+fi
+
+# ---------------------------------------------------------------------------
+# (ai)-(al) F3, Cybered NO-GO: "delete the BUG/Oops branch" mutant survived
+#     because test (z) carries all three header words (BUG:, Oops:, Call
+#     Trace) in ONE fixture, so removing any single one still leaves the
+#     other two to open the window. One fixture per header word, alone.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(ai) F3: header word 'BUG:' ALONE (no Oops:, no Call Trace) + a real frame -> DETECTED"
+ST="$(fresh_case ai)"; BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+printf '[ 1.0] BUG: unable to handle kernel paging request\n[ 1.1] dxgadapter_wait_fence+0x55/0x100 [dxgkrnl]\n' > "$KERN"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN" \
+  && pass "F3: 'BUG:' alone + frame -> DETECTED" \
+  || fail "F3: 'BUG:' alone + frame was missed ($OUT)"
+
+echo ""
+echo "(aj) F3: header word 'Oops:' ALONE + a real frame -> DETECTED"
+ST="$(fresh_case aj)"; BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+printf '[ 1.0] Oops: 0000 [#1] SMP\n[ 1.1] dxgadapter_wait_fence+0x55/0x100 [dxgkrnl]\n' > "$KERN"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN" \
+  && pass "F3: 'Oops:' alone + frame -> DETECTED" \
+  || fail "F3: 'Oops:' alone + frame was missed ($OUT)"
+
+echo ""
+echo "(ak) F3: header word 'Call Trace:' ALONE + a real frame -> DETECTED"
+ST="$(fresh_case ak)"; BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+printf '[ 1.0] Call Trace:\n[ 1.1] dxgadapter_wait_fence+0x55/0x100 [dxgkrnl]\n' > "$KERN"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN" \
+  && pass "F3: 'Call Trace:' alone + frame -> DETECTED" \
+  || fail "F3: 'Call Trace:' alone + frame was missed ($OUT)"
+
+echo ""
+echo "(al) F3: a header with NO qualifying frame anywhere -> silent"
+ST="$(fresh_case al)"; BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+printf '[ 1.0] BUG: unable to handle kernel paging request\n[ 1.1] some unrelated line, no dxg frame at all\n' > "$KERN"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN" \
+  && fail "F3: a header with no dxg frame wrongly detected ($OUT)" \
+  || pass "F3: a header with no qualifying dxg frame anywhere stays silent"
+
+echo ""
+echo "(am) F3: MUTANT PROOF -- dropping just 'BUG:' from the header regex flips (ai) from DETECTED to silent"
+GUARD_MUT="$TMPDIR_BASE/guard-mutant-am.sh"
+sed 's#/BUG:|Oops:|Call Trace/#/Oops:|Call Trace/#' "$GUARD" > "$GUARD_MUT"
+chmod +x "$GUARD_MUT"
+ST="$TMPDIR_BASE/case-ai"
+mkdir -p "$ST-mut"
+echo "$(($(date +%s) - 3600))" > "$ST-mut/.gpu-crashloop-guard-baseline"   # avoid a false "silent" from the first-run branch, not the mutation
+OUT_MUT="$(GPU_GUARD_STATE_DIR="$ST-mut" GPU_GUARD_BOOTS_OVERRIDE="$ST/boots.txt" GPU_GUARD_KERNEL_LOG_OVERRIDE="$ST/kernel.txt" \
+  GPU_GUARD_ALERT_DRYRUN=1 GPU_GUARD_MASK_DRYRUN=1 bash "$GUARD_MUT" 2>&1)"
+if printf '%s' "$OUT_MUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  fail "F3(b) mutant proof: dropping 'BUG:' should silence the BUG:-only fixture (ai), but it still detected ($OUT_MUT)"
+else
+  pass "F3(b) mutant proof: dropping 'BUG:' flips the BUG:-only fixture (ai) from DETECTED to silent"
+fi
+
+echo ""
+echo "(an) F3: MUTANT PROOF -- dropping just 'Oops:' from the header regex flips (aj) from DETECTED to silent"
+GUARD_MUT="$TMPDIR_BASE/guard-mutant-an.sh"
+sed 's#/BUG:|Oops:|Call Trace/#/BUG:|Call Trace/#' "$GUARD" > "$GUARD_MUT"
+chmod +x "$GUARD_MUT"
+ST="$TMPDIR_BASE/case-aj"
+mkdir -p "$ST-mut"
+echo "$(($(date +%s) - 3600))" > "$ST-mut/.gpu-crashloop-guard-baseline"   # avoid a false "silent" from the first-run branch, not the mutation
+OUT_MUT="$(GPU_GUARD_STATE_DIR="$ST-mut" GPU_GUARD_BOOTS_OVERRIDE="$ST/boots.txt" GPU_GUARD_KERNEL_LOG_OVERRIDE="$ST/kernel.txt" \
+  GPU_GUARD_ALERT_DRYRUN=1 GPU_GUARD_MASK_DRYRUN=1 bash "$GUARD_MUT" 2>&1)"
+if printf '%s' "$OUT_MUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  fail "F3(b) mutant proof: dropping 'Oops:' should silence the Oops:-only fixture (aj), but it still detected ($OUT_MUT)"
+else
+  pass "F3(b) mutant proof: dropping 'Oops:' flips the Oops:-only fixture (aj) from DETECTED to silent"
+fi
+
+echo ""
+echo "(ao) F3: MUTANT PROOF -- dropping just 'Call Trace' from the header regex flips (ak) from DETECTED to silent"
+GUARD_MUT="$TMPDIR_BASE/guard-mutant-ao.sh"
+sed 's#/BUG:|Oops:|Call Trace/#/BUG:|Oops:/#' "$GUARD" > "$GUARD_MUT"
+chmod +x "$GUARD_MUT"
+ST="$TMPDIR_BASE/case-ak"
+mkdir -p "$ST-mut"
+echo "$(($(date +%s) - 3600))" > "$ST-mut/.gpu-crashloop-guard-baseline"   # avoid a false "silent" from the first-run branch, not the mutation
+OUT_MUT="$(GPU_GUARD_STATE_DIR="$ST-mut" GPU_GUARD_BOOTS_OVERRIDE="$ST/boots.txt" GPU_GUARD_KERNEL_LOG_OVERRIDE="$ST/kernel.txt" \
+  GPU_GUARD_ALERT_DRYRUN=1 GPU_GUARD_MASK_DRYRUN=1 bash "$GUARD_MUT" 2>&1)"
+if printf '%s' "$OUT_MUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  fail "F3(b) mutant proof: dropping 'Call Trace' should silence the Call-Trace-only fixture (ak), but it still detected ($OUT_MUT)"
+else
+  pass "F3(b) mutant proof: dropping 'Call Trace' flips the Call-Trace-only fixture (ak) from DETECTED to silent"
+fi
+
+# ---------------------------------------------------------------------------
+# (ap)-(ar) F2, Cybered NO-GO: the frame match must not be satisfiable by
+#     ordinary boot noise. "-22" ioctl noise and the "registering driver
+#     dxgkrnl" line both contain the substring "dxg" but are NOT a stack
+#     frame -- neither has the +0xOFFSET/LEN shape nor a [dxgkrnl] module tag.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(ap) F2: header + '-22' ioctl noise ONLY (no real frame) -> silent"
+ST="$(fresh_case ap)"; BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+printf '[ 1.0] BUG: some unrelated kernel fault\n[ 1.1] misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22\n' > "$KERN"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN" \
+  && fail "F2: an unrelated header + ioctl noise wrongly counted the noise as a frame ($OUT)" \
+  || pass "F2: an unrelated header followed by ioctl noise alone stays silent"
+
+echo ""
+echo "(aq) F2: the exact false-positive Cybered measured -- unrelated header + ioctl noise + a clean poweroff signal -> silent"
+ST="$(fresh_case aq)"; BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"; JOURNAL="$ST/journal.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+printf '[ 1.0] Call Trace:\n[ 1.1] some_unrelated_workqueue_fn+0x10/0x20\n[ 1.2] misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22\n' > "$KERN"
+echo "systemd-poweroff.service: Finished." > "$JOURNAL"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN" "$JOURNAL")"
+printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN" \
+  && fail "F2: unrelated Call Trace + ioctl noise + clean poweroff wrongly detected (970a90c3 regression) ($OUT)" \
+  || pass "F2: unrelated Call Trace + ioctl noise + clean poweroff stays silent (970a90c3 stays fixed)"
+
+echo ""
+echo "(ar) F2: a real frame (offset shape) still matches after tightening -- no false negative introduced"
+ST="$(fresh_case ar)"; BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+printf '[ 1.0] Oops: 0000\n[ 1.1] dxgkvmb_send_sync_msg+0x40/0x90\n' > "$KERN"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN" \
+  && pass "F2: a real offset-shaped dxg frame still matches after tightening" \
+  || fail "F2: tightening the frame match introduced a false negative on a real frame ($OUT)"
+
 echo "========================="
 TOTAL=$((PASS + FAIL))
 echo "Results: $PASS/$TOTAL passed"
