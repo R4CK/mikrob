@@ -138,7 +138,15 @@ to_epoch() {
 # means the VM was asked to stop -- it must NOT count as a crash-boot (card 970a90c3).
 is_clean_shutdown() {
   local idx="$1" text
-  if [ -n "${GPU_GUARD_JOURNAL_LOG_OVERRIDE:-}" ]; then
+  # Per-boot override DIRECTORY (card 31131dc5 F3, Cybered NO-GO on d988d5987): one file named
+  # by idx (e.g. "-1", "-2"), so a test can give DIFFERENT boots different journal content in
+  # the SAME run. The old single-file override applied the SAME text to every boot index, which
+  # made "3 clean boots, then one real crash" unrepresentable -- exactly the scenario the
+  # "delete the skip" mutant needs to be caught in. Falls back to the single-file override, then
+  # the real journalctl, for backward compatibility with existing fixtures.
+  if [ -n "${GPU_GUARD_JOURNAL_LOG_DIR:-}" ]; then
+    text="$(cat "$GPU_GUARD_JOURNAL_LOG_DIR/$idx" 2>/dev/null)"
+  elif [ -n "${GPU_GUARD_JOURNAL_LOG_OVERRIDE:-}" ]; then
     text="$(cat "$GPU_GUARD_JOURNAL_LOG_OVERRIDE" 2>/dev/null)"
   else
     text="$(journalctl -b "$idx" 2>/dev/null)"
@@ -162,14 +170,23 @@ is_clean_shutdown() {
 # BUG/Oops/Call Trace header (grep -E has no cross-line ".{0,200}"), but a real
 # oops spreads the header and the faulting frame across several lines. Scanned
 # with awk instead: any BUG:/Oops:/Call Trace header opens a 40-line window,
-# and a dxg-related frame ANYWHERE in that window counts as a fault. A bare
-# "misc dxg: dxgk: ... Ioctl failed: -22" noise line never opens a window on
-# its own (it is not a BUG/Oops/Call Trace header), so it still reads as
-# silent on its own (card 970a90c3) -- it only risks a false match if it
-# happens to fall inside an unrelated header's window, an accepted edge case.
+# and a dxg-related STACK FRAME anywhere in that window counts as a fault.
+#
+# FRAME SHAPE TIGHTENED (Cybered NO-GO on d988d5987, F2): a bare /dxg/
+# substring match let the "-22" ioctl-noise line and the every-boot
+# "registering driver dxgkrnl" line count as the frame themselves, which
+# reopens the 970a90c3 false positive in a narrow form (an unrelated header,
+# say a page-allocation BUG, followed within 40 lines by ordinary boot noise
+# that happens to contain "dxg"). A real stack frame has a shape neither noise
+# line has: a symbol+offset/length (dxgadapter_wait_fence+0x55/0x100) or an
+# explicit [dxgkrnl] module tag. Requiring one of those excludes both noise
+# lines while still matching every real frame this guard has ever seen.
 boot_has_dxg_oops() {
   local idx="$1" text
-  if [ -n "${GPU_GUARD_KERNEL_LOG_OVERRIDE:-}" ]; then
+  # Per-boot override DIRECTORY -- see is_clean_shutdown() for why.
+  if [ -n "${GPU_GUARD_KERNEL_LOG_DIR:-}" ]; then
+    text="$(cat "$GPU_GUARD_KERNEL_LOG_DIR/$idx" 2>/dev/null)"
+  elif [ -n "${GPU_GUARD_KERNEL_LOG_OVERRIDE:-}" ]; then
     text="$(cat "$GPU_GUARD_KERNEL_LOG_OVERRIDE" 2>/dev/null)"
   else
     text="$(journalctl -k -b "$idx" 2>/dev/null)"
@@ -179,7 +196,10 @@ boot_has_dxg_oops() {
   fi
   echo "$text" | awk '
     /BUG:|Oops:|Call Trace/ { for (i = 0; i <= 40; i++) win[NR + i] = 1 }
-    { if (win[NR] && $0 ~ /dxg/) found = 1 }
+    {
+      if (win[NR] && $0 ~ /dxg[A-Za-z_]*\+0x[0-9a-fA-F]+\/0x[0-9a-fA-F]+/) found = 1
+      if (win[NR] && $0 ~ /\[dxgkrnl\]/) found = 1
+    }
     END { exit found ? 0 : 1 }
   '
 }
@@ -532,7 +552,16 @@ case "${1:-}" in
 # existing MASK_DRYRUN/ALERT_DRYRUN assertion undetected. This prints the
 # verdict directly so each regex alternative can be pinned on its own.
 --debug-is-clean-shutdown)
-  if is_clean_shutdown "${2:--1}"; then echo "clean"; else echo "not-clean"; fi
+  # Validated BEFORE it reaches is_clean_shutdown (Cybered LOW on d988d5987): unvalidated, a
+  # value starting with "-" would be read as a journalctl OPTION, not a boot index, once this
+  # seam is used against the real journal (no override set). Boot indices are always a bare
+  # negative integer (e.g. -1, -2); anything else is a usage error, not a value to pass through.
+  DEBUG_IDX="${2:--1}"
+  case "$DEBUG_IDX" in
+    -[0-9]*) ;;
+    *) echo "usage: --debug-is-clean-shutdown <negative-integer-boot-index>" >&2; exit 2 ;;
+  esac
+  if is_clean_shutdown "$DEBUG_IDX"; then echo "clean"; else echo "not-clean"; fi
   exit 0 ;;
 esac
 
