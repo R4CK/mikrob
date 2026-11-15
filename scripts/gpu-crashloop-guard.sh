@@ -138,7 +138,15 @@ to_epoch() {
 # means the VM was asked to stop -- it must NOT count as a crash-boot (card 970a90c3).
 is_clean_shutdown() {
   local idx="$1" text
-  if [ -n "${GPU_GUARD_JOURNAL_LOG_OVERRIDE:-}" ]; then
+  # Per-boot override DIRECTORY (card 31131dc5 F3, Cybered NO-GO on d988d5987): one file named
+  # by idx (e.g. "-1", "-2"), so a test can give DIFFERENT boots different journal content in
+  # the SAME run. The old single-file override applied the SAME text to every boot index, which
+  # made "3 clean boots, then one real crash" unrepresentable -- exactly the scenario the
+  # "delete the skip" mutant needs to be caught in. Falls back to the single-file override, then
+  # the real journalctl, for backward compatibility with existing fixtures.
+  if [ -n "${GPU_GUARD_JOURNAL_LOG_DIR:-}" ]; then
+    text="$(cat "$GPU_GUARD_JOURNAL_LOG_DIR/$idx" 2>/dev/null)"
+  elif [ -n "${GPU_GUARD_JOURNAL_LOG_OVERRIDE:-}" ]; then
     text="$(cat "$GPU_GUARD_JOURNAL_LOG_OVERRIDE" 2>/dev/null)"
   else
     text="$(journalctl -b "$idx" 2>/dev/null)"
@@ -154,16 +162,46 @@ is_clean_shutdown() {
 # "misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22" -- a feature-
 # discovery noise line present on EVERY boot; it is NOT a fault. Removed. Real faults
 # appear as dxgk_ioctl/dxgadapter_release_lock symbols (hardware-layer fault path) or
-# a BUG/Oops/call-trace line that co-occurs with a dxgk symbol.
+# a multi-line BUG/Oops/Call Trace block with a dxg frame.
+#
+# MULTI-LINE FIX (card 31131dc5 F2): the real kernel oops format capitalizes
+# "Call Trace:" -- the old same-line pattern only had lowercase "call trace",
+# which never matched. It also required the dxg symbol on the SAME line as the
+# BUG/Oops/Call Trace header (grep -E has no cross-line ".{0,200}"), but a real
+# oops spreads the header and the faulting frame across several lines. Scanned
+# with awk instead: any BUG:/Oops:/Call Trace header opens a 40-line window,
+# and a dxg-related STACK FRAME anywhere in that window counts as a fault.
+#
+# FRAME SHAPE TIGHTENED (Cybered NO-GO on d988d5987, F2): a bare /dxg/
+# substring match let the "-22" ioctl-noise line and the every-boot
+# "registering driver dxgkrnl" line count as the frame themselves, which
+# reopens the 970a90c3 false positive in a narrow form (an unrelated header,
+# say a page-allocation BUG, followed within 40 lines by ordinary boot noise
+# that happens to contain "dxg"). A real stack frame has a shape neither noise
+# line has: a symbol+offset/length (dxgadapter_wait_fence+0x55/0x100) or an
+# explicit [dxgkrnl] module tag. Requiring one of those excludes both noise
+# lines while still matching every real frame this guard has ever seen.
 boot_has_dxg_oops() {
   local idx="$1" text
-  if [ -n "${GPU_GUARD_KERNEL_LOG_OVERRIDE:-}" ]; then
+  # Per-boot override DIRECTORY -- see is_clean_shutdown() for why.
+  if [ -n "${GPU_GUARD_KERNEL_LOG_DIR:-}" ]; then
+    text="$(cat "$GPU_GUARD_KERNEL_LOG_DIR/$idx" 2>/dev/null)"
+  elif [ -n "${GPU_GUARD_KERNEL_LOG_OVERRIDE:-}" ]; then
     text="$(cat "$GPU_GUARD_KERNEL_LOG_OVERRIDE" 2>/dev/null)"
   else
     text="$(journalctl -k -b "$idx" 2>/dev/null)"
   fi
-  echo "$text" | grep -qE \
-    'dxgk_ioctl|dxgadapter_release_lock|(BUG:|Oops:|call trace).{0,200}dxgk|dxgk.{0,200}(BUG:|Oops:)'
+  if echo "$text" | grep -qE 'dxgk_ioctl|dxgadapter_release_lock'; then
+    return 0
+  fi
+  echo "$text" | awk '
+    /BUG:|Oops:|Call Trace/ { for (i = 0; i <= 40; i++) win[NR + i] = 1 }
+    {
+      if (win[NR] && $0 ~ /dxg[A-Za-z_]*\+0x[0-9a-fA-F]+\/0x[0-9a-fA-F]+/) found = 1
+      if (win[NR] && $0 ~ /\[dxgkrnl\]/) found = 1
+    }
+    END { exit found ? 0 : 1 }
+  '
 }
 
 # Detect the crash-loop pattern: >= MIN_SHORT_BOOTS boots, each shorter than
@@ -174,7 +212,7 @@ boot_has_dxg_oops() {
 # signature (so an unrelated cause -- host sleep/resume, a manual
 # `wsl --shutdown` -- doesn't trigger a false mask).
 detect_crashloop() {
-  local now baseline windows short_count=0 dxg_seen=0 idx=0 line start_s end_s dur total lineno
+  local now baseline windows short_count=0 dxg_seen=0 idx=0 line start_s end_s dur total lineno has_oops
   now="$(date +%s)"
   baseline=0; [ -f "$BASELINE_STAMP" ] && baseline="$(cat "$BASELINE_STAMP" 2>/dev/null || echo 0)"
   case "$baseline" in (''|*[!0-9]*) baseline=0;; esac
@@ -195,12 +233,21 @@ detect_crashloop() {
     dur=$((end_s - start_s))
     [ $((now - end_s)) -gt "$RECENT_WINDOW_SEC" ] && break   # too old, stop scanning
     if [ "$dur" -lt "$SHORT_BOOT_MAX_SEC" ] && [ "$dur" -ge 0 ]; then
+      # The oops check runs FIRST and can OVERRIDE the clean-shutdown skip
+      # (card 31131dc5 F1): a boot that both carries a poweroff signal AND a
+      # genuine dxg fault is still a crash-boot (e.g. the fault happened
+      # during an otherwise-orderly shutdown sequence) -- checking
+      # is_clean_shutdown first threw such boots away unconditionally before
+      # the real oops was ever looked at.
+      has_oops=0
+      if boot_has_dxg_oops "$idx"; then has_oops=1; fi
       # A clean voluntary shutdown (poweroff/reboot requested by the user or MikroB)
       # ends quickly without a kernel fault -- skip it; counting it as a crash-boot
-      # causes the false positive described in card 970a90c3.
-      if is_clean_shutdown "$idx"; then continue; fi
+      # causes the false positive described in card 970a90c3. Only applies when
+      # there is no real oops to override it.
+      if [ "$has_oops" -eq 0 ] && is_clean_shutdown "$idx"; then continue; fi
       short_count=$((short_count + 1))
-      if boot_has_dxg_oops "$idx"; then dxg_seen=1; fi
+      [ "$has_oops" -eq 1 ] && dxg_seen=1
     else
       break   # a normal-length boot breaks the current streak
     fi
@@ -497,6 +544,25 @@ EOF
 
 case "${1:-}" in
 --restore-hint) print_restore_hint; exit 0 ;;
+# Test-only seam (card 31131dc5 F3): is_clean_shutdown()'s return value is
+# NEVER observable through a full guard cycle on its own -- detect_crashloop
+# requires dxg_seen=1 for ANY verdict other than silent, and a boot with no
+# real oops in its kernel-log fixture leaves dxg_seen=0 no matter what
+# is_clean_shutdown decides, so a mutation to its regex could survive every
+# existing MASK_DRYRUN/ALERT_DRYRUN assertion undetected. This prints the
+# verdict directly so each regex alternative can be pinned on its own.
+--debug-is-clean-shutdown)
+  # Validated BEFORE it reaches is_clean_shutdown (Cybered LOW on d988d5987): unvalidated, a
+  # value starting with "-" would be read as a journalctl OPTION, not a boot index, once this
+  # seam is used against the real journal (no override set). Boot indices are always a bare
+  # negative integer (e.g. -1, -2); anything else is a usage error, not a value to pass through.
+  DEBUG_IDX="${2:--1}"
+  case "$DEBUG_IDX" in
+    -[0-9]*) ;;
+    *) echo "usage: --debug-is-clean-shutdown <negative-integer-boot-index>" >&2; exit 2 ;;
+  esac
+  if is_clean_shutdown "$DEBUG_IDX"; then echo "clean"; else echo "not-clean"; fi
+  exit 0 ;;
 esac
 
 main "$@"

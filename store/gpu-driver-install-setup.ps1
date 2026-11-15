@@ -116,6 +116,13 @@ if ($Phase -eq '1') {
             exit 1
         }
         foreach ($child in @(Get-ChildItem $TargetDir -Force -ErrorAction SilentlyContinue)) {
+            # N2 fix (b64cfc09, follow-up of eb12a5dd): the owner check alone does not catch a
+            # junction/symlink child -- Phase 2's own re-verification loop (2b) already checks
+            # both reparse-point and owner on children; this loop only checked owner.
+            if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                Write-Log "FAIL: existing entry '$($child.Name)' in $TargetDir is a junction or symlink -- refusing to adopt it"
+                exit 1
+            }
             if (-not (Test-TrustedOwner $child.FullName)) {
                 Write-Log "FAIL: existing entry '$($child.Name)' in $TargetDir is not owned by Administrators/SYSTEM -- refusing to adopt it"
                 exit 1

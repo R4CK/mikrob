@@ -214,6 +214,16 @@ review_rx = re.compile(r"^(?:[#*\-]+[ \t]*)?REVIEW\b", re.M)
 gate_sha_rx = re.compile(r"^(?:[-*#]+[ \t]*)?Gate-SHA:[ \t]*([0-9a-fA-F]{7,40}(?:[ \t]*[, ][ \t]*[0-9a-fA-F]{7,40})*)", re.M | re.I)
 fence_rx = re.compile(r"(```|~~~).*?(\1|\Z)", re.S)
 
+# EXPLICIT "n/a" (card 1aeed1ca, WhiteHat2 L2): CLAUDE.md rule 4e config-only convention is a
+# stated "Gate-SHA: n/a" line -- gate_sha_rx only ever matches hex, so this line is invisible to
+# structured_shas(), and shas_of() fell through to the extract_shas() prose scrape, which can pick
+# up an unrelated hex-looking token elsewhere in the same comment and misread it as the thing being
+# reviewed. Checked the same way gate_sha_rx is (line-anchored, fence-stripped by the caller).
+na_gate_sha_rx = re.compile(r"^(?:[-*#]+[ \t]*)?Gate-SHA:[ \t]*n/a\b", re.M | re.I)
+
+def is_na_gate_sha(text):
+    return bool(na_gate_sha_rx.search(fence_rx.sub("", text or "")))
+
 # INFO-ONLY (card a5732476, QA-measured on e00c12ad): a comment that merely NAMES an already-
 # reviewed sha in passing -- baseline CI data, a status recap -- falls through to the
 # extract_shas() scrape at the bottom of is_submission() and gets read as a fresh submission,
@@ -306,6 +316,11 @@ def extract_shas(text):
 def shas_of(comment):
     """The shas a comment is ABOUT: its declared ones if it declares any, else the scrape."""
     text = comment.get("content") or ""
+    # A stated "Gate-SHA: n/a" (card 1aeed1ca) IS a declaration -- of nothing -- and must not fall
+    # through to the scrape: a hex-looking token elsewhere in the same comment (a card id, an old
+    # sha mentioned in passing) would otherwise be misread as what this comment is about.
+    if is_na_gate_sha(text):
+        return set()
     return structured_shas(text) or extract_shas(text)
 
 # GATE_AGENTS imported from gate_designation (card acc197c8) -- not redefined here.
@@ -493,6 +508,22 @@ if _newest_mine_declared and _newest_review_declared:
     if not any(r.startswith(m) or m.startswith(r) for r in _newest_review_declared for m in _newest_mine_declared):
         print("ALLOW:stale-verdict")
         sys.exit(0)
+
+# EXPLICIT n/a ON BOTH SIDES USED TO SHORT-CIRCUIT TO ADVISE-SKIP HERE (card 1aeed1ca, WhiteHat2
+# L2) -- removed per the CYBERED NO-GO on the SAME card, finding F3. n/a names nothing that tells
+# two rounds of config-only work apart: it reads identically whether the newer REVIEW repeats the
+# SAME already-gated round or describes a SECOND, DIFFERENT config-only change. Measured by
+# CYBERED: a probe with verdict n/a, then a newer REVIEW n/a for a genuinely different change,
+# answered the same ADVISE-SKIP as a true repeat -- silently un-re-waking a gate that should have
+# fired. The general declared-match path below (prose_would_arm()) cannot rescue this either: pure
+# config-only text almost never carries a hex token in prose on either side, so that check would
+# itself always read "nothing to compare" and arm -- which is just this same safe default reached
+# a different way. So: no special case. Both-n/a falls through to the unconditional
+# ALLOW:stale-verdict at the end, same as any other case where neither side resolves a sha --
+# the cheap-direction fail-open this file already applies everywhere else (wasted re-gate, not a
+# silently skipped one). The shas_of() function own n/a handling (above) is unrelated and
+# unchanged: a stray hex elsewhere in an n/a comment still never gets misread as what that
+# comment is about.
 
 if last_review < last_mine:
     print(f"ADVISE-SKIP:already-gated:{int(last_mine)}")
@@ -834,6 +865,26 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     t "review names ONLY a new sha -- must re-arm" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO -- abc1111"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed, commit def2222"}]'
     # No sha on either side -> unchanged, falls back to the pre-existing timestamp rule (fail-open).
     t "no sha anywhere falls back to the timestamp rule" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"NO-GO"},{"author":"backend","created_at":200,"content":"REVIEW -- fixed, no commit mentioned"}]'
+
+    # EXPLICIT n/a (card 1aeed1ca, WhiteHat2 L2, then CYBERED NO-GO F3). CLAUDE.md rule 4e's
+    # config-only convention: the REVIEW and the verdict that gated it both declare "Gate-SHA: n/a"
+    # (no commit exists to name). An earlier version of this fix special-cased both-sides-n/a to
+    # ADVISE-SKIP (treating it as "a stated match"); CYBERED's F3 showed n/a cannot tell a true
+    # repeat apart from a SECOND, different config-only round, so that special case is gone --
+    # both-n/a now falls through to the ordinary unconditional ALLOW:stale-verdict at the end, the
+    # safe default (occasionally re-gates an honest repeat; never silently swallows a real one).
+    t "both sides declare n/a -- re-arms (n/a cannot tell two config-only rounds apart, CYBERED F3)" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"CYBERSEC GO\nGate-SHA: n/a (config-only)"},{"author":"backend","created_at":200,"content":"REVIEW -- meg egyszer leirva, ugyanaz a config-only valtozas\nGate-SHA: n/a (config-only)"}]'
+    # The exact probe CYBERED measured: verdict n/a, then a newer REVIEW n/a describing a
+    # DIFFERENT config-only change. Before the F3 fix this read as the same "stated match" as a
+    # true repeat and silently stayed skipped; it must re-arm so a human actually looks at it.
+    t "F3: a SECOND, different config-only round (still n/a) must still re-arm" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"CYBERSEC GO\nGate-SHA: n/a (config-only)"},{"author":"backend","created_at":200,"content":"REVIEW -- masik config-only valtozas, nem az elozo\nGate-SHA: n/a (config-only)"}]'
+    # A stray hex token elsewhere in an n/a REVIEW must still not leak through the prose scrape and
+    # be misread as what the comment is about -- shas_of()'s own n/a handling (unchanged by F3)
+    # is what closes this, independent of the ADVISE-SKIP branch removed above.
+    t "n/a review does not let a stray hex token re-arm via the scrape" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"CYBERSEC GO\nGate-SHA: n/a (config-only)"},{"author":"backend","created_at":200,"content":"REVIEW -- config-only, lasd a testver-kartyat 63c4b270\nGate-SHA: n/a (config-only)"}]'
+    # Regression control: n/a on the REVIEW side only, verdict names a real sha -- not a declared
+    # match, must not be swallowed by the n/a branch (falls through to the ordinary rule below).
+    t "n/a on one side only is not treated as a match" "ALLOW:stale-verdict" cybersec <<< '[{"author":"cybersec","created_at":100,"content":"CYBERSEC GO\nGate-SHA: abc1111"},{"author":"backend","created_at":200,"content":"REVIEW -- kulon config-only follow-up, nincs commit\nGate-SHA: n/a (config-only)"}]'
 
     # SUBMISSION WITHOUT THE REVIEW PREFIX (card b60835e1). Both cases are the real comment shapes,
     # and both were measured against the live comment history truncated to the moment of the

@@ -66,7 +66,7 @@ TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-backend backend2 fullstack cybered cyber
 # this host's transcripts. If dist cannot be read we fall back to its own conservative default
 # (200k) rather than to the largest window -- under-estimating compacts too eagerly, which is loud
 # and cheap; over-estimating is silent and ends in the ceiling.
-COMPACT_PCT="${COMPACT_PCT:-75}"
+COMPACT_PCT="${COMPACT_PCT:-50}"
 CONTEXT_GUARD_JS="${CONTEXT_GUARD_JS:-$ROOT/dist/context-guard.js}"
 window_tokens_for_model() {
   local w
@@ -351,9 +351,10 @@ if [ "${1:-}" = "--selftest" ]; then
   s "an unknown model is conservative"   "200000"  "$(window_tokens_for_model claude-future-9)"
   s "an unreadable dist falls back small" "200000" \
     "$(CONTEXT_GUARD_JS=/nonexistent/context-guard.js window_tokens_for_model claude-opus-5)"
-  s "75% of a 1M window"    "750000" "$(threshold_tokens_for_model claude-opus-5)"
-  s "75% of a 200k window"  "150000" "$(threshold_tokens_for_model claude-sonnet-5)"
-  s "the percentage is overridable" "500000" "$(COMPACT_PCT=50 threshold_tokens_for_model claude-opus-5)"
+  s "50% of a 1M window (new default, card 3bad1678, Token 6)" "500000" \
+    "$(threshold_tokens_for_model claude-opus-5)"
+  s "50% of a 200k window (new default)" "100000" "$(threshold_tokens_for_model claude-sonnet-5)"
+  s "the percentage is overridable" "750000" "$(COMPACT_PCT=75 threshold_tokens_for_model claude-opus-5)"
   # And the derived number has to be the one the decision actually uses, at its boundary.
   s "at the derived threshold it acts"     "compact"         "$(should_compact 750000 750000 5 20 60 45)"
   s "one below the derived threshold it does not" "below-threshold" "$(should_compact 749999 750000 5 20 60 45)"
