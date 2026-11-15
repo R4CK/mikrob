@@ -481,7 +481,7 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "NOTE: running as root, skipping the read-only-file atomicity case (counter)"
   fi
 
-  [ "$fails" -eq 0 ] && { echo "selftest OK (43 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
+  [ "$fails" -eq 0 ] && { echo "selftest OK (55 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
 
 [ -r "$DB" ] || { echo "context-compact-monitor.sh: cannot read $DB" >&2; exit 3; }
