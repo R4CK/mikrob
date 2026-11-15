@@ -26040,3 +26040,18 @@ Measured: `gpu-driver-install-setup.selftest.sh` PASS (grew by 2 new block-ancho
 **Teszt:** 6 new tests added to the "class A round 2" describe block in `src/__tests__/pane-background-agents.test.ts` (F1 permission, F1 held-peer, F2a shell-tail, F2a queued, F2b parenthetical+tail, F4 stale-dialog+30-trailing-lines), total 42 in the file. `fleet-test.sh --ref d73e00433dc2e6fe108c6daf57398efe5d2ee246 src/__tests__/pane-background-agents.test.ts`: 42/42 green. Blast-radius: all 42 files importing `pane-state.ts` under `src/__tests__/`, same sha: 42/42 files, 1362/1362 tests green. Mutation-verified both fixes independently via dangling `commit-tree` mutants (no branch pointer moved): reverting only the `ctrl+t` suffix addition turned exactly the F2b test red (41/42); reverting only `idleFooterAndNoDialogAfter` back to the old fixed-window call turned exactly 3 tests red -- both new F1 tests plus the pre-existing stale-footer regression test from an earlier round (39/42) -- confirming the direction-aware replacement resolves a real three-way conflict, not a cosmetic rename. Both mutants restored via `git checkout <gate-sha> -- src/pane-state.ts`, verified `git diff` empty before continuing.
 
 **Ki döntött:** backend (kártya 8e9828c9 round 2, RedHat NO-GO 31373, MikroB trusted-peer dispatch msg_id 18722 continuing this WIP). Gate: QA + RedHat. Gate-SHA: d73e00433dc2e6fe108c6daf57398efe5d2ee246.
+
+### 2026-11-15 -- kg-search.selftest.sh leak-check scope (card afc0d569)
+
+MikroB merese: a F1 leak-check `grep -slF ... /tmp/tmp.*` alakja a teljes rendszer `/tmp`-et
+pasztazta fajltipus-szures nelkul -- egy MASIK folyamat elhagyott FIFO-ja (nyito, iro nelkul
+blokkol a vegtelenig) 3 landolast is vorosre vitt (3bad1678 x2, ec34c025). Javitas: a
+`kg-search.sh` futtatasa `TMPDIR="$WORKDIR"`-dal tortenik (a sajat mktemp-je -- ha lenne -- ide
+irna, nem a megosztott `/tmp`-be), a leak-check pedig `find -type f`-fel kizarolag rendes
+fajlt nyit meg, soha FIFO-t/socketet.
+
+**Teszt:** `kg-search.selftest.sh` 6/6 valtozatlanul zold. Kezzel reprodukalva: `mkfifo
+/tmp/tmp.<x>` + a regi glob-alak -> `timeout 10` utan exit 124 (tenyleges akasztas); ugyanaz a
+FIFO a javitott koddal -> exit 0, 0s alatt, 30s timeout alatt marad.
+
+**Ki dontott:** MikroB dispatch (msg_id:19071) -> backend3 vegrehajtasa.
