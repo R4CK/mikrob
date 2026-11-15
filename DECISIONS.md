@@ -25370,3 +25370,16 @@ LOW-2 (Cybersec GO 31290): a guard docstringje és a kártya korábbi kommuniká
 Ellenőrzés: `gate-verdict-token-list-single-source.selftest.py` 8/8 PASS (a régi 7 + az új case 8), `gate-closure-check.selftest.py` 167/167 érintetlen, `tsc --noEmit` tiszta. Gate-closure-check.py maga nem módosult ebben a delta-ban, csak a guard.
 
 Gate: újra QA + Cybersec (Cybersec saját ajánlata szerint 2 perces próba). **Ki döntött:** DevO (fullstack), Cybersec GO 31290 MEDIUM-1/LOW-2 nyomán.
+
+## 2026-11-15 -- card ec34c025 delta: shebang-files-executable fix (land refusal, msg 18872)
+
+**Döntés:** MikroB land-refusal jelezte, hogy src/__tests__/shebang-files-executable.test.ts elbukik 3
+fájlon, amiket a kártya 100644 módban követett, pedig mindháromnak `#!/usr/bin/env python3` shebangja
+van: store/gate-verdict-token-list-single-source.selftest.py, store/gate_verdict_tokens.selftest.py,
+store/sha_content_equivalence.selftest.py. Javítás: `git update-index --chmod=+x` mindháromra, majd
+`chmod +x` a diszken is (hogy a working-tree mód egyezzen az index-szel), tisztán mode-only commit
+(0 insertion/0 deletion, 3 mode-change 100644->100755). Tartalom nem változott.
+
+Ellenőrzés: `npx vitest run --root . src/__tests__/shebang-files-executable.test.ts` -> 3/3 PASS.
+
+Gate: delta QA (egysoros, MikroB jelölése szerint). **Ki döntött:** DevO (fullstack).
