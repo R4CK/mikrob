@@ -26040,6 +26040,36 @@ Measured: `gpu-driver-install-setup.selftest.sh` PASS (grew by 2 new block-ancho
 **Teszt:** 6 new tests added to the "class A round 2" describe block in `src/__tests__/pane-background-agents.test.ts` (F1 permission, F1 held-peer, F2a shell-tail, F2a queued, F2b parenthetical+tail, F4 stale-dialog+30-trailing-lines), total 42 in the file. `fleet-test.sh --ref d73e00433dc2e6fe108c6daf57398efe5d2ee246 src/__tests__/pane-background-agents.test.ts`: 42/42 green. Blast-radius: all 42 files importing `pane-state.ts` under `src/__tests__/`, same sha: 42/42 files, 1362/1362 tests green. Mutation-verified both fixes independently via dangling `commit-tree` mutants (no branch pointer moved): reverting only the `ctrl+t` suffix addition turned exactly the F2b test red (41/42); reverting only `idleFooterAndNoDialogAfter` back to the old fixed-window call turned exactly 3 tests red -- both new F1 tests plus the pre-existing stale-footer regression test from an earlier round (39/42) -- confirming the direction-aware replacement resolves a real three-way conflict, not a cosmetic rename. Both mutants restored via `git checkout <gate-sha> -- src/pane-state.ts`, verified `git diff` empty before continuing.
 
 **Ki döntött:** backend (kártya 8e9828c9 round 2, RedHat NO-GO 31373, MikroB trusted-peer dispatch msg_id 18722 continuing this WIP). Gate: QA + RedHat. Gate-SHA: d73e00433dc2e6fe108c6daf57398efe5d2ee246.
+
+## 2026-11-15 — 1506d10d lezárás: mindkét finding (F-A, F-B) már landolt commitból teljesül
+
+**Döntés:** A kártya mindkét Kész-ha kritériuma a `cdde2666` kártyán korábban landolt
+`d4d42e166` commitból (már `origin/develop`-on, `merge-base --is-ancestor` igazolva) teljesül,
+külön diff nélkül.
+
+F-B (replay a valódi egress-gate-en): `card-route-table-replay.sh` az `offload-dispatch.sh
+--check-freellm-blocked`-et (a valódi `is_freellm_blocked`) hívja, auth-ot követel, és nem-nullával
+lép ki 401/üres/parse-olhatatlan fetch, nem-{0,42} checker-exit, hiányzó checker, vagy kihagyott
+kártya esetén. `card-route-table-replay.selftest.sh`: 17/17 zöld (ezen a session-ön futtatva).
+Valós tokennel futtatott replay (a commit-üzenetből, átvéve): checked=136 skipped=0 errors=0
+violations=0 -- a Cybered által nevezett 14931e4e/200d2969/ba22ec48 mind BLOCKED a valódi
+gemini-ok marker-követelmény alatt. (Lásd 1506d10d komment 31514 a korábbi F-B mérésért is,
+99/155-ös bontással a 13943/13944 utáni szélesített gate-en.)
+
+F-A (F1 modell-ellenőrzés exact-match): `store/local-llm.sh` `model_pulled()` lecserélte a régi
+`grep -q "${MODEL%%:*}"` substring-tesztet egy python3 exact set-membership ellenőrzésre az
+`/api/tags` modellnevek ellen (karakterkészlet-validáció + `:latest` kanonizálás, nincs
+substring/regex keresés). Pin: `local-llm-gateway-mode.test.ts` "Ollama has pulled a model whose
+name CONTAINS auto as a substring (starcoder2-autocomplete): requesting --model auto still
+refuses" eset. Ezen a session-ön futtatva: `npx vitest run local-llm-gateway-mode.test.ts` ->
+9/9 zöld.
+
+Nincs ebben: új kódváltozás -- a kártya a `cdde2666`-ban landolt javítást örökli, csak a mérést
+rögzíti és zárja a kártyát.
+
+**Ki döntött:** backend2 (kártya 1506d10d, Cybersec GO 29776 + Cybered NO-GO 29789 -> javítás
+`d4d42e166` a `cdde2666` kártyán, itt csak verifikálva és lezárva). Gate: QA + Cybersec.
+Gate-SHA: `d4d42e166ae8a58d15d6e5edaacd4c571d3eafc5`.
 ## 2026-11-15 09:07 -- 7c79badc: Koteg 23 upstream sync (11 commit), három konfliktus-döntés
 
 **Döntés:** backend3 real `git merge --no-ff`-elt 11 upstream commitot (c4ede16d0..402de0e13) a
