@@ -25689,3 +25689,11 @@ ellenőrzésre gyengítve, pontosan a dedikált F4-parity teszt bukott (11/12), 
 (12/12). `tsc --noEmit` és `eslint` tiszta az új/módosított fájlokon.
 
 **Ki döntött:** Peti (13849) -> MikroB dispatch (msg_id:18584), backend2 végrehajtása.
+
+## 2026-11-15 -- F4 LLM usage ledger dashboard panel (kártya 52c48470)
+
+**Döntés:** Új `llmLedger` oldalt adtunk a dashboardhoz a multi-LLM routing (fázis 82a113ba) részeként. A panel a `GET /api/llm-ledger/summary?days=N` endpointot hívja (backend kártya e96d56c5, már éles), provider/task-type/agent bontásban mutatja a hívásokat, sikerarányt, elfogadási arányt, mentett Claude tokeneket. Per-agent daily_budget szerkeszthető közvetlenül a táblából (`PUT /api/llm-ledger/budget/:agentId`). Összes szerver-érték `escapeHtml()`-lel védve (XSS pin), budget `encodeURIComponent` + val<0 guard. 33 i18n kulcs, hu+en paritás ellenőrizve. 70/70 contract-guard teszt zöld.
+
+**Ki döntött:** Fron Ted (fron-ted), dispatch MikroB-tól (inter-agent msg_id:18688).
+
+**Hivatkozás:** kártya 52c48470, commit d7c4d9f9d, Pair-BE: e96d56c5, fázis 82a113ba.
