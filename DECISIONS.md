@@ -25431,3 +25431,15 @@ gate-reviewer döntése, hogy kéri-e a 11 commit teljes hatókörére is.
 nem-adoptálását MikroB korábban megerősítette; a skill-import fail-closed-vs-queue kérdés
 Peti/MikroB felé NYITOTT marad (lásd fent). Gate: QA + WhiteHat (+ RedHat, mivel a kötegben
 trust-boundary fájl van érintve: `agents-skills.ts`, `schedule-runner.ts`, skill-import routes).
+
+## 2026-11-15 -- 7c79badc delta: a teljes fleet-test LAND REFUSED-ot adott, 12+ fork-teszt piros -- upstream 402de0e13 (willWake/ownsResume) jogosulatlan adoptálása, kijavítva
+
+**Kontextus:** MikroB (msg 18922) a teljes `fleet-test.sh` futást a merge-eredményen (nem a korábbi, szűkített futást) LAND REFUSED-dal zárta: 12+ fork-saját tesztfájl piros. A gyökér-ok a `fork-upstream-conflict-guard.test.ts` saját lelete: a kártya korábbi körében (8bb6abcb3-ig) a `402de0e13` upstream commit ("deliver the first prompt after a restart... willWake/ownsResume") adoptálva lett, NOT-adopted jelzés nélkül -- miközben a c8f33954 kártya ÁLLÓ, korábban eldöntött ACKNOWLEDGED_CONFLICTS szabálya "KEEP FORK"-ot mond ki pontosan erre a refaktorra. backend3 saját korábbi döntését nem ellenőrizte a c8f33954 szabály ellen.
+
+**Döntés:** `402de0e13` teljes visszavonása (7 implementációs + 8 tesztfájl, mindegyiknél a sor-szám-egyezés ellenőrizve, hogy kizárólag ez a commit a forrás, más adoptált munka nem sérül). Törölve az új `resume-delivery.ts` modul és tesztje. Két további, SAJÁT korábbi "typecheck-javító" kártya-kör mellékhatása is javítva: (1) egy szinkron `runPreCheck` referencia-forma `spawnSync(`-et vitt vissza a `schedule-runner.ts`-be, ami a kártya 92e2bb1b álló szöveg-szkennelő kapuját pirosra vitte (semmi a tick-en nem hívja, de a kapu szöveget néz, nem hívási gráfot) -- külön fájlba (`schedule-runner-sync-precheck.ts`) mozgatva; (2) két korábbi fork-teszt (`schedule-runner-reference-delivery.test.ts`, `schedule-runner-tick-survives-rejection.test.ts`) sosem mockolta a schedule-registry-t (egy VALÓDI, adoptált upstream funkció, nem a willWake-visszavonás része) -- passthrough mock pótolva.
+
+**Teszt:** `fleet-test.sh` TELJES futás a `dd4560884` shán: 15 Test Files passed (15), 340 Tests passed (340), 0 FAIL. `tsc --noEmit`: tiszta minden köztes commit-on.
+
+**Nincs benne:** az `agent-process.ts`-ből kiesett "start race" log (restart elveszti a versenyfutást egy másik szupervizorral) kérdésként jelezve MikroB-nek -- önmagában hasznosnak tűnt, de a willWake-hez volt kötve; nem lett visszaépítve, amíg MikroB nem dönt.
+
+**Ki döntött:** MikroB (land refusal, msg 18922), backend3 végezte a gyökér-ok azonosítást és a javítást. Gate: QA + WhiteHat (+ RedHat, routes/skills.ts és agent-process.ts auth-közeli fájlok miatt).
