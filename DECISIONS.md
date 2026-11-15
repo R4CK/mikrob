@@ -25916,3 +25916,42 @@ tovabbi lelete (Cybersec GO 56c9a507 follow-up, L1/L2/P1):
 61/61 valtozatlanul zold.
 
 **Ki dontott:** MikroB dispatch (msg_id:18721, Peti 13930) -> backend2 vegrehajtasa.
+
+## 2026-11-14 -- card ec34c025: ed332869 shared contract (sha-equivalence fn, card-landings lib, verdict token list)
+
+**Döntés:** Fázis ed332869 rescope pont 5 (MikroB 27940, un-paused 30530). Három darab kiemelve a gate-closure-check.py-ból + db.ts-ből, hogy a F4.3/F5/F7/F8 és a gate-sweepek egy közös forrást olvassanak, ne saját másolatot: `store/gate_verdict_tokens.py` (GATE_NAMES, OUTCOME_WORDS, PASSING, VERDICT_RE), `store/sha_content_equivalence.py` (content_verdict + git/clone-helperek), `src/card-landings-record.ts` (recordCardLanding/listCardLandings, db.ts re-exportálja változatlan néven). marveen-land.sh-t ez a kártya NEM érinti (land-script-szerkesztés a 6ec8e9d8/24a12714/84faa996 sorrendhez van kötve).
+
+Nincs viselkedésváltozás: a gate-closure-check.py kimenete bájtra egyezik 20 valós, friss kártyán régi/új szkripttel mérve (lista + mindkét kimenet a REVIEW-ban). gate-closure-check.selftest.py: 166/166 változatlan. Új selftestek: gate_verdict_tokens (11/11), sha_content_equivalence (9/9, valós git-repón), gate-verdict-token-list-single-source (4/4, mutáció-tesztelve: a literál visszaírása pirosra viszi).
+
+Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- card ec34c025: Cybersec NO-GO 31111 javítva -- shape-alapú allowlist-ratchet
+
+**Döntés:** a `gate-verdict-token-list-single-source.selftest.py` guard csak két PONTOS írásmódot (`_VERDICT = re.compile(...)`, `PASSING = {...}`) kapott el a gate-closure-check.py-ban -- egy átnevezés, egy `set()`/`frozenset()` visszakötés, egy annotált visszakötés vagy egy új fájl a repóban zöld maradt (Cybersec NO-GO 31111, Fix-Direction). Csere: SHAPE-alapú detektor (egy OUTCOME szó -- PASS/FAIL/GO/NO-GO -- egy GATE névvel -- QA/CYBERSEC/WHITEHAT/CYBERED/REDHAT -- egyazon regex-mintában vagy nevesített literálban, kommentek nélkül, szóhatárolt) + explicit ALLOWLIST, a `store/*.py`+`store/*.sh` (lapos) és az eredeti REVIEW által nevesített egyetlen TS fájl ((`src/web/kanban-gate-completeness-guard.ts`) hatókörén.
+
+Az ALLOWLIST-ot a detektor TÉNYLEGES futtatásával mértem a hatókörön, nem a NO-GO szálának "hat ismert másolat" listájából: a mért halmaz 9 fájl, nem 6 -- a `store/cybered-gate-scan.py`, `store/gate_scan_lib.py` és `store/unlanded-branch-sweep.sh` is hordozza a szókincset, ezeket a kártya eddig nem nevezte meg. Mutáció-tesztelve mind a 4, a NO-GO-ban listázott mutánsra (átnevezés, `set()` visszakötés, annotált visszakötés, új fájl) -- mind pirosra megy most; az eredeti 4 case változatlan marad (Fix-Direction kérése). `gate-closure-check.selftest.py` (166/166) és `tsc --noEmit` érintetlen -- a gate-closure-check.py maga nem módosult.
+
+Gate: QA + Cybersec, re-gate a 20af5b9dc Gate-SHA-n. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- card ec34c025: Cybersec GO 31290 MEDIUM-1 javítva -- AST-alapú tiltás a PASSING/VERDICT_RE/_VERDICT visszakötésére, LOW-2 szóhasználat javítva
+
+**Döntés:** Cybersec GO 31290 (Gate-SHA 44a34585a) MEDIUM-1 lelete: a case 1-2 csak a PONTOS írásmódot (`PASSING = {`/`(`, `_VERDICT = re.compile`) kapja el a gate-closure-check.py-ban, ezért a `PASSING`-nek egy MÁS konstruktorral (pl. `set((...))`, `PASSING | {...}`, `tuple([...])`, `frozenset(set(PASSING) | {...})`) való visszakötése zöld maradt. Fix (új case 8): `ast.parse` a gate-closure-check.py-ra, és piros, ha a modul TOP-LEVEL testében bármilyen `Assign`/`AnnAssign`/`AugAssign` a `PASSING`, `VERDICT_RE` vagy `_VERDICT` nevet célozza, a jobb oldal konstruktorától függetlenül -- az `from gate_verdict_tokens import ...` sor egy másik AST-csomópont (`ImportFrom`), ezt nem érinti. Mutáció-tesztelve: mind a 4, Cybersec által nevezett konstruktor pirosra megy; egy FÜGGVÉNYEN belüli, azonos nevű lokális változó (nem modul top-level) zölden marad, mert az nem a valódi importált `PASSING`-et köti újra, csak árnyékolja -- ez szándékos, nem rés.
+
+LOW-2 (Cybersec GO 31290): a guard docstringje és a kártya korábbi kommunikációja "repo-wide"-nak nevezte a cases 5-7 ratchet-et, miközben a hatókör csak `store/*.py`+`store/*.sh` (lapos) + a nevesített TS fájl -- a `scripts/`, bármely `store/<almappa>/`, a többi `src/*.ts` és a `selftest` nevű fájlok nincsenek benne. A guard docstringjét javítottam: a ratchet mostantól "`store/` ratchet"-ként van megnevezve, a nem-vizsgált helyek explicit felsorolva, és egy mondat arra, hogy Peti/MikroB felé is így kell hivatkozni rá, sosem "repo-wide"-ként.
+
+Ellenőrzés: `gate-verdict-token-list-single-source.selftest.py` 8/8 PASS (a régi 7 + az új case 8), `gate-closure-check.selftest.py` 167/167 érintetlen, `tsc --noEmit` tiszta. Gate-closure-check.py maga nem módosult ebben a delta-ban, csak a guard.
+
+Gate: újra QA + Cybersec (Cybersec saját ajánlata szerint 2 perces próba). **Ki döntött:** DevO (fullstack), Cybersec GO 31290 MEDIUM-1/LOW-2 nyomán.
+
+## 2026-11-15 -- card ec34c025 delta: shebang-files-executable fix (land refusal, msg 18872)
+
+**Döntés:** MikroB land-refusal jelezte, hogy src/__tests__/shebang-files-executable.test.ts elbukik 3
+fájlon, amiket a kártya 100644 módban követett, pedig mindháromnak `#!/usr/bin/env python3` shebangja
+van: store/gate-verdict-token-list-single-source.selftest.py, store/gate_verdict_tokens.selftest.py,
+store/sha_content_equivalence.selftest.py. Javítás: `git update-index --chmod=+x` mindháromra, majd
+`chmod +x` a diszken is (hogy a working-tree mód egyezzen az index-szel), tisztán mode-only commit
+(0 insertion/0 deletion, 3 mode-change 100644->100755). Tartalom nem változott.
+
+Ellenőrzés: `npx vitest run --root . src/__tests__/shebang-files-executable.test.ts` -> 3/3 PASS.
+
+Gate: delta QA (egysoros, MikroB jelölése szerint). **Ki döntött:** DevO (fullstack).
