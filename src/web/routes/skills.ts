@@ -15,6 +15,7 @@ import {
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName, shellEscape } from '../sanitize.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -266,6 +267,19 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
   const pendingActionMatch = path.match(/^\/api\/skills\/pending\/([^/]+)\/(approve|reject)$/)
   if (pendingActionMatch && method === 'POST') {
+    // CYBERED NO-GO F2 (card 7c79badc, bd32ad68 class): approve/reject mutate the approval
+    // queue (approve INSTALLS into the fleet-wide ~/.claude/skills) and had no auth-kind check
+    // at all -- the shared agent bearer could walk around the two hard-fail-closed global
+    // routes above by hand-writing a pending directory and calling approve. Same human-only
+    // posture as memories.ts's backfill gate: a browser session, or Peti's own (non-agent)
+    // device key, is required; the shared bearer (kind token), a federation peer and an
+    // agent's own device key are all refused.
+    const isHumanDevice = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) === null
+    if (ctx.auth?.kind !== 'session' && !isHumanDevice) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Skill pending approve/reject: rejected for non-human credential')
+      json(res, { error: 'A várakozó skill jóváhagyása/elvetése csak a tulajdonos munkamenetéből vagy saját eszközkulcsával lehetséges, a megosztott flotta-tokennel nem.' }, 403)
+      return true
+    }
     const id = decodeURIComponent(pendingActionMatch[1])
     if (pendingActionMatch[2] === 'reject') {
       let ok = false

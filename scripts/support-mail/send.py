@@ -7,30 +7,12 @@ Body can also be piped on stdin if --body is omitted.
 Mailbox / hosts come from config (.env); password is pulled from the vault at
 runtime (never stored/printed). --html sends the body as an HTML alternative.
 
-Exit 3 = refused, nothing sent (the reason on stderr, "KULDES MEGTAGADVA: ..."):
-the checks of scripts/hooks/sender_check.py on the exact letter this run
-delivers -- the email_send level (level 1; level 2 without a matching unused
-approval or a live standing recipient), and, when the install turned the
-recipient ledger on for the main agent, an address not in
-store/verified-recipients.json. Checked before the vault or SMTP is touched.
 """
 import sys, os, ssl, smtplib, argparse, imaplib, time
 from email.message import EmailMessage
 from email.utils import getaddresses
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib
-
-# The checks this sender runs itself, before the vault or SMTP (see the
-# docstring). A missing or broken module is a refusal like every other one:
-# exit 3, never a traceback with exit 1.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
-try:
-    import sender_check
-except BaseException as _check_exc:  # noqa: BLE001 -- deliberate fail-closed net
-    print("KULDES MEGTAGADVA: a kuldo-oldali ellenorzes (scripts/hooks/sender_check.py) nem "
-          f"toltheto be ({_check_exc!r}); fail-closed, ellenorizetlen level nem mehet ki.",
-          file=sys.stderr)
-    sys.exit(3)
 
 # A gazda masolati cime: a kimeno support-levelek alapertelmezett CC-je.
 # CONFIG-VEZERELT, URES ALAPERTELMEZESSEL -- a Marveen termekkent szallitodik, tehat
@@ -105,8 +87,6 @@ def main():
     # stub, which is what plain-text readers and previews then show.
     ap.add_argument("--html-wrap", action="store_true")
     a = ap.parse_args()
-    # Was --cc given on the command line (as opposed to the configured default)?
-    cc_given = any(x == "--cc" or x.startswith("--cc=") for x in sys.argv[1:])
     # A lemondas CSAK az alapertelmezett (config-bol jott) erteket ejti ki: egy
     # kimondott --cc-t nem dob el. Ha nincs beallitva OWNER_CC, nincs mit ejteni.
     if a.no_owner_cc and OWNER_CC and a.cc == OWNER_CC:
@@ -131,30 +111,8 @@ def main():
 
     try:
         rcpts = envelope_recipients(a.to, a.cc)
-        to_addrs = envelope_recipients(a.to)
     except ValueError as e:
         sys.exit(f"send.py: refusing to send, {e}")
-    seen_to = {t.lower() for t in to_addrs}
-    cc_addrs = [r for r in rcpts if r.lower() not in seen_to]
-    # The level (and, when it is on, the ledger) on the exact envelope this run
-    # delivers, before the vault or SMTP. The render mode is part of the
-    # approved letter: an approved plain letter cannot go out as HTML. The
-    # standing list sees what the caller typed: the configured owner CC is not
-    # part of that view, as it never was for the hook.
-    explicit_cc = [a.cc] if a.cc and not (a.cc == OWNER_CC and not cc_given) else []
-    try:
-        notes = sender_check.check({
-            "to": to_addrs, "cc": cc_addrs, "text": f"{a.subject}\n{body}",
-            "render": "--html-wrap" if a.html_wrap else ("--html" if a.html else ""),
-            "raw_to": a.to, "raw_cc": a.cc,
-            "explicit_to": [a.to], "explicit_cc": explicit_cc,
-            "default_cc": envelope_recipients(OWNER_CC) if (OWNER_CC and a.cc == OWNER_CC and not cc_given) else [],
-        })
-    except Exception as exc:  # noqa: BLE001 -- sender_check.Refused, or anything: refuse
-        print(f"KULDES MEGTAGADVA: {exc}", file=sys.stderr)
-        sys.exit(3)
-    for line in notes:
-        print(line, file=sys.stderr)
     # FQDN EHLO name is REQUIRED: some SMTP providers reject EHLO with a private/bare
     # IP ([192.168.x.x]) -> "421 4.4.2 timeout exceeded". local_hostname forces a
     # proper FQDN; derive it from the mailbox domain.

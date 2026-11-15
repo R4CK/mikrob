@@ -7,7 +7,6 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { agentDir } from '../agent-config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
-import { importArchiveToPending, nameConflict, queueGeneratedSkill } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries, shellEscape } from '../sanitize.js'
@@ -262,22 +261,26 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     if (!skillName) { json(res, { error: 'Skill name is required' }, 400); return true }
     if (!description) { json(res, { error: 'Skill description is required' }, 400); return true }
 
-    // MARVEENGAPS1020 (b): the generated SKILL.md is queued for approval.
-    const target = { scope: 'agent' as const, agent: agentName }
-    const clash = nameConflict(target, skillName)
-    if (clash === 'live') { json(res, { error: 'Skill already exists' }, 409); return true }
-    if (clash === 'pending') { json(res, { error: 'A skill with this name is already waiting for approval' }, 409); return true }
+    // CYBERED NO-GO F3 (card 7c79badc): the merge had switched this to queueGeneratedSkill
+    // (MARVEENGAPS1020 b), but nothing in the dashboard can approve a per-agent pending skill
+    // (no web/*.js references /api/skills/pending from this flow, index.html's #skillsPending
+    // is an empty hidden div) -- a queue nobody can drain. Code-quality principle 5: a working
+    // feature (direct write) is not replaced without Peti. Restored to the fork's pre-merge
+    // direct-write behaviour (e1f43d02c) until a UI exists to drain the queue.
+    const skillDir = join(skillsRootFor(agentName), skillName)
+    if (existsSync(skillDir)) { json(res, { error: 'Skill already exists' }, 409); return true }
+    mkdirSync(skillDir, { recursive: true })
 
-    let skillMd: string
     try {
-      skillMd = await generateSkillMd(skillName, description)
+      const skillMd = await generateSkillMd(skillName, description)
+      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
     } catch {
+      rmSync(skillDir, { recursive: true, force: true })
       json(res, { error: 'Failed to generate skill' }, 500)
       return true
     }
-    const queued = queueGeneratedSkill(target, skillName, skillMd)
-    logger.info({ agent: agentName, name: skillName, id: queued.id }, 'Agent skill generated and queued for approval')
-    json(res, { ok: true, name: skillName, pending: true, id: queued.id })
+
+    json(res, { ok: true, name: skillName })
     return true
   }
 
