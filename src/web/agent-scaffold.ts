@@ -4964,7 +4964,9 @@ function isUsableAnchorRoot(value: string): boolean {
 function replaceRootOccurrences(content: string, oldRoot: string, newRoot: string): string {
   const escaped = oldRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const pattern = new RegExp(`${escaped}(?![A-Za-z0-9_-])`, 'g')
-  return content.replace(pattern, newRoot)
+  // A string replacer interprets $ sequences (e.g. $& or $$) IN newRoot itself; a function
+  // replacer passes it through literally.
+  return content.replace(pattern, () => newRoot)
 }
 
 export function ensureProjectRootAnchor(name: string): void {

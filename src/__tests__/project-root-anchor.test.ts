@@ -157,4 +157,22 @@ describe('ensureProjectRootAnchor', () => {
     expect(claudeMdAfter).toContain(`cat ${NEW_ROOT}/store/.dashboard-token`)
     expect(claudeMdAfter).toContain(`cd ${siblingPath}`) // sibling path left exactly as-is
   })
+
+  // Card eed22288 delta (CYBERSEC GO): String.replace(pattern, newRoot) interprets `$` sequences
+  // IN newRoot itself (e.g. a literal `$&` would re-insert the whole match) -- a string replacer
+  // must become a function replacer so newRoot is substituted literally.
+  it('writes a new root containing a literal $& exactly, not expanded as a replacement pattern', () => {
+    const NEW_ROOT = '/home/neon/marveen$&weird'
+    currentProjectRoot = OLD_ROOT
+    const { claudeMdPath, settingsPath, anchorPath } = agentFiles('agent-g')
+    writeFileSync(anchorPath, JSON.stringify({ root: OLD_ROOT }))
+    writeFileSync(claudeMdPath, `# Agent\n\ncat ${OLD_ROOT}/store/.dashboard-token\n`)
+    writeFileSync(settingsPath, '{}')
+
+    currentProjectRoot = NEW_ROOT
+    ensureProjectRootAnchor('agent-g')
+
+    const claudeMdAfter = readFileSync(claudeMdPath, 'utf-8')
+    expect(claudeMdAfter).toBe(`# Agent\n\ncat ${NEW_ROOT}/store/.dashboard-token\n`)
+  })
 })
