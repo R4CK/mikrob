@@ -25657,3 +25657,35 @@ the stale 077c16bda base). Own code delta carried over verbatim: the `custom:` w
 DECISIONS.md-only entries above were re-added as new tail entries (not cherry-picked), per the
 tail-append invariant; git cherry against card/9b25cc84-rebuild2 shows only this card's own
 commit on top.
+
+## 2026-11-14: /api/freellm/status route hiányzott (kártya a8e34618)
+
+**Döntés:** a dashboard FreeAPI LLM oldala (`web/app-freellm.js`) `GET`/`PUT /api/freellm/status`-t
+hív, de ez a végpont sosem létezett a `src`-ben (404) -- Pair-FE/Pair-BE szakadás, a FE a kártya
+leírásánál korábban épült meg egy sosem leszállított kontraktusra. Peti Telegram 13849 (2026-11-14
+19:18, screenshot): a FreeAPI LLM oldal "nem tölthető be" hibát mutat.
+
+**Mit:** új `src/web/routes/freellm-status.ts`, bekötve `src/web.ts`-be (`tryHandleFreellmKeys`
+után). A kontraktus a VALÓDI, már leszállított FE-kódból jött, nem a kártya leírás laza "POST"
+szövegéből (a FE tényleg `PUT`-ot hív, ezt a `web/index.html` saját kommentje is megerősíti):
+`GET -> {enabled, calls, drafts, lastError}`, `PUT {enabled:boolean} -> ugyanaz`. `enabled` a
+`store/freellm-enabled.json`-ból jön, SZIGORÚ bool-parse-szal (`d.get('enabled') is True`, nem
+truthy -- ugyanaz a konvenció mint a `freellm-call.sh` saját kapcsoló-ellenőrzése, kártya 4eb3743e
+F4). `calls`/`drafts`/`lastError` a meglévő `kanban_comments` naplóból jön (`author='local-llm'`,
+`[LOCAL-LLM DRAFT | freellm...]` fejléc, 24 órás ablak) -- nincs új napló-formátum, ugyanaz az elv
+mint a `card-build-route-24h-measure.sh`-nál. Az írás a meglévő `atomicWriteFileSync` segédfüggvényt
+használja (tmp+rename) -- a rename(2) sosem követ symlinket a cél oldalon, ezért a "sosem követ
+symlinket" elfogadási kritérium a meglévő mintából ingyen jön, nem kellett hozzá külön lstat-ellenőrzés.
+
+**i18n:** a `freellm.desc` kulcs (hu+en) és a `web/index.html` saját fallback-szövege frissítve
+Peti 13829/13838 döntése szerint -- a tartalom-szűrő már nem blokkol mopsion/PII miatt, csak a
+hitelesítő adatok (token/kulcs/jelszó) vannak `[REDACTED]`-ként maszkolva.
+
+**Teszt:** új `src/__tests__/freellm-status.test.ts`, 12 eset (hiányzó/malformed/szigorú-bool
+kapcsoló-fájl, 24h számláló szétválasztás siker/hiba között + régi/más-formátumú komment kizárása,
+PUT szigorú bool validáció 400-ra, symlink-biztonsági eset: a cél fájl tartalma nem sérül, csak a
+link-bejegyzés cserélődik). Mutáció-bizonyítva: a szigorú `=== true` ellenőrzés truthy (`!!`)
+ellenőrzésre gyengítve, pontosan a dedikált F4-parity teszt bukott (11/12), visszaállítva zöld
+(12/12). `tsc --noEmit` és `eslint` tiszta az új/módosított fájlokon.
+
+**Ki döntött:** Peti (13849) -> MikroB dispatch (msg_id:18584), backend2 végrehajtása.

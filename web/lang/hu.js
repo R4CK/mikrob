@@ -1237,7 +1237,7 @@ window._i18n.hu = {
   'freellm.page_title':          'FreeAPI LLM',
   'freellm.page_subtitle':       'Offload útvonal nyilvántartás',
   'freellm.title':               'FreeAPI LLM offload',
-  'freellm.desc':                'Harmadik féltől származó nyílt LLM szolgáltatás az offload útvonalhoz. Ki/be kapcsolható, és az összes kimenő tartalom szűrt (security/auth/finance/mopsion/PII soha).',
+  'freellm.desc':                'Harmadik féltől származó nyílt LLM szolgáltatás az offload útvonalhoz. Ki/be kapcsolható; a kimenő tartalom mopsion/PII miatt már nem blokkolt -- csak az észlelt hitelesítő adatok (token/kulcs/jelszó) vannak [REDACTED]-ként maszkolva, mielőtt a tartalom elhagyja a gépet.',
   'freellm.status.on':           'Bekapcsolva',
   'freellm.status.off':          'Kikapcsolva',
   'freellm.saved_on':            'FreeAPI LLM bekapcsolva.',
