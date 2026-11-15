@@ -84,7 +84,17 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // signal" and the cut discarded the real typing box along with the spoof.
 // The parenthetical is now optional before the `·` tail, not exclusive with it;
 // a bare `on` (both groups absent) still cannot match, same as before.
-const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?:(?: \(shift\+tab to cycle\))(?: · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))?| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
+//
+// F2b (same NO-GO): the `ctrl+t` tail action keyword is not always the last
+// token -- the footer can read `ctrl+t to hide tasks` (with ` to hide tasks`
+// after the keyword) when the tasks panel is visible. ROW_IDLE_FOOTER_ANCHORED_RX
+// requires `\s*$` after the matched portion so that prose containing `ctrl+t`
+// mid-sentence does not spuriously match; that anchor requires the IDLE_FOOTER_RX
+// match to reach the end of the line. Adding `(?: to hide tasks)?` after
+// `ctrl\+t` makes the match consume that known suffix, satisfying `\s*$` whether
+// the suffix is present or absent, while still rejecting prose endings like
+// `ctrl+t to jump` (not ` to hide tasks`).
+const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?:(?: \(shift\+tab to cycle\))(?: · [^\n]*?(?:ctrl\+t(?: to hide tasks)?|↓ to manage|← for agents))?| · [^\n]*?(?:ctrl\+t(?: to hide tasks)?|↓ to manage|← for agents))|\? for shortcuts/
 
 // tmux clips the footer to the pane width and marks the cut with `…`, so on a
 // narrow pane the required tail arrives as `← for agen…` and IDLE_FOOTER_RX
@@ -169,17 +179,24 @@ function hasIdleFooterNear(lines: string[], regionLines: number): boolean {
   return hasIdleFooter(lines.slice(-regionLines))
 }
 
-// RedHat F4 (card 8e9828c9 NO-GO 31373, new false positive): BUSY_LIVE_REGION_LINES
-// (12) is tuned for the busy-indicator scan, not for how far a genuine idle footer
-// can sit from the true bottom. Trailing chrome AFTER the footer (e.g. a wrapped
-// banner) can push it past that window, so hasIdleFooterNear(lines, BUSY_LIVE_REGION_LINES)
-// missed a REAL footer and let stale dialog text quoted above it count as live,
-// flagging a dialog that is not there. detectsHeldPeerMessage/detectsPermissionDialog
-// use this wider, dedicated window instead -- still tail-scoped (so a dialog with
-// genuinely NO footer anywhere near the bottom is not rescued), just generous enough
-// to survive extra trailing chrome below the footer (measured against 30 trailing
-// lines, RedHat's repro).
-const DIALOG_FOOTER_SEARCH_LINES = 40
+// idleFooterAndNoDialogAfter solves the fixed-window dilemma for dialog detectors
+// (card 8e9828c9 round-2): a narrow window (BUSY_LIVE_REGION_LINES=12) missed a real
+// footer with 30 trailing banner lines; a wide window (DIALOG_FOOTER_SEARCH_LINES=40)
+// found the stale footer 16 lines from the live-end and produced a false negative.
+// No single fixed window handles both cases.
+//
+// Direction-aware semantics: `idleFooterIndex` locates the footer from the logical
+// position (last non-empty line first, then backward scan). If dialog content follows
+// the located footer in `lines`, the footer is STALE -- something happened AFTER the
+// idle state, so the pane is NOT idle; the dialog detector should proceed. If nothing
+// dialog-like follows the footer, the footer is CURRENT and the pane is idle; return
+// true to suppress the dialog detection.
+function idleFooterAndNoDialogAfter(lines: string[], dialogTest: (text: string) => boolean): boolean {
+  const footerIdx = idleFooterIndex(lines)
+  if (footerIdx < 0) return false
+  const afterFooter = lines.slice(footerIdx + 1).join('\n')
+  return !dialogTest(afterFooter)
+}
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.
@@ -1379,7 +1396,10 @@ export function detectsHeldPeerMessage(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (hasIdleFooterNear(lines, DIALOG_FOOTER_SEARCH_LINES)) return false
+  // F4/direction-aware idle-footer check: footer found AND no dialog content
+  // after it means the pane is currently idle; footer found but dialog AFTER
+  // it means the footer is stale and we should proceed with detection.
+  if (idleFooterAndNoDialogAfter(lines, (t) => HELD_PEER_MESSAGE_RX.test(t))) return false
   return HELD_PEER_MESSAGE_RX.test(pane)
 }
 
@@ -1469,9 +1489,10 @@ export function detectsPermissionDialog(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  // RedHat F4 (card 8e9828c9 NO-GO 31373): DIALOG_FOOTER_SEARCH_LINES, not
-  // BUSY_LIVE_REGION_LINES -- see its own comment.
-  if (hasIdleFooterNear(lines, DIALOG_FOOTER_SEARCH_LINES)) return false
+  // F4/direction-aware idle-footer check (replaces DIALOG_FOOTER_SEARCH_LINES):
+  // footer found AND no dialog content after it means the pane is currently
+  // idle; footer found but dialog AFTER it means the footer is stale.
+  if (idleFooterAndNoDialogAfter(lines, (t) => PERMISSION_AMEND_RX.test(t) || (PERMISSION_QUESTION_RX.test(t) && PERMISSION_YES_RX.test(t)))) return false
   return PERMISSION_AMEND_RX.test(footerRegion)
     || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
 }
