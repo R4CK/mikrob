@@ -25838,3 +25838,33 @@ no leak recurrence. `tsc --noEmit -p .` clean (shell-only diff).
 **Ki döntött:** DevO (fullstack), card a49d1e1a delta round, off QA2 FAIL (comment 30353) + WhiteHat2
 CYBERSEC GO items (comment 30347). Gate: re-gate QA2 + WhiteHat2 on the new Gate-SHA (see REVIEW
 comment).
+
+## 2026-11-15: agent-boot-reconcile.sh H1-H3 keményítés (kártya aceda032, RedHat 17886 maradéka, 43d98136 szülő)
+
+**Döntés:** a kártya mindhárom nem blokkoló leletét javítottuk, nem csak dokumentáltuk tovább.
+
+- **H1:** a `weekly-hard-stop.json` HIÁNYA marad fail-open (szándékos, változatlan -- nincs mit
+  megállítani egy sosem írt fájlon). A bug a JELEN LÉVŐ, de nem értelmezhető fájl volt (csonka JSON,
+  üres, BOM, tömb-gyökér, könyvtár a fájl helyén) -- ez eddig inaktívnak olvasódott, mostantól
+  fail-closed (nincs indítás, egy naplósor). `-f` helyett `-e`, hogy egy könyvtár is átmenjen az
+  ellenőrzésen, ne ugorja át érintetlenül.
+- **H2:** a BLOKKOLT-szűrő kis-/nagybetű-független, és a cím ÉS minden label név ellen illeszt
+  (korábban: kis-nagybetű érzékeny, csak cím). Nem vállalt rész: valódi Unicode-homoglif védelem
+  (kirill T stb.) -- ehhez egy confusables-tábla kellene, RedHat mérése szerint ma 0 élő populáció,
+  szándékosan nyitva hagyva.
+- **H3a:** egy waiting+REVIEW kártya, amit a `gate-closure-check.py` már AGREE-nek olvas (minden
+  kijelölt gate elfogadta, ugyanazon sha-n), többé nem számít közelgő munkának -- a timer 5 perces
+  (nem boot-egyszeri) backstopja korábban végtelenségig újraindíthatta egy már lezárt kártya
+  építőjét.
+- **H3b:** a kártya-azonosítót mostantól `^[0-9a-f]{8}$` alakra szűrjük, mielőtt a from:mikrob
+  resume-üzenetbe vagy a Telegram-összesítőbe kerülne.
+
+**Mérés:** `store/agent-boot-reconcile.selftest.sh` -- 83 ok sor, 0 valós bukás (a "FAIL" szó csak
+három ÁTMENŐ teszt-címkében fordul elő: fetch-fail, fetch-error-object, start-http-fail), exit 0.
+13 új teszt (pozitív + mutáns-bizonyíték pár mind a négy javításra), a meglévő 20 változatlan
+viselkedéssel megy át az új hex8 fixture-azonosítók alatt (a régi `cardAAA`-stílusú azonosítók a
+H3b saját szűrőjét csendben kizárták volna, ezért át kellett nevezni mindet). `tsc --noEmit -p .`
+tiszta (nincs .ts változás).
+
+**Ki döntött:** RedHat lelete (komment 17886, Gate-SHA 1199bea9, a 43d98136 szülőkártya gate-jén),
+javítás: DevO (fullstack), card aceda032. Gate: QA + Cybered.
