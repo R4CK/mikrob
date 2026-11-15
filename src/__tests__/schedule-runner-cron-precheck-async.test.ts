@@ -218,9 +218,9 @@ describe('the pre-check does not hold the dashboard\'s own request handling', ()
   beforeEach(() => { served = 0; onRequest = () => {} })
 
   it('runPreCheck on the same script gets the answer at once, and the dashboard still answers', async () => {
-    const { runPreCheck } = await import('../web/schedule-runner.js')
+    const { runPreCheckAsync } = await import('../web/schedule-runner.js')
     const t0 = performance.now()
-    const r = await runPreCheck({ ...TASK, preCheck: scriptPath })
+    const r = await runPreCheckAsync({ ...TASK, preCheck: scriptPath })
     expect(r).toEqual({ skip: false, prefix: 'dashboard said: msg-1' })
     expect(performance.now() - t0).toBeLessThan(2_500)
   })
@@ -248,10 +248,10 @@ describe('runPreCheck ends the script\'s whole process group', () => {
   }
 
   it('on the time limit: the answer comes at the limit, and the grandchild never writes its file', async () => {
-    const { runPreCheck } = await import('../web/schedule-runner.js')
+    const { runPreCheckAsync } = await import('../web/schedule-runner.js')
     const { file, mark } = grandchildScript('sleep 30')
     const t0 = performance.now()
-    const r = await runPreCheck({ ...TASK, preCheck: file }, { timeoutMs: 500 })
+    const r = await runPreCheckAsync({ ...TASK, preCheck: file }, { timeoutMs: 500 })
     expect(r).toEqual({ skip: false })
     expect(performance.now() - t0).toBeLessThan(1_500)
     await new Promise((res) => setTimeout(res, 3_000))
@@ -259,34 +259,34 @@ describe('runPreCheck ends the script\'s whole process group', () => {
   }, 10_000)
 
   it('a grandchild that ignores TERM is KILLed a second later', async () => {
-    const { runPreCheck } = await import('../web/schedule-runner.js')
+    const { runPreCheckAsync } = await import('../web/schedule-runner.js')
     const d = mkdtempSync(join(tmpdir(), 'precheck-group-term-'))
     const mark = join(d, 'grandchild-was-here')
     marks.push(mark)
     const file = join(d, 'pre-check.sh')
     writeFileSync(file, `#!/usr/bin/env bash\nbash -c 'trap "" TERM; sleep 2.5; echo x > "${mark}"' &\nsleep 30\n`, { mode: 0o755 })
-    expect(await runPreCheck({ ...TASK, preCheck: file }, { timeoutMs: 300 })).toEqual({ skip: false })
+    expect(await runPreCheckAsync({ ...TASK, preCheck: file }, { timeoutMs: 300 })).toEqual({ skip: false })
     await new Promise((res) => setTimeout(res, 3_500))
     expect(existsSync(mark)).toBe(false)
   }, 10_000)
 
   it('on an oversized output: same, the grandchild is ended too', async () => {
-    const { runPreCheck } = await import('../web/schedule-runner.js')
+    const { runPreCheckAsync } = await import('../web/schedule-runner.js')
     const { file, mark } = grandchildScript('head -c 5000 /dev/zero | tr "\\\\0" x; sleep 30')
-    const r = await runPreCheck({ ...TASK, preCheck: file }, { maxStdoutBytes: 1000 })
+    const r = await runPreCheckAsync({ ...TASK, preCheck: file }, { maxStdoutBytes: 1000 })
     expect(r).toEqual({ skip: false })
     await new Promise((res) => setTimeout(res, 3_000))
     expect(existsSync(mark)).toBe(false)
   }, 10_000)
 
   it('control: a script that finishes in time is not touched, its grandchild lives on', async () => {
-    const { runPreCheck } = await import('../web/schedule-runner.js')
+    const { runPreCheckAsync } = await import('../web/schedule-runner.js')
     const d = mkdtempSync(join(tmpdir(), 'precheck-group-ctl-'))
     const mark = join(d, 'grandchild-was-here')
     marks.push(mark)
     const file = join(d, 'pre-check.sh')
     writeFileSync(file, `#!/usr/bin/env bash\npython3 -c "import time,pathlib; time.sleep(1); pathlib.Path('${mark}').write_text('x')" >/dev/null 2>&1 &\necho done\n`, { mode: 0o755 })
-    expect(await runPreCheck({ ...TASK, preCheck: file }, { timeoutMs: 5_000 })).toEqual({ skip: false, prefix: 'done' })
+    expect(await runPreCheckAsync({ ...TASK, preCheck: file }, { timeoutMs: 5_000 })).toEqual({ skip: false, prefix: 'done' })
     await new Promise((res) => setTimeout(res, 2_000))
     expect(existsSync(mark)).toBe(true)
   }, 10_000)

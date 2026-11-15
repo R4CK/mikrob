@@ -8,7 +8,7 @@ import {
   rememberPreCheckAnswer,
   resetPreCheckAnswersForTests,
   retryPreCheck,
-  runPreCheck,
+  runPreCheckAsync,
   type PreCheckResult,
 } from '../web/schedule-runner.js'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
@@ -54,7 +54,7 @@ describe('runPreCheck answers', () => {
   it('SKIP', async () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\necho "SKIP"\n')
     try {
-      expect(await runPreCheck(makeTask({ preCheck: file }))).toEqual({ skip: true })
+      expect(await runPreCheckAsync(makeTask({ preCheck: file }))).toEqual({ skip: true })
     } finally {
       rmSync(dir, { recursive: true })
     }
@@ -63,7 +63,7 @@ describe('runPreCheck answers', () => {
   it('actionable text becomes the prefix, trimmed', async () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\necho "  3 actionable cards found  "\n')
     try {
-      expect(await runPreCheck(makeTask({ preCheck: file }))).toEqual({ skip: false, prefix: '3 actionable cards found' })
+      expect(await runPreCheckAsync(makeTask({ preCheck: file }))).toEqual({ skip: false, prefix: '3 actionable cards found' })
     } finally {
       rmSync(dir, { recursive: true })
     }
@@ -72,7 +72,7 @@ describe('runPreCheck answers', () => {
   it('no output: no prefix', async () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\nexit 0\n')
     try {
-      expect(await runPreCheck(makeTask({ preCheck: file }))).toEqual({ skip: false })
+      expect(await runPreCheckAsync(makeTask({ preCheck: file }))).toEqual({ skip: false })
     } finally {
       rmSync(dir, { recursive: true })
     }
@@ -81,7 +81,7 @@ describe('runPreCheck answers', () => {
   it('a non-zero exit fails open, even after printing SKIP', async () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\necho "SKIP"\nexit 3\n')
     try {
-      expect(await runPreCheck(makeTask({ preCheck: file }))).toEqual({ skip: false })
+      expect(await runPreCheckAsync(makeTask({ preCheck: file }))).toEqual({ skip: false })
     } finally {
       rmSync(dir, { recursive: true })
     }
@@ -90,7 +90,7 @@ describe('runPreCheck answers', () => {
   it('accented text survives the chunked read', async () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\nfor i in $(seq 1 3000); do printf "árvíztűrő tükörfúrógép "; done\necho\n')
     try {
-      const r = await runPreCheck(makeTask({ preCheck: file }))
+      const r = await runPreCheckAsync(makeTask({ preCheck: file }))
       expect(r.skip).toBe(false)
       expect(r.prefix?.startsWith('árvíztűrő tükörfúrógép árvíztűrő')).toBe(true)
     } finally {
@@ -100,8 +100,8 @@ describe('runPreCheck answers', () => {
 
   it('a missing script and a task without a preCheck fail open', async () => {
     const missing = makeTask({ preCheck: '/nonexistent/path/pre-check.sh' })
-    expect(await runPreCheck(missing)).toEqual({ skip: false })
-    expect(await runPreCheck(makeTask())).toEqual({ skip: false })
+    expect(await runPreCheckAsync(missing)).toEqual({ skip: false })
+    expect(await runPreCheckAsync(makeTask())).toEqual({ skip: false })
   })
 })
 
@@ -110,7 +110,7 @@ describe('runPreCheck limits', () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\nsleep 5\necho "SKIP"\n')
     try {
       const t0 = performance.now()
-      const r = await runPreCheck(makeTask({ preCheck: file }), { timeoutMs: 300 })
+      const r = await runPreCheckAsync(makeTask({ preCheck: file }), { timeoutMs: 300 })
       expect(r).toEqual({ skip: false })
       expect(performance.now() - t0).toBeLessThan(2500)
     } finally {
@@ -122,8 +122,8 @@ describe('runPreCheck limits', () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\nhead -c 3000 /dev/zero | tr "\\0" a\necho\n')
     try {
       const task = makeTask({ preCheck: file })
-      expect(await runPreCheck(task, { maxStdoutBytes: 1000 })).toEqual({ skip: false })
-      const under = await runPreCheck(task, { maxStdoutBytes: 4000 })
+      expect(await runPreCheckAsync(task, { maxStdoutBytes: 1000 })).toEqual({ skip: false })
+      const under = await runPreCheckAsync(task, { maxStdoutBytes: 4000 })
       expect(under.skip).toBe(false)
       expect(under.prefix).toBe('a'.repeat(3000))
     } finally {
@@ -137,7 +137,7 @@ describe('the event loop while a pre-check runs (the reason for 2a)', () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\nsleep 1.5\necho "SKIP"\n')
     try {
       const task = makeTask({ preCheck: file })
-      const off = await timerLateness(() => runPreCheck(task))
+      const off = await timerLateness(() => runPreCheckAsync(task))
       expect(off.value).toEqual({ skip: true })
       expect(off.lateMs).toBeLessThan(500)
     } finally {
@@ -235,11 +235,11 @@ describe('wiring (source-level)', () => {
   // CRONPRECHECKSYNC1007: the cron loop awaits the async form; the answer is
   // still recorded right after it.
   it('the cron loop awaits the async pre-check and records its fresh answer right after it', () => {
-    expect(SRC).toMatch(/const cronPc = await runPreCheck\(task\)\n\s+rememberPreCheckAnswer\(task, now, cronPc\)/)
+    expect(SRC).toMatch(/const cronPc = await runPreCheckAsync\(task\)\n\s+rememberPreCheckAnswer\(task, now, cronPc\)/)
   })
 
   it('runPreCheck spawns without a synchronous call', () => {
-    const fn = SRC.slice(SRC.indexOf('export async function runPreCheck'), SRC.indexOf('export const RETRY_PRECHECK_MIN_INTERVAL_MS'))
+    const fn = SRC.slice(SRC.indexOf('export async function runPreCheckAsync'), SRC.indexOf('export const RETRY_PRECHECK_MIN_INTERVAL_MS'))
     // The argv comes from preCheckInvocation (verified bytes for a hashed script,
     // [scriptPath] otherwise); still the async spawn.
     expect(fn).toMatch(/spawn\('bash', inv\.args/)
