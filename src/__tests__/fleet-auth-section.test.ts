@@ -59,7 +59,7 @@ describe('ensureFleetAuthSection', () => {
     const out = read('agent-b')
     expect(out).toContain(MARKER_BEGIN)
     expect(out).toContain(MARKER_END)
-    expect(out).toContain('CLAUDE_CODE_OAUTH_TOKEN')
+    expect(out).toContain('flotta-auth-mechanizmus.md')
     expect(out).toContain('SOHA ne másold át másik agent tokenjét')
     expect(out).toContain('Some persona.')
   })
@@ -79,7 +79,7 @@ describe('ensureFleetAuthSection', () => {
     const out = read('agent-b')
     expect(out).not.toContain('RÉGI SZÖVEG')
     expect(out).toContain('Kézzel írt lábjegyzet.')
-    expect(out).toContain('CLAUDE_CODE_OAUTH_TOKEN')
+    expect(out).toContain('flotta-auth-mechanizmus.md')
   })
 
   it('skips silently when there is no CLAUDE.md', () => {
@@ -145,9 +145,15 @@ describe('the STATIC CLAUDE.md block matches the generator (card 965b0b2b, short
 // Upstream (AUTHSECT919): the block ships to every install, so it must not carry one
 // deployment's operator name or agent names -- same reason as template-identity-hygiene.
 // Independent of the no-op-for-MAIN behavior above, kept alongside it.
+//
+// Card 2ec21127: the short form's ONE path (the mechanism-doc pointer) is legitimately
+// PROJECT_ROOT-derived and so varies by install/sandbox on purpose (unlike a hardcoded operator
+// path) -- it is stripped via normalizeMechanismPath before the no-leaked-path check runs, same
+// as the equality test above does, so this test still catches a genuinely hardcoded path/name
+// anywhere else in the body.
 describe('body hygiene', () => {
   it('is host-agnostic: no operator or per-install agent names', () => {
-    const body = buildFleetAuthBody()
+    const body = normalizeMechanismPath(buildFleetAuthBody())
     expect(body).not.toMatch(/\/(Users|home)\/[A-Za-z0-9._-]+/)
     expect(body).not.toMatch(/Juhász|Viktor|Szabolcs|marveenja/i)
   })
