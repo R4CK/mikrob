@@ -26070,3 +26070,13 @@ rögzíti és zárja a kártyát.
 **Ki döntött:** backend2 (kártya 1506d10d, Cybersec GO 29776 + Cybered NO-GO 29789 -> javítás
 `d4d42e166` a `cdde2666` kártyán, itt csak verifikálva és lezárva). Gate: QA + Cybersec.
 Gate-SHA: `d4d42e166ae8a58d15d6e5edaacd4c571d3eafc5`.
+
+## 2026-11-15 -- abd4970c (ed332869 F4.2.1): agent-worktree-marveen.sh --card rolls back a dangling branch on a failed worktree-add
+
+**Döntés:** F4.2.1's own acceptance criterion ("selftest: forced worktree-add failure leaves no branch") was unmet. Measured in a scratch clone: `git worktree add "$TREE" -b "$BRANCH" origin/develop` against an occupied target path creates the BRANCH ref successfully (prints "Preparing worktree (new branch ...)", "branch ... set up to track ...") and only THEN fails on the worktree-population step ("fatal: ... already exists", exit 128) -- the branch survives the failure. The next `--card` attempt for the same id would silently hit the script's own "existing local branch" fallback path and reuse that half-initialized branch as if it were the legitimate survivor case (a branch kept after `git worktree remove`), carrying whatever state the failed attempt left on it.
+
+**Fix:** `agent-worktree-marveen.sh`'s card-worktree creation now records whether `$BRANCH` existed BEFORE the `-b` attempt; on failure, if the branch exists now but did not exist before, it is deleted (`git branch -D`) before falling through to the existing fallback attempt. A pre-existing branch (the real survivor case) is never touched. Had to route this through `if`/`||` lists rather than a bare `cmd; if [ $? -ne 0 ]` check -- the script runs under `set -e` (line 57), and a bare failing simple command aborts the whole script before the status check is ever reached (caught this myself: the first version of the fix never ran at all, the script silently exited at the failing `git worktree add` line).
+
+**Teszt:** `agent-worktree-marveen.selftest.sh`: 16/16 PASS (2 new cases: the dangling-branch assertion on the existing occupied-path fixture, and a discriminating control proving a genuine survivor branch from a removed worktree is reused via the fallback, never deleted). Mutation-verified: removing just the rollback block turned exactly the new dangling-branch case red (1/16 FAIL), the survivor control and all 14 pre-existing cases stayed green. `bash -n` clean on both files.
+
+**Ki döntött:** fullstack (FÁZIS ed332869, "t3code mechanisms", F4.2 sub-step; self-advance continuation after a machine restart, BOOT-RECONCILE msg 19188). Gate: per card, QA + Cybered (land-path adjacent). Gate-SHA: lásd REVIEW komment.
