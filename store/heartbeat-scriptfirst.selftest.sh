@@ -68,6 +68,22 @@ cat > "$TMP/gateclosure-crash.py" <<'EOF'
 import sys
 sys.exit(3)
 EOF
+cat > "$TMP/nmdrift-sync.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "npm-live-install-drift: IN SYNC -- 1 non-root package entries, installed matches lockfile"
+exit 0
+EOF
+cat > "$TMP/nmdrift-drift.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "npm-live-install-drift: DRIFT -- installed node_modules does not match package-lock.json (1 missing, 0 version-mismatched)"
+echo "  MISSING node_modules/foo (want 1.0.0)"
+exit 1
+EOF
+cat > "$TMP/nmdrift-fault.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "npm-live-install-drift: HARNESS FAULT -- node_modules/.package-lock.json missing or empty" >&2
+exit 3
+EOF
 chmod +x "$TMP"/*.sh "$TMP"/*.py
 
 common_env() { # $1 = case name -- own state/wake/active files per case, no cross-case diff pollution
@@ -78,6 +94,7 @@ common_env() { # $1 = case name -- own state/wake/active files per case, no cros
   export HEARTBEAT_SCRIPTFIRST_GATECLOSURE_BIN="$HERE/gate-closure-check.py"
   export HEARTBEAT_SCRIPTFIRST_WAKE_BIN="$TMP/wake-recorder.sh"
   export HEARTBEAT_SCRIPTFIRST_QUOTA_BIN="$TMP/quota-ok.sh"
+  export HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN="$TMP/nmdrift-sync.sh"
   export HEARTBEAT_SCRIPTFIRST_STATE_FILE="$TMP/state-$case_name.txt"
   export HEARTBEAT_SCRIPTFIRST_PENDING_FILE="$TMP/pending-$case_name.txt"
   export HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE="$TMP/active-subagents-$case_name.json"
@@ -365,6 +382,50 @@ OUT="$(bash "$BIN" 2>&1)"
 check "changed-not-actionable: changed=1" "changed=1" "$OUT"
 check "changed-not-actionable: actionable=0" "actionable=0" "$OUT"
 check_absent "changed-not-actionable: no wake" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- NM1. node_modules drift detected -> actionable, ERR not raised (it is DRIFT, not a tool fault) -
+common_env nmdrift
+export HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN="$TMP/nmdrift-drift.sh"
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+OUT="$(bash "$BIN" 2>&1)"
+check "nmdrift: actionable=1" "actionable=1" "$OUT"
+check "nmdrift: report line present" "NODE-MODULES-DRIFT" "$OUT"
+check_absent "nmdrift: not reported as a tool ERR" "ERR: npm-live-install-drift-check.sh" "$OUT"
+check "nmdrift: wakes" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- NM2. node_modules in sync -> report line only, no wake (control for NM1) -----------------------
+common_env nmsync
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+bash "$BIN" >/dev/null 2>&1   # first run establishes baseline
+OUT="$(bash "$BIN" 2>&1)"
+check "nmsync: routine, no change, silent" "routine, no change, silent" "$OUT"
+
+# --- NM3. drift check cannot run (harness fault, exit 3) -> reported as not-applicable, not DRIFT ---
+common_env nmfault
+export HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN="$TMP/nmdrift-fault.sh"
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+OUT="$(bash "$BIN" 2>&1)"
+check "nmfault: reported as not applicable" "check not applicable" "$OUT"
+check_absent "nmfault: never misreported as DRIFT" "NODE-MODULES-DRIFT" "$OUT"
+check_absent "nmfault: never wakes on a harness fault alone" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- NM4. drift-check binary itself crashes unrecognisably -> ERR, fail-closed wake ------------------
+common_env nmcrash
+cat > "$TMP/nmdrift-crash.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "something unexpected happened"
+exit 7
+EOF
+chmod +x "$TMP/nmdrift-crash.sh"
+export HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN="$TMP/nmdrift-crash.sh"
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+OUT="$(bash "$BIN" 2>&1)"
+check "nmcrash: ERR raised" "ERR: npm-live-install-drift-check.sh exited 7" "$OUT"
+check "nmcrash: wakes" "WOKE" "$(cat "$WAKE_CALLS")"
 
 # --- 12. feature flag off -> immediate silent exit, nothing else runs -------------------------------
 common_env flagoff

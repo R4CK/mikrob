@@ -65,6 +65,8 @@ WAKE_BIN="${HEARTBEAT_SCRIPTFIRST_WAKE_BIN:-$ROOT/store/sched-wake-mikrob.sh}"
 STATE_FILE="${HEARTBEAT_SCRIPTFIRST_STATE_FILE:-$ROOT/store/.heartbeat-scriptfirst-last.txt}"
 PENDING_FILE="${HEARTBEAT_SCRIPTFIRST_PENDING_FILE:-$ROOT/store/.heartbeat-scriptfirst-pending.txt}"
 ACTIVE_SUBAGENTS_FILE="${HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE:-$ROOT/store/active-subagents.json}"
+NMDRIFT_BIN="${HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN:-$ROOT/store/npm-live-install-drift-check.sh}"
+MAIN_REPO="${HEARTBEAT_SCRIPTFIRST_MAIN_REPO:-/home/neon/marveen}"
 
 if [ "${HEARTBEAT_SCRIPTFIRST:-on}" = "off" ]; then
   echo "heartbeat-scriptfirst: disabled (HEARTBEAT_SCRIPTFIRST=off)"
@@ -312,6 +314,20 @@ except Exception as e:
     *) err "idle-park check failed: $IDLE_RAW" ;;
   esac
 fi
+
+# --- 12) live node_modules drift from package-lock.json (card dd051a9f) -------------------------
+# marveen-land.sh's sync_live_install() fast-forwards $MAIN's package.json/package-lock.json on
+# every landing but never runs npm ci there (card 5d365589 N3, deliberate), and its "run npm ci by
+# hand" line goes into a backgrounded land-run log nobody is tailing (land-run-journal.sh). This
+# makes the gap loud on the heartbeat instead, so it stops depending on a human noticing a stale
+# install before something breaks in production.
+ND_OUT="$(bash "$NMDRIFT_BIN" --repo "$MAIN_REPO" 2>&1)"; ND_RC=$?
+case "$ND_RC" in
+  0) add "NODE-MODULES-SYNC: $(printf '%s' "$ND_OUT" | head -1)" ;;
+  1) add "NODE-MODULES-DRIFT: $ND_OUT"; ACTIONABLE=1 ;;
+  3) add "NODE-MODULES-SYNC: check not applicable -- $(printf '%s' "$ND_OUT" | head -1)" ;;
+  *) err "npm-live-install-drift-check.sh exited $ND_RC: $ND_OUT" ;;
+esac
 
 # --- diff against previous run (card 6d0775bb: "kimenetuk diffelve az elozo korhoz") --------------
 # The TIME line changes every second by construction -- excluded from the comparison, or every
