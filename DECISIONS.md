@@ -26122,3 +26122,30 @@ tesztje bukik). QA repro (kulso stand-in secret fajl) kezzel megismetelve: conta
 megtagadja, mielott a fajl egyaltalan megnyilna.
 
 **Ki dontott:** MikroB dispatch (msg_id:19038, QA FAIL 31746) -> backend3 vegrehajtasa.
+
+## 2026-11-15 -- 2746165b delta: marveen-land fleet-test caught two real land-blocking bugs
+
+**Kontextus:** marveen-land.sh --card 2746165b fleet-test (real, on the merge result, not a
+contention artifact) failed 3 cases in src/__tests__/store-selftests-all-run.test.ts:
+freellm-call-retry.selftest.sh and freellm-call.selftest.sh both exited non-zero, and
+llm-skill-pack-build.selftest.sh's own success shape went unrecognized by the meta-test.
+
+**Döntés:** (1) the "default" skill pack's source (karpathy-guidelines) carries an attribution
+link ending in a 19-digit tweet ID; once prepended to PROMPT, that digit run matched
+freellm-call.sh's pre-existing PII cc_number pattern, refusing every real call that used the
+default pack (exit 4). Fixed in store/llm-skill-pack-build.py: markdown link URLs are stripped
+during extraction, anchor text kept -- a URL is not instructional content, and is exactly the
+shape that can accidentally look like a secret/ID. (2) store/freellm-call.selftest.sh's F1
+byte-for-byte round-trip tests asserted no prefix is ever prepended to the sent payload -- true
+before this card, intentionally false now. Fixed by stripping the known default-pack prefix
+before comparing, keeping the real injection-safety guarantee (the payload text itself is never
+mangled/executed) without pinning a shape this card deliberately changes. (3) added a new
+OK_SHAPES entry to src/__tests__/store-selftests-all-run.test.ts for
+llm-skill-pack-build.selftest.sh's own reporting shape, per that file's own documented practice.
+
+**Teszt:** freellm-call-retry.selftest.sh 25/25 (was 17/25), freellm-call.selftest.sh 61/61 (was
+59/61), llm-skill-pack-build.selftest.sh 5/5 (new case added, mutation-verified: reverting the
+URL-strip call turns exactly that case red).
+
+**Ki döntött:** marveen-land.sh's own real fleet-test run caught this; backend3 diagnosed and
+fixed.
