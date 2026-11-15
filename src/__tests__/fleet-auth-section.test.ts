@@ -98,11 +98,18 @@ describe('ensureFleetAuthSection', () => {
 // Card 965b0b2b (WhiteHat NO-GO, H1): the main agent's own PROJECT_ROOT/CLAUDE.md carries a
 // STATICALLY COMMITTED copy of this section (ensureFleetAuthSection no-ops for the main agent --
 // see the test above -- so nothing keeps that copy synced at runtime). Mirrors the f390a08e
-// pattern already established for ensureSystemDirectiveAuthSection. This body has no
-// PROJECT_ROOT-derived path segments (no tokenPath/dashboardOrigin interpolation), so an exact
-// match is correct here -- no normalisation needed.
-describe('the STATIC CLAUDE.md block matches the generator (card 965b0b2b)', () => {
-  it("the committed section in THIS checkout's own CLAUDE.md equals the generator output", async () => {
+// pattern already established for ensureSystemDirectiveAuthSection.
+//
+// Card 2ec21127 (Token 8, base-prompt diet): the short form's background pointer now embeds a
+// PROJECT_ROOT-derived absolute path (docs/rules/flotta-auth-mechanizmus.md), which is NOT the
+// same literal path in every environment a gate-worktree runs in as in the real install -- same
+// trap card f390a08e's system-directive-auth-section test documents and solves, applied here:
+// normalise the one environment-derived path segment before comparing structurally.
+const MECHANISM_DOC_RE = /\/[^\s)]+\/docs\/rules\/flotta-auth-mechanizmus\.md/g
+const normalizeMechanismPath = (s: string) => s.replace(MECHANISM_DOC_RE, '<PROJECT_ROOT>/docs/rules/flotta-auth-mechanizmus.md')
+
+describe('the STATIC CLAUDE.md block matches the generator (card 965b0b2b, shortened by 2ec21127)', () => {
+  it("the committed section in THIS checkout's own CLAUDE.md equals the generator output, modulo PROJECT_ROOT", async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')
     const claudeMd = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
     const start = claudeMd.indexOf(MARKER_BEGIN)
@@ -111,7 +118,27 @@ describe('the STATIC CLAUDE.md block matches the generator (card 965b0b2b)', () 
     expect(end).toBeGreaterThan(start)
     const committedBlock = claudeMd.slice(start + MARKER_BEGIN.length, end).trim()
 
-    expect(buildFleetAuthBody().trim()).toBe(committedBlock)
+    expect(normalizeMechanismPath(buildFleetAuthBody().trim())).toBe(normalizeMechanismPath(committedBlock))
+  })
+
+  it('CONTROL: the normaliser actually changes something -- it is not vacuously a no-op', () => {
+    const sample = '/home/neon/marveen/docs/rules/flotta-auth-mechanizmus.md'
+    expect(normalizeMechanismPath(sample)).not.toBe(sample)
+  })
+
+  // Card 2ec21127 condition 3: the legacy (pre-shrink) full block must still be reachable via the
+  // env flag, so the short form is a deliberate, reversible choice with a tested escape hatch.
+  it('the legacy env flag restores the full pre-shrink wording', async () => {
+    const { legacyGeneratedBlocksEnabled, LEGACY_GENERATED_BLOCKS_ENV } = await import('../web/agent-scaffold.js')
+    expect(legacyGeneratedBlocksEnabled({} as NodeJS.ProcessEnv)).toBe(false)
+    const onEnv = { [LEGACY_GENERATED_BLOCKS_ENV]: 'on' } as NodeJS.ProcessEnv
+    expect(legacyGeneratedBlocksEnabled(onEnv)).toBe(true)
+    const legacyBody = buildFleetAuthBody(onEnv)
+    expect(legacyBody).toContain('A sub-agentek alapértelmezés szerint a `CLAUDE_CODE_OAUTH_TOKEN` úton hitelesítenek')
+    expect(legacyBody).toContain('MAIN_AGENT_ISOLATED_CONFIG=1')
+    const shortBody = buildFleetAuthBody({} as NodeJS.ProcessEnv)
+    expect(shortBody).not.toContain('MAIN_AGENT_ISOLATED_CONFIG=1')
+    expect(shortBody.length).toBeLessThan(legacyBody.length)
   })
 })
 

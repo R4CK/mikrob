@@ -519,19 +519,7 @@ százalék-kódold (vagy `-G --data-urlencode`), vagy keress ékezet nélküli s
 <!-- BEGIN GENERATED: fleet-auth-rule (auto-generated, do not edit by hand) -->
 ## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)
 
-A sub-agentek alapértelmezés szerint a `CLAUDE_CODE_OAUTH_TOKEN` úton hitelesítenek
-(`store/.claude-oauth-token`), auto-provisionált `CLAUDE_CONFIG_DIR`-rel. Ez az út
-szünteti meg a visszatérő 401-kaszkádot, amit a kézzel elhelyezett, lejáró
-`.credentials.json` okozott.
-
-A fő channels-agent ettől SZÁNDÉKOSAN eltér: alapértelmezésben a közös `~/.claude`-ot
-használja. A `MAIN_AGENT_ISOLATED_CONFIG=1` kapcsolja át a flotta setup-tokenjére; ha
-a botnak SAJÁT Claude-loginja van, arra a `MAIN_AGENT_CONFIG_DIR` való, és az
-elsőbbséget élvez.
-
-A per-agent `claudeConfigDir` TÁMOGATOTT mező (nevesített plan-en keresztül is), arra
-az esetre, ha egy agentnek saját Claude-loginra vagy saját plan-re van szüksége. A
-használata döntés kérdése, nem tilalom.
+Háttér (auth-mechanizmus, MAIN_AGENT_ISOLATED_CONFIG, claudeConfigDir): /home/neon/marveen/docs/rules/flotta-auth-mechanizmus.md
 
 AMI VISZONT MEGSZEGHETETLEN:
 
