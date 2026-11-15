@@ -25535,3 +25535,50 @@ deterministic-auth-tenant-scope) do not need a separate decision now (MikroB msg
 **Ki döntött:** Peti (Telegram 13832 proposal narrowly read by MikroB -> 13942 direct question ->
 13943 "Teljes" + 13944 "Mehet" = full bypass approved) -> MikroB (msg 18733 narrow, superseded by
 18744, action specified in 18758) -> backend2 végrehajtása (revert `16394f26b`).
+
+## 2026-11-15 — 81eb57b5: redact_secrets 26-shape M1 widening + Gemini-isolation M2 pin (Cybersec GO 31533)
+
+**Döntés:** Cybersec GO 31533 on `a1c72ca4` left two MEDIUMs open, non-blocking for 6d8ef952s
+land but required before this card can close.
+
+M1 (credential masking coverage): `redact_secrets()` masked 9 of 26 synthetic secret shapes;
+17 reached the outgoing freellm payload unmasked (sk-ant-api03/sk-ant-oat01 incl. via
+`CLAUDE_CODE_OAUTH_TOKEN=`, sk-proj-, sk_live_, Telegram bot tokens, PEM private-key blocks,
+64-hex dashboard-style tokens, AWS secret keys via `AWS_SECRET_ACCESS_KEY=`, github_pat_, ya29
+tokens, Slack webhook URLs, STRIPE_SECRET=/DASHBOARD_TOKEN= assignments, curl -u user:pass, gsk_,
+sk-or-v1-). Root cause for the env-assignment shapes: the existing `credential-assignment` regex
+requires a `\b` word boundary immediately before its stem ("token", "access_key", ...), which
+never matches when the stem is glued onto a longer identifier by `_` (a word character) --
+`CLAUDE_CODE_OAUTH_TOKEN=` and `AWS_SECRET_ACCESS_KEY=` never reached `\btoken\b`/`\baccess_key\b`.
+Root cause for the vendor-prefixed keys: the existing flat `openai-key` pattern
+(`sk-[A-Za-z0-9]{20,}`) does not allow the `-`/`_` separators these newer vendor-key shapes use
+after their prefix segment.
+
+Fix (`store/offload-dispatch.sh`, `redact_secrets()`): added `github-pat`, `slack-webhook`,
+`google-oauth-token` (ya29.), `vendor-secret-key` (sk-ant-api03/sk-ant-oat01/sk-proj/sk-or-v1/
+sk_live/gsk, one alternation pattern), `telegram-bot-token` (exact `\d{8,10}:[A-Za-z0-9_-]{35}`
+shape), `pem-private-key` (whole-block redaction), `hex-token-64`, `curl-userpass`, and
+`env-credential-assignment` (anchors the boundary at the START of the whole ALL-CAPS identifier
+instead of immediately before the stem, fixing the underscore-glue gap for every
+TOKEN/SECRET/KEY-suffixed env var, not just the two named in the GO). PII (email) stays unmasked,
+confirmed unchanged (Peti 13838).
+
+M2 (Gemini-route isolation unpinned): added a direct `--test-redact-secrets` subcommand
+(pipes stdin through `redact_secrets`, no re-implementation) and 2 new `--check-blocked`
+(Gemini) selftest cases pinning Cybersec's own named mutants -- `skip_category` default flipped
+to 1, and `mopsion` added to the hardcoded `ALLOWED_PROJECTS` set. Both cases require the
+`gemini-ok` marker on the probe card so the POSITIVE-MARKER-REQUIRED check does not independently
+block the card for an unrelated reason and mask the mutant under test.
+
+**Teszt:** `offload-dispatch.selftest.sh` 190 -> 244/244 PASS (26 new M1 shape-pairs x2 checks +
+PEM/hex/PII singles + 2 M2 cases). Mutation-proven: M1 -- reverting the fix to the pre-a1c72ca4
+`redact_secrets` body makes all 26 new shape-marker checks + the PII check red (26/26), restoring
+the fix brings all back green. M2 -- `skip_category="${7:-0}"` flipped to `${7:-1}` reds exactly
+the skip_category M2 case (1/244); `ALLOWED_PROJECTS = {"mikrob"}` widened to
+`{"mikrob","mopsion"}` reds exactly the mopsion M2 case (1/244); reverting either mutant restores
+244/244. `offload-draft-nudge.test.ts` unaffected, 21/21 green (vitest, this session).
+
+**Ki döntött:** backend2 (kártya 81eb57b5, Cybersec GO 31533 M1+M2 on 6d8ef952). MikroB (msg
+18824) authorized building on `card/6d8ef952`@`a1c72ca4` as the baseline before that cards own
+landing, since it is already gated (QA PASS 31538 + CYBERSEC GO 31533) and only pending landing.
+Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment.

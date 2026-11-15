@@ -98,15 +98,52 @@ PATTERNS = [
     ("jwt",            re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
     ("aws-key",        re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("github-token",   re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("github-pat",     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
     ("gitlab-token",   re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
     ("slack-token",    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    # https://hooks.slack.com/services/<team>/<channel>/<token> -- a Slack incoming-webhook URL
+    # IS the credential (anyone with the URL can post as the integration), card 81eb57b5 M1.
+    ("slack-webhook",  re.compile(r"\bhttps://hooks\.slack\.com/services/[A-Za-z0-9/]+\b")),
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
+    # ya29.<...> -- Google OAuth2 bearer access token (distinct from the AIza... API-key shape
+    # above), card 81eb57b5 M1.
+    ("google-oauth-token", re.compile(r"\bya29\.[A-Za-z0-9_-]{20,}\b")),
     ("npm-token",      re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b")),
     ("openai-key",     re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    # Vendor secret-key prefixes whose body contains "-"/"_" segments, which the flat openai-key
+    # pattern above (no separators allowed after "sk-") never matched (Cybersec GO 31533 M1):
+    # Anthropic sk-ant-api03-.../sk-ant-oat01-... (incl. our own OAuth token), OpenAI
+    # project keys sk-proj-..., OpenRouter sk-or-v1-..., Stripe live secret keys sk_live_..., and
+    # Groq gsk_... .
+    ("vendor-secret-key",
+     re.compile(r"\b(?:sk-ant-api03|sk-ant-oat01|sk-proj|sk-or-v1|sk_live|gsk)[-_][A-Za-z0-9_-]{10,}\b")),
+    # Telegram bot token: <numeric bot id>:<35-char secret> (card 81eb57b5 M1, exact shape from
+    # Cybersec GO 31533).
+    ("telegram-bot-token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
+    # PEM private-key block (RSA/EC/OpenSSH/generic PKCS8) -- whole block, no partial reveal.
+    ("pem-private-key",
+     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----")),
+    # A bare 64-char hex token (our own dashboard-token shape, store/.dashboard-token).
+    ("hex-token-64",   re.compile(r"\b[0-9a-fA-F]{64}\b")),
     ("bearer-token",   re.compile(r"\bBearer\s+[A-Za-z0-9._-]{10,}", re.IGNORECASE)),
     # scheme://user:password@host -- connection strings (postgres, mysql, mongodb, redis, amqp, ...)
     ("connection-string",
      re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+:([^\s/@]+)@")),
+    # curl -u user:pass -- the same userinfo credential as connection-string above, but as a curl
+    # CLI flag rather than a "scheme://" URL, so the "://" anchor above never sees it (card
+    # 81eb57b5 M1, exact shape from Cybersec GO 31533).
+    ("curl-userpass",
+     re.compile(r"(-u\s+[^\s:\x27\"]+:)([^\s\x27\"]+)")),
+    # [A-Z0-9_]*(TOKEN|SECRET|KEY)=value -- env-var-style assignment (card 81eb57b5 M1, Cybersec
+    # GO 31533). Distinct from credential-assignment below: that pattern requires a \b word
+    # boundary immediately before its stem word ("token", "access_key", ...), which never matches
+    # when the stem is glued onto a longer identifier by "_" (a "_" IS a word character, so
+    # "CLAUDE_CODE_OAUTH_TOKEN=" or "AWS_SECRET_ACCESS_KEY=" never reached \btoken\b /
+    # \baccess_key\b). This pattern anchors the boundary at the START of the whole identifier
+    # instead, so any ALL-CAPS env-var name ending in TOKEN/SECRET/KEY matches regardless of what
+    # is glued in front of it.
+    ("env-credential-assignment",
+     re.compile(r"\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|KEY)\s*[:=]\s*[\"\x27]?([^\s\"\x27,;\[\]]{4,})")),
     # explicit key=value / key: value / key = "value" assignment of a secret-shaped field,
     # value quoted or bare, up to the next whitespace/quote/comma. Applied LAST (see the loop
     # below) and the value excludes "[" / "]" so it never re-captures a "[REDACTED:...]" marker a
@@ -1867,6 +1904,13 @@ fi
 # id or leaf id into a filesystem-safe name (card 21fbc293).
 if [[ "${1:-}" == "--test-sanitize-path-component" ]]; then
   sanitize_path_component "${2-}"
+  exit 0
+fi
+# --test-redact-secrets: pipes stdin through redact_secrets and prints the result on stdout --
+# the direct unit-level entry point for the credential-masking selftest (card 81eb57b5, Cybersec
+# GO 31533 M1), instead of exercising the whole try_freellm_first_for_leaf pipeline per shape.
+if [[ "${1:-}" == "--test-redact-secrets" ]]; then
+  redact_secrets
   exit 0
 fi
 if [[ "${1:-}" == "--test-resolve" ]]; then
