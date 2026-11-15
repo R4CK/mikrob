@@ -399,12 +399,6 @@ BLOCKED_TAGS = {
     # "fin" or "biztonsag" fell through here because this set never had them.
     "fin","biztonsag",
 }
-# skip_category NARROWING (card 1506d10d, MikroB decision msg 18733, 2026-11-15): defined here,
-# before the first BLOCKED_TAGS check below, so every tag/stem check in this function (not just
-# the title/desc content gate further down) sees the same narrowed exemption. See the content-gate
-# section below for the full rationale (undecidable = sensitive; only these tokens are exempt).
-FREELLM_EXEMPT_TAGS = {"mopsion", "cleancore", "pii", "secret"}
-FREELLM_EXEMPT_STEMS = {"pii", "secret", "titok", "jelszo", "password", "token", "kulcs", "szemelyes"}
 tags_n = []
 for tag in all_tags:
     # C3 (card 33047d3f): the F2 fail-closed check (has_unmapped_letter) only ran on title/desc
@@ -431,7 +425,7 @@ for tag in all_tags:
     tag_tokens = tag_tokens_of(tag)
     if "blokkolt" in tag_tokens:
         sys.exit(0)  # blocked -- explicit human override, never skippable
-    if any(tok in BLOCKED_TAGS and not (skip_category and tok in FREELLM_EXEMPT_TAGS) for tok in tag_tokens):
+    if any(tok in BLOCKED_TAGS for tok in tag_tokens) and not skip_category:
         sys.exit(0)  # blocked
     # F2(c)/M3 (card c8a6e1da, RedHat NO-GO 2. kor, komment 18638): split-letter form ("[S E C]",
     # "[S.E.C]", "[S-E-C]", "[S EC]") writes a blocked word one letter (or short fragment) at a
@@ -494,7 +488,7 @@ for tag in all_tags:
             for _candidate in (_run_joined, _run_stripped):
                 if _candidate == "blokkolt":
                     sys.exit(0)  # blocked -- explicit human override, never skippable
-                if _candidate and _candidate in BLOCKED_TAGS and not (skip_category and _candidate in FREELLM_EXEMPT_TAGS):
+                if _candidate and _candidate in BLOCKED_TAGS and not skip_category:
                     sys.exit(0)  # blocked
     # F2(d) (card c8a6e1da): digit-suffix form ("[SEC2]", "BLOKKOLT2", "MOPSION2") appends a bare
     # digit directly after the blocked word with no delimiter at all, so it never split into its
@@ -504,7 +498,7 @@ for tag in all_tags:
         if stripped and stripped != tok:
             if stripped == "blokkolt":
                 sys.exit(0)  # blocked -- explicit human override, never skippable
-            if stripped in BLOCKED_TAGS and not (skip_category and stripped in FREELLM_EXEMPT_TAGS):
+            if stripped in BLOCKED_TAGS and not skip_category:
                 sys.exit(0)  # blocked
 
 # 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
@@ -539,7 +533,7 @@ _whole_title_tokens = tag_tokens_of(title)
 for _tok in _whole_title_tokens:
     if _tok == "blokkolt":
         sys.exit(0)  # blocked -- explicit human override, never skippable
-    if _tok in BLOCKED_TAGS and not (skip_category and _tok in FREELLM_EXEMPT_TAGS):
+    if _tok in BLOCKED_TAGS and not skip_category:
         sys.exit(0)  # blocked
 
 title_n = norm(title)
@@ -568,36 +562,21 @@ TENANT_ISOLATION_RE = re.compile(
     r"|(elkulonit|szetvalaszt|izol|szepara|elvalaszt|kulonvalaszt|kulonit).{0,40}berlo",
     re.DOTALL,
 )
-# skip_category NARROWING (card 1506d10d, MikroB decision msg 18733, 2026-11-15): the original
-# blanket skip_category (card 6d8ef952) bypassed EVERY BLOCKED_TAGS entry and every SENS_RE stem
-# for freellm -- a retro-replay against the real router found 99/155 historically router-flagged
-# sensitive cards would pass. Peti 13838 ("igen, vedd le") answered MikroB 13832, which named
-# EXACTLY two things: the secret/PII content filter and the mopsion project block -- not every
-# tag category. MikroBs rule: undecidable = sensitive. So skip_category now only exempts the
-# specific tokens defined above (next to BLOCKED_TAGS); every other BLOCKED_TAGS entry, every
-# other SENS_RE stem, and TENANT_ISOLATION_RE stay live on the freellm route exactly as they are
-# for Gemini.
-
-def _sens_blocks(text):
-    """True if `text` carries a SENS_RE stem that is NOT exempt under the current
-    skip_category scope (always true when skip_category is off -- every stem blocks)."""
-    for m in SENS_RE.finditer(text):
-        if skip_category and m.group(1).lower() in FREELLM_EXEMPT_STEMS:
-            continue
-        return True
-    return False
-
-if _sens_blocks(title_n) or _sens_blocks(desc_n):
+# skip_category (card 6d8ef952, Peti 13829/13838, freellm only): the category/PII inference
+# below (SENS_RE stems, tenant-isolation co-occurrence, per-tag stem match) is the "content gate
+# as a LIMIT" Peti ordered removed for freellm -- it stops REFUSING on these grounds. It stays
+# unchanged and still blocks Gemini (default skip_category=False) and the explicit project/
+# tag-category(BLOCKED_TAGS)/blokkolt/marker gates above and below, which are untouched.
+if not skip_category and (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
+        or TENANT_ISOLATION_RE.search(title_n) or TENANT_ISOLATION_RE.search(desc_n)):
     sys.exit(0)  # blocked
-if TENANT_ISOLATION_RE.search(title_n) or TENANT_ISOLATION_RE.search(desc_n):
-    sys.exit(0)  # blocked -- tenant isolation is never exemptable
 
 # N2 (RedHat 17510/17825): a TAG that is not an EXACT match on BLOCKED_TAGS above still needs the
 # same stem check title/desc already get -- a label literally named "jelszo-rotacio" or
 # "[Biztonsag]" (the bracket-tag case from 1b) would otherwise sail through on tag-exact-match
 # alone, even though its own text names a sensitive stem. Measured: a neutral-titled card tagged
 # "jelszo-rotacio"/"szamla"/"[Biztonsag]" was previously ALLOWED through this gate.
-if any(_sens_blocks(t) for t in tags_n):
+if not skip_category and any(SENS_RE.search(t) for t in tags_n):
     sys.exit(0)  # blocked
 
 # 5. POSITIVE MARKER REQUIRED (card c23ea72f, RedHat structural recommendation komment 18638 on

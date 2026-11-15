@@ -1361,26 +1361,15 @@ check "freellm-first project allowlist: unrelated project still blocked" \
   "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
 check "freellm-first project allowlist: unrelated project falls through" "$out" "fallthrough"
 
-# Case 7 (card 1506d10d narrowing, MikroB decision msg 18733, supersedes the original card
-# 6d8ef952 blanket skip_category): Peti 13838 "igen, vedd le" named exactly two things --
-# the secret/PII content filter and the mopsion project block -- not every BLOCKED_TAGS
-# category. An authz/security-worded leaf is NOT one of the exempt stems, so it is BLOCKED
-# again, same as the Gemini route (undecidable = sensitive).
+# Case 7 (card 6d8ef952 scope change): the category/PII content gate no longer REFUSES a freellm
+# card -- a sensitive-worded mikrob leaf now reaches the stub and drafts (masking of actual
+# credential VALUES, tested separately below, is the real protection now, not a refusal).
 rm -f "$FF_MARKER" "$FF_COOLDOWN"
 make_ff_stub 0
 run_ff_first leafF7 "authz check" "irj meg egy authz ellenorzest" mikrob ""
-check "freellm-first content gate (prefilter): authz-worded leaf stays blocked (narrowed, 1506d10d)" \
-  "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
-check "freellm-first content gate (prefilter): authz-worded leaf falls through" "$out" "fallthrough"
-
-# Case 7c: a secret/PII-worded leaf is the one category the narrowing DOES still exempt (the
-# two things Peti actually approved) -- it reaches the stub and drafts.
-rm -f "$FF_MARKER" "$FF_COOLDOWN"
-make_ff_stub 0
-run_ff_first leafF7c "token rotation" "irjunk egy uj secret-et" mikrob ""
-check "freellm-first content gate (prefilter): secret/PII-worded leaf still reaches the stub (narrowed exemption, 1506d10d)" \
+check "freellm-first content gate (prefilter): sensitive leaf now reaches the stub (6d8ef952)" \
   "$([[ -f "$FF_MARKER" ]] && echo reached || echo missing)" "reached"
-check "freellm-first content gate (prefilter): secret/PII-worded leaf drafts" "$out" "drafted"
+check "freellm-first content gate (prefilter): sensitive leaf drafts" "$out" "drafted"
 
 # Case 7b: an explicit BLOKKOLT-* tag is a human override, not a category inference -- it still
 # blocks even after the content-gate loosening above.

@@ -25502,37 +25502,3 @@ individually -> exactly the matching new test(s) go red, rest green; restored af
 
 **Ki döntött:** Peti (13829/13838) -> MikroB (comment 31306, card 6d8ef952) -> backend2 végrehajtása,
 confirmed by MikroB inter-agent msg 18628/18638.
-
-## 2026-11-15: freellm content-gate skip_category narrowed -- csak mopsion/cleancore + pii/secret ment ki (kartya 1506d10d, 6d8ef952 delta)
-
-**Miert:** a kartya 6d8ef952 "content-gate masking" vatozata (331abf9c3) a `skip_category`
-kapcsolot BLANKET modon vezette be -- a teljes `BLOCKED_TAGS` halmazt es a teljes `SENS_RE`
-tartalom-mintat kikapcsolta a freellm utra. Retro-replay (kartya 1506d10d) a VALODI
-dashboard-logon futtatva: 155 ellenorzott kartyabol 99 olyan, amit `card-build-route.sh` sajat
-klasszifikatora erzekenynek jelolt, de a szeles skip_category "ALLOWED"-nek mondott. MikroB
-(msg_id:18733) tenyellenorzese: Peti 13838 "igen, vedd le" a 13832-es javaslatra valaszolt, az
-PONTOSAN KETTOT nevezett meg -- a secret/PII tartalom-szuro es a mopsion projekt-tilalom --, nem
-minden kategoriat.
-
-**Mi valtozott:** `store/offload-dispatch.sh` -- `FREELLM_EXEMPT_TAGS = {mopsion, cleancore, pii,
-secret}` es `FREELLM_EXEMPT_STEMS = {pii, secret, titok, jelszo, password, token, kulcs,
-szemelyes}`. Minden `BLOCKED_TAGS`/`SENS_RE` ellenorzesi pont mostantol csak EZEKET a konkret
-tokeneket engedi at `skip_category` alatt -- minden mas kategoria (sec, security, auth, authz,
-rbac, tenant, superadmin, finance, billing, payment, legal, gdpr, privacy, cybersec, crypto, fin,
-biztonsag), tovabba a `TENANT_ISOLATION_RE`, ugyanugy blokkol a freellm uton, mint a Gemini uton.
-
-**Teszt:** `--check-freellm-blocked` kezzel ellenorizve: `[SEC]`/`[AUTH]`/`TENANT`-tagelt kartya
-tovabbra is blokkolt (rc=0), egy `gemini-ok`-markeres mopsion+PII-csak kartya engedett (rc=42).
-Mutacioval igazolva: a RAJI, szukitetlen 331abf9c3-on ugyanaz a `[SEC]` kartya engedett volt
-(rc=42) -- a szukites tenylegesen valtoztat. `store/offload-dispatch.selftest.sh` 2 Case-e
-(7/7b) frissult az uj hatarra; 192/0 zold.
-
-**Replay utofutas:** a kartya 1506d10d retro-replay-je a szukitett kapun 99 -> 4 violation-re
-csokkent. A fennmarado 4 (14931e4e, 200d2969, 775ec47a, ba22ec48) mind
-`deterministic-document-assembly`/`deterministic-auth-tenant-scope` STRUKTURALIS okbol
-erzekeny a router szerint -- ez a tartalom-alapu `is_freellm_blocked` szamara LATHATATLAN jel
-(nincs szoveges nyoma), nem a most szukitett kategoriak koreben all; kulon dontes kell, hogy ez
-elfogadott hatarnak szamit-e (ugyanaz a limitacio, ami az eredeti Cybersec GO 29776-ban csak 3
-talalatot adott).
-
-**Ki dontott:** Peti (13829/13838) -> MikroB szukites msg_id:18733 -> backend2 vegrehajtasa.
