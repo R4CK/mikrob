@@ -114,6 +114,8 @@ async function runLand(
         ...process.env,
         MARVEEN_MAIN: main,
         MARVEEN_LAND_TEST: testCmd,
+        // card 9918f78d: land worktrees go into the test's own temp tree, not /home/neon.
+        MARVEEN_SCRATCH_DIR: join(dir, 'scratch'),
         KANBAN_COMMENT_API: 'http://127.0.0.1:1',
         KANBAN_COMMENT_TOKEN_FILE: '/nonexistent/no-token',
         ...extraEnv,

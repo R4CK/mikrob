@@ -93,6 +93,9 @@
 set -uo pipefail
 
 MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
+# card 9918f78d: all disposable land/gate worktrees go here, never scattered under /home/neon/.
+# Override with MARVEEN_SCRATCH_DIR env var (tests use a subdir of their own tmpdir).
+MARVEEN_SCRATCH_DIR="${MARVEEN_SCRATCH_DIR:-/home/neon/marveen-scratch-worktrees}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
@@ -1324,7 +1327,8 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     return 0
   fi
 
-  local wt="/home/neon/marveen-land-${agent}-$$"
+  local wt="${MARVEEN_SCRATCH_DIR}/marveen-land-${agent}-$$"
+  mkdir -p "$MARVEEN_SCRATCH_DIR"
   rm -rf "$wt"
   g worktree add --detach -q "$wt" "origin/$DEFAULT_BRANCH" || die 3 "could not create the landing worktree for $agent"
   # `${wt:-}` and the explicit success, both deliberate (card 65657bad, caught by its own test): the
@@ -2040,7 +2044,8 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
 
   g fetch -q origin "$DEFAULT_BRANCH" || die 3 "could not fetch origin/$DEFAULT_BRANCH"
   local base_sha; base_sha="$(g rev-parse "origin/$DEFAULT_BRANCH")"
-  local wt="/home/neon/marveen-land-${batch_tag}"
+  local wt="${MARVEEN_SCRATCH_DIR}/marveen-land-${batch_tag}"
+  mkdir -p "$MARVEEN_SCRATCH_DIR"
   rm -rf "$wt"
   g worktree add --detach -q "$wt" "origin/$DEFAULT_BRANCH" || die 3 "could not create the batch landing worktree"
   cleanup() {
@@ -2425,9 +2430,9 @@ if [ "${1:-}" = "--selftest-land-lock-release-inner" ]; then
   # F2 fix (Cybered NO-GO 29382): use the EXACT path -- marveen-land-fixture-b-$$ -- not a glob.
   # A glob matches every concurrent run's fixture worktree: 8-parallel test measured 1/8 false FAILs
   # and rm -rf on the glob deletes another run's live worktree mid-run.
-  if ls -d "/home/neon/marveen-land-fixture-b-$$" >/dev/null 2>&1; then
+  if ls -d "${MARVEEN_SCRATCH_DIR}/marveen-land-fixture-b-$$" >/dev/null 2>&1; then
     echo "  FAIL case B: the disposable landing worktree was not removed"; fail=1
-    rm -rf "/home/neon/marveen-land-fixture-b-$$" 2>/dev/null
+    rm -rf "${MARVEEN_SCRATCH_DIR}/marveen-land-fixture-b-$$" 2>/dev/null
   else
     echo "  ok   case B: the disposable landing worktree was removed (second cleanup() ran)"
   fi
@@ -2819,7 +2824,7 @@ EOF
     ( trap - INT HUP TERM; exec bash "$0" --selftest-land-batch-case-j-run "$MAIN" "$LBTMP/stub-sleep-${_sig}.sh" "j1" "$LBTMP/caseJ${_sig}-count" ) \
       >"$LBTMP/out-j${_sig}.txt" 2>&1 &
     lb_pid=$!
-    worktree_path="/home/neon/marveen-land-batch-${lb_pid}"
+    worktree_path="${MARVEEN_SCRATCH_DIR}/marveen-land-batch-${lb_pid}"
     for _i in $(seq 1 100); do
       [ -s "$_sleep_pid_file" ] && [ -d "$worktree_path" ] && break
       sleep 0.1
