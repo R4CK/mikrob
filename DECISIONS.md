@@ -25689,3 +25689,73 @@ ellenőrzésre gyengítve, pontosan a dedikált F4-parity teszt bukott (11/12), 
 (12/12). `tsc --noEmit` és `eslint` tiszta az új/módosított fájlokon.
 
 **Ki döntött:** Peti (13849) -> MikroB dispatch (msg_id:18584), backend2 végrehajtása.
+
+## 2026-11-14 -- eb12a5dd delta: CYBERED NO-GO 30643 (F1 schtasks /TR idézés, F2 fail-open elő-ellenőrzés, F3 tartalom nélküli selftest, F4 csak-ACE-számot néző R2b) javítás
+
+**Kontextus:** a REVIEW 30534 (Gate-SHA 28c87019f) hozta be R1-et (launcher önmaga-pinelése hívás
+előtt) és R2(b)-t (Phase 2 ellenőrzi Phase 1 rögzített ACL-állapotát). A QA saját PASS-ja (30646)
+visszavonva (30648) azután, hogy RedHat NO-GO-ja (30643/30644) egy valódi mutációs-tesztelési rést
+reprodukált: a selftest R1/R2b ellenőrzései kizárólag szöveg-jelenlét alapúak voltak, tehát az
+összehasonlító operátor megfordítása (`-ne` -> `-eq`) teljesen zöld maradt -- RedHat 12 viselkedési
+mutánsából mind a 12 életben maradt.
+
+**Döntés (Fix-Direction a QA 30648 szerint, RedHat saját "mi lenne a GO" listája a 30643-ban):**
+- **F1:** az ütemezett feladat action-je mostantól `New-ScheduledTaskAction` + `Set-ScheduledTask`-on
+  megy, nem `& schtasks /Change /TN ... /TR <string>`-en. A régi alak a parancs-szöveget a
+  PowerShell 5.1 natív-parancs argumentum-kezelésén futtatja át, ami dokumentáltan rosszul escape-eli
+  egy olyan argumentumot, amiben EGYSZERRE van beágyazott dupla idézőjel és szóköz -- pont a régi
+  inline-check alakja -- és RedHat argv-emulációja a régi 249 karakteres parancsot 6 helyett 9
+  argumentumra bontotta szét. Az Action objektum `.Arguments` mezőjének beállítása egyszerű .NET
+  string-hozzárendelés, nincs ilyen körforgás. Mindkét hash most TELJES hosszban megy (nincs több
+  80-bites prefix-csonkolás), mert a schtasks /TR hosszkorlátja, ami miatt a csonkolás létezett,
+  többé nem áll fenn (`Action.Arguments` dokumentáltan 32767 karakterig enged; egy 8000 karakteres,
+  valódi, bár bőkezű biztonsági plafon marad kontrollként).
+- **F2:** a launcher elő-ellenőrzése (`try{$h=(Get-FileHash $p -Algorithm SHA256 -ErrorAction Stop)
+  .Hash}catch{exit 1};if($h -ne '<hash>'){exit 1}`) lép a régi `if((Get-FileHash $p).Hash
+  .Substring(0,20)-ne'...'){exit 1}` helyére. A régi alaknál egy sikertelen hash-olvasás `$null`-t
+  hagyott a `.Hash`-ben, és a `.Substring` hívás `$null`-on terminating hibát dob, ami egy
+  `-Command` szkriptben (ami a pontosvesszővel elválasztott felső szintű állításokat REPL-szerűen
+  futtatja) csak az EGY `if`-állítást szakítja meg -- a vezérlés átesett a launcher hívásába.
+  Az új alak nem eshet át: a catch kilép mielőtt bármilyen összehasonlítás futna, és az
+  összehasonlítás maga egy érték-összevetés egy string-literállal, nem metódushívás, tehát egy
+  eltévedt `$null` is zárva marad.
+- **F3:** a selftest (`gpu-driver-install-setup.selftest.sh`) mostantól az OPERÁTOR irányát (`-ne`
+  jelen, `-eq` hiányzik, mindkettő a tényleges launcher-hash változóhoz horgonyozva), az ÉRTÉKET
+  (a valódi `$launcherHash` változóval hasonlít, nem egy beégetett konstanssal), és a SORRENDET
+  (bájt-offszet ellenőrzés: a hash-check substringnek a `& $p` hívás substring ELŐTT kell állnia
+  ugyanabban a sorban) pineli. Egy új, szó szerinti javítás-előtti fixture (`$PRENOGO`, a pontos
+  28c87019f forrásszöveg) a negatív kontroll minden új ellenőrzéshez, a meglévő `$OLD` fixture
+  mellett. Kézzel mutáció-tesztelve RedHat minden, az új kódalakra még érvényes mutáns-osztálya
+  ellen (megfordított operátor, eldobott try/catch, visszaállított schtasks, az ACE-diff eldobása
+  az R2b divergencia-feltételből, hívás-a-check-előtt sorrend-csere) -- mind az öt pirosra viszi a
+  selftestet.
+- **F4 (RedHat saját "olcsó javítás" javaslata):** az R2(b) divergencia-ellenőrzés mostantól a
+  TELJES ACE-listát hasonlítja (SID + jogosultság + típus + öröklött-e, rendezve, egy új
+  `Get-AceSnapshot` segédfüggvénnyel + `Compare-Object`-tel), nem csak egy puszta ACE-számot --
+  egy csak-szám-összevetés zölden marad, ha egy szükséges ACE-t egy másikra cserélnek ugyanannyi
+  összes ACE mellett (ugyanaz a tulajdonos, ugyanaz az összeg, 0 öröklött, más tényleges jog).
+- **Ebben a körben nem érintve (tovább-görgetve, ugyanúgy mint a kártyacsalád minden korábbi
+  körében -- 22466/22570/23134/23230):** N2 (Phase 1 örökbefogadó ciklusa nem nézi a gyerekek
+  reparse-point-jét, csak a tulajdonost), N3 (Phase 2 bármilyen kiszámolt hash-t pinel, gate-elt
+  érték nélküli összevetés nélkül), X4 (a `Write-Log` írhat a `$TargetDir`-be, mielőtt az
+  örökbefogadó-guard megerősíti, hogy a mappa megbízható). Ezek egyike sem szerepel a QA rögzített
+  Fix-Direction-jében (30648); nyitva maradnak, ugyanúgy, mint az N2/N3/X4 osztályú tételek ennek a
+  kártyának minden korábbi körében.
+
+**Mérés:** a `gpu-driver-install-setup.selftest.sh` 23-ról 60 ok/PASS sorra nőtt (26 a vitest-plafont
+számoló natív "  ok  " alakból, a többi "PASS:" sor az újabb `check_stripped` segédből), 4 egymás
+utáni tiszta futás. A `graph-tooling-selftests.test.ts` (ami ezt a selftestet csomagolja, plafon 17
+ok-sor): 12/12 zöld, 10,15s, `npx vitest run --root .`-vel, ezen a worktree-n, ezen a shán mérve
+(nem egy merge eredményén). `tsc --noEmit` tiszta. RedHat 5 mutáns-osztályát kézzel
+mutáció-tesztelve a javított forrás ellen (azonos-mappás másolat technika, mert a ps1 és a selftest
+egymás mellett ülnek, keresztfájl-sourcing nélkül, ami elromolhatna) -- mind az 5 pirosra viszi a
+selftestet.
+
+**Nem futtatva (ugyanaz a host-korlát, mint minden korábbi körben):** semmilyen pwsh/
+powershell.exe/schtasks/Get-ScheduledTask ezen a hoszton -- a `Set-ScheduledTask`/
+`New-ScheduledTaskAction` cmdletek és a Task Scheduler-oldali argumentum-átadás valódi
+Windows-szemantikáját ez a kártya sem tudja futtatva igazolni; ez RedHat/WhiteHat valódi
+Windows-futásos lépése, nem ezé a körét.
+
+**Ki döntött:** MikroB (msg 18314/18332, előreveve eb12a5dd saját sorbeli helyéhez képest).
+Gate: QA + RedHat (MikroB kijelölés, 30638, delta re-gate). Gate-SHA: lásd REVIEW komment.
