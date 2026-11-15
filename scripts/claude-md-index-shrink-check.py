@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 BULLET_RE = re.compile(
-    r'^(\s*-\s+\*\*)([\w.]+)(\.\*\*\s+\*\*)(.*?)(\.\*\*)\s+(.*?)(\s*\(/home/neon/marveen/docs/rules/[\w.-]+\.md\))\s*$'
+    r'^(\s*-\s+\*\*)([\w.]+)(\.\*\*\s+\*\*)(.*?)(\.?\*\*)\s+(.*?)(\s*\(/home/neon/marveen/docs/rules/[\w.-]+\.md\))\s*$'
 )
 
 PROTOCOL_TOKENS = [

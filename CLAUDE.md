@@ -39,7 +39,7 @@ Személyiség alatti sorokat) -- nem csak a linkelt fájlban (WhiteHat2 H1, ugya
   - **4.** **Készterméket csak NEM a készítő ellenőrizhet -- KOCKÁZAT-ALAPÚ gate-tiering (Peti szabály 2026-07-05).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **4a.** **MINDEN gate-verdiktre AZONNAL reagálni -- a flotta SOHA ne várjon MikroB-ra (Peti szabály 2026-07-12, 3x beragadás után).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **4b.** **A REVIEW (és a gate-verdikt) MONDJA MEG a sháját: `Gate-SHA: <sha>` (kártya f910eabd).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
-  - **4c.** **A gate-VERDIKT szava legyen az ELSŐ SOR, a `Gate-SHA:` a MÁSODIK (WhiteHat mérése, kártya 3477c793, 2026-08-24).** `CYBERSEC GO`/`CYBERSEC NO-GO`/`QA PASS`/`QA FAIL`/`CYBERED GO`/`CYBERED NO-GO` a komment első sora legyen; a `Gate-SHA:` a második. (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
+  - **4c.** **A gate-VERDIKT szava legyen az ELSŐ SOR, a `Gate-SHA:` a MÁSODIK (WhiteHat mérése, kártya 3477c793, 2026-08-24).** `CYBERSEC GO`/`CYBERSEC NO-GO`/`QA PASS`/`QA FAIL`/`CYBERED GO`/`CYBERED NO-GO` a komment első sora legyen; a `Gate-SHA:` (4b. szabály) utána, a második sorban. (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **4d.** **Egy suite-/teszt-SZÁM egy verdiktben/REVIEW-ban MONDJA MEG, MELYIK FÁN/SHÁN mérték (WhiteHat javaslata, 2026-09-13).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **4e.** **Config-only munkánál (nincs commit) a `Gate-SHA:` explicit `n/a (config-only)` legyen, nem egy odakeveredett sha (kártya 1d0dda52, Cybered lelete f72ee333 delta-gate-jén).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **4f.** **Egy sima NO-GO/FAIL önmagában NEM rögzít proposert -- csak egy explicit `Fix-Direction:` sor teszi (MikroB döntés, kártya c188f357, komment 21553, a `Gate-SHA:` minta kiterjesztése, RedHat 16225 eredeti szándéka szerint).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
@@ -65,11 +65,11 @@ Személyiség alatti sorokat) -- nem csak a linkelt fájlban (WhiteHat2 H1, ugya
   - **20.** **Skill-használat MINDEN területen -- minden ügynök a saját szerepéhez tartozó skilleket ténylegesen HASZNÁLJA, nem csak birtokolja (Peti szabály 2026-09-24, Telegram).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **21.** **10 percenként ügynök-ellenőrzés a beragadás és a felesleges tokenfogyás ellen (Peti szabály 2026-09-24, Telegram).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **22.** **WSL megosztott home-könyvtár takarítása: SOHA ne törölj commitolatlan munkát vagy aktív worktree-t, és élő `--apply` Peti jóváhagyása nélkül nem futhat (Peti szabály 2026-09-25, kártya bc1e7ef2).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
-  - **22a.** **Az útvonalat SOHA ne írd be fixen.** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
-  - **22b.** **Gate SOHA ne futtasson tesztet más ügynök worktree-jében.** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
-  - **22c.** **Függőség-telepítő (`pnpm install`, `npm ci`, `pnpm add`) SOHA nem futhat worktree-ből.** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
-  - **22d.** **Tesztelési gate-ek (KÖTELEZŐ): sign-off jogköre KIZÁRÓLAG `qa-engineer` + `cybersecurity-redteam` + `cybered` hármasáé.** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
-  - **22e.** **A gate-verdikt kulcsszavai (`CYBERSEC GO`/`NO-GO`, `CYBERED GO`/`NO-GO`) addig maradnak kötelezők, amíg a verdikt-parserek a `WHITEHAT`/`REDHAT` aliast el nem fogadják.** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
+  - **22a.** **Az útvonalat SOHA ne írd be fixen** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
+  - **22b.** **Gate SOHA ne futtasson tesztet más ügynök worktree-jében** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
+  - **22c.** **Függőség-telepítő (`pnpm install`, `npm ci`, `pnpm add`) SOHA nem futhat worktree-ből** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
+  - **22d.** **Tesztelési gate-ek (KÖTELEZŐ): sign-off jogköre KIZÁRÓLAG `qa-engineer` + `cybersecurity-redteam` + `cybered` hármasáé** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
+  - **22e.** **A gate-verdikt kulcsszavai (`CYBERSEC GO`/`NO-GO`, `CYBERED GO`/`NO-GO`) addig maradnak kötelezők, amíg a verdikt-parserek a `WHITEHAT`/`REDHAT` aliast el nem fogadják** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
 - **Kódminőségi alapelvek -- MINDEN ÜGYNÖKRE (Peti szabály 2026-07-31)** -- egy index-sor
   MINDEN kódolási alapelvre (1-15):
   - **1.** **Gondolkodj a kódolás ELŐTT.** (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
@@ -79,7 +79,7 @@ Személyiség alatti sorokat) -- nem csak a linkelt fájlban (WhiteHat2 H1, ugya
   - **5.** **Működő, kész funkciót SOHA nem vonsz vissza és nem írsz felül kérdés nélkül (Peti szabály 2026-08-20).** (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
   - **6.** **Strukturális védelem a fegyelem helyett (Peti szabály 2026-08-20, az 5. szabály végrehajtási mechanizmusa).** (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
   - **7.** **Regressziós alapvonal: eltűnő/gyengülő teszt = FAIL, nem "tisztább kód" (Peti szabály 2026-08-20).** (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
-  - **8.** **Funkció-tulajdonos jelölés (Peti szabály 2026-08-20).** A mintára -- `Gate-SHA:`/`Pair-FE:`/`Pair-BE:` sorok (4b., 8a.). (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
+  - **8.** **Funkció-tulajdonos jelölés (Peti szabály 2026-08-20).** Minden kész, élesített, user-facing funkcióhoz tartozzon egy rövid, kimondott jegyzet (melyik kártya/commit szállította, melyik ügynök) -- a `Gate-SHA:`/`Pair-FE:`/`Pair-BE:` sorok mintájára (4b., 8a. szabály). (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
   - **9.** **Kockázatos változtatás feature flag vagy külön ág mögött, sose a működő útvonal közvetlen helyettesítéseként (Peti szabály 2026-08-20).** (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
   - **10.** **Blast-radius ellenőrzés megosztott/core fájl szerkesztése előtt.** (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
   - **11.** **Migráció/séma-változtatáshoz tesztelt rollback-út is kell, nem csak forward-út.** (/home/neon/marveen/docs/rules/kodminosegi-alapelvek.md)
@@ -90,17 +90,17 @@ Személyiség alatti sorokat) -- nem csak a linkelt fájlban (WhiteHat2 H1, ugya
 - **Ellenőrizhető munka, önellenőrzés, ügynök-tervrajz -- SZABÁLY (Peti 2026-10-17, Telegram 11619)**
   -- egy index-sor MINDEN számozott pontra (1-12):
   - **1.** **„Kész, ha:" lista minden kártyán.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
-  - **2.** **Kétkörös önellenőrzés fontos kimenet előtt.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
+  - **2.** **Kétkörös önellenőrzés fontos kimenet előtt** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **3.** **Ajánlás formája.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **4.** **Ügynök-tervrajz és létjogosultság.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **5.** **Modell a feladathoz, egy sor indokkal.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
-  - **6.** **Handoff 200 szó alatt, négy mezővel:.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
+  - **6.** **Handoff 200 szó alatt, négy mezővel:** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **7.** **Csendes ütemezett feladat, de nyomot hagy.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
-  - **8.** **Egyetlen jóváhagyási vonal mindenhol, ahol a flotta cselekedni tud.** Ez minden csatornára egyformán áll (Telegram, email-connector, ütemezett feladat, föderáció, subagent). (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
+  - **8.** **Egyetlen jóváhagyási vonal mindenhol, ahol a flotta cselekedni tud.** Küldés kifelé (email, külső poszt, harmadik félnek menő üzenet), törlés, pénzköltés, és bármi visszafordíthatatlan: Peti jóváhagyása kell, és ez minden csatornára egyformán áll (Telegram, email-connector, ütemezett feladat, föderáció, subagent). (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **9.** **Elavult emlékek gondozása.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **10.** **Mérés.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **11.** **Alkalmazás/kódbázis visszafejtése (versenytárs-elemzés, idegen repó, saját modul megértése).** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
-  - **12.** **Dispatch-üzenet és lezárás formája.** Minden delegáló üzenet négy blokkot tartalmaz: **Cél**, **Kontextus**, **Eszközök/források**, **Korlátok**. (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
+  - **12.** **Dispatch-üzenet és lezárás formája.** Minden delegáló üzenet (MikroB -> ügynök, ügynök -> ügynök, subagent-prompt) négy blokkot tartalmaz: Cél (a végeredmény, nem a lépések, a `Kész, ha:` pontokkal), Kontextus (releváns fájlok, linkek, kártya- és komment-ID-k, előzmény), Eszközök/források (amit használni kell vagy tilos), Korlátok (hatókör, formátum, határidő, mit NE érintsen). (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
 - **Inter-agent kommunikáció** -- ágensek közti üzenetküldés API-ja; ismeretlen-sender esetén
   AUTO-ENGEDÉLYEZÉS, ha a senderId szerepel a saját csatornád `allowFrom` listájában, egyébként
   DEFAULT-DENY (Peti-eszkaláció); föderáció (társrendszerek), válasz-cím és hurok-védelem szabályai
