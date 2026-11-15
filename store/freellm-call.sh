@@ -44,6 +44,58 @@ FREELLM_MODEL="${FREELLM_MODEL:-auto}"
 FREELLM_AUTH_TOKEN_FILE="${FREELLM_AUTH_TOKEN_FILE:-/home/neon/.config/freellmapi/auth-token}"
 CATEGORY_CHECK="${FREELLM_CATEGORY_CHECK_OVERRIDE:-$ROOT/store/gemini-agy-category-check.py}"
 TIMEOUT="${FREELLM_TIMEOUT:-60}"
+# F1 (WhiteHat2 MEDIUM-LOW, comment 31204, card 4cd2a0fc delta): FREELLM_TIMEOUT,
+# FREELLM_MAX_ATTEMPTS and FREELLM_ATTEMPT_TIMEOUT are each evaluated ARITHMETICALLY
+# below ($(( TIMEOUT / ... )) and the `-le "$FREELLM_MAX_ATTEMPTS"` test), and bash
+# arithmetic evaluates a command substitution reached through an unvalidated value
+# (e.g. FREELLM_TIMEOUT='x[$(cmd)]'). Validated here, before any arithmetic touches
+# them -- fail-closed (exit 2) like every other config check in this script. The
+# length cap (not just the regex) avoids a 64-bit arithmetic overflow on an oversized
+# digit string, same convention as store/skill-coverage-report.sh's RedHat N2 fix.
+# L1 (card 6f9426d6, CYBERSEC GO 56c9a507 follow-up): a rejected value used to exit 2 with
+# empty stderr -- indistinguishable from any other silent exit-2 config problem, and the
+# caller never learns WHICH variable was bad. Name the variable and the value in every
+# rejection, same convention as freellm-call.sh's other config-check failure messages.
+_validate_positive_int() {
+  local value="$1" maxlen="$2" varname="$3"
+  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "FREELLM: invalid $varname='$value' (must be a positive integer) -- refusing" >&2
+    exit 2
+  fi
+  if (( ${#value} > maxlen )); then
+    echo "FREELLM: invalid $varname='$value' (more than $maxlen digits) -- refusing" >&2
+    exit 2
+  fi
+}
+_validate_positive_int "$TIMEOUT" 4 FREELLM_TIMEOUT
+
+# Card 4cd2a0fc (MikroB live probe comment 30552, 2026-11-14): a single slow
+# upstream (observed: google/gemini-3.7-flash) used to get the WHOLE $TIMEOUT
+# budget on one attempt -- when it hung, curl's own --max-time fired at
+# exactly $TIMEOUT, the proxy logged "client disconnected mid-attempt ...
+# stopping without benching", and no second attempt ever ran. Splitting the
+# same overall budget into several SHORTER attempts means one stalled
+# upstream only burns its own slice; freellmapi re-routes fresh on every
+# call (FREELLM_MODEL=auto), so a retry has a real chance of landing on a
+# different, responsive provider instead of the one that just hung.
+FREELLM_MAX_ATTEMPTS="${FREELLM_MAX_ATTEMPTS:-2}"
+_validate_positive_int "$FREELLM_MAX_ATTEMPTS" 2 FREELLM_MAX_ATTEMPTS
+
+# Default: TIMEOUT split three ways, not two -- so even FREELLM_MAX_ATTEMPTS
+# attempts in a row leave headroom under $TIMEOUT for connect time and our
+# own request-building overhead, instead of exactly summing to it.
+FREELLM_ATTEMPT_TIMEOUT="${FREELLM_ATTEMPT_TIMEOUT:-$(( TIMEOUT / 3 > 0 ? TIMEOUT / 3 : 1 ))}"
+_validate_positive_int "$FREELLM_ATTEMPT_TIMEOUT" 4 FREELLM_ATTEMPT_TIMEOUT
+# F2 (WhiteHat2 LOW, same comment): this rejects FREELLM_ATTEMPT_TIMEOUT=0 (unlimited
+# curl -- MikroB 18482) via the regex above, but an explicit FREELLM_ATTEMPT_TIMEOUT
+# combined with a high FREELLM_MAX_ATTEMPTS can still sum past FREELLM_TIMEOUT (e.g. 5
+# attempts x 2s at a 6s budget = 10s). Clamp to TIMEOUT/attempts so the total across all
+# attempts never exceeds the advertised budget, for every attempts/attempt-timeout
+# combination, not only the defaults.
+_SAFE_ATTEMPT_TIMEOUT=$(( TIMEOUT / FREELLM_MAX_ATTEMPTS > 0 ? TIMEOUT / FREELLM_MAX_ATTEMPTS : 1 ))
+if (( FREELLM_ATTEMPT_TIMEOUT > _SAFE_ATTEMPT_TIMEOUT )); then
+  FREELLM_ATTEMPT_TIMEOUT="$_SAFE_ATTEMPT_TIMEOUT"
+fi
 DRY_RUN=0
 
 # Card e96d56c5 (F4): caller/task identity travels via env var, not a new positional flag
@@ -395,14 +447,51 @@ freellm_startup_preflight || exit $?
 
 # Call API (localhost, 127.0.0.1 only -- enforced above; --noproxy '*' so a proxy env var
 # cannot redirect this request off-host, per the L1 fix, WhiteHat NO-GO 28484).
-HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TMPOUT" -X POST \
-  "$FREELLM_API_BASE/chat/completions" \
-  -H "Content-Type: application/json" \
-  -H @"$AUTH_HDR" \
-  --data @"$REQ_FILE" \
-  --noproxy '*' \
-  --connect-timeout 5 \
-  --max-time "$TIMEOUT" 2>"$TMPERR")
+# Each attempt gets only a SLICE of $TIMEOUT (see FREELLM_ATTEMPT_TIMEOUT above);
+# curl exit 28 is "operation timeout" -- no response at all arrived -- and is
+# the ONLY case retried: every other failure (bad response, refused
+# connection, TLS error) is deterministic and a retry would just repeat it.
+#
+# L2 (card 6f9426d6, CYBERSEC GO 56c9a507 follow-up): the per-attempt clamp above bounds
+# EACH slice but not the SUM -- when FREELLM_MAX_ATTEMPTS exceeds TIMEOUT, integer division
+# floors FREELLM_ATTEMPT_TIMEOUT to its 1-second minimum, and FREELLM_MAX_ATTEMPTS stalled
+# attempts at 1s each can still total far more than TIMEOUT (measured: TIMEOUT=3,
+# MAX_ATTEMPTS=9 ran 9348ms). An overall wall-clock deadline, checked before every attempt
+# (including the first), is the only way to bound the SUM regardless of how the per-attempt
+# slice was computed: once the remaining budget is exhausted, no further attempt is made, and
+# the last attempt's own --max-time is clamped to whatever remains so it cannot overrun on
+# its own either.
+_FREELLM_DEADLINE_S=$(( $(date +%s) + TIMEOUT ))
+attempt=1
+HTTP_CODE=""
+while [[ "$attempt" -le "$FREELLM_MAX_ATTEMPTS" ]]; do
+  _freellm_remaining_s=$(( _FREELLM_DEADLINE_S - $(date +%s) ))
+  if (( _freellm_remaining_s <= 0 )); then
+    echo "FREELLM: overall timeout budget (${TIMEOUT}s) exhausted before attempt $attempt/$FREELLM_MAX_ATTEMPTS -- giving up" >&2
+    curl_rc=28
+    break
+  fi
+  _freellm_this_attempt_timeout="$FREELLM_ATTEMPT_TIMEOUT"
+  (( _freellm_this_attempt_timeout > _freellm_remaining_s )) && _freellm_this_attempt_timeout="$_freellm_remaining_s"
+  HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TMPOUT" -X POST \
+    "$FREELLM_API_BASE/chat/completions" \
+    -H "Content-Type: application/json" \
+    -H @"$AUTH_HDR" \
+    --data @"$REQ_FILE" \
+    --noproxy '*' \
+    --connect-timeout 5 \
+    --max-time "$_freellm_this_attempt_timeout" 2>"$TMPERR")
+  curl_rc=$?
+  if [[ "$curl_rc" -eq 28 && "$attempt" -lt "$FREELLM_MAX_ATTEMPTS" ]]; then
+    echo "FREELLM: attempt $attempt/$FREELLM_MAX_ATTEMPTS stalled (no response within ${_freellm_this_attempt_timeout}s) -- retrying" >&2
+    attempt=$((attempt + 1))
+    continue
+  fi
+  if [[ "$curl_rc" -eq 28 ]]; then
+    echo "FREELLM: all $FREELLM_MAX_ATTEMPTS attempts stalled (no response within ${FREELLM_ATTEMPT_TIMEOUT}s each) -- giving up" >&2
+  fi
+  break
+done
 
 # ---- handle API response ---------------------------------------------------------------
 case "$HTTP_CODE" in

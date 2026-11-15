@@ -85,6 +85,17 @@ else
   log "mopsion suite-guard installer not found ($CC_GUARD_INSTALLER)"
 fi
 
+# 4c. /tmp inode-guard crontab line (card b1813ab2). A crontab entry is host state, not repo
+# state, so a fresh checkout would otherwise never get it; idempotent (checks the existing
+# crontab for the script's own path before appending), re-run every boot to self-heal.
+TMP_GUARD_INSTALLER="$(dirname "$0")/install-tmp-inode-guard-cron.sh"
+if [ -x "$TMP_GUARD_INSTALLER" ]; then
+  bash "$TMP_GUARD_INSTALLER" >>"$LOG" 2>&1 \
+    && log "/tmp inode-guard cron ensured" || log "/tmp inode-guard cron ensure FAILED"
+else
+  log "/tmp inode-guard installer not found ($TMP_GUARD_INSTALLER)"
+fi
+
 # 5. Windows-side WSL watchdog (outer net for a TOTAL WSL wedge). WSL-only +
 # self-guarded; idempotent, so a deleted/missing Windows task self-heals at
 # logon. Silent no-op on non-WSL / no-powershell hosts.
