@@ -66,11 +66,12 @@ function ctxFor(path: string, method: string, body?: Buffer, contentType?: strin
     destroy() {},
   }
   const url = new URL(`http://localhost:3420${path}`)
-  // CYBERED NO-GO F2 (card 7c79badc): approve/reject now require a human credential (session,
-  // or a non-agent device key) -- the shared agent bearer this file otherwise uses throughout
+  // CYBERED NO-GO F2 + WhiteHat follow-up (card 7c79badc): the whole /api/skills/pending
+  // surface (list, detail, approve, reject) now requires a human credential (session, or a
+  // non-agent device key) -- the shared agent bearer this file otherwise uses throughout
   // (kind: 'token') would 403 there. Every OTHER route keeps exercising the shared-bearer path,
   // which is what every agent actually calls these with.
-  const auth: RouteContext['auth'] = /\/pending\/[^/]+\/(approve|reject)$/.test(url.pathname)
+  const auth: RouteContext['auth'] = /^\/api\/skills\/pending(\/[^/]+(\/(approve|reject))?)?$/.test(url.pathname)
     ? { kind: 'session', user: 'peti' }
     : { kind: 'token' }
   return { ctx: { req, res, path: url.pathname, method, url, auth } as RouteContext, out }
@@ -245,18 +246,27 @@ describe('imported archives are queued, scanned and shown before approval', () =
     expect(await pendingList()).toEqual([])
   })
 
-  it('CYBERED NO-GO F2: the shared agent bearer cannot approve or reject, only a human credential can', async () => {
-    await call(`/api/agents/${AGENT}/skills`, 'POST', { name: 'zz-bearer-gate', description: 'x' })
+  it('CYBERED NO-GO F2 + WhiteHat follow-up: the shared agent bearer cannot list, view, approve or reject -- only a human credential can', async () => {
+    await importZip('/api/skills/import', zipOf((d) => {
+      mkdirSync(join(d, 'zz-bearer-gate'))
+      writeFileSync(join(d, 'zz-bearer-gate', 'SKILL.md'), '# x\n')
+    }))
+    const bearerList = await callAs('/api/skills/pending', 'GET', { kind: 'token' })
+    expect(bearerList.status).toBe(403)
     const [p] = await pendingList()
+    const bearerDetail = await callAs(`/api/skills/pending/${p.id}`, 'GET', { kind: 'token' })
+    expect(bearerDetail.status).toBe(403)
     const bearerApprove = await callAs(`/api/skills/pending/${p.id}/approve`, 'POST', { kind: 'token' }, { hash: p.hash })
     expect(bearerApprove.status).toBe(403)
     const bearerReject = await callAs(`/api/skills/pending/${p.id}/reject`, 'POST', { kind: 'token' })
     expect(bearerReject.status).toBe(403)
     const deviceAgentApprove = await callAs(`/api/skills/pending/${p.id}/approve`, 'POST', { kind: 'device', device: `agent:${AGENT}` }, { hash: p.hash })
     expect(deviceAgentApprove.status).toBe(403)
-    // still pending: neither 403 installed or discarded it.
+    // still pending: none of the 403s installed or discarded it.
     expect(await pendingList()).toHaveLength(1)
-    // a real human credential (session) still works, same hash, same id.
+    // a real human credential (session) still works for all four, same hash, same id.
+    expect((await call('/api/skills/pending', 'GET')).status).toBe(200)
+    expect((await call(`/api/skills/pending/${p.id}`, 'GET')).status).toBe(200)
     expect((await call(`/api/skills/pending/${p.id}/approve`, 'POST', { hash: p.hash })).status).toBe(200)
   })
 
