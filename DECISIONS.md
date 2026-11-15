@@ -25381,3 +25381,72 @@ VALÓDI saját commitja (e3787f5d8, tartalom-azonos a fenti négy fájlon) friss
 cherry-pickelve, a DECISIONS.md bejegyzés (ez a blokk) kézzel újra a fájl VÉGÉRE fűzve, mert az
 eredeti append pozíciója (akkori sor 23770) közben elavult. A verdikt áthozva, nem újra-reviewolva --
 lásd a landoló komment a pontos per-fájl blob-azonosság igazolással.
+
+## 2026-11-14 -- 4cd2a0fc: freellm-call.sh kliens-oldali retry, nem freellmapi-config
+
+**Dontes:** a card celja ("egy lassu upstream ne egye meg a teljes FREELLM_TIMEOUT
+budgetet") KLIENS-OLDALI megoldast kapott (store/freellm-call.sh uj FREELLM_MAX_ATTEMPTS/
+FREELLM_ATTEMPT_TIMEOUT valtozoi, alapertek 2 probalkozas x TIMEOUT/3), NEM a freellmapi
+szerver sajat PROVIDER_TIMEOUT_<PLATFORM>/fallback_time_budget_ms config-janak hangolasat.
+
+**Miert nem a szerver-config:** a freellmapi forras tenyleges vizsgalata (server/src/
+providers/index.ts, provider-timeout.ts) feltarta, hogy a legtobb katalogus-platform
+(pl. google: `new GoogleProvider({timeoutMs: 60_000})`) alapertek szerint PONTOSAN annyi
+(60000ms), mint a sajat kliensunk FREELLM_TIMEOUT-ja -- ez a tenyleges gyoker-ok a
+MikroB-probaban latott "client disconnected mid-attempt ... stopping without benching"
+jelensegre (a ket oldal verseng, es a kliens veszit). A platformok tucatjait egyenkent,
+tartosan PROVIDER_TIMEOUT_<PLATFORM>-pal pin-elni (es upstream-sync utan is karban
+tartani) terhes es a forras-draft ellen szol. Egy izolalt freellmapi-peldanyon
+(FREEAPI_DB_PATH temp DB, fix port) egy valodi custom-provider-parral REPRODUKALVA: az
+alapertek (custom: 120000ms) a kliens 60s/65s budgetje elott sosem jar le, a kliens
+ad fel elobb. Ugyanazon az izolalt peldanyon PROVIDER_TIMEOUT_CUSTOM=15000-tel a
+problema megoldhato volt szerver-oldalon IS -- de ez csak a 'custom' platformra VONT
+le, a tenyleges forgalmunk (FREELLM_MODEL=auto, tucatnyi katalogus-platform) nem ezt
+hasznalja, es a general megoldas (minden platform pin-elese) nem karbantarthato.
+
+**A valasztott fix:** freellm-call.sh a TIMEOUT-ot tobb, rovidebb probalkozasra bontja
+(alapertek: 2x TIMEOUT/3 masodperc); curl exit 28 (operation timeout, nincs valasz) az
+EGYETLEN ag, amit ujrapr obal -- minden mas hiba (HTTP-valasz, elutasitott kapcsolat)
+determinisztikus, ujraprobalas nem valtana semmit. A freellmapi "auto" router minden
+hivasnal frissen dont, tehat egy masodik probalkozasnak valodi esolye van egy masik,
+valaszolo providerre esni. Teszt: store/freellm-call-retry.selftest.sh, izolalt mock
+szerverrel (elso keres 90s-ig akad, utana azonnal valaszol) -- bizonyitja: a fallback
+valasz a FREELLM_TIMEOUT-on belul erkezik, a masodik probalkozas tenylegesen megtortenik
+(nem csendben eldobva), es FREELLM_MAX_ATTEMPTS=1-gyel (retry kikapcsolva) ugyanaz a
+forgatokonyv sikertelen -- a retry az, amin a kulonbseg all.
+
+**Ki dontott:** backend2 (kartya 4cd2a0fc, MikroB priority 13768, Peti-elsobbseg).
+Gate-SHA: lasd a kartya REVIEW-jat.
+
+## 2026-11-14 -- 4cd2a0fc delta: FREELLM_TIMEOUT/MAX_ATTEMPTS/ATTEMPT_TIMEOUT validacio + budget-clamp
+
+**Dontes:** a WhiteHat2 (cybersec2) delta-gate lelete (komment 31204, F1 MEDIUM-LOW, F2 LOW) alapjan
+a freellm-call.sh harom uj konfig-valtozoja (FREELLM_TIMEOUT, FREELLM_MAX_ATTEMPTS,
+FREELLM_ATTEMPT_TIMEOUT) most validalva van (`^[1-9][0-9]*$` + hossz-korlat) MIELOTT bash
+aritmetikaba kerulnek, es egy magas FREELLM_MAX_ATTEMPTS x explicit FREELLM_ATTEMPT_TIMEOUT
+kombinacio mar a FREELLM_TIMEOUT budgetre van clamp-elve (TIMEOUT/attempts-re), nem haladhatja
+tul azt.
+
+**Miert:** F1 -- a regi kod a harom valtozot `$(( TIMEOUT / 3 ))` es `[[ "$attempt" -le
+"$FREELLM_MAX_ATTEMPTS" ]]` aritmetikaban hasznalta validacio nelkul; egy `FREELLM_TIMEOUT=
+'x[$(parancs)]'` alaku ertek a hivo oldalrol (akarki inditja a scriptet, ugyanaz a principal,
+nincs uj bizalmi hatar, de a script sajat header-je egy korabbi CRITICAL injection-t rogzit,
+es a validacio olcso) parancsot futtat a bash aritmetikai kiertekeles soran. F2 -- a validacio
+melleklete: FREELLM_ATTEMPT_TIMEOUT=0 (`curl --max-time 0` = korlatlan) mar `^[1-9]...` regex
+alatt elutasitva; egy magas FREELLM_MAX_ATTEMPTS x nagy FREELLM_ATTEMPT_TIMEOUT osszeg a
+budget felett is clamp-elve van (pl. 5 probalkozas x 2s a 6s budget felett -- most 1s/probalkozasra
+csokkentve a budget betartasahoz).
+
+**Amit a Kesz-ha (b) pontrol oszinten rogzitunk (cybersec2 31204, MikroB 18483):** a (b) pont
+("a lassu provider megjelenik a proxy logban, benchelve vagy szamolva, nem csendben eldobva")
+CSAK FELIG teljesul. A kliens oldalan a stall/retry stderr-re kerul (ez igaz), de a VALODI
+freellmapi proxy (server/src/lib/fallback-loop.ts:1546-1560, csak olvasva, nem modositva) egy
+kliens-oldali megszakitast "canceled" kerelemkent logol, es EZT KIFEJEZETTEN NEM szamitja
+provider-health szignalnak (nincs cooldown, nincs buntetes, a stats/scoring lekerdezesek
+kizarjak a 'canceled' sorokat). A stalled route tehat lathato a kerelem-tablaban, de a kliens-
+oldali retry soha nem benchel semmit szerver-oldalon -- ez egy ismert, dokumentalt korlat, nem
+hianyossag a mostani javitasban (a kartya celja a kliens-oldali budget betartasa volt, nem a
+szerver sajat benchelesi logikajanak megvaltoztatasa).
+
+**Ki dontott:** backend2 (kartya 4cd2a0fc delta, MikroB dispatch msg_id 18483, cybersec2 lelete
+31204 alapjan). Gate-SHA: lasd a kartya uj REVIEW-jat.
