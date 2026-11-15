@@ -1371,6 +1371,20 @@ if _repo_ok:
           c("someone", "unrelated chatter\nLanding: n/a (just testing)")], "NOT-LANDED",
          gates="qa", env=DB_ENV, landed=True, extra=["--card", "ffffffff"])
 
+    # Cybersec2 NO-GO 31869, F1 round 2: a LATER comment that merely STARTS with the word REVIEW
+    # (no Gate-SHA line at all) must not win the "latest REVIEW" slot over the real, Gate-SHA-
+    # bearing REVIEW -- it must not exempt the real REVIEW's declared, unlanded sha either. Pin:
+    # NOT-LANDED, not AGREE.
+    case("a later Gate-SHA-less 'REVIEW (addendum)' comment does NOT exempt the real REVIEW's sha",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED),
+          c("someone", "REVIEW (addendum)\nLanding: n/a")], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "hhhhhhhh"])
+
+    case("the case-insensitive 'review:' spelling, same shape, does NOT exempt either",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED),
+          c("someone", "review: just a note\nLanding: n/a")], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "iiiiiiii"])
+
     _ldb.close()
     shutil.rmtree(_landings_dir, ignore_errors=True)
 

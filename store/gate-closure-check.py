@@ -303,40 +303,32 @@ _RETRACTION_LINE = re.compile(r"^\s*(?:VISSZAVONVA|RETRACTED)\s*:\s*(.+)$", re.I
 _LANDING_LINE = re.compile(r"^\s*Landing\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 
 
-def _latest_review_comment(comments):
-    """The LATEST, non-generated, REVIEW-shaped comment's content, or None if there is none. Same
-    comment-selection rule declared_shas() already applies to Gate-SHA lines (latest REVIEW wins,
-    generated authors skipped) -- but without requiring a Gate-SHA line to be present, because
-    `Landing: n/a` is exactly the case where there is deliberately no sha to declare."""
-    found = None
-    for c in comments:
-        if _is_generated_author(c):
-            continue
-        content = (c or {}).get("content")
-        if not isinstance(content, str):
-            continue
-        if not _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
-            continue
-        found = content
-    return found
-
-
 def _landing_exempt(comments):
-    """Does the LATEST REVIEW-shaped comment -- not any arbitrary comment -- carry a line-initial
+    """Does the comment `declared_shas()` itself would read the judged Gate-SHA from -- the latest,
+    not-retracted, REVIEW-shaped comment that carries a Gate-SHA line -- ALSO carry a line-initial
     `Landing: n/a`? Skips BOTH the card_landings and the git-ancestry landed checks for this card,
     the same way `--no-landed` does for the caller.
 
     QA FAIL (comment 31861, card 634a188c): the first version of this function scanned EVERY
     comment on the card, from ANY author, which let anyone who can post a kanban comment exempt a
     real, declared, never-landed Gate-SHA from NOT-LANDED/UNLANDED forever, just by posting one
-    throwaway comment reading "Landing: n/a" anywhere on the card -- a lower bar than forging a
-    sha, since it needs no sha-shaped text at all. Scoped here to the same comment declared_shas()
-    would read the Gate-SHA from, closing the gap the same way `_is_na_gate_sha_line`-style per-
-    comment scoping already closes it for the `Gate-SHA: n/a` convention.
+    throwaway comment reading "Landing: n/a" anywhere on the card.
+
+    Cybersec2 NO-GO round 2 (comment 31869): the first fix narrowed the scan to "the latest
+    REVIEW-shaped comment", but that selection did not require a Gate-SHA line -- so a LATER,
+    unrelated comment that merely started with the word "REVIEW" (e.g. "REVIEW (addendum)\n
+    Landing: n/a", no Gate-SHA at all) still won the "latest REVIEW" slot and exempted a REAL,
+    earlier-declared, unlanded sha it says nothing about. Fixed by reusing declared_shas()'s own
+    comment-selection helper verbatim (not a second regex that can drift from it): the exemption
+    can now only ever come from the exact comment whose Gate-SHA line supplies the judged sha. A
+    comment with no Gate-SHA line never wins that selection, so it can never carry the exemption
+    either -- consistent with the fact that an exemption on a card with NO declared sha at all
+    never reaches this code anyway (NOSHA fires first).
     """
-    content = _latest_review_comment(comments)
-    if content is None:
+    found = _latest_declaring_review(comments)
+    if found is None:
         return False
+    _, content = found
     for m in _LANDING_LINE.finditer(content):
         if m.group(1).strip().lower().startswith("n/a"):
             return True
@@ -392,21 +384,26 @@ def verdict_of(content):
             tuple(shas) if shas else None)
 
 
-def declared_shas(comments):
-    """The shas the LATEST, NOT-RETRACTED `REVIEW` comment says this card delivers, [] if none says.
+def _latest_declaring_review(comments):
+    """(index, content) of the LATEST, NOT-RETRACTED, REVIEW-shaped comment that carries a Gate-SHA
+    line, or None if no comment qualifies. The single shared selection both declared_shas() (which
+    sha is judged) and _landing_exempt() (which comment's `Landing: n/a`, if any, applies to that
+    sha) must agree on -- card 634a188c, Cybersec2 NO-GO round 2 (comment 31869): an exemption read
+    from a DIFFERENT comment than the one supplying the judged sha let an unrelated, Gate-SHA-less
+    "REVIEW (addendum)" comment exempt a real sha it never declared.
 
     Not "the latest Gate-SHA anywhere": measured both ways over the board, sourcing it from any
     non-verdict comment fixes 8 cards and breaks 8 others, so it buys nothing and loosens the rule.
 
     A REVIEW is skipped if a LATER comment carries a line-initial `VISSZAVONVA:`/`RETRACTED:` marker
     naming one of its shas (card 84fed4ee): the 101f1702 incident was a second REVIEW followed by a
-    branch revert back to the first REVIEW's sha, described only in prose -- declared_shas() always
-    took the newest REVIEW regardless, so the withdrawn sha became the default --expect and three
+    branch revert back to the first REVIEW's sha, described only in prose -- this used to always
+    take the newest REVIEW regardless, so the withdrawn sha became the default --expect and three
     verdicts that correctly judged the ORIGINAL sha read STALE. "Later" is comment order, the same
     convention `_gate_state` already documents for this file -- a retraction cannot apply to a REVIEW
     that has not been posted yet.
     """
-    found = []
+    found = None
     for i, c in enumerate(comments):
         if _is_generated_author(c):
             continue
@@ -420,8 +417,15 @@ def declared_shas(comments):
             continue
         if sha_sets_agree(shas, _retraction_shas_after(comments, i)):
             continue
-        found = shas
+        found = (i, content)
     return found
+
+
+def declared_shas(comments):
+    """The shas the LATEST, NOT-RETRACTED `REVIEW` comment says this card delivers, [] if none says.
+    See _latest_declaring_review() for the selection rule."""
+    found = _latest_declaring_review(comments)
+    return _line_shas(found[1]) if found else []
 
 
 def _retraction_shas_after(comments, index):
