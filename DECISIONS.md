@@ -25582,3 +25582,38 @@ the skip_category M2 case (1/244); `ALLOWED_PROJECTS = {"mikrob"}` widened to
 18824) authorized building on `card/6d8ef952`@`a1c72ca4` as the baseline before that cards own
 landing, since it is already gated (QA PASS 31538 + CYBERSEC GO 31533) and only pending landing.
 Gate: QA + Cybersec. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15 -- card 81eb57b5 delta: 3 fixes on Cybersec GO (MikroB 18891) before landing 2453cf94
+
+MikroB gave CYBERSEC GO on `2453cf94` but held the landing for 3 small fixes (his call, "they are
+small and the freellm route reads every card text"):
+
+1. **MEDIUM: PEM pattern quadratic with no END.** The unbounded `[\s\S]+?` scans ahead for a
+   never-found END on EVERY BEGIN occurrence; with many BEGIN markers spread through the text
+   that is O(n^2) overall (measured on a single isolated BEGIN this is much cheaper -- the regex
+   engine's literal-prefix search finds it in O(1) and the scan itself is then O(n); the
+   quadratic blowup needs many BEGIN occurrences). Fix: bounded the body-match to `{0,8192}?`
+   (8 KiB -- covers an RSA-8192 PEM body, base64 of the DER, a few KB, with room to spare).
+2. **Telegram bot token pattern too narrow.** Was exactly `\d{8,10}:[A-Za-z0-9_-]{35}`. Widened
+   to `\d{6,12}:[A-Za-z0-9_-]{30,60}` per MikroB 18891.
+3. **ya29 pin.** Added a dedicated selftest case confirming the `google-oauth-token` pattern
+   (not the older `google-api-key`/`bearer-token` patterns) is what masks a ya29 sample.
+
+**Mérés:** on a dense repeated-BEGIN fixture (~400k chars, ~8500 unterminated BEGIN markers,
+every ~47 chars) the pre-fix unbounded pattern took 10.8s; the 8192-cap fix takes 0.66s. A
+sparser fixture (400 occurrences, every 1000 chars) only showed 0.545s even unbounded -- the
+selftest's timing pin uses the DENSE fixture, the only one shown to trip the quadratic path.
+
+**Teszt:** `offload-dispatch.selftest.sh` 244 -> 253/253 PASS (2 PEM timing/length checks, 2 new
+telegram-token boundary cases x2 checks each = 4, 3 ya29-dedicated-pin checks). Mutation-proven:
+reverting the PEM cap to unbounded makes the timing check red (252/253, takes >2s); reverting the
+telegram widening back to `{35}`/`{8,10}` makes the 2 new boundary cases red (4/4 of their
+checks, 249/253); restoring either fix brings 253/253 back. The ya29 pin required no code mutant
+(the pattern already existed from the prior round) -- it only adds a check that the OLDER
+`google-api-key`/`bearer-token` patterns do not already cover the ya29 shape on their own.
+
+**Ki döntött:** MikroB (msg 18891, delta-gate on 2453cf94) named all 3 fixes; backend2 implemented
+and mutation-proved them. Gate: delta Cybersec + QA on these 3 changes only (per 18891 and the
+delta-regate rule, Peti 13846).
+
+Gate-SHA: lásd REVIEW komment.

@@ -1564,6 +1564,60 @@ check "M2 (31533): --check-blocked (Gemini), project=mopsion (+gemini-ok marker)
 check "M2 (31533): --check-blocked (Gemini), project=mikrob + category tag SEC (+gemini-ok marker) -- stays BLOCK" \
   "$(DASHBOARD_URL="http://127.0.0.1:1" bash "$DISPATCH" --check-blocked mikrob "SEC,gemini-ok" "egyszeru feladat" "irj egy fuggvenyt" >/dev/null 2>&1; echo $?)" "0"
 
+
+# ============================================================================================
+# MikroB 18891 (delta on 2453cf94, Cybersec GO on 2453cf94 with 3 fix requests before landing).
+# ============================================================================================
+
+# ---- (1) PEM pattern was quadratic when a BEGIN marker has no matching END: the unbounded
+# "[\s\S]+?" makes the regex engine retry a never-found END one char at a time for EACH BEGIN
+# occurrence, and with many BEGIN occurrences spread densely through the text the total work is
+# O(n^2) (measured before the fix, repeated-BEGIN input: 100k chars 1.46s, 400k chars 20s per
+# leaf). A single isolated BEGIN, or BEGINs spaced far apart, is much cheaper (the regex engine's
+# literal-prefix search finds each one in O(1), and the bounded fix below caps the subsequent
+# scan) -- so the fixture below repeats the marker DENSELY (every ~47 chars, ~8500 occurrences
+# in ~400k chars) to actually exercise the quadratic path (measured: 10.8s unbounded, 0.66s with
+# the 8192-char cap fix). Timing pin: must stay well under 2s.
+pem_stress_marker="-----BEGIN PRIVATE"; pem_stress_marker="${pem_stress_marker} KEY-----"
+pem_stress_start="$(date +%s.%N)"
+pem_stress_out="$(python3 -c "
+import sys
+marker = sys.argv[1]
+unit = marker + 'A' * 20
+sys.stdout.write(unit * 8500)
+" "$pem_stress_marker" | bash "$DISPATCH" --test-redact-secrets)"
+pem_stress_end="$(date +%s.%N)"
+pem_stress_elapsed="$(python3 -c "print(1 if ($pem_stress_end - $pem_stress_start) < 2.0 else 0)")"
+check "redact_secrets PEM pattern: ~400k chars, ~8500 densely-packed unterminated BEGIN markers -- stays under 2s (MikroB 18891 M1)" \
+  "$pem_stress_elapsed" "1"
+check "redact_secrets PEM pattern: ~400k chars, ~8500 densely-packed unterminated BEGIN markers -- output length unchanged (no match, no truncation)" \
+  "$(printf '%s' "$pem_stress_out" | wc -c)" "399500"
+
+# ---- (2) Telegram bot token pattern was exactly {35} on the secret and {8,10} on the bot id --
+# widened to secret {30,60} / id {6,12} (MikroB 18891 M2). Pin the boundary cases the old
+# pattern would have missed: 34-char and 40-char secrets.
+tg_bot_tok_34="123456:"; tg_bot_tok_34="${tg_bot_tok_34}$(python3 -c "print('A'*34)")"
+tg_bot_tok_40="1234567890:"; tg_bot_tok_40="${tg_bot_tok_40}$(python3 -c "print('B'*40)")"
+redact_check "telegram bot token, 34-char secret (widened range, MikroB 18891 M2)" "bot: $tg_bot_tok_34" "$tg_bot_tok_34"
+redact_check "telegram bot token, 40-char secret (widened range, MikroB 18891 M2)" "bot: $tg_bot_tok_40" "$tg_bot_tok_40"
+
+# ---- (3) ya29 Google OAuth token pinned with a sample the OLDER labelled patterns (google-api-key
+# AIza..., bearer-token) do not already mask on their own -- confirms the dedicated
+# google-oauth-token pattern is doing the work, not an accidental overlap (MikroB 18891 M3).
+ya29_dedicated="ya29."; ya29_dedicated="${ya29_dedicated}c0AfJohXNqWxYzAbCdEfGhIjKlMnOpQrStUvWx"
+ya29_dedicated_out="$(printf '%s' "token=$ya29_dedicated" | bash "$DISPATCH" --test-redact-secrets)"
+check "redact_secrets ya29 dedicated sample -- not already masked by google-api-key or bearer-token alone" \
+  "$(printf '%s' "token=$ya29_dedicated" | python3 -c '
+import re, sys
+text = sys.stdin.read()
+older = [re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"), re.compile(r"\bBearer\s+[A-Za-z0-9._-]{10,}", re.IGNORECASE)]
+print(1 if any(p.search(text) for p in older) else 0)
+')" "0"
+check "redact_secrets ya29 dedicated sample -- raw value removed by dedicated pattern" \
+  "$(printf '%s' "$ya29_dedicated_out" | grep -c -- "$ya29_dedicated")" "0"
+check "redact_secrets ya29 dedicated sample -- google-oauth-token marker present" \
+  "$(printf '%s' "$ya29_dedicated_out" | grep -c '\[REDACTED:google-oauth-token\]')" "1"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

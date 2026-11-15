@@ -117,12 +117,20 @@ PATTERNS = [
     # Groq gsk_... .
     ("vendor-secret-key",
      re.compile(r"\b(?:sk-ant-api03|sk-ant-oat01|sk-proj|sk-or-v1|sk_live|gsk)[-_][A-Za-z0-9_-]{10,}\b")),
-    # Telegram bot token: <numeric bot id>:<35-char secret> (card 81eb57b5 M1, exact shape from
-    # Cybersec GO 31533).
-    ("telegram-bot-token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
+    # Telegram bot token: <numeric bot id>:<secret> (card 81eb57b5 M1, Cybersec GO 31533; widened
+    # per MikroB 18891 -- the real shape varies, {35} alone missed valid 34/40-char secrets).
+    ("telegram-bot-token", re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,60}\b")),
     # PEM private-key block (RSA/EC/OpenSSH/generic PKCS8) -- whole block, no partial reveal.
+    # Body length BOUNDED at 8 KiB (MikroB 18891 MEDIUM-1): an unbounded "[\s\S]+?" forces the
+    # regex engine to scan ahead for a never-found END on EVERY BEGIN occurrence, and with many
+    # BEGIN markers spread through the text that is O(n^2) overall (measured on repeated-BEGIN
+    # input: 100k chars 1.46s, 400k chars 20s per leaf). The cap bounds the per-occurrence scan
+    # to a fixed ceiling, so total cost stays O(occurrences * cap) instead of O(occurrences * n)
+    # -- an 8192-char ceiling covers even an RSA-8192 PEM body (base64 of the DER, a few KB) with
+    # room to spare, while a flood of unterminated BEGIN markers on attack input now fails to
+    # match (leaves those markers unredacted) instead of hanging the leaf.
     ("pem-private-key",
-     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----")),
+     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY-----")),
     # A bare 64-char hex token (our own dashboard-token shape, store/.dashboard-token).
     ("hex-token-64",   re.compile(r"\b[0-9a-fA-F]{64}\b")),
     ("bearer-token",   re.compile(r"\bBearer\s+[A-Za-z0-9._-]{10,}", re.IGNORECASE)),
