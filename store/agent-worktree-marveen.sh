@@ -125,9 +125,29 @@ else
   # NOT --force, no rm -rf: an occupied path fails loudly instead of silently deleting someone's work.
   # Try creating a NEW branch first (the common case); fall back to an existing local branch (a
   # worktree that was removed with `git worktree remove` but whose branch survived).
-  add_err="$(git -C "$MAIN" worktree add "$TREE" -b "$BRANCH" "origin/$DEFAULT_BRANCH" 2>&1)" \
-    || add_err="$add_err"$'\n'"$(git -C "$MAIN" worktree add "$TREE" "$BRANCH" 2>&1)" \
-    || die 3 "could not create the worktree at $TREE -- git said:"$'\n'"$add_err"
+  # `set -e` is active (line 57), so every git check that may legitimately fail here goes through
+  # an `if`/`||` list -- never a bare statement -- or its failure would abort the whole script
+  # instead of reaching the fallback/rollback logic below.
+  branch_preexisted=0
+  if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then branch_preexisted=1; fi
+  add_rc=0
+  add_err="$(git -C "$MAIN" worktree add "$TREE" -b "$BRANCH" "origin/$DEFAULT_BRANCH" 2>&1)" || add_rc=$?
+  if [ "$add_rc" -ne 0 ]; then
+    # Card abd4970c (F4.2.1): `git worktree add -b` can create the BRANCH ref successfully and
+    # still fail the worktree-population step right after it (measured: an occupied target
+    # directory reproduces this every time -- git prints "branch 'X' set up to track..." THEN
+    # "fatal: ... already exists", exit 128). A dangling branch left behind here is invisible
+    # until the NEXT create attempt silently reuses it via the fallback below, as if it were the
+    # legitimate "survived a worktree remove" case, carrying whatever half-initialized state this
+    # failed attempt left on it. Only ever delete it when THIS call is what just created it
+    # (branch_preexisted=0) -- a branch that already existed before this call is the real survivor
+    # case the fallback exists for, and must never be touched.
+    if [ "$branch_preexisted" = "0" ] && git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      git -C "$MAIN" branch -D "$BRANCH" >/dev/null 2>&1 || true
+    fi
+    fallback_err="$(git -C "$MAIN" worktree add "$TREE" "$BRANCH" 2>&1)" \
+      || die 3 "could not create the worktree at $TREE -- git said:"$'\n'"$add_err"$'\n'"$fallback_err"
+  fi
   echo "created $TREE on $BRANCH"
 fi
 
