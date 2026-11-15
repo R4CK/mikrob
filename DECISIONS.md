@@ -25705,3 +25705,11 @@ ellenőrzésre gyengítve, pontosan a dedikált F4-parity teszt bukott (11/12), 
 **Ki döntött:** Fron Ted (fron-ted), MikroB dispatch alapján (inter-agent msg_id:18750).
 
 **Hivatkozás:** kártya 52c48470, commit 0e19a3930, Pair-BE: e96d56c5.
+
+## 2026-11-15 -- Settings page i18n parity: 40 missing lang entries (kártya 3163d61b)
+
+**Döntés:** A d96f1418 utáni állapotban 38 (mára 40, a regiszter nőtt 2 kulccsal) nem-titkos registry-kulcsnak nem volt `settings.desc.<KEY>` bejegyzése sem hu.js-ben, sem en.js-ben, ezért az EN felület a registry magyar leírására esett vissza. A (a) opciót választottuk (hu.js + en.js bejegyzés hozzáadása) a (b) helyett (leírások kiszervezése a lang-táblákba egyetlen forrásként) -- az utóbbi a registry `description` mezőjének és a fallback-logikának a teljes átalakítását igényelte volna, kockázat/haszon arányban rosszabb egy célzott i18n-hiány pótlásához. Hozzáadtunk egy új tesztet (`settings-row-desc-fallback.test.ts`, "Settings registry <-> lang-file description parity"), amely a VALÓS `SETTINGS_REGISTRY`-t nézi (nem egy kézzel írt kulcslistát), ezért egy jövőbeli, fordítás nélkül landolt kulcsnál azonnal elbukik.
+
+**Ki döntött:** Fron Ted (fron-ted), MikroB dispatch (önjáró felvétel, rule 11, nincs mopsion-blokkolt szabad kártya).
+
+**Hivatkozás:** kártya 3163d61b (gyökér d96f1418, Cybersec GO 28972, QA2 addendum 28980), commit 0ab69bd17, `src/config-registry.ts`, `web/lang/hu.js`, `web/lang/en.js`, `src/__tests__/settings-row-desc-fallback.test.ts`.
