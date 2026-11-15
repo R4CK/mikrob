@@ -238,9 +238,11 @@ describe('wiring (source-level)', () => {
     expect(SRC).toMatch(/const cronPc = await runPreCheck\(task\)\n\s+rememberPreCheckAnswer\(task, now, cronPc\)/)
   })
 
-  it('runPreCheck spawns without a synchronous call, anywhere in the file', () => {
-    expect(SRC).not.toMatch(/\b(spawnSync|execSync|execFileSync)\(/)
+  it('runPreCheck spawns without a synchronous call', () => {
     const fn = SRC.slice(SRC.indexOf('export async function runPreCheck'), SRC.indexOf('export const RETRY_PRECHECK_MIN_INTERVAL_MS'))
-    expect(fn).toMatch(/spawn\('bash', \[scriptPath\]/)
+    // The argv comes from preCheckInvocation (verified bytes for a hashed script,
+    // [scriptPath] otherwise); still the async spawn.
+    expect(fn).toMatch(/spawn\('bash', inv\.args/)
+    expect(fn).not.toMatch(/spawnSync|execSync|execFileSync/)
   })
 })

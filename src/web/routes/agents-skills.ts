@@ -5,9 +5,9 @@ import { randomUUID } from 'node:crypto'
 import { execShellAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
 import { agentDir } from '../agent-config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
+import { importArchiveToPending, nameConflict, queueGeneratedSkill } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries, shellEscape } from '../sanitize.js'
@@ -204,8 +204,8 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       } catch { /* dir gone or unreadable; nothing to do */ }
       logger.error({ err }, 'Failed to import skill')
       json(res, { error: 'Failed to extract .skill file' }, 500)
-      return true
     }
+    return true
   }
 
   const skillActionMatch = path.match(/^\/api\/agents\/([^/]+)\/skills\/([^/]+)$/)
@@ -262,20 +262,22 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     if (!skillName) { json(res, { error: 'Skill name is required' }, 400); return true }
     if (!description) { json(res, { error: 'Skill description is required' }, 400); return true }
 
-    const skillDir = join(skillsRootFor(agentName), skillName)
-    if (existsSync(skillDir)) { json(res, { error: 'Skill already exists' }, 409); return true }
-    mkdirSync(skillDir, { recursive: true })
+    // MARVEENGAPS1020 (b): the generated SKILL.md is queued for approval.
+    const target = { scope: 'agent' as const, agent: agentName }
+    const clash = nameConflict(target, skillName)
+    if (clash === 'live') { json(res, { error: 'Skill already exists' }, 409); return true }
+    if (clash === 'pending') { json(res, { error: 'A skill with this name is already waiting for approval' }, 409); return true }
 
+    let skillMd: string
     try {
-      const skillMd = await generateSkillMd(skillName, description)
-      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
-    } catch (err) {
-      rmSync(skillDir, { recursive: true, force: true })
+      skillMd = await generateSkillMd(skillName, description)
+    } catch {
       json(res, { error: 'Failed to generate skill' }, 500)
       return true
     }
-
-    json(res, { ok: true, name: skillName })
+    const queued = queueGeneratedSkill(target, skillName, skillMd)
+    logger.info({ agent: agentName, name: skillName, id: queued.id }, 'Agent skill generated and queued for approval')
+    json(res, { ok: true, name: skillName, pending: true, id: queued.id })
     return true
   }
 

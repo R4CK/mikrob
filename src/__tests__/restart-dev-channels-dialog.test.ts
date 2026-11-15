@@ -246,7 +246,7 @@ describe('wiring (source-level)', () => {
     expect(spawnAt).toBeGreaterThan(0)
     expect(identityAt).toBeGreaterThan(spawnAt)
     const restart = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('async function restartAgentProcessUnlocked('))
-    expect(restart.slice(0, restart.indexOf('\n}\n'))).toContain('await startAgentProcessUnlocked(name, opts)')
+    expect(restart.slice(0, restart.indexOf('\n}\n'))).toContain('await startAgentProcessUnlocked(name, willWake ? { ...opts, ownsResume: true } : opts)')
   })
 
   it('the identity setup answers startup dialogs BEFORE anything else touches the pane', () => {
