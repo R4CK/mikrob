@@ -267,6 +267,27 @@ describe('imported archives are queued, scanned and shown before approval', () =
     expect((await call(`/api/skills/pending/${p.id}/approve`, 'POST', { hash: p.hash })).status).toBe(200)
   })
 
+  it('a federation caller cannot list, view, approve or reject either (WhiteHat 31601, card 7c79badc)', async () => {
+    await importZip('/api/skills/import', zipOf((d) => {
+      mkdirSync(join(d, 'zz-federation-gate'))
+      writeFileSync(join(d, 'zz-federation-gate', 'SKILL.md'), '# x\n')
+    }))
+    const [p] = await pendingList()
+    const fedAuth: RouteContext['auth'] = { kind: 'federation', peer: 'other-system' }
+    const fedList = await callAs('/api/skills/pending', 'GET', fedAuth)
+    expect(fedList.status).toBe(403)
+    const fedDetail = await callAs(`/api/skills/pending/${p.id}`, 'GET', fedAuth)
+    expect(fedDetail.status).toBe(403)
+    const fedApprove = await callAs(`/api/skills/pending/${p.id}/approve`, 'POST', fedAuth, { hash: p.hash })
+    expect(fedApprove.status).toBe(403)
+    const fedReject = await callAs(`/api/skills/pending/${p.id}/reject`, 'POST', fedAuth)
+    expect(fedReject.status).toBe(403)
+    // still pending: none of the 403s installed or discarded it.
+    expect(await pendingList()).toHaveLength(1)
+    // cleanup via the real human path, so this test does not leak state into the next.
+    expect((await call(`/api/skills/pending/${p.id}/approve`, 'POST', { hash: p.hash })).status).toBe(200)
+  })
+
   it('a symlink planted into a pending skill after the scan blocks the approval', async () => {
     await importZip('/api/skills/import', zipOf(hostile))
     symlinkSync('/etc/hosts', join(PENDING, (await pendingList())[0].id, 'skill', 'link'))
