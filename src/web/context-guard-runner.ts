@@ -1,4 +1,4 @@
-import { statSync, readFileSync, writeFileSync } from 'node:fs'
+import { statSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
@@ -51,6 +51,7 @@ import {
   usageLimitEvidenceFromTranscript,
   usageLimitVerdict,
   USAGE_LIMIT_MAX_PARK_MS,
+  buildRestartLogEntry,
   type GuardState,
   type HandoffStaleness,
   type GuardInputs,
@@ -234,6 +235,23 @@ function handoffPathFor(name: string): string {
   return join(agentConfigRoot(name), 'HANDOFF.md')
 }
 
+// Structured, per-resume restart log (card d66b7681, MikroB GO msg 18804 condition 2). A plain
+// JSONL append, same shape as channel-event-log.ts -- one line per resume injection, nothing to
+// read atomically, so appendFileSync is enough (no concurrent-writer risk worse than an interleaved
+// line, which a line-oriented JSONL reader tolerates).
+const RESTART_LOG_PATH = process.env.CONTEXT_GUARD_RESTART_LOG_PATH ?? join(PROJECT_ROOT, 'store', 'context-guard-restart-log.jsonl')
+
+function appendRestartLogEntry(name: string, hadHandoff: boolean, staleMinutes: HandoffStaleness): void {
+  try {
+    const entry = buildRestartLogEntry(name, hadHandoff, staleMinutes, Date.now())
+    appendFileSync(RESTART_LOG_PATH, JSON.stringify(entry) + '\n')
+  } catch (err) {
+    // Observability, not a control path: losing this line must never block or retry the resume
+    // injection itself, only be noted.
+    logger.warn({ err, name }, 'context-guard: failed to append restart-log entry')
+  }
+}
+
 function handoffMtime(name: string): number | null {
   try { return statSync(handoffPathFor(name)).mtimeMs } catch { return null }
 }
@@ -329,7 +347,14 @@ export function resumePrompt(
       // questions; say the gap out loud and route the agent to the live
       // sources FIRST for the uncovered window.
       ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, DE ELAVULT: az utolsó ~${staleMinutes} perc munkája NINCS benne. ` +
-        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. `
+        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. ` +
+        // card d66b7681 (MikroB GO, msg 18804, condition 1): a backend3 restart
+        // (~30 perc elavult handoff) dupla landolással végződött -- a puszta
+        // FIGYELEM-sor nem volt elég konkrét ahhoz, hogy megállítsa. Ez a sor
+        // egy MÉRHETŐ, KONKRÉT elsőlépés, nem csak egy újabb figyelmeztetés.
+        `KÖTELEZŐ ELSŐ LÉPÉS, MIELŐTT BÁRMILYEN land/push/PUT done (vagy más visszafordíthatatlan lépés) megtörténne: ` +
+        `futtasd \`git ls-remote\` + \`git cat-file -e\` MINDEN sha-ra, amit a handoff megnevez (már landolt / pusholt állapotnak állít), ` +
+        `és olvasd újra az ott megnevezett MINDEN kártya aktuális kanban-státuszát (GET /api/kanban/<id>) -- ne a handoff szava szerint, a MÉRÉS szerint dönts arról, hogy valami már megtörtént-e. `
       : `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója. `
   return (
     base + source +
@@ -920,6 +945,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         }
         if (outcome === 'sent') {
           dropPendingResume(name, 'resume delivered')
+          appendRestartLogEntry(name, hadHandoff, state.handoffStaleMinutes)
         } else {
           // Nothing was injected ('aborted-busy' / 'skipped-locked'): keep
           // the obligation and stay in await-ready, so the next sweep retries

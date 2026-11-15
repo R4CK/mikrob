@@ -25759,3 +25759,33 @@ Windows-futásos lépése, nem ezé a körét.
 
 **Ki döntött:** MikroB (msg 18314/18332, előreveve eb12a5dd saját sorbeli helyéhez képest).
 Gate: QA + RedHat (MikroB kijelölés, 30638, delta re-gate). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15: Ügynök-újraindítás utáni munkamenet-igazolás -- olcsó (C) irány, nem kemény blokkolás (kártya d66b7681)
+
+**Döntés:** a context-guard resume-mechanizmusába NEM épül kemény blokkolás (resume-injektálás
+megállítása + MikroB-értesítés minden elavult handoffnál) -- az flotta-szintű dispatch-késleltetést
+vezetne be és az önjáró flotta ellen hatna túl alacsony küszöbnél. Helyette egy olcsó, additív
+irány (C) ment élesbe: (1) a stale resume-prompt eresítve egy KONKRÉT, MÉRHETŐ első lépéssel
+(`git ls-remote` + `git cat-file` minden sha-ra amit a handoff állít, és minden megnevezett kártya
+státuszának újraolvasása kanban-ból, MIELŐTT bármilyen land/push/PUT done megtörténne); (2) egy
+strukturált, agent-onkénti restart-log (`store/context-guard-restart-log.jsonl`, egy JSON-sor
+minden resume-injektálásnál: agent, handoff-kor percben, stale-jelző, az adott prompt-variáns
+neve), ami mérhetővé teszi, követik-e az ügynökök az instrukciót; (3) legalább egy teszt, ami
+pinneli, hogy a stale ág tényleg tartalmazza az eresített sort.
+
+**Mit indokolt:** a backend3 restart (~30 perc elavult HANDOFF) dupla landolással végződött -- a
+puszta szöveges figyelmeztetés ("FIGYELEM: a HANDOFF.md ELAVULT") már korábban is létezett a
+resume-promptban, de nem volt elég konkrét ahhoz, hogy megállítsa az agensit. Plan-grilling (kártya
+d66b7681 komment 31547) talált egy nyitott kérdést: a hiba oka az volt, hogy az agens nem olvasta/
+követte a figyelmeztetést, vagy hogy a figyelmeztetés maga nem volt elég erős? A kemény blokkolás
+az első esetre sem segítene önmagában (egy agens, aki egy szöveges figyelmeztetést átugrik, egy
+másikat is átugorhat), és a második esetre a (C) irány már elég -- ezért nem volt ok a nagyobb,
+visszafordíthatatlan architektúra-döntésre ráugrani anélkül, hogy a mérés megmutatná, kell-e
+egyáltalán.
+
+**Nyitva hagyva, saját kártyán (ha indokolt):** a kemény blokkolás (resume-injektálás megállítása)
+csak akkor kap saját kártyát, ha a restart-log ismétlődő stale-handoff-utáni landolást mutat --
+azaz a (C) mérés maga dönti el, kell-e a nagyobb beavatkozás.
+
+**Ki döntött:** MikroB (msg 18804, válasz a fullstack plan-grilling kérdésére, komment 31547/
+msg 18803). Gate: QA.
