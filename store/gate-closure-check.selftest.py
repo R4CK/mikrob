@@ -215,26 +215,43 @@ if not _ok:
 case("a REVIEW with no Gate-SHA line is the same case: unchecked, and said out loud",
      [c("backend", "REVIEW: kesz, de nincs sha."), c("qa", V % "aaaa1111")], "AGREE")
 
-# Card 1aeed1ca (WhiteHat2 L1): an explicit "Gate-SHA: n/a" on the LATEST REVIEW must RESET the
-# expectation, not silently fall back to an EARLIER REVIEW's real sha. Before the fix, a REVIEW
-# saying "n/a" produced no hex tokens and was skipped exactly like one with no Gate-SHA line at
-# all, so `found` kept the OLDER REVIEW's sha (aaaa1111) and the gates' AGREE on that same old sha
-# read as a normal match -- the output would NOT say "unchecked", silently treating stale-but-
-# equal-sha agreement as proof the n/a round was reviewed.
+# Card 1aeed1ca (WhiteHat2 L1 + CYBERED NO-GO F2): an explicit "Gate-SHA: n/a" on the LATEST REVIEW
+# must RESET the expectation, not silently fall back to an EARLIER REVIEW's real sha. Before the
+# L1 fix, a REVIEW saying "n/a" produced no hex tokens and was skipped exactly like one with no
+# Gate-SHA line at all, so `found` kept the OLDER REVIEW's sha (aaaa1111) and the gates' AGREE on
+# that same old sha read as a normal match. CYBERED's F2 sharpened the expectation further: once
+# the reset is correct, THIS is no longer "unchecked, but AGREE" (that message is for silence) --
+# it is a STATED mismatch, because the gate verdicted on a REAL commit (aaaa1111) that the n/a
+# REVIEW explicitly says does not exist. The right answer is a non-AGREE verdict that says so.
 n += 1
 _out = run([c("backend", R % "aaaa1111"),
             c("backend", "REVIEW: config-only, nincs tobbe commit.\nGate-SHA: n/a (config-only)"),
             c("qa", V % "aaaa1111")], None, None)
-_ok = "unchecked" in _out
-print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "says-so", "says-so" if _ok else "silent",
-                              "a later n/a REVIEW resets the expectation instead of falling back"))
+_ok = (not _out.startswith("AGREE")) and "n/a" in _out and "aaaa1111" in _out
+print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "mismatch", "mismatch" if _ok else "AGREE",
+                              "a later n/a REVIEW resets the expectation AND reads as a mismatch, not AGREE"))
 if not _ok:
-    failures.append(("n/a must reset, not fall back", "contains 'unchecked'", _out))
+    failures.append(("n/a must reset to a mismatch, not AGREE", "not AGREE, mentions n/a and aaaa1111", _out))
 
 case("...and the reset does not block FORWARD progress: a real sha after the n/a round is used normally",
      [c("backend", R % "aaaa1111"),
       c("backend", "REVIEW: config-only kozbeeso lepes.\nGate-SHA: n/a (config-only)"),
       c("backend", R % "bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+
+# CYBERED NO-GO on 1aeed1ca, F1 (GO condition 1): n/a must NOT reset a REAL sha that sits on the
+# SAME REVIEW. Three shapes of "n/a next to a real sha", each with a gate verdicting on a
+# DIFFERENT sha -- mirrors the plain "REVIEW names bbbb2222, QA verdicts on aaaa1111" base case
+# (line ~197, UNRESOLVED with no clone configured): if the n/a line wiped the real sha, declared
+# would become [] and this would read AGREE instead, exactly the bug being fixed.
+case("F1: a second, separate 'Gate-SHA: n/a' line next to a real one does not wipe the real sha",
+     [c("backend", "REVIEW: kesz.\nGate-SHA: bbbb2222\nGate-SHA: n/a"),
+      c("qa", V % "aaaa1111")], "UNRESOLVED")
+case("F1: upper-case 'N/A' on its own line next to a real sha does not wipe the real sha",
+     [c("backend", "REVIEW: kesz.\nGate-SHA: bbbb2222\nGate-SHA: N/A"),
+      c("qa", V % "aaaa1111")], "UNRESOLVED")
+case("F1: 'n/a <sha>' on ONE line is a real sha, not an n/a declaration",
+     [c("backend", "REVIEW: kesz.\nGate-SHA: n/a bbbb2222"),
+      c("qa", V % "aaaa1111")], "UNRESOLVED")
 
 # Cybered's condition 2: anchored exactly like the verdict, or a comment QUOTING a review supplies
 # the expectation -- the mirror image of gate-dispatch-check's documented false-positive class.
