@@ -142,7 +142,7 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     const cronLoopIdx = SRC.indexOf('for (const task of tasks)')
     expect(cronLoopIdx).toBeGreaterThan(0)
     const cronLoop = SRC.slice(cronLoopIdx)
-    const preCheckIdx = cronLoop.indexOf('await runPreCheck(task)')
+    const preCheckIdx = cronLoop.indexOf('await runPreCheckAsync(task)')
     const fireIdx = cronLoop.indexOf('attemptFireTask(current,')
     expect(preCheckIdx).toBeGreaterThan(0)
     expect(preCheckIdx).toBeLessThan(fireIdx)

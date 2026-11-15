@@ -44,7 +44,7 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
     const nextCheckIdx = SRC.indexOf('if (!task.forceSend', guardIdx)
     expect(nextCheckIdx).toBeGreaterThan(guardIdx)
     const missingBlock = SRC.slice(guardIdx, nextCheckIdx)
-    expect(missingBlock).toMatch(/startAgentProcess\(agentName, \{ ownsResume: true \}\)/)
+    expect(missingBlock).toMatch(/startAgentProcess\(agentName\)/)
     expect(missingBlock).toMatch(/return 'starting'/)
     // And the new branch is inside the same block, not bolted on somewhere else.
     expect(missingBlock).toMatch(/catch \(err\)/)

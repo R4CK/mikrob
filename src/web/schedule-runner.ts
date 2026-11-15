@@ -1732,11 +1732,9 @@ async function attemptFireTaskUnguarded(
     // branch below already calls 'missing', and the retry row + operator alert it drives are what a
     // wedged agent should produce. Caught here rather than at the call sites because THIS is where
     // that meaning is known; the call sites keep a separate backstop for anything else.
-    // ownsResume: the scheduled prompt IS the first prompt of this session, so
-    // the start's generic recovery brief stays out (two prompts for one start).
     let start: { ok: boolean; error?: string }
     try {
-      start = await startAgentProcess(agentName, { ownsResume: true })
+      start = await startAgentProcess(agentName)
     } catch (err) {
       logger.warn(
         { task: task.name, agent: agentName, session, err },

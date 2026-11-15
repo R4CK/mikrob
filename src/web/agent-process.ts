@@ -34,7 +34,7 @@ import {
   detectsHeldPeerMessage,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { scheduleRecoveryBrief, cancelRecoveryBrief } from './restart-recovery-brief.js'
+import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
@@ -2284,42 +2284,32 @@ function startRemoteAgentProcess(
   }
 }
 
-/** What a caller can tell the start about itself. */
-export interface StartOpts {
-  fresh?: boolean
-  /** The caller delivers its OWN first prompt to the new session (the context
-   *  guard's resume), so the recovery brief stays out: two prompts for one
-   *  restart was measured in 10 cases. */
-  ownsResume?: boolean
-}
-
 /**
  * Does a start that just happened deserve a recovery brief?
  *
- * Every successful start does, fresh or --continue, unless its caller owns the
- * first prompt. The first version briefed fresh starts only; the measurement
- * that followed (7 days, 41 restarts through the reconcile auto-start and the
- * API restart, both non-fresh) found the agent idle after 32 of them, because a
- * --continue session still remembers the conversation but nobody hands it a
- * new turn. The brief itself keeps its own rule -- no facts, no message -- so
- * an agent that was genuinely idle still hears nothing.
+ * Only a FRESH start: a --continue resume still has the conversation, so the
+ * agent already knows what it was doing, and a brief there would repeat it.
+ * And only a start that actually succeeded -- briefing a session that never
+ * came up would type into whatever is on that tmux target next.
  *
- * Two exceptions: a start that failed (briefing a session that never came up
- * would type into whatever is on that tmux target next), and a caller that owns
- * the first prompt itself (opts.ownsResume): the context guard (its resume),
- * the scheduler's auto-start (the scheduled prompt), and every restart that
- * owes a [RESTART-WAKE] (restartAgentProcess sets it: the API --continue
- * restart by default, the plan switches, the model fallback).
+ * Card 3a64403b covered the channel-monitor door. The measurement that
+ * followed found three more (context-guard restart, auto-restart in fresh
+ * mode, and the dashboard's own restart button), which is why the decision
+ * now lives here, at the one place all of them pass through, rather than at
+ * each caller.
  *
- * The decision lives here, at the one place every door passes through (card
- * 3a64403b found four of them; the reconcile and API doors made it six),
- * rather than at each caller.
+ * MERGE NOTE (B-wave, card 42938a74): adopted from upstream, but the door in
+ * THIS fork is startAgentProcessUnlocked -- startAgentProcess is the
+ * withLifecycleLock wrapper (card 74ba7c78) and delegates here, so every fresh
+ * caller still passes exactly one place. The fork's own duplicate
+ * scheduleRecoveryBrief in channel-monitor.ts is removed by the same merge, so
+ * the brief is scheduled once rather than twice on the watchdog path.
  */
 export function shouldBriefAfterStart(
-  opts: StartOpts,
+  opts: { fresh?: boolean },
   result: { ok: boolean },
 ): boolean {
-  return result.ok && opts.ownsResume !== true
+  return opts.fresh === true && result.ok
 }
 
 /**
@@ -2366,7 +2356,7 @@ export function isClaudeAgent(model: string, customProviderId: string | null | u
   return !customProviderId && model.startsWith('claude-')
 }
 
-async function startAgentProcessUnlocked(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -3420,22 +3410,14 @@ async function startAgentProcessUnlocked(name: string, opts: StartOpts = {}): Pr
       schedulePluginUnlockAfterRespawn(session, provider.type)
     }
 
-    // A fresh session has no memory of what the agent was doing, and a
-    // --continue one gets no new turn on its own. Every door passes here (the
-    // channel monitor's watchdog and reconcile starts, auto-restart, the
-    // dashboard's start / restart / config-change restarts, the reauth healer,
-    // the heartbeat boot start), so the brief is scheduled once, at the door,
-    // instead of at each caller (card 3a64403b); callers that bring their own
-    // first prompt opt out with ownsResume (see shouldBriefAfterStart).
+    // A fresh session has no memory of what the agent was doing. Every fresh
+    // door passes here -- the channel monitor's watchdog, the context guard,
+    // auto-restart in fresh mode, and the dashboard button -- so the brief is
+    // scheduled once, at the door, instead of at each caller (card 3a64403b).
     if (shouldBriefAfterStart(opts, { ok: true })) {
-      // The gate and the send are a pair: the brief goes in only while the pane
-      // is idle, and the send ABORTS if it turned busy in between, so it is never
-      // typed into a running turn (resume-delivery.ts).
-      scheduleRecoveryBrief(name, session, {
-        isReady: (target) => isSessionReadyForPrompt(target),
-        send: (target, text) =>
-          sendPromptToSession(target, text, null, { lockMode: 'deliver', onBusyTimeout: 'abort' }),
-      })
+      scheduleRecoveryBrief(name, session, (target, text) =>
+        sendPromptToSession(target, text, null, { lockMode: 'deliver' }),
+      )
     }
 
     return { ok: true }
@@ -3446,8 +3428,6 @@ async function startAgentProcessUnlocked(name: string, opts: StartOpts = {}): Pr
 }
 
 async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; error?: string }> {
-  // A brief still waiting for the old incarnation's pane must not fire into a later one.
-  cancelRecoveryBrief(name)
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
@@ -3523,10 +3503,7 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-async function restartAgentProcessUnlocked(
-  name: string,
-  opts: StartOpts & { wake?: RestartWakeRequest } = {},
-): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function restartAgentProcessUnlocked(name: string, opts: { fresh?: boolean; wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   // RESTARTWAKE927 / restart-lock.ts: this function already runs under withLifecycleLock's
   // own per-agent mutex (the caller below), but beginRestart/endRestart is a SEPARATE,
   // cross-cutting flag that OTHER restart initiators (channel-monitor reconcile,
@@ -3547,31 +3524,10 @@ async function restartAgentProcessUnlocked(
       const stopResult = await stopAgentProcessUnlocked(name)
       if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
     }
-    // One restart, one first prompt: a --continue restart that owes a
-    // [RESTART-WAKE] already gets its turn restarted by the wake, so the start's
-    // own recovery brief is skipped (ownsResume) -- otherwise both land ~25 s
-    // after the restart, two instructions for one interruption. Without a wake
-    // (the auto-restart, reconcile, watchdog doors) the brief stays the one
-    // prompt. Accepted trade-off: if the wake is then not delivered (busy pane,
-    // held send lock, tmux error), no brief follows either. A busy pane was
-    // woken by someone else already; the other cases are logged by
-    // restart-wake.ts, and the wake asks the agent to check its kanban, which
-    // carries the same in-progress facts the brief would have listed.
-    const willWake = !opts.fresh && !!opts.wake
-    const started = await startAgentProcessUnlocked(name, willWake ? { ...opts, ownsResume: true } : opts)
-    // Losing the start race must NEVER read as success: the session that is up
-    // is somebody else's, launched with somebody else's options, and a caller
-    // that treats this as done (the context guard does) goes on to inject a
-    // resume prompt into a session it did not create. Loud, and !ok.
-    if (!started.ok && /already running/i.test(started.error ?? '')) {
-      logger.error(
-        { name, opts, error: started.error },
-        'Restart lost the start race -- another supervisor started this agent inside the stop window',
-      )
-    }
+    const started = await startAgentProcessUnlocked(name, opts)
     // RESTARTWAKE927: only a caller that asked for it, only a --continue
     // restart, only one that really started this session (see restart-wake.ts).
-    if (started.ok && willWake && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)
+    if (started.ok && !opts.fresh && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)
     return started
   } finally {
     endRestart(name)
@@ -5293,10 +5249,10 @@ async function clearStaleParkedInputInLane(
 // concurrent caller joins the running operation instead of racing it past the same check
 // (card 74ba7c78). The *Unlocked variants stay private: restart composes stop+start INSIDE one
 // critical section, and calling the public ones there would make it join its own lock.
-/** Stable options identity. Naming each option explicitly keeps a future
- *  one from silently widening what counts as "the same request". */
-function optsKeyOf(opts: { fresh?: boolean; ownsResume?: boolean }): string {
-  return `fresh=${opts.fresh === true};ownsResume=${opts.ownsResume === true}`
+/** Stable options identity. `fresh` is the only option today; naming it explicitly keeps a future
+ *  option from silently widening what counts as "the same request". */
+function optsKeyOf(opts: { fresh?: boolean }): string {
+  return `fresh=${opts.fresh === true}`
 }
 
 // Card 466f21fe F2 (CYBERSEC GO 14256aac, design note, not a bug in existing code): `--continue`
@@ -5305,7 +5261,7 @@ function optsKeyOf(opts: { fresh?: boolean; ownsResume?: boolean }): string {
 // a SECURITY reason (token rotation, injection suspicion, key rotation) MUST pass `fresh: true`
 // explicitly; `opts.fresh` already exists for exactly this. context-guard-runner.ts is the one
 // such call site today and already does this (channel-continue-policy.test.ts locks it in).
-export function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
 }
 
@@ -5313,6 +5269,6 @@ export function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: s
   return withLifecycleLock(name, 'stop', '', () => stopAgentProcessUnlocked(name))
 }
 
-export function restartAgentProcess(name: string, opts: StartOpts & { wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export function restartAgentProcess(name: string, opts: { fresh?: boolean; wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'restart', optsKeyOf(opts), () => restartAgentProcessUnlocked(name, opts))
 }

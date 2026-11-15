@@ -162,7 +162,7 @@ describe('restart-lock wiring (pinned at the source)', () => {
     // the same agent-keyed lock would deadlock against the section that already holds it.
     const inner = fnBody(source, 'restartAgentProcessUnlocked')
     expect(inner).toContain('await stopAgentProcessUnlocked(name)')
-    expect(inner).toContain('await startAgentProcessUnlocked(name, willWake ? { ...opts, ownsResume: true } : opts)')
+    expect(inner).toContain('await startAgentProcessUnlocked(name, opts)')
     // Anchored on the AWAITED CALL, not on the bare name: `startAgentProcessUnlocked` is a
     // substring of this very function's own name (re-startAgentProcessUnlocked), so a bare
     // indexOf finds the signature at offset 11 and reports the order backwards.
@@ -179,10 +179,7 @@ describe('restart-lock wiring (pinned at the source)', () => {
     // decide whether to schedule a restart-wake on success, so the pin is on the BINDING + a bare
     // `return started` (nothing between them reassigns `started` or its `.ok`), not on a literal
     // `return await ...` tail expression.
-    // Koteg 23 (willWake, ownsResume): the second argument is now a ternary that adds ownsResume
-    // in the willWake case rather than a bare `opts` -- still a single awaited call on `name`, not
-    // a rewritten verdict, so the pin loosens to that shape instead of the literal second argument.
-    expect(inner).toMatch(/const started = await startAgentProcessUnlocked\(name, .*opts.*\)/)
+    expect(inner).toMatch(/const started = await startAgentProcessUnlocked\(name, opts\)/)
     expect(inner).toMatch(/return started\n/)
     expect(inner).not.toMatch(/return\s*\{\s*ok:\s*true/)
     expect(inner).not.toMatch(/started\s*=\s*\{/) // started.ok is never overwritten
@@ -222,13 +219,11 @@ describe('context-guard: a failed rescue is not filed as a completed one', () =>
 
   it('performRestart still asks for FRESH and now checks the result', () => {
     const body = fnBody(runner, 'performRestart')
-    // ownsResume: the guard delivers its own resume, so the
-    // generic recovery brief stays out. Still FRESH.
-    expect(body).toContain('restartAgentProcess(name, { fresh: true, ownsResume: true })')
+    expect(body).toContain('restartAgentProcess(name, { fresh: true })')
     // The result was discarded before RESTARTRACE901; a discarded result is how
     // "Agent is already running" became a silent success.
     expect(body).toMatch(/if\s*\(!res\.ok\)\s*throw/)
-    expect(body).not.toMatch(/^\s*await restartAgentProcess\(name, \{ fresh: true, ownsResume: true \}\)\s*$/m)
+    expect(body).not.toMatch(/^\s*await restartAgentProcess\(name, \{ fresh: true \}\)\s*$/m)
   })
 
   it('the restart action rolls the guard state back when the rescue fails', () => {
