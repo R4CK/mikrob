@@ -25381,3 +25381,53 @@ VALÓDI saját commitja (e3787f5d8, tartalom-azonos a fenti négy fájlon) friss
 cherry-pickelve, a DECISIONS.md bejegyzés (ez a blokk) kézzel újra a fájl VÉGÉRE fűzve, mert az
 eredeti append pozíciója (akkori sor 23770) közben elavult. A verdikt áthozva, nem újra-reviewolva --
 lásd a landoló komment a pontos per-fájl blob-azonosság igazolással.
+
+## 2026-11-15 09:07 -- 7c79badc: Koteg 23 upstream sync (11 commit), három konfliktus-döntés
+
+**Döntés:** backend3 real `git merge --no-ff`-elt 11 upstream commitot (c4ede16d0..402de0e13) a
+develop-be. Három olyan konfliktus/ütközés merült fel a feloldás során, amit nem a merge dönt el
+mechanikusan, hanem explicit Peti/MikroB-döntés kell hozzá vagy már megvolt:
+
+1. **Recipient-ledger infra (336bfadc2/fe409665b) NEM kerül át.** MikroB korábban (msg 16465/16471)
+   megerősítette, hogy ezt a köteget nem vesszük át. A `email_send` level-jét és az opt-in
+   outgoing-copy részt megtartottuk, a recipient-ledger parsing/tárolás részét kihagytuk.
+2. **Fork-struktúra elsőbbsége `web/app.js`-ben.** Upstream batch 8/21/23 mindháromszor visszaépíti a
+   teljes, nem-modularizált kanban/updates-szekciót inline (ezres sorszámú blokkok) -- ezt NEM vettük
+   át, a fork `app-kanban.js`/`app-updates.js` modul-felbontása (slice 30/25) maradt, a stub-kommentek
+   a helyükön. Ha ebben a blokkban volt genuinely ÚJ upstream kanban-UI viselkedés, azt nem vizsgáltam
+   sor-pontosan (külön, frontend-tulajdonú review MikroB/Fron Ted felé, nem ebben a backend-kártyában).
+3. **Skill-import útvonalak: fail-closed marad, nem a queue-rendszer.** A koteg behozta a
+   `skill-quarantine.test.ts`-t (card bb9d7a372, MARVEENGAPS1020 b), amely azt feltételezte, hogy a
+   `POST /api/skills`, `POST /api/skills/import` ÉS `POST /api/agents/:name/skills/import` mind a
+   queue-rendszeren (`importArchiveToPending`/`queueGeneratedSkill`) megy át. Három MEGLÉVŐ,
+   MUTATION-PINNELT fork-teszt (`skills-sibling-routes-auth-gate.test.ts`,
+   `skills-import-auth-gate.test.ts`, `agents-skills-import-symlink-guard.test.ts`) ezzel szemben
+   rögzíti: az első két útvonal hard fail-closed (card 4f4cb0df, Peti/MikroB döntés 15101/15397), a
+   harmadik valódi, WhiteHat-reviewolt direkt-extrakciót csinál (card 45a45700/d2d47a92), NEM
+   queue-ol. Ez egy termék-szintű döntés, nem oldható fel egyoldalúan egy merge-ben: a fail-closed
+   gate-eket/direkt-extrakciót MEGHAGYTAM, a `skill-quarantine.test.ts`-t úgy írtam át, hogy a
+   queue-könyvtárat (`importArchiveToPending`/`queueGeneratedSkill`) KÖZVETLENÜL hívja (nem a kapun
+   át), így a scanning/injekció-detektáló logika tesztelt marad anélkül, hogy a pinnelt
+   HTTP-kontraktusokat megszegné. **Nyitott kérdés Petinek/MikroB-nek:** az `importArchiveToPending`
+   és a `queueGeneratedSkill` MÁR MEGVAN mint nem-hamisítható approval-csatorna (amire a 4f4cb0df
+   döntés a card 3fb0ef97-öt várta) a két globális útvonalhoz -- a fail-closed gate feloldása
+   (queue-ra állítás) egy jövőbeli, külön kártyán döntendő kérdés, nem ez a merge döntötte el.
+
+Build/typecheck hibák, amiket a konfliktus-feloldás saját maga okozott, és amiket a landolás előtt
+kijavítottam (nem viselkedés-változás, csak a merge hibáinak javítása): `agent-process.ts`
+`startAgentProcess`/`restartAgentProcess` publikus wrapperei szűkebb opt-típust vettek fel, mint a
+`StartOpts` (az `ownsResume` mezőt elutasították); `context-guard-runner.ts`-ben egy
+`workingDirFor`-ra hivatkozó maradvány (a fork `agentConfigRoot`-jának upstream neve); `routes/skills.ts`
+import-route-jából kiesett a `skillsDir`/`tmpPath`/`before` deklaráció; `schedule-runner.ts`-ben az
+async és sync preCheck-forma névütközése (`runPreCheckAsync` lett a valódi async belépési pont, a
+szinkron `runPreCheck` csak referencia-forma -- 3 meglévő fork-teszt hívási helye átnevezve).
+
+**Teszt:** `fleet-test.sh` SZŰKÍTETT futás (MikroB lean-mode direktívája, msg 18720, kvóta-nyomás
+miatt) a konfliktus-feloldás és a javítások által érintett 20 fájlon: 292/292 teszt zöld, 0 FAIL
+(Gate-SHA efbf0182165f9d75dfa9837fa27eb98cfe0d3240-n mérve). Teljes suite futás NEM történt --
+gate-reviewer döntése, hogy kéri-e a 11 commit teljes hatókörére is.
+
+**Ki döntött:** backend3 végezte a konfliktus-feloldást és a javításokat; a recipient-ledger
+nem-adoptálását MikroB korábban megerősítette; a skill-import fail-closed-vs-queue kérdés
+Peti/MikroB felé NYITOTT marad (lásd fent). Gate: QA + WhiteHat (+ RedHat, mivel a kötegben
+trust-boundary fájl van érintve: `agents-skills.ts`, `schedule-runner.ts`, skill-import routes).
