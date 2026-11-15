@@ -9356,6 +9356,44 @@ export function pruneTokenUsage(): number {
   return rollupAndDelete(cutoff)
 }
 
+// Non-destructive daily rollup for RECENT data, so the dashboard/reports do not have to wait
+// TOKEN_USAGE_RETENTION_DAYS (default 30) before a day shows up in token_usage_daily (card
+// d8f44d15 req 2). pruneTokenUsage only folds a day in once it is OLD ENOUGH to delete -- by
+// design, not a bug (verified live: max(day) always sits exactly retentionDays behind "now").
+// This fills the gap for days still inside the retention window.
+//
+// REPLACE, NOT ADD, and ONLY STRICTLY-PAST-THE-CUTOFF-DAY days (card d8f44d15): pruneTokenUsage's
+// upsert is additive because it deletes the source rows in the same transaction, so each raw row
+// is ever folded in exactly once. This function does NOT delete anything, so re-running it over
+// the same still-live rows must RECOMPUTE the total fresh each time, never add to a prior run's
+// result, or every sweep would double/triple-count. That recompute is only safe on a day whose
+// raw data pruneTokenUsage could not have touched yet -- the cutoff instant can fall mid-day, so
+// the calendar day CONTAINING the cutoff may already hold a partial, additively-built total from
+// pruneTokenUsage; a REPLACE there would erase it. Restricting to `day > cutoffDay` skips exactly
+// that one boundary day, which pruneTokenUsage itself finishes off within one more sweep cycle.
+export function rollupRecentTokenUsageDaily(): number {
+  const retentionDays = Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS'))
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+  const cutoffDay = db.prepare(`SELECT date(?, 'unixepoch', 'localtime') AS d`).get(cutoff) as { d: string }
+  const result = db.prepare(`
+    INSERT INTO token_usage_daily (day, agent, model, project, calls, input_tokens, output_tokens,
+      cache_read_tokens, cache_creation_tokens, thinking_tokens)
+    SELECT date(timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, ''), COALESCE(project, ''),
+      COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+      SUM(cache_creation_tokens), SUM(COALESCE(thinking_tokens, 0))
+    FROM token_usage WHERE date(timestamp, 'unixepoch', 'localtime') > ?
+    GROUP BY 1, 2, 3, 4
+    ON CONFLICT (day, agent, model, project) DO UPDATE SET
+      calls = excluded.calls,
+      input_tokens = excluded.input_tokens,
+      output_tokens = excluded.output_tokens,
+      cache_read_tokens = excluded.cache_read_tokens,
+      cache_creation_tokens = excluded.cache_creation_tokens,
+      thinking_tokens = excluded.thinking_tokens
+  `).run(cutoffDay.d)
+  return result.changes
+}
+
 // --- LLM ledger (card e96d56c5, F4) ---
 
 export interface LlmLedgerRow {
