@@ -25759,3 +25759,33 @@ Windows-futásos lépése, nem ezé a körét.
 
 **Ki döntött:** MikroB (msg 18314/18332, előreveve eb12a5dd saját sorbeli helyéhez képest).
 Gate: QA + RedHat (MikroB kijelölés, 30638, delta re-gate). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15 — 1506d10d lezárás: mindkét finding (F-A, F-B) már landolt commitból teljesül
+
+**Döntés:** A kártya mindkét Kész-ha kritériuma a `cdde2666` kártyán korábban landolt
+`d4d42e166` commitból (már `origin/develop`-on, `merge-base --is-ancestor` igazolva) teljesül,
+külön diff nélkül.
+
+F-B (replay a valódi egress-gate-en): `card-route-table-replay.sh` az `offload-dispatch.sh
+--check-freellm-blocked`-et (a valódi `is_freellm_blocked`) hívja, auth-ot követel, és nem-nullával
+lép ki 401/üres/parse-olhatatlan fetch, nem-{0,42} checker-exit, hiányzó checker, vagy kihagyott
+kártya esetén. `card-route-table-replay.selftest.sh`: 17/17 zöld (ezen a session-ön futtatva).
+Valós tokennel futtatott replay (a commit-üzenetből, átvéve): checked=136 skipped=0 errors=0
+violations=0 -- a Cybered által nevezett 14931e4e/200d2969/ba22ec48 mind BLOCKED a valódi
+gemini-ok marker-követelmény alatt. (Lásd 1506d10d komment 31514 a korábbi F-B mérésért is,
+99/155-ös bontással a 13943/13944 utáni szélesített gate-en.)
+
+F-A (F1 modell-ellenőrzés exact-match): `store/local-llm.sh` `model_pulled()` lecserélte a régi
+`grep -q "${MODEL%%:*}"` substring-tesztet egy python3 exact set-membership ellenőrzésre az
+`/api/tags` modellnevek ellen (karakterkészlet-validáció + `:latest` kanonizálás, nincs
+substring/regex keresés). Pin: `local-llm-gateway-mode.test.ts` "Ollama has pulled a model whose
+name CONTAINS auto as a substring (starcoder2-autocomplete): requesting --model auto still
+refuses" eset. Ezen a session-ön futtatva: `npx vitest run local-llm-gateway-mode.test.ts` ->
+9/9 zöld.
+
+Nincs ebben: új kódváltozás -- a kártya a `cdde2666`-ban landolt javítást örökli, csak a mérést
+rögzíti és zárja a kártyát.
+
+**Ki döntött:** backend2 (kártya 1506d10d, Cybersec GO 29776 + Cybered NO-GO 29789 -> javítás
+`d4d42e166` a `cdde2666` kártyán, itt csak verifikálva és lezárva). Gate: QA + Cybersec.
+Gate-SHA: `d4d42e166ae8a58d15d6e5edaacd4c571d3eafc5`.
