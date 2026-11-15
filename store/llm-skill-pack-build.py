@@ -29,6 +29,16 @@ DEFAULT_MAP = os.path.join(ROOT, "store", "llm-skill-pack-map.json")
 DEFAULT_OUT = os.path.join(ROOT, "store", "llm-skill-packs")
 
 HEADER_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+# A markdown link's URL is not instructional content and is exactly the kind of noise that can
+# accidentally look like a secret or PII to a content gate -- card 2746165b delta (QA-reproduced
+# live: a source skill's attribution link's numeric tweet ID matched freellm-call.sh's PII
+# cc_number pattern, 13-19 consecutive digits, refusing every real call that used the "default"
+# pack). Keep the anchor text, drop the destination.
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+
+
+def _strip_markdown_links(text):
+    return MARKDOWN_LINK_RE.sub(r"\1", text)
 
 # QA FAIL 31746 (card 2746165b): a source path had no containment check (plain abspath,
 # symlinks followed uninspected) and the extracted text had no secret scan at all, so a bad
@@ -200,7 +210,7 @@ def build_one(task, cfg, map_cfg):
         path = expand(src["path"])
         with open(path, "r", encoding="utf-8") as f:
             raw = f.read()
-        extracted = extract(raw, src.get("mode", "sections"), rule_kw, pitfall_kw)
+        extracted = _strip_markdown_links(extract(raw, src.get("mode", "sections"), rule_kw, pitfall_kw))
         if extracted:
             assert_no_secret(extracted, f"{task}:{src['path']}")
             chunks.append(extracted)

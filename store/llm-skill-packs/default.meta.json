@@ -1,7 +1,7 @@
 {
   "task": "default",
-  "sha256_12": "102e2bf466a4",
-  "est_tokens": 550,
+  "sha256_12": "904fa866a139",
+  "est_tokens": 537,
   "token_cap": 1500,
   "truncated": false,
   "sources": [

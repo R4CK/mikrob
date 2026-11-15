@@ -306,6 +306,11 @@ const OK_SHAPES: readonly RegExp[] = [
   // distinct from the local-llm-rag entry above ("all N checks passed", no period, different
   // noun). Captured non-zero N keeps the non-vacuous guarantee: `all 0 cases pass.` does not match.
   /selftest: all ([1-9]\d*) cases pass\./,
+  // llm-skill-pack-build.selftest.sh style (card 2746165b): `[i/N] <desc>` then an indented
+  // `ok` (or `ok (...)`) line per case, final bare `SELFTEST OK`. Same family as the
+  // `ok ... selftest: PASS` entry above -- at least one `ok` line is required before the final
+  // line, the same non-vacuous guarantee, just a different final word.
+  /^\s*ok\b[\s\S]*\nSELFTEST OK$/m,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {

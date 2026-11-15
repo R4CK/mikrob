@@ -4,6 +4,8 @@
 #  2) editing a source file and rebuilding changes the pack sha (card 2746165b Kesz-ha #3)
 #  3) a source path outside the allowed roots is refused (QA FAIL 31746, M1/path-containment)
 #  4) a secret-shaped string in a source is refused, nothing written (QA FAIL 31746, M2/secret-scan)
+#  5) a markdown link's URL is stripped, its anchor text kept (card 2746165b delta: a source's
+#     attribution link's numeric tweet ID matched freellm-call.sh's PII cc_number pattern live)
 # Uses a throwaway temp map + temp skill copy -- never touches the real ~/.claude/skills tree.
 # LLM_SKILL_PACK_EXTRA_ROOT lets this fixture's temp dir pass containment without touching the
 # real global skills dir; no production call site ever sets that env var.
@@ -15,7 +17,7 @@ BUILD_PY="$ROOT/store/llm-skill-pack-build.py"
 
 fail() { echo "SELFTEST FAIL: $1" >&2; exit 1; }
 
-echo "[1/4] --check against the live map/packs"
+echo "[1/5] --check against the live map/packs"
 python3 -I "$BUILD_PY" --check || fail "live --check did not pass (run the build first)"
 echo "  ok"
 
@@ -23,7 +25,7 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 export LLM_SKILL_PACK_EXTRA_ROOT="$TMP_DIR"
 
-echo "[2/4] edit-and-rebuild changes the pack sha"
+echo "[2/5] edit-and-rebuild changes the pack sha"
 
 TMP_SKILL="$TMP_DIR/FAKE_SKILL.md"
 cat > "$TMP_SKILL" <<'EOF'
@@ -69,7 +71,7 @@ SHA2="$(grep -o 'pack=fake-type@[0-9a-f]*' "$TMP_DIR/build2.log" | cut -d@ -f2)"
 [ "$SHA1" != "$SHA2" ] || fail "sha did not change after editing the source skill ($SHA1 == $SHA2)"
 echo "  ok (sha $SHA1 -> $SHA2)"
 
-echo "[3/4] a source path outside every allowed root is refused"
+echo "[3/5] a source path outside every allowed root is refused"
 OUTSIDE_FILE="/tmp/llm-skill-pack-selftest-outside-$$.txt"
 echo "should never be read" > "$OUTSIDE_FILE"
 trap 'rm -f "$OUTSIDE_FILE"; rm -rf "$TMP_DIR"' EXIT
@@ -92,7 +94,7 @@ grep -q "outside every allowed root" "$TMP_DIR/escape.err" || fail "refusal mess
 [ ! -e "$ESCAPE_OUT/escape-type.txt" ] || fail "a pack file was written despite the refusal"
 echo "  ok (refused, no pack file written)"
 
-echo "[4/4] a secret-shaped string in a source is refused, nothing written"
+echo "[4/5] a secret-shaped string in a source is refused, nothing written"
 # Built by concatenation, not as a literal in this file, so a static secret-shape scan of THIS
 # script does not flag its own test fixture -- it is still a real AWS-access-key-id SHAPE once
 # assembled, which is exactly what the build script's own scan below must catch.
@@ -122,5 +124,34 @@ fi
 grep -q "matched secret pattern" "$TMP_DIR/secret.err" || fail "refusal message did not name the secret-pattern check"
 [ ! -e "$SECRET_OUT/secret-type.txt" ] || fail "a pack file was written despite the secret match"
 echo "  ok (refused, no pack file written)"
+
+echo "[5/5] a markdown link's URL is stripped, its anchor text kept"
+LINK_SKILL="$TMP_DIR/link-fixture.md"
+cat > "$LINK_SKILL" <<'EOF'
+---
+name: link-fixture
+description: selftest fixture
+---
+# Link Fixture
+
+## Pitfalls
+- derived from [an attribution link](https://x.com/someone/status/2015883857489522876) text
+EOF
+LINK_MAP="$TMP_DIR/link-map.json"
+python3 -I - "$LINK_SKILL" "$LINK_MAP" <<'PY'
+import json, sys
+skill_path, map_path = sys.argv[1], sys.argv[2]
+cfg = {
+    "token_cap": 1500, "chars_per_token": 4,
+    "rule_keywords": ["x"], "pitfall_keywords": ["pitfall"],
+    "types": {"link-type": {"sources": [{"path": skill_path, "mode": "sections"}]}},
+}
+json.dump(cfg, open(map_path, "w"))
+PY
+LINK_OUT="$TMP_DIR/link-out"
+python3 -I "$BUILD_PY" --map "$LINK_MAP" --out-dir "$LINK_OUT" > "$TMP_DIR/link.log" || fail "build of a markdown-link source was refused unexpectedly"
+grep -q "an attribution link" "$LINK_OUT/link-type.txt" || fail "anchor text was not kept"
+grep -q "x.com" "$LINK_OUT/link-type.txt" && fail "the link URL was not stripped"
+echo "  ok (anchor kept, URL stripped)"
 
 echo "SELFTEST OK"
