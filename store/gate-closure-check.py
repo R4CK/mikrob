@@ -303,16 +303,43 @@ _RETRACTION_LINE = re.compile(r"^\s*(?:VISSZAVONVA|RETRACTED)\s*:\s*(.+)$", re.I
 _LANDING_LINE = re.compile(r"^\s*Landing\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 
 
-def _landing_exempt(comments):
-    """Does any comment carry a line-initial `Landing: n/a` -- skips BOTH the card_landings and the
-    git-ancestry landed checks for this card, the same way `--no-landed` does for the caller."""
+def _latest_review_comment(comments):
+    """The LATEST, non-generated, REVIEW-shaped comment's content, or None if there is none. Same
+    comment-selection rule declared_shas() already applies to Gate-SHA lines (latest REVIEW wins,
+    generated authors skipped) -- but without requiring a Gate-SHA line to be present, because
+    `Landing: n/a` is exactly the case where there is deliberately no sha to declare."""
+    found = None
     for c in comments:
+        if _is_generated_author(c):
+            continue
         content = (c or {}).get("content")
         if not isinstance(content, str):
             continue
-        for m in _LANDING_LINE.finditer(content):
-            if m.group(1).strip().lower().startswith("n/a"):
-                return True
+        if not _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
+            continue
+        found = content
+    return found
+
+
+def _landing_exempt(comments):
+    """Does the LATEST REVIEW-shaped comment -- not any arbitrary comment -- carry a line-initial
+    `Landing: n/a`? Skips BOTH the card_landings and the git-ancestry landed checks for this card,
+    the same way `--no-landed` does for the caller.
+
+    QA FAIL (comment 31861, card 634a188c): the first version of this function scanned EVERY
+    comment on the card, from ANY author, which let anyone who can post a kanban comment exempt a
+    real, declared, never-landed Gate-SHA from NOT-LANDED/UNLANDED forever, just by posting one
+    throwaway comment reading "Landing: n/a" anywhere on the card -- a lower bar than forging a
+    sha, since it needs no sha-shaped text at all. Scoped here to the same comment declared_shas()
+    would read the Gate-SHA from, closing the gap the same way `_is_na_gate_sha_line`-style per-
+    comment scoping already closes it for the `Gate-SHA: n/a` convention.
+    """
+    content = _latest_review_comment(comments)
+    if content is None:
+        return False
+    for m in _LANDING_LINE.finditer(content):
+        if m.group(1).strip().lower().startswith("n/a"):
+            return True
     return False
 
 
@@ -961,7 +988,13 @@ def _db_landed_verdict(card_id, candidates, db_path=None):
             "no card_landings row exists for card %s -- marveen-land.sh/mopsion-land.sh have not "
             "recorded a verified push for it yet" % card_id)
     for work_sha, merge_sha in rows:
-        if any(shas_agree(cand, work_sha) or shas_agree(cand, merge_sha) for cand in candidates):
+        # QA FAIL 31861, LOW: shas_agree(x, "") is True for any x (empty string is a prefix of
+        # everything), so an empty/blank work_sha or merge_sha must never reach it -- not exploitable
+        # via the only real writer today (card-landings.ts rejects empty shas with 400), but a future
+        # direct-sqlite3 writer or test fixture could otherwise defeat this check silently.
+        if any(((work_sha or "").strip() and shas_agree(cand, work_sha))
+               or ((merge_sha or "").strip() and shas_agree(cand, merge_sha))
+               for cand in candidates):
             return "landed", None
     recorded = ", ".join(sorted({s for pair in rows for s in pair}))
     return "not-landed", (

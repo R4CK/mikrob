@@ -1338,6 +1338,15 @@ if _repo_ok:
          [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "NOT-LANDED",
          gates="qa", env=DB_ENV, landed=True, extra=["--card", "cccccccc"])
 
+    # QA FAIL 31861, LOW: shas_agree(x, "") is True for any x, so a row with an empty/blank
+    # work_sha and merge_sha must not be able to vacuously "land" any real sha. Not reachable via
+    # the live writer today, but pinned so a future direct-sqlite3 writer cannot defeat this
+    # silently.
+    _put_landing("gggggggg", "", "")
+    case("a card_landings row with empty work_sha/merge_sha cannot vacuously land any sha",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "gggggggg"])
+
     case("CONTROL: no --card given -- the DB check never runs, pre-card behaviour (AGREE)",
          [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "AGREE",
          gates="qa", env=DB_ENV, landed=True)
@@ -1352,6 +1361,15 @@ if _repo_ok:
          [c("backend2", "REVIEW: kesz.\nGate-SHA: %s\nLanding: n/a (config-only)" % STRANDED),
           c("qa", L % STRANDED)], "AGREE",
          gates="qa", env=DB_ENV, landed=True, extra=["--card", "eeeeeeee"])
+
+    # QA FAIL 31861, MEDIUM: Landing: n/a must only exempt when it is on the LATEST REVIEW itself --
+    # an unrelated THIRD-PARTY comment carrying the same text, posted AFTER a real REVIEW that
+    # declares a genuinely unlanded sha, must not retroactively exempt that sha. Pin: NOT-LANDED,
+    # not AGREE.
+    case("an unrelated LATER comment's Landing: n/a does NOT exempt a real REVIEW's unlanded sha",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED),
+          c("someone", "unrelated chatter\nLanding: n/a (just testing)")], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "ffffffff"])
 
     _ldb.close()
     shutil.rmtree(_landings_dir, ignore_errors=True)
