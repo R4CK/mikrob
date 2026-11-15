@@ -607,6 +607,103 @@ if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
   pass "ioctl-noise: ioctl -22 noise is not a dxg-oops, guard stays silent"
 fi
 
+# ---------------------------------------------------------------------------
+# (y) F1 (card 31131dc5): a poweroff signal AND a real dxg oops in the SAME
+#     boot must still be DETECTED -- the oops overrides the clean-shutdown
+#     skip. Before the fix, is_clean_shutdown ran first and threw the boot
+#     away unconditionally, so a fault that happened during an otherwise
+#     orderly shutdown sequence was invisible to the guard.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(y) F1: poweroff signal + real dxg oops in the same boot -> DETECTED"
+ST="$(fresh_case y)"
+BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"; JOURNAL="$ST/journal.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+echo "dxgk_ioctl: dxgadapter_release_lock_shared" > "$KERN"
+echo "systemd-poweroff.service: Finished." > "$JOURNAL"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN" "$JOURNAL")"
+if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  pass "F1: a real oops during a poweroff sequence is still a crash-boot"; else
+  fail "F1: a poweroff signal hid a real dxg oops ($OUT)"
+fi
+
+# ---------------------------------------------------------------------------
+# (z) F2 (card 31131dc5): a MULTI-LINE oops -- "Call Trace:" (capital letters,
+#     the real kernel format) with the dxg frame several lines later, not on
+#     the same line as the header -- must be DETECTED. The symbol names here
+#     are deliberately NOT "dxgk_ioctl"/"dxgadapter_release_lock" so this test
+#     can only pass through the new multi-line window check, not the older
+#     single-line symbol check.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(z) F2: multi-line Call Trace (capitalized) with a dxg frame -> DETECTED"
+ST="$(fresh_case z)"
+BOOTS="$ST/boots.txt"; KERN="$ST/kernel.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+cat > "$KERN" <<'KEOF'
+[   12.345678] BUG: unable to handle kernel paging request
+[   12.345680] IP: do_something+0x10/0x20
+[   12.345690] Call Trace:
+[   12.345700]  dxgadapter_wait_fence+0x55/0x100 [dxgkrnl]
+[   12.345710]  dxgvmbuschannel_send+0x22/0x80 [dxgkrnl]
+KEOF
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  pass "F2: multi-line Call Trace + dxg frame recognised as a real oops"; else
+  fail "F2: a multi-line dxg oops was missed ($OUT)"
+fi
+
+# ---------------------------------------------------------------------------
+# (aa)-(ae) F3 (card 31131dc5): is_clean_shutdown()'s regex has 4 OR-branches.
+#     Through a full guard cycle its return value is NEVER observable on its
+#     own (detect_crashloop requires dxg_seen=1 for any non-silent verdict,
+#     and a no-oops kernel fixture leaves dxg_seen=0 regardless of what
+#     is_clean_shutdown decides) -- so a mutant on any one branch could
+#     survive every MASK_DRYRUN/ALERT_DRYRUN assertion above undetected.
+#     These call the new --debug-is-clean-shutdown seam directly, one per
+#     branch, plus a negative control.
+# ---------------------------------------------------------------------------
+debug_clean_shutdown() {
+  GPU_GUARD_JOURNAL_LOG_OVERRIDE="$1" bash "$GUARD" --debug-is-clean-shutdown -1
+}
+
+echo ""
+echo "(aa) F3: is_clean_shutdown branch 1 -- 'Deactivated successfully'"
+ST="$(fresh_case aa)"; echo "systemd-poweroff.service: Deactivated successfully" > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "clean" ] \
+  && pass "F3: 'Deactivated successfully' recognised as clean" \
+  || fail "F3: 'Deactivated successfully' not recognised as clean"
+
+echo ""
+echo "(ab) F3: is_clean_shutdown branch 2 -- 'Succeeded.'"
+ST="$(fresh_case ab)"; echo "systemd-poweroff.service: Succeeded." > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "clean" ] \
+  && pass "F3: 'Succeeded.' recognised as clean" \
+  || fail "F3: 'Succeeded.' not recognised as clean"
+
+echo ""
+echo "(ac) F3: is_clean_shutdown branch 3 -- 'Finished' with no trailing period"
+ST="$(fresh_case ac)"; echo "systemd-poweroff.service: Finished" > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "clean" ] \
+  && pass "F3: 'Finished' (no period) recognised as clean -- pins the optional \\.?" \
+  || fail "F3: 'Finished' without a period not recognised as clean"
+
+echo ""
+echo "(ad) F3: is_clean_shutdown branch 4 -- 'Reached target poweroff.target'"
+ST="$(fresh_case ad)"; echo "Reached target poweroff.target" > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "clean" ] \
+  && pass "F3: 'Reached target poweroff.target' recognised as clean" \
+  || fail "F3: 'Reached target poweroff.target' not recognised as clean"
+
+echo ""
+echo "(ae) F3: negative control -- unrelated text is NOT clean-shutdown"
+ST="$(fresh_case ae)"; echo "some unrelated kernel panic text" > "$ST/j.txt"
+[ "$(debug_clean_shutdown "$ST/j.txt")" = "not-clean" ] \
+  && pass "F3: unrelated text correctly NOT recognised as a clean shutdown" \
+  || fail "F3: unrelated text was wrongly recognised as a clean shutdown"
+
 echo "========================="
 TOTAL=$((PASS + FAIL))
 echo "Results: $PASS/$TOTAL passed"
