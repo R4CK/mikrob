@@ -66,11 +66,26 @@ function ctxFor(path: string, method: string, body?: Buffer, contentType?: strin
     destroy() {},
   }
   const url = new URL(`http://localhost:3420${path}`)
-  return { ctx: { req, res, path: url.pathname, method, url, auth: { kind: 'token' } } as RouteContext, out }
+  // CYBERED NO-GO F2 (card 7c79badc): approve/reject now require a human credential (session,
+  // or a non-agent device key) -- the shared agent bearer this file otherwise uses throughout
+  // (kind: 'token') would 403 there. Every OTHER route keeps exercising the shared-bearer path,
+  // which is what every agent actually calls these with.
+  const auth: RouteContext['auth'] = /\/pending\/[^/]+\/(approve|reject)$/.test(url.pathname)
+    ? { kind: 'session', user: 'peti' }
+    : { kind: 'token' }
+  return { ctx: { req, res, path: url.pathname, method, url, auth } as RouteContext, out }
 }
 
 async function call(path: string, method: string, json?: object): Promise<Out> {
   const { ctx, out } = ctxFor(path, method, json ? Buffer.from(JSON.stringify(json)) : Buffer.from(''))
+  const handled = (await tryHandleSkills(ctx)) || (await tryHandleAgentsSkills(ctx))
+  expect(handled).toBe(true)
+  return out
+}
+
+async function callAs(path: string, method: string, auth: RouteContext['auth'], json?: object): Promise<Out> {
+  const { ctx, out } = ctxFor(path, method, json ? Buffer.from(JSON.stringify(json)) : Buffer.from(''))
+  ;(ctx as { auth: RouteContext['auth'] }).auth = auth
   const handled = (await tryHandleSkills(ctx)) || (await tryHandleAgentsSkills(ctx))
   expect(handled).toBe(true)
   return out
@@ -228,6 +243,21 @@ describe('imported archives are queued, scanned and shown before approval', () =
     expect(readFileSync(join(GLOBAL, 'zz-imp', 'scripts', 'run.sh'), 'utf-8')).toContain('swapped')
     expect(statSync(join(GLOBAL, 'zz-imp', 'scripts', 'run.sh')).mode & 0o111).not.toBe(0)
     expect(await pendingList()).toEqual([])
+  })
+
+  it('CYBERED NO-GO F2: the shared agent bearer cannot approve or reject, only a human credential can', async () => {
+    await call(`/api/agents/${AGENT}/skills`, 'POST', { name: 'zz-bearer-gate', description: 'x' })
+    const [p] = await pendingList()
+    const bearerApprove = await callAs(`/api/skills/pending/${p.id}/approve`, 'POST', { kind: 'token' }, { hash: p.hash })
+    expect(bearerApprove.status).toBe(403)
+    const bearerReject = await callAs(`/api/skills/pending/${p.id}/reject`, 'POST', { kind: 'token' })
+    expect(bearerReject.status).toBe(403)
+    const deviceAgentApprove = await callAs(`/api/skills/pending/${p.id}/approve`, 'POST', { kind: 'device', device: `agent:${AGENT}` }, { hash: p.hash })
+    expect(deviceAgentApprove.status).toBe(403)
+    // still pending: neither 403 installed or discarded it.
+    expect(await pendingList()).toHaveLength(1)
+    // a real human credential (session) still works, same hash, same id.
+    expect((await call(`/api/skills/pending/${p.id}/approve`, 'POST', { hash: p.hash })).status).toBe(200)
   })
 
   it('a symlink planted into a pending skill after the scan blocks the approval', async () => {
