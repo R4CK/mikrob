@@ -1224,6 +1224,22 @@ def main():
             print("UNREADABLE|--expect is not a sha: %s" % argv[i + 1].strip())
             return
         del argv[i:i + 2]
+    card_id = None
+    db_path = None
+    if "--card-id" in argv:
+        i = argv.index("--card-id")
+        if i + 1 < len(argv) and argv[i + 1].strip():
+            card_id = argv[i + 1].strip()
+        del argv[i:i + 2]
+    if "--db" in argv:
+        i = argv.index("--db")
+        if i + 1 < len(argv) and argv[i + 1].strip():
+            db_path = argv[i + 1].strip()
+        del argv[i:i + 2]
+    if card_id and not db_path:
+        db_path = os.environ.get("MARVEEN_DB") or os.path.join(
+            os.environ.get("MARVEEN_MAIN", "/home/neon/marveen"), "store", "claudeclaw.db"
+        )
     designated = None
     if argv and argv[0].strip():
         designated = [g for g in re.split(r"[,\s]+", argv[0].strip()) if g]
@@ -1238,7 +1254,53 @@ def main():
         if unknown:
             print("UNREADABLE|not a gate name: %s" % ", ".join(unknown))
             return
-    print(check(comments, designated, expect, use_declared, check_landed))
+
+    result = check(comments, designated, expect, use_declared, check_landed)
+
+    if card_id and db_path:
+        rev_shas = declared_shas(comments)
+        if rev_shas:
+            check_sha = next(iter(rev_shas))
+            covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
+            if not covered:
+                result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+
+    print(result)
+
+
+def _checkpoint_coverage(card_id, gate_sha, db_path):
+    """Return (covered: bool, reason: str|None).
+
+    covered=True if no checkpoints recorded yet (transitional / no-checkpoint workflow) or if
+    gate_sha matches a head_sha in card_checkpoints. covered=False only when at least one
+    checkpoint exists for the card but the declared sha is not among them (genuine gap).
+    Errors accessing the DB are fail-open to avoid blocking the board on infra issues.
+    """
+    try:
+        import sqlite3 as _sqlite3
+        conn = _sqlite3.connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM card_checkpoints WHERE card_id = ?", (card_id,)
+            ).fetchone()
+            count = row[0] if row else 0
+            if count == 0:
+                return True, None
+            sha_norm = gate_sha.lower()[:40]
+            match = conn.execute(
+                "SELECT n FROM card_checkpoints WHERE card_id = ? AND head_sha = ?",
+                (card_id, sha_norm),
+            ).fetchone()
+        finally:
+            conn.close()
+        if match:
+            return True, None
+        return False, (
+            "Gate-SHA %s not in any recorded checkpoint for card %s (%d checkpoint(s) exist)"
+            % (gate_sha[:12], card_id, count)
+        )
+    except Exception:  # noqa: BLE001 -- DB missing / locked / corrupt: fail-open
+        return True, None
 
 
 if __name__ == "__main__":
