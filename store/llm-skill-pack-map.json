@@ -1,0 +1,35 @@
+{
+  "_comment": "Card 2746165b (F8, phase 82a113ba). Maps F3 mechanical task types (store/card-route-table.json 'types' + 'default') to the skill/rule sources whose rule+pitfall sections get compiled into store/llm-skill-packs/<task>.txt. Edit this file to add a type or change sources; rerun store/llm-skill-pack-build.py to rebuild. mode 'sections' extracts only headers matching rule_keywords/pitfall_keywords (case-insensitive substring); mode 'all' takes the whole body (minus frontmatter/H1).",
+  "token_cap": 1500,
+  "chars_per_token": 4,
+  "rule_keywords": ["core principle", "iron law", "when to use", "mikor haszn", "core rule", "overview", "procedure"],
+  "pitfall_keywords": ["pitfall", "buktat", "red flag", "common rationalization", "common mistake", "gotcha", "verification", "ellenorz", "ellenőrz"],
+  "types": {
+    "test-scaffold": {
+      "sources": [
+        { "path": "~/.claude/skills/sp-test-driven-development/SKILL.md", "mode": "sections" },
+        { "path": "~/.claude/skills/vitest-react-router-guard/SKILL.md", "mode": "sections" }
+      ]
+    },
+    "i18n-keys": {
+      "sources": [
+        { "path": "~/.claude/skills/i18n-parity-sweep/SKILL.md", "mode": "sections" }
+      ]
+    },
+    "doc-update": {
+      "sources": [
+        { "path": "/home/neon/marveen/docs/rules/readme-karbantartas.md", "mode": "all" }
+      ]
+    },
+    "type-def": {
+      "sources": [
+        { "path": "~/.claude/skills/api-and-interface-design/SKILL.md", "mode": "sections" }
+      ]
+    },
+    "default": {
+      "sources": [
+        { "path": "~/.claude/skills/karpathy-guidelines/SKILL.md", "mode": "all" }
+      ]
+    }
+  }
+}

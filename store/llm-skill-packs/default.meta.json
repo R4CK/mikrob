@@ -1,0 +1,14 @@
+{
+  "task": "default",
+  "sha256_12": "102e2bf466a4",
+  "est_tokens": 550,
+  "token_cap": 1500,
+  "truncated": false,
+  "sources": [
+    {
+      "path": "/home/neon/.claude/skills/karpathy-guidelines/SKILL.md",
+      "mode": "all",
+      "sha256_12": "6e22cc54cb02"
+    }
+  ]
+}
