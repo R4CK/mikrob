@@ -570,11 +570,32 @@ const ROW_LIVE_SIGNAL_RX = new RegExp(
 // real `◯` agent row (BG_AGENT_ROW_RX); no genuine live-state signal is ever rendered on one (the
 // footer/spinner/placeholder always render on their own, non-`◯` line), so excluding `◯` rows from
 // every check below closes this without weakening detection of an actual trailing live signal.
+// RedHat round-3 residual 1 (8b8bc092, comment 31136): a wrapped label continuation line
+// (rendered at indent 5 in every captured fixture, e.g. test's
+// '     the retry logic depends on') can coincidentally match one of the loose row-level
+// regexes added for B(i)/B(iii) (BUSY_ESC_CLIPPED_RX, FOOTER_SHELL_TAIL_RX, PENDING_PASTE_RX)
+// or the pre-existing idle-footer/esc-interrupt forms, even though it carries no real signal --
+// every genuine signal row (footer, the `❯ ` box line, NAME_BAR/SEP separators, `◯` agent rows)
+// renders at indent 0-2. Rejecting anything deeper than that removes the false match without
+// touching a real signal.
+const ROW_SIGNAL_MAX_INDENT = 3
+
+function rowLeadingSpaces(row: string): number {
+  return row.length - row.trimStart().length
+}
+
 function rowCarriesLiveSignal(row: string): boolean {
   if (BG_AGENT_ROW_RX.test(row)) return false
+  if (rowLeadingSpaces(row) > ROW_SIGNAL_MAX_INDENT) return false
+  // QA2/QA3 (card 8b8bc092, comment 31261): the indent cutoff alone is a margin, not a
+  // structural guarantee -- the same coincidental-match text at indent 2 or 3 (still inside
+  // ROW_SIGNAL_MAX_INDENT) still trips BUSY_ESC_CLIPPED_RX, since that branch had no content
+  // gate at all. CLIPPED_BUSY_LEAD_RX (defined with the lastLine clipped-esc gate further down)
+  // rejects it on content instead of position: "the retry logic depends on" has 4 words before
+  // "on", past the anchor's {1,3} cap, at any indent.
   return (
     ROW_LIVE_SIGNAL_RX.test(row) ||
-    BUSY_ESC_CLIPPED_RX.test(row) ||
+    (BUSY_ESC_CLIPPED_RX.test(row) && CLIPPED_BUSY_LEAD_RX.test(row)) ||
     FOOTER_SHELL_TAIL_RX.test(row) ||
     PENDING_PASTE_RX.test(row)
   )
@@ -623,6 +644,24 @@ export function detectBackgroundAgents(pane: string): { total: number; running: 
 // is the measured clip; no idle footer segment starts with `e` (`↓ to manage`,
 // `← for agents`, `ctrl+t`, `N shells`, `N monitors`).
 const BUSY_ESC_CLIPPED_RX = /· e(?:s(?:c(?: (?:t(?:o(?: (?:i[a-z]*)?)?)?)?)?)?)?…\s*$/
+
+// QA1 (card 8b8bc092, comment 31261): FOOTER_LEAD_RX is unanchored, so testing it against the
+// WHOLE lastLine lets it match a "1-3 words + on ·" shape buried anywhere in an ordinary idle
+// sentence that happens to use the word "on" -- "you can toggle it by typing turn it on · e…" is
+// plain English, not chrome, but satisfies FOOTER_LEAD_RX the same way a real "bypass permissions
+// on · e…" footer does. A genuine footer/mode line is never a sentence: it is drawn starting at
+// (or right after a short glyph prefix at) the left edge of the terminal, not after a run of prose.
+// Anchoring the mode-lead to the START of the line rejects the prose case (its "on" sits 4+ words
+// in, past the {1,3} cap counted from position 0) while keeping every real clipped shape, which
+// renders with at most a couple of glyph/space characters before the mode words.
+//
+// RedHat LOW (8b8bc092, comment 31259, folded in here per MikroB 31260): the mode-lead branch
+// requires an "on"-word at all, which a mode-less/default clip ("1 shell, 1 monitor · /tasks to
+// see subagents · e…") never has. The second alternative below accepts that shape too: two
+// `·`-joined chrome segments anchored at the line start is already a signal ordinary prose does
+// not produce (English sentences do not contain literal middle-dot separators), independent of
+// any specific mode word.
+const CLIPPED_BUSY_LEAD_RX = /^[^\w\n]{0,8}(?:(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · |(?:[^\n]*? · ){2})/
 
 // Persistent Anthropic thinking-block API error. When an assistant turn
 // ends with a 400 about thinking/redacted_thinking blocks that "cannot
@@ -1560,7 +1599,14 @@ export function detectPaneState(
   // segment) -- BUSY_ESC_CLIPPED_RX is already distinctive on its own (literal `· e` lead plus a
   // nested prefix of "sc to interrupt" ending in the truncation ellipsis; see its own comment:
   // "no idle footer segment starts with `e`"), so the AND added nothing but a gap.
-  if (BUSY_ESC_CLIPPED_RX.test(lastLine)) return 'busy'
+  // RedHat round-3 residual 2 (8b8bc092, comment 31136): BUSY_ESC_CLIPPED_RX alone over-matches
+  // idle prose that happens to end in "· e…" without ever being a mode-word footer -- "see the
+  // docs · e…" or "Tips for getting started · e…" are not busy, they just end badly on a narrow
+  // pane. QA FAIL 31261 (round 2): an unanchored FOOTER_LEAD_RX gate reopens the same over-match
+  // one level up, for idle prose whose own wording happens to contain "<word> on ·" ("turn it
+  // on · e…"). CLIPPED_BUSY_LEAD_RX anchors the mode-lead (or the mode-less two-separator shape)
+  // to the start of the line, which real chrome satisfies and ordinary sentences do not.
+  if (BUSY_ESC_CLIPPED_RX.test(lastLine) && CLIPPED_BUSY_LEAD_RX.test(lastLine)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
   // stub sits in the live input box; the footer below it is version-dependent
