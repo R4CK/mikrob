@@ -59,13 +59,6 @@ export class UserFacingError extends Error {
 // ---------------------------------------------------------------------------
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/
 
-function assertSafeName(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !SAFE_NAME_RE.test(value)) {
-    throw new Error(`Érvénytelen ${field} érték: "${String(value).slice(0, 60)}" -- csak [a-z0-9_-] megengedett.`)
-  }
-  return value
-}
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -723,7 +716,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
 
   const withSecrets = !!options.vaultPassword
   const db = getDb()
-  const bindingLookup = withSecrets ? new Map() : buildBindingLookup()
+  const bindingLookup = withSecrets ? new Map<string, Map<string, Map<string, string>>>() : buildBindingLookup()
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
   const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
@@ -1161,7 +1154,7 @@ export function importFleet(
         return { ...EMPTY_DIFF, errors: [`A vault jelszó legalább ${MIN_VAULT_PASSWORD_LEN} karakter kell legyen.`] }
       }
       try {
-        jsonBody = decryptWithPassword(parsed.blob, options.vaultPassword)
+        jsonBody = decryptWithPassword(parsed.blob as string, options.vaultPassword)
       } catch {
         return { ...EMPTY_DIFF, errors: ['Helytelen vault jelszó -- a titkosított fájl nem dekódolható.'] }
       }

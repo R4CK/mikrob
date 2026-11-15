@@ -38,16 +38,19 @@ function withScript(content: string, ext = '.sh'): { dir: string; file: string }
 }
 
 describe('runPreCheck', () => {
-  it('returns skip=false when task has no preCheck configured', async () => {
-    const result = await runPreCheck(makeTask())
+  // runPreCheck is synchronous (re-exported from schedule-runner-sync-precheck.ts); these used
+  // to `await` it, which is a no-op on a non-Promise value and what @typescript-eslint/await-
+  // thenable now flags (card 7c79badc delta, upstream batch).
+  it('returns skip=false when task has no preCheck configured', () => {
+    const result = runPreCheck(makeTask())
     expect(result.skip).toBe(false)
     expect(result.prefix).toBeUndefined()
   })
 
-  it('returns skip=true when script outputs SKIP', async () => {
+  it('returns skip=true when script outputs SKIP', () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\necho "SKIP"\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = runPreCheck(makeTask({ preCheck: file }))
       expect(result.skip).toBe(true)
       expect(result.prefix).toBeUndefined()
     } finally {
@@ -55,10 +58,10 @@ describe('runPreCheck', () => {
     }
   })
 
-  it('returns skip=false with prefix when script outputs actionable text', async () => {
+  it('returns skip=false with prefix when script outputs actionable text', () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\necho "3 actionable cards found"\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = runPreCheck(makeTask({ preCheck: file }))
       expect(result.skip).toBe(false)
       expect(result.prefix).toBe('3 actionable cards found')
     } finally {
@@ -66,10 +69,10 @@ describe('runPreCheck', () => {
     }
   })
 
-  it('returns skip=false with no prefix when script outputs nothing', async () => {
+  it('returns skip=false with no prefix when script outputs nothing', () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\nexit 0\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = runPreCheck(makeTask({ preCheck: file }))
       expect(result.skip).toBe(false)
       expect(result.prefix).toBeUndefined()
     } finally {
@@ -77,18 +80,18 @@ describe('runPreCheck', () => {
     }
   })
 
-  it('fails open (skip=false) when script exits non-zero', async () => {
+  it('fails open (skip=false) when script exits non-zero', () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\necho "error"\nexit 1\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = runPreCheck(makeTask({ preCheck: file }))
       expect(result.skip).toBe(false)
     } finally {
       rmSync(dir, { recursive: true })
     }
   })
 
-  it('fails open (skip=false) when script path does not exist', async () => {
-    const result = await runPreCheck(makeTask({ preCheck: '/nonexistent/path/pre-check.sh' }))
+  it('fails open (skip=false) when script path does not exist', () => {
+    const result = runPreCheck(makeTask({ preCheck: '/nonexistent/path/pre-check.sh' }))
     expect(result.skip).toBe(false)
   })
 })

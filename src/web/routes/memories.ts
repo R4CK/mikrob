@@ -4,7 +4,7 @@ import {
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   saveFailedEpisode, listFailedEpisodes, auditMemoryRecall,
   excludeToolLogShapeSql,
-  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval, listApprovals, getApproval,
+  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval, getApproval,
   type Memory, type MemoryRow, type Approval,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ } from '../../config.js'

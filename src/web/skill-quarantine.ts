@@ -504,6 +504,7 @@ export function listPending(): PendingSkill[] {
   return listIds()
     .map((id) => getPending(id))
     .filter((p): p is PendingSkill => p !== null)
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- rest-exclude pattern: drops `text` from the GET /api/skills/pending shape, the destructured name itself is never read
     .map((p) => ({ ...p, report: { ...p.report, files: p.report.files.map(({ text: _t, ...f }) => f) } }))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }

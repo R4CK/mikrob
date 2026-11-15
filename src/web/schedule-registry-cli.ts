@@ -29,7 +29,6 @@ import {
   describeVerdict,
 } from './schedule-registry.js'
 
-/* eslint-disable no-console */
 function usage(): never {
   console.error('usage: schedule-registry-cli.js status | verify <name>... | register [--source S] (--all | <name>...) | unregister <name>...')
   process.exit(2)

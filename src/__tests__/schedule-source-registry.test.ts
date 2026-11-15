@@ -24,11 +24,8 @@ import { join } from 'node:path'
 // HOME must point at the sandbox BEFORE scheduled-tasks-io is imported:
 // SCHEDULED_TASKS_DIR is computed from os.homedir() at import time.
 const { tmpHome, realHome } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const fs = require('node:fs') as typeof import('node:fs')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const os = require('node:os') as typeof import('node:os')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const path = require('node:path') as typeof import('node:path')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'schedsrc-home-'))
   const prev = process.env.HOME
@@ -36,7 +33,7 @@ const { tmpHome, realHome } = vi.hoisted(() => {
   return { tmpHome: dir, realHome: prev }
 })
 
-const mockSendPrompt = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => 'sent'))
+const mockSendPrompt = vi.hoisted(() => vi.fn(async (...a: unknown[]) => { void a; return 'sent' }))
 const mockWarn = vi.hoisted(() => vi.fn())
 
 vi.mock('../logger.js', () => ({

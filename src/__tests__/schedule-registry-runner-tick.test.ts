@@ -17,11 +17,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 
 const { tmpHome, realHome } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const fs = require('node:fs') as typeof import('node:fs')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const os = require('node:os') as typeof import('node:os')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const path = require('node:path') as typeof import('node:path')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'schedtick-home-'))
   const prev = process.env.HOME
@@ -32,7 +29,7 @@ const { tmpHome, realHome } = vi.hoisted(() => {
 const sent = vi.hoisted(() => [] as Array<{ session: string; prompt: string }>)
 // What a send does before it returns: the window between the tick's check and
 // a later fire of the same tick.
-const hooks = vi.hoisted(() => ({ duringSend: (_session: string) => {} }))
+const hooks = vi.hoisted(() => ({ duringSend: (session: string) => { void session } }))
 const mockWarn = vi.hoisted(() => vi.fn())
 
 vi.mock('../logger.js', () => ({
