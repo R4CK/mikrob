@@ -1,10 +1,18 @@
 # gpu-driver-install-launcher.ps1 -- hash-checking launcher for gpu-driver-install.ps1
 # (cards 8b588834/7857c82c, GPU-driver figyelő (C)).
 #
+# R1 fix (eb12a5dd): the scheduled task's own action now verifies THIS script's own full SHA-256,
+# inline, before invoking it -- see gpu-driver-install-setup.ps1 Phase 2's task-action
+# construction (Set-ScheduledTask/New-ScheduledTaskAction, CYBERED NO-GO 30643 F1 fix). That check
+# lives OUTSIDE this file by design: if this file is ever replaced in a compromised TargetDir, its
+# own code cannot be trusted to check itself. This file's unchanged job below (verifying the MAIN
+# script's hash) still happens only if the external pre-check already confirmed this file itself
+# wasn't tampered with.
+#
 # The scheduled task calls THIS script (with -ExecutionPolicy Bypass), not the main
 # gpu-driver-install.ps1 directly.  Before launching the main script, this script:
-#   1. Reads the expected SHA-256: first from $args[0] (task command line, set by
-#      gpu-driver-install-setup.ps1 Phase 2 via schtasks /Change -- F1 fix), then from
+#   1. Reads the expected SHA-256: first from $args[0] (the task's own action argument, set by
+#      gpu-driver-install-setup.ps1 Phase 2 via Set-ScheduledTask -- F1 fix), then from
 #      gpu-driver-install.sha256 in the same directory (fallback for manual invocation).
 #   2. Computes the actual SHA-256 of gpu-driver-install.ps1 (same directory).
 #   3. If they match: runs the main script (no params, no extra flags).

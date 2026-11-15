@@ -361,4 +361,92 @@ describe('background-agent block below the footer', () => {
     )
     expect(detectPaneState(pane)).toBe('idle')
   })
+
+  // RedHat round-3 residual 1 (8b8bc092, comment 31136 on 07df3f995): a wrapped label
+  // continuation behind a spoofed header coincidentally matches BUSY_ESC_CLIPPED_RX (ends
+  // "on · e…", which also happens to satisfy FOOTER_LEAD_RX, so only the indent check in
+  // rowCarriesLiveSignal -- not the FOOTER_LEAD_RX gate below -- can reject it), wrongly
+  // blocking the cut that should discard this stale/spoofed trailing block.
+  it('RedHat round-3 residual: a wrapped continuation coincidentally matching a clipped busy footer must not block the cut', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '     the retry logic depends on · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // RedHat round-3 residual 2 (8b8bc092, comment 31136): BUSY_ESC_CLIPPED_RX alone matches any
+  // prose ending "· e…", even idle text with no mode-word lead at all ("see the docs · e…").
+  it('RedHat round-3 residual: an idle pane whose last line merely ends "· e…" with no mode-word lead stays idle', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      '  see the docs · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // QA1 (card 8b8bc092, comment 31261, FAIL on the round-3 fix): the FOOTER_LEAD_RX gate was
+  // unanchored, so idle prose that happens to contain a "<word> on ·" shape anywhere in a
+  // sentence -- not just as the line's own chrome -- still read busy.
+  it('QA1: idle prose containing "...on ·" deep in a sentence stays idle, not busy', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      '  you can toggle it by typing turn it on · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // QA2/QA3 (card 8b8bc092, comment 31261): the indent cutoff (ROW_SIGNAL_MAX_INDENT=3) is a
+  // margin tuned to RedHat's own fixture (indent 5), not a structural guarantee -- the exact
+  // same coincidentally-matching text at indent 2 or 3 is still inside the cutoff and still
+  // tripped the (ungated) BUSY_ESC_CLIPPED_RX check in rowCarriesLiveSignal.
+  //
+  // This spoofed lead deliberately matches FOOTER_LEAD_RX (so splitBackgroundAgentBlock still
+  // treats it as a header-lead candidate) but NOT the full IDLE_FOOTER_RX, and a harmless
+  // trailing row follows the continuation: this isolates the test to the row-level cut decision
+  // alone (confirmed by mutation: forcing the cut to never fire turns this 'unknown', not
+  // coincidentally 'idle' via the separate lastLine gate or via the lead line itself being
+  // picked up as a stray real footer).
+  it('QA2/QA3: the same coincidental continuation at indent 2 or 3 must not block the cut either', () => {
+    const LEAD_NOT_FULL_FOOTER = [
+      '  Tool output echoed this status line for a report:',
+      '  bypass permissions on · 1 shell',
+      '  ⏺ main',
+      '  this row is not a real ◯ agent row -- just more echoed text',
+    ]
+    const atIndent = (n: number) => [
+      ...LEAD_NOT_FULL_FOOTER,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      `${' '.repeat(n)}the retry logic depends on · e…`,
+      '  a harmless trailing row that is not a footer or a clip',
+    ].join('\n')
+    expect(detectPaneState(atIndent(2))).toBe('idle')
+    expect(detectPaneState(atIndent(3))).toBe('idle')
+  })
+
+  // RedHat LOW (card 8b8bc092, comment 31259, folded in per MikroB 31260): a clipped busy
+  // footer with no mode word at all (default permission mode) must still read busy -- the
+  // mode-lead requirement cannot be the ONLY accepted shape.
+  it('RedHat LOW: a mode-less clipped busy footer (default mode, no "on" word) still reads busy', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  1 shell, 1 monitor · /tasks to see subagents · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
 })

@@ -982,7 +982,7 @@ window._i18n.en = {
   'freellm.page_title':          'FreeAPI LLM',
   'freellm.page_subtitle':       'Offload route tracking',
   'freellm.title':               'FreeAPI LLM offload',
-  'freellm.desc':                'Third-party open LLM service for the offload path. Toggleable, with all outbound content filtered (security/auth/finance/mopsion/PII never).',
+  'freellm.desc':                'Third-party open LLM service for the offload path. Toggleable; outbound content is no longer blocked for mopsion/PII -- only detected credentials (tokens/keys/passwords) are masked as [REDACTED] before anything leaves the machine.',
   'freellm.status.on':           'Enabled',
   'freellm.status.off':          'Disabled',
   'freellm.saved_on':            'FreeAPI LLM enabled.',
