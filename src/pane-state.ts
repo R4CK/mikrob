@@ -163,22 +163,6 @@ function hasIdleFooter(lines: string[]): boolean {
   return idleFooterIndex(lines) >= 0
 }
 
-/**
- * RedHat class A follow-up (card 8e9828c9): hasIdleFooter(lines) scans the
- * WHOLE pane most-recent-match-first, which is correct when a real footer
- * exists somewhere to out-rank a stale one. If no real footer exists at all,
- * though, a single stale/spoofed idle-footer-shaped line far up in scrollback
- * is the only match by default, and "most recent of one" still wins -- wrongly
- * suppressing detectsHeldPeerMessage/detectsPermissionDialog for a real dialog
- * that has no idle-footer-shaped line of its own. The live footer is only ever
- * drawn at the bottom, so bound the check to the same tail window the busy
- * check already uses (BUSY_LIVE_REGION_LINES) -- a stale line quoted further
- * up than that can no longer masquerade as the current footer.
- */
-function hasIdleFooterNear(lines: string[], regionLines: number): boolean {
-  return hasIdleFooter(lines.slice(-regionLines))
-}
-
 // idleFooterAndNoDialogAfter solves the fixed-window dilemma for dialog detectors
 // (card 8e9828c9 round-2): a narrow window (BUSY_LIVE_REGION_LINES=12) missed a real
 // footer with 30 trailing banner lines; a wide window (DIALOG_FOOTER_SEARCH_LINES=40)
