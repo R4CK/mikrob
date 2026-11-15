@@ -57,7 +57,17 @@ const DIAGNOSE_MARKER = join(PROJECT_ROOT, 'store', 'update-diagnose.last')
 // once for a debug run, left in a systemd unit, inherited from an operator shell) silently rode
 // along into every ordinary fork-pull update after it. None of these are a login/shell basic, so
 // none of them belong in this list.
-const BASE_ENV_KEYS = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL'] as const
+// XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS (RedHat NO-GO F1, comment on 1cc5be855): neither is a
+// control switch or a code-loading variable, they are what `systemctl --user` needs to reach the
+// user session bus. Without them update.sh's `systemctl --user daemon-reload` calls (after it
+// patches/creates unit files) and its `_unit_drift` check are written `2>/dev/null || true` /
+// treat-failure-as-ok, so the loss was SILENT: measured on this host, `systemctl --user status`
+// exits 1 with "$DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined" when only the other
+// base keys are set, and exits 0 once XDG_RUNTIME_DIR alone is restored.
+const BASE_ENV_KEYS = [
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL',
+  'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS',
+] as const
 
 /** Returns the env {@link spawnUpdateScript} hands to update.sh: the {@link BASE_ENV_KEYS} login
  *  basics (if set on this process), with `extraEnv` layered on top -- nothing else from the
@@ -82,9 +92,21 @@ const BASE_ENV_KEYS = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMP
  *  (`in` walks the prototype chain; `Object.assign` below only ever copies extraEnv's OWN
  *  properties). The one caller that used to set it directly (a raw upstream fetch+merge handed
  *  off to update.sh in POST_MERGE_MODE) was removed as dead code under card 55885cb1 -- see the
- *  NOT ADOPTED comment near the top of this file -- so nothing sets it today either way. */
+ *  NOT ADOPTED comment near the top of this file -- so nothing sets it today either way.
+ *
+ *  Built with Object.create(null), not a plain {} (RedHat NO-GO F2): node's spawn() copies the
+ *  child env with a `for...in` loop, which walks the prototype chain -- a plain object inherits
+ *  Object.prototype, so a polluted Object.prototype.FOO is an ENUMERABLE inherited property and
+ *  reaches the spawned child even though `Object.hasOwn(env, 'FOO')` is false (measured on node
+ *  22.23.2). A null-prototype object has no inherited enumerable properties at all, so `for...in`
+ *  only ever sees what was actually assigned here. This also defuses `Object.assign(env,
+ *  extraEnv)` for an extraEnv with an own `__proto__` key (e.g. from JSON.parse): against a plain
+ *  object that assignment invokes Object.prototype's `__proto__` setter and changes env's own
+ *  prototype (measured: a later-set key then leaks via the same for...in path); against a
+ *  null-prototype object there is no inherited `__proto__` accessor, so it becomes an ordinary own
+ *  property literally named "__proto__", never a prototype change. */
 export function buildUpdateScriptEnv(extraEnv: Record<string, string>): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {}
+  const env: NodeJS.ProcessEnv = Object.create(null)
   for (const key of BASE_ENV_KEYS) {
     const value = process.env[key]
     if (value !== undefined) env[key] = value
