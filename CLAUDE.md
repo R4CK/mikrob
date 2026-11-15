@@ -96,11 +96,11 @@ Személyiség alatti sorokat) -- nem csak a linkelt fájlban (WhiteHat2 H1, ugya
   - **5.** **Modell a feladathoz, egy sor indokkal.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **6.** **Handoff 200 szó alatt, négy mezővel:.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **7.** **Csendes ütemezett feladat, de nyomot hagy.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
-  - **8.** **Egyetlen jóváhagyási vonal mindenhol, ahol a flotta cselekedni tud.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
+  - **8.** **Egyetlen jóváhagyási vonal mindenhol, ahol a flotta cselekedni tud.** Ez minden csatornára egyformán áll (Telegram, email-connector, ütemezett feladat, föderáció, subagent). (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **9.** **Elavult emlékek gondozása.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **10.** **Mérés.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
   - **11.** **Alkalmazás/kódbázis visszafejtése (versenytárs-elemzés, idegen repó, saját modul megértése).** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
-  - **12.** **Dispatch-üzenet és lezárás formája.** (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
+  - **12.** **Dispatch-üzenet és lezárás formája.** Minden delegáló üzenet négy blokkot tartalmaz: **Cél**, **Kontextus**, **Eszközök/források**, **Korlátok**. (/home/neon/marveen/docs/rules/ellenorizheto-munka.md)
 - **Inter-agent kommunikáció** -- ágensek közti üzenetküldés API-ja; ismeretlen-sender esetén
   AUTO-ENGEDÉLYEZÉS, ha a senderId szerepel a saját csatornád `allowFrom` listájában, egyébként
   DEFAULT-DENY (Peti-eszkaláció); föderáció (társrendszerek), válasz-cím és hurok-védelem szabályai
