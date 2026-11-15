@@ -2375,6 +2375,10 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
   MAIN_AGENT_ID="$MAIN_AGENT_ID" bash "$INSTALL_DIR/scripts/install-guard-timers.sh" 2>/dev/null \
     && ok "resilience guard-timerek telepitve (channel-watchdog + stuck-modal + disk-space)" \
     || warn "guard-timerek telepitese kihagyva (startup.sh ujraprobalja)"
+  # /tmp inode-or (plain crontab, card b1813ab2): idempotent + self-guarded; never hard-fail.
+  bash "$INSTALL_DIR/scripts/install-tmp-inode-guard-cron.sh" 2>/dev/null \
+    && ok "/tmp inode-or cron telepitve" \
+    || warn "/tmp inode-or cron telepitese kihagyva"
   # Windows-side WSL watchdog (outer net for a TOTAL WSL wedge). WSL-only +
   # self-guarded; a silent no-op on non-WSL / no-powershell hosts.
   bash "$INSTALL_DIR/scripts/install-wsl-watchdog.sh" >/dev/null 2>&1 \
