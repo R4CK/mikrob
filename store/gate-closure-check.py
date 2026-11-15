@@ -1271,8 +1271,14 @@ def main():
             if gaps:
                 result = "CHECKPOINT_FAIL|%s|%s" % (
                     ",".join(s for s, _ in gaps), "; ".join(r for _, r in gaps))
-            # else every sha answered None (no checkpoints recorded for this card at all): a
-            # transitional skip, not a gap -- see _checkpoint_coverage's own docstring. Left as AGREE.
+            else:
+                # F3 (card 0c03aa06, Cybered 31713): every sha answered None (zero checkpoint rows
+                # recorded for this card at all) -- a transitional skip, not a gap, so the verdict
+                # stays AGREE. But a plain "AGREE" here is byte-identical to a genuinely verified
+                # AGREE, and the card forbids wiring any --card-id caller until that distinction is
+                # explicit. Append a token a caller can branch on instead of silently reading
+                # "never checked" as "checked and fine".
+                result = "%s|CHECKPOINT_NONE" % result
 
     print(result)
 

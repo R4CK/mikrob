@@ -1564,6 +1564,30 @@ if not _ok_h:
     failures.append(("F1 ckpt: multi-sha, second covers", "AGREE", _cli_h.stdout.strip()))
 os.unlink(_ckpt_db)
 
+# Case I (card 0c03aa06, F3, Cybered 31713): --card-id with ZERO checkpoint rows for the card must
+# not print a plain "AGREE" -- that is byte-identical to a genuinely verified AGREE, and the card
+# text forbids wiring any --card-id caller until this is fixed, because every card has zero rows
+# today. The CLI line, not just the function return (Case A), must carry the explicit token.
+_make_ckpt_db(_ckpt_db, [])
+n += 1
+_cli_i = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardNoRows1", "--db", _ckpt_db],
+    input=json.dumps({"comments": [
+        {"author": "fullstack", "content": "REVIEW\nGate-SHA: %s" % _KNOWN_SHA},
+        {"author": "qa", "content": "QA PASS\nGate-SHA: %s" % _KNOWN_SHA},
+        {"author": "cybersec", "content": "CYBERSEC GO\nGate-SHA: %s" % _KNOWN_SHA},
+    ]}),
+    capture_output=True, text=True, env=_cli_env,
+)
+_out_i = _cli_i.stdout.strip()
+_ok_i = _out_i.split("|", 1)[0] == "AGREE" and "CHECKPOINT_NONE" in _out_i
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_i else "FAIL", "AGREE+NONE", _out_i,
+    "F3 ckpt: zero rows for the card -> AGREE carries an explicit CHECKPOINT_NONE token"))
+if not _ok_i:
+    failures.append(("F3 ckpt: zero-row CLI token", "AGREE|...|CHECKPOINT_NONE", _out_i))
+os.unlink(_ckpt_db)
+
 shutil.rmtree(_ckpt_dir, ignore_errors=True)
 
 print()

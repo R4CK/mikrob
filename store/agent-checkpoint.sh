@@ -131,10 +131,16 @@ sweep_checkpoints() {
     esac
   done
   case "$older_days" in ''|*[!0-9]*) die 2 "--older-than-days must be a positive integer (got: $older_days)" ;; esac
+  # F1 (card 0c03aa06, Cybered 31713): the un-capped value fed into date-arithmetic wraps for a
+  # mistyped or injected huge threshold -- measured: 1000000000000000 and 213503982334601 both
+  # delete a card's refs done minutes ago, not just astronomically large inputs. 36500 days
+  # (100 years) is far past any real retention need, so anything above it is rejected outright
+  # rather than trusted to stay negative.
+  [ "$((10#$older_days))" -gt 36500 ] && die 2 "--older-than-days too large (max 36500, got: $older_days)"
 
   [ -f "$DB" ] || die 1 "DB not found: $DB (set MARVEEN_DB to override)"
 
-  local cutoff=$(( $(date +%s) - older_days * 86400 ))
+  local cutoff=$(( $(date +%s) - (10#$older_days) * 86400 ))
   local card_ids
   card_ids="$(sqlite3 "$DB" "SELECT id FROM kanban_cards WHERE status='done' AND updated_at < $cutoff" 2>&1)" \
     || die 1 "sqlite3 query failed: $card_ids"
@@ -430,6 +436,15 @@ if [ "${1:-}" = "--selftest" ]; then
     && no "sweep --dry-run listed open card's ref (should not): $dry_out" \
     || ok "sweep --dry-run skipped open card"
 
+  # F2 (card 0c03aa06, Cybered 31713): a dry-run that ALSO deletes (e.g. a `git update-ref -d`
+  # mutant dropped next to the "would delete:" echo) previously stayed green, since nothing
+  # checked the ref still existed after a dry-run -- only the printed text was asserted.
+  if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/oldcard01/1" >/dev/null 2>&1; then
+    ok "sweep --dry-run did not actually delete the old card's ref"
+  else
+    no "sweep --dry-run deleted a ref it should have only listed"
+  fi
+
   MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$sweep_db" bash "$0" --sweep --older-than-days 1 >/dev/null
   if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/oldcard01/1" >/dev/null 2>&1; then
     no "old card's ref still exists after sweep"
@@ -442,22 +457,57 @@ if [ "${1:-}" = "--selftest" ]; then
     no "open card's ref was deleted (should not)"
   fi
 
-  # Huge --older-than-days pin (card 0c03aa06, WhiteHat2 finding on 295ae6a3): a cutoff built from
-  # an absurdly large threshold goes deeply NEGATIVE (now - huge*86400), so nothing recorded today
-  # is ever "older than" it -- this already holds with plain integer arithmetic (bash's $(( ))
-  # is 64-bit; 999999999*86400 does not overflow it), but nothing PINNED that a future rewrite of
-  # the cutoff formula (e.g. an unsigned clamp, or swapping the subtraction order) can't quietly
-  # start sweeping everything. A dry-run that WOULD delete here must turn this case red.
+  # Huge --older-than-days (card 0c03aa06, WhiteHat2 finding on 295ae6a3; Cybered 31713 F1 delta).
+  # The OLD pin used 999999999: a cutoff built from it goes deeply NEGATIVE under plain 64-bit
+  # arithmetic, so it behaved identically whether or not a cap existed (vacuous -- it could never
+  # go red). Measured: values like 1000000000000000 and 213503982334601 DO make the pre-fix
+  # (uncapped) formula wrap and delete a just-done card's refs. The fix is a hard cap (36500 days,
+  # 100 years) rather than trusting the arithmetic to stay negative, so EVERY value past the cap is
+  # now rejected outright -- including the old 999999999 pin itself.
   huge_db="$tmp/huge-sweep.db"
   sqlite3 "$huge_db" "
     CREATE TABLE kanban_cards (id TEXT, status TEXT, updated_at INTEGER);
     INSERT INTO kanban_cards VALUES ('donetoday1', 'done', $(date +%s));
   "
   git -C "$TEST_MAIN" update-ref "refs/mikrob/ckpt/donetoday1/1" "$sweep_head"
-  huge_out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days 999999999 2>&1)"
-  echo "$huge_out" | grep -q "donetoday1" \
-    && no "huge --older-than-days dry-run would delete a card done TODAY: $huge_out" \
-    || ok "huge --older-than-days deletes nothing of a card done today"
+
+  # At the cap (accepted): still correctly deletes nothing of a card done today.
+  if huge_out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days 36500 2>&1)"; then
+    printf '%s' "$huge_out" | grep -q "donetoday1" \
+      && no "--older-than-days 36500 (at cap) dry-run would delete a card done TODAY: $huge_out" \
+      || ok "--older-than-days 36500 (at cap) deletes nothing of a card done today"
+  else
+    no "--older-than-days 36500 (at cap) should be ACCEPTED, got refused: $huge_out"
+  fi
+  if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/donetoday1/1" >/dev/null 2>&1; then
+    ok "--older-than-days 36500 (at cap) dry-run did not actually delete the today card's ref"
+  else
+    no "--older-than-days 36500 (at cap) dry-run deleted a ref it should have only listed"
+  fi
+
+  # Past the cap (rejected outright): the old vacuous pin (999999999) plus the two values that
+  # measurably delete today's refs on the uncapped base.
+  for _huge_days in 999999999 1000000000000000 213503982334601; do
+    if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days "$_huge_days" 2>&1)"; then
+      no "--older-than-days $_huge_days should have been rejected (cap 36500), got: $out"
+    else
+      printf '%s' "$out" | grep -q "too large" \
+        && ok "--older-than-days $_huge_days is rejected (cap 36500)" \
+        || no "--older-than-days $_huge_days refused, but not with the cap message: $out"
+    fi
+    if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/donetoday1/1" >/dev/null 2>&1; then
+      ok "--older-than-days $_huge_days: today card's ref untouched after rejection"
+    else
+      no "--older-than-days $_huge_days: today card's ref is gone after a refused sweep"
+    fi
+  done
+
+  # L3 (same card): a leading-zero value must not hit bash's octal arithmetic (base-10 pin).
+  if MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days 08 >/dev/null 2>&1; then
+    ok "--older-than-days 08 (leading zero) is accepted, not an octal arithmetic error"
+  else
+    no "--older-than-days 08 (leading zero) failed -- likely bash octal arithmetic"
+  fi
 
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
   exit "$fail"
