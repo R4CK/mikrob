@@ -1257,24 +1257,50 @@ def main():
 
     result = check(comments, designated, expect, use_declared, check_landed)
 
-    if card_id and db_path:
-        rev_shas = declared_shas(comments)
-        if rev_shas:
-            check_sha = next(iter(rev_shas))
-            covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
-            if not covered:
-                result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+    # M2 (card 0c03aa06, WhiteHat2 M2 + RedHat on 295ae6a3): the checkpoint overlay must only ever
+    # NARROW an AGREE, exactly like the landing check above it (check()'s own "only narrows AGREE"
+    # rule) -- never replace a FAILED/DISAGREE/MISSING/etc verdict, or a NO-GO silently disappears
+    # behind CHECKPOINT_FAIL. And it must look at EVERY declared sha (rule 4b's multi-commit
+    # Gate-SHA), not just the first -- a card delta-gated across a work-commit/landing-commit pair
+    # read a false gap before if only the first one happened to lack a checkpoint.
+    rev_shas = declared_shas(comments) if (card_id and db_path and result.startswith("AGREE")) else []
+    if rev_shas:
+        states = [(_checkpoint_coverage(card_id, s, db_path), s) for s in rev_shas]
+        if not any(cov is True for (cov, _reason), _sha in states):
+            gaps = [(sha, reason) for (cov, reason), sha in states if cov is False]
+            if gaps:
+                result = "CHECKPOINT_FAIL|%s|%s" % (
+                    ",".join(s for s, _ in gaps), "; ".join(r for _, r in gaps))
+            # else every sha answered None (no checkpoints recorded for this card at all): a
+            # transitional skip, not a gap -- see _checkpoint_coverage's own docstring. Left as AGREE.
 
     print(result)
 
 
 def _checkpoint_coverage(card_id, gate_sha, db_path):
-    """Return (covered: bool, reason: str|None).
+    """Return (covered, reason) where covered is True | False | None.
 
-    covered=True if no checkpoints recorded yet (transitional / no-checkpoint workflow) or if
-    gate_sha matches a head_sha in card_checkpoints. covered=False only when at least one
-    checkpoint exists for the card but the declared sha is not among them (genuine gap).
-    Errors accessing the DB are fail-open to avoid blocking the board on infra issues.
+    True  = this card has at least one recorded checkpoint matching gate_sha (by prefix, M1 below),
+            OR no checkpoint matches but gate_sha is already landed on origin (the "or origin" leg
+            M1 also asked for: a REVIEW naming the LANDING merge, not the work commit a checkpoint
+            was taken from, must not read as a gap).
+    False = checkpoints exist for this card, gate_sha matches none of them, AND it is not landed
+            on origin either -- a genuine gap.
+    None  = no checkpoints recorded for this card AT ALL (distinct from True on purpose -- RedHat's
+            finding on 295ae6a3/card 0c03aa06: agent-checkpoint.sh never wrote a row until this
+            card wired it, so every pre-existing card has zero rows, and collapsing that into the
+            same True a real match gets would make "never checked" indistinguishable from "checked
+            and fine". main() currently treats None the same as a pass-through -- exactly RedHat's
+            own "or state explicitly the feature stays off" alternative: nothing calls this with
+            --card-id in production today (measured on this board), so this is not yet a live
+            blocking switch; flipping that is a separate, fleet-wide decision, not this card's).
+    Errors accessing the DB are fail-open (None) to avoid blocking the board on infra issues.
+
+    M1 (WhiteHat2, card 0c03aa06): the old equality check (`head_sha = gate_sha[:40]`) compared a
+    SHORT sha (rule 4b allows 7-40 hex in a REVIEW) against the full 40-hex head_sha it never
+    equals, so every short-sha REVIEW read as a gap. `LIKE ? || '%'` is a prefix match either way:
+    unchanged for a full 40-hex gate_sha (nothing else can share it as a strict prefix in practice),
+    correct for a short one.
     """
     try:
         import sqlite3 as _sqlite3
@@ -1285,22 +1311,25 @@ def _checkpoint_coverage(card_id, gate_sha, db_path):
             ).fetchone()
             count = row[0] if row else 0
             if count == 0:
-                return True, None
+                return None, None
             sha_norm = gate_sha.lower()[:40]
             match = conn.execute(
-                "SELECT n FROM card_checkpoints WHERE card_id = ? AND head_sha = ?",
+                "SELECT n FROM card_checkpoints WHERE card_id = ? AND head_sha LIKE ? || '%'",
                 (card_id, sha_norm),
             ).fetchone()
         finally:
             conn.close()
         if match:
             return True, None
+        landed = landed_verdict([sha_norm])
+        if landed is None:
+            return True, None
         return False, (
-            "Gate-SHA %s not in any recorded checkpoint for card %s (%d checkpoint(s) exist)"
-            % (gate_sha[:12], card_id, count)
+            "Gate-SHA %s not in any recorded checkpoint for card %s (%d checkpoint(s) exist), and "
+            "it is not landed on origin either" % (gate_sha[:12], card_id, count)
         )
     except Exception:  # noqa: BLE001 -- DB missing / locked / corrupt: fail-open
-        return True, None
+        return None, None
 
 
 if __name__ == "__main__":

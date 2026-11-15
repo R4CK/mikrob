@@ -34,6 +34,21 @@ agent_checkpoint() {
   case "$agent" in *[!a-z0-9-]*|-*|'') die 2 "agent name must match [a-z0-9-]+ (got: $agent)" ;; esac
   case "$card" in *[!0-9a-f]*|'') die 2 "card id must be hex (got: $card)" ;; esac
 
+  # Forgery binding (card 0c03aa06, RedHat finding on 295ae6a3): refuse BEFORE touching the
+  # worktree or creating anything if the card's kanban assignee is recorded and names a DIFFERENT
+  # agent -- nothing else here checks that the caller actually owns the card it is checkpointing.
+  # FAIL-OPEN only on ambiguity ($DB missing, or this specific card has no row yet), matching this
+  # file's existing fail-open posture (see sweep_checkpoints' DB-missing die being the one place
+  # that's NOT ambiguous -- its whole job IS the DB). A refused forgery must leave no trace: this
+  # runs first, so nothing is created at all, not even the checkpoint commit.
+  if [ -f "$DB" ]; then
+    local assignee
+    assignee="$(sqlite3 "$DB" "SELECT assignee FROM kanban_cards WHERE id = '$card'" 2>/dev/null || true)"
+    if [ -n "$assignee" ] && [ "${assignee,,}" != "${agent,,}" ]; then
+      die 1 "checkpoint refused: card $card is assigned to '$assignee', not '$agent' (forgery binding, card 0c03aa06)"
+    fi
+  fi
+
   local wt
   wt="$(MARVEEN_MAIN="$MAIN" bash "$HERE/agent-worktree-marveen.sh" "$agent" --path)"
 
@@ -90,6 +105,16 @@ agent_checkpoint() {
     n=$((n + 1))
     [ "$n" -le "$max_attempts" ] || die 1 "update-ref: $max_attempts attempts, all claimed -- giving up"
   done
+
+  # Wire the write (card 0c03aa06, RedHat finding on 295ae6a3): the ref above is the authoritative
+  # checkpoint; this row is what lets gate-closure-check.py's _checkpoint_coverage actually find it.
+  # Best-effort and non-fatal -- $DB missing (e.g. a test fixture, or MARVEEN_DB pointed elsewhere)
+  # must not fail a checkpoint that otherwise succeeded; the git ref is still the source of truth.
+  if [ -f "$DB" ]; then
+    sqlite3 "$DB" "INSERT INTO card_checkpoints (card_id, n, sha, head_sha, agent, created_at)
+      VALUES ('$card', (SELECT COALESCE(MAX(n), 0) + 1 FROM card_checkpoints WHERE card_id = '$card'),
+              '$commit', '$head', '$agent', strftime('%s', 'now'));" 2>/dev/null || true
+  fi
 
   echo "$ref $commit"
 }
@@ -332,6 +357,60 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
   fi
 
+  # --- forgery binding + DB write wiring (card 0c03aa06, RedHat finding on 295ae6a3) -------------
+  ckptdb="$tmp/ckpt-claudeclaw.db"
+  sqlite3 "$ckptdb" "
+    CREATE TABLE kanban_cards (id TEXT, assignee TEXT);
+    CREATE TABLE card_checkpoints (
+      card_id TEXT NOT NULL, n INTEGER NOT NULL, sha TEXT NOT NULL, head_sha TEXT NOT NULL,
+      agent TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (card_id, n)
+    );
+    INSERT INTO kanban_cards VALUES ('deadbeef11', 'owneragent');
+  "
+  run_wt owneragent >/dev/null
+  owner_head="$(git -C "$TEST_ROOT/owneragent" rev-parse HEAD)"
+
+  # The card's real owner succeeds, and the row actually lands with the right columns.
+  if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_WORKTREES="$TEST_ROOT" MARVEEN_DB="$ckptdb" \
+      bash "$0" owneragent deadbeef11)"; then
+    ok "the card's own owner can checkpoint it"
+  else
+    no "the card's own owner was refused: $out"
+  fi
+  row="$(sqlite3 "$ckptdb" "SELECT card_id, head_sha, agent FROM card_checkpoints WHERE card_id = 'deadbeef11'")"
+  [ "$row" = "deadbeef11|$owner_head|owneragent" ] \
+    && ok "the write actually lands in card_checkpoints, with the real HEAD and agent" \
+    || no "expected deadbeef11|$owner_head|owneragent in card_checkpoints, got: $row"
+
+  # An impostor (a different agent than the card's assignee) is refused, BEFORE anything is
+  # created: no new git ref, no new row -- a refused forgery must leave no trace.
+  run_wt impostoragent >/dev/null
+  refs_before="$(git -C "$TEST_MAIN" for-each-ref 'refs/mikrob/ckpt/deadbeef11/' | wc -l)"
+  rows_before="$(sqlite3 "$ckptdb" "SELECT COUNT(*) FROM card_checkpoints WHERE card_id = 'deadbeef11'")"
+  if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_WORKTREES="$TEST_ROOT" MARVEEN_DB="$ckptdb" \
+      bash "$0" impostoragent deadbeef11 2>&1)"; then
+    no "an impostor agent was NOT refused: $out"
+  else
+    printf '%s' "$out" | grep -q "forgery binding" \
+      && ok "an agent that is not the card's assignee is refused, with the forgery-binding message" \
+      || no "refused, but not with the expected forgery-binding message: $out"
+  fi
+  refs_after="$(git -C "$TEST_MAIN" for-each-ref 'refs/mikrob/ckpt/deadbeef11/' | wc -l)"
+  rows_after="$(sqlite3 "$ckptdb" "SELECT COUNT(*) FROM card_checkpoints WHERE card_id = 'deadbeef11'")"
+  [ "$refs_before" = "$refs_after" ] && ok "a refused forgery creates no new checkpoint ref" \
+    || no "refs/mikrob/ckpt/deadbeef11/ grew from $refs_before to $refs_after after a refused forgery"
+  [ "$rows_before" = "$rows_after" ] && ok "a refused forgery writes no new row" \
+    || no "card_checkpoints rows for deadbeef11 grew from $rows_before to $rows_after after a refused forgery"
+
+  # Control: an UNKNOWN card (no kanban_cards row at all) is ambiguous, not provably forged, so the
+  # fail-open posture lets it through -- same posture as _checkpoint_coverage's own count==0 case.
+  if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_WORKTREES="$TEST_ROOT" MARVEEN_DB="$ckptdb" \
+      bash "$0" owneragent deadbeef09)"; then
+    ok "a card with no kanban_cards row at all fails open (ambiguous, not refused)"
+  else
+    no "an unknown card should fail open, not be refused: $out"
+  fi
+
   # --- sweep selftest (card 1778f6ac F1.1.2) ---
   sweep_db="$tmp/sweep.db"
   sqlite3 "$sweep_db" "
@@ -362,6 +441,23 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     no "open card's ref was deleted (should not)"
   fi
+
+  # Huge --older-than-days pin (card 0c03aa06, WhiteHat2 finding on 295ae6a3): a cutoff built from
+  # an absurdly large threshold goes deeply NEGATIVE (now - huge*86400), so nothing recorded today
+  # is ever "older than" it -- this already holds with plain integer arithmetic (bash's $(( ))
+  # is 64-bit; 999999999*86400 does not overflow it), but nothing PINNED that a future rewrite of
+  # the cutoff formula (e.g. an unsigned clamp, or swapping the subtraction order) can't quietly
+  # start sweeping everything. A dry-run that WOULD delete here must turn this case red.
+  huge_db="$tmp/huge-sweep.db"
+  sqlite3 "$huge_db" "
+    CREATE TABLE kanban_cards (id TEXT, status TEXT, updated_at INTEGER);
+    INSERT INTO kanban_cards VALUES ('donetoday1', 'done', $(date +%s));
+  "
+  git -C "$TEST_MAIN" update-ref "refs/mikrob/ckpt/donetoday1/1" "$sweep_head"
+  huge_out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days 999999999 2>&1)"
+  echo "$huge_out" | grep -q "donetoday1" \
+    && no "huge --older-than-days dry-run would delete a card done TODAY: $huge_out" \
+    || ok "huge --older-than-days deletes nothing of a card done today"
 
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
   exit "$fail"
