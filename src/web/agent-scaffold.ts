@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync, lstatSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -4941,10 +4941,30 @@ export function ensureMemorySearchLabelSection(name: string): void {
 // settings.json are both git-tracked and maintained statically (same precedent as
 // ensureFleetAuthSection's no-op for MAIN_AGENT_ID -- a runtime write there fights the
 // --ff-only pull, card 2dd28b5d/99fccbcf).
-const PROJECT_ROOT_ANCHOR_FILE = 'project-root-anchor.json'
+// Card b5d19a32 (Cybersec, finding on eed22288): the anchor used to live under the agent's OWN
+// .claude dir, which the agent itself can write to (or replace with a symlink into another
+// agent's .claude). Keeping it in STORE_DIR instead means no agent process can plant or control
+// its own anchor value -- only this sweep (running as the main process) ever writes here.
+const PROJECT_ROOT_ANCHOR_DIR = join(STORE_DIR, 'project-root-anchors')
 
 function projectRootAnchorPath(name: string): string {
-  return join(agentDir(name), '.claude', PROJECT_ROOT_ANCHOR_FILE)
+  return join(PROJECT_ROOT_ANCHOR_DIR, `${name}.json`)
+}
+
+// Card b5d19a32: if agents/<name>/.claude (or CLAUDE.md, or settings.json) is a symlink, the
+// "victim" the link points at is not this agent's own content -- rewriting through it would
+// mutate whatever real agent (or location) is on the other end, using a boundary this agent
+// chose by creating the link. Refuse the whole sweep for this agent rather than touch anything.
+function hasSymlinkedScaffoldPath(name: string): boolean {
+  const candidates = [join(agentDir(name), '.claude'), join(agentDir(name), 'CLAUDE.md'), agentSettingsPath(name)]
+  for (const p of candidates) {
+    try {
+      if (lstatSync(p).isSymbolicLink()) return true
+    } catch {
+      // Does not exist: not a symlink, nothing to refuse on this path.
+    }
+  }
+  return false
 }
 
 // An anchor value this mechanism can safely use for the replace below: must be a non-root
@@ -4972,6 +4992,11 @@ function replaceRootOccurrences(content: string, oldRoot: string, newRoot: strin
 export function ensureProjectRootAnchor(name: string): void {
   if (name === MAIN_AGENT_ID) return
 
+  if (hasSymlinkedScaffoldPath(name)) {
+    logger.warn({ name }, 'ensureProjectRootAnchor: refusing, .claude/CLAUDE.md/settings.json is a symlink')
+    return
+  }
+
   const anchorPath = projectRootAnchorPath(name)
   let recordedRoot: string | null = null
   try {
@@ -4986,7 +5011,7 @@ export function ensureProjectRootAnchor(name: string): void {
   // just (re-)establish the baseline for next time, no file rewrite.
   if (recordedRoot === null) {
     try {
-      mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+      mkdirSync(PROJECT_ROOT_ANCHOR_DIR, { recursive: true })
       atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
     } catch {
       // Best-effort: a missing anchor just means this re-checks on the next sweep tick.
