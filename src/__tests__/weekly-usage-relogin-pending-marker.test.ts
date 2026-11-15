@@ -50,12 +50,17 @@ const RELOGIN = join(STORE, 'weekly-usage-relogin.sh')
 let dir: string
 let log: string
 let marker: string
+let skipStreakFile: string
 let holders: ChildProcess[]
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'usage-relogin-pending-'))
   log = join(dir, 'tmux.log')
   marker = join(dir, 'pending-marker')
+  // card f3343af0 delta-gate (Cybersec MEDIUM-3): runReader always passes this explicitly, inside
+  // this test's own mktemp dir, never the live store/.weekly-usage-relogin-skip-streak -- a stale
+  // file there would make the first tick of a REAL relogin escalate immediately.
+  skipStreakFile = join(dir, 'skip-streak')
   holders = []
   // Always-succeeding tmux shim: has-session/new-session/send-keys/resize-window all exit 0,
   // capture-pane prints a benign line. Good enough for the "did it even try to touch the panel"
@@ -94,11 +99,17 @@ function runReader(env: Record<string, string> = {}): { stdout: string; code: nu
   try {
     stdout = execFileSync('bash', [READER], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Cybersec MEDIUM-3 (card f3343af0 delta-gate): a hang here (e.g. a future change that
+      // blocks on an fd the fake tmux shim never closes) must fail the test outright, not hang
+      // the whole run red-by-timeout at the CI level. 15s gives headroom over the 10s
+      // WU_RELOGIN_FIFO_TIMEOUT_SEC used by the longest-running case below.
+      timeout: 15_000,
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
         WU_RELOGIN_TEST_MODE: '1',
         WU_RELOGIN_PENDING_MARKER: marker,
+        WU_RELOGIN_SKIP_STREAK_FILE: skipStreakFile,
         ...env,
       },
     }).toString('utf-8')
@@ -119,6 +130,10 @@ function runRelogin(mode: string, env: Record<string, string> = {}, input?: stri
     stdout = execFileSync('bash', [RELOGIN, mode], {
       input,
       stdio: [input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      // Cybersec MEDIUM-3 (card f3343af0 delta-gate): same reasoning as runReader -- a hang in
+      // `start`'s FIFO handshake must fail the test, not hang the run. 15s gives headroom over
+      // the 10s WU_RELOGIN_FIFO_TIMEOUT_SEC used by the longest-running case below.
+      timeout: 15_000,
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,

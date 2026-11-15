@@ -25937,3 +25937,40 @@ Teszt: a célzott fájl 23/23 PASS; a 4 testvér-fájl (code-intake, redaction, 
 cron-shell-pane-writers) 51/51 PASS; `bash -n` a módosított scripten tiszta; tsc --noEmit tiszta.
 
 Gate: QA, Cybersec (delta re-gate a korábbi GO-k felett). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 delta-gate (CYBERSEC GO on 7df1b166, 1 feltetel: MEDIUM-3 skip-streak teszt-szivargas)
+
+CYBERSEC GO a d6f0c0a83 FIFO-javitasra, egy feltetellel landolas elott: a
+weekly-usage-relogin-pending-marker.test.ts `runReader` segedje beallitotta a
+`WU_RELOGIN_TEST_MODE=1`-et, de a `WU_RELOGIN_SKIP_STREAK_FILE` utvonalat NEM -- a
+`weekly-usage-panel-read.sh` SKIP-STREAK-escalacios logikaja (Cybersec MEDIUM-1, card f3343af0)
+emiatt minden teszt-futasnal a VALODI eles `store/.weekly-usage-relogin-skip-streak` fajlt irta/
+olvasta (a `STORE` valtozo a scriptben FIX `/home/neon/marveen/store`, nem a worktree sajat utja).
+Egy itt maradt elavult streak-fajl azt eredmenyezhette volna, hogy egy VALODI relogin elso tickje
+azonnal escalal, es a login-dialogusba gepel -- pontosan az a hiba, amit a MEDIUM-1 fix el akart
+keruelni.
+
+Javitas ketfele szinten:
+1. A teszt-segedben (`runReader`): minden hivas alapertelmezetten a saját mktemp-dir-jen
+   beluli `skip-streak` utvonalat kapja (`WU_RELOGIN_SKIP_STREAK_FILE`), amit egy explicit
+   `env` felulirhat -- ugyanaz a minta, mint a `WU_RELOGIN_PENDING_MARKER`-nel.
+2. A scriptben (melyseg-vedelem): `WU_RELOGIN_TEST_MODE=1` alatt a `WU_RELOGIN_SKIP_STREAK_FILE`
+   mostantol KOTELEZO (`${VAR:?hibaszoveg}`) -- ha egy jovobeli teszt ujra elfelejtene beallitani,
+   a script AZONNAL, hangosan megall, nem csendben az eles fajlra esik vissza. Merve: a valtozo
+   nelkuli hivas `exit 1`-et ad, "WU_RELOGIN_SKIP_STREAK_FILE must be set under
+   WU_RELOGIN_TEST_MODE=1" uzenettel, MIELOTT bármi irna/olvasna.
+
+Masik feltetel (hang elleni korlat): a `runReader`/`runRelogin` ket `execFileSync` hivasa nem
+kapott kulso idokorlatot -- egy jovobeli regresszio (pl. a FIFO-kezfogas megakad) a tesztet
+orokre fuggesztette volna, nem egyszeruen pirosra valtotta. Mindkettő `timeout: 15_000` lett
+(a leghosszabb belso `WU_RELOGIN_FIFO_TIMEOUT_SEC` eset 10 masodperces, a vitest globalis
+`testTimeout` 60 masodperces -- a 15s a kettő kozott, feleslegesen szoros hatarido nelkul).
+
+Teszt: a celzott fajl 23/23 PASS (az uj default streak-utvonallal egyutt). Testver-fajlok
+(code-intake, redaction, panel-size, panel-revive-states, cron-shell-pane-writers) 78/78 PASS
+egyutt futtatva. Kezi mutacio-proba: a script hivasa `WU_RELOGIN_TEST_MODE=1`-gyel es
+`WU_RELOGIN_SKIP_STREAK_FILE` NELKUL azonnal `exit 1`-et ad a hianyzo-vedelem uzenettel --
+a regi kod csendben az eles fajlra esett volna. `bash -n` a modositott scripten tiszta,
+`tsc --noEmit` tiszta.
+
+Gate: QA, Cybersec (delta re-gate a 7df1b166 GO felett). **Ki döntött:** DevO (fullstack).

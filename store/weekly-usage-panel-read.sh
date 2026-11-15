@@ -98,8 +98,14 @@ pending_marker_valid() {
 # alert path instead of silently skipping forever. A single legitimate relogin never reaches
 # this (the holder self-expires its own marker at 1x TTL); only a marker kept artificially fresh
 # past that point does.
+# Cybersec MEDIUM-3 (card f3343af0 delta-gate): under test mode this path must be EXPLICITLY
+# supplied by the caller -- never silently fall back to the live production file the way
+# PENDING_MARKER above does. A test that sets WU_RELOGIN_TEST_MODE=1 without also setting
+# WU_RELOGIN_SKIP_STREAK_FILE would otherwise read/write the REAL store/.weekly-usage-relogin-
+# skip-streak, and a stale streak left there makes the first tick of a genuine relogin escalate
+# immediately and type into the login dialog it is meant to protect.
 if [ "${WU_RELOGIN_TEST_MODE:-0}" = "1" ]; then
-  SKIP_STREAK_FILE="${WU_RELOGIN_SKIP_STREAK_FILE:-${STORE}/.weekly-usage-relogin-skip-streak}"
+  SKIP_STREAK_FILE="${WU_RELOGIN_SKIP_STREAK_FILE:?WU_RELOGIN_SKIP_STREAK_FILE must be set under WU_RELOGIN_TEST_MODE=1 -- refusing to touch the live streak file}"
 else
   SKIP_STREAK_FILE="${STORE}/.weekly-usage-relogin-skip-streak"
 fi
