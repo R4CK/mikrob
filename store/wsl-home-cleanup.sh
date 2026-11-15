@@ -22,6 +22,9 @@
 #                   an in_progress/waiting kanban card (branch name "agent/<x>/work", "card/<id>",
 #                   or a sort_order/dir-name match against the dashboard API -- best effort; if the
 #                   dashboard is unreachable, fail OPEN to ACTIVE, never to DISPOSABLE).
+#   ORPHAN      -- has a .git FILE (not dir) pointing to a gitdir that no longer exists (card
+#                   9918f78d). The main repo was deleted/moved; no live git state to protect.
+#                   Shown with a content listing; removed by --apply like DISPOSABLE.
 #   DISPOSABLE  -- name matches a known one-off pattern (see DISPOSABLE_PATTERNS) AND mtime is
 #                   older than $MIN_AGE_HOURS hours AND it did not already classify as ACTIVE.
 #   UNKNOWN     -- none of the above. Reported, never removed automatically -- a human decides.
@@ -265,6 +268,21 @@ classify() {
       return
     fi
   fi
+  # card 9918f78d: a dir with a .git FILE (not dir) whose gitdir target no longer exists is an
+  # orphaned worktree -- the main repo was deleted/moved. It has no live git state to protect and
+  # is distinct from "uncommitted changes in unregistered git dir". Classify as ORPHAN so the
+  # dry-run report shows them separately; --apply removes them (no registered owner, no live data).
+  if [ -f "$path/.git" ]; then
+    local _gitdir; _gitdir="$(grep '^gitdir:' "$path/.git" 2>/dev/null | sed 's/^gitdir: //')"
+    if [ -n "$_gitdir" ]; then
+      # resolve relative gitdir (git stores them relative to the worktree root)
+      if [[ "$_gitdir" != /* ]]; then _gitdir="$path/$_gitdir"; fi
+      if [ ! -d "$_gitdir" ]; then
+        echo "ORPHAN"
+        return
+      fi
+    fi
+  fi
   if matches_any "$name" "${DISPOSABLE_PATTERNS[@]}"; then
     # B2 (WhiteHat NO-GO 16566, MikroB decision 16567): age used to be the TOP-LEVEL dir's own
     # mtime, which does not change when a file deep inside is edited -- a dir that looked old at
@@ -433,8 +451,8 @@ main() {
   LIVE_PROC_TARGETS_PRIMED=1
   trap 'rm -f "$OPEN_CARD_IDS_FILE"; LIVE_PROC_TARGETS_PRIMED=0; LIVE_PROC_TARGETS=""' RETURN
 
-  local keep_count=0 active_count=0 disposable_count=0 removable_count=0 unknown_count=0
-  local disposable_paths=() path name cls reason
+  local keep_count=0 active_count=0 disposable_count=0 removable_count=0 unknown_count=0 orphan_count=0
+  local disposable_paths=() orphan_paths=() path name cls reason
 
   for path in "$HOME_DIR"/*/ "$HOME_DIR"/.[!.]*/; do
     [ -d "$path" ] || continue
@@ -457,20 +475,30 @@ main() {
           removable_count=$((removable_count + 1))
         fi
         ;;
+      # card 9918f78d: orphaned worktree -- .git file present but gitdir target gone.
+      # Treated as removable (no live git state), listed with contents for human review.
+      ORPHAN)
+        orphan_count=$((orphan_count + 1))
+        orphan_paths+=("$path")
+        # show up to 5 entries so the report is useful without being overwhelming
+        local _n_entries; _n_entries="$(ls -A "$path" 2>/dev/null | wc -l)"
+        local _first5; _first5="$(ls -A "$path" 2>/dev/null | head -5 | tr '\n' ' ')"
+        reason="orphaned gitdir, ${_n_entries} entries: ${_first5}"
+        ;;
       UNKNOWN) unknown_count=$((unknown_count + 1)) ;;
     esac
     if [ -n "$reason" ]; then
-      printf '%-11s %s  (apply would SKIP: %s)\n' "$cls" "$path" "$reason"
+      printf '%-11s %s  (%s)\n' "$cls" "$path" "$reason"
     else
       printf '%-11s %s\n' "$cls" "$path"
     fi
   done
 
-  say "summary: KEEP=$keep_count ACTIVE=$active_count DISPOSABLE=$disposable_count UNKNOWN=$unknown_count"
+  say "summary: KEEP=$keep_count ACTIVE=$active_count DISPOSABLE=$disposable_count ORPHAN=$orphan_count UNKNOWN=$unknown_count"
   [ "$DASHBOARD_UP" = 1 ] || say "note: dashboard unreachable during this run -- every registered worktree with no live process was failed OPEN to ACTIVE (not guessed into DISPOSABLE)"
 
   if [ "$MODE" = "dry-run" ]; then
-    say "dry-run: nothing removed. Re-run with --apply --yes to remove $removable_count of the $disposable_count DISPOSABLE entries above ($((disposable_count - removable_count)) would be SKIPPED -- see reasons above)."
+    say "dry-run: nothing removed. Re-run with --apply --yes to remove $removable_count of the $disposable_count DISPOSABLE + $orphan_count ORPHAN entries above ($((disposable_count - removable_count)) DISPOSABLE would be SKIPPED -- see reasons above)."
     return 0
   fi
 
@@ -486,6 +514,12 @@ main() {
     else
       skipped=$((skipped + 1))
     fi
+  done
+  # card 9918f78d: orphaned worktrees have no live gitdir -- remove directly with rm -rf.
+  for path in "${orphan_paths[@]}"; do
+    say "removing orphaned worktree: $path"
+    rm -rf "$path"
+    removed=$((removed + 1))
   done
   say "apply done: removed=$removed skipped=$skipped"
 }
