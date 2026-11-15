@@ -36,6 +36,16 @@ MODE="${1:-start}"
 # gives the probe its OWN credentials.json + refresh-token lineage, so one login sticks.
 PROBE_CONFIG_DIR="/home/neon/.claude-usage-probe"
 
+# PENDING-RELOGIN MARKER (card f3343af0): weekly-usage-panel-read.sh types "/usage" into this same
+# panel on a timer. While a relogin is in flight the panel sits on a waiting /login dialog instead
+# of a shell prompt, so that keystroke lands on the dialog -- measured 2026-10-14, two login flows
+# in a row died with "Login interrupted" because the reader's /usage text was typed into the
+# dialog. `start` writes this marker (its mtime is the clock); the reader refuses to send any key
+# while a fresh one exists. A successful `--paste` clears it; anything else (a stuck/failed login)
+# lets it expire on its own TTL so a wedged relogin cannot block the reader forever.
+PENDING_MARKER="${WU_RELOGIN_PENDING_MARKER:-/home/neon/marveen/store/.weekly-usage-relogin-pending}"
+PENDING_TTL_SEC="${WU_RELOGIN_PENDING_TTL_SEC:-1800}"
+
 ensure_pane() {
   tmux has-session -t "$PANE" 2>/dev/null && return 0
   # 700, matching ~/.claude: the dir holds .credentials.json (card 90424157 F2).
@@ -174,6 +184,7 @@ case "$MODE" in
     tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 8
     if tmux capture-pane -t "$PANE" -p 2>/dev/null | grep -qiE 'Login successful|Welcome back'; then
       tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 2
+      rm -f "$PENDING_MARKER" 2>/dev/null || true
       echo "OK: login successful, panel Max-authed."
       exit 0
     fi
@@ -183,6 +194,10 @@ case "$MODE" in
     exit 1
     ;;
   start)
+    # Mark the relogin as pending BEFORE anything touches the panel, so a reader tick that lands
+    # between this line and the first send-keys below still sees it and skips (vs. a window where
+    # the marker only appears after the panel is already mid-dialog).
+    printf '%s\n' "$(date +%s)" > "$PENDING_MARKER" 2>/dev/null || true
     ensure_pane || { echo "FAIL: cannot ensure panel" >&2; exit 1; }
     # Widen the window BEFORE /login prints the URL. tmux does NOT reflow existing scrollback,
     # so resizing after the URL is printed leaves it wrapped/truncated (the &state= param spills

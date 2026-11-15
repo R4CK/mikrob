@@ -46,6 +46,23 @@ trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# PENDING-RELOGIN MARKER (card f3343af0): see weekly-usage-relogin.sh for why this exists. If a
+# relogin is in flight the panel is sitting on a /login dialog, not a shell prompt -- sending
+# "/usage" there types into the dialog and kills the login (measured 2026-10-14, "Login
+# interrupted" twice). Checked FIRST, before any tmux call, so a pending relogin never gets a
+# stray keystroke from this script. A marker older than its TTL is treated as stale/abandoned and
+# ignored, so a wedged relogin cannot silently block weekly-% reads forever.
+PENDING_MARKER="${WU_RELOGIN_PENDING_MARKER:-${STORE}/.weekly-usage-relogin-pending}"
+PENDING_TTL_SEC="${WU_RELOGIN_PENDING_TTL_SEC:-1800}"
+if [ -f "$PENDING_MARKER" ]; then
+  marker_ts="$(cat "$PENDING_MARKER" 2>/dev/null || echo 0)"
+  now_ts="$(date +%s)"
+  if [ "$marker_ts" -gt 0 ] 2>/dev/null && [ $((now_ts - marker_ts)) -lt "$PENDING_TTL_SEC" ]; then
+    echo "SKIP: relogin pending"
+    exit 0
+  fi
+fi
+
 # REBOOT-SURVIVABILITY (2026-07-31): a tmux session does NOT survive a machine reboot.
 # The isolated .credentials.json (with a ~month-long refresh token) DOES. So on reboot the
 # creds are still valid but the PANEL is gone -- and the old behaviour ("fail -> escalate to
