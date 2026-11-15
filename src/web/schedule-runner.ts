@@ -10,7 +10,7 @@ import {
 } from './heartbeat-direct-digest.js'
 import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from './heartbeat-kanban-verify.js'
 import { existsSync, readFileSync } from 'node:fs'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { isRepoShippedScript } from './precheck-trust.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -1391,44 +1391,13 @@ export async function runPreCheckAsync(
   })
 }
 
-// The synchronous form. Since CRONPRECHECKSYNC1007 the runner calls it from
-// nowhere: both loops use runPreCheckAsync. Kept only as the reference the
-// async form's contract tests compare against; do not call it from the runner
-// (it holds the event loop, and its timeout ends only the direct child).
-export function runPreCheck(task: ScheduledTask): PreCheckResult {
-  if (!task.preCheck) return { skip: false }
-  // dirName, not name: a relative preCheck lives in the task's OWN directory,
-  // which is also what the registry hashed. `name` can come from
-  // the SKILL.md frontmatter and point at a different directory.
-  const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
-  if (!existsSync(scriptPath)) {
-    logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
-    return { skip: false }
-  }
-  const inv = preCheckInvocation(task, scriptPath)
-  if ('result' in inv) return inv.result
-  try {
-    const r = spawnSync('bash', inv.args, { timeout: PRECHECK_TIMEOUT_MS, encoding: 'utf-8' })
-    if (r.error) {
-      logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
-      return { skip: false }
-    }
-    if (r.status !== 0) {
-      logger.warn({ task: task.name, status: r.status, stderr: (r.stderr || '').trim().slice(0, 200) }, 'pre-check script exited non-zero, running LLM anyway')
-      return { skip: false }
-    }
-    const out = (r.stdout || '').trim()
-    if (out === 'SKIP') {
-      logger.info({ task: task.name }, 'pre-check: nothing actionable, skipping LLM')
-      return { skip: true }
-    }
-    if (out) return { skip: false, prefix: out }
-    return { skip: false }
-  } catch (err) {
-    logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
-    return { skip: false }
-  }
-}
+// The synchronous reference form lives in schedule-runner-sync-precheck.ts, not here: card
+// 92e2bb1b's scheduler-tick-nonblocking guard scans THIS file's text for spawnSync/execSync/
+// execFileSync, since this file's own setInterval tick must never call one synchronously. A
+// dead-code reference implementation containing a literal spawnSync( would still trip that
+// scan even though nothing on the tick calls it -- re-exported here so existing imports of
+// `runPreCheck` from this module keep working.
+export { runPreCheck } from './schedule-runner-sync-precheck.js'
 
 // A pending retry re-runs its task's preCheck at most once per this interval;
 // the ticks in between (every SCHEDULE_TICK_MS) reuse the last answer
