@@ -25863,3 +25863,12 @@ Cybersec2 B1 (MikroB msg_id:18606 relay): a watched-repos-record-review.sh futta
 vegzi el mindharom bejegyzesre a kartya zarasakor, DevO nem futtatta.
 
 Gate: QA2 + Cybersec2, delta szabaly (csak store/watched-repos.json, egy sor). **Ki döntött:** DevO (fullstack).
+
+2026-11-15, kártya f3343af0 (QA FAIL a koraibbi fixen): a relogin pending-markert elobb csak egy
+friss epoch jelezte, env-fellulirhato uton -- bármely, store/-ba iro folyamat elplanthatta es a
+timestampet újraírva vegtelenul elfojthatta volna a weekly-usage olvasast. Javitas: a marker utja
+eleses a termelesben (env felulirás csak WU_RELOGIN_TEST_MODE=1 alatt), a marker 0600 modban,
+tulajdonosa az aktualis user, es egy ELO folyamat pid-jet hordozza (egy kulon --hold-marker
+gyermek, sajat sessionnel, ami a marker tényleges irasat vegzi es a TTL lejartig tartja), amelynek
+/proc cmdline-ja a weekly-usage-relogin.sh nevet viseli -- az olvaso MINDEGYIK feltetelt ellenorzi,
+nem csak a timestampet. Gate: QA, Cybersec. **Ki döntött:** DevO (fullstack).
