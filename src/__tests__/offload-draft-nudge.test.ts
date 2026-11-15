@@ -370,9 +370,12 @@ describe('the freellm production call sites are pinned, not only the --test-capa
     )
   })
 
-  it('mutant A target: the CAPACITY_HOLD site still gates try_freellm_for_leaf on lveto OR is_freellm_blocked', () => {
+  it('mutant A target: the CAPACITY_HOLD site still gates try_freellm_for_leaf on is_freellm_blocked (lveto skip removed, card 6d8ef952)', () => {
+    // Card 6d8ef952 deliberately removed the lveto early-return: a security-veto no longer stops a
+    // draft attempt. The is_freellm_blocked gate (project allowlist, BLOKKOLT-* tag, gemini-ok
+    // marker) is the remaining gatekeeper and must not be removed from this site.
     expect(SRC).toMatch(
-      /if \[\[ "\$lveto" == "true" \]\] \|\| is_freellm_blocked "\$lproject" "\$ltags" "\$ltitle" "\$ldesc"; then\s*\n\s*attempts_op categorical-online "\$lid" >\/dev\/null/,
+      /if is_freellm_blocked "\$lproject" "\$ltags" "\$ltitle" "\$ldesc"; then\s*\n\s*attempts_op categorical-online "\$lid" >\/dev\/null/,
     )
   })
 })
