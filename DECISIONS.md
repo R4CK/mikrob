@@ -25492,3 +25492,31 @@ szerver sajat benchelesi logikajanak megvaltoztatasa).
 **Teszt:** `tmp-inode-guard.selftest.sh` 14 -> 24/24 PASS (4 új "00"/"000" eset mindkét env-változóra, 4 új fallback-pin eset a 120/10 határra, 2 új ALERT_PCT=80 pin eset egy stubbolt `df`-fel). Mutáció-ellenőrizve (minden esetben visszaállítva): a validátor visszaállítása az első (NO-GO-t kapott) alakra 4/24 pirosat ad, PONTOSAN a négy új "00"/"000" esetet; a 120-as alapérték 60-ra változtatása 1/24 pirosat ad; a 10-es alapérték 20-ra változtatása 1/24 pirosat ad; a tényleges ALERT_PCT garbage-ág (80-as literál) 90-re változtatása 1/24 pirosat ad -- ez utóbbinál kiderült, hogy az ALERT_PCT bash-paraméter-default (`${TMP_GUARD_ALERT_PCT:-80}` a deklaráláskor) HOLT ÁG garbage-bemenetre (a `:-` csak üres/unset esetén él, "garbage" nem az) -- a valódi garbage-fallback a KÜLÖN validációs case-ágban él, és a pin-teszt helyesen ARRA mutat.
 
 **Ki döntött:** Cybersec (lelet, komment 31244/31255-ös QA-visszaigazolás), MikroB (re-dispatch, msg 18508). backend3 végezte a javítást. Gate: QA (delta) + Cybersec (csak a validátor re-ellenőrzése, per MikroB utasítás).
+
+## 2026-11-14 -- card 24a12714 delta: Cybersec2 NO-GO 31317 H1 (LBTMP leak TERM alatt) + H2 (recursion-pin hianya) javitva
+
+Delta fix (Cybersec2 NO-GO 31317, Gate-SHA f7c154662-n): H1 -- a `_batch_sig_stop` es a
+`land_one`/`land_with_retry` torli a sajat signal-trapjeiket (a bash trap folyamat-globalis),
+a kulso fixture-build trap pedig csak `rm -rf "$LBTMP"`-t futtatott exit nelkul, igy egy TERM
+elnyelodott es a build folytatodott, ujra letrehozva a mappat (merve: 143-2841 fajl szivargott
+futasonkent). Javitas: explicit `_outer_sig_stop()` ami torol ES tenylegesen kilep
+TERM/HUP/INT-re, plusz egy leszakitott janitor-subshell (sajat maga ignoralja a TERM/INT/HUP-ot),
+ami `kill -0`-val varja a figyelt pid halalat es torli az LBTMP-t fuggetlenul a fo folyamat
+trap-allapotatol -- ezert tulel egy in-process trap-clobbert ES egy process-group-szintu kill-t
+is. H2 -- a case N `SELFTEST_BATCH_NESTED` skip-guardja nem volt pinnelve: a `PASSING`-hoz
+hasonloan BARMELY konstruktorral atirhato volt es nem jelzett semmit (merve: 15 leaked LBTMP,
+8 leaked worktree, 24 vs 9 folyamat, semmi piros). Javitas: kemeny `SELFTEST_BATCH_DEPTH` sapka
+(>=2 azonnal `FAIL`-t ad es kilep 3-mal, meg a fixture-epites ELOTT), ami fuggetlenul utazik a
+`SELFTEST_BATCH_NESTED`-tol mindket case-N spawn-soron. L1 -- a `_batch_sig_stop` elhagyta a sajat
+`ft_log` mktemp fajljat TERM/HUP/INT-nel; most torlodik a trap kilepese elott.
+
+Ellenorzes a VALODI szkripten (nem csak izolalt probakon), izolalt `TMPDIR`-rel: standard futas
+20/20 PASS rc=0 nulla szivargo fajllal; TERM 2s-nel es 8s-nel rc=143, nulla szivargas, nulla arva
+folyamat; H2 mutant (a `SELFTEST_BATCH_NESTED` check `"never"`-re torve) -- case N helyesen FAIL-t
+ad a mely-sapkan keresztul, nem korlatlan rekurzioval (csucs 8 folyamat a korabbi 24-41+-hoz
+kepest), nulla szivargo fajl.
+
+Commit: `e57c0ca74` (branch `fix/24a12714-batch-landing-pins`, elozo Gate-SHA `f7c154662`-re).
+
+**Ki dontott:** fullstack (DevO), Cybersec2 NO-GO 31317 nyoman. Gate: qa2 + cybersec2 re-gate
+ugyanarra a problemara, uj Gate-SHA ezen a delta-n.
