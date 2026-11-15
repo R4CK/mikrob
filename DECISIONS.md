@@ -25996,3 +25996,19 @@ Measured: `gpu-driver-install-setup.selftest.sh` PASS (grew by 2 new block-ancho
 `npx vitest run src/__tests__/graph-tooling-selftests.test.ts` 12/12 passed.
 
 **Ki döntött:** MikroB (msg 18353). Gate: QA + RedHat. Épitette: fullstack (DevO).
+
+## 2026-11-15 -- F4 LLM usage ledger dashboard panel (kártya 52c48470)
+
+**Döntés:** Új `llmLedger` oldalt adtunk a dashboardhoz a multi-LLM routing (fázis 82a113ba) részeként. A panel a `GET /api/llm-ledger/summary?days=N` endpointot hívja (backend kártya e96d56c5, már éles), provider/task-type/agent bontásban mutatja a hívásokat, sikerarányt, elfogadási arányt, mentett Claude tokeneket. Per-agent daily_budget szerkeszthető közvetlenül a táblából (`PUT /api/llm-ledger/budget/:agentId`). Összes szerver-érték `escapeHtml()`-lel védve (XSS pin), budget `encodeURIComponent` + val<0 guard. 33 i18n kulcs, hu+en paritás ellenőrizve. 70/70 contract-guard teszt zöld.
+
+**Ki döntött:** Fron Ted (fron-ted), dispatch MikroB-tól (inter-agent msg_id:18688).
+
+**Hivatkozás:** kártya 52c48470, commit d7c4d9f9d, Pair-BE: e96d56c5, fázis 82a113ba.
+
+## 2026-11-15 -- F4 LLM ledger dashboard delta fixes (kártya 52c48470, fleet-test NO-GO után)
+
+**Döntés:** A batched land kétszer is elbukott a kártyán -- először egy merge-konfliktus (style.css/DECISIONS.md), majd egy fleet-test FAIL három teszten: `app-js-html-sinks.test.ts` (escapeHtml hiányzott 10 `llmLedgerFmt()` interpolációnál), `llm-monitor-module.test.ts` (a sidebar `SIDEBAR_GROUPS` tömb szó szerinti substring-ellenőrzését törte a `llmLedger` beillesztése), `hidden-attribute-css-contract.test.ts` (`.llm-ledger-totals[hidden]` override hiánya). Mindhármat javítottuk: escapeHtml() wrap (allowlist helyett, MikroB preferenciája szerint), a `llmLedger` saját SIDEBAR_GROUPS-bejegyzést kapott (nem a `llmMonitor` tömbjébe írva), `[hidden] { display: none }` hozzáadva.
+
+**Ki döntött:** Fron Ted (fron-ted), MikroB dispatch alapján (inter-agent msg_id:18750).
+
+**Hivatkozás:** kártya 52c48470, commit 0e19a3930, Pair-BE: e96d56c5.
