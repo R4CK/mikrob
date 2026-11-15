@@ -11384,3 +11384,113 @@ body {
   .notes-actions { text-align: left; }
   .notes-assignee { white-space: normal; overflow-wrap: anywhere; }
 }
+
+/* === LLM Ledger page (card 52c48470) === */
+.llm-ledger-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.llm-ledger-days-filter {
+  display: flex;
+  gap: 4px;
+}
+.llm-ledger-loading,
+.llm-ledger-error,
+.llm-ledger-empty {
+  padding: 12px 0;
+  color: var(--text-secondary);
+}
+.llm-ledger-error { color: var(--danger, #e55); }
+.llm-ledger-totals {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--card-bg, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 12px 0;
+}
+.llm-ledger-total-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.llm-ledger-total-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.llm-ledger-total-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+.llm-ledger-tokens-saved .llm-ledger-total-value,
+.llm-ledger-tokens-saved { color: var(--accent); }
+.llm-ledger-section { margin: 20px 0; }
+.llm-ledger-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.llm-ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+.llm-ledger-table th,
+.llm-ledger-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.llm-ledger-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--surface);
+}
+.llm-ledger-table tbody tr:hover { background: var(--hover-bg, rgba(255,255,255,.04)); }
+.llm-ledger-num { text-align: right; font-variant-numeric: tabular-nums; }
+.llm-ledger-provider-name { font-weight: 500; }
+.llm-ledger-no-data { color: var(--text-secondary); text-align: center; padding: 20px !important; }
+.llm-ledger-budget-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+}
+.llm-ledger-budget-view {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.llm-ledger-budget-source {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+.llm-ledger-budget-source.override { color: var(--accent); }
+.llm-ledger-budget-input {
+  width: 110px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg, var(--surface));
+  color: var(--text);
+  font-size: 0.875rem;
+}
+.llm-ledger-budget-actions {
+  display: flex;
+  gap: 4px;
+}
+@media (max-width: 600px) {
+  .llm-ledger-toolbar { flex-direction: column; align-items: flex-start; }
+  .llm-ledger-totals { gap: 16px; }
+  .llm-ledger-budget-cell { flex-wrap: wrap; min-width: 0; }
+}
