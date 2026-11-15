@@ -119,6 +119,20 @@ def _const_literals_py(code):
         re.MULTILINE | re.DOTALL,
     ):
         yield m.group(1), m.group(2)
+    # "word1 word2 ...".split() form: body is the string content
+    for m in re.finditer(
+        r"^([A-Z][A-Z0-9_]*)\s*(?::\s*\S+)?\s*=\s*['\"]([^'\"]*)['\"]\.split\(",
+        code,
+        re.MULTILINE,
+    ):
+        yield m.group(1), m.group(2)
+    # sep.join([...]) or sep.join((...)) form: body is the list/tuple content
+    for m in re.finditer(
+        r"^([A-Z][A-Z0-9_]*)\s*(?::\s*\S+)?\s*=\s*['\"][^'\"]*['\"]\.join\(\s*[\[\(](.*?)[\]\)]\s*\)",
+        code,
+        re.MULTILINE | re.DOTALL,
+    ):
+        yield m.group(1), m.group(2)
 
 
 def _shape_in_text(text):
@@ -273,6 +287,28 @@ check(
     "(rebound=%s)" % _rebound_name if _rebound else
     "gate-closure-check.py does not rebind PASSING/VERDICT_RE/_VERDICT by any constructor",
     not _rebound,
+)
+
+# --- cases 9-10: split/join literal forms detected (QA2 FAIL 31300 Fix-Direction) ---------------
+import tempfile as _tf, os as _os
+
+def _has_shape_snippet(code_text):
+    """Test has_shape on a synthetic .py snippet via a temp file."""
+    with _tf.NamedTemporaryFile(mode="w", suffix=".py", dir=HERE, delete=False) as _fh:
+        _fh.write(code_text)
+        _tmp = _fh.name
+    try:
+        return has_shape(_tmp)
+    finally:
+        _os.unlink(_tmp)
+
+check(
+    'has_shape detects NAME = "GATE OUTCOME".split() form',
+    _has_shape_snippet('MY_OWN_PASSING = "QA PASS".split()\n'),
+)
+check(
+    'has_shape detects NAME = sep.join(["GATE", "OUTCOME"]) form',
+    _has_shape_snippet('MY_OWN_VERDICT_WORDS = ",".join(["QA", "PASS", "CYBERSEC", "NO-GO"])\n'),
 )
 
 print()
