@@ -84,6 +84,19 @@ describe('rollupRecentTokenUsageDaily', () => {
     const oldDay = new Date(old * 1000).toISOString().slice(0, 10)
     expect(dailyRow(oldDay, 'cardX-boundary')).toBeUndefined()
   })
+
+  it('never touches a row on the cutoff boundary DAY ITSELF (QA FAIL 31513: the 400-day-old case above is far past the cutoff, where > and >= behave identically -- this is the actual boundary the strict > exists for)', () => {
+    // retentionDays default is 30 (config-registry.ts TOKEN_USAGE_RETENTION_DAYS). A row timestamped
+    // exactly at the cutoff instant falls on the SAME calendar day pruneTokenUsage's cutoff computation
+    // lands on -- the one day rollupRecentTokenUsageDaily must leave alone so a later pruneTokenUsage
+    // sweep can still fold it in additively without this function's REPLACE erasing part of that total.
+    const retentionDays = 30
+    const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
+    insertRaw(cutoff, 'cardX-cutoff-boundary', 1)
+    rollupRecentTokenUsageDaily()
+    const cutoffDay = new Date(cutoff * 1000).toISOString().slice(0, 10)
+    expect(dailyRow(cutoffDay, 'cardX-cutoff-boundary')).toBeUndefined()
+  })
 })
 
 describe('classifyTokenPruneLag (card d8f44d15 req 3, previously computed but unwired)', () => {
