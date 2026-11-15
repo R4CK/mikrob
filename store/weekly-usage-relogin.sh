@@ -224,14 +224,35 @@ case "$MODE" in
     # the marker itself, holds for up to PENDING_TTL_SEC, then self-expires. A FIFO handshake (not a
     # sleep/poll) blocks this invocation only until the child confirms the marker is actually on
     # disk, so the "written before the panel is touched" guarantee still holds exactly.
+    #
+    # BOUNDED (Cybersec MEDIUM-2, card f3343af0): the read used to have no timeout -- if the
+    # holder child died before signalling (measured by simulating a no-op `setsid`), this `start`
+    # invocation blocked FOREVER on the FIFO read. FAIL CLOSED on timeout: no confirmed marker
+    # means we do not know the pending-state actually landed, so the panel must NOT be touched as
+    # if it did -- a failed `start` the operator can re-run is strictly better than the stray
+    # keystroke into a live login dialog this whole mechanism exists to prevent.
+    _wu_fifo_timeout="${WU_RELOGIN_FIFO_TIMEOUT_SEC:-10}"
     _wu_fifo="$(mktemp -u)"
     mkfifo "$_wu_fifo" 2>/dev/null || true
     WU_RELOGIN_HOLD_SIGNAL_FIFO="$_wu_fifo" setsid bash "$0" --hold-marker >/dev/null 2>&1 </dev/null &
+    _wu_hold_pid=$!
     disown 2>/dev/null || true
-    if [ -p "$_wu_fifo" ]; then
-      read -r _ < "$_wu_fifo" 2>/dev/null || true
+    # `read -t` alone does NOT bound this: the blocking part is the FIFO's open() itself (it waits
+    # for a writer to open the other end), which happens as part of the `< fifo` redirection
+    # BEFORE `read` ever starts running, so its own -t never gets a chance to apply. Measured
+    # directly: a bare `read -t 1 < fifo` with no writer still blocked past a 3s outer timeout.
+    # `timeout` wraps the WHOLE redirection+read in a child process it can kill by signal,
+    # interrupting the blocked open() -- confirmed this actually unblocks it (rc 124 at ~2s).
+    _wu_handshake_ok=0
+    if [ -p "$_wu_fifo" ] && timeout "$_wu_fifo_timeout" bash -c 'read -r _ < "$1"' _ "$_wu_fifo" 2>/dev/null; then
+      _wu_handshake_ok=1
     fi
     rm -f "$_wu_fifo" 2>/dev/null || true
+    if [ "$_wu_handshake_ok" -ne 1 ]; then
+      kill "$_wu_hold_pid" 2>/dev/null || true
+      echo "FAIL: pending-marker handshake did not confirm within ${_wu_fifo_timeout}s -- not touching the panel." >&2
+      exit 1
+    fi
     ensure_pane || { echo "FAIL: cannot ensure panel" >&2; exit 1; }
     # Widen the window BEFORE /login prints the URL. tmux does NOT reflow existing scrollback,
     # so resizing after the URL is printed leaves it wrapped/truncated (the &state= param spills
@@ -285,10 +306,27 @@ print(url)
     # handshake FIFO that the write landed, then sleeps up to PENDING_TTL_SEC and self-expires --
     # only removing a marker that still names this same pid, so it never clobbers a NEWER holder's
     # marker from a second relogin started after a wedged first one timed out.
-    write_pending_marker
-    if [ -n "${WU_RELOGIN_HOLD_SIGNAL_FIFO:-}" ] && [ -p "$WU_RELOGIN_HOLD_SIGNAL_FIFO" ]; then
-      printf x > "$WU_RELOGIN_HOLD_SIGNAL_FIFO" 2>/dev/null || true
+    #
+    # REFUSE UNLESS INVOKED BY `start` (Cybersec MEDIUM-1, card f3343af0): a bare
+    # `bash weekly-usage-relogin.sh --hold-marker &` used to write a perfectly valid marker with
+    # NO relogin in flight at all -- rerun every <30 min, it suppressed every weekly-usage read
+    # indefinitely. Checking the handshake FIFO `start` already sets up cannot AUTHENTICATE the
+    # caller (same-user trust zone -- the env var is forgeable by anything running as this user),
+    # but it does close the one-line direct-invocation path, the realistic careless/accidental
+    # case. The deliberate same-user decoy (a process that fakes its own cmdline to pass the
+    # reader's match) is closed on the READER side instead, by the SKIP-streak escalation in
+    # weekly-usage-panel-read.sh -- this check cannot see that case and does not claim to.
+    if [ -z "${WU_RELOGIN_HOLD_SIGNAL_FIFO:-}" ] || [ ! -p "${WU_RELOGIN_HOLD_SIGNAL_FIFO:-}" ]; then
+      echo "FAIL: --hold-marker must be invoked by 'start' (missing/invalid handshake FIFO)." >&2
+      exit 1
     fi
+    write_pending_marker
+    # Newline-terminated (card f3343af0, MEDIUM-2 follow-up): bash's `read` returns non-zero if it
+    # hits EOF before seeing the delimiter, even when it DID read the byte -- a bare `printf x`
+    # (no newline) made every handshake register as a read FAILURE once the parent side started
+    # checking read's exit status (it used to be swallowed by `|| true`). Measured directly:
+    # `printf x` -> read exit 1 despite the data arriving; `printf 'x\n'` -> read exit 0.
+    printf 'x\n' > "$WU_RELOGIN_HOLD_SIGNAL_FIFO" 2>/dev/null || true
     # Hold until our own marker is gone (cleared by a successful --paste) or the TTL elapses --
     # checked against REAL wall-clock time (date) on every iteration, not one long sleep, so this
     # self-expires correctly even when `sleep` is PATH-shimmed to a no-op for OTHER delays in this

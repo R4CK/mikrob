@@ -87,9 +87,38 @@ pending_marker_valid() {
   tr '\0' '\n' < "/proc/$marker_pid/cmdline" 2>/dev/null | grep -q 'weekly-usage-relogin\.sh' || return 1
   return 0
 }
+# SKIP-STREAK ESCALATION (Cybersec MEDIUM-1, card f3343af0): the marker's OWN freshness check
+# above can be kept green forever by a same-user process that replants a fresh epoch every
+# <30 min with no real relogin in flight (measured: `--hold-marker` rerun directly, or a decoy
+# process exec'd under the script's own name) -- the TTL alone cannot tell that apart from a
+# genuinely slow, still-pending relogin, because the decoy controls the very timestamp the TTL
+# check reads. So track OUR OWN first-observed time, in a file the marker's owner cannot touch
+# (we write it, they never do), and once a marker has been honored continuously for >= 2x the
+# TTL, stop honoring it and fall through to the normal flow -- which raises the normal failure/
+# alert path instead of silently skipping forever. A single legitimate relogin never reaches
+# this (the holder self-expires its own marker at 1x TTL); only a marker kept artificially fresh
+# past that point does.
+if [ "${WU_RELOGIN_TEST_MODE:-0}" = "1" ]; then
+  SKIP_STREAK_FILE="${WU_RELOGIN_SKIP_STREAK_FILE:-${STORE}/.weekly-usage-relogin-skip-streak}"
+else
+  SKIP_STREAK_FILE="${STORE}/.weekly-usage-relogin-skip-streak"
+fi
 if pending_marker_valid; then
-  echo "SKIP: relogin pending"
-  exit 0
+  now_ts="$(date +%s)"
+  streak_start="$(cat "$SKIP_STREAK_FILE" 2>/dev/null || true)"
+  if ! [ "$streak_start" -gt 0 ] 2>/dev/null; then
+    streak_start="$now_ts"
+    ( umask 177; printf '%s\n' "$streak_start" > "$SKIP_STREAK_FILE" ) 2>/dev/null || true
+  fi
+  if [ $((now_ts - streak_start)) -ge $((2 * PENDING_TTL_SEC)) ]; then
+    echo "ESCALATE: relogin marker has been honored for >= 2x the TTL (${PENDING_TTL_SEC}s) without clearing -- treating as stuck or artificially kept fresh, no longer skipping." >&2
+    rm -f "$SKIP_STREAK_FILE" 2>/dev/null || true
+  else
+    echo "SKIP: relogin pending"
+    exit 0
+  fi
+else
+  rm -f "$SKIP_STREAK_FILE" 2>/dev/null || true
 fi
 
 # REBOOT-SURVIVABILITY (2026-07-31): a tmux session does NOT survive a machine reboot.

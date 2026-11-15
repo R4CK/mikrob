@@ -102,6 +102,7 @@ function runReader(env: Record<string, string> = {}): { stdout: string; code: nu
 
 function runRelogin(mode: string, env: Record<string, string> = {}, input?: string) {
   let stdout = ''
+  let stderr = ''
   let code = 0
   try {
     stdout = execFileSync('bash', [RELOGIN, mode], {
@@ -116,18 +117,28 @@ function runRelogin(mode: string, env: Record<string, string> = {}, input?: stri
       },
     }).toString('utf-8')
   } catch (e) {
-    const err = e as { status?: number; stdout?: Buffer }
+    const err = e as { status?: number; stdout?: Buffer; stderr?: Buffer }
     code = err.status ?? -1
     stdout = err.stdout ? err.stdout.toString('utf-8') : ''
+    stderr = err.stderr ? err.stderr.toString('utf-8') : ''
   }
-  return { stdout, code }
+  return { stdout, stderr, code }
 }
 
 // Spawns a REAL --hold-marker child against the test marker path, with a long TTL so it stays
 // alive for the test's duration, and waits for the marker file to actually land before returning
 // its pid. This is the exact production writer (not a fake pid) -- it is what makes the
 // "pid alive and names weekly-usage-relogin.sh" cases faithful rather than simulated.
+//
+// --hold-marker now REFUSES unless it is handed a real handshake FIFO (MEDIUM-1 fix, card
+// f3343af0), so this helper sets one up itself and drains it with `cat` the same way `start`'s
+// own FIFO write has a reader -- otherwise --hold-marker's `printf x > fifo` would block forever
+// with nothing on the other end.
 async function spawnHolder(ttlSec = 120): Promise<number> {
+  const fifo = join(dir, `hold-fifo-${Math.random().toString(36).slice(2)}`)
+  execFileSync('mkfifo', [fifo])
+  const drain = spawn('cat', [fifo], { stdio: 'ignore' })
+  holders.push(drain)
   const h = spawn('bash', [RELOGIN, '--hold-marker'], {
     env: {
       ...process.env,
@@ -135,6 +146,7 @@ async function spawnHolder(ttlSec = 120): Promise<number> {
       WU_RELOGIN_TEST_MODE: '1',
       WU_RELOGIN_PENDING_MARKER: marker,
       WU_RELOGIN_PENDING_TTL_SEC: String(ttlSec),
+      WU_RELOGIN_HOLD_SIGNAL_FIFO: fifo,
     },
     stdio: 'ignore',
   })
@@ -328,5 +340,120 @@ exit 0
     }
     expect(existsSync(marker)).toBe(false)
     void pid
+  })
+})
+
+// CYBERSEC GO conditions (comment 31727, card f3343af0): MEDIUM-2 (unbounded FIFO read hangs
+// `start` forever if the holder dies before signalling) and MEDIUM-1 (a same-user decoy can keep
+// the marker fresh forever, or a bare `--hold-marker &` needs no relogin at all).
+describe('MEDIUM-2: the start/hold-marker FIFO handshake is bounded and fails closed (card f3343af0)', () => {
+  it('start does not hang, does not touch the panel, and exits non-zero if the holder never signals', () => {
+    // Simulate the holder dying before it can signal: `setsid` here never actually runs
+    // --hold-marker at all, so nothing ever writes to the handshake FIFO.
+    writeFileSync(join(dir, 'setsid'), '#!/usr/bin/env bash\nexit 0\n')
+    chmodSync(join(dir, 'setsid'), 0o755)
+    const { code } = runRelogin('start', { WU_RELOGIN_FIFO_TIMEOUT_SEC: '1' })
+    expect(code).not.toBe(0)
+    const calls = existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').filter(Boolean) : []
+    expect(calls.some((c) => c.includes('has-session'))).toBe(false)
+  })
+
+  it('start proceeds normally when the holder signals promptly (control: the timeout itself is not what blocks a healthy run)', async () => {
+    // A `setsid` that actually runs --hold-marker (the real production shape), confirming the
+    // bound does not false-positive on the happy path. The shimmed tmux here has no OAuth-URL
+    // text for capture-pane to find, so `start` still exits non-zero overall (unrelated to this
+    // fix) -- what matters is that the handshake succeeded and the panel WAS touched, not stuck.
+    runRelogin('start', { WU_RELOGIN_FIFO_TIMEOUT_SEC: '10' })
+    const calls = existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').filter(Boolean) : []
+    expect(calls.some((c) => c.includes('has-session'))).toBe(true)
+    // Clean up the detached holder.
+    if (existsSync(marker)) {
+      const pid = Number(readFileSync(marker, 'utf-8').trim().split('\n')[0])
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+  })
+})
+
+describe('MEDIUM-1a: --hold-marker refuses without a real handshake FIFO from start (card f3343af0)', () => {
+  it('a bare --hold-marker with no FIFO env at all is refused, marker never written', () => {
+    const { code } = runRelogin('--hold-marker')
+    expect(code).not.toBe(0)
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('--hold-marker with the FIFO env pointing at a plain file (not a real FIFO) is refused', () => {
+    const fakeFifo = join(dir, 'not-a-fifo')
+    writeFileSync(fakeFifo, '')
+    const { code } = runRelogin('--hold-marker', { WU_RELOGIN_HOLD_SIGNAL_FIFO: fakeFifo })
+    expect(code).not.toBe(0)
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('--hold-marker DOES write the marker once given a real, start-style handshake FIFO (control)', async () => {
+    const pid = await spawnHolder()
+    expect(existsSync(marker)).toBe(true)
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
+  })
+})
+
+describe('MEDIUM-1b: reader SKIP-streak escalation closes the same-user decoy (card f3343af0)', () => {
+  it('a freshly-observed, genuinely valid marker still SKIPs, and starts a streak file near "now"', async () => {
+    await spawnHolder()
+    const streakFile = join(dir, 'skip-streak-fresh')
+    const { stdout } = runReader({ WU_RELOGIN_SKIP_STREAK_FILE: streakFile })
+    expect(stdout).toMatch(/^SKIP: relogin pending/)
+    expect(existsSync(streakFile)).toBe(true)
+    const val = Number(readFileSync(streakFile, 'utf-8').trim())
+    expect(Math.abs(Date.now() / 1000 - val)).toBeLessThan(10)
+  })
+
+  it('a marker honored continuously for >= 2x the TTL stops SKIPping and escalates, even though the marker itself still looks fresh', async () => {
+    await spawnHolder() // genuinely fresh, valid marker (live pid, right cmdline) -- the decoy's shape
+    const streakFile = join(dir, 'skip-streak-stale')
+    const longAgo = Math.floor(Date.now() / 1000) - 1000 // far past 2x any short test TTL below
+    writeFileSync(streakFile, `${longAgo}\n`)
+    const { stdout, calls } = runReader({
+      WU_RELOGIN_PENDING_TTL_SEC: '60', // 2x TTL = 120s, well under the 1000s streak age
+      WU_RELOGIN_SKIP_STREAK_FILE: streakFile,
+    })
+    expect(stdout).not.toMatch(/^SKIP/)
+    expect(calls.some((c) => c.includes('has-session'))).toBe(true)
+    expect(existsSync(streakFile)).toBe(false) // escalation resets the streak for the next cycle
+  })
+
+  it('a marker honored for LESS than 2x the TTL keeps SKIPping (control: not a hair-trigger)', async () => {
+    await spawnHolder()
+    const streakFile = join(dir, 'skip-streak-ok')
+    const recently = Math.floor(Date.now() / 1000) - 5
+    writeFileSync(streakFile, `${recently}\n`)
+    const { stdout } = runReader({
+      WU_RELOGIN_PENDING_TTL_SEC: '60', // 2x TTL = 120s, well above the 5s streak age
+      WU_RELOGIN_SKIP_STREAK_FILE: streakFile,
+    })
+    expect(stdout).toMatch(/^SKIP: relogin pending/)
+    expect(existsSync(streakFile)).toBe(true)
+  })
+
+  it('the streak file is cleared once the marker is no longer valid (relogin finished or expired)', async () => {
+    const pid = await spawnHolder()
+    const streakFile = join(dir, 'skip-streak-clear')
+    runReader({ WU_RELOGIN_SKIP_STREAK_FILE: streakFile })
+    expect(existsSync(streakFile)).toBe(true)
+    rmSync(marker) // simulate a successful --paste clearing it
+    runReader({ WU_RELOGIN_SKIP_STREAK_FILE: streakFile })
+    expect(existsSync(streakFile)).toBe(false)
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
   })
 })

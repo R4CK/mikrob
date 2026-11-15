@@ -25872,3 +25872,35 @@ tulajdonosa az aktualis user, es egy ELO folyamat pid-jet hordozza (egy kulon --
 gyermek, sajat sessionnel, ami a marker tényleges irasat vegzi es a TTL lejartig tartja), amelynek
 /proc cmdline-ja a weekly-usage-relogin.sh nevet viseli -- az olvaso MINDEGYIK feltetelt ellenorzi,
 nem csak a timestampet. Gate: QA, Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 (CYBERSEC GO 31727, két feltétel lezárása)
+
+**Döntés:** Cybersec GO-t adott a pending-marker keményítésre (bbc06abf7), két feltétellel:
+MEDIUM-2 (a `start`/`--hold-marker` FIFO-kézfogás határolatlan `read` -- ha a gyermek a jelzés
+előtt elhal, `start` örökre blokkol) és MEDIUM-1 (egy same-user álprocessz, pl.
+`exec -a weekly-usage-relogin.sh sleep 600` vagy egy közvetlen `--hold-marker &` hívás, a
+markert örökké frissen tarthatja, és örökké elfojthatja az olvasást).
+
+Javítás: (1) a FIFO-kézfogás `timeout`-tal határolt -- mért tény: egy puszta `read -t N < fifo`
+NEM elég, mert a FIFO `open()`-je magában blokkol íróra várva, MÉG a `read` saját időzítője
+előtt; a `timeout` a teljes nyitás+olvasás műveletet egy megölhető gyermekfolyamatba csomagolja.
+Határidő után `start` FAIL-lel kilép, NEM érinti a panelt (fail-closed). (2) a `--hold-marker`
+megtagadja a futást, ha nem kapja meg a `start` saját kézfogó FIFO-ját (env-változó + tényleges
+named pipe) -- ez a közvetlen, egysoros hívást zárja le, NEM a same-user álprocesszt (azt egy
+script-szintű ellenőrzés nem képes megkülönböztetni a valós tartótól). (3) az olvasó oldalon egy
+SKIP-sorozat-fájl követi, MIÓTA fogadja el folyamatosan a markert -- 2x TTL (alapesetben 1 óra)
+folyamatos elfogadás után leállítja a SKIP-elést és átesik a normál (riasztó) útra, mert egy
+valós relogin sosem tart ennyit (a tartó saját magát lejáratja 1x TTL-nél).
+
+Mellékes lelet a javítás közben: a `--hold-marker` jelzése `printf x` (newline nélkül) volt --
+bash `read` nem-nulla kóddal tér vissza, ha EOF-ot ér delimiter előtt, MÉG ha az adat megérkezett
+is. Ez a kézfogás saját ellenőrzését hamis negatívra futtatta volna; javítva `printf 'x\n'`-re,
+mérve közvetlenül mindkét alakon.
+
+Teszt: src/__tests__/weekly-usage-relogin-pending-marker.test.ts 22/22 PASS (6 új eset); a teljes
+weekly-usage sibling-sweep (7 fájl) 394/394 PASS; tsc --noEmit tiszta. Mindhárom fix mutánsonként
+bizonyítva pontosan a saját tesztjét futtatja pirosra (a határolatlan read visszaállítása és a
+hold-marker kapu eltávolítása FÜGGETLENÜL lefagyasztja a tesztet, ami maga is bizonyíték -- külső
+timeout-tal elkapva; az escalation eltávolítása pontosan 1 tesztet buktat).
+
+Gate: QA, Cybersec (re-gate a GO feltételeire). **Ki döntött:** DevO (fullstack).
