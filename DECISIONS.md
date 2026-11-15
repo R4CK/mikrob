@@ -26097,3 +26097,28 @@ file content in the prompt, which stays the caller's responsibility.
 5/5 es `store/local-llm-model-routing.selftest.sh` 5/5 valtozatlanul zold (regresszio).
 
 **Ki dontott:** MikroB dispatch (msg_id:19011) -> backend3 vegrehajtasa.
+
+### 2026-11-15 -- F8 delta: path containment + secret scan a skill-pack builderen (card 2746165b, QA FAIL 31746)
+
+A QA FAIL 31746 bebizonyitotta: `expand()`-nek nem volt containment-ellenorzese (sima
+abspath/expanduser), es az extract() pipeline-nak semmilyen secret-scanje -- egy hibas
+`store/llm-skill-pack-map.json` bejegyzes (elgepeles, rossz copy-paste, vagy rosszhiszemu
+szerkesztes, ugyanazzal a fajlrendszer-hozzaferessel, amivel minden ugynok mar rendelkezik)
+csendben kikuldhetett volna egy tetszoleges fajlt, vagy egy forrasban ulo titkot, a freellm
+felhos utvonalon.
+
+Javitas fail-closed mindket tengelyen (refuse, nem maszkolas): `expand()` realpath-eli minden
+forrast es megtagadja, ha az a `~/.claude/skills` vagy `docs/rules` gyokereken kivul esik
+(symlink-escape ugyanugy elkapva, mint a ff7ecc74 kartya mas skill-sync kodjaban); `build_one()`
+a kinyert szoveget atfuttatja a `store/freellm-call.sh` egress-kapujaval azonos
+SECRET_PATTERNS-listan (portolva, nem importalva) es megtagadja az egesz buildet talalatra.
+A `doc-update` map-bejegyzes abszolut `/home/neon/marveen` ut helyett repo-relativ lett (ez
+pont az a worktree-fegyelem-hiba volt, amit ez a session korabban mar maga is elkovetett es
+javitott).
+
+**Teszt:** `store/llm-skill-pack-build.selftest.sh` 1/4 -> 4/4 (2 uj, pinnelt eset: path-escape
+es secret-match, mindkettő mutacioval igazolva -- a megfelelo check-hivas kivetelevel a sajat
+tesztje bukik). QA repro (kulso stand-in secret fajl) kezzel megismetelve: containment-check
+megtagadja, mielott a fajl egyaltalan megnyilna.
+
+**Ki dontott:** MikroB dispatch (msg_id:19038, QA FAIL 31746) -> backend3 vegrehajtasa.
