@@ -274,6 +274,32 @@ def _is_path_token(tok):
 # 4b/4c allow -- verdict first or `Gate-SHA:` first -- work here too.
 _REVIEW_OPEN = re.compile(r"^\s*REVIEW\b", re.IGNORECASE)
 
+# A STATED "n/a" ON THE LATEST REVIEW RESETS THE EXPECTATION, IT DOES NOT FALL BACK TO AN OLDER
+# ONE (card 1aeed1ca, WhiteHat2 L1). CLAUDE.md rule 4e's config-only convention is a REVIEW line
+# `Gate-SHA: n/a` -- `_line_shas()` only ever collects hex tokens, so that line produces [] the
+# same way a REVIEW with no Gate-SHA line at all does, and the old loop's `if not shas: continue`
+# treated both the same way: skip this REVIEW, keep whatever an EARLIER REVIEW declared. That is
+# right for "this REVIEW said nothing about a sha" but wrong for "this REVIEW explicitly says there
+# is none" -- a rebuilt-with-no-commit round would then still check the gates' latest AGREE against
+# the stale OLD sha, exactly the hazard `--expect`/declared_shas() exists to close one door over.
+_NA_GATE_SHA = re.compile(r"^\s*n/a\b", re.IGNORECASE)
+
+
+def _is_na_gate_sha_line(content):
+    """Does this REVIEW's Gate-SHA line(s) read as 'n/a' (rule 4e) and NOTHING ELSE?
+
+    CYBERED NO-GO on 1aeed1ca, F1: the first version matched if ANY Gate-SHA line started with
+    'n/a', so one extra line "Gate-SHA: n/a" next to a real sha -- or a single line like
+    "Gate-SHA: n/a <B>" -- wiped the real sha out of declared_shas() entirely. A card whose Gate-SHA
+    line(s) name no hex sha ANYWHERE is the only case this must fire for: if `_line_shas()` finds a
+    real sha on any Gate-SHA line of this same comment, n/a is not a declaration of "nothing to
+    check", it is at most a stray/explanatory line next to the actual one.
+    """
+    if not any(_NA_GATE_SHA.match(line.strip()) for line in _GATE_SHA_LINE.findall(content)):
+        return False
+    return not _line_shas(content)
+
+
 # A machine-readable retraction marker (card 84fed4ee, Cybered's finding on 101f1702): a builder who
 # posts a second REVIEW and then reverts the branch back to the first sha, with only a prose comment
 # explaining it, leaves declared_shas() no way to tell the two REVIEWs apart -- it always takes the
@@ -348,6 +374,11 @@ def declared_shas(comments):
     verdicts that correctly judged the ORIGINAL sha read STALE. "Later" is comment order, the same
     convention `_gate_state` already documents for this file -- a retraction cannot apply to a REVIEW
     that has not been posted yet.
+
+    A REVIEW whose Gate-SHA line reads literally `n/a` (rule 4e, config-only work) RESETS this to
+    [] rather than being skipped like a REVIEW with no Gate-SHA line at all (card 1aeed1ca): the
+    explicit n/a is itself a declaration, just an empty one, and must not leave an earlier REVIEW's
+    sha standing as the default expectation.
     """
     found = []
     for i, c in enumerate(comments):
@@ -358,6 +389,12 @@ def declared_shas(comments):
             continue
         if not _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
             continue
+        if _is_na_gate_sha_line(content):
+            # Explicit "nothing to check" (card 1aeed1ca, L1): resets any earlier REVIEW's sha
+            # rather than leaving it standing, so a later gate AGREE is never silently checked
+            # against content this REVIEW said does not exist.
+            found = []
+            continue
         shas = _line_shas(content)
         if not shas:
             continue
@@ -365,6 +402,30 @@ def declared_shas(comments):
             continue
         found = shas
     return found
+
+
+def _latest_review_is_na(comments):
+    """Does the single LATEST `REVIEW` comment (declared_shas()'s own notion of "latest") declare
+    its Gate-SHA as n/a (rule 4e)?
+
+    CYBERED NO-GO on 1aeed1ca, F2: `declared_shas()` returning [] is ambiguous on its own -- it means
+    either "no REVIEW ever named a sha" (silence) or "the latest REVIEW explicitly says there is no
+    commit" (a declaration). `check()`'s default-AGREE path must tell these apart: silence keeps the
+    existing "unchecked, but AGREE" caveat, but an explicit n/a is a stated claim that MISMATCHES a
+    gate verdict naming a real commit -- that must never read as AGREE (see F2's fixture: REVIEW A,
+    gates PASS/GO on A, then the builder posts a REVIEW with Gate-SHA: n/a for the SAME rebuilt
+    code -- the gates judged a real commit, the REVIEW says none exists).
+    """
+    for c in reversed(comments):
+        if _is_generated_author(c):
+            continue
+        content = (c or {}).get("content")
+        if not isinstance(content, str):
+            continue
+        if not _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
+            continue
+        return _is_na_gate_sha_line(content)
+    return False
 
 
 def _retraction_shas_after(comments, index):
@@ -998,6 +1059,14 @@ def check(comments, designated=None, expect=None, use_declared=True, check_lande
         declared, source = [], "--no-expect"
 
     if not declared:
+        # CYBERED NO-GO on 1aeed1ca, F2: an explicit n/a on the latest REVIEW is a STATED claim
+        # ("no commit was delivered"), not silence -- and every designated gate, at this point in
+        # the function, has already been shown to have verdicted on a real commit (the NOSHA check
+        # above would have caught a gate with no sha of its own). That is a mismatch, not an
+        # agreement, so it must never take the same AGREE path plain silence does.
+        if source == "the latest REVIEW" and _latest_review_is_na(comments):
+            return "STALE|%s|n/a|the latest REVIEW declares Gate-SHA: n/a (no commit delivered), " \
+                   "but the designated gate(s) verdicted on a real commit: %s" % (_fmt_shas(shas[0]), detail)
         # Cybered's plan-grilling condition, and the one that keeps this honest: "no expectation"
         # must never read as "expectation met". It is said out loud instead, in the same place the
         # unstated gate designation is said out loud.

@@ -26080,3 +26080,14 @@ Gate-SHA: `d4d42e166ae8a58d15d6e5edaacd4c571d3eafc5`.
 **Teszt:** `agent-worktree-marveen.selftest.sh`: 16/16 PASS (2 new cases: the dangling-branch assertion on the existing occupied-path fixture, and a discriminating control proving a genuine survivor branch from a removed worktree is reused via the fallback, never deleted). Mutation-verified: removing just the rollback block turned exactly the new dangling-branch case red (1/16 FAIL), the survivor control and all 14 pre-existing cases stayed green. `bash -n` clean on both files.
 
 **Ki döntött:** fullstack (FÁZIS ed332869, "t3code mechanisms", F4.2 sub-step; self-advance continuation after a machine restart, BOOT-RECONCILE msg 19188). Gate: per card, QA + Cybered (land-path adjacent). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15, kártya 1aeed1ca (CYBERED NO-GO 3 leletre, F1/F2/F3): a Gate-SHA n/a kezeles szigoritva
+
+F1 -- gate-closure-check.py: az n/a-reset csak akkor szamit, ha a REVIEW Gate-SHA sorain SEHOL nincs
+valodi hex sha (korabban egy masodik "n/a" sor vagy egy "n/a <sha>" alak kitorolte a valodi shat).
+F2 -- gate-closure-check.py: egy n/a REVIEW, amikor egy kijelolt gate egy VALODI commitra adott
+verdiktet, mar nem AGREE("unchecked")-kent olvas, hanem STALE-mismatchkent (a n/a azt allitja, nincs
+commit, a gate meg valodit biralt). F3 -- gate-dispatch-check.sh: a both-sides-n/a ADVISE-SKIP
+kulonszabaly torolve -- az n/a nem tudja megkulonbozteteni a valodi ismetlest egy MASIK config-only
+kortol, ezert a biztos alapertelmezett ALLOW:stale-verdict-re esik vissza (ugyanaz az irany, mint a
+fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fullstack).
