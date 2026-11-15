@@ -35,6 +35,20 @@ def bullets(text: str) -> dict[tuple[str, str], str]:
     return out
 
 
+def bullet_full_lines(text: str) -> dict[tuple[str, str], str]:
+    """Same keys as bullets(), but the value is the FULL line (title + any
+    extra clause), not just the bold title -- a protocol token can live in
+    either half, so checking it stays on ITS OWN rule's line (not merely
+    somewhere in the file) needs the whole line, not the title slice."""
+    out: dict[tuple[str, str], str] = {}
+    for line in text.split('\n'):
+        m = BULLET_RE.match(line)
+        if m:
+            num, link = m.group(2), m.group(7).strip()
+            out[(num, link)] = line
+    return out
+
+
 def main() -> int:
     old_ref, new_path = sys.argv[1], sys.argv[2]
     old_text = subprocess.run(
@@ -46,14 +60,31 @@ def main() -> int:
     old_b, new_b = bullets(old_text), bullets(new_text)
     missing = [k for k in old_b if k not in new_b]
     changed = [k for k in old_b if k in new_b and old_b[k] != new_b[k]]
-    lost_tokens = [t for t in PROTOCOL_TOKENS if t in old_text and t not in new_text]
+
+    # Protocol tokens, checked PER RULE LINE, not merely "somewhere in the file": a token could
+    # vanish from the one rule that actually carries it while an unrelated bullet elsewhere still
+    # happens to contain the same literal string (or the token could be moved onto the wrong
+    # rule's line entirely), and the old whole-file membership check would call that fine.
+    old_full, new_full = bullet_full_lines(old_text), bullet_full_lines(new_text)
+    moved_or_lost: list[str] = []
+    for token in PROTOCOL_TOKENS:
+        old_keys = [k for k, line in old_full.items() if token in line]
+        if not old_keys:
+            # The token lives outside any numbered bullet (e.g. allowFrom, in prose) --
+            # step 1 never touches non-bullet prose, so the old whole-file check still applies.
+            if token in old_text and token not in new_text:
+                moved_or_lost.append(f"{token} (not in any numbered bullet, lost from the file)")
+            continue
+        for k in old_keys:
+            if token not in new_full.get(k, ''):
+                moved_or_lost.append(f"{token} (rule {k[0]} no longer carries it on its own line)")
 
     print(f"old bullets: {len(old_b)}, new bullets: {len(new_b)}")
     print(f"missing bullets: {len(missing)}", missing[:5])
     print(f"bold title changed: {len(changed)}", changed[:5])
-    print(f"protocol tokens lost: {len(lost_tokens)}", lost_tokens)
+    print(f"protocol tokens moved/lost: {len(moved_or_lost)}", moved_or_lost)
 
-    ok = not missing and not changed and not lost_tokens
+    ok = not missing and not changed and not moved_or_lost
     print('RESULT:', 'OK' if ok else 'FAIL')
     return 0 if ok else 1
 
