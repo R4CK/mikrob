@@ -239,7 +239,21 @@ case "$MODE" in
     # trap's reach); a bare file has no such parent to clean it up by.
     _wu_fifo_timeout="${WU_RELOGIN_FIFO_TIMEOUT_SEC:-10}"
     _wu_fifo_dir="$(mktemp -d)"
-    trap 'rm -rf "$_wu_fifo_dir" 2>/dev/null || true' EXIT INT TERM
+    _wu_hold_pid=""
+    # Cybersec MEDIUM-4 (card f3343af0 delta-gate, regression from the mktemp-d fix): the previous
+    # trap only cleaned up, it never exited -- INT/TERM ran the trap body and then fell through to
+    # the rest of `start` (ensure_pane and beyond), so a Ctrl-C or a supervisor's `timeout` on
+    # `start` no longer stopped it; it went on to drive the login dialog it was told to abandon.
+    # Each signal trap now also kills the detached holder and exits with the conventional
+    # 128+signum code (143 for TERM, 130 for INT) so the caller can tell a signal killed it from an
+    # ordinary failure.
+    # The EXIT trap only removes the fifo dir -- it must NOT kill the holder on a normal, successful
+    # exit: the holder is DESIGNED to outlive this invocation (see the comment above), so a kill
+    # here would tear down the pending marker the instant `start` returns, breaking every ordinary
+    # run. Only an aborted run (INT/TERM) should take the holder down with it.
+    trap 'rm -rf "$_wu_fifo_dir" 2>/dev/null || true' EXIT
+    trap '[ -n "$_wu_hold_pid" ] && kill "$_wu_hold_pid" 2>/dev/null; rm -rf "$_wu_fifo_dir" 2>/dev/null || true; exit 143' TERM
+    trap '[ -n "$_wu_hold_pid" ] && kill "$_wu_hold_pid" 2>/dev/null; rm -rf "$_wu_fifo_dir" 2>/dev/null || true; exit 130' INT
     _wu_fifo="$_wu_fifo_dir/fifo"
     mkfifo "$_wu_fifo" 2>/dev/null || true
     WU_RELOGIN_HOLD_SIGNAL_FIFO="$_wu_fifo" setsid bash "$0" --hold-marker >/dev/null 2>&1 </dev/null &
@@ -251,9 +265,19 @@ case "$MODE" in
     # directly: a bare `read -t 1 < fifo` with no writer still blocked past a 3s outer timeout.
     # `timeout` wraps the WHOLE redirection+read in a child process it can kill by signal,
     # interrupting the blocked open() -- confirmed this actually unblocks it (rc 124 at ~2s).
+    #
+    # Cybersec MEDIUM-4: bash defers a trap until the FOREGROUND command it is running returns, so
+    # running `timeout` directly in the foreground here (the original shape) meant INT/TERM during
+    # the wait did not actually fire the trap until the FIFO timeout itself elapsed -- measured: a
+    # TERM at t+2s with a 10s FIFO timeout was not honored until t+8s or later. `wait` on a
+    # BACKGROUNDED job, unlike a foreground command, returns as soon as the signal arrives, so the
+    # trap fires immediately -- measured directly (trap fired at t+2s instead of waiting out the
+    # child).
     _wu_handshake_ok=0
-    if [ -p "$_wu_fifo" ] && timeout "$_wu_fifo_timeout" bash -c 'read -r _ < "$1"' _ "$_wu_fifo" 2>/dev/null; then
-      _wu_handshake_ok=1
+    if [ -p "$_wu_fifo" ]; then
+      timeout "$_wu_fifo_timeout" bash -c 'read -r _ < "$1"' _ "$_wu_fifo" 2>/dev/null &
+      _wu_handshake_pid=$!
+      wait "$_wu_handshake_pid" && _wu_handshake_ok=1
     fi
     rm -rf "$_wu_fifo_dir" 2>/dev/null || true
     if [ "$_wu_handshake_ok" -ne 1 ]; then

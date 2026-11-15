@@ -463,6 +463,174 @@ describe('FIFO leak fix: start cleans up its handshake dir even when killed mid-
   })
 })
 
+// Cybersec MEDIUM-4 (card f3343af0 delta-gate): the mktemp-d fix's trap only cleaned up, it never
+// exited, so INT/TERM during the handshake wait ran the trap body and then fell through to the
+// rest of `start` (ensure_pane and beyond) -- a Ctrl-C or a supervisor's `timeout` on `start` no
+// longer stopped it, and it went on to drive the login dialog it was told to abandon (the exact
+// stray-keystroke class this card exists to prevent). Fixed: each signal trap now also kills the
+// detached holder and exits with 128+signum; the handshake wait runs in the background and is
+// `wait`-ed on (a foreground command defers a pending trap until it returns; a backgrounded job
+// being `wait`-ed does not).
+describe('MEDIUM-4: a signal during the handshake wait actually stops start (card f3343af0 delta-gate)', () => {
+  it('TERM while blocked on a holder that never signals kills start promptly (143), before ensure_pane ever runs, dir removed', async () => {
+    writeFileSync(join(dir, 'setsid'), '#!/usr/bin/env bash\nexit 0\n') // holder never actually starts
+    chmodSync(join(dir, 'setsid'), 0o755)
+    const tmproot = join(dir, 'tmproot-term-never')
+    mkdirSync(tmproot)
+    const child = spawn('bash', [RELOGIN, 'start'], {
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        WU_RELOGIN_TEST_MODE: '1',
+        WU_RELOGIN_PENDING_MARKER: marker,
+        WU_RELOGIN_FIFO_TIMEOUT_SEC: '30',
+        TMPDIR: tmproot,
+      },
+      stdio: 'ignore',
+    })
+    holders.push(child)
+    let created = false
+    for (let i = 0; i < 100; i++) {
+      if (readdirSync(tmproot).length > 0) {
+        created = true
+        break
+      }
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    expect(created).toBe(true) // control: the handshake dir really exists before we signal it
+    const t0 = Date.now()
+    child.kill('SIGTERM')
+    const code: number = await new Promise((resolve) => child.once('exit', (c) => resolve(c ?? -1)))
+    const elapsedMs = Date.now() - t0
+    expect(code).toBe(143) // 128 + SIGTERM(15)
+    // The FIFO timeout above is 30s; a prompt TERM must not be deferred until it elapses.
+    expect(elapsedMs).toBeLessThan(10_000)
+    expect(existsSync(log)).toBe(false) // zero tmux calls -- ensure_pane never ran
+    expect(readdirSync(tmproot).length).toBe(0) // the handshake dir is gone, not leaked
+  }, 20_000)
+
+  it('TERM sent just before a DELAYED holder would have signalled still aborts -- the trap does not just clean up and let start continue (the exact regression)', async () => {
+    // A setsid shim that waits, then becomes the real --hold-marker invocation: the handshake
+    // WOULD eventually succeed if start kept waiting. Reproduces the precise bug: the old trap
+    // only ran its cleanup body when the (deferred) signal was finally acted on, at which point
+    // the foreground `timeout read` had already returned (because the late holder DID signal by
+    // then) -- so the script read _wu_handshake_ok=1 and just continued into ensure_pane as if
+    // nothing had happened.
+    // /bin/sleep by absolute path: this test's own `dir` is first on PATH and already carries a
+    // no-op `sleep` fake (so the script's OWN internal sleeps don't slow other tests down) --
+    // calling bare `sleep` here would hit that same fake and make the holder start immediately.
+    writeFileSync(join(dir, 'setsid'), '#!/usr/bin/env bash\n/bin/sleep 4\nexec "$@"\n')
+    chmodSync(join(dir, 'setsid'), 0o755)
+    const tmproot = join(dir, 'tmproot-term-late')
+    mkdirSync(tmproot)
+    const child = spawn('bash', [RELOGIN, 'start'], {
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        WU_RELOGIN_TEST_MODE: '1',
+        WU_RELOGIN_PENDING_MARKER: marker,
+        WU_RELOGIN_FIFO_TIMEOUT_SEC: '20',
+        TMPDIR: tmproot,
+      },
+      stdio: 'ignore',
+    })
+    holders.push(child)
+    let created = false
+    for (let i = 0; i < 100; i++) {
+      if (readdirSync(tmproot).length > 0) {
+        created = true
+        break
+      }
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    expect(created).toBe(true)
+    await new Promise((r) => setTimeout(r, 1000)) // TERM lands well before the holder starts at t+4s
+    child.kill('SIGTERM')
+    const code: number = await new Promise((resolve) => child.once('exit', (c) => resolve(c ?? -1)))
+    expect(code).toBe(143)
+    expect(existsSync(log)).toBe(false) // ensure_pane never ran, even though the holder would have signalled later
+    // Give the now-late holder's own setsid-sleep a moment to finish so afterEach's SIGKILL sweep
+    // of `holders` (which only tracks `child`, not this detached grandchild) is not racing it.
+    await new Promise((r) => setTimeout(r, 4000))
+    expect(readdirSync(tmproot).length).toBe(0)
+  }, 20_000)
+})
+
+// Cybersec LOW-1 (card f3343af0 delta-gate): three new safeguards were unpinned -- a mutant through
+// the real test file left the suite fully green for each. Pinned directly below (not via source
+// text: the `:?` guard is exercised by actually calling the reader, same as the rest of this file).
+describe('pinning the MEDIUM-3/MEDIUM-4 safeguards (card f3343af0 delta-gate, Cybersec LOW-1)', () => {
+  it('the reader in test mode with WU_RELOGIN_SKIP_STREAK_FILE unset refuses outright: exit 1, zero tmux calls, nothing written', () => {
+    // Deliberately NOT using runReader(): that helper now always supplies a safe default, which is
+    // exactly the behaviour under test here -- this case calls the reader with the var genuinely
+    // absent, pinning the script's own `:?` guard (mutating it back to a `:-` fallback turns this
+    // red).
+    const env = {
+      ...process.env,
+      PATH: `${dir}:${process.env.PATH}`,
+      WU_RELOGIN_TEST_MODE: '1',
+      WU_RELOGIN_PENDING_MARKER: marker,
+    }
+    delete (env as Record<string, string | undefined>)['WU_RELOGIN_SKIP_STREAK_FILE']
+    let code = 0
+    let stderr = ''
+    try {
+      execFileSync('bash', [READER], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, env })
+    } catch (e) {
+      const err = e as { status?: number; stderr?: Buffer }
+      code = err.status ?? -1
+      stderr = err.stderr ? err.stderr.toString('utf-8') : ''
+    }
+    expect(code).toBe(1)
+    expect(stderr).toMatch(/WU_RELOGIN_SKIP_STREAK_FILE must be set/)
+    expect(existsSync(log)).toBe(false)
+  })
+
+  it('a successful handshake removes the FIFO dir right away, before ensure_pane runs -- not only when start finally exits', async () => {
+    // Pins the standalone post-handshake `rm -rf`, distinct from the EXIT trap: if that line were
+    // removed, the dir would still get cleaned up eventually (the EXIT trap fires when `start`
+    // finally returns), but only AFTER ensure_pane/resize/sleep have all run -- a materially longer
+    // leak window. Here we check the instant the panel is first touched, which is as early as this
+    // test can observe without invasive timing.
+    const tmproot = join(dir, 'tmproot-posthandshake')
+    mkdirSync(tmproot)
+    const child = spawn('bash', [RELOGIN, 'start'], {
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        WU_RELOGIN_TEST_MODE: '1',
+        WU_RELOGIN_PENDING_MARKER: marker,
+        WU_RELOGIN_FIFO_TIMEOUT_SEC: '10',
+        TMPDIR: tmproot,
+      },
+      stdio: 'ignore',
+    })
+    holders.push(child)
+    // Wait for the FIRST tmux call (ensure_pane's has-session), proving the handshake already
+    // succeeded and start has moved on -- the dir must be gone by now if the standalone rm -rf ran.
+    let sawFirstCall = false
+    for (let i = 0; i < 250; i++) {
+      if (existsSync(log) && readFileSync(log, 'utf-8').trim().length > 0) {
+        sawFirstCall = true
+        break
+      }
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    expect(sawFirstCall).toBe(true)
+    expect(readdirSync(tmproot).length).toBe(0)
+    child.kill('SIGKILL')
+    await new Promise((resolve) => child.once('exit', resolve))
+    if (existsSync(marker)) {
+      const pid = Number(readFileSync(marker, 'utf-8').trim().split('\n')[0])
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+  }, 20_000)
+})
+
 describe('MEDIUM-1a: --hold-marker refuses without a real handshake FIFO from start (card f3343af0)', () => {
   it('a bare --hold-marker with no FIFO env at all is refused, marker never written', () => {
     const { code } = runRelogin('--hold-marker')

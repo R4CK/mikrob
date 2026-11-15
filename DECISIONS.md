@@ -25974,3 +25974,54 @@ a regi kod csendben az eles fajlra esett volna. `bash -n` a modositott scripten 
 `tsc --noEmit` tiszta.
 
 Gate: QA, Cybersec (delta re-gate a 7df1b166 GO felett). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 delta-gate (Cybersec MEDIUM-4: a mktemp-d trap nem allitja meg a TERM/INT-et)
+
+Cybersec GO (8405ebed4, komment 31834) egy felteteles NO-GO-t rejtett: a d6f0c0a83-ban bevezetett
+`trap 'rm -rf "$_wu_fifo_dir" ...' EXIT INT TERM` regressziot hozott. A trap CSAK takaritott, nem
+allt ki -- INT/TERM lefuttatta a trap-testet, majd a script EGYSZERUEN FOLYTATTA a tobbi sort
+(ensure_pane es tovabb). Egy Ctrl-C vagy egy felugyelo `timeout`-ja `start`-on ezert tovabb nem
+allitotta meg a folyamatot, az pedig tovabbment a login-dialogus fele -- pontosan az a
+belegepeles-osztaly, amit ez a kartya meg akar akadalyozni.
+
+Ket kulon ok, ket kulon javitas:
+1. **A trap maga nem allt ki.** Minden jel-kezelo most mar explicit `exit 143`-at (TERM) vagy
+   `exit 130`-at (INT) is futtat a sajat takaritasa UTAN, es megoli a leszakitott
+   `--hold-marker` tartot is -- de az EXIT trap ezt NEM teheti meg (a tarto a SIKERES futas
+   utan is tovabb kell eljen, 1 sikeres `start` 15-25 masodpercig fut, a tarto viszont percekig).
+2. **Bash elhalasztja a trapot, amig az ELOTERI gyermek-parancs vissza nem ter.** A kezfogas-varas
+   (`timeout ... read`) korabban kozvetlenul az elotetben futott -- egy TERM a varas kozben csak
+   akkor futott le, amikor a `timeout` SAJAT idokorlata (akar 10-30mp) lejart, nem azonnal. Mert
+   egy HATTERBE tett job-on vart `wait` MASKENT viselkedik: a jel erkezesekor azonnal visszater
+   (kulon, izolalt bash-teszttel megerositve: egy elotetben futo `sleep 10`-en a trap 10mp-et
+   var, egy hatterbe tett + `wait`-elt ugyanazon `sleep 10`-en a trap ~2mp-nel (a tenyleges
+   jelkuldes idopontjaban) lefut). Javitas: a `timeout` hatterbe kerul, majd `wait`-elunk ra.
+
+Ket uj teszt (`weekly-usage-relogin-pending-marker.test.ts`, MEDIUM-4 describe blokk):
+- TERM egy soha nem jelzo tarto mellett: `start` 143-mal, azonnal (nem varja ki a 30mp-es FIFO
+  idokorlatot), nulla tmux-hivassal, a fifo-dir eltavolitva.
+- TERM EGY KESLEKEDO (de vegul sikeresen jelzo) tarto mellett -- ez a PONTOS cybersec-regressziot
+  reprodukalja: a tarto 4mp mulva tenylegesen elindulna es jelezne, a TERM 1mp-nel erkezik, MEGIS
+  `start` azonnal 143-mal kilep, nem varja meg a kesei sikeres kezfogast es nem folytatja
+  `ensure_pane`-be.
+
+Harom cybersec LOW-1 mutans lezarva, kezzel mutalva es visszaallitva mindharomnal:
+- a `:?` szigoru ellenorzes visszaallitva a regi `:-` eleselegi alakra -> piros (a mar meglevo
+  MEDIUM-3 teszt most mar NEM NEVESITETT szoveget kap stderr-en, hanem a normal-mod hibajat --
+  ez buktatja az allitast).
+- a jel-kezelok `exit`-je torolve -> piros (mindket uj MEDIUM-4 teszt).
+- a jel-kezelok TELJES torlese -> piros (ugyanaz a ketto, `code=-1` a vart 143 helyett).
+- a sikeres-kezfogas utani kulonallo `rm -rf "$_wu_fifo_dir"` sor torolve -> piros (uj,
+  "sikeres kezfogas rogton eltavolitja a fifo-dirt" teszt).
+
+Egy FONTOS buktato a teszt megirasa kozben: a hamis holder-shim sajat `sleep 4` hivasa a
+teszt-infra SAJAT, no-op `sleep` fake-jet talalta meg a PATH-on (ugyanaz a fake, amivel a
+relogin-script SAJAT belso sleep-jeit gyorsitjuk fel mas tesztekben) -- a holder nem is
+keslekedett, azonnal elindult, a teszt pedig a vart 20mp-es idotullepesig futott. Javitas:
+`/bin/sleep 4` abszolut uttal a shimben.
+
+Teszt: a celzott fajl 27/27 PASS (23 regi + 4 uj). Testver-fajlok (code-intake, redaction,
+panel-size, panel-revive-states, cron-shell-pane-writers) 82/82 PASS egyutt futtatva. `bash -n`
+mindket modositott scripten tiszta, `tsc --noEmit` tiszta.
+
+Gate: QA, Cybersec (delta re-gate a 8405ebed4 GO felett). **Ki döntött:** DevO (fullstack).
