@@ -335,7 +335,12 @@ describe('local-llm.sh gateway mode (card f3f4b571)', () => {
     }
   })
 
-  it('PIN (known, accepted gap while the gateway switch is OFF -- card 9b25cc84 G3, Cybersec GO 29890): a pulled model literally named like a needsKey catalog id (e.g. "qwen3-coder") passes model_pulled and is forwarded to the gateway AS that id -- exact-name match proves Ollama has the model, not which platform the gateway string routes to. Documented here so a future change to this behaviour is visible, not silently reintroduced or silently fixed without updating this test.', async () => {
+  // H3 (card 29ceef23, RedHat standing condition on Cybered GO 30273 / card 9b25cc84): a pulled
+  // name that STARTS WITH the requested canon, but is not EQUAL to it, is a different mutant than
+  // the substring-anywhere case above (`canon in n` vs `n.startswith(canon)`) -- "qwen:latest" is
+  // a prefix of "qwen:latest-extra" even though it never appears anywhere else in that string, so
+  // a prefix-membership check would wrongly accept it where the substring check above would not.
+  it('ON, a pulled model name STARTS WITH the requested canon but is longer (not equal to it): refuses -- exact set membership, not prefix-of-pulled-name (H3)', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
     const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
     writeFileSync(switchFile, '{"enabled": true}')
@@ -343,7 +348,189 @@ describe('local-llm.sh gateway mode (card f3f4b571)', () => {
       const ollamaPort = await startServer((req, res) => {
         if (req.url === '/api/tags') {
           res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ models: [{ name: 'qwen3-coder:latest' }] }))
+          res.end(JSON.stringify({ models: [{ name: 'qwen:latest-extra' }] }))
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+      let gatewayHit = false
+      const gatewayPort = await startServer((_req, res) => {
+        gatewayHit = true
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'should-not-be-used' } }], usage: {} }))
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const r = await run(baseEnv({
+        OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }), ['--model', 'qwen', 'hello'])
+      expect(r.status).toBe(3)
+      expect(gatewayHit).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  // H6 (card 29ceef23, RedHat standing condition on Cybered GO 30273 / card 9b25cc84): model_pulled()
+  // already fails CLOSED (`except Exception: sys.exit(1)`) on an unparseable /api/tags body -- this
+  // test PINS that behaviour so a future regression (e.g. flipping that handler to exit 0) is
+  // caught; nothing in this file exercised a malformed-body response before. ollama_up() only
+  // checks curl's transport success, not the body, so a 200 with garbage JSON still passes it and
+  // reaches model_pulled(), exactly the path a real Ollama returning a truncated/corrupt response
+  // would take.
+  it('ON, /api/tags returns a 200 with an UNPARSEABLE (non-JSON) body: refuses (fails closed), never calls the gateway (H6)', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      const ollamaPort = await startServer((req, res) => {
+        if (req.url === '/api/tags') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end('{not valid json at all')
+          return
+        }
+        res.writeHead(404); res.end()
+      })
+      let gatewayHit = false
+      const gatewayPort = await startServer((_req, res) => {
+        gatewayHit = true
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'should-not-be-used' } }], usage: {} }))
+      })
+      const tokenFile = join(tmpDir, 'auth-token')
+      writeFileSync(tokenFile, 'test-token-value\n')
+
+      const r = await run(baseEnv({
+        OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+        LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+        LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+        LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+      }), ['--model', 'test-model', 'hello'])
+      expect(r.status).toBe(3)
+      expect(gatewayHit).toBe(false)
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  // card 29ceef23 (RedHat standing condition on Cybered GO 30273 / card 9b25cc84): the G3 gap --
+  // a pulled model literally named like a needsKey catalog id (qwen3-coder, command-r) or
+  // freellmapi's own virtual-model strings (auto, auto:*, fusion, fusion:*) passes model_pulled
+  // and used to go to the gateway VERBATIM, where freellmapi's router could resolve it as
+  // something other than our own Ollama -- is now closed STRUCTURALLY: every gateway request's
+  // wire "model" field is prefixed "custom:" (freellmapi's own endpoint-qualified-id syntax),
+  // which neither isAutoModel/isFusionModel nor any catalog platform id can match, live-verified
+  // against the running freellmapi (X-Routed-Via header) in the REVIEW/DECISIONS. This covers
+  // every possible collision, not a named few, including names no one has thought to deny yet.
+  // 'fusion:chain' added per QA FAIL 30293: freellmapi's isFusionModel (fusion.ts:30-33) is the
+  // SAME lower === 'fusion' || lower.startswith('fusion:') shape as isAutoModel -- the round-1
+  // denylist added an explicit auto: prefix rule but not the symmetric fusion: one, so a pulled
+  // model literally named "fusion:chain" passed unrefused. The custom: prefix fix in this round
+  // closes it structurally (neither check can match "custom:fusion:chain"), and this case is
+  // included explicitly so the test suite proves it, not just implies it.
+  it.each(['auto', 'auto:chain', 'fusion', 'fusion:chain', 'qwen3-coder', 'command-r', 'command-a', 'mistral-nemo'])(
+    'every gateway request for %s is forwarded with the wire model id prefixed "custom:" (card 29ceef23)',
+    async (collisionName) => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+      const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+      writeFileSync(switchFile, '{"enabled": true}')
+      try {
+        const ollamaPort = await startServer((req, res) => {
+          if (req.url === '/api/tags') {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ models: [{ name: collisionName }] }))
+            return
+          }
+          res.writeHead(404); res.end()
+        })
+        let forwardedModel: unknown
+        const gatewayPort = await startServer((req, res) => {
+          let body = ''
+          req.on('data', (c) => { body += c })
+          req.on('end', () => {
+            forwardedModel = JSON.parse(body).model
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ choices: [{ message: { content: 'gateway-reply' } }], usage: {} }))
+          })
+        })
+        const tokenFile = join(tmpDir, 'auth-token')
+        writeFileSync(tokenFile, 'test-token-value\n')
+
+        const r = await run(baseEnv({
+          OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+          LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+          LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+          LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+        }), ['--model', collisionName, 'hello'])
+        expect(r.status).toBe(0)
+        expect(forwardedModel).toBe(`custom:${collisionName}`)
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  // Case-fold pin (MikroB dispatch msg 17997, after QA FAIL 30293): freellmapi's own
+  // isAutoModel/isFusionModel lower-case the string before comparing, so "Auto" and "FUSION" are
+  // ALSO virtual-model strings there, not just the exact-lowercase spelling. The custom: prefix
+  // closes this the same way it closes everything else -- "custom:Auto" cannot match either
+  // check regardless of what case the suffix is in -- but pinning it explicitly proves that
+  // rather than leaving it implied.
+  it.each(['Auto', 'FUSION', 'Qwen3-Coder'])(
+    'mixed-case collision name %s is forwarded with the custom: prefix, case preserved (card 29ceef23)',
+    async (mixedCaseName) => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+      const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+      writeFileSync(switchFile, '{"enabled": true}')
+      try {
+        const ollamaPort = await startServer((req, res) => {
+          if (req.url === '/api/tags') {
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ models: [{ name: mixedCaseName }] }))
+            return
+          }
+          res.writeHead(404); res.end()
+        })
+        let forwardedModel: unknown
+        const gatewayPort = await startServer((req, res) => {
+          let body = ''
+          req.on('data', (c) => { body += c })
+          req.on('end', () => {
+            forwardedModel = JSON.parse(body).model
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ choices: [{ message: { content: 'gateway-reply' } }], usage: {} }))
+          })
+        })
+        const tokenFile = join(tmpDir, 'auth-token')
+        writeFileSync(tokenFile, 'test-token-value\n')
+
+        const r = await run(baseEnv({
+          OLLAMA_HOST: `http://127.0.0.1:${ollamaPort}`,
+          LOCAL_LLM_GATEWAY_SWITCH: switchFile,
+          LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
+          LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
+        }), ['--model', mixedCaseName, 'hello'])
+        expect(r.status).toBe(0)
+        expect(forwardedModel).toBe(`custom:${mixedCaseName}`)
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('a model name that merely CONTAINS "qwen3-coder" (not equal to it) is still forwarded with the custom: prefix (card 29ceef23)', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'local-llm-gateway-'))
+    const switchFile = join(tmpDir, 'local-llm-gateway-enabled.json')
+    writeFileSync(switchFile, '{"enabled": true}')
+    try {
+      const ollamaPort = await startServer((req, res) => {
+        if (req.url === '/api/tags') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ models: [{ name: 'myqwen3-coder-finetune:latest' }] }))
           return
         }
         res.writeHead(404); res.end()
@@ -366,13 +553,9 @@ describe('local-llm.sh gateway mode (card f3f4b571)', () => {
         LOCAL_LLM_GATEWAY_SWITCH: switchFile,
         LOCAL_LLM_GATEWAY_API_BASE: `http://127.0.0.1:${gatewayPort}`,
         LOCAL_LLM_GATEWAY_AUTH_TOKEN_FILE: tokenFile,
-      }), ['--model', 'qwen3-coder', 'hello'])
+      }), ['--model', 'myqwen3-coder-finetune', 'hello'])
       expect(r.status).toBe(0)
-      // The known gap: the gateway forwards the catalog-id-shaped name VERBATIM. Closing this
-      // (a served-platform check) is explicitly deferred (Cybersec GO 29890 G3, LOW, latent
-      // while the switch is OFF) -- this test pins the current behaviour so the gap stays
-      // visible rather than silent.
-      expect(forwardedModel).toBe('qwen3-coder')
+      expect(forwardedModel).toBe('custom:myqwen3-coder-finetune')
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
     }
