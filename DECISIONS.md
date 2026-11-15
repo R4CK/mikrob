@@ -30330,3 +30330,50 @@ the blind two-file `diff --quiet`.
 **Ki döntött:** MikroB (kártyanyitás a mérésre), DevO (fullstack, mérés + javítás).
 **Hivatkozás:** kártya `426adb21`; `store/npm-ci-advisory-check.sh`, `store/marveen-land.sh`
 (`sync_live_install`).
+## 2026-11-15 -- card b7fe4a95 (1c8f6d25 follow-up, WhiteHat2 F1/F2 + 8 pin gap)
+
+**Döntés:** WhiteHat2 CYBERSEC GO 31505 a heartbeat-scriptfirst.sh N1-N4 javítását (ba6075bfd)
+landolhatónak minősítette, de a weekly-task átkötését két MEDIUM lelet (F1, F2) és 8 túlélt
+mutáns miatt blokkolta.
+
+F1 (state vs transition): a hard-stop/newDevStop/load-guard-HOLD jelzők ÁLLAPOT alapján
+állították az ACTIONABLE-t, nem ÁTMENET alapján -- egy tartós (napokig tartó) heti stop vagy
+load-guard HOLD ezért MINDEN tickben felébresztette MikroB-ot, pont az ellen, amiért a szkript
+létezik. Javítás: egy külön flags-state fájl (`.heartbeat-scriptfirst-flags-last.txt`) rögzíti
+az ELŐZŐ tick értékét mindhárom jelzőre, és csak a VÁLTOZÁS ébreszt -- a cold-start alapérték a
+NORMÁL állapot (False/ADMIT), nem egy üres string, különben az első valaha lefutó tick is
+feleslegesen ébresztene egy teljesen rendben lévő rendszeren (ezt mérve találtam, nem a terv
+része volt -- az első implementáció pont ezt a hibát vezette be, a selftest fogta meg).
+
+F2 (unbounded replay): egy sikertelen wake a TELJES riportot hozzáfűzte a pending fájlhoz, és
+minden további tick a TELJES backlogot próbálta visszajátszani -- ~128 KB felett `Argument list
+too long` (rc 126), és onnan nincs visszaút kézi törlés nélkül. Javítás: a visszajátszás az
+utolsó 8192 B-re van vágva (a teljes méret kiírva, semmi nem vész el nyomtalanul), és a
+hozzáfűzés oldala UGYANÚGY vágva minden sikertelen tick után.
+
+8 pin gap (31505 mutáció-mérése): mind a 8 lezárva -- N2 collapse/printable (gate-closure-check.py
+`_sanitize_author`, két KÜLÖN eset: szóközök futtatása a collapse-ra, ESC+RLO a printable-szűrőre,
+mert egy közös "nincs \n" teszt mindkettőt egyszerre fedte, vakon), N1 skills-skip (saját eset),
+N3 newDevStopActive fél (saját, tartós eset), N4 actionable/clear/fold (mindhárom, lásd lejjebb a
+teszt-önkorrekciót).
+
+**Teszt-önkorrekció, ugyanebben a körben:** az N1 blank-skip "pin" ÉS az N4 clear/fold eredeti
+pinjei maguk is vakok voltak, ezt közvetlenül mérve találtam, nem feltételezve -- lásd a
+`guards-that-pin-behaviour` skillt. (1) N1 blank-skip: a `has_review` regex saját `\s*`-je
+MINDIG lenyeli az önálló üres sort, a LEAD_SKIP saját üres-sor ágát feleslegessé teszi -- mérve:
+az ág eltávolítása NULLA esetben változtat kimenetet, ezért a HALOTT kódot töröltem (egyszerűsítés),
+nem egy hamis pint tartottam meg. A valódi pin egy KOMBINÁLT eset (Gate-SHA+Skills+üres sor
+egymás után REVIEW előtt), ahol az üres sor ágára VALÓBAN szükség volna, ha létezne -- de mivel
+nem létezik, ez is csak a Gate-SHA/Skills ágakat pinneli. (2) N4 "cleared"/"folded" pin: a
+`check` helper üres needle-lel (`check ... ""`) MINDIG igaz (a `case *""*` minta bármit
+illeszkedik), így a két eredeti pin semmit nem mért -- közvetlen `[ -z ... ]` ellenőrzésre,
+illetve egy a backlogra EGYEDI needle-re (`NEW:backend`, ami csak az 1. kör tartalmában van)
+cserélve. Mindhárom hiba mutációval megerősítve (a megfelelő mutáns PONTOSAN a saját tesztjét
+buktatja, a javított tesztek előtt NEM buktatta).
+
+**Teszt:** heartbeat-scriptfirst.selftest.sh összes eset PASS (F1 5-tickes tartós-állapot eset,
+F2 200 KB-os visszajátszás E2BIG nélkül + korlátozott méret, 8 pin gap mindegyike); gate-closure-check.selftest.py
+171 eset PASS (169+2, N2 collapse/printable külön). Mind a 8+3(önkorrekció) mutáns egyenként
+futtatva, a megfelelő teszt(ek) pontosan pirosra váltanak, visszaállítva zöld.
+
+Gate: QA + Cybersec (31505 F1/F2 + pin gap re-gate). **Ki döntött:** DevO (fullstack).

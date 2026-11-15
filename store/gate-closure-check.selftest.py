@@ -2032,6 +2032,34 @@ print("%s %-9s <- %-9s %s" % (
 if not _ok_san:
     failures.append(("N2: _sanitize_author collapses+caps", "no newline, len<=40", repr(_san)))
 
+# N2 pin gap (WhiteHat2 L2): the combined "no newline" check above is satisfied even if EITHER the
+# whitespace-collapse line OR the isprintable filter is removed, because the other one also happens
+# to strip "\n" (collapse turns it into a space; isprintable() treats "\n" as non-printable). Two
+# narrower cases below isolate each line so a mutant removing just ONE of them is caught on its own.
+n += 1
+# Multiple plain ASCII spaces: isprintable() keeps a bare space (it is the one separator character
+# Python's isprintable() explicitly allows), so ONLY the whitespace-collapse `re.sub(r"\s+", " ", ...)`
+# line can turn a run of spaces into one. Removing that line leaves "a    b" untouched.
+_san_collapse = _gcc._sanitize_author("a    b")
+_ok_collapse = _san_collapse == "a b"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_collapse else "FAIL", "'a b'", repr(_san_collapse),
+    "N2 pin: whitespace-collapse line (removing it leaves multi-space runs)"))
+if not _ok_collapse:
+    failures.append(("N2 pin: whitespace-collapse line", "'a b'", repr(_san_collapse)))
+
+n += 1
+# ESC (control, category Cc) and RLO (bidi override, category Cf) are neither whitespace (the \s+
+# collapse never touches them) nor removed by anything except the isprintable() filter -- so ONLY
+# that line can strip them. Removing it leaves both characters in the output.
+_san_printable = _gcc._sanitize_author("a\x1bb‮c")
+_ok_printable = "\x1b" not in _san_printable and "‮" not in _san_printable
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_printable else "FAIL", "no ESC/RLO", repr(_san_printable),
+    "N2 pin: isprintable filter line (removing it leaves control/bidi chars)"))
+if not _ok_printable:
+    failures.append(("N2 pin: isprintable filter line", "no ESC/RLO", repr(_san_printable)))
+
 n += 1
 _n2_comments = [
     c("qa", "QA PASS\nGate-SHA: ccc0000"),
