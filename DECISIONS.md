@@ -25697,3 +25697,11 @@ ellenőrzésre gyengítve, pontosan a dedikált F4-parity teszt bukott (11/12), 
 **Ki döntött:** Fron Ted (fron-ted), dispatch MikroB-tól (inter-agent msg_id:18688).
 
 **Hivatkozás:** kártya 52c48470, commit d7c4d9f9d, Pair-BE: e96d56c5, fázis 82a113ba.
+
+## 2026-11-15 -- F4 LLM ledger dashboard delta fixes (kártya 52c48470, fleet-test NO-GO után)
+
+**Döntés:** A batched land kétszer is elbukott a kártyán -- először egy merge-konfliktus (style.css/DECISIONS.md), majd egy fleet-test FAIL három teszten: `app-js-html-sinks.test.ts` (escapeHtml hiányzott 10 `llmLedgerFmt()` interpolációnál), `llm-monitor-module.test.ts` (a sidebar `SIDEBAR_GROUPS` tömb szó szerinti substring-ellenőrzését törte a `llmLedger` beillesztése), `hidden-attribute-css-contract.test.ts` (`.llm-ledger-totals[hidden]` override hiánya). Mindhármat javítottuk: escapeHtml() wrap (allowlist helyett, MikroB preferenciája szerint), a `llmLedger` saját SIDEBAR_GROUPS-bejegyzést kapott (nem a `llmMonitor` tömbjébe írva), `[hidden] { display: none }` hozzáadva.
+
+**Ki döntött:** Fron Ted (fron-ted), MikroB dispatch alapján (inter-agent msg_id:18750).
+
+**Hivatkozás:** kártya 52c48470, commit 0e19a3930, Pair-BE: e96d56c5.
