@@ -25916,3 +25916,23 @@ tovabbi lelete (Cybersec GO 56c9a507 follow-up, L1/L2/P1):
 61/61 valtozatlanul zold.
 
 **Ki dontott:** MikroB dispatch (msg_id:18721, Peti 13930) -> backend2 vegrehajtasa.
+
+### 2026-11-15 -- Seed the 38 FE-assigned skills missing from fron-ted/fron-teddy (card f651b26c)
+
+A `store/agent-skill-drift-sync.sh` heartbeat jelezte, hogy 38 skill csak fron-ted LIVE
+`.claude/skills`-eben letezik, a `seed-fleet-agents/{fron-ted,fron-teddy}` snapshotbol hianyzik
+(ez utobbit uj klon provisioninggel hasznaljak, a futo sibling-sync nem erinti). A 38 pontosan
+egyezik a `store/skill-role-map.json` fron-ted role + fleet-core listajaval -- athelyezve a
+globalis `~/.claude/skills/` forrasbol mindket seed fara, igy a ket fa most byte-azonos (80 skill).
+
+Tudatos dontes: fron-ted live masolata meg 10 TOVABBI skillt is tartalmaz (a11y-audit,
+api-design, architecture-decision-records, context-budget, database-migrations,
+hexagonal-architecture, postgres-patterns, search-first, tdd-workflow, verification-loop), DE
+ezek NINCSENEK a skill-role-map.json fron-ted/fleet-core listajan -- nem hivatalosan kiosztott
+FE-skill, ezert NEM kerultek be a seedbe. Nevesitve a REVIEW-ban, nem csendben kihagyva.
+
+**Teszt:** `store/agent-skill-drift-sync.sh --telegram` utana is `missing=0`
+`sibling-pair-findings=0` (a live sync mar korabban lefutott, ez a kartya a seed-snapshotot
+zarta fel kulon).
+
+**Ki dontott:** MikroB dispatch (msg_id:19011) -> backend3 vegrehajtasa.
