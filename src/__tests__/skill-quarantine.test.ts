@@ -310,9 +310,9 @@ describe('the scan is calibrated in both directions', () => {
   // POST /api/agents/:name/skills no longer queues (CYBERED NO-GO F3), so this exercises the
   // same target-normalization + scan path directly against the library the route would have
   // called, the way the global-scope generate tests above already do for that route's revert.
-  it('a clean skill reports its file and no findings; a MAIN-agent target normalizes to the global root', () => {
-    const meta = queueGeneratedSkill({ scope: 'agent' as const, agent: MAIN_AGENT_ID }, 'zz-main', '---\nname: zz-main\n---\n# zz-main\n\nclean\n')
-    const p = getPending(meta.id)!
+  it('a clean skill reports its file and no findings; a MAIN-agent target normalizes to the global root', async () => {
+    queueGeneratedSkill({ scope: 'agent' as const, agent: MAIN_AGENT_ID }, 'zz-main', '---\nname: zz-main\n---\n# zz-main\n\nclean\n')
+    const [p] = await pendingList()
     expect(p.report.files).toEqual([{ path: 'SKILL.md', size: expect.any(Number), kind: 'markdown', executable: false, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) }])
     expect(p.report.findings).toEqual([])
     // the main agent's own root IS the global one, and the approver is told so
