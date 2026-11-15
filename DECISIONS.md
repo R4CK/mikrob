@@ -26070,3 +26070,30 @@ rögzíti és zárja a kártyát.
 **Ki döntött:** backend2 (kártya 1506d10d, Cybersec GO 29776 + Cybered NO-GO 29789 -> javítás
 `d4d42e166` a `cdde2666` kártyán, itt csak verifikálva és lezárva). Gate: QA + Cybersec.
 Gate-SHA: `d4d42e166ae8a58d15d6e5edaacd4c571d3eafc5`.
+
+### 2026-11-15 -- F8 compiled skill packs for non-Claude models (card 2746165b)
+
+Non-Claude calls (`freellm-call.sh` / `local-llm.sh`) carried only the raw per-task prompt
+template (`store/local-llm-skills/<task>.txt`), never any `~/.claude/skills` rule/pitfall
+content. Added `store/llm-skill-pack-build.py`, driven by `store/llm-skill-pack-map.json`,
+which compiles only the rule+pitfall sections of the relevant SKILL.md/rule-doc into a short
+(<=1500 token) pack per F3 route-table task type (`store/card-route-table.json`: test-scaffold,
+i18n-keys, doc-update, type-def, default). Both call sites now prepend the pack for their task
+label and log `pack=<task>@<sha12>` to `store/llm-skill-pack-usage.log`.
+
+Deliberate choice: the generated `.txt` pack contains prose only, no filesystem paths or
+hostnames -- source provenance (paths + sha) lives only in a sidecar `<task>.meta.json` that
+is never sent to a model, so the pack stays safe on the freellm cloud route (the card's own
+"a pack that names an internal path or host goes local-only" constraint).
+
+Measured limit, not a gap in the implementation: a real A/B replay of the 10 most recent
+historic `Draft-Review:` verdicts (kanban_comments, 2026-11-15) showed 9 of 10 failures were
+hallucinated repo structure (invented imports/files/functions), not missing skill-rule
+awareness -- only 1 of 10 was actually one of this card's four mechanical task types. A
+generic rule+pitfall pack cannot fix repo-grounding hallucination by itself; that needs real
+file content in the prompt, which stays the caller's responsibility.
+
+**Teszt:** `store/llm-skill-pack-build.selftest.sh` 3/3 (uj), `store/local-llm-rag.selftest.sh`
+5/5 es `store/local-llm-model-routing.selftest.sh` 5/5 valtozatlanul zold (regresszio).
+
+**Ki dontott:** MikroB dispatch (msg_id:19011) -> backend3 vegrehajtasa.
