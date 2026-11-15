@@ -25689,3 +25689,31 @@ ellenőrzésre gyengítve, pontosan a dedikált F4-parity teszt bukott (11/12), 
 (12/12). `tsc --noEmit` és `eslint` tiszta az új/módosított fájlokon.
 
 **Ki döntött:** Peti (13849) -> MikroB dispatch (msg_id:18584), backend2 végrehajtása.
+
+## 2026-11-15: freellm-call.sh retry-ablak -- nevesitett validacios hiba + valos teljes-ido korlat (kartya 6f9426d6)
+
+**Mi valtozott:** a `store/freellm-call.sh` 56c9a507d-ben landolt retry-javitasanak harom
+tovabbi lelete (Cybersec GO 56c9a507 follow-up, L1/L2/P1):
+
+- **L1:** `_validate_positive_int()` eddig csendben `exit 2`-t adott egy ervenytelen
+  `FREELLM_TIMEOUT`/`FREELLM_MAX_ATTEMPTS`/`FREELLM_ATTEMPT_TIMEOUT` ertekre -- most nevesiti
+  a valtozot es az erteket a stderr-en.
+- **L2:** a per-attempt clamp csak az EGYES kisereletet korlatozta, nem az OSSZEGET -- ha
+  `FREELLM_MAX_ATTEMPTS` nagyobb mint `FREELLM_TIMEOUT`, az egesz-szamu osztas 1 masodpercre
+  padlozott, es a sok 1s-es kiserlet osszesen jovat lephette a `TIMEOUT`-ot (mert: TIMEOUT=3,
+  MAX_ATTEMPTS=9 merve 9348ms, nem a hirdetett 3s). Javitas: valodi wall-clock hatarido a hurok
+  elott, minden kiserlet elott ellenorizve -- a fennmarado ido szabja meg mind azt, hogy
+  indul-e meg kiserlet, mind azt, hogy az meddig tarthat.
+- **P1:** a regi `freellm-call-retry.selftest.sh` Test 5 pinje uresjarat volt: a mock szerver
+  csak az ELSO keresre allt meg, igy egy KESOBBI kiserlet mindig gyorsan sikerult, es a clamp
+  eltavolitasa/megforditasa/0-ra padlozasa is zoldet adott. Uj teszt egy MINDIG-allo mockkal
+  (STALL_MODE=always) bizonyitja a valos korlatot; mutacioval igazolva (a deadline-ellenorzes
+  visszaallitasa a regi kodra 9518ms-ot ad, a javitott kod a 3s koruli ertekben marad). Kulon
+  teszt a hosszkorlat-reteget is pinneli (tul hosszu, de ervenyes szamjegy-string, pl.
+  `FREELLM_TIMEOUT=99999`), amit a regi tesztek (csak nem-szamjegy injekciós payload) sosem
+  gyakoroltak.
+
+**Teszt:** `store/freellm-call-retry.selftest.sh` 16 -> 25 (9 uj), `store/freellm-call.selftest.sh`
+61/61 valtozatlanul zold.
+
+**Ki dontott:** MikroB dispatch (msg_id:18721, Peti 13930) -> backend2 vegrehajtasa.
