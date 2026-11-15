@@ -26,8 +26,19 @@
 // Driven against a PATH shim for `tmux` (and a no-op `sleep`), same technique as
 // weekly-usage-panel-size.test.ts: these cases never touch the real mikrob-usage-probe panel.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync, existsSync, statSync, symlinkSync } from 'node:fs'
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  chmodSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+  statSync,
+  symlinkSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -375,6 +386,65 @@ describe('MEDIUM-2: the start/hold-marker FIFO handshake is bounded and fails cl
         /* already gone */
       }
     }
+  })
+})
+
+// FIFO leak (MikroB finding, card f3343af0 follow-up): `start` used to build its handshake FIFO
+// with a bare `mktemp -u` path directly in /tmp root. Killing `start` between mkfifo and the old
+// rm -f (a test timeout, a fleet-test kill) left that FIFO behind -- measured live: two leaked at
+// 14:12 and 14:18, and kg-search.selftest.sh's `grep /tmp/tmp.*` blocked forever on one of them,
+// timing out store-selftests-all-run and refusing three unrelated lands. Fix: the FIFO lives inside
+// its own mktemp -d, cleaned up by a trap on EXIT/INT/TERM, not by the happy-path rm -f alone.
+describe('FIFO leak fix: start cleans up its handshake dir even when killed mid-handshake (card f3343af0 follow-up)', () => {
+  it('a SIGKILL mid-handshake never leaves a bare FIFO directly under TMPDIR, and a grep-style scan does not hang on whatever is left', async () => {
+    // SIGKILL cannot be trapped or deferred (measured separately: even SIGTERM to `start` itself
+    // does not interrupt it while blocked in the foreground `timeout`/`read`, since GNU timeout's
+    // monitored child runs in its OWN process group and bash defers trap handling until the
+    // foreground command it is waiting on returns) -- so nothing, old code or new, gets to run
+    // any cleanup here. What still differs STRUCTURALLY: with the old bare `mktemp -u` path, the
+    // thing left at the top level of TMPDIR is the FIFO itself, and kg-search.selftest.sh's own
+    // scan pattern (`grep -slF ... /tmp/tmp.*`) opens it and blocks forever on the read (measured
+    // live: two such leaks at 14:12 and 14:18 timed out store-selftests-all-run). With the FIFO
+    // nested one level inside its own mktemp -d, the top-level leftover is a plain directory,
+    // which that same grep skips immediately ("Is a directory") instead of opening.
+    writeFileSync(join(dir, 'setsid'), '#!/usr/bin/env bash\nexit 0\n')
+    chmodSync(join(dir, 'setsid'), 0o755)
+    const tmproot = join(dir, 'tmproot')
+    mkdirSync(tmproot)
+    const child = spawn('bash', [RELOGIN, 'start'], {
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        WU_RELOGIN_TEST_MODE: '1',
+        WU_RELOGIN_PENDING_MARKER: marker,
+        WU_RELOGIN_FIFO_TIMEOUT_SEC: '30',
+        TMPDIR: tmproot,
+      },
+      stdio: 'ignore',
+    })
+    holders.push(child)
+    // Control: confirm the FIFO dir really was created (under our own isolated TMPDIR, so no
+    // concurrent process can produce a false positive) before we kill it mid-handshake.
+    let created = false
+    for (let i = 0; i < 100; i++) {
+      if (readdirSync(tmproot).length > 0) {
+        created = true
+        break
+      }
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    expect(created).toBe(true)
+    child.kill('SIGKILL')
+    await new Promise((resolve) => child.once('exit', resolve))
+    const leftover = readdirSync(tmproot)
+    expect(leftover.length).toBeGreaterThan(0) // control: the kill really did leave something behind
+    for (const name of leftover) {
+      expect(statSync(join(tmproot, name)).isFIFO()).toBe(false)
+    }
+    // Pin the actual observed symptom directly: a `timeout`-bounded run of the real scan shape
+    // must not time out (rc 124) on whatever TMPDIR holds now.
+    const scan = spawnSync('bash', ['-c', `timeout 3 grep -slF anything "${tmproot}"/tmp.* 2>/dev/null`])
+    expect(scan.status).not.toBe(124)
   })
 })
 

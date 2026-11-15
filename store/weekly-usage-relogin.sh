@@ -231,8 +231,16 @@ case "$MODE" in
     # means we do not know the pending-state actually landed, so the panel must NOT be touched as
     # if it did -- a failed `start` the operator can re-run is strictly better than the stray
     # keystroke into a live login dialog this whole mechanism exists to prevent.
+    # The FIFO lives inside its OWN mktemp -d, never a bare mktemp -u path in /tmp root (MikroB
+    # finding, card f3343af0): two leaked at 14:12/14:18 when `start` was killed between mkfifo and
+    # the old rm -f, and kg-search.selftest.sh's `grep /tmp/tmp.*` blocked forever on the leaked
+    # FIFO, timing out store-selftests-all-run and refusing 3 unrelated lands. A directory can be
+    # removed with a trap that fires on EXIT/INT/TERM (SIGKILL still leaks, but that is outside any
+    # trap's reach); a bare file has no such parent to clean it up by.
     _wu_fifo_timeout="${WU_RELOGIN_FIFO_TIMEOUT_SEC:-10}"
-    _wu_fifo="$(mktemp -u)"
+    _wu_fifo_dir="$(mktemp -d)"
+    trap 'rm -rf "$_wu_fifo_dir" 2>/dev/null || true' EXIT INT TERM
+    _wu_fifo="$_wu_fifo_dir/fifo"
     mkfifo "$_wu_fifo" 2>/dev/null || true
     WU_RELOGIN_HOLD_SIGNAL_FIFO="$_wu_fifo" setsid bash "$0" --hold-marker >/dev/null 2>&1 </dev/null &
     _wu_hold_pid=$!
@@ -247,7 +255,7 @@ case "$MODE" in
     if [ -p "$_wu_fifo" ] && timeout "$_wu_fifo_timeout" bash -c 'read -r _ < "$1"' _ "$_wu_fifo" 2>/dev/null; then
       _wu_handshake_ok=1
     fi
-    rm -f "$_wu_fifo" 2>/dev/null || true
+    rm -rf "$_wu_fifo_dir" 2>/dev/null || true
     if [ "$_wu_handshake_ok" -ne 1 ]; then
       kill "$_wu_hold_pid" 2>/dev/null || true
       echo "FAIL: pending-marker handshake did not confirm within ${_wu_fifo_timeout}s -- not touching the panel." >&2

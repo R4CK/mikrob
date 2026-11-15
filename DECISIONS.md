@@ -25904,3 +25904,36 @@ hold-marker kapu eltávolítása FÜGGETLENÜL lefagyasztja a tesztet, ami maga 
 timeout-tal elkapva; az escalation eltávolítása pontosan 1 tesztet buktat).
 
 Gate: QA, Cybersec (re-gate a GO feltételeire). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 follow-up: FIFO leak fix (MikroB lelet, msg 19070)
+
+Mikrob mérte: a `weekly-usage-relogin.sh` `start` ága a kézfogó FIFO-t egy puszta `mktemp -u`
+útvonalon hozta létre, közvetlenül a `/tmp` gyökerében (`/tmp/tmp.XXXXXXXXXX`). Ha a `start`
+mkfifo és a régi `rm -f` között megszakadt (teszt-timeout, fleet-test kill), a FIFO ott maradt --
+mérve: két ilyen 14:12-kor és 14:18-kor. A `store/kg-search.selftest.sh` saját
+`grep -slF ... /tmp/tmp.*` mintája ráesett a leakelt FIFO-ra, és örökre blokkolt az `open()`-en
+(nincs író), ami a `store-selftests-all-run` futást időzítette ki, és visszadobott 3 landolást
+(3bad1678 kétszer, ec34c025). MikroB kézzel feloldotta és eltávolította a leakelt FIFO-kat.
+
+Javítás: a FIFO a saját, privát `mktemp -d` könyvtárán BELÜL él (`"$dir/fifo"`, nem bare `/tmp`
+útvonal), `trap ... EXIT INT TERM`-mel takarítva. Mérve direktben (nem csak logika alapján):
+egy puszta SIGTERM a `start` folyamatra NEM szakítja meg azt, amíg a `timeout`/`read` blokkol --
+a GNU `timeout` a felügyelt gyermekét SAJÁT process-csoportba teszi, és a bash is elhalasztja a
+trap futtatását, amíg a foreground parancsra vár. SIGKILL-t pedig semmi nem fog el, se a régi,
+se az új kód -- a valódi strukturális védelem nem az, hogy a takarítás MINDIG lefut, hanem hogy
+AMI megmarad, az egy könyvtár, nem egy FIFO a `/tmp` gyökerében: egy `grep /tmp/tmp.*`-szerű
+pásztázás egy könyvtáron azonnal hibát ad ("Is a directory"), nem blokkol -- egy bare FIFO-n
+viszont örökre blokkolna. Ez pontosan a mért tünetet zárja le, a kill pontos időzítésétől
+függetlenül.
+
+Teszt (src/__tests__/weekly-usage-relogin-pending-marker.test.ts, új eset): `start`-ot SIGKILL-
+li a kézfogás közben (saját, izolált `TMPDIR` alatt, hogy ne keveredjen más ügynök egyidejű
+folyamataival), és ellenőrzi, hogy a megmaradt bejegyzés SOHA nem FIFO, ÉS hogy egy
+`timeout`-tal határolt, a kg-search mintáját pontosan követő `grep` scan nem akad el (rc != 124).
+Mutáns-próba: a régi `mktemp -u` + bare `rm -f` alakra visszaállítva a teszt pirosra vált
+(`expected true to be false` a FIFO-ellenőrzésen) -- majd a javítással visszazöldül.
+
+Teszt: a célzott fájl 23/23 PASS; a 4 testvér-fájl (code-intake, redaction, panel-size,
+cron-shell-pane-writers) 51/51 PASS; `bash -n` a módosított scripten tiszta; tsc --noEmit tiszta.
+
+Gate: QA, Cybersec (delta re-gate a korábbi GO-k felett). **Ki döntött:** DevO (fullstack).
