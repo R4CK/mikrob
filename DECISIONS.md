@@ -25759,3 +25759,82 @@ Windows-futásos lépése, nem ezé a körét.
 
 **Ki döntött:** MikroB (msg 18314/18332, előreveve eb12a5dd saját sorbeli helyéhez képest).
 Gate: QA + RedHat (MikroB kijelölés, 30638, delta re-gate). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-13 -- ollama-boot-restore alert gaps closed: health-probe failure, stale stamp, undelivered send (card a49d1e1a)
+
+**Döntés:** four alert gaps flagged by WhiteHat2's CYBERSEC GO on card 84181422 @e74c7b399 (msg 18055,
+not blocking that card) are closed in `scripts/ollama-boot-restore.sh`:
+- **F1:** a start that returns rc=0 but Ollama never answers the post-restart probe now calls
+  `alert_failure_once()` too (previously only rc!=0 alerted) -- a new `OLLAMA_RESTORE_PROBE_SLEEP_SEC`
+  env seam (default 2s, unchanged) lets tests exercise the full retry loop fast.
+- **F2:** `clear_fail_alert_stamp()` now runs at the TOP of `main()` on both early-return health checks
+  (pid/port override already up, or the real probe already up), not only after this script's own
+  successful restart -- so a manual recovery noticed on a later sweep also reopens the alert for the
+  next failure streak, instead of leaving a stale stamp that silences it.
+- **F3:** `alert_owner()`'s old `cmd && log A || log B` shape always returned 0 (the exit status of
+  whichever `log` ran), so the stamp was set unconditionally on any alert attempt, even an undelivered
+  one. Rewritten to propagate curl's real exit status; `alert_failure_once()` now only touches the
+  stamp if `alert_owner` returned 0. New test seam `OLLAMA_RESTORE_ALERT_FAIL_OVERRIDE` simulates a
+  failed send with no network call; it is checked right after the DRYRUN check, before any real
+  token/chat lookup, so the simulated failure is deterministic regardless of whether this box has
+  Telegram configured (an earlier version placed it after the token lookup, which hid the override
+  behind this box's own "no token configured" branch in testing).
+- **F4:** the owner-facing failure alert text is accented Hungarian (spelling rule for Peti-facing
+  text), confirmed by a new test that greps the script source for the literal alert strings and
+  asserts an accented character is present.
+
+4 new tests added, all confirmed non-vacuous by reverting the script fix and watching exactly these
+tests go red (6 failures: the F1/F2/F3 assertions plus the F4 accent check) while the rest of the
+45-test suite stayed green. A separate bug was found and fixed in the test file itself during this
+round: `start_ok_server()` (added for F1/F2, a real loopback HTTP server simulating Ollama genuinely
+answering) backgrounded its python3 server inside a `$(...)` command substitution without redirecting
+its stdout -- the server inherited the substitution's pipe and, since a server never exits, the
+substitution never saw EOF and the whole test run hung indefinitely (measured: stuck 15+ minutes with
+zero output after "syntax OK"). Fixed by redirecting the backgrounded server's stdout/stderr to
+`/dev/null` explicitly.
+
+**Ki döntött:** DevO (fullstack), card a49d1e1a, off WhiteHat2's CYBERSEC GO findings on 84181422.
+Gate: QA + Cybersec on Gate-SHA (see REVIEW comment).
+
+## 2026-11-13 -- a49d1e1a delta round: closed F1-real (weak curl check) and F2-real (server leak) that WhiteHat2/QA2 found on 7ba3dac90
+
+**Döntés:** QA2 FAIL (comment 30353) + WhiteHat2 CYBERSEC GO with 3 unresolved items (comment 30347)
+on 7ba3dac90 found real gaps the previous round's own tests did not catch:
+- **F2 (QA2 FAIL, the blocking one):** `start_ok_server()` was invoked as `OK_HOST="$(start_ok_server)"`
+  -- a command substitution, which runs the ENTIRE function, including `OK_SERVER_PIDS+=("$!")`, in a
+  SUBSHELL. Bash does not propagate array mutations out of a subshell, so the real server's pid was
+  appended to a throwaway copy of the array that vanished the instant the subshell exited -- the
+  top-level `OK_SERVER_PIDS` the EXIT trap reads never got the pid, and every suite run leaked one
+  long-lived python3 HTTP server. Fixed by having `start_ok_server` print `"<url> <pid>"` and having
+  the caller `read` both and append the pid to the array AT THE TOP LEVEL, outside any subshell.
+  Also found (same root class) two pre-existing `trap ... EXIT` REASSIGNMENTS further down the file
+  (for `$JBIN_DIR`/`$SBIN_DIR` cleanup) that REPLACE the whole-script trap set at line 21 rather than
+  chain onto it -- these would have dropped `stop_ok_servers` even with the pid-tracking fix, since
+  `start_ok_server` is called after both reassignments. Both now include `stop_ok_servers` too.
+- **F1-real (WhiteHat2, MEDIUM-LOW):** `alert_owner()`'s curl call used `-o /dev/null` with no
+  `--fail`, so curl exits 0 on ANY HTTP response, including Telegram's own 401/400/429/500 error
+  replies (measured against a loopback server) -- a rejected send (rotated token, wrong chat id,
+  rate limit) was being treated as delivered and silenced the retry; only a transport failure
+  (timeout, DNS, refused) was ever actually caught. Fixed by adding `--fail` to the curl call, so
+  curl itself exits nonzero on any HTTP status >= 400. New test seam
+  `OLLAMA_RESTORE_TELEGRAM_API_BASE_OVERRIDE` lets a test point `alert_owner` at a loopback server
+  that replies with a real HTTP status, exercising the REAL curl branch (not the
+  `ALERT_FAIL_OVERRIDE` seam, which bypasses curl entirely) -- a fully synthetic `$HOME` with a fake
+  Telegram token/chat id is used so the test never touches this box's real credentials, and the
+  override always targets the loopback server regardless of what token/chat get interpolated into
+  the URL.
+- **F4 vacuity (WhiteHat2 F3 note):** the old F4 test (`grep -o ... | grep -q '[accented chars]'`)
+  passed if ANY ONE of the two known owner-facing alert strings had an accent, so it stayed green
+  even with accents stripped from one of them. Fixed to require BOTH known strings present (asserts
+  the population, not just "found something" -- guards-that-pin-behaviour principle) AND each one
+  individually accented.
+
+4 new/fixed tests, full suite 48/48 green (was 45), confirmed non-vacuous for each: reverting only
+the `--fail` flag reproduced exactly the 2 new F1-real assertions red, rest green; reverting only the
+pid-tracking fix (reading just the URL, dropping the pid line) reproduced a leaked python3 process
+after every run, confirmed on a live `ps aux` check. Ran the suite twice in a row post-fix to confirm
+no leak recurrence. `tsc --noEmit -p .` clean (shell-only diff).
+
+**Ki döntött:** DevO (fullstack), card a49d1e1a delta round, off QA2 FAIL (comment 30353) + WhiteHat2
+CYBERSEC GO items (comment 30347). Gate: re-gate QA2 + WhiteHat2 on the new Gate-SHA (see REVIEW
+comment).
