@@ -25863,3 +25863,32 @@ Cybersec2 B1 (MikroB msg_id:18606 relay): a watched-repos-record-review.sh futta
 vegzi el mindharom bejegyzesre a kartya zarasakor, DevO nem futtatta.
 
 Gate: QA2 + Cybersec2, delta szabaly (csak store/watched-repos.json, egy sor). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card 0c03aa06: checkpoint-coverage short-sha/origin + keep NO-GO + sweep bounds
+
+**Döntés:** gate-closure-check.py `_checkpoint_coverage` returns True|False|None (None = zero
+checkpoint rows for the card, distinct from a verified match); matches `head_sha` by prefix (M1,
+fixes a short Gate-SHA REVIEW reading as CHECKPOINT_FAIL) or via the existing `landed_verdict`
+machinery when the sha is already on origin (the "or origin" leg). `main()` checks every declared
+Gate-SHA, not just the first (fixes order-dependence), and only overwrites a result that already
+starts with AGREE, so a standing NO-GO/FAIL is never masked by CHECKPOINT_FAIL (M2).
+`agent-checkpoint.sh` gained a forgery-binding check (refuse before any write when the calling
+agent isn't the card's `kanban_cards.assignee`, fail-open only when the card/DB row is missing)
+and now writes the actual `card_checkpoints` row (previously fully inert -- no HTTP route, no
+write path). Gate-SHA: 5ef23f011.
+
+Delta round on CYBERED NO-GO 31713 (F1/F2/F3): `--older-than-days` above 36500 (100 years) is now
+rejected outright rather than trusted to stay negative under 64-bit arithmetic (the old 999999999
+pin never overflowed, so it was green on the unfixed base too); forced base-10 arithmetic so a
+leading-zero value doesn't hit bash octal parsing. Added a ref-still-resolves assertion after
+every `--dry-run` call (a mutant that also deletes under dry-run now goes red). CLI output for a
+zero-checkpoint-row card now appends an explicit `CHECKPOINT_NONE` token instead of a plain AGREE,
+since the card forbids wiring any `--card-id` caller until that distinction is explicit and no
+card has rows today. Gate-SHA: 483b88c27.
+
+Both rounds: `gate-closure-check.selftest.py` and `agent-checkpoint.sh --selftest` green, plus the
+`store-selftests-all-run.test.ts` TS wrapper (157/157). No HTTP endpoint was built for checkpoints
+-- the write happens directly via `sqlite3` from the agent's own shell, matching what the card
+asked for.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
