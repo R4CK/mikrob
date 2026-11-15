@@ -49,36 +49,48 @@ const DIAGNOSE_MARKER = join(PROJECT_ROOT, 'store', 'update-diagnose.last')
 // rollback point: the fork-pull path's rollback point is recorded by update.sh itself, not by this
 // file, both before this feature existed and after its removal.
 
-/** Returns the env {@link spawnUpdateScript} hands to update.sh, with NODE_ENV stripped
- *  (AUTOUPDNODEENV905 half 2/2, card c116696f -- half 1/2 landed as update.sh's own
- *  `--include=dev` on both npm ci sites, card 50af1a27). Under NODE_ENV=production a plain `npm
- *  ci` prunes dev dependencies including the compiler, so if this process ever inherits that
- *  value from whatever launched it (systemd unit, container default, operator shell), update.sh's
- *  build fails, the rollback reverts the very update.sh that would have fixed it, and the loop
- *  repeats with every health check green.
+// Card 651ee11f (WhiteHat2 CYBERSEC GO on 758e06dd, L3): a known-safe ALLOWLIST, not the full
+// inherited process.env with specific bad keys deleted one at a time. update.sh reads several
+// control switches straight from its OWN environment, with no CLI-flag equivalent --
+// FORCE_REBUILD, UPDATE_AUTO_REBASE, RESEED_FLEET, REGEN_CLAUDEMD, POST_MERGE_OLD_SHA -- and a
+// denylist only ever catches the ones someone thought to name; any other inherited value (set
+// once for a debug run, left in a systemd unit, inherited from an operator shell) silently rode
+// along into every ordinary fork-pull update after it. None of these are a login/shell basic, so
+// none of them belong in this list.
+const BASE_ENV_KEYS = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'SHELL'] as const
+
+/** Returns the env {@link spawnUpdateScript} hands to update.sh: the {@link BASE_ENV_KEYS} login
+ *  basics (if set on this process), with `extraEnv` layered on top -- nothing else from the
+ *  inherited environment crosses over. Builds a LOCAL object and never touches the real
+ *  process.env (Cybersec NO-GO on an earlier version of the NODE_ENV fix below, which mutated it
+ *  directly): a child process's env is an OS-level copy taken at its OWN spawn() (execve envp),
+ *  not a live view of the parent's object, so a local object passed to spawn() already protects
+ *  update.sh AND everything IT spawns, without the unbounded on-this-long-running-process lifetime
+ *  a direct process.env mutation would have if update.sh exits before ever restarting it.
  *
- *  Builds a LOCAL COPY and deletes NODE_ENV from THAT, never from the real process.env (Cybersec
- *  NO-GO on this card's first version, which mutated process.env directly). That version's own
- *  reasoning was wrong: a child process's env is an OS-level copy taken at its OWN spawn() (execve
- *  envp), not a live view of the parent's object, so a local copy passed to spawn() already
- *  protects update.sh AND everything IT spawns (the rollback's npm ci, the regenerated finalize
- *  script) -- verified against Node's own child_process semantics, not assumed. Mutating the real
- *  process.env instead would have an unbounded lifetime on OUR OWN long-running process: update.sh
- *  has several early-exit paths before the finalize/restart step (e.g. a failed `npm ci` at line
- *  ~928), and on any of them the dashboard process that just deleted its own NODE_ENV keeps running,
- *  unrestarted, in that state -- silently and indefinitely, until someone restarts it by hand. That
- *  is the exact "repeated failed update, no restart" shape AUTOUPDNODEENV905 already produced five
- *  times in ten days; this fix must not add a second way into the same shape. */
+ *  NODE_ENV is deliberately NOT in BASE_ENV_KEYS (AUTOUPDNODEENV905 half 2/2, card c116696f --
+ *  half 1/2 landed as update.sh's own `--include=dev` on both npm ci sites, card 50af1a27): under
+ *  NODE_ENV=production a plain `npm ci` prunes dev dependencies including the compiler, so an
+ *  inherited value broke update.sh's own build five times in ten days before that card. The
+ *  allowlist shape already keeps it out, but it is deleted here too, explicitly, as a named guard
+ *  against a future BASE_ENV_KEYS edit silently reopening that incident.
+ *
+ *  POST_MERGE_MODE/POST_MERGE_OLD_SHA (card 758e06dd) no longer need special-case code: they are
+ *  not base keys, so an inherited value can never reach `env` at all, and a caller that genuinely
+ *  needs to set POST_MERGE_MODE still can, through `extraEnv`, the same as any other switch --
+ *  this also closes the prototype-pollution gap the old `'POST_MERGE_MODE' in extraEnv` check had
+ *  (`in` walks the prototype chain; `Object.assign` below only ever copies extraEnv's OWN
+ *  properties). The one caller that used to set it directly (a raw upstream fetch+merge handed
+ *  off to update.sh in POST_MERGE_MODE) was removed as dead code under card 55885cb1 -- see the
+ *  NOT ADOPTED comment near the top of this file -- so nothing sets it today either way. */
 export function buildUpdateScriptEnv(extraEnv: Record<string, string>): NodeJS.ProcessEnv {
-  const env = { ...process.env, ...extraEnv }
+  const env: NodeJS.ProcessEnv = {}
+  for (const key of BASE_ENV_KEYS) {
+    const value = process.env[key]
+    if (value !== undefined) env[key] = value
+  }
+  Object.assign(env, extraEnv)
   delete env.NODE_ENV
-  // Card 758e06dd (Cybersec hardening finding, ae071239 GO comment 4934): POST_MERGE_MODE=1
-  // tells update.sh to skip its mandatory pre-update checkpoint, because the post-merge caller
-  // (below, ~line 674) already took one before spawning. If this process's own environment ever
-  // carries POST_MERGE_MODE (inherited from whatever launched it), the normal fork-pull path would
-  // silently inherit it too and skip the checkpoint it actually needs. Strip the INHERITED value,
-  // but keep it when extraEnv itself set it -- that's the one legitimate call site.
-  if (!('POST_MERGE_MODE' in extraEnv)) delete env.POST_MERGE_MODE
   return env
 }
 
