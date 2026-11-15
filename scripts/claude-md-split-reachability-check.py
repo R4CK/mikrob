@@ -365,7 +365,22 @@ def check_index_structure(new_text: str, rules_dir: Path, baseline: dict) -> lis
         # plant a stray "**" inside an otherwise-matching run of text and break a literal
         # substring match for no semantic reason -- bold markers are invisible to a reader either way.
         full_norm = normalize(full.replace("**", ""))
-        rule_text_norm = normalize(target.read_text(encoding="utf-8").replace("**", ""))
+        # Read the CONTENT from rules_dir's own copy (the tree actually under test), not the
+        # repo-root-absolute `target` path above -- that path is only a CONVENTION check (links
+        # must be repo-root-absolute so a sub-agent's relative cwd never breaks them, rule 1b),
+        # not a promise that THIS run's docs/rules tree lives at that literal path. A detached
+        # worktree or fleet-test's $TEST_TREE has its OWN docs/rules/*.md beside its OWN CLAUDE.md;
+        # reading the live /home/neon/marveen copy instead would silently grade the tested tree's
+        # bullet against a DIFFERENT file's content whenever the two have diverged (measured:
+        # card cc72cb3e's own rebase onto a fresh develop land this verbatim check against the
+        # live install while testing a worktree, passing or failing on content the worktree does
+        # not even contain). `target` (used above only to confirm the link's named file exists)
+        # and `rules_dir / target.name` are byte-identical on a synced install; they differ only
+        # mid-edit, which is exactly when this check must grade the tree being tested.
+        rule_file = rules_dir / target.name
+        if not rule_file.is_file():
+            rule_file = target
+        rule_text_norm = normalize(rule_file.read_text(encoding="utf-8").replace("**", ""))
         if full_norm not in rule_text_norm:
             problems.append(
                 f"rule {num}: index bullet text is not a verbatim substring of {link}: "

@@ -9,6 +9,7 @@ the unmutated control.
 Run: python3 scripts/claude-md-split-reachability-check.selftest.py
 Exit: 0 = all pass, 1 = a failure.
 """
+import re
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,40 @@ def sandbox():
     shutil.copy(REAL_CLAUDE_MD, claude_md)
     shutil.copytree(REAL_RULES_DIR, rules_dir)
     return d, claude_md, rules_dir
+
+
+def establish_clean_baseline(claude_md: Path, rules_dir: Path) -> None:
+    """Accept whatever the REAL corpus already needs accepted against OLD_REF (card cc72cb3e:
+    5c55ed281 reworded two lines on develop -- 75% -> 50% compaction threshold -- before this
+    checker was wired into any gate, so nothing ever ran --update-baseline for them) before a
+    test applies its OWN mutation on top. Without this, a test's bootstrap `--yes` alone always
+    refused (the real corpus has permanent legitimate rewords against the frozen OLD_REF), and
+    the single-hash regex a test uses to pick up ITS OWN new candidate grabbed one of these
+    instead. Content-dynamic (reads whatever --accept/--allow-removal lines the refusal itself
+    prints), never hardcodes today's specific hashes, so a FUTURE legitimate historical edit
+    needs no change here either.
+    """
+    for _ in range(10):
+        r = subprocess.run(
+            [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        if r.returncode == 0:
+            return
+        combined = r.stdout + r.stderr
+        accepts = re.findall(r"^\s+--accept (\S+)\s+#", combined, re.M)
+        removals = re.findall(r"^\s+--allow-removal (\S+)\s+#", combined, re.M)
+        if not accepts and not removals:
+            raise RuntimeError(f"establish_clean_baseline: refused with no usable hash: {combined}")
+        args = [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"]
+        for h in accepts:
+            args += ["--accept", h]
+        for h in removals:
+            args += ["--allow-removal", h]
+        r2 = subprocess.run(args, capture_output=True, text=True, cwd=str(REPO_ROOT))
+        if r2.returncode == 0:
+            return
+    raise RuntimeError("establish_clean_baseline: did not converge after 10 rounds")
 
 
 def replace_once(path: Path, old: str, new: str, label: str) -> None:
@@ -243,11 +278,24 @@ case("no baseline file at all (pinned bullets have nothing to compare against)",
 # and must refuse to write anything without --yes.
 d, claude_md, rules_dir = sandbox()
 try:
+    establish_clean_baseline(claude_md, rules_dir)
+    # Reword BOTH the rule file and CLAUDE.md's own index bullet for rule 4, identically -- the
+    # same invariant the rule-21/live-drift fix (card cc72cb3e rebase) closed: the bullet and its
+    # linked rule file's full text must stay verbatim-consistent, or check_index_structure's
+    # per-bullet check (now reading rules_dir's own copy, not a hardcoded live path) rightly
+    # flags it. This test is only about the CONSERVATION reword workflow, so both copies move
+    # together; staying out of sync is exactly the real-world bug rule-21 had, tested elsewhere.
     replace_once(
         rules_dir / "munkavegzesi-szabalyok.md",
         "a készítő SOHA nem ellenőrzi a sajátját",
         "a készítő a kockázat-alapú tiering szerint ritkán ellenőrzi a sajátját (szándékos reword a selftesthez)",
         "update-baseline-reword",
+    )
+    replace_once(
+        claude_md,
+        "a készítő SOHA nem ellenőrzi a sajátját",
+        "a készítő a kockázat-alapú tiering szerint ritkán ellenőrzi a sajátját (szándékos reword a selftesthez)",
+        "update-baseline-reword-index",
     )
     rc, out = run_checker(claude_md, rules_dir)
     if rc != 0:
@@ -278,14 +326,21 @@ try:
     else:
         bad("31319: --yes alone blessed a REWORD with no --accept", rc_yes_only.stdout + rc_yes_only.stderr)
 
-    m = __import__("re").search(r"^\s+--accept (\S+)\s+#", rc_yes_only.stdout + rc_yes_only.stderr, __import__("re").M)
-    if not m:
-        bad("31319: the refusal did not print a usable --accept hash", rc_yes_only.stdout + rc_yes_only.stderr)
+    # ALL printed hashes, not just one: establish_clean_baseline's two already-accepted real
+    # rewords are STILL candidates on every --update-baseline run (it recomputes the full set
+    # against OLD_REF each time, it does not merge with the previous baseline), so this
+    # mutation's own hash is one of three, not the only one.
+    combined_refusal = rc_yes_only.stdout + rc_yes_only.stderr
+    reword_hashes = re.findall(r"^\s+--accept (\S+)\s+#", combined_refusal, re.M)
+    if not reword_hashes:
+        bad("31319: the refusal did not print a usable --accept hash", combined_refusal)
     else:
-        reword_hash = m.group(1)
+        accept_args = []
+        for h in reword_hashes:
+            accept_args += ["--accept", h]
         rc_yes = subprocess.run(
             [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
-             "--yes", "--accept", reword_hash],
+             "--yes", *accept_args],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
         rc2, out2 = run_checker(claude_md, rules_dir)
@@ -301,6 +356,7 @@ finally:
 # as any other reword, and it must only go through when its OWN printed hash is named. ----------
 d, claude_md, rules_dir = sandbox()
 try:
+    establish_clean_baseline(claude_md, rules_dir)
     replace_once(
         rules_dir / "szemelyiseg.md",
         'Soha ne mondd: "Természetesen!", "Remek kérdés!", "Szívesen segítek", "Mint mesterséges intelligencia".',
@@ -325,14 +381,17 @@ try:
     else:
         bad("31319: --yes alone silently accepted the inversion", rc_yes_only.stdout + rc_yes_only.stderr)
 
-    m = __import__("re").search(r"^\s+--accept (\S+)\s+#", rc_yes_only.stdout + rc_yes_only.stderr, __import__("re").M)
-    if not m:
-        bad("31319: the inversion refusal did not print a usable --accept hash", rc_yes_only.stdout + rc_yes_only.stderr)
+    combined_refusal = rc_yes_only.stdout + rc_yes_only.stderr
+    reword_hashes = re.findall(r"^\s+--accept (\S+)\s+#", combined_refusal, re.M)
+    if not reword_hashes:
+        bad("31319: the inversion refusal did not print a usable --accept hash", combined_refusal)
     else:
-        h = m.group(1)
+        accept_args = []
+        for h in reword_hashes:
+            accept_args += ["--accept", h]
         rc_allowed = subprocess.run(
             [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
-             "--yes", "--accept", h],
+             "--yes", *accept_args],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
         rc2, out2 = run_checker(claude_md, rules_dir)
@@ -349,6 +408,7 @@ finally:
 # the printed hash works when supplied. -------------------------------------------------------
 d, claude_md, rules_dir = sandbox()
 try:
+    establish_clean_baseline(claude_md, rules_dir)
     removed_line = '- Nincs AI klisé. Soha ne mondd: "Természetesen!", "Remek kérdés!", "Szívesen segítek", "Mint mesterséges intelligencia".'
     path = rules_dir / "szemelyiseg.md"
     text = path.read_text(encoding="utf-8")
@@ -373,16 +433,24 @@ try:
     else:
         bad("U2: --yes alone blessed a removed line with no --allow-removal", rc_blocked.stdout + rc_blocked.stderr)
 
-    # the hash the refusal itself printed, from its per-line summary bullet (not the generic
-    # "<hash>" placeholder in the instructional sentence above it)
-    m = __import__("re").search(r"^\s+--allow-removal (\S+)\s+#", rc_blocked.stdout + rc_blocked.stderr, __import__("re").M)
-    if not m:
-        bad("U2: the refusal did not print a usable --allow-removal hash", rc_blocked.stdout + rc_blocked.stderr)
+    # the hash(es) the refusal itself printed, from its per-line summary bullets (not the
+    # generic "<hash>" placeholder in the instructional sentence above them). Also pick up any
+    # --accept lines: the two pre-existing real rewords (establish_clean_baseline) are STILL
+    # candidates on this run too, since --update-baseline recomputes the full set every time.
+    combined_blocked = rc_blocked.stdout + rc_blocked.stderr
+    removal_hashes = re.findall(r"^\s+--allow-removal (\S+)\s+#", combined_blocked, re.M)
+    reword_hashes = re.findall(r"^\s+--accept (\S+)\s+#", combined_blocked, re.M)
+    if not removal_hashes:
+        bad("U2: the refusal did not print a usable --allow-removal hash", combined_blocked)
     else:
-        h = m.group(1)
+        extra_args = []
+        for h in removal_hashes:
+            extra_args += ["--allow-removal", h]
+        for h in reword_hashes:
+            extra_args += ["--accept", h]
         rc_allowed = subprocess.run(
             [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
-             "--yes", "--allow-removal", h],
+             "--yes", *extra_args],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
         )
         rc2, out2 = run_checker(claude_md, rules_dir)
@@ -400,12 +468,7 @@ d, claude_md, rules_dir = sandbox()
 try:
     # Establish a baseline FIRST (pins the real, un-inverted text) -- the thing U3 is about is a
     # CHANGE relative to an existing recorded pin, not the first-ever recording of one.
-    rc_first = subprocess.run(
-        [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir), "--yes"],
-        capture_output=True, text=True, cwd=str(REPO_ROOT),
-    )
-    if rc_first.returncode != 0:
-        bad("U3 setup: could not establish an initial baseline", rc_first.stdout + rc_first.stderr)
+    establish_clean_baseline(claude_md, rules_dir)
 
     replace_once(
         claude_md,
@@ -431,9 +494,16 @@ try:
     else:
         bad("U3: --yes alone silently re-pinned the inverted bullet, or did not show the diff", combined)
 
+    # The two pre-existing real rewords (establish_clean_baseline) are STILL candidates on
+    # this run too -- --update-baseline recomputes the full set every time, it does not merge
+    # with what is already on disk.
+    reword_hashes = re.findall(r"^\s+--accept (\S+)\s+#", combined, re.M)
+    extra_args = ["--allow-pin-change", "19"]
+    for h in reword_hashes:
+        extra_args += ["--accept", h]
     rc_allowed = subprocess.run(
         [sys.executable, str(CHECKER), "--update-baseline", OLD_REF, str(claude_md), str(rules_dir),
-         "--yes", "--allow-pin-change", "19"],
+         "--yes", *extra_args],
         capture_output=True, text=True, cwd=str(REPO_ROOT),
     )
     rc2, out2 = run_checker(claude_md, rules_dir)
