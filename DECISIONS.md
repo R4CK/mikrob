@@ -25502,3 +25502,36 @@ individually -> exactly the matching new test(s) go red, rest green; restored af
 
 **Ki döntött:** Peti (13829/13838) -> MikroB (comment 31306, card 6d8ef952) -> backend2 végrehajtása,
 confirmed by MikroB inter-agent msg 18628/18638.
+
+## 2026-11-15 -- card 6d8ef952: skip_category narrowing proposed then reverted (Peti 13943 "Teljes" + 13944 "Mehet")
+
+**Context:** 1506d10d's replay against the full-bypass gate (331abf9c3) found 99/155 sensitive
+cards would route to freellm under the "igen, vedd le" (13838) widening. MikroB (msg 18733) read
+Peti's answer narrowly -- only the mopsion/cleancore project+tag block and the secret/PII stems
+were named in 13832, "undecidable = sensitive" -- and had backend2 narrow `skip_category` to drop
+only those two things via `FREELLM_EXEMPT_TAGS`/`FREELLM_EXEMPT_STEMS` (commit 3a37bc071,
+REVIEW/Gate-SHA posted). Before that landed, MikroB asked Peti directly (13942) and got 13943
+"Teljes" + 13944 "Mehet" -- the full BLOCKED_TAGS category bypass is approved as originally built,
+not the narrowed version (msg 18744, superseding 18733).
+
+**Decision:** `3a37bc071` reverted clean (`16394f26b`, no force-push, history kept) on
+`card/6d8ef952`. `is_freellm_blocked()` is back to `is_gemini_blocked(... , "mopsion", "1")` --
+`skip_category=1` bypasses BLOCKED_TAGS/SENS_RE/TENANT_ISOLATION_RE entirely for the freellm
+route; `BLOKKOLT-*` stays a non-skippable human override; the `gemini-ok` positive-marker
+requirement (card 392d7104) is unchanged and still gates every card regardless of tags.
+
+**Verified post-revert:** `offload-dispatch.selftest.sh` 190 passed, 0 failed. Direct
+`--check-freellm-blocked` probes (project=mikrob, required for the project-allowlist check to
+even reach the tag/content gates): `SEC,gemini-ok` title/desc mentioning "authz" -> rc=42
+(allowed, full bypass); `gemini-ok,BLOKKOLT-tisztazas` tag -> rc=0 (blocked, override never
+skippable); `[BLOKKOLT-stop]` title-prefix + `gemini-ok` tag -> rc=0 (blocked, same); `SEC` tag
+with no `gemini-ok` marker -> rc=0 (blocked, marker still required).
+
+1506d10d's replay against this (the real, un-narrowed) gate is expected to reproduce the 99/155
+figure as the approved widening, not a defect -- reported split by reason on that card, F-B closed
+there; the 4 structural-classifier signals (deterministic-document-assembly /
+deterministic-auth-tenant-scope) do not need a separate decision now (MikroB msg 18758).
+
+**Ki döntött:** Peti (Telegram 13832 proposal narrowly read by MikroB -> 13942 direct question ->
+13943 "Teljes" + 13944 "Mehet" = full bypass approved) -> MikroB (msg 18733 narrow, superseded by
+18744, action specified in 18758) -> backend2 végrehajtása (revert `16394f26b`).
