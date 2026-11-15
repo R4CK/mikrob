@@ -41,7 +41,7 @@ vi.mock('../web/agent-scaffold.js', async (orig) => {
 const { tryHandleSkills } = await import('../web/routes/skills.js')
 const { tryHandleAgentsSkills } = await import('../web/routes/agents-skills.js')
 const { MAIN_AGENT_ID } = await import('../config.js')
-const { importArchiveToPending, queueGeneratedSkill, nameConflict } = await import('../web/skill-quarantine.js')
+const { importArchiveToPending, queueGeneratedSkill, nameConflict, getPending, approvePending } = await import('../web/skill-quarantine.js')
 
 const GLOBAL = join(HOME, '.claude', 'skills')
 const PENDING = join(STORE, 'skills-pending')
@@ -174,16 +174,13 @@ describe('generated skills are queued, not live', () => {
     expect(list[0].report.findings).toEqual([])
   })
 
-  it('POST /api/agents/:name/skills queues for that agent; the agent root stays untouched', async () => {
+  it('POST /api/agents/:name/skills writes directly for that agent (CYBERED NO-GO F3: no UI to drain a queue, reverted to the fork\'s pre-merge direct write)', async () => {
     const r = await call(`/api/agents/${AGENT}/skills`, 'POST', { name: 'zz-agen', description: 'agent thing' })
-    expect(existsSync(join(AGENT_SKILLS, 'zz-agen'))).toBe(false)
-    expect(r.body).toMatchObject({ ok: true, pending: true })
-    const [p] = await pendingList()
-    expect(p.target).toEqual({ scope: 'agent', agent: AGENT })
-    const ok = await call(`/api/skills/pending/${p.id}/approve`, 'POST', { hash: p.hash })
-    expect(ok.status).toBe(200)
+    expect(r.body).toMatchObject({ ok: true, name: 'zz-agen' })
+    expect(r.body.pending).toBeUndefined()
     expect(readFileSync(join(AGENT_SKILLS, 'zz-agen', 'SKILL.md'), 'utf-8')).toContain('agent thing')
     expect(existsSync(join(GLOBAL, 'zz-agen'))).toBe(false)
+    expect(await pendingList()).toEqual([])
   })
 
   it('a name that is live, or already pending for the same target, is refused (409)', async () => {
@@ -310,14 +307,17 @@ describe('imported archives are queued, scanned and shown before approval', () =
 })
 
 describe('the scan is calibrated in both directions', () => {
-  it('a clean skill reports its file and no findings; the main agent target resolves to the global root', async () => {
-    await call(`/api/agents/${MAIN_AGENT_ID}/skills`, 'POST', { name: 'zz-main', description: 'clean' })
-    const [p] = await pendingList()
+  // POST /api/agents/:name/skills no longer queues (CYBERED NO-GO F3), so this exercises the
+  // same target-normalization + scan path directly against the library the route would have
+  // called, the way the global-scope generate tests above already do for that route's revert.
+  it('a clean skill reports its file and no findings; a MAIN-agent target normalizes to the global root', () => {
+    const meta = queueGeneratedSkill({ scope: 'agent' as const, agent: MAIN_AGENT_ID }, 'zz-main', '---\nname: zz-main\n---\n# zz-main\n\nclean\n')
+    const p = getPending(meta.id)!
     expect(p.report.files).toEqual([{ path: 'SKILL.md', size: expect.any(Number), kind: 'markdown', executable: false, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) }])
     expect(p.report.findings).toEqual([])
     // the main agent's own root IS the global one, and the approver is told so
     expect(p.target).toEqual({ scope: 'global' })
-    expect((await call(`/api/skills/pending/${p.id}/approve`, 'POST', { hash: p.hash })).status).toBe(200)
+    expect(approvePending(p.id, p.hash).ok).toBe(true)
     expect(existsSync(join(GLOBAL, 'zz-main', 'SKILL.md'))).toBe(true)
   })
 })
@@ -348,8 +348,8 @@ describe('the approver sees every byte the approval binds (#2088 review)', () =>
   })
 
   it('a name or target edited in meta.json after the listing voids the approval', async () => {
-    await call(`/api/agents/${AGENT}/skills`, 'POST', { name: 'zz-meta', description: 'x' })
-    const [p] = await pendingList()
+    const queued = queueGeneratedSkill({ scope: 'agent' as const, agent: AGENT }, 'zz-meta', '---\nname: zz-meta\n---\n# zz-meta\n\nx\n')
+    const p = getPending(queued.id)!
     const metaPath = join(PENDING, p.id, 'meta.json')
     const meta = JSON.parse(readFileSync(metaPath, 'utf-8'))
     writeFileSync(metaPath, JSON.stringify({ ...meta, target: { scope: 'global' } }))
