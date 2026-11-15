@@ -12,6 +12,7 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries, shellEscape } from '../sanitize.js'
 import { detachSkillSymlinkIfAny } from '../skill-map-provisioner.js'
+import { rejectIfNotHumanAuth } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
@@ -256,6 +257,11 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
   if (skillsMatch && method === 'POST') {
     const agentName = decodeURIComponent(skillsMatch[1])
     if (!agentExistsFor(agentName)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Card b3b73630 (Cybersec F1, comment 31601 on 7c79badc): skillsRootFor(MAIN_AGENT_ID) is the
+    // GLOBAL ~/.claude/skills root every agent loads -- the shared bearer every fleet agent holds
+    // could write there with no auth-kind check. Sub-agent targets are unaffected (their skills
+    // dir is agent-local, not fleet-wide) and keep the existing behaviour.
+    if (agentName === MAIN_AGENT_ID && rejectIfNotHumanAuth(ctx)) return true
     const body = await readBody(req)
     const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
     const skillName = sanitizeSkillName(rawSkillName || '')
