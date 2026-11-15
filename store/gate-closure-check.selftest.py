@@ -1341,6 +1341,95 @@ print(
 if not _redos_ok:
     failures.append(("F2 ReDoS regression", "None in <0.5s", "%s in %.3fs" % (_redos_got, _redos_elapsed)))
 
+# --- F1 req-3: checkpoint coverage (_checkpoint_coverage and CLI --card-id/--db) ----------------
+import sqlite3 as _sql
+
+def _make_ckpt_db(path, rows):
+    """Create a minimal card_checkpoints DB at path, rows = [(card_id, head_sha)]."""
+    conn = _sql.connect(path)
+    conn.execute(
+        "CREATE TABLE card_checkpoints ("
+        "n INTEGER PRIMARY KEY, card_id TEXT, head_sha TEXT, "
+        "created_at TEXT, branch TEXT, agent TEXT, work_sha TEXT"
+        ")"
+    )
+    for i, (card_id, head_sha) in enumerate(rows):
+        conn.execute(
+            "INSERT INTO card_checkpoints (n, card_id, head_sha) VALUES (?, ?, ?)",
+            (i + 1, card_id, head_sha),
+        )
+    conn.commit()
+    conn.close()
+
+
+_ckpt_dir = tempfile.mkdtemp(prefix="gcc-ckpt-")
+_ckpt_db = os.path.join(_ckpt_dir, "ckpt.db")
+_KNOWN_SHA = "aabbccdd11223344aabbccdd11223344aabbccdd"
+_OTHER_SHA = "deadbeef00000000deadbeef00000000deadbeef"
+
+# Case A: no checkpoint rows exist for the card -> covered (fail-open / transitional)
+_make_ckpt_db(_ckpt_db, [])
+n += 1
+_cov_a, _reason_a = _gcc._checkpoint_coverage("cardXXXX", _KNOWN_SHA, _ckpt_db)
+_ok_a = _cov_a is True
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_a else "FAIL", "covered", "covered" if _cov_a else "NOT-covered",
+    "F1 ckpt: no rows -> fail-open (covered)"))
+if not _ok_a:
+    failures.append(("F1 ckpt: no rows -> fail-open", "covered=True", str(_cov_a)))
+os.unlink(_ckpt_db)
+
+# Case B: checkpoint exists for card, sha matches -> covered
+_make_ckpt_db(_ckpt_db, [("cardYYYY", _KNOWN_SHA)])
+n += 1
+_cov_b, _reason_b = _gcc._checkpoint_coverage("cardYYYY", _KNOWN_SHA, _ckpt_db)
+_ok_b = _cov_b is True
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_b else "FAIL", "covered", "covered" if _cov_b else "NOT-covered",
+    "F1 ckpt: sha matches -> covered"))
+if not _ok_b:
+    failures.append(("F1 ckpt: sha matches", "covered=True", str(_cov_b)))
+os.unlink(_ckpt_db)
+
+# Case C: checkpoint exists but sha NOT present -> not covered (CHECKPOINT_FAIL)
+_make_ckpt_db(_ckpt_db, [("cardZZZZ", _OTHER_SHA)])
+n += 1
+_cov_c, _reason_c = _gcc._checkpoint_coverage("cardZZZZ", _KNOWN_SHA, _ckpt_db)
+_ok_c = _cov_c is False and _reason_c and "not in any recorded checkpoint" in _reason_c
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_c else "FAIL", "NOT-cvrd", "covered" if _cov_c else "NOT-covered",
+    "F1 ckpt: sha missing -> CHECKPOINT_FAIL"))
+if not _ok_c:
+    failures.append(("F1 ckpt: sha missing -> CHECKPOINT_FAIL", "covered=False+reason",
+                     "covered=%s reason=%s" % (_cov_c, _reason_c)))
+
+# Case D: through CLI -- AGREE with --card-id/--db where sha NOT in checkpoints -> CHECKPOINT_FAIL
+# A REVIEW comment is required so declared_shas() returns the builder's sha for the check.
+n += 1
+_cli_env = dict(os.environ)
+_cli_env["MARVEEN_MAIN"] = "/nonexistent-marveen"
+_cli_env["CLEANCORE_MAIN"] = "/nonexistent-cleancore"
+_review_d = "REVIEW\nGate-SHA: %s" % _KNOWN_SHA
+_v_agree = "QA PASS\nGate-SHA: %s" % _KNOWN_SHA
+_s_agree = "CYBERSEC GO\nGate-SHA: %s" % _KNOWN_SHA
+_cli_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardZZZZ", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_d},
+                                   {"author": "qa", "content": _v_agree},
+                                   {"author": "cybersec", "content": _s_agree}]}),
+    capture_output=True, text=True, env=_cli_env,
+)
+_cli_verdict = _cli_p.stdout.strip().split("|", 1)[0]
+_ok_d = _cli_verdict == "CHECKPOINT_FAIL"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_d else "FAIL", "CKPT_FAIL", _cli_verdict,
+    "F1 ckpt: CLI AGREE->CHECKPOINT_FAIL when sha not in DB"))
+if not _ok_d:
+    failures.append(("F1 ckpt: CLI AGREE->CHECKPOINT_FAIL", "CHECKPOINT_FAIL",
+                     _cli_p.stdout.strip()))
+os.unlink(_ckpt_db)
+shutil.rmtree(_ckpt_dir, ignore_errors=True)
+
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
 for f in failures:

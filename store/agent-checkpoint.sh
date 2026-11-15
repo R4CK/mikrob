@@ -25,6 +25,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
+DB="${MARVEEN_DB:-$MAIN/store/claudeclaw.db}"
 
 die() { echo "agent-checkpoint.sh: $2" >&2; exit "$1"; }
 
@@ -91,6 +92,52 @@ agent_checkpoint() {
   done
 
   echo "$ref $commit"
+}
+
+# sweep_checkpoints -- delete refs/mikrob/ckpt/<card>/* for cards done > N days (card F1.1.2).
+# Usage: sweep_checkpoints [--dry-run] [--older-than-days N]
+sweep_checkpoints() {
+  local dry_run=0 older_days=14
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry_run=1; shift ;;
+      --older-than-days) older_days="${2:-}"; shift 2 ;;
+      *) die 2 "usage: agent-checkpoint.sh --sweep [--dry-run] [--older-than-days N]" ;;
+    esac
+  done
+  case "$older_days" in ''|*[!0-9]*) die 2 "--older-than-days must be a positive integer (got: $older_days)" ;; esac
+
+  [ -f "$DB" ] || die 1 "DB not found: $DB (set MARVEEN_DB to override)"
+
+  local cutoff=$(( $(date +%s) - older_days * 86400 ))
+  local card_ids
+  card_ids="$(sqlite3 "$DB" "SELECT id FROM kanban_cards WHERE status='done' AND updated_at < $cutoff" 2>&1)" \
+    || die 1 "sqlite3 query failed: $card_ids"
+
+  local deleted=0 listed=0
+  while IFS= read -r card; do
+    [ -z "$card" ] && continue
+    local refs
+    refs="$(git -C "$MAIN" for-each-ref "refs/mikrob/ckpt/$card/" --format='%(refname)' 2>/dev/null)"
+    [ -z "$refs" ] && continue
+    while IFS= read -r ref; do
+      [ -z "$ref" ] && continue
+      if [ "$dry_run" -eq 1 ]; then
+        echo "would delete: $ref (card $card)"
+        listed=$((listed + 1))
+      else
+        git -C "$MAIN" update-ref -d "$ref"
+        echo "deleted: $ref"
+        deleted=$((deleted + 1))
+      fi
+    done <<< "$refs"
+  done <<< "$card_ids"
+
+  if [ "$dry_run" -eq 1 ]; then
+    echo "sweep: dry-run complete, $listed ref(s) would be deleted (cards done > ${older_days}d)"
+  else
+    echo "sweep: $deleted ref(s) deleted (cards done > ${older_days}d)"
+  fi
 }
 
 if [ "${1:-}" = "--selftest" ]; then
@@ -285,9 +332,46 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
   fi
 
+  # --- sweep selftest (card 1778f6ac F1.1.2) ---
+  sweep_db="$tmp/sweep.db"
+  sqlite3 "$sweep_db" "
+    CREATE TABLE kanban_cards (id TEXT, status TEXT, updated_at INTEGER);
+    INSERT INTO kanban_cards VALUES ('oldcard01', 'done', $(( $(date +%s) - 2*86400 )));
+    INSERT INTO kanban_cards VALUES ('opencard2', 'in_progress', $(( $(date +%s) )));
+  "
+  sweep_head="$(git -C "$TEST_MAIN" rev-parse HEAD)"
+  git -C "$TEST_MAIN" update-ref "refs/mikrob/ckpt/oldcard01/1" "$sweep_head"
+  git -C "$TEST_MAIN" update-ref "refs/mikrob/ckpt/opencard2/1" "$sweep_head"
+
+  dry_out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$sweep_db" bash "$0" --sweep --dry-run --older-than-days 1 2>&1)"
+  echo "$dry_out" | grep -q "oldcard01" \
+    && ok "sweep --dry-run lists old card's ref" \
+    || no "sweep --dry-run missing old card: $dry_out"
+  echo "$dry_out" | grep -q "opencard2" \
+    && no "sweep --dry-run listed open card's ref (should not): $dry_out" \
+    || ok "sweep --dry-run skipped open card"
+
+  MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$sweep_db" bash "$0" --sweep --older-than-days 1 >/dev/null
+  if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/oldcard01/1" >/dev/null 2>&1; then
+    no "old card's ref still exists after sweep"
+  else
+    ok "old card's refs removed after sweep"
+  fi
+  if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/opencard2/1" >/dev/null 2>&1; then
+    ok "open card's ref kept after sweep"
+  else
+    no "open card's ref was deleted (should not)"
+  fi
+
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
   exit "$fail"
 fi
 
-[ $# -eq 2 ] || die 2 "usage: agent-checkpoint.sh <agent> <cardId>  |  agent-checkpoint.sh --selftest"
+if [ "${1:-}" = "--sweep" ]; then
+  shift
+  sweep_checkpoints "$@"
+  exit 0
+fi
+
+[ $# -eq 2 ] || die 2 "usage: agent-checkpoint.sh <agent> <cardId>  |  agent-checkpoint.sh --selftest  |  agent-checkpoint.sh --sweep [--dry-run] [--older-than-days N]"
 agent_checkpoint "$1" "$2"
