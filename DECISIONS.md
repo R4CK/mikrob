@@ -25904,3 +25904,12 @@ digit-STRING LENGTH before any arithmetic runs (`case "$older_days" in ??????*) 
 that never executes). Pinned with both values, red on 5ef23f011 and 483b88c27.
 
 Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card 0c03aa06 (delta round 3b): third pin value added
+
+**Döntés:** MikroB asked for the exact pin value 18446744073709551616 (2^64) alongside the
+9223372036854775808/18446744073709551615 pair already in place from the F1b fix above. Same
+digit-length rejection path (the fix bounds STRING LENGTH, not value), added for literal coverage
+of the named value. No behavioural change, test-only.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
