@@ -25996,3 +25996,14 @@ Measured: `gpu-driver-install-setup.selftest.sh` PASS (grew by 2 new block-ancho
 `npx vitest run src/__tests__/graph-tooling-selftests.test.ts` 12/12 passed.
 
 **Ki döntött:** MikroB (msg 18353). Gate: QA + RedHat. Épitette: fullstack (DevO).
+
+## 2026-11-15, kártya 1aeed1ca (CYBERED NO-GO 3 leletre, F1/F2/F3): a Gate-SHA n/a kezeles szigoritva
+
+F1 -- gate-closure-check.py: az n/a-reset csak akkor szamit, ha a REVIEW Gate-SHA sorain SEHOL nincs
+valodi hex sha (korabban egy masodik "n/a" sor vagy egy "n/a <sha>" alak kitorolte a valodi shat).
+F2 -- gate-closure-check.py: egy n/a REVIEW, amikor egy kijelolt gate egy VALODI commitra adott
+verdiktet, mar nem AGREE("unchecked")-kent olvas, hanem STALE-mismatchkent (a n/a azt allitja, nincs
+commit, a gate meg valodit biralt). F3 -- gate-dispatch-check.sh: a both-sides-n/a ADVISE-SKIP
+kulonszabaly torolve -- az n/a nem tudja megkulonbozteteni a valodi ismetlest egy MASIK config-only
+kortol, ezert a biztos alapertelmezett ALLOW:stale-verdict-re esik vissza (ugyanaz az irany, mint a
+fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fullstack).
