@@ -21,6 +21,9 @@ vi.mock('../config.js', async () => {
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
+vi.mock('../agent.js', () => ({
+  runAgent: vi.fn(async () => ({ text: '---\nname: probe\ndescription: probe\n---\n# probe\n', error: null })),
+}))
 
 const SKILL_NAME = 'b3b73630-probe-skill'
 const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
