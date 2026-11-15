@@ -26091,3 +26091,17 @@ commit, a gate meg valodit biralt). F3 -- gate-dispatch-check.sh: a both-sides-n
 kulonszabaly torolve -- az n/a nem tudja megkulonbozteteni a valodi ismetlest egy MASIK config-only
 kortol, ezert a biztos alapertelmezett ALLOW:stale-verdict-re esik vissza (ugyanaz az irany, mint a
 fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- 34f846cc: lint-ratchet (parse-error) bucket conflated 'Unused eslint-disable directive' with a real parse error
+
+**Kontextus:** backend3 mérése (7c79badc comment, 2026-11-15): `store/lint-ratchet.sh` COULD NOT MEASURE-t jelzett a 59ab01df8 (UPSTREAM-SYNC koteg 23, kártya 7c79badc) merge-eredményén, "parse errors 0 -> 10", és ez 3x blokkolta a landolást. A script 161. sora `message.get('ruleId') or '(parse-error)'` alapján bucketelt -- az ESLint nemcsak valódi, nem-parseolható fájlnál ad ruleId==null-t, hanem az "Unused eslint-disable directive" figyelmeztetésnél is. A 10 üzenet mind a második fajta volt (4 fájl felesleges eslint-disable kommentje), fatal:true SEHOL a 1773 fájlos riportban, `tsc --noEmit` tiszta -- a fa valójában hibátlanul parseolt.
+
+**Döntés:** a bucketelés `message.get('fatal')`-ra épül, nem a nyers ruleId-hiányra.
+
+- `(parse-error)` csak akkor, ha `fatal: true` (ESLint saját jelzése egy valódi, nem-parseolható fájlra).
+- `(unused-disable-directive)` a konkrét "Unused eslint-disable directive" figyelmeztetésre (szöveg-prefix alapján), saját ratchetelt vödörben -- nem eldobva, nem a parse-error-ral összemosva.
+- `(no-rule-id-other)` minden egyéb, eddig nevesítetlen ruleId-nélküli, nem-fatal üzenetre (ratchetelve, soha nem csendben eldobva).
+
+**Teszt:** `store/lint-ratchet.selftest.sh` 43 -> 47/47 PASS (a meglévő 43 eset `mk_report` segédje mostantól `fatal: true`-t generál a `parse=N` alakra, így a régi esetek jelentése változatlan maradt; 4 új eset W1-W4: W1 egy valódi fatal parse-error továbbra is blokkolja a bootstrapot a vak-futás küszöbön keresztül; W2 egy csak unused-disable-directive üzeneteket tartalmazó riport ZÖLDEN bootstrapol, a kiírt baseline `(unused-disable-directive)`-et tartalmaz, `(parse-error)`-t nem; W3 egy második, azonos-alakú futás egy már létező baseline mellett tisztán átmegy; W4 mutáció-ellenőrzés: a javítás kézzel visszafordítva PONTOSAN 2 eset (W2, W4) vált pirosra, a többi zöld marad -- visszaállítva, 47/47 ismét zöld). A 7c79badc merge-fan (59ab01df8) saját, korábban elmentett ESLint-riportján lefuttatva a javított bucketelés: `{'(unused-disable-directive)': 10}`, `(parse-error)` kulcs sehol -- a mérés most helyesen fut.
+
+**Ki döntött:** MikroB (dispatch, üzenet 19358, elfogadva a 7c79badc leletből). backend3 végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
