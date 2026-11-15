@@ -4,16 +4,28 @@
 // 200 + file landed on base e1f43d02c / Gate-SHA 8bb6abcb3). Fix: require the same human
 // credential as the dashboard's existing rejectIfNotHumanAuth gate (auth.ts:124) for the
 // MAIN_AGENT_ID target only; sub-agent targets keep current behaviour.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+//
+// Fixture isolation (MikroB report 2026-11-15): an earlier version of this test scaffolded a
+// real agent dir (agents/b3b73630-subagent, with .claude/memory/.mcp.json) and wrote into the
+// real ~/.claude/skills -- both PROJECT_ROOT/agents (shared with every other fleet-test run) and
+// the operator's own global skills catalog. The stray dir tripped 6 guard-wiring tests ("every
+// scaffolded agent has the guard") in unrelated suite runs and blocked two lands. Everything the
+// route or scaffoldAgentDir touches on disk is redirected into disposable mkdtemp roots below --
+// never into PROJECT_ROOT/agents or the real homedir.
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { existsSync, rmSync, mkdirSync } from 'node:fs'
+import { existsSync, rmSync, mkdirSync, mkdtempSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
-import { tryHandleAgentsSkills } from '../web/routes/agents-skills.js'
-import { scaffoldAgentDir } from '../web/agent-scaffold.js'
-import { agentDir } from '../web/agent-config.js'
+import { tmpdir } from 'node:os'
 import type { RouteContext } from '../web/routes/types.js'
 
+const fakeHome = mkdtempSync(join(tmpdir(), 'b3b73630-fakehome-'))
+const fakeAgentsRoot = mkdtempSync(join(tmpdir(), 'b3b73630-fakeagents-'))
+
+vi.mock('node:os', async () => {
+  const actual = await vi.importActual<typeof import('node:os')>('node:os')
+  return { ...actual, homedir: () => fakeHome }
+})
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js')
   return { ...actual, MAIN_AGENT_ID: 'mikrob' }
@@ -24,9 +36,24 @@ vi.mock('../logger.js', () => ({
 vi.mock('../agent.js', () => ({
   runAgent: vi.fn(async () => ({ text: '---\nname: probe\ndescription: probe\n---\n# probe\n', error: null })),
 }))
+vi.mock('../web/agent-config.js', () => ({
+  agentDir: (name: string) => join(fakeAgentsRoot, name),
+  agentConfigRoot: () => fakeAgentsRoot,
+  listAgentNames: () => ['b3b73630-subagent'],
+  readAgentCapabilities: () => [],
+}))
+
+const { tryHandleAgentsSkills } = await import('../web/routes/agents-skills.js')
+const { scaffoldAgentDir } = await import('../web/agent-scaffold.js')
+const { agentDir } = await import('../web/agent-config.js')
+
+afterAll(() => {
+  rmSync(fakeHome, { recursive: true, force: true })
+  rmSync(fakeAgentsRoot, { recursive: true, force: true })
+})
 
 const SKILL_NAME = 'b3b73630-probe-skill'
-const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
+const GLOBAL_SKILLS_DIR = join(fakeHome, '.claude', 'skills')
 const GLOBAL_SKILL_DIR = join(GLOBAL_SKILLS_DIR, SKILL_NAME)
 const SUB_AGENT = 'b3b73630-subagent'
 
@@ -92,6 +119,10 @@ describe('POST /api/agents/<sub-agent>/skills -- unaffected by the main-agent ga
     scaffoldAgentDir(SUB_AGENT)
   })
 
+  afterAll(() => {
+    rmSync(agentDir(SUB_AGENT), { recursive: true, force: true })
+  })
+
   it('the shared agent bearer still works for a sub-agent target (unchanged behaviour)', async () => {
     const skillDir = join(agentDir(SUB_AGENT), '.claude', 'skills', SKILL_NAME)
     rmSync(skillDir, { recursive: true, force: true })
@@ -99,6 +130,5 @@ describe('POST /api/agents/<sub-agent>/skills -- unaffected by the main-agent ga
     expect(await tryHandleAgentsSkills(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(existsSync(join(skillDir, 'SKILL.md'))).toBe(true)
-    rmSync(skillDir, { recursive: true, force: true })
   })
 })
