@@ -25892,3 +25892,15 @@ Both rounds: `gate-closure-check.selftest.py` and `agent-checkpoint.sh --selftes
 asked for.
 
 Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card 0c03aa06 (delta round 3): F1b -- sweep cap wrap-around
+
+**Döntés:** Cybered NO-GO 31725: the `--older-than-days` cap check ran `$((10#$older_days))`
+BEFORE comparing against 36500, and that arithmetic is 64-bit signed -- a digit string at or
+above 2^63 (9223372036854775808, 18446744073709551615) wraps to a small/negative number and
+sails under the cap, reproducing the exact failure the card exists for. Fixed by bounding the
+digit-STRING LENGTH before any arithmetic runs (`case "$older_days" in ??????*) die ... ;; esac`
+-- 36500 is 5 digits, so 6+ digits is already over cap, no wrap can hide behind a comparison
+that never executes). Pinned with both values, red on 5ef23f011 and 483b88c27.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).

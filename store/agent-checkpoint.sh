@@ -136,6 +136,13 @@ sweep_checkpoints() {
   # delete a card's refs done minutes ago, not just astronomically large inputs. 36500 days
   # (100 years) is far past any real retention need, so anything above it is rejected outright
   # rather than trusted to stay negative.
+  # F1b (Cybered 31725): the numeric comparison below runs $((10#$older_days)) FIRST, and that is
+  # 64-bit signed arithmetic -- a digit string at or above 2^63 wraps to a small or negative number
+  # BEFORE the -gt 36500 check ever sees it, sailing under the cap (measured: 9223372036854775808
+  # and 18446744073709551615 both still delete a done-today card's refs). Bound the STRING LENGTH
+  # before any arithmetic touches it at all: 36500 is 5 digits, so 6+ digits is already over cap,
+  # no wrap can hide behind a comparison that never runs.
+  case "$older_days" in ??????*) die 2 "--older-than-days too large (max 36500, got: $older_days)" ;; esac
   [ "$((10#$older_days))" -gt 36500 ] && die 2 "--older-than-days too large (max 36500, got: $older_days)"
 
   [ -f "$DB" ] || die 1 "DB not found: $DB (set MARVEEN_DB to override)"
@@ -487,7 +494,10 @@ if [ "${1:-}" = "--selftest" ]; then
 
   # Past the cap (rejected outright): the old vacuous pin (999999999) plus the two values that
   # measurably delete today's refs on the uncapped base.
-  for _huge_days in 999999999 1000000000000000 213503982334601; do
+  # F1b (Cybered 31725): 9223372036854775808 (2^63) and 18446744073709551615 (2^64-1) both wrap
+  # the OLD bare-arithmetic cap check to a small/negative number and sailed under it -- the
+  # string-length bound above must reject them before any arithmetic runs.
+  for _huge_days in 999999999 1000000000000000 213503982334601 9223372036854775808 18446744073709551615; do
     if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days "$_huge_days" 2>&1)"; then
       no "--older-than-days $_huge_days should have been rejected (cap 36500), got: $out"
     else
