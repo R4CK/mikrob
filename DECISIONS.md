@@ -25879,3 +25879,18 @@ A kártya 3. kritériuma (federation-eset a /api/skills/pending útvonalakon) EL
 döntése szerint (msg 18939) ez a pin arra a kártyára kerül át.
 
 Gate-SHA: b24a2fa0d. Gate: QA + Cybersec. **Ki döntött:** backend.
+
+## 2026-11-15 -- card b3b73630 (follow-up): CYBERSEC NO-GO 31782 (WhiteHat2) javítása -- import/delete kapu
+
+**Döntés:** a fenti human-gate csak a POST /api/agents/<MAIN_AGENT_ID>/skills (generate) útvonalra
+került rá; WhiteHat2 (CYBERSEC NO-GO 31782 a 50b05aa47-en) mérte, hogy a két testvér-útvonal --
+POST /api/agents/<MAIN_AGENT_ID>/skills/import és DELETE /api/agents/<MAIN_AGENT_ID>/skills/<name>
+-- ugyanúgy a globális ~/.claude/skills gyökérbe ír, auth-kind ellenőrzés nélkül. MikroB döntése
+(msg 19287): ugyanaz a rejectIfNotHumanAuth kapu mindkét útvonalra, MAIN_AGENT_ID célpontra. Nincs
+új jogosultsági mechanizmus, csak a meglévő kapu bedrótozása.
+
+Teszt (src/__tests__/agents-skills-main-agent-human-gate.test.ts): mindkét útvonalon a 4 nem-ember
+auth-fajta -> 403, semmi nem változik a lemezen; böngésző-session és ember device key -> 200.
+Mutáció-pin: a kapu nélküli 50b05aa47-en a 8 új refused-eset pirosra vált (403 helyett 200).
+
+Gate-SHA: 735115880. Gate: QA + Cybersec (WhiteHat2). **Ki döntött:** backend.
