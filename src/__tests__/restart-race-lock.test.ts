@@ -179,7 +179,10 @@ describe('restart-lock wiring (pinned at the source)', () => {
     // decide whether to schedule a restart-wake on success, so the pin is on the BINDING + a bare
     // `return started` (nothing between them reassigns `started` or its `.ok`), not on a literal
     // `return await ...` tail expression.
-    expect(inner).toMatch(/const started = await startAgentProcessUnlocked\(name, opts\)/)
+    // Koteg 23 (willWake, ownsResume): the second argument is now a ternary that adds ownsResume
+    // in the willWake case rather than a bare `opts` -- still a single awaited call on `name`, not
+    // a rewritten verdict, so the pin loosens to that shape instead of the literal second argument.
+    expect(inner).toMatch(/const started = await startAgentProcessUnlocked\(name, .*opts.*\)/)
     expect(inner).toMatch(/return started\n/)
     expect(inner).not.toMatch(/return\s*\{\s*ok:\s*true/)
     expect(inner).not.toMatch(/started\s*=\s*\{/) // started.ok is never overwritten

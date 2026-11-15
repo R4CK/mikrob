@@ -239,7 +239,7 @@ describe('wiring (source-level)', () => {
   })
 
   it('runPreCheck spawns without a synchronous call', () => {
-    const fn = SRC.slice(SRC.indexOf('export async function runPreCheckAsync'), SRC.indexOf('export const RETRY_PRECHECK_MIN_INTERVAL_MS'))
+    const fn = SRC.slice(SRC.indexOf('export async function runPreCheckAsync'), SRC.indexOf('// The synchronous form.'))
     // The argv comes from preCheckInvocation (verified bytes for a hashed script,
     // [scriptPath] otherwise); still the async spawn.
     expect(fn).toMatch(/spawn\('bash', inv\.args/)
