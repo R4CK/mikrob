@@ -155,7 +155,7 @@ describe('data_delete below level 3: the delete needs an approval', () => {
   it('the anchor includes the memory id: an approval for one memory cannot delete another with the same content', async () => {
     const { id: a } = saveAgentMemory('leanscout', 'same words', 'hot')
     const { id: b } = saveAgentMemory('leanscout', 'same words', 'hot')
-    const approvalId = (await del(a)).body.approval_id
+    const approvalId = (await del(a)).body.approval_id!
     resolveApproval(approvalId, 'approved', 'owner')
     expect((await del(b, approvalId)).body.reason).toBe('hash_mismatch')
     expect(getMemoryById(b)).toBeDefined()
@@ -165,7 +165,7 @@ describe('data_delete below level 3: the delete needs an approval', () => {
   it('ABA: a row restored with the same id and content gets a fresh request; the consumed approval is not offered or usable', async () => {
     const { id } = saveAgentMemory('leanscout', 'restorable', 'hot')
     const before = getDb().prepare('SELECT * FROM memories WHERE id = ?').get(id) as Record<string, unknown>
-    const first = (await del(id)).body.approval_id
+    const first = (await del(id)).body.approval_id!
     resolveApproval(first, 'approved', 'owner')
     expect((await del(id, first)).status).toBe(200)
     const cols = Object.keys(before)

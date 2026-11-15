@@ -458,6 +458,12 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const contentType = req.headers['content-type'] || ''
     const { file } = parseMultipart(body, contentType)
     if (!file) { json(res, { error: 'No file uploaded' }, 400); return true }
+
+    const skillsDir = join(homedir(), '.claude', 'skills')
+    mkdirSync(skillsDir, { recursive: true })
+
+    const tmpPath = join(skillsDir, `_import_${randomUUID()}.zip`)
+    const before = new Set(readdirSync(skillsDir))
     try {
       writeFileSync(tmpPath, file.data)
       const listOutput = await execShellAsync(`unzip -Z1 ${shellEscape(tmpPath)} 2>&1`, { timeoutMs: 5000 })

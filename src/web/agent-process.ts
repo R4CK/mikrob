@@ -5293,10 +5293,10 @@ async function clearStaleParkedInputInLane(
 // concurrent caller joins the running operation instead of racing it past the same check
 // (card 74ba7c78). The *Unlocked variants stay private: restart composes stop+start INSIDE one
 // critical section, and calling the public ones there would make it join its own lock.
-/** Stable options identity. `fresh` is the only option today; naming it explicitly keeps a future
- *  option from silently widening what counts as "the same request". */
-function optsKeyOf(opts: { fresh?: boolean }): string {
-  return `fresh=${opts.fresh === true}`
+/** Stable options identity. Naming each option explicitly keeps a future
+ *  one from silently widening what counts as "the same request". */
+function optsKeyOf(opts: { fresh?: boolean; ownsResume?: boolean }): string {
+  return `fresh=${opts.fresh === true};ownsResume=${opts.ownsResume === true}`
 }
 
 // Card 466f21fe F2 (CYBERSEC GO 14256aac, design note, not a bug in existing code): `--continue`
@@ -5305,7 +5305,7 @@ function optsKeyOf(opts: { fresh?: boolean }): string {
 // a SECURITY reason (token rotation, injection suspicion, key rotation) MUST pass `fresh: true`
 // explicitly; `opts.fresh` already exists for exactly this. context-guard-runner.ts is the one
 // such call site today and already does this (channel-continue-policy.test.ts locks it in).
-export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export function startAgentProcess(name: string, opts: StartOpts = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
 }
 
@@ -5313,6 +5313,6 @@ export function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: s
   return withLifecycleLock(name, 'stop', '', () => stopAgentProcessUnlocked(name))
 }
 
-export function restartAgentProcess(name: string, opts: { fresh?: boolean; wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export function restartAgentProcess(name: string, opts: StartOpts & { wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'restart', optsKeyOf(opts), () => restartAgentProcessUnlocked(name, opts))
 }

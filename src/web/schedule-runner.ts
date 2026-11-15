@@ -1304,7 +1304,7 @@ function endPreCheckGroup(child: ReturnType<typeof spawn>, task: ScheduledTask, 
   setTimeout(() => { signalGroup('SIGKILL'); onEnded() }, PRECHECK_KILL_GRACE_MS).unref()
 }
 
-export async function runPreCheck(
+export async function runPreCheckAsync(
   task: ScheduledTask,
   opts: { timeoutMs?: number; maxStdoutBytes?: number } = {},
 ): Promise<PreCheckResult> {
@@ -1391,6 +1391,45 @@ export async function runPreCheck(
   })
 }
 
+// The synchronous form. Since CRONPRECHECKSYNC1007 the runner calls it from
+// nowhere: both loops use runPreCheckAsync. Kept only as the reference the
+// async form's contract tests compare against; do not call it from the runner
+// (it holds the event loop, and its timeout ends only the direct child).
+export function runPreCheck(task: ScheduledTask): PreCheckResult {
+  if (!task.preCheck) return { skip: false }
+  // dirName, not name: a relative preCheck lives in the task's OWN directory,
+  // which is also what the registry hashed. `name` can come from
+  // the SKILL.md frontmatter and point at a different directory.
+  const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
+  if (!existsSync(scriptPath)) {
+    logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
+    return { skip: false }
+  }
+  const inv = preCheckInvocation(task, scriptPath)
+  if ('result' in inv) return inv.result
+  try {
+    const r = spawnSync('bash', inv.args, { timeout: PRECHECK_TIMEOUT_MS, encoding: 'utf-8' })
+    if (r.error) {
+      logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
+      return { skip: false }
+    }
+    if (r.status !== 0) {
+      logger.warn({ task: task.name, status: r.status, stderr: (r.stderr || '').trim().slice(0, 200) }, 'pre-check script exited non-zero, running LLM anyway')
+      return { skip: false }
+    }
+    const out = (r.stdout || '').trim()
+    if (out === 'SKIP') {
+      logger.info({ task: task.name }, 'pre-check: nothing actionable, skipping LLM')
+      return { skip: true }
+    }
+    if (out) return { skip: false, prefix: out }
+    return { skip: false }
+  } catch (err) {
+    logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
+    return { skip: false }
+  }
+}
+
 // A pending retry re-runs its task's preCheck at most once per this interval;
 // the ticks in between (every SCHEDULE_TICK_MS) reuse the last answer
 // (df2e0d97 2a). The answer is the task's, not the target agent's (the cron
@@ -1410,7 +1449,7 @@ export function rememberPreCheckAnswer(task: ScheduledTask, nowMs: number, resul
 export async function retryPreCheck(
   task: ScheduledTask,
   nowMs: number,
-  run: (task: ScheduledTask) => Promise<PreCheckResult> = runPreCheck,
+  run: (task: ScheduledTask) => Promise<PreCheckResult> = runPreCheckAsync,
 ): Promise<PreCheckResult> {
   if (!task.preCheck) return { skip: false }
   const last = preCheckAnswers.get(preCheckAnswerKey(task))
@@ -3288,7 +3327,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // CRONPRECHECKSYNC1007: off the event loop, like the retry loop's, so a
       // pre-check that calls the dashboard's own API gets its answer. The
       // tickRunning guard holds the next tick while this one awaits.
-      const cronPc = await runPreCheck(task)
+      const cronPc = await runPreCheckAsync(task)
       rememberPreCheckAnswer(task, now, cronPc)
       // The await is new here, so a task disabled or deleted while its
       // pre-check ran is left alone: no fire (the per-target re-read below

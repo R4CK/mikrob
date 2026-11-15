@@ -466,7 +466,11 @@ function resumeTargetRunning(name: string): boolean {
  *  sweep's await-ready verdict): the newest transcript can still be the
  *  replaced session's until the fresh one writes its first entry. */
 function resumeTargetLimited(name: string, nowMs: number, restartedAtMs: number): boolean {
-  const tail = readTranscriptTailFromProjectDir(workingDirFor(name), configDirFor(name))
+  // workingDirFor was upstream's name for this fork's agentConfigRoot (see the
+  // identical leftover below, Koteg 22: the call site changed cleanly but the
+  // helper's own definition did not carry over, since this fork already has
+  // an equivalent under a different name).
+  const tail = readTranscriptTailFromProjectDir(agentConfigRoot(name), configDirFor(name))
   return usageLimitVerdict(usageLimitEvidenceFromTranscript(tail ?? ''), nowMs, restartedAtMs).limited
 }
 
