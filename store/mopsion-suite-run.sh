@@ -67,7 +67,7 @@
 #                                selftest contends without touching the real fleet's slots.
 #   CLEANCORE_SUITE_LOCK_PREFIX  overrides the slot path outright. Overriding it per checkout
 #                                REMOVES the mutual exclusion -- that is the bug this default fixes.
-#   CLEANCORE_SUITE_SLOTS        default 2
+#   CLEANCORE_SUITE_SLOTS        default 3 (card eff5c2f6, Peti Telegram 11042)
 #   CLEANCORE_SUITE_MAX_WORKERS  overrides the vitest --maxWorkers default (nproc / SLOTS, floor 1).
 #                                Ignored if the caller already passed --maxWorkers after `--`.
 #   CLEANCORE_SUITE_MIN_AVAIL_MB default 4096 -- MemAvailable a run needs before it may START, and
@@ -100,7 +100,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./env-compat-lib.sh
 . "$HERE/env-compat-lib.sh"
-SLOTS="$(env_compat_get MIKROB_SUITE_SLOTS CLEANCORE_SUITE_SLOTS 2)"
+SLOTS="$(env_compat_get MIKROB_SUITE_SLOTS CLEANCORE_SUITE_SLOTS 3)"
 WAIT_MAX_S="$(env_compat_get MIKROB_SUITE_WAIT_MAX_S CLEANCORE_SUITE_WAIT_MAX_S 7200)"   # 2h: two 60-90min runs can legitimately be ahead
 POLL_S="$(env_compat_get MIKROB_SUITE_POLL_S CLEANCORE_SUITE_POLL_S 20)"
 KEEPALIVE_S="$(env_compat_get MIKROB_SUITE_KEEPALIVE_S CLEANCORE_SUITE_KEEPALIVE_S 300)"  # < the 10-minute stuck threshold, with margin

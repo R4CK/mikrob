@@ -115,7 +115,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # apart. See the acquisition block below (right before the tree lock) for the full reasoning.
 # shellcheck source=./env-compat-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
-CPU_SLOTS="$(env_compat_get MIKROB_SUITE_SLOTS CLEANCORE_SUITE_SLOTS 2)"
+CPU_SLOTS="$(env_compat_get MIKROB_SUITE_SLOTS CLEANCORE_SUITE_SLOTS 3)"
 CPU_LOCK_PREFIX="$(env_compat_get MIKROB_SUITE_LOCK_PREFIX CLEANCORE_SUITE_LOCK_PREFIX "${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot")"
 CPU_WAIT_MAX_S="$(env_compat_get MIKROB_SUITE_WAIT_MAX_S CLEANCORE_SUITE_WAIT_MAX_S 7200)"
 CPU_POLL_S="$(env_compat_get MIKROB_SUITE_POLL_S CLEANCORE_SUITE_POLL_S 20)"
