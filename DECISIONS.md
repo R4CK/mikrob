@@ -25838,3 +25838,28 @@ no leak recurrence. `tsc --noEmit -p .` clean (shell-only diff).
 **Ki döntött:** DevO (fullstack), card a49d1e1a delta round, off QA2 FAIL (comment 30353) + WhiteHat2
 CYBERSEC GO items (comment 30347). Gate: re-gate QA2 + WhiteHat2 on the new Gate-SHA (see REVIEW
 comment).
+
+## 2026-11-14 -- card eccb1219: update-review (2) -- repomix dep bump, anthropic-mcp-builder/webapp-testing upstream
+
+**Döntés:** repomix 5beee248..813a886c (4 commit, 4 fájl) -- a package.json/package-lock.json fuggoseg-valtozas egy PATCH-bump egy mar meglevo fuggosegen (web-tree-sitter 0.27.1 -> 0.27.2), nincs uj csomag. OSV lekerdezes web-tree-sitter@0.27.2-re: nulla talalat. A tobbi src-valtozas (fileProcess.ts) egy Bun worker-pool meretezesi perf-javitas, nincs uj exec/network felulet. A regisztry-telepitett pin (npm, --ignore-scripts) marad 1.19.0, erintetlen. A store/repomix.sh altal megkovetelt tiltott flagek (--remote, --no-security-check) mindketto megvan a src/cli/cliRun.ts-ben az uj shan is. NO-OP a pinre, csak note-append (a repomix-nek nincs last_sha mezoje a regisztryben, note-on keresztul kovetve).
+
+anthropic-mcp-builder / anthropic-webapp-testing 2c5958ec..1780c5e5 (1 commit, 36 fajl, +3273/-622) -- teljesen skills/docx + skills/pdf + skills/pptx + skills/xlsx (document-skills validator/office-helper frissitesek), `git diff --name-only` szerint. `git diff --stat 2c5958ec..1780c5e5 -- skills/mcp-builder skills/webapp-testing` URES mindket vendorolt subdirre -- nulla atfedes. A vendorolt lokalis masolatok (agents/*/.claude/skills/mcp-builder, agents/*/.claude/skills/webapp-testing) byte-azonosak a klon jelenlegi skills/mcp-builder es skills/webapp-testing tartalmaval (csak a varakozott VENDORED.md/UPSTREAM-LICENSE pluszok es lokalis __pycache__ a kulonbseg). NO-OP: last_sha mindket regisztry-bejegyzesnel 1780c5e5-re mozgatva, datumozott note hozzafuzve mindkettohoz.
+
+A freellmapi/pipx driftek kihagyva a kartya leirasa szerint (kulon kartyak fedik).
+
+Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- card eccb1219 (follow-up): QA2 FAIL 31337 javitas -- hianyzo repomix note-sor
+
+**Dontes:** QA2 FAIL 31337 helyesen jelezte, hogy a repomix regisztry-bejegyzes nem kapott datumozott
+note-sort, pedig a d89f85b19 commit uzenete ezt allitotta mindharom bejegyzesre (repomix +
+anthropic-mcp-builder + anthropic-webapp-testing). Ujra-diffelve d89f85b19-et: a tenyleges valtozas
+(1 fajl, 4 insertion/4 deletion) csak a ket anthropic-skills bejegyzest erintette, a repomix note
+sosem kapta meg a sorat. Javitas (dd8f7d0e6): hozzafuzve a hianyzo 2026-11-14 note a repomix
+bejegyzeshez, ugyanazzal a tartalommal, mint a fenti (2026-11-14, eredeti eccb1219) bejegyzesben --
+nincs uj review-munka, csak a hianyzo nyilvantartasi sor.
+
+Cybersec2 B1 (MikroB msg_id:18606 relay): a watched-repos-record-review.sh futtatasat MikroB maga
+vegzi el mindharom bejegyzesre a kartya zarasakor, DevO nem futtatta.
+
+Gate: QA2 + Cybersec2, delta szabaly (csak store/watched-repos.json, egy sor). **Ki döntött:** DevO (fullstack).
