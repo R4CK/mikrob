@@ -215,6 +215,27 @@ if not _ok:
 case("a REVIEW with no Gate-SHA line is the same case: unchecked, and said out loud",
      [c("backend", "REVIEW: kesz, de nincs sha."), c("qa", V % "aaaa1111")], "AGREE")
 
+# Card 1aeed1ca (WhiteHat2 L1): an explicit "Gate-SHA: n/a" on the LATEST REVIEW must RESET the
+# expectation, not silently fall back to an EARLIER REVIEW's real sha. Before the fix, a REVIEW
+# saying "n/a" produced no hex tokens and was skipped exactly like one with no Gate-SHA line at
+# all, so `found` kept the OLDER REVIEW's sha (aaaa1111) and the gates' AGREE on that same old sha
+# read as a normal match -- the output would NOT say "unchecked", silently treating stale-but-
+# equal-sha agreement as proof the n/a round was reviewed.
+n += 1
+_out = run([c("backend", R % "aaaa1111"),
+            c("backend", "REVIEW: config-only, nincs tobbe commit.\nGate-SHA: n/a (config-only)"),
+            c("qa", V % "aaaa1111")], None, None)
+_ok = "unchecked" in _out
+print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "says-so", "says-so" if _ok else "silent",
+                              "a later n/a REVIEW resets the expectation instead of falling back"))
+if not _ok:
+    failures.append(("n/a must reset, not fall back", "contains 'unchecked'", _out))
+
+case("...and the reset does not block FORWARD progress: a real sha after the n/a round is used normally",
+     [c("backend", R % "aaaa1111"),
+      c("backend", "REVIEW: config-only kozbeeso lepes.\nGate-SHA: n/a (config-only)"),
+      c("backend", R % "bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+
 # Cybered's condition 2: anchored exactly like the verdict, or a comment QUOTING a review supplies
 # the expectation -- the mirror image of gate-dispatch-check's documented false-positive class.
 case("a comment that merely QUOTES a REVIEW does not declare the expectation",
