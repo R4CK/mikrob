@@ -25863,3 +25863,19 @@ Cybersec2 B1 (MikroB msg_id:18606 relay): a watched-repos-record-review.sh futta
 vegzi el mindharom bejegyzesre a kartya zarasakor, DevO nem futtatta.
 
 Gate: QA2 + Cybersec2, delta szabaly (csak store/watched-repos.json, egy sor). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card b3b73630: main-agent skill write human-gate
+
+**Döntés:** POST /api/agents/<MAIN_AGENT_ID>/skills (src/web/routes/agents-skills.ts) írt egyenesen
+a globális ~/.claude/skills gyökérbe (minden ügynök betölti onnan), auth-kind ellenőrzés nélkül --
+Cybersec F1 lelete (31601 komment a 7c79badc kártyán, Gate-SHA 8bb6abcb3, már az e1f43d02c alapon is
+jelen volt, nem regresszió). A javítás a dashboard már meglévő rejectIfNotHumanAuth kapuját
+(auth.ts:124) köti be a MAIN_AGENT_ID célpontra: megosztott bearer / federation / agent:<id> device
+key -> 403, semmi nem íródik; böngésző-session / ember device key -> 200 (a dashboard generate gomb
+így tovább működik). Sub-agent célpontok (saját, nem flotta-szintű skills mappa) érintetlenek.
+
+A kártya 3. kritériuma (federation-eset a /api/skills/pending útvonalakon) ELMARADT: azok az
+útvonalak csak a még nem landolt card/7c79badc ágon léteznek (jelenleg újra-munkálás alatt), MikroB
+döntése szerint (msg 18939) ez a pin arra a kártyára kerül át.
+
+Gate-SHA: b24a2fa0d. Gate: QA + Cybersec. **Ki döntött:** backend.
