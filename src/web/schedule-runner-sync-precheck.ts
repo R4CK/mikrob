@@ -4,16 +4,17 @@ import { logger } from '../logger.js'
 import type { ScheduledTask } from './scheduled-tasks-io.js'
 import { resolvePreCheckPath, preCheckInvocation, PRECHECK_TIMEOUT_MS, type PreCheckResult } from './schedule-runner.js'
 
-// The synchronous form. Since CRONPRECHECKSYNC1007 the runner calls it from nowhere: both loops
-// use runPreCheckAsync (schedule-runner.ts). Kept only as the reference the async form's
-// contract tests compare against; do not call it from the runner (it holds the event loop, and
-// its timeout ends only the direct child).
+// The synchronous reference form. The runner itself calls nowhere but
+// runPreCheckAsync (schedule-runner.ts) -- kept so schedule-source-registry.test.ts can assert
+// the registry-verified preCheckInvocation/resolvePreCheckPath wiring agrees whether driven
+// synchronously or off the event loop; do not call it from the runner (it holds the event loop,
+// and its timeout ends only the direct child).
 //
 // Lives in its OWN file, not schedule-runner.ts: card 92e2bb1b's scheduler-tick-nonblocking
 // guard does a source-level scan of schedule-runner.ts for spawnSync/execSync/execFileSync,
-// because that file's own setInterval tick must never call one synchronously -- this function
-// is dead code on that path, but the guard scans TEXT, not the call graph, so the literal
-// spawnSync( here would still trip it if it stayed in that file.
+// because that file's own setInterval tick must never call one synchronously. This function is
+// never reached from that tick, but the guard scans TEXT, not the call graph, so a literal
+// spawnSync( staying in that file would still trip it.
 export function runPreCheck(task: ScheduledTask): PreCheckResult {
   if (!task.preCheck) return { skip: false }
   // dirName, not name: a relative preCheck lives in the task's OWN directory,

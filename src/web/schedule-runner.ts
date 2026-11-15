@@ -1391,12 +1391,9 @@ export async function runPreCheckAsync(
   })
 }
 
-// The synchronous reference form lives in schedule-runner-sync-precheck.ts, not here: card
-// 92e2bb1b's scheduler-tick-nonblocking guard scans THIS file's text for spawnSync/execSync/
-// execFileSync, since this file's own setInterval tick must never call one synchronously. A
-// dead-code reference implementation containing a literal spawnSync( would still trip that
-// scan even though nothing on the tick calls it -- re-exported here so existing imports of
-// `runPreCheck` from this module keep working.
+// The synchronous reference form (contract-equivalence check against this async function) lives
+// in schedule-runner-sync-precheck.ts, not here -- see that file's own header comment for why.
+// Re-exported so `import { runPreCheck } from '../web/schedule-runner.js'` keeps working.
 export { runPreCheck } from './schedule-runner-sync-precheck.js'
 
 // A pending retry re-runs its task's preCheck at most once per this interval;
