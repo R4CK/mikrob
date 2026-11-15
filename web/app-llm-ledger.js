@@ -61,11 +61,11 @@ function llmLedgerRenderProviders(providers) {
   tbody.innerHTML = providers.map((r) => `
     <tr>
       <td class="llm-ledger-provider-name">${escapeHtml(r.provider)}</td>
-      <td class="llm-ledger-num">${llmLedgerFmt(r.calls)}</td>
+      <td class="llm-ledger-num">${escapeHtml(llmLedgerFmt(r.calls))}</td>
       <td class="llm-ledger-num">${llmLedgerPct(r.ok, r.calls)}</td>
       <td class="llm-ledger-num">${llmLedgerAcceptPct(r.accepted, r.ok)}</td>
       <td class="llm-ledger-num">${llmLedgerLatency(r.avg_latency_ms)}</td>
-      <td class="llm-ledger-num llm-ledger-tokens-saved">${llmLedgerFmt(r.claude_token_equiv_saved)}</td>
+      <td class="llm-ledger-num llm-ledger-tokens-saved">${escapeHtml(llmLedgerFmt(r.claude_token_equiv_saved))}</td>
     </tr>
   `).join('')
 }
@@ -80,9 +80,9 @@ function llmLedgerRenderTaskTypes(taskTypes) {
   tbody.innerHTML = taskTypes.map((r) => `
     <tr>
       <td class="llm-ledger-provider-name">${escapeHtml(r.task_type)}</td>
-      <td class="llm-ledger-num">${llmLedgerFmt(r.calls)}</td>
+      <td class="llm-ledger-num">${escapeHtml(llmLedgerFmt(r.calls))}</td>
       <td class="llm-ledger-num">${llmLedgerPct(r.ok, r.calls)}</td>
-      <td class="llm-ledger-num llm-ledger-tokens-saved">${llmLedgerFmt(r.claude_token_equiv_saved)}</td>
+      <td class="llm-ledger-num llm-ledger-tokens-saved">${escapeHtml(llmLedgerFmt(r.claude_token_equiv_saved))}</td>
     </tr>
   `).join('')
 }
@@ -97,11 +97,11 @@ function llmLedgerRenderAgents(agents) {
   tbody.innerHTML = agents.map((r) => `
     <tr data-agent-id="${escapeHtml(r.agent_id)}">
       <td class="llm-ledger-provider-name">${escapeHtml(r.agent_id)}</td>
-      <td class="llm-ledger-num">${llmLedgerFmt(r.calls)}</td>
+      <td class="llm-ledger-num">${escapeHtml(llmLedgerFmt(r.calls))}</td>
       <td class="llm-ledger-num">${llmLedgerPct(r.ok, r.calls)}</td>
-      <td class="llm-ledger-num llm-ledger-tokens-saved">${llmLedgerFmt(r.claude_token_equiv_saved)}</td>
+      <td class="llm-ledger-num llm-ledger-tokens-saved">${escapeHtml(llmLedgerFmt(r.claude_token_equiv_saved))}</td>
       <td class="llm-ledger-budget-cell">
-        <span class="llm-ledger-budget-view" data-role="budget-view">${llmLedgerFmt(r.daily_budget)}<span class="llm-ledger-budget-source ${escapeHtml(r.budget_source)}">${escapeHtml(t('llmLedger.budget.source.' + r.budget_source))}</span></span>
+        <span class="llm-ledger-budget-view" data-role="budget-view">${escapeHtml(llmLedgerFmt(r.daily_budget))}<span class="llm-ledger-budget-source ${escapeHtml(r.budget_source)}">${escapeHtml(t('llmLedger.budget.source.' + r.budget_source))}</span></span>
         <input type="number" class="llm-ledger-budget-input" data-role="budget-input" value="${Number(r.daily_budget)}" min="0" step="1000" hidden aria-label="${escapeHtml(t('llmLedger.budget.input_label', { agent: r.agent_id }))}">
         <div class="llm-ledger-budget-actions" data-role="budget-actions">
           <button class="btn-secondary btn-compact" data-act="edit-budget">${escapeHtml(t('llmLedger.budget.edit'))}</button>
@@ -120,7 +120,7 @@ function llmLedgerRenderTotals(totals) {
   el.innerHTML = `
     <span class="llm-ledger-total-item">
       <span class="llm-ledger-total-label">${escapeHtml(t('llmLedger.totals.calls'))}</span>
-      <span class="llm-ledger-total-value">${llmLedgerFmt(totals.calls)}</span>
+      <span class="llm-ledger-total-value">${escapeHtml(llmLedgerFmt(totals.calls))}</span>
     </span>
     <span class="llm-ledger-total-item">
       <span class="llm-ledger-total-label">${escapeHtml(t('llmLedger.totals.ok'))}</span>
@@ -128,7 +128,7 @@ function llmLedgerRenderTotals(totals) {
     </span>
     <span class="llm-ledger-total-item llm-ledger-tokens-saved">
       <span class="llm-ledger-total-label">${escapeHtml(t('llmLedger.totals.saved_tokens'))}</span>
-      <span class="llm-ledger-total-value">${llmLedgerFmt(totals.claude_token_equiv_saved)}</span>
+      <span class="llm-ledger-total-value">${escapeHtml(llmLedgerFmt(totals.claude_token_equiv_saved))}</span>
     </span>
   `
 }
@@ -179,7 +179,7 @@ async function llmLedgerSaveBudget(row, agentId, newBudget) {
     // Update view
     const view = row.querySelector('[data-role="budget-view"]')
     const input = row.querySelector('[data-role="budget-input"]')
-    if (view) view.innerHTML = llmLedgerFmt(data.daily_budget) + `<span class="llm-ledger-budget-source override">${escapeHtml(t('llmLedger.budget.source.override'))}</span>`
+    if (view) view.innerHTML = escapeHtml(llmLedgerFmt(data.daily_budget)) + `<span class="llm-ledger-budget-source override">${escapeHtml(t('llmLedger.budget.source.override'))}</span>`
     if (input) input.value = data.daily_budget
     llmLedgerToggleBudgetEdit(row, false)
     showToast(t('common.saved'))

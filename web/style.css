@@ -11413,6 +11413,9 @@ body {
   border-radius: 8px;
   margin: 12px 0;
 }
+.llm-ledger-totals[hidden] {
+  display: none;
+}
 .llm-ledger-total-item {
   display: flex;
   flex-direction: column;
