@@ -3,17 +3,31 @@
 // own timer regardless -- measured 2026-10-14: two /login flows in a row died with "Login
 // interrupted" because the reader's keystroke landed on the waiting dialog.
 //
-// Fix: weekly-usage-relogin.sh's `start` writes a pending marker (epoch seconds) BEFORE touching
-// the panel, and a successful `--paste` clears it; weekly-usage-panel-read.sh checks the marker
-// FIRST, before any tmux call, and skips with "SKIP: relogin pending" while it is fresh (inside
-// WU_RELOGIN_PENDING_TTL_SEC). A stale marker (older than the TTL) is ignored so a wedged relogin
-// cannot block reads forever.
+// Fix v1: weekly-usage-relogin.sh's `start` wrote a pending marker (bare epoch seconds) BEFORE
+// touching the panel, and a successful `--paste` cleared it; weekly-usage-panel-read.sh checked
+// the marker FIRST, before any tmux call, and skipped while it was fresh (inside
+// WU_RELOGIN_PENDING_TTL_SEC).
+//
+// QA FAIL (card f3343af0, 2026-11-15): that marker could be PLANTED. Nothing tied it to a real
+// relogin -- any process able to write a file (store/ is shared-trust) could point
+// WU_RELOGIN_PENDING_MARKER at an arbitrary path, or (once we lock the path down) just write to the
+// fixed path directly, and keep a fresh epoch forever to suppress every read indefinitely.
+//
+// Fix v2 (this file): the marker path is FIXED in production -- the env override only takes effect
+// under WU_RELOGIN_TEST_MODE=1 -- and a marker is honored only when it is a regular file (not a
+// symlink), owned by the current user, mode 0600, and names (line 1) the PID of a process that is
+// BOTH alive and whose /proc cmdline contains "weekly-usage-relogin.sh". `start` backgrounds a
+// detached --hold-marker child (its own session, via setsid) that writes the marker with ITS OWN
+// pid and holds it for up to the TTL, so the pid stays alive for the real duration of a pending
+// relogin (which can be minutes -- `start` itself only runs ~15-25s). A successful `--paste` still
+// clears the marker; the holder self-expires it on TTL otherwise, and only if the marker still
+// names its own pid (so it never clobbers a newer holder's marker).
 //
 // Driven against a PATH shim for `tmux` (and a no-op `sleep`), same technique as
 // weekly-usage-panel-size.test.ts: these cases never touch the real mikrob-usage-probe panel.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync, existsSync } from 'node:fs'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync, existsSync, statSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,11 +39,13 @@ const RELOGIN = join(STORE, 'weekly-usage-relogin.sh')
 let dir: string
 let log: string
 let marker: string
+let holders: ChildProcess[]
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'usage-relogin-pending-'))
   log = join(dir, 'tmux.log')
   marker = join(dir, 'pending-marker')
+  holders = []
   // Always-succeeding tmux shim: has-session/new-session/send-keys/resize-window all exit 0,
   // capture-pane prints a benign line. Good enough for the "did it even try to touch the panel"
   // and "did start/paste manage the marker" assertions below -- none of these cases need a real
@@ -50,9 +66,18 @@ exit 0
   chmodSync(join(dir, 'sleep'), 0o755)
 })
 
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
+afterEach(() => {
+  for (const h of holders) {
+    try {
+      h.kill('SIGKILL')
+    } catch {
+      /* already gone */
+    }
+  }
+  rmSync(dir, { recursive: true, force: true })
+})
 
-function runReader(ttlSec?: number): { stdout: string; code: number; calls: string[] } {
+function runReader(env: Record<string, string> = {}): { stdout: string; code: number; calls: string[] } {
   let stdout = ''
   let code = 0
   try {
@@ -61,8 +86,9 @@ function runReader(ttlSec?: number): { stdout: string; code: number; calls: stri
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH}`,
+        WU_RELOGIN_TEST_MODE: '1',
         WU_RELOGIN_PENDING_MARKER: marker,
-        ...(ttlSec !== undefined ? { WU_RELOGIN_PENDING_TTL_SEC: String(ttlSec) } : {}),
+        ...env,
       },
     }).toString('utf-8')
   } catch (e) {
@@ -81,7 +107,13 @@ function runRelogin(mode: string, env: Record<string, string> = {}, input?: stri
     stdout = execFileSync('bash', [RELOGIN, mode], {
       input,
       stdio: [input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, WU_RELOGIN_PENDING_MARKER: marker },
+      env: {
+        ...process.env,
+        PATH: `${dir}:${process.env.PATH}`,
+        WU_RELOGIN_TEST_MODE: '1',
+        WU_RELOGIN_PENDING_MARKER: marker,
+        ...env,
+      },
     }).toString('utf-8')
   } catch (e) {
     const err = e as { status?: number; stdout?: Buffer }
@@ -91,19 +123,45 @@ function runRelogin(mode: string, env: Record<string, string> = {}, input?: stri
   return { stdout, code }
 }
 
+// Spawns a REAL --hold-marker child against the test marker path, with a long TTL so it stays
+// alive for the test's duration, and waits for the marker file to actually land before returning
+// its pid. This is the exact production writer (not a fake pid) -- it is what makes the
+// "pid alive and names weekly-usage-relogin.sh" cases faithful rather than simulated.
+async function spawnHolder(ttlSec = 120): Promise<number> {
+  const h = spawn('bash', [RELOGIN, '--hold-marker'], {
+    env: {
+      ...process.env,
+      PATH: `${dir}:${process.env.PATH}`,
+      WU_RELOGIN_TEST_MODE: '1',
+      WU_RELOGIN_PENDING_MARKER: marker,
+      WU_RELOGIN_PENDING_TTL_SEC: String(ttlSec),
+    },
+    stdio: 'ignore',
+  })
+  holders.push(h)
+  for (let i = 0; i < 100; i++) {
+    if (existsSync(marker)) break
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  if (!existsSync(marker)) throw new Error('holder never wrote the marker')
+  const pid = h.pid
+  if (pid === undefined) throw new Error('holder has no pid')
+  return pid
+}
+
 describe('reader side: pending marker gates the keystroke (card f3343af0)', () => {
-  it('a fresh marker: SKIP, exit 0, never calls tmux at all', () => {
-    writeFileSync(marker, `${Math.floor(Date.now() / 1000)}\n`)
+  it('a fresh, valid marker (live pid naming this script): SKIP, exit 0, never calls tmux', async () => {
+    await spawnHolder()
     const { stdout, code, calls } = runReader()
     expect(stdout).toMatch(/^SKIP: relogin pending/)
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
   })
 
-  it('an expired marker (older than the TTL): no SKIP, reader proceeds to touch the panel', () => {
-    const old = Math.floor(Date.now() / 1000) - 120
-    writeFileSync(marker, `${old}\n`)
-    const { stdout, calls } = runReader(60) // TTL shorter than the marker's age -> stale
+  it('an expired marker (older than the TTL): no SKIP, reader proceeds to touch the panel', async () => {
+    const pid = await spawnHolder()
+    writeFileSync(marker, `${pid}\n${Math.floor(Date.now() / 1000) - 120}\n`, { mode: 0o600 })
+    const { stdout, calls } = runReader({ WU_RELOGIN_PENDING_TTL_SEC: '60' }) // shorter than the marker's age -> stale
     expect(stdout).not.toMatch(/SKIP/)
     expect(calls.some((c) => c.includes('has-session'))).toBe(true)
   })
@@ -113,18 +171,107 @@ describe('reader side: pending marker gates the keystroke (card f3343af0)', () =
     expect(stdout).not.toMatch(/SKIP/)
     expect(calls.some((c) => c.includes('has-session'))).toBe(true)
   })
+
+  describe('plant case (QA FAIL, card f3343af0 follow-up): a fresh epoch alone is not enough', () => {
+    it('a marker with a DEAD pid (process never existed): no SKIP, treated as not-pending', () => {
+      // A pid that is astronomically unlikely to be alive, let alone named weekly-usage-relogin.sh.
+      writeFileSync(marker, `999999\n${Math.floor(Date.now() / 1000)}\n`, { mode: 0o600 })
+      const { stdout, calls } = runReader()
+      expect(stdout).not.toMatch(/SKIP/)
+      expect(calls.some((c) => c.includes('has-session'))).toBe(true)
+    })
+
+    it('a marker naming a LIVE pid whose cmdline does NOT match this script: no SKIP', async () => {
+      // This test runner process itself is alive, but its cmdline is node/vitest, not
+      // weekly-usage-relogin.sh -- the cmdline check must refuse it even though the pid is real.
+      writeFileSync(marker, `${process.pid}\n${Math.floor(Date.now() / 1000)}\n`, { mode: 0o600 })
+      const { stdout, calls } = runReader()
+      expect(stdout).not.toMatch(/SKIP/)
+      expect(calls.some((c) => c.includes('has-session'))).toBe(true)
+    })
+
+    it('a marker that is a SYMLINK (even to an otherwise-valid marker): no SKIP', async () => {
+      await spawnHolder() // writes a genuinely valid marker at `marker`
+      const real = join(dir, 'real-marker')
+      const content = readFileSync(marker, 'utf-8')
+      rmSync(marker)
+      writeFileSync(real, content, { mode: 0o600 })
+      symlinkSync(real, marker)
+      const { stdout, calls } = runReader()
+      expect(stdout).not.toMatch(/SKIP/)
+      expect(calls.some((c) => c.includes('has-session'))).toBe(true)
+    })
+
+    it('a marker with the right pid+epoch but loose permissions (0644): no SKIP', async () => {
+      const pid = await spawnHolder()
+      chmodSync(marker, 0o644)
+      const { stdout, calls } = runReader()
+      expect(stdout).not.toMatch(/SKIP/)
+      expect(calls.some((c) => c.includes('has-session'))).toBe(true)
+      void pid
+    })
+
+    it('the env override is IGNORED outside WU_RELOGIN_TEST_MODE -- resolves to the hardcoded production path', () => {
+      // No side effects: --debug-marker-path only prints the path this run would use, it never
+      // touches the real marker file, so this is safe to run unconditionally.
+      const out = execFileSync('bash', [RELOGIN, '--debug-marker-path'], {
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, WU_RELOGIN_PENDING_MARKER: marker },
+      })
+        .toString('utf-8')
+        .trim()
+      expect(out).toBe('/home/neon/marveen/store/.weekly-usage-relogin-pending')
+      expect(out).not.toBe(marker)
+    })
+
+    it('the env override DOES take effect once WU_RELOGIN_TEST_MODE=1 is also set', () => {
+      const out = execFileSync('bash', [RELOGIN, '--debug-marker-path'], {
+        env: {
+          ...process.env,
+          PATH: `${dir}:${process.env.PATH}`,
+          WU_RELOGIN_TEST_MODE: '1',
+          WU_RELOGIN_PENDING_MARKER: marker,
+        },
+      })
+        .toString('utf-8')
+        .trim()
+      expect(out).toBe(marker)
+    })
+  })
 })
 
 describe('writer side: relogin.sh manages the marker (card f3343af0)', () => {
-  it('start writes a fresh pending marker before touching the panel', () => {
+  it('start writes a fresh pending marker, owned 0600, naming a live pid, before touching the panel', () => {
     runRelogin('start')
     expect(existsSync(marker)).toBe(true)
-    const ts = parseInt(readFileSync(marker, 'utf-8').trim(), 10)
-    expect(Math.abs(Date.now() / 1000 - ts)).toBeLessThan(10)
+    const [pidLine, tsLine] = readFileSync(marker, 'utf-8').trim().split('\n')
+    expect(Math.abs(Date.now() / 1000 - Number(tsLine))).toBeLessThan(10)
+    const pid = Number(pidLine)
+    expect(pid).toBeGreaterThan(0)
+
+    const st = statSync(marker)
+    expect(st.mode & 0o777).toBe(0o600)
+
+    // The held pid must actually be alive and its cmdline must name this script -- i.e. the
+    // marker `start` just wrote must pass the reader's own validity check. `start` itself already
+    // drove tmux (ensure_pane + the login flow), so the log is non-empty BEFORE this call -- check
+    // the DELTA the reader itself adds, not the file's cumulative content.
+    const callsBeforeRead = log && existsSync(log) ? readFileSync(log, 'utf-8').trim().split('\n').filter(Boolean).length : 0
+    const { stdout, calls } = runReader()
+    expect(stdout).toMatch(/^SKIP: relogin pending/)
+    expect(calls.length - callsBeforeRead).toBe(0)
+
+    // Clean up the detached holder so it doesn't outlive the test.
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
   })
 
   it('a successful --paste clears the pending marker', () => {
-    writeFileSync(marker, `${Math.floor(Date.now() / 1000)}\n`)
+    runRelogin('start')
+    expect(existsSync(marker)).toBe(true)
+    const holdPid = Number(readFileSync(marker, 'utf-8').trim().split('\n')[0])
     // capture-pane must report success for the --paste branch to take the clear-marker path.
     writeFileSync(
       join(dir, 'tmux'),
@@ -141,10 +288,17 @@ exit 0
     const { stdout } = runRelogin('--paste', {}, 'ABC123\n')
     expect(stdout).toMatch(/OK: login successful/)
     expect(existsSync(marker)).toBe(false)
+    try {
+      process.kill(holdPid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
   })
 
   it('a failed --paste leaves the pending marker in place', () => {
-    writeFileSync(marker, `${Math.floor(Date.now() / 1000)}\n`)
+    runRelogin('start')
+    expect(existsSync(marker)).toBe(true)
+    const holdPid = Number(readFileSync(marker, 'utf-8').trim().split('\n')[0])
     writeFileSync(
       join(dir, 'tmux'),
       `#!/usr/bin/env bash
@@ -159,5 +313,20 @@ exit 0
     chmodSync(join(dir, 'tmux'), 0o755)
     runRelogin('--paste', {}, 'ABC123\n')
     expect(existsSync(marker)).toBe(true)
+    try {
+      process.kill(holdPid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
+  })
+
+  it('--hold-marker self-expires the marker after the TTL, but only if it still names its own pid', async () => {
+    const pid = await spawnHolder(1) // 1s TTL -- but `sleep` is PATH-shimmed to a no-op, so it expires near-instantly
+    // Give the holder a moment to run its post-sleep self-expire check.
+    for (let i = 0; i < 200 && existsSync(marker); i++) {
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    expect(existsSync(marker)).toBe(false)
+    void pid
   })
 })

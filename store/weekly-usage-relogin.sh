@@ -36,15 +36,34 @@ MODE="${1:-start}"
 # gives the probe its OWN credentials.json + refresh-token lineage, so one login sticks.
 PROBE_CONFIG_DIR="/home/neon/.claude-usage-probe"
 
-# PENDING-RELOGIN MARKER (card f3343af0): weekly-usage-panel-read.sh types "/usage" into this same
-# panel on a timer. While a relogin is in flight the panel sits on a waiting /login dialog instead
-# of a shell prompt, so that keystroke lands on the dialog -- measured 2026-10-14, two login flows
-# in a row died with "Login interrupted" because the reader's /usage text was typed into the
-# dialog. `start` writes this marker (its mtime is the clock); the reader refuses to send any key
-# while a fresh one exists. A successful `--paste` clears it; anything else (a stuck/failed login)
-# lets it expire on its own TTL so a wedged relogin cannot block the reader forever.
-PENDING_MARKER="${WU_RELOGIN_PENDING_MARKER:-/home/neon/marveen/store/.weekly-usage-relogin-pending}"
-PENDING_TTL_SEC="${WU_RELOGIN_PENDING_TTL_SEC:-1800}"
+# PENDING-RELOGIN MARKER (card f3343af0, hardened in a QA FAIL follow-up): weekly-usage-panel-read.sh
+# types "/usage" into this same panel on a timer. While a relogin is in flight the panel sits on a
+# waiting /login dialog instead of a shell prompt, so that keystroke lands on the dialog -- measured
+# 2026-10-14, two login flows in a row died with "Login interrupted" because the reader's /usage text
+# was typed into the dialog.
+#
+# QA FAIL (2026-11-15): the first version gated SKIP on nothing but a fresh mtime in an
+# env-overridable path -- any process able to write ANY file (store/ is shared-trust, every agent can)
+# could plant a marker and suppress every weekly-usage read indefinitely by rewriting the timestamp
+# every <30 min, with no tie to a real relogin. Fixed: the marker path is fixed in production (the env
+# override below only takes effect under WU_RELOGIN_TEST_MODE=1, set by tests only); the marker is
+# written mode 0600 via umask (no separate chmod window) and carries the PID of the process actually
+# holding the relogin open, not just a timestamp; weekly-usage-panel-read.sh additionally verifies
+# ownership, mode, and that the PID is alive AND its cmdline names this script before honoring it.
+if [ "${WU_RELOGIN_TEST_MODE:-0}" = "1" ]; then
+  PENDING_MARKER="${WU_RELOGIN_PENDING_MARKER:-/home/neon/marveen/store/.weekly-usage-relogin-pending}"
+  PENDING_TTL_SEC="${WU_RELOGIN_PENDING_TTL_SEC:-1800}"
+else
+  PENDING_MARKER="/home/neon/marveen/store/.weekly-usage-relogin-pending"
+  PENDING_TTL_SEC=1800
+fi
+
+# Writes the marker atomically at 0600 (umask, not a post-hoc chmod -- no window where the file is
+# briefly world-readable) with OUR OWN pid (line 1) and the start epoch (line 2). Called only from
+# inside --hold-marker, whose process is the one meant to stay alive for the pending window.
+write_pending_marker() {
+  ( umask 177; printf '%s\n%s\n' "$$" "$(date +%s)" > "$PENDING_MARKER" ) 2>/dev/null || true
+}
 
 ensure_pane() {
   tmux has-session -t "$PANE" 2>/dev/null && return 0
@@ -197,7 +216,22 @@ case "$MODE" in
     # Mark the relogin as pending BEFORE anything touches the panel, so a reader tick that lands
     # between this line and the first send-keys below still sees it and skips (vs. a window where
     # the marker only appears after the panel is already mid-dialog).
-    printf '%s\n' "$(date +%s)" > "$PENDING_MARKER" 2>/dev/null || true
+    #
+    # The marker's pid must stay alive for the WHOLE pending window (until --paste or the TTL), but
+    # this `start` invocation itself only runs for ~15-25s (the sleeps below) and then returns --
+    # Peti's actual OAuth click-and-paste can take minutes. So a detached --hold-marker child (own
+    # session via setsid, survives this invocation's exit) is what the marker's pid names; it writes
+    # the marker itself, holds for up to PENDING_TTL_SEC, then self-expires. A FIFO handshake (not a
+    # sleep/poll) blocks this invocation only until the child confirms the marker is actually on
+    # disk, so the "written before the panel is touched" guarantee still holds exactly.
+    _wu_fifo="$(mktemp -u)"
+    mkfifo "$_wu_fifo" 2>/dev/null || true
+    WU_RELOGIN_HOLD_SIGNAL_FIFO="$_wu_fifo" setsid bash "$0" --hold-marker >/dev/null 2>&1 </dev/null &
+    disown 2>/dev/null || true
+    if [ -p "$_wu_fifo" ]; then
+      read -r _ < "$_wu_fifo" 2>/dev/null || true
+    fi
+    rm -f "$_wu_fifo" 2>/dev/null || true
     ensure_pane || { echo "FAIL: cannot ensure panel" >&2; exit 1; }
     # Widen the window BEFORE /login prints the URL. tmux does NOT reflow existing scrollback,
     # so resizing after the URL is printed leaves it wrapped/truncated (the &state= param spills
@@ -244,11 +278,44 @@ print(url)
     tmux capture-pane -t "$PANE" -p -J 2>/dev/null | grep -v '^$' | tail -8 | redact_code >&2
     exit 1
     ;;
+  --hold-marker)
+    # Internal, not part of the public usage line: a detached child `start` backgrounds to hold the
+    # pending marker alive for the actual duration of a relogin. Writes the marker with ITS OWN pid
+    # (the long-lived one the reader's liveness check verifies), signals the parent `start` over the
+    # handshake FIFO that the write landed, then sleeps up to PENDING_TTL_SEC and self-expires --
+    # only removing a marker that still names this same pid, so it never clobbers a NEWER holder's
+    # marker from a second relogin started after a wedged first one timed out.
+    write_pending_marker
+    if [ -n "${WU_RELOGIN_HOLD_SIGNAL_FIFO:-}" ] && [ -p "$WU_RELOGIN_HOLD_SIGNAL_FIFO" ]; then
+      printf x > "$WU_RELOGIN_HOLD_SIGNAL_FIFO" 2>/dev/null || true
+    fi
+    # Hold until our own marker is gone (cleared by a successful --paste) or the TTL elapses --
+    # checked against REAL wall-clock time (date) on every iteration, not one long sleep, so this
+    # self-expires correctly even when `sleep` is PATH-shimmed to a no-op for OTHER delays in this
+    # script (a real test need, not just defensiveness -- see weekly-usage-relogin-pending-marker.test.ts).
+    _wu_start_ts="$(sed -n '2p' "$PENDING_MARKER" 2>/dev/null || echo 0)"
+    while [ -f "$PENDING_MARKER" ]; do
+      _wu_now="$(date +%s)"
+      [ $((_wu_now - _wu_start_ts)) -lt "$PENDING_TTL_SEC" ] || break
+      sleep 1 2>/dev/null || true
+    done
+    if [ -f "$PENDING_MARKER" ] && [ "$(sed -n '1p' "$PENDING_MARKER" 2>/dev/null)" = "$$" ]; then
+      rm -f "$PENDING_MARKER" 2>/dev/null || true
+    fi
+    exit 0
+    ;;
   --redact-stdin)
     # Test/diagnostic seam: pipe text in, get the SAME redaction the --paste failure dump applies.
     # Exposed so the redaction is directly testable -- the failure branch itself needs a live panel,
     # and an untested redaction is exactly the kind of thing that silently stops redacting.
     redact_code
+    ;;
+  --debug-marker-path)
+    # Test-only seam, zero side effects: prints the RESOLVED marker path so a test can prove the
+    # env override is ignored outside WU_RELOGIN_TEST_MODE=1 without ever touching the real
+    # production marker file (card f3343af0 QA FAIL follow-up).
+    printf '%s\n' "$PENDING_MARKER"
+    exit 0
     ;;
   *)
     echo "usage: $0 [start|--check|--paste (code on stdin)|--paste-file <0600-file>]" >&2; exit 2 ;;

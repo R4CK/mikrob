@@ -46,21 +46,50 @@ trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# PENDING-RELOGIN MARKER (card f3343af0): see weekly-usage-relogin.sh for why this exists. If a
-# relogin is in flight the panel is sitting on a /login dialog, not a shell prompt -- sending
-# "/usage" there types into the dialog and kills the login (measured 2026-10-14, "Login
-# interrupted" twice). Checked FIRST, before any tmux call, so a pending relogin never gets a
-# stray keystroke from this script. A marker older than its TTL is treated as stale/abandoned and
-# ignored, so a wedged relogin cannot silently block weekly-% reads forever.
-PENDING_MARKER="${WU_RELOGIN_PENDING_MARKER:-${STORE}/.weekly-usage-relogin-pending}"
-PENDING_TTL_SEC="${WU_RELOGIN_PENDING_TTL_SEC:-1800}"
-if [ -f "$PENDING_MARKER" ]; then
-  marker_ts="$(cat "$PENDING_MARKER" 2>/dev/null || echo 0)"
+# PENDING-RELOGIN MARKER (card f3343af0, hardened in a QA FAIL follow-up): see
+# weekly-usage-relogin.sh for why this exists. If a relogin is in flight the panel is sitting on a
+# /login dialog, not a shell prompt -- sending "/usage" there types into the dialog and kills the
+# login (measured 2026-10-14, "Login interrupted" twice). Checked FIRST, before any tmux call, so
+# a pending relogin never gets a stray keystroke from this script.
+#
+# QA FAIL (2026-11-15): a bare fresh-mtime check in an env-overridable path could be PLANTED by any
+# process able to write a file (store/ is shared-trust) -- no owner/perm check, no tie to a live
+# relogin, so a rewritten timestamp suppressed every read indefinitely. Fixed: the path is fixed in
+# production (the env override below only takes effect under WU_RELOGIN_TEST_MODE=1, set by tests
+# only); the marker must be a REGULAR file (not a symlink), owned by the current user, mode 0600,
+# and its first line must be the PID of a process that is both alive and whose /proc cmdline names
+# this exact script -- a marker that fails ANY of these is treated as not-pending, same as if the
+# file did not exist, regardless of how fresh its timestamp looks. The TTL freshness check is kept
+# as a second, independent requirement (belt-and-suspenders): the holder process self-expires the
+# marker after the same TTL anyway, so this can never be stricter than that in practice.
+if [ "${WU_RELOGIN_TEST_MODE:-0}" = "1" ]; then
+  PENDING_MARKER="${WU_RELOGIN_PENDING_MARKER:-${STORE}/.weekly-usage-relogin-pending}"
+  PENDING_TTL_SEC="${WU_RELOGIN_PENDING_TTL_SEC:-1800}"
+else
+  PENDING_MARKER="${STORE}/.weekly-usage-relogin-pending"
+  PENDING_TTL_SEC=1800
+fi
+pending_marker_valid() {
+  [ -f "$PENDING_MARKER" ] || return 1
+  [ -h "$PENDING_MARKER" ] && return 1   # a symlink is never trusted, whatever it points to
+  local owner_uid mode marker_pid marker_ts now_ts
+  owner_uid="$(stat -c '%u' "$PENDING_MARKER" 2>/dev/null || echo -1)"
+  [ "$owner_uid" = "$(id -u)" ] || return 1
+  mode="$(stat -c '%a' "$PENDING_MARKER" 2>/dev/null || echo '')"
+  [ "$mode" = "600" ] || return 1
+  marker_pid="$(sed -n '1p' "$PENDING_MARKER" 2>/dev/null)"
+  marker_ts="$(sed -n '2p' "$PENDING_MARKER" 2>/dev/null)"
+  [ -n "$marker_pid" ] && [ "$marker_pid" -gt 0 ] 2>/dev/null || return 1
+  [ -n "$marker_ts" ] && [ "$marker_ts" -gt 0 ] 2>/dev/null || return 1
   now_ts="$(date +%s)"
-  if [ "$marker_ts" -gt 0 ] 2>/dev/null && [ $((now_ts - marker_ts)) -lt "$PENDING_TTL_SEC" ]; then
-    echo "SKIP: relogin pending"
-    exit 0
-  fi
+  [ $((now_ts - marker_ts)) -lt "$PENDING_TTL_SEC" ] || return 1
+  kill -0 "$marker_pid" 2>/dev/null || return 1
+  tr '\0' '\n' < "/proc/$marker_pid/cmdline" 2>/dev/null | grep -q 'weekly-usage-relogin\.sh' || return 1
+  return 0
+}
+if pending_marker_valid; then
+  echo "SKIP: relogin pending"
+  exit 0
 fi
 
 # REBOOT-SURVIVABILITY (2026-07-31): a tmux session does NOT survive a machine reboot.
