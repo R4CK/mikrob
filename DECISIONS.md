@@ -25863,3 +25863,10 @@ Cybersec2 B1 (MikroB msg_id:18606 relay): a watched-repos-record-review.sh futta
 vegzi el mindharom bejegyzesre a kartya zarasakor, DevO nem futtatta.
 
 Gate: QA2 + Cybersec2, delta szabaly (csak store/watched-repos.json, egy sor). **Ki döntött:** DevO (fullstack).
+
+2026-11-15, kártya dffbb55f (RedHat c0408a1c comment 18896 follow-up): mopsion-suite-run.sh D1
+marveen-fa felismerese path-prefix minta helyett marker-alapura valtott (git toplevel + saját
+store/fleet-test.sh jelenlete), es minden argumentum `realpath -m` utan megy a markeren at. Ez
+zarja a 3 mert kerulouttat (literal ".." szegmens, symlink argumentum, gate-worktree cwd + relativ
+argumentum) es RedHat 7 tulelo mutansat (K5, K7b, K9, K9b, K10b, K12, K13). Gate-SHA:
+38f4ef91528df9f110bdce8d96349ecd4b55141e. Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
