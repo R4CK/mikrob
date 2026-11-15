@@ -497,7 +497,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # F1b (Cybered 31725): 9223372036854775808 (2^63) and 18446744073709551615 (2^64-1) both wrap
   # the OLD bare-arithmetic cap check to a small/negative number and sailed under it -- the
   # string-length bound above must reject them before any arithmetic runs.
-  for _huge_days in 999999999 1000000000000000 213503982334601 9223372036854775808 18446744073709551615; do
+  for _huge_days in 999999999 1000000000000000 213503982334601 9223372036854775808 18446744073709551615 18446744073709551616; do
     if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days "$_huge_days" 2>&1)"; then
       no "--older-than-days $_huge_days should have been rejected (cap 36500), got: $out"
     else
