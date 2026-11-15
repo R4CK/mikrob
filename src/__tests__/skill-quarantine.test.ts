@@ -41,6 +41,7 @@ vi.mock('../web/agent-scaffold.js', async (orig) => {
 const { tryHandleSkills } = await import('../web/routes/skills.js')
 const { tryHandleAgentsSkills } = await import('../web/routes/agents-skills.js')
 const { MAIN_AGENT_ID } = await import('../config.js')
+const { importArchiveToPending, queueGeneratedSkill, nameConflict } = await import('../web/skill-quarantine.js')
 
 const GLOBAL = join(HOME, '.claude', 'skills')
 const PENDING = join(STORE, 'skills-pending')
@@ -75,25 +76,54 @@ async function call(path: string, method: string, json?: object): Promise<Out> {
   return out
 }
 
+// Built with python3's stdlib zipfile, not the `zip` CLI -- unzip is the only
+// archiver binary this environment ships (see agents-skills-import-symlink-
+// guard.test.ts). zipfile.write() dereferences a symlink by default, which
+// would silence every symlink-detection test below, so each symlink entry is
+// written by hand with a ZipInfo carrying the unix S_IFLNK mode bits in
+// external_attr and the link target as its data -- the same shape `zip -y`
+// produces, and what a real unzip extracts back into a symlink.
 function zipOf(build: (dir: string) => void): Buffer {
   const src = mkdtempSync(join(tmpRoot, 'zipsrc-'))
   build(src)
   const zip = join(src, '..', `${src.split('/').pop()}.zip`)
-  execFileSync('zip', ['-q', '-r', '-y', zip, '.'], { cwd: src })
+  const py = `
+import os, stat, zipfile
+src = ${JSON.stringify(src)}
+with zipfile.ZipFile(${JSON.stringify(zip)}, 'w', zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(src):
+        for name in dirs + files:
+            p = os.path.join(root, name)
+            arc = os.path.relpath(p, src)
+            if os.path.islink(p):
+                target = os.readlink(p)
+                zi = zipfile.ZipInfo(arc)
+                zi.create_system = 3
+                zi.external_attr = (stat.S_IFLNK | 0o777) << 16
+                zf.writestr(zi, target)
+            elif os.path.isdir(p):
+                continue
+            else:
+                zf.write(p, arc)
+`
+  execFileSync('python3', ['-I', '-c', py])
   return readFileSync(zip)
 }
 
+// Both /api/skills/import (global) and /api/agents/:name/skills/import (per-agent) are hard
+// fail-closed / direct-extraction at the HTTP layer today (card 4f4cb0df delta B1 / card 45a45700,
+// MUTATION-PINNED by skills-import-auth-gate.test.ts and agents-skills-import-symlink-guard.test.ts)
+// -- lifting either gate to use the queue below is a product decision for MikroB/Peti, flagged in
+// DECISIONS.md, not something a merge resolution can call. importArchiveToPending IS the queueing
+// implementation those routes would call once that decision lands, so the scanning/quarantine
+// behaviour below is exercised directly against it instead of through the currently-gated routes.
 async function importZip(path: string, data: Buffer): Promise<Out> {
-  const boundary = 'zzBoundary42'
-  const body = Buffer.concat([
-    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="s.zip"\r\nContent-Type: application/zip\r\n\r\n`, 'binary'),
-    data,
-    Buffer.from(`\r\n--${boundary}--\r\n`, 'binary'),
-  ])
-  const { ctx, out } = ctxFor(path, 'POST', body, `multipart/form-data; boundary=${boundary}`)
-  const handled = (await tryHandleSkills(ctx)) || (await tryHandleAgentsSkills(ctx))
-  expect(handled).toBe(true)
-  return out
+  const target = path.startsWith('/api/agents/')
+    ? { scope: 'agent' as const, agent: path.split('/')[3] }
+    : { scope: 'global' as const }
+  const result = importArchiveToPending(target, data)
+  if (!result.ok) return { status: result.status, body: { error: result.error } }
+  return { status: 200, body: { ok: true, imported: result.queued.map((q) => q.name), pending: true } }
 }
 
 const pendingList = async () => (await call('/api/skills/pending', 'GET')).body as any[]
@@ -111,11 +141,15 @@ afterAll(() => {
 })
 
 describe('generated skills are queued, not live', () => {
-  it('POST /api/skills queues the generated SKILL.md; the global root stays untouched', async () => {
-    const r = await call('/api/skills', 'POST', { name: 'zz-gen', description: 'does a thing' })
+  // POST /api/skills (the global-scope HTTP route) is hard fail-closed today (card 4f4cb0df
+  // delta B1, MUTATION-PINNED by skills-sibling-routes-auth-gate.test.ts) -- same note as
+  // importZip above. queueGeneratedSkill is the queueing implementation that route would call
+  // once that gate is lifted, so the global-scope queueing semantics are exercised directly
+  // against it instead of through the gated route.
+  it('a generated SKILL.md is queued for the global scope; the global root stays untouched', async () => {
+    const meta = queueGeneratedSkill({ scope: 'global' }, 'zz-gen', '---\nname: zz-gen\n---\n# zz-gen\n\ndoes a thing\n')
     expect(existsSync(join(GLOBAL, 'zz-gen'))).toBe(false)
-    expect(r.status).toBe(200)
-    expect(r.body).toMatchObject({ ok: true, name: 'zz-gen', pending: true })
+    expect(meta).toMatchObject({ name: 'zz-gen', target: { scope: 'global' }, source: 'generate' })
     const list = await pendingList()
     expect(list).toHaveLength(1)
     expect(list[0]).toMatchObject({ name: 'zz-gen', target: { scope: 'global' }, source: 'generate' })
@@ -138,9 +172,9 @@ describe('generated skills are queued, not live', () => {
 
   it('a name that is live, or already pending for the same target, is refused (409)', async () => {
     mkdirSync(join(GLOBAL, 'zz-live'), { recursive: true })
-    expect((await call('/api/skills', 'POST', { name: 'zz-live', description: 'x' })).status).toBe(409)
-    expect((await call('/api/skills', 'POST', { name: 'zz-twice', description: 'x' })).status).toBe(200)
-    expect((await call('/api/skills', 'POST', { name: 'zz-twice', description: 'x' })).status).toBe(409)
+    expect(nameConflict({ scope: 'global' }, 'zz-live')).toBe('live')
+    queueGeneratedSkill({ scope: 'global' }, 'zz-twice', '---\nname: zz-twice\n---\n# zz-twice\n')
+    expect(nameConflict({ scope: 'global' }, 'zz-twice')).toBe('pending')
     // a different target is a different name space
     expect((await call(`/api/agents/${AGENT}/skills`, 'POST', { name: 'zz-twice', description: 'x' })).status).toBe(200)
   })
