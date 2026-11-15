@@ -30,6 +30,94 @@ DEFAULT_OUT = os.path.join(ROOT, "store", "llm-skill-packs")
 
 HEADER_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 
+# QA FAIL 31746 (card 2746165b): a source path had no containment check (plain abspath,
+# symlinks followed uninspected) and the extracted text had no secret scan at all, so a bad
+# map entry -- typo'd path, copy-paste mistake, or a bad-faith edit, same filesystem access
+# every agent already has to store/llm-skill-pack-map.json -- could silently ship an arbitrary
+# file's contents to the freellm cloud route. Both checks below are fail-closed: refuse to
+# build, never write a partial or redacted pack. ALLOWED_ROOTS is resolved with realpath (not
+# a string prefix on the raw path) so a symlink that points OUT of an allowed root is refused
+# the same way card ff7ecc74 fixed for this fleet's other skill-sync code.
+ALLOWED_ROOTS = [
+    os.path.realpath(os.path.expanduser("~/.claude/skills")),
+    os.path.realpath(os.path.join(ROOT, "docs", "rules")),
+]
+# Test-only escape hatch: a selftest fixture cannot live under ~/.claude/skills (that directory
+# is shared, live, fleet-wide) and cannot live under docs/rules either (tracked repo content).
+# No production caller (freellm-call.sh, local-llm.sh) ever sets this; it only exists so
+# llm-skill-pack-build.selftest.sh can point at a disposable temp directory.
+if os.environ.get("LLM_SKILL_PACK_EXTRA_ROOT"):
+    ALLOWED_ROOTS.append(os.path.realpath(os.environ["LLM_SKILL_PACK_EXTRA_ROOT"]))
+
+# Ported from store/freellm-call.sh's content gate (same SECRET_PATTERNS alternations) rather
+# than imported, matching this fleet's existing convention of a second copy for one small
+# check (that script's own header documents the same tradeoff against gemini-offload-call.sh).
+# Deliberately WITHOUT that gate's homoglyph-folding: these sources are trusted, non-adversarial
+# fleet-authored SKILL.md/rule-doc text, not attacker-controlled input trying to evade detection
+# -- the threat modeled here is an accidental secret landing in a doc, not an adversary hiding
+# one past a scanner.
+SECRET_PATTERNS = [
+    (r'-----BEGIN [A-Z0-9 ]*(PRIVATE KEY|OPENSSH PRIVATE KEY)-----', 'privkey'),
+    (r'\bssh-(rsa|ed25519|dss) [A-Za-z0-9+/]{40,}={0,2}', 'ssh_pubkey'),
+    (r'\b(sk|rk|pk)_(live|test)_[A-Za-z0-9]{16,}', 'sk_live'),
+    (r'\bsk[-_][A-Za-z0-9_-]{24,}', 'sk_generic'),
+    (r'\bsk-proj-[A-Za-z0-9_-]{20,}', 'sk_proj'),
+    (r'\bsk-ant-[A-Za-z0-9_-]{20,}', 'anthropic'),
+    (r'(?i)xi-api-key["\'\s:=]+[A-Za-z0-9_-]{16,}', 'elevenlabs'),
+    (r'(?i)\bBearer\s+[A-Za-z0-9_\-.=+/]{4,}', 'bearer'),
+    (r'\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}', 'jwt'),
+    (r'\bgh[pousr]_[A-Za-z0-9]{30,}', 'github'),
+    (r'\bxox[baprs]-[A-Za-z0-9-]{10,}', 'slack'),
+    (r'\bAKIA[0-9A-Z]{16}\b', 'aws'),
+    (r'(?i)aws_secret_access_key["\'\s:=]+[A-Za-z0-9/+=]{30,}', 'aws_secret'),
+    (r'\bsbp_[0-9a-f]{40}\b', 'supabase'),
+    (r'\bAIza[0-9A-Za-z_-]{20,}', 'google'),
+    (r'\b[0-9]+-[0-9A-Za-z_-]{32}\.apps\.googleusercontent\.com\b', 'google_oauth'),
+    (r'\b\d{8,12}:[A-Za-z0-9_-]{35,}\b', 'telegram'),
+    (r'\bSK[0-9a-f]{32}\b', 'twilio'),
+    (r'\bAC[0-9a-f]{32}\b', 'twilio_sid'),
+    (r'\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}', 'sendgrid'),
+    (r'\bnpm_[A-Za-z0-9]{36}\b', 'npm'),
+    (r'\bdckr_pat_[A-Za-z0-9_-]{20,}\b', 'dockerhub'),
+    (r'\bdop_v1_[a-f0-9]{64}\b', 'digitalocean'),
+    (r'\b[MN][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b', 'discord'),
+    (r'(?i)cloudflare[_-]?(api[_-]?)?token["\'\s:=]+[A-Za-z0-9_-]{30,}', 'cloudflare'),
+    (r'(?i)AccountKey=[A-Za-z0-9+/]{40,}={0,2}', 'azure'),
+    (r'(?m)^[ \t]*(export[ \t]+)?[A-Za-z_][A-Za-z0-9_]+=\S{8,}', 'env'),
+    (r'((?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z]))(?i:password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)["\']?[=:\s]+'
+     r'(?:"[^"\n]{8,}"|\'[^\'\n]{8,}\'|[A-Za-z0-9_\-.=+/]{8,})', 'cred'),
+    (r'(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]{4,}@', 'dburl'),
+    (r'(?i)\bBasic\s+[A-Za-z0-9+/=]{8,}', 'basic'),
+    (r'\bASIA[0-9A-Z]{16}\b', 'aws_asia'),
+    (r'\b1//0[A-Za-z0-9_-]{20,}\b', 'google_refresh'),
+    (r'(?i)\bcookie:\s*[^\n]*?session[A-Za-z0-9_]*=[A-Za-z0-9%_.\-]{8,}', 'cookie_session'),
+    (r'\bwhsec_[A-Za-z0-9]{16,}\b', 'stripe_whsec'),
+]
+
+
+class PackBuildRefused(Exception):
+    """Raised to refuse a build outright (path escape or a detected secret shape) --
+    never caught by anything that would let a partial/tainted pack get written."""
+
+
+def assert_contained(resolved_path):
+    for root in ALLOWED_ROOTS:
+        if resolved_path == root or resolved_path.startswith(root + os.sep):
+            return
+    raise PackBuildRefused(
+        f"source path '{resolved_path}' is outside every allowed root ({ALLOWED_ROOTS}) -- refusing to read it"
+    )
+
+
+def assert_no_secret(text, source_label):
+    for pattern, label in SECRET_PATTERNS:
+        if re.search(pattern, text, re.DOTALL):
+            raise PackBuildRefused(
+                f"source '{source_label}' matched secret pattern '{label}' -- refusing to build "
+                "(nothing was written; this pack would have left the machine over the freellm "
+                "cloud route)"
+            )
+
 
 def strip_frontmatter(text):
     if text.startswith("---\n"):
@@ -89,7 +177,18 @@ def extract(source_text, mode, rule_kw, pitfall_kw):
 
 
 def expand(path):
-    return os.path.abspath(os.path.expanduser(path))
+    # A relative path (no leading '~' or '/') resolves against ROOT (this script's own repo
+    # checkout), not the process cwd -- so a map entry like "docs/rules/x.md" is portable across
+    # every agent's own worktree instead of hardcoding one agent's absolute clone path.
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
+        expanded = os.path.join(ROOT, expanded)
+    # realpath (not abspath) so a symlink pointing outside an allowed root is resolved to its
+    # real target BEFORE the containment check below ever runs -- an unresolved symlink would
+    # let assert_contained see only the in-root symlink path and miss where it actually reads from.
+    resolved = os.path.realpath(expanded)
+    assert_contained(resolved)
+    return resolved
 
 
 def build_one(task, cfg, map_cfg):
@@ -103,6 +202,7 @@ def build_one(task, cfg, map_cfg):
             raw = f.read()
         extracted = extract(raw, src.get("mode", "sections"), rule_kw, pitfall_kw)
         if extracted:
+            assert_no_secret(extracted, f"{task}:{src['path']}")
             chunks.append(extracted)
         manifest_sources.append(
             {
@@ -171,7 +271,11 @@ def main():
                 violations.append(f"{task}: {est_tokens} est. tokens > cap {token_cap}")
             continue
 
-        body, sources, truncated, est_tokens, cap = build_one(task, cfg, map_cfg)
+        try:
+            body, sources, truncated, est_tokens, cap = build_one(task, cfg, map_cfg)
+        except PackBuildRefused as e:
+            print(f"REFUSED: {task}: {e}", file=sys.stderr)
+            return 3
         if not body:
             print(f"WARNING: {task} produced an empty pack (check keywords/sources)", file=sys.stderr)
         with open(pack_path, "w", encoding="utf-8") as f:
