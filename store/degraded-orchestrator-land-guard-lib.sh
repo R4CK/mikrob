@@ -13,6 +13,10 @@
 DEGRADED_ORCHESTRATOR_SWITCH="${DEGRADED_ORCHESTRATOR_SWITCH:-/home/neon/marveen/store/degraded-orchestrator-enabled.json}"
 
 degraded_orchestrator_is_on() {
+  # Round 3 (MikroB msg 19635, WhiteHat round-1 measurement, same fix as marveen-land.sh's own
+  # inline copy): python3 missing from PATH means this check CANNOT RUN AT ALL -- every way the
+  # check cannot run is degraded, same posture as the unreadable/corrupt file case below.
+  command -v python3 >/dev/null 2>&1 || return 0
   [ -e "$DEGRADED_ORCHESTRATOR_SWITCH" ] || return 1
   python3 -c '
 import json, sys

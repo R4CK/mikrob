@@ -77,5 +77,34 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL case 5 (non-owner --actor still refused): rc=$rc, out=$out"
 fi
 
+# Case 6 (MikroB msg 19635, WhiteHat round-1 measurement): python3 missing from PATH means the
+# check cannot run at all -- must refuse (fail closed), not silently proceed as if the switch were
+# off. A minimal fakebin dir carries every OTHER coreutils binary the script needs so execution
+# reaches the degraded-orchestrator guard and not some unrelated "command not found" earlier.
+printf '{"enabled": true}' > "$SWITCH"
+FAKEBIN="$TMPDIR/fakebin"
+mkdir -p "$FAKEBIN"
+for b in bash git grep sed awk cat tr cut head tail mktemp rm mkdir printf test sort uniq wc date tee dirname basename find xargs; do
+  p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$FAKEBIN/$b"
+done
+out="$(PATH="$FAKEBIN" DEGRADED_ORCHESTRATOR_SWITCH="$SWITCH" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run some-agent 2>&1)"
+rc=$?
+if [ "$rc" = 3 ] && echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL case 6 (python3 missing -> refuse): rc=$rc, out=$out"
+fi
+
+# Case 7: MUTATION PIN -- switch file missing via the env-override mechanism (case 1's own
+# pattern, used throughout this suite and the HTTP guard tests to simulate OFF) must stay
+# unaffected by case 6's python3 fix -- re-run case 1 itself with python3 present.
+rm -f "$SWITCH"
+out="$(DEGRADED_ORCHESTRATOR_SWITCH="$SWITCH" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run no-such-agent-d5638d28-again 2>&1)"
+if echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
+  FAIL=$((FAIL+1)); echo "  FAIL case 7 (switch missing via env override = OFF, unaffected by case 6): guard fired anyway: $out"
+else
+  PASS=$((PASS+1))
+fi
+
 echo "degraded-orchestrator-land-guard.selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

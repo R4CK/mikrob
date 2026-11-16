@@ -114,6 +114,12 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # (degraded-orchestrator-switch-parity.test.ts) feeds both implementations the same payload set.
 DEGRADED_ORCHESTRATOR_SWITCH="${DEGRADED_ORCHESTRATOR_SWITCH:-$MAIN/store/degraded-orchestrator-enabled.json}"
 degraded_orchestrator_is_on() {
+  # Round 3 (MikroB msg 19635, WhiteHat round-1 measurement): python3 missing from PATH means
+  # this check CANNOT RUN AT ALL -- the old code let a 127 (command not found) from the subprocess
+  # below propagate as this function's own nonzero exit, which `if degraded_orchestrator_is_on;
+  # then` reads as "not on", landing proceeds. Every way the check cannot run is degraded, same
+  # posture as the unreadable/corrupt file case already below.
+  command -v python3 >/dev/null 2>&1 || return 0
   [ -e "$DEGRADED_ORCHESTRATOR_SWITCH" ] || return 1
   python3 -c '
 import json, sys
