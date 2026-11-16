@@ -26326,3 +26326,29 @@ backend2 vegezte a javitast. Gate: QA + Cybered.
 Mutacio-ellenorzes: a `needs-fleet-oauth.mjs` uj ellenorzesenek visszavonasaval az eredeti hiba pontosan reprodukalodik (isolation=yes, fleet-token exportalva) az 53-57. eseteken; a 58-59. mutacio-pin zold maradt. Visszaallitva, ismet zold.
 
 **Ki döntött:** RedHat (cybered) LOW NO-GO, komment 32213. backend vegezte a javitast. Gate-SHA: a9af9e15a. Gate: QA + Cybered.
+
+---
+
+## 2026-11-16 -- 270b2950: remote agent on shared auth still isolation=no; pin customProvider:null
+
+11c6cab4 RedHat residual (comment 32213, carried into the round-3 GO 32340): closing the
+customProvider-unusable gap left two smaller items open. **MEDIUM-LOW:** a remote (ssh) agent
+(remoteHost+remoteWorkdir) with no customProvider on the default shared-auth mode had no check
+at all in needs-fleet-oauth.mjs -- it fell into the plain "needed" branch, same as any local
+Claude agent, and watchdog.sh then either silently printed isolation=no (no local .claude-config
+for a remote agent) or, when one happened to exist, actually exported the shared fleet token to
+a process that runs on a different host -- a real token-leak shape, not just a cosmetic gap.
+**LOW:** an explicit `customProvider: null` was already correctly classified as unusable by the
+shared classifier, but no test pinned it by name.
+
+**Fix:** needs-fleet-oauth.mjs now calls the same resolveRemoteConfig() watchdog-provider-env.mjs
+already uses, and refuses (fleet-oauth-undecidable) for a configured remote agent before ever
+reaching the fleet-token branch. The customProvider:null case needed no code change -- only a
+named test.
+
+**Mérés:** scripts/__tests__/watchdog-config-isolation.test.sh cases 60/61, mutation-proven
+(disabling either check flips the matching case red; with a .claude-config fixture present, the
+remote mutant actually exports the fleet token -- isolation=yes -- confirming the real-leak
+severity, not just a missing refusal). 71/71 green with the fix (was 69/69). tsc --noEmit clean.
+
+**Ki döntött:** RedHat (Cybered) lelete alapján backend korrigálja; Gate: QA + Cybered.
