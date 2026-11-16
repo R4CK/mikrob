@@ -26808,3 +26808,43 @@ fájl mindkét konstansa javítva, zöld újramérve.
 
 **Ki döntött:** fleet-test.sh saját piros eredménye fogta meg, backend javítja ugyanabban a
 körben, push előtt.
+
+## 2026-11-16 -- 2ba008f2 round 4: _session_outage_active polarity fail-closed on python crash
+
+**Mi:** CYBERSEC NO-GO round 3 (cybersec2, comment 32558, Gate-SHA 6fde6fde4) F1 MEDIUM: the
+round-3 `_session_outage_active()` (store/degraded-orchestrator-land-guard-lib.sh AND
+marveen-land.sh's inline copy) ended with `[ $? = 0 ]`, so ONLY exact python exit 0 meant "outage
+active"; exit 1 was the intended "normal" signal, but so was every other crash code (127, 137,
+139, bad PYTHONHOME, cwd-shadowed json.py) -- wrongly granting the `--actor mikrob` bypass on a
+python crash during a real outage. Proof table from 32558: healthy python3 -> refused (control);
+PATH-stub exit 1/2/127/137/139 -> allowed (bug, all five); unusable PYTHONHOME -> allowed; cwd
+`json.py` shadow (no `-I`) -> allowed.
+
+**Fix:** sentinel exit code (3, not 1) for the genuine "not active" case, emitted from inside a
+`try: main() / except SystemExit: raise / except BaseException: sys.exit(0)` wrapper (the
+`except SystemExit: raise` is load-bearing -- without it the sentinel itself is a SystemExit and
+gets swallowed by the BaseException catch-all), invoked via `python3 -I -c` to stop cwd/PYTHON*
+shadowing. Shell side: `local rc=$?; [ "$rc" = 3 ] && return 1; return 0` -- only rc=3 means "not
+active"; 0 or any crash code means "active" (fail-closed, deny the bypass). Applied identically
+to the lib and marveen-land.sh's inline copy (verified byte-identical extraction).
+
+**Nincs benne:** the exit-127 "guard lib sourced but missing check_degraded_orchestrator_guard"
+fail-open case (noted by MikroB, msg 20150, same fail-open-on-crash family as F1) -- carried to
+the next round on this card, not yet fixed.
+
+**Mérés:** selftest cases added (python3 crash exit 1/137/139 via a selective stub matching only
+the outage-check's own inline script, so the switch-file reader's independent python3 call is
+untouched): `degraded-orchestrator-land-guard.selftest.sh` 11->14/14 PASS, `marveen-land.sh
+--selftest` 98->101/101 PASS, `mopsi-land.sh --selftest` 77->80/80 PASS, `mopsion-land.sh`/
+`cleancore-land.sh --selftest` 113->116/116 PASS. `landing-downward-check.test.ts` shared-block
+floors bumped cc 51->54, mv 36->39 (cc=116-54=62, mv=101-39=62, unchanged shared-block delta).
+Mutation-proven: reverting to the old `[ $? = 0 ]` polarity reproduces the bypass under the
+selective-stub crash case (exit 137); restored fix denies it, confirmed byte-identical to backup.
+`npx tsc --noEmit` clean. `fleet-test.sh --ref 08119dcf442ac46610f7652d187578ad37fd55d1` on
+degraded-orchestrator-land-guard-selftest.test.ts + landing-downward-check.test.ts: 2 Test Files
+passed, 11 Tests passed.
+
+**Ki döntött:** Fix-Direction: WhiteHat2 (cybersec2, comment 32558). backend végezte a javítást.
+Gate-SHA: 08119dcf442ac46610f7652d187578ad37fd55d1. Gate: QA + Cybered (Fix-Direction jött
+WhiteHat2-től, a biztonsági re-gate RedHat-é, root CLAUDE.md "fix proposed by WhiteHat -> security
+gate is RedHat" konvenció szerint).
