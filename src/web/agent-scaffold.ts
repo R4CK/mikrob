@@ -1136,6 +1136,7 @@ export const EMAIL_GATE_MATCHER =
   'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
   + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
   + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
+  + '|.*send_mail.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
@@ -3500,20 +3501,6 @@ function buildAutonomyBody(name: string): string {
 // "ezzel napok telnek el, hogyha hulyesegeket mondanak nekem, es en meg
 // elhiszem". This block is fleet-wide, not agent-specific: a guess dressed as
 // a fact costs the same wherever it comes from.
-// `isMainAgent`: the recipient-ledger hook (scripts/email-send-gate.mjs) is
-// wired ONLY into sub-agent settings (writeAgentSettingsFromProfile, guarded by
-// `name !== MAIN_AGENT_ID`); the main agent's own sends go through the
-// approval gate (envelope-hash approval) and the Hungarian copy gate under
-// scripts/hooks/, neither of which reads the ledger. The hook FILE NAMES are
-// deliberately not written into the generated text: the seeding-surface scan in
-// hook-registration-completeness.test.ts reads this file as a corpus and would
-// take a name mention for a registration.
-// Measured 2026-09-22 (LEDGERFOAGENS922): the main agent's settings carry no
-// email-send-gate entry and its two email hooks contain zero ledger references.
-// The same paragraph cannot be true for both audiences: for a sub-agent the
-// ledger IS a machine gate, for the main agent it is NOT. Wiring the ledger for
-// the main agent is a separate owner decision; this text only stops promising a
-// protection that is not there.
 //
 // NOT ADOPTED HERE (card 5a15cd5a, upstream-sync batch 7): the recipient-ledger
 // system itself is rejected in any form (Cybersec, card afd64623, HIGH --

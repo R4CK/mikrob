@@ -4,7 +4,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
-import { listAgentNames, listAllAgentNames, agentConfigRoot, readAgentModel, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, listAllAgentNames, agentConfigRoot, readAgentModel, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { mainAgentConfigDir } from './main-transcript-root.js'
 import {
@@ -33,7 +33,7 @@ import {
 import { localMidnightMs } from '../auto-restart.js'
 import { ownerQuestionHolds } from './open-question.js'
 import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
-import { createAgentMessage } from '../db.js'
+import { createAgentMessage, countRestartQueueState } from '../db.js'
 import { sweepAgentDirTripwire } from './agent-dir-tripwire.js'
 import {
   decideGuard,
@@ -45,6 +45,8 @@ import {
   HANDOFF_RESEND_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
+  READY_TIMEOUT_MS,
+  RESUME_GIVE_UP_REASON,
   STALE_REFRESH_REASON_PREFIX,
   SATURATION_CREDIBLE_MIN_PCT,
   saturationBannerCredible,
@@ -214,11 +216,13 @@ function readHighwater(): HighwaterMap {
 
 let highwater: HighwaterMap | null = null
 
-function observedHighwater(name: string, model: string, observedNow: number): number {
+// `learn` false reads the stored mark without raising it: a status read must
+// not change the thing it reports on, so only the guard's sweep writes.
+function observedHighwater(name: string, model: string, observedNow: number, learn: boolean): number {
   if (highwater === null) highwater = readHighwater()
   const entry = highwater[name]
   const prior = entry && entry.model === model ? entry.tokens : 0
-  if (observedNow > prior) {
+  if (learn && observedNow > prior) {
     highwater[name] = { model, tokens: observedNow }
     try { writeFileSync(HIGHWATER_PATH, JSON.stringify(highwater, null, 2)) }
     catch (err) { logger.warn({ err }, 'context-guard: highwater persist failed') }
@@ -305,6 +309,42 @@ export function staleRefreshHandoffPrompt(staleMinutes: number, handoffPath: str
   )
 }
 
+/**
+ * The queue sentence of the restart notice. The notice used to tell the main
+ * agent that messages sent to the old session "may have been lost -- check and
+ * resend them", without measuring anything. Resending is usually wrong: pending
+ * rows are delivered into the fresh session once it is ready, and the resume
+ * prompt tells the fresh session to re-read the restart window itself, so a
+ * resend lands as a duplicate in the very session that was just restarted to
+ * get its context down. The sentence now carries the counts instead; the rows
+ * the router will not retry are the failed ones. Exported so a test pins it.
+ */
+export function restartNoticeQueueText(queue: { pending: number; failed: number } | null): string {
+  if (queue === null) {
+    return ' A sor allapotat NEM tudtam megmerni -- ellenorizd kezzel, mielott barmit ujrakuldenel.'
+  }
+  return ` A sor a restart pillanataban: ${queue.pending} pending, ${queue.failed} failed (utolso ora).` +
+    (queue.failed > 0
+      ? ` A ${queue.failed} failed sort a router mar NEM probalja ujra -- ezeket nezd meg (a 'result' mezo mondja meg, miert buktak).`
+      : '') +
+    (queue.pending > 0
+      ? ` A ${queue.pending} pending sort a router a friss sessionbe kezbesiti, amint az kesz -- NE kuldd ujra, mert duplikalodik.`
+      : '') +
+    ' A regi sessionbe az utolso percekben kezbesitett uzeneteket a resume prompt alapjan a friss session maga olvassa vissza -- ezeket se kuldd ujra.' +
+    // Both promises need the resume to happen; a ready-timeout gives it up, and then nothing re-reads.
+    ' Mindez akkor all, ha a friss session elindul es megkapja a resume promptot; ha nem, a sort es ezeket az uzeneteket kezzel nezd meg.'
+}
+
+/** Counts the queue for the restart notice; a failed count yields null, not a guess. */
+export function restartQueueAtRestart(name: string): { pending: number; failed: number } | null {
+  try {
+    return countRestartQueueState(name, Math.floor(Date.now() / 1000) - 3600)
+  } catch (err) {
+    logger.warn({ err, name }, 'context-guard: queue count for the restart notice failed')
+    return null
+  }
+}
+
 export function resumePrompt(
   name: string,
   handoffPath: string,
@@ -377,6 +417,31 @@ export function configDirFor(name: string): string | undefined {
   return name === MAIN_AGENT_ID ? mainAgentConfigDir(agentConfigRoot(name)) : (resolveAgentConfigDirForRead(name) ?? undefined)
 }
 
+/** Operator notice for a resume give-up. Exported so the wording is pinned by a test. */
+export function resumeGiveUpNotice(name: string, handoffPath: string): string {
+  return `[CONTEXT-GUARD] A(z) "${name}" agent restartja utan a session ${READY_TIMEOUT_MS / 60_000} percen belul nem lett kesz, ` +
+    'ezert a folytatasi (resume) prompt NEM ment ki. Az agent vagy nem fut, vagy nem fogad promptot, vagy a handoff nelkul indult el. ' +
+    `Nezd meg a pane-t; ha all, add be neki kezzel a handoffot: ${handoffPath}`
+}
+
+/**
+ * The resume give-up is decided as action 'none', and the none-branch logs
+ * nothing, so the restarted agent could sit without its handoff pointer while
+ * nobody knew the resume path had failed. Warn, and tell a human through the
+ * same sinks as the rescue-failure alert: the main agent's own inbox is not a
+ * sink for an alert about the main agent.
+ */
+export async function reportResumeGiveUp(name: string): Promise<void> {
+  logger.warn({ name }, 'context-guard: resume give-up -- the restarted session never became ready, resume prompt not sent')
+  const text = resumeGiveUpNotice(name, handoffPathFor(name))
+  try {
+    if (name === MAIN_AGENT_ID) await notifyChannel(text)
+    else createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard resume give-up notice')
+  } catch (err) {
+    logger.error({ err, name }, 'context-guard: FAILED TO RAISE the resume give-up notice')
+  }
+}
+
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
 async function measureContextTokens(name: string): Promise<number | null> {
   const tokens = await readContextTokensFromProjectDir(agentConfigRoot(name), configDirFor(name))
@@ -395,7 +460,12 @@ function measureIdleMs(name: string, nowMs: number): number | null {
   return Math.max(0, nowMs - mtime)
 }
 
-async function measurePct(name: string, cfgLimit: number | null): Promise<number | null> {
+// Koteg 24 (card 57044a66): async signature + agentConfigRoot() kept per the standing
+// fork-upstream/acknowledged-conflicts.ts pin on this exact point -- this fork's
+// readContextTokensFromProjectDir is async (upstream's is sync), so upstream's sync
+// measurePct would silently return a Promise where a number|null is expected. `opts`
+// (upstream's new learn-suppression flag) is adopted; it is already referenced below.
+export async function measurePct(name: string, cfgLimit: number | null, opts: { learn?: boolean } = {}): Promise<number | null> {
   const workingDir = agentConfigRoot(name)
   const configDir = configDirFor(name)
   const tokens = await readContextTokensFromProjectDir(workingDir, configDir)
@@ -410,7 +480,7 @@ async function measurePct(name: string, cfgLimit: number | null): Promise<number
     // Calibrate against the persisted per-(agent, model) maximum, not just
     // the live reading: a fresh post-restart session must not un-learn a
     // window the previous session already proved (see HighwaterMap above).
-    limit = calibrateLimit(observedHighwater(name, model, tokens), contextLimitForModel(model))
+    limit = calibrateLimit(observedHighwater(name, model, tokens, opts.learn !== false), contextLimitForModel(model))
   }
   return tokens / limit
 }
@@ -466,6 +536,38 @@ async function performRestart(name: string): Promise<void> {
     const res = await restartAgentProcess(name, { fresh: true })
     if (!res.ok) throw new Error(res.error ?? 'agent restart failed')
   }
+}
+
+/** Is this agent fed through the worksource queue (it redelivers unacknowledged items)? */
+function onWorksource(name: string): boolean {
+  try { return readAgentWorksourceChannel(name) } catch { return false }
+}
+
+/**
+ * The "what may have been lost" sentence of the restart notice. The generic
+ * line tells the supervisor that prompts sent to the old session may be gone
+ * and to send them again. For an idle-flush restart of
+ * an agent on the worksource queue that is false twice over: it had nothing in
+ * flight, and the queue redelivers whatever it had not acknowledged. The
+ * supervisor following the generic line sent three needless status messages
+ * (~3.1M input tokens, measured 2026-09-29), so that case gets its own text.
+ * Every other case, and any agent NOT on worksource, gets the queue at restart
+ * time instead (restartNoticeQueueText): a resend advice would duplicate rows
+ * the router still delivers.
+ */
+export function restartLossLine(
+  idleFlush: boolean,
+  worksource: boolean,
+  idleMinutes: number,
+  queue: { pending: number; failed: number } | null,
+): string {
+  if (worksource && idleFlush) {
+    return (
+      `. Tetlen volt (>= ${idleMinutes} perc), folyamatban levo munka nem volt; a nyugtazatlan tetelek a sorbol ujrakezbesulnek; ` +
+      'a resume magatol megy -- NE kuldj allapot-uzenetet es NE kuldj ujra semmit.'
+    )
+  }
+  return '.' + restartNoticeQueueText(queue)
 }
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
@@ -730,6 +832,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     dropPendingResume(name, decision.reason)
   }
   if (decision.action === 'none') {
+    if (decision.reason === RESUME_GIVE_UP_REASON) await reportResumeGiveUp(name)
     // Idle-flush non-decisions carry the measurement that blocked them
     // ("quiet for only 4m of 20m"), which is the only way to see the tier
     // failing to reach its threshold. It matters because the idle clock is the
@@ -878,10 +981,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             MAIN_AGENT_ID,
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
             (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
-            `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.` +
+            // The idle-flush origin comes from the SEQUENCE state: decision.reason
+            // here is the restart's own ("handoff written"), never idle-flush.
+            restartLossLine(state.idleFlushSequence === true, onWorksource(name), cfg.idleMinutes, restartQueueAtRestart(name)) +
             (typeof decision.nextState.handoffStaleMinutes === 'number'
-              // The generic "messages may be lost" line invites the wrong
-              // conclusion when the real gap is the ARTIFACT: say explicitly
+              // The queue line alone invites the wrong conclusion when the
+              // real gap is the ARTIFACT: say explicitly
               // that the handoff does not cover the tail of the session.
               ? ` FIGYELEM: a HANDOFF.md ELAVULT -- az utolso ~${decision.nextState.handoffStaleMinutes} perc munkaja nincs benne, a friss session ezt a szakaszt az elo forrasokbol kapja meg.`
               : decision.nextState.handoffStaleMinutes === 'unknown'
@@ -955,7 +1060,11 @@ export async function getContextGuardStatus(): Promise<Array<{
     return {
       agent: name,
       phase: state?.phase ?? 'idle',
-      pct: cfg.enabled && !remote ? await measurePct(name, cfg.limitTokens) : null,
+      // Koteg 24 (card 57044a66): learn:false -- this is a read-only status listing, not the
+      // guard's own sweep; it must not feed its reading into the per-agent high-water mark
+      // (observedHighwater), or opening the dashboard status page would itself widen the
+      // learned context window.
+      pct: cfg.enabled && !remote ? await measurePct(name, cfg.limitTokens, { learn: false }) : null,
       enabled: cfg.enabled,
       saturationRestart: cfg.saturationRestart,
       ...cooldownStatusExtra(state),

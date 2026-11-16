@@ -87,6 +87,13 @@ jobs:
       # own comment for this step: its load-bearing contract is the EXIT CODE (a non-zero
       # UserPromptSubmit hook blocks every prompt), only asserted by this shell suite; the live-API
       # case inside it stays opt-in, so this run touches nothing outside its fixtures.
+      # Koteg 24 (card 57044a66): migrate-main-agent-id.sh itself IS adopted this round (commits
+      # 036fecd13/397b3d06f/0b88d90bc, FLEETIMPORTENVKEY1021/FLEETIMPORTFOLLOW1021 -- a real fix,
+      # not an upstream-only feature), so its own test gets wired, unlike the NOT-ADOPTED bundle
+      # above. FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and never sources
+      # it. Hermetic: throwaway install dirs, uname/tmux stubs on PATH, every case answers "n"
+      # before anything is migrated.
+      - run: bash scripts/__tests__/migrate-agent-id-env-literal.test.sh
       - run: bash scripts/__tests__/taskstate-stub.test.sh
       # 723bbb70 (3): the hook-load watcher is a DIFFERENT, already-adopted fork feature
       # (scripts/hook-load-watch.py already shipped before this batch) -- not part of the

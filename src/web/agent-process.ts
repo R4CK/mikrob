@@ -27,6 +27,7 @@ import {
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
+  feedbackDraftDismissPlan,
   firstRunAcceptKeys,
   mcpTrustAcceptKeys,
   devChannelsAcceptKeys,
@@ -3590,10 +3591,11 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // live on agent-samu 2026-08-31: 10 minutes not-ready, 5 queued messages, and
 // a peer's report parked unsubmitted in the prompt.
 //
-// Dismissal takes TWO steps, measured on that same pane: "0" closes the draft,
-// then Claude Code immediately offers "Turn off Claude-drafted feedback? 0 to
-// turn off · Esc to keep". A second "0" there would silently disable feedback
-// drafting for that agent, so the follow-up is answered with Esc (keep) -- and
+// Dismissal: the card is closed with C-u then Down, never a digit (see
+// feedbackDraftDismissPlan for why a typed digit can stick and pile up). Claude
+// Code may then offer "Turn off Claude-drafted feedback? 0 to turn off · Esc to
+// keep". A "0" there would silently disable feedback drafting for that agent,
+// so the follow-up is answered with Esc (keep) -- and
 // only when its own detector fires, never blind: a bare Esc into a prompt box
 // that holds a parked delivery is not a keystroke worth firing on spec.
 // The not-ready-path companion to the pre-flight dismissal above, and the
@@ -3638,51 +3640,51 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
-// Card 813eeee9 (backend3, 2026-09-19 09:20-09:36): the '0' sent below does not always land on
-// the modal -- measured live, it went into the prompt INPUT instead, and the old code logged
-// "Dismissed" unconditionally and never re-checked. The not-ready caller (clearFeedbackModalAndRecheck)
-// re-ran this every second for 11+ minutes, each pass adding another '0' to the input box (it grew
-// to 40+ characters) while the log kept repeating a false "Dismissed" next to it. Fixed by actually
-// VERIFYING the modal is gone before claiming success, and bounding the retries: each failed
-// attempt clears the stray digit(s) with clearInputBuffer (same retry+verify C-u this file already
-// uses for a parked preamble) before trying again, with backoff between attempts. After
-// FEEDBACK_DISMISS_MAX_ATTEMPTS the function gives up loudly (logger.error, 'wedged') instead of
-// looping forever -- the pane then genuinely stays non-idle, which the EXISTING session-stuck /
-// stuck-input watchers already alert and restart on; this function does not need to invent a
-// second alerting path.
-const FEEDBACK_DISMISS_MAX_ATTEMPTS = 3
-const FEEDBACK_DISMISS_BACKOFF_MS = [300, 600, 1200]
+// Card 813eeee9 (backend3, 2026-09-19 09:20-09:36): a DIGIT sent to dismiss this modal does not
+// always land on it -- measured live, it went into the prompt INPUT instead, and the old code
+// logged "Dismissed" unconditionally and never re-checked, so the not-ready caller
+// (clearFeedbackModalAndRecheck) re-ran this every second for 11+ minutes, each pass adding
+// another stray digit to the input box. Koteg 24 (card 57044a66): superseded by upstream's own,
+// deeper fix below (feedbackDraftDismissPlan, pane-state.ts) rather than kept alongside it -- that
+// fix removes the root cause this card patched around: it NEVER sends a digit at all (C-u/Down
+// only, with a "hold" action whenever no keystroke on this specific pane content is provably
+// safe), so there is no stray-digit case left for a retry-with-backoff loop to clean up after.
+// Between C-u and Down: in one tmux call Down would reach the TUI before it
+// re-rendered the cleared input.
+const FEEDBACK_KEY_GAP_MS = 200
 
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    for (let attempt = 1; attempt <= FEEDBACK_DISMISS_MAX_ATTEMPTS; attempt++) {
-      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '0'], { timeout: 5000 })
-      await delay(FEEDBACK_DISMISS_BACKOFF_MS[attempt - 1])
-      const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
-
-      if (detectsFeedbackOptOutPrompt(after)) {
-        runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
-        await delay(300)
-        logger.info({ session, attempt }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
-        return
-      }
-      if (!detectsFeedbackDraftModal(after)) {
-        logger.info({ session, attempt }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
-        return
-      }
-
-      logger.warn(
-        { session, attempt, max: FEEDBACK_DISMISS_MAX_ATTEMPTS },
-        'Feedback-draft modal still present after the dismiss key -- it likely landed in the prompt input instead; clearing stray input before retrying',
-      )
-      await clearInputBuffer(session, host)
+    // The input box is read from the ghost-stripped view: a dim autosuggest in an
+    // empty box must not read as typed text. Detection stays on the plain capture.
+    const plan = feedbackDraftDismissPlan(pane, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION)
+    if (plan.act === 'none') return
+    if (plan.act === 'hold') {
+      logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
+      return
+    }
+    for (const [i, key] of plan.keys.entries()) {
+      if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
+    }
+    await delay(300)
+    const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+    if (detectsFeedbackOptOutPrompt(after)) {
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
+      await delay(300)
+      logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+      return
+    }
+    if (!detectsFeedbackDraftModal(after)) {
+      logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt')
+      return
     }
 
     logger.error(
       { session },
-      'Feedback-draft modal could not be dismissed after retries -- pane is wedged; not retrying further (existing session-stuck/stuck-input watchers will surface and restart it)',
+      'Feedback-draft modal still present after the dismiss keys -- pane is wedged; not retrying further (existing session-stuck/stuck-input watchers will surface and restart it)',
     )
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')

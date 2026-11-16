@@ -26,13 +26,34 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# Load BOT_NAME (and existing MAIN_AGENT_ID if present).
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
-
-BOT_NAME="${BOT_NAME:-Marveen}"
+# Read BOT_NAME from .env as a LITERAL, never by sourcing the file: .env is data
+# (a fleet import writes its identity values into it), and `source` would run
+# any $(...) or backticks a value holds (FLEETIMPORTFOLLOW1021). The shapes
+# source accepted read the same: "..." or '...' quotes, an export prefix, a
+# trailing " # comment" on a bare value, the last assignment wins. Without a
+# BOT_NAME line the caller's environment applies, then the default.
+# A function, not a heredoc inside $(...): bash 3.2 (macOS) misparses a quote
+# in a heredoc that sits inside a command substitution.
+read_env_bot_name() {
+  python3 - "$1" <<'PYEOF'
+import re, sys
+val = None
+with open(sys.argv[1], encoding='utf-8', errors='replace') as fh:
+    for line in fh:
+        m = re.match(r'\s*(?:export\s+)?BOT_NAME=(.*)$', line.rstrip('\r\n'))
+        if not m:
+            continue
+        v = m.group(1).strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+            v = v[1:-1]
+        else:
+            v = re.split(r'\s+#', v, maxsplit=1)[0].strip()
+        val = v
+print(val or '', end='')
+PYEOF
+}
+ENV_BOT_NAME="$(read_env_bot_name .env)"
+BOT_NAME="${ENV_BOT_NAME:-${BOT_NAME:-Marveen}}"
 NEW_SLUG=$(python3 - "$BOT_NAME" <<'PYEOF'
 import sys, unicodedata, re
 s = sys.argv[1].strip()
@@ -41,6 +62,24 @@ s = re.sub(r'[^a-zA-Z0-9]+', '-', s).strip('-').lower()
 print(s or 'marveen')
 PYEOF
 )
+
+# An id the message layer already owns, or a sub-agent's name, cannot become the
+# main agent's (FLEETRESERVEDNAME1021): 'system' is refused on every POST, so a
+# main agent named that could not send. Checked before anything is stopped.
+# The list is RESERVED_AGENT_IDS in src/web/sanitize.ts; a test keeps them equal.
+RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator hanna"
+case " $RESERVED_AGENT_IDS " in
+  *" $NEW_SLUG "*)
+    echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is reserved by the system." >&2
+    echo "Nothing was changed. Set another BOT_NAME in .env and rerun." >&2
+    exit 1 ;;
+esac
+# "marveen" is the id the install already runs under: nothing to rename there.
+if [ "$NEW_SLUG" != "marveen" ] && [ -d "$INSTALL_DIR/agents/$NEW_SLUG" ]; then
+  echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is already a sub-agent (agents/$NEW_SLUG)." >&2
+  echo "Nothing was changed. Set another BOT_NAME in .env and rerun." >&2
+  exit 1
+fi
 
 if [ "$NEW_SLUG" = "marveen" ]; then
   echo "BOT_NAME=\"$BOT_NAME\" → slug \"marveen\" (default). Nothing to migrate."

@@ -257,7 +257,10 @@ def owner_cc_missing(tool_input: dict, owner: str) -> bool:
 # The pre-classifier send-name test, kept ONLY for owner_cc_scope when the
 # extractor does not load (classify_tool -> "unclassified"), so a broken
 # email_extract.py cannot switch the owner-CC check off at level 3.
-_OWNER_CC_SEND_FALLBACK = re.compile(r"send_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
+# send_mail(_auto)$: the harder-mail sends (HARDERMAILGATES1019), the suffix
+# classify_mail_tool gates them by.
+_OWNER_CC_SEND_FALLBACK = re.compile(
+    r"send_email|gmail__(reply|reply_all|send_message|forward)$|send_mail(_auto)?$", re.I)
 
 
 def owner_cc_scope(tool: str, kind, tool_input: dict):
@@ -398,6 +401,11 @@ def read_standing():
     return out, None
 
 
+# The recipient-anchor tokens email_extract.collect_email_envelope (and the
+# credential gate) put in `to` for a reply addressed by its original.
+_ANCHOR_TOKEN_PREFIXES = ("messageId:", "reply_to:")
+
+
 def standing_match(env: dict, standing):
     """The address this letter may be sent to WITHOUT an approval, or None.
 
@@ -411,6 +419,21 @@ def standing_match(env: dict, standing):
     to exactly one known address falls through to the approval path -- never to
     an allow."""
     if not standing:
+        return None
+    # A harder-mail reply is addressed by its original (reply_to), not by `to`:
+    # the `to` the envelope holds is then a made-up anchor token, and an address
+    # typed into reply_folder / reply_to_uid parses out of it as a recipient
+    # (security review of HARDERMAILGATES1019). Such a letter is never on the list.
+    if env.get("reply_to"):
+        return None
+    # A reply addressed by its ORIGINAL carries a made-up anchor token in `to`
+    # (messageId:<id> for a connector reply, reply_to:[folder, uid] for a
+    # harder-mail one), not a recipient. getaddresses reads an address typed
+    # into the id as THE one listed recipient, and the reply -- whose real
+    # recipient is the original's sender -- went out without an approval
+    # (measured 2026-10-20: messageId "<listed@addr>" -> exit 0 at level 2).
+    # A letter whose `to` holds such a token is never on the list.
+    if any(str(v).startswith(_ANCHOR_TOKEN_PREFIXES) for v in (env.get("to") or [])):
         return None
     for field in ("cc", "bcc"):
         if any(str(v).strip() for v in (env.get(field) or [])):
@@ -616,6 +639,12 @@ def content_anchor(env: dict) -> str:
         fields["attachments"] = env["attachments"]
     if env.get("inline_images"):
         fields["inline_images"] = env["inline_images"]
+    # HARDERMAILGATES1019: a harder-mail send names its account (the From), a
+    # non-plain body_format and, for a reply, the original message; they join
+    # the canon only when present, so every other anchor stays byte-identical.
+    for key in ("account", "reply_to", "body_format"):
+        if env.get(key):
+            fields[key] = env[key]
     canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
@@ -729,6 +758,12 @@ def summarize(env: dict) -> str:
     extra = ""
     if env.get("attachments"):
         extra += " | Csatolmany: " + ", ".join(f"{a['filename']} ({a['sha256'][:16]})" for a in env["attachments"])
+    if env.get("account"):
+        extra += f" | Fiok: {env['account']}"
+    if env.get("body_format"):
+        extra += f" | Formatum: {env['body_format']}"
+    if env.get("reply_to"):
+        extra += f" | Valasz erre: {env['reply_to'][0]} / uid {env['reply_to'][1]}"
     return f"Cimzett: {to} | CC: {cc} | Szoveg eleje: {head}{extra}"
 
 
@@ -793,6 +828,16 @@ def main():
     is_connector_send = bool(_EMAIL_SERVER_RE.search(tool)) and bool(
         _CONNECTOR_SEND_VERB_RE.search(_bare_tool_name(tool)))
     is_connector_send = is_connector_send or scope_kind(tool) == "connector_send"
+    # Koteg 24 (card 57044a66, HARDERMAILGATES1019 follow-up): owner_cc_scope()'s own
+    # _OWNER_CC_SEND_FALLBACK (send_mail(_auto)$) was added for exactly this -- a broken
+    # email_extract.py returns "unclassified" for mcp__harder-mail__send_mail (it has no
+    # "manage_email" substring for classify_tool's own except-branch fallback), so neither
+    # scope_kind() == "connector_send" above nor _SEND_TOOL below ever fires for it, and the
+    # owner-CC check was silently skipped at every level. owner_cc_scope() itself is never
+    # called anywhere else in this file (measured by grep) -- wiring its fallback regex in
+    # here directly, bare-verb like the connector check above, rather than routing through
+    # the unused function and risking a second, diverging path.
+    is_connector_send = is_connector_send or bool(re.search(r"send_mail(_auto)?$", tool, re.I))
     is_mcp_send = is_connector_send or (bool(_SEND_TOOL.search(tool)) and not (
         _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input)))
     # Koteg 23a: an off-brand server name (mcp__workspace__send_gmail_message) is classified
@@ -903,7 +948,13 @@ def main():
     standing, standing_note = read_standing()
     if standing_note:
         prefix = prefix + f"({standing_note})\n"
-    hit = standing_match(env, standing)
+    # A call that names its original (a connector reply, reply_all or forward)
+    # is never a standing-list send, whatever `to` says: the letter reaches the
+    # original's sender or participants, or carries the original's content,
+    # none of which this gate read. The envelope only shows the messageId as a
+    # `to` token when `to` is empty, so this is decided on the call itself
+    # (PR #2098 review: messageId + a listed `to` -> exit 0 at level 2).
+    hit = None if tool_input.get("messageId") else standing_match(env, standing)
     if hit:
         # The list makes the address a CANDIDATE; only the owner's one-time
         # approval makes it live. Checked before the trace, because an address

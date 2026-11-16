@@ -132,13 +132,23 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   dailyHandoffTime: null,
 }
 
+/**
+ * Upper bound for every minutes field. Each one is turned into a millisecond
+ * deadline (nowMs + minutes * 60_000), and Number.isFinite(1e308) is true while
+ * 1e308 * 60_000 is Infinity: an infinite deadline is never reached, so the
+ * phase would never time out. This is a conversion limit, not a business one
+ * (about 5800 years): it keeps the latest possible Date plus two such durations
+ * a safe integer.
+ */
+export const MAX_GUARD_MINUTES = Math.floor((Number.MAX_SAFE_INTEGER - 8.64e15) / (2 * 60_000))
+
 /** Coerce arbitrary parsed JSON into a safe, fully-populated config. */
 export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
   const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
   const pct = (v: unknown, dflt: number): number =>
     (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1) ? v : dflt
   const mins = (v: unknown, dflt: number): number =>
-    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? v : dflt
+    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? Math.min(v, MAX_GUARD_MINUTES) : dflt
   let actPct = pct(o.actPct, DEFAULT_CONTEXT_GUARD.actPct)
   let hardPct = pct(o.hardPct, DEFAULT_CONTEXT_GUARD.hardPct)
   if (hardPct < actPct) hardPct = actPct // hard tier can never sit below act
@@ -303,6 +313,12 @@ export interface GuardState {
    *  sent. A re-send carries a reason of its own, and the runner needs the
    *  original one to word the prompt the same way (act / idle / daily / stale). */
   handoffRequestReason?: string
+  /** Koteg 24 (card 57044a66): set when THIS sequence's handoff request was triggered
+   *  by the idle-flush tier (reason starts with IDLE_FLUSH_REASON_PREFIX), not act/daily/stale.
+   *  The runner's restart notice wording (restartLossLine) needs the sequence's OWN origin,
+   *  not the restart action's reason (always "handoff written"), to know whether a worksource
+   *  agent's "nothing was lost, don't resend" line applies. */
+  idleFlushSequence?: boolean
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -672,6 +688,13 @@ export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
  * matches this constant to pick the prompt.
  */
 export const DAILY_HANDOFF_REASON_PREFIX = 'daily-handoff'
+
+/**
+ * Reason for giving up on the resume injection: the restarted session did not
+ * become ready within READY_TIMEOUT_MS. The decision is action 'none', so the
+ * runner matches this constant to raise an alert instead of staying silent.
+ */
+export const RESUME_GIVE_UP_REASON = 'ready timeout -- giving up on resume injection'
 
 /**
  * Whether the daily tier can actually fire for this config.
@@ -1210,7 +1233,7 @@ export function decideGuard(
         }
       }
       if (nowMs >= state.deadlineMs) {
-        return cooldown(nowMs, cfg, 'ready timeout -- giving up on resume injection')
+        return cooldown(nowMs, cfg, RESUME_GIVE_UP_REASON)
       }
       return none('waiting for restarted session')
     }
@@ -1333,6 +1356,7 @@ function handoffRequest(
       staleRefreshCount: 0,
       handoffStaleMinutes: null,
       handoffRequestReason: reason,
+      idleFlushSequence: reason.startsWith(IDLE_FLUSH_REASON_PREFIX),
     },
   }
 }
