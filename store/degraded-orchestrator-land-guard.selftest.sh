@@ -135,5 +135,28 @@ else
   PASS=$((PASS+1))
 fi
 
+# Case 10 (card 2ba008f2 round 3, WhiteHat2 probe on origin/develop): the --actor mikrob bypass
+# in case 3 must NOT apply while a session outage is active, even though the switch itself is ON.
+OUTAGE="$TMPDIR/mikrob-session-outage.json"
+printf '{"enabled": true}' > "$SWITCH"
+printf '{"active": true, "heartbeat": %s}' "$(date +%s)" > "$OUTAGE"
+out="$(DEGRADED_ORCHESTRATOR_SWITCH="$SWITCH" MIKROB_SESSION_OUTAGE_PATH="$OUTAGE" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run some-agent --actor mikrob 2>&1)"
+rc=$?
+if [ "$rc" = 3 ] && echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL case 10 (--actor mikrob refused during active outage): rc=$rc, out=$out"
+fi
+
+# Case 11: MUTATION PIN -- the SAME outage marker, but the switch itself is {"enabled": false}
+# (OFF): the lander must proceed normally -- an outage must not turn an OFF switch into a refusal.
+printf '{"enabled": false}' > "$SWITCH"
+out="$(DEGRADED_ORCHESTRATOR_SWITCH="$SWITCH" MIKROB_SESSION_OUTAGE_PATH="$OUTAGE" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run no-such-agent-d5638d28-outage-off --actor mikrob 2>&1)"
+if echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
+  FAIL=$((FAIL+1)); echo "  FAIL case 11 (switch OFF during outage): guard fired anyway: $out"
+else
+  PASS=$((PASS+1))
+fi
+
 echo "degraded-orchestrator-land-guard.selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

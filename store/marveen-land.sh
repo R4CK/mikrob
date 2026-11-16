@@ -149,9 +149,62 @@ sys.exit(0 if data["enabled"] else 1)
   [ $? = 1 ] && return 1
   return 0
 }
+# Card 2ba008f2 (WhiteHat2 probe on origin/develop, round 3): the --actor mikrob bypass below is
+# self-declared, just like src/kanban-force-actors.ts's isForceActor() -- same shared-token
+# caller can send it. That module already refuses the bypass outright while a session outage is
+# active (store/mikrob-session-outage.json), regardless of the switch's own state; this ports the
+# SAME check here so the bash landers cannot grant via --actor what the TS guard now denies via
+# force+actor. Mirrors isSessionOutageActive() field-for-field (active/heartbeat, same staleness
+# and future-skew windows, same fail-closed-on-malformed rule) -- not imported (bash cannot import
+# a TS module), kept in exact lockstep the same way the switch-file contract above already is.
+_MIKROB_SESSION_OUTAGE_PATH="${MIKROB_SESSION_OUTAGE_PATH:-$MAIN/store/mikrob-session-outage.json}"
+_session_outage_active() {
+  # Same posture as degraded_orchestrator_is_on: if the check cannot run at all, that is not
+  # "verified inactive" -- fail closed (deny the bypass). degraded_orchestrator_is_on's own
+  # python3-missing fail-closed-to-ON below makes the die() fire either way in that case.
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 -c '
+import json, sys, time
+try:
+    with open(sys.argv[1]) as f:
+        raw = f.read()
+except FileNotFoundError:
+    sys.exit(1)  # no marker: normal operation
+except Exception:
+    sys.exit(0)  # exists but unreadable: fail closed
+try:
+    data = json.loads(raw)
+except Exception:
+    sys.exit(0)  # corrupt/empty: fail closed
+if not isinstance(data, dict):
+    sys.exit(0)
+active = data.get("active")
+if not isinstance(active, bool):
+    sys.exit(0)  # malformed active field: fail closed
+if active is False:
+    sys.exit(1)  # explicitly inactive: normal operation
+heartbeat = data.get("heartbeat")
+if not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool):
+    sys.exit(0)  # malformed heartbeat: fail closed
+MIN_H, MAX_H = 1_600_000_000, 4_000_000_000
+if heartbeat < MIN_H or heartbeat > MAX_H:
+    sys.exit(0)  # implausible value (e.g. ms instead of s): fail closed
+age_ms = (time.time() - heartbeat) * 1000
+STALE_MS, FUTURE_TOLERANCE_MS = 15 * 60 * 1000, 60 * 1000
+if age_ms > STALE_MS:
+    sys.exit(1)  # genuinely stale: normal operation resumes
+if age_ms < -FUTURE_TOLERANCE_MS:
+    sys.exit(1)  # modest clock skew beyond tolerance: normal operation
+sys.exit(0)  # fresh and active: fence holds
+' "$_MIKROB_SESSION_OUTAGE_PATH"
+  [ $? = 0 ]
+}
+
 check_degraded_orchestrator_guard() { # $1 = actor (may be empty)
   local actor="${1:-}"
-  [ "$actor" = "mikrob" ] && return 0
+  if [ "$actor" = "mikrob" ] && ! _session_outage_active; then
+    return 0
+  fi
   if degraded_orchestrator_is_on; then
     die 3 "degraded-orchestrator mode is ON ($DEGRADED_ORCHESTRATOR_SWITCH) -- landing is not allowed while degraded (card d5638d28). Owner override: --actor mikrob."
   fi
@@ -1179,18 +1232,45 @@ print(rest[19])
   # Card d5638d28 round 4 (CYBERED NO-GO 32270 Finding 2): the F4d case above only ever tried
   # no --actor at all -- RedHat's own mutant (widening the shared lib's actor allowlist to accept
   # ANY non-empty name) left this selftest green, because nothing here ever supplied an --actor.
+  # Card 2ba008f2 round 3: pin a nonexistent MIKROB_SESSION_OUTAGE_PATH so this case (and the
+  # non-owner one below) do not depend on whether a REAL outage happens to be active right now.
+  NOOUT="$(mktemp -d)/no-outage.json"
   n=$((n+1))
-  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$NOOUT" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
   case "$out" in
     *"degraded-orchestrator mode is ON"*) echo "  FAIL degraded-orchestrator owner bypass: --actor mikrob was still refused: $out"; fail=1 ;;
   esac
 
   n=$((n+1))
-  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor someone-else 2>&1)"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$NOOUT" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor someone-else 2>&1)"
   rc=$?
   case "$out" in
     *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator non-owner actor: wrong exit code $rc"; fail=1; } ;;
     *) echo "  FAIL degraded-orchestrator non-owner actor: guard did not refuse a non-owner --actor: $out"; fail=1 ;;
+  esac
+
+  # Card 2ba008f2 round 3 (WhiteHat2 probe on origin/develop): the --actor mikrob bypass above
+  # must NOT apply while a session outage is active, even though the switch itself is ON -- same
+  # "refused outright during outage" rule as src/kanban-force-actors.ts's isForceActor().
+  OUTJ="$(mktemp -d)/outage.json"
+  printf '{"active": true, "heartbeat": %s}' "$(date +%s)" > "$OUTJ"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator owner bypass during outage: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator owner bypass during outage: --actor mikrob was NOT refused while the session outage marker is active: $out"; fail=1 ;;
+  esac
+
+  # Same outage marker, but the switch itself is OFF: the bypass is irrelevant here (no ON state
+  # to bypass), so the lander must proceed normally -- an outage must not turn an OFF switch into
+  # a refusal on its own.
+  DGSWOFF="$(mktemp -d)/switch-off.json"
+  printf '{"enabled": false}' > "$DGSWOFF"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSWOFF" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) echo "  FAIL switch OFF during outage: lander refused even though the switch itself is OFF: $out"; fail=1 ;;
   esac
   rm -rf "$(dirname "$DGSW")"
 

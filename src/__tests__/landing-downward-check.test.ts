@@ -151,6 +151,11 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // whenever that block does -- the assertion it feeds is about the SHARED block being identical
     // in both, and lowering it to make an edit fit would delete exactly that guarantee.
     //
+    // marveen-land.sh's own-case constant moved 34 -> 36 with card 2ba008f2 round 3 (WhiteHat2
+    // probe on origin/develop: the --actor mikrob land-guard bypass still worked during a session
+    // outage): two new cases (bypass refused while the outage marker is active, and an OFF switch
+    // still lands normally during an outage) -- own-block only, cleancore-land.sh untouched.
+    //
     // marveen-land.sh's own-case constant moved 3 -> 7 with card cd3e577b (F1 per-card
     // worktree/branch: card_designated_gates_agree + --card/--all gate-requirement cases), then
     // 7 -> 10 with card 3731c807 (cd3e577b follow-up: the acquire_land_lock call-site pin, the
@@ -180,7 +185,7 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // own --selftest total the same way the HUP/INT cases above were) -- marveen-only own-block,
     // cleancore-land.sh untouched, same category as every other bump in this comment history.
     expect(cc).toBeGreaterThan(49) // 49 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(34) // 34 = marveen-land.sh's own cases
-    expect(cc - 49).toBe(mv - 34) // the same shared block, in both
+    expect(mv).toBeGreaterThan(36) // 36 = marveen-land.sh's own cases
+    expect(cc - 49).toBe(mv - 36) // the same shared block, in both
   })
 })

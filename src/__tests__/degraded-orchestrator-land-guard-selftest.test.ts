@@ -33,8 +33,8 @@ describe('degraded-orchestrator-land-guard.selftest.sh', () => {
   // hardcoded /home/neon/marveen path) -- so a fix applied to one copy and forgotten in the other
   // (exactly the class of bug this card exists for) fails this test, not just a live gate.
   it('marveen-land.sh\'s inline degraded_orchestrator_is_on is byte-equal to the shared lib copy', () => {
-    const extractFn = (src: string): string => {
-      const start = src.indexOf('degraded_orchestrator_is_on() {')
+    const extractFn = (src: string, name: string): string => {
+      const start = src.indexOf(`${name}() {`)
       expect(start).toBeGreaterThan(-1)
       const end = src.indexOf('\n}\n', start)
       expect(end).toBeGreaterThan(start)
@@ -42,7 +42,10 @@ describe('degraded-orchestrator-land-guard.selftest.sh', () => {
     }
     const landSrc = readFileSync(join(REPO_ROOT, 'store', 'marveen-land.sh'), 'utf-8')
     const libSrc = readFileSync(join(REPO_ROOT, 'store', 'degraded-orchestrator-land-guard-lib.sh'), 'utf-8')
-    expect(extractFn(landSrc)).toBe(extractFn(libSrc))
+    expect(extractFn(landSrc, 'degraded_orchestrator_is_on')).toBe(extractFn(libSrc, 'degraded_orchestrator_is_on'))
+    // Card 2ba008f2 round 3: same hand-kept-equal risk for the new session-outage check -- a fix
+    // applied to one copy and forgotten in the other is exactly this card's own root cause.
+    expect(extractFn(landSrc, '_session_outage_active')).toBe(extractFn(libSrc, '_session_outage_active'))
   })
 
   it('mopsion-land.sh and mopsi-land.sh source the shared lib', () => {
