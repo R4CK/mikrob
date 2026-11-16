@@ -193,6 +193,18 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee('miкrob')).toBe(true) // Cyrillic k
     expect(isForbiddenAssignee('mikrοb')).toBe(true) // Greek omicron
   })
+
+  // CYBERED NO-GO FINDING 1 (card 30aa8b29, Gate-SHA 9ca093266): the earlier bidi cases above
+  // (e.g. 'mikrob‎') just append a bidi char AFTER the literal spelling, so the filtered
+  // text is already "mikrob" and the old rule caught it for an unrelated reason. This case is
+  // the real gap: U+202E (RLO) followed by "borkim" -- the name spelled BACKWARDS -- filters to
+  // "borkim" (not "mikrob", literally or de-accented), so no equality check ever saw it. In any
+  // bidi-aware renderer (terminal, browser, the dashboard) it DISPLAYS as "mikrob". Measured by
+  // Cybered to answer POST/PUT 200 and store as-is before this fix.
+  it('catches an RLO-reversed spelling that displays as "mikrob" in a bidi-aware renderer (CYBERED FINDING 1)', () => {
+    expect(isForbiddenAssignee('‮borkim')).toBe(true)
+    expect(isForbiddenAssignee('‮borkim⁩')).toBe(true) // with a trailing isolate-pop, still forbidden
+  })
 })
 
 describe('isInvalidAssigneeShape (pure check, WhiteHat F1)', () => {

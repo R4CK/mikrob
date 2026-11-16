@@ -96,6 +96,15 @@ def main():
         ('plain', 'mikrob'), ('case', 'MikroB'), ('spaced', '  mikrob  '),
         ('at-prefixed', '@mikrob'), ('zwsp', 'mi​krob'), ('cyrillic-a', 'mиkrob'),
         ('hun-accent-sub', 'mikrób'),
+        # CYBERED NO-GO FINDING 1 (card 30aa8b29, Gate-SHA 9ca093266): U+202E (RLO) + "borkim"
+        # (the name reversed) answered 200 before this fix -- the filtered text was "borkim", not
+        # "mikrob", so no equality check saw it, even though a bidi-aware renderer displays it as
+        # "mikrob". Caught now by _van_bidi_vezerlo's presence-only check.
+        ('rlo-reversed', '‮borkim'),
+        # CYBERED NO-GO FINDING 2 (card 30aa8b29): dropping NFKC from _azonossag_egyezes stayed
+        # 18/18 green before this case existed -- nothing exercised the fullwidth/compatibility-
+        # form path NFKC exists to fold. Fullwidth Latin "mikrob" (U+FF4D/FF49/FF4B/FF52/FF4F/FF42).
+        ('fullwidth', 'ｍｉｋｒｏｂ'),
     ):
         p = letrehoz(f'NEW_{label.upper()}', val)
         out = p.stdout + p.stderr

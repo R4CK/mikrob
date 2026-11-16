@@ -26358,3 +26358,54 @@ ismert, parse5-hianyos hiba), `lint-ratchet.sh`: 441 lelet, baseline tartja.
 
 **Ki döntött:** backend2 (self-advance pickup, a kártya 2 napnál régebbi `planned` elemkent
 elsobbseget kapott a 6b. szabaly szerint). Gate: QA + Cybered.
+
+## 2026-11-16 10:53 -- 30aa8b29 delta: Cybered NO-GO 3 leletenek javitasa (bidi-override, NFKC pin,
+## refusal-szoveg) + a 16449 kiegeszites harom tesztlyuka a kanban-id-guardon
+
+Cybered NO-GO @9ca093266 (komment 32255) QA PASS (@9ca093266, komment 32256) mellett. Delta-fix a
+13846. szabaly szerint: csak a NO-GO-ban megnevezett reszt erintve, nem teljes re-futas.
+
+**FINDING 1 (MEDIUM-LOW), javitva:** bidi-override alak -- U+202E (RLO) + "borkim" (a nev
+visszafele) -- a szuro-utani szoveg "borkim" (nem "mikrob"), tehat semelyik egyenloseg-ellenorzes
+nem latta, holott egy bidi-tudatos megjelenitoben "mikrob"-kent jelenik meg. A javitas NEM a bidi
+MEGJELENITES szimulalasa, hanem jelenlet-alapu fail-closed: barmely explicit/implicit bidi-vezerlo
+karakter (U+061C, U+200E-F, U+202A-E, U+2066-9) eleve tiltott -- egy szerep-ugynok nevenek soha
+nincs jogos oka bidi-vezerlore. Uj `hasBidiControl()` (TS, kanban-assignee-guard.ts) es
+`_van_bidi_vezerlo()` (Python, kartya-es-ertesites.py), mindket `isForbiddenAssignee`/
+`_tiltott_felelos` elejen hivva.
+
+**FINDING 2 (LOW-MEDIUM), javitva:** a Python `_azonossag_egyezes` NFKC-lepesenek kikapcsolasa
+18/18 zold maradt -- semmi nem gyakorolta a fullwidth/kompatibilis-alak utat, amit az NFKC pont
+kinyit. Uj teszteset: fullwidth "ｍｉｋｒｏｂ" (U+FF4D stb.) a `kartya-mikrob-tiltas.test.py`-ben.
+
+**FINDING 3 (LOW), javitva:** a MEGTAGADVA-uzenet a szkript sajat COORDINATOR konstansat
+("marveen") nevezte meg, holott a tiltott nev "mikrob" -- felrevezeto. Javitva: az uzenet most a
+valodi tiltott nevet ("mikrob") nevezi meg, es kulon mondat zarja ki a felreertest (a szkript
+sajat COORDINATOR="marveen" konvenciojat ez nem erinti).
+
+**Supplement 16449 (kanban-id-guard, 3 tesztlyuk), lezarva uj pinekkel (nem kódmódosítással -- a
+regex/renderer MAR helyesen viselkedik, csak nem volt rajuk mutáció-bizonyított teszt):**
+1. `KANBAN_ID_RE`-nek nincs `m` flag-je -- egy beagyazott-ujsoros id ma elutasitva, de egy jovobeli
+   `m` hozzaadas egyetlen tiszta sort engedne at egy rosszindulatu elso sor mellett. Uj teszt:
+   `'x$(evil)\nclean123'` pinnelve `false`-ra.
+2.+3. a FAIL-CLOSED uzenet `("${JSON.stringify(id)}")` alakja egyszerre dupla-idezi (a sajat
+   literal `"` + JSON.stringify sajat `"`-je) ES escapeli a beagyazott idezojelet. Egy teszt
+   (`'a"b'` -> `(""a\"b"")` pontos resz-string) mindket mutanst (a literal idezojel elhagyasa, a
+   `JSON.stringify(id)` nyers `id`-re csereje) elkapja.
+
+**Mutacio-bizonyitas (mindegyik visszaallitva ellenorzes utan):**
+- TS `hasBidiControl` hivasanak kikapcsolasa -> 1 teszt piros (az RLO-forditott eset).
+- Python `_van_bidi_vezerlo` hivasanak kikapcsolasa -> pontosan a 2 uj RLO-allitas piros
+  (20/22 zold).
+- Python NFKC lepes eltavolitasa -> pontosan a 2 uj fullwidth-allitas piros (20/22 zold).
+- `KANBAN_ID_RE` `m` flag hozzaadasa -> az uj ujsoros-id teszt piros.
+- A FAIL-CLOSED uzenet literal idezojelenek elhagyasa, ILLETVE a `JSON.stringify(id)` nyers `id`-re
+  cserelese -> mindket esetben ugyanaz az 1 teszt piros (a `'a"b'` pontos resz-string pin).
+
+**Verifikacio:** `kanban-assignee-guard.test.ts` + `kanban-id-guard.test.ts` + `fleet-transfer.test.ts`
++ `team-notes-fleet-transfer.test.ts` -> 106/106 zold. Mind a 16 `kartya-*.test.py` (a
+`kartya-mikrob-tiltas.test.py` most 22/22) zold. `npx tsc --noEmit` tiszta (ugyanaz a 3,
+korabbrol ismert parse5-hianyos hiba). `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+**Ki döntött:** backend2 (delta-fix a Cybered NO-GO-ra, QA PASS mar megvolt a gate-poolbol).
+Gate: QA + Cybered (re-gate).

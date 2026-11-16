@@ -314,6 +314,18 @@ ISMERT_FELELOSOK = FLEET | {COORDINATOR, GAZDA}
 # tartja -- lasd isForbiddenAssignee round-5 fixet, kanban-assignee-guard.ts, ugyanez a hianyossag).
 _VALODI_KOORDINATOR_TILTOTT_NEV = 'mikrob'
 
+# Cybered NO-GO FINDING 1 (card 30aa8b29, TS mirror: kanban-assignee-guard.ts hasBidiControl()).
+# A bidi-override spelling (U+202E RLO + "borkim", the name reversed) de-accents/alnum-filters to
+# "borkim" -- not "mikrob" -- so no literal-equality check ever sees that a bidi-aware renderer
+# displays it reversed, i.e. as "mikrob". No legitimate role-agent name needs a bidi control
+# character, so this fails closed on PRESENCE alone.
+_BIDI_CONTROL_CHARS = frozenset('؜‎‏‪‫‬‭‮'
+                                 '⁦⁧⁨⁩')
+
+
+def _van_bidi_vezerlo(s):
+    return any(c in _BIDI_CONTROL_CHARS for c in s)
+
 
 def _csak_betu_szam(s):
     return ''.join(c for c in s if c.isalnum())
@@ -330,9 +342,12 @@ def _ekezet_nelkuli_azonossag(s):
 
 def _tiltott_felelos(nev):
     """Igaz, ha a nev a VALODI flotta koordinatorat ("mikrob") jelenti egy tiszta ASCII
-    eset/szokoz/irasjel/lathatatlan-nem-betu alakban, vagy magyar ekezet-helyettesitessel.
+    eset/szokoz/irasjel/lathatatlan-nem-betu alakban, vagy magyar ekezet-helyettesitessel,
+    vagy barmilyen bidi-vezerlo karaktert tartalmaz (lasd _van_bidi_vezerlo fent).
     A nem-ASCII BETU-alapu homoglifakat (Cirill/Gorog stb.) szandekosan a letezo gyanus()
     fogja el, a sajat (altalanos, nem koordinator-specifikus) uzenetevel."""
+    if _van_bidi_vezerlo(nev):
+        return True
     if _azonossag_egyezes(nev) == _VALODI_KOORDINATOR_TILTOTT_NEV:
         return True
     return _ekezet_nelkuli_azonossag(nev) == _VALODI_KOORDINATOR_TILTOTT_NEV
@@ -378,8 +393,10 @@ def _felelos_feloldas(nyers):
     # tulajdonol kartyat. Ez a homoglifa-kapu ELOTT fut, mert maga a "{COORDINATOR}" alak ASCII,
     # azt a gyanus() nem is nezi.
     if _tiltott_felelos(nev):
-        sys.exit(f'MEGTAGADVA: a felelos nem lehet a koordinator ("{COORDINATOR}"), sem annak egy '
-                 f'eset-, szokoz-, irasjel-, lathatatlan- vagy hasonmas-betus alakja (Peti 10943).')
+        sys.exit(f'MEGTAGADVA: a felelos nem lehet a VALODI flotta-koordinator '
+                 f'("{_VALODI_KOORDINATOR_TILTOTT_NEV}"), sem annak egy eset-, szokoz-, irasjel-, '
+                 f'lathatatlan- vagy hasonmas-betus alakja (Peti 10943). (Ez a szkript sajat '
+                 f'COORDINATOR="{COORDINATOR}" konvenciojat NEM erinti.)')
     # HOMOGLIFA: a felelos-mezo a legrosszabb hely egy lathatatlan betucserere -- a nev
     # HELYESNEK LATSZIK, a kartya viszont sajat, egy-elemu oszlopba kerul, es a "kinel all
     # a dontes" kerdesre a tabla csendben rosszul valaszol. Ugyanaz a szures, mint a cimen.
