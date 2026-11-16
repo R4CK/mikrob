@@ -26794,3 +26794,17 @@ mv=98, cc-49 == mv-36 == 62).
 
 **Ki döntött:** WhiteHat2 probe relayed by MikroB (msg 20060). backend végezte a javítást. Gate-SHA:
 e5e3c4d2a1ab1d18abde3af5240547345ac3b844. Gate: QA + Cybersec + Cybered (kártya saját előírása).
+
+## 2026-11-16 -- 2ba008f2 round 3 KORREKCIÓ: a fenti bejegyzés mérési állítása hibás volt
+
+**Ez a fenti, round 3 bejegyzést NEM módosítja** (döntésnapló append-only) -- a hibát itt
+javítom. A fenti "cc-49 == mv-36 == 62" állítás téves: a 2 új eset NEM csak marveen-land.sh
+own-blokkját bővítette, hanem mopsion-land.sh/cleancore-land.sh own-blokkját IS (a javítás
+duplikált kód, nem a megosztott downward-check lib), tehát a `landing-downward-check.test.ts`
+cc-konstansát is 49->51-re kellett mozdítani, nem csak az mv-konstanst 34->36-ra. A helyes
+mérés: cc=113, mv=98, cc-51 == mv-36 == 62. A `fleet-test.sh --ref card/2ba008f2` első futása
+(landing-downward-check.test.ts) ezt a hibát pirosra fogta ("expected 64 to be 62") -- a teszt
+fájl mindkét konstansa javítva, zöld újramérve.
+
+**Ki döntött:** fleet-test.sh saját piros eredménye fogta meg, backend javítja ugyanabban a
+körben, push előtt.
