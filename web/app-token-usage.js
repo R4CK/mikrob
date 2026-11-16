@@ -30,6 +30,12 @@ let tuChartState = null
 // reversion -- $2/$10 is the standing rate, do NOT reintroduce a date-based
 // flip back to $3/$15.
 const TU_SONNET5_PRICE = { in: 2.0, out: 10.0, cw: 2.50, cr: 0.20 }
+// Sonnet 5.5 shares sonnet-5's input/output/cache-write price, but NOT its cache-read price:
+// Sonnet 5.5 is priced at 0.05x base input ($0.10), the standard 0.1x ($0.20) only applies to
+// plain Sonnet 5 -- confirmed against platform.claude.com/docs/en/about-claude/pricing
+// 2026-11-16 (model-pricing-weekly-check, card 808cd7fc). Do not re-merge this into
+// TU_SONNET5_PRICE.
+const TU_SONNET5_5_PRICE = { in: 2.0, out: 10.0, cw: 2.50, cr: 0.10 }
 
 // 2026-08-17 weekly check: 'claude-opus-4-5' had no explicit row, so the longest-prefix matcher
 // below fell through to 'claude-opus-4' (15/75) -- a real bug (Opus 4.5 actually bills at the
@@ -44,8 +50,11 @@ const TU_MODEL_PRICING = {
   'claude-fable-5-1':    { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 }, // same price as fable-5; explicit row for prefix-match correctness
   'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
   'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
-  // Opus 5.5 is priced LOWER than opus-5 (4/20 vs 5/25); separate row required.
-  'claude-opus-5-5':     { in: 4.0,   out: 20.0,  cw: 5.00,  cr: 0.40 },
+  // Opus 5.5 is priced LOWER than opus-5 (4/20 vs 5/25); separate row required. Its cache-hit
+  // price is also a special 0.05x base input ($0.20), not the standard 0.1x -- confirmed against
+  // platform.claude.com/docs/en/about-claude/pricing 2026-11-16 (model-pricing-weekly-check,
+  // card 808cd7fc); do not "simplify" this back to in*0.1.
+  'claude-opus-5-5':     { in: 4.0,   out: 20.0,  cw: 5.00,  cr: 0.20 },
   // Confirmed against the official pricing page 2026-08-17: same tier as 4.6/4.7/4.8 (5 / 25).
   'claude-opus-5':       { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   'claude-opus-4-8':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
@@ -56,8 +65,7 @@ const TU_MODEL_PRICING = {
   // on Bedrock/Google Cloud).
   'claude-opus-4-1':     { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
   'claude-opus-4':       { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
-  // Sonnet 5.5 same price as sonnet-5; explicit row for prefix-match correctness.
-  'claude-sonnet-5-5':   TU_SONNET5_PRICE,
+  'claude-sonnet-5-5':   TU_SONNET5_5_PRICE,
   'claude-sonnet-5':     TU_SONNET5_PRICE,
   'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
