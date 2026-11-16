@@ -23,6 +23,7 @@ import { launchableInstallDefault } from '../default-model-guard.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { degradedOrchestratorRefusal } from '../../degraded-orchestrator-guard.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
 import {
   agentDir,
@@ -2489,7 +2490,16 @@ function compactPrompt(): string {
     // agents on Claude Code 2.1.193, where a `--continue` resume does not load
     // the --channels plugin MCP server (agent comes up deaf).
     let startFresh = false
-    try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
+    let startBody: { fresh?: unknown; force?: unknown; actor?: unknown } = {}
+    try { startBody = JSON.parse((await readBody(req)).toString() || '{}'); startFresh = startBody.fresh === true } catch {}
+    // Card d5638d28: refuse starting an agent while degraded-orchestrator mode is on, same
+    // owner-bypass convention as the kanban move-to-done guard (degraded-orchestrator-guard.ts).
+    {
+      const refusal = degradedOrchestratorRefusal(
+        'agent start', startBody.force === true, typeof startBody.actor === 'string' ? startBody.actor : undefined
+      )
+      if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
+    }
     const result = await startAgentProcess(name, { fresh: startFresh })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).

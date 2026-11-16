@@ -96,6 +96,54 @@ MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
+# Card d5638d28: structural refusal while degraded-orchestrator mode is on, same switch file and
+# same fail-closed-on-unreadable rule as src/degraded-orchestrator-guard.ts (the TS port used by
+# the kanban move-to-done guard and the POST /api/agents/:name/start route) -- missing file = OFF
+# (card's own Kesz, ha #1), present-but-unparseable = treated as ON (MikroB decision, inter-agent
+# msg 19506: an unreadable switch is an anomaly, not evidence the owner turned it off). Unlike the
+# other two gated actions, landing is never owner/Telegram-triggered in practice (Peti never calls
+# this script directly), so there is no bypass here -- passing --actor mikrob is the one way past
+# it, reusing the SAME allowlist name src/kanban-force-actors.ts hardcodes (duplicated here on
+# purpose: bash cannot import that TS module, and the name is the single fact that has to match).
+DEGRADED_ORCHESTRATOR_SWITCH="${DEGRADED_ORCHESTRATOR_SWITCH:-$MAIN/store/degraded-orchestrator-enabled.json}"
+degraded_orchestrator_is_on() {
+  [ -e "$DEGRADED_ORCHESTRATOR_SWITCH" ] || return 1
+  python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    sys.exit(0 if data.get("enabled") is True else 1)
+except Exception:
+    sys.exit(0)  # unreadable/corrupt: fail closed, treat as ON
+' "$DEGRADED_ORCHESTRATOR_SWITCH"
+}
+check_degraded_orchestrator_guard() { # $1 = actor (may be empty)
+  local actor="${1:-}"
+  [ "$actor" = "mikrob" ] && return 0
+  if degraded_orchestrator_is_on; then
+    die 3 "degraded-orchestrator mode is ON ($DEGRADED_ORCHESTRATOR_SWITCH) -- landing is not allowed while degraded (card d5638d28). Owner override: --actor mikrob."
+  fi
+}
+# Run the check HERE, before any of the git/lock-file infra checks further down (several of which
+# die with the same exit code 3 for unrelated reasons, which would otherwise race this one and
+# make a test pass for the wrong reason). Scans the raw argv directly rather than waiting for the
+# real option parser near the bottom of this file, which runs far later and well after several
+# other refusals. Skipped for --selftest, which exercises unrelated internal functions and never
+# touches git or the kill switch.
+if [ "${1:-}" != "--selftest" ]; then
+  _degraded_guard_actor=""
+  _degraded_guard_args=("$@")
+  for ((_dgi = 0; _dgi < ${#_degraded_guard_args[@]}; _dgi++)); do
+    case "${_degraded_guard_args[$_dgi]}" in
+      --actor) _degraded_guard_actor="${_degraded_guard_args[$((_dgi + 1))]:-}" ;;
+      --actor=*) _degraded_guard_actor="${_degraded_guard_args[$_dgi]#--actor=}" ;;
+    esac
+  done
+  check_degraded_orchestrator_guard "$_degraded_guard_actor"
+  unset _degraded_guard_actor _degraded_guard_args _dgi
+fi
+
 # Card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 1): a signal received while bash blocks on a
 # FOREGROUND subshell or pipeline is deferred until that subshell exits -- non-interactive bash
 # only acts on a pending trap between commands, not while synchronously waiting on a child via
@@ -3538,6 +3586,21 @@ fi
 
 DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0; ALLOW_UNGATED_CARDS=""
 TARGET="${1:-}"; [ $# -gt 0 ] && shift
+
+# Card d5638d28: --actor was already consumed by the degraded-orchestrator guard check at the top
+# of this script (before any infra/lock checks). Strip it here too, before any of the three
+# mode-specific parsers (--card, --batch, the plain-agent/--all loop) see argv -- they do not know
+# the flag and would otherwise die with "unknown option: --actor".
+_land_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --actor) shift ;;
+    --actor=*) ;;
+    *) _land_args+=("$1") ;;
+  esac
+  shift
+done
+set -- "${_land_args[@]}"
 
 # card cd3e577b (F1): `marveen-land.sh --card <id> --agent <agent> [--dry-run]` lands the card's OWN
 # card/<id> worktree branch (created by `agent-worktree-marveen.sh <agent> --card <id>`) instead of
