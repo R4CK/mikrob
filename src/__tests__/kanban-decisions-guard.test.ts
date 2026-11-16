@@ -24,6 +24,11 @@ vi.mock('../logger.js', () => ({
 
 /** git diff stub: `decisionsDiff` is the raw `git diff <sha>^1 <sha> -- DECISIONS.md` stdout. */
 let decisionsDiff = ''
+// Per-sha override (card a5f5cfd8): decisionsEntryState() is called with ONE sha per invocation,
+// but a test asserting "latest REVIEW's Gate-SHA wins" needs two DIFFERENT shas to resolve to
+// two DIFFERENT diffs in the same test. Empty by default -- falls back to the single `decisionsDiff`
+// above, so every pre-existing test (one sha per test) is untouched.
+let decisionsDiffBySha: Record<string, string> = {}
 let diffShouldFail = false
 export let diffCalls: string[][] = []
 vi.mock('node:child_process', () => ({
@@ -38,7 +43,8 @@ vi.mock('node:child_process', () => ({
     queueMicrotask(() => {
       if (a.includes('diff')) {
         if (diffShouldFail) { cb(new Error('bad revision'), ''); return }
-        cb(null, decisionsDiff)
+        const sha = a[5] // git() prepends ['-C', repo, ...]: ['-C', repo, 'diff', '--no-color', `${sha}^1`, sha, '--', 'DECISIONS.md']
+        cb(null, (sha !== undefined && sha in decisionsDiffBySha) ? decisionsDiffBySha[sha]! : decisionsDiff)
         return
       }
       cb(null, '')
@@ -60,6 +66,7 @@ beforeEach(() => {
   comments = []
   addedComments = []
   decisionsDiff = ''
+  decisionsDiffBySha = {}
   diffShouldFail = false
   diffCalls = []
 })
@@ -81,6 +88,64 @@ describe('decisionsGuardVerdict (blocking path, non-trivial cards only)', () => 
     decisionsDiff = '+## 2026-10-17 -- döntés a c1 kártyán\n+leírás...\n'
     const v = await decisionsGuardVerdict('c1', 'waiting', false, 'fullstack')
     expect(v.blocked).toBe(false)
+  })
+
+  // Card a5f5cfd8 (backend2 report on 12d91d4b, msg 19979): the guard already sources its sha
+  // from latestReviewGateSha() -- the LATEST comment matching `/^\s*REVIEW\b/im`, same convention
+  // gate-closure-check.py's declared_shas() uses (card 3e4dc2c3: a non-REVIEW comment's Gate-SHA
+  // must never sink an otherwise-correct round). A plain follow-up comment that only MENTIONS a
+  // corrected Gate-SHA -- without a line opening with "REVIEW" -- does NOT count; these two tests
+  // pin that this is working as designed, not a bug: with two REAL REVIEW comments, the LATER
+  // one's sha is the one checked, either way.
+  it('two REVIEW comments: only the LATER sha carries the DECISIONS entry -> move allowed', async () => {
+    card.priority = 'high'
+    const SHA_OLD = 'aaaaaaaa'
+    const SHA_NEW = 'bbbbbbbb'
+    comments = [
+      { content: `REVIEW: first pass\nGate-SHA: ${SHA_OLD}`, created_at: 1 },
+      { content: `REVIEW: corrected\nGate-SHA: ${SHA_NEW}`, created_at: 2 },
+    ]
+    decisionsDiffBySha = {
+      [SHA_OLD]: '+unrelated\n',
+      [SHA_NEW]: '+## decision for c1\n',
+    }
+    const v = await decisionsGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+  })
+
+  it('two REVIEW comments: only the EARLIER sha carries the DECISIONS entry -> refused, citing the later sha', async () => {
+    card.priority = 'high'
+    const SHA_OLD = 'aaaaaaaa'
+    const SHA_NEW = 'bbbbbbbb'
+    comments = [
+      { content: `REVIEW: first pass\nGate-SHA: ${SHA_OLD}`, created_at: 1 },
+      { content: `REVIEW: corrected\nGate-SHA: ${SHA_NEW}`, created_at: 2 },
+    ]
+    decisionsDiffBySha = {
+      [SHA_OLD]: '+## decision for c1\n',
+      [SHA_NEW]: '+unrelated\n',
+    }
+    const v = await decisionsGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(true)
+    expect(v.message).toContain(SHA_NEW)
+    expect(v.message).not.toContain(SHA_OLD)
+  })
+
+  it('a plain follow-up comment (no line opening with "REVIEW") does not override the prior REVIEW\'s sha', async () => {
+    card.priority = 'high'
+    const SHA_REVIEW = 'aaaaaaaa'
+    const SHA_MENTIONED = 'bbbbbbbb'
+    comments = [
+      { content: `REVIEW: done\nGate-SHA: ${SHA_REVIEW}`, created_at: 1 },
+      { content: `Follow-up to the REVIEW above, corrected Gate-SHA: ${SHA_MENTIONED}`, created_at: 2 },
+    ]
+    decisionsDiffBySha = {
+      [SHA_REVIEW]: '+## decision for c1\n',
+      [SHA_MENTIONED]: '+unrelated\n',
+    }
+    const v = await decisionsGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(false)
+    expect(diffCalls.some((a) => a.includes(SHA_MENTIONED))).toBe(false)
   })
 
   it('does NOT block a plain normal-priority, untagged card -- only warns (separate test below)', async () => {
