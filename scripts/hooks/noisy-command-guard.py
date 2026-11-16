@@ -118,6 +118,33 @@ def _owned_by_wrapper(seg):
 # A command carrying shell metacharacters therefore has to travel as a single argument.
 _METACHAR_RX = re.compile(r"[|&;<>\n()`]|\$\(")
 
+# Leading `VAR=val` assignment(s) before the real command. Built with `+` (one-or-more), not
+# reused from _ENV_PREFIX's `*` (zero-or-more) -- a `*` here would match every command at position
+# zero (zero assignments is still a match), making the check a no-op.
+_LEADING_ENV_RX = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)+")
+
+
+def _rewrite_is_safe(raw):
+    """WhiteHat F1/F2 (card fc3a6a39 follow-up, ff43b10e): rewrite mode may ONLY substitute a
+    command that `noisy-run.sh` can run as a plain argv list, unmodified in meaning, with the
+    SAME string the permission engine evaluated its deny/ask rules against.
+
+    F1 (blocking): wrapping a compound/multi-segment command into `bash -c '<raw>'` buries every
+    embedded simple command inside one quoted string argument. A deny rule (e.g. BASH_EGRESS_DENY
+    on wget/nc/telnet) that recognizes a program by how a command STARTS no longer sees it -- the
+    rewritten line starts with `bash .../noisy-run.sh bash -c '...'`, not with the denied program.
+    This is fine for the block-and-suggest path (a human reads the suggestion, decides, retypes
+    it) but not for a mode that substitutes it silently. A command with any shell metacharacter
+    therefore never gets the rewrite; it falls back to block-and-suggest exactly like today.
+
+    F2: `"$@"` is a bare exec, not a shell -- `noisy-run.sh FOO=bar npm test` passes "FOO=bar" as
+    argv[0] (a literal program name, not an environment assignment for npm), which fails with
+    "command not found" (rc 127) instead of ever running npm. A leading `VAR=val` prefix therefore
+    also falls back to block-and-suggest, where the printed suggestion is read and retyped by a
+    real shell that DOES parse the assignment.
+    """
+    return not _METACHAR_RX.search(raw) and not _LEADING_ENV_RX.match(raw)
+
 
 def _suggest(here, raw):
     if _METACHAR_RX.search(raw):
@@ -151,7 +178,7 @@ def main():
                     if rx.search(seg):
                         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                         wrapped = _suggest(here, raw)
-                        if os.environ.get(MODE_ENV) == "rewrite":
+                        if os.environ.get(MODE_ENV) == "rewrite" and _rewrite_is_safe(raw):
                             updated_input = dict(ti)
                             updated_input["command"] = wrapped
                             print(json.dumps({

