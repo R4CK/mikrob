@@ -26300,3 +26300,21 @@ felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szaba
 
 **Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
 backend2 vegezte a javitast. Gate: QA + Cybered.
+
+## 2026-11-15: Teljes suite CPU-slot 2 -> 3 (kártya eff5c2f6)
+
+**Döntés:** Peti kérése (Telegram 11042, 2026-10-11): a teljes tesztfutások közös CPU-slotszáma
+2-ről 3-ra. A `CLEANCORE_SUITE_SLOTS`/`MIKROB_SUITE_SLOTS` alapérték mindkét helyen (`store/fleet-test.sh`,
+`store/mopsion-suite-run.sh`) emelve, a `cleancore-suite-run.sh` szimlink ugyanazt a fájlt éri el.
+
+**Mit:** a worker-plafon (`DEFAULT_MAX_WORKERS=$((CORES / SLOTS))`) mindkét szkriptben már eleve
+a slot-számból van levezetve, nem fixen 6 -- így 12 mag / 3 slot = 4 worker/futás automatikusan
+adódik, külön kódváltoztatás nélkül. A `store/fleet-test-cpu-slot-env.selftest.sh` default-ellenőrző
+sora (2 -> 3) frissítve; a `mopsion-suite-run.selftest.sh` (és szimlinkje `cleancore-suite-run.selftest.sh`)
+minden tesztesete explicit `CLEANCORE_SUITE_SLOTS=2`-t ad át, ezért a default emelése nem bontja
+el őket.
+
+**Megfigyelés a bevezetés után:** ha hamis piros jelenik meg (birpc timeout, 0 bukás, exit 1) 3 slot
+mellett, vissza 2-re (`MIKROB_SUITE_SLOTS=2`).
+
+**Ki döntött:** Peti (Telegram 11042) -> MikroB dispatch -> fullstack végrehajtása. Gate: QA + Cybered.

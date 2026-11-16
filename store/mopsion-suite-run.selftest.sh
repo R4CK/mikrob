@@ -141,9 +141,11 @@ cp "$HERE/env-compat-lib.sh" "$TMP/co-a/store/" && cp "$HERE/env-compat-lib.sh" 
 COPY_A="$TMP/co-a/store/$(basename "$RUN")"
 COPY_B="$TMP/co-b/store/$(basename "$RUN")"
 
-# Hold both slots on the ANCHOR -- the location a correct default must resolve to.
+# Hold all default slots (3, card eff5c2f6) on the ANCHOR -- the location a correct default must
+# resolve to.
 ( exec 9>"$ANCHOR/store/.cleancore-suite-slot-1.lock"; flock 9; sleep 300 ) & HOLDERS+=("$!")
 ( exec 9>"$ANCHOR/store/.cleancore-suite-slot-2.lock"; flock 9; sleep 300 ) & HOLDERS+=("$!")
+( exec 9>"$ANCHOR/store/.cleancore-suite-slot-3.lock"; flock 9; sleep 300 ) & HOLDERS+=("$!")
 sleep 0.5
 
 for co in A B; do
