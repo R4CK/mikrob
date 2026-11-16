@@ -26168,3 +26168,50 @@ visszaallitva, ismet zold.
 
 **Ki döntött:** Cybered (RedHat) NO-GO, MikroB fix-irany (Fix-Direction: MikroB, komment 32155).
 backend2 végezte a javítást. Gate: QA + Cybered. Gate-SHA: 256017938735130114ecb4b5b80e288716e41030.
+
+## 2026-11-16 -- ff43b10e: MikroB addendum (komment 32155/19523/19536) -- altalanositott wrapper-tiltas rewrite modban
+
+Javito bejegyzes a fenti (2026-11-16, "CYBERED NO-GO javítás") entry-hez: az elozo javitas a sudo/doas/
+pkexec/su -c szegmenst TELJESEN kihagyta a NOISY_PATTERNS illesztesbol (nem csak az atirasbol), ami
+tobb volt mint amit MikroB kert, es a hasonlo osztaly maradek tagjait (time, rtk) egyaltalan nem
+erintette. MikroB addendum pontositotta: a szabaly "rewrite CSAK akkor, ha a parancs elso szava a zajos
+program maga" -- minden vezeto wrapper (sudo/doas/pkexec/su -c, time, rtk) block-and-suggest-re esik
+vissza, PONTOSAN ugy, mint ma, CSAK az ATIRASt tiltja, a NOISY_PATTERNS illesztest/blokkolast nem
+erinti.
+
+**Javitas:** `_PRIV_RX` (ami a teljes szegmenst kihagyta) helyett `_WRAPPER_DISQUALIFIES_REWRITE_RX`
+(sudo/doas/pkexec/su -c/time/rtk) betéve a `_rewrite_is_safe()` feltetelbe; a fomagban a kulon
+`continue` sor eltavolitva (a sudo-szegmens IGY ismet eljut a NOISY_PATTERNS ellenorzesig, es a
+block-and-suggest agra kerul rewrite modban is).
+
+**Teszt:** uj CASES-bejegyzesek (sudo npm install / sudo apt-get install / sudo pip install / sudo
+docker build -> BLOCK default/block modban, valtozatlan); uj check_rewrite_mode (b2): sudo npm install,
+sudo apt-get install -y jq, sudo pip install requests, sudo docker build -t x ., time npm install, rtk
+npm test -> mind block-and-suggest-re esik vissza rewrite modban (rc=2, stderr, nincs stdout JSON); (b3)
+doas/pkexec dokumentalva mint ELOTTE IS illesztetlen (a `_CMD` grammatika sosem ismerte fel oket), nem
+ennek a javitasnak a resze. RedHat LOW (32154): a metachar-lista teljesseg-teszt (eset h) kibovitve a
+')' es egy beagyazott newline karakterrel -- mindketto mar BENNE volt a `_METACHAR_RX` karakterosztalyban,
+csak a teszt-lefedettsegbol hianyzott.
+
+Elo deny-probe (valodi hook subprocess, `NOISY_GUARD_MODE=rewrite`), a pontos kimenet: `sudo npm
+install`, `sudo apt-get install -y jq`, `sudo pip install requests`, `sudo docker build -t x .`, `time
+npm install`, `rtk npm test` -> mind `rc=2`, ures stdout, nem-ures stderr (`NOISY-COMMAND-GUARD: ...`);
+`npm install` -> `rc=0`, stdout JSON `updatedInput.command` atirva, `permissionDecision` kulcs nelkul.
+
+Mutacio-ellenorzes: a `_WRAPPER_DISQUALIFIES_REWRITE_RX` feltetel eltavolitasaval 6 teszt vorosre valt
+(mind a 6 wrapper-parancs); a ')'/newline eltavolitasaval `_METACHAR_RX`-bol 2 teszt vorosre valt.
+Mindket mutans visszaallitva, ismet zold. `noisy-run.selftest.sh` pass=7 fail=0 (erintetlen), `npx tsc
+--noEmit` tiszta (ugyanaz a 3, korabbrol ismert, FUGGETLEN parse5-hianyos hiba), `lint-ratchet.sh`: 441
+lelet, baseline tartja.
+
+**Korrekcio a korabbi (2026-10-10, fc3a6a39) bejegyzeshez:** az a bejegyzes Mechanizmus-bekezdese
+("A jogosultsagi szabalyok az ATIRT inputra ertekelodnek") es Gate-bekezdese (az F1 leirasa) nem
+egyertelmuen ugyanazt mondjak -- RedHat eszrevetele (komment 32154, 2. LOW). A tenyleges viselkedes
+(ez es az ff43b10e-javitasok ota): a Claude Code jogosultsagi motor a `hookSpecificOutput.updatedInput`
+altal ATIRT parancsot ertekeli, NEM az eredetit -- ez pontosan az oka, hogy egy wrapperbe (bash -c,
+vagy korabban sudo) csomagolt atirt sor miatt egy start-anchored deny szabaly (pl. Bash(sudo:*),
+BASH_EGRESS_DENY) mar nem a tenyleges programot latja a sor elejen. A fc3a6a39 Gate-bekezdese ezt
+felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szabaly), csak pontositja.
+
+**Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
+backend2 vegezte a javitast. Gate: QA + Cybered.

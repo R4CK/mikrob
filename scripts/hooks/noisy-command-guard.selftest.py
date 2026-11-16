@@ -73,6 +73,14 @@ CASES = [
     ("rtk cargo test", BLOCK, "rtk-wrapped cargo test"),
     ("rtk pytest tests/", BLOCK, "rtk-wrapped pytest"),
     ("rtk npm ls", ALLOW, "rtk-wrapped, but the underlying command is not noisy"),
+    # MikroB addendum (comment 32155/19523/19536, RedHat NO-GO 32154): sudo-wrapped noisy commands
+    # must still be caught by block-and-suggest in default/block mode, UNCHANGED from before this
+    # fix -- this fix only narrows which matched commands may be rewritten (see check_rewrite_mode
+    # (b2) below), it does not touch matching/blocking at all.
+    ("sudo npm install", BLOCK, "sudo-wrapped install (card ff43b10e, RedHat 32154)"),
+    ("sudo apt-get install -y jq", BLOCK, "sudo-wrapped apt-get install (card ff43b10e, RedHat 32154)"),
+    ("sudo pip install requests", BLOCK, "sudo-wrapped pip install (card ff43b10e, RedHat 32154)"),
+    ("sudo docker build -t x .", BLOCK, "sudo-wrapped docker build (card ff43b10e, RedHat 32154)"),
 ]
 
 
@@ -118,19 +126,35 @@ def check_rewrite_mode():
             if updated.get("command") == "npm install":
                 failures.append("rewrite mode updatedInput.command is unchanged -- not actually rewritten")
 
-    # (b2) RedHat NO-GO (comment 32154), MikroB fix-direction (comment 32155): a single-segment
-    # privilege-escalation wrapper is passed through completely unrewritten, in EVERY mode -- no
-    # stdout JSON, no stderr block, exit 0 -- so the real permission engine (incl. any
-    # Bash(sudo:*) deny rule) always sees the command the agent actually typed, never a
-    # bash-wrapped substitute that starts with something else.
-    for cmd in ("sudo npm install", "sudo apt-get install -y jq", "doas npm ci",
-                "pkexec pip install requests", "su -c 'npm install' root"):
+    # (b2) RedHat NO-GO (comment 32154) + MikroB addendum (comment 32155/19523/19536): rewrite
+    # mode must fall back to block-and-suggest (rc=2, stderr, no stdout JSON) -- the SAME outcome
+    # as block mode, never a silent rewrite -- for any command whose first word is a wrapper, not
+    # the noisy program itself: sudo (the concrete exploit RedHat measured), time, rtk. This is
+    # the generalization MikroB asked for beyond just the sudo family (19536: "rewrite ONLY when
+    # the first word is the noisy program itself").
+    for cmd in ("sudo npm install", "sudo apt-get install -y jq", "sudo pip install requests",
+                "sudo docker build -t x .", "time npm install", "rtk npm test"):
+        rc, out, err = run_with_mode(cmd, mode="rewrite")
+        if rc != 2 or out.strip() or not err.strip():
+            failures.append(
+                f"wrapper-disqualifies-rewrite regression: {cmd!r} was rewritten instead of "
+                f"falling back to block-and-suggest under rewrite mode "
+                f"(rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
+            )
+
+    # (b3) doas/pkexec/su -c are not recognized by _CMD's wrapper grammar at all (only
+    # sudo/time/rtk are), so a command using them is not matched by any NOISY_PATTERNS and is
+    # untouched in every mode -- this is PRE-EXISTING, unrelated to this fix, documented here so a
+    # future _CMD change that adds them is forced to also extend
+    # _WRAPPER_DISQUALIFIES_REWRITE_RX (same rx literal) rather than silently missing it.
+    for cmd in ("doas npm ci", "pkexec pip install requests"):
         for mode in (None, "block", "rewrite"):
             rc, out, err = run_with_mode(cmd, mode=mode)
             if rc != 0 or out.strip() or err.strip():
                 failures.append(
-                    f"privilege-wrapped command {cmd!r} was touched under mode={mode!r} "
-                    f"(rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
+                    f"unrecognized-wrapper command {cmd!r} was touched under mode={mode!r} "
+                    f"(rc={rc}, out={out[:160]!r}, err={err[:160]!r}) -- if _CMD now recognizes "
+                    f"this wrapper, _WRAPPER_DISQUALIFIES_REWRITE_RX must too"
                 )
 
     # (c) rewrite mode on a non-noisy command: still allow, but no rewrite (no stdout JSON) --
@@ -190,7 +214,10 @@ def check_rewrite_mode():
 
     # (h) WhiteHat F4, survivor class "metakarakter-lista": each metacharacter _METACHAR_RX lists
     # must, on its own, be enough to route rewrite mode back to block-and-suggest (not just the
-    # combination used in case (e) above).
+    # combination used in case (e) above). RedHat residual LOW (comment 32154): the original list
+    # omitted ')' and an embedded newline, even though both are already IN the _METACHAR_RX
+    # character class -- added here so dropping either from the regex is caught, not just the 8
+    # already covered.
     for mc, example in [
         ("|", "npm install | cat"),
         ("&", "npm install &"),
@@ -198,6 +225,8 @@ def check_rewrite_mode():
         ("<", "npm install < /dev/null"),
         (">", "npm install > /tmp/out"),
         ("(", "(npm install)"),
+        (")", "npm install )"),
+        ("\\n", "npm install\necho done"),
         ("`", "npm install `true`"),
         ("$(", "npm install $(true)"),
     ]:

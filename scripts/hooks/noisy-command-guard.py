@@ -16,9 +16,11 @@ original behavior) makes the hook transparently substitute the wrapped `noisy-ru
 block/retry round-trip. `updatedInput` replaces the WHOLE tool_input object, so every other field
 (not just `command`) is carried through unchanged. `permissionDecision` is NEVER set by this hook
 (card ff43b10e, RedHat NO-GO) -- the rewrite only changes WHAT runs, never whether it is allowed to
-run; the normal permission flow, including any deny rule, still evaluates the result on its own. A
-privilege-escalation wrapper (sudo/doas/pkexec/su -c) is never rewritten or suggested at all, in
-either mode, so a deny rule anchored on it always sees the command the agent actually typed.
+run; the normal permission flow, including any deny rule, still evaluates the result on its own.
+Rewrite ONLY fires when the command's first word is the noisy program itself: any leading wrapper
+(sudo/doas/pkexec/su -c, time, rtk) or `VAR=val` prefix or shell metacharacter falls back to
+block-and-suggest instead, unchanged from today's behavior, so a deny rule anchored on the real
+program name always sees the command the agent actually typed.
 
 WHAT COUNTS AS NOISY
 npm/pnpm/yarn install|ci|add|update and `npm run build`; test runners (npx vitest/jest/playwright,
@@ -128,16 +130,17 @@ _METACHAR_RX = re.compile(r"[|&;<>\n()`]|\$\(")
 _LEADING_ENV_RX = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)+")
 
 
-# RedHat NO-GO (card ff43b10e, comment 32154): a single-segment privilege-escalation wrapper
-# (sudo/doas/pkexec/su -c) matches _CMD's own optional `sudo` prefix, so e.g. `sudo npm install`
+# RedHat NO-GO (card ff43b10e, comment 32154) + MikroB addendum (comment 32155, dispatch 19523/
+# 19536): rewrite may ONLY happen when the first word of the command is the noisy program itself.
+# ANY leading wrapper -- sudo/doas/pkexec/su -c (privilege escalation), time, rtk -- disqualifies
+# the rewrite, same as a leading `VAR=val` or a shell metacharacter: it falls back to
+# block-and-suggest exactly like today, UNCHANGED from before this fix (this only narrows which
+# matched commands may be REWRITTEN, it does not change which commands are matched/blocked at
+# all). The concrete exploit: `sudo npm install` matched _CMD's own optional `sudo` prefix, so it
 # got rewritten into `bash .../noisy-run.sh sudo npm install` -- a line starting with `bash`, not
-# `sudo`, which a start-anchored deny rule like Bash(sudo:*) can no longer see, AND the rewrite
-# used to answer permissionDecision=allow directly, bypassing that deny rule entirely. Fix
-# (MikroB decision, comment 32155): a privilege-wrapped segment is never a rewrite/suggest
-# candidate at all -- it passes through completely untouched by this guard, in every mode, so the
-# real permission engine always evaluates the command the agent actually typed.
-_PRIV_RX = re.compile(
-    r"^\s*" + _ENV_PREFIX + r"(?:sudo|doas|pkexec)\b|^\s*" + _ENV_PREFIX + r"su\s+-c\b"
+# `sudo`, which a start-anchored deny rule like Bash(sudo:*) can no longer see.
+_WRAPPER_DISQUALIFIES_REWRITE_RX = re.compile(
+    r"^\s*(?:sudo|doas|pkexec|time|rtk)\b|^\s*su\s+-c\b"
 )
 
 
@@ -159,8 +162,17 @@ def _rewrite_is_safe(raw):
     "command not found" (rc 127) instead of ever running npm. A leading `VAR=val` prefix therefore
     also falls back to block-and-suggest, where the printed suggestion is read and retyped by a
     real shell that DOES parse the assignment.
+
+    RedHat NO-GO (comment 32154) + MikroB addendum (comment 32155/19536): a leading wrapper token
+    (sudo/doas/pkexec/su -c/time/rtk) ALSO falls back to block-and-suggest -- see
+    `_WRAPPER_DISQUALIFIES_REWRITE_RX` above. The rewrite may only fire when the command's first
+    word is the noisy program itself.
     """
-    return not _METACHAR_RX.search(raw) and not _LEADING_ENV_RX.match(raw)
+    return (
+        not _METACHAR_RX.search(raw)
+        and not _LEADING_ENV_RX.match(raw)
+        and not _WRAPPER_DISQUALIFIES_REWRITE_RX.match(raw)
+    )
 
 
 def _suggest(here, raw):
@@ -191,8 +203,6 @@ def main():
                 # somewhere else on the line says nothing about THIS command.
                 if _owned_by_wrapper(seg) or f"{ALLOW_ENV}=1" in seg:
                     continue
-                if _PRIV_RX.search(seg):
-                    continue  # privilege-escalation wrapper: never rewritten or suggested
                 for rx in NOISY_PATTERNS:
                     if rx.search(seg):
                         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
