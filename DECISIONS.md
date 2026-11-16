@@ -26522,3 +26522,19 @@ a THIRD card-creation path that can still create a project-less card -- out of t
 file scope (src/web/routes/kanban.ts only), flagged for a follow-up.
 
 **Ki döntött:** Peti kérése alapján backend implementálja; Gate: QA + Cybersec.
+
+## 2026-11-16 -- b296b810 round 2: non-string project values no longer bypass the guard
+
+Cybersec2 NO-GO (comment 32437, F1 MEDIUM) on round 1: PUT /api/kanban/:id accepted a
+non-string, non-null `project` ([""], [null], a number, a boolean, an object) because
+normalizeProjectName only inspected string values, and better-sqlite3 silently bound a
+one-element array to its element, storing a blank/garbage project with HTTP 200 -- the exact
+blank-project class round 1 closed for a plain string. Fixed by rejecting any `project` key in
+the PUT body that is neither a string nor null/undefined with 400
+INVALID_PROJECT_TYPE_MESSAGE, before normalizeProjectName runs at all; a malformed value never
+reaches the title-tag/parent fallback either.
+
+**Mérés:** src/__tests__/kanban-project-required.test.ts, fleet-test.sh --ref card/b296b810,
+24/24 passed. tsc --noEmit clean.
+
+**Ki döntött:** Cybersec2 lelet, backend javítja. Gate: QA (delta) + Cybersec2.
