@@ -144,13 +144,39 @@ const SELF_PACE_TOOLS = new Set([
 // Bash command patterns that achieve self-pace by another route. These are
 // tested per COMMAND SEGMENT (see splitSegments), so a token in one part of a
 // compound command never trips a pattern that belongs to another part.
+// Card 9ea8dcb8: the old `/\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i` fired on
+// `claude` ANYWHERE after nohup/setsid/disown in the segment, including inside a
+// path or argument -- every agent scratchpad path is `/tmp/claude-1000/...`, so a
+// backgrounded command merely logging there (`nohup ... > /tmp/claude-1000/x/log`)
+// was denied. `claude` only matters as the COMMAND WORD actually launched: the
+// first token after nohup/setsid/disown, skipping the same pass-through prefixes
+// heredocOwnerRunsBody already skips (env assignment, sudo/env/nice/time/exec/
+// command/stdbuf) -- NOT a path/argument token. A chain like `nohup setsid claude`
+// is still caught: setsid is itself a trigger word, so the scan re-examines
+// starting from it.
+function nohupRelaunchesClaude(text) {
+  const triggerRx = /\b(?:nohup|setsid|disown)\b/gi
+  let m
+  while ((m = triggerRx.exec(text)) !== null) {
+    const tokens = text.slice(m.index + m[0].length).trim().split(/\s+/).filter(Boolean)
+    let i = 0
+    while (i < tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]) ||
+      ['sudo', 'env', 'nice', 'time', 'exec', 'command', 'stdbuf'].includes(tokens[i]))) {
+      i++
+    }
+    if (i < tokens.length && tokens[i].split('/').pop().toLowerCase() === 'claude') return true
+  }
+  return false
+}
+
 const SELF_PACE_BASH_PATTERNS = [
   // tmux pane injection -- every write-subcommand that can push keys/text/commands
   // into a pane (the actual incident vector), not just send-keys. [\s\S] (not
   // [^\n]) so an intra-segment newline cannot split the match.
   /\btmux\b[\s\S]*\b(send-keys|paste-buffer|run-shell|set-buffer)\b/i,
-  // self-backgrounding that relaunches claude (nohup/setsid/disown + claude)
-  /\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i,
+  // self-backgrounding that relaunches claude (nohup/setsid/disown + claude) --
+  // see nohupRelaunchesClaude above for why this is a function, not a regex.
+  nohupRelaunchesClaude,
   // the loop slash-skill driven from a shell. `/loop` must be in SLASH-COMMAND
   // position -- a standalone token (segment-start / whitespace / quote before it,
   // whitespace / quote / end after it) -- never a PATH segment. The old
@@ -3827,7 +3853,10 @@ function decide(toolName, toolInput, opts = {}) {
       // what catches a real `subprocess.run(['tmux','send-keys',...])` inside a
       // heredoc body (measured 2026-08-05). Quote-aware segments here would have
       // dropped the detection of this gate's own founding incident vector.
-      if (SELF_PACE_BASH_PATTERNS.some((re) => re.test(normalizeShellEvasion(seg)))) return { deny: true }
+      if (SELF_PACE_BASH_PATTERNS.some((re) => {
+        const normalized = normalizeShellEvasion(seg)
+        return typeof re === 'function' ? re(normalized) : re.test(normalized)
+      })) return { deny: true }
       // self-schedule store: block WRITE only (a read/grep is legit diagnostics)
       if (SCHEDULE_STORE_RX.test(seg) && hasWriteIntent(seg, naiveSegs[i + 1])) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)

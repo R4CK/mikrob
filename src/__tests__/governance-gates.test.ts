@@ -308,6 +308,29 @@ describe('self-pace-gate gateDecision', () => {
   it('denies nohup/setsid self-respawn of claude', () => {
     expect(selfPaceDecision('Bash', { command: 'nohup claude -p "keep going" &' }).deny).toBe(true)
   })
+  // Card 9ea8dcb8: nohupRelaunchesClaude must match `claude` only as the COMMAND
+  // WORD after nohup/setsid/disown (skipping env-assignment / sudo / env / nice /
+  // time / exec / command / stdbuf prefixes), never a path/argument token -- every
+  // agent scratchpad path is /tmp/claude-1000/..., so a backgrounded command that
+  // merely logs there was false-denied before this fix.
+  it('still denies every real nohup/setsid/disown + claude relaunch shape', () => {
+    for (const cmd of [
+      'setsid claude -p "keep going" &',
+      'disown claude -p "keep going"',
+      'nohup env X=1 claude -p "keep going" &',
+      'nohup /home/neon/.local/bin/claude -p "keep going" &',
+      'nohup sudo claude -p "keep going" &',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+    }
+  })
+  it('does NOT misfire on "claude" inside a scratchpad path argument, not the command word', () => {
+    expect(
+      selfPaceDecision('Bash', {
+        command: 'nohup bash store/marveen-land.sh backend --card 9ea8dcb8 > /tmp/claude-1000/x/log 2>&1 &',
+      }).deny
+    ).toBe(false)
+  })
   it('does NOT misfire "at" on a substring (netstat / cat)', () => {
     expect(selfPaceDecision('Bash', { command: 'cat file.txt && netstat -an' }).deny).toBe(false)
   })
