@@ -26152,3 +26152,39 @@ commit, a gate meg valodit biralt). F3 -- gate-dispatch-check.sh: a both-sides-n
 kulonszabaly torolve -- az n/a nem tudja megkulonbozteteni a valodi ismetlest egy MASIK config-only
 kortol, ezert a biztos alapertelmezett ALLOW:stale-verdict-re esik vissza (ugyanaz az irany, mint a
 fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-16, kártya 57044a66 (Koteg 24 upstream-sync, c4ede16d0..f0cfd842b, 25 commit): merge-konfliktusok feloldása
+
+**Kontextus:** harmadik párhuzamos upstream-sync koteg (előzmény: koteg 23 és azt megelőzők); a
+tartomány 31 fájlt konfliktusba hozott -- egress/settings (A rész), email-gate-ek (B rész), és a
+többi (C rész: db.ts/kanban.ts/context-guard/schedule-runner/web/app.js stb.).
+
+**Döntés (összevontan, a teljes kártya-komment REVIEW-ban a per-fájl tábla):** minden konfliktust
+egyenként feloldva, a fork saját, már eldöntött pontjait (acknowledged-conflicts.ts pinjei) tiszteletben
+tartva, két új pin hozzáadva (BASH_EGRESS_HOST_ALLOW saját teszje, bash-egress-host-allow.test.ts).
+Két valós biztonsági lelet a merge KÖZBEN, nem a feloldás eredményeként: (1)
+scripts/hooks/email-approval-gate.py -- a törött email_extract.py eseten a harder-mail
+send_mail/send_mail_auto owner-CC ellenőrzése csendben kimaradt (a defined-de-sosem-hívott
+owner_cc_scope helyett közvetlenül bedrótozva); (2) scripts/hooks/outgoing-copy-gate.py -- a
+harder-mail formázott-test render-ellenőrzés elérhetetlen volt create_draft-ra (egy korábbi elif
+elkapta a bare nevet előbb) -- a dispatch-lánc elejére mozgatva. Egy harmadik, "clean" auto-merge
+által csendben elvesztett mező: src/context-guard.ts GuardState.idleFlushSequence, konfliktusjelzés
+nélkül kimaradt, pótolva. Egy negyedik, MINDKÉT oldalon (upstream blobjában is) meglévő régi hiba:
+src/web/sanitize.ts RESERVED_AGENT_IDS hiányolta a SYSTEM_DIRECTIVE_SENDER-t ('system-directive'),
+a koteg saját új tesztje fogta meg -- az importált konstanssal pótolva, nem szó szerint kiírva (a
+reserved-id-not-spelled-out őr miatt).
+
+**Teszt:** `fleet-test.sh --ref 8033484b6` TELJES futás: 42344 Tests passed (42344), 0 FAIL, 132
+skipped (szándékos). `tsc --noEmit -p .`: tiszta. `npx eslint src`: 0 fatal/parse error (a
+fleet-test harness saját lint-ratchet lépése "0 -> 3 parse error"-t jelez minden futáson,
+commit-tól függetlenül -- megosztott fleet-test-fa egyidejű-hozzáférés okozta mérési torzítás,
+nem valódi lelet ebből a kártyából).
+
+**Nincs benne:** web/app.js-ben az upstream újra-beágyazott kanban UI blokkjának (4749 sor) egyedi
+soronkénti átvizsgálása -- a fork architekturális döntése (app-kanban.js modul-szétválasztás)
+szerint elutasítva, a bennük lévő esetleges ÚJ UI-viselkedés MikroB/Fron Ted felé jelezve, nem
+kitalálva.
+
+**Ki döntött:** backend3, a merge feloldása és verifikációja önállóan; a kártya priorizálása és a
+Card A/B/C sávosítás MikroB iránymutatása (msg 19483). Gate: QA + Cybersec + Cybered (trust-boundary
+fájlok: settings.json, hooks, routes, db.ts, kanban.ts). Gate-SHA: lásd REVIEW komment.
