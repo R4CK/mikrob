@@ -101,8 +101,8 @@ describe('POST /api/kanban -- L1, a client-supplied id cannot self-parent', () =
 
   it('rejects a new card whose parent_id closes a loop through an existing ancestor chain', async () => {
     // existing chain: grandparent <- parent
-    createKanbanCard({ id: 'grandparent', title: 'Grandparent', status: 'planned' })
-    createKanbanCard({ id: 'parent', title: 'Parent', status: 'planned', parent_id: 'grandparent' })
+    createKanbanCard({ id: 'grandparent', title: 'Grandparent', status: 'planned', project: 'test' })
+    createKanbanCard({ id: 'parent', title: 'Parent', status: 'planned', parent_id: 'grandparent', project: 'test' })
     // the NEW card is supplied as id='grandparent' (overwrite attempt aside, a cycle check
     // must still fire before create even reaches that conflict) -- pick a distinct id that
     // is itself an ancestor of the requested parent to prove the chain walk, not just id===parent_id.
@@ -117,7 +117,7 @@ describe('POST /api/kanban -- L1, a client-supplied id cannot self-parent', () =
   // POSITIVE CONTROL for L1: without this, a guard that refused EVERY POST with a parent_id
   // would keep the self-loop test above green while breaking ordinary card creation.
   it('an ordinary new card with a real, non-cyclic parent_id still creates with 200', async () => {
-    createKanbanCard({ id: 'realparent', title: 'Real parent', status: 'planned' })
+    createKanbanCard({ id: 'realparent', title: 'Real parent', status: 'planned', project: 'test' })
     const { ctx, out } = postCtx({ id: 'realchild', title: 'Real child', parent_id: 'realparent' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
