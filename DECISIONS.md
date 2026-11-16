@@ -26490,3 +26490,81 @@ trust-boundary fájl van érintve: `agents-skills.ts`, `schedule-runner.ts`, ski
 **Nincs benne:** az `agent-process.ts`-ből kiesett "start race" log (restart elveszti a versenyfutást egy másik szupervizorral) kérdésként jelezve MikroB-nek -- önmagában hasznosnak tűnt, de a willWake-hez volt kötve; nem lett visszaépítve, amíg MikroB nem dönt.
 
 **Ki döntött:** MikroB (land refusal, msg 18922), backend3 végezte a gyökér-ok azonosítást és a javítást. Gate: QA + WhiteHat (+ RedHat, routes/skills.ts és agent-process.ts auth-közeli fájlok miatt).
+
+---
+
+**2026-11-16 -- Kártya 60aeca01: e7f91eb9 + d8d035f8 utómunka (szerző-trim, szomszéd fogyasztók,
+refusal-alakú generált komment, model-pin viselkedési teszt)**
+
+Forrás: WhiteHat2 (e7f91eb9, komment 16689) F1/F3/F4/F5, plusz d8d035f8 N1. Mind a két szülő-kártya
+mar landolt; ez a maradek 5 lelet lezarasa.
+
+**F1 (szerző-trim a TS-ben):** a Python oldal (`gate-closure-check.py`'s `_is_generated_author`)
+`.strip().lower()`-t hasznal; a TS-oldal 4 olvasási pontja (`kanban-landed-guard.ts`'s
+`claimedCommits`, `kanban-gate-completeness-guard.ts`'s `latestReviewAt`/`latestReviewGateSha`/
+`currentRoundStartTs`, `kanban-draft-review-guard.ts`'s `hasDraftReview`) `.toLowerCase()`-t
+hasznalt (vagy semmit), de SOHA nem trimmelt -- egy " local-llm " (szelso szokozzel) atment a
+Python-ellenorzesen, de a TS-en nem. Javitas: egy kozos `isGeneratedCommentAuthor()` export
+(`kanban-landed-guard.ts`), `.trim().toLowerCase()`, minden 4 TS-hivasi pont erre atallitva --
+hogy a negy hely ne tudjon tovabb szet-drift-elni a normalizalason.
+
+**F3 (szomszéd fogyasztók nincsenek lefedve):** a kártya három konkrét szomszédot nevez.
+`landing-gate-verdict-parse.py` (a landolas-gate ellenorzo parsere) EGYALTALAN nem zarta ki a
+generalt szerzoket -- se Python, se korabbi TS mintat nem kovetett itt senki. `kanban-relations`
+(`db.ts`'s `addKanbanComment` élő hook ÉS `reconcileKanbanRelations` teljes-sweep) ugyanugy: a
+`commentEdges()` hivasok szerzo-szures nelkul futottak mindket helyen, tehat egy local-llm draft
+stray "Gate-SHA: <sha>" sora hamis kapcsolat-elt irt volna a `kanban_relations` tablaba (es a
+reconcile sweep ezt SOHA nem tisztitotta volna, mert a sweep az EGYETLEN torlesi ut). Javitas:
+`landing-gate-verdict-parse.py`-ban uj `GENERATED_COMMENT_AUTHORS`/`_is_generated_author()` (a
+`gate-closure-check.py` mintajat tukrozve, nem importalva -- ugyanaz a konvencio); `db.ts` ket
+hivasi pontjan `isGeneratedCommentAuthor()` import + guard (a `reconcileKanbanRelations` SQL
+select-je kiegeszitve `author` oszloppal, ami korabban hianyzott onnan).
+
+**F4 (refusal-alakú generált komment FAILED-et ad):** `landing-gate-verdict-parse.py` FAIL-ága
+SZANDEKOSAN nincs szerepkor-ellenorizve (egy relayelt emberi NO-GO, pl. MikroB "QA FAIL
+ELFOGADVA" sora, igy is ervenyes refuzis kell maradjon) -- de emiatt semmi nem allitotta meg, hogy
+egy local-llm/gate-pretriage draft nyers, nem-fence-elt szovege, ha eppen egy verdikt-alaku elso
+sort ir (pl. egy teszt-fixture peldat general onmagarol) es tartalmaz egy "Gate-SHA: <sha>" sort
+UGYANARRA a shara, FAILED-kent block-olja a landolast, holott soha senki nem adott NO-GO-t. Ugyanaz
+a `_is_generated_author()` kizaras (F3-mal egy javitasban) zarja ezt is: a FAIL-ag MOST mar sem a
+generalt szerzoket nem latja, az emberi relay-eket viszont tovabbra is igen (lasd a CONTROL
+eseteket a tesztekben).
+
+**F5 (pontatlan alapszám-hivatkozás egy MAR LANDOLT DECISIONS.md-bejegyzesben):** a 2026-xx-xx-i
+e7f91eb9-bejegyzes (`kanban-gate-completeness-guard.test.ts` 5 új eset (71 -> 76, ...)) hibás volt
+-- MERVE (`git show <commit előtte>:<fájl> | grep -c '^\s*it('` vs utana, a tényleges fix-commitra,
+4730ee064): a valódi szám **67 -> 72**, nem 71 -> 76. A DECISIONS.md append-only, a régi sor NEM
+javítható helyben -- ez a bejegyzés a korrekció, nem egy új szerkesztés a régi fölött.
+
+**N1 (d8d035f8: model-pin tesztek csak forrás-grep):** `model-pinned-agents.test.ts` korabbi
+"checkAgent / ... source wiring" blokkja csak a `checkAgent` forras-szoveget grep-elte a literal
+`if (isModelPinned(name)) return` sorra -- egy mutant, ami ugyanezt a sort masutt (pl. kommentben)
+hagyja, de a VALODI agat no-op-ra cserelné, zöld marad. `checkAgent` nincs exportalva (minden MAS
+agán tmux/pane/config I/O-t igenyel, lasd `model-step-down-starts-fresh.test.ts` sajat jegyzete
+errol), de a PINNELT ag a fuggveny ELSO sora, meg a pane/IO elott -- ezert egy valodi hivas erre az
+agra olcson tesztelheto. Javitas: `_checkAgentForTest` export (ugyanaz az escape-hatch minta mint
+`_mainModelIoForTest`), uj viselkedesi teszt (`model-pinned-agent-checkagent-behavioral.test.ts`)
+ami a VALODI `checkAgent`-et hivja egy pinnelt ugynokre 99%-os (tier 2) heti kvótánál, és aszerteli,
+hogy a pane/model I/O (agentRunState, capturePane, readAgentRemoteHost, readAgentModel,
+writeAgentModel) EGYIKE sem futott -- plusz egy CONTROL, ami egy NEM pinnelt ugynokre bizonyitja,
+hogy az I/O VALOBAN elerheto (kulonben a teszt ures futas lenne).
+
+**Mérés:** `npx vitest run src/__tests__/kanban-landed-guard.test.ts
+src/__tests__/kanban-gate-completeness-guard.test.ts src/__tests__/kanban-draft-review-guard.test.ts
+src/__tests__/kanban-relations-extract.test.ts src/__tests__/model-pinned-agent-checkagent-behavioral.test.ts
+src/__tests__/model-pinned-agents.test.ts src/__tests__/model-step-down-starts-fresh.test.ts
+src/__tests__/landing-gate-verdict-check.test.ts` -> 267 PASS (0 fail). `bash
+store/landing-gate-verdict-check.selftest.sh` -> 57 case(s), PASS (volt: 51, +6 uj -- 4 F3/F4 eset +
+2 CONTROL). Mutáció-ellenőrzés mindegyik javításra KÜLÖN-KÜLÖN: `isGeneratedCommentAuthor()`
+trim+lowercase elvetelevel pontosan 3 teszt piros (2 uj F1-eset + egy MAR MEGLEVO case-insensitive
+regresszio, ami azt bizonyitja, hogy a mutacio a lowercase felet is elvitte); `db.ts` ket
+`commentEdges` hivasi pontjanak visszaallitasaval pontosan 3 uj teszt piros; a Python-oldali
+`_is_generated_author()` kizaras elvetelevel pontosan 4 uj + a CONTROL-par 1 fele (5 db) piros;
+`_checkAgentForTest` mogotti pin-check kivetelevel pontosan 1 (az uj viselkedesi teszt) piros.
+Minden esetben visszaallitva, ismet zold. `tsc --noEmit` tiszta (a 2 korabbrol ismert, FUGGETLEN
+parse5-hiba leszamitva, confirmed origin/develop-en is). `node --check
+store/landing-gate-verdict-parse.py` tiszta.
+
+**Ki döntött:** WhiteHat2 lelete (e7f91eb9 komment 16689) + Peti/d8d035f8 (N1) adta az iranyt.
+backend2 vegezte a javitast. Gate: QA + Cybersec2 (a kartya sajat kijelolese, WhiteHat2 adta az
+iranyt).
