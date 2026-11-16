@@ -3543,17 +3543,22 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'with a worker_threads-based approach this fork has never reviewed -- a wholesale swap ' +
     'without dedicated WhiteHat/RedHat review would be reckless and is out of this card\'s scope ' +
     'regardless. SEPARATELY, WhiteHat measured (archived scripts/ from both trees, synthetic ' +
-    'PreToolUse JSON, SELF_PACE_AST=off): the fork ALLOWS and upstream DENIES 6 self-scheduling ' +
-    'shapes (python3 -c urllib POST, node -e fetch POST, curl to /api/sch{e,}dules, a bare file ' +
-    'write directly under ~/.claude/scheduled-tasks/, cp /dev/null into that dir, native Write ' +
-    'to a file there) -- both sides allow a 7th, variable-composed shape, so upstream is not ' +
-    'complete either. This gap is recorded, not resolved, here: follow-up card 2e04a52e ports ' +
-    "upstream's scheduleSurfaceDeny as its own surgical merge (QA + Cybersec + Cybered gate, " +
-    'the control that stopped the autonom-kor incident). The anchor below pins the fork-only AST ' +
-    'cutover mechanism as a tripwire for the wholesale-swap decision -- it does NOT satisfy ' +
-    "\"every KEEP FORK on a security surface is protected\": there is no fork-only enforcement " +
-    'fact in this file to pin (SCHEDULE_STORE_RX, allowlistBashSegmentAllowed, ' +
-    'fileToolTargetsAllowlist all exist on both sides), and it says nothing about the 6-shape gap.',
+    'PreToolUse JSON, SELF_PACE_AST=off) a 6-shape self-scheduling gap -- python3 -c urllib POST, ' +
+    'node -e fetch POST, curl to /api/sch{e,}dules, a bare file write directly under ' +
+    '~/.claude/scheduled-tasks/, cp /dev/null into that dir, native Write to a file there -- ' +
+    'where the fork ALLOWED and upstream DENIED. CLOSED, not a residual: follow-up card 2e04a52e ' +
+    're-measured all 6 shapes against the LIVE fork gate (gateDecision, not the archived-tree ' +
+    'snapshot) and found every one already denied, independently of this file, plus an existing ' +
+    'pinned regression for each in governance-gates.test.ts (fleet-test.sh @ b43de75ac, 259/259 ' +
+    'green) -- the fork closed this gap itself (its own measured incident, the "4x HTTP 200" ' +
+    'comment in that test file) sometime after WhiteHat\'s archived-tree snapshot was taken, so ' +
+    'porting upstream\'s scheduleSurfaceDeny is no longer needed. Both sides still allow a 7th, ' +
+    'variable-composed shape (shared gap, unresolved, out of 2e04a52e\'s scope). The anchor below ' +
+    'pins the fork-only AST cutover mechanism as a tripwire for the wholesale-swap decision -- it ' +
+    'does NOT satisfy "every KEEP FORK on a security surface is protected": there is no fork-only ' +
+    'enforcement fact in this file to pin for the 6-shape question (SCHEDULE_STORE_RX, ' +
+    'allowlistBashSegmentAllowed, fileToolTargetsAllowlist all exist on both sides) -- the actual ' +
+    'protection for that question is the governance-gates.test.ts pins named above.',
   'scripts/sms/seeme-send.py':
     'KEEP FORK (corrected per WhiteHat 27159 -- the case is stronger than originally stated, ' +
     'and the original description of upstream was wrong). The fork\'s approval-consumption is ' +
