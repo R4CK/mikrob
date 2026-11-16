@@ -276,6 +276,17 @@ esac
 [ "$TEST_TREE" -ef "$ROOT" ] \
   && die 2 "FLEET_TEST_TREE ($TEST_TREE) IS the live install ($ROOT) -- refusing before the reset/clean/checkout below would run against it. Point FLEET_TEST_TREE at a disposable worktree instead."
 # <<< ROOT_GUARD_BLOCK_END
+# Card 0ca2322b (c5f98f82 follow-up, MikroB comment 32226 on RedHat's suggestion, comment 32216):
+# the regex-based detector just below (fleet-test-no-test-tree-reassignment-after-guard.test.ts)
+# only scans the TEXT of the gap between the guard above and the real `cd "$ROOT"` call -- it is
+# blind to any write form that does not spell "TEST_TREE=" literally (mapfile/readarray, a for/
+# select loop variable, printf -v, declare -n/local -n indirection, a backslash-newline split
+# between the name and "="), and it covers nothing AFTER the `cd` call at all. `readonly` closes
+# the whole class in one line, structurally, for the REST of this script's run (not just the gap):
+# bash itself refuses every one of those write forms at runtime with "readonly variable", not just
+# the ones this file's author thought to enumerate. The static detector stays as a cheap backstop
+# that still catches the most common mistake (a plain `TEST_TREE=...`) before the script even runs.
+readonly TEST_TREE
 
 REF=""
 ARGS=()
