@@ -26301,6 +26301,134 @@ felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szaba
 **Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
 backend2 vegezte a javitast. Gate: QA + Cybered.
 
+## 2026-11-15: Teljes suite CPU-slot 2 -> 3 (kártya eff5c2f6)
+
+**Döntés:** Peti kérése (Telegram 11042, 2026-10-11): a teljes tesztfutások közös CPU-slotszáma
+2-ről 3-ra. A `CLEANCORE_SUITE_SLOTS`/`MIKROB_SUITE_SLOTS` alapérték mindkét helyen (`store/fleet-test.sh`,
+`store/mopsion-suite-run.sh`) emelve, a `cleancore-suite-run.sh` szimlink ugyanazt a fájlt éri el.
+
+**Mit:** a worker-plafon (`DEFAULT_MAX_WORKERS=$((CORES / SLOTS))`) mindkét szkriptben már eleve
+a slot-számból van levezetve, nem fixen 6 -- így 12 mag / 3 slot = 4 worker/futás automatikusan
+adódik, külön kódváltoztatás nélkül. A `store/fleet-test-cpu-slot-env.selftest.sh` default-ellenőrző
+sora (2 -> 3) frissítve; a `mopsion-suite-run.selftest.sh` (és szimlinkje `cleancore-suite-run.selftest.sh`)
+minden tesztesete explicit `CLEANCORE_SUITE_SLOTS=2`-t ad át, ezért a default emelése nem bontja
+el őket.
+
+**Megfigyelés a bevezetés után:** ha hamis piros jelenik meg (birpc timeout, 0 bukás, exit 1) 3 slot
+mellett, vissza 2-re (`MIKROB_SUITE_SLOTS=2`).
+
+**Ki döntött:** Peti (Telegram 11042) -> MikroB dispatch -> fullstack végrehajtása. Gate: QA + Cybered.
+## 2026-11-16 10:42 -- 214ca312: noisy-guard rewrite LOW-k (ff43b10e kovetokartya) + engine-level
+## deny probe NOISY_GUARD_MODE=rewrite elott
+
+RedHat GO-ja az ff43b10e-n (@c7fabb8c, msg 19546) harom LOW-t hagyott nyitva, mielott
+`NOISY_GUARD_MODE=rewrite` BARMELY settings/env-ben eleselodhetne (a landolt alapertek `block`
+marad):
+
+1. `bash -c '<zajos parancs>'` / `sh -c ...` / `zsh -c ...` meg REWRITE-elodott. A guard a
+   `_unwrapped_variants()`-tal a QUOTE-okon belüli parancsot illeszti a NOISY_PATTERNS-re (hogy a
+   benne bujo zajos parancsot felismerje), de `_rewrite_is_safe()` a NYERS, kulso parancsot
+   nezi -- aminek az elso szava `bash`/`sh`/`zsh`, nem a zajos program maga, tehat technikai
+   ertelemben teljesitette "az elso szo a zajos program maga" szabalyt. Ugyanaz a hiba-osztaly,
+   mint a sudo-exploit (ff43b10e), egy reteggel odebb. Javitas: `_WRAPPER_DISQUALIFIES_REWRITE_RX`
+   kiterjesztve `^\s*(?:bash|sh|zsh)\s+-c\b`-vel -- block-and-suggestre esik vissza, nem
+   rewrite-elodik.
+2. A vezeto-szokozos parancs (`"  npm install"`) mar helyesen mukodott (a `_CMD` sajat `\s*`
+   prefixe), csak nem volt neven pinnelt teszt -- hozzaadva a `CASES` listahoz block-modban.
+3. Engine-level probe: a korabbi mérés csak a HOOK-alprocesszt hivta kozvetlenul (stdin JSON ->
+   stdout/exit kod), sosem a VALODI Claude Code permission engine-t egy éles `Bash(sudo:*)`
+   deny-szabállyal. Ma egy izolalt, eldobhato probe-mappaban (`.claude/settings.json`: csak
+   `Bash(sudo:*)`/`Bash(*/sudo *)` deny + a noisy-command-guard hook `NOISY_GUARD_MODE=rewrite`-re
+   drotozva) elinditottam egy valodi `claude -p` sessiont ("Use the Bash tool to run exactly this
+   command... sudo npm install"). A tenyleges engine `permission_denials` tomb ket bejegyzest
+   adott vissza: az elso a NYERS `sudo npm install` Bash-hivas (a hook block-and-suggestje +
+   a Bash(sudo:*) deny egyutt zarja), a masodik a modell sajat `bash .../noisy-run.sh sudo npm
+   install` probalkozasa (ask-ra esett, TTY nelkul nem engedelyezve). A modell vegso valasza:
+   "sudo npm install did not run. The noisy-command guard hook blocked the raw command, and the
+   same command through the noisy-run.sh filter then needed approval, which wasn't granted." --
+   azaz `sudo npm install` ELUTASITVA a valodi permission engine szintjen is, rewrite mod alatt.
+
+**Teszt:** `scripts/hooks/noisy-command-guard.selftest.py` CASES-be 1 uj block-pin (vezeto
+szokoz), a `check_rewrite_mode()` (b2) blokkba 3 uj wrapper-disqualifies-rewrite eset (bash/sh/zsh
+-c). 33 base case + rewrite-mode + quoting-roundtrip zold (korabban 28 volt a padlo az
+`noisy-command-guard-selftests.test.ts`-ben, a floor-check `>=28`-re meg teljesül). Mutacio-
+ellenorzes: a `_WRAPPER_DISQUALIFIES_REWRITE_RX` kiterjesztesenek visszavonasaval pontosan a 3 uj
+eset (bash/sh/zsh -c) bukik piros-ra; visszaallitva, ismet zold. `npx tsc --noEmit` tiszta (ugyanaz
+a 3, korabbrol ismert parse5-hianyos hiba), `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+**Ki döntött:** backend2 (self-advance, MikroB prioritás-direktíva msg 19621: 214ca312 elobb, mint
+0ca2322b, mindkettő a saját korábban gate-elt munka follow-upja). Gate: QA + Cybered.
+
+## 2026-11-16 11:11 -- 214ca312 delta: Cybered NO-GO round 2 (eval-wrapper hole + a valodi
+## engine-probe) javitasa
+
+Cybered NO-GO @1ea145a6e, ket lelet:
+
+**FINDING 1 (MEDIUM-LOW), javitva:** `eval "sudo npm install"` meg REWRITE-elodott rewrite-modban
+-- a `_WRAPPER_DISQUALIFIES_REWRITE_RX` DENYLISTJE csak bash/sh/zsh -c-t, sudo/doas/pkexec/su
+-c/time/rtk-t ismerte, `eval`-t nem, holott a `_unwrapped_variants()` mar amugy is kibontja az
+eval-t (ezert ismeri fel a bent bujo zajos parancsot). Minden egyes megnevezett wrapper egy
+bezarando lyuk -- a gyoker-ok a forma, nem a konkret lista hianyossaga.
+
+**Dontes: a denylistet egy POZITIV szabaly helyettesiti** (MikroB 19536 eredeti szandeka szerint:
+"rewrite CSAK akkor, ha a parancs elso szava a zajos program maga"). Uj
+`_STRICT_NOISY_PATTERNS` -- ugyanazok a NOISY_PATTERNS vegei, de `^\s*` eloccsel, wrapper-
+tolerancia NELKUL. `_rewrite_is_safe()` most ezt koveteli meg POZITIVKENT, nem egy denylist
+HIANYAT. Ezzel NEM csak az eval zarul be, hanem MINDEN jovobeli, meg nem nevesitett wrapper is --
+a `_WRAPPER_DISQUALIFIES_REWRITE_RX` teljesen megszunt.
+
+**FINDING 2 (MEDIUM), javitva -- a VALODI engine-probe, nem a korabbi (ami nem tesztelte, amit
+allitott):** a korabbi probe `sudo npm install`-t hasznalt, ami MAR a hook szintjen
+block-and-suggestre esik (sudo wrapper-diszkvalifikacio), tehat `updatedInput` SOHA nem jutott el
+az engine-hez -- a korabbi probe nem azt mutatta meg, amit a kartya kerdese volt ("amikor a hook
+TENYLEG atir, a deny-szabaly az EREDETI vagy az ATIRT szoveget latja-e"). Az uj probe izolalt
+`CLAUDE_CONFIG_DIR`-ral (a korabbi probe EZT elmulasztotta -- a gyermek `claude -p` a sajat,
+megosztott projekt-szintu `.claude/settings.json`-jat is betoltotte, ami a sajat,
+rewrite-mod-nelkuli noisy-command-guard hook-ot hordozta, ELFEDVE a probe eredmenyet -- ez maga is
+egy mert hiba, lasd lejjebb), tiszta cwd-vel (`cd` a probe-mappaba KOTELEZO, kulonben a projekt-
+gyoker `.claude/settings.json`-ja is bekerul), `Bash(npm install:*)` deny-szabalylyal es a VALODI
+`NOISY_GUARD_MODE=rewrite`-re drotozott hookkal.
+
+**Eredmeny (a `permission_denials` tomb teljes szovege):**
+```json
+[
+  {
+    "tool_name": "Bash",
+    "tool_use_id": "toolu_01Cews63d6JhZoYVckT4YBY5",
+    "tool_input": {
+      "command": "bash /home/neon/marveen-agent-worktrees/backend2/scripts/noisy-run.sh npm install",
+      "description": "Install npm dependencies"
+    }
+  }
+]
+```
+A modell egyetlen Bash-hivasa MAR a tenyleges ATIRT szoveget hordozta (`bash .../noisy-run.sh npm
+install`), nem a nyers "npm install"-t -- a hook tehat CSENDESEN atirt, az engine pedig a `Bash
+(npm install:*)` deny-szabalyat az ATIRT szoveg ellen probalta (ami "bash"-sal kezdodik, nem
+"npm"-mel), es NEM talalt egyezest -- csak a rendes jovahagyas-keres folyamat futott (amit a `-p`
+mod TTY nelkul nem tud megadni). **Tehat: egy, a zajos program sajat nevere horgonyzott deny-
+szabaly ATIRASSAL megkerulheto.** Ma a `BASH_EGRESS_DENY`/`FLEET_BASELINE_DENY` egyike sem
+horgonyoz zajos programra (sudo/wget/nc/ncat/telnet/rm/curl/git -- semelyik nem `NOISY_PATTERNS`),
+tehat ELES kitettseg MA nincs, de a kerdes most MERT, nem talalgatott.
+
+**Strukturalis vedelem a jovore:** uj `src/__tests__/noisy-guard-rewrite-vs-deny-rules.test.ts`
+(3 teszt): ellenorzi, hogy a ket deny-listaban (`BASH_EGRESS_DENY`, `FLEET_BASELINE_DENY`) SEMMI
+nem horgonyoz egy olyan program-nevre, amit `NOISY_PATTERNS` atir. Ha valaki a jovoben egy ilyen
+deny-szabalyt adna hozza (pl. `Bash(npm install:*)`), a teszt PIROSRA valik -- tudatos dontesre
+kenyszerítve (vagy `NOISY_GUARD_MODE` marad `block`-on, vagy a szabaly nem puszta program-nevre
+horgonyoz).
+
+**Mutacio-bizonyitas:** a regi denylist visszaallitasaval (`eval "sudo npm install"` stb.)
+pontosan a 3 uj eval-eset bukik piros-ra (33/33 -> 30/33); visszaallitva ismet zold. Az uj
+cross-check teszt masodik esete (`'Bash(npm install:*)'`) explicit bizonyitja, hogy a check
+tenyleg tuzel egy valodi utkozesre.
+
+**Verifikacio:** `noisy-command-guard.selftest.py` 33/33 (3 uj eval-eset). `npx vitest run` a
+`noisy-command-guard-selftests.test.ts` + uj `noisy-guard-rewrite-vs-deny-rules.test.ts` +
+`fleet-baseline-deny.test.ts` + `bash-egress-deny.test.ts` -> 47/47 zold. `npx tsc --noEmit`
+tiszta (ugyanaz a 3 ismert parse5-hiba). `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+**Ki döntött:** backend2 (delta-fix a Cybered NO-GO-ra). Gate: QA + Cybered (re-gate).
 ## 2026-11-15 09:07 -- 7c79badc: Koteg 23 upstream sync (11 commit), három konfliktus-döntés
 
 **Döntés:** backend3 real `git merge --no-ff`-elt 11 upstream commitot (c4ede16d0..402de0e13) a
