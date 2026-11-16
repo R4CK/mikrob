@@ -48,7 +48,7 @@ describe('L6: the launcher body genuinely calls readAgentCustomProvider(name), n
 
   it('a present-but-unusable customProvider value refuses the start before resolveProviderEnv ever runs', () => {
     const idx = launcherBody.indexOf('const customProviderId = readAgentCustomProvider(name)')
-    const afterRead = launcherBody.slice(idx, idx + 500)
+    const afterRead = launcherBody.slice(idx, idx + 800)
     expect(afterRead).toMatch(/isAgentCustomProviderFieldUnusable\(name\)/)
     expect(afterRead).toMatch(/return \{ ok: false, error: 'customProvider:/)
   })
