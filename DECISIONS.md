@@ -26318,3 +26318,46 @@ el őket.
 mellett, vissza 2-re (`MIKROB_SUITE_SLOTS=2`).
 
 **Ki döntött:** Peti (Telegram 11042) -> MikroB dispatch -> fullstack végrehajtása. Gate: QA + Cybered.
+
+## 2026-11-16: self-pace-gate self-schedule residuals (kartya a6c7780d, RedHat msg 19773 pont 3, MEDIUM, upstream-mal kozos)
+
+RedHat a 2e04a52e gate-jen (NO-GO, msg 19773) harom, upstreammal KOZOS maradek rest nevezett meg a
+`scripts/self-pace-gate.mjs` `scheduleSurfaceDeny()`-jen: (a) printf/echo-irt script-fajl utolagos
+futtatasa, (b) `curl -K <fajl>` (nem stdin), (c) `base64 -d | sh`, (d) tobb valtozobol osszerakott
+store-ut. Mind a negy ugyanaz a modul sajat fejkommentjeben MAR dokumentalt korlat egy-egy pelddaja:
+a hivatkozas csak akkor eszlelheto, ha a parancs SAJAT SZOVEGE tartalmazza -- ezek mind azt erik el,
+hogy ne tartalmazza.
+
+**Megerositve meresssel** (nem talalas elott): mind a negy alak `ALLOW`-t ad a VALODI
+`gateDecision()`/`scheduleSurfaceDeny()`-n keresztul, probaval igazolva, mielott hozzanyultam volna.
+
+**Javitas -- csak (b) es (c), amik LOKALISAN, a shell modellezese nelkul bizonyithatok:**
+- `curlConfigFileRefs`: ha egy curl parancs `-K`/`--config`-ja VALODI lokalis fajlra mutat (nem
+  `-`), a hook (szinkron, a sajat gepen, a Bash-hivas ELOTT fut) beolvassa azt a fajlt
+  (meret-korlatos, try/catch) es a tartalmat is atfuttatja a sched-surface egyezesen.
+- `decodedBase64Refs`: ha a parancs tartalmazza a `base64` szot ES egy stdin-olvaso shellbe
+  pipe-ol (a MAR bizonyitott `STDIN_SHELL_RX` / `HAS_PIPE_RX`+`WRAPPER_POSITION_BARE_SHELL_RX`
+  felteteit hasznalva, amit `executableStrings` is pont ezert hasznal), minden base64-alaku
+  tokent dekodol es a dekodolt szoveget is atfuttatja az egyezesen.
+
+Mindket uj ellenorzes CSAK HOZZAAD tiltast (barmi felbonthatatlan -- hianyzo fajl, `$`-expanzio,
+nincs base64/pipe-shell alak -- csendben at van engedve, nem uj tiltas), es csak akkor tilt, ha a
+fajl/dekodolt tartalom VALODI hivatkozast tartalmaz -- nem feltetlenul minden `curl -K` vagy
+`base64` hasznalatot (hamis-pozitiv teszt mindkettore).
+
+**(a) es (d) SZANDEKOSAN NYITVA marad:** (a) lezarasa minden futtatott script-fajl TARTALMANAK
+olvasasat jelentene -- ez a sajat repo scriptjeit (amik PONT errol a funkciorol szolnak) rendszeresen
+elvagna; a modul fejkommentje mar most "szandekosan megengedett"-nek mondja. (d) teljes
+shell-valtozo-interpretaciot igenyelne, amit upstream sem csinal. Mindket pont a modul fejkommentjebe
+irva NEVESITVE (nem csak "assembled at run time" altalanossaggal), hogy kesobb ne tunjon uj
+resznek vagy mulasztasnak.
+
+**Teszt:** `src/__tests__/self-pace-indirect-reference-residuals.test.ts`, 11 uj teszt (1/alak + 2
+hamis-pozitiv-or a zart alakokra + 2 invariant-valtozatlansag). Mutacio-ellenorzes: a fix
+visszaallitasaval PONTOSAN a 2 "CLOSED" teszt valt vorosre, a tobbi zold marad; visszaallitva ismet
+zold. A teljes gate-erintett teszt-csalad (23 fajl, egyezik Cybered sajat 2e04a52e-mereset) 1227
+PASS + 98 skip. `tsc --noEmit` tiszta (3, korabbrol ismert, FUGGETLEN parse5-hiba leszamitva).
+ESLint es `node --check` tiszta.
+
+**Ki döntött:** RedHat lelete (msg 19773) adta az iranyt. backend2 vegezte a javitast. Gate: QA +
+Cybersec + Cybered (a kartya sajat kijelolese).
