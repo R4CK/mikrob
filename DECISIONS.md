@@ -26190,3 +26190,113 @@ fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fulls
 **Teszt:** `claude-md-split-reachability-check.selftest.py` 30/30 PASS (26-ról, a 2 fenti valós fixen keresztül derült ki 4 selftest-rés). `src/__tests__/claude-md-split-reachability.test.ts` 2/2 PASS a rebase-elt tippen (ami EGYBEN a develop-merge-elt állapot is). `npx tsc --noEmit` tiszta.
 
 **Ki döntött:** MikroB (land-refusal + re-dispatch, üzenet 19336/19338). backend3 végezte a rebase-t és mindkét javítást. Gate: QA + Cybered (a kártya saját kijelölése).
+
+## 2026-11-16 -- ff43b10e: noisy-command-guard rewrite-mode F1/F2/F4 javitas (WhiteHat F1-F4, fc3a6a39)
+
+**Kontextus:** WhiteHat GO a fc3a6a39-en (komment 9a0f47b1) azzal a felteteллel, hogy a fleet-wide
+rewrite-mode aktivalas elott F1-F4 javitva legyen. F1 (blokkolo): osszetett/tobb-szegmensu parancs
+rewrite-modban `bash -c '<raw>'`-be csomagolodik, ami egy start-anchored deny-szabaly (pl.
+BASH_EGRESS_DENY wget/nc/telnet) elol elrejti a beagyazott parancsot. F2: egy vezeto `VAR=val`
+hozzarendeles a `noisy-run.sh` bare `"$@"` execjeben literal programnevkent ertelmezodik -> rc 127,
+a valodi parancs sosem fut. F4 LOW: 7/14 mutans tulelte a korabbi tesztkort.
+
+**Dontes:** `_rewrite_is_safe(raw)` kapu `scripts/hooks/noisy-command-guard.py`-ban: rewrite mod
+CSAK akkor helyettesit csendben, ha a parancs (a) nem tartalmaz shell-metakaraktert (F1) ES (b) nincs
+vezeto env-hozzarendelese (F2) -- kulonben block-and-suggest fallback, pont ugy mint alapertelmezesben.
+F4: uj regresszios tesztek zarjak a 3 maradek mutans-tulelo osztalyt (tool_input mezo-megmaradas,
+metachar-lista teljesseg, kilepesi kod a kis-kimenet agon noisy-run.sh-ban). F3 (LOW, lossy sibling
+segment output) a kartya sajat fix-direction-je szerint hatokoron kivul, nincs eloirt javitas.
+
+**Teszt:** `noisy-command-guard.selftest.py` 28 alap eset + rewrite-mode + quoting round-trip PASS;
+`noisy-run.selftest.sh` pass=7 fail=0 (uj kilepesi-kod eset); `fleet-test.sh --ref e777f8629
+src/__tests__/noisy-command-guard-selftests.test.ts` 2/2 PASS; `npx tsc --noEmit` tiszta (a sajat
+worktree egy FUGGETLEN, elavult node_modules miatti parse5-hianyt jelzett, nem erinti ezt a commitot,
+mar lefedve a fleet-test.sh friss dist-buildjevel); `lint-ratchet.sh`: 441 lelet, baseline tartja.
+Mutacio-ellenorzes: a `_rewrite_is_safe` kapu kivetelevel 10 teszt vorosre valt (F1/F2 regresszio +
+8 metachar-eset), a 28 alap eset nem serult; visszaallitva ismet zold.
+
+**Ki döntött:** WhiteHat (fix-irany, fc3a6a39 komment 9a0f47b1). backend2 végezte a javítást.
+Gate: QA + Cybered. Gate-SHA: e777f862984ba3bbff870f413aca70fec9df5ca9.
+
+## 2026-11-16 -- ff43b10e: CYBERED NO-GO javítás -- sudo/doas/pkexec/su -c sosem íródik felül, rewrite sosem allow
+
+Cybered (RedHat) NO-GO-t adott a 9a1cc5367 gate-sharol (komment 32154): egyetlen szegmensbol allo
+privilegium-emelo parancs (`sudo npm install`, `sudo apt-get install`, stb.) illeszkedett a `_CMD`
+opcionalis `sudo` prefixere, igy rewrite modban `bash .../noisy-run.sh sudo npm install`-re irodott
+at -- egy `bash`-sal kezdodo sorra, amit egy `Bash(sudo:*)` deny szabaly mar nem lat -- ES a hook
+`permissionDecision: allow`-t is visszaadott, amivel a deny-floor-t kerulo uttal egyutt teljesen
+megkerulte azt.
+
+MikroB fix-irany (komment 32155, Fix-Direction: MikroB): a rewrite hook SOHA ne adjon `allow`
+permissionDecision-t -- maradjon beallitatlanul, hogy a normal jogosultsagi folyamat (beleertve a
+deny szabalyokat) a (esetleg atirt) parancsot a sajat jogan ertekelje. Tovabba: egy szegmens, amelynek
+elso szava `sudo`/`doas`/`pkexec`, vagy `su -c`-vel kezdodik, SOHA nem valik atiras/javaslat
+jeloltje -- teljesen erintetlenul halad at, mindket modban, hogy egy deny szabaly mindig a tenyleges,
+be nem csomagolt parancsot lassa.
+
+Javitas: `_PRIV_RX` kapu a `NOISY_PATTERNS` ciklus elott (`scripts/hooks/noisy-command-guard.py`,
+commit 256017938), es a rewrite-mode JSON-bol a `permissionDecision`/`permissionDecisionReason` kulcsok
+torlese.
+
+**Teszt:** `noisy-command-guard.selftest.py` 28 alap eset + rewrite-mode (uj check: a JSON SOHA nem
+tartalmaz `permissionDecision`-t) + uj privilegium-wrapper check (5 parancs, mindharom modban
+erintetlen) + quoting round-trip, mind PASS. `noisy-run.selftest.sh` pass=7 fail=0, erintetlen.
+Elo deny-probe (valodi hook subprocess, `NOISY_GUARD_MODE=rewrite`): `sudo npm install`, `sudo
+apt-get install -y jq`, `doas npm ci`, `pkexec pip install requests`, `su -c 'npm install' root`
+mind rc=0, ures stdout (erintetlen); `npm install` tovabbra is atirodik, a JSON nem tartalmaz
+`permissionDecision`-t. `npx tsc --noEmit`: tiszta a 3, korabbrol ismert, FUGGETLEN parse5-hianyos
+hibat leszamitva. `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+Mutacio-ellenorzes: a `_PRIV_RX` kapu eltavolitasaval 6 teszt vorosre valt (mind az 5 privilegium-
+parancs block/rewrite modban); az `allow` visszaadasaval 1 teszt vorosre valt. Mindket mutans
+visszaallitva, ismet zold.
+
+**Ki döntött:** Cybered (RedHat) NO-GO, MikroB fix-irany (Fix-Direction: MikroB, komment 32155).
+backend2 végezte a javítást. Gate: QA + Cybered. Gate-SHA: 256017938735130114ecb4b5b80e288716e41030.
+
+## 2026-11-16 -- ff43b10e: MikroB addendum (komment 32155/19523/19536) -- altalanositott wrapper-tiltas rewrite modban
+
+Javito bejegyzes a fenti (2026-11-16, "CYBERED NO-GO javítás") entry-hez: az elozo javitas a sudo/doas/
+pkexec/su -c szegmenst TELJESEN kihagyta a NOISY_PATTERNS illesztesbol (nem csak az atirasbol), ami
+tobb volt mint amit MikroB kert, es a hasonlo osztaly maradek tagjait (time, rtk) egyaltalan nem
+erintette. MikroB addendum pontositotta: a szabaly "rewrite CSAK akkor, ha a parancs elso szava a zajos
+program maga" -- minden vezeto wrapper (sudo/doas/pkexec/su -c, time, rtk) block-and-suggest-re esik
+vissza, PONTOSAN ugy, mint ma, CSAK az ATIRASt tiltja, a NOISY_PATTERNS illesztest/blokkolast nem
+erinti.
+
+**Javitas:** `_PRIV_RX` (ami a teljes szegmenst kihagyta) helyett `_WRAPPER_DISQUALIFIES_REWRITE_RX`
+(sudo/doas/pkexec/su -c/time/rtk) betéve a `_rewrite_is_safe()` feltetelbe; a fomagban a kulon
+`continue` sor eltavolitva (a sudo-szegmens IGY ismet eljut a NOISY_PATTERNS ellenorzesig, es a
+block-and-suggest agra kerul rewrite modban is).
+
+**Teszt:** uj CASES-bejegyzesek (sudo npm install / sudo apt-get install / sudo pip install / sudo
+docker build -> BLOCK default/block modban, valtozatlan); uj check_rewrite_mode (b2): sudo npm install,
+sudo apt-get install -y jq, sudo pip install requests, sudo docker build -t x ., time npm install, rtk
+npm test -> mind block-and-suggest-re esik vissza rewrite modban (rc=2, stderr, nincs stdout JSON); (b3)
+doas/pkexec dokumentalva mint ELOTTE IS illesztetlen (a `_CMD` grammatika sosem ismerte fel oket), nem
+ennek a javitasnak a resze. RedHat LOW (32154): a metachar-lista teljesseg-teszt (eset h) kibovitve a
+')' es egy beagyazott newline karakterrel -- mindketto mar BENNE volt a `_METACHAR_RX` karakterosztalyban,
+csak a teszt-lefedettsegbol hianyzott.
+
+Elo deny-probe (valodi hook subprocess, `NOISY_GUARD_MODE=rewrite`), a pontos kimenet: `sudo npm
+install`, `sudo apt-get install -y jq`, `sudo pip install requests`, `sudo docker build -t x .`, `time
+npm install`, `rtk npm test` -> mind `rc=2`, ures stdout, nem-ures stderr (`NOISY-COMMAND-GUARD: ...`);
+`npm install` -> `rc=0`, stdout JSON `updatedInput.command` atirva, `permissionDecision` kulcs nelkul.
+
+Mutacio-ellenorzes: a `_WRAPPER_DISQUALIFIES_REWRITE_RX` feltetel eltavolitasaval 6 teszt vorosre valt
+(mind a 6 wrapper-parancs); a ')'/newline eltavolitasaval `_METACHAR_RX`-bol 2 teszt vorosre valt.
+Mindket mutans visszaallitva, ismet zold. `noisy-run.selftest.sh` pass=7 fail=0 (erintetlen), `npx tsc
+--noEmit` tiszta (ugyanaz a 3, korabbrol ismert, FUGGETLEN parse5-hianyos hiba), `lint-ratchet.sh`: 441
+lelet, baseline tartja.
+
+**Korrekcio a korabbi (2026-10-10, fc3a6a39) bejegyzeshez:** az a bejegyzes Mechanizmus-bekezdese
+("A jogosultsagi szabalyok az ATIRT inputra ertekelodnek") es Gate-bekezdese (az F1 leirasa) nem
+egyertelmuen ugyanazt mondjak -- RedHat eszrevetele (komment 32154, 2. LOW). A tenyleges viselkedes
+(ez es az ff43b10e-javitasok ota): a Claude Code jogosultsagi motor a `hookSpecificOutput.updatedInput`
+altal ATIRT parancsot ertekeli, NEM az eredetit -- ez pontosan az oka, hogy egy wrapperbe (bash -c,
+vagy korabban sudo) csomagolt atirt sor miatt egy start-anchored deny szabaly (pl. Bash(sudo:*),
+BASH_EGRESS_DENY) mar nem a tenyleges programot latja a sor elejen. A fc3a6a39 Gate-bekezdese ezt
+felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szabaly), csak pontositja.
+
+**Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
+backend2 vegezte a javitast. Gate: QA + Cybered.

@@ -32,6 +32,17 @@ else
   bad "small output was wrapped" "direct=${direct@Q} wrapped=${wrapped@Q}"
 fi
 
+# --- small-output exit code must be the WRAPPED command's own status, not swallowed (WhiteHat F4
+# survivor class, card fc3a6a39 follow-up ff43b10e: "kilepesi kod a kis-kimenet agon").
+SMALL_FAIL_SCRIPT='printf "line one\nline two\n"; exit 7'
+bash "$RUN" bash -c "$SMALL_FAIL_SCRIPT" >/dev/null
+small_fail_rc=$?
+if [ "$small_fail_rc" -eq 7 ]; then
+  ok "small-output branch propagates the wrapped command's real exit code (7)"
+else
+  bad "small-output branch did not propagate the real exit code" "got rc=$small_fail_rc, expected 7"
+fi
+
 # --- large output still gets the header + filtering (small-output skip must not swallow everything)
 LARGE_SCRIPT='for i in $(seq 1 200); do echo "filler line $i"; done; echo "ERROR: boom"'
 wrapped_large="$(bash "$RUN" bash -c "$LARGE_SCRIPT")"

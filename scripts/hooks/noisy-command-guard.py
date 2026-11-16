@@ -14,7 +14,13 @@ before building this, not from memory. `NOISY_GUARD_MODE=rewrite` (default stays
 original behavior) makes the hook transparently substitute the wrapped `noisy-run.sh` invocation via
 `updatedInput` instead of blocking: the agent's original Bash call just runs filtered, no extra
 block/retry round-trip. `updatedInput` replaces the WHOLE tool_input object, so every other field
-(not just `command`) is carried through unchanged.
+(not just `command`) is carried through unchanged. `permissionDecision` is NEVER set by this hook
+(card ff43b10e, RedHat NO-GO) -- the rewrite only changes WHAT runs, never whether it is allowed to
+run; the normal permission flow, including any deny rule, still evaluates the result on its own.
+Rewrite ONLY fires when the command's first word is the noisy program itself: any leading wrapper
+(sudo/doas/pkexec/su -c, time, rtk) or `VAR=val` prefix or shell metacharacter falls back to
+block-and-suggest instead, unchanged from today's behavior, so a deny rule anchored on the real
+program name always sees the command the agent actually typed.
 
 WHAT COUNTS AS NOISY
 npm/pnpm/yarn install|ci|add|update and `npm run build`; test runners (npx vitest/jest/playwright,
@@ -118,6 +124,56 @@ def _owned_by_wrapper(seg):
 # A command carrying shell metacharacters therefore has to travel as a single argument.
 _METACHAR_RX = re.compile(r"[|&;<>\n()`]|\$\(")
 
+# Leading `VAR=val` assignment(s) before the real command. Built with `+` (one-or-more), not
+# reused from _ENV_PREFIX's `*` (zero-or-more) -- a `*` here would match every command at position
+# zero (zero assignments is still a match), making the check a no-op.
+_LEADING_ENV_RX = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)+")
+
+
+# RedHat NO-GO (card ff43b10e, comment 32154) + MikroB addendum (comment 32155, dispatch 19523/
+# 19536): rewrite may ONLY happen when the first word of the command is the noisy program itself.
+# ANY leading wrapper -- sudo/doas/pkexec/su -c (privilege escalation), time, rtk -- disqualifies
+# the rewrite, same as a leading `VAR=val` or a shell metacharacter: it falls back to
+# block-and-suggest exactly like today, UNCHANGED from before this fix (this only narrows which
+# matched commands may be REWRITTEN, it does not change which commands are matched/blocked at
+# all). The concrete exploit: `sudo npm install` matched _CMD's own optional `sudo` prefix, so it
+# got rewritten into `bash .../noisy-run.sh sudo npm install` -- a line starting with `bash`, not
+# `sudo`, which a start-anchored deny rule like Bash(sudo:*) can no longer see.
+_WRAPPER_DISQUALIFIES_REWRITE_RX = re.compile(
+    r"^\s*(?:sudo|doas|pkexec|time|rtk)\b|^\s*su\s+-c\b"
+)
+
+
+def _rewrite_is_safe(raw):
+    """WhiteHat F1/F2 (card fc3a6a39 follow-up, ff43b10e): rewrite mode may ONLY substitute a
+    command that `noisy-run.sh` can run as a plain argv list, unmodified in meaning, with the
+    SAME string the permission engine evaluated its deny/ask rules against.
+
+    F1 (blocking): wrapping a compound/multi-segment command into `bash -c '<raw>'` buries every
+    embedded simple command inside one quoted string argument. A deny rule (e.g. BASH_EGRESS_DENY
+    on wget/nc/telnet) that recognizes a program by how a command STARTS no longer sees it -- the
+    rewritten line starts with `bash .../noisy-run.sh bash -c '...'`, not with the denied program.
+    This is fine for the block-and-suggest path (a human reads the suggestion, decides, retypes
+    it) but not for a mode that substitutes it silently. A command with any shell metacharacter
+    therefore never gets the rewrite; it falls back to block-and-suggest exactly like today.
+
+    F2: `"$@"` is a bare exec, not a shell -- `noisy-run.sh FOO=bar npm test` passes "FOO=bar" as
+    argv[0] (a literal program name, not an environment assignment for npm), which fails with
+    "command not found" (rc 127) instead of ever running npm. A leading `VAR=val` prefix therefore
+    also falls back to block-and-suggest, where the printed suggestion is read and retyped by a
+    real shell that DOES parse the assignment.
+
+    RedHat NO-GO (comment 32154) + MikroB addendum (comment 32155/19536): a leading wrapper token
+    (sudo/doas/pkexec/su -c/time/rtk) ALSO falls back to block-and-suggest -- see
+    `_WRAPPER_DISQUALIFIES_REWRITE_RX` above. The rewrite may only fire when the command's first
+    word is the noisy program itself.
+    """
+    return (
+        not _METACHAR_RX.search(raw)
+        and not _LEADING_ENV_RX.match(raw)
+        and not _WRAPPER_DISQUALIFIES_REWRITE_RX.match(raw)
+    )
+
 
 def _suggest(here, raw):
     if _METACHAR_RX.search(raw):
@@ -151,18 +207,16 @@ def main():
                     if rx.search(seg):
                         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                         wrapped = _suggest(here, raw)
-                        if os.environ.get(MODE_ENV) == "rewrite":
+                        if os.environ.get(MODE_ENV) == "rewrite" and _rewrite_is_safe(raw):
+                            # MikroB decision (comment 32155, RedHat NO-GO): never raise
+                            # permission on a rewrite -- permissionDecision stays UNSET, so the
+                            # normal permission flow (including any deny rule) still evaluates
+                            # the rewritten command on its own merits.
                             updated_input = dict(ti)
                             updated_input["command"] = wrapped
                             print(json.dumps({
                                 "hookSpecificOutput": {
                                     "hookEventName": "PreToolUse",
-                                    "permissionDecision": "allow",
-                                    "permissionDecisionReason": (
-                                        "noisy-command-guard: routed through noisy-run.sh "
-                                        "(NOISY_GUARD_MODE=rewrite) -- raw install/build/test "
-                                        "output filtered to errors/warnings/summary"
-                                    ),
                                     "updatedInput": updated_input,
                                 }
                             }))
