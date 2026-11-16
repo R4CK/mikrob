@@ -180,3 +180,33 @@ describe('POST /api/kanban create-as-done refuses while degraded (card d5638d28 
     expect(res.status).toBe(200)
   })
 })
+
+// Card e3cf26d0 (MikroB addendum, comment 32433, on RedHat GO d5638d28 @49bb67aef msg 19908): the
+// `actor` field off a real HTTP body is `unknown` at runtime even though every TS signature
+// downstream types it as `string | undefined` -- a mutant that dropped a call site's inline
+// `typeof actor === 'string' ? actor : undefined` narrowing (create route) or weakened
+// kanbanWriteActor()'s own `typeof actor !== 'string'` rejection (move/PUT routes) would let a
+// non-string actor value reach the owner-bypass check with no test noticing. None of the three
+// routes may ever let a non-string actor (even one shaped like `['mikrob']`, which a loose/
+// coercing comparison could misread) pass as the owner.
+describe('a non-string actor never reaches the owner bypass (card e3cf26d0, MikroB addendum 32433)', () => {
+  it('POST /api/kanban/:id/move: actor:["mikrob"], force:true is refused, not bypassed', async () => {
+    writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: true }))
+    createKanbanCard({ id: 'deg-coerce-move', title: 'plain card', assignee: 'backend', status: 'in_progress' })
+    const res = await move('deg-coerce-move', { status: 'done', actor: ['mikrob'], force: true })
+    expect(res.status).not.toBe(200)
+  })
+
+  it('PUT /api/kanban/:id: actor:["mikrob"], force:true is refused, not bypassed', async () => {
+    writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: true }))
+    createKanbanCard({ id: 'deg-coerce-put', title: 'plain card', assignee: 'backend', status: 'in_progress' })
+    const res = await put('deg-coerce-put', { status: 'done', actor: ['mikrob'], force: true })
+    expect(res.status).not.toBe(200)
+  })
+
+  it('POST /api/kanban create-as-done: actor:["mikrob"], force:true is refused, not bypassed', async () => {
+    writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: true }))
+    const res = await create({ id: 'deg-coerce-create', title: 'plain card', assignee: 'backend', status: 'done', actor: ['mikrob'], force: true })
+    expect(res.status).not.toBe(200)
+  })
+})

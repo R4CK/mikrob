@@ -41,12 +41,14 @@ function withEnvOverride<T>(path: string, fn: () => T): T {
 }
 
 describe('readDegradedOrchestratorState (card d5638d28)', () => {
-  it('missing file = off (Kesz, ha #1)', () => {
+  // Card e3cf26d0 round 2 (MikroB decision 32246(b) extended to the explicit-path form, QA2 FAIL
+  // 32542): a missing explicit `path` ARGUMENT is now unreadable (fail-closed), same as a missing
+  // env override -- only the genuine production default's absence is OFF (Kesz, ha #1), covered by
+  // the dedicated test below.
+  it('a missing explicit path argument is unreadable (fail-closed), not off', () => {
     withSwitchFile(null, (path) => {
-      expect(readDegradedOrchestratorState(path)).toBe('off')
+      expect(readDegradedOrchestratorState(path)).toBe('unreadable')
     })
-    // isDegradedOrchestratorBlocking() itself (no path param, card e3cf26d0) against the
-    // genuine default-missing case is covered by the dedicated test below.
   })
 
   it('{"enabled": true} = on', () => {
@@ -164,22 +166,37 @@ describe('readDegradedOrchestratorState (card d5638d28)', () => {
     }
   })
 
-  // MUTATION PIN: an explicit `path` ARGUMENT that is missing stays OFF even while
-  // DEGRADED_ORCHESTRATOR_SWITCH happens to be set in the environment to something else -- the
-  // override rule above must key off "was the env var used" (no argument given), not "is the env
-  // var merely set somewhere" while a caller also passed its own path.
-  it('an explicit path argument that is missing stays OFF even with an unrelated env override set', () => {
+  // MUTATION PIN: an explicit `path` ARGUMENT that is missing is unreadable (fail-closed)
+  // regardless of whether DEGRADED_ORCHESTRATOR_SWITCH happens to be set in the environment to
+  // something else -- the env var being set must not accidentally change the verdict for a
+  // caller-passed path, and the caller-passed path being missing must not fall back to OFF either.
+  it('an explicit path argument that is missing is unreadable regardless of an unrelated env override', () => {
     const dir = mkdtempSync(join(tmpdir(), 'degraded-guard-explicit-missing-'))
     const explicitMissingPath = join(dir, 'also-does-not-exist.json')
     const envPath = join(dir, 'env-path-irrelevant.json')
     const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
     process.env.DEGRADED_ORCHESTRATOR_SWITCH = envPath
     try {
-      expect(readDegradedOrchestratorState(explicitMissingPath)).toBe('off')
+      expect(readDegradedOrchestratorState(explicitMissingPath)).toBe('unreadable')
     } finally {
       if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
       else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The genuine production default (no override, no explicit argument) still reads missing as OFF
+  // -- the one case Kesz, ha #1 actually protects, now distinguished from the two cases above by
+  // the explicit `isGenuineDefault` check in readDegradedOrchestratorState() rather than by
+  // "was an argument passed" alone.
+  it('the genuine default (no override, no explicit arg) missing is OFF even with an unrelated env var unset', () => {
+    const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    try {
+      expect(readDegradedOrchestratorState()).toBe('off')
+    } finally {
+      if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+      else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
     }
   })
 })
