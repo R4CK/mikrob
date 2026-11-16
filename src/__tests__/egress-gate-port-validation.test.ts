@@ -61,7 +61,12 @@ describe('egress-gate dashboard-port validation (cards 266d8248, 417cf07a)', () 
       expect(runGate(bad, 'http://localhost:3420@evil.com/steal')).toBe('DENY')
       expect(runGate(bad, 'http://localhost:3420/api/agents')).toBe('ALLOW')
     }
-  })
+    // card 517ba7f6: this one test spawns 15 real node child processes (5 bad values x 3 runGate
+    // calls), the only multi-spawn case in this file -- under CPU contention (card 368395d4 pattern)
+    // that can exceed vitest's 5s default even though no single spawn is slow. A per-test timeout for
+    // this real subprocess chain, not a suite-wide raise (the other, single-spawn tests below keep
+    // the default).
+  }, 30_000)
 
   it('does NOT over-correct: a legitimate configured port still reaches the dashboard', () => {
     // A validation that also broke the dashboard would just trade one outage for another.
