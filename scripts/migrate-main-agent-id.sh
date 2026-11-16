@@ -67,7 +67,7 @@ PYEOF
 # main agent's (FLEETRESERVEDNAME1021): 'system' is refused on every POST, so a
 # main agent named that could not send. Checked before anything is stopped.
 # The list is RESERVED_AGENT_IDS in src/web/sanitize.ts; a test keeps them equal.
-RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator hanna"
+RESERVED_AGENT_IDS="system system-directive heartbeat telegram-coordinator channel-coordinator hanna"
 case " $RESERVED_AGENT_IDS " in
   *" $NEW_SLUG "*)
     echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is reserved by the system." >&2

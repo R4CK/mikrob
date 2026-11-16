@@ -25,7 +25,10 @@ vi.mock('node:child_process', () => ({
   },
 }))
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }))
-vi.mock('../platform.js', () => ({ resolveFromPath: () => '/usr/bin/tmux' }))
+// Koteg 24 (card 57044a66): makeLazyBinResolver added -- stuck-tool-call-watcher.ts calls it at
+// MODULE LOAD time (`const tmuxBin = makeLazyBinResolver('tmux')`), so an incomplete mock here
+// throws before any test body runs, not just where resolveFromPath is used directly.
+vi.mock('../platform.js', () => ({ resolveFromPath: () => '/usr/bin/tmux', makeLazyBinResolver: () => () => '/usr/bin/tmux' }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: '/nonexistent-project-root', STORE_DIR: '/nonexistent-store-dir', BOT_NAME: 'Marveen', MAIN_AGENT_ID: 'marveen' }))
 vi.mock('../web/agent-process.js', () => ({ capturePane: (session: string) => { h.captured.push(session); return h.pane }, isAgentRunning: () => false, agentSessionName: (a: string) => a, agentHasChannel: () => true }))
 vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => [], readAgentRemoteHost: () => null }))

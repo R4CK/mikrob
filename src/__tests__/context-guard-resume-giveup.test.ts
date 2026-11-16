@@ -94,7 +94,8 @@ describe('resume give-up', () => {
 
   it('checkAgent reports the give-up from its none-branch', () => {
     const start = RUNNER_SRC.indexOf('async function checkAgent(')
-    const end = RUNNER_SRC.indexOf('export function getContextGuardStatus(')
+    // Koteg 24 (card 57044a66): async, per this fork's measurePct/getContextGuardStatus pin.
+    const end = RUNNER_SRC.indexOf('export async function getContextGuardStatus(')
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
     const body = RUNNER_SRC.slice(start, end)
