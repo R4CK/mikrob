@@ -26070,6 +26070,237 @@ rögzíti és zárja a kártyát.
 **Ki döntött:** backend2 (kártya 1506d10d, Cybersec GO 29776 + Cybered NO-GO 29789 -> javítás
 `d4d42e166` a `cdde2666` kártyán, itt csak verifikálva és lezárva). Gate: QA + Cybersec.
 Gate-SHA: `d4d42e166ae8a58d15d6e5edaacd4c571d3eafc5`.
+
+## 2026-11-15 -- abd4970c (ed332869 F4.2.1): agent-worktree-marveen.sh --card rolls back a dangling branch on a failed worktree-add
+
+**Döntés:** F4.2.1's own acceptance criterion ("selftest: forced worktree-add failure leaves no branch") was unmet. Measured in a scratch clone: `git worktree add "$TREE" -b "$BRANCH" origin/develop` against an occupied target path creates the BRANCH ref successfully (prints "Preparing worktree (new branch ...)", "branch ... set up to track ...") and only THEN fails on the worktree-population step ("fatal: ... already exists", exit 128) -- the branch survives the failure. The next `--card` attempt for the same id would silently hit the script's own "existing local branch" fallback path and reuse that half-initialized branch as if it were the legitimate survivor case (a branch kept after `git worktree remove`), carrying whatever state the failed attempt left on it.
+
+**Fix:** `agent-worktree-marveen.sh`'s card-worktree creation now records whether `$BRANCH` existed BEFORE the `-b` attempt; on failure, if the branch exists now but did not exist before, it is deleted (`git branch -D`) before falling through to the existing fallback attempt. A pre-existing branch (the real survivor case) is never touched. Had to route this through `if`/`||` lists rather than a bare `cmd; if [ $? -ne 0 ]` check -- the script runs under `set -e` (line 57), and a bare failing simple command aborts the whole script before the status check is ever reached (caught this myself: the first version of the fix never ran at all, the script silently exited at the failing `git worktree add` line).
+
+**Teszt:** `agent-worktree-marveen.selftest.sh`: 16/16 PASS (2 new cases: the dangling-branch assertion on the existing occupied-path fixture, and a discriminating control proving a genuine survivor branch from a removed worktree is reused via the fallback, never deleted). Mutation-verified: removing just the rollback block turned exactly the new dangling-branch case red (1/16 FAIL), the survivor control and all 14 pre-existing cases stayed green. `bash -n` clean on both files.
+
+**Ki döntött:** fullstack (FÁZIS ed332869, "t3code mechanisms", F4.2 sub-step; self-advance continuation after a machine restart, BOOT-RECONCILE msg 19188). Gate: per card, QA + Cybered (land-path adjacent). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15, kártya 1aeed1ca (CYBERED NO-GO 3 leletre, F1/F2/F3): a Gate-SHA n/a kezeles szigoritva
+
+F1 -- gate-closure-check.py: az n/a-reset csak akkor szamit, ha a REVIEW Gate-SHA sorain SEHOL nincs
+valodi hex sha (korabban egy masodik "n/a" sor vagy egy "n/a <sha>" alak kitorolte a valodi shat).
+F2 -- gate-closure-check.py: egy n/a REVIEW, amikor egy kijelolt gate egy VALODI commitra adott
+verdiktet, mar nem AGREE("unchecked")-kent olvas, hanem STALE-mismatchkent (a n/a azt allitja, nincs
+commit, a gate meg valodit biralt). F3 -- gate-dispatch-check.sh: a both-sides-n/a ADVISE-SKIP
+kulonszabaly torolve -- az n/a nem tudja megkulonbozteteni a valodi ismetlest egy MASIK config-only
+kortol, ezert a biztos alapertelmezett ALLOW:stale-verdict-re esik vissza (ugyanaz az irany, mint a
+fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- 34f846cc: lint-ratchet (parse-error) bucket conflated 'Unused eslint-disable directive' with a real parse error
+
+**Kontextus:** backend3 mérése (7c79badc comment, 2026-11-15): `store/lint-ratchet.sh` COULD NOT MEASURE-t jelzett a 59ab01df8 (UPSTREAM-SYNC koteg 23, kártya 7c79badc) merge-eredményén, "parse errors 0 -> 10", és ez 3x blokkolta a landolást. A script 161. sora `message.get('ruleId') or '(parse-error)'` alapján bucketelt -- az ESLint nemcsak valódi, nem-parseolható fájlnál ad ruleId==null-t, hanem az "Unused eslint-disable directive" figyelmeztetésnél is. A 10 üzenet mind a második fajta volt (4 fájl felesleges eslint-disable kommentje), fatal:true SEHOL a 1773 fájlos riportban, `tsc --noEmit` tiszta -- a fa valójában hibátlanul parseolt.
+
+**Döntés:** a bucketelés `message.get('fatal')`-ra épül, nem a nyers ruleId-hiányra.
+
+- `(parse-error)` csak akkor, ha `fatal: true` (ESLint saját jelzése egy valódi, nem-parseolható fájlra).
+- `(unused-disable-directive)` a konkrét "Unused eslint-disable directive" figyelmeztetésre (szöveg-prefix alapján), saját ratchetelt vödörben -- nem eldobva, nem a parse-error-ral összemosva.
+- `(no-rule-id-other)` minden egyéb, eddig nevesítetlen ruleId-nélküli, nem-fatal üzenetre (ratchetelve, soha nem csendben eldobva).
+
+**Teszt:** `store/lint-ratchet.selftest.sh` 43 -> 47/47 PASS (a meglévő 43 eset `mk_report` segédje mostantól `fatal: true`-t generál a `parse=N` alakra, így a régi esetek jelentése változatlan maradt; 4 új eset W1-W4: W1 egy valódi fatal parse-error továbbra is blokkolja a bootstrapot a vak-futás küszöbön keresztül; W2 egy csak unused-disable-directive üzeneteket tartalmazó riport ZÖLDEN bootstrapol, a kiírt baseline `(unused-disable-directive)`-et tartalmaz, `(parse-error)`-t nem; W3 egy második, azonos-alakú futás egy már létező baseline mellett tisztán átmegy; W4 mutáció-ellenőrzés: a javítás kézzel visszafordítva PONTOSAN 2 eset (W2, W4) vált pirosra, a többi zöld marad -- visszaállítva, 47/47 ismét zöld). A 7c79badc merge-fan (59ab01df8) saját, korábban elmentett ESLint-riportján lefuttatva a javított bucketelés: `{'(unused-disable-directive)': 10}`, `(parse-error)` kulcs sehol -- a mérés most helyesen fut.
+
+**Ki döntött:** MikroB (dispatch, üzenet 19358, elfogadva a 7c79badc leletből). backend3 végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
+
+## 2026-11-15 -- c2dd3cfa (b2f71cdc follow-up L1/L2/L3): redispatch-guard busy-detection corpse + missing worktree kinds + prefix-glob mutant
+
+**Döntés:** b2f71cdc fixed `redispatch-guard.sh`'s agent-busy check so a live, non-shell process with its cwd inside the agent's own worktree counts as "still working", not just a static tmux frame. Three follow-up gaps found live: (L1) cwd-in-worktree ALONE is not enough -- a dead selftest fixture reparented off its own process tree (ppid 342, ~7.9h old, cwd still pointed at the backend worktree from before its real parent exited) was reported "busy" forever, with nothing left to do with the agent. (L2) only the agent's own two worktrees (agent-worktree.sh, agent-worktree-marveen.sh) were checked -- a landing worktree (`/home/neon/marveen-land-<agent>-<pid>`) or a card/gate worktree the agent is actively driving (conflict resolution, a targeted test run) was invisible to the busy check, the same false-"stuck" shape b2f71cdc already fixed for the agent's own worktree. (L3) the cwd match `case "$cwd" in "$wt"|"$wt"/*) ;; esac` has an unpinned mutant: `"$wt"*` (dropping the required `/` before the wildcard) stays green on the whole suite, since nothing tested a sibling path that merely shares `$wt` as a bare string prefix.
+
+**Fix:** (L1) added `_tmux_pane_pid` (asks tmux for the agent's own pane pid) and `_is_descendant_of`/`_ppid_of` (walk the real `/proc/<pid>/stat` ppid chain, robust against parens/spaces in `comm`); `_agent_background_busy` now requires BOTH the existing cwd-in-worktree+non-shell-comm match AND that the matched pid is a live descendant of the agent's own pane -- a corpse reparented to init/a subreaper no longer passes. (L2) added `_all_registered_worktree_paths` (asks `git -C <marveen checkout> worktree list --porcelain`, anchored on `agent-worktree-marveen.sh`'s path, not the mopsion/CleanCore one `agent-worktree.sh` manages -- measured the wrong anchor silently listing a different repo's worktrees entirely) plus a `/home/neon/marveen-land-"$agent"-*` glob for the per-agent landing worktree; `_agent_worktree_paths` now returns both on top of the original two. Being over-inclusive here (a peer agent's card/gate worktree can appear too, since those paths are not agent-namespaced) is deliberate and safe: the L1 pane-descendant check is what scopes a hit back to the right agent, not this list. (L3) no code change needed -- the existing `"$wt"|"$wt"/*` pattern was already correct; only the missing test was added.
+
+**Teszt:** `redispatch-guard.sh selftest`: full PASS (19 numbered test groups + the new 15b/15c/15d/16d/16e/16f cases). New cases: (15b) non-hermetic, read-only `git worktree list` check that THIS session's own live marveen worktree appears in `_all_registered_worktree_paths`' output; (15c) hermetic landing-worktree glob test under a fake agent id (`bgtest-land`, scoped dir created+removed); (15d) wiring source-assertion that `_agent_worktree_paths` calls `_all_registered_worktree_paths`; (16d) no live tmux pane -> not busy even with a real process sitting in the worktree; (16e) a genuinely orphaned process (reparented via an intermediate bash that backgrounds a leaf then exits immediately, confirmed via measured ppid != test pid) is NOT counted busy, despite satisfying the old cwd+comm check alone; (16f) a sibling directory sharing `$wt` as a bare string prefix is NOT counted; (18) wiring source-assertion that `_agent_background_busy` calls both `_tmux_pane_pid` and `_is_descendant_of`; (19) direct unit checks on `_ppid_of`/`_is_descendant_of` against a real spawned child and pid 1. Mutation-verified all three fixes independently by hand-reverting each in a scratch copy and re-running the full selftest: (L1) removing the pane-pid early-return and the descendant-check-and-return turned exactly 3 cases red (`bg-busy-no-pane`, `bg-busy-orphan`, the `_is_descendant_of` wiring check) -- nothing else; (L2) removing the land-glob + `_all_registered_worktree_paths` call turned exactly 2 cases red (`agent-worktree-paths-land`, the wiring check) -- nothing else; (L3) widening the cwd pattern to `"$wt"*` turned exactly 1 case red (`bg-busy-sibling-prefix`) -- nothing else. Caught and fixed one own mistake during this verification: the first orphan-fixture idiom captured the WAITING PARENT's pid via `( exec sleep 5 ) &; echo "$!"` instead of the actual leaf process (a double-subshell quirk), so `kill` on it left the real orphan running for its full 5s and transiently leaked into the next test case under a mutant -- fixed by having the leaf write its OWN pid before exec'ing, confirmed the corrected idiom's measured ppid differs from the test's own `$$`. `bash -n` clean.
+
+**Ki döntött:** fullstack (self-advance, rule 11 -- oldest unblocked planned card per rule 6b, 766.9h). Gate: QA + Cybersec (flotta-orchestracios megbizhatosag, nem trust-boundary, a kártya saját szava szerint). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15 -- c2dd3cfa fix round 2: CYBERSEC NO-GO on 22a7c6abb, HIGH-1 (fleet-wide false-busy via main clone) + MEDIUM-2 (112s idle-path cost)
+
+**Döntés:** CYBERSEC NO-GO on the round-1 busy-detection fix (previous entry) found that `_all_registered_worktree_paths`'s `git worktree list` output always includes the MAIN clone itself as its first entry, and every agent's own claude/node session has its cwd under `agents/<name>`, nested inside that main clone -- so the new pane-descendant + cwd-in-list check matched EVERY live agent's own session process. Measured live: 9/9 agents reported busy at the round-1 fix, 0/9 at the pre-fix base -- the redispatch and 60-minute sibling-handover paths were suppressed fleet-wide, strictly worse than the single-agent false-busy this card exists to fix (HIGH-1). The green selftest never caught it because every hermetic test stubs `_agent_worktree_paths` directly, bypassing the real git-querying path entirely. Once the obvious fix (drop the main clone from the list) is applied, the OLD loop shape -- for each worktree, scan every `/proc/<pid>` and `readlink` its cwd -- costs O(worktrees x procs): measured 112.0s on this host (130 worktrees x 267 procs) versus 1.54s at the pre-fix base, because the pre-fix code's accidental first-match short-circuit had been hiding this cost (MEDIUM-2). A guard called once per heartbeat tick per agent cannot spend ~2 minutes per call.
+
+**Fix:** (HIGH-1) `_all_registered_worktree_paths` now excludes the main clone itself via `grep -vxF "${MARVEEN_MAIN:-/home/neon/marveen}"` -- the same default `agent-worktree-marveen.sh` itself uses, not a bare hardcoded path, so a `MARVEEN_MAIN` override stays correct too. (MEDIUM-2) Inverted the loop in `_agent_background_busy`: a new `_pane_descendant_pids` helper walks the pane's own live descendants via `pgrep -P` recursion (a handful of pids, not every `/proc` entry), and each descendant's cwd is read exactly ONCE and matched against the (now main-clone-excluded, deduped) worktree list, instead of reading every `/proc` cwd once per worktree. `_is_descendant_of`/`_ppid_of` are kept (still directly unit-tested, test 19) even though the hot path no longer calls them -- they remain correct, tested primitives, just no longer load-bearing for this specific check.
+
+**Teszt:** Added to `redispatch-guard.sh`'s selftest: 15e (real, non-hermetic -- asserts the real `_all_registered_worktree_paths` output never contains the main clone), 15f (faithful fixture per the dispatch's own "Done when": a live process with cwd under `/home/neon/marveen/agents/fullstack` -- i.e. under the main clone, not any registered worktree -- must NOT count as busy; uses the REAL unstubbed `_agent_worktree_paths`/`_all_registered_worktree_paths` for a fake agent id, only `_tmux_pane_pid` is stubbed), 15g (the same real call must finish well under 2000ms; measured 93ms with the fix, versus 119441ms with the MEDIUM-2 mutant). Updated WIRING test 18 to assert `_agent_background_busy` calls `_pane_descendant_pids` (the mechanism that replaced the per-candidate `_is_descendant_of` call). `redispatch-guard.sh selftest`: PASS. Mutation-verified both fixes independently via hand-reverted scratch copies, restored and re-verified after each: reverting only the HIGH-1 `grep -vxF` exclusion turned exactly 2 cases red (15e, 15f); reverting only the MEDIUM-2 loop inversion (back to the old per-worktree/per-proc nested loop with `_is_descendant_of`) turned exactly 2 cases red (15g, the test-18 wiring assertion), with 15e/15f staying green since HIGH-1's fix is untouched by that mutant.
+
+**Ki döntött:** fullstack (CYBERSEC NO-GO on the round-1 landing, dispatch msg 19235 from MikroB). Gate: QA + Cybersec (delta re-gate). Gate-SHA: lásd REVIEW komment.
+## 2026-11-14 -- cc72cb3e: CLAUDE.md split index-struktúra kapu + hiányzó 5+2 index-sor (RedHat CYBERED GO 30478 follow-up)
+
+**Kontextus:** RedHat (cybered) CYBERED GO (komment 30478, Gate-SHA `b9ee959cb`) a c60e229a CLAUDE.md-split kártyán GO-t adott, de 11 mutánst futtatott a kártya saját `scripts/claude-md-split-reachability-check.py` ellenőrzőjén: egy in-place gyengítés elkapva, a másik 10 (A1-A10, additív/strukturális) exit 0-val, "0 hiányzik" eredménnyel ment át -- az ellenőrző egyirányú ("semmi nem veszett el") konzerváció-bizonyíték, nem azt méri, hogy egy kötelező mondat ÉRVÉNYBEN marad-e. F1 MEDIUM: öt, számozatlan alszekcióban élő kötelező szabály (worktree-útvonal hardcode tilalma, gate más ügynök worktree-jében tesztet sosem futtat, függőség-telepítő worktree-ből sosem fut, Tesztelési gate-ek kizárólagossága, a CYBERSEC/CYBERED kulcsszó-kötelezettség a rename-aliasig) és a Személyiség alatti két nyelvi szabály (HELYESÍRÁS, AGENT-TO-AGENT ENGLISH) nem kaptak index-sort. F2 MEDIUM: az ellenőrző egyszeri, senki nem futtatja.
+
+**Döntés:** F1 + F2 + a 10 mutáns zárása, RedHat saját javasolt terve szerint (komment 30478, 4. szakasz).
+
+- `scripts/claude-md-split-reachability-check.py`: új `check_index_structure()` function, a meglévő konzerváció-ellenőrzések MELLETT (nem helyette) fut. Négy ellenőrzés: (1) HTML-komment és kódblokk-tartalom eltávolítása MINDEN alábbi ellenőrzés ELŐTT (`strip_inert_markup`) -- egy bullet, amit egy agent olvasva nem látna, a géppel se látszódjon láthatónak (zárja A3, A10); (2) >=71 látható, számozott per-szabály bullet (37 munkavégzés + 5 új 22a-22e + 15 kódminőség + 12 ellenőrizhető munka + 2 új személyiség) -- egy törölt vagy elrejtett bullet a számot a küszöb alá viszi (zárja A6, és A3/A10 a rejtés oldaláról is); (3) minden bullet linkje repo-gyökér-abszolút ÉS a célfájl létezik (zárja A8, A9); (4) minden bullet TELJES szövege (a bold vezérmondat + a link előtti maradék, a végi "…" levágva, `**` jelek mindkét oldalon eltávolítva) szó szerint megtalálható a saját linkelt docs/rules fájljában, kivéve a 8a/19 engedélyezett-lista (korábbi, RedHat F3 által elfogadott kézi parafrázis) -- zárja A1, A2, A5 (a teljes szöveg, nem csak a bold vezérmondat ellenőrzése szükséges A5-höz: az "approval" szabály megfordítása a bullet NEM-bold farkában történt). Plusz egy 14 elemű protokoll-token "padló" ellenőrzés (mindegyiknek >=1 előfordulása kell CLAUDE.md-ben) -- zárja A7 (az egyetlen előfordulású `DEFAULT-DENY` tokenre). Plusz egy árvafájl-ellenőrzés (minden docs/rules/*.md valahonnan linkelve van) -- zárja A4 a linkelt-fájl oldaláról is.
+- CLAUDE.md: 5 új index-sor (**22a.**-**22e.**) a Munkavégzési szabályok 22. után, a fent nevezett 5 szabályra; 2 új index-sor (**1.**-**2.**) a Személyiség szekció alatt, a HELYESÍRÁS és AGENT-TO-AGENT ENGLISH szabályokra. Mindegyik szó szerinti kivonat a saját docs/rules fájljából (ellenőrizve a (4) ellenőrzéssel). Mellékes javítás: a 2. és 6. (Ellenőrizhető munka) bullet egy generátor-eredetű felesleges pontot hordozott a bold záráson belül (RedHat saját F3 mérése) -- eltávolítva, immár szó szerint egyezik a forrással.
+- Új `scripts/claude-md-split-reachability-check.selftest.py`: RedHat saját 10 mutánsa (A1-A10) + az eredeti in-place-gyengítés kontroll, mindegyik egy eldobható sandbox-másolaton (SOHA a valódi fájlokon), mindegyikre megköveteli, hogy a checker nem-nullával lépjen ki.
+- Új `src/__tests__/claude-md-split-reachability.test.ts`: (a) a checker a VALÓS CLAUDE.md + docs/rules ellen 0-val lép ki -- ez a tényleges álló kapu, zárja F2: élőben bizonyítva (a `SOHA nem ellenőrzi`->`ritkán ellenőrzi` gyengítés a valós fájlon mindkét tesztet pirosra vitte, majd a visszaállítás után ismét zöld); (b) a selftest (RedHat 10 mutánsa) is lefut a suite-ban, tehát a CHECKER saját regressziója is landolás előtt pirosat ad.
+
+**Teszt:** `claude-md-split-reachability-check.selftest.py` 12/12 PASS (control zöld + 11 piros eset). `claude-md-split-reachability.test.ts` 2/2 PASS, élőben bizonyítva, hogy egy valós CLAUDE.md-gyengítés pirosra viszi, majd a visszaállítás után zöld (mindkét irány mérve, nem csak feltételezve). A checker a valós fájlokon (`CLAUDE.md`, `docs/rules/`) is 0-val lép ki: 74 sor ellenőrizve/0 hiányzik, 661 egyedi sor/0 hiány, 8 marker-pár/0 hiba, index-struktúra 0 probléma.
+
+**Nincs benne:** a residual rés, amit RedHat maga is kimondott (memória: a-one-way-conservation-check-proves-nothing-was-lost-not-that-nothing-was-weakened) -- egy kontradikció vagy feltétel, ami NEM a meglévő bullet szövegét módosítja, hanem egy ÚJ, KÜLÖN bullet/bekezdés formájában kerül be, ettől a kártyától is láthatatlan marad. Ez nem ennek a kártyának a hatóköre volt (RedHat saját 10 mutánsa mind a meglévő bullet/szöveg módosítását célozta), hanem egy dokumentált, elfogadott korlát.
+
+**Ki döntött:** RedHat (cybered) lelete + saját javasolt terve (kártya c60e229a, komment 30478, Gate-SHA `b9ee959cb`), MikroB (kártya cc72cb3e dispatch). backend3 végezte a javítást. Gate: QA + Cybered (a kártya saját kijelölése).
+
+## 2026-11-14 -- cc72cb3e delta: MikroB hold 31268 + QA FAIL 31269 -- szekciónkénti szabály-szám követés, duplikált fejléc, pin-elt bullet, baseline-frissítő parancs
+
+**Kontextus:** MikroB (komment 31268) landolás előtt megkövetelt egy dokumentált, tesztelt baseline-frissítő utat (egy szabály szándékos átszövegezése örökre pirosra vinné a suite-ot, ha nincs rá elfogadási mechanizmus), plusz RedHat 4 résének pin-elését (duplikált/átszámozott bullet, duplikált fejléc, index-sor nélküli szabály, invertált 19/8a). QA FAIL (komment 31269) saját mutánst konstruált a dispatch kérése szerint: törölte a 14. szabály bullet-ját, a helyére a 13. szabály bullet-jének egy másolatát szúrta be -- a nyers bullet-SZÁM (>=71) változatlan marad, a verbatim-ellenőrzés is átmegy (a duplikált szöveg tényleg megvan a saját fájljában), tehát a checker 0 problémát jelentett egy valódi, felhasználó-szemszögű index-résen.
+
+**Döntés:** mindhárom pont zárva.
+
+- `check_section_numbering()`: a bullet-okat SZEKCIÓNKÉNT (Munkavégzés/Kódminőség/Ellenőrizhető munka/Személyiség) csoportosítja a legutóbb látott szekció-fejléc szerint, és (a) jelez, ha egy szabály-SZÁM egy szekción belül többször szerepel (duplikátum/átszámozás -- zárja QA1-et), (b) jelez, ha a szekció saját docs/rules fájljában létező szabály-szám nem kapott CLAUDE.md index-sort (hiány -- `SOURCE_RULE_NUM_RE` a forrásfájl KÉT számozási alakját ismeri fel: "N. **Cím**" lapos és "   **Na. Cím**" beljebb tolt-alak, sor elejére kötve, hogy egy prózai kereszthivatkozás, pl. "(4b. szabály)", sose essen bele). A FORDÍTOTT irány (index-sor forrás-szám nélkül) NEM hiba: ez pont cc72cb3e saját 22a-22e bulletjeinek mintája (korábban számozatlan prózát indexelnek).
+- `check_duplicate_headings()`: a 4 szekció-fejléc-horgonynak pontosan egyszer kell szerepelnie.
+- `check_pinned_bullets()` + `docs/rules/.reachability-baseline.json` `pinned_bullets` mező: a 19. és 8a. bullet (ami megkerüli az általános verbatim-ellenőrzést, RedHat F3 kézi parafrázis) pontos szövegét a baseline-fájl rögzíti, és minden futás szó szerint egyezést követel -- egy invertálás ezeken a bulleteken eddig láthatatlan volt, most nem.
+- `--update-baseline <old-ref> <claude-md> <docs-rules-dir> [baseline-fájl] --yes`: az EGY parancs, amit MikroB kért. Felsorolja, mit fogadna el (a jelenleg hiányzó/konzerváció-rövid sorokat, a pin-elt bulletek jelenlegi szövegét), és csak `--yes` jelenlétében ír -- `--yes` nélkül NEM dönt helyetted arról, hogy egy hiányzó sor szándékos átfogalmazás vagy véletlen elvétel, csak megmutatja a listát. Az elfogadott sorok a `accepted_missing_lines` mezőbe kerülnek, és minden rákövetkező futás kiszűri őket MIND a kulcsszó-ellenőrzésből, MIND az erősebb multiset-konzerváció-ellenőrzésből.
+
+**Teszt:** `claude-md-split-reachability-check.selftest.py` 12 -> 20/20 PASS: 5 új eset (QA1 törlés+duplikálás, duplikált fejléc, 19. és 8a. invertálása, hiányzó baseline-bejegyzés), plusz egy teljes --update-baseline munkafolyamat-teszt (egy valódi átszövegezés pirosra viszi, `--update-baseline` `--yes` nélkül NEM ír és nem-nullával lép ki, `--yes`-szel ír és a checker újra zöld lesz). `src/__tests__/claude-md-split-reachability.test.ts` 2/2 PASS a valós fájlokon, a baseline-fájllal együtt. A checker a valós fájlokon 0 problémával lép ki, a baseline-fájlban 0 elfogadott sor (nincs függő, el nem fogadott átfogalmazás) és a két pin-elt bullet jelenlegi szövege rögzítve.
+
+**Nincs benne:** a SZEMÉLYISÉG szekció két saját bulletje (1., 2.) nincs szám szerint keresztbe ellenőrizve a forrásfájllal (a `szemelyiseg.md` nem ad saját, sorszámozott struktúrát, amiből hiány/duplikátum levezethető lenne) -- csak a duplikátum-ellenőrzés fut rá, a hiány-ellenőrzés nem (lásd a modul docstring-jét).
+
+**Ki döntött:** MikroB (hold, komment 31268), QA (FAIL + Fix-Direction, komment 31269). backend3 végezte a javítást. Gate: QA2 (a FAIL szerzője, QA, a 4f. szabály szerint nem gate-eli saját re-gate-jét Fix-Direction birtokában) + RedHat.
+
+## 2026-11-14 -- cc72cb3e delta 2: CYBERED NO-GO 6f5045341 -- --update-baseline nem különböztette meg a REWORD-ot a REMOVED-től, és csendben újra-pin-elt egy megfordított bullet-et
+
+**Kontextus:** QA2 PASS zárta a 2. delta kört (komment 31289), de RedHat (cybered) re-gate-je NO-GO-t adott (komment, Gate-SHA `6f5045341`) a 3. ellenőrzésen (`--update-baseline`): saját 4 szondája közül U2 és U3 valódi, meg nem jósolt rést talált. U2: egy TELJESEN törölt, index-sorral nem fedett kötelező sort (`szemelyiseg.md`, "Nincs AI klisé...") a `--yes` önmagában elfogadott, ugyanúgy, mint egy valódi átfogalmazást -- a parancs nem tudta megkülönböztetni a kettőt, mert minden jelenleg hiányzó sort vakon felvett. U3: a 19. (vagy 8a.) pin-elt bullet invertálása után a `--yes` csendben ÚJRA-pin-elte a MEGFORDÍTOTT szöveget, szöveg-kiírás nélkül -- a kimenet nem mutatta, hogy egy pin-elt bullet egyáltalán megváltozott. (U1 rewording és U4 teljes számozott szabály+bullet törlése -- a darabszám-küszöb azt önállóan elkapja -- rendben voltak, RedHat GO-t adott rájuk.)
+
+**Döntés:** RedHat saját javasolt iránya szerint, szó szerint.
+
+- `classify_missing_line()`: minden jelölt hiányzó/rövid sort a JELENLEGI korpusz sorai ellen `difflib.SequenceMatcher` hasonlósággal REWORD-ra (van >=0.6 hasonlóságú sor valahol) vagy REMOVED-re (nincs) osztályoz.
+- Egy REMOVED sor elfogadása megtagadva, amíg a sor saját, kiírt rövid hash-e (`sha256(sor)[:12]`) nem szerepel egy `--allow-removal <hash>` kapcsolóban -- a hash a sorhoz kötött, nem egy általános "igen mindenre" kapcsoló.
+- A pin-elt bullet-ek (19, 8a) JELENLEGI szövegét a baseline-fájlban már rögzített ELŐZŐ szöveghez hasonlítja; eltérésnél a RÉGI és ÚJ szöveget kiírja, és megtagadja a felülírást, amíg a szabály-ID egy `--allow-pin-change <id>` kapcsolóban nem szerepel -- szándékosan NEM hasonlóság-alapú (RedHat saját pontja: hasonlóság nem különbözteti meg megbízhatóan az átfogalmazást a megfordítástól), minden változás explicit megerősítést kér.
+- Semmi nem íródik, amíg MINDEN megtagadott elem (törlés VAGY pin-változás) meg nem kapta a saját kapcsolóját -- egy részleges `--yes` sem ír félkész állapotot.
+
+**Teszt:** `claude-md-split-reachability-check.selftest.py` 20 -> 26/26 PASS (U2: törlés pirosra visz, `--yes` önmagában megtagadja + nem ír, a kiírt hash-sel elfogad + zöld lesz; U3: invertálás pirosra visz EGY MEGLÉVŐ baseline mellett, `--yes` önmagában megtagadja + RÉGI/ÚJ szöveget kiírja + nem ír, `--allow-pin-change 19`-gyel elfogad + zöld lesz). Mutáció-ellenőrizve: a megtagadó ág (`if blocked_removals or blocked_pins: return 1`) eltávolítása PONTOSAN a 2 új U2/U3-megtagadás-tesztet viszi pirosra (24/26), a többi változatlan zöld -- visszaállítva. `src/__tests__/claude-md-split-reachability.test.ts` 2/2 PASS (a selftest ~6 mp-es futásidejéhez a vitest `it()`-nek explicit 30000 ms timeout kellett, az alapértelmezett 5000 ms kevés volt).
+
+**Ki döntött:** RedHat (cybered) NO-GO-ja + saját javasolt terve (prózai irány, nem Fix-Direction-rekord), MikroB (re-dispatch). backend3 végezte a javítást. Gate: QA2 (a 2. kör PASS-jának szerzője, saját re-gate ismét nem self) + RedHat.
+
+## 2026-11-15 -- cc72cb3e land-fix round 2: rebase onto develop (8c4fb38c9) talál egy valós rule-21 index<->rule-file driftet + a checker saját hermetikus-rés hibáját
+
+**Kontextus:** Második MikroB land refusal (üzenet 19336/19338): a kártya tippje (df0742d98) nem tartalmazta 5c55ed281-et (kártya 3bad1678, "Token 6", 2026-11-15 08:39), ami CLAUDE.md rule-21 index-bulletjét 75%->50%-ra reworddolta, de a `--update-baseline` állóőr ezen a kártyán még nem volt élesítve, amikor 3bad1678 landolt -- ezért `src/__tests__/claude-md-split-reachability.test.ts` pirosra vált a merge-eredményen.
+
+**Döntés:** rebase + két valós hiba zárása, nem csak az OLD_REF eltolása.
+
+- origin/develop (57 commit, tip 8c4fb38c9) merge-elve a kártyaágba. DECISIONS.md ütközés (mindkét oldal a végére fűzött) a decisions-tail-append-guard konvenció szerint feloldva: develop saját fűzései a helyükön, a kártya saját delta-bejegyzései a valódi vég után.
+- VALÓS DRIFT, nem baseline-elfogadás: 5c55ed281 a CLAUDE.md rule-21 bullet szövegét 50%-ra írta, de a `docs/rules/munkavegzesi-szabalyok.md` saját rule-21 szövegét NEM -- az ott 75% maradt, megsértve a `check_index_structure()` saját verbatim-egyezés-invariánsát, élőben, ettől a kártyától függetlenül. Javítva: a docs/rules szöveg szinkronizálva 50%-ra.
+- OLD_REF (`61a258e38`) NEM mozdult -- a két, mostantól örökre eltérő sor (rule-21 bullet + a különálló "Kontextus-tömörítés küszöb" bekezdés, mindkettő 75%->50%, jelentés-megőrző) `--update-baseline --accept <hash>`-sel rögzítve (hash `93444c376eb2` és `ca280963e45f`).
+- VALÓS HERMETIKUS-RÉS a checkerben: `check_index_structure()` per-bullet verbatim-ellenőrzése a bullet linkjéből kinyert repo-gyökér-abszolút útvonalat (`/home/neon/marveen/docs/rules/...`) literálisan `Path()`-ként nyitotta meg -- azaz MINDIG az ÉLES telepítést olvasta, függetlenül attól, melyik fa CLAUDE.md-ját teszteli éppen. Javítva: a `rules_dir` paraméter saját másolatát olvassa (amit ez a function már egyébként is használ a többi ellenőrzéshez), és csak akkor esik vissza az abszolút útra, ha a `rules_dir`-ben nincs meg a fájl.
+- A hermetikus-javítás ledobott egy meglévő selftest-esetet (a rule-4 reword-teszt, ami csak a docs/rules szöveget mutálta, a CLAUDE.md bulletet nem) -- javítva ugyanazzal a mintával, mint a valós fix (mindkét fájlt együtt reword-olva).
+- A selftest baseline-bootstrapja is megerősítve: a `--update-baseline` mindig a TELJES jelölt-halmazt újraszámolja OLD_REF ellen (nem fésüli össze a diszken már meglévővel), így egy valódi, tartós történeti reword mellett MINDEN `--update-baseline` hívásnak kell a --accept, nem csak az elsőnek. A selftest 4 helyen csak az ELSŐ kiírt hash-t szedte ki regexszel -- ez elszállt, amint egynél több kellett. `establish_clean_baseline()` (tartalom-dinamikus, nem hardkódolt hash) + minden hash-kinyerés első-találatról MINDEN-találatra váltva.
+
+**Teszt:** `claude-md-split-reachability-check.selftest.py` 30/30 PASS (26-ról, a 2 fenti valós fixen keresztül derült ki 4 selftest-rés). `src/__tests__/claude-md-split-reachability.test.ts` 2/2 PASS a rebase-elt tippen (ami EGYBEN a develop-merge-elt állapot is). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** MikroB (land-refusal + re-dispatch, üzenet 19336/19338). backend3 végezte a rebase-t és mindkét javítást. Gate: QA + Cybered (a kártya saját kijelölése).
+
+## 2026-11-16 -- ff43b10e: noisy-command-guard rewrite-mode F1/F2/F4 javitas (WhiteHat F1-F4, fc3a6a39)
+
+**Kontextus:** WhiteHat GO a fc3a6a39-en (komment 9a0f47b1) azzal a felteteллel, hogy a fleet-wide
+rewrite-mode aktivalas elott F1-F4 javitva legyen. F1 (blokkolo): osszetett/tobb-szegmensu parancs
+rewrite-modban `bash -c '<raw>'`-be csomagolodik, ami egy start-anchored deny-szabaly (pl.
+BASH_EGRESS_DENY wget/nc/telnet) elol elrejti a beagyazott parancsot. F2: egy vezeto `VAR=val`
+hozzarendeles a `noisy-run.sh` bare `"$@"` execjeben literal programnevkent ertelmezodik -> rc 127,
+a valodi parancs sosem fut. F4 LOW: 7/14 mutans tulelte a korabbi tesztkort.
+
+**Dontes:** `_rewrite_is_safe(raw)` kapu `scripts/hooks/noisy-command-guard.py`-ban: rewrite mod
+CSAK akkor helyettesit csendben, ha a parancs (a) nem tartalmaz shell-metakaraktert (F1) ES (b) nincs
+vezeto env-hozzarendelese (F2) -- kulonben block-and-suggest fallback, pont ugy mint alapertelmezesben.
+F4: uj regresszios tesztek zarjak a 3 maradek mutans-tulelo osztalyt (tool_input mezo-megmaradas,
+metachar-lista teljesseg, kilepesi kod a kis-kimenet agon noisy-run.sh-ban). F3 (LOW, lossy sibling
+segment output) a kartya sajat fix-direction-je szerint hatokoron kivul, nincs eloirt javitas.
+
+**Teszt:** `noisy-command-guard.selftest.py` 28 alap eset + rewrite-mode + quoting round-trip PASS;
+`noisy-run.selftest.sh` pass=7 fail=0 (uj kilepesi-kod eset); `fleet-test.sh --ref e777f8629
+src/__tests__/noisy-command-guard-selftests.test.ts` 2/2 PASS; `npx tsc --noEmit` tiszta (a sajat
+worktree egy FUGGETLEN, elavult node_modules miatti parse5-hianyt jelzett, nem erinti ezt a commitot,
+mar lefedve a fleet-test.sh friss dist-buildjevel); `lint-ratchet.sh`: 441 lelet, baseline tartja.
+Mutacio-ellenorzes: a `_rewrite_is_safe` kapu kivetelevel 10 teszt vorosre valt (F1/F2 regresszio +
+8 metachar-eset), a 28 alap eset nem serult; visszaallitva ismet zold.
+
+**Ki döntött:** WhiteHat (fix-irany, fc3a6a39 komment 9a0f47b1). backend2 végezte a javítást.
+Gate: QA + Cybered. Gate-SHA: e777f862984ba3bbff870f413aca70fec9df5ca9.
+
+## 2026-11-16 -- ff43b10e: CYBERED NO-GO javítás -- sudo/doas/pkexec/su -c sosem íródik felül, rewrite sosem allow
+
+Cybered (RedHat) NO-GO-t adott a 9a1cc5367 gate-sharol (komment 32154): egyetlen szegmensbol allo
+privilegium-emelo parancs (`sudo npm install`, `sudo apt-get install`, stb.) illeszkedett a `_CMD`
+opcionalis `sudo` prefixere, igy rewrite modban `bash .../noisy-run.sh sudo npm install`-re irodott
+at -- egy `bash`-sal kezdodo sorra, amit egy `Bash(sudo:*)` deny szabaly mar nem lat -- ES a hook
+`permissionDecision: allow`-t is visszaadott, amivel a deny-floor-t kerulo uttal egyutt teljesen
+megkerulte azt.
+
+MikroB fix-irany (komment 32155, Fix-Direction: MikroB): a rewrite hook SOHA ne adjon `allow`
+permissionDecision-t -- maradjon beallitatlanul, hogy a normal jogosultsagi folyamat (beleertve a
+deny szabalyokat) a (esetleg atirt) parancsot a sajat jogan ertekelje. Tovabba: egy szegmens, amelynek
+elso szava `sudo`/`doas`/`pkexec`, vagy `su -c`-vel kezdodik, SOHA nem valik atiras/javaslat
+jeloltje -- teljesen erintetlenul halad at, mindket modban, hogy egy deny szabaly mindig a tenyleges,
+be nem csomagolt parancsot lassa.
+
+Javitas: `_PRIV_RX` kapu a `NOISY_PATTERNS` ciklus elott (`scripts/hooks/noisy-command-guard.py`,
+commit 256017938), es a rewrite-mode JSON-bol a `permissionDecision`/`permissionDecisionReason` kulcsok
+torlese.
+
+**Teszt:** `noisy-command-guard.selftest.py` 28 alap eset + rewrite-mode (uj check: a JSON SOHA nem
+tartalmaz `permissionDecision`-t) + uj privilegium-wrapper check (5 parancs, mindharom modban
+erintetlen) + quoting round-trip, mind PASS. `noisy-run.selftest.sh` pass=7 fail=0, erintetlen.
+Elo deny-probe (valodi hook subprocess, `NOISY_GUARD_MODE=rewrite`): `sudo npm install`, `sudo
+apt-get install -y jq`, `doas npm ci`, `pkexec pip install requests`, `su -c 'npm install' root`
+mind rc=0, ures stdout (erintetlen); `npm install` tovabbra is atirodik, a JSON nem tartalmaz
+`permissionDecision`-t. `npx tsc --noEmit`: tiszta a 3, korabbrol ismert, FUGGETLEN parse5-hianyos
+hibat leszamitva. `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+Mutacio-ellenorzes: a `_PRIV_RX` kapu eltavolitasaval 6 teszt vorosre valt (mind az 5 privilegium-
+parancs block/rewrite modban); az `allow` visszaadasaval 1 teszt vorosre valt. Mindket mutans
+visszaallitva, ismet zold.
+
+**Ki döntött:** Cybered (RedHat) NO-GO, MikroB fix-irany (Fix-Direction: MikroB, komment 32155).
+backend2 végezte a javítást. Gate: QA + Cybered. Gate-SHA: 256017938735130114ecb4b5b80e288716e41030.
+
+## 2026-11-16 -- ff43b10e: MikroB addendum (komment 32155/19523/19536) -- altalanositott wrapper-tiltas rewrite modban
+
+Javito bejegyzes a fenti (2026-11-16, "CYBERED NO-GO javítás") entry-hez: az elozo javitas a sudo/doas/
+pkexec/su -c szegmenst TELJESEN kihagyta a NOISY_PATTERNS illesztesbol (nem csak az atirasbol), ami
+tobb volt mint amit MikroB kert, es a hasonlo osztaly maradek tagjait (time, rtk) egyaltalan nem
+erintette. MikroB addendum pontositotta: a szabaly "rewrite CSAK akkor, ha a parancs elso szava a zajos
+program maga" -- minden vezeto wrapper (sudo/doas/pkexec/su -c, time, rtk) block-and-suggest-re esik
+vissza, PONTOSAN ugy, mint ma, CSAK az ATIRASt tiltja, a NOISY_PATTERNS illesztest/blokkolast nem
+erinti.
+
+**Javitas:** `_PRIV_RX` (ami a teljes szegmenst kihagyta) helyett `_WRAPPER_DISQUALIFIES_REWRITE_RX`
+(sudo/doas/pkexec/su -c/time/rtk) betéve a `_rewrite_is_safe()` feltetelbe; a fomagban a kulon
+`continue` sor eltavolitva (a sudo-szegmens IGY ismet eljut a NOISY_PATTERNS ellenorzesig, es a
+block-and-suggest agra kerul rewrite modban is).
+
+**Teszt:** uj CASES-bejegyzesek (sudo npm install / sudo apt-get install / sudo pip install / sudo
+docker build -> BLOCK default/block modban, valtozatlan); uj check_rewrite_mode (b2): sudo npm install,
+sudo apt-get install -y jq, sudo pip install requests, sudo docker build -t x ., time npm install, rtk
+npm test -> mind block-and-suggest-re esik vissza rewrite modban (rc=2, stderr, nincs stdout JSON); (b3)
+doas/pkexec dokumentalva mint ELOTTE IS illesztetlen (a `_CMD` grammatika sosem ismerte fel oket), nem
+ennek a javitasnak a resze. RedHat LOW (32154): a metachar-lista teljesseg-teszt (eset h) kibovitve a
+')' es egy beagyazott newline karakterrel -- mindketto mar BENNE volt a `_METACHAR_RX` karakterosztalyban,
+csak a teszt-lefedettsegbol hianyzott.
+
+Elo deny-probe (valodi hook subprocess, `NOISY_GUARD_MODE=rewrite`), a pontos kimenet: `sudo npm
+install`, `sudo apt-get install -y jq`, `sudo pip install requests`, `sudo docker build -t x .`, `time
+npm install`, `rtk npm test` -> mind `rc=2`, ures stdout, nem-ures stderr (`NOISY-COMMAND-GUARD: ...`);
+`npm install` -> `rc=0`, stdout JSON `updatedInput.command` atirva, `permissionDecision` kulcs nelkul.
+
+Mutacio-ellenorzes: a `_WRAPPER_DISQUALIFIES_REWRITE_RX` feltetel eltavolitasaval 6 teszt vorosre valt
+(mind a 6 wrapper-parancs); a ')'/newline eltavolitasaval `_METACHAR_RX`-bol 2 teszt vorosre valt.
+Mindket mutans visszaallitva, ismet zold. `noisy-run.selftest.sh` pass=7 fail=0 (erintetlen), `npx tsc
+--noEmit` tiszta (ugyanaz a 3, korabbrol ismert, FUGGETLEN parse5-hianyos hiba), `lint-ratchet.sh`: 441
+lelet, baseline tartja.
+
+**Korrekcio a korabbi (2026-10-10, fc3a6a39) bejegyzeshez:** az a bejegyzes Mechanizmus-bekezdese
+("A jogosultsagi szabalyok az ATIRT inputra ertekelodnek") es Gate-bekezdese (az F1 leirasa) nem
+egyertelmuen ugyanazt mondjak -- RedHat eszrevetele (komment 32154, 2. LOW). A tenyleges viselkedes
+(ez es az ff43b10e-javitasok ota): a Claude Code jogosultsagi motor a `hookSpecificOutput.updatedInput`
+altal ATIRT parancsot ertekeli, NEM az eredetit -- ez pontosan az oka, hogy egy wrapperbe (bash -c,
+vagy korabban sudo) csomagolt atirt sor miatt egy start-anchored deny szabaly (pl. Bash(sudo:*),
+BASH_EGRESS_DENY) mar nem a tenyleges programot latja a sor elejen. A fc3a6a39 Gate-bekezdese ezt
+felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szabaly), csak pontositja.
+
+**Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
+backend2 vegezte a javitast. Gate: QA + Cybered.
+
 ## 2026-11-15 09:07 -- 7c79badc: Koteg 23 upstream sync (11 commit), három konfliktus-döntés
 
 **Döntés:** backend3 real `git merge --no-ff`-elt 11 upstream commitot (c4ede16d0..402de0e13) a
@@ -26131,27 +26362,6 @@ trust-boundary fájl van érintve: `agents-skills.ts`, `schedule-runner.ts`, ski
 **Nincs benne:** az `agent-process.ts`-ből kiesett "start race" log (restart elveszti a versenyfutást egy másik szupervizorral) kérdésként jelezve MikroB-nek -- önmagában hasznosnak tűnt, de a willWake-hez volt kötve; nem lett visszaépítve, amíg MikroB nem dönt.
 
 **Ki döntött:** MikroB (land refusal, msg 18922), backend3 végezte a gyökér-ok azonosítást és a javítást. Gate: QA + WhiteHat (+ RedHat, routes/skills.ts és agent-process.ts auth-közeli fájlok miatt).
-
-## 2026-11-15 -- abd4970c (ed332869 F4.2.1): agent-worktree-marveen.sh --card rolls back a dangling branch on a failed worktree-add
-
-**Döntés:** F4.2.1's own acceptance criterion ("selftest: forced worktree-add failure leaves no branch") was unmet. Measured in a scratch clone: `git worktree add "$TREE" -b "$BRANCH" origin/develop` against an occupied target path creates the BRANCH ref successfully (prints "Preparing worktree (new branch ...)", "branch ... set up to track ...") and only THEN fails on the worktree-population step ("fatal: ... already exists", exit 128) -- the branch survives the failure. The next `--card` attempt for the same id would silently hit the script's own "existing local branch" fallback path and reuse that half-initialized branch as if it were the legitimate survivor case (a branch kept after `git worktree remove`), carrying whatever state the failed attempt left on it.
-
-**Fix:** `agent-worktree-marveen.sh`'s card-worktree creation now records whether `$BRANCH` existed BEFORE the `-b` attempt; on failure, if the branch exists now but did not exist before, it is deleted (`git branch -D`) before falling through to the existing fallback attempt. A pre-existing branch (the real survivor case) is never touched. Had to route this through `if`/`||` lists rather than a bare `cmd; if [ $? -ne 0 ]` check -- the script runs under `set -e` (line 57), and a bare failing simple command aborts the whole script before the status check is ever reached (caught this myself: the first version of the fix never ran at all, the script silently exited at the failing `git worktree add` line).
-
-**Teszt:** `agent-worktree-marveen.selftest.sh`: 16/16 PASS (2 new cases: the dangling-branch assertion on the existing occupied-path fixture, and a discriminating control proving a genuine survivor branch from a removed worktree is reused via the fallback, never deleted). Mutation-verified: removing just the rollback block turned exactly the new dangling-branch case red (1/16 FAIL), the survivor control and all 14 pre-existing cases stayed green. `bash -n` clean on both files.
-
-**Ki döntött:** fullstack (FÁZIS ed332869, "t3code mechanisms", F4.2 sub-step; self-advance continuation after a machine restart, BOOT-RECONCILE msg 19188). Gate: per card, QA + Cybered (land-path adjacent). Gate-SHA: lásd REVIEW komment.
-
-## 2026-11-15, kártya 1aeed1ca (CYBERED NO-GO 3 leletre, F1/F2/F3): a Gate-SHA n/a kezeles szigoritva
-
-F1 -- gate-closure-check.py: az n/a-reset csak akkor szamit, ha a REVIEW Gate-SHA sorain SEHOL nincs
-valodi hex sha (korabban egy masodik "n/a" sor vagy egy "n/a <sha>" alak kitorolte a valodi shat).
-F2 -- gate-closure-check.py: egy n/a REVIEW, amikor egy kijelolt gate egy VALODI commitra adott
-verdiktet, mar nem AGREE("unchecked")-kent olvas, hanem STALE-mismatchkent (a n/a azt allitja, nincs
-commit, a gate meg valodit biralt). F3 -- gate-dispatch-check.sh: a both-sides-n/a ADVISE-SKIP
-kulonszabaly torolve -- az n/a nem tudja megkulonbozteteni a valodi ismetlest egy MASIK config-only
-kortol, ezert a biztos alapertelmezett ALLOW:stale-verdict-re esik vissza (ugyanaz az irany, mint a
-fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fullstack).
 
 ## 2026-11-16, kártya 57044a66 (Koteg 24 upstream-sync, c4ede16d0..f0cfd842b, 25 commit): merge-konfliktusok feloldása
 
