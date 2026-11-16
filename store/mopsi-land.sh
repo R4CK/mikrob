@@ -103,6 +103,11 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 if ! . "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"; then
   die 3 "degraded-orchestrator-land-guard-lib.sh missing or failed to source -- refusing to land without this check (card e3cf26d0)"
 fi
+# Card e3cf26d0 round 4 (cybersec2 LOW, comment 32575, same fail-open-on-crash family as F1):
+# a lib that sources cleanly but is empty/truncated before defining the function leaves
+# check_degraded_orchestrator_guard undefined -- the source itself returns 0, so the check above
+# alone does not catch it, and the call below would only print "command not found" and continue.
+declare -F check_degraded_orchestrator_guard >/dev/null || die 3 "degraded-orchestrator-land-guard-lib.sh sourced but did not define check_degraded_orchestrator_guard (truncated/empty lib?) -- refusing to land without this check (card e3cf26d0)"
 if [ "${1:-}" != "--selftest" ]; then
   _dgi_actor=""
   _dgi_args=("$@")

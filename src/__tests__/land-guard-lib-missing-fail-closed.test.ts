@@ -15,7 +15,7 @@
 // though the file content was read by following the chain back to the real store/ tree.
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readdirSync, symlinkSync, statSync } from 'node:fs'
+import { mkdtempSync, rmSync, readdirSync, symlinkSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
@@ -34,6 +34,24 @@ function farmWithoutGuardLib(): string {
     if (entry === OMIT) continue
     const src = join(STORE_DIR, entry)
     if (statSync(src).isDirectory()) continue // these landers only source flat *.sh siblings
+    symlinkSync(src, join(scratch, entry))
+  }
+  return scratch
+}
+
+// Card e3cf26d0 round 4 (cybersec2 LOW, comment 32575): a lib that SOURCES CLEANLY but never
+// defines check_degraded_orchestrator_guard (empty/truncated file -- a non-atomic write or
+// truncated deploy is enough) is a different trigger than a missing file, and the fix above
+// alone does not catch it: `. lib` returns 0, so the `if ! . lib` check never fires.
+function farmWithEmptyGuardLib(): string {
+  scratch = mkdtempSync(join(tmpdir(), 'land-guard-lib-empty-'))
+  for (const entry of readdirSync(STORE_DIR)) {
+    const src = join(STORE_DIR, entry)
+    if (statSync(src).isDirectory()) continue
+    if (entry === OMIT) {
+      writeFileSync(join(scratch, entry), '') // sources cleanly, defines nothing
+      continue
+    }
     symlinkSync(src, join(scratch, entry))
   }
   return scratch
@@ -68,6 +86,19 @@ describe.each(['mopsion-land.sh', 'mopsi-land.sh', 'cleancore-land.sh'])(
       // setup, also exit 3) -- proving the check itself is live and not accidentally green only
       // because of that downstream failure's own exit code.
       expect(out).toContain('refusing to land without this check (card e3cf26d0)')
+      expect(out).not.toContain('degraded-orchestrator mode is ON')
+    })
+  },
+)
+
+describe.each(['mopsion-land.sh', 'mopsi-land.sh', 'cleancore-land.sh'])(
+  '%s refuses when degraded-orchestrator-land-guard-lib.sh sources but defines nothing (card e3cf26d0 round 4)',
+  (script) => {
+    it('refuses with its own die() message, not a later, unrelated failure', () => {
+      const dir = farmWithEmptyGuardLib()
+      const { status, out } = run(dir, script)
+      expect(status).toBe(3)
+      expect(out).toContain('sourced but did not define check_degraded_orchestrator_guard')
       expect(out).not.toContain('degraded-orchestrator mode is ON')
     })
   },
