@@ -26490,3 +26490,35 @@ trust-boundary fájl van érintve: `agents-skills.ts`, `schedule-runner.ts`, ski
 **Nincs benne:** az `agent-process.ts`-ből kiesett "start race" log (restart elveszti a versenyfutást egy másik szupervizorral) kérdésként jelezve MikroB-nek -- önmagában hasznosnak tűnt, de a willWake-hez volt kötve; nem lett visszaépítve, amíg MikroB nem dönt.
 
 **Ki döntött:** MikroB (land refusal, msg 18922), backend3 végezte a gyökér-ok azonosítást és a javítást. Gate: QA + WhiteHat (+ RedHat, routes/skills.ts és agent-process.ts auth-közeli fájlok miatt).
+
+---
+
+## 2026-11-16 -- b296b810: project-less kanban cards can no longer be created
+
+Peti 14008 (2026-11-16): 411 live cards had an empty project between 2026-09-26 and 2026-11-15,
+all reclassified by hand (title tag / parent) since nothing enforced the field. Both
+card-creation paths (POST /api/kanban and POST /api/kanban/:id/breakdown/accept) now resolve a
+project in order: (1) an explicit project wins; (2) the parent card's project is inherited;
+(3) a recognised title tag ([mopsion]/[cleancore] -> mopsion, [MikroB]/[marveen] -> MikroB)
+derives one; (4) if none resolve, a speaking 400 instead of a silent NULL row. PUT /api/kanban/:id
+applies the same resolution only when the caller actually tries to CLEAR project to empty -- a PUT
+that never mentions the field leaves the existing value untouched.
+
+The title-tag mapping ([cleancore] -> mopsion) is intentionally a NEW, separate table from the
+existing CANONICAL_PROJECTS used for an explicit project STRING value, which deliberately keeps
+'CleanCore' and 'mopsion' apart (card 1b02ed3a's staged rebrand, protecting historical cards) --
+this derivation only fires for a brand NEW card naming no project at all, where the live name
+(mopsion) is correct.
+
+**Mérés:** scripts/__tests__... n/a (TS-only card). src/__tests__/kanban-project-required.test.ts,
+18 new cases, mutation-proven (disabling each of the 3 guard sites -- POST, PUT-clear,
+breakdown/accept -- flips the matching case red, restored clean). 13 pre-existing test files
+updated to carry an explicit project in fixtures that previously had none (unrelated features --
+id echo, assignee alias, gemini-ok marker, claim routes, parent-cycle detection). Full run: 41
+test files / 569 tests green. tsc --noEmit clean.
+
+**Nincs benne:** POST /api/ideas/:id/promote and /promote-breakdown (src/web/routes/ideas.ts) is
+a THIRD card-creation path that can still create a project-less card -- out of this card's named
+file scope (src/web/routes/kanban.ts only), flagged for a follow-up.
+
+**Ki döntött:** Peti kérése alapján backend implementálja; Gate: QA + Cybersec.
