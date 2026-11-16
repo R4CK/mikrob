@@ -11,7 +11,7 @@ import { createDeviceKey, resolveDeviceKey, _clearDeviceKeyCacheForTest, NIGHT_K
 import { resolveAuth } from '../web/auth-gate.js'
 import { nightGateDecision } from '../web/night-gate.js'
 import { tryHandleKanban, NIGHT_COMMENT_AUTHOR, NIGHT_COMMENT_MARKER } from '../web/routes/kanban.js'
-import { tryHandleMessages } from '../web/routes/messages.js'
+import { tryHandleMessages, NIGHT_MESSAGE_SENDER } from '../web/routes/messages.js'
 import { agentDir } from '../web/agent-config.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -206,5 +206,20 @@ describe('POST /api/messages -- night scope can only message mikrob', () => {
     const { ctx, out } = fakeCtx('POST', '/api/messages', { from: 'qa', to: 'backend', content: 'hi' }, { kind: 'token' } as RouteContext['auth'])
     expect(await tryHandleMessages(ctx)).toBe(true)
     expect(out.status).toBe(200)
+  })
+
+  it('BLOCKING (Cybered NO-GO, Finding 3): a night-scoped caller cannot forge the `from` field -- it is forced server-side regardless of the body claim', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/messages', { from: 'mikrob', to: 'mikrob', content: 'hi, i am mikrob' }, nightAuth)
+    expect(await tryHandleMessages(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(out.body.from_agent).toBe(NIGHT_MESSAGE_SENDER)
+    expect(out.body.from_agent).not.toBe('mikrob')
+  })
+
+  it('a night-scoped caller claiming to be a different fleet agent is still forced to the night sender', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/messages', { from: 'qa', to: 'mikrob', content: 'hi' }, nightAuth)
+    expect(await tryHandleMessages(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(out.body.from_agent).toBe(NIGHT_MESSAGE_SENDER)
   })
 })

@@ -35,6 +35,12 @@ import { decidePriority, parsePriorityField } from '../message-priority.js'
 import { rankedSenders } from '../../delivery-order.js'
 import type { RouteContext } from './types.js'
 
+// Card 2ba008f2 (Cybered NO-GO, comment 32445, Finding 3): a night-scoped device key is a
+// VERIFIED identity, same posture the comment route already treats its author with
+// (NIGHT_COMMENT_AUTHOR in kanban.ts) -- the registered agent id the night shift (card d5638d28)
+// runs as.
+export const NIGHT_MESSAGE_SENDER = 'night-loop'
+
 // Should closing a message produce a reverse "[Result]" notification to its sender?
 //
 // Exported and tested directly, rather than inlined in the PUT handler: the previous
@@ -188,6 +194,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (ctx.auth?.kind === 'device' && ctx.auth.scope === 'night' && to.trim().toLowerCase() !== 'mikrob') {
       json(res, { error: 'a night-scoped credential may only message mikrob' }, 403)
       return true
+    }
+    // Card 2ba008f2 (Cybered NO-GO, Finding 3): the `to` check above restricts WHERE a
+    // night-scoped caller may write, but `from` above is still whatever the body claims -- mikrob
+    // treats a message from a fleet agent as a trusted-peer instruction, so an unforced `from`
+    // would let the night key speak as any agent. Forced server-side, ignoring the body, before
+    // any downstream check (isKnownAgent, homoglyph, impersonation guards) runs against it.
+    if (ctx.auth?.kind === 'device' && ctx.auth.scope === 'night') {
+      from = NIGHT_MESSAGE_SENDER
     }
     // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
     measureAgentIdentityClaim(ctx, 'POST /api/messages', from)

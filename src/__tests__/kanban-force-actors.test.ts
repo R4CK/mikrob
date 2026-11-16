@@ -67,3 +67,70 @@ describe('isForceActor', () => {
     expect(forceActors()).toEqual(['mikrob'])
   })
 })
+
+describe('isForceActor -- Cybered NO-GO (comment 32445, Finding 2): fail CLOSED on a marker that exists but cannot be trusted', () => {
+  it('BLOCKING: corrupt JSON refuses the bypass', () => {
+    writeFileSync(OUTAGE_PATH, '{not json')
+    expect(isForceActor(true, 'mikrob')).toBe(false)
+  })
+
+  it('BLOCKING: an empty file refuses the bypass', () => {
+    writeFileSync(OUTAGE_PATH, '')
+    expect(isForceActor(true, 'mikrob')).toBe(false)
+  })
+
+  it('BLOCKING: a directory in place of the file refuses the bypass', () => {
+    const { mkdirSync, rmdirSync } = require('node:fs') as typeof import('node:fs')
+    mkdirSync(OUTAGE_PATH)
+    try {
+      expect(isForceActor(true, 'mikrob')).toBe(false)
+    } finally {
+      rmdirSync(OUTAGE_PATH)
+    }
+  })
+
+  it('BLOCKING: active as the string "true" (wrong type) refuses the bypass', () => {
+    writeFileSync(OUTAGE_PATH, JSON.stringify({ active: 'true', heartbeat: Math.floor(Date.now() / 1000) }))
+    expect(isForceActor(true, 'mikrob')).toBe(false)
+  })
+
+  it('BLOCKING: heartbeat as a string (wrong type) refuses the bypass', () => {
+    writeFileSync(OUTAGE_PATH, JSON.stringify({ active: true, heartbeat: String(Math.floor(Date.now() / 1000)) }))
+    expect(isForceActor(true, 'mikrob')).toBe(false)
+  })
+
+  it('BLOCKING: heartbeat in milliseconds instead of seconds (implausible value) refuses the bypass', () => {
+    writeFileSync(OUTAGE_PATH, JSON.stringify({ active: true, heartbeat: Date.now() }))
+    expect(isForceActor(true, 'mikrob')).toBe(false)
+  })
+
+  it('BLOCKING: a JSON array instead of an object refuses the bypass', () => {
+    writeFileSync(OUTAGE_PATH, JSON.stringify([true, Math.floor(Date.now() / 1000)]))
+    expect(isForceActor(true, 'mikrob')).toBe(false)
+  })
+
+  it('BLOCKING: a file that cannot be read (permission denied) refuses the bypass', () => {
+    const { chmodSync } = require('node:fs') as typeof import('node:fs')
+    writeOutage(false, 0)
+    chmodSync(OUTAGE_PATH, 0o000)
+    try {
+      expect(isForceActor(true, 'mikrob')).toBe(false)
+    } finally {
+      chmodSync(OUTAGE_PATH, 0o644)
+    }
+  })
+
+  it('NOT BLOCKING (unchanged): a genuinely missing marker does not refuse the bypass', () => {
+    expect(isForceActor(true, 'mikrob')).toBe(true)
+  })
+
+  it('NOT BLOCKING (unchanged): a stale marker past SESSION_OUTAGE_STALE_MS does not refuse the bypass', () => {
+    writeOutage(true, 20 * 60)
+    expect(isForceActor(true, 'mikrob')).toBe(true)
+  })
+
+  it('NOT BLOCKING (unchanged): a modest future-dated marker within the clock-skew allowance beyond tolerance still does not refuse the bypass', () => {
+    writeOutage(true, -5 * 60)
+    expect(isForceActor(true, 'mikrob')).toBe(true)
+  })
+})
