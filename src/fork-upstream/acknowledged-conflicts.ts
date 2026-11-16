@@ -3548,17 +3548,29 @@ export const ACKNOWLEDGED_CONFLICTS = {
     '~/.claude/scheduled-tasks/, cp /dev/null into that dir, native Write to a file there -- ' +
     'where the fork ALLOWED and upstream DENIED. CLOSED, not a residual: follow-up card 2e04a52e ' +
     're-measured all 6 shapes against the LIVE fork gate (gateDecision, not the archived-tree ' +
-    'snapshot) and found every one already denied, independently of this file, plus an existing ' +
-    'pinned regression for each in governance-gates.test.ts (fleet-test.sh @ b43de75ac, 259/259 ' +
-    'green) -- the fork closed this gap itself (its own measured incident, the "4x HTTP 200" ' +
-    'comment in that test file) sometime after WhiteHat\'s archived-tree snapshot was taken, so ' +
-    'porting upstream\'s scheduleSurfaceDeny is no longer needed. Both sides still allow a 7th, ' +
-    'variable-composed shape (shared gap, unresolved, out of 2e04a52e\'s scope). The anchor below ' +
-    'pins the fork-only AST cutover mechanism as a tripwire for the wholesale-swap decision -- it ' +
-    'does NOT satisfy "every KEEP FORK on a security surface is protected": there is no fork-only ' +
-    'enforcement fact in this file to pin for the 6-shape question (SCHEDULE_STORE_RX, ' +
-    'allowlistBashSegmentAllowed, fileToolTargetsAllowlist all exist on both sides) -- the actual ' +
-    'protection for that question is the governance-gates.test.ts pins named above.',
+    'snapshot) and found every one already denied. CORRECTED PROVENANCE (RedHat/Cybered NO-GO, ' +
+    'card 2e04a52e round 2, comment 32345): the closing code is upstream commit a328d3b41 ' +
+    '(#1999, 2026-10-20), which reached the fork via card 4f3c0287 (merge cea2c7e21, landed ' +
+    '2026-11-14) -- an upstream-port batch, not an independent fork incident; the "4x HTTP 200" ' +
+    'comment in governance-gates.test.ts describes a328d3b41\'s own upstream incident, not a ' +
+    'fork-original one. CORRECTED PIN COVERAGE: only 3 of the 6 shapes (python3 urllib, node ' +
+    'fetch, brace-expand curl) had a reopen-mutant-proven pin as of card 2e04a52e round 1; the ' +
+    'other 3 (bare file directly under the store dir, cp /dev/null into it, native ' +
+    'Write/Edit/MultiEdit on a bare file there) were added and mutation-proven in round 2. Both ' +
+    'sides still allow a 7th, variable-composed shape (shared gap, unresolved, out of ' +
+    '2e04a52e\'s scope). ROUND 2 ADDITION (RedHat Finding 1 HIGH / cybersec2 F3 LOW): upstream\'s ' +
+    'MCP filesystem write-gate (b9dadf48d, #2502, never ported) left mcp__filesystem__write_file/ ' +
+    'edit_file/create_directory/move_file completely ungated on this surface -- closed with a ' +
+    'minimal mcpDecide() reusing the existing native-Write deny logic (not upstream\'s generic ' +
+    'mcpDirDeny framework), wired into the injectSelfPaceGate hook matcher alongside MultiEdit. ' +
+    'The anchor below pins the fork-only AST cutover mechanism as a tripwire for the ' +
+    'wholesale-swap decision -- it does NOT satisfy "every KEEP FORK on a security surface is ' +
+    'protected": there is no fork-only enforcement fact in this file to pin for the 6-shape ' +
+    'question (SCHEDULE_STORE_RX, allowlistBashSegmentAllowed, fileToolTargetsAllowlist all exist ' +
+    'on both sides) -- the actual protection for that question is the governance-gates.test.ts ' +
+    'pins named above. RedHat Finding 3 (shared fork+upstream residual: printf/echo into a ' +
+    'script file run after, curl -K from an echo-written config, base64-decode-piped-to-sh, ' +
+    'string-concatenation, python chr()-built paths) is NOT closed by this card -- open follow-up.',
   'scripts/sms/seeme-send.py':
     'KEEP FORK (corrected per WhiteHat 27159 -- the case is stronger than originally stated, ' +
     'and the original description of upstream was wrong). The fork\'s approval-consumption is ' +

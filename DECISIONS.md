@@ -26343,3 +26343,41 @@ Cybered (a kártya saját előírása, mert ez az autonom-kor incidenst megáll�
 szóló megállapítás).
 
 **Ki döntött:** backend saját mérése, a kártya saját elfogadási kritériuma szerint végrehajtva.
+
+## 2026-11-16 -- 2e04a52e KORREKCIÓ: a fenti bejegyzés két állítása pontatlan volt (RedHat/Cybered NO-GO, komment 32345)
+
+**Ez a fenti, 2026-11-16-i "scheduleSurfaceDeny 6-shape rés már zárva" bejegyzést NEM módosítja**
+(a döntésnapló append-only) -- a két hibát itt javítom, a bejegyzés VÉGÉN.
+
+**1. hiba -- a pin-elt-regresszió állítás túl tágra fogalmazott.** A fenti bejegyzés azt írta, hogy
+"mind a 6 alakra MÁR LÉTEZIK pin-elt regresszióteszt". RedHat (Cybered) reopen-mutáns próbával
+mérte: ez 3 alakra (python3 urllib, node fetch, brace-expand curl) igaz volt, de a másik 3-ra
+(puszta fájlírás közvetlenül a store mappa alá, `cp /dev/null` a mappába, natív Write/Edit egy
+puszta fájlra a mappában) NEM -- a megfelelő guard-sor reopenelve a governance-gates.test.ts
+suite 259/259 zöld maradt, tehát azok 3 alak NEM volt mutáció-bizonyított pin. Ugyanezt
+cybersec2 (WhiteHat2) is megerősítette a natív-Write ágra (F1 lelet, komment 32340).
+
+**2. hiba -- a lezárás eredete rosszul volt megnevezve.** A fenti bejegyzés "a fork saját,
+korábbi, önálló incidensének javításaként" írta le a zárást. RedHat ásta ki a tényleges
+eredetet: a záró kód upstream **a328d3b41** commitja (#1999, 2026-10-20), ami a fork-ba a
+**4f3c0287** kártya (merge **cea2c7e21**, landolva **2026-11-14**) upstream-port batch-ével
+érkezett -- nem egy független fork-incidens javítása. A WhiteHat eredeti, archivált-fás mérése
+(komment 27159) a 4f3c0287 landolás ELŐTTI fa-állapotra vonatkozott, ott helyesen reprodukálta a
+6-alakos rést -- a mérés nem volt hibás, csak a kártya felvételéig a rés már bezárult máshonnan.
+
+**Javítás ebben a körben:** a hiányzó 3 pin pótolva governance-gates.test.ts-ben (bare-file a
+store mappa alatt, `cp /dev/null`, natív Write/Edit/MultiEdit bare fájlra), mutáció-bizonyítva.
+Az `src/fork-upstream/acknowledged-conflicts.ts` bejegyzése is frissül ugyanerre a pontos
+eredetre. RedHat Finding 1 (HIGH, MCP filesystem self-scheduling bypass, upstream b9dadf48d
+#2502 soha nem portolva) és cybersec2 F3 (MultiEdit hiánya a hook matcherből) ebben a körben
+lezárva: `mcpDecide` + a `injectSelfPaceGate` matcher bővítve a négy `mcp__filesystem__*`
+write-shape tool-ra + `MultiEdit`-re, tesztekkel. RedHat Finding 3 (megosztott upstream+fork
+residual: printf/echo-ba írt script utólagos futtatása, `curl -K`, base64-dekódolt pipe-to-sh,
+string-összefűzés, python `chr()`-épített útvonal) -- NEM javítva ebben a körben, külön
+follow-up kártyára vár (nincs benne, lásd a REVIEW).
+
+**Mérés:** RedHat 88-alakos differenciál-mérés fork/upstream-pinned/upstream-develop-today ellen
+(komment 32345); cybersec2 reopen-mutáns a natív-Write ágon (komment 32340).
+
+**Ki döntött:** RedHat (Cybered) lelete alapján backend korrigálja; Gate: QA + Cybersec + Cybered
+(változatlan, a kártya saját előírása).
