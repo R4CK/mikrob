@@ -308,28 +308,59 @@ describe('self-pace-gate gateDecision', () => {
   it('denies nohup/setsid self-respawn of claude', () => {
     expect(selfPaceDecision('Bash', { command: 'nohup claude -p "keep going" &' }).deny).toBe(true)
   })
-  // Card 9ea8dcb8: nohupRelaunchesClaude must match `claude` only as the COMMAND
-  // WORD after nohup/setsid/disown (skipping env-assignment / sudo / env / nice /
-  // time / exec / command / stdbuf prefixes), never a path/argument token -- every
-  // agent scratchpad path is /tmp/claude-1000/..., so a backgrounded command that
-  // merely logs there was false-denied before this fix.
+  // Card 9ea8dcb8 round 2 (cybersec NO-GO 32608, Gate-SHA 6dc4c450b): round 1's fix
+  // (a token-walk past a fixed wrapper-word list) traded the scratchpad-path false
+  // positive for 14 missed respawn shapes -- any wrapper not on the list, or one
+  // followed by its own option/flag, ended the walk on a token that was never
+  // "claude", so those shapes went from denied to allowed. The actual fix narrows
+  // only the WORD BOUNDARY on the old broad "claude anywhere after the trigger"
+  // scan ((?<![\w-])claude(?![\w./-])), so no wrapper list is needed: every one of
+  // these (cybersec's own probe, run against the real gateDecision()) must stay
+  // denied, same as the pre-existing bare-relaunch shapes.
   it('still denies every real nohup/setsid/disown + claude relaunch shape', () => {
     for (const cmd of [
+      // pre-existing shapes (already pinned before this card)
       'setsid claude -p "keep going" &',
       'disown claude -p "keep going"',
       'nohup env X=1 claude -p "keep going" &',
       'nohup /home/neon/.local/bin/claude -p "keep going" &',
       'nohup sudo claude -p "keep going" &',
+      // cybersec 32608: setsid with a flag before the command word
+      'setsid -f claude -p hi',
+      'setsid --fork claude -p hi',
+      // cybersec 32608: wrapper not on round-1's fixed list, or wrapper + its own option
+      'nohup nice -n 10 claude -p hi',
+      'nohup timeout 3600 claude -p hi',
+      'nohup sudo -u someuser claude -p hi',
+      'nohup env -i claude -p hi',
+      'nohup stdbuf -oL claude -p hi',
+      'nohup /usr/bin/env claude -p hi',
+      // cybersec 32608: quoted or substituted command word
+      'nohup "claude" -p hi',
+      "nohup 'claude' -p hi",
+      'nohup $(which claude) -p hi',
+      // cybersec 32608: claude launched from inside a bash -c/sh -c body
+      "nohup bash -c 'claude -p hi'",
+      'setsid sh -c "claude --continue"',
+      'nohup bash -lc "exec claude -p hi"',
+      // cybersec 32608: xargs relaunch
+      'nohup xargs -I{} claude -p {} < file',
     ]) {
       expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
     }
   })
+  // The intended allows (cybersec 32608 "INTENDED ALLOWS CONFIRMED"): a scratchpad
+  // path containing "claude" as a path SEGMENT (always followed by "/" or
+  // end-of-word, never a shell metacharacter or bare-word boundary) must stay
+  // allowed -- these are the actual false positives the card exists to fix.
   it('does NOT misfire on "claude" inside a scratchpad path argument, not the command word', () => {
-    expect(
-      selfPaceDecision('Bash', {
-        command: 'nohup bash store/marveen-land.sh backend --card 9ea8dcb8 > /tmp/claude-1000/x/log 2>&1 &',
-      }).deny
-    ).toBe(false)
+    for (const cmd of [
+      'nohup bash store/marveen-land.sh backend --card 9ea8dcb8 > /tmp/claude-1000/x/log 2>&1 &',
+      'nohup node server.js > /tmp/claude-1000/a.log 2>&1 &',
+      'setsid -f bash store/foo.sh > /tmp/claude-1000/a/log 2>&1',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(false)
+    }
   })
   it('does NOT misfire "at" on a substring (netstat / cat)', () => {
     expect(selfPaceDecision('Bash', { command: 'cat file.txt && netstat -an' }).deny).toBe(false)
