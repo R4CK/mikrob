@@ -26988,3 +26988,52 @@ passed (3), 60 Tests passed (60). `npx tsc --noEmit` tiszta.
 **Ki döntött:** QA2 FAIL (komment 32542), relézve MikroB üzenet 20096-ban. backend végezte a
 javítást. Gate-SHA: 8c23bbd67a41f9c61e79daaabb0b8d712d5cd4bc. Gate: QA + Cybersec + Cybered
 (kártya saját előírása).
+
+## e3cf26d0 round 4: rebase a 2ba008f2 round 4 (F1 polarity) tetejére + cybersec2 LOW záró
+(exit-127 hiányzó guard-függvény)
+
+A kártya a sima-SKIP gate-sorrend miatt a 2ba008f2 C1 (credential-scope fence) befejezéséig nem
+mehetett live-ra (HARD PRECONDITION, lásd a kártya saját leírását) -- a `card/2ba008f2` közben
+round 4-et kapott (F1 polarity fail-closed, lásd a fenti 2ba008f2 bejegyzést), ezért a
+`card/e3cf26d0` ágat (korábbi tipp: `ccb8f67ff5b1c046255c32662a991a4ebbb2373f`) rebase-elni kellett
+az új `origin/card/2ba008f2` tetejére (`704b4d5cf87041858e30be140b94f1043cf94360`), MikroB üzenet
+20150 utasítása szerint. A DECISIONS.md append-only ütközést kézzel oldottam (a HEAD blokk, majd
+az e3cf26d0 saját round-4 blokkja, konfliktus-jelölő nélkül).
+
+Ugyanabban a körben MikroB üzenet 20150 második pontja a cybersec2 SKIP (komment 32575) alatt
+hagyott LOW-t kérte zárni: a round 1-ben (LOW-2) fixelt eset egy TELJESEN HIÁNYZÓ guard lib-re
+vonatkozott (`. lib` maga bukik, a bare-`.` exit-kódja nem-nulla); a cybersec2 mérés szerint egy
+olyan lib, ami LÉTEZIK és TISZTÁN SOURCE-OLÓDIK, de nem definiálja a
+`check_degraded_orchestrator_guard` függvényt (üres/csonka fájl), más hibaosztály: `. lib` 0-val
+tér vissza, a `if ! . lib` ág nem fut, a hívás SIKERESEN lefut `command not found`-dal (exit 127),
+és a lander a kapcsolóval FOLYTATJA -- ugyanaz a fail-open-a-crash-ra család, mint az F1 (2ba008f2),
+csak egy állapottal arrébb.
+
+**A javítás:** `store/mopsi-land.sh` és `store/mopsion-land.sh` (a `store/cleancore-land.sh`
+symlink automatikusan lefedve) a meglévő `if ! . "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"; then die 3 ...; fi`
+blokk UTÁN egy explicit szimbólum-jelenlét-ellenőrzést kapott:
+`declare -F check_degraded_orchestrator_guard >/dev/null || die 3 "...truncated/empty lib?..."`
+(nem részsztring-keresés, a kódminőségi alapelvek 12. pontja szerint).
+
+**Mutáció-bizonyíték:** a két lander script másolatát a scratchpadbe mentve, az új
+`declare -F ...` sor helyére `true # MUTANT`-ot írva, a célzott vitest-fájl 3/6 tesztje pirosra
+váltott (a 3 új eset); visszaállítás után 6/6 zöld -- a javítás load-bearing.
+
+**Kész, ha:** egy üres/csonka lib stub refuse-olja a mopsion-land-et, selftestben bizonyítva --
+`land-guard-lib-missing-fail-closed.test.ts` új `describe.each` blokkja (`farmWithEmptyGuardLib()`,
+3 lander × 1 teszt) pinneli: `status===3`, az üzenet tartalmazza a
+`sourced but did not define check_degraded_orchestrator_guard` szöveget, NEM tartalmazza a
+`degraded-orchestrator mode is ON` szöveget.
+
+**Mérés:** `fleet-test.sh --ref 33636282adbb72b3d8d2fdf2dc4ccd25ae14ec6d` (6 fájl:
+`land-guard-lib-missing-fail-closed.test.ts`, `degraded-orchestrator-guard.test.ts`,
+`kanban-force-actors.test.ts`, `kanban-move-degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `landing-downward-check.test.ts`):
+6 Test Files passed (6), 82 Tests passed (82). `bash store/mopsi-land.sh --selftest`: 80/80 PASS.
+`bash store/mopsion-land.sh --selftest`: 116/116 PASS (változatlan a 2ba008f2 round 4 óta, ez a kör
+csak vitest-tesztet adott, bash `--selftest` esetet nem). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** MikroB üzenet 20150 (rebase-utasítás + cybersec2 32575 LOW zárása). backend
+végezte. Gate-SHA: 33636282adbb72b3d8d2fdf2dc4ccd25ae14ec6d. Gate: QA + Cybersec + Cybered (kártya
+saját előírása) -- delta re-gate csak az e körben változott részre (MikroB üzenet 20150: "its
+gates will re-check only that delta").
