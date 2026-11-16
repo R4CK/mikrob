@@ -26190,3 +26190,39 @@ fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fulls
 **Teszt:** `claude-md-split-reachability-check.selftest.py` 30/30 PASS (26-ról, a 2 fenti valós fixen keresztül derült ki 4 selftest-rés). `src/__tests__/claude-md-split-reachability.test.ts` 2/2 PASS a rebase-elt tippen (ami EGYBEN a develop-merge-elt állapot is). `npx tsc --noEmit` tiszta.
 
 **Ki döntött:** MikroB (land-refusal + re-dispatch, üzenet 19336/19338). backend3 végezte a rebase-t és mindkét javítást. Gate: QA + Cybered (a kártya saját kijelölése).
+
+## 2026-11-16 -- eb26a3e4: --continue generacio-osszehasonlitas mutacio-rese + reauth-healer nem-router park (466f21fe F1 kovetok)
+
+RedHat CYBERED GO a 466f21fe-n (komment 15173, d499a449) ket maradek rest nevezett meg a parkolt-ugynok
+generacio-token fixen (card 466f21fe F1): 1. a `--continue` callback generacio-osszehasonlitasanak
+megfordulasa (`===` helyett `!==`) 39/39 teszt mellett is zoldet ad; 2. a stop csak FUTO ugynoknel
+leptet generaciot, a nem-router parkolasok (scripts/stop.sh, monitor, reauth-healer) nem.
+
+**1. pont javitasa:** a `generationChanged` osszehasonlitas (`agentLaunchGeneration.get(name) !==
+myLaunchGeneration`) inline volt az agent-process.ts egyetlen hivasi pontjan, teszt nelkul pinnelve.
+Kiemelve `hasLaunchGenerationChanged()` tiszta, exportalt fuggvenyként a channel-continue-policy.ts-be,
+bedrotozva a hivasi pontra, es 3 kozvetlen unit teszt + 1 mutacio-pin teszt hozzaadva.
+
+**2. pont mert valasz:** vegig olvasva minden tmux kill-session hivasi helyet egy role-agent session
+ellen: `scripts/stop.sh` csak a FO ugynok sajat sessionjet celozza (mar kizarva a mechanizmusbol, `name
+!== MAIN_AGENT_ID`) -- nem res. `channel-monitor.ts` watchdog-restartja `stopAgentProcess` +
+`startAgentProcess(fresh:true)`-on megy at, mindket vegen mar leptet. `reauth-healer.ts`
+`restartFirstRunGatedAgent`-je VALODI res: kozvetlenul `execFile`-lal kilove a sessiont, generacio-
+leptetes nelkul, majd ~1mp mulva ujra inditja -- ha ez lassu vagy elhasal, egy korabbi inditasbol
+maradt, kesobb lezaro `--continue` ellenorzo callback meg a vegso allast latja valtozatlannak, es
+ujraeleszti a mar parkolt ugynokot. `agent-worker.ts` `restartWorkerSession`-je kizarva (ephemer worker-
+session, sosincs csatorna-pluginje, a `verifyContinueLaunch` sosem fut ra).
+
+**Javitas:** `bumpAgentLaunchGeneration(name)` exportalt fuggveny (egy kozos hely, nem harmadik
+masolat), hivva a `reauth-healer.ts` kill-session-je ELOTT, ugyanabban a sorrendben mint
+`stopAgentProcessUnlocked` sajat leptetese.
+
+**Teszt:** `channel-continue-policy.test.ts` + `reauth-healer.test.ts` + 4 tovabbi kapcsolodo teszt-fajl
+(126 teszt) PASS a sajat worktree-ben; `fleet-test.sh --ref 6445b6e13` a ket erintett fajlon (80 teszt)
+PASS a megosztott fan. `tsc --noEmit` tiszta (a 3, korabbrol ismert, FUGGETLEN parse5-hianyos hibat
+leszamitva). `lint-ratchet.sh`: 441 lelet, baseline tartja. Mutacio-ellenorzes: a `hasLaunchGenerationChanged`
+`!==`-jenek `===`-re forditasa 4 teszt vorosre; a `bumpAgentLaunchGeneration` hivas eltavolitasa 1 teszt
+vorosre. Mindket mutans visszaallitva, ismet zold.
+
+**Ki döntött:** RedHat CYBERED GO (466f21fe, komment 15173) adta a fix-iranyt. backend2 vegezte a
+javitast. Gate: QA + Cybersec (a kartya sajat kijelolese).
