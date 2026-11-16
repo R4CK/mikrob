@@ -649,6 +649,7 @@ export function ensureIsolatedChannelConfigDir(
 //   - returns null (caller keeps the shared root) whenever not applicable.
 export function ensureMainAgentIsolatedConfigDir(
   provider?: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site symmetry with the sub-agent path; genuinely unused, see "any platform" note above
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   let enabled = false
@@ -2201,7 +2202,6 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
 export function getAgentRunningSince(name: string, session: string = agentSessionName(name)): number | null {
   try {
     const target = agentTmuxTarget(name)
-    const host = target.host
     const out = captureTmux(target, ['display-message', '-p', '-t', exactTmuxTarget(session), '#{session_created}']).trim()
     const ts = parseInt(out, 10)
     return Number.isFinite(ts) ? ts : null

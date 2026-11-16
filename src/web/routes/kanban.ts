@@ -2057,7 +2057,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const body = await readBody(req)
-    const { author, content, automated } = JSON.parse(body.toString())
+    // Read through typed locals: JSON.parse's result is `any`, and letting that flow
+    // straight into the calls below made every one of them an unsafe-argument finding.
+    const parsedCommentBody = JSON.parse(body.toString()) as Record<string, unknown>
+    const author = typeof parsedCommentBody.author === 'string' ? parsedCommentBody.author : undefined
+    const content = typeof parsedCommentBody.content === 'string' ? parsedCommentBody.content : undefined
+    const automated = parsedCommentBody.automated
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
     // `author` is a self-reported body field, not derived from auth identity (card 1cdac111,
     // Cybersec LOW finding on 3906d77b): every fleet agent authenticates with the same shared
@@ -2124,7 +2129,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const cardId = decodeURIComponent(kanbanLineCommentsMatch[1])
     if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
     const body = await readBody(req)
-    const { sha, file, line, author, content } = JSON.parse(body.toString())
+    // Read through typed locals: JSON.parse's result is `any`, and letting that flow
+    // straight into the calls below made every one of them an unsafe-argument finding.
+    const parsedLineCommentBody = JSON.parse(body.toString()) as Record<string, unknown>
+    const sha = typeof parsedLineCommentBody.sha === 'string' ? parsedLineCommentBody.sha : undefined
+    const file = typeof parsedLineCommentBody.file === 'string' ? parsedLineCommentBody.file : undefined
+    const line = typeof parsedLineCommentBody.line === 'number' ? parsedLineCommentBody.line : NaN
+    const author = typeof parsedLineCommentBody.author === 'string' ? parsedLineCommentBody.author : undefined
+    const content = typeof parsedLineCommentBody.content === 'string' ? parsedLineCommentBody.content : undefined
     if (!sha || !file || !author || !content) {
       json(res, { error: 'sha, file, author és content kötelező' }, 400)
       return true

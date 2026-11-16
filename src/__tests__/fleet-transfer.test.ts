@@ -92,6 +92,7 @@ vi.mock('node:fs', async (importOriginal) => {
 })
 
 // The target's channel token, by provider (FLEETIMPORTFOLLOW1021): none unless a test sets one.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- signature must match readChannelToken(provider, envPath) for mock-call-arg assertions below
 const channelTokenMock = vi.hoisted(() => vi.fn((_provider: string, _envPath: string): string | null => null))
 vi.mock('../channel-provider.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../channel-provider.js')>()),
@@ -317,7 +318,7 @@ describe('importFleet: identity takeover', () => {
     const configOverrideCalls = (atomicWriteFileSync as any).mock.calls
       .filter((c: string[]) => c[0]?.includes('config-overrides.json'))
     expect(configOverrideCalls.length).toBeGreaterThan(0)
-    const written = JSON.parse(configOverrideCalls[configOverrideCalls.length - 1][1])
+    const written = JSON.parse(configOverrideCalls[configOverrideCalls.length - 1][1] as string)
     expect(written['MAIN_AGENT_ID']).toBe('atlas')
     expect(written['BOT_NAME']).toBe('Atlas')
     expect(written['BRAND_NAME']).toBe('Atlas')
@@ -383,7 +384,7 @@ describe('importFleet: identity takeover', () => {
   const lastOverridesWrite = async (): Promise<Record<string, unknown>> => {
     const { atomicWriteFileSync } = await import('../web/atomic-write.js')
     const calls = (atomicWriteFileSync as any).mock.calls.filter((c: string[]) => c[0]?.includes('config-overrides.json'))
-    return JSON.parse(calls.at(-1)[1])
+    return JSON.parse(calls.at(-1)[1] as string)
   }
   const IDENTITY = { MAIN_AGENT_ID: 'atlas', BOT_NAME: 'Atlas', BRAND_NAME: 'Atlas', OWNER_NAME: 'Norbert', CHANNEL_PROVIDER: 'telegram' }
 

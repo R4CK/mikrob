@@ -9,11 +9,8 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 const { tmpHome, realHome } = vi.hoisted(() => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const fs = require('node:fs') as typeof import('node:fs')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const os = require('node:os') as typeof import('node:os')
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const path = require('node:path') as typeof import('node:path')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'precheck-path-home-'))
   const prev = process.env.HOME

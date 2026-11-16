@@ -149,6 +149,7 @@ describe('PUT /api/kanban/:id with the version it read', () => {
 
   it('control: the same PUT without a version still overwrites (the old behaviour, unchanged)', async () => {
     createKanbanCard({ id: 'c2', title: 'Card', assignee: 'dex' })
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- dropping version from the PUT body is the point of this control
     const { version: _drop, ...copy } = getKanbanCard('c2')!
     updateKanbanCard('c2', { description: 'measurement record' })
     const r = await put('c2', { ...copy, assignee: 'orin' })
