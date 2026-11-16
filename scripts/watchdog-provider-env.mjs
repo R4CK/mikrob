@@ -12,6 +12,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
+import { isCustomProviderFieldUnusable } from './lib/custom-provider-field-check.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
@@ -65,19 +66,16 @@ try {
   // this script's own existing fail-closed convention, not a new one.
   //
   // (a) customProvider present but not a usable non-empty string (R1's bug, same predicate,
-  // re-derived from the already-parsed `config` object this script holds -- the real
+  // via the shared scripts/lib/custom-provider-field-check.mjs classifier -- the real
   // isAgentCustomProviderFieldUnusable()/readAgentCustomProvider() pair in agent-config.ts are
   // path-based (agentDir(name)/agent-config.json) and cannot be reused here: this script is
   // fixture-tested against a TEMP directory distinct from the real agents/ tree
   // (watchdog-provider-env-parity.test.ts), so the customProviderId line below already computes
   // it from `config` directly rather than calling the path-based reader -- same reason this
-  // refusal re-derives "present" from `config` instead of calling the path-based checker too).
-  if ('customProvider' in config) {
-    const v = config.customProvider
-    if (!(typeof v === 'string' && v.trim())) {
-      console.error('customProvider: field present but not a usable non-empty string -- refusing rather than treating it as unset')
-      process.exit(2)
-    }
+  // refusal operates on `config` instead of calling the path-based checker too).
+  if (isCustomProviderFieldUnusable(config)) {
+    console.error('customProvider: field present but not a usable non-empty string -- refusing rather than treating it as unset')
+    process.exit(2)
   }
 
   // (b) a remote (ssh) agent: resolveProviderEnv has no effect on the remote launch path at all
