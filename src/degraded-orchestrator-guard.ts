@@ -72,8 +72,8 @@ export function readDegradedOrchestratorState(explicitPath?: string): DegradedOr
 }
 
 /** True when the 3 gated actions (done, land, agent-start) must be refused. */
-export function isDegradedOrchestratorBlocking(path?: string): boolean {
-  return readDegradedOrchestratorState(path) !== 'off'
+export function isDegradedOrchestratorBlocking(): boolean {
+  return readDegradedOrchestratorState() !== 'off'
 }
 
 /**
@@ -90,15 +90,22 @@ export function isDegradedOrchestratorBlocking(path?: string): boolean {
  * proposed a deny-by-default credential-scope fence (auth-device-keys.ts/operator-gate.ts pattern)
  * instead. MikroB (msg 19527): ship this guard as-is, track the fence as card 2ba008f2, and make it
  * a hard precondition before any degraded-orchestrator loop is ever wired to call these endpoints.
+ *
+ * Card e3cf26d0 (RedHat/WhiteHat LOW on d5638d28): this and isDegradedOrchestratorBlocking() used
+ * to take an optional explicit `path`, which kept the OLD missing-path-is-OFF rule even after the
+ * env-override rule above was tightened to fail closed -- no production caller ever passed one
+ * (every real call site below passes none), but the parameter stayed reachable for a future one
+ * to accidentally pick up the weaker reading. Dropped from both PUBLIC functions; the lower-level
+ * readDegradedOrchestratorState() keeps the parameter for its own direct unit tests, which
+ * exercise the two-path contract on purpose.
  */
 export function degradedOrchestratorRefusal(
   actionLabel: string,
   force: boolean,
-  actor?: string,
-  path?: string
+  actor?: string
 ): string | null {
   if (isForceActor(force, actor)) return null
-  const state = readDegradedOrchestratorState(path)
+  const state = readDegradedOrchestratorState()
   if (state === 'off') return null
   return state === 'unreadable'
     ? `degraded-orchestrator guard: ${degradedOrchestratorSwitchPath()} is unreadable/corrupt -- refusing ${actionLabel} fail-closed (card d5638d28)`

@@ -42,6 +42,10 @@ describe.each([
   // marveen carries 3 of its own + 26 shared.
   ['cleancore-land.sh', 42],
   ['marveen-land.sh', 29],
+  // Card e3cf26d0 (WhiteHat LOW-3 on d5638d28): mopsi-land.sh has carried a --selftest mode since
+  // card 7feb477b, same as the two above, and nothing ran it either -- gate agents were invoking
+  // it by hand each round instead. Floor measured directly: `bash store/mopsi-land.sh --selftest`.
+  ['mopsi-land.sh', 75],
 ])('%s --selftest', (script, floor) => {
   it('passes', { timeout: 30_000 }, () => {
     const r = selftest(script)

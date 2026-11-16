@@ -96,7 +96,13 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # degraded-orchestrator kill-switch check as marveen-land.sh / mopsion-land.sh, shared via the one
 # lib so the three cannot drift apart from each other (see that file's own header).
 # shellcheck source=./degraded-orchestrator-land-guard-lib.sh
-. "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"
+# Card e3cf26d0 (RedHat/WhiteHat LOW-2 on d5638d28): the old bare `.` left a missing/unreadable
+# lib as a silent "command not found" on check_degraded_orchestrator_guard below (set -u aborts on
+# an unbound VARIABLE, not on a failed/missing command, so the script kept going -- fail-open on
+# the one failure mode that matters most: the check itself cannot run).
+if ! . "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"; then
+  die 3 "degraded-orchestrator-land-guard-lib.sh missing or failed to source -- refusing to land without this check (card e3cf26d0)"
+fi
 if [ "${1:-}" != "--selftest" ]; then
   _dgi_actor=""
   _dgi_args=("$@")
