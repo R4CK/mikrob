@@ -36,26 +36,16 @@ import * as ts from 'typescript'
 // property that uses a non-literal expression (`!0`, a referenced const, a spread object) -- RedHat's
 // own finding treats that as a separate, non-comment question out of this card's scope.
 function findLiveServerFlags(src: string): string[] {
-  const sourceFile = ts.createSourceFile('vitest.config.ts', src, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS)
-  const hits: string[] = []
-  const propertyKeyText = (name: ts.PropertyName): string | undefined => {
-    if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text
-    if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) return name.expression.text
-    return undefined
-  }
-  const visit = (node: ts.Node): void => {
-    if (ts.isPropertyAssignment(node)) {
-      const key = propertyKeyText(node.name)
-      if (key === 'ui' && node.initializer.kind === ts.SyntaxKind.TrueKeyword) {
-        hits.push('ui: true')
-      }
-      if (key === 'api' && node.initializer.kind !== ts.SyntaxKind.FalseKeyword) {
-        hits.push('api: set')
-      }
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, src)
+  let result = ''
+  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+    if (kind !== ts.SyntaxKind.SingleLineCommentTrivia && kind !== ts.SyntaxKind.MultiLineCommentTrivia) {
+      result += src.slice(scanner.getTokenPos(), scanner.getTextPos())
     }
-    ts.forEachChild(node, visit)
   }
-  visit(sourceFile)
+  const hits: string[] = []
+  if (/\bui\s*:\s*true\b/.test(result)) hits.push('ui: true')
+  if (/\bapi\s*:\s*(true|\d|\{)/.test(result)) hits.push('api: set')
   return hits
 }
 
