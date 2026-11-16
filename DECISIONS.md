@@ -26300,3 +26300,43 @@ felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szaba
 
 **Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
 backend2 vegezte a javitast. Gate: QA + Cybered.
+## 2026-11-16 10:42 -- 214ca312: noisy-guard rewrite LOW-k (ff43b10e kovetokartya) + engine-level
+## deny probe NOISY_GUARD_MODE=rewrite elott
+
+RedHat GO-ja az ff43b10e-n (@c7fabb8c, msg 19546) harom LOW-t hagyott nyitva, mielott
+`NOISY_GUARD_MODE=rewrite` BARMELY settings/env-ben eleselodhetne (a landolt alapertek `block`
+marad):
+
+1. `bash -c '<zajos parancs>'` / `sh -c ...` / `zsh -c ...` meg REWRITE-elodott. A guard a
+   `_unwrapped_variants()`-tal a QUOTE-okon belüli parancsot illeszti a NOISY_PATTERNS-re (hogy a
+   benne bujo zajos parancsot felismerje), de `_rewrite_is_safe()` a NYERS, kulso parancsot
+   nezi -- aminek az elso szava `bash`/`sh`/`zsh`, nem a zajos program maga, tehat technikai
+   ertelemben teljesitette "az elso szo a zajos program maga" szabalyt. Ugyanaz a hiba-osztaly,
+   mint a sudo-exploit (ff43b10e), egy reteggel odebb. Javitas: `_WRAPPER_DISQUALIFIES_REWRITE_RX`
+   kiterjesztve `^\s*(?:bash|sh|zsh)\s+-c\b`-vel -- block-and-suggestre esik vissza, nem
+   rewrite-elodik.
+2. A vezeto-szokozos parancs (`"  npm install"`) mar helyesen mukodott (a `_CMD` sajat `\s*`
+   prefixe), csak nem volt neven pinnelt teszt -- hozzaadva a `CASES` listahoz block-modban.
+3. Engine-level probe: a korabbi mérés csak a HOOK-alprocesszt hivta kozvetlenul (stdin JSON ->
+   stdout/exit kod), sosem a VALODI Claude Code permission engine-t egy éles `Bash(sudo:*)`
+   deny-szabállyal. Ma egy izolalt, eldobhato probe-mappaban (`.claude/settings.json`: csak
+   `Bash(sudo:*)`/`Bash(*/sudo *)` deny + a noisy-command-guard hook `NOISY_GUARD_MODE=rewrite`-re
+   drotozva) elinditottam egy valodi `claude -p` sessiont ("Use the Bash tool to run exactly this
+   command... sudo npm install"). A tenyleges engine `permission_denials` tomb ket bejegyzest
+   adott vissza: az elso a NYERS `sudo npm install` Bash-hivas (a hook block-and-suggestje +
+   a Bash(sudo:*) deny egyutt zarja), a masodik a modell sajat `bash .../noisy-run.sh sudo npm
+   install` probalkozasa (ask-ra esett, TTY nelkul nem engedelyezve). A modell vegso valasza:
+   "sudo npm install did not run. The noisy-command guard hook blocked the raw command, and the
+   same command through the noisy-run.sh filter then needed approval, which wasn't granted." --
+   azaz `sudo npm install` ELUTASITVA a valodi permission engine szintjen is, rewrite mod alatt.
+
+**Teszt:** `scripts/hooks/noisy-command-guard.selftest.py` CASES-be 1 uj block-pin (vezeto
+szokoz), a `check_rewrite_mode()` (b2) blokkba 3 uj wrapper-disqualifies-rewrite eset (bash/sh/zsh
+-c). 33 base case + rewrite-mode + quoting-roundtrip zold (korabban 28 volt a padlo az
+`noisy-command-guard-selftests.test.ts`-ben, a floor-check `>=28`-re meg teljesül). Mutacio-
+ellenorzes: a `_WRAPPER_DISQUALIFIES_REWRITE_RX` kiterjesztesenek visszavonasaval pontosan a 3 uj
+eset (bash/sh/zsh -c) bukik piros-ra; visszaallitva, ismet zold. `npx tsc --noEmit` tiszta (ugyanaz
+a 3, korabbrol ismert parse5-hianyos hiba), `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+**Ki döntött:** backend2 (self-advance, MikroB prioritás-direktíva msg 19621: 214ca312 elobb, mint
+0ca2322b, mindkettő a saját korábban gate-elt munka follow-upja). Gate: QA + Cybered.

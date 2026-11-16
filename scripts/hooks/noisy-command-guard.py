@@ -139,8 +139,16 @@ _LEADING_ENV_RX = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)+")
 # all). The concrete exploit: `sudo npm install` matched _CMD's own optional `sudo` prefix, so it
 # got rewritten into `bash .../noisy-run.sh sudo npm install` -- a line starting with `bash`, not
 # `sudo`, which a start-anchored deny rule like Bash(sudo:*) can no longer see.
+#
+# RedHat LOW (card 214ca312, ff43b10e follow-up): `bash -c '<noisy cmd>'` / `sh -c ...` /
+# `zsh -c ...` sat outside this list, so it was still REWRITTEN -- the same class of hole as
+# sudo, one layer removed. `_unwrapped_variants()` matches NOISY_PATTERNS against the string
+# INSIDE the quotes (so the guard still recognizes the noisy command hiding in there), but
+# `_rewrite_is_safe()` checks the RAW, outer command, whose first word is `bash`/`sh`/`zsh`, not
+# the noisy program -- so it passed the "first word is the noisy program itself" rule on a
+# technicality. Added here so it falls back to block-and-suggest like every other wrapper.
 _WRAPPER_DISQUALIFIES_REWRITE_RX = re.compile(
-    r"^\s*(?:sudo|doas|pkexec|time|rtk)\b|^\s*su\s+-c\b"
+    r"^\s*(?:sudo|doas|pkexec|time|rtk)\b|^\s*su\s+-c\b|^\s*(?:bash|sh|zsh)\s+-c\b"
 )
 
 

@@ -81,6 +81,10 @@ CASES = [
     ("sudo apt-get install -y jq", BLOCK, "sudo-wrapped apt-get install (card ff43b10e, RedHat 32154)"),
     ("sudo pip install requests", BLOCK, "sudo-wrapped pip install (card ff43b10e, RedHat 32154)"),
     ("sudo docker build -t x .", BLOCK, "sudo-wrapped docker build (card ff43b10e, RedHat 32154)"),
+    # card 214ca312 (ff43b10e follow-up LOW): a leading-space command was already caught by _CMD's
+    # own `\s*` prefix, but had no pinned test by name -- pinning it here, next to the other
+    # BLOCK cases, so a future `_CMD` edit that tightens that prefix is caught.
+    ("  npm install", BLOCK, "leading-space command behaves like the unpadded form (card 214ca312)"),
 ]
 
 
@@ -133,7 +137,10 @@ def check_rewrite_mode():
     # the generalization MikroB asked for beyond just the sudo family (19536: "rewrite ONLY when
     # the first word is the noisy program itself").
     for cmd in ("sudo npm install", "sudo apt-get install -y jq", "sudo pip install requests",
-                "sudo docker build -t x .", "time npm install", "rtk npm test"):
+                "sudo docker build -t x .", "time npm install", "rtk npm test",
+                # card 214ca312, ff43b10e follow-up LOW: bash/sh/zsh -c is the same class of hole
+                # as sudo -- the raw command's first word is the wrapper, not the noisy program.
+                "bash -c 'npm install'", "sh -c 'npm test'", "zsh -c 'npm ci'"):
         rc, out, err = run_with_mode(cmd, mode="rewrite")
         if rc != 2 or out.strip() or not err.strip():
             failures.append(
