@@ -848,5 +848,37 @@ case "$OUT" in
 esac
 rm -f "$AGENT_SHARED_BYO/agent-config.json"
 
+# --- card 270b2950 (RedHat residual MEDIUM-LOW + LOW off 11c6cab4 comment 32213/32340):
+# (a) a remote (ssh) agent WITHOUT a customProvider, on the default shared-auth mode, had NO
+# check at all before this card -- it fell straight into needsFleetOauthFor's "needed" branch
+# (no customProvider to trip case 53-57's check), and watchdog.sh then found no local
+# `.claude-config` dir for it (its real config lives on the remote host) and silently printed
+# isolation=no, never reaching the refusal watchdog-provider-env.mjs already had for a remote
+# agent. RedHat's round-1 fixture used the wrong config keys for this case, so it went
+# unmeasured then; round 3's own GO re-measured it correctly and left it open as a residual.
+# (b) an explicit customProvider: null was never pinned by name in the shared classifier,
+# though RedHat measured it already refuses (isCustomProviderFieldUnusable's own `'customProvider'
+# in config` check is true for a present null value, same branch as 1/{}/[]/true above). ---
+
+# 60) BLOCKING (residual (a) repro): remote agent, NO customProvider, default shared auth ->
+#     refuse (fleet-oauth-undecidable), never isolation=no.
+printf '{"remoteHost": "build-box", "remoteWorkdir": "/home/agent/work"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "60: remote agent, no customProvider, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "60: remote agent, no customProvider, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+
+# 61) residual (b) repro: an explicit customProvider: null, default shared auth -> refuse
+#     (fleet-oauth-undecidable), same branch as 1/{}/[]/true (case 53-56), now pinned by name.
+printf '{"customProvider": null}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "61: customProvider=null, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "61: customProvider=null, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
