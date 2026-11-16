@@ -24,7 +24,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 const ROOT = join(__dirname, '..', '..')
 const PROCESS_SRC = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
 
-const { isAgentRunning, stopAgentProcess, __getAgentLaunchGenerationForTest } = await import('../web/agent-process.js')
+const { isAgentRunning, stopAgentProcess, __getAgentLaunchGenerationForTest, bumpAgentLaunchGeneration, applyContinueVerifyOutcome } = await import('../web/agent-process.js')
 
 const measured: ContinueDecisionInput = {
   hasPriorSession: true, fresh: false, hasChannel: true, isMainAgent: false, provider: 'telegram',
@@ -141,6 +141,82 @@ describe('resolveContinueTimeoutAction (card 2b2fbabc: the glued call-site funct
   })
 })
 
+describe('applyContinueVerifyOutcome (card 2b2fbabc MEDIUM-1 / card 56344ff4): the post-resolve tail, behaviourally', () => {
+  const polls = 5
+  const elapsedMs = 15_000
+
+  it("'kept': no kill, no relaunch", async () => {
+    const name = `__m1-kept-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const capturedAtLaunch = Symbol()
+    bumpAgentLaunchGeneration(name) // current != capturedAtLaunch on purpose: 'alive' must win regardless
+    const killSession = vi.fn()
+    const startAgentProcess = vi.fn()
+    const action = await applyContinueVerifyOutcome(name, 'sess', { outcome: 'alive', polls, elapsedMs }, capturedAtLaunch, { killSession, startAgentProcess })
+    expect(action).toBe('kept')
+    expect(killSession).not.toHaveBeenCalled()
+    expect(startAgentProcess).not.toHaveBeenCalled()
+  })
+
+  // Y11 (Cybersec GO 32483, MEDIUM-1): the old inline `if (action === 'skip-stopped') { ...; return }`
+  // was pinned only by a source-text check on the condition, which cannot tell a branch WITH its
+  // `return` from one without it -- a mutant removing the `return` fell through to kill+relaunch
+  // and stayed 87/87 green. This test drives the real branch and asserts on the SIDE EFFECT
+  // (nothing killed, nothing relaunched), not on source text: a `return`-less mutant makes it RED.
+  it("Y11 MUTATION PIN: 'skip-stopped' (a stop/newer-start happened mid-window) -- no kill, no relaunch", async () => {
+    const name = `__m1-skip-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const capturedAtLaunch = Symbol()
+    bumpAgentLaunchGeneration(name) // current generation now differs from capturedAtLaunch -> skip-stopped
+    const killSession = vi.fn()
+    const startAgentProcess = vi.fn()
+    const action = await applyContinueVerifyOutcome(name, 'sess', { outcome: 'timeout', polls, elapsedMs }, capturedAtLaunch, { killSession, startAgentProcess })
+    expect(action).toBe('skip-stopped')
+    expect(killSession).not.toHaveBeenCalled()
+    expect(startAgentProcess).not.toHaveBeenCalled()
+  })
+
+  it("'relaunch-fresh': unchanged generation on timeout -- kills the session then relaunches fresh", async () => {
+    const name = `__m1-fresh-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    // Mirrors the real launch call site: it bumps the map to a fresh symbol and captures that
+    // SAME symbol as capturedAtLaunch, right before opening the verify window.
+    bumpAgentLaunchGeneration(name)
+    const capturedAtLaunch = __getAgentLaunchGenerationForTest(name)!
+    const killSession = vi.fn()
+    const startAgentProcess = vi.fn(async () => ({ ok: true, pid: 1 }))
+    const action = await applyContinueVerifyOutcome(name, 'sess', { outcome: 'timeout', polls, elapsedMs }, capturedAtLaunch, { killSession, startAgentProcess })
+    expect(action).toBe('relaunch-fresh')
+    expect(killSession).toHaveBeenCalledWith(name, 'sess')
+    expect(startAgentProcess).toHaveBeenCalledWith(name, { fresh: true })
+  })
+
+  // Y2 (Cybersec GO 32483, MEDIUM-1): the old call site could pass the CAPTURED generation as the
+  // "current" one too, which makes every timeout read as unchanged and re-opens the original F1
+  // bug (a just-stopped agent gets wrongly relaunched fresh). Removed structurally, not just
+  // tested: applyContinueVerifyOutcome takes only ONE generation symbol (capturedAtLaunch) and
+  // looks up "current" itself from the module's own map -- there is no second symbol parameter a
+  // call site could mix up with it any more. This test still pins the real map-lookup wiring: the
+  // same capturedAtLaunch symbol produces opposite actions depending on what is CURRENTLY in the
+  // map for that name, which only holds if the lookup is genuinely live, not a stale copy.
+  it('Y2 MUTATION PIN: same capturedAtLaunch symbol -> relaunch-fresh if nothing changed since, skip-stopped if the map moved on', async () => {
+    const name = `__m1-y2-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const capturedAtLaunch = Symbol()
+    const killSessionA = vi.fn()
+    const startA = vi.fn(async () => ({ ok: true, pid: 1 }))
+    // agentLaunchGeneration has nothing for `name` yet -> undefined != capturedAtLaunch -> changed.
+    const a = await applyContinueVerifyOutcome(name, 'sess', { outcome: 'timeout', polls, elapsedMs }, capturedAtLaunch, { killSession: killSessionA, startAgentProcess: startA })
+    expect(a).toBe('skip-stopped')
+    expect(startA).not.toHaveBeenCalled()
+
+    const killSessionB = vi.fn()
+    const startB = vi.fn(async () => ({ ok: true, pid: 1 }))
+    // Now set the map to the SAME symbol as capturedAtLaunch -> unchanged -> relaunch-fresh.
+    bumpAgentLaunchGeneration(name)
+    const matching = __getAgentLaunchGenerationForTest(name)!
+    const b = await applyContinueVerifyOutcome(name, 'sess', { outcome: 'timeout', polls, elapsedMs }, matching, { killSession: killSessionB, startAgentProcess: startB })
+    expect(b).toBe('relaunch-fresh')
+    expect(startB).toHaveBeenCalledWith(name, { fresh: true })
+  })
+})
+
 describe('card 2b2fbabc F2: a stop on an already-not-running agent still bumps the generation', () => {
   it('never-started agent: isAgentRunning is false (sanity, no real tmux session exists)', () => {
     expect(isAgentRunning(`__f2-sanity-${Date.now()}`)).toBe(false)
@@ -168,21 +244,16 @@ describe('the launch path is wired to the policy', () => {
     expect(PROCESS_SRC).toContain('installedCli = hasAnyChannel ? (await measureClaudeCliVersion()).version : null')
     expect(PROCESS_SRC).toContain("const continueFlag = continueDecision.useContinue ? '--continue ' : ''")
   })
-  it('a resumed channel launch is verified with the plugin-liveness probe and falls back to a FRESH start', () => {
+  it('a resumed channel launch is verified with the plugin-liveness probe and its outcome goes through applyContinueVerifyOutcome', () => {
     const at = PROCESS_SRC.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
     expect(at).toBeGreaterThan(-1)
-    const block = PROCESS_SRC.slice(at, at + 2500)
+    const block = PROCESS_SRC.slice(at, at + 1000)
     expect(block).toContain('verifyContinueLaunch({')
     expect(block).toContain('probeChannelPluginLiveness(pid, agentProvider, name)')
-    expect(block).toContain("['kill-session', '-t', exactTmuxTarget(session)]")
-    expect(block).toContain('startAgentProcess(name, { fresh: true })')
-  })
-  it('the timeout fallback is routed through resolveContinueTimeoutAction, not a bare if(v.outcome==="alive") (card 466f21fe F1, card 2b2fbabc)', () => {
-    const at = PROCESS_SRC.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
-    const block = PROCESS_SRC.slice(at, at + 2500)
-    expect(block).toContain('resolveContinueTimeoutAction(v.outcome, agentLaunchGeneration.get(name), myLaunchGeneration)')
-    expect(block).toContain("action === 'kept'")
-    expect(block).toContain("action === 'skip-stopped'")
+    // card 56344ff4: the post-resolve tail (kill/relaunch/log) is no longer inline here -- it moved
+    // into applyContinueVerifyOutcome, which carries its own behavioural tests (Y11/Y2 mutation
+    // pins, above) instead of a source-text check on its branches.
+    expect(block).toContain('applyContinueVerifyOutcome(name, session, v, myLaunchGeneration)')
   })
   it('every launch bumps its own agentLaunchGeneration entry BEFORE the verify window opens', () => {
     const newSessionAt = PROCESS_SRC.indexOf("runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)]")
