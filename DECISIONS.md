@@ -26729,3 +26729,27 @@ flagged for its own card rather than an under-specified guess here.
 döntés (komment 32162): HARD PRECONDITION -- semelyik degraded/night loop (d5638d28 C2 és később)
 nem hívhatja a done/land/agent-start végpontokat, amíg ez a kártya nincs kész. Gate: QA +
 Cybersec + Cybered.
+
+## 2026-11-16 -- 2ba008f2 round 2: outage marker fails closed, night sender forced server-side
+
+Cybered NO-GO (comment 32445) on round 1's credential-scope fence: isSessionOutageActive()
+failed OPEN (bypass allowed) for 10 of 11 measured malformed marker states (corrupt JSON, empty
+file, directory-in-place, active/heartbeat as a string, heartbeat in milliseconds, JSON array,
+chmod 000 unreadable) -- only "file missing" should legitimately read as normal. Fixed by
+rewriting the function to fail CLOSED (outage=true) for any read error except ENOENT, any
+JSON-parse failure, any non-object/array malformed active/heartbeat, and an implausible raw
+heartbeat value outside [1_600_000_000, 4_000_000_000] seconds -- without changing the two
+pre-existing pinned behaviors (a STALE marker and a FUTURE-dated marker within clock-skew
+tolerance both still read as non-outage). Separately, a night-scoped device key could forge the
+`from` field on POST /api/messages (the route only restricted `to`); fixed by forcing
+`from = NIGHT_MESSAGE_SENDER` server-side for every night-scoped caller.
+
+Finding 1 (land scripts -- marveen-land.sh/degraded-orchestrator-land-guard-lib.sh -- not fenced
+against the outage marker) is explicitly NOT fixed in this round: those files do not exist on
+this branch's base (d5638d28, which introduces them, is still unlanded) -- deferred to a
+follow-up once d5638d28 lands.
+
+**Mérés:** kanban-force-actors.test.ts (+10 cases) + night-gate.test.ts (+2 cases),
+fleet-test.sh --ref card/2ba008f2, 4 files / 83 tests passed. tsc --noEmit clean.
+
+**Ki döntött:** Cybered lelet, backend javítja. Gate: QA + Cybersec + Cybered.
