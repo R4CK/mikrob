@@ -6,6 +6,11 @@
 # throwaway MARVEEN_MAIN so the check fires and dies BEFORE any real git operation is attempted
 # (the check runs first, right after arg parsing -- see marveen-land.sh's own comment at its
 # definition).
+#
+# Round 3 (CYBERED NO-GO 32245 F1, MikroB decision 32246): Kesz ha #1 is now "default path absent
+# = OFF; explicit override to a missing path = refuse; override to {"enabled": false} = OFF" --
+# OFF must be simulated via an override to an EXISTING {"enabled": false} file (cases 1/7 below),
+# never via an override to a REMOVED file (that is now case 8's own refuse scenario).
 set -uo pipefail
 HERE="$(dirname "$0")"
 LAND="$HERE/marveen-land.sh"
@@ -22,13 +27,13 @@ git init -q "$FAKE_MAIN"
 
 PASS=0; FAIL=0
 
-# Case 1: switch missing (default OFF) -- the guard itself must not be what refuses. Using a
-# nonexistent agent name so the REAL refusal (unrelated to this guard) is "agent branch not found",
-# never the degraded-orchestrator message -- that is the thing under test.
-rm -f "$SWITCH"
+# Case 1: override to an EXISTING {"enabled": false} file -- the guard itself must not be what
+# refuses. Using a nonexistent agent name so the REAL refusal (unrelated to this guard) is "agent
+# branch not found", never the degraded-orchestrator message -- that is the thing under test.
+printf '{"enabled": false}' > "$SWITCH"
 out="$(DEGRADED_ORCHESTRATOR_SWITCH="$SWITCH" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run no-such-agent-d5638d28 2>&1)"
 if echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
-  FAIL=$((FAIL+1)); echo "  FAIL case 1 (switch missing = OFF): guard fired anyway: $out"
+  FAIL=$((FAIL+1)); echo "  FAIL case 1 (override to {enabled:false} = OFF): guard fired anyway: $out"
 else
   PASS=$((PASS+1))
 fi
@@ -95,13 +100,37 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL case 6 (python3 missing -> refuse): rc=$rc, out=$out"
 fi
 
-# Case 7: MUTATION PIN -- switch file missing via the env-override mechanism (case 1's own
-# pattern, used throughout this suite and the HTTP guard tests to simulate OFF) must stay
-# unaffected by case 6's python3 fix -- re-run case 1 itself with python3 present.
-rm -f "$SWITCH"
+# Case 7: MUTATION PIN -- override to an EXISTING {"enabled": false} file (case 1's own pattern)
+# must stay unaffected by case 6's python3 fix -- re-run case 1 itself with python3 present.
+printf '{"enabled": false}' > "$SWITCH"
 out="$(DEGRADED_ORCHESTRATOR_SWITCH="$SWITCH" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run no-such-agent-d5638d28-again 2>&1)"
 if echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
-  FAIL=$((FAIL+1)); echo "  FAIL case 7 (switch missing via env override = OFF, unaffected by case 6): guard fired anyway: $out"
+  FAIL=$((FAIL+1)); echo "  FAIL case 7 (override to {enabled:false} = OFF, unaffected by case 6): guard fired anyway: $out"
+else
+  PASS=$((PASS+1))
+fi
+
+# Case 8 (CYBERED NO-GO 32245 F1, MikroB decision 32246): an EXPLICIT override pointing at a
+# missing path is a broken configuration, not a statement of normal mode -- must refuse. Distinct
+# from case 9's default-path-missing scenario below.
+NO_SUCH_SWITCH="$TMPDIR/no-such-switch.json"
+rm -f "$NO_SUCH_SWITCH"
+out="$(DEGRADED_ORCHESTRATOR_SWITCH="$NO_SUCH_SWITCH" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run some-agent 2>&1)"
+rc=$?
+if [ "$rc" = 3 ] && echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL case 8 (explicit override to missing path -> refuse): rc=$rc, out=$out"
+fi
+
+# Case 9: MUTATION PIN -- the DEFAULT path (no override at all) never having been written is
+# STILL the legitimate OFF state, unaffected by case 8's fix. Unset DEGRADED_ORCHESTRATOR_SWITCH
+# entirely so the script's own default applies, pointed at a MARVEEN_MAIN whose store/ never got
+# a switch file written.
+unset DEGRADED_ORCHESTRATOR_SWITCH
+out="$(MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run no-such-agent-d5638d28-default 2>&1)"
+if echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
+  FAIL=$((FAIL+1)); echo "  FAIL case 9 (default path missing, no override = OFF, unaffected by case 8): guard fired anyway: $out"
 else
   PASS=$((PASS+1))
 fi

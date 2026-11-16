@@ -85,6 +85,11 @@ describe('POST /api/agents/:name/start refuses while degraded-orchestrator mode 
     const res = await postStart(AGENT, { force: true, actor: 'mikrob' })
     expect(res.status).toBe(200)
     expect(startAgentProcessMock).toHaveBeenCalledTimes(1)
+    // Round 3 (RedHat NO-GO 32245 F2): the route's own pre-check passing is not enough -- it must
+    // also FORWARD force/actor into startAgentProcess, or the SAME guard inside
+    // startAgentProcessUnlocked refuses again with nothing to let it through. This mock cannot see
+    // that inner refusal (it replaces the whole function), so assert on the call args directly.
+    expect(startAgentProcessMock).toHaveBeenCalledWith(AGENT, expect.objectContaining({ force: true, actor: 'mikrob' }))
   })
 
   it('{"enabled": true} + force:true but actor is NOT mikrob: still refused', async () => {

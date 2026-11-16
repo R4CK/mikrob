@@ -61,6 +61,14 @@ describe('TS guard vs bash land-guard: identical classification for every fixtur
     { name: 'empty object {}', json: '{}' },
     { name: 'string-typed enabled: {"enabled": "true"}', json: '{"enabled": "true"}' },
     { name: 'number-typed enabled: {"enabled": 1}', json: '{"enabled": 1}' },
+    // Card d5638d28 round 3 (RedHat NO-GO 32245 F4c): FALSY non-boolean values -- these would
+    // read as OFF in bash if the `isinstance(data["enabled"], bool)` check ever regressed to a
+    // plain truthiness check (Python's `0`/`""`/`None` are all falsy), while the string "true"
+    // fixture above reads ON "by accident" either way -- so that one fixture alone could not have
+    // caught this regression class.
+    { name: 'falsy number-typed enabled: {"enabled": 0}', json: '{"enabled": 0}' },
+    { name: 'falsy string-typed enabled: {"enabled": ""}', json: '{"enabled": ""}' },
+    { name: 'null-typed enabled: {"enabled": null}', json: '{"enabled": null}' },
     { name: 'typo key: {"Enabled": true}', json: '{"Enabled": true}' },
     { name: 'extra key: {"enabled": false, "note": "x"}', json: '{"enabled": false, "note": "x"}' },
     { name: 'malformed JSON', json: '{not valid json' },

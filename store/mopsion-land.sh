@@ -633,6 +633,22 @@ if [ "${1:-}" = "--selftest" ]; then
   out="$(env -u MOPSION_WORKTREES CLEANCORE_WORKTREES=/tmp/wt-y bash "$0" --worktree-path 2>/dev/null)"
   [ "$out" = "/tmp/wt-y" ] || { echo "  FAIL CLEANCORE_WORKTREES fallback broken: got [$out]"; fail=1; }
 
+  # Card d5638d28 round 3 (RedHat NO-GO 32245 F4d): one end-to-end refusal case for THIS lander's
+  # own degraded-orchestrator guard -- the shared lib's unit behaviour is already covered by
+  # degraded-orchestrator-land-guard.selftest.sh, but nothing proved mopsion-land.sh actually wires
+  # check_degraded_orchestrator_guard in BEFORE it would otherwise proceed. The guard runs before
+  # argument parsing, so no real MAIN/git fixture is needed -- a fixture cardId/sha is enough.
+  n=$((n+1))
+  DGSW="$(mktemp -d)/switch.json"
+  printf '{"enabled": true}' > "$DGSW"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator guard wired in: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator guard wired in: guard never fired: $out"; fail=1 ;;
+  esac
+  rm -rf "$(dirname "$DGSW")"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi

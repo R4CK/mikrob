@@ -2500,7 +2500,15 @@ function compactPrompt(): string {
       )
       if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
     }
-    const result = await startAgentProcess(name, { fresh: startFresh })
+    // Round 3 (RedHat NO-GO 32245 F2): force/actor must reach startAgentProcess too, not just
+    // this route's own pre-check above -- otherwise an owner override (force:true, actor:"mikrob")
+    // passes the pre-check, then the SAME guard inside startAgentProcessUnlocked refuses again
+    // with no force/actor to let it through, so the owner override never actually worked.
+    const result = await startAgentProcess(name, {
+      fresh: startFresh,
+      force: startBody.force === true,
+      actor: typeof startBody.actor === 'string' ? startBody.actor : undefined,
+    })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'Agent is already running') addDesiredAgent(name)
