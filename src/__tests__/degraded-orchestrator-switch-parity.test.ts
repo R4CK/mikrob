@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readDegradedOrchestratorState } from '../degraded-orchestrator-guard.js'
+import { degradedOrchestratorSwitchPath, readDegradedOrchestratorState } from '../degraded-orchestrator-guard.js'
 
 const LAND_SCRIPT = join(import.meta.dirname, '..', '..', 'store', 'marveen-land.sh')
 
@@ -24,10 +24,17 @@ function extractPythonSnippet(): string {
   return src.slice(bodyStart, end)
 }
 
-function bashSideIsOn(fixturePath: string): boolean {
-  // Mirrors the bash function's own `[ -e "$path" ] || return 1` line, which runs BEFORE python
-  // is ever invoked -- the extracted snippet alone does not include that short-circuit.
-  if (!existsSync(fixturePath)) return false
+// CYBERED NO-GO 32605 (card e3cf26d0 round 4): the missing-file short-circuit itself has TWO
+// cases in store/marveen-land.sh (lines 120-131), not one -- an override pointing at nothing is
+// an unverifiable caller misconfiguration (fail-closed ON), only the genuine default never
+// having been written is the legitimate OFF (Kesz, ha #1). `overrideSet` mirrors that branch;
+// it is irrelevant (and defaulted) for every fixture row below that writes a real file, since
+// existsSync is true there regardless of override status.
+function bashSideIsOn(fixturePath: string, overrideSet = false): boolean {
+  // Mirrors the bash function's own `[ -e "$path" ] || { ...; return 1; }` lines, which run
+  // BEFORE python is ever invoked -- the extracted snippet alone does not include that
+  // short-circuit.
+  if (!existsSync(fixturePath)) return overrideSet
   const script = extractPythonSnippet()
   try {
     execFileSync('python3', ['-c', script, fixturePath], { stdio: 'pipe' })
@@ -50,7 +57,6 @@ describe('TS guard vs bash land-guard: identical classification for every fixtur
   }
 
   const FIXTURES: { name: string; json: string | null }[] = [
-    { name: 'missing file', json: null },
     { name: 'valid on: {"enabled": true}', json: '{"enabled": true}' },
     { name: 'valid off: {"enabled": false}', json: '{"enabled": false}' },
     { name: 'bare true', json: 'true' },
@@ -83,6 +89,43 @@ describe('TS guard vs bash land-guard: identical classification for every fixtur
       expect(bashOn).toBe(tsOn)
     } finally {
       rmSync(path, { force: true })
+    }
+  })
+
+  // CYBERED NO-GO 32605: the two missing-file rows below replace the old single "missing file"
+  // fixture, which drove the TS side with an EXPLICIT path argument -- a call shape no real
+  // caller uses (every production call site passes no argument at all; a caller either sets the
+  // env override or relies on the default). readDegradedOrchestratorState() treats "explicit
+  // argument, missing" as unreadable (card e3cf26d0 round 2), which disagreed with the bash
+  // mirror's "missing = OFF" and was a stale pin, not a behaviour hole: driven the way production
+  // actually calls it, the two sides already agree.
+  it('missing file, override set to a missing path: TS and bash agree (ON)', () => {
+    const missingPath = join(dir, 'override-missing.json')
+    const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    process.env.DEGRADED_ORCHESTRATOR_SWITCH = missingPath
+    try {
+      const tsOn = readDegradedOrchestratorState() !== 'off' // no explicit arg -- the real call shape
+      const bashOn = bashSideIsOn(missingPath, true)
+      expect(bashOn).toBe(tsOn)
+    } finally {
+      if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+      else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
+    }
+  })
+
+  // Safe to run for real: fleet-test.sh builds a throwaway checkout, so the genuine production
+  // default (PROJECT_ROOT/store/degraded-orchestrator-enabled.json) never exists there -- same
+  // reasoning degraded-orchestrator-guard.test.ts's own default-path test already relies on.
+  it('missing file, genuine default (no override, no explicit arg): TS and bash agree (OFF)', () => {
+    const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    try {
+      const tsOn = readDegradedOrchestratorState() !== 'off'
+      const bashOn = bashSideIsOn(degradedOrchestratorSwitchPath(), false)
+      expect(bashOn).toBe(tsOn)
+    } finally {
+      if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+      else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
     }
   })
 
