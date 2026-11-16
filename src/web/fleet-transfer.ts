@@ -28,7 +28,8 @@ import {
 import { safeJoin } from './sanitize.js'
 import { detachSkillSymlinkIfAny } from './skill-map-provisioner.js'
 import { importedLabelColor } from '../css-color.js'
-import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
+import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
+import { registerScheduledTask } from './schedule-registry.js'
 import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
@@ -57,13 +58,6 @@ export class UserFacingError extends Error {
 // Name validation (used to guard all import-side path joins -- B1)
 // ---------------------------------------------------------------------------
 const SAFE_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/
-
-function assertSafeName(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !SAFE_NAME_RE.test(value)) {
-    throw new Error(`Érvénytelen ${field} érték: "${String(value).slice(0, 60)}" -- csak [a-z0-9_-] megengedett.`)
-  }
-  return value
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -722,7 +716,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
 
   const withSecrets = !!options.vaultPassword
   const db = getDb()
-  const bindingLookup = withSecrets ? new Map() : buildBindingLookup()
+  const bindingLookup = withSecrets ? new Map<string, Map<string, Map<string, string>>>() : buildBindingLookup()
 
   const mainAgent = exportMainAgent(bindingLookup, withSecrets)
   const agents = listAgentNames().map(name => exportAgent(name, bindingLookup, withSecrets))
@@ -1160,7 +1154,7 @@ export function importFleet(
         return { ...EMPTY_DIFF, errors: [`A vault jelszó legalább ${MIN_VAULT_PASSWORD_LEN} karakter kell legyen.`] }
       }
       try {
-        jsonBody = decryptWithPassword(parsed.blob, options.vaultPassword)
+        jsonBody = decryptWithPassword(parsed.blob as string, options.vaultPassword)
       } catch {
         return { ...EMPTY_DIFF, errors: ['Helytelen vault jelszó -- a titkosított fájl nem dekódolható.'] }
       }
@@ -1227,6 +1221,7 @@ export function importFleet(
     }
 
     // 3. Scheduled tasks (all paused: enabled=false already set at export time)
+    const importedTaskBytes = new Map<string, ScheduledTaskWritten>()
     if (existsSync(SCHEDULED_TASKS_DIR) || fleet.scheduledTasks?.length) {
       trackedMkdir(SCHEDULED_TASKS_DIR, tracker)
     }
@@ -1234,11 +1229,9 @@ export function importFleet(
       const dir = safeJoin(SCHEDULED_TASKS_DIR, task.dirName)
       trackedMkdir(dir, tracker)
       if (task.skillMd) trackedWrite(join(dir, 'SKILL.md'), task.skillMd, tracker)
-      trackedWrite(
-        join(dir, 'task-config.json'),
-        JSON.stringify({ ...task.config, enabled: false }, null, 2),
-        tracker,
-      )
+      const configContent = JSON.stringify({ ...task.config, enabled: false }, null, 2)
+      trackedWrite(join(dir, 'task-config.json'), configContent, tracker)
+      importedTaskBytes.set(task.dirName, { skill: task.skillMd || null, config: configContent })
     }
 
     // 4. Dashboard settings
@@ -1489,6 +1482,25 @@ export function importFleet(
       applyWarnings.push(
         `Fő-agent identitás átvéve: ${sourceAgentId}. Újraindítás kell hogy a dashboard ${sourceAgentId}-ként induljon.`
       )
+    }
+
+    // Scheduled-task registry: the imported tasks were written by the server from an
+    // operator-authorized API import (and arrive paused, enabled=false), so they
+    // are registered like any other API write; otherwise the operator could not
+    // even toggle them on (the toggle route refuses unregistered files). Only the
+    // bytes the import WROTE are registered: an existing target dir can hold
+    // leftover files (a SKILL.md the import did not ship, a preCheck script), and
+    // those must not become trusted as "api:fleet-import". Such a task is left
+    // unregistered (the runner skips it) for the operator to review.
+    for (const task of fleet.scheduledTasks ?? []) {
+      const written = importedTaskBytes.get(task.dirName)
+      try {
+        if (!written || !registerScheduledTask(task.dirName, 'api:fleet-import', written, { noUnwrittenPreCheck: true, noUnwrittenDirFiles: true })) {
+          logger.warn({ task: task.dirName }, 'Fleet import: scheduled task not registered (its dir holds files the import did not write); review it, then register')
+        }
+      } catch (err) {
+        logger.warn({ err, task: task.dirName }, 'Fleet import: scheduled task not registered (runner will skip it)')
+      }
     }
 
     logger.info({ agents: (fleet.agents ?? []).map(a => a.name) }, 'Fleet import completed')

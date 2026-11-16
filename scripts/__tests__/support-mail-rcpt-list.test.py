@@ -31,6 +31,10 @@ sys.path.insert(0, SUPPORT)
 import send  # noqa: E402
 import lib   # noqa: E402
 
+# send.py reads the owner CC from .env only (an environment value is ignored, it
+# could be injected in front of any send): point it at a hermetic value directly.
+send.OWNER_CC = 'owner@example.test'
+
 
 def check(name, cond, detail=''):
     print(('PASS  ' if cond else 'FAIL  ') + name + (('  -- ' + str(detail)) if detail and not cond else ''))
