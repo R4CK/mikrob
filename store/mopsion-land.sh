@@ -62,6 +62,26 @@ say() { echo "  $*"; }
 fmt_bad_files() { sed -n 's/^\[warn\] //p' | grep -v '^Code style issues found' || true; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
+# Card d5638d28 round 2 LOW (CYBERED NO-GO 32207, MikroB Fix-Direction 32209): the same
+# degraded-orchestrator kill-switch check marveen-land.sh runs, extended to this lander -- a
+# mopsion landing is as much an unattended write as a marveen one. The switch file lives in the
+# MikroB fleet's OWN store, not in this script's $MAIN (the mopsion product repo), since the
+# switch is about the fleet orchestrator being degraded, not about mopsion itself.
+# shellcheck source=./degraded-orchestrator-land-guard-lib.sh
+. "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"
+if [ "${1:-}" != "--selftest" ]; then
+  _dgi_actor=""
+  _dgi_args=("$@")
+  for ((_dgi = 0; _dgi < ${#_dgi_args[@]}; _dgi++)); do
+    case "${_dgi_args[$_dgi]}" in
+      --actor) _dgi_actor="${_dgi_args[$((_dgi + 1))]:-}" ;;
+      --actor=*) _dgi_actor="${_dgi_args[$_dgi]#--actor=}" ;;
+    esac
+  done
+  check_degraded_orchestrator_guard "$_dgi_actor"
+  unset _dgi_actor _dgi_args _dgi
+fi
+
 # Migration numbers, against the CURRENT main (card 79311937, QA+Cybersec finding: c483a990's
 # landing REFUSED on a migration the branch only DELETED, 2026-10-01 02:09). Three-dot diff picks
 # ONE merge-base; under a criss-cross history (two unrelated merge-bases, git warns "multiple merge
@@ -640,6 +660,11 @@ while [ $# -gt 0 ]; do
     # 90-day distillation commits move entries from DECISIONS.md's beginning into an archive file,
     # breaking the byte-exact-prefix invariant.  Only MikroB passes this explicitly (card acffb1d6).
     --allow-archive) ALLOW_ARCHIVE=1 ;;
+    # Card d5638d28 round 2: --actor was already consumed by the degraded-orchestrator guard
+    # check at the top of this script -- accepted and discarded here so a caller passing the
+    # flag does not die with "unknown option: --actor".
+    --actor) shift ;;
+    --actor=*) ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift

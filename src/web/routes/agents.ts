@@ -2638,6 +2638,13 @@ function compactPrompt(): string {
     try { restartBody = (await readBody(req)).toString() } catch {}
     const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))
     if (result.ok) { json(res, { ok: true }); return true }
+    // Card d5638d28 round 2 (CYBERED NO-GO 32207 F1): restartAgentProcess now runs the same
+    // degradedOrchestratorRefusal check /start uses; surface it the same way (409 + code), not the
+    // generic 400 every other restart failure gets.
+    if (result.error && result.error.startsWith('degraded-orchestrator guard:')) {
+      json(res, { code: 'degraded_orchestrator_blocked', error: result.error }, 409)
+      return true
+    }
     json(res, { error: result.error }, 400)
     return true
   }

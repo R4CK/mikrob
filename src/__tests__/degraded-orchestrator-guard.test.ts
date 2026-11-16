@@ -52,10 +52,57 @@ describe('readDegradedOrchestratorState (card d5638d28)', () => {
     })
   })
 
-  it('valid JSON missing the enabled key = off (absence of the flag, not corruption)', () => {
+  // Round 2 (CYBERED NO-GO 32207 F3, MikroB Fix-Direction 32209 #3): the ONE switch-file contract
+  // is now stricter than "parsed?.enabled === true ? on : off" -- only {"enabled": true|false}
+  // with a real JSON boolean is valid; EVERYTHING else that parses (wrong shape, wrong type,
+  // extra/typo key) is 'unreadable' (blocks), not 'off'. The old behaviour silently read every one
+  // of these as OFF, which is exactly the split RedHat measured against the bash land guard.
+  it('{} (missing the enabled key) is now invalid shape -> unreadable (blocks), not off', () => {
     withSwitchFile('{}', (path) => {
-      expect(readDegradedOrchestratorState(path)).toBe('off')
+      expect(readDegradedOrchestratorState(path)).toBe('unreadable')
+      expect(isDegradedOrchestratorBlocking(path)).toBe(true)
     })
+  })
+
+  it('a typo key ({"Enabled": true}) is invalid shape -> unreadable', () => {
+    withSwitchFile('{"Enabled": true}', (path) => {
+      expect(readDegradedOrchestratorState(path)).toBe('unreadable')
+    })
+  })
+
+  it('an extra key alongside enabled is invalid shape -> unreadable', () => {
+    withSwitchFile('{"enabled": false, "note": "why"}', (path) => {
+      expect(readDegradedOrchestratorState(path)).toBe('unreadable')
+    })
+  })
+
+  it.each([
+    ['true', 'true'],
+    ['[]', '[]'],
+    ['"on"', '"on"'],
+    ['1', '1'],
+    ['null', 'null'],
+  ])('a bare top-level %s (not an {enabled} object) is invalid shape -> unreadable', (_label, json) => {
+    withSwitchFile(json, (path) => {
+      expect(readDegradedOrchestratorState(path)).toBe('unreadable')
+    })
+  })
+
+  it('{"enabled": "true"} (string, not boolean) is invalid shape -> unreadable', () => {
+    withSwitchFile('{"enabled": "true"}', (path) => {
+      expect(readDegradedOrchestratorState(path)).toBe('unreadable')
+    })
+  })
+
+  it('{"enabled": 1} (number, not boolean) is invalid shape -> unreadable', () => {
+    withSwitchFile('{"enabled": 1}', (path) => {
+      expect(readDegradedOrchestratorState(path)).toBe('unreadable')
+    })
+  })
+
+  it('the only two valid shapes still read exactly as their boolean says', () => {
+    withSwitchFile('{"enabled": true}', (path) => expect(readDegradedOrchestratorState(path)).toBe('on'))
+    withSwitchFile('{"enabled": false}', (path) => expect(readDegradedOrchestratorState(path)).toBe('off'))
   })
 })
 

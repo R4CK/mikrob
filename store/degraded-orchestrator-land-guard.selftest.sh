@@ -65,5 +65,17 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL case 4 (malformed switch fails closed): rc=$rc, out=$out"
 fi
 
+# Case 5 (CYBERED NO-GO 32207, residual 2; MikroB Fix-Direction 32209 #4): --actor accepts ONLY
+# the allowlisted owner identity, not any non-empty name. Before this case, 4/4 only ever tried
+# --actor mikrob, so a mutant that let ANY --actor through left the suite green.
+printf '{"enabled": true}' > "$SWITCH"
+out="$(DEGRADED_ORCHESTRATOR_SWITCH="$SWITCH" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run some-agent --actor someone-else 2>&1)"
+rc=$?
+if [ "$rc" = 3 ] && echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "  FAIL case 5 (non-owner --actor still refused): rc=$rc, out=$out"
+fi
+
 echo "degraded-orchestrator-land-guard.selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

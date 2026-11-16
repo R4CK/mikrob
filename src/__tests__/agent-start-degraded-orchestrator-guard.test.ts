@@ -4,13 +4,13 @@
 // agent-start-pre-compact.test.ts.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { agentDir } from '../web/agent-config.js'
 import { scaffoldAgentDir } from '../web/agent-scaffold.js'
 import type { RouteContext } from '../web/routes/types.js'
-import { DEGRADED_ORCHESTRATOR_SWITCH_PATH } from '../degraded-orchestrator-guard.js'
 
 const AGENT = 'degradedstarttest-d5638d28'
 
@@ -23,15 +23,24 @@ vi.mock('../web/agent-process.js', async (orig) => {
 
 const { tryHandleAgents } = await import('../web/routes/agents.js')
 
+// Round 2 LOW (CYBERED NO-GO 32207, residual 3): a temp path via DEGRADED_ORCHESTRATOR_SWITCH env,
+// not the real switch file of the tree under test (degradedOrchestratorSwitchPath() reads this
+// env var fresh on every call -- see src/degraded-orchestrator-guard.ts).
+let switchDir: string
+let DEGRADED_ORCHESTRATOR_SWITCH_PATH: string
+
 beforeEach(() => {
   if (!existsSync(agentDir(AGENT))) { mkdirSync(agentDir(AGENT), { recursive: true }); scaffoldAgentDir(AGENT) }
   startAgentProcessMock.mockClear()
-  rmSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, { force: true })
+  switchDir = mkdtempSync(join(tmpdir(), 'degraded-guard-start-'))
+  DEGRADED_ORCHESTRATOR_SWITCH_PATH = join(switchDir, 'degraded-orchestrator-enabled.json')
+  process.env.DEGRADED_ORCHESTRATOR_SWITCH = DEGRADED_ORCHESTRATOR_SWITCH_PATH
 })
 
 afterEach(() => {
   rmSync(agentDir(AGENT), { recursive: true, force: true })
-  rmSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, { force: true })
+  rmSync(switchDir, { recursive: true, force: true })
+  delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
 })
 
 async function postStart(name: string, body: Record<string, unknown> = {}): Promise<{ status: number; body: unknown }> {

@@ -92,6 +92,24 @@ TEST_TIMEOUT="${MOPSI_TEST_TIMEOUT:-1800}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
+# Card d5638d28 round 2 LOW (CYBERED NO-GO 32207, MikroB Fix-Direction 32209): same
+# degraded-orchestrator kill-switch check as marveen-land.sh / mopsion-land.sh, shared via the one
+# lib so the three cannot drift apart from each other (see that file's own header).
+# shellcheck source=./degraded-orchestrator-land-guard-lib.sh
+. "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"
+if [ "${1:-}" != "--selftest" ]; then
+  _dgi_actor=""
+  _dgi_args=("$@")
+  for ((_dgi = 0; _dgi < ${#_dgi_args[@]}; _dgi++)); do
+    case "${_dgi_args[$_dgi]}" in
+      --actor) _dgi_actor="${_dgi_args[$((_dgi + 1))]:-}" ;;
+      --actor=*) _dgi_actor="${_dgi_args[$_dgi]#--actor=}" ;;
+    esac
+  done
+  check_degraded_orchestrator_guard "$_dgi_actor"
+  unset _dgi_actor _dgi_args _dgi
+fi
+
 SELF_DIR="$(dirname "$0")"
 # shellcheck source=./landing-downward-check.sh
 . "$SELF_DIR/landing-downward-check.sh"
@@ -349,6 +367,10 @@ while [ $# -gt 0 ]; do
     --allow-ungated) ALLOW_UNGATED=1 ;;
     --allow-stacked) shift; [ $# -gt 0 ] || { echo "--allow-stacked needs a card id list" >&2; exit 2; }; ALLOW_STACKED="$1" ;;
     --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
+    # Card d5638d28 round 2: --actor was already consumed by the degraded-orchestrator guard
+    # check at the top of this script.
+    --actor) shift ;;
+    --actor=*) ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift

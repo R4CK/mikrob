@@ -1331,6 +1331,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // Card d5638d28 round 2 (CYBERED NO-GO 32207 F2, MikroB Fix-Direction 32209 #2): a card
+    // created straight into `done` reaches the done state without ever going through the
+    // PUT/move guards above (same class the in_progress/waiting block above this one already
+    // exists for) -- refuse it the same way, with the same owner bypass.
+    if (data.status === 'done') {
+      const refusal = degradedOrchestratorRefusal('kanban create as done', force === true, actor)
+      if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
+    }
     if (isInvalidAssigneeShape(data.assignee)) {
       json(res, { error: INVALID_ASSIGNEE_TYPE_MESSAGE }, 400)
       return true

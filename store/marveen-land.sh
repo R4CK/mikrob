@@ -105,6 +105,13 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # this script directly), so there is no bypass here -- passing --actor mikrob is the one way past
 # it, reusing the SAME allowlist name src/kanban-force-actors.ts hardcodes (duplicated here on
 # purpose: bash cannot import that TS module, and the name is the single fact that has to match).
+#
+# Round 2 (CYBERED NO-GO 32207 F3, MikroB Fix-Direction 32209 #3): the ONLY valid shape is an
+# object with exactly one key, "enabled", whose value is a real JSON boolean. Anything else that
+# parses (wrong type, wrong/extra/typo key, non-object top level like a bare `true`/`[]`/`1`) is
+# treated the SAME as a parse failure -- ON. This must stay byte-for-byte the same rule as
+# classifySwitchPayload() in src/degraded-orchestrator-guard.ts; the shared fixture-parity test
+# (degraded-orchestrator-switch-parity.test.ts) feeds both implementations the same payload set.
 DEGRADED_ORCHESTRATOR_SWITCH="${DEGRADED_ORCHESTRATOR_SWITCH:-$MAIN/store/degraded-orchestrator-enabled.json}"
 degraded_orchestrator_is_on() {
   [ -e "$DEGRADED_ORCHESTRATOR_SWITCH" ] || return 1
@@ -113,9 +120,11 @@ import json, sys
 try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
-    sys.exit(0 if data.get("enabled") is True else 1)
 except Exception:
     sys.exit(0)  # unreadable/corrupt: fail closed, treat as ON
+if not isinstance(data, dict) or list(data.keys()) != ["enabled"] or not isinstance(data["enabled"], bool):
+    sys.exit(0)  # wrong shape/type/extra/typo key: same fail-closed rule as the TS guard
+sys.exit(0 if data["enabled"] else 1)
 ' "$DEGRADED_ORCHESTRATOR_SWITCH"
 }
 check_degraded_orchestrator_guard() { # $1 = actor (may be empty)

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, unlinkSync, mkdtempSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
+import { degradedOrchestratorRefusal } from '../degraded-orchestrator-guard.js'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -2356,7 +2357,20 @@ export function isClaudeAgent(model: string, customProviderId: string | null | u
   return !customProviderId && model.startsWith('claude-')
 }
 
-async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function startAgentProcessUnlocked(
+  name: string,
+  opts: { fresh?: boolean; force?: boolean; actor?: string } = {}
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  // Card d5638d28 round 2 (CYBERED NO-GO 32207 F1, MikroB Fix-Direction 32209 #1): the ONE shared
+  // check for every agent-start path, enforced here so EVERY caller (routes/agents.ts /start AND
+  // /restart's underlying restartAgentProcess-that-starts-a-stopped-agent case, auto-restart-runner,
+  // schedule-runner, channel-monitor, model-fallback-runner, context-guard-runner, reauth-healer,
+  // claude-plan-fleet-wiring, routes/claude-plans.ts, and the two in-file restart branches in
+  // routes/agents.ts at the channel-config PUT handlers) is covered by construction, not by
+  // remembering to call it at each site. No caller except an explicit owner override passes
+  // force/actor, so every internal/automated path refuses while degraded, same as a manual one.
+  const refusal = degradedOrchestratorRefusal('agent start', opts.force === true, opts.actor)
+  if (refusal) return { ok: false, error: refusal }
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -3503,7 +3517,17 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-async function restartAgentProcessUnlocked(name: string, opts: { fresh?: boolean; wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function restartAgentProcessUnlocked(
+  name: string,
+  opts: { fresh?: boolean; wake?: RestartWakeRequest; force?: boolean; actor?: string } = {}
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  // Card d5638d28 round 2 (CYBERED NO-GO 32207 F1): same ONE shared check as
+  // startAgentProcessUnlocked above -- restartAgentProcess starts a non-running-but-desired agent
+  // outright (RESTARTSTOPPED1005), so this is itself an agent-start door, not just a restart.
+  {
+    const refusal = degradedOrchestratorRefusal('agent restart', opts.force === true, opts.actor)
+    if (refusal) return { ok: false, error: refusal }
+  }
   // RESTARTWAKE927 / restart-lock.ts: this function already runs under withLifecycleLock's
   // own per-agent mutex (the caller below), but beginRestart/endRestart is a SEPARATE,
   // cross-cutting flag that OTHER restart initiators (channel-monitor reconcile,
@@ -5261,7 +5285,10 @@ function optsKeyOf(opts: { fresh?: boolean }): string {
 // a SECURITY reason (token rotation, injection suspicion, key rotation) MUST pass `fresh: true`
 // explicitly; `opts.fresh` already exists for exactly this. context-guard-runner.ts is the one
 // such call site today and already does this (channel-continue-policy.test.ts locks it in).
-export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export function startAgentProcess(
+  name: string,
+  opts: { fresh?: boolean; force?: boolean; actor?: string } = {}
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
 }
 
@@ -5269,6 +5296,9 @@ export function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: s
   return withLifecycleLock(name, 'stop', '', () => stopAgentProcessUnlocked(name))
 }
 
-export function restartAgentProcess(name: string, opts: { fresh?: boolean; wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export function restartAgentProcess(
+  name: string,
+  opts: { fresh?: boolean; wake?: RestartWakeRequest; force?: boolean; actor?: string } = {}
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'restart', optsKeyOf(opts), () => restartAgentProcessUnlocked(name, opts))
 }
