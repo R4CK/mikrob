@@ -182,6 +182,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
     }
+    // Card 2ba008f2: the night gate (night-gate.ts) already lets a 'night' scoped key reach
+    // this path at all -- this is the one thing its own allowlist cannot express (a path-only
+    // check has no body), so the `to` restriction is enforced here instead.
+    if (ctx.auth?.kind === 'device' && ctx.auth.scope === 'night' && to.trim().toLowerCase() !== 'mikrob') {
+      json(res, { error: 'a night-scoped credential may only message mikrob' }, 403)
+      return true
+    }
     // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
     measureAgentIdentityClaim(ctx, 'POST /api/messages', from)
     // Card 795d1f48 (a): an URGENT row is typed into a BUSY pane by the router (e.g. the save signal a key rotation
