@@ -26300,3 +26300,33 @@ felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szaba
 
 **Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
 backend2 vegezte a javitast. Gate: QA + Cybered.
+
+## 2026-11-16 -- 2ec21127 rebase: Cybered NO-GO fix + egy fuggetlen timeout-flake javitas
+
+**Dontes:** a 2ec21127 (CLAUDE.md base-prompt diet) rebase utani CYBERED NO-GO (komment 32333) ket
+dolgot talalt: (1) develop sajat `scripts/claude-md-split-reachability-check.selftest.py`-ja (a
+cc72cb3e 6791d3f88 kommitja altal keszitett, keményebb verzio) egy esete, `update-baseline-reword-
+index`, a 4. szabaly INDEX-bullet-jeben akarta atirni "a készítő SOHA nem ellenőrzi a sajátját"
+szoveget -- ez a diet altal mar elvett magyarazo-prozahoz tartozott, tehat a shortened CLAUDE.md-ben
+mar nincs ott, es a feltetlen `replace_once` AssertionError-ral a teljes selftestet elszakitotta.
+Javitas: a CLAUDE.md-oldali csere feltetelesse valt (csak ha a szoveg tenyleg ott van), a docs/rules-
+oldali csere maradt, a teszt celja (a conservation-reword workflow) valtozatlan. 30/30 zold utana.
+
+(2) Fuggetlenul a rebase-tol, MikroB jelzese (uzenet 19800) alapjan: a `claude-md-split-reachability.
+test.ts` ugyanazon tesztje (a 10 RedHat-mutans + in-place-weakening kontroll) idotullepett DevO
+`d66b7681` landolasan is, 7-8 parhuzamos fleet-test suite alatt. Kozvetlenul merve (nem vitesten at):
+a selftest ONMAGABAN 29.3 masodpercet vett igenybe a mostani valodi egyidejű terheles alatt (load
+average ~5) -- mar a regi 30000ms keret SZELEN, a vitest sajat folyamat-inditasi rafordulasa nelkul
+is. Javitas: a teszt sajat timeout-ja 30000 -> 90000 ms (3x a mert, terhelt futasido), SEMMI mas nem
+valtozott (ugyanaz a 30 eset, ugyanazok a mutansok). A valodi atereszto-kepesseg-problemat (egy
+kozos fa/lock minden futast sorba allit, fuggetlenul a fajl-kortol) a c5ff36bf kartya oldja meg
+(naplozas-only commit mar bent, QA-ra var); ez itt egy lokalis, surgical patch, hogy ez a teszt addig
+ne flakeljen a mar ismert gyokerok miatt.
+
+**Ellenorzes:** `scripts/claude-md-split-reachability-check.selftest.py` kozvetlenul futtatva 30/30;
+`fleet-test.sh --ref <uj sha> src/__tests__/claude-md-split-reachability.test.ts` ketszer lefuttatva
+a vegso tippen, mindket alkalommal 2/2 zold (29.73s, bo margoval a 90s alatt).
+
+**Ki döntött:** Cybered NO-GO (komment 32333) + MikroB kovetkezo-lepes (uzenet 19800/19805).
+backend3 vegezte. Gate: QA + Cybersec + Cybered (delta re-gate, csak a rebase-mechanika + ez a ket
+javitas, nem teljes suite).
