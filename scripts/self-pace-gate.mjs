@@ -2080,11 +2080,18 @@ export function blankHeredocBodies(src) {
 //     another (`ls -d <store>/*/SKILL.md > /tmp/l; while read f; do echo x >>
 //     "$f"; done < /tmp/l`): the write segment's path comes from `read`, not
 //     from the command text;
-//   - a reference assembled at run time (chr(), base64, `$(echo sch)edules`, a
-//     variable split across segments, a symlink to the store), or a URL/config
-//     taken from the environment;
+//   - a reference assembled at run time from PIECES the command text never
+//     glues back together: chr(), `$(echo sch)edules`, a variable split across
+//     segments (`A=sched; B=-tasks; echo x > "$HOME/.claude/$A$B/y"`), a
+//     symlink to the store, or a URL/config taken from the environment. A
+//     SINGLE base64-encoded blob piped into a shell IS decoded and checked
+//     (card a6c7780d, decodedBase64Refs) -- that is one whole, self-contained
+//     reference, recoverable without modelling the shell at all;
 //   - a curlrc: ~/.curlrc can turn ANY curl, even one with no reference, into a
-//     write; only form (a) is protected, by requiring -q;
+//     write; only form (a) is protected, by requiring -q. A `-K`/`--config`
+//     FILE argument (as opposed to `-K -`, already covered elsewhere) IS read
+//     and checked (card a6c7780d, curlConfigFileRefs) when the path resolves
+//     to a real, bounded-size local file;
 //   - a cd into the store whose effect PERSISTS to a LATER Bash call, IF Claude
 //     Code keeps the cwd across calls (unverified): a per-command gate cannot
 //     see the earlier cd. Rule 1 still denies that cd in the command where it
@@ -3191,9 +3198,10 @@ const CURL_ARG_OPTS = new Map([
 ])
 
 function parseCurl(words) {
-  const out = { urls: [], kinds: new Set(), dataIdx: new Set(), stdinData: false, sent: [], noCurlrc: false }
+  const out = { urls: [], kinds: new Set(), dataIdx: new Set(), stdinData: false, sent: [], noCurlrc: false, configs: [] }
   const record = (kind, idx, value) => {
     out.kinds.add(kind)
+    if (kind === 'config') out.configs.push(value)
     if (kind === 'header') out.sent.push({ value, ansi: words[idx].ansi })
     if (kind === 'data') {
       out.dataIdx.add(idx)
@@ -3535,6 +3543,67 @@ function wholeCommandExports(command) {
   return masked == null || ENV_EXPORT_RX.test(masked)
 }
 
+// Card a6c7780d (RedHat msg 19773 point 3, MEDIUM, shared with upstream): a local FILE a curl
+// `-K`/`--config` argument names, read right here before the Bash call runs (this hook executes
+// synchronously, on the same machine, strictly before the tool call it is gating). curl's config
+// directives (url=/data=/header=/...) can place the whole request in that file instead of on the
+// command line, so the command's own text carries no reference for scheduleSurfaceRefs to find --
+// exactly the class the module header above calls "not provable from a single command's text",
+// except this ONE instance IS provable: the file is local and already on disk. `-K -`/`-K-`/
+// `--config -` (stdin) are a different, already-covered mechanism (CURL_CONFIG_STDIN_RX, card
+// 0ecff3ae/0120d19a) and are skipped here to avoid overlapping two independent checks on the same
+// shape. A value containing `$` (an expansion this function does not resolve) or unreadable/over
+// the size cap is skipped, not denied -- this function only ever ADDS a denial, so being
+// conservative here costs nothing a prior round already covered.
+const CONFIG_FILE_MAX_BYTES = 262144
+function curlConfigFileRefs(command, opts) {
+  const segs = shellSegments(command, opts)
+  if (!segs) return false
+  for (const seg of segs) {
+    const words = shellWords(seg.own)
+    if (!words || !words.length) continue
+    if (commandName(words) !== 'curl') continue
+    const p = parseCurl(words)
+    if (!p) continue
+    for (const value of p.configs) {
+      if (value === '-' || /^-+$/.test(value) || value.includes('$')) continue
+      const abs = value.startsWith('/') ? value : resolve(String(opts.cwd ?? process.cwd()), value)
+      let stat
+      try { stat = statSync(abs) } catch { continue }
+      if (!stat.isFile() || stat.size > CONFIG_FILE_MAX_BYTES) continue
+      let content
+      try { content = readFileSync(abs, 'utf-8') } catch { continue }
+      const r = scheduleSurfaceRefs(content, opts)
+      if (strongRef(r) || r.db) return true
+    }
+  }
+  return false
+}
+
+// Card a6c7780d point (c): a base64 blob piped through `base64 -d`/`-D`/`--decode` into a shell
+// reading its stdin -- the command's own text is the ENCODED bytes, which spell no reference
+// scheduleSurfaceVariants can find (base64 is not an escape decodeEscapes resolves: its alphabet
+// overlaps ordinary text too much to decode unconditionally without manufacturing false matches
+// out of innocent base64 unrelated to this surface). Gated on an ACTUAL pipe into an ACTUAL
+// stdin-reading shell -- the same two-part, independently-proven STDIN_SHELL_RX /
+// HAS_PIPE_RX+WRAPPER_POSITION_BARE_SHELL_RX condition executableStrings already uses for the
+// identical reason (card 1a609c01 round 4) -- plus the literal word `base64`, so this never touches
+// a command that neither decodes nor pipes into a shell. Only a candidate run that decodes to a
+// REFERENCE denies; base64 used for anything else is untouched.
+const BASE64_TOKEN_RX = /[A-Za-z0-9+/]{16,}={0,2}/g
+function decodedBase64Refs(command, opts) {
+  if (!/\bbase64\b/i.test(command)) return false
+  if (!(STDIN_SHELL_RX.test(command) || (HAS_PIPE_RX.test(command) && WRAPPER_POSITION_BARE_SHELL_RX.test(command)))) return false
+  for (const m of command.matchAll(BASE64_TOKEN_RX)) {
+    let decoded
+    try { decoded = Buffer.from(m[0], 'base64').toString('utf8') } catch { continue }
+    if (!decoded) continue
+    const r = scheduleSurfaceRefs(decoded, opts)
+    if (strongRef(r) || r.db) return true
+  }
+  return false
+}
+
 // The decision for one Bash command. true = deny.
 //
 // Once the command references the API or the store surface (raw or decoded),
@@ -3552,11 +3621,19 @@ function wholeCommandExports(command) {
 // The only cross-segment state left is a tainted VARIABLE (`F=<store path>;
 // cat >> $F`): a value carrying a reference taints its name, and a later use of
 // it counts as a reference. That only ADDS denials.
+//
+// BEFORE any of that: card a6c7780d closes two of the three "keep the reference off the command
+// line" instances the module header names as accepted gaps -- curlConfigFileRefs (a curl -K/--config
+// FILE, not stdin) and decodedBase64Refs (a base64 blob piped into a shell). Both run even when
+// the command's OWN text has no reference at all, because that is exactly the case they exist for;
+// a hit here denies outright, with none of the "is this a safe plain GET" nuance below -- there is
+// no legitimate reason to go out of the way to keep a schedule-surface reference off the command
+// line in the first place.
 export function scheduleSurfaceDeny(command, gateOpts = {}) {
-  const opts = { parentCtx: cdsIntoStoreParent(command), projectRoot: gateOpts.projectRoot, selfAgent: gateOpts.selfAgent }
+  const opts = { parentCtx: cdsIntoStoreParent(command), projectRoot: gateOpts.projectRoot, selfAgent: gateOpts.selfAgent, cwd: gateOpts.cwd }
   const whole = scheduleSurfaceRefs(command, opts)
   const wholeStrong = strongRef(whole)
-  if (!wholeStrong && !whole.db) return false
+  if (!wholeStrong && !whole.db) return curlConfigFileRefs(command, opts) || decodedBase64Refs(command, opts)
   const segs = shellSegments(command, opts)
   if (!segs) return true // unresolvable quoting around a reference: fail closed
 
