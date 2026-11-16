@@ -26300,3 +26300,17 @@ felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szaba
 
 **Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
 backend2 vegezte a javitast. Gate: QA + Cybered.
+
+## 2026-11-16 -- 11c6cab4 (657b32f2 R1-R3 kovetes): customProvider jelen-de-hasznalhatatlan erteke most hangosan refuse, nem "nincs beallitva"
+
+**Kontextus:** RedHat (cybered) 657b32f2 GO-ja (komment 14986) harom, a delta-n kivuli, nem-blokkolo R1-R3 lyukat talalt ugyanabban az osztalyban, amit az `oauthTokenFile` mezo mar korabban hangosan refuse-al kezel: a `readAgentCustomProvider` (agent-config.ts) minden hibat es nem-string erteket `null`-ra visz, tehat egy JELEN LEVO, de hasznalhatatlan customProvider (szam, objektum, ures string) "nincs beallitva"-kent olvasodik, es a letezo biztonsagi dontesek (tavoli-ugynok refuse, oauth-bypass, resolveProviderEnv sajat regisztry-keresese) csendben kihagyodnak.
+
+**Dontes:** mindharom pontot javitva, strukturalisan, a mar letezo oauthTokenFile-mintat kovetve.
+
+- R1: uj `isAgentCustomProviderFieldUnusable(name)` (agent-config.ts) -- kulon fuggveny, nem a readAgentCustomProvider modositasa (az meglevo hivoinak a null pontosan jo). A launcher (`startAgentProcessUnlocked`, agent-process.ts) a customProviderId beolvasasa UTAN azonnal ellenorzi, es `ok:false`-szal megtagadja az inditast, ha a mezo jelen van, de hasznalhatatlan -- ugyanaz a fail-closed allas, mint az oauthTokenFile-nal nehany sorral feljebb.
+- R2: RedHat mert egy L6 mutanst (a launcher sajat `const customProviderId = readAgentCustomProvider(name)` sora `= null`-ra cserelve), ami a teljes 153-tesztes suite-on zoldon maradt -- semelyik teszt nem rogzitette, hogy a launcher TENYLEG a valodi olvasot hivja, csak a lejjebbi viselkedest. Uj forras-alaku teszt (`custom-provider-launcher-wiring.test.ts`) pontosan ezt a hivast pinneli, plusz hogy az uj refuse-ag a hivas UTAN, a resolveProviderEnv ELOTT all.
+- R3: `scripts/watchdog-provider-env.mjs` (a MASODIK inditasi hely, watchdog-triggerelt restartnal) a customProviderId-t KEZZEL duplikalva szamolta, pontosan ugyanazzal a hibaval, es a "remote" fogalmat egyaltalan nem ismerte. Mindket hiany most hangos refuse (exit!=0, nincs kiiras) -- a customProvider-ellenorzest a sajat, mar beolvasott `config` objektumbol szarmaztatva (a script FIXTURE-tesztelt egy temp-konyvtarral, nem a valodi agents/ fan, ezert a path-alapu valodi olvaso/ellenorzo fuggvenyek itt nem hivhatok kozvetlenul), a remote-ellenorzest pedig a VALODI, importalt `resolveRemoteConfig()`-on at (nem kezzel duplikalva).
+
+**Teszt:** `agent-custom-provider-field.test.ts` 6 uj eset (`isAgentCustomProviderFieldUnusable`: hianyzo/hasznalhato/szam/objektum/ures-string/korrupt-JSON). `custom-provider-launcher-wiring.test.ts` 2 uj eset (a valodi olvaso-hivas forras-alaku pinelese + az uj refuse-ag elhelyezese). `watchdog-provider-env-parity.test.ts` 3 uj eset (szam, ures string, remote agent -- mindharom refuse, nincs kiiras). Osszesen `fleet-test.sh --ref 77f91dc5db367cbb16b0fb554848b84743508b15` -- Test Files 3 passed (3), Tests 42 passed (42), 2026-11-16 09:22. `npx tsc --noEmit` tiszta. Elo agent-config.json-ok ellenorizve: nincs ma mukodo agens, akit ez a refuse erintene (customProvider mezo sehol nincs beallitva).
+
+**Ki döntött:** RedHat (cybered) 657b32f2 GO-ja, komment 14986, R1-R3. backend vegezte a javitast. Gate: QA + Cybered (a kartya sajat kijelolese).
