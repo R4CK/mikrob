@@ -9,7 +9,7 @@
 // through to the "Agent not found" error, which is how this test tells "the guard ran and let it
 // through" apart from "the guard was never reached at all".
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startAgentProcess, restartAgentProcess } from '../web/agent-process.js'
@@ -68,5 +68,29 @@ describe('restartAgentProcess (real function, card d5638d28 round 3)', () => {
     const result = await restartAgentProcess(AGENT, { force: true, actor: 'someone-else' })
     expect(result.ok).toBe(false)
     expect(result.error).toContain('degraded-orchestrator guard')
+  })
+
+  // Round 4 (CYBERED NO-GO 32270, RedHat's follow-up on the "known gap" in REVIEW 32264): for a
+  // NONEXISTENT agent, restartAgentProcessUnlocked's own early guard and startAgentProcessUnlocked's
+  // inner guard are indistinguishable (both refuse, either one alone would pass the tests above) --
+  // RedHat measured that removing restartAgentProcessUnlocked's OWN early check alone stays green.
+  // The early guard is independently load-bearing for an ALREADY-RUNNING agent: without it, a
+  // degraded-mode restart would stop that agent (beginRestart -> stopAgentProcessUnlocked) BEFORE
+  // ever reaching the refusal, leaving it dead instead of left running. A live tmux session is not
+  // safe to spin up in a unit test, so this pins the SOURCE ORDER instead (RedHat's own accepted
+  // alternative): the guard's refusal call must appear before the function's first
+  // stopAgentProcessUnlocked call, so the stop can never execute before the refusal has a chance to.
+  it('source-order pin: the degraded-orchestrator guard runs before the first stopAgentProcessUnlocked call', () => {
+    const src = readFileSync(join(import.meta.dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
+    const fnStart = src.indexOf('async function restartAgentProcessUnlocked(')
+    expect(fnStart).toBeGreaterThan(-1)
+    const fnEnd = src.indexOf('\n}\n', fnStart)
+    expect(fnEnd).toBeGreaterThan(fnStart)
+    const body = src.slice(fnStart, fnEnd)
+    const guardIdx = body.indexOf('degradedOrchestratorRefusal(')
+    const stopIdx = body.indexOf('stopAgentProcessUnlocked(')
+    expect(guardIdx).toBeGreaterThan(-1)
+    expect(stopIdx).toBeGreaterThan(-1)
+    expect(guardIdx).toBeLessThan(stopIdx)
   })
 })

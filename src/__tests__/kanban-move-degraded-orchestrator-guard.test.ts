@@ -79,10 +79,21 @@ afterEach(() => {
 })
 
 describe('POST /api/kanban/:id/move refuses a transition into done while degraded (card d5638d28)', () => {
-  it('switch missing (default OFF): a plain card moves to done normally', async () => {
+  it('override to an existing {"enabled": false} file (OFF): a plain card moves to done normally', async () => {
+    writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: false }))
     createKanbanCard({ id: 'deg-1', title: 'plain card', assignee: 'backend', status: 'in_progress' })
     const res = await move('deg-1', { status: 'done', actor: 'backend' })
     expect(res.status).toBe(200)
+  })
+
+  // Round 4 (CYBERED NO-GO 32270 Finding 1, MikroB decision 32246(b)): an explicit
+  // DEGRADED_ORCHESTRATOR_SWITCH override to a path that does not exist is a misconfiguration,
+  // not evidence of OFF -- must refuse, unlike the missing-DEFAULT-path case this suite no longer
+  // simulates this way.
+  it('override to a MISSING path: refused (unreadable), not treated as off', async () => {
+    createKanbanCard({ id: 'deg-1b', title: 'plain card', assignee: 'backend', status: 'in_progress' })
+    const res = await move('deg-1b', { status: 'done', actor: 'backend' })
+    expect(res.status).toBe(409)
   })
 
   it('{"enabled": true}: refuses, card stays off done', async () => {
@@ -109,10 +120,17 @@ describe('POST /api/kanban/:id/move refuses a transition into done while degrade
 })
 
 describe('PUT /api/kanban/:id refuses a transition into done while degraded (card d5638d28 round 2, F4)', () => {
-  it('switch missing (default OFF): a plain card moves to done normally', async () => {
+  it('override to an existing {"enabled": false} file (OFF): a plain card moves to done normally', async () => {
+    writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: false }))
     createKanbanCard({ id: 'deg-put-1', title: 'plain card', assignee: 'backend', status: 'in_progress' })
     const res = await put('deg-put-1', { status: 'done', actor: 'backend' })
     expect(res.status).toBe(200)
+  })
+
+  it('override to a MISSING path: refused (unreadable), not treated as off', async () => {
+    createKanbanCard({ id: 'deg-put-1b', title: 'plain card', assignee: 'backend', status: 'in_progress' })
+    const res = await put('deg-put-1b', { status: 'done', actor: 'backend' })
+    expect(res.status).toBe(409)
   })
 
   it('{"enabled": true}: refuses, card stays off done', async () => {
@@ -132,9 +150,15 @@ describe('PUT /api/kanban/:id refuses a transition into done while degraded (car
 })
 
 describe('POST /api/kanban create-as-done refuses while degraded (card d5638d28 round 2, F2)', () => {
-  it('switch missing (default OFF): creating a card already done is fine', async () => {
+  it('override to an existing {"enabled": false} file (OFF): creating a card already done is fine', async () => {
+    writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: false }))
     const res = await create({ id: 'deg-create-1', title: 'plain card', assignee: 'backend', status: 'done' })
     expect(res.status).toBe(200)
+  })
+
+  it('override to a MISSING path: refused (unreadable), not treated as off', async () => {
+    const res = await create({ id: 'deg-create-1b', title: 'plain card', assignee: 'backend', status: 'done' })
+    expect(res.status).toBe(409)
   })
 
   it('{"enabled": true}: refuses a create straight into done', async () => {

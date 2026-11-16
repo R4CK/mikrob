@@ -66,10 +66,20 @@ async function postStart(name: string, body: Record<string, unknown> = {}): Prom
 }
 
 describe('POST /api/agents/:name/start refuses while degraded-orchestrator mode is on (card d5638d28)', () => {
-  it('switch file missing: starts normally (default OFF)', async () => {
+  it('override to an existing {"enabled": false} file (OFF): starts normally', async () => {
+    writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: false }))
     const res = await postStart(AGENT)
     expect(res.status).toBe(200)
     expect(startAgentProcessMock).toHaveBeenCalledTimes(1)
+  })
+
+  // Round 4 (CYBERED NO-GO 32270 Finding 1, MikroB decision 32246(b)): an explicit
+  // DEGRADED_ORCHESTRATOR_SWITCH override to a path that does not exist is a misconfiguration,
+  // not evidence of OFF -- must refuse.
+  it('override to a MISSING path: refused (unreadable), does not call startAgentProcess', async () => {
+    const res = await postStart(AGENT)
+    expect(res.status).toBe(409)
+    expect(startAgentProcessMock).not.toHaveBeenCalled()
   })
 
   it('{"enabled": true}: refuses, does not call startAgentProcess', async () => {

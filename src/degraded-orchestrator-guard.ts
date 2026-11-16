@@ -48,10 +48,22 @@ function classifySwitchPayload(parsed: unknown): DegradedOrchestratorState {
   return value ? 'on' : 'off'
 }
 
-export function readDegradedOrchestratorState(
-  path: string = degradedOrchestratorSwitchPath()
-): DegradedOrchestratorState {
-  if (!existsSync(path)) return 'off'
+// Round 4 (CYBERED NO-GO 32270 Finding 1, MikroB decision 32246(b)): the bash port already treats
+// a CALLER-SET env override that resolves to nothing as unreadable (fail-closed), while this
+// reader still fell back to 'off' for ANY missing path -- including an explicit
+// DEGRADED_ORCHESTRATOR_SWITCH override, a caller-controlled misconfiguration, not evidence the
+// owner turned degraded mode off. The distinction is "was the env var set", not "was an explicit
+// `path` argument given" -- every real caller (the kanban guards, the agent-start route) always
+// calls this with NO argument, relying on the default; only tests pass an explicit path, and they
+// do so to exercise an arbitrary fixture file, not the env-override semantics specifically. So an
+// explicit `path` argument keeps the OLD missing-path-is-OFF behaviour (unchanged, still used by
+// most of this module's own tests), and ONLY the no-argument/env-override path gets the new rule.
+export function readDegradedOrchestratorState(explicitPath?: string): DegradedOrchestratorState {
+  const envOverride = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+  const path = explicitPath ?? degradedOrchestratorSwitchPath()
+  if (!existsSync(path)) {
+    return explicitPath === undefined && envOverride ? 'unreadable' : 'off'
+  }
   try {
     return classifySwitchPayload(JSON.parse(readFileSync(path, 'utf-8')))
   } catch {

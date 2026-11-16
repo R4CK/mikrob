@@ -104,6 +104,47 @@ describe('readDegradedOrchestratorState (card d5638d28)', () => {
     withSwitchFile('{"enabled": true}', (path) => expect(readDegradedOrchestratorState(path)).toBe('on'))
     withSwitchFile('{"enabled": false}', (path) => expect(readDegradedOrchestratorState(path)).toBe('off'))
   })
+
+  // Round 4 (CYBERED NO-GO 32270 Finding 1, MikroB decision 32246(b)): an EXPLICIT
+  // DEGRADED_ORCHESTRATOR_SWITCH override that resolves to nothing is a caller-controlled
+  // misconfiguration, not evidence the owner turned degraded mode off -- same posture as the bash
+  // land guard already has. Unlike every other test in this file (which pass an explicit `path`
+  // argument, keeping the old missing-path-is-off behaviour on purpose), this one drives the env
+  // var directly with NO path argument, the exact shape every real caller (routes, agent-process)
+  // actually uses.
+  it('an env-override path that does not exist is unreadable (blocks), NOT off', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'degraded-guard-override-missing-'))
+    const missingPath = join(dir, 'does-not-exist.json')
+    const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    process.env.DEGRADED_ORCHESTRATOR_SWITCH = missingPath
+    try {
+      expect(readDegradedOrchestratorState()).toBe('unreadable')
+      expect(isDegradedOrchestratorBlocking()).toBe(true)
+    } finally {
+      if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+      else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // MUTATION PIN: an explicit `path` ARGUMENT that is missing stays OFF even while
+  // DEGRADED_ORCHESTRATOR_SWITCH happens to be set in the environment to something else -- the
+  // override rule above must key off "was the env var used" (no argument given), not "is the env
+  // var merely set somewhere" while a caller also passed its own path.
+  it('an explicit path argument that is missing stays OFF even with an unrelated env override set', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'degraded-guard-explicit-missing-'))
+    const explicitMissingPath = join(dir, 'also-does-not-exist.json')
+    const envPath = join(dir, 'env-path-irrelevant.json')
+    const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    process.env.DEGRADED_ORCHESTRATOR_SWITCH = envPath
+    try {
+      expect(readDegradedOrchestratorState(explicitMissingPath)).toBe('off')
+    } finally {
+      if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+      else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('degradedOrchestratorRefusal (card d5638d28)', () => {
