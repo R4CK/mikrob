@@ -187,8 +187,13 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // fix: one new case in marveen-land-run-fg-killable.selftest.sh, folded into marveen-land.sh's
     // own --selftest total the same way the HUP/INT cases above were) -- marveen-only own-block,
     // cleancore-land.sh untouched, same category as every other bump in this comment history.
-    expect(cc).toBeGreaterThan(51) // 51 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(36) // 36 = marveen-land.sh's own cases
-    expect(cc - 51).toBe(mv - 36) // the same shared block, in both
+    // cc 51 -> 54 and mv 36 -> 39 with card 2ba008f2 round 4 (CYBERSEC NO-GO 32558 F1:
+    // _session_outage_active's python3 crash polarity): the SAME 3 new cases (outage-check
+    // python3 crashing with exit 1/137/139 must refuse the --actor mikrob bypass) were added to
+    // BOTH marveen-land.sh's own block AND mopsion-land.sh's own block, same symmetric-duplicated-
+    // code pattern round 3 established two bumps above.
+    expect(cc).toBeGreaterThan(54) // 54 = cleancore-land.sh's own cases
+    expect(mv).toBeGreaterThan(39) // 39 = marveen-land.sh's own cases
+    expect(cc - 54).toBe(mv - 39) // the same shared block, in both
   })
 })

@@ -689,6 +689,34 @@ if [ "${1:-}" = "--selftest" ]; then
     *"degraded-orchestrator mode is ON"*) echo "  FAIL switch OFF during outage: lander refused even though the switch itself is OFF: $out"; fail=1 ;;
   esac
 
+  # Round 4 (CYBERSEC NO-GO 32558 F1): _session_outage_active's python3 subprocess crashing (exit
+  # 1 / 137 / 139) must refuse the --actor mikrob bypass, same as a fresh active marker -- see the
+  # full rationale on marveen-land.sh's own copy of this case. The stub crashes ONLY the
+  # outage-check's own inline script and passes every other python3 call through to the real
+  # interpreter.
+  CRASHBIN="$(mktemp -d)"
+  REAL_PYTHON3="$(command -v python3)"
+  cat > "$CRASHBIN/python3" <<STUBEOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    *FileNotFoundError*) exit "\${STUB_CRASH_CODE:-1}" ;;
+  esac
+done
+exec "$REAL_PYTHON3" "\$@"
+STUBEOF
+  chmod +x "$CRASHBIN/python3"
+  for code in 1 137 139; do
+    n=$((n+1))
+    out="$(STUB_CRASH_CODE=$code PATH="$CRASHBIN:$PATH" DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+    rc=$?
+    case "$out" in
+      *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL outage-check python3 crash (exit $code) refuses: wrong exit code $rc"; fail=1; } ;;
+      *) echo "  FAIL outage-check python3 crash (exit $code) refuses: --actor mikrob was NOT refused: $out"; fail=1 ;;
+    esac
+  done
+  rm -rf "$CRASHBIN"
+
   rm -rf "$(dirname "$DGSW")"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"

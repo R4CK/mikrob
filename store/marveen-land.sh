@@ -158,46 +158,70 @@ sys.exit(0 if data["enabled"] else 1)
 # and future-skew windows, same fail-closed-on-malformed rule) -- not imported (bash cannot import
 # a TS module), kept in exact lockstep the same way the switch-file contract above already is.
 _MIKROB_SESSION_OUTAGE_PATH="${MIKROB_SESSION_OUTAGE_PATH:-$MAIN/store/mikrob-session-outage.json}"
+# Round 4 (CYBERSEC NO-GO 32558 F1, Fix-Direction): the previous version read the subprocess exit
+# code as `[ $? = 0 ]` -- ONLY an exact python exit 0 meant "active". Exit 1 was the intended
+# "normal" signal, but EVERY other outcome (an uncaught exception default exit 1, a kill 137, a
+# segfault 139, a failed interpreter start from a bad PYTHONHOME, rc 127) ALSO fell into "not
+# active", wrongly granting the --actor mikrob bypass on a crash. Sentinel-based now, same shape
+# as degraded_orchestrator_is_on's own three-valued read a few lines up: ONLY a dedicated,
+# unlikely-to-collide sentinel exit code (3, not 0 or 1, which real crashes commonly produce)
+# means "normal" (not active); everything else -- the explicit fail-closed exit 0, a plain
+# exception's default exit 1, or any crash code -- means active (deny the bypass). The whole body
+# is wrapped in try/except BaseException so nothing can escape as an unsentineled exit. `-I`
+# (isolated mode) stops a cwd-local json.py or stray PYTHON* env var from shadowing the stdlib
+# modules this depends on.
 _session_outage_active() {
   # Same posture as degraded_orchestrator_is_on: if the check cannot run at all, that is not
   # "verified inactive" -- fail closed (deny the bypass). degraded_orchestrator_is_on's own
   # python3-missing fail-closed-to-ON below makes the die() fire either way in that case.
   command -v python3 >/dev/null 2>&1 || return 0
-  python3 -c '
-import json, sys, time
+  python3 -I -c '
+import sys
+
+def main():
+    import json, time
+    try:
+        with open(sys.argv[1]) as f:
+            raw = f.read()
+    except FileNotFoundError:
+        sys.exit(3)  # no marker: normal operation (sentinel)
+    except Exception:
+        sys.exit(0)  # exists but unreadable: fail closed
+    try:
+        data = json.loads(raw)
+    except Exception:
+        sys.exit(0)  # corrupt/empty: fail closed
+    if not isinstance(data, dict):
+        sys.exit(0)
+    active = data.get("active")
+    if not isinstance(active, bool):
+        sys.exit(0)  # malformed active field: fail closed
+    if active is False:
+        sys.exit(3)  # explicitly inactive: normal operation (sentinel)
+    heartbeat = data.get("heartbeat")
+    if not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool):
+        sys.exit(0)  # malformed heartbeat: fail closed
+    MIN_H, MAX_H = 1_600_000_000, 4_000_000_000
+    if heartbeat < MIN_H or heartbeat > MAX_H:
+        sys.exit(0)  # implausible value (e.g. ms instead of s): fail closed
+    age_ms = (time.time() - heartbeat) * 1000
+    STALE_MS, FUTURE_TOLERANCE_MS = 15 * 60 * 1000, 60 * 1000
+    if age_ms > STALE_MS:
+        sys.exit(3)  # genuinely stale: normal operation resumes (sentinel)
+    if age_ms < -FUTURE_TOLERANCE_MS:
+        sys.exit(3)  # modest clock skew beyond tolerance: normal operation (sentinel)
+    sys.exit(0)  # fresh and active: fence holds
+
 try:
-    with open(sys.argv[1]) as f:
-        raw = f.read()
-except FileNotFoundError:
-    sys.exit(1)  # no marker: normal operation
-except Exception:
-    sys.exit(0)  # exists but unreadable: fail closed
-try:
-    data = json.loads(raw)
-except Exception:
-    sys.exit(0)  # corrupt/empty: fail closed
-if not isinstance(data, dict):
-    sys.exit(0)
-active = data.get("active")
-if not isinstance(active, bool):
-    sys.exit(0)  # malformed active field: fail closed
-if active is False:
-    sys.exit(1)  # explicitly inactive: normal operation
-heartbeat = data.get("heartbeat")
-if not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool):
-    sys.exit(0)  # malformed heartbeat: fail closed
-MIN_H, MAX_H = 1_600_000_000, 4_000_000_000
-if heartbeat < MIN_H or heartbeat > MAX_H:
-    sys.exit(0)  # implausible value (e.g. ms instead of s): fail closed
-age_ms = (time.time() - heartbeat) * 1000
-STALE_MS, FUTURE_TOLERANCE_MS = 15 * 60 * 1000, 60 * 1000
-if age_ms > STALE_MS:
-    sys.exit(1)  # genuinely stale: normal operation resumes
-if age_ms < -FUTURE_TOLERANCE_MS:
-    sys.exit(1)  # modest clock skew beyond tolerance: normal operation
-sys.exit(0)  # fresh and active: fence holds
+    main()
+except SystemExit:
+    raise  # the sentinel/fail-closed exits FROM main() itself must propagate untouched
+except BaseException:
+    sys.exit(0)  # anything unforeseen escaping main(): fail closed, never silently "normal"
 ' "$_MIKROB_SESSION_OUTAGE_PATH"
-  [ $? = 0 ]
+  local rc=$?
+  [ "$rc" = 3 ] && return 1
+  return 0
 }
 
 check_degraded_orchestrator_guard() { # $1 = actor (may be empty)
@@ -1272,6 +1296,38 @@ print(rest[19])
   case "$out" in
     *"degraded-orchestrator mode is ON"*) echo "  FAIL switch OFF during outage: lander refused even though the switch itself is OFF: $out"; fail=1 ;;
   esac
+
+  # Round 4 (CYBERSEC NO-GO 32558 F1): _session_outage_active's python3 subprocess crashing (an
+  # uncaught exception's default exit 1, a kill 137, a segfault 139) must refuse the --actor
+  # mikrob bypass, same as a fresh active marker -- the old `[ $? = 0 ]` read let any non-zero,
+  # non-intended exit fall through to "not active", wrongly granting the bypass. The PATH stub
+  # below crashes ONLY the outage-check's own inline script (matched by a string unique to it,
+  # "FileNotFoundError", that the switch-file reader's script never contains) and passes every
+  # other python3 invocation through to the real interpreter, so the switch check itself still
+  # runs correctly and this pins the outage check specifically, not a side effect of the switch
+  # read also failing.
+  CRASHBIN="$(mktemp -d)"
+  REAL_PYTHON3="$(command -v python3)"
+  cat > "$CRASHBIN/python3" <<STUBEOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    *FileNotFoundError*) exit "\${STUB_CRASH_CODE:-1}" ;;
+  esac
+done
+exec "$REAL_PYTHON3" "\$@"
+STUBEOF
+  chmod +x "$CRASHBIN/python3"
+  for code in 1 137 139; do
+    n=$((n+1))
+    out="$(STUB_CRASH_CODE=$code PATH="$CRASHBIN:$PATH" DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+    rc=$?
+    case "$out" in
+      *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL outage-check python3 crash (exit $code) refuses: wrong exit code $rc"; fail=1; } ;;
+      *) echo "  FAIL outage-check python3 crash (exit $code) refuses: --actor mikrob was NOT refused: $out"; fail=1 ;;
+    esac
+  done
+  rm -rf "$CRASHBIN"
   rm -rf "$(dirname "$DGSW")"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"

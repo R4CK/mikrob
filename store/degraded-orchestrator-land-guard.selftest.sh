@@ -158,5 +158,38 @@ else
   PASS=$((PASS+1))
 fi
 
+# Cases 12-14 (CYBERSEC NO-GO 32558 F1): _session_outage_active's python3 subprocess crashing
+# (exit 1 / 137 / 139) must refuse the --actor mikrob bypass, same as a fresh active marker -- the
+# old `[ $? = 0 ]` read let any non-zero, non-intended exit fall through to "not active", wrongly
+# granting the bypass on a crash. The stub below crashes ONLY the outage-check's own inline
+# script (matched by a string unique to it, "FileNotFoundError", absent from the switch-file
+# reader's script) and passes every other python3 call through to the real interpreter, so the
+# switch check itself still runs correctly and this pins the outage check specifically.
+printf '{"enabled": true}' > "$SWITCH"
+CRASHBIN="$TMPDIR/crashbin"
+mkdir -p "$CRASHBIN"
+REAL_PYTHON3="$(command -v python3)"
+cat > "$CRASHBIN/python3" <<STUBEOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    *FileNotFoundError*) exit "\${STUB_CRASH_CODE:-1}" ;;
+  esac
+done
+exec "$REAL_PYTHON3" "\$@"
+STUBEOF
+chmod +x "$CRASHBIN/python3"
+case_n=12
+for code in 1 137 139; do
+  out="$(STUB_CRASH_CODE=$code PATH="$CRASHBIN:$PATH" DEGRADED_ORCHESTRATOR_SWITCH="$SWITCH" MIKROB_SESSION_OUTAGE_PATH="$OUTAGE" MARVEEN_MAIN="$FAKE_MAIN" bash "$LAND" --dry-run some-agent --actor mikrob 2>&1)"
+  rc=$?
+  if [ "$rc" = 3 ] && echo "$out" | grep -q "degraded-orchestrator mode is ON"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL case $case_n (outage-check python3 crash exit $code refuses the bypass): rc=$rc, out=$out"
+  fi
+  case_n=$((case_n+1))
+done
+
 echo "degraded-orchestrator-land-guard.selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
