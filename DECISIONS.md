@@ -26105,3 +26105,30 @@ fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fulls
 **Teszt:** `store/lint-ratchet.selftest.sh` 43 -> 47/47 PASS (a meglévő 43 eset `mk_report` segédje mostantól `fatal: true`-t generál a `parse=N` alakra, így a régi esetek jelentése változatlan maradt; 4 új eset W1-W4: W1 egy valódi fatal parse-error továbbra is blokkolja a bootstrapot a vak-futás küszöbön keresztül; W2 egy csak unused-disable-directive üzeneteket tartalmazó riport ZÖLDEN bootstrapol, a kiírt baseline `(unused-disable-directive)`-et tartalmaz, `(parse-error)`-t nem; W3 egy második, azonos-alakú futás egy már létező baseline mellett tisztán átmegy; W4 mutáció-ellenőrzés: a javítás kézzel visszafordítva PONTOSAN 2 eset (W2, W4) vált pirosra, a többi zöld marad -- visszaállítva, 47/47 ismét zöld). A 7c79badc merge-fan (59ab01df8) saját, korábban elmentett ESLint-riportján lefuttatva a javított bucketelés: `{'(unused-disable-directive)': 10}`, `(parse-error)` kulcs sehol -- a mérés most helyesen fut.
 
 **Ki döntött:** MikroB (dispatch, üzenet 19358, elfogadva a 7c79badc leletből). backend3 végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
+
+## 2026-11-16 -- ff43b10e: noisy-command-guard rewrite-mode F1/F2/F4 javitas (WhiteHat F1-F4, fc3a6a39)
+
+**Kontextus:** WhiteHat GO a fc3a6a39-en (komment 9a0f47b1) azzal a felteteллel, hogy a fleet-wide
+rewrite-mode aktivalas elott F1-F4 javitva legyen. F1 (blokkolo): osszetett/tobb-szegmensu parancs
+rewrite-modban `bash -c '<raw>'`-be csomagolodik, ami egy start-anchored deny-szabaly (pl.
+BASH_EGRESS_DENY wget/nc/telnet) elol elrejti a beagyazott parancsot. F2: egy vezeto `VAR=val`
+hozzarendeles a `noisy-run.sh` bare `"$@"` execjeben literal programnevkent ertelmezodik -> rc 127,
+a valodi parancs sosem fut. F4 LOW: 7/14 mutans tulelte a korabbi tesztkort.
+
+**Dontes:** `_rewrite_is_safe(raw)` kapu `scripts/hooks/noisy-command-guard.py`-ban: rewrite mod
+CSAK akkor helyettesit csendben, ha a parancs (a) nem tartalmaz shell-metakaraktert (F1) ES (b) nincs
+vezeto env-hozzarendelese (F2) -- kulonben block-and-suggest fallback, pont ugy mint alapertelmezesben.
+F4: uj regresszios tesztek zarjak a 3 maradek mutans-tulelo osztalyt (tool_input mezo-megmaradas,
+metachar-lista teljesseg, kilepesi kod a kis-kimenet agon noisy-run.sh-ban). F3 (LOW, lossy sibling
+segment output) a kartya sajat fix-direction-je szerint hatokoron kivul, nincs eloirt javitas.
+
+**Teszt:** `noisy-command-guard.selftest.py` 28 alap eset + rewrite-mode + quoting round-trip PASS;
+`noisy-run.selftest.sh` pass=7 fail=0 (uj kilepesi-kod eset); `fleet-test.sh --ref e777f8629
+src/__tests__/noisy-command-guard-selftests.test.ts` 2/2 PASS; `npx tsc --noEmit` tiszta (a sajat
+worktree egy FUGGETLEN, elavult node_modules miatti parse5-hianyt jelzett, nem erinti ezt a commitot,
+mar lefedve a fleet-test.sh friss dist-buildjevel); `lint-ratchet.sh`: 441 lelet, baseline tartja.
+Mutacio-ellenorzes: a `_rewrite_is_safe` kapu kivetelevel 10 teszt vorosre valt (F1/F2 regresszio +
+8 metachar-eset), a 28 alap eset nem serult; visszaallitva ismet zold.
+
+**Ki döntött:** WhiteHat (fix-irany, fc3a6a39 komment 9a0f47b1). backend2 végezte a javítást.
+Gate: QA + Cybered. Gate-SHA: e777f862984ba3bbff870f413aca70fec9df5ca9.
