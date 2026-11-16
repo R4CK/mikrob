@@ -49,6 +49,7 @@ import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
 import { decisionsGuardVerdict, decisionsGuardCheck } from '../kanban-decisions-guard.js'
+import { degradedOrchestratorRefusal } from '../../degraded-orchestrator-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
 import { onKanbanCardStatusChanged } from '../kg-capture-hook.js'
@@ -1330,6 +1331,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // Card d5638d28 round 2 (CYBERED NO-GO 32207 F2, MikroB Fix-Direction 32209 #2): a card
+    // created straight into `done` reaches the done state without ever going through the
+    // PUT/move guards above (same class the in_progress/waiting block above this one already
+    // exists for) -- refuse it the same way, with the same owner bypass.
+    if (data.status === 'done') {
+      const refusal = degradedOrchestratorRefusal(
+        'kanban create as done', force === true, typeof actor === 'string' ? actor : undefined
+      )
+      if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
+    }
     if (isInvalidAssigneeShape(data.assignee)) {
       json(res, { error: INVALID_ASSIGNEE_TYPE_MESSAGE }, 400)
       return true
@@ -1507,6 +1518,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     {
       const v = await decisionsGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
+    }
+    // Card d5638d28: same refusal as the /move handler's sibling block -- guarding one of the
+    // two close paths guards neither (card 9cc72f2c's own reasoning, above).
+    if (data.status === 'done') {
+      const refusal = degradedOrchestratorRefusal('kanban move to done', force === true, actor)
+      if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
     }
     // Captured BEFORE any mutation -- card 81452ce2 delta-gate F1 (WhiteHat2 komment 16326):
     // specTemplateGuardCheck must fire only AFTER the transition actually succeeds, past every
@@ -1798,6 +1815,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     {
       const v = await decisionsGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
+    }
+    // Card d5638d28: refuse a transition INTO done while degraded-orchestrator mode is on,
+    // regardless of who/what is moving the card -- see degraded-orchestrator-guard.ts.
+    if (status === 'done') {
+      const refusal = degradedOrchestratorRefusal('kanban move to done', force === true, actor)
+      if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
     }
     // See the sibling comment in the PUT handler (card 81452ce2 delta-gate F1): captured BEFORE
     // any mutation, the guard itself fires only AFTER moveKanbanCard actually succeeds below.

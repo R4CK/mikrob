@@ -96,6 +96,85 @@ MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
+# Card d5638d28: structural refusal while degraded-orchestrator mode is on, same switch file and
+# same fail-closed-on-unreadable rule as src/degraded-orchestrator-guard.ts (the TS port used by
+# the kanban move-to-done guard and the POST /api/agents/:name/start route) -- missing file = OFF
+# (card's own Kesz, ha #1), present-but-unparseable = treated as ON (MikroB decision, inter-agent
+# msg 19506: an unreadable switch is an anomaly, not evidence the owner turned it off). Unlike the
+# other two gated actions, landing is never owner/Telegram-triggered in practice (Peti never calls
+# this script directly), so there is no bypass here -- passing --actor mikrob is the one way past
+# it, reusing the SAME allowlist name src/kanban-force-actors.ts hardcodes (duplicated here on
+# purpose: bash cannot import that TS module, and the name is the single fact that has to match).
+#
+# Round 2 (CYBERED NO-GO 32207 F3, MikroB Fix-Direction 32209 #3): the ONLY valid shape is an
+# object with exactly one key, "enabled", whose value is a real JSON boolean. Anything else that
+# parses (wrong type, wrong/extra/typo key, non-object top level like a bare `true`/`[]`/`1`) is
+# treated the SAME as a parse failure -- ON. This must stay byte-for-byte the same rule as
+# classifySwitchPayload() in src/degraded-orchestrator-guard.ts; the shared fixture-parity test
+# (degraded-orchestrator-switch-parity.test.ts) feeds both implementations the same payload set.
+# Round 3 (CYBERED NO-GO 32245 F1, MikroB decision 32246): capture whether the caller explicitly
+# set this env var, BEFORE applying the default. Kesz ha #1 now reads: "default path absent = OFF;
+# explicit override to a missing path = refuse; override to {"enabled": false} = OFF" -- an
+# override the caller set but that resolves to nothing is a broken configuration, not a statement
+# of normal mode, unlike the DEFAULT path simply never having been written yet.
+_DEGRADED_ORCHESTRATOR_SWITCH_OVERRIDE_SET=0
+[ -n "${DEGRADED_ORCHESTRATOR_SWITCH:-}" ] && _DEGRADED_ORCHESTRATOR_SWITCH_OVERRIDE_SET=1
+DEGRADED_ORCHESTRATOR_SWITCH="${DEGRADED_ORCHESTRATOR_SWITCH:-$MAIN/store/degraded-orchestrator-enabled.json}"
+degraded_orchestrator_is_on() {
+  # python3 missing from PATH means this check CANNOT RUN AT ALL -- the old code let a 127
+  # (command not found) from the subprocess below propagate as this function's own nonzero exit,
+  # which the caller read as "not on", landing proceeded. Every way the check cannot run is
+  # degraded, same posture as the unreadable/corrupt file case below.
+  command -v python3 >/dev/null 2>&1 || return 0
+  if [ ! -e "$DEGRADED_ORCHESTRATOR_SWITCH" ]; then
+    [ "$_DEGRADED_ORCHESTRATOR_SWITCH_OVERRIDE_SET" = 1 ] && return 0 # explicit override to nowhere: can't verify, fail closed (ON)
+    return 1 # default path never written: legit OFF (Kesz ha #1)
+  fi
+  python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)  # unreadable/corrupt: fail closed, treat as ON
+if not isinstance(data, dict) or list(data.keys()) != ["enabled"] or not isinstance(data["enabled"], bool):
+    sys.exit(0)  # wrong shape/type/extra/typo key: same fail-closed rule as the TS guard
+sys.exit(0 if data["enabled"] else 1)
+' "$DEGRADED_ORCHESTRATOR_SWITCH"
+  # Round 3 (RedHat 32245 F1): three-valued read on the subprocess's own exit code -- ONLY an
+  # explicit exit 1 (the python script's own `sys.exit(1)` for a confirmed {"enabled": false})
+  # means OFF. Anything else (0 explicit ON, or an unexpected 126/127/139/etc from python3 itself
+  # crashing/being killed) means ON, so a corrupted interpreter state cannot silently read as OFF
+  # the way a bare nonzero-vs-zero check would.
+  [ $? = 1 ] && return 1
+  return 0
+}
+check_degraded_orchestrator_guard() { # $1 = actor (may be empty)
+  local actor="${1:-}"
+  [ "$actor" = "mikrob" ] && return 0
+  if degraded_orchestrator_is_on; then
+    die 3 "degraded-orchestrator mode is ON ($DEGRADED_ORCHESTRATOR_SWITCH) -- landing is not allowed while degraded (card d5638d28). Owner override: --actor mikrob."
+  fi
+}
+# Run the check HERE, before any of the git/lock-file infra checks further down (several of which
+# die with the same exit code 3 for unrelated reasons, which would otherwise race this one and
+# make a test pass for the wrong reason). Scans the raw argv directly rather than waiting for the
+# real option parser near the bottom of this file, which runs far later and well after several
+# other refusals. Skipped for --selftest, which exercises unrelated internal functions and never
+# touches git or the kill switch.
+if [ "${1:-}" != "--selftest" ]; then
+  _degraded_guard_actor=""
+  _degraded_guard_args=("$@")
+  for ((_dgi = 0; _dgi < ${#_degraded_guard_args[@]}; _dgi++)); do
+    case "${_degraded_guard_args[$_dgi]}" in
+      --actor) _degraded_guard_actor="${_degraded_guard_args[$((_dgi + 1))]:-}" ;;
+      --actor=*) _degraded_guard_actor="${_degraded_guard_args[$_dgi]#--actor=}" ;;
+    esac
+  done
+  check_degraded_orchestrator_guard "$_degraded_guard_actor"
+  unset _degraded_guard_actor _degraded_guard_args _dgi
+fi
+
 # Card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 1): a signal received while bash blocks on a
 # FOREGROUND subshell or pipeline is deferred until that subshell exits -- non-interactive bash
 # only acts on a pending trap between commands, not while synchronously waiting on a child via
@@ -1080,6 +1159,40 @@ print(rest[19])
   else
     echo "  FAIL marveen-land-run-fg-killable.selftest.sh not found next to $0 -- wiring broken"; fail=1
   fi
+
+  # Card d5638d28 round 3 (RedHat NO-GO 32245 F4d), ported from cleancore-land.sh's own parity
+  # cases: one end-to-end refusal case for THIS lander's own degraded-orchestrator guard -- the
+  # shared lib's unit behaviour is already covered by degraded-orchestrator-land-guard.selftest.sh,
+  # but nothing proved marveen-land.sh actually wires check_degraded_orchestrator_guard in BEFORE
+  # it would otherwise proceed. The guard runs before argument parsing, so no real MAIN/git
+  # fixture is needed -- a fixture cardId/sha is enough.
+  n=$((n+1))
+  DGSW="$(mktemp -d)/switch.json"
+  printf '{"enabled": true}' > "$DGSW"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator guard wired in: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator guard wired in: guard never fired: $out"; fail=1 ;;
+  esac
+
+  # Card d5638d28 round 4 (CYBERED NO-GO 32270 Finding 2): the F4d case above only ever tried
+  # no --actor at all -- RedHat's own mutant (widening the shared lib's actor allowlist to accept
+  # ANY non-empty name) left this selftest green, because nothing here ever supplied an --actor.
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) echo "  FAIL degraded-orchestrator owner bypass: --actor mikrob was still refused: $out"; fail=1 ;;
+  esac
+
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor someone-else 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator non-owner actor: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator non-owner actor: guard did not refuse a non-owner --actor: $out"; fail=1 ;;
+  esac
+  rm -rf "$(dirname "$DGSW")"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -3538,6 +3651,21 @@ fi
 
 DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0; ALLOW_UNGATED_CARDS=""
 TARGET="${1:-}"; [ $# -gt 0 ] && shift
+
+# Card d5638d28: --actor was already consumed by the degraded-orchestrator guard check at the top
+# of this script (before any infra/lock checks). Strip it here too, before any of the three
+# mode-specific parsers (--card, --batch, the plain-agent/--all loop) see argv -- they do not know
+# the flag and would otherwise die with "unknown option: --actor".
+_land_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --actor) shift ;;
+    --actor=*) ;;
+    *) _land_args+=("$1") ;;
+  esac
+  shift
+done
+set -- "${_land_args[@]}"
 
 # card cd3e577b (F1): `marveen-land.sh --card <id> --agent <agent> [--dry-run]` lands the card's OWN
 # card/<id> worktree branch (created by `agent-worktree-marveen.sh <agent> --card <id>`) instead of

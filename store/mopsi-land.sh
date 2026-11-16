@@ -92,6 +92,24 @@ TEST_TIMEOUT="${MOPSI_TEST_TIMEOUT:-1800}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
+# Card d5638d28 round 2 LOW (CYBERED NO-GO 32207, MikroB Fix-Direction 32209): same
+# degraded-orchestrator kill-switch check as marveen-land.sh / mopsion-land.sh, shared via the one
+# lib so the three cannot drift apart from each other (see that file's own header).
+# shellcheck source=./degraded-orchestrator-land-guard-lib.sh
+. "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"
+if [ "${1:-}" != "--selftest" ]; then
+  _dgi_actor=""
+  _dgi_args=("$@")
+  for ((_dgi = 0; _dgi < ${#_dgi_args[@]}; _dgi++)); do
+    case "${_dgi_args[$_dgi]}" in
+      --actor) _dgi_actor="${_dgi_args[$((_dgi + 1))]:-}" ;;
+      --actor=*) _dgi_actor="${_dgi_args[$_dgi]#--actor=}" ;;
+    esac
+  done
+  check_degraded_orchestrator_guard "$_dgi_actor"
+  unset _dgi_actor _dgi_args _dgi
+fi
+
 SELF_DIR="$(dirname "$0")"
 # shellcheck source=./landing-downward-check.sh
 . "$SELF_DIR/landing-downward-check.sh"
@@ -334,6 +352,39 @@ if [ "${1:-}" = "--selftest" ]; then
   fi
   rm -rf "$L1WORK"
 
+  # Card d5638d28 round 3 (RedHat NO-GO 32245 F4d): one end-to-end refusal case for THIS lander's
+  # own degraded-orchestrator guard -- the shared lib's unit behaviour is already covered by
+  # degraded-orchestrator-land-guard.selftest.sh, but nothing proved mopsi-land.sh actually wires
+  # check_degraded_orchestrator_guard in BEFORE it would otherwise proceed. The guard runs before
+  # argument parsing, so no real MAIN/git fixture is needed -- a fixture cardId/sha is enough.
+  n=$((n+1))
+  DGSW="$(mktemp -d)/switch.json"
+  printf '{"enabled": true}' > "$DGSW"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator guard wired in: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator guard wired in: guard never fired: $out"; fail=1 ;;
+  esac
+
+  # Card d5638d28 round 4 (CYBERED NO-GO 32270 Finding 2): the F4d case above only ever tried
+  # no --actor at all -- RedHat's own mutant (widening the shared lib's actor allowlist to accept
+  # ANY non-empty name) left this selftest green, because nothing here ever supplied an --actor.
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) echo "  FAIL degraded-orchestrator owner bypass: --actor mikrob was still refused: $out"; fail=1 ;;
+  esac
+
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor someone-else 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator non-owner actor: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator non-owner actor: guard did not refuse a non-owner --actor: $out"; fail=1 ;;
+  esac
+  rm -rf "$(dirname "$DGSW")"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -349,6 +400,10 @@ while [ $# -gt 0 ]; do
     --allow-ungated) ALLOW_UNGATED=1 ;;
     --allow-stacked) shift; [ $# -gt 0 ] || { echo "--allow-stacked needs a card id list" >&2; exit 2; }; ALLOW_STACKED="$1" ;;
     --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
+    # Card d5638d28 round 2: --actor was already consumed by the degraded-orchestrator guard
+    # check at the top of this script.
+    --actor) shift ;;
+    --actor=*) ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
