@@ -27037,3 +27037,51 @@ csak vitest-tesztet adott, bash `--selftest` esetet nem). `npx tsc --noEmit` tis
 végezte. Gate-SHA: 33636282adbb72b3d8d2fdf2dc4ccd25ae14ec6d. Gate: QA + Cybersec + Cybered (kártya
 saját előírása) -- delta re-gate csak az e körben változott részre (MikroB üzenet 20150: "its
 gates will re-check only that delta").
+
+### e3cf26d0 round 5: CYBERED NO-GO 32605 fix -- a switch-file parity teszt stale pin volt, nem viselkedés-lyuk
+
+**Cause:** Cybered NO-GO (komment 32605, round 4, Gate-SHA 8cfad7d74) azt mérte, hogy
+`src/__tests__/degraded-orchestrator-switch-parity.test.ts` "missing file: TS and bash agree" esete
+PIROS a round-4 ágon, miközben a base (704b4d5cf) alatt zöld -- nem flaky, determinisztikus. A
+round 2 úgy módosította `readDegradedOrchestratorState(explicitPath)`-t, hogy egy HIÁNYZÓ EXPLICIT
+útra `'unreadable'`-t adjon vissza, de a parity teszt a TS oldalt továbbra is egy explicit fixture
+útvonallal hajtotta a "missing file" sorban, a bash oldalt pedig `missing=OFF`-ként modellezte --
+ez egy OLYAN hívási alak, amit SEMMILYEN valós hívó nem használ (minden production hívás argumentum
+nélkül megy: a hívó vagy env override-ot állít, vagy a default-ra hagyatkozik). A bash lib
+(`store/degraded-orchestrator-land-guard-lib.sh` / `store/marveen-land.sh` 120-131. sor) már
+rendelkezik egy `_OVERRIDE_SET` ággal: a semmire mutató override ON (fail-closed), a sosem írt
+default path OFF -- a két oldal MÁR megegyezik, ha úgy hajtjuk, ahogy a production tényleg hívja
+őket. Stale pin volt, nem viselkedés-lyuk.
+
+**Fix:** `src/__tests__/degraded-orchestrator-switch-parity.test.ts`-ben a `bashSideIsOn()` egy
+`overrideSet` paramétert kapott (a hiányzó-path ág most ezt adja vissza, nem feltétlen `false`-t); a
+`FIXTURES` tömbből törölve a régi, explicit-pathos "missing file" sor (minden más fixture-sor valódi
+fájlt ír, ott ez az ág sosem triggerel). Két új, dedikált teszt váltja: (a) "missing file, override
+set to a missing path: TS and bash agree (ON)" -- `DEGRADED_ORCHESTRATOR_SWITCH` egy hiányzó útra
+állítva, `readDegradedOrchestratorState()` ARGUMENTUM NÉLKÜL (a valós hívási alak) a
+`bashSideIsOn(missingPath, true)`-hoz hasonlítva; (b) "missing file, genuine default (no override,
+no explicit arg): TS and bash agree (OFF)" -- env törölve, `readDegradedOrchestratorState()`
+argumentum nélkül a `bashSideIsOn(degradedOrchestratorSwitchPath(), false)`-hoz hasonlítva. Nincs
+viselkedés-változás a guard-ban, csak a teszt hívási alakja igazodott a valósághoz.
+
+**Mutáció-bizonyíték:** a `bashSideIsOn` hiányzó-path ága visszamutálva feltétlen `return false`-ra
+-> `degraded-orchestrator-switch-parity.test.ts` önállóan futtatva 1/19 piros (pontosan az új
+override-missing teszt, `expected false to be true`); visszaállítva (diff IDENTIKUS a backuppal) ->
+19/19 zöld.
+
+**Mérés:** `fleet-test.sh --ref 3b15170ea236ac3f7f9eb530326520fe587345a7` (10 fájl:
+`agent-restart-degraded-orchestrator-guard.test.ts`, `agent-start-degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `degraded-orchestrator-guard.test.ts`,
+`degraded-orchestrator-land-guard-selftest.test.ts`, `degraded-orchestrator-switch-parity.test.ts`,
+`kanban-move-degraded-orchestrator-guard.test.ts`, `kanban-force-actors.test.ts`,
+`landing-downward-check.test.ts`, `land-guard-lib-missing-fail-closed.test.ts`): 10 Test Files
+passed (10), 115 Tests passed (115). `npx tsc --noEmit` tiszta. A round-4 behaviorális teszt az
+üres/csonka-lib fail-closed esetre (`land-guard-lib-missing-fail-closed.test.ts` `describe.each`
+blokkja, `declare -F` alapú) VÁLTOZATLAN ebben a körben, és benne van a fenti 10 fájlos futásban --
+cybersec (MikroB üzenet 20198 addendum) ezt a sha-t nem mérte, cybered 8cfad7d74-n mérte zártnak.
+
+**Ki döntött:** cybered NO-GO (32605) a 2ba008f2-t (704b4d5cf, teljesen gate-elve) proposer-ként;
+MikroB üzenet 20198 megerősítette, hogy `origin/card/e3cf26d0` már 704b4d5cf-re van rebase-elve
+(nem kellett újra rebase-elni). backend végezte. Gate-SHA:
+3b15170ea236ac3f7f9eb530326520fe587345a7. Gate: QA + Cybersec (WhiteHat) -- RedHat (cybered)
+javasolta a fixet, tehát a biztonsági re-gate WhiteHat (4f. munkavégzési szabály).
