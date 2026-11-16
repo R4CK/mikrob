@@ -1,5 +1,6 @@
 import { readdirSync, lstatSync, statSync, existsSync, openSync, writeSync, closeSync, constants, realpathSync } from 'node:fs'
 import { join, resolve, sep, dirname, basename } from 'node:path'
+import { SYSTEM_DIRECTIVE_SENDER } from './system-directive-id.js'
 
 // NFD + combining-mark strip so Hungarian input like "etrendiro" decays
 // to "etrendiro" instead of silently losing every accented character
@@ -34,7 +35,7 @@ export function sanitizeAgentName(raw: string): string {
 // reserved-agent-ids.test.ts (this same koteg) exercising upstream's own blob, which has
 // the identical gap -- not introduced by this merge, and not fixed by adopting it as-is.
 export const RESERVED_AGENT_IDS: readonly string[] =
-  ['system', 'system-directive', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']
+  ['system', SYSTEM_DIRECTIVE_SENDER, 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']
 
 // Same rules as sanitizeAgentName -- used for skill names to prevent path traversal.
 export function sanitizeSkillName(raw: string): string {
