@@ -1336,7 +1336,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // PUT/move guards above (same class the in_progress/waiting block above this one already
     // exists for) -- refuse it the same way, with the same owner bypass.
     if (data.status === 'done') {
-      const refusal = degradedOrchestratorRefusal('kanban create as done', force === true, actor)
+      const refusal = degradedOrchestratorRefusal(
+        'kanban create as done', force === true, typeof actor === 'string' ? actor : undefined
+      )
       if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
     }
     if (isInvalidAssigneeShape(data.assignee)) {

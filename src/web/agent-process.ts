@@ -5279,6 +5279,8 @@ function optsKeyOf(opts: { fresh?: boolean }): string {
   return `fresh=${opts.fresh === true}`
 }
 
+type AgentLifecycleOpts = { fresh?: boolean; force?: boolean; actor?: string }
+
 // Card 466f21fe F2 (CYBERSEC GO 14256aac, design note, not a bug in existing code): `--continue`
 // means a channel agent's restart is no longer a clean slate -- a prompt-injected or
 // secret-carrying conversation survives it if the launch is not fresh. ANY restart triggered for
@@ -5287,7 +5289,7 @@ function optsKeyOf(opts: { fresh?: boolean }): string {
 // such call site today and already does this (channel-continue-policy.test.ts locks it in).
 export function startAgentProcess(
   name: string,
-  opts: { fresh?: boolean; force?: boolean; actor?: string } = {}
+  opts: AgentLifecycleOpts = {}
 ): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
 }
@@ -5298,7 +5300,7 @@ export function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: s
 
 export function restartAgentProcess(
   name: string,
-  opts: { fresh?: boolean; wake?: RestartWakeRequest; force?: boolean; actor?: string } = {}
+  opts: AgentLifecycleOpts & { wake?: RestartWakeRequest } = {}
 ): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'restart', optsKeyOf(opts), () => restartAgentProcessUnlocked(name, opts))
 }
