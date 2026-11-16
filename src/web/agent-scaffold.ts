@@ -1527,10 +1527,15 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
-    // Write|Edit|NotebookEdit are included so the gate actually fires on the
+    // Write|Edit|MultiEdit|NotebookEdit are included so the gate actually fires on the
     // native-file route to the self-schedule store (gateDecision blocks a Write
     // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
-    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
+    // MultiEdit added card 2e04a52e round 2 (WhiteHat2 F3): gateDecision already handles it,
+    // but the matcher never named it, so the hook was never invoked for it.
+    // The four mcp__filesystem__ write-shaped tool names added the same round (RedHat
+    // Finding 1 HIGH): gateDecision now judges their path arguments, but only when this
+    // hook actually fires for them.
+    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__filesystem__write_file|mcp__filesystem__edit_file|mcp__filesystem__create_directory|mcp__filesystem__move_file',
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []

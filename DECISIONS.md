@@ -26523,3 +26523,84 @@ egy környezeti hiányossága, nem regresszió.
 
 **Ki döntött:** backend (self-advance, rule 6b legrégebbi dispatchelhető planned levél; kártya
 ae5af304, forrás: bc32d233 CYBERED GO, komment 14954). Gate: QA + Cybered.
+
+## 2026-11-16 -- 2e04a52e: scheduleSurfaceDeny 6-shape rés már zárva, upstream port nem kell
+
+**Kártya:** 2e04a52e ("port scheduleSurfaceDeny from upstream self-pace-gate.mjs: 6 self-scheduling
+shapes the fork currently allows"), a 4eb41f64/komment 27159 WhiteHat-mérésének follow-upja.
+
+**Állítás a kártyán:** WhiteHat archivált scripts/ fát mért mindkét ágból (SELF_PACE_AST=off,
+szintetikus PreToolUse JSON, semmi nem futott valóban), és a fork ENGEDÉLYEZETT, az upstream
+TILTOTT 6 self-scheduling alakot: python3 -c urllib POST a schedule API-ra, node -e fetch POST
+ugyanoda, curl zárójel-kiterjesztett (brace-expand) schedule-útra, egy puszta fájlírás közvetlenül a
+schedule-task store mappa alá, cp /dev/null ugyanoda, natív Write ugyanoda.
+
+**Kész, ha #1 végrehajtva:** a kártya saját elfogadási kritériuma szerint a 6 alakot ELŐSZÖR a LIVE
+fork gate ellen kell újramérni, nem csak az archivált-fa próba alapján elhinni. Megmértem közvetlenül
+a `gateDecision`-t (scripts/self-pace-gate.mjs) mind a 6 alakra: MINDEGYIK `deny:true`. A 7. alak
+(változó-összefűzött endpoint, amit a kártya szövege is "mindkét oldal engedi, upstream se teljes"
+néven mellékesen megemlít) `deny:false` marad -- ez megosztott, dokumentált, a kártya hatókörén
+kívüli rés.
+
+**Keresztellenőrzés a tényleges gate-futtatóval:** `store/fleet-test.sh src/__tests__/governance-gates.test.ts`
+@ b43de75ac -- 259/259 zöld, és ebben a fájlban mind a 6 alakra MÁR LÉTEZIK pin-elt regresszióteszt
+(python3 urllib több variánsban, brace-expand curl, natív Write/Edit a store-ra, cd+echo a mappa alá
+stb.) -- ezek nem ebben a kártyában születtek, hanem a fork saját, korábbi, önálló incidensének
+("4x HTTP 200" megjegyzés a tesztfájlban) javításaként, függetlenül az upstream-drift méréstől.
+
+**Következtetés:** a kártya előfeltétele (a fork ma is engedi a 6 alakot) ELAVULT -- a WhiteHat-mérés
+egy archivált, korábbi fa-állapotra vonatkozott, a fork saját hardeningje azóta lezárta a rést. Az
+upstream `scheduleSurfaceDeny` portolása ezért NEM indokolt: felesleges munka lenne, és az
+acknowledged-conflicts.ts saját megjegyzése szerint is kockázatos egy teljes csere (az upstream oldal
+emellett az AST-divergencia shadow-mode mechanizmust is lecseréli egy nem-átvizsgált worker_threads
+megoldásra -- az NEM ennek a kártyának a hatóköre).
+
+**Kód-változás:** `src/fork-upstream/acknowledged-conflicts.ts` scripts/self-pace-gate.mjs
+bejegyzése frissítve: a "6-shape gap, follow-up card 2e04a52e ports..." mondat helyett a mérési
+eredmény és a lezárás ténye áll, hogy a drift-map ne hivatkozzon tovább egy már nem létező
+teendőre. Nincs más kódváltozás -- sem a gate logikáján, sem a teszteken. `npx tsc --noEmit` tiszta.
+
+**Mérés:** élő `gateDecision` próba mind 6 alakra (deny:true mindegyikre) + `fleet-test.sh`
+governance-gates.test.ts @ b43de75ac (259/259 zöld, a pin-ek már léteznek). Gate: QA + Cybersec +
+Cybered (a kártya saját előírása, mert ez az autonom-kor incidenst megállító kontroll állapotáról
+szóló megállapítás).
+
+**Ki döntött:** backend saját mérése, a kártya saját elfogadási kritériuma szerint végrehajtva.
+
+## 2026-11-16 -- 2e04a52e KORREKCIÓ: a fenti bejegyzés két állítása pontatlan volt (RedHat/Cybered NO-GO, komment 32345)
+
+**Ez a fenti, 2026-11-16-i "scheduleSurfaceDeny 6-shape rés már zárva" bejegyzést NEM módosítja**
+(a döntésnapló append-only) -- a két hibát itt javítom, a bejegyzés VÉGÉN.
+
+**1. hiba -- a pin-elt-regresszió állítás túl tágra fogalmazott.** A fenti bejegyzés azt írta, hogy
+"mind a 6 alakra MÁR LÉTEZIK pin-elt regresszióteszt". RedHat (Cybered) reopen-mutáns próbával
+mérte: ez 3 alakra (python3 urllib, node fetch, brace-expand curl) igaz volt, de a másik 3-ra
+(puszta fájlírás közvetlenül a store mappa alá, `cp /dev/null` a mappába, natív Write/Edit egy
+puszta fájlra a mappában) NEM -- a megfelelő guard-sor reopenelve a governance-gates.test.ts
+suite 259/259 zöld maradt, tehát azok 3 alak NEM volt mutáció-bizonyított pin. Ugyanezt
+cybersec2 (WhiteHat2) is megerősítette a natív-Write ágra (F1 lelet, komment 32340).
+
+**2. hiba -- a lezárás eredete rosszul volt megnevezve.** A fenti bejegyzés "a fork saját,
+korábbi, önálló incidensének javításaként" írta le a zárást. RedHat ásta ki a tényleges
+eredetet: a záró kód upstream **a328d3b41** commitja (#1999, 2026-10-20), ami a fork-ba a
+**4f3c0287** kártya (merge **cea2c7e21**, landolva **2026-11-14**) upstream-port batch-ével
+érkezett -- nem egy független fork-incidens javítása. A WhiteHat eredeti, archivált-fás mérése
+(komment 27159) a 4f3c0287 landolás ELŐTTI fa-állapotra vonatkozott, ott helyesen reprodukálta a
+6-alakos rést -- a mérés nem volt hibás, csak a kártya felvételéig a rés már bezárult máshonnan.
+
+**Javítás ebben a körben:** a hiányzó 3 pin pótolva governance-gates.test.ts-ben (bare-file a
+store mappa alatt, `cp /dev/null`, natív Write/Edit/MultiEdit bare fájlra), mutáció-bizonyítva.
+Az `src/fork-upstream/acknowledged-conflicts.ts` bejegyzése is frissül ugyanerre a pontos
+eredetre. RedHat Finding 1 (HIGH, MCP filesystem self-scheduling bypass, upstream b9dadf48d
+#2502 soha nem portolva) és cybersec2 F3 (MultiEdit hiánya a hook matcherből) ebben a körben
+lezárva: `mcpDecide` + a `injectSelfPaceGate` matcher bővítve a négy `mcp__filesystem__*`
+write-shape tool-ra + `MultiEdit`-re, tesztekkel. RedHat Finding 3 (megosztott upstream+fork
+residual: printf/echo-ba írt script utólagos futtatása, `curl -K`, base64-dekódolt pipe-to-sh,
+string-összefűzés, python `chr()`-épített útvonal) -- NEM javítva ebben a körben, külön
+follow-up kártyára vár (nincs benne, lásd a REVIEW).
+
+**Mérés:** RedHat 88-alakos differenciál-mérés fork/upstream-pinned/upstream-develop-today ellen
+(komment 32345); cybersec2 reopen-mutáns a natív-Write ágon (komment 32340).
+
+**Ki döntött:** RedHat (Cybered) lelete alapján backend korrigálja; Gate: QA + Cybersec + Cybered
+(változatlan, a kártya saját előírása).

@@ -3543,17 +3543,34 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'with a worker_threads-based approach this fork has never reviewed -- a wholesale swap ' +
     'without dedicated WhiteHat/RedHat review would be reckless and is out of this card\'s scope ' +
     'regardless. SEPARATELY, WhiteHat measured (archived scripts/ from both trees, synthetic ' +
-    'PreToolUse JSON, SELF_PACE_AST=off): the fork ALLOWS and upstream DENIES 6 self-scheduling ' +
-    'shapes (python3 -c urllib POST, node -e fetch POST, curl to /api/sch{e,}dules, a bare file ' +
-    'write directly under ~/.claude/scheduled-tasks/, cp /dev/null into that dir, native Write ' +
-    'to a file there) -- both sides allow a 7th, variable-composed shape, so upstream is not ' +
-    'complete either. This gap is recorded, not resolved, here: follow-up card 2e04a52e ports ' +
-    "upstream's scheduleSurfaceDeny as its own surgical merge (QA + Cybersec + Cybered gate, " +
-    'the control that stopped the autonom-kor incident). The anchor below pins the fork-only AST ' +
-    'cutover mechanism as a tripwire for the wholesale-swap decision -- it does NOT satisfy ' +
-    "\"every KEEP FORK on a security surface is protected\": there is no fork-only enforcement " +
-    'fact in this file to pin (SCHEDULE_STORE_RX, allowlistBashSegmentAllowed, ' +
-    'fileToolTargetsAllowlist all exist on both sides), and it says nothing about the 6-shape gap.',
+    'PreToolUse JSON, SELF_PACE_AST=off) a 6-shape self-scheduling gap -- python3 -c urllib POST, ' +
+    'node -e fetch POST, curl to /api/sch{e,}dules, a bare file write directly under ' +
+    '~/.claude/scheduled-tasks/, cp /dev/null into that dir, native Write to a file there -- ' +
+    'where the fork ALLOWED and upstream DENIED. CLOSED, not a residual: follow-up card 2e04a52e ' +
+    're-measured all 6 shapes against the LIVE fork gate (gateDecision, not the archived-tree ' +
+    'snapshot) and found every one already denied. CORRECTED PROVENANCE (RedHat/Cybered NO-GO, ' +
+    'card 2e04a52e round 2, comment 32345): the closing code is upstream commit a328d3b41 ' +
+    '(#1999, 2026-10-20), which reached the fork via card 4f3c0287 (merge cea2c7e21, landed ' +
+    '2026-11-14) -- an upstream-port batch, not an independent fork incident; the "4x HTTP 200" ' +
+    'comment in governance-gates.test.ts describes a328d3b41\'s own upstream incident, not a ' +
+    'fork-original one. CORRECTED PIN COVERAGE: only 3 of the 6 shapes (python3 urllib, node ' +
+    'fetch, brace-expand curl) had a reopen-mutant-proven pin as of card 2e04a52e round 1; the ' +
+    'other 3 (bare file directly under the store dir, cp /dev/null into it, native ' +
+    'Write/Edit/MultiEdit on a bare file there) were added and mutation-proven in round 2. Both ' +
+    'sides still allow a 7th, variable-composed shape (shared gap, unresolved, out of ' +
+    '2e04a52e\'s scope). ROUND 2 ADDITION (RedHat Finding 1 HIGH / cybersec2 F3 LOW): upstream\'s ' +
+    'MCP filesystem write-gate (b9dadf48d, #2502, never ported) left mcp__filesystem__write_file/ ' +
+    'edit_file/create_directory/move_file completely ungated on this surface -- closed with a ' +
+    'minimal mcpDecide() reusing the existing native-Write deny logic (not upstream\'s generic ' +
+    'mcpDirDeny framework), wired into the injectSelfPaceGate hook matcher alongside MultiEdit. ' +
+    'The anchor below pins the fork-only AST cutover mechanism as a tripwire for the ' +
+    'wholesale-swap decision -- it does NOT satisfy "every KEEP FORK on a security surface is ' +
+    'protected": there is no fork-only enforcement fact in this file to pin for the 6-shape ' +
+    'question (SCHEDULE_STORE_RX, allowlistBashSegmentAllowed, fileToolTargetsAllowlist all exist ' +
+    'on both sides) -- the actual protection for that question is the governance-gates.test.ts ' +
+    'pins named above. RedHat Finding 3 (shared fork+upstream residual: printf/echo into a ' +
+    'script file run after, curl -K from an echo-written config, base64-decode-piped-to-sh, ' +
+    'string-concatenation, python chr()-built paths) is NOT closed by this card -- open follow-up.',
   'scripts/sms/seeme-send.py':
     'KEEP FORK (corrected per WhiteHat 27159 -- the case is stronger than originally stated, ' +
     'and the original description of upstream was wrong). The fork\'s approval-consumption is ' +

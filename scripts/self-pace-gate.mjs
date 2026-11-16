@@ -3651,6 +3651,35 @@ export function scheduleSurfaceDeny(command, gateOpts = {}) {
 // as SCHEDULE_DIR_REF_RX, see there).
 const SCHEDULE_DIR_PATH_RX = /scheduled-tasks([/\\]|$)/i
 
+// MCP filesystem write route (card 2e04a52e round 2, RedHat Finding 1 HIGH / WhiteHat2 F2):
+// upstream's MCPWRITEGATE1104 (commit b9dadf48d) judges an MCP tool's path arguments with the
+// SAME rules as a native Write -- this fork had no branch for mcp__ tool names at all, so the
+// filesystem MCP's write/edit/move/create tools reached the schedule store ungated, and the hook
+// never even fired for them (the deployed matcher names no mcp__ tool). Scoped to exactly the
+// four write-shaped tools named in the dispatch (msg 19775); the filesystem MCP's read/list/search
+// tools are out of scope here (same open residual upstream's non-'write' MCP classes have, not a
+// regression this card introduces). Each tool's path argument(s) go through the EXISTING native
+// Write-tool deny logic (decide('Write', ...)) so a protected path added there is covered here too,
+// without a second list to keep in sync. A missing or non-string path argument denies (fail
+// closed): the gate cannot judge a path it was not given, and the MCP server would see it too.
+const MCP_FS_PATH_FIELDS = Object.freeze({
+  mcp__filesystem__write_file: ['path'],
+  mcp__filesystem__edit_file: ['path'],
+  mcp__filesystem__create_directory: ['path'],
+  mcp__filesystem__move_file: ['source', 'destination'],
+})
+function mcpDecide(name, toolInput, opts) {
+  const fields = MCP_FS_PATH_FIELDS[name]
+  if (!fields) return { deny: false }
+  for (const field of fields) {
+    const p = toolInput?.[field]
+    if (typeof p !== 'string' || !p) return { deny: true, reason: 'mcp-path' }
+    const v = decide('Write', { file_path: p }, opts)
+    if (v.deny) return { deny: true, reason: v.reason ? `mcp-${v.reason}` : 'mcp-schedule' }
+  }
+  return { deny: false }
+}
+
 // Pure decision: does this tool call set up self-pace / self-injection?
 // Any exception inside the decision is a DENY: a gate that throws must never
 // be read as "nothing to block" (see also the hook entry below).
@@ -3665,6 +3694,7 @@ export function gateDecision(toolName, toolInput, opts = {}) {
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
+  if (name in MCP_FS_PATH_FIELDS) return mcpDecide(name, toolInput, opts)
   // Measured on the BYTE length, not String.length: a non-ASCII command can be up to three times
   // its UTF-16 length in bytes, and the thing being bounded is work over bytes.
   const rawCommand = name === 'Bash' ? String(toolInput?.command ?? '') : ''
