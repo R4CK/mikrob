@@ -26132,3 +26132,39 @@ Mutacio-ellenorzes: a `_rewrite_is_safe` kapu kivetelevel 10 teszt vorosre valt 
 
 **Ki döntött:** WhiteHat (fix-irany, fc3a6a39 komment 9a0f47b1). backend2 végezte a javítást.
 Gate: QA + Cybered. Gate-SHA: e777f862984ba3bbff870f413aca70fec9df5ca9.
+
+## 2026-11-16 -- ff43b10e: CYBERED NO-GO javítás -- sudo/doas/pkexec/su -c sosem íródik felül, rewrite sosem allow
+
+Cybered (RedHat) NO-GO-t adott a 9a1cc5367 gate-sharol (komment 32154): egyetlen szegmensbol allo
+privilegium-emelo parancs (`sudo npm install`, `sudo apt-get install`, stb.) illeszkedett a `_CMD`
+opcionalis `sudo` prefixere, igy rewrite modban `bash .../noisy-run.sh sudo npm install`-re irodott
+at -- egy `bash`-sal kezdodo sorra, amit egy `Bash(sudo:*)` deny szabaly mar nem lat -- ES a hook
+`permissionDecision: allow`-t is visszaadott, amivel a deny-floor-t kerulo uttal egyutt teljesen
+megkerulte azt.
+
+MikroB fix-irany (komment 32155, Fix-Direction: MikroB): a rewrite hook SOHA ne adjon `allow`
+permissionDecision-t -- maradjon beallitatlanul, hogy a normal jogosultsagi folyamat (beleertve a
+deny szabalyokat) a (esetleg atirt) parancsot a sajat jogan ertekelje. Tovabba: egy szegmens, amelynek
+elso szava `sudo`/`doas`/`pkexec`, vagy `su -c`-vel kezdodik, SOHA nem valik atiras/javaslat
+jeloltje -- teljesen erintetlenul halad at, mindket modban, hogy egy deny szabaly mindig a tenyleges,
+be nem csomagolt parancsot lassa.
+
+Javitas: `_PRIV_RX` kapu a `NOISY_PATTERNS` ciklus elott (`scripts/hooks/noisy-command-guard.py`,
+commit 256017938), es a rewrite-mode JSON-bol a `permissionDecision`/`permissionDecisionReason` kulcsok
+torlese.
+
+**Teszt:** `noisy-command-guard.selftest.py` 28 alap eset + rewrite-mode (uj check: a JSON SOHA nem
+tartalmaz `permissionDecision`-t) + uj privilegium-wrapper check (5 parancs, mindharom modban
+erintetlen) + quoting round-trip, mind PASS. `noisy-run.selftest.sh` pass=7 fail=0, erintetlen.
+Elo deny-probe (valodi hook subprocess, `NOISY_GUARD_MODE=rewrite`): `sudo npm install`, `sudo
+apt-get install -y jq`, `doas npm ci`, `pkexec pip install requests`, `su -c 'npm install' root`
+mind rc=0, ures stdout (erintetlen); `npm install` tovabbra is atirodik, a JSON nem tartalmaz
+`permissionDecision`-t. `npx tsc --noEmit`: tiszta a 3, korabbrol ismert, FUGGETLEN parse5-hianyos
+hibat leszamitva. `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+Mutacio-ellenorzes: a `_PRIV_RX` kapu eltavolitasaval 6 teszt vorosre valt (mind az 5 privilegium-
+parancs block/rewrite modban); az `allow` visszaadasaval 1 teszt vorosre valt. Mindket mutans
+visszaallitva, ismet zold.
+
+**Ki döntött:** Cybered (RedHat) NO-GO, MikroB fix-irany (Fix-Direction: MikroB, komment 32155).
+backend2 végezte a javítást. Gate: QA + Cybered. Gate-SHA: 256017938735130114ecb4b5b80e288716e41030.
