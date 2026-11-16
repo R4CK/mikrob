@@ -26753,3 +26753,44 @@ follow-up once d5638d28 lands.
 fleet-test.sh --ref card/2ba008f2, 4 files / 83 tests passed. tsc --noEmit clean.
 
 **Ki döntött:** Cybered lelet, backend javítja. Gate: QA + Cybersec + Cybered.
+
+## 2026-11-16 -- 2ba008f2 round 3: Finding 1 fixed now that d5638d28 landed -- land-guard --actor mikrob bypass ignored the session outage marker
+
+**Kontextus:** Round 2's own entry (above) deferred Finding 1 (the land-guard scripts' --actor
+mikrob bypass not fenced against the session outage marker) because d5638d28, which introduces
+store/degraded-orchestrator-land-guard-lib.sh and marveen-land.sh's degraded-orchestrator check,
+was still unlanded at the time. d5638d28 landed (51de8702b). MikroB (msg 20060) relayed WhiteHat2's
+fresh probe against origin/develop: both the shared lib (sourced by mopsion-land.sh/
+cleancore-land.sh and mopsi-land.sh) and marveen-land.sh's own inline copy still let `--actor
+mikrob` bypass the kill switch unconditionally, confirming Finding 1 was real and still open.
+
+**Fix:** ported the same session-outage fence src/kanban-force-actors.ts's isForceActor() already
+has (round 2 of this card) into bash, mirroring isSessionOutageActive() field-for-field (missing
+marker = normal; unreadable/corrupt/malformed active or heartbeat field = fail closed; explicit
+`active: false` = normal; fresh+active = fence holds; stale past 15 min or future-skewed beyond 60s
+tolerance = normal, unchanged fail-safe-toward-normal direction). A new `_session_outage_active()`
+function, kept byte-equal between store/degraded-orchestrator-land-guard-lib.sh and
+marveen-land.sh's inline copy (same hand-kept-equal discipline as the existing
+`degraded_orchestrator_is_on` pin) -- mopsion-land.sh and mopsi-land.sh get it for free via the
+shared lib. `check_degraded_orchestrator_guard()` now only grants the `--actor mikrob` bypass when
+no outage is active; when an outage IS active, execution falls through to the ordinary
+`degraded_orchestrator_is_on` check (so an OFF switch during an outage still lands normally -- the
+outage only removes the bypass, it does not itself refuse).
+
+**Nincs benne:** a `MIKROB_SESSION_OUTAGE_PATH` env override exists for test fixtures only (mirrors
+the existing `DEGRADED_ORCHESTRATOR_SWITCH` override pattern); no real caller sets it.
+
+**Mérés:** `degraded-orchestrator-land-guard.selftest.sh` 9->11/11 PASS (new cases: owner bypass
+refused during an active outage; an OFF switch during the same outage still lands normally).
+`marveen-land.sh --selftest` 96->98/98 PASS. `mopsion-land.sh`/`cleancore-land.sh --selftest`
+111->113/113 PASS. `mopsi-land.sh --selftest` 75->77/77 PASS. Mutation-proven: reverting
+`check_degraded_orchestrator_guard`'s outage check lets the owner-bypass-during-outage case go
+red (restored clean). `npx tsc --noEmit` clean (no TS changed this round; the extended
+`degraded-orchestrator-land-guard-selftest.test.ts` parity assertion now also pins
+`_session_outage_active` byte-equal between the two bash copies, same pattern as the pre-existing
+`degraded_orchestrator_is_on` pin). `landing-downward-check.test.ts`'s own-case constant for
+marveen-land.sh moved 34 -> 36 to keep its shared-block arithmetic correct (measured: cc=113,
+mv=98, cc-49 == mv-36 == 62).
+
+**Ki döntött:** WhiteHat2 probe relayed by MikroB (msg 20060). backend végezte a javítást. Gate-SHA:
+e5e3c4d2a1ab1d18abde3af5240547345ac3b844. Gate: QA + Cybersec + Cybered (kártya saját előírása).
