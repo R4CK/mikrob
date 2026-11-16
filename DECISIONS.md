@@ -26190,3 +26190,17 @@ fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fulls
 **Teszt:** `claude-md-split-reachability-check.selftest.py` 30/30 PASS (26-ról, a 2 fenti valós fixen keresztül derült ki 4 selftest-rés). `src/__tests__/claude-md-split-reachability.test.ts` 2/2 PASS a rebase-elt tippen (ami EGYBEN a develop-merge-elt állapot is). `npx tsc --noEmit` tiszta.
 
 **Ki döntött:** MikroB (land-refusal + re-dispatch, üzenet 19336/19338). backend3 végezte a rebase-t és mindkét javítást. Gate: QA + Cybered (a kártya saját kijelölése).
+
+## 2026-11-16 -- 808cd7fc: Opus 5.5 / Sonnet 5.5 cache-olvasási ár 0.05x, nem 0.1x (heti arlista-check talalat)
+
+**Kontextus:** a `model-pricing-weekly-check` ütemezett heartbeat (kártya 270e3ef4 folytatása) a `src/costops/model-pricing.ts` és a `web/app-token-usage.js` ártábláját a hivatalos árlistával (platform.claude.com/docs/en/about-claude/pricing, lekérve 2026-11-16) vetette össze.
+
+**Döntés:** valós eltérés, javítva.
+
+- A hivatalos oldal lábjegyzete szerint "Cache hits and refreshes on Claude Opus 5.5 and Claude Sonnet 5.5 are priced at 0.05x the base input price. All other models use the standard 0.1x multiplier." Opus 5.5: $0.20/MTok (nem $0.40). Sonnet 5.5: $0.10/MTok (nem $0.20).
+- `model-pricing.ts` egyetlen globális `CACHE_READ_MULTIPLIER`-t (0.1) alkalmazott MINDEN modellre -- 2x túlárazta a cache-olvasást mindkét modellen. Javítás: `ModelRate` kapott egy opcionális `cacheReadMultiplier` felülírást (alapértelmezett a globális marad), `claude-opus-5-5` és `claude-sonnet-5-5` sora 0.05-re állítva.
+- `app-token-usage.js`-ben az `opus-5-5` sora már saját `cr` mezővel rendelkezett, de rossz értékkel (0.40 -> 0.20). A `sonnet-5-5` viszont a sima `sonnet-5`-tel OSZTOTTA a `TU_SONNET5_PRICE` objektumot (cr 0.20) -- ez a sonnet-5-nek helyes, a sonnet-5-5-nek NEM. Saját `TU_SONNET5_5_PRICE` (cr 0.10) bevezetve, a `token-usage-pricing-fallthrough.test.ts` extraktora frissítve, hogy ezt az új blokkot is kivegye.
+
+**Teszt:** `src/__tests__/costops-model-pricing.test.ts` két új eset (0.05x mindkét modellen, kontroll: a testvér-modellek -- opus-5, sonnet-5 -- változatlanul 0.1x-en). `src/__tests__/token-usage-pricing-fallthrough.test.ts` két új eset (sonnet-5-5 saját cr, opus-5-5 javított cr). `fleet-test.sh --ref eafdf710790805e0643e43239d478ec523495ffe` -- Test Files 2 passed (2), Tests 25 passed (25), 2026-11-16 09:06. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** a heti arlista-check heartbeat találata, nincs emberi döntés-pont (mechanikus javítás a hivatalos forrás ellen ellenőrizve). backend végezte. Gate: QA.
