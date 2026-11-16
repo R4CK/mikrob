@@ -26091,3 +26091,38 @@ commit, a gate meg valodit biralt). F3 -- gate-dispatch-check.sh: a both-sides-n
 kulonszabaly torolve -- az n/a nem tudja megkulonbozteteni a valodi ismetlest egy MASIK config-only
 kortol, ezert a biztos alapertelmezett ALLOW:stale-verdict-re esik vissza (ugyanaz az irany, mint a
 fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-16 -- af6466a5 (WhiteHat L1+L2, 6b10a6b8 PICKERCLIKAPU923): CLI-launch gate -- behavioral POST test + wired into /model
+
+**Problem:** L1 -- POST /api/agents (agent-create) was gated against the installed CLI's measured
+capability (card 6b10a6b8), but the only test exercising that call site was a source-grep "wiring
+contract" count of `refuseIfCliCannotLaunch(` occurrences in agents.ts. Deleting the real POST call
+site while leaving a reference to the function's name elsewhere in the file would not drop that
+count below its threshold -- a false green, measured directly in this session (removed the POST
+call site: the new behavioral test went red, the old source-grep test stayed green). L2 -- the same
+gate was never wired into main-model.ts's `setModel` (the owner's own `/model` command): a
+syntactically valid choice from store/model-choices.json could still be a model the installed CLI
+cannot launch, silencing the OWNER'S OWN session, not just a sub-agent's.
+
+**Fix:** added a real behavioral POST test (src/__tests__/cli-launch-gate.test.ts, mirroring the
+existing PUT behavioral tests) that drives tryHandleAgents end to end and asserts the 400/no-create
+and 200/model-persisted outcomes. Wired `refuseIfCliCannotLaunch` into `setModel` (src/web/main-model.ts),
+right where the choice is resolved, before the quiet-check/send -- same function POST/PUT already
+use, no second implementation. `model-fallback-runner.ts` was deliberately NOT touched: it only ever
+writes models from the fleet's own fixed tier ladder (model-catalog.ts), not an owner-chosen id, so
+the same CLI-version gate has no realistic refusal case there and adding it would mean a second,
+unreviewed risk surface on the unattended quota-downgrade path for no real protection.
+
+**Teszt:** `npx vitest run src/__tests__/cli-launch-gate.test.ts src/__tests__/main-model.test.ts` ->
+2 files, 83/83 PASS. Mutation-proof (both directions, this session): removing the new POST call
+site in agents.ts turned the new POST behavioral test red while the old wiring-contract test stayed
+green (the exact gap this card reports); removing the new `setModel` gate in main-model.ts turned
+the new af6466a5 describe block's refusal test red, the rest of the file (81 pre-existing tests)
+stayed green. Fix restored after each probe, both files re-verified green.
+
+INFO item (localized, non-i18n error message) was already closed by a prior change --
+`cliLaunchRefusalText` in agents.ts already carries full Hungarian accents and switches to English
+via DASHBOARD_LANG, matching the existing passing test in cli-launch-gate.test.ts. Not touched here.
+
+**Ki döntött:** backend (self-advance, oldest dispatchable planned leaf per rule 6b, created
+2026-08-xx / card af6466a5, WhiteHat 6b10a6b8 GO @ c5ecc99e). Gate: QA + Cybersec (WhiteHat).
