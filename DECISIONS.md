@@ -26910,3 +26910,49 @@ vitest: 22/22 PASS. `npx tsc --noEmit` tiszta.
 32720), a javítást backend végezte.
 
 **Hivatkozás:** kártya 2ba008f2, komment 32720 (Fix-Direction), `src/__tests__/night-gate.test.ts`.
+
+## 2026-11-16 -- e3cf26d0: d5638d28 round-4 gate follow-up -- land-guard fail-open on a missing shared lib + 4 unpinned LOWs
+
+**Kontextus:** WhiteHat (üzenet 19821) + RedHat (32303) a d5638d28 round-4 gate-ek (@3e15b6c2e,
+mind GO) mellett 5 LOW-tételt jelzett, amik önmagukban nem buktatták a GO-t, de nem voltak
+pinnelve: a legfontosabb (LOW-2), hogy ha a megosztott
+`store/degraded-orchestrator-land-guard-lib.sh` hiányzik, a lander csak "command not found"-ot ír
+és FOLYTATJA -- fail-open a check saját forrásolási hibáján.
+
+**Javítás:**
+- **LOW-2:** `store/mopsi-land.sh` és `store/mopsion-land.sh` (a `cleancore-land.sh` symlink ez
+  utóbbira) bare `.` forrásolása exit-státusz ellenőrzés nélkül ment -- mindhárom lander
+  `set -uo pipefail`-t használ (`-e` nélkül), tehát a hiányzó lib "command not found" hibája NEM
+  állította meg a futást, a guard csendben soha nem futott le. Javítva: `if ! . "..."; then die 3
+  "... refusing to land without this check (card e3cf26d0)"; fi`. A `marveen-land.sh` a guard
+  SAJÁT, beágyazott másolatát hordozza, nem forrásolja a megosztott libet, tehát ez a konkrét
+  hibamód nem érinti.
+- **LOW-1:** a `readDegradedOrchestratorState()`/`isDegradedOrchestratorBlocking()` eddigi minden
+  tesztje explicit path-ot adott vagy env-override-ot állított -- semmi nem futtatta a VALÓS
+  production default-utat (se override, se argumentum). Pótolva. RedHat LOW (a két PUBLIC
+  függvény opcionális `path` paramétere eltávolítva -- semelyik valós hívó nem adott át ilyet; az
+  alsó szintű `readDegradedOrchestratorState()` megtartja a saját két-paraméteres szerződését a
+  direkt tesztjeihez).
+- **LOW-3:** `mopsi-land.sh --selftest` nem volt bekötve semmilyen suite-ba -- bekötve a
+  `landing-downward-check.test.ts` `describe.each`-ébe, mért padló 75.
+- **LOW-4:** a forrás-sorrend pin
+  (`agent-start-restart-degraded-orchestrator-real.test.ts`) nyers `indexOf`-ot futtatott a
+  forrásszövegen, tehát egy kikommentezett hívás (`// const refusal =
+  degradedOrchestratorRefusal(...)`) is illeszkedett volna. `stripComments()` segédfüggvény
+  pótolva (ugyanaz a technika, mint `agent-working-dir-single-source.test.ts` saját
+  `stripComments`-je) az `indexOf` elé.
+
+**Kész, ha:** guard lib átnevezve -> mindhárom lander refuse-ol (nem-nulla, semmi nem pusholva) --
+`land-guard-lib-missing-fail-closed.test.ts` (symlink-farm próba, a die() üzenet SZÖVEGÉT nézi, nem
+csak a bash "No such file" sorát, mert az utóbbi a régi, sérülékeny kódon is megjelenik); LOW-1/
+LOW-4 red-on-mutant tesztek pótolva; mopsi selftest bekötve; az explicit-path hiányzó fájl esete
+továbbra is OFF-ot olvas (változatlan, tesztelve).
+
+**Mérés:** `fleet-test.sh --ref card/e3cf26d0` (4 fájl: `degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `landing-downward-check.test.ts`,
+`land-guard-lib-missing-fail-closed.test.ts`): 4 Test Files passed (4), 42 Tests passed (42).
+`npx tsc --noEmit` tiszta.
+
+**Ki döntött:** WhiteHat (üzenet 19821) + RedHat (32303) lelet. backend végezte a javítást.
+Gate-SHA: 69631bae486fd506855c9c0c6172da245cf3d890. Gate: QA + Cybersec + Cybered (kártya saját
+előírása).
