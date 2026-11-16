@@ -97,8 +97,9 @@ def check_rewrite_mode():
         if (rc_default, err_default) != (rc_block, err_block):
             failures.append(f"default mode != explicit block mode for {cmd!r} ({why})")
 
-    # (b) rewrite mode: a noisy command gets permissionDecision=allow + updatedInput.command
-    # wrapped through noisy-run.sh, exit 0, no stderr block.
+    # (b) rewrite mode: a noisy command gets updatedInput.command wrapped through noisy-run.sh,
+    # exit 0, no stderr block -- and, per the ff43b10e/RedHat NO-GO fix, permissionDecision is
+    # NEVER set (left unset so the normal permission flow, incl. any deny rule, still applies).
     rc, out, err = run_with_mode("npm install", mode="rewrite")
     if rc != 0:
         failures.append(f"rewrite mode exited {rc} (expected 0) for 'npm install', stderr={err[:200]!r}")
@@ -109,13 +110,28 @@ def check_rewrite_mode():
             failures.append(f"rewrite mode stdout is not valid JSON: {out[:200]!r}")
         else:
             hso = payload.get("hookSpecificOutput", {})
-            if hso.get("permissionDecision") != "allow":
-                failures.append(f"rewrite mode permissionDecision != allow: {hso!r}")
+            if "permissionDecision" in hso:
+                failures.append(f"rewrite mode must never set permissionDecision, got: {hso!r}")
             updated = hso.get("updatedInput", {})
             if "noisy-run.sh" not in (updated.get("command") or ""):
                 failures.append(f"rewrite mode updatedInput.command does not route through noisy-run.sh: {updated!r}")
             if updated.get("command") == "npm install":
                 failures.append("rewrite mode updatedInput.command is unchanged -- not actually rewritten")
+
+    # (b2) RedHat NO-GO (comment 32154), MikroB fix-direction (comment 32155): a single-segment
+    # privilege-escalation wrapper is passed through completely unrewritten, in EVERY mode -- no
+    # stdout JSON, no stderr block, exit 0 -- so the real permission engine (incl. any
+    # Bash(sudo:*) deny rule) always sees the command the agent actually typed, never a
+    # bash-wrapped substitute that starts with something else.
+    for cmd in ("sudo npm install", "sudo apt-get install -y jq", "doas npm ci",
+                "pkexec pip install requests", "su -c 'npm install' root"):
+        for mode in (None, "block", "rewrite"):
+            rc, out, err = run_with_mode(cmd, mode=mode)
+            if rc != 0 or out.strip() or err.strip():
+                failures.append(
+                    f"privilege-wrapped command {cmd!r} was touched under mode={mode!r} "
+                    f"(rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
+                )
 
     # (c) rewrite mode on a non-noisy command: still allow, but no rewrite (no stdout JSON) --
     # mirrors today's silent-allow for unrelated commands.

@@ -14,7 +14,11 @@ before building this, not from memory. `NOISY_GUARD_MODE=rewrite` (default stays
 original behavior) makes the hook transparently substitute the wrapped `noisy-run.sh` invocation via
 `updatedInput` instead of blocking: the agent's original Bash call just runs filtered, no extra
 block/retry round-trip. `updatedInput` replaces the WHOLE tool_input object, so every other field
-(not just `command`) is carried through unchanged.
+(not just `command`) is carried through unchanged. `permissionDecision` is NEVER set by this hook
+(card ff43b10e, RedHat NO-GO) -- the rewrite only changes WHAT runs, never whether it is allowed to
+run; the normal permission flow, including any deny rule, still evaluates the result on its own. A
+privilege-escalation wrapper (sudo/doas/pkexec/su -c) is never rewritten or suggested at all, in
+either mode, so a deny rule anchored on it always sees the command the agent actually typed.
 
 WHAT COUNTS AS NOISY
 npm/pnpm/yarn install|ci|add|update and `npm run build`; test runners (npx vitest/jest/playwright,
@@ -124,6 +128,19 @@ _METACHAR_RX = re.compile(r"[|&;<>\n()`]|\$\(")
 _LEADING_ENV_RX = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)+")
 
 
+# RedHat NO-GO (card ff43b10e, comment 32154): a single-segment privilege-escalation wrapper
+# (sudo/doas/pkexec/su -c) matches _CMD's own optional `sudo` prefix, so e.g. `sudo npm install`
+# got rewritten into `bash .../noisy-run.sh sudo npm install` -- a line starting with `bash`, not
+# `sudo`, which a start-anchored deny rule like Bash(sudo:*) can no longer see, AND the rewrite
+# used to answer permissionDecision=allow directly, bypassing that deny rule entirely. Fix
+# (MikroB decision, comment 32155): a privilege-wrapped segment is never a rewrite/suggest
+# candidate at all -- it passes through completely untouched by this guard, in every mode, so the
+# real permission engine always evaluates the command the agent actually typed.
+_PRIV_RX = re.compile(
+    r"^\s*" + _ENV_PREFIX + r"(?:sudo|doas|pkexec)\b|^\s*" + _ENV_PREFIX + r"su\s+-c\b"
+)
+
+
 def _rewrite_is_safe(raw):
     """WhiteHat F1/F2 (card fc3a6a39 follow-up, ff43b10e): rewrite mode may ONLY substitute a
     command that `noisy-run.sh` can run as a plain argv list, unmodified in meaning, with the
@@ -174,22 +191,22 @@ def main():
                 # somewhere else on the line says nothing about THIS command.
                 if _owned_by_wrapper(seg) or f"{ALLOW_ENV}=1" in seg:
                     continue
+                if _PRIV_RX.search(seg):
+                    continue  # privilege-escalation wrapper: never rewritten or suggested
                 for rx in NOISY_PATTERNS:
                     if rx.search(seg):
                         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                         wrapped = _suggest(here, raw)
                         if os.environ.get(MODE_ENV) == "rewrite" and _rewrite_is_safe(raw):
+                            # MikroB decision (comment 32155, RedHat NO-GO): never raise
+                            # permission on a rewrite -- permissionDecision stays UNSET, so the
+                            # normal permission flow (including any deny rule) still evaluates
+                            # the rewritten command on its own merits.
                             updated_input = dict(ti)
                             updated_input["command"] = wrapped
                             print(json.dumps({
                                 "hookSpecificOutput": {
                                     "hookEventName": "PreToolUse",
-                                    "permissionDecision": "allow",
-                                    "permissionDecisionReason": (
-                                        "noisy-command-guard: routed through noisy-run.sh "
-                                        "(NOISY_GUARD_MODE=rewrite) -- raw install/build/test "
-                                        "output filtered to errors/warnings/summary"
-                                    ),
                                     "updatedInput": updated_input,
                                 }
                             }))
