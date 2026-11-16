@@ -134,6 +134,27 @@ export function ensureKanbanClaimSchema(d: Database.Database): boolean {
   return true
 }
 
+// Parsed-embedding cache for vectorSearch. vectorSearch used to SELECT * every embedded
+// memory and JSON.parse each vector (~16 KB of JSON text) on EVERY call, synchronously:
+// on a store with ~8400 vectors that held the event loop for 0.8-2.2 s per call, and
+// memory recall runs it on every inbound message. The parsed vectors live
+// here, keyed by memory id and fingerprinted by octet_length(embedding), which SQLite
+// reads from the record header without loading the value. Every in-process write of an
+// embedding also drops its entry (forgetCachedEmbedding), and initDatabase() and
+// clearMemoryCache() empty the cache. A tool that rewrites vectors from OUTSIDE this
+// process is caught by the fingerprint in the normal case (a different vector almost
+// always has a different JSON byte length) and in every case by a restart. Declared
+// above initDatabase so no code path can reach it inside its temporal dead zone.
+// vec: the stored text parsed to an array of plain numbers (the normal case).
+// Otherwise vec is null and `parsed` holds whatever JSON.parse returned, or `failed`
+// says it threw; such a row is scored by the old code verbatim (see vectorSearch).
+type CachedEmbedding = { len: number; vec: Float64Array | null; parsed: unknown; failed: boolean; normSq: number }
+const embeddingCache = new Map<number, CachedEmbedding>()
+const EMBEDDING_CACHE_MAX = 200_000
+export function forgetCachedEmbedding(id: number | bigint): void { embeddingCache.delete(Number(id)) }
+/** Exposed for tests only. */
+export function getEmbeddingCacheSize(): number { return embeddingCache.size }
+
 // dbPathOverride is for tests: pass ':memory:' (or a temp file path) to open an
 // isolated database instead of the real store/claudeclaw.db. ':memory:' has no
 // path to chmod, so the file-precreate (openSync 'wx') and tightenDbPermissions
@@ -142,6 +163,7 @@ export function ensureKanbanClaimSchema(d: Database.Database): boolean {
 // tightening logic on a throwaway file instead of touching the prod DB. The
 // STORE_DIR mkdir stays prod-only; a temp-file override owns its own directory.
 export function initDatabase(dbPathOverride?: string): void {
+  embeddingCache.clear() // ids are per database: a re-init (tests, ':memory:') must not reuse vectors
   const useOverride = dbPathOverride !== undefined
   const isMemory = dbPathOverride === ':memory:'
   if (!useOverride) mkdirSync(STORE_DIR, { recursive: true })
@@ -458,6 +480,17 @@ export function initDatabase(dbPathOverride?: string): void {
   // before it would be dropped again on an old database.
   try {
     db.exec('ALTER TABLE kanban_cards ADD COLUMN start_date INTEGER')
+  } catch {
+    // column already exists
+  }
+  // Migration: row version for the PUT's lost-update check (see writeKanbanCard).
+  // Not updated_at: that is seconds-granular, so two writers inside the same
+  // second read the same value and the check would pass -- exactly the case it
+  // exists for. NOT NULL DEFAULT 0 gives every existing row a defined value, so
+  // there is no "version unknown" state to guess at. Same AFTER-the-rebuild rule
+  // as the two columns above.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN version INTEGER NOT NULL DEFAULT 0')
   } catch {
     // column already exists
   }
@@ -1313,6 +1346,39 @@ export function initDatabase(dbPathOverride?: string): void {
       UPDATE kanban_cards SET updated_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = NEW.id;
     END
   `)
+
+  // The row version moves whenever a column the whole-card PUT writes back
+  // changes (KANBAN_WRITABLE_FIELDS), whoever the writer is: updateKanbanCard,
+  // /move, the archive sweep, or a script writing the table directly. A version
+  // bumped only in the TypeScript write paths would miss those last ones, and a
+  // stale PUT would then pass the check and overwrite them.
+  //
+  // Not the other columns on purpose: comments, dispatch and claim stamps and
+  // updated_at do not travel back in a PUT body, so a change there cannot be
+  // overwritten by one, and bumping on them would refuse writes that lose nothing.
+  //
+  // Dropped and recreated on every start rather than IF NOT EXISTS: the column
+  // list comes from KANBAN_WRITABLE_FIELDS, and a field added there later must
+  // reach the trigger on existing databases too. No recursion: the inner UPDATE
+  // sets only `version`, which is not in the OF list.
+  //
+  // The drop and the create are ONE immediate transaction: between two separate
+  // statements another process could write a card with no trigger in place (that
+  // write would not move the version, and an older copy would then pass the
+  // check), and two processes starting together could both drop and then collide
+  // on the create.
+  const versionedCols = [...KANBAN_WRITABLE_FIELDS]
+  db.transaction(() => {
+    db.exec('DROP TRIGGER IF EXISTS kanban_cards_version_bump')
+    db.exec(`
+      CREATE TRIGGER kanban_cards_version_bump
+      AFTER UPDATE OF ${versionedCols.join(', ')} ON kanban_cards
+      FOR EACH ROW WHEN ${versionedCols.map((c) => `NEW.${c} IS NOT OLD.${c}`).join(' OR ')}
+      BEGIN
+        UPDATE kanban_cards SET version = version + 1 WHERE id = NEW.id;
+      END
+    `)
+  }).immediate()
 
   // KANBANCTXDEAD824 follow-up: paragraph-length card titles cost tokens in
   // every agent that reads the board, and the 2026-08-24 sweep moved ~1.3 MB
@@ -3127,6 +3193,7 @@ export function saveMemory(
   generateEmbedding(content).then(emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      forgetCachedEmbedding(id)
     }
   }).catch(() => {})
 }
@@ -3430,6 +3497,7 @@ function memoryCacheInvalidate(agentId: string): void {
 /** Exposed for tests and diagnostics only. */
 export function clearMemoryCache(): void {
   memoryCache.clear()
+  embeddingCache.clear()
 }
 
 /** Exposed for tests only. */
@@ -3464,6 +3532,7 @@ export function saveAgentMemory(
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      forgetCachedEmbedding(id)
     }
   }).catch(() => {})
 
@@ -3578,15 +3647,19 @@ export function searchAgentMemories(
     // excludeToolLogShapeSql). Without the alias here this catch raised `no such column:
     // m.content` -- so the designated safety net for an FTS failure threw a SECOND, unrelated
     // error instead of degrading, turning a recoverable outage into a hard 500 (card ad209cdf).
+    // Koteg 24 (card 57044a66): combined with upstream's own independent fix here -- a raw
+    // `query` substring in a LIKE pattern lets `%`/`_`/`\` act as wildcards instead of literal
+    // characters (a search for "100%" matches anything); escapeLike + ESCAPE '\' pins them literal.
+    const pattern = `%${escapeLike(query)}%`
     return (category
       ? db.prepare(
-          `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?)
+          `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')
            AND (${shapeFilter.sql})${selfAuth.sql} ORDER BY accessed_at DESC LIMIT ?`
-        ).all(agentId, category, `%${query}%`, `%${query}%`, ...shapeFilter.params, ...selfAuthParams, limit)
+        ).all(agentId, category, pattern, pattern, ...shapeFilter.params, ...selfAuthParams, limit)
       : db.prepare(
-          `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
+          `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')
            AND (${shapeFilter.sql})${selfAuth.sql} ORDER BY accessed_at DESC LIMIT ?`
-        ).all(agentId, `%${query}%`, `%${query}%`, ...shapeFilter.params, ...selfAuthParams, limit)) as Memory[]
+        ).all(agentId, pattern, pattern, ...shapeFilter.params, ...selfAuthParams, limit)) as Memory[]
   }
 }
 
@@ -3788,6 +3861,7 @@ export function deleteMemoryById(id: number): boolean {
     db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(id)
     db.prepare('DELETE FROM memories WHERE id = ?').run(id)
   })()
+  forgetCachedEmbedding(id)
   // A shared row is listed for every agent, so evicting one owner is not enough.
   if (before.category === 'shared') clearMemoryCache()
   else if (before.agent_id) memoryCacheInvalidate(before.agent_id)
@@ -3911,7 +3985,9 @@ function toBudapestTs(dateStr: string, endOfDay: boolean): number {
   return Math.floor((target.getTime() - offsetMs) / 1000)
 }
 
-function escapeLike(s: string): string {
+// Escapes a user query for `LIKE ? ESCAPE '\\'`: without it `%` and `_` in the
+// query are wildcards, so a search for q=% or q=_ matches every row.
+export function escapeLike(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
 
@@ -4140,6 +4216,10 @@ export interface KanbanCard {
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+  // Row version, moved by a trigger on every change to a writable field. A PUT
+  // that sends back the version it read is refused (409) if the card changed
+  // since, instead of overwriting the change (writeKanbanCard).
+  version: number
   // Seconds this card has spent SITTING IN in_progress, summed over every stay
   // there (kanban_card_events), plus the open stay up to now when it is in
   // progress right now. This is wall-clock time in the column, NOT hours of
@@ -4754,27 +4834,75 @@ export function kanbanWriteClearsDispatch(nextStatus: string | null | undefined)
   return nextStatus !== 'in_progress'
 }
 
+export type KanbanCardWriteResult =
+  | { ok: true; version: number }
+  | { ok: false; reason: 'not_found' }
+  | { ok: false; reason: 'stale'; current_version: number }
+  // Koteg 24 (card 57044a66): the pre-existing guard refusals (reviewed-card reopen without
+  // force, an unmet predecessor without a forced actor, a bulk status change without
+  // attribution) folded into this result type rather than overloading 'not_found' for them --
+  // each already has its OWN dedicated error body at the route layer (dependencyBlockBody,
+  // the bulk_attribution_required check), so the exact reason reaching here is a backstop
+  // detail, not load-bearing for the caller's response.
+  | { ok: false; reason: 'blocked' }
+
+// The boolean form for callers that make no claim about what they read: true when
+// the card exists (written or a no-op), false when it does not.
 export function updateKanbanCard(
   id: string,
-  fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at' | 'version'>>,
   opts?: { actor?: string; force?: boolean; reason?: string }
 ): boolean {
+  return writeKanbanCard(id, fields, opts?.actor, null, opts).ok
+}
+
+// `expectedVersion` is the version the caller based its body on. A client that
+// GETs a card, sits on it and PUTs the whole object back would otherwise overwrite
+// whatever changed meanwhile: by then the stale values are its own request body,
+// and nothing here can tell them from a deliberate edit. With the version it is
+// told it lost ('stale' -> 409 at the route) and nothing is written. Without it
+// (null/undefined) the write is last-writer-wins, as before.
+//
+// For such a caller the check is also in the UPDATE itself (`version = ?`), not
+// only in the comparison below: another process writing the table between that
+// read and this write would otherwise slip through. A caller without a version
+// gets the unconditional write it always got.
+//
+// Koteg 24 (card 57044a66): `opts` carries this fork's own guard-bypass controls (force/reason),
+// unrelated to upstream's optimistic-concurrency `expectedVersion` -- both are needed by the
+// same /api/kanban/:id PUT route, so both parameters live on the one real implementation rather
+// than forking into two incompatible writers.
+export function writeKanbanCard(
+  id: string,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at' | 'version'>>,
+  actor?: string,
+  expectedVersion?: number | null,
+  opts?: { force?: boolean; reason?: string },
+): KanbanCardWriteResult {
   if (fields.assignee !== undefined) assertValidAssignee(fields.assignee)
   const card = getKanbanCard(id)
-  if (!card) return false
+  if (!card) return { ok: false, reason: 'not_found' }
+  // Before the no-op check on purpose: a caller holding an old copy is told so even
+  // when its body happens to change nothing, rather than reading the ok as "my copy
+  // is current".
+  if (expectedVersion != null && expectedVersion !== card.version) {
+    return { ok: false, reason: 'stale', current_version: card.version }
+  }
   const statusChanges = fields.status !== undefined && fields.status !== card.status
   const blocked = statusChanges && reviewedCardBlocksInProgress(id, fields.status as string)
-  if (blocked && !opts?.force) return false
+  if (blocked && !opts?.force) return { ok: false, reason: 'blocked' }
   // Card a8aa9ae5: an unmet predecessor blocks the same two transitions here as everywhere else.
   // Card a8aa9ae5 / Cybersec F-1: `force` alone is NOT the bypass -- the three sibling guards on
   // this state machine all require an allowlisted actor with it, and the one place that did not
   // (newDevStop, before 31cc1cd4) was abused. `force` without an actor is now just a refusal.
   const depBlocked = statusChanges && dependencyBlockers(id, fields.status as string).length > 0
-  if (depBlocked && !isForceActor(opts?.force === true, opts?.actor)) return false
+  if (depBlocked && !isForceActor(opts?.force === true, actor)) return { ok: false, reason: 'blocked' }
   // Card 4bbb5167: a status write that is part of a burst has to say who and why. Checked here
   // rather than in the routes for the reason dependencyBlockers gives above -- there are three
   // doors into a status change and a route-level guard sees two of them.
-  if (statusChanges && bulkAttributionRequired(Math.floor(Date.now() / 1000), opts?.actor, opts?.reason, id)) return false
+  if (statusChanges && bulkAttributionRequired(Math.floor(Date.now() / 1000), actor, opts?.reason, id)) {
+    return { ok: false, reason: 'blocked' }
+  }
   // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
   // override -- an ordinary in_progress move that happens to carry `force:true` (e.g. an exempt
   // agent's client always sends it) is not itself a guard override and must not read as one; see
@@ -4798,17 +4926,25 @@ export function updateKanbanCard(
   // failed write should have preserved. A no-op is not a failure: return true
   // (the card exists) but touch nothing.
   const realChange = KANBAN_WRITABLE_FIELDS.some((k) => f[k] !== card[k])
-  if (!realChange) return true
+  if (!realChange) return { ok: true, version: card.version }
+  // Bound twice as two anonymous parameters: a numbered `?N` would alias the N-th
+  // parameter of the whole statement, not this clause.
+  const guard = expectedVersion ?? null
   // ONE TRANSACTION for the card write and every row it owes (card f6fba9ec,
   // a review finding): the UPDATE, the ancestor stamps, the status event and the
   // field events either all happen or none does. Before, a row insert that
   // threw (an actor SQLite cannot bind: a PUT with actor true answered 500)
   // left the card changed with no row saying who changed it.
-  return db.transaction((): boolean => {
+  return db.transaction((): KanbanCardWriteResult => {
     const changed = db.prepare(
       `UPDATE kanban_cards SET title=?, description=?, test_steps=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, start_date=?, sort_order=?, updated_at=?, archived_at=?
-       WHERE id=?`
-    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.start_date ?? null, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+       WHERE id=? AND (? IS NULL OR version=?)`
+    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.start_date ?? null, f.sort_order, f.updated_at, f.archived_at, id, guard, guard).changes > 0
+    if (!changed) {
+      // Gone, or (only with a version) moved on between the read above and this write.
+      const current = getKanbanCard(id)
+      return current ? { ok: false, reason: 'stale', current_version: current.version } : { ok: false, reason: 'not_found' }
+    }
     // Same dispatched_at rule as moveKanbanCard (kanbanWriteClearsDispatch). Before,
     // a card the PUT took out of in_progress kept its stamp, and the next /move to
     // in_progress woke nobody. The PUT only clears: it never dispatches.
@@ -4821,10 +4957,13 @@ export function updateKanbanCard(
       // to it even though no row beneath it was written.
       if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
     }
+    // Only a REAL transition is an event: a PUT that edits the title or the
+    // assignee and echoes the unchanged status back must not log one, or the
+    // history fills with noise that hides the transitions worth reading.
     if (changed && statusChanges) {
       const r = db.prepare(
         'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag, opts?.reason?.trim() || null)
+      ).run(id, card.status, f.status, actor ?? null, now, forcedFlag, opts?.reason?.trim() || null)
       // Card d05d72b3: waiting/done is the qualifying transition -- see maybeResolveStuckIncident's
       // own comment for why the filter lives here, at the ONE place that knows a status event was
       // just written, rather than duplicated inside that function.
@@ -4832,12 +4971,16 @@ export function updateKanbanCard(
         maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
       }
     }
-    if (changed) recordKanbanFieldChanges(id, card, opts?.actor, now)
+    if (changed) recordKanbanFieldChanges(id, card, actor, now)
     // Card 6cd61430: an edit can ADD a Pair-* line or a parent. It can also REMOVE one, and this
     // insert-only path cannot see that -- reconcileKanbanRelations() is what deletes the stale edge,
     // which is why the sweep is a reconcile and not a backfill.
     if (changed) noteRelations(cardEdges({ id, description: f.description, parent_id: f.parent_id }))
-    return changed
+    // Koteg 24 (card 57044a66): read back, not card.version + 1 -- a trigger may move it more
+    // than once in one write (the title gate's own UPDATE re-fires it), and the caller chains
+    // its next write on the value actually stored.
+    const stored = getKanbanCard(id)
+    return { ok: true, version: stored?.version ?? card.version + 1 }
   })()
 }
 
@@ -7531,6 +7674,19 @@ export function getRecipientQueueState(toAgent: string): RecipientQueueState {
   }
 }
 
+// The queue state the context guard's restart notice reports for one agent:
+// rows still pending (the router delivers them into the fresh session) and rows
+// that failed since `failedSinceEpoch` (the router does not retry those).
+export function countRestartQueueState(agent: string, failedSinceEpoch: number): { pending: number; failed: number } {
+  const pending = db.prepare(
+    "SELECT COUNT(*) AS c FROM agent_messages WHERE status = 'pending' AND to_agent = ?",
+  ).get(agent) as { c: number }
+  const failed = db.prepare(
+    "SELECT COUNT(*) AS c FROM agent_messages WHERE status = 'failed' AND to_agent = ? AND completed_at > ?",
+  ).get(agent, failedSinceEpoch) as { c: number }
+  return { pending: pending.c, failed: failed.c }
+}
+
 // Close a pending backlog that is NOT going to be delivered -- stale rows an
 // operator does not want the router to replay (an old thank-you note, a legal
 // warning whose content has since changed). Separate from markMessageDelivered
@@ -8303,12 +8459,48 @@ export function backfillNeedsWarning(pending: number, embedded: number): boolean
   return pending > 0 && embedded === 0
 }
 
-export async function generateEmbedding(text: string): Promise<number[] | null> {
+// The text set before a query or a stored memory when it is embedded
+// (EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX). Some models are trained with
+// such task prefixes and retrieve worse without them. Empty = none, the
+// behaviour before these settings existed. Read per call, like the floor.
+// A literal \n in the value is a line break: the settings field is one line,
+// and some prefixes (qwen3-embedding's) span two.
+function embedPrefix(kind: 'query' | 'document'): string {
   try {
+    return String(getEffectiveSettingValue(kind === 'query' ? 'EMBED_QUERY_PREFIX' : 'EMBED_DOCUMENT_PREFIX') ?? '')
+      .replace(/\\n/g, '\n')
+  } catch {
+    return ''
+  }
+}
+
+// Ollama's keep_alive for the embedding model (EMBED_KEEP_ALIVE). Empty = not
+// sent, so Ollama's own default applies. A bare integer is sent as a number
+// (seconds; negative keeps the model loaded), a duration such as "30m" as a
+// string. Anything else (a value set outside the settings UI, past the registry
+// check) is not sent: a keep_alive Ollama refuses would fail every embedding request.
+export function parseEmbedKeepAlive(raw: string): string | number | undefined {
+  const t = raw.trim()
+  if (t === '') return undefined
+  if (/^-?\d+$/.test(t)) return Number.isSafeInteger(Number(t)) ? Number(t) : undefined
+  return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? t : undefined
+}
+
+function embedKeepAlive(): string | number | undefined {
+  try { return parseEmbedKeepAlive(String(getEffectiveSettingValue('EMBED_KEEP_ALIVE') ?? '')) } catch { return undefined }
+}
+
+export async function generateEmbedding(text: string, kind: 'query' | 'document' = 'document'): Promise<number[] | null> {
+  try {
+    const keepAlive = embedKeepAlive()
     const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000) }),
+      body: JSON.stringify({
+        model: EMBED_MODEL,
+        prompt: embedPrefix(kind) + text.slice(0, 2000),
+        ...(keepAlive !== undefined ? { keep_alive: keepAlive } : {}),
+      }),
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
     })
     const data = await resp.json() as { embedding?: number[] }
@@ -8443,41 +8635,97 @@ function vectorSearch(
   selfAuthenticatedOnly = false,
 ): { hits: VectorHit[]; floor: number } {
   // Same push-down as searchAgentMemories: this branch scores EVERY embedded
-  // row in JS, so filtering in SQL is both correct and strictly less work. The
-  // shape filter (card 3bcc1242) now applies here too -- it used to be FTS-only,
-  // which let tool-log-shaped rows back in through this branch alone.
+  // row in JS, so filtering in SQL is both correct and strictly less work.
+  // Same WHERE as the full-row read it replaces, but only the id and the
+  // vector's byte length: the vectors come from embeddingCache.
+  //
+  // Koteg 24 (card 57044a66): combined with this fork's own shape filter (card 3bcc1242, it used
+  // to be FTS-only, which let tool-log-shaped rows back in through this branch alone) and the
+  // self-authenticated-only scoping (card 84dcc5d4) -- both apply to the lean id+length candidate
+  // query exactly as they did to the full-row one it replaces, since they gate WHICH rows are
+  // even candidates, not which columns come back.
   const shapeFilter = excludeToolLogShapeSql()
   const selfAuth = selfAuthenticatedSql(selfAuthenticatedOnly)
   const selfAuthParams = selfAuthenticatedOnly ? [agentId] : []
-  const rows = (category
+  const cands = (category
     ? db.prepare(
-        `SELECT * FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ? AND (${shapeFilter.sql})${selfAuth.sql}`
+        `SELECT id, octet_length(embedding) AS elen FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ? AND (${shapeFilter.sql})${selfAuth.sql}`
       ).all(agentId, category, ...shapeFilter.params, ...selfAuthParams)
     : db.prepare(
-        `SELECT * FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND (${shapeFilter.sql})${selfAuth.sql}`
-      ).all(agentId, ...shapeFilter.params, ...selfAuthParams)) as Memory[]
+        `SELECT id, octet_length(embedding) AS elen FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND (${shapeFilter.sql})${selfAuth.sql}`
+      ).all(agentId, ...shapeFilter.params, ...selfAuthParams)) as { id: number; elen: number }[]
+
+  // Parse only what is new or changed since the last call.
+  let getVec: Database.Statement | null = null
+  const live: { id: number; entry: CachedEmbedding }[] = []
+  for (const c of cands) {
+    let entry = embeddingCache.get(c.id)
+    if (!entry || entry.len !== c.elen) {
+      getVec ??= db.prepare('SELECT embedding, octet_length(embedding) AS elen FROM memories WHERE id = ?')
+      const r = getVec.get(c.id) as { embedding: string | null; elen: number } | undefined
+      if (!r || r.embedding == null) { embeddingCache.delete(c.id); continue }
+      // A vector that does not parse keeps its former treatment: scored 0, not dropped.
+      let vec: Float64Array | null = null
+      let parsed: unknown = undefined
+      let failed = false
+      let normSq = 0
+      try { parsed = JSON.parse(r.embedding) } catch { failed = true }
+      if (!failed && Array.isArray(parsed) && parsed.every(x => typeof x === 'number')) {
+        vec = Float64Array.from(parsed as number[])
+        for (let i = 0; i < vec.length; i++) normSq += vec[i] * vec[i]
+        parsed = undefined
+      }
+      entry = { len: r.elen, vec, parsed, failed, normSq }
+      // The bound holds at every insert, not only between calls.
+      if (embeddingCache.size >= EMBEDDING_CACHE_MAX) embeddingCache.clear()
+      embeddingCache.set(c.id, entry)
+    }
+    live.push({ id: c.id, entry })
+  }
 
   // A vector written by a DIFFERENT model has a different length, and the
   // cosine loop walks the QUERY's length: the missing entries read as undefined
   // and the score comes back NaN. NaN compares false against everything, so it
   // neither sorts to the top nor raises -- the search quietly returns junk.
   // Drop the mismatches instead, so a half-migrated table degrades to "fewer
-  // results" rather than "wrong results".
-  const scored = rows.flatMap((m): VectorHit[] => {
-    try {
-      const emb = JSON.parse(m.embedding!) as number[]
-      if (emb.length !== queryEmbedding.length) return []
-      return [{ memory: m, similarity: cosineSimilarity(queryEmbedding, emb) }]
-    } catch {
-      return [{ memory: m, similarity: 0 }]
+  // results" rather than "wrong results". The score is cosineSimilarity's,
+  // bit for bit: each sum is accumulated in index order, as there.
+  let normQ = 0
+  for (let i = 0; i < queryEmbedding.length; i++) normQ += queryEmbedding[i] * queryEmbedding[i]
+  const scored = live.flatMap(({ id, entry }): { id: number; similarity: number }[] => {
+    if (entry.vec === null) {
+      // Anything but an array of numbers (never written by this code): the old
+      // per-row code verbatim, so its result, including a throw scored 0, is unchanged.
+      if (entry.failed) return [{ id, similarity: 0 }]
+      try {
+        const emb = entry.parsed as number[]
+        if (emb.length !== queryEmbedding.length) return []
+        return [{ id, similarity: cosineSimilarity(queryEmbedding, emb) }]
+      } catch {
+        return [{ id, similarity: 0 }]
+      }
     }
+    if (entry.vec.length !== queryEmbedding.length) return []
+    let dot = 0
+    for (let i = 0; i < queryEmbedding.length; i++) dot += queryEmbedding[i] * entry.vec[i]
+    return [{ id, similarity: dot / (Math.sqrt(normQ) * Math.sqrt(entry.normSq)) }]
   })
 
   // The floor comes from EVERY scored row, before the cut to `limit`: the
   // plateau is a property of the corpus, not of the top of the list.
   const floor = vectorSimilarityFloor(scored.map(s => s.similarity))
   scored.sort((a, b) => b.similarity - a.similarity)
-  return { hits: scored.slice(0, limit), floor }
+  const top = scored.slice(0, limit)
+  if (top.length === 0) return { hits: [], floor }
+  // Full rows only for the hits, one primary-key read each (no parameter list that
+  // grows with `limit`); a row deleted between the two reads is skipped.
+  const getRow = db.prepare('SELECT * FROM memories WHERE id = ?')
+  const hits: VectorHit[] = []
+  for (const t of top) {
+    const memory = getRow.get(t.id) as Memory | undefined
+    if (memory) hits.push({ memory, similarity: t.similarity })
+  }
+  return { hits, floor }
 }
 
 /**
@@ -8525,6 +8773,12 @@ export async function hybridSearch(
   selfAuthenticatedOnly = false,
 ): Promise<HybridSearchHit[]> {
   const k = 60 // RRF constant
+  // Per-branch weights (MEMORY_RRF_FTS_WEIGHT / MEMORY_RRF_VECTOR_WEIGHT), 1/1 by
+  // default: equal fusion, as before. A model with good multilingual vectors can
+  // do better with a lighter keyword branch, whose relaxed OR-matches otherwise
+  // pull good vector hits down; that is a measurement per install, not a default.
+  const wFts = numericSetting('MEMORY_RRF_FTS_WEIGHT', 1, (n) => n >= 0 && n <= 10)
+  const wVec = numericSetting('MEMORY_RRF_VECTOR_WEIGHT', 1, (n) => n >= 0 && n <= 10)
 
   // FTS5 results
   const ftsTrace = { relaxed: false }
@@ -8539,7 +8793,7 @@ export async function hybridSearch(
   // score is NOT the one it had before the floor existed: the vector rank below
   // is computed on the already filtered list, so a kept row moves up past the
   // dropped ones and its RRF term grows accordingly.
-  const queryEmbedding = await generateEmbedding(query)
+  const queryEmbedding = await generateEmbedding(query, 'query')
   const vec = queryEmbedding
     ? vectorSearch(agentId, queryEmbedding, limit * 2, category, selfAuthenticatedOnly)
     : { hits: [] as VectorHit[], floor: 0 }
@@ -8566,13 +8820,13 @@ export async function hybridSearch(
   const similarityById: Map<number, number> = new Map()
 
   ftsResults.forEach((m, rank) => {
-    scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
+    scores.set(m.id, (scores.get(m.id) || 0) + wFts / (k + rank + 1))
     byId.set(m.id, m)
   })
 
   vecResults.forEach((h, rank) => {
     const m = h.memory
-    scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
+    scores.set(m.id, (scores.get(m.id) || 0) + wVec / (k + rank + 1))
     similarityById.set(m.id, h.similarity)
     byId.set(m.id, m)
   })
@@ -8609,6 +8863,7 @@ export async function backfillEmbeddings(): Promise<BackfillResult> {
     const emb = await generateEmbedding(text)
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
+      forgetCachedEmbedding(row.id)
       count++
     }
     // Small delay to not overwhelm Ollama

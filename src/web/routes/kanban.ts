@@ -3,7 +3,7 @@ import { execFileAsync } from '../exec-async.js'
 import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
-  listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
+  listKanbanCards, kanbanAssigneeExists, createKanbanCard, writeKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanLineComments, addKanbanLineComment,
@@ -1401,7 +1401,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (unknownKeys.length > 0) {
       logger.warn({ id, keys: unknownKeys }, 'POST /api/kanban: ismeretlen mező(k), csendben eldobva')
     }
-    createKanbanCard({ ...normalized, id })
+    try {
+      createKanbanCard({ ...normalized, id })
+    } catch (err) {
+      // A caller-supplied id that is already taken is the caller's conflict, not a
+      // server fault: 409, with the id and whether the existing card is archived --
+      // GET /api/kanban hides archived cards, so "not in the list" does not mean
+      // "free". Caught on the INSERT rather than checked before it, so a card
+      // created by another process in between is answered the same way. A
+      // generated id colliding is not the caller's doing and stays an error.
+      if (suppliedId && (err as { code?: unknown })?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+        json(res, {
+          error: 'A card with this id already exists (GET /api/kanban/<id> returns it, archived or not)',
+          id,
+          archived: getKanbanCard(id)?.archived_at != null,
+        }, 409)
+        return true
+      }
+      throw err
+    }
     // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
     // only by agent discipline before opening a card, and by the >2-day dispatch filter for cards
     // already open). One extra async spawn per card create, awaited before responding -- same
@@ -1448,11 +1466,36 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const { actor: rawActor, force, reason, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
+    // `actor` is metadata for the audit event, not a card column -- keep it out
+    // of the field set so it can never be mistaken for one. Same name the /move
+    // route already accepts, so callers do not have to learn a second spelling.
+    // `force`/`reason` are this fork's own guard-bypass fields (card a8aa9ae5/4bbb5167);
+    // `version`/`expected_version` are upstream's optimistic-concurrency fields -- both pairs
+    // land on the same writer now (writeKanbanCard, db.ts), so both are stripped here together.
+    const { actor: rawActor, force, reason, version, expected_version, ...data } =
+      JSON.parse(body.toString()) as Record<string, unknown> & { actor?: unknown }
+    // The version the body was based on (writeKanbanCard). Two spellings, because the
+    // two real caller shapes differ: `expected_version` for a caller that builds a
+    // partial body by hand, and `version` for one that GETs the card and PUTs the
+    // whole object back -- the dashboard does that on every assignee and parent edit,
+    // and that body carries `description` from whenever the board was loaded, so it
+    // gets the check without changing. Neither is ever written as a column.
+    // A malformed value is a 400, not "no check": a caller that believes it sent a
+    // guard must not get an unguarded write.
+    const versionError = (v: unknown) => v !== undefined && !(Number.isSafeInteger(v) && (v as number) >= 0)
+    if (versionError(version) || versionError(expected_version)) {
+      json(res, { error: '"version" / "expected_version" must be a non-negative integer (the version the card was read at)' }, 400)
+      return true
+    }
+    if (version !== undefined && expected_version !== undefined && version !== expected_version) {
+      json(res, { error: '"version" and "expected_version" disagree -- send one' }, 400)
+      return true
+    }
+    const expectedVersion = (expected_version ?? version) as number | undefined
     // X7 (card f6fba9ec): an actor that is neither a string nor null is refused BEFORE any write.
-    const writeActor = kanbanWriteActor(rawActor, ctx.auth)
-    if ('error' in writeActor) { json(res, { error: writeActor.error }, 400); return true }
-    const actor = writeActor.actor
+    const who = kanbanWriteActor(rawActor, ctx.auth)
+    if ('error' in who) { json(res, { error: who.error }, 400); return true }
+    const actor = who.actor
     // Card 9e83ce97 F2: a title edit that NEWLY introduces the marker is gated the same way as
     // creating it would be. Comparing against the OLD title (not just the new one) means editing
     // an already-marked card's other fields never retroactively demands privilege.
@@ -1572,7 +1615,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     // PUT to in_progress clears but does not dispatch; /move remains the only
-    // dispatch path (KARTYADISPATCH1010). updateKanbanCard applies the shared
+    // dispatch path (KARTYADISPATCH1010). writeKanbanCard applies the shared
     // dispatched_at clear (kanbanWriteClearsDispatch, db.ts); no fireKanbanDispatch call belongs here.
     // Koteg 23c (card 16145418, 2026-11-12): statusChangeExtras (claim_warning, evidence_warning,
     // unblocked) IS adopted here, reusing the already-resolved `actor` (no second kanbanWriteActor
@@ -1582,7 +1625,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // "Two system notes land on the freed card: this unblock's own, and the hand-off notice from
     // notifyUnblockedCards". Not a duplicate-wire hazard, verified by that test.
     const before = getKanbanCard(id)
-    if (updateKanbanCard(id, normalizeProjectName(data), { actor, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
+    const written = writeKanbanCard(id, normalizeProjectName(data), actor, expectedVersion,
+      { force: force === true, reason: typeof reason === 'string' ? reason : undefined })
+    if (written.ok) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       // Card 64f56f97 requirement 1: a fresh planned->in_progress transition always routes
@@ -1593,7 +1638,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const after = getKanbanCard(id)
       // Card 08bf8326 (#567): a card this one blocked may now be free to go.
       if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, actor)
-      json(res, { ok: true, ...archivedNote(after), ...statusChangeExtras(id, before, data.status, actor) }); return true
+      json(res, { ok: true, version: written.version, ...archivedNote(after), ...statusChangeExtras(id, before, data.status, actor) }); return true
+    }
+    if (written.reason === 'stale') {
+      // An instruction, not a diagnosis: the next act has to be a re-read. Reposting
+      // the same body is exactly the overwrite this refused.
+      json(res, {
+        error: 'The card changed since you read it -- nothing was saved. Read it again and apply your change to the current version.',
+        conflict: 'stale_version',
+        current_version: written.current_version,
+      }, 409)
+      return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
     // caller learns what to do instead of retrying blindly.
@@ -2025,7 +2080,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const body = await readBody(req)
-    const { author, content, automated } = JSON.parse(body.toString())
+    // Read through typed locals: JSON.parse's result is `any`, and letting that flow
+    // straight into the calls below made every one of them an unsafe-argument finding.
+    const parsedCommentBody = JSON.parse(body.toString()) as Record<string, unknown>
+    const author = typeof parsedCommentBody.author === 'string' ? parsedCommentBody.author : undefined
+    const content = typeof parsedCommentBody.content === 'string' ? parsedCommentBody.content : undefined
+    const automated = parsedCommentBody.automated
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
     // `author` is a self-reported body field, not derived from auth identity (card 1cdac111,
     // Cybersec LOW finding on 3906d77b): every fleet agent authenticates with the same shared
@@ -2092,7 +2152,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const cardId = decodeURIComponent(kanbanLineCommentsMatch[1])
     if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
     const body = await readBody(req)
-    const { sha, file, line, author, content } = JSON.parse(body.toString())
+    // Read through typed locals: JSON.parse's result is `any`, and letting that flow
+    // straight into the calls below made every one of them an unsafe-argument finding.
+    const parsedLineCommentBody = JSON.parse(body.toString()) as Record<string, unknown>
+    const sha = typeof parsedLineCommentBody.sha === 'string' ? parsedLineCommentBody.sha : undefined
+    const file = typeof parsedLineCommentBody.file === 'string' ? parsedLineCommentBody.file : undefined
+    const line = typeof parsedLineCommentBody.line === 'number' ? parsedLineCommentBody.line : NaN
+    const author = typeof parsedLineCommentBody.author === 'string' ? parsedLineCommentBody.author : undefined
+    const content = typeof parsedLineCommentBody.content === 'string' ? parsedLineCommentBody.content : undefined
     if (!sha || !file || !author || !content) {
       json(res, { error: 'sha, file, author és content kötelező' }, 400)
       return true

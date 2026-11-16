@@ -997,8 +997,13 @@ export function gateDecision(toolName, toolInput) {
   // matching fix on the sub-agent governance-deny side of that same gap. The three generic
   // connector words stay tied to "gmail" case-insensitively -- the Telegram plugin's tool is
   // `..._telegram__reply` and must never deny here.
+  // Koteg 24 (card 57044a66, HARDERMAILGATES1019 follow-up): send_mail/send_mail_auto (the
+  // harder-mail MCP's own send verbs, no "harder-mail" string match in EMAIL_SERVER_RE either)
+  // added to the same bare-verb set -- the EMAIL_GATE_MATCHER widening alone makes the hook fire,
+  // this is what makes it actually deny once it does. Not gmail-gated, same as send_draft/
+  // reply_all above: these verbs are not shared with any other server's safe operations.
   if (
-    /(^|_)(?:send_draft|reply_all|send_gmail_message|draft_gmail_message)$/i.test(name) ||
+    /(^|_)(?:send_draft|reply_all|send_gmail_message|draft_gmail_message|send_mail|send_mail_auto)$/i.test(name) ||
     // Cybered NO-GO 28354 F3: "forward_message" added -- mcp__google_workspace__gmail_forward_message
     // ends in "forward_message", not bare "forward", so it missed this alternation (allowed, no
     // deny at all) -- the same gap closed in email_extract.py's _CONNECTOR_GENERIC_SUFFIXES.

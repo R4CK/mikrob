@@ -290,6 +290,33 @@ describe('context-guard resume obligation across a dashboard restart', () => {
   })
 })
 
+// Koteg 24 (card 57044a66): upstream's "immediate resume delivery after a guard restart" describe
+// block (PR #1984, willWake/ownsResume/resume-delivery loop) is NOT adopted here -- it is the
+// exact refactor src/fork-upstream/acknowledged-conflicts.ts already decided to reject (card
+// c8f33954, "KEEP FORK, because the fork has not adopted upstream's willWake/ownsResume
+// wake-ownership refactor"; verified again here: grep for willWake/ownsResume/resume-delivery in
+// agent-process.ts and context-guard-runner.ts finds nothing). PR #1984 predates koteg 24's own
+// commit range entirely (merge-base confirms it as an ancestor of the range's lower bound), so its
+// re-appearance here is this merge re-presenting an already-decided rejection, not a new offer.
+
+describe('restartLossLine (pure)', () => {
+  // The through-the-runner proof is context-guard-idle-flush-restart-notice.test.ts;
+  // these pin the two branches of the wording itself.
+  it('idle-flush + worksource: the queue redelivers, do not resend', async () => {
+    const { restartLossLine } = await import('../web/context-guard-runner.js')
+    const line = restartLossLine(true, true, 30, { pending: 0, failed: 0 })
+    expect(line).toContain('NE kuldj ujra')
+    expect(line).toContain('ujrakezbesulnek')
+    expect(line).not.toContain('ELVESZHETTEK')
+  })
+
+  it('elsewhere (not worksource, or not an idle-flush) the line reports the queue', async () => {
+    const { restartLossLine } = await import('../web/context-guard-runner.js')
+    expect(restartLossLine(true, false, 30, { pending: 1, failed: 0 })).toContain('1 pending, 0 failed')
+    expect(restartLossLine(false, true, 30, { pending: 1, failed: 0 })).toContain('1 pending, 0 failed')
+  })
+})
+
 describe('context-guard-resume-store: pure parts', () => {
   it('parses defensively: malformed entries are dropped, staleness is validated', async () => {
     const { parsePendingResumes } = await import('../web/context-guard-resume-store.js')

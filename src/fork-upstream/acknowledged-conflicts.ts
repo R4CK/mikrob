@@ -2656,7 +2656,16 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "independently-maintained hook over a different paradigm for the same threat surface is the " +
     "same duplicate-wire hazard GATECOPY828 names for ensureTelegramCopyGate vs. the fork's own " +
     "ensureOutgoingCopyGate -- not an addition. If the fork's own guard is ever retired or proven " +
-    "insufficient, that is its own decision, made against THAT guard, not a reason to run both.",
+    "insufficient, that is its own decision, made against THAT guard, not a reason to run both. " +
+    "Re-measured 2026-11-16 (backend3, card 57044a66/Koteg 24): upstream moved again (commit " +
+    "61a6572bc, BASH_EGRESS_HOST_ALLOW -- judges curl-https/wget by destination host, honours " +
+    "egress-vendor-hosts.json). Checked ensureBashEgressDeny/mergeBashEgressDeny directly against " +
+    "the diff: both got new params (parserCovers, mainScopeSettingsPath) wired to the rejected " +
+    "parser; reverted to the fork's pre-merge 2-arg signatures (verified via diff against the " +
+    "pre-merge blob + tsc + fork-upstream-conflict-guard.test.ts, all clean). Resolution unchanged " +
+    "-- the fork's allowlist mechanism still covers the same ground on a first read; a full side-" +
+    "by-side against BASH_EGRESS_HOST_ALLOW specifically is deferred to its own LOW research card " +
+    "(card a93874fb, MikroB dispatch msg 19457/19483), not decided here. Blob bumped.",
 
   // Card 1eae1b41 (test/docs group of the 7f0efce3 drift decomposition, DevO, 2026-10-17). The
   // argv-token pattern: upstream's side of all three template files below puts the dashboard
@@ -3306,6 +3315,12 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'NOT ADOPTED -- consistent with the existing NOT ADOPTED decision for ' +
     "scripts/hooks/bash-egress-parser.mjs above: fork's bash-egress-guard.py (allowlist-based) " +
     "covers the same threat surface. The test for a hook the fork doesn't ship stays un-adopted too.",
+  // bash-egress-host-allow.test.ts (koteg 24, card 57044a66): the TEST for BASH_EGRESS_HOST_ALLOW's
+  // ensureMainScopeBashEgressParser wiring, same un-adopted hook family as the entry above.
+  'src/__tests__/bash-egress-host-allow.test.ts':
+    'NOT ADOPTED -- same premise as bash-egress-parser.test.ts above: tests ' +
+    "ensureMainScopeBashEgressParser/bashEgressHostAllowEnabled/bashEgressParserCovers, which this " +
+    "koteg stripped from agent-scaffold.ts (duplicate-wire hazard, card 965b0b2b).",
   // hook-fail-closed.test.ts: fork's current file already asserts security.length === 17 (vs
   // upstream's 15) because Köteg 17 ported Discord reply|edit_message plus a broader gmail regex
   // and draft_email ALONGSIDE the fork's existing narrower patterns (union, not replacement, per
@@ -3682,7 +3697,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/context-restart-gate-runner.ts': '588c35241193764152514a9ecdd196622b2fd377',
   'src/web.ts': 'cc00ef2535cb6d21698207cb2169b855e6457173',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'scripts/hooks/bash-egress-parser.mjs': '3437b7edf7f2af22f54955adb0d1c0a8e38786fe',
+  'scripts/hooks/bash-egress-parser.mjs': 'd49a230d1baf6fc45a1e612a3534a84a4052e8d9',
   'src/web/agent-scaffold.ts': '351cb47f5c60aa7e7cd41f6f1c3aca937a771a7b',
   'src/db.ts': 'a0e29d89865e34ed4b7a1c8c13027dd00d71faae',
   'src/memory.ts': 'af9f66316bd85499a8bafe47444a9b9e0ab779bd',
@@ -4046,7 +4061,8 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/__tests__/email-gate-matcher-drift.test.ts': '9874aa64605991a42a2416af87e9ac87775c4d3e',
   'src/web/routes/fleet.ts': 'e2a89a8fd215b77c16a9c5c5fe8dd2e1990e24fa',
   'src/__tests__/fixtures/app-js-html-allowlist.json': 'b4083ea9bf35f9b93516a8f334b4df6f17bb20f2',
-  'src/__tests__/bash-egress-parser.test.ts': '73bfec2ab10467163394143c0a911683f60eacb0',
+  'src/__tests__/bash-egress-parser.test.ts': 'a99286a6fece459f6ade51dffb97cfa5cddfb360',
+  'src/__tests__/bash-egress-host-allow.test.ts': 'bc9a00b4f9354d8628919c2a439c047c79b4e599',
   'src/__tests__/hook-fail-closed.test.ts': '71f2eed6b8bf16a9b97fd308819496a7b46cdda4',
   'src/__tests__/egress-allowlist-selfedit.test.ts': '4729d8baf78a6fb10084078338a674769e0e8e5f',
   // Card c8f33954, see the matching ACKNOWLEDGED_CONFLICTS entries above.
@@ -5003,6 +5019,23 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "parser.mjs' key above -- this is the TEST for that un-adopted hook. If ensureBashEgressParser " +
       "appears, the hook was adopted without re-deciding the duplication (same anchor, same file) " +
       "-- re-read both entries before adopting this test too.",
+  },
+  // Koteg 24 (card 57044a66): BASH_EGRESS_HOST_ALLOW's own commit (61a6572bc) added a SECOND,
+  // separate test for the exact same un-adopted mechanism (ensureMainScopeBashEgressParser/
+  // bashEgressHostAllowEnabled/bashEgressParserCovers/LEGACY_BASH_EGRESS_DENY -- all symbols this
+  // koteg stripped from agent-scaffold.ts, keeping only the ALREADY-adopted pre-merge
+  // ensureBashEgressDeny/mergeBashEgressDeny). Caught only by a full-project tsc run (not per-file
+  // isolated checks, which a still-conflicted sibling file was poisoning at the time) -- removed.
+  'src/__tests__/bash-egress-host-allow.test.ts': {
+    needle: 'ensureMainScopeBashEgressParser',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "Card 57044a66 (koteg 24): NOT ADOPTED, same premise as bash-egress-parser.test.ts above -- " +
+      "this is the TEST for BASH_EGRESS_HOST_ALLOW's host-allow parser wiring, which the fork's own " +
+      "bash-egress-guard.py allowlist already covers (duplicate-wire hazard, see card 965b0b2b). If " +
+      "ensureMainScopeBashEgressParser appears in agent-scaffold.ts, re-read this and the sibling " +
+      "entries before adopting this test too.",
   },
   // Card c8f33954: the fork's restart-wake behaviour (no willWake/ownsResume) is pinned by
   // src/__tests__/restart-wake.test.ts above; verified the symbol is absent today.
