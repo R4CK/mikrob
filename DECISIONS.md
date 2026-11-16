@@ -26040,3 +26040,68 @@ Measured: `gpu-driver-install-setup.selftest.sh` PASS (grew by 2 new block-ancho
 **Teszt:** 6 new tests added to the "class A round 2" describe block in `src/__tests__/pane-background-agents.test.ts` (F1 permission, F1 held-peer, F2a shell-tail, F2a queued, F2b parenthetical+tail, F4 stale-dialog+30-trailing-lines), total 42 in the file. `fleet-test.sh --ref d73e00433dc2e6fe108c6daf57398efe5d2ee246 src/__tests__/pane-background-agents.test.ts`: 42/42 green. Blast-radius: all 42 files importing `pane-state.ts` under `src/__tests__/`, same sha: 42/42 files, 1362/1362 tests green. Mutation-verified both fixes independently via dangling `commit-tree` mutants (no branch pointer moved): reverting only the `ctrl+t` suffix addition turned exactly the F2b test red (41/42); reverting only `idleFooterAndNoDialogAfter` back to the old fixed-window call turned exactly 3 tests red -- both new F1 tests plus the pre-existing stale-footer regression test from an earlier round (39/42) -- confirming the direction-aware replacement resolves a real three-way conflict, not a cosmetic rename. Both mutants restored via `git checkout <gate-sha> -- src/pane-state.ts`, verified `git diff` empty before continuing.
 
 **Ki döntött:** backend (kártya 8e9828c9 round 2, RedHat NO-GO 31373, MikroB trusted-peer dispatch msg_id 18722 continuing this WIP). Gate: QA + RedHat. Gate-SHA: d73e00433dc2e6fe108c6daf57398efe5d2ee246.
+
+## 2026-11-15 — 1506d10d lezárás: mindkét finding (F-A, F-B) már landolt commitból teljesül
+
+**Döntés:** A kártya mindkét Kész-ha kritériuma a `cdde2666` kártyán korábban landolt
+`d4d42e166` commitból (már `origin/develop`-on, `merge-base --is-ancestor` igazolva) teljesül,
+külön diff nélkül.
+
+F-B (replay a valódi egress-gate-en): `card-route-table-replay.sh` az `offload-dispatch.sh
+--check-freellm-blocked`-et (a valódi `is_freellm_blocked`) hívja, auth-ot követel, és nem-nullával
+lép ki 401/üres/parse-olhatatlan fetch, nem-{0,42} checker-exit, hiányzó checker, vagy kihagyott
+kártya esetén. `card-route-table-replay.selftest.sh`: 17/17 zöld (ezen a session-ön futtatva).
+Valós tokennel futtatott replay (a commit-üzenetből, átvéve): checked=136 skipped=0 errors=0
+violations=0 -- a Cybered által nevezett 14931e4e/200d2969/ba22ec48 mind BLOCKED a valódi
+gemini-ok marker-követelmény alatt. (Lásd 1506d10d komment 31514 a korábbi F-B mérésért is,
+99/155-ös bontással a 13943/13944 utáni szélesített gate-en.)
+
+F-A (F1 modell-ellenőrzés exact-match): `store/local-llm.sh` `model_pulled()` lecserélte a régi
+`grep -q "${MODEL%%:*}"` substring-tesztet egy python3 exact set-membership ellenőrzésre az
+`/api/tags` modellnevek ellen (karakterkészlet-validáció + `:latest` kanonizálás, nincs
+substring/regex keresés). Pin: `local-llm-gateway-mode.test.ts` "Ollama has pulled a model whose
+name CONTAINS auto as a substring (starcoder2-autocomplete): requesting --model auto still
+refuses" eset. Ezen a session-ön futtatva: `npx vitest run local-llm-gateway-mode.test.ts` ->
+9/9 zöld.
+
+Nincs ebben: új kódváltozás -- a kártya a `cdde2666`-ban landolt javítást örökli, csak a mérést
+rögzíti és zárja a kártyát.
+
+**Ki döntött:** backend2 (kártya 1506d10d, Cybersec GO 29776 + Cybered NO-GO 29789 -> javítás
+`d4d42e166` a `cdde2666` kártyán, itt csak verifikálva és lezárva). Gate: QA + Cybersec.
+Gate-SHA: `d4d42e166ae8a58d15d6e5edaacd4c571d3eafc5`.
+
+## 2026-11-15 -- abd4970c (ed332869 F4.2.1): agent-worktree-marveen.sh --card rolls back a dangling branch on a failed worktree-add
+
+**Döntés:** F4.2.1's own acceptance criterion ("selftest: forced worktree-add failure leaves no branch") was unmet. Measured in a scratch clone: `git worktree add "$TREE" -b "$BRANCH" origin/develop` against an occupied target path creates the BRANCH ref successfully (prints "Preparing worktree (new branch ...)", "branch ... set up to track ...") and only THEN fails on the worktree-population step ("fatal: ... already exists", exit 128) -- the branch survives the failure. The next `--card` attempt for the same id would silently hit the script's own "existing local branch" fallback path and reuse that half-initialized branch as if it were the legitimate survivor case (a branch kept after `git worktree remove`), carrying whatever state the failed attempt left on it.
+
+**Fix:** `agent-worktree-marveen.sh`'s card-worktree creation now records whether `$BRANCH` existed BEFORE the `-b` attempt; on failure, if the branch exists now but did not exist before, it is deleted (`git branch -D`) before falling through to the existing fallback attempt. A pre-existing branch (the real survivor case) is never touched. Had to route this through `if`/`||` lists rather than a bare `cmd; if [ $? -ne 0 ]` check -- the script runs under `set -e` (line 57), and a bare failing simple command aborts the whole script before the status check is ever reached (caught this myself: the first version of the fix never ran at all, the script silently exited at the failing `git worktree add` line).
+
+**Teszt:** `agent-worktree-marveen.selftest.sh`: 16/16 PASS (2 new cases: the dangling-branch assertion on the existing occupied-path fixture, and a discriminating control proving a genuine survivor branch from a removed worktree is reused via the fallback, never deleted). Mutation-verified: removing just the rollback block turned exactly the new dangling-branch case red (1/16 FAIL), the survivor control and all 14 pre-existing cases stayed green. `bash -n` clean on both files.
+
+**Ki döntött:** fullstack (FÁZIS ed332869, "t3code mechanisms", F4.2 sub-step; self-advance continuation after a machine restart, BOOT-RECONCILE msg 19188). Gate: per card, QA + Cybered (land-path adjacent). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15, kártya 1aeed1ca (CYBERED NO-GO 3 leletre, F1/F2/F3): a Gate-SHA n/a kezeles szigoritva
+
+F1 -- gate-closure-check.py: az n/a-reset csak akkor szamit, ha a REVIEW Gate-SHA sorain SEHOL nincs
+valodi hex sha (korabban egy masodik "n/a" sor vagy egy "n/a <sha>" alak kitorolte a valodi shat).
+F2 -- gate-closure-check.py: egy n/a REVIEW, amikor egy kijelolt gate egy VALODI commitra adott
+verdiktet, mar nem AGREE("unchecked")-kent olvas, hanem STALE-mismatchkent (a n/a azt allitja, nincs
+commit, a gate meg valodit biralt). F3 -- gate-dispatch-check.sh: a both-sides-n/a ADVISE-SKIP
+kulonszabaly torolve -- az n/a nem tudja megkulonbozteteni a valodi ismetlest egy MASIK config-only
+kortol, ezert a biztos alapertelmezett ALLOW:stale-verdict-re esik vissza (ugyanaz az irany, mint a
+fajl tobbi fail-open szabalya). Gate: QA, Cybered. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- 34f846cc: lint-ratchet (parse-error) bucket conflated 'Unused eslint-disable directive' with a real parse error
+
+**Kontextus:** backend3 mérése (7c79badc comment, 2026-11-15): `store/lint-ratchet.sh` COULD NOT MEASURE-t jelzett a 59ab01df8 (UPSTREAM-SYNC koteg 23, kártya 7c79badc) merge-eredményén, "parse errors 0 -> 10", és ez 3x blokkolta a landolást. A script 161. sora `message.get('ruleId') or '(parse-error)'` alapján bucketelt -- az ESLint nemcsak valódi, nem-parseolható fájlnál ad ruleId==null-t, hanem az "Unused eslint-disable directive" figyelmeztetésnél is. A 10 üzenet mind a második fajta volt (4 fájl felesleges eslint-disable kommentje), fatal:true SEHOL a 1773 fájlos riportban, `tsc --noEmit` tiszta -- a fa valójában hibátlanul parseolt.
+
+**Döntés:** a bucketelés `message.get('fatal')`-ra épül, nem a nyers ruleId-hiányra.
+
+- `(parse-error)` csak akkor, ha `fatal: true` (ESLint saját jelzése egy valódi, nem-parseolható fájlra).
+- `(unused-disable-directive)` a konkrét "Unused eslint-disable directive" figyelmeztetésre (szöveg-prefix alapján), saját ratchetelt vödörben -- nem eldobva, nem a parse-error-ral összemosva.
+- `(no-rule-id-other)` minden egyéb, eddig nevesítetlen ruleId-nélküli, nem-fatal üzenetre (ratchetelve, soha nem csendben eldobva).
+
+**Teszt:** `store/lint-ratchet.selftest.sh` 43 -> 47/47 PASS (a meglévő 43 eset `mk_report` segédje mostantól `fatal: true`-t generál a `parse=N` alakra, így a régi esetek jelentése változatlan maradt; 4 új eset W1-W4: W1 egy valódi fatal parse-error továbbra is blokkolja a bootstrapot a vak-futás küszöbön keresztül; W2 egy csak unused-disable-directive üzeneteket tartalmazó riport ZÖLDEN bootstrapol, a kiírt baseline `(unused-disable-directive)`-et tartalmaz, `(parse-error)`-t nem; W3 egy második, azonos-alakú futás egy már létező baseline mellett tisztán átmegy; W4 mutáció-ellenőrzés: a javítás kézzel visszafordítva PONTOSAN 2 eset (W2, W4) vált pirosra, a többi zöld marad -- visszaállítva, 47/47 ismét zöld). A 7c79badc merge-fan (59ab01df8) saját, korábban elmentett ESLint-riportján lefuttatva a javított bucketelés: `{'(unused-disable-directive)': 10}`, `(parse-error)` kulcs sehol -- a mérés most helyesen fut.
+
+**Ki döntött:** MikroB (dispatch, üzenet 19358, elfogadva a 7c79badc leletből). backend3 végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).

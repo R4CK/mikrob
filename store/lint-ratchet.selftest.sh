@@ -47,8 +47,12 @@ SHIM
 chmod +x "$TMP/bin/npx"
 export PATH="$TMP/bin:$PATH"
 
-# Build an ESLint JSON report from `rule=count` pairs. A bare `parse` count becomes messages with
-# no ruleId, which is exactly how a parse error reaches the counter.
+# Build an ESLint JSON report from `rule=count` pairs. A bare `parse` count becomes FATAL
+# messages with no ruleId -- ESLint's actual shape for a genuine unparseable file, and what the
+# script's (parse-error) bucket is supposed to catch (card 34f846cc: ruleId==null alone is NOT
+# enough, a non-fatal "Unused eslint-disable directive" message also has no ruleId). `unused=N`
+# builds that exact non-fatal, no-ruleId advisory instead, to test the bucket it must land in
+# now. `norule=N` builds a THIRD, unnamed ruleId-less non-fatal kind, for the fallback bucket.
 mk_report() {
   local out="$1"; shift
   python3 - "$out" "$@" <<'PY'
@@ -58,7 +62,17 @@ messages = []
 for pair in pairs:
     rule, n = pair.rsplit('=', 1)
     for _ in range(int(n)):
-        messages.append({} if rule == 'parse' else {'ruleId': rule})
+        if rule == 'parse':
+            messages.append({'fatal': True})
+        elif rule == 'unused':
+            messages.append({
+                'message': "Unused eslint-disable directive (no problems were reported from "
+                           "'@typescript-eslint/no-require-imports').",
+            })
+        elif rule == 'norule':
+            messages.append({'message': 'some other ruleId-less advisory'})
+        else:
+            messages.append({'ruleId': rule})
 json.dump([{'filePath': '/x/src/a.ts', 'messages': messages}], open(out, 'w'))
 PY
 }
@@ -581,6 +595,79 @@ run "$root" --update "--accept-blind-clear=$UA,$UV"
 [ "$CODE" = 3 ] \
   && ok "V5: a stale --accept-blind-clear list fails on a healthy run" \
   || bad "V5: a stale --accept-blind-clear list fails on a healthy run" "code=$CODE out=$OUT"
+
+# --- W1: a TRUE fatal parse error still lands in (parse-error), and the blind-check still fires -
+# (card 34f846cc, backend3 measurement on 7c79badc / 59ab01df8: fixing the false positive below
+# must not weaken the real signal). No type-aware rule reports (as a lost TS program would do),
+# parse errors rise above baseline -> still blind, still refused, same as before this fix.
+root="$(new_root --no-baseline)"; export REPORT_JSON="$TMP/w1.json"
+mk_report "$REPORT_JSON" "parse=12"
+run "$root" --bootstrap
+[ "$CODE" = 3 ] && echo "$OUT" | grep -q "NOT ONE finding from any type-aware rule" \
+  && ok "W1: a true fatal parse error still blocks bootstrap via the blind-run floor" \
+  || bad "W1: a true fatal parse error still blocks bootstrap" "code=$CODE out=$OUT"
+
+# --- W2: an 'Unused eslint-disable directive' message (ruleId==null, NOT fatal) is NOT a parse --
+# error. This is the actual bug (7c79badc / 59ab01df8, measured: 10 such messages, zero fatal,
+# tsc --noEmit clean, yet the unfixed script said "COULD NOT MEASURE -- parse errors 0 -> 10").
+# A healthy bootstrap (every type-aware rule still reports) must succeed and record the message
+# under its OWN bucket, not under (parse-error).
+root="$(new_root --no-baseline)"; export REPORT_JSON="$TMP/w2.json"
+mk_report "$REPORT_JSON" "unused=10" "$UA=101" "$UV=107"
+run "$root" --bootstrap
+if [ "$CODE" = 0 ]; then
+  baseline_after="$(cat "$root/store/lint-baseline.json")"
+  if echo "$baseline_after" | grep -q '"(unused-disable-directive)": 10' \
+     && ! echo "$baseline_after" | grep -q '"(parse-error)"'; then
+    ok "W2: unused-disable-directive messages bootstrap into their own bucket, not (parse-error)"
+  else
+    bad "W2: unused-disable-directive messages did not land in their own bucket" "$baseline_after"
+  fi
+else
+  bad "W2: a healthy run with only unused-disable-directive messages did not bootstrap" "code=$CODE out=$OUT"
+fi
+
+# --- W3: a SECOND run, same shape, against an EXISTING baseline that already has 10 recorded --
+# must pass clean (no false COULD-NOT-MEASURE, no false REFUSED) -- this is the actual 7c79badc
+# repro shape: the messages are not new, the script's own bucketing was just wrong about them.
+root="$(new_root --no-baseline)"; export REPORT_JSON="$TMP/w3-bootstrap.json"
+mk_report "$REPORT_JSON" "unused=10" "$UA=101" "$UV=107"
+run "$root" --bootstrap
+[ "$CODE" = 0 ] || bad "W3 setup: could not bootstrap" "code=$CODE out=$OUT"
+export REPORT_JSON="$TMP/w3-check.json"
+mk_report "$REPORT_JSON" "unused=10" "$UA=101" "$UV=107"
+run "$root"
+[ "$CODE" = 0 ] && echo "$OUT" | grep -q "no rule got worse" \
+  && ok "W3: a repeat run with the same unused-disable-directive count passes clean" \
+  || bad "W3: a repeat run with the same unused-disable-directive count did not pass clean" "code=$CODE out=$OUT"
+
+# --- W4: MUTATION-PROOF -- reverting the fix (any ruleId==null back to (parse-error) regardless --
+# of fatal/message text) must turn W2's healthy bootstrap RED, proving this selftest actually
+# exercises the fixed branch and is not vacuously green. Simulated directly against the counting
+# rule rather than by re-patching the script: a baseline that NAMES (parse-error) instead of
+# (unused-disable-directive) must now MISMATCH a correctly-bucketed run, which it does because
+# the two keys are different strings -- confirmed by asserting the real baseline (unused-disable-
+# directive) is what W2 wrote, not (parse-error) (same assertion as W2, repeated here as the
+# explicit mutation-proof control the Kesz-ha asks for).
+root="$(new_root --no-baseline)"
+cat > "$root/store/lint-baseline.json" <<'JSON'
+{
+  "(parse-error)": 10,
+  "@typescript-eslint/no-unsafe-argument": 101,
+  "@typescript-eslint/no-unused-vars": 107
+}
+JSON
+export REPORT_JSON="$TMP/w4.json"
+mk_report "$REPORT_JSON" "unused=10" "$UA=101" "$UV=107"
+run "$root"
+# Fixed script: 10 unused-disable messages count as (unused-disable-directive), which this
+# baseline does NOT have (0 -> 10, a brand-new rule at a nonzero count) -- REFUSED, not a false
+# "no rule got worse". A reverted script (unused=10 still bucketed as (parse-error)) would instead
+# match this exact baseline's "(parse-error)": 10 and print "no rule got worse", so this case
+# fails (goes green) under the old bug and passes (stays red) under the fix -- the mutation check.
+[ "$CODE" = 1 ] && echo "$OUT" | grep -q "(unused-disable-directive): 0 -> 10" \
+  && ok "W4: mutation-proof -- a baseline shaped for the OLD (parse-error) bucketing does not silently match" \
+  || bad "W4: mutation-proof check failed -- old bucketing would have matched this baseline" "code=$CODE out=$OUT"
 
 echo
 printf 'lint-ratchet selftest: %d passed, %d failed (%d cases)\n' "$pass" "$fail" "$((pass+fail))"
