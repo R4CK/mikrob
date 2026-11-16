@@ -26687,3 +26687,45 @@ Mutáció-ellenőrzés: route force/actor-továbbadás eltávolítva -> az új `
 Mutáció-ellenőrzés: az override-hiányzó szabály eltávolítva -> 5 teszt vörösre vált (4 HTTP + 1 unit), visszaállítva. `restartOptsFromBody` force/actor eltávolítva -> 8 teszt vörösre vált 2 fájlban, visszaállítva. `/restart` 409-leképezés eltávolítva -> 1 teszt vörösre vált, visszaállítva. `restartAgentProcessUnlocked` saját guard-hívása eltávolítva -> az új forrás-sorrend teszt vörösre vált (a saját -1 ellenőrzésén keresztül), visszaállítva. mopsion/mopsi actor-allowlist kibővítve bármilyen nem-üres névre -> az új non-owner eset mindkét selftestben vörösre vált, visszaállítva.
 
 **Ki döntött:** RedHat (komment 32270) lelet 1, és a round 3 REVIEW (32264) "szándékosan nem pinnelt" döntésének visszadobása (lelet 2b). backend végezte a javítást. Gate-SHA: 6f3061a1d.
+
+## 2026-11-16 -- 2ba008f2: credential-scope fence for the degraded-mode owner bypass
+
+elemzo plan-grilling on d5638d28 (comment 32144, C1): the degraded-mode guard owner bypass was
+actor===mikrob (kanban-force-actors.ts isForceActor), self-declared in the request body -- any
+caller holding the shared dashboard Bearer token (every sub-agent, and a buggy/stale/doubled
+degraded loop) can send that exact string, so the bypass proved nothing about who was actually
+calling.
+
+**Fix, two independent mechanisms (elemzo own C1 spec):**
+1. isForceActor refuses the force+actor bypass outright, for EVERY caller, while a session
+   outage is active (reads store/mikrob-session-outage.json directly, same staleness/future-skew
+   hardening as gemini-fallback-runner.ts own readSessionOutageActive -- re-implemented locally,
+   not imported, to avoid a circular import through db.js). A legitimate human override during
+   an outage still has the normal gate flow; only the one-field shortcut is removed.
+2. A new "night" DeviceKeyScope, mandatory short expiry (max 14 days), deny-by-default gate
+   (night-gate.ts, same chokepoint/shape as operator-gate.ts). Allowlist: GET under /api/kanban
+   (read-only), POST a comment (author+marker forced server-side), POST /api/messages (to
+   restricted to mikrob inside the route). Everything else refused, including PUT status:done,
+   POST /api/agents/:name/start, card create, and any future route.
+
+toScope()s fail-closed default for an unexpected stored scope value changed from operator to
+night -- night is the narrower blast radius (fixed 3-item allowlist vs. the whole
+/api/operator/* namespace).
+
+**Mérés:** night-gate.test.ts (20 cases) + kanban-force-actors.test.ts (7 cases), all 4 fix
+sites mutation-proven (disabling each flips exactly the matching case(s) red, restored clean).
+57 affected test files / 1103 tests green (every isForceActor/device-key-scope/tryHandleMessages
+touchpoint). tsc --noEmit clean.
+
+**Nincs benne:** MikroB extension (msg 19831, a6c7780d finding off cybersec) to also exclude
+sub-agent self-scheduling via POST /api/schedules -- NOT implemented. That route has zero auth
+checks on its agent body field, and the shared-token model gives no reliable way to tell which
+agent is really calling (elemzo own measured limit: X-Agent-Id is self-asserted, never
+authoritative). A night-scoped key is already excluded (outside its allowlist, no extra code
+needed); the BROADER gap needs per-agent device keys for every sub-agent -- new infrastructure,
+flagged for its own card rather than an under-specified guess here.
+
+**Ki döntött:** elemzo plan-grilling verdiktje (d5638d28 C1) alapján backend építi; MikroB
+döntés (komment 32162): HARD PRECONDITION -- semelyik degraded/night loop (d5638d28 C2 és később)
+nem hívhatja a done/land/agent-start végpontokat, amíg ez a kártya nincs kész. Gate: QA +
+Cybersec + Cybered.
