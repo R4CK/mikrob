@@ -118,6 +118,15 @@ function projectFromTitleTag(title: unknown): string | null {
 export const NO_PROJECT_MESSAGE =
   'A kártyához projekt szükséges: adj meg explicit "project" mezőt, vagy "parent_id"-t aminek van projektje, vagy használj [mopsion]/[cleancore]/[MikroB]/[marveen] cím-taget.'
 
+// Cybersec2 NO-GO on b296b810 (comment 32437, F1 MEDIUM): PUT only guarded the case where
+// normalizeProjectName resolves `project` to null -- that function only looks at STRING values,
+// so a non-string, non-null `project` (an array, object, number or boolean) passed through
+// untouched, and better-sqlite3 silently binds a one-element array as its element (e.g.
+// `{"project":[""]}` stored an empty-string project with a 200, the exact blank-project class
+// this card closes for a plain string). Rejected before normalizeProjectName even runs.
+export const INVALID_PROJECT_TYPE_MESSAGE =
+  'A "project" mezőnek szövegnek (string) vagy null-nak kell lennie, nem tömbnek/objektumnak/számnak/logikai értéknek.'
+
 // `project` here is already post-normalizeProjectName (a real canonical string, or null/undefined
 // if absent/cleared). `parentProject` is the ALREADY-RESOLVED project of the parent card (null if
 // no parent or the parent itself has none) -- callers pass it in rather than this function doing
@@ -1622,6 +1631,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // fires when the caller is ACTUALLY touching `project` and the result would be empty; a PUT
     // that never mentions `project` at all leaves the existing value alone, same as before.
     if ('project' in data) {
+      const rawProject = (data as Record<string, unknown>).project
+      if (rawProject !== null && rawProject !== undefined && typeof rawProject !== 'string') {
+        json(res, { error: INVALID_PROJECT_TYPE_MESSAGE }, 400)
+        return true
+      }
       const normalizedProjectCheck = normalizeProjectName(data)
       if (normalizedProjectCheck.project === null) {
         const effectiveParentId = typeof data.parent_id === 'string' && data.parent_id ? data.parent_id : (before?.parent_id ?? null)

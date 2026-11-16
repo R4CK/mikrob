@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
 import type http from 'node:http'
 import { initDatabase, createKanbanCard, getKanbanCard, getChildCards } from '../db.js'
-import { tryHandleKanban, resolveCardProject, NO_PROJECT_MESSAGE } from '../web/routes/kanban.js'
+import { tryHandleKanban, resolveCardProject, NO_PROJECT_MESSAGE, INVALID_PROJECT_TYPE_MESSAGE } from '../web/routes/kanban.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 function fakeCtx(path: string, method: string, body?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
@@ -138,6 +138,34 @@ describe('PUT /api/kanban/:id -- clearing project falls back the same way', () =
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard('untouched1')?.project).toBe('mopsion')
+  })
+
+  // Cybersec2 NO-GO (comment 32437, F1 MEDIUM): normalizeProjectName only looks at STRING
+  // values, so a non-string/non-null `project` passed the old guard untouched and
+  // better-sqlite3 silently bound a one-element array as its element -- {"project":[""]} stored
+  // an empty-string project with a 200, the exact blank-project class this card closes for a
+  // plain string.
+  it.each([
+    ['[""]', ['']],
+    ['[null]', [null]],
+    ['123 (a number)', 123],
+    ['true (a boolean)', true],
+    ['{} (an object)', {}],
+  ])('BLOCKING: a non-string, non-null project (%s) is rejected 400, card unchanged', async (_label, badProject) => {
+    createKanbanCard({ id: 'badtype1', title: 'Ordinary title', project: 'mopsion' })
+    const { ctx, out } = fakeCtx('/api/kanban/badtype1', 'PUT', { project: badProject })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toBe(INVALID_PROJECT_TYPE_MESSAGE)
+    expect(getKanbanCard('badtype1')?.project).toBe('mopsion')
+  })
+
+  it('BLOCKING: an array project is rejected even when the title carries a recognised tag (the tag is never consulted)', async () => {
+    createKanbanCard({ id: 'badtype2', title: 'Ordinary title', project: 'mopsion' })
+    const { ctx, out } = fakeCtx('/api/kanban/badtype2', 'PUT', { project: [''], title: '[mopsion] t' })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(getKanbanCard('badtype2')?.project).toBe('mopsion')
   })
 })
 
