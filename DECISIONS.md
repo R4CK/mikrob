@@ -26300,3 +26300,46 @@ felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szaba
 
 **Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
 backend2 vegezte a javitast. Gate: QA + Cybered.
+
+## 2026-11-16 -- 2e04a52e: scheduleSurfaceDeny 6-shape rés már zárva, upstream port nem kell
+
+**Kártya:** 2e04a52e ("port scheduleSurfaceDeny from upstream self-pace-gate.mjs: 6 self-scheduling
+shapes the fork currently allows"), a 4eb41f64/komment 27159 WhiteHat-mérésének follow-upja.
+
+**Állítás a kártyán:** WhiteHat archivált scripts/ fát mért mindkét ágból (SELF_PACE_AST=off,
+szintetikus PreToolUse JSON, semmi nem futott valóban), és a fork ENGEDÉLYEZETT, az upstream
+TILTOTT 6 self-scheduling alakot: python3 -c urllib POST a schedule API-ra, node -e fetch POST
+ugyanoda, curl zárójel-kiterjesztett (brace-expand) schedule-útra, egy puszta fájlírás közvetlenül a
+schedule-task store mappa alá, cp /dev/null ugyanoda, natív Write ugyanoda.
+
+**Kész, ha #1 végrehajtva:** a kártya saját elfogadási kritériuma szerint a 6 alakot ELŐSZÖR a LIVE
+fork gate ellen kell újramérni, nem csak az archivált-fa próba alapján elhinni. Megmértem közvetlenül
+a `gateDecision`-t (scripts/self-pace-gate.mjs) mind a 6 alakra: MINDEGYIK `deny:true`. A 7. alak
+(változó-összefűzött endpoint, amit a kártya szövege is "mindkét oldal engedi, upstream se teljes"
+néven mellékesen megemlít) `deny:false` marad -- ez megosztott, dokumentált, a kártya hatókörén
+kívüli rés.
+
+**Keresztellenőrzés a tényleges gate-futtatóval:** `store/fleet-test.sh src/__tests__/governance-gates.test.ts`
+@ b43de75ac -- 259/259 zöld, és ebben a fájlban mind a 6 alakra MÁR LÉTEZIK pin-elt regresszióteszt
+(python3 urllib több variánsban, brace-expand curl, natív Write/Edit a store-ra, cd+echo a mappa alá
+stb.) -- ezek nem ebben a kártyában születtek, hanem a fork saját, korábbi, önálló incidensének
+("4x HTTP 200" megjegyzés a tesztfájlban) javításaként, függetlenül az upstream-drift méréstől.
+
+**Következtetés:** a kártya előfeltétele (a fork ma is engedi a 6 alakot) ELAVULT -- a WhiteHat-mérés
+egy archivált, korábbi fa-állapotra vonatkozott, a fork saját hardeningje azóta lezárta a rést. Az
+upstream `scheduleSurfaceDeny` portolása ezért NEM indokolt: felesleges munka lenne, és az
+acknowledged-conflicts.ts saját megjegyzése szerint is kockázatos egy teljes csere (az upstream oldal
+emellett az AST-divergencia shadow-mode mechanizmust is lecseréli egy nem-átvizsgált worker_threads
+megoldásra -- az NEM ennek a kártyának a hatóköre).
+
+**Kód-változás:** `src/fork-upstream/acknowledged-conflicts.ts` scripts/self-pace-gate.mjs
+bejegyzése frissítve: a "6-shape gap, follow-up card 2e04a52e ports..." mondat helyett a mérési
+eredmény és a lezárás ténye áll, hogy a drift-map ne hivatkozzon tovább egy már nem létező
+teendőre. Nincs más kódváltozás -- sem a gate logikáján, sem a teszteken. `npx tsc --noEmit` tiszta.
+
+**Mérés:** élő `gateDecision` próba mind 6 alakra (deny:true mindegyikre) + `fleet-test.sh`
+governance-gates.test.ts @ b43de75ac (259/259 zöld, a pin-ek már léteznek). Gate: QA + Cybersec +
+Cybered (a kártya saját előírása, mert ez az autonom-kor incidenst megállító kontroll állapotáról
+szóló megállapítás).
+
+**Ki döntött:** backend saját mérése, a kártya saját elfogadási kritériuma szerint végrehajtva.
