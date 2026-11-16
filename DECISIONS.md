@@ -26490,3 +26490,36 @@ trust-boundary fájl van érintve: `agents-skills.ts`, `schedule-runner.ts`, ski
 **Nincs benne:** az `agent-process.ts`-ből kiesett "start race" log (restart elveszti a versenyfutást egy másik szupervizorral) kérdésként jelezve MikroB-nek -- önmagában hasznosnak tűnt, de a willWake-hez volt kötve; nem lett visszaépítve, amíg MikroB nem dönt.
 
 **Ki döntött:** MikroB (land refusal, msg 18922), backend3 végezte a gyökér-ok azonosítást és a javítást. Gate: QA + WhiteHat (+ RedHat, routes/skills.ts és agent-process.ts auth-közeli fájlok miatt).
+
+## 2026-11-16 -- ae5af304 (RedHat follow-up, bc32d233): oauth_token_file_check.py crash-as-clean javítás
+
+**Probléma:** `--bad-content-characters` és `--same-as-fleet-token` szigorú `encoding="utf-8"`-cal
+olvastak, nem fogták el a `UnicodeDecodeError`-t (az `except OSError` nem fedi, mert az előbbi egy
+`ValueError`). Egy nem-érvényes UTF-8 bájtot tartalmazó own-token-fájlon a script lefagyott
+(traceback stderr-re, amit a watchdog.sh `2>/dev/null`-ja elnyel), Python alap exit code 1-gyel --
+ami megkülönböztethetetlen a függvény saját, legitim "nem, tiszta"/"nem, nem másolat" válaszától
+(ugyanaz az 1-es kód). A `watchdog.sh`-ban az `if python3 ...; then REFUSE; fi` ezt a crash-et
+"nincs baj"-nak olvasta, és folytatta a (korrupt) fájl exportálásával. Élő kitettség ma nincs
+(a kártya szerint), de a hiba valódi és reprodukálható.
+
+**Fix:** mindkét olvasás `errors="replace"`-re váltott (ugyanaz a minta, mint a `resolve()` saját,
+korábbi javítása ugyanebben a fájlban) -- ez magát a crash-forrást zárja le. Emellett a `__main__`
+dispatch mindkét alparancsnál try/except-et kapott: egy ELŐRE NEM LÁTOTT kivétel is fail-closed
+(a REFUSE-t jelentő exit kóddal) zár, nem a "tiszta/nem-ugyanaz" kóddal -- a watchdog.sh oldalon
+semmit nem kellett módosítani, mert a Python oldal már a megfelelő exit kódot adja vissza.
+
+**Teszt:** `scripts/__tests__/watchdog-config-isolation.test.sh`, 2 új eset (53-54), `watchdog.sh
+--launch-env` élő futtatásán át: 53 egy érvénytelen UTF-8 bájtot tartalmazó own-token-fájlra
+ellenőrzi, hogy nem crashel át exportra; 54 ugyanazt a bájtot tartalmazó, a fleet-tokennel
+bájtra-azonos fájlra ellenőrzi, hogy VALÓDI REFUSE-t ad (nem a crash miatt "véletlenül" talál
+rá, hanem a javított összehasonlítás tényleg észreveszi). Mutáció-bizonyítás: a Python javítás
+visszaállítva (a teszt megmaradt) -- a 54. eset pirosra vált ("isolation=yes", azaz a korrupt,
+fleet-tokennel azonos fájlt EXPORTÁLTA volna), a többi (40-ből 39) zöld maradt; visszaállítva,
+újra 40/40 zöld. `python3 -m py_compile` és `bash -n` mindkét fájlon tiszta.
+
+A futtatás 24 előre létező, a változástól FÜGGETLEN hibát is mutat (node/needs-fleet-oauth
+predikátum-tesztek, ugyanannyi hibával a javítás NÉLKÜL futtatva is) -- ezek ennek a sandboxnak
+egy környezeti hiányossága, nem regresszió.
+
+**Ki döntött:** backend (self-advance, rule 6b legrégebbi dispatchelhető planned levél; kártya
+ae5af304, forrás: bc32d233 CYBERED GO, komment 14954). Gate: QA + Cybered.
