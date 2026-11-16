@@ -56,22 +56,28 @@ _ENV_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)*"
 _CMD = r"(?:^|[\n;&|(])\s*" + _ENV_PREFIX + r"(?:sudo\s+)?(?:time\s+)?(?:rtk\s+)?"
 
 _MUTATING_NPM = r"(?:ci|install|i|add|update|up|upgrade|dedupe|rebuild)"
-NOISY_PATTERNS = [
-    re.compile(_CMD + r"(?:npm|pnpm|yarn)\s+(?:[-\w]+\s+)*?" + _MUTATING_NPM + r"\b"),
-    re.compile(_CMD + r"(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|test)\b"),
-    re.compile(_CMD + r"npx\s+(?:[-\w@/.]+\s+)*?(?:vitest|jest|playwright|mocha|ava)\b"),
-    re.compile(_CMD + r"(?:go)\s+(?:build|test)\b"),
-    re.compile(_CMD + r"cargo\s+(?:build|test)\b"),
-    re.compile(_CMD + r"(?:python3?\s+-m\s+)?pytest\b"),
-    re.compile(_CMD + r"mvn\s+(?:[-\w]+\s+)*?(?:install|test|package|verify)\b"),
-    re.compile(_CMD + r"(?:\.\/)?gradlew?\s+(?:[-\w]+\s+)*?(?:build|test)\b"),
-    re.compile(_CMD + r"tsc\b(?![^\n;&|]*--noEmit\b[^\n;&|]*$)(?=[^\n;&|]*(?:$|[\n;&|]))"),
-    re.compile(_CMD + r"(?:webpack|vite)\s+(?:[-\w]+\s+)*?build\b"),
-    re.compile(_CMD + r"docker\s+build\b"),
-    re.compile(_CMD + r"docker[- ]compose\s+(?:[-\w]+\s+)*?up\b"),
-    re.compile(_CMD + r"apt(?:-get)?\s+(?:[-\w]+\s+)*?install\b"),
-    re.compile(_CMD + r"pip3?\s+install\b"),
+# Card 214ca312 FINDING 1 (Cybered NO-GO, comment on top of the bash/sh/zsh -c fix): the suffix
+# patterns live here ONCE, shared by two different prefixes below -- NOISY_PATTERNS (with the
+# wrapper-tolerant _CMD, used for detection/blocking in every mode) and _STRICT_NOISY_PATTERNS
+# (with a bare `^\s*`, used ONLY to decide rewrite eligibility). Keeping one list of suffixes
+# means a new noisy program only has to be added once, not kept in sync across two lists.
+_NOISY_SUFFIXES = [
+    r"(?:npm|pnpm|yarn)\s+(?:[-\w]+\s+)*?" + _MUTATING_NPM + r"\b",
+    r"(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|test)\b",
+    r"npx\s+(?:[-\w@/.]+\s+)*?(?:vitest|jest|playwright|mocha|ava)\b",
+    r"(?:go)\s+(?:build|test)\b",
+    r"cargo\s+(?:build|test)\b",
+    r"(?:python3?\s+-m\s+)?pytest\b",
+    r"mvn\s+(?:[-\w]+\s+)*?(?:install|test|package|verify)\b",
+    r"(?:\.\/)?gradlew?\s+(?:[-\w]+\s+)*?(?:build|test)\b",
+    r"tsc\b(?![^\n;&|]*--noEmit\b[^\n;&|]*$)(?=[^\n;&|]*(?:$|[\n;&|]))",
+    r"(?:webpack|vite)\s+(?:[-\w]+\s+)*?build\b",
+    r"docker\s+build\b",
+    r"docker[- ]compose\s+(?:[-\w]+\s+)*?up\b",
+    r"apt(?:-get)?\s+(?:[-\w]+\s+)*?install\b",
+    r"pip3?\s+install\b",
 ]
+NOISY_PATTERNS = [re.compile(_CMD + suffix) for suffix in _NOISY_SUFFIXES]
 
 _WRAPPER_RX = re.compile(
     r"(?:^|[\n;&|(])\s*(?:bash|sh|zsh)\s+-c\s+(['\"])(.*?)\1|(?:^|[\n;&|(])\s*eval\s+(['\"])(.*?)\3",
@@ -140,16 +146,22 @@ _LEADING_ENV_RX = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)+")
 # got rewritten into `bash .../noisy-run.sh sudo npm install` -- a line starting with `bash`, not
 # `sudo`, which a start-anchored deny rule like Bash(sudo:*) can no longer see.
 #
-# RedHat LOW (card 214ca312, ff43b10e follow-up): `bash -c '<noisy cmd>'` / `sh -c ...` /
-# `zsh -c ...` sat outside this list, so it was still REWRITTEN -- the same class of hole as
-# sudo, one layer removed. `_unwrapped_variants()` matches NOISY_PATTERNS against the string
-# INSIDE the quotes (so the guard still recognizes the noisy command hiding in there), but
-# `_rewrite_is_safe()` checks the RAW, outer command, whose first word is `bash`/`sh`/`zsh`, not
-# the noisy program -- so it passed the "first word is the noisy program itself" rule on a
-# technicality. Added here so it falls back to block-and-suggest like every other wrapper.
-_WRAPPER_DISQUALIFIES_REWRITE_RX = re.compile(
-    r"^\s*(?:sudo|doas|pkexec|time|rtk)\b|^\s*su\s+-c\b|^\s*(?:bash|sh|zsh)\s+-c\b"
-)
+# RedHat NO-GO round 2 (card 214ca312, on top of the bash/sh/zsh -c fix): a DENYLIST of named
+# wrappers is the wrong shape -- every wrapper not yet on the list is a new hole, and `eval` was
+# the next one: `_unwrapped_variants()` already unwraps `eval "<raw>"` to recognize a noisy
+# command hiding inside it (that is how detection/blocking works at all), but the old
+# `_WRAPPER_DISQUALIFIES_REWRITE_RX` never listed `eval`, so `eval "sudo npm install"` still got
+# REWRITTEN into `bash .../noisy-run.sh eval "sudo npm install"` -- the exact ff43b10e sudo
+# exploit, one more layer removed, past a start-anchored Bash(sudo:*) deny rule that only ever
+# sees the first word of the line it is given, "bash". Measured by RedHat 2026-11-16.
+#
+# Fix: replace the denylist with the POSITIVE rule it was always meant to approximate (MikroB
+# 19536: "rewrite ONLY when the first word is the noisy program itself") -- rewrite is eligible
+# ONLY when the raw command, after leading whitespace, matches one of `_STRICT_NOISY_PATTERNS`
+# directly (no _CMD wrapper tolerance at all). A denylist needs updating every time a new wrapper
+# is discovered; this allowlist needs nothing; any wrapper, named or not, simply fails to match
+# and falls back to block-and-suggest.
+_STRICT_NOISY_PATTERNS = [re.compile(r"^\s*" + suffix) for suffix in _NOISY_SUFFIXES]
 
 
 def _rewrite_is_safe(raw):
@@ -171,15 +183,15 @@ def _rewrite_is_safe(raw):
     also falls back to block-and-suggest, where the printed suggestion is read and retyped by a
     real shell that DOES parse the assignment.
 
-    RedHat NO-GO (comment 32154) + MikroB addendum (comment 32155/19536): a leading wrapper token
-    (sudo/doas/pkexec/su -c/time/rtk) ALSO falls back to block-and-suggest -- see
-    `_WRAPPER_DISQUALIFIES_REWRITE_RX` above. The rewrite may only fire when the command's first
-    word is the noisy program itself.
+    RedHat NO-GO round 2 (card 214ca312): any wrapper at all (named or not: sudo/doas/pkexec/
+    su -c/time/rtk/bash/sh/zsh -c/eval/...) falls back to block-and-suggest -- see
+    `_STRICT_NOISY_PATTERNS` above. The rewrite may only fire when the command's first word is
+    the noisy program itself, checked as a POSITIVE match, not a wrapper denylist.
     """
     return (
         not _METACHAR_RX.search(raw)
         and not _LEADING_ENV_RX.match(raw)
-        and not _WRAPPER_DISQUALIFIES_REWRITE_RX.match(raw)
+        and any(rx.match(raw) for rx in _STRICT_NOISY_PATTERNS)
     )
 
 

@@ -140,7 +140,11 @@ def check_rewrite_mode():
                 "sudo docker build -t x .", "time npm install", "rtk npm test",
                 # card 214ca312, ff43b10e follow-up LOW: bash/sh/zsh -c is the same class of hole
                 # as sudo -- the raw command's first word is the wrapper, not the noisy program.
-                "bash -c 'npm install'", "sh -c 'npm test'", "zsh -c 'npm ci'"):
+                "bash -c 'npm install'", "sh -c 'npm test'", "zsh -c 'npm ci'",
+                # card 214ca312 FINDING 1 (RedHat NO-GO round 2): eval was the NEXT wrapper the
+                # old denylist missed -- the positive _STRICT_NOISY_PATTERNS rule closes this and
+                # every other wrapper, named or not, in one rule instead of enumerating them.
+                'eval "sudo npm install"', 'eval "npm install"', "eval 'pip install requests'"):
         rc, out, err = run_with_mode(cmd, mode="rewrite")
         if rc != 2 or out.strip() or not err.strip():
             failures.append(
@@ -152,16 +156,17 @@ def check_rewrite_mode():
     # (b3) doas/pkexec/su -c are not recognized by _CMD's wrapper grammar at all (only
     # sudo/time/rtk are), so a command using them is not matched by any NOISY_PATTERNS and is
     # untouched in every mode -- this is PRE-EXISTING, unrelated to this fix, documented here so a
-    # future _CMD change that adds them is forced to also extend
-    # _WRAPPER_DISQUALIFIES_REWRITE_RX (same rx literal) rather than silently missing it.
+    # future _CMD change that adds them is forced to check this test still passes (the positive
+    # _STRICT_NOISY_PATTERNS rule needs no matching update -- an unrecognized-as-wrapper command
+    # that newly becomes DETECTED as noisy would simply fail the strict-prefix match too, since
+    # its first word still is not the noisy program, and fall back to block-and-suggest).
     for cmd in ("doas npm ci", "pkexec pip install requests"):
         for mode in (None, "block", "rewrite"):
             rc, out, err = run_with_mode(cmd, mode=mode)
             if rc != 0 or out.strip() or err.strip():
                 failures.append(
                     f"unrecognized-wrapper command {cmd!r} was touched under mode={mode!r} "
-                    f"(rc={rc}, out={out[:160]!r}, err={err[:160]!r}) -- if _CMD now recognizes "
-                    f"this wrapper, _WRAPPER_DISQUALIFIES_REWRITE_RX must too"
+                    f"(rc={rc}, out={out[:160]!r}, err={err[:160]!r})"
                 )
 
     # (c) rewrite mode on a non-noisy command: still allow, but no rewrite (no stdout JSON) --
