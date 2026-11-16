@@ -26956,3 +26956,35 @@ továbbra is OFF-ot olvas (változatlan, tesztelve).
 **Ki döntött:** WhiteHat (üzenet 19821) + RedHat (32303) lelet. backend végezte a javítást.
 Gate-SHA: 69631bae486fd506855c9c0c6172da245cf3d890. Gate: QA + Cybersec + Cybered (kártya saját
 előírása).
+
+## e3cf26d0 round 2: QA2 FAIL (komment 32542) két hiányzó pont javítva
+
+A round 1 REVIEW (f73ca32a0) alatt QA2 két Kész-ha-pontot talált nyitva (relézve MikroB üzenet
+20096-ban):
+
+1. **Explicit-path hiányzó fájl még OFF-ot olvasott.** A `readDegradedOrchestratorState(explicitPath)`
+   egy hiányzó, EXPLICIT path argumentumra `off`-ot adott vissza, holott MikroB döntés 32246(b)
+   már korábban (d5638d28 round 4) fail-closed-ra állította az env-override ugyanilyen esetét. MikroB
+   üzenet 20096: a 32246(b) döntés az explicit-path alakra is vonatkozik -- egy hívó által átadott
+   path ugyanolyan hívó-kontrollált érték, mint az env override, a hiánya ugyanúgy anomália, nem az
+   owner szándékos OFF-ja. Javítva: a hiányzó-path OFF-ág mostantól CSAK a valódi production
+   default-ra érvényes (se env override, se explicit argumentum) -- mindkét másik eset
+   (`unreadable`) lesz. A két régi, az ELŐZŐ viselkedést pinnelő teszt frissítve az ÚJ
+   viselkedésre, plusz egy külön teszt a változatlan valódi-default esetre.
+2. **MikroB addendum (kártya komment 32433, RedHat GO d5638d28 @49bb67aef üzenet 19908): a
+   `kanban.ts`/`kanban-force-actors.ts` actor-szűkítése unpinned volt egy olyan mutánsra, ami egy
+   nem-string actort az owner-bypasshoz juttatna.** Pótolva: unit pin `kanban-force-actors.test.ts`-ben
+   (`isForceActor` egy toString/valueOf-fal "mikrob"-nak látszó objektumra és egy `['mikrob']`
+   tömbre is `false`-t kell adjon -- a `Set.has()` SameValueZero-szemantikáját pinneli egy
+   coerce-elő összehasonlításra cserélő mutáns ellen); 3 integrációs pin
+   `kanban-move-degraded-orchestrator-guard.test.ts`-ben (POST /move, PUT, POST create-as-done,
+   mindhárom `actor:["mikrob"], force:true`-t küld degraded állapotban, és az owner-bypass NEM
+   érvényesül).
+
+**Mérés:** `fleet-test.sh --ref card/e3cf26d0` (`degraded-orchestrator-guard.test.ts`,
+`kanban-force-actors.test.ts`, `kanban-move-degraded-orchestrator-guard.test.ts`): 3 Test Files
+passed (3), 60 Tests passed (60). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** QA2 FAIL (komment 32542), relézve MikroB üzenet 20096-ban. backend végezte a
+javítást. Gate-SHA: 8c23bbd67a41f9c61e79daaabb0b8d712d5cd4bc. Gate: QA + Cybersec + Cybered
+(kártya saját előírása).
