@@ -144,6 +144,20 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee('miㅤkrob')).toBe(true)
   })
 
+  // Card 30aa8b29 R2: the full invisible-filler/format set RedHat's own follow-up named
+  // (U+115F, U+1160, U+3164, U+FFA0, U+200B-U+200D, U+2060) was already caught by the generic
+  // fail-closed non-ASCII-residue rule above (confirmed directly against isForbiddenAssignee
+  // before this test existed), but only U+115F/U+3164/U+200B had their own pinned case -- this
+  // locks in the remaining four individually so a future regression in the rule's letter/format
+  // handling cannot silently reopen any one of them.
+  it('pins the remaining named invisible/filler code points individually (card 30aa8b29 R2)', () => {
+    expect(isForbiddenAssignee('miᅠkrob')).toBe(true) // HANGUL JUNGSEONG FILLER
+    expect(isForbiddenAssignee('miﾠkrob')).toBe(true) // HALFWIDTH HANGUL FILLER
+    expect(isForbiddenAssignee('mi‌krob')).toBe(true) // ZERO WIDTH NON-JOINER
+    expect(isForbiddenAssignee('mi‍krob')).toBe(true) // ZERO WIDTH JOINER
+    expect(isForbiddenAssignee('mi⁠krob')).toBe(true) // WORD JOINER
+  })
+
   it('catches dotless/dotted Turkish i, small-caps, Greek iota/kappa, and Armenian o (RedHat delta B2)', () => {
     expect(isForbiddenAssignee('mıkrob')).toBe(true) // dotless i
     expect(isForbiddenAssignee('MİKROB')).toBe(true) // Turkish capital dotted I
@@ -154,6 +168,13 @@ describe('isForbiddenAssignee (pure check)', () => {
 
   it('catches a combining mark NFKC leaves attached (RedHat delta B2)', () => {
     expect(isForbiddenAssignee('mi̇krob')).toBe(true) // explicit combining dot above
+  })
+
+  // Card 30aa8b29 R4 (QA note): "mi krob" -- an internal-space-padded form of the literal
+  // name -- is already caught by the existing letters-and-digits-only filter (the space is
+  // stripped before the equality check), but had no dedicated pin naming exactly that form.
+  it('catches an internal-space-padded form of the literal name ("mi krob", card 30aa8b29 R4)', () => {
+    expect(isForbiddenAssignee('mi krob')).toBe(true)
   })
 
   it('still does not false-positive on a mid-string space or a different real value (negative controls, RedHat delta B2)', () => {

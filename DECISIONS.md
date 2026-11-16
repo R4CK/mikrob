@@ -26300,3 +26300,61 @@ felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szaba
 
 **Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
 backend2 vegezte a javitast. Gate: QA + Cybered.
+
+## 2026-11-16 10:22 -- Kártya 30aa8b29: assignee=mikrob tiltás maradékai (sablon, lathatatlan karakterek, nyers INSERT utak)
+
+**Forrás:** kovetokartya az e25a549a lezarasahoz (RedHat 16106, QA 10687), Peti szabaly 10943
+(assignee soha nem mikrob). Gate: QA + Cybered.
+
+**R1 (sablon-hiba):** `templates/CLAUDE.md.template` 156. sora az "Uj kartya" curl-pelda
+`assignee`-jebe `{{MAIN_AGENT_ID}}`-t irt -- ez ezen a telepitesen `mikrob`-ra rendereli, amit a
+sajat guard-ja elutasitana. Javitva egy sorsa-fuggetlen `SZEREP_UGYNOK` placeholderre, plusz egy
+sor, ami kimondja: az assignee mindig szerep-ugynok, soha a fo-ugynok sajat neve. Grep-auditalva
+az osszes `templates/` es `seed-skills/` fajl `assignee` kornyezetben allo `MAIN_AGENT_ID`-jere --
+mas talalat nem volt.
+
+**R2 (teszt-les):** az U+115F/U+1160/U+3164/U+FFA0/U+200B-U+200D/U+2060 lathatatlan/toltokarakter-
+csoport MINDEGYIKE mar helyesen tiltott volt (`isForbiddenAssignee`-t direktben probalva, mind
+`true`), de csak harom (U+115F, U+3164, U+200B) kapott korabban sajat pinnelt tesztet. A maradek
+ot (U+1160, U+FFA0, U+200C, U+200D, U+2060) most egy uj, dedikalt teszteset rogziti egyenkent
+(`src/__tests__/kanban-assignee-guard.test.ts`).
+
+**R3 (nyers INSERT/UPDATE utak, a valodi gap):** ket hely irta a `kanban_cards.assignee` oszlopot
+a `src/web/kanban-assignee-guard.ts` write-hatara MELLETT, nem az altal:
+  1. `src/web/fleet-transfer.ts` fleet-import -- egy tars-flotta exportjabol nyers `db.prepare(...).run(...)`-
+     tel masolta be a kartyakat. Javitas: import elott `isInvalidAssigneeShape`/`isForbiddenAssignee`-vel
+     szurve, tiltott/rossz-alaku ertek `null`-ra esik (a kartya ettol fuggetlenul letrejon, nem dobodik
+     el) -- ugyanaz az elv, mint a mellette allo `importedLabelColor` sanitizalas.
+  2. `scripts/kartya-es-ertesites.py` (a ClaudeClaw-vendorolt, MASIK fleet-nevkonvenciot hasznalo
+     kartyafelveteli/kommentelo eszkoz, sajat `COORDINATOR='marveen'` konstanssal, amire a FLEETKIVETEL922
+     teszt szerint SZANDEKOSAN szabad kartyat nyitni -- ez NEM a mi mikrob-tilalmunk hatokore).
+     Döntés: a guard ide a MI VALODI koordinatorunk neve ("mikrob") ellen vonatkozzon, NEM a szkript
+     sajat COORDINATOR-konstansa ellen -- a ket nev kulonbozo rendszer, kulonbozo jogos hasznalat.
+     Uj `_tiltott_felelos()` fuggveny `_felelos_feloldas()` elejen, ami a mar meglevo `gyanus()`
+     (altalanos, BARMELY felelosre vonatkozo vegyes-irasrendszeru homoglifa-szures) MELLETT, nem
+     helyette fut: csak azt a ket resret zarja, amit `gyanus()` szandekosan nem fed -- tiszta ASCII
+     eset/szokoz/irasjel/nem-betu-lathatatlan alakok, es a magyar ekezet-helyettesites (mikrób,
+     mikrőb stb.), ugyanaz a hianyossag-par, mint a TS `isForbiddenAssignee` round-5 fixe.
+     Elso proba (fail-closed minden nem-ASCII maradekra, az `isForbiddenAssignee` TS-mintajat
+     szorol-szora atvetve) a `kartya-mezomozgatas.test.py` 2 meglevo tesztjet torte (26/27: egy
+     MASIK, nem-koordinator nevre -- "sаmmu", Cirill а -- irt homoglifa-probat a sajat, felreveto
+     uzenetevel takart el a `gyanus()` ELOL) -- a `gyanus()` mar lefedi a betu-kategoriaju
+     homoglifakat BARMELY nevre, a ketto nem helyettesitheti egymast ugyanazzal a logikaval.
+     Javitva: a fail-closed residue-szabaly eltavolitva, csak a literalis azonossag (+ekezet-levetel)
+     marad `_tiltott_felelos`-ban.
+
+**Teszt:** uj `src/__tests__/kanban-assignee-guard.test.ts` esetek (R2: 5 uj pin, R4: "mi krob"
+belso-szokozos alak); uj `src/__tests__/fleet-transfer.test.ts` eset (forbidden/malformed assignee
+import -> null, kontrollal); uj `scripts/__tests__/kartya-mikrob-tiltas.test.py` (18 allitas: create
++ comment-mode mindket iras-uton, negativ kontroll a sajat COORDINATOR='marveen' konvenciora).
+Minden meglevo `kartya-*.test.py` (14 fajl) es a `kanban-assignee-guard`/`fleet-transfer` TS-tesztek
+zoldek maradtak.
+
+Mutacio-ellenorzes: a fleet-transfer sanitizalas kikapcsolasaval 1 TS-teszt vorosre valt; a Python
+`_tiltott_felelos()` hivas kikapcsolasaval 12/18 allitas vorosre valt (create-mod minden ASCII-alakja
++ comment-mod, ez utobbi csak `--assignee-uj`-vel izolalva a masik, nem-kapcsolodo "ismeretlen nev"
+kaputol). Mindket mutans visszaallitva, ismet zold. `npx tsc --noEmit` tiszta (ugyanaz a 3, korabbrol
+ismert, parse5-hianyos hiba), `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+**Ki döntött:** backend2 (self-advance pickup, a kártya 2 napnál régebbi `planned` elemkent
+elsobbseget kapott a 6b. szabaly szerint). Gate: QA + Cybered.
