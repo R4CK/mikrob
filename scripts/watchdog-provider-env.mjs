@@ -47,7 +47,7 @@ const VALID_AUTH_MODES = new Set(['shared', 'own_team', 'api'])
 
 try {
   const { resolveAgentModelFromConfig } = await import(join(projectRoot, 'dist', 'model-profiles.js'))
-  const { readModelProfileMap, resolveModelId, DEFAULT_MODEL } = await import(
+  const { readModelProfileMap, resolveModelId, DEFAULT_MODEL, resolveRemoteConfig } = await import(
     join(projectRoot, 'dist', 'web', 'agent-config.js')
   )
   const { resolveOpenRouterModel } = await import(join(projectRoot, 'dist', 'web', 'openrouter-models.js'))
@@ -57,6 +57,41 @@ try {
   const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
 
   const config = readConfig(agentDir)
+
+  // Card 11c6cab4 R3 (RedHat follow-up on 657b32f2, comment 14986): this is the SECOND launch
+  // site (the dashboard start path is agent-process.ts's startAgentProcessUnlocked) that builds a
+  // provider env from an agent's config, and until now it knew about neither of the two things
+  // that site refuses loudly for. Both checked here, both refuse (exit non-zero, no output) --
+  // this script's own existing fail-closed convention, not a new one.
+  //
+  // (a) customProvider present but not a usable non-empty string (R1's bug, same predicate,
+  // re-derived from the already-parsed `config` object this script holds -- the real
+  // isAgentCustomProviderFieldUnusable()/readAgentCustomProvider() pair in agent-config.ts are
+  // path-based (agentDir(name)/agent-config.json) and cannot be reused here: this script is
+  // fixture-tested against a TEMP directory distinct from the real agents/ tree
+  // (watchdog-provider-env-parity.test.ts), so the customProviderId line below already computes
+  // it from `config` directly rather than calling the path-based reader -- same reason this
+  // refusal re-derives "present" from `config` instead of calling the path-based checker too).
+  if ('customProvider' in config) {
+    const v = config.customProvider
+    if (!(typeof v === 'string' && v.trim())) {
+      console.error('customProvider: field present but not a usable non-empty string -- refusing rather than treating it as unset')
+      process.exit(2)
+    }
+  }
+
+  // (b) a remote (ssh) agent: resolveProviderEnv has no effect on the remote launch path at all
+  // (agent-process.ts's own refuseRemoteCustomProvider comment), so this script has nothing
+  // correct to export for one -- refuse rather than silently computing a value nothing will use.
+  // resolveRemoteConfig is the real, imported validator (host/workdir character-class + parent-
+  // traversal checks), not a hand-rolled duplicate -- it takes a raw JSON string, which readConfig
+  // above already consumed, so it is re-derived here via JSON.stringify(config) rather than
+  // threading a second raw-string return value through readConfig for this one caller.
+  if (resolveRemoteConfig(JSON.stringify(config)).host) {
+    console.error('remote agent: watchdog-provider-env has no effect on the ssh launch path -- refusing rather than computing an unused value')
+    process.exit(2)
+  }
+
   const resolved = resolveAgentModelFromConfig(config, readModelProfileMap(), DEFAULT_MODEL, resolveModelId)
   const model = resolveOpenRouterModel(resolved.model)
   const customProviderId =
