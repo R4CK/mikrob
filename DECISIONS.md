@@ -26723,3 +26723,40 @@ kitalálva.
 **Ki döntött:** backend3, a merge feloldása és verifikációja önállóan; a kártya priorizálása és a
 Card A/B/C sávosítás MikroB iránymutatása (msg 19483). Gate: QA + Cybersec + Cybered (trust-boundary
 fájlok: settings.json, hooks, routes, db.ts, kanban.ts). Gate-SHA: lásd REVIEW komment.
+
+## 9ea8dcb8: self-pace-gate nohup/claude false positive -- scratchpad-útvonal ártalmatlan szó, nem a futó parancs
+
+DevO (üzenet 20038) jelezte rögtön a 2e04a52e hook élesítése után: a
+`scripts/self-pace-gate.mjs` `SELF_PACE_BASH_PATTERNS` tömbjének nohup/setsid/disown-önújraindítást
+figyelő sora (`/\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i`) horgonyozatlan volt -- a célnevet a
+szegmens BÁRHOL később megtalálta, nem csak a tényleges futó parancsszóban. Minden ügynök
+scratchpad-útvonala `/tmp/claude-1000/...` alakú, tehát egy háttérbe küldött, csak odalogoló parancs
+(`nohup bash store/marveen-land.sh ... > /tmp/claude-1000/x/log 2>&1 &`) is elutasításra került,
+holott a cél-bináris sosem indult el.
+
+**Javítás:** a regex-sort egy `nohupRelaunchesClaude()` függvényre cseréltem (a kódminőségi
+alapelvek 12. pontja szerint: szimbólum-jelenlét sosem részsztring). A függvény a trigger-szó
+(nohup/setsid/disown) UTÁNI tokent nézi, átlépve a `heredocOwnerRunsBody` már meglévő pass-through
+prefix-listáján (env-hozzárendelés, sudo/env/nice/time/exec/command/stdbuf), és csak akkor jelez,
+ha az így kapott parancsszó basename-je PONTOSAN a cél-bináris neve -- egy láncolt
+`nohup setsid <cél>` is lefedve, mert a `setsid` maga is trigger-szó, a scan onnantól újraindul.
+A hívó oldalt (`SELF_PACE_BASH_PATTERNS.some(...)`) kiterjesztettem, hogy a tömb elemei lehessenek
+regex VAGY függvény.
+
+**Kész, ha (a kártya saját listája):**
+- `nohup bash store/marveen-land.sh ... > /tmp/claude-1000/x/log 2>&1 &` -> allowed (teszt: "does
+  NOT misfire on claude inside a scratchpad path argument, not the command word").
+- `nohup <cél> ...`, `setsid <cél> -p ...`, `nohup env X=1 <cél> ...`,
+  `nohup /abs/path/<cél> ...` -> továbbra is denied (teszt: "still denies every real
+  nohup/setsid/disown + claude relaunch shape", 5 alak).
+- governance-gates suite zöld; a régi regexre visszamutáló mutáns (a fix sorát visszaírva az
+  eredeti unanchored regexre) az új allow-esetet pirosra fordítja.
+
+**Mérés:** `npx vitest run src/__tests__/governance-gates.test.ts` (uncommitted fán, a mutáció-próba
+miatt nem `fleet-test.sh --ref`-fel, hanem `noisy-run.sh`-n át, a `fleet-test.sh --ref` csak
+committolt git-refet tesztel): 271 Test (271) passed a javított kódon; a regex-mutánson 1/271 piros
+(pont az új allow-eset), visszaállítva ismét 271/271 zöld. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** DevO lelete (üzenet 20038), MikroB nudger-dispatch (self-advance, msg 20189).
+backend végezte a javítást. Gate-SHA: 7066c34750d629291c8a4631563fd176d586d5d0. Gate: QA +
+Cybersec (a kártya saját előírása).
