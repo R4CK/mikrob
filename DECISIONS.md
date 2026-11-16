@@ -26604,3 +26604,26 @@ follow-up kártyára vár (nincs benne, lásd a REVIEW).
 
 **Ki döntött:** RedHat (Cybered) lelete alapján backend korrigálja; Gate: QA + Cybersec + Cybered
 (változatlan, a kártya saját előírása).
+
+## 81593084 -- MT-10 importerek bekötve egy futtatható CLI-be
+
+A négy MT-10 importer (import-findings.ts, import-decisions-log.ts, import-cold-memories.ts,
+import-anti-patterns.ts) már régebben elkészült és le lett tesztelve a gyerek-kártyák alatt
+(63206155/bb0cadd9/76c2efb1/33e5e4ff + 49b96b30/61348647/4ecd75d0/80ab5067, mind done), de
+sosem hívta meg őket semmi: mérve (`sqlite3 store/knowledge-graph.db "select type, count(*)
+from kg_nodes group by type"`) csak solution/card/commit sor volt, decision/finding/error_class/
+lesson/anti_pattern nulla. Ez a kártya a hiányzó hívás: `src/kg/import-mt10-cli.ts`
+(`runImportMt10Cli`/`runImportMt10`, injektált deps a teszthez) + `scripts/kg-import-mt10.ts`
+(a tényleges belépési pont), `KG_CAPTURE_ENABLED`-re kapuzva (ugyanaz a kapcsoló, amit a
+kg-backfill.ts/MT-06 is használ az írási oldalra), idempotens (minden importer saját, tartalom-
+alapú id szerint upsertel).
+
+**Mérés:** `src/__tests__/kg-import-mt10-cli.test.ts`, fleet-test.sh --ref card/81593084
+(e6c1b8fcb61b45cb8596e20591de4ab6fe853632 alapon épült dist-tel futott), 1 fájl / 7 teszt zöld.
+`tsc --noEmit` tiszta.
+
+**Ki döntött:** a kártya saját terve (MikroB 20666/c65add5a MODULTERV, 2026-10-16) + MikroB
+döntés 32210 (ne a code-review-graph saját gráfját bővítsük, külön store/knowledge-graph.db
+fájl marad, project-partícióval -- lásd a Peti 11541 döntést). Gate: QA (funkcionális, nincs
+trust-boundary-váltás) + Cybersec (KG_CAPTURE_ENABLED kapu + a DECISIONS.md/cold-memories
+olvasás secret-szűrése miatt, az import-* modulok már ezt a gate-réteget hordozzák).
