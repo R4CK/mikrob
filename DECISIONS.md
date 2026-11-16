@@ -26300,3 +26300,35 @@ felreerthetoen fogalmazta meg; ez a bejegyzes nem irja at azt (append-only szaba
 
 **Ki döntött:** MikroB addendum (Fix-Direction: MikroB, uzenet 19523/19536, RedHat 32154 alapjan).
 backend2 vegezte a javitast. Gate: QA + Cybered.
+
+## 2026-11-16 -- fleet-test.sh TREE-lock wait/run logging (kartya c5ff36bf, Gate-SHA 087c680cf)
+
+**Dontes:** a tenyleges atereszto-kepesseg-redesign (scoped futasok ne alljanak sorba teljes futasok
+mogott) ELOTT egy kulon, nem-viselkedes-valtozo commit keruljon be, ami csak NAPLOZZA a mar meglevo
+TREE-lock sor (egy kozos /home/neon/marveen-test fa + lock, ami MINDEN futast sorba allit, fuggetlenul
+a fajl-korrol) varakozasi es futasi idejet. Korabban ehhez NEM volt tartos naplo -- csak egy stderr
+echo, amit a terminal elgoerdit. A CPU-slot szemafor fazis mar postol kanban kommentet (PAUSED/RESUMED-
+SEMAPHORE), de az NEM ez a fazis, es nem is az, amire a panaszok (b7d8ecc4, c5ff36bf) vonatkoznak.
+
+**Miert eloszor ez:** a kartya sajat "Kesz, ha" sorrendje ("today's wait/run table posted as a comment
+before any code change") LOG NELKUL nem tarthato be -- nincs log, amibol a tablat fel lehetne epiteni.
+MikroB dontese (komment 32328, uzenet 19762): a "table before code" valojaban "nincs viselkedes-
+valtozas a meres elott"-et jelentette, es egy nem-viselkedesi naplo-sor pontosan ez -- tehat a
+naplozas-only commit megy elore, QA-only kapuval (nincs futas-sorrend/idozites valtozas), utana
+legalabb 4 munkaora valodi adat gyujtese, csak AZUTAN a tablazat + redesign-javaslat.
+
+**Mi keszult:** `fleet_test_log_lock_event()` (store/fleet-test.sh) egy sort fuz a
+`${ROOT}-fleet-test-lock.log`-hoz minden futas vegen (ts, pid, priority rank+nev, scope=full|
+scoped:<n>, ref, wait_s, run_s, status), plus egy `timeout` esemenyt, ha a futas sosem kapta meg a
+lock-ot. Best-effort (`|| true`, stderr elnyomva) -- a naplozas sosem buktathatja el vagy lassithatja
+a valodi tesztfutast. Uj `store/fleet-test-lock-log.selftest.sh` (sed-kivonat a valodi fuggvenybol,
+ugyanaz a minta mint `fleet-test-priority-lane.selftest.sh`), 16/16 zold, mutacio-ellenorzessel.
+
+**Ismert hianyossag, vallaltan:** egy lock-tartas kozben bekovetkezo `die()` (worktree checkout/npm ci/
+build hiba) nem naplozza a run_s-t -- ezt a reszt EXIT trap-pel lehetne lefedni, de a script mar ket
+EXIT trap-et hasznal TMPDIR/run_log takaritasra, es egy harmadik belefuzese pont azt a viselkedes-
+valtozas-kockazatot hozna be, amit ez a kartya el akar kerulni egy olyan szelsoseges esetert, ami nem
+a sorban-allas (a mert jelenseg), hanem egy infra-telepitesi hiba.
+
+**Ki döntött:** MikroB (komment 32328, uzenet 19762). backend3 vegezte. Gate: QA (only, MikroB
+explicit dontese -- naplozas-only, nincs viselkedes-valtozas).
