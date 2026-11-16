@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readdirSync, mkdirSync, writeFileSync, unlinkSync, rmSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readdirSync, mkdirSync, unlinkSync, rmSync, statSync } from 'node:fs'
 import { join, sep, basename } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -8,9 +8,14 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-config.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
+import {
+  approvePending, getPending, importArchiveToPending, listPending, nameConflict, queueGeneratedSkill, rejectPending, targetRoot,
+  type SkillTarget,
+} from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
-import { sanitizeSkillName, shellEscape, findSymlinkTaintedEntries } from '../sanitize.js'
+import { sanitizeSkillName, shellEscape } from '../sanitize.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -246,6 +251,61 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // The approval queue. GET lists every pending skill with its file list, scan
+  // report and hash; approve takes the hash the approver was shown.
+  //
+  // CYBERED NO-GO F2 (card 7c79badc, bd32ad68 class) + WhiteHat follow-up (msg 18793/18794):
+  // all four routes below -- not only approve/reject -- are gated to a human credential. The
+  // pending queue's own content (full file text, scan findings, the exact hash that unlocks an
+  // install into the fleet-wide ~/.claude/skills) is itself the sensitive surface; RedHat's
+  // original measurement showed a hand-written pending dir + approve returning 200 with the
+  // shared bearer, which also means list/detail were never meant to be bearer-reachable either.
+  // Same human-only posture as memories.ts's backfill gate: a browser session, or Peti's own
+  // (non-agent) device key, is required; the shared bearer (kind token), a federation peer and
+  // an agent's own device key are all refused.
+  const isPendingRoute = path === '/api/skills/pending' || /^\/api\/skills\/pending\/[^/]+(\/(approve|reject))?$/.test(path)
+  if (isPendingRoute) {
+    const isHumanDevice = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) === null
+    if (ctx.auth?.kind !== 'session' && !isHumanDevice) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none', path }, 'Skill pending queue: rejected for non-human credential')
+      json(res, { error: 'A várakozó skillek listája/jóváhagyása/elvetése csak a tulajdonos munkamenetéből vagy saját eszközkulcsával lehetséges, a megosztott flotta-tokennel nem.' }, 403)
+      return true
+    }
+  }
+  if (path === '/api/skills/pending' && method === 'GET') {
+    json(res, listPending())
+    return true
+  }
+  const pendingDetailMatch = path.match(/^\/api\/skills\/pending\/([^/]+)$/)
+  if (pendingDetailMatch && method === 'GET') {
+    let p
+    try { p = getPending(decodeURIComponent(pendingDetailMatch[1])) } catch { p = null }
+    if (!p) { json(res, { error: 'Pending skill not found' }, 404); return true }
+    json(res, p)
+    return true
+  }
+  const pendingActionMatch = path.match(/^\/api\/skills\/pending\/([^/]+)\/(approve|reject)$/)
+  if (pendingActionMatch && method === 'POST') {
+    const id = decodeURIComponent(pendingActionMatch[1])
+    if (pendingActionMatch[2] === 'reject') {
+      let ok = false
+      try { ok = rejectPending(id) } catch { ok = false }
+      if (!ok) { json(res, { error: 'Pending skill not found' }, 404); return true }
+      logger.info({ id }, 'Pending skill rejected')
+      json(res, { ok: true })
+      return true
+    }
+    const body = await readBody(req)
+    let hash: unknown
+    try { hash = (JSON.parse(body.toString() || '{}') as { hash?: unknown }).hash } catch { hash = undefined }
+    let r
+    try { r = approvePending(id, hash) } catch { r = { ok: false as const, status: 404, error: 'Pending skill not found' } }
+    if (!r.ok) { json(res, { error: r.error }, r.status); return true }
+    logger.info({ id, name: r.name, path: r.path, auth: ctx.auth?.kind }, 'Pending skill approved and installed')
+    json(res, { ok: true, name: r.name })
+    return true
+  }
+
   const globalSkillDetailMatch = path.match(/^\/api\/skills\/([^/]+)$/)
   if (globalSkillDetailMatch && method === 'GET') {
     const skillName = decodeURIComponent(globalSkillDetailMatch[1])
@@ -354,11 +414,17 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // MARVEENGAPS1020 (b): a generated skill is QUEUED for approval, never written
+  // into the global root, which every agent of the fleet loads. See
+  // skill-quarantine.ts for what the approver is shown and what is not covered.
   if (path === '/api/skills' && method === 'POST') {
     // Card 54e6f4c8 (RedHat delta-gate 4f4cb0df R2): same fleet-wide ~/.claude/skills blast
     // radius as the skills/import route below, no auth-kind check at all. Same fix: hard
     // fail-closed (a literal constant, no bespoke approval mechanism) until card 3fb0ef97
-    // (non-forgeable approval channel) ships.
+    // (non-forgeable approval channel) ships. MUTATION PIN: skills-sibling-routes-auth-gate.test.ts
+    // locks both the 403 and this exact error string -- importArchiveToPending/queueGeneratedSkill
+    // already give this route a non-forgeable queue, but lifting the gate to use them is a product
+    // decision for MikroB/Peti (flagged in DECISIONS.md), not a merge-conflict call.
     const SKILLS_CREATE_FAIL_CLOSED = true
     if (SKILLS_CREATE_FAIL_CLOSED) {
       logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Skill create: hard-refused (fail-closed pending card 3fb0ef97)')
@@ -373,24 +439,26 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     if (!skillName) { json(res, { error: 'Skill name is required' }, 400); return true }
     if (!description) { json(res, { error: 'Skill description is required' }, 400); return true }
 
-    const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
-    const skillDir = join(GLOBAL_SKILLS_DIR, skillName)
-    if (!skillDir.startsWith(GLOBAL_SKILLS_DIR + sep)) {
+    const target: SkillTarget = { scope: 'global' }
+    const skillDir = join(targetRoot(target), skillName)
+    if (!skillDir.startsWith(targetRoot(target) + sep)) {
       json(res, { error: 'Invalid skill name' }, 400)
       return true
     }
-    if (existsSync(skillDir)) { json(res, { error: 'Skill already exists' }, 409); return true }
-    mkdirSync(skillDir, { recursive: true })
+    const clash = nameConflict(target, skillName)
+    if (clash === 'live') { json(res, { error: 'Skill already exists' }, 409); return true }
+    if (clash === 'pending') { json(res, { error: 'A skill with this name is already waiting for approval' }, 409); return true }
 
+    let skillMd: string
     try {
-      const skillMd = await generateSkillMd(skillName, description)
-      atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
-    } catch (err) {
-      rmSync(skillDir, { recursive: true, force: true })
+      skillMd = await generateSkillMd(skillName, description)
+    } catch {
       json(res, { error: 'Failed to generate skill' }, 500)
       return true
     }
-    json(res, { ok: true, name: skillName })
+    const queued = queueGeneratedSkill(target, skillName, skillMd)
+    logger.info({ name: skillName, id: queued.id }, 'Global skill generated and queued for approval')
+    json(res, { ok: true, name: skillName, pending: true, id: queued.id })
     return true
   }
 
@@ -400,7 +468,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     // auth-kind check at all -- the shared bearer every agent holds could reach it. Same hibaosztály
     // and same fix as the agents.ts overwrite=1 gate: a hard-refused literal constant, not an
     // approval mechanism (PATCH /api/approvals/:id was shown forgeable by the same shared bearer),
-    // until a non-forgeable approval channel ships (card 3fb0ef97).
+    // until a non-forgeable approval channel ships (card 3fb0ef97). MUTATION PIN:
+    // skills-import-auth-gate.test.ts locks the 403 and this exact string -- same note as above,
+    // importArchiveToPending exists and could replace this, but that is MikroB/Peti's call.
     const SKILLS_IMPORT_FAIL_CLOSED = true
     if (SKILLS_IMPORT_FAIL_CLOSED) {
       logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Skill import: hard-refused (fail-closed pending card 3fb0ef97)')
@@ -414,76 +484,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const { file } = parseMultipart(body, contentType)
     if (!file) { json(res, { error: 'No file uploaded' }, 400); return true }
 
-    const skillsDir = join(homedir(), '.claude', 'skills')
-    mkdirSync(skillsDir, { recursive: true })
-
-    const tmpPath = join(skillsDir, `_import_${randomUUID()}.zip`)
-    const before = new Set(readdirSync(skillsDir))
-    try {
-      writeFileSync(tmpPath, file.data)
-      const listOutput = await execShellAsync(`unzip -Z1 ${shellEscape(tmpPath)} 2>&1`, { timeoutMs: 5000 })
-      const entries = listOutput.split('\n').map(l => l.trim()).filter(Boolean)
-      for (const entry of entries) {
-        if (entry.includes('..') || entry.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(entry)) {
-          unlinkSync(tmpPath)
-          json(res, { error: 'Invalid skill file: path traversal detected' }, 400)
-          return true
-        }
-      }
-      const topLevel = new Set<string>()
-      for (const entry of entries) {
-        const seg = entry.split('/')[0]
-        if (seg) topLevel.add(seg)
-      }
-      for (const td of topLevel) {
-        if (before.has(td)) {
-          unlinkSync(tmpPath)
-          json(res, {
-            error: `Skill already exists: ${td}. Delete it first if you want to overwrite.`,
-          }, 409)
-          return true
-        }
-      }
-      await execShellAsync(`unzip -o "${tmpPath}" -d "${skillsDir}"`, { timeoutMs: 10000 })
-      unlinkSync(tmpPath)
-
-      const after = readdirSync(skillsDir).filter(f => !before.has(f))
-      const tainted = findSymlinkTaintedEntries(skillsDir, after)
-      if (tainted.length > 0) {
-        for (const f of after) {
-          try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
-        }
-        json(res, { error: 'Invalid skill file: symlink entries rejected' }, 400)
-        return true
-      }
-
-      const extracted = after.filter(f => {
-        const p = join(skillsDir, f)
-        try { return statSync(p).isDirectory() && existsSync(join(p, 'SKILL.md')) } catch { return false }
-      })
-      if (extracted.length === 0) {
-        for (const f of after) {
-          try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
-        }
-        json(res, { error: 'No valid skill (SKILL.md) found in archive' }, 400)
-        return true
-      }
-
-      logger.info({ skills: extracted }, 'Global skill(s) imported')
-      json(res, { ok: true, imported: extracted })
-      return true
-    } catch (err) {
-      try { unlinkSync(tmpPath) } catch { /* ignored */ }
-      try {
-        const leftover = readdirSync(skillsDir).filter(f => !before.has(f))
-        for (const f of leftover) {
-          try { rmSync(join(skillsDir, f), { recursive: true, force: true }) } catch { /* best effort */ }
-        }
-      } catch { /* dir gone or unreadable; nothing to do */ }
-      logger.error({ err }, 'Failed to import global skill')
-      json(res, { error: 'Failed to extract .skill file' }, 500)
-      return true
-    }
+    const result = importArchiveToPending({ scope: 'global' }, file.data)
+    if (!result.ok) { json(res, { error: result.error }, result.status); return true }
+    logger.info({ skills: result.queued.map((q) => q.name) }, 'Global skill(s) queued for approval')
+    json(res, { ok: true, imported: result.queued.map((q) => q.name), pending: true })
+    return true
   }
 
   const globalSkillAssignMatch = path.match(/^\/api\/skills\/([^/]+)\/assign$/)
