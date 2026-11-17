@@ -26724,7 +26724,7 @@ kitalálva.
 Card A/B/C sávosítás MikroB iránymutatása (msg 19483). Gate: QA + Cybersec + Cybered (trust-boundary
 fájlok: settings.json, hooks, routes, db.ts, kanban.ts). Gate-SHA: lásd REVIEW komment.
 
-## 9ea8dcb8: self-pace-gate nohup/claude false positive -- scratchpad-útvonal ártalmatlan szó, nem a futó parancs
+## 2026-11-16 -- 9ea8dcb8: self-pace-gate nohup/claude false positive -- scratchpad-útvonal ártalmatlan szó, nem a futó parancs
 
 DevO (üzenet 20038) jelezte rögtön a 2e04a52e hook élesítése után: a
 `scripts/self-pace-gate.mjs` `SELF_PACE_BASH_PATTERNS` tömbjének nohup/setsid/disown-önújraindítást
