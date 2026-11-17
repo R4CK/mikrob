@@ -3,7 +3,7 @@
 // error_class/lesson/anti_pattern rows -- measured directly against store/knowledge-graph.db).
 // Drives the REAL runImportMt10Cli() with every collaborator mocked: no DB, no IO.
 import { describe, it, expect, vi } from 'vitest'
-import type Database from 'better-sqlite3'
+import Database from 'better-sqlite3'
 import {
   runImportMt10Cli,
   runImportMt10,
@@ -11,10 +11,11 @@ import {
   ROOT_DECISIONS_SOURCE_PATH,
   type ImportMt10CliDeps,
 } from '../kg/import-mt10-cli.js'
-import type { FindingsImportReport } from '../kg/import-findings.js'
-import type { DecisionsImportReport } from '../kg/import-decisions-log.js'
-import type { ColdMemoriesImportReport } from '../kg/import-cold-memories.js'
-import type { AntiPatternsImportReport } from '../kg/import-anti-patterns.js'
+import { migrate as migrateKg } from '../kg/store.js'
+import { importFindings, type FindingsImportReport } from '../kg/import-findings.js'
+import { importDecisionsLog, type DecisionsImportReport } from '../kg/import-decisions-log.js'
+import { importColdMemories, type ColdMemoriesImportReport } from '../kg/import-cold-memories.js'
+import { importAntiPatterns, type AntiPatternsImportReport } from '../kg/import-anti-patterns.js'
 
 function fakeDb(): Database.Database {
   return {} as Database.Database
@@ -135,6 +136,24 @@ describe('runImportMt10Cli', () => {
     expect(flagValue(['--db', 'x'], '--kg-db')).toBeUndefined()
     expect(flagValue(['--db', 'x'], '--db')).toBe('x')
   })
+
+  // LOW-2 (card 81593084 CYBERSEC GO comment 32549): `--kg-db --help` used to read '--help' as
+  // --kg-db's value (a file literally named `--help` would have been opened).
+  it('LOW-2: flagValue does not consume a following flag as the value', () => {
+    expect(flagValue(['--kg-db', '--help'], '--kg-db')).toBeUndefined()
+    expect(flagValue(['--kg-db'], '--kg-db')).toBeUndefined()
+  })
+
+  // MEDIUM-1 (card 81593084 CYBERSEC GO comment 32549): cold-memories' about-edges target
+  // `card:<id>` nodes that only antiPatterns creates among these four importers -- running
+  // coldMemories before antiPatterns silently dropped those edges on the first run.
+  it('MEDIUM-1: antiPatterns runs before coldMemories', () => {
+    const { deps } = makeDeps()
+    runImportMt10Cli([], deps)
+    const antiOrder = (deps.importAntiPatterns as any).mock.invocationCallOrder[0]
+    const coldOrder = (deps.importColdMemories as any).mock.invocationCallOrder[0]
+    expect(antiOrder).toBeLessThan(coldOrder)
+  })
 })
 
 describe('runImportMt10 (pure combination, no CLI/switch plumbing)', () => {
@@ -154,5 +173,63 @@ describe('runImportMt10 (pure combination, no CLI/switch plumbing)', () => {
       coldMemories: coldMemoriesReport,
       antiPatterns: antiPatternsReport,
     })
+  })
+})
+
+// EK (card 4e9ad774, "Kész, ha" #1): real importers, real in-memory DBs, no mocks. Reproduces
+// the exact MEDIUM-1 shape (card 81593084 comment 32549): a card whose only route into the graph
+// is the anti-patterns importer (a Draft-Review: ELUTASITVA comment), referenced by an 8-hex-char
+// cold memory, so the about-edge exists only if antiPatterns ran first.
+function makeMt10MainDbFixture(): Database.Database {
+  const db = new Database(':memory:')
+  db.exec(`
+    CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, title TEXT NOT NULL, project TEXT);
+    CREATE TABLE kanban_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL, author TEXT NOT NULL,
+      content TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE kanban_verdicts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT, gate TEXT, verdict TEXT, sha TEXT,
+      findings_ref TEXT, created_at INTEGER
+    );
+    CREATE TABLE memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, category TEXT NOT NULL,
+      content TEXT NOT NULL, keywords TEXT, created_at INTEGER NOT NULL
+    );
+  `)
+  db.prepare(`INSERT INTO kanban_cards VALUES ('cafe1234', 'Card under test', 'MikroB')`).run()
+  db.prepare(
+    `INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES
+       ('cafe1234', 'backend2', 'Draft-Review: ELUTASITVA\n\nIndok: nem ezt kerte a kartya.', 1000)`,
+  ).run()
+  db.prepare(
+    `INSERT INTO memories (agent_id, category, content, keywords, created_at) VALUES
+       ('qa', 'cold', 'A cafe1234 kartyan a regresszio az async refaktorbol jott.', null, 1000)`,
+  ).run()
+  return db
+}
+
+describe('runImportMt10 (real importers, real in-memory DBs -- rerun idempotency, MEDIUM-1)', () => {
+  it('two consecutive imports on a fresh graph DB give identical node and edge counts', () => {
+    const mainDb = makeMt10MainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    const deps = { importFindings, importDecisionsLog, importColdMemories, importAntiPatterns }
+
+    const report1 = runImportMt10(mainDb, kgDb, '# Döntésnapló\n', 'mikrob', 'DECISIONS.md', deps)
+    const nodesAfterRun1 = (kgDb.prepare('SELECT count(*) as c FROM kg_nodes').get() as { c: number }).c
+    const edgesAfterRun1 = (kgDb.prepare('SELECT count(*) as c FROM kg_edges').get() as { c: number }).c
+
+    const report2 = runImportMt10(mainDb, kgDb, '# Döntésnapló\n', 'mikrob', 'DECISIONS.md', deps)
+    const nodesAfterRun2 = (kgDb.prepare('SELECT count(*) as c FROM kg_nodes').get() as { c: number }).c
+    const edgesAfterRun2 = (kgDb.prepare('SELECT count(*) as c FROM kg_edges').get() as { c: number }).c
+
+    expect(nodesAfterRun2).toBe(nodesAfterRun1)
+    expect(edgesAfterRun2).toBe(edgesAfterRun1)
+    // Specifically: the about-edge from the cold-memory lesson to card:cafe1234 is created
+    // ALREADY on run 1 (antiPatterns ran first, so card:cafe1234 existed in time) -- the
+    // MEDIUM-1 bug meant run 1 reported 0 here and the edge only appeared from run 2 on.
+    expect(report1.coldMemories.aboutEdges).toBe(1)
+    expect(report2.coldMemories.aboutEdges).toBe(0)
   })
 })
