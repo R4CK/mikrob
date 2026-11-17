@@ -26889,3 +26889,24 @@ együtt: 18 fájl / 384 teszt PASS (nincs regresszió az audit miatt). `npx tsc 
 Gate-SHA: cc0e86f70 (ideiglenes, a végső Gate-SHA ennek a dokumentum-bejegyzésnek a commitja
 lesz -- lásd a REVIEW-t a kártyán a pontos sha-ért). Gate: QA + Cybersec + Cybered (MikroB saját
 dispatchja, komment 32654).
+
+## 2026-11-17 -- 2ba008f2 round 6: fullstack landolási dry-run-ja lint-ratchet-en akadt el (Fix-Direction komment 32720)
+
+**A hiba.** fullstack landolási dry-run-ja elutasítva: `@typescript-eslint/no-unused-vars`
+(baseline 273, a `night-gate.test.ts` egy használaton kívüli `getKanbanCard` importtal 274-re
+emelte). A 4 korábbi gate-kör egyike sem futtatta a `lint-ratchet.sh`-t ezen a kártyán, ezért ez
+csak a landolási dry-run-nál derült ki.
+
+**Javítás.** A `getKanbanCard` importot kivettem a `src/__tests__/night-gate.test.ts` import
+sorából -- a fájlban máshol nincs rá hivatkozás (`grep -n "getKanbanCard" ...` egyetlen sort ad,
+magát az import sort).
+
+**Mérés:** `lint-ratchet.sh` (a worktree saját másolatán, hogy a `$ROOT` a worktree-re oldódjon
+fel, ne a fő klónra) a javítás UTÁN: exit 0, "no rule got worse (433 findings, baseline holds)",
+`@typescript-eslint/no-unused-vars` 273 (baseline 273, egyezik). `night-gate.test.ts` noisy-run
+vitest: 22/22 PASS. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** fullstack landolási dry-run-ja találta, MikroB adta a Fix-Direction-t (komment
+32720), a javítást backend végezte.
+
+**Hivatkozás:** kártya 2ba008f2, komment 32720 (Fix-Direction), `src/__tests__/night-gate.test.ts`.
