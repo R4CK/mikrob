@@ -26760,3 +26760,45 @@ committolt git-refet tesztel): 271 Test (271) passed a javított kódon; a regex
 **Ki döntött:** DevO lelete (üzenet 20038), MikroB nudger-dispatch (self-advance, msg 20189).
 backend végezte a javítást. Gate-SHA: 7066c34750d629291c8a4631563fd176d586d5d0. Gate: QA +
 Cybersec (a kártya saját előírása).
+
+### 9ea8dcb8 round 2: CYBERSEC NO-GO 32608 fix -- a wrapper-szó-lista maga volt a lyuk, nem a hiányos lista
+
+**Cause:** cybersec NO-GO (komment 32608, Gate-SHA 6dc4c450b) mérte, hogy a round 1
+`nohupRelaunchesClaude()` függvénye (a trigger-szó utáni első tokent sétáltatta végig egy fix
+prefix-listán: env-hozzárendelés, sudo/env/nice/time/exec/command/stdbuf) 14 valódi
+self-respawn alakot ENGED át, amit a régi, széles regex még tiltott: `setsid -f`/`--fork`,
+`nohup nice -n`, `timeout`, `sudo -u`, `env -i`, `stdbuf -oL`, `/usr/bin/env`, egy idézett vagy
+`$(which ...)`-szubsztituált parancsszó, `bash -c`/`sh -c`/`bash -lc` törzsön belüli indítás,
+`xargs`. A sétáló megoldás MAGA volt a lyuk: bármelyik wrapper, ami nincs a fix listán, vagy egy
+listás wrapper a SAJÁT opciójával (`-f`, `-n 10`, `-u user`, `-i`, `-oL`), olyan tokenen állítja
+meg a sétát, ami sosem "claude" -- nem a lista hiányossága volt a hiba, hanem a séta-alapú
+szűkítés módja maga.
+
+**Fix:** cybersec saját, a valódi `gateDecision()`-t mindkét fán (régi/új) lefuttató próbájával
+VERIFIKÁLT irány: a régi, SZÉLES "claude bárhol a trigger-szó után" scan-t megtartva, csak a
+SZÓHATÁRT szűkítjük `\bclaude\b` helyett `(?<![\w-])claude(?![\w./-])`-ra. Nincs szükség
+wrapper-listára: egy path-szegmens mindig `/` vagy `-` karakterrel folytatódik (soha nem shell
+metakarakterrel vagy sima szóhatárral), így a `/tmp/claude-1000/...` scratchpad-útban a "claude"
+utáni `-` kizárja a találatot, miközben minden valódi respawn-alak (idézett, wrapperelt,
+szubsztituált, `bash -c` törzsön belüli) a "claude" szót sima szóhatárral tartalmazza, és
+továbbra is illeszkedik. A `nohupRelaunchesClaude()` függvény és a hívó oldal
+regex-vagy-függvény kiterjesztése törölve (surgical cleanup: a saját változtatásom tette
+feleslegessé).
+
+**Teszt:** `src/__tests__/governance-gates.test.ts` "still denies every real nohup/setsid/disown +
+claude relaunch shape" tesztje 21 denied-alakra bővült (az 5 régi + mind a 14 cybersec-lelet +
+2 további wrapper-variáns), az "does NOT misfire..." teszt 3 scratchpad-path allow-esetre
+(cybersec "INTENDED ALLOWS CONFIRMED" listája).
+
+**Mutáció-bizonyíték:** a fix sorát visszaírva a round 1 `nohupRelaunchesClaude()` pontos
+tartalmára (git history, commit 7066c3475) -> 1/271 piros, pontosan az új "still denies..." teszt
+(`expected false to be true`); visszaállítva (diff IDENTIKUS a backuppal) -> 271/271 zöld.
+
+**Mérés:** `fleet-test.sh --ref dc9b0e702f6d9910baa1d7755396af9677d4d43c
+src/__tests__/governance-gates.test.ts`: 1 Test File passed (1), 271 Tests passed (271).
+`npx tsc --noEmit` tiszta.
+
+**Ki döntött:** cybersec NO-GO (32608) proposer-ként (WhiteHat javasolta a fixet, saját
+verifikált próbával). backend végezte a javítást. Gate-SHA:
+dc9b0e702f6d9910baa1d7755396af9677d4d43c. Gate: QA + Cybered (RedHat) -- a proposer-szabály (4f.
+munkavégzési szabály) szerint, mert ezúttal WhiteHat (cybersec) javasolta a fixet.
