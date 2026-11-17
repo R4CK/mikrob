@@ -1,7 +1,18 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction, hasLaunchGenerationChanged, CONTINUE_MIN_CLI, type ContinueDecisionInput } from '../web/channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction, hasLaunchGenerationChanged, resolveContinueTimeoutAction, CONTINUE_MIN_CLI, type ContinueDecisionInput } from '../web/channel-continue-policy.js'
+
+// Card 2b2fbabc F2: stopAgentProcess's not-running early return is exercised for real (not
+// mocked at the agent-process.js module boundary -- that boundary IS the module under test
+// here). Only the real tmux child-process call underneath it is stubbed, exactly like
+// reauth-healer.test.ts stubs node:child_process for the same reason: a real tmux invocation
+// against a name that never had a session always fails anyway ("no server running"), so making
+// that failure explicit and synchronous is a stub of the OUTCOME, not a fake of the logic.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return { ...actual, execFileSync: () => { throw new Error('mocked: no tmux server') } }
+})
 
 // CONTRESUME922 narrowing (approved 2026-09-23 with three conditions). The
 // measurement: on Claude Code 2.1.280 a hand-launched --continue session of a
@@ -12,6 +23,8 @@ import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction, 
 
 const ROOT = join(__dirname, '..', '..')
 const PROCESS_SRC = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
+
+const { isAgentRunning, stopAgentProcess, __getAgentLaunchGenerationForTest } = await import('../web/agent-process.js')
 
 const measured: ContinueDecisionInput = {
   hasPriorSession: true, fresh: false, hasChannel: true, isMainAgent: false, provider: 'telegram',
@@ -100,6 +113,53 @@ describe('hasLaunchGenerationChanged (card eb26a3e4: the comparison direction it
   })
 })
 
+describe('resolveContinueTimeoutAction (card 2b2fbabc: the glued call-site function, behaviourally)', () => {
+  it('composes exactly like the two pinned primitives: same generation -> relaunch-fresh on timeout', () => {
+    const g = Symbol()
+    expect(resolveContinueTimeoutAction('timeout', g, g)).toBe('relaunch-fresh')
+  })
+  it('changed generation on timeout -> skip-stopped (the F1 fix, through the composed function)', () => {
+    expect(resolveContinueTimeoutAction('timeout', Symbol(), Symbol())).toBe('skip-stopped')
+  })
+  it('undefined current generation (never set, or cleared) counts as changed -> skip-stopped', () => {
+    expect(resolveContinueTimeoutAction('timeout', undefined, Symbol())).toBe('skip-stopped')
+  })
+  it('alive always keeps the session regardless of generation', () => {
+    const g = Symbol()
+    expect(resolveContinueTimeoutAction('alive', g, g)).toBe('kept')
+    expect(resolveContinueTimeoutAction('alive', Symbol(), Symbol())).toBe('kept')
+  })
+  // MUTATION PIN (card 2b2fbabc F1): the two tests above ('same generation -> relaunch-fresh' and
+  // 'changed generation -> skip-stopped') ARE the mutant catch -- this is the exact finding: a `!`
+  // negating the comparison this function feeds into would flip BOTH their expected results. Unlike
+  // the old source-text `toContain('hasLaunchGenerationChanged(...)')` check (which matches the
+  // substring whether or not it is negated), these assertions execute the real composition, so a
+  // negation here turns a passing test red instead of surviving unnoticed.
+  it('MUTATION PIN: self-check -- the same two cases disagree, which is what a negated comparison could not produce', () => {
+    const g = Symbol()
+    expect(resolveContinueTimeoutAction('timeout', g, g)).not.toBe(resolveContinueTimeoutAction('timeout', Symbol(), Symbol()))
+  })
+})
+
+describe('card 2b2fbabc F2: a stop on an already-not-running agent still bumps the generation', () => {
+  it('never-started agent: isAgentRunning is false (sanity, no real tmux session exists)', () => {
+    expect(isAgentRunning(`__f2-sanity-${Date.now()}`)).toBe(false)
+  })
+  it('stopAgentProcess on a session that was never started still invalidates a pending --continue callback', async () => {
+    const name = `__f2-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const before = __getAgentLaunchGenerationForTest(name)
+    expect(before).toBeUndefined()
+    const r = await stopAgentProcess(name)
+    expect(r).toEqual({ ok: false, error: 'Agent is not running' })
+    const after = __getAgentLaunchGenerationForTest(name)
+    // RED before the fix: the old early return sat BEFORE the bump, so `after` stayed undefined,
+    // byte-identical to `before` -- a pending --continue callback captured earlier would still see
+    // its own generation as unchanged and wrongly relaunch-fresh, undoing this explicit stop.
+    expect(after).toBeDefined()
+    expect(after).not.toBe(before)
+  })
+})
+
 describe('the launch path is wired to the policy', () => {
   it('startAgentProcess decides with decideContinueFlag from the measured inputs and no longer hardcodes !hasChannel', () => {
     expect(PROCESS_SRC).not.toContain("(hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''")
@@ -117,10 +177,10 @@ describe('the launch path is wired to the policy', () => {
     expect(block).toContain("['kill-session', '-t', exactTmuxTarget(session)]")
     expect(block).toContain('startAgentProcess(name, { fresh: true })')
   })
-  it('the timeout fallback is routed through decideContinueTimeoutAction, not a bare if(v.outcome==="alive") (card 466f21fe F1)', () => {
+  it('the timeout fallback is routed through resolveContinueTimeoutAction, not a bare if(v.outcome==="alive") (card 466f21fe F1, card 2b2fbabc)', () => {
     const at = PROCESS_SRC.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
     const block = PROCESS_SRC.slice(at, at + 2500)
-    expect(block).toContain('decideContinueTimeoutAction(v.outcome, generationChanged)')
+    expect(block).toContain('resolveContinueTimeoutAction(v.outcome, agentLaunchGeneration.get(name), myLaunchGeneration)')
     expect(block).toContain("action === 'kept'")
     expect(block).toContain("action === 'skip-stopped'")
   })
@@ -133,18 +193,18 @@ describe('the launch path is wired to the policy', () => {
     expect(between).toContain('const myLaunchGeneration = Symbol()')
     expect(between).toContain('agentLaunchGeneration.set(name, myLaunchGeneration)')
   })
-  it('the generationChanged comparison is routed through hasLaunchGenerationChanged, not a bare inline !== (card eb26a3e4)', () => {
-    const at = PROCESS_SRC.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
-    const block = PROCESS_SRC.slice(at, at + 2500)
-    expect(block).toContain('hasLaunchGenerationChanged(agentLaunchGeneration.get(name), myLaunchGeneration)')
-  })
-  it('stopAgentProcessUnlocked bumps the generation too, before killing the session (card 466f21fe F1)', () => {
+  it('stopAgentProcessUnlocked bumps the generation before killing the session AND before the not-running early return (card 466f21fe F1, card 2b2fbabc F2)', () => {
     const stopAt = PROCESS_SRC.indexOf('async function stopAgentProcessUnlocked(name: string)')
     expect(stopAt).toBeGreaterThan(-1)
     const killAt = PROCESS_SRC.indexOf("kill-session", stopAt)
+    const notRunningAt = PROCESS_SRC.indexOf("return { ok: false, error: 'Agent is not running' }", stopAt)
     const bumpAt = PROCESS_SRC.indexOf('agentLaunchGeneration.set(name, Symbol())', stopAt)
+    expect(notRunningAt).toBeGreaterThan(stopAt)
     expect(bumpAt).toBeGreaterThan(stopAt)
     expect(bumpAt).toBeLessThan(killAt)
+    // The actual F2 behaviour (that this moved bump really runs before the early return, not just
+    // textually above it) is proven by execution in the 'card 2b2fbabc F2' describe block above.
+    expect(bumpAt).toBeLessThan(notRunningAt)
   })
 })
 

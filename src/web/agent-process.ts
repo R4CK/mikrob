@@ -69,7 +69,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction, hasLaunchGenerationChanged } from './channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, resolveContinueTimeoutAction } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
@@ -182,6 +182,11 @@ const lifecycleInFlight = new Map<string, LifecycleEntry>()
 // 'timeout', confirms the agent's CURRENT generation still matches -- if a stop or a newer start
 // happened in between, the fallback is skipped: the current state is no longer this call's business.
 const agentLaunchGeneration = new Map<string, symbol>()
+
+/** Test-only: read the current launch-generation token without exporting the Map itself. */
+export function __getAgentLaunchGenerationForTest(name: string): symbol | undefined {
+  return agentLaunchGeneration.get(name)
+}
 
 /**
  * Card eb26a3e4 point 2 (measured): stopAgentProcessUnlocked bumps the generation, but only
@@ -3311,8 +3316,7 @@ async function startAgentProcessUnlocked(
           ])
         },
       }).then(async (v) => {
-        const generationChanged = hasLaunchGenerationChanged(agentLaunchGeneration.get(name), myLaunchGeneration)
-        const action = decideContinueTimeoutAction(v.outcome, generationChanged)
+        const action = resolveContinueTimeoutAction(v.outcome, agentLaunchGeneration.get(name), myLaunchGeneration)
         if (action === 'kept') {
           logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
           return
@@ -3461,12 +3465,15 @@ async function startAgentProcessUnlocked(
 
 async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
-  if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
-  // Card 466f21fe F1: bump the launch generation on every stop, same as on every start -- an
-  // in-flight --continue verify callback checks this before acting on a timeout, so a stop that
-  // lands mid-window is not undone by that callback's own fresh-fallback. See the Map's comment.
+  // Card 466f21fe F1 / eb26a3e4 F2 follow-up (2b2fbabc): bump the launch generation BEFORE the
+  // not-running early return, not after it. POST /stop clears the desired-state first and calls
+  // this unconditionally; if the session is already dead (isAgentRunning false) the OLD bump site
+  // below it was never reached, so a pending --continue verify callback from an earlier launch
+  // still saw its own captured generation as unchanged and relaunched FRESH -- undoing the
+  // explicit stop. Bumping first means every stop invalidates that callback, running or not.
   agentLaunchGeneration.set(name, Symbol())
+  if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
   const target = agentTmuxTarget(name)
   const host = target.host

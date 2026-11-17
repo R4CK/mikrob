@@ -6,7 +6,14 @@ import { decideReauthAction, evaluateSession, checkSession, agentUsesOwnTokenFil
 
 // ---- FILE-LEVEL MOCKS (vi.mock is hoisted to the top of this file whatever its position; they apply to EVERY test below) ----
 // agent-config lookup: <root>/<agent>/agent-config.json, the root is a temp dir per test.
-const fixture = vi.hoisted(() => ({ root: '', execCalls: [] as unknown[][], pane: 'pane', reauth: { needsReauth: true, reason: 'API Error: 401' } as { needsReauth: boolean; reason?: string } }))
+const fixture = vi.hoisted(() => ({
+  root: '', execCalls: [] as unknown[][], pane: 'pane', reauth: { needsReauth: true, reason: 'API Error: 401' } as { needsReauth: boolean; reason?: string },
+  // Card 2b2fbabc (eb26a3e4 point 2 follow-up): an ORDERED log shared between the bump stub and
+  // the kill-session branch of the execFile stub, so "bump ran before kill" is proven by actually
+  // running restartFirstRunGatedAgent and reading the order calls landed in -- not by indexOf() on
+  // the source text, which the finding named as unable to tell a real wiring bug from its negation.
+  order: [] as string[],
+}))
 vi.mock('../web/agent-config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../web/agent-config.js')>()
   return {
@@ -39,6 +46,7 @@ vi.mock('node:child_process', async (importOriginal) => {
     ...actual,
     execFile: (...args: unknown[]) => {
       fixture.execCalls.push(args)
+      if (Array.isArray(args[1]) && (args[1] as unknown[])[0] === 'kill-session') fixture.order.push('kill')
       const cb = args.find((a) => typeof a === 'function') as ((e: null) => void) | undefined
       cb?.(null)
     },
@@ -48,7 +56,7 @@ vi.mock('../web/agent-process.js', () => ({
   isAgentRunning: () => true,
   capturePane: () => fixture.pane,
   startAgentProcess: async () => ({ ok: true }),
-  bumpAgentLaunchGeneration: () => {},
+  bumpAgentLaunchGeneration: () => { fixture.order.push('bump') },
 }))
 vi.mock('../web/reauth-detect.js', () => ({ detectReauthNeeded: () => fixture.reauth }))
 vi.mock('../web/claude-credentials-guard.js', () => ({ quarantineFleetTokenIfDead: async () => 'no-token' }))
@@ -491,6 +499,7 @@ describe('checkSession: the call site', () => {
   beforeEach(() => {
     fixture.root = mkdtempSync(join(tmpdir(), 'reauth-check-test-'))
     fixture.execCalls.length = 0
+    fixture.order.length = 0
     fixture.pane = 'pane'
     fixture.reauth = { needsReauth: true, reason: 'API Error: 401' }
     vi.stubEnv('DISPLAY', ':99') // hostCanInteractiveLogin() on a non-macOS CI host
@@ -556,5 +565,19 @@ describe('checkSession: the call site', () => {
     writeConfig('zeta', JSON.stringify({}))
     await sweep('zeta')
     expect(notifications()[0]).toContain('Manuális browser /login')
+  })
+
+  // Card 2b2fbabc (eb26a3e4 point 2 follow-up): drives the REAL restartFirstRunGatedAgent through
+  // checkSession's decision -> restart branch and spies on the actual call order, instead of the
+  // source-text indexOf() comparison this replaces. The bump and kill-session stubs both push into
+  // the SAME ordered log (fixture.order), so a regression that re-orders them, or drops the bump
+  // entirely, shows up as a wrong sequence or a missing 'bump' entry -- not as a passing string match.
+  it('the first-run-gate restart bumps the launch generation BEFORE killing the session (spy on real execution)', async () => {
+    fixture.reauth = { needsReauth: true, reason: 'onboarding picker' }
+    writeConfig('eta', JSON.stringify({}))
+    await sweep('eta')
+    expect(fixture.order).toContain('bump')
+    expect(fixture.order).toContain('kill')
+    expect(fixture.order.indexOf('bump')).toBeLessThan(fixture.order.indexOf('kill'))
   })
 })

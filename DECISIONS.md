@@ -26759,3 +26759,48 @@ vorosre. Mindket mutans visszaallitva, ismet zold.
 
 **Ki döntött:** RedHat CYBERED GO (466f21fe, komment 15173) adta a fix-iranyt. backend2 vegezte a
 javitast. Gate: QA + Cybersec (a kartya sajat kijelolese).
+
+## 2026-11-16: eb26a3e4 F1/F2 follow-up (kartya 2b2fbabc) -- WhiteHat2 GO a viselkedesi tesztre, F2 res zarasa
+
+WhiteHat2 GO az eb26a3e4-n (komment 32252, @0ad2b7d1f) ket leletet nevezett meg: F1 (teszt-res) --
+`hasLaunchGenerationChanged()` maga pinnelve, de a HASZNALATA csak forras-szoveg `toContain()`-nel,
+ami nem kulonbozteti meg a hivast a negaltjatol (a `!` substring-kent benne marad); a
+reauth-healer teszt `bumpAgentLaunchGeneration`-t no-op-kent mockolja, sorrend-ellenorzes nelkul.
+F2 (olvasott kod, meg nem kihasznalva) -- `stopAgentProcessUnlocked` a "nem fut" early return UTAN
+leptette a generaciot, igy egy halott sessionre erkezo explicit stop nem ervenytelenitett egy
+korabbi inditasbol maradt `--continue` ellenorzo callback-et, ami relaunch-fresh-sel visszavonhatta
+a stopot.
+
+**F1 javitasa:** a hivasi pont ket sorat (`generationChanged = hasLaunchGenerationChanged(...)` +
+`decideContinueTimeoutAction(outcome, generationChanged)`) egyetlen exportalt `resolveContinueTimeoutAction()`
+fuggvenybe vonva ossze (channel-continue-policy.ts), az agent-process.ts hivasi pontjat ratercelve.
+A viselkedesi mutacio-pin tesztek most a VALODI kompozicion futnak, nem szoveg-egyezesen.
+A reauth-healer bump-elott-kill sorrendet most egy kozos `fixture.order` tombbe iro kem (spy)
+bizonyitja a VALODI `checkSession -> restartFirstRunGatedAgent` utvonalon, nem indexOf()-fal.
+
+**F2 javitasa:** `agentLaunchGeneration.set(name, Symbol())` athelyezve a "nem fut" early return
+ELE `stopAgentProcessUnlocked`-ban (agent-process.ts) -- minden stop leptet, futott-e az ugynok
+vagy nem.
+
+**Teszt-only export:** `__getAgentLaunchGenerationForTest(name)` (ugyanaz a minta mint a
+restart-lock.ts `__resetRestartLock`-ja), hogy a privat Map-et kiolvashassa a teszt a VALODI
+`stopAgentProcess()` hivason at, csak a tmux `execFileSync` hatarat mockolva (nem a sajat modult).
+
+**Mutacio-ellenorzes:** a fix visszaallitasaval (`git stash` az agent-process.ts-en) mindharom
+uj/javitott teszt vorosre valtott (2 wiring-pin + az F2 viselkedesi teszt + a reauth-healer spy
+teszt kulonallo ellenorzessel); visszaallitva, ismet zold. Reszletek: kartya 2b2fbabc REVIEW
+komment (32354).
+
+**Teszt:** `channel-continue-policy.test.ts` (30 teszt) + `reauth-healer.test.ts` (57 teszt) PASS
+a sajat worktree-ben (3d6b5ecac2). `tsc --noEmit` tiszta a 2, korabbrol ismert, FUGGETLEN
+parse5-hianyos hibat leszamitva (megerositve: a bazis commit-on, 0ad2b7d1f-en is megvannak). ESLint
+a 4 erintett fajlon: 3 korabbrol ismert unused-var hiba agent-process.ts-ben, megerositve hogy a
+bazis commit-on is megvannak, 0 uj. Teljes `fleet-test.sh` NEM futott (fajl-skopolt kartya a
+karpathy-loop 5. lepese szerint, teljes suite a gate dolga).
+
+**Alap megjegyzes:** eb26a3e4 (amire ez a kartya epul) meg `waiting`, nincs develop-ba landolva --
+ez az ag az o csucs-commitjan (0ad2b7d1f) alapul, nem origin/develop-en, mert a fenti fuggvenyek
+meg nincsenek develop-on.
+
+**Ki döntött:** WhiteHat2 GO (eb26a3e4, komment 32252) adta a fix-iranyt. backend2 vegezte a
+javitast. Gate: QA + Cybersec (a kartya sajat kijelolese).

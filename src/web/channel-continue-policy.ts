@@ -110,6 +110,23 @@ export function hasLaunchGenerationChanged(current: symbol | undefined, captured
 }
 
 /**
+ * Card 2b2fbabc (eb26a3e4 F1 follow-up): the single function the launch call site now uses to go
+ * from a verify outcome + a generation pair to the timeout action. Before this, the call site held
+ * its own `const generationChanged = hasLaunchGenerationChanged(...)` line, pinned only by a
+ * source-text `toContain()` check -- which cannot tell `hasLaunchGenerationChanged(a, b)` from
+ * `!hasLaunchGenerationChanged(a, b)` (the substring survives either way) or from swapped
+ * arguments. Collapsing both already-pinned primitives into one glued, directly-callable function
+ * moves that comparison into a real behavioural test (below) instead of a string match.
+ */
+export function resolveContinueTimeoutAction(
+  outcome: ContinueVerifyOutcome,
+  currentGeneration: symbol | undefined,
+  capturedAtLaunch: symbol,
+): ContinueTimeoutAction {
+  return decideContinueTimeoutAction(outcome, hasLaunchGenerationChanged(currentGeneration, capturedAtLaunch))
+}
+
+/**
  * Condition 3: poll the plugin-liveness probe until it says 'alive' or the
  * window closes. 'unknown' (a failed ps) and 'down' both keep polling: only a
  * positive verdict ends the wait early. Injected clock/sleep for tests.
