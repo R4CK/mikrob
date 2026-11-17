@@ -26837,3 +26837,30 @@ javítást. Gate: QA + Cybered (RedHat) -- a proposer-szabály (4f. munkavégzé
 mert a fix iránya ezúttal is WhiteHat-tól jött.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+## 2026-11-17 -- 9ea8dcb8: fejléc-dátum pótlása, hogy a decisions-append-union auto-merge-je lefusson (Fix-Direction komment 32722)
+
+**A hiba.** fullstack landolási dry-run-ja a merge-konfliktus szakaszban elutasítva, mielőtt a
+fleet-test egyáltalán elindult: a DECISIONS.md konfliktusa TISZTA kettős-append (develop és
+card/9ea8dcb8 is csak a végére fűz hozzá, ugyanonnan, 7deb8ecea merge-base-ről), ami
+strukturálisan megfelelne a `store/decisions-append-union.sh` `try_append_union`-jának, de a
+funkció a `## [0-9][0-9][0-9][0-9]-*` fejléc-mintát várja, és a `6dc4c450b` commit saját új
+bejegyzésének fejléce ("## 9ea8dcb8: self-pace-gate ...") dátum-prefix nélkül érkezett -- ezért
+az auto-union nem ismerte fel, és a hívó a szokásos elutasít-és-jelent útra esett.
+
+**Javítás.** A fejlécet "## 2026-11-16 -- 9ea8dcb8: ..."-re bővítettem (a commit dátuma szerint),
+egyetlen soros módosítás, tartalom-változás nélkül. Átnéztem a kártya másik két DECISIONS.md-bővítését
+(round 2, round 4): mindkettő `###` (al-fejléc) a MÁR LÉTEZŐ, most javított bejegyzés alatt, nem a
+`try_append_union` fejléc-mintájára illeszkedő top-szintű bejegyzés, tehát nem kellett bántani.
+
+**Ellenőrzés -- magam futtattam a union-függvényt, nem csak feltételeztem, hogy javít.**
+Eldobható worktree-t nyitottam a javított branch-re, `git merge --no-ff origin/develop`-ot
+futtattam (ugyanaz a konfliktus-alak, amit fullstack mért: KIZÁRÓLAG a DECISIONS.md konfliktál),
+majd a `decisions-append-union.sh`-t forrásolva meghívtam `try_append_union <worktree> DECISIONS.md`-t
+közvetlenül: RETURN=0 (sikeres resolve), a fájl `UU` helyett `M` lett, konfliktus-jelölő sor nulla,
+a javított fejléc-sor a végeredményben megvan. Az eldobható worktree-t töröltem.
+
+**Ki döntött:** fullstack landolási dry-run-ja találta, MikroB adta a Fix-Direction-t (komment
+32722), a javítást backend végezte.
+
+**Hivatkozás:** kártya 9ea8dcb8, komment 32722 (Fix-Direction), `store/decisions-append-union.sh`.
