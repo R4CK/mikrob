@@ -26723,3 +26723,13 @@ kitalálva.
 **Ki döntött:** backend3, a merge feloldása és verifikációja önállóan; a kártya priorizálása és a
 Card A/B/C sávosítás MikroB iránymutatása (msg 19483). Gate: QA + Cybersec + Cybered (trust-boundary
 fájlok: settings.json, hooks, routes, db.ts, kanban.ts). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-17 -- F4.4/F4.5: card worktree cleanup sweep + dispatch/self-advance docs (cards 0ae1166e, f8fde8e9, phase ed332869)
+
+**Döntés:** F4.3 (`marveen-land.sh --card <id>`) and the dispatch/self-advance card-mode wiring (`store/self-advance-pickup.sh` step 4b, gated by `MARVEEN_CARD_WORKTREE=1`) were already fully implemented and shipped before this boot-reconcile pass -- confirmed by git history (real landed merges on origin/develop for card/57044a66, card/d5638d28, card/2e04a52e, card/ae5af304, card/7c79badc, card/214ca312, card/eff5c2f6, card/ff43b10e, card/c4ef7da5, card/594da483, card/ff7ecc74, card/cc72cb3e, card/c2dd3cfa, card/34f846cc, card/1aeed1ca, card/abd4970c and others -- "one real card built and landed in card mode" was already satisfied many times over). ec587638 (F4.3) closed as verification-only (61/61 selftest cases fresh).
+
+What was genuinely missing and built now: `store/marveen-card-worktree-cleanup.sh` (0ae1166e, F4.4) -- removes a per-card worktree only when LANDED (branch tip ancestor of origin/develop) + IDLE (no live process cwd/fd under it, TOCTOU-safe double-scan) + CLEAN (git status empty); dry-run default, `--apply` needs `--yes` (same convention as `wsl-home-cleanup.sh`, rule 22). 16-case selftest in a throwaway fixture repo, mutation-checked (dropping any one of the three classify() checks turns it red).
+
+Docs closed (f8fde8e9, F4.5): README "Git/worktree/landolási infrastruktúra" section's `--card` bullet extended with the opt-in dispatch flag + the new cleanup sweep; `docs/rules/marveen-worktree-fegyelme.md` gained a full "Kártyánkénti ág + worktree (card mode)" section (it previously said nothing about card mode at all, only the per-agent worktree); this DECISIONS.md tail entry.
+
+**Ki döntött:** DevO (fullstack), cards ec587638 + 0ae1166e + f8fde8e9, Gate-SHA 528f6fe72 (0ae1166e; ec587638/f8fde8e9 are verification/docs-only, no new commit of their own).
