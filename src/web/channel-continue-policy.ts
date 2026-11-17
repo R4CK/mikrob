@@ -99,6 +99,17 @@ export function decideContinueTimeoutAction(outcome: ContinueVerifyOutcome, gene
 }
 
 /**
+ * Card eb26a3e4 (466f21fe F1 follow-up): the generation comparison itself (current map value vs
+ * the symbol captured at launch) was inline at the one call site and un-pinned by any test --
+ * flipping `!==` to `===` there silently inverts the F1 fix (a genuinely changed generation would
+ * read as unchanged, resurrecting a just-stopped agent) with 0 red tests. Extracted so it is a
+ * real, directly-testable comparison instead of inline text a mutant can flip unnoticed.
+ */
+export function hasLaunchGenerationChanged(current: symbol | undefined, capturedAtLaunch: symbol): boolean {
+  return current !== capturedAtLaunch
+}
+
+/**
  * Condition 3: poll the plugin-liveness probe until it says 'alive' or the
  * window closes. 'unknown' (a failed ps) and 'down' both keep polling: only a
  * positive verdict ends the wait early. Injected clock/sleep for tests.

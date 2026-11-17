@@ -48,6 +48,7 @@ vi.mock('../web/agent-process.js', () => ({
   isAgentRunning: () => true,
   capturePane: () => fixture.pane,
   startAgentProcess: async () => ({ ok: true }),
+  bumpAgentLaunchGeneration: () => {},
 }))
 vi.mock('../web/reauth-detect.js', () => ({ detectReauthNeeded: () => fixture.reauth }))
 vi.mock('../web/claude-credentials-guard.js', () => ({ quarantineFleetTokenIfDead: async () => 'no-token' }))

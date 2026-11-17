@@ -69,7 +69,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction } from './channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction, hasLaunchGenerationChanged } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
@@ -182,6 +182,23 @@ const lifecycleInFlight = new Map<string, LifecycleEntry>()
 // 'timeout', confirms the agent's CURRENT generation still matches -- if a stop or a newer start
 // happened in between, the fallback is skipped: the current state is no longer this call's business.
 const agentLaunchGeneration = new Map<string, symbol>()
+
+/**
+ * Card eb26a3e4 point 2 (measured): stopAgentProcessUnlocked bumps the generation, but only
+ * on the ROUTER's own stop path, and only when the agent was detected running. Measured by
+ * reading every tmux kill-session call site against a role agent's session: scripts/stop.sh only
+ * ever targets the MAIN agent's own session (`${SLUG}-channels`), which is already excluded from
+ * this mechanism (`name !== MAIN_AGENT_ID`) -- not a gap. channel-monitor.ts's watchdog restart
+ * routes through stopAgentProcess+startAgentProcess(fresh:true), so both ends already bump.
+ * reauth-healer.ts's restartFirstRunGatedAgent IS a real gap: it kills a role agent's session
+ * directly via execFile, with no generation bump, then relaunches ~1s later -- if that relaunch
+ * is slow or fails, a stale --continue verify callback from an EARLIER launch could read the
+ * generation as unchanged and wrongly relaunch-fresh, undoing the healer's own stop. Exported so
+ * that one call site (not a copy of `.set(name, Symbol())`) covers it.
+ */
+export function bumpAgentLaunchGeneration(name: string): void {
+  agentLaunchGeneration.set(name, Symbol())
+}
 
 /** Exported for tests: how many agents currently have an operation in flight. */
 export function lifecycleInFlightCount(): number {
@@ -3294,7 +3311,7 @@ async function startAgentProcessUnlocked(
           ])
         },
       }).then(async (v) => {
-        const generationChanged = agentLaunchGeneration.get(name) !== myLaunchGeneration
+        const generationChanged = hasLaunchGenerationChanged(agentLaunchGeneration.get(name), myLaunchGeneration)
         const action = decideContinueTimeoutAction(v.outcome, generationChanged)
         if (action === 'kept') {
           logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')

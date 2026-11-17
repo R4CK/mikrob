@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction, CONTINUE_MIN_CLI, type ContinueDecisionInput } from '../web/channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction, hasLaunchGenerationChanged, CONTINUE_MIN_CLI, type ContinueDecisionInput } from '../web/channel-continue-policy.js'
 
 // CONTRESUME922 narrowing (approved 2026-09-23 with three conditions). The
 // measurement: on Claude Code 2.1.280 a hand-launched --continue session of a
@@ -78,6 +78,28 @@ describe('decideContinueTimeoutAction (card 466f21fe F1)', () => {
   })
 })
 
+describe('hasLaunchGenerationChanged (card eb26a3e4: the comparison direction itself, not just decideContinueTimeoutAction)', () => {
+  it('the same symbol (nothing changed since launch) is NOT a change', () => {
+    const g = Symbol()
+    expect(hasLaunchGenerationChanged(g, g)).toBe(false)
+  })
+  it('a different symbol (a stop or a newer start happened) IS a change', () => {
+    expect(hasLaunchGenerationChanged(Symbol(), Symbol())).toBe(true)
+  })
+  it('an undefined current generation (never set, or cleared) IS a change from any captured symbol', () => {
+    expect(hasLaunchGenerationChanged(undefined, Symbol())).toBe(true)
+  })
+  // MUTATION PIN: flipping the `!==` to `===` inside hasLaunchGenerationChanged would invert
+  // every one of the 3 cases above -- this test only exists to say explicitly what that mutant
+  // does, so a future reviewer sees the exact failure shape, not just 3 red cases with no story.
+  it('MUTATION PIN: a flipped (===) comparison would report "unchanged" as changed and vice versa', () => {
+    const g = Symbol()
+    const inverted = (current: symbol | undefined, captured: symbol) => current === captured
+    expect(inverted(g, g)).not.toBe(hasLaunchGenerationChanged(g, g))
+    expect(inverted(Symbol(), Symbol())).not.toBe(hasLaunchGenerationChanged(Symbol(), Symbol()))
+  })
+})
+
 describe('the launch path is wired to the policy', () => {
   it('startAgentProcess decides with decideContinueFlag from the measured inputs and no longer hardcodes !hasChannel', () => {
     expect(PROCESS_SRC).not.toContain("(hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''")
@@ -111,12 +133,29 @@ describe('the launch path is wired to the policy', () => {
     expect(between).toContain('const myLaunchGeneration = Symbol()')
     expect(between).toContain('agentLaunchGeneration.set(name, myLaunchGeneration)')
   })
+  it('the generationChanged comparison is routed through hasLaunchGenerationChanged, not a bare inline !== (card eb26a3e4)', () => {
+    const at = PROCESS_SRC.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
+    const block = PROCESS_SRC.slice(at, at + 2500)
+    expect(block).toContain('hasLaunchGenerationChanged(agentLaunchGeneration.get(name), myLaunchGeneration)')
+  })
   it('stopAgentProcessUnlocked bumps the generation too, before killing the session (card 466f21fe F1)', () => {
     const stopAt = PROCESS_SRC.indexOf('async function stopAgentProcessUnlocked(name: string)')
     expect(stopAt).toBeGreaterThan(-1)
     const killAt = PROCESS_SRC.indexOf("kill-session", stopAt)
     const bumpAt = PROCESS_SRC.indexOf('agentLaunchGeneration.set(name, Symbol())', stopAt)
     expect(bumpAt).toBeGreaterThan(stopAt)
+    expect(bumpAt).toBeLessThan(killAt)
+  })
+})
+
+describe('card eb26a3e4 point 2: non-router session kills also bump the launch generation', () => {
+  const HEALER_SRC = readFileSync(join(ROOT, 'src', 'web', 'reauth-healer.ts'), 'utf-8')
+  it('restartFirstRunGatedAgent bumps the generation BEFORE killing the session, not after', () => {
+    const fnAt = HEALER_SRC.indexOf('async function restartFirstRunGatedAgent(name: string, session: string)')
+    expect(fnAt).toBeGreaterThan(-1)
+    const bumpAt = HEALER_SRC.indexOf('bumpAgentLaunchGeneration(name)', fnAt)
+    const killAt = HEALER_SRC.indexOf('kill-session', fnAt)
+    expect(bumpAt).toBeGreaterThan(fnAt)
     expect(bumpAt).toBeLessThan(killAt)
   })
 })
