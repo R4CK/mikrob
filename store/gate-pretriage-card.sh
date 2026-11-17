@@ -88,15 +88,21 @@ ensure_auth_header() {
 #      case `merge-base(sha, origin/trunk)` degenerates to `sha` itself (an empty diff) the moment it
 #      lands -- caught below and treated as "could not use this method", falling back to the exact
 #      `sha~1` this script always used.
+# Card a42d27e1: pulled out of resolve_diff_base so the land-parity check below (which needs the
+# CURRENT trunk tip, not a merge-base) can name the same trunk without re-deriving the per-repo rule.
+trunk_for_repo() {
+  case "$1" in
+    "$CLEANCORE_REPO") printf '%s\n' "origin/main" ;;
+    *) printf '%s\n' "origin/develop" ;;
+  esac
+}
+
 resolve_diff_base() {
   local repo="$1" sha="$2" prior="${3:-}" trunk mb full
   if [ -n "$prior" ] && git -C "$repo" cat-file -e "${prior}^{commit}" 2>/dev/null; then
     printf '%s\n' "$prior"; return 0
   fi
-  case "$repo" in
-    "$CLEANCORE_REPO") trunk="origin/main" ;;
-    *) trunk="origin/develop" ;;
-  esac
+  trunk="$(trunk_for_repo "$repo")"
   mb="$(git -C "$repo" merge-base "$sha" "$trunk" 2>/dev/null)" || mb=""
   full="$(git -C "$repo" rev-parse "$sha" 2>/dev/null)"
   if [ -n "$mb" ] && [ "$mb" != "$full" ]; then printf '%s\n' "$mb"; else printf '%s~1\n' "$sha"; fi
@@ -115,7 +121,11 @@ build_body() {
   [[ -d "$repo/.git" ]] || return 3
   git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null || return 3
   base="$(resolve_diff_base "$repo" "$sha" "$prior_sha")"
-  json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" --json 2>/dev/null)" || return 3
+  # --trunk (card a42d27e1): land parity against the CURRENT trunk tip, fetched fresh so a stale
+  # local origin/<trunk> cannot report a clean merge the real land would not actually get.
+  local trunk; trunk="$(trunk_for_repo "$repo")"
+  git -C "$repo" fetch -q origin "${trunk#origin/}" 2>/dev/null || true
+  json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" --trunk "$trunk" --json 2>/dev/null)" || return 3
   MARKER="$MARKER" SHA="$sha" BASE="$base" REPO="$repo" PT_JSON="$json" TITLE="$title" DESC="$desc" PEER_GATE_SHA="$peer_sha" python3 <<'PY'
 import json, os, re
 d = json.loads(os.environ["PT_JSON"])
