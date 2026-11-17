@@ -26848,3 +26848,44 @@ passed, 11 Tests passed.
 Gate-SHA: 08119dcf442ac46610f7652d187578ad37fd55d1. Gate: QA + Cybered (Fix-Direction jött
 WhiteHat2-től, a biztonsági re-gate RedHat-é, root CLAUDE.md "fix proposed by WhiteHat -> security
 gate is RedHat" konvenció szerint).
+
+### 2ba008f2 round 5: QA2 lelete -- két teszt node:fs mockja elfedte a kimaradás-kaput
+
+**Mi történt:** MikroB jelezte (komment 32654), hogy QA2 az e3cf26d0 round 5 gate-elése közben
+(komment 32653) a TELJES tesztkörben futtatva talált két elbukó fájlt, amit a 2ba008f2 négy
+gate-köre sosem futtatott (a delta re-gate-ek csak a kártya aktuálisan módosított fájljaira
+szűkítettek): `kanban-decisions-guard.test.ts` "force actor bypasses the block" és
+`kanban-landed-guard.test.ts` "honours force only for an exempt actor". A round-1 commit
+(a2307bf11) óta mindkettő pirosan állt a teljes kör mellett, senki nem vette észre.
+
+**Gyökér-ok:** `isSessionOutageActive()` (src/kanban-force-actors.ts, a round 1-4 kimaradás-kapu
+logikája) `readFileSync()`-et hív a FORCE_ACTORS-ellenőrzés ELŐTT. A két tesztfájl node:fs mockja
+csak `existsSync`-et adott, `readFileSync` hiányzott -- a hívás ezért egy sima (nem ENOENT)
+TypeError-t dob, amit a függvény catch-ága "a marker létezik, de nem olvasható" állapotnak lát
+(fail closed: outage aktív), és ez a mikrob force-bypasst feltétel nélkül megtagadja, pontosan
+azt a vizlelátét, amit a két teszt saját maga elvárt volna.
+
+**Javítás:** mindkét mock kapott egy `readFileSync`-et, ami egy valódi ENOENT hibát dob (ez a
+helyes "nincs is marker" jelzés) -- ugyanaz az alak, mint a másik 16, node:fs-et mockoló
+teszt-fájlnak. A PRODUKCIÓS kód (a round 1-4 fail-closed viselkedése) változatlan, csak a két
+teszt saját mockja módosult.
+
+**Audit:** végigmentem a flotta MIND a 18 node:fs-et mockoló teszt-fájlján (`grep -rl
+"vi.mock('node:fs'" src/__tests__`). A maradék 16 közül egyik sem importálja a
+kanban-force-actors.ts-t közvetlenül, és egyik sem tölti be valódi, nem-mockolt db.js-en keresztül
+sem (vagy egyáltalán nem érintik a db.js-t, vagy teljes egyéni stubbal helyettesítik, így a
+valódi kanban-force-actors.ts sosem töltődik be). Az egyetlen kivétel,
+`fleet-import-kanban-real-db.test.ts`, `importOriginal`-lal a VALÓDI node:fs-et is átengedi
+(`readFileSync` valódi), ezért ezt sosem érintette a hiba.
+
+**Mutáció-bizonyíték:** mindkét mockot visszaállítottam a hibás (`{ existsSync: () => true }`)
+alakra -- pontosan a két megnevezett teszt bukott (62/64 zöld), minden más maradt. Visszaállítva
+a scratchpad-backupból, `diff -q`-val bájt-azonos, újrafuttatva: 64/64 zöld.
+
+**Mérés:** a 2 javított fájl, noisy-run vitest: 64/64 PASS. Mind a 18 node:fs-et mockoló fájl
+együtt: 18 fájl / 384 teszt PASS (nincs regresszió az audit miatt). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** a lelet forrása QA2 (komment 32654, MikroB relayje), a javítást backend végezte.
+Gate-SHA: cc0e86f70 (ideiglenes, a végső Gate-SHA ennek a dokumentum-bejegyzésnek a commitja
+lesz -- lásd a REVIEW-t a kártyán a pontos sha-ért). Gate: QA + Cybersec + Cybered (MikroB saját
+dispatchja, komment 32654).
