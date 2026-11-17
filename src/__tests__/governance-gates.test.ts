@@ -312,11 +312,16 @@ describe('self-pace-gate gateDecision', () => {
   // (a token-walk past a fixed wrapper-word list) traded the scratchpad-path false
   // positive for 14 missed respawn shapes -- any wrapper not on the list, or one
   // followed by its own option/flag, ended the walk on a token that was never
-  // "claude", so those shapes went from denied to allowed. The actual fix narrows
-  // only the WORD BOUNDARY on the old broad "claude anywhere after the trigger"
-  // scan ((?<![\w-])claude(?![\w./-])), so no wrapper list is needed: every one of
-  // these (cybersec's own probe, run against the real gateDecision()) must stay
-  // denied, same as the pre-existing bare-relaunch shapes.
+  // "claude", so those shapes went from denied to allowed. Round 2 narrowed the
+  // old regex's WORD BOUNDARY instead ((?<![\w-])claude(?![\w./-])), which closed
+  // those 14 but also excluded "claude" as a prefix/suffix of another token, so
+  // round 3 (cybersec NO-GO 32639) lost 6 more real shapes (claude-code, npx
+  // @anthropic-ai/claude-code, node .../claude-code/cli.js, a relaunch-claude.sh
+  // wrapper script, claude.sh, claude.exe). The actual fix (cybersec2 32612,
+  // reconfirmed by cybersec 32639) keeps the OLD broad regex untouched and masks
+  // only the per-uid scratch directory component (`claude-<digits>`) before
+  // testing, so every one of these shapes -- the pre-existing ones, cybersec's
+  // 14, and the 6 prefix/suffix ones -- must stay denied.
   it('still denies every real nohup/setsid/disown + claude relaunch shape', () => {
     for (const cmd of [
       // pre-existing shapes (already pinned before this card)
@@ -345,6 +350,14 @@ describe('self-pace-gate gateDecision', () => {
       'nohup bash -lc "exec claude -p hi"',
       // cybersec 32608: xargs relaunch
       'nohup xargs -I{} claude -p {} < file',
+      // cybersec 32639: "claude" as a prefix/suffix of another token, lost by
+      // round 2's word-boundary narrowing
+      'nohup claude-code -p x &',
+      'nohup npx @anthropic-ai/claude-code -p x &',
+      'nohup node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js -p x &',
+      'nohup bash ./relaunch-claude.sh &',
+      'setsid ./claude.sh &',
+      'nohup claude.exe -p x &',
     ]) {
       expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
     }

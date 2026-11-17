@@ -154,21 +154,31 @@ const SELF_PACE_TOOLS = new Set([
 // quoted/substituted command word, bash -c/sh -c bodies, xargs) -- any wrapper
 // not on the list, or one followed by its own option, ended the walk on a token
 // that was never "claude" at all, so the walk-based narrowing itself was the
-// hole, not just an incomplete wrapper list. Cybersec verified (same probe,
-// gateDecision() on both trees, 26 shapes) that keeping the OLD BROAD scan and
-// narrowing ONLY the word boundary closes all 14 without a wrapper list: a path
-// component is always followed by `/` or end-of-segment-non-word, never by a
-// shell metacharacter or end of a bare word, so `claude` embedded in
-// `/tmp/claude-1000/...` is followed by `-`, which this boundary excludes, while
-// every respawn shape (quoted, wrapped, substituted, inside bash -c) still has
-// `claude` as a bare word and still matches.
+// hole, not just an incomplete wrapper list. Round 2 narrowed the old regex's
+// word boundary instead (`\bclaude\b` -> `(?<![\w-])claude(?![\w./-])`), which
+// closed all 14 but excluded `claude` as a PREFIX/SUFFIX of another token too,
+// losing 6 more old-deny shapes (round 3, cybersec NO-GO 32639): claude-code,
+// npx @anthropic-ai/claude-code, node .../claude-code/cli.js, relaunch-claude.sh,
+// claude.sh, claude.exe -- three of them real relaunches of the same CLI under
+// its package name. Fix (cybersec2, comment 32612; reconfirmed by cybersec in
+// 32639): don't touch the regex or its word boundary at all -- keep the OLD
+// broad scan, and strip only the actual false-positive source, the per-uid
+// scratch directory component `claude-<digits>`, from the string before
+// testing it. A respawn shape never contains that exact digit-suffixed
+// component, so masking it loses nothing a respawn shape needs; a scratchpad
+// path like `/tmp/claude-1000/...` no longer contains the bare word "claude"
+// once masked, so the old regex no longer fires on it.
+const CLAUDE_RELAUNCH_RE = /\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i
 const SELF_PACE_BASH_PATTERNS = [
   // tmux pane injection -- every write-subcommand that can push keys/text/commands
   // into a pane (the actual incident vector), not just send-keys. [\s\S] (not
   // [^\n]) so an intra-segment newline cannot split the match.
   /\btmux\b[\s\S]*\b(send-keys|paste-buffer|run-shell|set-buffer)\b/i,
   // self-backgrounding that relaunches claude (nohup/setsid/disown + claude).
-  /\b(nohup|setsid|disown)\b[\s\S]*(?<![\w-])claude(?![\w./-])/i,
+  // See comment above: OLD broad regex, scratch-dir component masked first.
+  {
+    test: (s) => CLAUDE_RELAUNCH_RE.test(s.replace(/\/claude-\d+(?=\/|\b)/g, '/uidscratch')),
+  },
   // the loop slash-skill driven from a shell. `/loop` must be in SLASH-COMMAND
   // position -- a standalone token (segment-start / whitespace / quote before it,
   // whitespace / quote / end after it) -- never a PATH segment. The old

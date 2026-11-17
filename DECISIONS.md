@@ -26802,3 +26802,38 @@ src/__tests__/governance-gates.test.ts`: 1 Test File passed (1), 271 Tests passe
 verifikált próbával). backend végezte a javítást. Gate-SHA:
 dc9b0e702f6d9910baa1d7755396af9677d4d43c. Gate: QA + Cybered (RedHat) -- a proposer-szabály (4f.
 munkavégzési szabály) szerint, mert ezúttal WhiteHat (cybersec) javasolta a fixet.
+
+### 9ea8dcb8 round 4: CYBERSEC NO-GO 32639 fix -- a szóhatár-szűkítés maga vesztett el 6 régi deny-alakot
+
+**Mi történt:** A round 3 javítás (WhiteHat saját, a round-1 NO-GO-ban javasolt szóhatár-szűkítése,
+a cél-szó körüli negatív lookaround kiterjesztése) lezárta a round 1 összes 14 regresszióját, de a
+szóhatár maga is túl szűk lett: kizárta a cél-szót MÁSIK token prefixumaként/suffixumaként is, így
+6 régi deny-alak engedetté vált, hármuk a tényleges CLI valódi relaunch-je a csomagneve alatt
+(a CLI package-neve mögé írt "-code" suffixszel, npx-es és node-cli.js-es alakban), plusz három
+"wrapper script" alak (.sh, .exe suffixszel). Ezt cybersec maga fedte fel (NO-GO 32639, friss,
+42 shape-es próba, a regex, amit maga javasolt a round 1-ben), cybersec2 round-2 NO-GO-ja (32612)
+pedig MÁR ELŐRE rögzítette a helyes irányt a saját, függetlenül mért próbájával.
+
+**Javítás (cybersec2 iránya, 32612; cybersec megerősítve, 32639):** a szóhatárt EGYÁLTALÁN nem
+kell szűkíteni. A tényleges téves pozitív forrás a per-uid scratch-könyvtár komponens volt (a
+célszó után egy szám-suffix, pl. "-1000"), nem a célszó maga -- ezt kell maszkolni a teszt ELŐTT
+egy útvonal-helyettesítővel, a régi, széles mintát pedig változatlanul hagyni. Egy valódi
+relaunch-alak sosem tartalmazza ezt a szám-suffixes scratch-komponenst, tehát a maszkolás semmit
+nem veszít, amire egy relaunch-alaknak szüksége van; egy scratch-útvonal a maszkolás után már nem
+tartalmazza a sima célszót, tehát a régi minta nem sül el rajta.
+
+**Mutáció-bizonyíték:** a javítást visszaállítottam a round-2 szóhatár-szűkített alakra (maszkolás
+nélkül) -> 1/271 piros, pontosan az új "still denies ... relaunch shape" teszt (a 6 új alak
+egyikén, "expected false to be true"); visszaállítva -> 271/271 zöld, a diff byte-azonos a
+mentett verzióval.
+
+**Mérés:** `npx vitest run src/__tests__/governance-gates.test.ts` (noisy-run, commitolatlan fa,
+mutáció-próba): 271/271 a javítással, 270/271 (1 piros) a mutánson. `npx tsc --noEmit` tiszta.
+A commitolt sha-ra `fleet-test.sh --ref`-fel még nem futott ebben a szakaszban -- lásd a REVIEW-t
+a kártyán a pontos sha-val, amint lefut.
+
+**Ki döntött:** cybersec NO-GO (32639) + cybersec2 NO-GO (32612, a fix iránya). backend végezte a
+javítást. Gate: QA + Cybered (RedHat) -- a proposer-szabály (4f. munkavégzési szabály) szerint,
+mert a fix iránya ezúttal is WhiteHat-tól jött.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
