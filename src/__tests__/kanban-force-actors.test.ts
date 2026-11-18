@@ -66,6 +66,18 @@ describe('isForceActor', () => {
   it('forceActors() itself is unaffected by outage state (it is just the allowlist, not a decision)', () => {
     expect(forceActors()).toEqual(['mikrob'])
   })
+
+  // Card e3cf26d0 (MikroB addendum, comment 32433): a non-string actor must never match the
+  // allowlist, even one that LOOKS like 'mikrob' under coercion (toString/valueOf, or a
+  // single-element array). Set.has() uses SameValueZero (no coercion) today -- this pins that, so
+  // a mutant that swapped it for a coercing comparison (e.g. FORCE_ACTORS.has(String(actor)), or
+  // a loose `==`) goes red here, even though every upstream call site's own `typeof actor ===
+  // 'string'` narrowing (kanban.ts, kanbanWriteActor) would normally stop it first.
+  it('a non-string actor never matches the allowlist, even if it looks like "mikrob" under coercion', () => {
+    const looksLikeMikrob = { toString: () => 'mikrob', valueOf: () => 'mikrob' } as unknown as string
+    expect(isForceActor(true, looksLikeMikrob)).toBe(false)
+    expect(isForceActor(true, ['mikrob'] as unknown as string)).toBe(false)
+  })
 })
 
 describe('isForceActor -- Cybered NO-GO (comment 32445, Finding 2): fail CLOSED on a marker that exists but cannot be trusted', () => {

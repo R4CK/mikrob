@@ -24,18 +24,37 @@ function withSwitchFile(contents: string | null, fn: (path: string) => void) {
   }
 }
 
+// Card e3cf26d0: isDegradedOrchestratorBlocking()/degradedOrchestratorRefusal() no longer take a
+// path (RedHat/WhiteHat LOW, see degraded-orchestrator-guard.ts's own comment) -- these drive
+// them the same way every real caller does, via the env override, for the tests below that need
+// a specific fixture FILE that exists (not the missing-file case, which has its own dedicated
+// tests above/below using the genuine no-override default).
+function withEnvOverride<T>(path: string, fn: () => T): T {
+  const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+  process.env.DEGRADED_ORCHESTRATOR_SWITCH = path
+  try {
+    return fn()
+  } finally {
+    if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
+  }
+}
+
 describe('readDegradedOrchestratorState (card d5638d28)', () => {
-  it('missing file = off (Kesz, ha #1)', () => {
+  // Card e3cf26d0 round 2 (MikroB decision 32246(b) extended to the explicit-path form, QA2 FAIL
+  // 32542): a missing explicit `path` ARGUMENT is now unreadable (fail-closed), same as a missing
+  // env override -- only the genuine production default's absence is OFF (Kesz, ha #1), covered by
+  // the dedicated test below.
+  it('a missing explicit path argument is unreadable (fail-closed), not off', () => {
     withSwitchFile(null, (path) => {
-      expect(readDegradedOrchestratorState(path)).toBe('off')
-      expect(isDegradedOrchestratorBlocking(path)).toBe(false)
+      expect(readDegradedOrchestratorState(path)).toBe('unreadable')
     })
   })
 
   it('{"enabled": true} = on', () => {
     withSwitchFile('{"enabled": true}', (path) => {
       expect(readDegradedOrchestratorState(path)).toBe('on')
-      expect(isDegradedOrchestratorBlocking(path)).toBe(true)
+      expect(withEnvOverride(path, () => isDegradedOrchestratorBlocking())).toBe(true)
     })
   })
 
@@ -48,7 +67,7 @@ describe('readDegradedOrchestratorState (card d5638d28)', () => {
   it('malformed JSON fails CLOSED (unreadable -> blocking), not open (MikroB msg 19506)', () => {
     withSwitchFile('{not valid json', (path) => {
       expect(readDegradedOrchestratorState(path)).toBe('unreadable')
-      expect(isDegradedOrchestratorBlocking(path)).toBe(true)
+      expect(withEnvOverride(path, () => isDegradedOrchestratorBlocking())).toBe(true)
     })
   })
 
@@ -60,7 +79,7 @@ describe('readDegradedOrchestratorState (card d5638d28)', () => {
   it('{} (missing the enabled key) is now invalid shape -> unreadable (blocks), not off', () => {
     withSwitchFile('{}', (path) => {
       expect(readDegradedOrchestratorState(path)).toBe('unreadable')
-      expect(isDegradedOrchestratorBlocking(path)).toBe(true)
+      expect(withEnvOverride(path, () => isDegradedOrchestratorBlocking())).toBe(true)
     })
   })
 
@@ -127,22 +146,57 @@ describe('readDegradedOrchestratorState (card d5638d28)', () => {
     }
   })
 
-  // MUTATION PIN: an explicit `path` ARGUMENT that is missing stays OFF even while
-  // DEGRADED_ORCHESTRATOR_SWITCH happens to be set in the environment to something else -- the
-  // override rule above must key off "was the env var used" (no argument given), not "is the env
-  // var merely set somewhere" while a caller also passed its own path.
-  it('an explicit path argument that is missing stays OFF even with an unrelated env override set', () => {
+  // Card e3cf26d0 (WhiteHat LOW-1 on d5638d28): every test above either passes an explicit
+  // `path` or sets the env override -- nothing ever exercised the GENUINE production default
+  // (no override, no explicit path argument, the real degradedOrchestratorSwitchPath()). A
+  // mutant that made that branch 'unreadable' too (same as the override-missing rule) stayed
+  // green, because nothing asserted the Kesz-ha-#1 contract against the literal default path.
+  // Safe to run for real: fleet-test.sh builds a throwaway checkout (no CLAUDECLAW_ENV_DIR state
+  // of its own), so PROJECT_ROOT/store/degraded-orchestrator-enabled.json never exists there --
+  // this reads it, never writes it.
+  it('the genuine default path (no override, no explicit path arg) missing is OFF (Kesz, ha #1)', () => {
+    const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    try {
+      expect(readDegradedOrchestratorState()).toBe('off')
+      expect(isDegradedOrchestratorBlocking()).toBe(false)
+    } finally {
+      if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+      else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
+    }
+  })
+
+  // MUTATION PIN: an explicit `path` ARGUMENT that is missing is unreadable (fail-closed)
+  // regardless of whether DEGRADED_ORCHESTRATOR_SWITCH happens to be set in the environment to
+  // something else -- the env var being set must not accidentally change the verdict for a
+  // caller-passed path, and the caller-passed path being missing must not fall back to OFF either.
+  it('an explicit path argument that is missing is unreadable regardless of an unrelated env override', () => {
     const dir = mkdtempSync(join(tmpdir(), 'degraded-guard-explicit-missing-'))
     const explicitMissingPath = join(dir, 'also-does-not-exist.json')
     const envPath = join(dir, 'env-path-irrelevant.json')
     const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
     process.env.DEGRADED_ORCHESTRATOR_SWITCH = envPath
     try {
-      expect(readDegradedOrchestratorState(explicitMissingPath)).toBe('off')
+      expect(readDegradedOrchestratorState(explicitMissingPath)).toBe('unreadable')
     } finally {
       if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
       else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The genuine production default (no override, no explicit argument) still reads missing as OFF
+  // -- the one case Kesz, ha #1 actually protects, now distinguished from the two cases above by
+  // the explicit `isGenuineDefault` check in readDegradedOrchestratorState() rather than by
+  // "was an argument passed" alone.
+  it('the genuine default (no override, no explicit arg) missing is OFF even with an unrelated env var unset', () => {
+    const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    try {
+      expect(readDegradedOrchestratorState()).toBe('off')
+    } finally {
+      if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+      else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
     }
   })
 })
@@ -150,7 +204,7 @@ describe('readDegradedOrchestratorState (card d5638d28)', () => {
 describe('degradedOrchestratorRefusal (card d5638d28)', () => {
   it('refuses when degraded is on and no force-actor bypass is given', () => {
     withSwitchFile('{"enabled": true}', (path) => {
-      const refusal = degradedOrchestratorRefusal('kanban move to done', false, undefined, path)
+      const refusal = withEnvOverride(path, () => degradedOrchestratorRefusal('kanban move to done', false, undefined))
       expect(refusal).not.toBeNull()
       expect(refusal).toContain('d5638d28')
     })
@@ -158,25 +212,35 @@ describe('degradedOrchestratorRefusal (card d5638d28)', () => {
 
   it('refuses even with force:true when the actor is NOT the owner-bypass allowlist', () => {
     withSwitchFile('{"enabled": true}', (path) => {
-      expect(degradedOrchestratorRefusal('agent start', true, 'degraded-orchestrator-loop', path)).not.toBeNull()
+      expect(
+        withEnvOverride(path, () => degradedOrchestratorRefusal('agent start', true, 'degraded-orchestrator-loop')),
+      ).not.toBeNull()
     })
   })
 
   it('passes for the owner bypass (force:true, actor:"mikrob") even while degraded', () => {
     withSwitchFile('{"enabled": true}', (path) => {
-      expect(degradedOrchestratorRefusal('agent start', true, 'mikrob', path)).toBeNull()
+      expect(withEnvOverride(path, () => degradedOrchestratorRefusal('agent start', true, 'mikrob'))).toBeNull()
     })
   })
 
+  // Genuine default (no env override, no explicit path -- card e3cf26d0 dropped the path
+  // parameter from this function), NOT a fixture file simulating "off": the real missing-default
+  // contract is what matters here, same reasoning as the dedicated LOW-1 test above.
   it('passes when degraded is off, regardless of actor', () => {
-    withSwitchFile(null, (path) => {
-      expect(degradedOrchestratorRefusal('kanban move to done', false, 'some-other-agent', path)).toBeNull()
-    })
+    const prev = process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+    try {
+      expect(degradedOrchestratorRefusal('kanban move to done', false, 'some-other-agent')).toBeNull()
+    } finally {
+      if (prev === undefined) delete process.env.DEGRADED_ORCHESTRATOR_SWITCH
+      else process.env.DEGRADED_ORCHESTRATOR_SWITCH = prev
+    }
   })
 
   it('refuses fail-closed on an unreadable file even for a non-owner actor', () => {
     withSwitchFile('{garbage', (path) => {
-      expect(degradedOrchestratorRefusal('marveen-land', false, 'fullstack', path)).not.toBeNull()
+      expect(withEnvOverride(path, () => degradedOrchestratorRefusal('marveen-land', false, 'fullstack'))).not.toBeNull()
     })
   })
 })

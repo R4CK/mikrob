@@ -16,6 +16,16 @@ import { startAgentProcess, restartAgentProcess } from '../web/agent-process.js'
 
 const AGENT = 'nonexistent-agent-d5638d28-r3-does-not-exist'
 
+/** Source with `//` line comments and /* *\/ blocks removed (card e3cf26d0, same technique as
+ *  agent-working-dir-single-source.test.ts's own stripComments). */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n')
+}
+
 let switchDir: string
 let SWITCH_PATH: string
 
@@ -86,7 +96,13 @@ describe('restartAgentProcess (real function, card d5638d28 round 3)', () => {
     expect(fnStart).toBeGreaterThan(-1)
     const fnEnd = src.indexOf('\n}\n', fnStart)
     expect(fnEnd).toBeGreaterThan(fnStart)
-    const body = src.slice(fnStart, fnEnd)
+    // Card e3cf26d0 (RedHat/WhiteHat LOW-4 on d5638d28): a plain indexOf on the raw source found
+    // the string `degradedOrchestratorRefusal(` even when the actual call was commented out
+    // (`// const refusal = degradedOrchestratorRefusal(...)`), because the text survives in the
+    // comment -- the pin passed while proving nothing. Strip comments first, same technique as
+    // agent-working-dir-single-source.test.ts's stripComments, so a commented-out call is
+    // indistinguishable from an absent one.
+    const body = stripComments(src.slice(fnStart, fnEnd))
     const guardIdx = body.indexOf('degradedOrchestratorRefusal(')
     const stopIdx = body.indexOf('stopAgentProcessUnlocked(')
     expect(guardIdx).toBeGreaterThan(-1)

@@ -27059,3 +27059,178 @@ vitest: 22/22 PASS. `npx tsc --noEmit` tiszta.
 32720), a javítást backend végezte.
 
 **Hivatkozás:** kártya 2ba008f2, komment 32720 (Fix-Direction), `src/__tests__/night-gate.test.ts`.
+
+## 2026-11-16 -- e3cf26d0: d5638d28 round-4 gate follow-up -- land-guard fail-open on a missing shared lib + 4 unpinned LOWs
+
+**Kontextus:** WhiteHat (üzenet 19821) + RedHat (32303) a d5638d28 round-4 gate-ek (@3e15b6c2e,
+mind GO) mellett 5 LOW-tételt jelzett, amik önmagukban nem buktatták a GO-t, de nem voltak
+pinnelve: a legfontosabb (LOW-2), hogy ha a megosztott
+`store/degraded-orchestrator-land-guard-lib.sh` hiányzik, a lander csak "command not found"-ot ír
+és FOLYTATJA -- fail-open a check saját forrásolási hibáján.
+
+**Javítás:**
+- **LOW-2:** `store/mopsi-land.sh` és `store/mopsion-land.sh` (a `cleancore-land.sh` symlink ez
+  utóbbira) bare `.` forrásolása exit-státusz ellenőrzés nélkül ment -- mindhárom lander
+  `set -uo pipefail`-t használ (`-e` nélkül), tehát a hiányzó lib "command not found" hibája NEM
+  állította meg a futást, a guard csendben soha nem futott le. Javítva: `if ! . "..."; then die 3
+  "... refusing to land without this check (card e3cf26d0)"; fi`. A `marveen-land.sh` a guard
+  SAJÁT, beágyazott másolatát hordozza, nem forrásolja a megosztott libet, tehát ez a konkrét
+  hibamód nem érinti.
+- **LOW-1:** a `readDegradedOrchestratorState()`/`isDegradedOrchestratorBlocking()` eddigi minden
+  tesztje explicit path-ot adott vagy env-override-ot állított -- semmi nem futtatta a VALÓS
+  production default-utat (se override, se argumentum). Pótolva. RedHat LOW (a két PUBLIC
+  függvény opcionális `path` paramétere eltávolítva -- semelyik valós hívó nem adott át ilyet; az
+  alsó szintű `readDegradedOrchestratorState()` megtartja a saját két-paraméteres szerződését a
+  direkt tesztjeihez).
+- **LOW-3:** `mopsi-land.sh --selftest` nem volt bekötve semmilyen suite-ba -- bekötve a
+  `landing-downward-check.test.ts` `describe.each`-ébe, mért padló 75.
+- **LOW-4:** a forrás-sorrend pin
+  (`agent-start-restart-degraded-orchestrator-real.test.ts`) nyers `indexOf`-ot futtatott a
+  forrásszövegen, tehát egy kikommentezett hívás (`// const refusal =
+  degradedOrchestratorRefusal(...)`) is illeszkedett volna. `stripComments()` segédfüggvény
+  pótolva (ugyanaz a technika, mint `agent-working-dir-single-source.test.ts` saját
+  `stripComments`-je) az `indexOf` elé.
+
+**Kész, ha:** guard lib átnevezve -> mindhárom lander refuse-ol (nem-nulla, semmi nem pusholva) --
+`land-guard-lib-missing-fail-closed.test.ts` (symlink-farm próba, a die() üzenet SZÖVEGÉT nézi, nem
+csak a bash "No such file" sorát, mert az utóbbi a régi, sérülékeny kódon is megjelenik); LOW-1/
+LOW-4 red-on-mutant tesztek pótolva; mopsi selftest bekötve; az explicit-path hiányzó fájl esete
+továbbra is OFF-ot olvas (változatlan, tesztelve).
+
+**Mérés:** `fleet-test.sh --ref card/e3cf26d0` (4 fájl: `degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `landing-downward-check.test.ts`,
+`land-guard-lib-missing-fail-closed.test.ts`): 4 Test Files passed (4), 42 Tests passed (42).
+`npx tsc --noEmit` tiszta.
+
+**Ki döntött:** WhiteHat (üzenet 19821) + RedHat (32303) lelet. backend végezte a javítást.
+Gate-SHA: 69631bae486fd506855c9c0c6172da245cf3d890. Gate: QA + Cybersec + Cybered (kártya saját
+előírása).
+
+## e3cf26d0 round 2: QA2 FAIL (komment 32542) két hiányzó pont javítva
+
+A round 1 REVIEW (f73ca32a0) alatt QA2 két Kész-ha-pontot talált nyitva (relézve MikroB üzenet
+20096-ban):
+
+1. **Explicit-path hiányzó fájl még OFF-ot olvasott.** A `readDegradedOrchestratorState(explicitPath)`
+   egy hiányzó, EXPLICIT path argumentumra `off`-ot adott vissza, holott MikroB döntés 32246(b)
+   már korábban (d5638d28 round 4) fail-closed-ra állította az env-override ugyanilyen esetét. MikroB
+   üzenet 20096: a 32246(b) döntés az explicit-path alakra is vonatkozik -- egy hívó által átadott
+   path ugyanolyan hívó-kontrollált érték, mint az env override, a hiánya ugyanúgy anomália, nem az
+   owner szándékos OFF-ja. Javítva: a hiányzó-path OFF-ág mostantól CSAK a valódi production
+   default-ra érvényes (se env override, se explicit argumentum) -- mindkét másik eset
+   (`unreadable`) lesz. A két régi, az ELŐZŐ viselkedést pinnelő teszt frissítve az ÚJ
+   viselkedésre, plusz egy külön teszt a változatlan valódi-default esetre.
+2. **MikroB addendum (kártya komment 32433, RedHat GO d5638d28 @49bb67aef üzenet 19908): a
+   `kanban.ts`/`kanban-force-actors.ts` actor-szűkítése unpinned volt egy olyan mutánsra, ami egy
+   nem-string actort az owner-bypasshoz juttatna.** Pótolva: unit pin `kanban-force-actors.test.ts`-ben
+   (`isForceActor` egy toString/valueOf-fal "mikrob"-nak látszó objektumra és egy `['mikrob']`
+   tömbre is `false`-t kell adjon -- a `Set.has()` SameValueZero-szemantikáját pinneli egy
+   coerce-elő összehasonlításra cserélő mutáns ellen); 3 integrációs pin
+   `kanban-move-degraded-orchestrator-guard.test.ts`-ben (POST /move, PUT, POST create-as-done,
+   mindhárom `actor:["mikrob"], force:true`-t küld degraded állapotban, és az owner-bypass NEM
+   érvényesül).
+
+**Mérés:** `fleet-test.sh --ref card/e3cf26d0` (`degraded-orchestrator-guard.test.ts`,
+`kanban-force-actors.test.ts`, `kanban-move-degraded-orchestrator-guard.test.ts`): 3 Test Files
+passed (3), 60 Tests passed (60). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** QA2 FAIL (komment 32542), relézve MikroB üzenet 20096-ban. backend végezte a
+javítást. Gate-SHA: 8c23bbd67a41f9c61e79daaabb0b8d712d5cd4bc. Gate: QA + Cybersec + Cybered
+(kártya saját előírása).
+
+## e3cf26d0 round 4: rebase a 2ba008f2 round 4 (F1 polarity) tetejére + cybersec2 LOW záró
+(exit-127 hiányzó guard-függvény)
+
+A kártya a sima-SKIP gate-sorrend miatt a 2ba008f2 C1 (credential-scope fence) befejezéséig nem
+mehetett live-ra (HARD PRECONDITION, lásd a kártya saját leírását) -- a `card/2ba008f2` közben
+round 4-et kapott (F1 polarity fail-closed, lásd a fenti 2ba008f2 bejegyzést), ezért a
+`card/e3cf26d0` ágat (korábbi tipp: `ccb8f67ff5b1c046255c32662a991a4ebbb2373f`) rebase-elni kellett
+az új `origin/card/2ba008f2` tetejére (`704b4d5cf87041858e30be140b94f1043cf94360`), MikroB üzenet
+20150 utasítása szerint. A DECISIONS.md append-only ütközést kézzel oldottam (a HEAD blokk, majd
+az e3cf26d0 saját round-4 blokkja, konfliktus-jelölő nélkül).
+
+Ugyanabban a körben MikroB üzenet 20150 második pontja a cybersec2 SKIP (komment 32575) alatt
+hagyott LOW-t kérte zárni: a round 1-ben (LOW-2) fixelt eset egy TELJESEN HIÁNYZÓ guard lib-re
+vonatkozott (`. lib` maga bukik, a bare-`.` exit-kódja nem-nulla); a cybersec2 mérés szerint egy
+olyan lib, ami LÉTEZIK és TISZTÁN SOURCE-OLÓDIK, de nem definiálja a
+`check_degraded_orchestrator_guard` függvényt (üres/csonka fájl), más hibaosztály: `. lib` 0-val
+tér vissza, a `if ! . lib` ág nem fut, a hívás SIKERESEN lefut `command not found`-dal (exit 127),
+és a lander a kapcsolóval FOLYTATJA -- ugyanaz a fail-open-a-crash-ra család, mint az F1 (2ba008f2),
+csak egy állapottal arrébb.
+
+**A javítás:** `store/mopsi-land.sh` és `store/mopsion-land.sh` (a `store/cleancore-land.sh`
+symlink automatikusan lefedve) a meglévő `if ! . "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"; then die 3 ...; fi`
+blokk UTÁN egy explicit szimbólum-jelenlét-ellenőrzést kapott:
+`declare -F check_degraded_orchestrator_guard >/dev/null || die 3 "...truncated/empty lib?..."`
+(nem részsztring-keresés, a kódminőségi alapelvek 12. pontja szerint).
+
+**Mutáció-bizonyíték:** a két lander script másolatát a scratchpadbe mentve, az új
+`declare -F ...` sor helyére `true # MUTANT`-ot írva, a célzott vitest-fájl 3/6 tesztje pirosra
+váltott (a 3 új eset); visszaállítás után 6/6 zöld -- a javítás load-bearing.
+
+**Kész, ha:** egy üres/csonka lib stub refuse-olja a mopsion-land-et, selftestben bizonyítva --
+`land-guard-lib-missing-fail-closed.test.ts` új `describe.each` blokkja (`farmWithEmptyGuardLib()`,
+3 lander × 1 teszt) pinneli: `status===3`, az üzenet tartalmazza a
+`sourced but did not define check_degraded_orchestrator_guard` szöveget, NEM tartalmazza a
+`degraded-orchestrator mode is ON` szöveget.
+
+**Mérés:** `fleet-test.sh --ref 33636282adbb72b3d8d2fdf2dc4ccd25ae14ec6d` (6 fájl:
+`land-guard-lib-missing-fail-closed.test.ts`, `degraded-orchestrator-guard.test.ts`,
+`kanban-force-actors.test.ts`, `kanban-move-degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `landing-downward-check.test.ts`):
+6 Test Files passed (6), 82 Tests passed (82). `bash store/mopsi-land.sh --selftest`: 80/80 PASS.
+`bash store/mopsion-land.sh --selftest`: 116/116 PASS (változatlan a 2ba008f2 round 4 óta, ez a kör
+csak vitest-tesztet adott, bash `--selftest` esetet nem). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** MikroB üzenet 20150 (rebase-utasítás + cybersec2 32575 LOW zárása). backend
+végezte. Gate-SHA: 33636282adbb72b3d8d2fdf2dc4ccd25ae14ec6d. Gate: QA + Cybersec + Cybered (kártya
+saját előírása) -- delta re-gate csak az e körben változott részre (MikroB üzenet 20150: "its
+gates will re-check only that delta").
+
+### e3cf26d0 round 5: CYBERED NO-GO 32605 fix -- a switch-file parity teszt stale pin volt, nem viselkedés-lyuk
+
+**Cause:** Cybered NO-GO (komment 32605, round 4, Gate-SHA 8cfad7d74) azt mérte, hogy
+`src/__tests__/degraded-orchestrator-switch-parity.test.ts` "missing file: TS and bash agree" esete
+PIROS a round-4 ágon, miközben a base (704b4d5cf) alatt zöld -- nem flaky, determinisztikus. A
+round 2 úgy módosította `readDegradedOrchestratorState(explicitPath)`-t, hogy egy HIÁNYZÓ EXPLICIT
+útra `'unreadable'`-t adjon vissza, de a parity teszt a TS oldalt továbbra is egy explicit fixture
+útvonallal hajtotta a "missing file" sorban, a bash oldalt pedig `missing=OFF`-ként modellezte --
+ez egy OLYAN hívási alak, amit SEMMILYEN valós hívó nem használ (minden production hívás argumentum
+nélkül megy: a hívó vagy env override-ot állít, vagy a default-ra hagyatkozik). A bash lib
+(`store/degraded-orchestrator-land-guard-lib.sh` / `store/marveen-land.sh` 120-131. sor) már
+rendelkezik egy `_OVERRIDE_SET` ággal: a semmire mutató override ON (fail-closed), a sosem írt
+default path OFF -- a két oldal MÁR megegyezik, ha úgy hajtjuk, ahogy a production tényleg hívja
+őket. Stale pin volt, nem viselkedés-lyuk.
+
+**Fix:** `src/__tests__/degraded-orchestrator-switch-parity.test.ts`-ben a `bashSideIsOn()` egy
+`overrideSet` paramétert kapott (a hiányzó-path ág most ezt adja vissza, nem feltétlen `false`-t); a
+`FIXTURES` tömbből törölve a régi, explicit-pathos "missing file" sor (minden más fixture-sor valódi
+fájlt ír, ott ez az ág sosem triggerel). Két új, dedikált teszt váltja: (a) "missing file, override
+set to a missing path: TS and bash agree (ON)" -- `DEGRADED_ORCHESTRATOR_SWITCH` egy hiányzó útra
+állítva, `readDegradedOrchestratorState()` ARGUMENTUM NÉLKÜL (a valós hívási alak) a
+`bashSideIsOn(missingPath, true)`-hoz hasonlítva; (b) "missing file, genuine default (no override,
+no explicit arg): TS and bash agree (OFF)" -- env törölve, `readDegradedOrchestratorState()`
+argumentum nélkül a `bashSideIsOn(degradedOrchestratorSwitchPath(), false)`-hoz hasonlítva. Nincs
+viselkedés-változás a guard-ban, csak a teszt hívási alakja igazodott a valósághoz.
+
+**Mutáció-bizonyíték:** a `bashSideIsOn` hiányzó-path ága visszamutálva feltétlen `return false`-ra
+-> `degraded-orchestrator-switch-parity.test.ts` önállóan futtatva 1/19 piros (pontosan az új
+override-missing teszt, `expected false to be true`); visszaállítva (diff IDENTIKUS a backuppal) ->
+19/19 zöld.
+
+**Mérés:** `fleet-test.sh --ref 3b15170ea236ac3f7f9eb530326520fe587345a7` (10 fájl:
+`agent-restart-degraded-orchestrator-guard.test.ts`, `agent-start-degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `degraded-orchestrator-guard.test.ts`,
+`degraded-orchestrator-land-guard-selftest.test.ts`, `degraded-orchestrator-switch-parity.test.ts`,
+`kanban-move-degraded-orchestrator-guard.test.ts`, `kanban-force-actors.test.ts`,
+`landing-downward-check.test.ts`, `land-guard-lib-missing-fail-closed.test.ts`): 10 Test Files
+passed (10), 115 Tests passed (115). `npx tsc --noEmit` tiszta. A round-4 behaviorális teszt az
+üres/csonka-lib fail-closed esetre (`land-guard-lib-missing-fail-closed.test.ts` `describe.each`
+blokkja, `declare -F` alapú) VÁLTOZATLAN ebben a körben, és benne van a fenti 10 fájlos futásban --
+cybersec (MikroB üzenet 20198 addendum) ezt a sha-t nem mérte, cybered 8cfad7d74-n mérte zártnak.
+
+**Ki döntött:** cybered NO-GO (32605) a 2ba008f2-t (704b4d5cf, teljesen gate-elve) proposer-ként;
+MikroB üzenet 20198 megerősítette, hogy `origin/card/e3cf26d0` már 704b4d5cf-re van rebase-elve
+(nem kellett újra rebase-elni). backend végezte. Gate-SHA:
+3b15170ea236ac3f7f9eb530326520fe587345a7. Gate: QA + Cybersec (WhiteHat) -- RedHat (cybered)
+javasolta a fixet, tehát a biztonsági re-gate WhiteHat (4f. munkavégzési szabály).
