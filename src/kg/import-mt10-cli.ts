@@ -15,6 +15,14 @@
 // Gated on KG_CAPTURE_ENABLED, same switch kg-backfill.ts (MT-06) already gates its own write
 // path on -- these are both "derive graph nodes from existing data" jobs, not the KG_ENABLED
 // read-side kill switch (src/web/routes/kg.ts), which only governs the query routes.
+//
+// LOW-1 (card 81593084 CYBERSEC GO comment 32549): atomicity is PER IMPORTER, not across the
+// whole CLI run -- each importer wraps its own work in one kgDb.transaction. If a later importer
+// throws, the earlier importers' writes stay committed; there is no outer transaction rolling the
+// whole run back. This is safe to leave as-is rather than wrapping all four in one transaction:
+// every importer's write is an idempotent upsert (re-running after a partial failure converges to
+// the same state, same reasoning as the re-run-for-MEDIUM-1 case above), so a rerun after a
+// mid-run throw is the recovery path, not a rollback.
 import type Database from 'better-sqlite3'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -30,7 +38,12 @@ import { importAntiPatterns, type AntiPatternsImportReport } from './import-anti
 
 export function flagValue(argv: readonly string[], name: string): string | undefined {
   const i = argv.indexOf(name)
-  return i >= 0 ? argv[i + 1] : undefined
+  if (i < 0) return undefined
+  const value = argv[i + 1]
+  // LOW-2 (card 81593084 CYBERSEC GO comment 32549): a following flag (e.g. `--kg-db --help`)
+  // must not be swallowed as this flag's value -- that previously created a file named `--help`.
+  if (value === undefined || value.startsWith('--')) return undefined
+  return value
 }
 
 export const HELP_TEXT = [
@@ -103,11 +116,16 @@ export function runImportMt10(
     'importFindings' | 'importDecisionsLog' | 'importColdMemories' | 'importAntiPatterns'
   >,
 ): ImportMt10Report {
+  // antiPatterns BEFORE coldMemories: cold-memories' about-edges target `card:<id>` nodes that
+  // only antiPatterns creates among these four importers (MEDIUM-1, card 81593084 CYBERSEC GO
+  // comment 32549) -- running cold-memories first meant the first run skipped those edges
+  // (card-node not yet there) and only the second run (re-run, idempotent upsert) picked them up.
+  const antiPatterns = deps.importAntiPatterns(mainDb, kgDb, decisionsMarkdown, decisionsProject, sourcePath)
   return {
     findings: deps.importFindings(mainDb, kgDb),
     decisions: deps.importDecisionsLog(decisionsMarkdown, mainDb, kgDb, decisionsProject, sourcePath),
     coldMemories: deps.importColdMemories(mainDb, kgDb),
-    antiPatterns: deps.importAntiPatterns(mainDb, kgDb, decisionsMarkdown, decisionsProject, sourcePath),
+    antiPatterns,
   }
 }
 
