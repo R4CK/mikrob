@@ -28051,3 +28051,55 @@ src/__tests__/main-config-dir-wiring.test.ts (commit 750698ab6), src/web/agent-p
 src/config-dir-path.ts, src/web/active-model.ts.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+## 2026-11-18: b715a0b1 follow-up -- third configDirFor copy pinned, mainConfigRoots explicit-root candidate validated (card 5423775c, Cybered GO 32882 conditions)
+
+Cybered's GO on b715a0b1 (comment 32882, Gate-SHA de9eb2ebd) left 3 non-blocking conditions. C3
+(3 ms/call measurement, no cache needed) required no action. C1 and C2 fixed here:
+
+**C1 -- third configDirFor copy unpinned.** The L1 pin (card d79a69b5/25ea084c) covers
+context-restart-gate-runner.ts and context-guard-runner.ts's own local configDirFor() copies
+(main-config-dir-wiring.test.ts). src/web/delivery-turn-check.ts carries a THIRD, independent copy
+-- not exported, not imported by any test. Reverting it to the pre-fix unconditional `undefined`
+for MAIN_AGENT_ID left the whole suite green (Cybered's own measurement). Fixed: exported
+configDirFor from delivery-turn-check.ts and added two cases to main-config-dir-wiring.test.ts
+(real delegation to mainAgentConfigDir with the real working dir; non-main agent never reaches
+it). The mainConfigRoots() explicit-root candidate (inbound-probe.ts) was likewise unpinned --
+no test asserted a malformed/unsafe value was ever rejected. Fixed together with C2 below (the
+same code change pins both).
+
+**C2 -- watchdogs read the raw MAIN_AGENT_CONFIG_DIR value, the launcher validates it.**
+inbound-probe.ts's mainConfigRoots() expanded the raw setting with its OWN ad-hoc tilde rule
+(`raw.startsWith('~') ? join(homedir(), raw.slice(1)) : raw`) and pushed the result unchecked.
+The launcher's resolveMainAgentConfigDir() (agent-process.ts) instead runs the same raw value
+through expandAndValidateConfigDir (config-dir-path.ts): a character whitelist, a `..`-traversal
+reject, and a strict tilde-form check (bare `~` or a leading `~/` only). A watchdog could
+therefore probe a root the launcher would have refused to ever export as CLAUDE_CONFIG_DIR (a
+`..`-traversal path, a mid-string `~`, a shell-significant character) -- a value the main session
+never actually ran under. No DECISIONS.md entry asserted the two already shared validation (the
+L2 premise checked here is "the agent bearer cannot write the setting", a different question), so
+the fix is the code change, not a correction. mainConfigRoots() now calls
+expandAndValidateConfigDir(raw, homedir()) and only pushes the result when non-null -- the exact
+same gauntlet the launcher applies, so the two can no longer disagree about what MAIN_AGENT_CONFIG_DIR
+means. existsSync is NOT re-applied here (unlike the launcher): a watchdog probing a root that
+does not exist is already harmless by mainConfigRoots()'s own design (a candidate not in use
+yields an older/no timestamp, "newest wins" answers the question) -- only path-safety, not
+existence, was the actual gap.
+
+**Verification.** New src/__tests__/main-config-roots-explicit-dir-validation.test.ts (5 cases: a
+well-formed `~/`-prefixed value included and correctly expanded; `..`-traversal rejected;
+mid-string `~` rejected; a shell-significant character rejected; no setting -> exactly the 2
+default roots). main-config-dir-wiring.test.ts gained 2 cases for delivery-turn-check.ts's
+configDirFor. Fleet-test command not yet run on this delta (scoped per the delta-regate rule --
+see REVIEW); locally: src/__tests__/main-config-dir-wiring.test.ts (5/5),
+src/__tests__/main-config-roots-explicit-dir-validation.test.ts (5/5),
+src/__tests__/delivery-turn-check.test.ts + inbound-probe.test.ts + inbound-probe-rotated-root.test.ts
++ token-usage-main-launcher-config-dir.test.ts + schedule-inflight-config-dir.test.ts all green
+(310+291 across the two combined runs, no overlap double-counted). Mutation-proven: reverting the
+C2 fix (back to the raw tilde-only expansion) turned exactly the 3 new rejection cases red, nothing
+else; reverting delivery-turn-check.ts's configDirFor to the pre-fix unconditional `undefined` turned
+exactly the 1 new delegation case red, nothing else. tsc clean. lint-ratchet.sh --show: 422, all 3
+rules at baseline (unchanged from before this delta).
+
+**Ki dontott:** backend (sajat kartya 5423775c, Cybered GO 32882 C1/C2 kovetelmenyei alapjan). Gate:
+QA + Cybered (a kartya sajat kijelolese).
