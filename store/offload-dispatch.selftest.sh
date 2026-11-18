@@ -117,6 +117,37 @@ check "MUTATION: an absurdly high threshold un-skips staleCard, proving the excl
 invalid_env_out="$(CARD=freshCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=10m bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
 check "a non-integer OFFLOAD_STALE_IN_PROGRESS_SECONDS falls back to the 600s default instead of silently zeroing every leaf" "$invalid_env_out" "freshCard"
 
+# LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66): the old
+# ^[0-9]+$ regex accepted 08/09 (bash arithmetic treats a 0-prefixed literal as octal and 08/09
+# are invalid octal digits -> the `((...))` comparisons this value feeds would error, not compare),
+# 010 (decimal 10 misread as octal 8), and anything >= 2^63 (wraps negative in bash's signed
+# 64-bit arithmetic). Each of these must now trip the same documented-default fallback as a
+# non-numeric value. 12abc/abc12 additionally pin the regex's own anchors: abc12 only fails
+# ^(...)$ because of the ^ anchor (it ends in a valid digit run), 12abc only fails because of the
+# $ anchor (it starts with one) -- dropping either anchor would wrongly accept one of these two.
+for bad in 08 09 010 9223372036854775808 12abc abc12; do
+  stale_bad_out="$(CARD=freshCard OFFLOAD_STALE_IN_PROGRESS_SECONDS="$bad" bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+  check "OFFLOAD_STALE_IN_PROGRESS_SECONDS='$bad' falls back to the 600s default (freshCard still resolves)" "$stale_bad_out" "freshCard"
+done
+
+# S FALLBACK VALUE PINNED (card 27c54ceb, Kesz-ha "S/T fallback values asserted"): the existing
+# fresh(100s)/stale(700s) pair above only pins the true default somewhere in [100s, 700s]. This
+# boundary pair, with OFFLOAD_STALE_IN_PROGRESS_SECONDS UNSET (the real default path, not an
+# explicit override), pins it at exactly 600s.
+python3 -c "
+import json, time
+now = int(time.time())
+cards = [
+    {'id':'justUnderCard','title':'599s','description':'x','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-599},
+    {'id':'justOverCard','title':'601s','description':'x','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-601},
+]
+json.dump(cards, open('$TMPDIR/fixture-stale-boundary.json', 'w'))
+"
+just_under_out="$(CARD=justUnderCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+check "S PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched 599s ago (just under the true 600s default) still resolves" "$just_under_out" "justUnderCard"
+just_over_out="$(CARD=justOverCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json")"
+check "S PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched 601s ago (just over the true 600s default) is excluded" "$just_over_out" "[]"
+
 # --- decompose wrapper (card 501c489f, MikroB verdikt komment 6007) -------------------------------
 # ISOLATION (d39fc5e7 QA finding): card_decompose_candidates() reads DECOMPOSE_STOP_STATE_FILE to
 # check which types are currently disabled. If the live store/decompose-type-disabled.json has all
@@ -337,6 +368,107 @@ json.dump(d, open('$AF', 'w'))
 "
 r="$(EXHAUSTED_TTL_SECONDS=86400 op check leafX)"
 check "an exhausted entry older than the TTL resets to pending on the next check" "$(st "$r")|$(at "$r")" "pending|0"
+
+# NON-INTEGER ENV GUARD, sibling env 1/3 (card 660e3b66, same bug class as f8e7f7cb's
+# OFFLOAD_STALE_IN_PROGRESS_SECONDS fix). Before the fix, a non-integer EXHAUSTED_TTL_SECONDS
+# crashed attempts_op()'s python `int(...)` call with an uncaught ValueError.
+python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['leafX']['updated_at'] = int(time.time()) - 100000
+json.dump(d, open('$AF', 'w'))
+"
+ttl_stderr="$TMPDIR/ttl-stderr.log"
+r="$(EXHAUSTED_TTL_SECONDS=30d bash "$DISPATCH" --test-attempts-op check leafX --file "$AF" 2>"$ttl_stderr")"
+check "a non-integer EXHAUSTED_TTL_SECONDS falls back to the 86400s default (the old entry still resets to pending)" "$(st "$r")|$(at "$r")" "pending|0"
+check "a non-integer EXHAUSTED_TTL_SECONDS prints the documented fallback log line" \
+  "$(grep -qF "EXHAUSTED_TTL_SECONDS='30d' is not an integer -- falling back to the documented default (86400s)" "$ttl_stderr" && echo yes)" "yes"
+
+# LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66) -- see the same
+# comment on the OFFLOAD_STALE_IN_PROGRESS_SECONDS block above for why each of these must fail.
+for bad in 08 09 010 9223372036854775808 12abc abc12; do
+  leaf_id="ttlBad_${bad//[^a-zA-Z0-9]/_}"
+  bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_id" --file "$AF" >/dev/null
+  bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_id" --file "$AF" >/dev/null
+  python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['$leaf_id']['updated_at'] = int(time.time()) - 100000
+json.dump(d, open('$AF', 'w'))
+"
+  r="$(EXHAUSTED_TTL_SECONDS="$bad" bash "$DISPATCH" --test-attempts-op check "$leaf_id" --file "$AF")"
+  check "EXHAUSTED_TTL_SECONDS='$bad' falls back to the 86400s default ($leaf_id resets to pending)" "$(st "$r")|$(at "$r")" "pending|0"
+done
+
+# T FALLBACK VALUE PINNED (card 27c54ceb, Kesz-ha "S/T fallback values asserted"): the explicit
+# EXHAUSTED_TTL_SECONDS=86400 test above and the invalid-env fallback tests only pin the true
+# default somewhere under 100000s. This boundary pair, with EXHAUSTED_TTL_SECONDS UNSET (the real
+# default path), pins it at exactly 86400s.
+leaf_ttl_under="ttlBoundaryUnder"
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_under" --file "$AF" >/dev/null
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_under" --file "$AF" >/dev/null
+python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['$leaf_ttl_under']['updated_at'] = int(time.time()) - 86399
+json.dump(d, open('$AF', 'w'))
+"
+r="$(bash "$DISPATCH" --test-attempts-op check "$leaf_ttl_under" --file "$AF")"
+check "T PIN: with EXHAUSTED_TTL_SECONDS unset, an exhausted entry aged 86399s (just under the true 86400s default) stays exhausted" "$(st "$r")" "exhausted"
+
+leaf_ttl_over="ttlBoundaryOver"
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_over" --file "$AF" >/dev/null
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_over" --file "$AF" >/dev/null
+python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['$leaf_ttl_over']['updated_at'] = int(time.time()) - 86401
+json.dump(d, open('$AF', 'w'))
+"
+r="$(bash "$DISPATCH" --test-attempts-op check "$leaf_ttl_over" --file "$AF")"
+check "T PIN: with EXHAUSTED_TTL_SECONDS unset, an exhausted entry aged 86401s (just over the true 86400s default) resets to pending" "$(st "$r")|$(at "$r")" "pending|0"
+
+# NON-INTEGER ENV GUARD, sibling env 2/3. Before the fix, a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS
+# would reach both attempts_op()'s python `int(...)` and the shell retry-ceiling comparison.
+attempts_stderr="$TMPDIR/attempts-stderr.log"
+AF3="$TMPDIR/attempts-maxattempts.json"
+bash "$DISPATCH" --test-attempts-op transient-fail leafMaxAttemptsGuard --file "$AF3" >/dev/null
+r="$(OFFLOAD_LEAF_MAX_ATTEMPTS=four bash "$DISPATCH" --test-attempts-op transient-fail leafMaxAttemptsGuard --file "$AF3" 2>"$attempts_stderr")"
+check "a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS falls back to the default ceiling (2): 2nd transient failure exhausts" "$(st "$r")|$(at "$r")" "exhausted|2"
+check "a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_LEAF_MAX_ATTEMPTS='four' is not an integer -- falling back to the documented default (2)" "$attempts_stderr" && echo yes)" "yes"
+
+# LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66) -- see the same
+# comment on the OFFLOAD_STALE_IN_PROGRESS_SECONDS block above for why each of these must fail.
+for bad in 08 09 010 9223372036854775808 12abc abc12; do
+  leaf_id="leafMaxAttemptsBad_${bad//[^a-zA-Z0-9]/_}"
+  af_bad="$TMPDIR/attempts-maxattempts-$leaf_id.json"
+  bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_id" --file "$af_bad" >/dev/null
+  r="$(OFFLOAD_LEAF_MAX_ATTEMPTS="$bad" bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_id" --file "$af_bad")"
+  check "OFFLOAD_LEAF_MAX_ATTEMPTS='$bad' falls back to the default ceiling (2): 2nd transient failure exhausts" "$(st "$r")|$(at "$r")" "exhausted|2"
+done
+
+# NON-INTEGER ENV GUARD, sibling env 3/3. OFFLOAD_MAX_SUBTASKS has no isolated test hook of its
+# own (it only guards the main dispatch loop's leaf-call budget, which none of this file's
+# --test-* hooks exercise) -- the guard itself runs unconditionally before ANY --test-* flag is
+# handled, so its log line is still observable through any existing hook even though the budget
+# comparison it protects is not reachable from here. A "still returns pending|0" check would be
+# vacuous (that path never touches OFFLOAD_MAX_SUBTASKS either way), so this is log-line only.
+subtasks_stderr="$TMPDIR/subtasks-stderr.log"
+bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
+OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
+check "a non-integer OFFLOAD_MAX_SUBTASKS prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_MAX_SUBTASKS='lots' is not an integer -- falling back to the documented default (15)" "$subtasks_stderr" && echo yes)" "yes"
+
+# LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66) -- see the same
+# comment on the OFFLOAD_STALE_IN_PROGRESS_SECONDS block above for why each of these must fail.
+# Log-line only, same reasoning as the 'lots' case above (no reachable behavioral hook here).
+for bad in 08 09 010 9223372036854775808 12abc abc12; do
+  bad_stderr="$TMPDIR/subtasks-bad-stderr.log"
+  OFFLOAD_MAX_SUBTASKS="$bad" bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$bad_stderr"
+  check "OFFLOAD_MAX_SUBTASKS='$bad' prints the documented fallback log line" \
+    "$(grep -qF "OFFLOAD_MAX_SUBTASKS='$bad' is not an integer -- falling back to the documented default (15)" "$bad_stderr" && echo yes)" "yes"
+done
 
 # --- concurrency: N parallel transient-fail calls on a fresh leaf must not lose an update -----------
 AF2="$TMPDIR/attempts-conc.json"

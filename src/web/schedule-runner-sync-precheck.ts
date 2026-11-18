@@ -27,7 +27,10 @@ export function runPreCheck(task: ScheduledTask): PreCheckResult {
   // throws a TypeError, which would surface as an unrelated-looking crash instead of the same
   // "running LLM anyway" degrade every other branch here gives.
   if (scriptPath == null) {
-    logger.warn({ task: task.name, preCheck: task.preCheck }, 'pre-check is not a script path (not a non-empty string); running LLM anyway')
+    // Log the TYPE only, never the value: a task's preCheck field is operator-authored config,
+    // not something this gate should echo into the log verbatim (card 5dd0842a, caught by a
+    // fleet-test case added this round -- the value can carry content that should not be logged).
+    logger.warn({ task: task.name, preCheckType: typeof task.preCheck }, 'pre-check is not a script path (not a non-empty string); running LLM anyway')
     return { skip: false }
   }
   if (!existsSync(scriptPath)) {

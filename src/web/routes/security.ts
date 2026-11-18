@@ -48,6 +48,11 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
     json(res, { error: 'Forbidden for this credential type', code: 'forbidden_credential' }, 403)
     return true
   }
+  // mayIssueCredentials/OWNER_SESSION_REQUIRED (upstream, DEVKEYMINT1022) NOT adopted here --
+  // ENROLL_KINDS = ['session'] above already fully gates this to session-only, so the extra
+  // check would always be a no-op once reached (session always passes mayIssueCredentials);
+  // see routes/auth.ts's own CREDENTIAL_MINT_KINDS entry for why the underlying mechanism itself
+  // is rejected (reopens the retired token-bootstrap exception).
 
   let body: Record<string, unknown>
   try {

@@ -1466,22 +1466,28 @@ if not _ok_d:
     failures.append(("F1 ckpt: CLI AGREE->CHECKPOINT_FAIL", "CHECKPOINT_FAIL",
                      _cli_p.stdout.strip()))
 
-# Case E (card 14bfc893): a REAL, reachable clone (a fresh git repo, MARVEEN_MAIN pointed at it)
-# but the declared Gate-SHA names a commit that was NEVER made there -> FABRICATED, not
-# CHECKPOINT_FAIL. This is the distinction Case D's unreachable-clones scenario cannot exercise:
-# there, "no clone reachable" and "sha does not exist" are indistinguishable on purpose (fail-open);
-# here, a clone genuinely exists and genuinely does not hold this sha.
+# Case E (card 14bfc893): TWO real, reachable clones (card 06334c7d CYBERED C1 tightened this to
+# require BOTH configured clones present -- see Case G below for the "one is missing" scenario
+# this used to conflate with FABRICATED) but the declared Gate-SHA names a commit that was NEVER
+# made in EITHER -> FABRICATED, not CHECKPOINT_FAIL. This is the distinction Case D's
+# unreachable-clones scenario cannot exercise: there, "no clone reachable" and "sha does not
+# exist" are indistinguishable on purpose (fail-open); here, both clones genuinely exist and
+# genuinely do not hold this sha.
 n += 1
 _fab_repo = tempfile.mkdtemp(prefix="gcc-fab-repo-")
 subprocess.run(["git", "init", "-q", _fab_repo], check=True)
 subprocess.run(["git", "-C", _fab_repo, "-c", "user.email=t@t", "-c", "user.name=t",
                 "commit", "-q", "--allow-empty", "-m", "init"], check=True)
-_fab_sha = "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"  # never committed in _fab_repo
+_fab_repo2 = tempfile.mkdtemp(prefix="gcc-fab-repo2-")
+subprocess.run(["git", "init", "-q", _fab_repo2], check=True)
+subprocess.run(["git", "-C", _fab_repo2, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "-q", "--allow-empty", "-m", "init2"], check=True)
+_fab_sha = "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"  # never committed in either repo
 os.unlink(_ckpt_db)
 _make_ckpt_db(_ckpt_db, [])
 _fab_env = dict(os.environ)
 _fab_env["MARVEEN_MAIN"] = _fab_repo
-_fab_env["CLEANCORE_MAIN"] = "/nonexistent-cleancore"
+_fab_env["CLEANCORE_MAIN"] = _fab_repo2
 _review_e = "REVIEW\nGate-SHA: %s" % _fab_sha
 _v_e = "QA PASS\nGate-SHA: %s" % _fab_sha
 _s_e = "CYBERSEC GO\nGate-SHA: %s" % _fab_sha
@@ -1529,7 +1535,209 @@ if not _ok_f:
     failures.append(("F1.3 ckpt CONTROL: real sha, no checkpoint", "CHECKPOINT_FAIL",
                      _real_p.stdout.strip()))
 
+# Case G (card 06334c7d, CYBERED C1): ONE clone reachable (and genuinely does not hold the sha),
+# the OTHER configured clone missing entirely -> UNRESOLVED, not FABRICATED. This is the actual
+# bug the finding named: the old code treated "not found in the one clone I could reach" as proof
+# of absence everywhere, when the unreachable clone could still hold it.
+n += 1
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [])
+_g_env = dict(os.environ)
+_g_env["MARVEEN_MAIN"] = _fab_repo
+_g_env["CLEANCORE_MAIN"] = "/nonexistent-cleancore-g"
+_review_g = "REVIEW\nGate-SHA: %s" % _fab_sha
+_v_g = "QA PASS\nGate-SHA: %s" % _fab_sha
+_s_g = "CYBERSEC GO\nGate-SHA: %s" % _fab_sha
+_g_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardG", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_g},
+                                   {"author": "qa", "content": _v_g},
+                                   {"author": "cybersec", "content": _s_g}]}),
+    capture_output=True, text=True, env=_g_env,
+)
+_g_verdict = _g_p.stdout.strip().split("|", 1)[0]
+_ok_g = _g_verdict == "UNRESOLVED"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_g else "FAIL", "UNRESOLVED", _g_verdict,
+    "C1: one clone reachable (absent), the other missing -> UNRESOLVED, not FABRICATED"))
+if not _ok_g:
+    failures.append(("C1: second clone missing -> UNRESOLVED", "UNRESOLVED", _g_p.stdout.strip()))
+
+# Case H (card 06334c7d, CYBERED C1): a git call that TIMES OUT must answer UNRESOLVED, never
+# FABRICATED -- a fake `git` in PATH that sleeps past a monkey-patched tiny timeout, exercising
+# _cat_file_commit_status directly (pure function, no CLI needed for this one).
+n += 1
+_slow_git_dir = tempfile.mkdtemp(prefix="gcc-slowgit-")
+_slow_git_path = os.path.join(_slow_git_dir, "git")
+with open(_slow_git_path, "w") as _f:
+    _f.write("#!/usr/bin/env bash\nsleep 5\n")
+os.chmod(_slow_git_path, 0o755)
+_old_path_env = os.environ.get("PATH", "")
+_old_git_timeout = _gcc._GIT_TIMEOUT
+os.environ["PATH"] = _slow_git_dir + os.pathsep + _old_path_env
+_gcc._GIT_TIMEOUT = 0.3
+try:
+    _h_status = _gcc._cat_file_commit_status(_fab_repo, _fab_sha)
+finally:
+    os.environ["PATH"] = _old_path_env
+    _gcc._GIT_TIMEOUT = _old_git_timeout
+_ok_h = _h_status == "timeout"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_h else "FAIL", "timeout", _h_status,
+    "C1: a hung git call is classified as 'timeout', not 'absent'"))
+if not _ok_h:
+    failures.append(("C1: git timeout classification", "timeout", _h_status))
+
+# Case I (card 06334c7d, QA FAIL 32965 on the CYBERED C1 fix): Case H only proves
+# _cat_file_commit_status() itself returns "timeout" -- it never drives main()'s end-to-end
+# FABRICATED-check path to confirm a timeout on a reachable clone actually surfaces as the
+# UNRESOLVED verdict. BOTH configured clones exist on disk here (unlike Case G), so the
+# partial-reachability branch cannot fire first -- only the timeout branch can explain the
+# result.
+n += 1
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [])
+_real_git = shutil.which("git")
+_slowdir2 = tempfile.mkdtemp(prefix="gcc-slowgit2-")
+_slow_git2_path = os.path.join(_slowdir2, "git")
+with open(_slow_git2_path, "w") as _f:
+    _f.write("#!/usr/bin/env bash\n"
+             "if [ \"$2\" = \"%s\" ]; then sleep 5; fi\n"
+             "exec %s \"$@\"\n" % (_fab_repo, _real_git))
+os.chmod(_slow_git2_path, 0o755)
+_i_env = dict(os.environ)
+_i_env["MARVEEN_MAIN"] = _fab_repo
+_i_env["CLEANCORE_MAIN"] = _fab_repo2
+_i_env["PATH"] = _slowdir2 + os.pathsep + _i_env.get("PATH", "")
+_i_env["GATE_CLOSURE_GIT_TIMEOUT"] = "0.3"
+_review_i = "REVIEW\nGate-SHA: %s" % _fab_sha
+_v_i = "QA PASS\nGate-SHA: %s" % _fab_sha
+_s_i = "CYBERSEC GO\nGate-SHA: %s" % _fab_sha
+_i_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardI", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_i},
+                                   {"author": "qa", "content": _v_i},
+                                   {"author": "cybersec", "content": _s_i}]}),
+    capture_output=True, text=True, env=_i_env,
+)
+shutil.rmtree(_slowdir2, ignore_errors=True)
+_i_verdict = _i_p.stdout.strip().split("|", 1)[0]
+_ok_i = _i_verdict == "UNRESOLVED"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_i else "FAIL", "UNRESOLVED", _i_verdict,
+    "C1: BOTH clones reachable, one git call hangs -> end-to-end UNRESOLVED, not FABRICATED"))
+if not _ok_i:
+    failures.append(("C1: git timeout on a reachable clone -> UNRESOLVED (end to end)",
+                      "UNRESOLVED", _i_p.stdout.strip()))
+
+# Case J (card 06334c7d, CYBERED C1 condition 2a): the sha genuinely EXISTS in the one
+# reachable clone, the OTHER configured clone is missing entirely -> ordinary CHECKPOINT_FAIL
+# (the clone we COULD reach already answered "yes"), not UNRESOLVED -- the old
+# `elif len(reachable_paths) < len(clone_paths)` branch fired on partial reachability alone,
+# without checking whether a reachable clone had already found it.
+n += 1
+_real_sha_j = subprocess.run(
+    ["git", "-C", _fab_repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+).stdout.strip()
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [("cardJ", _OTHER_SHA)])  # a checkpoint exists (wrong card_id key
+# would be fail-open/covered); this forces covered=False so CHECKPOINT_FAIL is actually
+# reachable, the same setup Case F uses.
+_j_env = dict(os.environ)
+_j_env["MARVEEN_MAIN"] = _fab_repo
+_j_env["CLEANCORE_MAIN"] = "/nonexistent-cleancore-j"
+_review_j = "REVIEW\nGate-SHA: %s" % _real_sha_j
+_v_j = "QA PASS\nGate-SHA: %s" % _real_sha_j
+_s_j = "CYBERSEC GO\nGate-SHA: %s" % _real_sha_j
+_j_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardJ", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_j},
+                                   {"author": "qa", "content": _v_j},
+                                   {"author": "cybersec", "content": _s_j}]}),
+    capture_output=True, text=True, env=_j_env,
+)
+_j_verdict = _j_p.stdout.strip().split("|", 1)[0]
+_ok_j = _j_verdict == "CHECKPOINT_FAIL"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_j else "FAIL", "CKPT_FAIL", _j_verdict,
+    "C1: sha EXISTS in the one reachable clone, other clone missing -> CHECKPOINT_FAIL, not UNRESOLVED"))
+if not _ok_j:
+    failures.append(("C1: reachable clone already found it, other missing -> CHECKPOINT_FAIL",
+                      "CHECKPOINT_FAIL", _j_p.stdout.strip()))
+
+# Case K: same as J but with the reachable/missing clones swapped (MARVEEN missing, CLEANCORE
+# holds the sha) -- proves the fix is not order-dependent.
+n += 1
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [("cardK", _OTHER_SHA)])
+_k_env = dict(os.environ)
+_k_env["MARVEEN_MAIN"] = "/nonexistent-marveen-k"
+_k_env["CLEANCORE_MAIN"] = _fab_repo
+_k_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardK", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_j},
+                                   {"author": "qa", "content": _v_j},
+                                   {"author": "cybersec", "content": _s_j}]}),
+    capture_output=True, text=True, env=_k_env,
+)
+_k_verdict = _k_p.stdout.strip().split("|", 1)[0]
+_ok_k = _k_verdict == "CHECKPOINT_FAIL"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_k else "FAIL", "CKPT_FAIL", _k_verdict,
+    "C1: same as J with clones swapped -- order-independent"))
+if not _ok_k:
+    failures.append(("C1: reachable/missing clones swapped -> CHECKPOINT_FAIL",
+                      "CHECKPOINT_FAIL", _k_p.stdout.strip()))
+
+# Case L (card 06334c7d, CYBERED C1 condition 2b): one clone path EXISTS on disk but is NOT a
+# usable git repo (an empty, non-initialized directory stands in for a corrupt clone or a
+# dubious-ownership refusal); the OTHER configured clone is a real, reachable repo that does
+# NOT hold the sha -> UNRESOLVED (the non-repo path could not be checked, not proven absent),
+# never FABRICATED.
+n += 1
+_notarepo_dir = tempfile.mkdtemp(prefix="gcc-notarepo-")
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [])
+_l_env = dict(os.environ)
+_l_env["MARVEEN_MAIN"] = _fab_repo2
+_l_env["CLEANCORE_MAIN"] = _notarepo_dir
+_review_l = "REVIEW\nGate-SHA: %s" % _fab_sha
+_v_l = "QA PASS\nGate-SHA: %s" % _fab_sha
+_s_l = "CYBERSEC GO\nGate-SHA: %s" % _fab_sha
+_l_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardL", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_l},
+                                   {"author": "qa", "content": _v_l},
+                                   {"author": "cybersec", "content": _s_l}]}),
+    capture_output=True, text=True, env=_l_env,
+)
+shutil.rmtree(_notarepo_dir, ignore_errors=True)
+_l_verdict = _l_p.stdout.strip().split("|", 1)[0]
+_ok_l = _l_verdict == "UNRESOLVED"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_l else "FAIL", "UNRESOLVED", _l_verdict,
+    "C1: a reachable-but-not-a-repo clone path is 'unreachable', not 'absent' -> UNRESOLVED"))
+if not _ok_l:
+    failures.append(("C1: non-repo clone path counts as unreachable -> UNRESOLVED",
+                      "UNRESOLVED", _l_p.stdout.strip()))
+
+# Case M (card 06334c7d, CYBERED condition 4 second half): the FABRICATED verdict text must
+# name the configured clones searched and say the limitation out loud (LOW-2's own wording),
+# not just return the bare verdict word -- pins the message, not only the keyword.
+n += 1
+_m_verdict_line = _fab_p.stdout.strip()
+_ok_m = ("advisory only" in _m_verdict_line and "marveen" in _m_verdict_line
+         and "cleancore" in _m_verdict_line)
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_m else "FAIL", "wording", "wording",
+    "LOW-2: FABRICATED text names the clones searched + 'advisory only' limitation"))
+if not _ok_m:
+    failures.append(("LOW-2: FABRICATED wording names clones + advisory-only limitation",
+                      "clone names + 'advisory only' present", _m_verdict_line))
+
 shutil.rmtree(_fab_repo, ignore_errors=True)
+shutil.rmtree(_fab_repo2, ignore_errors=True)
+shutil.rmtree(_slow_git_dir, ignore_errors=True)
 os.unlink(_ckpt_db)
 shutil.rmtree(_ckpt_dir, ignore_errors=True)
 

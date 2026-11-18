@@ -35,6 +35,7 @@ import { readEnvFile } from '../env.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { resolveOwnerChatId } from '../owner-chat.js'
 import { projectsDirFor } from './active-model.js'
+import { expandAndValidateConfigDir } from '../config-dir-path.js'
 import { capturePane, resolveMainAgentRotatedConfigDir } from './agent-process.js'
 import type { PaneState } from '../pane-state.js'
 
@@ -97,11 +98,17 @@ export function mainConfigRoots(): string[] {
   // An operator-set MAIN_AGENT_CONFIG_DIR (a separate Claude login for the bot)
   // wins over both defaults, so it must be a candidate too. Read defensively:
   // the settings store must never be able to break a watchdog tick.
+  //
+  // Same expand+validate gauntlet as the launcher's own resolveMainAgentConfigDir()
+  // (agent-process.ts), not a second, looser tilde-only expansion (card 5423775c,
+  // Cybered C2 on b715a0b1): a watchdog probing a root the launcher would have
+  // rejected (bad charset, `..` traversal, malformed tilde) is reading a value the
+  // main session never actually ran under.
   try {
-    let raw = String(getEffectiveSettingValue('MAIN_AGENT_CONFIG_DIR') ?? '').trim()
+    const raw = String(getEffectiveSettingValue('MAIN_AGENT_CONFIG_DIR') ?? '').trim()
     if (raw) {
-      if (raw.startsWith('~')) raw = join(homedir(), raw.slice(1))
-      roots.push(raw)
+      const dir = expandAndValidateConfigDir(raw, homedir())
+      if (dir) roots.push(dir)
     }
   } catch {
     // keep the defaults
