@@ -485,24 +485,25 @@ NOT_TMP_DIR="$HOME/wsl-cleanup-selftest-nottmp-$$"
 rm -rf "$NOT_TMP_DIR"
 mkdir -p "$NOT_TMP_DIR/old-entry"
 touch -d "@$PAST4" "$NOT_TMP_DIR/old-entry"
+SANITY_OUT="$(mktemp)"
 (
   WSL_CLEANUP_TMP_DIR="$NOT_TMP_DIR"
   export WSL_CLEANUP_TMP_DIR
   # shellcheck source=./wsl-cleanup.sh
   source "$RUN"
   sweep_tmp
-) >/tmp/wsl-cleanup-selftest-sanity.out 2>&1
-if grep -qF "REFUSING /tmp sweep" /tmp/wsl-cleanup-selftest-sanity.out; then
+) >"$SANITY_OUT" 2>&1
+if grep -qF "REFUSING /tmp sweep" "$SANITY_OUT"; then
   ok "SANITY guard: WSL_CLEANUP_TMP_DIR outside /tmp is refused with a clear message"
 else
-  bad "SANITY guard: WSL_CLEANUP_TMP_DIR outside /tmp was NOT refused" "$(cat /tmp/wsl-cleanup-selftest-sanity.out)"
+  bad "SANITY guard: WSL_CLEANUP_TMP_DIR outside /tmp was NOT refused" "$(cat "$SANITY_OUT")"
 fi
 if [ -e "$NOT_TMP_DIR/old-entry" ]; then
   ok "SANITY guard: the entry under the outside-/tmp dir survives (sweep refused, nothing touched)"
 else
   bad "SANITY guard: an entry outside /tmp was removed despite the sanity guard" ""
 fi
-rm -rf "$NOT_TMP_DIR" /tmp/wsl-cleanup-selftest-sanity.out 2>/dev/null
+rm -rf "$NOT_TMP_DIR" "$SANITY_OUT" 2>/dev/null
 
 rm -rf "$TMP4"
 
