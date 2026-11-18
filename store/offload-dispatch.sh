@@ -962,7 +962,11 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 # bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below -- a non-integer value reaches the
 # `(( attempted >= OFFLOAD_MAX_SUBTASKS ))` arithmetic comparison, which throws a bash syntax
 # error instead of comparing, silently stopping local-first drafting with no trace of why.
-if ! [[ "$OFFLOAD_MAX_SUBTASKS" =~ ^[0-9]+$ ]]; then
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): ^[0-9]+$ still accepted a leading-zero
+# value (bash treats 08/09 as invalid octal literals in arithmetic, 010 as octal 8 not decimal 10)
+# and any value >= 2^63 (wraps negative in bash's 64-bit arithmetic). ^(0|[1-9][0-9]{0,8})$ allows
+# bare 0 or a non-zero-leading run of up to 9 digits (max 999999999), well under 2^63.
+if ! [[ "$OFFLOAD_MAX_SUBTASKS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
   echo "offload-dispatch: OFFLOAD_MAX_SUBTASKS='$OFFLOAD_MAX_SUBTASKS' is not an integer -- falling back to the documented default (15)" >&2
   OFFLOAD_MAX_SUBTASKS=15
 fi
@@ -989,7 +993,9 @@ EXHAUSTED_TTL_SECONDS="${EXHAUSTED_TTL_SECONDS:-86400}"
 # attempts_op()'s python does `int(os.environ.get("EXHAUSTED_TTL_SECONDS", ...))` -- a non-integer
 # value raises ValueError there instead of being caught here, silently losing the exhausted-entry
 # expiry check instead of falling back to the documented default.
-if ! [[ "$EXHAUSTED_TTL_SECONDS" =~ ^[0-9]+$ ]]; then
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$EXHAUSTED_TTL_SECONDS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
   echo "offload-dispatch: EXHAUSTED_TTL_SECONDS='$EXHAUSTED_TTL_SECONDS' is not an integer -- falling back to the documented default (86400s)" >&2
   EXHAUSTED_TTL_SECONDS=86400
 fi
@@ -1000,7 +1006,9 @@ OFFLOAD_LEAF_MAX_ATTEMPTS="${OFFLOAD_LEAF_MAX_ATTEMPTS:-2}"
 # NON-INTEGER GUARD (card 660e3b66, same bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below):
 # reaches both attempts_op()'s python `int(...)` and the shell arithmetic comparison at the
 # per-leaf retry-ceiling check -- a non-integer value breaks either silently.
-if ! [[ "$OFFLOAD_LEAF_MAX_ATTEMPTS" =~ ^[0-9]+$ ]]; then
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$OFFLOAD_LEAF_MAX_ATTEMPTS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
   echo "offload-dispatch: OFFLOAD_LEAF_MAX_ATTEMPTS='$OFFLOAD_LEAF_MAX_ATTEMPTS' is not an integer -- falling back to the documented default (2)" >&2
   OFFLOAD_LEAF_MAX_ATTEMPTS=2
 fi
@@ -1016,7 +1024,9 @@ OFFLOAD_STALE_IN_PROGRESS_SECONDS="${OFFLOAD_STALE_IN_PROGRESS_SECONDS:-600}"
 # leaf is resolved -- the uncaught exception aborts that python process with no stdout, and because
 # resolve_leaves()'s caller redirects stderr to /dev/null, the whole function silently returns empty,
 # so EVERY leaf (including a fresh "planned" one) resolves to zero, with no trace of why.
-if ! [[ "$OFFLOAD_STALE_IN_PROGRESS_SECONDS" =~ ^[0-9]+$ ]]; then
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$OFFLOAD_STALE_IN_PROGRESS_SECONDS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
   echo "offload-dispatch: OFFLOAD_STALE_IN_PROGRESS_SECONDS='$OFFLOAD_STALE_IN_PROGRESS_SECONDS' is not an integer -- falling back to the documented default (600s)" >&2
   OFFLOAD_STALE_IN_PROGRESS_SECONDS=600
 fi
