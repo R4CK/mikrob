@@ -196,8 +196,19 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // python3 crashing with exit 1/137/139 must refuse the --actor mikrob bypass) were added to
     // BOTH marveen-land.sh's own block AND mopsion-land.sh's own block, same symmetric-duplicated-
     // code pattern round 3 established two bumps above.
+    //
+    // mv's own-case constant moves 39 -> 40 with card 8ca1f91d (Cybered NO-GO LOW, comment
+    // 33127, mutants L10/L11): one new grep-pin case ("both downward_check call sites export
+    // DOWNWARD_CHECK_REPO") asserting on marveen-land.sh's own source text, not a stubbed
+    // function call. Lives in marveen-land.sh's own block, not the shared lib, because only it
+    // wires DOWNWARD_CHECK_REPO at all -- cleancore/mopsion/mopsi have no Szotasz/marveen
+    // upstream remote to confirm ancestry against, same asymmetric-by-design reasoning
+    // _upstream_ancestor_commits_only's own header gives. cc's own-case constant is untouched by
+    // this card (cleancore-land.sh not in its diff) -- only the shared lib (+17 cases: the
+    // 404-card-ref fold-in mechanism, its CYBERSEC2/CYBERED hardening rounds, and the real-git
+    // ancestry/shadow-ref cases) and marveen's own block (+1, above) moved.
     expect(cc).toBeGreaterThan(54) // 54 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(39) // 39 = marveen-land.sh's own cases
-    expect(cc - 54).toBe(mv - 39) // the same shared block, in both
+    expect(mv).toBeGreaterThan(40) // 40 = marveen-land.sh's own cases
+    expect(cc - 54).toBe(mv - 40) // the same shared block, in both
   })
 })
