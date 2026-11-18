@@ -52,6 +52,7 @@ import { decisionsGuardVerdict, decisionsGuardCheck } from '../kanban-decisions-
 import { degradedOrchestratorRefusal } from '../../degraded-orchestrator-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
+import { reviewPresenceGuardCheck } from '../kanban-review-presence-guard.js'
 import { onKanbanCardStatusChanged } from '../kg-capture-hook.js'
 import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE, isInvalidAssigneeShape, INVALID_ASSIGNEE_TYPE_MESSAGE } from '../kanban-assignee-guard.js'
 import { isInvalidKanbanIdShape, isValidKanbanId, KANBAN_ID_PATTERN_DESC, INVALID_KANBAN_ID_MESSAGE } from '../kanban-id-guard.js'
@@ -1638,6 +1639,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       { force: force === true, reason: typeof reason === 'string' ? reason : undefined })
     if (written.ok) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
+      reviewPresenceGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       // Card 64f56f97 requirement 1: a fresh planned->in_progress transition always routes
       // through card-build-route.sh, even on this PUT path (which, unlike /move, never wakes
@@ -1910,6 +1912,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       hasExpected ? (expected_status as Parameters<typeof moveKanbanCard>[1]) : undefined,
     )) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, status, actor)
+      reviewPresenceGuardCheck(id, specTemplatePrevStatus, status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, status, actor)
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).

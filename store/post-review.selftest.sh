@@ -25,6 +25,11 @@ done
 case "$url" in
   */comments)
     if [ "$is_post" -eq 1 ]; then
+      if [ "${POST_HTTP_FAIL:-0}" = "1" ]; then
+        # Simulates curl returning nothing usable (connection reset, timeout, non-JSON error
+        # page) -- post-review.sh's id-extraction finds no id and must refuse before any move.
+        exit 0
+      fi
       # find the --data-binary payload
       data=""; prev=""
       for a in "$@"; do [ "$prev" = "--data-binary" ] && data="$a"; prev="$a"; done
@@ -53,7 +58,7 @@ chmod +x "$WORK/curl"
 
 run() { # $1 label, remaining = args to post-review.sh, env already exported by caller
   WORK_LOG="$WORK/calls.log"; : >"$WORK_LOG"
-  export WORK WORK_LOG MATCH_MODE AGENT_CHECKPOINT_SCRIPT AGENT_WORKTREE_SCRIPT
+  export WORK WORK_LOG MATCH_MODE AGENT_CHECKPOINT_SCRIPT AGENT_WORKTREE_SCRIPT POST_HTTP_FAIL
   PATH="$WORK:$PATH" bash "$SCRIPT" "$@"
 }
 
@@ -67,6 +72,17 @@ MATCH_MODE=match
 rc=0; run "cardX" "$WORK/blank.txt" "backend" >"$WORK/out1.txt" 2>&1 || rc=$?
 t_ok "$rc" 1 "blank review file refuses with exit 1"
 if [ -s "$WORK/calls.log" ]; then echo "  FAIL blank file still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   blank file never touched the board"; fi
+
+# 1b. HTTP error on the comment POST (board returns nothing usable): refuses with exit 3,
+#     move is never attempted. Card 18fbb3a8 base criterion ("selftest incl. ... HTTP error").
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/httpfail.txt"
+: >"$WORK/calls.log"
+MATCH_MODE=match
+POST_HTTP_FAIL=1
+rc=0; run "cardHF" "$WORK/httpfail.txt" "backend" >"$WORK/out-httpfail.txt" 2>&1 || rc=$?
+POST_HTTP_FAIL=0
+t_ok "$rc" 3 "HTTP error on comment post refuses with exit 3"
+grep -q "/move" "$WORK/calls.log" && { echo "  FAIL HTTP-error path still attempted the move"; fail=1; } || echo "  ok   HTTP-error path never attempted the move"
 
 # 2. Good content, readback matches -> moves to waiting, exit 0.
 printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/good.txt"
