@@ -173,6 +173,13 @@ describe('TOKEN_PRUNE -- the health line that replaced the DB-size threshold (HB
     expect(out).not.toContain('token_usage prune: rendben')
   })
 
+  it('UNKNOWN state (card 771c1219, WhiteHat2 CYBERSEC GO 63b9e332 follow-up): the default branch is fail-closed, not "rendben"', () => {
+    const out = withPrune('TOKEN_PRUNE state=bogus retention_days=90 lag_hours=0.27 tolerance_hours=48')
+    expect(out).toContain('FIGYELEM')
+    expect(out).toContain("ISMERETLEN: 'bogus'")
+    expect(out).not.toContain('rendben')
+  })
+
   it('MUTATION CONTROL: the rendered verdict follows the state, not the DB size', () => {
     // Same 481.7 MB in both renders -- if the two outputs did not diverge, the
     // line would be decoration re-deriving the old always-true size alarm.
