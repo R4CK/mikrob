@@ -27991,3 +27991,15 @@ fleet-test ebben a körben.
 **Hivatkozás:** kártya 339ad171 (szülő: 471d0fdc), cybersec2 NO-GO komment 33084 (Gate-SHA
 45429adb8), REVIEW komment 33095 (Gate-SHA 2f34c9948), `src/web/kanban-card-landings-guard.ts`,
 `src/__tests__/kanban-card-landings-guard.test.ts`.
+
+## 2026-11-18: Server-side REVIEW-presence guard for waiting transitions (card 18fbb3a8)
+
+Added src/web/kanban-review-presence-guard.ts: warn-only, fires when a card moves to `waiting`
+with no recent REVIEW comment from its own assignee in the last 30 minutes. Backstops a direct
+PUT/POST .../move to waiting that bypasses store/post-review.sh entirely (manual curl, a
+different script, a bug) -- the same empty-REVIEW shape 88b67fb4 closed for post-review.sh
+callers, now closed for the ones that skip it. Wired into both the PUT and POST /move handlers
+in src/web/routes/kanban.ts, right after the existing specTemplateGuardCheck call. Never blocks
+the transition, same discipline as kanban-spec-template-guard.ts.
+
+**Ki dontott:** backend (sajat kartya, F3.1 follow-up grilling note). Gate: QA + Cybersec.
