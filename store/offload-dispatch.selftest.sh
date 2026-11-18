@@ -743,7 +743,8 @@ check "freellm sensitive card -> exit code 4" "$sensitive_rc" "4"
 # live API: every leaf got a freellm routing DECISION instead of the old unconditional skip, and
 # the gate still tells them apart.
 gpu_hold_out="$(printf '[{"id":"leafPlain","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafWithMarker","project":"mikrob","tags":"gemini-ok","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafSensitive","project":"mikrob","title":"authz modul","description":"irj meg egy authz ellenorzest"}]' \
-  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-no-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
+  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-no-token.txt" \
+    OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
 check "GPU-hold case: all three leaves got a freellm routing decision (3 output lines, named by leaf id)" \
   "$(printf '%s\n' "$gpu_hold_out" | wc -l | tr -d ' ')" "3"
 check "card 392d7104 (Peti 13201): a clean leaf WITHOUT the gemini-ok marker never reaches freellm-call.sh (blocked)" \
@@ -850,6 +851,7 @@ chmod +x "$FREELLM_STUB"
 run_fallback_site() { # $1=script path, $2=site, $3..=site args -> sets $rc, writes/clears $MARKER first
   rm -f "$MARKER"
   FREELLM_ATTEMPT_MARKER="$MARKER" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" DASHBOARD_URL="http://127.0.0.1:1" \
+    OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
     bash "$1" --test-freellm-fallback-site "${@:2}" >/dev/null 2>&1
   rc=$?
 }
@@ -1014,6 +1016,7 @@ rm -f "$MARKER"
 timeout 20 env DASHBOARD_URL="http://127.0.0.1:$M1_CAP_PORT" OFFLOAD_INSTALLED="$M1_CAP_INSTALLED" \
   OFFLOAD_VRAM_GUARD="$M1_CAP_VRAM_BUSY" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" FREELLM_ATTEMPT_MARKER="$MARKER" \
   ATTEMPTS_FILE="$TMPDIR/m1cap-attempts.json" ATTEMPTS_LOCK="$TMPDIR/m1cap-attempts.lock" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
   bash "$DISPATCH" m1caphold >/dev/null 2>&1
 check "M1 (a): real entry point (bash DISPATCH <card>, not --test-* hook), capacity-hold branch: blocked shape never reaches freellm-call.sh" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
