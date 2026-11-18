@@ -338,6 +338,43 @@ json.dump(d, open('$AF', 'w'))
 r="$(EXHAUSTED_TTL_SECONDS=86400 op check leafX)"
 check "an exhausted entry older than the TTL resets to pending on the next check" "$(st "$r")|$(at "$r")" "pending|0"
 
+# NON-INTEGER ENV GUARD, sibling env 1/3 (card 660e3b66, same bug class as f8e7f7cb's
+# OFFLOAD_STALE_IN_PROGRESS_SECONDS fix). Before the fix, a non-integer EXHAUSTED_TTL_SECONDS
+# crashed attempts_op()'s python `int(...)` call with an uncaught ValueError.
+python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['leafX']['updated_at'] = int(time.time()) - 100000
+json.dump(d, open('$AF', 'w'))
+"
+ttl_stderr="$TMPDIR/ttl-stderr.log"
+r="$(EXHAUSTED_TTL_SECONDS=30d bash "$DISPATCH" --test-attempts-op check leafX --file "$AF" 2>"$ttl_stderr")"
+check "a non-integer EXHAUSTED_TTL_SECONDS falls back to the 86400s default (the old entry still resets to pending)" "$(st "$r")|$(at "$r")" "pending|0"
+check "a non-integer EXHAUSTED_TTL_SECONDS prints the documented fallback log line" \
+  "$(grep -qF "EXHAUSTED_TTL_SECONDS='30d' is not an integer -- falling back to the documented default (86400s)" "$ttl_stderr" && echo yes)" "yes"
+
+# NON-INTEGER ENV GUARD, sibling env 2/3. Before the fix, a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS
+# would reach both attempts_op()'s python `int(...)` and the shell retry-ceiling comparison.
+attempts_stderr="$TMPDIR/attempts-stderr.log"
+AF3="$TMPDIR/attempts-maxattempts.json"
+bash "$DISPATCH" --test-attempts-op transient-fail leafMaxAttemptsGuard --file "$AF3" >/dev/null
+r="$(OFFLOAD_LEAF_MAX_ATTEMPTS=four bash "$DISPATCH" --test-attempts-op transient-fail leafMaxAttemptsGuard --file "$AF3" 2>"$attempts_stderr")"
+check "a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS falls back to the default ceiling (2): 2nd transient failure exhausts" "$(st "$r")|$(at "$r")" "exhausted|2"
+check "a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_LEAF_MAX_ATTEMPTS='four' is not an integer -- falling back to the documented default (2)" "$attempts_stderr" && echo yes)" "yes"
+
+# NON-INTEGER ENV GUARD, sibling env 3/3. OFFLOAD_MAX_SUBTASKS has no isolated test hook of its
+# own (it only guards the main dispatch loop's leaf-call budget, which none of this file's
+# --test-* hooks exercise) -- the guard itself runs unconditionally before ANY --test-* flag is
+# handled, so its log line is still observable through any existing hook even though the budget
+# comparison it protects is not reachable from here. A "still returns pending|0" check would be
+# vacuous (that path never touches OFFLOAD_MAX_SUBTASKS either way), so this is log-line only.
+subtasks_stderr="$TMPDIR/subtasks-stderr.log"
+bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
+OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
+check "a non-integer OFFLOAD_MAX_SUBTASKS prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_MAX_SUBTASKS='lots' is not an integer -- falling back to the documented default (15)" "$subtasks_stderr" && echo yes)" "yes"
+
 # --- concurrency: N parallel transient-fail calls on a fresh leaf must not lose an update -----------
 AF2="$TMPDIR/attempts-conc.json"
 N=15
