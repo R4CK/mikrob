@@ -150,8 +150,8 @@ describe('runImportMt10Cli', () => {
   it('MEDIUM-1: antiPatterns runs before coldMemories', () => {
     const { deps } = makeDeps()
     runImportMt10Cli([], deps)
-    const antiOrder = (deps.importAntiPatterns as any).mock.invocationCallOrder[0]
-    const coldOrder = (deps.importColdMemories as any).mock.invocationCallOrder[0]
+    const antiOrder: number = (deps.importAntiPatterns as any).mock.invocationCallOrder[0]
+    const coldOrder: number = (deps.importColdMemories as any).mock.invocationCallOrder[0]
     expect(antiOrder).toBeLessThan(coldOrder)
   })
 })
