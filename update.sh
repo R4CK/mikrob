@@ -65,12 +65,23 @@ write_result() {
 
 retry() {
   local tries="$1" pause="$2"; shift 2
-  local i=1
+  local i=1 rc=0
   while true; do
-    if "$@"; then return 0; fi
-    if [ "$i" -ge "$tries" ]; then return 1; fi
+    rc=0; "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then return 0; fi
+    # UPDOOMNPMCI926: return the LAST attempt's exit code, not a flat 1 -- a
+    # caller that must tell an OOM kill (137) from a lockfile error needs it.
+    if [ "$i" -ge "$tries" ]; then return "$rc"; fi
     echo -e "  ${DIM}retry $i/$tries...${NC}"; sleep "$pause"; pause=$(( pause * 2 )); i=$(( i + 1 ))
   done
+}
+
+# #950: the honest test that the better-sqlite3 native binding is usable is
+# whether it LOADS, not whether a rebuild exited 0. better-sqlite3 13.x ships a
+# Node-API prebuilt binary (stable ABI), so a plain install/rebuild uses the
+# prebuild and there is nothing to compile per Node version.
+native_module_loads() {
+  node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1
 }
 
 health_ok() {
@@ -478,6 +489,66 @@ restore_stash_before_exit() {
       echo "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
     fi
   fi
+}
+
+# UPDOOMNPMCI926: `npm ci` failed after the pull. npm ci deletes node_modules
+# before installing, so the tree is on the NEW commit with a half-installed
+# dependency set; the running dashboard still has the old code in memory, but
+# its next start (or any fresh node process) would load from the broken tree.
+# The old path only printed a fixed "package-lock.json out of sync" line and
+# exited 1 with no rollback, so the report said "failed" while the tree sat on
+# the new commit. Measured on a 3.8 GB, swapless host: the OOM killer ended
+# npm ci three times in 33 s (exit 137), and the message blamed the lockfile.
+# Now: name the cause from the exit code, roll back exactly like the build
+# failure below (old commit, its dependencies, its build), and report what
+# actually happened -- including a rollback whose own npm ci failed too.
+npm_ci_failed() {
+  local rc="$1"
+  if [ "$rc" -eq 137 ]; then
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} npm ci was killed (exit 137, SIGKILL) -- most likely the machine ran out of memory."
+      echo -e "  Check with: dmesg | grep -i 'killed process'  (the lockfile is not the cause)"
+    else
+      echo -e "${RED}HIBA:${NC} az npm ci-t a rendszer leállította (137-es kilépési kód, SIGKILL), valószínűleg elfogyott a memória."
+      echo -e "  Ellenőrzés: dmesg | grep -i 'killed process'  (nem a package-lock.json a hiba)"
+    fi
+  else
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} npm ci failed (exit code ${rc}). Details: npm ci"
+    else
+      echo -e "${RED}HIBA:${NC} az npm ci sikertelen (kilépési kód: ${rc}). Részletek: npm ci"
+    fi
+  fi
+  echo -e "  Visszaallitas a korabbi verziora (${OLD_VERSION})..."
+  local deps_ok=0 guard_allowed=0
+  # Card 980454f7: every auto-rollback in this script clears rollback_guard_check first
+  # (ancestor-of-HEAD, within-distance, above the watchdog floor) -- this npm-ci-failure
+  # path is a rollback like any other and must not bypass that invariant.
+  if [ -n "$OLD_VERSION_FULL" ] && rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_VERSION_FULL" "update-npm-ci-failure"; then
+    guard_allowed=1
+    git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+    if npm ci --silent --include=dev 2>/dev/null; then deps_ok=1; fi
+    # #950: rebuild only when the installed prebuild does not load -- a failing source build
+    # deletes the working binary, which is what this rollback is trying to restore.
+    native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
+    npm run build --silent 2>/dev/null || true
+    [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+  fi
+  local cause="a függőségek telepítése elbukott (kilépési kód: ${rc})"
+  [ "$rc" -eq 137 ] && cause="a függőségek telepítését a rendszer leállította (137, valószínűleg memóriahiány)"
+  if [ "$guard_allowed" = "0" ]; then
+    RESULT_STATUS="failed"
+    RESULT_MSG="A frissítés közben ${cause}, ES a visszaallitast a rollback-guard megtagadta (elavult/tul tavoli cel). A rendszer a jelenlegi verzion maradt, kezi beavatkozas kell: ./recovery-prev-version.sh --list"
+  elif [ "$deps_ok" = "1" ]; then
+    RESULT_STATUS="rolled-back"
+    RESULT_MSG="A frissítés közben ${cause}; a rendszer visszaállt a korábbi működő verzióra (${OLD_VERSION}). A frissítés nem ment ki."
+  else
+    RESULT_STATUS="failed"
+    RESULT_MSG="A frissítés közben ${cause}, és a visszaállítás függőség-telepítése sem sikerült: a kód a korábbi verzión (${OLD_VERSION}) áll, de a node_modules hiányos lehet. Kézi beavatkozás kell: npm ci --include=dev, majd npm run build."
+    echo -e "${RED}HIBA:${NC} a visszaallitas npm ci-je is elbukott; a node_modules hianyos lehet. Kezi beavatkozas kell: npm ci --include=dev && npm run build"
+  fi
+  restore_stash_before_exit
+  exit 6
 }
 
 # Save current version
@@ -1546,11 +1617,9 @@ if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock
   # nowhere in .env, start.sh, install-linux.sh or this script (measured 2026-09-06) --
   # so this is closing a latent hole, not a live outage. The audit below keeps its own
   # --omit=dev, so the security scope is unchanged.
-  if ! retry 3 3 npm ci --silent --include=dev; then
-    echo -e "  HIBA: npm ci sikertelen. Valoszinuleg a package-lock.json nincs szinkronban."
-    echo -e "  Reszletekert futtasd: npm ci"
-    exit 1
-  fi
+  NPM_CI_RC=0
+  retry 3 3 npm ci --silent --include=dev || NPM_CI_RC=$?
+  [ "$NPM_CI_RC" -eq 0 ] || npm_ci_failed "$NPM_CI_RC"
   # Security posture check, NOT a hard gate. npm audit queries the
   # registry and can fail for reasons entirely outside the operator's
   # control (network blip, upstream CVE newly disclosed minutes ago,
@@ -1576,7 +1645,12 @@ fi
 # compiled tree did not change, only the seeded skills/tasks need refreshing.
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   RESULT_PHASE="build"
-  retry 2 3 npm rebuild better-sqlite3 --build-from-source --silent || true
+  # #950: prefer the Node-API prebuild; only rebuild if it does not load, and
+  # NEVER --build-from-source. A source build under a Node the toolchain cannot
+  # target (24/26) failed AND deleted the working binary, and the update then
+  # restarted with no native module; the old rollback ran the same failing
+  # command. The load check below is the real gate.
+  native_module_loads || retry 2 3 npm rebuild better-sqlite3 --silent || true
 
   # Rebuild. On failure, auto-rollback to the pre-update commit (safe ff-only
   # ancestor) and rebuild that, leaving the box on a WORKING old version rather
@@ -1600,7 +1674,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
       # and without the compiler this rollback build would also fail silently,
       # leaving git=OLD + node_modules=pruned (AUTOUPDNODEENV905 finding A).
       npm ci --silent --include=dev 2>/dev/null || true
-      npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+      native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
       rm -rf "$INSTALL_DIR/dist"
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
@@ -1615,6 +1689,37 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
       # guard exists to prevent.
       RESULT_STATUS="failed"
       RESULT_MSG="A build elbukott, ES a visszaallitast a rollback-guard megtagadta (elavult/tul tavoli cel). A rendszer a jelenlegi verzion maradt, kezi beavatkozas kell: ./recovery-prev-version.sh --list"
+    fi
+    restore_stash_before_exit
+    exit 6
+  fi
+
+  # #950 (Koteg 26, upstream): verify the native module actually loads before we
+  # restart anything. If it does not, roll back to the previous working version
+  # (whose prebuild loads) WHILE IT IS STILL RUNNING, rather than restarting into
+  # a dashboard that cannot open its database. Rollback gated by rollback_guard_check
+  # (card 980454f7), same pattern as the build-failure branch above.
+  if ! native_module_loads; then
+    echo -e "${RED}HIBA:${NC} a better-sqlite3 modul nem toltheto be a frissites utan. Visszaallitas (${OLD_VERSION})..."
+    # #950 follow-up: name the Node version and the requirement, so a host still
+    # on Node 20 learns WHY every update rolls back (better-sqlite3 13.x needs
+    # Node >=22) instead of only seeing "the module cannot load".
+    echo -e "  ${DIM}Futo Node: $(node -v 2>/dev/null || echo '?'). A better-sqlite3 13.x Node 22 vagy ujabbat igenyel; ha ez alatt futsz, frissitsd a Node-ot es futtasd ujra a frissitest.${NC}"
+    ROLLED_BACK=0
+    if [ -n "$OLD_VERSION_FULL" ] && rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_VERSION_FULL" "update-native-module-load-failure"; then
+      git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+      npm ci --silent --include=dev 2>/dev/null || true
+      native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
+      npm run build --silent 2>/dev/null || true
+      [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+      ROLLED_BACK=1
+    fi
+    if [ "$ROLLED_BACK" = "1" ]; then
+      RESULT_STATUS="rolled-back"
+      RESULT_MSG="A frissites utan a natv adatbazis-modul nem toltodott be (futo Node: $(node -v 2>/dev/null || echo ?); a better-sqlite3 13.x Node 22 vagy ujabbat igenyel). A rendszer visszaallt a korabbi mukodo verziora (${OLD_VERSION}). A frissites nem ment ki."
+    else
+      RESULT_STATUS="failed"
+      RESULT_MSG="A natv adatbazis-modul nem toltodik be, ES a visszaallitast a rollback-guard megtagadta (elavult/tul tavoli cel). A rendszer a jelenlegi verzion maradt, kezi beavatkozas kell: ./recovery-prev-version.sh --list"
     fi
     restore_stash_before_exit
     exit 6
@@ -2079,6 +2184,8 @@ cd "$INSTALL_DIR" 2>/dev/null || true
 # stage= line as the marker.
 STAGE="boot"
 _stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
+# Same check as update.sh's native_module_loads (#950): this script runs on its own.
+native_module_loads() { node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1; }
 trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
 
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
@@ -2175,8 +2282,11 @@ if [ -n "$OLD_FULL" ]; then
     # and it does so silently (`|| true`), so the recovery path would report success on
     # a build that never ran. The fork's rollback_guard_check wrapper around this block
     # stays as it is -- upstream has no equivalent.
+    # #950 (Koteg 26, upstream): rebuild only when the installed prebuild does not
+    # load, never --build-from-source -- a failing source build deletes the working
+    # binary this rollback is trying to restore.
     npm ci --silent --include=dev 2>/dev/null || true
-    npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+    native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
     npm run build --silent 2>/dev/null || true
     [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
     ROLLED_BACK=1

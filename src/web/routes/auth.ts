@@ -13,12 +13,15 @@
 // which talks to the database directly and has no HTTP round-trip, so there is no token to abuse.
 // There is still no unauthenticated first-run setup PAGE (a claim-the-admin race on loopback) --
 // the operator runs the CLI on the machine instead.
-// NOT ADOPTED, upstream's mayIssueCredentials/DEVKEYMINT1022 (Koteg 25, #2163): it still lets the
-// bearer token mint the first user/credential over HTTP whenever zero dashboard_users rows exist
-// -- exactly the bootstrap exception card 49960046 retired. Re-checked against this koteg: the
-// CLI_RECOVERY_ONLY error message IS adopted below (a strictly better message on the same refusal
-// this file already gives), mayIssueCredentials/OWNER_SESSION_REQUIRED and the token-bootstrap
-// exception are not. See src/fork-upstream/acknowledged-conflicts.ts.
+// Upstream's OWN mayIssueCredentials (DEVKEYMINT1022, Koteg 25, #2163) is NOT ADOPTED: it still
+// lets the bearer token mint the first user/credential over HTTP whenever zero dashboard_users
+// rows exist -- exactly the bootstrap exception card 49960046 retired. The CLI_RECOVERY_ONLY error
+// message IS adopted below (a strictly better message on the same refusal this file already
+// gives). Several later upstream call sites (Koteg 26, DEVKEYFOLLOW1022, #2175) gate on the
+// mayIssueCredentials/OWNER_SESSION_REQUIRED names, so this file exports its OWN strict versions
+// under those names (session-only, no bootstrap exception) rather than leaving every caller broken
+// -- see their definitions below, next to CREDENTIAL_MINT_KINDS. See
+// src/fork-upstream/acknowledged-conflicts.ts.
 //
 // Principal discipline: every handler that grants or removes access checks the
 // caller's auth kind against an EXPLICIT allowlist. Only 'token' and 'session'
@@ -165,6 +168,22 @@ const CREDENTIAL_MINT_KINDS = ['session'] as const
 export const CLI_RECOVERY_ONLY = {
   error: 'Resetting a password needs the dashboard login and the current password. Without them, recover on the machine itself: npm run dashboard-user -- reset-password <username>.',
   code: 'cli_recovery_only',
+}
+
+// Koteg 26 (DEVKEYFOLLOW1022, #2175): several upstream call sites across this and other route
+// files (approvals.ts, claude-plans.ts, claude-plans-login.ts, federation.ts, fleet-freeze.ts,
+// operator-access.ts, settings.ts, skills.ts) now gate on mayIssueCredentials/OWNER_SESSION_REQUIRED.
+// Upstream's OWN mayIssueCredentials (DEVKEYMINT1022) is NOT adopted -- it carries the
+// bootstrap/token-with-a-cookie exceptions card 49960046 retired (see the file-top comment). This
+// is the fork's strict replacement under the SAME exported name so every caller compiles against
+// the fork's existing session-only posture instead: exactly CREDENTIAL_MINT_KINDS, no exceptions.
+export function mayIssueCredentials(auth: RouteContext['auth'], _req?: http.IncomingMessage): boolean {
+  return kindAllowed(auth, CREDENTIAL_MINT_KINDS)
+}
+
+export const OWNER_SESSION_REQUIRED = {
+  error: 'This needs the dashboard login (an owner session); the shared agent token cannot do this.',
+  code: 'owner_session_required',
 }
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
@@ -340,6 +359,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/auth/users' && method === 'GET') {
     if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    // The usernames are the first half of a password guess, so once a login
+    // exists the list takes the owner's session too (DEVKEYFOLLOW1022).
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
     json(res, { users: listDashboardUsers() })

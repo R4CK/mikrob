@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { PROJECT_ROOT, OLLAMA_URL } from '../../config.js'
-import { execShellAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import {
   slugify as slugifyMcp,
@@ -13,7 +14,6 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
-import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
@@ -35,6 +35,37 @@ import type { RouteContext } from './types.js'
 // auth kind (including session/device), ahead of the kind-check below, until card 3fb0ef97 (a
 // non-forgeable approval channel) ships. Flip to false only in a reviewed commit once that lands.
 const CONNECTORS_PROJECT_STDIO_FAIL_CLOSED = true
+
+const execFileAsync = promisify(execFile)
+
+// `claude mcp add` / `claude mcp remove` as an argv (no shell) and off the event
+// loop: the synchronous shell form froze the whole dashboard for as long as the
+// CLI took (timeouts of 15-30 s). stdin is closed at once, as the sync call did.
+async function execClaudeMcp(args: string[], timeout: number): Promise<void> {
+  // The shell form threw on a non-string value (its quoting helper calls .replace on
+  // it); execFile would stringify it and run the CLI. Keep the refusal.
+  if (args.some((a) => typeof a !== 'string')) throw new TypeError('claude mcp: every argument must be a string')
+  const pending = execFileAsync('claude', args, { timeout, encoding: 'utf-8' })
+  pending.child.stdin?.end()
+  await pending
+}
+
+// The CLI operations still run one at a time, as the synchronous form did: each
+// one rewrites the same CLI config file, and two overlapping requests (a double
+// click on "install", an uninstall racing an add of the same name) must not
+// interleave. A multi-call operation (the uninstall's user-then-project
+// fallback) holds the slot for all of its calls.
+let claudeMcpQueue: Promise<unknown> = Promise.resolve()
+
+function serializeClaudeMcp<T>(op: () => Promise<T>): Promise<T> {
+  const run = claudeMcpQueue.then(op)
+  claudeMcpQueue = run.catch(() => {})
+  return run
+}
+
+function runClaudeMcp(args: string[], timeout: number): Promise<void> {
+  return serializeClaudeMcp(() => execClaudeMcp(args, timeout))
+}
 
 // The catalog is the union of the committed mcp-catalog.json (the MCPs the
 // central devs ship) and an optional, gitignored mcp-catalog.local.json where
@@ -463,7 +494,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
 
     try {
-      const scopeFlag = data.scope === 'project' ? '-s project' : '-s user'
+      const scope = data.scope === 'project' ? 'project' : 'user'
 
       const catalogEntry: any = {
         id: sanitizedName,
@@ -476,7 +507,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
       if ((data.type === 'http' || data.type === 'sse') && data.url) {
         const transport = data.type === 'sse' ? 'sse' : 'http'
-        await execShellAsync(`claude mcp add --transport ${transport} ${scopeFlag} ${shellEscape(sanitizedName)} ${shellEscape(data.url)} 2>&1`, { timeoutMs: 15000 })
+        await runClaudeMcp(['mcp', 'add', '--transport', transport, '-s', scope, sanitizedName, data.url], 15000)
         catalogEntry.type = 'remote'
         catalogEntry.url = data.url
         catalogEntry.transport = transport
@@ -486,8 +517,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         const userSecrets = Object.fromEntries(
           Object.entries(data.env || {}).filter(([, v]) => v !== ''),
         ) as Record<string, string>
-        const argsStr = data.args ? data.args.split(/\s+/).filter(Boolean).map(a => shellEscape(a)).join(' ') : ''
-        await execShellAsync(`claude mcp add ${scopeFlag} ${shellEscape(sanitizedName)} -- ${shellEscape(data.command)} ${argsStr} 2>&1`, { timeoutMs: 15000 })
+        const argList = data.args ? data.args.split(/\s+/).filter(Boolean) : []
+        await runClaudeMcp(['mcp', 'add', '-s', scope, sanitizedName, '--', data.command, ...argList], 15000)
         catalogEntry.type = 'local'
         catalogEntry.command = data.command
         catalogEntry.args = data.args ? data.args.split(/\s+/).filter(Boolean) : []
@@ -711,13 +742,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         const defaultEnv = Object.fromEntries(
           Object.entries(item.env || {}).filter(([k, v]) => v !== '' && !(k in userSecrets)),
         ) as Record<string, string>
-        const envFlags = Object.entries(defaultEnv)
-          .map(([k, v]) => `-e ${shellEscape(k)}=${shellEscape(v as string)}`)
-          .join(' ')
-
-        const argsStr = (item.args || []).map((a: string) => shellEscape(a)).join(' ')
-        const cmd = `claude mcp add --scope user ${shellEscape(cliName)} ${envFlags} -- ${shellEscape(item.command)} ${argsStr} 2>&1`
-        await execShellAsync(cmd, { timeoutMs: 30000 })
+        const envArgs = Object.entries(defaultEnv).flatMap(([k, v]) => ['-e', `${k}=${v as string}`])
+        await runClaudeMcp(['mcp', 'add', '--scope', 'user', cliName, ...envArgs, '--', item.command, ...(item.args || [])], 30000)
         if (Object.keys(userSecrets).length) {
           vaultAndBindEnvSecrets(cliName, join(homedir(), '.claude.json'), userSecrets)
         }
@@ -727,7 +753,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
         // Respect the catalog item's transport (http/sse) instead of forcing sse,
         // so one-click remote installs can use streamable-http (e.g. n8n).
         const transport = item.transport === 'http' ? 'http' : 'sse'
-        await execShellAsync(`claude mcp add --transport ${transport} --scope user ${shellEscape(cliName)} ${shellEscape(url)} 2>&1`, { timeoutMs: 30000 })
+        await runClaudeMcp(['mcp', 'add', '--transport', transport, '--scope', 'user', cliName, url], 30000)
       }
 
       let message = 'Telepítve'
@@ -752,13 +778,15 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       if (!item) { json(res, { error: 'Item not found in catalog' }, 404); return true }
 
       const cliName = item.id
-      try {
-        await execShellAsync(`claude mcp remove ${shellEscape(cliName)} -s user 2>&1`, { timeoutMs: 15000 })
-      } catch {
+      await serializeClaudeMcp(async () => {
         try {
-          await execShellAsync(`claude mcp remove ${shellEscape(cliName)} -s project 2>&1`, { timeoutMs: 15000 })
-        } catch { /* ignore if not found anywhere */ }
-      }
+          await execClaudeMcp(['mcp', 'remove', cliName, '-s', 'user'], 15000)
+        } catch {
+          try {
+            await execClaudeMcp(['mcp', 'remove', cliName, '-s', 'project'], 15000)
+          } catch { /* ignore if not found anywhere */ }
+        }
+      })
 
       json(res, { ok: true, message: 'Eltávolítva' })
     } catch (err: any) {

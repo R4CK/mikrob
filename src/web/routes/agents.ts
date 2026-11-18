@@ -1414,7 +1414,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     // Async: a 60s smoke test on the main thread froze every other request for its
-    // whole duration -- the largest blocking call in any route handler (card 89d0bfde).
+    // whole duration -- the largest blocking call in any route handler (card 89d0bfde,
+    // same root cause as upstream's #2188).
     // Args are passed as argv, not interpolated into a shell string, so an agent name
     // can no longer reach `bash -c`.
     const smoke = await execFileAsync('/bin/bash', [scriptPath, name], {

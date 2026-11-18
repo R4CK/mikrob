@@ -98,6 +98,7 @@ import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
 import { tryHandleAgents } from './web/routes/agents.js'
 import { tryHandleClaudePlans } from './web/routes/claude-plans.js'
+import { tryHandleClaudePlansLogin } from './web/routes/claude-plans-login.js'
 import { tryHandleMarveen } from './web/routes/marveen.js'
 import { tryHandleRecall } from './web/routes/recall.js'
 import { tryHandleBackgroundTasks, sweepOrphanedBackgroundTasks } from './web/routes/background-tasks.js'
@@ -111,12 +112,14 @@ import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleProjectPriority } from './web/routes/project-priority.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
+import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleLlmLedger } from './web/routes/llm-ledger.js'
 import { tryHandleGeminiCalls } from './web/routes/gemini-calls.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleNotes } from './web/routes/notes.js'
+import { tryHandlePdfRender } from './web/routes/pdf-render.js'
 import { tryHandleVideoReview } from './web/routes/video-review.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSpans } from './web/routes/spans.js'
@@ -289,6 +292,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleAgentHud(routeCtx)) return
       if (await tryHandleTaskEvents(routeCtx)) return
       if (await tryHandleAgents(routeCtx, WEB_DIR)) return
+      if (await tryHandleClaudePlansLogin(routeCtx)) return
       if (await tryHandleClaudePlans(routeCtx)) return
       if (await tryHandleMarveen(routeCtx, WEB_DIR)) return
       if (await tryHandleBackgroundTasks(routeCtx)) return
@@ -305,12 +309,14 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleProjectPriority(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
+      if (await tryHandleFleetFreeze(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleLlmLedger(routeCtx)) return
       if (await tryHandleGeminiCalls(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
       if (await tryHandleNotes(routeCtx)) return
+      if (await tryHandlePdfRender(routeCtx)) return
       if (await tryHandleVideoReview(routeCtx, WEB_DIR)) return
       if (await tryHandleSpans(routeCtx)) return
       if (await tryHandleToolLog(routeCtx)) return
@@ -884,11 +890,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
   }
 
-  try {
-    sweepOrphanedBackgroundTasks()
-  } catch (err) {
-    logger.warn({ err }, 'Background task sweep skipped')
-  }
+  sweepOrphanedBackgroundTasks().catch(err => logger.warn({ err }, 'Background task sweep skipped'))
 
   try {
     const swept = sweepOrphanTaskStates(Date.now())
