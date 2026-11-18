@@ -27269,3 +27269,35 @@ skipped (1370), 42804 Tests passed | 132 skipped (42936), 0 FAIL. Duration 647.9
 `src/web/routes/auth.ts`/`security.ts`-t is érintette (`auth-routes.test.ts` self-korrekció), ugyanaz
 a fájl-osztály, ami Koteg 24-en (57044a66) Cybered-et kapott. `66d38ee45` `git merge-base
 --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
+
+## 2026-11-18 -- 5dd0842a: Koteg 25 upstream szinkron -- a korábbi "0 FAIL" mérés nem volt a végső shán, javítva 942ec654f-en
+
+A fenti 2026-11-18-i bejegyzés (`9d35c7030`-on mért 0 FAIL) utólag nem bizonyult megbízhatónak:
+a `fleet-test.sh` az a kör nem `--ref`-fel futott, hanem a `$ROOT` aktuális HEAD-jén, és egy
+párhuzamos backend2-futás (`--ref df2ebb310`) ugyanazt a megosztott `/home/neon/marveen-test`
+fát és lock-ot versenyeztette ugyanabban az ablakban -- utólag nem rekonstruálható, melyik sha-t
+tesztelte valójában. Ezután Cybered NO-GO-t adott `44100d69f`-en (approvals.ts generikus
+category-consume regresszió, W2 kártya 2a80c6cb hardening visszanyitása), a fix `8ca723623`-ra
+ment, majd QA FAIL derült ki `44100d69f`-en (tsc TS2739, `acknowledged-conflicts.ts` két párosított
+map-je nem volt szinkronban -- 4 új `ACKNOWLEDGED_CONFLICTS` kulcsnak nem volt
+`ACKNOWLEDGED_UPSTREAM_BLOBS` párja).
+
+Egy explicit `--ref 8ca723623`-cal futtatott teljes `fleet-test.sh` (most már megbízhatóan ehhez
+a shához kötve) 3 valódi, a merge-ből eredő hibát talált: (1) `agent-dir-namespace-runtime.test.ts`
+-- `fork-upstream/acknowledged-conflicts.ts` egy fenntartott azonosítót szó szerint kiírt import
+helyett; (2) `hook-registration-completeness.test.ts` -- a merge-ből portolt
+`scripts/hooks/sender_check.py`-nak nem volt regisztrációja/EXEMPT bejegyzése; (3)
+`shebang-files-executable.test.ts` -- 5 új upstream fájl (`uptime-monitor.py` + tesztje,
+`daily-log-backfill-memories.ts`, `spotlight-check.sh`, `yt_ingest_lib.py`) shebanggel, de nem
+futtatható jelzéssel trackelve. Mindhárom javítva `942ec654f`-en.
+
+**Mérés:** `fleet-test.sh --ref 942ec654f` (explicit ref, detached/setsid-nohup futás, túlélt egy
+session-restartot): 1382 Test Files passed | 1 skipped (1383), 43263 Tests passed | 132 skipped
+(43395), 0 FAIL. Duration 641.31s. `lint-ratchet.sh`: no rule got worse (420 finding, baseline
+tartja magát). `npx tsc --noEmit` ezen a shán: clean.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 942ec654f040b93d5e7a62eedbae4c88386b52a5. Gate: QA +
+Cybersec (WhiteHat) + Cybered (RedHat) -- friss kör kell MINDHÁROM kaputól ezen a shán, a korábbi
+QA FAIL és Cybered NO-GO korábbi (már javított) shákra vonatkozott. `942ec654f`
+`git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
+
