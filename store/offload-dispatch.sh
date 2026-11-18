@@ -958,6 +958,14 @@ try_gemini_second_opinion_for_leaf() {
 # budget, so the cap always lands on leaves that still have something to try (grilling change #4 -- the
 # filter runs before the cut, not after, so a large Feladat does not starve its 16th+ leaf forever).
 OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
+# NON-INTEGER GUARD (card 660e3b66, RedHat non-blocking in f8e7f7cb's GO, comment 17102): same
+# bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below -- a non-integer value reaches the
+# `(( attempted >= OFFLOAD_MAX_SUBTASKS ))` arithmetic comparison, which throws a bash syntax
+# error instead of comparing, silently stopping local-first drafting with no trace of why.
+if ! [[ "$OFFLOAD_MAX_SUBTASKS" =~ ^[0-9]+$ ]]; then
+  echo "offload-dispatch: OFFLOAD_MAX_SUBTASKS='$OFFLOAD_MAX_SUBTASKS' is not an integer -- falling back to the documented default (15)" >&2
+  OFFLOAD_MAX_SUBTASKS=15
+fi
 
 # DECOMPOSE (card 501c489f, MikroB verdikt komment 6007). Per-card ceiling on SYNTHETIC (not real
 # kanban-child) subtasks the deterministic templates in card-decompose-templates.sh may generate for
@@ -977,10 +985,25 @@ OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
 ATTEMPTS_FILE="${ATTEMPTS_FILE:-$HERE/offload-attempts.json}"
 ATTEMPTS_LOCK="${ATTEMPTS_LOCK:-$HERE/.offload-attempts.lock}"
 EXHAUSTED_TTL_SECONDS="${EXHAUSTED_TTL_SECONDS:-86400}"
+# NON-INTEGER GUARD (card 660e3b66, same bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below):
+# attempts_op()'s python does `int(os.environ.get("EXHAUSTED_TTL_SECONDS", ...))` -- a non-integer
+# value raises ValueError there instead of being caught here, silently losing the exhausted-entry
+# expiry check instead of falling back to the documented default.
+if ! [[ "$EXHAUSTED_TTL_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "offload-dispatch: EXHAUSTED_TTL_SECONDS='$EXHAUSTED_TTL_SECONDS' is not an integer -- falling back to the documented default (86400s)" >&2
+  EXHAUSTED_TTL_SECONDS=86400
+fi
 # Card 501c489f, MikroB verdikt komment 6007, requirement 6: 3 -> 2. Only the TRANSIENT-failure
 # threshold moves; categorical-online (router says ONLINE) was already a single-call jump straight
 # to exhausted and stays that way, just landing on this same new ceiling.
 OFFLOAD_LEAF_MAX_ATTEMPTS="${OFFLOAD_LEAF_MAX_ATTEMPTS:-2}"
+# NON-INTEGER GUARD (card 660e3b66, same bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below):
+# reaches both attempts_op()'s python `int(...)` and the shell arithmetic comparison at the
+# per-leaf retry-ceiling check -- a non-integer value breaks either silently.
+if ! [[ "$OFFLOAD_LEAF_MAX_ATTEMPTS" =~ ^[0-9]+$ ]]; then
+  echo "offload-dispatch: OFFLOAD_LEAF_MAX_ATTEMPTS='$OFFLOAD_LEAF_MAX_ATTEMPTS' is not an integer -- falling back to the documented default (2)" >&2
+  OFFLOAD_LEAF_MAX_ATTEMPTS=2
+fi
 
 # STALE-IN-PROGRESS SKIP (card eeebd2b5). Measured twice (041b6a47 msg 1808; card #1804) that a
 # draft landing on an in_progress leaf the online agent has ALREADY been carrying for a while
