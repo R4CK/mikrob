@@ -264,7 +264,14 @@ run_c1_case 1 c
 
 # --- section 3: /tmp sweep (card c9c1f159, Cybered GO 32928 on 6c41214a) --------------------
 # Sandboxed via WSL_CLEANUP_TMP_DIR, never touches the real /tmp.
+# `export`ed (657f12a3, Cybered GO 33173): the find()/stat() shims below reference $TMP3 from
+# inside functions that get re-exercised in the CHILD `bash "$RUN"` process (export -f ships the
+# function body as text, but not an unexported variable it reads) -- without this, $TMP3 expands
+# empty in the child, the shim's path comparison never matches, and the simulated failure the
+# case exists to test is never actually injected (the case then passes on the real, unmutated
+# fail-closed behavior alone, not on the shim).
 TMP3="$(mktemp -d -p /tmp)"
+export TMP3
 PAST3=$(( $(date +%s) - 3000 * 60 ))  # 3000m old, well past the 2880m (48h) default threshold
 
 run_tmp_sweep() {
@@ -364,6 +371,21 @@ else
 fi
 rm -rf "$TMP3/.X11-unix"
 
+# NAME-PATTERN guard pin, .font-unix and .ICE-unix individually (Cybered GO 33173, card
+# 657f12a3): the case pattern lists three names on one line -- only .X11-unix had its own case
+# above, so a mutant dropping either of the other two from the pattern stayed green.
+for dotdir in .font-unix .ICE-unix; do
+  mkdir -p "$TMP3/$dotdir"
+  touch -d "@$PAST3" "$TMP3/$dotdir"
+  out="$(run_tmp_sweep)"
+  if echo "$out" | grep -qF "rm -rf -- $TMP3/$dotdir"; then
+    bad "NAME-PATTERN: an old $dotdir dir was (dry-run) removed -- name-pattern guard not enforced" "$out"
+  else
+    ok "NAME-PATTERN guard: an old $dotdir dir is never removed"
+  fi
+  rm -rf "$TMP3/$dotdir"
+done
+
 # ISDIR guard (DOCUMENTED, not pinned -- equivalent mutant for a plain file): the `[ -d "$entry" ]`
 # check before the inner-freshness call is EQUIVALENT to omitting it, for a regular file that
 # already passed the AGE guard above. `find <file> -mmin -X -print -quit` evaluates the SAME
@@ -404,6 +426,48 @@ else
   ok "STAT guard: an entry whose stat call fails is skipped, not removed"
 fi
 rm -rf "$TMP3/vanishing-dir"
+
+# Removed-counter pin, failed rm (Cybered GO 33173, card 657f12a3): "removed" was incremented
+# unconditionally even when the actual rm failed, making the summary line claim a cleanup that
+# did not happen. Shim `rm` to fail for one specific old, otherwise-removable entry; assert it
+# survives, is counted under "skipped (rm failed)", and "removed" stays 0. Direct `source` +
+# call (not run_tmp_sweep's --dry-run wrapper) since this needs the REAL run_argv rm call path,
+# not the dry-run printf stand-in.
+TMP5="$(mktemp -d -p /tmp)"
+PAST5=$(( $(date +%s) - 3000 * 60 ))
+mkdir -p "$TMP5/rm-fails"
+touch -d "@$PAST5" "$TMP5/rm-fails"
+RMFAIL_OUT="$(mktemp)"
+(
+  rm() {
+    local a
+    for a in "$@"; do
+      [ "$a" = "$TMP5/rm-fails" ] && return 1
+    done
+    command rm "$@"
+  }
+  WSL_CLEANUP_TMP_DIR="$TMP5"
+  export WSL_CLEANUP_TMP_DIR
+  # shellcheck source=./wsl-cleanup.sh
+  source "$RUN"
+  sweep_tmp
+) >"$RMFAIL_OUT" 2>&1
+if [ -e "$TMP5/rm-fails" ]; then
+  ok "removed counter: an entry whose rm fails is still present afterward"
+else
+  bad "removed counter: an entry whose rm fails was actually removed -- shim did not intercept" "$(cat "$RMFAIL_OUT")"
+fi
+if grep -qF "skipped (rm failed): 1" "$RMFAIL_OUT"; then
+  ok "removed counter: a failed rm is counted under 'skipped (rm failed)', not folded into 'removed'"
+else
+  bad "removed counter: 'skipped (rm failed): 1' not found in summary for a failed rm" "$(cat "$RMFAIL_OUT")"
+fi
+if grep -qF "removed 0" "$RMFAIL_OUT"; then
+  ok "removed counter: 'removed' count stays 0 when the only candidate's rm failed"
+else
+  bad "removed counter: 'removed' count was not 0 despite the only candidate's rm failing" "$(cat "$RMFAIL_OUT")"
+fi
+rm -rf "$TMP5" "$RMFAIL_OUT" 2>/dev/null
 
 rm -rf "$TMP3"
 
@@ -504,6 +568,62 @@ else
   bad "SANITY guard: an entry outside /tmp was removed despite the sanity guard" ""
 fi
 rm -rf "$NOT_TMP_DIR" "$SANITY_OUT" 2>/dev/null
+
+# SANITY guard pin, traversal escape (Cybered GO 33173, card 657f12a3): the OLD check was purely
+# LEXICAL ("$WSL_CLEANUP_TMP_DIR" matched against /tmp/* as a string) -- a value that textually
+# starts with "/tmp/" but contains enough ".." segments to resolve OUTSIDE /tmp entirely passed
+# the guard, even though the directory it actually sweeps is not under /tmp at all. Build exactly
+# that shape: a real dir under /tmp, plus the RELATIVE path from it to a real dir under $HOME
+# (which is necessarily "../.../<home>/..." -- that relative path IS the traversal string), then
+# point WSL_CLEANUP_TMP_DIR at the concatenation so it reads as "/tmp/<sub>/../.../<home-dir>".
+TRAVERSAL_OUTER="$HOME/wsl-cleanup-selftest-traversal-$$"
+rm -rf "$TRAVERSAL_OUTER"
+mkdir -p "$TRAVERSAL_OUTER"
+touch -d "@$PAST4" "$TRAVERSAL_OUTER"
+TRAVERSAL_SUB="$(mktemp -d -p /tmp)"
+TRAVERSAL_REL="$(realpath --relative-to="$TRAVERSAL_SUB" "$TRAVERSAL_OUTER")"
+TRAVERSAL_PATH="$TRAVERSAL_SUB/$TRAVERSAL_REL"
+case "$TRAVERSAL_PATH" in
+  /tmp/*) ;;
+  *) bad "traversal fixture setup: constructed path '$TRAVERSAL_PATH' does not even start with /tmp/ -- fixture is wrong, not the guard" "" ;;
+esac
+TRAVERSAL_OUT="$(mktemp)"
+(
+  WSL_CLEANUP_TMP_DIR="$TRAVERSAL_PATH"
+  export WSL_CLEANUP_TMP_DIR
+  # shellcheck source=./wsl-cleanup.sh
+  source "$RUN"
+  sweep_tmp
+) >"$TRAVERSAL_OUT" 2>&1
+if grep -qF "REFUSING /tmp sweep" "$TRAVERSAL_OUT"; then
+  ok "SANITY guard (traversal): a /tmp/-prefixed path that resolves outside /tmp is refused"
+else
+  bad "SANITY guard (traversal): a /tmp/-prefixed path resolving outside /tmp was NOT refused" "$(cat "$TRAVERSAL_OUT")"
+fi
+if [ -e "$TRAVERSAL_OUTER" ]; then
+  ok "SANITY guard (traversal): the entry the traversal would have reached survives"
+else
+  bad "SANITY guard (traversal): the traversal-reached entry was removed despite the sanity guard" ""
+fi
+rm -rf "$TRAVERSAL_SUB" "$TRAVERSAL_OUTER" "$TRAVERSAL_OUT" 2>/dev/null
+
+# SANITY guard pin, prefix loosening (Cybered GO 33173, card 657f12a3): "/tmpfoo" shares the
+# literal "/tmp" prefix but is a sibling, not a subdirectory -- must still be refused. Previously
+# unpinned (no case asserted it), even though the existing case pattern already rejected it.
+LOOSE_OUT="$(mktemp)"
+(
+  WSL_CLEANUP_TMP_DIR="/tmpfoo"
+  export WSL_CLEANUP_TMP_DIR
+  # shellcheck source=./wsl-cleanup.sh
+  source "$RUN"
+  sweep_tmp
+) >"$LOOSE_OUT" 2>&1
+if grep -qF "REFUSING /tmp sweep" "$LOOSE_OUT"; then
+  ok "SANITY guard (prefix): '/tmpfoo' (shares the /tmp prefix, not a subdir) is refused"
+else
+  bad "SANITY guard (prefix): '/tmpfoo' was NOT refused" "$(cat "$LOOSE_OUT")"
+fi
+rm -rf "$LOOSE_OUT" 2>/dev/null
 
 rm -rf "$TMP4"
 

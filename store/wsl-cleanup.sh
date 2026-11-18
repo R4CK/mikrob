@@ -203,16 +203,25 @@ sweep_tmp() {
   # stopped it from pointing the "mindepth 1 -maxdepth 1 ... rm -rf" sweep at /, /home or $HOME.
   # Only the real /tmp, or a path actually UNDER /tmp (a test's own disposable sandbox dir), may
   # be swept.
-  case "$WSL_CLEANUP_TMP_DIR" in
+  # Cybered GO 33173 (card 657f12a3): the check above was LEXICAL -- a value shaped like
+  # "<under /tmp>/x/../outer" matched the /tmp/* string pattern even though it resolves OUTSIDE
+  # /tmp, so the sweep would run against a directory this guard was supposed to block. Resolve
+  # with realpath FIRST, require the RESOLVED path to be exactly /tmp or start with /tmp/ (slash
+  # included, so "/tmpfoo" is rejected too), and sweep the resolved path itself so what gets
+  # checked is exactly what gets enumerated/removed.
+  local resolved
+  resolved="$(realpath -m -- "$WSL_CLEANUP_TMP_DIR" 2>/dev/null)" || resolved="$WSL_CLEANUP_TMP_DIR"
+  case "$resolved" in
     /tmp|/tmp/*) ;;
     *)
-      say "REFUSING /tmp sweep: WSL_CLEANUP_TMP_DIR='$WSL_CLEANUP_TMP_DIR' is not /tmp or under /tmp/"
+      say "REFUSING /tmp sweep: WSL_CLEANUP_TMP_DIR='$WSL_CLEANUP_TMP_DIR' resolves to '$resolved', not /tmp or under /tmp/"
       return 1
       ;;
   esac
+  WSL_CLEANUP_TMP_DIR="$resolved"
   local entry name mtime now age_min
   now=$(date +%s)
-  local removed=0 skipped_fresh_inner=0 skipped_stat=0
+  local removed=0 skipped_fresh_inner=0 skipped_stat=0 skipped_rm_failed=0
   # NUL-delimited (-print0 / read -r -d ''), not newline-delimited: a /tmp entry's name is
   # attacker-reachable (any local process can create one), and a newline inside a name would
   # otherwise split one entry into two read() iterations -- the second one a bogus, usually
@@ -235,10 +244,17 @@ sweep_tmp() {
       skipped_fresh_inner=$((skipped_fresh_inner + 1))
       continue
     fi
-    run_argv rm -rf -- "$entry"
-    removed=$((removed + 1))
+    # 657f12a3 (Cybered GO 33173): removed was incremented unconditionally -- a failed rm (e.g.
+    # permission denied, or the entry vanishing again between the checks above and this call) was
+    # still counted as "removed", making the summary line claim a cleanup that did not happen.
+    if run_argv rm -rf -- "$entry"; then
+      removed=$((removed + 1))
+    else
+      skipped_rm_failed=$((skipped_rm_failed + 1))
+      say "rm failed for $entry"
+    fi
   done < <(find "$WSL_CLEANUP_TMP_DIR" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
-  say "/tmp sweep: removed $removed, skipped (fresh inner file): $skipped_fresh_inner, skipped (stat failed): $skipped_stat"
+  say "/tmp sweep: removed $removed, skipped (fresh inner file): $skipped_fresh_inner, skipped (stat failed): $skipped_stat, skipped (rm failed): $skipped_rm_failed"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
