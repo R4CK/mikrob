@@ -26851,3 +26851,41 @@ Cybersec (a kártya saját kijelölése) -- mindkettő már GO/PASS volt a korá
 funkcionális/API-viselkedés nem változott a 3 meglévő Kész-ha kontrollon kívül -- azok újra-futtatva
 is zöldek maradnak (lásd a teszt-eredményt fent).
 
+## 2026-11-18 -- a42d27e1 (javítás): F1 TÉVESEN "javítva"-ként szerepelt fent -- a valódi zárás a
+`--trunk` opt-in-né tétele, nem a harness-fájl-allowlist
+
+**Helyesbítés a fenti (Gate-SHA c07d26d84) bejegyzéshez.** A fenti entry "F1 ... javítva" állítása
+TÉVES volt -- Cybersec NO-GO 33120 (6a8a7b848-on, MikroB döntés msg 20826) ezt blokkolta: a
+harness-fájl-allowlist (`.eslintrc*`, `vitest.config.*`, `package.json`, stb.) csak akkor hagyja ki
+a mérést, ha a diff EZEKET érinti -- az importer-sweep viszont a kártya SAJÁT, meglévő teszt-
+fájljait (és az azok által importált, változott src-fájlokat) futtatja le `fleet-test.sh`/vitest
+alatt, FELÜGYELET NÉLKÜL, a heartbeat-consolidated önjáró útján, minden 30 percben, MIELŐTT
+bármelyik gate elolvasná a diffet -- ez a domináns eset (egy rendes, nem-harness src-fájl, amit egy
+meglévő teszt importál), és a harness-allowlist erre semmit nem tesz.
+
+**A valódi javítás.** A `gate-pretriage-card.sh` teljes `--trunk` (land-parity) szekciója mostantól
+EXPLICIT opt-in: a szkript saját CLI-jén egy ÚJ `--trunk` flag kell hozzá (alapértelmezés: KI), és
+csak akkor fut a trunk-fetch + a `gate-pretriage.sh --trunk` hívás, ha ezt a hívó megadta. A
+heartbeat-consolidated önjáró út (`gate-pretriage-card.sh <cardId>`, flag nélkül) ettől a ponttól
+SOHA nem adja meg -- a szekció NEM csak egy allowlist mögött szűkül, hanem EGYÁLTALÁN nem fut le
+azon az úton. Egy gate-ügynök a saját, eldobható gate-worktree-jéből futtathatja a `--trunk`
+flaggel, ha a land-parity mérést akarja -- ott már van felügyelő fél az eredményhez.
+
+**Teszt:** 4 új eset (`src/__tests__/gate-pretriage-card.test.ts`, "--trunk land-parity measurement
+is opt-in only"): egy harness-fájlt érintő commit `--trunk` NÉLKÜL semmilyen land-parity leletet nem
+ad (a szekció egyáltalán nem fut); UGYANAZ a commit `--trunk`-kal megadva ADJA a
+`land-parity-measurement-skipped` leletet (bizonyítja, hogy a flag tényleg visszakapcsolja a
+szekciót, nem csak egy hibás fixture); a `--trunk` flag valóban a top-level arg-parseren szerepel;
+és egy szöveges pin arra, hogy a `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md` saját
+`gate-pretriage-card.sh` hívása SOHA nem tartalmazza a `--trunk` szót. Teljes
+`gate-pretriage*` suite (3 fájl, 121 teszt, 117+4) PASS. `npx tsc --noEmit`: tiszta.
+`lint-ratchet.sh --show`: 422 lelet, alapvonal tart, 0 új. A két érintett shell-selftest
+(`gate-pretriage-attribution.selftest.sh` 16/16, `card-build-route.selftest.sh` 70/70) is zöld.
+
+**Ki döntött:** MikroB (msg 20826, Cybersec NO-GO 33120 alapján) -- "I do NOT accept that residual",
+az opcionális docs-only elfogadást a kötelező kódjavításra emelte. backend3 végezte.
+
+**Hivatkozás:** kártya a42d27e1, Cybersec NO-GO 33120 (6a8a7b848-on), MikroB msg 20826,
+`store/gate-pretriage-card.sh`, `src/__tests__/gate-pretriage-card.test.ts`,
+`seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`.
+
