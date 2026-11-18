@@ -26605,7 +26605,7 @@ follow-up kártyára vár (nincs benne, lásd a REVIEW).
 **Ki döntött:** RedHat (Cybered) lelete alapján backend korrigálja; Gate: QA + Cybersec + Cybered
 (változatlan, a kártya saját előírása).
 
-## 81593084 -- MT-10 importerek bekötve egy futtatható CLI-be
+## 2026-11-16 -- 81593084: MT-10 importerek bekötve egy futtatható CLI-be
 
 A négy MT-10 importer (import-findings.ts, import-decisions-log.ts, import-cold-memories.ts,
 import-anti-patterns.ts) már régebben elkészült és le lett tesztelve a gyerek-kártyák alatt
