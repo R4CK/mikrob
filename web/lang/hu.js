@@ -2859,6 +2859,8 @@ window._i18n.hu = {
   'auth.card.logout':             'Kilépés',
   'auth.card.active_sessions':    'Aktív munkamenetek',
   'auth.card.token_mode':         'Ez a munkamenet a hozzáférési tokennel lépett be (a Bridge és a flotta-eszközök saját kulccsal nyitnak, ezért sosem kérnek jelszót). A jelszavas belépésed ettől függetlenül él és működik: böngészőből a bejelentkező oldalon bármikor használhatod.',
+  'auth.card.token_mode_signin_desc': 'Kulcs kiadása, eszköz párosítása és felhasználó kezelése a dashboard-bejelentkezéssel megy. Ez a böngésző a hozzáférési tokent őrzi; a gombbal törlöd innen, és a bejelentkező oldalra kerülsz.',
+  'auth.card.token_mode_signin_btn': 'Belépés a dashboard-jelszóval',
 
   'auth.devices.title':            'Eszközkulcsok',
   'auth.devices.desc':             'Eszközönkénti kulcs a Bridge-hez vagy telefonhoz: külön visszavonható, a közös token nem változik. A kulcs csak a létrehozáskor látható.',
@@ -2952,6 +2954,7 @@ window._i18n.hu = {
   'auth.bridge.err.host_url':                    '\"{seen}\" egy URL. Csak a címet add meg, http:// és útvonal nélkül.',
   'auth.bridge.err.host_invalid':                '\"{seen}\" nem érvényes IP-cím vagy gépnév.',
   'auth.bridge.err.forbidden_credential':        'Ez a bejelentkezés nem jogosult párosításra. Jelentkezz be a dashboardra, és onnan indítsd a párosítást.',
+  'auth.bridge.err.owner_session_required':      'A párosítás a dashboard-bejelentkezést kéri. A hozzáférési token ezt csak az első bejelentkezés létrehozása előtt teheti meg. Jelentkezz be, és ha a böngésző tokent is őriz, töröld onnan.',
   'auth.bridge.err.invalid_json':                'A kérés hibás formátumú. Töltsd újra az oldalt, és próbáld újra.',
   'auth.bridge.err.key_line_required':           'A kulcs-sor kötelező. Illeszd be a Bridge alkalmazásban megjelenő ssh-ed25519 ... marveen-remote:... sort.',
   'auth.bridge.err.invalid_name':                'Az eszköz neve 1-64 karakter lehet: betű, számjegy, szóköz, valamint a . _ - jelek.',

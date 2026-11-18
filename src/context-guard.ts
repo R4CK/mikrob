@@ -319,6 +319,12 @@ export interface GuardState {
    *  not the restart action's reason (always "handoff written"), to know whether a worksource
    *  agent's "nothing was lost, don't resend" line applies. */
   idleFlushSequence?: boolean
+
+  /** await-handoff only: the busy-pane deferral already reported, once, that
+   *  the pane stayed busy a whole handoffTimeoutMinutes past the deadline.
+   *  Optional, and absent from every state literal that starts a sequence, so
+   *  each new handoff sequence may report once again. */
+  busyOverdueWarned?: boolean
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -690,6 +696,14 @@ export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
 export const DAILY_HANDOFF_REASON_PREFIX = 'daily-handoff'
 
 /**
+ * Reason prefix of the one-time busy-pane warning: the pane is still mid-turn a
+ * whole handoffTimeoutMinutes past the handoff deadline. The decision stays
+ * action 'none' (a busy pane is never restarted); the runner matches this
+ * prefix to log a warning, once per handoff sequence.
+ */
+export const BUSY_OVERDUE_REASON_PREFIX = 'busy-overdue'
+
+/**
  * Reason for giving up on the resume injection: the restarted session did not
  * become ready within READY_TIMEOUT_MS. The decision is action 'none', so the
  * runner matches this constant to raise an alert instead of staying silent.
@@ -1006,6 +1020,17 @@ export function decideGuard(
   const none = (reason: string, next: GuardState = state): GuardDecision =>
     ({ action: 'none', reason, nextState: next })
 
+  // A busy pane is never restarted (both await-handoff deferrals wait for the
+  // turn to end). Once per handoff sequence, a whole handoffTimeoutMinutes past
+  // the deadline, the deferral says so: same action, same state otherwise.
+  const deferBusy = (reason: string): GuardDecision => {
+    if (!state.busyOverdueWarned && nowMs >= state.deadlineMs + cfg.handoffTimeoutMinutes * 60_000) {
+      const minutes = Math.floor((nowMs - state.deadlineMs) / 60_000)
+      return none(`${BUSY_OVERDUE_REASON_PREFIX}: ${reason} (${minutes}m past the handoff deadline)`, { ...state, busyOverdueWarned: true })
+    }
+    return none(reason)
+  }
+
   if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
     return none('disabled', INITIAL_GUARD_STATE)
   }
@@ -1182,11 +1207,11 @@ export function decideGuard(
       // sweep that finds the pane no longer busy; a turn that saturates
       // mid-flight is caught by the paneSaturated branch above.
       if (inputs.pct !== null && inputs.pct >= cfg.hardPct) {
-        if (inputs.paneBusy) return none('hard threshold during await-handoff but agent mid-turn -- deferring restart')
+        if (inputs.paneBusy) return deferBusy('hard threshold during await-handoff but agent mid-turn -- deferring restart')
         return restartDecision(nowMs, 'hard threshold during await-handoff', handoffStaleMinutes(inputs))
       }
       if (nowMs >= state.deadlineMs) {
-        if (inputs.paneBusy) return none('handoff timeout but agent mid-turn -- deferring restart')
+        if (inputs.paneBusy) return deferBusy('handoff timeout but agent mid-turn -- deferring restart')
         // No handoff in time (agent wedged or ignored the prompt). Restart
         // anyway: taskstate + kanban + hot memories are the fallback context.
         // An OLD HANDOFF.md may still exist; measure how far behind it is so

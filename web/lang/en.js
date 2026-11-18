@@ -2857,6 +2857,8 @@ window._i18n.en = {
   'auth.card.logout':             'Log out',
   'auth.card.active_sessions':    'Active sessions',
   'auth.card.token_mode':         'This session signed in with the access token (the Bridge and fleet tools open with their own key, so they never ask for a password). Your password login is still active and works: use it any time on the browser sign-in page.',
+  'auth.card.token_mode_signin_desc': 'Issuing keys, pairing a device and managing users take the dashboard login. This browser keeps the access token; the button removes it from here and takes you to the sign-in page.',
+  'auth.card.token_mode_signin_btn': 'Sign in with the dashboard password',
 
   'auth.devices.title':            'Device keys',
   'auth.devices.desc':             'A per-device key for the Bridge or a phone: revocable on its own, the shared token stays unchanged. The key is shown only at creation.',
@@ -2950,6 +2952,7 @@ window._i18n.en = {
   'auth.bridge.err.host_url':                    '\"{seen}\" is a URL. Enter only the address, without http:// or a path.',
   'auth.bridge.err.host_invalid':                '\"{seen}\" is not a valid IP address or hostname.',
   'auth.bridge.err.forbidden_credential':        'This sign-in may not pair a device. Log in to the dashboard and start the pairing from there.',
+  'auth.bridge.err.owner_session_required':      'Pairing needs the dashboard login. The access token can pair only before the first login exists. Log in, and if this browser also keeps the access token, remove it.',
   'auth.bridge.err.invalid_json':                'The request was malformed. Reload the page and try again.',
   'auth.bridge.err.key_line_required':           'The key line is required. Paste the ssh-ed25519 ... marveen-remote:... line shown in the Bridge app.',
   'auth.bridge.err.invalid_name':                'The device name may be 1-64 characters: letters, digits, space, and . _ -',

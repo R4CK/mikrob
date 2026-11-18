@@ -1216,6 +1216,8 @@ export function resolvePreCheckPath(taskName: string, preCheck: unknown): string
   return preCheckScriptPath(join(SCHEDULED_TASKS_DIR, taskName), preCheck)
 }
 
+// Logged with typeof only: the value is whatever task-config.json held (an
+// object, an array), and an arbitrary value has no place in dashboard.log.
 const NOT_A_PRECHECK_PATH_MSG = 'pre-check is not a script path (not a non-empty string); the registry hash ignores it, so it is ignored here too, running LLM anyway'
 
 export type PreCheckResult = { skip: boolean; prefix?: string }
@@ -1274,6 +1276,8 @@ export function preCheckInvocation(task: ScheduledTask, scriptPath: string): { a
 // catch. The one real improvement in upstream's version -- a `scriptPath == null` guard before
 // existsSync(), missing from the real file and the cause of a genuine `string | null` type error
 // there -- is ported to schedule-runner-sync-precheck.ts instead, where the function actually lives.
+// Koteg 25: re-confirmed, same rejection, same reason -- upstream's sync runPreCheck reappears
+// verbatim in this round's diff too.
 
 // runPreCheck's contract without holding the event loop (df2e0d97 2a). The
 // pending-retry loop re-runs a task's preCheck on every tick, and spawnSync
@@ -1321,7 +1325,7 @@ export async function runPreCheckAsync(
   // which is what the registry hashed (same rule as runPreCheck).
   const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
   if (scriptPath == null) {
-    logger.warn({ task: task.name, preCheck: task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
+    logger.warn({ task: task.name, preCheckType: typeof task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
     return Promise.resolve({ skip: false })
   }
   if (!existsSync(scriptPath)) {
