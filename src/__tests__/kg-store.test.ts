@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import {
   migrate, openKgDb, rebuild, upsertNode, upsertEdge, setNodeStatus, getNode, KgSecretError,
   KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState, sanitizeKgText,
-  findKgLocalSecretShape, redactKgLocalPii, kgLocalSecretShapeCounts,
+  findKgLocalSecretShape, redactKgLocalPii, kgLocalSecretShapeCounts, findKgLocalKvSecret,
 } from '../kg/store.js'
 
 const dirs: string[] = []
@@ -360,6 +360,39 @@ describe('kg store CRUD', () => {
       expect(findKgLocalSecretShape(`token ${hex64}`)).not.toBeNull()
       expect(findKgLocalSecretShape('password=<hunter2hunter2>')).toBeNull()
       expect(findKgLocalSecretShape('password=${hunter2hunter2}')).toBeNull()
+    })
+
+    // F4 (round 2 on this delta, Cybersec NO-GO 33019): the F3 fix's unanchored optional
+    // `[A-Za-z0-9]*[_ -]` prefix retried from every start position on a long alphanumeric run
+    // with no separator in it -- same O(n^2) class as F1. 200KB/100KB alnum runs must now finish
+    // well under the NO-GO's own measured numbers (35.2s/8.9s pre-fix), and the 7 F3 spellings
+    // plus the SERVICE_API_KEY control must still be caught without the dropped prefix.
+    it('F4: a 200 KB plain alphanumeric run no longer causes a multi-second KV-regex scan (ReDoS budget)', () => {
+      const adversarial = 'a'.repeat(200_000)
+      const start = Date.now()
+      expect(() => findKgLocalKvSecret(adversarial)).not.toThrow()
+      expect(Date.now() - start).toBeLessThan(1000)
+    })
+
+    it('F4: a 100 KB mixed alnum run ("ab1" repeated) also stays fast', () => {
+      const adversarial = 'ab1'.repeat(100_000)
+      const start = Date.now()
+      expect(() => findKgLocalKvSecret(adversarial)).not.toThrow()
+      expect(Date.now() - start).toBeLessThan(1000)
+    })
+
+    it('F4: dropping the separator prefix does not reopen any F3 spelling or the SERVICE_API_KEY control', () => {
+      const cases = [
+        'API_KEY=abcd1234efgh5678',
+        'DB_PASSWORD=Sup3rS3cretValue',
+        '{"password": "hunter2hunter2"}',
+        '{"api_key": "abcd1234efgh5678ijkl"}',
+        'password = "my long pass phrase 1234"',
+        'SERVICE_API_KEY=abcd1234efgh5678',
+      ]
+      for (const line of cases) {
+        expect(findKgLocalKvSecret(line), line).not.toBeNull()
+      }
     })
   })
 

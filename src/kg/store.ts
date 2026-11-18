@@ -210,15 +210,21 @@ function isKgLocalPlaceholderValue(value: string): boolean {
 // matched. (c) a JSON key's closing quote (`"password":`) sat between the keyword and the
 // separator, which the old pattern never accounted for. (d) the value class excluded whitespace
 // unconditionally, so a quoted value containing a space broke the backreference before reaching
-// the closing quote. Fixed: an optional `[A-Za-z0-9]*[_ -]` prefix (so a leading `_`/`-`/space
-// counts as a separator, not a boundary requirement), `passwd`/`secret`/`token` added to the
-// keyword alternation, an optional quote consumed right after the keyword, and two value forms --
-// quoted (any non-newline char up to the matching quote) or unquoted (no whitespace/quote/comma/
-// semicolon).
+// the closing quote. Fixed: `passwd`/`secret`/`token` added to the keyword alternation, an
+// optional quote consumed right after the keyword, and two value forms -- quoted (any non-newline
+// char up to the matching quote) or unquoted (no whitespace/quote/comma/semicolon). No separator
+// prefix is needed: the keyword alternation already matches as a substring inside
+// DB_PASSWORD=/SERVICE_API_KEY=/JWT_SECRET= without one.
+//
+// Cybersec NO-GO 33019 round 2 (F4): an earlier version of this regex added an unanchored
+// `(?:[A-Za-z0-9]*[_ -])?` prefix group to treat a leading `_`/`-`/space as a separator -- but an
+// OPTIONAL unbounded quantifier right before the keyword retries from every failed start position
+// on a long alphanumeric run with no separator in it, giving the same O(n^2) class as F1 (measured
+// 35.2s on a 200KB all-"a" run). The prefix was never needed (see above), so it is simply dropped.
 const KG_LOCAL_KV_SECRET_RX =
-  /((?:[A-Za-z0-9]*[_ -])?(?:api[_-]?key|passwd|password|secret|token))(?:['"])?\s*[:=]\s*(?:(['"])([^\n]{1,200}?)\2|([^\s'",;]{1,200}))/gi
+  /(api[_-]?key|passwd|password|secret|token)(?:['"])?\s*[:=]\s*(?:(['"])([^\n]{1,200}?)\2|([^\s'",;]{1,200}))/gi
 
-function findKgLocalKvSecret(text: string): string | null {
+export function findKgLocalKvSecret(text: string): string | null {
   for (const m of text.matchAll(KG_LOCAL_KV_SECRET_RX)) {
     const value = m[3] ?? m[4]
     if (value && value.length >= 8 && !isKgLocalPlaceholderValue(value)) return `${m[1].toLowerCase()}=`

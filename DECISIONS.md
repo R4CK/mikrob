@@ -27491,3 +27491,35 @@ against f85b188a6: empty (shared gate still untouched).
 
 **Ki dontott:** backend (sajat kartya 03dff487 delta, Cybersec NO-GO 33019 ketelezesei alapjan).
 Gate: QA (re-confirm) + Cybersec (delta re-gate, a kartya sajat kijelolese).
+
+## 2026-11-18: 03dff487 delta round 2 -- CYBERSEC NO-GO 33019 round 2 (F4: the F3 fix re-introduced the F1 ReDoS class)
+
+**F4 (MEDIUM, regression introduced by the round-1 F3 fix).** Round 1 added an optional
+`(?:[A-Za-z0-9]*[_ -])?` prefix group in front of the kv-secret keyword alternation, so that a
+leading `_`/`-`/space would count as a separator. But the prefix group is OPTIONAL and unbounded,
+so on a long alphanumeric run with no separator anywhere in it, the regex engine retries the
+`[A-Za-z0-9]*` from every failed start position before giving up and trying the next position --
+the same O(n^2) class as the original F1 email-regex ReDoS. Cybersec measured 35.2 s on a 200 KB
+all-"a" run and 63.8 s on a 100 KB "ab1"-repeated run.
+
+The prefix was never load-bearing: the keyword alternation (`api[_-]?key|passwd|password|secret|
+token`) already matches as a plain substring inside `DB_PASSWORD=`, `SERVICE_API_KEY=`,
+`JWT_SECRET=` without any separator-matching prefix in front of it -- `password` is a substring of
+`DB_PASSWORD`, `api_key`/`api-key` is a substring of `SERVICE_API_KEY`, `secret` is a substring of
+`JWT_SECRET`. Fixed by simply dropping the prefix group; group numbering in
+`findKgLocalKvSecret()` is unchanged (it was always a non-capturing wrapper around the keyword,
+not a capture group of its own).
+
+**Verification.** `findKgLocalKvSecret` exported for direct testing (previously file-local). 3 new
+rows in src/__tests__/kg-store.test.ts: a 200 KB all-"a" run and a 100 KB "ab1"-repeated run must
+each finish under 1 s (was 35.2 s / 63.8 s pre-fix), and all 7 of round 1's F3 spellings plus the
+SERVICE_API_KEY control must still be caught with the prefix gone. Mutation-proven: reverting to
+the prefixed regex and re-running the suite caused the run to exceed a 90 s wall-clock budget
+without completing (consistent with Cybersec's own 35-64 s per-case measurements) -- confirmed the
+regression reproduces, then restored the fix and re-confirmed 45/45 green. Full kg-*.test.ts
+importer sweep: 22 files, 341 tests green (was 338, +3). tsc clean. lint-ratchet.sh --show: 422
+(12+140+270), all 3 rules at baseline, unchanged. src/security/secret-gate.ts diff: empty.
+
+**Ki dontott:** backend (sajat kartya 03dff487 delta round 2, Cybersec NO-GO 33019 round 2 (F4)
+alapjan, Fix-Direction replay-verified by Cybersec in the card comment). Gate: QA (re-confirm) +
+Cybersec (delta re-gate round 2, a kartya sajat kijelolese).
