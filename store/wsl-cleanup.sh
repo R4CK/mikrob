@@ -49,6 +49,22 @@ CLEANCORE_MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Wo
 
 say() { echo "wsl-cleanup: $*"; }
 run() { if [ "$DRY_RUN" = 1 ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
+# run_argv: like run(), but NEVER goes through a shell (no eval, no re-tokenizing, no globbing) --
+# use for any command built from a DYNAMIC, filesystem-derived name (a git worktree path, a /tmp
+# entry). Cybered NO-GO (card c9c1f159, comment 32973): run()'s eval treated a name like
+# `x';touch PWNED;echo '` as a second injected command, and a newline inside a name split one
+# entry into an unrelated argument once eval re-tokenized the string. Passing argv straight to
+# "$@" never re-parses it, so neither shell metacharacters nor an embedded newline in a single
+# argument can inject or split anything.
+run_argv() {
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run]'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
 
 # Same flaw and fix as store/wsl-home-cleanup.sh's git_dirty_or_failed() (card 89e8cb90): the
 # guard below used to test only git's OUTPUT, never its exit code -- a git that dies silently
@@ -77,6 +93,15 @@ sweep_throwaway_worktrees() {
   local wt mtime age_min pid
   while read -r wt; do
     [[ "$wt" =~ $pattern ]] || continue
+    # ISDIR guard (DOCUMENTED, not pinned -- equivalent mutant, Cybered LOW, card c9c1f159,
+    # comment 32973 condition 3): a registered-but-missing worktree (deleted by hand, left
+    # prunable) is already caught downstream, with or without this line -- git_dirty_or_failed
+    # below runs `git -C "$wt" status --porcelain` against the nonexistent path, which fails with
+    # a non-zero rc, landing on the "SKIP (git rc=...)" branch either way. Measured by hand:
+    # removing this line left the full selftest suite green. Kept anyway as a cheap, explicit
+    # short-circuit -- it means a missing-directory entry never reaches `git -C`, `stat`, or the
+    # kill/age checks below at all -- but a fixture that only has git's own rc path to distinguish
+    # presence from absence would just assert a tautology, so it is not force-pinned.
     [ -d "$wt" ] || continue
     # Trailing digits of the throwaway name are always the owning PID (marveen-land.sh's own
     # naming convention) regardless of which/how many capture groups $pattern itself has --
@@ -114,10 +139,19 @@ sweep_throwaway_worktrees() {
       continue
     fi
     say "removing throwaway worktree: $wt (age ${age_min}m)"
-    run "git -C '$repo' worktree remove --force '$wt'"
+    run_argv git -C "$repo" worktree remove --force "$wt"
     freed_worktrees=$((freed_worktrees + 1))
   done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree/{print $2}')
 }
+
+# Sections 1/2/3/4 below are the actual sweep, run ONLY when this file is executed directly
+# (`bash wsl-cleanup.sh`), never when it is `source`d. A selftest sources it to reach a function
+# (e.g. sweep_tmp) in total isolation -- with DRY_RUN=0, for a real, non-dry-run assertion that a
+# quote-injection or newline name cannot inject a command or escape to a relative path (Cybered
+# NO-GO, card c9c1f159, comment 32973) -- without also running the package-cache purges or the
+# root-owned-cache section, which have no WSL_CLEANUP_TMP_DIR-style sandbox knob and would touch
+# the real machine's caches.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
 sweep_throwaway_worktrees "$MARVEEN_MAIN" '^/home/neon/marveen-land-[a-zA-Z0-9]+-[0-9]+$'
 sweep_throwaway_worktrees "$CLEANCORE_MAIN" '^/home/neon/cc-land(-base)?-[a-zA-Z0-9]+-[0-9]+$'
@@ -148,6 +182,8 @@ fi
 
 run "rm -rf '$HOME/.cache/node-gyp'/* 2>/dev/null"
 
+fi # end of direct-execution guard (reopened below, after the section-3 function definitions)
+
 # --- 3. /tmp: entries untouched for TMP_MIN_AGE_MIN, excluding system paths -------------
 # MEDIUM (Cybered GO 32928 on 6c41214a, card c9c1f159): the old single `find ... -mmin +N -exec
 # rm -rf` judged age from the TOP-LEVEL entry's own mtime only. A directory whose top mtime is
@@ -162,10 +198,26 @@ tmp_inner_fresh_or_failed() {
 }
 
 sweep_tmp() {
+  # SANITY guard (Cybered LOW, card c9c1f159, comment 32973 condition 4): WSL_CLEANUP_TMP_DIR is
+  # an env-only knob, read from the same scheduler env this job itself runs under -- nothing
+  # stopped it from pointing the "mindepth 1 -maxdepth 1 ... rm -rf" sweep at /, /home or $HOME.
+  # Only the real /tmp, or a path actually UNDER /tmp (a test's own disposable sandbox dir), may
+  # be swept.
+  case "$WSL_CLEANUP_TMP_DIR" in
+    /tmp|/tmp/*) ;;
+    *)
+      say "REFUSING /tmp sweep: WSL_CLEANUP_TMP_DIR='$WSL_CLEANUP_TMP_DIR' is not /tmp or under /tmp/"
+      return 1
+      ;;
+  esac
   local entry name mtime now age_min
   now=$(date +%s)
   local removed=0 skipped_fresh_inner=0 skipped_stat=0
-  while read -r entry; do
+  # NUL-delimited (-print0 / read -r -d ''), not newline-delimited: a /tmp entry's name is
+  # attacker-reachable (any local process can create one), and a newline inside a name would
+  # otherwise split one entry into two read() iterations -- the second one a bogus, usually
+  # relative fragment that still reached `rm -rf` (Cybered NO-GO, card c9c1f159, comment 32973).
+  while IFS= read -r -d '' entry; do
     name="$(basename "$entry")"
     # NAME-PATTERN guard: X11/font/ICE unix-socket dirs other live sessions depend on.
     case "$name" in
@@ -183,11 +235,13 @@ sweep_tmp() {
       skipped_fresh_inner=$((skipped_fresh_inner + 1))
       continue
     fi
-    run "rm -rf '$entry'"
+    run_argv rm -rf -- "$entry"
     removed=$((removed + 1))
-  done < <(find "$WSL_CLEANUP_TMP_DIR" -mindepth 1 -maxdepth 1 2>/dev/null)
+  done < <(find "$WSL_CLEANUP_TMP_DIR" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
   say "/tmp sweep: removed $removed, skipped (fresh inner file): $skipped_fresh_inner, skipped (stat failed): $skipped_stat"
 }
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
 sweep_tmp
 
@@ -200,3 +254,5 @@ else
 fi
 
 say "done"
+
+fi # end of direct-execution guard
