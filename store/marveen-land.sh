@@ -622,6 +622,16 @@ if [ "${1:-}" = "--selftest" ]; then
   # Downward range check (card dfff9b37) -- the cases live in the shared lib so the two landers
   # cannot end up testing different things about the same code.
   downward_selftest_cases
+
+  # CYBERED NO-GO LOW (card 8ca1f91d, comment 33127, mutants L10/L11): a grep pin on THIS file's
+  # own source, not a stubbed call -- a future edit that drops DOWNWARD_CHECK_REPO from either
+  # land_one's or the batch-landing loop's downward_check call silently reintroduces the original
+  # 5dd0842a false positive, with the 404-exemption tests above giving no signal (they stub around
+  # the env var entirely). Lives here, not in the shared lib, because only marveen-land.sh has a
+  # Szotasz/marveen upstream remote to wire this for at all.
+  t "both downward_check call sites (land_one + batch landing) export DOWNWARD_CHECK_REPO" \
+    "$(grep -c 'DOWNWARD_CHECK_REPO="\$wt" downward_check' "$0")" "2"
+
   # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
   conflict_marker_selftest_cases
 

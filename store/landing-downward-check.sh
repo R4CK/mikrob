@@ -170,9 +170,15 @@ foreign_cards() {
 # base path, a proxy with no route, a stale dashboard build (card 2dd78397) or GATE_CHECK_API
 # pointed at the wrong service can all answer 404 to EVERY id, which the first version of this
 # function waived as "not a card" across the board. Fail-closed now requires the 404 body to be
-# OUR board's own not-found answer, naming this exact id (`{"error":"... <id> ..."}`) -- any 404
-# whose body does not carry that shape still answers "exists", the same posture as an unreachable
-# API or a 5xx.
+# OUR board's own not-found answer, naming this exact id -- any 404 whose body does not carry
+# that shape still answers "exists", the same posture as an unreachable API or a 5xx.
+#
+# CYBERED NO-GO LOW-MEDIUM (comment 33127, non-blocking): the original `*'"error"'*"$id"*`
+# match is looser than "our board's own not-found answer" -- a DIFFERENT service that happens to
+# echo the requested id inside any "error" field (e.g. `{"error":"Not Found: /api/kanban/<id>"}`
+# or a separate "path" field naming it) would also match. Anchored on the EXACT phrase the
+# dashboard source emits (src/web/routes/kanban.ts, `Kártya nem található: <id>`, measured live)
+# instead of two independent wildcards.
 #   _card_exists_on_board <id>  -- rc 0 = exists (or unknown/unconfirmed), rc 1 = confirmed 404
 _card_exists_on_board() {
   local id="$1" raw http_code body
@@ -183,7 +189,7 @@ _card_exists_on_board() {
   body="${raw%$'\n'*}"
   [ "$http_code" = "404" ] || return 0
   case "$body" in
-    *'"error"'*"$id"*) return 1 ;;
+    *"Kártya nem található: $id"*) return 1 ;;
     *) return 0 ;;
   esac
 }
@@ -198,6 +204,16 @@ _card_exists_on_board() {
 # Szotasz/marveen upstream relationship at all) or the repo has no `upstream` remote, this always
 # answers "not confirmed", so the 404 exemption never applies there -- same refuse-everything-
 # foreign behaviour those landers already had before this card.
+#
+# CYBERED NO-GO F1 (comment 33127, blocking): the SHORT name `upstream/develop` is ambiguous --
+# git's own disambiguation order tries refs/tags/ and refs/heads/ BEFORE refs/remotes/, so a
+# LOCAL branch or tag literally named `upstream/develop` wins over the real remote-tracking ref.
+# Branches/tags are shared across every worktree of the same repo (unlike HEAD and the index), so
+# one `git branch upstream/develop <forged-sha>` or `git tag upstream/develop <forged-sha>` from
+# ANY agent's worktree -- the same actor this guard exists to distrust -- defeats the whole check
+# for every landing. Measured live by Cybered: rc flips 1 -> 0 the moment either ref is planted.
+# Fully qualifying the ref (`refs/remotes/upstream/develop`) is immune to both, since neither a
+# branch nor a tag can ever share that namespace.
 #   _upstream_ancestor_commits_only <id> <log> <repo>  -- rc 0 = every commit in <log> that names
 #   <id> is an ancestor of upstream/develop in <repo> (and at least one such commit exists); rc 1
 #   otherwise, including "no repo given" and "id named by zero commits" (should not happen -- the
@@ -209,7 +225,7 @@ _upstream_ancestor_commits_only() {
     [ -n "$sha" ] || continue
     printf '%s\n' "$(cards_in_subject "$subj")" | grep -qx "$id" || continue
     any=1
-    git -C "$repo" merge-base --is-ancestor "$sha" upstream/develop 2>/dev/null || return 1
+    git -C "$repo" merge-base --is-ancestor "$sha" refs/remotes/upstream/develop 2>/dev/null || return 1
   done <<< "$log"
   [ "$any" = "1" ]
 }
@@ -633,6 +649,114 @@ downward_selftest_cases() {
   wait "$_fakesrv_pid" 2>/dev/null
   rm -rf "$tmp"
 
+  # CYBERED non-blocking LOW-MEDIUM/LOW (comment 33127, mutants L2/L3/L4): a custom fake server,
+  # one case each, pinning the exact-phrase match and the status gate against real HTTP responses
+  # (not stubs). _fs_status/_fs_body select the response; log_message is silenced the same way the
+  # plain http.server case above runs quietly.
+  _fakesrv_port=$((20000 + (($$ + 1) % 10000)))
+  _FS_STATUS=404 _FS_BODY='{"error":"Kártya nem található: deadbeef"}' python3 - "$_fakesrv_port" <<'PY' >/dev/null 2>&1 &
+import http.server, os, sys
+port = int(sys.argv[1])
+status = int(os.environ["_FS_STATUS"])
+body = os.environ["_FS_BODY"].encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: our board's EXACT not-found phrase confirms the 404 (positive control for the tightened match)" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "1"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+
+  _fakesrv_port=$((20000 + (($$ + 2) % 10000)))
+  _FS_STATUS=404 _FS_BODY='{"error":"Not Found: /api/kanban/deadbeef"}' python3 - "$_fakesrv_port" <<'PY' >/dev/null 2>&1 &
+import http.server, os, sys
+port = int(sys.argv[1])
+status = int(os.environ["_FS_STATUS"])
+body = os.environ["_FS_BODY"].encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: a 404 that merely echoes the id in an unrelated error field is NOT our board's phrase (kills L2)" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "0"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+
+  _fakesrv_port=$((20000 + (($$ + 3) % 10000)))
+  _FS_STATUS=404 _FS_BODY='' python3 - "$_fakesrv_port" <<'PY' >/dev/null 2>&1 &
+import http.server, os, sys
+port = int(sys.argv[1])
+status = int(os.environ["_FS_STATUS"])
+body = os.environ["_FS_BODY"].encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: a 404 with an EMPTY body still answers exists (kills L4)" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "0"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+
+  _fakesrv_port=$((20000 + (($$ + 4) % 10000)))
+  _FS_STATUS=500 _FS_BODY='{"error":"Kártya nem található: deadbeef"}' python3 - "$_fakesrv_port" <<'PY' >/dev/null 2>&1 &
+import http.server, os, sys
+port = int(sys.argv[1])
+status = int(os.environ["_FS_STATUS"])
+body = os.environ["_FS_BODY"].encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: a 500 with the board's own not-found phrase (wrong status) still answers exists (kills L3)" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "0"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+
   _card_exists_on_board() { return 0; }
   _upstream_ancestor_commits_only() { return 1; }
 
@@ -680,6 +804,27 @@ downward_selftest_cases() {
     "$(_upstream_ancestor_commits_only 513c886e "$L" "$tmp/repo"; echo $?)" "1"
   t "REAL git path: no repo given never confirms, even for the real upstream sha" \
     "$(_upstream_ancestor_commits_only 513c886e "$(printf '%s\tfeat(upstream): port a thing (card 513c886e)\n' "$_real_upstream_sha")" ''; echo $?)" "1"
+
+  # CYBERED NO-GO F1 (comment 33127, BLOCKING): a locally planted branch or tag named exactly
+  # `upstream/develop` must NOT be able to vouch for the forged commit -- git's own ref
+  # disambiguation tries refs/heads/ and refs/tags/ BEFORE refs/remotes/, so the short name
+  # `upstream/develop` resolved to whichever one was planted, defeating the whole guard (measured:
+  # rc flipped 1 -> 0 the moment either was planted, on the pre-fix code). Still the SAME forged
+  # commit (_forged_sha, never pushed anywhere) -- only a shadow ref changes.
+  git -C "$tmp/repo" branch upstream/develop "$_forged_sha"
+  t "REAL git path: a PLANTED LOCAL BRANCH named upstream/develop does not vouch for a forged commit" \
+    "$(_upstream_ancestor_commits_only 513c886e "$L" "$tmp/repo"; echo $?)" "1"
+  git -C "$tmp/repo" branch -D upstream/develop >/dev/null 2>&1
+  git -C "$tmp/repo" tag upstream/develop "$_forged_sha"
+  t "REAL git path: a PLANTED LOCAL TAG named upstream/develop does not vouch for a forged commit either" \
+    "$(_upstream_ancestor_commits_only 513c886e "$L" "$tmp/repo"; echo $?)" "1"
+  git -C "$tmp/repo" tag -d upstream/develop >/dev/null 2>&1
+  # Sensitivity check: with NEITHER shadow ref planted, the real upstream commit still confirms --
+  # proves the two cases above are refused BECAUSE of the fully-qualified ref, not because
+  # merge-base now refuses everything.
+  t "REAL git path: ...and with no shadow ref planted, the real upstream commit still confirms" \
+    "$(_upstream_ancestor_commits_only 513c886e "$(printf '%s\tfeat(upstream): port a thing (card 513c886e)\n' "$_real_upstream_sha")" "$tmp/repo"; echo $?)" "0"
+
   rm -rf "$tmp"
   _upstream_ancestor_commits_only() { return 1; }
 
