@@ -10,16 +10,17 @@
 //     anchor itself is updated to the new root,
 //   - the main agent is skipped entirely (its CLAUDE.md and settings.json are git-tracked).
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-rootanchor-test-'))
+const STORE_DIR = join(tmpRoot, 'store')
 const OLD_ROOT = '/home/neon/marveen-OLDHOST'
 let currentProjectRoot = OLD_ROOT
 
 vi.mock('../config.js', () => ({
-  STORE_DIR: '/nonexistent/claudeclaw-test-store',
+  STORE_DIR,
   get PROJECT_ROOT() {
     return currentProjectRoot
   },
@@ -47,13 +48,20 @@ vi.mock('../web/atomic-write.js', () => ({
 
 const { ensureProjectRootAnchor } = await import('../web/agent-scaffold.js')
 
+// Card b5d19a32: the anchor now lives in STORE_DIR, keyed by agent name -- not under the
+// agent's own .claude dir, which the agent can write to (or symlink away).
+function anchorPathFor(name: string): string {
+  return join(STORE_DIR, 'project-root-anchors', `${name}.json`)
+}
+
 function agentFiles(name: string) {
   const dir = join(tmpRoot, 'agents', name, '.claude')
   mkdirSync(dir, { recursive: true })
+  mkdirSync(join(STORE_DIR, 'project-root-anchors'), { recursive: true })
   return {
     claudeMdPath: join(tmpRoot, 'agents', name, 'CLAUDE.md'),
     settingsPath: join(dir, 'settings.json'),
-    anchorPath: join(dir, 'project-root-anchor.json'),
+    anchorPath: anchorPathFor(name),
   }
 }
 
@@ -117,9 +125,8 @@ describe('ensureProjectRootAnchor', () => {
 
   it('is a no-op for the main agent (CLAUDE.md and settings.json are git-tracked there)', () => {
     currentProjectRoot = OLD_ROOT
-    const anchorPath = join(tmpRoot, 'agents', 'agent-a', '.claude', 'project-root-anchor.json')
     ensureProjectRootAnchor('agent-a')
-    expect(existsSync(anchorPath)).toBe(false)
+    expect(existsSync(anchorPathFor('agent-a'))).toBe(false)
   })
 
   // Card eed22288 F1: a corrupt/empty recorded root must never be used for the replace --
@@ -174,5 +181,53 @@ describe('ensureProjectRootAnchor', () => {
 
     const claudeMdAfter = readFileSync(claudeMdPath, 'utf-8')
     expect(claudeMdAfter).toBe(`# Agent\n\ncat ${NEW_ROOT}/store/.dashboard-token\n`)
+  })
+
+  // Card b5d19a32 (Cybersec finding on eed22288): if agent A's .claude is a symlink into agent
+  // B's .claude, agentSettingsPath('A') resolves through the link to B's real settings.json.
+  // Without a refusal, the sweep for 'A' would rewrite B's file using a drift A had no business
+  // triggering. The whole sweep for 'A' must refuse instead, leaving B's file untouched.
+  it('refuses the whole sweep when the agent is a symlink into another agent (victim untouched)', () => {
+    const NEW_ROOT = '/home/neon/marveen-NEWHOST'
+    currentProjectRoot = OLD_ROOT
+    const victim = agentFiles('agent-victim')
+    writeFileSync(victim.anchorPath, JSON.stringify({ root: OLD_ROOT }))
+    const victimSettings = JSON.stringify({ hooks: { PreCompact: [{ hooks: [{ command: `python3 ${OLD_ROOT}/scripts/hooks/taskstate-replay.py` }] }] } })
+    writeFileSync(victim.settingsPath, victimSettings)
+
+    // Seed a STORE_DIR anchor for the attacker that already shows drift, exactly like a
+    // legitimate prior run would have left behind.
+    mkdirSync(join(STORE_DIR, 'project-root-anchors'), { recursive: true })
+    writeFileSync(anchorPathFor('agent-attacker'), JSON.stringify({ root: OLD_ROOT }))
+    // The attacker's OWN .claude dir does not exist yet -- replace it with a symlink into the
+    // victim's real .claude dir (the attack this fix defends against).
+    mkdirSync(join(tmpRoot, 'agents', 'agent-attacker'), { recursive: true })
+    symlinkSync(join(tmpRoot, 'agents', 'agent-victim', '.claude'), join(tmpRoot, 'agents', 'agent-attacker', '.claude'))
+
+    currentProjectRoot = NEW_ROOT
+    ensureProjectRootAnchor('agent-attacker')
+
+    expect(readFileSync(victim.settingsPath, 'utf-8')).toBe(victimSettings) // untouched
+  })
+
+  // Card b5d19a32: an anchor file an agent plants under its OWN .claude dir (the pre-fix
+  // location) must be ignored -- only the STORE_DIR copy, which no agent process can write, is
+  // ever trusted.
+  it('ignores an anchor file written under the agent\'s own .claude dir', () => {
+    currentProjectRoot = OLD_ROOT
+    const { claudeMdPath, settingsPath } = agentFiles('agent-h')
+    const claudeMdBody = `# Agent\n\ncat ${OLD_ROOT}/store/.dashboard-token\n`
+    writeFileSync(claudeMdPath, claudeMdBody)
+    writeFileSync(settingsPath, '{}')
+    // Planted anchor, attacker-chosen root, in the OLD (agent-local) location -- never in
+    // STORE_DIR for this agent.
+    writeFileSync(join(tmpRoot, 'agents', 'agent-h', '.claude', 'project-root-anchor.json'), JSON.stringify({ root: '/evil/attacker-chosen-root' }))
+
+    ensureProjectRootAnchor('agent-h')
+
+    // Treated as "no anchor yet": baseline written to STORE_DIR with the real PROJECT_ROOT,
+    // CLAUDE.md untouched (no drift to compare against the planted value).
+    expect(JSON.parse(readFileSync(anchorPathFor('agent-h'), 'utf-8')).root).toBe(OLD_ROOT)
+    expect(readFileSync(claudeMdPath, 'utf-8')).toBe(claudeMdBody)
   })
 })

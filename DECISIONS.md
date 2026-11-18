@@ -28132,3 +28132,13 @@ tiszta. `lint-ratchet.sh --show`: 420 lelet/3 szabály, a session-alapvonallal e
 
 **Ki döntött:** backend (saját kártya). Gate-SHA: fe92ec25147794cf7f8954963ab66710859dc6ad.
 Gate: QA + Cybered (a kártya saját kijelölése).
+
+## 2026-11-15 -- b5d19a32: project-root anchor moved to STORE_DIR, sweep refuses symlinked .claude/CLAUDE.md/settings.json
+
+**Decision:** Card b5d19a32 (source: CYBERSEC GO on card eed22288, MEDIUM pre-existing on develop 8c6f30fb). Finding: the project-root anchor used to live at `agents/<name>/.claude/project-root-anchor.json`, a path the agent itself can write to or replace -- including by making `agents/<name>/.claude` a symlink into another agent's `.claude` dir. The anchor sweeper then resolves the victim's real `settings.json` through that symlink and rewrites its hook paths using drift the attacker (agent A) chose, not the victim's own history.
+
+**Fix:** moved the anchor store to `STORE_DIR/project-root-anchors/<name>.json` (no agent process can write under `STORE_DIR`), and added `hasSymlinkedScaffoldPath(name)` in `agent-scaffold.ts`, which `lstatSync`s the agent's `.claude` dir, `CLAUDE.md`, and `settings.json` and refuses the whole sweep (`ensureProjectRootAnchor` returns early with a warn log) if any of the three is a symlink.
+
+**Test:** `src/__tests__/project-root-anchor.test.ts`, two new cases: (a) agent-attacker's `.claude` symlinked to agent-victim's `.claude`, with a drifted STORE_DIR anchor seeded for attacker -- asserts the sweep refuses and victim's `settings.json` is byte-identical afterward; (b) an anchor file planted under the agent's own (legacy) `.claude` dir is ignored -- the sweep treats it as "no anchor yet" and writes the real baseline to STORE_DIR instead. `fleet-test.sh --ref 2ae712bfd src/__tests__/project-root-anchor.test.ts`: 1 file, 9/9 green.
+
+**Who decided:** backend (card b5d19a32, dispatched by MikroB msg 18944 off CYBERSEC GO on eed22288). Gate: QA + Cybersec. Gate-SHA: 2ae712bfd.
