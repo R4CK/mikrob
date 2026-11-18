@@ -111,6 +111,18 @@ describe('sanitizeToolDenyList (card b0d84dc3)', () => {
 // dropped by the old letters/digits/underscore-only regex -- an operator who denied
 // mcp__code-review-graph__apply_refactor_tool got no deny and no warning. Truncation past
 // TOOL_DENY_MAX_PER_AGENT was equally silent.
+//
+// Koteg 24 (card 57044a66): upstream's own "writeAgentSettingsFromProfile + agent-config.json
+// toolDeny" describe block landed on this same insertion point with largely redundant coverage
+// (union-not-replace, respawn-survival, allow-list-untouched, pattern-injection-rejected) under
+// its OWN top-level NAME/SEVEN/readDeny/writeConfig consts -- this fork's "writeAgentSettingsFromProfile
+// unions toolDeny, never replaces (card 21597530)" and "...strict superset of the security floor
+// (card 4113c2d7)" describe blocks further down this file already assert the same mechanism,
+// under AGENT_NAME/writeConfig already declared at the top of this file. Adopting both would mean
+// two colliding top-level `writeConfig` functions with different signatures -- rejected as
+// duplicate-wire (same pattern as GATECOPY828); the two genuinely novel assertions it added
+// (no-duplicate-after-respawn, reversible-on-field-removal) are incremental robustness checks on
+// an already-covered mechanism, not a new bug class.
 describe('sanitizeToolDenyList: hyphenated names and silent-drop signal (card 7a52fa9c)', () => {
   it('keeps a hyphenated qualified MCP tool name (the exact shape that silently dropped)', () => {
     expect(sanitizeToolDenyList(['mcp__code-review-graph__apply_refactor_tool']))

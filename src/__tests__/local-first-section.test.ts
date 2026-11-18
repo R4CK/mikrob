@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-localfirst-test-'))
 
 vi.mock('../config.js', () => ({
+  APP_TZ: 'Europe/Budapest',
   PROJECT_ROOT: tmpRoot,
   // agent-scaffold.js now imports mcp-inheritance.js, which imports settings-store.js,
   // which derives OVERRIDES_PATH from STORE_DIR at module-import time (MCPOROKLES923).

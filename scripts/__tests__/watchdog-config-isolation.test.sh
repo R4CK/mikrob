@@ -771,5 +771,39 @@ case "$OUT" in
 esac
 rm -f "$AGENT_BYO/agent-config.json" "$FIXTURE_INSTALL/store/.watchdog-fleet-oauth-undecidable-alert"
 
+# 53-54) Card ae5af304 (RedHat follow-up, bc32d233): the own-token FILE'S CONTENT (not the config)
+# contains an invalid-UTF-8 byte. Before the fix, both --bad-content-characters and
+# --same-as-fleet-token crashed on this (UnicodeDecodeError, not an OSError, so uncaught),
+# Python's default exit code 1 on a crash being INDISTINGUISHABLE from the check's own legitimate
+# "no, clean"/"no, not a copy" answer -- watchdog.sh's `2>/dev/null` swallowed the traceback and
+# `if python3 ...; then REFUSE; fi` read the crash as "no problem", proceeding to export the
+# byte-corrupt file. The prefix check (head -c 20 | grep sk-ant-oat) runs first in watchdog.sh, so
+# the byte must come AFTER a valid-looking prefix to actually reach the Python checks.
+write_own_config
+printf '%s\x80' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=yes prefix="*"$OWN_TOKEN_FILE"*)
+    pass "53: invalid-UTF-8 byte in own token content -> resolves normally (no crash-as-clean export), fails content/same-as-fleet checks cleanly" ;;
+  *) fail "53: invalid-UTF-8 byte in own token content -> resolves normally, not a silent export via crash" "$OUT" ;;
+esac
+
+# 54) Same invalid byte, but the file IS byte-for-byte the fleet token (with the bad byte) --
+# same_as_fleet_token must detect the match without crashing, and REFUSE.
+printf '%s' "$FAKE_SETUP_TOKEN" > "$FIXTURE_INSTALL/store/.claude-oauth-token"
+printf '\x80' >> "$FIXTURE_INSTALL/store/.claude-oauth-token"
+cp "$FIXTURE_INSTALL/store/.claude-oauth-token" "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=same-as-fleet-token")
+    pass "54: own token with an invalid-UTF-8 byte, byte-identical to the fleet token -> refuse, no crash-through" ;;
+  *) fail "54: own token with an invalid-UTF-8 byte, byte-identical to the fleet token -> refuse" "$OUT" ;;
+esac
+echo "sk-test-fixture-token" > "$FIXTURE_INSTALL/store/.claude-oauth-token" # restore for any later run
+printf '%s' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

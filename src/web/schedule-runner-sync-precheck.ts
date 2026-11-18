@@ -21,6 +21,18 @@ export function runPreCheck(task: ScheduledTask): PreCheckResult {
   // which is also what the registry hashed. `name` can come from
   // the SKILL.md frontmatter and point at a different directory.
   const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
+  // Koteg 24 (card 57044a66): a preCheck that is not a non-empty string (resolvePreCheckPath's
+  // own "ignore it, the registry hash ignores it too" contract, mirrored by the async form's
+  // NOT_A_PRECHECK_PATH_MSG in schedule-runner.ts) resolves to null -- existsSync(null) itself
+  // throws a TypeError, which would surface as an unrelated-looking crash instead of the same
+  // "running LLM anyway" degrade every other branch here gives.
+  if (scriptPath == null) {
+    // Log the TYPE only, never the value: a task's preCheck field is operator-authored config,
+    // not something this gate should echo into the log verbatim (card 5dd0842a, caught by a
+    // fleet-test case added this round -- the value can carry content that should not be logged).
+    logger.warn({ task: task.name, preCheckType: typeof task.preCheck }, 'pre-check is not a script path (not a non-empty string); running LLM anyway')
+    return { skip: false }
+  }
   if (!existsSync(scriptPath)) {
     logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
     return { skip: false }

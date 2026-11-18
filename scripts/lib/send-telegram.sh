@@ -40,7 +40,7 @@ telegram_api_call() {
     return 1
   fi
 
-  local response curl_exit
+  local response curl_exit base
   # SECURITY (card 8418b098): the token never touches argv/ps -- fed to curl via a -K config file
   # over stdin (only the URL line carries it), matching store/roll-forward-oneshot.sh's notify() and
   # scripts/dashboard-watchdog.sh's notify_peti(). DEVIATION FROM ACKNOWLEDGED_CONFLICTS (card
@@ -52,8 +52,21 @@ telegram_api_call() {
   # telegram_fallback_send.py honours; unset in production. Kept from upstream's
   # merge (Koteg 16) alongside the -K/stdin security fix -- morning-briefing-slack-delivery.test.sh
   # already relies on this being honoured here.
-  response=$(printf 'url = "%s/bot%s/%s"\n' "${TELEGRAM_API_BASE:-https://api.telegram.org}" "$token" "$method" \
+  base="${TELEGRAM_API_BASE:-https://api.telegram.org}"
+  # Koteg 24 (card 57044a66): upstream's own re-landing of this same -K/stdin pattern adds an
+  # injection guard this fork's version never had -- the URL is a QUOTED config value, and a
+  # quote, backslash or newline in the token/method/base would break out of it. Refuse rather
+  # than build a config line that could be misread (or inject a second directive) by curl's
+  # -K parser; such a call could not deliver anything correctly anyway.
+  case "$token$method$base" in
+    *\"*|*\\*|*$'\n'*)
+      echo "telegram_api_call(${method}): the token, method or API base contains a quote, backslash or newline -- refusing (nothing would be delivered)" >&2
+      return 1
+      ;;
+  esac
+  response=$(printf 'url = "%s/bot%s/%s"\n' "$base" "$token" "$method" \
     | curl -sS -m 15 -K - "$@" 2>&1)
+  # curl is the last command of the pipe, so $? is its exit code, not printf's.
   curl_exit=$?
   # Never let the token reach a log/journal: redact before any echo.
   response="${response//${token}/<token>}"

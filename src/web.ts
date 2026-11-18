@@ -10,6 +10,7 @@ import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { operatorGateDecision } from './web/operator-gate.js'
+import { nightGateDecision } from './web/night-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleOperator } from './web/routes/operator.js'
@@ -49,6 +50,7 @@ import { startModelFallbackRunner } from './web/model-fallback-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
 import { startKanbanArchiveRunner } from './web/kanban-archive-runner.js'
 import { startContextRestartGateRunner, setMainSweepHook } from './web/context-restart-gate-runner.js'
+import { startEventLoopLagMonitor } from './web/event-loop-lag-monitor.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
@@ -219,6 +221,17 @@ export function startWebServer(port = 3420): http.Server {
         logger.warn({ path, method, device: auth.kind === 'device' ? auth.device : undefined, reason: operatorDenied }, 'operator gate: denied')
         res.writeHead(403, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Forbidden for this credential', reason: operatorDenied }))
+        return
+      }
+    }
+    // Card 2ba008f2: same deny-by-default shape as the operator gate above, same chokepoint,
+    // before any handler runs -- a 'night' scoped key reaches only its own 3-item allowlist.
+    if (requiresAuth(path, method)) {
+      const nightDenied = nightGateDecision(auth, path, method)
+      if (nightDenied) {
+        logger.warn({ path, method, device: auth.kind === 'device' ? auth.device : undefined, reason: nightDenied }, 'night gate: denied')
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Forbidden for this credential', reason: nightDenied }))
         return
       }
     }
@@ -585,6 +598,13 @@ export function startWebServer(port = 3420): http.Server {
     logger.info('Context-restart gate runner started (per-agent poll, 3min initial delay)')
   }
 
+  // Event-loop-lag monitor: detects a blocked event loop from ANY source (a sync
+  // shell-out, a runaway loop, a giant parse) and logs a WARN, so a wedge surfaces in
+  // seconds instead of when a human notices the dashboard is unresponsive. Runs on a
+  // web-only instance too: the loop it watches is the web server's.
+  const eventLoopLag = startEventLoopLagMonitor()
+  logger.info(`Event-loop-lag monitor started (${eventLoopLag.sampleMs / 1000}s window, WARN past ${eventLoopLag.warnMs}ms block)`)
+
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) {
     // Derived, never restated (card 06bed89a): this line said '15min poll' for months after the
@@ -901,6 +921,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
     clearInterval(authSessionSweepInterval)
+    eventLoopLag.stop()
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)

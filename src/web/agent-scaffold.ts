@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync, lstatSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
 import { basename, join } from 'node:path'
@@ -11,11 +11,17 @@ import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { loadProfileTemplate, profileWantsDestructiveGate, resolveProfilePlaceholders,
+// profileWantsCredentialGate/agentGetsCredentialGate (Koteg 25, #2163's companion gate) NOT
+// adopted -- a new fleet-wide security gate, same standing refusal as the other new opt-in gates
+// in this file (see src/fork-upstream/acknowledged-conflicts.ts, RE-MEASURED 2026-10-17 round).
+// profileWantsYtIngest IS adopted (wired into bashEgressDeny/seedSettingsFromTemplate elsewhere
+// in this file, already present via clean auto-merge, not itself a security-gate decision).
+import { loadProfileTemplate, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 // Const-only module (no imports of its own) -- the scaffold section must name the SAME
 // reserved id the request-path guard enforces, or the recipe sends agents to verify a
 // field nobody rejects. Card 5c5d7bc4.
@@ -956,8 +962,12 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
 
   // Egress deny: EVERY profile, not just the gated ones. This function replaces permissions
   // wholesale on each spawn, so without it a respawn would silently drop what ensureBashEgressDeny()
-  // merged in.
-  denyList.push(...BASH_EGRESS_DENY)
+  // merged in. bashEgressDeny(ytIngestOnly) adds the yt-dlp rules when the profile/switch call for
+  // them (used again at allowRules below). Upstream's separate agentGetsBashEgressParser/
+  // BASH_EGRESS_HOST_ALLOW conditional NOT adopted -- rejected parser mechanism, same as
+  // mergeBashEgressDeny above (see src/fork-upstream/acknowledged-conflicts.ts).
+  const ytIngestOnly = ytDlpIngestOnly()
+  denyList.push(...bashEgressDeny(ytIngestOnly))
   // Fleet baseline: the deny FLOOR every agent gets regardless of profile.
   // Pushed here rather than copied into each templates/profiles/*.json so a
   // profile added tomorrow cannot silently ship without it. Deduped against what
@@ -986,8 +996,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // before the grant and ran silently after it). Omitted entirely when the
   // profile declares none, so existing profiles are unaffected.
   const extraDirs = (profile.additionalDirectories ?? []).map(p => resolveProfilePlaceholders(p, ctx))
+  const allowRules = profileWantsYtIngest(profile) && ytIngestOnly
+    ? [...profile.filesystem.allow, ...YT_INGEST_ALLOW.filter(r => !profile.filesystem.allow.includes(r))]
+    : profile.filesystem.allow
   existing.permissions = {
-    allow: profile.filesystem.allow.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
+    allow: allowRules.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
     deny: denyList,
     ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
@@ -1132,10 +1145,16 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // never that the evidence is real, so an agent can self-certify any address with --source owner).
 // See ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
 // Kept a FLAT alternation (no inner `|`): the drift test splits it on '|'.
+// F1 LOW (card 154cbbd0, RedHat a2cb71f1 komment 20438, left out of d8f10864 on purpose): the two
+// server-anchored alternatives below used to vary only the FIRST letter ([Gg]mail/bare "resend"),
+// so a connector registered as "GMAIL" or "gMail" (anything but the exact "[Gg]mail" shape) named
+// the right server but still skipped the matcher entirely -- confirmed case-sensitive, full-match
+// (`^(?:matcher)$`) PreToolUse behavior (Claude Code hooks docs). Every letter is now a class.
 export const EMAIL_GATE_MATCHER =
-  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
+  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg][Mm][Aa][Ii][Ll][A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*[Rr][Ee][Ss][Ee][Nn][Dd][A-Za-z0-9_-]*__.*|.*draft_email.*'
   + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
   + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
+  + '|.*send_mail.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
@@ -1357,6 +1376,46 @@ export const BASH_EGRESS_DENY = [
   'Bash(*/telnet *)',
 ]
 
+// yt-dlp only through scripts/yt-ingest/yt-ingest.sh -- an OPT-IN switch,
+// YT_DLP_INGEST_ONLY (config-registry.ts), off by default (#1705 maintainer
+// decision, 2026-10-14). The shared default cannot carry these: skills call
+// yt-dlp directly from a SKILL.md command line, and a default deny would break
+// them on the next respawn of every agent on every install. With the switch on,
+// the rules ride exactly where BASH_EGRESS_DENY rides (every spawn's profile
+// write, the startup merge, the main agent's own config dir); with it off,
+// nothing here is written and the generated settings are byte-identical to an
+// install without this code. The third rule catches `<venv>/bin/python -m
+// yt_dlp`. A call hidden inside another program is out of reach of name rules
+// (see the parser note above).
+export const YT_DLP_EGRESS_DENY = [
+  'Bash(yt-dlp *)',
+  'Bash(*/yt-dlp *)',
+  'Bash(* -m yt_dlp*)',
+]
+
+// The sanctioned way in, granted to a profile that sets `ytIngest: true`
+// (researcher), and only while the switch is on -- the allow lines go with the
+// deny, not ahead of it.
+export const YT_INGEST_ALLOW = [
+  'Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-ingest.sh:*)',
+  'Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-read.sh:*)',
+]
+
+export const YT_DLP_INGEST_ONLY_KEY = 'YT_DLP_INGEST_ONLY'
+
+// Read per call (override > .env > default), so flipping the switch needs no
+// dashboard restart -- it binds each agent from its next spawn. Unreadable or
+// unknown reads as OFF: the off state is the shipped default, not a widening.
+export function ytDlpIngestOnly(read: (key: string) => string | number = getEffectiveSettingValue): boolean {
+  try { return String(read(YT_DLP_INGEST_ONLY_KEY)) === '1' } catch { return false }
+}
+
+// The egress deny set an agent actually gets: BASH_EGRESS_DENY, plus the
+// yt-dlp rules when the switch is on.
+export function bashEgressDeny(ytIngestOnly: boolean = ytDlpIngestOnly()): string[] {
+  return ytIngestOnly ? [...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY] : [...BASH_EGRESS_DENY]
+}
+
 // The fleet-wide deny FLOOR: applied to EVERY profile, exactly like
 // BASH_EGRESS_DENY above and for the same reason. permissions.deny is rebuilt
 // WHOLESALE from the security profile on every spawn, so a rule that lives only
@@ -1451,12 +1510,17 @@ export const FLEET_BASELINE_DENY = [
 // are unit-testable; ensureBashEgressDeny() below is the filesystem wrapper.
 // Existing entries are preserved and their order kept: an operator's own deny
 // rule must never be dropped by a migration. Returns true if anything changed.
-export function mergeBashEgressDeny(settings: Record<string, unknown>): boolean {
+// `rules` lets a caller merge the yt-ingest-aware set (bashEgressDeny(true), see
+// seedSettingsFromTemplate below) instead of the plain BASH_EGRESS_DENY. Upstream's separate
+// `parserCovers` param (which also REMOVES LEGACY_BASH_EGRESS_DENY entries) is NOT adopted -- it
+// wires the rejected bash-egress-parser.mjs/BASH_EGRESS_HOST_ALLOW mechanism (Koteg 25, see
+// src/fork-upstream/acknowledged-conflicts.ts). This function only ever ADDS, never removes.
+export function mergeBashEgressDeny(settings: Record<string, unknown>, rules: readonly string[] = BASH_EGRESS_DENY): boolean {
   const perms = (settings.permissions && typeof settings.permissions === 'object' && !Array.isArray(settings.permissions))
     ? settings.permissions as Record<string, unknown>
     : {}
   const deny = Array.isArray(perms.deny) ? [...(perms.deny as unknown[])] : []
-  const missing = BASH_EGRESS_DENY.filter((rule) => !deny.includes(rule))
+  const missing = rules.filter((rule) => !deny.includes(rule))
   if (missing.length === 0) return false
   perms.deny = [...deny, ...missing]
   settings.permissions = perms
@@ -1497,7 +1561,7 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown> } catch { return false }
   }
-  if (!mergeBashEgressDeny(settings)) return false
+  if (!mergeBashEgressDeny(settings, bashEgressDeny())) return false
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
@@ -1527,10 +1591,15 @@ export function injectSelfPaceGate(existing: Record<string, unknown>): void {
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
-    // Write|Edit|NotebookEdit are included so the gate actually fires on the
+    // Write|Edit|MultiEdit|NotebookEdit are included so the gate actually fires on the
     // native-file route to the self-schedule store (gateDecision blocks a Write
     // to scheduled_tasks.json); a Bash-only matcher would leave that route open.
-    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|NotebookEdit',
+    // MultiEdit added card 2e04a52e round 2 (WhiteHat2 F3): gateDecision already handles it,
+    // but the matcher never named it, so the hook was never invoked for it.
+    // The four mcp__filesystem__ write-shaped tool names added the same round (RedHat
+    // Finding 1 HIGH): gateDecision now judges their path arguments, but only when this
+    // hook actually fires for them.
+    matcher: 'ScheduleWakeup|CronCreate|CronDelete|CronList|RemoteTrigger|Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__filesystem__write_file|mcp__filesystem__edit_file|mcp__filesystem__create_directory|mcp__filesystem__move_file',
     hooks: [{ type: 'command', command, timeout: 10 }],
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
@@ -3329,8 +3398,22 @@ export function scaffoldAgentDir(name: string) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
     if (existsSync(tplPath)) {
       const resolved = resolveTemplatePlaceholders(readFileSync(tplPath, 'utf-8'))
-      atomicWriteFileSync(settingsJson, resolved)
+      atomicWriteFileSync(settingsJson, seedSettingsFromTemplate(resolved, ytDlpIngestOnly()))
     }
+  }
+}
+
+// The template carries BASH_EGRESS_DENY only. With YT_DLP_INGEST_ONLY on, the
+// yt-dlp rules are merged into the seeded file too; with it off the template
+// text is returned verbatim, exactly as before the switch existed. Pure, so
+// both switch states are testable without scaffolding a real agent dir.
+export function seedSettingsFromTemplate(resolved: string, ytIngestOnly: boolean): string {
+  if (!ytIngestOnly) return resolved
+  try {
+    const tpl = JSON.parse(resolved) as Record<string, unknown>
+    return mergeBashEgressDeny(tpl, bashEgressDeny(true)) ? JSON.stringify(tpl, null, 2) : resolved
+  } catch {
+    return resolved // unparsable template: write it as is, the profile write follows
   }
 }
 
@@ -3500,20 +3583,6 @@ function buildAutonomyBody(name: string): string {
 // "ezzel napok telnek el, hogyha hulyesegeket mondanak nekem, es en meg
 // elhiszem". This block is fleet-wide, not agent-specific: a guess dressed as
 // a fact costs the same wherever it comes from.
-// `isMainAgent`: the recipient-ledger hook (scripts/email-send-gate.mjs) is
-// wired ONLY into sub-agent settings (writeAgentSettingsFromProfile, guarded by
-// `name !== MAIN_AGENT_ID`); the main agent's own sends go through the
-// approval gate (envelope-hash approval) and the Hungarian copy gate under
-// scripts/hooks/, neither of which reads the ledger. The hook FILE NAMES are
-// deliberately not written into the generated text: the seeding-surface scan in
-// hook-registration-completeness.test.ts reads this file as a corpus and would
-// take a name mention for a registration.
-// Measured 2026-09-22 (LEDGERFOAGENS922): the main agent's settings carry no
-// email-send-gate entry and its two email hooks contain zero ledger references.
-// The same paragraph cannot be true for both audiences: for a sub-agent the
-// ledger IS a machine gate, for the main agent it is NOT. Wiring the ledger for
-// the main agent is a separate owner decision; this text only stops promising a
-// protection that is not there.
 //
 // NOT ADOPTED HERE (card 5a15cd5a, upstream-sync batch 7): the recipient-ledger
 // system itself is rejected in any form (Cybersec, card afd64623, HIGH --
@@ -3625,6 +3694,18 @@ const DEVO_FAMILY = new Set(['fullstack'])
 // in Core even though that verification is Teszter's own job. Curated table mirrors the
 // BACKEND_FAMILY pattern.
 const TESZTER_FAMILY = new Set(['teszter'])
+// Card 3a60633b: Jogász gets a curated table for the mandatory sourced-investigation method
+// (Peti Telegram 12225: every jurisdiction needs its own local-law check, full sourced
+// investigation). Measured baseline: no comment since Oct 11, Core only legal-compliance-review,
+// and gdpr-audit-prep/ai-act-readiness/iso27001-audit-prep/soc2-audit-prep unreferenced despite
+// being local skills. Curated table mirrors the BACKEND_FAMILY pattern.
+const JOGASZ_FAMILY = new Set(['jogasz'])
+// Card f27512c9: Marketing gets a curated table (Peti Telegram 12231: "Mehet"). Measured
+// baseline: no comment since Oct 8, Core only marketing-gtm + humanize-writing, the 10 local
+// marketing skills and 7 global brand skills at 0 use, and frontend-design-research +
+// d3-data-visualization (not marketing's job) in Core. Curated table mirrors the BACKEND_FAMILY
+// pattern.
+const MARKETING_FAMILY = new Set(['marketing'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
@@ -3821,6 +3902,57 @@ export function buildTesterFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
+// Exported for test rendering (card 3a60633b, mirrors the Tester precedent): callers assert on
+// this function's actual return value instead of slicing the source text.
+export function buildJogaszFamilySkillUsageBody(): string {
+  const rows = [
+    '| Szerződés, ToS, DPA | `contract-review-redline` |',
+    '| GDPR, PII, DPIA | `gdpr-audit-prep`, `legal-compliance-review` |',
+    '| AI-funkció | `ai-act-readiness` |',
+    '| Licenc, OSS / source-available, clean-room (10. szabály) | `legal-compliance-review` + `fork-adopt-investigation` licenc-része, rögzített sha-n |',
+    '| Biztonsági megfelelés, ügyfélkérdőív | `iso27001-audit-prep`, `soc2-audit-prep` |',
+    '| Ország-specifikus jog | `legal-compliance-review` + a joghatóság-térkép, élő forrás (quarantine-reader / WebSearch) |',
+    '| Cél-tisztázás | `interview-me` |',
+    '| Magyar szöveg | `humanize-writing` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 3a60633b)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
+// Exported for test rendering (card f27512c9, mirrors the Jogász precedent): callers assert on
+// this function's actual return value instead of slicing the source text.
+export function buildMarketingFamilySkillUsageBody(): string {
+  const rows = [
+    '| Pozicionálás, üzenet-hierarchia | `positioning-messaging`, `marketing-gtm` |',
+    '| Versenytárs-kép (élő forrásból) | `competitive-analysis` |',
+    '| Márkaépítés, ebben a sorrendben | `brand-foundations-strategy` -> `brand-tone-of-voice-guide` -> `brand-visual-identity-direction` -> `brand-logo-concepts` -> `brand-identity-stress-test` -> `brand-handbook-compiler` |',
+    '| Landing, konverziós szöveg | `copywriting-conversion`, `cro-page`, `marketing-psychology` |',
+    '| SEO | `seo-technical-audit` |',
+    '| Bevezetés, csatornák | `launch-marketing`, `gtm-motions`, `social-media`, `webinar-marketing` |',
+    '| Mérés | `campaign-analytics`, `measuring-product-market-fit`, `analyzing-user-feedback` |',
+    '| Megtartás, onboarding-üzenet | `retention-engagement`, `user-onboarding` |',
+    '| Árazási üzenet (a szám a pénzügyé) | `pricing-strategy` |',
+    '| Bármilyen nyelvű szöveg | `humanize-writing` |',
+    '| Cél-tisztázás | `interview-me` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya f27512c9)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3835,6 +3967,8 @@ function buildSkillUsageBody(name: string): string | null {
   if (FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()
   if (DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()
   if (TESZTER_FAMILY.has(name)) return buildTesterFamilySkillUsageBody()
+  if (JOGASZ_FAMILY.has(name)) return buildJogaszFamilySkillUsageBody()
+  if (MARKETING_FAMILY.has(name)) return buildMarketingFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null
@@ -4880,6 +5014,11 @@ export function buildMemorySearchLabelBody(name: string): string {
     'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
     '`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.',
     '',
+    'Időszakra szűrés: `&date=tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)',
+    'vagy `&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN`, ékezet nélkül, kódolva. A szűrő nem lazul: érvénytelen',
+    'kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen',
+    'használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
+    '',
     'NYERS ÉKEZET A `q`-BAN = HTTP 400, ÜRES TÖRZZSEL. A `q=funkcionális` alak 400-at ad, a',
     '`q=funkcion%C3%A1lis` és a `-G --data-urlencode "q=..."` alak 200-at. A 400-on NINCS',
     '`X-Memory-Search` fejléc, tehát a fenti `grep` némán semmit nem ír, és a nulla sor pontosan',
@@ -4951,29 +5090,77 @@ export function ensureMemorySearchLabelSection(name: string): void {
 // settings.json are both git-tracked and maintained statically (same precedent as
 // ensureFleetAuthSection's no-op for MAIN_AGENT_ID -- a runtime write there fights the
 // --ff-only pull, card 2dd28b5d/99fccbcf).
-const PROJECT_ROOT_ANCHOR_FILE = 'project-root-anchor.json'
+// Card b5d19a32 (Cybersec, finding on eed22288): the anchor used to live under the agent's OWN
+// .claude dir, which the agent itself can write to (or replace with a symlink into another
+// agent's .claude). Keeping it in STORE_DIR instead means no agent process can plant or control
+// its own anchor value -- only this sweep (running as the main process) ever writes here.
+const PROJECT_ROOT_ANCHOR_DIR = join(STORE_DIR, 'project-root-anchors')
 
 function projectRootAnchorPath(name: string): string {
-  return join(agentDir(name), '.claude', PROJECT_ROOT_ANCHOR_FILE)
+  return join(PROJECT_ROOT_ANCHOR_DIR, `${name}.json`)
+}
+
+// Card b5d19a32: if agents/<name>/.claude (or CLAUDE.md, or settings.json) is a symlink, the
+// "victim" the link points at is not this agent's own content -- rewriting through it would
+// mutate whatever real agent (or location) is on the other end, using a boundary this agent
+// chose by creating the link. Refuse the whole sweep for this agent rather than touch anything.
+function hasSymlinkedScaffoldPath(name: string): boolean {
+  const candidates = [join(agentDir(name), '.claude'), join(agentDir(name), 'CLAUDE.md'), agentSettingsPath(name)]
+  for (const p of candidates) {
+    try {
+      if (lstatSync(p).isSymbolicLink()) return true
+    } catch {
+      // Does not exist: not a symlink, nothing to refuse on this path.
+    }
+  }
+  return false
+}
+
+// An anchor value this mechanism can safely use for the replace below: must be a non-root
+// absolute path. Empty/relative values would make `content.includes(recordedRoot)` match
+// everywhere (an empty string is a substring of anything), inserting PROJECT_ROOT between
+// every character of CLAUDE.md/settings.json -- measured, card eed22288 F1.
+function isUsableAnchorRoot(value: string): boolean {
+  return value.length > 1 && value.startsWith('/')
+}
+
+// Boundary-safe replace: a plain substring swap would also rewrite sibling paths that merely
+// START with oldRoot (e.g. `${oldRoot}-agent-worktrees`, `${oldRoot}-test`) into a broken path,
+// because oldRoot is not a suffix-delimited token of its own -- measured, card eed22288 F2.
+// Only replace an occurrence that is not immediately followed by another path-segment
+// character (oldRoot is always an absolute filesystem path, so this cannot false-negative
+// inside unrelated text).
+function replaceRootOccurrences(content: string, oldRoot: string, newRoot: string): string {
+  const escaped = oldRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`${escaped}(?![A-Za-z0-9_-])`, 'g')
+  // A string replacer interprets $ sequences (e.g. $& or $$) IN newRoot itself; a function
+  // replacer passes it through literally.
+  return content.replace(pattern, () => newRoot)
 }
 
 export function ensureProjectRootAnchor(name: string): void {
   if (name === MAIN_AGENT_ID) return
 
+  if (hasSymlinkedScaffoldPath(name)) {
+    logger.warn({ name }, 'ensureProjectRootAnchor: refusing, .claude/CLAUDE.md/settings.json is a symlink')
+    return
+  }
+
   const anchorPath = projectRootAnchorPath(name)
   let recordedRoot: string | null = null
   try {
     const parsed = JSON.parse(readFileSync(anchorPath, 'utf-8')) as { root?: string }
-    recordedRoot = typeof parsed.root === 'string' ? parsed.root : null
+    recordedRoot = typeof parsed.root === 'string' && isUsableAnchorRoot(parsed.root) ? parsed.root : null
   } catch {
     recordedRoot = null
   }
 
-  // No anchor yet (pre-dates this mechanism, or a brand-new agent): nothing to compare
-  // against, so there is no drift to correct -- just establish the baseline for next time.
+  // No anchor yet (pre-dates this mechanism, a brand-new agent, or a corrupt/unusable
+  // recorded value): nothing safe to compare against, so there is no drift to correct --
+  // just (re-)establish the baseline for next time, no file rewrite.
   if (recordedRoot === null) {
     try {
-      mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+      mkdirSync(PROJECT_ROOT_ANCHOR_DIR, { recursive: true })
       atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
     } catch {
       // Best-effort: a missing anchor just means this re-checks on the next sweep tick.
@@ -4993,7 +5180,16 @@ export function ensureProjectRootAnchor(name: string): void {
       continue
     }
     if (!content.includes(recordedRoot)) continue
-    atomicWriteFileSync(path, content.split(recordedRoot).join(PROJECT_ROOT))
+    const rewritten = replaceRootOccurrences(content, recordedRoot, PROJECT_ROOT)
+    if (path.endsWith('settings.json')) {
+      try {
+        JSON.parse(rewritten)
+      } catch {
+        logger.warn(`ensureProjectRootAnchor: skipping ${path}, rewrite would break JSON`)
+        continue
+      }
+    }
+    atomicWriteFileSync(path, rewritten)
   }
 
   atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
@@ -5067,6 +5263,7 @@ A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni. A keresés alapból ENGED�
 relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
 relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a &strict=1-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
+Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva. A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 

@@ -56,6 +56,24 @@ LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
 # started after it still contend on one file.
 LOCK_FILE="${ROOT}-test.lock"
 
+# WAIT/RUN LOGGING (card c5ff36bf). Non-behavioral: this never changes which run goes first or
+# how long anything waits, it only records what already happens. The TREE-lock stage below had no
+# durable record at all (only a stderr echo, gone the moment the terminal scrolls) -- the CPU-slot
+# stage already posts kanban comments, but THIS is the stage callers actually complain about
+# (b7d8ecc4, c5ff36bf), so this is the one that needs a log. One line per run, appended once the
+# run is over (wait_s + run_s both known by then), plus one line for a run that times out waiting
+# and never gets to run at all. Append-only, best-effort (a logging failure must never fail or
+# slow down a real test run -- hence `|| true` and redirecting its own errors away).
+LOCK_LOG="${FLEET_TEST_LOCK_LOG:-${ROOT}-fleet-test-lock.log}"
+fleet_test_log_lock_event() { # $1=event(run|timeout) $2=wait_s $3=run_s(or -) $4=status(or -)
+  local scope="full"
+  [ "${#ARGS[@]}" -gt 0 ] && scope="scoped:${#ARGS[@]}"
+  printf '%s pid=%s event=%s rank=%s priority=%s scope=%s ref=%s wait_s=%s run_s=%s status=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" "${PRIORITY_RANK:--}" "${FLEET_TEST_PRIORITY:--}" \
+    "$scope" "${REF:--}" "$2" "${3:--}" "${4:--}" \
+    >>"$LOCK_LOG" 2>/dev/null || true
+}
+
 # PRIORITY LANE FOR LANDS (card b7d8ecc4). marveen-land.sh holds its own exclusive develop-push
 # lock for the ENTIRE duration of this script's run (merge -> fleet-test -> push), so every minute
 # a land's fleet-test call sits in a plain FIFO queue is a minute EVERY OTHER land is blocked too,
@@ -425,11 +443,14 @@ while ! { fleet_test_is_head "$TREE_TICKET_DIR" "$TREE_TICKET" && flock -n 9; };
   TREE_TICKET_WAITED=$(( $(date +%s) - TREE_TICKET_START ))
   if [ "$TREE_TICKET_WAITED" -ge "$LOCK_WAIT_SECONDS" ]; then
     rm -f "$TREE_TICKET" 2>/dev/null
+    fleet_test_log_lock_event timeout "$TREE_TICKET_WAITED" - 3
     die 3 "timed out after ${LOCK_WAIT_SECONDS}s waiting for the fleet suite lock ($LOCK_FILE). Another run is stuck: find it with 'fuser -v $LOCK_FILE' and deal with THAT run. A private FLEET_TEST_TREE is no longer a way around the queue (card 2f0c7d24)."
   fi
   sleep 1
 done
 rm -f "$TREE_TICKET" 2>/dev/null
+TREE_LOCK_WAIT_S=$(( $(date +%s) - TREE_TICKET_START ))
+TREE_LOCK_ACQUIRED_AT="$(date +%s)"
 
 # Create once, reuse forever. `git worktree add --detach` fails if the path exists, so the
 # create and the update paths are deliberately separate.
@@ -749,5 +770,8 @@ if [ ${#ARGS[@]} -eq 0 ] && [ -x "$TEST_TREE/store/lint-ratchet.sh" ]; then
     status="$lint_status"
   fi
 fi
+
+TREE_LOCK_RUN_S=$(( $(date +%s) - TREE_LOCK_ACQUIRED_AT ))
+fleet_test_log_lock_event run "$TREE_LOCK_WAIT_S" "$TREE_LOCK_RUN_S" "$status"
 
 exit "$status"

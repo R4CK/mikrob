@@ -83,7 +83,7 @@ vi.mock('../web/agent-process.js', () => ({
 
 import { initDatabase, insertPendingTaskRetryIfNew, getDb } from '../db.js'
 import { SCHEDULED_TASKS_DIR } from '../web/scheduled-tasks-io.js'
-import { backfillScheduledTaskRegistryOnce, _resetRegistryWarningsForTest } from '../web/schedule-registry.js'
+import { backfillScheduledTaskRegistryOnce, registerScheduledTask, _resetRegistryWarningsForTest } from '../web/schedule-registry.js'
 import { tryHandleSchedules } from '../web/routes/schedules.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -262,5 +262,28 @@ describe('runner tick x registry (real tick, real registry)', () => {
     await runOneTick()
     expect(sent).toHaveLength(1)
     expect(sent.some(s => s.prompt.includes('EDITED'))).toBe(false)
+  })
+
+  // The registry hash and the runner read a task's preCheck by one path rule
+  // (precheck-path.ts). A non-string preCheck is no script for the hash, so it
+  // is none for the runner either. Before, the runner took any truthy value
+  // for a path and its `.replace` threw inside the tick: a retry of such a
+  // task rejected the whole tick, and no other task fired.
+  it('a registered task whose preCheck is not a string does not stop the tick', async () => {
+    await createViaApi('badpc', 'Non-string preCheck.', '0 8 * * *')
+    // The API no longer stores a non-string preCheck (schedule-precheck-put-type.test.ts)...
+    expect((await call('PUT', '/api/schedules/badpc', { preCheck: true })).status).toBe(400)
+    // ...but a config can still carry one into the registry: a hand edit the
+    // operator re-registers with the registry CLI. The runner keeps its guard.
+    const cfgPath = join(dirOf('badpc'), 'task-config.json')
+    writeFileSync(cfgPath, JSON.stringify({ ...JSON.parse(readFileSync(cfgPath, 'utf-8')), preCheck: true }, null, 2))
+    expect(registerScheduledTask('badpc', 'cli')).toBeTruthy()
+    await createViaApi('badpc-ctrl', 'Control prompt.')
+    insertPendingTaskRetryIfNew('badpc', AGENT, Date.now() - 120_000, 'busy')
+
+    await runOneTick()
+
+    expect(sentTo('badpc')).toHaveLength(1)
+    expect(sentTo('badpc-ctrl')).toHaveLength(1)
   })
 })
