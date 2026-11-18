@@ -8,7 +8,6 @@ import {
   runImportMt10Cli,
   runImportMt10,
   flagValue,
-  ROOT_DECISIONS_PROJECT,
   ROOT_DECISIONS_SOURCE_PATH,
   type ImportMt10CliDeps,
 } from '../kg/import-mt10-cli.js'
