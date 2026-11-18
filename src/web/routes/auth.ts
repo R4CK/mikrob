@@ -177,7 +177,8 @@ export const CLI_RECOVERY_ONLY = {
 // bootstrap/token-with-a-cookie exceptions card 49960046 retired (see the file-top comment). This
 // is the fork's strict replacement under the SAME exported name so every caller compiles against
 // the fork's existing session-only posture instead: exactly CREDENTIAL_MINT_KINDS, no exceptions.
-export function mayIssueCredentials(auth: RouteContext['auth'], _req?: http.IncomingMessage): boolean {
+export function mayIssueCredentials(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
+  void req // kept for call-site compatibility with upstream's signature; unused in the fork's strict, session-only check
   return kindAllowed(auth, CREDENTIAL_MINT_KINDS)
 }
 

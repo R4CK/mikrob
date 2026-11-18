@@ -137,13 +137,18 @@ describe('PATCH status=approved', () => {
     expect(gate(p).code).toBe(0)
   })
 
-  it('the owner\'s browser that sends the stored token AND a live session cookie approves (no 403 on the dashboard)', async () => {
+  // Card 49960046: the fork's mayIssueCredentials checks only `auth.kind` -- a token-kind caller
+  // stays refused no matter what cookie it carries (upstream's own version resolves a session
+  // from the cookie on a token caller too; NOT adopted, see src/web/routes/auth.ts's file-top
+  // comment). Only a caller whose auth was already resolved to `kind: 'session'` upstream of this
+  // handler (OWNER, used elsewhere in this file) counts.
+  it('a token caller with a live session cookie is STILL refused -- the fork checks auth.kind only, not the cookie', async () => {
     const p = letter()
     const anchor = anchorOf(p)
     const own = await post({ agent_id: 'soma', category: 'email_send', action_description: 'v', content_hash: anchor }, TOKEN)
     const r = await patch(own.body.id, { status: 'approved', resolved_by: 'dashboard' }, TOKEN, { cookie: ownerCookie() })
-    expect(r.status).toBe(200)
-    expect(gate(p).code).toBe(0)
+    expect(r.status).toBe(403)
+    expect(gate(p).code).toBe(2)
   })
 
   it.each(['rejected', 'timeout'])('the token may still resolve a request as %s: that only cancels it', async (status) => {
@@ -182,10 +187,13 @@ describe('standing-recipient activation (STANDING_CATEGORY)', () => {
 })
 
 describe('before the first dashboard login exists', () => {
-  it('the token is the one credential there is: it may approve (first-run, as for issuing credentials)', async () => {
+  // Card 49960046: no first-run exception in this fork -- the token can NEVER approve, even
+  // before any dashboard user exists (unlike upstream's own mayIssueCredentials, which is NOT
+  // adopted; see src/web/routes/auth.ts's file-top comment).
+  it('the token is STILL refused -- no bootstrap exception in this fork', async () => {
     getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
     _clearSessionCacheForTest()
     const own = await post({ agent_id: 'soma', category: 'email_send', action_description: 'first-run' }, TOKEN)
-    expect((await patch(own.body.id, { status: 'approved', resolved_by: 'dashboard' }, TOKEN)).status).toBe(200)
+    expect((await patch(own.body.id, { status: 'approved', resolved_by: 'dashboard' }, TOKEN)).status).toBe(403)
   })
 })

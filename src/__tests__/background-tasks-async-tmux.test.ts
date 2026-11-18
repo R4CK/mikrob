@@ -397,6 +397,9 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     expect(r.json.output).toBe('(cancelled)')
   })
 
+  // Real wall-clock waits (vi.waitFor's own 10s budget plus a 2.5s settle) exceed vitest's
+  // default 5000ms test timeout -- an explicit, longer timeout on the test itself, not just on
+  // the internal waitFor, same idiom as connectors-mcp-cli-async.test.ts's 'stdin is closed'.
   it('DELETE during the completing tick ends in a state a DELETE before or after it could reach', async () => {
     const r = await call('POST', '/api/background-tasks', { agent_id: 'agent-delrace', prompt: 'x' })
     const id = r.json.id as string
@@ -410,5 +413,5 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     const t = db.getBackgroundTask(id)!
     expect(t.status).toBe('failed')
     expect(['out text\n___BG_DONE___', '(cancelled)']).toContain(t.output)
-  })
+  }, 15_000)
 })

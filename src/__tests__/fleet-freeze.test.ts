@@ -25,7 +25,7 @@ vi.mock('../web/agent-process.js', () => ({
   startAgentProcess: async (n: string, o: unknown) => { startSpy(n, o); running.add(n); return { ok: true } },
 }))
 vi.mock('../web/agent-config.js', async (orig) => ({ ...(await orig<typeof import('../web/agent-config.js')>()), listAgentNames: () => ['samu', 'zara', 'iris', 'marveen', 'kint'], readAgentRemoteHost: (n: string) => (n === 'kint' ? 'vps.example' : null) }))
-const notifySpy = vi.hoisted(() => vi.fn(async (_text: string) => {}))
+const notifySpy = vi.hoisted(() => vi.fn(async (text: string) => { void text }))
 vi.mock('../notify.js', async (orig) => ({ ...(await orig<typeof import('../notify.js')>()), notifyOwner: notifySpy }))
 
 const { initDatabase, getDb } = await import('../db.js')
@@ -50,7 +50,14 @@ async function call(method: string, path: string, auth: Ctx['auth'], body?: unkn
 }
 const freeze = (auth: Ctx['auth'], body: unknown = { reason: 'teszt' }) => call('POST', '/api/fleet/freeze', auth, body)
 const unfreeze = (auth: Ctx['auth'], headers: Record<string, string> = {}) => call('POST', '/api/fleet/unfreeze', auth, undefined, headers)
-const addOwner = () => call('POST', '/api/auth/users', TOKEN, { username: 'owner', password: 'super-secret-pw' }, {}, tryHandleAuth)
+// Card 49960046 (RedHat 17005 X1): POST /api/auth/users (first-user bootstrap) is session-only in
+// this fork -- there is no HTTP path to create the first user with the shared token, by design.
+// Upstream's own test assumed its own mayIssueCredentials bootstrap exception (NOT adopted here,
+// see src/web/routes/auth.ts's file-top comment); seed the row directly, same as auth-sessions.test.ts.
+async function addOwner(): Promise<void> {
+  const { createDashboardUser } = await import('../db.js')
+  createDashboardUser('owner', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+}
 
 beforeAll(() => { process.env.NODE_ENV = 'test'; initDatabase(':memory:') })
 beforeEach(() => {
@@ -100,7 +107,7 @@ describe('switching it on', () => {
 
 describe('lifting it: the owner only, the #2163 predicate', () => {
   it('once a login exists the token is refused, and the fleet stays frozen', async () => {
-    expect((await addOwner()).status).toBe(201)
+    await addOwner()
     await freeze(TOKEN)
     const r = await unfreeze(TOKEN)
     expect(r.status).toBe(403)
@@ -109,7 +116,7 @@ describe('lifting it: the owner only, the #2163 predicate', () => {
   })
 
   it('a limited (operator) device key and a full device key are refused too', async () => {
-    expect((await addOwner()).status).toBe(201)
+    await addOwner()
     await freeze(TOKEN)
     expect((await unfreeze({ kind: 'device', scope: 'full', device: 'phone' })).status).toBe(403)
     expect((await unfreeze({ kind: 'device', scope: 'operator', device: 'op' })).status).toBe(403)
@@ -117,7 +124,7 @@ describe('lifting it: the owner only, the #2163 predicate', () => {
   })
 
   it('the owner session lifts it, restarts exactly the stopped agents (a channel agent fresh) and tells the owner', async () => {
-    expect((await addOwner()).status).toBe(201)
+    await addOwner()
     running.add('samu'); running.add('zara')
     await freeze(TOKEN, { reason: 'x', mode: 'stop' })
     notifySpy.mockClear()
@@ -130,19 +137,28 @@ describe('lifting it: the owner only, the #2163 predicate', () => {
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 
-  it('the token with the owner\'s live session cookie counts as the owner (the browser sends both)', async () => {
-    expect((await addOwner()).status).toBe(201)
+  // Card 49960046: the fork's mayIssueCredentials does NOT resolve a session from a cookie on a
+  // token-kind caller either (upstream's own version does) -- it checks only `auth.kind`, so a
+  // token request stays refused here no matter what cookie it carries. Only a real `kind: 'session'`
+  // auth result (resolved upstream of this handler, by the cookie-aware gate) counts as the owner.
+  it('a token caller with the owner\'s live session cookie is STILL refused -- the fork checks auth.kind only, not the cookie', async () => {
+    await addOwner()
     await freeze(TOKEN)
     const owner = getDb().prepare("SELECT id FROM dashboard_users WHERE username = 'owner'").get() as { id: number }
     const cookieValue = createSession({ userId: owner.id, username: 'owner' })
-    expect((await unfreeze(TOKEN, { cookie: `${SESSION_COOKIE_NAME}=${cookieValue}` })).status).toBe(200)
-    expect(isFleetFrozen()).toBe(false)
+    const r = await unfreeze(TOKEN, { cookie: `${SESSION_COOKIE_NAME}=${cookieValue}` })
+    expect(r.status).toBe(403)
+    expect(isFleetFrozen()).toBe(true)
   })
 
-  it('before the first login exists the token is the one owner credential there is', async () => {
+  // Card 49960046: no first-run exception in this fork -- the token can NEVER unfreeze, even
+  // before any dashboard user exists (unlike upstream's own mayIssueCredentials, which is NOT
+  // adopted; see src/web/routes/auth.ts's file-top comment).
+  it('before the first login exists the token is STILL refused -- no bootstrap exception in this fork', async () => {
     await freeze(TOKEN)
-    expect((await unfreeze(TOKEN)).status).toBe(200)
-    expect(isFleetFrozen()).toBe(false)
+    const r = await unfreeze(TOKEN)
+    expect(r.status).toBe(403)
+    expect(isFleetFrozen()).toBe(true)
   })
 })
 

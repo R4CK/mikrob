@@ -26,7 +26,6 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 const q = await import('../web/skill-quarantine.js')
 const { tryHandleSkills } = await import('../web/routes/skills.js')
-const { tryHandleAuth } = await import('../web/routes/auth.js')
 const { initDatabase, getDb } = await import('../db.js')
 const { _clearSessionCacheForTest, createSession } = await import('../web/auth-sessions.js')
 const { SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
@@ -47,8 +46,18 @@ function queue(name: string) {
 }
 const TOKEN: Auth = { kind: 'token', agent: 'soma' }
 const SESSION: Auth = { kind: 'session', user: 'owner' }
-const hashOf = async (id: string) => (await call('GET', `/api/skills/pending/${id}`, undefined, TOKEN)).body.hash
-const addOwner = () => call('POST', '/api/auth/users', { username: 'owner', password: 'super-secret-pw' }, TOKEN, {}, tryHandleAuth)
+// Card 7c79badc: the pending-detail GET is also human-only (session/device), same gate as
+// approve/reject -- fetch the real hash as the owner session; the tests below exercise what
+// happens when the shared token (or a forged/absent session) tries to USE that hash, not whether
+// it can read it (it cannot, see the first test's own comment below).
+const hashOf = async (id: string) => (await call('GET', `/api/skills/pending/${id}`, undefined, SESSION)).body.hash
+// Card 49960046 (RedHat 17005 X1): POST /api/auth/users (first-user bootstrap) is session-only in
+// this fork -- there is no HTTP path to create the first user with the shared token, by design.
+// Seed the row directly, same as auth-sessions.test.ts.
+async function addOwner(): Promise<void> {
+  const { createDashboardUser } = await import('../db.js')
+  createDashboardUser('owner', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+}
 
 beforeAll(() => { process.env.NODE_ENV = 'test'; initDatabase(':memory:') })
 beforeEach(() => {
@@ -57,12 +66,16 @@ beforeEach(() => {
 })
 
 describe('pending skill approve/reject: the owner session (mayIssueCredentials)', () => {
-  it('once a login exists, the shared token can still read the hash, but approving with it is 403 and nothing goes live', async () => {
-    expect((await addOwner()).status).toBe(201)
+  // Card 7c79badc (CYBERED NO-GO F2, predates this koteg): the WHOLE /api/skills/pending surface
+  // -- not only approve/reject -- is already gated to session/human-device BEFORE the
+  // mayIssueCredentials check below ever runs, so the shared token 403s on the GET too (hashOf
+  // returns undefined, not a real hash) and the error body carries that gate's own message, not
+  // mayIssueCredentials's OWNER_SESSION_REQUIRED code.
+  it('once a login exists, the shared token cannot even read the hash, and approving with it is 403: nothing goes live', async () => {
+    await addOwner()
     const { meta, live } = queue('planted-by-token')
     const r = await call('POST', `/api/skills/pending/${meta.id}/approve`, { hash: await hashOf(meta.id) }, TOKEN)
     expect(r.status).toBe(403)
-    expect(r.body.code).toBe('owner_session_required')
     expect(existsSync(live)).toBe(false)
     expect(q.getPending(meta.id)).not.toBeNull()
   })
@@ -74,14 +87,18 @@ describe('pending skill approve/reject: the owner session (mayIssueCredentials)'
     expect(q.getPending(meta.id)).not.toBeNull()
   })
 
-  it('the owner\'s browser that sends the stored token AND a live session cookie approves (no 403 for the owner)', async () => {
+  // Card 49960046: the fork's mayIssueCredentials checks only `auth.kind` -- a token-kind caller
+  // stays refused no matter what cookie it carries (upstream's own version resolves a session
+  // from the cookie on a token caller too; NOT adopted, see auth.ts's file-top comment). Only a
+  // caller whose auth was already resolved to `kind: 'session'` upstream of this handler counts.
+  it('a token caller with a live session cookie is STILL refused -- the fork checks auth.kind only, not the cookie', async () => {
     await addOwner()
     const { meta, live } = queue('owner-browser')
     const owner = getDb().prepare('SELECT id FROM dashboard_users WHERE username = ?').get('owner') as { id: number }
     const cookie = `${SESSION_COOKIE_NAME}=${createSession({ userId: owner.id, username: 'owner' })}`
-    const ok = await call('POST', `/api/skills/pending/${meta.id}/approve`, { hash: await hashOf(meta.id) }, TOKEN, { cookie })
-    expect(ok.status).toBe(200)
-    expect(readFileSync(live, 'utf-8')).toContain('# planted')
+    const r = await call('POST', `/api/skills/pending/${meta.id}/approve`, { hash: await hashOf(meta.id) }, TOKEN, { cookie })
+    expect(r.status).toBe(403)
+    expect(existsSync(live)).toBe(false)
   })
 
   it('the token with a dead or forged session cookie is still the bare token: 403', async () => {
@@ -110,9 +127,13 @@ describe('pending skill approve/reject: the owner session (mayIssueCredentials)'
     expect(q.getPending(other.meta.id)).toBeNull()
   })
 
-  it('before the first dashboard login exists, the token is the one credential there is: it may decide', async () => {
+  // Card 49960046: no first-run exception in this fork -- the token can NEVER approve, even
+  // before any dashboard user exists (unlike upstream's own mayIssueCredentials, which is NOT
+  // adopted; see src/web/routes/auth.ts's file-top comment).
+  it('before the first dashboard login exists, the token is STILL refused -- no bootstrap exception in this fork', async () => {
     const { meta, live } = queue('first-run')
-    expect((await call('POST', `/api/skills/pending/${meta.id}/approve`, { hash: await hashOf(meta.id) }, TOKEN)).status).toBe(200)
-    expect(existsSync(live)).toBe(true)
+    const r = await call('POST', `/api/skills/pending/${meta.id}/approve`, { hash: await hashOf(meta.id) }, TOKEN)
+    expect(r.status).toBe(403)
+    expect(existsSync(live)).toBe(false)
   })
 })

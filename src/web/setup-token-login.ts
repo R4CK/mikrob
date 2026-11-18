@@ -36,13 +36,11 @@ import { tryResolveFromPath } from '../platform.js'
 // Parsing (pure).
 // ---------------------------------------------------------------------------
 
-/* eslint-disable no-control-regex */
 const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
 const CSI_RE = /\x1b\[[0-9;?<>=]*[A-Za-z]/g
 const MISC_ESC_RE = /\x1b[=>]?/g
 // OSC 8 hyperlink opener: ESC ] 8 ; params ; URI (BEL | ST)
 const OSC8_TARGET_RE = /\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]+)(?:\x07|\x1b\\)/g
-/* eslint-enable no-control-regex */
 
 export function stripAnsiOsc(text: string): string {
   return text.replace(OSC_RE, '').replace(CSI_RE, '').replace(MISC_ESC_RE, '')

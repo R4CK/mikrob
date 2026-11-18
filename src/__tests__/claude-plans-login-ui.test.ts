@@ -24,7 +24,6 @@ function extractFn(name: string): string {
   throw new Error(`${name}: unbalanced braces`)
 }
 
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
 const buildStart = new Function(`${extractFn('buildClaudePlanLoginStartBody')}; return buildClaudePlanLoginStartBody`)() as (
   f: Record<string, unknown>,
 ) => { error?: string; body?: Record<string, unknown> }
@@ -32,7 +31,6 @@ const buildStart = new Function(`${extractFn('buildClaudePlanLoginStartBody')}; 
 async function loadLang(file: string): Promise<Record<string, string>> {
   const src = readFileSync(join(__dirname, '../../web/lang', file), 'utf-8')
   const sandbox: Record<string, unknown> = {}
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
   new Function('window', src)(sandbox)
   const found = Object.values(sandbox).find((v) => v && typeof v === 'object') as Record<string, Record<string, string>> | undefined
   if (!found) throw new Error(`no dictionary in ${file}`)

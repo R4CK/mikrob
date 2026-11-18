@@ -29,7 +29,6 @@ vi.mock('../logger.js', () => {
 
 const { initDatabase, getDb } = await import('../db.js')
 const { _clearSessionCacheForTest } = await import('../web/auth-sessions.js')
-const { tryHandleAuth } = await import('../web/routes/auth.js')
 const { tryHandleClaudePlansLogin, setClaudePlanLoginDepsForTest } = await import('../web/routes/claude-plans-login.js')
 const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
@@ -108,9 +107,12 @@ beforeEach(async () => {
   })
 })
 
+// Card 49960046 (RedHat 17005 X1): POST /api/auth/users (first-user bootstrap) is session-only in
+// this fork -- there is no HTTP path to create the first user with the shared token, by design.
+// Seed the row directly, same as auth-sessions.test.ts.
 async function addOwner() {
-  const r = await call('POST', '/api/auth/users', TOKEN_AUTH, { username: 'owner', password: 'super-secret-pw' }, tryHandleAuth)
-  expect(r.status).toBe(201)
+  const { createDashboardUser } = await import('../db.js')
+  createDashboardUser('owner', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
 }
 
 function noTokenAnywhere() {
@@ -143,8 +145,12 @@ describe('owner gate (mayIssueCredentials)', () => {
     await call('POST', '/api/claude-plans/login/cancel', SESSION_AUTH)
   })
 
-  it('before any login exists (first-run setup), the token is the owner', async () => {
-    expect((await call('GET', '/api/claude-plans/login/status', TOKEN_AUTH)).status).toBe(200)
+  // Card 49960046: no first-run exception in this fork -- the token is STILL refused, even
+  // before any dashboard user exists (unlike upstream's own mayIssueCredentials, which is NOT
+  // adopted; see src/web/routes/auth.ts's file-top comment).
+  it('before any login exists (first-run setup), the token is STILL refused -- no bootstrap exception in this fork', async () => {
+    const r = await call('GET', '/api/claude-plans/login/status', TOKEN_AUTH)
+    expect(r.status).toBe(403)
   })
 })
 

@@ -35,7 +35,6 @@ const IN_TOKEN = 'a'.repeat(64)
 const TOKEN_AUTH: RouteContext['auth'] = { kind: 'token' }
 const SESSION_AUTH: RouteContext['auth'] = { kind: 'session', user: 'owner' }
 const DEVICE_AUTH: RouteContext['auth'] = { kind: 'device', device: 'phone', deviceId: 1, scope: 'full' }
-const GOOD_PW = 'super-secret-pw'
 
 type Handler = (ctx: RouteContext) => Promise<boolean>
 async function call(handler: Handler, method: string, path: string, auth: RouteContext['auth'], body?: unknown, headers: Record<string, string> = {}) {
@@ -52,7 +51,13 @@ async function call(handler: Handler, method: string, path: string, auth: RouteC
   return { status: out.status || 200, json: () => JSON.parse(out.body || '{}') as Record<string, unknown> }
 }
 
-const addUser = (auth: RouteContext['auth'], username: string) => call(tryHandleAuth, 'POST', '/api/auth/users', auth, { username, password: GOOD_PW })
+// Card 49960046 (RedHat 17005 X1): POST /api/auth/users (first-user bootstrap) is session-only in
+// this fork -- there is no HTTP path to create the first user with the shared token, by design.
+// Seed the row directly, same as auth-sessions.test.ts, for scenarios that just need a user to exist.
+async function seedOwner(): Promise<void> {
+  const { createDashboardUser } = await import('../db.js')
+  createDashboardUser('owner', '$scrypt$ln=16,r=8,p=1$c2FsdA==$a2V5')
+}
 const addPeer = (auth: RouteContext['auth'], id = 'teodor', headers: Record<string, string> = {}) =>
   call(tryHandleFederation, 'POST', '/api/federation/peers', auth, { id, baseUrl: 'https://teodor.example' }, headers)
 const putDoc = (auth: RouteContext['auth']) => call(tryHandleFederation, 'PUT', '/api/federation/peers', auth, {
@@ -92,22 +97,25 @@ afterAll(() => {
   rmSync(TMP, { recursive: true, force: true })
 })
 
-describe('first-run setup (no dashboard user yet): the token still issues', () => {
-  it('adds a peer, rotates and reveals its token, writes the switches and lists users', async () => {
+// Card 49960046: no first-run exception in this fork -- the token is refused on every one of
+// these routes even before any dashboard user exists (unlike upstream's own mayIssueCredentials,
+// which IS adopted upstream but NOT here; see src/web/routes/auth.ts's file-top comment).
+describe('first-run setup (no dashboard user yet): the token is STILL refused -- no bootstrap exception in this fork', () => {
+  it('adding a peer, rotating/revealing its token, writing the switches and listing users are all refused', async () => {
     const added = await addPeer(TOKEN_AUTH)
-    expect(added.status).toBe(201)
-    expect(typeof added.json().inboundToken).toBe('string')
-    expect((await rotate(TOKEN_AUTH)).status).toBe(200)
-    expect((await reveal(TOKEN_AUTH)).status).toBe(200)
-    expect((await putDoc(TOKEN_AUTH)).status).toBe(200)
-    expect((await putOperator(TOKEN_AUTH)).status).toBe(200)
-    expect((await listUsers(TOKEN_AUTH)).status).toBe(200)
+    expect(added.status).toBe(403)
+    expect(added.json()).not.toHaveProperty('inboundToken')
+    expect((await rotate(TOKEN_AUTH)).status).toBe(403)
+    expect((await reveal(TOKEN_AUTH)).status).toBe(403)
+    expect((await putDoc(TOKEN_AUTH)).status).toBe(403)
+    expect((await putOperator(TOKEN_AUTH)).status).toBe(403)
+    expect((await listUsers(TOKEN_AUTH)).status).toBe(403)
   })
 })
 
 describe('once a login exists, the token cannot issue a peer token or widen the operator', () => {
   beforeEach(async () => {
-    expect((await addUser(TOKEN_AUTH, 'owner')).status).toBe(201)
+    await seedOwner()
     seedPeer()
   })
 
@@ -140,12 +148,15 @@ describe('once a login exists, the token cannot issue a peer token or widen the 
     expect((await reveal(DEVICE_AUTH)).status).toBe(403)
   })
 
-  it('the operator switches cannot be widened, reading them stays open', async () => {
+  // Card 0c508c7b (predates this koteg): /api/operator-access is already owner-session-only for
+  // EVERY method, not just PUT -- the token 403s on GET too (the generic "Forbidden" gate fires
+  // before mayIssueCredentials/OWNER_SESSION_REQUIRED ever runs), so GET is not "open" to it either.
+  it('the operator switches cannot be widened or even read by the token', async () => {
     const r = await putOperator(TOKEN_AUTH)
     expect(r.status).toBe(403)
-    expect(r.json().code).toBe('owner_session_required')
     expect(h.operatorAccess).toBeNull()
-    expect((await call(tryHandleOperatorAccess, 'GET', '/api/operator-access', TOKEN_AUTH)).status).toBe(200)
+    expect((await call(tryHandleOperatorAccess, 'GET', '/api/operator-access', TOKEN_AUTH)).status).toBe(403)
+    expect((await call(tryHandleOperatorAccess, 'GET', '/api/operator-access', SESSION_AUTH)).status).toBe(200)
   })
 
   it('the username list is refused to the token', async () => {
@@ -194,11 +205,16 @@ describe('once a login exists, the token cannot issue a peer token or widen the 
     expect((await listUsers(SESSION_AUTH)).status).toBe(200)
   })
 
-  it('the owner\'s browser that also keeps the token: a valid session cookie alongside it is the owner', async () => {
+  // Card 49960046: the fork's mayIssueCredentials checks only `auth.kind` -- a token-kind caller
+  // stays refused no matter what cookie it carries (upstream's own version resolves a session
+  // from the cookie on a token caller too; NOT adopted, see src/web/routes/auth.ts's file-top
+  // comment). Only a caller whose auth was already resolved to `kind: 'session'` upstream of this
+  // handler (SESSION_AUTH, used elsewhere in this file) counts.
+  it('a token caller with a live session cookie is STILL refused -- the fork checks auth.kind only, not the cookie', async () => {
     const u = getDashboardUser('owner')!
     const cookie = `${SESSION_COOKIE_NAME}=${createSession({ userId: u.id, username: u.username })}`
-    expect((await addPeer(TOKEN_AUTH, 'zeta', { cookie })).status).toBe(201)
-    expect((await listUsers(TOKEN_AUTH, { cookie })).status).toBe(200)
+    expect((await addPeer(TOKEN_AUTH, 'zeta', { cookie })).status).toBe(403)
+    expect((await listUsers(TOKEN_AUTH, { cookie })).status).toBe(403)
     expect((await addPeer(TOKEN_AUTH, 'eta', { cookie: `${SESSION_COOKIE_NAME}=forged` })).status).toBe(403)
   })
 })

@@ -126,9 +126,8 @@ describe('claude mcp CLI is async and shell-free', () => {
 
   it('POST stdio connector', async () => {
     setSleep()
-    let r: any
     const stall = await stallDuring(async () => {
-      r = await call('POST', '/api/connectors', { name: 'local1', type: 'stdio', command: 'node', args: '  server.js   --port 9  ' })
+      await call('POST', '/api/connectors', { name: 'local1', type: 'stdio', command: 'node', args: '  server.js   --port 9  ' })
     })
     expect(argvOf(1)).toEqual(['mcp', 'add', '-s', 'user', 'local1', '--', 'node', 'server.js', '--port', '9'])
     expect(stall).toBeLessThan(STALL_MAX_MS)
