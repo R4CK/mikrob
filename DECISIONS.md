@@ -28142,3 +28142,91 @@ Gate: QA + Cybered (a kártya saját kijelölése).
 **Test:** `src/__tests__/project-root-anchor.test.ts`, two new cases: (a) agent-attacker's `.claude` symlinked to agent-victim's `.claude`, with a drifted STORE_DIR anchor seeded for attacker -- asserts the sweep refuses and victim's `settings.json` is byte-identical afterward; (b) an anchor file planted under the agent's own (legacy) `.claude` dir is ignored -- the sweep treats it as "no anchor yet" and writes the real baseline to STORE_DIR instead. `fleet-test.sh --ref 2ae712bfd src/__tests__/project-root-anchor.test.ts`: 1 file, 9/9 green.
 
 **Who decided:** backend (card b5d19a32, dispatched by MikroB msg 18944 off CYBERSEC GO on eed22288). Gate: QA + Cybersec. Gate-SHA: 2ae712bfd.
+
+## 2026-11-18 -- 50684453: correction to e3d14be9's consumer survey + unresolved Gate line (CYBERED GO 21225 R1, not reopened)
+
+**Context:** follow-up to the e3d14be9 entry above (2026-10-17, Gate-SHA 45fb4e0b). That entry's
+category-1 claim and its closing Gate line were both measured wrong by Cybered's GO (comment
+21225, R1) on the same sha; this is the append-only correction, not a reopening of e3d14be9 --
+the F1 code fix itself (`return resolved`) is correct and unaffected.
+
+**Correction 1 (R1, category-1 claim).** The e3d14be9 entry's point 1 says "the most common
+shell consumers (notify.sh, limit-monitor.sh, morning-briefing.sh, disk-space-guard.sh,
+stuck-modal-guard.sh, host-restart-watchdog.sh, unit-fail-notify.sh, fleet-memory-gate.sh) go
+through `scripts/lib/owner-chat.sh`, which does not read `TELEGRAM_STATE_DIR` itself." Re-read
+just now (grep on the live scripts, 2026-11-18): true for exactly 2 of the 8 named scripts
+(`notify.sh` sources `owner-chat.sh`; `morning-briefing.sh` sources it too, AND deliberately sets
+`TELEGRAM_STATE_DIR=$NO_CHANNEL_STATE` before calling it). FALSE for the other 6: `fleet-memory-gate.sh`
+(line 90), `host-restart-watchdog.sh` (28), `unit-fail-notify.sh` (18), `disk-space-guard.sh`
+(57), `stuck-modal-guard.sh` (49), and `limit-monitor.sh` (97) all read
+`"${TELEGRAM_STATE_DIR:-}"` directly, with no validation, and derive their `.env`/`access.json`
+paths from it unvalidated. Cybered also measured (code-read only, not run) the same raw,
+unvalidated pattern in 5 hook files outside this category: `telegram_fallback_send.py`,
+`telegram-ack.py`, `marveen-commands.py`, `telegram_progress.py`, `channel-inbox-drain.py` --
+confirmed the same way just now (`os.environ.get("TELEGRAM_STATE_DIR")`, no realpath/containment
+check, in all five).
+
+**Why this does not change the e3d14be9 verdict.** The consequence of a redirected
+`TELEGRAM_STATE_DIR` on these 6 scripts + 5 hooks is the SAME class e3d14be9's own category-2
+already named: a different notification target / bot token, not an authorization bypass --
+there is no allowlist-of-SENDERS check in any of them (confirmed by reading: none compares an
+inbound sender against `allowFrom`; `access.json` there only ever supplies an outbound chat id or
+a token). And the attacker capability required to redirect the env var (write access inside the
+checkout, same UID as the real `.env`/`access.json`) already lets that same attacker edit the
+REAL files directly -- a shared validator here would not remove any capability the attacker does
+not already have through a more direct path. The LOW severity holds; only the REASON stated in
+the original entry was wrong (the scripts are not structurally unaffected, they're affected but
+low-consequence-and-already-equally-exposed).
+
+**Decision on the card's point 2 (common validator helper): NOT built, documented reason instead.**
+Wiring the quota-bridge.py resolution logic (or an equivalent shared shell/python helper) into 6
+shell scripts and 5 hook files is a real, multi-file production change for a finding that is LOW
+severity with no live attacker model beyond "has write access to this agent's own checkout" --
+the same UID that could already rewrite the real `.env`/`access.json` these scripts read, with no
+validation to bypass at all. Per the karpathy-guidelines surgical-change principle and the
+e3d14be9 entry's own established policy for its category 2 (same reasoning, correctly reasoned
+there), a flotta-wide refactor against an already-equal-privilege threat does not earn its
+complexity. If `TELEGRAM_STATE_DIR` is ever set from an untrusted or lower-privilege source (a
+systemd unit, a different-UID service, a container boundary) this decision is reopened --
+re-checked just now: still zero `.service` files set it (`grep -rl TELEGRAM_STATE_DIR
+scripts/systemd/*.service` -- 0 matches), matching the original entry's point 3.
+
+**Correction 2 (card point 3, KC2/KC3, documentation only, inherited from 01dea2f0/e3d14be9, not
+re-opened).** Cybered's KC2: the `return resolved` fix in quota-bridge.py returns the path
+resolved AT THE TIME OF THE CALL that reads `TELEGRAM_STATE_DIR`; it does not pin the directory
+itself. If the resolved directory is later renamed and a symlink put in its place (same
+checkout-write privilege as the original vector), the NEXT read follows the new symlink --
+measured by Cybered on a synthetic tree. The fix closes the specific vector it was built for
+(retargeting the symlink the env var itself points at, after acceptance) and narrows but does not
+generally close the TOCTOU class. KC3: the fallback candidate path
+(`<checkout>/.claude/channels/telegram`) is returned raw, unvalidated, inherited unchanged from
+before 01dea2f0 -- not today exploited (the live first candidate is a real directory, not a
+symlink, checked by `ls -ld`), but not hardened either. Both are LOW, both are pre-existing
+(inherited), neither is reopened by this correction; a hardening card (resolved dir-fd, or
+revalidating the fallback the same way) is optional future work, not required here.
+
+**Correction 3 (card point 4, stale Gate line).** The e3d14be9 entry's own closing line says "Gate:
+QA + Cybersec" with a now-superseded justification ("NEM mirror-case ... a tényleges fix szerzője
+backend, az ellenőrző Cybersec, nem azonosak"). MikroB's actual designation on that card (message
+13425/comment 21223) was QA + RedHat, because the fix direction came from Cybersec (mirror-case
+rule, `gate-dispatch-check-who-designed-the-fix`) -- Cybered's own GO on the card flagged the same
+drift (comment 21225). The e3d14be9 entry above is left as originally written (append-only, per
+the tail-write convention); this entry states the corrected designation for anyone reading the
+old one: **the actual gate on e3d14be9 was QA + RedHat (CYBERED GO comment 21225, QA PASS comment
+21240), not QA + Cybersec.**
+
+**Measured:** `grep -n "TELEGRAM_STATE_DIR" scripts/fleet-memory-gate.sh
+scripts/host-restart-watchdog.sh scripts/unit-fail-notify.sh scripts/disk-space-guard.sh
+scripts/stuck-modal-guard.sh scripts/limit-monitor.sh` -- all 6 match (raw `${VAR:-}` read).
+`grep -n "TELEGRAM_STATE_DIR\|owner-chat" scripts/notify.sh scripts/morning-briefing.sh` -- both
+source `owner-chat.sh`, morning-briefing.sh additionally overrides the var to empty before doing
+so. `grep -n "TELEGRAM_STATE_DIR" scripts/hooks/telegram_fallback_send.py
+scripts/hooks/telegram-ack.py scripts/hooks/marveen-commands.py scripts/hooks/telegram_progress.py
+scripts/hooks/channel-inbox-drain.py` -- all 5 read `os.environ.get(...)` raw. `grep -rl
+TELEGRAM_STATE_DIR scripts/systemd/*.service` -- 0 matches (no live unit sets it), unchanged from
+e3d14be9's own point 3. No code changed by this card; append-only documentation per the card's own
+scope.
+
+**Who decided:** backend (own card, correcting Cybered's R1 on e3d14be9). Gate: QA + Cybersec2
+(the correcting measurement came from Cybered's gate on a different card, so not a mirror-case
+for the gate itself; QA + Cybersec2 per this card's own designation).
