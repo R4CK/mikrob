@@ -27375,3 +27375,51 @@ a javított fejléc-sor a végeredményben megvan. Az eldobható worktree-t tör
 32722), a javítást backend végezte.
 
 **Hivatkozás:** kártya 9ea8dcb8, komment 32722 (Fix-Direction), `store/decisions-append-union.sh`.
+
+## 2026-11-18 -- b715a0b1: TOKENVAK915 follow-up (25ea084c WhiteHat2) -- mindhárom pont már teljesült, kódváltozás nélkül
+
+**L1 (a lényeg, mutáns pirosítás).** A kártya azt feltételezte, hogy a TOKENVAK915-javítás
+(context-restart-gate-runner.ts és context-guard-runner.ts configDirFor-ja, MAIN_AGENT_ID ->
+mainAgentConfigDir) nincs pinelve. Ez közben egy MÁSIK kártyán (25ea084c, QA2 L1 lelet) már
+megépült: a src/__tests__/main-config-dir-wiring.test.ts (commit 750698ab6, már az origin/develop-en)
+pontosan ezt a delegálást pineli. Ellenőriztem kézzel: mindkét runner configDirFor-jában a
+MAIN_AGENT_ID ágat feltétel nélküli `undefined`-ra írtam vissza, lefuttattam a tesztfájlt --
+pontosan a két célzott teszt ("resolves through the real function") ment pirosra, a harmadik
+("a non-main agent never reaches mainAgentConfigDir") zöld maradt (helyesen, mert az az ág
+nem ágazik a mutált kódra). A fájlokat byte-azonosra visszaállítottam (`diff -q` tiszta).
+
+**L2 (MAIN_AGENT_CONFIG_DIR hitelesség, döntés).** A `resolveMainAgentConfigDir()`
+(src/web/agent-process.ts) MÁR validál: `expandAndValidateConfigDir` (shell-biztonsági
+whitelist + `..`-tiltás + tilde-szabályok) ÉS `existsSync` -- hiányzó vagy érvénytelen érték
+esetén fail-open NULL-ra esik (megosztott `~/.claude` marad), nem egy hamis gyökérre. A kártya
+által javasolt "csak a saját home alatt" megszorítást A KÓD SZÁNDÉKOSAN NEM vezeti be
+(config-dir-path.ts:28-29 saját kommentje: "legitimate non-home locations like
+'/var/lib/claude-coding' still work") -- ez egy MEGLÉVŐ, tudatos döntés, nem hiányosság: az
+üzemeltető szándékosan választhat home-on kívüli konfig-gyökeret (pl. különálló Claude-login egy
+másik lemezen/felhasználón). Döntés: a jelenlegi existence+shell-safety validáció elegendő
+megbízási szint a ~/.claude/projects hamis fájljához képest (a hamisítás továbbra is helyi fájlrendszer-
+hozzáférést igényel, amit a fail-open-null már lekezel); a home-dir-megszorítást NEM vezetjük be.
+
+**L3 (readdir-költség, mérve).** A kártya "1327 fájlnál ~7-11 ms" mérésének megfelelő, uncachelt
+szinkron readdir+stat hurok TÉNYLEG létezik: `readLastConversationTsFromProjectDir` és
+`readTranscriptMtimeFromProjectDir` (src/web/active-model.ts) -- ezeket hívja
+`msSinceTranscriptWrite` a context-restart-gate-runner.ts-ben és a context-guard-runner.ts
+tick-je, 5 percenkénti ciklusban, agensenként. (A MÁSIK olvasó, `readContextTokensFromProjectDir`,
+MÁR async + 3s TTL-cache + in-flight-coalescing -- card 9a2fd3f7 -- tehát az NEM ez a gond.)
+Élő mérés: a legnagyobb jsonl-könyvtáron (607 fájl, /home/neon/.claude/projects/-home-neon-marveen)
+a readdir+stat hurok 6.6 ms. 18 regisztrált agenssel, 2 runnerrel, 5 perces ciklusonként: legfeljebb
+~18*2*7-14ms ≈ 250-500 ms szinkron CPU 300 másodpercenként, ami <0,2%-os terhelés és egyedi hívásként
+jóval a d3dc35bf/9a2fd3f7 kártyák által mért, másodperces-blokkolást okozó eset alatt marad (azok
+többszáz MB-os teljes fájlbeolvasást cacheltek, nem egy 1327-elemű readdir-t). Döntés: a jelenlegi
+hívási gyakoriság NEM indokolja a cache bevezetését -- a kártya saját feltétele ("csak akkor javítsd,
+ha a hívási gyakoriság indokolja") erre nem teljesül, spekulatív optimalizálás nem kerül be
+(karpathy-guidelines: egyszerűség először).
+
+**Ki döntött:** backend (vizsgálat + mérés), a döntést a kártya saját feltételei alapján magam
+rögzítettem, kódváltozás nélkül.
+
+**Hivatkozás:** kártya b715a0b1, forrás 25ea084c (WhiteHat2 CYBERSEC GO, msg 12178),
+src/__tests__/main-config-dir-wiring.test.ts (commit 750698ab6), src/web/agent-process.ts,
+src/config-dir-path.ts, src/web/active-model.ts.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
