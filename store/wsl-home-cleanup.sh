@@ -391,6 +391,21 @@ remove_entry() {
 }
 
 main() {
+  # 8cb1e168 (Cybered GO 33187 on 09ed7ef6): WSL_HOME_CLEANUP_MIN_AGE_HOURS=0 or a negative value
+  # makes every entry read as old regardless of its real mtime -- find_recent_or_failed() turns it
+  # into `find ... -mmin -0` (or a double-negative minute count), which never matches any file, so
+  # find_recent_or_failed always returns false ("not recently modified") and every DISPOSABLE-named
+  # entry proceeds straight to removal, however new it actually is. A non-integer already fails
+  # closed via the arithmetic in find_recent_or_failed erroring out. Refuse to run at all for any
+  # value that is not a positive integer, so the failure is loud and up front, not a silent
+  # miscount buried in the age check.
+  case "$MIN_AGE_HOURS" in
+    ''|*[!0-9]*|0)
+      echo "wsl-home-cleanup: WSL_HOME_CLEANUP_MIN_AGE_HOURS must be a positive integer (got '$MIN_AGE_HOURS') -- refusing to run" >&2
+      return 2
+      ;;
+  esac
+
   local MODE="dry-run" CONFIRMED=0 arg
   for arg in "$@"; do
     case "$arg" in
