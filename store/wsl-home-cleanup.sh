@@ -147,6 +147,18 @@ git_dirty_or_failed() {
   [ -n "$out" ] || [ "$rc" -ne 0 ]
 }
 
+# CONDITION 1 (Cybered GO 32903 on 3bcdc0a6c, card 09ed7ef6): the three `find -mmin` age re-checks
+# below were still output-only (`[ -n "$(find ... -print -quit 2>/dev/null)" ]`), the same fail-OPEN
+# shape C1 above just fixed for git: a find that dies silently (no stderr, non-zero rc) on a dir
+# modified seconds ago produced empty output, which read as "not recently modified" -- removable.
+# Same helper shape as git_dirty_or_failed: capture rc alongside output, treat ANY non-zero rc the
+# same as "found a recent file" (fail closed -- SKIP/UNKNOWN, never silently "clean").
+find_recent_or_failed() {
+  local path="$1" out rc
+  out="$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)"; rc=$?
+  [ -n "$out" ] || [ "$rc" -ne 0 ]
+}
+
 path_under_targets() {
   local dir="$1" targets="$2" target
   # N2 (RedHat LOW 16849): a healthy scan_live_proc_targets() is never empty (there is always at
@@ -258,7 +270,7 @@ classify() {
     # mtime, which does not change when a file deep inside is edited -- a dir that looked old at
     # the top could still hold content someone touched minutes ago. Age is now whether ANY file
     # anywhere inside the dir (any depth) was modified within the last $MIN_AGE_HOURS hours.
-    if [ -n "$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)" ]; then
+    if find_recent_or_failed "$path"; then
       echo "UNKNOWN"
       return
     fi
@@ -337,7 +349,7 @@ remove_entry() {
       say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
       return 1
     fi
-    if [ -n "$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)" ]; then
+    if find_recent_or_failed "$path"; then
       say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
       return 1
     fi
@@ -370,7 +382,7 @@ remove_entry() {
     say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
     return 1
   fi
-  if [ -n "$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)" ]; then
+  if find_recent_or_failed "$path"; then
     say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
     return 1
   fi
