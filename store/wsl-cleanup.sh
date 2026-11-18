@@ -47,6 +47,18 @@ CLEANCORE_MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Wo
 say() { echo "wsl-cleanup: $*"; }
 run() { if [ "$DRY_RUN" = 1 ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
 
+# Same flaw and fix as store/wsl-home-cleanup.sh's git_dirty_or_failed() (card 89e8cb90): the
+# guard below used to test only git's OUTPUT, never its exit code -- a git that dies silently
+# (rc 137/127/1, no stderr) produced empty output, which read as "clean", removing a dirty
+# worktree. Capturing rc alongside output and treating ANY non-zero rc as "found a problem too"
+# closes that hole. This script runs unattended daily, so the exposure is live (card 6c41214a).
+GIT_DIRTY_OR_FAILED_RC=0
+git_dirty_or_failed() {
+  local out
+  out="$("$@" 2>&1)"; GIT_DIRTY_OR_FAILED_RC=$?
+  [ -n "$out" ] || [ "$GIT_DIRTY_OR_FAILED_RC" -ne 0 ]
+}
+
 freed_worktrees=0
 skipped_dirty=0
 skipped_live_pid=0
@@ -83,8 +95,12 @@ sweep_throwaway_worktrees() {
       skipped_live_pid=$((skipped_live_pid + 1))
       continue
     fi
-    if [ -n "$(git -C "$wt" status --porcelain 2>&1)" ]; then
-      say "SKIP (uncommitted changes): $wt"
+    if git_dirty_or_failed git -C "$wt" status --porcelain; then
+      if [ "$GIT_DIRTY_OR_FAILED_RC" -ne 0 ]; then
+        say "SKIP (git rc=$GIT_DIRTY_OR_FAILED_RC): $wt"
+      else
+        say "SKIP (uncommitted changes): $wt"
+      fi
       skipped_dirty=$((skipped_dirty + 1))
       continue
     fi
