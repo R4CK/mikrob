@@ -220,7 +220,24 @@ if [[ -n "$TRUNK" ]]; then
       fi
     fi
 
-    if [[ "$merge_ok" == "1" ]]; then
+    # TRUST BOUNDARY (F1, cybersec GO 20497 / card a42d27e1): this runs UNATTENDED off the
+    # heartbeat-consolidated B-section, BEFORE any gate reads the diff and before a PreToolUse
+    # hook can see the branch's own code -- unlike a gate dispatch, which happens after a human/
+    # agent has looked at the diff and does sit under hooks. Below this point the branch's OWN
+    # store/lint-ratchet.sh and store/fleet-test.sh run as real bash, and the branch's OWN test
+    # files run as real JS under vitest, with whatever rights this script's caller has (today:
+    # the dashboard Bearer token file is readable by this user). If the diff being checked
+    # touches the harness itself or anything that changes what the harness executes, that is
+    # exactly the shape a compromised/prompt-injected branch would need -- so skip the measurement
+    # entirely rather than run branch-controlled harness logic unattended. A gate agent reviewing
+    # the diff by hand still covers this case normally, under hooks.
+    harness_touched="$(git -C "$PARITY_WT" diff --name-only "$TRUNK" HEAD -- \
+      '.eslintrc*' 'eslint.config.*' 'vitest.config.*' 'vitest.workspace.*' \
+      'package.json' 'package-lock.json' 'store/lint-ratchet.sh' 'store/fleet-test.sh' 2>/dev/null || true)"
+    if [[ "$merge_ok" == "1" && -n "$harness_touched" ]]; then
+      add "info" "land-parity-measurement-skipped" \
+        "diff touches harness/config file(s) ($(printf '%s' "$harness_touched" | tr '\n' ' ' | sed 's/ $//')) -- lint-ratchet/importer-sweep execution skipped rather than run branch-controlled harness code unattended (F1); a gate reviewing the diff by hand still covers this"
+    elif [[ "$merge_ok" == "1" ]]; then
       # lint-ratchet.sh must be the WORKTREE'S OWN copy, never the main clone's -- its ROOT
       # resolves from its own BASH_SOURCE path, so the main clone's copy would measure the WRONG
       # tree (card 2ba008f2 round 6's own lesson, learned by hand before this section existed).
@@ -257,14 +274,22 @@ if [[ -n "$TRUNK" ]]; then
           merge_sha="$(git -C "$PARITY_WT" rev-parse HEAD)"
           sweep_out="$(bash "$REPO/store/fleet-test.sh" --ref "$merge_sha" "${rel_importers[@]}" 2>&1)"
           sweep_rc=$?
-          if [[ $sweep_rc -ne 0 ]]; then
+          # fleet-test.sh die()s with 2 (bad usage) or 3 (harness/setup fault: lock timeout, npm ci,
+          # stale-build refusal -- see store/fleet-test.sh die() call sites) BEFORE a single test
+          # runs; neither is a test result. Only rc=1 WITH an actual FAIL/failed-count line in the
+          # log is a real red (F2, cybersec GO 20497 comment): queue congestion or a setup fault must
+          # not post a false importer-sweep-red INPUT finding on the card.
+          fail_lines="$(printf '%s' "$sweep_out" | grep -E '^\s*(FAIL|⎯⎯⎯⎯⎯⎯⎯ Failed Tests|Tests .*failed)' | head -8)"
+          if [[ $sweep_rc -eq 1 && -n "$fail_lines" ]]; then
             # The importer list itself can run into the hundreds (the sweep is deliberately a wide
             # grep, not a precise import graph) -- the finding names the FAILING file(s) and the
             # vitest "FAIL"/"Tests ... failed" lines, never the full candidate list, which a blind
             # `tail -N` cannot reliably surface once vitest's own trailing perf hint outgrows it.
-            fail_lines="$(printf '%s' "$sweep_out" | grep -E '^\s*(FAIL|⎯⎯⎯⎯⎯⎯⎯ Failed Tests|Tests .*failed)' | head -8)"
             add "fail" "importer-sweep-red" \
               "${#rel_importers[@]} importer file(s) swept, at least one red against the merged tree -- $(printf '%s' "$fail_lines" | tr '\n' ' ' | sed 's/^ *//')"
+          elif [[ $sweep_rc -ne 0 ]]; then
+            add "info" "importer-sweep-unmeasured" \
+              "fleet-test.sh exited $sweep_rc before/without a test-result line (harness fault, not a card fact) -- $(printf '%s' "$sweep_out" | tail -3 | tr '\n' ' ' | sed 's/^ *//')"
           else
             add "info" "importer-sweep-green" "${#rel_importers[@]} importer test file(s) green against the merged tree"
           fi

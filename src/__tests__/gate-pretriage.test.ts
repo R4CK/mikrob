@@ -296,3 +296,71 @@ describe('gate-pretriage.sh -- --trunk land parity is opt-in (card a42d27e1)', (
     expect(find(r, 'land-parity-skipped')?.severity).toBe('info')
   })
 })
+
+describe('gate-pretriage.sh -- --trunk trust boundary (F1/F2, cybersec GO 20497 on card a42d27e1)', () => {
+  it('F1: skips lint-ratchet/importer-sweep execution when the diff touches a harness/config file, instead of running branch-controlled harness code unattended', () => {
+    // trunk branches off AFTER package.json already exists, so master's later edit is a genuine
+    // content diff against trunk, not an add/add conflict from two independent additions.
+    writeFileSync(join(repo, 'package.json'), '{\n  "name": "fixture-base"\n}\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'base package.json')
+    git('checkout', '-q', '-b', 'trunk')
+    git('checkout', '-q', 'master')
+    writeFileSync(join(repo, 'package.json'), '{\n  "name": "fixture-head"\n}\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'head package.json change')
+    const out = execFileSync(
+      'bash',
+      [SCRIPT, '--repo', repo, '--trunk', 'trunk', '--head', 'master', '--json'],
+      { encoding: 'utf-8' },
+    )
+    const r = JSON.parse(out) as { findings: Finding[] }
+    const skipped = find(r, 'land-parity-measurement-skipped')
+    expect(skipped?.severity).toBe('info')
+    expect(skipped?.detail).toMatch(/package\.json/)
+    for (const check of [
+      'lint-ratchet-regression',
+      'lint-ratchet-unmeasured',
+      'importer-sweep-red',
+      'importer-sweep-green',
+      'importer-sweep-empty',
+      'importer-sweep-unmeasured',
+    ]) {
+      expect(find(r, check), `${check} must not appear when harness/config is touched`).toBeUndefined()
+    }
+  })
+
+  it('F2: a fleet-test.sh setup failure (rc=3, no FAIL line) reports importer-sweep-unmeasured, never a false red', () => {
+    mkdirSync(join(repo, 'src/__tests__'), { recursive: true })
+    mkdirSync(join(repo, 'store'), { recursive: true })
+    writeFileSync(join(repo, 'src/thing.ts'), 'export function thing() { return 1 }\n')
+    writeFileSync(join(repo, 'src/__tests__/thing.test.ts'), 'import { thing } from "../thing"\n')
+    // A fake fleet-test.sh standing in for "died in the CPU-slot/lock queue before a single test
+    // ran" -- the real die() call sites exit 2 (bad usage) or 3 (harness/setup fault), never with
+    // a vitest FAIL/"N failed" line, which is exactly the shape F2 must not mistake for a red.
+    writeFileSync(
+      join(repo, 'store/fleet-test.sh'),
+      '#!/usr/bin/env bash\necho "fleet-test.sh: no shared CPU slot after 15 min" >&2\nexit 3\n',
+    )
+    chmodSync(join(repo, 'store/fleet-test.sh'), 0o755)
+    git('add', '-A')
+    git('commit', '-q', '-m', 'base: thing.ts + test + fake fleet-test.sh')
+    // trunk branches off AFTER this base, so the only diff master introduces below is thing.ts's
+    // body -- not fleet-test.sh itself (F1 would otherwise swallow this test's own target).
+    git('checkout', '-q', '-b', 'trunk')
+    git('checkout', '-q', 'master')
+    writeFileSync(join(repo, 'src/thing.ts'), 'export function thing() { return 2 }\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'head change to thing.ts')
+    const out = execFileSync(
+      'bash',
+      [SCRIPT, '--repo', repo, '--trunk', 'trunk', '--head', 'master', '--json'],
+      { encoding: 'utf-8' },
+    )
+    const r = JSON.parse(out) as { findings: Finding[] }
+    expect(find(r, 'importer-sweep-red')).toBeUndefined()
+    const unmeasured = find(r, 'importer-sweep-unmeasured')
+    expect(unmeasured?.severity).toBe('info')
+    expect(unmeasured?.detail).toMatch(/exited 3/)
+  })
+})
