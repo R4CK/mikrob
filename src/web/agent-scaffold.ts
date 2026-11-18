@@ -3689,6 +3689,18 @@ const DEVO_FAMILY = new Set(['fullstack'])
 // in Core even though that verification is Teszter's own job. Curated table mirrors the
 // BACKEND_FAMILY pattern.
 const TESZTER_FAMILY = new Set(['teszter'])
+// Card 3a60633b: Jogász gets a curated table for the mandatory sourced-investigation method
+// (Peti Telegram 12225: every jurisdiction needs its own local-law check, full sourced
+// investigation). Measured baseline: no comment since Oct 11, Core only legal-compliance-review,
+// and gdpr-audit-prep/ai-act-readiness/iso27001-audit-prep/soc2-audit-prep unreferenced despite
+// being local skills. Curated table mirrors the BACKEND_FAMILY pattern.
+const JOGASZ_FAMILY = new Set(['jogasz'])
+// Card f27512c9: Marketing gets a curated table (Peti Telegram 12231: "Mehet"). Measured
+// baseline: no comment since Oct 8, Core only marketing-gtm + humanize-writing, the 10 local
+// marketing skills and 7 global brand skills at 0 use, and frontend-design-research +
+// d3-data-visualization (not marketing's job) in Core. Curated table mirrors the BACKEND_FAMILY
+// pattern.
+const MARKETING_FAMILY = new Set(['marketing'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
@@ -3885,6 +3897,57 @@ export function buildTesterFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
+// Exported for test rendering (card 3a60633b, mirrors the Tester precedent): callers assert on
+// this function's actual return value instead of slicing the source text.
+export function buildJogaszFamilySkillUsageBody(): string {
+  const rows = [
+    '| Szerződés, ToS, DPA | `contract-review-redline` |',
+    '| GDPR, PII, DPIA | `gdpr-audit-prep`, `legal-compliance-review` |',
+    '| AI-funkció | `ai-act-readiness` |',
+    '| Licenc, OSS / source-available, clean-room (10. szabály) | `legal-compliance-review` + `fork-adopt-investigation` licenc-része, rögzített sha-n |',
+    '| Biztonsági megfelelés, ügyfélkérdőív | `iso27001-audit-prep`, `soc2-audit-prep` |',
+    '| Ország-specifikus jog | `legal-compliance-review` + a joghatóság-térkép, élő forrás (quarantine-reader / WebSearch) |',
+    '| Cél-tisztázás | `interview-me` |',
+    '| Magyar szöveg | `humanize-writing` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 3a60633b)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
+// Exported for test rendering (card f27512c9, mirrors the Jogász precedent): callers assert on
+// this function's actual return value instead of slicing the source text.
+export function buildMarketingFamilySkillUsageBody(): string {
+  const rows = [
+    '| Pozicionálás, üzenet-hierarchia | `positioning-messaging`, `marketing-gtm` |',
+    '| Versenytárs-kép (élő forrásból) | `competitive-analysis` |',
+    '| Márkaépítés, ebben a sorrendben | `brand-foundations-strategy` -> `brand-tone-of-voice-guide` -> `brand-visual-identity-direction` -> `brand-logo-concepts` -> `brand-identity-stress-test` -> `brand-handbook-compiler` |',
+    '| Landing, konverziós szöveg | `copywriting-conversion`, `cro-page`, `marketing-psychology` |',
+    '| SEO | `seo-technical-audit` |',
+    '| Bevezetés, csatornák | `launch-marketing`, `gtm-motions`, `social-media`, `webinar-marketing` |',
+    '| Mérés | `campaign-analytics`, `measuring-product-market-fit`, `analyzing-user-feedback` |',
+    '| Megtartás, onboarding-üzenet | `retention-engagement`, `user-onboarding` |',
+    '| Árazási üzenet (a szám a pénzügyé) | `pricing-strategy` |',
+    '| Bármilyen nyelvű szöveg | `humanize-writing` |',
+    '| Cél-tisztázás | `interview-me` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya f27512c9)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3899,6 +3962,8 @@ function buildSkillUsageBody(name: string): string | null {
   if (FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()
   if (DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()
   if (TESZTER_FAMILY.has(name)) return buildTesterFamilySkillUsageBody()
+  if (JOGASZ_FAMILY.has(name)) return buildJogaszFamilySkillUsageBody()
+  if (MARKETING_FAMILY.has(name)) return buildMarketingFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null
