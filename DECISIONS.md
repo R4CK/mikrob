@@ -26627,3 +26627,58 @@ döntés 32210 (ne a code-review-graph saját gráfját bővítsük, külön sto
 fájl marad, project-partícióval -- lásd a Peti 11541 döntést). Gate: QA (funkcionális, nincs
 trust-boundary-váltás) + Cybersec (KG_CAPTURE_ENABLED kapu + a DECISIONS.md/cold-memories
 olvasás secret-szűrése miatt, az import-* modulok már ezt a gate-réteget hordozzák).
+
+## 2026-11-17 -- 4e9ad774: 81593084 CYBERSEC GO komment 32549 követő -- importer-sorrend + flagValue
+
+**A hiba.** A CYBERSEC GO (komment 32549, Gate-SHA 2997183f) MEDIUM-1/MEDIUM-2/LOW-1/LOW-2
+leleteket hagyott a landolás előtt. Ebben a körben a MEDIUM-1 és a LOW-1/LOW-2 ment javításra;
+a MEDIUM-2 (SECRET_PATTERNS bővítés) NYITOTT, lásd lejjebb.
+
+**MEDIUM-1 javítva.** `runImportMt10` (import-mt10-cli.ts) az `importAntiPatterns`-t most az
+`importColdMemories` ELŐTT futtatja. A cold-memories importer `about` éle egy `card:<id>`
+csomópontra mutat, amit a négy importer közül KIZÁRÓLAG az anti-patterns importer hoz létre --
+a régi sorrendnél az első futás ezért kihagyta ezeket az éleket, és csak egy második (rerun)
+vette fel. Mutáció-bizonyított: a sorrend-javítást visszafordítva mindkét új teszt pirosra
+váltott (az élszám nőtt run1->run2-re, pontosan a MEDIUM-1 alakban), visszaállítva byte-azonos,
+10/10 zöld.
+
+**LOW-1 dokumentálva.** Az atomicitás IMPORTERENKÉNTI, nem a teljes CLI-futásra -- ha a 4.
+importer dob, a korábbiak írása megmarad. Szándékosan nem kapott közös tranzakciót: minden
+importer upsert idempotens, egy rerun a helyreállítás útja, nem egy rollback.
+
+**LOW-2 javítva.** `flagValue` (import-mt10-cli.ts) többé nem nyeli el a következő flag-et
+értékként (pl. `--kg-db --help` korábban egy `--help` nevű fájlt nyitott volna).
+
+**MEDIUM-2 NYITOTT -- termékdöntés kell, mielőtt a SECRET_PATTERNS-t (src/security/secret-gate.ts)
+bővítjük.** A kártya 6 hiányzó alakot nevezett meg (bare 64-hex, password=, unprefixed
+*_API_KEY=, Telegram bot token, base64 blob, email/phone). Mérve a teljes repóra
+(`git ls-files`, kézzel írt próba-mintákkal): a "Telegram bot token" alak MÁR le van fedve (a
+GO-komment szintetikus próbája nem adott pontosan 35 karakteres titkot, ez a próba hibája volt,
+nem a mintáé -- egy regressziós teszt most ezt pinneli). A másik öt alakra ÉLŐ ütközést mértem:
+- bare 64-hex: 16 db létező, legitim sha256-pin előfordulás (DECISIONS.md skill-pin sorok,
+  secret-gate.ts saját fixture-listája) -- egy ilyen minta a kapu SAJÁT fájljának jövőbeli
+  szerkesztését is blokkolná.
+- password=/*_API_KEY= (hossz+pont-kizárással finomítva): 20, illetve 13 fájl ütközik ma --
+  `.env.example`, vendor skill-dokumentáció placeholderek (`your_api_key_here`), és a kapu
+  SAJÁT tesztfixture-jei (pl. `secret-gate.test.ts`, `resend-key-env.test.ts`).
+- base64 blob (naiv alak-illesztés): 273 fájl ütközik -- gyakorlatilag használhatatlanul
+  széles, valódi entrópia-ellenőrzés nélkül.
+A SECRET_PATTERNS egyszerre a commit-idejű blokkoló kapu ÉS a kg/store.ts írás-ellenőrzés ÉS az
+agent-transcript.ts maszkolás forrása -- egy itt bővítés nagy hatássugarú, és a fenti mérés
+szerint vagy 30+ fájlos allowlist-bővítést igényelne, vagy a kapu kezdene legitim
+commitokat/dokumentációt blokkolni. Ez meghaladja ennek a kártyának a hatókörét: a döntés
+(bővítsük a megosztott listát az allowlist-költséggel, vagy egy KÜLÖN, csak a kg/store.ts
+írás-ellenőrzésére szánt, szűkebb mintalista legyen -- ami elhagyja az "egy forrás" elvet, amit
+a store.ts saját fejkommentje kimond) MikroB-ra/Petire vár, nincs implementálva. Az email/phone
+alakokat a GO-komment is külön, eldöntésre váró kérdésnek jelölte (nem MEDIUM), itt is az marad.
+
+**Mérés:** `src/__tests__/kg-import-mt10-cli.test.ts`, noisy-run vitest (uncommitted tree): 1
+fájl / 10 teszt zöld (6 régi + 4 új). `tsc --noEmit` tiszta.
+
+**Ki döntött:** backend (a fix szerzője), MikroB dispatch (self-advance pickup, fleet-nudger
+msg_id:20324) alapján, a 81593084 kártya CYBERSEC GO leletei szerint. A MEDIUM-2 nyitott kérdés
+MikroB/Peti döntésére vár.
+
+**Hivatkozás:** kártya 4e9ad774 (szülő: c65add5a), 81593084 (komment 32549, Gate-SHA
+2997183f), `src/kg/import-mt10-cli.ts`, `src/__tests__/kg-import-mt10-cli.test.ts`,
+`src/security/secret-gate.ts`.
