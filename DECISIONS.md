@@ -27905,3 +27905,48 @@ WhiteHat2 GO a bf7a7335-ön). A teljes allowlist-csere döntése nyitva marad.
 **Hivatkozás:** kártya 1df5360b, bf7a7335 (komment 9092, Gate-SHA e1aa7437),
 `scripts/email-send-gate.mjs`, `scripts/hooks/email-approval-gate.py`,
 `scripts/hooks/outgoing-copy-gate.py`.
+
+## 2026-11-18 -- f19cb1e1: agent-id-header generátor pinje a valódi detektorra cserélve, a detektor saját hézagai javítva
+
+**Döntés:** CYBERSEC GO F1 a ca6d7b9d-n (Gate-SHA 4a0845f9) jelezte, hogy a card ca6d7b9d saját,
+kézzel írt regexe (`agent-id-header-argv-pin.test.ts` "MUTATION PIN" assertje) csak a pontos régi
+alakot fogja: egy hosszú `--header "Authorization: Bearer ..."` kapcsoló, egy kisbetűs
+`authorization: bearer`, egy `-H` utáni sortörés, és curl saját `--oauth2-bearer "$(...)"`
+kapcsolója mind átment rajta. Mérve: a `token-in-argv-guard.test.ts` MÁR LÉTEZŐ, erősebb
+`findCurlInvocations`/`leaksTokenInArgv` detektora (ami a teljes `src/` fát scanneli, agent-
+scaffold.ts-t is beleértve) a `--header` és a sortöréses alakot MÁR elkapja -- de a kisbetűs
+alakot és a `--oauth2-bearer`-t ŐK IS átengedik, tehát a hiba nem csak a kis pin-teszté, hanem
+magáé a megosztott detektoré.
+
+**Javítás:** (1) `leaksTokenInArgv` (token-in-argv-guard.test.ts): `/i` flag a header-minta
+case-insensitive illesztéséhez, plusz egy külön `--oauth2-bearer[\s=]+...` minta -- ennek nincs
+fájl-alapú szankcionált alakja, ezért sosem mentesül a `-H @` kivétel alól. (2)
+agent-id-header-argv-pin.test.ts: a régi, kézzel írt "MUTATION PIN" regex-assert törölve, helyette
+a SAJÁT (nincs megosztott import, lásd lentebb) másolata a javított detektornak, és a generált
+blokkot a VALÓS detektorral ellenőrzi, nem substring-mintával (kódminőségi 12. elv).
+
+**Miért nincs megosztott import a két teszt-fájl között:** próbáltam `import { findCurlInvocations,
+leaksTokenInArgv } from './token-in-argv-guard.test.js'`-t -- ez a .test.ts fájl TELJES modulját
+betöltötte, ami a benne lévő describe/it hívásokat IS újra regisztrálta ebben a futásban (mérve:
+19850 teszt helyett 39701, pontosan a duplázódás jele). A megoldás: saját másolat mindkét kapuban,
+ugyanaz a konvenció, amit az email-kapuk (scripts/email-send-gate.mjs, scripts/hooks/email-
+approval-gate.py, scripts/hooks/outgoing-copy-gate.py) már követnek.
+
+**"és a többi generált szekció" (a kártya szövege):** a `token-in-argv-guard.test.ts` saját
+SRC_FILES scanje (src/**/*.ts, __tests__ kivéve) MÁR lefedi agent-scaffold.ts TELJES forrását, nem
+csak buildAgentIdHeaderBody-t -- a detektor-szintű javítás (case-insensitive + --oauth2-bearer)
+ezért automatikusan kiterjed minden generátor-függvényre a fájlban, külön per-függvény teszt
+nélkül.
+
+**Mérés:** mutáció-bizonyított mindkét kapun külön -- a detektor visszaállítva a régi (case-
+sensitive, --oauth2-bearer nélküli) alakra: token-in-argv-guard.test.ts-ben pontosan a 2 új canary
+(lowercase, --oauth2-bearer) piros, semmi más (19847/19849); agent-id-header-argv-pin.test.ts-ben a
+detektor-szintű mutáció-pin teszt az M3 (lowercase) esetnél piros (a `for...of` az első dobásnál
+megáll). Visszaállítva: mindkettő teljesen zöld (19852/19852 a két fájl együtt). tsc --noEmit
+tiszta. lint-ratchet.sh --show: 422, mindhárom szabály alapvonalon.
+
+**Ki döntött:** backend (a fix szerzője), MikroB kanban-sor alapján (kártya f19cb1e1, forrás:
+RedHat e73b17ef GO, komment 19571, egyezik a WhiteHat2 F1-gyel a ca6d7b9d-n).
+
+**Hivatkozás:** kártya f19cb1e1, ca6d7b9d (CYBERSEC GO, Gate-SHA 4a0845f9), e73b17ef,
+`src/__tests__/token-in-argv-guard.test.ts`, `src/__tests__/agent-id-header-argv-pin.test.ts`.
