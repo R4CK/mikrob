@@ -180,6 +180,42 @@ describe('TOKEN_PRUNE -- the health line that replaced the DB-size threshold (HB
     expect(out).not.toContain('rendben')
   })
 
+  it('CYBERED L1 (card 6590b228): a case-variant of "ok" is NOT accepted as ok -- strict match only', () => {
+    const out = withPrune('TOKEN_PRUNE state=OK retention_days=90 lag_hours=0.27 tolerance_hours=48')
+    expect(out).toContain('FIGYELEM')
+    expect(out).toContain("ISMERETLEN: 'OK'")
+    expect(out).not.toContain('rendben')
+  })
+
+  it('CYBERED L1 (card 6590b228): a prefix-variant of "ok" is NOT accepted as ok -- strict match only', () => {
+    const out = withPrune('TOKEN_PRUNE state=ok-ish retention_days=90 lag_hours=0.27 tolerance_hours=48')
+    expect(out).toContain('FIGYELEM')
+    expect(out).toContain("ISMERETLEN: 'ok-ish'")
+    expect(out).not.toContain('rendben')
+  })
+
+  it('CYBERED L2 (card 6590b228): a long unknown state value is capped, never echoed raw', () => {
+    const huge = 'x'.repeat(10 * 1024)
+    const out = withPrune(`TOKEN_PRUNE state=${huge} retention_days=90 lag_hours=0.27 tolerance_hours=48`)
+    expect(out).toContain('FIGYELEM')
+    expect(out).not.toContain(huge)
+    const m = out.match(/ISMERETLEN: '(x*)'/)
+    expect(m).not.toBeNull()
+    expect(m![1].length).toBeLessThanOrEqual(80)
+  })
+
+  it('CYBERED L2 (card 6590b228): control characters in an unknown state value are stripped before echoing', () => {
+    // TOKEN_PRUNE's own kv parser matches \S+ for values, so a literal space/newline
+    // can never reach state -- but other non-whitespace control bytes (e.g. BEL) can.
+    // Build the ParsedMetrics state directly to prove the render-time guard, not the parser.
+    const out = withPrune('TOKEN_PRUNE state=bad\x07\x1bstate retention_days=90 lag_hours=0.27 tolerance_hours=48')
+    expect(out).toContain('FIGYELEM')
+    const m = out.match(/ISMERETLEN: '([^']*)'/)
+    expect(m).not.toBeNull()
+    expect(m![1]).not.toMatch(/[\x00-\x1f\x7f]/)
+    expect(m![1]).toBe('badstate')
+  })
+
   it('MUTATION CONTROL: the rendered verdict follows the state, not the DB size', () => {
     // Same 481.7 MB in both renders -- if the two outputs did not diverge, the
     // line would be decoration re-deriving the old always-true size alarm.
