@@ -5096,6 +5096,28 @@ function projectRootAnchorPath(name: string): string {
   return join(agentDir(name), '.claude', PROJECT_ROOT_ANCHOR_FILE)
 }
 
+// An anchor value this mechanism can safely use for the replace below: must be a non-root
+// absolute path. Empty/relative values would make `content.includes(recordedRoot)` match
+// everywhere (an empty string is a substring of anything), inserting PROJECT_ROOT between
+// every character of CLAUDE.md/settings.json -- measured, card eed22288 F1.
+function isUsableAnchorRoot(value: string): boolean {
+  return value.length > 1 && value.startsWith('/')
+}
+
+// Boundary-safe replace: a plain substring swap would also rewrite sibling paths that merely
+// START with oldRoot (e.g. `${oldRoot}-agent-worktrees`, `${oldRoot}-test`) into a broken path,
+// because oldRoot is not a suffix-delimited token of its own -- measured, card eed22288 F2.
+// Only replace an occurrence that is not immediately followed by another path-segment
+// character (oldRoot is always an absolute filesystem path, so this cannot false-negative
+// inside unrelated text).
+function replaceRootOccurrences(content: string, oldRoot: string, newRoot: string): string {
+  const escaped = oldRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`${escaped}(?![A-Za-z0-9_-])`, 'g')
+  // A string replacer interprets $ sequences (e.g. $& or $$) IN newRoot itself; a function
+  // replacer passes it through literally.
+  return content.replace(pattern, () => newRoot)
+}
+
 export function ensureProjectRootAnchor(name: string): void {
   if (name === MAIN_AGENT_ID) return
 
@@ -5103,13 +5125,14 @@ export function ensureProjectRootAnchor(name: string): void {
   let recordedRoot: string | null = null
   try {
     const parsed = JSON.parse(readFileSync(anchorPath, 'utf-8')) as { root?: string }
-    recordedRoot = typeof parsed.root === 'string' ? parsed.root : null
+    recordedRoot = typeof parsed.root === 'string' && isUsableAnchorRoot(parsed.root) ? parsed.root : null
   } catch {
     recordedRoot = null
   }
 
-  // No anchor yet (pre-dates this mechanism, or a brand-new agent): nothing to compare
-  // against, so there is no drift to correct -- just establish the baseline for next time.
+  // No anchor yet (pre-dates this mechanism, a brand-new agent, or a corrupt/unusable
+  // recorded value): nothing safe to compare against, so there is no drift to correct --
+  // just (re-)establish the baseline for next time, no file rewrite.
   if (recordedRoot === null) {
     try {
       mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
@@ -5132,7 +5155,16 @@ export function ensureProjectRootAnchor(name: string): void {
       continue
     }
     if (!content.includes(recordedRoot)) continue
-    atomicWriteFileSync(path, content.split(recordedRoot).join(PROJECT_ROOT))
+    const rewritten = replaceRootOccurrences(content, recordedRoot, PROJECT_ROOT)
+    if (path.endsWith('settings.json')) {
+      try {
+        JSON.parse(rewritten)
+      } catch {
+        logger.warn(`ensureProjectRootAnchor: skipping ${path}, rewrite would break JSON`)
+        continue
+      }
+    }
+    atomicWriteFileSync(path, rewritten)
   }
 
   atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
