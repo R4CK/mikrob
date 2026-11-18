@@ -93,6 +93,18 @@ jobs:
       # above. FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and never sources
       # it. Hermetic: throwaway install dirs, uname/tmux stubs on PATH, every case answers "n"
       # before anything is migrated.
+      # Koteg 25 (card 5dd0842a): two of upstream's new steps ARE adopted, unlike the
+      # NOT-ADOPTED bundle above -- both exercise a script genuinely present in this fork
+      # (not referencing a never-ported file, the exact failure class the bundle above was
+      # refused for), and neither is a new security-gate decision.
+      # A turn that died on an API error while a channel message waited must leave
+      # a trace (StopFailure hook, scripts/hooks/ledger-turn-failure.py); hermetic, isolated
+      # ledger DB.
+      - run: python3 scripts/__tests__/ledger-turn-failure.test.py
+      # The host resource heartbeat's exit code IS its alert (1 = resource
+      # warning, 2 = nothing measured): a crash or a bad threshold that exits 1
+      # would page someone for nothing. Hermetic: fake /proc files and disk.
+      - run: python3 scripts/__tests__/host-resource-heartbeat.test.py
       - run: bash scripts/__tests__/migrate-agent-id-env-literal.test.sh
       - run: bash scripts/__tests__/taskstate-stub.test.sh
       # 723bbb70 (3): the hook-load watcher is a DIFFERENT, already-adopted fork feature
@@ -101,3 +113,8 @@ jobs:
       # test here closes that gap. Hermetic: a throwaway install root, stand-in python and
       # node gates, a local stub for the alert POST.
       - run: python3 scripts/__tests__/hook-load-watch.test.py
+      # The uptime monitor is the alert path that works while the dashboard is down, so its
+      # exit-code contract and its real send path are gate instruments too. Hermetic: a local
+      # HTTP server for the targets and as the Bot API stub (TELEGRAM_API_BASE), throwaway
+      # install trees, HOME on a temp dir, proxies cleared.
+      - run: python3 scripts/__tests__/uptime-monitor.test.py

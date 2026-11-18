@@ -22,6 +22,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation, paneShowsContextSaturationHardError } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir, readTranscriptTailFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import { setDeliveryHoldProbe, type DeliveryHold } from './delivery-hold.js'
 import {
   readPendingResumes,
   writePendingResumes,
@@ -47,6 +48,7 @@ import {
   INITIAL_GUARD_STATE,
   READY_TIMEOUT_MS,
   RESUME_GIVE_UP_REASON,
+  BUSY_OVERDUE_REASON_PREFIX,
   STALE_REFRESH_REASON_PREFIX,
   SATURATION_CREDIBLE_MIN_PCT,
   saturationBannerCredible,
@@ -92,6 +94,13 @@ const SATURATION_OVERRIDE_TTL_MS = 3 * INTERVAL_MS
 // (context-guard-resume-store.ts) and re-armed by restorePendingResumes() when
 // the runner starts.
 const guardStates = new Map<string, GuardState>()
+
+// Agents with a resume send in flight, for contextGuardDeliveryHold below (delivery-hold.ts):
+// the one stretch between the sweep's own inject-resume send and its outcome that no guard
+// phase covers, so the router must not deliver a message into it. Set/cleared only around the
+// sweep's own send (this fork has no separate immediate-delivery loop, unlike upstream's
+// resumeLoops/resumeTargetRunning -- not ported here, out of scope for this round).
+const resumeSending = new Set<string>()
 
 // Write-through mirror of the persisted resume obligations. Held in memory so
 // the per-sweep "drop if present" checks cost no I/O; the file is written only
@@ -833,6 +842,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   }
   if (decision.action === 'none') {
     if (decision.reason === RESUME_GIVE_UP_REASON) await reportResumeGiveUp(name)
+    if (decision.reason.startsWith(BUSY_OVERDUE_REASON_PREFIX)) logger.warn({ name, reason: decision.reason }, 'context-guard: pane still busy far past the handoff deadline -- restart stays deferred')
     // Idle-flush non-decisions carry the measurement that blocked them
     // ("quiet for only 4m of 20m"), which is the only way to see the tier
     // failing to reach its threshold. It matters because the idle clock is the
@@ -1011,6 +1021,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         // GUARDHITELES903: anchored like the handoff request -- the resume
         // prompt steers a fresh session's entire first turn.
         let outcome: Awaited<ReturnType<typeof sendSystemDirective>>
+        resumeSending.add(name)
         try {
           outcome = await sendSystemDirective(
             name,
@@ -1022,6 +1033,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // the text already landed, and a second copy is worse than none.
           dropPendingResume(name, 'resume delivery threw')
           throw err
+        } finally {
+          resumeSending.delete(name)
         }
         if (outcome === 'sent') {
           dropPendingResume(name, 'resume delivered')
@@ -1122,7 +1135,53 @@ export function getHardGuardPhase(name: string): string {
   return guardStates.get(name)?.phase ?? 'idle'
 }
 
+// The hold end already reported as lapsed, per agent: one warn per hold, not one
+// per router tick. One entry per agent, so it cannot grow with time.
+const lapsedHoldLogged = new Map<string, number>()
+
+function lapsed(name: string, phase: string, untilMs: number, nowMs: number): null {
+  if (lapsedHoldLogged.get(name) !== untilMs) {
+    lapsedHoldLogged.set(name, untilMs)
+    logger.warn({ name, phase, overdueMs: nowMs - untilMs }, 'context-guard: delivery hold lapsed past the phase deadline -- delivering to this agent again (fail-open)')
+  }
+  return null
+}
+
+/**
+ * The message router's delivery hold for this agent (delivery-hold.ts): from the
+ * handoff request until the fresh session has its resume prompt.
+ *
+ * - A resume prompt being typed right now holds, whatever the phase: the sweep's
+ *   inject-resume has already moved the state to cooldown when it sends, so this
+ *   is the one stretch the phase does not cover, and a message pasted now would
+ *   land in front of the resume. Bounded by how long a resume can be owed at all
+ *   (the obligation's restart time + PENDING_RESUME_TTL_MS + one sweep), which
+ *   covers both the in-run ready deadline and the longer one a restored
+ *   obligation gets: a send that never returns must not keep the inbox shut.
+ * - await-handoff and await-ready hold until the phase deadline plus one sweep.
+ *   The end is fixed by the deadline, never by `now`: a phase can outlast its
+ *   deadline (a deferral keeps await-handoff past it), and a hold renewed from
+ *   `now` on every look would last exactly as long as that does. Past it the hold
+ *   lapses, with one warn, and the agent's rows flow again (fail-open).
+ */
+export function contextGuardDeliveryHold(name: string, nowMs: number): DeliveryHold | null {
+  if (resumeSending.has(name)) {
+    const owed = pendingResumes[name]
+    // No owed resume while one is being sent should not happen; if it does, hold nothing.
+    if (!owed) return null
+    const untilMs = owed.restartedAtMs + PENDING_RESUME_TTL_MS + INTERVAL_MS
+    return nowMs < untilMs ? { phase: 'resume-sending', untilMs } : lapsed(name, 'resume-sending', untilMs, nowMs)
+  }
+  const st = guardStates.get(name)
+  if (!st || (st.phase !== 'await-handoff' && st.phase !== 'await-ready')) return null
+  const untilMs = st.deadlineMs + INTERVAL_MS
+  return nowMs < untilMs ? { phase: st.phase, untilMs } : lapsed(name, st.phase, untilMs, nowMs)
+}
+
 export function startContextGuardRunner(): NodeJS.Timeout {
+  // Before anything can put an agent into a restart sequence -- including the
+  // await-ready states re-armed just below.
+  setDeliveryHoldProbe(contextGuardDeliveryHold)
   // Before the first sweep can run, so an agent restarted by the
   // previous dashboard process is not re-armed at 'idle' and left without its
   // resume prompt.

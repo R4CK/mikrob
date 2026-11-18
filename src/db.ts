@@ -28,6 +28,7 @@ import {
 import { triggerLikeClause } from './homoglyph.js'
 import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 import { compareDeliveryOrder, deliveryRankSql } from './delivery-order.js'
+import { toBudapestTs, type TsRange } from './date-range.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -516,6 +517,13 @@ export function initDatabase(dbPathOverride?: string): void {
   }
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
+  // The date filter of GET /api/memories (card f90928e3) is a range on
+  // created_at inside one agent's rows: this index makes it a range scan.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent_created ON memories(agent_id, created_at)`)
+  // Every agent's list also carries the shared rows (`agent_id = ? OR category
+  // = 'shared'`). SQLite can serve an OR from indexes only when BOTH sides have
+  // one, so without this the dated listing is a full scan.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_category_created ON memories(category, created_at)`)
 
   // --- Conversation-continuity ledger (deterministic; P0 2026-06-02) ---
   // A durable ROLLING TRANSCRIPT of every channel turn -- inbound user messages
@@ -646,6 +654,8 @@ export function initDatabase(dbPathOverride?: string): void {
       db.exec(`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, content, keywords) VALUES('delete', old.id, old.content, old.keywords); INSERT INTO memories_fts(rowid, content, keywords) VALUES (new.id, new.content, new.keywords); END`)
       db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent_created ON memories(agent_id, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_category_created ON memories(category, created_at)`)
     }
   } catch (err) {
     // Previously this silently swallowed every error which masked the
@@ -795,6 +805,20 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_daily_logs_date ON daily_logs(agent_id, date)`)
+
+  // Link between a daily-log row and the searchable memories row that mirrors
+  // it (card f90928e3). UNIQUE on both sides: one log row has at most one
+  // mirror, and one memory is the mirror of at most one log row -- that is what
+  // makes the backfill idempotent. No foreign key on purpose: when somebody
+  // deletes a mirror row the link stays, so a later backfill does not quietly
+  // resurrect a memory that was removed deliberately.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_log_memory (
+      daily_log_id INTEGER NOT NULL UNIQUE,
+      memory_id INTEGER NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    )
+  `)
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_status ON kanban_cards(status, archived_at)`)
 
@@ -3294,6 +3318,15 @@ export function buildRelaxedFtsExpression(query: string): string {
  * need the hard answer pass allowRelaxed=false and get silence when there is
  * no strict match.
  */
+// ` AND <col> >= ? AND <col> <= ?` for an optional created_at window (card
+// f90928e3), plus its bound parameters. Every memory read path appends this to
+// its WHERE so the window is applied in SQL, ahead of any LIMIT.
+function tsClause(col: string, range?: TsRange): { sql: string; params: number[] } {
+  return range
+    ? { sql: ` AND ${col} >= ? AND ${col} <= ?`, params: [range.fromTs, range.toTs] }
+    : { sql: '', params: [] }
+}
+
 function ftsWithOrFallback<T>(
   query: string,
   run: (terms: string) => T[],
@@ -3374,24 +3407,18 @@ export function searchMemories(
   // Same label searchAgentMemories reports. Without it the no-agent branch of
   // the endpoint said `relaxed=false` whatever this function actually did.
   trace?: { relaxed: boolean },
+  range?: TsRange,
 ): Memory[] {
   try {
+    const dt = tsClause('m.created_at', range)
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
-      (category
-        ? db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND m.chat_id = ? AND m.category = ?
-             ORDER BY rank
-             LIMIT ?`
-          ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
-        : db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND m.chat_id = ?
-             ORDER BY rank
-             LIMIT ?`
-          ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+      db.prepare(
+        `SELECT m.*, f.rank AS rank FROM memories m
+         JOIN memories_fts f ON m.id = f.rowid
+         WHERE f.memories_fts MATCH ? AND m.chat_id = ?${category ? ' AND m.category = ?' : ''}${dt.sql}
+         ORDER BY rank
+         LIMIT ?`
+      ).all(terms, chatId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
       , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
@@ -3433,7 +3460,7 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string): Memory[] {
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
@@ -3444,14 +3471,12 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   // route, applied after this function had already cut to `limit`: measured
   // 2026-10-17 on the owner store, the dashboard Hot tab (no agent filter,
   // limit 50) showed 6 of 115 hot memories.
-  if (category) {
-    return db
-      .prepare('SELECT * FROM memories WHERE chat_id = ? AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
-      .all(chatId, category, limit, offset) as Memory[]
-  }
+  //
+  // The date range (card f90928e3) goes into the query for the same reason.
+  const dt = tsClause('created_at', range)
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
-    .all(chatId, limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(chatId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -3516,6 +3541,10 @@ export function saveAgentMemory(
   // except the POST /api/memories handler passes nothing, which is unchanged behaviour).
   writtenByAgentKey?: string | null
 ): { id: number } {
+  // NOT switched to insertMemoryRow (upstream's refactor, adopted below for the daily-log mirror
+  // call sites, which never need written_by_agent_key): that helper has no parameter for it, and
+  // this is the ONE call site that writes it (card 84dcc5d4) -- routing through the helper would
+  // silently drop the per-agent-key write attribution.
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
     'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated, keywords, written_by_agent_key) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?, ?)'
@@ -3528,15 +3557,38 @@ export function saveAgentMemory(
   if (category === 'shared') clearMemoryCache()
   else memoryCacheInvalidate(agentId)
 
-  // Fire-and-forget: generate embedding asynchronously
+  scheduleEmbedding(id, content, keywords)
+
+  return { id }
+}
+
+// The bare INSERT shared by saveAgentMemory and the daily-log mirror. No cache
+// eviction and no embedding here: the mirror runs this inside a transaction
+// that may still roll back, so side effects wait for the commit.
+function insertMemoryRow(
+  agentId: string,
+  content: string,
+  category: string,
+  keywords: string | undefined,
+  autoGenerated: boolean,
+  sector: 'semantic' | 'episodic',
+  createdAt: number,
+): number {
+  const info = db.prepare(
+    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated, keywords) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?)'
+  ).run(ALLOWED_CHAT_ID, null, content, sector, createdAt, createdAt, agentId, category, autoGenerated ? 1 : 0, keywords ?? null)
+  return Number(info.lastInsertRowid)
+}
+
+// Fire-and-forget: generate the embedding asynchronously. A backend that is
+// down leaves the column NULL and the existing backfill picks the row up later.
+function scheduleEmbedding(id: number, content: string, keywords: string | undefined): void {
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
       forgetCachedEmbedding(id)
     }
   }).catch(() => {})
-
-  return { id }
 }
 
 // The category filter belongs in SQL, ahead of the LIMIT. Filtering the rows
@@ -3544,21 +3596,20 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
-  // after a bulk import and make LIMIT/OFFSET non-total without it.
-  const key = `${agentId}:${limit}:${category ?? ''}:${offset}`
+  // after a bulk import and make LIMIT/OFFSET non-total without it. The date
+  // range (card f90928e3) is part of the key for the same reason, and goes
+  // into the query ahead of the LIMIT, never after it.
+  const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
-  const result = (category
-    ? db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, category, limit, offset)
-    : db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, limit, offset)) as Memory[]
+  const dt = tsClause('created_at', range)
+  const result = db.prepare(
+    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
   memoryCacheSet(key, result)
   return result
 }
@@ -3618,10 +3669,16 @@ export function searchAgentMemories(
   allowRelaxed = true,
   category?: string,
   selfAuthenticatedOnly = false,
+  // Card f90928e3: a created_at window, pushed into every query below for the
+  // same reason as `category` -- a window applied after the LIMIT would answer
+  // "which of the N best matches fall in the window", not "the best matches
+  // inside the window".
+  range?: TsRange,
 ): Memory[] {
   const shapeFilter = excludeToolLogShapeSql()
   const selfAuth = selfAuthenticatedSql(selfAuthenticatedOnly)
   const selfAuthParams = selfAuthenticatedOnly ? [agentId] : []
+  const dt = tsClause('m.created_at', range)
   try {
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
       (category
@@ -3629,16 +3686,16 @@ export function searchAgentMemories(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
              WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-               AND m.category = ? AND (${shapeFilter.sql})${selfAuth.sql}
+               AND m.category = ? AND (${shapeFilter.sql})${selfAuth.sql}${dt.sql}
              ORDER BY rank LIMIT ?`
-          ).all(terms, agentId, category, ...shapeFilter.params, ...selfAuthParams, limit * RECENCY_OVERSAMPLE)
+          ).all(terms, agentId, category, ...shapeFilter.params, ...selfAuthParams, ...dt.params, limit * RECENCY_OVERSAMPLE)
         : db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
              WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-               AND (${shapeFilter.sql})${selfAuth.sql}
+               AND (${shapeFilter.sql})${selfAuth.sql}${dt.sql}
              ORDER BY rank LIMIT ?`
-          ).all(terms, agentId, ...shapeFilter.params, ...selfAuthParams, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+          ).all(terms, agentId, ...shapeFilter.params, ...selfAuthParams, ...dt.params, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
@@ -3654,12 +3711,12 @@ export function searchAgentMemories(
     return (category
       ? db.prepare(
           `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')
-           AND (${shapeFilter.sql})${selfAuth.sql} ORDER BY accessed_at DESC LIMIT ?`
-        ).all(agentId, category, pattern, pattern, ...shapeFilter.params, ...selfAuthParams, limit)
+           AND (${shapeFilter.sql})${selfAuth.sql}${dt.sql} ORDER BY accessed_at DESC LIMIT ?`
+        ).all(agentId, category, pattern, pattern, ...shapeFilter.params, ...selfAuthParams, ...dt.params, limit)
       : db.prepare(
           `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')
-           AND (${shapeFilter.sql})${selfAuth.sql} ORDER BY accessed_at DESC LIMIT ?`
-        ).all(agentId, pattern, pattern, ...shapeFilter.params, ...selfAuthParams, limit)) as Memory[]
+           AND (${shapeFilter.sql})${selfAuth.sql}${dt.sql} ORDER BY accessed_at DESC LIMIT ?`
+        ).all(agentId, pattern, pattern, ...shapeFilter.params, ...selfAuthParams, ...dt.params, limit)) as Memory[]
   }
 }
 
@@ -3944,13 +4001,185 @@ export function updateMemory(id: number, content: string, category?: string, age
 
 // --- Daily logs ---
 
-export function appendDailyLog(agentId: string, content: string): void {
+// Tier of the searchable copy of a log entry: cold, so the hot list (the
+// "what is in flight right now" list) does not fill up with diary lines that
+// would read as open tasks.
+const DAILY_LOG_MIRROR_CATEGORY = 'cold'
+
+/**
+ * Text and keywords of the memories row that mirrors one daily-log entry:
+ * `[Napló ÉÉÉÉ-HH-NN ÓÓ:PP] <text>`. The date is the log row's own date; the
+ * clock time is the entry's created_at in the install zone.
+ */
+export function dailyLogMirrorText(date: string, createdAt: number, text: string): { content: string; keywords: string } {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: APP_TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(createdAt * 1000))
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? '00'
+  return {
+    content: `[Napló ${date} ${get('hour')}:${get('minute')}] ${text}`,
+    keywords: `napi-naplo, ${date}`,
+  }
+}
+
+/**
+ * Appends a daily-log entry. With `mirror: true` the same transaction also
+ * inserts the searchable memories row and the link row, so the log entry is
+ * findable by the memory search the moment this returns (FTS comes from the
+ * memories_ai trigger; the embedding follows asynchronously). Any DB error
+ * rolls BOTH rows back and throws. Content-filter decisions are the caller's:
+ * a refused entry is simply appended with `mirror: false`.
+ */
+export function appendDailyLog(
+  agentId: string,
+  content: string,
+  opts: { mirror?: boolean } = {},
+): { id: number; memoryId: number | null } {
   const now = Math.floor(Date.now() / 1000)
   // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
   // local time lands on the previous day and the "ma" recall query misses it.
   // en-CA formats as YYYY-MM-DD.
   const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
-  db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
+  const mirror = opts.mirror === true ? dailyLogMirrorText(today, now, content) : null
+  const result = db.transaction((): { id: number; memoryId: number | null } => {
+    const info = db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
+    const id = Number(info.lastInsertRowid)
+    if (!mirror) return { id, memoryId: null }
+    const memoryId = insertMemoryRow(agentId, mirror.content, DAILY_LOG_MIRROR_CATEGORY, mirror.keywords, true, 'episodic', now)
+    db.prepare('INSERT INTO daily_log_memory (daily_log_id, memory_id, created_at) VALUES (?, ?, ?)').run(id, memoryId, now)
+    return { id, memoryId }
+  })()
+  if (mirror && result.memoryId !== null) {
+    memoryCacheInvalidate(agentId)
+    scheduleEmbedding(result.memoryId, mirror.content, mirror.keywords)
+  }
+  return result
+}
+
+export interface DailyLogBackfillResult {
+  /** daily_logs rows in the table */
+  total: number
+  /** rows that already had a mirror (link row present) */
+  already: number
+  /** mirrors written (apply) */
+  created: number
+  /** mirrors a --apply run would write (dry run) */
+  wouldCreate: number
+  /** log rows whose mirror memory already exists unlinked (fleet import): link row only */
+  relinked: number
+  /** relinks a --apply run would do (dry run) */
+  wouldRelink: number
+  /** refused by the content filter or empty: no mirror, log row untouched */
+  skipped: number
+  /** rows whose mirror insert threw (the others are unaffected) */
+  failed: number
+}
+
+// Looks for a memory that already IS the mirror of this log row but has no link
+// row: a fleet import brings daily_logs and the `[Napló ...]` memories without
+// daily_log_memory. Same agent, exact mirror content, same created_at; memories
+// in `taken` (claimed by an earlier identical row in this run) are skipped.
+function findUnlinkedMirror(
+  handle: Database.Database,
+  row: { agent_id: string; date: string; content: string; created_at: number },
+  taken: Set<number>,
+  linkTable: boolean,
+): number | null {
+  const m = dailyLogMirrorText(row.date, row.created_at, row.content)
+  const cands = handle.prepare(
+    `SELECT id FROM memories WHERE agent_id = ? AND content = ? AND created_at = ?${linkTable
+      ? ' AND NOT EXISTS (SELECT 1 FROM daily_log_memory k WHERE k.memory_id = memories.id)'
+      : ''} ORDER BY id`
+  ).all(row.agent_id, m.content, row.created_at) as { id: number }[]
+  const hit = cands.find(c => !taken.has(c.id))
+  return hit ? hit.id : null
+}
+
+/**
+ * Mirrors every daily_logs row that has no link yet, with its own created_at.
+ * Idempotent: the link table is the "done" marker, so a second run finds
+ * nothing to do. A row whose mirror memory already exists without a link (fleet
+ * import) is only re-linked, never mirrored twice. Dry run unless `apply`. Embeddings are left to the existing
+ * backfill (the CLI process exits before an async embed could land).
+ */
+export function backfillDailyLogMemories(opts: { apply: boolean; reject?: (content: string) => boolean }): DailyLogBackfillResult {
+  const total = (db.prepare('SELECT COUNT(*) AS n FROM daily_logs').get() as { n: number }).n
+  const pending = db.prepare(
+    `SELECT l.id, l.agent_id, l.date, l.content, l.created_at FROM daily_logs l
+      LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
+      WHERE k.daily_log_id IS NULL ORDER BY l.id`
+  ).all() as { id: number; agent_id: string; date: string; content: string; created_at: number }[]
+  const result: DailyLogBackfillResult = { total, already: total - pending.length, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0 }
+  const link = db.prepare('INSERT INTO daily_log_memory (daily_log_id, memory_id, created_at) VALUES (?, ?, ?)')
+  const taken = new Set<number>()
+  for (const row of pending) {
+    if (!row.content.trim() || opts.reject?.(row.content)) { result.skipped++; continue }
+    const existing = findUnlinkedMirror(db, row, taken, true)
+    if (existing !== null) {
+      taken.add(existing)
+      if (!opts.apply) { result.wouldRelink++; continue }
+      try {
+        link.run(row.id, existing, Math.floor(Date.now() / 1000))
+        result.relinked++
+      } catch (err) {
+        result.failed++
+        logger.warn({ err: (err as Error)?.message, dailyLogId: row.id }, 'daily-log backfill: relink failed')
+      }
+      continue
+    }
+    if (!opts.apply) { result.wouldCreate++; continue }
+    try {
+      const m = dailyLogMirrorText(row.date, row.created_at, row.content)
+      db.transaction(() => {
+        const memoryId = insertMemoryRow(row.agent_id, m.content, DAILY_LOG_MIRROR_CATEGORY, m.keywords, true, 'episodic', row.created_at)
+        link.run(row.id, memoryId, Math.floor(Date.now() / 1000))
+      })()
+      result.created++
+    } catch (err) {
+      result.failed++
+      logger.warn({ err: (err as Error)?.message, dailyLogId: row.id }, 'daily-log backfill: mirror insert failed')
+    }
+  }
+  if (result.created > 0) clearMemoryCache()
+  return result
+}
+
+/**
+ * Dry run of the backfill against a handle the CALLER opened read-only, with
+ * no migration: it must not write anything, not even the empty link table.
+ * A database that never ran the mirror migration has no daily_log_memory
+ * table; then every log row counts as pending and `linkTableMissing` says
+ * that `--apply` would create the table first. A database without even a
+ * daily_logs table reports zero rows.
+ */
+export function dryRunDailyLogBackfill(
+  handle: Database.Database,
+  opts: { reject?: (content: string) => boolean } = {},
+): DailyLogBackfillResult & { linkTableMissing: boolean } {
+  const has = (name: string) =>
+    handle.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
+  const linkTableMissing = !has('daily_log_memory')
+  if (!has('daily_logs')) {
+    return { total: 0, already: 0, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0, linkTableMissing }
+  }
+  const total = (handle.prepare('SELECT COUNT(*) AS n FROM daily_logs').get() as { n: number }).n
+  const pending = (linkTableMissing
+    ? handle.prepare('SELECT id, agent_id, date, content, created_at FROM daily_logs ORDER BY id')
+    : handle.prepare(
+        `SELECT l.id, l.agent_id, l.date, l.content, l.created_at FROM daily_logs l
+          LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
+          WHERE k.daily_log_id IS NULL ORDER BY l.id`
+      )).all() as { id: number; agent_id: string; date: string; content: string; created_at: number }[]
+  const result = { total, already: total - pending.length, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0, linkTableMissing }
+  const canRelink = has('memories')
+  const taken = new Set<number>()
+  for (const row of pending) {
+    if (!row.content.trim() || opts.reject?.(row.content)) { result.skipped++; continue }
+    const existing = canRelink ? findUnlinkedMirror(handle, row, taken, !linkTableMissing) : null
+    if (existing !== null) { taken.add(existing); result.wouldRelink++ }
+    else result.wouldCreate++
+  }
+  return result
 }
 
 export function getDailyLog(agentId: string, date: string): { id: number; content: string; created_at: number }[] {
@@ -3969,27 +4198,17 @@ export interface RecallResult {
   dateRange: { from: string; to: string }
 }
 
-function toBudapestTs(dateStr: string, endOfDay: boolean): number {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: APP_TZ,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  })
-  const refDate = new Date(`${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}`)
-  const parts = fmt.formatToParts(refDate)
-  const get = (t: string) => parts.find(p => p.type === t)?.value || '0'
-  const localStr = `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`
-  const localMs = new Date(localStr + 'Z').getTime()
-  const offsetMs = localMs - refDate.getTime()
-  const target = new Date(`${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}Z`)
-  return Math.floor((target.getTime() - offsetMs) / 1000)
-}
-
 // Escapes a user query for `LIKE ? ESCAPE '\\'`: without it `%` and `_` in the
 // query are wildcards, so a search for q=% or q=_ matches every row.
 export function escapeLike(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
+
+// SQL fragments: the memory row is NOT the mirror of a daily-log entry. The
+// mirror is already in `logs`, so recall leaves it out of `memories` and every
+// entry shows once (card f90928e3).
+const NOT_MIRROR = 'NOT EXISTS (SELECT 1 FROM daily_log_memory dlm WHERE dlm.memory_id = id)'
+const NOT_MIRROR_M = 'NOT EXISTS (SELECT 1 FROM daily_log_memory dlm WHERE dlm.memory_id = m.id)'
 
 export function recallByDateRange(from: string, to: string, agentId?: string): RecallResult {
   const logSql = agentId
@@ -4001,8 +4220,8 @@ export function recallByDateRange(from: string, to: string, agentId?: string): R
   const fromTs = toBudapestTs(from, false)
   const toTs = toBudapestTs(to, true)
   const memSql = agentId
-    ? "SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') ORDER BY created_at ASC"
-    : 'SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? ORDER BY created_at ASC'
+    ? `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') AND ${NOT_MIRROR} ORDER BY created_at ASC`
+    : `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND ${NOT_MIRROR} ORDER BY created_at ASC`
   const memParams = agentId ? [fromTs, toTs, agentId] : [fromTs, toTs]
   const memories = db.prepare(memSql).all(...memParams) as Memory[]
 
@@ -4018,8 +4237,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       // same λ-blend as the other search paths, so a strongly matching older
       // memory can still surface above barely-matching fresh noise.
       const sql = agentId
-        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') ORDER BY rank LIMIT ?`
-        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? ORDER BY rank LIMIT ?`
+        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
+        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
       const { rows } = ftsWithOrFallback(query, (terms) =>
         agentId
           ? db.prepare(sql).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
@@ -4028,8 +4247,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       memories = withoutRank(reRankByRecency(rows, limit)) as Memory[]
     } catch {
       const sql = agentId
-        ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
-        : "SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
+        ? `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
+        : `SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
       const pat = `%${escaped}%`
       memories = agentId
         ? db.prepare(sql).all(agentId, pat, pat, limit) as Memory[]
@@ -8633,6 +8852,7 @@ function vectorSearch(
   // agentId -- i.e. rows an AUTHENTICATED per-agent key wrote, not merely rows claiming this
   // agent_id in the body.
   selfAuthenticatedOnly = false,
+  range?: TsRange,
 ): { hits: VectorHit[]; floor: number } {
   // Same push-down as searchAgentMemories: this branch scores EVERY embedded
   // row in JS, so filtering in SQL is both correct and strictly less work.
@@ -8644,16 +8864,20 @@ function vectorSearch(
   // self-authenticated-only scoping (card 84dcc5d4) -- both apply to the lean id+length candidate
   // query exactly as they did to the full-row one it replaces, since they gate WHICH rows are
   // even candidates, not which columns come back.
+  // Koteg 25: the date window (card f90928e3, tsClause) joins the same candidate query -- it
+  // narrows WHICH rows are candidates too, so the similarity floor below is computed over the
+  // windowed rows, same reasoning as the shape filter and self-auth scoping already here.
   const shapeFilter = excludeToolLogShapeSql()
   const selfAuth = selfAuthenticatedSql(selfAuthenticatedOnly)
   const selfAuthParams = selfAuthenticatedOnly ? [agentId] : []
+  const dt = tsClause('created_at', range)
   const cands = (category
     ? db.prepare(
-        `SELECT id, octet_length(embedding) AS elen FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ? AND (${shapeFilter.sql})${selfAuth.sql}`
-      ).all(agentId, category, ...shapeFilter.params, ...selfAuthParams)
+        `SELECT id, octet_length(embedding) AS elen FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ? AND (${shapeFilter.sql})${selfAuth.sql}${dt.sql}`
+      ).all(agentId, category, ...shapeFilter.params, ...selfAuthParams, ...dt.params)
     : db.prepare(
-        `SELECT id, octet_length(embedding) AS elen FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND (${shapeFilter.sql})${selfAuth.sql}`
-      ).all(agentId, ...shapeFilter.params, ...selfAuthParams)) as { id: number; elen: number }[]
+        `SELECT id, octet_length(embedding) AS elen FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND (${shapeFilter.sql})${selfAuth.sql}${dt.sql}`
+      ).all(agentId, ...shapeFilter.params, ...selfAuthParams, ...dt.params)) as { id: number; elen: number }[]
 
   // Parse only what is new or changed since the last call.
   let getVec: Database.Statement | null = null
@@ -8771,6 +8995,7 @@ export async function hybridSearch(
   // passes true; every other hybridSearch caller (plain dashboard/API search) omits it and is
   // unaffected.
   selfAuthenticatedOnly = false,
+  range?: TsRange,
 ): Promise<HybridSearchHit[]> {
   const k = 60 // RRF constant
   // Per-branch weights (MEMORY_RRF_FTS_WEIGHT / MEMORY_RRF_VECTOR_WEIGHT), 1/1 by
@@ -8785,7 +9010,7 @@ export async function hybridSearch(
   // Relaxed on purpose, and unchanged by the strict default introduced for the
   // endpoint: the hybrid answer fuses two rankings and already reports which
   // branch produced it, so a loose lexical hit here is labelled, not silent.
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category, selfAuthenticatedOnly)
+  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category, selfAuthenticatedOnly, range)
   const ftsIds = new Set(ftsResults.map(m => m.id))
 
   // Vector results. A row below the floor survives only when the keyword
@@ -8795,7 +9020,7 @@ export async function hybridSearch(
   // dropped ones and its RRF term grows accordingly.
   const queryEmbedding = await generateEmbedding(query, 'query')
   const vec = queryEmbedding
-    ? vectorSearch(agentId, queryEmbedding, limit * 2, category, selfAuthenticatedOnly)
+    ? vectorSearch(agentId, queryEmbedding, limit * 2, category, selfAuthenticatedOnly, range)
     : { hits: [] as VectorHit[], floor: 0 }
   const vecResults = vec.hits.filter(h => h.similarity >= vec.floor || ftsIds.has(h.memory.id))
   const vectorDropped = vec.hits.length - vecResults.length

@@ -95,7 +95,8 @@ describe('memory-lookup-nudge: speaks on a human message', () => {
           `curl -s -H @- -G -D /tmp/mem-fejlec-samu.txt ` +
           `--data-urlencode "agent=samu" --data-urlencode "q=KULCSSZO" "http://localhost:${port}/api/memories"\n` +
           "grep -i '^x-memory-search' /tmp/mem-fejlec-samu.txt  " +
-          '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1")\n',
+          '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1"; ' +
+          'idoszak: date=tegnap | since= until=)\n',
       )
       // Card b5b7eb6b child 971f7d4f, Cybersec NO-GO @f10dd063: the token must never ride the
       // curl argv (/proc/<pid>/cmdline leak) -- it goes via stdin header (-H @-) instead.

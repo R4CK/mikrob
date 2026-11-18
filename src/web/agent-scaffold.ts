@@ -11,11 +11,17 @@ import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { loadProfileTemplate, profileWantsDestructiveGate, resolveProfilePlaceholders,
+// profileWantsCredentialGate/agentGetsCredentialGate (Koteg 25, #2163's companion gate) NOT
+// adopted -- a new fleet-wide security gate, same standing refusal as the other new opt-in gates
+// in this file (see src/fork-upstream/acknowledged-conflicts.ts, RE-MEASURED 2026-10-17 round).
+// profileWantsYtIngest IS adopted (wired into bashEgressDeny/seedSettingsFromTemplate elsewhere
+// in this file, already present via clean auto-merge, not itself a security-gate decision).
+import { loadProfileTemplate, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 // Const-only module (no imports of its own) -- the scaffold section must name the SAME
 // reserved id the request-path guard enforces, or the recipe sends agents to verify a
 // field nobody rejects. Card 5c5d7bc4.
@@ -956,8 +962,12 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
 
   // Egress deny: EVERY profile, not just the gated ones. This function replaces permissions
   // wholesale on each spawn, so without it a respawn would silently drop what ensureBashEgressDeny()
-  // merged in.
-  denyList.push(...BASH_EGRESS_DENY)
+  // merged in. bashEgressDeny(ytIngestOnly) adds the yt-dlp rules when the profile/switch call for
+  // them (used again at allowRules below). Upstream's separate agentGetsBashEgressParser/
+  // BASH_EGRESS_HOST_ALLOW conditional NOT adopted -- rejected parser mechanism, same as
+  // mergeBashEgressDeny above (see src/fork-upstream/acknowledged-conflicts.ts).
+  const ytIngestOnly = ytDlpIngestOnly()
+  denyList.push(...bashEgressDeny(ytIngestOnly))
   // Fleet baseline: the deny FLOOR every agent gets regardless of profile.
   // Pushed here rather than copied into each templates/profiles/*.json so a
   // profile added tomorrow cannot silently ship without it. Deduped against what
@@ -986,8 +996,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // before the grant and ran silently after it). Omitted entirely when the
   // profile declares none, so existing profiles are unaffected.
   const extraDirs = (profile.additionalDirectories ?? []).map(p => resolveProfilePlaceholders(p, ctx))
+  const allowRules = profileWantsYtIngest(profile) && ytIngestOnly
+    ? [...profile.filesystem.allow, ...YT_INGEST_ALLOW.filter(r => !profile.filesystem.allow.includes(r))]
+    : profile.filesystem.allow
   existing.permissions = {
-    allow: profile.filesystem.allow.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
+    allow: allowRules.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
     deny: denyList,
     ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
@@ -1358,6 +1371,46 @@ export const BASH_EGRESS_DENY = [
   'Bash(*/telnet *)',
 ]
 
+// yt-dlp only through scripts/yt-ingest/yt-ingest.sh -- an OPT-IN switch,
+// YT_DLP_INGEST_ONLY (config-registry.ts), off by default (#1705 maintainer
+// decision, 2026-10-14). The shared default cannot carry these: skills call
+// yt-dlp directly from a SKILL.md command line, and a default deny would break
+// them on the next respawn of every agent on every install. With the switch on,
+// the rules ride exactly where BASH_EGRESS_DENY rides (every spawn's profile
+// write, the startup merge, the main agent's own config dir); with it off,
+// nothing here is written and the generated settings are byte-identical to an
+// install without this code. The third rule catches `<venv>/bin/python -m
+// yt_dlp`. A call hidden inside another program is out of reach of name rules
+// (see the parser note above).
+export const YT_DLP_EGRESS_DENY = [
+  'Bash(yt-dlp *)',
+  'Bash(*/yt-dlp *)',
+  'Bash(* -m yt_dlp*)',
+]
+
+// The sanctioned way in, granted to a profile that sets `ytIngest: true`
+// (researcher), and only while the switch is on -- the allow lines go with the
+// deny, not ahead of it.
+export const YT_INGEST_ALLOW = [
+  'Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-ingest.sh:*)',
+  'Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-read.sh:*)',
+]
+
+export const YT_DLP_INGEST_ONLY_KEY = 'YT_DLP_INGEST_ONLY'
+
+// Read per call (override > .env > default), so flipping the switch needs no
+// dashboard restart -- it binds each agent from its next spawn. Unreadable or
+// unknown reads as OFF: the off state is the shipped default, not a widening.
+export function ytDlpIngestOnly(read: (key: string) => string | number = getEffectiveSettingValue): boolean {
+  try { return String(read(YT_DLP_INGEST_ONLY_KEY)) === '1' } catch { return false }
+}
+
+// The egress deny set an agent actually gets: BASH_EGRESS_DENY, plus the
+// yt-dlp rules when the switch is on.
+export function bashEgressDeny(ytIngestOnly: boolean = ytDlpIngestOnly()): string[] {
+  return ytIngestOnly ? [...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY] : [...BASH_EGRESS_DENY]
+}
+
 // The fleet-wide deny FLOOR: applied to EVERY profile, exactly like
 // BASH_EGRESS_DENY above and for the same reason. permissions.deny is rebuilt
 // WHOLESALE from the security profile on every spawn, so a rule that lives only
@@ -1452,12 +1505,17 @@ export const FLEET_BASELINE_DENY = [
 // are unit-testable; ensureBashEgressDeny() below is the filesystem wrapper.
 // Existing entries are preserved and their order kept: an operator's own deny
 // rule must never be dropped by a migration. Returns true if anything changed.
-export function mergeBashEgressDeny(settings: Record<string, unknown>): boolean {
+// `rules` lets a caller merge the yt-ingest-aware set (bashEgressDeny(true), see
+// seedSettingsFromTemplate below) instead of the plain BASH_EGRESS_DENY. Upstream's separate
+// `parserCovers` param (which also REMOVES LEGACY_BASH_EGRESS_DENY entries) is NOT adopted -- it
+// wires the rejected bash-egress-parser.mjs/BASH_EGRESS_HOST_ALLOW mechanism (Koteg 25, see
+// src/fork-upstream/acknowledged-conflicts.ts). This function only ever ADDS, never removes.
+export function mergeBashEgressDeny(settings: Record<string, unknown>, rules: readonly string[] = BASH_EGRESS_DENY): boolean {
   const perms = (settings.permissions && typeof settings.permissions === 'object' && !Array.isArray(settings.permissions))
     ? settings.permissions as Record<string, unknown>
     : {}
   const deny = Array.isArray(perms.deny) ? [...(perms.deny as unknown[])] : []
-  const missing = BASH_EGRESS_DENY.filter((rule) => !deny.includes(rule))
+  const missing = rules.filter((rule) => !deny.includes(rule))
   if (missing.length === 0) return false
   perms.deny = [...deny, ...missing]
   settings.permissions = perms
@@ -1498,7 +1556,7 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown> } catch { return false }
   }
-  if (!mergeBashEgressDeny(settings)) return false
+  if (!mergeBashEgressDeny(settings, bashEgressDeny())) return false
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
@@ -3335,8 +3393,22 @@ export function scaffoldAgentDir(name: string) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
     if (existsSync(tplPath)) {
       const resolved = resolveTemplatePlaceholders(readFileSync(tplPath, 'utf-8'))
-      atomicWriteFileSync(settingsJson, resolved)
+      atomicWriteFileSync(settingsJson, seedSettingsFromTemplate(resolved, ytDlpIngestOnly()))
     }
+  }
+}
+
+// The template carries BASH_EGRESS_DENY only. With YT_DLP_INGEST_ONLY on, the
+// yt-dlp rules are merged into the seeded file too; with it off the template
+// text is returned verbatim, exactly as before the switch existed. Pure, so
+// both switch states are testable without scaffolding a real agent dir.
+export function seedSettingsFromTemplate(resolved: string, ytIngestOnly: boolean): string {
+  if (!ytIngestOnly) return resolved
+  try {
+    const tpl = JSON.parse(resolved) as Record<string, unknown>
+    return mergeBashEgressDeny(tpl, bashEgressDeny(true)) ? JSON.stringify(tpl, null, 2) : resolved
+  } catch {
+    return resolved // unparsable template: write it as is, the profile write follows
   }
 }
 
@@ -4872,6 +4944,11 @@ export function buildMemorySearchLabelBody(name: string): string {
     'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
     '`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.',
     '',
+    'Időszakra szűrés: `&date=tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)',
+    'vagy `&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN`, ékezet nélkül, kódolva. A szűrő nem lazul: érvénytelen',
+    'kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen',
+    'használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
+    '',
     'NYERS ÉKEZET A `q`-BAN = HTTP 400, ÜRES TÖRZZSEL. A `q=funkcionális` alak 400-at ad, a',
     '`q=funkcion%C3%A1lis` és a `-G --data-urlencode "q=..."` alak 200-at. A 400-on NINCS',
     '`X-Memory-Search` fejléc, tehát a fenti `grep` némán semmit nem ír, és a nulla sor pontosan',
@@ -5059,6 +5136,7 @@ A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni. A keresés alapból ENGED�
 relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
 relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a &strict=1-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
+Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva. A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 

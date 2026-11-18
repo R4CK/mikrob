@@ -27576,3 +27576,69 @@ visszaallitva byte-azonos. `store/post-review.selftest.sh`: 43/43 (volt 37/37).
 **Ki dontott:** backend (sajat kartya 06334c7d delta #2, Cybered NO-GO fix-direction 32965). Gate:
 Cybered (delta re-gate), QA FAIL 32962 is lezarva ugyanezzel a munkaval (a C1 CLI-timeout resze
 mar a #1 deltaban kesz volt).
+
+## 2026-11-18 -- 5dd0842a: Koteg 25 (f0cfd842b..66d38ee45, 25 commit) upstream szinkron -- zöld fleet-test
+
+Szotasz/marveen upstream szinkron következő kötege (e5c46e87 FÁZIS része, Koteg 24 = 57044a66
+után). `git merge --no-ff 66d38ee45`, 22 konfliktusos fájl + 2 modify/delete + downstream
+auto-merge melléhatás feloldva (ennek során 5 valódi bug kiderült: duplikált `consume_approval`
+`seeme-send.py`-ban, duplikált allow/deny/isInvokedDirectly re-deklarálás `self-pace-gate.mjs`-ben,
+pozíciós-argumentum eltolódás `memories.ts`-ben, hiányzó `resumeSending` Set `context-guard-runner.ts`-ben,
+lógó `mayIssueCredentials` hívási helyek `auth.ts`/`security.ts`-ben). Commit `1825c0a32`.
+
+Teljes `fleet-test.sh` (a kártya saját "Kész, ha" pontja, nem scope-olt futás -- lásd 7c79badc:
+a scope-olt futás elrejt piros fájlokat) első köre `cb64fecd8`-n (korábbi session lint-fixe után):
+19 sikertelen teszt-fájl / 48 sikertelen teszt. Mindegyik gyökér-okra visszavezetve és javítva
+(`0acf9e1c1` + chmod-fix `9d35c7030`), lásd a kártya REVIEW-ját a fájlonkénti bontásért. Két eset
+visszautasított upstream-funkciót tesztelt (DEVKEYMINT1022 bearer-bootstrap kivétel, card 49960046;
+APPROVALCONSUME1022 HTTP-consume, `seeme-send.py` saját KEEP FORK bejegyzése) -- a teszt-fájl
+törölve, `acknowledged-conflicts.ts` + `fork-upstream-conflict-guard.test.ts` backlog bejegyzéssel
+rögzítve, nem viselkedés-hiba. Egy eset önhibából eredő regresszió volt egy korábbi körből
+(`auth-routes.test.ts`, visszaállítva). `scripts/hooks/sender_check.py` hiányzott teljesen
+(upstream-ban megvan, de a korábbi merge-kör sosem portolta) -- scope-olt port készült, csak a
+`Refused`/`_copy_check` rész, ennek a forknak a saját `outgoing-copy-gate.py` konstansaival, az
+email-approval-gate/recipient-ledger wiring (Node-oldali megfelelő: `scripts/recipient-ledger.mjs`,
+külön álló NOT ADOPTED döntés) és upstream missing-rules-file refuse-policy-ja SZÁNDÉKOSAN nem
+portolva (ez a hook Telegram-riasztásra megy, fail-open-with-warning a helyes, nem upstream email-
+küldőknek való unconditional refuse -- a hook saját docstringje dokumentálja a különbséget).
+
+**Mérés:** `fleet-test.sh` (teljes, nem scope-olt, `9d35c7030`-on): 1369 Test Files passed | 1
+skipped (1370), 42804 Tests passed | 132 skipped (42936), 0 FAIL. Duration 647.90s.
+`lint-ratchet.sh`: no rule got worse (422 finding, baseline tartja magát).
+
+**Ki döntött:** backend3 végezte (kártya felvétele: MikroB dispatch 20498). Gate-SHA:
+0acf9e1c1,9d35c7030. Gate: QA + Cybersec (WhiteHat) + Cybered (RedHat) -- ez a kör
+`src/web/routes/auth.ts`/`security.ts`-t is érintette (`auth-routes.test.ts` self-korrekció), ugyanaz
+a fájl-osztály, ami Koteg 24-en (57044a66) Cybered-et kapott. `66d38ee45` `git merge-base
+--is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
+
+## 2026-11-18 -- 5dd0842a: Koteg 25 upstream szinkron -- a korábbi "0 FAIL" mérés nem volt a végső shán, javítva 942ec654f-en
+
+A fenti 2026-11-18-i bejegyzés (`9d35c7030`-on mért 0 FAIL) utólag nem bizonyult megbízhatónak:
+a `fleet-test.sh` az a kör nem `--ref`-fel futott, hanem a `$ROOT` aktuális HEAD-jén, és egy
+párhuzamos backend2-futás (`--ref df2ebb310`) ugyanazt a megosztott `/home/neon/marveen-test`
+fát és lock-ot versenyeztette ugyanabban az ablakban -- utólag nem rekonstruálható, melyik sha-t
+tesztelte valójában. Ezután Cybered NO-GO-t adott `44100d69f`-en (approvals.ts generikus
+category-consume regresszió, W2 kártya 2a80c6cb hardening visszanyitása), a fix `8ca723623`-ra
+ment, majd QA FAIL derült ki `44100d69f`-en (tsc TS2739, `acknowledged-conflicts.ts` két párosított
+map-je nem volt szinkronban -- 4 új `ACKNOWLEDGED_CONFLICTS` kulcsnak nem volt
+`ACKNOWLEDGED_UPSTREAM_BLOBS` párja).
+
+Egy explicit `--ref 8ca723623`-cal futtatott teljes `fleet-test.sh` (most már megbízhatóan ehhez
+a shához kötve) 3 valódi, a merge-ből eredő hibát talált: (1) `agent-dir-namespace-runtime.test.ts`
+-- `fork-upstream/acknowledged-conflicts.ts` egy fenntartott azonosítót szó szerint kiírt import
+helyett; (2) `hook-registration-completeness.test.ts` -- a merge-ből portolt
+`scripts/hooks/sender_check.py`-nak nem volt regisztrációja/EXEMPT bejegyzése; (3)
+`shebang-files-executable.test.ts` -- 5 új upstream fájl (`uptime-monitor.py` + tesztje,
+`daily-log-backfill-memories.ts`, `spotlight-check.sh`, `yt_ingest_lib.py`) shebanggel, de nem
+futtatható jelzéssel trackelve. Mindhárom javítva `942ec654f`-en.
+
+**Mérés:** `fleet-test.sh --ref 942ec654f` (explicit ref, detached/setsid-nohup futás, túlélt egy
+session-restartot): 1382 Test Files passed | 1 skipped (1383), 43263 Tests passed | 132 skipped
+(43395), 0 FAIL. Duration 641.31s. `lint-ratchet.sh`: no rule got worse (420 finding, baseline
+tartja magát). `npx tsc --noEmit` ezen a shán: clean.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 942ec654f040b93d5e7a62eedbae4c88386b52a5. Gate: QA +
+Cybersec (WhiteHat) + Cybered (RedHat) -- friss kör kell MINDHÁROM kaputól ezen a shán, a korábbi
+QA FAIL és Cybered NO-GO korábbi (már javított) shákra vonatkozott. `942ec654f`
+`git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
