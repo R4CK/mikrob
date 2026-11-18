@@ -494,12 +494,17 @@ wait "$r11_pid" 2>/dev/null
 # 0/-5/1.5/empty must refuse to run (non-zero exit, nothing classified as removable); a normal
 # value still works. Separate throwaway candidate so this block doesn't depend on fixture state
 # left behind by the R11/R9 block above.
+# Cybered NO-GO 33289: the first guard (`''|*[!0-9]*|0`) missed two spellings of the same hole --
+# a leading-zero zero ("00"/"000", numerically zero but matches none of those three alternatives)
+# and a value whose minute count overflows bash's 64-bit arithmetic (2^63 and above, which wraps
+# silently instead of erroring). "010" is added too: not itself a hole, but it was silently read
+# as octal 8 under the old code instead of refused -- the fixed regex refuses it (leading zero).
 rm -rf "$FAKE_HOME"; mkdir -p "$FAKE_HOME"
 minage_dir="$FAKE_HOME/qa-gate-minage-fresh"
 mkdir -p "$minage_dir"
 HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
 old_min_age_hours="$MIN_AGE_HOURS"
-for bad_value in 0 -5 1.5 ""; do
+for bad_value in 0 -5 1.5 "" 00 010 9223372036854775807; do
   MIN_AGE_HOURS="$bad_value"
   out="$(main --dry-run 2>&1)"; rc=$?
   if [ "$rc" -ne 0 ]; then

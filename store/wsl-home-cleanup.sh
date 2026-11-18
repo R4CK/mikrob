@@ -399,12 +399,18 @@ main() {
   # closed via the arithmetic in find_recent_or_failed erroring out. Refuse to run at all for any
   # value that is not a positive integer, so the failure is loud and up front, not a silent
   # miscount buried in the age check.
-  case "$MIN_AGE_HOURS" in
-    ''|*[!0-9]*|0)
-      echo "wsl-home-cleanup: WSL_HOME_CLEANUP_MIN_AGE_HOURS must be a positive integer (got '$MIN_AGE_HOURS') -- refusing to run" >&2
-      return 2
-      ;;
-  esac
+  # Cybered NO-GO 33289: the first cut (`''|*[!0-9]*|0`) still let two spellings of the same hole
+  # through. "00"/"000" is numerically zero but matches none of those three alternatives (not
+  # empty, no non-digit char, not literally "0"), so it reached the arithmetic unrefused and
+  # produced the same -mmin -0 everything-is-old bug. And bash's 64-bit integer arithmetic wraps
+  # silently (no overflow error) for a minute count at or above 2^63, so an all-digit value that
+  # large also slipped past the old check and came out the other side of `MIN_AGE_HOURS * 60` as a
+  # small/negative number. A leading-non-zero-digit, length-bounded regex closes both: at most 9
+  # digits is 114,000+ years of hours, far below where the multiply-by-60 could wrap.
+  if ! [[ "$MIN_AGE_HOURS" =~ ^[1-9][0-9]{0,8}$ ]]; then
+    echo "wsl-home-cleanup: WSL_HOME_CLEANUP_MIN_AGE_HOURS must be a positive integer (got '$MIN_AGE_HOURS') -- refusing to run" >&2
+    return 2
+  fi
 
   local MODE="dry-run" CONFIRMED=0 arg
   for arg in "$@"; do
