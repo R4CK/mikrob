@@ -27386,3 +27386,36 @@ check so the existing fail-open-on-unreachable-clones behavior is unchanged.
 
 **Ki dontott:** backend (sajat kartya, phase 295ae6a3 F1.3). Gate: QA + WhiteHat + RedHat (a fazis
 saja kijelolese, landolasi utak / git-integritas / kartya-allapot hitelesseg).
+
+## 2026-11-18: F1.3 follow-up -- checkpoint timeout, FABRICATED wording, card-worktree snapshot (card 06334c7d)
+
+Non-blocking findings from CYBERSEC GO 32818 es CYBERED GO 32822 a 14bfc893-on, mind harom javitva:
+
+- **LOW-1 (CYBERSEC):** `store/post-review.sh`-ban a `record_review_checkpoint` hivasa korul nem
+  volt timeout -- egy beragadt `agent-checkpoint.sh` hivas a teljes REVIEW -> waiting lepest
+  blokkolta volna. Most `timeout ${POST_REVIEW_CHECKPOINT_TIMEOUT_S:-10}`-be csomagolva, a fail-open
+  viselkedes valtozatlan (egy timeout ugyanugy "checkpoint nem rogzitve, REVIEW valtozatlan" lesz).
+
+- **LOW-3 (CYBERSEC) / C2 (CYBERED), ugyanaz a lelet:** a checkpoint mindig az ugynok DEFAULT
+  worktree-jet (`agent/<actor>/work`) pillanatfelvetelezte, nem a kartya worktree-jet
+  (`$ROOT/card/<cardId>`, 77 letezik) -- egy kartya-modu REVIEW valos Gate-SHA-ja soha nem egyezett
+  a rogzitett head_sha-val. Most eloszor a kartya worktree-t probalja (`agent-worktree-marveen.sh
+  <actor> --card <cardId> --path`), csak akkor esik vissza a default worktree-re, ha az nem letezik.
+
+- **LOW-2 (CYBERSEC):** a FABRICATED szoveg most kimondja a korlatot -- "advisory only, not proof it
+  was never a real commit anywhere" -- es megnevezi, melyik klonokban keresett.
+
+- **C1 (CYBERED, MEDIUM-LOW):** `gate-closure-check.py`-ban az `any_clone_reachable = any(...)` csak
+  EGY klon letezeset koevetelte meg, tehat egy valodi commit FABRICATED-kent jelent meg, ha a MASIK
+  (azt tartalmazo) klon nem volt eleheto, vagy a git hivas timeoutolt. Most harom kimenet van: ha
+  EGYETLEN klon sem eleheto, a regi fail-open viselkedes marad (CHECKPOINT_FAIL/AGREE); ha NEM
+  minden klon eleheto, de a elerhetok nem talaljak a shat, UNRESOLVED (nem FABRICATED); ha MINDEN
+  klon eleheto es mind "nincs" valaszol, FABRICATED; egy timeout barmelyik elerheto klonon
+  UNRESOLVED-et ad.
+
+Mutacio-bizonyitott mindharom javitas (a fix visszaallitasaval pontosan a hozza tartozo uj teszt(ek)
+mentek pirosra, a tobbi zold maradt, majd visszaallitva byte-azonos). `store/post-review.selftest.sh`:
+37/37. `store/gate-closure-check.selftest.py`: 180/180.
+
+**Ki dontott:** backend (sajat kartya 06334c7d, phase 295ae6a3 follow-up). Gate: QA + Cybersec +
+Cybered (a kartya sajat kijelolese).

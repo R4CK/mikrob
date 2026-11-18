@@ -153,6 +153,7 @@ Exit:   0 always. The caller decides -- this is a readout, not a gate on the gat
 import json
 import os
 import re
+import subprocess
 import sys
 
 # The role names and the author->role fold both live in gate_author_role.py, so that the tool
@@ -165,7 +166,7 @@ from gate_author_role import GATE_ROLES, author_role, canonical_gate  # noqa: E4
 # separate, later cards) reads the SAME source instead of growing another copy.
 from gate_verdict_tokens import VERDICT_RE as _VERDICT, PASSING  # noqa: E402
 from sha_content_equivalence import (  # noqa: E402
-    _SHARED_CHURN, _MAIN_REF_OVERRIDE, _git, _CLONES,
+    _SHARED_CHURN, _MAIN_REF_OVERRIDE, _git, _CLONES, _GIT_TIMEOUT,
     shas_agree, sha_sets_agree, _clone_holding, _clone_and_ref_holding,
     _is_version_bump, _bump_parent_hint, content_verdict,
 )
@@ -1198,20 +1199,76 @@ def main():
             # commit, just not one of this card's recorded checkpoints" -- a sha that is not a
             # commit object ANYWHERE is a different, worse problem (hand-typed or hallucinated),
             # and must say so distinctly rather than read as the same ordinary coverage gap.
-            # Gated on at least one clone directory actually being reachable here: _clone_holding
-            # returning None is ambiguous between "no repo has this commit" and "no repo is
-            # configured/mounted in this environment" (same ambiguity _git's own docstring
-            # accepts), and this file's fail-open convention means the latter must never read as
-            # FABRICATED -- it falls through to the ordinary (fail-open) coverage check instead.
-            any_clone_reachable = any(os.path.isdir(p) for _n, p, _r in _CLONES)
-            if any_clone_reachable and _clone_holding(check_sha) is None:
-                result = "FABRICATED|%s|does not exist as a commit object in any known repo" % check_sha
-            else:
+            #
+            # Card 06334c7d (CYBERED C1 on 14bfc893's own GO): the old `any_clone_reachable =
+            # any(...)` only required ONE clone directory to exist, so a real commit that lives
+            # ONLY in the second clone was reported FABRICATED whenever that second clone was
+            # unmounted (or its own git call simply timed out) -- "I could not check the clone
+            # this commit actually lives in" was misread as "I checked every clone and found
+            # nothing".
+            #
+            # Three outcomes now, by how much was actually checked:
+            #   - NO clone reachable at all: unchanged fail-open fallthrough (the original, most
+            #     common case -- a dev box with no clones configured) -- same as always.
+            #   - SOME but not ALL clones reachable, and the reachable one(s) answer "not found":
+            #     UNRESOLVED, not FABRICATED -- the unreachable clone could still hold it, so
+            #     "not found where I could look" is not "does not exist anywhere" (the actual
+            #     finding: the old code reported FABRICATED here).
+            #   - EVERY clone reachable: a timeout on any of them is UNRESOLVED (the same
+            #     fail-closed-to-UNRESOLVED convention `check()` already uses elsewhere in this
+            #     file for "cannot check"); every one genuinely answering "absent" is FABRICATED.
+            clone_paths = [p for _n, p, _r in _CLONES]
+            reachable_paths = [p for p in clone_paths if os.path.isdir(p)]
+            if not reachable_paths:
                 covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
                 if not covered:
                     result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+            else:
+                statuses = [_cat_file_commit_status(p, check_sha) for p in reachable_paths]
+                if any(s == "timeout" for s in statuses):
+                    result = "UNRESOLVED|%s|%s|a git call timed out while checking whether this " \
+                        "commit exists (--card-id/--db FABRICATED check)" % (check_sha, check_sha)
+                elif len(reachable_paths) < len(clone_paths):
+                    result = "UNRESOLVED|%s|%s|not found in the %d reachable clone(s), but %d " \
+                        "configured clone(s) could not be reached -- cannot confirm it does not " \
+                        "exist there" % (check_sha, check_sha, len(reachable_paths),
+                                          len(clone_paths) - len(reachable_paths))
+                elif all(s == "absent" for s in statuses):
+                    # LOW-2 (CYBERSEC on the same GO): name the limitation, not just the verdict --
+                    # this only means "not found in the configured clones", never "proven to never
+                    # have existed anywhere" (an unreachable or unconfigured repo would say so).
+                    result = "FABRICATED|%s|does not exist as a commit object in any of the %d " \
+                        "configured clones searched (%s) -- advisory only, not proof it was never " \
+                        "a real commit anywhere" % (
+                            check_sha, len(_CLONES), ", ".join(nm for nm, _p, _r in _CLONES))
+                else:
+                    covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
+                    if not covered:
+                        result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
 
     print(result)
+
+
+def _cat_file_commit_status(repo, sha):
+    """('exists' | 'absent' | 'timeout' | 'unreachable') for whether `sha^{commit}` resolves in
+    `repo`. Deliberately separate from sha_content_equivalence.py's own `_git` (card 06334c7d,
+    CYBERED C1): that helper's documented contract is "any failure -- missing git, missing clone,
+    timeout -- is a plain False", which is the right call for the AGREE/DISAGREE machinery that
+    consumes it everywhere else, but conflates "git could not answer" with "git answered no" for
+    the ONE caller (the FABRICATED check below) where that distinction is the entire point.
+    Narrowly scoped here rather than changing `_git` itself, so every other caller's behaviour is
+    unaffected.
+    """
+    if not os.path.isdir(repo):
+        return "unreachable"
+    try:
+        p = subprocess.run(("git", "-C", repo, "cat-file", "-e", sha + "^{commit}"),
+                            capture_output=True, text=True, timeout=_GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except (OSError, subprocess.SubprocessError):
+        return "unreachable"
+    return "exists" if p.returncode == 0 else "absent"
 
 
 def _checkpoint_coverage(card_id, gate_sha, db_path):
