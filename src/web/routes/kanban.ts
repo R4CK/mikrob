@@ -45,6 +45,7 @@ import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-con
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
 import { landedGuardVerdict, GENERATED_COMMENT_AUTHORS } from '../kanban-landed-guard.js'
+import { cardLandingsGuardVerdict } from '../kanban-card-landings-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
@@ -1556,6 +1557,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
+      const v = cardLandingsGuardVerdict(id, data.status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'landing_record_required', error: v.message }, 409); return true }
+    }
+    {
       const v = gateCompletenessGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
@@ -1863,6 +1868,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     {
       const v = await landedGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
+    }
+    {
+      const v = cardLandingsGuardVerdict(id, status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'landing_record_required', error: v.message }, 409); return true }
     }
     {
       const v = gateCompletenessGuardVerdict(id, status, force === true, actor)
