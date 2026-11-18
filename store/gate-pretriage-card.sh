@@ -122,10 +122,17 @@ build_body() {
   git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null || return 3
   base="$(resolve_diff_base "$repo" "$sha" "$prior_sha")"
   # --trunk (card a42d27e1): land parity against the CURRENT trunk tip, fetched fresh so a stale
-  # local origin/<trunk> cannot report a clean merge the real land would not actually get.
+  # local origin/<trunk> cannot report a clean merge the real land would not actually get. Passed
+  # ONLY when it actually resolves in this repo -- a throwaway fixture repo (no origin remote at
+  # all, e.g. this script's own test suite) silently gets no land-parity check, same as before
+  # this card, rather than a visible "skipped" finding on every single call.
+  local trunk_args=()
   local trunk; trunk="$(trunk_for_repo "$repo")"
-  git -C "$repo" fetch -q origin "${trunk#origin/}" 2>/dev/null || true
-  json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" --trunk "$trunk" --json 2>/dev/null)" || return 3
+  if git -C "$repo" fetch -q origin "${trunk#origin/}" 2>/dev/null \
+     && git -C "$repo" rev-parse --verify "${trunk}^{commit}" >/dev/null 2>&1; then
+    trunk_args=(--trunk "$trunk")
+  fi
+  json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" "${trunk_args[@]}" --json 2>/dev/null)" || return 3
   MARKER="$MARKER" SHA="$sha" BASE="$base" REPO="$repo" PT_JSON="$json" TITLE="$title" DESC="$desc" PEER_GATE_SHA="$peer_sha" python3 <<'PY'
 import json, os, re
 d = json.loads(os.environ["PT_JSON"])
