@@ -1605,7 +1605,10 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # decision 3 in landing-downward-check.sh.
   local down_log
   down_log="$(g log --no-merges --format='%h%x09%s' "origin/$DEFAULT_BRANCH..$branch")"
-  downward_check "$down_log" "$LAND_CARD" "$ALLOW_STACKED" "$([ -n "$LAND_CARD" ] && echo 1 || echo 0)" "$agent" || {
+  # DOWNWARD_CHECK_REPO (card 8ca1f91d, Cybersec NO-GO F1): $wt shares marveen's own `upstream`
+  # remote config (it is a worktree of $MAIN, not a separate clone), so the 404-card exemption can
+  # confirm a citing commit is actually reachable from upstream/develop, not merely forged/deleted.
+  DOWNWARD_CHECK_REPO="$wt" downward_check "$down_log" "$LAND_CARD" "$ALLOW_STACKED" "$([ -n "$LAND_CARD" ] && echo 1 || echo 0)" "$agent" || {
     echo "$agent: REFUSED -- commits belonging to OTHER cards are in $branch. Nothing merged, nothing pushed."
     return 4
   }
@@ -2336,7 +2339,8 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     fi
 
     down_log="$(git -C "$wt" log --no-merges --format='%h%x09%s' "$pre_head..$branch")"
-    if ! downward_check "$down_log" "$card" "$ALLOW_STACKED" 1 "$agent" 2>/dev/null; then
+    # DOWNWARD_CHECK_REPO (card 8ca1f91d, Cybersec NO-GO F1) -- same reasoning as land_one's call.
+    if ! DOWNWARD_CHECK_REPO="$wt" downward_check "$down_log" "$card" "$ALLOW_STACKED" 1 "$agent" 2>/dev/null; then
       _batch_drop "$card" "foreign-card commits on $branch (downward check)"; continue
     fi
 
