@@ -48,8 +48,8 @@ import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { messageWakesReceiver } from './message-wake.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-// selectTickWindow NOT adopted (see acknowledged-conflicts.ts, message-router-window.ts entry) --
-// fork's own selectFairBatch (this file) is used instead.
+// upstream's fair-tick-window selector NOT adopted (see acknowledged-conflicts.ts,
+// message-router-window.ts entry) -- fork's own selectFairBatch (this file) is used instead.
 import { isStopMessage, isUrgentDelivery } from './message-router-window.js'
 import { deliveryHoldFor, type DeliveryHold } from './delivery-hold.js'
 
@@ -1112,7 +1112,7 @@ export async function runMessageRouterTick(): Promise<void> {
         logger.info({ agent }, 'message-router: delivery hold released')
       }
     }
-    // selectTickWindow (upstream) NOT adopted -- see acknowledged-conflicts.ts; fork's own
+    // upstream's fair-tick-window selector NOT adopted -- see acknowledged-conflicts.ts; fork's own
     // selectFairBatch (defined above, already carries its own urgency-promotion feature).
     const pending = selectFairBatch(localPending, MAX_MESSAGES_PER_TICK)
     // ---- update absent/present tracking for all receivers in this tick ----

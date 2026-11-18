@@ -1326,6 +1326,26 @@ register_seeded_schedules() {
 # operator review.
 SCHED_REVIEW_NAMES=""
 
+# Registry verdict of task $1 as it is on disk NOW:
+#   0 = trusted (ok), 1 = a REAL not-ok verdict (unregistered / hash mismatch /
+#   not found), 2 = UNKNOWN: no CLI (first update to a guard build, or an
+#   unbuilt dist), no node, a CLI without `verify` (usage exit 2), or a crash.
+# A crash also exits 1 in node, so 1 counts only together with the CLI's own
+# "<verdict> <name>" line.
+sched_task_verified_ok() {
+  _sv_cli="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
+  [ -f "$_sv_cli" ] || return 2
+  command -v node >/dev/null 2>&1 || return 2
+  _sv_rc=0
+  _sv_out="$(node "$_sv_cli" verify "$1" 2>/dev/null)" || _sv_rc=$?
+  [ "$_sv_rc" = "0" ] && return 0
+  # registry-error = the CLI could not read the registry: unknown, not a verdict.
+  if [ "$_sv_rc" = "1" ] && printf '%s\n' "$_sv_out" | grep -xE "[a-z-]+ $1" | grep -qv '^registry-error '; then
+    return 1
+  fi
+  return 2
+}
+
 # True (0) iff every entry of the installed task dir $1 is shipped content:
 #   - a regular top-level file (no symlink) byte-identical to the current
 #     shipped version of the same file in the seed source dir $2 (rendered when

@@ -685,6 +685,28 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     'docs/config-reference.md',
     'scripts/channel-outage-alarm.sh',
     'scripts/hooks/send-invocation-cases.json',
+    //   - src/__tests__/credential-issuance-owner-session.test.ts (card 5dd0842a, Koteg 25): the
+    //     entry under this key documents WHY the file was deleted (it tested the rejected
+    //     mayIssueCredentials/DEVKEYMINT1022 bootstrap exception), not an independent refusal with
+    //     its own tree symbol -- the actual decided behavior is CREDENTIAL_MINT_KINDS, already
+    //     anchored under 'src/web/routes/auth.ts' above. A second anchor on the same constant
+    //     would be redundant, not load-bearing.
+    'src/__tests__/credential-issuance-owner-session.test.ts',
+    //   - scripts/__tests__/seeme-send-consume.test.sh (card 5dd0842a, Koteg 25): same shape as
+    //     the credential-issuance entry above -- documents why a deleted upstream test file was
+    //     deleted, not an independent refusal. The decided behavior (content-hash-bound
+    //     consume) is anchored under 'scripts/sms/seeme-send.py' above.
+    'scripts/__tests__/seeme-send-consume.test.sh',
+    //   - scripts/hooks/sender_check.py (card 5dd0842a, Koteg 25): the entry mentions the phrase
+    //     only by cross-referencing the ALREADY-anchored recipient-ledger refusal elsewhere in
+    //     this file; this entry's own content is an ADOPTED, scoped port, not an independent
+    //     refusal with a symbol of its own to watch.
+    'scripts/hooks/sender_check.py',
+    //   - src/__tests__/auth-routes.test.ts (DEVKEYMINT1022 self-correction, Koteg 25, card
+    //     5dd0842a): documents an in-round correction of this round's own merge, not a new
+    //     refusal -- it only mentions the phrase because it quotes the auth.ts entry it corrected
+    //     back into line with. No symbol of its own to anchor.
+    'src/__tests__/auth-routes.test.ts (DEVKEYMINT1022 self-correction, Koteg 25, card 5dd0842a)',
     //   - src/web/routes/claude-plans.ts (card 4aa87fdf, 2026-10-17): the two "NOT adopted" items in
     //     this entry (mainRotationContinueVerdict and RESTARTWAKE927) were BOTH adopted on develop
     //     between our branch-cut and landing -- grep-verified on origin/develop. Any 'absent' anchor

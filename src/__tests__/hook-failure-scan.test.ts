@@ -18,7 +18,9 @@ vi.mock('../web/agent-config.js', async (orig) => {
     listAllAgentNames: () => ['ana', main, 'dex'],
   }
 })
-vi.mock('../web/main-transcript-root.js', () => ({
+// configDirFor lives in context-guard-runner.js in this fork (not main-transcript-root.js,
+// where upstream has it -- see that file's own comment on the structural difference).
+vi.mock('../web/context-guard-runner.js', () => ({
   configDirFor: (name: string) => (name === 'dex' ? '/cfg/dex' : undefined),
 }))
 

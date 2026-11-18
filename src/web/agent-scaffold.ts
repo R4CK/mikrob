@@ -1556,7 +1556,7 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown> } catch { return false }
   }
-  if (!mergeBashEgressDeny(settings)) return false
+  if (!mergeBashEgressDeny(settings, bashEgressDeny())) return false
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true

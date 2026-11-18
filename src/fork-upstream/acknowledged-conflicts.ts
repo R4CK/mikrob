@@ -3209,6 +3209,57 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above.',
   'src/__tests__/auth-recovery.test.ts':
     'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above.',
+  'src/__tests__/auth-routes.test.ts (DEVKEYMINT1022 self-correction, Koteg 25, card 5dd0842a)':
+    "CORRECTED: an earlier pass of THIS SAME round's conflict resolution wrongly imported " +
+    "upstream's mayIssueCredentials/DEVKEYMINT1022 assumption into the pre-existing 'deletes a " +
+    "user and revokes their sessions' test, changing the TOKEN_AUTH delete-user assertion from " +
+    '200 to 403 -- directly contradicting USER_ADMIN_KINDS = [\'token\', \'session\'] in auth.ts, ' +
+    "whose own comment calls token-inclusion deliberate, existing behavior, and the auth.ts entry " +
+    "above pinning DEVKEYMINT1022 as NOT ADOPTED. Caught by fleet-test (expected 200 to be 403). " +
+    'Reverted to the original assertion (token delete succeeds, 200); the CLI_RECOVERY_ONLY ' +
+    'code-pinning and the session-path negative-control additions elsewhere in the same diff are ' +
+    'unrelated and correct, left as adopted.',
+  'scripts/hooks/sender_check.py':
+    'ADOPTED, SCOPED (card 5dd0842a, Koteg 25). scripts/uptime-monitor.py (new this same Koteg) ' +
+    "imports this file for its outgoing-copy CONTENT check before a Telegram alert send; it did " +
+    "not land with uptime-monitor.py in the first pass (caught by fleet-test: FileNotFoundError). " +
+    "Ported ONLY the Refused exception + _copy_check(text), against this fork's OWN " +
+    'outgoing-copy-gate.py (unchanged, already present, different constant names than upstream -- ' +
+    'BAD_NAME_STATE/STATE_BROKEN/STATE_EMPTY/STATE_ACTIVE/BROKEN_REASON, not RULES_STATE/' +
+    'RULES_INVALID/RULES_MISSING/RULES_EMPTY). NOT ported: the email_send approval-level gate ' +
+    '(email-approval-gate.py) and the opt-in Python recipient ledger (recipient_ledger.py) ' +
+    "upstream's full sender_check.py also wires in for its OWN mail senders -- the Python ledger " +
+    'module does not exist in this fork, and the Node-side equivalent (scripts/recipient-ledger.mjs) ' +
+    'is an separately standing NOT ADOPTED decision elsewhere in this file. A Telegram alert refusing ' +
+    'to send because an UNRELATED, unconfigured ledger feature failed to load would be a new, ' +
+    'unintended failure mode, not hardening. Policy difference from upstream, deliberate: a missing/' +
+    "unreadable rules file (BAD_NAME_STATE=STATE_BROKEN, BROKEN_REASON unset) is treated like " +
+    'STATE_EMPTY (fail-open with a warning), not refused -- upstream refuses it unconditionally, ' +
+    "correct for ITS email senders (fail-closed is the documented policy there) but wrong for a " +
+    "Telegram alert (the hook's own docstring draws exactly this email-vs-Telegram line: email " +
+    'fail-closed, Telegram fail-open-with-warning). Only a genuinely broken PATTERN in a present, ' +
+    'parseable rules file (BROKEN_REASON set) still refuses.',
+  'scripts/__tests__/seeme-send-consume.test.sh':
+    "NOT ADOPTED (Koteg 25, card 5dd0842a). Upstream's own test for the HTTP-consume " +
+    'APPROVALCONSUME1022 mechanism -- the exact flow the seeme-send.py entry above already KEEPS ' +
+    "FORK against (weaker binding: a substring recipient-text match with no content-hash tie, " +
+    'no time window). The fixture spins up a fake dashboard/gateway simulating the REJECTED ' +
+    "HTTP-consume round-trip; the fork's real approval-consumption is direct-SQLite and " +
+    'content-hash-bound, so the fixture exercises a code path that does not exist here (the ' +
+    "script's actual --approval validation, UUID-shaped only, correctly refuses the test's " +
+    "non-UUID 'appr-ext-1' fixture id -- not a bug, the test assumed the wrong mechanism). " +
+    'Deleted rather than rewritten against the real mechanism: the existing hash-bound ' +
+    'consume already has its own coverage elsewhere, documented at the seeme-send.py entry.',
+  'src/__tests__/credential-issuance-owner-session.test.ts':
+    "NOT ADOPTED (Koteg 25, card 5dd0842a). Upstream's own test for mayIssueCredentials/" +
+    "DEVKEYMINT1022 -- the feature its 'first-run setup' describe block exercises is the exact " +
+    'HTTP break-glass bootstrap exception card 49960046 retired (see the auth.ts entry above). ' +
+    "Its beforeEach for the SECOND describe block (`addUser(TOKEN_AUTH, 'owner')` expected 201) " +
+    'also depends on that same rejected exception, so every test in that block fails at setup, ' +
+    "not just the first-run ones. Deleted rather than kept failing or rewritten to assert 403: " +
+    'this fork already pins the retirement via auth-routes.test.ts and auth-recovery.test.ts, so ' +
+    'a second, upstream-shaped pin on the same decision adds no coverage, only merge friction on ' +
+    'every future koteg that touches auth.ts.',
   // security.ts ENROLL_KINDS: fork is ['session'] only, upstream is ['token','session']. This IS
   // the bridge-enroll door named in fleet.ts's own comments as one of three self-escalation routes
   // the 68254bd7 chain closed (shared bearer minting a session/device credential). WhiteHat

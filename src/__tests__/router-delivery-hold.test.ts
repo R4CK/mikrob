@@ -53,6 +53,8 @@ vi.mock('../db.js', () => ({
   stampMessageTrace: () => false,
   upsertOtelSpan: () => undefined,
   closeOtelSpan: () => false,
+  closeOtelSpanIfOpen: () => false,
+  getKanbanCardStateByIdPrefix: () => null,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({

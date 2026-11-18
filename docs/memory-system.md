@@ -85,7 +85,7 @@ Minden `POST /api/daily-log` bejegyzés ugyanabban az SQLite-tranzakcióban egy 
 
 ```bash
 # tegnapi bejegyzések (a napló tükör-sorai is), kulcsszóra
-curl -s -G -D /tmp/mem-fejlec.txt -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -G -D /tmp/mem-fejlec.txt \
   --data-urlencode "agent=brainy" --data-urlencode "q=levél" --data-urlencode "date=tegnap" \
   "http://localhost:3420/api/memories"
 grep -i '^x-memory-search' /tmp/mem-fejlec.txt

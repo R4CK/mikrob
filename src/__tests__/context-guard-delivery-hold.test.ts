@@ -72,8 +72,11 @@ vi.mock('../web/agent-config.js', () => ({
   listAgentNames: () => ['boni'],
   listAllAgentNames: () => ['boni'],
   agentDir: (n: string) => join(ROOT, 'agents', n),
+  agentConfigRoot: (n: string) => (n === 'marveen' ? ROOT : join(ROOT, 'agents', n)),
   readAgentModel: () => null,
   readAgentRemoteHost: () => null,
+  readAgentClaudePlan: () => null,
+  readAgentClaudeConfigDir: () => null,
   readAgentWorksourceChannel: () => h.worksource,
 }))
 vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => undefined }))

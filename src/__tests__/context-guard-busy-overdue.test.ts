@@ -143,7 +143,7 @@ describe('decideGuard: a busy pane far past the handoff deadline', () => {
 describe('the runner logs the overdue busy pane', () => {
   it('checkAgent warns from its none-branch, before that branch returns', () => {
     const start = RUNNER_SRC.indexOf('async function checkAgent(')
-    const end = RUNNER_SRC.indexOf('export function getContextGuardStatus(')
+    const end = RUNNER_SRC.indexOf('export async function getContextGuardStatus(')
     expect(start).toBeGreaterThan(-1)
     expect(end).toBeGreaterThan(start)
     const body = RUNNER_SRC.slice(start, end)

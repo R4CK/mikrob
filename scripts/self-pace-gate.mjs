@@ -3901,7 +3901,15 @@ function decide(toolName, toolInput, opts = {}) {
       // email-standing-recipients.json, .approval-bot-token/-key) -- never loosens anything the
       // checks above already deny, so it carries none of this file's usual not-safe-to-hand-
       // merge-under-time-pressure caution (that caution is about NEW PERMISSIONS, not new denies).
-      if (!protectedStoreBashSegmentAllowed(seg)) return { deny: true, reason: 'protected-store-file' }
+      // Same inertHeredocProse exemption as the egress-allowlist check just above (not in the
+      // original adoption -- caught by fleet-test: a heredoc body merely MENTIONING a protected
+      // filename in prose, e.g. documenting this very gate, was denied on that line alone).
+      if (!protectedStoreBashSegmentAllowed(seg)) {
+        const [rStart, rEnd] = segRanges[i] ?? [-1, -1]
+        const inertHeredocProse = rStart >= 0 &&
+          dataSinkHeredocRanges.some((h) => rStart >= h.start && rEnd <= h.end)
+        if (!inertHeredocProse) return { deny: true, reason: 'protected-store-file' }
+      }
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and
