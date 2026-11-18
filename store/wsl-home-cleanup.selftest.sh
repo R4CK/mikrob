@@ -490,5 +490,125 @@ fi
 kill "$r11_pid" 2>/dev/null
 wait "$r11_pid" 2>/dev/null
 
+# --- C1 (RedHat MEDIUM, Cybered gate on 0116755a @ e3ac5b1a6, card 89e8cb90) -- a git that dies
+# SILENTLY (non-zero rc, empty output -- the rc 137/127/1 OOM-kill/missing-binary/generic-error
+# shape) must be treated as "found a problem" (SKIP), not as "nothing to report" (proceed). Shim
+# `git` to fail exactly the named subcommand with the given rc and no output, everything else
+# passes through to the real git so the worktree/clone setup around it still works.
+GIT_FAIL_CMD=""
+GIT_FAIL_RC=0
+git() {
+  if [ -n "$GIT_FAIL_CMD" ]; then
+    local a
+    for a in "$@"; do
+      [ "$a" = "$GIT_FAIL_CMD" ] && { echo -n ""; return "$GIT_FAIL_RC"; }
+    done
+  fi
+  command git "$@"
+}
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-c1a-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-c1a-status137" qa-c1a-branch >/dev/null 2>&1
+find "$FAKE_HOME/qa-c1a-status137" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$FAKE_HOME/qa-c1a-status137"]="$FAKE_MAIN"
+GIT_FAIL_CMD=status; GIT_FAIL_RC=137
+if remove_entry "$FAKE_HOME/qa-c1a-status137" >/dev/null 2>&1; then
+  bad "C1a: remove_entry must SKIP a registered worktree whose git status dies silently (rc=137), it did not"
+else
+  [ -d "$FAKE_HOME/qa-c1a-status137" ] \
+    && ok "remove_entry SKIPs a registered worktree when git status dies silently, rc=137 (C1a fix)" \
+    || bad "C1a: worktree removed despite git status failing silently with rc=137"
+fi
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-c1b-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-c1b-revlist127" qa-c1b-branch >/dev/null 2>&1
+find "$FAKE_HOME/qa-c1b-revlist127" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$FAKE_HOME/qa-c1b-revlist127"]="$FAKE_MAIN"
+GIT_FAIL_CMD=rev-list; GIT_FAIL_RC=127
+if remove_entry "$FAKE_HOME/qa-c1b-revlist127" >/dev/null 2>&1; then
+  bad "C1b: remove_entry must SKIP a registered worktree whose git rev-list dies silently (rc=127), it did not"
+else
+  [ -d "$FAKE_HOME/qa-c1b-revlist127" ] \
+    && ok "remove_entry SKIPs a registered worktree when git rev-list dies silently, rc=127 (C1b fix)" \
+    || bad "C1b: worktree removed despite git rev-list failing silently with rc=127"
+fi
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+c1c_dir="$FAKE_HOME/qa-c1c-status1"
+command git clone -q "$FAKE_MAIN" "$c1c_dir" >/dev/null 2>&1
+find "$c1c_dir" -exec touch -d '2 days ago' {} +
+GIT_FAIL_CMD=status; GIT_FAIL_RC=1
+if remove_entry "$c1c_dir" >/dev/null 2>&1; then
+  bad "C1c: remove_entry must SKIP an unregistered clone whose git status dies silently (rc=1), it did not"
+else
+  [ -d "$c1c_dir" ] \
+    && ok "remove_entry SKIPs an unregistered clone when git status dies silently, rc=1 (C1c fix)" \
+    || bad "C1c: unregistered clone removed despite git status failing silently with rc=1"
+fi
+GIT_FAIL_CMD=""; GIT_FAIL_RC=0
+unset -f git
+
+# --- C2 (RedHat LOW, same gate, card 89e8cb90) -- three mutants that survived because nothing
+# called would_skip_removal()/remove_entry() along the path they guard -----------------------
+
+# C2a: would_skip_removal()'s report-side guard for an UNREGISTERED clone with an unreachable HEAD
+# (N3's report-side addition) -- only remove_entry's matching enforcement-side guard had a test.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+c2a_dir="$FAKE_HOME/qa-c2a-unregistered-detached"
+git clone -q "$FAKE_MAIN" "$c2a_dir" >/dev/null 2>&1
+(
+  cd "$c2a_dir" || exit 1
+  git config user.email s@s; git config user.name s
+  git checkout -q --detach >/dev/null 2>&1
+  echo change > f
+  git add -A
+  git commit -qm "dangling commit in an UNREGISTERED clone (C2a)"
+) >/dev/null 2>&1
+reason="$(would_skip_removal "$c2a_dir")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags an unregistered clone with an unreachable HEAD (C2a pin, N3 report-side)" \
+  || bad "C2a: would_skip_removal() silently passed an unregistered unreachable-HEAD clone"
+
+# C2b: would_skip_removal()'s report-side guard for a REGISTERED worktree with an unreachable HEAD
+# (mirrors remove_entry's own B3 enforcement guard, which already had a test; the report side did not).
+git -C "$FAKE_MAIN" worktree add -q --detach "$FAKE_HOME/qa-c2b-detached-worktree" >/dev/null 2>&1
+(
+  cd "$FAKE_HOME/qa-c2b-detached-worktree" || exit 1
+  echo change > f
+  git add -A
+  git commit -qm "dangling commit, not on any branch (C2b)"
+) >/dev/null 2>&1
+WORKTREE_OWNER["$FAKE_HOME/qa-c2b-detached-worktree"]="$FAKE_MAIN"
+reason="$(would_skip_removal "$FAKE_HOME/qa-c2b-detached-worktree")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags a registered worktree with an unreachable HEAD (C2b pin, B3 report-side)" \
+  || bad "C2b: would_skip_removal() silently passed a registered unreachable-HEAD worktree"
+
+# C2c: --no-optional-locks must actually reach the status call, not just sit in a comment.
+# Logs the argv of every git invocation that mentions "status" while the shim is active.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+argv_log="$tmp/git-argv.log"
+: > "$argv_log"
+git() {
+  local a
+  for a in "$@"; do
+    [ "$a" = "status" ] && printf '%s\n' "$*" >> "$argv_log"
+  done
+  command git "$@"
+}
+git -C "$FAKE_MAIN" branch qa-c2c-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-c2c-locks-pin" qa-c2c-branch >/dev/null 2>&1
+find "$FAKE_HOME/qa-c2c-locks-pin" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$FAKE_HOME/qa-c2c-locks-pin"]="$FAKE_MAIN"
+remove_entry "$FAKE_HOME/qa-c2c-locks-pin" >/dev/null 2>&1
+unset -f git
+if grep -q -- '--no-optional-locks' "$argv_log"; then
+  ok "remove_entry's status check passes --no-optional-locks through to git (C2c pin)"
+else
+  bad "C2c: --no-optional-locks missing from the status call's argv"
+fi
+
 echo "selftest: $passed passed, $fail failed"
 [ "$fail" = 0 ] || exit 1
