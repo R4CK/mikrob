@@ -44,7 +44,7 @@ import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KAN
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
-import { landedGuardVerdict } from '../kanban-landed-guard.js'
+import { landedGuardVerdict, GENERATED_COMMENT_AUTHORS } from '../kanban-landed-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
@@ -89,6 +89,15 @@ export function normalizeProjectName<T extends Record<string, unknown>>(data: T)
   }
   return data
 }
+
+// Card 2ba008f2: 'gemini-orch-review' is already in GENERATED_COMMENT_AUTHORS and is the night
+// loop's own identity; the assertion keeps that coupling explicit instead of retyping the
+// literal and silently drifting if the set is ever renamed.
+export const NIGHT_COMMENT_AUTHOR = 'gemini-orch-review'
+if (!GENERATED_COMMENT_AUTHORS.has(NIGHT_COMMENT_AUTHOR)) {
+  throw new Error('NIGHT_COMMENT_AUTHOR must stay a member of GENERATED_COMMENT_AUTHORS')
+}
+export const NIGHT_COMMENT_MARKER = 'LOCAL-LLM DRAFT | night'
 
 // Card c9b0b0c4: 45 of 884 comments from the "cybered" agent landed under "Cybered" -- same agent,
 // two case variants, so any per-agent gate stat undercounts it by 45. Fold a comment author onto
@@ -2107,9 +2116,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
+    // Card 2ba008f2: UNLIKE the general case above, a 'night' scoped device key IS a verified
+    // identity (not the shared, self-asserted token), so the author and a marker are forced
+    // here regardless of what the caller's body claims -- elemzo C1/C4's "author and marker set
+    // server-side". Reuses an EXISTING generated-comment author (kanban-landed-guard.ts's
+    // GENERATED_COMMENT_AUTHORS) rather than adding a new one, since the night loop IS the
+    // gemini orchestrator this author already names.
+    const isNightScoped = ctx.auth?.kind === 'device' && ctx.auth.scope === 'night'
+    const effectiveAuthor = isNightScoped ? NIGHT_COMMENT_AUTHOR : normalizeCommentAuthor(author)
+    const effectiveContent = isNightScoped ? `[${NIGHT_COMMENT_MARKER}] ${normalizedContent}` : normalizedContent
     // automated (card 5aaf7209 item 5 / 16e60d3c item 5): a bulk/machine writer's self-reported
     // flag, so a stuck-card detector does not read its own comment as human work-trace.
-    const comment = addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent, automated === true)
+    const comment = addKanbanComment(cardId, effectiveAuthor, effectiveContent, automated === true)
     // MT-08 (card 1a350f22, MikroB decision 26148): parse `Megoldás-tár:` feedback lines out of
     // the just-created comment and record used/not_relevant/harmful against kg_usage,
     // anti-inflation-gated by recordKgUsageFeedback (a node needs an 'offered' row for THIS

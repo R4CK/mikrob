@@ -26836,3 +26836,226 @@ a sorban-allas (a mert jelenseg), hanem egy infra-telepitesi hiba.
 
 **Ki döntött:** MikroB (komment 32328, uzenet 19762). backend3 vegezte. Gate: QA (only, MikroB
 explicit dontese -- naplozas-only, nincs viselkedes-valtozas).
+
+## 2026-11-16 -- 2ba008f2: credential-scope fence for the degraded-mode owner bypass
+
+elemzo plan-grilling on d5638d28 (comment 32144, C1): the degraded-mode guard owner bypass was
+actor===mikrob (kanban-force-actors.ts isForceActor), self-declared in the request body -- any
+caller holding the shared dashboard Bearer token (every sub-agent, and a buggy/stale/doubled
+degraded loop) can send that exact string, so the bypass proved nothing about who was actually
+calling.
+
+**Fix, two independent mechanisms (elemzo own C1 spec):**
+1. isForceActor refuses the force+actor bypass outright, for EVERY caller, while a session
+   outage is active (reads store/mikrob-session-outage.json directly, same staleness/future-skew
+   hardening as gemini-fallback-runner.ts own readSessionOutageActive -- re-implemented locally,
+   not imported, to avoid a circular import through db.js). A legitimate human override during
+   an outage still has the normal gate flow; only the one-field shortcut is removed.
+2. A new "night" DeviceKeyScope, mandatory short expiry (max 14 days), deny-by-default gate
+   (night-gate.ts, same chokepoint/shape as operator-gate.ts). Allowlist: GET under /api/kanban
+   (read-only), POST a comment (author+marker forced server-side), POST /api/messages (to
+   restricted to mikrob inside the route). Everything else refused, including PUT status:done,
+   POST /api/agents/:name/start, card create, and any future route.
+
+toScope()s fail-closed default for an unexpected stored scope value changed from operator to
+night -- night is the narrower blast radius (fixed 3-item allowlist vs. the whole
+/api/operator/* namespace).
+
+**Mérés:** night-gate.test.ts (20 cases) + kanban-force-actors.test.ts (7 cases), all 4 fix
+sites mutation-proven (disabling each flips exactly the matching case(s) red, restored clean).
+57 affected test files / 1103 tests green (every isForceActor/device-key-scope/tryHandleMessages
+touchpoint). tsc --noEmit clean.
+
+**Nincs benne:** MikroB extension (msg 19831, a6c7780d finding off cybersec) to also exclude
+sub-agent self-scheduling via POST /api/schedules -- NOT implemented. That route has zero auth
+checks on its agent body field, and the shared-token model gives no reliable way to tell which
+agent is really calling (elemzo own measured limit: X-Agent-Id is self-asserted, never
+authoritative). A night-scoped key is already excluded (outside its allowlist, no extra code
+needed); the BROADER gap needs per-agent device keys for every sub-agent -- new infrastructure,
+flagged for its own card rather than an under-specified guess here.
+
+**Ki döntött:** elemzo plan-grilling verdiktje (d5638d28 C1) alapján backend építi; MikroB
+döntés (komment 32162): HARD PRECONDITION -- semelyik degraded/night loop (d5638d28 C2 és később)
+nem hívhatja a done/land/agent-start végpontokat, amíg ez a kártya nincs kész. Gate: QA +
+Cybersec + Cybered.
+
+## 2026-11-16 -- 2ba008f2 round 2: outage marker fails closed, night sender forced server-side
+
+Cybered NO-GO (comment 32445) on round 1's credential-scope fence: isSessionOutageActive()
+failed OPEN (bypass allowed) for 10 of 11 measured malformed marker states (corrupt JSON, empty
+file, directory-in-place, active/heartbeat as a string, heartbeat in milliseconds, JSON array,
+chmod 000 unreadable) -- only "file missing" should legitimately read as normal. Fixed by
+rewriting the function to fail CLOSED (outage=true) for any read error except ENOENT, any
+JSON-parse failure, any non-object/array malformed active/heartbeat, and an implausible raw
+heartbeat value outside [1_600_000_000, 4_000_000_000] seconds -- without changing the two
+pre-existing pinned behaviors (a STALE marker and a FUTURE-dated marker within clock-skew
+tolerance both still read as non-outage). Separately, a night-scoped device key could forge the
+`from` field on POST /api/messages (the route only restricted `to`); fixed by forcing
+`from = NIGHT_MESSAGE_SENDER` server-side for every night-scoped caller.
+
+Finding 1 (land scripts -- marveen-land.sh/degraded-orchestrator-land-guard-lib.sh -- not fenced
+against the outage marker) is explicitly NOT fixed in this round: those files do not exist on
+this branch's base (d5638d28, which introduces them, is still unlanded) -- deferred to a
+follow-up once d5638d28 lands.
+
+**Mérés:** kanban-force-actors.test.ts (+10 cases) + night-gate.test.ts (+2 cases),
+fleet-test.sh --ref card/2ba008f2, 4 files / 83 tests passed. tsc --noEmit clean.
+
+**Ki döntött:** Cybered lelet, backend javítja. Gate: QA + Cybersec + Cybered.
+
+## 2026-11-16 -- 2ba008f2 round 3: Finding 1 fixed now that d5638d28 landed -- land-guard --actor mikrob bypass ignored the session outage marker
+
+**Kontextus:** Round 2's own entry (above) deferred Finding 1 (the land-guard scripts' --actor
+mikrob bypass not fenced against the session outage marker) because d5638d28, which introduces
+store/degraded-orchestrator-land-guard-lib.sh and marveen-land.sh's degraded-orchestrator check,
+was still unlanded at the time. d5638d28 landed (51de8702b). MikroB (msg 20060) relayed WhiteHat2's
+fresh probe against origin/develop: both the shared lib (sourced by mopsion-land.sh/
+cleancore-land.sh and mopsi-land.sh) and marveen-land.sh's own inline copy still let `--actor
+mikrob` bypass the kill switch unconditionally, confirming Finding 1 was real and still open.
+
+**Fix:** ported the same session-outage fence src/kanban-force-actors.ts's isForceActor() already
+has (round 2 of this card) into bash, mirroring isSessionOutageActive() field-for-field (missing
+marker = normal; unreadable/corrupt/malformed active or heartbeat field = fail closed; explicit
+`active: false` = normal; fresh+active = fence holds; stale past 15 min or future-skewed beyond 60s
+tolerance = normal, unchanged fail-safe-toward-normal direction). A new `_session_outage_active()`
+function, kept byte-equal between store/degraded-orchestrator-land-guard-lib.sh and
+marveen-land.sh's inline copy (same hand-kept-equal discipline as the existing
+`degraded_orchestrator_is_on` pin) -- mopsion-land.sh and mopsi-land.sh get it for free via the
+shared lib. `check_degraded_orchestrator_guard()` now only grants the `--actor mikrob` bypass when
+no outage is active; when an outage IS active, execution falls through to the ordinary
+`degraded_orchestrator_is_on` check (so an OFF switch during an outage still lands normally -- the
+outage only removes the bypass, it does not itself refuse).
+
+**Nincs benne:** a `MIKROB_SESSION_OUTAGE_PATH` env override exists for test fixtures only (mirrors
+the existing `DEGRADED_ORCHESTRATOR_SWITCH` override pattern); no real caller sets it.
+
+**Mérés:** `degraded-orchestrator-land-guard.selftest.sh` 9->11/11 PASS (new cases: owner bypass
+refused during an active outage; an OFF switch during the same outage still lands normally).
+`marveen-land.sh --selftest` 96->98/98 PASS. `mopsion-land.sh`/`cleancore-land.sh --selftest`
+111->113/113 PASS. `mopsi-land.sh --selftest` 75->77/77 PASS. Mutation-proven: reverting
+`check_degraded_orchestrator_guard`'s outage check lets the owner-bypass-during-outage case go
+red (restored clean). `npx tsc --noEmit` clean (no TS changed this round; the extended
+`degraded-orchestrator-land-guard-selftest.test.ts` parity assertion now also pins
+`_session_outage_active` byte-equal between the two bash copies, same pattern as the pre-existing
+`degraded_orchestrator_is_on` pin). `landing-downward-check.test.ts`'s own-case constant for
+marveen-land.sh moved 34 -> 36 to keep its shared-block arithmetic correct (measured: cc=113,
+mv=98, cc-49 == mv-36 == 62).
+
+**Ki döntött:** WhiteHat2 probe relayed by MikroB (msg 20060). backend végezte a javítást. Gate-SHA:
+e5e3c4d2a1ab1d18abde3af5240547345ac3b844. Gate: QA + Cybersec + Cybered (kártya saját előírása).
+
+## 2026-11-16 -- 2ba008f2 round 3 KORREKCIÓ: a fenti bejegyzés mérési állítása hibás volt
+
+**Ez a fenti, round 3 bejegyzést NEM módosítja** (döntésnapló append-only) -- a hibát itt
+javítom. A fenti "cc-49 == mv-36 == 62" állítás téves: a 2 új eset NEM csak marveen-land.sh
+own-blokkját bővítette, hanem mopsion-land.sh/cleancore-land.sh own-blokkját IS (a javítás
+duplikált kód, nem a megosztott downward-check lib), tehát a `landing-downward-check.test.ts`
+cc-konstansát is 49->51-re kellett mozdítani, nem csak az mv-konstanst 34->36-ra. A helyes
+mérés: cc=113, mv=98, cc-51 == mv-36 == 62. A `fleet-test.sh --ref card/2ba008f2` első futása
+(landing-downward-check.test.ts) ezt a hibát pirosra fogta ("expected 64 to be 62") -- a teszt
+fájl mindkét konstansa javítva, zöld újramérve.
+
+**Ki döntött:** fleet-test.sh saját piros eredménye fogta meg, backend javítja ugyanabban a
+körben, push előtt.
+
+## 2026-11-16 -- 2ba008f2 round 4: _session_outage_active polarity fail-closed on python crash
+
+**Mi:** CYBERSEC NO-GO round 3 (cybersec2, comment 32558, Gate-SHA 6fde6fde4) F1 MEDIUM: the
+round-3 `_session_outage_active()` (store/degraded-orchestrator-land-guard-lib.sh AND
+marveen-land.sh's inline copy) ended with `[ $? = 0 ]`, so ONLY exact python exit 0 meant "outage
+active"; exit 1 was the intended "normal" signal, but so was every other crash code (127, 137,
+139, bad PYTHONHOME, cwd-shadowed json.py) -- wrongly granting the `--actor mikrob` bypass on a
+python crash during a real outage. Proof table from 32558: healthy python3 -> refused (control);
+PATH-stub exit 1/2/127/137/139 -> allowed (bug, all five); unusable PYTHONHOME -> allowed; cwd
+`json.py` shadow (no `-I`) -> allowed.
+
+**Fix:** sentinel exit code (3, not 1) for the genuine "not active" case, emitted from inside a
+`try: main() / except SystemExit: raise / except BaseException: sys.exit(0)` wrapper (the
+`except SystemExit: raise` is load-bearing -- without it the sentinel itself is a SystemExit and
+gets swallowed by the BaseException catch-all), invoked via `python3 -I -c` to stop cwd/PYTHON*
+shadowing. Shell side: `local rc=$?; [ "$rc" = 3 ] && return 1; return 0` -- only rc=3 means "not
+active"; 0 or any crash code means "active" (fail-closed, deny the bypass). Applied identically
+to the lib and marveen-land.sh's inline copy (verified byte-identical extraction).
+
+**Nincs benne:** the exit-127 "guard lib sourced but missing check_degraded_orchestrator_guard"
+fail-open case (noted by MikroB, msg 20150, same fail-open-on-crash family as F1) -- carried to
+the next round on this card, not yet fixed.
+
+**Mérés:** selftest cases added (python3 crash exit 1/137/139 via a selective stub matching only
+the outage-check's own inline script, so the switch-file reader's independent python3 call is
+untouched): `degraded-orchestrator-land-guard.selftest.sh` 11->14/14 PASS, `marveen-land.sh
+--selftest` 98->101/101 PASS, `mopsi-land.sh --selftest` 77->80/80 PASS, `mopsion-land.sh`/
+`cleancore-land.sh --selftest` 113->116/116 PASS. `landing-downward-check.test.ts` shared-block
+floors bumped cc 51->54, mv 36->39 (cc=116-54=62, mv=101-39=62, unchanged shared-block delta).
+Mutation-proven: reverting to the old `[ $? = 0 ]` polarity reproduces the bypass under the
+selective-stub crash case (exit 137); restored fix denies it, confirmed byte-identical to backup.
+`npx tsc --noEmit` clean. `fleet-test.sh --ref 08119dcf442ac46610f7652d187578ad37fd55d1` on
+degraded-orchestrator-land-guard-selftest.test.ts + landing-downward-check.test.ts: 2 Test Files
+passed, 11 Tests passed.
+
+**Ki döntött:** Fix-Direction: WhiteHat2 (cybersec2, comment 32558). backend végezte a javítást.
+Gate-SHA: 08119dcf442ac46610f7652d187578ad37fd55d1. Gate: QA + Cybered (Fix-Direction jött
+WhiteHat2-től, a biztonsági re-gate RedHat-é, root CLAUDE.md "fix proposed by WhiteHat -> security
+gate is RedHat" konvenció szerint).
+
+### 2ba008f2 round 5: QA2 lelete -- két teszt node:fs mockja elfedte a kimaradás-kaput
+
+**Mi történt:** MikroB jelezte (komment 32654), hogy QA2 az e3cf26d0 round 5 gate-elése közben
+(komment 32653) a TELJES tesztkörben futtatva talált két elbukó fájlt, amit a 2ba008f2 négy
+gate-köre sosem futtatott (a delta re-gate-ek csak a kártya aktuálisan módosított fájljaira
+szűkítettek): `kanban-decisions-guard.test.ts` "force actor bypasses the block" és
+`kanban-landed-guard.test.ts` "honours force only for an exempt actor". A round-1 commit
+(a2307bf11) óta mindkettő pirosan állt a teljes kör mellett, senki nem vette észre.
+
+**Gyökér-ok:** `isSessionOutageActive()` (src/kanban-force-actors.ts, a round 1-4 kimaradás-kapu
+logikája) `readFileSync()`-et hív a FORCE_ACTORS-ellenőrzés ELŐTT. A két tesztfájl node:fs mockja
+csak `existsSync`-et adott, `readFileSync` hiányzott -- a hívás ezért egy sima (nem ENOENT)
+TypeError-t dob, amit a függvény catch-ága "a marker létezik, de nem olvasható" állapotnak lát
+(fail closed: outage aktív), és ez a mikrob force-bypasst feltétel nélkül megtagadja, pontosan
+azt a vizlelátét, amit a két teszt saját maga elvárt volna.
+
+**Javítás:** mindkét mock kapott egy `readFileSync`-et, ami egy valódi ENOENT hibát dob (ez a
+helyes "nincs is marker" jelzés) -- ugyanaz az alak, mint a másik 16, node:fs-et mockoló
+teszt-fájlnak. A PRODUKCIÓS kód (a round 1-4 fail-closed viselkedése) változatlan, csak a két
+teszt saját mockja módosult.
+
+**Audit:** végigmentem a flotta MIND a 18 node:fs-et mockoló teszt-fájlján (`grep -rl
+"vi.mock('node:fs'" src/__tests__`). A maradék 16 közül egyik sem importálja a
+kanban-force-actors.ts-t közvetlenül, és egyik sem tölti be valódi, nem-mockolt db.js-en keresztül
+sem (vagy egyáltalán nem érintik a db.js-t, vagy teljes egyéni stubbal helyettesítik, így a
+valódi kanban-force-actors.ts sosem töltődik be). Az egyetlen kivétel,
+`fleet-import-kanban-real-db.test.ts`, `importOriginal`-lal a VALÓDI node:fs-et is átengedi
+(`readFileSync` valódi), ezért ezt sosem érintette a hiba.
+
+**Mutáció-bizonyíték:** mindkét mockot visszaállítottam a hibás (`{ existsSync: () => true }`)
+alakra -- pontosan a két megnevezett teszt bukott (62/64 zöld), minden más maradt. Visszaállítva
+a scratchpad-backupból, `diff -q`-val bájt-azonos, újrafuttatva: 64/64 zöld.
+
+**Mérés:** a 2 javított fájl, noisy-run vitest: 64/64 PASS. Mind a 18 node:fs-et mockoló fájl
+együtt: 18 fájl / 384 teszt PASS (nincs regresszió az audit miatt). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** a lelet forrása QA2 (komment 32654, MikroB relayje), a javítást backend végezte.
+Gate-SHA: cc0e86f70 (ideiglenes, a végső Gate-SHA ennek a dokumentum-bejegyzésnek a commitja
+lesz -- lásd a REVIEW-t a kártyán a pontos sha-ért). Gate: QA + Cybersec + Cybered (MikroB saját
+dispatchja, komment 32654).
+
+## 2026-11-17 -- 2ba008f2 round 6: fullstack landolási dry-run-ja lint-ratchet-en akadt el (Fix-Direction komment 32720)
+
+**A hiba.** fullstack landolási dry-run-ja elutasítva: `@typescript-eslint/no-unused-vars`
+(baseline 273, a `night-gate.test.ts` egy használaton kívüli `getKanbanCard` importtal 274-re
+emelte). A 4 korábbi gate-kör egyike sem futtatta a `lint-ratchet.sh`-t ezen a kártyán, ezért ez
+csak a landolási dry-run-nál derült ki.
+
+**Javítás.** A `getKanbanCard` importot kivettem a `src/__tests__/night-gate.test.ts` import
+sorából -- a fájlban máshol nincs rá hivatkozás (`grep -n "getKanbanCard" ...` egyetlen sort ad,
+magát az import sort).
+
+**Mérés:** `lint-ratchet.sh` (a worktree saját másolatán, hogy a `$ROOT` a worktree-re oldódjon
+fel, ne a fő klónra) a javítás UTÁN: exit 0, "no rule got worse (433 findings, baseline holds)",
+`@typescript-eslint/no-unused-vars` 273 (baseline 273, egyezik). `night-gate.test.ts` noisy-run
+vitest: 22/22 PASS. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** fullstack landolási dry-run-ja találta, MikroB adta a Fix-Direction-t (komment
+32720), a javítást backend végezte.
+
+**Hivatkozás:** kártya 2ba008f2, komment 32720 (Fix-Direction), `src/__tests__/night-gate.test.ts`.
