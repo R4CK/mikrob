@@ -321,6 +321,179 @@ else
   echo "  ok   checkpoint endpoint not called when no worktree resolves"
 fi
 
+# Card 06334c7d (CYBERSEC LOW-1, 14bfc893 follow-up): a hung agent-checkpoint.sh must not stall
+# the REVIEW -> waiting move. Short timeout for the test; the stub sleeps well past it.
+cat >"$WORK/fake-agent-checkpoint-slow.sh" <<'FAKESLOW'
+#!/usr/bin/env bash
+sleep 30
+echo "refs/mikrob/ckpt/x/1 deadbeef"
+FAKESLOW
+chmod +x "$WORK/fake-agent-checkpoint-slow.sh"
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/ckptslow.txt"
+: >"$WORK/calls.log"
+AGENT_CHECKPOINT_SCRIPT="$WORK/fake-agent-checkpoint-slow.sh"
+AGENT_WORKTREE_SCRIPT="$WORK/fake-agent-worktree.sh"
+POST_REVIEW_CHECKPOINT_TIMEOUT_S=1
+export POST_REVIEW_CHECKPOINT_TIMEOUT_S
+start="$(date +%s)"
+rc=0; run "cardCkptSlow" "$WORK/ckptslow.txt" "backend" >"$WORK/out-ckptslow.txt" 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+unset POST_REVIEW_CHECKPOINT_TIMEOUT_S
+t_ok "$rc" 0 "a hung checkpoint call still lets the REVIEW post and the card move to waiting"
+n=$((n+1))
+if [ "$elapsed" -le 6 ]; then
+  echo "  ok   the hung checkpoint call was cut off by the timeout (${elapsed}s, within timeout(1s)+5s)"
+else
+  echo "  FAIL took ${elapsed}s -- the timeout did not cut off the hung checkpoint call"; fail=1
+fi
+n=$((n+1))
+if grep -q '/checkpoints' "$WORK/calls.log"; then
+  echo "  FAIL checkpoint endpoint was called despite the checkpoint call timing out"; fail=1
+else
+  echo "  ok   checkpoint endpoint not called when agent-checkpoint.sh times out"
+fi
+
+# CYBERED C3 / NO-GO 32965 condition 3 (LOW-1 only half met): a plain `timeout N` only bounds a
+# KILLABLE hang -- a checkpoint script that traps/ignores SIGTERM is NOT bounded by it (CYBERED
+# measured 20s against a 3s limit). `timeout -k 2 N` must still cut this off promptly via SIGKILL.
+cat >"$WORK/fake-agent-checkpoint-termignore.sh" <<'FAKETERMIGNORE'
+#!/usr/bin/env bash
+trap '' TERM
+sleep 10
+echo "refs/mikrob/ckpt/x/1 deadbeef"
+FAKETERMIGNORE
+chmod +x "$WORK/fake-agent-checkpoint-termignore.sh"
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/ckptterm.txt"
+: >"$WORK/calls.log"
+AGENT_CHECKPOINT_SCRIPT="$WORK/fake-agent-checkpoint-termignore.sh"
+AGENT_WORKTREE_SCRIPT="$WORK/fake-agent-worktree.sh"
+POST_REVIEW_CHECKPOINT_TIMEOUT_S=1
+export POST_REVIEW_CHECKPOINT_TIMEOUT_S
+start="$(date +%s)"
+rc=0; run "cardCkptTermIgnore" "$WORK/ckptterm.txt" "backend" >"$WORK/out-ckptterm.txt" 2>&1 || rc=$?
+elapsed=$(( $(date +%s) - start ))
+unset POST_REVIEW_CHECKPOINT_TIMEOUT_S
+t_ok "$rc" 0 "a TERM-ignoring checkpoint call still lets the REVIEW post and the card move to waiting"
+n=$((n+1))
+if [ "$elapsed" -le 6 ]; then
+  echo "  ok   the TERM-ignoring checkpoint call was still cut off promptly (${elapsed}s, -k 2 grace)"
+else
+  echo "  FAIL took ${elapsed}s -- a TERM-ignoring checkpoint call was not bounded (missing -k)"; fail=1
+fi
+n=$((n+1))
+if grep -q '/checkpoints' "$WORK/calls.log"; then
+  echo "  FAIL checkpoint endpoint was called despite the TERM-ignoring checkpoint call hanging"; fail=1
+else
+  echo "  ok   checkpoint endpoint not called when the TERM-ignoring checkpoint call is killed"
+fi
+
+# Card 06334c7d (CYBERSEC LOW-3 / CYBERED C2, same finding): in card mode the checkpoint must
+# read the CARD worktree's HEAD, not the agent's default worktree -- the fake worktree script
+# returns a DIFFERENT (card) worktree when --card is passed, so this proves the card worktree is
+# actually preferred, not just accepted as one option among equals.
+CKPT_WT_CARD="$WORK/ckpt-worktree-card"
+git init -q "$CKPT_WT_CARD"
+git -C "$CKPT_WT_CARD" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "card head"
+CKPT_HEAD_CARD="$(git -C "$CKPT_WT_CARD" rev-parse HEAD)"
+cat >"$WORK/fake-agent-worktree-cardaware.sh" <<FAKEWTCARD
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = "--card" ]; then
+    echo "$CKPT_WT_CARD"
+    exit 0
+  fi
+done
+echo "$CKPT_WT"
+FAKEWTCARD
+chmod +x "$WORK/fake-agent-worktree-cardaware.sh"
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/ckptcard.txt"
+: >"$WORK/calls.log"
+AGENT_CHECKPOINT_SCRIPT="$WORK/fake-agent-checkpoint.sh"
+AGENT_WORKTREE_SCRIPT="$WORK/fake-agent-worktree-cardaware.sh"
+rc=0; run "cardCkptCard" "$WORK/ckptcard.txt" "backend" >"$WORK/out-ckptcard.txt" 2>&1 || rc=$?
+t_ok "$rc" 0 "card-mode checkpoint REVIEW still succeeds"
+ckpt_call_card="$(grep '/checkpoints' "$WORK/calls.log" || true)"
+n=$((n+1))
+if printf '%s' "$ckpt_call_card" | grep -q "$CKPT_HEAD_CARD"; then
+  echo "  ok   checkpoint recorded the CARD worktree's HEAD, not the agent default worktree's"
+else
+  echo "  FAIL checkpoint did not record the card worktree's HEAD: $ckpt_call_card"; fail=1
+fi
+n=$((n+1))
+if printf '%s' "$ckpt_call_card" | grep -q "$CKPT_HEAD"; then
+  echo "  FAIL checkpoint recorded the agent DEFAULT worktree's HEAD instead of the card one"; fail=1
+else
+  echo "  ok   checkpoint did not fall back to the agent default worktree when a card worktree exists"
+fi
+
+# CYBERED C2 / NO-GO 32965 condition 1: the REAL agent-checkpoint.sh, not the fake stub above,
+# with a card worktree that genuinely DIFFERS from the agent default worktree -- the bug the
+# fake-checkpoint tests above cannot see, since they never run the real snapshot logic against
+# two different trees. Proves the checkpoint commit's PARENT equals the recorded head_sha (the
+# card worktree's HEAD), i.e. the snapshot was taken of the SAME tree that was recorded, not of
+# the unrelated default worktree.
+CKPT_WT_DEFAULT_REAL="$WORK/ckpt-real-default"
+git init -q "$CKPT_WT_DEFAULT_REAL"
+git -C "$CKPT_WT_DEFAULT_REAL" config user.email t@t
+git -C "$CKPT_WT_DEFAULT_REAL" config user.name t
+git -C "$CKPT_WT_DEFAULT_REAL" commit -q --allow-empty -m "default head"
+echo def_only_file > "$CKPT_WT_DEFAULT_REAL/def.txt"
+git -C "$CKPT_WT_DEFAULT_REAL" add def.txt
+
+CKPT_WT_CARD_REAL="$WORK/ckpt-real-card"
+git init -q "$CKPT_WT_CARD_REAL"
+git -C "$CKPT_WT_CARD_REAL" config user.email t@t
+git -C "$CKPT_WT_CARD_REAL" config user.name t
+git -C "$CKPT_WT_CARD_REAL" commit -q --allow-empty -m "card head"
+echo card_only_file > "$CKPT_WT_CARD_REAL/card.txt"
+CKPT_HEAD_CARD_REAL="$(git -C "$CKPT_WT_CARD_REAL" rev-parse HEAD)"
+
+cat >"$WORK/fake-agent-worktree-realcard.sh" <<FAKEWTREALCARD
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = "--card" ]; then
+    echo "$CKPT_WT_CARD_REAL"
+    exit 0
+  fi
+done
+echo "$CKPT_WT_DEFAULT_REAL"
+FAKEWTREALCARD
+chmod +x "$WORK/fake-agent-worktree-realcard.sh"
+
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/ckptrealcard.txt"
+: >"$WORK/calls.log"
+AGENT_CHECKPOINT_SCRIPT="$HERE/agent-checkpoint.sh"
+AGENT_WORKTREE_SCRIPT="$WORK/fake-agent-worktree-realcard.sh"
+MARVEEN_MAIN="$CKPT_WT_DEFAULT_REAL"
+export MARVEEN_MAIN
+rc=0; run "cafe1234" "$WORK/ckptrealcard.txt" "backend" >"$WORK/out-ckptrealcard.txt" 2>&1 || rc=$?
+unset MARVEEN_MAIN
+t_ok "$rc" 0 "real agent-checkpoint.sh with a card worktree still lets the REVIEW succeed"
+
+ckpt_call_real="$(grep '/checkpoints' "$WORK/calls.log" || true)"
+n=$((n+1))
+if printf '%s' "$ckpt_call_real" | grep -q "$CKPT_HEAD_CARD_REAL"; then
+  echo "  ok   real checkpoint recorded the card worktree's HEAD as head_sha"
+else
+  echo "  FAIL real checkpoint did not record the card worktree's HEAD: $ckpt_call_real"; fail=1
+fi
+
+# Read the checkpoint commit straight from the ref the REAL script created (in CKPT_WT_CARD_REAL,
+# its own repo, not an actual --worktree of another one) -- more robust than parsing the sha back
+# out of the logged curl call, whose JSON payload is space-separated by json.dumps' own default
+# separators.
+ckpt_sha_real="$(git -C "$CKPT_WT_CARD_REAL" for-each-ref "refs/mikrob/ckpt/cafe1234/" --format='%(objectname)' | head -1)"
+n=$((n+1))
+if [ -n "$ckpt_sha_real" ] && git -C "$CKPT_WT_CARD_REAL" cat-file -e "$ckpt_sha_real" 2>/dev/null \
+   && [ "$(git -C "$CKPT_WT_CARD_REAL" rev-parse "$ckpt_sha_real^")" = "$CKPT_HEAD_CARD_REAL" ] \
+   && git -C "$CKPT_WT_CARD_REAL" ls-tree -r --name-only "$ckpt_sha_real" | grep -qx card.txt \
+   && ! git -C "$CKPT_WT_CARD_REAL" ls-tree -r --name-only "$ckpt_sha_real" | grep -qx def.txt; then
+  echo "  ok   checkpoint commit's parent equals head_sha and its tree is the CARD tree (not the default worktree's)"
+else
+  echo "  FAIL checkpoint commit does not match the recorded head_sha's own tree: sha=$ckpt_sha_real call=$ckpt_call_real"
+  fail=1
+fi
+
 echo "post-review.sh selftest: $n checks"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"
 exit "$fail"
