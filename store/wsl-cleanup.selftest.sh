@@ -264,7 +264,7 @@ run_c1_case 1 c
 
 # --- section 3: /tmp sweep (card c9c1f159, Cybered GO 32928 on 6c41214a) --------------------
 # Sandboxed via WSL_CLEANUP_TMP_DIR, never touches the real /tmp.
-TMP3="$(mktemp -d)"
+TMP3="$(mktemp -d -p /tmp)"
 PAST3=$(( $(date +%s) - 3000 * 60 ))  # 3000m old, well past the 2880m (48h) default threshold
 
 run_tmp_sweep() {
@@ -414,7 +414,7 @@ rm -rf "$TMP3"
 # REAL (DRY_RUN=0), not dry-run, since the whole point is proving nothing gets executed/escaped --
 # `source`ing wsl-cleanup.sh (instead of `bash "$RUN"`) reaches sweep_tmp() directly without ever
 # running sections 1/2/4 (no package-cache purge, no sudo section touches the real machine).
-TMP4="$(mktemp -d)"
+TMP4="$(mktemp -d -p /tmp)"
 PAST4=$(( $(date +%s) - 3000 * 60 ))
 
 # Case A: quote-injection name. The exact shape Cybered measured: a name that, once eval'd inside
@@ -422,7 +422,7 @@ PAST4=$(( $(date +%s) - 3000 * 60 ))
 QUOTE_NAME="x';touch PWNED;echo '"
 mkdir -p -- "$TMP4/$QUOTE_NAME"
 touch -d "@$PAST4" "$TMP4/$QUOTE_NAME/old.txt" "$TMP4/$QUOTE_NAME"
-PWNED_CWD="$(mktemp -d)"
+PWNED_CWD="$(mktemp -d -p /tmp)"
 rm -f "$PWNED_CWD/PWNED" "$TMP4/PWNED" 2>/dev/null
 
 (
@@ -454,7 +454,7 @@ rm -rf "$PWNED_CWD" "$TMP4/$QUOTE_NAME" 2>/dev/null
 NEWLINE_NAME=$'crafted\nbogus'
 mkdir -p -- "$TMP4/$NEWLINE_NAME"
 touch -d "@$PAST4" "$TMP4/$NEWLINE_NAME"
-DECOY_CWD="$(mktemp -d)"
+DECOY_CWD="$(mktemp -d -p /tmp)"
 touch -d "@$PAST4" "$DECOY_CWD/bogus"
 
 (
