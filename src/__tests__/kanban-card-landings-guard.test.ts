@@ -42,6 +42,10 @@ vi.mock('../web/kanban-landed-guard.js', () => ({
     cleancore: { root: '/y', mainRef: 'origin/main' },
   },
   NO_REPO_PROJECTS: new Set(['', 'ingatlan']),
+  GENERATED_COMMENT_AUTHORS: new Set(['local-llm', 'gate-pretriage', 'gemini-orch-review']),
+}))
+vi.mock('../web/kanban-gate-completeness-guard.js', () => ({
+  GATE_AGENT_NAMES: new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']),
 }))
 vi.mock('../logger.js', () => ({
   logger: { warn: () => {}, info: () => {} },
@@ -220,5 +224,85 @@ describe('cardLandingsGuardVerdict', () => {
     expect(() => cardLandingsGuardVerdict('throws', 'done', false, 'backend3')).not.toThrow()
     const v = cardLandingsGuardVerdict('throws', 'done', false, 'backend3')
     expect(v.blocked).toBe(false)
+  })
+
+  // Cybersec2 NO-GO (card 339ad171, comment 33084) -- the three findings below, each reproduced
+  // against the PRE-FIX guard first (it fails) before pinning the fixed behaviour.
+  describe('cybersec2 NO-GO fixes', () => {
+    it('F1: the guard does NOT exempt itself via its own warn comment on the next (enforce) check', () => {
+      // No gated sha at all -- an ungated card -- so this exercises the `!gated` exemption-scan
+      // branch the F1 finding named. WARN first (posts the guard's own comment, which quotes
+      // "Landing: n/a" verbatim), then flip to ENFORCE on the SAME card: must still block.
+      comments = []
+      const warned = cardLandingsGuardVerdict('c1', 'done', false, 'backend3')
+      expect(warned.blocked).toBe(false)
+      expect(addedComments).toHaveLength(1)
+      expect(addedComments[0].author).toBe('card-landings-guard')
+
+      process.env.LANDING_GUARD = 'enforce'
+      const enforced = cardLandingsGuardVerdict('c1', 'done', false, 'backend3')
+      expect(enforced.blocked).toBe(true)
+    })
+
+    it('F1: a generated/local-llm comment containing "Landing: n/a" also does not exempt', () => {
+      comments = [{ author: 'local-llm', content: 'draft note\nLanding: n/a' }]
+      process.env.LANDING_GUARD = 'enforce'
+      const v = cardLandingsGuardVerdict('c1', 'done', false, 'backend3')
+      expect(v.blocked).toBe(true)
+    })
+
+    it('F2: an UNGATED card (no REVIEW/Gate-SHA at all) is NOT proven landed by a row on card_id alone', () => {
+      // No REVIEW comment at all -- `gated` is null -- but a row exists for this card_id (the
+      // "a docs commit merely says see card <id>" class the binding rule names).
+      comments = []
+      landings = [{ card_id: 'c1', work_sha: 'deadbeef00000000deadbeef00000000deadbeef', merge_sha: '' }]
+      process.env.LANDING_GUARD = 'enforce'
+      const v = cardLandingsGuardVerdict('c1', 'done', false, 'backend3')
+      expect(v.blocked).toBe(true)
+    })
+
+    it('F2: WARN-ONLY, same ungated-but-has-a-row shape, still warns (not silently exempt)', () => {
+      comments = []
+      landings = [{ card_id: 'c1', work_sha: 'deadbeef00000000deadbeef00000000deadbeef', merge_sha: '' }]
+      const v = cardLandingsGuardVerdict('c1', 'done', false, 'backend3')
+      expect(v.blocked).toBe(false)
+      expect(addedComments).toHaveLength(1)
+    })
+
+    it('F3: a GATE-authored "REVIEW"-shaped comment cannot override the real builder REVIEW\'s gated sha', () => {
+      // Builder's real REVIEW names GATED_SHA; a later comment from "cybersec" restates its own
+      // Gate-SHA line (a legitimate thing for a gate to post) -- this must NOT become the sha the
+      // landing is bound to. A row matching the BUILDER's sha must still pass.
+      comments = [
+        { author: 'backend3', content: REVIEW_WITH_SHA },
+        { author: 'cybersec', content: 'REVIEW\nGate-SHA: deadbeef00000000deadbeef00000000deadbeef' },
+      ]
+      landings = [{ card_id: 'c1', work_sha: GATED_SHA, merge_sha: '' }]
+      const v = cardLandingsGuardVerdict('c1', 'done', false, 'backend3')
+      expect(v.blocked).toBe(false)
+      expect(addedComments).toHaveLength(0)
+    })
+
+    it('F3: ...and a row matching the GATE comment\'s sha (not the builder\'s) is correctly rejected', () => {
+      comments = [
+        { author: 'backend3', content: REVIEW_WITH_SHA },
+        { author: 'cybersec', content: 'REVIEW\nGate-SHA: deadbeef00000000deadbeef00000000deadbeef' },
+      ]
+      landings = [{ card_id: 'c1', work_sha: 'deadbeef00000000deadbeef00000000deadbeef', merge_sha: '' }]
+      process.env.LANDING_GUARD = 'enforce'
+      const v = cardLandingsGuardVerdict('c1', 'done', false, 'backend3')
+      expect(v.blocked).toBe(true)
+    })
+
+    it('F3: a generated/local-llm "REVIEW"-shaped comment cannot supply the gated sha either', () => {
+      comments = [
+        { author: 'backend3', content: REVIEW_WITH_SHA },
+        { author: 'local-llm', content: 'REVIEW\nGate-SHA: deadbeef00000000deadbeef00000000deadbeef' },
+      ]
+      landings = [{ card_id: 'c1', work_sha: GATED_SHA, merge_sha: '' }]
+      const v = cardLandingsGuardVerdict('c1', 'done', false, 'backend3')
+      expect(v.blocked).toBe(false)
+      expect(addedComments).toHaveLength(0)
+    })
   })
 })

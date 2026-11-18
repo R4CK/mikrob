@@ -36,7 +36,8 @@
 // through, so a force bypass is audited by the existing write path the moment it is allowed.
 import { getKanbanCard, getKanbanComments, listCardLandings, addKanbanComment } from '../db.js'
 import { isForceActor } from '../kanban-force-actors.js'
-import { PROJECT_REPOS, NO_REPO_PROJECTS } from './kanban-landed-guard.js'
+import { PROJECT_REPOS, NO_REPO_PROJECTS, GENERATED_COMMENT_AUTHORS } from './kanban-landed-guard.js'
+import { GATE_AGENT_NAMES } from './kanban-gate-completeness-guard.js'
 import { logger } from '../logger.js'
 
 interface Comment {
@@ -54,10 +55,19 @@ const LANDING_NA_RX = /landing\s*:\s*n\s*\/?\s*a\b/i
  *  declaration can never outrank a later one. Only the FIRST sha on the line is used (a multi-sha
  *  `Gate-SHA: <a>, <b>` line is rare on this guard's own population and the match below already
  *  tries every row, so taking the first token is enough to bind "did a real landing happen", not
- *  to replay rule 4b's full multi-sha agreement logic). */
+ *  to replay rule 4b's full multi-sha agreement logic).
+ *
+ *  Cybersec2 NO-GO F3 (card 339ad171): only a genuine BUILDER hand-off may declare the sha this
+ *  guard binds a landing to -- a gate's OWN "REVIEW"-shaped restatement of a sha (or a generated/
+ *  local-llm comment) must never be able to override an earlier, real builder REVIEW the gates
+ *  already verdicted on. Same exclusion kanban-gate-completeness-guard.ts's own `latestReviewAt`/
+ *  `latestReviewGateSha` already apply for the identical reason ("only a non-gate author can open
+ *  a new round"), reused here rather than re-derived. */
 function latestGatedSha(comments: readonly Comment[]): { sha: string; comment: Comment } | null {
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!
+    const author = (c.author ?? '').toLowerCase()
+    if (GATE_AGENT_NAMES.has(author) || GENERATED_COMMENT_AUTHORS.has(author)) continue
     if (!REVIEW_START_RX.test(c.content ?? '')) continue
     const line = GATE_SHA_LINE_RX.exec(c.content ?? '')
     if (!line) continue
@@ -128,17 +138,41 @@ export function cardLandingsGuardVerdict(
     if (LANDING_NA_RX.test(card.description ?? '')) return { blocked: false }
     if (gated) {
       if (LANDING_NA_RX.test(gated.comment.content ?? '')) return { blocked: false }
-    } else if (comments.some((c) => LANDING_NA_RX.test(c.content ?? ''))) {
+      // Cybersec2 NO-GO F1 (card 339ad171): this guard's OWN warn comment (posted a few lines
+      // below, GUARD_AUTHOR) quotes the exemption instruction, so it literally contains the
+      // "Landing: n/a" string -- an ungated card that was warned once exempted itself on the very
+      // next (enforce) check. The guard's own comments (and any generated/automated one) can never
+      // count as the card declaring its own exemption.
+    } else if (
+      comments.some(
+        (c) =>
+          c.author !== GUARD_AUTHOR &&
+          !GENERATED_COMMENT_AUTHORS.has((c.author ?? '').toLowerCase()) &&
+          LANDING_NA_RX.test(c.content ?? ''),
+      )
+    ) {
       return { blocked: false }
     }
 
     const rows = listCardLandings(cardId)
     let message: string | null = null
-    if (rows.length === 0) {
+    // Cybersec2 NO-GO F2 (card 339ad171): MikroB's binding rule (comment 28280) requires a row to
+    // name the sha the gates actually judged -- which is only checkable when a gated sha exists at
+    // all. Without this `!gated` branch, a card that was NEVER gated (no builder REVIEW with a
+    // Gate-SHA line) passed as soon as ANY row existed for its card_id, which is exactly "a row on
+    // card_id alone", the case the rule exists to refuse (a docs commit merely saying "see card
+    // <id>" mints such a row). An ungated card is treated the same as a card with zero rows: there
+    // is nothing here a landing claim can be bound to yet.
+    if (!gated) {
+      message =
+        `Nincs olyan REVIEW-szerű, Gate-SHA sort viselő (nem gate-szerep által írt) komment a ` +
+        `kártyán, amihez a landolást kötni lehetne -- egy card_landings sor önmagában, a card_id ` +
+        `alapján, sosem elég bizonyíték (MikroB szabálya, kártya 339ad171 komment 28280).`
+    } else if (rows.length === 0) {
       message =
         `Nincs VERIFIKÁLT landolási bejegyzés (card_landings) ehhez a kártyához -- a land script ` +
         `(marveen-land.sh/mopsion-land.sh) sosem rögzített egy ellenőrzött push-t erre a kártya-id-re.`
-    } else if (gated && !rows.some((r) => shaMatches(gated.sha, r.work_sha) || shaMatches(gated.sha, r.merge_sha))) {
+    } else if (!rows.some((r) => shaMatches(gated.sha, r.work_sha) || shaMatches(gated.sha, r.merge_sha))) {
       // Mikrob's binding rule (comment 28280): a row existing for this card_id is not enough -- it
       // must name the sha the gates actually judged, or a card amended/re-landed after gating
       // would read as landed on the strength of an unrelated, earlier (or abandoned) landing.
