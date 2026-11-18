@@ -1145,8 +1145,13 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // never that the evidence is real, so an agent can self-certify any address with --source owner).
 // See ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
 // Kept a FLAT alternation (no inner `|`): the drift test splits it on '|'.
+// F1 LOW (card 154cbbd0, RedHat a2cb71f1 komment 20438, left out of d8f10864 on purpose): the two
+// server-anchored alternatives below used to vary only the FIRST letter ([Gg]mail/bare "resend"),
+// so a connector registered as "GMAIL" or "gMail" (anything but the exact "[Gg]mail" shape) named
+// the right server but still skipped the matcher entirely -- confirmed case-sensitive, full-match
+// (`^(?:matcher)$`) PreToolUse behavior (Claude Code hooks docs). Every letter is now a class.
 export const EMAIL_GATE_MATCHER =
-  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
+  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg][Mm][Aa][Ii][Ll][A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*[Rr][Ee][Ss][Ee][Nn][Dd][A-Za-z0-9_-]*__.*|.*draft_email.*'
   + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
   + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
   + '|.*send_mail.*'

@@ -359,6 +359,31 @@ check("inlineImages: neither path nor content -> unreadable_reason",
 check("inlineImages: empty-string content (falsy, not a real path either) -> unreadable_reason",
       mod.collect_mcp_inline_images({"inlineImages": [{"cid": "img1", "content": ""}]})[1] is not None)
 
+# P1 (card 154cbbd0, a2cb71f1 residual LOW): only the FIRST image was ever exercised above --
+# a mutant that stops hashing after the first list item (e.g. only appends out[0], or breaks the
+# loop early) stayed green against every prior assertion. Two distinct images, asserted in full.
+imgs2, reason2 = mod.collect_mcp_inline_images({"inlineImages": [
+    {"cid": "img1", "content": "QQ==", "filename": "a.png"},
+    {"cid": "img2", "content": "Qg==", "filename": "b.png"},
+]})
+check("inlineImages: TWO images are BOTH hashed and present (P1, card 154cbbd0)",
+      reason2 is None and imgs2 == sorted([
+          {"cid": "img1", "filename": "a.png", "sha256": hashlib.sha256(b"QQ==").hexdigest()},
+          {"cid": "img2", "filename": "b.png", "sha256": hashlib.sha256(b"Qg==").hexdigest()},
+      ], key=lambda a: (a["cid"], a["filename"], a["sha256"])),
+      f"got {(imgs2, reason2)!r}")
+
+# P2 (card 154cbbd0, a2cb71f1 residual LOW): the `path` branch was only ever tested with a
+# SINGLE-item list, where the function returns on the very first entry. A mutant that checked
+# `path` only for item index 0 (e.g. `if i == 0 and path:`) would stay green against that case
+# alone. Put the content-only image FIRST and the path-carrying one SECOND.
+imgs3, reason3 = mod.collect_mcp_inline_images({"inlineImages": [
+    {"cid": "img1", "content": "QQ==", "filename": "a.png"},
+    {"cid": "img2", "path": "/etc/passwd"},
+]})
+check("inlineImages: a path entry LATER in the list is still rejected fail-closed (P2, card 154cbbd0)",
+      imgs3 == [] and reason3 is not None, f"got {(imgs3, reason3)!r}")
+
 # The actual H1 reproduction: the SAME letter, with and without an inlineImages path, must now
 # anchor DIFFERENTLY (unreadable_reason denies the path variant outright instead of matching the
 # path-less approval).
