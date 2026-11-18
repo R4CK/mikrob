@@ -126,6 +126,21 @@ describe('gateDecision', () => {
     expect(gateDecision('mcp__resend__search-and-send-email', {}).deny).toBe(true)
   })
 
+  // Card bf7a7335 CYBERSEC GO LOW (comment 9092): the negative lookahead above only excluded
+  // send/reply/forward, so a safe-looking prefix plus any OTHER sending synonym still read as
+  // safe (measured 18 forms). All 18 must deny; the existing safe names above must stay allowed.
+  it('does NOT let a safe-looking prefix hide a sending synonym other than send/reply/forward (canary)', () => {
+    for (const name of [
+      'draft_and_dispatch', 'draft_and_deliver', 'draft_and_submit', 'draft_and_transmit',
+      'draft_and_post', 'draft_and_publish', 'draft_and_relay', 'draft_and_respond',
+      'get_and_respond', 'read_and_fwd', 'draft_and_mail_out', 'search_and_deliver',
+      'list_and_post', 'draft_then_ship', 'read_and_answer', 'draft_and_xmit',
+      'draft_snd', 'get_rply',
+    ]) {
+      expect(gateDecision(`mcp__gmail__${name}`, {}).deny, name).toBe(true)
+    }
+  })
+
   // @aaronsb/google-workspace-mcp multiplexes read/draft/send behind one tool,
   // so the gate has to read the operation + draft flag, not just the name.
   // This replaces the server's draft-only-email policy, which blocks drafting too.

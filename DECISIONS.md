@@ -27863,3 +27863,45 @@ az opcionális docs-only elfogadást a kötelező kódjavításra emelte. backen
 **Hivatkozás:** kártya a42d27e1, Cybersec NO-GO 33120 (6a8a7b848-on), MikroB msg 20826,
 `store/gate-pretriage-card.sh`, `src/__tests__/gate-pretriage-card.test.ts`,
 `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`.
+
+## 2026-11-18 -- 1df5360b: email-kapu safe-prefix allowlist -- szinonima-igék szélesítve a tiltott szóhalmazban
+
+**Döntés:** WhiteHat2 GO a bf7a7335-ön (Gate-SHA e1aa7437, komment 9092) MARADT, nem blokkoló
+LOW leletet jelzett: a három email-kapu (`scripts/email-send-gate.mjs`,
+`scripts/hooks/email-approval-gate.py`, `scripts/hooks/outgoing-copy-gate.py`) saját
+`EMAIL_SAFE_TOOL_RE`/`_EMAIL_SAFE_TOOL_RE` negatív lookaheadje csak a `send|reply|forward`
+szavakat zárta ki egy safe-prefix (search/get/list/read/draft) ÉS 18 mért küldő-szinonima
+(dispatch, deliver, submit, transmit, post, publish, relay, respond, fwd, mail_out, ship,
+answer, xmit, snd, rply) kombinációja mindhárom kapun átmegy. Élőben ma nem kihasználható
+(nincs Gmail/Resend szerver bekötve), de a következő küldő MCP-szerverrel az lesz.
+
+**Javítás (surgical, a meglévő regex-mechanizmus szélesítve, nem a card által javasolt teljes
+allowlist-csere):** mindhárom kapu saját regex-másolatában (nincs közös import, ez a fájlok
+saját, dokumentált konvenciója) a negatív lookahead szóhalmaza kibővült a mért 18 formát fedő
+15 egyedi szinonimával. A regex 3 bájtra NEM azonos a három kapuban (az alap verb-készlet is
+eltér: `email-send-gate.mjs`/`email-approval-gate.py` `search|get|list|read|draft`,
+`outgoing-copy-gate.py` `search|get|list|read|delete`, Koteg 23a szerint), de a bővített
+szóhalmaz maga azonos mindhárom helyen.
+
+**Miért nem a teljes explicit-allowlist (a card által javasolt "tartós javítás"):** egy valódi,
+explicit, teljes toolnév-lista (default-deny) a Gmail connector + Resend MCP teljes, hitelesen
+mért operáció-katalógusát igényelné -- ennek hiányában egy kitalált lista FALSE DENY kockázatot
+hordozna (egy valódi, biztonságos olvasó/draft tool neve kimaradna, és letiltaná a normál
+munkát), ami rosszabb kimenet, mint a mai LOW lelet. A szóhalmaz-szélesítés ugyanazt a "deny-lista
+egy allow-listában" tulajdonságot hordozza tovább (egy JÖVŐBELI, itt nem enumerált szinonima
+ismét átmehetne) -- ez tudatosan maradt NYITOTT kockázat, dokumentálva, nem elrejtve. A teljes
+allowlist-csere ezért külön, nagyobb kártyaként marad, ha a döntéshozó (MikroB/Peti) ezt
+választja a jelenlegi, kisebb kockázatú javítás helyett.
+
+**Mérés:** canary-tesztek mindhárom kapu saját teszt-fájljában, mind a 18 formára (pontosan a
+WhiteHat2 mérési listájából), plusz a meglévő biztonságos nevek (search_threads, get_email,
+create_draft, draft_email stb.) regresszió nélkül. `email-approval-gate.test.py` és
+`outgoing-copy-gate.test.py` (python3 -I): teljesen zöld, mindhárom gate saját suite-ja.
+`email-send-gate.test.ts`: új teszt a 18 formára, fleet-test-tel igazolva.
+
+**Ki döntött:** backend (a fix szerzője), MikroB kanban-sor alapján (kártya 1df5360b, forrás:
+WhiteHat2 GO a bf7a7335-ön). A teljes allowlist-csere döntése nyitva marad.
+
+**Hivatkozás:** kártya 1df5360b, bf7a7335 (komment 9092, Gate-SHA e1aa7437),
+`scripts/email-send-gate.mjs`, `scripts/hooks/email-approval-gate.py`,
+`scripts/hooks/outgoing-copy-gate.py`.
