@@ -28142,3 +28142,30 @@ Gate: QA + Cybered (a kártya saját kijelölése).
 **Test:** `src/__tests__/project-root-anchor.test.ts`, two new cases: (a) agent-attacker's `.claude` symlinked to agent-victim's `.claude`, with a drifted STORE_DIR anchor seeded for attacker -- asserts the sweep refuses and victim's `settings.json` is byte-identical afterward; (b) an anchor file planted under the agent's own (legacy) `.claude` dir is ignored -- the sweep treats it as "no anchor yet" and writes the real baseline to STORE_DIR instead. `fleet-test.sh --ref 2ae712bfd src/__tests__/project-root-anchor.test.ts`: 1 file, 9/9 green.
 
 **Who decided:** backend (card b5d19a32, dispatched by MikroB msg 18944 off CYBERSEC GO on eed22288). Gate: QA + Cybersec. Gate-SHA: 2ae712bfd.
+
+## 2026-11-18 -- 58342cec: precedence tests for shared-memory-inject --agent vs cwd (M2/M4/M5)
+
+**Decision:** Card 58342cec (source: cybersec2 GO on 44091907, comment 21098, point 6/N1). The
+cwd-agent-arg fix at 4108addd had 3 of 8 tried mutations survive the then-16-case suite: M2
+(identification from the LAST path segment instead of the element right after "agents"), M4 (an
+unidentifiable cwd swapped for a different non-gate name instead of the literal "fleet"), M5
+(cwd-derivation taking precedence over --agent when the cwd itself carries a non-fleet
+"agents/<x>" segment -- the exact precedence test cybersec2 asked for).
+
+**Fix:** test-only card, no production code change. Added 7 cases to
+`src/__tests__/shared-memory-inject-cwd-agent-arg.test.ts` (6 -> 13): the 3 remaining named cwd
+shapes (empty string, live clone root, upper-cased agents/CYBERSEC) and the 3 mutation pins.
+
+**Test:** mutation-proven one at a time in an isolated worktree -- M2 (`parts[-1]` instead of
+`parts[i+1]`): exactly the M2 case went red. M4 (`"fleet"` swapped for `"unknown-caller"`):
+exactly the M4 case went red (the literal-value assertion is what catches it). M5 (cwd-derivation
+first): 2 cases went red (the M5 case itself, and the upper-cased-cwd-with-override case, which
+legitimately shares the same agents/<x> segment). Restored the real code after each, confirmed
+byte-identical (empty diff), re-ran: 13/13 green throughout.
+
+**Measured:** `fleet-test.sh --ref 5cadc2bccdfbcd4faddf3c193d7bca83c99ba2f6
+src/__tests__/shared-memory-inject-cwd-agent-arg.test.ts
+src/__tests__/shared-memory-inject-gate-exclusion.test.ts`: 2 Test Files passed, 19 Tests passed.
+`tsc --noEmit`: clean. `lint-ratchet.sh --show`: 420 findings/3 rules, session baseline (12/140/268).
+
+**Who decided:** backend (own card). Gate: QA + WhiteHat (the card's own designation).
