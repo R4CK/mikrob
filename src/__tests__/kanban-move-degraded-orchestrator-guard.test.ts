@@ -152,7 +152,7 @@ describe('PUT /api/kanban/:id refuses a transition into done while degraded (car
 describe('POST /api/kanban create-as-done refuses while degraded (card d5638d28 round 2, F2)', () => {
   it('override to an existing {"enabled": false} file (OFF): creating a card already done is fine', async () => {
     writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: false }))
-    const res = await create({ id: 'deg-create-1', title: 'plain card', assignee: 'backend', status: 'done' })
+    const res = await create({ id: 'deg-create-1', title: 'plain card', assignee: 'backend', status: 'done', project: 'MikroB' })
     expect(res.status).toBe(200)
   })
 
@@ -170,13 +170,13 @@ describe('POST /api/kanban create-as-done refuses while degraded (card d5638d28 
 
   it('{"enabled": true}: a create NOT into done is untouched by this guard', async () => {
     writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: true }))
-    const res = await create({ id: 'deg-create-3', title: 'plain card', assignee: 'backend', status: 'planned' })
+    const res = await create({ id: 'deg-create-3', title: 'plain card', assignee: 'backend', status: 'planned', project: 'MikroB' })
     expect(res.status).toBe(200)
   })
 
   it('{"enabled": true} + owner bypass (force:true, actor:"mikrob"): passes through', async () => {
     writeFileSync(DEGRADED_ORCHESTRATOR_SWITCH_PATH, JSON.stringify({ enabled: true }))
-    const res = await create({ id: 'deg-create-4', title: 'plain card', assignee: 'backend', status: 'done', actor: 'mikrob', force: true })
+    const res = await create({ id: 'deg-create-4', title: 'plain card', assignee: 'backend', status: 'done', actor: 'mikrob', force: true, project: 'MikroB' })
     expect(res.status).toBe(200)
   })
 })

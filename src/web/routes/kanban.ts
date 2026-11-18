@@ -1712,7 +1712,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
       const normalizedProjectCheck = normalizeProjectName(data)
-      if (normalizedProjectCheck.project === null) {
+      // A whole-card PUT echoes every field it read, `project` included; if the card already had
+      // no project (legacy, pre-dates this guard) and the body's value resolves to the same
+      // nothing, this isn't an attempt to CLEAR it -- skip the resolve-or-reject below.
+      const isNoopEcho = normalizedProjectCheck.project === null && (before?.project ?? null) === null
+      if (normalizedProjectCheck.project === null && !isNoopEcho) {
         const effectiveParentId = typeof data.parent_id === 'string' && data.parent_id ? data.parent_id : (before?.parent_id ?? null)
         const parentProject = effectiveParentId ? (getKanbanCard(effectiveParentId)?.project ?? null) : null
         const effectiveTitle = typeof data.title === 'string' ? data.title : before?.title
