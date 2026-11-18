@@ -702,11 +702,12 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     //     this file; this entry's own content is an ADOPTED, scoped port, not an independent
     //     refusal with a symbol of its own to watch.
     'scripts/hooks/sender_check.py',
-    //   - src/__tests__/auth-routes.test.ts (DEVKEYMINT1022 self-correction, Koteg 25, card
-    //     5dd0842a): documents an in-round correction of this round's own merge, not a new
-    //     refusal -- it only mentions the phrase because it quotes the auth.ts entry it corrected
-    //     back into line with. No symbol of its own to anchor.
-    'src/__tests__/auth-routes.test.ts (DEVKEYMINT1022 self-correction, Koteg 25, card 5dd0842a)',
+    //   - src/__tests__/approvals-consume-category.test.ts (CYBERED NO-GO 32995 follow-up, Koteg
+    //     25, card 5dd0842a): documents why a file added earlier in this same round's merge was
+    //     deleted again -- it tested consumeCategoryApproval/handleCategoryConsume, both reverted
+    //     as a confused-deputy regression of W2 (anchored under 'src/web/routes/approvals.ts'
+    //     above). No symbol of its own to anchor; the decided behavior is the KEEP FORK entry.
+    'src/__tests__/approvals-consume-category.test.ts',
     //   - src/web/routes/claude-plans.ts (card 4aa87fdf, 2026-10-17): the two "NOT adopted" items in
     //     this entry (mainRotationContinueVerdict and RESTARTWAKE927) were BOTH adopted on develop
     //     between our branch-cut and landing -- grep-verified on origin/develop. Any 'absent' anchor

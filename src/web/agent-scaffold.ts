@@ -3550,15 +3550,7 @@ function buildAutonomyBody(name: string): string {
     '',
     'Döntés lekérdezése (GET, 60 mp-enként ismételve):',
     `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/approvals/<id>"`,
-    'status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
-    // APPROVALCONSUME1022 (Koteg 25): adopted, matching consumeCategoryApproval in
-    // src/web/routes/approvals.ts -- but the curl example is rewritten to this fork's own
-    // never-the-token-on-the-command-line convention (stdin `-H @-`), not upstream's inline
-    // `-H "Authorization: Bearer $(cat ...)"` (leaks via /proc/<pid>/cmdline).
-    'status=approved -> a jóváhagyás EGYSZER használható: MIELŐTT cselekszel, használd fel (APPROVALCONSUME1022):',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/approvals/<id>/consume -H "Content-Type: application/json" -d '{"category":"CATEGORY_KEY","consumer":"${name}"}'`,
-    'Csak HTTP 200 után végezd el a műveletet. 409 (already_consumed, expired, not_approved, hash_mismatch) = NE csináld: kérj új jóváhagyást.',
-    'Ha a kérésben content_hash volt, a felhasználásban is ugyanazt add meg. Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
+    'status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
     '',
     '**Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.',
   ].join('\n')

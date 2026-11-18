@@ -3206,19 +3206,20 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'self-escalation path (chain 68254bd7/9655494c) that upstream still leaves open (bearer can ' +
     'create the first user over HTTP). WhiteHat agreed (card 417e2343 comment 26763).',
   'src/__tests__/auth-routes.test.ts':
-    'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above.',
+    'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above. ' +
+    "CORRECTED 2026-11-18 (Koteg 25, card 5dd0842a): an earlier pass of THIS SAME round's " +
+    "conflict resolution wrongly imported upstream's mayIssueCredentials/DEVKEYMINT1022 " +
+    "assumption into the pre-existing 'deletes a user and revokes their sessions' test, changing " +
+    "the TOKEN_AUTH delete-user assertion from 200 to 403 -- directly contradicting " +
+    "USER_ADMIN_KINDS = ['token', 'session'] in auth.ts, whose own comment calls token-inclusion " +
+    'deliberate, existing behavior, and the auth.ts entry above already declining DEVKEYMINT1022. ' +
+    'Caught by fleet-test (expected 200 to be 403). Reverted to the original assertion (token ' +
+    'delete succeeds, 200); the CLI_RECOVERY_ONLY code-pinning and the session-path negative-' +
+    'control additions elsewhere in the same diff are unrelated and correct, left as adopted. ' +
+    '(Previously recorded, in error, under a second, malformed key carrying this parenthetical ' +
+    'in the key STRING itself -- merged back into this one entry, same file, same blob pin.)',
   'src/__tests__/auth-recovery.test.ts':
     'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above.',
-  'src/__tests__/auth-routes.test.ts (DEVKEYMINT1022 self-correction, Koteg 25, card 5dd0842a)':
-    "CORRECTED: an earlier pass of THIS SAME round's conflict resolution wrongly imported " +
-    "upstream's mayIssueCredentials/DEVKEYMINT1022 assumption into the pre-existing 'deletes a " +
-    "user and revokes their sessions' test, changing the TOKEN_AUTH delete-user assertion from " +
-    '200 to 403 -- directly contradicting USER_ADMIN_KINDS = [\'token\', \'session\'] in auth.ts, ' +
-    "whose own comment calls token-inclusion deliberate, existing behavior, and the auth.ts entry " +
-    "above pinning DEVKEYMINT1022 as NOT ADOPTED. Caught by fleet-test (expected 200 to be 403). " +
-    'Reverted to the original assertion (token delete succeeds, 200); the CLI_RECOVERY_ONLY ' +
-    'code-pinning and the session-path negative-control additions elsewhere in the same diff are ' +
-    'unrelated and correct, left as adopted.',
   'scripts/hooks/sender_check.py':
     'ADOPTED, SCOPED (card 5dd0842a, Koteg 25). scripts/uptime-monitor.py (new this same Koteg) ' +
     "imports this file for its outgoing-copy CONTENT check before a Telegram alert send; it did " +
@@ -3296,17 +3297,46 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // UPDATE WHERE clause) and atomic -- so this is not "upstream is less secure", it is that upstream
   // generalised into one function with its own exclusion-list machinery
   // (SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) that no current fork caller needs.
+  // RE-BROKEN 2026-11-18 (card 5dd0842a, Koteg 25): the merge silently adopted the category
+  // branch anyway (handleCategoryConsume in approvals.ts + consumeCategoryApproval in db.ts + the
+  // agent-scaffold.ts autonomy text pointing every agent at it), contradicting this very entry.
+  // CYBERED NO-GO 32995 on 44100d69f found it is not merely "no upgrade" but an ACTIVE REGRESSION
+  // of W2 (card 2a80c6cb): the shared bearer token can burn ANY approved row of ANY category
+  // through POST /api/approvals/:id/consume (200, self-declared consumed_by, no agent_id binding),
+  // including a no-hash cloud_spend row -- the exact cross-feature-burn primitive W2 closed on the
+  // consume-oneshot route, reopened behind a different URL shape. Reverted the adoption in full
+  // (handleCategoryConsume/consumeCategoryApproval/isCategoryKey/categoryWindowSeconds/isConsumeRef
+  // and the CATEGORY_CONSUME_*/SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES constants
+  // deleted; agent-scaffold.ts buildAutonomyBody and seed-skills/approval-request-handling/SKILL.md
+  // reverted to the pre-merge text; approvals-consume-category.test.ts deleted;
+  // approvals-prompt-contract.test.ts's two APPROVALCONSUME1022 assertions removed).
   'src/web/routes/approvals.ts':
     'KEEP FORK -- consumeEmailSendApproval + the separate generic consumeApproval (db.ts) are both ' +
     "content-hash-bound (exact payload match) and atomic single-use. Verified upstream's " +
-    'consumeCategoryApproval is EQUALLY hash-bound (content_hash IS ? in its UPDATE), so adopting ' +
-    'it is not a security upgrade -- it would only add exclusion-list machinery ' +
-    '(SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) no current fork caller needs ' +
-    '(verified by backend3, re-verified by WhiteHat at 56d302fd1, card 417e2343 comment 26763, ' +
-    'confirmed by reading upstream/develop:src/db.ts).',
+    'consumeCategoryApproval is NOT a neutral generalisation but an active regression of W2 (card ' +
+    '2a80c6cb): a shared-token holder can burn ANY approved approval of ANY category via POST ' +
+    '/api/approvals/:id/consume with no agent_id binding and a self-declared consumed_by -- the ' +
+    'cross-feature-burn primitive W2 closed on consume-oneshot, reopened on a different URL shape ' +
+    '(CYBERED NO-GO 32995, card 5dd0842a, 2026-11-18, confirmed by a live burn probe in a gate ' +
+    'worktree). Earlier verification (backend3, re-verified by WhiteHat at 56d302fd1, card 417e2343 ' +
+    'comment 26763) still holds for the hash-binding claim itself; what changed is that "adopting ' +
+    'it is not a security upgrade" undersold the risk -- it is a downgrade, and the exclusion-list ' +
+    'machinery (SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) papers over, not closes, ' +
+    'the missing caller binding. Re-decide only with a bound consume (caller key == approval.agent_id, ' +
+    'or a consumer secret issued with the approval) inside the same conditional UPDATE -- option (c) ' +
+    'in 32995, not the plain category branch upstream ships.',
   'src/__tests__/approvals-delivery.test.ts':
     'KEEP FORK -- pins the current single-arg notifyOwner(approval) call shape matching ' +
     'src/web/routes/approvals.ts above.',
+  'src/__tests__/approvals-consume-category.test.ts':
+    'NOT ADOPTED (CYBERED NO-GO 32995 follow-up, Koteg 25, card 5dd0842a, 2026-11-18). Tested ' +
+    'the reverted consumeCategoryApproval/handleCategoryConsume -- the confused-deputy burn ' +
+    'regression of W2 documented at src/web/routes/approvals.ts above. Deleted rather than kept ' +
+    'failing or rewritten to assert the refusal: this fork already pins the revert there, and a ' +
+    "second, upstream-shaped test on the same reverted feature adds no coverage, only merge " +
+    'friction on the next koteg that re-touches approvals.ts. The actual regression guard lives ' +
+    "in src/__tests__/approvals-consume.test.ts's new describe block instead (reproduces " +
+    "Cybered's burn probe against the fork's own route, not upstream's test shape).",
   // auth-device-keys.ts: fork's mintAgentDeviceKey/findAgentDeviceKeys/revokeAgentDeviceKeys
   // (agent: prefix, card 9655494c F1) and upstream's mintBridgeDeviceKey/DEVICE_NAME_RE (Bridge
   // pairing, BRIDGEINSTKEY1020) solve different problems -- MERGE, not a real conflict. Verified
@@ -4107,8 +4137,15 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/routes/security.ts': '03fb34204e0a378d336f010781dae7c3b9c4e2e4',
   'src/web/fleet-transfer.ts': 'd2da1432854eaaa4ee83901089e78cafa9059f81',
   'src/__tests__/fleet-transfer.test.ts': '0efe57f4a0eabf007f23ce9bf17f5806eeb0560e',
-  'src/web/routes/approvals.ts': 'e936aa7c21253773cfb236012d90e8f005fd72d3',
+  'src/web/routes/approvals.ts': 'b741f71e0728ca1ccd64a264c344760e5833a15d',
   'src/__tests__/approvals-delivery.test.ts': '125da1f21a19f3b10a78d0a19e38d436071e68b5',
+  'src/__tests__/approvals-consume-category.test.ts': '5ef75507c2266eb46327273b7baf44cd62c61342',
+  // Koteg 25, card 5dd0842a -- three entries added in the round1 fix (0acf9e1c1) that had no
+  // matching pin here, a TS2739 compile error caught only on this re-measure (not by fleet-test's
+  // vitest run, which does not typecheck the file it never imports from a test entry point).
+  'scripts/hooks/sender_check.py': '2ffb16044eff9787eec1c9ad1e95fe5c17e8bcd4',
+  'scripts/__tests__/seeme-send-consume.test.sh': '7e854ec676346b27396432881584d728ee143114',
+  'src/__tests__/credential-issuance-owner-session.test.ts': '825abdd8ddf30f520f59785b6007c9be45bff664',
   'src/web/auth-device-keys.ts': '5be94598249441e497f9b07103ee31887d2d18f4',
   'src/__tests__/email-gate-matcher-drift.test.ts': '9874aa64605991a42a2416af87e9ac87775c4d3e',
   'src/web/routes/fleet.ts': 'e2a89a8fd215b77c16a9c5c5fe8dd2e1990e24fa',
