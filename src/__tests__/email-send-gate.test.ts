@@ -967,7 +967,7 @@ describe.skipIf(REPO_UNDER_TMP)('injectEmailSendGate', () => {
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
     expect(hooks[0].matcher).toBe(
-      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
+      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg][Mm][Aa][Ii][Ll][A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*[Rr][Ee][Ss][Ee][Nn][Dd][A-Za-z0-9_-]*__.*|.*draft_email.*'
       + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
       + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
       + '|.*send_mail.*')
@@ -992,6 +992,23 @@ describe.skipIf(REPO_UNDER_TMP)('injectEmailSendGate', () => {
     expect(re.test('Bash')).toBe(true)
     expect(re.test('Read')).toBe(false)
     expect(re.test('mcp__google-workspace__manage_calendar')).toBe(false)
+  })
+
+  // F1 LOW (card 154cbbd0, RedHat a2cb71f1 komment 20438): the server-anchor alternatives used to
+  // vary only the first letter ([Gg]mail / bare "resend"), so a server registered under any OTHER
+  // casing named the right server but still skipped the matcher. These isolate the server-anchor
+  // branch with a tool verb NOT covered by any other alternative, so a regression here cannot be
+  // masked by the bare-verb alternatives matching instead.
+  it('server-anchor matches gmail/resend regardless of casing (F1, card 154cbbd0)', () => {
+    const s: Record<string, unknown> = {}
+    injectEmailSendGate(s)
+    const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
+    const re = new RegExp(`^(?:${hooks[0].matcher as string})$`)
+    expect(re.test('mcp__GMAIL-mcp__quick_compose')).toBe(true)
+    expect(re.test('mcp__gMail-connector__quick_compose')).toBe(true)
+    expect(re.test('mcp__RESEND-mcp__fire_notice')).toBe(true)
+    expect(re.test('mcp__ReSeNd-connector__fire_notice')).toBe(true)
+    expect(re.test('mcp__unrelated__quick_compose')).toBe(false)
   })
 
   it('is idempotent (no duplicate entries on re-apply / respawn)', () => {

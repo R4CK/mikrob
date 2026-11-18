@@ -28103,3 +28103,32 @@ rules at baseline (unchanged from before this delta).
 
 **Ki dontott:** backend (sajat kartya 5423775c, Cybered GO 32882 C1/C2 kovetelmenyei alapjan). Gate:
 QA + Cybered (a kartya sajat kijelolese).
+
+## 2026-11-18 -- 154cbbd0: email-gate matcher kis-nagybetű-érzékenység (F1) + inlineImages
+## P1/P2 mutáció-fedettség (a2cb71f1 maradék LOW leletek)
+
+RedHat a2cb71f1 komment 20438 maga mondta, hogy a Claude Code matcher kis-nagybetű-érzékenységét
+nem mérte. Megmértem (WebSearch): a PreToolUse matcherek kis-nagybetű-érzékenyek és teljes-egyezést
+várnak (`^(?:matcher)$`) -- az `EMAIL_GATE_MATCHER` gmail/resend szerver-horgony alternatívái csak
+az ELSŐ betűt variálták, így egy "GMAIL"/"gMail" nevű szerver a kaput megkerülte. Javítva teljes
+kis-nagybetű-érzéketlen karakterosztályra, szinkronban a tracked `.claude/settings.json`-nal és 2
+teszt-fájllal.
+
+P1/P2: a2cb71f1-nél csak az ELSŐ inline kép hash-elése volt pinelve (P1), és a `path`-ág csak egy
+egyetlen-elemű listán volt tesztelve (P2). Hozzáadva: két-képes teszt (P1), és egy olyan eset,
+ahol a `path`-ot hordozó elem a lista MÁSODIK tagja (P2).
+
+**Delta (CYBERED NO-GO 33233):** az első P2-teszt egy path-ONLY (content nélküli) második elemet
+használt -- ha az `if path:` ágat kivesszük, a tétel a KÜLÖNÁLLÓ "hiányzó content" ág miatt
+akkor is elutasításra kerülne, tehát a mutáns zöld maradt volna, a REVIEW "index-0 mutáns pirosra
+vált" állítása hamis volt erre a konkrét esetre. Javítva: a második elem path ÉS érvényes content
+mezőt is kap, így az elutasítás KIZÁRÓLAG a `path`-ellenőrzéstől függ. Mutáció-bizonyítva: az
+`if path:` blokk kivételével a teszt valóban pirosra vált, visszaállítva zöld.
+
+**Mérés:** `fleet-test.sh --ref 1a50ca711` (F1, 3 érintett fájl, delta-szabály szerint szűkítve,
+LOW kártya): 3 Test Files passed, 184 Tests passed. `email-extract-parity.test.py` (P1/P2,
+`python3 -I`): minden check zöld, mutáció-teszt a fenti deltánál megerősítve. `tsc --noEmit`:
+tiszta. `lint-ratchet.sh --show`: 420 lelet/3 szabály, a session-alapvonallal egyezik (12/140/268).
+
+**Ki döntött:** backend (saját kártya). Gate-SHA: fe92ec25147794cf7f8954963ab66710859dc6ad.
+Gate: QA + Cybered (a kártya saját kijelölése).
