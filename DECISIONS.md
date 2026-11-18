@@ -27779,3 +27779,87 @@ importer sweep: 22 files, 341 tests green (was 338, +3). tsc clean. lint-ratchet
 **Ki dontott:** backend (sajat kartya 03dff487 delta round 2, Cybersec NO-GO 33019 round 2 (F4)
 alapjan, Fix-Direction replay-verified by Cybersec in the card comment). Gate: QA (re-confirm) +
 Cybersec (delta re-gate round 2, a kartya sajat kijelolese).
+
+## 2026-11-18 -- a42d27e1: gate-pretriage.sh --trunk land-parity -- F1/F2 owned (cybersec GO 20497)
+
+A kártya alap funkcióját (opt-in `--trunk` land-parity a `gate-pretriage.sh`-ban: valódi
+merge-with-trunk fán futó lint-ratchet + DECISIONS append-union dry-run + importer-sweep
+`fleet-test.sh`) WhiteHat (cybersec) GO-val zárta (337a240c3, REVIEW 32842), de a GO F1/F2
+MEDIUM leletek tulajdonlásához kötve: a szekció a heartbeat-consolidated B-szekció önjáró
+útján, MINDEN gate előtt, EMBERI/PreToolUse-hook nélkül futtatja a KÁRTYA SAJÁT ágának
+harness-scriptjeit (`store/lint-ratchet.sh`, `store/fleet-test.sh`) és teszt-fájljait --
+ez a kockázat-réteg, amit egy gate-dispatch (diff-olvasás + hook alatt) amúgy lefed, de ez az
+automatikus út nem.
+
+**F1 (MEDIUM, bizalmi határ) -- javítva `c07d26d8`-n.** A megoldás a cybersec javasolt (a) opció:
+ha a `--trunk`-kal mért merge diffje harness/config fájlt érint (`.eslintrc*`, `eslint.config.*`,
+`vitest.config.*`, `vitest.workspace.*`, `package.json`, `package-lock.json`,
+`store/lint-ratchet.sh`, `store/fleet-test.sh`), a lint-ratchet + importer-sweep MÉRÉS teljesen
+KIMARAD (`land-parity-measurement-skipped` info lelet), nem fut le az ág saját, esetleg módosított
+harness-kódja felügyelet nélkül. A (b) opciót (a `--trunk` kikapcsolása az automatikus
+heartbeat-útról) NEM választottuk -- az a kártya egész célját (3 valós landolás-bukás, lásd a
+kártya leírását) nullázná vissza minden kártyán, nem csak a harness-ot érintőkön.
+
+**F2 (MEDIUM, false red) -- javítva ugyanitt.** A `fleet-test.sh` `die()` 2-vel (rossz usage) vagy
+3-mal (harness/setup hiba: lock-timeout, npm ci, stale-build refusal) lép ki MIELŐTT egyetlen
+teszt is lefutna -- ez eddig `importer-sweep-red`-ként ment a kártyára. Mostantól csak `rc=1`
+ÉS egy valódi FAIL/"N failed" sor együtt számít piros leletnek; minden más nemzéró rc
+`importer-sweep-unmeasured` info lelet.
+
+**Mérés:** 2 új pozitív kontroll-teszt (`gate-pretriage.sh -- --trunk trust boundary (F1/F2...)`,
+`src/__tests__/gate-pretriage.test.ts`): egy szintetikus `package.json`-t érintő trunk-merge
+`land-parity-measurement-skipped`-et ad, NEM futtatja a lint/importer lépéseket; egy hamis,
+rc=3-mal kilépő `fleet-test.sh` `importer-sweep-unmeasured`-et ad, NEM `importer-sweep-red`-et.
+Teljes `gate-pretriage*` suite (3 fájl, 117 teszt) PASS. `npx tsc --noEmit`: tiszta. ESLint az
+érintett fájlokon: 1 előzetesen ismert, a bázison is meglévő `no-unsafe-argument` hiba (nem új,
+nem ezen a kártyán keletkezett).
+
+**F3-F5 (LOW) -- elfogadva, nem javítva ezen a körön.** F3 (a "clean merge" szöveg nem
+különbözteti meg "már trunk-ban van"-tól), F4 (idézetlen `for f in $changed_src` + nem escapelt
+grep -E), F5 (EXIT trap REPO-path interpolációja, árva worktree egy killelt futásnál) -- mindhárom
+LOW, cybersec saját szavaival "nothing attacker-controlled reaches the trap today", nem feltétele
+a GO-nak. Nyitva marad egy jövőbeli hardening körre, ha valaki a scriptet újra bővíti.
+
+**Ki döntött:** backend3 végezte (saját kártya). Gate-SHA: c07d26d84c52d53fb461b028749058c9434b841b. Gate: QA +
+Cybersec (a kártya saját kijelölése) -- mindkettő már GO/PASS volt a korábbi shán (QA PASS
+32848, CYBERSEC GO 20497), ez a kör csak az előbbi GO feltételét (F1/F2 tulajdonlása) teljesíti,
+funkcionális/API-viselkedés nem változott a 3 meglévő Kész-ha kontrollon kívül -- azok újra-futtatva
+is zöldek maradnak (lásd a teszt-eredményt fent).
+
+## 2026-11-18 -- a42d27e1 (javítás): F1 TÉVESEN "javítva"-ként szerepelt fent -- a valódi zárás a
+`--trunk` opt-in-né tétele, nem a harness-fájl-allowlist
+
+**Helyesbítés a fenti (Gate-SHA c07d26d84) bejegyzéshez.** A fenti entry "F1 ... javítva" állítása
+TÉVES volt -- Cybersec NO-GO 33120 (6a8a7b848-on, MikroB döntés msg 20826) ezt blokkolta: a
+harness-fájl-allowlist (`.eslintrc*`, `vitest.config.*`, `package.json`, stb.) csak akkor hagyja ki
+a mérést, ha a diff EZEKET érinti -- az importer-sweep viszont a kártya SAJÁT, meglévő teszt-
+fájljait (és az azok által importált, változott src-fájlokat) futtatja le `fleet-test.sh`/vitest
+alatt, FELÜGYELET NÉLKÜL, a heartbeat-consolidated önjáró útján, minden 30 percben, MIELŐTT
+bármelyik gate elolvasná a diffet -- ez a domináns eset (egy rendes, nem-harness src-fájl, amit egy
+meglévő teszt importál), és a harness-allowlist erre semmit nem tesz.
+
+**A valódi javítás.** A `gate-pretriage-card.sh` teljes `--trunk` (land-parity) szekciója mostantól
+EXPLICIT opt-in: a szkript saját CLI-jén egy ÚJ `--trunk` flag kell hozzá (alapértelmezés: KI), és
+csak akkor fut a trunk-fetch + a `gate-pretriage.sh --trunk` hívás, ha ezt a hívó megadta. A
+heartbeat-consolidated önjáró út (`gate-pretriage-card.sh <cardId>`, flag nélkül) ettől a ponttól
+SOHA nem adja meg -- a szekció NEM csak egy allowlist mögött szűkül, hanem EGYÁLTALÁN nem fut le
+azon az úton. Egy gate-ügynök a saját, eldobható gate-worktree-jéből futtathatja a `--trunk`
+flaggel, ha a land-parity mérést akarja -- ott már van felügyelő fél az eredményhez.
+
+**Teszt:** 4 új eset (`src/__tests__/gate-pretriage-card.test.ts`, "--trunk land-parity measurement
+is opt-in only"): egy harness-fájlt érintő commit `--trunk` NÉLKÜL semmilyen land-parity leletet nem
+ad (a szekció egyáltalán nem fut); UGYANAZ a commit `--trunk`-kal megadva ADJA a
+`land-parity-measurement-skipped` leletet (bizonyítja, hogy a flag tényleg visszakapcsolja a
+szekciót, nem csak egy hibás fixture); a `--trunk` flag valóban a top-level arg-parseren szerepel;
+és egy szöveges pin arra, hogy a `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md` saját
+`gate-pretriage-card.sh` hívása SOHA nem tartalmazza a `--trunk` szót. Teljes
+`gate-pretriage*` suite (3 fájl, 121 teszt, 117+4) PASS. `npx tsc --noEmit`: tiszta.
+`lint-ratchet.sh --show`: 422 lelet, alapvonal tart, 0 új. A két érintett shell-selftest
+(`gate-pretriage-attribution.selftest.sh` 16/16, `card-build-route.selftest.sh` 70/70) is zöld.
+
+**Ki döntött:** MikroB (msg 20826, Cybersec NO-GO 33120 alapján) -- "I do NOT accept that residual",
+az opcionális docs-only elfogadást a kötelező kódjavításra emelte. backend3 végezte.
+
+**Hivatkozás:** kártya a42d27e1, Cybersec NO-GO 33120 (6a8a7b848-on), MikroB msg 20826,
+`store/gate-pretriage-card.sh`, `src/__tests__/gate-pretriage-card.test.ts`,
+`seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`.
