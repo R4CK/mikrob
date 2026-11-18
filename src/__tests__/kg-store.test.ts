@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import {
   migrate, openKgDb, rebuild, upsertNode, upsertEdge, setNodeStatus, getNode, KgSecretError,
   KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState, sanitizeKgText,
+  findKgLocalSecretShape, redactKgLocalPii, kgLocalSecretShapeCounts, findKgLocalKvSecret,
 } from '../kg/store.js'
 
 const dirs: string[] = []
@@ -138,6 +139,261 @@ describe('kg store CRUD', () => {
     ).toThrow(KgSecretError)
     expect(db.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
     db.close()
+  })
+
+  // Card 03dff487 (Cybersec MEDIUM-2 on 4e9ad774/81593084): KG-local extra secret/PII shapes,
+  // one row per shape (positive reject/redact + a placeholder/no-context negative), built from
+  // parts so this file itself does not trip the repo's own secret-write guard.
+  describe('KG-local secret/PII shapes (card 03dff487)', () => {
+    it('rejects a password= assignment with a real-length value, but not a placeholder', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      const real = 'password' + '=' + 'Sw0rd' + 'Fish1!'
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:pw1', type: 'solution', project: 'marveen', title: 'fix',
+          body: `config line: ${real}`, source_ref: 'kanban_comments:10', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      const placeholder = 'password=changeme'
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:pw2', type: 'solution', project: 'marveen', title: 'fix',
+          body: `config line: ${placeholder}`, source_ref: 'kanban_comments:11', extractor: 'manual',
+        }),
+      ).not.toThrow()
+      expect(getNode(db, 'sol:pw2')?.body).toContain('changeme')
+      db.close()
+    })
+
+    it('rejects an unprefixed *_API_KEY= assignment with a real-length value, but not a placeholder', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      const real = 'STRIPE' + '_API_KEY' + '=' + 'abcd1234' + 'EFGH5678'
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:ak1', type: 'solution', project: 'marveen', title: 'fix',
+          body: `config line: ${real}`, source_ref: 'kanban_comments:12', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      const placeholder = 'SOME_API_KEY=xxxxxxxx'
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:ak2', type: 'solution', project: 'marveen', title: 'fix',
+          body: `config line: ${placeholder}`, source_ref: 'kanban_comments:13', extractor: 'manual',
+        }),
+      ).not.toThrow()
+      db.close()
+    })
+
+    it('rejects a bare 64-hex string only with a key-ish word nearby; without it, report-only (not rejected)', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      const hex64 = 'a1b2c3d4'.repeat(8)
+      expect(hex64).toHaveLength(64)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:hex1', type: 'solution', project: 'marveen', title: 'fix',
+          body: `api key: ${hex64}`, source_ref: 'kanban_comments:14', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:hex2', type: 'solution', project: 'marveen', title: 'fix',
+          body: `commit sha: ${hex64}`, source_ref: 'kanban_comments:15', extractor: 'manual',
+        }),
+      ).not.toThrow()
+      expect(getNode(db, 'sol:hex2')?.body).toContain(hex64)
+      db.close()
+    })
+
+    it('rejects a base64 blob only with a key-ish word nearby; without it, report-only (not rejected)', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      const blob = 'Q'.repeat(44)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:b641', type: 'solution', project: 'marveen', title: 'fix',
+          body: `secret value: ${blob}`, source_ref: 'kanban_comments:16', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:b642', type: 'solution', project: 'marveen', title: 'fix',
+          body: `encoded payload: ${blob}`, source_ref: 'kanban_comments:17', extractor: 'manual',
+        }),
+      ).not.toThrow()
+      expect(getNode(db, 'sol:b642')?.body).toContain(blob)
+      db.close()
+    })
+
+    it('redacts an email address instead of rejecting the node', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      upsertNode(db, {
+        id: 'sol:email1', type: 'solution', project: 'marveen', title: 'fix',
+        body: 'contact someone@example.com for details', source_ref: 'kanban_comments:18',
+        extractor: 'manual',
+      })
+      const row = getNode(db, 'sol:email1')
+      expect(row?.body).toContain('[redacted:email]')
+      expect(row?.body).not.toContain('someone@example.com')
+      db.close()
+    })
+
+    it('redacts a Hungarian phone number instead of rejecting the node', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      upsertNode(db, {
+        id: 'sol:phone1', type: 'solution', project: 'marveen', title: 'fix',
+        body: 'call +36201234567 for details', source_ref: 'kanban_comments:19',
+        extractor: 'manual',
+      })
+      const row = getNode(db, 'sol:phone1')
+      expect(row?.body).toContain('[redacted:phone]')
+      expect(row?.body).not.toContain('+36201234567')
+      db.close()
+    })
+
+    it('findKgLocalSecretShape/redactKgLocalPii/kgLocalSecretShapeCounts agree on the same inputs', () => {
+      const hex64 = 'a1b2c3d4'.repeat(8)
+      expect(findKgLocalSecretShape(`api key: ${hex64}`)).toBe('bare 64-hex (key context)')
+      expect(findKgLocalSecretShape(`commit sha: ${hex64}`)).toBeNull()
+      expect(redactKgLocalPii('mail me at a@b.com or call 06201234567')).toBe(
+        'mail me at [redacted:email] or call [redacted:phone]',
+      )
+      const counts = kgLocalSecretShapeCounts(`commit sha: ${hex64}, mail a@b.com`)
+      expect(counts['bare-64-hex']).toBe(1)
+      expect(counts.email).toBe(1)
+    })
+  })
+
+  // Cybersec NO-GO 33019 (delta on card 03dff487, Gate-SHA bc68b1b6f): F1 (ReDoS), F2 (redaction-
+  // before-check ordering), F3 (common spellings missed). Each row below reproduces the exact
+  // probe case from the NO-GO comment.
+  describe('Cybersec NO-GO 33019 delta (F1/F2/F3)', () => {
+    // F1: the email regex was O(n^2) on adversarial input, running on the full uncapped text
+    // before any length cap, inside the KG write transaction. 200 KB "a." must now finish well
+    // under the NO-GO's own measured numbers (8.3s at 100 KB, 33s at 200 KB pre-fix).
+    it('F1: a 200 KB adversarial "a." field no longer causes a multi-second scan (ReDoS budget)', () => {
+      const adversarial = 'a.'.repeat(100_000) // 200 KB
+      const start = Date.now()
+      expect(() => redactKgLocalPii(adversarial)).not.toThrow()
+      expect(Date.now() - start).toBeLessThan(1000)
+    })
+
+    // F2: PII redaction ran BEFORE the secret checks, so a phone-shaped digit run inside a
+    // 64-hex/base64 secret split the hex/base64 run around the redaction and dodged the
+    // contextual check entirely. Both of the NO-GO's exact probe inputs must now be rejected.
+    it('F2: a 64-hex secret is still rejected even when it contains a phone-shaped digit run', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      // 64-hex with "b06123456789c" embedded in the middle (NO-GO Input A).
+      const hex64 = ('a1b2c3d4'.repeat(4) + 'b06123456789c' + 'a1b2c3d4'.repeat(3)).slice(0, 64)
+      expect(hex64).toHaveLength(64)
+      // Context word "key" (not "api key"/"secret", which the F3 kv-secret regex now ALSO
+      // matches on its own) keeps this test isolated to the F2 contextual-check path only.
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:f2-hex', type: 'solution', project: 'marveen', title: 'fix',
+          body: `key: ${hex64}`, source_ref: 'kanban_comments:20', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      db.close()
+    })
+
+    it('F2: a base64 blob secret is still rejected even when it contains a phone-shaped digit run', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      // 44-char base64-looking blob with "x06123456789y" embedded (NO-GO Input B).
+      const blob = ('Q'.repeat(15) + 'x06123456789y' + 'Q'.repeat(16)).slice(0, 44)
+      expect(blob).toHaveLength(44)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:f2-b64', type: 'solution', project: 'marveen', title: 'fix',
+          body: `api key: ${blob}`, source_ref: 'kanban_comments:21', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      db.close()
+    })
+
+    // F3: every spelling Cybersec probed as ACCEPTED (missed) by the pre-fix gate must now be
+    // rejected; the previously-caught controls must stay caught; the placeholder exemptions must
+    // still pass.
+    it('F3: common kv-secret spellings the NO-GO found missing are now rejected', () => {
+      const cases = [
+        'API_KEY=abcd1234efgh5678',
+        'DB_PASSWORD=Sup3rS3cretValue',
+        '{"password": "hunter2hunter2"}',
+        '{"api_key": "abcd1234efgh5678ijkl"}',
+        'password = "my long pass phrase 1234"',
+      ]
+      for (const line of cases) {
+        const db = new Database(':memory:')
+        migrate(db)
+        expect(() =>
+          upsertNode(db, {
+            id: 'sol:f3', type: 'solution', project: 'marveen', title: 'fix',
+            body: `config: ${line}`, source_ref: 'kanban_comments:22', extractor: 'manual',
+          }),
+          line,
+        ).toThrow(KgSecretError)
+        db.close()
+      }
+    })
+
+    it('F3: JWT_SECRET=/SIGNING_KEY= with an underscore before the context word are now caught', () => {
+      const hex64 = 'a1b2c3d4'.repeat(8)
+      const blob = 'Q'.repeat(44)
+      expect(findKgLocalSecretShape(`JWT_SECRET=${hex64}`)).not.toBeNull()
+      expect(findKgLocalSecretShape(`SIGNING_KEY=${blob}`)).not.toBeNull()
+      // Context word AFTER the value must also be seen (40-before/20-after window).
+      const hex64b = 'b2c3d4a1'.repeat(8)
+      expect(findKgLocalSecretShape(`${hex64b} is the token`)).not.toBeNull()
+    })
+
+    it('F3: previously-caught controls still get caught, and placeholder exemptions still pass', () => {
+      const hex64 = 'a1b2c3d4'.repeat(8)
+      expect(findKgLocalSecretShape('password=hunter2hunter2')).not.toBeNull()
+      expect(findKgLocalSecretShape('SERVICE_API_KEY=abcd1234efgh5678')).not.toBeNull()
+      expect(findKgLocalSecretShape(`the secret: ${hex64}`)).not.toBeNull()
+      expect(findKgLocalSecretShape(`token ${hex64}`)).not.toBeNull()
+      expect(findKgLocalSecretShape('password=<hunter2hunter2>')).toBeNull()
+      expect(findKgLocalSecretShape('password=${hunter2hunter2}')).toBeNull()
+    })
+
+    // F4 (round 2 on this delta, Cybersec NO-GO 33019): the F3 fix's unanchored optional
+    // `[A-Za-z0-9]*[_ -]` prefix retried from every start position on a long alphanumeric run
+    // with no separator in it -- same O(n^2) class as F1. 200KB/100KB alnum runs must now finish
+    // well under the NO-GO's own measured numbers (35.2s/8.9s pre-fix), and the 7 F3 spellings
+    // plus the SERVICE_API_KEY control must still be caught without the dropped prefix.
+    it('F4: a 200 KB plain alphanumeric run no longer causes a multi-second KV-regex scan (ReDoS budget)', () => {
+      const adversarial = 'a'.repeat(200_000)
+      const start = Date.now()
+      expect(() => findKgLocalKvSecret(adversarial)).not.toThrow()
+      expect(Date.now() - start).toBeLessThan(1000)
+    })
+
+    it('F4: a 100 KB mixed alnum run ("ab1" repeated) also stays fast', () => {
+      const adversarial = 'ab1'.repeat(100_000)
+      const start = Date.now()
+      expect(() => findKgLocalKvSecret(adversarial)).not.toThrow()
+      expect(Date.now() - start).toBeLessThan(1000)
+    })
+
+    it('F4: dropping the separator prefix does not reopen any F3 spelling or the SERVICE_API_KEY control', () => {
+      const cases = [
+        'API_KEY=abcd1234efgh5678',
+        'DB_PASSWORD=Sup3rS3cretValue',
+        '{"password": "hunter2hunter2"}',
+        '{"api_key": "abcd1234efgh5678ijkl"}',
+        'password = "my long pass phrase 1234"',
+        'SERVICE_API_KEY=abcd1234efgh5678',
+      ]
+      for (const line of cases) {
+        expect(findKgLocalKvSecret(line), line).not.toBeNull()
+      }
+    })
   })
 
   // Cybersec GO 28465 I1 (INFO, on 861e426ba): sanitizeKgText is NOT strictly idempotent in one
