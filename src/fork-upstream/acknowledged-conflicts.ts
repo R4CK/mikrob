@@ -3710,7 +3710,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'nothing in the diff is code is withdrawn.',
   'src/web/agent-bundle.ts':
     'KEEP FORK FOR NOW, real gap flagged for a follow-up card -- this fork\'s isReservedSenderId ' +
-    '(system-directive-id.ts) blocks naming an agent "system" or "system-directive" (the message-' +
+    '(system-directive-id.ts) blocks naming an agent "system" or the SYSTEM_DIRECTIVE_SENDER id (the message-' +
     'impersonation guard from card b46a4b7e; upstream has no equivalent check at all for the ' +
     'system-directive channel, since that channel does not exist upstream). Upstream\'s competing ' +
     'check, RESERVED_AGENT_IDS (= FIXED_RESERVED_AGENT_IDS from sanitize.ts, [\'system\', ' +
