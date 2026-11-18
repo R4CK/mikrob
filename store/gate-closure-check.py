@@ -1217,34 +1217,41 @@ def main():
             #   - EVERY clone reachable: a timeout on any of them is UNRESOLVED (the same
             #     fail-closed-to-UNRESOLVED convention `check()` already uses elsewhere in this
             #     file for "cannot check"); every one genuinely answering "absent" is FABRICATED.
+            # CYBERED C1 condition 2 (card 06334c7d NO-GO 32965): two refinements over the first
+            # cut. (a) A reachable clone that ANSWERS "exists" settles the question on its own --
+            # it must not be outranked by a DIFFERENT, unreachable configured clone, which says
+            # nothing either way. (b) A clone path that exists on disk but is not a usable repo
+            # (empty mountpoint, corrupt object store, dubious-ownership refusal) must count as
+            # "unreachable", not "absent" -- `git cat-file -e <missing>` and `git -C <non-repo>
+            # cat-file ...` both exit 128, so rc alone cannot distinguish "answered no" from
+            # "could not answer"; _cat_file_commit_status now checks repo validity first.
             clone_paths = [p for _n, p, _r in _CLONES]
-            reachable_paths = [p for p in clone_paths if os.path.isdir(p)]
-            if not reachable_paths:
+            statuses = [_cat_file_commit_status(p, check_sha) for p in clone_paths]
+            reachable_statuses = [s for s in statuses if s != "unreachable"]
+            if not reachable_statuses:
                 covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
                 if not covered:
                     result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
-            else:
-                statuses = [_cat_file_commit_status(p, check_sha) for p in reachable_paths]
-                if any(s == "timeout" for s in statuses):
-                    result = "UNRESOLVED|%s|%s|a git call timed out while checking whether this " \
-                        "commit exists (--card-id/--db FABRICATED check)" % (check_sha, check_sha)
-                elif len(reachable_paths) < len(clone_paths):
-                    result = "UNRESOLVED|%s|%s|not found in the %d reachable clone(s), but %d " \
-                        "configured clone(s) could not be reached -- cannot confirm it does not " \
-                        "exist there" % (check_sha, check_sha, len(reachable_paths),
-                                          len(clone_paths) - len(reachable_paths))
-                elif all(s == "absent" for s in statuses):
-                    # LOW-2 (CYBERSEC on the same GO): name the limitation, not just the verdict --
-                    # this only means "not found in the configured clones", never "proven to never
-                    # have existed anywhere" (an unreachable or unconfigured repo would say so).
-                    result = "FABRICATED|%s|does not exist as a commit object in any of the %d " \
-                        "configured clones searched (%s) -- advisory only, not proof it was never " \
-                        "a real commit anywhere" % (
-                            check_sha, len(_CLONES), ", ".join(nm for nm, _p, _r in _CLONES))
-                else:
-                    covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
-                    if not covered:
-                        result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+            elif any(s == "timeout" for s in reachable_statuses):
+                result = "UNRESOLVED|%s|%s|a git call timed out while checking whether this " \
+                    "commit exists (--card-id/--db FABRICATED check)" % (check_sha, check_sha)
+            elif any(s == "exists" for s in reachable_statuses):
+                covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
+                if not covered:
+                    result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+            elif len(reachable_statuses) < len(clone_paths):
+                result = "UNRESOLVED|%s|%s|not found in the %d reachable clone(s), but %d " \
+                    "configured clone(s) could not be reached -- cannot confirm it does not " \
+                    "exist there" % (check_sha, check_sha, len(reachable_statuses),
+                                      len(clone_paths) - len(reachable_statuses))
+            elif all(s == "absent" for s in reachable_statuses):
+                # LOW-2 (CYBERSEC on the same GO): name the limitation, not just the verdict --
+                # this only means "not found in the configured clones", never "proven to never
+                # have existed anywhere" (an unreachable or unconfigured repo would say so).
+                result = "FABRICATED|%s|does not exist as a commit object in any of the %d " \
+                    "configured clones searched (%s) -- advisory only, not proof it was never " \
+                    "a real commit anywhere" % (
+                        check_sha, len(_CLONES), ", ".join(nm for nm, _p, _r in _CLONES))
 
     print(result)
 
@@ -1260,6 +1267,19 @@ def _cat_file_commit_status(repo, sha):
     unaffected.
     """
     if not os.path.isdir(repo):
+        return "unreachable"
+    # CYBERED C1 condition 2b (card 06334c7d NO-GO 32965): a path that exists but is not a
+    # usable repo (empty mountpoint, corrupt object store, dubious-ownership refusal) must read
+    # as "unreachable", not "absent" -- git exits 128 for a missing clone object just the same
+    # as it does for a missing object in a real repo, so rc alone cannot separate the two.
+    try:
+        gd = subprocess.run(("git", "-C", repo, "rev-parse", "--git-dir"),
+                             capture_output=True, text=True, timeout=_GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except (OSError, subprocess.SubprocessError):
+        return "unreachable"
+    if gd.returncode != 0:
         return "unreachable"
     try:
         p = subprocess.run(("git", "-C", repo, "cat-file", "-e", sha + "^{commit}"),

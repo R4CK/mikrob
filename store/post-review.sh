@@ -57,23 +57,31 @@ AGENT_WORKTREE_SCRIPT="${AGENT_WORKTREE_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0
 # agent-checkpoint.sh call (e.g. a stuck git/API call inside it) used to stall the whole
 # REVIEW -> waiting move behind it. Fail-open unchanged: a timeout is treated exactly like any
 # other agent-checkpoint.sh failure below, not a new barrier.
+# C3 (card 06334c7d NO-GO 32965, LOW-1 only half met): plain `timeout N` only bounds a KILLABLE
+# hang -- a checkpoint script that traps/ignores SIGTERM (or exits itself but leaves a
+# TERM-ignoring background child holding the command-substitution pipe's write end open) kept
+# this call blocked long past N. `-k 2` arms a second, SIGKILL timer 2s after the SIGTERM, and
+# the output is captured via a temp file instead of a `$(...)` pipe, so a lingering child that
+# only holds the pipe open (without itself being reachable by the process-group signal) cannot
+# keep this call waiting on a read that will never see EOF.
 POST_REVIEW_CHECKPOINT_TIMEOUT_S="${POST_REVIEW_CHECKPOINT_TIMEOUT_S:-10}"
 record_review_checkpoint() {
   local card="$1" actor="$2"
   [ -x "$AGENT_CHECKPOINT_SCRIPT" ] || return 0
-  local ckpt_out ckpt_sha wt_path head_sha
-  ckpt_out="$(timeout "$POST_REVIEW_CHECKPOINT_TIMEOUT_S" "$AGENT_CHECKPOINT_SCRIPT" "$actor" "$card" 2>/dev/null)" || {
-    echo "post-review: checkpoint not recorded for $actor on $card (agent-checkpoint.sh failed or timed out after ${POST_REVIEW_CHECKPOINT_TIMEOUT_S}s, likely no worktree) -- REVIEW unaffected." >&2
-    return 0
-  }
-  ckpt_sha="$(printf '%s' "$ckpt_out" | awk '{print $2}')"
-  [ -n "$ckpt_sha" ] || return 0
+  local wt_path head_sha ckpt_outfile ckpt_out ckpt_sha
   # Card 06334c7d (CYBERSEC LOW-3 / CYBERED C2, same finding): prefer the CARD worktree
   # ($ROOT/card/<cardId>, card-mode builders keep one there, 77 exist) over the agent's default
   # agent/<actor>/work worktree -- a card-mode REVIEW's actual Gate-SHA lives on the card branch,
   # not on the agent's shared work branch, and the old code always read the latter. `--path` only
   # computes and prints the expected path (no worktree creation, no side effect either way), so
   # trying it first and falling back is safe even when no card worktree exists yet.
+  #
+  # C1 (CYBERED NO-GO 32965, condition 1): resolved ONCE, here, and the SAME path is passed
+  # explicitly to agent-checkpoint.sh (its 3rd arg) so the snapshot it builds and the head_sha
+  # recorded below always come from the identical tree -- previously agent-checkpoint.sh
+  # re-resolved its own worktree internally (always the agent's DEFAULT one), so a card-mode
+  # REVIEW's recorded head_sha (from the card worktree) and the actual checkpointed tree (from
+  # the default worktree) could silently diverge, making the row claim coverage it did not have.
   wt_path="$(bash "$AGENT_WORKTREE_SCRIPT" "$actor" --card "$card" --path 2>/dev/null)"
   if [ -z "$wt_path" ] || [ ! -e "$wt_path/.git" ]; then
     wt_path="$(bash "$AGENT_WORKTREE_SCRIPT" "$actor" --path 2>/dev/null)"
@@ -81,6 +89,17 @@ record_review_checkpoint() {
   [ -n "$wt_path" ] && [ -e "$wt_path/.git" ] || return 0
   head_sha="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)"
   [ -n "$head_sha" ] || return 0
+
+  ckpt_outfile="$(mktemp)"
+  trap 'rm -f "$ckpt_outfile"' RETURN
+  if ! timeout -k 2 "$POST_REVIEW_CHECKPOINT_TIMEOUT_S" \
+      "$AGENT_CHECKPOINT_SCRIPT" "$actor" "$card" "$wt_path" >"$ckpt_outfile" 2>/dev/null; then
+    echo "post-review: checkpoint not recorded for $actor on $card (agent-checkpoint.sh failed or timed out after ${POST_REVIEW_CHECKPOINT_TIMEOUT_S}s, likely no worktree) -- REVIEW unaffected." >&2
+    return 0
+  fi
+  ckpt_out="$(cat "$ckpt_outfile")"
+  ckpt_sha="$(printf '%s' "$ckpt_out" | awk '{print $2}')"
+  [ -n "$ckpt_sha" ] || return 0
   local ckpt_payload
   ckpt_payload="$(python3 -c '
 import json, sys

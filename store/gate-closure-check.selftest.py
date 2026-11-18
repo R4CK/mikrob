@@ -1630,6 +1630,111 @@ if not _ok_i:
     failures.append(("C1: git timeout on a reachable clone -> UNRESOLVED (end to end)",
                       "UNRESOLVED", _i_p.stdout.strip()))
 
+# Case J (card 06334c7d, CYBERED C1 condition 2a): the sha genuinely EXISTS in the one
+# reachable clone, the OTHER configured clone is missing entirely -> ordinary CHECKPOINT_FAIL
+# (the clone we COULD reach already answered "yes"), not UNRESOLVED -- the old
+# `elif len(reachable_paths) < len(clone_paths)` branch fired on partial reachability alone,
+# without checking whether a reachable clone had already found it.
+n += 1
+_real_sha_j = subprocess.run(
+    ["git", "-C", _fab_repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+).stdout.strip()
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [("cardJ", _OTHER_SHA)])  # a checkpoint exists (wrong card_id key
+# would be fail-open/covered); this forces covered=False so CHECKPOINT_FAIL is actually
+# reachable, the same setup Case F uses.
+_j_env = dict(os.environ)
+_j_env["MARVEEN_MAIN"] = _fab_repo
+_j_env["CLEANCORE_MAIN"] = "/nonexistent-cleancore-j"
+_review_j = "REVIEW\nGate-SHA: %s" % _real_sha_j
+_v_j = "QA PASS\nGate-SHA: %s" % _real_sha_j
+_s_j = "CYBERSEC GO\nGate-SHA: %s" % _real_sha_j
+_j_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardJ", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_j},
+                                   {"author": "qa", "content": _v_j},
+                                   {"author": "cybersec", "content": _s_j}]}),
+    capture_output=True, text=True, env=_j_env,
+)
+_j_verdict = _j_p.stdout.strip().split("|", 1)[0]
+_ok_j = _j_verdict == "CHECKPOINT_FAIL"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_j else "FAIL", "CKPT_FAIL", _j_verdict,
+    "C1: sha EXISTS in the one reachable clone, other clone missing -> CHECKPOINT_FAIL, not UNRESOLVED"))
+if not _ok_j:
+    failures.append(("C1: reachable clone already found it, other missing -> CHECKPOINT_FAIL",
+                      "CHECKPOINT_FAIL", _j_p.stdout.strip()))
+
+# Case K: same as J but with the reachable/missing clones swapped (MARVEEN missing, CLEANCORE
+# holds the sha) -- proves the fix is not order-dependent.
+n += 1
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [("cardK", _OTHER_SHA)])
+_k_env = dict(os.environ)
+_k_env["MARVEEN_MAIN"] = "/nonexistent-marveen-k"
+_k_env["CLEANCORE_MAIN"] = _fab_repo
+_k_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardK", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_j},
+                                   {"author": "qa", "content": _v_j},
+                                   {"author": "cybersec", "content": _s_j}]}),
+    capture_output=True, text=True, env=_k_env,
+)
+_k_verdict = _k_p.stdout.strip().split("|", 1)[0]
+_ok_k = _k_verdict == "CHECKPOINT_FAIL"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_k else "FAIL", "CKPT_FAIL", _k_verdict,
+    "C1: same as J with clones swapped -- order-independent"))
+if not _ok_k:
+    failures.append(("C1: reachable/missing clones swapped -> CHECKPOINT_FAIL",
+                      "CHECKPOINT_FAIL", _k_p.stdout.strip()))
+
+# Case L (card 06334c7d, CYBERED C1 condition 2b): one clone path EXISTS on disk but is NOT a
+# usable git repo (an empty, non-initialized directory stands in for a corrupt clone or a
+# dubious-ownership refusal); the OTHER configured clone is a real, reachable repo that does
+# NOT hold the sha -> UNRESOLVED (the non-repo path could not be checked, not proven absent),
+# never FABRICATED.
+n += 1
+_notarepo_dir = tempfile.mkdtemp(prefix="gcc-notarepo-")
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [])
+_l_env = dict(os.environ)
+_l_env["MARVEEN_MAIN"] = _fab_repo2
+_l_env["CLEANCORE_MAIN"] = _notarepo_dir
+_review_l = "REVIEW\nGate-SHA: %s" % _fab_sha
+_v_l = "QA PASS\nGate-SHA: %s" % _fab_sha
+_s_l = "CYBERSEC GO\nGate-SHA: %s" % _fab_sha
+_l_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardL", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_l},
+                                   {"author": "qa", "content": _v_l},
+                                   {"author": "cybersec", "content": _s_l}]}),
+    capture_output=True, text=True, env=_l_env,
+)
+shutil.rmtree(_notarepo_dir, ignore_errors=True)
+_l_verdict = _l_p.stdout.strip().split("|", 1)[0]
+_ok_l = _l_verdict == "UNRESOLVED"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_l else "FAIL", "UNRESOLVED", _l_verdict,
+    "C1: a reachable-but-not-a-repo clone path is 'unreachable', not 'absent' -> UNRESOLVED"))
+if not _ok_l:
+    failures.append(("C1: non-repo clone path counts as unreachable -> UNRESOLVED",
+                      "UNRESOLVED", _l_p.stdout.strip()))
+
+# Case M (card 06334c7d, CYBERED condition 4 second half): the FABRICATED verdict text must
+# name the configured clones searched and say the limitation out loud (LOW-2's own wording),
+# not just return the bare verdict word -- pins the message, not only the keyword.
+n += 1
+_m_verdict_line = _fab_p.stdout.strip()
+_ok_m = ("advisory only" in _m_verdict_line and "marveen" in _m_verdict_line
+         and "cleancore" in _m_verdict_line)
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_m else "FAIL", "wording", "wording",
+    "LOW-2: FABRICATED text names the clones searched + 'advisory only' limitation"))
+if not _ok_m:
+    failures.append(("LOW-2: FABRICATED wording names clones + advisory-only limitation",
+                      "clone names + 'advisory only' present", _m_verdict_line))
+
 shutil.rmtree(_fab_repo, ignore_errors=True)
 shutil.rmtree(_fab_repo2, ignore_errors=True)
 shutil.rmtree(_slow_git_dir, ignore_errors=True)

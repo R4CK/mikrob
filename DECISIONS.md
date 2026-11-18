@@ -27437,3 +27437,64 @@ visszaallitva byte-azonos. `store/gate-closure-check.selftest.py`: 181/181.
 
 **Ki dontott:** backend (sajat kartya 06334c7d delta, QA fix-direction 32965). Gate: QA (delta
 re-gate).
+
+(Pontositas: a fenti sor QA fix-direction 32965-ot idez; a pontos komment-ID a QA FAIL 32962 volt,
+a Cybered NO-GO maskent, 32965-os ID-vel, UTANA erkezett -- lasd a kovetkezo bejegyzest.)
+
+## 2026-11-18: F1.3 delta #2 -- CYBERED NO-GO 32965, 4 feltetel (card 06334c7d)
+
+A Cybered NO-GO (32965) negy feltetelt sorolt fel, a QA FAIL 32962-vel parhuzamosan erkezve:
+
+- **Feltetel 1 (MEDIUM, blokkolo, C2):** a checkpoint-sor HAMIS allitast rogzitett. A head_sha a
+  KARTYA worktree-bol jott, de a pillanatfelvetel maga tovabbra is az ugynok DEFAULT worktree-jet
+  fenykepezte (`agent-checkpoint.sh` sajat belso `agent-worktree-marveen.sh <agent> --path`
+  felbontasa, --card nelkul). A sor igy "X checkpointolva" -t allitott, mikozben a megorzott fa
+  egy FUGGETLEN tartalom volt. Javitas: `agent-checkpoint.sh` uj, opcionalis 3. pozicionalis
+  argumentuma (`worktreePath`) -- ha megadva, azt hasznalja KOZVETLENUL, nincs ujra-felbontas.
+  `post-review.sh` MOST egyszer oldja fel a worktree-t (kartya-elobb, alapertelmezett-utobb,
+  mar meglevo logika), es UGYANAZT az utat adja at explicit 3. argumentumkent
+  `agent-checkpoint.sh`-nak is, ES a head_sha-t is ebbol olvassa -- a ket ertek STRUKTURALISAN
+  nem tud tobbe elterni, mert egy valtozobol szarmazik mindket felhasznalasa. Uj valodi-szkriptes
+  teszt (`post-review.selftest.sh`): a FAKE checkpoint-szkript helyett a VALODI
+  `agent-checkpoint.sh` fut, ket KULONBOZO (card vs default) worktree-vel, es a teszt a
+  checkpoint-commit SZULOJET es FAJAT olvassa vissza git-bol, nem csak a verdiktet -- igazolva,
+  hogy a szulo a kartya HEAD-je es a fa a kartya tartalmat hordozza (nem a default worktree-et).
+
+- **Feltetel 2 (LOW-MEDIUM, C1 fele-zart):** a harom-agu logika ket hibat is hordozott. (a) Ha egy
+  elerheto klon MAR MEGTALALTA a shat, de egy MASIK konfiguralt klon nem volt elerheto, a kod
+  tovabbra is UNRESOLVED-et adott (a "nem minden klon elerheto" feltetel elsobbseget kapott az
+  "egy elerheto klon mar valaszolt IGEN"-nel szemben), noha a megtalalas onmagaban eldonti a
+  kerdest. (b) Egy olyan klon-ut, ami letezik a diszken, de NEM hasznalhato git repo (ures
+  mountpoint, serult object-store), "absent"-kent szamitott, mert a `git cat-file -e` 128-as
+  kodot ad MIND a hianyzo objektumra, MIND egy nem-repo-ra -- rc egyedul nem kulonbozteti meg a
+  kettot. Javitas: `_cat_file_commit_status()` MOST eloszor `git -C <repo> rev-parse --git-dir`-t
+  futtat, es ha az sikertelen, "unreachable"-t ad "absent" helyett; a hivo oldalon a sorrend
+  MOST: timeout -> VAN "exists" (akkor a megtalalas donti el, fuggetlenul a tobbi klon
+  elerhetosegetol) -> partial reachability -> all absent -> FABRICATED. Harom uj CLI-szintu teszt
+  (Case J/K/L): sha letezik az egyetlen elerheto klonban, a masik HIANYZIK (mindket iranyban) ->
+  CHECKPOINT_FAIL, nem UNRESOLVED; egy letezo-de-nem-repo ut + egy valodi, de a shat nem
+  tartalmazo klon -> UNRESOLVED, nem FABRICATED.
+
+- **Feltetel 3 (LOW-MEDIUM, LOW-1 fele-zart):** a sima `timeout N` csak egy OLTHATO hangot
+  korlatoz -- egy SIGTERM-et figyelmen kivul hagyo checkpoint-szkript 20 masodpercig futott egy 3
+  masodperces korlat mellett is (Cybered merese). Javitas: `timeout -k 2 N` (2 masodperces
+  kegyelmi ido, utana SIGKILL a teljes folyamat-csoportnak), es a kimenet egy temp-fajlba megy
+  (`mktemp`), nem `$(...)` pipe-ba -- egy csak a pipe irovegel maradt gyerekfolyamat sem tudja
+  tobbe blokkolni az olvasast. Uj teszt: egy `trap '' TERM` stub, 1 masodperces korlat mellett is
+  ~3 masodperc alatt megszakad (10 helyett).
+
+- **Feltetel 4 (LOW):** a ket tulelo mutans lefedve. A CLI-szintu timeout->UNRESOLVED eset mar az
+  elozo delta-ban (Case I) megvan; most hozzajott egy kulon ellenorzes, hogy a FABRICATED szoveg
+  tenylegesen tartalmazza a keresett klonok neveit ES az "advisory only" korlatozast (Case M),
+  nem csak a verdikt-szot.
+
+Mutacio-bizonyitott mindegyik: a megfelelo javitas visszaallitasaval (3. argumentum elhagyasa,
+`-k 2` torlese, a `reachable_statuses`/`_cat_file_commit_status` logika visszaallitasa az eredeti
+allapotra) PONTOSAN a hozza tartozo uj teszt(ek) mentek pirosra, minden mas zold maradt, majd
+visszaallitva byte-azonos. `store/post-review.selftest.sh`: 43/43 (volt 37/37).
+`store/gate-closure-check.selftest.py`: 185/185 (volt 181/181). `store/agent-checkpoint.sh
+--selftest`: valtozatlanul zold.
+
+**Ki dontott:** backend (sajat kartya 06334c7d delta #2, Cybered NO-GO fix-direction 32965). Gate:
+Cybered (delta re-gate), QA FAIL 32962 is lezarva ugyanezzel a munkaval (a C1 CLI-timeout resze
+mar a #1 deltaban kesz volt).
