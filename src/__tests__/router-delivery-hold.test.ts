@@ -6,11 +6,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockGetPendingMessages = vi.fn()
-const mockMarkDelivered = vi.fn(() => true)
-const mockMarkFailed = vi.fn(() => true)
-const mockSendPrompt = vi.fn(async () => 'sent' as const)
-const mockMarkDone = vi.fn(() => true)
-const mockCreateMessage = vi.fn(() => ({ id: 999 }))
+const mockMarkDelivered = vi.fn((..._a: unknown[]) => { void _a; return true })
+const mockMarkFailed = vi.fn((..._a: unknown[]) => { void _a; return true })
+const mockSendPrompt = vi.fn(async (..._a: unknown[]) => { void _a; return 'sent' as const })
+const mockMarkDone = vi.fn((..._a: unknown[]) => { void _a; return true })
+const mockCreateMessage = vi.fn((..._a: unknown[]) => { void _a; return { id: 999 } })
 // The reconnect pre-pass's per-agent query; empty unless a test opts in.
 let perAgentPending: (agent: string) => unknown[] = () => []
 // Which tmux sessions exist; all of them unless a test says otherwise.
@@ -238,7 +238,7 @@ describe('message router: delivery hold around a context-guard restart', () => {
   })
 
   it('a failing probe means "deliver", asked once per recipient per tick, not once per row', async () => {
-    const probe = vi.fn(() => { throw new Error('probe broke') })
+    const probe = vi.fn((..._a: unknown[]) => { void _a; throw new Error('probe broke') })
     setDeliveryHoldProbe(probe)
     queue([row(61, 'dex'), row(62, 'dex'), row(63, 'dex'), row(64, 'ana')])
 

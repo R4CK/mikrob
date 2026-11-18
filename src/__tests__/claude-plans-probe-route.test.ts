@@ -61,7 +61,7 @@ const HEADERS_OK = {
   'anthropic-ratelimit-unified-7d-status': 'allowed_warning',
 }
 
-const fetchMock = vi.fn(async () => new Response('{}', { status: 200, headers: HEADERS_OK }))
+const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => { void _url; void _init; return new Response('{}', { status: 200, headers: HEADERS_OK }) })
 
 describe('POST /api/claude-plans/:id/probe', () => {
   beforeEach(() => {
