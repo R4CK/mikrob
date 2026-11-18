@@ -27697,3 +27697,30 @@ worse (443 finding, baseline tartja magát).
 Cybersec (WhiteHat) + Cybered (RedHat) -- a kötegben trust-boundary fájl van (auth.ts, approvals.ts,
 claude-plans-login.ts, settings.ts érintett az upstream commitokban). `99b0ff860`
 `git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
+
+
+## 2026-11-18 -- 51c68eeb: Koteg 26 delta -- RedHat C2 feloldva, a /stop es /resume valodi feloldasi utat mutat
+
+RedHat GO (komment 33311, Gate-SHA 4aeb9055694351cfcf15fe2397c9c9d9f7b3ef1b) ket landolasi
+feltetelt nevezett meg a mar kesz Koteg 26 batch mellett. C1 (nincs dashboard-felhasznalo
+az elesben) Peti/MikroB dontese, nem erre a kartyara tartozik. C2: a dashboard piros savjaban
+levo "Feloldas" gomb nulla bekotessel all a web/app.js-ben (grep: fleet, freeze, unfreeze,
+FleetFreeze mind 0), es az /stop + /resume Telegram-valaszok, valamint docs/fleet-freeze.md
+pont erre a nem-mukodo gombra kuldtek a gazdat -- telefonrol olvasva ez rosszabb, mint a
+csend.
+
+Javitas (nem a gomb portolasa -- az kulon kartyat/scope-ot igenyelne, lasd a REVIEW-ban
+nevesitve): a harom szoveg (src/web/builtin-commands.ts /stop + /resume valasz, docs/
+fleet-freeze.md) mind a ket tenylegesen mukodo utat nevezi meg: (1) store/fleet-freeze.json
+torlese a gepen (a fleet-freeze.ts modul sajat, mar dokumentalt "CLI-free way out"-ja),
+(2) hitelesitett POST /api/fleet/unfreeze hivas, ha mar van dashboard-bejelentkezes (C1
+felteve). fleet-freeze.test.ts: 37/37 zold, semelyik teszt nem fuggott a regi szoveg
+pontos szavaitol (grep-pelve ellenorizve).
+
+**Mertek:** npx tsc --noEmit ezen a shan: clean. npx vitest run fleet-freeze.test.ts: 37/37
+zold. Teljes fleet-test.sh ezen a delta-shan nincs lefuttatva kulon (bash-only + 2 TS/doc
+fajl, nem kodfuggo valtozas -- a QA/WhiteHat/RedHat delta-gate dontse, kell-e teljes kor).
+
+**Ki dontott:** backend3 vegezte. Gate-SHA: c13d691d05e7b2af03889a4214199a4480a56594. Delta scope: src/web/builtin-commands.ts
+(2 reply-string csere), docs/fleet-freeze.md (1 szakasz javitasa) -- a Koteg 26 batch tobbi
+resze (merge + korabbi fixupok) valtozatlan, lasd a korabbi 51c68eeb bejegyzeseket.
