@@ -1588,6 +1588,48 @@ print("%s %-9s <- %-9s %s" % (
 if not _ok_h:
     failures.append(("C1: git timeout classification", "timeout", _h_status))
 
+# Case I (card 06334c7d, QA FAIL 32965 on the CYBERED C1 fix): Case H only proves
+# _cat_file_commit_status() itself returns "timeout" -- it never drives main()'s end-to-end
+# FABRICATED-check path to confirm a timeout on a reachable clone actually surfaces as the
+# UNRESOLVED verdict. BOTH configured clones exist on disk here (unlike Case G), so the
+# partial-reachability branch cannot fire first -- only the timeout branch can explain the
+# result.
+n += 1
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [])
+_real_git = shutil.which("git")
+_slowdir2 = tempfile.mkdtemp(prefix="gcc-slowgit2-")
+_slow_git2_path = os.path.join(_slowdir2, "git")
+with open(_slow_git2_path, "w") as _f:
+    _f.write("#!/usr/bin/env bash\n"
+             "if [ \"$2\" = \"%s\" ]; then sleep 5; fi\n"
+             "exec %s \"$@\"\n" % (_fab_repo, _real_git))
+os.chmod(_slow_git2_path, 0o755)
+_i_env = dict(os.environ)
+_i_env["MARVEEN_MAIN"] = _fab_repo
+_i_env["CLEANCORE_MAIN"] = _fab_repo2
+_i_env["PATH"] = _slowdir2 + os.pathsep + _i_env.get("PATH", "")
+_i_env["GATE_CLOSURE_GIT_TIMEOUT"] = "0.3"
+_review_i = "REVIEW\nGate-SHA: %s" % _fab_sha
+_v_i = "QA PASS\nGate-SHA: %s" % _fab_sha
+_s_i = "CYBERSEC GO\nGate-SHA: %s" % _fab_sha
+_i_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardI", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_i},
+                                   {"author": "qa", "content": _v_i},
+                                   {"author": "cybersec", "content": _s_i}]}),
+    capture_output=True, text=True, env=_i_env,
+)
+shutil.rmtree(_slowdir2, ignore_errors=True)
+_i_verdict = _i_p.stdout.strip().split("|", 1)[0]
+_ok_i = _i_verdict == "UNRESOLVED"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_i else "FAIL", "UNRESOLVED", _i_verdict,
+    "C1: BOTH clones reachable, one git call hangs -> end-to-end UNRESOLVED, not FABRICATED"))
+if not _ok_i:
+    failures.append(("C1: git timeout on a reachable clone -> UNRESOLVED (end to end)",
+                      "UNRESOLVED", _i_p.stdout.strip()))
+
 shutil.rmtree(_fab_repo, ignore_errors=True)
 shutil.rmtree(_fab_repo2, ignore_errors=True)
 shutil.rmtree(_slow_git_dir, ignore_errors=True)

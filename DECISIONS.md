@@ -27419,3 +27419,21 @@ mentek pirosra, a tobbi zold maradt, majd visszaallitva byte-azonos). `store/pos
 
 **Ki dontott:** backend (sajat kartya 06334c7d, phase 295ae6a3 follow-up). Gate: QA + Cybersec +
 Cybered (a kartya sajat kijelolese).
+
+## 2026-11-18: F1.3 delta -- hianyzo integraciós teszt a C1 timeout-agra (QA FAIL 32965, card 06334c7d)
+
+A C1 timeout-javitas logikaja helyes volt, de a kartya sajat Kesz-ha blokkja harom tesztesetet igert
+("git timeout stub -> UNRESOLVED" is koztuk), es ebbol csak ketto volt tenylegesen vegig-ellenorizve
+`check()`-en keresztul -- a harmadik (`Case H`) csak a `_cat_file_commit_status()` segitofuggvenyt
+tesztelte kulon, nem a teljes CLI-utat. Egy mutans, ami kikapcsolta a `any(s == "timeout")` agat,
+igy 180/180 zolden atment volna.
+
+Uj `Case I`: KETTO valodi, elerheto klon-repo a diszken (a partial-reachability ag nem sulhet el
+elsonek), egy `git` stub a PATH elejen, ami csak az EGYIK klon cat-file hivasara aluszik `sleep 5`-ot
+(`GATE_CLOSURE_GIT_TIMEOUT=0.3`), a masikra a valodi gitre exec-el. A teljes CLI-t futtatva (`main()`
+subprocess-ben) a verdikt UNRESOLVED. Mutacio-bizonyitott: a timeout-ag `if False and ...`-ra
+cserelve pontosan ez az uj eset (es csak ez) ment pirosra (`AGREE` lett `UNRESOLVED` helyett),
+visszaallitva byte-azonos. `store/gate-closure-check.selftest.py`: 181/181.
+
+**Ki dontott:** backend (sajat kartya 06334c7d delta, QA fix-direction 32965). Gate: QA (delta
+re-gate).
