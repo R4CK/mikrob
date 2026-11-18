@@ -100,6 +100,65 @@ else
   ok "dead-pid worktree was not skipped for a live-pid reason"
 fi
 
+# --- C1 (card 6c41214a, same flaw/fix as 89e8cb90) -- a git that dies SILENTLY (non-zero rc,
+# empty output -- the rc 1/127/137 generic-error/missing-binary/OOM-kill shape) must be treated
+# as "found a problem" (SKIP), not as "nothing to report" (clean, proceed to remove). Shim `git`
+# to fail exactly the `status` subcommand with the given rc and no output, everything else
+# passes through to the real git so the worktree setup around it still works. Exported with
+# `export -f` so the function is inherited by the `bash "$RUN"` subprocess below.
+GIT_FAIL_CMD=""
+GIT_FAIL_RC=0
+git() {
+  if [ -n "$GIT_FAIL_CMD" ]; then
+    local a
+    for a in "$@"; do
+      [ "$a" = "$GIT_FAIL_CMD" ] && { echo -n ""; return "$GIT_FAIL_RC"; }
+    done
+  fi
+  command git "$@"
+}
+export -f git
+
+run_c1_case() {
+  local rc="$1" label="$2"
+  # Trailing digits of the dir name are read as the owning PID (sweep_throwaway_worktrees'
+  # live-pid guard, card 7f3e8ac6) -- must be a CONFIRMED-DEAD pid, not $$ (this script, alive),
+  # or the live-pid guard skips the entry before the git-status guard under test ever runs.
+  local c1_dead_pid
+  ( exit 0 ) &
+  c1_dead_pid=$!
+  wait "$c1_dead_pid" 2>/dev/null
+  local dir="/home/neon/marveen-land-c1${label}-${c1_dead_pid}"
+  rm -rf "$dir"
+  command git -C "$MARVEEN_MAIN_TEST" worktree add -q --detach "$dir" HEAD
+  PAST=$(( $(date +%s) - 130 * 60 ))
+  touch -d "@$PAST" "$dir"
+
+  GIT_FAIL_CMD=status GIT_FAIL_RC="$rc"
+  local out
+  out="$(MARVEEN_MAIN="$MARVEEN_MAIN_TEST" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+         WSL_CLEANUP_MIN_AGE_MIN=120 GIT_FAIL_CMD="$GIT_FAIL_CMD" GIT_FAIL_RC="$GIT_FAIL_RC" \
+         bash "$RUN" --dry-run 2>&1)"
+  GIT_FAIL_CMD=""; GIT_FAIL_RC=0
+
+  if echo "$out" | grep -qF "SKIP (git rc=$rc): $dir"; then
+    ok "C1$label: SKIPs when git status dies silently with rc=$rc"
+  else
+    bad "C1$label: expected 'SKIP (git rc=$rc)' for a git status that dies silently (rc=$rc)" "$out"
+  fi
+  if echo "$out" | grep -qF "worktree remove --force '$dir'"; then
+    bad "C1$label: worktree was (dry-run) removed despite git status failing silently (rc=$rc)" "$out"
+  else
+    ok "C1$label: worktree was not passed to 'git worktree remove' (rc=$rc)"
+  fi
+
+  command git -C "$MARVEEN_MAIN_TEST" worktree remove --force "$dir" 2>/dev/null
+}
+
+run_c1_case 137 a
+run_c1_case 127 b
+run_c1_case 1 c
+
 echo
 echo "wsl-cleanup.selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
