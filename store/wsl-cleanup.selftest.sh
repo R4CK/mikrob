@@ -261,6 +261,7 @@ run_c1_case() {
 run_c1_case 137 a
 run_c1_case 127 b
 run_c1_case 1 c
+unset -f git
 
 # --- section 3: /tmp sweep (card c9c1f159, Cybered GO 32928 on 6c41214a) --------------------
 # Sandboxed via WSL_CLEANUP_TMP_DIR, never touches the real /tmp.
@@ -756,6 +757,66 @@ for REALPATH_RC in 1 127 137 139; do
 done
 
 rm -rf "$TMP4"
+
+# NON-INTEGER GUARD, age knobs (card e2425f05, scope extension comment 33299, Cybered GO 33297 on
+# 8cb1e168): MIN_AGE_MIN (throwaway worktrees) and TMP_MIN_AGE_MIN (/tmp sweep) had no integer
+# guard at all. Pin both the fallback log line and that the real sweep still runs correctly
+# (falls back to the documented default, does not crash or silently sweep nothing).
+TMP7="$(mktemp -d -p /tmp)"
+PAST7=$(( $(date +%s) - 3000 * 60 ))
+mkdir -p "$TMP7/old-entry"
+touch -d "@$PAST7" "$TMP7/old-entry"
+TMPKNOB_OUT="$(mktemp)"
+(
+  WSL_CLEANUP_TMP_DIR="$TMP7"
+  WSL_CLEANUP_TMP_MIN_AGE_MIN="not-a-number"
+  export WSL_CLEANUP_TMP_DIR WSL_CLEANUP_TMP_MIN_AGE_MIN
+  # shellcheck source=./wsl-cleanup.sh
+  source "$RUN"
+  sweep_tmp
+) >"$TMPKNOB_OUT" 2>&1
+if [ -e "$TMP7/old-entry" ]; then
+  bad "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number': old entry was NOT swept, fallback did not apply" "$(cat "$TMPKNOB_OUT")"
+else
+  ok "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number': falls back to the default (2880), old entry still swept"
+fi
+if grep -qF "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number' is not a positive integer -- falling back to the documented default (2880)" "$TMPKNOB_OUT"; then
+  ok "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number' prints the documented fallback log line"
+else
+  bad "WSL_CLEANUP_TMP_MIN_AGE_MIN='not-a-number' fallback log line missing" "$(cat "$TMPKNOB_OUT")"
+fi
+rm -rf "$TMP7" "$TMPKNOB_OUT" 2>/dev/null
+
+# MIN_AGE_MIN (throwaway worktrees): full-script invocation, same convention and the same REAL
+# literal path prefix (/home/neon/marveen-land-<name>-<pid>) the live header-block tests above
+# use -- the sweep pattern is a hardcoded absolute prefix, not derived from MARVEEN_MAIN, so a
+# worktree under any other path would never be a candidate regardless of the guard. A dead-PID,
+# old, clean worktree must still be reported as a dry-run removal candidate when
+# WSL_CLEANUP_MIN_AGE_MIN is invalid (falls back to 120).
+MARVEEN_MAIN_KNOB="$(mktemp -d)"
+git init -q "$MARVEEN_MAIN_KNOB"
+git -C "$MARVEEN_MAIN_KNOB" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+( exit 0 ) &
+KNOB_DEAD_PID=$!
+wait "$KNOB_DEAD_PID" 2>/dev/null
+KNOB_WT="/home/neon/marveen-land-selftestknob-${KNOB_DEAD_PID}"
+rm -rf "$KNOB_WT"
+git -C "$MARVEEN_MAIN_KNOB" worktree add -q --detach "$KNOB_WT" HEAD
+touch -d '-3000 minutes' "$KNOB_WT"
+MINAGE_KNOB_OUT="$(MARVEEN_MAIN="$MARVEEN_MAIN_KNOB" CLEANCORE_MAIN="$CLEANCORE_MAIN_TEST" \
+                   WSL_CLEANUP_MIN_AGE_MIN=lots bash "$RUN" --dry-run 2>&1)"
+if printf '%s\n' "$MINAGE_KNOB_OUT" | grep -qF "worktree remove --force $KNOB_WT"; then
+  ok "WSL_CLEANUP_MIN_AGE_MIN='lots': falls back to the default (120), old throwaway worktree still a dry-run candidate"
+else
+  bad "WSL_CLEANUP_MIN_AGE_MIN='lots': old throwaway worktree was NOT reported, fallback did not apply" "$MINAGE_KNOB_OUT"
+fi
+if printf '%s\n' "$MINAGE_KNOB_OUT" | grep -qF "WSL_CLEANUP_MIN_AGE_MIN='lots' is not a positive integer -- falling back to the documented default (120)"; then
+  ok "WSL_CLEANUP_MIN_AGE_MIN='lots' prints the documented fallback log line"
+else
+  bad "WSL_CLEANUP_MIN_AGE_MIN='lots' fallback log line missing" "$MINAGE_KNOB_OUT"
+fi
+git -C "$MARVEEN_MAIN_KNOB" worktree remove --force "$KNOB_WT" 2>/dev/null
+rm -rf "$MARVEEN_MAIN_KNOB" "$KNOB_WT" 2>/dev/null
 
 echo
 echo "wsl-cleanup.selftest: $pass passed, $fail failed"

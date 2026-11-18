@@ -38,6 +38,22 @@ DRY_RUN=0
 
 MIN_AGE_MIN="${WSL_CLEANUP_MIN_AGE_MIN:-120}"       # throwaway worktrees: 2h
 TMP_MIN_AGE_MIN="${WSL_CLEANUP_TMP_MIN_AGE_MIN:-2880}" # /tmp entries: 48h
+# INFO (card e2425f05, scope extension comment 33299, Cybered GO 33297 on 8cb1e168): neither knob
+# had an integer guard -- both feed a `[ "$age_min" -ge "$MIN_AGE_MIN" ]`/find -mmin comparison, so
+# a non-numeric value throws a shell "integer expression expected" error (MIN_AGE_MIN) or makes
+# find silently treat the whole expression as invalid (TMP_MIN_AGE_MIN), either way an unclear
+# failure far from the actual bad input. Same guard shape MikroB specified (^[1-9][0-9]{0,8}$, no
+# bare 0): 0 is itself dangerous here, not just a weird edge case -- it means "every entry is old
+# enough", the exact same all-fresh-considered-old bug class WSL_HOME_CLEANUP_MIN_AGE_HOURS=0 was
+# fixed for on card 8cb1e168, so 0 is refused like any other invalid value, not accepted.
+if ! [[ "$MIN_AGE_MIN" =~ ^[1-9][0-9]{0,8}$ ]]; then
+  echo "wsl-cleanup: WSL_CLEANUP_MIN_AGE_MIN='$MIN_AGE_MIN' is not a positive integer -- falling back to the documented default (120)" >&2
+  MIN_AGE_MIN=120
+fi
+if ! [[ "$TMP_MIN_AGE_MIN" =~ ^[1-9][0-9]{0,8}$ ]]; then
+  echo "wsl-cleanup: WSL_CLEANUP_TMP_MIN_AGE_MIN='$TMP_MIN_AGE_MIN' is not a positive integer -- falling back to the documented default (2880)" >&2
+  TMP_MIN_AGE_MIN=2880
+fi
 
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 # env-overridable (default unchanged) so a selftest can point the /tmp sweep at a throwaway
