@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { runPreCheck } from '../web/schedule-runner.js'
+import { runPreCheck, runPreCheckAsync } from '../web/schedule-runner.js'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 
 // Tests for the heartbeat pre-check mechanism (#234).
@@ -38,16 +38,19 @@ function withScript(content: string, ext = '.sh'): { dir: string; file: string }
 }
 
 describe('runPreCheck', () => {
-  it('returns skip=false when task has no preCheck configured', async () => {
-    const result = await runPreCheck(makeTask())
+  // runPreCheck is synchronous (re-exported from schedule-runner-sync-precheck.ts); these used
+  // to `await` it, which is a no-op on a non-Promise value and what @typescript-eslint/await-
+  // thenable now flags (card 7c79badc delta, upstream batch).
+  it('returns skip=false when task has no preCheck configured', () => {
+    const result = runPreCheck(makeTask())
     expect(result.skip).toBe(false)
     expect(result.prefix).toBeUndefined()
   })
 
-  it('returns skip=true when script outputs SKIP', async () => {
+  it('returns skip=true when script outputs SKIP', () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\necho "SKIP"\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = runPreCheck(makeTask({ preCheck: file }))
       expect(result.skip).toBe(true)
       expect(result.prefix).toBeUndefined()
     } finally {
@@ -55,10 +58,10 @@ describe('runPreCheck', () => {
     }
   })
 
-  it('returns skip=false with prefix when script outputs actionable text', async () => {
+  it('returns skip=false with prefix when script outputs actionable text', () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\necho "3 actionable cards found"\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = runPreCheck(makeTask({ preCheck: file }))
       expect(result.skip).toBe(false)
       expect(result.prefix).toBe('3 actionable cards found')
     } finally {
@@ -66,10 +69,10 @@ describe('runPreCheck', () => {
     }
   })
 
-  it('returns skip=false with no prefix when script outputs nothing', async () => {
+  it('returns skip=false with no prefix when script outputs nothing', () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\nexit 0\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = runPreCheck(makeTask({ preCheck: file }))
       expect(result.skip).toBe(false)
       expect(result.prefix).toBeUndefined()
     } finally {
@@ -77,26 +80,27 @@ describe('runPreCheck', () => {
     }
   })
 
-  it('fails open (skip=false) when script exits non-zero', async () => {
+  it('fails open (skip=false) when script exits non-zero', () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\necho "error"\nexit 1\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = runPreCheck(makeTask({ preCheck: file }))
       expect(result.skip).toBe(false)
     } finally {
       rmSync(dir, { recursive: true })
     }
   })
 
-  it('fails open (skip=false) when script path does not exist', async () => {
-    const result = await runPreCheck(makeTask({ preCheck: '/nonexistent/path/pre-check.sh' }))
+  it('fails open (skip=false) when script path does not exist', () => {
+    const result = runPreCheck(makeTask({ preCheck: '/nonexistent/path/pre-check.sh' }))
     expect(result.skip).toBe(false)
   })
 })
 
-describe('runPreCheck timeout-vs-kill classification (card 68bfbff2)', () => {
-  // Cybered's probes (card 92e2bb1b comment #8673), reproduced against the REAL runPreCheck and
-  // its real 10s execFile timeout -- not a re-implementation, and not mocked timers, because the
-  // bug is specifically about real OS signal/exec semantics that a mock would paper over.
+describe('runPreCheckAsync timeout-vs-kill classification (card 68bfbff2)', () => {
+  // Cybered's probes (card 92e2bb1b comment #8673), reproduced against the REAL runPreCheckAsync
+  // (the process-group-aware async implementation, not the sync reference form) and its real 10s
+  // execFile timeout -- not a re-implementation, and not mocked timers, because the bug is
+  // specifically about real OS signal/exec semantics that a mock would paper over.
   // [honest-skip] (a script that just echoes SKIP and exits) is already covered above by
   // 'returns skip=true when script outputs SKIP'; not duplicated here.
 
@@ -110,7 +114,7 @@ describe('runPreCheck timeout-vs-kill classification (card 68bfbff2)', () => {
       "#!/usr/bin/env bash\ntrap 'exit 0' TERM\necho SKIP\nsleep 30 & wait\n",
     )
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = await runPreCheckAsync(makeTask({ preCheck: file }))
       // Pre-fix: err=null because the trap exited 0 -> stdout trims to 'SKIP' -> skip=true.
       // The script was KILLED mid-flight; it never reached an honest decision, so the scheduled
       // task (a detection control: gate-reconciler, stuck-card-monitor, quota-limit-monitor) must
@@ -124,7 +128,7 @@ describe('runPreCheck timeout-vs-kill classification (card 68bfbff2)', () => {
   it('[no-trap] a pre-check killed by the timeout with no trap still fails open (unaffected by the fix)', async () => {
     const { file, dir } = withScript('#!/usr/bin/env bash\necho SKIP\nsleep 30\n')
     try {
-      const result = await runPreCheck(makeTask({ preCheck: file }))
+      const result = await runPreCheckAsync(makeTask({ preCheck: file }))
       expect(result.skip).toBe(false)
     } finally {
       rmSync(dir, { recursive: true })
@@ -142,7 +146,7 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     const cronLoopIdx = SRC.indexOf('for (const task of tasks)')
     expect(cronLoopIdx).toBeGreaterThan(0)
     const cronLoop = SRC.slice(cronLoopIdx)
-    const preCheckIdx = cronLoop.indexOf('await runPreCheck(task)')
+    const preCheckIdx = cronLoop.indexOf('await runPreCheckAsync(task)')
     const fireIdx = cronLoop.indexOf('attemptFireTask(current,')
     expect(preCheckIdx).toBeGreaterThan(0)
     expect(preCheckIdx).toBeLessThan(fireIdx)

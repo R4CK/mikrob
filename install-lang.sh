@@ -192,6 +192,8 @@ _t() {
     en:macos.bumblebee_installed) echo "  Bumblebee threat-intel catalogs installed" ;;
     hu:macos.bumblebee_installed) echo "  Bumblebee threat-intel katalógusok telepítve" ;;
     # ── Ollama ────────────────────────────────────────────────────────
+    # (upstream's auto-install block NOT adopted, see install-macos.sh -- these i18n keys
+    # would have no caller, so they are not added either)
     # ── Whisper / ffmpeg ──────────────────────────────────────────────
     en:macos.whisper_installing) echo "  Installing Whisper (speech-to-text)..." ;;
     hu:macos.whisper_installing) echo "  Whisper telepítés (beszéd -> szöveg leirat)..." ;;

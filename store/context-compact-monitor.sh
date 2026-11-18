@@ -66,13 +66,17 @@ TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-backend backend2 fullstack cybered cyber
 # this host's transcripts. If dist cannot be read we fall back to its own conservative default
 # (200k) rather than to the largest window -- under-estimating compacts too eagerly, which is loud
 # and cheap; over-estimating is silent and ends in the ceiling.
-COMPACT_PCT="${COMPACT_PCT:-75}"
+COMPACT_PCT="${COMPACT_PCT:-50}"
+# card 3bad1678 (Token 6, 2026-11-15): dropped from 75 to 50 -- compacting is itself cheaper than
+# the context volume it carries, so trigger sooner.
+#
 # HARD CAP (Peti 13835, card 5dd48e5d): token-usage measured 2026-11-14 (card 2ad5ba6c) showed each
 # compact re-reading 240-420k tokens on the 1M-window models -- the PERCENTAGE rule above (introduced
-# for the opposite reason: a fixed count is wrong for every model) still let a 1M-window model run all
-# the way to 750k before triggering, which is itself an expensive re-read. The threshold is now
-# whichever is SMALLER: COMPACT_PCT% of the window, or COMPACT_MAX_TOKENS. On a small-window model
-# the percentage still wins (never raised by the cap); only a large-window model is pulled down.
+# for the opposite reason: a fixed count is wrong for every model) still let a 1M-window model run
+# to 500k (now, at 50%; it was 750k at the old 75%) before triggering, which is itself an expensive
+# re-read. The threshold is now whichever is SMALLER: COMPACT_PCT% of the window, or
+# COMPACT_MAX_TOKENS. On a small-window model the percentage still wins (never raised by the cap);
+# only a large-window model is pulled down.
 # Validated like every other env-tunable numeric knob in this repo (card b1813ab2, the "00"/"000"
 # lesson): non-digit, empty, OR all-zero falls back to the default, never silently reads as "no cap".
 CONTEXT_GUARD_JS="${CONTEXT_GUARD_JS:-$ROOT/dist/context-guard.js}"
@@ -387,12 +391,13 @@ if [ "${1:-}" = "--selftest" ]; then
   s "an unknown model is conservative"   "200000"  "$(window_tokens_for_model claude-future-9)"
   s "an unreadable dist falls back small" "200000" \
     "$(CONTEXT_GUARD_JS=/nonexistent/context-guard.js window_tokens_for_model claude-opus-5)"
-  # Card 5dd48e5d (Peti 13835): 75% of a 1M window (750k) is now CAPPED at COMPACT_MAX_TOKENS
-  # (200k default) -- the percentage rule alone let a 1M-window model run to 750k before
-  # triggering, and each compact re-reads 240-420k tokens (card 2ad5ba6c), measured, not assumed.
-  s "75% of a 1M window, capped at 200k"  "200000" "$(threshold_tokens_for_model claude-opus-5)"
-  s "75% of a 200k window (below the cap, untouched)" "150000" "$(threshold_tokens_for_model claude-sonnet-5)"
-  s "the percentage is overridable, still capped" "200000" "$(COMPACT_PCT=50 threshold_tokens_for_model claude-opus-5)"
+  # Card 5dd48e5d (Peti 13835): a percentage of a 1M window is CAPPED at COMPACT_MAX_TOKENS
+  # (200k default) -- the percentage rule alone let a 1M-window model run to 500k (card 3bad1678
+  # dropped the base 75% -> 50% after this card's own numbers landed) before triggering, and each
+  # compact re-reads 240-420k tokens (card 2ad5ba6c), measured, not assumed.
+  s "50% of a 1M window, capped at 200k"  "200000" "$(threshold_tokens_for_model claude-opus-5)"
+  s "50% of a 200k window (below the cap, untouched)" "100000" "$(threshold_tokens_for_model claude-sonnet-5)"
+  s "the percentage is overridable, still capped" "200000" "$(COMPACT_PCT=75 threshold_tokens_for_model claude-opus-5)"
   s "a smaller percentage can still land under the cap" "100000" "$(COMPACT_PCT=10 threshold_tokens_for_model claude-opus-5)"
   s "the cap itself is overridable" "300000" \
     "$(COMPACT_MAX_TOKENS=300000 threshold_tokens_for_model claude-opus-5)"
@@ -412,7 +417,7 @@ if [ "${1:-}" = "--selftest" ]; then
   s "a negative value falls back to 200000, not an always-uncapped -1" "200000" \
     "$(COMPACT_MAX_TOKENS=-1 threshold_tokens_for_model claude-opus-5)"
   # 31332 fix: a 10+ digit cap must not silently disable capping (it would always lose to
-  # pct_threshold, so the opus-5 75%-of-1M case below would wrongly read 750000, not 200000).
+  # pct_threshold, so the opus-5 50%-of-1M case above would wrongly read 500000, not 200000).
   s "a 10-digit cap falls back to 200000, does not disable the cap" "200000" \
     "$(COMPACT_MAX_TOKENS=9999999999 threshold_tokens_for_model claude-opus-5)"
   s "a 9-digit cap is still honoured (boundary, not rejected)" "999999999" \

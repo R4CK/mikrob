@@ -131,6 +131,31 @@ check_eq("check_secret_leak: Bearer in a comment is allowed (documentation examp
     mod.check_secret_leak('// Authorization: Bearer zzzfixture-bearer-token-xxxxxxxxxxxxxxxx'), None)
 check_eq("check_secret_leak: clean code returns None",
     mod.check_secret_leak('export function foo() { return 42; }'), None)
+check_eq("check_secret_leak: bare 'bearer' key=value (no Authorization prefix) is rejected (R1, card 3eddc9a8)",
+    mod.check_secret_leak('bearer: "zzzfixture-bare-bearer-value-xxxxxxxxxxxxxxxx"'), "secret-shaped value in draft (key-name + long opaque string)")
+check_eq("check_secret_leak: bare 'bearer =' key=value (no Authorization prefix) is rejected (R1, card 3eddc9a8)",
+    mod.check_secret_leak('bearer = "zzzfixture-bare-bearer-value-xxxxxxxxxxxxxxxx"'), "secret-shaped value in draft (key-name + long opaque string)")
+
+# --- check() must actually CALL check_secret_leak, not just define it (R2, card 3eddc9a8) --------
+# This goes RED if the check_secret_leak() call is ever removed from check()'s body -- the
+# check_secret_leak tests above only pin the helper, not the entry point real callers use.
+draft_with_secret = """```ts
+import { describe, it, expect } from 'vitest'
+import { parseWindow } from './parseWindow'
+
+describe('parseWindow', () => {
+  const apiKey = "zzzfixture-not-a-real-key-value-xxxxxxxxxxxxxxxx"
+  it('returns the default window when no args are given', () => {
+    expect(parseWindow()).toEqual({ start: 0, end: 24 })
+  })
+})
+```"""
+reason = mod.check(draft_with_secret, task, "")
+check_eq(
+    "check(): an otherwise-valid draft containing a secret-shaped value is rejected via the secret-leak check",
+    reason is not None and "secret-shaped value" in reason,
+    True,
+)
 
 # --- builtins never require a repo lookup -------------------------------------------------
 draft_builtin = """```ts

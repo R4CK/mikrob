@@ -60,12 +60,16 @@ function runHealth(): { code: number; out: string } {
 }
 
 describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN banner (card 5298134d)', () => {
+  // card fa375169 (368395d4 pattern): every test here spawns a real bash child that in turn
+  // execs python3 inline to parse/sanitize the flag JSON -- cheap standalone (~40ms) but
+  // exceeding vitest's 5s default under CPU contention (fullstack land log, msg 20320). Each
+  // `it` below gets a 30_000ms timeout.
   it('no flag file: the note is simply absent, banner unaffected', () => {
     const { code, out } = runHealth()
     expect(code).toBe(2)
     expect(out).toContain('ollama: DOWN')
     expect(out).not.toContain('MASKED')
-  })
+  }, 30_000)
 
   it('a clean flag: the note is PRESENT with the recorded unit and reason (card 10c3fbeb must not regress)', () => {
     writeMaskFlag({ units: 'ollama.service', reason: 'dxgkrnl GPU-passthrough crash-loop', restore: 'systemctl --user start ollama' })
@@ -74,7 +78,7 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
     expect(out).toContain('ollama.service')
     expect(out).toContain('dxgkrnl GPU-passthrough crash-loop')
     expect(out).toContain('systemctl --user start ollama')
-  })
+  }, 30_000)
 
   it('a newline in reason cannot forge a second fake DOWN/banner line', () => {
     writeMaskFlag({
@@ -92,7 +96,7 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
     // stand as its OWN line: merged into the one real banner line, not a second one.
     expect(downLines).toHaveLength(1)
     expect(downLines[0]).toContain('evil')
-  })
+  }, 30_000)
 
   it('an ANSI escape in units/reason/restore is stripped entirely (the control byte, not the visible text around it)', () => {
     writeMaskFlag({ units: 'ollama.service', reason: 'boom\x1b[31mred\x1b[0m', restore: 'ok' })
@@ -101,7 +105,7 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
     // The ESC bytes (0x1B) are gone, so "[31m"/"[0m" can no longer function as an escape
     // sequence -- but as plain characters they are not redacted, just defanged.
     expect(out).toContain('boom[31mred[0m')
-  })
+  }, 30_000)
 
   it('a BIDI override character is stripped, not merely re-encoded', () => {
     // U+202E RIGHT-TO-LEFT OVERRIDE -- a Cf format char, not a Cc control char, so a naive
@@ -110,7 +114,7 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
     const { out } = runHealth()
     expect(out).not.toContain('‮')
     expect(out).toContain('beforeafter')
-  })
+  }, 30_000)
 
   it('a non-string field (list/number) is coerced and still length-capped, not an unbounded raw repr', () => {
     writeMaskFlag({ units: 'ollama.service', reason: Array.from({ length: 5000 }, () => 'x').join(''), restore: 123 })
@@ -120,21 +124,21 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
     // fixed banner text -- a generous bound well short of the 5000 chars supplied.
     const maskedLine = out.split('\n').find((l) => l.includes('MASKED')) ?? ''
     expect(maskedLine.length).toBeLessThan(500)
-  })
+  }, 30_000)
 
   it('an ANSI escape in the restore field ALONE is stripped (card dfb1f873 F1: restore sanitization was previously unpinned -- the other cases above only ever put the payload in reason)', () => {
     writeMaskFlag({ units: 'ollama.service', reason: 'ok', restore: 'boom\x1b[31mred\x1b[0m' })
     const { out } = runHealth()
     expect(out).not.toMatch(/\x1b/)
     expect(out).toContain('restore: boom[31mred[0m')
-  })
+  }, 30_000)
 
   it('a BIDI override in the restore field ALONE is stripped (F1)', () => {
     writeMaskFlag({ units: 'ollama.service', reason: 'ok', restore: 'before‮after' })
     const { out } = runHealth()
     expect(out).not.toContain('‮')
     expect(out).toContain('restore: beforeafter')
-  })
+  }, 30_000)
 
   it('a newline in the restore field ALONE cannot forge a second fake DOWN line (F1)', () => {
     writeMaskFlag({
@@ -147,14 +151,14 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
     const downLines = lines.filter((l) => l.includes('ollama: DOWN'))
     expect(downLines).toHaveLength(1)
     expect(downLines[0]).toContain('evil')
-  })
+  }, 30_000)
 
   it('an overlength restore field ALONE is length-capped (F1)', () => {
     writeMaskFlag({ units: 'ollama.service', reason: 'ok', restore: Array.from({ length: 5000 }, () => 'y').join('') })
     const { out } = runHealth()
     const maskedLine = out.split('\n').find((l) => l.includes('MASKED')) ?? ''
     expect(maskedLine.length).toBeLessThan(500)
-  })
+  }, 30_000)
 
   it('U+2028/U+2029 (line/paragraph separator) are stripped, not just U+000A (card dfb1f873 F2: Python str.splitlines() treats Zl/Zp as line breaks even though they are not "\\n", so a consumer using splitlines() instead of split("\\n") would still see a forged second line)', () => {
     const LS = String.fromCharCode(0x2028)
@@ -164,7 +168,7 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
     expect(out.includes(LS)).toBe(false)
     expect(out.includes(PS)).toBe(false)
     expect(out).toContain('beforeafterend')
-  })
+  }, 30_000)
 
   it('MUTATION: removing the sanitize call lets the ANSI escape and the forged line back through', () => {
     // Does not edit the shipped script -- runs a throwaway copy with the fix's three clean(...)
@@ -197,5 +201,5 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
     }
     const downLines = out.split('\n').filter((l) => l.includes('ollama: DOWN'))
     expect(downLines.length).toBeGreaterThan(1)
-  })
+  }, 30_000)
 })

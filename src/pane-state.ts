@@ -75,7 +75,26 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // scrollback still will not match; it needs the shift+tab hint or a `·`
 // separated idle action, which is UI chrome that prose does not carry.
 // `← for agents` is the FleetView tail on current builds; older tails kept.
-const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
+//
+// RedHat F2 (card 8e9828c9 NO-GO 31373): the shift+tab parenthetical and the
+// `·`-separated tail were mutually exclusive alternatives, so a real footer
+// carrying BOTH (`... on (shift+tab to cycle) · ctrl+t to hide tasks`) matched
+// neither and the row read as no-footer-at-all -- which, behind a spoofed
+// background-agent block, let rowCarriesLiveSignal reject that row as "no live
+// signal" and the cut discarded the real typing box along with the spoof.
+// The parenthetical is now optional before the `·` tail, not exclusive with it;
+// a bare `on` (both groups absent) still cannot match, same as before.
+//
+// F2b (same NO-GO): the `ctrl+t` tail action keyword is not always the last
+// token -- the footer can read `ctrl+t to hide tasks` (with ` to hide tasks`
+// after the keyword) when the tasks panel is visible. ROW_IDLE_FOOTER_ANCHORED_RX
+// requires `\s*$` after the matched portion so that prose containing `ctrl+t`
+// mid-sentence does not spuriously match; that anchor requires the IDLE_FOOTER_RX
+// match to reach the end of the line. Adding `(?: to hide tasks)?` after
+// `ctrl\+t` makes the match consume that known suffix, satisfying `\s*$` whether
+// the suffix is present or absent, while still rejecting prose endings like
+// `ctrl+t to jump` (not ` to hide tasks`).
+const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?:(?: \(shift\+tab to cycle\))(?: · [^\n]*?(?:ctrl\+t(?: to hide tasks)?|↓ to manage|← for agents))?| · [^\n]*?(?:ctrl\+t(?: to hide tasks)?|↓ to manage|← for agents))|\? for shortcuts/
 
 // tmux clips the footer to the pane width and marks the cut with `…`, so on a
 // narrow pane the required tail arrives as `← for agen…` and IDLE_FOOTER_RX
@@ -111,17 +130,56 @@ const FOOTER_SHELL_TAIL_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycl
  * non-empty line, which is where the live footer is drawn. A dialog replaces
  * the input box and footer, so its last line is the dialog's own hint, never
  * a clipped footer.
+ *
+ * RedHat class A (card 8e9828c9): the live footer is only ever drawn at the
+ * bottom of the pane, so the MOST RECENT matching line is the real one -- a
+ * forward findIndex locked onto the FIRST (oldest) match instead, which a
+ * footer-lead phrase quoted in scrollback, or echoed inside a background-agent
+ * block, sits above and so wins the race. Scan from the bottom, same pattern
+ * detectsThinkingBlockError already uses for its own footer search.
+ *
+ * RedHat F2 (card 8e9828c9 NO-GO 31373): "most recent wins" still lost to an
+ * earlier match when the TRUE last line used the shell-tail/clipped form --
+ * the backward IDLE_FOOTER_RX scan ran across the WHOLE pane first and could
+ * find an older (possibly spoofed) IDLE_FOOTER_RX line before the loop ever
+ * reached the true bottom, and the shell-tail/clipped check only ran as a
+ * fallback when NO IDLE_FOOTER_RX match existed anywhere. The true last
+ * non-empty line is checked FIRST now, against all three footer shapes --
+ * the real bottom always outranks anything above it, spoofed or not.
  */
 function idleFooterIndex(lines: string[]): number {
-  const full = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
-  if (full >= 0) return full
   let last = lines.length - 1
   while (last >= 0 && lines[last].trim() === '') last--
-  return last >= 0 && (FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last])) ? last : -1
+  if (last >= 0 && (IDLE_FOOTER_RX.test(lines[last]) || FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last]))) {
+    return last
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (IDLE_FOOTER_RX.test(lines[i])) return i
+  }
+  return -1
 }
 
 function hasIdleFooter(lines: string[]): boolean {
   return idleFooterIndex(lines) >= 0
+}
+
+// idleFooterAndNoDialogAfter solves the fixed-window dilemma for dialog detectors
+// (card 8e9828c9 round-2): a narrow window (BUSY_LIVE_REGION_LINES=12) missed a real
+// footer with 30 trailing banner lines; a wide window (DIALOG_FOOTER_SEARCH_LINES=40)
+// found the stale footer 16 lines from the live-end and produced a false negative.
+// No single fixed window handles both cases.
+//
+// Direction-aware semantics: `idleFooterIndex` locates the footer from the logical
+// position (last non-empty line first, then backward scan). If dialog content follows
+// the located footer in `lines`, the footer is STALE -- something happened AFTER the
+// idle state, so the pane is NOT idle; the dialog detector should proceed. If nothing
+// dialog-like follows the footer, the footer is CURRENT and the pane is idle; return
+// true to suppress the dialog detection.
+function idleFooterAndNoDialogAfter(lines: string[], dialogTest: (text: string) => boolean): boolean {
+  const footerIdx = idleFooterIndex(lines)
+  if (footerIdx < 0) return false
+  const afterFooter = lines.slice(footerIdx + 1).join('\n')
+  return !dialogTest(afterFooter)
 }
 
 // Positive busy signals. ANY match anywhere in the pane means the turn
@@ -284,6 +342,7 @@ const PASTE_REGION_FALLBACK_LINES = 8
 // destructive Ctrl-C + resend on a perfectly healthy session. Scoping to
 // the box (same discipline as BUSY_ESC_TO_INTERRUPT_RX / the footer checks)
 // confines the match to where a genuine parked stub actually lives.
+// typedTailEchoed() reads the same region, for the same reason.
 function pastePlaceholderRegion(pane: string): { where: PastePlaceholderWhere; text: string } {
   const lines = pane.split('\n')
   let bottomSep = -1
@@ -1298,6 +1357,23 @@ const HELD_PEER_MESSAGE_RX = /Held message from another session/
 
 export function detectsHeldPeerMessage(pane: string): boolean {
   if (!pane || !pane.trim()) return false
+  // RedHat class A (card 8e9828c9): cut a non-live background-agent block
+  // first, same as detectPaneState -- otherwise a spoofed footer-lead line
+  // inside an uncut block can sit below this title and win the idle-footer
+  // check further down, even though it is not the real, current footer.
+  //
+  // RedHat F1 (card 8e9828c9 NO-GO 31373): a spoofed `⏺ main` header sits
+  // ABOVE the real pane content by position, not only above a trailing block --
+  // splitBackgroundAgentBlock finds the LAST such header and treats everything
+  // below it (to the end of the pane) as "rows" to cut, which can be the real
+  // dialog itself. A dialog carries no live-elapsed/spinner signal
+  // (rowCarriesLiveSignal), so the cut discarded it outright. Do not cut when
+  // the dialog's own title is among the discarded rows -- that is the signal
+  // this detector exists to find, not noise to strip.
+  const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
+  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal) && !HELD_PEER_MESSAGE_RX.test(bgBlock.rows.join('\n'))) {
+    pane = bgBlock.above.join('\n')
+  }
   const lines = pane.split('\n')
   const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
@@ -1305,7 +1381,10 @@ export function detectsHeldPeerMessage(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  // F4/direction-aware idle-footer check: footer found AND no dialog content
+  // after it means the pane is currently idle; footer found but dialog AFTER
+  // it means the footer is stale and we should proceed with detection.
+  if (idleFooterAndNoDialogAfter(lines, (t) => HELD_PEER_MESSAGE_RX.test(t))) return false
   return HELD_PEER_MESSAGE_RX.test(pane)
 }
 
@@ -1368,6 +1447,26 @@ const PERMISSION_YES_RX = /(?:^|\n)\s*[\u276f>]?\s*1\.\s*Yes\b/
  */
 export function detectsPermissionDialog(pane: string): boolean {
   if (!pane || !pane.trim()) return false
+  // RedHat class A (card 8e9828c9): cut a non-live background-agent block
+  // first, same as detectPaneState -- otherwise a spoofed footer-lead line
+  // inside an uncut block can win the idle-footer check below even though a
+  // real permission dialog is open above/around it.
+  //
+  // RedHat F1 (card 8e9828c9 NO-GO 31373): a spoofed `⏺ main` header sits
+  // ABOVE the real pane content by position, not only above a trailing block --
+  // splitBackgroundAgentBlock finds the LAST such header and treats everything
+  // below it (to the end of the pane) as "rows" to cut, which can be the real
+  // dialog itself. A dialog carries no live-elapsed/spinner signal
+  // (rowCarriesLiveSignal), so the cut discarded it outright. Do not cut when
+  // the dialog's own markers are among the discarded rows -- that is the
+  // signal this detector exists to find, not noise to strip.
+  const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
+  const bgRowsText = bgBlock ? bgBlock.rows.join('\n') : ''
+  const bgRowsHaveDialog = PERMISSION_AMEND_RX.test(bgRowsText)
+    || (PERMISSION_QUESTION_RX.test(bgRowsText) && PERMISSION_YES_RX.test(bgRowsText))
+  if (bgBlock && !bgBlock.rows.some(rowCarriesLiveSignal) && !bgRowsHaveDialog) {
+    pane = bgBlock.above.join('\n')
+  }
   const lines = pane.split('\n')
   const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
   for (const rx of BUSY_INDICATORS) {
@@ -1375,7 +1474,10 @@ export function detectsPermissionDialog(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  // F4/direction-aware idle-footer check (replaces DIALOG_FOOTER_SEARCH_LINES):
+  // footer found AND no dialog content after it means the pane is currently
+  // idle; footer found but dialog AFTER it means the footer is stale.
+  if (idleFooterAndNoDialogAfter(lines, (t) => PERMISSION_AMEND_RX.test(t) || (PERMISSION_QUESTION_RX.test(t) && PERMISSION_YES_RX.test(t)))) return false
   return PERMISSION_AMEND_RX.test(footerRegion)
     || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
 }
@@ -1491,6 +1593,43 @@ export function detectsFeedbackOptOutPrompt(pane: string): boolean {
   if (!pane || !pane.trim()) return false
   const liveRegion = pane.split('\n').slice(-BUSY_LIVE_REGION_LINES).join('\n')
   return FEEDBACK_OPTOUT_RX.test(liveRegion)
+}
+
+export type FeedbackDismissPlan =
+  | { act: 'none' }
+  | { act: 'keys'; keys: Array<'C-u' | 'Down'> }
+  | { act: 'hold'; reason: 'input-occupied' | 'input-unreadable' }
+
+/**
+ * What the dismisser may type at a feedback-draft modal. NEVER A DIGIT. The card
+ * does not read a keypress: it watches the prompt INPUT VALUE and fires only when
+ * the input changes to exactly one digit, after a 400 ms debounce, ignoring a digit
+ * typed within 600 ms of the card appearing (measured in the shipped CLI). A digit
+ * that did not fire stays in the input, the next attempt makes it two digits, and a
+ * longer input never fires again, so every later attempt only appends (an agent
+ * sat not-ready behind a growing `❯ 0000`). And "2" sends the draft. The measured
+ * manual recipe is C-u, then Down: Down moves focus to the footer, which stops the
+ * band above the prompt from rendering.
+ * C-u clears only what is provably a digit-typing dismisser's leftover -- an empty
+ * or all-digit input -- and NEVER on the main session, whose box may hold an
+ * operator's reply; there even digits may be a numbered answer, so only an empty
+ * prompt gets its Down. Anything else gets no keystroke.
+ * Two captures: `pane`, the plain one the detector reads (the card's own text
+ * may be dim, which a ghost-stripped capture would drop), and `inputView`, the
+ * ghost-stripped one the input box is read from (otherwise an empty prompt
+ * showing an autosuggest reads as occupied and the card stays up).
+ */
+export function feedbackDraftDismissPlan(pane: string, inputView: string | null, isMainSession: boolean): FeedbackDismissPlan {
+  if (!detectsFeedbackDraftModal(pane)) return { act: 'none' }
+  const box = inputView == null ? null : liveInputBox(inputView)
+  if (box == null) return { act: 'hold', reason: 'input-unreadable' }
+  // Only a column-0 ❯ at the top of the box (blank rows allowed) is UI; an
+  // indented ❯ is typed text. Row edges only: a wrapped leftover still joins,
+  // a typed "2 2" does not.
+  const typed = box.replace(/^(?:[^\S\n]*\n)*❯/, '').split('\n').map((row) => row.trim()).join('')
+  if (typed === '') return { act: 'keys', keys: isMainSession ? ['Down'] : ['C-u', 'Down'] }
+  if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', 'Down'] }
+  return { act: 'hold', reason: 'input-occupied' }
 }
 
 export interface DetectPaneStateOptions {
@@ -2370,6 +2509,44 @@ export function overfullParkedInputTail(pane: string): string | null {
 export function submitLanded(prevSig: string, paneAfter: string | null): boolean {
   if (paneAfter == null) return false
   return stuckInputSignature(paneAfter) !== prevSig
+}
+
+// How many trailing characters of a typed prompt (whitespace removed) must be
+// visible before the submitting Enter goes out. Long enough to be specific to
+// this prompt, short enough to fit on the bottom rows of an overfull box.
+export const TYPED_ECHO_TAIL_CHARS = 24
+
+// Has the TUI ECHOED the end of what we just typed? True when the last
+// TYPED_ECHO_TAIL_CHARS non-whitespace characters of `typed` are visible IN THE
+// LIVE INPUT BOX (whitespace removed on both sides, so terminal wrap and the row
+// indent do not matter), or when a `[Pasted text #N]` placeholder sits there
+// (the TUI ingested the burst as a paste, which is also "read"). False on a null
+// capture.
+//
+// Both checks read the SAME region, pastePlaceholderRegion(): between the two
+// bottom-most box separators, or the last few lines when the box is taller than
+// the pane (overfull: the top separator scrolled off, the tail is at the
+// bottom). The whole pane would not do: a submitted prompt stays visible in the
+// transcript above the box, and many prompts end the same way every time (the
+// by-reference scheduled-task block, the batch trailer, a recurring task's own
+// text), so an earlier copy of the tail would pass for the echo of this one
+// while the box still shows only the head.
+//
+// Why: the pre-Enter settle wait reads two identical captures as "settled". A
+// TUI that has stopped reading its input looks exactly like that, so the Enter
+// and the retry Enters went out while most of the prompt was still unread in
+// the PTY. Measured on a sub-agent still on keyboard delivery: the two long
+// deliveries that did land were split at a chunk boundary (offset 800) into a
+// <pasted_content> block and reached the transcript 18.5 s and 24.9 s AFTER the
+// router had finished the send (median for the other 110 deliveries: 0 s);
+// three others never landed. The end of the text on screen is the one signal a
+// frozen TUI cannot fake.
+export function typedTailEchoed(pane: string | null, typed: string): boolean {
+  if (pane == null) return false
+  const tail = typed.replace(/\s+/g, '').slice(-TYPED_ECHO_TAIL_CHARS)
+  if (tail.length === 0) return true
+  const region = pastePlaceholderRegion(pane).text
+  return region.replace(/\s+/g, '').includes(tail) || PENDING_PASTE_RX.test(region)
 }
 
 // Per-session bookkeeping for the stuck-input recovery watcher. A "spell"
