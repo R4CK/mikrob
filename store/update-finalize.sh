@@ -26,6 +26,8 @@ cd "$INSTALL_DIR" 2>/dev/null || true
 # stage= line as the marker.
 STAGE="boot"
 _stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
+# Same check as update.sh's native_module_loads (#950): this script runs on its own.
+native_module_loads() { node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1; }
 trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
 
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
@@ -122,8 +124,11 @@ if [ -n "$OLD_FULL" ]; then
     # and it does so silently (`|| true`), so the recovery path would report success on
     # a build that never ran. The fork's rollback_guard_check wrapper around this block
     # stays as it is -- upstream has no equivalent.
+    # #950 (Koteg 26, upstream): rebuild only when the installed prebuild does not
+    # load, never --build-from-source -- a failing source build deletes the working
+    # binary this rollback is trying to restore.
     npm ci --silent --include=dev 2>/dev/null || true
-    npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
+    native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
     npm run build --silent 2>/dev/null || true
     [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
     ROLLED_BACK=1

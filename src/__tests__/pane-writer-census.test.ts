@@ -109,8 +109,13 @@ const EXPECTED: Record<string, Census & { why: string }> = {
     why: "the worker's /clear, run inside withSessionSendLock via clearWorkerContext",
   },
   'web/channel-mcp-reconnect.ts': {
-    textSites: 1, ctrlOnlySites: 7, lane: true,
-    why: '/mcp plus menu navigation, all inside the lane span of attemptChannelMcpReconnect',
+    // Koteg 26 (upstream #2179, efc5ae7f7): the cursor-driven menu-navigation rewrite (repeated
+    // Up/Down/Escape to find the Reconnect/Enable row) was replaced by typing the one-line
+    // `/mcp reconnect <server>` command directly and reading the CLI's reply -- ctrlOnlySites
+    // 7 -> 2 (just the pre-dismiss Escape and the submitting Enter), textSites stays 1 (the `-l`
+    // literal command text itself, now carrying the full command instead of just `/mcp`).
+    textSites: 1, ctrlOnlySites: 2, lane: true,
+    why: 'the pre-dismiss Escape, the typed /mcp reconnect command (-l literal) and the submitting Enter, all inside the lane span of attemptChannelMcpReconnect',
   },
   'web/channel-monitor.ts': {
     textSites: 0, ctrlOnlySites: 3, lane: true,

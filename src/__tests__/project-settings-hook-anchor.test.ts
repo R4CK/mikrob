@@ -205,6 +205,10 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'egress-gate.mjs', matcher: 'WebFetch' },
   { script: 'secret-write-guard.py', matcher: 'Write|Edit|MultiEdit' },
   { script: 'big-file-guard.py', matcher: 'Write' },
+  // Koteg 26 (upstream #2172, KILLSWITCH1022): the fleet-freeze hook refuses every tool call
+  // while the fleet is frozen (store/fleet-freeze.json present) -- wired on every tool, not just
+  // Bash/Write/Edit, so a frozen agent cannot work around it through an unlisted matcher.
+  { script: 'fleet-freeze-gate.sh', matcher: '*' },
   { script: 'git-protect-guard.py', matcher: 'Bash' },
   { script: 'npm-protect-guard.py', matcher: 'Bash' },
   { script: 'symlinked-node-modules-guard.py', matcher: 'Bash' },

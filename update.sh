@@ -1650,7 +1650,9 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
   # target (24/26) failed AND deleted the working binary, and the update then
   # restarted with no native module; the old rollback ran the same failing
   # command. The load check below is the real gate.
-  native_module_loads || retry 2 3 npm rebuild better-sqlite3 --silent || true
+  if ! native_module_loads; then
+    retry 2 3 npm rebuild better-sqlite3 --silent || true
+  fi
 
   # Rebuild. On failure, auto-rollback to the pre-update commit (safe ff-only
   # ancestor) and rebuild that, leaving the box on a WORKING old version rather

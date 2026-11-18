@@ -30,7 +30,6 @@ vi.mock('../notify.js', async (orig) => ({ ...(await orig<typeof import('../noti
 
 const { initDatabase, getDb } = await import('../db.js')
 const { tryHandleFleetFreeze } = await import('../web/routes/fleet-freeze.js')
-const { tryHandleAuth } = await import('../web/routes/auth.js')
 const { FLEET_FREEZE_PATH, isFleetFrozen, readFleetFreeze, frozenSkip, whileNotFrozen } = await import('../web/fleet-freeze.js')
 const { _clearSessionCacheForTest, createSession } = await import('../web/auth-sessions.js')
 const { SESSION_COOKIE_NAME } = await import('../web/auth-gate.js')
