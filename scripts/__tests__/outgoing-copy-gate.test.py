@@ -396,6 +396,22 @@ def main():
                                                   "text": CLEAN_HU_OK + " — mégis."}}, rules_file=active)
         check("resend search-and-send-email (safe-prefix bypass): em dash now blocks (exit 2)", code, 2)
 
+        # --- Card bf7a7335 CYBERSEC GO LOW (comment 9092) ---
+        # The negative lookahead above only excluded send/reply/forward; a safe-prefix name using
+        # any OTHER sending synonym still passed UNTOUCHED (measured 18 forms). Each must now
+        # reach the em-dash audit like any other send-shaped tool.
+        for synonym_name in (
+            "draft_and_dispatch", "draft_and_deliver", "draft_and_submit", "draft_and_transmit",
+            "draft_and_post", "draft_and_publish", "draft_and_relay", "draft_and_respond",
+            "get_and_respond", "read_and_fwd", "draft_and_mail_out", "search_and_deliver",
+            "list_and_post", "draft_then_ship", "read_and_answer", "draft_and_xmit",
+            "draft_snd", "get_rply",
+        ):
+            code, out, err = run_hook({"tool_name": f"mcp__claude_ai_Gmail__{synonym_name}",
+                                       "tool_input": {"to": ["a@b.hu"], "subject": "Teszt",
+                                                      "body": CLEAN_HU_OK + " — mégis."}}, rules_file=active)
+            check(f"connector {synonym_name} (sending-synonym bypass): em dash now blocks (exit 2)", code, 2)
+
         # --- COPYGATEENT914: HTML-ENTITAS NEM KERULHETI MEG A GONDOLATJEL-TILTAST ---
         # Marveen merese 2026-09-14, egy VALODI vevo-levelen: a hook a TAGEKET
         # szedte ki, de az entitast sehol nem dekodolta, igy a `&mdash;` atment

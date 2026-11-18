@@ -2349,8 +2349,20 @@ _EMAIL_SERVER_RE = re.compile(r"__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__", re.
 # originally, reopened by the Koteg 23a prefix widening. Fixed by moving the negative lookahead
 # to the START of the pattern, so it scans the WHOLE name for a dangerous word, not just the
 # tail after the verb.
+#
+# Card bf7a7335 CYBERSEC GO LOW (comment 9092, same twin finding on all three gates): the
+# lookahead only excluded send/reply/forward, so safe-prefix + ANY OTHER sending synonym still
+# read as safe (measured 18 forms: draft_and_dispatch/_deliver/_submit/_transmit/_post/_publish/
+# _relay/_respond, get_and_respond, read_and_fwd, draft_and_mail_out, search_and_deliver,
+# list_and_post, draft_then_ship, read_and_answer, draft_and_xmit, draft_snd, get_rply). Widened
+# the danger-word alternation to the full synonym set measured against the real finding; this is
+# a deny-list inside an allow-list, so a FUTURE unenumerated synonym is still a residual risk
+# (the durable fix the card points at is an explicit full-name allowlist, left as a separate,
+# larger change).
 _EMAIL_SAFE_TOOL_RE = re.compile(
-    r"^(?!.*(?:send|reply|forward))[A-Za-z0-9_-]*(?:search|get|list|read|delete)[-_]", re.I
+    r"^(?!.*(?:send|reply|forward|dispatch|deliver|submit|transmit|post|publish|relay|respond"
+    r"|fwd|mail[-_]?out|ship|answer|xmit|snd|rply))[A-Za-z0-9_-]*(?:search|get|list|read|delete)[-_]",
+    re.I,
 )
 # Koteg 23a: two curated look-alikes whose SUFFIX names a real read/settings noun, not a send,
 # even though a naive verb-prefix match would call them dangerous (forwarding_SETTINGS is not a
