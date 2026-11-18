@@ -69,7 +69,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { decideContinueFlag, verifyContinueLaunch, resolveContinueTimeoutAction } from './channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, resolveContinueTimeoutAction, type ContinueVerifyOutcome, type ContinueTimeoutAction } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
@@ -203,6 +203,58 @@ export function __getAgentLaunchGenerationForTest(name: string): symbol | undefi
  */
 export function bumpAgentLaunchGeneration(name: string): void {
   agentLaunchGeneration.set(name, Symbol())
+}
+
+/**
+ * Card 2b2fbabc MEDIUM-1 (Cybersec GO, follow-up card 56344ff4): the --continue verify callback's
+ * post-resolve tail (log-and-return for 'kept'/'skip-stopped', kill+relaunch-fresh otherwise) used
+ * to live inline in the `.then()` at the resume call site, pinned only by a source-text check on
+ * the `action === 'skip-stopped'` condition -- which cannot tell a branch WITH its `return` from
+ * one without it (Y11), nor catch the generation arguments being passed in the wrong order at the
+ * call site (Y2: `hasLaunchGenerationChanged(current, capturedAtLaunch)` reads as "unchanged" when
+ * `current` is itself the captured value, resurrecting the F1 bug this generation check exists to
+ * close). Extracted so both are real, directly-callable behaviour instead of text a mutant can
+ * flip unnoticed. The current generation is looked up HERE, from the one map, rather than taken
+ * as a second caller-supplied symbol -- a call site can no longer pass the captured value for
+ * "current" (Y2), because there is no longer a second symbol parameter to mix up with it.
+ * `deps` is test-only DI: `startAgentProcess`/`killSession` are the real ones by default (the
+ * production call site passes neither), and a test stubs them to observe which one ran without
+ * needing to mock this whole module from outside (an ES-module self-call a `vi.mock` on the
+ * exports object cannot intercept).
+ */
+export async function applyContinueVerifyOutcome(
+  name: string,
+  session: string,
+  v: { outcome: ContinueVerifyOutcome; polls: number; elapsedMs: number },
+  capturedAtLaunch: symbol,
+  deps: {
+    startAgentProcess?: (name: string, opts?: { fresh?: boolean }) => Promise<{ ok: boolean; pid?: number; error?: string }>
+    killSession?: (name: string, session: string) => void
+  } = {},
+): Promise<ContinueTimeoutAction> {
+  const doStart = deps.startAgentProcess ?? startAgentProcess
+  const doKill = deps.killSession ?? ((n: string, s: string) => {
+    try { runTmux(agentTmuxTarget(n), ['kill-session', '-t', exactTmuxTarget(s)], { timeout: 5000 }) } catch { /* already gone */ }
+  })
+
+  const action = resolveContinueTimeoutAction(v.outcome, agentLaunchGeneration.get(name), capturedAtLaunch)
+  if (action === 'kept') {
+    logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
+    return action
+  }
+  if (action === 'skip-stopped') {
+    logger.info({ name, session }, 'resumed channel agent: a stop or a newer start happened during the verify window -- skipping fresh fallback')
+    return action
+  }
+  logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
+  doKill(name, session)
+  try {
+    const r = await doStart(name, { fresh: true })
+    logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
+  } catch (err) {
+    logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
+  }
+  return action
 }
 
 /** Exported for tests: how many agents currently have an operation in flight. */
@@ -3315,25 +3367,8 @@ async function startAgentProcessUnlocked(
             probeExtraPluginsInTree(pid, extraLaunch.providers),
           ])
         },
-      }).then(async (v) => {
-        const action = resolveContinueTimeoutAction(v.outcome, agentLaunchGeneration.get(name), myLaunchGeneration)
-        if (action === 'kept') {
-          logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
-          return
-        }
-        if (action === 'skip-stopped') {
-          logger.info({ name, session }, 'resumed channel agent: a stop or a newer start happened during the verify window -- skipping fresh fallback')
-          return
-        }
-        logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
-        try { runTmux(agentTmuxTarget(name), ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }) } catch { /* already gone */ }
-        try {
-          const r = await startAgentProcess(name, { fresh: true })
-          logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
-        } catch (err) {
-          logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
-        }
-      }).catch((err) => logger.error({ err, name }, 'resume verification crashed'))
+      }).then((v) => applyContinueVerifyOutcome(name, session, v, myLaunchGeneration))
+        .catch((err) => logger.error({ err, name }, 'resume verification crashed'))
     }
 
     // EPERM /tmp-fallback (2026-06-30, mirrors scripts/channels.sh:233+): on
