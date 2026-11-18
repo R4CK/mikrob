@@ -27464,3 +27464,41 @@ MikroB/Peti döntésére vár.
 **Hivatkozás:** kártya 4e9ad774 (szülő: c65add5a), 81593084 (komment 32549, Gate-SHA
 2997183f), `src/kg/import-mt10-cli.ts`, `src/__tests__/kg-import-mt10-cli.test.ts`,
 `src/security/secret-gate.ts`.
+
+
+## 2026-11-18 -- 8ca1f91d: marveen-land.sh stacked-check false positive (upstream card refs) -- lezarva, delta-regate utan
+
+5dd0842a (upstream Koteg 25) landolasat a stacked-card detekcio refuzalta, mert egy upstream
+(Szotasz/marveen) commit "card 513c886e"-t irt a subjectjebe, amit a mi tablunkon 404. A
+javitas (store/landing-downward-check.sh "downward_check"): egy, a logban nevezett card id,
+ami a mi tablunkon confirmed 404 ES minden ra hivatkozo commit upstream/develop ancestor-je
+(DOWNWARD_CHECK_REPO, csak marveen-land.sh allitja -- a tobbi landernek nincs ilyen remote-ja),
+az allow-listazott idekent kezelendo, nem foreign work. Negy delta-kor a gate-eken:
+
+1. CYBERSEC NO-GO (komment 33090) + CYBERSEC2 NO-GO (komment 33098): a bare 404 nem bizonyitek
+   (rossz service/route/stale build is 404-azhat mindenre); a 404 valasz TESTENEK a mi tablunk
+   sajat not-found alakjat kell hordoznia ("Kartya nem talalhato: <id>"), es minden hivatkozo
+   commitnak upstream/develop ancestor-nek kell lennie -- fixeltve egy korben (667a33fb3).
+2. Journal-isolation fix (1aeea3b64): a --selftest a /bin/bash-t valodi subprocessent hivja ujra, ami
+   elesben a live store/land-runs.jsonl-be irt fixturecard sorokat, amig egy worktree-n kivul
+   futott; minden belso subprocess sajat LAND_RUN_JOURNAL_FILE-ra all at.
+3. CYBERED NO-GO (komment 33127, blocking): a rovid "upstream/develop" nev egy helyi branch
+   vagy tag altal arnyekolhato (git refs/heads es refs/tags ELOBB probalja, mint
+   refs/remotes-ot) -- fully qualified refs/remotes/upstream/develop-ra javitva (d5a9dd71b).
+4. DevO LAND REFUSED (komment 33172) a mar QA PASS + CYBERED GO alatt allo d5a9dd71b-en: a
+   fleet-test determinisztikus szamelteresi hibat talalt, amit QA rosszul minositett
+   ("bash-only diff, nincs vitest-szurfeszt" -- de ez a TS teszt FUT es SZAMLAL bash
+   selftest-case-okat). A javitas (25813215d): a card egy uj, CSAK marveen-land.sh sajat
+   blokkjahoz tartozo selftest-case-et adott (a "both call sites export DOWNWARD_CHECK_REPO"
+   grep-pin, CYBERED LOW mutants L10/L11), asszimmetrikusan novelve marveen sajat szamat a
+   cleancore-eihoz kepest -- a teszt kemenykodolt "39" bazisszama 40-re javitva, mertek
+   alapjan (bash store/marveen-land.sh --selftest -> 120; bash store/cleancore-land.sh
+   --selftest -> 134; 134-54 = 80 = 120-40).
+
+**Mertek:** teljes fleet-test.sh --ref 25813215d: 1370 Test Files passed | 1 skipped (1371),
+42928 Tests passed | 132 skipped (43060), 0 FAIL. Duration 691.65s. npx tsc --noEmit: clean.
+lint-ratchet.sh: no rule got worse (422 finding, baseline tartja magat).
+
+**Ki dontott:** backend3 vegezte, tobb delta-kor CYBERSEC/CYBERSEC2/CYBERED NO-GO-ira es DevO
+land-refuse-ere valaszolva. Gate-SHA: 25813215d5c684e0debd9680dbb45f0bee15aed4. Gate: QA + Cybered (MikroB 2026-11-18: mindket
+cybersec es cybersec2 irt Fix-Direction-t ezen a kartyan, a security slot RedHate megy).
