@@ -13,10 +13,10 @@ Egy mozdulattal megállítja az egész flottát, ha valami elszabadult. Ilyen le
 
 ## Hol
 
-- **Dashboard:** piros gomb az oldalsávban; fagyasztás alatt piros sáv van a tetején a Feloldás gombbal.
+- **Dashboard:** piros gomb az oldalsávban fagyaszt. A fagyasztás alatti piros sávban van egy "Feloldás" gomb is, de ez **jelenleg nincs bekötve** (nulla hivatkozás rá a `web/app.js`-ben) -- ne arra számíts, nem csinál semmit. Tényleges feloldás innen: a gépen töröld a `store/fleet-freeze.json` fájlt, vagy (bejelentkezve) hívd meg a `POST /api/fleet/unfreeze`-t.
 - **Telefonról, a gazda csatornáján:**
   - `/stop <indok>` fagyaszt;
-  - `/resume` megmondja, hol lehet feloldani. Ez az út a közös tokennel fut, ezért innen nem lehet feloldani.
+  - `/resume` megmondja, hol lehet feloldani. Ez az út a közös tokennel fut, ezért innen nem lehet feloldani -- a válasz a valódi utakat (fájltörlés a gépen, vagy hitelesített API-hívás) nevezi meg, nem a (nem működő) gombot.
 - **API:**
   - `GET /api/fleet/freeze`;
   - `POST /api/fleet/freeze {"reason": "...", "mode": "freeze"|"stop"}`;

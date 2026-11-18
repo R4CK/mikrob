@@ -825,14 +825,23 @@ export function registerBuiltinCommands(): void {
   // owner-chat and inbound-evidence gates of dispatchForChat apply. Lifting it is
   // NOT a command: this path runs on the shared token, and the unfreeze takes the
   // owner's login (POST /api/fleet/unfreeze, the #2163 predicate). /resume says so.
+  //
+  // RedHat GO condition 2 on card 51c68eeb (comment 33311): the dashboard's red-bar
+  // Unfeloldás button exists in the markup (web/index.html) but has zero wiring in
+  // web/app.js -- it does nothing. Pointing the owner at it from a reply they will
+  // read on a phone is worse than silence, so this names the two paths that
+  // actually work instead: deleting store/fleet-freeze.json on the machine (the
+  // fleet-freeze.ts module's own "CLI-free way out"), or an authenticated
+  // POST /api/fleet/unfreeze call once a dashboard login exists.
+  const UNFREEZE_HOW = 'A piros sáv "Feloldás" gombja NEM működik (nincs bekötve) -- NE arra várj. Ami tényleg feloldja: a gépen töröld a store/fleet-freeze.json fájlt, VAGY (ha már van dashboard-bejelentkezésed) hívd meg POST /api/fleet/unfreeze-t egy hitelesített session-nel.'
   registerCommand({
-    name: 'stop', kind: 'write', usage: '/stop <indok>', description: 'piros gomb: a flotta fagyasztása (feloldás a dashboardon, bejelentkezve)',
+    name: 'stop', kind: 'write', usage: '/stop <indok>', description: 'piros gomb: a flotta fagyasztása (feloldás: lásd /resume)',
     run: async (ctx, args) => {
       const reason = args.join(' ').trim()
       if (!reason) return reply(ctx, 'Írd mögé az okát: /stop <indok>. A gazda-üzenet és a napló is ezt mutatja.')
       if (reason.length > FLEET_REASON_MAX) return reply(ctx, `Az indok legfeljebb ${FLEET_REASON_MAX} karakter lehet.`)
       const state = await pullFleetBrake('freeze', reason, 'owner-command')
-      return reply(ctx, `🛑 A flotta ${state.mode === 'stop' ? 'LEÁLLÍTVA' : 'FAGYASZTVA'}: ${state.reason}\nFeloldás: a dashboardon, bejelentkezve (Feloldás gomb a piros sávban).`)
+      return reply(ctx, `🛑 A flotta ${state.mode === 'stop' ? 'LEÁLLÍTVA' : 'FAGYASZTVA'}: ${state.reason}\n${UNFREEZE_HOW}`)
     },
   })
   registerCommand({
@@ -840,7 +849,7 @@ export function registerBuiltinCommands(): void {
     run: ctx => {
       const st = readFleetFreeze()
       if (!st) return reply(ctx, 'A flotta nincs fagyasztva.')
-      return reply(ctx, `A flotta ${st.mode === 'stop' ? 'leállítva' : 'fagyasztva'} (${st.by}): ${st.reason}\nFeloldani csak a dashboardon lehet, a dashboard-jelszóval bejelentkezve: a piros sáv Feloldás gombja. Innen nem, mert ez az út a közös tokennel fut.`)
+      return reply(ctx, `A flotta ${st.mode === 'stop' ? 'leállítva' : 'fagyasztva'} (${st.by}): ${st.reason}\n${UNFREEZE_HOW}`)
     },
   })
 
