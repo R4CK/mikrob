@@ -27386,3 +27386,54 @@ check so the existing fail-open-on-unreachable-clones behavior is unchanged.
 
 **Ki dontott:** backend (sajat kartya, phase 295ae6a3 F1.3). Gate: QA + WhiteHat + RedHat (a fazis
 saja kijelolese, landolasi utak / git-integritas / kartya-allapot hitelesseg).
+
+## 2026-11-18: KG write path -- KG-local secret-shape list (MEDIUM-2 from 4e9ad774, card 03dff487)
+
+Cybersec MEDIUM-2 (komment 32780 a 4e9ad774-en, eredetileg 32549 a 81593084-en): 5 a 6-bol
+secret/PII alakzat nem volt elutasitva a KG iras-utjan (src/kg/store.ts, a kozos SECRET_PATTERNS-t
+hasznalja) -- csupasz 64-hex, `password=`, nem-prefixelt `*_API_KEY=`, base64 blob, email/telefon.
+Egy titok egy cold memory-ban vagy findingben KG node body-ba kerulhet, amit ugynokok es az
+/api/kg route-ok olvasnak.
+
+MikroB dontese (a kartya leirasa): a 5 alakzat KIZAROLAG a KG write-uton (src/kg/store.ts), SOHA a
+kozos commit-gate-ben (src/security/secret-gate.ts) -- a tracked fa maga tartalmaz csupasz 64-hex-et
+15 fajlban es password-alaku hozzarendelest 37-ben (Cybersec merese), egy altalanos hozzaadas a
+kozos gate-hez a repo sajat tartalmat talalna el.
+
+Megvalositas (src/kg/store.ts, uj export-ok):
+- `findKgLocalKvSecret`/`findKgLocalSecretShape`: `password=`/`*_API_KEY=` kulcs=ertek alak,
+  min. 8 karakteres ertekkel, placeholder-kizarassal (xxx, changeme, example, `<...>`, `${...}`).
+- `findKgLocalContextualSecret`: csupasz 64-hex es base64 blob CSAK kulcs-szeru szo
+  kozelsegeben (40 karakteres ablak: key/secret/token/password/credential/api) utasitodik el --
+  context nelkul csak jelentve (ld. lejjebb), nem blokkolva, mert onmagaban mindket alak magas
+  false-positive (git sha, hash digest, base64-kodolt kep).
+- `redactKgLocalPii`: email/telefon REDAKTALVA, nem elutasitva (MikroB dontese) -- egy email/
+  telefon egy egyebkent legitim memoria/finding-szovegben nem eri meg az egesz node elvesztet.
+- `upsertNode` sorrendje: sanitize -> PII-redakcio -> kozos SECRET_PATTERNS check -> uj KG-local
+  check -> capLength. A redakcio ELOTT fut a ket secret-check elott (ugyanaz az ok, mint az F-a
+  sanitize-elobb mintaja: a ellenorzesnek es a tenylegesen tarolt szovegnek egyeznie kell).
+
+Backfill dry-run (Kesz-ha pont 3): uj `src/kg/secret-shape-scan.ts` + `scripts/
+kg-secret-shape-scan.ts` -- vegig-olvassa a MEGLEVO kg_nodes tablat (csak olvasas, sosem ir),
+es `kgLocalSecretShapeCounts`-szal (context NELKUL, szelesebb halo, mint az iras-ut) szamolja,
+hany CSOMOPONT tartalmazna legalabb egy talalatot alakzatonkent -- egy csomopont tobb talalata
+ugyanabban a mezoben egyszer szamit.
+
+Teszt-sorok alakzatonkent (pozitiv + placeholder/no-context negativ), src/__tests__/
+kg-store.test.ts uj 'KG-local secret/PII shapes' blokkjaban: password=, *_API_KEY=, 64-hex
+(context-tel/nelkule), base64 (context-tel/nelkule), email (redaktalva), telefon (redaktalva),
+plusz kozvetlen unit-tesztek a harom uj export-ra. src/__tests__/kg-secret-shape-scan.test.ts
+a dry-run dedup-logikajat pinneli (ugyanaz a csomopont ket talalattal egy mezoben egyszer
+szamit, nem kettot).
+
+Mutacio-bizonyitott mindegyik: a `findKgLocalKvSecret`, `hasKgLocalKeyContext` es
+`redactKgLocalPii` fuggvenyek egyenkent kiuresitve PONTOSAN a hozzajuk tartozo uj teszt(ek)
+mentek pirosra (2, 3, illetve 3 teszt), a tobbi zold maradt, visszaallitva byte-azonos. A
+dry-run dedup-agat eltavolitva a dedikalt pin-teszt ment pirosra (1 -> 2), a tobbi zold maradt.
+
+`src/security/secret-gate.ts`: `git diff` ures (Kesz-ha pont 2). tsc clean.
+`lint-ratchet.sh --show`: 422 (12+140+270), mindharom szabaly a baseline-on, nincs regresszio.
+src/__tests__/kg-store.test.ts: 36/36. src/__tests__/kg-secret-shape-scan.test.ts: 2/2.
+
+**Ki dontott:** backend (sajat kartya 03dff487, MikroB dontese a kartya leirasaban, Cybersec
+MEDIUM-2 ajanlas alapjan). Gate: QA, Cybersec (a kartya sajat kijelolese).

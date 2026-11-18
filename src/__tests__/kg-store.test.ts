@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import {
   migrate, openKgDb, rebuild, upsertNode, upsertEdge, setNodeStatus, getNode, KgSecretError,
   KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState, sanitizeKgText,
+  findKgLocalSecretShape, redactKgLocalPii, kgLocalSecretShapeCounts,
 } from '../kg/store.js'
 
 const dirs: string[] = []
@@ -138,6 +139,133 @@ describe('kg store CRUD', () => {
     ).toThrow(KgSecretError)
     expect(db.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
     db.close()
+  })
+
+  // Card 03dff487 (Cybersec MEDIUM-2 on 4e9ad774/81593084): KG-local extra secret/PII shapes,
+  // one row per shape (positive reject/redact + a placeholder/no-context negative), built from
+  // parts so this file itself does not trip the repo's own secret-write guard.
+  describe('KG-local secret/PII shapes (card 03dff487)', () => {
+    it('rejects a password= assignment with a real-length value, but not a placeholder', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      const real = 'password' + '=' + 'Sw0rd' + 'Fish1!'
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:pw1', type: 'solution', project: 'marveen', title: 'fix',
+          body: `config line: ${real}`, source_ref: 'kanban_comments:10', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      const placeholder = 'password=changeme'
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:pw2', type: 'solution', project: 'marveen', title: 'fix',
+          body: `config line: ${placeholder}`, source_ref: 'kanban_comments:11', extractor: 'manual',
+        }),
+      ).not.toThrow()
+      expect(getNode(db, 'sol:pw2')?.body).toContain('changeme')
+      db.close()
+    })
+
+    it('rejects an unprefixed *_API_KEY= assignment with a real-length value, but not a placeholder', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      const real = 'STRIPE' + '_API_KEY' + '=' + 'abcd1234' + 'EFGH5678'
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:ak1', type: 'solution', project: 'marveen', title: 'fix',
+          body: `config line: ${real}`, source_ref: 'kanban_comments:12', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      const placeholder = 'SOME_API_KEY=xxxxxxxx'
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:ak2', type: 'solution', project: 'marveen', title: 'fix',
+          body: `config line: ${placeholder}`, source_ref: 'kanban_comments:13', extractor: 'manual',
+        }),
+      ).not.toThrow()
+      db.close()
+    })
+
+    it('rejects a bare 64-hex string only with a key-ish word nearby; without it, report-only (not rejected)', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      const hex64 = 'a1b2c3d4'.repeat(8)
+      expect(hex64).toHaveLength(64)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:hex1', type: 'solution', project: 'marveen', title: 'fix',
+          body: `api key: ${hex64}`, source_ref: 'kanban_comments:14', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:hex2', type: 'solution', project: 'marveen', title: 'fix',
+          body: `commit sha: ${hex64}`, source_ref: 'kanban_comments:15', extractor: 'manual',
+        }),
+      ).not.toThrow()
+      expect(getNode(db, 'sol:hex2')?.body).toContain(hex64)
+      db.close()
+    })
+
+    it('rejects a base64 blob only with a key-ish word nearby; without it, report-only (not rejected)', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      const blob = 'Q'.repeat(44)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:b641', type: 'solution', project: 'marveen', title: 'fix',
+          body: `secret value: ${blob}`, source_ref: 'kanban_comments:16', extractor: 'manual',
+        }),
+      ).toThrow(KgSecretError)
+      expect(() =>
+        upsertNode(db, {
+          id: 'sol:b642', type: 'solution', project: 'marveen', title: 'fix',
+          body: `encoded payload: ${blob}`, source_ref: 'kanban_comments:17', extractor: 'manual',
+        }),
+      ).not.toThrow()
+      expect(getNode(db, 'sol:b642')?.body).toContain(blob)
+      db.close()
+    })
+
+    it('redacts an email address instead of rejecting the node', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      upsertNode(db, {
+        id: 'sol:email1', type: 'solution', project: 'marveen', title: 'fix',
+        body: 'contact someone@example.com for details', source_ref: 'kanban_comments:18',
+        extractor: 'manual',
+      })
+      const row = getNode(db, 'sol:email1')
+      expect(row?.body).toContain('[redacted:email]')
+      expect(row?.body).not.toContain('someone@example.com')
+      db.close()
+    })
+
+    it('redacts a Hungarian phone number instead of rejecting the node', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      upsertNode(db, {
+        id: 'sol:phone1', type: 'solution', project: 'marveen', title: 'fix',
+        body: 'call +36201234567 for details', source_ref: 'kanban_comments:19',
+        extractor: 'manual',
+      })
+      const row = getNode(db, 'sol:phone1')
+      expect(row?.body).toContain('[redacted:phone]')
+      expect(row?.body).not.toContain('+36201234567')
+      db.close()
+    })
+
+    it('findKgLocalSecretShape/redactKgLocalPii/kgLocalSecretShapeCounts agree on the same inputs', () => {
+      const hex64 = 'a1b2c3d4'.repeat(8)
+      expect(findKgLocalSecretShape(`api key: ${hex64}`)).toBe('bare 64-hex (key context)')
+      expect(findKgLocalSecretShape(`commit sha: ${hex64}`)).toBeNull()
+      expect(redactKgLocalPii('mail me at a@b.com or call 06201234567')).toBe(
+        'mail me at [redacted:email] or call [redacted:phone]',
+      )
+      const counts = kgLocalSecretShapeCounts(`commit sha: ${hex64}, mail a@b.com`)
+      expect(counts['bare-64-hex']).toBe(1)
+      expect(counts.email).toBe(1)
+    })
   })
 
   // Cybersec GO 28465 I1 (INFO, on 861e426ba): sanitizeKgText is NOT strictly idempotent in one

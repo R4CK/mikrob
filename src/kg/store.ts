@@ -179,6 +179,119 @@ function assertNoSecretShape(fields: Record<string, string | null | undefined>):
   }
 }
 
+// --- KG-local secret/PII shapes (card 03dff487, Cybersec MEDIUM-2 on 4e9ad774/81593084) ---
+//
+// These stay OUT of the shared src/security/secret-gate.ts SECRET_PATTERNS on purpose: the
+// tracked tree itself has bare 64-hex in 15 files and password-shaped assignments in 37
+// (measured by Cybersec, comment 32780 on 4e9ad774) -- a blanket addition there would reject the
+// repo's own content. A kg_nodes field is extracted memory/finding prose, not source code, so a
+// tighter, KG-only screen applies here instead. MikroB's decision (card description): phase 1 is
+// key=value assignments with a length floor and placeholder exclusions; bare 64-hex/base64 only
+// reject with a key-ish word nearby, otherwise report-only (left to the backfill dry-run,
+// scripts/kg-secret-shape-scan.ts); email/phone are REDACTED, not rejected, so one PII token does
+// not cost the whole node.
+
+const KG_LOCAL_PLACEHOLDER_RX = /^(x+|changeme|example|\.{3}|<.*>|\$\{.*\})$/i
+
+function isKgLocalPlaceholderValue(value: string): boolean {
+  return KG_LOCAL_PLACEHOLDER_RX.test(value.trim())
+}
+
+// `*_API_KEY=`/`password=` assignment shape: an unprefixed `SOME_SERVICE_API_KEY=...` or
+// `password=...`/`password: ...`, case-insensitive key, with a minimum value length (8) so a
+// one-character placeholder slips through before it even reaches the exclusion list.
+const KG_LOCAL_KV_SECRET_RX = /\b([A-Za-z0-9_]*_API_KEY|password)\s*[:=]\s*(['"]?)([^\s'",;]{1,200})\2/gi
+
+function findKgLocalKvSecret(text: string): string | null {
+  for (const m of text.matchAll(KG_LOCAL_KV_SECRET_RX)) {
+    const value = m[3]
+    if (value.length >= 8 && !isKgLocalPlaceholderValue(value)) return `${m[1].toLowerCase()}=`
+  }
+  return null
+}
+
+// Bare 64-hex and base64 blobs are high-false-positive on their own (a git sha, a hash digest, a
+// base64-encoded image are all benign) -- reject only with a key-ish word nearby, the same
+// "report, don't block, unless there's context" the card's description asks for.
+const KG_LOCAL_HEX64_RX = /\b[0-9a-f]{64}\b/gi
+const KG_LOCAL_BASE64_BLOB_RX = /\b[A-Za-z0-9+/]{40,}={0,2}\b/g
+const KG_LOCAL_KEY_CONTEXT_RX = /\b(key|secret|token|password|credential|api)\b/i
+const KG_LOCAL_CONTEXT_WINDOW = 40
+
+function hasKgLocalKeyContext(text: string, index: number): boolean {
+  const start = Math.max(0, index - KG_LOCAL_CONTEXT_WINDOW)
+  return KG_LOCAL_KEY_CONTEXT_RX.test(text.slice(start, index))
+}
+
+function findKgLocalContextualSecret(text: string): string | null {
+  for (const m of text.matchAll(KG_LOCAL_HEX64_RX)) {
+    if (hasKgLocalKeyContext(text, m.index ?? 0)) return 'bare 64-hex (key context)'
+  }
+  for (const m of text.matchAll(KG_LOCAL_BASE64_BLOB_RX)) {
+    if (hasKgLocalKeyContext(text, m.index ?? 0)) return 'base64 blob (key context)'
+  }
+  return null
+}
+
+/** KG-local reject-worthy shapes only (used by upsertNode, in addition to the shared
+ *  SECRET_PATTERNS check) -- the 64-hex/base64 shapes here REQUIRE key context; without it they
+ *  are report-only (see kgLocalSecretShapeCounts, used by the backfill dry-run instead). */
+export function findKgLocalSecretShape(text: string | null | undefined): string | null {
+  if (!text) return null
+  return findKgLocalKvSecret(text) ?? findKgLocalContextualSecret(text)
+}
+
+function assertNoKgLocalSecretShape(fields: Record<string, string | null | undefined>): void {
+  for (const [field, value] of Object.entries(fields)) {
+    const hit = findKgLocalSecretShape(value)
+    if (hit) throw new KgSecretError(field, hit)
+  }
+}
+
+// Email / Hungarian phone number: redact rather than reject (MikroB's decision in the card
+// description) -- an email or phone number inside otherwise-legitimate memory/finding prose
+// should not cost the whole node, unlike a key=value secret or a high-confidence key blob, where
+// the field is either not worth keeping or trivially reconstructed from the rest.
+// Same shapes src/skill-scan.ts already uses for its own PII rules (email-address,
+// hu-phone-number) -- reused here as literal regexes rather than imported, since skill-scan.ts
+// is an unrelated feature (skill-body scanning) and this module should not depend on it.
+const KG_LOCAL_EMAIL_RX = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g
+const KG_LOCAL_HU_PHONE_RX = /(?<!\d)(\+36|0036|06)[ -]?(\d{1,2})[ -]?\d{3}[ -]?\d{3,4}(?!\d)/g
+
+/** Replaces every email/phone match with a fixed placeholder, in place of findSecretShape's
+ *  reject-and-throw -- the card's decision for PII specifically. Exported like sanitizeKgText so
+ *  an importer that builds a field outside upsertNode's own string inputs can apply the same
+ *  redaction before the text reaches upsertNode. */
+export function redactKgLocalPii<T extends string | null | undefined>(text: T): T {
+  if (text == null) return text
+  return (text as string)
+    .replace(KG_LOCAL_EMAIL_RX, '[redacted:email]')
+    .replace(KG_LOCAL_HU_PHONE_RX, '[redacted:phone]') as T
+}
+
+/** Report-only counts for the backfill dry-run (Kesz-ha point 3): how many matches of EACH of
+ *  the 5 shapes exist in this text, WITHOUT the write-path's context requirement for 64-hex/
+ *  base64 -- a wider net on purpose, so the dry-run tells the operator the true collision
+ *  surface, not just what the write path would currently block. Never called from upsertNode. */
+export function kgLocalSecretShapeCounts(text: string | null | undefined): Record<string, number> {
+  const counts: Record<string, number> = {
+    'kv-secret (password=/*_API_KEY=)': 0,
+    'bare-64-hex': 0,
+    'base64-blob': 0,
+    email: 0,
+    phone: 0,
+  }
+  if (!text) return counts
+  for (const m of text.matchAll(KG_LOCAL_KV_SECRET_RX)) {
+    if (m[3].length >= 8 && !isKgLocalPlaceholderValue(m[3])) counts['kv-secret (password=/*_API_KEY=)']++
+  }
+  counts['bare-64-hex'] = [...text.matchAll(KG_LOCAL_HEX64_RX)].length
+  counts['base64-blob'] = [...text.matchAll(KG_LOCAL_BASE64_BLOB_RX)].length
+  counts.email = [...text.matchAll(KG_LOCAL_EMAIL_RX)].length
+  counts.phone = [...text.matchAll(KG_LOCAL_HU_PHONE_RX)].length
+  return counts
+}
+
 export interface KgNodeInput {
   id: string
   type: KgNodeType
@@ -287,16 +400,30 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
   const sanitizedBody = sanitizeKgText(input.body)
   const sanitizedSnippet = sanitizeKgText(input.snippet)
   const sanitizedKeywords = sanitizeKgText(input.keywords)
+  // Card 03dff487 (KG-local secret/PII shapes): PII redaction runs BEFORE both secret-shape
+  // checks, same reasoning as sanitizeKgText running before them -- the checks and the stored
+  // text must agree on what is actually being written, and an email/phone match must never
+  // reach either check as a reject candidate once the card's decision is to redact it instead.
+  const piiRedactedTitle = redactKgLocalPii(sanitizedTitle)
+  const piiRedactedBody = redactKgLocalPii(sanitizedBody)
+  const piiRedactedSnippet = redactKgLocalPii(sanitizedSnippet)
+  const piiRedactedKeywords = redactKgLocalPii(sanitizedKeywords)
   assertNoSecretShape({
-    title: sanitizedTitle,
-    body: sanitizedBody,
-    snippet: sanitizedSnippet,
-    keywords: sanitizedKeywords,
+    title: piiRedactedTitle,
+    body: piiRedactedBody,
+    snippet: piiRedactedSnippet,
+    keywords: piiRedactedKeywords,
+  })
+  assertNoKgLocalSecretShape({
+    title: piiRedactedTitle,
+    body: piiRedactedBody,
+    snippet: piiRedactedSnippet,
+    keywords: piiRedactedKeywords,
   })
   const now = nowSec()
-  const title = capLength(sanitizedTitle, 200) as string
-  const body = capLength(sanitizedBody ?? null, 8000)
-  const snippet = capLength(sanitizedSnippet ?? null, 12000)
+  const title = capLength(piiRedactedTitle, 200) as string
+  const body = capLength(piiRedactedBody ?? null, 8000)
+  const snippet = capLength(piiRedactedSnippet ?? null, 12000)
 
   const tx = db.transaction(() => {
     // F1 (eeb57483, WhiteHat GO condition on ee9ee17b): a re-import (e.g. importFromRelations
@@ -339,7 +466,7 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
       body,
       snippet,
       snippet_lang: input.snippet_lang ?? null,
-      keywords: sanitizedKeywords ?? null,
+      keywords: piiRedactedKeywords ?? null,
       status: finalStatus,
       source_ref: input.source_ref,
       gate_sha: input.gate_sha ?? null,
