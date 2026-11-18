@@ -155,10 +155,33 @@ if not report:
 counts: collections.Counter = collections.Counter()
 for entry in report:
     for message in entry['messages']:
-        # A parse error has no ruleId. Bucket it under a stable name so it can be ratcheted too;
-        # otherwise a file that stops parsing silently drops out of every rule's count and reads
-        # as an improvement.
-        counts[message.get('ruleId') or '(parse-error)'] += 1
+        rule_id = message.get('ruleId')
+        if rule_id:
+            key = rule_id
+        elif message.get('fatal'):
+            # A TRUE parse error: ESLint could not build an AST for the file at all. No ruleId
+            # AND fatal -- bucket it under a stable name so it can be ratcheted too; otherwise a
+            # file that stops parsing silently drops out of every rule's count and reads as an
+            # improvement.
+            key = '(parse-error)'
+        elif (message.get('message') or '').startswith('Unused eslint-disable directive'):
+            # Card 34f846cc (backend3 measurement, 7c79badc comment, 2026-11-15): ESLint also
+            # omits ruleId for "Unused eslint-disable directive" warnings -- a stale `// eslint-
+            # disable-line <rule>` comment, nothing to do with parsing. `ruleId or '(parse-
+            # error)'` (the prior form of this loop) conflated the two, so a stale disable
+            # comment alone produced "COULD NOT MEASURE -- parse errors 0 -> N" and blocked a
+            # landing whose toolchain was never degraded (measured: 59ab01df8, 10 such messages,
+            # ZERO fatal, tsc --noEmit clean). Its own stable, ratcheted bucket -- not dropped,
+            # not conflated with a real parse failure.
+            key = '(unused-disable-directive)'
+        else:
+            # Any OTHER ruleId-less, non-fatal message this script has not seen a name for yet.
+            # Deliberately NOT lumped into either bucket above: a real parse error must stay a
+            # reliable signal (nothing non-fatal dilutes it), and an unnamed kind must not be
+            # silently misclassified as the one specific advisory this fix targets. Still
+            # ratcheted like any other key, so it cannot grow unnoticed.
+            key = '(no-rule-id-other)'
+        counts[key] += 1
 
 try:
     with open(baseline_path, encoding='utf-8') as fh:

@@ -37,6 +37,7 @@ MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
 6. **Verdikt komment** a kártyára (sha-t mindig beleírni):
    - `QA PASS -- commit <sha>, <N>/<N> teszt zöld, tsc clean. Gate: [WhiteHat/RedHat szükséges-e]`
    - `QA FAIL -- commit <sha>. Repro: ... Elvárt: ... Tényleges: ... Következő lépés: ...`
+   - **Bizonyíték-típus (4g. munkavégzési szabály, kártya c77013a1):** a verdikt-szó/Gate-SHA sorok UTÁN minden érdemi állítás elé: `OBSERVATION: <mit mértem, melyik sha/parancs szerint>`, `DERIVATION: <mit következtetek belőle>`, `CONCLUSION: <végső állítás>`, `UNKNOWN: <mit nem néztem meg>`. Egy sima "N/N zöld" szám önmagában OBSERVATION, nem CONCLUSION -- a PASS/FAIL szó maga a CONCLUSION.
 7. **Move**: PASS -> `waiting` (MikroB zárja DONE-ba); FAIL -> `in_progress`.
 
 ```bash

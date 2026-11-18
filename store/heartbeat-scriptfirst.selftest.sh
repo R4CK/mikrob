@@ -83,6 +83,9 @@ common_env() { # $1 = case name -- own state/wake/active files per case, no cros
   export HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE="$TMP/active-subagents-$case_name.json"
   export HEARTBEAT_SCRIPTFIRST_FIXTURE_DIR="$TMP/fixtures"
   export WAKE_CALLS="$TMP/wake-calls-$case_name.txt"
+  export HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE="$TMP/tokenlag-$case_name.json"
+  echo '{"state":"ok","retention_days":30,"tolerance_hours":48,"lag_hours":-700,"oldest_age_days":1}' \
+    > "$HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE"
   : > "$WAKE_CALLS"
   rm -f "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE"
   echo '[]' > "$HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE"
@@ -365,6 +368,43 @@ OUT="$(bash "$BIN" 2>&1)"
 check "changed-not-actionable: changed=1" "changed=1" "$OUT"
 check "changed-not-actionable: actionable=0" "actionable=0" "$OUT"
 check_absent "changed-not-actionable: no wake" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- d8f44d15 req 3: token_usage_daily lag -- 'stale' wakes --------------------------------------
+common_env tokenlagstale
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+echo '{"state":"stale","retention_days":30,"tolerance_hours":48,"lag_hours":120,"oldest_age_days":35}' \
+  > "$HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE"
+OUT="$(bash "$BIN" 2>&1)"
+check "tokenlag-stale: wakes" "actionable=1" "$OUT"
+check "tokenlag-stale: line present" "TOKEN-USAGE-DAILY-LAG" "$OUT"
+check "tokenlag-stale: wake recorded" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- d8f44d15 req 3: 'ok'/'empty' stay silent (control for the case above) -------------------------
+common_env tokenlagok
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+bash "$BIN" >/dev/null 2>&1
+OUT="$(bash "$BIN" 2>&1)"
+check "tokenlag-ok: routine" "routine, no change, silent" "$OUT"
+
+# --- d8f44d15 req 3: 'invalid' (bad retention/tolerance config) wakes via err() --------------------
+common_env tokenlaginvalid
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+echo '{"state":"invalid","retention_days":"NaN"}' > "$HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE"
+OUT="$(bash "$BIN" 2>&1)"
+check "tokenlag-invalid: ERR surfaced" "ERR: token-usage daily-lag reports invalid config" "$OUT"
+check "tokenlag-invalid: wakes" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- d8f44d15 req 3: fetch failure (unparseable body) wakes via err() too ---------------------------
+common_env tokenlagfetchfail
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+rm -f "$HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE"
+OUT="$(bash "$BIN" 2>&1)"
+check "tokenlag-fetchfail: ERR surfaced" "ERR: token-usage daily-lag fetch failed" "$OUT"
+check "tokenlag-fetchfail: wakes" "WOKE" "$(cat "$WAKE_CALLS")"
 
 # --- 12. feature flag off -> immediate silent exit, nothing else runs -------------------------------
 common_env flagoff

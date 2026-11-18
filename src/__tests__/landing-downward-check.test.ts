@@ -42,6 +42,10 @@ describe.each([
   // marveen carries 3 of its own + 26 shared.
   ['cleancore-land.sh', 42],
   ['marveen-land.sh', 29],
+  // Card e3cf26d0 (WhiteHat LOW-3 on d5638d28): mopsi-land.sh has carried a --selftest mode since
+  // card 7feb477b, same as the two above, and nothing ran it either -- gate agents were invoking
+  // it by hand each round instead. Floor measured directly: `bash store/mopsi-land.sh --selftest`.
+  ['mopsi-land.sh', 75],
 ])('%s --selftest', (script, floor) => {
   it('passes', { timeout: 30_000 }, () => {
     const r = selftest(script)
@@ -151,6 +155,14 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // whenever that block does -- the assertion it feeds is about the SHARED block being identical
     // in both, and lowering it to make an edit fit would delete exactly that guarantee.
     //
+    // marveen-land.sh's own-case constant moved 34 -> 36 AND cc's floor moved 49 -> 51 with card
+    // 2ba008f2 round 3 (WhiteHat2 probe on origin/develop: the --actor mikrob land-guard bypass
+    // still worked during a session outage): the SAME two new cases (bypass refused while the
+    // outage marker is active, and an OFF switch still lands normally during an outage) were
+    // added to BOTH marveen-land.sh's own block AND mopsion-land.sh's own block (cleancore-land.sh
+    // is the symlink to it) -- unlike every other bump in this history, this one touches both
+    // landers' own blocks symmetrically, since the fix itself is duplicated (not shared-lib) code.
+    //
     // marveen-land.sh's own-case constant moved 3 -> 7 with card cd3e577b (F1 per-card
     // worktree/branch: card_designated_gates_agree + --card/--all gate-requirement cases), then
     // 7 -> 10 with card 3731c807 (cd3e577b follow-up: the acquire_land_lock call-site pin, the
@@ -179,8 +191,13 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // fix: one new case in marveen-land-run-fg-killable.selftest.sh, folded into marveen-land.sh's
     // own --selftest total the same way the HUP/INT cases above were) -- marveen-only own-block,
     // cleancore-land.sh untouched, same category as every other bump in this comment history.
-    expect(cc).toBeGreaterThan(49) // 49 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(34) // 34 = marveen-land.sh's own cases
-    expect(cc - 49).toBe(mv - 34) // the same shared block, in both
+    // cc 51 -> 54 and mv 36 -> 39 with card 2ba008f2 round 4 (CYBERSEC NO-GO 32558 F1:
+    // _session_outage_active's python3 crash polarity): the SAME 3 new cases (outage-check
+    // python3 crashing with exit 1/137/139 must refuse the --actor mikrob bypass) were added to
+    // BOTH marveen-land.sh's own block AND mopsion-land.sh's own block, same symmetric-duplicated-
+    // code pattern round 3 established two bumps above.
+    expect(cc).toBeGreaterThan(54) // 54 = cleancore-land.sh's own cases
+    expect(mv).toBeGreaterThan(39) // 39 = marveen-land.sh's own cases
+    expect(cc - 54).toBe(mv - 39) // the same shared block, in both
   })
 })
