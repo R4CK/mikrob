@@ -27234,3 +27234,38 @@ MikroB üzenet 20198 megerősítette, hogy `origin/card/e3cf26d0` már 704b4d5cf
 (nem kellett újra rebase-elni). backend végezte. Gate-SHA:
 3b15170ea236ac3f7f9eb530326520fe587345a7. Gate: QA + Cybersec (WhiteHat) -- RedHat (cybered)
 javasolta a fixet, tehát a biztonsági re-gate WhiteHat (4f. munkavégzési szabály).
+
+## 2026-11-18 -- 5dd0842a: Koteg 25 (f0cfd842b..66d38ee45, 25 commit) upstream szinkron -- zöld fleet-test
+
+Szotasz/marveen upstream szinkron következő kötege (e5c46e87 FÁZIS része, Koteg 24 = 57044a66
+után). `git merge --no-ff 66d38ee45`, 22 konfliktusos fájl + 2 modify/delete + downstream
+auto-merge melléhatás feloldva (ennek során 5 valódi bug kiderült: duplikált `consume_approval`
+`seeme-send.py`-ban, duplikált allow/deny/isInvokedDirectly re-deklarálás `self-pace-gate.mjs`-ben,
+pozíciós-argumentum eltolódás `memories.ts`-ben, hiányzó `resumeSending` Set `context-guard-runner.ts`-ben,
+lógó `mayIssueCredentials` hívási helyek `auth.ts`/`security.ts`-ben). Commit `1825c0a32`.
+
+Teljes `fleet-test.sh` (a kártya saját "Kész, ha" pontja, nem scope-olt futás -- lásd 7c79badc:
+a scope-olt futás elrejt piros fájlokat) első köre `cb64fecd8`-n (korábbi session lint-fixe után):
+19 sikertelen teszt-fájl / 48 sikertelen teszt. Mindegyik gyökér-okra visszavezetve és javítva
+(`0acf9e1c1` + chmod-fix `9d35c7030`), lásd a kártya REVIEW-ját a fájlonkénti bontásért. Két eset
+visszautasított upstream-funkciót tesztelt (DEVKEYMINT1022 bearer-bootstrap kivétel, card 49960046;
+APPROVALCONSUME1022 HTTP-consume, `seeme-send.py` saját KEEP FORK bejegyzése) -- a teszt-fájl
+törölve, `acknowledged-conflicts.ts` + `fork-upstream-conflict-guard.test.ts` backlog bejegyzéssel
+rögzítve, nem viselkedés-hiba. Egy eset önhibából eredő regresszió volt egy korábbi körből
+(`auth-routes.test.ts`, visszaállítva). `scripts/hooks/sender_check.py` hiányzott teljesen
+(upstream-ban megvan, de a korábbi merge-kör sosem portolta) -- scope-olt port készült, csak a
+`Refused`/`_copy_check` rész, ennek a forknak a saját `outgoing-copy-gate.py` konstansaival, az
+email-approval-gate/recipient-ledger wiring (Node-oldali megfelelő: `scripts/recipient-ledger.mjs`,
+külön álló NOT ADOPTED döntés) és upstream missing-rules-file refuse-policy-ja SZÁNDÉKOSAN nem
+portolva (ez a hook Telegram-riasztásra megy, fail-open-with-warning a helyes, nem upstream email-
+küldőknek való unconditional refuse -- a hook saját docstringje dokumentálja a különbséget).
+
+**Mérés:** `fleet-test.sh` (teljes, nem scope-olt, `9d35c7030`-on): 1369 Test Files passed | 1
+skipped (1370), 42804 Tests passed | 132 skipped (42936), 0 FAIL. Duration 647.90s.
+`lint-ratchet.sh`: no rule got worse (422 finding, baseline tartja magát).
+
+**Ki döntött:** backend3 végezte (kártya felvétele: MikroB dispatch 20498). Gate-SHA:
+0acf9e1c1,9d35c7030. Gate: QA + Cybersec (WhiteHat) + Cybered (RedHat) -- ez a kör
+`src/web/routes/auth.ts`/`security.ts`-t is érintette (`auth-routes.test.ts` self-korrekció), ugyanaz
+a fájl-osztály, ami Koteg 24-en (57044a66) Cybered-et kapott. `66d38ee45` `git merge-base
+--is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
