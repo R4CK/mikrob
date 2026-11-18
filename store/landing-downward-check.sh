@@ -157,6 +157,22 @@ foreign_cards() {
 # live board. Reuses gate-closure-check.py's own verdict logic rather than re-deriving "does this
 # card have an unresolved rejection" from raw comments a second time -- that tool already does
 # exactly this, with its own extensive test coverage.
+#
+# Card 8ca1f91d: an upstream (Szotasz/marveen) commit subject can carry "(card 513c886e)" for a
+# card that lives on THEIR board, not ours -- cards_in_subject has no way to tell a foreign-board
+# id from one of our own stacked cards, since both are just 8 hex chars after the word "card". The
+# false positive this card fixes: 5dd0842a (upstream Koteg 25) was refused landing because an
+# upstream commit named card 513c886e, 404 on our board. Confirmed existence, not inferred from a
+# downstream parse failure: a timeout/5xx/malformed response answers "exists" (rc 0), the same
+# fail-closed default downward_check already has for anything it cannot positively rule out.
+#   _card_exists_on_board <id>  -- rc 0 = exists (or unknown), rc 1 = confirmed 404
+_card_exists_on_board() {
+  local id="$1" http_code
+  http_code="$(printf 'Authorization: Bearer %s\n' "$(cat "${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}" 2>/dev/null)" \
+    | curl -sS -m 20 -H @- -o /dev/null -w '%{http_code}' "${GATE_CHECK_API:-http://127.0.0.1:3420}/api/kanban/$id" 2>/dev/null)"
+  [ "$http_code" != "404" ]
+}
+
 _foreign_card_verdict() {
   local id="$1" body verdict
   body="$(printf 'Authorization: Bearer %s\n' "$(cat "${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}" 2>/dev/null)" \
@@ -243,8 +259,28 @@ downward_check() {
   n="$(printf '%s\n' "$log" | grep -c . || true)"
   cards="$(printf '%s\n' "$log" | distinct_cards | tr '\n' ' ')"
   unattr="$(printf '%s\n' "$log" | unattributed_commits)"
-  fgc="$(printf '%s\n' "$log" | foreign_commits "$own" "$allow")"
-  fgn="$(printf '%s\n' "$log" | foreign_cards "$own" "$allow")"
+
+  # Card 8ca1f91d: a card id named in the log that is confirmed 404 on OUR board (an upstream
+  # repo's own card reference, a typo, a deleted card) is not foreign work -- there is nothing of
+  # ours to check or refuse on. Fold confirmed-404 ids into the allow set BEFORE classifying, the
+  # same treatment --allow-stacked gives an id the operator vouches for, so foreign_commits/
+  # foreign_cards (and, downstream, foreign_card_gate_check) never see them as foreign at all.
+  local nonexistent="" _own_lc _allow_lc
+  _own_lc="$(printf '%s' "${own:-}" | tr 'A-F' 'a-f')"
+  _allow_lc=",$(printf '%s' "${allow:-}" | tr 'A-F' 'a-f' | tr -d '[:space:]'),"
+  while IFS= read -r _nid; do
+    [ -n "$_nid" ] || continue
+    [ "$_nid" = "$_own_lc" ] && continue
+    case "$_allow_lc" in *",$_nid,"*) continue ;; esac
+    _card_exists_on_board "$_nid" || nonexistent="$nonexistent,$_nid"
+  done <<< "$(printf '%s\n' "$log" | distinct_cards)"
+  local effective_allow="$allow$nonexistent"
+  if [ -n "$nonexistent" ]; then
+    echo "  $label: not fleet cards (404 on this board, not foreign work): ${nonexistent#,}"
+  fi
+
+  fgc="$(printf '%s\n' "$log" | foreign_commits "$own" "$effective_allow")"
+  fgn="$(printf '%s\n' "$log" | foreign_cards "$own" "$effective_allow")"
 
   echo "  $label: $n commit(s) ride along; cards named: ${cards:-none}"
   # An override that leaves no trace is the same silence this check exists to end: without this
@@ -309,6 +345,15 @@ downward_selftest_cases() {
   # case (no verdict yet at all) rather than accidentally exercising the FAILED path everywhere.
   # Cases further down override this locally to exercise foreign_card_gate_check itself.
   _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
+
+  # Card 8ca1f91d: same reason as the _foreign_card_verdict stub above -- downward_check now also
+  # calls _card_exists_on_board on every distinct card id in the log, and every fixture id in this
+  # suite (11111111, 22222222, ...) is made up, not a real board card. Without this stub the real
+  # curl-based implementation would hit the live dashboard, get a genuine 404 for every one of
+  # them, and fold them ALL into "not a fleet card" -- silently flipping every existing "refuses"
+  # case in this file into a pass. Default to "exists" so the pre-existing cases keep meaning what
+  # they always meant; the 404 cases further down override this locally for the one id under test.
+  _card_exists_on_board() { return 0; }
 
   t "anchored: reads the id after 'card'" \
     "$(cards_in_subject 'feat(x): thing (card 0f7f7fe9, round 4)')" "0f7f7fe9"
@@ -465,6 +510,30 @@ downward_selftest_cases() {
   t "a foreign card that already AGREE-closes does not trip the gate check" \
     "$(rc_of "$L" 11111111 '' 0)" "0"
   _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
+
+  # Card 8ca1f91d: the stacked-card false positive this card fixes. An upstream (or otherwise
+  # foreign-board) commit can say "(card <id>)" for an id that is simply not one of our fleet
+  # cards -- 5dd0842a (upstream Koteg 25) was refused this way over card 513c886e, 404 on our
+  # board. A card id that is confirmed 404 must be treated like an allow-listed one: no refusal,
+  # no gate-verdict check (there is nothing of ours to check), reported so it is never silent.
+  L="$(printf 'aaa1111\tfeat: own (card 11111111)\nbbb2222\tfeat(upstream): port a thing (card 513c886e)\n')"
+  _card_exists_on_board() { [ "$1" = "513c886e" ] && return 1 || return 0; }
+  t "a 404 card ref lands WITHOUT --allow-stacked (the upstream-commit false positive)" \
+    "$(rc_of "$L" 11111111)" "0"
+  t "...the 404 id is reported, not silently dropped" \
+    "$(downward_check "$L" 11111111 '' 1 test 2>/dev/null | grep -c 'not fleet cards (404 on this board, not foreign work): 513c886e')" "1"
+  t "...and it is NOT counted among the (empty) foreign cards" \
+    "$(printf '%s\n' "$L" | foreign_cards 11111111 ',513c886e' | grep -c .)" "0"
+  _card_exists_on_board() { return 0; }
+
+  # The other half of the same acceptance criterion: a card id that DOES exist is not waved away
+  # just because it looks the same shape as the 404 case above -- the existing refusal (tested
+  # extensively above with real fixture ids, _card_exists_on_board stubbed to "exists") still
+  # holds. Re-asserted here explicitly against the 404 path so the two behaviours are pinned side
+  # by side, not just independently plausible.
+  L="$(printf 'aaa1111\tfeat: own (card 11111111)\nbbb2222\tfix: someone else (card 22222222)\n')"
+  t "a REAL, still-existing stacked fleet card is still refused (not swept up by the 404 fix)" \
+    "$(rc_of "$L" 11111111)" "1"
 
   # Card c266ec74 (Cybersec DELTA NO-GO on Gate-SHA 177dcccf, reproduced live): "could not check" is
   # NOT "checked and clean". Before this fix, neither an unreachable dashboard API nor a broken
