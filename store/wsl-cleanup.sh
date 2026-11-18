@@ -40,6 +40,9 @@ MIN_AGE_MIN="${WSL_CLEANUP_MIN_AGE_MIN:-120}"       # throwaway worktrees: 2h
 TMP_MIN_AGE_MIN="${WSL_CLEANUP_TMP_MIN_AGE_MIN:-2880}" # /tmp entries: 48h
 
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
+# env-overridable (default unchanged) so a selftest can point the /tmp sweep at a throwaway
+# sandbox dir instead of the real /tmp -- same pattern as MARVEEN_MAIN/CLEANCORE_MAIN above.
+WSL_CLEANUP_TMP_DIR="${WSL_CLEANUP_TMP_DIR:-/tmp}"
 # shellcheck source=./env-compat-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
 CLEANCORE_MAIN="$(env_compat_get MOPSION_MAIN CLEANCORE_MAIN /mnt/h/LM_Studio_Workdir/mopsion)"
@@ -61,6 +64,7 @@ git_dirty_or_failed() {
 
 freed_worktrees=0
 skipped_dirty=0
+skipped_git_rc=0
 skipped_live_pid=0
 
 # --- 1. throwaway land/test worktrees, per repo -----------------------------------------
@@ -98,10 +102,15 @@ sweep_throwaway_worktrees() {
     if git_dirty_or_failed git -C "$wt" status --porcelain; then
       if [ "$GIT_DIRTY_OR_FAILED_RC" -ne 0 ]; then
         say "SKIP (git rc=$GIT_DIRTY_OR_FAILED_RC): $wt"
+        # Cybered LOW (card c9c1f159, on top of 6c41214a's fix): a silently-failing git and a
+        # genuinely dirty worktree are different signals for whoever reads the summary line (one
+        # is "git itself is broken", the other is "there's real uncommitted work") -- counted
+        # separately instead of folding the rc case into skipped_dirty.
+        skipped_git_rc=$((skipped_git_rc + 1))
       else
         say "SKIP (uncommitted changes): $wt"
+        skipped_dirty=$((skipped_dirty + 1))
       fi
-      skipped_dirty=$((skipped_dirty + 1))
       continue
     fi
     say "removing throwaway worktree: $wt (age ${age_min}m)"
@@ -116,7 +125,7 @@ sweep_throwaway_worktrees "$CLEANCORE_MAIN" '^/home/neon/cc-land(-base)?-[a-zA-Z
 run "git -C '$MARVEEN_MAIN' worktree prune 2>/dev/null"
 run "git -C '$CLEANCORE_MAIN' worktree prune 2>/dev/null"
 
-say "throwaway worktrees removed: $freed_worktrees, skipped (uncommitted): $skipped_dirty, skipped (live pid): $skipped_live_pid"
+say "throwaway worktrees removed: $freed_worktrees, skipped (uncommitted): $skipped_dirty, skipped (git rc): $skipped_git_rc, skipped (live pid): $skipped_live_pid"
 
 # --- 2. package-manager caches (content-addressable / re-downloadable) -------------------
 if command -v pip >/dev/null 2>&1; then
@@ -140,9 +149,47 @@ fi
 run "rm -rf '$HOME/.cache/node-gyp'/* 2>/dev/null"
 
 # --- 3. /tmp: entries untouched for TMP_MIN_AGE_MIN, excluding system paths -------------
-run "find /tmp -mindepth 1 -maxdepth 1 -mmin +$TMP_MIN_AGE_MIN \
-  -not -name '.X11-unix' -not -name '.font-unix' -not -name '.ICE-unix' \
-  -exec rm -rf {} + 2>/dev/null"
+# MEDIUM (Cybered GO 32928 on 6c41214a, card c9c1f159): the old single `find ... -mmin +N -exec
+# rm -rf` judged age from the TOP-LEVEL entry's own mtime only. A directory whose top mtime is
+# old but holds a file written seconds ago (e.g. a long-running test's scratch dir, touched only
+# once at creation) got removed mid-use. Fix: for a directory candidate, also check whether
+# anything INSIDE it is fresher than the threshold, and skip removal if so, or if that inner
+# check itself fails (fail closed -- an unreadable subtree is not evidence of staleness).
+tmp_inner_fresh_or_failed() {
+  local out rc
+  out="$(find "$1" -mmin "-$TMP_MIN_AGE_MIN" -print -quit 2>&1)"; rc=$?
+  [ -n "$out" ] || [ "$rc" -ne 0 ]
+}
+
+sweep_tmp() {
+  local entry name mtime now age_min
+  now=$(date +%s)
+  local removed=0 skipped_fresh_inner=0 skipped_stat=0
+  while read -r entry; do
+    name="$(basename "$entry")"
+    # NAME-PATTERN guard: X11/font/ICE unix-socket dirs other live sessions depend on.
+    case "$name" in
+      .X11-unix|.font-unix|.ICE-unix) continue ;;
+    esac
+    # STAT guard: an entry that vanished mid-sweep (TOCTOU) or that stat can't read is not
+    # evidence of staleness -- skip it rather than treat the failed read as "ancient".
+    mtime="$(stat -c %Y "$entry" 2>/dev/null)" || { skipped_stat=$((skipped_stat + 1)); continue; }
+    age_min=$(( (now - mtime) / 60 ))
+    # AGE guard: only entries old enough at the top level are even candidates.
+    [ "$age_min" -ge "$TMP_MIN_AGE_MIN" ] || continue
+    # ISDIR guard: the inner-freshness check only means something for a directory -- a plain
+    # file's own mtime (already checked above) IS its content.
+    if [ -d "$entry" ] && tmp_inner_fresh_or_failed "$entry"; then
+      skipped_fresh_inner=$((skipped_fresh_inner + 1))
+      continue
+    fi
+    run "rm -rf '$entry'"
+    removed=$((removed + 1))
+  done < <(find "$WSL_CLEANUP_TMP_DIR" -mindepth 1 -maxdepth 1 2>/dev/null)
+  say "/tmp sweep: removed $removed, skipped (fresh inner file): $skipped_fresh_inner, skipped (stat failed): $skipped_stat"
+}
+
+sweep_tmp
 
 # --- 4. root-owned caches, best-effort only (never blocks on a password prompt) ---------
 if sudo -n true 2>/dev/null; then
