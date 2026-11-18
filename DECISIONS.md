@@ -27464,3 +27464,44 @@ MikroB/Peti döntésére vár.
 **Hivatkozás:** kártya 4e9ad774 (szülő: c65add5a), 81593084 (komment 32549, Gate-SHA
 2997183f), `src/kg/import-mt10-cli.ts`, `src/__tests__/kg-import-mt10-cli.test.ts`,
 `src/security/secret-gate.ts`.
+
+## 2026-11-18 -- 339ad171: cybersec2 CYBERSEC NO-GO (komment 33084) 3 lelet javítva a card_landings done-guardon
+
+**A hiba.** A CYBERSEC NO-GO (komment 33084, Gate-SHA 45429adb8) három leletet hagyott az F2.2
+card_landings done-guardon (`src/web/kanban-card-landings-guard.ts`), F1-et és F2-t blokkolóként,
+F3-at "ugyanebben a körben javítandó"-ként jelölve.
+
+**F1 javítva (MEDIUM).** A guard saját warn-kommentje szó szerint idézi a "Landing: n/a"
+kibúvó-sort, és az ungated kártyák kibúvó-keresése szerző-szűrő nélkül futott -- egy egyszer
+warn-olt, nem gate-elt kártya a KÖVETKEZŐ (enforce) ellenőrzésnél önmagát mentette ki. A
+kibúvó-keresés most kihagyja a guard saját (GUARD_AUTHOR) kommentjeit és minden
+generált/automatizált (GENERATED_COMMENT_AUTHORS) kommentet.
+
+**F2 javítva (MEDIUM).** A sha-kötés szabály (MikroB komment 28280) csak akkor futott, ha volt
+gate-elt sha -- egy SOHA nem gate-elt kártya (nincs builder REVIEW Gate-SHA sorral) egyetlen
+card_landings sor létezésére átment, pontosan a "card_id-n önmagán alapuló landolás" eset, amit
+a szabály tilt (pl. egy docs commit, ami csak annyit ír, "lásd card <id>"). Egy nem gate-elt
+kártya most ugyanúgy viselkedik, mint egy nulla sorral rendelkező: nincs mihez kötni a landolást.
+
+**F3 javítva (MEDIUM-LOW).** A `latestGatedSha()` a legújabb REVIEW-alakú, Gate-SHA-t viselő
+kommentet vette, szerzőtől függetlenül -- egy gate saját visszaigazolása (vagy egy generált
+komment) felülírhatta a valódi builder-átadást, amit a gate-ek tényleg megítéltek. Most csak
+nem-gate, nem-generált szerző kommentje jelölheti ki a gate-elt shát -- a
+`kanban-gate-completeness-guard.ts` saját `GATE_AGENT_NAMES`-ét és a
+`kanban-landed-guard.ts` `GENERATED_COMMENT_AUTHORS`-ét újrahasznosítva, nem újra levezetve.
+
+**F4/F5 nyitva marad.** Cybersec2 saját verdiktje szerint LOW, illetve INFO, nem része a NO-GO-nak
+-- dokumentált, ismert korlátként marad, ugyanúgy, mint a testvér-guardokon (F5).
+
+**Mérés:** 7 új teszt (29 összesen: 22 régi + 7 új), mind PASS. Regresszió: a guard saját
+suite-ja + 6 testvér close-door guard/route suite a kanban.ts-ben (ugyanaz a kör, amit QA2 az 1.
+körben futtatott) -- 249/249, 0 új bukás. `tsc --noEmit` tiszta. `lint-ratchet.sh --show`: 422
+lelet, alapvonal tart, 0 új.
+
+**Ki döntött:** backend3 (a fix szerzője), cybersec2 CYBERSEC NO-GO Fix-Direction-je alapján
+(komment 33084). Delta re-gate (Peti szabály, 2026-11-14): diff + célzott suite-ok, nincs teljes
+fleet-test ebben a körben.
+
+**Hivatkozás:** kártya 339ad171 (szülő: 471d0fdc), cybersec2 NO-GO komment 33084 (Gate-SHA
+45429adb8), REVIEW komment 33095 (Gate-SHA 2f34c9948), `src/web/kanban-card-landings-guard.ts`,
+`src/__tests__/kanban-card-landings-guard.test.ts`.
