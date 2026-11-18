@@ -252,3 +252,47 @@ describe('gate-pretriage.sh -- usage', () => {
     expect(r.findings).toEqual([])
   })
 })
+
+describe('gate-pretriage.sh -- --trunk land parity is opt-in (card a42d27e1)', () => {
+  // The real land-parity behaviour (merge + lint-ratchet + importer sweep against the ACTUAL
+  // marveen repo, verified by hand against 3 real historical incidents: 2ba008f2 @13ae7ee37,
+  // 9ea8dcb8 @5b5875695, 56344ff4 @093280a1d, plus a clean control at 517ba7f6 @b777d9b5d) is not
+  // re-fixtured here -- it needs a real git merge, a real lint-ratchet.sh/ESLint config and a real
+  // fleet-test.sh run, none of which a throwaway one-commit repo can cheaply stand in for. What a
+  // fixture repo CAN prove, cheaply and deterministically, is the opt-in boundary itself: omitting
+  // --trunk must never add any land-parity finding, for ANY commit, not just the clean ones above.
+  it('never adds a land-parity finding when --trunk is omitted, even with a real conflict present', () => {
+    // Plant the exact shape that --trunk WOULD flag (two branches both appending to the same
+    // file's tail) and confirm the DEFAULT (no --trunk) run never attempts a merge at all.
+    git('checkout', '-q', '-b', 'other')
+    writeFileSync(join(repo, 'seed.txt'), 'seed\nother branch addition\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'other branch tail-append')
+    git('checkout', '-q', 'master')
+    writeFileSync(join(repo, 'seed.txt'), 'seed\nmaster branch addition\n')
+    const r = commitAndTriage({})
+    for (const check of [
+      'land-parity-merge',
+      'decisions-union-would-refuse',
+      'land-merge-conflicts',
+      'lint-ratchet-regression',
+      'lint-ratchet-unmeasured',
+      'importer-sweep-red',
+      'importer-sweep-green',
+      'importer-sweep-empty',
+      'land-parity-skipped',
+    ]) {
+      expect(find(r, check), `${check} must not appear without --trunk`).toBeUndefined()
+    }
+  })
+
+  it('--trunk pointed at an unresolvable ref reports land-parity-skipped, not a crash', () => {
+    const out = execFileSync(
+      'bash',
+      [SCRIPT, '--repo', repo, '--trunk', 'refs/does-not-exist', '--json'],
+      { encoding: 'utf-8' },
+    )
+    const r = JSON.parse(out) as { findings: Finding[] }
+    expect(find(r, 'land-parity-skipped')?.severity).toBe('info')
+  })
+})

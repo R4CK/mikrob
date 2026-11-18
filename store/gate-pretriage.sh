@@ -258,8 +258,13 @@ if [[ -n "$TRUNK" ]]; then
           sweep_out="$(bash "$REPO/store/fleet-test.sh" --ref "$merge_sha" "${rel_importers[@]}" 2>&1)"
           sweep_rc=$?
           if [[ $sweep_rc -ne 0 ]]; then
+            # The importer list itself can run into the hundreds (the sweep is deliberately a wide
+            # grep, not a precise import graph) -- the finding names the FAILING file(s) and the
+            # vitest "FAIL"/"Tests ... failed" lines, never the full candidate list, which a blind
+            # `tail -N` cannot reliably surface once vitest's own trailing perf hint outgrows it.
+            fail_lines="$(printf '%s' "$sweep_out" | grep -E '^\s*(FAIL|⎯⎯⎯⎯⎯⎯⎯ Failed Tests|Tests .*failed)' | head -8)"
             add "fail" "importer-sweep-red" \
-              "${#rel_importers[@]} importer file(s) (${rel_importers[*]}) red against the merged tree: $(printf '%s' "$sweep_out" | tail -5 | tr '\n' ' ')"
+              "${#rel_importers[@]} importer file(s) swept, at least one red against the merged tree -- $(printf '%s' "$fail_lines" | tr '\n' ' ' | sed 's/^ *//')"
           else
             add "info" "importer-sweep-green" "${#rel_importers[@]} importer test file(s) green against the merged tree"
           fi
