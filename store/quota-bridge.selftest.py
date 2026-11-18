@@ -781,6 +781,59 @@ def main() -> int:
         m.stop_ghost_runner, m.clear_session_outage, m.sys.exit = old_stop, old_clear, old_exit
         m._active_ghost_runner = None
 
+    # --- ENTRY-SIDE HYSTERESIS wiring (card f490ae53): record_outage_probe() + should_declare_
+    # --- outage() are the two pure-ish helpers main()'s loop calls each tick; kill_pid_holder()
+    # --- must be reachable ONLY when should_declare_outage() is True. Driven directly (no infinite
+    # --- loop, no network) -- the pure confirm_outage() math itself is pinned in
+    # --- quota-switchback.selftest.py; this pins that quota-bridge.py's OWN wiring calls it and
+    # --- gates kill_pid_holder() on it, which is what the real flap (quota-bridge.log 21:52:31
+    # --- kill -> 21:52:35 recover, repeated many times on 2026-11-18 and 2026-11-14) needs fixed.
+    old_kill = m.kill_pid_holder
+    kill_calls = {"n": 0}
+    m.kill_pid_holder = lambda: kill_calls.__setitem__("n", kill_calls["n"] + 1)
+    try:
+        # Replay the exact flap shape: down, then up 4s later. should_declare_outage() must say
+        # False, and -- the acceptance criterion requirement -- kill_pid_holder() (and therefore
+        # the bot.pid overwrite inside it) must never be reached for this state.
+        state = {"phase": "healthy", "outage_probe_log": []}
+        m.record_outage_probe(state, down=True, now=3_000_000.0)
+        m.record_outage_probe(state, down=False, now=3_000_000.0 + 4)
+        declared = m.should_declare_outage(state, confirm_probes=2, min_gap_sec=45)
+        if declared is False:
+            ok("should_declare_outage() rejects the 4s flap (card f490ae53 replay)")
+        else:
+            bad("should_declare_outage() should reject the 4s flap", declared)
+        if kill_calls["n"] == 0:
+            ok("kill_pid_holder() is never called for a state the hysteresis rejects "
+               "(no bot.pid overwrite on an aborted takeover)")
+        else:
+            bad("kill_pid_holder() must not be called when should_declare_outage() is False",
+                kill_calls)
+
+        # Positive control: a genuinely sustained outage (two down readings >=45s apart, nothing
+        # healthy between them) must still confirm and reach kill_pid_holder() -- the fix must not
+        # make a real outage unreachable.
+        kill_calls["n"] = 0
+        state2 = {"phase": "healthy", "outage_probe_log": []}
+        m.record_outage_probe(state2, down=True, now=4_000_000.0)
+        m.record_outage_probe(state2, down=True, now=4_000_000.0 + 46)
+        declared2 = m.should_declare_outage(state2, confirm_probes=2, min_gap_sec=45)
+        if declared2 is True:
+            ok("should_declare_outage() confirms a sustained outage (>=45s, no healthy reading "
+               "between) (positive control)")
+        else:
+            bad("should_declare_outage() should confirm a genuinely sustained outage", declared2)
+        if declared2:
+            m.kill_pid_holder()
+        if kill_calls["n"] == 1:
+            ok("kill_pid_holder() is reachable and called exactly once for a confirmed sustained "
+               "outage (fix does not block a real takeover)")
+        else:
+            bad("kill_pid_holder() should be called once a sustained outage is confirmed",
+                kill_calls)
+    finally:
+        m.kill_pid_holder = old_kill
+
     print(f"\nselftest: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
 

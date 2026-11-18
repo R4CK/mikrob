@@ -70,6 +70,49 @@ def record_probe(probe_log, ok, ts, max_len=20):
     return new_log[-max_len:]
 
 
+def confirm_outage(probe_log, confirm_probes=2, min_gap_sec=45):
+    """ENTRY-SIDE mirror of confirm_switchback, for card f490ae53: a single mikrob_down()==True
+    reading used to be enough (quota-bridge.py's old banner_streak counter had no minimum time
+    span, only a consecutive-count), and a 2026-11-18 quota-bridge.log flap (SIGTERM at 21:52:31,
+    "MikroB recovered" 4s later at 21:52:35, repeated many times that day) showed that count alone
+    does not bound real elapsed time -- a process restart between two polls can produce two
+    "down" readings a fraction of a second apart. True only when the trailing run of probes is
+    ALL down (ok=False), that run has at least `confirm_probes` entries, and the oldest-to-newest
+    span of that trailing down-run is >= min_gap_sec. A single ok=True probe anywhere in the
+    trailing window resets the run to zero, exactly like confirm_switchback -- so a down-then-up
+    flap of any length never confirms, independent of the gap check."""
+    if confirm_probes < 1:
+        return False
+    run = []
+    for entry in reversed(probe_log):
+        if entry.get("ok"):
+            break
+        run.append(entry)
+    if len(run) < confirm_probes:
+        return False
+    newest_ts = run[0]["ts"]
+    oldest_ts = run[confirm_probes - 1]["ts"]
+    return (newest_ts - oldest_ts) >= min_gap_sec
+
+
+def load_outage_confirm_config(path=HYSTERESIS_CONFIG):
+    """I/O: entry-side (outage-DECLARATION) confirm-over-N-probes config, same file as
+    load_hysteresis_config, different keys (confirmProbesIn/minGapSecIn) so one file documents
+    both directions of the same rule. Defaults reproduce quota-bridge.py's pre-fix intent:
+    CONFIRM_CHECKS=2 consecutive checks, POLL_HEALTHY_SEC=45s apart -- i.e. the two numbers the
+    old code already used, just with an explicit minimum real-time span instead of a bare count."""
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+        confirm_probes = int(raw.get("confirmProbesIn", 2))
+        min_gap_sec = int(raw.get("minGapSecIn", 45))
+        if confirm_probes < 1 or min_gap_sec < 0:
+            raise ValueError("out of range")
+        return confirm_probes, min_gap_sec
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 2, 45
+
+
 def confirm_switchback(probe_log, confirm_probes=2, min_gap_sec=300):
     """SWITCHBACK-HYSTERESIS-V1: True only when the trailing run of probes is ALL ok, that run
     has at least `confirm_probes` entries, and the oldest-to-newest span of that trailing ok-run

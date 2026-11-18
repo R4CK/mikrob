@@ -72,6 +72,51 @@ check(
     qs.confirm_switchback(straddling_log, confirm_probes=2, min_gap_sec=300) is False,
 )
 
+# --- card f490ae53: confirm_outage() mirrors confirm_switchback for the ENTRY (outage-declare)
+# --- direction. Same flap shape as the quota-bridge.log evidence: a down reading followed by an
+# --- up reading 4s later must NOT confirm, regardless of count. ------------------------------
+t1 = 2_000_000.0
+flap_log = []
+flap_log = qs.record_probe(flap_log, ok=False, ts=t1)        # down
+flap_log = qs.record_probe(flap_log, ok=True, ts=t1 + 4)      # up 4s later (the 21:52:31/:35 flap)
+check(
+    "down then up 4s later does not confirm an outage (card f490ae53 flap replay)",
+    qs.confirm_outage(flap_log, confirm_probes=2, min_gap_sec=45) is False,
+)
+
+# Two down readings close together (e.g. a fast process-restart edge) must also fail: count alone
+# is not enough, the real-time span matters.
+close_down_log = [{"ok": False, "ts": t1}, {"ok": False, "ts": t1 + 1}]
+check(
+    "two down readings 1s apart does not confirm an outage (count without a real gap)",
+    qs.confirm_outage(close_down_log, confirm_probes=2, min_gap_sec=45) is False,
+)
+
+# Positive control: a genuinely sustained outage (down readings spanning >= min_gap_sec, none
+# interrupted by an up reading) DOES confirm.
+sustained_down_log = [{"ok": False, "ts": t1}, {"ok": False, "ts": t1 + 46}]
+check(
+    "two down readings >=45s apart, no up reading between, DOES confirm (positive control)",
+    qs.confirm_outage(sustained_down_log, confirm_probes=2, min_gap_sec=45) is True,
+)
+
+# A single up reading anywhere in the trailing window breaks the run, even when the overall span
+# would otherwise satisfy the gap -- mirrors M3's straddling case for confirm_switchback.
+straddling_down_log = [
+    {"ok": False, "ts": t1},
+    {"ok": True, "ts": t1 + 20},
+    {"ok": False, "ts": t1 + 50},
+]
+check(
+    "down, up, down spanning >=45s straddling the up reading does not confirm",
+    qs.confirm_outage(straddling_down_log, confirm_probes=2, min_gap_sec=45) is False,
+)
+
+check(
+    "load_outage_confirm_config() defaults to (2, 45) on a missing/corrupt file",
+    qs.load_outage_confirm_config("/nonexistent/path.json") == (2, 45),
+)
+
 # --- Kesz-ha 4: quota-bridge.py and gemini-fallback-runner share the SAME confirmation rule -----
 PY_SRC = f"{STORE}/quota-bridge.py"
 TS_SRC = os.path.join(STORE, "..", "src", "gemini-fallback.ts")
