@@ -44,6 +44,37 @@ set -uo pipefail
 POST_REVIEW_API="${POST_REVIEW_API:-http://127.0.0.1:3420}"
 POST_REVIEW_TOKEN_FILE="${POST_REVIEW_TOKEN_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.dashboard-token}"
 GATE_SHA_REPO_SCRIPT="${GATE_SHA_REPO_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gate-sha-repo.sh}"
+# F1.3 (card 14bfc893, phase ed332869): REVIEW posting records a checkpoint (F1.1's branchless
+# ref + F1.2's card_checkpoints table), so gate-closure-check.py's --card-id/--db coverage check
+# has something to check against. Best-effort: a worktree that does not exist for this actor (not
+# every role keeps one the same way backend/fullstack do) must never block the REVIEW itself.
+AGENT_CHECKPOINT_SCRIPT="${AGENT_CHECKPOINT_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-checkpoint.sh}"
+AGENT_WORKTREE_SCRIPT="${AGENT_WORKTREE_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-worktree-marveen.sh}"
+
+# Records one row in card_checkpoints for this REVIEW, or prints a warning and does nothing else.
+# Never affects the exit code -- a checkpoint is a bonus integrity record, not a new barrier.
+record_review_checkpoint() {
+  local card="$1" actor="$2"
+  [ -x "$AGENT_CHECKPOINT_SCRIPT" ] || return 0
+  local ckpt_out ckpt_sha wt_path head_sha
+  ckpt_out="$("$AGENT_CHECKPOINT_SCRIPT" "$actor" "$card" 2>/dev/null)" || {
+    echo "post-review: checkpoint not recorded for $actor on $card (agent-checkpoint.sh failed, likely no worktree) -- REVIEW unaffected." >&2
+    return 0
+  }
+  ckpt_sha="$(printf '%s' "$ckpt_out" | awk '{print $2}')"
+  [ -n "$ckpt_sha" ] || return 0
+  wt_path="$(bash "$AGENT_WORKTREE_SCRIPT" "$actor" --path 2>/dev/null)"
+  [ -n "$wt_path" ] && [ -e "$wt_path/.git" ] || return 0
+  head_sha="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)"
+  [ -n "$head_sha" ] || return 0
+  local ckpt_payload
+  ckpt_payload="$(python3 -c '
+import json, sys
+print(json.dumps({"sha": sys.argv[1], "head_sha": sys.argv[2], "agent": sys.argv[3]}))' \
+    "$ckpt_sha" "$head_sha" "$actor")" || return 0
+  _auth_header | curl -H @- -s -X POST "$POST_REVIEW_API/api/kanban/$card/checkpoints" \
+    -H 'Content-Type: application/json' --data-binary "$ckpt_payload" >/dev/null 2>&1 || true
+}
 
 # Which branch counts as "landed" for a repo gate-sha-repo.sh names.
 _landed_branch_for() {
@@ -227,6 +258,8 @@ if [ "$match" != "yes" ]; then
   echo "REFUSED: readback of comment $comment_id on card $card did not match what was sent -- card NOT moved to waiting." >&2
   exit 2
 fi
+
+record_review_checkpoint "$card" "$actor"
 
 move_payload="$(python3 -c '
 import json, sys

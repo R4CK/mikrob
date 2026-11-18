@@ -53,7 +53,7 @@ chmod +x "$WORK/curl"
 
 run() { # $1 label, remaining = args to post-review.sh, env already exported by caller
   WORK_LOG="$WORK/calls.log"; : >"$WORK_LOG"
-  export WORK WORK_LOG MATCH_MODE
+  export WORK WORK_LOG MATCH_MODE AGENT_CHECKPOINT_SCRIPT AGENT_WORKTREE_SCRIPT
   PATH="$WORK:$PATH" bash "$SCRIPT" "$@"
 }
 
@@ -259,6 +259,67 @@ Gate-SHA: n/a (config-only)
 Gate-SHA: $NONEXISTENT_SHA" gsM
 t_ok "$rc" 1 "n/a on line 1 plus a bogus Gate-SHA on line 2 refuses with exit 1"
 if [ -s "$WORK/calls.log" ]; then echo "  FAIL n/a-then-bogus still called curl: $(cat "$WORK/calls.log")"; fail=1; else echo "  ok   n/a-then-bogus never touched the board"; fi
+
+# F1.3 (card 14bfc893): a successful REVIEW post records a checkpoint via the (faked) F1.1
+# script and POSTs it to the (faked) F1.2 checkpoints endpoint, with sha/head_sha/agent correct.
+CKPT_WT="$WORK/ckpt-worktree"
+git init -q "$CKPT_WT"
+git -C "$CKPT_WT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+CKPT_HEAD="$(git -C "$CKPT_WT" rev-parse HEAD)"
+CKPT_SHA="0123456789012345678901234567890123456789"
+
+cat >"$WORK/fake-agent-checkpoint.sh" <<FAKECKPT
+#!/usr/bin/env bash
+echo "refs/mikrob/ckpt/\$2/1 $CKPT_SHA"
+FAKECKPT
+chmod +x "$WORK/fake-agent-checkpoint.sh"
+
+cat >"$WORK/fake-agent-worktree.sh" <<FAKEWT
+#!/usr/bin/env bash
+echo "$CKPT_WT"
+FAKEWT
+chmod +x "$WORK/fake-agent-worktree.sh"
+
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/ckpt.txt"
+MATCH_MODE=match
+: >"$WORK/calls.log"
+AGENT_CHECKPOINT_SCRIPT="$WORK/fake-agent-checkpoint.sh"
+AGENT_WORKTREE_SCRIPT="$WORK/fake-agent-worktree.sh"
+rc=0; run "cardCkpt" "$WORK/ckpt.txt" "backend" >"$WORK/out-ckpt.txt" 2>&1 || rc=$?
+t_ok "$rc" 0 "successful REVIEW post with checkpoint wiring still exits 0"
+ckpt_call="$(grep '/checkpoints' "$WORK/calls.log" || true)"
+n=$((n+1))
+if printf '%s' "$ckpt_call" | grep -q "$CKPT_SHA" && printf '%s' "$ckpt_call" | grep -q "$CKPT_HEAD" && printf '%s' "$ckpt_call" | grep -q 'backend'; then
+  echo "  ok   checkpoint POST carries the checkpoint sha, head sha, and agent"
+else
+  echo "  FAIL checkpoint POST missing expected fields: $ckpt_call"; fail=1
+fi
+n=$((n+1))
+if grep -q '/checkpoints' "$WORK/calls.log"; then
+  echo "  ok   checkpoint endpoint was actually called"
+else
+  echo "  FAIL checkpoint endpoint was never called"; fail=1
+fi
+
+# F1.3 negative: no worktree resolvable for the actor (fake-agent-worktree.sh prints an empty
+# path) -- checkpoint recording is skipped silently, the REVIEW itself still succeeds.
+cat >"$WORK/fake-agent-worktree-empty.sh" <<'FAKEWTEMPTY'
+#!/usr/bin/env bash
+echo ""
+FAKEWTEMPTY
+chmod +x "$WORK/fake-agent-worktree-empty.sh"
+printf 'REVIEW: all good\nGate-SHA: n/a (config-only)\n' >"$WORK/ckptnowt.txt"
+: >"$WORK/calls.log"
+AGENT_CHECKPOINT_SCRIPT="$WORK/fake-agent-checkpoint.sh"
+AGENT_WORKTREE_SCRIPT="$WORK/fake-agent-worktree-empty.sh"
+rc=0; run "cardCkptNoWt" "$WORK/ckptnowt.txt" "backend" >"$WORK/out-ckptnowt.txt" 2>&1 || rc=$?
+t_ok "$rc" 0 "no resolvable worktree: REVIEW still succeeds (checkpoint recording is best-effort)"
+n=$((n+1))
+if grep -q '/checkpoints' "$WORK/calls.log"; then
+  echo "  FAIL checkpoint endpoint was called despite no worktree"; fail=1
+else
+  echo "  ok   checkpoint endpoint not called when no worktree resolves"
+fi
 
 echo "post-review.sh selftest: $n checks"
 [ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL"

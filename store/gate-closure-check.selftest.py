@@ -1465,6 +1465,71 @@ print("%s %-9s <- %-9s %s" % (
 if not _ok_d:
     failures.append(("F1 ckpt: CLI AGREE->CHECKPOINT_FAIL", "CHECKPOINT_FAIL",
                      _cli_p.stdout.strip()))
+
+# Case E (card 14bfc893): a REAL, reachable clone (a fresh git repo, MARVEEN_MAIN pointed at it)
+# but the declared Gate-SHA names a commit that was NEVER made there -> FABRICATED, not
+# CHECKPOINT_FAIL. This is the distinction Case D's unreachable-clones scenario cannot exercise:
+# there, "no clone reachable" and "sha does not exist" are indistinguishable on purpose (fail-open);
+# here, a clone genuinely exists and genuinely does not hold this sha.
+n += 1
+_fab_repo = tempfile.mkdtemp(prefix="gcc-fab-repo-")
+subprocess.run(["git", "init", "-q", _fab_repo], check=True)
+subprocess.run(["git", "-C", _fab_repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+_fab_sha = "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"  # never committed in _fab_repo
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [])
+_fab_env = dict(os.environ)
+_fab_env["MARVEEN_MAIN"] = _fab_repo
+_fab_env["CLEANCORE_MAIN"] = "/nonexistent-cleancore"
+_review_e = "REVIEW\nGate-SHA: %s" % _fab_sha
+_v_e = "QA PASS\nGate-SHA: %s" % _fab_sha
+_s_e = "CYBERSEC GO\nGate-SHA: %s" % _fab_sha
+_fab_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardFAB", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_e},
+                                   {"author": "qa", "content": _v_e},
+                                   {"author": "cybersec", "content": _s_e}]}),
+    capture_output=True, text=True, env=_fab_env,
+)
+_fab_verdict = _fab_p.stdout.strip().split("|", 1)[0]
+_ok_e = _fab_verdict == "FABRICATED"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_e else "FAIL", "FABRICATED", _fab_verdict,
+    "F1.3 ckpt: reachable clone + nonexistent sha -> FABRICATED, not CHECKPOINT_FAIL"))
+if not _ok_e:
+    failures.append(("F1.3 ckpt: reachable clone + nonexistent sha", "FABRICATED",
+                     _fab_p.stdout.strip()))
+
+# Case F (control): same reachable clone, but the Gate-SHA names the commit that DOES exist
+# there -> ordinary CHECKPOINT_FAIL (no checkpoint recorded), not FABRICATED. Proves the clone-
+# reachability guard does not turn every checkpoint gap into FABRICATED once a clone is present.
+n += 1
+_real_sha = subprocess.run(
+    ["git", "-C", _fab_repo, "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+).stdout.strip()
+os.unlink(_ckpt_db)
+_make_ckpt_db(_ckpt_db, [("cardREAL", _OTHER_SHA)])  # a checkpoint exists, just not for _real_sha
+_review_f = "REVIEW\nGate-SHA: %s" % _real_sha
+_v_f = "QA PASS\nGate-SHA: %s" % _real_sha
+_s_f = "CYBERSEC GO\nGate-SHA: %s" % _real_sha
+_real_p = subprocess.run(
+    [sys.executable, CHECK, "--no-landed", "--card-id", "cardREAL", "--db", _ckpt_db],
+    input=json.dumps({"comments": [{"author": "fullstack", "content": _review_f},
+                                   {"author": "qa", "content": _v_f},
+                                   {"author": "cybersec", "content": _s_f}]}),
+    capture_output=True, text=True, env=_fab_env,
+)
+_real_verdict = _real_p.stdout.strip().split("|", 1)[0]
+_ok_f = _real_verdict == "CHECKPOINT_FAIL"
+print("%s %-9s <- %-9s %s" % (
+    "OK  " if _ok_f else "FAIL", "CKPT_FAIL", _real_verdict,
+    "F1.3 ckpt CONTROL: real sha, no checkpoint recorded -> CHECKPOINT_FAIL, not FABRICATED"))
+if not _ok_f:
+    failures.append(("F1.3 ckpt CONTROL: real sha, no checkpoint", "CHECKPOINT_FAIL",
+                     _real_p.stdout.strip()))
+
+shutil.rmtree(_fab_repo, ignore_errors=True)
 os.unlink(_ckpt_db)
 shutil.rmtree(_ckpt_dir, ignore_errors=True)
 
