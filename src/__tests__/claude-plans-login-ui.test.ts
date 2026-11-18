@@ -9,13 +9,19 @@
 // wiring' describe checks) merged cleanly and is real, present code -- only the frontend half
 // (buildClaudePlanLoginStartBody, renderClaudePlansPanel's login-mode UI, showClaudePlanLoginStep,
 // copyClaudePlanLoginUrl, startClaudePlanLogin/submitClaudePlanLoginCode/cancelClaudePlanLogin/
-// resumeClaudePlanLogin, the settings.claude_plans.login.* lang keys) lives in web/app.js, whose
-// merge policy is STUB-ours (src/fork-upstream/acknowledged-conflicts.ts, 'web/app.js' entry):
-// renderClaudePlansPanel itself still does not exist in this fork's app.js, same deferred gap as
-// claude-plans-readiness-ui.test.ts (card d7e1d611) and the panel-port card 1c810029 it points to.
-// Same posture, not a new decision: there is nothing in app.js to attach this feature's UI to until
-// 1c810029 ports the panel. Re-enable (drop .skip) when it does; do not quick-port only the login
-// piece here (rule 3, surgical changes -- that would grow scope into the deferred panel-port).
+// resumeClaudePlanLogin) is missing, and NOT because the panel itself is absent -- CORRECTED after
+// checking card 1c810029 (done 2026-11-07): renderClaudePlansPanel exists, ported into
+// web/app-claude-plans.js by card c6e8a919, but that port carried only the panel as it stood at
+// upstream Köteg 3 (bare id/label/configDir/type/channelsAllowed form, no mode selector, no
+// token-auth mode, no edit flow). Every later growth round this file's acknowledged-conflicts.ts
+// entry logged (2026-09-15, 2026-09-26, 2026-10-14, and now this one) assumed the richer,
+// mode-selector-having panel the login feature's diff is written against (it edits an existing
+// `<select id="cpFormMode">` with token/configDir options) -- that selector was never ported
+// either, so login mode has no scaffolding to attach to in app-claude-plans.js, the same as it had
+// none in app.js. Re-enable (drop .skip) only once a dedicated card ports the accumulated
+// mode-selector/token-mode/edit growth into app-claude-plans.js; porting login alone here would
+// mean inventing that scaffolding from scratch, well past this card's upstream-sync scope (rule 3,
+// surgical changes).
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
