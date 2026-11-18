@@ -112,5 +112,42 @@ found="$(first_landed_sha cafebabe1)"
 found_full="$(git -C "$REPO" rev-parse "$found" 2>/dev/null)"
 [ "$found_full" = "$SHIP_SHA" ] && ok || bad "case8: must return the SHIPPING commit ($SHIP_SHA), got '$found' -> '$found_full' (revert was $REVERT_SHA)"
 
+# case 9 (N1, RedHat 16908, card e2368d0a): the sourcing guard's R10 mutant ("if true; then
+# return 0" regardless of BASH_SOURCE[0] vs $0) stayed GREEN on this selftest because nothing
+# here actually executes the script DIRECTLY -- every case above sources it. A direct run with a
+# bogus dashboard and a nonexistent MARVEEN_MAIN must still reach the token-read + curl failure
+# and exit 3 (Cybered's measured baseline); a guard that returns early on every invocation would
+# exit 0 instead and never even try.
+direct_rc=0
+DASHBOARD_URL="http://127.0.0.1:9" MARVEEN_MAIN="/nonexistent-$$" \
+  bash "$SCRIPT_DIR/reconstruction-landed-sweep.sh" >/dev/null 2>&1 || direct_rc=$?
+[ "$direct_rc" -eq 3 ] && ok || bad "case9: direct execution with unreachable dashboard must exit 3, got $direct_rc"
+
+# N3-R3 (RedHat 16908) has NO case here on purpose: Cybered's own mutant (replacing the
+# merge-base --is-ancestor check with "true") is an EQUIVALENT mutant for this function as
+# actually called. `first_landed()`'s loop only ever iterates shas yielded by
+# `git log --oneline ... "$branch"`, and `git log <rev>` by definition lists only commits
+# reachable from <rev> -- so every $sha reaching the is-ancestor check is already guaranteed an
+# ancestor of $branch before that check runs. Verified directly: replacing the check with `true`
+# still passes every case in this file (13/13), including the plain happy-path attribution cases,
+# because no case can produce a $sha from that same `git log "$branch"` call that ISN'T an
+# ancestor of "$branch". A real test would need a $sha reaching the loop body through some path
+# other than that one `git log` call, which first_landed() has no such path for -- fabricating
+# one would test a scenario the function cannot encounter, not pin real behaviour.
+
+# case 11 (N3-R7, RedHat 16908): --regexp-ignore-case makes a capitalized keyword ("Card <id>")
+# still attribute. Without it, this commit would be missed.
+echo eleven > "$REPO/f"; G "$REPO" add -A
+G "$REPO" commit -qm "fix: Card deadbeef02 dashboard tweak"
+[ "$(attributed deadbeef02)" = "1" ] && ok || bad "case11: capitalized 'Card <id>' must still be attributed (case-insensitive)"
+
+# case 12 (N3-R8, RedHat 16908): the keyword-to-id gap is capped at {0,4} non-alnum chars. An id
+# separated from the keyword by MORE than 4 non-alnum characters (here: no alnum in between at
+# all, just a long run of dots) must NOT be attributed -- a widened gap (e.g. {0,80}) would wrongly
+# catch it.
+echo twelve > "$REPO/f"; G "$REPO" add -A
+G "$REPO" commit -qm "chore: unrelated (card....................deadbeef03) note"
+[ "$(attributed deadbeef03)" = "0" ] && ok || bad "case12: id separated from keyword by >4 non-alnum chars must NOT be attributed"
+
 echo "selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
