@@ -197,15 +197,31 @@ function isKgLocalPlaceholderValue(value: string): boolean {
   return KG_LOCAL_PLACEHOLDER_RX.test(value.trim())
 }
 
-// `*_API_KEY=`/`password=` assignment shape: an unprefixed `SOME_SERVICE_API_KEY=...` or
-// `password=...`/`password: ...`, case-insensitive key, with a minimum value length (8) so a
-// one-character placeholder slips through before it even reaches the exclusion list.
-const KG_LOCAL_KV_SECRET_RX = /\b([A-Za-z0-9_]*_API_KEY|password)\s*[:=]\s*(['"]?)([^\s'",;]{1,200})\2/gi
+// `*_API_KEY=`/`password=` assignment shape: an unprefixed `API_KEY=...`, an underscore-prefixed
+// `SOME_SERVICE_API_KEY=...` or `DB_PASSWORD=...`, a JSON-quoted key (`"password": "..."`), or a
+// quoted value containing spaces (`password = "my long pass phrase"`), case-insensitive key, with
+// a minimum value length (8) so a one-character placeholder slips through before it even reaches
+// the exclusion list.
+//
+// Cybersec NO-GO 33019 F3: the prior version missed all of the above. (a) the keyword alternation
+// required an underscore BEFORE "API_KEY" (no bare `API_KEY=` alt) and had no `passwd`/`secret`/
+// `token` alternatives at all. (b) `\b` in front of a bare `password`/`secret`/... fails right
+// after a `_` (both are \w, so there is no boundary) -- `DB_PASSWORD=`/`JWT_SECRET=` never
+// matched. (c) a JSON key's closing quote (`"password":`) sat between the keyword and the
+// separator, which the old pattern never accounted for. (d) the value class excluded whitespace
+// unconditionally, so a quoted value containing a space broke the backreference before reaching
+// the closing quote. Fixed: an optional `[A-Za-z0-9]*[_ -]` prefix (so a leading `_`/`-`/space
+// counts as a separator, not a boundary requirement), `passwd`/`secret`/`token` added to the
+// keyword alternation, an optional quote consumed right after the keyword, and two value forms --
+// quoted (any non-newline char up to the matching quote) or unquoted (no whitespace/quote/comma/
+// semicolon).
+const KG_LOCAL_KV_SECRET_RX =
+  /((?:[A-Za-z0-9]*[_ -])?(?:api[_-]?key|passwd|password|secret|token))(?:['"])?\s*[:=]\s*(?:(['"])([^\n]{1,200}?)\2|([^\s'",;]{1,200}))/gi
 
 function findKgLocalKvSecret(text: string): string | null {
   for (const m of text.matchAll(KG_LOCAL_KV_SECRET_RX)) {
-    const value = m[3]
-    if (value.length >= 8 && !isKgLocalPlaceholderValue(value)) return `${m[1].toLowerCase()}=`
+    const value = m[3] ?? m[4]
+    if (value && value.length >= 8 && !isKgLocalPlaceholderValue(value)) return `${m[1].toLowerCase()}=`
   }
   return null
 }
@@ -213,22 +229,30 @@ function findKgLocalKvSecret(text: string): string | null {
 // Bare 64-hex and base64 blobs are high-false-positive on their own (a git sha, a hash digest, a
 // base64-encoded image are all benign) -- reject only with a key-ish word nearby, the same
 // "report, don't block, unless there's context" the card's description asks for.
+//
+// Cybersec NO-GO 33019 F3: `\b` on both sides of the context word missed `JWT_SECRET=`/
+// `SIGNING_KEY=` (the `_` before the word is \w, same boundary gap as the KV regex above), and
+// the window only looked BEFORE the value, missing "<64hex> is the token" phrasing. Fixed: the
+// lookaround now excludes only LETTERS on either side (digits/underscore no longer block a
+// match), and the window checks both a 40-char span before and a 20-char span after the match.
 const KG_LOCAL_HEX64_RX = /\b[0-9a-f]{64}\b/gi
 const KG_LOCAL_BASE64_BLOB_RX = /\b[A-Za-z0-9+/]{40,}={0,2}\b/g
-const KG_LOCAL_KEY_CONTEXT_RX = /\b(key|secret|token|password|credential|api)\b/i
-const KG_LOCAL_CONTEXT_WINDOW = 40
+const KG_LOCAL_KEY_CONTEXT_RX = /(?<![A-Za-z])(key|secret|token|password|credential|api)(?![A-Za-z])/i
+const KG_LOCAL_CONTEXT_BEFORE = 40
+const KG_LOCAL_CONTEXT_AFTER = 20
 
-function hasKgLocalKeyContext(text: string, index: number): boolean {
-  const start = Math.max(0, index - KG_LOCAL_CONTEXT_WINDOW)
-  return KG_LOCAL_KEY_CONTEXT_RX.test(text.slice(start, index))
+function hasKgLocalKeyContext(text: string, index: number, matchLength: number): boolean {
+  const before = text.slice(Math.max(0, index - KG_LOCAL_CONTEXT_BEFORE), index)
+  const after = text.slice(index + matchLength, index + matchLength + KG_LOCAL_CONTEXT_AFTER)
+  return KG_LOCAL_KEY_CONTEXT_RX.test(before) || KG_LOCAL_KEY_CONTEXT_RX.test(after)
 }
 
 function findKgLocalContextualSecret(text: string): string | null {
   for (const m of text.matchAll(KG_LOCAL_HEX64_RX)) {
-    if (hasKgLocalKeyContext(text, m.index ?? 0)) return 'bare 64-hex (key context)'
+    if (hasKgLocalKeyContext(text, m.index ?? 0, m[0].length)) return 'bare 64-hex (key context)'
   }
   for (const m of text.matchAll(KG_LOCAL_BASE64_BLOB_RX)) {
-    if (hasKgLocalKeyContext(text, m.index ?? 0)) return 'base64 blob (key context)'
+    if (hasKgLocalKeyContext(text, m.index ?? 0, m[0].length)) return 'base64 blob (key context)'
   }
   return null
 }
@@ -255,7 +279,12 @@ function assertNoKgLocalSecretShape(fields: Record<string, string | null | undef
 // Same shapes src/skill-scan.ts already uses for its own PII rules (email-address,
 // hu-phone-number) -- reused here as literal regexes rather than imported, since skill-scan.ts
 // is an unrelated feature (skill-body scanning) and this module should not depend on it.
-const KG_LOCAL_EMAIL_RX = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g
+// Cybersec NO-GO 33019 F1: unbounded `+` quantifiers made this O(n^2) on adversarial input (a
+// field full of "a." repeats retries the local-part match from every boundary) -- measured 33 s
+// synchronous, inside the KG write transaction, on 200 KB of such text. Bounded to the longest
+// legal local-part (64 octets, RFC 5321) and a generous domain length (255) so every match
+// attempt costs at most ~320 chars, making the whole scan linear in input length.
+const KG_LOCAL_EMAIL_RX = /\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}\b/g
 const KG_LOCAL_HU_PHONE_RX = /(?<!\d)(\+36|0036|06)[ -]?(\d{1,2})[ -]?\d{3}[ -]?\d{3,4}(?!\d)/g
 
 /** Replaces every email/phone match with a fixed placeholder, in place of findSecretShape's
@@ -283,7 +312,8 @@ export function kgLocalSecretShapeCounts(text: string | null | undefined): Recor
   }
   if (!text) return counts
   for (const m of text.matchAll(KG_LOCAL_KV_SECRET_RX)) {
-    if (m[3].length >= 8 && !isKgLocalPlaceholderValue(m[3])) counts['kv-secret (password=/*_API_KEY=)']++
+    const value = m[3] ?? m[4]
+    if (value && value.length >= 8 && !isKgLocalPlaceholderValue(value)) counts['kv-secret (password=/*_API_KEY=)']++
   }
   counts['bare-64-hex'] = [...text.matchAll(KG_LOCAL_HEX64_RX)].length
   counts['base64-blob'] = [...text.matchAll(KG_LOCAL_BASE64_BLOB_RX)].length
@@ -400,26 +430,29 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
   const sanitizedBody = sanitizeKgText(input.body)
   const sanitizedSnippet = sanitizeKgText(input.snippet)
   const sanitizedKeywords = sanitizeKgText(input.keywords)
-  // Card 03dff487 (KG-local secret/PII shapes): PII redaction runs BEFORE both secret-shape
-  // checks, same reasoning as sanitizeKgText running before them -- the checks and the stored
-  // text must agree on what is actually being written, and an email/phone match must never
-  // reach either check as a reject candidate once the card's decision is to redact it instead.
+  // Cybersec NO-GO 33019 F2: PII redaction running BEFORE the secret checks let a phone-shaped
+  // digit run INSIDE a 64-hex/base64 secret defeat the contextual checks (the redaction splits
+  // the hex/base64 run around the matched digits, so the now-broken-up text no longer matches
+  // KG_LOCAL_HEX64_RX/KG_LOCAL_BASE64_BLOB_RX at all) -- e.g. a 64-hex value containing a
+  // Hungarian-phone-shaped digit run inside it passed straight through. The secret checks must
+  // run on the SANITIZED, NOT-YET-REDACTED text (sanitizeKgText only strips invisible/control
+  // characters, so it does not have this problem); redaction happens afterwards, for storage only.
+  assertNoSecretShape({
+    title: sanitizedTitle,
+    body: sanitizedBody,
+    snippet: sanitizedSnippet,
+    keywords: sanitizedKeywords,
+  })
+  assertNoKgLocalSecretShape({
+    title: sanitizedTitle,
+    body: sanitizedBody,
+    snippet: sanitizedSnippet,
+    keywords: sanitizedKeywords,
+  })
   const piiRedactedTitle = redactKgLocalPii(sanitizedTitle)
   const piiRedactedBody = redactKgLocalPii(sanitizedBody)
   const piiRedactedSnippet = redactKgLocalPii(sanitizedSnippet)
   const piiRedactedKeywords = redactKgLocalPii(sanitizedKeywords)
-  assertNoSecretShape({
-    title: piiRedactedTitle,
-    body: piiRedactedBody,
-    snippet: piiRedactedSnippet,
-    keywords: piiRedactedKeywords,
-  })
-  assertNoKgLocalSecretShape({
-    title: piiRedactedTitle,
-    body: piiRedactedBody,
-    snippet: piiRedactedSnippet,
-    keywords: piiRedactedKeywords,
-  })
   const now = nowSec()
   const title = capLength(piiRedactedTitle, 200) as string
   const body = capLength(piiRedactedBody ?? null, 8000)

@@ -27437,3 +27437,57 @@ src/__tests__/kg-store.test.ts: 36/36. src/__tests__/kg-secret-shape-scan.test.t
 
 **Ki dontott:** backend (sajat kartya 03dff487, MikroB dontese a kartya leirasaban, Cybersec
 MEDIUM-2 ajanlas alapjan). Gate: QA, Cybersec (a kartya sajat kijelolese).
+
+## 2026-11-18: 03dff487 delta -- CYBERSEC NO-GO 33019 (F1 ReDoS, F2 redaction-before-check, F3 missed spellings)
+
+Cybersec's NO-GO on bc68b1b6f (comment 33019, probe-proven, QA/QA2 PASS already stood) found 3
+MEDIUM regressions in the KG-local secret/PII work above. All three fixed in this delta, same
+Gate-SHA line convention.
+
+**F1 (ReDoS):** the email regex's unbounded `+` quantifiers made redactKgLocalPii O(n^2) on
+adversarial input (measured by Cybersec: 33 s on 200 KB of "a." repeats, synchronous, inside the
+KG write transaction). Fixed by bounding the local-part to 64 chars (RFC 5321) and the domain to
+255 -- every match attempt now costs at most ~320 chars, making the scan linear. Regression test:
+a 200 KB "a." field finishes under 1 s (was 29-33 s before the fix, measured via mutation revert).
+
+**F2 (redaction before secret checks):** PII redaction ran BEFORE assertNoSecretShape/
+assertNoKgLocalSecretShape, so a phone-shaped digit run embedded inside a 64-hex or base64 secret
+split the hex/base64 run around the redacted span and dodged the contextual check entirely (both
+of Cybersec's probe inputs reproduced live). Fixed by running both secret checks on the sanitized-
+but-not-yet-redacted text, then redacting for storage only -- the checks and the eventually-stored
+text no longer need to agree on PII content, only on absence of secret shapes.
+
+**F3 (missed common spellings):** the kv-secret regex required a literal `_` before `API_KEY`
+(missed bare `API_KEY=`), had no `passwd`/`secret`/`token` alternatives, and `\b` in front of a
+bare `password` never matched after an underscore (`DB_PASSWORD=`) since `_` is a word character
+-- no boundary exists there. A JSON key's closing quote (`"password":`) and a quoted value
+containing spaces (`password = "my long pass phrase"`) also broke the old pattern. The context
+regex for bare 64-hex/base64 had the identical underscore-boundary gap (`JWT_SECRET=`/
+`SIGNING_KEY=` never seen) and only looked BEFORE the value, missing "<64hex> is the token"
+phrasing. Fixed: an optional `[A-Za-z0-9]*[_ -]` prefix on the kv-secret keyword (so `_`/`-`/space
+all count as separators), `passwd`/`secret`/`token` added to the alternation, an optional quote
+consumed after the keyword, and two value forms (quoted, any non-newline char; unquoted, no
+whitespace/quote/comma/semicolon). The context regex now excludes only LETTERS on either side
+(lookaround, not `\b`) and checks a 40-char window before AND a 20-char window after the match.
+Every previously-caught control (password=hunter2hunter2, SERVICE_API_KEY=..., "the secret:
+<64hex>", "token <64hex>") still catches, and the placeholder exemptions (`<...>`, `${...}`) still
+pass.
+
+**LOW (unmeasured, flagged, fixed anyway):** scripts/kg-secret-shape-scan.ts called openKgDb()
+unconditionally, which creates+migrates a missing path -- not read-only against a fresh
+`--kg-db` path. Fixed with an existsSync() guard that exits 1 instead of creating a database for
+a dry-run tool.
+
+**Verification.** 6 new rows in src/__tests__/kg-store.test.ts reproducing Cybersec's exact probe
+inputs (F1 timing budget, F2 both hex/base64 inputs, F3 all 5 missed spellings, F3
+underscore-context + after-value context, F3 controls-still-caught + placeholders-still-exempt).
+All 3 fixes mutation-proven independently (revert each, confirm exactly its own new test(s) go
+red, nothing else, then restore): F1 revert -> 1 test red (29.3 s measured, matching the NO-GO's
+own order of magnitude); F2 revert -> exactly its 2 tests red; F3 (kv regex) revert -> 1 test red;
+F3 (context regex) revert -> 1 test red. Full importer sweep: every kg-*.test.ts file (22 files,
+338 tests) green, no regression in any other kg-store.ts caller. tsc clean. lint-ratchet.sh
+--show: 422 (12+140+270), all 3 rules at baseline, unchanged. src/security/secret-gate.ts diff
+against f85b188a6: empty (shared gate still untouched).
+
+**Ki dontott:** backend (sajat kartya 03dff487 delta, Cybersec NO-GO 33019 ketelezesei alapjan).
+Gate: QA (re-confirm) + Cybersec (delta re-gate, a kartya sajat kijelolese).
