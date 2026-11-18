@@ -27375,3 +27375,14 @@ a javított fejléc-sor a végeredményben megvan. Az eldobható worktree-t tör
 32722), a javítást backend végezte.
 
 **Hivatkozás:** kártya 9ea8dcb8, komment 32722 (Fix-Direction), `store/decisions-append-union.sh`.
+
+## 2026-11-18: F1.3 checkpoint wiring into REVIEW posting + FABRICATED gate verdict (card 14bfc893)
+
+Wired F1.1 (store/agent-checkpoint.sh) and F1.2 (card_checkpoints table/API) together: post-review.sh
+now records a checkpoint (best-effort, fail-open) as part of posting a REVIEW. gate-closure-check.py
+--card-id/--db now returns a FABRICATED verdict (not CHECKPOINT_FAIL) when a declared Gate-SHA does
+not exist as a commit object in ANY reachable repo clone -- scoped behind an actual-clone-reachable
+check so the existing fail-open-on-unreachable-clones behavior is unchanged.
+
+**Ki dontott:** backend (sajat kartya, phase 295ae6a3 F1.3). Gate: QA + WhiteHat + RedHat (a fazis
+saja kijelolese, landolasi utak / git-integritas / kartya-allapot hitelesseg).

@@ -115,6 +115,11 @@ Input:  the card's comments JSON on stdin (the /api/kanban/<id>/comments shape).
 Output: exactly one line.
         AGREE|<sha>|<details>        every designated gate's latest verdict passes, on one sha
         DISAGREE|<details>           the delta-gate hazard: latest verdicts name different shas
+        FABRICATED|<sha>|<why>       (--card-id/--db only) the REVIEW's declared sha does not
+                                     exist as a commit object in any known repo at all -- not a
+                                     checkpoint gap (CHECKPOINT_FAIL), a hand-typed or
+                                     hallucinated sha that was never a real commit anywhere
+                                     (card 14bfc893).
         FAILED|<details>             a designated gate's latest verdict is a FAIL/NO-GO
         MISSING|<details>            a designated gate has no verdict at all
         NOSHA|<details>              a latest verdict carries no Gate-SHA, so agreement is unprovable
@@ -160,7 +165,7 @@ from gate_author_role import GATE_ROLES, author_role, canonical_gate  # noqa: E4
 # separate, later cards) reads the SAME source instead of growing another copy.
 from gate_verdict_tokens import VERDICT_RE as _VERDICT, PASSING  # noqa: E402
 from sha_content_equivalence import (  # noqa: E402
-    _SHARED_CHURN, _MAIN_REF_OVERRIDE, _git,
+    _SHARED_CHURN, _MAIN_REF_OVERRIDE, _git, _CLONES,
     shas_agree, sha_sets_agree, _clone_holding, _clone_and_ref_holding,
     _is_version_bump, _bump_parent_hint, content_verdict,
 )
@@ -1189,9 +1194,22 @@ def main():
         rev_shas = declared_shas(comments)
         if rev_shas:
             check_sha = next(iter(rev_shas))
-            covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
-            if not covered:
-                result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+            # F1.3 (card 14bfc893): a checkpoint gap (CHECKPOINT_FAIL) means "this is a real
+            # commit, just not one of this card's recorded checkpoints" -- a sha that is not a
+            # commit object ANYWHERE is a different, worse problem (hand-typed or hallucinated),
+            # and must say so distinctly rather than read as the same ordinary coverage gap.
+            # Gated on at least one clone directory actually being reachable here: _clone_holding
+            # returning None is ambiguous between "no repo has this commit" and "no repo is
+            # configured/mounted in this environment" (same ambiguity _git's own docstring
+            # accepts), and this file's fail-open convention means the latter must never read as
+            # FABRICATED -- it falls through to the ordinary (fail-open) coverage check instead.
+            any_clone_reachable = any(os.path.isdir(p) for _n, p, _r in _CLONES)
+            if any_clone_reachable and _clone_holding(check_sha) is None:
+                result = "FABRICATED|%s|does not exist as a commit object in any known repo" % check_sha
+            else:
+                covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
+                if not covered:
+                    result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
 
     print(result)
 
