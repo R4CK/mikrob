@@ -27234,3 +27234,144 @@ MikroB üzenet 20198 megerősítette, hogy `origin/card/e3cf26d0` már 704b4d5cf
 (nem kellett újra rebase-elni). backend végezte. Gate-SHA:
 3b15170ea236ac3f7f9eb530326520fe587345a7. Gate: QA + Cybersec (WhiteHat) -- RedHat (cybered)
 javasolta a fixet, tehát a biztonsági re-gate WhiteHat (4f. munkavégzési szabály).
+
+## 2026-11-16 -- 9ea8dcb8: self-pace-gate nohup/claude false positive -- scratchpad-útvonal ártalmatlan szó, nem a futó parancs
+
+DevO (üzenet 20038) jelezte rögtön a 2e04a52e hook élesítése után: a
+`scripts/self-pace-gate.mjs` `SELF_PACE_BASH_PATTERNS` tömbjének nohup/setsid/disown-önújraindítást
+figyelő sora (`/\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i`) horgonyozatlan volt -- a célnevet a
+szegmens BÁRHOL később megtalálta, nem csak a tényleges futó parancsszóban. Minden ügynök
+scratchpad-útvonala `/tmp/claude-1000/...` alakú, tehát egy háttérbe küldött, csak odalogoló parancs
+(`nohup bash store/marveen-land.sh ... > /tmp/claude-1000/x/log 2>&1 &`) is elutasításra került,
+holott a cél-bináris sosem indult el.
+
+**Javítás:** a regex-sort egy `nohupRelaunchesClaude()` függvényre cseréltem (a kódminőségi
+alapelvek 12. pontja szerint: szimbólum-jelenlét sosem részsztring). A függvény a trigger-szó
+(nohup/setsid/disown) UTÁNI tokent nézi, átlépve a `heredocOwnerRunsBody` már meglévő pass-through
+prefix-listáján (env-hozzárendelés, sudo/env/nice/time/exec/command/stdbuf), és csak akkor jelez,
+ha az így kapott parancsszó basename-je PONTOSAN a cél-bináris neve -- egy láncolt
+`nohup setsid <cél>` is lefedve, mert a `setsid` maga is trigger-szó, a scan onnantól újraindul.
+A hívó oldalt (`SELF_PACE_BASH_PATTERNS.some(...)`) kiterjesztettem, hogy a tömb elemei lehessenek
+regex VAGY függvény.
+
+**Kész, ha (a kártya saját listája):**
+- `nohup bash store/marveen-land.sh ... > /tmp/claude-1000/x/log 2>&1 &` -> allowed (teszt: "does
+  NOT misfire on claude inside a scratchpad path argument, not the command word").
+- `nohup <cél> ...`, `setsid <cél> -p ...`, `nohup env X=1 <cél> ...`,
+  `nohup /abs/path/<cél> ...` -> továbbra is denied (teszt: "still denies every real
+  nohup/setsid/disown + claude relaunch shape", 5 alak).
+- governance-gates suite zöld; a régi regexre visszamutáló mutáns (a fix sorát visszaírva az
+  eredeti unanchored regexre) az új allow-esetet pirosra fordítja.
+
+**Mérés:** `npx vitest run src/__tests__/governance-gates.test.ts` (uncommitted fán, a mutáció-próba
+miatt nem `fleet-test.sh --ref`-fel, hanem `noisy-run.sh`-n át, a `fleet-test.sh --ref` csak
+committolt git-refet tesztel): 271 Test (271) passed a javított kódon; a regex-mutánson 1/271 piros
+(pont az új allow-eset), visszaállítva ismét 271/271 zöld. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** DevO lelete (üzenet 20038), MikroB nudger-dispatch (self-advance, msg 20189).
+backend végezte a javítást. Gate-SHA: 7066c34750d629291c8a4631563fd176d586d5d0. Gate: QA +
+Cybersec (a kártya saját előírása).
+
+### 9ea8dcb8 round 2: CYBERSEC NO-GO 32608 fix -- a wrapper-szó-lista maga volt a lyuk, nem a hiányos lista
+
+**Cause:** cybersec NO-GO (komment 32608, Gate-SHA 6dc4c450b) mérte, hogy a round 1
+`nohupRelaunchesClaude()` függvénye (a trigger-szó utáni első tokent sétáltatta végig egy fix
+prefix-listán: env-hozzárendelés, sudo/env/nice/time/exec/command/stdbuf) 14 valódi
+self-respawn alakot ENGED át, amit a régi, széles regex még tiltott: `setsid -f`/`--fork`,
+`nohup nice -n`, `timeout`, `sudo -u`, `env -i`, `stdbuf -oL`, `/usr/bin/env`, egy idézett vagy
+`$(which ...)`-szubsztituált parancsszó, `bash -c`/`sh -c`/`bash -lc` törzsön belüli indítás,
+`xargs`. A sétáló megoldás MAGA volt a lyuk: bármelyik wrapper, ami nincs a fix listán, vagy egy
+listás wrapper a SAJÁT opciójával (`-f`, `-n 10`, `-u user`, `-i`, `-oL`), olyan tokenen állítja
+meg a sétát, ami sosem "claude" -- nem a lista hiányossága volt a hiba, hanem a séta-alapú
+szűkítés módja maga.
+
+**Fix:** cybersec saját, a valódi `gateDecision()`-t mindkét fán (régi/új) lefuttató próbájával
+VERIFIKÁLT irány: a régi, SZÉLES "claude bárhol a trigger-szó után" scan-t megtartva, csak a
+SZÓHATÁRT szűkítjük `\bclaude\b` helyett `(?<![\w-])claude(?![\w./-])`-ra. Nincs szükség
+wrapper-listára: egy path-szegmens mindig `/` vagy `-` karakterrel folytatódik (soha nem shell
+metakarakterrel vagy sima szóhatárral), így a `/tmp/claude-1000/...` scratchpad-útban a "claude"
+utáni `-` kizárja a találatot, miközben minden valódi respawn-alak (idézett, wrapperelt,
+szubsztituált, `bash -c` törzsön belüli) a "claude" szót sima szóhatárral tartalmazza, és
+továbbra is illeszkedik. A `nohupRelaunchesClaude()` függvény és a hívó oldal
+regex-vagy-függvény kiterjesztése törölve (surgical cleanup: a saját változtatásom tette
+feleslegessé).
+
+**Teszt:** `src/__tests__/governance-gates.test.ts` "still denies every real nohup/setsid/disown +
+claude relaunch shape" tesztje 21 denied-alakra bővült (az 5 régi + mind a 14 cybersec-lelet +
+2 további wrapper-variáns), az "does NOT misfire..." teszt 3 scratchpad-path allow-esetre
+(cybersec "INTENDED ALLOWS CONFIRMED" listája).
+
+**Mutáció-bizonyíték:** a fix sorát visszaírva a round 1 `nohupRelaunchesClaude()` pontos
+tartalmára (git history, commit 7066c3475) -> 1/271 piros, pontosan az új "still denies..." teszt
+(`expected false to be true`); visszaállítva (diff IDENTIKUS a backuppal) -> 271/271 zöld.
+
+**Mérés:** `fleet-test.sh --ref dc9b0e702f6d9910baa1d7755396af9677d4d43c
+src/__tests__/governance-gates.test.ts`: 1 Test File passed (1), 271 Tests passed (271).
+`npx tsc --noEmit` tiszta.
+
+**Ki döntött:** cybersec NO-GO (32608) proposer-ként (WhiteHat javasolta a fixet, saját
+verifikált próbával). backend végezte a javítást. Gate-SHA:
+dc9b0e702f6d9910baa1d7755396af9677d4d43c. Gate: QA + Cybered (RedHat) -- a proposer-szabály (4f.
+munkavégzési szabály) szerint, mert ezúttal WhiteHat (cybersec) javasolta a fixet.
+
+### 9ea8dcb8 round 4: CYBERSEC NO-GO 32639 fix -- a szóhatár-szűkítés maga vesztett el 6 régi deny-alakot
+
+**Mi történt:** A round 3 javítás (WhiteHat saját, a round-1 NO-GO-ban javasolt szóhatár-szűkítése,
+a cél-szó körüli negatív lookaround kiterjesztése) lezárta a round 1 összes 14 regresszióját, de a
+szóhatár maga is túl szűk lett: kizárta a cél-szót MÁSIK token prefixumaként/suffixumaként is, így
+6 régi deny-alak engedetté vált, hármuk a tényleges CLI valódi relaunch-je a csomagneve alatt
+(a CLI package-neve mögé írt "-code" suffixszel, npx-es és node-cli.js-es alakban), plusz három
+"wrapper script" alak (.sh, .exe suffixszel). Ezt cybersec maga fedte fel (NO-GO 32639, friss,
+42 shape-es próba, a regex, amit maga javasolt a round 1-ben), cybersec2 round-2 NO-GO-ja (32612)
+pedig MÁR ELŐRE rögzítette a helyes irányt a saját, függetlenül mért próbájával.
+
+**Javítás (cybersec2 iránya, 32612; cybersec megerősítve, 32639):** a szóhatárt EGYÁLTALÁN nem
+kell szűkíteni. A tényleges téves pozitív forrás a per-uid scratch-könyvtár komponens volt (a
+célszó után egy szám-suffix, pl. "-1000"), nem a célszó maga -- ezt kell maszkolni a teszt ELŐTT
+egy útvonal-helyettesítővel, a régi, széles mintát pedig változatlanul hagyni. Egy valódi
+relaunch-alak sosem tartalmazza ezt a szám-suffixes scratch-komponenst, tehát a maszkolás semmit
+nem veszít, amire egy relaunch-alaknak szüksége van; egy scratch-útvonal a maszkolás után már nem
+tartalmazza a sima célszót, tehát a régi minta nem sül el rajta.
+
+**Mutáció-bizonyíték:** a javítást visszaállítottam a round-2 szóhatár-szűkített alakra (maszkolás
+nélkül) -> 1/271 piros, pontosan az új "still denies ... relaunch shape" teszt (a 6 új alak
+egyikén, "expected false to be true"); visszaállítva -> 271/271 zöld, a diff byte-azonos a
+mentett verzióval.
+
+**Mérés:** `npx vitest run src/__tests__/governance-gates.test.ts` (noisy-run, commitolatlan fa,
+mutáció-próba): 271/271 a javítással, 270/271 (1 piros) a mutánson. `npx tsc --noEmit` tiszta.
+A commitolt sha-ra `fleet-test.sh --ref`-fel még nem futott ebben a szakaszban -- lásd a REVIEW-t
+a kártyán a pontos sha-val, amint lefut.
+
+**Ki döntött:** cybersec NO-GO (32639) + cybersec2 NO-GO (32612, a fix iránya). backend végezte a
+javítást. Gate: QA + Cybered (RedHat) -- a proposer-szabály (4f. munkavégzési szabály) szerint,
+mert a fix iránya ezúttal is WhiteHat-tól jött.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+## 2026-11-17 -- 9ea8dcb8: fejléc-dátum pótlása, hogy a decisions-append-union auto-merge-je lefusson (Fix-Direction komment 32722)
+
+**A hiba.** fullstack landolási dry-run-ja a merge-konfliktus szakaszban elutasítva, mielőtt a
+fleet-test egyáltalán elindult: a DECISIONS.md konfliktusa TISZTA kettős-append (develop és
+card/9ea8dcb8 is csak a végére fűz hozzá, ugyanonnan, 7deb8ecea merge-base-ről), ami
+strukturálisan megfelelne a `store/decisions-append-union.sh` `try_append_union`-jának, de a
+funkció a `## [0-9][0-9][0-9][0-9]-*` fejléc-mintát várja, és a `6dc4c450b` commit saját új
+bejegyzésének fejléce ("## 9ea8dcb8: self-pace-gate ...") dátum-prefix nélkül érkezett -- ezért
+az auto-union nem ismerte fel, és a hívó a szokásos elutasít-és-jelent útra esett.
+
+**Javítás.** A fejlécet "## 2026-11-16 -- 9ea8dcb8: ..."-re bővítettem (a commit dátuma szerint),
+egyetlen soros módosítás, tartalom-változás nélkül. Átnéztem a kártya másik két DECISIONS.md-bővítését
+(round 2, round 4): mindkettő `###` (al-fejléc) a MÁR LÉTEZŐ, most javított bejegyzés alatt, nem a
+`try_append_union` fejléc-mintájára illeszkedő top-szintű bejegyzés, tehát nem kellett bántani.
+
+**Ellenőrzés -- magam futtattam a union-függvényt, nem csak feltételeztem, hogy javít.**
+Eldobható worktree-t nyitottam a javított branch-re, `git merge --no-ff origin/develop`-ot
+futtattam (ugyanaz a konfliktus-alak, amit fullstack mért: KIZÁRÓLAG a DECISIONS.md konfliktál),
+majd a `decisions-append-union.sh`-t forrásolva meghívtam `try_append_union <worktree> DECISIONS.md`-t
+közvetlenül: RETURN=0 (sikeres resolve), a fájl `UU` helyett `M` lett, konfliktus-jelölő sor nulla,
+a javított fejléc-sor a végeredményben megvan. Az eldobható worktree-t töröltem.
+
+**Ki döntött:** fullstack landolási dry-run-ja találta, MikroB adta a Fix-Direction-t (komment
+32722), a javítást backend végezte.
+
+**Hivatkozás:** kártya 9ea8dcb8, komment 32722 (Fix-Direction), `store/decisions-append-union.sh`.
