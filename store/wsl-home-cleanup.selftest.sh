@@ -339,5 +339,156 @@ main --apply --yes >/dev/null 2>&1
   && ok "main --apply --yes removes the DISPOSABLE entry" \
   || bad "main --apply --yes did not remove the DISPOSABLE entry"
 
+# --- path_under_targets(): N2 fix (RedHat LOW 16849) -- an EMPTY scan result fails CLOSED (treated
+# as a live reference present), not OPEN toward "nothing is live" -----------------------------
+if path_under_targets "$FAKE_HOME/anything" ""; then
+  ok "path_under_targets(): an empty scan result fails CLOSED, treated as found (N2 fix)"
+else
+  bad "path_under_targets(): empty scan wrongly treated as 'nothing live' -- fail-open regression (N2)"
+fi
+
+# --- remove_entry(): N3 fix (RedHat LOW 16849) -- an UNREGISTERED, clean git clone whose HEAD is
+# unreachable from any branch/remote/tag must be refused too (mirrors the registered-worktree B3
+# guard; closes the matching 16676 N1 gap that was open on this branch) -------------------------
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+n3_dir="$FAKE_HOME/qa-n3-unregistered-detached"
+git clone -q "$FAKE_MAIN" "$n3_dir" >/dev/null 2>&1
+(
+  cd "$n3_dir" || exit 1
+  git config user.email s@s; git config user.name s
+  git checkout -q --detach >/dev/null 2>&1
+  echo change > f
+  git add -A
+  git commit -qm "dangling commit in an UNREGISTERED clone" >/dev/null 2>&1
+) >/dev/null 2>&1
+find "$n3_dir" -exec touch -d '2 days ago' {} +
+if remove_entry "$n3_dir" >/dev/null 2>&1; then
+  bad "remove_entry must refuse an unregistered clone with an unreachable HEAD, it did not (N3 regression)"
+else
+  [ -d "$n3_dir" ] \
+    && ok "remove_entry refuses an UNREGISTERED clean clone whose HEAD is unreachable from any ref (N3 fix)" \
+    || bad "N3: unregistered detached-HEAD clone was removed despite the new guard"
+fi
+
+# --- remove_entry(): N1 fix (RedHat LOW 16849) -- the fresh live-process/age re-check now runs
+# AFTER the git status/rev-list checks (LAST, immediately before the destructive call), not before
+# them, shrinking the TOCTOU window to the last check's own runtime instead of two git commands
+# plus the check. Shim `git` to be slow (2s) and start a process cwd'd into the worktree WHILE the
+# slow git status/rev-list calls are still running -- pre-fix, the live-process re-check would
+# already be done (and stale) by the time the process starts; post-fix, it still catches it.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+SLOWGIT_DELAY=0
+git() { sleep "$SLOWGIT_DELAY"; command git "$@"; }
+n1_dir="$FAKE_HOME/qa-n1-slowgit"
+git -C "$FAKE_MAIN" branch qa-n1-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$n1_dir" qa-n1-branch >/dev/null 2>&1
+find "$n1_dir" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$n1_dir"]="$FAKE_MAIN"
+SLOWGIT_DELAY=2
+( sleep 0.5; cd "$n1_dir" && exec sleep 10 ) &
+n1_race_pid=$!
+if remove_entry "$n1_dir" >/dev/null 2>&1; then
+  bad "remove_entry must refuse when a process starts cwd'd into the worktree during the (slow) git checks, it did not (N1 regression)"
+else
+  [ -d "$n1_dir" ] \
+    && ok "remove_entry's fresh re-check (reordered to run last) still catches a process that starts mid-git-check (N1 fix)" \
+    || bad "N1: worktree removed despite a live process that started during the git status/rev-list calls"
+fi
+SLOWGIT_DELAY=0
+unset -f git
+kill "$n1_race_pid" 2>/dev/null
+wait "$n1_race_pid" 2>/dev/null
+
+# --- remove_entry(): R10 mutation pin (RedHat LOW 16849, N4) -- the fresh age re-check must convert
+# MIN_AGE_HOURS to MINUTES ($((MIN_AGE_HOURS * 60))); a mutant treating MIN_AGE_HOURS as already-
+# minutes would miss a file modified 45 minutes ago under a nominal 1-hour window ----------------
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+old_min_age_hours="$MIN_AGE_HOURS"
+MIN_AGE_HOURS=1
+r10_dir="$FAKE_HOME/qa-r10-age-unit"
+mkdir -p "$r10_dir"
+touch -d '2 days ago' "$r10_dir"
+touch -d '45 minutes ago' "$r10_dir/recent-ish"
+if remove_entry "$r10_dir" >/dev/null 2>&1; then
+  bad "remove_entry must SKIP a file modified 45 minutes ago under MIN_AGE_HOURS=1 (R10: hours-as-minutes unit mutant)"
+else
+  [ -d "$r10_dir" ] \
+    && ok "remove_entry's age re-check correctly converts MIN_AGE_HOURS to minutes (R10 pin)" \
+    || bad "R10: dir removed despite a 45-minute-old file under a 1-hour re-check window"
+fi
+MIN_AGE_HOURS="$old_min_age_hours"
+
+# has_live_process_under() was permanently stubbed by the two classify() isolation tests above
+# ("pretend a process is there" / "return 1") and never restored -- harmless for those tests
+# (they call classify() directly, dashboard-gated paths), but it would silently blind every test
+# below that actually needs the real check. Restore the original implementation (verbatim from
+# wsl-home-cleanup.sh) before relying on it again.
+has_live_process_under() {
+  if [ "$LIVE_PROC_TARGETS_PRIMED" = 1 ]; then
+    path_under_targets "$1" "$LIVE_PROC_TARGETS"
+    return $?
+  fi
+  path_under_targets "$1" "$(scan_live_proc_targets)"
+}
+
+# --- main(): R11 + R9 mutation pins (RedHat LOW 16849, N4) -- run through main()'s REAL /proc
+# priming (not a manual classify() call) with both a live-fd-holding candidate (must report ACTIVE,
+# never DISPOSABLE -- R11: a mutant priming an empty scan would blind the whole classification loop)
+# and a comparable non-live candidate (must still report DISPOSABLE -- proves the loop isn't just
+# fail-closing EVERYTHING, which would otherwise mask the R11 mutant after the N2 fix above). Also
+# checks the "remove N of M" line actually reflects a would_skip_removal-excluded dirty worktree
+# (R9: a mutant that bypasses the helper's verdict in the count would promise more than it removes).
+rm -rf "$FAKE_HOME"; mkdir -p "$FAKE_HOME"
+r11_live_dir="$FAKE_HOME/qa-gate-r11live"
+mkdir -p "$r11_live_dir"
+: > "$r11_live_dir/live.log"
+touch -d '2 days ago' "$r11_live_dir"
+( cd "$tmp" && exec tail -f "$r11_live_dir/live.log" >/dev/null 2>&1 ) &
+r11_pid=$!
+for _ in $(seq 1 30); do
+  readlink -f /proc/"$r11_pid"/fd/* 2>/dev/null | grep -qF "$r11_live_dir/live.log" && break
+  sleep 0.2
+done
+r11_dead_dir="$FAKE_HOME/qa-gate-r11dead"
+mkdir -p "$r11_dead_dir"
+touch -d '2 days ago' "$r11_dead_dir"
+r9_dirty_dir="$FAKE_HOME/qa-gate-r9dirty"
+git -C "$FAKE_MAIN" branch qa-r9-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$r9_dirty_dir" qa-r9-branch >/dev/null 2>&1
+find "$r9_dirty_dir" -exec touch -d '2 days ago' {} +
+echo dirty >> "$r9_dirty_dir/f"
+touch -d '2 days ago' "$r9_dirty_dir/f" # dirty but not "recently modified" for the age check
+# dashboard_reachable() is unreachable in this fixture by design (bad token file) -- a registered
+# worktree would otherwise fail OPEN to ACTIVE unconditionally (never reaching the DISPOSABLE
+# pattern/age check at all), which would make the R9 wiring untestable here. Fake it reachable
+# for this one main() call only, restored right after.
+dashboard_reachable() { return 0; }
+main_out="$(main --dry-run 2>&1)"
+dashboard_reachable() { [ -f "$DASHBOARD_TOKEN_FILE" ] || return 1
+  printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" \
+    | curl -s -H @- -o /dev/null -w '%{http_code}' --max-time 3 "$DASHBOARD_URL/api/kanban" 2>/dev/null \
+    | grep -q '^200$'; }
+if printf '%s\n' "$main_out" | grep -q "^ACTIVE.*qa-gate-r11live$"; then
+  ok "main() dry-run: a live-fd candidate classifies ACTIVE through the real priming path (R11 pin)"
+else
+  bad "R11: main()'s real priming path did not report ACTIVE for the live-fd candidate"
+fi
+if printf '%s\n' "$main_out" | grep -q "^DISPOSABLE.*qa-gate-r11dead$"; then
+  ok "main() dry-run: a comparable non-live candidate still classifies DISPOSABLE (control for the R11 pin -- not just fail-closing everything)"
+else
+  bad "R11 control: a non-live, old, name-matching candidate did not classify DISPOSABLE -- priming may be fail-closing everything, masking the real bug"
+fi
+if printf '%s\n' "$main_out" | grep -qE 'remove [0-9]+ of the [0-9]+ DISPOSABLE'; then
+  removed_n="$(printf '%s\n' "$main_out" | grep -oE 'remove [0-9]+ of' | grep -oE '[0-9]+')"
+  total_m="$(printf '%s\n' "$main_out" | grep -oE 'of the [0-9]+ DISPOSABLE' | grep -oE '[0-9]+')"
+  [ -n "$removed_n" ] && [ -n "$total_m" ] && [ "$removed_n" -lt "$total_m" ] \
+    && ok "main() dry-run: 'remove N of M' excludes the dirty registered worktree from N, not just from the per-line report (R9 pin)" \
+    || bad "R9: 'remove N of M' counted the dirty registered worktree as removable -- the helper's verdict isn't reaching the summary line"
+else
+  bad "R9: main() dry-run did not print a 'remove N of M DISPOSABLE' summary line to check"
+fi
+kill "$r11_pid" 2>/dev/null
+wait "$r11_pid" 2>/dev/null
+
 echo "selftest: $passed passed, $fail failed"
 [ "$fail" = 0 ] || exit 1
