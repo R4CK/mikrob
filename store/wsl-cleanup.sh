@@ -209,8 +209,16 @@ sweep_tmp() {
   # with realpath FIRST, require the RESOLVED path to be exactly /tmp or start with /tmp/ (slash
   # included, so "/tmpfoo" is rejected too), and sweep the resolved path itself so what gets
   # checked is exactly what gets enumerated/removed.
+  # LOW fail-open (Cybered GO 33287 on 657f12a3): a realpath FAILURE (rc 1/127/137/139 -- missing
+  # binary, killed, OOM) fell back to the RAW, unresolved value, which is exactly the lexical
+  # string this guard exists to stop trusting -- the traversal-escape case this guard is meant to
+  # block (measured dry-run: 4/4) passes straight through on a realpath failure. Fail CLOSED
+  # instead: a realpath failure refuses the sweep, the same as a resolved path outside /tmp.
   local resolved
-  resolved="$(realpath -m -- "$WSL_CLEANUP_TMP_DIR" 2>/dev/null)" || resolved="$WSL_CLEANUP_TMP_DIR"
+  if ! resolved="$(realpath -m -- "$WSL_CLEANUP_TMP_DIR" 2>/dev/null)"; then
+    say "REFUSING /tmp sweep: realpath failed to resolve WSL_CLEANUP_TMP_DIR='$WSL_CLEANUP_TMP_DIR' -- not trusting the raw value"
+    return 1
+  fi
   case "$resolved" in
     /tmp|/tmp/*) ;;
     *)
@@ -219,7 +227,7 @@ sweep_tmp() {
       ;;
   esac
   WSL_CLEANUP_TMP_DIR="$resolved"
-  local entry name mtime now age_min
+  local entry name mtime now age_min entry_q
   now=$(date +%s)
   local removed=0 skipped_fresh_inner=0 skipped_stat=0 skipped_rm_failed=0
   # NUL-delimited (-print0 / read -r -d ''), not newline-delimited: a /tmp entry's name is
@@ -251,7 +259,12 @@ sweep_tmp() {
       removed=$((removed + 1))
     else
       skipped_rm_failed=$((skipped_rm_failed + 1))
-      say "rm failed for $entry"
+      # LOW log-line forgery (Cybered GO 33287 on 657f12a3): $entry is an attacker-reachable
+      # name (anyone can create a /tmp entry) and `say` uses plain `echo` -- a newline or control
+      # char inside the name would print as literal bytes, letting a crafted name forge what
+      # looks like a second, unrelated log line. %q quotes it into a single shell-safe token.
+      printf -v entry_q '%q' "$entry"
+      say "rm failed for $entry_q"
     fi
   done < <(find "$WSL_CLEANUP_TMP_DIR" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
   say "/tmp sweep: removed $removed, skipped (fresh inner file): $skipped_fresh_inner, skipped (stat failed): $skipped_stat, skipped (rm failed): $skipped_rm_failed"
