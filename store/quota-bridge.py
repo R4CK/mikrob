@@ -136,6 +136,11 @@ GETUPDATES_TIMEOUT = 25    # long-poll seconds during outage
 # Outage-declaration confirm-over-N-probes config (ENTRY-SIDE HYSTERESIS, card f490ae53) lives in
 # switchback-hysteresis.json (confirmProbesIn/minGapSecIn), loaded once in main() -- see
 # quota_switchback.load_outage_confirm_config().
+# F1b (Cybersec NO-GO 33392/33574): a trailing down-run older than this cannot confirm an outage
+# on its own -- a small multiple of POLL_HEALTHY_SEC, generous enough that normal polling never
+# ages a genuinely-sustained outage out, but short enough that a probe_log surviving a process
+# restart does not combine an hours-old down reading with one fresh one.
+OUTAGE_PROBE_MAX_AGE_SEC = POLL_HEALTHY_SEC * 10
 
 # --- Recovery-probe suppression while a reset deadline is known (card cd7376ed) ---------------
 #
@@ -324,13 +329,17 @@ def record_outage_probe(state, down, now=None):
     return state
 
 
-def should_declare_outage(state, confirm_probes, min_gap_sec):
+def should_declare_outage(state, confirm_probes, min_gap_sec, max_age_sec=None, now=None):
     """True only once `confirm_probes` consecutive down readings in state['outage_probe_log']
     span >= min_gap_sec (quota_switchback.confirm_outage). A single healthy reading anywhere in
     the trailing window resets this to False, so a brief flap -- regardless of how many polls
-    happen to straddle it -- never confirms."""
+    happen to straddle it -- never confirms. F1b (Cybersec NO-GO 33392/33574): `max_age_sec`
+    drops entries older than that from the trailing run before counting, so a probe_log
+    persisted across a process restart cannot combine an hours-old down reading with a single
+    fresh one to confirm an outage that is no longer current."""
     return quota_switchback.confirm_outage(
-        state.get("outage_probe_log", []), confirm_probes, min_gap_sec)
+        state.get("outage_probe_log", []), confirm_probes, min_gap_sec,
+        max_age_sec=max_age_sec, now=now)
 
 
 def rag_context(query, limit=5):
@@ -698,7 +707,8 @@ def main():
             return
         record_outage_probe(state, mikrob_down())
         save_state(state)
-        if should_declare_outage(state, confirm_probes_in, min_gap_sec_in):
+        if should_declare_outage(state, confirm_probes_in, min_gap_sec_in,
+                                  max_age_sec=OUTAGE_PROBE_MAX_AGE_SEC):
             if state["phase"] != "outage":
                 log("OUTAGE confirmed -> taking over channel")
                 state["phase"] = "outage"; save_state(state)

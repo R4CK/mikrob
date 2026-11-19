@@ -117,6 +117,97 @@ check(
     qs.load_outage_confirm_config("/nonexistent/path.json") == (2, 45),
 )
 
+# --- F1b (Cybersec NO-GO 33392/33574): a stale down reading from hours earlier plus ONE fresh
+# --- down reading must NOT confirm once max_age_sec bounds the run -- the stale entry is dropped,
+# --- leaving only one recent reading, which is < confirm_probes. -------------------------------
+t2 = 3_000_000.0
+stale_plus_fresh_log = [
+    {"ok": False, "ts": t2 - 3 * 3600},   # 3h-old down reading (e.g. survived a process restart)
+    {"ok": False, "ts": t2},               # one fresh down reading
+]
+check(
+    "WITHOUT max_age_sec, a 3h-old reading + one fresh reading still confirms (shows the bug "
+    "max_age_sec exists to close)",
+    qs.confirm_outage(stale_plus_fresh_log, confirm_probes=2, min_gap_sec=45, now=t2) is True,
+)
+check(
+    "F1b: WITH max_age_sec=450, a 3h-old reading + one fresh reading does NOT confirm (the "
+    "stale entry is dropped, leaving only 1 recent down reading)",
+    qs.confirm_outage(stale_plus_fresh_log, confirm_probes=2, min_gap_sec=45,
+                       max_age_sec=450, now=t2) is False,
+)
+
+# Positive control: max_age_sec must not break a genuinely sustained, RECENT outage.
+recent_sustained_log = [{"ok": False, "ts": t2 - 46}, {"ok": False, "ts": t2}]
+check(
+    "F1b positive control: two down readings 46s apart, both within max_age_sec=450, "
+    "still confirms",
+    qs.confirm_outage(recent_sustained_log, confirm_probes=2, min_gap_sec=45,
+                       max_age_sec=450, now=t2) is True,
+)
+
+# --- F2 (Cybersec NO-GO 33392/33574): hostile/malformed switchback-hysteresis.json must not
+# --- crash load_outage_confirm_config() (startup would crash-loop the bridge) and must not be
+# --- accepted outside the sane window -- both fall back to the defaults (2, 45). --------------
+import json as _json
+import tempfile as _tempfile
+
+
+def _load_outage_cfg_from(obj_or_text):
+    with _tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        if isinstance(obj_or_text, str):
+            f.write(obj_or_text)
+        else:
+            _json.dump(obj_or_text, f)
+        path = f.name
+    try:
+        return qs.load_outage_confirm_config(path)
+    finally:
+        os.unlink(path)
+
+
+check(
+    "F2: confirmProbesIn=1e999 (OverflowError on int()) does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 1e999, "minGapSecIn": 45}) == (2, 45),
+)
+check(
+    "F2: minGapSecIn=-1e999 (OverflowError on int()) does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 2, "minGapSecIn": -1e999}) == (2, 45),
+)
+check(
+    "F2: a top-level JSON list (AttributeError on .get()) does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from("[1, 2, 3]") == (2, 45),
+)
+check(
+    "F2: a top-level JSON string does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from('"not an object"') == (2, 45),
+)
+check(
+    "F2: a top-level JSON number does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from("42") == (2, 45),
+)
+check(
+    "F2: a top-level JSON null does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from("null") == (2, 45),
+)
+check(
+    "F2: the weakest accepted value {confirmProbesIn:1, minGapSecIn:0} (kill-on-first-probe by "
+    "one edited number) is now out of bounds, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 1, "minGapSecIn": 0}) == (2, 45),
+)
+check(
+    "F2: confirmProbesIn=10**30 (outage never declared) is out of bounds, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 10 ** 30, "minGapSecIn": 45}) == (2, 45),
+)
+check(
+    "F2: minGapSecIn=10**30 (outage never declared) is out of bounds, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 2, "minGapSecIn": 10 ** 30}) == (2, 45),
+)
+check(
+    "F2 positive control: a valid in-bounds config is used as-is, not clamped away",
+    _load_outage_cfg_from({"confirmProbesIn": 3, "minGapSecIn": 60}) == (3, 60),
+)
+
 # --- Kesz-ha 4: quota-bridge.py and gemini-fallback-runner share the SAME confirmation rule -----
 PY_SRC = f"{STORE}/quota-bridge.py"
 TS_SRC = os.path.join(STORE, "..", "src", "gemini-fallback.ts")

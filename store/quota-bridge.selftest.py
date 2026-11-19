@@ -893,6 +893,55 @@ def main() -> int:
         for name, fn in old6.items():
             setattr(m, name, fn)
 
+    # --- F1b wiring (Cybersec NO-GO 33392/33574): main() must actually PASS max_age_sec through
+    # --- to should_declare_outage(), not just have a correct function sitting unused -- a mutant
+    # --- that drops the kwarg at the call site would silently disable the fix in production while
+    # --- every other test above (which drives the helpers directly) stays green.
+    old7 = {
+        "read_token": m.read_token, "load_state": m.load_state, "kill_pid_holder": m.kill_pid_holder,
+        "save_state": m.save_state, "outage_loop": m.outage_loop,
+        "clear_session_outage": m.clear_session_outage,
+        "record_outage_probe": m.record_outage_probe, "mikrob_down": m.mikrob_down,
+        "should_declare_outage": m.should_declare_outage,
+    }
+    orig_argv7 = m.sys.argv
+
+    class _StopTest7(Exception):
+        pass
+
+    calls7 = {"max_age_sec": "UNSET (never called)"}
+    m.read_token = lambda: "fake-token"
+    m.load_state = lambda: {"phase": "healthy", "offset": 0, "notified_outage": False}
+    m.kill_pid_holder = lambda: None
+    m.save_state = lambda s: None
+    m.clear_session_outage = lambda: None
+    m.record_outage_probe = lambda state, down, now=None: state
+    m.mikrob_down = lambda: True
+
+    def _capture_should_declare(state, confirm_probes, min_gap_sec, max_age_sec=None, now=None):
+        calls7["max_age_sec"] = max_age_sec
+        raise _StopTest7()
+
+    m.should_declare_outage = _capture_should_declare
+    m.sys.argv = ["quota-bridge.py"]
+    try:
+        try:
+            m.main()
+            bad("F1b wiring: main() should have reached should_declare_outage() and stopped there",
+                "main() returned normally instead")
+        except _StopTest7:
+            pass
+        if calls7["max_age_sec"] == m.OUTAGE_PROBE_MAX_AGE_SEC and calls7["max_age_sec"] is not None:
+            ok("F1b wiring: main() calls should_declare_outage() with max_age_sec="
+               "OUTAGE_PROBE_MAX_AGE_SEC, not the default None")
+        else:
+            bad("F1b wiring: main() must pass max_age_sec=OUTAGE_PROBE_MAX_AGE_SEC to "
+                "should_declare_outage()", calls7["max_age_sec"])
+    finally:
+        m.sys.argv = orig_argv7
+        for name, fn in old7.items():
+            setattr(m, name, fn)
+
     print(f"\nselftest: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
 
