@@ -59,47 +59,66 @@ path_under_targets() {
 
 DEFAULT_BRANCH=""
 
+# LANDED requires BOTH: the branch tip is an ancestor of origin/<default-branch>, AND the
+# worktree's own HEAD is actually that branch (not detached, not switched) -- otherwise a
+# detached commit that is not on any ref would be orphaned by the removal (F2).
 is_landed() {
-  local branch="$1"
+  local path="$1" branch="$2"
+  [ "$(git -C "$path" symbolic-ref -q HEAD 2>/dev/null)" = "refs/heads/$branch" ] || return 1
   git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch" || return 1
   git -C "$MAIN" merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH"
 }
 
+# CLEAN requires no uncommitted changes AND no ignored files outside the known symlink
+# allowlist (node_modules/dist) -- `git status --porcelain` alone does not list ignored files,
+# and `git worktree remove` does not refuse on them either, so without this check a landed,
+# "clean" worktree can still lose real local files (.env, local DBs) on removal (F3).
 is_clean() {
-  [ -z "$(git -C "$1" status --porcelain 2>&1)" ]
+  local path="$1" ignored
+  [ -z "$(git -C "$path" status --porcelain 2>&1)" ] || return 1
+  ignored="$(git -C "$path" status --porcelain --ignored 2>&1 | grep -v -E '^!! (node_modules|dist)/?$')"
+  [ -z "$ignored" ]
 }
 
 # classify PATH CARD_ID LIVE_TARGETS -> prints "REMOVABLE" or "SKIP <reason>"
 classify() {
-  local path="$1" card="$2" live_targets="$3" branch="card/$card"
-  if path_under_targets "$path" "$live_targets"; then
+  local path="$1" card="$2" live_targets="$3"
+  local branch
+  branch="card/$card"
+  local real_path
+  real_path="$(readlink -f "$path")"
+  if path_under_targets "$real_path" "$live_targets"; then
     echo "SKIP a live process has cwd/fd under this worktree"
     return
   fi
   if ! is_clean "$path"; then
-    echo "SKIP uncommitted changes in the worktree"
+    echo "SKIP uncommitted or ignored-but-untracked changes in the worktree"
     return
   fi
-  if ! is_landed "$branch"; then
-    echo "SKIP not landed (card/$card is not an ancestor of origin/$DEFAULT_BRANCH)"
+  if ! is_landed "$path" "$branch"; then
+    echo "SKIP not landed (HEAD is not card/$card, or card/$card is not an ancestor of origin/$DEFAULT_BRANCH)"
     return
   fi
   echo "REMOVABLE"
 }
 
 remove_entry() {
-  local path="$1" card="$2" branch="card/$card"
+  local path="$1" card="$2"
+  local branch
+  branch="card/$card"
+  local real_path
+  real_path="$(readlink -f "$path")"
   # Fresh re-check immediately before removing, same reason as wsl-home-cleanup.sh's B1': time
   # passes between classifying the first candidate and removing the Nth one.
-  if path_under_targets "$path" "$(scan_live_proc_targets)"; then
+  if path_under_targets "$real_path" "$(scan_live_proc_targets)"; then
     say "SKIP (a live process now has cwd/fd under this worktree -- re-checked at removal time): $path"
     return 1
   fi
   if ! is_clean "$path"; then
-    say "SKIP (uncommitted changes -- re-checked at removal time): $path"
+    say "SKIP (uncommitted or ignored-but-untracked changes -- re-checked at removal time): $path"
     return 1
   fi
-  if ! is_landed "$branch"; then
+  if ! is_landed "$path" "$branch"; then
     say "SKIP (no longer landed -- re-checked at removal time): $path"
     return 1
   fi
