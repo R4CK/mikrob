@@ -97,6 +97,16 @@ export async function spawnBackgroundTask(agentId: string, prompt: string): Prom
   try {
     await execFileAsync(resolvedTmuxBin, [
       'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
+      // BGPROMPTEMPTY1018 (card 68eaeb93, WhiteHat2 a5ef4771 gate finding): `new-session`'s own
+      // `env` option (bgTaskEnv below) only becomes the pane's environment when THIS client call
+      // starts a brand-new tmux SERVER. On an already-running server (the normal case -- this
+      // process's own earlier sessions keep it alive), a new session's shell instead inherits the
+      // server's "global environment", captured once when the server itself first started, so
+      // BG_PROMPT arrives empty in the pane no matter what `env` is passed here. `-e` sets it on
+      // the SESSION itself, which always takes effect regardless of server age (tmux(1), GLOBAL
+      // AND SESSION ENVIRONMENT: "If a variable exists in both, the value from the session
+      // environment is used").
+      '-e', `BG_PROMPT=${prompt}`,
       `${shellCmd}; echo '___BG_DONE___'; sleep 5`,
     ], {
       timeout: 5000,

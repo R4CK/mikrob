@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync, lstatSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
 import { basename, join } from 'node:path'
@@ -1145,8 +1145,13 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // never that the evidence is real, so an agent can self-certify any address with --source owner).
 // See ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
 // Kept a FLAT alternation (no inner `|`): the drift test splits it on '|'.
+// F1 LOW (card 154cbbd0, RedHat a2cb71f1 komment 20438, left out of d8f10864 on purpose): the two
+// server-anchored alternatives below used to vary only the FIRST letter ([Gg]mail/bare "resend"),
+// so a connector registered as "GMAIL" or "gMail" (anything but the exact "[Gg]mail" shape) named
+// the right server but still skipped the matcher entirely -- confirmed case-sensitive, full-match
+// (`^(?:matcher)$`) PreToolUse behavior (Claude Code hooks docs). Every letter is now a class.
 export const EMAIL_GATE_MATCHER =
-  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*draft_email.*'
+  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg][Mm][Aa][Ii][Ll][A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*[Rr][Ee][Ss][Ee][Nn][Dd][A-Za-z0-9_-]*__.*|.*draft_email.*'
   + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
   + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
   + '|.*send_mail.*'
@@ -3689,6 +3694,18 @@ const DEVO_FAMILY = new Set(['fullstack'])
 // in Core even though that verification is Teszter's own job. Curated table mirrors the
 // BACKEND_FAMILY pattern.
 const TESZTER_FAMILY = new Set(['teszter'])
+// Card 3a60633b: Jogász gets a curated table for the mandatory sourced-investigation method
+// (Peti Telegram 12225: every jurisdiction needs its own local-law check, full sourced
+// investigation). Measured baseline: no comment since Oct 11, Core only legal-compliance-review,
+// and gdpr-audit-prep/ai-act-readiness/iso27001-audit-prep/soc2-audit-prep unreferenced despite
+// being local skills. Curated table mirrors the BACKEND_FAMILY pattern.
+const JOGASZ_FAMILY = new Set(['jogasz'])
+// Card f27512c9: Marketing gets a curated table (Peti Telegram 12231: "Mehet"). Measured
+// baseline: no comment since Oct 8, Core only marketing-gtm + humanize-writing, the 10 local
+// marketing skills and 7 global brand skills at 0 use, and frontend-design-research +
+// d3-data-visualization (not marketing's job) in Core. Curated table mirrors the BACKEND_FAMILY
+// pattern.
+const MARKETING_FAMILY = new Set(['marketing'])
 
 function buildQaFamilySkillUsageBody(): string {
   const rows = [
@@ -3885,6 +3902,57 @@ export function buildTesterFamilySkillUsageBody(): string {
   ].join('\n')
 }
 
+// Exported for test rendering (card 3a60633b, mirrors the Tester precedent): callers assert on
+// this function's actual return value instead of slicing the source text.
+export function buildJogaszFamilySkillUsageBody(): string {
+  const rows = [
+    '| Szerződés, ToS, DPA | `contract-review-redline` |',
+    '| GDPR, PII, DPIA | `gdpr-audit-prep`, `legal-compliance-review` |',
+    '| AI-funkció | `ai-act-readiness` |',
+    '| Licenc, OSS / source-available, clean-room (10. szabály) | `legal-compliance-review` + `fork-adopt-investigation` licenc-része, rögzített sha-n |',
+    '| Biztonsági megfelelés, ügyfélkérdőív | `iso27001-audit-prep`, `soc2-audit-prep` |',
+    '| Ország-specifikus jog | `legal-compliance-review` + a joghatóság-térkép, élő forrás (quarantine-reader / WebSearch) |',
+    '| Cél-tisztázás | `interview-me` |',
+    '| Magyar szöveg | `humanize-writing` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya 3a60633b)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
+// Exported for test rendering (card f27512c9, mirrors the Jogász precedent): callers assert on
+// this function's actual return value instead of slicing the source text.
+export function buildMarketingFamilySkillUsageBody(): string {
+  const rows = [
+    '| Pozicionálás, üzenet-hierarchia | `positioning-messaging`, `marketing-gtm` |',
+    '| Versenytárs-kép (élő forrásból) | `competitive-analysis` |',
+    '| Márkaépítés, ebben a sorrendben | `brand-foundations-strategy` -> `brand-tone-of-voice-guide` -> `brand-visual-identity-direction` -> `brand-logo-concepts` -> `brand-identity-stress-test` -> `brand-handbook-compiler` |',
+    '| Landing, konverziós szöveg | `copywriting-conversion`, `cro-page`, `marketing-psychology` |',
+    '| SEO | `seo-technical-audit` |',
+    '| Bevezetés, csatornák | `launch-marketing`, `gtm-motions`, `social-media`, `webinar-marketing` |',
+    '| Mérés | `campaign-analytics`, `measuring-product-market-fit`, `analyzing-user-feedback` |',
+    '| Megtartás, onboarding-üzenet | `retention-engagement`, `user-onboarding` |',
+    '| Árazási üzenet (a szám a pénzügyé) | `pricing-strategy` |',
+    '| Bármilyen nyelvű szöveg | `humanize-writing` |',
+    '| Cél-tisztázás | `interview-me` |',
+  ]
+  return [
+    '## Skill-használat: feladattípus -> skill (generált, kártya f27512c9)',
+    '',
+    'A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.',
+    '',
+    '| Feladattípus | Skill(ek) |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
 // Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
 // SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
 // prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
@@ -3899,6 +3967,8 @@ function buildSkillUsageBody(name: string): string | null {
   if (FRONTEND_FAMILY.has(name)) return buildFrontendFamilySkillUsageBody()
   if (DEVO_FAMILY.has(name)) return buildDevOFamilySkillUsageBody()
   if (TESZTER_FAMILY.has(name)) return buildTesterFamilySkillUsageBody()
+  if (JOGASZ_FAMILY.has(name)) return buildJogaszFamilySkillUsageBody()
+  if (MARKETING_FAMILY.has(name)) return buildMarketingFamilySkillUsageBody()
 
   const entries = SKILL_USAGE_DATA[name]
   if (!entries || entries.length === 0) return null
@@ -5020,29 +5090,77 @@ export function ensureMemorySearchLabelSection(name: string): void {
 // settings.json are both git-tracked and maintained statically (same precedent as
 // ensureFleetAuthSection's no-op for MAIN_AGENT_ID -- a runtime write there fights the
 // --ff-only pull, card 2dd28b5d/99fccbcf).
-const PROJECT_ROOT_ANCHOR_FILE = 'project-root-anchor.json'
+// Card b5d19a32 (Cybersec, finding on eed22288): the anchor used to live under the agent's OWN
+// .claude dir, which the agent itself can write to (or replace with a symlink into another
+// agent's .claude). Keeping it in STORE_DIR instead means no agent process can plant or control
+// its own anchor value -- only this sweep (running as the main process) ever writes here.
+const PROJECT_ROOT_ANCHOR_DIR = join(STORE_DIR, 'project-root-anchors')
 
 function projectRootAnchorPath(name: string): string {
-  return join(agentDir(name), '.claude', PROJECT_ROOT_ANCHOR_FILE)
+  return join(PROJECT_ROOT_ANCHOR_DIR, `${name}.json`)
+}
+
+// Card b5d19a32: if agents/<name>/.claude (or CLAUDE.md, or settings.json) is a symlink, the
+// "victim" the link points at is not this agent's own content -- rewriting through it would
+// mutate whatever real agent (or location) is on the other end, using a boundary this agent
+// chose by creating the link. Refuse the whole sweep for this agent rather than touch anything.
+function hasSymlinkedScaffoldPath(name: string): boolean {
+  const candidates = [join(agentDir(name), '.claude'), join(agentDir(name), 'CLAUDE.md'), agentSettingsPath(name)]
+  for (const p of candidates) {
+    try {
+      if (lstatSync(p).isSymbolicLink()) return true
+    } catch {
+      // Does not exist: not a symlink, nothing to refuse on this path.
+    }
+  }
+  return false
+}
+
+// An anchor value this mechanism can safely use for the replace below: must be a non-root
+// absolute path. Empty/relative values would make `content.includes(recordedRoot)` match
+// everywhere (an empty string is a substring of anything), inserting PROJECT_ROOT between
+// every character of CLAUDE.md/settings.json -- measured, card eed22288 F1.
+function isUsableAnchorRoot(value: string): boolean {
+  return value.length > 1 && value.startsWith('/')
+}
+
+// Boundary-safe replace: a plain substring swap would also rewrite sibling paths that merely
+// START with oldRoot (e.g. `${oldRoot}-agent-worktrees`, `${oldRoot}-test`) into a broken path,
+// because oldRoot is not a suffix-delimited token of its own -- measured, card eed22288 F2.
+// Only replace an occurrence that is not immediately followed by another path-segment
+// character (oldRoot is always an absolute filesystem path, so this cannot false-negative
+// inside unrelated text).
+function replaceRootOccurrences(content: string, oldRoot: string, newRoot: string): string {
+  const escaped = oldRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`${escaped}(?![A-Za-z0-9_-])`, 'g')
+  // A string replacer interprets $ sequences (e.g. $& or $$) IN newRoot itself; a function
+  // replacer passes it through literally.
+  return content.replace(pattern, () => newRoot)
 }
 
 export function ensureProjectRootAnchor(name: string): void {
   if (name === MAIN_AGENT_ID) return
 
+  if (hasSymlinkedScaffoldPath(name)) {
+    logger.warn({ name }, 'ensureProjectRootAnchor: refusing, .claude/CLAUDE.md/settings.json is a symlink')
+    return
+  }
+
   const anchorPath = projectRootAnchorPath(name)
   let recordedRoot: string | null = null
   try {
     const parsed = JSON.parse(readFileSync(anchorPath, 'utf-8')) as { root?: string }
-    recordedRoot = typeof parsed.root === 'string' ? parsed.root : null
+    recordedRoot = typeof parsed.root === 'string' && isUsableAnchorRoot(parsed.root) ? parsed.root : null
   } catch {
     recordedRoot = null
   }
 
-  // No anchor yet (pre-dates this mechanism, or a brand-new agent): nothing to compare
-  // against, so there is no drift to correct -- just establish the baseline for next time.
+  // No anchor yet (pre-dates this mechanism, a brand-new agent, or a corrupt/unusable
+  // recorded value): nothing safe to compare against, so there is no drift to correct --
+  // just (re-)establish the baseline for next time, no file rewrite.
   if (recordedRoot === null) {
     try {
-      mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+      mkdirSync(PROJECT_ROOT_ANCHOR_DIR, { recursive: true })
       atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
     } catch {
       // Best-effort: a missing anchor just means this re-checks on the next sweep tick.
@@ -5062,7 +5180,16 @@ export function ensureProjectRootAnchor(name: string): void {
       continue
     }
     if (!content.includes(recordedRoot)) continue
-    atomicWriteFileSync(path, content.split(recordedRoot).join(PROJECT_ROOT))
+    const rewritten = replaceRootOccurrences(content, recordedRoot, PROJECT_ROOT)
+    if (path.endsWith('settings.json')) {
+      try {
+        JSON.parse(rewritten)
+      } catch {
+        logger.warn(`ensureProjectRootAnchor: skipping ${path}, rewrite would break JSON`)
+        continue
+      }
+    }
+    atomicWriteFileSync(path, rewritten)
   }
 
   atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))

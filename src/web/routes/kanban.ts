@@ -45,6 +45,7 @@ import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-con
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
 import { landedGuardVerdict, GENERATED_COMMENT_AUTHORS } from '../kanban-landed-guard.js'
+import { cardLandingsGuardVerdict } from '../kanban-card-landings-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
@@ -52,6 +53,7 @@ import { decisionsGuardVerdict, decisionsGuardCheck } from '../kanban-decisions-
 import { degradedOrchestratorRefusal } from '../../degraded-orchestrator-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
+import { reviewPresenceGuardCheck } from '../kanban-review-presence-guard.js'
 import { onKanbanCardStatusChanged } from '../kg-capture-hook.js'
 import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE, isInvalidAssigneeShape, INVALID_ASSIGNEE_TYPE_MESSAGE } from '../kanban-assignee-guard.js'
 import { isInvalidKanbanIdShape, isValidKanbanId, KANBAN_ID_PATTERN_DESC, INVALID_KANBAN_ID_MESSAGE } from '../kanban-id-guard.js'
@@ -1563,6 +1565,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
+      const v = cardLandingsGuardVerdict(id, data.status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'landing_record_required', error: v.message }, 409); return true }
+    }
+    {
       const v = gateCompletenessGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
@@ -1645,6 +1651,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       { force: force === true, reason: typeof reason === 'string' ? reason : undefined })
     if (written.ok) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
+      reviewPresenceGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       // Card 64f56f97 requirement 1: a fresh planned->in_progress transition always routes
       // through card-build-route.sh, even on this PUT path (which, unlike /move, never wakes
@@ -1872,6 +1879,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
+      const v = cardLandingsGuardVerdict(id, status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'landing_record_required', error: v.message }, 409); return true }
+    }
+    {
       const v = gateCompletenessGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
@@ -1917,6 +1928,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       hasExpected ? (expected_status as Parameters<typeof moveKanbanCard>[1]) : undefined,
     )) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, status, actor)
+      reviewPresenceGuardCheck(id, specTemplatePrevStatus, status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, status, actor)
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).

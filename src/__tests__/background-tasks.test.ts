@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // Card ca593869 (Cybersec finding on 2a653b4b): mocks makeLazyBinResolver directly (not
 // resolveFromPath) because background-tasks.ts imports and calls makeLazyBinResolver itself --
@@ -9,7 +13,7 @@ import Database from 'better-sqlite3'
 //
 // vi.hoisted: the mock factory below runs before this file's own top-level code, so the flag it
 // reads must be created through vi.hoisted rather than a plain `let`, which would not exist yet.
-const claudeResolveState = vi.hoisted(() => ({ shouldThrow: true }))
+const claudeResolveState = vi.hoisted(() => ({ shouldThrow: true, binPath: '/bin/true' }))
 
 // Card a5ef4771: records the `env` passed to every `tmux new-session` call so a test can assert
 // the dangerous channel vars never reach it, WITHOUT changing behaviour for the existing tests in
@@ -79,7 +83,7 @@ vi.mock('../platform.js', async (importOriginal) => {
       // 2026-09-25). This test only needs the resolver to succeed, not a real CLI.
       return () => {
         if (claudeResolveState.shouldThrow) throw new Error('claude: command not found (PATH gap simulated for this test)')
-        return '/bin/true'
+        return claudeResolveState.binPath
       }
     },
   }
@@ -348,4 +352,60 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
     expect(spawnedEnv?.PATH).toBe(process.env.PATH)
     expect(spawnedEnv?.BG_PROMPT).toBe('yet another prompt')
   })
+})
+
+// Card 68eaeb93 (WhiteHat2 a5ef4771 gate finding, comment 19787): on THIS process's own already-
+// running tmux server (every test above has already created and torn down several sessions on
+// it by the time this describe runs), a new session's pane used to inherit the server's "global
+// environment" -- captured once when the server first started -- not the `env` option passed to
+// this `tmux new-session` client call. BG_PROMPT therefore arrived EMPTY in the pane every time
+// except when this was the very first session on a cold server (masking the bug in a one-off
+// manual test). Repro: point the mocked claude resolver at a real, tiny shell script that writes
+// $BG_PROMPT to a file, run spawnBackgroundTask through the REAL tmux binary (no `claude` process
+// ever starts -- only `/bin/true`-class stand-ins, same convention as the describe blocks above),
+// and read that file back.
+describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNING tmux server (card 68eaeb93)', () => {
+  let outFile: string
+  let sessionName: string | undefined
+
+  beforeEach(async () => {
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+    claudeResolveState.shouldThrow = false
+    const dir = mkdtempSync(join(tmpdir(), 'bg-prompt-repro-'))
+    const scriptPath = join(dir, 'fake-claude.sh')
+    outFile = join(dir, 'out.txt')
+    writeFileSync(scriptPath, `#!/bin/bash\nprintf '%s' "$BG_PROMPT" > ${JSON.stringify(outFile)}\n`, { mode: 0o700 })
+    claudeResolveState.binPath = scriptPath
+  })
+
+  afterEach(() => {
+    claudeResolveState.binPath = '/bin/true'
+    claudeResolveState.shouldThrow = true
+    if (sessionName) {
+      try { execFileSync('tmux', ['kill-session', '-t', sessionName]) } catch { /* already gone */ }
+    }
+    sessionName = undefined
+  })
+
+  it('a prompt reaches the pane even though this process already has a running tmux server', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const prompt = 'repro prompt for card 68eaeb93, with spaces'
+
+    const task = await spawnBackgroundTask('marveen', prompt)
+    if ('error' in task) throw new Error(task.error)
+    sessionName = task.tmux_session ?? undefined
+
+    const deadline = Date.now() + 5000
+    let seen = ''
+    while (Date.now() < deadline) {
+      if (existsSync(outFile)) {
+        seen = readFileSync(outFile, 'utf-8')
+        if (seen) break
+      }
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    expect(seen).toBe(prompt)
+  }, 10_000)
 })

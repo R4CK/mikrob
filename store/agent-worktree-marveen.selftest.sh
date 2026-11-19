@@ -61,18 +61,25 @@ else
 fi
 
 n=$((n + 1))
-# card 20f2b522 (F4.2): if the target path is occupied by something that is NOT a git worktree
-# (e.g. a leftover plain directory), the script must refuse loudly (exit 3) and leave the occupying
-# content untouched -- never `rm -rf` it to make room (same "fails loudly" contract the script's
-# own comment states for `git worktree add`).
+# card 20f2b522 (F4.2), strengthened by 018c85d3 (L1, RedHat Cybersec GO 28254 on Gate-SHA
+# 7c04bbd73): if the target path is occupied by something that is NOT a git worktree (e.g. a
+# leftover plain directory), the script must refuse loudly (exit 3, the SPECIFIC "could not create
+# the worktree" message, not just any nonzero rc) and leave the occupying content as ITS ONLY
+# content -- never `rm -rf` it to make room, and never leave any half-created git state (.git file,
+# extra files) behind in it either. The weaker version of this case (rc != 0 + the sentinel file
+# merely still present) is satisfied by a mutant that swallows the `git worktree add` error and
+# returns some OTHER nonzero code, or that leaves a stray `.git` file in the occupant dir.
 mkdir -p "$ROOT/card/baadf00d12"
 echo "not a worktree, do not delete me" > "$ROOT/card/baadf00d12/sentinel.txt"
 rollback_out="$(run backend --card baadf00d12 2>&1)"
 rollback_rc=$?
-if [ "$rollback_rc" != 0 ] && [ -f "$ROOT/card/baadf00d12/sentinel.txt" ]; then
-  echo "  ok   an occupied non-worktree path is refused (exit $rollback_rc), occupying content untouched"
+occupant_listing="$(ls -A "$ROOT/card/baadf00d12")"
+if [ "$rollback_rc" = 3 ] \
+  && printf '%s' "$rollback_out" | grep -q "could not create the worktree" \
+  && [ "$occupant_listing" = "sentinel.txt" ]; then
+  echo "  ok   an occupied non-worktree path is refused with exit 3, the specific message, occupant holds only the sentinel"
 else
-  echo "  FAIL expected a loud refusal with the sentinel file intact -> rc=$rollback_rc out=$rollback_out"; fail=1
+  echo "  FAIL expected exit 3 + specific message + sentinel-only occupant -> rc=$rollback_rc listing='$occupant_listing' out=$rollback_out"; fail=1
 fi
 
 n=$((n + 1))
@@ -102,6 +109,52 @@ if git -C "$MAIN" show-ref --verify --quiet "refs/heads/card/abcdef1912"; then
   fi
 else
   echo "  FAIL setup did not produce a survivor branch to test against"; fail=1
+fi
+
+n=$((n + 1))
+# card 018c85d3 (L2, same gate): a leftover survivor branch (reused via the fallback above) can be
+# BEHIND the current origin/develop tip -- advance develop with a new commit the survivor branch
+# never saw, then re-pick-up the survivor and confirm the reattach now warns about the stale base.
+# A mutant that drops the fallback entirely, or that ignores a `git fetch` failure, would both
+# survive a weaker assertion that only checks "the worktree still gets created" -- this checks the
+# WARNING text specifically.
+git -C "$MAIN" worktree add -q -b card/51a1e099 "$ROOT/card/51a1e099" develop >/dev/null
+git -C "$MAIN" worktree remove --force "$ROOT/card/51a1e099" >/dev/null
+# Advance origin/develop through a SEPARATE clone, not MAIN -- `git push` from MAIN itself would
+# update MAIN's own remote-tracking ref as a side effect of the push, making the script's own
+# `git fetch` call a no-op in this fixture and the mutant unfalsifiable. Through a separate clone,
+# MAIN's local origin/develop stays genuinely stale until the script's fetch actually runs.
+OTHER="$WORK/other-clone"
+git clone -q "$ORIGIN" "$OTHER"
+git -C "$OTHER" config user.email s@s
+git -C "$OTHER" config user.name s
+echo "advance develop" > "$OTHER/advance.txt"
+git -C "$OTHER" add advance.txt
+git -C "$OTHER" commit -qm "advance develop past 51a1e099's base"
+git -C "$OTHER" push -q origin develop
+stale_out="$(run backend --card 51a1e099 2>&1)"
+stale_rc=$?
+if [ "$stale_rc" = 0 ] && printf '%s' "$stale_out" | grep -q "WARNING: card/51a1e099 is behind origin/develop"; then
+  echo "  ok   reattaching a survivor branch behind the current origin tip warns explicitly"
+else
+  echo "  FAIL expected a stale-base WARNING -> rc=$stale_rc out=$stale_out"; fail=1
+fi
+
+n=$((n + 1))
+# CONTROL for the case above: a survivor branch that is NOT behind (created from the CURRENT
+# origin/develop tip) must NOT warn -- otherwise the check would be blanket-firing on every reuse,
+# not actually discriminating stale from fresh. Branched from origin/develop, not MAIN's own local
+# develop -- the stale-case run() above only fetched (updating origin/develop), it never fast-
+# forwarded MAIN's local develop branch itself, so local develop is ITSELF stale at this point.
+git -C "$MAIN" fetch -q origin develop
+git -C "$MAIN" worktree add -q -b card/f2e50088 "$ROOT/card/f2e50088" origin/develop >/dev/null
+git -C "$MAIN" worktree remove --force "$ROOT/card/f2e50088" >/dev/null
+fresh_out="$(run backend --card f2e50088 2>&1)"
+fresh_rc=$?
+if [ "$fresh_rc" = 0 ] && ! printf '%s' "$fresh_out" | grep -q "WARNING:"; then
+  echo "  ok   reattaching a survivor branch that is NOT behind origin/develop does not warn"
+else
+  echo "  FAIL unexpected warning (or failure) for a non-stale survivor -> rc=$fresh_rc out=$fresh_out"; fail=1
 fi
 
 n=$((n + 1))

@@ -705,6 +705,20 @@ with tempfile.TemporaryDirectory() as td:
     code, _, err = run_gate(store_l1, resend("search-and-send-email", to="a@b.hu"))
     check("resend search-and-send-email (safe-prefix bypass): DENIED at level 1",
           code == 2 and "szint 1" in err, f"exit={code}")
+
+    # --- Card bf7a7335 CYBERSEC GO LOW (comment 9092) ---
+    # The negative lookahead above only excluded send/reply/forward; a safe-prefix name using any
+    # OTHER sending synonym still read as safe (measured 18 forms). All must deny at level 1.
+    for synonym_name in (
+        "draft_and_dispatch", "draft_and_deliver", "draft_and_submit", "draft_and_transmit",
+        "draft_and_post", "draft_and_publish", "draft_and_relay", "draft_and_respond",
+        "get_and_respond", "read_and_fwd", "draft_and_mail_out", "search_and_deliver",
+        "list_and_post", "draft_then_ship", "read_and_answer", "draft_and_xmit",
+        "draft_snd", "get_rply",
+    ):
+        code, _, err = run_gate(store_l1, connector(synonym_name, to=["a@b.hu"], body="x"))
+        check(f"connector {synonym_name} (sending-synonym bypass): DENIED at level 1",
+              code == 2 and "szint 1" in err, f"exit={code}")
     # --- EMAILALLANDOCIMZETT926: allando cimzett-lista, CSAK level 2-n --------
     # A funkcio egyetlen dolga, hogy EGY cimre jovahagyas nelkul lehessen kuldeni,
     # ugy, hogy minden mas cimzett a regi uton maradjon. Ezert minden teszt parban

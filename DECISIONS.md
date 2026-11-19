@@ -27643,6 +27643,547 @@ Cybersec (WhiteHat) + Cybered (RedHat) -- friss kör kell MINDHÁROM kaputól ez
 QA FAIL és Cybered NO-GO korábbi (már javított) shákra vonatkozott. `942ec654f`
 `git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
 
+## 2026-11-18: KG write path -- KG-local secret-shape list (MEDIUM-2 from 4e9ad774, card 03dff487)
+
+Cybersec MEDIUM-2 (komment 32780 a 4e9ad774-en, eredetileg 32549 a 81593084-en): 5 a 6-bol
+secret/PII alakzat nem volt elutasitva a KG iras-utjan (src/kg/store.ts, a kozos SECRET_PATTERNS-t
+hasznalja) -- csupasz 64-hex, `password=`, nem-prefixelt `*_API_KEY=`, base64 blob, email/telefon.
+Egy titok egy cold memory-ban vagy findingben KG node body-ba kerulhet, amit ugynokok es az
+/api/kg route-ok olvasnak.
+
+MikroB dontese (a kartya leirasa): a 5 alakzat KIZAROLAG a KG write-uton (src/kg/store.ts), SOHA a
+kozos commit-gate-ben (src/security/secret-gate.ts) -- a tracked fa maga tartalmaz csupasz 64-hex-et
+15 fajlban es password-alaku hozzarendelest 37-ben (Cybersec merese), egy altalanos hozzaadas a
+kozos gate-hez a repo sajat tartalmat talalna el.
+
+Megvalositas (src/kg/store.ts, uj export-ok):
+- `findKgLocalKvSecret`/`findKgLocalSecretShape`: `password=`/`*_API_KEY=` kulcs=ertek alak,
+  min. 8 karakteres ertekkel, placeholder-kizarassal (xxx, changeme, example, `<...>`, `${...}`).
+- `findKgLocalContextualSecret`: csupasz 64-hex es base64 blob CSAK kulcs-szeru szo
+  kozelsegeben (40 karakteres ablak: key/secret/token/password/credential/api) utasitodik el --
+  context nelkul csak jelentve (ld. lejjebb), nem blokkolva, mert onmagaban mindket alak magas
+  false-positive (git sha, hash digest, base64-kodolt kep).
+- `redactKgLocalPii`: email/telefon REDAKTALVA, nem elutasitva (MikroB dontese) -- egy email/
+  telefon egy egyebkent legitim memoria/finding-szovegben nem eri meg az egesz node elvesztet.
+- `upsertNode` sorrendje: sanitize -> PII-redakcio -> kozos SECRET_PATTERNS check -> uj KG-local
+  check -> capLength. A redakcio ELOTT fut a ket secret-check elott (ugyanaz az ok, mint az F-a
+  sanitize-elobb mintaja: a ellenorzesnek es a tenylegesen tarolt szovegnek egyeznie kell).
+
+Backfill dry-run (Kesz-ha pont 3): uj `src/kg/secret-shape-scan.ts` + `scripts/
+kg-secret-shape-scan.ts` -- vegig-olvassa a MEGLEVO kg_nodes tablat (csak olvasas, sosem ir),
+es `kgLocalSecretShapeCounts`-szal (context NELKUL, szelesebb halo, mint az iras-ut) szamolja,
+hany CSOMOPONT tartalmazna legalabb egy talalatot alakzatonkent -- egy csomopont tobb talalata
+ugyanabban a mezoben egyszer szamit.
+
+Teszt-sorok alakzatonkent (pozitiv + placeholder/no-context negativ), src/__tests__/
+kg-store.test.ts uj 'KG-local secret/PII shapes' blokkjaban: password=, *_API_KEY=, 64-hex
+(context-tel/nelkule), base64 (context-tel/nelkule), email (redaktalva), telefon (redaktalva),
+plusz kozvetlen unit-tesztek a harom uj export-ra. src/__tests__/kg-secret-shape-scan.test.ts
+a dry-run dedup-logikajat pinneli (ugyanaz a csomopont ket talalattal egy mezoben egyszer
+szamit, nem kettot).
+
+Mutacio-bizonyitott mindegyik: a `findKgLocalKvSecret`, `hasKgLocalKeyContext` es
+`redactKgLocalPii` fuggvenyek egyenkent kiuresitve PONTOSAN a hozzajuk tartozo uj teszt(ek)
+mentek pirosra (2, 3, illetve 3 teszt), a tobbi zold maradt, visszaallitva byte-azonos. A
+dry-run dedup-agat eltavolitva a dedikalt pin-teszt ment pirosra (1 -> 2), a tobbi zold maradt.
+
+`src/security/secret-gate.ts`: `git diff` ures (Kesz-ha pont 2). tsc clean.
+`lint-ratchet.sh --show`: 422 (12+140+270), mindharom szabaly a baseline-on, nincs regresszio.
+src/__tests__/kg-store.test.ts: 36/36. src/__tests__/kg-secret-shape-scan.test.ts: 2/2.
+
+**Ki dontott:** backend (sajat kartya 03dff487, MikroB dontese a kartya leirasaban, Cybersec
+MEDIUM-2 ajanlas alapjan). Gate: QA, Cybersec (a kartya sajat kijelolese).
+
+## 2026-11-18: 03dff487 delta -- CYBERSEC NO-GO 33019 (F1 ReDoS, F2 redaction-before-check, F3 missed spellings)
+
+Cybersec's NO-GO on bc68b1b6f (comment 33019, probe-proven, QA/QA2 PASS already stood) found 3
+MEDIUM regressions in the KG-local secret/PII work above. All three fixed in this delta, same
+Gate-SHA line convention.
+
+**F1 (ReDoS):** the email regex's unbounded `+` quantifiers made redactKgLocalPii O(n^2) on
+adversarial input (measured by Cybersec: 33 s on 200 KB of "a." repeats, synchronous, inside the
+KG write transaction). Fixed by bounding the local-part to 64 chars (RFC 5321) and the domain to
+255 -- every match attempt now costs at most ~320 chars, making the scan linear. Regression test:
+a 200 KB "a." field finishes under 1 s (was 29-33 s before the fix, measured via mutation revert).
+
+**F2 (redaction before secret checks):** PII redaction ran BEFORE assertNoSecretShape/
+assertNoKgLocalSecretShape, so a phone-shaped digit run embedded inside a 64-hex or base64 secret
+split the hex/base64 run around the redacted span and dodged the contextual check entirely (both
+of Cybersec's probe inputs reproduced live). Fixed by running both secret checks on the sanitized-
+but-not-yet-redacted text, then redacting for storage only -- the checks and the eventually-stored
+text no longer need to agree on PII content, only on absence of secret shapes.
+
+**F3 (missed common spellings):** the kv-secret regex required a literal `_` before `API_KEY`
+(missed bare `API_KEY=`), had no `passwd`/`secret`/`token` alternatives, and `\b` in front of a
+bare `password` never matched after an underscore (`DB_PASSWORD=`) since `_` is a word character
+-- no boundary exists there. A JSON key's closing quote (`"password":`) and a quoted value
+containing spaces (`password = "my long pass phrase"`) also broke the old pattern. The context
+regex for bare 64-hex/base64 had the identical underscore-boundary gap (`JWT_SECRET=`/
+`SIGNING_KEY=` never seen) and only looked BEFORE the value, missing "<64hex> is the token"
+phrasing. Fixed: an optional `[A-Za-z0-9]*[_ -]` prefix on the kv-secret keyword (so `_`/`-`/space
+all count as separators), `passwd`/`secret`/`token` added to the alternation, an optional quote
+consumed after the keyword, and two value forms (quoted, any non-newline char; unquoted, no
+whitespace/quote/comma/semicolon). The context regex now excludes only LETTERS on either side
+(lookaround, not `\b`) and checks a 40-char window before AND a 20-char window after the match.
+Every previously-caught control (password=hunter2hunter2, SERVICE_API_KEY=..., "the secret:
+<64hex>", "token <64hex>") still catches, and the placeholder exemptions (`<...>`, `${...}`) still
+pass.
+
+**LOW (unmeasured, flagged, fixed anyway):** scripts/kg-secret-shape-scan.ts called openKgDb()
+unconditionally, which creates+migrates a missing path -- not read-only against a fresh
+`--kg-db` path. Fixed with an existsSync() guard that exits 1 instead of creating a database for
+a dry-run tool.
+
+**Verification.** 6 new rows in src/__tests__/kg-store.test.ts reproducing Cybersec's exact probe
+inputs (F1 timing budget, F2 both hex/base64 inputs, F3 all 5 missed spellings, F3
+underscore-context + after-value context, F3 controls-still-caught + placeholders-still-exempt).
+All 3 fixes mutation-proven independently (revert each, confirm exactly its own new test(s) go
+red, nothing else, then restore): F1 revert -> 1 test red (29.3 s measured, matching the NO-GO's
+own order of magnitude); F2 revert -> exactly its 2 tests red; F3 (kv regex) revert -> 1 test red;
+F3 (context regex) revert -> 1 test red. Full importer sweep: every kg-*.test.ts file (22 files,
+338 tests) green, no regression in any other kg-store.ts caller. tsc clean. lint-ratchet.sh
+--show: 422 (12+140+270), all 3 rules at baseline, unchanged. src/security/secret-gate.ts diff
+against f85b188a6: empty (shared gate still untouched).
+
+**Ki dontott:** backend (sajat kartya 03dff487 delta, Cybersec NO-GO 33019 ketelezesei alapjan).
+Gate: QA (re-confirm) + Cybersec (delta re-gate, a kartya sajat kijelolese).
+
+## 2026-11-18: 03dff487 delta round 2 -- CYBERSEC NO-GO 33019 round 2 (F4: the F3 fix re-introduced the F1 ReDoS class)
+
+**F4 (MEDIUM, regression introduced by the round-1 F3 fix).** Round 1 added an optional
+`(?:[A-Za-z0-9]*[_ -])?` prefix group in front of the kv-secret keyword alternation, so that a
+leading `_`/`-`/space would count as a separator. But the prefix group is OPTIONAL and unbounded,
+so on a long alphanumeric run with no separator anywhere in it, the regex engine retries the
+`[A-Za-z0-9]*` from every failed start position before giving up and trying the next position --
+the same O(n^2) class as the original F1 email-regex ReDoS. Cybersec measured 35.2 s on a 200 KB
+all-"a" run and 63.8 s on a 100 KB "ab1"-repeated run.
+
+The prefix was never load-bearing: the keyword alternation (`api[_-]?key|passwd|password|secret|
+token`) already matches as a plain substring inside `DB_PASSWORD=`, `SERVICE_API_KEY=`,
+`JWT_SECRET=` without any separator-matching prefix in front of it -- `password` is a substring of
+`DB_PASSWORD`, `api_key`/`api-key` is a substring of `SERVICE_API_KEY`, `secret` is a substring of
+`JWT_SECRET`. Fixed by simply dropping the prefix group; group numbering in
+`findKgLocalKvSecret()` is unchanged (it was always a non-capturing wrapper around the keyword,
+not a capture group of its own).
+
+**Verification.** `findKgLocalKvSecret` exported for direct testing (previously file-local). 3 new
+rows in src/__tests__/kg-store.test.ts: a 200 KB all-"a" run and a 100 KB "ab1"-repeated run must
+each finish under 1 s (was 35.2 s / 63.8 s pre-fix), and all 7 of round 1's F3 spellings plus the
+SERVICE_API_KEY control must still be caught with the prefix gone. Mutation-proven: reverting to
+the prefixed regex and re-running the suite caused the run to exceed a 90 s wall-clock budget
+without completing (consistent with Cybersec's own 35-64 s per-case measurements) -- confirmed the
+regression reproduces, then restored the fix and re-confirmed 45/45 green. Full kg-*.test.ts
+importer sweep: 22 files, 341 tests green (was 338, +3). tsc clean. lint-ratchet.sh --show: 422
+(12+140+270), all 3 rules at baseline, unchanged. src/security/secret-gate.ts diff: empty.
+
+**Ki dontott:** backend (sajat kartya 03dff487 delta round 2, Cybersec NO-GO 33019 round 2 (F4)
+alapjan, Fix-Direction replay-verified by Cybersec in the card comment). Gate: QA (re-confirm) +
+Cybersec (delta re-gate round 2, a kartya sajat kijelolese).
+
+## 2026-11-18 -- a42d27e1: gate-pretriage.sh --trunk land-parity -- F1/F2 owned (cybersec GO 20497)
+
+A kártya alap funkcióját (opt-in `--trunk` land-parity a `gate-pretriage.sh`-ban: valódi
+merge-with-trunk fán futó lint-ratchet + DECISIONS append-union dry-run + importer-sweep
+`fleet-test.sh`) WhiteHat (cybersec) GO-val zárta (337a240c3, REVIEW 32842), de a GO F1/F2
+MEDIUM leletek tulajdonlásához kötve: a szekció a heartbeat-consolidated B-szekció önjáró
+útján, MINDEN gate előtt, EMBERI/PreToolUse-hook nélkül futtatja a KÁRTYA SAJÁT ágának
+harness-scriptjeit (`store/lint-ratchet.sh`, `store/fleet-test.sh`) és teszt-fájljait --
+ez a kockázat-réteg, amit egy gate-dispatch (diff-olvasás + hook alatt) amúgy lefed, de ez az
+automatikus út nem.
+
+**F1 (MEDIUM, bizalmi határ) -- javítva `c07d26d8`-n.** A megoldás a cybersec javasolt (a) opció:
+ha a `--trunk`-kal mért merge diffje harness/config fájlt érint (`.eslintrc*`, `eslint.config.*`,
+`vitest.config.*`, `vitest.workspace.*`, `package.json`, `package-lock.json`,
+`store/lint-ratchet.sh`, `store/fleet-test.sh`), a lint-ratchet + importer-sweep MÉRÉS teljesen
+KIMARAD (`land-parity-measurement-skipped` info lelet), nem fut le az ág saját, esetleg módosított
+harness-kódja felügyelet nélkül. A (b) opciót (a `--trunk` kikapcsolása az automatikus
+heartbeat-útról) NEM választottuk -- az a kártya egész célját (3 valós landolás-bukás, lásd a
+kártya leírását) nullázná vissza minden kártyán, nem csak a harness-ot érintőkön.
+
+**F2 (MEDIUM, false red) -- javítva ugyanitt.** A `fleet-test.sh` `die()` 2-vel (rossz usage) vagy
+3-mal (harness/setup hiba: lock-timeout, npm ci, stale-build refusal) lép ki MIELŐTT egyetlen
+teszt is lefutna -- ez eddig `importer-sweep-red`-ként ment a kártyára. Mostantól csak `rc=1`
+ÉS egy valódi FAIL/"N failed" sor együtt számít piros leletnek; minden más nemzéró rc
+`importer-sweep-unmeasured` info lelet.
+
+**Mérés:** 2 új pozitív kontroll-teszt (`gate-pretriage.sh -- --trunk trust boundary (F1/F2...)`,
+`src/__tests__/gate-pretriage.test.ts`): egy szintetikus `package.json`-t érintő trunk-merge
+`land-parity-measurement-skipped`-et ad, NEM futtatja a lint/importer lépéseket; egy hamis,
+rc=3-mal kilépő `fleet-test.sh` `importer-sweep-unmeasured`-et ad, NEM `importer-sweep-red`-et.
+Teljes `gate-pretriage*` suite (3 fájl, 117 teszt) PASS. `npx tsc --noEmit`: tiszta. ESLint az
+érintett fájlokon: 1 előzetesen ismert, a bázison is meglévő `no-unsafe-argument` hiba (nem új,
+nem ezen a kártyán keletkezett).
+
+**F3-F5 (LOW) -- elfogadva, nem javítva ezen a körön.** F3 (a "clean merge" szöveg nem
+különbözteti meg "már trunk-ban van"-tól), F4 (idézetlen `for f in $changed_src` + nem escapelt
+grep -E), F5 (EXIT trap REPO-path interpolációja, árva worktree egy killelt futásnál) -- mindhárom
+LOW, cybersec saját szavaival "nothing attacker-controlled reaches the trap today", nem feltétele
+a GO-nak. Nyitva marad egy jövőbeli hardening körre, ha valaki a scriptet újra bővíti.
+
+**Ki döntött:** backend3 végezte (saját kártya). Gate-SHA: c07d26d84c52d53fb461b028749058c9434b841b. Gate: QA +
+Cybersec (a kártya saját kijelölése) -- mindkettő már GO/PASS volt a korábbi shán (QA PASS
+32848, CYBERSEC GO 20497), ez a kör csak az előbbi GO feltételét (F1/F2 tulajdonlása) teljesíti,
+funkcionális/API-viselkedés nem változott a 3 meglévő Kész-ha kontrollon kívül -- azok újra-futtatva
+is zöldek maradnak (lásd a teszt-eredményt fent).
+
+## 2026-11-18 -- a42d27e1 (javítás): F1 TÉVESEN "javítva"-ként szerepelt fent -- a valódi zárás a
+`--trunk` opt-in-né tétele, nem a harness-fájl-allowlist
+
+**Helyesbítés a fenti (Gate-SHA c07d26d84) bejegyzéshez.** A fenti entry "F1 ... javítva" állítása
+TÉVES volt -- Cybersec NO-GO 33120 (6a8a7b848-on, MikroB döntés msg 20826) ezt blokkolta: a
+harness-fájl-allowlist (`.eslintrc*`, `vitest.config.*`, `package.json`, stb.) csak akkor hagyja ki
+a mérést, ha a diff EZEKET érinti -- az importer-sweep viszont a kártya SAJÁT, meglévő teszt-
+fájljait (és az azok által importált, változott src-fájlokat) futtatja le `fleet-test.sh`/vitest
+alatt, FELÜGYELET NÉLKÜL, a heartbeat-consolidated önjáró útján, minden 30 percben, MIELŐTT
+bármelyik gate elolvasná a diffet -- ez a domináns eset (egy rendes, nem-harness src-fájl, amit egy
+meglévő teszt importál), és a harness-allowlist erre semmit nem tesz.
+
+**A valódi javítás.** A `gate-pretriage-card.sh` teljes `--trunk` (land-parity) szekciója mostantól
+EXPLICIT opt-in: a szkript saját CLI-jén egy ÚJ `--trunk` flag kell hozzá (alapértelmezés: KI), és
+csak akkor fut a trunk-fetch + a `gate-pretriage.sh --trunk` hívás, ha ezt a hívó megadta. A
+heartbeat-consolidated önjáró út (`gate-pretriage-card.sh <cardId>`, flag nélkül) ettől a ponttól
+SOHA nem adja meg -- a szekció NEM csak egy allowlist mögött szűkül, hanem EGYÁLTALÁN nem fut le
+azon az úton. Egy gate-ügynök a saját, eldobható gate-worktree-jéből futtathatja a `--trunk`
+flaggel, ha a land-parity mérést akarja -- ott már van felügyelő fél az eredményhez.
+
+**Teszt:** 4 új eset (`src/__tests__/gate-pretriage-card.test.ts`, "--trunk land-parity measurement
+is opt-in only"): egy harness-fájlt érintő commit `--trunk` NÉLKÜL semmilyen land-parity leletet nem
+ad (a szekció egyáltalán nem fut); UGYANAZ a commit `--trunk`-kal megadva ADJA a
+`land-parity-measurement-skipped` leletet (bizonyítja, hogy a flag tényleg visszakapcsolja a
+szekciót, nem csak egy hibás fixture); a `--trunk` flag valóban a top-level arg-parseren szerepel;
+és egy szöveges pin arra, hogy a `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md` saját
+`gate-pretriage-card.sh` hívása SOHA nem tartalmazza a `--trunk` szót. Teljes
+`gate-pretriage*` suite (3 fájl, 121 teszt, 117+4) PASS. `npx tsc --noEmit`: tiszta.
+`lint-ratchet.sh --show`: 422 lelet, alapvonal tart, 0 új. A két érintett shell-selftest
+(`gate-pretriage-attribution.selftest.sh` 16/16, `card-build-route.selftest.sh` 70/70) is zöld.
+
+**Ki döntött:** MikroB (msg 20826, Cybersec NO-GO 33120 alapján) -- "I do NOT accept that residual",
+az opcionális docs-only elfogadást a kötelező kódjavításra emelte. backend3 végezte.
+
+**Hivatkozás:** kártya a42d27e1, Cybersec NO-GO 33120 (6a8a7b848-on), MikroB msg 20826,
+`store/gate-pretriage-card.sh`, `src/__tests__/gate-pretriage-card.test.ts`,
+`seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`.
+
+## 2026-11-18 -- 1df5360b: email-kapu safe-prefix allowlist -- szinonima-igék szélesítve a tiltott szóhalmazban
+
+**Döntés:** WhiteHat2 GO a bf7a7335-ön (Gate-SHA e1aa7437, komment 9092) MARADT, nem blokkoló
+LOW leletet jelzett: a három email-kapu (`scripts/email-send-gate.mjs`,
+`scripts/hooks/email-approval-gate.py`, `scripts/hooks/outgoing-copy-gate.py`) saját
+`EMAIL_SAFE_TOOL_RE`/`_EMAIL_SAFE_TOOL_RE` negatív lookaheadje csak a `send|reply|forward`
+szavakat zárta ki egy safe-prefix (search/get/list/read/draft) ÉS 18 mért küldő-szinonima
+(dispatch, deliver, submit, transmit, post, publish, relay, respond, fwd, mail_out, ship,
+answer, xmit, snd, rply) kombinációja mindhárom kapun átmegy. Élőben ma nem kihasználható
+(nincs Gmail/Resend szerver bekötve), de a következő küldő MCP-szerverrel az lesz.
+
+**Javítás (surgical, a meglévő regex-mechanizmus szélesítve, nem a card által javasolt teljes
+allowlist-csere):** mindhárom kapu saját regex-másolatában (nincs közös import, ez a fájlok
+saját, dokumentált konvenciója) a negatív lookahead szóhalmaza kibővült a mért 18 formát fedő
+15 egyedi szinonimával. A regex 3 bájtra NEM azonos a három kapuban (az alap verb-készlet is
+eltér: `email-send-gate.mjs`/`email-approval-gate.py` `search|get|list|read|draft`,
+`outgoing-copy-gate.py` `search|get|list|read|delete`, Koteg 23a szerint), de a bővített
+szóhalmaz maga azonos mindhárom helyen.
+
+**Miért nem a teljes explicit-allowlist (a card által javasolt "tartós javítás"):** egy valódi,
+explicit, teljes toolnév-lista (default-deny) a Gmail connector + Resend MCP teljes, hitelesen
+mért operáció-katalógusát igényelné -- ennek hiányában egy kitalált lista FALSE DENY kockázatot
+hordozna (egy valódi, biztonságos olvasó/draft tool neve kimaradna, és letiltaná a normál
+munkát), ami rosszabb kimenet, mint a mai LOW lelet. A szóhalmaz-szélesítés ugyanazt a "deny-lista
+egy allow-listában" tulajdonságot hordozza tovább (egy JÖVŐBELI, itt nem enumerált szinonima
+ismét átmehetne) -- ez tudatosan maradt NYITOTT kockázat, dokumentálva, nem elrejtve. A teljes
+allowlist-csere ezért külön, nagyobb kártyaként marad, ha a döntéshozó (MikroB/Peti) ezt
+választja a jelenlegi, kisebb kockázatú javítás helyett.
+
+**Mérés:** canary-tesztek mindhárom kapu saját teszt-fájljában, mind a 18 formára (pontosan a
+WhiteHat2 mérési listájából), plusz a meglévő biztonságos nevek (search_threads, get_email,
+create_draft, draft_email stb.) regresszió nélkül. `email-approval-gate.test.py` és
+`outgoing-copy-gate.test.py` (python3 -I): teljesen zöld, mindhárom gate saját suite-ja.
+`email-send-gate.test.ts`: új teszt a 18 formára, fleet-test-tel igazolva.
+
+**Ki döntött:** backend (a fix szerzője), MikroB kanban-sor alapján (kártya 1df5360b, forrás:
+WhiteHat2 GO a bf7a7335-ön). A teljes allowlist-csere döntése nyitva marad.
+
+**Hivatkozás:** kártya 1df5360b, bf7a7335 (komment 9092, Gate-SHA e1aa7437),
+`scripts/email-send-gate.mjs`, `scripts/hooks/email-approval-gate.py`,
+`scripts/hooks/outgoing-copy-gate.py`.
+
+## 2026-11-18 -- f19cb1e1: agent-id-header generátor pinje a valódi detektorra cserélve, a detektor saját hézagai javítva
+
+**Döntés:** CYBERSEC GO F1 a ca6d7b9d-n (Gate-SHA 4a0845f9) jelezte, hogy a card ca6d7b9d saját,
+kézzel írt regexe (`agent-id-header-argv-pin.test.ts` "MUTATION PIN" assertje) csak a pontos régi
+alakot fogja: egy hosszú `--header "Authorization: Bearer ..."` kapcsoló, egy kisbetűs
+`authorization: bearer`, egy `-H` utáni sortörés, és curl saját `--oauth2-bearer "$(...)"`
+kapcsolója mind átment rajta. Mérve: a `token-in-argv-guard.test.ts` MÁR LÉTEZŐ, erősebb
+`findCurlInvocations`/`leaksTokenInArgv` detektora (ami a teljes `src/` fát scanneli, agent-
+scaffold.ts-t is beleértve) a `--header` és a sortöréses alakot MÁR elkapja -- de a kisbetűs
+alakot és a `--oauth2-bearer`-t ŐK IS átengedik, tehát a hiba nem csak a kis pin-teszté, hanem
+magáé a megosztott detektoré.
+
+**Javítás:** (1) `leaksTokenInArgv` (token-in-argv-guard.test.ts): `/i` flag a header-minta
+case-insensitive illesztéséhez, plusz egy külön `--oauth2-bearer[\s=]+...` minta -- ennek nincs
+fájl-alapú szankcionált alakja, ezért sosem mentesül a `-H @` kivétel alól. (2)
+agent-id-header-argv-pin.test.ts: a régi, kézzel írt "MUTATION PIN" regex-assert törölve, helyette
+a SAJÁT (nincs megosztott import, lásd lentebb) másolata a javított detektornak, és a generált
+blokkot a VALÓS detektorral ellenőrzi, nem substring-mintával (kódminőségi 12. elv).
+
+**Miért nincs megosztott import a két teszt-fájl között:** próbáltam `import { findCurlInvocations,
+leaksTokenInArgv } from './token-in-argv-guard.test.js'`-t -- ez a .test.ts fájl TELJES modulját
+betöltötte, ami a benne lévő describe/it hívásokat IS újra regisztrálta ebben a futásban (mérve:
+19850 teszt helyett 39701, pontosan a duplázódás jele). A megoldás: saját másolat mindkét kapuban,
+ugyanaz a konvenció, amit az email-kapuk (scripts/email-send-gate.mjs, scripts/hooks/email-
+approval-gate.py, scripts/hooks/outgoing-copy-gate.py) már követnek.
+
+**"és a többi generált szekció" (a kártya szövege):** a `token-in-argv-guard.test.ts` saját
+SRC_FILES scanje (src/**/*.ts, __tests__ kivéve) MÁR lefedi agent-scaffold.ts TELJES forrását, nem
+csak buildAgentIdHeaderBody-t -- a detektor-szintű javítás (case-insensitive + --oauth2-bearer)
+ezért automatikusan kiterjed minden generátor-függvényre a fájlban, külön per-függvény teszt
+nélkül.
+
+**Mérés:** mutáció-bizonyított mindkét kapun külön -- a detektor visszaállítva a régi (case-
+sensitive, --oauth2-bearer nélküli) alakra: token-in-argv-guard.test.ts-ben pontosan a 2 új canary
+(lowercase, --oauth2-bearer) piros, semmi más (19847/19849); agent-id-header-argv-pin.test.ts-ben a
+detektor-szintű mutáció-pin teszt az M3 (lowercase) esetnél piros (a `for...of` az első dobásnál
+megáll). Visszaállítva: mindkettő teljesen zöld (19852/19852 a két fájl együtt). tsc --noEmit
+tiszta. lint-ratchet.sh --show: 422, mindhárom szabály alapvonalon.
+
+**Ki döntött:** backend (a fix szerzője), MikroB kanban-sor alapján (kártya f19cb1e1, forrás:
+RedHat e73b17ef GO, komment 19571, egyezik a WhiteHat2 F1-gyel a ca6d7b9d-n).
+
+**Hivatkozás:** kártya f19cb1e1, ca6d7b9d (CYBERSEC GO, Gate-SHA 4a0845f9), e73b17ef,
+`src/__tests__/token-in-argv-guard.test.ts`, `src/__tests__/agent-id-header-argv-pin.test.ts`.
+
+## 2026-11-18 -- 339ad171: cybersec2 CYBERSEC NO-GO (komment 33084) 3 lelet javítva a card_landings done-guardon
+
+**A hiba.** A CYBERSEC NO-GO (komment 33084, Gate-SHA 45429adb8) három leletet hagyott az F2.2
+card_landings done-guardon (`src/web/kanban-card-landings-guard.ts`), F1-et és F2-t blokkolóként,
+F3-at "ugyanebben a körben javítandó"-ként jelölve.
+
+**F1 javítva (MEDIUM).** A guard saját warn-kommentje szó szerint idézi a "Landing: n/a"
+kibúvó-sort, és az ungated kártyák kibúvó-keresése szerző-szűrő nélkül futott -- egy egyszer
+warn-olt, nem gate-elt kártya a KÖVETKEZŐ (enforce) ellenőrzésnél önmagát mentette ki. A
+kibúvó-keresés most kihagyja a guard saját (GUARD_AUTHOR) kommentjeit és minden
+generált/automatizált (GENERATED_COMMENT_AUTHORS) kommentet.
+
+**F2 javítva (MEDIUM).** A sha-kötés szabály (MikroB komment 28280) csak akkor futott, ha volt
+gate-elt sha -- egy SOHA nem gate-elt kártya (nincs builder REVIEW Gate-SHA sorral) egyetlen
+card_landings sor létezésére átment, pontosan a "card_id-n önmagán alapuló landolás" eset, amit
+a szabály tilt (pl. egy docs commit, ami csak annyit ír, "lásd card <id>"). Egy nem gate-elt
+kártya most ugyanúgy viselkedik, mint egy nulla sorral rendelkező: nincs mihez kötni a landolást.
+
+**F3 javítva (MEDIUM-LOW).** A `latestGatedSha()` a legújabb REVIEW-alakú, Gate-SHA-t viselő
+kommentet vette, szerzőtől függetlenül -- egy gate saját visszaigazolása (vagy egy generált
+komment) felülírhatta a valódi builder-átadást, amit a gate-ek tényleg megítéltek. Most csak
+nem-gate, nem-generált szerző kommentje jelölheti ki a gate-elt shát -- a
+`kanban-gate-completeness-guard.ts` saját `GATE_AGENT_NAMES`-ét és a
+`kanban-landed-guard.ts` `GENERATED_COMMENT_AUTHORS`-ét újrahasznosítva, nem újra levezetve.
+
+**F4/F5 nyitva marad.** Cybersec2 saját verdiktje szerint LOW, illetve INFO, nem része a NO-GO-nak
+-- dokumentált, ismert korlátként marad, ugyanúgy, mint a testvér-guardokon (F5).
+
+**Mérés:** 7 új teszt (29 összesen: 22 régi + 7 új), mind PASS. Regresszió: a guard saját
+suite-ja + 6 testvér close-door guard/route suite a kanban.ts-ben (ugyanaz a kör, amit QA2 az 1.
+körben futtatott) -- 249/249, 0 új bukás. `tsc --noEmit` tiszta. `lint-ratchet.sh --show`: 422
+lelet, alapvonal tart, 0 új.
+
+**Ki döntött:** backend3 (a fix szerzője), cybersec2 CYBERSEC NO-GO Fix-Direction-je alapján
+(komment 33084). Delta re-gate (Peti szabály, 2026-11-14): diff + célzott suite-ok, nincs teljes
+fleet-test ebben a körben.
+
+**Hivatkozás:** kártya 339ad171 (szülő: 471d0fdc), cybersec2 NO-GO komment 33084 (Gate-SHA
+45429adb8), REVIEW komment 33095 (Gate-SHA 2f34c9948), `src/web/kanban-card-landings-guard.ts`,
+`src/__tests__/kanban-card-landings-guard.test.ts`.
+
+## 2026-11-18: Server-side REVIEW-presence guard for waiting transitions (card 18fbb3a8)
+
+Added src/web/kanban-review-presence-guard.ts: warn-only, fires when a card moves to `waiting`
+with no recent REVIEW comment from its own assignee in the last 30 minutes. Backstops a direct
+PUT/POST .../move to waiting that bypasses store/post-review.sh entirely (manual curl, a
+different script, a bug) -- the same empty-REVIEW shape 88b67fb4 closed for post-review.sh
+callers, now closed for the ones that skip it. Wired into both the PUT and POST /move handlers
+in src/web/routes/kanban.ts, right after the existing specTemplateGuardCheck call. Never blocks
+the transition, same discipline as kanban-spec-template-guard.ts.
+
+**Ki dontott:** backend (sajat kartya, F3.1 follow-up grilling note). Gate: QA + Cybersec.
+
+## 2026-11-18 -- b715a0b1: TOKENVAK915 follow-up (25ea084c WhiteHat2) -- mindhárom pont már teljesült, kódváltozás nélkül
+
+**L1 (a lényeg, mutáns pirosítás).** A kártya azt feltételezte, hogy a TOKENVAK915-javítás
+(context-restart-gate-runner.ts és context-guard-runner.ts configDirFor-ja, MAIN_AGENT_ID ->
+mainAgentConfigDir) nincs pinelve. Ez közben egy MÁSIK kártyán (25ea084c, QA2 L1 lelet) már
+megépült: a src/__tests__/main-config-dir-wiring.test.ts (commit 750698ab6, már az origin/develop-en)
+pontosan ezt a delegálást pineli. Ellenőriztem kézzel: mindkét runner configDirFor-jában a
+MAIN_AGENT_ID ágat feltétel nélküli `undefined`-ra írtam vissza, lefuttattam a tesztfájlt --
+pontosan a két célzott teszt ("resolves through the real function") ment pirosra, a harmadik
+("a non-main agent never reaches mainAgentConfigDir") zöld maradt (helyesen, mert az az ág
+nem ágazik a mutált kódra). A fájlokat byte-azonosra visszaállítottam (`diff -q` tiszta).
+
+**L2 (MAIN_AGENT_CONFIG_DIR hitelesség, döntés).** A `resolveMainAgentConfigDir()`
+(src/web/agent-process.ts) MÁR validál: `expandAndValidateConfigDir` (shell-biztonsági
+whitelist + `..`-tiltás + tilde-szabályok) ÉS `existsSync` -- hiányzó vagy érvénytelen érték
+esetén fail-open NULL-ra esik (megosztott `~/.claude` marad), nem egy hamis gyökérre. A kártya
+által javasolt "csak a saját home alatt" megszorítást A KÓD SZÁNDÉKOSAN NEM vezeti be
+(config-dir-path.ts:28-29 saját kommentje: "legitimate non-home locations like
+'/var/lib/claude-coding' still work") -- ez egy MEGLÉVŐ, tudatos döntés, nem hiányosság: az
+üzemeltető szándékosan választhat home-on kívüli konfig-gyökeret (pl. különálló Claude-login egy
+másik lemezen/felhasználón). Döntés: a jelenlegi existence+shell-safety validáció elegendő
+megbízási szint a ~/.claude/projects hamis fájljához képest (a hamisítás továbbra is helyi fájlrendszer-
+hozzáférést igényel, amit a fail-open-null már lekezel); a home-dir-megszorítást NEM vezetjük be.
+
+**L3 (readdir-költség, mérve).** A kártya "1327 fájlnál ~7-11 ms" mérésének megfelelő, uncachelt
+szinkron readdir+stat hurok TÉNYLEG létezik: `readLastConversationTsFromProjectDir` és
+`readTranscriptMtimeFromProjectDir` (src/web/active-model.ts) -- ezeket hívja
+`msSinceTranscriptWrite` a context-restart-gate-runner.ts-ben és a context-guard-runner.ts
+tick-je, 5 percenkénti ciklusban, agensenként. (A MÁSIK olvasó, `readContextTokensFromProjectDir`,
+MÁR async + 3s TTL-cache + in-flight-coalescing -- card 9a2fd3f7 -- tehát az NEM ez a gond.)
+Élő mérés: a legnagyobb jsonl-könyvtáron (607 fájl, /home/neon/.claude/projects/-home-neon-marveen)
+a readdir+stat hurok 6.6 ms. 18 regisztrált agenssel, 2 runnerrel, 5 perces ciklusonként: legfeljebb
+~18*2*7-14ms ≈ 250-500 ms szinkron CPU 300 másodpercenként, ami <0,2%-os terhelés és egyedi hívásként
+jóval a d3dc35bf/9a2fd3f7 kártyák által mért, másodperces-blokkolást okozó eset alatt marad (azok
+többszáz MB-os teljes fájlbeolvasást cacheltek, nem egy 1327-elemű readdir-t). Döntés: a jelenlegi
+hívási gyakoriság NEM indokolja a cache bevezetését -- a kártya saját feltétele ("csak akkor javítsd,
+ha a hívási gyakoriság indokolja") erre nem teljesül, spekulatív optimalizálás nem kerül be
+(karpathy-guidelines: egyszerűség először).
+
+**Ki döntött:** backend (vizsgálat + mérés), a döntést a kártya saját feltételei alapján magam
+rögzítettem, kódváltozás nélkül.
+
+**Hivatkozás:** kártya b715a0b1, forrás 25ea084c (WhiteHat2 CYBERSEC GO, msg 12178),
+src/__tests__/main-config-dir-wiring.test.ts (commit 750698ab6), src/web/agent-process.ts,
+src/config-dir-path.ts, src/web/active-model.ts.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+## 2026-11-18: b715a0b1 follow-up -- third configDirFor copy pinned, mainConfigRoots explicit-root candidate validated (card 5423775c, Cybered GO 32882 conditions)
+
+Cybered's GO on b715a0b1 (comment 32882, Gate-SHA de9eb2ebd) left 3 non-blocking conditions. C3
+(3 ms/call measurement, no cache needed) required no action. C1 and C2 fixed here:
+
+**C1 -- third configDirFor copy unpinned.** The L1 pin (card d79a69b5/25ea084c) covers
+context-restart-gate-runner.ts and context-guard-runner.ts's own local configDirFor() copies
+(main-config-dir-wiring.test.ts). src/web/delivery-turn-check.ts carries a THIRD, independent copy
+-- not exported, not imported by any test. Reverting it to the pre-fix unconditional `undefined`
+for MAIN_AGENT_ID left the whole suite green (Cybered's own measurement). Fixed: exported
+configDirFor from delivery-turn-check.ts and added two cases to main-config-dir-wiring.test.ts
+(real delegation to mainAgentConfigDir with the real working dir; non-main agent never reaches
+it). The mainConfigRoots() explicit-root candidate (inbound-probe.ts) was likewise unpinned --
+no test asserted a malformed/unsafe value was ever rejected. Fixed together with C2 below (the
+same code change pins both).
+
+**C2 -- watchdogs read the raw MAIN_AGENT_CONFIG_DIR value, the launcher validates it.**
+inbound-probe.ts's mainConfigRoots() expanded the raw setting with its OWN ad-hoc tilde rule
+(`raw.startsWith('~') ? join(homedir(), raw.slice(1)) : raw`) and pushed the result unchecked.
+The launcher's resolveMainAgentConfigDir() (agent-process.ts) instead runs the same raw value
+through expandAndValidateConfigDir (config-dir-path.ts): a character whitelist, a `..`-traversal
+reject, and a strict tilde-form check (bare `~` or a leading `~/` only). A watchdog could
+therefore probe a root the launcher would have refused to ever export as CLAUDE_CONFIG_DIR (a
+`..`-traversal path, a mid-string `~`, a shell-significant character) -- a value the main session
+never actually ran under. No DECISIONS.md entry asserted the two already shared validation (the
+L2 premise checked here is "the agent bearer cannot write the setting", a different question), so
+the fix is the code change, not a correction. mainConfigRoots() now calls
+expandAndValidateConfigDir(raw, homedir()) and only pushes the result when non-null -- the exact
+same gauntlet the launcher applies, so the two can no longer disagree about what MAIN_AGENT_CONFIG_DIR
+means. existsSync is NOT re-applied here (unlike the launcher): a watchdog probing a root that
+does not exist is already harmless by mainConfigRoots()'s own design (a candidate not in use
+yields an older/no timestamp, "newest wins" answers the question) -- only path-safety, not
+existence, was the actual gap.
+
+**Verification.** New src/__tests__/main-config-roots-explicit-dir-validation.test.ts (5 cases: a
+well-formed `~/`-prefixed value included and correctly expanded; `..`-traversal rejected;
+mid-string `~` rejected; a shell-significant character rejected; no setting -> exactly the 2
+default roots). main-config-dir-wiring.test.ts gained 2 cases for delivery-turn-check.ts's
+configDirFor. Fleet-test command not yet run on this delta (scoped per the delta-regate rule --
+see REVIEW); locally: src/__tests__/main-config-dir-wiring.test.ts (5/5),
+src/__tests__/main-config-roots-explicit-dir-validation.test.ts (5/5),
+src/__tests__/delivery-turn-check.test.ts + inbound-probe.test.ts + inbound-probe-rotated-root.test.ts
++ token-usage-main-launcher-config-dir.test.ts + schedule-inflight-config-dir.test.ts all green
+(310+291 across the two combined runs, no overlap double-counted). Mutation-proven: reverting the
+C2 fix (back to the raw tilde-only expansion) turned exactly the 3 new rejection cases red, nothing
+else; reverting delivery-turn-check.ts's configDirFor to the pre-fix unconditional `undefined` turned
+exactly the 1 new delegation case red, nothing else. tsc clean. lint-ratchet.sh --show: 422, all 3
+rules at baseline (unchanged from before this delta).
+
+**Ki dontott:** backend (sajat kartya 5423775c, Cybered GO 32882 C1/C2 kovetelmenyei alapjan). Gate:
+QA + Cybered (a kartya sajat kijelolese).
+
+## 2026-11-18 -- 154cbbd0: email-gate matcher kis-nagybetű-érzékenység (F1) + inlineImages
+## P1/P2 mutáció-fedettség (a2cb71f1 maradék LOW leletek)
+
+RedHat a2cb71f1 komment 20438 maga mondta, hogy a Claude Code matcher kis-nagybetű-érzékenységét
+nem mérte. Megmértem (WebSearch): a PreToolUse matcherek kis-nagybetű-érzékenyek és teljes-egyezést
+várnak (`^(?:matcher)$`) -- az `EMAIL_GATE_MATCHER` gmail/resend szerver-horgony alternatívái csak
+az ELSŐ betűt variálták, így egy "GMAIL"/"gMail" nevű szerver a kaput megkerülte. Javítva teljes
+kis-nagybetű-érzéketlen karakterosztályra, szinkronban a tracked `.claude/settings.json`-nal és 2
+teszt-fájllal.
+
+P1/P2: a2cb71f1-nél csak az ELSŐ inline kép hash-elése volt pinelve (P1), és a `path`-ág csak egy
+egyetlen-elemű listán volt tesztelve (P2). Hozzáadva: két-képes teszt (P1), és egy olyan eset,
+ahol a `path`-ot hordozó elem a lista MÁSODIK tagja (P2).
+
+**Delta (CYBERED NO-GO 33233):** az első P2-teszt egy path-ONLY (content nélküli) második elemet
+használt -- ha az `if path:` ágat kivesszük, a tétel a KÜLÖNÁLLÓ "hiányzó content" ág miatt
+akkor is elutasításra kerülne, tehát a mutáns zöld maradt volna, a REVIEW "index-0 mutáns pirosra
+vált" állítása hamis volt erre a konkrét esetre. Javítva: a második elem path ÉS érvényes content
+mezőt is kap, így az elutasítás KIZÁRÓLAG a `path`-ellenőrzéstől függ. Mutáció-bizonyítva: az
+`if path:` blokk kivételével a teszt valóban pirosra vált, visszaállítva zöld.
+
+**Mérés:** `fleet-test.sh --ref 1a50ca711` (F1, 3 érintett fájl, delta-szabály szerint szűkítve,
+LOW kártya): 3 Test Files passed, 184 Tests passed. `email-extract-parity.test.py` (P1/P2,
+`python3 -I`): minden check zöld, mutáció-teszt a fenti deltánál megerősítve. `tsc --noEmit`:
+tiszta. `lint-ratchet.sh --show`: 420 lelet/3 szabály, a session-alapvonallal egyezik (12/140/268).
+
+**Ki döntött:** backend (saját kártya). Gate-SHA: fe92ec25147794cf7f8954963ab66710859dc6ad.
+Gate: QA + Cybered (a kártya saját kijelölése).
+
+## 2026-11-15 -- b5d19a32: project-root anchor moved to STORE_DIR, sweep refuses symlinked .claude/CLAUDE.md/settings.json
+
+**Decision:** Card b5d19a32 (source: CYBERSEC GO on card eed22288, MEDIUM pre-existing on develop 8c6f30fb). Finding: the project-root anchor used to live at `agents/<name>/.claude/project-root-anchor.json`, a path the agent itself can write to or replace -- including by making `agents/<name>/.claude` a symlink into another agent's `.claude` dir. The anchor sweeper then resolves the victim's real `settings.json` through that symlink and rewrites its hook paths using drift the attacker (agent A) chose, not the victim's own history.
+
+**Fix:** moved the anchor store to `STORE_DIR/project-root-anchors/<name>.json` (no agent process can write under `STORE_DIR`), and added `hasSymlinkedScaffoldPath(name)` in `agent-scaffold.ts`, which `lstatSync`s the agent's `.claude` dir, `CLAUDE.md`, and `settings.json` and refuses the whole sweep (`ensureProjectRootAnchor` returns early with a warn log) if any of the three is a symlink.
+
+**Test:** `src/__tests__/project-root-anchor.test.ts`, two new cases: (a) agent-attacker's `.claude` symlinked to agent-victim's `.claude`, with a drifted STORE_DIR anchor seeded for attacker -- asserts the sweep refuses and victim's `settings.json` is byte-identical afterward; (b) an anchor file planted under the agent's own (legacy) `.claude` dir is ignored -- the sweep treats it as "no anchor yet" and writes the real baseline to STORE_DIR instead. `fleet-test.sh --ref 2ae712bfd src/__tests__/project-root-anchor.test.ts`: 1 file, 9/9 green.
+
+**Who decided:** backend (card b5d19a32, dispatched by MikroB msg 18944 off CYBERSEC GO on eed22288). Gate: QA + Cybersec. Gate-SHA: 2ae712bfd.
+
+## 2026-11-15 -- card 2d5ad4d2 (b7540305 follow-up, CYBERSEC F1 MEDIUM: graphify symlink bypass + stale pin/approval szöveg)
+
+**F1 (symlink bypass):** `store/graphify.sh build`-nek a GHSA-pcc4-rvhr-2pr8 kompenzáló
+tiltó-predikátuma (`find ... -type f ...`, card b7540305) csak VALÓDI fájlt vizsgált --
+egy védett kiterjesztésre (pl. `x.F90`) nevezett SZIMLINK, akármire is mutatott, átjutott
+rajta és elérte a pinnelt binárist. Mért bizonyíték: egy canary-symlink
+(`ln -s innocuous.txt canary.F90`) a régi predikátummal lefutott, a `graphify` hívást
+a FAKE_BIN naplója szerint TÉNYLEGESEN elérte. Javítás: a predikátum mostantól
+`\( -type f -o -type l \)`. Mutáció-ellenőrzés: a régi (`-type f` only) alakra visszaállítva
+a `store/graphify-fortran-guard.selftest.sh` új symlink-canary esete pontosan PIROSRA vált
+(2 esetben), a javítással visszazöldül.
+
+**Szöveg-korrekció (2. rész):** a `store/watched-repos.json` graphify-bejegyzése és a
+`store/graphify.sh` fejlett-kommentje avítottan "Peti approval pending"-ként hivatkozott a
+8317aeb4 jóváhagyásra. Tényleges állapot: a jóváhagyás 18:32-kor lejárt (timeout), és Peti
+(Telegram 12932) a verzió-bumpokat a heti/kétheti eszköz-ellenőrzésre halasztotta, nem egy
+különálló élő-frissítési ablakra. A `graphify.sh` kommentjét frissítettem (ÉLŐ kód, nem
+append-only napló, szabad javítani); a `watched-repos.json` note mezejéhez -- ami maga is
+dátumozott, hozzáfűzős bejegyzésekből áll, ugyanúgy mint ez a fájl -- egy ÚJ, 2026-11-15-ös
+dátumozott szegmenst fűztem a VÉGÉRE, ami korrigálja a 2026-10-31-es bejegyzés keretezését,
+nem törölve/szerkesztve azt. Ugyanitt rögzítve: az élesben futó binárs verziója 0.9.35
+(nem a regisztrált 0.9.67 pin), a tiszta cél a heti ellenőrzéshez >=0.9.70 -- a 2026-10-09-es
+bejegyzésben dokumentált `pipx install --force graphifyy==0.9.67` parancs NEM tekinthető a
+CVE javításának, mert a 0.9.67 maga is a 0.7.2-0.9.69 érintett tartományba esik (ezt a
+2026-10-09-es bejegyzés a fa4a875d-es CVE-lelet ELŐTT íródott, ezért hiányzik belőle ez a
+figyelmeztetés).
+
+**Teszt:** `store/graphify-fortran-guard.selftest.sh` 10/10 PASS (5 régi eset + 1 új
+symlink-canary eset, 2 check), `bash -n store/graphify.sh` tiszta, `watched-repos.json`
+JSON-validált a szerkesztés után, `git diff --stat` 3 fájl (selftest +16, graphify.sh
++11/-4, watched-repos.json +4/-2 -- a note-mező egyetlen string, a JSON-diff ezért csak
+2 sort mutat a tartalmi hozzáfűzés ellenére).
+
+Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15, kártya dffbb55f (RedHat c0408a1c comment 18896 follow-up): mopsion-suite-run.sh D1
+marveen-fa felismerese path-prefix minta helyett marker-alapura valtott (git toplevel + saját
+store/fleet-test.sh jelenlete), es minden argumentum `realpath -m` utan megy a markeren at. Ez
+zarja a 3 mert kerulouttat (literal ".." szegmens, symlink argumentum, gate-worktree cwd + relativ
+argumentum) es RedHat 7 tulelo mutansat (K5, K7b, K9, K9b, K10b, K12, K13). Gate-SHA:
+38f4ef91528df9f110bdce8d96349ecd4b55141e. Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
 
 ## 2026-11-18 -- 51c68eeb: Koteg 26 upstream szinkron (66d38ee45..a4545a8a0, 25 commit)
 

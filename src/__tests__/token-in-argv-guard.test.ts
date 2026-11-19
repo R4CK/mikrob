@@ -95,7 +95,16 @@ function findCurlInvocations(source: string): CurlInvocation[] {
  * `Bearer <token>` and `Bearer %s`, and inventing that on no evidence is how guards get disabled.
  */
 function leaksTokenInArgv(invocation: string): boolean {
-  if (!/Authorization:\s*Bearer\s*(\$(\(|\{|[A-Za-z_])|`)/.test(invocation)) return false
+  // Card f19cb1e1 (CYBERSEC GO F1 on ca6d7b9d, comment on Gate-SHA 4a0845f9): this rule was
+  // case-sensitive on the header NAME/scheme (`authorization: bearer $(...)` survived) and had no
+  // rule at all for curl's OWN `--oauth2-bearer <token>` flag, which puts a bearer token in argv
+  // without ever spelling the word "Authorization". Both measured live against this exact
+  // function: neither tripped it before this fix. `/i` covers the first; a dedicated check below
+  // covers the second, since `--oauth2-bearer` has no sanctioned file-based form to exempt.
+  const headerBearer = /Authorization:\s*Bearer\s*(\$(\(|\{|[A-Za-z_])|`)/i.test(invocation)
+  const oauth2Bearer = /--oauth2-bearer[\s=]+["'`]?(\$(\(|\{|[A-Za-z_])|`)/i.test(invocation)
+  if (!headerBearer && !oauth2Bearer) return false
+  if (oauth2Bearer) return true
   // The sanctioned form reads the header from a file (`-H @"$hdr_file"` / `-H @"$hdr"` / `-H @"$hf"`);
   // that never matches the Bearer-in-argv pattern above in the first place, but keep this as an
   // explicit second check so a future refactor that keeps BOTH forms in one invocation still trips.
@@ -963,6 +972,33 @@ describe('the scanner itself catches what a naive single-line regex would miss',
 
   it('does NOT flag a curl with no Authorization header at all', () => {
     const script = '#!/usr/bin/env bash\ncurl -s "http://example.com"\n'
+    expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
+  })
+
+  // Card f19cb1e1 (CYBERSEC GO F1 on ca6d7b9d): the header NAME/scheme match was case-sensitive,
+  // so a lowercase `authorization: bearer $(...)` survived both this guard and the smaller
+  // generator pin test unnoticed.
+  it('flags a lowercase "authorization: bearer" header, not just the capitalized spelling', () => {
+    const script = 'curl -s -H "authorization: bearer $(cat store/.dashboard-token)" "$DASH/api/x"'
+    expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toHaveLength(1)
+  })
+
+  // Card f19cb1e1 (same finding): curl's own `--oauth2-bearer <token>` flag puts a bearer token
+  // in argv WITHOUT ever spelling the word "Authorization" -- a rule anchored on that word alone
+  // is blind to it by construction. No sanctioned file-based form exists for this flag, so it is
+  // never exempted the way `-H @"$hdr"` exempts the header form.
+  it('flags --oauth2-bearer sourced from a variable or substitution', () => {
+    for (const script of [
+      'curl -s --oauth2-bearer "$(cat store/.dashboard-token)" "$DASH/api/x"',
+      'curl -s --oauth2-bearer="${TOK}" "$DASH/api/x"',
+      'curl -s --oauth2-bearer "$TOK" "$DASH/api/x"',
+    ]) {
+      expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text)), script).toHaveLength(1)
+    }
+  })
+
+  it('does NOT flag --oauth2-bearer with a literal, non-interpolated placeholder (doc example)', () => {
+    const script = 'curl -s --oauth2-bearer "<token>" "$DASH/api/x"'
     expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
   })
 

@@ -133,6 +133,32 @@ scan_live_proc_targets() {
     -printf '%l\n' 2>/dev/null
 }
 
+# C1 (RedHat MEDIUM, Cybered gate on 0116755a @ e3ac5b1a6, card 89e8cb90): every guard below used
+# to test only git's OUTPUT (`[ -n "$(git ... 2>&1)" ]`), never its exit code. A git that dies
+# silently under memory pressure or a missing binary (rc 137/127/1, no stderr) produced empty
+# output, which read as "clean" -- fail OPEN exactly where the guard claims to fail closed.
+# Measured: a stub git exiting 137 with no output let remove_entry delete a dirty registered
+# worktree, a dirty unregistered clone, AND an unregistered clone with an unreachable HEAD.
+# Capturing rc alongside output and treating ANY non-zero rc as "found a problem too" closes all
+# of them with one helper, same fail-closed polarity as N2's empty-scan fix above.
+git_dirty_or_failed() {
+  local out rc
+  out="$("$@" 2>&1)"; rc=$?
+  [ -n "$out" ] || [ "$rc" -ne 0 ]
+}
+
+# CONDITION 1 (Cybered GO 32903 on 3bcdc0a6c, card 09ed7ef6): the three `find -mmin` age re-checks
+# below were still output-only (`[ -n "$(find ... -print -quit 2>/dev/null)" ]`), the same fail-OPEN
+# shape C1 above just fixed for git: a find that dies silently (no stderr, non-zero rc) on a dir
+# modified seconds ago produced empty output, which read as "not recently modified" -- removable.
+# Same helper shape as git_dirty_or_failed: capture rc alongside output, treat ANY non-zero rc the
+# same as "found a recent file" (fail closed -- SKIP/UNKNOWN, never silently "clean").
+find_recent_or_failed() {
+  local path="$1" out rc
+  out="$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)"; rc=$?
+  [ -n "$out" ] || [ "$rc" -ne 0 ]
+}
+
 path_under_targets() {
   local dir="$1" targets="$2" target
   # N2 (RedHat LOW 16849): a healthy scan_live_proc_targets() is never empty (there is always at
@@ -244,7 +270,7 @@ classify() {
     # mtime, which does not change when a file deep inside is edited -- a dir that looked old at
     # the top could still hold content someone touched minutes ago. Age is now whether ANY file
     # anywhere inside the dir (any depth) was modified within the last $MIN_AGE_HOURS hours.
-    if [ -n "$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)" ]; then
+    if find_recent_or_failed "$path"; then
       echo "UNKNOWN"
       return
     fi
@@ -261,18 +287,18 @@ classify() {
 would_skip_removal() {
   local path="$1" owner="${WORKTREE_OWNER[$1]:-}"
   if [ -n "$owner" ]; then
-    if [ -n "$(git --no-optional-locks -C "$path" status --porcelain 2>&1)" ]; then
+    if git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain; then
       echo "uncommitted changes in registered worktree"
       return 0
     fi
-    if [ -n "$(git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags 2>&1)" ]; then
+    if git_dirty_or_failed git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags; then
       echo "HEAD unreachable from any branch/remote/tag"
       return 0
     fi
     return 1
   fi
   if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
-    if [ -n "$(git --no-optional-locks -C "$path" status --porcelain 2>&1)" ]; then
+    if git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain; then
       echo "uncommitted changes in unregistered git dir"
       return 0
     fi
@@ -281,7 +307,7 @@ would_skip_removal() {
     # unregistered, detached-HEAD clone was reported removable here while remove_entry's own
     # mirrored guard (below) would in fact refuse it -- same gap as 16676 N1, just the "N of M"
     # report side instead of the enforcement side.
-    if [ -n "$(git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags 2>&1)" ]; then
+    if git_dirty_or_failed git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags; then
       echo "HEAD unreachable from any branch/remote/tag in unregistered git dir"
       return 0
     fi
@@ -300,7 +326,7 @@ remove_entry() {
     # really an ordering accident, not a real guard (the actual missing guard was the unregistered-
     # clone rev-list check added to would_skip_removal/below). --no-optional-locks keeps this a pure
     # read: no index write, so it can no longer feed the age re-check a false "just modified" signal.
-    if [ -n "$(git --no-optional-locks -C "$path" status --porcelain 2>&1)" ]; then
+    if git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain; then
       say "SKIP (uncommitted changes in registered worktree): $path"
       return 1
     fi
@@ -309,7 +335,7 @@ remove_entry() {
     # --porcelain` only looks at the working tree, it says nothing about this. `git worktree
     # remove --force` would turn that commit into a dangling object, recoverable only until the
     # next `git gc`. Refuse removal unless HEAD is reachable from some branch/remote/tag.
-    if [ -n "$(git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags 2>&1)" ]; then
+    if git_dirty_or_failed git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags; then
       say "SKIP (HEAD commit not reachable from any branch/remote/tag in registered worktree): $path"
       return 1
     fi
@@ -323,7 +349,7 @@ remove_entry() {
       say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
       return 1
     fi
-    if [ -n "$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)" ]; then
+    if find_recent_or_failed "$path"; then
       say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
       return 1
     fi
@@ -338,14 +364,14 @@ remove_entry() {
     return "$rc"
   fi
   if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
-    if [ -n "$(git --no-optional-locks -C "$path" status --porcelain 2>&1)" ]; then
+    if git_dirty_or_failed git --no-optional-locks -C "$path" status --porcelain; then
       say "SKIP (uncommitted changes, unregistered git dir): $path"
       return 1
     fi
     # N3 (RedHat LOW 16849): mirrors the B3 guard above for an UNREGISTERED git clone -- the
     # original 16676 N1 gap (no B3-equivalent guard on this branch) stayed open through this
     # round until now.
-    if [ -n "$(git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags 2>&1)" ]; then
+    if git_dirty_or_failed git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags; then
       say "SKIP (HEAD commit not reachable from any branch/remote/tag, unregistered git dir): $path"
       return 1
     fi
@@ -356,7 +382,7 @@ remove_entry() {
     say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
     return 1
   fi
-  if [ -n "$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)" ]; then
+  if find_recent_or_failed "$path"; then
     say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
     return 1
   fi
