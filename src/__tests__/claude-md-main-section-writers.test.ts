@@ -25,6 +25,35 @@ import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 import { agentDir } from '../web/agent-config.js'
 import * as agentScaffold from '../web/agent-scaffold.js'
 import { buildAgentIdHeaderBody } from '../web/agent-scaffold.js'
+import { atomicWriteFileSync } from '../web/atomic-write.js'
+
+// Card e5c13c0e: the restore below targets the real GIT-TRACKED root CLAUDE.md, shared by every
+// concurrent fleet-test.sh run and every other vitest worker file in THIS run. A plain
+// `writeFileSync` truncates the file before writing the new bytes (open with O_TRUNC, then a
+// separate write() syscall) -- not atomic, so a concurrent `git status --porcelain` (exactly what
+// store-selftests-all-run.test.ts's dirty-tree guard does, around each of its 165 sequential
+// selftests) can observe the file mid-truncate and report it as unexpectedly modified, blaming
+// whichever selftest happened to be running at that microsecond. Measured: 51c68eeb/8ca1f91d land
+// attempts were refused on "left the shared tracked tree dirty: M CLAUDE.md" a DIFFERENT selftest
+// each time (offload-dispatch, then mopsion-suite-run) -- consistent with a timing-dependent false
+// attribution, not a real defect in either selftest (both green standalone, every time).
+//
+// THE FIX, two parts: (1) skip the write ENTIRELY when the content already matches (true on every
+// passing run, since every writer here is asserted to be a no-op for MAIN_AGENT_ID) -- zero writes
+// means zero race window in the common case; (2) when a write IS needed (a writer actually failed
+// its no-op contract), use atomicWriteFileSync (write-to-sibling-tmp + rename) so the ONE
+// unavoidable write is atomic -- a concurrent reader sees either the old or the new content,
+// never a truncated intermediate state.
+export function restoreTrackedFileIfChanged(path: string, original: string): void {
+  let current: string
+  try {
+    current = readFileSync(path, 'utf-8')
+  } catch {
+    atomicWriteFileSync(path, original)
+    return
+  }
+  if (current !== original) atomicWriteFileSync(path, original)
+}
 
 const WEB_TS_PATH = join(PROJECT_ROOT, 'src', 'web.ts')
 const AGENT_PROCESS_TS_PATH = join(PROJECT_ROOT, 'src', 'web', 'agent-process.ts')
@@ -138,8 +167,9 @@ describe('f22ef741/7e202dbf: every MAIN-branch CLAUDE.md section-writer gives 0 
       const agentAfter = readFileSync(agentClaudeMdPath, 'utf-8')
       expect(agentAfter, `${name} wrote into agentDir(MAIN_AGENT_ID)/CLAUDE.md`).toBe(agentStub)
     } finally {
-      // Always restore the real committed file byte-for-byte, regardless of outcome.
-      writeFileSync(ROOT_CLAUDE_MD_PATH, rootBefore, 'utf-8')
+      // Restore the real committed file byte-for-byte, regardless of outcome -- but only touch
+      // disk (atomically) if a writer actually changed it. See restoreTrackedFileIfChanged above.
+      restoreTrackedFileIfChanged(ROOT_CLAUDE_MD_PATH, rootBefore)
 
       if (agentClaudeMdPreexisted && agentClaudeMdBackup !== null) {
         writeFileSync(agentClaudeMdPath, agentClaudeMdBackup, 'utf-8')
