@@ -28719,3 +28719,22 @@ the 90000ms budget, consistent with this branch's own measurement). secret-gate 
 sha copied via `git rev-parse HEAD`, not retyped). Gate: QA + Cybered + Cybersec + Cybersec2
 per the card's designated set (all four already agreed on a81e5a8e) -- needs a fresh verdict on
 this sha before landing.
+
+## 2026-11-19 -- 2ec21127: CYBERED NO-GO fix -- rule 4g's index bullet lost the Gate-SHA: token
+
+RedHat NO-GO (komment 33823) on fca1ecead: the terse rewrite of rule 4g's index bullet in CLAUDE.md
+dropped the "Cél: ... Gate-SHA: ... TÉNYLEGESEN…" clause, losing the verbatim `Gate-SHA:` protocol
+token the top-of-file rule requires, and making the bullet fail
+scripts/claude-md-index-shrink-check.py's verbatim-substring check against
+docs/rules/munkavegzesi-szabalyok.md (the composed replacement clause was not an exact quote of
+the source file). Fix: restored develop's own exact 4g line byte-for-byte (including the ellipsis
+character, not a period) instead of composing a new clause.
+
+**Mérés:** scripts/claude-md-index-shrink-check.py origin/develop CLAUDE.md: "RESULT: OK" (0
+missing bullets, 0 changed bold titles, 0 moved/lost protocol tokens). vitest run
+claude-md-split-reachability.test.ts: 2 Tests passed (2). tsc --noEmit: clean.
+
+**Ki döntött:** RedHat lelet (CYBERED NO-GO 33823), backend3 javítás. Gate-SHA:
+a04d3410ad9fd6388169c6409a81c43074d2c3ba (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
+Cybered + Cybersec + Cybersec2, delta re-gate ezen a shán (MikroB üzenet 21446: "one-line
+CLAUDE.md-only re-gate follows").
