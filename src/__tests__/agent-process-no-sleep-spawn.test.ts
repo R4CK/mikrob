@@ -71,14 +71,21 @@ describe('agent-process.ts never spawns a process just to wait (card 873c48df)',
   // silently launch a full second agent set on an orphaned-then-replaced default tmux socket --
   // the exact incident shape, triggered from the dashboard's own reconcile tick instead of a
   // channels restart.
+  //
+  // SEVENTH call, justified (Koteg 26, upstream #2196, REMOTESAWTURN1022):
+  // readRemoteTranscriptMtime()'s default `exec` dependency (overridable, so tests never hit the
+  // real call) runs the existing bounded ssh path, same shape as the four tmux/ssh wrappers and
+  // probes above -- a scheduled remote agent's round, read from its transcript mtime over ssh,
+  // with a 3s timeout and no shell. Any failure (host unreachable, timeout, garbage output)
+  // returns null and never throws.
   it('the remaining synchronous children stay at the reviewed count', () => {
     const matches = code().match(/\b(?:spawnSync|execSync|execFileSync)\(/g) ?? []
     expect(
       matches.length,
-      'agent-process.ts changed its number of synchronous child calls. Six are reviewed (four tmux/ssh ' +
-        'wrappers and probes, the once-per-process-per-root memoized git toplevel lookup, and the ' +
-        'pre-launch orphaned-tmux-server reap); a SEVENTH needs justification, and a smaller number means ' +
-        'this pin is stale.',
-    ).toBe(6)
+      'agent-process.ts changed its number of synchronous child calls. Seven are reviewed (four tmux/ssh ' +
+        'wrappers and probes, the once-per-process-per-root memoized git toplevel lookup, the ' +
+        'pre-launch orphaned-tmux-server reap, and the remote-transcript-mtime ssh read); an EIGHTH needs ' +
+        'justification, and a smaller number means this pin is stale.',
+    ).toBe(7)
   })
 })

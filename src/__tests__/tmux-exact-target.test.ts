@@ -17,7 +17,7 @@
  */
 import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { symlinkSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { symlinkSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { exactTmuxTarget, sessionOfTmuxTarget } from '../tmux-target.js'
@@ -83,26 +83,21 @@ afterAll(() => {
 
 describe.skipIf(!tmuxBin)('a real caller against an isolated tmux server', () => {
   it('getClaudePidForSession(agent-foo) is null while only agent-foo2 runs a claude', async () => {
-    // A process NAMED claude, so `ps -o comm=` ends in /claude: a symlink to
-    // bash, not to `sleep` (`comm` is set by the kernel from the exec path's
-    // own basename, not from argv[0]). A symlink to `sleep` used to be here,
-    // but measured on this box `/bin/sleep` IS uutils-coreutils -- the same
-    // multicall binary as /bin/cat, /bin/ls etc. (one inode, many names).
-    // Invoked through a path ending in "claude", its OWN applet dispatch
-    // (keyed off that exec-path basename, not argv[0] -- verified with
-    // `exec -a` overriding each independently) rejects "claude" as an unknown
-    // program and exits immediately, tearing the whole detached (-d)
-    // session/server down well inside this test's 2s retry window ("no
-    // server running", not a timing flake). bash has no such name-dispatch.
-    // (A COPY of /bin/sleep is SIGKILLed by macOS code signing, measured rc
-    // 137 -- a symlink avoids that too, since it never copies the binary.)
-    // A single simple `-c` command is bash's own tail-call exec-replace,
-    // which would swap comm back to the replaced command's name; `; true`
-    // after it defeats that so bash itself, not a replacement image, stays
-    // the pane's root process.
+    // A process NAMED claude, so `ps -o comm=` ends in /claude. Measured per
+    // platform (DEVCITMUX1022, 2026-10-22):
+    //  - macOS: a symlink to /bin/sleep (comm "claude"). A COPY of /bin/sleep
+    //    is SIGKILLed by code signing (rc 137), and a shell script shows comm
+    //    "/bin/sh".
+    //  - Linux: a shell script named claude (comm "claude" on Ubuntu 24.04 and
+    //    26.04). The symlink no longer works there: on Ubuntu 26.04 /bin/sleep
+    //    is uutils, a multi-call binary that refuses another name ("Security
+    //    violation: Requested utility `claude` does not match executable
+    //    name", rc 1), so the fake claude died at once and this positive
+    //    control went red on every run once ubuntu-latest became 26.04.
     const fakeClaude = join(SOCKDIR, 'claude')
-    symlinkSync('/bin/bash', fakeClaude)
-    isolatedTmux(['new-session', '-d', '-s', 'agent-foo2', `${fakeClaude} -c 'sleep 300; true'`])
+    if (process.platform === 'darwin') symlinkSync('/bin/sleep', fakeClaude)
+    else writeFileSync(fakeClaude, '#!/bin/sh\nsleep "$1"\n', { mode: 0o755 })
+    isolatedTmux(['new-session', '-d', '-s', 'agent-foo2', `${fakeClaude} 300`])
     startedSessions.push('agent-foo2')
     const sock = isolatedTmux(['display-message', '-p', '-t', '=agent-foo2:', '#{socket_path}']).trim()
     expect(sock.includes(SOCKDIR.replace(/^\/private/, ''))).toBe(true) // isolation proven before any caller runs
@@ -118,6 +113,7 @@ describe.skipIf(!tmuxBin)('a real caller against an isolated tmux server', () =>
     }
     expect(siblingPid).toBeGreaterThan(1) // positive control: the instrument sees a claude
     expect(getClaudePidForSession('agent-foo')).toBeNull() // the prefix match is gone
+    expect(getClaudePidForSession('agent-foo2')).toBe(siblingPid) // and the sibling still runs: the null is not a dead pane
   })
 })
 

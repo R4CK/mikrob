@@ -2154,7 +2154,10 @@ EOF
 # still marks the day delivered on the way out, masking the failure. The
 # scheduled task runs inside the live channel session, which has the
 # allowlist. The unit files stay on disk so an operator who wants the timer
-# path can `systemctl --user enable --now ${MORN_UNIT}.timer`.
+# path can `systemctl --user enable --now ${MORN_UNIT}.timer`, but only with
+# ANTHROPIC_API_KEY in the install .env: morning-briefing.sh refuses to run
+# its headless `claude -p` on the subscription login (MORNTIMER2197, #2197) --
+# already adopted independently in this fork's morning-briefing.sh.
 #
 # NO Requires=/Wants= on the service here: a [Unit] dependency on the
 # triggered service makes EVERY activation of the timer unit (each systemd

@@ -430,6 +430,14 @@ describe('background-agent block below the footer', () => {
       NAME_BAR,
       '❯ ',
       SEP,
+      // Koteg 26 (upstream #2177, COMMATAIL1022): FOOTER_SHELL_TAIL_RX is now anchored to the
+      // genuine glyph lead (⏵⏵/⏵/⏸), so the echoed `bypass permissions on · 1 shell` line in
+      // LEAD_NOT_FULL_FOOTER above (deliberately glyph-less, to prove it is quoted text, not
+      // chrome) no longer coincidentally counts as a real footer either -- a real one is needed
+      // here, same as the other fixtures in this file, so the test still isolates what it says
+      // it isolates: the row-level cut decision on the continuation line below, not whether a
+      // footer exists at all.
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
       `${' '.repeat(n)}the retry logic depends on · e…`,
       '  a harmless trailing row that is not a footer or a clip',
     ].join('\n')

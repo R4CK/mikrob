@@ -63,15 +63,16 @@ const EXPECTED: Record<string, string[]> = {
     // walked straight past it. PostToolUse is the event that cannot be
     // dodged by choosing a different tool.
     'persona-change-notify.py',
-    // MARVEENGAPS1020 (c): WebSearch results reach the main agent framed as
-    // untrusted content, as WebFetch results already do.
-    'browser-content-notice.py @ WebSearch',
+    // MARVEENGAPS1020 (c): WebSearch and WebFetch results reach the main agent
+    // framed as untrusted content (an allowlisted host's text is still external).
+    'browser-content-notice.py @ WebSearch|WebFetch',
   ],
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.
   // KAPUEGYUT918: a failed Bash call can still have written a memory file.
   PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py @ Bash'],
   PreToolUse: [
+    'fleet-freeze-gate.sh @ *', // KILLSWITCH1022: every tool call denied while the fleet is frozen
     'outgoing-copy-gate.py @ Bash',
     'outgoing-copy-gate.py @ .*send_email.*',
     'outgoing-copy-gate.py @ .*manage_email.*',
@@ -204,6 +205,10 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'egress-gate.mjs', matcher: 'WebFetch' },
   { script: 'secret-write-guard.py', matcher: 'Write|Edit|MultiEdit' },
   { script: 'big-file-guard.py', matcher: 'Write' },
+  // Koteg 26 (upstream #2172, KILLSWITCH1022): the fleet-freeze hook refuses every tool call
+  // while the fleet is frozen (store/fleet-freeze.json present) -- wired on every tool, not just
+  // Bash/Write/Edit, so a frozen agent cannot work around it through an unlisted matcher.
+  { script: 'fleet-freeze-gate.sh', matcher: '*' },
   { script: 'git-protect-guard.py', matcher: 'Bash' },
   { script: 'npm-protect-guard.py', matcher: 'Bash' },
   { script: 'symlinked-node-modules-guard.py', matcher: 'Bash' },

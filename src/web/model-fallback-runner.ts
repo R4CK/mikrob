@@ -45,6 +45,7 @@ import {
   type ModelFallbackConfig,
 } from '../model-fallback.js'
 import { readHardStop } from '../costops/weekly-hard-stop.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 // Drives the model-fallback-on-limit feature (see src/model-fallback.ts for the
 // why and the pure decision logic). Mirrors the auto-restart runner: a 60s
@@ -481,5 +482,5 @@ export function startModelFallbackRunner(): NodeJS.Timeout {
     }
   }
   setTimeout(sweep, INITIAL_DELAY_MS)
-  return setInterval(sweep, INTERVAL_MS)
+  return setInterval(whileNotFrozen('model-fallback', sweep), INTERVAL_MS)
 }
