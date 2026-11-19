@@ -118,7 +118,6 @@ describe('buildUpdateScriptEnv: prototype-pollution class is closed (card 651ee1
   // Object.assign(env, extraEnv) only ever copies extraEnv's OWN enumerable properties -- so this
   // discriminates the fix from the old `in`-based shape directly, not just from a cosmetic rename.
   afterEach(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (Object.prototype as any).POST_MERGE_MODE
     delete process.env.POST_MERGE_MODE
   })
@@ -126,7 +125,6 @@ describe('buildUpdateScriptEnv: prototype-pollution class is closed (card 651ee1
   it('a polluted Object.prototype does not make an inherited switch survive', () => {
     delete process.env.POST_MERGE_MODE
     process.env.POST_MERGE_MODE = '1'
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(Object.prototype as any).POST_MERGE_MODE = '1'
     const extraEnv = {} // owns nothing; 'POST_MERGE_MODE' in extraEnv is true ONLY via the pollution
     expect('POST_MERGE_MODE' in extraEnv).toBe(true) // control: the pollution itself is real
@@ -146,7 +144,6 @@ describe('buildUpdateScriptEnv: prototype pollution does not reach the spawned c
   // the prototype chain. Object.hasOwn(env, 'FOO') being false is true to the STATEMENT but not to
   // what the actual child process receives -- these tests check the real process boundary.
   afterEach(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (Object.prototype as any).FORCE_REBUILD
   })
 
@@ -156,7 +153,6 @@ describe('buildUpdateScriptEnv: prototype pollution does not reach the spawned c
   }
 
   it('a polluted Object.prototype is NOT seen by the spawned child (null-prototype env)', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(Object.prototype as any).FORCE_REBUILD = 'polluted'
     const env = buildUpdateScriptEnv({})
     expect(readFromChild(env, 'FORCE_REBUILD')).toBe('')
@@ -165,14 +161,13 @@ describe('buildUpdateScriptEnv: prototype pollution does not reach the spawned c
   it('control: the same pollution DOES reach a child spawned with a plain (prototype-inheriting) env', () => {
     // Proves the previous assertion is not vacuous (e.g. node ignoring inherited props for some
     // other reason) -- the exact same pollution crosses the OS boundary for an ordinary {} env.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(Object.prototype as any).FORCE_REBUILD = 'polluted'
     const plainEnv: NodeJS.ProcessEnv = { PATH: process.env.PATH }
     expect(readFromChild(plainEnv, 'FORCE_REBUILD')).toBe('polluted')
   })
 
   it('an extraEnv with an own "__proto__" key (e.g. from JSON.parse) cannot set env\'s prototype', () => {
-    const extraEnv = JSON.parse('{"AUTO_STASH":"1","__proto__":{"FORCE_REBUILD":"viaproto"}}')
+    const extraEnv = JSON.parse('{"AUTO_STASH":"1","__proto__":{"FORCE_REBUILD":"viaproto"}}') as Record<string, string>
     expect(Object.hasOwn(extraEnv, '__proto__')).toBe(true) // control: a real own property, not literal-syntax proto-set
     const env = buildUpdateScriptEnv(extraEnv)
     expect(Object.getPrototypeOf(env)).toBeNull()
