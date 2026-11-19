@@ -28590,3 +28590,43 @@ reaches the title-tag/parent fallback either.
 **Test:** `store/quota-bridge.selftest.py` (+1, net 55->56): new case D4 reproduces the exact regression through the real `main()` -- a persisted log with an old down reading, a healthy reading, and a newer down reading (the healthy one future-dated relative to a stepped-back restart clock) plus one fresh probe, asserting `kills=0`. Mutation-verified by hand: re-adding the deleted prune call (and the deleted function) turns exactly this one assertion red (`kills=1`), all 55 others stay green. Updated the comment on the existing D-case (no longer references the removed call) and added an honest-note after the existing +1h/-1h clock-step cases (QA2 33606): those two do not independently exercise the two-sided direction of the age bound (verified: still `kills=0` under a one-sided mutant of `confirm_outage`'s filter) -- that direction is pinned separately at the pure-function level in `quota-switchback.selftest.py`. `python3 -I store/quota-switchback.selftest.py`: 33/33 green. `python3 -I store/quota-bridge.selftest.py`: 56/56 green. `python3 -m py_compile`: clean.
 
 **Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21353, Fix-Direction per WhiteHat). Gate: QA + Cybersec + Cybered. Gate-SHA: (see next commit, git rev-parse HEAD).
+
+## 2026-11-16 -- eaf56df5: hosszkorlát-tesztek + ESC a lapitando halmazba, U+001C-1E/tag karakterek mert dontessel kihagyva (e6b2742b RedHat GO kovetok)
+
+RedHat CYBERED GO az e6b2742b-n (komment 15294) ket LOW rest nevezett meg a scripts/hooks/shared-
+memory-inject.py inditó-kontextus lapitasán: 1. a keywords (200) es rovid mezok (64) hosszkorlatja
+nincs tesztben rogzitve (E14/E15 mutans zold); 2. a `_cap_and_flatten` nem lapitja a U+001C-U+001E,
+ESC (0x1B) es U+E0000 tag karaktereket -- merni kellett, okozhatnak-e sor-kitorest az inditó
+kontextusban.
+
+**1. pont javitasa:** ket uj teszt a session-memory-inject-own-curated.test.ts-ben, ami a tenyleges
+vagott+utotag kimenetet asserteli a valodi konstans-ertekeknel (keywords 200, rovid mezo 64).
+
+**2. pont mert valasz:** U+001C/1D/1E nem resze a VT100/ANSI vezerlo-grammatikanak, semelyik
+terminal (tmux/xterm/iTerm) nem nyit uj sort rajuk; Python sajat `str.splitlines()`-a hataroknak
+tekinti oket, de a script sosem hiv `.splitlines()`-t a memoria-tartalmon (grep-ellenorizve), tehat
+ez a tagabb definicio sosem fut ra ezekre az adatokra. DONTES: kimaradnak a lapitando halmazbol,
+teszttel rogzitve (a karakter lapitatlanul atmegy, pontosan egy sor marad). A tag-blokk
+(U+E0000-U+E007F): lathatatlan karakterek, nincs sor-kitoresi szemantikajuk semelyik renderelonel
+sem -- KULON, nem e kartyahoz tartozo injekcios osztaly (rejtett szoveg, nem hamis sor-kezdes),
+ugyanaz a hatarvonal amit RedHat sajat jegyzete mar meghuzott. DONTES: ugyanazon okbol kimarad,
+teszttel rogzitve. ESC (0x1B): MASKEPPEN -- nem maga sortores, de minden ANSI/VT100 kurzor-
+mozgato/sor-torlo escape-sorozat egybajtos BEVEZETOJE, es a flotta sajat tmux capture-pane/
+send-keys gepezete pontosan olyan ANSI-ismero terminal, amin egy ilyen sorozat mukodne, ha ez a
+szoveg kesobb egy terminalon at jelenik meg. Egy onallo ESC byte-nak nincs jogos hasznalata
+memoria-tartalomban, tehat olcso hatastalanitani ugyanugy, mint a tobbi karaktert (szokozre
+csereles, nincs szukseg sorozat-elemzesre). DONTES: bekerult a `_LINE_BREAK_CHARS`-ba, a meglevo
+7 osztaly osszes tesztjevel (content + keywords/agent_id/created_label + mutacio-proba) egyutt
+lefedve a kozos `LINE_BREAK_CASES` tombon keresztul.
+
+**Teszt:** `shared-memory-inject-provenance.test.ts` + `session-memory-inject-own-curated.test.ts`
+71/71 PASS. `tsc --noEmit` tiszta (a 3, korabbrol ismert, FUGGETLEN parse5-hianyos hibat
+leszamitva). `lint-ratchet.sh`: 441 lelet, baseline tartja. `python3 -c "import ast; ast.parse(...)"`:
+a hook forrasa tovabbra is szintaktikailag ervenyes. Mutacio-ellenorzes: a ket hosszkorlat
+1000-szeresre bontasa 2 tesztet buktat (pontosan a 2 uj korlat-teszt); az ESC eltavolitasa a
+`_LINE_BREAK_CHARS`-bol 4 tesztet buktat (content + a 3 OTHER_FIELDS eset). Mindket mutans
+visszaallitva, ismet zold.
+
+**Ki döntött:** RedHat CYBERED GO (e6b2742b, komment 15294) adta a fix-iranyt es a merendo
+kerdest; backend2 vegezte a merest/dontest/javitast. Gate: QA + Cybersec (a kartya sajat
+kijelolese).
