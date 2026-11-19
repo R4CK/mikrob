@@ -28872,3 +28872,88 @@ red) independently.
 `git rev-parse HEAD`, not retyped). Supersedes beedd6369/567b13aa4 (force-pushed over, same
 card branch, no other agent had based work on them). Gate: QA + Cybersec (WhiteHat) + Cybered
 (RedHat) per the card's designated set -- needs a fresh verdict on this sha.
+
+## 2026-11-19 -- 1124f53f: Koteg 27 (d7182b63..6b457343, 25 commits), two NOT-ADOPTED security features, one direct adoption
+
+Stacked on card/51c68eeb (Koteg 26, not yet landed) per the batch convention -- merged
+origin/card/51c68eeb into card/1124f53f first (clean, DECISIONS.md unioned ours-first via
+try_append_union, since this branch had no new tail content of its own yet), then merged
+upstream 6b457343 on top. 12 real conflicts, all resolved by hand (not auto-mergeable).
+
+**NOT ADOPTED (two), both tangled into otherwise-valid commits:**
+
+1. **recipient-ledger re-introduction in scripts/email-send-gate.mjs** (gateDecision gains
+   isVerified/cwd params, an 'unverified-recipient' kind). Checked upstream's CURRENT
+   recipient-ledger.mjs at 6b457343: isValidSource() is still a pure regex-on-the-string check,
+   never verifying the evidence is real -- the EXACT flaw Cybersec rejected (card afd64623, HIGH,
+   "addRecipient() validates the --source string's FORMAT only, never that the evidence is real,
+   so an agent can self-certify any address"). Unfixed upstream, so not adopted again. Kept ours
+   entirely for this file. Two unrelated good pieces in the same upstream commit (a symlink-safe
+   local isInvokedDirectly() via realpathSync; a script-header mail-import scanner via
+   openSync/readSync/closeSync) left on the table too -- tangled into the rejected diff, worth a
+   dedicated future card (the symlink-safety piece belongs in hook-lib.mjs for every gate, not a
+   one-off here).
+
+2. **"evidence on done" self-close-to-done escape hatch** (upstream #2026: an agent attaching an
+   `evidence` string to POST /api/kanban/:id/move can close straight to 'done', bypassing the
+   normal waiting->gate flow). This fleet's rule 4 (CLAUDE.md, Peti 2026-07-05) is absolute: an
+   agent NEVER closes its own work to done, no exception. Same self-certification shape as item 1,
+   decided the same way. What WAS adopted: the `evidence` field itself (API validation, DB column,
+   KANBAN_EVIDENCE_MAX_CHARS, isAgentActor()) and the SAFETY NET it enables -- an agent-actor move
+   to 'done' now ALWAYS redirects to 'testing' regardless of evidence (stricter than upstream's
+   "unless evidence given"), computed before the fork's own gate checks
+   (landedGuardVerdict/cardLandingsGuardVerdict/gateCompletenessGuardVerdict/
+   planGrillingGuardVerdict/draftReviewGuardVerdict/decisionsGuardVerdict/
+   degradedOrchestratorRefusal/dependencyBlockBody/bulkAttributionRequired, all still run, now
+   against the EFFECTIVE status) so a redirect-to-testing never trips a done-only guard for a
+   transition that is no longer actually going to done. The PUT route's pre-existing stricter
+   behaviour (never accepts evidence at all, always redirects) is now consistent with /move's.
+   Removed entirely: src/web/routes/review-action.ts + its test (the server half of a THIRD,
+   separate rejected feature -- "D3(b) second reviewer", a new opt-in high-risk-tool-call review
+   gate -- this file imported BOTH agentGetsSecondReviewer AND the already-reverted
+   consumeCategoryApproval from db.ts, so it could not even compile); its web.ts wiring line; the
+   dangling 'second_review is reserved' check in approvals.ts; scripts/hooks/second-reviewer-gate.py
+   + its own test (orphaned once the TS wiring was cut); agentGetsSecondReviewer/
+   injectSecondReviewerGate/removeSecondReviewerGate/hasSecondReviewerHook/profileWantsSecondReviewer
+   usage in agent-scaffold.ts (profileWantsSecondReviewer itself stays defined in profiles.ts,
+   just never called -- same standing-refusal shape as the already-NOT-ADOPTED
+   profileWantsCredentialGate from Koteg 25); src/__tests__/second-reviewer-wiring.test.ts.
+
+**ADOPTED DIRECTLY (one, no caveat):** schedule-runner.ts's `seen_at` column (F9, when a
+recipient was seen to have a message, message-seen-sweep.ts) -- added to
+src/schema/agent-messages-ddl.ts's shared AGENT_MESSAGES_ALTER_COLUMNS array (the fork's own
+refactor of what used to be inline ALTER statements), not inlined in db.ts the upstream way.
+message-seen-sweep.ts needed one adaptation: its `from './main-transcript-root.js' import
+{ configDirFor }` does not exist in this fork (no central export) -- replaced with the same
+2-line local `configDirFor` duplicate every other caller (delivery-turn-check.ts,
+context-guard-runner.ts, context-restart-gate-runner.ts) already carries, per that file's own
+documented reasoning (importing the shared module pulls in a heavy, unrelated import graph for
+one small helper). moveKanbanCard() gained the `evidence` trailing positional parameter (see item
+2 above) the same way expectedStatus was added in Koteg 19 (card 973ed6eb) -- a new trailing
+param, not upstream's options-object refactor, so the ~60 existing call sites stay untouched.
+Team-nicknames (owner strip, store/team-nicknames.json) merged in clean, no conflict, used in the
+kanban/marveen route hunks resolved here (combined with fork-specific imports, not a replacement).
+
+**Other 10 conflicts** (db.ts's moveKanbanCard signature/body; kanban.ts's move-route guard
+sequence and dispatch-template text; agent-scaffold.ts's gate-injection call sites and a
+misaligned function boundary around ensureGateSharedMemoryInjectAgentArg; marveen.ts's response
+field; skills.ts's execShellAsync-vs-execFile duplication, three places; websearch-envelope-wiring.test.ts's
+stale 'WebSearch'-only assertions, now matching the ALREADY-MERGED-CLEAN production
+WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'; web/app.js + its allowlist fixture, STUB (ours)
+per this entry's own standing policy below (two hunks, ~6000 + ~3000 lines, not line-audited --
+same character as every prior round on this file); web/lang/{en,hu}.js, union of both additive
+tails per that entry's own standing policy) were either pure import/combination merges or resolved
+per an EXISTING acknowledged-conflicts.ts policy, not fresh judgement calls.
+
+**Two unrelated TS errors fixed in auto-merged (non-conflicted) new files**, both pre-existing
+upstream test bugs surfaced by `tsc --noEmit` rather than anything this merge caused:
+claude-plans-login-routes.test.ts was missing a `tryHandleAuth` import it already called;
+connectors-mcp-cli-async.test.ts's stdio-connector test called `call(...)` without capturing its
+result into the `r` the rest of the test block already expected.
+
+**Mérés:** `npx tsc --noEmit`: clean, whole tree (zero errors, including every file this merge
+touched). Scoped `fleet-test.sh --ref card/1124f53f`: TODO before gate (listed in REVIEW).
+
+**Ki döntött:** backend3 végezte (MikroB dispatch msg 21629, "take e5c46e87's next unblocked
+subtask" while e5c13c0e's gate was pending). Gate: QA + Cybersec + Cybered (trust-boundary
+clause: vault/secret, auth, approval and mail-gate code touched -- see the card's own Gate line).

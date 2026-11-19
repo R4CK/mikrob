@@ -38,7 +38,9 @@ import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startUtilizationSampler } from './web/local-llm-utilization-history.js'
 import { gpuInfo, isGpuLockHeld } from './web/routes/local-llm.js'
 import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
+import { startTeamsCredentialMonitor } from './web/teams-credential-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
+import { startMessageSeenSweep } from './web/message-seen-sweep.js'
 import { startMidTurnCommandWatcher } from './web/midturn-commands.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startScaffoldSectionSweeper } from './web/scaffold-section-sweeper.js'
@@ -556,6 +558,8 @@ export function startWebServer(port = 3420): http.Server {
   // only signal a silently deaf poller leaves behind.
   const channelIntakeInterval = webOnly ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
   if (!webOnly) logger.info('Channel intake monitor started (5min poll, 100s offset)')
+  const teamsCredentialInterval = webOnly ? undefined : startTeamsCredentialMonitor()
+  if (!webOnly) logger.info('Teams credential monitor started (daily, 5min offset)')
 
   // CostOps: reflect the local config's fixed costs into the ledger once at boot + every
   // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
@@ -565,6 +569,9 @@ export function startWebServer(port = 3420): http.Server {
 
   const stuckInputInterval = webOnly ? undefined : startStuckInputWatcher()
   if (!webOnly) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
+
+  const messageSeenInterval = webOnly ? undefined : startMessageSeenSweep()
+  if (!webOnly) logger.info('Message-seen sweep started (60s poll)')
 
   const midTurnCommandInterval = webOnly ? undefined : startMidTurnCommandWatcher()
   if (!webOnly) logger.info('Mid-turn command watcher started (3s poll)')
@@ -910,8 +917,10 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(channelHealthInterval)
     if (utilizationSamplerInterval) clearInterval(utilizationSamplerInterval)
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
+    if (teamsCredentialInterval) clearInterval(teamsCredentialInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
+    if (messageSeenInterval) clearInterval(messageSeenInterval)
     if (midTurnCommandInterval) clearInterval(midTurnCommandInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)

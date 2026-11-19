@@ -16,7 +16,7 @@ import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../
 import { readBody, json } from '../http-helpers.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
-import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
+import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -550,7 +550,6 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (connectorDetailMatch && method === 'DELETE' && !path.includes('/assign')) {
     const name = decodeURIComponent(connectorDetailMatch[1])
-    let removed = 0
     const mcpFiles = [
       join(PROJECT_ROOT, '.mcp.json'),
       join(homedir(), '.claude.json'),
@@ -571,16 +570,27 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     for (const extPath of getExternalProjectPaths()) {
       mcpFiles.push(join(extPath, '.mcp.json'))
     }
-    for (const mcpPath of mcpFiles) {
-      try {
-        const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
-        if (parsed.mcpServers && parsed.mcpServers[name]) {
-          delete parsed.mcpServers[name]
-          atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2))
-          removed++
-        }
-      } catch { /* skip unreadable files */ }
-    }
+    // Must not interleave with a running `claude mcp add/remove` child that
+    // rewrites the same ~/.claude.json, so hold the CLI slot for the whole loop.
+    const removed = await serializeClaudeMcp(async () => {
+      let count = 0
+      for (const mcpPath of mcpFiles) {
+        try {
+          const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
+          // Own keys only: "toString" or "__proto__" is truthy on every object,
+          // so a plain lookup counted a removal and rewrote the file for nothing.
+          const servers = parsed.mcpServers
+          if (servers && typeof servers === 'object' && Object.hasOwn(servers, name)) {
+            delete servers[name]
+            // Keep the file's own mode: ~/.claude.json is 0600, and a mode-less
+            // write renames a umask-default (0644) file over it (VAULTMODE818).
+            atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2), { mode: statSync(mcpPath).mode & 0o777 })
+            count++
+          }
+        } catch { /* skip unreadable files */ }
+      }
+      return count
+    })
     if (removed > 0) {
       purgeFromMcpListCache(name)
       json(res, { ok: true, removed })
@@ -814,13 +824,50 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // D1 (1): the resolver scripts (scripts/vault-resolve.mjs, scripts/vault-headers-helper.mjs) read secrets
+  // here instead of decrypting in the agent's own process, so every read leaves a row (who claimed what)
+  // and VAULT_ACL_MODE=enforce can hold an agent to its allowlist. Not isolation: the master-key file is
+  // readable by the same OS user, and a caller that claims no agent is an owner lane.
+  if (path === '/api/vault/resolve' && method === 'POST') {
+    let body: { ids?: unknown }
+    try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
+    const ids = Array.isArray(body?.ids) ? body.ids : null
+    if (!ids || ids.length === 0 || ids.length > 100 || !ids.every((i) => typeof i === 'string' && i.trim() && i.length <= 200)) {
+      json(res, { error: 'ids must be 1..100 non-empty strings of at most 200 characters' }, 400)
+      return true
+    }
+    const acl = readVaultAcl()
+    const values: Record<string, string> = Object.create(null)
+    const missing: string[] = []
+    const refused: Array<{ id: string; reason: 'ssh-key' | 'acl' }> = []
+    for (const raw of ids as string[]) {
+      const id = raw.trim()
+      if (isSshPrivateKeyId(id)) {
+        logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
+        refused.push({ id, reason: 'ssh-key' })
+        continue
+      }
+      if (vaultReadRefused(id, ctx.auth, acl)) {
+        logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'resolve', refused: true })
+        refused.push({ id, reason: 'acl' })
+        continue
+      }
+      const val = getSecret(id)
+      logVaultRead(id, ctx.auth, val !== null, acl, { channel: 'resolve' })
+      if (val === null) missing.push(id)
+      else values[id] = val
+    }
+    json(res, { values, missing, refused, mode: vaultAclMode() })
+    return true
+  }
+
   const vaultMatch = path.match(/^\/api\/vault\/([^/]+)$/)
   // 'ssh-servers' is the dedicated SSH-server sub-resource (routes/vault-ssh.ts),
   // handled later in the web.ts chain -- without this exclusion, a bare GET
   // /api/vault/ssh-servers matches THIS generic secret-store route first
   // (id="ssh-servers"), finds no such secret, and returns 404 before
   // tryHandleVaultSsh ever runs (2026-07-01, frontend/backend Vault epic).
-  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys'].includes(vaultMatch[1])
+  const isVaultSubroute = vaultMatch && ['bindings', 'sync', 'scan', 'import', 'ssh-servers', 'ssh-keys', 'resolve'].includes(vaultMatch[1])
   if (vaultMatch && !isVaultSubroute && method === 'GET') {
     const id = decodeURIComponent(vaultMatch[1])
     // VAULTSZELES826: SSH private keys are NEVER served by this generic value route.
@@ -832,15 +879,21 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // feature, the dashboard's reveal/edit buttons, scripts, skills, agent commands: 0).
     // The audit row is kept so an attempt stays visible, and the key is not even decrypted.
     if (isSshPrivateKeyId(id)) {
-      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id))
+      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), readVaultAcl(), { channel: 'value', refused: true })
       json(res, { error: 'SSH private keys are not served by this route' }, 403)
+      return true
+    }
+    const acl = readVaultAcl()
+    if (vaultReadRefused(id, ctx.auth, acl)) {
+      logVaultRead(id, ctx.auth, listSecrets().some(s => s.id === id), acl, { channel: 'value', refused: true })
+      json(res, { error: 'Not allowed for this agent by the vault allowlist (VAULT_ACL_MODE=enforce)' }, 403)
       return true
     }
     const val = getSecret(id)
     // VAULTSZELES826 F0: one audit row per value read (id, kind, principal,
     // allowlist verdict) BEFORE the value leaves the server. Audit only: the
     // verdict never blocks here. The value is not passed to the logger.
-    logVaultRead(id, ctx.auth, val !== null)
+    logVaultRead(id, ctx.auth, val !== null, acl)
     if (val === null) { json(res, { error: 'Not found' }, 404); return true }
     json(res, { id, value: val })
     return true

@@ -42,6 +42,7 @@ import { openKgDb, kgDbPath } from '../../kg/store.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME, PROJECT_ROOT } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
+import { nicknameFor } from '../team-nicknames.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-stop.js'
 import { landedGuardVerdict, GENERATED_COMMENT_AUTHORS } from '../kanban-landed-guard.js'
@@ -248,14 +249,32 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // /claim and /release (a PUT must not be a way around the compare-and-set),
   // so they are accepted-and-ignored here, never written.
   'claimed_by', 'claimed_at', 'claim_expires_at',
+  // done_evidence is written only by a move to done (see the /move route);
+  // a whole-card PUT carries it back and must not 400 on it.
+  'done_evidence',
 ])
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
 // rule as the PUT above. `force`/`reason` are the newDevStopWouldBlock override
 // (same shape as the PUT's), not generic card fields -- they belong here, not
 // in KANBAN_WRITABLE_FIELDS. `expected_status` (upstream #1975, adopted 2026-10-24 during
-// Koteg 19) is the compare-and-set guard.
-const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'force', 'reason', 'expected_status'] as const
+// Koteg 19) is the compare-and-set guard. `evidence` (Koteg 27, upstream #2026) is below.
+const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'force', 'reason', 'expected_status', 'evidence'] as const
+
+// Evidence on done (one human, many agents). The owner cannot re-check every
+// card a fleet of agents closes, so an AGENT may only close a card by saying
+// what it checked: a test run, a PR link, a file read back, a measured number.
+// A move to done by an agent without it lands in testing instead, and the
+// answer says why -- the work is kept, it just waits for a look. A human
+// (browser session, or a token caller naming no agent) closes as before.
+export const KANBAN_EVIDENCE_MAX_CHARS = 2000
+
+export function isAgentActor(actor: string | undefined): boolean {
+  if (!actor) return false
+  const a = actor.trim().toLowerCase()
+  if (a === MAIN_AGENT_ID.toLowerCase()) return true
+  return listAgentNames().some((n) => n.toLowerCase() === a)
+}
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
@@ -382,6 +401,18 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     // found and removed exactly this sentence as a gate-bypass injection lever (a card
     // description could talk an agent into skipping the always-waiting rule). That
     // removal stands; `done` never appears as a self-set target in this template.
+    //
+    // Koteg 27 (upstream #2026, "evidence on done"): NOT adopted here either, same reason
+    // -- this template is the opposite governance model. Upstream lets an agent self-close
+    // straight to done by attaching its own evidence string; this fleet's rule 4
+    // (CLAUDE.md, Peti 2026-07-05) is that the author NEVER verifies/closes their own work,
+    // full stop -- every card goes to waiting and an INDEPENDENT gate (QA/Cybersec/Cybered)
+    // closes it. A self-attested "evidence" field is exactly the kind of self-certification
+    // this fleet already rejected once this batch (see email-send-gate.mjs's recipient-ledger
+    // note and the deleted approvals-consume-category.test.ts) -- same shape, same answer.
+    // The `evidence` field itself stays wired at the API/DB level (harmless, optional,
+    // useful if a HUMAN or a gate wants to attach it when moving a card), just never
+    // suggested here as the path to self-close.
     'Az "expected_status":"in_progress" mező feltételessé teszi a mozgatást: csak akkor lép, ha a kártya MÉG in_progress. Ha a válasz HTTP 409 ("status_conflict", a "current_status" mező mutatja, hol tart most), a kártya közben továbblépett: NE mozgasd újra feltétel nélkül, NE dolgozz rajta tovább, hanem jelezd a delegálódnak.',
     '',
     // The "actor" field is not decoration: it is what tells the board WHO moved
@@ -988,7 +1019,8 @@ export function isKanbanClaimLockEnabled(): boolean {
 //     prevent. Soft: the dashboard's drag carries no actor and must keep working.
 //   - evidence_warning: closed as done without a single non-system comment since
 //     the work started (no done without evidence). Soft for
-//     the same reason; the warning names the fix.
+//     the same reason; the warning names the fix. Skipped when the move itself
+//     carried "evidence": the closer already said what it checked.
 //   - unblocked: the waiting cards this close released back to planned.
 // Best-effort like the dispatch: the move has already happened, so a failure in
 // here is logged and swallowed rather than turned into a 500.
@@ -997,6 +1029,7 @@ export function statusChangeExtras(
   before: Pick<KanbanCard, 'status' | 'claimed_by' | 'claim_expires_at'> | undefined,
   newStatus: unknown,
   actor?: string | null,
+  opts?: { evidenceGiven?: boolean },
 ): Record<string, unknown> {
   const extras: Record<string, unknown> = {}
   if (!before || before.status === newStatus) return extras
@@ -1007,7 +1040,7 @@ export function statusChangeExtras(
       'Ha nem te vagy, NE dolgozz rajta párhuzamosan: egyeztess vele, vagy várd meg, amíg elengedi.'
   }
   if (newStatus === 'done') {
-    try {
+    if (!opts?.evidenceGiven) try {
       const ev = getDoneEvidence(id)
       if (ev && ev.comments === 0) {
         extras.evidence_warning =
@@ -1347,10 +1380,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/kanban/assignees' && method === 'GET') {
-    const agents = listAgentNames().map((name) => ({ name, type: 'agent', displayName: readAgentDisplayName(name) || name }))
+    // `nickname` is the character name behind the portrait. Undefined when
+    // store/team-nicknames.json has no entry, and the board then falls back to
+    // the plain name.
+    const agents = listAgentNames().map((name) => ({
+      name,
+      type: 'agent',
+      displayName: readAgentDisplayName(name) || name,
+      nickname: nicknameFor(name),
+    }))
     json(res, [
-      { name: OWNER_NAME, type: 'owner' },
-      { name: BOT_NAME, type: 'bot' },
+      { name: OWNER_NAME, type: 'owner', nickname: nicknameFor(OWNER_NAME) },
+      { name: BOT_NAME, type: 'bot', nickname: nicknameFor(BOT_NAME) },
       ...agents,
     ])
     return true
@@ -1699,6 +1740,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // Evidence on done: the PUT carries no evidence field, so an agent closing a
+    // card through it would skip the rule. A card the agent puts to done here
+    // goes to testing instead -- unless it is already done (a whole-card PUT of
+    // an unrelated edit round-trips status:'done' and must not reopen it).
+    let putNeedsEvidence = false
+    if (data.status === 'done' && isAgentActor(who.actor) && getKanbanCard(id)?.status !== 'done') {
+      data.status = 'testing'
+      putNeedsEvidence = true
+    }
     // PUT to in_progress clears but does not dispatch; /move remains the only
     // dispatch path (KARTYADISPATCH1010). writeKanbanCard applies the shared
     // dispatched_at clear (kanbanWriteClearsDispatch, db.ts); no fireKanbanDispatch call belongs here.
@@ -1749,8 +1799,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       onKanbanCardStatusChanged(id, specTemplatePrevStatus, data.status)
       const after = getKanbanCard(id)
       // Card 08bf8326 (#567): a card this one blocked may now be free to go.
-      if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, actor)
-      json(res, { ok: true, version: written.version, ...archivedNote(after), ...statusChangeExtras(id, before, data.status, actor) }); return true
+      if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, who.actor)
+      json(res, {
+        ok: true,
+        version: written.version,
+        ...(putNeedsEvidence ? {
+          status: 'testing',
+          evidence_required: true,
+          note: 'An agent closes a card only through POST /api/kanban/:id/move with "evidence". The card was moved to testing, not done.',
+        } : {}),
+        ...archivedNote(after),
+        ...statusChangeExtras(id, before, data.status ?? before?.status, who.actor),
+      })
+      return true
     }
     if (written.reason === 'stale') {
       // An instruction, not a diagnosis: the next act has to be a re-read. Reposting
@@ -1940,12 +2001,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Unknown field(s): ${unknownMoveKeys.join(', ')}. Accepted: ${KANBAN_MOVE_FIELDS.join(', ')}` }, 400)
       return true
     }
-    const { status, sort_order, actor: rawActor, force, reason, expected_status } = moveBody as
-      { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; force?: unknown; reason?: unknown; expected_status?: unknown }
+    const { status, sort_order, actor: rawActor, force, reason, expected_status, evidence } = moveBody as
+      { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; force?: unknown; reason?: unknown; expected_status?: unknown; evidence?: unknown }
     // Optional compare-and-set guard (upstream #1975, adopted 2026-10-24 during Koteg 19).
     // Absent (undefined/null) keeps the old unconditional move. Present, it must name a real
     // status: an unknown value could never match, and a 409 would wrongly suggest someone else
     // moved it.
+    if (evidence !== undefined && evidence !== null && typeof evidence !== 'string') {
+      json(res, { error: 'evidence must be a string or null' }, 400)
+      return true
+    }
+    if (typeof evidence === 'string' && evidence.length > KANBAN_EVIDENCE_MAX_CHARS) {
+      json(res, { error: `evidence is longer than ${KANBAN_EVIDENCE_MAX_CHARS} characters` }, 400)
+      return true
+    }
     const hasExpected = expected_status !== undefined && expected_status !== null
     if (hasExpected && !(KANBAN_STATUSES as readonly string[]).includes(expected_status as string)) {
       json(res, { error: `Invalid expected_status. Accepted: ${KANBAN_STATUSES.join(', ')}` }, 400)
@@ -1959,37 +2028,50 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const writeActor = kanbanWriteActor(rawActor, ctx.auth)
     if ('error' in writeActor) { json(res, { error: writeActor.error }, 400); return true }
     const actor = writeActor.actor
-    if (newDevStopWouldBlock(id, status, force === true, actor)) {
+    const hasEvidence = typeof evidence === 'string' && evidence.trim() !== ''
+    // Koteg 27 (upstream #2026, "evidence on done"): NOT adopting the evidence-bypass-to-done
+    // escape hatch -- this fleet's rule 4 (CLAUDE.md, Peti 2026-07-05) is that an agent NEVER
+    // closes its own work to done, full stop, no exception for attaching evidence (see the
+    // dispatch-template note above for the same decision, and the recipient-ledger rejection
+    // earlier this same batch for the same self-certification shape). An agent-actor move to
+    // 'done' is always redirected to 'testing' here, regardless of evidence; evidence, if
+    // given, is still stored (useful metadata for whoever reviews it next). Computed BEFORE the
+    // guards below so they see the EFFECTIVE status, not the raw requested one -- otherwise a
+    // redirect-to-testing could trip a done-only guard (degradedOrchestratorRefusal) for a
+    // transition that is no longer actually going to done.
+    const needsEvidenceRedirect = status === 'done' && isAgentActor(actor) && getKanbanCard(id)?.status !== 'done'
+    const effectiveStatus: Parameters<typeof moveKanbanCard>[1] = needsEvidenceRedirect ? 'testing' : status
+    if (newDevStopWouldBlock(id, effectiveStatus, force === true, actor)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
     }
     {
-      const v = await landedGuardVerdict(id, status, force === true, actor)
+      const v = await landedGuardVerdict(id, effectiveStatus, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
-      const v = cardLandingsGuardVerdict(id, status, force === true, actor)
+      const v = cardLandingsGuardVerdict(id, effectiveStatus, force === true, actor)
       if (v.blocked) { json(res, { code: 'landing_record_required', error: v.message }, 409); return true }
     }
     {
-      const v = gateCompletenessGuardVerdict(id, status, force === true, actor)
+      const v = gateCompletenessGuardVerdict(id, effectiveStatus, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
-      const v = planGrillingGuardVerdict(id, status, force === true, actor)
+      const v = planGrillingGuardVerdict(id, effectiveStatus, force === true, actor)
       if (v.blocked) { json(res, { code: 'plan_grilling_required', error: v.message }, 409); return true }
     }
     {
-      const v = draftReviewGuardVerdict(id, status, force === true, actor)
+      const v = draftReviewGuardVerdict(id, effectiveStatus, force === true, actor)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
     {
-      const v = await decisionsGuardVerdict(id, status, force === true, actor)
+      const v = await decisionsGuardVerdict(id, effectiveStatus, force === true, actor)
       if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
     }
     // Card d5638d28: refuse a transition INTO done while degraded-orchestrator mode is on,
     // regardless of who/what is moving the card -- see degraded-orchestrator-guard.ts.
-    if (status === 'done') {
+    if (effectiveStatus === 'done') {
       const refusal = degradedOrchestratorRefusal('kanban move to done', force === true, actor)
       if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
     }
@@ -2000,11 +2082,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const before = getKanbanCard(id)
     const specTemplatePrevStatus = before?.status
     {
-      const v = dependencyBlockBody(id, status, force === true, actor)
+      const v = dependencyBlockBody(id, effectiveStatus, force === true, actor)
       if (v.blocked) { json(res, v.body!, 409); return true }
     }
     // Card 4bbb5167 -- see the sibling block in the PUT handler for why the check is repeated here.
-    if (statusWouldChange(id, status) &&
+    if (statusWouldChange(id, effectiveStatus) &&
         bulkAttributionRequired(Math.floor(Date.now() / 1000),
           actor,
           typeof reason === 'string' ? reason : undefined,
@@ -2013,27 +2095,37 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (moveKanbanCard(
-      id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined,
+      id, effectiveStatus, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined,
       hasExpected ? (expected_status as Parameters<typeof moveKanbanCard>[1]) : undefined,
+      hasEvidence ? (evidence as string) : undefined,
     )) {
-      specTemplateGuardCheck(id, specTemplatePrevStatus, status, actor)
-      reviewPresenceGuardCheck(id, specTemplatePrevStatus, status, actor)
-      void decisionsGuardCheck(id, specTemplatePrevStatus, status, actor)
+      specTemplateGuardCheck(id, specTemplatePrevStatus, effectiveStatus, actor)
+      reviewPresenceGuardCheck(id, specTemplatePrevStatus, effectiveStatus, actor)
+      void decisionsGuardCheck(id, specTemplatePrevStatus, effectiveStatus, actor)
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and
       // awaiting it here would hold the HTTP response on a pane-idle wait (card 900178fa).
-      if (status === 'in_progress') void fireKanbanDispatch(id, actor)
+      if (effectiveStatus === 'in_progress') void fireKanbanDispatch(id, actor)
       // Card 64f56f97 requirement 1: same enforcement as the PUT handler above, for this
       // path's own fresh planned->in_progress transitions (self-advance-pickup.sh and
       // MikroB's own dispatch both move cards through /move, not PUT).
-      if (status === 'in_progress' && specTemplatePrevStatus === 'planned') fireCardBuildRoute(id)
-      onKanbanCardStatusChanged(id, specTemplatePrevStatus, status)
+      if (effectiveStatus === 'in_progress' && specTemplatePrevStatus === 'planned') fireCardBuildRoute(id)
+      onKanbanCardStatusChanged(id, specTemplatePrevStatus, effectiveStatus)
       // Card 08bf8326 (#567): a reorder inside the done column is not a closing -- only a
       // real transition to done frees the cards waiting on this one.
       const moved = getKanbanCard(id)
       if (specTemplatePrevStatus !== 'done' && moved?.status === 'done') notifyUnblockedCards(id, actor)
-      json(res, { ok: true, ...archivedNote(moved), ...statusChangeExtras(id, before, status, actor) })
+      json(res, {
+        ok: true,
+        ...(needsEvidenceRedirect ? {
+          status: 'testing',
+          evidence_required: true,
+          note: 'An agent closes a card only through an independent gate (QA/Cybersec/Cybered) via waiting -- see rule 4. The card was moved to testing, not done.',
+        } : {}),
+        ...archivedNote(moved),
+        ...statusChangeExtras(id, before, effectiveStatus, actor, { evidenceGiven: hasEvidence }),
+      })
       return true
     }
     // Nothing changed: a missing card stays the old 404; an existing card means either the

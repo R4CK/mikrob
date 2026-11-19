@@ -72,4 +72,7 @@ export const AGENT_MESSAGES_ALTER_COLUMNS: readonly string[] = [
   // sets it; POST /api/messages never does, so a 1 here is authenticated by construction.
   // 0 for every older row.
   `ALTER TABLE agent_messages ADD COLUMN stop_authorized INTEGER NOT NULL DEFAULT 0`,
+  // Koteg 27 (upstream #2194), F9: when the recipient was seen to have the message
+  // (message-seen-sweep.ts). NULL until seen, so an old row reads as unseen rather than guessing.
+  `ALTER TABLE agent_messages ADD COLUMN seen_at INTEGER`,
 ]
