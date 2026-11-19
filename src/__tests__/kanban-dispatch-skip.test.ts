@@ -216,7 +216,10 @@ describe('KANBAN_DISPATCH_SKIP_AGENTS: the dispatch (DISPATCHSKIP1022)', () => {
     createKanbanCard({ id: 'w', title: 'Waiting', assignee: 'pm', status: 'waiting' })
     createKanbanCard({ id: 'b', title: 'Blocker', assignee: 'dex', status: 'in_progress' })
     addCardBlocker('w', 'b')
-    await move('b', 'done', 'dex')
+    // Card e5c13c0e/Koteg 27: a HUMAN closes the blocker here, not 'dex' (a mocked agent in
+    // this file) -- this fleet's rule 4 means an agent-actor move to done always redirects to
+    // testing, which would never reach the notifyUnblockedCards() this test is pinning.
+    await move('b', 'done', 'Some Human')
     const toPm = sentTo('pm').map((c) => String(c[2]))
     expect(toPm.some((m) => m.includes('[Kanban feloldva #w]'))).toBe(true)
   })
