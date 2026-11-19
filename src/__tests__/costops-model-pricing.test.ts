@@ -132,6 +132,36 @@ describe('costops estimateCostUsd', () => {
     expect(cost).toBe(4.0)
   })
 
+  // Weekly pricing-reconciliation check (card 270e3ef4), 2026-11-16 run: Opus 5.5 and Sonnet 5.5
+  // price cache hits/refreshes at 0.05x base input, NOT the standard 0.1x every other model uses
+  // (official pricing page footnote: "Cache hits and refreshes on Claude Opus 5.5 and Claude
+  // Sonnet 5.5 are priced at 0.05x the base input price. All other models use the standard 0.1x
+  // multiplier."). estimateCostUsd was applying the global 0.1x to everything, overcharging cache
+  // reads on both by 2x. Source: platform.claude.com/docs/en/about-claude/pricing, card 808cd7fc.
+  it('Opus 5.5 and Sonnet 5.5 discount cache reads to 0.05x input, not the standard 0.1x', () => {
+    const opus55 = estimateCostUsd('claude-opus-5-5', {
+      input_tokens: 0, output_tokens: 0, cache_read_tokens: 1_000_000, cache_creation_tokens: 0, thinking_tokens: 0,
+    })
+    expect(opus55).toBeCloseTo(0.2, 10) // 4.0 * 0.05
+
+    const sonnet55 = estimateCostUsd('claude-sonnet-5-5', {
+      input_tokens: 0, output_tokens: 0, cache_read_tokens: 1_000_000, cache_creation_tokens: 0, thinking_tokens: 0,
+    })
+    expect(sonnet55).toBeCloseTo(0.1, 10) // 2.0 * 0.05
+  })
+
+  it('CONTROL: siblings without the override still use the standard 0.1x cache-read multiplier', () => {
+    const opus5 = estimateCostUsd('claude-opus-5', {
+      input_tokens: 0, output_tokens: 0, cache_read_tokens: 1_000_000, cache_creation_tokens: 0, thinking_tokens: 0,
+    })
+    expect(opus5).toBeCloseTo(0.5, 10) // 5.0 * 0.1, unaffected by the opus-5-5 override
+
+    const sonnet5 = estimateCostUsd('claude-sonnet-5', {
+      input_tokens: 0, output_tokens: 0, cache_read_tokens: 1_000_000, cache_creation_tokens: 0, thinking_tokens: 0,
+    })
+    expect(sonnet5).toBeCloseTo(0.2, 10) // 2.0 * 0.1, unaffected by the sonnet-5-5 override
+  })
+
   it('covers the newly recorded models as of 2026-10-12 DB sweep', () => {
     // From store/claudeclaw.db distinct model list 2026-10-12: all must price to non-null.
     const recorded = [
