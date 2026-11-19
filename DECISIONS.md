@@ -28689,3 +28689,33 @@ a vegso tippen, mindket alkalommal 2/2 zold (29.73s, bo margoval a 90s alatt).
 **Ki döntött:** Cybered NO-GO (komment 32333) + MikroB kovetkezo-lepes (uzenet 19800/19805).
 backend3 vegezte. Gate: QA + Cybersec + Cybered (delta re-gate, csak a rebase-mechanika + ez a ket
 javitas, nem teljes suite).
+
+## 2026-11-19 -- 2ec21127: Token 8 land refused on develop drift, fixed (CLAUDE.md 4g/22a-22e merge + reachability-test timeout)
+
+Land attempt (marveen-land.sh --card 2ec21127 --agent backend3) was REFUSED on CONFLICTS merging
+card tip a81e5a8e into a fresh origin/develop: CLAUDE.md, DECISIONS.md,
+src/__tests__/claude-md-split-reachability.test.ts. Root cause: develop gained rule 4g and
+sub-rules 22a-22e (with short clauses) after this card's own base-prompt-diet pass touched the
+same index -- this card's HEAD already carried 22a-22e in an even terser (bold+link-only) form but
+was missing 4g entirely, and the reachability test's timeout constant diverged (develop still had
+an older 26-case/60000ms measurement from card 517ba7f6, superseded by this card's own 30-case/
+90000ms measurement from 2026-11-16, card 2ec21127 itself, msg 19800).
+
+Fix: merged origin/develop into card/2ec21127. CLAUDE.md: added rule 4g in the branch's own
+terse style (bold title + link, no prose clause, matching 22a-22e's existing style on this
+branch), corrected the sub-rule count line from "37 sor" to "43 sor" (22 main + 21 lettered subs,
+matching develop's own stated total once 4g is counted). claude-md-split-reachability.test.ts:
+kept this branch's 90000ms/30-case version (newer, supersedes develop's). DECISIONS.md: both
+sides append-only, unioned theirs-first via store/decisions-sync-resolve.sh (rc=0 on
+--check-last-merge). One unrelated clean auto-merge: src/__tests__/dismiss-feedback-draft-modal-retry.test.ts
+deleted on develop (not touched on this branch), deletion accepted (standard 3-way merge rule,
+no conflict).
+
+**Mérés:** tsc --noEmit on the merge result: clean. vitest run
+claude-md-split-reachability.test.ts: 1 Test File passed (1), 2 Tests passed (2), 29.84s (under
+the 90000ms budget, consistent with this branch's own measurement). secret-gate PASS, 351 files.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 912955f06f119feb9fe4bcc840c23c6860fc61fc (merge commit,
+sha copied via `git rev-parse HEAD`, not retyped). Gate: QA + Cybered + Cybersec + Cybersec2
+per the card's designated set (all four already agreed on a81e5a8e) -- needs a fresh verdict on
+this sha before landing.
