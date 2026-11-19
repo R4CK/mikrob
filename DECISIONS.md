@@ -26071,7 +26071,7 @@ rögzíti és zárja a kártyát.
 `d4d42e166` a `cdde2666` kártyán, itt csak verifikálva és lezárva). Gate: QA + Cybersec.
 Gate-SHA: `d4d42e166ae8a58d15d6e5edaacd4c571d3eafc5`.
 
-### 2026-11-15 -- F8 compiled skill packs for non-Claude models (card 2746165b)
+## 2026-11-15 -- F8 compiled skill packs for non-Claude models (card 2746165b)
 
 Non-Claude calls (`freellm-call.sh` / `local-llm.sh`) carried only the raw per-task prompt
 template (`store/local-llm-skills/<task>.txt`), never any `~/.claude/skills` rule/pitfall
@@ -26098,7 +26098,7 @@ file content in the prompt, which stays the caller's responsibility.
 
 **Ki dontott:** MikroB dispatch (msg_id:19011) -> backend3 vegrehajtasa.
 
-### 2026-11-15 -- F8 delta: path containment + secret scan a skill-pack builderen (card 2746165b, QA FAIL 31746)
+## 2026-11-15 -- F8 delta: path containment + secret scan a skill-pack builderen (card 2746165b, QA FAIL 31746)
 
 A QA FAIL 31746 bebizonyitotta: `expand()`-nek nem volt containment-ellenorzese (sima
 abspath/expanduser), es az extract() pipeline-nak semmilyen secret-scanje -- egy hibas
