@@ -28250,3 +28250,39 @@ korabbrol ismert parse5-hianyos hiba). `lint-ratchet.sh`: 441 lelet, baseline ta
 
 **Ki döntött:** backend2 (delta-fix a Cybered NO-GO-ra, QA PASS mar megvolt a gate-poolbol).
 Gate: QA + Cybered (re-gate).
+
+---
+
+## 2026-11-19 -- Kártya 30aa8b29 delta: develop-drift merge-konfliktus feloldása (MikroB msg 21053)
+
+**Kontextus:** a batch land dry-run (DevO msg 21050) valódi konfliktust talált a már gate-elt
+30aa8b29 (Gate-SHA 62fc59ac8) és origin/develop között -- ez a kártya is régi develop ponton
+állt. Két valódi tartalmi konfliktus: DECISIONS.md (sorrend-jellegű, mint a testvér-kártyáknál)
+és `src/web/fleet-transfer.ts` (valódi forrás-konfliktus, nem csak sorrend).
+
+**Döntés (DECISIONS.md):** ugyanaz az algoritmus mint a 60aeca01 delta-nál: develop oldal elöl,
+a kártya saját bejegyzése a fájl végére. `store/decisions-sync-resolve.sh --check-last-merge`
+rc=0.
+
+**Döntés (fleet-transfer.ts):** két, EGYMÁSTÓL FÜGGETLEN funkció ütközött ugyanazon a két
+helyen, mindkettőt meg kellett tartani (unió, nem egyik-vagy-másik):
+1. Import-sor: a kártya saját `isForbiddenAssignee`/`isInvalidAssigneeShape` importja
+   (`kanban-assignee-guard.js`) ÉS a develop-en közben landolt `registerScheduledTask`/
+   `ScheduledTaskWritten` import (`schedule-registry.js`/`scheduled-tasks-io.js`) -- mindkettőt
+   valóban HASZNÁLJA a fájl más pontja (ellenőrizve grep-pel: `ScheduledTaskWritten` az 1321.
+   sorban, `registerScheduledTask` az 1598. sorban, `isInvalidAssigneeShape`/
+   `isForbiddenAssignee` az 1371. sorban).
+2. A kanban_cards import INSERT: a kártya saját `safeAssignee` szanitizálása (Peti 10943, a
+   tiltott assignee nem juthat be egy peer exportból importált kártyán sem) ÉS a develop-en
+   közben landolt `version` oszlop (optimista zárolás) egyszerre kell -- az INSERT oszloplistája
+   és a VALUES placeholder-ei a `version`-t is tartalmazzák, de a `c.assignee ?? null` helyén a
+   szanitizált `safeAssignee` marad.
+
+**Teszt:** `tsc --noEmit` a fleet-transfer.ts-re tiszta (a 2 korábbról ismert, FÜGGETLEN parse5
+hiba leszámítva, ugyanaz mint a 60aeca01 delta-nál mérve).
+
+**Nincs benne:** landolás -- a delta-gate után DevO landolja (MikroB utasítása).
+
+**Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást.
+Gate: a delta a 62fc59ac8-on már megadott QA + Cybered sign-offot nem ismétli meg; ez a komment
+a merge-delta saját REVIEW-ja.
