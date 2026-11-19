@@ -28143,6 +28143,602 @@ Gate: QA + Cybered (a kártya saját kijelölése).
 
 **Who decided:** backend (card b5d19a32, dispatched by MikroB msg 18944 off CYBERSEC GO on eed22288). Gate: QA + Cybersec. Gate-SHA: 2ae712bfd.
 
+## 2026-11-15 -- card 2d5ad4d2 (b7540305 follow-up, CYBERSEC F1 MEDIUM: graphify symlink bypass + stale pin/approval szöveg)
+
+**F1 (symlink bypass):** `store/graphify.sh build`-nek a GHSA-pcc4-rvhr-2pr8 kompenzáló
+tiltó-predikátuma (`find ... -type f ...`, card b7540305) csak VALÓDI fájlt vizsgált --
+egy védett kiterjesztésre (pl. `x.F90`) nevezett SZIMLINK, akármire is mutatott, átjutott
+rajta és elérte a pinnelt binárist. Mért bizonyíték: egy canary-symlink
+(`ln -s innocuous.txt canary.F90`) a régi predikátummal lefutott, a `graphify` hívást
+a FAKE_BIN naplója szerint TÉNYLEGESEN elérte. Javítás: a predikátum mostantól
+`\( -type f -o -type l \)`. Mutáció-ellenőrzés: a régi (`-type f` only) alakra visszaállítva
+a `store/graphify-fortran-guard.selftest.sh` új symlink-canary esete pontosan PIROSRA vált
+(2 esetben), a javítással visszazöldül.
+
+**Szöveg-korrekció (2. rész):** a `store/watched-repos.json` graphify-bejegyzése és a
+`store/graphify.sh` fejlett-kommentje avítottan "Peti approval pending"-ként hivatkozott a
+8317aeb4 jóváhagyásra. Tényleges állapot: a jóváhagyás 18:32-kor lejárt (timeout), és Peti
+(Telegram 12932) a verzió-bumpokat a heti/kétheti eszköz-ellenőrzésre halasztotta, nem egy
+különálló élő-frissítési ablakra. A `graphify.sh` kommentjét frissítettem (ÉLŐ kód, nem
+append-only napló, szabad javítani); a `watched-repos.json` note mezejéhez -- ami maga is
+dátumozott, hozzáfűzős bejegyzésekből áll, ugyanúgy mint ez a fájl -- egy ÚJ, 2026-11-15-ös
+dátumozott szegmenst fűztem a VÉGÉRE, ami korrigálja a 2026-10-31-es bejegyzés keretezését,
+nem törölve/szerkesztve azt. Ugyanitt rögzítve: az élesben futó binárs verziója 0.9.35
+(nem a regisztrált 0.9.67 pin), a tiszta cél a heti ellenőrzéshez >=0.9.70 -- a 2026-10-09-es
+bejegyzésben dokumentált `pipx install --force graphifyy==0.9.67` parancs NEM tekinthető a
+CVE javításának, mert a 0.9.67 maga is a 0.7.2-0.9.69 érintett tartományba esik (ezt a
+2026-10-09-es bejegyzés a fa4a875d-es CVE-lelet ELŐTT íródott, ezért hiányzik belőle ez a
+figyelmeztetés).
+
+**Teszt:** `store/graphify-fortran-guard.selftest.sh` 10/10 PASS (5 régi eset + 1 új
+symlink-canary eset, 2 check), `bash -n store/graphify.sh` tiszta, `watched-repos.json`
+JSON-validált a szerkesztés után, `git diff --stat` 3 fájl (selftest +16, graphify.sh
++11/-4, watched-repos.json +4/-2 -- a note-mező egyetlen string, a JSON-diff ezért csak
+2 sort mutat a tartalmi hozzáfűzés ellenére).
+
+Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15, kártya dffbb55f (RedHat c0408a1c comment 18896 follow-up): mopsion-suite-run.sh D1
+marveen-fa felismerese path-prefix minta helyett marker-alapura valtott (git toplevel + saját
+store/fleet-test.sh jelenlete), es minden argumentum `realpath -m` utan megy a markeren at. Ez
+zarja a 3 mert kerulouttat (literal ".." szegmens, symlink argumentum, gate-worktree cwd + relativ
+argumentum) es RedHat 7 tulelo mutansat (K5, K7b, K9, K9b, K10b, K12, K13). Gate-SHA:
+38f4ef91528df9f110bdce8d96349ecd4b55141e. Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- 5dd48e5d: kontextus-tömörítés küszöb felső sapkával 200k tokenre (Peti 13835)
+
+**Kontextus:** a token-használat mérése (kártya 2ad5ba6c, 2026-11-14) azt mutatta, hogy egy tömörítés 240-420k tokent olvas vissza egy 1M-ablakos modellen (opus-5) -- a 75%-os percentage-küszöb (2026-08-14-es szabály) ott 750k-nál indul, ami ezt a drága újraolvasást ritkán, de nagy méretben engedi megtörténni. Peti (Telegram 13835): sapkázni a küszöböt 200 000 tokenre, a 75%-os szabály MELLETT, nem helyette.
+
+**Döntés:** `threshold_tokens_for_model()` mostantól `min(ablak * COMPACT_PCT/100, COMPACT_MAX_TOKENS)`. `COMPACT_MAX_TOKENS` alapértelmezés 200000, env-felülírható (`COMPACT_MAX_TOKENS`), validálva a repo már bevált mintájával (kártya b1813ab2, a "00"/"000" tanulság): nem-numerikus, üres VAGY csupa-nulla érték visszaesik 200000-re -- a validáció a `compact_max_tokens()` függvényben fut MINDEN híváskor, nem egyszer a script indulásakor, mert a selftest (és egy valódi hívó) a változót egy MÁR FUTÓ shellben egy függvényhívás elé prefixként állítja, nem új script-indítással -- egy egyszeri, top-level validáció ezt sosem futtatná újra (ez volt az első implementáció hibája, saját teszttel elkapva, mielőtt landolt volna). Kis ablakos modellen (ahol a 75% már a sapka alatt van) a sapka nem változtat semmit -- csak lefelé húz, sosem felfelé. CLAUDE.md "Kontextus-tömörítés küszöb" szakasza frissítve, ugyanebben a commitban.
+
+**Teszt:** `context-compact-monitor.sh --selftest` 43/43 PASS (6 új eset: 1M-ablak sapkázva 200k-ra, 200k-ablak változatlan 150k-n, a százalék felülírható marad sapkázva, a sapka maga felülírható, nem-numerikus és csupa-nulla ("00") sapka-érték visszaesik 200000-re). Mutáció-ellenőrizve (visszaállítva): a sapka-logika teljes eltávolítása 6/43 pirosat ad; a validáció eltávolítása (csak a nem-numerikus/csupa-nulla eseteket) 2/43 pirosat ad.
+
+**Nincs benne:** a monitor cron/heartbeat-ként fut (minden hívás friss script-betöltés, nincs tartós állapot a régi küszöb-logikára), ezért a "live monitor without restart" Kész-ha pont architekturálisan eleve teljesül, nem igényelt külön munkát.
+
+**Ki döntött:** Peti (Telegram 13835, 2026-11-14 19:11), MikroB (kártya 5dd48e5d dispatch, msg 18561). backend3 végezte a javítást. Gate: QA + Cybersec.
+
+## 2026-11-16 -- 12d91d4b: fleet-resume.sh belső timeoutjai konfigurálhatóvá tétele, land-blokkoló flake javítása
+
+**Probléma:** DevO teljes fleet-test.sh land-futásai 5x megbuktak timeout miatt olyan fájlokban,
+amiket a landolt kártyák nem is érintettek (msg 19798, 19913): `offload-batch-health.test.ts`,
+`store-selftests-all-run.test.ts` (ezen belül `fleet-resume.selftest.sh`), és
+`claude-md-split-reachability.test.ts`. Mindhárom fájlt mértem alone vs. szándékos párhuzamos
+terhelés alatt (MikroB jóváhagyásával, msg 19950/19951 után szintetikus terhelés már nem futott).
+A `fleet-resume.selftest.sh` valódi flakét reprodukált load avg 20-40 alatt: egyszer a 8.
+tesztben (a kimenő `timeout 20` elfogyott a kumulatív fork/exec-késleltetés miatt, mielőtt a
+8. lépés lefutott volna), egyszer a 3. tesztben (az `INSTALLED_CHECK` saját, korábban HARDCODE-olt
+`timeout 10`-je sült ki extrém fork/exec-kontenció alatt, teljesen más ágra lökve a fleet-resume.sh
+futását).
+
+**Fix:** `store/fleet-resume.sh`-ban a korábban hardcode-olt belső `timeout N` hívások (installed
+check, active-check, start, vram, load-read, agent-cap) mind env-seammé váltak, ugyanazzal a
+konvencióval, mint a már meglévő `FLEET_RESUME_CLEANUP_TIMEOUT` -- az alapértékek változatlanok, az
+éles viselkedés nem változik. A selftest a saját, hermetikus stub-jainak fork/exec-késleltetését
+60s-re nyitja ezeken a seameken. A 8. teszt assertje wall-clock (`END-START <= 10`, ami a
+timeout-tűztől függetlenül buktatott kontenció alatt) helyett viselkedés-alapúra váltott: a stub
+"too slow" jelzése (amit csak az 5s sleep VÉGÉN ír ki) hiányát nézi, ami bizonyítja, hogy az 1s
+CLEANUP_TIMEOUT valóban megölte, nem csak kifutott a host-zaj alatt. `offload-batch-health.test.ts`
+és `claude-md-split-reachability.test.ts` nem módosult (az utóbbit MikroB kifejezett kérésére nem
+érintettem -- az a 2ec21127 kártyával landol, commit 15e089afd).
+
+**Teszt:** `store/fleet-resume.selftest.sh` önmagában 17/17 zöld. Mutáció-bizonyítás: a
+`CLEANUP_SCRIPT` köré tett `timeout` wrapper ideiglenes eltávolítása a fleet-resume.sh-ban pontosan
+a 2 érintett assertet buktatta pirosra (15/17), visszaállítva újra 17/17. Teljes `fleet-test.sh`
+futás (`--ref b14b94fef`, a 3-slotos szemaforon át): 1344 Test Files passed, 1 skipped, 1 FAIL --
+a bukás egy ettől a kártyától FÜGGETLEN fájlban (`graph-tooling-selftests.test.ts`,
+gpu-driver-install-setup selftest), nem a 3 célfájl egyikében. `lint-ratchet.sh`: nem romlott
+(433 lelet, baseline tart).
+
+**Ki döntött:** MikroB (dispatch msg 19923, a landolási bottleneck feloldására), backend2 végezte.
+Gate: QA.
+
+## 2026-11-15: agent-boot-reconcile.sh H1-H3 keményítés (kártya aceda032, RedHat 17886 maradéka, 43d98136 szülő)
+
+**Döntés:** a kártya mindhárom nem blokkoló leletét javítottuk, nem csak dokumentáltuk tovább.
+
+- **H1:** a `weekly-hard-stop.json` HIÁNYA marad fail-open (szándékos, változatlan -- nincs mit
+  megállítani egy sosem írt fájlon). A bug a JELEN LÉVŐ, de nem értelmezhető fájl volt (csonka JSON,
+  üres, BOM, tömb-gyökér, könyvtár a fájl helyén) -- ez eddig inaktívnak olvasódott, mostantól
+  fail-closed (nincs indítás, egy naplósor). `-f` helyett `-e`, hogy egy könyvtár is átmenjen az
+  ellenőrzésen, ne ugorja át érintetlenül.
+- **H2:** a BLOKKOLT-szűrő kis-/nagybetű-független, és a cím ÉS minden label név ellen illeszt
+  (korábban: kis-nagybetű érzékeny, csak cím). Nem vállalt rész: valódi Unicode-homoglif védelem
+  (kirill T stb.) -- ehhez egy confusables-tábla kellene, RedHat mérése szerint ma 0 élő populáció,
+  szándékosan nyitva hagyva.
+- **H3a:** egy waiting+REVIEW kártya, amit a `gate-closure-check.py` már AGREE-nek olvas (minden
+  kijelölt gate elfogadta, ugyanazon sha-n), többé nem számít közelgő munkának -- a timer 5 perces
+  (nem boot-egyszeri) backstopja korábban végtelenségig újraindíthatta egy már lezárt kártya
+  építőjét.
+- **H3b:** a kártya-azonosítót mostantól `^[0-9a-f]{8}$` alakra szűrjük, mielőtt a from:mikrob
+  resume-üzenetbe vagy a Telegram-összesítőbe kerülne.
+
+**Mérés:** `store/agent-boot-reconcile.selftest.sh` -- 83 ok sor, 0 valós bukás (a "FAIL" szó csak
+három ÁTMENŐ teszt-címkében fordul elő: fetch-fail, fetch-error-object, start-http-fail), exit 0.
+13 új teszt (pozitív + mutáns-bizonyíték pár mind a négy javításra), a meglévő 20 változatlan
+viselkedéssel megy át az új hex8 fixture-azonosítók alatt (a régi `cardAAA`-stílusú azonosítók a
+H3b saját szűrőjét csendben kizárták volna, ezért át kellett nevezni mindet). `tsc --noEmit -p .`
+tiszta (nincs .ts változás).
+
+**Ki döntött:** RedHat lelete (komment 17886, Gate-SHA 1199bea9, a 43d98136 szülőkártya gate-jén),
+javítás: DevO (fullstack), card aceda032. Gate: QA + Cybered.
+
+## 2026-11-18 -- 50684453: correction to e3d14be9's consumer survey + unresolved Gate line (CYBERED GO 21225 R1, not reopened)
+
+**Context:** follow-up to the e3d14be9 entry above (2026-10-17, Gate-SHA 45fb4e0b). That entry's
+category-1 claim and its closing Gate line were both measured wrong by Cybered's GO (comment
+21225, R1) on the same sha; this is the append-only correction, not a reopening of e3d14be9 --
+the F1 code fix itself (`return resolved`) is correct and unaffected.
+
+**Correction 1 (R1, category-1 claim).** The e3d14be9 entry's point 1 says "the most common
+shell consumers (notify.sh, limit-monitor.sh, morning-briefing.sh, disk-space-guard.sh,
+stuck-modal-guard.sh, host-restart-watchdog.sh, unit-fail-notify.sh, fleet-memory-gate.sh) go
+through `scripts/lib/owner-chat.sh`, which does not read `TELEGRAM_STATE_DIR` itself." Re-read
+just now (grep on the live scripts, 2026-11-18): true for exactly 2 of the 8 named scripts
+(`notify.sh` sources `owner-chat.sh`; `morning-briefing.sh` sources it too, AND deliberately sets
+`TELEGRAM_STATE_DIR=$NO_CHANNEL_STATE` before calling it). FALSE for the other 6: `fleet-memory-gate.sh`
+(line 90), `host-restart-watchdog.sh` (28), `unit-fail-notify.sh` (18), `disk-space-guard.sh`
+(57), `stuck-modal-guard.sh` (49), and `limit-monitor.sh` (97) all read
+`"${TELEGRAM_STATE_DIR:-}"` directly, with no validation, and derive their `.env`/`access.json`
+paths from it unvalidated. Cybered also measured (code-read only, not run) the same raw,
+unvalidated pattern in 5 hook files outside this category: `telegram_fallback_send.py`,
+`telegram-ack.py`, `marveen-commands.py`, `telegram_progress.py`, `channel-inbox-drain.py` --
+confirmed the same way just now (`os.environ.get("TELEGRAM_STATE_DIR")`, no realpath/containment
+check, in all five).
+
+**Why this does not change the e3d14be9 verdict.** The consequence of a redirected
+`TELEGRAM_STATE_DIR` on these 6 scripts + 5 hooks is the SAME class e3d14be9's own category-2
+already named: a different notification target / bot token, not an authorization bypass --
+there is no allowlist-of-SENDERS check in any of them (confirmed by reading: none compares an
+inbound sender against `allowFrom`; `access.json` there only ever supplies an outbound chat id or
+a token). And the attacker capability required to redirect the env var (write access inside the
+checkout, same UID as the real `.env`/`access.json`) already lets that same attacker edit the
+REAL files directly -- a shared validator here would not remove any capability the attacker does
+not already have through a more direct path. The LOW severity holds; only the REASON stated in
+the original entry was wrong (the scripts are not structurally unaffected, they're affected but
+low-consequence-and-already-equally-exposed).
+
+**Decision on the card's point 2 (common validator helper): NOT built, documented reason instead.**
+Wiring the quota-bridge.py resolution logic (or an equivalent shared shell/python helper) into 6
+shell scripts and 5 hook files is a real, multi-file production change for a finding that is LOW
+severity with no live attacker model beyond "has write access to this agent's own checkout" --
+the same UID that could already rewrite the real `.env`/`access.json` these scripts read, with no
+validation to bypass at all. Per the karpathy-guidelines surgical-change principle and the
+e3d14be9 entry's own established policy for its category 2 (same reasoning, correctly reasoned
+there), a flotta-wide refactor against an already-equal-privilege threat does not earn its
+complexity. If `TELEGRAM_STATE_DIR` is ever set from an untrusted or lower-privilege source (a
+systemd unit, a different-UID service, a container boundary) this decision is reopened --
+re-checked just now: still zero `.service` files set it (`grep -rl TELEGRAM_STATE_DIR
+scripts/systemd/*.service` -- 0 matches), matching the original entry's point 3.
+
+**Correction 2 (card point 3, KC2/KC3, documentation only, inherited from 01dea2f0/e3d14be9, not
+re-opened).** Cybered's KC2: the `return resolved` fix in quota-bridge.py returns the path
+resolved AT THE TIME OF THE CALL that reads `TELEGRAM_STATE_DIR`; it does not pin the directory
+itself. If the resolved directory is later renamed and a symlink put in its place (same
+checkout-write privilege as the original vector), the NEXT read follows the new symlink --
+measured by Cybered on a synthetic tree. The fix closes the specific vector it was built for
+(retargeting the symlink the env var itself points at, after acceptance) and narrows but does not
+generally close the TOCTOU class. KC3: the fallback candidate path
+(`<checkout>/.claude/channels/telegram`) is returned raw, unvalidated, inherited unchanged from
+before 01dea2f0 -- not today exploited (the live first candidate is a real directory, not a
+symlink, checked by `ls -ld`), but not hardened either. Both are LOW, both are pre-existing
+(inherited), neither is reopened by this correction; a hardening card (resolved dir-fd, or
+revalidating the fallback the same way) is optional future work, not required here.
+
+**Correction 3 (card point 4, stale Gate line).** The e3d14be9 entry's own closing line says "Gate:
+QA + Cybersec" with a now-superseded justification ("NEM mirror-case ... a tényleges fix szerzője
+backend, az ellenőrző Cybersec, nem azonosak"). MikroB's actual designation on that card (message
+13425/comment 21223) was QA + RedHat, because the fix direction came from Cybersec (mirror-case
+rule, `gate-dispatch-check-who-designed-the-fix`) -- Cybered's own GO on the card flagged the same
+drift (comment 21225). The e3d14be9 entry above is left as originally written (append-only, per
+the tail-write convention); this entry states the corrected designation for anyone reading the
+old one: **the actual gate on e3d14be9 was QA + RedHat (CYBERED GO comment 21225, QA PASS comment
+21240), not QA + Cybersec.**
+
+**Measured:** `grep -n "TELEGRAM_STATE_DIR" scripts/fleet-memory-gate.sh
+scripts/host-restart-watchdog.sh scripts/unit-fail-notify.sh scripts/disk-space-guard.sh
+scripts/stuck-modal-guard.sh scripts/limit-monitor.sh` -- all 6 match (raw `${VAR:-}` read).
+`grep -n "TELEGRAM_STATE_DIR\|owner-chat" scripts/notify.sh scripts/morning-briefing.sh` -- both
+source `owner-chat.sh`, morning-briefing.sh additionally overrides the var to empty before doing
+so. `grep -n "TELEGRAM_STATE_DIR" scripts/hooks/telegram_fallback_send.py
+scripts/hooks/telegram-ack.py scripts/hooks/marveen-commands.py scripts/hooks/telegram_progress.py
+scripts/hooks/channel-inbox-drain.py` -- all 5 read `os.environ.get(...)` raw. `grep -rl
+TELEGRAM_STATE_DIR scripts/systemd/*.service` -- 0 matches (no live unit sets it), unchanged from
+e3d14be9's own point 3. No code changed by this card; append-only documentation per the card's own
+scope.
+
+**Who decided:** backend (own card, correcting Cybered's R1 on e3d14be9). Gate: QA + Cybersec2
+(the correcting measurement came from Cybered's gate on a different card, so not a mirror-case
+for the gate itself; QA + Cybersec2 per this card's own designation).
+
+## 2026-11-16: self-pace-gate self-schedule residuals (kartya a6c7780d, RedHat msg 19773 pont 3, MEDIUM, upstream-mal kozos)
+
+RedHat a 2e04a52e gate-jen (NO-GO, msg 19773) harom, upstreammal KOZOS maradek rest nevezett meg a
+`scripts/self-pace-gate.mjs` `scheduleSurfaceDeny()`-jen: (a) printf/echo-irt script-fajl utolagos
+futtatasa, (b) `curl -K <fajl>` (nem stdin), (c) `base64 -d | sh`, (d) tobb valtozobol osszerakott
+store-ut. Mind a negy ugyanaz a modul sajat fejkommentjeben MAR dokumentalt korlat egy-egy pelddaja:
+a hivatkozas csak akkor eszlelheto, ha a parancs SAJAT SZOVEGE tartalmazza -- ezek mind azt erik el,
+hogy ne tartalmazza.
+
+**Megerositve meresssel** (nem talalas elott): mind a negy alak `ALLOW`-t ad a VALODI
+`gateDecision()`/`scheduleSurfaceDeny()`-n keresztul, probaval igazolva, mielott hozzanyultam volna.
+
+**Javitas -- csak (b) es (c), amik LOKALISAN, a shell modellezese nelkul bizonyithatok:**
+- `curlConfigFileRefs`: ha egy curl parancs `-K`/`--config`-ja VALODI lokalis fajlra mutat (nem
+  `-`), a hook (szinkron, a sajat gepen, a Bash-hivas ELOTT fut) beolvassa azt a fajlt
+  (meret-korlatos, try/catch) es a tartalmat is atfuttatja a sched-surface egyezesen.
+- `decodedBase64Refs`: ha a parancs tartalmazza a `base64` szot ES egy stdin-olvaso shellbe
+  pipe-ol (a MAR bizonyitott `STDIN_SHELL_RX` / `HAS_PIPE_RX`+`WRAPPER_POSITION_BARE_SHELL_RX`
+  felteteit hasznalva, amit `executableStrings` is pont ezert hasznal), minden base64-alaku
+  tokent dekodol es a dekodolt szoveget is atfuttatja az egyezesen.
+
+Mindket uj ellenorzes CSAK HOZZAAD tiltast (barmi felbonthatatlan -- hianyzo fajl, `$`-expanzio,
+nincs base64/pipe-shell alak -- csendben at van engedve, nem uj tiltas), es csak akkor tilt, ha a
+fajl/dekodolt tartalom VALODI hivatkozast tartalmaz -- nem feltetlenul minden `curl -K` vagy
+`base64` hasznalatot (hamis-pozitiv teszt mindkettore).
+
+**(a) es (d) SZANDEKOSAN NYITVA marad:** (a) lezarasa minden futtatott script-fajl TARTALMANAK
+olvasasat jelentene -- ez a sajat repo scriptjeit (amik PONT errol a funkciorol szolnak) rendszeresen
+elvagna; a modul fejkommentje mar most "szandekosan megengedett"-nek mondja. (d) teljes
+shell-valtozo-interpretaciot igenyelne, amit upstream sem csinal. Mindket pont a modul fejkommentjebe
+irva NEVESITVE (nem csak "assembled at run time" altalanossaggal), hogy kesobb ne tunjon uj
+resznek vagy mulasztasnak.
+
+**Teszt:** `src/__tests__/self-pace-indirect-reference-residuals.test.ts`, 11 uj teszt (1/alak + 2
+hamis-pozitiv-or a zart alakokra + 2 invariant-valtozatlansag). Mutacio-ellenorzes: a fix
+visszaallitasaval PONTOSAN a 2 "CLOSED" teszt valt vorosre, a tobbi zold marad; visszaallitva ismet
+zold. A teljes gate-erintett teszt-csalad (23 fajl, egyezik Cybered sajat 2e04a52e-mereset) 1227
+PASS + 98 skip. `tsc --noEmit` tiszta (3, korabbrol ismert, FUGGETLEN parse5-hiba leszamitva).
+ESLint es `node --check` tiszta.
+
+**Ki döntött:** RedHat lelete (msg 19773) adta az iranyt. backend2 vegezte a javitast. Gate: QA +
+Cybersec + Cybered (a kartya sajat kijelolese).
+
+## 2026-11-15: Ügynök-újraindítás utáni munkamenet-igazolás -- olcsó (C) irány, nem kemény blokkolás (kártya d66b7681)
+
+**Döntés:** a context-guard resume-mechanizmusába NEM épül kemény blokkolás (resume-injektálás
+megállítása + MikroB-értesítés minden elavult handoffnál) -- az flotta-szintű dispatch-késleltetést
+vezetne be és az önjáró flotta ellen hatna túl alacsony küszöbnél. Helyette egy olcsó, additív
+irány (C) ment élesbe: (1) a stale resume-prompt eresítve egy KONKRÉT, MÉRHETŐ első lépéssel
+(`git ls-remote` + `git cat-file` minden sha-ra amit a handoff állít, és minden megnevezett kártya
+státuszának újraolvasása kanban-ból, MIELŐTT bármilyen land/push/PUT done megtörténne); (2) egy
+strukturált, agent-onkénti restart-log (`store/context-guard-restart-log.jsonl`, egy JSON-sor
+minden resume-injektálásnál: agent, handoff-kor percben, stale-jelző, az adott prompt-variáns
+neve), ami mérhetővé teszi, követik-e az ügynökök az instrukciót; (3) legalább egy teszt, ami
+pinneli, hogy a stale ág tényleg tartalmazza az eresített sort.
+
+**Mit indokolt:** a backend3 restart (~30 perc elavult HANDOFF) dupla landolással végződött -- a
+puszta szöveges figyelmeztetés ("FIGYELEM: a HANDOFF.md ELAVULT") már korábban is létezett a
+resume-promptban, de nem volt elég konkrét ahhoz, hogy megállítsa az agensit. Plan-grilling (kártya
+d66b7681 komment 31547) talált egy nyitott kérdést: a hiba oka az volt, hogy az agens nem olvasta/
+követte a figyelmeztetést, vagy hogy a figyelmeztetés maga nem volt elég erős? A kemény blokkolás
+az első esetre sem segítene önmagában (egy agens, aki egy szöveges figyelmeztetést átugrik, egy
+másikat is átugorhat), és a második esetre a (C) irány már elég -- ezért nem volt ok a nagyobb,
+visszafordíthatatlan architektúra-döntésre ráugrani anélkül, hogy a mérés megmutatná, kell-e
+egyáltalán.
+
+**Nyitva hagyva, saját kártyán (ha indokolt):** a kemény blokkolás (resume-injektálás megállítása)
+csak akkor kap saját kártyát, ha a restart-log ismétlődő stale-handoff-utáni landolást mutat --
+azaz a (C) mérés maga dönti el, kell-e a nagyobb beavatkozás.
+
+**Ki döntött:** MikroB (msg 18804, válasz a fullstack plan-grilling kérdésére, komment 31547/
+msg 18803). Gate: QA.
+
+## 2026-11-18 -- a7f206a5: retraction marker tightened to the REVIEW's own author/mikrob, first-sha-only
+
+**Decision:** Card a7f206a5 (source: WhiteHat 84fed4ee gate, comment 20580, landed). The
+`VISSZAVONVA:`/`RETRACTED:` marker (card 84fed4ee) that excludes a stale REVIEW from
+`declared_shas()` had two gaps measured live by WhiteHat:
+
+F1: `_retraction_shas_after` applied no author filter at all -- any commenter, including a
+generated draft author (local-llm, gate-pretriage), could retract someone else's real REVIEW.
+
+F2: the retraction line's EVERY hex token counted, so "VISSZAVONVA: B (visszaallitva A-ra)" --
+the exact sentence shape the original 101f1702 incident's prose used -- retracted both B (the
+one actually withdrawn) and A (the one restored to), leaving no live REVIEW and the real,
+intended sha unverified (NOSHA/UNRESOLVED instead of AGREE).
+
+**Fix:** `_retraction_shas_after(comments, index, review_author)` now only accepts a retraction
+comment whose author is the REVIEW's own author or `mikrob` (per WhiteHat's own suggestion, and
+excludes generated authors via the existing `_is_generated_author`), and only takes the FIRST
+sha-shaped token per retraction line, reusing `_line_shas()`'s own parent-marker/path-token
+exclusions rather than a bare token scan. `_latest_declaring_review` passes the REVIEW's author
+through. F4 (gate-dispatch-check.sh / gate-pretriage-card.sh not recognising the marker at all)
+is WhiteHat's own INFO-severity, explicitly out of the card's stated success criteria, and is
+left for a separate card.
+
+**Test:** `store/gate-closure-check.selftest.py`, 9 new cases: 3 pin F1 (unrelated author,
+local-llm, gate-pretriage all fail to retract; mikrob succeeds), 2 pin F2 (first-sha-only is
+correct; a verdict on the wrongly-surviving sha under the OLD code reads UNRESOLVED, not AGREE),
+2 pin case-insensitivity of the keyword and of the sha token (WhiteHat's M3/M6). Mutation-proven:
+reverted `gate-closure-check.py` only (selftest file kept at HEAD) -- exactly 4 of the 9 new
+cases (the ones that distinguish old from new behaviour; the other 5 pass under either version
+by construction, e.g. mikrob was never excluded by the old code either) went RED, everything
+else (195 pre-existing cases) stayed GREEN. Restored, re-ran: 204/204 green.
+
+**Measured:** `python3 store/gate-closure-check.selftest.py`: 204 case(s), PASS (pre-fix: 200
+pass / 4 fail, exactly the F1 x3 + F2-control cases). `python3 -m py_compile`: clean.
+
+**Who decided:** backend (own card). Gate: QA + Cybered (fix direction came from WhiteHat, so
+the security gate is Cybered, per the card's own designation).
+
+## 2026-11-16 11:01 -- 0ca2322b: fleet-test.sh TEST_TREE detektor maradek vak alakjai -- `readonly
+## TEST_TREE`-vel lezarva, nem regex-formankent
+
+c5f98f82 kovetokartya (QA2 32214, RedHat 19592, mindketto @bea353d23). A regex-alapu statikus
+detektor (`fleet-test-no-test-tree-reassignment-after-guard.test.ts`) csak a literalis
+`TEST_TREE=` reszstringet ismeri fel, ezert vak maradt: `: "${TEST_TREE:=...}"` (assign-default),
+`TEST_TREE[0]=`, `TEST_TREE+=`, `mapfile`/`readarray TEST_TREE`, egy `for`/`select TEST_TREE in
+...` ciklusvaltozo, `printf -v` (idezve vagy ragasztva), `declare -n`/`local -n` indirekcio, es a
+nev/`=` kozotti backslash-ujsor torese. Es semmit nem mondott a `cd "$ROOT"` HIVAS UTANI
+szakaszrol.
+
+**Dontes (MikroB komment 32226, RedHat javaslatara, komment 32216): NEM regex-formankent
+bovitjuk a detektort, hanem `readonly TEST_TREE`-t teszunk a guard vege utan.** Bash ekkor MINDEN
+kesobbi iras-format visszadob runtime "readonly variable" hibaval -- az EGESZ osztalyt egy sorban
+zarja le, nem csak azokat a formakat, amiket valaki eppen felsorolt. A statikus detektor marad,
+mint olcso elso-vonal (a legegyszerubb, nyers `TEST_TREE=` hibat meg a szkript futasa elott
+elkapja), de a strukturalis vedelem a readonly deklaracio.
+
+**Verifikacio (valodi bash-futtatassal, nem csak string-mintaillesztessel):** a szkript sajat
+szovegebol kivonva a `readonly TEST_TREE`-ig tarto elotagot, majd ALAHOZZA mindegyik felsorolt
+irasi forma -> MIND elbukik "readonly variable" hibaval, az `assign-default` KIVETELEVEL (ez
+NOOP, nem bypass: a `:=` csak akkor ir, ha a valtozo ures/nincs beallitva, es a TEST_TREE a 31.
+sorban MAR nem-ures erteket kapott, mire ide erunk -- tehat ez a forma soha nem lehetett
+tenyleges kihasznalas, csak egy olyan alak, ami a regex-detektort nem erdekelte). "After-cd
+window" pin: a szkript elotagjat a VALODI `cd "$ROOT"` hivasig kivonva, majd azutan probalva irni
+-> ugyanugy elbukik -- a readonly a futas HATRALEVO egesz reszere vonatkozik, nem csak a
+guard-vege-es-cd kozti resre. Mutacio-bizonyitas: a `readonly TEST_TREE` sor ideiglenes
+eltavolitasaval MIND A 15 teszt (`fleet-test-tree-readonly-after-guard.test.ts`) pirosra valt
+(az irasi formak mind sikeresek lesznek), visszaallitva ismet zold. 3 fleet-test selftest
+(`fleet-test-incomplete-run`, `fleet-test-priority-lane`, `fleet-test-cpu-slot-env`) zold.
+
+**Ki döntött:** backend2 (self-advance, MikroB prioritas 19621: 0ca2322b a 214ca312 utan,
+mindketto sajat korabban gate-elt munka follow-upja). Gate: QA + Cybered.
+
+## 2026-11-16 -- b296b810: project-less kanban cards can no longer be created
+
+Peti 14008 (2026-11-16): 411 live cards had an empty project between 2026-09-26 and 2026-11-15,
+all reclassified by hand (title tag / parent) since nothing enforced the field. Both
+card-creation paths (POST /api/kanban and POST /api/kanban/:id/breakdown/accept) now resolve a
+project in order: (1) an explicit project wins; (2) the parent card's project is inherited;
+(3) a recognised title tag ([mopsion]/[cleancore] -> mopsion, [MikroB]/[marveen] -> MikroB)
+derives one; (4) if none resolve, a speaking 400 instead of a silent NULL row. PUT /api/kanban/:id
+applies the same resolution only when the caller actually tries to CLEAR project to empty -- a PUT
+that never mentions the field leaves the existing value untouched.
+
+The title-tag mapping ([cleancore] -> mopsion) is intentionally a NEW, separate table from the
+existing CANONICAL_PROJECTS used for an explicit project STRING value, which deliberately keeps
+'CleanCore' and 'mopsion' apart (card 1b02ed3a's staged rebrand, protecting historical cards) --
+this derivation only fires for a brand NEW card naming no project at all, where the live name
+(mopsion) is correct.
+
+**Mérés:** scripts/__tests__... n/a (TS-only card). src/__tests__/kanban-project-required.test.ts,
+18 new cases, mutation-proven (disabling each of the 3 guard sites -- POST, PUT-clear,
+breakdown/accept -- flips the matching case red, restored clean). 13 pre-existing test files
+updated to carry an explicit project in fixtures that previously had none (unrelated features --
+id echo, assignee alias, gemini-ok marker, claim routes, parent-cycle detection). Full run: 41
+test files / 569 tests green. tsc --noEmit clean.
+
+**Nincs benne:** POST /api/ideas/:id/promote and /promote-breakdown (src/web/routes/ideas.ts) is
+a THIRD card-creation path that can still create a project-less card -- out of this card's named
+file scope (src/web/routes/kanban.ts only), flagged for a follow-up.
+
+**Ki döntött:** Peti kérése alapján backend implementálja; Gate: QA + Cybersec.
+
+## 2026-11-16 -- b296b810 round 2: non-string project values no longer bypass the guard
+
+Cybersec2 NO-GO (comment 32437, F1 MEDIUM) on round 1: PUT /api/kanban/:id accepted a
+non-string, non-null `project` ([""], [null], a number, a boolean, an object) because
+normalizeProjectName only inspected string values, and better-sqlite3 silently bound a
+one-element array to its element, storing a blank/garbage project with HTTP 200 -- the exact
+blank-project class round 1 closed for a plain string. Fixed by rejecting any `project` key in
+the PUT body that is neither a string nor null/undefined with 400
+INVALID_PROJECT_TYPE_MESSAGE, before normalizeProjectName runs at all; a malformed value never
+reaches the title-tag/parent fallback either.
+
+**Mérés:** src/__tests__/kanban-project-required.test.ts, fleet-test.sh --ref card/b296b810,
+24/24 passed. tsc --noEmit clean.
+
+**Ki döntött:** Cybersec2 lelet, backend javítja. Gate: QA (delta) + Cybersec2.
+
+## 2026-11-18 -- f490ae53: entry-side hysteresis for quota-bridge's outage-declaration kill
+
+**Decision:** Card f490ae53 (MikroB URGENT, 8 fleet-wide tmux-server/channel restarts measured on 2026-11-18). Root cause: `store/quota-bridge.py`'s `kill_pid_holder()` SIGTERMs the real Telegram plugin poller and takes over `bot.pid` as soon as `mikrob_down()` reads true, confirmed only by a bare consecutive-count (`banner_streak >= CONFIRM_CHECKS`), with no minimum real-time span between the confirming readings. `store/quota-bridge.log` shows a 21:52:31 kill followed by a 21:52:35 "MikroB recovered" (4s), repeated many times that day and on 2026-11-14 -- the real poller dies, `channels.sh` sees `bot.pid` hijacked/disappeared, and after its 180s grace restarts the whole channels session, which journalctl shows taking the entire shared tmux server (11-13 agent panes) down with it.
+
+**Fix:** added `confirm_outage()`/`load_outage_confirm_config()` to `store/quota-switchback.py`, mirroring the existing SWITCHBACK-HYSTERESIS-V1 recovery-side rule (`confirm_switchback`) for the ENTRY direction: N down readings must span a minimum real-time gap, not just be counted -- a single healthy reading anywhere in the trailing window resets the run, so a flap of any length never confirms regardless of poll timing (e.g. a process-restart edge producing two near-instant readings). Config lives in `store/switchback-hysteresis.json` (`confirmProbesIn`/`minGapSecIn`, defaults 2/45s, matching the old `CONFIRM_CHECKS`/`POLL_HEALTHY_SEC` intent). `quota-bridge.py`'s `main()` loop now records each probe via `record_outage_probe()` and gates `kill_pid_holder()` on `should_declare_outage()` -- both small, pure-ish, directly testable without driving the infinite loop or touching the network.
+
+**Test:** `store/quota-switchback.selftest.py` (+5 cases: the 4s flap does not confirm, two close-together down readings without a real gap do not confirm, a genuinely sustained outage spanning the gap DOES confirm, a straddling healthy reading still breaks the run, and the config loader's default). `store/quota-bridge.selftest.py` (+4 cases: `should_declare_outage()` rejects the flap AND `kill_pid_holder()` is never called for it -- i.e. `bot.pid` is never overwritten on an aborted takeover -- plus the positive control that a confirmed sustained outage still reaches `kill_pid_holder()` exactly once). `python3 -I store/quota-switchback.selftest.py`: 18/18 green. `python3 -I store/quota-bridge.selftest.py`: 44/44 green. `python3 -m py_compile`: clean on both runtime files.
+
+**Who decided:** fullstack (card f490ae53, MikroB-approved fix shape per msg 21151). Gate: QA + Cybersec + Cybered (kills the live channel poller). Gate-SHA: 48a269f4a.
+
+## 2026-11-19 -- f490ae53: fix Cybered NO-GO B2 (outage_probe_log not cleared on recovery)
+
+**Decision:** Cybered NO-GO 33404 (B2) and QA correction 33446 on Gate-SHA 81fb03ab8: `outage_loop()`'s recovery branch reset `state["probe_log"]`/`banner_streak`/`notified_outage` but left `state["outage_probe_log"]` (the entry-side hysteresis run added by the 2026-11-18 fix above) untouched. A trailing pre-recovery down-run that already spanned `min_gap_sec` survived the recovery, so a single fresh down reading right after MikroB came back could immediately re-confirm the outage and kill the real Telegram poller again -- the exact class B2 was raised to close.
+
+**Fix:** `store/quota-bridge.py`, `outage_loop()` recovery branch: added `state["outage_probe_log"] = []` alongside the existing reset.
+
+**Test:** `store/quota-bridge.selftest.py` (+2 cases): drives `outage_loop()` through the real recovery branch (`confirm_switchback` mocked True) with a pre-recovery `outage_probe_log` already spanning `min_gap_sec`, asserts it is wiped to `[]`, then replays `should_declare_outage()` with one post-recovery down reading and asserts it does not re-confirm. Mutation-checked: removing the new clear line turns this test red (45/46 vs 46/46). `python3 -I store/quota-bridge.selftest.py`: 46/46 green. `python3 -I store/quota-switchback.selftest.py`: 18/18 green (unchanged). `python3 -m py_compile`: clean.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21319). Gate: QA + Cybersec + Cybered. Gate-SHA: dd59183ce981335dae9825dcf84ac30c59ba9cb9.
+
+## 2026-11-19 -- f490ae53: fix Cybersec NO-GO F1b/F2 (stale-run age bound + hostile-config loader)
+
+**Decision:** Cybersec NO-GO 33392/33574 on top of the B2 fix (Gate-SHA deaa3ffe4): two MEDIUM regressions in the entry-side hysteresis (card f490ae53's 2026-11-18 fix) were still open. F1b: `confirm_outage()` had no maximum age on the trailing down-run, so a probe_log surviving a process restart could combine an hours-old down reading with a single fresh one and declare an outage immediately, on data no longer evidence of a CURRENT outage. F2: `load_outage_confirm_config()` only caught `(OSError, ValueError, TypeError, JSONDecodeError)`; a hostile/malformed `switchback-hysteresis.json` (`1e999`/`-1e999` -> `OverflowError`, a non-dict JSON root -> `AttributeError`) crashed `main()` before the loop (no fallback takeover during a real outage), and an in-range-looking-but-weak value (`confirmProbesIn:1, minGapSecIn:0`) or an absurd one (`10**30`) was accepted outright.
+
+**Fix:** `store/quota-switchback.py`: `confirm_outage()` gained `max_age_sec`/`now` parameters -- entries older than `max_age_sec` are dropped from the trailing run before the count/span check, so a stale entry can no longer stand in for a missing fresh one. `load_outage_confirm_config()` now catches any `Exception`, requires the JSON root to be a dict, and clamps `confirmProbesIn`/`minGapSecIn` to sane bounds (2..10, 15..3600) -- anything outside either range, or any read/parse exception, falls back to the documented defaults `(2, 45)` with a warning on stderr (not a silent clamp to the boundary). `store/quota-bridge.py`: `should_declare_outage()` threads `max_age_sec`/`now` through to `confirm_outage()`; `main()`'s loop now calls it with the new `OUTAGE_PROBE_MAX_AGE_SEC` constant (`POLL_HEALTHY_SEC * 10` = 450s).
+
+**Test:** `store/quota-switchback.selftest.py` (+13 cases): the F1b bug reproduced without the bound (still confirms) and closed with it (does not confirm), a positive control that a genuinely recent sustained outage still confirms under the bound, and 9 F2 cases (both `OverflowError` shapes, four non-dict JSON roots, the weakened-by-one-edited-number config, both `10**30` extremes, and a valid in-bounds config passing through unclamped). `store/quota-bridge.selftest.py` (+1 case): a wiring pin that `main()` actually passes `max_age_sec=OUTAGE_PROBE_MAX_AGE_SEC` to `should_declare_outage()`, not the default `None` -- mutation-checked (dropping the kwarg at the call site turns it red). `python3 -I store/quota-switchback.selftest.py`: 31/31 green. `python3 -I store/quota-bridge.selftest.py`: 47/47 green. `python3 -m py_compile`: clean on all four files.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21331, Fix-Direction per WhiteHat 33392/33574). Gate: QA + Cybersec + Cybered. Gate-SHA: (see next commit, git rev-parse HEAD).
+
+## 2026-11-19 -- f490ae53: fix Cybered NO-GO 33576 (restart leg, clock-step, main() wiring)
+
+**Decision:** Cybered NO-GO 33576 on top of the F1b/F2 fix (Gate-SHA 57edc7c41), reaching three open items: (3) restart leg -- a persisted down reading of ANY age plus one fresh down still killed the poller (600s, 30 days, and a 1h clock step all gave kills=1 on deaa3ffe4); (4) `time.time()` is not monotonic, so a wall-clock step (either direction) between two down readings also confirmed; (5) the selftests did not pin `main()`'s own wiring -- deleting the `record_outage_probe()` call, or replacing the `should_declare_outage()` call with a bare `True`, left every existing selftest green. WhiteHat LOW (33574) also flagged that the B2 fix's second new assertion passed even without the fix (a 4s gap vs. the 45s span check already rejected it on its own, independent of the clear).
+
+**Fix:** `store/quota-switchback.py`: `confirm_outage()`'s age filter is now two-sided (`0 <= (now - ts) <= max_age_sec`), rejecting a future-dated entry (negative age) the same way it rejects a stale one -- closing the clock-step bypass (a one-sided check lets a bogus future timestamp, from a forward-clock glitch that later corrects, count as perpetually fresh and manufacture an arbitrary span with an unrelated older reading). New `prune_stale_outage_probes()` applies the same two-sided rule to a whole probe_log. `store/quota-bridge.py`: `main()` now prunes the persisted `outage_probe_log` with this function right after `load_state()` (defense in depth at process start, on top of the existing per-call filtering); both the prune call and the `should_declare_outage()` call now pass `now=time.time()` explicitly (this module's own, overridable clock name) instead of relying on `quota_switchback`'s separate default, so a test driving the real `main()` only needs to override one clock. The B2 test's weak second assertion was tightened (the fresh reading now lands 600s after the stale tail instead of 4s, so an un-cleared log would wrongly confirm and a cleared one correctly does not).
+
+**Test:** `store/quota-switchback.selftest.py` (+2): a future-dated-entry case reproducing the one-sided bypass inline (as a literal mutant of the old condition, not a call into the fixed function) and the fixed function correctly rejecting it. `store/quota-bridge.selftest.py` (+11): a `main()`-driving harness (adapted from Cybered's own replay harness, `agents/cybered/handoff-artifacts/f490ae53/harness_f490_r2.py`) with positive/negative controls, the 600s and 30-day restart-leg cases, +1h/-1h clock-step cases, and two wiring mutants (`should_declare_outage` forced `True`, `record_outage_probe` no-op) that must turn the controls red. All new assertions mutation-checked by hand before posting (each one verified to flip red under the specific regression it claims to catch) except the load-time prune call, which is explicitly noted in-code as NOT independently pinned (confirm_outage's own per-call filtering already covers every tested scenario; the prune call is kept as the defense-in-depth Cybered asked for, not because a test distinguishes its absence). `python3 -I store/quota-switchback.selftest.py`: 33/33 green. `python3 -I store/quota-bridge.selftest.py`: 55/55 green. `python3 -m py_compile`: clean.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21334, Fix-Direction per Cybered NO-GO 33576 + WhiteHat LOW 33574). Gate: QA + Cybersec + Cybered. Gate-SHA: (see next commit, git rev-parse HEAD).
+
+## 2026-11-19: f490ae53: fix Cybersec NO-GO (load-time prune of outage_probe_log was itself a regression)
+
+**Problem:** the previous round's load-time `prune_stale_outage_probes()` call in `quota-bridge.py`'s `main()` -- added as explicitly-unpinned defense-in-depth on top of `confirm_outage()`'s own per-call age filter -- was itself a false-confirmation hole (Cybersec NO-GO on Gate-SHA 8b74003492f3c503c284958e2db3dc800546b734). `prune_stale_outage_probes()` filters the WHOLE persisted `outage_probe_log` by age, including healthy (`ok=True`) entries that serve as recovery boundaries in `confirm_outage()`'s backward walk. After a backward clock step followed by a restart, a healthy reading recorded (by the old, correct clock) chronologically AFTER an old down reading can look future-dated relative to the new, stepped-back "now" and get deleted outright -- permanently, since the pruned state is what gets saved back to disk. Deleting that boundary lets `confirm_outage()`'s backward scan reach PAST it into an even older down reading that still happens to look fresh enough under the age bound, merging it with one new probe into a false outage confirmation (demonstrated: `kills=1` with the prune present, `kills=0` with it removed, on the same repro driven through the real `main()`). `confirm_outage()`'s own per-call filtering already closes the plain restart leg (an old down reading + one fresh down, no healthy reading between) without any load-time pruning.
+
+**Fix:** `store/quota-bridge.py`: deleted the load-time `prune_stale_outage_probes()` call (and its surrounding comments) from `main()`; decision-time age filtering inside `should_declare_outage()`/`confirm_outage()` (unchanged) is the only age bound now. `store/quota-switchback.py`: deleted the now-unused `prune_stale_outage_probes()` function (no remaining callers, no independent unit test existed for it).
+
+**Test:** `store/quota-bridge.selftest.py` (+1, net 55->56): new case D4 reproduces the exact regression through the real `main()` -- a persisted log with an old down reading, a healthy reading, and a newer down reading (the healthy one future-dated relative to a stepped-back restart clock) plus one fresh probe, asserting `kills=0`. Mutation-verified by hand: re-adding the deleted prune call (and the deleted function) turns exactly this one assertion red (`kills=1`), all 55 others stay green. Updated the comment on the existing D-case (no longer references the removed call) and added an honest-note after the existing +1h/-1h clock-step cases (QA2 33606): those two do not independently exercise the two-sided direction of the age bound (verified: still `kills=0` under a one-sided mutant of `confirm_outage`'s filter) -- that direction is pinned separately at the pure-function level in `quota-switchback.selftest.py`. `python3 -I store/quota-switchback.selftest.py`: 33/33 green. `python3 -I store/quota-bridge.selftest.py`: 56/56 green. `python3 -m py_compile`: clean.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21353, Fix-Direction per WhiteHat). Gate: QA + Cybersec + Cybered. Gate-SHA: (see next commit, git rev-parse HEAD).
+
+## 2026-11-16 -- eaf56df5: hosszkorlát-tesztek + ESC a lapitando halmazba, U+001C-1E/tag karakterek mert dontessel kihagyva (e6b2742b RedHat GO kovetok)
+
+RedHat CYBERED GO az e6b2742b-n (komment 15294) ket LOW rest nevezett meg a scripts/hooks/shared-
+memory-inject.py inditó-kontextus lapitasán: 1. a keywords (200) es rovid mezok (64) hosszkorlatja
+nincs tesztben rogzitve (E14/E15 mutans zold); 2. a `_cap_and_flatten` nem lapitja a U+001C-U+001E,
+ESC (0x1B) es U+E0000 tag karaktereket -- merni kellett, okozhatnak-e sor-kitorest az inditó
+kontextusban.
+
+**1. pont javitasa:** ket uj teszt a session-memory-inject-own-curated.test.ts-ben, ami a tenyleges
+vagott+utotag kimenetet asserteli a valodi konstans-ertekeknel (keywords 200, rovid mezo 64).
+
+**2. pont mert valasz:** U+001C/1D/1E nem resze a VT100/ANSI vezerlo-grammatikanak, semelyik
+terminal (tmux/xterm/iTerm) nem nyit uj sort rajuk; Python sajat `str.splitlines()`-a hataroknak
+tekinti oket, de a script sosem hiv `.splitlines()`-t a memoria-tartalmon (grep-ellenorizve), tehat
+ez a tagabb definicio sosem fut ra ezekre az adatokra. DONTES: kimaradnak a lapitando halmazbol,
+teszttel rogzitve (a karakter lapitatlanul atmegy, pontosan egy sor marad). A tag-blokk
+(U+E0000-U+E007F): lathatatlan karakterek, nincs sor-kitoresi szemantikajuk semelyik renderelonel
+sem -- KULON, nem e kartyahoz tartozo injekcios osztaly (rejtett szoveg, nem hamis sor-kezdes),
+ugyanaz a hatarvonal amit RedHat sajat jegyzete mar meghuzott. DONTES: ugyanazon okbol kimarad,
+teszttel rogzitve. ESC (0x1B): MASKEPPEN -- nem maga sortores, de minden ANSI/VT100 kurzor-
+mozgato/sor-torlo escape-sorozat egybajtos BEVEZETOJE, es a flotta sajat tmux capture-pane/
+send-keys gepezete pontosan olyan ANSI-ismero terminal, amin egy ilyen sorozat mukodne, ha ez a
+szoveg kesobb egy terminalon at jelenik meg. Egy onallo ESC byte-nak nincs jogos hasznalata
+memoria-tartalomban, tehat olcso hatastalanitani ugyanugy, mint a tobbi karaktert (szokozre
+csereles, nincs szukseg sorozat-elemzesre). DONTES: bekerult a `_LINE_BREAK_CHARS`-ba, a meglevo
+7 osztaly osszes tesztjevel (content + keywords/agent_id/created_label + mutacio-proba) egyutt
+lefedve a kozos `LINE_BREAK_CASES` tombon keresztul.
+
+**Teszt:** `shared-memory-inject-provenance.test.ts` + `session-memory-inject-own-curated.test.ts`
+71/71 PASS. `tsc --noEmit` tiszta (a 3, korabbrol ismert, FUGGETLEN parse5-hianyos hibat
+leszamitva). `lint-ratchet.sh`: 441 lelet, baseline tartja. `python3 -c "import ast; ast.parse(...)"`:
+a hook forrasa tovabbra is szintaktikailag ervenyes. Mutacio-ellenorzes: a ket hosszkorlat
+1000-szeresre bontasa 2 tesztet buktat (pontosan a 2 uj korlat-teszt); az ESC eltavolitasa a
+`_LINE_BREAK_CHARS`-bol 4 tesztet buktat (content + a 3 OTHER_FIELDS eset). Mindket mutans
+visszaallitva, ismet zold.
+
+**Ki döntött:** RedHat CYBERED GO (e6b2742b, komment 15294) adta a fix-iranyt es a merendo
+kerdest; backend2 vegezte a merest/dontest/javitast. Gate: QA + Cybersec (a kartya sajat
+kijelolese).
+
+## 2026-11-16 -- 6b7a606d: watchdog.sh REFUSEs on a checker exit other than 0/1
+
+RedHat LOW on ae5af304 (msg 19513): agent_launch_env's --bad-content-characters and
+--same-as-fleet-token sub-calls used a bare `if CMD; then`, collapsing every non-zero exit
+(1 = legitimate no-match, but also 2, a kill signal, or a crash) into the same "no match"
+branch -- a checker crash on either call could again let a corrupted own-token file through.
+Fixed by capturing the exit code explicitly: only exit 1 means no-match now, anything else
+REFUSEs as checker-failed.
+
+Rebased onto current develop (base 92db6b69a) instead of the earlier, now-stale f5a3de9b9
+attempt: develop already carries the checker-side crash-safety fix (card bc32d233,
+oauth_token_file_check.py) via a different, equivalent-or-stronger mechanism
+(`errors="replace"` plus a generic fail-closed-on-any-exception in both CLI branches) than the
+decode-maps-to-exit-0/other-exceptions-map-to-exit-2 split this card's earlier attempt
+(d816ef444) used independently -- confirmed no residual gap by diffing scripts/watchdog.sh
+against the earlier e0e56cfaa attempt (empty diff, same fix) and
+scripts/lib/oauth_token_file_check.py against the earlier c75524f91 attempt (bc32d233's version
+is a superset of the same guarantee). Only the watchdog.sh-side fence was actually missing from
+develop; the checker-side fence had already landed under bc32d233.
+
+**Mérés:** scripts/__tests__/watchdog-config-isolation.test.sh, 4 new cases (55-58, renumbered
+from the earlier attempt's 53-56 to sit after the already-landed 53-54): a stub checker exits 2
+/ is killed by SIGKILL on each sub-call while behaving normally for the main resolve() call.
+Mutation-proven: reverting watchdog.sh's fix flips exactly 55/56/57 red (the exact fail-open
+reproduced), #58 pins the exit-0/exit-1 behaviour stays unchanged. Full suite: 68/68 green with
+the fix, 65/68 (3 red) reverted.
+
+**Ki döntött:** RedHat lelete (msg 19513) alapján backend javítja. Gate: QA + Cybered.
+
+## 2026-11-16 -- 2ec21127 rebase: Cybered NO-GO fix + egy fuggetlen timeout-flake javitas
+
+**Dontes:** a 2ec21127 (CLAUDE.md base-prompt diet) rebase utani CYBERED NO-GO (komment 32333) ket
+dolgot talalt: (1) develop sajat `scripts/claude-md-split-reachability-check.selftest.py`-ja (a
+cc72cb3e 6791d3f88 kommitja altal keszitett, keményebb verzio) egy esete, `update-baseline-reword-
+index`, a 4. szabaly INDEX-bullet-jeben akarta atirni "a készítő SOHA nem ellenőrzi a sajátját"
+szoveget -- ez a diet altal mar elvett magyarazo-prozahoz tartozott, tehat a shortened CLAUDE.md-ben
+mar nincs ott, es a feltetlen `replace_once` AssertionError-ral a teljes selftestet elszakitotta.
+Javitas: a CLAUDE.md-oldali csere feltetelesse valt (csak ha a szoveg tenyleg ott van), a docs/rules-
+oldali csere maradt, a teszt celja (a conservation-reword workflow) valtozatlan. 30/30 zold utana.
+
+(2) Fuggetlenul a rebase-tol, MikroB jelzese (uzenet 19800) alapjan: a `claude-md-split-reachability.
+test.ts` ugyanazon tesztje (a 10 RedHat-mutans + in-place-weakening kontroll) idotullepett DevO
+`d66b7681` landolasan is, 7-8 parhuzamos fleet-test suite alatt. Kozvetlenul merve (nem vitesten at):
+a selftest ONMAGABAN 29.3 masodpercet vett igenybe a mostani valodi egyidejű terheles alatt (load
+average ~5) -- mar a regi 30000ms keret SZELEN, a vitest sajat folyamat-inditasi rafordulasa nelkul
+is. Javitas: a teszt sajat timeout-ja 30000 -> 90000 ms (3x a mert, terhelt futasido), SEMMI mas nem
+valtozott (ugyanaz a 30 eset, ugyanazok a mutansok). A valodi atereszto-kepesseg-problemat (egy
+kozos fa/lock minden futast sorba allit, fuggetlenul a fajl-kortol) a c5ff36bf kartya oldja meg
+(naplozas-only commit mar bent, QA-ra var); ez itt egy lokalis, surgical patch, hogy ez a teszt addig
+ne flakeljen a mar ismert gyokerok miatt.
+
+**Ellenorzes:** `scripts/claude-md-split-reachability-check.selftest.py` kozvetlenul futtatva 30/30;
+`fleet-test.sh --ref <uj sha> src/__tests__/claude-md-split-reachability.test.ts` ketszer lefuttatva
+a vegso tippen, mindket alkalommal 2/2 zold (29.73s, bo margoval a 90s alatt).
+
+**Ki döntött:** Cybered NO-GO (komment 32333) + MikroB kovetkezo-lepes (uzenet 19800/19805).
+backend3 vegezte. Gate: QA + Cybersec + Cybered (delta re-gate, csak a rebase-mechanika + ez a ket
+javitas, nem teljes suite).
+
+## 2026-11-19 -- 2ec21127: Token 8 land refused on develop drift, fixed (CLAUDE.md 4g/22a-22e merge + reachability-test timeout)
+
+Land attempt (marveen-land.sh --card 2ec21127 --agent backend3) was REFUSED on CONFLICTS merging
+card tip a81e5a8e into a fresh origin/develop: CLAUDE.md, DECISIONS.md,
+src/__tests__/claude-md-split-reachability.test.ts. Root cause: develop gained rule 4g and
+sub-rules 22a-22e (with short clauses) after this card's own base-prompt-diet pass touched the
+same index -- this card's HEAD already carried 22a-22e in an even terser (bold+link-only) form but
+was missing 4g entirely, and the reachability test's timeout constant diverged (develop still had
+an older 26-case/60000ms measurement from card 517ba7f6, superseded by this card's own 30-case/
+90000ms measurement from 2026-11-16, card 2ec21127 itself, msg 19800).
+
+Fix: merged origin/develop into card/2ec21127. CLAUDE.md: added rule 4g in the branch's own
+terse style (bold title + link, no prose clause, matching 22a-22e's existing style on this
+branch), corrected the sub-rule count line from "37 sor" to "43 sor" (22 main + 21 lettered subs,
+matching develop's own stated total once 4g is counted). claude-md-split-reachability.test.ts:
+kept this branch's 90000ms/30-case version (newer, supersedes develop's). DECISIONS.md: both
+sides append-only, unioned theirs-first via store/decisions-sync-resolve.sh (rc=0 on
+--check-last-merge). One unrelated clean auto-merge: src/__tests__/dismiss-feedback-draft-modal-retry.test.ts
+deleted on develop (not touched on this branch), deletion accepted (standard 3-way merge rule,
+no conflict).
+
+**Mérés:** tsc --noEmit on the merge result: clean. vitest run
+claude-md-split-reachability.test.ts: 1 Test File passed (1), 2 Tests passed (2), 29.84s (under
+the 90000ms budget, consistent with this branch's own measurement). secret-gate PASS, 351 files.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 912955f06f119feb9fe4bcc840c23c6860fc61fc (merge commit,
+sha copied via `git rev-parse HEAD`, not retyped). Gate: QA + Cybered + Cybersec + Cybersec2
+per the card's designated set (all four already agreed on a81e5a8e) -- needs a fresh verdict on
+this sha before landing.
+
+## 2026-11-19 -- 2ec21127: CYBERED NO-GO fix -- rule 4g's index bullet lost the Gate-SHA: token
+
+RedHat NO-GO (komment 33823) on fca1ecead: the terse rewrite of rule 4g's index bullet in CLAUDE.md
+dropped the "Cél: ... Gate-SHA: ... TÉNYLEGESEN…" clause, losing the verbatim `Gate-SHA:` protocol
+token the top-of-file rule requires, and making the bullet fail
+scripts/claude-md-index-shrink-check.py's verbatim-substring check against
+docs/rules/munkavegzesi-szabalyok.md (the composed replacement clause was not an exact quote of
+the source file). Fix: restored develop's own exact 4g line byte-for-byte (including the ellipsis
+character, not a period) instead of composing a new clause.
+
+**Mérés:** scripts/claude-md-index-shrink-check.py origin/develop CLAUDE.md: "RESULT: OK" (0
+missing bullets, 0 changed bold titles, 0 moved/lost protocol tokens). vitest run
+claude-md-split-reachability.test.ts: 2 Tests passed (2). tsc --noEmit: clean.
+
+**Ki döntött:** RedHat lelet (CYBERED NO-GO 33823), backend3 javítás. Gate-SHA:
+a04d3410ad9fd6388169c6409a81c43074d2c3ba (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
+Cybered + Cybersec + Cybersec2, delta re-gate ezen a shán (MikroB üzenet 21446: "one-line
+CLAUDE.md-only re-gate follows").
+
 ## 2026-11-15 -- kg-search.selftest.sh leak-check scope (card afc0d569)
 
 MikroB merese: a F1 leak-check `grep -slF ... /tmp/tmp.*` alakja a teljes rendszer `/tmp`-et

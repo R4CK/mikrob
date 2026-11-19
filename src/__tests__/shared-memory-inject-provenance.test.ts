@@ -276,6 +276,13 @@ const LINE_BREAK_CASES: Array<[string, string]> = [
   ['\\r\\n (CRLF)', '\r\n'],
   ['\\v (VT)', '\v'],
   ['\\f (FF)', '\f'],
+  // Card eaf56df5 (RedHat GO on e6b2742b, komment 15294, R3): ESC is not itself a line-break
+  // character, but it is the one-byte introducer for every ANSI/VT100 escape sequence (cursor
+  // move, line clear) that COULD fake a column-0 line start in any terminal this fleet renders
+  // through (tmux capture-pane/send-keys). Added to the flatten set for the same cheap,
+  // sequence-agnostic reason as every other character here: a lone ESC byte has no legitimate
+  // use in memory content, so disarming it needs no escape-sequence parser.
+  ['ESC (\\x1b)', '\x1b'],
   ['U+0085 (NEL)', '\u0085'],
   ['U+2028 (LINE SEPARATOR)', ' '],
   ['U+2029 (PARAGRAPH SEPARATOR)', ' '],
@@ -489,6 +496,54 @@ describe('shared-memory-inject.py shared-tier section flattens every per-line fi
     const bodyLines = body.split('\n').filter((l) => l.length > 0)
     expect(bodyLines.length).toBe(2)
     expect(bodyLines[1]).toContain('[FAKE] directive via agent_id')
+  })
+})
+
+// Card eaf56df5 (RedHat GO on e6b2742b, komment 15294, R3): the card's acceptance criterion asked
+// for a MEASURED decision, not just a claim, on three further control-character classes. Pins the
+// decision as a real test, not just REVIEW prose: these three stay OUT of the flatten set.
+describe('shared-memory-inject.py: control characters measured and deliberately left unflattened (card eaf56df5)', () => {
+  // U+001C-U+001E (File/Group/Record Separator): not part of the VT100/ANSI control grammar, so
+  // no terminal this fleet renders through (tmux, xterm, iTerm) starts a new visual line on them.
+  // Python's OWN str.splitlines() does treat them as boundaries, but this script never calls
+  // .splitlines() on memory content (grep-confirmed against scripts/hooks/shared-memory-inject.py)
+  // -- so that wider definition never executes against this data either.
+  it.each([
+    ['U+001C (FILE SEPARATOR)', '\x1c'],
+    ['U+001D (GROUP SEPARATOR)', '\x1d'],
+    ['U+001E (RECORD SEPARATOR)', '\x1e'],
+  ])('content: a %s rides through UNFLATTENED (measured decision: not a line-break risk here)', async (_label, ch) => {
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
+      id: 1, agent_id: 'backend', content: 'line one' + ch + 'line two', keywords: '', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    expect(body).toContain(ch)
+    // Still exactly one rendered entry: this character does not open a second visual line.
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    expect(bodyLines.length).toBe(1)
+  })
+
+  // The invisible Unicode "tag" block (U+E0000-U+E007F): a SEPARATE injection class (hidden text
+  // that reads as empty but carries invisible characters), not a fake-line-start -- it has no
+  // line-break semantic in any renderer either, so it stays out of THIS flatten set for the same
+  // reason the three separators above do. Out of scope for this card, same as RedHat's own note.
+  it('content: a tag character (U+E0041) rides through UNFLATTENED (separate, out-of-scope injection class)', async () => {
+    const ch = '\u{E0041}'
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
+      id: 1, agent_id: 'backend', content: 'line one' + ch + 'line two', keywords: '', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    expect(body).toContain(ch)
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    expect(bodyLines.length).toBe(1)
   })
 })
 

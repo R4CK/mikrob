@@ -89,20 +89,20 @@ describe('POST /api/kanban/:id/breakdown/accept -- subtask assignee', () => {
   const accept = (subtasks: unknown[]) => call('POST', '/api/kanban/parent-1/breakdown/accept', { subtasks })
 
   it("a subtask with a null assignee inherits the parent's", async () => {
-    createKanbanCard({ id: 'parent-1', title: 'Parent', assignee: 'dex' })
+    createKanbanCard({ id: 'parent-1', title: 'Parent', assignee: 'dex', project: 'test' })
     const out = await accept([{ title: 'Child', description: '', assignee: null, priority: 'normal' }])
     expect(out.status).toBe(200)
     expect(getKanbanCard(out.body.created[0])?.assignee).toBe('dex')
   })
 
   it('an explicit subtask assignee is kept, not overwritten by the parent', async () => {
-    createKanbanCard({ id: 'parent-1', title: 'Parent', assignee: 'dex' })
+    createKanbanCard({ id: 'parent-1', title: 'Parent', assignee: 'dex', project: 'test' })
     const out = await accept([{ title: 'Child', description: '', assignee: 'orin', priority: 'normal' }])
     expect(getKanbanCard(out.body.created[0])?.assignee).toBe('orin')
   })
 
   it('with no assignee on either side the child stays unassigned', async () => {
-    createKanbanCard({ id: 'parent-1', title: 'Parent' })
+    createKanbanCard({ id: 'parent-1', title: 'Parent', project: 'test' })
     await accept([{ title: 'Child', description: '', assignee: null, priority: 'normal' }])
     const [child] = getChildCards('parent-1')
     expect(child.assignee ?? null).toBeNull()

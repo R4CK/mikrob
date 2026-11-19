@@ -307,6 +307,36 @@ describe('shared-memory-inject.py own-curated-memory section (card 5a4bea2e part
     expect(ownSection).toContain('tiny tail entry')
   })
 
+  // Card eaf56df5 (RedHat GO, e6b2742b follow-up, komment 15294): the content cap (400) was
+  // already pinned by the test above ('y'.repeat(600) truncated test), but keywords (200) and
+  // the short fields (64, who/when/category) were not -- RedHat's own mutation sweep (E14/E15)
+  // bumped both constants 1000x and all 60 existing tests stayed green.
+  it('caps keywords at OWN_CURATED_MAX_KEYWORDS_CHARS (200), not left unbounded (E14)', async () => {
+    const { dir, script } = sandboxRoot(['fullstack'])
+    const longKeywords = 'k'.repeat(1000)
+    const mem = [{ id: 1, content: 'short content', category: 'hot', keywords: longKeywords, created_label: '2026-01-01' }]
+    const r = await runHook(script, '/home/neon/marveen/agents/fullstack', CARD, mem, dir)
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const ownSection = ctx.slice(ctx.indexOf('KURÁLT MEMÓRIA'))
+    expect(ownSection).not.toContain(longKeywords)
+    expect(ownSection).toContain('k'.repeat(200) + '…(+800 karakter)')
+  })
+
+  it('caps the short fields (who/when/category) at OWN_CURATED_MAX_SHORT_FIELD_CHARS (64), not left unbounded (E15)', async () => {
+    const { dir, script } = sandboxRoot(['fullstack'])
+    const longAgentId = 'a'.repeat(1000)
+    const mem = [{ id: 1, content: 'short content', category: 'hot', keywords: '', agent_id: longAgentId, created_label: '2026-01-01' }]
+    const r = await runHook(script, '/home/neon/marveen/agents/fullstack', CARD, mem, dir)
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const ownSection = ctx.slice(ctx.indexOf('KURÁLT MEMÓRIA'))
+    expect(ownSection).not.toContain(longAgentId)
+    expect(ownSection).toContain('a'.repeat(64) + '…(+936 karakter)')
+  })
+
   it('respects the token budget: a huge memory list is truncated rather than overshooting', async () => {
     const { dir, script } = sandboxRoot(['fullstack'])
     const huge = Array.from({ length: 20 }, (_, i) => ({

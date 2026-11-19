@@ -29,7 +29,7 @@ describe('POST /api/kanban -- the reported id is the stored id', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
   it('echoes the CALLER-supplied id, and that id resolves to a real card', async () => {
-    const { ctx, out } = postCtx({ id: 'juta-olvashato-slug', title: 'Slug card' })
+    const { ctx, out } = postCtx({ id: 'juta-olvashato-slug', title: 'Slug card', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.body.id).toBe('juta-olvashato-slug')
     // the load-bearing half: the reported id must resolve
@@ -37,7 +37,7 @@ describe('POST /api/kanban -- the reported id is the stored id', () => {
   })
 
   it('generates an id when none is supplied, and that id resolves too', async () => {
-    const { ctx, out } = postCtx({ title: 'Generated card' })
+    const { ctx, out } = postCtx({ title: 'Generated card', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(typeof out.body.id).toBe('string')
     expect(out.body.id.length).toBeGreaterThan(0)
@@ -45,7 +45,7 @@ describe('POST /api/kanban -- the reported id is the stored id', () => {
   })
 
   it('ignores a blank supplied id rather than storing an empty key', async () => {
-    const { ctx, out } = postCtx({ id: '   ', title: 'Blank id card' })
+    const { ctx, out } = postCtx({ id: '   ', title: 'Blank id card', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.body.id.trim()).not.toBe('')
     expect(getKanbanCard(out.body.id)?.title).toBe('Blank id card')
