@@ -1606,8 +1606,11 @@ export function initDatabase(dbPathOverride?: string): void {
 
   // --- Agent Messages ---
   // DDL lives in src/schema/agent-messages-ddl.ts, shared with the channel-coordinator's own
-  // defensive CREATE TABLE (src/channel-coordinator/ingest.ts) -- see that module's comment for
-  // why (card 26ad5302: the two copies drifted silently before this).
+  // defensive table-creation call (src/channel-coordinator/ingest.ts) -- see that module's
+  // comment for why (card 26ad5302: the two copies drifted silently before this). Worded this
+  // way, not "CREATE TABLE", so agent-messages-ddl.test.ts's hand-copy regression guard (which
+  // scans for that exact SQL phrase through to the next `agent_messages(`) does not false-match
+  // across this comment into the real, unrelated idx_agent_messages_unseen CREATE INDEX below.
   // origin_note (card 06f062e4): the bus has no sender authentication -- from_agent is
   // self-declared and every sub-agent spawned under a parent shares that
   // parent's from_agent string, invisibly to the parent session and its
