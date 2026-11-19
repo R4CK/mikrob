@@ -28659,3 +28659,82 @@ reproduced), #58 pins the exit-0/exit-1 behaviour stays unchanged. Full suite: 6
 the fix, 65/68 (3 red) reverted.
 
 **Ki döntött:** RedHat lelete (msg 19513) alapján backend javítja. Gate: QA + Cybered.
+
+## 2026-11-16 -- 2ec21127 rebase: Cybered NO-GO fix + egy fuggetlen timeout-flake javitas
+
+**Dontes:** a 2ec21127 (CLAUDE.md base-prompt diet) rebase utani CYBERED NO-GO (komment 32333) ket
+dolgot talalt: (1) develop sajat `scripts/claude-md-split-reachability-check.selftest.py`-ja (a
+cc72cb3e 6791d3f88 kommitja altal keszitett, keményebb verzio) egy esete, `update-baseline-reword-
+index`, a 4. szabaly INDEX-bullet-jeben akarta atirni "a készítő SOHA nem ellenőrzi a sajátját"
+szoveget -- ez a diet altal mar elvett magyarazo-prozahoz tartozott, tehat a shortened CLAUDE.md-ben
+mar nincs ott, es a feltetlen `replace_once` AssertionError-ral a teljes selftestet elszakitotta.
+Javitas: a CLAUDE.md-oldali csere feltetelesse valt (csak ha a szoveg tenyleg ott van), a docs/rules-
+oldali csere maradt, a teszt celja (a conservation-reword workflow) valtozatlan. 30/30 zold utana.
+
+(2) Fuggetlenul a rebase-tol, MikroB jelzese (uzenet 19800) alapjan: a `claude-md-split-reachability.
+test.ts` ugyanazon tesztje (a 10 RedHat-mutans + in-place-weakening kontroll) idotullepett DevO
+`d66b7681` landolasan is, 7-8 parhuzamos fleet-test suite alatt. Kozvetlenul merve (nem vitesten at):
+a selftest ONMAGABAN 29.3 masodpercet vett igenybe a mostani valodi egyidejű terheles alatt (load
+average ~5) -- mar a regi 30000ms keret SZELEN, a vitest sajat folyamat-inditasi rafordulasa nelkul
+is. Javitas: a teszt sajat timeout-ja 30000 -> 90000 ms (3x a mert, terhelt futasido), SEMMI mas nem
+valtozott (ugyanaz a 30 eset, ugyanazok a mutansok). A valodi atereszto-kepesseg-problemat (egy
+kozos fa/lock minden futast sorba allit, fuggetlenul a fajl-kortol) a c5ff36bf kartya oldja meg
+(naplozas-only commit mar bent, QA-ra var); ez itt egy lokalis, surgical patch, hogy ez a teszt addig
+ne flakeljen a mar ismert gyokerok miatt.
+
+**Ellenorzes:** `scripts/claude-md-split-reachability-check.selftest.py` kozvetlenul futtatva 30/30;
+`fleet-test.sh --ref <uj sha> src/__tests__/claude-md-split-reachability.test.ts` ketszer lefuttatva
+a vegso tippen, mindket alkalommal 2/2 zold (29.73s, bo margoval a 90s alatt).
+
+**Ki döntött:** Cybered NO-GO (komment 32333) + MikroB kovetkezo-lepes (uzenet 19800/19805).
+backend3 vegezte. Gate: QA + Cybersec + Cybered (delta re-gate, csak a rebase-mechanika + ez a ket
+javitas, nem teljes suite).
+
+## 2026-11-19 -- 2ec21127: Token 8 land refused on develop drift, fixed (CLAUDE.md 4g/22a-22e merge + reachability-test timeout)
+
+Land attempt (marveen-land.sh --card 2ec21127 --agent backend3) was REFUSED on CONFLICTS merging
+card tip a81e5a8e into a fresh origin/develop: CLAUDE.md, DECISIONS.md,
+src/__tests__/claude-md-split-reachability.test.ts. Root cause: develop gained rule 4g and
+sub-rules 22a-22e (with short clauses) after this card's own base-prompt-diet pass touched the
+same index -- this card's HEAD already carried 22a-22e in an even terser (bold+link-only) form but
+was missing 4g entirely, and the reachability test's timeout constant diverged (develop still had
+an older 26-case/60000ms measurement from card 517ba7f6, superseded by this card's own 30-case/
+90000ms measurement from 2026-11-16, card 2ec21127 itself, msg 19800).
+
+Fix: merged origin/develop into card/2ec21127. CLAUDE.md: added rule 4g in the branch's own
+terse style (bold title + link, no prose clause, matching 22a-22e's existing style on this
+branch), corrected the sub-rule count line from "37 sor" to "43 sor" (22 main + 21 lettered subs,
+matching develop's own stated total once 4g is counted). claude-md-split-reachability.test.ts:
+kept this branch's 90000ms/30-case version (newer, supersedes develop's). DECISIONS.md: both
+sides append-only, unioned theirs-first via store/decisions-sync-resolve.sh (rc=0 on
+--check-last-merge). One unrelated clean auto-merge: src/__tests__/dismiss-feedback-draft-modal-retry.test.ts
+deleted on develop (not touched on this branch), deletion accepted (standard 3-way merge rule,
+no conflict).
+
+**Mérés:** tsc --noEmit on the merge result: clean. vitest run
+claude-md-split-reachability.test.ts: 1 Test File passed (1), 2 Tests passed (2), 29.84s (under
+the 90000ms budget, consistent with this branch's own measurement). secret-gate PASS, 351 files.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 912955f06f119feb9fe4bcc840c23c6860fc61fc (merge commit,
+sha copied via `git rev-parse HEAD`, not retyped). Gate: QA + Cybered + Cybersec + Cybersec2
+per the card's designated set (all four already agreed on a81e5a8e) -- needs a fresh verdict on
+this sha before landing.
+
+## 2026-11-19 -- 2ec21127: CYBERED NO-GO fix -- rule 4g's index bullet lost the Gate-SHA: token
+
+RedHat NO-GO (komment 33823) on fca1ecead: the terse rewrite of rule 4g's index bullet in CLAUDE.md
+dropped the "Cél: ... Gate-SHA: ... TÉNYLEGESEN…" clause, losing the verbatim `Gate-SHA:` protocol
+token the top-of-file rule requires, and making the bullet fail
+scripts/claude-md-index-shrink-check.py's verbatim-substring check against
+docs/rules/munkavegzesi-szabalyok.md (the composed replacement clause was not an exact quote of
+the source file). Fix: restored develop's own exact 4g line byte-for-byte (including the ellipsis
+character, not a period) instead of composing a new clause.
+
+**Mérés:** scripts/claude-md-index-shrink-check.py origin/develop CLAUDE.md: "RESULT: OK" (0
+missing bullets, 0 changed bold titles, 0 moved/lost protocol tokens). vitest run
+claude-md-split-reachability.test.ts: 2 Tests passed (2). tsc --noEmit: clean.
+
+**Ki döntött:** RedHat lelet (CYBERED NO-GO 33823), backend3 javítás. Gate-SHA:
+a04d3410ad9fd6388169c6409a81c43074d2c3ba (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
+Cybered + Cybersec + Cybersec2, delta re-gate ezen a shán (MikroB üzenet 21446: "one-line
+CLAUDE.md-only re-gate follows").
