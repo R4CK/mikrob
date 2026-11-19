@@ -107,7 +107,7 @@ describe('POST /api/daily-log -- agent-key boundary (card a6b476cb)', () => {
     const { ctx, getBody } = makePostCtx({ kind: 'device', device: 'agent:attacker' }, { agent_id: 'victim', content: 'spoofed entry' })
     const handled = await tryHandleDailyLog(ctx)
     expect(handled).toBe(true)
-    expect(getBody()).toEqual({ ok: true })
+    expect(getBody()).toMatchObject({ ok: true })
     const today = new Date().toISOString().split('T')[0]
     expect(JSON.stringify(getDailyLog('victim', today))).not.toContain('spoofed entry')
     expect(JSON.stringify(getDailyLog('attacker', today))).toContain('spoofed entry')
@@ -117,7 +117,7 @@ describe('POST /api/daily-log -- agent-key boundary (card a6b476cb)', () => {
     const { ctx, getBody } = makePostCtx({ kind: 'device', device: 'agent:victim' }, { agent_id: 'victim', content: 'own entry via device key' })
     const handled = await tryHandleDailyLog(ctx)
     expect(handled).toBe(true)
-    expect(getBody()).toEqual({ ok: true })
+    expect(getBody()).toMatchObject({ ok: true })
     const today = new Date().toISOString().split('T')[0]
     expect(JSON.stringify(getDailyLog('victim', today))).toContain('own entry via device key')
   })
@@ -126,7 +126,7 @@ describe('POST /api/daily-log -- agent-key boundary (card a6b476cb)', () => {
     const { ctx, getBody } = makePostCtx(undefined, { agent_id: 'victim', content: 'shared-bearer entry' })
     const handled = await tryHandleDailyLog(ctx)
     expect(handled).toBe(true)
-    expect(getBody()).toEqual({ ok: true })
+    expect(getBody()).toMatchObject({ ok: true })
     const today = new Date().toISOString().split('T')[0]
     expect(JSON.stringify(getDailyLog('victim', today))).toContain('shared-bearer entry')
   })

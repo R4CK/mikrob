@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, unlinkSync, mkdtempSync } from 'node:fs'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
+import { degradedOrchestratorRefusal } from '../degraded-orchestrator-guard.js'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -27,10 +28,12 @@ import {
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
+  feedbackDraftDismissPlan,
   firstRunAcceptKeys,
   mcpTrustAcceptKeys,
   devChannelsAcceptKeys,
   detectsBlockingMenu,
+  typedTailEchoed,
   detectsHeldPeerMessage,
   type FirstRunGateKind,
 } from '../pane-state.js'
@@ -67,7 +70,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction } from './channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, resolveContinueTimeoutAction, type ContinueVerifyOutcome, type ContinueTimeoutAction } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
@@ -180,6 +183,80 @@ const lifecycleInFlight = new Map<string, LifecycleEntry>()
 // 'timeout', confirms the agent's CURRENT generation still matches -- if a stop or a newer start
 // happened in between, the fallback is skipped: the current state is no longer this call's business.
 const agentLaunchGeneration = new Map<string, symbol>()
+
+/** Test-only: read the current launch-generation token without exporting the Map itself. */
+export function __getAgentLaunchGenerationForTest(name: string): symbol | undefined {
+  return agentLaunchGeneration.get(name)
+}
+
+/**
+ * Card eb26a3e4 point 2 (measured): stopAgentProcessUnlocked bumps the generation, but only
+ * on the ROUTER's own stop path, and only when the agent was detected running. Measured by
+ * reading every tmux kill-session call site against a role agent's session: scripts/stop.sh only
+ * ever targets the MAIN agent's own session (`${SLUG}-channels`), which is already excluded from
+ * this mechanism (`name !== MAIN_AGENT_ID`) -- not a gap. channel-monitor.ts's watchdog restart
+ * routes through stopAgentProcess+startAgentProcess(fresh:true), so both ends already bump.
+ * reauth-healer.ts's restartFirstRunGatedAgent IS a real gap: it kills a role agent's session
+ * directly via execFile, with no generation bump, then relaunches ~1s later -- if that relaunch
+ * is slow or fails, a stale --continue verify callback from an EARLIER launch could read the
+ * generation as unchanged and wrongly relaunch-fresh, undoing the healer's own stop. Exported so
+ * that one call site (not a copy of `.set(name, Symbol())`) covers it.
+ */
+export function bumpAgentLaunchGeneration(name: string): void {
+  agentLaunchGeneration.set(name, Symbol())
+}
+
+/**
+ * Card 2b2fbabc MEDIUM-1 (Cybersec GO, follow-up card 56344ff4): the --continue verify callback's
+ * post-resolve tail (log-and-return for 'kept'/'skip-stopped', kill+relaunch-fresh otherwise) used
+ * to live inline in the `.then()` at the resume call site, pinned only by a source-text check on
+ * the `action === 'skip-stopped'` condition -- which cannot tell a branch WITH its `return` from
+ * one without it (Y11), nor catch the generation arguments being passed in the wrong order at the
+ * call site (Y2: `hasLaunchGenerationChanged(current, capturedAtLaunch)` reads as "unchanged" when
+ * `current` is itself the captured value, resurrecting the F1 bug this generation check exists to
+ * close). Extracted so both are real, directly-callable behaviour instead of text a mutant can
+ * flip unnoticed. The current generation is looked up HERE, from the one map, rather than taken
+ * as a second caller-supplied symbol -- a call site can no longer pass the captured value for
+ * "current" (Y2), because there is no longer a second symbol parameter to mix up with it.
+ * `deps` is test-only DI: `startAgentProcess`/`killSession` are the real ones by default (the
+ * production call site passes neither), and a test stubs them to observe which one ran without
+ * needing to mock this whole module from outside (an ES-module self-call a `vi.mock` on the
+ * exports object cannot intercept).
+ */
+export async function applyContinueVerifyOutcome(
+  name: string,
+  session: string,
+  v: { outcome: ContinueVerifyOutcome; polls: number; elapsedMs: number },
+  capturedAtLaunch: symbol,
+  deps: {
+    startAgentProcess?: (name: string, opts?: { fresh?: boolean }) => Promise<{ ok: boolean; pid?: number; error?: string }>
+    killSession?: (name: string, session: string) => void
+  } = {},
+): Promise<ContinueTimeoutAction> {
+  const doStart = deps.startAgentProcess ?? startAgentProcess
+  const doKill = deps.killSession ?? ((n: string, s: string) => {
+    try { runTmux(agentTmuxTarget(n), ['kill-session', '-t', exactTmuxTarget(s)], { timeout: 5000 }) } catch { /* already gone */ }
+  })
+
+  const action = resolveContinueTimeoutAction(v.outcome, agentLaunchGeneration.get(name), capturedAtLaunch)
+  if (action === 'kept') {
+    logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
+    return action
+  }
+  if (action === 'skip-stopped') {
+    logger.info({ name, session }, 'resumed channel agent: a stop or a newer start happened during the verify window -- skipping fresh fallback')
+    return action
+  }
+  logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
+  doKill(name, session)
+  try {
+    const r = await doStart(name, { fresh: true })
+    logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
+  } catch (err) {
+    logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
+  }
+  return action
+}
 
 /** Exported for tests: how many agents currently have an operation in flight. */
 export function lifecycleInFlightCount(): number {
@@ -648,6 +725,7 @@ export function ensureIsolatedChannelConfigDir(
 //   - returns null (caller keeps the shared root) whenever not applicable.
 export function ensureMainAgentIsolatedConfigDir(
   provider?: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for call-site symmetry with the sub-agent path; genuinely unused, see "any platform" note above
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   let enabled = false
@@ -2200,7 +2278,6 @@ export function sessionExistsOnHost(host: string | null, session: string): boole
 export function getAgentRunningSince(name: string, session: string = agentSessionName(name)): number | null {
   try {
     const target = agentTmuxTarget(name)
-    const host = target.host
     const out = captureTmux(target, ['display-message', '-p', '-t', exactTmuxTarget(session), '#{session_created}']).trim()
     const ts = parseInt(out, 10)
     return Number.isFinite(ts) ? ts : null
@@ -2356,7 +2433,20 @@ export function isClaudeAgent(model: string, customProviderId: string | null | u
   return !customProviderId && model.startsWith('claude-')
 }
 
-async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function startAgentProcessUnlocked(
+  name: string,
+  opts: { fresh?: boolean; force?: boolean; actor?: string } = {}
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  // Card d5638d28 round 2 (CYBERED NO-GO 32207 F1, MikroB Fix-Direction 32209 #1): the ONE shared
+  // check for every agent-start path, enforced here so EVERY caller (routes/agents.ts /start AND
+  // /restart's underlying restartAgentProcess-that-starts-a-stopped-agent case, auto-restart-runner,
+  // schedule-runner, channel-monitor, model-fallback-runner, context-guard-runner, reauth-healer,
+  // claude-plan-fleet-wiring, routes/claude-plans.ts, and the two in-file restart branches in
+  // routes/agents.ts at the channel-config PUT handlers) is covered by construction, not by
+  // remembering to call it at each site. No caller except an explicit owner override passes
+  // force/actor, so every internal/automated path refuses while degraded, same as a manual one.
+  const refusal = degradedOrchestratorRefusal('agent start', opts.force === true, opts.actor)
+  if (refusal) return { ok: false, error: refusal }
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
 
@@ -3278,26 +3368,8 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
             probeExtraPluginsInTree(pid, extraLaunch.providers),
           ])
         },
-      }).then(async (v) => {
-        const generationChanged = agentLaunchGeneration.get(name) !== myLaunchGeneration
-        const action = decideContinueTimeoutAction(v.outcome, generationChanged)
-        if (action === 'kept') {
-          logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
-          return
-        }
-        if (action === 'skip-stopped') {
-          logger.info({ name, session }, 'resumed channel agent: a stop or a newer start happened during the verify window -- skipping fresh fallback')
-          return
-        }
-        logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
-        try { runTmux(agentTmuxTarget(name), ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }) } catch { /* already gone */ }
-        try {
-          const r = await startAgentProcess(name, { fresh: true })
-          logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
-        } catch (err) {
-          logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
-        }
-      }).catch((err) => logger.error({ err, name }, 'resume verification crashed'))
+      }).then((v) => applyContinueVerifyOutcome(name, session, v, myLaunchGeneration))
+        .catch((err) => logger.error({ err, name }, 'resume verification crashed'))
     }
 
     // EPERM /tmp-fallback (2026-06-30, mirrors scripts/channels.sh:233+): on
@@ -3429,12 +3501,15 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
 
 async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
-  if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
-  // Card 466f21fe F1: bump the launch generation on every stop, same as on every start -- an
-  // in-flight --continue verify callback checks this before acting on a timeout, so a stop that
-  // lands mid-window is not undone by that callback's own fresh-fallback. See the Map's comment.
+  // Card 466f21fe F1 / eb26a3e4 F2 follow-up (2b2fbabc): bump the launch generation BEFORE the
+  // not-running early return, not after it. POST /stop clears the desired-state first and calls
+  // this unconditionally; if the session is already dead (isAgentRunning false) the OLD bump site
+  // below it was never reached, so a pending --continue verify callback from an earlier launch
+  // still saw its own captured generation as unchanged and relaunched FRESH -- undoing the
+  // explicit stop. Bumping first means every stop invalidates that callback, running or not.
   agentLaunchGeneration.set(name, Symbol())
+  if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
   const target = agentTmuxTarget(name)
   const host = target.host
@@ -3503,7 +3578,17 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-async function restartAgentProcessUnlocked(name: string, opts: { fresh?: boolean; wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function restartAgentProcessUnlocked(
+  name: string,
+  opts: { fresh?: boolean; wake?: RestartWakeRequest; force?: boolean; actor?: string } = {}
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  // Card d5638d28 round 2 (CYBERED NO-GO 32207 F1): same ONE shared check as
+  // startAgentProcessUnlocked above -- restartAgentProcess starts a non-running-but-desired agent
+  // outright (RESTARTSTOPPED1005), so this is itself an agent-start door, not just a restart.
+  {
+    const refusal = degradedOrchestratorRefusal('agent restart', opts.force === true, opts.actor)
+    if (refusal) return { ok: false, error: refusal }
+  }
   // RESTARTWAKE927 / restart-lock.ts: this function already runs under withLifecycleLock's
   // own per-agent mutex (the caller below), but beginRestart/endRestart is a SEPARATE,
   // cross-cutting flag that OTHER restart initiators (channel-monitor reconcile,
@@ -3590,10 +3675,11 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // live on agent-samu 2026-08-31: 10 minutes not-ready, 5 queued messages, and
 // a peer's report parked unsubmitted in the prompt.
 //
-// Dismissal takes TWO steps, measured on that same pane: "0" closes the draft,
-// then Claude Code immediately offers "Turn off Claude-drafted feedback? 0 to
-// turn off · Esc to keep". A second "0" there would silently disable feedback
-// drafting for that agent, so the follow-up is answered with Esc (keep) -- and
+// Dismissal: the card is closed with C-u then Down, never a digit (see
+// feedbackDraftDismissPlan for why a typed digit can stick and pile up). Claude
+// Code may then offer "Turn off Claude-drafted feedback? 0 to turn off · Esc to
+// keep". A "0" there would silently disable feedback drafting for that agent,
+// so the follow-up is answered with Esc (keep) -- and
 // only when its own detector fires, never blind: a bare Esc into a prompt box
 // that holds a parked delivery is not a keystroke worth firing on spec.
 // The not-ready-path companion to the pre-flight dismissal above, and the
@@ -3638,51 +3724,51 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
-// Card 813eeee9 (backend3, 2026-09-19 09:20-09:36): the '0' sent below does not always land on
-// the modal -- measured live, it went into the prompt INPUT instead, and the old code logged
-// "Dismissed" unconditionally and never re-checked. The not-ready caller (clearFeedbackModalAndRecheck)
-// re-ran this every second for 11+ minutes, each pass adding another '0' to the input box (it grew
-// to 40+ characters) while the log kept repeating a false "Dismissed" next to it. Fixed by actually
-// VERIFYING the modal is gone before claiming success, and bounding the retries: each failed
-// attempt clears the stray digit(s) with clearInputBuffer (same retry+verify C-u this file already
-// uses for a parked preamble) before trying again, with backoff between attempts. After
-// FEEDBACK_DISMISS_MAX_ATTEMPTS the function gives up loudly (logger.error, 'wedged') instead of
-// looping forever -- the pane then genuinely stays non-idle, which the EXISTING session-stuck /
-// stuck-input watchers already alert and restart on; this function does not need to invent a
-// second alerting path.
-const FEEDBACK_DISMISS_MAX_ATTEMPTS = 3
-const FEEDBACK_DISMISS_BACKOFF_MS = [300, 600, 1200]
+// Card 813eeee9 (backend3, 2026-09-19 09:20-09:36): a DIGIT sent to dismiss this modal does not
+// always land on it -- measured live, it went into the prompt INPUT instead, and the old code
+// logged "Dismissed" unconditionally and never re-checked, so the not-ready caller
+// (clearFeedbackModalAndRecheck) re-ran this every second for 11+ minutes, each pass adding
+// another stray digit to the input box. Koteg 24 (card 57044a66): superseded by upstream's own,
+// deeper fix below (feedbackDraftDismissPlan, pane-state.ts) rather than kept alongside it -- that
+// fix removes the root cause this card patched around: it NEVER sends a digit at all (C-u/Down
+// only, with a "hold" action whenever no keystroke on this specific pane content is provably
+// safe), so there is no stray-digit case left for a retry-with-backoff loop to clean up after.
+// Between C-u and Down: in one tmux call Down would reach the TUI before it
+// re-rendered the cleared input.
+const FEEDBACK_KEY_GAP_MS = 200
 
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    for (let attempt = 1; attempt <= FEEDBACK_DISMISS_MAX_ATTEMPTS; attempt++) {
-      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '0'], { timeout: 5000 })
-      await delay(FEEDBACK_DISMISS_BACKOFF_MS[attempt - 1])
-      const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
-
-      if (detectsFeedbackOptOutPrompt(after)) {
-        runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
-        await delay(300)
-        logger.info({ session, attempt }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
-        return
-      }
-      if (!detectsFeedbackDraftModal(after)) {
-        logger.info({ session, attempt }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
-        return
-      }
-
-      logger.warn(
-        { session, attempt, max: FEEDBACK_DISMISS_MAX_ATTEMPTS },
-        'Feedback-draft modal still present after the dismiss key -- it likely landed in the prompt input instead; clearing stray input before retrying',
-      )
-      await clearInputBuffer(session, host)
+    // The input box is read from the ghost-stripped view: a dim autosuggest in an
+    // empty box must not read as typed text. Detection stays on the plain capture.
+    const plan = feedbackDraftDismissPlan(pane, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION)
+    if (plan.act === 'none') return
+    if (plan.act === 'hold') {
+      logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
+      return
+    }
+    for (const [i, key] of plan.keys.entries()) {
+      if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
+    }
+    await delay(300)
+    const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
+    if (detectsFeedbackOptOutPrompt(after)) {
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
+      await delay(300)
+      logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+      return
+    }
+    if (!detectsFeedbackDraftModal(after)) {
+      logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt')
+      return
     }
 
     logger.error(
       { session },
-      'Feedback-draft modal could not be dismissed after retries -- pane is wedged; not retrying further (existing session-stuck/stuck-input watchers will surface and restart it)',
+      'Feedback-draft modal still present after the dismiss keys -- pane is wedged; not retrying further (existing session-stuck/stuck-input watchers will surface and restart it)',
     )
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')
@@ -4490,6 +4576,13 @@ export async function sendPromptToSession(
       i = end
       if (i < oneLine.length) await delay(30)
     }
+    // The settle wait below cannot tell a TUI that finished drawing from one
+    // that stopped READING its input (both give identical captures), so first
+    // wait until the end of the prompt is actually on screen. Bounded; on
+    // timeout the Enter goes out as before, and the log says so.
+    if (oneLine.length > CHUNK && !(await waitForTypedEcho(() => capturePane(session, host), oneLine))) {
+      logger.warn({ session, chars: oneLine.length, waitedMs: TYPED_ECHO_MAX_MS }, 'sendPromptToSession: the end of the typed prompt never appeared in the pane; sending Enter anyway (TUI not reading input?)')
+    }
     // A multi-chunk prompt gets its Enter only once the TUI has stopped
     // redrawing. Sent straight after the last chunk, the Enter races the
     // TUI still ingesting the burst and is dropped: measured 2026-09-15
@@ -4674,6 +4767,31 @@ export async function waitForPaneSettle(
     prev = cur
   }
   return false
+}
+
+// Upper bound for waitForTypedEcho. The measured stalls (a sub-agent whose
+// TUI stopped reading input mid-prompt) lasted 18.5 s and 24.9 s; past this
+// the Enter goes out as it did before.
+export const TYPED_ECHO_MAX_MS = 30_000
+
+// Resolve true as soon as typedTailEchoed() sees the end of `typed` in a
+// capture, false after `maxMs` without it. Capture, sleep and clock are
+// injectable, like waitForPaneSettle, so the loop is tested without tmux.
+export async function waitForTypedEcho(
+  capture: () => string | null,
+  typed: string,
+  opts: { pollMs?: number; maxMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<boolean> {
+  const pollMs = opts.pollMs ?? 250
+  const maxMs = opts.maxMs ?? TYPED_ECHO_MAX_MS
+  const sleep = opts.sleep ?? delay
+  const now = opts.now ?? Date.now
+  const deadline = now() + maxMs
+  for (;;) {
+    if (typedTailEchoed(capture(), typed)) return true
+    if (now() >= deadline) return false
+    await sleep(pollMs)
+  }
 }
 
 export function capturePane(session: string, host: string | null = null): string | null {
@@ -5255,13 +5373,18 @@ function optsKeyOf(opts: { fresh?: boolean }): string {
   return `fresh=${opts.fresh === true}`
 }
 
+type AgentLifecycleOpts = { fresh?: boolean; force?: boolean; actor?: string }
+
 // Card 466f21fe F2 (CYBERSEC GO 14256aac, design note, not a bug in existing code): `--continue`
 // means a channel agent's restart is no longer a clean slate -- a prompt-injected or
 // secret-carrying conversation survives it if the launch is not fresh. ANY restart triggered for
 // a SECURITY reason (token rotation, injection suspicion, key rotation) MUST pass `fresh: true`
 // explicitly; `opts.fresh` already exists for exactly this. context-guard-runner.ts is the one
 // such call site today and already does this (channel-continue-policy.test.ts locks it in).
-export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export function startAgentProcess(
+  name: string,
+  opts: AgentLifecycleOpts = {}
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
 }
 
@@ -5269,6 +5392,9 @@ export function stopAgentProcess(name: string): Promise<{ ok: boolean; error?: s
   return withLifecycleLock(name, 'stop', '', () => stopAgentProcessUnlocked(name))
 }
 
-export function restartAgentProcess(name: string, opts: { fresh?: boolean; wake?: RestartWakeRequest } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export function restartAgentProcess(
+  name: string,
+  opts: AgentLifecycleOpts & { wake?: RestartWakeRequest } = {}
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'restart', optsKeyOf(opts), () => restartAgentProcessUnlocked(name, opts))
 }

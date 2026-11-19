@@ -128,11 +128,21 @@ STATE="${AGENT_SKILL_DRIFT_STATE:-$ROOT/store/agent-skill-drift-state.json}"
 # F1 FOLLOW-UP on this same GO (card a9ab4a62, Cybersec sandbox finding): "seed-fleet-agents only"
 # above still used a plain `-d` existence check -- but seed-fleet-agents is the MAIN CLONE'S OWN
 # working file, not a frozen artifact, so a path existing there says nothing about whether git has
-# ever reviewed it. _seed_fleet_src() now also requires _seed_fleet_src_is_tracked_clean() (tracked
-# at HEAD, no untracked/modified content anywhere under the skill directory) before a candidate is
-# usable, re-checked a second time immediately before the actual write (same TOCTOU shape as the
-# stale-sync path). An untracked or locally-modified candidate is reported, distinctly worded, and
-# never copied -- the family keeps checking the next member in order, same as before.
+# ever reviewed it. _seed_fleet_src() now also requires _seed_fleet_src_is_tracked_at_head() (tracked
+# at HEAD) before a candidate is usable, re-checked a second time immediately before the actual write
+# (same TOCTOU shape as the stale-sync path). An untracked candidate is reported, distinctly worded,
+# and never copied -- the family keeps checking the next member in order, same as before.
+#
+# CARD ff7ecc74 (WhiteHat L1+L2+INFO on a9ab4a62's own GO): the "tracked AND clean working tree"
+# check above still read the actual copy from DISK (`cp -r`) once it passed. A `git status
+# --porcelain` clean check has no selftest proving it is load-bearing (L1), and a
+# skip-worktree/assume-unchanged bit hides a real local modification from that same check (L2) --
+# the candidate is then accepted and its (unreviewed, hidden-dirty) disk content gets copied to
+# every family member. The fix drops the "clean" requirement entirely and reads the copy straight
+# from the git object store at HEAD (_copy_skill_from_git_head, git archive) instead of from disk --
+# the working tree's state, hidden or not, no longer has any bearing on what gets copied. A
+# committed symlink anywhere under the skill directory is refused outright (replaces
+# _dir_has_escaping_symlink, which only checked the working tree after the fact).
 MISSING_SYNC_APPLY_ENABLED=1
 
 APPLY=0
@@ -312,17 +322,21 @@ _family_members() { sibling_family_members "$1"; }
 # Card a9ab4a62 (Cybersec F1 on 85521c7e's own GO): "TRACKED seed-fleet-agents copy" above was
 # only ever checked with `-d` -- a plain on-disk existence test. seed-fleet-agents is the MAIN
 # CLONE'S OWN WORKING FILE, not a frozen artifact: a file can sit there without ever having been
-# `git add`ed (a hand-dropped curl|sh skill install, exactly the shape F2 was written to keep out),
-# or a tracked file can carry a local, uncommitted edit nobody reviewed. Measured in Cybersec's
-# sandbox: an untracked skill placed under seed-fleet-agents/<agent>/.claude/skills/ passed the
-# old `-d` check and reached --apply. A candidate must be COMMITTED at HEAD and byte-identical to
-# what HEAD has (no untracked extras anywhere under it, no local modification) before it is usable.
-_seed_fleet_src_is_tracked_clean() {
+# `git add`ed (a hand-dropped curl|sh skill install, exactly the shape F2 was written to keep out).
+# Measured in Cybersec's sandbox: an untracked skill placed under
+# seed-fleet-agents/<agent>/.claude/skills/ passed the old `-d` check and reached --apply. A
+# candidate must be COMMITTED at HEAD before it is usable.
+#
+# Card ff7ecc74: deliberately does NOT also require a clean working tree. The actual copy
+# (_copy_skill_from_git_head) reads the committed blob straight from the git object store, never
+# from disk, so a local modification -- hidden by skip-worktree/assume-unchanged or not -- cannot
+# reach the synced content either way. Requiring "clean" here would only add a refusal that the
+# copy mechanism no longer needs.
+_seed_fleet_src_is_tracked_at_head() {
   local dir="$1" rel
   rel="${dir#$ROOT/}"
   [ "$rel" != "$dir" ] || return 1   # not under ROOT at all -- cannot verify against git, refuse
-  [ -n "$(git -C "$ROOT" ls-files -- "$rel" 2>/dev/null)" ] || return 1   # nothing tracked here
-  [ -z "$(git -C "$ROOT" status --porcelain --ignored -- "$rel" 2>/dev/null)" ]
+  [ -n "$(git -C "$ROOT" ls-tree -r HEAD --name-only -- "$rel" 2>/dev/null)" ]
 }
 
 # Card 85521c7e F2: resolves a missing skill's copy source to a family member's TRACKED
@@ -345,7 +359,7 @@ _seed_fleet_src() {
   for s in $members; do
     dir="$SEED_FLEET_DIR/$s/.claude/skills/$skill"
     [ -d "$dir" ] || continue
-    if _seed_fleet_src_is_tracked_clean "$dir"; then
+    if _seed_fleet_src_is_tracked_at_head "$dir"; then
       _SEED_FLEET_SRC_DIR="$dir"
       return 0
     fi
@@ -354,21 +368,38 @@ _seed_fleet_src() {
   return 1
 }
 
-# Card 85521c7e F2: refuses a copy source containing ANY symlink that resolves outside its own
-# root -- defense in depth even against the tracked seed (a symlink escaping the skill directory,
-# committed by mistake or malice, is still a hazard once `cp -r` recreates it on every family
-# member's disk). Deliberately walks with `find -type l` (never `-L`, which would descend THROUGH
-# an escaping link instead of finding it) and resolves each link with `readlink -f`.
-_dir_has_escaping_symlink() {
-  local root="$1" real_root link target
-  real_root="$(cd "$root" 2>/dev/null && pwd -P)" || return 0  # can't even resolve the root: refuse
-  while IFS= read -r -d '' link; do
-    target="$(readlink -f -- "$link" 2>/dev/null)" || return 0  # unresolvable link -> treat as escaping
-    case "$target" in
-      "$real_root"/*|"$real_root") ;;
-      *) return 0 ;;  # escapes the root
-    esac
-  done < <(find "$root" -type l -print0 2>/dev/null)
+# Card ff7ecc74 (WhiteHat L1+L2+INFO on a9ab4a62's own GO): copies a tracked skill directory
+# straight from the git object store at HEAD, never from the working tree -- `git archive` always
+# reads the committed blob, regardless of what `git status` would or would not show (closes the
+# TOCTOU window the old disk-read `cp -r` left open, and makes a skip-worktree/assume-unchanged
+# hidden local edit irrelevant: the content synced is always exactly what HEAD has). Refuses
+# outright if the committed tree contains ANY symlink under the skill directory (mode 120000) --
+# a symlink materialized on every family member's disk can point to something none of them
+# tracks (replaces the old post-hoc, working-tree-only _dir_has_escaping_symlink check).
+# $1 = repo-relative path (e.g. seed-fleet-agents/backend/.claude/skills/skillA)
+# $2 = destination directory (caller's job to confirm it does not exist yet)
+# Returns: 0 synced, 1 not tracked at HEAD or extraction failed, 2 refused (committed symlink)
+_copy_skill_from_git_head() {
+  local rel="$1" target_dir="$2" tmp_extract
+  git -C "$ROOT" ls-tree -r HEAD --name-only -- "$rel" 2>/dev/null | grep -q . || return 1
+  if git -C "$ROOT" ls-tree -r HEAD -- "$rel" 2>/dev/null | awk '{print $1}' | grep -q '^120000$'; then
+    return 2
+  fi
+  tmp_extract="$(mktemp -d)" || return 1
+  if ! git -C "$ROOT" archive HEAD -- "$rel" 2>/dev/null | tar -x -C "$tmp_extract" 2>/dev/null; then
+    rm -rf "$tmp_extract"
+    return 1
+  fi
+  if [ ! -d "$tmp_extract/$rel" ]; then
+    rm -rf "$tmp_extract"
+    return 1
+  fi
+  mkdir -p "$(dirname "$target_dir")" 2>/dev/null
+  if mv "$tmp_extract/$rel" "$target_dir"; then
+    rm -rf "$tmp_extract"
+    return 0
+  fi
+  rm -rf "$tmp_extract"
   return 1
 }
 
@@ -405,7 +436,7 @@ scan_missing_skills() {
     done
     [ -n "$union" ] || continue
 
-    local skill target_dir src_dir agent_state union_arr
+    local skill target_dir src_dir agent_state union_arr rc
     IFS=',' read -r -a union_arr <<<"$union"
     for m in $members; do
       _wanted_agent "$m" || continue
@@ -450,22 +481,25 @@ scan_missing_skills() {
           if [ -e "$target_dir" ]; then
             continue
           fi
-          # Card a9ab4a62: re-verify tracked/clean immediately before the write, same TOCTOU
+          # Card a9ab4a62: re-verify tracked-at-HEAD immediately before the write, same TOCTOU
           # reasoning the stale-sync path already uses -- the window between _seed_fleet_src's
           # selection and this line is exactly where an uncommitted edit could land.
-          if ! _seed_fleet_src_is_tracked_clean "$src_dir"; then
+          if ! _seed_fleet_src_is_tracked_at_head "$src_dir"; then
             MISSING_LIST="${MISSING_LIST}${m}/${skill} -- seed-fleet-agents copy became untracked/modified between selection and copy (concurrent write), REFUSED\n"
             continue
           fi
-          if _dir_has_escaping_symlink "$src_dir"; then
-            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- seed-fleet-agents copy contains a symlink escaping its own directory, REFUSED (needs manual review)\n"
-            continue
-          fi
-          if cp -r "$src_dir" "$target_dir" 2>/dev/null; then
+          # Card ff7ecc74: copy from the git OBJECT STORE (HEAD), never the working tree -- see
+          # _copy_skill_from_git_head for why this closes the TOCTOU window the disk read left open.
+          if _copy_skill_from_git_head "${src_dir#$ROOT/}" "$target_dir"; then
             MISSING_SYNCED=$((MISSING_SYNCED+1))
-            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copied from seed-fleet-agents -> synced\n"
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copied from seed-fleet-agents (git HEAD) -> synced\n"
           else
-            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copy from seed-fleet-agents FAILED (left untouched)\n"
+            rc=$?
+            if [ "$rc" -eq 2 ]; then
+              MISSING_LIST="${MISSING_LIST}${m}/${skill} -- seed-fleet-agents copy contains a committed symlink, REFUSED (needs manual review)\n"
+            else
+              MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copy from seed-fleet-agents FAILED (left untouched)\n"
+            fi
           fi
         else
           MISSING_LIST="${MISSING_LIST}${m}/${skill} -- present in seed-fleet-agents, absent here (would-sync, dry-run)\n"
@@ -1364,6 +1398,53 @@ agent-someone-else" bash "${BASH_SOURCE[0]}" --apply --telegram --agent agentG)"
   echo "$outF5" | grep -qE 'missing=0([^0-9]|$)' \
     && echo "  ok   an agent outside every declared family reports missing=0" \
     || { echo "  FAIL an undeclared-family agent was scanned for missing skills:"; echo "$outF5"; fail=1; }
+
+  # SECURITY (card ff7ecc74, WhiteHat L1): "copy from git HEAD, not disk" must be provably
+  # load-bearing -- a plain local modification (no skip-worktree trick) must not leak into the
+  # synced content. skillG: live on backend2 only; its seed-fleet-agents copy is committed, then
+  # modified ON DISK afterwards (an ordinary, visible-to-porcelain edit). The OLD code's
+  # _seed_fleet_src_is_tracked_clean sees this as dirty and REFUSES the whole candidate, so
+  # backend/backend3 never receive skillG at all -- RED on the old code. The fix reads from HEAD
+  # regardless, so backend/backend3 get the clean, committed content.
+  mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillG"
+  printf 'SKILL G CONTENT (HEAD)\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillG/SKILL.md"
+  mkdir -p "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillG"
+  printf 'SKILL G CONTENT (HEAD)\n' > "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillG/SKILL.md"
+  git -C "$tmp/family-root" add -A && git -C "$tmp/family-root" commit -q -m "add skillG"
+  printf 'SKILL G CONTENT (DIRTY, UNREVIEWED)\n' > "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillG/SKILL.md"
+  fam_run --apply >/dev/null
+  if [ "$(cat "$tmp/family-root/agents/backend/.claude/skills/skillG/SKILL.md" 2>/dev/null)" = "SKILL G CONTENT (HEAD)" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillG/SKILL.md" 2>/dev/null)" = "SKILL G CONTENT (HEAD)" ]; then
+    echo "  ok   SECURITY: an ordinary local modification is bypassed -- the synced content is always HEAD's (card ff7ecc74 L1)"
+  else
+    echo "  FAIL skillG was not synced with HEAD content (plain local edit broke or leaked into the sync)"; fail=1
+  fi
+
+  # SECURITY (card ff7ecc74, WhiteHat L2 -- the actual exploit): a skip-worktree/assume-unchanged
+  # bit hides a local modification from `git status --porcelain` entirely. skillH: live on
+  # backend2 only, seed copy committed, then skip-worktree set and the disk content changed to
+  # something that was NEVER reviewed. The OLD code's porcelain-based check sees "clean" (the bit
+  # hides the edit) and ACCEPTS the candidate, then `cp -r` copies the hidden, unreviewed disk
+  # content into every family member -- RED on the old code (synced content would be the hidden
+  # edit, not HEAD's). The fix never reads disk at all, so the hidden edit cannot reach the sync.
+  mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillH"
+  printf 'SKILL H CONTENT (HEAD)\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillH/SKILL.md"
+  mkdir -p "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillH"
+  printf 'SKILL H CONTENT (HEAD)\n' > "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillH/SKILL.md"
+  git -C "$tmp/family-root" add -A && git -C "$tmp/family-root" commit -q -m "add skillH"
+  git -C "$tmp/family-root" update-index --skip-worktree -- "seed-fleet-agents/backend2/.claude/skills/skillH/SKILL.md"
+  printf 'SKILL H CONTENT (HIDDEN MODIFICATION, NEVER REVIEWED)\n' > "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillH/SKILL.md"
+  [ -z "$(git -C "$tmp/family-root" status --porcelain -- "seed-fleet-agents/backend2/.claude/skills/skillH/SKILL.md")" ] \
+    && echo "  ok   fixture check: skip-worktree genuinely hides the edit from git status --porcelain" \
+    || { echo "  FAIL fixture setup is broken -- skip-worktree did not hide the edit, test proves nothing"; fail=1; }
+  fam_run --apply >/dev/null
+  if [ "$(cat "$tmp/family-root/agents/backend/.claude/skills/skillH/SKILL.md" 2>/dev/null)" = "SKILL H CONTENT (HEAD)" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillH/SKILL.md" 2>/dev/null)" = "SKILL H CONTENT (HEAD)" ]; then
+    echo "  ok   SECURITY: a skip-worktree-hidden local edit never reaches the sync -- always HEAD's content (card ff7ecc74 L2)"
+  else
+    echo "  FAIL skillH synced the hidden/unreviewed disk content instead of HEAD -- SKIP-WORKTREE BYPASS"; fail=1
+  fi
+  git -C "$tmp/family-root" update-index --no-skip-worktree -- "seed-fleet-agents/backend2/.claude/skills/skillH/SKILL.md" 2>/dev/null
 
   # --- sibling-pair drift (card 31e70128): dedicated, isolated fixture ------------------------
   # A fresh root, separate from family-root above, so these assertions do not depend on the exact

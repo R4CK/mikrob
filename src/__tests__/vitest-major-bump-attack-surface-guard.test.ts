@@ -17,21 +17,46 @@ import * as ts from 'typescript'
 // reopen a CVSS 9.8 hole with no advisory-exception review. This guard fails loudly if either
 // fact stops being true, BEFORE the vitest major bump (this card's main step) is attempted.
 
-// Lexer-based, not regex-based (WhiteHat INFO I1, card d4675258, 2f05b3e3 follow-up): the old
-// `/\/\*[\s\S]*?\*\//` regex does not know about string/template literals, so a config value like
-// `comment: "/* not closed"` makes it consume everything up to the NEXT real `*/` anywhere later in
-// the file -- which can delete a genuine `ui: true` along the way and blind this exact guard. The
-// TypeScript scanner tokenizes string/template literals as single tokens, so it cannot be fooled
-// this way.
-function stripComments(src: string): string {
-  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, src)
-  let result = ''
-  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
-    if (kind !== ts.SyntaxKind.SingleLineCommentTrivia && kind !== ts.SyntaxKind.MultiLineCommentTrivia) {
-      result += src.slice(scanner.getTokenPos(), scanner.getTextPos())
-    }
+// AST-based, not scanner-based (RedHat I1b, card c4ef7da5, d4675258 comment 14181 follow-up):
+// the prior fix (ts.createScanner, a bare lexer) tokenizes string/template literals as single
+// tokens, which closed the founding exploit, but a bare scanner does not know, on its own, where
+// a regex literal or a template-literal tail begins -- without an explicit `reScanSlashToken`/
+// `reScanTemplateToken` call at each `/` or post-`${...}` `}`, it falls back to treating `/` as a
+// division operator and the template tail as ordinary code. A `/*`-shaped sequence sitting inside
+// a regex literal, or in the template text right after a `${...}` substitution, was therefore
+// still read as a real comment and could swallow a genuine `ui: true` written later in the file
+// (measured: 9 of 24 corpus shapes still hid a live `ui: true` after the scanner fix, down from
+// 12 before it -- a real improvement, but not closed). A full parse (`ts.createSourceFile`)
+// disambiguates regex and template literals the same way the TypeScript compiler itself does, so
+// it is not subject to this class of gap. This function no longer strips comments and re-matches
+// text at all; it walks the real AST and looks only at actual property-assignment nodes, so a
+// comment-shaped sequence anywhere in a string/regex/template literal is never treated as trivia
+// in the first place, regardless of what precedes it in the file. This closes the `ui`/`api`
+// comment-evasion class; it does not, and is not meant to, defend against a value `ui`/`api`
+// property that uses a non-literal expression (`!0`, a referenced const, a spread object) -- RedHat's
+// own finding treats that as a separate, non-comment question out of this card's scope.
+function findLiveServerFlags(src: string): string[] {
+  const sourceFile = ts.createSourceFile('vitest.config.ts', src, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS)
+  const hits: string[] = []
+  const propertyKeyText = (name: ts.PropertyName): string | undefined => {
+    if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text
+    if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) return name.expression.text
+    return undefined
   }
-  return result
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAssignment(node)) {
+      const key = propertyKeyText(node.name)
+      if (key === 'ui' && node.initializer.kind === ts.SyntaxKind.TrueKeyword) {
+        hits.push('ui: true')
+      }
+      if (key === 'api' && node.initializer.kind !== ts.SyntaxKind.FalseKeyword) {
+        hits.push('api: set')
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return hits
 }
 
 const repoRoot = join(process.cwd())
@@ -61,17 +86,46 @@ describe('no vitest --ui/--api server, no vite dev server (card 2f05b3e3 step 0)
   })
 
   it('vitest.config.ts does not enable the UI/API server (`ui: true` or `api:` set)', () => {
-    const src = stripComments(readFileSync(join(repoRoot, 'vitest.config.ts'), 'utf8'))
-    expect(src).not.toMatch(/\bui\s*:\s*true\b/)
-    expect(src).not.toMatch(/\bapi\s*:\s*(true|\d|\{)/)
+    const src = readFileSync(join(repoRoot, 'vitest.config.ts'), 'utf8')
+    expect(findLiveServerFlags(src)).toEqual([])
   })
 
   it('the `test` script is a one-shot `vitest run`, not watch mode (which the UI flag pairs with)', () => {
     expect(pkg.scripts.test).toBe('vitest run')
   })
 
-  it('stripComments does not let an unterminated-comment-shaped string literal hide a real `ui: true` (I1 regression)', () => {
-    const exploit = `export default defineConfig({\n  test: {\n    comment: "/* not closed",\n    ui: true,\n  }\n})\n/* real trailing comment */\n`
-    expect(stripComments(exploit)).toMatch(/\bui\s*:\s*true\b/)
+  it('findLiveServerFlags does not let a comment-shaped sequence hide a real `ui: true` (I1/I1b regression corpus)', () => {
+    const founding = `export default defineConfig({\n  test: {\n    comment: "/* not closed",\n    ui: true,\n  }\n})\n/* real trailing comment */\n`
+    const nestedTemplate = 'export default defineConfig({ test: { tag: `${`${x}`}//`, ui: true } })\n/* trailing */\n'
+    const lineSeparator = 'export default defineConfig({ test: { tag: "// still code", ui: true } })\n'
+    // RedHat I1b (card c4ef7da5, d4675258 comment 14181): a bare scanner does not know it is
+    // inside a regex literal or a post-`${...}` template tail without an explicit re-scan call,
+    // so a `/*`/`//`-shaped sequence there was still read as a real comment and could hide a
+    // live `ui: true` written later in the file.
+    const regexLiteralThenRealComment = 'export default defineConfig({ test: { tag: /[/*]/, ui: true } })\n/* real */\n'
+    const regexLiteralSameLine = 'export default defineConfig({ test: { tag: /a\\/\\//, ui: true } })\n'
+    const templateTailThenRealComment = 'export default defineConfig({ test: { tag: `${1}/*`, ui: true } })\n/* real */\n'
+    const templateTailSameLine = 'export default defineConfig({ test: { tag: `${1}//`, ui: true } })\n'
+
+    for (const src of [
+      founding,
+      nestedTemplate,
+      lineSeparator,
+      regexLiteralThenRealComment,
+      regexLiteralSameLine,
+      templateTailThenRealComment,
+      templateTailSameLine,
+    ]) {
+      expect(findLiveServerFlags(src), src).toContain('ui: true')
+    }
+  })
+
+  it('findLiveServerFlags does not false-positive on `ui`/`api` spelled inside comments or strings, or `api: false`', () => {
+    const onlyInComment = 'export default defineConfig({ test: { /* ui: true */ reporters: [] } })\n'
+    const onlyInString = 'export default defineConfig({ test: { tag: "ui: true, api: 1" } })\n'
+    const apiExplicitlyOff = 'export default defineConfig({ test: { api: false } })\n'
+    for (const src of [onlyInComment, onlyInString, apiExplicitlyOff]) {
+      expect(findLiveServerFlags(src), src).toEqual([])
+    }
   })
 })

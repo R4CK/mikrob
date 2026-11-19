@@ -48,7 +48,10 @@ import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { messageWakesReceiver } from './message-wake.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+// upstream's fair-tick-window selector NOT adopted (see acknowledged-conflicts.ts,
+// message-router-window.ts entry) -- fork's own selectFairBatch (this file) is used instead.
 import { isStopMessage, isUrgentDelivery } from './message-router-window.js'
+import { deliveryHoldFor, type DeliveryHold } from './delivery-hold.js'
 
 // Upstream, adopted 2026-10-24 during Koteg 19: extracted so the POST /api/messages route can
 // quote the same number without importing the whole router.
@@ -539,6 +542,9 @@ const agentBatchedThisReconnect = new Set<string>()
 // dashboard start, so a restart cannot make an old message look abandoned: the clock
 // starts at the router's first observation, not at the message's creation.
 const agentAbsentSince = new Map<string, number>()
+// Agents whose delivery hold this router has reported (delivery-hold.ts): one line
+// when a hold starts and one when it ends, not one per 5 s tick.
+const heldAgentsLogged = new Set<string>()
 
 /** Card 71263d15 (A): continuous absence of `agent` at `now`; 0 while present or not yet seen absent. */
 function continuousAbsenceMs(agent: string, sessionExists: boolean, now: number): number {
@@ -1069,9 +1075,46 @@ export async function runMessageRouterTick(): Promise<void> {
     const allPending = getPendingMessages()
     const localPending: AgentMessage[] = []
     const federatedPending: AgentMessage[] = []
-    for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
-    const pending = selectFairBatch(localPending, MAX_MESSAGES_PER_TICK)
+    // NOTE: the federated/local split used to happen in a standalone loop right here (fork) --
+    // it is now folded into the hold-filtering loop below (which does the same split, PLUS
+    // delivery-hold filtering), so a second loop here would double-push every row.
     const now = Date.now()
+    // An agent the context-guard is restarting is held (delivery-hold.ts): its rows
+    // stay pending and go to the fresh session after its resume prompt. They are
+    // taken out BEFORE the window is chosen, so a held backlog cannot fill the
+    // window and starve every other recipient while it waits. An authenticated STOP
+    // or urgent row (isUrgentDelivery) is never held: it goes now, to whichever pane
+    // is up, with its usual pane checks. A STOP held for the length of a restart
+    // would arrive after the work it was meant to stop.
+    const held = new Map<string, { hold: DeliveryHold; rows: number }>()
+    // One answer per recipient per tick, "not held" included: a probe that fails
+    // (and warns) must not do so once per pending row.
+    const holdOf = new Map<string, DeliveryHold | null>()
+    for (const m of allPending) {
+      if (isQualifiedId(m.to_agent)) { federatedPending.push(m); continue }
+      if (!holdOf.has(m.to_agent)) holdOf.set(m.to_agent, deliveryHoldFor(m.to_agent, now))
+      const hold = holdOf.get(m.to_agent)
+      if (hold && !isUrgentDelivery(m, MAIN_AGENT_ID)) { held.set(m.to_agent, { hold, rows: (held.get(m.to_agent)?.rows ?? 0) + 1 }); continue }
+      localPending.push(m)
+    }
+    for (const [agent, { hold, rows }] of held) {
+      // The pane this clock was timing is being replaced; carried across the
+      // restart it would time the fresh session from the old one's start.
+      agentStuckSince.delete(agent)
+      if (!heldAgentsLogged.has(agent)) {
+        heldAgentsLogged.add(agent)
+        logger.info({ agent, phase: hold.phase, untilMs: hold.untilMs, pending: rows }, 'message-router: delivery held -- context-guard restart in progress, rows stay pending for the fresh session')
+      }
+    }
+    for (const agent of heldAgentsLogged) {
+      if (!held.has(agent) && !deliveryHoldFor(agent, now)) {
+        heldAgentsLogged.delete(agent)
+        logger.info({ agent }, 'message-router: delivery hold released')
+      }
+    }
+    // upstream's fair-tick-window selector NOT adopted -- see acknowledged-conflicts.ts; fork's own
+    // selectFairBatch (defined above, already carries its own urgency-promotion feature).
+    const pending = selectFairBatch(localPending, MAX_MESSAGES_PER_TICK)
     // ---- update absent/present tracking for all receivers in this tick ----
     // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
     // Shared across all messages to the same agent (one sessionExistsOnHost call
@@ -1110,6 +1153,10 @@ export async function runMessageRouterTick(): Promise<void> {
       // in pending/ and get handed over one at a time, acknowledged one at a
       // time. Summarising them away would DISCARD work that was never lost.
       if (agentSessionCache.get(agent)?.worksource) continue
+      // A held agent is not batched either: its ordinary rows were held, not missed,
+      // and go one by one after the release. It is a receiver here only through an
+      // exempt STOP or urgent row, and the restart can show it absent for a tick.
+      if (holdOf.get(agent)) continue
       if (agentWasAbsent.has(agent) && !agentBatchedThisReconnect.has(agent)) {
         // Check if this agent qualifies for backlog batching.
         const agentPending = getPendingMessages(agent)
@@ -1551,6 +1598,21 @@ export async function runMessageRouterTick(): Promise<void> {
             { id: msg.id, from: msg.from_agent, to: msg.to_agent, liveStatus },
             'message-router: row is no longer pending at send time, skipping delivery',
           )
+          continue
+        }
+        // The hold, re-read for the same reason: the one taken at the top of the
+        // tick is a snapshot, and the guard can start a restart sequence while this
+        // tick awaits (readiness probes, STT). Nothing awaits between here and the
+        // send, so a hold set mid-tick is honoured before anything is pasted. The
+        // row stays pending; it is not a failure. A STOP or urgent row is exempt,
+        // as at the top of the tick.
+        const lateHold = isStop ? null : deliveryHoldFor(msg.to_agent, Date.now())
+        if (lateHold) {
+          // Same once-per-hold log as the top of the tick; the release is logged there.
+          if (!heldAgentsLogged.has(msg.to_agent)) {
+            heldAgentsLogged.add(msg.to_agent)
+            logger.info({ agent: msg.to_agent, phase: lateHold.phase, untilMs: lateHold.untilMs }, 'message-router: delivery held -- context-guard restart started during this tick, rows stay pending for the fresh session')
+          }
           continue
         }
         // channel-inbound carries the STT-applied deliveryContent; the agent

@@ -247,6 +247,23 @@ check "F2: JSON-form key: value secret-shaped line is stripped from excerpt" \
 check "F2: non-secret JSON key survives (appName is not a secret shape)" \
   "$(printf '%s' "$out_f2_json" | grep -c 'appName')" "1"
 
+# R1 (card 3eddc9a8, RedHat 17386): a bare 'bearer: <value>' line (no 'Authorization' prefix)
+# must also be stripped from the excerpt -- the keyword list was missing 'bearer'.
+cat > "$SECREPO/src/bearer-config.ts" <<'EOF'
+export const APP_NAME = "MyApp"
+bearer: "zzzfixture-bare-bearer-value-xxxxxxxxxxxxxxxx"
+export const VERSION = "1.0.0"
+export type AppConfig = { name: string; version: string }
+EOF
+git -C "$SECREPO" add "$SECREPO/src/bearer-config.ts" 2>/dev/null
+git -C "$SECREPO" commit -qm "add config with bare bearer value" 2>/dev/null
+out_r1="$(echo '{"type":"type-def","text":"add type for src/bearer-config.ts","repo":"'"$SECREPO"'"}' \
+  | python3 "$HERE/decompose-sample-context.py")"
+check "R1: bare 'bearer:' secret-shaped line is stripped from excerpt" \
+  "$(printf '%s' "$out_r1" | grep -c 'zzzfixture-bare-bearer-value-xxxxxxxxxxxxxxxx')" "0"
+check "R1: non-secret lines survive in the bearer-config excerpt" \
+  "$(printf '%s' "$out_r1" | grep -c 'APP_NAME')" "1"
+
 # Mutation-pin for B1.2: if we re-enable dotfiles the test must go red
 # (verified by inspection: without the "if f.startswith('.'): continue" guard,
 # .secrets.json would appear first in sorted() and grep would return 1, not 0)

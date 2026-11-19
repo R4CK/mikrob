@@ -308,6 +308,73 @@ describe('self-pace-gate gateDecision', () => {
   it('denies nohup/setsid self-respawn of claude', () => {
     expect(selfPaceDecision('Bash', { command: 'nohup claude -p "keep going" &' }).deny).toBe(true)
   })
+  // Card 9ea8dcb8 round 2 (cybersec NO-GO 32608, Gate-SHA 6dc4c450b): round 1's fix
+  // (a token-walk past a fixed wrapper-word list) traded the scratchpad-path false
+  // positive for 14 missed respawn shapes -- any wrapper not on the list, or one
+  // followed by its own option/flag, ended the walk on a token that was never
+  // "claude", so those shapes went from denied to allowed. Round 2 narrowed the
+  // old regex's WORD BOUNDARY instead ((?<![\w-])claude(?![\w./-])), which closed
+  // those 14 but also excluded "claude" as a prefix/suffix of another token, so
+  // round 3 (cybersec NO-GO 32639) lost 6 more real shapes (claude-code, npx
+  // @anthropic-ai/claude-code, node .../claude-code/cli.js, a relaunch-claude.sh
+  // wrapper script, claude.sh, claude.exe). The actual fix (cybersec2 32612,
+  // reconfirmed by cybersec 32639) keeps the OLD broad regex untouched and masks
+  // only the per-uid scratch directory component (`claude-<digits>`) before
+  // testing, so every one of these shapes -- the pre-existing ones, cybersec's
+  // 14, and the 6 prefix/suffix ones -- must stay denied.
+  it('still denies every real nohup/setsid/disown + claude relaunch shape', () => {
+    for (const cmd of [
+      // pre-existing shapes (already pinned before this card)
+      'setsid claude -p "keep going" &',
+      'disown claude -p "keep going"',
+      'nohup env X=1 claude -p "keep going" &',
+      'nohup /home/neon/.local/bin/claude -p "keep going" &',
+      'nohup sudo claude -p "keep going" &',
+      // cybersec 32608: setsid with a flag before the command word
+      'setsid -f claude -p hi',
+      'setsid --fork claude -p hi',
+      // cybersec 32608: wrapper not on round-1's fixed list, or wrapper + its own option
+      'nohup nice -n 10 claude -p hi',
+      'nohup timeout 3600 claude -p hi',
+      'nohup sudo -u someuser claude -p hi',
+      'nohup env -i claude -p hi',
+      'nohup stdbuf -oL claude -p hi',
+      'nohup /usr/bin/env claude -p hi',
+      // cybersec 32608: quoted or substituted command word
+      'nohup "claude" -p hi',
+      "nohup 'claude' -p hi",
+      'nohup $(which claude) -p hi',
+      // cybersec 32608: claude launched from inside a bash -c/sh -c body
+      "nohup bash -c 'claude -p hi'",
+      'setsid sh -c "claude --continue"',
+      'nohup bash -lc "exec claude -p hi"',
+      // cybersec 32608: xargs relaunch
+      'nohup xargs -I{} claude -p {} < file',
+      // cybersec 32639: "claude" as a prefix/suffix of another token, lost by
+      // round 2's word-boundary narrowing
+      'nohup claude-code -p x &',
+      'nohup npx @anthropic-ai/claude-code -p x &',
+      'nohup node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js -p x &',
+      'nohup bash ./relaunch-claude.sh &',
+      'setsid ./claude.sh &',
+      'nohup claude.exe -p x &',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(true)
+    }
+  })
+  // The intended allows (cybersec 32608 "INTENDED ALLOWS CONFIRMED"): a scratchpad
+  // path containing "claude" as a path SEGMENT (always followed by "/" or
+  // end-of-word, never a shell metacharacter or bare-word boundary) must stay
+  // allowed -- these are the actual false positives the card exists to fix.
+  it('does NOT misfire on "claude" inside a scratchpad path argument, not the command word', () => {
+    for (const cmd of [
+      'nohup bash store/marveen-land.sh backend --card 9ea8dcb8 > /tmp/claude-1000/x/log 2>&1 &',
+      'nohup node server.js > /tmp/claude-1000/a.log 2>&1 &',
+      'setsid -f bash store/foo.sh > /tmp/claude-1000/a/log 2>&1',
+    ]) {
+      expect(selfPaceDecision('Bash', { command: cmd }).deny).toBe(false)
+    }
+  })
   it('does NOT misfire "at" on a substring (netstat / cat)', () => {
     expect(selfPaceDecision('Bash', { command: 'cat file.txt && netstat -an' }).deny).toBe(false)
   })
@@ -1317,6 +1384,18 @@ describe('self-pace-gate: the scheduled-tasks store', () => {
     expect(selfPaceDecision('Edit', { file_path: '/srv/app/.channels-config/scheduled-tasks/x/task-config.json' }).deny).toBe(true)
     expect(selfPaceDecision('NotebookEdit', { notebook_path: '/home/agent/.claude/scheduled-tasks/x/n.ipynb' }).deny).toBe(true)
   })
+  // RedHat Finding 1 (card 2e04a52e round 2, Gate-SHA acab04fe7): every test above targets a path
+  // ONE LEVEL DEEPER than the store dir itself (x/SKILL.md, x/task-config.json). A bare file
+  // directly under the store dir, with no subdirectory, was denied in practice (SCHEDULE_DIR_PATH_RX
+  // and SCHEDULE_DIR_REF_RX have no such requirement) but had no pin: a reopen mutant on the native
+  // branch left all three shapes green. Pinned here, one case per shape named in the card.
+  it('denies a BARE file directly under the store dir (no subdirectory) -- shapes (iv)/(v)/(vi)', () => {
+    expect(deny(`echo x > ~/.claude/scheduled-tasks/foo.json`)).toBe(true) // (iv)
+    expect(deny(`cp /dev/null ~/.claude/scheduled-tasks/`)).toBe(true) // (v)
+    expect(selfPaceDecision('Write', { file_path: '/home/agent/.claude/scheduled-tasks/foo.json', content: 'x' }).deny).toBe(true) // (vi)
+    expect(selfPaceDecision('Edit', { file_path: '/home/agent/.claude/scheduled-tasks/foo.json' }).deny).toBe(true)
+    expect(selfPaceDecision('MultiEdit', { file_path: '/home/agent/.claude/scheduled-tasks/foo.json', edits: [] }).deny).toBe(true)
+  })
   // Shapes from a replay of real sub-agent tool calls: the store path travels
   // in a VARIABLE or in the WORKING DIRECTORY, not in the segment that writes.
   // The first is a measured SKILL.md append by a sub-agent.
@@ -1340,6 +1419,53 @@ describe('self-pace-gate: the scheduled-tasks store', () => {
     expect(deny(`cat ~/.claude/scheduled-tasks/*/task-config.json 2>/dev/null | grep agent`)).toBe(false)
     expect(deny(`sed -n 1,40p src/web/scheduled-tasks-io.ts`)).toBe(false)
     expect(selfPaceDecision('Write', { file_path: '/home/x/src/web/scheduled-tasks-io.ts', content: 'x' }).deny).toBe(false)
+  })
+})
+
+// Card 2e04a52e round 2 (RedHat Finding 1, HIGH): upstream's MCPWRITEGATE1104 (commit b9dadf48d)
+// judges an MCP tool's path arguments with the native-Write rules; this fork had no branch for
+// mcp__ tool names at all, so the filesystem MCP's write/edit/move/create tools reached the
+// schedule store with no gate, and the hook matcher never even named an mcp__ tool (so even a
+// future gate branch would not have been invoked for it in production). One test per tool, per the
+// dispatch's "tests per tool" instruction.
+describe('self-pace-gate: MCP filesystem tools (mcp__filesystem__*)', () => {
+  it('denies mcp__filesystem__write_file into the store', () => {
+    expect(selfPaceDecision('mcp__filesystem__write_file', { path: '/home/agent/.claude/scheduled-tasks/foo.json', content: 'x' }).deny).toBe(true)
+  })
+  it('denies mcp__filesystem__edit_file into the store', () => {
+    expect(selfPaceDecision('mcp__filesystem__edit_file', { path: '/home/agent/.claude/scheduled-tasks/x/task-config.json', edits: [] }).deny).toBe(true)
+  })
+  it('denies mcp__filesystem__create_directory into the store', () => {
+    expect(selfPaceDecision('mcp__filesystem__create_directory', { path: '/home/agent/.claude/scheduled-tasks/newdir' }).deny).toBe(true)
+  })
+  it('denies mcp__filesystem__move_file: either end (source OR destination) landing in the store', () => {
+    expect(selfPaceDecision('mcp__filesystem__move_file', { source: '/tmp/x.json', destination: '/home/agent/.claude/scheduled-tasks/x.json' }).deny).toBe(true)
+    expect(selfPaceDecision('mcp__filesystem__move_file', { source: '/home/agent/.claude/scheduled-tasks/x.json', destination: '/tmp/x.json' }).deny).toBe(true)
+  })
+  it('denies the scheduled_tasks.json file (DB-adjacent store file) too', () => {
+    expect(selfPaceDecision('mcp__filesystem__write_file', { path: '/home/agent/.claude/scheduled_tasks.json', content: 'x' }).deny).toBe(true)
+  })
+  it('denies a missing or non-string path (fail closed, cannot judge what it cannot see)', () => {
+    expect(selfPaceDecision('mcp__filesystem__write_file', { content: 'x' }).deny).toBe(true)
+    expect(selfPaceDecision('mcp__filesystem__move_file', { source: '/tmp/x.json' }).deny).toBe(true)
+  })
+  it('ALLOWS a write to an unrelated path', () => {
+    expect(selfPaceDecision('mcp__filesystem__write_file', { path: '/home/agent/project/README.md', content: 'x' }).deny).toBe(false)
+    expect(selfPaceDecision('mcp__filesystem__move_file', { source: '/tmp/a.txt', destination: '/tmp/b.txt' }).deny).toBe(false)
+  })
+  it('ALLOWS an unrelated MCP tool name untouched (e.g. a read)', () => {
+    expect(selfPaceDecision('mcp__filesystem__read_file', { path: '/home/agent/.claude/scheduled-tasks/foo.json' }).deny).toBe(false)
+  })
+  it('the hook MATCHER fires on the four write-shaped mcp__filesystem__ tools', () => {
+    const s: Record<string, unknown> = {}
+    injectSelfPaceGate(s)
+    const pre = ((s.hooks as Record<string, unknown>).PreToolUse as Array<{ matcher: string }>)
+    const entry = pre.find((e) => JSON.stringify(e).includes('self-pace-gate.mjs'))
+    const re = new RegExp(`^(?:${entry!.matcher})$`)
+    for (const t of ['MultiEdit', 'mcp__filesystem__write_file', 'mcp__filesystem__edit_file', 'mcp__filesystem__create_directory', 'mcp__filesystem__move_file']) {
+      expect(re.test(t)).toBe(true)
+    }
+    expect(re.test('mcp__filesystem__read_file')).toBe(false)
   })
 })
 
