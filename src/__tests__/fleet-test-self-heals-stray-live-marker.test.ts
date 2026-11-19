@@ -56,6 +56,16 @@ function problems(text: string): string[] {
     if (rm >= 0 && !branch.slice(rm, rm + 400).includes(m)) found.push(`marker not wiped: ${m}`)
   }
 
+  // Card e5c13c0e: the agents/ wipe shares this SAME guard (one if-block, not a second guard
+  // occurrence -- see that card's own comment in fleet-test.sh for why a second occurrence would
+  // silently defeat the mutation-proof check above). It must sit between the guard and the guard's
+  // own closing `fi`, after the marker wipe.
+  const agentsRm = branch.indexOf('rm -rf "$TEST_TREE/agents"', rm < 0 ? 0 : rm)
+  const fiAfterRm = branch.indexOf('\n  fi\n', rm < 0 ? 0 : rm)
+  if (agentsRm < 0) found.push('agents/ wipe not found')
+  if (agentsRm >= 0 && rm >= 0 && agentsRm < rm) found.push('the agents/ wipe runs before the marker wipe (expected after)')
+  if (agentsRm >= 0 && fiAfterRm >= 0 && agentsRm > fiAfterRm) found.push('the agents/ wipe sits OUTSIDE the safety-guard if-block')
+
   // The wipe must precede the belt-and-braces check, which lives OUTSIDE this branch (after the
   // if/else closes), so we check its position in the FULL text instead of the branch slice.
   const wipeInFullText = text.indexOf('rm -f "$TEST_TREE/store/.dashboard-token"')
@@ -77,12 +87,21 @@ describe('fleet-test.sh self-heals a stray live-marker from its own prior run (c
   })
 
   it('MUTATION-PROOF: dropping the safety guard is caught', () => {
+    // Card e5c13c0e: the body now also carries the agents/ wipe (comments included) between the
+    // marker wipe and the closing `fi` -- [\s\S]*? (not \s*) so the capture spans that content
+    // too, stripping the if/fi wrapper around BOTH wipes, not just the marker one.
     const unguarded = text.replace(
-      /if \[ -f "\$TEST_TREE\/\.git" \]; then\n(\s*rm -f "\$TEST_TREE\/store\/\.dashboard-token" "\$TEST_TREE\/store\/claudeclaw\.db" "\$TEST_TREE\/store\/\.claude-oauth-token"\n)\s*fi\n/,
+      /if \[ -f "\$TEST_TREE\/\.git" \]; then\n([\s\S]*?rm -f "\$TEST_TREE\/store\/\.dashboard-token" "\$TEST_TREE\/store\/claudeclaw\.db" "\$TEST_TREE\/store\/\.claude-oauth-token"\n[\s\S]*?rm -rf "\$TEST_TREE\/agents"\n)\s*fi\n/,
       '$1',
     )
     expect(unguarded, 'the mutation did not apply').not.toBe(text)
     expect(problems(unguarded)).toContain('no .git-is-a-file safety guard before wiping markers')
+  })
+
+  it('MUTATION-PROOF (card e5c13c0e): dropping the agents/ wipe is caught', () => {
+    const noAgentsWipe = text.replace('    rm -rf "$TEST_TREE/agents"\n', '')
+    expect(noAgentsWipe, 'the mutation did not apply').not.toBe(text)
+    expect(problems(noAgentsWipe)).toContain('agents/ wipe not found')
   })
 
   it('MUTATION-PROOF: wiping only one of the three markers is caught, not just "some wipe exists"', () => {
@@ -99,7 +118,7 @@ describe('fleet-test.sh self-heals a stray live-marker from its own prior run (c
 
   it('CONTROL: the guard structure alone (no wipe at all) is caught, not mistaken for compliance', () => {
     const noWipe = text.replace(
-      /\n  if \[ -f "\$TEST_TREE\/\.git" \]; then\n\s*rm -f "\$TEST_TREE\/store\/\.dashboard-token" "\$TEST_TREE\/store\/claudeclaw\.db" "\$TEST_TREE\/store\/\.claude-oauth-token"\n\s*fi\n/,
+      /\n  if \[ -f "\$TEST_TREE\/\.git" \]; then\n[\s\S]*?rm -f "\$TEST_TREE\/store\/\.dashboard-token" "\$TEST_TREE\/store\/claudeclaw\.db" "\$TEST_TREE\/store\/\.claude-oauth-token"\n[\s\S]*?rm -rf "\$TEST_TREE\/agents"\n\s*fi\n/,
       '\n',
     )
     expect(noWipe, 'the mutation did not apply').not.toBe(text)

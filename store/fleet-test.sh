@@ -508,20 +508,21 @@ Inspect by hand: git -C $TEST_TREE status"
   # weaken what it protects.
   if [ -f "$TEST_TREE/.git" ]; then
     rm -f "$TEST_TREE/store/.dashboard-token" "$TEST_TREE/store/claudeclaw.db" "$TEST_TREE/store/.claude-oauth-token"
-  fi
-
-  # SAME CLASS AS THE THREE FILES ABOVE, ONE DIRECTORY OVER (card e5c13c0e). `agents/` is
-  # gitignored wholesale (CLAUDE.md's own fleet agents live there in the LIVE install, but this is
-  # the disposable TEST tree -- nothing under here is ever legitimately persistent across runs),
-  # so a test that scaffolds a real agent directory as its own fixture (claude-md-main-section-
-  # writers.test.ts's MAIN_AGENT_ID pin-test, before it was isolated via vi.mock) leaves a stub
-  # that `git clean -fdq` above never touches. Measured live: that stub survived across this
-  # agent's own scoped runs and then made a LATER, unrelated full-suite run's
-  # listAgentNames()-based agent discovery see a phantom agent -- a schedule-runner test's 'all'
-  # fan-out fired the main agent twice because of it. Gitignored content accumulating in a
-  # disposable worktree is never a prior run's state worth keeping, so wipe it every time, same
-  # "safe only because this is a linked worktree" guarantee as the three-file wipe above.
-  if [ -f "$TEST_TREE/.git" ]; then
+    # SAME CLASS, ONE DIRECTORY OVER (card e5c13c0e). `agents/` is gitignored wholesale
+    # (CLAUDE.md's own fleet agents live there in the LIVE install, but this is the disposable
+    # TEST tree -- nothing under here is ever legitimately persistent across runs), so a test
+    # that scaffolds a real agent directory as its own fixture (claude-md-main-section-
+    # writers.test.ts's MAIN_AGENT_ID pin-test, before it was isolated via vi.mock) leaves a stub
+    # that `git clean -fdq` above never touches. Measured live: that stub survived across this
+    # agent's own scoped runs and then made a LATER, unrelated full-suite run's
+    # listAgentNames()-based agent discovery see a phantom agent -- a schedule-runner test's 'all'
+    # fan-out fired the main agent twice because of it. Gitignored content accumulating in a
+    # disposable worktree is never a prior run's state worth keeping, so wipe it every time.
+    # Kept inside this SAME if-block, not a second one (CYBERSEC NO-GO on an earlier round,
+    # comment 34209): fleet-test-self-heals-stray-live-marker.test.ts's mutation-proof check
+    # looks for the FIRST `if [ -f "$TEST_TREE/.git" ]; then` guard occurrence in this update
+    # branch and asserts it disappears when stripped -- a second, separate occurrence of the
+    # same guard text would still match after that strip, silently defeating the test.
     rm -rf "$TEST_TREE/agents"
   fi
 fi
