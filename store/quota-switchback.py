@@ -32,6 +32,7 @@ unused, since they were introduced by this same card and are now fully supersede
 """
 import json
 import os
+import sys
 import time
 
 STORE = os.path.dirname(os.path.abspath(__file__))
@@ -68,6 +69,95 @@ def record_probe(probe_log, ok, ts, max_len=20):
     matching the pure-function style of the rest of this module."""
     new_log = list(probe_log) + [{"ok": bool(ok), "ts": float(ts)}]
     return new_log[-max_len:]
+
+
+def confirm_outage(probe_log, confirm_probes=2, min_gap_sec=45, max_age_sec=None, now=None):
+    """ENTRY-SIDE mirror of confirm_switchback, for card f490ae53: a single mikrob_down()==True
+    reading used to be enough (quota-bridge.py's old banner_streak counter had no minimum time
+    span, only a consecutive-count), and a 2026-11-18 quota-bridge.log flap (SIGTERM at 21:52:31,
+    "MikroB recovered" 4s later at 21:52:35, repeated many times that day) showed that count alone
+    does not bound real elapsed time -- a process restart between two polls can produce two
+    "down" readings a fraction of a second apart. True only when the trailing run of probes is
+    ALL down (ok=False), that run has at least `confirm_probes` entries, and the oldest-to-newest
+    span of that trailing down-run is >= min_gap_sec. A single ok=True probe anywhere in the
+    trailing window resets the run to zero, exactly like confirm_switchback -- so a down-then-up
+    flap of any length never confirms, independent of the gap check.
+
+    F1b (Cybersec NO-GO 33392/33574, Cybered NO-GO 33404/33576): without `max_age_sec`, a
+    probe_log persisted across a process restart (or a long gap in polling) can carry one down
+    reading from hours or days earlier plus ONE fresh down reading -- the span between them
+    trivially satisfies min_gap_sec, so the stale reading alone supplies the "confirm_probes-th"
+    entry the fresh reading needs, confirming on data that is no longer evidence of a CURRENT
+    outage. When `max_age_sec` is given, entries dropped from the trailing run BEFORE the
+    count/span check are the ones whose age (relative to `now`, default time.time()) falls
+    OUTSIDE [0, max_age_sec] -- too old, so a stale entry can no longer stand in for a missing
+    fresh one; OR appearing to be in the future, because `time.time()` is not monotonic and a
+    backward clock step (NTP correction, resume-from-suspend) would otherwise make an old entry's
+    (now - ts) go NEGATIVE, which is "<= max_age_sec" and would wrongly un-expire it forever
+    (Cybered NO-GO 33576 item 4, reproduced: a 1h step either direction between two down readings
+    confirmed). Rejecting age < 0 too closes that: a timestamp the current clock thinks is in the
+    future is exactly as untrustworthy as one that is stale."""
+    if confirm_probes < 1:
+        return False
+    run = []
+    for entry in reversed(probe_log):
+        if entry.get("ok"):
+            break
+        run.append(entry)
+    if max_age_sec is not None:
+        now = time.time() if now is None else now
+        run = [entry for entry in run if 0 <= (now - entry["ts"]) <= max_age_sec]
+    if len(run) < confirm_probes:
+        return False
+    newest_ts = run[0]["ts"]
+    oldest_ts = run[confirm_probes - 1]["ts"]
+    return (newest_ts - oldest_ts) >= min_gap_sec
+
+
+# F2 (Cybersec NO-GO 33392/33574): sane bounds for the entry-side confirm config. Outside these,
+# the value is not trusted (clamped TO THE DEFAULTS, not to the boundary) -- a value this far off
+# is treated the same as a missing/corrupt file, not as a deliberately extreme but valid setting.
+OUTAGE_CONFIRM_PROBES_BOUNDS = (2, 10)
+OUTAGE_MIN_GAP_SEC_BOUNDS = (15, 3600)
+
+
+def load_outage_confirm_config(path=HYSTERESIS_CONFIG):
+    """I/O: entry-side (outage-DECLARATION) confirm-over-N-probes config, same file as
+    load_hysteresis_config, different keys (confirmProbesIn/minGapSecIn) so one file documents
+    both directions of the same rule. Defaults reproduce quota-bridge.py's pre-fix intent:
+    CONFIRM_CHECKS=2 consecutive checks, POLL_HEALTHY_SEC=45s apart -- i.e. the two numbers the
+    old code already used, just with an explicit minimum real-time span instead of a bare count.
+
+    F2 (Cybersec NO-GO 33392/33574): the entry-side values gate a kill of the live Telegram
+    poller, so a malformed or hostile switchback-hysteresis.json must neither crash the bridge
+    at startup (an uncaught OverflowError/AttributeError here means quota-bridge.py dies in
+    main() before the loop, so there is no fallback takeover during a real outage) nor be
+    accepted outside a sane window (confirmProbesIn=1/minGapSecIn=0 reintroduces kill-on-first-
+    probe by one edited number; 10**30 for either means an outage is never declared). Any
+    exception (bad JSON, non-dict root, oversized/negative/non-numeric values -- including
+    OverflowError from int(1e999) and AttributeError from a non-dict root) or an out-of-bounds
+    result falls back to the documented defaults (2, 45), with a warning on stderr so a
+    misconfigured file is visible without crash-looping."""
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError("config root is not a JSON object")
+        confirm_probes = int(raw.get("confirmProbesIn", 2))
+        min_gap_sec = int(raw.get("minGapSecIn", 45))
+    except Exception as exc:
+        print(f"quota-switchback: {path} unreadable/malformed for outage-confirm config "
+              f"({exc!r}) -- falling back to defaults (2, 45)", file=sys.stderr)
+        return 2, 45
+    lo_p, hi_p = OUTAGE_CONFIRM_PROBES_BOUNDS
+    lo_g, hi_g = OUTAGE_MIN_GAP_SEC_BOUNDS
+    if not (lo_p <= confirm_probes <= hi_p) or not (lo_g <= min_gap_sec <= hi_g):
+        print(f"quota-switchback: outage-confirm config out of sane bounds "
+              f"(confirmProbesIn={confirm_probes}, minGapSecIn={min_gap_sec}; expected "
+              f"{lo_p}..{hi_p} and {lo_g}..{hi_g}) -- falling back to defaults (2, 45)",
+              file=sys.stderr)
+        return 2, 45
+    return confirm_probes, min_gap_sec
 
 
 def confirm_switchback(probe_log, confirm_probes=2, min_gap_sec=300):

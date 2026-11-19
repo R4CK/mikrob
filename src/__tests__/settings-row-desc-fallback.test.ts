@@ -14,11 +14,12 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getSettingDefinition } from '../config-registry.js'
+import { getSettingDefinition, SETTINGS_REGISTRY } from '../config-registry.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(ROOT, 'web', 'app-device-keys.js'), 'utf8')
 const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
+const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
 
 function extract(name: string): string {
   const start = SRC.indexOf(`function ${name}(`)
@@ -51,11 +52,13 @@ function makeDocument() {
   return { createElement: (tag: string) => new FakeEl(tag) }
 }
 
-// Confirms the premise directly against the SHIPPED hu.js, not an assumption: no lang entry
-// exists for KG_ENABLED's settings.desc key. If this ever starts failing because someone adds
-// the entry, that is a real, desirable change -- the fallback below must still work for every
-// OTHER key that still has no entry, so the fallback test does not depend on this one.
-const KG_ENABLED_HAS_LANG_ENTRY = HU.includes("'settings.desc.KG_ENABLED'")
+// Card 3163d61b (2026-11-15): KG_ENABLED and the other 39 keys named in the original d96f1418
+// repro now have real lang entries in both hu.js and en.js (see the parity describe block
+// below) -- the fallback path itself still needs covering, so it is exercised here against a
+// SYNTHETIC key that is guaranteed to never collide with a real settings.desc.* entry, rather
+// than against a real registry key whose "currently missing" state would silently stop being
+// true the next time someone fixes a translation gap.
+const SYNTHETIC_MISSING_KEY = '__NO_SUCH_SETTING_KEY_IN_ANY_LANG_FILE__'
 
 // Mimics the real t(): a real lang entry would return its own text; here we only need the
 // documented miss behavior (returns the key itself), since no settings.desc.* fixture key in
@@ -82,27 +85,23 @@ function descTextOf(row: FakeEl): string {
 }
 
 describe('Settings row description fallback (card d96f1418)', () => {
-  it('KG_ENABLED has no settings.desc lang entry in the shipped hu.js (confirms the root cause premise)', () => {
-    expect(KG_ENABLED_HAS_LANG_ENTRY).toBe(false)
-  })
-
-  it('a key with no lang entry (KG_ENABLED) shows the registry description, not the raw key', () => {
-    const def = getSettingDefinition('KG_ENABLED')
-    expect(def).toBeDefined()
-    const row = buildSettingRow({ ...def, value: def!.default })
-    expect(descTextOf(row)).toBe(def!.description)
+  it('a key with no lang entry shows the registry description, not the raw key', () => {
+    const def = { ...getSettingDefinition('KG_ENABLED')!, key: SYNTHETIC_MISSING_KEY }
+    const row = buildSettingRow({ ...def, value: def.default })
+    expect(descTextOf(row)).toBe(def.description)
     expect(descTextOf(row)).not.toMatch(/^settings\.desc\./)
   })
 
   it('no settings row shows a literal "settings.desc." string, for any key missing a lang entry', () => {
-    const def = getSettingDefinition('KG_ENABLED')!
+    const def = { ...getSettingDefinition('KG_ENABLED')!, key: SYNTHETIC_MISSING_KEY }
     const row = buildSettingRow({ ...def, value: def.default })
     expect(descTextOf(row)).not.toContain('settings.desc.')
   })
 
   it('a key WITH a real translation still uses the translation, not the registry description (sanity: the fix did not break the hit path)', () => {
-    const def = getSettingDefinition('KG_ENABLED')!
-    const translated = (key: string) => (key === 'settings.desc.KG_ENABLED' ? 'EN DESC HIT' : key)
+    const def = { ...getSettingDefinition('KG_ENABLED')!, key: SYNTHETIC_MISSING_KEY }
+    const translated = (key: string) =>
+      (key === `settings.desc.${SYNTHETIC_MISSING_KEY}` ? 'EN DESC HIT' : key)
     const body = `${extract('buildSettingRow')}\nreturn { buildSettingRow }`
     const factory = new Function('document', 't', body) as (
       document: unknown, t: unknown,
@@ -110,5 +109,24 @@ describe('Settings row description fallback (card d96f1418)', () => {
     const out = factory(makeDocument(), translated)
     const row = out.buildSettingRow({ ...def, value: def.default })
     expect(descTextOf(row)).toBe('EN DESC HIT')
+  })
+})
+
+// Card 3163d61b (2026-11-15, Cybersec GO 28972 / QA2 addendum 28980 on d96f1418): 38 (now 40,
+// the registry grew by 2 since) of the registry's keys had no settings.desc.<KEY> entry in
+// either lang file, so the EN UI fell back to the registry's Hungarian-only description. This
+// is the parity check the card's "Kesz, ha" asks for, run against the live SETTINGS_REGISTRY
+// (not a hand-typed key list) so it fails the moment a NEW key ships without a lang entry in
+// either file -- the actual regression this card exists to prevent.
+describe('Settings registry <-> lang-file description parity (card 3163d61b)', () => {
+  const missingHu = SETTINGS_REGISTRY.filter((d) => !HU.includes(`'settings.desc.${d.key}'`)).map((d) => d.key)
+  const missingEn = SETTINGS_REGISTRY.filter((d) => !EN.includes(`'settings.desc.${d.key}'`)).map((d) => d.key)
+
+  it('every registry key has a settings.desc entry in hu.js', () => {
+    expect(missingHu).toEqual([])
+  })
+
+  it('every registry key has a settings.desc entry in en.js', () => {
+    expect(missingEn).toEqual([])
   })
 })

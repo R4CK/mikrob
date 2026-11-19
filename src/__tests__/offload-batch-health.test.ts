@@ -223,7 +223,10 @@ describe('offload batch health signal (card 5f00664c)', () => {
   // The curl stub above removes the network variable, but this path still spawns several real
   // children (bash, the stub, python3, mktemp) -- a generous timeout for that real subprocess
   // chain under CPU contention (card 368395d4), not a blanket suite-wide raise.
-  }, 30_000)
+  // card 517ba7f6: the 30_000 above still timed out under real fleet contention (measured 37.26s
+  // standalone under contention) -- the subprocess chain is real work, not a hang, so this widens
+  // the same per-test budget rather than changing the mechanism.
+  }, 60_000)
 
   // INSTALLED GATE (card 5595afa7): the batch must not spend a board-fetch plus a per-candidate
   // draft-check HTTP round-trip when the local LLM is not installed/masked -- it should bail with

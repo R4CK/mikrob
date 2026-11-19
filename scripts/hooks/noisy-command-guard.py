@@ -14,7 +14,13 @@ before building this, not from memory. `NOISY_GUARD_MODE=rewrite` (default stays
 original behavior) makes the hook transparently substitute the wrapped `noisy-run.sh` invocation via
 `updatedInput` instead of blocking: the agent's original Bash call just runs filtered, no extra
 block/retry round-trip. `updatedInput` replaces the WHOLE tool_input object, so every other field
-(not just `command`) is carried through unchanged.
+(not just `command`) is carried through unchanged. `permissionDecision` is NEVER set by this hook
+(card ff43b10e, RedHat NO-GO) -- the rewrite only changes WHAT runs, never whether it is allowed to
+run; the normal permission flow, including any deny rule, still evaluates the result on its own.
+Rewrite ONLY fires when the command's first word is the noisy program itself: any leading wrapper
+(sudo/doas/pkexec/su -c, time, rtk) or `VAR=val` prefix or shell metacharacter falls back to
+block-and-suggest instead, unchanged from today's behavior, so a deny rule anchored on the real
+program name always sees the command the agent actually typed.
 
 WHAT COUNTS AS NOISY
 npm/pnpm/yarn install|ci|add|update and `npm run build`; test runners (npx vitest/jest/playwright,
@@ -50,22 +56,28 @@ _ENV_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)*"
 _CMD = r"(?:^|[\n;&|(])\s*" + _ENV_PREFIX + r"(?:sudo\s+)?(?:time\s+)?(?:rtk\s+)?"
 
 _MUTATING_NPM = r"(?:ci|install|i|add|update|up|upgrade|dedupe|rebuild)"
-NOISY_PATTERNS = [
-    re.compile(_CMD + r"(?:npm|pnpm|yarn)\s+(?:[-\w]+\s+)*?" + _MUTATING_NPM + r"\b"),
-    re.compile(_CMD + r"(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|test)\b"),
-    re.compile(_CMD + r"npx\s+(?:[-\w@/.]+\s+)*?(?:vitest|jest|playwright|mocha|ava)\b"),
-    re.compile(_CMD + r"(?:go)\s+(?:build|test)\b"),
-    re.compile(_CMD + r"cargo\s+(?:build|test)\b"),
-    re.compile(_CMD + r"(?:python3?\s+-m\s+)?pytest\b"),
-    re.compile(_CMD + r"mvn\s+(?:[-\w]+\s+)*?(?:install|test|package|verify)\b"),
-    re.compile(_CMD + r"(?:\.\/)?gradlew?\s+(?:[-\w]+\s+)*?(?:build|test)\b"),
-    re.compile(_CMD + r"tsc\b(?![^\n;&|]*--noEmit\b[^\n;&|]*$)(?=[^\n;&|]*(?:$|[\n;&|]))"),
-    re.compile(_CMD + r"(?:webpack|vite)\s+(?:[-\w]+\s+)*?build\b"),
-    re.compile(_CMD + r"docker\s+build\b"),
-    re.compile(_CMD + r"docker[- ]compose\s+(?:[-\w]+\s+)*?up\b"),
-    re.compile(_CMD + r"apt(?:-get)?\s+(?:[-\w]+\s+)*?install\b"),
-    re.compile(_CMD + r"pip3?\s+install\b"),
+# Card 214ca312 FINDING 1 (Cybered NO-GO, comment on top of the bash/sh/zsh -c fix): the suffix
+# patterns live here ONCE, shared by two different prefixes below -- NOISY_PATTERNS (with the
+# wrapper-tolerant _CMD, used for detection/blocking in every mode) and _STRICT_NOISY_PATTERNS
+# (with a bare `^\s*`, used ONLY to decide rewrite eligibility). Keeping one list of suffixes
+# means a new noisy program only has to be added once, not kept in sync across two lists.
+_NOISY_SUFFIXES = [
+    r"(?:npm|pnpm|yarn)\s+(?:[-\w]+\s+)*?" + _MUTATING_NPM + r"\b",
+    r"(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|test)\b",
+    r"npx\s+(?:[-\w@/.]+\s+)*?(?:vitest|jest|playwright|mocha|ava)\b",
+    r"(?:go)\s+(?:build|test)\b",
+    r"cargo\s+(?:build|test)\b",
+    r"(?:python3?\s+-m\s+)?pytest\b",
+    r"mvn\s+(?:[-\w]+\s+)*?(?:install|test|package|verify)\b",
+    r"(?:\.\/)?gradlew?\s+(?:[-\w]+\s+)*?(?:build|test)\b",
+    r"tsc\b(?![^\n;&|]*--noEmit\b[^\n;&|]*$)(?=[^\n;&|]*(?:$|[\n;&|]))",
+    r"(?:webpack|vite)\s+(?:[-\w]+\s+)*?build\b",
+    r"docker\s+build\b",
+    r"docker[- ]compose\s+(?:[-\w]+\s+)*?up\b",
+    r"apt(?:-get)?\s+(?:[-\w]+\s+)*?install\b",
+    r"pip3?\s+install\b",
 ]
+NOISY_PATTERNS = [re.compile(_CMD + suffix) for suffix in _NOISY_SUFFIXES]
 
 _WRAPPER_RX = re.compile(
     r"(?:^|[\n;&|(])\s*(?:bash|sh|zsh)\s+-c\s+(['\"])(.*?)\1|(?:^|[\n;&|(])\s*eval\s+(['\"])(.*?)\3",
@@ -118,6 +130,70 @@ def _owned_by_wrapper(seg):
 # A command carrying shell metacharacters therefore has to travel as a single argument.
 _METACHAR_RX = re.compile(r"[|&;<>\n()`]|\$\(")
 
+# Leading `VAR=val` assignment(s) before the real command. Built with `+` (one-or-more), not
+# reused from _ENV_PREFIX's `*` (zero-or-more) -- a `*` here would match every command at position
+# zero (zero assignments is still a match), making the check a no-op.
+_LEADING_ENV_RX = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)+")
+
+
+# RedHat NO-GO (card ff43b10e, comment 32154) + MikroB addendum (comment 32155, dispatch 19523/
+# 19536): rewrite may ONLY happen when the first word of the command is the noisy program itself.
+# ANY leading wrapper -- sudo/doas/pkexec/su -c (privilege escalation), time, rtk -- disqualifies
+# the rewrite, same as a leading `VAR=val` or a shell metacharacter: it falls back to
+# block-and-suggest exactly like today, UNCHANGED from before this fix (this only narrows which
+# matched commands may be REWRITTEN, it does not change which commands are matched/blocked at
+# all). The concrete exploit: `sudo npm install` matched _CMD's own optional `sudo` prefix, so it
+# got rewritten into `bash .../noisy-run.sh sudo npm install` -- a line starting with `bash`, not
+# `sudo`, which a start-anchored deny rule like Bash(sudo:*) can no longer see.
+#
+# RedHat NO-GO round 2 (card 214ca312, on top of the bash/sh/zsh -c fix): a DENYLIST of named
+# wrappers is the wrong shape -- every wrapper not yet on the list is a new hole, and `eval` was
+# the next one: `_unwrapped_variants()` already unwraps `eval "<raw>"` to recognize a noisy
+# command hiding inside it (that is how detection/blocking works at all), but the old
+# `_WRAPPER_DISQUALIFIES_REWRITE_RX` never listed `eval`, so `eval "sudo npm install"` still got
+# REWRITTEN into `bash .../noisy-run.sh eval "sudo npm install"` -- the exact ff43b10e sudo
+# exploit, one more layer removed, past a start-anchored Bash(sudo:*) deny rule that only ever
+# sees the first word of the line it is given, "bash". Measured by RedHat 2026-11-16.
+#
+# Fix: replace the denylist with the POSITIVE rule it was always meant to approximate (MikroB
+# 19536: "rewrite ONLY when the first word is the noisy program itself") -- rewrite is eligible
+# ONLY when the raw command, after leading whitespace, matches one of `_STRICT_NOISY_PATTERNS`
+# directly (no _CMD wrapper tolerance at all). A denylist needs updating every time a new wrapper
+# is discovered; this allowlist needs nothing; any wrapper, named or not, simply fails to match
+# and falls back to block-and-suggest.
+_STRICT_NOISY_PATTERNS = [re.compile(r"^\s*" + suffix) for suffix in _NOISY_SUFFIXES]
+
+
+def _rewrite_is_safe(raw):
+    """WhiteHat F1/F2 (card fc3a6a39 follow-up, ff43b10e): rewrite mode may ONLY substitute a
+    command that `noisy-run.sh` can run as a plain argv list, unmodified in meaning, with the
+    SAME string the permission engine evaluated its deny/ask rules against.
+
+    F1 (blocking): wrapping a compound/multi-segment command into `bash -c '<raw>'` buries every
+    embedded simple command inside one quoted string argument. A deny rule (e.g. BASH_EGRESS_DENY
+    on wget/nc/telnet) that recognizes a program by how a command STARTS no longer sees it -- the
+    rewritten line starts with `bash .../noisy-run.sh bash -c '...'`, not with the denied program.
+    This is fine for the block-and-suggest path (a human reads the suggestion, decides, retypes
+    it) but not for a mode that substitutes it silently. A command with any shell metacharacter
+    therefore never gets the rewrite; it falls back to block-and-suggest exactly like today.
+
+    F2: `"$@"` is a bare exec, not a shell -- `noisy-run.sh FOO=bar npm test` passes "FOO=bar" as
+    argv[0] (a literal program name, not an environment assignment for npm), which fails with
+    "command not found" (rc 127) instead of ever running npm. A leading `VAR=val` prefix therefore
+    also falls back to block-and-suggest, where the printed suggestion is read and retyped by a
+    real shell that DOES parse the assignment.
+
+    RedHat NO-GO round 2 (card 214ca312): any wrapper at all (named or not: sudo/doas/pkexec/
+    su -c/time/rtk/bash/sh/zsh -c/eval/...) falls back to block-and-suggest -- see
+    `_STRICT_NOISY_PATTERNS` above. The rewrite may only fire when the command's first word is
+    the noisy program itself, checked as a POSITIVE match, not a wrapper denylist.
+    """
+    return (
+        not _METACHAR_RX.search(raw)
+        and not _LEADING_ENV_RX.match(raw)
+        and any(rx.match(raw) for rx in _STRICT_NOISY_PATTERNS)
+    )
+
 
 def _suggest(here, raw):
     if _METACHAR_RX.search(raw):
@@ -151,18 +227,16 @@ def main():
                     if rx.search(seg):
                         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                         wrapped = _suggest(here, raw)
-                        if os.environ.get(MODE_ENV) == "rewrite":
+                        if os.environ.get(MODE_ENV) == "rewrite" and _rewrite_is_safe(raw):
+                            # MikroB decision (comment 32155, RedHat NO-GO): never raise
+                            # permission on a rewrite -- permissionDecision stays UNSET, so the
+                            # normal permission flow (including any deny rule) still evaluates
+                            # the rewritten command on its own merits.
                             updated_input = dict(ti)
                             updated_input["command"] = wrapped
                             print(json.dumps({
                                 "hookSpecificOutput": {
                                     "hookEventName": "PreToolUse",
-                                    "permissionDecision": "allow",
-                                    "permissionDecisionReason": (
-                                        "noisy-command-guard: routed through noisy-run.sh "
-                                        "(NOISY_GUARD_MODE=rewrite) -- raw install/build/test "
-                                        "output filtered to errors/warnings/summary"
-                                    ),
                                     "updatedInput": updated_input,
                                 }
                             }))

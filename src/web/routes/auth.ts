@@ -13,6 +13,12 @@
 // which talks to the database directly and has no HTTP round-trip, so there is no token to abuse.
 // There is still no unauthenticated first-run setup PAGE (a claim-the-admin race on loopback) --
 // the operator runs the CLI on the machine instead.
+// NOT ADOPTED, upstream's mayIssueCredentials/DEVKEYMINT1022 (Koteg 25, #2163): it still lets the
+// bearer token mint the first user/credential over HTTP whenever zero dashboard_users rows exist
+// -- exactly the bootstrap exception card 49960046 retired. Re-checked against this koteg: the
+// CLI_RECOVERY_ONLY error message IS adopted below (a strictly better message on the same refusal
+// this file already gives), mayIssueCredentials/OWNER_SESSION_REQUIRED and the token-bootstrap
+// exception are not. See src/fork-upstream/acknowledged-conflicts.ts.
 //
 // Principal discipline: every handler that grants or removes access checks the
 // caller's auth kind against an EXPLICIT allowlist. Only 'token' and 'session'
@@ -148,7 +154,18 @@ const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
 // POST /api/fleet/import -- a two-step bypass of that gate using nothing but the token every agent
 // already has. Listing and revoking/deleting are NOT part of this escalation (they reduce or
 // merely read access, never grant a new one), so they stay on the wider lists above.
+// No first-run exception, unlike upstream's mayIssueCredentials/DEVKEYMINT1022 (NOT adopted, see
+// the file-top comment and src/fork-upstream/acknowledged-conflicts.ts) -- the first user is
+// always the local CLI (card 49960046).
 const CREDENTIAL_MINT_KINDS = ['session'] as const
+
+// Adopted from upstream's DEVKEYMINT1022 (#2163): a strictly better error message for the SAME
+// refusal this file already gave the bearer token on password reset (FORBIDDEN_KIND) -- not a new
+// mechanism. mayIssueCredentials/OWNER_SESSION_REQUIRED are NOT adopted alongside it.
+export const CLI_RECOVERY_ONLY = {
+  error: 'Resetting a password needs the dashboard login and the current password. Without them, recover on the machine itself: npm run dashboard-user -- reset-password <username>.',
+  code: 'cli_recovery_only',
+}
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
@@ -275,14 +292,21 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     const newPassword = str(body.new_password)
 
+    // Card 49960046 (RedHat 17005 X3): the bearer break-glass branch used to let the shared
+    // fleet token reset ANY user's password with no current_password proof, then log in as
+    // them -- the second half of the X1/X3 self-escalation chain. Retired from HTTP: only a
+    // session (which proves current_password below) may reset here now. The actual break-glass
+    // path, for when no session exists or the owner is locked out, is the local CLI
+    // (`npm run dashboard-user -- reset-password`, scripts/dashboard-user.ts) -- same trust
+    // root as the rest of break-glass tooling, no HTTP round-trip, no token to abuse.
+    if (auth?.kind === 'token') {
+      // Adopted from upstream (DEVKEYMINT1022): a more specific message than the plain
+      // FORBIDDEN_KIND below, same refusal.
+      logger.warn({ agent: auth.agent }, 'password reset via bearer token refused (recovery is the CLI)')
+      json(res, CLI_RECOVERY_ONLY, 403)
+      return true
+    }
     if (auth?.kind !== 'session' || !auth.user) {
-      // Card 49960046 (RedHat 17005 X3): the bearer break-glass branch used to let the shared
-      // fleet token reset ANY user's password with no current_password proof, then log in as
-      // them -- the second half of the X1/X3 self-escalation chain. Retired from HTTP: only a
-      // session (which proves current_password below) may reset here now. The actual break-glass
-      // path, for when no session exists or the owner is locked out, is the local CLI
-      // (`npm run dashboard-user -- reset-password`, scripts/dashboard-user.ts) -- same trust
-      // root as the rest of break-glass tooling, no HTTP round-trip, no token to abuse.
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
