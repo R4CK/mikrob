@@ -28184,3 +28184,15 @@ store/fleet-test.sh jelenlete), es minden argumentum `realpath -m` utan megy a m
 zarja a 3 mert kerulouttat (literal ".." szegmens, symlink argumentum, gate-worktree cwd + relativ
 argumentum) es RedHat 7 tulelo mutansat (K5, K7b, K9, K9b, K10b, K12, K13). Gate-SHA:
 38f4ef91528df9f110bdce8d96349ecd4b55141e. Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- 5dd48e5d: kontextus-tömörítés küszöb felső sapkával 200k tokenre (Peti 13835)
+
+**Kontextus:** a token-használat mérése (kártya 2ad5ba6c, 2026-11-14) azt mutatta, hogy egy tömörítés 240-420k tokent olvas vissza egy 1M-ablakos modellen (opus-5) -- a 75%-os percentage-küszöb (2026-08-14-es szabály) ott 750k-nál indul, ami ezt a drága újraolvasást ritkán, de nagy méretben engedi megtörténni. Peti (Telegram 13835): sapkázni a küszöböt 200 000 tokenre, a 75%-os szabály MELLETT, nem helyette.
+
+**Döntés:** `threshold_tokens_for_model()` mostantól `min(ablak * COMPACT_PCT/100, COMPACT_MAX_TOKENS)`. `COMPACT_MAX_TOKENS` alapértelmezés 200000, env-felülírható (`COMPACT_MAX_TOKENS`), validálva a repo már bevált mintájával (kártya b1813ab2, a "00"/"000" tanulság): nem-numerikus, üres VAGY csupa-nulla érték visszaesik 200000-re -- a validáció a `compact_max_tokens()` függvényben fut MINDEN híváskor, nem egyszer a script indulásakor, mert a selftest (és egy valódi hívó) a változót egy MÁR FUTÓ shellben egy függvényhívás elé prefixként állítja, nem új script-indítással -- egy egyszeri, top-level validáció ezt sosem futtatná újra (ez volt az első implementáció hibája, saját teszttel elkapva, mielőtt landolt volna). Kis ablakos modellen (ahol a 75% már a sapka alatt van) a sapka nem változtat semmit -- csak lefelé húz, sosem felfelé. CLAUDE.md "Kontextus-tömörítés küszöb" szakasza frissítve, ugyanebben a commitban.
+
+**Teszt:** `context-compact-monitor.sh --selftest` 43/43 PASS (6 új eset: 1M-ablak sapkázva 200k-ra, 200k-ablak változatlan 150k-n, a százalék felülírható marad sapkázva, a sapka maga felülírható, nem-numerikus és csupa-nulla ("00") sapka-érték visszaesik 200000-re). Mutáció-ellenőrizve (visszaállítva): a sapka-logika teljes eltávolítása 6/43 pirosat ad; a validáció eltávolítása (csak a nem-numerikus/csupa-nulla eseteket) 2/43 pirosat ad.
+
+**Nincs benne:** a monitor cron/heartbeat-ként fut (minden hívás friss script-betöltés, nincs tartós állapot a régi küszöb-logikára), ezért a "live monitor without restart" Kész-ha pont architekturálisan eleve teljesül, nem igényelt külön munkát.
+
+**Ki döntött:** Peti (Telegram 13835, 2026-11-14 19:11), MikroB (kártya 5dd48e5d dispatch, msg 18561). backend3 végezte a javítást. Gate: QA + Cybersec.
