@@ -577,3 +577,49 @@ load-bearing control is that nothing goes live without the approval.
   dashboard write, and with the one shared dashboard token an agent can call it
   too. "Only a human approves" needs the per-agent identity decision (#1985)
   first.
+
+# Fleet import takes over only the identity keys
+
+`POST /api/fleet/import?apply=true` makes the target install adopt the source's
+main-agent identity: it writes the identity into `store/config-overrides.json`
+and mirrors it into `.env`, because `scripts/channels.sh` reads `MAIN_AGENT_ID`
+and `CHANNEL_PROVIDER` from `.env` directly.
+
+Until FLEETIMPORTENVKEY1021 the takeover copied every key of
+`mainAgent.identity`. The import is reachable with the fleet's one shared
+dashboard token, and `.env` also holds keys that decide what an agent may do,
+so one import call could set any of them.
+
+What happens now:
+
+- Only the keys the export writes are taken over: `MAIN_AGENT_ID`, `BOT_NAME`,
+  `BRAND_NAME`, `OWNER_NAME`, `CHANNEL_PROVIDER` (`FLEET_IDENTITY_KEYS` in
+  `src/web/fleet-transfer.ts`). The same set goes into both files.
+- A value with a control character is left out, not cleaned. `.env` values are
+  written unquoted, one per line, so a line break would start a line of the
+  file's choosing. If `MAIN_AGENT_ID` is left out, nothing is taken over.
+- Every key that is left out is named in a warning, in the dry run and in the
+  apply result.
+- `updateEnvFile` itself refuses a value with CR, LF or NUL, and a key that is
+  not a plain env name, before it reads the file.
+- The identity is checked against the target (FLEETIMPORTFOLLOW1021), in the
+  dry run and the apply alike. `MAIN_AGENT_ID` must have the installer's slug
+  shape and must not be the name of a sub-agent, on the target or in the same
+  import; otherwise nothing is taken over. `CHANNEL_PROVIDER` is taken over only
+  when the target already holds a token for that channel (the import carries
+  none), or when it is the target's own provider; otherwise that key alone is
+  left out, with a warning.
+- `MAIN_AGENT_ID` must also not be an id the message layer owns
+  (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/web/sanitize.ts`):
+  `system` is refused on every POST, so a main agent with that id could not
+  send, and `hanna` is accepted only from a device key and framed as the owner.
+  `scripts/migrate-main-agent-id.sh` refuses the same ids, and a `BOT_NAME`
+  whose id is already a sub-agent, before it stops anything. The installers
+  (`install-macos.sh`, `install-linux.sh`) derive the id from `BOT_NAME`
+  without this check.
+
+**Not covered, stated out loud:** the rest of the import (agent files, settings,
+the vault, scheduled tasks) still writes with the same shared token, and on a
+single-user host an agent whose Bash is permissive can write `.env` directly.
+Closing those needs the per-agent identity decision (#1985) and per-agent OS
+users, not this filter.

@@ -118,6 +118,10 @@ const CASES: Array<[string, string | null, string | null, string]> = [
 ]
 
 describe('main-agent model resolution: launch and respawn agree', () => {
+  // card 517ba7f6: each case spawns a real bash child (channels.sh --resolve-main-model), which
+  // under CPU contention (card 368395d4 pattern) can exceed vitest's 5s default even though the
+  // script itself does little work -- a per-case timeout for that real subprocess spawn, not a
+  // suite-wide raise.
   it.each(CASES)('%s', (_label, envBody, settingsBody, want) => {
     const root = fixture(envBody, settingsBody)
     const fromShell = shellResolves(root)
@@ -128,7 +132,7 @@ describe('main-agent model resolution: launch and respawn agree', () => {
     expect(fromTs).toBe(want)
     // ...and, the invariant that actually matters, they are right TOGETHER.
     expect(fromTs).toBe(fromShell)
-  })
+  }, 20_000)
 })
 
 // DEFAULTCLIGUARD927 (Szotasz review of #1609): a model-less install on a CLI

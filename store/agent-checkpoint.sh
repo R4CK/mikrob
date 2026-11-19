@@ -30,12 +30,22 @@ DB="${MARVEEN_DB:-$MAIN/store/claudeclaw.db}"
 die() { echo "agent-checkpoint.sh: $2" >&2; exit "$1"; }
 
 agent_checkpoint() {
-  local agent="$1" card="$2"
+  local agent="$1" card="$2" wt_override="${3:-}"
   case "$agent" in *[!a-z0-9-]*|-*|'') die 2 "agent name must match [a-z0-9-]+ (got: $agent)" ;; esac
   case "$card" in *[!0-9a-f]*|'') die 2 "card id must be hex (got: $card)" ;; esac
 
+  # C2 (card 06334c7d NO-GO 32965): an optional explicit worktree path, so a caller that already
+  # resolved a specific worktree (e.g. post-review.sh's card-worktree-first head_sha lookup) can
+  # make the snapshot and the recorded head_sha come from the EXACT SAME tree. Without this, the
+  # snapshot always came from the agent's default worktree while head_sha could come from the
+  # card worktree -- the recorded row then claimed a sha was checkpointed when the preserved
+  # content was actually an unrelated tree.
   local wt
-  wt="$(MARVEEN_MAIN="$MAIN" bash "$HERE/agent-worktree-marveen.sh" "$agent" --path)"
+  if [ -n "$wt_override" ]; then
+    wt="$wt_override"
+  else
+    wt="$(MARVEEN_MAIN="$MAIN" bash "$HERE/agent-worktree-marveen.sh" "$agent" --path)"
+  fi
 
   # The worktree path NOT resolving to a real git worktree must refuse, never fall back to
   # running git against $MAIN -- a checkpoint "of the agent's state" taken against the SHARED
@@ -373,5 +383,5 @@ if [ "${1:-}" = "--sweep" ]; then
   exit 0
 fi
 
-[ $# -eq 2 ] || die 2 "usage: agent-checkpoint.sh <agent> <cardId>  |  agent-checkpoint.sh --selftest  |  agent-checkpoint.sh --sweep [--dry-run] [--older-than-days N]"
-agent_checkpoint "$1" "$2"
+[ $# -eq 2 ] || [ $# -eq 3 ] || die 2 "usage: agent-checkpoint.sh <agent> <cardId> [worktreePath]  |  agent-checkpoint.sh --selftest  |  agent-checkpoint.sh --sweep [--dry-run] [--older-than-days N]"
+agent_checkpoint "$1" "$2" "${3:-}"

@@ -36,8 +36,11 @@ describe('claude-md-split-reachability-check.py: standing control (card cc72cb3e
     () => {
       // ~6s on a quiet machine: 26 cases, several spawning 2-3 of their own python3 subprocesses
       // each (the --update-baseline round-trips). Default vitest timeout (5s) is too tight.
+      // card 517ba7f6: 30000 itself timed out under real fleet contention (standalone on the same
+      // sha: GREEN, 30.20s -- a real subprocess chain running slightly over budget under load, not
+      // a hang), so this widens the same per-test budget rather than changing the mechanism.
       expect(() => execFileSync('python3', [SELFTEST], { cwd: ROOT, encoding: 'utf-8' })).not.toThrow()
     },
-    30000,
+    60000,
   )
 })

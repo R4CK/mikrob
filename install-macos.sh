@@ -1409,6 +1409,9 @@ fi
 # filtered to the machine: store/first-run-llm.sh. The nomic-embed-text pull moved there too, right
 # after the runtime, because semantic memory search depends on it and a dependency must not ride
 # along with a preference.
+# NOT ADOPTED (Koteg 25): upstream's automatic Ollama+nomic-embed-text install block directly
+# reopens the owner directive above -- the runtime/model choice stays a deliberate post-boot step,
+# not an install-time default, on every platform this fork ships (mirrors install-linux.sh).
 echo ""
 echo -e "  Local LLM: nothing is installed automatically."
 echo -e "  After boot, pick a model that fits this Mac: store/first-run-llm.sh"
@@ -1500,6 +1503,7 @@ else
   warn "$(_t macos.ffmpeg_skipped)"
   echo -e "    ${DIM}$(_t macos.ffmpeg_skipped_hint)${NC}"
 fi
+
 
 # TAILSCALE-STEP-BEGIN (kartya 12dc8a5c -- sentinel a src/__tests__ standalone tesztjenek, ne torold)
 # --- Tailscale (automatikus, kartya 12dc8a5c) ---

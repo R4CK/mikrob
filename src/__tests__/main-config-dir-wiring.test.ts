@@ -56,4 +56,25 @@ describe('configDirFor REAL delegation to mainAgentConfigDir (not a mocked confi
     guard.configDirFor('some-sub-agent')
     expect(mainAgentConfigDirMock).not.toHaveBeenCalled()
   })
+
+  // card 5423775c (Cybered C1 on b715a0b1): delivery-turn-check.ts carries a THIRD,
+  // independent copy of configDirFor -- mutating it (e.g. back to the pre-fix
+  // unconditional `undefined` for MAIN_AGENT_ID) left 567/567 green, since nothing
+  // called it from a test. Same real-delegation pin as the two runners above.
+  it('delivery-turn-check.ts: MAIN_AGENT_ID resolves through the real function, with the real working dir', async () => {
+    const { MAIN_AGENT_ID, PROJECT_ROOT } = await import('../config.js')
+    expectedWorkingDir = PROJECT_ROOT
+    mainAgentConfigDirMock.mockClear()
+    const { configDirFor } = await import('../web/delivery-turn-check.js')
+    const result = configDirFor(MAIN_AGENT_ID)
+    expect(mainAgentConfigDirMock).toHaveBeenCalledWith(PROJECT_ROOT)
+    expect(result).toBe(ISOLATED_DIR)
+  })
+
+  it('delivery-turn-check.ts: a non-main agent never reaches mainAgentConfigDir (mutation pin: the branch is name-gated)', async () => {
+    mainAgentConfigDirMock.mockClear()
+    const { configDirFor } = await import('../web/delivery-turn-check.js')
+    configDirFor('some-sub-agent')
+    expect(mainAgentConfigDirMock).not.toHaveBeenCalled()
+  })
 })

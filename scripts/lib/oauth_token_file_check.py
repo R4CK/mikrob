@@ -122,14 +122,24 @@ def same_as_fleet_token(own_path: str, fleet_token_path: str) -> bool:
     """Mirrors checkOauthTokenFile's content-equality check: a COPY of the fleet token under
     another name (different inode, identical bytes) is still the fleet token. Trailing newlines
     stripped on both sides, matching exportedValue()'s treatment of what `$(cat file)` hands the
-    shell. Never prints either value -- a boolean only."""
+    shell. Never prints either value -- a boolean only.
+
+    Card bc32d233 (RedHat GO, oauth_token_file_check.py follow-up): a strict `encoding="utf-8"`
+    read raises UnicodeDecodeError on invalid bytes, UNCAUGHT by the `except OSError` below
+    (UnicodeDecodeError is a ValueError, not an OSError) -- the whole script then crashed with a
+    traceback on stderr (swallowed by watchdog.sh's `2>/dev/null`) and Python's default exit code
+    1, indistinguishable from this function's own legitimate "not the same token" answer (also
+    exit 1). watchdog.sh's `if python3 ...; then REFUSE; fi` read that crash as "no problem" and
+    proceeded to export the file. `errors="replace"` (same as resolve()'s own fix above) removes
+    the crash; the dispatch in `__main__` below additionally fails CLOSED on any OTHER
+    unanticipated exception."""
     try:
-        with open(own_path, "r", encoding="utf-8") as f:
+        with open(own_path, "r", encoding="utf-8", errors="replace") as f:
             own = f.read().rstrip("\n")
     except OSError:
         return False
     try:
-        with open(fleet_token_path, "r", encoding="utf-8") as f:
+        with open(fleet_token_path, "r", encoding="utf-8", errors="replace") as f:
             fleet = f.read().rstrip("\n")
     except OSError:
         return False  # no fleet file: nothing to be a copy of
@@ -139,9 +149,12 @@ def same_as_fleet_token(own_path: str, fleet_token_path: str) -> bool:
 def has_bad_content_characters(path: str) -> bool:
     """Mirrors checkOauthTokenFile's content-bad-characters check: a setup-token never contains
     whitespace or control characters; one that does would reach the environment verbatim and fail
-    as a login, not here."""
+    as a login, not here.
+
+    Card bc32d233: same `errors="replace"` fix as same_as_fleet_token above, for the same
+    UnicodeDecodeError-crash-reads-as-"clean" reason."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             value = f.read().rstrip("\n")
     except OSError:
         return False
@@ -160,9 +173,21 @@ def _usage() -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
-        sys.exit(0 if same_as_fleet_token(sys.argv[2], sys.argv[3]) else 1)
+        # Card bc32d233: fail CLOSED on any exception the function itself does not anticipate --
+        # exit 0 is the code watchdog.sh reads as "REFUSE:same-as-fleet-token", so an unreadable
+        # crash never slips through as the other (proceed) branch.
+        try:
+            same = same_as_fleet_token(sys.argv[2], sys.argv[3])
+        except Exception:
+            same = True
+        sys.exit(0 if same else 1)
     elif len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
-        sys.exit(0 if has_bad_content_characters(sys.argv[2]) else 1)
+        # Same fail-closed posture: exit 0 is "REFUSE:content-bad-characters".
+        try:
+            bad = has_bad_content_characters(sys.argv[2])
+        except Exception:
+            bad = True
+        sys.exit(0 if bad else 1)
     elif len(sys.argv) == 2 and not sys.argv[1].startswith("--"):
         # Belt-and-suspenders (card bc32d233): resolve() is written to never raise for any
         # condition it anticipates, but an exception from a cause nobody anticipated (OOM, a

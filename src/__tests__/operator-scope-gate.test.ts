@@ -221,11 +221,15 @@ describe('the owner switches', () => {
     expect(row.actor).toBe('session:owner')
   })
 
-  it('an unexpected stored scope reads as operator (fail closed), only the literal full is full', () => {
+  // Card 2ba008f2: an unexpected value now reads as 'night', not 'operator' -- 'night' is the
+  // NARROWER of the two (a fixed 3-item allowlist vs. the entire /api/operator/* namespace), so
+  // failing closed to it instead of 'operator' is a strictly smaller blast radius for a corrupt
+  // or future-unknown stored value. Still only the literal 'full' reads as full.
+  it('an unexpected stored scope reads as night (fail closed to the narrowest), only the literal full is full', () => {
     const k = createDeviceKey('odd')
     getDb().prepare("UPDATE device_keys SET scope = 'FULL' WHERE id = ?").run(k.id)
     _clearDeviceKeyCacheForTest()
-    expect(resolveDeviceKey(k.key)?.scope).toBe('operator')
+    expect(resolveDeviceKey(k.key)?.scope).toBe('night')
   })
 
   it('GET/PUT /api/operator-access is owner-only: device keys (full or operator) get 403', async () => {

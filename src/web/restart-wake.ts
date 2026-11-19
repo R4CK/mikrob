@@ -53,7 +53,9 @@ export function restartWakePrompt(reason: string): string {
  * restart never wakes. An unreadable body keeps the defaults, as the route did
  * for `fresh` before.
  */
-export function restartOptsFromBody(raw: string): { fresh: boolean; wake?: RestartWakeRequest } {
+export function restartOptsFromBody(
+  raw: string
+): { fresh: boolean; wake?: RestartWakeRequest; force?: boolean; actor?: string } {
   let body: unknown = {}
   try {
     body = JSON.parse(raw || '{}')
@@ -62,8 +64,13 @@ export function restartOptsFromBody(raw: string): { fresh: boolean; wake?: Resta
   }
   const b = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {}
   const fresh = b.fresh === true
-  if (fresh || b.wake === false) return { fresh }
-  return { fresh, wake: { reason: 'api-restart' } }
+  // Card d5638d28 round 2: same owner-bypass shape as /start's body parsing
+  // (force:true + actor:"mikrob"), forwarded to restartAgentProcess's shared
+  // degraded-orchestrator check.
+  const force = b.force === true
+  const actor = typeof b.actor === 'string' ? b.actor : undefined
+  if (fresh || b.wake === false) return { fresh, force, actor }
+  return { fresh, wake: { reason: 'api-restart' }, force, actor }
 }
 
 const pending = new Map<string, ReturnType<typeof setTimeout>>()
