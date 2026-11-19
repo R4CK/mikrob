@@ -298,6 +298,37 @@ case("a retraction mid-prose, not line-initial, is not a marker (anchored like G
       c("backend", "a VISSZAVONVA: bbbb2222 szo csak idezve szerepel itt"),
       c("qa", V % "bbbb2222")], "AGREE")
 
+# --- F1/F2 (card a7f206a5, WhiteHat 84fed4ee gate comment 20580): author trust and single-sha ---
+case("F1: a retraction from an UNRELATED author (neither the REVIEW's own nor mikrob) does not "
+     "retract it",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("qa2", "VISSZAVONVA: bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+case("F1: a GENERATED author's (local-llm) retraction line is ignored, same filter as REVIEW-reading",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("local-llm", "VISSZAVONVA: bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+case("F1: a GENERATED author's (gate-pretriage) retraction line is ignored too",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("gate-pretriage", "VISSZAVONVA: bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+case("F1: mikrob MAY retract a REVIEW on the board's behalf, not only the review's own author",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("mikrob", "VISSZAVONVA: bbbb2222"), c("qa", V % "aaaa1111")], "AGREE")
+case("F2: only the FIRST sha after the keyword retracts -- the branch-revert sentence's OTHER "
+     "sha (the one restored TO) must stay live",
+     [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"),
+      c("backend", "VISSZAVONVA: bbbb2222 (branch visszaallitva aaaa1111-re)"),
+      c("qa", V % "aaaa1111")], "AGREE")
+case("F2 MUTATION CONTROL: same history, verdict on the WRONG (withdrawn) sha must NOT read AGREE",
+     [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"),
+      c("backend", "VISSZAVONVA: bbbb2222 (branch visszaallitva aaaa1111-re)"),
+      c("qa", V % "bbbb2222")], "UNRESOLVED")
+case("F3 (WhiteHat M3): a lower-case 'visszavonva:' keyword still retracts (IGNORECASE)",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("fron-teddy", "visszavonva: bbbb2222"), c("qa", V % "aaaa1111")], "AGREE")
+case("F3 (WhiteHat M6): an upper-case sha on the retraction line still matches the lower-case "
+     "Gate-SHA it names",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("fron-teddy", "VISSZAVONVA: BBBB2222"), c("qa", V % "aaaa1111")], "AGREE")
+
 # --- THE VERDICT WORD MUST END, NOT MERELY HIT A WORD BOUNDARY ---------------------------------
 # `\b` matched between the S of PASS and the hyphen, so a BUILDER's "QA PASS-eligible" parsed as
 # the QA gate's verdict (measured: card 65e0b0d5, author backend2). Four comments in 20121 carry

@@ -28422,3 +28422,41 @@ azaz a (C) mérés maga dönti el, kell-e a nagyobb beavatkozás.
 
 **Ki döntött:** MikroB (msg 18804, válasz a fullstack plan-grilling kérdésére, komment 31547/
 msg 18803). Gate: QA.
+
+## 2026-11-18 -- a7f206a5: retraction marker tightened to the REVIEW's own author/mikrob, first-sha-only
+
+**Decision:** Card a7f206a5 (source: WhiteHat 84fed4ee gate, comment 20580, landed). The
+`VISSZAVONVA:`/`RETRACTED:` marker (card 84fed4ee) that excludes a stale REVIEW from
+`declared_shas()` had two gaps measured live by WhiteHat:
+
+F1: `_retraction_shas_after` applied no author filter at all -- any commenter, including a
+generated draft author (local-llm, gate-pretriage), could retract someone else's real REVIEW.
+
+F2: the retraction line's EVERY hex token counted, so "VISSZAVONVA: B (visszaallitva A-ra)" --
+the exact sentence shape the original 101f1702 incident's prose used -- retracted both B (the
+one actually withdrawn) and A (the one restored to), leaving no live REVIEW and the real,
+intended sha unverified (NOSHA/UNRESOLVED instead of AGREE).
+
+**Fix:** `_retraction_shas_after(comments, index, review_author)` now only accepts a retraction
+comment whose author is the REVIEW's own author or `mikrob` (per WhiteHat's own suggestion, and
+excludes generated authors via the existing `_is_generated_author`), and only takes the FIRST
+sha-shaped token per retraction line, reusing `_line_shas()`'s own parent-marker/path-token
+exclusions rather than a bare token scan. `_latest_declaring_review` passes the REVIEW's author
+through. F4 (gate-dispatch-check.sh / gate-pretriage-card.sh not recognising the marker at all)
+is WhiteHat's own INFO-severity, explicitly out of the card's stated success criteria, and is
+left for a separate card.
+
+**Test:** `store/gate-closure-check.selftest.py`, 9 new cases: 3 pin F1 (unrelated author,
+local-llm, gate-pretriage all fail to retract; mikrob succeeds), 2 pin F2 (first-sha-only is
+correct; a verdict on the wrongly-surviving sha under the OLD code reads UNRESOLVED, not AGREE),
+2 pin case-insensitivity of the keyword and of the sha token (WhiteHat's M3/M6). Mutation-proven:
+reverted `gate-closure-check.py` only (selftest file kept at HEAD) -- exactly 4 of the 9 new
+cases (the ones that distinguish old from new behaviour; the other 5 pass under either version
+by construction, e.g. mikrob was never excluded by the old code either) went RED, everything
+else (195 pre-existing cases) stayed GREEN. Restored, re-ran: 204/204 green.
+
+**Measured:** `python3 store/gate-closure-check.selftest.py`: 204 case(s), PASS (pre-fix: 200
+pass / 4 fail, exactly the F1 x3 + F2-control cases). `python3 -m py_compile`: clean.
+
+**Who decided:** backend (own card). Gate: QA + Cybered (fix direction came from WhiteHat, so
+the security gate is Cybered, per the card's own designation).
