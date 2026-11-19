@@ -28630,3 +28630,32 @@ visszaallitva, ismet zold.
 **Ki döntött:** RedHat CYBERED GO (e6b2742b, komment 15294) adta a fix-iranyt es a merendo
 kerdest; backend2 vegezte a merest/dontest/javitast. Gate: QA + Cybersec (a kartya sajat
 kijelolese).
+
+## 2026-11-16 -- 6b7a606d: watchdog.sh REFUSEs on a checker exit other than 0/1
+
+RedHat LOW on ae5af304 (msg 19513): agent_launch_env's --bad-content-characters and
+--same-as-fleet-token sub-calls used a bare `if CMD; then`, collapsing every non-zero exit
+(1 = legitimate no-match, but also 2, a kill signal, or a crash) into the same "no match"
+branch -- a checker crash on either call could again let a corrupted own-token file through.
+Fixed by capturing the exit code explicitly: only exit 1 means no-match now, anything else
+REFUSEs as checker-failed.
+
+Rebased onto current develop (base 92db6b69a) instead of the earlier, now-stale f5a3de9b9
+attempt: develop already carries the checker-side crash-safety fix (card bc32d233,
+oauth_token_file_check.py) via a different, equivalent-or-stronger mechanism
+(`errors="replace"` plus a generic fail-closed-on-any-exception in both CLI branches) than the
+decode-maps-to-exit-0/other-exceptions-map-to-exit-2 split this card's earlier attempt
+(d816ef444) used independently -- confirmed no residual gap by diffing scripts/watchdog.sh
+against the earlier e0e56cfaa attempt (empty diff, same fix) and
+scripts/lib/oauth_token_file_check.py against the earlier c75524f91 attempt (bc32d233's version
+is a superset of the same guarantee). Only the watchdog.sh-side fence was actually missing from
+develop; the checker-side fence had already landed under bc32d233.
+
+**Mérés:** scripts/__tests__/watchdog-config-isolation.test.sh, 4 new cases (55-58, renumbered
+from the earlier attempt's 53-56 to sit after the already-landed 53-54): a stub checker exits 2
+/ is killed by SIGKILL on each sub-call while behaving normally for the main resolve() call.
+Mutation-proven: reverting watchdog.sh's fix flips exactly 55/56/57 red (the exact fail-open
+reproduced), #58 pins the exit-0/exit-1 behaviour stays unchanged. Full suite: 68/68 green with
+the fix, 65/68 (3 red) reverted.
+
+**Ki döntött:** RedHat lelete (msg 19513) alapján backend javítja. Gate: QA + Cybered.
