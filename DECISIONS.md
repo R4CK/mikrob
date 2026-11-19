@@ -28957,3 +28957,60 @@ touched). Scoped `fleet-test.sh --ref card/1124f53f`: TODO before gate (listed i
 **Ki döntött:** backend3 végezte (MikroB dispatch msg 21629, "take e5c46e87's next unblocked
 subtask" while e5c13c0e's gate was pending). Gate: QA + Cybersec + Cybered (trust-boundary
 clause: vault/secret, auth, approval and mail-gate code touched -- see the card's own Gate line).
+
+
+## 2026-11-19 -- 1124f53f (follow-up): Koteg 27 scoped-test reconciliation, two more NOT-ADOPTED items
+
+Scoped fleet-test (63 test files touched or added by this koteg, run in two batches) surfaced
+real mismatches after the first commit, none of them compile errors (tsc was already clean) --
+all either a new upstream test assuming a feature this fork does not have, or this fork's OWN
+stricter rule-4 enforcement (agent-actor move to done always redirects to testing, no evidence
+exception -- see the main entry above) correctly breaking a test fixture written against the
+looser upstream semantics.
+
+**Two more NOT ADOPTED, consistent with the main entry's reasoning:**
+
+3. **email-send-gate.mjs's script-header mail-import scanner** (readScriptHead/resolveScriptPath/
+   isSendInvocation/scriptRunSends, flagged as "left on the table" in the main entry above).
+   Its own dedicated test file, email-send-gate-script.test.ts, landed as a new file importing
+   functions that do not exist in this fork's version of the gate (kept entirely ours, per the
+   recipient-ledger rejection two files over in the same conflict). DELETED the test (not
+   skipped): it has zero code behind it in this fork, so a skip would just be a permanently-red
+   marker nobody re-enables. Revisit together if/when the dedicated follow-up card this entry's
+   main paragraph suggests ports the scanner.
+4. **web/app.js's owner-strip UI**, kanban-owner-strip.test.ts specifically (not -lanes, which
+   skips cleanly): its `setup()` helper is called directly inside `describe()` bodies, not
+   inside `it()`, so `describe.skip` does not prevent the module-collection-time crash
+   (`slice()` throwing on a marker absent from the STUB'd app.js). DELETED for the same reason
+   as #3 -- no code exists in this fork for the skip to eventually re-enable.
+
+**Fixed, not skipped (rule-4 interaction, not a missing feature):** five test files used a
+mocked `listAgentNames()` whose entries happened to double as the "actor" closing a card to
+done, incidentally triggering the new agent-redirect and breaking assertions that were actually
+about something else entirely (notification routing, expected_status staleness, dispatch-skip).
+kanban-unblock-notify.test.ts: swapped the move() helper's default closing actor from the agent
+'zara' to a human (listAgentNames itself stayed, since the file's self-exclusion/dispatch-routing
+logic genuinely needs 'dex'/'zara' recognised as agents elsewhere) -- one sub-test skipped with
+a note (its premise needs an agent to reach done directly, which rule 4 no longer allows; a real
+fix needs the shared card fixture reassigned, not a one-line actor swap). kanban-dispatch-skip.ts
+and kanban-move-expected-status.ts: one call site each, same swap. kanban-done-evidence.test.ts:
+updated the one test literally asserting the old evidence-bypass to assert the correct
+testing-redirect instead (evidence still stored, so the reviewer sees it -- required a
+db.ts fix too: evidenceToStore only checked status==='done', silently dropping evidence on
+the redirect-to-testing path it exists for; now also checks 'testing'). fleet-roster-section.ts:
+skipped case (g), which assumes the main agent can be a roster "manager" through the same
+dynamic path a sub-agent uses -- ensureFleetRosterSection has its own pre-existing, unrelated
+`if (name === MAIN_AGENT_ID) return` (same no-op-for-MAIN class every other ensure*Section
+carries, confirmed by its own comment, not something this merge touched). skills-cli-async.test.ts:
+5 of 9 tests skipped (the "assign" ones) -- /api/skills/:name/assign is pre-existing hard
+fail-closed (SKILLS_ASSIGN_FAIL_CLOSED = true, confirmed on origin/develop, unrelated to this
+batch) pending card 3fb0ef97's non-forgeable approval channel; the 4 "export" tests are
+unaffected and still run. teams-credentials.test.ts: one case skipped (the web/app.js half of
+an otherwise-passing wiring check).
+
+**Mérés:** two scoped fleet-test.sh --ref 0fe59d29f batches (63 test files split in half) --
+Batch A: 31 Test Files passed (31), 633 Tests passed, 11 skipped (644). Batch B: 28 Test Files
+passed | 2 skipped (30), 450 Tests passed, 16 skipped (466). `npx tsc --noEmit`: clean, whole
+tree. Full (unscoped) fleet-test.sh still not run on this branch (time).
+
+**Ki döntött:** backend3 végezte.
