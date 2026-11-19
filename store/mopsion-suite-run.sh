@@ -83,10 +83,9 @@
 #   CLEANCORE_SUITE_ALLOW_NO_CARD (card c0408a1c) set to 1 to skip the live-mopsion-card
 #                                precondition below and take a slot anyway. Logged to stderr
 #                                whenever used -- this is an explicit, auditable override, not a
-#                                silent bypass.
-#   CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR (card c0408a1c, D1) overrides the marveen-worktrees
-#                                path the cwd/argument check (below) refuses against, for the
-#                                selftest only. Default /home/neon/marveen-agent-worktrees.
+#                                silent bypass. Does NOT skip the D1 marveen-tree refusal below
+#                                (card dffbb55f): that check runs first and is not a "no card"
+#                                question at all.
 #
 # Exit: the suite's own exit code | 2 usage, an unusable lock directory, OR (card c0408a1c, D1) the
 #       caller's cwd or a vitest argument names a marveen-repo file -- use fleet-test.sh instead |
@@ -203,46 +202,60 @@ shift || true
 [ "${1:-}" = "--" ] && shift || true
 
 # --- D1: refuse a marveen test run outright (card c0408a1c, MikroB 18681, 2nd acceptance criterion
-# of comment 17448) --------------------------------------------------------------------------
+# of comment 17448; reworked by card dffbb55f) ------------------------------------------------
 # Measured 2026-10-12/13: qa2 and backend2 ran a MARVEEN file (src/__tests__/gemini-offload-dispatch
 # .test.ts) through this script, and backend3's cwd was a marveen worktree -- four agents, six runs
 # in one day, all of them meant for marveen's own fleet-test.sh instead. This check runs before
 # anything else below (even before the live-mopsion-card precondition, and NOT skippable by
 # CLEANCORE_SUITE_ALLOW_NO_CARD -- that override is for "no live mopsion card", a different
 # precondition; a marveen test never belongs in this script's lock regardless of override).
-MARVEEN_MAIN_DIR="${MARVEEN_MAIN:-/home/neon/marveen}"
-MARVEEN_WORKTREES_DIR="$(env_compat_get MIKROB_SUITE_MARVEEN_WORKTREES_DIR CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR /home/neon/marveen-agent-worktrees)"
+#
+# MARKER, NOT PATH PREFIX (card dffbb55f, RedHat's c0408a1c comment 18896). The original check
+# matched the cwd/argument against two hardcoded directories (the main clone, marveen-agent-
+# worktrees) and missed every OTHER marveen checkout -- measured live: a gate agent's own worktree
+# is neither (QA2's was /home/neon/cc-gate-c0408a1c-qa2-3ceeec74, this agent's own gate runs are
+# under /home/neon/marveen-gate-worktrees/...), so the exact population most likely to trip this
+# (gate agents, running from their own throwaway marveen worktree) was not covered. Every marveen
+# checkout, wherever it lives, is a git worktree carrying store/fleet-test.sh -- the file this
+# message itself tells the caller to use instead -- and no mopsion checkout does. So detection asks
+# git for the checkout's toplevel and looks for that one file, instead of naming directories.
+_is_marveen_dir() { # $1 = an existing, absolute directory
+  local top
+  top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -f "$top/store/fleet-test.sh" ]
+}
 CALLER_PWD="$(pwd -P)"
 # The cwd half is skipped for --worktree callers: that flag already names an explicit, pinned
 # mopsion worktree for a specific prepared commit (card 08eb6402's prepare/suite/land design,
 # e.g. mopsion-preland.sh) -- the caller's own shell cwd is irrelevant there, and was never the
 # failure mode (qa2/backend2 called this script directly, with no --worktree).
-if [ -z "$WORKTREE_OVERRIDE" ]; then
-  case "$CALLER_PWD" in
-    "$MARVEEN_MAIN_DIR"|"$MARVEEN_MAIN_DIR"/*|"$MARVEEN_WORKTREES_DIR"|"$MARVEEN_WORKTREES_DIR"/*)
-      echo "mopsion-suite-run: REFUSED -- the caller's cwd ('$CALLER_PWD') is a marveen checkout, not a mopsion worktree. Use 'bash store/fleet-test.sh --ref <sha> <fajl>' for marveen tests instead (card c0408a1c)." >&2
-      exit 2
-      ;;
-  esac
+if [ -z "$WORKTREE_OVERRIDE" ] && _is_marveen_dir "$CALLER_PWD"; then
+  echo "mopsion-suite-run: REFUSED -- the caller's cwd ('$CALLER_PWD') is a marveen checkout, not a mopsion worktree. Use 'bash store/fleet-test.sh --ref <sha> <fajl>' for marveen tests instead (card c0408a1c, dffbb55f)." >&2
+  exit 2
 fi
 for _d1_arg in ${1+"$@"}; do
   case "$_d1_arg" in
     -*) continue ;;  # a flag (e.g. --maxWorkers=4) is never a file path
   esac
   case "$_d1_arg" in
-    /*) _d1_path="$_d1_arg" ;;
-    *) _d1_path="$CALLER_PWD/$_d1_arg" ;;
+    /*) _d1_raw="$_d1_arg" ;;
+    *) _d1_raw="$CALLER_PWD/$_d1_arg" ;;
   esac
-  case "$_d1_path" in
-    "$MARVEEN_MAIN_DIR"/*|"$MARVEEN_WORKTREES_DIR"/*)
-      if [ -e "$_d1_path" ]; then
-        echo "mopsion-suite-run: REFUSED -- vitest argument '$_d1_arg' names a marveen-repo file, not a mopsion one. Use 'bash store/fleet-test.sh --ref <sha> $_d1_arg' for marveen tests instead (card c0408a1c)." >&2
-        exit 2
-      fi
-      ;;
-  esac
+  # realpath -m (card dffbb55f, bypasses a+b measured in RedHat's comment 18896): collapses a
+  # literal ".." segment and resolves any symlink component that DOES exist, continuing lexically
+  # past the first component that does not -- so it never requires the final file to exist, but a
+  # symlink pointing AT a marveen file is judged by its real target, not by its own (non-marveen)
+  # path.
+  _d1_path="$(realpath -m -- "$_d1_raw" 2>/dev/null)" || _d1_path="$_d1_raw"
+  if [ -e "$_d1_path" ]; then
+    _d1_dir="$(dirname "$_d1_path")"
+    if _is_marveen_dir "$_d1_dir"; then
+      echo "mopsion-suite-run: REFUSED -- vitest argument '$_d1_arg' names a marveen-repo file, not a mopsion one. Use 'bash store/fleet-test.sh --ref <sha> $_d1_arg' for marveen tests instead (card c0408a1c, dffbb55f)." >&2
+      exit 2
+    fi
+  fi
 done
-unset _d1_arg _d1_path
+unset _d1_arg _d1_raw _d1_path _d1_dir
 
 # --- kanban comment, best-effort ---------------------------------------------------------------
 # NEVER fails the run. A suite must not depend on the dashboard being up; the comment is a courtesy

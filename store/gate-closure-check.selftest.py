@@ -17,6 +17,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -296,6 +297,37 @@ case("a retraction mid-prose, not line-initial, is not a marker (anchored like G
      [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"),
       c("backend", "a VISSZAVONVA: bbbb2222 szo csak idezve szerepel itt"),
       c("qa", V % "bbbb2222")], "AGREE")
+
+# --- F1/F2 (card a7f206a5, WhiteHat 84fed4ee gate comment 20580): author trust and single-sha ---
+case("F1: a retraction from an UNRELATED author (neither the REVIEW's own nor mikrob) does not "
+     "retract it",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("qa2", "VISSZAVONVA: bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+case("F1: a GENERATED author's (local-llm) retraction line is ignored, same filter as REVIEW-reading",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("local-llm", "VISSZAVONVA: bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+case("F1: a GENERATED author's (gate-pretriage) retraction line is ignored too",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("gate-pretriage", "VISSZAVONVA: bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
+case("F1: mikrob MAY retract a REVIEW on the board's behalf, not only the review's own author",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("mikrob", "VISSZAVONVA: bbbb2222"), c("qa", V % "aaaa1111")], "AGREE")
+case("F2: only the FIRST sha after the keyword retracts -- the branch-revert sentence's OTHER "
+     "sha (the one restored TO) must stay live",
+     [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"),
+      c("backend", "VISSZAVONVA: bbbb2222 (branch visszaallitva aaaa1111-re)"),
+      c("qa", V % "aaaa1111")], "AGREE")
+case("F2 MUTATION CONTROL: same history, verdict on the WRONG (withdrawn) sha must NOT read AGREE",
+     [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"),
+      c("backend", "VISSZAVONVA: bbbb2222 (branch visszaallitva aaaa1111-re)"),
+      c("qa", V % "bbbb2222")], "UNRESOLVED")
+case("F3 (WhiteHat M3): a lower-case 'visszavonva:' keyword still retracts (IGNORECASE)",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("fron-teddy", "visszavonva: bbbb2222"), c("qa", V % "aaaa1111")], "AGREE")
+case("F3 (WhiteHat M6): an upper-case sha on the retraction line still matches the lower-case "
+     "Gate-SHA it names",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("fron-teddy", "VISSZAVONVA: BBBB2222"), c("qa", V % "aaaa1111")], "AGREE")
 
 # --- THE VERDICT WORD MUST END, NOT MERELY HIT A WORD BOUNDARY ---------------------------------
 # `\b` matched between the S of PASS and the hyphen, so a BUILDER's "QA PASS-eligible" parsed as
@@ -1337,6 +1369,93 @@ if _repo_ok:
          "not read as landed just because develop's lines are (trivially) present on develop",
          [c("backend2", R % SYNC_MERGE), c("qa", L % SYNC_MERGE)], "UNLANDED",
          gates="qa", env=ENV, landed=True)
+
+    # --- NOT-LANDED: does card_landings back up the judged sha? (card 634a188c) -----------------
+    # Reuses the SAME landing-fixture repo (SHIPPED/STRANDED, etc.) so these cases exercise the real
+    # `--card` path end to end, not a mock. A fresh scratch sqlite db keeps them independent of each
+    # other and of the real store/claudeclaw.db.
+    _landings_dir = tempfile.mkdtemp(prefix="gcc-landings-")
+    _landings_db = os.path.join(_landings_dir, "card-landings-selftest.db")
+    _ldb = sqlite3.connect(_landings_db)
+    _ldb.execute(
+        "CREATE TABLE card_landings (id INTEGER PRIMARY KEY, card_id TEXT, work_sha TEXT, "
+        "merge_sha TEXT, repo TEXT, landed_at INTEGER, landed_by TEXT)"
+    )
+    _ldb.commit()
+
+    def _put_landing(card_id, work_sha, merge_sha):
+        _ldb.execute(
+            "INSERT INTO card_landings (card_id, work_sha, merge_sha, repo, landed_at, landed_by) "
+            "VALUES (?, ?, ?, 'marveen', 0, 'test')", (card_id, work_sha, merge_sha))
+        _ldb.commit()
+
+    DB_ENV = dict(ENV, GATE_CLOSURE_DB=_landings_db)
+
+    _put_landing("aaaaaaaa", SHIPPED, TIP)
+    case("a card_landings row naming the judged sha: not NOT-LANDED (falls through to AGREE)",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "AGREE",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "aaaaaaaa"])
+
+    case("no card_landings row at all for this card id: NOT-LANDED, even though git ancestry "
+         "would call it AGREE",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "bbbbbbbb"])
+
+    _put_landing("cccccccc", STRANDED, STRANDED)
+    case("a card_landings row exists for this card id, but names a DIFFERENT sha: NOT-LANDED, "
+         "not a silent pass on card_id alone (MikroB's requirement, comment 28281)",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "cccccccc"])
+
+    # QA FAIL 31861, LOW: shas_agree(x, "") is True for any x, so a row with an empty/blank
+    # work_sha and merge_sha must not be able to vacuously "land" any real sha. Not reachable via
+    # the live writer today, but pinned so a future direct-sqlite3 writer cannot defeat this
+    # silently.
+    _put_landing("gggggggg", "", "")
+    case("a card_landings row with empty work_sha/merge_sha cannot vacuously land any sha",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "gggggggg"])
+
+    case("CONTROL: no --card given -- the DB check never runs, pre-card behaviour (AGREE)",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "AGREE",
+         gates="qa", env=DB_ENV, landed=True)
+
+    case("CONTROL: a missing/unreadable card_landings db falls through to the git check, "
+         "fail-open on THIS check only (not a silent block)",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "AGREE",
+         gates="qa", env=dict(ENV, GATE_CLOSURE_DB="/nonexistent-landings.db"), landed=True,
+         extra=["--card", "dddddddd"])
+
+    case("Landing: n/a exempts a config-only card from BOTH checks, even with no row at all",
+         [c("backend2", "REVIEW: kesz.\nGate-SHA: %s\nLanding: n/a (config-only)" % STRANDED),
+          c("qa", L % STRANDED)], "AGREE",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "eeeeeeee"])
+
+    # QA FAIL 31861, MEDIUM: Landing: n/a must only exempt when it is on the LATEST REVIEW itself --
+    # an unrelated THIRD-PARTY comment carrying the same text, posted AFTER a real REVIEW that
+    # declares a genuinely unlanded sha, must not retroactively exempt that sha. Pin: NOT-LANDED,
+    # not AGREE.
+    case("an unrelated LATER comment's Landing: n/a does NOT exempt a real REVIEW's unlanded sha",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED),
+          c("someone", "unrelated chatter\nLanding: n/a (just testing)")], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "ffffffff"])
+
+    # Cybersec2 NO-GO 31869, F1 round 2: a LATER comment that merely STARTS with the word REVIEW
+    # (no Gate-SHA line at all) must not win the "latest REVIEW" slot over the real, Gate-SHA-
+    # bearing REVIEW -- it must not exempt the real REVIEW's declared, unlanded sha either. Pin:
+    # NOT-LANDED, not AGREE.
+    case("a later Gate-SHA-less 'REVIEW (addendum)' comment does NOT exempt the real REVIEW's sha",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED),
+          c("someone", "REVIEW (addendum)\nLanding: n/a")], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "hhhhhhhh"])
+
+    case("the case-insensitive 'review:' spelling, same shape, does NOT exempt either",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED),
+          c("someone", "review: just a note\nLanding: n/a")], "NOT-LANDED",
+         gates="qa", env=DB_ENV, landed=True, extra=["--card", "iiiiiiii"])
+
+    _ldb.close()
+    shutil.rmtree(_landings_dir, ignore_errors=True)
 
     shutil.rmtree(_landed_repo, ignore_errors=True)
 

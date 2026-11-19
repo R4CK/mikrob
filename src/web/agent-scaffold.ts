@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync, lstatSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
 import { basename, join } from 'node:path'
@@ -4396,7 +4396,17 @@ const FLEET_AUTH_BLOCK_RE = new RegExp(
   `${FLEET_AUTH_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${FLEET_AUTH_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildFleetAuthBody(): string {
+// Card 2ec21127 (Token 8, MikroB condition 3): short form is the default emission; the full
+// legacy block (pre-shrink wording, byte-identical to the historical committed text) is kept
+// available via this env flag ONLY so a zero-diff/regression test can assert both shapes still
+// render, not because any live agent is meant to run on it long-term.
+export const LEGACY_GENERATED_BLOCKS_ENV = 'CLAUDE_MD_LEGACY_GENERATED_BLOCKS'
+
+export function legacyGeneratedBlocksEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ['1', 'on', 'true', 'yes'].includes(String(env[LEGACY_GENERATED_BLOCKS_ENV] ?? '').trim().toLowerCase())
+}
+
+function buildFleetAuthBodyLong(): string {
   return [
     '## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)',
     '',
@@ -4425,6 +4435,35 @@ export function buildFleetAuthBody(): string {
     '   saját creds-könyvtár, saját OAuth). A másolás auditálhatatlan, és más megbízó',
     '   adatához is hozzáférést ad.',
   ].join('\n')
+}
+
+// Short form (card 2ec21127, Token 8 base-prompt diet): the mechanism explanation (default auth
+// path, MAIN_AGENT_ISOLATED_CONFIG, claudeConfigDir) is background -- moved to
+// docs/rules/flotta-auth-mechanizmus.md. The two MEGSZEGHETETLEN rules stay inline VERBATIM: they
+// are the actionable gist (what to do when an agent shows "Not logged in", and the standing ban
+// on copying another agent's credential), not a description of the mechanism.
+function buildFleetAuthBodyShort(): string {
+  const mechanismDoc = join(PROJECT_ROOT, 'docs', 'rules', 'flotta-auth-mechanizmus.md')
+  return [
+    '## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)',
+    '',
+    `Háttér (auth-mechanizmus, MAIN_AGENT_ISOLATED_CONFIG, claudeConfigDir): ${mechanismDoc}`,
+    '',
+    'AMI VISZONT MEGSZEGHETETLEN:',
+    '',
+    '1. Ha egy agent "Not logged in"-t mutat, a javítás a TOKEN-FORRÁS, nem egy kézzel',
+    '   elhelyezett vagy symlinkelt `.credentials.json`. A kézi credential-elhelyezés hozta',
+    '   vissza a 401-kaszkádot minden alkalommal: a lejárt fájl a Claude Code precedenciája',
+    '   miatt akkor is nyer az érvényes env-tokennel szemben, ha az ott van mellette.',
+    '2. SOHA ne másold át másik agent tokenjét vagy credentialjét. Új agent SAJÁT,',
+    '   per-agent tokent és saját külső-szolgáltatás setupot kap (saját email, egyedi port,',
+    '   saját creds-könyvtár, saját OAuth). A másolás auditálhatatlan, és más megbízó',
+    '   adatához is hozzáférést ad.',
+  ].join('\n')
+}
+
+export function buildFleetAuthBody(env: NodeJS.ProcessEnv = process.env): string {
+  return legacyGeneratedBlocksEnabled(env) ? buildFleetAuthBodyLong() : buildFleetAuthBodyShort()
 }
 
 // Same five-rule idempotency contract as ensureFleetRosterSection / ensureAutonomySection /
@@ -5090,29 +5129,77 @@ export function ensureMemorySearchLabelSection(name: string): void {
 // settings.json are both git-tracked and maintained statically (same precedent as
 // ensureFleetAuthSection's no-op for MAIN_AGENT_ID -- a runtime write there fights the
 // --ff-only pull, card 2dd28b5d/99fccbcf).
-const PROJECT_ROOT_ANCHOR_FILE = 'project-root-anchor.json'
+// Card b5d19a32 (Cybersec, finding on eed22288): the anchor used to live under the agent's OWN
+// .claude dir, which the agent itself can write to (or replace with a symlink into another
+// agent's .claude). Keeping it in STORE_DIR instead means no agent process can plant or control
+// its own anchor value -- only this sweep (running as the main process) ever writes here.
+const PROJECT_ROOT_ANCHOR_DIR = join(STORE_DIR, 'project-root-anchors')
 
 function projectRootAnchorPath(name: string): string {
-  return join(agentDir(name), '.claude', PROJECT_ROOT_ANCHOR_FILE)
+  return join(PROJECT_ROOT_ANCHOR_DIR, `${name}.json`)
+}
+
+// Card b5d19a32: if agents/<name>/.claude (or CLAUDE.md, or settings.json) is a symlink, the
+// "victim" the link points at is not this agent's own content -- rewriting through it would
+// mutate whatever real agent (or location) is on the other end, using a boundary this agent
+// chose by creating the link. Refuse the whole sweep for this agent rather than touch anything.
+function hasSymlinkedScaffoldPath(name: string): boolean {
+  const candidates = [join(agentDir(name), '.claude'), join(agentDir(name), 'CLAUDE.md'), agentSettingsPath(name)]
+  for (const p of candidates) {
+    try {
+      if (lstatSync(p).isSymbolicLink()) return true
+    } catch {
+      // Does not exist: not a symlink, nothing to refuse on this path.
+    }
+  }
+  return false
+}
+
+// An anchor value this mechanism can safely use for the replace below: must be a non-root
+// absolute path. Empty/relative values would make `content.includes(recordedRoot)` match
+// everywhere (an empty string is a substring of anything), inserting PROJECT_ROOT between
+// every character of CLAUDE.md/settings.json -- measured, card eed22288 F1.
+function isUsableAnchorRoot(value: string): boolean {
+  return value.length > 1 && value.startsWith('/')
+}
+
+// Boundary-safe replace: a plain substring swap would also rewrite sibling paths that merely
+// START with oldRoot (e.g. `${oldRoot}-agent-worktrees`, `${oldRoot}-test`) into a broken path,
+// because oldRoot is not a suffix-delimited token of its own -- measured, card eed22288 F2.
+// Only replace an occurrence that is not immediately followed by another path-segment
+// character (oldRoot is always an absolute filesystem path, so this cannot false-negative
+// inside unrelated text).
+function replaceRootOccurrences(content: string, oldRoot: string, newRoot: string): string {
+  const escaped = oldRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`${escaped}(?![A-Za-z0-9_-])`, 'g')
+  // A string replacer interprets $ sequences (e.g. $& or $$) IN newRoot itself; a function
+  // replacer passes it through literally.
+  return content.replace(pattern, () => newRoot)
 }
 
 export function ensureProjectRootAnchor(name: string): void {
   if (name === MAIN_AGENT_ID) return
 
+  if (hasSymlinkedScaffoldPath(name)) {
+    logger.warn({ name }, 'ensureProjectRootAnchor: refusing, .claude/CLAUDE.md/settings.json is a symlink')
+    return
+  }
+
   const anchorPath = projectRootAnchorPath(name)
   let recordedRoot: string | null = null
   try {
     const parsed = JSON.parse(readFileSync(anchorPath, 'utf-8')) as { root?: string }
-    recordedRoot = typeof parsed.root === 'string' ? parsed.root : null
+    recordedRoot = typeof parsed.root === 'string' && isUsableAnchorRoot(parsed.root) ? parsed.root : null
   } catch {
     recordedRoot = null
   }
 
-  // No anchor yet (pre-dates this mechanism, or a brand-new agent): nothing to compare
-  // against, so there is no drift to correct -- just establish the baseline for next time.
+  // No anchor yet (pre-dates this mechanism, a brand-new agent, or a corrupt/unusable
+  // recorded value): nothing safe to compare against, so there is no drift to correct --
+  // just (re-)establish the baseline for next time, no file rewrite.
   if (recordedRoot === null) {
     try {
-      mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+      mkdirSync(PROJECT_ROOT_ANCHOR_DIR, { recursive: true })
       atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
     } catch {
       // Best-effort: a missing anchor just means this re-checks on the next sweep tick.
@@ -5132,7 +5219,16 @@ export function ensureProjectRootAnchor(name: string): void {
       continue
     }
     if (!content.includes(recordedRoot)) continue
-    atomicWriteFileSync(path, content.split(recordedRoot).join(PROJECT_ROOT))
+    const rewritten = replaceRootOccurrences(content, recordedRoot, PROJECT_ROOT)
+    if (path.endsWith('settings.json')) {
+      try {
+        JSON.parse(rewritten)
+      } catch {
+        logger.warn(`ensureProjectRootAnchor: skipping ${path}, rewrite would break JSON`)
+        continue
+      }
+    }
+    atomicWriteFileSync(path, rewritten)
   }
 
   atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
