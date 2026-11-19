@@ -834,6 +834,65 @@ def main() -> int:
     finally:
         m.kill_pid_holder = old_kill
 
+    # --- B2 fix (Cybersec NO-GO F1 @c5e5ec28-era gate, Cybered NO-GO 33404, QA correction 33446):
+    # --- outage_loop()'s recovery branch cleared probe_log/banner_streak/notified_outage but left
+    # --- outage_probe_log (the entry-side run) untouched, so a trailing pre-recovery down-run
+    # --- survived and let ONE fresh down reading after recovery re-confirm the outage immediately.
+    # --- Drive outage_loop() through the real recovery branch and assert outage_probe_log is wiped,
+    # --- then replay should_declare_outage() with a single post-recovery down reading.
+    old6 = {
+        "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
+        "start_ghost_runner": m.start_ghost_runner, "request_ghost_stop": m.request_ghost_stop,
+        "wait_for_ghost_exit": m.wait_for_ghost_exit, "stop_ghost_runner": m.stop_ghost_runner,
+        "clear_session_outage": m.clear_session_outage, "send": m.send,
+        "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
+        "mikrob_down": m.mikrob_down,
+    }
+    old_confirm6 = m.quota_switchback.confirm_switchback
+    m.allowed_chats = lambda: {"1"}
+    m.mark_session_outage = lambda: None
+    m.start_ghost_runner = lambda: "FAKE_PROC"
+    m.request_ghost_stop = lambda: None
+    m.wait_for_ghost_exit = lambda proc, max_wait_sec=600: True
+    m.stop_ghost_runner = lambda proc: None
+    m.clear_session_outage = lambda: None
+    m.send = lambda token, chat_id, text: None
+    m.save_state = lambda s: None
+    m.recovery_probe_due = lambda now=None: True
+    m.mikrob_down = lambda: False
+    m.quota_switchback.confirm_switchback = lambda *a, **kw: True  # force the recovery branch
+    try:
+        # Pre-recovery state: a trailing down-run that already spans >= min_gap_sec, as if the
+        # outage had almost (or just) been confirmed right before MikroB came back.
+        state6 = {
+            "offset": 0, "notified_outage": True,
+            "outage_probe_log": [{"ok": False, "ts": 5_000_000.0},
+                                  {"ok": False, "ts": 5_000_000.0 + 46}],
+        }
+        m.outage_loop("fake-token", state6)
+        if state6.get("outage_probe_log") == []:
+            ok("B2: outage_loop() recovery branch clears outage_probe_log (no stale pre-recovery "
+               "down-run survives)")
+        else:
+            bad("B2: outage_loop() recovery branch must clear outage_probe_log",
+                state6.get("outage_probe_log"))
+
+        # The acceptance criterion itself: ONE fresh down reading right after this recovery must
+        # NOT re-confirm the outage. Before the fix, the stale run above (already >= min_gap_sec)
+        # made should_declare_outage() return True on this single reading.
+        m.record_outage_probe(state6, down=True, now=5_000_000.0 + 50)
+        declared6 = m.should_declare_outage(state6, confirm_probes=2, min_gap_sec=45)
+        if declared6 is False:
+            ok("B2: a single down reading right after recovery does not re-confirm the outage "
+               "(stale run was wiped, not just extended)")
+        else:
+            bad("B2: should_declare_outage() must reject a lone post-recovery down reading",
+                declared6)
+    finally:
+        m.quota_switchback.confirm_switchback = old_confirm6
+        for name, fn in old6.items():
+            setattr(m, name, fn)
+
     print(f"\nselftest: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
 

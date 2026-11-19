@@ -603,6 +603,7 @@ def outage_loop(token, state):
                          "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
                     state["phase"] = "healthy"; state["banner_streak"] = 0
                     state["notified_outage"] = False; state["probe_log"] = []
+                    state["outage_probe_log"] = []
                     save_state(state)
                     return
             # Y1 (RedHat GO, card 612058c2 Teendo @6b9f61eb, comment 19993): refresh the heartbeat
