@@ -28142,3 +28142,38 @@ Gate: QA + Cybered (a kártya saját kijelölése).
 **Test:** `src/__tests__/project-root-anchor.test.ts`, two new cases: (a) agent-attacker's `.claude` symlinked to agent-victim's `.claude`, with a drifted STORE_DIR anchor seeded for attacker -- asserts the sweep refuses and victim's `settings.json` is byte-identical afterward; (b) an anchor file planted under the agent's own (legacy) `.claude` dir is ignored -- the sweep treats it as "no anchor yet" and writes the real baseline to STORE_DIR instead. `fleet-test.sh --ref 2ae712bfd src/__tests__/project-root-anchor.test.ts`: 1 file, 9/9 green.
 
 **Who decided:** backend (card b5d19a32, dispatched by MikroB msg 18944 off CYBERSEC GO on eed22288). Gate: QA + Cybersec. Gate-SHA: 2ae712bfd.
+
+## 2026-11-15 -- card 2d5ad4d2 (b7540305 follow-up, CYBERSEC F1 MEDIUM: graphify symlink bypass + stale pin/approval szöveg)
+
+**F1 (symlink bypass):** `store/graphify.sh build`-nek a GHSA-pcc4-rvhr-2pr8 kompenzáló
+tiltó-predikátuma (`find ... -type f ...`, card b7540305) csak VALÓDI fájlt vizsgált --
+egy védett kiterjesztésre (pl. `x.F90`) nevezett SZIMLINK, akármire is mutatott, átjutott
+rajta és elérte a pinnelt binárist. Mért bizonyíték: egy canary-symlink
+(`ln -s innocuous.txt canary.F90`) a régi predikátummal lefutott, a `graphify` hívást
+a FAKE_BIN naplója szerint TÉNYLEGESEN elérte. Javítás: a predikátum mostantól
+`\( -type f -o -type l \)`. Mutáció-ellenőrzés: a régi (`-type f` only) alakra visszaállítva
+a `store/graphify-fortran-guard.selftest.sh` új symlink-canary esete pontosan PIROSRA vált
+(2 esetben), a javítással visszazöldül.
+
+**Szöveg-korrekció (2. rész):** a `store/watched-repos.json` graphify-bejegyzése és a
+`store/graphify.sh` fejlett-kommentje avítottan "Peti approval pending"-ként hivatkozott a
+8317aeb4 jóváhagyásra. Tényleges állapot: a jóváhagyás 18:32-kor lejárt (timeout), és Peti
+(Telegram 12932) a verzió-bumpokat a heti/kétheti eszköz-ellenőrzésre halasztotta, nem egy
+különálló élő-frissítési ablakra. A `graphify.sh` kommentjét frissítettem (ÉLŐ kód, nem
+append-only napló, szabad javítani); a `watched-repos.json` note mezejéhez -- ami maga is
+dátumozott, hozzáfűzős bejegyzésekből áll, ugyanúgy mint ez a fájl -- egy ÚJ, 2026-11-15-ös
+dátumozott szegmenst fűztem a VÉGÉRE, ami korrigálja a 2026-10-31-es bejegyzés keretezését,
+nem törölve/szerkesztve azt. Ugyanitt rögzítve: az élesben futó binárs verziója 0.9.35
+(nem a regisztrált 0.9.67 pin), a tiszta cél a heti ellenőrzéshez >=0.9.70 -- a 2026-10-09-es
+bejegyzésben dokumentált `pipx install --force graphifyy==0.9.67` parancs NEM tekinthető a
+CVE javításának, mert a 0.9.67 maga is a 0.7.2-0.9.69 érintett tartományba esik (ezt a
+2026-10-09-es bejegyzés a fa4a875d-es CVE-lelet ELŐTT íródott, ezért hiányzik belőle ez a
+figyelmeztetés).
+
+**Teszt:** `store/graphify-fortran-guard.selftest.sh` 10/10 PASS (5 régi eset + 1 új
+symlink-canary eset, 2 check), `bash -n store/graphify.sh` tiszta, `watched-repos.json`
+JSON-validált a szerkesztés után, `git diff --stat` 3 fájl (selftest +16, graphify.sh
++11/-4, watched-repos.json +4/-2 -- a note-mező egyetlen string, a JSON-diff ezért csak
+2 sort mutat a tartalmi hozzáfűzés ellenére).
+
+Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
