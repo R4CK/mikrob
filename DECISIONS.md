@@ -28152,3 +28152,13 @@ Gate: QA + Cybered (a kártya saját kijelölése).
 **Test:** `store/quota-switchback.selftest.py` (+5 cases: the 4s flap does not confirm, two close-together down readings without a real gap do not confirm, a genuinely sustained outage spanning the gap DOES confirm, a straddling healthy reading still breaks the run, and the config loader's default). `store/quota-bridge.selftest.py` (+4 cases: `should_declare_outage()` rejects the flap AND `kill_pid_holder()` is never called for it -- i.e. `bot.pid` is never overwritten on an aborted takeover -- plus the positive control that a confirmed sustained outage still reaches `kill_pid_holder()` exactly once). `python3 -I store/quota-switchback.selftest.py`: 18/18 green. `python3 -I store/quota-bridge.selftest.py`: 44/44 green. `python3 -m py_compile`: clean on both runtime files.
 
 **Who decided:** fullstack (card f490ae53, MikroB-approved fix shape per msg 21151). Gate: QA + Cybersec + Cybered (kills the live channel poller). Gate-SHA: 48a269f4a.
+
+## 2026-11-19 -- f490ae53: fix Cybered NO-GO B2 (outage_probe_log not cleared on recovery)
+
+**Decision:** Cybered NO-GO 33404 (B2) and QA correction 33446 on Gate-SHA 81fb03ab8: `outage_loop()`'s recovery branch reset `state["probe_log"]`/`banner_streak`/`notified_outage` but left `state["outage_probe_log"]` (the entry-side hysteresis run added by the 2026-11-18 fix above) untouched. A trailing pre-recovery down-run that already spanned `min_gap_sec` survived the recovery, so a single fresh down reading right after MikroB came back could immediately re-confirm the outage and kill the real Telegram poller again -- the exact class B2 was raised to close.
+
+**Fix:** `store/quota-bridge.py`, `outage_loop()` recovery branch: added `state["outage_probe_log"] = []` alongside the existing reset.
+
+**Test:** `store/quota-bridge.selftest.py` (+2 cases): drives `outage_loop()` through the real recovery branch (`confirm_switchback` mocked True) with a pre-recovery `outage_probe_log` already spanning `min_gap_sec`, asserts it is wiped to `[]`, then replays `should_declare_outage()` with one post-recovery down reading and asserts it does not re-confirm. Mutation-checked: removing the new clear line turns this test red (45/46 vs 46/46). `python3 -I store/quota-bridge.selftest.py`: 46/46 green. `python3 -I store/quota-switchback.selftest.py`: 18/18 green (unchanged). `python3 -m py_compile`: clean.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21319). Gate: QA + Cybersec + Cybered. Gate-SHA: dd59183ce981335dae9825dcf84ac30c59ba9cb9.
