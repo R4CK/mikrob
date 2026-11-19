@@ -63,7 +63,7 @@ echo "agent-boot-reconcile controls"
 common_env inprogress
 python3 -c "
 import json
-cards = [{'id':'cardAAA','status':'in_progress','assignee':'backend'}]
+cards = [{'id':'a0000001','status':'in_progress','assignee':'backend'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -72,14 +72,14 @@ check "in_progress: started marker" "started:" "$OUT"
 check "in_progress: agent name in output" "backend" "$OUT"
 check "in_progress: start call recorded" "START: backend" "$(cat "$START_CALLS")"
 check "in_progress: resume message recorded" "MESSAGE: backend" "$(cat "$MESSAGE_CALLS")"
-check "in_progress: card id in resume message" "cardAAA" "$(cat "$MESSAGE_CALLS")"
+check "in_progress: card id in resume message" "a0000001" "$(cat "$MESSAGE_CALLS")"
 check "in_progress: telegram summary sent" "backend" "$(cat "$TELEGRAM_CALLS")"
 
 # --- 2. in_progress card, agent ALREADY running -> no start, no message, no telegram --------------
 common_env alreadyrunning
 python3 -c "
 import json
-cards = [{'id':'cardBBB','status':'in_progress','assignee':'backend2'}]
+cards = [{'id':'a0000002','status':'in_progress','assignee':'backend2'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend2','running': True}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -93,7 +93,7 @@ check_absent "already-running: no telegram" "TELEGRAM" "$(cat "$TELEGRAM_CALLS")
 common_env waitingnoreview
 python3 -c "
 import json
-cards = [{'id':'cardCCC','status':'waiting','assignee':'qa'}]
+cards = [{'id':'a0000003','status':'waiting','assignee':'qa'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'qa','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -105,34 +105,34 @@ check_absent "waiting-no-review: no start call" "START" "$(cat "$START_CALLS")"
 common_env waitingreview
 python3 -c "
 import json
-cards = [{'id':'cardDDD','status':'waiting','assignee':'fron-ted'}]
+cards = [{'id':'a0000004','status':'waiting','assignee':'fron-ted'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'fron-ted','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
-echo '[{"content":"REVIEW: done\nGate-SHA: abc1234"}]' > "$TMP/fixtures/comments-cardDDD.json"
+echo '[{"content":"REVIEW: done\nGate-SHA: abc1234"}]' > "$TMP/fixtures/comments-a0000004.json"
 OUT="$(bash "$BIN" 2>&1)"
 check "waiting-review: started marker" "started:" "$OUT"
-check "waiting-review: card id in resume message" "cardDDD" "$(cat "$MESSAGE_CALLS")"
+check "waiting-review: card id in resume message" "a0000004" "$(cat "$MESSAGE_CALLS")"
 
 # --- 4b. waiting card, REVIEW is NOT the first word of the comment (Gate-SHA-first convention,
 #         CLAUDE.md 4b/4c) -> still qualifies (multiline match, LOW fix) -----------------------
 common_env waitingreviewmultiline
 python3 -c "
 import json
-cards = [{'id':'cardD2D2','status':'waiting','assignee':'fron-teddy'}]
+cards = [{'id':'a0000005','status':'waiting','assignee':'fron-teddy'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'fron-teddy','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
-echo '[{"content":"Gate-SHA: abc1234\nREVIEW: done"}]' > "$TMP/fixtures/comments-cardD2D2.json"
+echo '[{"content":"Gate-SHA: abc1234\nREVIEW: done"}]' > "$TMP/fixtures/comments-a0000005.json"
 OUT="$(bash "$BIN" 2>&1)"
 check "waiting-review-multiline: started marker" "started:" "$OUT"
-check "waiting-review-multiline: card id in resume message" "cardD2D2" "$(cat "$MESSAGE_CALLS")"
+check "waiting-review-multiline: card id in resume message" "a0000005" "$(cat "$MESSAGE_CALLS")"
 
 # --- 5. assignee is mikrob -> never started by this script (that's its own channels unit) ---------
 common_env mikrobexcluded
 python3 -c "
 import json
-cards = [{'id':'cardEEE','status':'in_progress','assignee':'mikrob'}]
+cards = [{'id':'a0000006','status':'in_progress','assignee':'mikrob'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'mikrob','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -153,7 +153,7 @@ check_absent "empty: no telegram" "TELEGRAM" "$(cat "$TELEGRAM_CALLS")"
 common_env idempotent
 python3 -c "
 import json
-cards = [{'id':'cardFFF','status':'in_progress','assignee':'backend3'}]
+cards = [{'id':'a0000007','status':'in_progress','assignee':'backend3'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend3','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -195,7 +195,7 @@ check_absent "fetch-error-object: no start call" "START" "$(cat "$START_CALLS")"
 common_env blokkolt
 python3 -c "
 import json
-cards = [{'id':'cardGGG','status':'in_progress','assignee':'backend','title':'[BLOKKOLT-Peti-stop] [mopsion][BE] x'}]
+cards = [{'id':'a0000008','status':'in_progress','assignee':'backend','title':'[BLOKKOLT-Peti-stop] [mopsion][BE] x'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -210,7 +210,7 @@ echo '{"active": true}' > "$TMP/fixtures/hardstop.json"
 export AGENT_BOOT_RECONCILE_HARDSTOP_FILE="$TMP/fixtures/hardstop.json"
 python3 -c "
 import json
-cards = [{'id':'cardHHH','status':'in_progress','assignee':'backend2'}]
+cards = [{'id':'a0000009','status':'in_progress','assignee':'backend2'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend2','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -228,13 +228,13 @@ echo '{"priority": ["MikroB"]}' > "$TMP/fixtures/priority.json"
 export AGENT_BOOT_RECONCILE_PRIORITY_CONFIG="$TMP/fixtures/priority.json"
 python3 -c "
 import json
-cards = [{'id':'cardIII','status':'in_progress','assignee':'backend3','project':'mopsion'}]
+cards = [{'id':'a000000a','status':'in_progress','assignee':'backend3','project':'mopsion'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend3','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
 OUT="$(bash "$BIN" 2>&1)"
 check "priority-exclusion-removed: started marker" "started:" "$OUT"
-check "priority-exclusion-removed: card id in resume message" "cardIII" "$(cat "$MESSAGE_CALLS")"
+check "priority-exclusion-removed: card id in resume message" "a000000a" "$(cat "$MESSAGE_CALLS")"
 unset AGENT_BOOT_RECONCILE_PRIORITY_CONFIG
 
 # --- 11b. same priority list, card's project IS in it -> also starts (project is irrelevant either
@@ -244,7 +244,7 @@ echo '{"priority": ["MikroB"]}' > "$TMP/fixtures/priority2.json"
 export AGENT_BOOT_RECONCILE_PRIORITY_CONFIG="$TMP/fixtures/priority2.json"
 python3 -c "
 import json
-cards = [{'id':'cardJJJ','status':'in_progress','assignee':'backend3','project':'MikroB'}]
+cards = [{'id':'a000000b','status':'in_progress','assignee':'backend3','project':'MikroB'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend3','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -260,20 +260,20 @@ echo '{"priority": ["MikroB"]}' > "$TMP/fixtures/priority3.json"
 export AGENT_BOOT_RECONCILE_PRIORITY_CONFIG="$TMP/fixtures/priority3.json"
 python3 -c "
 import json
-cards = [{'id':'cardPPP','status':'in_progress','assignee':'backend'}]
+cards = [{'id':'a0000010','status':'in_progress','assignee':'backend'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
 OUT="$(bash "$BIN" 2>&1)"
 check "priority-project-none: started marker" "started:" "$OUT"
-check "priority-project-none: card id in resume message" "cardPPP" "$(cat "$MESSAGE_CALLS")"
+check "priority-project-none: card id in resume message" "a0000010" "$(cat "$MESSAGE_CALLS")"
 unset AGENT_BOOT_RECONCILE_PRIORITY_CONFIG
 
 # --- 12. F2: assignee not present in the SAME /api/agents fetch -> not started (no guessing) -------
 common_env assigneeghost
 python3 -c "
 import json
-cards = [{'id':'cardKKK','status':'in_progress','assignee':'ghost'}]
+cards = [{'id':'a000000c','status':'in_progress','assignee':'ghost'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -285,7 +285,7 @@ check_absent "assignee-ghost: no start call" "START" "$(cat "$START_CALLS")"
 common_env assigneetraversal
 python3 -c "
 import json
-cards = [{'id':'cardLLL','status':'in_progress','assignee':'../kanban/zzzzzzzz/move?x='}]
+cards = [{'id':'a000000d','status':'in_progress','assignee':'../kanban/zzzzzzzz/move?x='}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -299,7 +299,7 @@ common_env starthttpfail
 export START_RECORDER_CODE=500
 python3 -c "
 import json
-cards = [{'id':'cardMMM','status':'in_progress','assignee':'backend'}]
+cards = [{'id':'a000000e','status':'in_progress','assignee':'backend'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -316,7 +316,7 @@ common_env messagestopped
 export MESSAGE_RECORDER_STOPPED=1
 python3 -c "
 import json
-cards = [{'id':'cardNNN','status':'in_progress','assignee':'backend'}]
+cards = [{'id':'a000000f','status':'in_progress','assignee':'backend'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -332,13 +332,13 @@ echo '{"active": true, "reason": "Peti 11965"}' > "$TMP/fixtures/pause.json"
 export AGENT_BOOT_RECONCILE_PAUSE_FILE="$TMP/fixtures/pause.json"
 python3 -c "
 import json
-cards = [{'id':'cardQQQ','status':'in_progress','assignee':'backend'}]
+cards = [{'id':'a0000011','status':'in_progress','assignee':'backend'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
 OUT="$(bash "$BIN" 2>&1)"
 check "pause-active: would-start marker" "manual-dispatch-pause active -- would start:" "$OUT"
-check "pause-active: agent+card named in the log" "backend(cardQQQ)" "$OUT"
+check "pause-active: agent+card named in the log" "backend(a0000011)" "$OUT"
 check_absent "pause-active: no start call" "START" "$(cat "$START_CALLS")"
 check_absent "pause-active: no resume message" "MESSAGE" "$(cat "$MESSAGE_CALLS")"
 check_absent "pause-active: no telegram" "TELEGRAM" "$(cat "$TELEGRAM_CALLS")"
@@ -350,13 +350,13 @@ echo '{"active": false}' > "$TMP/fixtures/pause2.json"
 export AGENT_BOOT_RECONCILE_PAUSE_FILE="$TMP/fixtures/pause2.json"
 python3 -c "
 import json
-cards = [{'id':'cardRRR','status':'in_progress','assignee':'backend'}]
+cards = [{'id':'a0000012','status':'in_progress','assignee':'backend'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
 OUT="$(bash "$BIN" 2>&1)"
 check "pause-inactive: started marker" "started:" "$OUT"
-check "pause-inactive: card id in resume message" "cardRRR" "$(cat "$MESSAGE_CALLS")"
+check "pause-inactive: card id in resume message" "a0000012" "$(cat "$MESSAGE_CALLS")"
 unset AGENT_BOOT_RECONCILE_PAUSE_FILE
 
 # --- 18. pause file present but CORRUPT (unparseable JSON) -> fail-closed, treated as active --------
@@ -365,7 +365,7 @@ printf '{not valid json' > "$TMP/fixtures/pause3.json"
 export AGENT_BOOT_RECONCILE_PAUSE_FILE="$TMP/fixtures/pause3.json"
 python3 -c "
 import json
-cards = [{'id':'cardSSS','status':'in_progress','assignee':'backend'}]
+cards = [{'id':'a0000013','status':'in_progress','assignee':'backend'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -398,7 +398,7 @@ echo '{"active": true, "reason": "Peti 11965"}' > "$TMP/fixtures/pause.json"
 export AGENT_BOOT_RECONCILE_PAUSE_FILE="$TMP/fixtures/pause.json"
 python3 -c "
 import json
-cards = [{'id':'cardTTT','status':'in_progress','assignee':'backend'}]
+cards = [{'id':'a0000014','status':'in_progress','assignee':'backend'}]
 json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
@@ -410,6 +410,304 @@ else
   fail=1
 fi
 unset AGENT_BOOT_RECONCILE_PAUSE_FILE
+
+# ===========================================================================
+# RedHat NO-GO (comment 17886, Gate-SHA 1199bea9) delta: H1, H2, H3a, H3b.
+# ===========================================================================
+
+# --- 20. H1: hard-stop file EXISTS but is CORRUPT (truncated JSON) -> fail-closed, not started ----
+common_env hardstopcorrupt
+printf '{not valid json' > "$TMP/fixtures/hardstop-corrupt.json"
+export AGENT_BOOT_RECONCILE_HARDSTOP_FILE="$TMP/fixtures/hardstop-corrupt.json"
+python3 -c "
+import json
+cards = [{'id':'b0000001','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "hard-stop-corrupt: fail-closed marker (not started)" "could not be understood" "$OUT"
+check_absent "hard-stop-corrupt: no start call" "START" "$(cat "$START_CALLS")"
+unset AGENT_BOOT_RECONCILE_HARDSTOP_FILE
+
+# --- 21. H1: hard-stop file is a DIRECTORY, not a file -> fail-closed (the -e fix) -----------------
+common_env hardstopdir
+mkdir -p "$TMP/fixtures/hardstop-is-a-dir"
+export AGENT_BOOT_RECONCILE_HARDSTOP_FILE="$TMP/fixtures/hardstop-is-a-dir"
+python3 -c "
+import json
+cards = [{'id':'b0000002','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "hard-stop-dir: fail-closed marker (not started)" "could not be understood" "$OUT"
+check_absent "hard-stop-dir: no start call" "START" "$(cat "$START_CALLS")"
+unset AGENT_BOOT_RECONCILE_HARDSTOP_FILE
+
+# --- 22. H1: hard-stop file is a JSON ARRAY at the root (valid JSON, not an object) -> fail-closed -
+common_env hardstoparray
+echo '[1, 2, 3]' > "$TMP/fixtures/hardstop-array.json"
+export AGENT_BOOT_RECONCILE_HARDSTOP_FILE="$TMP/fixtures/hardstop-array.json"
+python3 -c "
+import json
+cards = [{'id':'b0000003','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "hard-stop-array: fail-closed marker (not started)" "could not be understood" "$OUT"
+check_absent "hard-stop-array: no start call" "START" "$(cat "$START_CALLS")"
+unset AGENT_BOOT_RECONCILE_HARDSTOP_FILE
+
+# --- 23. H1 control: hard-stop file MISSING ENTIRELY -> stays fail-OPEN (by design, unchanged) -----
+common_env hardstopmissing
+python3 -c "
+import json
+cards = [{'id':'b0000004','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "hard-stop-missing: still starts (missing file stays fail-open by design)" "started:" "$OUT"
+
+# --- 24. H1 MUTANT PROOF: reverting to the old bare try/except (d={} on any error) makes the
+#         corrupt-file case (20) start the agent anyway -------------------------------------------
+common_env hardstopmutant
+MUTANT_H1="$TMP/agent-boot-reconcile.mutant-h1.sh"
+python3 - "$BIN" "$MUTANT_H1" <<'PYEOF'
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+with open(src_path) as f:
+    content = f.read()
+old = '''  HS_STATE="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+    if not isinstance(d, dict):
+        print("corrupt")
+    else:
+        print("1" if d.get("active") else "0")
+except Exception:
+    print("corrupt")
+' "$HARDSTOP_FILE" 2>/dev/null)"'''
+new = '''  HS_STATE="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+print("1" if d.get("active") else "0")
+' "$HARDSTOP_FILE" 2>/dev/null)"'''
+assert old in content, "H1 mutant marker not found -- did the source change shape?"
+content = content.replace(old, new)
+with open(dst_path, "w") as f:
+    f.write(content)
+PYEOF
+chmod +x "$MUTANT_H1"
+printf '{not valid json' > "$TMP/fixtures/hardstop-corrupt2.json"
+MUT_OUT="$(AGENT_BOOT_RECONCILE_HARDSTOP_FILE="$TMP/fixtures/hardstop-corrupt2.json" bash "$MUTANT_H1" 2>&1)"
+if printf '%s' "$MUT_OUT" | grep -q 'started:'; then
+  echo "  ok   H1 mutant: reverting to the old fail-open parse flips the corrupt-file case to started"
+else
+  echo "  FAIL H1 mutant: reverting to the old fail-open parse should have started the agent anyway, but it did not -> $MUT_OUT"
+  fail=1
+fi
+
+# --- 25. H2: a LOWERCASE "blokkolt" title is NOT qualifying work -----------------------------------
+common_env blokkoltlower
+python3 -c "
+import json
+cards = [{'id':'b0000005','status':'in_progress','assignee':'backend','title':'[blokkolt-peti-stop] x'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "blokkolt-lower: nothing-to-do marker" "no agent had qualifying work" "$OUT"
+check_absent "blokkolt-lower: no start call" "START" "$(cat "$START_CALLS")"
+
+# --- 26. H2: BLOKKOLT present ONLY as a LABEL (title carries no such text) -> not qualifying -------
+common_env blokkoltlabel
+python3 -c "
+import json
+cards = [{'id':'b0000006','status':'in_progress','assignee':'backend','title':'[mopsion][BE] x',
+          'labels':[{'name':'BLOKKOLT-Peti-stop'}]}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "blokkolt-label: nothing-to-do marker" "no agent had qualifying work" "$OUT"
+check_absent "blokkolt-label: no start call" "START" "$(cat "$START_CALLS")"
+
+# --- 27. H2 MUTANT PROOF: reverting to the old case-sensitive, title-only check flips (25) and (26)
+#         from excluded to started -------------------------------------------------------------------
+common_env blokkoltmutant
+MUTANT_H2="$TMP/agent-boot-reconcile.mutant-h2.sh"
+python3 - "$BIN" "$MUTANT_H2" <<'PYEOF'
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+with open(src_path) as f:
+    content = f.read()
+old = '''    title = (c.get("title") or "").upper()
+    label_names = " ".join((lbl.get("name") or "") for lbl in (c.get("labels") or []) if isinstance(lbl, dict)).upper()
+    if "BLOKKOLT" in title or "BLOKKOLT" in label_names:
+        continue'''
+new = '''    title = c.get("title") or ""
+    if "BLOKKOLT" in title:
+        continue'''
+assert old in content, "H2 mutant marker not found -- did the source change shape?"
+content = content.replace(old, new)
+with open(dst_path, "w") as f:
+    f.write(content)
+PYEOF
+chmod +x "$MUTANT_H2"
+python3 -c "
+import json
+cards = [{'id':'b0000007','status':'in_progress','assignee':'backend','title':'[blokkolt-peti-stop] x'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+MUT_OUT="$(bash "$MUTANT_H2" 2>&1)"
+if printf '%s' "$MUT_OUT" | grep -q 'started:'; then
+  echo "  ok   H2 mutant: reverting to the case-sensitive title-only check flips the lowercase case to started"
+else
+  echo "  FAIL H2 mutant: reverting to the old check should have started the agent on lowercase blokkolt, but it did not -> $MUT_OUT"
+  fail=1
+fi
+
+# --- 28. H3a: a waiting+REVIEW card that gate-closure-check.py reads as fully AGREEd -> NOT
+#         qualifying work (its builder must not be restarted every 5 minutes on a closed card) ----
+# A plain Python script, not bash: the real caller invokes `python3 "$GATECLOSURE_BIN"`
+# (hardcoded interpreter, matching gate-closure-check.py's own CLI), so the override must be
+# something python3 can actually run.
+cat > "$TMP/gateclosure-agree.sh" <<'EOF'
+import sys
+sys.stdin.read()   # consume stdin (the comments JSON), same contract as the real tool
+print("AGREE|abc1234|QA PASS, CYBERSEC GO, same sha")
+EOF
+common_env gateclosureagree
+export AGENT_BOOT_RECONCILE_GATECLOSURE_BIN="$TMP/gateclosure-agree.sh"
+python3 -c "
+import json
+cards = [{'id':'b0000008','status':'waiting','assignee':'qa2'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'qa2','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+echo '[{"content":"REVIEW: done\nGate-SHA: abc1234"},{"author":"qa","content":"QA PASS\nGate-SHA: abc1234"}]' > "$TMP/fixtures/comments-b0000008.json"
+OUT="$(bash "$BIN" 2>&1)"
+check "gate-closure-agree: nothing-to-do marker (already fully gated)" "no agent had qualifying work" "$OUT"
+check_absent "gate-closure-agree: no start call" "START" "$(cat "$START_CALLS")"
+unset AGENT_BOOT_RECONCILE_GATECLOSURE_BIN
+
+# --- 29. H3a control: the SAME waiting+REVIEW card, but gate-closure-check.py reads anything other
+#         than AGREE (here MISSING, a gate has not verdicted yet) -> still qualifies, started -----
+cat > "$TMP/gateclosure-missing.sh" <<'EOF'
+import sys
+sys.stdin.read()
+print("MISSING|cybersec has no verdict")
+EOF
+common_env gateclosuremissing
+export AGENT_BOOT_RECONCILE_GATECLOSURE_BIN="$TMP/gateclosure-missing.sh"
+python3 -c "
+import json
+cards = [{'id':'b0000009','status':'waiting','assignee':'qa2'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'qa2','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+echo '[{"content":"REVIEW: done\nGate-SHA: abc1234"}]' > "$TMP/fixtures/comments-b0000009.json"
+OUT="$(bash "$BIN" 2>&1)"
+check "gate-closure-missing: still started (gate not fully closed yet)" "started:" "$OUT"
+check "gate-closure-missing: card id in resume message" "b0000009" "$(cat "$MESSAGE_CALLS")"
+unset AGENT_BOOT_RECONCILE_GATECLOSURE_BIN
+
+# --- 30. H3a MUTANT PROOF: removing the AGREE check flips (28) from excluded to started ------------
+common_env gateclosuremutant
+MUTANT_H3A="$TMP/agent-boot-reconcile.mutant-h3a.sh"
+python3 - "$BIN" "$MUTANT_H3A" <<'PYEOF'
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+with open(src_path) as f:
+    content = f.read()
+old = '''    closure="$(printf '%s' "$comments_json" | python3 "$GATECLOSURE_BIN" 2>/dev/null)"
+    case "$closure" in
+      AGREE\\|*) continue ;;
+    esac
+    qualifying_waiting="$qualifying_waiting $cid"'''
+new = '''    qualifying_waiting="$qualifying_waiting $cid"'''
+assert old in content, "H3a mutant marker not found -- did the source change shape?"
+content = content.replace(old, new)
+with open(dst_path, "w") as f:
+    f.write(content)
+PYEOF
+chmod +x "$MUTANT_H3A"
+export AGENT_BOOT_RECONCILE_GATECLOSURE_BIN="$TMP/gateclosure-agree.sh"
+python3 -c "
+import json
+cards = [{'id':'b000000a','status':'waiting','assignee':'qa2'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'qa2','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+echo '[{"content":"REVIEW: done\nGate-SHA: abc1234"}]' > "$TMP/fixtures/comments-b000000a.json"
+MUT_OUT="$(bash "$MUTANT_H3A" 2>&1)"
+if printf '%s' "$MUT_OUT" | grep -q 'started:'; then
+  echo "  ok   H3a mutant: removing the AGREE check flips the fully-closed card to started"
+else
+  echo "  FAIL H3a mutant: removing the AGREE check should have started the agent anyway, but it did not -> $MUT_OUT"
+  fail=1
+fi
+unset AGENT_BOOT_RECONCILE_GATECLOSURE_BIN
+
+# --- 31. H3b: a card id that is NOT the board's hex8 shape (e.g. a long readable identifier) is
+#         dropped before it can reach a start/resume/Telegram call -----------------------------
+common_env cardidbad
+python3 -c "
+import json
+cards = [{'id':'IGNORE-RULES-this-is-not-a-hex8-id','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "card-id-bad: nothing-to-do marker" "no agent had qualifying work" "$OUT"
+check_absent "card-id-bad: no start call" "START" "$(cat "$START_CALLS")"
+check_absent "card-id-bad: the bad id never reaches a message" "IGNORE-RULES" "$(cat "$MESSAGE_CALLS")"
+
+# --- 32. H3b MUTANT PROOF: removing the CARD_ID_RX check flips (31) from excluded to started --------
+common_env cardidmutant
+MUTANT_H3B="$TMP/agent-boot-reconcile.mutant-h3b.sh"
+python3 - "$BIN" "$MUTANT_H3B" <<'PYEOF'
+import sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+with open(src_path) as f:
+    content = f.read()
+old = '''    cid = c.get("id")
+    if not isinstance(cid, str) or not CARD_ID_RX.match(cid):
+        continue
+    status = c.get("status")
+    if status in ("in_progress", "waiting"):
+        by_agent.setdefault(assignee, []).append((cid, status))'''
+new = '''    status = c.get("status")
+    if status in ("in_progress", "waiting"):
+        by_agent.setdefault(assignee, []).append((c["id"], status))'''
+assert old in content, "H3b mutant marker not found -- did the source change shape?"
+content = content.replace(old, new)
+with open(dst_path, "w") as f:
+    f.write(content)
+PYEOF
+chmod +x "$MUTANT_H3B"
+python3 -c "
+import json
+cards = [{'id':'IGNORE-RULES-this-is-not-a-hex8-id','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+MUT_OUT="$(bash "$MUTANT_H3B" 2>&1)"
+if printf '%s' "$MUT_OUT" | grep -q 'started:'; then
+  echo "  ok   H3b mutant: removing the hex8 id check flips the malformed-id case to started"
+else
+  echo "  FAIL H3b mutant: removing the id check should have started the agent anyway, but it did not -> $MUT_OUT"
+  fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"

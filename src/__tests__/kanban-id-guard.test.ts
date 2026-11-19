@@ -76,7 +76,7 @@ describe('POST /api/kanban refuses a non-conforming client-supplied id', () => {
   })
 
   it('a well-formed client-supplied id is still accepted (control)', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'my-card_01', title: 'x', status: 'planned' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'my-card_01', title: 'x', status: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard('my-card_01')).toBeTruthy()
@@ -90,7 +90,7 @@ describe('POST /api/kanban refuses a non-conforming client-supplied id', () => {
   })
 
   it('no id supplied at all still auto-generates one normally (control)', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { title: 'x', status: 'planned' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { title: 'x', status: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(typeof out.body.id).toBe('string')
@@ -99,7 +99,7 @@ describe('POST /api/kanban refuses a non-conforming client-supplied id', () => {
 
 describe('PUT /api/kanban/:id refuses a non-conforming parent_id', () => {
   beforeEach(async () => {
-    await tryHandleKanban(fakeCtx('/api/kanban', 'POST', { id: 'existing1', title: 'x', status: 'planned' }).ctx)
+    await tryHandleKanban(fakeCtx('/api/kanban', 'POST', { id: 'existing1', title: 'x', status: 'planned', project: 'test' }).ctx)
   })
 
   it('is refused with 400, parent_id unchanged', async () => {
@@ -110,7 +110,7 @@ describe('PUT /api/kanban/:id refuses a non-conforming parent_id', () => {
   })
 
   it('clearing parent_id to null is unaffected (control)', async () => {
-    await tryHandleKanban(fakeCtx('/api/kanban', 'POST', { id: 'parent-ok', title: 'p', status: 'planned' }).ctx)
+    await tryHandleKanban(fakeCtx('/api/kanban', 'POST', { id: 'parent-ok', title: 'p', status: 'planned', project: 'test' }).ctx)
     await tryHandleKanban(fakeCtx('/api/kanban/existing1', 'PUT', { parent_id: 'parent-ok' }).ctx)
     const { ctx, out } = fakeCtx('/api/kanban/existing1', 'PUT', { parent_id: null })
     expect(await tryHandleKanban(ctx)).toBe(true)

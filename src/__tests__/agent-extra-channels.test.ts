@@ -26,7 +26,7 @@ vi.mock('../web/agent-config.js', async (orig) => {
 })
 
 const { parseExtraChannels, buildExtraChannelLaunch, enableExtraPlugins } = await import('../web/agent-extra-channels.js')
-const { ensureIsolatedChannelConfigDir, scopeChannelPlugins, CHANNEL_PLUGIN_IDS } = await import('../web/agent-process.js')
+const { ensureIsolatedChannelConfigDir, scopeChannelPlugins, CHANNEL_PLUGIN_IDS, applyContinueVerifyOutcome, bumpAgentLaunchGeneration, __getAgentLaunchGenerationForTest } = await import('../web/agent-process.js')
 const { decideContinueFlag } = await import('../web/channel-continue-policy.js')
 const { pluginInTree, combineLiveness } = await import('../web/extra-channel-liveness.js')
 
@@ -203,13 +203,29 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
     expect(calls.length).toBe(3)
     for (const c of calls) expect(c).toContain('extraLaunch.pluginIds')
   })
-  it('a resumed launch with extras is verified, primary AND extras, with the fresh fallback', () => {
+  it('a resumed launch with extras is verified, primary AND extras, and the outcome is handed to applyContinueVerifyOutcome', () => {
     const at = FN.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
     expect(at).toBeGreaterThan(-1)
     const block = FN.slice(at, at + 1800)
     expect(block).toContain('probeExtraPluginsInTree(pid, extraLaunch.providers)')
     expect(block).toContain("hasChannel ? probeChannelPluginLiveness(pid, agentProvider, name) : 'alive'")
-    expect(block).toContain('startAgentProcess(name, { fresh: true })')
+    // Cheap wiring check only: the fresh-fallback behaviour itself (Y11/Y2 mutation-proof)
+    // is pinned behaviourally below and in channel-continue-policy.test.ts, against the
+    // real applyContinueVerifyOutcome -- not re-pinned here as source text (card 56344ff4).
+    expect(block).toContain('applyContinueVerifyOutcome(name, session, v, myLaunchGeneration)')
+  })
+  it('a resumed launch with extras that times out relaunches fresh, via applyContinueVerifyOutcome', async () => {
+    const name = `__extras-fresh-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    bumpAgentLaunchGeneration(name)
+    const capturedAtLaunch = __getAgentLaunchGenerationForTest(name)!
+    const startAgentProcess = vi.fn(async () => ({ ok: true, pid: 123 }))
+    const killSession = vi.fn()
+    const action = await applyContinueVerifyOutcome(
+      name, 'sess', { outcome: 'timeout', polls: 3, elapsedMs: 900 }, capturedAtLaunch,
+      { startAgentProcess, killSession },
+    )
+    expect(action).toBe('relaunch-fresh')
+    expect(startAgentProcess).toHaveBeenCalledWith(name, { fresh: true })
   })
   it('the extras\' orphan pollers are reaped on STOP too (a stopped agent must not keep a socket)', () => {
     const stopAt = SRC.indexOf("'post-stop channel-poller reap failed'")

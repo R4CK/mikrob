@@ -44,7 +44,7 @@ beforeEach(() => { initDatabase(':memory:') })
 
 describe('POST /api/kanban returns the id it stored', () => {
   it('THE INCIDENT SHAPE: a caller-supplied id is echoed back, and the card exists under it', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'mycard01', title: 'supplied id', status: 'planned' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'mycard01', title: 'supplied id', status: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(echoedId(out)).toBe('mycard01')
     // The assertion that would have failed before: the ECHOED id resolves to a real card.
@@ -53,7 +53,7 @@ describe('POST /api/kanban returns the id it stored', () => {
   })
 
   it('generates an id when the caller supplies none, and that one resolves too', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { title: 'generated id', status: 'planned' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { title: 'generated id', status: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(echoedId(out)).toHaveLength(8)
     expect(getKanbanCard(echoedId(out))?.title).toBe('generated id')
@@ -63,7 +63,7 @@ describe('POST /api/kanban returns the id it stored', () => {
     // A blank id would create a row nothing can address -- worse than a mismatch, because there is
     // no second name under which to find it.
     for (const bad of ['', '   ']) {
-      const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: bad, title: 'blank id', status: 'planned' })
+      const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: bad, title: 'blank id', status: 'planned', project: 'test' })
       expect(await tryHandleKanban(ctx)).toBe(true)
       expect(echoedId(out).trim()).not.toBe('')
       expect(getKanbanCard(echoedId(out))).toBeTruthy()
@@ -72,8 +72,8 @@ describe('POST /api/kanban returns the id it stored', () => {
 
   it('the echoed id and the stored row agree for every shape -- the property, stated once', async () => {
     for (const body of [
-      { title: 'a', status: 'planned' },
-      { id: 'deadbeef', title: 'b', status: 'planned' },
+      { title: 'a', status: 'planned', project: 'test' },
+      { id: 'deadbeef', title: 'b', status: 'planned', project: 'test' },
       { id: 'x1', title: 'c', status: 'planned', project: 'MikroB' },
     ]) {
       const { ctx, out } = fakeCtx('/api/kanban', 'POST', body)

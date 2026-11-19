@@ -37,6 +37,17 @@ AGENT_CAP_CHECK="${FLEET_RESUME_AGENT_CAP_CHECK:-$SCRIPT_DIR/agent-cap-check.sh}
 CLEANUP_TIMEOUT="${FLEET_RESUME_CLEANUP_TIMEOUT:-120}"
 LOAD_GUARD_READ="${FLEET_RESUME_LOAD_GUARD_READ:-$SCRIPT_DIR/load-guard-read.sh}"
 SYSTEMCTL_BIN="${FLEET_RESUME_SYSTEMCTL_BIN:-systemctl}"
+# Per-subprocess timeouts for the read-only checks below (card 12d91d4b). Same seam convention as
+# CLEANUP_TIMEOUT above: a real host never needs these raised (the defaults match what each check
+# always had hardcoded), but a selftest driving these with instant stubs under heavy host
+# contention needs forking the stub itself to not race the timeout -- the fork/exec latency, not
+# the stub's own work, is what grows under load.
+INSTALLED_TIMEOUT="${FLEET_RESUME_INSTALLED_TIMEOUT:-10}"
+ACTIVE_CHECK_TIMEOUT="${FLEET_RESUME_ACTIVE_CHECK_TIMEOUT:-5}"
+START_TIMEOUT="${FLEET_RESUME_START_TIMEOUT:-10}"
+VRAM_TIMEOUT="${FLEET_RESUME_VRAM_TIMEOUT:-15}"
+LOAD_READ_TIMEOUT="${FLEET_RESUME_LOAD_READ_TIMEOUT:-5}"
+AGENT_CAP_TIMEOUT="${FLEET_RESUME_AGENT_CAP_TIMEOUT:-10}"
 OLLAMA_UNIT="${FLEET_RESUME_OLLAMA_UNIT:-ollama.service}"
 AGENTS_JSON="${FLEET_RESUME_AGENTS_JSON:-}"   # test seam: pre-fetched /api/agents body
 NOW="${FLEET_RESUME_NOW:-}"
@@ -62,7 +73,7 @@ echo
 echo "-- A. Ollama / GPU --"
 
 if [ -x "$INSTALLED_CHECK" ]; then
-  INSTALLED_OUT="$(timeout 10 "$INSTALLED_CHECK" 2>&1)"
+  INSTALLED_OUT="$(timeout "$INSTALLED_TIMEOUT" "$INSTALLED_CHECK" 2>&1)"
   INSTALLED_RC=$?
 else
   INSTALLED_OUT="not-installed: $INSTALLED_CHECK missing or not executable"
@@ -75,11 +86,11 @@ if printf '%s' "$INSTALLED_OUT" | grep -q "masked"; then
 elif [ "$INSTALLED_RC" -ne 0 ]; then
   echo "  ollama not usable on this host for another reason -- nothing to resume here."
 else
-  ACTIVE="$(timeout 5 "$SYSTEMCTL_BIN" --user is-active "$OLLAMA_UNIT" 2>/dev/null || true)"
+  ACTIVE="$(timeout "$ACTIVE_CHECK_TIMEOUT" "$SYSTEMCTL_BIN" --user is-active "$OLLAMA_UNIT" 2>/dev/null || true)"
   if [ "$ACTIVE" = "active" ]; then
     echo "  ollama.service already active -- nothing to do."
   elif [ "$APPLY" = true ]; then
-    if START_ERR="$(timeout 10 "$SYSTEMCTL_BIN" --user start "$OLLAMA_UNIT" 2>&1)"; then
+    if START_ERR="$(timeout "$START_TIMEOUT" "$SYSTEMCTL_BIN" --user start "$OLLAMA_UNIT" 2>&1)"; then
       echo "  ollama.service was '$ACTIVE' -> started."
     else
       echo "  ollama.service start FAILED (was '$ACTIVE'): $START_ERR"
@@ -90,7 +101,7 @@ else
 fi
 
 if [ -x "$VRAM_GUARD" ]; then
-  VRAM_OUT="$(timeout 15 "$VRAM_GUARD" 2>&1)" || true
+  VRAM_OUT="$(timeout "$VRAM_TIMEOUT" "$VRAM_GUARD" 2>&1)" || true
   echo "  GPU gate (read-only): $VRAM_OUT"
 else
   echo "  GPU gate: $VRAM_GUARD missing, skipped"
@@ -178,12 +189,12 @@ fi
 echo
 echo "-- D. load-guard / agent-cap snapshot --"
 if [ -x "$LOAD_GUARD_READ" ]; then
-  echo "  load: $(timeout 5 "$LOAD_GUARD_READ" 2>&1)"
+  echo "  load: $(timeout "$LOAD_READ_TIMEOUT" "$LOAD_GUARD_READ" 2>&1)"
 else
   echo "  load: $LOAD_GUARD_READ missing, skipped"
 fi
 if [ -x "$AGENT_CAP_CHECK" ]; then
-  echo "  agent-cap: $(timeout 10 "$AGENT_CAP_CHECK" 2>&1)"
+  echo "  agent-cap: $(timeout "$AGENT_CAP_TIMEOUT" "$AGENT_CAP_CHECK" 2>&1)"
 else
   echo "  agent-cap: $AGENT_CAP_CHECK missing, skipped"
 fi

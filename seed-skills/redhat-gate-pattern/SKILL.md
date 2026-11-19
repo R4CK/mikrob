@@ -229,6 +229,8 @@ Kill-chain 3 ([name]): PASS/INFO - [evidence]
 [If any INFO: Forward invariant: [what to re-gate when X lands]]
 ```
 
+**Evidence type (rule 4g, card c77013a1).** After the verdict word + `Gate-SHA:` line, tag each kill-chain line's claim: `OBSERVATION: <what you ran/traced, on which sha>` for the evidence itself, `DERIVATION: <what follows>` if you reason from it, `CONCLUSION: <the final PASS/FAIL per kill-chain>`, `UNKNOWN: <what you did not verify>`. Keeps a kill-chain's "PASS - evidence" line honest about whether the evidence is a measured fact or a conclusion drawn from one.
+
 ## RLS-migration gate: run the e2e LIVE yourself (don't trust the backend's claim)
 
 For a deploy-critical RLS PG-adapter card (tenant/owner/crew isolation), the migration + adapter code review is necessary but NOT sufficient — the decisive proof is the RLS policy ENFORCING live against the exact threat (a compromised non-superuser app-role). The card's e2e is env-gated on `PG_E2E_URL` and self-bootstraps its schema (applies the prereq migrations + creates roles in `beforeAll`). Spin up an embedded PG18 yourself and run it — do not rubber-stamp the backend's "7/7" claim.

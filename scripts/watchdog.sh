@@ -189,11 +189,25 @@ agent_launch_env() {
       if ! head -c 20 "$OWN_TOKEN_PATH" 2>/dev/null | grep -q '^sk-ant-oat'; then
         printf '%s' "REFUSE:not-a-setup-token"; return
       fi
-      if python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --bad-content-characters "$OWN_TOKEN_PATH" 2>/dev/null; then
+      # Card 6b7a606d (RedHat LOW on ae5af304, msg 19513): the checker's own contract for these two
+      # flags is exit 0 (match) / exit 1 (no match) -- anything else (a crash, an unanticipated
+      # exception exiting 1 in a way indistinguishable from this script's own intent, a kill signal)
+      # must REFUSE, not be read as "no match" by a bare `if CMD; then`, which collapses every
+      # non-zero exit to the same "false" branch. The exit code is captured explicitly so a 3rd
+      # outcome exists.
+      python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --bad-content-characters "$OWN_TOKEN_PATH" 2>/dev/null
+      BAD_CHARS_RC=$?
+      if [ "$BAD_CHARS_RC" -eq 0 ]; then
         printf '%s' "REFUSE:content-bad-characters"; return
+      elif [ "$BAD_CHARS_RC" -ne 1 ]; then
+        printf '%s' "REFUSE:checker-failed"; return
       fi
-      if python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --same-as-fleet-token "$OWN_TOKEN_PATH" "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null; then
+      python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --same-as-fleet-token "$OWN_TOKEN_PATH" "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null
+      SAME_AS_FLEET_RC=$?
+      if [ "$SAME_AS_FLEET_RC" -eq 0 ]; then
         printf '%s' "REFUSE:same-as-fleet-token"; return
+      elif [ "$SAME_AS_FLEET_RC" -ne 1 ]; then
+        printf '%s' "REFUSE:checker-failed"; return
       fi
       printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$OWN_TOKEN_PATH')\" && "
       return

@@ -37,7 +37,7 @@ describe('noisy-command-guard / noisy-run selftests actually run in CI', () => {
     const m = out.match(/pass=(\d+) fail=(\d+)/)
     expect(m, `no "pass=N fail=N" summary in output:\n${out}`).not.toBeNull()
     expect(m![2]).toBe('0')
-    expect(Number(m![1]), `case count shrank below its floor:\n${out}`).toBeGreaterThanOrEqual(6)
+    expect(Number(m![1]), `case count shrank below its floor:\n${out}`).toBeGreaterThanOrEqual(7)
     expect(code).toBe(0)
   }, 120_000)
 })

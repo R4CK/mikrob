@@ -70,6 +70,10 @@ const EXEMPT: Record<string, string> = {
     'shared library imported by outgoing-copy-gate.py (and the level-2 email approval gate, EMAILKAPU901 PR2); not itself a hook',
   'credential_lib.py':
     'shared library (CREDGATE1003, card 42d952bc) imported by credential-gate.py and credential-gate-cli.py: config/key/state/detector helpers; not itself a hook',
+  'sender_check.py':
+    'shared library imported by scripts/uptime-monitor.py for its outgoing-copy CONTENT check ' +
+    'before a Telegram alert send (card 5dd0842a, Koteg 25, scoped port from upstream); not a ' +
+    'PreToolUse/PostToolUse hook itself, same shape as email_extract.py above',
   'memory-save.sh':
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':
