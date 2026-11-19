@@ -967,7 +967,12 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 # and any value >= 2^63 (wraps negative in bash's 64-bit arithmetic). ^(0|[1-9][0-9]{0,8})$ allows
 # bare 0 or a non-zero-leading run of up to 9 digits (max 999999999), well under 2^63.
 if ! [[ "$OFFLOAD_MAX_SUBTASKS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
-  echo "offload-dispatch: OFFLOAD_MAX_SUBTASKS='$OFFLOAD_MAX_SUBTASKS' is not an integer -- falling back to the documented default (15)" >&2
+  # LOG-LINE FORGERY (CWE-117, card e2406a43, same pattern as wsl-cleanup.sh's %q fix on
+  # e2425f05): the raw env value is attacker-reachable (anything that can set env for this
+  # process) and was echoed verbatim -- a newline/control char inside it could forge a second,
+  # unrelated log line. %q quotes it into a single shell-safe token.
+  printf -v subtasks_val_q '%q' "$OFFLOAD_MAX_SUBTASKS"
+  echo "offload-dispatch: OFFLOAD_MAX_SUBTASKS=$subtasks_val_q is not an integer -- falling back to the documented default (15)" >&2
   OFFLOAD_MAX_SUBTASKS=15
 fi
 
@@ -985,7 +990,10 @@ OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
 # Same shape as the OFFLOAD_MAX_SUBTASKS guard above (bare 0 or a non-zero-leading run of up to 9
 # digits, so leading-zero octal confusion and >= 2^63 overflow are both rejected the same way).
 if ! [[ "$OFFLOAD_DECOMPOSE_MAX_PER_CARD" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
-  echo "offload-dispatch: OFFLOAD_DECOMPOSE_MAX_PER_CARD='$OFFLOAD_DECOMPOSE_MAX_PER_CARD' is not an integer -- falling back to the documented default (3)" >&2
+  # LOG-LINE FORGERY (CWE-117, card e2406a43): same reasoning as the OFFLOAD_MAX_SUBTASKS guard
+  # above -- %q quotes the attacker-reachable raw env value into a single shell-safe token.
+  printf -v per_card_val_q '%q' "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"
+  echo "offload-dispatch: OFFLOAD_DECOMPOSE_MAX_PER_CARD=$per_card_val_q is not an integer -- falling back to the documented default (3)" >&2
   OFFLOAD_DECOMPOSE_MAX_PER_CARD=3
 fi
 # shellcheck source=./card-decompose-templates.sh
@@ -1786,6 +1794,17 @@ if [[ "${1:-}" == "--test-attempts-op" ]]; then
   [[ "${1:-}" == "--file" ]] && { ATTEMPTS_FILE="$2"; export ATTEMPTS_FILE; }
   [[ -z "$op" || -z "$leaf" ]] && { echo "usage: --test-attempts-op OP LEAF [--file PATH]" >&2; exit 2; }
   attempts_op "$op" "$leaf"
+  exit 0
+fi
+
+# --test-subtasks-budget-reached ATTEMPTED: exposes the main loop's leaf-call budget comparison
+# (card e2406a43, follow-up to 81025eb5) against the real, already-guarded OFFLOAD_MAX_SUBTASKS --
+# the guard above runs unconditionally before this flag is handled, so the value here is exactly
+# what the real dispatch loop would compare against. Prints "reached"/"ok".
+if [[ "${1:-}" == "--test-subtasks-budget-reached" ]]; then
+  shift
+  attempted="${1:-0}"
+  if (( attempted >= OFFLOAD_MAX_SUBTASKS )); then echo "reached"; else echo "ok"; fi
   exit 0
 fi
 
