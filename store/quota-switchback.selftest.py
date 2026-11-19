@@ -146,6 +146,31 @@ check(
                        max_age_sec=450, now=t2) is True,
 )
 
+# Cybered NO-GO 33576 item 4: the two-sided bound must reject a FUTURE-dated entry too, not just
+# a stale one -- a one-sided `(now - ts) <= max_age_sec` check lets a negative age (a reading
+# whose ts is ahead of `now`, e.g. from a forward-clock glitch that later corrected) through
+# FOREVER, since a negative number is always <= a positive bound. Combined with an unrelated
+# genuinely-old-but-still-recent reading, that lets a bogus future timestamp manufacture an
+# arbitrarily large span and confirm on garbage data.
+future_dated_log = [{"ok": False, "ts": t2 - 100}, {"ok": False, "ts": t2 + 10_000}]
+check(
+    "WITHOUT the two-sided bound (one-sided check only), a future-dated newest entry + a real "
+    "older one still confirms (shows the bug the two-sided check exists to close)",
+    # Reproduce the one-sided mutant inline: filter with the OLD single-bound condition instead
+    # of calling confirm_outage's own (already-fixed) two-sided filter, so this control cannot
+    # accidentally pass just because confirm_outage was fixed under it.
+    (lambda log, now, max_age: (
+        lambda run: len(run) >= 2 and (run[0]["ts"] - run[1]["ts"]) >= 45
+    )([e for e in log[::-1] if (now - e["ts"]) <= max_age])
+    )(future_dated_log, t2, 450) is True,
+)
+check(
+    "F1b (Cybered NO-GO 33576 item 4): WITH the two-sided bound, a future-dated newest entry "
+    "is dropped (negative age), leaving only 1 entry -- does NOT confirm",
+    qs.confirm_outage(future_dated_log, confirm_probes=2, min_gap_sec=45,
+                       max_age_sec=450, now=t2) is False,
+)
+
 # --- F2 (Cybersec NO-GO 33392/33574): hostile/malformed switchback-hysteresis.json must not
 # --- crash load_outage_confirm_config() (startup would crash-loop the bridge) and must not be
 # --- accepted outside the sane window -- both fall back to the defaults (2, 45). --------------

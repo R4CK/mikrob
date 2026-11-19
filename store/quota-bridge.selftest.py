@@ -879,8 +879,13 @@ def main() -> int:
 
         # The acceptance criterion itself: ONE fresh down reading right after this recovery must
         # NOT re-confirm the outage. Before the fix, the stale run above (already >= min_gap_sec)
-        # made should_declare_outage() return True on this single reading.
-        m.record_outage_probe(state6, down=True, now=5_000_000.0 + 50)
+        # made should_declare_outage() return True on this single reading. WhiteHat LOW 33574: the
+        # original version of this assertion placed the fresh reading only 4s after the stale
+        # tail (5_000_050 vs 5_000_046), so even WITHOUT the clear, the newest two entries' span
+        # (4s) already fails min_gap_sec on its own -- the assertion passed either way, pinning
+        # nothing. Placing it 600s later means an un-cleared log (newest two = stale tail + this
+        # reading, span 600s >= 45) WOULD wrongly confirm, so clearing is what this now tests.
+        m.record_outage_probe(state6, down=True, now=5_000_000.0 + 46 + 600)
         declared6 = m.should_declare_outage(state6, confirm_probes=2, min_gap_sec=45)
         if declared6 is False:
             ok("B2: a single down reading right after recovery does not re-confirm the outage "
@@ -940,6 +945,215 @@ def main() -> int:
     finally:
         m.sys.argv = orig_argv7
         for name, fn in old7.items():
+            setattr(m, name, fn)
+
+    # --- B3 integration + restart leg + clock-step (Cybered NO-GO 33404/33576 items 3/4/5):
+    # --- every test above drives record_outage_probe()/should_declare_outage()/outage_loop()
+    # --- directly. Cybered measured that main() ITSELF was unpinned: deleting the
+    # --- record_outage_probe() call, or replacing the should_declare_outage() call with a bare
+    # --- True, left every selftest above green. This drives the REAL main(), with every side
+    # --- effect (state/marker/bot.pid files, kill_pid_holder, outage_loop, mikrob_down, the clock)
+    # --- stubbed but the actual loop body, record_outage_probe(), and should_declare_outage()
+    # --- running unmodified -- adapted from Cybered's own replay harness
+    # --- (agents/cybered/handoff-artifacts/f490ae53/harness_f490_r2.py, offered for reuse).
+    old8 = {
+        "STATE_FILE": m.STATE_FILE, "SESSION_OUTAGE_FILE": m.SESSION_OUTAGE_FILE,
+        "BOT_PID_FILE": m.BOT_PID_FILE, "read_token": m.read_token, "log": m.log,
+        "kill_pid_holder": m.kill_pid_holder, "outage_loop": m.outage_loop,
+        "mikrob_down": m.mikrob_down, "time": m.time, "clear_session_outage": m.clear_session_outage,
+    }
+    orig_argv8 = m.sys.argv
+
+    class _StopB3(Exception):
+        pass
+
+    class _FakeClock:
+        """Only time.sleep() advances the clock -- matching the REAL loop, where the only
+        elapsed time between probes comes from main()'s own time.sleep(POLL_HEALTHY_SEC) on the
+        not-yet-confirmed branch, or from the outage_loop() stub's own sleep while "in" an
+        outage. `jump_after`/`jump_by` apply on the Nth sleep call, modelling an NTP step or a
+        resume-from-suspend landing between two polls."""
+        def __init__(self, t0, jump_after=None, jump_by=0, max_sleeps=10, on_max=None):
+            self.t = t0
+            self.sleeps = 0
+            self._jump_after, self._jump_by = jump_after, jump_by
+            self._max_sleeps, self._on_max = max_sleeps, on_max
+
+        def time(self):
+            return self.t
+
+        def sleep(self, n):
+            self.t += n
+            self.sleeps += 1
+            if self._jump_after is not None and self.sleeps == self._jump_after:
+                self.t += self._jump_by
+            if self.sleeps >= self._max_sleeps:
+                self._on_max()
+
+    def _run_real_main(state0, readings, t0=9_000_000.0, jump_after=None, jump_by=0,
+                        max_sleeps=10, outage_secs=1):
+        """readings: bools consumed one per mikrob_down() probe (True=down); exhausted ->
+        further probes read healthy. Stops after max_sleeps time.sleep() calls via _StopB3,
+        since main()'s `while True` never exits on its own -- a sleep happens once per loop
+        iteration (either the not-yet-confirmed branch's real sleep, or the outage_loop() stub's
+        own sleep standing in for the time an outage lasts). Returns dict(kills, outages,
+        log_len, final_phase)."""
+        with tempfile.TemporaryDirectory(prefix="qb490-b3.") as td2:
+            state_path = os.path.join(td2, "state.json")
+            with open(state_path, "w") as f:
+                json.dump(state0, f)
+            m.STATE_FILE = state_path
+            m.SESSION_OUTAGE_FILE = os.path.join(td2, "outage.json")
+            m.BOT_PID_FILE = os.path.join(td2, "bot.pid")
+            m.read_token = lambda: "fake-token"
+            m.log = lambda msg: None
+            m.clear_session_outage = lambda: None
+            rec = {"kills": 0, "outages": 0}
+
+            def _raise_stop():
+                raise _StopB3()
+
+            clk = _FakeClock(t0, jump_after=jump_after, jump_by=jump_by,
+                              max_sleeps=max_sleeps, on_max=_raise_stop)
+            m.time = clk
+            seq = list(readings)
+
+            def _down():
+                return seq.pop(0) if seq else False
+
+            m.mikrob_down = _down
+            m.kill_pid_holder = lambda: rec.__setitem__("kills", rec["kills"] + 1)
+
+            def _outage_loop(token, state):
+                rec["outages"] += 1
+                state["phase"] = "healthy"; state["banner_streak"] = 0
+                state["notified_outage"] = False; state["probe_log"] = []
+                state["outage_probe_log"] = []
+                m.save_state(state)
+                clk.sleep(outage_secs)  # stands in for the time actually spent "in" the outage
+
+            m.outage_loop = _outage_loop
+            m.sys.argv = ["quota-bridge.py"]
+            try:
+                m.main()
+            except _StopB3:
+                pass
+            final = {}
+            try:
+                with open(state_path) as f:
+                    final = json.load(f)
+            except OSError:
+                pass
+            rec["log_len"] = len(final.get("outage_probe_log", []))
+            rec["final_phase"] = final.get("phase")
+            return rec
+
+    try:
+        D, H = True, False
+
+        # B (positive control): two down readings POLL_HEALTHY_SEC apart (the real cadence, read
+        # from the actual switchback-hysteresis.json's minGapSecIn=45) -> exactly one takeover.
+        r_b = _run_real_main({"phase": "healthy", "offset": 0, "notified_outage": False}, [D, D])
+        if r_b["kills"] == 1 and r_b["outages"] == 1:
+            ok("B3 positive control: real main(), two down readings POLL_HEALTHY_SEC apart -> "
+               "1 takeover")
+        else:
+            bad("B3 positive control: real main() should take over exactly once on a genuine "
+                "down pair spaced by the real poll interval", r_b)
+
+        # A (negative control): a flap (down, healthy, down, healthy, ...) never takes over.
+        r_a = _run_real_main({"phase": "healthy", "offset": 0, "notified_outage": False},
+                              [D, H, D, H, D, H])
+        if r_a["kills"] == 0 and r_a["outages"] == 0:
+            ok("B3 negative control: real main(), a down/healthy flap never takes over")
+        else:
+            bad("B3 negative control: real main() must not take over on a flap", r_a)
+
+        # D (restart leg, Cybered item 3): a persisted down reading 600s before process start,
+        # plus ONE fresh down reading -> must NOT take over (the single-reading kill the card
+        # exists to stop). This drives the REAL load_state()+main() startup path, including the
+        # new prune_stale_outage_probes() call. max_sleeps=1 stops right after the first (and
+        # only) real decision this scenario needs.
+        old_restart = {"phase": "healthy", "offset": 0, "notified_outage": False,
+                       "outage_probe_log": [{"ok": False, "ts": 9_000_000.0 - 600}]}
+        r_d = _run_real_main(old_restart, [D], max_sleeps=1)
+        if r_d["kills"] == 0:
+            ok("B3 restart leg: a persisted down reading 600s old + one fresh down does NOT "
+               "take over (Cybered NO-GO 33576 item 3)")
+        else:
+            bad("B3 restart leg: a stale persisted down reading must not combine with one "
+                "fresh reading to take over", r_d)
+
+        # D3: same with a 30-day-old persisted reading -- an even more extreme case of the same
+        # bug, must also stay at kills=0.
+        old_restart_30d = {"phase": "healthy", "offset": 0, "notified_outage": False,
+                            "outage_probe_log": [{"ok": False, "ts": 9_000_000.0 - 30 * 86400}]}
+        r_d3 = _run_real_main(old_restart_30d, [D], max_sleeps=1)
+        if r_d3["kills"] == 0:
+            ok("B3 restart leg: a persisted down reading 30 DAYS old + one fresh down does NOT "
+               "take over")
+        else:
+            bad("B3 restart leg: a 30-day-old persisted reading must not take over with one "
+                "fresh reading", r_d3)
+
+        # E/E2 (clock step, Cybered item 4): a +1h and a -1h wall-clock jump landing between the
+        # two readings of an otherwise-genuine down pair must NOT confirm either way. This is the
+        # SAFE side effect of the age bound: the jump makes the first reading look either too
+        # stale (forward jump) or dated in the future (backward jump, rejected by the two-sided
+        # check) relative to the second -- a real sustained outage just takes one more confirmed
+        # pair AFTER the jump settles, which is a delay, not a false confirmation either way.
+        r_e = _run_real_main({"phase": "healthy", "offset": 0, "notified_outage": False},
+                              [D, D], jump_after=1, jump_by=3600, max_sleeps=2)
+        if r_e["kills"] == 0:
+            ok("B3 clock step +1h: a forward jump landing between two down readings does not "
+               "let the now-apparently-ancient first reading confirm the second")
+        else:
+            bad("B3 clock step +1h: a forward jump must not produce a false confirmation", r_e)
+
+        r_e2 = _run_real_main({"phase": "healthy", "offset": 0, "notified_outage": False},
+                               [D, D], jump_after=1, jump_by=-3600, max_sleeps=2)
+        if r_e2["kills"] == 0:
+            ok("B3 clock step -1h (Cybered NO-GO 33576 item 4): a backward clock step does not "
+               "fool should_declare_outage() into confirming on a reading that LOOKS fresh "
+               "only because the clock moved backward")
+        else:
+            bad("B3 clock step -1h: a backward jump must not let a stale-looking reading count "
+                "as fresh", r_e2)
+
+        # B3 wiring mutants, on the REAL main() this time (Cybered item 5): temporarily replace
+        # should_declare_outage() with a bare True, and separately no-op record_outage_probe() --
+        # both must turn the positive/negative controls above red, proving THIS harness (not just
+        # the isolated-helper tests) actually exercises main()'s wiring.
+        old_sdo = m.should_declare_outage
+        m.should_declare_outage = lambda *a, **kw: True
+        try:
+            r_mut1 = _run_real_main({"phase": "healthy", "offset": 0, "notified_outage": False},
+                                     [H], max_sleeps=1)
+            if r_mut1["kills"] >= 1:
+                ok("B3 mutation check: replacing should_declare_outage() with True turns the "
+                   "negative control red (confirms this harness pins the real wiring)")
+            else:
+                bad("B3 mutation check: should_declare_outage()->True should make even a "
+                    "healthy reading take over", r_mut1)
+        finally:
+            m.should_declare_outage = old_sdo
+
+        old_rop = m.record_outage_probe
+        m.record_outage_probe = lambda state, down, now=None: state
+        try:
+            r_mut2 = _run_real_main({"phase": "healthy", "offset": 0, "notified_outage": False},
+                                     [D, D])
+            if r_mut2["kills"] == 0:
+                ok("B3 mutation check: no-opping record_outage_probe() turns the positive "
+                   "control red (confirms this harness pins the real wiring)")
+            else:
+                bad("B3 mutation check: a no-op record_outage_probe() should prevent any "
+                    "takeover (nothing is ever recorded to confirm)", r_mut2)
+        finally:
+            m.record_outage_probe = old_rop
+    finally:
+        m.sys.argv = orig_argv8
+        for name, fn in old8.items():
             setattr(m, name, fn)
 
     print(f"\nselftest: {PASS} passed, {FAIL} failed")

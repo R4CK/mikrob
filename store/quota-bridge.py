@@ -694,6 +694,20 @@ def main():
     # the staleness window.
     if state.get("phase") != "outage":
         clear_session_outage()
+    # F1b restart leg (Cybered NO-GO 33404/33576 item 3): prune a persisted outage_probe_log of
+    # any stale (or clock-step future-dated) entries right at process start, same two-sided bound
+    # confirm_outage applies per-call -- belt and suspenders, and keeps the on-disk log from
+    # carrying ancient entries forward across restarts. `now=time.time()` is passed explicitly
+    # (rather than relying on quota_switchback's own default) so this and every other outage-
+    # timing decision in this loop read the SAME clock source -- the one name (`time`, this
+    # module's own) a test can override.
+    # HONEST NOTE (not independently mutation-pinned): since confirm_outage() already applies
+    # the identical bound on EVERY call inside the loop, this line is currently redundant for
+    # correctness -- removing it alone does not turn any selftest red, only the decision-time
+    # filter does. Kept because Cybered explicitly asked for it at load time too (defense in
+    # depth against a future caller reading outage_probe_log before it reaches confirm_outage).
+    state["outage_probe_log"] = quota_switchback.prune_stale_outage_probes(
+        state.get("outage_probe_log", []), OUTAGE_PROBE_MAX_AGE_SEC, now=time.time())
     # ENTRY-SIDE HYSTERESIS config (card f490ae53): same confirm-over-N-probes-spanning-a-minimum-
     # gap shape as the recovery side's load_hysteresis_config, loaded once per process start (the
     # file is re-read on every restart, so an ops tuning edit takes effect without a code change).
@@ -708,7 +722,7 @@ def main():
         record_outage_probe(state, mikrob_down())
         save_state(state)
         if should_declare_outage(state, confirm_probes_in, min_gap_sec_in,
-                                  max_age_sec=OUTAGE_PROBE_MAX_AGE_SEC):
+                                  max_age_sec=OUTAGE_PROBE_MAX_AGE_SEC, now=time.time()):
             if state["phase"] != "outage":
                 log("OUTAGE confirmed -> taking over channel")
                 state["phase"] = "outage"; save_state(state)

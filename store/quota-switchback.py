@@ -83,15 +83,20 @@ def confirm_outage(probe_log, confirm_probes=2, min_gap_sec=45, max_age_sec=None
     trailing window resets the run to zero, exactly like confirm_switchback -- so a down-then-up
     flap of any length never confirms, independent of the gap check.
 
-    F1b (Cybersec NO-GO 33392/33574): without `max_age_sec`, a probe_log persisted across a
-    process restart (or a long gap in polling) can carry one down reading from hours earlier
-    plus ONE fresh down reading -- the span between them trivially satisfies min_gap_sec, so
-    the stale reading alone supplies the "confirm_probes-th" entry the fresh reading needs,
-    confirming on data that is no longer evidence of a CURRENT outage. When `max_age_sec` is
-    given, entries older than that (relative to `now`, default time.time()) are dropped from the
-    trailing run BEFORE the count/span check, so a stale entry can no longer stand in for a
-    missing fresh one -- it takes `confirm_probes` genuinely RECENT down readings, same as
-    before, not one recent plus leftover history."""
+    F1b (Cybersec NO-GO 33392/33574, Cybered NO-GO 33404/33576): without `max_age_sec`, a
+    probe_log persisted across a process restart (or a long gap in polling) can carry one down
+    reading from hours or days earlier plus ONE fresh down reading -- the span between them
+    trivially satisfies min_gap_sec, so the stale reading alone supplies the "confirm_probes-th"
+    entry the fresh reading needs, confirming on data that is no longer evidence of a CURRENT
+    outage. When `max_age_sec` is given, entries dropped from the trailing run BEFORE the
+    count/span check are the ones whose age (relative to `now`, default time.time()) falls
+    OUTSIDE [0, max_age_sec] -- too old, so a stale entry can no longer stand in for a missing
+    fresh one; OR appearing to be in the future, because `time.time()` is not monotonic and a
+    backward clock step (NTP correction, resume-from-suspend) would otherwise make an old entry's
+    (now - ts) go NEGATIVE, which is "<= max_age_sec" and would wrongly un-expire it forever
+    (Cybered NO-GO 33576 item 4, reproduced: a 1h step either direction between two down readings
+    confirmed). Rejecting age < 0 too closes that: a timestamp the current clock thinks is in the
+    future is exactly as untrustworthy as one that is stale."""
     if confirm_probes < 1:
         return False
     run = []
@@ -101,12 +106,23 @@ def confirm_outage(probe_log, confirm_probes=2, min_gap_sec=45, max_age_sec=None
         run.append(entry)
     if max_age_sec is not None:
         now = time.time() if now is None else now
-        run = [entry for entry in run if (now - entry["ts"]) <= max_age_sec]
+        run = [entry for entry in run if 0 <= (now - entry["ts"]) <= max_age_sec]
     if len(run) < confirm_probes:
         return False
     newest_ts = run[0]["ts"]
     oldest_ts = run[confirm_probes - 1]["ts"]
     return (newest_ts - oldest_ts) >= min_gap_sec
+
+
+def prune_stale_outage_probes(probe_log, max_age_sec, now=None):
+    """F1b restart leg (Cybered NO-GO 33404/33576 item 3): drop entries whose age falls outside
+    [0, max_age_sec] -- same two-sided rule as the one applied inside confirm_outage, exposed
+    separately so quota-bridge.py's main() can prune the PERSISTED log once at process start
+    (defense in depth: confirm_outage's own per-call filtering already makes a stale entry
+    harmless at decision time, but pruning the loaded state too means the on-disk log never
+    grows unbounded with ancient entries either). Pure; does not touch any file itself."""
+    now = time.time() if now is None else now
+    return [entry for entry in probe_log if 0 <= (now - entry["ts"]) <= max_age_sec]
 
 
 # F2 (Cybersec NO-GO 33392/33574): sane bounds for the entry-side confirm config. Outside these,
