@@ -1,3 +1,9 @@
+
+// Card e5c13c0e/Koteg 27 (backend3, 2026-11-19): web/app.js's conflict this round was
+// resolved whole-file STUB (ours), per src/fork-upstream/acknowledged-conflicts.ts's
+// standing policy -- the functions this file slices out of app.js do not exist in this
+// fork's version. Skipped (not deleted) until someone does the dedicated line-by-line
+// port that policy defers to.
 // Owner strip ("Rád vár" / "Waiting on you"): the owner's open cards plus any
 // card carrying the "Rád vár" label, above the board and outside every filter.
 // The browser code has no module boundary, so the real functions are sliced out
@@ -88,7 +94,7 @@ function setup(owner: string | null, cards: unknown[], assignees: unknown[] = []
 
 const RAD_VAR = { id: 'l1', name: 'Rád vár' }
 
-describe('kanbanIsOnOwnerStrip: assignee OR the "Rád vár" label', () => {
+describe.skip('kanbanIsOnOwnerStrip: assignee OR the "Rád vár" label', () => {
   const { onStrip } = setup('Jane Doe', [])
   it("takes the owner's own open card, matched case-insensitively", () => {
     expect(onStrip({ status: 'planned', assignee: ' jane doe ', labels: [] }, 'Jane Doe')).toBe(true)
@@ -110,7 +116,7 @@ describe('kanbanIsOnOwnerStrip: assignee OR the "Rád vár" label', () => {
   })
 })
 
-describe('kanbanHideFromLanes', () => {
+describe.skip('kanbanHideFromLanes', () => {
   it("hides only the owner's OPEN cards; a labelled agent card stays in its lane", () => {
     const { hide } = setup('Jane Doe', [])
     expect(hide({ status: 'planned', assignee: 'jane doe', labels: [] })).toBe(true)
@@ -129,7 +135,7 @@ describe('kanbanHideFromLanes', () => {
   })
 })
 
-describe('renderKanbanOwnerStrip', () => {
+describe.skip('renderKanbanOwnerStrip', () => {
   const cards = [
     { id: 'a', seq: 9, title: 'Low own', status: 'planned', priority: 'low', assignee: 'Jane Doe', labels: [] },
     { id: 'b', seq: 4, title: 'Needs a decision', status: 'waiting', priority: 'high', assignee: 'researcher', labels: [RAD_VAR] },
@@ -207,7 +213,7 @@ describe('renderKanbanOwnerStrip', () => {
   })
 })
 
-describe('wiring', () => {
+describe.skip('wiring', () => {
   it('renderKanban draws the strip, and the swimlane board skips the hidden cards in both passes', () => {
     expect(slice(APP_JS, 'function renderKanban()', 'function renderSwimlaneBoard(')).toContain('renderKanbanOwnerStrip()')
     const lanes = slice(APP_JS, 'function renderSwimlaneBoard(', '\n// Map column status keys')

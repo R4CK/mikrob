@@ -94,8 +94,11 @@ describe('POST /api/kanban/<id>/move with expected_status', () => {
 
   it('(b) refuses with 409 and leaves a done card done when expected_status is stale', async () => {
     createKanbanCard({ id: 'c-b', title: 'Already closed', assignee: 'dex' })
-    // An agent closes with evidence (kanban-done-evidence); without it the card would land in testing.
-    await move('c-b', { status: 'done', actor: 'dex', evidence: 'checked' })
+    // Card e5c13c0e/Koteg 27: a HUMAN closes here, not 'dex' (a mocked agent) -- this fleet's
+    // rule 4 means an agent-actor move to done always redirects to testing regardless of
+    // evidence (kanban-done-evidence.test.ts), and this test is about expected_status
+    // staleness, not about who is allowed to close a card.
+    await move('c-b', { status: 'done', actor: 'Some Human' })
     expect(getKanbanCard('c-b')?.status).toBe('done')
     const updatedBefore = getKanbanCard('c-b')?.updated_at
 

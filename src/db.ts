@@ -5517,7 +5517,12 @@ export function moveKanbanCard(
   // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
-  const evidenceToStore = status === 'done' && typeof evidence === 'string' && evidence.trim() !== ''
+  // 'testing' too (Koteg 27, card e5c13c0e): an agent-actor move to 'done' with evidence is
+  // redirected to 'testing' by the caller (kanban.ts's rule-4 enforcement) BEFORE this function
+  // ever sees 'done' -- the evidence must still land in done_evidence so whoever reviews the
+  // card out of testing sees it, or it would be silently dropped on exactly the path this
+  // column exists for.
+  const evidenceToStore = (status === 'done' || status === 'testing') && typeof evidence === 'string' && evidence.trim() !== ''
     ? evidence.trim()
     : undefined
   const baseSet = kanbanWriteClearsDispatch(status)

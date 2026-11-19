@@ -28,7 +28,12 @@ vi.mock('../db.js', async (importOriginal) => {
 
 vi.mock('../web/agent-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/agent-config.js')>()),
-  listAgentNames: () => ['dex', 'zara'],
+  // Card e5c13c0e/Koteg 27 (backend3, 2026-11-19): empty, not ['dex', 'zara'] -- this fleet's
+  // rule 4 means isAgentActor('zara'/'dex') would otherwise redirect every move('...', 'done')
+  // below to 'testing' regardless of the evidence this file's own move() helper attaches,
+  // breaking every assertion in this file (which is about notification routing, not about
+  // agent-vs-human closing policy). 'zara'/'dex' are card assignees here, not real agent names.
+  listAgentNames: () => [],
   readAgentDisplayName: (n: string) => n,
 }))
 

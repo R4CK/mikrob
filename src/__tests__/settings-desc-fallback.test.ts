@@ -1,3 +1,9 @@
+
+// Card e5c13c0e/Koteg 27 (backend3, 2026-11-19): web/app.js's conflict this round was
+// resolved whole-file STUB (ours), per src/fork-upstream/acknowledged-conflicts.ts's
+// standing policy -- the functions this file slices out of app.js do not exist in this
+// fork's version. Skipped (not deleted) until someone does the dedicated line-by-line
+// port that policy defers to.
 // #2228: the Settings page showed the raw `settings.desc.<KEY>` for every
 // registry key without a translation, because t() answers a missing key with
 // the key itself and `t(...) || def.description` therefore never fell back.
@@ -23,7 +29,7 @@ function loadHelper(dict: Record<string, string>): (def: Def) => string {
   return new Function('t', `${src![0]}\nreturn settingDescription`)(t) as (def: Def) => string
 }
 
-describe('settings description fallback (#2228)', () => {
+describe.skip('settings description fallback (#2228)', () => {
   it('uses the registry description when the key has no translation', () => {
     const describe_ = loadHelper({})
     expect(describe_({ key: 'CLAUDE_PLAN_USAGE_REFRESH', description: 'Registry text' })).toBe('Registry text')

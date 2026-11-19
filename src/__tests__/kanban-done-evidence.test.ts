@@ -41,10 +41,15 @@ function seed(status = 'in_progress') {
 describe('move to done: evidence required from an agent', () => {
   beforeEach(() => { initDatabase(':memory:'); seed() })
 
-  it('agent + evidence: done, evidence stored', async () => {
+  // Card e5c13c0e/Koteg 27 (backend3, 2026-11-19): this fleet's rule 4 (CLAUDE.md) means an
+  // agent NEVER closes its own work to done, no exception for attaching evidence -- stricter
+  // than upstream's "evidence bypasses the redirect" (the title above is upstream's original
+  // wording, kept so the diff against it stays legible). The evidence is still stored, so
+  // whoever reviews the card out of testing sees it.
+  it('agent + evidence: testing (not done), evidence stored for the reviewer', async () => {
     const out = await call(`/api/kanban/${CARD}/move`, 'POST', { status: 'done', actor: AGENT, evidence: '  vitest 12 pass, PR #1  ' })
-    expect(out.body).toEqual({ ok: true })
-    expect(readCard().status).toBe('done')
+    expect(out.body.evidence_required).toBe(true)
+    expect(readCard().status).toBe('testing')
     expect(readCard().done_evidence).toBe('vitest 12 pass, PR #1')
   })
 

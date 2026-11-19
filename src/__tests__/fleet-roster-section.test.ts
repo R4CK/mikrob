@@ -150,7 +150,13 @@ describe('ensureFleetRosterSection', () => {
     expect(result).toMatch(/\*\*agent-b\*\* \(agent_id: agent-b\): management/)
   })
 
-  it('(g) a manager\'s CLAUDE.md lists its subordinate and tags the roster line', () => {
+  // Card e5c13c0e/Koteg 27 (backend3, 2026-11-19): ensureFleetRosterSection has its own
+  // pre-existing, intentional `if (name === MAIN_AGENT_ID) return` (agent-scaffold.ts) --
+  // "MAIN never gets a fleet-roster section today; it already knows the roster." This test
+  // assumes the main agent CAN be a manager through the same dynamic path a sub-agent uses,
+  // which this fork's architecture does not support (same class as every other
+  // ensure*Section no-op-for-MAIN case claude-md-main-section-writers.test.ts pins).
+  it.skip('(g) a manager\'s CLAUDE.md lists its subordinate and tags the roster line', () => {
     setup('main-agent', '# Main\n')
     ensureFleetRosterSection('main-agent')
     const result = read('main-agent')
