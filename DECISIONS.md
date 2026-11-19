@@ -28219,3 +28219,31 @@ store/landing-gate-verdict-parse.py` tiszta.
 **Ki döntött:** WhiteHat2 lelete (e7f91eb9 komment 16689) + Peti/d8d035f8 (N1) adta az iranyt.
 backend2 vegezte a javitast. Gate: QA + Cybersec2 (a kartya sajat kijelolese, WhiteHat2 adta az
 iranyt).
+
+---
+
+## 2026-11-19 -- Kártya 60aeca01 delta: develop-drift merge-konfliktus feloldása (MikroB msg 21053)
+
+**Kontextus:** a batch land dry-run (DevO msg 21050) valódi konfliktust talált a már gate-elt
+60aeca01 (Gate-SHA 6042ce6df) és origin/develop között -- a kártya branch-je egy régi develop
+ponton állt (ugyanaz a helyzet, mint a 657f12a3/8cb1e168/e2425f05 testvér-kártyáknál ezen a
+sessionön), és mindkét oldal ugyanarra a horgonyra (a 7c79badc bejegyzés végére) fűzött fel egy
+új, egymástól független DECISIONS.md bejegyzést.
+
+**Döntés:** `git merge origin/develop` (nem rebase, hogy a 6042ce6df sha elérhető maradjon).
+Az EGYETLEN valódi tartalmi konfliktus a DECISIONS.md volt, tisztán sorrend-jellegű: a develop
+oldal (`theirs`) bejegyzéseit elöl hagytam, a kártya saját bejegyzését a fájl TÉNYLEGES végére
+tettem -- ugyanaz az algoritmus, amit a `store/decisions-sync-resolve.sh` erre az irányra (saját
+ág merge-eli be az integrációs ágat) dokumentál. Ellenőrizve a szkript saját
+`--check-last-merge` módjával: rc=0, az append-only invariáns él mindkét szülőn.
+
+**Teszt:** `fleet-test.sh --ref 786c942bc`, az 5 decisions-témájú tesztfájl (decisions-tail-
+append-guard-selftest, decisions-append-union-selftest, decisions-sync-resolve-selftest,
+kanban-decisions-guard, kg-import-decisions-log) -> 5 Test Files passed (5), 37 Tests passed
+(37), 0 fail.
+
+**Nincs benne:** landolás -- a delta-gate után DevO landolja (MikroB utasítása).
+
+**Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást. Gate:
+a delta a 6042ce6df-en már megadott QA + Cybersec2 sign-offot nem ismétli meg; ez a komment a
+merge-delta saját REVIEW-ja (kanban komment 33410).
