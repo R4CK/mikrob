@@ -25917,7 +25917,7 @@ tovabbi lelete (Cybersec GO 56c9a507 follow-up, L1/L2/P1):
 
 **Ki dontott:** MikroB dispatch (msg_id:18721, Peti 13930) -> backend2 vegrehajtasa.
 
-### 2026-11-15 -- Seed the 38 FE-assigned skills missing from fron-ted/fron-teddy (card f651b26c)
+## 2026-11-15 -- Seed the 38 FE-assigned skills missing from fron-ted/fron-teddy (card f651b26c)
 
 A `store/agent-skill-drift-sync.sh` heartbeat jelezte, hogy 38 skill csak fron-ted LIVE
 `.claude/skills`-eben letezik, a `seed-fleet-agents/{fron-ted,fron-teddy}` snapshotbol hianyzik
