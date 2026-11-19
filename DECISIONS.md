@@ -28460,3 +28460,37 @@ pass / 4 fail, exactly the F1 x3 + F2-control cases). `python3 -m py_compile`: c
 
 **Who decided:** backend (own card). Gate: QA + Cybered (fix direction came from WhiteHat, so
 the security gate is Cybered, per the card's own designation).
+
+## 2026-11-16 11:01 -- 0ca2322b: fleet-test.sh TEST_TREE detektor maradek vak alakjai -- `readonly
+## TEST_TREE`-vel lezarva, nem regex-formankent
+
+c5f98f82 kovetokartya (QA2 32214, RedHat 19592, mindketto @bea353d23). A regex-alapu statikus
+detektor (`fleet-test-no-test-tree-reassignment-after-guard.test.ts`) csak a literalis
+`TEST_TREE=` reszstringet ismeri fel, ezert vak maradt: `: "${TEST_TREE:=...}"` (assign-default),
+`TEST_TREE[0]=`, `TEST_TREE+=`, `mapfile`/`readarray TEST_TREE`, egy `for`/`select TEST_TREE in
+...` ciklusvaltozo, `printf -v` (idezve vagy ragasztva), `declare -n`/`local -n` indirekcio, es a
+nev/`=` kozotti backslash-ujsor torese. Es semmit nem mondott a `cd "$ROOT"` HIVAS UTANI
+szakaszrol.
+
+**Dontes (MikroB komment 32226, RedHat javaslatara, komment 32216): NEM regex-formankent
+bovitjuk a detektort, hanem `readonly TEST_TREE`-t teszunk a guard vege utan.** Bash ekkor MINDEN
+kesobbi iras-format visszadob runtime "readonly variable" hibaval -- az EGESZ osztalyt egy sorban
+zarja le, nem csak azokat a formakat, amiket valaki eppen felsorolt. A statikus detektor marad,
+mint olcso elso-vonal (a legegyszerubb, nyers `TEST_TREE=` hibat meg a szkript futasa elott
+elkapja), de a strukturalis vedelem a readonly deklaracio.
+
+**Verifikacio (valodi bash-futtatassal, nem csak string-mintaillesztessel):** a szkript sajat
+szovegebol kivonva a `readonly TEST_TREE`-ig tarto elotagot, majd ALAHOZZA mindegyik felsorolt
+irasi forma -> MIND elbukik "readonly variable" hibaval, az `assign-default` KIVETELEVEL (ez
+NOOP, nem bypass: a `:=` csak akkor ir, ha a valtozo ures/nincs beallitva, es a TEST_TREE a 31.
+sorban MAR nem-ures erteket kapott, mire ide erunk -- tehat ez a forma soha nem lehetett
+tenyleges kihasznalas, csak egy olyan alak, ami a regex-detektort nem erdekelte). "After-cd
+window" pin: a szkript elotagjat a VALODI `cd "$ROOT"` hivasig kivonva, majd azutan probalva irni
+-> ugyanugy elbukik -- a readonly a futas HATRALEVO egesz reszere vonatkozik, nem csak a
+guard-vege-es-cd kozti resre. Mutacio-bizonyitas: a `readonly TEST_TREE` sor ideiglenes
+eltavolitasaval MIND A 15 teszt (`fleet-test-tree-readonly-after-guard.test.ts`) pirosra valt
+(az irasi formak mind sikeresek lesznek), visszaallitva ismet zold. 3 fleet-test selftest
+(`fleet-test-incomplete-run`, `fleet-test-priority-lane`, `fleet-test-cpu-slot-env`) zold.
+
+**Ki döntött:** backend2 (self-advance, MikroB prioritas 19621: 0ca2322b a 214ca312 utan,
+mindketto sajat korabban gate-elt munka follow-upja). Gate: QA + Cybered.
