@@ -520,9 +520,11 @@ Inspect by hand: git -C $TEST_TREE status"
     # disposable worktree is never a prior run's state worth keeping, so wipe it every time.
     # Kept inside this SAME if-block, not a second one (CYBERSEC NO-GO on an earlier round,
     # comment 34209): fleet-test-self-heals-stray-live-marker.test.ts's mutation-proof check
-    # looks for the FIRST `if [ -f "$TEST_TREE/.git" ]; then` guard occurrence in this update
-    # branch and asserts it disappears when stripped -- a second, separate occurrence of the
-    # same guard text would still match after that strip, silently defeating the test.
+    # does a plain text search for the safety-guard line's own exact source and asserts it
+    # disappears when stripped -- a second, separate occurrence of that literal line (even one
+    # quoted verbatim in an explanatory comment like this one almost was) would still match
+    # after the strip, silently defeating the test. Describing the guard's shape in prose here
+    # instead of quoting it is deliberate, not an accident of wording.
     rm -rf "$TEST_TREE/agents"
   fi
 fi
