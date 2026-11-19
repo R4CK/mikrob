@@ -1078,7 +1078,7 @@ def main() -> int:
         r_d = _run_real_main(old_restart, [D], max_sleeps=1)
         if r_d["kills"] == 0:
             ok("B3 restart leg: a persisted down reading 600s old + one fresh down does NOT "
-               "take over (Cybered NO-GO 33576 item 3)")
+               "take over (Cybered NO-GO item 3, see comment above)")
         else:
             bad("B3 restart leg: a stale persisted down reading must not combine with one "
                 "fresh reading to take over", r_d)
@@ -1144,7 +1144,7 @@ def main() -> int:
         r_e2 = _run_real_main({"phase": "healthy", "offset": 0, "notified_outage": False},
                                [D, D], jump_after=1, jump_by=-3600, max_sleeps=2)
         if r_e2["kills"] == 0:
-            ok("B3 clock step -1h (Cybered NO-GO 33576 item 4): a backward clock step does not "
+            ok("B3 clock step -1h (Cybered NO-GO item 4, see comment above): a backward clock step does not "
                "fool should_declare_outage() into confirming on a reading that LOOKS fresh "
                "only because the clock moved backward")
         else:

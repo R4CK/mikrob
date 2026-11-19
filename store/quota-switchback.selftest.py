@@ -165,7 +165,7 @@ check(
     )(future_dated_log, t2, 450) is True,
 )
 check(
-    "F1b (Cybered NO-GO 33576 item 4): WITH the two-sided bound, a future-dated newest entry "
+    "F1b (Cybered NO-GO item 4, see comment above): WITH the two-sided bound, a future-dated newest entry "
     "is dropped (negative age), leaving only 1 entry -- does NOT confirm",
     qs.confirm_outage(future_dated_log, confirm_probes=2, min_gap_sec=45,
                        max_age_sec=450, now=t2) is False,
