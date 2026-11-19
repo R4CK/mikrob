@@ -72,6 +72,7 @@ MESSAGE_RECORDER="${AGENT_BOOT_RECONCILE_MESSAGE_BIN:-}"
 TELEGRAM_RECORDER="${AGENT_BOOT_RECONCILE_TELEGRAM_BIN:-}"
 HARDSTOP_FILE="${AGENT_BOOT_RECONCILE_HARDSTOP_FILE:-$ROOT/store/weekly-hard-stop.json}"
 PAUSE_FILE="${AGENT_BOOT_RECONCILE_PAUSE_FILE:-$ROOT/store/manual-dispatch-pause.json}"
+GATECLOSURE_BIN="${AGENT_BOOT_RECONCILE_GATECLOSURE_BIN:-$ROOT/store/gate-closure-check.py}"
 
 hf="$(mktemp)"; chmod 600 "$hf"
 cards_f="$(mktemp)"; agents_f="$(mktemp)"
@@ -79,19 +80,39 @@ trap 'rm -f "$hf" "$cards_f" "$agents_f"' EXIT
 printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
 
 # --- F1a: weekly hard-stop short-circuit. Parking rule (7.) takes precedence over this script. ---
-if [ -f "$HARDSTOP_FILE" ]; then
-  HS_ACTIVE="$(python3 -c '
+#
+# H1 (RedHat NO-GO, comment 17886, Gate-SHA 1199bea9): a hard-stop file that EXISTS but cannot be
+# understood (truncated JSON, empty file, a BOM, a JSON array at the root, a directory sitting at
+# the path) used to read exactly like "not active" -- every one of those measured shapes let
+# agents start. That matches weekly-hard-stop.ts's own documented fail-open choice for a MISSING
+# file (there is genuinely nothing to stop on), but a PRESENT, unreadable file is a different
+# claim: something is there and this script could not tell what it says, which must not silently
+# become "nothing is there". `-e`, not `-f`: a directory at the path failed the old `-f` test and
+# skipped this whole block unexamined, one more fail-open path the measurement found.
+if [ -e "$HARDSTOP_FILE" ]; then
+  HS_STATE="$(python3 -c '
 import json, sys
 try:
-    d = json.load(open(sys.argv[1]))
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+    if not isinstance(d, dict):
+        print("corrupt")
+    else:
+        print("1" if d.get("active") else "0")
 except Exception:
-    d = {}
-print("1" if d.get("active") else "0")
+    print("corrupt")
 ' "$HARDSTOP_FILE" 2>/dev/null)"
-  if [ "$HS_ACTIVE" = "1" ]; then
-    echo "agent-boot-reconcile: weekly-hard-stop active -- not starting anyone (parking rule 7 takes precedence)"
-    exit 0
-  fi
+  case "$HS_STATE" in
+    1)
+      echo "agent-boot-reconcile: weekly-hard-stop active -- not starting anyone (parking rule 7 takes precedence)"
+      exit 0
+      ;;
+    0) : ;;
+    *)
+      echo "agent-boot-reconcile: $HARDSTOP_FILE exists but could not be understood (not valid JSON, or not an object) -- not starting anyone (fail-closed on a present-but-unreadable file; a MISSING file stays fail-open by design)"
+      exit 0
+      ;;
+  esac
 fi
 
 # --- a4689243: manual-dispatch-pause check. Fail-closed: a missing file means inactive (the
@@ -213,6 +234,13 @@ import json, os, re
 
 VALID = set(x for x in os.environ.get("VALID_AGENTS", "").split(",") if x)
 NAME_RX = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+# H3b (RedHat NO-GO, comment 17886): the server accepts a readable identifier up to 64 chars for
+# a card id (measured: a literal "IGNORE-RULES-..." id landed verbatim, unescaped, in the
+# from:mikrob resume message AND the Telegram summary -- weak as injection goes since this is
+# mikrobs own channel, but still an unvalidated value flowing into text the owner reads). This
+# script only ever deals in the boards own hex8 card ids, so anything else is dropped here,
+# before it reaches any message/log this script builds.
+CARD_ID_RX = re.compile(r"^[0-9a-f]{8}$")
 
 try:
     cards = json.load(open(os.environ["CARDS_FILE"]))
@@ -226,12 +254,20 @@ for c in cards:
         continue
     if not NAME_RX.match(assignee) or assignee not in VALID:
         continue
-    title = c.get("title") or ""
-    if "BLOKKOLT" in title:
+    # H2 (RedHat NO-GO, comment 17886): the old check was `"BLOKKOLT" in title`, case-sensitive,
+    # title only. Measured: "blokkolt" (lowercase), "Blokkolt", a homoglyph substitution, and a
+    # card with NO "BLOKKOLT" text in the title at all but a "[BLOKKOLT-Peti-stop]" LABEL all
+    # started an agent anyway. Case-insensitive on both title and label names now.
+    title = (c.get("title") or "").upper()
+    label_names = " ".join((lbl.get("name") or "") for lbl in (c.get("labels") or []) if isinstance(lbl, dict)).upper()
+    if "BLOKKOLT" in title or "BLOKKOLT" in label_names:
+        continue
+    cid = c.get("id")
+    if not isinstance(cid, str) or not CARD_ID_RX.match(cid):
         continue
     status = c.get("status")
     if status in ("in_progress", "waiting"):
-        by_agent.setdefault(assignee, []).append((c["id"], status))
+        by_agent.setdefault(assignee, []).append((cid, status))
 
 for agent, entries in by_agent.items():
     ids = [cid for cid, status in entries if status == "in_progress"]
@@ -260,7 +296,19 @@ except Exception: sys.exit(0)
 comments = comments if isinstance(comments, list) else (comments or {}).get("comments") or []
 print("1" if any(re.search(r"(?m)^\s*REVIEW", (c.get("content") or ""), re.I) for c in comments) else "0")
 ' 2>/dev/null)"
-    [ "$has_review" = "1" ] && qualifying_waiting="$qualifying_waiting $cid"
+    if [ "$has_review" != "1" ]; then
+      continue
+    fi
+    # H3a (RedHat NO-GO, comment 17886): a waiting+REVIEW card can be FULLY gated already (every
+    # designated gate's latest verdict AGREE) -- the header comment's own claim ("a gate hasn't
+    # verdicted it yet") was false for this shape, and the timer's 5-minute backstop (not a
+    # boot-once check) kept restarting that card's builder for as long as it sat open after
+    # closing, which is normally minutes but is not guaranteed.
+    closure="$(printf '%s' "$comments_json" | python3 "$GATECLOSURE_BIN" 2>/dev/null)"
+    case "$closure" in
+      AGREE\|*) continue ;;
+    esac
+    qualifying_waiting="$qualifying_waiting $cid"
   done
   all_ids="$in_progress_ids"
   [ -n "$qualifying_waiting" ] && all_ids="$all_ids ${qualifying_waiting# }"

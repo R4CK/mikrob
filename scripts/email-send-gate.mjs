@@ -914,7 +914,17 @@ const EMAIL_SERVER_RE = /__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__/i
 // PREFIX, before the matched safe verb, was invisible to a lookahead that only scanned what
 // comes AFTER the verb (forward_get_x read as safe). Moved the negative lookahead to the START
 // of each alternative so it scans the WHOLE name.
-const EMAIL_SAFE_TOOL_RE = /^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?(?:search|get|list|read|draft)[-_]|^(?!.*(?:send|reply|forward))[A-Za-z0-9]*[-_]?create[-_]draft$/i
+//
+// Card bf7a7335 CYBERSEC GO LOW (comment 9092, same twin finding on all three gates): the
+// lookahead only excluded send/reply/forward, so safe-prefix + ANY OTHER sending synonym still
+// read as safe (measured 18 forms: draft_and_dispatch/_deliver/_submit/_transmit/_post/_publish/
+// _relay/_respond, get_and_respond, read_and_fwd, draft_and_mail_out, search_and_deliver,
+// list_and_post, draft_then_ship, read_and_answer, draft_and_xmit, draft_snd, get_rply). Widened
+// the danger-word alternation to the full synonym set measured against the real finding; this is
+// a deny-list inside an allow-list, so a FUTURE unenumerated synonym is still a residual risk
+// (the durable fix the card points at is an explicit full-name allowlist, left as a separate,
+// larger change).
+const EMAIL_SAFE_TOOL_RE = /^(?!.*(?:send|reply|forward|dispatch|deliver|submit|transmit|post|publish|relay|respond|fwd|mail[-_]?out|ship|answer|xmit|snd|rply))[A-Za-z0-9]*[-_]?(?:search|get|list|read|draft)[-_]|^(?!.*(?:send|reply|forward|dispatch|deliver|submit|transmit|post|publish|relay|respond|fwd|mail[-_]?out|ship|answer|xmit|snd|rply))[A-Za-z0-9]*[-_]?create[-_]draft$/i
 
 function bareToolName(qualifiedName) {
   const idx = qualifiedName.lastIndexOf('__')
@@ -997,8 +1007,13 @@ export function gateDecision(toolName, toolInput) {
   // matching fix on the sub-agent governance-deny side of that same gap. The three generic
   // connector words stay tied to "gmail" case-insensitively -- the Telegram plugin's tool is
   // `..._telegram__reply` and must never deny here.
+  // Koteg 24 (card 57044a66, HARDERMAILGATES1019 follow-up): send_mail/send_mail_auto (the
+  // harder-mail MCP's own send verbs, no "harder-mail" string match in EMAIL_SERVER_RE either)
+  // added to the same bare-verb set -- the EMAIL_GATE_MATCHER widening alone makes the hook fire,
+  // this is what makes it actually deny once it does. Not gmail-gated, same as send_draft/
+  // reply_all above: these verbs are not shared with any other server's safe operations.
   if (
-    /(^|_)(?:send_draft|reply_all|send_gmail_message|draft_gmail_message)$/i.test(name) ||
+    /(^|_)(?:send_draft|reply_all|send_gmail_message|draft_gmail_message|send_mail|send_mail_auto)$/i.test(name) ||
     // Cybered NO-GO 28354 F3: "forward_message" added -- mcp__google_workspace__gmail_forward_message
     // ends in "forward_message", not bare "forward", so it missed this alternation (allowed, no
     // deny at all) -- the same gap closed in email_extract.py's _CONNECTOR_GENERIC_SUFFIXES.

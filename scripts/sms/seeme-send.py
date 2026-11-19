@@ -76,6 +76,14 @@ HASZNALAT:
                  (korabbi, reszsztring-alapu ellenorzes) EZZEL MEGSZuNT: a hash-kotes
                  strukturalisan kizarja, hogy egy johavagyas mas cimzettre vagy mas
                  szovegre ervenyes legyen, tehat nincs mit a leirasbol kiolvasni.
+
+                 NEM ATVETT (Koteg 25): upstream HTTP-consume-ra (APPROVALCONSUME1022)
+                 atirt verzioja a cimzett szamat ismet RESZSZTRING-kent keresi a
+                 leirasban -- pontosan az a sebezhetoseg-osztaly, amit RedHat L1
+                 (delta-GO komment 14242) mar kizart a SOR-EGYENLOSEG ellenorzessel
+                 (lasd _description_binds lejjebb). A direkt-SQLite, hash-kotott,
+                 atomikus-consume minta valtozatlanul marad; lasd
+                 src/fork-upstream/acknowledged-conflicts.ts.
   --reference  : sajat azonosito a SeeMe fele (opcionalis, alapertelmezetten
                  `fleet-adhoc-<unix-ido>`). Csak `[A-Za-z0-9._-]` (max 64 karakter) --
                  lasd F3 lejjebb.
@@ -110,6 +118,10 @@ import argparse, hashlib, json, os, re, sqlite3, sys, time, urllib.error, urllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
+# NEM ATVETT (Koteg 25): upstream DASH_TOKEN_FILE/DASH_BASE/CONSUMER bevezetese a
+# rejected HTTP-consume atirashoz tartozik (lasd a fenti --approval dokumentaciot),
+# ES az INTERNAL_FILE felulirasat FELTETEL NELKuL engedi -- pontosan az a lyuk, amit
+# RedHat A2 (34573931) a SEEME_TEST_MODE-hoz kotessel zart le. Fork valtozatlan:
 # INTERNAL_FILE es DB_PATH felulirhato env-valtozoval -- KIZAROLAG a hermetikus
 # teszt (seeme-send.test.sh) miatt, ami egy fris checkoutban (CI, uj worktree)
 # SOSEM latja a valodi store/ tartalmat (gitignore-olt). 34573931 (RedHat A2,

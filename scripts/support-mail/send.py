@@ -6,6 +6,7 @@ Usage:
 Body can also be piped on stdin if --body is omitted.
 Mailbox / hosts come from config (.env); password is pulled from the vault at
 runtime (never stored/printed). --html sends the body as an HTML alternative.
+
 """
 import sys, os, ssl, smtplib, argparse, imaplib, time
 from email.message import EmailMessage
@@ -20,7 +21,17 @@ import lib
 # SUPPORT_OWNER_CC a .env-ben all, ami nem verziokovetett.
 # (A template-identity-hygiene teszt fogta meg az elso, hardcode-olt valtozatot --
 #  jogosan: az minden vevo telepitesen a mi cimunkre CC-zett volna.)
-OWNER_CC = lib._env("SUPPORT_OWNER_CC")
+# ONLY from the project .env, never from os.environ: the CC is a recipient, and
+# an environment value can be set by any shell spelling in front of the send
+# (`SUPPORT_OWNER_CC=... python3 ...`), which no gate reads -- an approved
+# letter then also went to that address.
+OWNER_CC = lib.env_file_value("SUPPORT_OWNER_CC")
+# Behaviour change, said out loud: an owner CC that used to come from the
+# environment is no longer used.
+if os.environ.get("SUPPORT_OWNER_CC") and os.environ.get("SUPPORT_OWNER_CC") != OWNER_CC:
+    print("FIGYELEM: a SUPPORT_OWNER_CC kornyezeti valtozot a kuldo nem olvassa, csak a projekt "
+          ".env-jet (" + (f"ott: {OWNER_CC}" if OWNER_CC else "ott nincs beallitva, a level gazda-CC nelkul megy")
+          + "). Allitsd be a .env-ben.", file=sys.stderr)
 
 
 def envelope_recipients(to, cc=None):
@@ -50,7 +61,11 @@ def envelope_recipients(to, cc=None):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    # allow_abbrev=False: with argparse's default prefix matching, `--t x` /
+    # `--c x` silently meant --to / --cc, so a recipient arrived under a
+    # spelling the mail gates do not read (they take recipients from the exact
+    # --to / --cc / --bcc). Now an abbreviation is an argparse error.
+    ap = argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument("--to", required=True)
     ap.add_argument("--subject", required=True)
     ap.add_argument("--body", default=None)

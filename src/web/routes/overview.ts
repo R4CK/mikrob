@@ -61,6 +61,14 @@ export function readUpstreamUpdate(
   }
 }
 
+// Koteg 24 (card 57044a66): upstream's own parallel-evolved incremental user-turn counter
+// (createUserTurnCounter, src/web/user-turns.ts, PR #2107) is NOT adopted here -- this fork
+// already closed the identical "full-scan every request" performance problem via
+// src/web/user-turn-index.ts (card ba0d218f, refreshUserTurnIndex/turnsOnDay, imported above).
+// Adopting a second incremental counter for the same number would be a duplicate-wire hazard
+// (two independently-cached tallies that can silently drift from each other); user-turns.ts and
+// its test are removed below as now-orphaned (this was their only call site).
+
 // The fleet's remaining quota, as the overview strip shows it. Same file and
 // the same staleness threshold the quota monitor uses, so the strip and the
 // alert can never disagree about what the fleet has left. QUOTAMOD1005: on a
@@ -100,9 +108,9 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     // busy. The index reads only what has been APPENDED since the last pass (transcripts are
     // append-only), so an idle-ish minute costs a stat() per file and nothing else.
     const { days: turnDays } = refreshUserTurnIndex()
-    const userTurns = turnsOnDay(turnDays, startTs)
+    const userTurnsToday = turnsOnDay(turnDays, startTs)
     const userTurnsPrev = turnsOnDay(turnDays, yesterday)
-    const tasksToday = schedToday + userTurns
+    const tasksToday = schedToday + userTurnsToday
     const tasksYesterday = schedYesterday + userTurnsPrev
 
     let skillCount = 0

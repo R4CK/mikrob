@@ -41,7 +41,7 @@ SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "coverage", ".tur
 # fires on non-comment lines.  The key=value form now accepts an optional quote between the name
 # and the [=:] separator, which is the JSON form: "apiKey": "..." (B3 fix, card d39fc5e7).
 _SECRET_KEY_VALUE_RE = re.compile(
-    r"""(?i)(password|secret|token|key|auth|credential|private)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/._\-]{20,}['"]?""",
+    r"""(?i)(password|secret|token|key|auth|credential|private|bearer)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/._\-]{20,}['"]?""",
 )
 _SECRET_OTHER_RE = re.compile(
     r"""(?ix)

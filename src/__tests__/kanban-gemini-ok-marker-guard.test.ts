@@ -46,14 +46,14 @@ describe('POST /api/kanban: a title carrying the "[GEMINI-OK]" marker is gated',
   })
 
   it('allows the privileged actor ("mikrob") to create the marked card', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'g3', title: '[GEMINI-OK] Clean task', status: 'planned', actor: 'mikrob' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'g3', title: '[GEMINI-OK] Clean task', status: 'planned', actor: 'mikrob', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard('g3')).toBeTruthy()
   })
 
   it('a title with no marker at all is unaffected (control)', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'g4', title: 'Ordinary task', status: 'planned' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'g4', title: 'Ordinary task', status: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard('g4')).toBeTruthy()
@@ -187,7 +187,7 @@ describe('Label API: creating/renaming/attaching a "gemini-ok"-named label is ga
 // title carrying "[GEMINI-OK]" reached the board 200, no privilege required.
 describe('POST /api/kanban/:parentId/breakdown/accept: a subtask title carrying the marker is gated', () => {
   beforeEach(() => {
-    createKanbanCard({ id: 'parent1', title: 'Parent task', status: 'planned' })
+    createKanbanCard({ id: 'parent1', title: 'Parent task', status: 'planned', project: 'test' })
   })
 
   it('refuses with 403 and creates NO subtask (not even the clean ones) when no actor is given', async () => {
@@ -301,7 +301,7 @@ describe('shared obfuscation corpus: TS gate vs. the real bash classifier (card 
 
   it('CONTROL: an ordinary non-marker title with the same obfuscation classes is unaffected', async () => {
     const { ctx, out } = fakeCtx('/api/kanban', 'POST', {
-      id: 'x2clean', title: 'Ordinary téask with a​n invisible char', status: 'planned',
+      id: 'x2clean', title: 'Ordinary téask with a​n invisible char', status: 'planned', project: 'test',
     })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
