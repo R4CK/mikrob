@@ -28265,3 +28265,29 @@ fajl, nem kodfuggo valtozas -- a QA/WhiteHat/RedHat delta-gate dontse, kell-e te
 **Ki dontott:** backend3 vegezte. Gate-SHA: c13d691d05e7b2af03889a4214199a4480a56594. Delta scope: src/web/builtin-commands.ts
 (2 reply-string csere), docs/fleet-freeze.md (1 szakasz javitasa) -- a Koteg 26 batch tobbi
 resze (merge + korabbi fixupok) valtozatlan, lasd a korabbi 51c68eeb bejegyzeseket.
+
+## 2026-11-19 -- 51c68eeb: Koteg 26 land refused on develop drift, fixed (background-tasks.test.ts await), redone theirs-first after RedHat C33478
+
+First attempt at this fixup (merge beedd6369 + docs commit 567b13aa4, pushed and reviewed in
+comment 33469) resolved the DECISIONS.md conflict by hand, ours-first -- RedHat's delta re-gate
+(comment 33478) caught two problems: decisions_tail_append_ok returned rc=1 against develop (the
+card's own entry sat mid-file relative to develop's later history), and my REVIEW quoted a
+hand-retyped, truncated sha. Both are process mistakes already on file (always-copy-gate-sha-from-git-rev-parse-never-retype),
+now actually hit.
+
+Redone with the right tool: `store/decisions-sync-resolve.sh` in a fresh detached worktree off
+the still-gated ba1a3f7a8, merging origin/develop theirs-first (the script's own stated purpose,
+card edf9c837 -- an agent syncing onto its own branch must put the integration branch's content
+first so its own entry stays a clean tail-append relative to develop's history). The
+background-tasks.test.ts await fix from the first attempt is unchanged and re-verified.
+
+**Mérés:** `store/decisions-sync-resolve.sh --check-last-merge`: rc=0 (append-only invariant
+holds against develop both ways). `tsc --noEmit`: clean. `vitest run background-tasks.test.ts
+background-tasks-async-tmux.test.ts`: 2 Test Files passed (2), 33 Tests passed (33) -- same
+result as the first attempt, confirming RedHat's own measurement (33/33, production-await mutant
+red) independently.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 16be03fbe94a4dcaa84c3ba67fa71a67c17bbc54 (merge commit; sha copied via
+`git rev-parse HEAD`, not retyped). Supersedes beedd6369/567b13aa4 (force-pushed over, same
+card branch, no other agent had based work on them). Gate: QA + Cybersec (WhiteHat) + Cybered
+(RedHat) per the card's designated set -- needs a fresh verdict on this sha.
