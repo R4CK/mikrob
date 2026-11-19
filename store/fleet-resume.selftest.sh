@@ -65,6 +65,20 @@ esac
   export FLEET_RESUME_AGENTS_DIR="$TMP/agents"
   export FLEET_RESUME_AGENTS_JSON='[{"name":"foo","running":true},{"name":"bar","running":true},{"name":"baz","running":false}]'
   export FLEET_RESUME_NOW=1700000000
+
+  # Card 12d91d4b: every stub above does instant, trivial work -- but under heavy host contention
+  # (several concurrent fleet-test.sh/vitest runs, measured: DevO's land queue, msgs 19798/19913)
+  # the FORK/EXEC of that stub, not the work itself, can take longer than fleet-resume.sh's own
+  # hardcoded per-call timeouts (10s/5s/15s). None of the tests below are testing THOSE timeouts
+  # firing -- only test 8 deliberately tests a timeout bound, via FLEET_RESUME_CLEANUP_TIMEOUT,
+  # which stays separate and tight. Widening the others removes that false-negative source without
+  # touching what any test asserts (same pattern CLEANUP_TIMEOUT already uses).
+  export FLEET_RESUME_INSTALLED_TIMEOUT=60
+  export FLEET_RESUME_ACTIVE_CHECK_TIMEOUT=60
+  export FLEET_RESUME_START_TIMEOUT=60
+  export FLEET_RESUME_VRAM_TIMEOUT=60
+  export FLEET_RESUME_LOAD_READ_TIMEOUT=60
+  export FLEET_RESUME_AGENT_CAP_TIMEOUT=60
 }
 
 # ---- 1. masked ollama: never calls start, even with --apply ----
@@ -127,14 +141,19 @@ t "disposable worktrees are surfaced" contains "$OUT" "DISPOSABLE"
 t "cleanup is never invoked with --apply/--yes" not "$OUT" "--apply --yes"
 
 # ---- 8. a slow cleanup script is bounded, not hung forever ----
+# Card 12d91d4b: this used to assert END-START <= 10, a wall-clock bound that fails under heavy
+# host contention for reasons that have nothing to do with whether the timeout fired (fork/exec
+# latency for the OTHER stubs in the same run, see base_env above). The real invariant -- that
+# cleanup.sh was KILLED before its 5s sleep completed, not merely outrun -- is fully captured by
+# the stub's own completion marker ("too slow", printed only AFTER the sleep) being absent. That
+# is a behavioural check, true regardless of how long the surrounding host noise makes the whole
+# run take.
 base_env
 mk_stub "$TMP/cleanup.sh" 'sleep 5; echo "too slow"; exit 0'
 export FLEET_RESUME_CLEANUP_TIMEOUT=1
-START=$(date +%s)
 OUT="$(timeout 20 bash "$SCRIPT" 2>&1)"
-END=$(date +%s)
 t "slow cleanup script is reported as timed out, not silently hung" contains "$OUT" "did not finish within"
-if [ $((END - START)) -le 10 ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); echo "FAIL: cleanup timeout was not honoured (took $((END - START))s)"; fi
+t "cleanup was killed before its sleep finished, not merely outrun by the rest of the script" not "$OUT" "too slow"
 unset FLEET_RESUME_CLEANUP_TIMEOUT
 
 # ---- 9. missing tool dependency degrades to a skip line, never a crash ----

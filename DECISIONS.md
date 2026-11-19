@@ -28196,3 +28196,38 @@ argumentum) es RedHat 7 tulelo mutansat (K5, K7b, K9, K9b, K10b, K12, K13). Gate
 **Nincs benne:** a monitor cron/heartbeat-ként fut (minden hívás friss script-betöltés, nincs tartós állapot a régi küszöb-logikára), ezért a "live monitor without restart" Kész-ha pont architekturálisan eleve teljesül, nem igényelt külön munkát.
 
 **Ki döntött:** Peti (Telegram 13835, 2026-11-14 19:11), MikroB (kártya 5dd48e5d dispatch, msg 18561). backend3 végezte a javítást. Gate: QA + Cybersec.
+
+## 2026-11-16 -- 12d91d4b: fleet-resume.sh belső timeoutjai konfigurálhatóvá tétele, land-blokkoló flake javítása
+
+**Probléma:** DevO teljes fleet-test.sh land-futásai 5x megbuktak timeout miatt olyan fájlokban,
+amiket a landolt kártyák nem is érintettek (msg 19798, 19913): `offload-batch-health.test.ts`,
+`store-selftests-all-run.test.ts` (ezen belül `fleet-resume.selftest.sh`), és
+`claude-md-split-reachability.test.ts`. Mindhárom fájlt mértem alone vs. szándékos párhuzamos
+terhelés alatt (MikroB jóváhagyásával, msg 19950/19951 után szintetikus terhelés már nem futott).
+A `fleet-resume.selftest.sh` valódi flakét reprodukált load avg 20-40 alatt: egyszer a 8.
+tesztben (a kimenő `timeout 20` elfogyott a kumulatív fork/exec-késleltetés miatt, mielőtt a
+8. lépés lefutott volna), egyszer a 3. tesztben (az `INSTALLED_CHECK` saját, korábban HARDCODE-olt
+`timeout 10`-je sült ki extrém fork/exec-kontenció alatt, teljesen más ágra lökve a fleet-resume.sh
+futását).
+
+**Fix:** `store/fleet-resume.sh`-ban a korábban hardcode-olt belső `timeout N` hívások (installed
+check, active-check, start, vram, load-read, agent-cap) mind env-seammé váltak, ugyanazzal a
+konvencióval, mint a már meglévő `FLEET_RESUME_CLEANUP_TIMEOUT` -- az alapértékek változatlanok, az
+éles viselkedés nem változik. A selftest a saját, hermetikus stub-jainak fork/exec-késleltetését
+60s-re nyitja ezeken a seameken. A 8. teszt assertje wall-clock (`END-START <= 10`, ami a
+timeout-tűztől függetlenül buktatott kontenció alatt) helyett viselkedés-alapúra váltott: a stub
+"too slow" jelzése (amit csak az 5s sleep VÉGÉN ír ki) hiányát nézi, ami bizonyítja, hogy az 1s
+CLEANUP_TIMEOUT valóban megölte, nem csak kifutott a host-zaj alatt. `offload-batch-health.test.ts`
+és `claude-md-split-reachability.test.ts` nem módosult (az utóbbit MikroB kifejezett kérésére nem
+érintettem -- az a 2ec21127 kártyával landol, commit 15e089afd).
+
+**Teszt:** `store/fleet-resume.selftest.sh` önmagában 17/17 zöld. Mutáció-bizonyítás: a
+`CLEANUP_SCRIPT` köré tett `timeout` wrapper ideiglenes eltávolítása a fleet-resume.sh-ban pontosan
+a 2 érintett assertet buktatta pirosra (15/17), visszaállítva újra 17/17. Teljes `fleet-test.sh`
+futás (`--ref b14b94fef`, a 3-slotos szemaforon át): 1344 Test Files passed, 1 skipped, 1 FAIL --
+a bukás egy ettől a kártyától FÜGGETLEN fájlban (`graph-tooling-selftests.test.ts`,
+gpu-driver-install-setup selftest), nem a 3 célfájl egyikében. `lint-ratchet.sh`: nem romlott
+(433 lelet, baseline tart).
+
+**Ki döntött:** MikroB (dispatch msg 19923, a landolási bottleneck feloldására), backend2 végezte.
+Gate: QA.
