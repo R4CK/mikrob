@@ -35,11 +35,17 @@ const KEY_PREFIX = 'mvdk_'
  * key: the gate lets it reach /api/operator/* only (operator-gate.ts), and it
  * must expire -- an operator key without an end date cannot be minted.
  */
-export type DeviceKeyScope = 'full' | 'operator'
-export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator']
+// Card 2ba008f2 (elemzo plan-grilling, comment 32144, C1): 'night' is the degraded/night-loop
+// key -- the gate (night-gate.ts) lets it reach a 3-item allowlist (read the board, post a
+// server-authored comment, message mikrob) and nothing else, and like 'operator' it must expire,
+// with a SHORTER ceiling: this key is meant to live only as long as one outage window, not a year.
+export type DeviceKeyScope = 'full' | 'operator' | 'night'
+export const DEVICE_KEY_SCOPES: readonly DeviceKeyScope[] = ['full', 'operator', 'night']
 export const OPERATOR_KEY_DEFAULT_EXPIRY_DAYS = 90
 /** An operator key lives at most a year (owner decision 2026-10-05; a full key keeps its own ceiling). */
 export const OPERATOR_KEY_MAX_EXPIRY_DAYS = 365
+export const NIGHT_KEY_DEFAULT_EXPIRY_DAYS = 7
+export const NIGHT_KEY_MAX_EXPIRY_DAYS = 14
 
 export interface DeviceKeyPrincipal {
   id: number
@@ -89,10 +95,13 @@ interface CachedKey {
   scope: DeviceKeyScope
 }
 
-// Fail closed: only the literal 'full' (the column default) is a full key. An
-// unexpected stored value reads as the narrowest scope, never the widest.
+// Fail closed: only the literal 'full'/'operator' read as themselves; an unexpected stored
+// value reads as 'night' -- the narrowest of the three scopes (a fixed 3-item allowlist, vs.
+// 'operator''s entire /api/operator/* namespace), never the widest.
 function toScope(value: unknown): DeviceKeyScope {
-  return value === 'full' ? 'full' : 'operator'
+  if (value === 'full') return 'full'
+  if (value === 'operator') return 'operator'
+  return 'night'
 }
 
 const cache = new Map<string, CachedKey>()
@@ -115,6 +124,12 @@ export function createDeviceKey(name: string, opts: { expiresInDays?: number; in
   }
   if (scope === 'operator' && opts.expiresInDays! > OPERATOR_KEY_MAX_EXPIRY_DAYS) {
     throw new Error(`an operator key lives at most ${OPERATOR_KEY_MAX_EXPIRY_DAYS} days`)
+  }
+  if (scope === 'night' && !(opts.expiresInDays && opts.expiresInDays > 0)) {
+    throw new Error('a night key must expire')
+  }
+  if (scope === 'night' && opts.expiresInDays! > NIGHT_KEY_MAX_EXPIRY_DAYS) {
+    throw new Error(`a night key lives at most ${NIGHT_KEY_MAX_EXPIRY_DAYS} days`)
   }
   const raw = KEY_PREFIX + randomBytes(32).toString('base64url')
   const keyHash = sha256hex(raw)

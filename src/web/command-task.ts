@@ -9,6 +9,7 @@ import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
 import { appendTaskRun, markTaskRunCompleted } from "../db.js"
 import { disableOnceTask, type ScheduledTask } from "./scheduled-tasks-io.js"
+import { rewriteRegisteredTask } from "./schedule-registry-rewrite.js"
 
 // command-type scheduled tasks run a raw shell command directly (no LLM
 // agent, no tmux session) and alert on Telegram after N consecutive
@@ -124,7 +125,7 @@ export async function runCommandTask(task: ScheduledTask, now: number): Promise<
   // leaves it on, so the failure alert above still has something to point at.
   if (ok && task.once) {
     try {
-      if (disableOnceTask(task.name, now)) logger.info({ task: task.name }, "once-task switched off after its first successful run")
+      if (rewriteRegisteredTask(task.name, 'server:once-disable', () => disableOnceTask(task.name, now))) logger.info({ task: task.name }, "once-task switched off after its first successful run")
     } catch (err) {
       logger.warn({ err, task: task.name }, "once-task could not be switched off -- left enabled")
     }

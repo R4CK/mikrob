@@ -14,6 +14,7 @@
 // Credentials come from the gitignored marveen-mail-ugyfelkod file (override
 // with MARVEEN_MAIL_CREDS). Send is intentionally CLI-explicit; the sub-agent
 // email-send-gate hook still applies to any programmatic use elsewhere.
+// `--flag value` and `--flag=value` are both read.
 
 import { listMessages, sendMail, verifyAccess } from '../src/graph-mail.js'
 import { readFileSync, realpathSync, statSync } from 'node:fs'
@@ -51,9 +52,16 @@ function readAttachment(rawPath: string): { name: string; contentBytes: string }
   return { name: basename(file), contentBytes: readFileSync(file).toString('base64') }
 }
 
+// The FIRST `--name value` or `--name=value`. The `=` form used to be ignored,
+// while the main agent's hook reads it: `--cc=x@example.com` was anchored there and
+// silently dropped here.
 function flag(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`)
-  return i !== -1 ? process.argv[i + 1] : undefined
+  const args = process.argv.slice(2)
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === `--${name}`) return args[i + 1]
+    if (args[i].startsWith(`--${name}=`)) return args[i].slice(name.length + 3)
+  }
+  return undefined
 }
 function has(name: string): boolean {
   return process.argv.includes(`--${name}`)
@@ -95,12 +103,15 @@ async function main(): Promise<void> {
         console.error('send requires --to, --subject and --body')
         process.exit(2)
       }
+      const toList = to.split(',').map((a) => a.trim()).filter(Boolean)
+      const ccRaw = flag('cc')
+      const ccList = ccRaw?.split(',').map((a) => a.trim()).filter(Boolean) ?? []
       await sendMail({
         attachments,
-        to: to.split(','),
+        to: toList,
         subject,
         body,
-        cc: flag('cc')?.split(','),
+        cc: ccList.length ? ccList : undefined,
         contentType: has('html') ? 'HTML' : 'Text',
       })
       console.log(`sent to ${to}`)

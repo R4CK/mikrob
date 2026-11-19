@@ -15,10 +15,19 @@
 # result is derived from it.
 #
 # USAGE:
-#   gate-pretriage.sh --repo <path> [--base <ref>] [--head <ref>] [--json] [--explain]
+#   gate-pretriage.sh --repo <path> [--base <ref>] [--head <ref>] [--json] [--explain] [--trunk <ref>]
 #     --base/--head  commit range to inspect (default: HEAD~1..HEAD)
 #     --json         machine-readable output (for a scheduled task / the dashboard)
 #     --explain      additionally ask the LOCAL model for a plain-language summary (advisory only)
+#     --trunk <ref>  OPT-IN land-parity check (card a42d27e1): build the ACTUAL merge-with-<ref>
+#                    tree in a disposable worktree and run lint-ratchet.sh + a DECISIONS.md
+#                    append-union dry-run + an importer-sweep fleet-test.sh pass against it -- the
+#                    same three things marveen-land.sh checks, which no gate round runs today. Three
+#                    fully-gated cards (56344ff4, 2ba008f2, 9ea8dcb8) were stopped only by the land
+#                    dry-run after every gate had already said GO/PASS. Omitted (the default): this
+#                    section does not run at all, so every existing caller keeps today's cost and
+#                    behaviour -- a real merge + a real lint run + a real fleet-test.sh run are not
+#                    free, so this only happens where a caller explicitly asks for land parity.
 #
 # EXIT: always 0 unless usage/repo is wrong (2). A finding is REPORTED, never fatal -- this is an
 # input to a human/agent gate, not a CI blocker, and a non-zero exit would make callers treat a
@@ -26,7 +35,7 @@
 
 set -uo pipefail
 
-REPO=""; BASE=""; HEAD_REF="HEAD"; JSON=0; EXPLAIN=0
+REPO=""; BASE=""; HEAD_REF="HEAD"; JSON=0; EXPLAIN=0; TRUNK=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) REPO="$2"; shift 2 ;;
@@ -34,6 +43,7 @@ while [[ $# -gt 0 ]]; do
     --head) HEAD_REF="$2"; shift 2 ;;
     --json) JSON=1; shift ;;
     --explain) EXPLAIN=1; shift ;;
+    --trunk) TRUNK="$2"; shift 2 ;;
     -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "gate-pretriage: unknown arg '$1'" >&2; exit 2 ;;
   esac
@@ -162,6 +172,135 @@ if echo "$CHANGED" | grep -qE '(^|/)package\.json$'; then
     1) add "fail" "npm-lockfile-out-of-sync" "$(printf '%s' "$npm_lf_out" | grep -iE 'were added|were removed|specifiers differ' | head -1 | sed 's/^ *//')" ;;
     3) : ;; # harness fault -- say nothing rather than blame the card
   esac
+fi
+
+# --- 9. land parity: lint-ratchet + DECISIONS append-union + importer sweep, on the ACTUAL
+# merge-with-trunk tree, not the diff (card a42d27e1, OPT-IN via --trunk; see usage block above for
+# why it defaults off). Checks 1-8 above all reason from `git diff`/`git show` alone -- cheap, but
+# blind to anything that only exists once trunk and this branch are actually merged: a lint rule
+# that only regresses in the COMBINED tree, a DECISIONS.md tail-append that conflicts against
+# trunk's OWN concurrent append, a sibling test (same hub file, different test file) a scoped QA
+# run never touched. Each of those sank a fully-gated card at the LAND dry-run, after every gate
+# had already said GO/PASS -- this builds the same tree land builds, so a gate sees it first.
+if [[ -n "$TRUNK" ]]; then
+  if git -C "$REPO" rev-parse --verify "${TRUNK}^{commit}" >/dev/null 2>&1; then
+    PARITY_WT="$(mktemp -d "${TMPDIR:-/tmp}/gate-pretriage-parity.XXXXXX")"
+    # Backstop cleanup: `git worktree remove` first (normal case), `rm -rf` if that worktree was
+    # never registered (e.g. `worktree add` itself failed). Runs once, at actual script exit --
+    # nothing earlier in this script calls `exit` after this point except the final `exit 0`.
+    trap '[[ -n "${PARITY_WT:-}" ]] && { git -C "'"$REPO"'" worktree remove --force "$PARITY_WT" >/dev/null 2>&1 || rm -rf "$PARITY_WT"; }' EXIT
+    git -C "$REPO" worktree add --detach "$PARITY_WT" "$TRUNK" >/dev/null 2>&1
+
+    merge_ok=0
+    if git -C "$PARITY_WT" -c user.email=gate-pretriage@marveen.local -c user.name=gate-pretriage \
+         merge --no-ff "$HEAD_REF" -m "gate-pretriage land-parity check" >/dev/null 2>&1; then
+      merge_ok=1
+      add "info" "land-parity-merge" "clean merge against $TRUNK, no conflicts"
+    else
+      conflicted="$(git -C "$PARITY_WT" diff --name-only --diff-filter=U 2>/dev/null)"
+      if [[ "$conflicted" == "DECISIONS.md" && -f "$REPO/store/decisions-append-union.sh" ]]; then
+        # shellcheck source=./decisions-append-union.sh
+        . "$REPO/store/decisions-append-union.sh"
+        if try_append_union "$PARITY_WT" "DECISIONS.md" 2>/dev/null; then
+          git -C "$PARITY_WT" -c user.email=gate-pretriage@marveen.local -c user.name=gate-pretriage \
+            commit --no-edit -q
+          merge_ok=1
+          add "info" "land-parity-merge" "DECISIONS.md conflicted against $TRUNK, auto-unioned (pure append both sides)"
+        else
+          add "fail" "decisions-union-would-refuse" \
+            "DECISIONS.md conflicts against $TRUNK and would NOT auto-union at land time -- check the new entry's header against the ## YYYY-MM-DD glob try_append_union requires"
+          git -C "$PARITY_WT" merge --abort >/dev/null 2>&1
+        fi
+      elif [[ -n "$conflicted" ]]; then
+        add "fail" "land-merge-conflicts" \
+          "merge against $TRUNK conflicts in: $(printf '%s' "$conflicted" | tr '\n' ' ')"
+        git -C "$PARITY_WT" merge --abort >/dev/null 2>&1
+      else
+        add "info" "land-parity-merge" "merge against $TRUNK failed with no conflicted-file list (harness fault, not a card fact)"
+      fi
+    fi
+
+    # TRUST BOUNDARY (F1, cybersec GO 20497 / card a42d27e1): this runs UNATTENDED off the
+    # heartbeat-consolidated B-section, BEFORE any gate reads the diff and before a PreToolUse
+    # hook can see the branch's own code -- unlike a gate dispatch, which happens after a human/
+    # agent has looked at the diff and does sit under hooks. Below this point the branch's OWN
+    # store/lint-ratchet.sh and store/fleet-test.sh run as real bash, and the branch's OWN test
+    # files run as real JS under vitest, with whatever rights this script's caller has (today:
+    # the dashboard Bearer token file is readable by this user). If the diff being checked
+    # touches the harness itself or anything that changes what the harness executes, that is
+    # exactly the shape a compromised/prompt-injected branch would need -- so skip the measurement
+    # entirely rather than run branch-controlled harness logic unattended. A gate agent reviewing
+    # the diff by hand still covers this case normally, under hooks.
+    harness_touched="$(git -C "$PARITY_WT" diff --name-only "$TRUNK" HEAD -- \
+      '.eslintrc*' 'eslint.config.*' 'vitest.config.*' 'vitest.workspace.*' \
+      'package.json' 'package-lock.json' 'store/lint-ratchet.sh' 'store/fleet-test.sh' 2>/dev/null || true)"
+    if [[ "$merge_ok" == "1" && -n "$harness_touched" ]]; then
+      add "info" "land-parity-measurement-skipped" \
+        "diff touches harness/config file(s) ($(printf '%s' "$harness_touched" | tr '\n' ' ' | sed 's/ $//')) -- lint-ratchet/importer-sweep execution skipped rather than run branch-controlled harness code unattended (F1); a gate reviewing the diff by hand still covers this"
+    elif [[ "$merge_ok" == "1" ]]; then
+      # lint-ratchet.sh must be the WORKTREE'S OWN copy, never the main clone's -- its ROOT
+      # resolves from its own BASH_SOURCE path, so the main clone's copy would measure the WRONG
+      # tree (card 2ba008f2 round 6's own lesson, learned by hand before this section existed).
+      if [[ -x "$PARITY_WT/store/lint-ratchet.sh" ]]; then
+        [[ -d "$REPO/node_modules" && ! -e "$PARITY_WT/node_modules" ]] \
+          && ln -s "$REPO/node_modules" "$PARITY_WT/node_modules" 2>/dev/null
+        lint_out="$(bash "$PARITY_WT/store/lint-ratchet.sh" 2>&1)"; lint_rc=$?
+        case $lint_rc in
+          1) add "fail" "lint-ratchet-regression" \
+               "$(printf '%s' "$lint_out" | grep -iE 'worse|->' | head -3 | tr '\n' ' ')" ;;
+          3) add "info" "lint-ratchet-unmeasured" "lint-ratchet.sh could not measure the merged tree (harness fault, not a card fact)" ;;
+        esac
+      fi
+
+      # Importer sweep (card 56344ff4's miss): every src/__tests__/*.test.ts file that imports OR
+      # text-scans a changed, non-test src file, run through fleet-test.sh against the MERGED tree.
+      # A plain grep on the basename stem, deliberately a SUPERSET of a real import graph -- it
+      # catches both `import { x } from '.../stem'` and a source-text pin like
+      # agent-extra-channels.test.ts's literal check against a sibling hub file.
+      changed_src="$(git -C "$PARITY_WT" diff --name-only "$TRUNK" HEAD -- '*.ts' '*.tsx' 2>/dev/null \
+        | grep -vE '\.test\.(ts|tsx)$' | grep -E '^src/' || true)"
+      if [[ -n "$changed_src" && -d "$PARITY_WT/src/__tests__" ]]; then
+        importers=""
+        for f in $changed_src; do
+          stem="$(basename "$f")"; stem="${stem%.*}"
+          hit="$(grep -lrE "[\"'./]${stem}([\"'.]|$)" "$PARITY_WT/src/__tests__" \
+            --include='*.test.ts' --include='*.test.tsx' 2>/dev/null || true)"
+          [[ -n "$hit" ]] && importers="${importers}${importers:+$'\n'}${hit}"
+        done
+        importers="$(printf '%s\n' "$importers" | sed '/^$/d' | sort -u)"
+        if [[ -n "$importers" ]]; then
+          rel_importers=()
+          while IFS= read -r p; do [[ -n "$p" ]] && rel_importers+=("${p#"$PARITY_WT"/}"); done <<< "$importers"
+          merge_sha="$(git -C "$PARITY_WT" rev-parse HEAD)"
+          sweep_out="$(bash "$REPO/store/fleet-test.sh" --ref "$merge_sha" "${rel_importers[@]}" 2>&1)"
+          sweep_rc=$?
+          # fleet-test.sh die()s with 2 (bad usage) or 3 (harness/setup fault: lock timeout, npm ci,
+          # stale-build refusal -- see store/fleet-test.sh die() call sites) BEFORE a single test
+          # runs; neither is a test result. Only rc=1 WITH an actual FAIL/failed-count line in the
+          # log is a real red (F2, cybersec GO 20497 comment): queue congestion or a setup fault must
+          # not post a false importer-sweep-red INPUT finding on the card.
+          fail_lines="$(printf '%s' "$sweep_out" | grep -E '^\s*(FAIL|⎯⎯⎯⎯⎯⎯⎯ Failed Tests|Tests .*failed)' | head -8)"
+          if [[ $sweep_rc -eq 1 && -n "$fail_lines" ]]; then
+            # The importer list itself can run into the hundreds (the sweep is deliberately a wide
+            # grep, not a precise import graph) -- the finding names the FAILING file(s) and the
+            # vitest "FAIL"/"Tests ... failed" lines, never the full candidate list, which a blind
+            # `tail -N` cannot reliably surface once vitest's own trailing perf hint outgrows it.
+            add "fail" "importer-sweep-red" \
+              "${#rel_importers[@]} importer file(s) swept, at least one red against the merged tree -- $(printf '%s' "$fail_lines" | tr '\n' ' ' | sed 's/^ *//')"
+          elif [[ $sweep_rc -ne 0 ]]; then
+            add "info" "importer-sweep-unmeasured" \
+              "fleet-test.sh exited $sweep_rc before/without a test-result line (harness fault, not a card fact) -- $(printf '%s' "$sweep_out" | tail -3 | tr '\n' ' ' | sed 's/^ *//')"
+          else
+            add "info" "importer-sweep-green" "${#rel_importers[@]} importer test file(s) green against the merged tree"
+          fi
+        else
+          add "info" "importer-sweep-empty" "no src/__tests__ file imports or text-scans the changed src file(s)"
+        fi
+      fi
+    fi
+  else
+    add "info" "land-parity-skipped" "--trunk '$TRUNK' does not resolve in this repo"
+  fi
 fi
 
 # --- 7. type-check, scoped to the repo's own command --------------------------------------------

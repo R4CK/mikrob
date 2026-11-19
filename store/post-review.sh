@@ -44,6 +44,70 @@ set -uo pipefail
 POST_REVIEW_API="${POST_REVIEW_API:-http://127.0.0.1:3420}"
 POST_REVIEW_TOKEN_FILE="${POST_REVIEW_TOKEN_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.dashboard-token}"
 GATE_SHA_REPO_SCRIPT="${GATE_SHA_REPO_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gate-sha-repo.sh}"
+# F1.3 (card 14bfc893, phase ed332869): REVIEW posting records a checkpoint (F1.1's branchless
+# ref + F1.2's card_checkpoints table), so gate-closure-check.py's --card-id/--db coverage check
+# has something to check against. Best-effort: a worktree that does not exist for this actor (not
+# every role keeps one the same way backend/fullstack do) must never block the REVIEW itself.
+AGENT_CHECKPOINT_SCRIPT="${AGENT_CHECKPOINT_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-checkpoint.sh}"
+AGENT_WORKTREE_SCRIPT="${AGENT_WORKTREE_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-worktree-marveen.sh}"
+
+# Records one row in card_checkpoints for this REVIEW, or prints a warning and does nothing else.
+# Never affects the exit code -- a checkpoint is a bonus integrity record, not a new barrier.
+# Card 06334c7d (CYBERSEC LOW-1, 14bfc893 follow-up): wrapped in `timeout` -- a hung
+# agent-checkpoint.sh call (e.g. a stuck git/API call inside it) used to stall the whole
+# REVIEW -> waiting move behind it. Fail-open unchanged: a timeout is treated exactly like any
+# other agent-checkpoint.sh failure below, not a new barrier.
+# C3 (card 06334c7d NO-GO 32965, LOW-1 only half met): plain `timeout N` only bounds a KILLABLE
+# hang -- a checkpoint script that traps/ignores SIGTERM (or exits itself but leaves a
+# TERM-ignoring background child holding the command-substitution pipe's write end open) kept
+# this call blocked long past N. `-k 2` arms a second, SIGKILL timer 2s after the SIGTERM, and
+# the output is captured via a temp file instead of a `$(...)` pipe, so a lingering child that
+# only holds the pipe open (without itself being reachable by the process-group signal) cannot
+# keep this call waiting on a read that will never see EOF.
+POST_REVIEW_CHECKPOINT_TIMEOUT_S="${POST_REVIEW_CHECKPOINT_TIMEOUT_S:-10}"
+record_review_checkpoint() {
+  local card="$1" actor="$2"
+  [ -x "$AGENT_CHECKPOINT_SCRIPT" ] || return 0
+  local wt_path head_sha ckpt_outfile ckpt_out ckpt_sha
+  # Card 06334c7d (CYBERSEC LOW-3 / CYBERED C2, same finding): prefer the CARD worktree
+  # ($ROOT/card/<cardId>, card-mode builders keep one there, 77 exist) over the agent's default
+  # agent/<actor>/work worktree -- a card-mode REVIEW's actual Gate-SHA lives on the card branch,
+  # not on the agent's shared work branch, and the old code always read the latter. `--path` only
+  # computes and prints the expected path (no worktree creation, no side effect either way), so
+  # trying it first and falling back is safe even when no card worktree exists yet.
+  #
+  # C1 (CYBERED NO-GO 32965, condition 1): resolved ONCE, here, and the SAME path is passed
+  # explicitly to agent-checkpoint.sh (its 3rd arg) so the snapshot it builds and the head_sha
+  # recorded below always come from the identical tree -- previously agent-checkpoint.sh
+  # re-resolved its own worktree internally (always the agent's DEFAULT one), so a card-mode
+  # REVIEW's recorded head_sha (from the card worktree) and the actual checkpointed tree (from
+  # the default worktree) could silently diverge, making the row claim coverage it did not have.
+  wt_path="$(bash "$AGENT_WORKTREE_SCRIPT" "$actor" --card "$card" --path 2>/dev/null)"
+  if [ -z "$wt_path" ] || [ ! -e "$wt_path/.git" ]; then
+    wt_path="$(bash "$AGENT_WORKTREE_SCRIPT" "$actor" --path 2>/dev/null)"
+  fi
+  [ -n "$wt_path" ] && [ -e "$wt_path/.git" ] || return 0
+  head_sha="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null)"
+  [ -n "$head_sha" ] || return 0
+
+  ckpt_outfile="$(mktemp)"
+  trap 'rm -f "$ckpt_outfile"' RETURN
+  if ! timeout -k 2 "$POST_REVIEW_CHECKPOINT_TIMEOUT_S" \
+      "$AGENT_CHECKPOINT_SCRIPT" "$actor" "$card" "$wt_path" >"$ckpt_outfile" 2>/dev/null; then
+    echo "post-review: checkpoint not recorded for $actor on $card (agent-checkpoint.sh failed or timed out after ${POST_REVIEW_CHECKPOINT_TIMEOUT_S}s, likely no worktree) -- REVIEW unaffected." >&2
+    return 0
+  fi
+  ckpt_out="$(cat "$ckpt_outfile")"
+  ckpt_sha="$(printf '%s' "$ckpt_out" | awk '{print $2}')"
+  [ -n "$ckpt_sha" ] || return 0
+  local ckpt_payload
+  ckpt_payload="$(python3 -c '
+import json, sys
+print(json.dumps({"sha": sys.argv[1], "head_sha": sys.argv[2], "agent": sys.argv[3]}))' \
+    "$ckpt_sha" "$head_sha" "$actor")" || return 0
+  _auth_header | curl -H @- -s -X POST "$POST_REVIEW_API/api/kanban/$card/checkpoints" \
+    -H 'Content-Type: application/json' --data-binary "$ckpt_payload" >/dev/null 2>&1 || true
+}
 
 # Which branch counts as "landed" for a repo gate-sha-repo.sh names.
 _landed_branch_for() {
@@ -227,6 +291,8 @@ if [ "$match" != "yes" ]; then
   echo "REFUSED: readback of comment $comment_id on card $card did not match what was sent -- card NOT moved to waiting." >&2
   exit 2
 fi
+
+record_review_checkpoint "$card" "$actor"
 
 move_payload="$(python3 -c '
 import json, sys

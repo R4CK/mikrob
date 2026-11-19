@@ -6,7 +6,7 @@ import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.
 import { makeLazyBinResolver } from '../platform.js'
 import { agentConfigRoot, listAgentNames } from './agent-config.js'
 import { resolveOauthTokenFileSetting } from './agent-oauth-token-file.js'
-import { isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
+import { isAgentRunning, capturePane, startAgentProcess, bumpAgentLaunchGeneration } from './agent-process.js'
 import { isRestartInFlight } from './restart-lock.js'
 import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
@@ -531,6 +531,11 @@ async function restartFirstRunGatedAgent(name: string, session: string): Promise
     logger.info({ name }, 'reauth-healer: managed restart in flight -- skipping first-run-gate relaunch')
     return
   }
+  // Card eb26a3e4 point 2: bump the generation at kill-time, same as stopAgentProcessUnlocked
+  // does on the router's own stop path -- this kill bypasses that path entirely, so without this
+  // a stale --continue verify callback from an earlier launch could still see an unchanged
+  // generation and wrongly relaunch-fresh if the relaunch below is slow or fails.
+  bumpAgentLaunchGeneration(name)
   await new Promise<void>((resolve) => {
     execFile(tmuxBin(), ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }, () => resolve())
   })

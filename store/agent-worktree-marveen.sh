@@ -147,6 +147,16 @@ else
     fi
     fallback_err="$(git -C "$MAIN" worktree add "$TREE" "$BRANCH" 2>&1)" \
       || die 3 "could not create the worktree at $TREE -- git said:"$'\n'"$add_err"$'\n'"$fallback_err"
+    # Card 018c85d3 (F4.2.1 follow-up): the fallback above just re-attached a SURVIVOR branch (one
+    # that already existed before this call -- branch_preexisted=1, the "worktree remove left the
+    # branch behind" case). That branch's base can be arbitrarily old: origin/$DEFAULT_BRANCH may
+    # have moved on since it was created, and the fallback has no reason to notice. Warn explicitly
+    # instead of silently handing back a worktree built on a stale base -- this is informational
+    # only (never blocks the pickup), since an actively-developed card is EXPECTED to be behind the
+    # latest origin tip until it rebases.
+    if [ "$branch_preexisted" = "1" ] && ! git -C "$MAIN" merge-base --is-ancestor "origin/$DEFAULT_BRANCH" "$BRANCH"; then
+      echo "WARNING: $BRANCH is behind origin/$DEFAULT_BRANCH (branched from an older base) -- consider rebasing before building on it."
+    fi
   fi
   echo "created $TREE on $BRANCH"
 fi
