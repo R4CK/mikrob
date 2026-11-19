@@ -53,6 +53,7 @@ import { decisionsGuardVerdict, decisionsGuardCheck } from '../kanban-decisions-
 import { degradedOrchestratorRefusal } from '../../degraded-orchestrator-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
+import { gateBounceGuardCheck } from '../kanban-gate-bounce-guard.js'
 import { reviewPresenceGuardCheck } from '../kanban-review-presence-guard.js'
 import { onKanbanCardStatusChanged } from '../kg-capture-hook.js'
 import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE, isInvalidAssigneeShape, INVALID_ASSIGNEE_TYPE_MESSAGE } from '../kanban-assignee-guard.js'
@@ -2228,6 +2229,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // automated (card 5aaf7209 item 5 / 16e60d3c item 5): a bulk/machine writer's self-reported
     // flag, so a stuck-card detector does not read its own comment as human work-trace.
     const comment = addKanbanComment(cardId, effectiveAuthor, effectiveContent, automated === true)
+    // Gate-bounce budget (card 6eb298b5): fail-open side effect, must never block comment creation.
+    gateBounceGuardCheck(cardId, comment)
     // MT-08 (card 1a350f22, MikroB decision 26148): parse `Megoldás-tár:` feedback lines out of
     // the just-created comment and record used/not_relevant/harmful against kg_usage,
     // anti-inflation-gated by recordKgUsageFeedback (a node needs an 'offered' row for THIS
