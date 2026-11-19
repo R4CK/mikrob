@@ -14,6 +14,19 @@ const mockSendPrompt = vi.fn((..._a: unknown[]) => 'sent')
 const mockListScheduledTasks = vi.fn(() => [] as ScheduledTask[])
 const mockWriteSnapshot = vi.fn()
 
+// Scheduled-task registry: the runner fires only registry-matched tasks (schedule registry
+// security, part of the koteg-23 upstream batch) -- a passthrough here, same as
+// schedule-runner-cron-precheck-async.test.ts, so this file's synthetic tasks (never registered
+// through the real API) are not silently filtered out by the real, unmocked registry.
+vi.mock('../web/schedule-registry.js', () => ({
+  filterRegisteredTasks: <T,>(tasks: T[]) => tasks,
+  backfillScheduledTaskRegistryOnce: () => ({ ran: false, registered: [] }),
+  verifyScheduledTask: () => ({ ok: true }),
+  describeVerdict: () => '',
+  registerScheduledTask: () => 'test-hash',
+  unregisterScheduledTask: () => true,
+}))
+
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))

@@ -62,5 +62,9 @@ describe('local-llm.sh --task allowlist (card 2de47a4e)', () => {
       expect(r.status, `${bad} should be rejected`).not.toBe(0)
       expect(r.stderr, `${bad} should hit the allowlist`).toContain('invalid --task')
     }
-  })
+    // card fa375169 (368395d4 pattern): 8 real bash child processes sequentially, each cheap
+    // standalone (~2.5s total) but exceeding vitest's 5s default under CPU contention, same as
+    // the 517ba7f6 fix elsewhere in this file's sibling suites. The single-spawn test above keeps
+    // the default.
+  }, 30_000)
 })

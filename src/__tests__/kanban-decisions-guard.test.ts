@@ -46,7 +46,20 @@ vi.mock('node:child_process', () => ({
     return { stdin: { end: () => {} } }
   },
 }))
-vi.mock('node:fs', () => ({ existsSync: () => true }))
+// isForceActor() (kanban-force-actors.ts) reads a session-outage marker via readFileSync before
+// checking FORCE_ACTORS; without it here the call throws a non-ENOENT TypeError, which
+// isSessionOutageActive() treats as "marker exists but unreadable" (fail closed), denying the
+// mikrob force bypass this suite's own "force actor bypasses the block" test expects (card
+// 2ba008f2 round 1 a2307bf11, found by QA2 in the full suite -- none of the 4 gate rounds ran
+// this file). ENOENT means no marker at all, i.e. normal operation.
+vi.mock('node:fs', () => ({
+  existsSync: () => true,
+  readFileSync: () => {
+    const err = new Error('ENOENT: no such file or directory') as NodeJS.ErrnoException
+    err.code = 'ENOENT'
+    throw err
+  },
+}))
 
 const { decisionsGuardVerdict, decisionsGuardCheck } = await import('../web/kanban-decisions-guard.js')
 
