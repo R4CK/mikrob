@@ -1428,16 +1428,12 @@ def main():
             statuses = [_cat_file_commit_status(p, check_sha) for p in clone_paths]
             reachable_statuses = [s for s in statuses if s != "unreachable"]
             if not reachable_statuses:
-                covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
-                if not covered:
-                    result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+                pass  # no clone reachable at all -- defer entirely to the coverage overlay below
             elif any(s == "timeout" for s in reachable_statuses):
                 result = "UNRESOLVED|%s|%s|a git call timed out while checking whether this " \
                     "commit exists (--card-id/--db FABRICATED check)" % (check_sha, check_sha)
             elif any(s == "exists" for s in reachable_statuses):
-                covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
-                if not covered:
-                    result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+                pass  # a real commit -- not fabricated; coverage is the overlay's job, not this one
             elif len(reachable_statuses) < len(clone_paths):
                 result = "UNRESOLVED|%s|%s|not found in the %d reachable clone(s), but %d " \
                     "configured clone(s) could not be reached -- cannot confirm it does not " \
