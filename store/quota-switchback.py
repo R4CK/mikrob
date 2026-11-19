@@ -114,17 +114,6 @@ def confirm_outage(probe_log, confirm_probes=2, min_gap_sec=45, max_age_sec=None
     return (newest_ts - oldest_ts) >= min_gap_sec
 
 
-def prune_stale_outage_probes(probe_log, max_age_sec, now=None):
-    """F1b restart leg (Cybered NO-GO 33404/33576 item 3): drop entries whose age falls outside
-    [0, max_age_sec] -- same two-sided rule as the one applied inside confirm_outage, exposed
-    separately so quota-bridge.py's main() can prune the PERSISTED log once at process start
-    (defense in depth: confirm_outage's own per-call filtering already makes a stale entry
-    harmless at decision time, but pruning the loaded state too means the on-disk log never
-    grows unbounded with ancient entries either). Pure; does not touch any file itself."""
-    now = time.time() if now is None else now
-    return [entry for entry in probe_log if 0 <= (now - entry["ts"]) <= max_age_sec]
-
-
 # F2 (Cybersec NO-GO 33392/33574): sane bounds for the entry-side confirm config. Outside these,
 # the value is not trusted (clamped TO THE DEFAULTS, not to the boundary) -- a value this far off
 # is treated the same as a missing/corrupt file, not as a deliberately extreme but valid setting.

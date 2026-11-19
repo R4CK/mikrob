@@ -1071,9 +1071,8 @@ def main() -> int:
 
         # D (restart leg, Cybered item 3): a persisted down reading 600s before process start,
         # plus ONE fresh down reading -> must NOT take over (the single-reading kill the card
-        # exists to stop). This drives the REAL load_state()+main() startup path, including the
-        # new prune_stale_outage_probes() call. max_sleeps=1 stops right after the first (and
-        # only) real decision this scenario needs.
+        # exists to stop). This drives the REAL load_state()+main() startup path. max_sleeps=1
+        # stops right after the first (and only) real decision this scenario needs.
         old_restart = {"phase": "healthy", "offset": 0, "notified_outage": False,
                        "outage_probe_log": [{"ok": False, "ts": 9_000_000.0 - 600}]}
         r_d = _run_real_main(old_restart, [D], max_sleeps=1)
@@ -1095,6 +1094,38 @@ def main() -> int:
         else:
             bad("B3 restart leg: a 30-day-old persisted reading must not take over with one "
                 "fresh reading", r_d3)
+
+        # D4 (Cybersec NO-GO regression on 8b74003492...734): a backward clock step before
+        # restart can make a HEALTHY reading, recorded after an old down reading by the real
+        # clock, look future-dated relative to the new "now". A load-time prune of the whole
+        # log would delete that healthy reading outright (permanently, since the pruned state
+        # is what gets saved), erasing the recovery boundary confirm_outage's backward walk
+        # relies on -- letting it reach past the deleted boundary into the still-older down
+        # reading and merge it with one new probe into a false confirmation. Without any
+        # load-time prune, confirm_outage's own per-call filter also drops the healthy reading
+        # (same age bound) but ONLY from the already-collected run, after the backward walk has
+        # already stopped at it -- so the older down reading stays unreachable and this must
+        # stay at kills=0. ts chosen so the old down reading (50s before restart) survives the
+        # age bound (450s) while the healthy + newer down readings (10s/60s AFTER restart) look
+        # future-dated at restart's "now" -- exactly a clock-step-back scenario.
+        t0 = 9_000_000.0
+        old_restart_merge = {
+            "phase": "healthy", "offset": 0, "notified_outage": False,
+            "outage_probe_log": [
+                {"ok": False, "ts": t0 - 50},
+                {"ok": True, "ts": t0 + 10},
+                {"ok": False, "ts": t0 + 60},
+            ],
+        }
+        r_d4 = _run_real_main(old_restart_merge, [D], t0=t0, max_sleeps=1)
+        if r_d4["kills"] == 0:
+            ok("B3 restart leg: a clock-step-back log with a healthy reading between two old "
+               "down readings + one fresh down does NOT merge across the recovery boundary "
+               "(Cybersec NO-GO regression on 8b74003492...734)")
+        else:
+            bad("B3 restart leg: a healthy reading must stay a recovery boundary even after a "
+                "backward clock step -- it must never be deleted and let an old down reading "
+                "merge with a fresh one", r_d4)
 
         # E/E2 (clock step, Cybered item 4): a +1h and a -1h wall-clock jump landing between the
         # two readings of an otherwise-genuine down pair must NOT confirm either way. This is the
@@ -1119,6 +1150,15 @@ def main() -> int:
         else:
             bad("B3 clock step -1h: a backward jump must not let a stale-looking reading count "
                 "as fresh", r_e2)
+
+        # HONEST NOTE (QA2 33606): E/E2 above do NOT independently pin the two-sided direction of
+        # confirm_outage's age bound -- with only two down readings and no healthy/stale-but-
+        # surviving entry in play, a one-sided (too-old-only) check rejects the same way a
+        # two-sided one does, so reverting confirm_outage's filter to one-sided does not turn
+        # E/E2 red (verified: still kills=0 on both). The two-sided direction is pinned at the
+        # pure-function level by quota-switchback.selftest.py's future-dated-entry case, not
+        # here. D4 above pins a different thing: the load-time-prune regression, mutation-
+        # verified by re-adding that call.
 
         # B3 wiring mutants, on the REAL main() this time (Cybered item 5): temporarily replace
         # should_declare_outage() with a bare True, and separately no-op record_outage_probe() --
