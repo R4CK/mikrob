@@ -1104,6 +1104,7 @@ if [ -d "$SCHED_TPL_DIR" ]; then
             "$f" > "$target/$sub$(basename "$f")"
       done
     done
+    INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
     echo -e "  ${GREEN}✓${NC} Utemezett feladat scaffoldolva: $task_name"
   done
 fi
@@ -1353,6 +1354,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             "$f" > "$target/$sub$(basename "$f")"
       done
     done
+    INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
     SCHED_NEW=$((SCHED_NEW + 1))
   done
   if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
@@ -1377,6 +1379,17 @@ if [ -d "$SEED_SCHED_DIR" ]; then
   fi
 fi
 
+# Scheduled-task registry: the schedule runner fires a task only if its
+# files hash-match the dashboard's registry. Register the tasks seeded above
+# (dist is already built at this point). On a FRESH install this is redundant
+# with the dashboard's one-time upgrade backfill; on a reinstall over an
+# existing box it is what keeps a newly seeded default firing.
+if [ -n "$(echo "${INSTALL_SCHED_REGISTER:-}" | tr -d ' ')" ] && [ -f "$INSTALL_DIR/dist/web/schedule-registry-cli.js" ] && command -v node >/dev/null 2>&1; then
+  # shellcheck disable=SC2086 # word-splitting the name list is intended
+  node "$INSTALL_DIR/dist/web/schedule-registry-cli.js" register --source installer $INSTALL_SCHED_REGISTER >/dev/null 2>&1 \
+    || echo "  WARN: scheduled-task registry registration failed; run: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status"
+fi
+
 # Seed config: copy default config files into store/ (idempotent: never overwrite)
 SEED_CONFIG_DIR="$INSTALL_DIR/seed-config"
 if [ -d "$SEED_CONFIG_DIR" ]; then
@@ -1396,6 +1409,9 @@ fi
 # filtered to the machine: store/first-run-llm.sh. The nomic-embed-text pull moved there too, right
 # after the runtime, because semantic memory search depends on it and a dependency must not ride
 # along with a preference.
+# NOT ADOPTED (Koteg 25): upstream's automatic Ollama+nomic-embed-text install block directly
+# reopens the owner directive above -- the runtime/model choice stays a deliberate post-boot step,
+# not an install-time default, on every platform this fork ships (mirrors install-linux.sh).
 echo ""
 echo -e "  Local LLM: nothing is installed automatically."
 echo -e "  After boot, pick a model that fits this Mac: store/first-run-llm.sh"
@@ -1487,6 +1503,7 @@ else
   warn "$(_t macos.ffmpeg_skipped)"
   echo -e "    ${DIM}$(_t macos.ffmpeg_skipped_hint)${NC}"
 fi
+
 
 # TAILSCALE-STEP-BEGIN (kartya 12dc8a5c -- sentinel a src/__tests__ standalone tesztjenek, ne torold)
 # --- Tailscale (automatikus, kartya 12dc8a5c) ---

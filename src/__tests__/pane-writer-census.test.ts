@@ -91,14 +91,18 @@ function measure(): Map<string, Census> {
 /** The pinned classification. `lane: false` needs a reason that survives a security review. */
 const EXPECTED: Record<string, Census & { why: string }> = {
   'web/agent-process.ts': {
-    textSites: 7, ctrlOnlySites: 16, lane: true,
+    textSites: 6, ctrlOnlySites: 17, lane: true,
     why: 'the delivery path itself, plus scheduleIdentitySetup /rename (IDENTLANE910) and the modal ' +
       'answers, plus two new-session launch sites (the normal start and the EPERM /tmp fallback, ' +
       'card 087e4418 merge) -- both create a session that does not exist yet, so there is no ' +
       'concurrent writer to race against at that point. ' +
       'Koteg 19 (upstream #1971, card 2337e4b0): ctrlOnlySites 15 -> 16, the new dev-channels ' +
       'first-run-gate keys in answerFirstRunGates, reached only from inside settleStartupGates\' ' +
-      'own send-lane acquisition.',
+      'own send-lane acquisition. ' +
+      'Koteg 24 (card 57044a66): textSites 7 -> 6, ctrlOnlySites 16 -> 17 -- the feedback-draft-modal ' +
+      'dismisser (card 813eeee9) no longer sends a bare digit (a text site: the whole root cause of ' +
+      'the stray-input bug it patched around) at all; superseded by feedbackDraftDismissPlan ' +
+      '(pane-state.ts), which sends only C-u/Down, moving that one call site into ctrlOnlySites.',
   },
   'web/agent-worker.ts': {
     textSites: 1, ctrlOnlySites: 2, lane: true,

@@ -8,12 +8,20 @@ import {
   getToolStats,
   correlateWithKanban,
 } from '../token-usage.js'
+import { getTokenPruneLag } from '../../db.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleTokenUsage(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
+
+  // card d8f44d15 req 3: whether the daily token_usage prune is still running (HBDBKUSZOB823's
+  // classifyTokenPruneLag, previously computed but never surfaced anywhere).
+  if (path === '/api/token-usage/daily-lag' && method === 'GET') {
+    json(res, getTokenPruneLag())
+    return true
+  }
 
   if (path === '/api/token-usage/collect' && method === 'POST') {
     try {

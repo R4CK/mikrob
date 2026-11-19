@@ -479,6 +479,41 @@ else
   fail=$((fail+1))
 fi
 
+# b64cfc09 (follow-up, CYBERED GO 30750 F3): the owner/ACE divergence check above was pinned, but
+# the two branches that make reaching it conditional on an actually-present, actually-parseable
+# state file were not -- RedHat's mut3.py showed "Phase 2 missing-state-file no longer exits 1" and
+# "unparsable-state no longer exits 1" both surviving. Anchor each branch to its own exit 1, same
+# technique as the divergence check above.
+R2B_MISSING_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A3 -F 'if (-not (Test-Path $StatePath))')"
+if printf '%s\n' "$R2B_MISSING_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: R2b missing-state-file check can fail closed"
+else
+  echo "FAIL: R2b missing-state-file check missing its own exit 1"
+  fail=$((fail+1))
+fi
+
+R2B_PARSE_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A3 -F '$recordedState = Get-Content $StatePath -Raw | ConvertFrom-Json')"
+if printf '%s\n' "$R2B_PARSE_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: R2b unparsable-state check can fail closed"
+else
+  echo "FAIL: R2b unparsable-state check missing its own exit 1"
+  fail=$((fail+1))
+fi
+
+echo "== N2 (b64cfc09, follow-up of eb12a5dd): Phase 1's adoption loop must reject a junction CHILD, not just a junction/owner-mismatch on TargetDir itself =="
+check "N2 reparse-point check present on adopted children" "$CURRENT" "is a junction or symlink -- refusing to adopt it" present
+check "N2 reparse-point check absent from old fixture"     "$OLD"     "is a junction or symlink -- refusing to adopt it" absent
+# Anchor the comparison itself: a junction child inside the loop must be able to exit 1 in the
+# same block (mutation target: deleting the exit 1 but leaving the Write-Log line, or deleting
+# the reparse-point branch entirely while keeping the owner-check branch below it).
+N2_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A3 -F 'if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)')"
+if printf '%s\n' "$N2_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: N2 junction-child check's own block can fail closed"
+else
+  echo "FAIL: N2 junction-child check block missing its own exit 1"
+  fail=$((fail+1))
+fi
+
 echo "== F4 (CYBERED NO-GO 30643): R2(b) must compare the FULL ACE set, not just a bare ACE count =="
 # A count-only compare (the pre-fix shape) passes when one required ACE is swapped for a different
 # one of the same count -- same owner, same total, 0 inherited, different actual grant.

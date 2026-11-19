@@ -6,6 +6,7 @@ import {
   decayMemories as dbDecay,
   pruneAuditLogs,
   pruneTokenUsage,
+  rollupRecentTokenUsageDaily,
   pruneConversationLog,
   pruneOtelSpans,
   pruneAgentMessages,
@@ -116,6 +117,7 @@ export function runDecaySweep(): void {
   dbDecay()
   pruneAuditLogs()
   const tokenRowsPruned = pruneTokenUsage()
+  const tokenDailyRowsRefreshed = rollupRecentTokenUsageDaily()
   const convRowsPruned = pruneConversationLog()
   const spanRowsPruned = pruneOtelSpans()
   const agentMsgRowsPruned = pruneAgentMessages()
@@ -126,6 +128,7 @@ export function runDecaySweep(): void {
   logger.info(
     {
       tokenRowsPruned,
+      tokenDailyRowsRefreshed,
       convRowsPruned,
       spanRowsPruned,
       agentMsgRowsPruned,

@@ -27,12 +27,12 @@ describe('specTemplateGuardCheck wiring in kanban.ts', () => {
     expect(calls).toBe(2)
   })
 
-  it('PUT handler: the call is textually AFTER the successful updateKanbanCard write, not before it', () => {
+  it('PUT handler: the call is textually AFTER the successful writeKanbanCard write, not before it', () => {
     const putHandlerSlice = sliceBetween(
-      "if (updateKanbanCard(id, normalizeProjectName(data)",
+      "const written = writeKanbanCard(id, normalizeProjectName(data)",
       "'Kártya nem található'",
     )
-    const writeIdx = putHandlerSlice.indexOf('updateKanbanCard(id, normalizeProjectName(data)')
+    const writeIdx = putHandlerSlice.indexOf('writeKanbanCard(id, normalizeProjectName(data)')
     const guardIdx = putHandlerSlice.indexOf('specTemplateGuardCheck(')
     expect(guardIdx, 'specTemplateGuardCheck must be called in the PUT success branch').toBeGreaterThan(-1)
     expect(guardIdx).toBeGreaterThan(writeIdx)
@@ -40,12 +40,12 @@ describe('specTemplateGuardCheck wiring in kanban.ts', () => {
 
   it('PUT handler: the call is AFTER the dependency/bulk-attribution 409 guards, not before them', () => {
     const putHandlerSlice = sliceBetween(
-      "if (updateKanbanCard(id, normalizeProjectName(data)",
+      "const written = writeKanbanCard(id, normalizeProjectName(data)",
       "'Kártya nem található'",
     )
     const guardIdx = putHandlerSlice.indexOf('specTemplateGuardCheck(')
     const dependencyIdx = SOURCE.indexOf('dependencyBlockBody(id, data.status')
-    const guardAbsoluteIdx = SOURCE.indexOf('specTemplateGuardCheck(', SOURCE.indexOf("if (updateKanbanCard(id, normalizeProjectName(data)"))
+    const guardAbsoluteIdx = SOURCE.indexOf('specTemplateGuardCheck(', SOURCE.indexOf("const written = writeKanbanCard(id, normalizeProjectName(data)"))
     expect(guardIdx).toBeGreaterThan(-1)
     expect(guardAbsoluteIdx).toBeGreaterThan(dependencyIdx)
   })

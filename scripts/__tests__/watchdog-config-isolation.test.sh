@@ -771,5 +771,136 @@ case "$OUT" in
 esac
 rm -f "$AGENT_BYO/agent-config.json" "$FIXTURE_INSTALL/store/.watchdog-fleet-oauth-undecidable-alert"
 
+# 53-54) Card ae5af304 (RedHat follow-up, bc32d233): the own-token FILE'S CONTENT (not the config)
+# contains an invalid-UTF-8 byte. Before the fix, both --bad-content-characters and
+# --same-as-fleet-token crashed on this (UnicodeDecodeError, not an OSError, so uncaught),
+# Python's default exit code 1 on a crash being INDISTINGUISHABLE from the check's own legitimate
+# "no, clean"/"no, not a copy" answer -- watchdog.sh's `2>/dev/null` swallowed the traceback and
+# `if python3 ...; then REFUSE; fi` read the crash as "no problem", proceeding to export the
+# byte-corrupt file. The prefix check (head -c 20 | grep sk-ant-oat) runs first in watchdog.sh, so
+# the byte must come AFTER a valid-looking prefix to actually reach the Python checks.
+write_own_config
+printf '%s\x80' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=yes prefix="*"$OWN_TOKEN_FILE"*)
+    pass "53: invalid-UTF-8 byte in own token content -> resolves normally (no crash-as-clean export), fails content/same-as-fleet checks cleanly" ;;
+  *) fail "53: invalid-UTF-8 byte in own token content -> resolves normally, not a silent export via crash" "$OUT" ;;
+esac
+
+# 54) Same invalid byte, but the file IS byte-for-byte the fleet token (with the bad byte) --
+# same_as_fleet_token must detect the match without crashing, and REFUSE.
+printf '%s' "$FAKE_SETUP_TOKEN" > "$FIXTURE_INSTALL/store/.claude-oauth-token"
+printf '\x80' >> "$FIXTURE_INSTALL/store/.claude-oauth-token"
+cp "$FIXTURE_INSTALL/store/.claude-oauth-token" "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=same-as-fleet-token")
+    pass "54: own token with an invalid-UTF-8 byte, byte-identical to the fleet token -> refuse, no crash-through" ;;
+  *) fail "54: own token with an invalid-UTF-8 byte, byte-identical to the fleet token -> refuse" "$OUT" ;;
+esac
+echo "sk-test-fixture-token" > "$FIXTURE_INSTALL/store/.claude-oauth-token" # restore for any later run
+printf '%s' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+
+# --- card 6b7a606d (RedHat LOW on ae5af304, msg 19513): agent_launch_env's --bad-content-characters
+# and --same-as-fleet-token sub-calls used `if CMD; then` to read the checker's verdict, which
+# collapses EVERY non-zero exit (1 = legitimate "no match", but also 2, a kill signal, or an
+# unanticipated crash) into the same "false" branch -- a crashing checker on either of these two
+# calls used to look identical to "nothing wrong", and the restart proceeded to export the token.
+# A stub checker is used (behaves like the real one for the plain <agent-dir> resolve call, but
+# exits a 3rd way for the two flag calls) so the main-call contract stays untouched. ---
+write_own_config
+printf '%s' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+
+STUB_CHECKER="$TMP/stub-check.py"
+
+# 55) --bad-content-characters sub-call exits 2 (neither match nor no-match) -> refuse, not "no
+#     bad content found".
+cat > "$STUB_CHECKER" << STUBEOF
+#!/usr/bin/env python3
+import sys
+if len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
+    sys.exit(2)
+if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
+    sys.exit(1)
+if len(sys.argv) == 2:
+    print("SET:$OWN_TOKEN_FILE")
+    sys.exit(0)
+sys.exit(2)
+STUBEOF
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$STUB_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "55: --bad-content-characters exits 2 -> refuse, not treated as clean" ;;
+  *) fail "55: --bad-content-characters exits 2 -> refuse, not treated as clean" "$OUT" ;;
+esac
+
+# 56) --bad-content-characters sub-call killed by a signal (SIGKILL, bash reports exit 137) -- same
+#     requirement as #55, a different real-world cause (OOM kill) producing the same class of exit.
+cat > "$STUB_CHECKER" << STUBEOF
+#!/usr/bin/env python3
+import os, signal, sys
+if len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
+    os.kill(os.getpid(), signal.SIGKILL)
+if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
+    sys.exit(1)
+if len(sys.argv) == 2:
+    print("SET:$OWN_TOKEN_FILE")
+    sys.exit(0)
+sys.exit(2)
+STUBEOF
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$STUB_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "56: --bad-content-characters killed by signal (exit 137) -> refuse, not treated as clean" ;;
+  *) fail "56: --bad-content-characters killed by signal (exit 137) -> refuse, not treated as clean" "$OUT" ;;
+esac
+
+# 57) --same-as-fleet-token sub-call exits 2 -> refuse, not "no match" (symmetry with #55/#56 on
+#     the second call site).
+cat > "$STUB_CHECKER" << STUBEOF
+#!/usr/bin/env python3
+import sys
+if len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
+    sys.exit(1)
+if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
+    sys.exit(2)
+if len(sys.argv) == 2:
+    print("SET:$OWN_TOKEN_FILE")
+    sys.exit(0)
+sys.exit(2)
+STUBEOF
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$STUB_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "57: --same-as-fleet-token exits 2 -> refuse, not treated as no-match" ;;
+  *) fail "57: --same-as-fleet-token exits 2 -> refuse, not treated as no-match" "$OUT" ;;
+esac
+
+# 58) MUTATION PIN / REGRESSION: exit 0 (match) and exit 1 (no match) on both sub-calls still
+#     behave exactly as before -- tests 3, 18 and 19 above already exercise this against the REAL
+#     checker; this re-confirms it against the stub harness itself, so a mutant that always refused
+#     (defeating #55-#57 by brute force) would be caught here.
+cat > "$STUB_CHECKER" << STUBEOF
+#!/usr/bin/env python3
+import sys
+if len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
+    sys.exit(1)
+if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
+    sys.exit(1)
+if len(sys.argv) == 2:
+    print("SET:$OWN_TOKEN_FILE")
+    sys.exit(0)
+sys.exit(2)
+STUBEOF
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$STUB_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=yes prefix="*"$OWN_TOKEN_FILE"*) pass "58: both sub-calls exit 1 (no match) -> isolation unchanged" ;;
+  *) fail "58: both sub-calls exit 1 (no match) -> isolation unchanged" "$OUT" ;;
+esac
+
+rm -f "$STUB_CHECKER"
+
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

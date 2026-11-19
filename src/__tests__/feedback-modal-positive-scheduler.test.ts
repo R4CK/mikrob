@@ -67,6 +67,16 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
   }
 })
 
+// Scheduled-task registry: this suite drives the runner with fixture tasks that never went
+// through the dashboard API; the registry gate is covered by
+// schedule-source-registry.test.ts, so here it is a passthrough.
+vi.mock('../web/schedule-registry.js', () => ({
+  filterRegisteredTasks: <T,>(tasks: T[]) => tasks,
+  backfillScheduledTaskRegistryOnce: () => ({ ran: false, registered: [] }),
+  verifyScheduledTask: () => ({ ok: true }),
+  describeVerdict: () => '',
+}))
+
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   listScheduledTasks: () => mockListScheduledTasks(),
   readScheduledTask: (n: string) => (mockListScheduledTasks() as Array<{ name: string }>).find(t => t.name === n) ?? null,
@@ -92,7 +102,7 @@ vi.mock('../web/agent-process.js', () => ({
   // to the helper, not swallow the modal case. Every later capture (the
   // post-send resubmit loop) returns null so the loop sees nothing parked
   // and stops, same as the sibling fixtures.
-  capturePane: (..._a: unknown[]) => (capturePaneCalls++ === 0 ? 'plain pane\n❯ ' : null),
+  capturePane: () => (capturePaneCalls++ === 0 ? 'plain pane\n❯ ' : null),
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(() => false),
   resolveAgentProvider: () => 'telegram',
