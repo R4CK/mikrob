@@ -70,17 +70,17 @@ describe('e5c13c0e: the root-CLAUDE.md restore in claude-md-main-section-writers
     try {
       const original = '# fixture root CLAUDE.md\n\nunchanged content\n'
       writeFileSync(path, original, 'utf-8')
-      const mtimeBefore = statSync(path).mtimeNs
-      // Sleep a tick via a busy wait is unnecessary: if ANY write happened, the OS mtime
-      // granularity (nanosecond on most filesystems used here) would still move forward, and a
-      // rename would also change the inode -- check both.
-      const inodeBefore = statSync(path).ino
+      // bigint mode for nanosecond-resolution mtime: a millisecond-resolution check could miss a
+      // write/rename that completes within the same millisecond, which is common for a fast
+      // synchronous call like this one. Inode is checked too (a rename always changes it).
+      const before = statSync(path, { bigint: true })
 
       restoreTrackedFileIfChanged(path, original)
 
+      const after = statSync(path, { bigint: true })
       expect(readFileSync(path, 'utf-8'), 'content changed even though nothing should have written').toBe(original)
-      expect(statSync(path).mtimeNs, 'mtime moved -- a write syscall happened for unchanged content').toBe(mtimeBefore)
-      expect(statSync(path).ino, 'inode changed -- a rename happened for unchanged content').toBe(inodeBefore)
+      expect(after.mtimeNs, 'mtime moved -- a write syscall happened for unchanged content').toBe(before.mtimeNs)
+      expect(after.ino, 'inode changed -- a rename happened for unchanged content').toBe(before.ino)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
