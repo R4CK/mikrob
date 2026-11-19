@@ -92,6 +92,55 @@ export function normalizeProjectName<T extends Record<string, unknown>>(data: T)
   return data
 }
 
+// Card b296b810 (Peti 14008, 2026-11-16): a project-less card silently inserted NULL, and 411
+// such cards piled up between 2026-09-26 and 2026-11-15 before MikroB manually reclassified them
+// by title tag/parent. Order: (1) an explicit project always wins; (2) failing that, a title tag
+// derives one; (3) failing that too, the caller gets a speaking 400 instead of a silent NULL row.
+// These two buckets are deliberately NOT the same mapping CANONICAL_PROJECTS uses for an EXPLICIT
+// project value: a NEW card tagged [cleancore] today should land under the live 'mopsion' bucket
+// (per this card's own instruction), while an explicit project:"cleancore" string still
+// canonicalizes to the separate, historical 'CleanCore' bucket (card 1b02ed3a's staged rebrand,
+// unaffected by this card -- that separation protects OLD cards, this derivation is only for NEW
+// ones that named no project at all).
+const TITLE_TAG_PROJECTS: Record<string, string> = Object.fromEntries(
+  [
+    ['mopsion', ['mopsion', 'cleancore']],
+    ['MikroB', ['mikrob', 'marveen']],
+  ].flatMap(([canonical, tags]) => (tags as string[]).map((t) => [t, canonical as string])),
+)
+const TITLE_TAG_RX = /\[([^[\]]+)\]/g
+function projectFromTitleTag(title: unknown): string | null {
+  if (typeof title !== 'string') return null
+  for (const m of title.matchAll(TITLE_TAG_RX)) {
+    const candidate = TITLE_TAG_PROJECTS[m[1].trim().toLowerCase()]
+    if (candidate) return candidate
+  }
+  return null
+}
+
+export const NO_PROJECT_MESSAGE =
+  'A kártyához projekt szükséges: adj meg explicit "project" mezőt, vagy "parent_id"-t aminek van projektje, vagy használj [mopsion]/[cleancore]/[MikroB]/[marveen] cím-taget.'
+
+// Cybersec2 NO-GO on b296b810 (comment 32437, F1 MEDIUM): PUT only guarded the case where
+// normalizeProjectName resolves `project` to null -- that function only looks at STRING values,
+// so a non-string, non-null `project` (an array, object, number or boolean) passed through
+// untouched, and better-sqlite3 silently binds a one-element array as its element (e.g.
+// `{"project":[""]}` stored an empty-string project with a 200, the exact blank-project class
+// this card closes for a plain string). Rejected before normalizeProjectName even runs.
+export const INVALID_PROJECT_TYPE_MESSAGE =
+  'A "project" mezőnek szövegnek (string) vagy null-nak kell lennie, nem tömbnek/objektumnak/számnak/logikai értéknek.'
+
+// `project` here is already post-normalizeProjectName (a real canonical string, or null/undefined
+// if absent/cleared). `parentProject` is the ALREADY-RESOLVED project of the parent card (null if
+// no parent or the parent itself has none) -- callers pass it in rather than this function doing
+// its own getKanbanCard lookup, so a single parent read serves both the project-inheritance and
+// any other caller-side use of that row.
+export function resolveCardProject(project: unknown, parentProject: string | null, title: unknown): string | null {
+  if (typeof project === 'string' && project) return project
+  if (parentProject) return parentProject
+  return projectFromTitleTag(title)
+}
+
 // Card 2ba008f2: 'gemini-orch-review' is already in GENERATED_COMMENT_AUTHORS and is the night
 // loop's own identity; the assertion keeps that coupling explicit instead of retyping the
 // literal and silently drifting if the set is ever renamed.
@@ -1394,6 +1443,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `A(z) "${rawParentId}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
       return true
     }
+    // Card b296b810: a project-less card must not be created. explicit project -> inherit the
+    // parent's project -> derive one from a title tag -> 400, never a silent NULL row.
+    {
+      const parentProject = typeof rawParentId === 'string' && rawParentId
+        ? (getKanbanCard(rawParentId)?.project ?? null)
+        : null
+      const resolvedProject = resolveCardProject((normalized as Record<string, unknown>).project, parentProject, (normalized as Record<string, unknown>).title)
+      if (!resolvedProject) {
+        json(res, { error: NO_PROJECT_MESSAGE }, 400)
+        return true
+      }
+      ;(normalized as Record<string, unknown>).project = resolvedProject
+    }
     // Unknown keys are WARNED, not rejected (Köteg 12, upstream 0bea3cd7): unlike PUT (whose
     // callers are internal and already measured), POST's caller population is NOT measured, and a
     // fail-closed 400 here would trade a silent data-loss bug for a loud outage in card CREATION --
@@ -1640,6 +1702,32 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // "Two system notes land on the freed card: this unblock's own, and the hand-off notice from
     // notifyUnblockedCards". Not a duplicate-wire hazard, verified by that test.
     const before = getKanbanCard(id)
+    // Card b296b810: PUT is the other write path that could clear `project` to empty -- only
+    // fires when the caller is ACTUALLY touching `project` and the result would be empty; a PUT
+    // that never mentions `project` at all leaves the existing value alone, same as before.
+    if ('project' in data) {
+      const rawProject = (data as Record<string, unknown>).project
+      if (rawProject !== null && rawProject !== undefined && typeof rawProject !== 'string') {
+        json(res, { error: INVALID_PROJECT_TYPE_MESSAGE }, 400)
+        return true
+      }
+      const normalizedProjectCheck = normalizeProjectName(data)
+      // A whole-card PUT echoes every field it read, `project` included; if the card already had
+      // no project (legacy, pre-dates this guard) and the body's value resolves to the same
+      // nothing, this isn't an attempt to CLEAR it -- skip the resolve-or-reject below.
+      const isNoopEcho = normalizedProjectCheck.project === null && (before?.project ?? null) === null
+      if (normalizedProjectCheck.project === null && !isNoopEcho) {
+        const effectiveParentId = typeof data.parent_id === 'string' && data.parent_id ? data.parent_id : (before?.parent_id ?? null)
+        const parentProject = effectiveParentId ? (getKanbanCard(effectiveParentId)?.project ?? null) : null
+        const effectiveTitle = typeof data.title === 'string' ? data.title : before?.title
+        const resolvedProject = resolveCardProject(null, parentProject, effectiveTitle)
+        if (!resolvedProject) {
+          json(res, { error: NO_PROJECT_MESSAGE }, 400)
+          return true
+        }
+        ;(data as Record<string, unknown>).project = resolvedProject
+      }
+    }
     const written = writeKanbanCard(id, normalizeProjectName(data), actor, expectedVersion,
       { force: force === true, reason: typeof reason === 'string' ? reason : undefined })
     if (written.ok) {
@@ -2347,6 +2435,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: GEMINI_OK_MARKER_FORBIDDEN_MESSAGE }, 403)
       return true
     }
+    // Card b296b810: this is the OTHER card-creation path (the parent's project used to be
+    // inherited unconditionally via `parent.project ?? undefined`, which is a silent NULL
+    // whenever the parent itself has none). Same resolution order as POST /api/kanban --
+    // parent's project, else a subtask's own title tag, else refuse the whole batch, checked
+    // before the transaction opens, same all-or-nothing posture as the gemini-ok check above.
+    if (subtasks.some((st) => !resolveCardProject(undefined, parent.project, st.title))) {
+      json(res, { error: NO_PROJECT_MESSAGE }, 400)
+      return true
+    }
     const db = getDb()
     // Kartya e25a549a: st.assignee CALLER-CONTROLLED (ez a masodik ismert iro-ut, ami a ket
     // route-handler guardjat megkerulte); a createKanbanCard() sajat assertValidAssignee()
@@ -2367,7 +2464,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
             // right for a piece of the same work, and is one click to change.
             assignee: st.assignee ?? parent.assignee ?? undefined,
             priority: (st.priority as any) ?? 'normal',
-            project: parent.project ?? undefined,
+            project: resolveCardProject(undefined, parent.project, st.title) ?? undefined,
             parent_id: parentId,
           })
           ids.push(id)

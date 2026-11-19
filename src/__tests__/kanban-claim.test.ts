@@ -406,7 +406,7 @@ describe('claim/release HTTP routes', () => {
   })
 
   it('the dashboard whole-card PUT carrying claim fields still succeeds and cannot write the claim', async () => {
-    createKanbanCard({ id: 'c1', title: 'One', assignee: 'cody' })
+    createKanbanCard({ id: 'c1', title: 'One', assignee: 'cody', project: 'test' })
     claimKanbanCard('c1', 'cody')
     const card = getKanbanCard('c1')!
     // A title edit through the whole-card send: the claim fields ride along
