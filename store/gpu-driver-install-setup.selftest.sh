@@ -244,6 +244,60 @@ Write-Log "Phase 2 complete. Setup done."
 exit 0
 OLD_PS1_EOF
 
+# PRENOGO: the exact gpu-driver-install-setup.ps1 text at Gate-SHA 28c87019f (the sha CYBERED
+# NO-GO 30643 was given against), BEFORE this round's F1/F2/F4 fixes. A literal fixture, like
+# $OLD above, not re-derived from git history -- the R1/R2b/F1/F2/F4 checks below run against both
+# $CURRENT (expect fixed) and $PRENOGO (expect the NO-GO'd shape still present), so a check that
+# would pass on EITHER version proves nothing.
+PRENOGO="$TMP/prenogo.ps1"
+cat > "$PRENOGO" <<'PRENOGO_PS1_EOF'
+$launcherHash      = (Get-FileHash $LauncherPath -Algorithm SHA256).Hash.ToUpper()
+$launcherHashShort = $launcherHash.Substring(0, 20)
+Write-Log "Launcher hash computed: $launcherHash (pinned prefix: $launcherHashShort)"
+
+$InlineCheck = "`$p='$LauncherPath';if((Get-FileHash `$p).Hash.Substring(0,20)-ne'$launcherHashShort'){exit 1};&`$p '$hash'"
+$TaskCommand = "powershell.exe -nop -ep Bypass -c `"$InlineCheck`""
+
+if ($TaskCommand.Length -gt 250) {
+    Write-Log "FAIL: task command is $($TaskCommand.Length) chars, over the safe 250-char budget for schtasks /TR -- aborting before schtasks /Change"
+    exit 1
+}
+
+Write-Log "Updating scheduled task '$TaskName' with launcher-hash pre-check + main hash $hash on command line..."
+$changeOut = & schtasks /Change /TN $TaskName /TR $TaskCommand 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Log "FAIL: schtasks /Change exited $LASTEXITCODE -- $changeOut"
+    exit 1
+}
+Write-Log "schtasks /Change: $changeOut"
+
+$queryOut = & schtasks /Query /TN $TaskName /FO CSV /V 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Log "FAIL: schtasks /Query exited $LASTEXITCODE -- $queryOut"
+    exit 1
+}
+$queryStr = $queryOut -join "`n"
+if ($queryStr -notmatch [regex]::Escape($launcherHashShort)) {
+    Write-Log "FAIL: task command line does not contain expected launcher-hash prefix $launcherHashShort after update"
+    exit 1
+}
+if ($queryStr -notmatch [regex]::Escape($hash)) {
+    Write-Log "FAIL: task command line does not contain expected main-script hash $hash after update"
+    exit 1
+}
+Write-Log "Task verified: launcher-hash prefix $launcherHashShort and main hash $hash present in task command line"
+
+$freshAcl       = Get-Acl $TargetDir
+$freshAceCount  = @($freshAcl.Access).Count
+$freshInherited = @($freshAcl.Access | Where-Object { $_.IsInherited }).Count
+$freshOwnerSid  = $freshAcl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+if ($freshOwnerSid -ne $recordedState.ownerSid -or $freshAceCount -ne $recordedState.aceCount -or $freshInherited -ne $recordedState.inherited) {
+    Write-Log "FAIL: ACL state diverged from Phase 1 recording -- recorded owner=$($recordedState.ownerSid) aceCount=$($recordedState.aceCount) inherited=$($recordedState.inherited); fresh owner=$freshOwnerSid aceCount=$freshAceCount inherited=$freshInherited"
+    exit 1
+}
+Write-Log "ACL state matches Phase 1 recording (owner=$freshOwnerSid, aceCount=$freshAceCount, inherited=$freshInherited)"
+PRENOGO_PS1_EOF
+
 echo "== X1(a): a pre-existing TargetDir must be refused, not silently adopted =="
 check "X1a fail-closed adoption guard present"  "$CURRENT" "refusing to adopt it"        present
 check "X1a fail-closed adoption guard present"  "$OLD"     "refusing to adopt it"        absent
@@ -286,6 +340,7 @@ echo "== B3: scheduled-task hash read-back guard present in current, diagnostic 
 strip_comments() { sed -E 's/#.*$//' "$1"; }
 CURRENT_NOCOMMENT="$(strip_comments "$CURRENT")"
 OLD_NOCOMMENT="$(strip_comments "$OLD")"
+PRENOGO_NOCOMMENT="$(strip_comments "$PRENOGO")"
 
 check_stripped() {
   local label="$1" src_nocomment="$2" needle="$3" mode="$4"
@@ -299,14 +354,18 @@ check_stripped() {
   fi
 }
 check_stripped "B3 hash read-back guard present (comment-stripped)"  "$CURRENT_NOCOMMENT" 'notmatch [regex]::Escape($hash)'  present
-check_stripped "B3 diagnostic log present (comment-stripped)"        "$CURRENT_NOCOMMENT" 'Write-Log "Query output:'        present
-check_stripped "B3 diagnostic log absent from old (comment-stripped)" "$OLD_NOCOMMENT"    'Write-Log "Query output:'        absent
+# F1 fix (CYBERED NO-GO 30643) replaced the schtasks /Query CSV diagnostic log ("Query output:")
+# with the task's own Actions[0].Arguments value ("Action argument:"), since the read-back itself
+# moved from schtasks /Query text to the Task Scheduler COM object -- same guard intent (log the
+# actual value on a read-back failure), new source.
+check_stripped "B3 diagnostic log present (comment-stripped)"        "$CURRENT_NOCOMMENT" 'Write-Log "Action argument:'      present
+check_stripped "B3 diagnostic log absent from old (comment-stripped)" "$OLD_NOCOMMENT"    'Write-Log "Action argument:'      absent
 
 # SM3 fix: 'exit 1' alone occurs 20+ times in this file for unrelated guards, so a mutant that
 # comments out (or removes) ONLY the B3 guard's own exit 1 still finds the needle elsewhere and
-# the old check passed anyway (fail-open blind spot). Anchor to the 2 lines following the
-# diagnostic log line -- that is this guard's own failure branch, not any other guard's.
-B3_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A2 -F 'Write-Log "Query output:')"
+# the old check passed anyway (fail-open blind spot). Anchor to the line itself and the line
+# following it -- that is this guard's own failure branch, not any other guard's.
+B3_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A1 -F 'Write-Log "Action argument:')"
 if printf '%s\n' "$B3_BLOCK" | grep -qF 'exit 1'; then
   echo "PASS: B3 failure exit 1 present in the guard's own block (comment-stripped, anchored)"
 else
@@ -319,6 +378,158 @@ echo "== F1 (2a80c6cb delta): gpu-driver-approval.token must NOT be in the allow
 check "F1 scoped token removed from allowlist"        "$CURRENT" "gpu-driver-approval.token"  absent
 check "F1 trigger-receipt in allowlist"               "$CURRENT" "gpu-driver-install-trigger-receipt.json"  present
 check "F1 shared fleet token not in allowlist"        "$CURRENT" '.dashboard-token'            absent
+
+echo "== R1 (eb12a5dd): the launcher's OWN hash must be checked outside TargetDir, before invoking it =="
+# Old fixture has no such mechanism at all -- pure presence/absence against $OLD confirms this is
+# genuinely new, not a pre-existing check this test just started looking for.
+check_stripped "R1 launcher hash computed (comment-stripped)" "$CURRENT_NOCOMMENT" '$launcherHash' present
+check_stripped "R1 launcher hash computed (comment-stripped)" "$OLD_NOCOMMENT"     '$launcherHash' absent
+check_stripped "R1 task action built from an inline pre-check, not -File (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" '$InlineCheck' present
+check_stripped "R1 old -File invocation of the launcher is gone (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" ' -File `"$LauncherPath`" $hash' absent
+check "R1 old -File invocation present in old fixture" "$OLD" ' -File `"$LauncherPath`" $hash' present
+# R1's whole point is that the launcher hash check must run BEFORE the launcher is invoked --
+# anchor to the actual $InlineCheck line, not just "the words exist somewhere in the file".
+INLINECHECK_LINE="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -F '$InlineCheck =')"
+if printf '%s\n' "$INLINECHECK_LINE" | grep -qF 'Get-FileHash' && printf '%s\n' "$INLINECHECK_LINE" | grep -qF 'exit 1'; then
+  echo "PASS: R1 inline check line itself hashes the launcher and can exit before invoking it"
+else
+  echo "FAIL: R1 inline check line does not both hash and fail-closed in one place"
+  fail=$((fail+1))
+fi
+
+echo "== F1 (CYBERED NO-GO 30643): the task action must be set via Set-ScheduledTask, not schtasks /TR =="
+# schtasks /Change round-trips the command text through PowerShell 5.1's native-command argument
+# handling, which RedHat's argv emulation showed mis-escaping an embedded-quotes-plus-whitespace
+# argument (the old $InlineCheck's exact shape) into 9 tokens instead of 6. Pin that the migration
+# actually happened, both ways: gone from current, still present in the pre-fix fixture.
+check_stripped "F1 schtasks /Change removed (comment-stripped)" "$CURRENT_NOCOMMENT" 'schtasks /Change' absent
+check_stripped "F1 schtasks /Change present in pre-fix fixture (comment-stripped)" "$PRENOGO_NOCOMMENT" 'schtasks /Change' present
+check_stripped "F1 New-ScheduledTaskAction present (comment-stripped)" "$CURRENT_NOCOMMENT" 'New-ScheduledTaskAction -Execute' present
+check_stripped "F1 New-ScheduledTaskAction absent from pre-fix fixture (comment-stripped)" "$PRENOGO_NOCOMMENT" 'New-ScheduledTaskAction -Execute' absent
+check_stripped "F1 Set-ScheduledTask applies the new action (comment-stripped)" "$CURRENT_NOCOMMENT" 'Set-ScheduledTask -TaskName $TaskName -Action $newAction' present
+# Read-back must use the task's own stored Actions[0].Arguments, not schtasks /Query CSV text.
+check_stripped "F1 read-back via Actions[0].Arguments (comment-stripped)" "$CURRENT_NOCOMMENT" '$verifyTask.Actions[0].Arguments' present
+
+echo "== F2 (CYBERED NO-GO 30643): the launcher pre-check must fail closed on an erroring hash read =="
+# Old shape: (Get-FileHash $p).Hash.Substring(0,20) -ne '...' -- a terminating method-call-on-null
+# only aborts that ONE if-statement in a -Command script, falling through to invoke the launcher
+# anyway. New shape: try{$h=(Get-FileHash ... -ErrorAction Stop).Hash}catch{exit 1}, so a failed
+# read exits before any comparison runs, and the comparison itself is a value compare ($h -ne
+# literal), never a method call that could crash past the gate.
+check_stripped "F2 fail-closed try/catch around the launcher hash read (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" 'try{`$h=(Get-FileHash `$p -Algorithm SHA256 -ErrorAction Stop).Hash}catch{exit 1}' present
+check_stripped "F2 fail-closed try/catch absent from pre-fix fixture (comment-stripped)" \
+  "$PRENOGO_NOCOMMENT" 'try{`$h=(Get-FileHash `$p -Algorithm SHA256 -ErrorAction Stop).Hash}catch{exit 1}' absent
+check_stripped "F2 old crash-prone Substring-on-possibly-null form removed (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" '(Get-FileHash `$p).Hash.Substring(0,20)' absent
+check "F2 old crash-prone Substring-on-possibly-null form present in pre-fix fixture" \
+  "$PRENOGO" '(Get-FileHash `$p).Hash.Substring(0,20)' present
+
+echo "== F3 (CYBERED NO-GO 30643): R1's comparison must be pinned by OPERATOR and ORDER, not just token presence =="
+# Operator direction: -ne (refuse on mismatch), not -eq (the exact inversion RedHat's mutant #1
+# applied and the old text-presence-only selftest never noticed, because -eq and -ne both contain
+# the same variable-name tokens).
+check_stripped "F3 R1 compares with -ne (fail on mismatch), anchored to the launcher-hash variable (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" "if(\`\$h -ne '\$launcherHash')" present
+check_stripped "F3 R1 inverted -eq form is absent (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" "if(\`\$h -eq '\$launcherHash')" absent
+# Comparison target: must be the REAL computed $launcherHash variable (interpolated into the
+# string), not a hardcoded or substituted constant -- RedHat's mutant #3 ("wrong value").
+check_stripped "F3 R1 compares against the real \$launcherHash variable, not a literal (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" "-ne '\$launcherHash'" present
+# Order: the hash check (if(...){exit 1}) must appear BEFORE the launcher invocation (& `$p) on
+# the same line -- RedHat's mutant #5 (launcher invoked before its own check).
+R1_LINE="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -F '$InlineCheck = ')"
+IF_POS="$(printf '%s' "$R1_LINE" | grep -abo "if(\`\$h -ne" | head -1 | cut -d: -f1)"
+INVOKE_POS="$(printf '%s' "$R1_LINE" | grep -abo '& `$p' | head -1 | cut -d: -f1)"
+if [ -n "$IF_POS" ] && [ -n "$INVOKE_POS" ] && [ "$IF_POS" -lt "$INVOKE_POS" ]; then
+  echo "  ok   F3 R1 hash check (position $IF_POS) runs before launcher invocation (position $INVOKE_POS)"
+else
+  echo "  FAIL F3 R1 ordering -- check at '$IF_POS', invocation at '$INVOKE_POS' (expected check < invocation)"
+  fail=1
+fi
+# No truncation left anywhere in the pre-check construction -- full-length hash now that the
+# schtasks /TR length ceiling (the only reason for truncating) no longer applies.
+check_stripped "F3 R1 pre-check no longer truncates the launcher hash (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" 'Substring(0,20)' absent
+check "F3 sanity length budget present (8000-char ceiling, Action.Arguments headroom)" "$CURRENT" 'TaskArgument.Length -gt 8000' present
+
+echo "== R2(b) (eb12a5dd): Phase 2 must compare against Phase 1's RECORDED state, not just re-derive its own checks =="
+check_stripped "R2b state filename referenced (comment-stripped)"  "$CURRENT_NOCOMMENT" 'gpu-driver-install-state.json' present
+check_stripped "R2b state filename referenced (comment-stripped)"  "$OLD_NOCOMMENT"     'gpu-driver-install-state.json' absent
+# Anchor to the ACTUAL write statement, not just the filename -- a mutant that comments out only
+# the write (leaving $StatePath's own assignment line untouched) still has the filename string
+# present, so the check above alone would miss it.
+check_stripped "R2b Phase 1 actually WRITES the state (comment-stripped, anchored to the write call)" \
+  "$CURRENT_NOCOMMENT" 'ConvertTo-Json -Compress) | Set-Content -Path $StatePath' present
+check_stripped "R2b Phase 1 actually WRITES the state (comment-stripped, anchored to the write call)" \
+  "$OLD_NOCOMMENT" 'ConvertTo-Json -Compress) | Set-Content -Path $StatePath' absent
+check_stripped "R2b Phase 2 reads the recorded state (comment-stripped)" "$CURRENT_NOCOMMENT" 'recordedState' present
+check "R2b state file added to the filename allowlist" "$CURRENT" "'gpu-driver-install-state.json')" present
+# Anchor the comparison itself: the divergence check must fail closed on owner OR ACE-set drift,
+# and must be able to exit 1 in the same block (mutation target: deleting the -or chain silently
+# turns this into an always-true-pass).
+R2B_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A3 -F 'if ($freshOwnerSid -ne $recordedState.ownerSid')"
+if printf '%s\n' "$R2B_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: R2b divergence check's own block can fail closed"
+else
+  echo "FAIL: R2b divergence check block missing its own exit 1"
+  fail=$((fail+1))
+fi
+
+# b64cfc09 (follow-up, CYBERED GO 30750 F3): the owner/ACE divergence check above was pinned, but
+# the two branches that make reaching it conditional on an actually-present, actually-parseable
+# state file were not -- RedHat's mut3.py showed "Phase 2 missing-state-file no longer exits 1" and
+# "unparsable-state no longer exits 1" both surviving. Anchor each branch to its own exit 1, same
+# technique as the divergence check above.
+R2B_MISSING_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A3 -F 'if (-not (Test-Path $StatePath))')"
+if printf '%s\n' "$R2B_MISSING_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: R2b missing-state-file check can fail closed"
+else
+  echo "FAIL: R2b missing-state-file check missing its own exit 1"
+  fail=$((fail+1))
+fi
+
+R2B_PARSE_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A3 -F '$recordedState = Get-Content $StatePath -Raw | ConvertFrom-Json')"
+if printf '%s\n' "$R2B_PARSE_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: R2b unparsable-state check can fail closed"
+else
+  echo "FAIL: R2b unparsable-state check missing its own exit 1"
+  fail=$((fail+1))
+fi
+
+echo "== N2 (b64cfc09, follow-up of eb12a5dd): Phase 1's adoption loop must reject a junction CHILD, not just a junction/owner-mismatch on TargetDir itself =="
+check "N2 reparse-point check present on adopted children" "$CURRENT" "is a junction or symlink -- refusing to adopt it" present
+check "N2 reparse-point check absent from old fixture"     "$OLD"     "is a junction or symlink -- refusing to adopt it" absent
+# Anchor the comparison itself: a junction child inside the loop must be able to exit 1 in the
+# same block (mutation target: deleting the exit 1 but leaving the Write-Log line, or deleting
+# the reparse-point branch entirely while keeping the owner-check branch below it).
+N2_BLOCK="$(printf '%s\n' "$CURRENT_NOCOMMENT" | grep -A3 -F 'if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)')"
+if printf '%s\n' "$N2_BLOCK" | grep -qF 'exit 1'; then
+  echo "PASS: N2 junction-child check's own block can fail closed"
+else
+  echo "FAIL: N2 junction-child check block missing its own exit 1"
+  fail=$((fail+1))
+fi
+
+echo "== F4 (CYBERED NO-GO 30643): R2(b) must compare the FULL ACE set, not just a bare ACE count =="
+# A count-only compare (the pre-fix shape) passes when one required ACE is swapped for a different
+# one of the same count -- same owner, same total, 0 inherited, different actual grant.
+check_stripped "F4 Get-AceSnapshot function present (comment-stripped)" "$CURRENT_NOCOMMENT" 'function Get-AceSnapshot' present
+check_stripped "F4 Get-AceSnapshot function absent from pre-fix fixture (comment-stripped)" "$PRENOGO_NOCOMMENT" 'function Get-AceSnapshot' absent
+check_stripped "F4 Phase 1 records an ACE snapshot, not just a count (comment-stripped)" "$CURRENT_NOCOMMENT" 'aceSnapshot   = $aceSnapshot' present
+check_stripped "F4 Phase 2 diffs the ACE snapshot via Compare-Object (comment-stripped)" "$CURRENT_NOCOMMENT" 'Compare-Object -ReferenceObject @($recordedState.aceSnapshot) -DifferenceObject $freshAceSnapshot' present
+# The divergence CONDITION itself must include the ACE diff, not just owner+count+inherited --
+# anchor to the real if-line so a mutant that keeps $aceDiff computed but drops it from the `-or`
+# chain (an always-true-pass on ACE drift specifically) is caught.
+check_stripped "F4 divergence condition includes the ACE diff (comment-stripped, anchored)" \
+  "$CURRENT_NOCOMMENT" 'if ($freshOwnerSid -ne $recordedState.ownerSid -or $aceDiff)' present
+check_stripped "F4 old count-only divergence condition is gone (comment-stripped)" \
+  "$CURRENT_NOCOMMENT" 'freshAceCount -ne $recordedState.aceCount' absent
+check "F4 old count-only divergence condition present in pre-fix fixture" \
+  "$PRENOGO" 'freshAceCount -ne $recordedState.aceCount' present
 
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"

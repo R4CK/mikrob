@@ -9,10 +9,23 @@
 #     secured directory. No payload (ps1/hash) is copied in Phase 1 -- fail-closed: if the write-test
 #     fails or errors, setup aborts (exit 1) before any content exists in the secured directory.
 #
-#   Phase 2: check for junctions/reparse points in the target directory, copy
-#     gpu-driver-install.ps1 and gpu-driver-install-launcher.ps1, pin the SHA-256, and update
-#     (+ verify by read-back) the scheduled task to call the launcher with the expected hash on the
-#     command line (F1: hash on the task command line, not next to the ps1 where neon can read it).
+#   Phase 2: re-check the directory against the state Phase 1 recorded (R2(b), eb12a5dd -- catches
+#     ACL drift between the two runs, including an added/swapped ACE, not just reparse-points/owner
+#     or a bare ACE count), copy gpu-driver-install.ps1 and gpu-driver-install-launcher.ps1, pin
+#     the SHA-256 of BOTH files, and update (+ verify by read-back) the scheduled task so its
+#     action: (1) checks the LAUNCHER's own hash first (R1, eb12a5dd -- the launcher used to be
+#     unpinned itself: if the ACL is ever bypassed, a replaced launcher would simply ignore the
+#     hash argument), then (2) calls the launcher with the main script's expected hash (F1: hash on
+#     the task action, not next to the ps1 where neon can read it). The task's Action is set via
+#     Set-ScheduledTask/New-ScheduledTaskAction (CYBERED NO-GO 30643 F1 fix), not `schtasks /Change
+#     /TR <string>`: the latter round-trips the command text through PowerShell 5.1's native
+#     external-command argument handling (`& schtasks ...`), which is documented to mis-escape an
+#     argument that contains both embedded double quotes and whitespace -- exactly the shape of the
+#     old inline check -- and RedHat's argv emulation showed the resulting command splitting into 9
+#     arguments instead of 6. Assigning the Action object's Arguments property directly is a plain
+#     .NET string assignment with no such round-trip, so both hashes travel FULL length now (no
+#     truncation -- the old 80-bit-prefix truncation existed only to fit schtasks /TR's real but
+#     inconsistently-documented length ceiling, which no longer applies).
 #
 # Run Phase 1 first, confirm neon is blocked, then run with -Phase 2.
 # -Phase 2 alone (without Phase 1) will fail if the directory does not exist yet.
@@ -68,6 +81,19 @@ function Test-TrustedOwner {
     return ($ownerSid -eq $adminSid.Value) -or ($ownerSid -eq $systemSid.Value)
 }
 
+# F4 fix (CYBERED NO-GO 30643): a bare ACE COUNT (the old R2(b) check) passes when one required
+# ACE is swapped for a different one of the same count -- same owner, same count, 0 inherited,
+# different actual grant. Snapshot the full ACE set (SID + rights + type + inherited-ness, sorted
+# so set order never matters) so Phase 2 can detect that swap, not just a count change.
+function Get-AceSnapshot {
+    param([System.Security.AccessControl.DirectorySecurity]$Acl)
+    $lines = foreach ($ace in @($Acl.Access)) {
+        $sid = $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        "$sid|$($ace.FileSystemRights)|$($ace.AccessControlType)|$($ace.IsInherited)"
+    }
+    return @($lines | Sort-Object)
+}
+
 if ($Phase -eq '1') {
     Write-Log "=== Phase 1: directory + ACL + write-test ==="
 
@@ -90,6 +116,13 @@ if ($Phase -eq '1') {
             exit 1
         }
         foreach ($child in @(Get-ChildItem $TargetDir -Force -ErrorAction SilentlyContinue)) {
+            # N2 fix (b64cfc09, follow-up of eb12a5dd): the owner check alone does not catch a
+            # junction/symlink child -- Phase 2's own re-verification loop (2b) already checks
+            # both reparse-point and owner on children; this loop only checked owner.
+            if ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                Write-Log "FAIL: existing entry '$($child.Name)' in $TargetDir is a junction or symlink -- refusing to adopt it"
+                exit 1
+            }
             if (-not (Test-TrustedOwner $child.FullName)) {
                 Write-Log "FAIL: existing entry '$($child.Name)' in $TargetDir is not owned by Administrators/SYSTEM -- refusing to adopt it"
                 exit 1
@@ -140,6 +173,26 @@ if ($Phase -eq '1') {
         exit 1
     }
     Write-Log "ACL verified: $aceCount ACEs, $inherited inherited, owner=$ownerVal (SID $ownerSid)"
+
+    # --- 1c2. Record what THIS run measured, so Phase 2 can detect drift (R2(b), eb12a5dd) --
+    # Phase 2 used to only re-derive its OWN owner/reparse-point checks -- that catches those two
+    # specific tampers, but says nothing about a subtler ACL change (e.g. an extra or swapped ACE)
+    # between the Phase 1 and Phase 2 runs. Record the measured state inside the directory itself:
+    # it is only writable by Administrators/SYSTEM from this point on (the Set-Acl above already
+    # ran), so this file carries the same trust guarantee as the rest of the directory's contents.
+    # aceSnapshot (F4 fix, CYBERED NO-GO 30643) is the full ACE list, not just a count -- a count
+    # match alone cannot tell "the same two ACEs" from "two different ACEs that happen to total 2".
+    $aceSnapshot = Get-AceSnapshot $chk
+    $state = [ordered]@{
+        ownerSid      = $ownerSid
+        aceCount      = $aceCount
+        inherited     = $inherited
+        aceSnapshot   = $aceSnapshot
+        recordedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    $StatePath = Join-Path $TargetDir 'gpu-driver-install-state.json'
+    ($state | ConvertTo-Json -Compress) | Set-Content -Path $StatePath -NoNewline
+    Write-Log "Phase 1 state recorded: $StatePath"
 
     # --- 1d. Positive control: verify the WSL write-test MECHANISM works --------------------
     # Test on a path neon CAN write, to confirm the bash printf + WSL path conversion is working
@@ -230,7 +283,7 @@ if (-not (Test-TrustedOwner $TargetDir)) {
     exit 1
 }
 $expectedNames = @('setup.log', 'launcher.log', 'gpu-driver-install.ps1', 'gpu-driver-install-launcher.ps1', 'gpu-driver-install.sha256',
-                   'gpu-driver-install-trigger-receipt.json', 'gpu-driver-install-used-approvals.json')
+                   'gpu-driver-install-trigger-receipt.json', 'gpu-driver-install-used-approvals.json', 'gpu-driver-install-state.json')
 # H1 fix (2a80c6cb delta): no token ever placed on the Windows side; ps1 verifies via the
 # trigger receipt written by the WSL trigger instead of calling consume-oneshot.
 # The shared fleet token must never appear in this directory.
@@ -252,6 +305,38 @@ foreach ($item in @($existing)) {
 }
 Write-Log "Directory and contents verified (Administrators/SYSTEM owner, no unexpected entries)"
 
+# --- 2b2. Compare a FRESH ACL measurement against what Phase 1 recorded (R2(b), eb12a5dd) -----
+# The loop above re-derives its own owner/reparse-point checks (catches those two tampers); this
+# step additionally catches drift the loop above does not look for (e.g. an extra ACE) by
+# comparing against the state Phase 1 actually measured and wrote, inside the same
+# Administrators/SYSTEM-only directory.
+$StatePath = Join-Path $TargetDir 'gpu-driver-install-state.json'
+if (-not (Test-Path $StatePath)) {
+    Write-Log "FAIL: $StatePath not found -- Phase 1 state was never recorded (or was removed) -- aborting"
+    exit 1
+}
+try {
+    $recordedState = Get-Content $StatePath -Raw | ConvertFrom-Json
+} catch {
+    Write-Log "FAIL: could not parse $StatePath -- aborting: $_"
+    exit 1
+}
+$freshAcl       = Get-Acl $TargetDir
+$freshAceCount  = @($freshAcl.Access).Count
+$freshInherited = @($freshAcl.Access | Where-Object { $_.IsInherited }).Count
+$freshOwnerSid  = $freshAcl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+$freshAceSnapshot = Get-AceSnapshot $freshAcl
+# F4 fix (CYBERED NO-GO 30643): compare the FULL ACE list, not just owner + count + inherited-
+# count -- a count-only compare passes when one required ACE is swapped for a different one of
+# the same count (same owner, same total, 0 inherited, different actual grant). Compare-Object
+# with no match returns nothing (falsy); any added/removed/changed line is non-empty (truthy).
+$aceDiff = Compare-Object -ReferenceObject @($recordedState.aceSnapshot) -DifferenceObject $freshAceSnapshot
+if ($freshOwnerSid -ne $recordedState.ownerSid -or $aceDiff) {
+    Write-Log "FAIL: ACL state diverged from Phase 1 recording -- recorded owner=$($recordedState.ownerSid) aceSnapshot=$($recordedState.aceSnapshot -join ';'); fresh owner=$freshOwnerSid aceSnapshot=$($freshAceSnapshot -join ';')"
+    exit 1
+}
+Write-Log "ACL state matches Phase 1 recording (owner=$freshOwnerSid, $freshAceCount ACE(s), $freshInherited inherited)"
+
 # --- 2c. Copy scripts -------------------------------------------------------------------------
 foreach ($name in @('gpu-driver-install.ps1', 'gpu-driver-install-launcher.ps1')) {
     $src  = Join-Path $SrcDir $name
@@ -269,32 +354,81 @@ Write-Log "Hash pinned: $hash"
 # --- 2e. Update scheduled task and verify by read-back (B3) -----------------------------------
 $LauncherPath = Join-Path $TargetDir 'gpu-driver-install-launcher.ps1'
 $TaskName     = 'MikroB-GPU-Driver-Install'
-# F1: pass hash as the first argument on the task command line, so the launcher reads it from
-# $args[0] -- the hash file remains in the ACL-protected directory, but the expected value is
-# also verifiable from the task definition itself (not stored next to the ps1 where neon can't
-# write but also can't read from WSL -- the task command line is admin-only too).
-$TaskCommand  = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$LauncherPath`" $hash"
 
-Write-Log "Updating scheduled task '$TaskName' with hash $hash on command line..."
-$changeOut = & schtasks /Change /TN $TaskName /TR $TaskCommand 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Log "FAIL: schtasks /Change exited $LASTEXITCODE -- $changeOut"
-    exit 1
-}
-Write-Log "schtasks /Change: $changeOut"
+# R1 fix (eb12a5dd, WhiteHat 22466 residual R1): the main script's hash travelled on the task
+# command line (F1), but the LAUNCHER itself was not pinned anywhere outside TargetDir -- if the
+# directory's ACL is ever bypassed, a replaced launcher just ignores the hash argument and runs
+# whatever it wants. Verify the launcher's OWN hash inline, in the task's own action (admin-only,
+# outside TargetDir -- the SAME channel as F1, not a registry value: a prior selftest, X3, already
+# pins that this script must not reference the registry-key approach that an earlier REVIEW
+# incorrectly described), BEFORE invoking it.
+$launcherHash = (Get-FileHash $LauncherPath -Algorithm SHA256).Hash.ToUpper()
+Write-Log "Launcher hash computed: $launcherHash"
 
-# Read-back: confirm the task command line now contains the launcher path and the hash.
-$queryOut = & schtasks /Query /TN $TaskName /FO CSV /V 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Log "FAIL: schtasks /Query exited $LASTEXITCODE -- $queryOut"
+# F2 fix (CYBERED NO-GO 30643): the old inline check was `if((Get-FileHash $p).Hash.Substring(0,20)
+# -ne '...'){exit 1}` -- if Get-FileHash errors (locked file, ACL oddity), .Hash is $null and
+# calling .Substring on $null throws, but that throw only aborts the CURRENT STATEMENT (the `if`),
+# not the whole -Command script (PowerShell's non-interactive host runs semicolon-separated
+# top-level statements REPL-style: an unhandled terminating error in one statement is reported and
+# execution continues to the next one) -- so control fell through past the check straight to
+# invoking the launcher. try/catch{exit 1} cannot fall through the same way: either $h is read and
+# compared, or the catch exits BEFORE any comparison runs. The final comparison is a value compare
+# against a string literal (`$h -ne '...'`), not a method call, so even a stray $null $h fails
+# closed instead of crashing past the gate.
+#
+# F1 fix (CYBERED NO-GO 30643): the task's action is set via New-ScheduledTaskAction +
+# Set-ScheduledTask, not `& schtasks /Change /TR <string>` -- the latter is a NATIVE command
+# invocation, and PowerShell 5.1's native-argument handling is documented to mis-escape an
+# argument that contains both embedded double quotes and whitespace (exactly the old
+# $InlineCheck's shape): RedHat's argv emulation on the old 249-char command showed it splitting
+# into 9 arguments instead of 6. Assigning .Arguments on the Action object is a plain .NET string
+# assignment -- no native-argv round-trip -- so that whole class of mis-escaping is structurally
+# impossible here. Full-length hashes now (no truncation): the old 80-bit-prefix truncation
+# existed only to fit schtasks /TR's real but inconsistently-documented length ceiling (255/260/
+# 261/262 chars, depending which source you read), which no longer applies -- Action.Arguments is
+# documented to allow up to 32767 characters. A generous sanity budget is kept below so the script
+# still checks a real constraint rather than assuming "long enough" never fails.
+$InlineCheck = "`$p='$LauncherPath';try{`$h=(Get-FileHash `$p -Algorithm SHA256 -ErrorAction Stop).Hash}catch{exit 1};if(`$h -ne '$launcherHash'){exit 1};& `$p '$hash'"
+$TaskArgument = "-NoProfile -ExecutionPolicy Bypass -Command `"$InlineCheck`""
+
+if ($TaskArgument.Length -gt 8000) {
+    Write-Log "FAIL: task action argument is $($TaskArgument.Length) chars, over the 8000-char sanity budget -- aborting before Set-ScheduledTask"
     exit 1
 }
-$queryStr = $queryOut -join "`n"
-if ($queryStr -notmatch [regex]::Escape($hash)) {
-    Write-Log "FAIL: task command line does not contain expected hash $hash after update"
-    Write-Log "Query output: $queryStr"
+
+Write-Log "Updating scheduled task '$TaskName' with launcher-hash pre-check + main hash $hash via Set-ScheduledTask..."
+try {
+    Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop | Out-Null
+} catch {
+    Write-Log "FAIL: Get-ScheduledTask '$TaskName' failed -- $_"
     exit 1
 }
-Write-Log "Task verified: hash $hash present in task command line"
+$newAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $TaskArgument
+try {
+    Set-ScheduledTask -TaskName $TaskName -Action $newAction -ErrorAction Stop | Out-Null
+} catch {
+    Write-Log "FAIL: Set-ScheduledTask '$TaskName' failed -- $_"
+    exit 1
+}
+Write-Log "Set-ScheduledTask: action updated"
+
+# Read-back: confirm the task's OWN stored action argument now contains BOTH the launcher hash and
+# the main-script hash -- a mutant that dropped the new launcher pre-check but kept the main hash
+# intact would still satisfy a read-back that only checked $hash, so both are checked
+# independently, same as the old schtasks-based B3 guard.
+$verifyTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+$verifyArgument = $null
+if ($verifyTask) { $verifyArgument = $verifyTask.Actions[0].Arguments }
+if (-not $verifyArgument -or $verifyArgument -notmatch [regex]::Escape($launcherHash)) {
+    Write-Log "FAIL: task action does not contain expected launcher hash $launcherHash after update"
+    Write-Log "Action argument: $verifyArgument"
+    exit 1
+}
+if ($verifyArgument -notmatch [regex]::Escape($hash)) {
+    Write-Log "FAIL: task action does not contain expected main-script hash $hash after update"
+    Write-Log "Action argument: $verifyArgument"
+    exit 1
+}
+Write-Log "Task verified: launcher hash $launcherHash and main hash $hash present in task action"
 Write-Log "Phase 2 complete. Setup done."
 exit 0

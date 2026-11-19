@@ -61,7 +61,7 @@ function stageTree(scriptNames: string[]): { root: string; bin: string } {
   // Card 850164cd. Drain BEFORE the exit branch -- real curl reads the config
   // first, then fails.
   writeFileSync(join(bin, 'curl'),
-    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\ncat >/dev/null 2>&1 || true\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then\n  echo "curl: (6) Could not resolve host for https://api.telegram.org/bot${CURL_STUB_TOKEN:-}/sendMessage" >&2\n  exit "${CURL_STUB_EXIT}"\nfi\nprintf \'%s\' "${CURL_STUB_BODY:-{\\"ok\\":true}}"\n')
+    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\ncat >> "${CURL_STDIN_LOG:-/dev/null}"\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then\n  echo "curl: (6) Could not resolve host for https://api.telegram.org/bot${CURL_STUB_TOKEN:-}/sendMessage" >&2\n  exit "${CURL_STUB_EXIT}"\nfi\nprintf \'%s\' "${CURL_STUB_BODY:-{\\"ok\\":true}}"\n')
   writeFileSync(join(bin, 'tmux'), '#!/bin/bash\nexit 1\n')
   // limit-monitor hashes with md5sum, which macOS lacks (md5 only); the hash
   // value is irrelevant to these tests, only the stamp lifecycle is.
@@ -77,6 +77,7 @@ function runScript(rel: string, args: string[], env: Record<string, string>, bin
       HOME: stage,
       CURL_STUB_TOKEN: FAKE_TOKEN,
       CURL_ARGV_LOG: join(stage, 'curl-argv.log'),
+      CURL_STDIN_LOG: join(stage, 'curl-stdin.log'),
       ...env,
     },
     encoding: 'utf-8',

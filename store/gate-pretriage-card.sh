@@ -8,8 +8,19 @@
 # never moves the card. Idempotent per commit -- it will not re-post for a HEAD it already triaged.
 #
 # USAGE:
-#   gate-pretriage-card.sh <cardId> [--dry-run]                  # resolve repo+commit from the API, post
-#   gate-pretriage-card.sh --repo <path> --sha <sha> --dry-run   # offline core (tests / manual), prints only
+#   gate-pretriage-card.sh <cardId> [--dry-run] [--trunk]        # resolve repo+commit from the API, post
+#   gate-pretriage-card.sh --repo <path> --sha <sha> --dry-run [--trunk]  # offline core (tests/manual)
+#
+# --trunk: OPT-IN ONLY, land-parity measurement (lint-ratchet + DECISIONS append-union + importer
+# sweep via fleet-test.sh against the current trunk tip, card a42d27e1). This merges the branch, runs
+# the branch's OWN test files and lint config as real code -- NEVER pass this from the automatic
+# heartbeat-consolidated scheduled task, which calls this script unattended every ~30 minutes before
+# any gate has read the diff (Cybersec NO-GO 33120 on 6a8a7b848, MikroB decision msg 20826: a
+# harness-file skip alone does not close this -- the importer sweep still executes unattended,
+# branch-controlled module code for the ordinary case of a changed src file an existing test imports).
+# Pass --trunk ONLY when a gate agent invokes this script itself, by hand or from its own scripted
+# pre-check, inside its own disposable gate worktree -- at that point a human/agent gate seat is
+# already attending the result, which is the trust boundary this flag exists to preserve.
 #
 # EXIT: 0 on success or a benign skip (no card, unresolved commit, already posted); 2 on usage error.
 set -uo pipefail
@@ -22,10 +33,11 @@ MARKER="GATE PRE-TRIAGE (mechanikus, verdict:null)"
 CLEANCORE_REPO="/mnt/h/LM_Studio_Workdir/mopsion"
 MIKROB_REPO="/home/neon/marveen"
 
-CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""; DESC=""; PEER_SHA=""; PRIOR_SHA=""
+CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""; DESC=""; PEER_SHA=""; PRIOR_SHA=""; TRUNK_CHECK=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRYRUN=1; shift ;;
+    --trunk) TRUNK_CHECK=1; shift ;;
     --repo) REPO="${2:-}"; shift 2 ;;
     --sha) SHA="${2:-}"; shift 2 ;;
     --title) TITLE="${2:-}"; shift 2 ;;
@@ -88,15 +100,21 @@ ensure_auth_header() {
 #      case `merge-base(sha, origin/trunk)` degenerates to `sha` itself (an empty diff) the moment it
 #      lands -- caught below and treated as "could not use this method", falling back to the exact
 #      `sha~1` this script always used.
+# Card a42d27e1: pulled out of resolve_diff_base so the land-parity check below (which needs the
+# CURRENT trunk tip, not a merge-base) can name the same trunk without re-deriving the per-repo rule.
+trunk_for_repo() {
+  case "$1" in
+    "$CLEANCORE_REPO") printf '%s\n' "origin/main" ;;
+    *) printf '%s\n' "origin/develop" ;;
+  esac
+}
+
 resolve_diff_base() {
   local repo="$1" sha="$2" prior="${3:-}" trunk mb full
   if [ -n "$prior" ] && git -C "$repo" cat-file -e "${prior}^{commit}" 2>/dev/null; then
     printf '%s\n' "$prior"; return 0
   fi
-  case "$repo" in
-    "$CLEANCORE_REPO") trunk="origin/main" ;;
-    *) trunk="origin/develop" ;;
-  esac
+  trunk="$(trunk_for_repo "$repo")"
   mb="$(git -C "$repo" merge-base "$sha" "$trunk" 2>/dev/null)" || mb=""
   full="$(git -C "$repo" rev-parse "$sha" 2>/dev/null)"
   if [ -n "$mb" ] && [ "$mb" != "$full" ]; then printf '%s\n' "$mb"; else printf '%s~1\n' "$sha"; fi
@@ -111,11 +129,31 @@ resolve_diff_base() {
 # comment, not a second commit-selector -- it runs AFTER selection, on whatever commit was already
 # resolved, and only ever adds a warning LINE; it never blocks or changes SHA/exit code.
 build_body() {
-  local repo="$1" sha="$2" title="${3:-}" desc="${4:-}" peer_sha="${5:-}" prior_sha="${6:-}" json base
+  local repo="$1" sha="$2" title="${3:-}" desc="${4:-}" peer_sha="${5:-}" prior_sha="${6:-}" trunk_check="${7:-0}" json base
   [[ -d "$repo/.git" ]] || return 3
   git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null || return 3
   base="$(resolve_diff_base "$repo" "$sha" "$prior_sha")"
-  json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" --json 2>/dev/null)" || return 3
+  # --trunk (card a42d27e1): land parity against the CURRENT trunk tip, fetched fresh so a stale
+  # local origin/<trunk> cannot report a clean merge the real land would not actually get. Passed
+  # ONLY when the CALLER opted in (trunk_check=1) AND it actually resolves in this repo -- a
+  # throwaway fixture repo (no origin remote at all, e.g. this script's own test suite) silently
+  # gets no land-parity check either way.
+  #
+  # Cybersec NO-GO 33120 (card a42d27e1), MikroB decision msg 20826: the land-parity measurement
+  # merges the branch and runs its OWN test files/lint config as real code (fleet-test.sh ->
+  # vitest import semantics), unattended. Gating this on an explicit opt-in -- never computed at
+  # all unless trunk_check=1 -- is the fix: the automatic heartbeat-consolidated call (card mode,
+  # no --trunk on its own CLI) never sets trunk_check, so this whole block is skipped entirely for
+  # that path, not merely narrowed by a harness-file allowlist (the prior, insufficient fix).
+  local trunk_args=()
+  if [[ "$trunk_check" = "1" ]]; then
+    local trunk; trunk="$(trunk_for_repo "$repo")"
+    if git -C "$repo" fetch -q origin "${trunk#origin/}" 2>/dev/null \
+       && git -C "$repo" rev-parse --verify "${trunk}^{commit}" >/dev/null 2>&1; then
+      trunk_args=(--trunk "$trunk")
+    fi
+  fi
+  json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" "${trunk_args[@]}" --json 2>/dev/null)" || return 3
   MARKER="$MARKER" SHA="$sha" BASE="$base" REPO="$repo" PT_JSON="$json" TITLE="$title" DESC="$desc" PEER_GATE_SHA="$peer_sha" python3 <<'PY'
 import json, os, re
 d = json.loads(os.environ["PT_JSON"])
@@ -232,7 +270,7 @@ PY
 # ---- Offline core mode (tests / manual): --repo + --sha + --dry-run, no API. ----
 if [[ -n "$REPO" && -n "$SHA" ]]; then
   [[ $DRYRUN -eq 1 ]] || { echo "gate-pretriage-card: --repo/--sha is offline mode, requires --dry-run" >&2; exit 2; }
-  if body="$(build_body "$REPO" "$SHA" "$TITLE" "$DESC" "$PEER_SHA" "$PRIOR_SHA")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
+  if body="$(build_body "$REPO" "$SHA" "$TITLE" "$DESC" "$PEER_SHA" "$PRIOR_SHA" "$TRUNK_CHECK")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
   exit 0
 fi
 
@@ -382,7 +420,7 @@ for c in rows:
 print(prior)
 ' 2>/dev/null || true)"
 
-body="$(build_body "$repo" "$sha" "$title" "$description" "$peer_sha" "$prior_sha")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
+body="$(build_body "$repo" "$sha" "$title" "$description" "$peer_sha" "$prior_sha" "$TRUNK_CHECK")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
 if [[ $DRYRUN -eq 1 ]]; then printf '%s\n' "$body"; exit 0; fi
 
 # Post as its own author so the comment is unmistakably pre-triage INPUT, not a gate verdict.

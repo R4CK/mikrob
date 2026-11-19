@@ -260,6 +260,80 @@ check "B2: 401-on-comments does not overwrite the state file (md5 unchanged)" "$
 disabled_ts_401="$(python3 -c "import json; print(json.load(open('$STATE_FILE'))['test-scaffold']['disabled'])")"
 check "B2: test-scaffold stays DISABLED after the 401-stub run" "$disabled_ts_401" "True"
 
+# --- R3 fix (card 3eddc9a8, RedHat 17386): a PARTIAL outage must also leave the state file -------
+# untouched, not just a total one. Scenario: test-scaffold is DISABLED in the existing state file.
+# One card (cardOK) is reachable and its own data alone would say "100% accept, re-enable" --
+# but a second card (cardBAD) returns a 401. Before the fix, API_FETCH_ERRORS>0 with API_FETCH_OK>0
+# still proceeded to recompute from the reachable card alone and overwrote the file; after the fix
+# ANY unreachable card leaves the file untouched.
+kill "$SERVER_PID" 2>/dev/null || true
+PORT4="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+cat > "$TMPDIR/server4.py" <<'PY'
+import http.server, json, sys
+CARDS = [{"id": "cardOK"}, {"id": "cardBAD"}]
+now = 2_000_000_000
+
+def draft(dtype, at):
+    return {"author": "local-llm", "created_at": at,
+            "content": f"[LOCAL-LLM DRAFT | dispatch-offload] #### Parent title — {dtype} (mechanikus reszfeladat, card 501c489f)\nsome draft body"}
+
+def verdict(word, at):
+    return {"author": "backend", "created_at": at, "content": f"Draft-Review: {word}\nrest of comment"}
+
+# cardOK alone: 5 judged, all accepted -> 100% -- would say KEEP/re-enable if trusted alone
+COMMENTS_OK = [
+    draft("test-scaffold", now + 1), verdict("ELFOGADVA", now + 2),
+    draft("test-scaffold", now + 3), verdict("ELFOGADVA", now + 4),
+    draft("test-scaffold", now + 5), verdict("ELFOGADVA", now + 6),
+    draft("test-scaffold", now + 7), verdict("ELFOGADVA", now + 8),
+    draft("test-scaffold", now + 9), verdict("ELFOGADVA", now + 10),
+]
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        if self.path == "/api/kanban":
+            self._send(200, CARDS)
+        elif self.path == "/api/kanban/cardOK/comments":
+            self._send(200, COMMENTS_OK)
+        else:
+            # cardBAD: 401 JSON error -- valid JSON, but NOT a list
+            self._send(401, {"error": "Unauthorized", "message": "Token expired"})
+
+if __name__ == "__main__":
+    srv = http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+    srv.serve_forever()
+PY
+# Pre-existing state file: test-scaffold DISABLED
+python3 -c "
+import json, time
+state = {t: {'judged':6,'accepted':1,'disabled': t=='test-scaffold','updated_at':int(time.time())}
+         for t in ['test-scaffold','i18n-keys','doc-update','type-def']}
+with open('$STATE_FILE', 'w') as f: json.dump(state, f)
+"
+MD5_BEFORE_R3="$(md5sum "$STATE_FILE" | cut -d' ' -f1)"
+python3 "$TMPDIR/server4.py" "$PORT4" &
+SERVER_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  curl -s "http://127.0.0.1:$PORT4/api/kanban" >/dev/null 2>&1 && break
+  sleep 0.2
+done
+DASHBOARD_URL="http://127.0.0.1:$PORT4" \
+DECOMPOSE_STOP_TOKEN_FILE="$TOKEN_FILE" \
+DECOMPOSE_STOP_STATE_FILE="$STATE_FILE" \
+  bash "$SCRIPT" --days 3 >/dev/null 2>&1
+MD5_AFTER_R3="$(md5sum "$STATE_FILE" | cut -d' ' -f1)"
+check "R3: a partial outage (1 ok, 1 unreachable card) does not overwrite the state file (md5 unchanged)" "$MD5_BEFORE_R3" "$MD5_AFTER_R3"
+disabled_ts_partial="$(python3 -c "import json; print(json.load(open('$STATE_FILE'))['test-scaffold']['disabled'])")"
+check "R3: test-scaffold stays DISABLED despite the reachable card alone suggesting re-enable" "$disabled_ts_partial" "True"
+
 echo
 echo "decompose-type-stop.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

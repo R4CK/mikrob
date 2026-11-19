@@ -958,6 +958,18 @@ try_gemini_second_opinion_for_leaf() {
 # budget, so the cap always lands on leaves that still have something to try (grilling change #4 -- the
 # filter runs before the cut, not after, so a large Feladat does not starve its 16th+ leaf forever).
 OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
+# NON-INTEGER GUARD (card 660e3b66, RedHat non-blocking in f8e7f7cb's GO, comment 17102): same
+# bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below -- a non-integer value reaches the
+# `(( attempted >= OFFLOAD_MAX_SUBTASKS ))` arithmetic comparison, which throws a bash syntax
+# error instead of comparing, silently stopping local-first drafting with no trace of why.
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): ^[0-9]+$ still accepted a leading-zero
+# value (bash treats 08/09 as invalid octal literals in arithmetic, 010 as octal 8 not decimal 10)
+# and any value >= 2^63 (wraps negative in bash's 64-bit arithmetic). ^(0|[1-9][0-9]{0,8})$ allows
+# bare 0 or a non-zero-leading run of up to 9 digits (max 999999999), well under 2^63.
+if ! [[ "$OFFLOAD_MAX_SUBTASKS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  echo "offload-dispatch: OFFLOAD_MAX_SUBTASKS='$OFFLOAD_MAX_SUBTASKS' is not an integer -- falling back to the documented default (15)" >&2
+  OFFLOAD_MAX_SUBTASKS=15
+fi
 
 # DECOMPOSE (card 501c489f, MikroB verdikt komment 6007). Per-card ceiling on SYNTHETIC (not real
 # kanban-child) subtasks the deterministic templates in card-decompose-templates.sh may generate for
@@ -966,6 +978,16 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 # only interact in that a card can never contribute more synthetic leaves than this ceiling, whatever
 # the run-wide budget allows elsewhere.
 OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
+# NON-INTEGER GUARD (card 81025eb5, Cybered GO 33203 on 27c54ceb): this value feeds
+# `head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"` below with no guard -- a non-numeric value makes
+# head error out (no decomposition, silently), and a negative value is head's own "all but the
+# last N lines" syntax, which can hand back MORE candidates than the ceiling is meant to allow.
+# Same shape as the OFFLOAD_MAX_SUBTASKS guard above (bare 0 or a non-zero-leading run of up to 9
+# digits, so leading-zero octal confusion and >= 2^63 overflow are both rejected the same way).
+if ! [[ "$OFFLOAD_DECOMPOSE_MAX_PER_CARD" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  echo "offload-dispatch: OFFLOAD_DECOMPOSE_MAX_PER_CARD='$OFFLOAD_DECOMPOSE_MAX_PER_CARD' is not an integer -- falling back to the documented default (3)" >&2
+  OFFLOAD_DECOMPOSE_MAX_PER_CARD=3
+fi
 # shellcheck source=./card-decompose-templates.sh
 . "$HERE/card-decompose-templates.sh"
 # shellcheck source=./decompose-sample-context.sh
@@ -977,10 +999,29 @@ OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
 ATTEMPTS_FILE="${ATTEMPTS_FILE:-$HERE/offload-attempts.json}"
 ATTEMPTS_LOCK="${ATTEMPTS_LOCK:-$HERE/.offload-attempts.lock}"
 EXHAUSTED_TTL_SECONDS="${EXHAUSTED_TTL_SECONDS:-86400}"
+# NON-INTEGER GUARD (card 660e3b66, same bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below):
+# attempts_op()'s python does `int(os.environ.get("EXHAUSTED_TTL_SECONDS", ...))` -- a non-integer
+# value raises ValueError there instead of being caught here, silently losing the exhausted-entry
+# expiry check instead of falling back to the documented default.
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$EXHAUSTED_TTL_SECONDS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  echo "offload-dispatch: EXHAUSTED_TTL_SECONDS='$EXHAUSTED_TTL_SECONDS' is not an integer -- falling back to the documented default (86400s)" >&2
+  EXHAUSTED_TTL_SECONDS=86400
+fi
 # Card 501c489f, MikroB verdikt komment 6007, requirement 6: 3 -> 2. Only the TRANSIENT-failure
 # threshold moves; categorical-online (router says ONLINE) was already a single-call jump straight
 # to exhausted and stays that way, just landing on this same new ceiling.
 OFFLOAD_LEAF_MAX_ATTEMPTS="${OFFLOAD_LEAF_MAX_ATTEMPTS:-2}"
+# NON-INTEGER GUARD (card 660e3b66, same bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below):
+# reaches both attempts_op()'s python `int(...)` and the shell arithmetic comparison at the
+# per-leaf retry-ceiling check -- a non-integer value breaks either silently.
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$OFFLOAD_LEAF_MAX_ATTEMPTS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  echo "offload-dispatch: OFFLOAD_LEAF_MAX_ATTEMPTS='$OFFLOAD_LEAF_MAX_ATTEMPTS' is not an integer -- falling back to the documented default (2)" >&2
+  OFFLOAD_LEAF_MAX_ATTEMPTS=2
+fi
 
 # STALE-IN-PROGRESS SKIP (card eeebd2b5). Measured twice (041b6a47 msg 1808; card #1804) that a
 # draft landing on an in_progress leaf the online agent has ALREADY been carrying for a while
@@ -993,7 +1034,9 @@ OFFLOAD_STALE_IN_PROGRESS_SECONDS="${OFFLOAD_STALE_IN_PROGRESS_SECONDS:-600}"
 # leaf is resolved -- the uncaught exception aborts that python process with no stdout, and because
 # resolve_leaves()'s caller redirects stderr to /dev/null, the whole function silently returns empty,
 # so EVERY leaf (including a fresh "planned" one) resolves to zero, with no trace of why.
-if ! [[ "$OFFLOAD_STALE_IN_PROGRESS_SECONDS" =~ ^[0-9]+$ ]]; then
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$OFFLOAD_STALE_IN_PROGRESS_SECONDS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
   echo "offload-dispatch: OFFLOAD_STALE_IN_PROGRESS_SECONDS='$OFFLOAD_STALE_IN_PROGRESS_SECONDS' is not an integer -- falling back to the documented default (600s)" >&2
   OFFLOAD_STALE_IN_PROGRESS_SECONDS=600
 fi

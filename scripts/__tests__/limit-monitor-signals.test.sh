@@ -488,6 +488,53 @@ else
   fail "ALLOWED_CHAT_ID=0 + two DM entries -> expected no send + reason: curl=$(cat "$C/fakebin/curl.log" 2>/dev/null) log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
+echo "(g) I3 (WhiteHat a55315be): install-scoped vs legacy \$HOME channel-dir fallback"
+# #915: send_alert's chan_dir tries INSTALL_DIR/.claude/channels/telegram first, falling
+# back to HOME/.claude/channels/telegram only when the install-scoped .env is missing.
+# Every deliver_case above happens to land on the legacy branch (new_case never creates
+# an install-scoped .env), so the fallback has always been EXERCISED incidentally but never
+# PINNED: nothing above asserts which token actually reached the Bot API, so a bug that
+# always used the wrong directory could still look like a passing test (the HTTP response
+# is hardcoded in those stubs). These two cases make the branch choice itself the
+# assertion, by reading which bot<TOKEN> the curl stub was actually told to call -- the
+# token is fed to curl via a -K stdin config file (send-telegram.sh), so the stub captures
+# its own stdin instead of inspecting argv.
+stdin_curl_case() {
+  local c; c="$(new_case "$1")"
+  mkdir -p "$c/fakebin"
+  cat > "$c/fakebin/curl" <<'STUB'
+#!/bin/bash
+cat > "$(dirname "$0")/curl-stdin.log"
+printf '%s' '{"ok":true,"result":{}}'
+exit 0
+STUB
+  chmod +x "$c/fakebin/curl"
+  echo "$c"
+}
+
+C="$(stdin_curl_case i3_install_scoped_wins)"
+mkdir -p "$C/.claude/channels/telegram" "$C/fakehome/.claude/channels/telegram"
+printf 'TELEGRAM_BOT_TOKEN=111111:AAAinstallscoped\n' > "$C/.claude/channels/telegram/.env"
+printf 'TELEGRAM_BOT_TOKEN=222222:BBBlegacyonly\n' > "$C/fakehome/.claude/channels/telegram/.env"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if grep -q "bot111111:AAAinstallscoped/sendMessage" "$C/fakebin/curl-stdin.log" 2>/dev/null; then
+  pass "an install-scoped .env is preferred over a legacy one that also exists"
+else
+  fail "install-scoped .env was not preferred: $(cat "$C/fakebin/curl-stdin.log" 2>/dev/null)"
+fi
+
+C="$(stdin_curl_case i3_legacy_fallback)"
+mkdir -p "$C/fakehome/.claude/channels/telegram"
+printf 'TELEGRAM_BOT_TOKEN=333333:CCClegacyfallback\n' > "$C/fakehome/.claude/channels/telegram/.env"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if grep -q "bot333333:CCClegacyfallback/sendMessage" "$C/fakebin/curl-stdin.log" 2>/dev/null; then
+  pass "no install-scoped .env -> falls back to the legacy \$HOME channel dir"
+else
+  fail "the legacy fallback was not used: $(cat "$C/fakebin/curl-stdin.log" 2>/dev/null)"
+fi
+
 echo ""
 if [ "$FAILED" = 0 ]; then echo "ALL PASS"; else echo "FAILURES"; fi
 exit "$FAILED"

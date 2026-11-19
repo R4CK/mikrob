@@ -17,8 +17,9 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-routes-test-'))
 
 // STORE_DIR: added when claude-plans.ts started importing rejectIfNotHumanAuth from ./auth.js
 // (card 6eca461e) -- auth.ts transitively pulls in auth-gate.ts, which reads STORE_DIR at
-// module scope for the session-cookie config path.
-vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, STORE_DIR: join(tmpRoot, 'store'), MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
+// module scope for the session-cookie config path. APP_TZ (Koteg 25): also required by this
+// round's upstream additions.
+vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, STORE_DIR: join(tmpRoot, 'store'), MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5', APP_TZ: 'Europe/Budapest' }))
 
 let rotationEnabled = '0'
 let fleetEnabled = false

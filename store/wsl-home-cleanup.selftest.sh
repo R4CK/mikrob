@@ -339,5 +339,480 @@ main --apply --yes >/dev/null 2>&1
   && ok "main --apply --yes removes the DISPOSABLE entry" \
   || bad "main --apply --yes did not remove the DISPOSABLE entry"
 
+# --- path_under_targets(): N2 fix (RedHat LOW 16849) -- an EMPTY scan result fails CLOSED (treated
+# as a live reference present), not OPEN toward "nothing is live" -----------------------------
+if path_under_targets "$FAKE_HOME/anything" ""; then
+  ok "path_under_targets(): an empty scan result fails CLOSED, treated as found (N2 fix)"
+else
+  bad "path_under_targets(): empty scan wrongly treated as 'nothing live' -- fail-open regression (N2)"
+fi
+
+# --- remove_entry(): N3 fix (RedHat LOW 16849) -- an UNREGISTERED, clean git clone whose HEAD is
+# unreachable from any branch/remote/tag must be refused too (mirrors the registered-worktree B3
+# guard; closes the matching 16676 N1 gap that was open on this branch) -------------------------
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+n3_dir="$FAKE_HOME/qa-n3-unregistered-detached"
+git clone -q "$FAKE_MAIN" "$n3_dir" >/dev/null 2>&1
+(
+  cd "$n3_dir" || exit 1
+  git config user.email s@s; git config user.name s
+  git checkout -q --detach >/dev/null 2>&1
+  echo change > f
+  git add -A
+  git commit -qm "dangling commit in an UNREGISTERED clone" >/dev/null 2>&1
+) >/dev/null 2>&1
+find "$n3_dir" -exec touch -d '2 days ago' {} +
+if remove_entry "$n3_dir" >/dev/null 2>&1; then
+  bad "remove_entry must refuse an unregistered clone with an unreachable HEAD, it did not (N3 regression)"
+else
+  [ -d "$n3_dir" ] \
+    && ok "remove_entry refuses an UNREGISTERED clean clone whose HEAD is unreachable from any ref (N3 fix)" \
+    || bad "N3: unregistered detached-HEAD clone was removed despite the new guard"
+fi
+
+# --- remove_entry(): N1 fix (RedHat LOW 16849) -- the fresh live-process/age re-check now runs
+# AFTER the git status/rev-list checks (LAST, immediately before the destructive call), not before
+# them, shrinking the TOCTOU window to the last check's own runtime instead of two git commands
+# plus the check. Shim `git` to be slow (2s) and start a process cwd'd into the worktree WHILE the
+# slow git status/rev-list calls are still running -- pre-fix, the live-process re-check would
+# already be done (and stale) by the time the process starts; post-fix, it still catches it.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+SLOWGIT_DELAY=0
+git() { sleep "$SLOWGIT_DELAY"; command git "$@"; }
+n1_dir="$FAKE_HOME/qa-n1-slowgit"
+git -C "$FAKE_MAIN" branch qa-n1-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$n1_dir" qa-n1-branch >/dev/null 2>&1
+find "$n1_dir" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$n1_dir"]="$FAKE_MAIN"
+SLOWGIT_DELAY=2
+( sleep 0.5; cd "$n1_dir" && exec sleep 10 ) &
+n1_race_pid=$!
+if remove_entry "$n1_dir" >/dev/null 2>&1; then
+  bad "remove_entry must refuse when a process starts cwd'd into the worktree during the (slow) git checks, it did not (N1 regression)"
+else
+  [ -d "$n1_dir" ] \
+    && ok "remove_entry's fresh re-check (reordered to run last) still catches a process that starts mid-git-check (N1 fix)" \
+    || bad "N1: worktree removed despite a live process that started during the git status/rev-list calls"
+fi
+SLOWGIT_DELAY=0
+unset -f git
+kill "$n1_race_pid" 2>/dev/null
+wait "$n1_race_pid" 2>/dev/null
+
+# --- remove_entry(): R10 mutation pin (RedHat LOW 16849, N4) -- the fresh age re-check must convert
+# MIN_AGE_HOURS to MINUTES ($((MIN_AGE_HOURS * 60))); a mutant treating MIN_AGE_HOURS as already-
+# minutes would miss a file modified 45 minutes ago under a nominal 1-hour window ----------------
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+old_min_age_hours="$MIN_AGE_HOURS"
+MIN_AGE_HOURS=1
+r10_dir="$FAKE_HOME/qa-r10-age-unit"
+mkdir -p "$r10_dir"
+touch -d '2 days ago' "$r10_dir"
+touch -d '45 minutes ago' "$r10_dir/recent-ish"
+if remove_entry "$r10_dir" >/dev/null 2>&1; then
+  bad "remove_entry must SKIP a file modified 45 minutes ago under MIN_AGE_HOURS=1 (R10: hours-as-minutes unit mutant)"
+else
+  [ -d "$r10_dir" ] \
+    && ok "remove_entry's age re-check correctly converts MIN_AGE_HOURS to minutes (R10 pin)" \
+    || bad "R10: dir removed despite a 45-minute-old file under a 1-hour re-check window"
+fi
+MIN_AGE_HOURS="$old_min_age_hours"
+
+# has_live_process_under() was permanently stubbed by the two classify() isolation tests above
+# ("pretend a process is there" / "return 1") and never restored -- harmless for those tests
+# (they call classify() directly, dashboard-gated paths), but it would silently blind every test
+# below that actually needs the real check. Restore the original implementation (verbatim from
+# wsl-home-cleanup.sh) before relying on it again.
+has_live_process_under() {
+  if [ "$LIVE_PROC_TARGETS_PRIMED" = 1 ]; then
+    path_under_targets "$1" "$LIVE_PROC_TARGETS"
+    return $?
+  fi
+  path_under_targets "$1" "$(scan_live_proc_targets)"
+}
+
+# --- main(): R11 + R9 mutation pins (RedHat LOW 16849, N4) -- run through main()'s REAL /proc
+# priming (not a manual classify() call) with both a live-fd-holding candidate (must report ACTIVE,
+# never DISPOSABLE -- R11: a mutant priming an empty scan would blind the whole classification loop)
+# and a comparable non-live candidate (must still report DISPOSABLE -- proves the loop isn't just
+# fail-closing EVERYTHING, which would otherwise mask the R11 mutant after the N2 fix above). Also
+# checks the "remove N of M" line actually reflects a would_skip_removal-excluded dirty worktree
+# (R9: a mutant that bypasses the helper's verdict in the count would promise more than it removes).
+rm -rf "$FAKE_HOME"; mkdir -p "$FAKE_HOME"
+r11_live_dir="$FAKE_HOME/qa-gate-r11live"
+mkdir -p "$r11_live_dir"
+: > "$r11_live_dir/live.log"
+touch -d '2 days ago' "$r11_live_dir"
+( cd "$tmp" && exec tail -f "$r11_live_dir/live.log" >/dev/null 2>&1 ) &
+r11_pid=$!
+for _ in $(seq 1 30); do
+  readlink -f /proc/"$r11_pid"/fd/* 2>/dev/null | grep -qF "$r11_live_dir/live.log" && break
+  sleep 0.2
+done
+r11_dead_dir="$FAKE_HOME/qa-gate-r11dead"
+mkdir -p "$r11_dead_dir"
+touch -d '2 days ago' "$r11_dead_dir"
+r9_dirty_dir="$FAKE_HOME/qa-gate-r9dirty"
+git -C "$FAKE_MAIN" branch qa-r9-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$r9_dirty_dir" qa-r9-branch >/dev/null 2>&1
+find "$r9_dirty_dir" -exec touch -d '2 days ago' {} +
+echo dirty >> "$r9_dirty_dir/f"
+touch -d '2 days ago' "$r9_dirty_dir/f" # dirty but not "recently modified" for the age check
+# dashboard_reachable() is unreachable in this fixture by design (bad token file) -- a registered
+# worktree would otherwise fail OPEN to ACTIVE unconditionally (never reaching the DISPOSABLE
+# pattern/age check at all), which would make the R9 wiring untestable here. Fake it reachable
+# for this one main() call only, restored right after.
+dashboard_reachable() { return 0; }
+main_out="$(main --dry-run 2>&1)"
+dashboard_reachable() { [ -f "$DASHBOARD_TOKEN_FILE" ] || return 1
+  printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" \
+    | curl -s -H @- -o /dev/null -w '%{http_code}' --max-time 3 "$DASHBOARD_URL/api/kanban" 2>/dev/null \
+    | grep -q '^200$'; }
+if printf '%s\n' "$main_out" | grep -q "^ACTIVE.*qa-gate-r11live$"; then
+  ok "main() dry-run: a live-fd candidate classifies ACTIVE through the real priming path (R11 pin)"
+else
+  bad "R11: main()'s real priming path did not report ACTIVE for the live-fd candidate"
+fi
+if printf '%s\n' "$main_out" | grep -q "^DISPOSABLE.*qa-gate-r11dead$"; then
+  ok "main() dry-run: a comparable non-live candidate still classifies DISPOSABLE (control for the R11 pin -- not just fail-closing everything)"
+else
+  bad "R11 control: a non-live, old, name-matching candidate did not classify DISPOSABLE -- priming may be fail-closing everything, masking the real bug"
+fi
+if printf '%s\n' "$main_out" | grep -qE 'remove [0-9]+ of the [0-9]+ DISPOSABLE'; then
+  removed_n="$(printf '%s\n' "$main_out" | grep -oE 'remove [0-9]+ of' | grep -oE '[0-9]+')"
+  total_m="$(printf '%s\n' "$main_out" | grep -oE 'of the [0-9]+ DISPOSABLE' | grep -oE '[0-9]+')"
+  [ -n "$removed_n" ] && [ -n "$total_m" ] && [ "$removed_n" -lt "$total_m" ] \
+    && ok "main() dry-run: 'remove N of M' excludes the dirty registered worktree from N, not just from the per-line report (R9 pin)" \
+    || bad "R9: 'remove N of M' counted the dirty registered worktree as removable -- the helper's verdict isn't reaching the summary line"
+else
+  bad "R9: main() dry-run did not print a 'remove N of M DISPOSABLE' summary line to check"
+fi
+kill "$r11_pid" 2>/dev/null
+wait "$r11_pid" 2>/dev/null
+
+# --- MIN_AGE_HOURS positive-integer guard (Cybered GO 33187 on 09ed7ef6, card 8cb1e168) --------
+# 0/-5/1.5/empty must refuse to run (non-zero exit, nothing classified as removable); a normal
+# value still works. Separate throwaway candidate so this block doesn't depend on fixture state
+# left behind by the R11/R9 block above.
+# Cybered NO-GO 33289: the first guard (`''|*[!0-9]*|0`) missed two spellings of the same hole --
+# a leading-zero zero ("00"/"000", numerically zero but matches none of those three alternatives)
+# and a value whose minute count overflows bash's 64-bit arithmetic (2^63 and above, which wraps
+# silently instead of erroring). "010" is added too: not itself a hole, but it was silently read
+# as octal 8 under the old code instead of refused -- the fixed regex refuses it (leading zero).
+rm -rf "$FAKE_HOME"; mkdir -p "$FAKE_HOME"
+minage_dir="$FAKE_HOME/qa-gate-minage-fresh"
+mkdir -p "$minage_dir"
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+old_min_age_hours="$MIN_AGE_HOURS"
+for bad_value in 0 -5 1.5 "" 00 010 9223372036854775807; do
+  MIN_AGE_HOURS="$bad_value"
+  out="$(main --dry-run 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    ok "MIN_AGE_HOURS='$bad_value': main() refuses to run (rc=$rc)"
+  else
+    bad "MIN_AGE_HOURS='$bad_value': main() exited 0, expected a refusal" "$out"
+  fi
+  if printf '%s\n' "$out" | grep -q "DISPOSABLE\|summary:"; then
+    bad "MIN_AGE_HOURS='$bad_value': classification output was printed despite the refusal" "$out"
+  else
+    ok "MIN_AGE_HOURS='$bad_value': nothing was classified as removable (refused before classifying)"
+  fi
+done
+MIN_AGE_HOURS="$old_min_age_hours"
+touch -d '1 hour ago' "$minage_dir"
+normal_out="$(main --dry-run 2>&1)"; normal_rc=$?
+if [ "$normal_rc" -eq 0 ]; then
+  ok "MIN_AGE_HOURS='$old_min_age_hours' (normal value): main() still runs (rc=0)"
+else
+  bad "a normal MIN_AGE_HOURS value stopped main() from running (rc=$normal_rc)" "$normal_out"
+fi
+
+# --- C1 (RedHat MEDIUM, Cybered gate on 0116755a @ e3ac5b1a6, card 89e8cb90) -- a git that dies
+# SILENTLY (non-zero rc, empty output -- the rc 137/127/1 OOM-kill/missing-binary/generic-error
+# shape) must be treated as "found a problem" (SKIP), not as "nothing to report" (proceed). Shim
+# `git` to fail exactly the named subcommand with the given rc and no output, everything else
+# passes through to the real git so the worktree/clone setup around it still works.
+GIT_FAIL_CMD=""
+GIT_FAIL_RC=0
+git() {
+  if [ -n "$GIT_FAIL_CMD" ]; then
+    local a
+    for a in "$@"; do
+      [ "$a" = "$GIT_FAIL_CMD" ] && { echo -n ""; return "$GIT_FAIL_RC"; }
+    done
+  fi
+  command git "$@"
+}
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-c1a-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-c1a-status137" qa-c1a-branch >/dev/null 2>&1
+find "$FAKE_HOME/qa-c1a-status137" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$FAKE_HOME/qa-c1a-status137"]="$FAKE_MAIN"
+GIT_FAIL_CMD=status; GIT_FAIL_RC=137
+if remove_entry "$FAKE_HOME/qa-c1a-status137" >/dev/null 2>&1; then
+  bad "C1a: remove_entry must SKIP a registered worktree whose git status dies silently (rc=137), it did not"
+else
+  [ -d "$FAKE_HOME/qa-c1a-status137" ] \
+    && ok "remove_entry SKIPs a registered worktree when git status dies silently, rc=137 (C1a fix)" \
+    || bad "C1a: worktree removed despite git status failing silently with rc=137"
+fi
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-c1b-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-c1b-revlist127" qa-c1b-branch >/dev/null 2>&1
+find "$FAKE_HOME/qa-c1b-revlist127" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$FAKE_HOME/qa-c1b-revlist127"]="$FAKE_MAIN"
+GIT_FAIL_CMD=rev-list; GIT_FAIL_RC=127
+if remove_entry "$FAKE_HOME/qa-c1b-revlist127" >/dev/null 2>&1; then
+  bad "C1b: remove_entry must SKIP a registered worktree whose git rev-list dies silently (rc=127), it did not"
+else
+  [ -d "$FAKE_HOME/qa-c1b-revlist127" ] \
+    && ok "remove_entry SKIPs a registered worktree when git rev-list dies silently, rc=127 (C1b fix)" \
+    || bad "C1b: worktree removed despite git rev-list failing silently with rc=127"
+fi
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+c1c_dir="$FAKE_HOME/qa-c1c-status1"
+command git clone -q "$FAKE_MAIN" "$c1c_dir" >/dev/null 2>&1
+find "$c1c_dir" -exec touch -d '2 days ago' {} +
+GIT_FAIL_CMD=status; GIT_FAIL_RC=1
+if remove_entry "$c1c_dir" >/dev/null 2>&1; then
+  bad "C1c: remove_entry must SKIP an unregistered clone whose git status dies silently (rc=1), it did not"
+else
+  [ -d "$c1c_dir" ] \
+    && ok "remove_entry SKIPs an unregistered clone when git status dies silently, rc=1 (C1c fix)" \
+    || bad "C1c: unregistered clone removed despite git status failing silently with rc=1"
+fi
+GIT_FAIL_CMD=""; GIT_FAIL_RC=0
+unset -f git
+
+# --- C2 (RedHat LOW, same gate, card 89e8cb90) -- three mutants that survived because nothing
+# called would_skip_removal()/remove_entry() along the path they guard -----------------------
+
+# C2a: would_skip_removal()'s report-side guard for an UNREGISTERED clone with an unreachable HEAD
+# (N3's report-side addition) -- only remove_entry's matching enforcement-side guard had a test.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+c2a_dir="$FAKE_HOME/qa-c2a-unregistered-detached"
+git clone -q "$FAKE_MAIN" "$c2a_dir" >/dev/null 2>&1
+(
+  cd "$c2a_dir" || exit 1
+  git config user.email s@s; git config user.name s
+  git checkout -q --detach >/dev/null 2>&1
+  echo change > f
+  git add -A
+  git commit -qm "dangling commit in an UNREGISTERED clone (C2a)"
+) >/dev/null 2>&1
+reason="$(would_skip_removal "$c2a_dir")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags an unregistered clone with an unreachable HEAD (C2a pin, N3 report-side)" \
+  || bad "C2a: would_skip_removal() silently passed an unregistered unreachable-HEAD clone"
+
+# C2b: would_skip_removal()'s report-side guard for a REGISTERED worktree with an unreachable HEAD
+# (mirrors remove_entry's own B3 enforcement guard, which already had a test; the report side did not).
+git -C "$FAKE_MAIN" worktree add -q --detach "$FAKE_HOME/qa-c2b-detached-worktree" >/dev/null 2>&1
+(
+  cd "$FAKE_HOME/qa-c2b-detached-worktree" || exit 1
+  echo change > f
+  git add -A
+  git commit -qm "dangling commit, not on any branch (C2b)"
+) >/dev/null 2>&1
+WORKTREE_OWNER["$FAKE_HOME/qa-c2b-detached-worktree"]="$FAKE_MAIN"
+reason="$(would_skip_removal "$FAKE_HOME/qa-c2b-detached-worktree")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags a registered worktree with an unreachable HEAD (C2b pin, B3 report-side)" \
+  || bad "C2b: would_skip_removal() silently passed a registered unreachable-HEAD worktree"
+
+# C2c: --no-optional-locks must actually reach the status call, not just sit in a comment.
+# Logs the argv of every git invocation that mentions "status" while the shim is active.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+argv_log="$tmp/git-argv.log"
+: > "$argv_log"
+git() {
+  local a
+  for a in "$@"; do
+    [ "$a" = "status" ] && printf '%s\n' "$*" >> "$argv_log"
+  done
+  command git "$@"
+}
+git -C "$FAKE_MAIN" branch qa-c2c-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-c2c-locks-pin" qa-c2c-branch >/dev/null 2>&1
+find "$FAKE_HOME/qa-c2c-locks-pin" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$FAKE_HOME/qa-c2c-locks-pin"]="$FAKE_MAIN"
+remove_entry "$FAKE_HOME/qa-c2c-locks-pin" >/dev/null 2>&1
+unset -f git
+if grep -q -- '--no-optional-locks' "$argv_log"; then
+  ok "remove_entry's status check passes --no-optional-locks through to git (C2c pin)"
+else
+  bad "C2c: --no-optional-locks missing from the status call's argv"
+fi
+
+# --- CONDITION 1 (Cybered GO 32903 on 3bcdc0a6c, card 09ed7ef6) -- a `find -mmin` age re-check
+# that dies SILENTLY (non-zero rc, empty output) must be treated as "found a recent file" (fail
+# closed: UNKNOWN/SKIP), not as "nothing recent" (proceed). Shim `find` to fail exactly the -mmin
+# invocation with the given rc and no output; everything else (the fixture setup's own `find
+# ... -exec touch` calls) passes through to the real find. -----------------------------------
+FIND_FAIL_RC=0
+find() {
+  if [ "$FIND_FAIL_RC" != 0 ]; then
+    local a
+    for a in "$@"; do
+      [ "$a" = "-mmin" ] && return "$FIND_FAIL_RC"
+    done
+  fi
+  command find "$@"
+}
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+c1find_dir="$FAKE_HOME/qa-gate-c1find-classify"
+mkdir -p "$c1find_dir"
+find "$c1find_dir" -exec touch -d '2 days ago' {} + # real find, not yet failing
+FIND_FAIL_RC=137
+if [ "$(classify qa-gate-c1find-classify "$c1find_dir")" = UNKNOWN ]; then
+  ok "classify() treats a silently-failing find (-mmin, rc=137) as UNKNOWN, not DISPOSABLE (CONDITION 1 fix)"
+else
+  bad "CONDITION 1: classify() reported DISPOSABLE for a dir whose age re-check failed silently"
+fi
+FIND_FAIL_RC=0
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-c1find-reg-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-c1find-reg" qa-c1find-reg-branch >/dev/null 2>&1
+find "$FAKE_HOME/qa-c1find-reg" -exec touch -d '2 days ago' {} +
+WORKTREE_OWNER["$FAKE_HOME/qa-c1find-reg"]="$FAKE_MAIN"
+FIND_FAIL_RC=127
+if remove_entry "$FAKE_HOME/qa-c1find-reg" >/dev/null 2>&1; then
+  bad "CONDITION 1: remove_entry must SKIP a registered worktree whose age re-check find dies silently (rc=127), it did not"
+else
+  [ -d "$FAKE_HOME/qa-c1find-reg" ] \
+    && ok "remove_entry SKIPs a registered worktree when the age re-check find dies silently, rc=127 (CONDITION 1 fix)" \
+    || bad "CONDITION 1: registered worktree removed despite its age re-check find failing silently with rc=127"
+fi
+FIND_FAIL_RC=0
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+c1find_unreg="$FAKE_HOME/qa-c1find-unreg"
+mkdir -p "$c1find_unreg"
+find "$c1find_unreg" -exec touch -d '2 days ago' {} +
+FIND_FAIL_RC=1
+if remove_entry "$c1find_unreg" >/dev/null 2>&1; then
+  bad "CONDITION 1: remove_entry must SKIP an unregistered plain dir whose age re-check find dies silently (rc=1), it did not"
+else
+  [ -d "$c1find_unreg" ] \
+    && ok "remove_entry SKIPs an unregistered plain dir when the age re-check find dies silently, rc=1 (CONDITION 1 fix)" \
+    || bad "CONDITION 1: unregistered dir removed despite its age re-check find failing silently with rc=1"
+fi
+FIND_FAIL_RC=0
+unset -f find
+
+# --- CONDITION 2 (LOW, Cybered GO 32903 on 3bcdc0a6c, card 09ed7ef6) -- 5 of the 8
+# git_dirty_or_failed call sites had no mutant-killing test (would_skip_removal's 4 sites, plus
+# remove_entry's unregistered-clone rev-list site); add one case per remaining site. -------------
+GIT_FAIL_CMD=""
+GIT_FAIL_RC=0
+git() {
+  if [ -n "$GIT_FAIL_CMD" ]; then
+    local a
+    for a in "$@"; do
+      [ "$a" = "$GIT_FAIL_CMD" ] && { echo -n ""; return "$GIT_FAIL_RC"; }
+    done
+  fi
+  command git "$@"
+}
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-wsr-g1-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-wsr-g1-reg-status" qa-wsr-g1-branch >/dev/null 2>&1
+WORKTREE_OWNER["$FAKE_HOME/qa-wsr-g1-reg-status"]="$FAKE_MAIN"
+GIT_FAIL_CMD=status; GIT_FAIL_RC=137
+reason="$(would_skip_removal "$FAKE_HOME/qa-wsr-g1-reg-status")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags a registered worktree when git status dies silently, rc=137 (CONDITION 2 fix)" \
+  || bad "CONDITION 2: would_skip_removal() silently passed a registered worktree whose git status died (rc=137)"
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-wsr-g2-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-wsr-g2-reg-revlist" qa-wsr-g2-branch >/dev/null 2>&1
+WORKTREE_OWNER["$FAKE_HOME/qa-wsr-g2-reg-revlist"]="$FAKE_MAIN"
+GIT_FAIL_CMD=rev-list; GIT_FAIL_RC=127
+reason="$(would_skip_removal "$FAKE_HOME/qa-wsr-g2-reg-revlist")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags a registered worktree when git rev-list dies silently, rc=127 (CONDITION 2 fix)" \
+  || bad "CONDITION 2: would_skip_removal() silently passed a registered worktree whose git rev-list died (rc=127)"
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+wsr_g3_dir="$FAKE_HOME/qa-wsr-g3-unreg-status"
+command git clone -q "$FAKE_MAIN" "$wsr_g3_dir" >/dev/null 2>&1
+GIT_FAIL_CMD=status; GIT_FAIL_RC=1
+reason="$(would_skip_removal "$wsr_g3_dir")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags an unregistered clone when git status dies silently, rc=1 (CONDITION 2 fix)" \
+  || bad "CONDITION 2: would_skip_removal() silently passed an unregistered clone whose git status died (rc=1)"
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+wsr_g4_dir="$FAKE_HOME/qa-wsr-g4-unreg-revlist"
+command git clone -q "$FAKE_MAIN" "$wsr_g4_dir" >/dev/null 2>&1
+GIT_FAIL_CMD=rev-list; GIT_FAIL_RC=137
+reason="$(would_skip_removal "$wsr_g4_dir")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags an unregistered clone when git rev-list dies silently, rc=137 (CONDITION 2 fix)" \
+  || bad "CONDITION 2: would_skip_removal() silently passed an unregistered clone whose git rev-list died (rc=137)"
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+re_g5_dir="$FAKE_HOME/qa-re-g5-unreg-revlist"
+command git clone -q "$FAKE_MAIN" "$re_g5_dir" >/dev/null 2>&1
+find "$re_g5_dir" -exec touch -d '2 days ago' {} +
+GIT_FAIL_CMD=rev-list; GIT_FAIL_RC=127
+if remove_entry "$re_g5_dir" >/dev/null 2>&1; then
+  bad "CONDITION 2: remove_entry must SKIP an unregistered clone whose git rev-list dies silently (rc=127), it did not"
+else
+  [ -d "$re_g5_dir" ] \
+    && ok "remove_entry SKIPs an unregistered clone when git rev-list dies silently, rc=127 (CONDITION 2 fix)" \
+    || bad "CONDITION 2: unregistered clone removed despite git rev-list failing silently with rc=127"
+fi
+GIT_FAIL_CMD=""; GIT_FAIL_RC=0
+unset -f git
+
+# --- CONDITION 2 (LOW), --no-optional-locks pin -- 3 of the 4 sites that pass the flag had no
+# test proving the flag actually reaches git's argv (only remove_entry's registered-worktree site
+# was pinned, by C2c above). ----------------------------------------------------------------------
+pin_no_optional_locks() {
+  local label="$1" dir="$2" fn="$3"
+  local safe_label="${label//\//_}"
+  local argv_log="$tmp/git-argv-$safe_label.log"
+  : > "$argv_log"
+  git() {
+    local a
+    for a in "$@"; do
+      [ "$a" = "status" ] && printf '%s\n' "$*" >> "$argv_log"
+    done
+    command git "$@"
+  }
+  "$fn" "$dir" >/dev/null 2>&1
+  unset -f git
+  if grep -q -- '--no-optional-locks' "$argv_log"; then
+    ok "$label: --no-optional-locks reaches git's status argv (CONDITION 2 pin)"
+  else
+    bad "$label: --no-optional-locks missing from the status call's argv"
+  fi
+}
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-locks1-branch >/dev/null 2>&1
+command git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-locks1-wsr-reg" qa-locks1-branch >/dev/null 2>&1
+WORKTREE_OWNER["$FAKE_HOME/qa-locks1-wsr-reg"]="$FAKE_MAIN"
+pin_no_optional_locks "would_skip_removal/registered" "$FAKE_HOME/qa-locks1-wsr-reg" would_skip_removal
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+locks2_dir="$FAKE_HOME/qa-locks2-wsr-unreg"
+command git clone -q "$FAKE_MAIN" "$locks2_dir" >/dev/null 2>&1
+pin_no_optional_locks "would_skip_removal/unregistered" "$locks2_dir" would_skip_removal
+
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+locks3_dir="$FAKE_HOME/qa-locks3-re-unreg"
+command git clone -q "$FAKE_MAIN" "$locks3_dir" >/dev/null 2>&1
+find "$locks3_dir" -exec touch -d '2 days ago' {} +
+pin_no_optional_locks "remove_entry/unregistered" "$locks3_dir" remove_entry
+
 echo "selftest: $passed passed, $fail failed"
 [ "$fail" = 0 ] || exit 1

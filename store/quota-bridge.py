@@ -21,8 +21,12 @@ DESIGN (matches the telegram plugin's own single-consumer protocol):
       The bridge also self-relinquishes as soon as it sees MikroB healthy again.
 
 OUTAGE SIGNAL: the mikrob-channels tmux pane showing the usage-limit banner
-(same regex as src/model-fallback.ts), confirmed over 2 consecutive checks to
-avoid transient false positives. Weekly-limit-stop is NOT an outage (MikroB is
+(same regex as src/model-fallback.ts), confirmed only once N consecutive down
+readings span at least a minimum real-time gap (ENTRY-SIDE HYSTERESIS, card
+f490ae53 -- mirrors SWITCHBACK-HYSTERESIS-V1's recovery-side rule; see
+quota_switchback.confirm_outage) to avoid transient false positives, including
+a restart-timing edge where two polls land a fraction of a second apart.
+Weekly-limit-stop is NOT an outage (MikroB is
 alive then) and is deliberately ignored here.
 
 No secrets are hardcoded: the bot token is read from the telegram channel .env,
@@ -129,7 +133,14 @@ LIMIT_RE = re.compile(f"({_load_limit_pattern()})", re.I)
 
 POLL_HEALTHY_SEC = 45      # how often to check MikroB health when things are fine
 GETUPDATES_TIMEOUT = 25    # long-poll seconds during outage
-CONFIRM_CHECKS = 2         # consecutive banner sightings before declaring outage
+# Outage-declaration confirm-over-N-probes config (ENTRY-SIDE HYSTERESIS, card f490ae53) lives in
+# switchback-hysteresis.json (confirmProbesIn/minGapSecIn), loaded once in main() -- see
+# quota_switchback.load_outage_confirm_config().
+# F1b (Cybersec NO-GO 33392/33574): a trailing down-run older than this cannot confirm an outage
+# on its own -- a small multiple of POLL_HEALTHY_SEC, generous enough that normal polling never
+# ages a genuinely-sustained outage out, but short enough that a probe_log surviving a process
+# restart does not combine an hours-old down reading with one fresh one.
+OUTAGE_PROBE_MAX_AGE_SEC = POLL_HEALTHY_SEC * 10
 
 # --- Recovery-probe suppression while a reset deadline is known (card cd7376ed) ---------------
 #
@@ -226,7 +237,7 @@ def load_state():
         with open(STATE_FILE) as f:
             return json.load(f)
     except (OSError, ValueError):
-        return {"phase": "healthy", "offset": 0, "banner_streak": 0, "notified_outage": False}
+        return {"phase": "healthy", "offset": 0, "outage_probe_log": [], "notified_outage": False}
 
 
 def save_state(s):
@@ -301,6 +312,34 @@ def kill_pid_holder():
             f.write(str(os.getpid()))
     except OSError:
         pass
+
+
+# ENTRY-SIDE HYSTERESIS (card f490ae53): SWITCHBACK-HYSTERESIS-V1's mirror for the outage
+# DECLARATION itself, not just the recovery switchback. Split into two small, directly-testable
+# functions (no infinite loop, no network) so the 2026-11-18 flap (quota-bridge.log 21:52:31 kill
+# -> 21:52:35 recover, repeated many times that day and on 2026-11-14) can be replayed as a
+# regression test without driving main()'s real loop.
+def record_outage_probe(state, down, now=None):
+    """Record one outage-probe reading into state['outage_probe_log'], reusing
+    quota_switchback.record_probe's same trim/shape as the recovery probe log (ok=True means
+    healthy here, i.e. ok = not down). Mutates and returns `state` for chaining."""
+    now = time.time() if now is None else now
+    state["outage_probe_log"] = quota_switchback.record_probe(
+        state.get("outage_probe_log", []), ok=not down, ts=now)
+    return state
+
+
+def should_declare_outage(state, confirm_probes, min_gap_sec, max_age_sec=None, now=None):
+    """True only once `confirm_probes` consecutive down readings in state['outage_probe_log']
+    span >= min_gap_sec (quota_switchback.confirm_outage). A single healthy reading anywhere in
+    the trailing window resets this to False, so a brief flap -- regardless of how many polls
+    happen to straddle it -- never confirms. F1b (Cybersec NO-GO 33392/33574): `max_age_sec`
+    drops entries older than that from the trailing run before counting, so a probe_log
+    persisted across a process restart cannot combine an hours-old down reading with a single
+    fresh one to confirm an outage that is no longer current."""
+    return quota_switchback.confirm_outage(
+        state.get("outage_probe_log", []), confirm_probes, min_gap_sec,
+        max_age_sec=max_age_sec, now=now)
 
 
 def rag_context(query, limit=5):
@@ -573,6 +612,7 @@ def outage_loop(token, state):
                          "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
                     state["phase"] = "healthy"; state["banner_streak"] = 0
                     state["notified_outage"] = False; state["probe_log"] = []
+                    state["outage_probe_log"] = []
                     save_state(state)
                     return
             # Y1 (RedHat GO, card 612058c2 Teendo @6b9f61eb, comment 19993): refresh the heartbeat
@@ -654,22 +694,41 @@ def main():
     # the staleness window.
     if state.get("phase") != "outage":
         clear_session_outage()
+    # CYBERSEC NO-GO (regression on 8b74003492f3c503c284958e2db3dc800546b734): a load-time prune
+    # of outage_probe_log used to live here, on the theory that it was harmless defense-in-depth
+    # since confirm_outage() already applies the identical two-sided age bound per call. It is
+    # NOT harmless: prune_stale_outage_probes() filtered the WHOLE log by age, including healthy
+    # (ok=True) entries that serve as breaks in confirm_outage's backward walk. After a
+    # backward clock step + restart, a healthy reading recorded (by the old, correct clock) AFTER
+    # an old down reading can look future-dated relative to the new, stepped-back "now" and get
+    # deleted outright -- permanently, since the pruned state is what gets saved. That erases the
+    # recovery boundary confirm_outage relies on to stop its backward scan, letting it reach PAST
+    # it into an even older down reading that happens to still look fresh enough, and merge it
+    # with one new probe into a false outage confirmation. confirm_outage()'s own per-call filter
+    # already closes the plain restart leg (an old down + one fresh down, no healthy reading in
+    # between) without this; removing it here removes the only path that could delete the
+    # recovery boundary itself. See quota-bridge.selftest.py's "load-time prune removed" block.
+    # ENTRY-SIDE HYSTERESIS config (card f490ae53): same confirm-over-N-probes-spanning-a-minimum-
+    # gap shape as the recovery side's load_hysteresis_config, loaded once per process start (the
+    # file is re-read on every restart, so an ops tuning edit takes effect without a code change).
+    confirm_probes_in, min_gap_sec_in = quota_switchback.load_outage_confirm_config()
     while True:
-        if force or mikrob_down():
-            state["banner_streak"] = state.get("banner_streak", 0) + 1
-            if state["banner_streak"] >= CONFIRM_CHECKS or force:
-                if state["phase"] != "outage":
-                    log("OUTAGE confirmed -> taking over channel")
-                    state["phase"] = "outage"; save_state(state)
-                    kill_pid_holder()
-                outage_loop(token, state)   # returns when recovered
-                if force:
-                    return
-            else:
-                save_state(state); time.sleep(POLL_HEALTHY_SEC)
+        if force:
+            log("OUTAGE confirmed -> taking over channel")
+            state["phase"] = "outage"; save_state(state)
+            kill_pid_holder()
+            outage_loop(token, state)   # returns when recovered
+            return
+        record_outage_probe(state, mikrob_down())
+        save_state(state)
+        if should_declare_outage(state, confirm_probes_in, min_gap_sec_in,
+                                  max_age_sec=OUTAGE_PROBE_MAX_AGE_SEC, now=time.time()):
+            if state["phase"] != "outage":
+                log("OUTAGE confirmed -> taking over channel")
+                state["phase"] = "outage"; save_state(state)
+                kill_pid_holder()
+            outage_loop(token, state)   # returns when recovered
         else:
-            if state.get("banner_streak"):
-                state["banner_streak"] = 0; save_state(state)
             time.sleep(POLL_HEALTHY_SEC)
 
 

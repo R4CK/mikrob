@@ -67,6 +67,9 @@ PENDING_FILE="${HEARTBEAT_SCRIPTFIRST_PENDING_FILE:-$ROOT/store/.heartbeat-scrip
 ACTIVE_SUBAGENTS_FILE="${HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE:-$ROOT/store/active-subagents.json}"
 NMDRIFT_BIN="${HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN:-$ROOT/store/npm-live-install-drift-check.sh}"
 MAIN_REPO="${HEARTBEAT_SCRIPTFIRST_MAIN_REPO:-/home/neon/marveen}"
+# card d8f44d15 req 3: fixture seam for /api/token-usage/daily-lag, same style as _get's
+# FIXTURE_DIR -- a plain file holding the JSON body, read instead of curled when set.
+TOKENLAG_FIXTURE="${HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE:-}"
 
 if [ "${HEARTBEAT_SCRIPTFIRST:-on}" = "off" ]; then
   echo "heartbeat-scriptfirst: disabled (HEARTBEAT_SCRIPTFIRST=off)"
@@ -327,6 +330,27 @@ case "$ND_RC" in
   1) add "NODE-MODULES-DRIFT: $ND_OUT"; ACTIONABLE=1 ;;
   3) add "NODE-MODULES-SYNC: check not applicable -- $(printf '%s' "$ND_OUT" | head -1)" ;;
   *) err "npm-live-install-drift-check.sh exited $ND_RC: $ND_OUT" ;;
+esac
+
+# --- 13) token_usage_daily staleness (card d8f44d15 req 3): classifyTokenPruneLag already --------
+# existed (HBDBKUSZOB823) but was never called from anywhere -- a guard nobody reads is not a
+# guard. ACTIONABLE only on 'stale' (a real multi-sweep-cycle miss); 'ok'/'empty' are silent,
+# 'invalid' is a config fault and wakes via err() same as any other allowlist miss.
+if [ -n "$TOKENLAG_FIXTURE" ]; then
+  TOKENLAG_JSON="$(cat "$TOKENLAG_FIXTURE" 2>/dev/null)"
+else
+  TOKENLAG_JSON="$(curl -s --max-time 15 -H @"$hf" "${DASH}/api/token-usage/daily-lag" 2>/dev/null)"
+fi
+TOKENLAG_STATE="$(printf '%s' "$TOKENLAG_JSON" | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin).get("state", ""))
+except Exception: print("")
+' 2>/dev/null)"
+case "$TOKENLAG_STATE" in
+  ok|empty) add "TOKEN-USAGE-DAILY-LAG: $TOKENLAG_JSON" ;;
+  stale) add "TOKEN-USAGE-DAILY-LAG: $TOKENLAG_JSON"; ACTIONABLE=1 ;;
+  invalid) err "token-usage daily-lag reports invalid config: $TOKENLAG_JSON" ;;
+  *) err "token-usage daily-lag fetch failed or unrecognised: $TOKENLAG_JSON" ;;
 esac
 
 # --- diff against previous run (card 6d0775bb: "kimenetuk diffelve az elozo korhoz") --------------

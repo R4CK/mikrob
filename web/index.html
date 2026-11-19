@@ -167,6 +167,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
             <span class="sb-label" data-i18n="nav.geminiCalls">Gemini hívások</span>
           </a>
+          <a href="#" class="sb-link" data-page="llmLedger">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            <span class="sb-label" data-i18n="nav.llmLedger">LLM napló</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="system">
@@ -1072,6 +1076,7 @@
           Új skillt a jobb felső "Új skill" gombbal tudsz létrehozni vagy importálni.
         </div>
       </div>
+      <div class="skills-pending" id="skillsPending" hidden></div>
       <div class="skills-stats" id="skillsStats"></div>
       <div class="skills-toolbar">
         <div class="skills-search-wrap">
@@ -1102,6 +1107,86 @@
     </div>
 
     <!-- === Skills Detail Modal === -->
+
+    <!-- === LLM Ledger Page === -->
+    <div class="page" id="llmLedgerPage" hidden>
+      <div class="page-header">
+        <div>
+          <h1 data-i18n="llmLedger.title">LLM napló</h1>
+          <p class="subtitle" data-i18n="llmLedger.subtitle">Hívások, sikerarány és megtakarított Claude tokenek szolgáltatónként, feladattípusonként és ágensenkként</p>
+        </div>
+        <div class="llm-ledger-toolbar">
+          <div class="llm-ledger-days-filter" role="group" aria-label="Időszak">
+            <button class="btn-secondary btn-compact active" id="llmLedgerDays7" data-i18n="llmLedger.days.7">7 nap</button>
+            <button class="btn-secondary btn-compact" id="llmLedgerDays30" data-i18n="llmLedger.days.30">30 nap</button>
+          </div>
+          <button class="btn-secondary btn-compact" id="llmLedgerRefreshBtn" data-i18n="llmLedger.refresh">Frissítés</button>
+        </div>
+      </div>
+      <p class="llm-ledger-loading" id="llmLedgerLoading" role="status" data-i18n="llmLedger.loading">Betöltés...</p>
+      <p class="llm-ledger-error" id="llmLedgerError" role="alert" hidden></p>
+      <p class="llm-ledger-empty" id="llmLedgerEmpty" role="status" hidden data-i18n="llmLedger.empty">Nincs adat a kiválasztott időszakban.</p>
+
+      <!-- Totals bar -->
+      <div class="llm-ledger-totals" id="llmLedgerTotals" hidden role="status"></div>
+
+      <!-- By provider -->
+      <section class="llm-ledger-section" aria-labelledby="llmLedgerProvidersHead">
+        <h2 class="llm-section-title" id="llmLedgerProvidersHead" data-i18n="llmLedger.providers.title">Szolgáltatónként</h2>
+        <div class="llm-ledger-table-wrap">
+          <table class="llm-ledger-table">
+            <thead>
+              <tr>
+                <th data-i18n="llmLedger.col.provider">Szolgáltató</th>
+                <th data-i18n="llmLedger.col.calls">Hívások</th>
+                <th data-i18n="llmLedger.col.success_rate">Sikerarány</th>
+                <th data-i18n="llmLedger.col.accept_rate">Elfogadás</th>
+                <th data-i18n="llmLedger.col.latency">Késleltetés</th>
+                <th data-i18n="llmLedger.col.tokens_saved">Megtakarított token</th>
+              </tr>
+            </thead>
+            <tbody id="llmLedgerProvidersTbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- By task type -->
+      <section class="llm-ledger-section" aria-labelledby="llmLedgerTaskTypesHead">
+        <h2 class="llm-section-title" id="llmLedgerTaskTypesHead" data-i18n="llmLedger.task_types.title">Feladattípusonként</h2>
+        <div class="llm-ledger-table-wrap">
+          <table class="llm-ledger-table">
+            <thead>
+              <tr>
+                <th data-i18n="llmLedger.col.task_type">Feladattípus</th>
+                <th data-i18n="llmLedger.col.calls">Hívások</th>
+                <th data-i18n="llmLedger.col.success_rate">Sikerarány</th>
+                <th data-i18n="llmLedger.col.tokens_saved">Megtakarított token</th>
+              </tr>
+            </thead>
+            <tbody id="llmLedgerTaskTypesTbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- By agent (with editable budget) -->
+      <section class="llm-ledger-section" aria-labelledby="llmLedgerAgentsHead">
+        <h2 class="llm-section-title" id="llmLedgerAgentsHead" data-i18n="llmLedger.agents.title">Ágensenkként (napi token-büdzsé)</h2>
+        <div class="llm-ledger-table-wrap">
+          <table class="llm-ledger-table">
+            <thead>
+              <tr>
+                <th data-i18n="llmLedger.col.agent">Ágens</th>
+                <th data-i18n="llmLedger.col.calls">Hívások</th>
+                <th data-i18n="llmLedger.col.success_rate">Sikerarány</th>
+                <th data-i18n="llmLedger.col.tokens_saved">Megtakarított token</th>
+                <th data-i18n="llmLedger.col.daily_budget">Napi büdzsé (token)</th>
+              </tr>
+            </thead>
+            <tbody id="llmLedgerAgentsTbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
 
     <!-- === Local LLM Page === -->
     <div class="page" id="localLlmPage" hidden>
@@ -4555,6 +4640,7 @@
   <script src="/app-overview.js"></script>
   <script src="/app-gemini-calls.js"></script>  <!-- card 57da740c: Gemini-calls page + overview tile; after app-overview.js so loadGeminiOverviewTile() can be called from loadOverview() -->
   <script src="/app-kg.js"></script>  <!-- card 8bb7cf54 (MT-11): Megoldas-tar (knowledge graph) page -->
+  <script src="/app-llm-ledger.js"></script>  <!-- card 52c48470: F4 LLM usage ledger by provider/task/agent -->
   <script src="/app-llm-monitor.js"></script>   <!-- card 87be1810: LLM monitor page (task-events swimlane); after app-overview.js for the shared ovw-llmdist CSS/idiom -->
   <script src="/app-autonomy.js"></script>
   <script src="/app-terminal.js"></script>

@@ -123,7 +123,7 @@ def import_check(code: str, repo: str) -> str | None:
 #
 # Same patterns as decompose-sample-context.py; duplicated here so both gates are independent.
 _SECRET_KEY_VALUE_RE = re.compile(
-    r"""(?i)(password|secret|token|key|auth|credential|private)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/._\-]{20,}['"]?""",
+    r"""(?i)(password|secret|token|key|auth|credential|private|bearer)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/._\-]{20,}['"]?""",
 )
 _SECRET_OTHER_RE = re.compile(
     r"""(?ix)

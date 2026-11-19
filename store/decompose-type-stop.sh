@@ -170,9 +170,15 @@ if [ "$API_FETCH_OK" -eq 0 ]; then
     "$API_FETCH_ERRORS" >&2
   exit 0
 fi
+# R3 (card 3eddc9a8, RedHat 17386): a PARTIAL outage (some cards reachable, the rest 401/429/etc.)
+# must also leave the state file untouched, not just a TOTAL one. A thinned-down, partially-OK
+# sample tends to fall below MIN_JUDGED for one or more types, which silently re-enables a type
+# that a full sample would have kept disabled -- the same wrong direction as the 0-reachable case
+# this guard already covers, just reached from a smaller gap instead of a total one.
 if [ "$API_FETCH_ERRORS" -gt 0 ]; then
-  printf '[decompose-type-stop] API fetch errors: %d/%d cards unreachable (ok=%d); stop decision uses only ok cards\n' \
+  printf '[decompose-type-stop] API fetch errors: %d/%d cards unreachable (ok=%d) -- state file left untouched\n' \
     "$API_FETCH_ERRORS" "$(( API_FETCH_ERRORS + API_FETCH_OK ))" "$API_FETCH_OK" >&2
+  exit 0
 fi
 
 ROWS_FILE="$(mktemp)"

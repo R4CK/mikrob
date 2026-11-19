@@ -72,6 +72,167 @@ check(
     qs.confirm_switchback(straddling_log, confirm_probes=2, min_gap_sec=300) is False,
 )
 
+# --- card f490ae53: confirm_outage() mirrors confirm_switchback for the ENTRY (outage-declare)
+# --- direction. Same flap shape as the quota-bridge.log evidence: a down reading followed by an
+# --- up reading 4s later must NOT confirm, regardless of count. ------------------------------
+t1 = 2_000_000.0
+flap_log = []
+flap_log = qs.record_probe(flap_log, ok=False, ts=t1)        # down
+flap_log = qs.record_probe(flap_log, ok=True, ts=t1 + 4)      # up 4s later (the 21:52:31/:35 flap)
+check(
+    "down then up 4s later does not confirm an outage (card f490ae53 flap replay)",
+    qs.confirm_outage(flap_log, confirm_probes=2, min_gap_sec=45) is False,
+)
+
+# Two down readings close together (e.g. a fast process-restart edge) must also fail: count alone
+# is not enough, the real-time span matters.
+close_down_log = [{"ok": False, "ts": t1}, {"ok": False, "ts": t1 + 1}]
+check(
+    "two down readings 1s apart does not confirm an outage (count without a real gap)",
+    qs.confirm_outage(close_down_log, confirm_probes=2, min_gap_sec=45) is False,
+)
+
+# Positive control: a genuinely sustained outage (down readings spanning >= min_gap_sec, none
+# interrupted by an up reading) DOES confirm.
+sustained_down_log = [{"ok": False, "ts": t1}, {"ok": False, "ts": t1 + 46}]
+check(
+    "two down readings >=45s apart, no up reading between, DOES confirm (positive control)",
+    qs.confirm_outage(sustained_down_log, confirm_probes=2, min_gap_sec=45) is True,
+)
+
+# A single up reading anywhere in the trailing window breaks the run, even when the overall span
+# would otherwise satisfy the gap -- mirrors M3's straddling case for confirm_switchback.
+straddling_down_log = [
+    {"ok": False, "ts": t1},
+    {"ok": True, "ts": t1 + 20},
+    {"ok": False, "ts": t1 + 50},
+]
+check(
+    "down, up, down spanning >=45s straddling the up reading does not confirm",
+    qs.confirm_outage(straddling_down_log, confirm_probes=2, min_gap_sec=45) is False,
+)
+
+check(
+    "load_outage_confirm_config() defaults to (2, 45) on a missing/corrupt file",
+    qs.load_outage_confirm_config("/nonexistent/path.json") == (2, 45),
+)
+
+# --- F1b (Cybersec NO-GO 33392/33574): a stale down reading from hours earlier plus ONE fresh
+# --- down reading must NOT confirm once max_age_sec bounds the run -- the stale entry is dropped,
+# --- leaving only one recent reading, which is < confirm_probes. -------------------------------
+t2 = 3_000_000.0
+stale_plus_fresh_log = [
+    {"ok": False, "ts": t2 - 3 * 3600},   # 3h-old down reading (e.g. survived a process restart)
+    {"ok": False, "ts": t2},               # one fresh down reading
+]
+check(
+    "WITHOUT max_age_sec, a 3h-old reading + one fresh reading still confirms (shows the bug "
+    "max_age_sec exists to close)",
+    qs.confirm_outage(stale_plus_fresh_log, confirm_probes=2, min_gap_sec=45, now=t2) is True,
+)
+check(
+    "F1b: WITH max_age_sec=450, a 3h-old reading + one fresh reading does NOT confirm (the "
+    "stale entry is dropped, leaving only 1 recent down reading)",
+    qs.confirm_outage(stale_plus_fresh_log, confirm_probes=2, min_gap_sec=45,
+                       max_age_sec=450, now=t2) is False,
+)
+
+# Positive control: max_age_sec must not break a genuinely sustained, RECENT outage.
+recent_sustained_log = [{"ok": False, "ts": t2 - 46}, {"ok": False, "ts": t2}]
+check(
+    "F1b positive control: two down readings 46s apart, both within max_age_sec=450, "
+    "still confirms",
+    qs.confirm_outage(recent_sustained_log, confirm_probes=2, min_gap_sec=45,
+                       max_age_sec=450, now=t2) is True,
+)
+
+# Cybered NO-GO 33576 item 4: the two-sided bound must reject a FUTURE-dated entry too, not just
+# a stale one -- a one-sided `(now - ts) <= max_age_sec` check lets a negative age (a reading
+# whose ts is ahead of `now`, e.g. from a forward-clock glitch that later corrected) through
+# FOREVER, since a negative number is always <= a positive bound. Combined with an unrelated
+# genuinely-old-but-still-recent reading, that lets a bogus future timestamp manufacture an
+# arbitrarily large span and confirm on garbage data.
+future_dated_log = [{"ok": False, "ts": t2 - 100}, {"ok": False, "ts": t2 + 10_000}]
+check(
+    "WITHOUT the two-sided bound (one-sided check only), a future-dated newest entry + a real "
+    "older one still confirms (shows the bug the two-sided check exists to close)",
+    # Reproduce the one-sided mutant inline: filter with the OLD single-bound condition instead
+    # of calling confirm_outage's own (already-fixed) two-sided filter, so this control cannot
+    # accidentally pass just because confirm_outage was fixed under it.
+    (lambda log, now, max_age: (
+        lambda run: len(run) >= 2 and (run[0]["ts"] - run[1]["ts"]) >= 45
+    )([e for e in log[::-1] if (now - e["ts"]) <= max_age])
+    )(future_dated_log, t2, 450) is True,
+)
+check(
+    "F1b (Cybered NO-GO item 4, see comment above): WITH the two-sided bound, a future-dated newest entry "
+    "is dropped (negative age), leaving only 1 entry -- does NOT confirm",
+    qs.confirm_outage(future_dated_log, confirm_probes=2, min_gap_sec=45,
+                       max_age_sec=450, now=t2) is False,
+)
+
+# --- F2 (Cybersec NO-GO 33392/33574): hostile/malformed switchback-hysteresis.json must not
+# --- crash load_outage_confirm_config() (startup would crash-loop the bridge) and must not be
+# --- accepted outside the sane window -- both fall back to the defaults (2, 45). --------------
+import json as _json
+import tempfile as _tempfile
+
+
+def _load_outage_cfg_from(obj_or_text):
+    with _tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        if isinstance(obj_or_text, str):
+            f.write(obj_or_text)
+        else:
+            _json.dump(obj_or_text, f)
+        path = f.name
+    try:
+        return qs.load_outage_confirm_config(path)
+    finally:
+        os.unlink(path)
+
+
+check(
+    "F2: confirmProbesIn=1e999 (OverflowError on int()) does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 1e999, "minGapSecIn": 45}) == (2, 45),
+)
+check(
+    "F2: minGapSecIn=-1e999 (OverflowError on int()) does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 2, "minGapSecIn": -1e999}) == (2, 45),
+)
+check(
+    "F2: a top-level JSON list (AttributeError on .get()) does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from("[1, 2, 3]") == (2, 45),
+)
+check(
+    "F2: a top-level JSON string does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from('"not an object"') == (2, 45),
+)
+check(
+    "F2: a top-level JSON number does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from("42") == (2, 45),
+)
+check(
+    "F2: a top-level JSON null does not crash, falls back to (2, 45)",
+    _load_outage_cfg_from("null") == (2, 45),
+)
+check(
+    "F2: the weakest accepted value {confirmProbesIn:1, minGapSecIn:0} (kill-on-first-probe by "
+    "one edited number) is now out of bounds, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 1, "minGapSecIn": 0}) == (2, 45),
+)
+check(
+    "F2: confirmProbesIn=10**30 (outage never declared) is out of bounds, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 10 ** 30, "minGapSecIn": 45}) == (2, 45),
+)
+check(
+    "F2: minGapSecIn=10**30 (outage never declared) is out of bounds, falls back to (2, 45)",
+    _load_outage_cfg_from({"confirmProbesIn": 2, "minGapSecIn": 10 ** 30}) == (2, 45),
+)
+check(
+    "F2 positive control: a valid in-bounds config is used as-is, not clamped away",
+    _load_outage_cfg_from({"confirmProbesIn": 3, "minGapSecIn": 60}) == (3, 60),
+)
+
 # --- Kesz-ha 4: quota-bridge.py and gemini-fallback-runner share the SAME confirmation rule -----
 PY_SRC = f"{STORE}/quota-bridge.py"
 TS_SRC = os.path.join(STORE, "..", "src", "gemini-fallback.ts")
