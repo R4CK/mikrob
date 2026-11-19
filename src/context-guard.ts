@@ -952,6 +952,47 @@ export function handoffStaleMinutes(inputs: GuardInputs): HandoffStaleness {
   return gapMs > STALE_HANDOFF_SLACK_MS ? Math.round(gapMs / 60_000) : null
 }
 
+/**
+ * One structured record per resume injection (card d66b7681, MikroB GO msg
+ * 18804 condition 2). Lets a human/agent later MEASURE whether resumed
+ * sessions actually followed the stale-handoff instruction, instead of only
+ * ever seeing the same thing twice: a backend3-style stale-handoff double
+ * landing produces no visible trace today beyond a generic restart notice.
+ *
+ * `firstActionInstructed` names WHICH resume-prompt variant fired, not a
+ * verified claim about what the agent actually did first -- the guard has no
+ * way to observe that. It is the instruction given, recorded so a later
+ * audit can at least check "was this agent told to verify, and did it still
+ * land something stale anyway".
+ */
+export interface RestartLogEntry {
+  agent: string
+  tsMs: number
+  handoffAgeMinutes: number | null
+  stale: boolean
+  firstActionInstructed: 'no-handoff-use-live-sources' | 'freshness-unmeasurable-cross-check' |
+    'stale-verify-live-before-irreversible' | 'fresh-handoff-resume'
+}
+
+/** Pure classification -- mirrors the four branches resumePrompt() picks from. */
+export function buildRestartLogEntry(
+  agent: string,
+  hadHandoff: boolean,
+  staleMinutes: HandoffStaleness,
+  tsMs: number,
+): RestartLogEntry {
+  if (!hadHandoff) {
+    return { agent, tsMs, handoffAgeMinutes: null, stale: false, firstActionInstructed: 'no-handoff-use-live-sources' }
+  }
+  if (staleMinutes === 'unknown') {
+    return { agent, tsMs, handoffAgeMinutes: null, stale: true, firstActionInstructed: 'freshness-unmeasurable-cross-check' }
+  }
+  if (typeof staleMinutes === 'number') {
+    return { agent, tsMs, handoffAgeMinutes: staleMinutes, stale: true, firstActionInstructed: 'stale-verify-live-before-irreversible' }
+  }
+  return { agent, tsMs, handoffAgeMinutes: 0, stale: false, firstActionInstructed: 'fresh-handoff-resume' }
+}
+
 export type GuardActionType = 'none' | 'request-handoff' | 'restart' | 'inject-resume'
 
 export interface GuardDecision {
