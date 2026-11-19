@@ -405,6 +405,21 @@ CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=08 bash "$DISPATCH" --test-resolv
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='08' prints the documented fallback log line" \
   "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=08 is not an integer -- falling back to the documented default (3)" "$zero8_stderr" && echo yes)" "yes"
 
+# LOG-LINE FORGERY PIN (CWE-117, card e2406a43 LOW-1, Cybered GO 34272): same reasoning as the
+# OFFLOAD_MAX_SUBTASKS pair above -- every PER_CARD value checked so far %q's to itself unchanged,
+# so a revert of this guard's %q escaping back to a raw echo would pass every check above untouched.
+decompose_nl_stderr="$TMPDIR/decompose-nl-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=$'1\nFAKE LOG LINE INJECTED' bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$decompose_nl_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with an embedded newline: exactly one stderr line (no forged second line)" \
+  "$(wc -l < "$decompose_nl_stderr" | tr -d ' ')" "1"
+
+decompose_esc_stderr="$TMPDIR/decompose-esc-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=$'\x1b[31mRED' bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$decompose_esc_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: exactly one stderr line" \
+  "$(wc -l < "$decompose_esc_stderr" | tr -d ' ')" "1"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: %q-escaped, no literal ESC byte reaches the log" \
+  "$(grep -cP '\x1b' "$decompose_esc_stderr" || true)" "0"
+
 # Valid-value-honoured case already covered above (cap5_count: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1).
 
 # --- attempts_op state machine -------------------------------------------------------------------
@@ -559,6 +574,26 @@ for bad in 08 09 010 9223372036854775808 12abc abc12; do
   check "OFFLOAD_MAX_SUBTASKS='$bad' prints the documented fallback log line" \
     "$(grep -qF "OFFLOAD_MAX_SUBTASKS=$bad is not an integer -- falling back to the documented default (15)" "$bad_stderr" && echo yes)" "yes"
 done
+
+# LOG-LINE FORGERY PIN (CWE-117, card e2406a43 LOW-1, Cybered GO 34272): the leading-zero/overflow
+# checks above all pin VALUES that happen to %q to themselves unchanged (no shell-special chars), so
+# a mutant that reverts the %q escaping back to a raw echo of $OFFLOAD_MAX_SUBTASKS leaves every one
+# of them green -- the fix for the actual log-forgery bug was itself unpinned. These two values are
+# hostile: a literal newline (would print as a second, forged log line if echoed raw) and an ANSI/ESC
+# sequence (would inject raw terminal escapes into the log if echoed raw). Both fail the integer
+# regex the same way any other garbage does, so they hit the identical fallback branch; the only
+# question is whether %q renders them as ONE safe, single-line token or lets them through raw.
+nl_stderr="$TMPDIR/subtasks-nl-stderr.log"
+OFFLOAD_MAX_SUBTASKS=$'1\nFAKE LOG LINE INJECTED' bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$nl_stderr"
+check "OFFLOAD_MAX_SUBTASKS with an embedded newline: exactly one stderr line (no forged second line)" \
+  "$(wc -l < "$nl_stderr" | tr -d ' ')" "1"
+
+esc_stderr="$TMPDIR/subtasks-esc-stderr.log"
+OFFLOAD_MAX_SUBTASKS=$'\x1b[31mRED' bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$esc_stderr"
+check "OFFLOAD_MAX_SUBTASKS with a raw ESC byte: exactly one stderr line" \
+  "$(wc -l < "$esc_stderr" | tr -d ' ')" "1"
+check "OFFLOAD_MAX_SUBTASKS with a raw ESC byte: %q-escaped, no literal ESC byte reaches the log" \
+  "$(grep -cP '\x1b' "$esc_stderr" || true)" "0"
 
 # BARE-0 ACCEPTED, NOT REJECTED (card 81025eb5, Cybered GO 33203 on 27c54ceb): the regex is
 # `^(0|[1-9][0-9]{0,8})$`, so a bare "0" is a VALID value, not an invalid one -- an explicit

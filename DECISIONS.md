@@ -28797,3 +28797,13 @@ Which other update.sh-read env vars are intentionally left out of the allowlist 
 **Teszt:** store/offload-dispatch.selftest.sh updated with the new behavioural cases plus the existing non-integer-guard greps adjusted to the new %q-rendered format; 202/202 green. Mutation-tested by hand (apply mutant, confirm the pinned case goes red, revert, confirm clean again): MAX_SUBTASKS default 15->16, MAX_SUBTASKS fallback 15->16, PER_CARD fallback 3->4, PER_CARD=0 rejected via a tightened regex -- each one independently turns its pinned case(s) red.
 
 **Ki döntött:** backend2 (own planned card, self-advance while card/e2425f05 waits on a delta re-gate). Gate: QA + Cybered. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-19 -- e2406a43 LOW-1: pin the CWE-117 %q fix itself (Cybered GO 34272, MikroB decision 34273)
+
+**Döntés:** Cybered's GO on the prior round (d7dc2ec43) found the %q log-forgery fix correct in the code but unpinned in the suite: reverting either `printf -v ... '%q'` guard back to a raw echo of the env value left `offload-dispatch.selftest.sh` 202/202 green, because every value the suite fed the guard (`abc`, `-1`, `08`, `lots`, ...) happens to %q to itself unchanged -- none of them exercise what %q actually does. MikroB required this fixed before land, not as a follow-up, since the card exists specifically to pin RedHat's mutation survivors.
+
+**Fix:** No code change (the fix from a12992c58/d7dc2ec43 was already correct) -- added hostile-value test cases per guard: a value with an embedded literal newline (would print as a forged second stderr line if echoed raw) and a value with a raw ESC byte (would inject a raw terminal escape sequence if echoed raw). Both fail the existing integer regex the same way any other garbage does, so they reach the identical fallback branch; the only question the new tests ask is whether %q renders the hostile value as one safe token or lets it through raw.
+
+**Teszt:** store/offload-dispatch.selftest.sh: 6 new checks (one per guard x embedded-newline "exactly one stderr line", plus one per guard x ESC-byte "exactly one stderr line" and "no literal ESC byte reaches the log" = 2+2+2). 208/208 green. Mutation-tested by hand: reverted both `printf -v %q` lines back to a raw `echo "...=$VAR is not an integer..."`, re-ran the suite -- exactly these 4 new checks went red (204/208), nothing else; restored the real fix, confirmed clean again (208/208, `git diff` on the script empty).
+
+**Ki döntött:** MikroB (decision 34273, required before land). Gate: delta QA + Cybered (diff + the revert mutant only, per Peti's delta-regate rule 13846). Gate-SHA: lásd REVIEW komment.
