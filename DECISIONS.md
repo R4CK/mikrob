@@ -28143,7 +28143,7 @@ Gate: QA + Cybered (a kártya saját kijelölése).
 
 **Who decided:** backend (card b5d19a32, dispatched by MikroB msg 18944 off CYBERSEC GO on eed22288). Gate: QA + Cybersec. Gate-SHA: 2ae712bfd.
 
-### 2026-11-15 -- kg-search.selftest.sh leak-check scope (card afc0d569)
+## 2026-11-15 -- kg-search.selftest.sh leak-check scope (card afc0d569)
 
 MikroB merese: a F1 leak-check `grep -slF ... /tmp/tmp.*` alakja a teljes rendszer `/tmp`-et
 pasztazta fajltipus-szures nelkul -- egy MASIK folyamat elhagyott FIFO-ja (nyito, iro nelkul
