@@ -165,4 +165,75 @@ describe('shared-memory-inject.py: explicit --agent bypasses cwd-ambiguous gate-
       cwd_had_agents_segment: false,
     })
   })
+
+  // --- Card 58342cec (cybersec2 GO 21098 on 44091907, N1): the acceptance criterion from 20830
+  // -- "mindharom azonositasi mutansnak pirosat kell adnia" -- named 7 non-canonical cwd shapes
+  // and 3 surviving mutants (M2, M4, M5). The canonical cwd shape itself is already pinned by
+  // shared-memory-inject-gate-exclusion.test.ts; the remaining shapes and the 3 mutants follow.
+
+  it('empty-string cwd, WITH --agent qa2: still excluded (one of the 7 named shapes)', async () => {
+    const { dir, script } = sandboxRoot()
+    const r = await runHook(script, dir, { cwd: '' }, ['--agent', 'qa2'])
+    expect(r.status, r.stderr).toBe(0)
+    const requests = readRequestLog(dir)
+    expect(requests.some((p) => p.includes('category=shared'))).toBe(false)
+  })
+
+  it('the live clone root itself (no agents/ segment at all), WITH --agent cybered: still excluded', async () => {
+    const { dir, script } = sandboxRoot()
+    const r = await runHook(script, dir, { cwd: '/home/neon/marveen' }, ['--agent', 'cybered'])
+    expect(r.status, r.stderr).toBe(0)
+    const requests = readRequestLog(dir)
+    expect(requests.some((p) => p.includes('category=shared'))).toBe(false)
+  })
+
+  it('an upper-cased agents/CYBERSEC cwd segment is NOT matched by GATE_AGENT_NAMES case-sensitively, '
+     + 'so WITHOUT --agent it still leaks (documents the gap; --agent is the only fix this card ships)', async () => {
+    const { dir, script } = sandboxRoot()
+    const r = await runHook(script, dir, { cwd: '/home/neon/marveen/agents/CYBERSEC' })
+    expect(r.status, r.stderr).toBe(0)
+    const requests = readRequestLog(dir)
+    expect(requests.some((p) => p.includes('category=shared'))).toBe(true)
+  })
+
+  it('the SAME upper-cased cwd, WITH --agent cybersec: excluded (the fix sidesteps the case gap entirely)', async () => {
+    const { dir, script } = sandboxRoot()
+    const r = await runHook(script, dir, { cwd: '/home/neon/marveen/agents/CYBERSEC' }, ['--agent', 'cybersec'])
+    expect(r.status, r.stderr).toBe(0)
+    const requests = readRequestLog(dir)
+    expect(requests.some((p) => p.includes('category=shared'))).toBe(false)
+  })
+
+  it('MUTATION PIN (M2): a cwd with something AFTER the agent segment (agents/cybersec/sub/deep) '
+     + 'resolves to the segment RIGHT AFTER "agents", not the last path component', async () => {
+    const { dir, script } = sandboxRoot()
+    const r = await runHook(script, dir, { cwd: '/home/neon/marveen/agents/cybersec/sub/deep', source: 'startup' })
+    expect(r.status, r.stderr).toBe(0)
+    // Correct: resolves to "cybersec" (a gate name) -> excluded. M2 (last path segment instead
+    // of the element right after "agents") would resolve to "deep" -> not a gate name -> leaks.
+    const requests = readRequestLog(dir)
+    expect(requests.some((p) => p.includes('category=shared'))).toBe(false)
+    expect(readResolutionLog(dir)[0]).toMatchObject({ resolved_agent: 'cybersec' })
+  })
+
+  it('MUTATION PIN (M4): an unidentifiable cwd resolves to the EXACT literal "fleet", not merely '
+     + 'to "some other non-gate name"', async () => {
+    const { dir, script } = sandboxRoot()
+    await runHook(script, dir, { cwd: '/some/odd/cwd-with-no-agents-segment', source: 'startup' })
+    const rows = readResolutionLog(dir)
+    expect(rows[0]).toMatchObject({ resolved_agent: 'fleet', used_explicit_agent_arg: false })
+  })
+
+  it('MUTATION PIN (M5, WhiteHat2 shape 7 / the N1-requested precedence test): a cwd containing a '
+     + 'NON-fleet agents/<x> segment (a foreign project with its own "agents" folder) does NOT '
+     + 'override an explicit --agent -- --agent must win regardless of what the cwd happens to spell', async () => {
+    const { dir, script } = sandboxRoot()
+    const r = await runHook(script, dir, { cwd: '/some/other/project/agents/teszter', source: 'startup' }, ['--agent', 'cybersec'])
+    expect(r.status, r.stderr).toBe(0)
+    // Correct: --agent wins -> resolved "cybersec" -> excluded. M5 (cwd-derivation wins when the
+    // cwd itself carries an agents/<x> segment) would resolve "teszter" instead -> leaks.
+    const requests = readRequestLog(dir)
+    expect(requests.some((p) => p.includes('category=shared'))).toBe(false)
+    expect(readResolutionLog(dir)[0]).toMatchObject({ resolved_agent: 'cybersec', used_explicit_agent_arg: true })
+  })
 })

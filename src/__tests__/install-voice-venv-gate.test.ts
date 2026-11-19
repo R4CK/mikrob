@@ -88,8 +88,9 @@ function makeVoices(dest: string): string {
 
 describe('install-voice.sh step 2 venv gate', () => {
   // Each test below has step 2 run a REAL `python3 -m venv`, so dest is not a tiny fixture dir --
-  // measured at ~12 MB apiece (card a4a6a5e5). Tracked here and removed in afterEach rather than
-  // per-test, so a test that fails before reaching its own cleanup still gets swept.
+  // measured at ~12 MB apiece (card a4a6a5e5; same leftover-disk concern upstream's own comment
+  // raises, MACSYSDATA1022). Tracked here and removed in afterEach rather than per-test, so a
+  // test that fails before reaching its own cleanup still gets swept.
   const created: string[] = []
   function tmpDest(prefix: string): string {
     const dest = mkdtempSync(join(tmpdir(), prefix))

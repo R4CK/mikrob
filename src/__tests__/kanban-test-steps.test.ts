@@ -53,7 +53,7 @@ describe('kanban test_steps -- the API stores and returns it', () => {
   })
 
   it('POST /api/kanban stores test_steps instead of dropping it', async () => {
-    const { ctx, out } = ctxFor('POST', '/api/kanban', { id: 'ts1', title: 'Card', test_steps: STEPS })
+    const { ctx, out } = ctxFor('POST', '/api/kanban', { id: 'ts1', title: 'Card', test_steps: STEPS, project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard('ts1')!.test_steps).toBe(STEPS)

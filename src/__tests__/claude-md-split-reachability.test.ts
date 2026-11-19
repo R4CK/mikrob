@@ -34,10 +34,18 @@ describe('claude-md-split-reachability-check.py: standing control (card cc72cb3e
   it(
     "RedHat's 10 mutants (comment 30478) + the in-place-weakening control still flip the checker red",
     () => {
-      // ~6s on a quiet machine: 26 cases, several spawning 2-3 of their own python3 subprocesses
-      // each (the --update-baseline round-trips). Default vitest timeout (5s) is too tight.
+      // ~6s on a quiet machine: 30 cases, several spawning 2-3 of their own python3 subprocesses
+      // each (the --update-baseline round-trips). Default vitest timeout (5s) is too tight even
+      // then. 30000ms was ALSO too tight: measured 2026-11-16 (card 2ec21127, MikroB msg 19800,
+      // DevO land timeout on d66b7681 with the same test under 7-8 concurrent fleet-test suites)
+      // -- the SELFTEST ALONE (no vitest, no execFileSync overhead) took 29.3s wall-clock under
+      // real same-host contention (load average ~5, several other vitest/fleet-test runs sharing
+      // the CPU), i.e. already AT the old 30000ms budget before vitest's own process-spawn
+      // overhead is added. This is a shared-host-load problem, not a slow checker on a quiet box
+      // (see store/fleet-test-lock-log.selftest.sh and card c5ff36bf for the actual throughput
+      // fix) -- so widen the budget rather than cut cases or weaken an assertion to make it fit.
       expect(() => execFileSync('python3', [SELFTEST], { cwd: ROOT, encoding: 'utf-8' })).not.toThrow()
     },
-    30000,
+    90000,
   )
 })

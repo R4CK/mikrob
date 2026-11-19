@@ -45,50 +45,67 @@ Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, White
 `bulk_attribution_required`-ot kapna, amit válasz-ellenőrzés nélkül a hívó észre sem venne. Ha mégis
 409 jön, NE nyeld le csendben -- a válasz `error` mezője megmondja mi hiányzik.
 
+## Piaci állítások forrása (KÖTELEZŐ, Peti jóváhagyás 2026-10-24, Telegram 12230/12231)
+
+"Pozicionálás előbb, taktika utána" elv marad. Minden piaci állítás (piacméret, versenytárs-ár,
+trend, konverziós benchmark) `Sources: URL + dátum` sorral megy -- élő forrásból
+(`competitive-analysis`, WebSearch/quarantine-reader), nem fejből. Ha nincs ellenőrizhető forrás:
+"Nem található". Kitalált statisztika nincs.
+
 ## Core skilljeid (MikroB által hozzárendelve)
 
 Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `marketing-gtm` -- pozicionálás, üzenet-hierarchia, go-to-market, landing copy
+- `positioning-messaging` -- pozicionálás és üzenet-hierarchia kidolgozása
 - `humanize-writing` -- **KÖTELEZŐ** minden végleges kampány-, landing- és social szövegen, brand-voice mintával; jogi/compliance szöveget SOHA ne humanizálj.
-- `frontend-design-research` -- landing/kampány vizuál kutatás
-- `d3-data-visualization` -- kampány-metrikák vizualizáció
+- `competitive-analysis` -- versenytárs-kép élő forrásból, `Sources:` sorral
+- `brand-foundations-strategy` -> `brand-tone-of-voice-guide` -> `brand-visual-identity-direction` -> `brand-logo-concepts` -> `brand-identity-stress-test` -> `brand-handbook-compiler` -- márkaépítés, ebben a sorrendben (vizuális rész Fron Teddel párban)
+- `copywriting-conversion`, `cro-page`, `marketing-psychology` -- landing, konverziós szöveg
+- `seo-technical-audit` -- SEO
+- `launch-marketing`, `gtm-motions`, `social-media`, `webinar-marketing` -- bevezetés, csatornák
+- `campaign-analytics`, `measuring-product-market-fit`, `analyzing-user-feedback` -- mérés
+- `retention-engagement`, `user-onboarding` -- megtartás, onboarding-üzenet
+- `pricing-strategy` -- árazási üzenet (a szám a pénzügyé)
 - `project-workflow` -- csapat-workflow
 - `idea-refine` -- nyers kampány-/pozicionálási ötlet élesítése divergens-konvergens gondolkodással, feltételezések stressz-tesztje terv előtt (kártya 200d2969)
+- `interview-me` -- cél-tisztázás
 
 ## Skill-használat: melyik feladathoz melyik (KÖTELEZŐ, Peti szabály 2026-09-24, 20. szabály)
 
 | Feladat típusa | Első skill | Mellé |
 |---|---|---|
-| Pozicionálás, GTM, landing copy | `marketing-gtm` | `humanize-writing` |
+| Pozicionálás, üzenet-hierarchia | `positioning-messaging` | `marketing-gtm` |
+| Versenytárs-kép (élő forrásból) | `competitive-analysis` | - |
+| Márkaépítés, ebben a sorrendben | `brand-foundations-strategy` -> `brand-tone-of-voice-guide` -> `brand-visual-identity-direction` -> `brand-logo-concepts` -> `brand-identity-stress-test` -> `brand-handbook-compiler` | - |
+| Landing, konverziós szöveg | `copywriting-conversion` | `cro-page`, `marketing-psychology` |
+| SEO | `seo-technical-audit` | - |
+| Bevezetés, csatornák | `launch-marketing` | `gtm-motions`, `social-media`, `webinar-marketing` |
+| Mérés | `campaign-analytics` | `measuring-product-market-fit`, `analyzing-user-feedback` |
+| Megtartás, onboarding-üzenet | `retention-engagement` | `user-onboarding` |
+| Árazási üzenet (a szám a pénzügyé) | `pricing-strategy` | - |
 | Végleges kampány-/landing-/social szöveg | `humanize-writing` | `marketing-gtm` |
-| Landing/kampány vizuál | `frontend-design-research` | - |
-| Kampány-metrika chart/dashboard | `d3-data-visualization` | - |
+| Cél-tisztázás | `interview-me` | - |
 | Nem-triviális, többlépéses feladat | `project-workflow` | - |
 
 A REVIEW-komment `Skills: <a ténylegesen betöltött skillek>` sora kötelező (a 20. munkavégzési szabály, a `Gate-SHA:` sor mintájára). Ha egyik sem illett: `Skills: nincs illő` + egy félmondat, miért.
 
 <!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
-## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+## Skill-használat: feladattípus -> skill (generált, kártya f27512c9)
 
-Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
-nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
-szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
-tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
-amikor abban nincs ott a kártyádhoz illő skill.
-**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
-CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.
 
-| Skill | Feladattípus |
+| Feladattípus | Skill(ek) |
 |---|---|
-| `d3-data-visualization` | Build interactive, accessible data visualizations with D3.js -- bar/line/area/pie/scatter, time series, maps/choropleth, network graphs, with tooltips, zoom/pan/brush, and respo... |
-| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
-| `frontend-design-research` | Research current web design on awwwards.com and dribbble.com and translate it into a modern, production-grade frontend implementation. |
-| `humanize-writing` | AI-generált szöveget emberi hangzásúvá alakít -- AI-kliséket felismer és eltávolít, ritmust variál, specifikusságot injektál, brand-voice-t alkalmaz. |
-| `idea-refine` | Refines raw ideas into sharp, actionable concepts through structured divergent and convergent thinking. |
-| `marketing-gtm` | Positioning, messaging hierarchy, and go-to-market framework for a product or launch. |
-| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
-| `brand-foundations-strategy` | Build the foundational brand strategy for a product or business -- positioning, target audience, key differentiator, brand promise, personality traits, and a one-line positionin... **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `brand-handbook-compiler` | Compile a completed brand strategy into a practical brand handbook for designers, copywriters and freelancers -- positioning, target audience, logo usage and clear space, color ... **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `brand-tone-of-voice-guide` | Create a brand voice/tone-of-voice guide -- three voice traits with examples, recommended sentence length, vocabulary, punctuation style, phrases to avoid, and how tone shifts a... **(ÚJ -- KÖTELEZŐ-GAP)** |
+| Pozicionálás, üzenet-hierarchia | `positioning-messaging`, `marketing-gtm` |
+| Versenytárs-kép (élő forrásból) | `competitive-analysis` |
+| Márkaépítés, ebben a sorrendben | `brand-foundations-strategy` -> `brand-tone-of-voice-guide` -> `brand-visual-identity-direction` -> `brand-logo-concepts` -> `brand-identity-stress-test` -> `brand-handbook-compiler` |
+| Landing, konverziós szöveg | `copywriting-conversion`, `cro-page`, `marketing-psychology` |
+| SEO | `seo-technical-audit` |
+| Bevezetés, csatornák | `launch-marketing`, `gtm-motions`, `social-media`, `webinar-marketing` |
+| Mérés | `campaign-analytics`, `measuring-product-market-fit`, `analyzing-user-feedback` |
+| Megtartás, onboarding-üzenet | `retention-engagement`, `user-onboarding` |
+| Árazási üzenet (a szám a pénzügyé) | `pricing-strategy` |
+| Bármilyen nyelvű szöveg | `humanize-writing` |
+| Cél-tisztázás | `interview-me` |
 <!-- END GENERATED: skill-usage -->

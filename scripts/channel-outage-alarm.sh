@@ -104,6 +104,18 @@ send_alarm() {
   local text="$1" tok chat http
   tok="$(read_token)" || { log "ERROR cannot send: no bot token in $CHAN_DIR/.env, parked copies, or $TOKEN_STASH"; return 1; }
   chat="$(read_chat_id)" || { log "ERROR cannot send: no allowFrom chat id in $CHAN_DIR/access.json"; return 1; }
+  # The URL carries the token, so it must never sit in curl's ARGV (ps -ww,
+  # /proc/<pid>/cmdline). Same trick as lib/curl-tok.sh: a curl config line on
+  # stdin (-K -) built by the printf builtin.
+  # Koteg 24 (card 57044a66): the URL is a QUOTED config value, so a token with
+  # a quote/backslash/newline in it is refused, not sent -- same guard added to
+  # lib/send-telegram.sh's telegram_api_call for the same reason.
+  case "$tok" in
+    *\"*|*\\*|*$'\n'*)
+      log "ERROR cannot send: bot token has an unsupported character"
+      return 1
+      ;;
+  esac
   http="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$tok" \
     | curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -K - \
       --data-urlencode "chat_id=${chat}" \

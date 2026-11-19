@@ -23,6 +23,7 @@ import { launchableInstallDefault } from '../default-model-guard.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
+import { degradedOrchestratorRefusal } from '../../degraded-orchestrator-guard.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
 import {
   agentDir,
@@ -2489,8 +2490,25 @@ function compactPrompt(): string {
     // agents on Claude Code 2.1.193, where a `--continue` resume does not load
     // the --channels plugin MCP server (agent comes up deaf).
     let startFresh = false
-    try { startFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = await startAgentProcess(name, { fresh: startFresh })
+    let startBody: { fresh?: unknown; force?: unknown; actor?: unknown } = {}
+    try { startBody = JSON.parse((await readBody(req)).toString() || '{}'); startFresh = startBody.fresh === true } catch {}
+    // Card d5638d28: refuse starting an agent while degraded-orchestrator mode is on, same
+    // owner-bypass convention as the kanban move-to-done guard (degraded-orchestrator-guard.ts).
+    {
+      const refusal = degradedOrchestratorRefusal(
+        'agent start', startBody.force === true, typeof startBody.actor === 'string' ? startBody.actor : undefined
+      )
+      if (refusal) { json(res, { code: 'degraded_orchestrator_blocked', error: refusal }, 409); return true }
+    }
+    // Round 3 (RedHat NO-GO 32245 F2): force/actor must reach startAgentProcess too, not just
+    // this route's own pre-check above -- otherwise an owner override (force:true, actor:"mikrob")
+    // passes the pre-check, then the SAME guard inside startAgentProcessUnlocked refuses again
+    // with no force/actor to let it through, so the owner override never actually worked.
+    const result = await startAgentProcess(name, {
+      fresh: startFresh,
+      force: startBody.force === true,
+      actor: typeof startBody.actor === 'string' ? startBody.actor : undefined,
+    })
     // Record operator intent so the monitor keeps this agent up across shared
     // tmux-server restarts / reboots (see agent-desired-state.ts).
     if (result.ok || result.error === 'Agent is already running') addDesiredAgent(name)
@@ -2628,6 +2646,13 @@ function compactPrompt(): string {
     try { restartBody = (await readBody(req)).toString() } catch {}
     const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))
     if (result.ok) { json(res, { ok: true }); return true }
+    // Card d5638d28 round 2 (CYBERED NO-GO 32207 F1): restartAgentProcess now runs the same
+    // degradedOrchestratorRefusal check /start uses; surface it the same way (409 + code), not the
+    // generic 400 every other restart failure gets.
+    if (result.error && result.error.startsWith('degraded-orchestrator guard:')) {
+      json(res, { code: 'degraded_orchestrator_blocked', error: result.error }, 409)
+      return true
+    }
     json(res, { error: result.error }, 400)
     return true
   }

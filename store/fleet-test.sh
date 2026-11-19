@@ -56,6 +56,24 @@ LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
 # started after it still contend on one file.
 LOCK_FILE="${ROOT}-test.lock"
 
+# WAIT/RUN LOGGING (card c5ff36bf). Non-behavioral: this never changes which run goes first or
+# how long anything waits, it only records what already happens. The TREE-lock stage below had no
+# durable record at all (only a stderr echo, gone the moment the terminal scrolls) -- the CPU-slot
+# stage already posts kanban comments, but THIS is the stage callers actually complain about
+# (b7d8ecc4, c5ff36bf), so this is the one that needs a log. One line per run, appended once the
+# run is over (wait_s + run_s both known by then), plus one line for a run that times out waiting
+# and never gets to run at all. Append-only, best-effort (a logging failure must never fail or
+# slow down a real test run -- hence `|| true` and redirecting its own errors away).
+LOCK_LOG="${FLEET_TEST_LOCK_LOG:-${ROOT}-fleet-test-lock.log}"
+fleet_test_log_lock_event() { # $1=event(run|timeout) $2=wait_s $3=run_s(or -) $4=status(or -)
+  local scope="full"
+  [ "${#ARGS[@]}" -gt 0 ] && scope="scoped:${#ARGS[@]}"
+  printf '%s pid=%s event=%s rank=%s priority=%s scope=%s ref=%s wait_s=%s run_s=%s status=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$1" "${PRIORITY_RANK:--}" "${FLEET_TEST_PRIORITY:--}" \
+    "$scope" "${REF:--}" "$2" "${3:--}" "${4:--}" \
+    >>"$LOCK_LOG" 2>/dev/null || true
+}
+
 # PRIORITY LANE FOR LANDS (card b7d8ecc4). marveen-land.sh holds its own exclusive develop-push
 # lock for the ENTIRE duration of this script's run (merge -> fleet-test -> push), so every minute
 # a land's fleet-test call sits in a plain FIFO queue is a minute EVERY OTHER land is blocked too,
@@ -115,7 +133,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # apart. See the acquisition block below (right before the tree lock) for the full reasoning.
 # shellcheck source=./env-compat-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-compat-lib.sh"
-CPU_SLOTS="$(env_compat_get MIKROB_SUITE_SLOTS CLEANCORE_SUITE_SLOTS 2)"
+CPU_SLOTS="$(env_compat_get MIKROB_SUITE_SLOTS CLEANCORE_SUITE_SLOTS 3)"
 CPU_LOCK_PREFIX="$(env_compat_get MIKROB_SUITE_LOCK_PREFIX CLEANCORE_SUITE_LOCK_PREFIX "${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot")"
 CPU_WAIT_MAX_S="$(env_compat_get MIKROB_SUITE_WAIT_MAX_S CLEANCORE_SUITE_WAIT_MAX_S 7200)"
 CPU_POLL_S="$(env_compat_get MIKROB_SUITE_POLL_S CLEANCORE_SUITE_POLL_S 20)"
@@ -276,6 +294,17 @@ esac
 [ "$TEST_TREE" -ef "$ROOT" ] \
   && die 2 "FLEET_TEST_TREE ($TEST_TREE) IS the live install ($ROOT) -- refusing before the reset/clean/checkout below would run against it. Point FLEET_TEST_TREE at a disposable worktree instead."
 # <<< ROOT_GUARD_BLOCK_END
+# Card 0ca2322b (c5f98f82 follow-up, MikroB comment 32226 on RedHat's suggestion, comment 32216):
+# the regex-based detector just below (fleet-test-no-test-tree-reassignment-after-guard.test.ts)
+# only scans the TEXT of the gap between the guard above and the real `cd "$ROOT"` call -- it is
+# blind to any write form that does not spell "TEST_TREE=" literally (mapfile/readarray, a for/
+# select loop variable, printf -v, declare -n/local -n indirection, a backslash-newline split
+# between the name and "="), and it covers nothing AFTER the `cd` call at all. `readonly` closes
+# the whole class in one line, structurally, for the REST of this script's run (not just the gap):
+# bash itself refuses every one of those write forms at runtime with "readonly variable", not just
+# the ones this file's author thought to enumerate. The static detector stays as a cheap backstop
+# that still catches the most common mistake (a plain `TEST_TREE=...`) before the script even runs.
+readonly TEST_TREE
 
 REF=""
 ARGS=()
@@ -425,11 +454,14 @@ while ! { fleet_test_is_head "$TREE_TICKET_DIR" "$TREE_TICKET" && flock -n 9; };
   TREE_TICKET_WAITED=$(( $(date +%s) - TREE_TICKET_START ))
   if [ "$TREE_TICKET_WAITED" -ge "$LOCK_WAIT_SECONDS" ]; then
     rm -f "$TREE_TICKET" 2>/dev/null
+    fleet_test_log_lock_event timeout "$TREE_TICKET_WAITED" - 3
     die 3 "timed out after ${LOCK_WAIT_SECONDS}s waiting for the fleet suite lock ($LOCK_FILE). Another run is stuck: find it with 'fuser -v $LOCK_FILE' and deal with THAT run. A private FLEET_TEST_TREE is no longer a way around the queue (card 2f0c7d24)."
   fi
   sleep 1
 done
 rm -f "$TREE_TICKET" 2>/dev/null
+TREE_LOCK_WAIT_S=$(( $(date +%s) - TREE_TICKET_START ))
+TREE_LOCK_ACQUIRED_AT="$(date +%s)"
 
 # Create once, reuse forever. `git worktree add --detach` fails if the path exists, so the
 # create and the update paths are deliberately separate.
@@ -749,5 +781,8 @@ if [ ${#ARGS[@]} -eq 0 ] && [ -x "$TEST_TREE/store/lint-ratchet.sh" ]; then
     status="$lint_status"
   fi
 fi
+
+TREE_LOCK_RUN_S=$(( $(date +%s) - TREE_LOCK_ACQUIRED_AT ))
+fleet_test_log_lock_event run "$TREE_LOCK_WAIT_S" "$TREE_LOCK_RUN_S" "$status"
 
 exit "$status"

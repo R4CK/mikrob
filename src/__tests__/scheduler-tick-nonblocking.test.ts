@@ -272,7 +272,7 @@ const KNOWN_SYNC_TICK_FILES = ['agent-process.ts', 'sleep-wake-detector.ts'] as 
     const cmd = readFileSync(join(WEB, 'command-task.ts'), 'utf-8')
     expect(runner).toMatch(/export async function runPreCheck/)
     expect(cmd).toMatch(/export async function runCommandTask/)
-    expect(runner).toMatch(/await runPreCheck\(/)
+    expect(runner).toMatch(/await runPreCheckAsync\(/)
     expect(runner).toMatch(/await runCommandTask\(/)
   })
 
