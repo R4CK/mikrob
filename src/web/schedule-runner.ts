@@ -78,7 +78,7 @@ import {
   describeVerdict,
   type RegistryVerdict,
 } from './schedule-registry.js'
-import { listAgentNames, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { listAgentNames, readAgentRemoteHost, readAgentRemoteConfig, agentDir } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
 import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
@@ -93,6 +93,7 @@ import {
   startAgentProcess,
   sessionExistsOnHost,
   capturePane,
+  readRemoteTranscriptMtime,
   sendEnterToSession,
   clearStaleParkedInput,
   resolveAgentProvider,
@@ -112,6 +113,7 @@ import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } f
 import { withSessionSendLock } from './session-send-lock.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { decideUsageLimitGate, USAGE_LIMIT_PROBE_INTERVAL_MS, type UsageLimitEpisode } from '../usage-limit-gate.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -206,6 +208,12 @@ export interface TaskInflightEntry {
   // `undefined` inside the list means the shared ~/.claude default.
   workingDir: string
   configDirs: ReadonlyArray<string | undefined>
+  // REMOTESAWTURN1022: for a remote (ssh) agent the transcript is on the remote
+  // host, under this absolute workdir (the one the remote launcher cd's into).
+  // The workingDir/configDirs fields point at a local path that has no transcript
+  // for such an agent, so the sawTurn probe reads it over ssh instead. Captured
+  // at injection time for the same reason as configDirs. Unset for a local agent.
+  remoteWorkdir?: string
   // Per-task stuck threshold, resolved at injection time from the task config
   // (see resolveStuckTimeoutMs). Captured on the entry rather than looked up
   // during the sweep so an edit to the schedule mid-run cannot move the
@@ -435,6 +443,43 @@ export function settleOnceAfterRun(
   } catch (err) {
     logger.warn({ err, task: taskName }, 'Once-task could not be switched off -- left enabled')
   }
+}
+
+/**
+ * REMOTESAWTURN1022: has the injected prompt started a turn? Called by the
+ * post-fire sweep until the first yes. 'busy' is the direct observation;
+ * otherwise the newest transcript write must be strictly later than the
+ * injection. A local agent's transcript is read from this machine's disk, a
+ * remote agent's (entry.host) over ssh from the host it runs on, because the
+ * local workingDir/configDirs of a remote agent point at a path that never gets
+ * a transcript. A remote entry without a remoteWorkdir, an unreachable host, or
+ * an unreadable directory gives no evidence (never an ssh call without a
+ * workdir, never a guess).
+ */
+export function probeTurnEvidence(
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'sawTurn' | 'host' | 'workingDir' | 'configDirs' | 'remoteWorkdir'>,
+  paneState: PaneState | null,
+  deps: {
+    readLocal?: (workingDir: string, configDirs: ReadonlyArray<string | undefined>) => number | null
+    readRemote?: (host: string, workdir: string) => number | null
+  } = {},
+): { sawTurn: boolean; mtimeSeen: number | null } {
+  if (entry.sawTurn) return { sawTurn: true, mtimeSeen: null }
+  if (paneState === 'busy') return { sawTurn: true, mtimeSeen: null }
+  let mtimeSeen: number | null
+  if (entry.host == null) {
+    mtimeSeen = deps.readLocal
+      ? deps.readLocal(entry.workingDir, entry.configDirs)
+      : readTranscriptMtimeAcrossConfigDirs(entry.workingDir, entry.configDirs)
+  } else if (entry.remoteWorkdir && paneState != null) {
+    // paneState null = the pane capture over ssh already failed (host
+    // unreachable): the verdict is 'hold' anyway, so a second ssh (up to 3 s)
+    // on every sweep for up to the whole tracking window would only block the sweep.
+    mtimeSeen = (deps.readRemote ?? readRemoteTranscriptMtime)(entry.host, entry.remoteWorkdir)
+  } else {
+    mtimeSeen = null
+  }
+  return { sawTurn: mtimeSeen != null && mtimeSeen > entry.injectedAt, mtimeSeen }
 }
 
 export function decideTaskTimeout(
@@ -2089,6 +2134,7 @@ async function attemptFireTaskUnguarded(
       taskType: task.type,
       // Local agents only: a remote agent's transcript is on its own host.
       ...(host == null ? { sentText: paneOneLine(fullPrompt), typedAt } : {}),
+      ...(host != null ? { remoteWorkdir: readAgentRemoteConfig(agentName).workdir ?? undefined } : {}),
       deliveryPending: true,
     }
     taskInflightMap.set(`${task.name}@${agentName}`, inflightEntry)
@@ -2270,9 +2316,9 @@ export function runHeartbeatGapCheck(nowMs: number = Date.now()): string[] {
 }
 
 export function startHeartbeatGapGuard(): ReturnType<typeof setInterval> {
-  return setInterval(() => {
+  return setInterval(whileNotFrozen('heartbeat-gap-guard', () => {
     try { runHeartbeatGapCheck() } catch (err) { logger.warn({ err }, 'HBFABRIC1003: heartbeat gap check failed') }
-  }, HEARTBEAT_GAP_CHECK_INTERVAL_MS)
+  }), HEARTBEAT_GAP_CHECK_INTERVAL_MS)
 }
 
 export async function runScheduledTaskNow(
@@ -2946,12 +2992,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // other side.
       let lastMtimeSeen: number | null = null
       if (!entry.sawTurn) {
-        if (state === 'busy') {
-          entry.sawTurn = true
-        } else {
-          lastMtimeSeen = readTranscriptMtimeAcrossConfigDirs(entry.workingDir, entry.configDirs)
-          if (lastMtimeSeen != null && lastMtimeSeen > entry.injectedAt) entry.sawTurn = true
-        }
+        const probed = probeTurnEvidence(entry, state)
+        lastMtimeSeen = probed.mtimeSeen
+        if (probed.sawTurn) entry.sawTurn = true
       }
       const decision = decideTaskTimeout(entry, state, now, {
         graceMs: TASK_FIRE_GRACE_MS,
@@ -3076,6 +3119,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
             injectedAt: entry.injectedAt,
             workingDir: entry.workingDir,
             configDirs: entry.configDirs,
+            remoteWorkdir: entry.remoteWorkdir,
             paneState: state,
             mtimeSeen: lastMtimeSeen,
             mtimeAheadOfInjectMs: lastMtimeSeen != null ? lastMtimeSeen - entry.injectedAt : null,
@@ -3521,5 +3565,5 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
   // Run immediately on start (catches missed tasks)
   setTimeout(() => { void runCheck() }, 5000)
-  return setInterval(() => { void runCheck() }, SCHEDULE_TICK_MS)
+  return setInterval(whileNotFrozen('schedule-runner', () => { void runCheck() }), SCHEDULE_TICK_MS)
 }

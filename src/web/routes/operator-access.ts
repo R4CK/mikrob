@@ -7,10 +7,14 @@
 // an operator key itself, it could still flip the owner switches on for an
 // operator key that already exists.
 // Every change lands in config_change_log with the actor.
+// Changing the switches widens what existing operator keys reach, so once a
+// dashboard login exists the PUT takes the owner's session (mayIssueCredentials,
+// DEVKEYFOLLOW1022); reading them stays open to both owner lanes.
 
 import { readBody, json } from '../http-helpers.js'
 import { logConfigChange } from '../../db.js'
 import { normaliseOperatorAccess, readOperatorAccess, writeOperatorAccess } from '../operator-access.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 const OWNER_KINDS = ['session']
@@ -28,6 +32,10 @@ export async function tryHandleOperatorAccess(ctx: RouteContext): Promise<boolea
     return true
   }
   if (method === 'PUT') {
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     let parsed: unknown
     try {
       parsed = JSON.parse((await readBody(req, { maxBytes: MAX_BODY })).toString())

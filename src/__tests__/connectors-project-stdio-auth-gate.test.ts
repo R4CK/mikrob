@@ -12,8 +12,13 @@
 // auth kind. This file now pins that unconditional refusal rather than the session/device
 // allowance it supersedes -- same posture as fleet-import-auth-gate.test.ts (card 657b32f2).
 //
-// Route-level test: the gate runs right after body parsing, before any `claude mcp add` shell-out,
+// Route-level test: the gate runs right after body parsing, before any `claude mcp` CLI call,
 // so a 403 (or its absence) is enough to pin the gate without a real connector pipeline.
+//
+// Koteg 26 (upstream #2187, card 60bd68cea): the route no longer shells out via execShellAsync
+// -- it runs `claude` directly through node:child_process.execFile (argv, no shell). The exec
+// layer to intercept moved with it, or a non-blocked request below would spawn a REAL `claude mcp
+// add` subprocess during this test.
 import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { tryHandleConnectors } from '../web/routes/connectors.js'
@@ -22,8 +27,13 @@ import type { RouteContext } from '../web/routes/types.js'
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
-vi.mock('../web/exec-async.js', () => ({
-  execShellAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+vi.mock('node:child_process', () => ({
+  execFile: (_cmd: string, _args: string[], _opts: unknown, cb?: (err: unknown, stdout: string, stderr: string) => void) => {
+    const callback = typeof _opts === 'function' ? _opts : cb
+    const child = { stdin: { end: vi.fn() } }
+    process.nextTick(() => callback?.(null, '', ''))
+    return child
+  },
 }))
 vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: vi.fn(),

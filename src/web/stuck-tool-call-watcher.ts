@@ -95,6 +95,7 @@ import {
   type PermissionPromptSummary,
 } from '../pane-state.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 const tmuxBin = makeLazyBinResolver('tmux')
 
@@ -1027,5 +1028,5 @@ export function startStuckToolCallWatcher(): NodeJS.Timeout {
     }
   }
   setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
-  return setInterval(() => { void sweep() }, INTERVAL_MS)
+  return setInterval(whileNotFrozen('stuck-tool-call', () => { void sweep() }), INTERVAL_MS)
 }

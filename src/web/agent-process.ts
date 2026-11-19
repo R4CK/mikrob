@@ -48,6 +48,7 @@ import { getCustomProviderOrThrow } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { worksourceRootFor } from './worksource-queue.js'
+import { syncBashSandboxSettings } from './bash-sandbox.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
@@ -60,6 +61,8 @@ import {
   buildSshExec,
   buildRemoteLaunchCommand,
   buildContinueProbeCommand,
+  buildRemoteTranscriptMtimeCommand,
+  parseRemoteTranscriptMtime,
   classifyRunState,
   classifyRunStateFromExit,
   sessionInList,
@@ -2514,6 +2517,26 @@ async function startAgentProcessUnlocked(
     }
   }
 
+  // BASHSANDBOX1022: an agent on the owner's BASH_SANDBOX_AGENTS list runs its Bash in Claude Code's
+  // sandbox, configured by a --settings file this start writes (see bash-sandbox.ts). Fail closed: a
+  // listed agent that cannot get its file, or runs on a remote host the file cannot follow, is not
+  // started -- starting it unsandboxed would turn the switch into a label.
+  let bashSandboxFlag = ''
+  try {
+    const sandboxFile = syncBashSandboxSettings(name)
+    if (sandboxFile) {
+      if (remote.host && remote.workdir) {
+        logger.error({ name }, 'bash-sandbox: agent NOT started (listed in BASH_SANDBOX_AGENTS, but remote agents cannot be sandboxed)')
+        return { ok: false, error: 'bash-sandbox: a remote agent cannot be sandboxed; take it off BASH_SANDBOX_AGENTS' }
+      }
+      bashSandboxFlag = ` --settings ${shSingleQuote(sandboxFile)}`
+      logger.info({ name, path: sandboxFile }, 'bash-sandbox: agent starts with its Bash sandbox settings')
+    }
+  } catch (err) {
+    logger.error({ err, name }, 'bash-sandbox: agent NOT started (fail-closed, its sandbox settings could not be written)')
+    return { ok: false, error: `bash-sandbox: ${err instanceof Error ? err.message : String(err)}` }
+  }
+
   if (remote.host && remote.workdir) {
     // F4 (card 657b32f2, WhiteHat LOW on f1800242): startRemoteAgentProcess builds its launch
     // command from the laptop's own ~/.claude login with no provider-env override at all (see
@@ -3325,7 +3348,7 @@ async function startAgentProcessUnlocked(
     // beats the Homebrew one that carries no packages -- same mechanism already adopted in
     // scripts/watchdog.sh this round.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
@@ -4803,6 +4826,34 @@ export function capturePane(session: string, host: string | null = null): string
     // (a banner otherwise pins detectPaneState 'unknown', blocking scheduler +
     // inter-agent delivery). See stripSessionTitleBanner.
     return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'])))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * REMOTESAWTURN1022: newest transcript write of a remote agent, as a local-clock
+ * epoch ms, read over the existing ssh path. The local clock is taken before the
+ * ssh call (see parseRemoteTranscriptMtime for why that keeps the estimate
+ * conservative). One bounded call; any failure (host unreachable, timeout, no
+ * transcript, garbage output) returns null and never throws, so the caller treats it
+ * as "no evidence", never as a turn.
+ */
+export function readRemoteTranscriptMtime(
+  host: string,
+  workdir: string,
+  deps: {
+    exec?: (file: string, args: string[], timeoutMs: number) => string
+    now?: () => number
+  } = {},
+): number | null {
+  const now = deps.now ?? Date.now
+  const exec = deps.exec ?? ((file: string, args: string[], timeoutMs: number): string =>
+    execFileSync(file, args, { timeout: timeoutMs, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }))
+  try {
+    const localBeforeMs = now()
+    const inv = buildSshExec(host, buildRemoteTranscriptMtimeCommand(workdir))
+    return parseRemoteTranscriptMtime(exec(inv.file, inv.args, 3000), localBeforeMs)
   } catch {
     return null
   }

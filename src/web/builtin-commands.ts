@@ -47,6 +47,8 @@ import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
 import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, withRetry, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent, type HoldState, modelSupportsEffort } from './main-model.js'
 import { contextClear } from './session-control.js'
+import { pullFleetBrake } from './routes/fleet-freeze.js'
+import { readFleetFreeze, REASON_MAX as FLEET_REASON_MAX } from './fleet-freeze.js'
 
 function clip(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
@@ -816,6 +818,39 @@ export function registerBuiltinCommands(): void {
     matches: args => args[0]?.toLowerCase() === 'clear',
     touches: ['context'],
     run: async ctx => { const r = await contextClear(ctx.now); await ctx.reply(withRetry('/context clear', { ok: r.cleared, text: r.text, busy: r.busy }, ctx)) },
+  })
+
+  // KILLSWITCH1022: the red button from the owner's phone. /stop pulls the brake
+  // (freeze: tool calls denied, loops paused, sessions kept); it is a write, so the
+  // owner-chat and inbound-evidence gates of dispatchForChat apply. Lifting it is
+  // NOT a command: this path runs on the shared token, and the unfreeze takes the
+  // owner's login (POST /api/fleet/unfreeze, the #2163 predicate). /resume says so.
+  //
+  // RedHat GO condition 2 on card 51c68eeb (comment 33311): the dashboard's red-bar
+  // Unfeloldás button exists in the markup (web/index.html) but has zero wiring in
+  // web/app.js -- it does nothing. Pointing the owner at it from a reply they will
+  // read on a phone is worse than silence, so this names the two paths that
+  // actually work instead: deleting store/fleet-freeze.json on the machine (the
+  // fleet-freeze.ts module's own "CLI-free way out"), or an authenticated
+  // POST /api/fleet/unfreeze call once a dashboard login exists.
+  const UNFREEZE_HOW = 'A piros sáv "Feloldás" gombja NEM működik (nincs bekötve) -- NE arra várj. Ami tényleg feloldja: a gépen töröld a store/fleet-freeze.json fájlt, VAGY (ha már van dashboard-bejelentkezésed) hívd meg POST /api/fleet/unfreeze-t egy hitelesített session-nel.'
+  registerCommand({
+    name: 'stop', kind: 'write', usage: '/stop <indok>', description: 'piros gomb: a flotta fagyasztása (feloldás: lásd /resume)',
+    run: async (ctx, args) => {
+      const reason = args.join(' ').trim()
+      if (!reason) return reply(ctx, 'Írd mögé az okát: /stop <indok>. A gazda-üzenet és a napló is ezt mutatja.')
+      if (reason.length > FLEET_REASON_MAX) return reply(ctx, `Az indok legfeljebb ${FLEET_REASON_MAX} karakter lehet.`)
+      const state = await pullFleetBrake('freeze', reason, 'owner-command')
+      return reply(ctx, `🛑 A flotta ${state.mode === 'stop' ? 'LEÁLLÍTVA' : 'FAGYASZTVA'}: ${state.reason}\n${UNFREEZE_HOW}`)
+    },
+  })
+  registerCommand({
+    name: 'resume', kind: 'read', description: 'a fagyasztás feloldása: hol és hogyan',
+    run: ctx => {
+      const st = readFleetFreeze()
+      if (!st) return reply(ctx, 'A flotta nincs fagyasztva.')
+      return reply(ctx, `A flotta ${st.mode === 'stop' ? 'leállítva' : 'fagyasztva'} (${st.by}): ${st.reason}\n${UNFREEZE_HOW}`)
+    },
   })
 
   // ÍR, megerősítéssel: planned until after the stabilization (CMD920 2.).

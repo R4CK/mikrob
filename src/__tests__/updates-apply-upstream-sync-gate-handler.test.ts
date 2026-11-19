@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { existsSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import type { RouteContext } from '../web/routes/types.js'
 
 const h = vi.hoisted(() => ({
@@ -34,6 +35,49 @@ vi.mock('node:child_process', async (orig) => ({
     }
     return '' // safe default: empty stdout (e.g. clean porcelain status)
   }),
+  // The pre-check's git probes went async (card 82f05633 + upstream #2193, Koteg 26): the handler
+  // now calls execFileAsync = promisify(execFile) for currentBranch/the fetch/the log range, not
+  // execFileSync. Real execFile defines [util.promisify.custom] to resolve {stdout, stderr} and
+  // attach the live ChildProcess as `.child` on the returned promise (gitOut calls
+  // `pending.child.stdin?.end()`) -- replacing the whole module loses that native behaviour, so
+  // the mock must provide its own [promisify.custom], or the generic promisify fallback resolves
+  // with a bare string and no `.child`, silently breaking every `const { stdout } = await pending`.
+  execFile: Object.assign(
+    vi.fn((file: string, args: string[] = [], options?: unknown, callback?: (err: Error | null, stdout: string, stderr: string) => void) => {
+      const cb = typeof options === 'function' ? options as typeof callback : callback
+      const key = (args || []).join(' ')
+      queueMicrotask(() => {
+        for (const throwKey of h.execThrows) {
+          if (key.includes(throwKey)) { cb?.(new Error(`mocked failure for: ${key}`), '', ''); return }
+        }
+        for (const [matchKey, result] of h.execResults) {
+          if (key.includes(matchKey)) { cb?.(null, result, ''); return }
+        }
+        cb?.(null, '', '')
+      })
+      return { pid: 12345 }
+    }),
+    {
+      // Tracked separately (its own .mock.calls): promisify calls THIS directly and never
+      // touches the plain execFile mock above once the custom symbol is present.
+      [promisify.custom]: vi.fn((file: string, args: string[] = []) => {
+        const key = (args || []).join(' ')
+        const promise = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          queueMicrotask(() => {
+            for (const throwKey of h.execThrows) {
+              if (key.includes(throwKey)) { reject(new Error(`mocked failure for: ${key}`)); return }
+            }
+            for (const [matchKey, result] of h.execResults) {
+              if (key.includes(matchKey)) { resolve({ stdout: result, stderr: '' }); return }
+            }
+            resolve({ stdout: '', stderr: '' })
+          })
+        }) as Promise<{ stdout: string; stderr: string }> & { child: { stdin: { end: () => void } } }
+        promise.child = { stdin: { end: vi.fn() } }
+        return promise
+      }),
+    },
+  ),
   spawn: vi.fn((file: string, args: string[] = []) => {
     h.spawnCalls.push({ file, args })
     const ee = new EventEmitter() as EventEmitter & { pid: number; unref: () => void }
@@ -141,6 +185,8 @@ describe('POST /api/updates/apply refuses an open UPSTREAM-SYNC card (card 82f05
     // itself occurred, not just the final verdict.
     h.execResults.set('log --format=%s', 'chore: noop\n')
     await callApply()
+    // Only this gate's own branch lookup (git.currentBranch, shared with the rest of the route)
+    // went async this round -- the gate's own fetch/log probes still run through execFileSync.
     const execFileSync = (await import('node:child_process')).execFileSync as unknown as ReturnType<typeof vi.fn>
     const fetchCalls = execFileSync.mock.calls.filter((call: unknown[]) => (call[1] as string[] | undefined)?.includes('fetch'))
     expect(fetchCalls.length).toBeGreaterThan(0)

@@ -22,6 +22,7 @@ const claudeResolveState = vi.hoisted(() => ({ shouldThrow: true, binPath: '/bin
 const execFileCallLog = vi.hoisted(() => ({ newSessionEnvs: [] as (NodeJS.ProcessEnv | undefined)[] }))
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
+  const { promisify } = await import('node:util')
   return {
     ...actual,
     execFileSync: (file: string, args?: readonly string[], options?: unknown) => {
@@ -31,6 +32,33 @@ vi.mock('node:child_process', async (importOriginal) => {
       }
       return actual.execFileSync(file, args as string[], options as Parameters<typeof actual.execFileSync>[2])
     },
+    // `tmux new-session` moved off execFileSync onto execFileAsync = promisify(execFile) (Koteg 26,
+    // upstream #2186) -- real execFile defines [util.promisify.custom] to resolve {stdout, stderr}
+    // and attach the live ChildProcess as `.child`; replacing the module loses that, so the mock
+    // provides its own, logging the env the same way the execFileSync branch above did.
+    execFile: Object.assign(
+      (file: string, args?: readonly string[], options?: unknown, callback?: (...a: unknown[]) => void) => {
+        const cb = typeof options === 'function' ? options as typeof callback : callback
+        if (args?.[0] === 'new-session') {
+          const env = (options as { env?: NodeJS.ProcessEnv } | undefined)?.env
+          execFileCallLog.newSessionEnvs.push(env)
+        }
+        return actual.execFile(file, args as string[], options as Parameters<typeof actual.execFile>[2], cb as never)
+      },
+      {
+        [promisify.custom]: (file: string, args?: readonly string[], options?: unknown) => {
+          if (args?.[0] === 'new-session') {
+            const env = (options as { env?: NodeJS.ProcessEnv } | undefined)?.env
+            execFileCallLog.newSessionEnvs.push(env)
+          }
+          const promise = (promisify(actual.execFile) as (f: string, a?: readonly string[], o?: unknown) => Promise<{ stdout: string; stderr: string }>)(
+            file, args, options,
+          ) as Promise<{ stdout: string; stderr: string }> & { child?: unknown }
+          promise.child = { stdin: { end: () => {} } }
+          return promise
+        },
+      },
+    ),
   }
 })
 
@@ -246,7 +274,7 @@ describe('spawnBackgroundTask: a PATH gap must not leave an orphaned running row
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
     const { getRunningBackgroundTasks } = await import('../db.js')
 
-    expect(() => spawnBackgroundTask('marveen', 'test prompt')).toThrow(/claude/)
+    await expect(spawnBackgroundTask('marveen', 'test prompt')).rejects.toThrow(/claude/)
     expect(getRunningBackgroundTasks()).toEqual([])
   })
 
@@ -255,7 +283,7 @@ describe('spawnBackgroundTask: a PATH gap must not leave an orphaned running row
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
     const { getBackgroundTasks } = await import('../db.js')
 
-    spawnBackgroundTask('samu', 'a normal prompt')
+    await spawnBackgroundTask('samu', 'a normal prompt')
     // includeFinished=true: the real tmux spawn inside the try/catch may itself fail in this
     // sandboxed test environment, which synchronously marks the row 'failed' -- that path is
     // already covered by the existing catch-block behavior, not what this test pins. What
@@ -306,7 +334,7 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
   it('strips every channel bot-token and state-dir var, even though the dashboard process has them set', async () => {
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
 
-    spawnBackgroundTask('marveen', 'another prompt')
+    await spawnBackgroundTask('marveen', 'another prompt')
 
     expect(execFileCallLog.newSessionEnvs.length).toBe(1)
     const spawnedEnv = execFileCallLog.newSessionEnvs[0]
@@ -318,7 +346,7 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
   it('leaves unrelated env vars (PATH, BG_PROMPT) untouched', async () => {
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
 
-    spawnBackgroundTask('marveen', 'yet another prompt')
+    await spawnBackgroundTask('marveen', 'yet another prompt')
 
     const spawnedEnv = execFileCallLog.newSessionEnvs[0]
     expect(spawnedEnv?.PATH).toBe(process.env.PATH)
@@ -364,7 +392,7 @@ describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNI
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
     const prompt = 'repro prompt for card 68eaeb93, with spaces'
 
-    const task = spawnBackgroundTask('marveen', prompt)
+    const task = await spawnBackgroundTask('marveen', prompt)
     if ('error' in task) throw new Error(task.error)
     sessionName = task.tmux_session ?? undefined
 

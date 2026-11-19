@@ -8299,6 +8299,23 @@ button.graph-rel-jump:focus-visible { outline: 2px solid var(--accent); outline-
   color: var(--text-muted);
   margin-top: 6px;
 }
+
+/* "Log in to add a plan" (SETUPTOKENWIZ1022): link, code field, submit. */
+.claude-plans-login-step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+/* display:flex would override the hidden attribute without this. */
+.claude-plans-login-step[hidden] {
+  display: none;
+}
+.claude-plans-login-step .form-row {
+  width: 100%;
+  align-items: center;
+}
 .claude-plans-form-actions {
   display: flex;
   gap: 8px;
@@ -11523,4 +11540,25 @@ body {
   .llm-ledger-toolbar { flex-direction: column; align-items: flex-start; }
   .llm-ledger-totals { gap: 16px; }
   .llm-ledger-budget-cell { flex-wrap: wrap; min-width: 0; }
+}
+
+/* KILLSWITCH1022: the fleet's red button and its banner. */
+.fleet-freeze-btn {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.fleet-freeze-btn:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.fleet-freeze-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.fleet-freeze-banner {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+  font-weight: 600;
 }
