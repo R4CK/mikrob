@@ -27,7 +27,7 @@ ezen az oldalon, a saját szabályuk index-sorában idézve (lásd a Munkavégz�
 Személyiség alatti sorokat) -- nem csak a linkelt fájlban (WhiteHat2 H1, ugyanaz a komment).
 
 - **Munkavégzési szabályok (csapat-workflow)** -- egy index-sor MINDEN számozott szabályra (1-22,
-  a betűs alszabályokkal 1b-1e, 3a, 4a-4f, 6a/6b, 8a/8b együtt, 37 sor):
+  a betűs alszabályokkal 1b-1e, 3a, 4a-4g, 6a/6b, 8a/8b, 22a-22e együtt, 43 sor):
   - **1.** **Felbontás Fázis -> Feladat -> alfeladat -> al-alfeladat (4+ szint).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **1b.** **Terv-fázisú grilling kockázatos/nehezen-visszafordítható Fázis/Feladat-kártyánál, MIELŐTT `in_progress`-be kerül (kártya 1161c9ed).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **1c.** **Valódi sorrend-függőség subtaskok között EXPLICIT predecessor/successor él legyen, ne csak próza (Peti szabály 2026-09-04).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
@@ -43,6 +43,7 @@ Személyiség alatti sorokat) -- nem csak a linkelt fájlban (WhiteHat2 H1, ugya
   - **4d.** **Egy suite-/teszt-SZÁM egy verdiktben/REVIEW-ban MONDJA MEG, MELYIK FÁN/SHÁN mérték (WhiteHat javaslata, 2026-09-13).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **4e.** **Config-only munkánál (nincs commit) a `Gate-SHA:` explicit `n/a (config-only)` legyen, nem egy odakeveredett sha (kártya 1d0dda52, Cybered lelete f72ee333 delta-gate-jén).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **4f.** **Egy sima NO-GO/FAIL önmagában NEM rögzít proposert -- csak egy explicit `Fix-Direction:` sor teszi (MikroB döntés, kártya c188f357, komment 21553, a `Gate-SHA:` minta kiterjesztése, RedHat 16225 eredeti szándéka szerint).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
+  - **4g.** **Minden REVIEW/verdikt-állítás jelölje a típusát: MEGFIGYELÉS, LEVEZETÉS, KÖVETKEZTETÉS vagy ISMERETLEN (rea-ötlet [morluto/rea, MIT], kártya c77013a1).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **5.** **Fázis automatikus lezárása.** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **6.** **A munka SOHA nem áll le tétlenül -- csak akkor lehet idle, ha elfogyott az 5 órás Claude keret.** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
   - **6a.** **A `planned` oszlopban NEM lehet felelős nélküli kártya -- ez MikroB feladata (Peti szabály 2026-08-14).** (/home/neon/marveen/docs/rules/munkavegzesi-szabalyok.md)
@@ -245,7 +246,7 @@ Ha azért akad el a munka, mert egy ügynök elérte az 5 órás Claude usage-li
 
 ## Kontextus-tömörítés küszöb -- SZABÁLY (Peti 2026-08-14)
 
-Ügynök-session kontextusa NE nőhessen a modell kontextusablakának 50%-a fölé anélkül, hogy tömörítés (`/compact`) el ne indulna (Peti szabály, kártya 3bad1678 "Token 6", 2026-11-15 -- a korábbi 75%-os küszöb lejjebb került, mert a tömörítés maga olcsóbb, mint a hordozott kontextus volumene). A küszöböt a kontextus-tömörítő eszköz (`store/context-compact-monitor.sh`) érvényesíti százalékos alapon (a modell tényleges kontextusablakának 50%-a, env `COMPACT_PCT`-tel konfigurálható), nem rögzített token-számmal -- mert a rögzített szám modellenként/agensenként mást jelent. Ez a szabály előzi meg azt a hibaosztályt, ami 2026-08-13 este többszöri lefagyást okozott (backend/backend2/cybered kontextusa a ~100%-os plafonig nőtt, mert a tömörítő eszköz 8 napig csak dry-run maradt, sosem lett élesítve). Az eszköznek ÉLESNEK kell lennie (tényleges `/compact` küldés, nem csak logolás) -- egy dry-run-only tömörítő-eszköz befejezetlen kontrollnak számít, nem védelemnek.
+Ügynök-session kontextusa NE nőhessen a modell kontextusablakának 50%-a fölé, DE LEGFELJEBB 200 000 tokenig, anélkül, hogy tömörítés (`/compact`) el ne indulna (Peti szabály, kártya 3bad1678 "Token 6", 2026-11-15 -- a korábbi 75%-os küszöb lejjebb került, mert a tömörítés maga olcsóbb, mint a hordozott kontextus volumene). A küszöböt a kontextus-tömörítő eszköz (`store/context-compact-monitor.sh`) érvényesíti százalékos alapon (a modell tényleges kontextusablakának 50%-a, env `COMPACT_PCT`-tel konfigurálható), nem rögzített token-számmal -- mert a rögzített szám modellenként/agensenként mást jelent -- DE a százalékos érték felülről sapkázott egy `COMPACT_MAX_TOKENS` (alapértelmezés 200 000, env-felülírható, pozitív egész-validált) korláttal: egy 1M-ablakos modellen a sima százalék-szabály 500k-s küszöböt adna, és egy mért tömörítés 240-420k tokent olvas vissza (kártya 2ad5ba6c, Peti 13835, 2026-11-14) -- a sapka ezt a drága, ritkán induló tömörítést cseréli egy olcsóbb, korábbi triggerre. Kis ablakos modellen (ahol a százalék már a sapka alatt van) a sapka nem változtat semmit. Ez a szabály előzi meg azt a hibaosztályt, ami 2026-08-13 este többszöri lefagyást okozott (backend/backend2/cybered kontextusa a ~100%-os plafonig nőtt, mert a tömörítő eszköz 8 napig csak dry-run maradt, sosem lett élesítve). Az eszköznek ÉLESNEK kell lennie (tényleges `/compact` küldés, nem csak logolás) -- egy dry-run-only tömörítő-eszköz befejezetlen kontrollnak számít, nem védelemnek.
 
 ## Ütemezett feladatok
 
@@ -507,6 +508,11 @@ grep -i '^x-memory-search' /tmp/mem-fejlec-mikrob.txt
 
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a
 `&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
+
+Időszakra szűrés: `&date=tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)
+vagy `&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN`, ékezet nélkül, kódolva. A szűrő nem lazul: érvénytelen
+kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen
+használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).
 
 NYERS ÉKEZET A `q`-BAN = HTTP 400, ÜRES TÖRZZSEL. A `q=funkcionális` alak 400-at ad, a
 `q=funkcion%C3%A1lis` és a `-G --data-urlencode "q=..."` alak 200-at. A 400-on NINCS

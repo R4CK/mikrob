@@ -68,7 +68,7 @@ describe('PUT /api/kanban/:id -- unknown fields are rejected, no-ops do not refr
   })
 
   it('accepts the dashboard whole-card PUT (read-only fields + embedded arrays)', async () => {
-    createKanbanCard({ id: 'c4', title: 'Card four', status: 'planned', assignee: 'samu' })
+    createKanbanCard({ id: 'c4', title: 'Card four', status: 'planned', assignee: 'samu', project: 'test' })
     const card = getKanbanCard('c4')!
     // shape of web/app.js's { ...card, assignee } send: base columns + seq +
     // last_status_at + the GET-embedded labels/blockers arrays.
