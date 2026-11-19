@@ -28787,3 +28787,18 @@ digit-length rejection path (the fix bounds STRING LENGTH, not value), added for
 of the named value. No behavioural change, test-only.
 
 Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-19 -- card 0c03aa06 (delta: merge-resolution fix never committed)
+
+**Döntés:** The 29bbe6b91 origin/develop merge resolution removed develop's two inline
+`_checkpoint_coverage` calls from `gate-closure-check.py`'s FABRICATED-detection block (so only
+the multi-sha overlay decides CHECKPOINT_FAIL) -- but that edit was made and selftest-verified in
+the worktree's uncommitted working tree, never `git add`+committed, so the pushed 29bbe6b91 still
+carried develop's original single-sha branches. CYBERED NO-GO 34202 / QA2 FAIL 34203 caught it
+(gate-closure-check.selftest.py 2/209 red at 29bbe6b91: F1 multi-sha-second-covers, F3
+CHECKPOINT_NONE). Root-caused via `git status`/`git diff HEAD` showing the file as
+uncommitted-modified; fixed by committing exactly that already-reviewed diff (132709e59, 1 file,
+-6/+2 lines) and verifying `git diff --stat HEAD` is empty post-commit before re-running the
+selftest (209/209 PASS on the committed state, not the working tree).
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
