@@ -71,6 +71,22 @@ check "$RC4" "7" "nested uppercase .F90: build refused"
 CALLED4=$(grep -c "graphify called" "$GRAPHIFY_CALL_LOG")
 check "$CALLED4" "0" "nested uppercase .F90: the real build path was never reached"
 
+# --- case 5: a SYMLINK named like an uppercase-F file is also caught (b7540305 follow-up,
+# 2d5ad4d2): the original predicate was -type f only, so a symlink named x.F90 pointing at an
+# innocuous target walked straight past the guard and reached the real binary -- the bypass this
+# card exists to close. The symlink's target does not matter; the NAME is what the vuln extractor
+# keys off of, so the guard must catch the link itself regardless of what it resolves to. ---------
+SYMLINK="$TMP/symlink-repo"
+mkdir -p "$SYMLINK"
+echo 'not fortran at all' > "$SYMLINK/innocuous.txt"
+ln -s "$SYMLINK/innocuous.txt" "$SYMLINK/canary.F90"
+: > "$GRAPHIFY_CALL_LOG"
+bash "$SCRIPT" build "$SYMLINK" > "$TMP/out5" 2>&1
+RC5=$?
+check "$RC5" "7" "symlink canary x.F90: build refused, bypass closed"
+CALLED5=$(grep -c "graphify called" "$GRAPHIFY_CALL_LOG")
+check "$CALLED5" "0" "symlink canary x.F90: the real build path was never reached"
+
 echo
 echo "selftest: $((PASS+FAIL)) case(s), PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -gt 0 ]; then

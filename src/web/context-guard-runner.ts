@@ -1,4 +1,4 @@
-import { statSync, readFileSync, writeFileSync } from 'node:fs'
+import { statSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
@@ -22,6 +22,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation, paneShowsContextSaturationHardError } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir, readTranscriptTailFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import { setDeliveryHoldProbe, type DeliveryHold } from './delivery-hold.js'
 import {
   readPendingResumes,
   writePendingResumes,
@@ -47,12 +48,14 @@ import {
   INITIAL_GUARD_STATE,
   READY_TIMEOUT_MS,
   RESUME_GIVE_UP_REASON,
+  BUSY_OVERDUE_REASON_PREFIX,
   STALE_REFRESH_REASON_PREFIX,
   SATURATION_CREDIBLE_MIN_PCT,
   saturationBannerCredible,
   usageLimitEvidenceFromTranscript,
   usageLimitVerdict,
   USAGE_LIMIT_MAX_PARK_MS,
+  buildRestartLogEntry,
   type GuardState,
   type HandoffStaleness,
   type GuardInputs,
@@ -92,6 +95,13 @@ const SATURATION_OVERRIDE_TTL_MS = 3 * INTERVAL_MS
 // (context-guard-resume-store.ts) and re-armed by restorePendingResumes() when
 // the runner starts.
 const guardStates = new Map<string, GuardState>()
+
+// Agents with a resume send in flight, for contextGuardDeliveryHold below (delivery-hold.ts):
+// the one stretch between the sweep's own inject-resume send and its outcome that no guard
+// phase covers, so the router must not deliver a message into it. Set/cleared only around the
+// sweep's own send (this fork has no separate immediate-delivery loop, unlike upstream's
+// resumeLoops/resumeTargetRunning -- not ported here, out of scope for this round).
+const resumeSending = new Set<string>()
 
 // Write-through mirror of the persisted resume obligations. Held in memory so
 // the per-sweep "drop if present" checks cost no I/O; the file is written only
@@ -238,6 +248,23 @@ function handoffPathFor(name: string): string {
   return join(agentConfigRoot(name), 'HANDOFF.md')
 }
 
+// Structured, per-resume restart log (card d66b7681, MikroB GO msg 18804 condition 2). A plain
+// JSONL append, same shape as channel-event-log.ts -- one line per resume injection, nothing to
+// read atomically, so appendFileSync is enough (no concurrent-writer risk worse than an interleaved
+// line, which a line-oriented JSONL reader tolerates).
+const RESTART_LOG_PATH = process.env.CONTEXT_GUARD_RESTART_LOG_PATH ?? join(PROJECT_ROOT, 'store', 'context-guard-restart-log.jsonl')
+
+function appendRestartLogEntry(name: string, hadHandoff: boolean, staleMinutes: HandoffStaleness): void {
+  try {
+    const entry = buildRestartLogEntry(name, hadHandoff, staleMinutes, Date.now())
+    appendFileSync(RESTART_LOG_PATH, JSON.stringify(entry) + '\n')
+  } catch (err) {
+    // Observability, not a control path: losing this line must never block or retry the resume
+    // injection itself, only be noted.
+    logger.warn({ err, name }, 'context-guard: failed to append restart-log entry')
+  }
+}
+
 function handoffMtime(name: string): number | null {
   try { return statSync(handoffPathFor(name)).mtimeMs } catch { return null }
 }
@@ -369,7 +396,14 @@ export function resumePrompt(
       // questions; say the gap out loud and route the agent to the live
       // sources FIRST for the uncovered window.
       ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, DE ELAVULT: az utolsó ~${staleMinutes} perc munkája NINCS benne. ` +
-        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. `
+        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. ` +
+        // card d66b7681 (MikroB GO, msg 18804, condition 1): a backend3 restart
+        // (~30 perc elavult handoff) dupla landolással végződött -- a puszta
+        // FIGYELEM-sor nem volt elég konkrét ahhoz, hogy megállítsa. Ez a sor
+        // egy MÉRHETŐ, KONKRÉT elsőlépés, nem csak egy újabb figyelmeztetés.
+        `KÖTELEZŐ ELSŐ LÉPÉS, MIELŐTT BÁRMILYEN land/push/PUT done (vagy más visszafordíthatatlan lépés) megtörténne: ` +
+        `futtasd \`git ls-remote\` + \`git cat-file -e\` MINDEN sha-ra, amit a handoff megnevez (már landolt / pusholt állapotnak állít), ` +
+        `és olvasd újra az ott megnevezett MINDEN kártya aktuális kanban-státuszát (GET /api/kanban/<id>) -- ne a handoff szava szerint, a MÉRÉS szerint dönts arról, hogy valami már megtörtént-e. `
       : `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója. `
   return (
     base + source +
@@ -833,6 +867,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   }
   if (decision.action === 'none') {
     if (decision.reason === RESUME_GIVE_UP_REASON) await reportResumeGiveUp(name)
+    if (decision.reason.startsWith(BUSY_OVERDUE_REASON_PREFIX)) logger.warn({ name, reason: decision.reason }, 'context-guard: pane still busy far past the handoff deadline -- restart stays deferred')
     // Idle-flush non-decisions carry the measurement that blocked them
     // ("quiet for only 4m of 20m"), which is the only way to see the tier
     // failing to reach its threshold. It matters because the idle clock is the
@@ -1011,6 +1046,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         // GUARDHITELES903: anchored like the handoff request -- the resume
         // prompt steers a fresh session's entire first turn.
         let outcome: Awaited<ReturnType<typeof sendSystemDirective>>
+        resumeSending.add(name)
         try {
           outcome = await sendSystemDirective(
             name,
@@ -1022,9 +1058,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // the text already landed, and a second copy is worse than none.
           dropPendingResume(name, 'resume delivery threw')
           throw err
+        } finally {
+          resumeSending.delete(name)
         }
         if (outcome === 'sent') {
           dropPendingResume(name, 'resume delivered')
+          appendRestartLogEntry(name, hadHandoff, state.handoffStaleMinutes)
         } else {
           // Nothing was injected ('aborted-busy' / 'skipped-locked'): keep
           // the obligation and stay in await-ready, so the next sweep retries
@@ -1122,7 +1161,53 @@ export function getHardGuardPhase(name: string): string {
   return guardStates.get(name)?.phase ?? 'idle'
 }
 
+// The hold end already reported as lapsed, per agent: one warn per hold, not one
+// per router tick. One entry per agent, so it cannot grow with time.
+const lapsedHoldLogged = new Map<string, number>()
+
+function lapsed(name: string, phase: string, untilMs: number, nowMs: number): null {
+  if (lapsedHoldLogged.get(name) !== untilMs) {
+    lapsedHoldLogged.set(name, untilMs)
+    logger.warn({ name, phase, overdueMs: nowMs - untilMs }, 'context-guard: delivery hold lapsed past the phase deadline -- delivering to this agent again (fail-open)')
+  }
+  return null
+}
+
+/**
+ * The message router's delivery hold for this agent (delivery-hold.ts): from the
+ * handoff request until the fresh session has its resume prompt.
+ *
+ * - A resume prompt being typed right now holds, whatever the phase: the sweep's
+ *   inject-resume has already moved the state to cooldown when it sends, so this
+ *   is the one stretch the phase does not cover, and a message pasted now would
+ *   land in front of the resume. Bounded by how long a resume can be owed at all
+ *   (the obligation's restart time + PENDING_RESUME_TTL_MS + one sweep), which
+ *   covers both the in-run ready deadline and the longer one a restored
+ *   obligation gets: a send that never returns must not keep the inbox shut.
+ * - await-handoff and await-ready hold until the phase deadline plus one sweep.
+ *   The end is fixed by the deadline, never by `now`: a phase can outlast its
+ *   deadline (a deferral keeps await-handoff past it), and a hold renewed from
+ *   `now` on every look would last exactly as long as that does. Past it the hold
+ *   lapses, with one warn, and the agent's rows flow again (fail-open).
+ */
+export function contextGuardDeliveryHold(name: string, nowMs: number): DeliveryHold | null {
+  if (resumeSending.has(name)) {
+    const owed = pendingResumes[name]
+    // No owed resume while one is being sent should not happen; if it does, hold nothing.
+    if (!owed) return null
+    const untilMs = owed.restartedAtMs + PENDING_RESUME_TTL_MS + INTERVAL_MS
+    return nowMs < untilMs ? { phase: 'resume-sending', untilMs } : lapsed(name, 'resume-sending', untilMs, nowMs)
+  }
+  const st = guardStates.get(name)
+  if (!st || (st.phase !== 'await-handoff' && st.phase !== 'await-ready')) return null
+  const untilMs = st.deadlineMs + INTERVAL_MS
+  return nowMs < untilMs ? { phase: st.phase, untilMs } : lapsed(name, st.phase, untilMs, nowMs)
+}
+
 export function startContextGuardRunner(): NodeJS.Timeout {
+  // Before anything can put an agent into a restart sequence -- including the
+  // await-ready states re-armed just below.
+  setDeliveryHoldProbe(contextGuardDeliveryHold)
   // Before the first sweep can run, so an agent restarted by the
   // previous dashboard process is not re-armed at 'idle' and left without its
   // resume prompt.

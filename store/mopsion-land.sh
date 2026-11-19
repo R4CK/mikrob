@@ -68,7 +68,18 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # MikroB fleet's OWN store, not in this script's $MAIN (the mopsion product repo), since the
 # switch is about the fleet orchestrator being degraded, not about mopsion itself.
 # shellcheck source=./degraded-orchestrator-land-guard-lib.sh
-. "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"
+# Card e3cf26d0 (RedHat/WhiteHat LOW-2 on d5638d28): the old bare `.` left a missing/unreadable
+# lib as a silent "command not found" on check_degraded_orchestrator_guard below (set -u aborts on
+# an unbound VARIABLE, not on a failed/missing command, so the script kept going -- fail-open on
+# the one failure mode that matters most: the check itself cannot run).
+if ! . "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"; then
+  die 3 "degraded-orchestrator-land-guard-lib.sh missing or failed to source -- refusing to land without this check (card e3cf26d0)"
+fi
+# Card e3cf26d0 round 4 (cybersec2 LOW, comment 32575, same fail-open-on-crash family as F1):
+# a lib that sources cleanly but is empty/truncated before defining the function leaves
+# check_degraded_orchestrator_guard undefined -- the source itself returns 0, so the check above
+# alone does not catch it, and the call below would only print "command not found" and continue.
+declare -F check_degraded_orchestrator_guard >/dev/null || die 3 "degraded-orchestrator-land-guard-lib.sh sourced but did not define check_degraded_orchestrator_guard (truncated/empty lib?) -- refusing to land without this check (card e3cf26d0)"
 if [ "${1:-}" != "--selftest" ]; then
   _dgi_actor=""
   _dgi_args=("$@")
@@ -651,19 +662,72 @@ if [ "${1:-}" = "--selftest" ]; then
   # Card d5638d28 round 4 (CYBERED NO-GO 32270 Finding 2): the F4d case above only ever tried
   # no --actor at all -- RedHat's own mutant (widening the shared lib's actor allowlist to accept
   # ANY non-empty name) left this selftest green, because nothing here ever supplied an --actor.
+  # Card 2ba008f2 round 3: pin a nonexistent MIKROB_SESSION_OUTAGE_PATH so this case (and the
+  # non-owner one below) do not depend on whether a REAL outage happens to be active right now.
+  NOOUT="$(mktemp -d)/no-outage.json"
   n=$((n+1))
-  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$NOOUT" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
   case "$out" in
     *"degraded-orchestrator mode is ON"*) echo "  FAIL degraded-orchestrator owner bypass: --actor mikrob was still refused: $out"; fail=1 ;;
   esac
 
   n=$((n+1))
-  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor someone-else 2>&1)"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$NOOUT" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor someone-else 2>&1)"
   rc=$?
   case "$out" in
     *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator non-owner actor: wrong exit code $rc"; fail=1; } ;;
     *) echo "  FAIL degraded-orchestrator non-owner actor: guard did not refuse a non-owner --actor: $out"; fail=1 ;;
   esac
+
+  # Card 2ba008f2 round 3 (WhiteHat2 probe on origin/develop): the --actor mikrob bypass above
+  # must NOT apply while a session outage is active, even though the switch itself is ON.
+  OUTJ="$(mktemp -d)/outage.json"
+  printf '{"active": true, "heartbeat": %s}' "$(date +%s)" > "$OUTJ"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator owner bypass during outage: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator owner bypass during outage: --actor mikrob was NOT refused while the session outage marker is active: $out"; fail=1 ;;
+  esac
+
+  # Same outage marker, but the switch itself is OFF: must proceed normally.
+  DGSWOFF="$(mktemp -d)/switch-off.json"
+  printf '{"enabled": false}' > "$DGSWOFF"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSWOFF" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) echo "  FAIL switch OFF during outage: lander refused even though the switch itself is OFF: $out"; fail=1 ;;
+  esac
+
+  # Round 4 (CYBERSEC NO-GO 32558 F1): _session_outage_active's python3 subprocess crashing (exit
+  # 1 / 137 / 139) must refuse the --actor mikrob bypass, same as a fresh active marker -- see the
+  # full rationale on marveen-land.sh's own copy of this case. The stub crashes ONLY the
+  # outage-check's own inline script and passes every other python3 call through to the real
+  # interpreter.
+  CRASHBIN="$(mktemp -d)"
+  REAL_PYTHON3="$(command -v python3)"
+  cat > "$CRASHBIN/python3" <<STUBEOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    *FileNotFoundError*) exit "\${STUB_CRASH_CODE:-1}" ;;
+  esac
+done
+exec "$REAL_PYTHON3" "\$@"
+STUBEOF
+  chmod +x "$CRASHBIN/python3"
+  for code in 1 137 139; do
+    n=$((n+1))
+    out="$(STUB_CRASH_CODE=$code PATH="$CRASHBIN:$PATH" DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+    rc=$?
+    case "$out" in
+      *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL outage-check python3 crash (exit $code) refuses: wrong exit code $rc"; fail=1; } ;;
+      *) echo "  FAIL outage-check python3 crash (exit $code) refuses: --actor mikrob was NOT refused: $out"; fail=1 ;;
+    esac
+  done
+  rm -rf "$CRASHBIN"
+
   rm -rf "$(dirname "$DGSW")"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"

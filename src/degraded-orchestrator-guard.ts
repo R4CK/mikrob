@@ -52,17 +52,21 @@ function classifySwitchPayload(parsed: unknown): DegradedOrchestratorState {
 // a CALLER-SET env override that resolves to nothing as unreadable (fail-closed), while this
 // reader still fell back to 'off' for ANY missing path -- including an explicit
 // DEGRADED_ORCHESTRATOR_SWITCH override, a caller-controlled misconfiguration, not evidence the
-// owner turned degraded mode off. The distinction is "was the env var set", not "was an explicit
-// `path` argument given" -- every real caller (the kanban guards, the agent-start route) always
-// calls this with NO argument, relying on the default; only tests pass an explicit path, and they
-// do so to exercise an arbitrary fixture file, not the env-override semantics specifically. So an
-// explicit `path` argument keeps the OLD missing-path-is-OFF behaviour (unchanged, still used by
-// most of this module's own tests), and ONLY the no-argument/env-override path gets the new rule.
+// owner turned degraded mode off.
+//
+// Card e3cf26d0 (MikroB msg 20096, QA2 FAIL comment 32542): decision 32246(b) applies to the
+// explicit-`path`-ARGUMENT form too, not just the env override -- an explicit path a caller passes
+// is the SAME kind of caller-controlled value as the env var, and a missing one is just as much an
+// anomaly, not evidence of "owner turned it off". The ONLY path whose absence is genuinely OFF is
+// the real production default itself (Kesz, ha #1 on card d5638d28): no env override AND no
+// explicit argument, i.e. the literal degradedOrchestratorSwitchPath() nobody has ever pointed
+// anywhere else.
 export function readDegradedOrchestratorState(explicitPath?: string): DegradedOrchestratorState {
   const envOverride = process.env.DEGRADED_ORCHESTRATOR_SWITCH
   const path = explicitPath ?? degradedOrchestratorSwitchPath()
   if (!existsSync(path)) {
-    return explicitPath === undefined && envOverride ? 'unreadable' : 'off'
+    const isGenuineDefault = explicitPath === undefined && !envOverride
+    return isGenuineDefault ? 'off' : 'unreadable'
   }
   try {
     return classifySwitchPayload(JSON.parse(readFileSync(path, 'utf-8')))
@@ -72,8 +76,8 @@ export function readDegradedOrchestratorState(explicitPath?: string): DegradedOr
 }
 
 /** True when the 3 gated actions (done, land, agent-start) must be refused. */
-export function isDegradedOrchestratorBlocking(path?: string): boolean {
-  return readDegradedOrchestratorState(path) !== 'off'
+export function isDegradedOrchestratorBlocking(): boolean {
+  return readDegradedOrchestratorState() !== 'off'
 }
 
 /**
@@ -90,15 +94,22 @@ export function isDegradedOrchestratorBlocking(path?: string): boolean {
  * proposed a deny-by-default credential-scope fence (auth-device-keys.ts/operator-gate.ts pattern)
  * instead. MikroB (msg 19527): ship this guard as-is, track the fence as card 2ba008f2, and make it
  * a hard precondition before any degraded-orchestrator loop is ever wired to call these endpoints.
+ *
+ * Card e3cf26d0 (RedHat/WhiteHat LOW on d5638d28): this and isDegradedOrchestratorBlocking() used
+ * to take an optional explicit `path`, which kept the OLD missing-path-is-OFF rule even after the
+ * env-override rule above was tightened to fail closed -- no production caller ever passed one
+ * (every real call site below passes none), but the parameter stayed reachable for a future one
+ * to accidentally pick up the weaker reading. Dropped from both PUBLIC functions; the lower-level
+ * readDegradedOrchestratorState() keeps the parameter for its own direct unit tests, which
+ * exercise the two-path contract on purpose.
  */
 export function degradedOrchestratorRefusal(
   actionLabel: string,
   force: boolean,
-  actor?: string,
-  path?: string
+  actor?: string
 ): string | null {
   if (isForceActor(force, actor)) return null
-  const state = readDegradedOrchestratorState(path)
+  const state = readDegradedOrchestratorState()
   if (state === 'off') return null
   return state === 'unreadable'
     ? `degraded-orchestrator guard: ${degradedOrchestratorSwitchPath()} is unreadable/corrupt -- refusing ${actionLabel} fail-closed (card d5638d28)`

@@ -909,14 +909,40 @@ def _find_function_bodies(cmd):
 # `! { curl ...; }`, `time { curl ...; }` were all ALLOW because "then "/"do "/"else "/"! "/"time "
 # precede the brace, not `;`/newline/`|`/`&`/`(`. Reproduced and fixed by also accepting a `{`
 # preceded by one of those keywords (word boundary, so e.g. a variable literally named `thething`
-# does not false-match). Deliberately NOT adding `)` to the punctuation class even though
-# `case x in x) { curl ...; };; esac` has the same gap: a bare `)` also ends a function
-# DEFINITION's parameter list (`f(){ ... }`), which this scan must never match (see the big
-# comment above -- that double-fire was already tried and reverted once). Fixing the case-pattern
-# shape needs its own, narrower lookbehind that can tell the two `)` apart; left open, not blocked
-# on here.
+# does not false-match).
+#
+# Card 89ccf629 (RedHat R1 follow-up on 7e01b349, comment 15353): three more ALLOW gaps in the
+# same class, named in that follow-up.
+#
+# (1) `if { curl ...; }; then` -- the brace sits in the IF CONDITION itself, directly after the
+# literal word "if", which the keyword list above never included (it has "elif" but not "if" --
+# a plain oversight, not a deliberate exclusion: an if-condition brace is structurally identical
+# to the while/until-condition brace already covered). Added "if" to the keyword alternation.
+#
+# (2) `case x in x) { curl ...; };; esac` -- a bare `)` ends a case PATTERN here, but a bare `)`
+# ALSO ends a function DEFINITION's empty parameter list (`f(){ ... }` / `f( ) { ... }`), which
+# this scan must never match (see the big comment above _SHELL_KEYWORDS -- that double-fire was
+# already tried and reverted once, because `_find_function_bodies`/`_looks_network_capable`
+# already covers a function body on its own, hatch-aware path). The two `)` shapes are told apart
+# by what sits immediately before them: a function-def's is always `(` with nothing but optional
+# whitespace between (`_FUNC_DEF_RX`'s own `\(\s*\)`), so `(?<!\()` on the character directly
+# before `)` excludes the single-space-or-less case (`f()`, `f( )`) that covers the overwhelming
+# majority of real function definitions. A function-def written with MORE than one space inside
+# empty parens (`f(  )`) is not excluded by this one-character lookbehind and would still be
+# treated as a case-pattern opener -- a known, deliberately accepted gap (that shape is vanishingly
+# rare in real shell code, and the worst outcome is a harmless duplicate finding for the same
+# command via two paths, never a missed one: see `_looks_network_capable`'s own recursion into
+# bare-brace bodies for why a double-match here is noise, not a false ALLOW).
+#
+# (3) `coproc { curl ...; }` (anonymous coprocess) -- the brace sits directly after the literal
+# word "coproc", so it is handled the same way as `if`/`then`/etc: added to the keyword
+# alternation. The NAMED form (`coproc NAME { ... }`, where NAME is an arbitrary identifier) is
+# NOT covered -- the brace there follows an arbitrary word, not a fixed keyword, and distinguishing
+# it from any other NAME-then-brace shape needs its own, separate lookbehind; left open (the
+# anonymous form is the documented, canonical usage, and the only one covered by this card's own
+# acceptance list).
 _BARE_GROUP_OPEN_RX = re.compile(
-    r"(?:\A|[;\n|&(]|\b(?:then|do|else|elif|while|until|time)\b|(?<!\S)!)\s*\{(?=\s)")
+    r"(?:\A|[;\n|&(]|\b(?:if|then|do|else|elif|while|until|time|coproc)\b|(?<!\S)!|(?<!\()\))\s*\{(?=\s)")
 
 
 def _find_bare_brace_group_bodies(cmd):

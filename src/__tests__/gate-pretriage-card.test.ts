@@ -579,3 +579,67 @@ describe('candidate attribution (card 928251b5)', () => {
     expect(src).toContain('EXCLUSION, NOT PREFERENCE')
   })
 })
+
+// --trunk OPT-IN ONLY (card a42d27e1, Cybersec NO-GO 33120, MikroB decision msg 20826). The prior
+// fix (F1, cybersec GO 20497) only skipped the land-parity measurement when the diff touched a
+// named harness/config file -- the importer sweep still ran the branch's OWN test files (and any
+// src file they import) as real, unattended vitest code for the ordinary case. The actual fix: the
+// whole land-parity section (lint-ratchet + DECISIONS append-union + importer sweep) is now gated
+// on an explicit `--trunk` flag to THIS script, defaulting OFF -- the automatic
+// heartbeat-consolidated call (card mode, no flags beyond the card id) never sets it, so the
+// section is never even attempted there, not merely narrowed by an allowlist.
+describe('--trunk land-parity measurement is opt-in only (card a42d27e1)', () => {
+  const STORE = join(import.meta.dirname, '..', '..', 'store')
+
+  /** A fixture repo with a REAL `origin` remote whose `develop` matches HEAD, so trunk genuinely
+   *  resolves (git fetch + rev-parse succeed) -- proving the opt-in gate, not an unrelated "no
+   *  remote" short-circuit, is what decides whether the section runs. */
+  function makeOriginBackedRepo(): void {
+    const upstream = mkdtempSync(join(tmpdir(), 'gpt-card-origin-'))
+    execFileSync('git', ['init', '-q', '--bare', upstream], { stdio: 'pipe' })
+    git('remote', 'add', 'origin', upstream)
+    git('push', '-q', 'origin', 'HEAD:develop')
+  }
+
+  it('without --trunk: a harness-file-touching commit produces NO land-parity finding at all (the section never runs)', () => {
+    makeOriginBackedRepo()
+    const body = commitAndBody({ 'package.json': '{"name":"x","version":"2"}\n' })
+    expect(body).not.toContain('land-parity-measurement-skipped')
+    expect(body).not.toContain('importer-sweep')
+  })
+
+  it('WITH --trunk: the same harness-file-touching commit DOES trigger the known F1 skip finding -- proves the flag genuinely opts the section back in, not just a broken test fixture', () => {
+    makeOriginBackedRepo()
+    writeFileSync(join(repo, 'package.json'), '{"name":"x","version":"2"}\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'change')
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+    const body = execFileSync(
+      'bash',
+      [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run', '--trunk'],
+      { encoding: 'utf-8', stdio: 'pipe' },
+    )
+    expect(body).toContain('land-parity-measurement-skipped')
+  })
+
+  it('--trunk is a recognised flag on the top-level arg parser, not silently swallowed as the card id', () => {
+    const src = readFileSync(join(STORE, 'gate-pretriage-card.sh'), 'utf-8')
+    expect(src).toMatch(/--trunk\)\s*TRUNK_CHECK=1/)
+  })
+
+  // THE ACTUAL BOUNDARY THIS CARD EXISTS TO PIN: the automatic scheduled-task entry point must
+  // never pass --trunk. A textual pin on the call site itself, the same shape this codebase already
+  // uses for "no bare exec outside release_land_lock_fd" (store/marveen-land.sh) -- a future edit
+  // that adds the flag back to the heartbeat call is caught here, not discovered live 30 minutes
+  // into production.
+  it('the heartbeat-consolidated scheduled task never passes --trunk to gate-pretriage-card.sh', () => {
+    const skillPath = join(import.meta.dirname, '..', '..', 'seed-scheduled-tasks', 'heartbeat-consolidated', 'SKILL.md')
+    const skill = readFileSync(skillPath, 'utf-8')
+    const callMatch = skill.match(/gate-pretriage-card\.sh[^`\n]*/)
+    expect(callMatch).not.toBeNull()
+    expect(callMatch![0]).not.toContain('--trunk')
+    // Sensitivity check: the pin above must actually be looking at the real call, not a typo'd
+    // path that never matches anything (which would make the assertion above vacuously pass).
+    expect(callMatch![0]).toContain('<cardId>')
+  })
+})

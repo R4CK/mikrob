@@ -33,6 +33,7 @@ import {
   mcpTrustAcceptKeys,
   devChannelsAcceptKeys,
   detectsBlockingMenu,
+  typedTailEchoed,
   detectsHeldPeerMessage,
   type FirstRunGateKind,
 } from '../pane-state.js'
@@ -69,7 +70,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction } from './channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, resolveContinueTimeoutAction, type ContinueVerifyOutcome, type ContinueTimeoutAction } from './channel-continue-policy.js'
 import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
@@ -182,6 +183,80 @@ const lifecycleInFlight = new Map<string, LifecycleEntry>()
 // 'timeout', confirms the agent's CURRENT generation still matches -- if a stop or a newer start
 // happened in between, the fallback is skipped: the current state is no longer this call's business.
 const agentLaunchGeneration = new Map<string, symbol>()
+
+/** Test-only: read the current launch-generation token without exporting the Map itself. */
+export function __getAgentLaunchGenerationForTest(name: string): symbol | undefined {
+  return agentLaunchGeneration.get(name)
+}
+
+/**
+ * Card eb26a3e4 point 2 (measured): stopAgentProcessUnlocked bumps the generation, but only
+ * on the ROUTER's own stop path, and only when the agent was detected running. Measured by
+ * reading every tmux kill-session call site against a role agent's session: scripts/stop.sh only
+ * ever targets the MAIN agent's own session (`${SLUG}-channels`), which is already excluded from
+ * this mechanism (`name !== MAIN_AGENT_ID`) -- not a gap. channel-monitor.ts's watchdog restart
+ * routes through stopAgentProcess+startAgentProcess(fresh:true), so both ends already bump.
+ * reauth-healer.ts's restartFirstRunGatedAgent IS a real gap: it kills a role agent's session
+ * directly via execFile, with no generation bump, then relaunches ~1s later -- if that relaunch
+ * is slow or fails, a stale --continue verify callback from an EARLIER launch could read the
+ * generation as unchanged and wrongly relaunch-fresh, undoing the healer's own stop. Exported so
+ * that one call site (not a copy of `.set(name, Symbol())`) covers it.
+ */
+export function bumpAgentLaunchGeneration(name: string): void {
+  agentLaunchGeneration.set(name, Symbol())
+}
+
+/**
+ * Card 2b2fbabc MEDIUM-1 (Cybersec GO, follow-up card 56344ff4): the --continue verify callback's
+ * post-resolve tail (log-and-return for 'kept'/'skip-stopped', kill+relaunch-fresh otherwise) used
+ * to live inline in the `.then()` at the resume call site, pinned only by a source-text check on
+ * the `action === 'skip-stopped'` condition -- which cannot tell a branch WITH its `return` from
+ * one without it (Y11), nor catch the generation arguments being passed in the wrong order at the
+ * call site (Y2: `hasLaunchGenerationChanged(current, capturedAtLaunch)` reads as "unchanged" when
+ * `current` is itself the captured value, resurrecting the F1 bug this generation check exists to
+ * close). Extracted so both are real, directly-callable behaviour instead of text a mutant can
+ * flip unnoticed. The current generation is looked up HERE, from the one map, rather than taken
+ * as a second caller-supplied symbol -- a call site can no longer pass the captured value for
+ * "current" (Y2), because there is no longer a second symbol parameter to mix up with it.
+ * `deps` is test-only DI: `startAgentProcess`/`killSession` are the real ones by default (the
+ * production call site passes neither), and a test stubs them to observe which one ran without
+ * needing to mock this whole module from outside (an ES-module self-call a `vi.mock` on the
+ * exports object cannot intercept).
+ */
+export async function applyContinueVerifyOutcome(
+  name: string,
+  session: string,
+  v: { outcome: ContinueVerifyOutcome; polls: number; elapsedMs: number },
+  capturedAtLaunch: symbol,
+  deps: {
+    startAgentProcess?: (name: string, opts?: { fresh?: boolean }) => Promise<{ ok: boolean; pid?: number; error?: string }>
+    killSession?: (name: string, session: string) => void
+  } = {},
+): Promise<ContinueTimeoutAction> {
+  const doStart = deps.startAgentProcess ?? startAgentProcess
+  const doKill = deps.killSession ?? ((n: string, s: string) => {
+    try { runTmux(agentTmuxTarget(n), ['kill-session', '-t', exactTmuxTarget(s)], { timeout: 5000 }) } catch { /* already gone */ }
+  })
+
+  const action = resolveContinueTimeoutAction(v.outcome, agentLaunchGeneration.get(name), capturedAtLaunch)
+  if (action === 'kept') {
+    logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
+    return action
+  }
+  if (action === 'skip-stopped') {
+    logger.info({ name, session }, 'resumed channel agent: a stop or a newer start happened during the verify window -- skipping fresh fallback')
+    return action
+  }
+  logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
+  doKill(name, session)
+  try {
+    const r = await doStart(name, { fresh: true })
+    logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
+  } catch (err) {
+    logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
+  }
+  return action
+}
 
 /** Exported for tests: how many agents currently have an operation in flight. */
 export function lifecycleInFlightCount(): number {
@@ -3293,26 +3368,8 @@ async function startAgentProcessUnlocked(
             probeExtraPluginsInTree(pid, extraLaunch.providers),
           ])
         },
-      }).then(async (v) => {
-        const generationChanged = agentLaunchGeneration.get(name) !== myLaunchGeneration
-        const action = decideContinueTimeoutAction(v.outcome, generationChanged)
-        if (action === 'kept') {
-          logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
-          return
-        }
-        if (action === 'skip-stopped') {
-          logger.info({ name, session }, 'resumed channel agent: a stop or a newer start happened during the verify window -- skipping fresh fallback')
-          return
-        }
-        logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
-        try { runTmux(agentTmuxTarget(name), ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }) } catch { /* already gone */ }
-        try {
-          const r = await startAgentProcess(name, { fresh: true })
-          logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
-        } catch (err) {
-          logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
-        }
-      }).catch((err) => logger.error({ err, name }, 'resume verification crashed'))
+      }).then((v) => applyContinueVerifyOutcome(name, session, v, myLaunchGeneration))
+        .catch((err) => logger.error({ err, name }, 'resume verification crashed'))
     }
 
     // EPERM /tmp-fallback (2026-06-30, mirrors scripts/channels.sh:233+): on
@@ -3444,12 +3501,15 @@ async function startAgentProcessUnlocked(
 
 async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
-  if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
-  // Card 466f21fe F1: bump the launch generation on every stop, same as on every start -- an
-  // in-flight --continue verify callback checks this before acting on a timeout, so a stop that
-  // lands mid-window is not undone by that callback's own fresh-fallback. See the Map's comment.
+  // Card 466f21fe F1 / eb26a3e4 F2 follow-up (2b2fbabc): bump the launch generation BEFORE the
+  // not-running early return, not after it. POST /stop clears the desired-state first and calls
+  // this unconditionally; if the session is already dead (isAgentRunning false) the OLD bump site
+  // below it was never reached, so a pending --continue verify callback from an earlier launch
+  // still saw its own captured generation as unchanged and relaunched FRESH -- undoing the
+  // explicit stop. Bumping first means every stop invalidates that callback, running or not.
   agentLaunchGeneration.set(name, Symbol())
+  if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
 
   const target = agentTmuxTarget(name)
   const host = target.host
@@ -4516,6 +4576,13 @@ export async function sendPromptToSession(
       i = end
       if (i < oneLine.length) await delay(30)
     }
+    // The settle wait below cannot tell a TUI that finished drawing from one
+    // that stopped READING its input (both give identical captures), so first
+    // wait until the end of the prompt is actually on screen. Bounded; on
+    // timeout the Enter goes out as before, and the log says so.
+    if (oneLine.length > CHUNK && !(await waitForTypedEcho(() => capturePane(session, host), oneLine))) {
+      logger.warn({ session, chars: oneLine.length, waitedMs: TYPED_ECHO_MAX_MS }, 'sendPromptToSession: the end of the typed prompt never appeared in the pane; sending Enter anyway (TUI not reading input?)')
+    }
     // A multi-chunk prompt gets its Enter only once the TUI has stopped
     // redrawing. Sent straight after the last chunk, the Enter races the
     // TUI still ingesting the burst and is dropped: measured 2026-09-15
@@ -4700,6 +4767,31 @@ export async function waitForPaneSettle(
     prev = cur
   }
   return false
+}
+
+// Upper bound for waitForTypedEcho. The measured stalls (a sub-agent whose
+// TUI stopped reading input mid-prompt) lasted 18.5 s and 24.9 s; past this
+// the Enter goes out as it did before.
+export const TYPED_ECHO_MAX_MS = 30_000
+
+// Resolve true as soon as typedTailEchoed() sees the end of `typed` in a
+// capture, false after `maxMs` without it. Capture, sleep and clock are
+// injectable, like waitForPaneSettle, so the loop is tested without tmux.
+export async function waitForTypedEcho(
+  capture: () => string | null,
+  typed: string,
+  opts: { pollMs?: number; maxMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<boolean> {
+  const pollMs = opts.pollMs ?? 250
+  const maxMs = opts.maxMs ?? TYPED_ECHO_MAX_MS
+  const sleep = opts.sleep ?? delay
+  const now = opts.now ?? Date.now
+  const deadline = now() + maxMs
+  for (;;) {
+    if (typedTailEchoed(capture(), typed)) return true
+    if (now() >= deadline) return false
+    await sleep(pollMs)
+  }
 }
 
 export function capturePane(session: string, host: string | null = null): string | null {

@@ -144,13 +144,41 @@ const SELF_PACE_TOOLS = new Set([
 // Bash command patterns that achieve self-pace by another route. These are
 // tested per COMMAND SEGMENT (see splitSegments), so a token in one part of a
 // compound command never trips a pattern that belongs to another part.
+// Card 9ea8dcb8 round 2 (cybersec NO-GO 32608, Gate-SHA 6dc4c450b): the old
+// `/\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i` fired on `claude` ANYWHERE after
+// nohup/setsid/disown in the segment, including inside a path/argument -- every
+// agent scratchpad path is `/tmp/claude-1000/...`, so a backgrounded command
+// merely logging there was denied. Round 1's fix (a token-walk past a fixed
+// wrapper-word list) traded that false positive for 14 missed respawn shapes
+// (setsid -f/--fork, nice -n, timeout, sudo -u, env -i, stdbuf, /usr/bin/env, a
+// quoted/substituted command word, bash -c/sh -c bodies, xargs) -- any wrapper
+// not on the list, or one followed by its own option, ended the walk on a token
+// that was never "claude" at all, so the walk-based narrowing itself was the
+// hole, not just an incomplete wrapper list. Round 2 narrowed the old regex's
+// word boundary instead (`\bclaude\b` -> `(?<![\w-])claude(?![\w./-])`), which
+// closed all 14 but excluded `claude` as a PREFIX/SUFFIX of another token too,
+// losing 6 more old-deny shapes (round 3, cybersec NO-GO 32639): claude-code,
+// npx @anthropic-ai/claude-code, node .../claude-code/cli.js, relaunch-claude.sh,
+// claude.sh, claude.exe -- three of them real relaunches of the same CLI under
+// its package name. Fix (cybersec2, comment 32612; reconfirmed by cybersec in
+// 32639): don't touch the regex or its word boundary at all -- keep the OLD
+// broad scan, and strip only the actual false-positive source, the per-uid
+// scratch directory component `claude-<digits>`, from the string before
+// testing it. A respawn shape never contains that exact digit-suffixed
+// component, so masking it loses nothing a respawn shape needs; a scratchpad
+// path like `/tmp/claude-1000/...` no longer contains the bare word "claude"
+// once masked, so the old regex no longer fires on it.
+const CLAUDE_RELAUNCH_RE = /\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i
 const SELF_PACE_BASH_PATTERNS = [
   // tmux pane injection -- every write-subcommand that can push keys/text/commands
   // into a pane (the actual incident vector), not just send-keys. [\s\S] (not
   // [^\n]) so an intra-segment newline cannot split the match.
   /\btmux\b[\s\S]*\b(send-keys|paste-buffer|run-shell|set-buffer)\b/i,
-  // self-backgrounding that relaunches claude (nohup/setsid/disown + claude)
-  /\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i,
+  // self-backgrounding that relaunches claude (nohup/setsid/disown + claude).
+  // See comment above: OLD broad regex, scratch-dir component masked first.
+  {
+    test: (s) => CLAUDE_RELAUNCH_RE.test(s.replace(/\/claude-\d+(?=\/|\b)/g, '/uidscratch')),
+  },
   // the loop slash-skill driven from a shell. `/loop` must be in SLASH-COMMAND
   // position -- a standalone token (segment-start / whitespace / quote before it,
   // whitespace / quote / end after it) -- never a PATH segment. The old
@@ -792,8 +820,42 @@ const ALLOWLIST_READERS = new Set([
 const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 
 export function allowlistBashSegmentAllowed(seg) {
+  return readOnlyMentionAllowed(seg, ALLOWLIST_MENTION_RX)
+}
+
+// MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
+// treatment as the allowlist above:
+//   egress-vendor-hosts.json       -- the hosts bash-egress-parser lets curl/wget reach
+//   config-overrides.json          -- dashboard settings; BASH_SANDBOX_AGENTS is one of them
+//   bash-sandbox-write-paths.json  -- where a sandboxed agent may write (#2149)
+//   email-standing-recipients.json -- an address on it (once activated) takes letters with
+//                                     no per-letter approval (email-approval-gate.py)
+//   .approval-bot-token, .approval-bot-key -- the owner's approval bot and the key its button data is
+//                                     signed with (src/approval-bot.ts, #2160)
+// Their writers are the owner, the main agent and, for config-overrides.json, the dashboard
+// process; none of them runs this gate. Unlike the allowlist, these have no hash baseline yet,
+// so what this gate cannot see (a path built at runtime) is not reported after the fact.
+const DEFAULT_STORE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'store')
+export const PROTECTED_STORE_FILES = new Set([
+  'egress-vendor-hosts.json',
+  'config-overrides.json',
+  'bash-sandbox-write-paths.json',
+  'email-standing-recipients.json',
+  '.approval-bot-token',
+  '.approval-bot-key',
+])
+// The file, or a glob that starts on its name. The prefixes are long enough that this gate's
+// and the features' own sources (bash-sandbox.ts, config-registry.ts) stay out of it; the
+// approval-bot files need their leading dot, so a source or doc named approval-bot-key-*.md or a
+// glob over src/approval-bot* stays out too.
+const PROTECTED_MENTION_RX =
+  /(?:egress[-_]?vendor[-_]?hosts|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
+
+// One rule for every protected store object: a segment that mentions it may only be a plain
+// READ, and no output redirect in it may point at it (or at a target built at runtime).
+function readOnlyMentionAllowed(seg, mentionRx) {
   const s = String(seg ?? '').trim()
-  if (!ALLOWLIST_MENTION_RX.test(s)) return true
+  if (!mentionRx.test(s)) return true
   const words = s.split(/\s+/)
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
@@ -802,9 +864,24 @@ export function allowlistBashSegmentAllowed(seg) {
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
     const target = m[1]
     if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
-    if (ALLOWLIST_MENTION_RX.test(target) || /[$`]/.test(target)) return false
+    if (mentionRx.test(target) || /[$`]/.test(target)) return false
   }
   return true
+}
+
+export function protectedStoreBashSegmentAllowed(seg) {
+  return readOnlyMentionAllowed(seg, PROTECTED_MENTION_RX)
+}
+
+// Does a native file-tool call target one of the protected store files? By name anywhere
+// (fail-closed, as for the allowlist), or by real path, so a symlink under another name does
+// not walk past it. `storeDir` is this install's store; tests pass a tmp one.
+export function fileToolTargetsProtectedStoreFile(toolInput, storeDir = DEFAULT_STORE_DIR, cwd = process.cwd()) {
+  const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
+  if (!raw) return false
+  if (PROTECTED_STORE_FILES.has(basename(raw).toLowerCase())) return true
+  const real = realOrSelf(resolve(cwd, expandHome(raw)))
+  return [...PROTECTED_STORE_FILES].some((f) => real === realOrSelf(join(storeDir, f)))
 }
 
 function expandHome(p) {
@@ -2080,11 +2157,18 @@ export function blankHeredocBodies(src) {
 //     another (`ls -d <store>/*/SKILL.md > /tmp/l; while read f; do echo x >>
 //     "$f"; done < /tmp/l`): the write segment's path comes from `read`, not
 //     from the command text;
-//   - a reference assembled at run time (chr(), base64, `$(echo sch)edules`, a
-//     variable split across segments, a symlink to the store), or a URL/config
-//     taken from the environment;
+//   - a reference assembled at run time from PIECES the command text never
+//     glues back together: chr(), `$(echo sch)edules`, a variable split across
+//     segments (`A=sched; B=-tasks; echo x > "$HOME/.claude/$A$B/y"`), a
+//     symlink to the store, or a URL/config taken from the environment. A
+//     SINGLE base64-encoded blob piped into a shell IS decoded and checked
+//     (card a6c7780d, decodedBase64Refs) -- that is one whole, self-contained
+//     reference, recoverable without modelling the shell at all;
 //   - a curlrc: ~/.curlrc can turn ANY curl, even one with no reference, into a
-//     write; only form (a) is protected, by requiring -q;
+//     write; only form (a) is protected, by requiring -q. A `-K`/`--config`
+//     FILE argument (as opposed to `-K -`, already covered elsewhere) IS read
+//     and checked (card a6c7780d, curlConfigFileRefs) when the path resolves
+//     to a real, bounded-size local file;
 //   - a cd into the store whose effect PERSISTS to a LATER Bash call, IF Claude
 //     Code keeps the cwd across calls (unverified): a per-command gate cannot
 //     see the earlier cd. Rule 1 still denies that cd in the command where it
@@ -3191,9 +3275,10 @@ const CURL_ARG_OPTS = new Map([
 ])
 
 function parseCurl(words) {
-  const out = { urls: [], kinds: new Set(), dataIdx: new Set(), stdinData: false, sent: [], noCurlrc: false }
+  const out = { urls: [], kinds: new Set(), dataIdx: new Set(), stdinData: false, sent: [], noCurlrc: false, configs: [] }
   const record = (kind, idx, value) => {
     out.kinds.add(kind)
+    if (kind === 'config') out.configs.push(value)
     if (kind === 'header') out.sent.push({ value, ansi: words[idx].ansi })
     if (kind === 'data') {
       out.dataIdx.add(idx)
@@ -3535,6 +3620,67 @@ function wholeCommandExports(command) {
   return masked == null || ENV_EXPORT_RX.test(masked)
 }
 
+// Card a6c7780d (RedHat msg 19773 point 3, MEDIUM, shared with upstream): a local FILE a curl
+// `-K`/`--config` argument names, read right here before the Bash call runs (this hook executes
+// synchronously, on the same machine, strictly before the tool call it is gating). curl's config
+// directives (url=/data=/header=/...) can place the whole request in that file instead of on the
+// command line, so the command's own text carries no reference for scheduleSurfaceRefs to find --
+// exactly the class the module header above calls "not provable from a single command's text",
+// except this ONE instance IS provable: the file is local and already on disk. `-K -`/`-K-`/
+// `--config -` (stdin) are a different, already-covered mechanism (CURL_CONFIG_STDIN_RX, card
+// 0ecff3ae/0120d19a) and are skipped here to avoid overlapping two independent checks on the same
+// shape. A value containing `$` (an expansion this function does not resolve) or unreadable/over
+// the size cap is skipped, not denied -- this function only ever ADDS a denial, so being
+// conservative here costs nothing a prior round already covered.
+const CONFIG_FILE_MAX_BYTES = 262144
+function curlConfigFileRefs(command, opts) {
+  const segs = shellSegments(command, opts)
+  if (!segs) return false
+  for (const seg of segs) {
+    const words = shellWords(seg.own)
+    if (!words || !words.length) continue
+    if (commandName(words) !== 'curl') continue
+    const p = parseCurl(words)
+    if (!p) continue
+    for (const value of p.configs) {
+      if (value === '-' || /^-+$/.test(value) || value.includes('$')) continue
+      const abs = value.startsWith('/') ? value : resolve(String(opts.cwd ?? process.cwd()), value)
+      let stat
+      try { stat = statSync(abs) } catch { continue }
+      if (!stat.isFile() || stat.size > CONFIG_FILE_MAX_BYTES) continue
+      let content
+      try { content = readFileSync(abs, 'utf-8') } catch { continue }
+      const r = scheduleSurfaceRefs(content, opts)
+      if (strongRef(r) || r.db) return true
+    }
+  }
+  return false
+}
+
+// Card a6c7780d point (c): a base64 blob piped through `base64 -d`/`-D`/`--decode` into a shell
+// reading its stdin -- the command's own text is the ENCODED bytes, which spell no reference
+// scheduleSurfaceVariants can find (base64 is not an escape decodeEscapes resolves: its alphabet
+// overlaps ordinary text too much to decode unconditionally without manufacturing false matches
+// out of innocent base64 unrelated to this surface). Gated on an ACTUAL pipe into an ACTUAL
+// stdin-reading shell -- the same two-part, independently-proven STDIN_SHELL_RX /
+// HAS_PIPE_RX+WRAPPER_POSITION_BARE_SHELL_RX condition executableStrings already uses for the
+// identical reason (card 1a609c01 round 4) -- plus the literal word `base64`, so this never touches
+// a command that neither decodes nor pipes into a shell. Only a candidate run that decodes to a
+// REFERENCE denies; base64 used for anything else is untouched.
+const BASE64_TOKEN_RX = /[A-Za-z0-9+/]{16,}={0,2}/g
+function decodedBase64Refs(command, opts) {
+  if (!/\bbase64\b/i.test(command)) return false
+  if (!(STDIN_SHELL_RX.test(command) || (HAS_PIPE_RX.test(command) && WRAPPER_POSITION_BARE_SHELL_RX.test(command)))) return false
+  for (const m of command.matchAll(BASE64_TOKEN_RX)) {
+    let decoded
+    try { decoded = Buffer.from(m[0], 'base64').toString('utf8') } catch { continue }
+    if (!decoded) continue
+    const r = scheduleSurfaceRefs(decoded, opts)
+    if (strongRef(r) || r.db) return true
+  }
+  return false
+}
+
 // The decision for one Bash command. true = deny.
 //
 // Once the command references the API or the store surface (raw or decoded),
@@ -3552,11 +3698,19 @@ function wholeCommandExports(command) {
 // The only cross-segment state left is a tainted VARIABLE (`F=<store path>;
 // cat >> $F`): a value carrying a reference taints its name, and a later use of
 // it counts as a reference. That only ADDS denials.
+//
+// BEFORE any of that: card a6c7780d closes two of the three "keep the reference off the command
+// line" instances the module header names as accepted gaps -- curlConfigFileRefs (a curl -K/--config
+// FILE, not stdin) and decodedBase64Refs (a base64 blob piped into a shell). Both run even when
+// the command's OWN text has no reference at all, because that is exactly the case they exist for;
+// a hit here denies outright, with none of the "is this a safe plain GET" nuance below -- there is
+// no legitimate reason to go out of the way to keep a schedule-surface reference off the command
+// line in the first place.
 export function scheduleSurfaceDeny(command, gateOpts = {}) {
-  const opts = { parentCtx: cdsIntoStoreParent(command), projectRoot: gateOpts.projectRoot, selfAgent: gateOpts.selfAgent }
+  const opts = { parentCtx: cdsIntoStoreParent(command), projectRoot: gateOpts.projectRoot, selfAgent: gateOpts.selfAgent, cwd: gateOpts.cwd }
   const whole = scheduleSurfaceRefs(command, opts)
   const wholeStrong = strongRef(whole)
-  if (!wholeStrong && !whole.db) return false
+  if (!wholeStrong && !whole.db) return curlConfigFileRefs(command, opts) || decodedBase64Refs(command, opts)
   const segs = shellSegments(command, opts)
   if (!segs) return true // unresolvable quoting around a reference: fail closed
 
@@ -3706,6 +3860,7 @@ function decide(toolName, toolInput, opts = {}) {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
     if (SCHEDULE_STORE_RX.test(fp)) return { deny: true }
     if (fileToolTargetsAllowlist(toolInput, opts.allowlistPath, opts.cwd)) return { deny: true, reason: 'egress-allowlist' }
+    if (fileToolTargetsProtectedStoreFile(toolInput, opts.storeDir, opts.cwd)) return { deny: true, reason: 'protected-store-file' }
     // ...and the dashboard's schedule store, which the runner turns into turns
     if (SCHEDULE_DIR_PATH_RX.test(fp)) return { deny: true }
   }
@@ -3845,6 +4000,20 @@ function decide(toolName, toolInput, opts = {}) {
         const inertHeredocProse = rStart >= 0 &&
           dataSinkHeredocRanges.some((h) => rStart >= h.start && rEnd <= h.end)
         if (!inertHeredocProse) return { deny: true, reason: 'egress-allowlist' }
+      }
+      // Adopted (Koteg 25): a fail-closed, strictly ADDITIVE deny over more protected store
+      // files (egress-vendor-hosts.json, config-overrides.json, bash-sandbox-write-paths.json,
+      // email-standing-recipients.json, .approval-bot-token/-key) -- never loosens anything the
+      // checks above already deny, so it carries none of this file's usual not-safe-to-hand-
+      // merge-under-time-pressure caution (that caution is about NEW PERMISSIONS, not new denies).
+      // Same inertHeredocProse exemption as the egress-allowlist check just above (not in the
+      // original adoption -- caught by fleet-test: a heredoc body merely MENTIONING a protected
+      // filename in prose, e.g. documenting this very gate, was denied on that line alone).
+      if (!protectedStoreBashSegmentAllowed(seg)) {
+        const [rStart, rEnd] = segRanges[i] ?? [-1, -1]
+        const inertHeredocProse = rStart >= 0 &&
+          dataSinkHeredocRanges.some((h) => rStart >= h.start && rEnd <= h.end)
+        if (!inertHeredocProse) return { deny: true, reason: 'protected-store-file' }
       }
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
@@ -3992,7 +4161,16 @@ const ALLOWLIST_GATE_MSG =
   'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
 
 // allow()/deny()/isInvokedDirectly() are shared with the other PreToolUse
-// gates -- see hook-lib.mjs.
+// gates -- see hook-lib.mjs (imported at the top of this file -- upstream's
+// duplicate local definitions of the same three names are NOT adopted: a
+// redeclaration of an imported binding is a SyntaxError, not a style choice).
+const PROTECTED_STORE_GATE_MSG =
+  'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
+  'store/egress-vendor-hosts.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
+  'store/email-standing-recipients.json, store/.approval-bot-token es store/.approval-bot-key ' +
+  'fajlt: mindegyik RAD vonatkozo kapu beallitasa. ' +
+  'Ha valtoztatas kell, kerd a fo agenst (inter-agent uzenet: mit es miert); o a gazda ' +
+  'jovahagyasaval irja. Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
 
 // The hook entry. PreToolUse reads exit 2 as "block", exit 0 as "allow" (unless
 // a deny is printed) -- and exit 1, or a hook killed by the harness timeout, as
@@ -4059,7 +4237,9 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
     const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
-      deny(verdict.reason === 'oversized' ? OVERSIZE_MSG : verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : GATE_MSG)
+      deny(verdict.reason === 'oversized' ? OVERSIZE_MSG
+        : verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
+        : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG : GATE_MSG)
     }
     allow()
   } catch (err) {

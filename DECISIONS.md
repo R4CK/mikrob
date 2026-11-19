@@ -26724,6 +26724,2099 @@ kitalálva.
 Card A/B/C sávosítás MikroB iránymutatása (msg 19483). Gate: QA + Cybersec + Cybered (trust-boundary
 fájlok: settings.json, hooks, routes, db.ts, kanban.ts). Gate-SHA: lásd REVIEW komment.
 
+## 2026-11-16 -- eb26a3e4: --continue generacio-osszehasonlitas mutacio-rese + reauth-healer nem-router park (466f21fe F1 kovetok)
+
+RedHat CYBERED GO a 466f21fe-n (komment 15173, d499a449) ket maradek rest nevezett meg a parkolt-ugynok
+generacio-token fixen (card 466f21fe F1): 1. a `--continue` callback generacio-osszehasonlitasanak
+megfordulasa (`===` helyett `!==`) 39/39 teszt mellett is zoldet ad; 2. a stop csak FUTO ugynoknel
+leptet generaciot, a nem-router parkolasok (scripts/stop.sh, monitor, reauth-healer) nem.
+
+**1. pont javitasa:** a `generationChanged` osszehasonlitas (`agentLaunchGeneration.get(name) !==
+myLaunchGeneration`) inline volt az agent-process.ts egyetlen hivasi pontjan, teszt nelkul pinnelve.
+Kiemelve `hasLaunchGenerationChanged()` tiszta, exportalt fuggvenyként a channel-continue-policy.ts-be,
+bedrotozva a hivasi pontra, es 3 kozvetlen unit teszt + 1 mutacio-pin teszt hozzaadva.
+
+**2. pont mert valasz:** vegig olvasva minden tmux kill-session hivasi helyet egy role-agent session
+ellen: `scripts/stop.sh` csak a FO ugynok sajat sessionjet celozza (mar kizarva a mechanizmusbol, `name
+!== MAIN_AGENT_ID`) -- nem res. `channel-monitor.ts` watchdog-restartja `stopAgentProcess` +
+`startAgentProcess(fresh:true)`-on megy at, mindket vegen mar leptet. `reauth-healer.ts`
+`restartFirstRunGatedAgent`-je VALODI res: kozvetlenul `execFile`-lal kilove a sessiont, generacio-
+leptetes nelkul, majd ~1mp mulva ujra inditja -- ha ez lassu vagy elhasal, egy korabbi inditasbol
+maradt, kesobb lezaro `--continue` ellenorzo callback meg a vegso allast latja valtozatlannak, es
+ujraeleszti a mar parkolt ugynokot. `agent-worker.ts` `restartWorkerSession`-je kizarva (ephemer worker-
+session, sosincs csatorna-pluginje, a `verifyContinueLaunch` sosem fut ra).
+
+**Javitas:** `bumpAgentLaunchGeneration(name)` exportalt fuggveny (egy kozos hely, nem harmadik
+masolat), hivva a `reauth-healer.ts` kill-session-je ELOTT, ugyanabban a sorrendben mint
+`stopAgentProcessUnlocked` sajat leptetese.
+
+**Teszt:** `channel-continue-policy.test.ts` + `reauth-healer.test.ts` + 4 tovabbi kapcsolodo teszt-fajl
+(126 teszt) PASS a sajat worktree-ben; `fleet-test.sh --ref 6445b6e13` a ket erintett fajlon (80 teszt)
+PASS a megosztott fan. `tsc --noEmit` tiszta (a 3, korabbrol ismert, FUGGETLEN parse5-hianyos hibat
+leszamitva). `lint-ratchet.sh`: 441 lelet, baseline tartja. Mutacio-ellenorzes: a `hasLaunchGenerationChanged`
+`!==`-jenek `===`-re forditasa 4 teszt vorosre; a `bumpAgentLaunchGeneration` hivas eltavolitasa 1 teszt
+vorosre. Mindket mutans visszaallitva, ismet zold.
+
+**Ki döntött:** RedHat CYBERED GO (466f21fe, komment 15173) adta a fix-iranyt. backend2 vegezte a
+javitast. Gate: QA + Cybersec (a kartya sajat kijelolese).
+
+## 2026-11-16: eb26a3e4 F1/F2 follow-up (kartya 2b2fbabc) -- WhiteHat2 GO a viselkedesi tesztre, F2 res zarasa
+
+WhiteHat2 GO az eb26a3e4-n (komment 32252, @0ad2b7d1f) ket leletet nevezett meg: F1 (teszt-res) --
+`hasLaunchGenerationChanged()` maga pinnelve, de a HASZNALATA csak forras-szoveg `toContain()`-nel,
+ami nem kulonbozteti meg a hivast a negaltjatol (a `!` substring-kent benne marad); a
+reauth-healer teszt `bumpAgentLaunchGeneration`-t no-op-kent mockolja, sorrend-ellenorzes nelkul.
+F2 (olvasott kod, meg nem kihasznalva) -- `stopAgentProcessUnlocked` a "nem fut" early return UTAN
+leptette a generaciot, igy egy halott sessionre erkezo explicit stop nem ervenytelenitett egy
+korabbi inditasbol maradt `--continue` ellenorzo callback-et, ami relaunch-fresh-sel visszavonhatta
+a stopot.
+
+**F1 javitasa:** a hivasi pont ket sorat (`generationChanged = hasLaunchGenerationChanged(...)` +
+`decideContinueTimeoutAction(outcome, generationChanged)`) egyetlen exportalt `resolveContinueTimeoutAction()`
+fuggvenybe vonva ossze (channel-continue-policy.ts), az agent-process.ts hivasi pontjat ratercelve.
+A viselkedesi mutacio-pin tesztek most a VALODI kompozicion futnak, nem szoveg-egyezesen.
+A reauth-healer bump-elott-kill sorrendet most egy kozos `fixture.order` tombbe iro kem (spy)
+bizonyitja a VALODI `checkSession -> restartFirstRunGatedAgent` utvonalon, nem indexOf()-fal.
+
+**F2 javitasa:** `agentLaunchGeneration.set(name, Symbol())` athelyezve a "nem fut" early return
+ELE `stopAgentProcessUnlocked`-ban (agent-process.ts) -- minden stop leptet, futott-e az ugynok
+vagy nem.
+
+**Teszt-only export:** `__getAgentLaunchGenerationForTest(name)` (ugyanaz a minta mint a
+restart-lock.ts `__resetRestartLock`-ja), hogy a privat Map-et kiolvashassa a teszt a VALODI
+`stopAgentProcess()` hivason at, csak a tmux `execFileSync` hatarat mockolva (nem a sajat modult).
+
+**Mutacio-ellenorzes:** a fix visszaallitasaval (`git stash` az agent-process.ts-en) mindharom
+uj/javitott teszt vorosre valtott (2 wiring-pin + az F2 viselkedesi teszt + a reauth-healer spy
+teszt kulonallo ellenorzessel); visszaallitva, ismet zold. Reszletek: kartya 2b2fbabc REVIEW
+komment (32354).
+
+**Teszt:** `channel-continue-policy.test.ts` (30 teszt) + `reauth-healer.test.ts` (57 teszt) PASS
+a sajat worktree-ben (3d6b5ecac2). `tsc --noEmit` tiszta a 2, korabbrol ismert, FUGGETLEN
+parse5-hianyos hibat leszamitva (megerositve: a bazis commit-on, 0ad2b7d1f-en is megvannak). ESLint
+a 4 erintett fajlon: 3 korabbrol ismert unused-var hiba agent-process.ts-ben, megerositve hogy a
+bazis commit-on is megvannak, 0 uj. Teljes `fleet-test.sh` NEM futott (fajl-skopolt kartya a
+karpathy-loop 5. lepese szerint, teljes suite a gate dolga).
+
+**Alap megjegyzes:** eb26a3e4 (amire ez a kartya epul) meg `waiting`, nincs develop-ba landolva --
+ez az ag az o csucs-commitjan (0ad2b7d1f) alapul, nem origin/develop-en, mert a fenti fuggvenyek
+meg nincsenek develop-on.
+
+**Ki döntött:** WhiteHat2 GO (eb26a3e4, komment 32252) adta a fix-iranyt. backend2 vegezte a
+javitast. Gate: QA + Cybersec (a kartya sajat kijelolese).
+
+## 2026-11-16 -- fleet-test.sh TREE-lock wait/run logging (kartya c5ff36bf, Gate-SHA 087c680cf)
+
+**Dontes:** a tenyleges atereszto-kepesseg-redesign (scoped futasok ne alljanak sorba teljes futasok
+mogott) ELOTT egy kulon, nem-viselkedes-valtozo commit keruljon be, ami csak NAPLOZZA a mar meglevo
+TREE-lock sor (egy kozos /home/neon/marveen-test fa + lock, ami MINDEN futast sorba allit, fuggetlenul
+a fajl-korrol) varakozasi es futasi idejet. Korabban ehhez NEM volt tartos naplo -- csak egy stderr
+echo, amit a terminal elgoerdit. A CPU-slot szemafor fazis mar postol kanban kommentet (PAUSED/RESUMED-
+SEMAPHORE), de az NEM ez a fazis, es nem is az, amire a panaszok (b7d8ecc4, c5ff36bf) vonatkoznak.
+
+**Miert eloszor ez:** a kartya sajat "Kesz, ha" sorrendje ("today's wait/run table posted as a comment
+before any code change") LOG NELKUL nem tarthato be -- nincs log, amibol a tablat fel lehetne epiteni.
+MikroB dontese (komment 32328, uzenet 19762): a "table before code" valojaban "nincs viselkedes-
+valtozas a meres elott"-et jelentette, es egy nem-viselkedesi naplo-sor pontosan ez -- tehat a
+naplozas-only commit megy elore, QA-only kapuval (nincs futas-sorrend/idozites valtozas), utana
+legalabb 4 munkaora valodi adat gyujtese, csak AZUTAN a tablazat + redesign-javaslat.
+
+**Mi keszult:** `fleet_test_log_lock_event()` (store/fleet-test.sh) egy sort fuz a
+`${ROOT}-fleet-test-lock.log`-hoz minden futas vegen (ts, pid, priority rank+nev, scope=full|
+scoped:<n>, ref, wait_s, run_s, status), plus egy `timeout` esemenyt, ha a futas sosem kapta meg a
+lock-ot. Best-effort (`|| true`, stderr elnyomva) -- a naplozas sosem buktathatja el vagy lassithatja
+a valodi tesztfutast. Uj `store/fleet-test-lock-log.selftest.sh` (sed-kivonat a valodi fuggvenybol,
+ugyanaz a minta mint `fleet-test-priority-lane.selftest.sh`), 16/16 zold, mutacio-ellenorzessel.
+
+**Ismert hianyossag, vallaltan:** egy lock-tartas kozben bekovetkezo `die()` (worktree checkout/npm ci/
+build hiba) nem naplozza a run_s-t -- ezt a reszt EXIT trap-pel lehetne lefedni, de a script mar ket
+EXIT trap-et hasznal TMPDIR/run_log takaritasra, es egy harmadik belefuzese pont azt a viselkedes-
+valtozas-kockazatot hozna be, amit ez a kartya el akar kerulni egy olyan szelsoseges esetert, ami nem
+a sorban-allas (a mert jelenseg), hanem egy infra-telepitesi hiba.
+
+**Ki döntött:** MikroB (komment 32328, uzenet 19762). backend3 vegezte. Gate: QA (only, MikroB
+explicit dontese -- naplozas-only, nincs viselkedes-valtozas).
+
+## 2026-11-16 -- 2ba008f2: credential-scope fence for the degraded-mode owner bypass
+
+elemzo plan-grilling on d5638d28 (comment 32144, C1): the degraded-mode guard owner bypass was
+actor===mikrob (kanban-force-actors.ts isForceActor), self-declared in the request body -- any
+caller holding the shared dashboard Bearer token (every sub-agent, and a buggy/stale/doubled
+degraded loop) can send that exact string, so the bypass proved nothing about who was actually
+calling.
+
+**Fix, two independent mechanisms (elemzo own C1 spec):**
+1. isForceActor refuses the force+actor bypass outright, for EVERY caller, while a session
+   outage is active (reads store/mikrob-session-outage.json directly, same staleness/future-skew
+   hardening as gemini-fallback-runner.ts own readSessionOutageActive -- re-implemented locally,
+   not imported, to avoid a circular import through db.js). A legitimate human override during
+   an outage still has the normal gate flow; only the one-field shortcut is removed.
+2. A new "night" DeviceKeyScope, mandatory short expiry (max 14 days), deny-by-default gate
+   (night-gate.ts, same chokepoint/shape as operator-gate.ts). Allowlist: GET under /api/kanban
+   (read-only), POST a comment (author+marker forced server-side), POST /api/messages (to
+   restricted to mikrob inside the route). Everything else refused, including PUT status:done,
+   POST /api/agents/:name/start, card create, and any future route.
+
+toScope()s fail-closed default for an unexpected stored scope value changed from operator to
+night -- night is the narrower blast radius (fixed 3-item allowlist vs. the whole
+/api/operator/* namespace).
+
+**Mérés:** night-gate.test.ts (20 cases) + kanban-force-actors.test.ts (7 cases), all 4 fix
+sites mutation-proven (disabling each flips exactly the matching case(s) red, restored clean).
+57 affected test files / 1103 tests green (every isForceActor/device-key-scope/tryHandleMessages
+touchpoint). tsc --noEmit clean.
+
+**Nincs benne:** MikroB extension (msg 19831, a6c7780d finding off cybersec) to also exclude
+sub-agent self-scheduling via POST /api/schedules -- NOT implemented. That route has zero auth
+checks on its agent body field, and the shared-token model gives no reliable way to tell which
+agent is really calling (elemzo own measured limit: X-Agent-Id is self-asserted, never
+authoritative). A night-scoped key is already excluded (outside its allowlist, no extra code
+needed); the BROADER gap needs per-agent device keys for every sub-agent -- new infrastructure,
+flagged for its own card rather than an under-specified guess here.
+
+**Ki döntött:** elemzo plan-grilling verdiktje (d5638d28 C1) alapján backend építi; MikroB
+döntés (komment 32162): HARD PRECONDITION -- semelyik degraded/night loop (d5638d28 C2 és később)
+nem hívhatja a done/land/agent-start végpontokat, amíg ez a kártya nincs kész. Gate: QA +
+Cybersec + Cybered.
+
+## 2026-11-16 -- 2ba008f2 round 2: outage marker fails closed, night sender forced server-side
+
+Cybered NO-GO (comment 32445) on round 1's credential-scope fence: isSessionOutageActive()
+failed OPEN (bypass allowed) for 10 of 11 measured malformed marker states (corrupt JSON, empty
+file, directory-in-place, active/heartbeat as a string, heartbeat in milliseconds, JSON array,
+chmod 000 unreadable) -- only "file missing" should legitimately read as normal. Fixed by
+rewriting the function to fail CLOSED (outage=true) for any read error except ENOENT, any
+JSON-parse failure, any non-object/array malformed active/heartbeat, and an implausible raw
+heartbeat value outside [1_600_000_000, 4_000_000_000] seconds -- without changing the two
+pre-existing pinned behaviors (a STALE marker and a FUTURE-dated marker within clock-skew
+tolerance both still read as non-outage). Separately, a night-scoped device key could forge the
+`from` field on POST /api/messages (the route only restricted `to`); fixed by forcing
+`from = NIGHT_MESSAGE_SENDER` server-side for every night-scoped caller.
+
+Finding 1 (land scripts -- marveen-land.sh/degraded-orchestrator-land-guard-lib.sh -- not fenced
+against the outage marker) is explicitly NOT fixed in this round: those files do not exist on
+this branch's base (d5638d28, which introduces them, is still unlanded) -- deferred to a
+follow-up once d5638d28 lands.
+
+**Mérés:** kanban-force-actors.test.ts (+10 cases) + night-gate.test.ts (+2 cases),
+fleet-test.sh --ref card/2ba008f2, 4 files / 83 tests passed. tsc --noEmit clean.
+
+**Ki döntött:** Cybered lelet, backend javítja. Gate: QA + Cybersec + Cybered.
+
+## 2026-11-16 -- 2ba008f2 round 3: Finding 1 fixed now that d5638d28 landed -- land-guard --actor mikrob bypass ignored the session outage marker
+
+**Kontextus:** Round 2's own entry (above) deferred Finding 1 (the land-guard scripts' --actor
+mikrob bypass not fenced against the session outage marker) because d5638d28, which introduces
+store/degraded-orchestrator-land-guard-lib.sh and marveen-land.sh's degraded-orchestrator check,
+was still unlanded at the time. d5638d28 landed (51de8702b). MikroB (msg 20060) relayed WhiteHat2's
+fresh probe against origin/develop: both the shared lib (sourced by mopsion-land.sh/
+cleancore-land.sh and mopsi-land.sh) and marveen-land.sh's own inline copy still let `--actor
+mikrob` bypass the kill switch unconditionally, confirming Finding 1 was real and still open.
+
+**Fix:** ported the same session-outage fence src/kanban-force-actors.ts's isForceActor() already
+has (round 2 of this card) into bash, mirroring isSessionOutageActive() field-for-field (missing
+marker = normal; unreadable/corrupt/malformed active or heartbeat field = fail closed; explicit
+`active: false` = normal; fresh+active = fence holds; stale past 15 min or future-skewed beyond 60s
+tolerance = normal, unchanged fail-safe-toward-normal direction). A new `_session_outage_active()`
+function, kept byte-equal between store/degraded-orchestrator-land-guard-lib.sh and
+marveen-land.sh's inline copy (same hand-kept-equal discipline as the existing
+`degraded_orchestrator_is_on` pin) -- mopsion-land.sh and mopsi-land.sh get it for free via the
+shared lib. `check_degraded_orchestrator_guard()` now only grants the `--actor mikrob` bypass when
+no outage is active; when an outage IS active, execution falls through to the ordinary
+`degraded_orchestrator_is_on` check (so an OFF switch during an outage still lands normally -- the
+outage only removes the bypass, it does not itself refuse).
+
+**Nincs benne:** a `MIKROB_SESSION_OUTAGE_PATH` env override exists for test fixtures only (mirrors
+the existing `DEGRADED_ORCHESTRATOR_SWITCH` override pattern); no real caller sets it.
+
+**Mérés:** `degraded-orchestrator-land-guard.selftest.sh` 9->11/11 PASS (new cases: owner bypass
+refused during an active outage; an OFF switch during the same outage still lands normally).
+`marveen-land.sh --selftest` 96->98/98 PASS. `mopsion-land.sh`/`cleancore-land.sh --selftest`
+111->113/113 PASS. `mopsi-land.sh --selftest` 75->77/77 PASS. Mutation-proven: reverting
+`check_degraded_orchestrator_guard`'s outage check lets the owner-bypass-during-outage case go
+red (restored clean). `npx tsc --noEmit` clean (no TS changed this round; the extended
+`degraded-orchestrator-land-guard-selftest.test.ts` parity assertion now also pins
+`_session_outage_active` byte-equal between the two bash copies, same pattern as the pre-existing
+`degraded_orchestrator_is_on` pin). `landing-downward-check.test.ts`'s own-case constant for
+marveen-land.sh moved 34 -> 36 to keep its shared-block arithmetic correct (measured: cc=113,
+mv=98, cc-49 == mv-36 == 62).
+
+**Ki döntött:** WhiteHat2 probe relayed by MikroB (msg 20060). backend végezte a javítást. Gate-SHA:
+e5e3c4d2a1ab1d18abde3af5240547345ac3b844. Gate: QA + Cybersec + Cybered (kártya saját előírása).
+
+## 2026-11-16 -- 2ba008f2 round 3 KORREKCIÓ: a fenti bejegyzés mérési állítása hibás volt
+
+**Ez a fenti, round 3 bejegyzést NEM módosítja** (döntésnapló append-only) -- a hibát itt
+javítom. A fenti "cc-49 == mv-36 == 62" állítás téves: a 2 új eset NEM csak marveen-land.sh
+own-blokkját bővítette, hanem mopsion-land.sh/cleancore-land.sh own-blokkját IS (a javítás
+duplikált kód, nem a megosztott downward-check lib), tehát a `landing-downward-check.test.ts`
+cc-konstansát is 49->51-re kellett mozdítani, nem csak az mv-konstanst 34->36-ra. A helyes
+mérés: cc=113, mv=98, cc-51 == mv-36 == 62. A `fleet-test.sh --ref card/2ba008f2` első futása
+(landing-downward-check.test.ts) ezt a hibát pirosra fogta ("expected 64 to be 62") -- a teszt
+fájl mindkét konstansa javítva, zöld újramérve.
+
+**Ki döntött:** fleet-test.sh saját piros eredménye fogta meg, backend javítja ugyanabban a
+körben, push előtt.
+
+## 2026-11-16 -- 2ba008f2 round 4: _session_outage_active polarity fail-closed on python crash
+
+**Mi:** CYBERSEC NO-GO round 3 (cybersec2, comment 32558, Gate-SHA 6fde6fde4) F1 MEDIUM: the
+round-3 `_session_outage_active()` (store/degraded-orchestrator-land-guard-lib.sh AND
+marveen-land.sh's inline copy) ended with `[ $? = 0 ]`, so ONLY exact python exit 0 meant "outage
+active"; exit 1 was the intended "normal" signal, but so was every other crash code (127, 137,
+139, bad PYTHONHOME, cwd-shadowed json.py) -- wrongly granting the `--actor mikrob` bypass on a
+python crash during a real outage. Proof table from 32558: healthy python3 -> refused (control);
+PATH-stub exit 1/2/127/137/139 -> allowed (bug, all five); unusable PYTHONHOME -> allowed; cwd
+`json.py` shadow (no `-I`) -> allowed.
+
+**Fix:** sentinel exit code (3, not 1) for the genuine "not active" case, emitted from inside a
+`try: main() / except SystemExit: raise / except BaseException: sys.exit(0)` wrapper (the
+`except SystemExit: raise` is load-bearing -- without it the sentinel itself is a SystemExit and
+gets swallowed by the BaseException catch-all), invoked via `python3 -I -c` to stop cwd/PYTHON*
+shadowing. Shell side: `local rc=$?; [ "$rc" = 3 ] && return 1; return 0` -- only rc=3 means "not
+active"; 0 or any crash code means "active" (fail-closed, deny the bypass). Applied identically
+to the lib and marveen-land.sh's inline copy (verified byte-identical extraction).
+
+**Nincs benne:** the exit-127 "guard lib sourced but missing check_degraded_orchestrator_guard"
+fail-open case (noted by MikroB, msg 20150, same fail-open-on-crash family as F1) -- carried to
+the next round on this card, not yet fixed.
+
+**Mérés:** selftest cases added (python3 crash exit 1/137/139 via a selective stub matching only
+the outage-check's own inline script, so the switch-file reader's independent python3 call is
+untouched): `degraded-orchestrator-land-guard.selftest.sh` 11->14/14 PASS, `marveen-land.sh
+--selftest` 98->101/101 PASS, `mopsi-land.sh --selftest` 77->80/80 PASS, `mopsion-land.sh`/
+`cleancore-land.sh --selftest` 113->116/116 PASS. `landing-downward-check.test.ts` shared-block
+floors bumped cc 51->54, mv 36->39 (cc=116-54=62, mv=101-39=62, unchanged shared-block delta).
+Mutation-proven: reverting to the old `[ $? = 0 ]` polarity reproduces the bypass under the
+selective-stub crash case (exit 137); restored fix denies it, confirmed byte-identical to backup.
+`npx tsc --noEmit` clean. `fleet-test.sh --ref 08119dcf442ac46610f7652d187578ad37fd55d1` on
+degraded-orchestrator-land-guard-selftest.test.ts + landing-downward-check.test.ts: 2 Test Files
+passed, 11 Tests passed.
+
+**Ki döntött:** Fix-Direction: WhiteHat2 (cybersec2, comment 32558). backend végezte a javítást.
+Gate-SHA: 08119dcf442ac46610f7652d187578ad37fd55d1. Gate: QA + Cybered (Fix-Direction jött
+WhiteHat2-től, a biztonsági re-gate RedHat-é, root CLAUDE.md "fix proposed by WhiteHat -> security
+gate is RedHat" konvenció szerint).
+
+### 2ba008f2 round 5: QA2 lelete -- két teszt node:fs mockja elfedte a kimaradás-kaput
+
+**Mi történt:** MikroB jelezte (komment 32654), hogy QA2 az e3cf26d0 round 5 gate-elése közben
+(komment 32653) a TELJES tesztkörben futtatva talált két elbukó fájlt, amit a 2ba008f2 négy
+gate-köre sosem futtatott (a delta re-gate-ek csak a kártya aktuálisan módosított fájljaira
+szűkítettek): `kanban-decisions-guard.test.ts` "force actor bypasses the block" és
+`kanban-landed-guard.test.ts` "honours force only for an exempt actor". A round-1 commit
+(a2307bf11) óta mindkettő pirosan állt a teljes kör mellett, senki nem vette észre.
+
+**Gyökér-ok:** `isSessionOutageActive()` (src/kanban-force-actors.ts, a round 1-4 kimaradás-kapu
+logikája) `readFileSync()`-et hív a FORCE_ACTORS-ellenőrzés ELŐTT. A két tesztfájl node:fs mockja
+csak `existsSync`-et adott, `readFileSync` hiányzott -- a hívás ezért egy sima (nem ENOENT)
+TypeError-t dob, amit a függvény catch-ága "a marker létezik, de nem olvasható" állapotnak lát
+(fail closed: outage aktív), és ez a mikrob force-bypasst feltétel nélkül megtagadja, pontosan
+azt a vizlelátét, amit a két teszt saját maga elvárt volna.
+
+**Javítás:** mindkét mock kapott egy `readFileSync`-et, ami egy valódi ENOENT hibát dob (ez a
+helyes "nincs is marker" jelzés) -- ugyanaz az alak, mint a másik 16, node:fs-et mockoló
+teszt-fájlnak. A PRODUKCIÓS kód (a round 1-4 fail-closed viselkedése) változatlan, csak a két
+teszt saját mockja módosult.
+
+**Audit:** végigmentem a flotta MIND a 18 node:fs-et mockoló teszt-fájlján (`grep -rl
+"vi.mock('node:fs'" src/__tests__`). A maradék 16 közül egyik sem importálja a
+kanban-force-actors.ts-t közvetlenül, és egyik sem tölti be valódi, nem-mockolt db.js-en keresztül
+sem (vagy egyáltalán nem érintik a db.js-t, vagy teljes egyéni stubbal helyettesítik, így a
+valódi kanban-force-actors.ts sosem töltődik be). Az egyetlen kivétel,
+`fleet-import-kanban-real-db.test.ts`, `importOriginal`-lal a VALÓDI node:fs-et is átengedi
+(`readFileSync` valódi), ezért ezt sosem érintette a hiba.
+
+**Mutáció-bizonyíték:** mindkét mockot visszaállítottam a hibás (`{ existsSync: () => true }`)
+alakra -- pontosan a két megnevezett teszt bukott (62/64 zöld), minden más maradt. Visszaállítva
+a scratchpad-backupból, `diff -q`-val bájt-azonos, újrafuttatva: 64/64 zöld.
+
+**Mérés:** a 2 javított fájl, noisy-run vitest: 64/64 PASS. Mind a 18 node:fs-et mockoló fájl
+együtt: 18 fájl / 384 teszt PASS (nincs regresszió az audit miatt). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** a lelet forrása QA2 (komment 32654, MikroB relayje), a javítást backend végezte.
+Gate-SHA: cc0e86f70 (ideiglenes, a végső Gate-SHA ennek a dokumentum-bejegyzésnek a commitja
+lesz -- lásd a REVIEW-t a kártyán a pontos sha-ért). Gate: QA + Cybersec + Cybered (MikroB saját
+dispatchja, komment 32654).
+
+## 2026-11-17 -- 2ba008f2 round 6: fullstack landolási dry-run-ja lint-ratchet-en akadt el (Fix-Direction komment 32720)
+
+**A hiba.** fullstack landolási dry-run-ja elutasítva: `@typescript-eslint/no-unused-vars`
+(baseline 273, a `night-gate.test.ts` egy használaton kívüli `getKanbanCard` importtal 274-re
+emelte). A 4 korábbi gate-kör egyike sem futtatta a `lint-ratchet.sh`-t ezen a kártyán, ezért ez
+csak a landolási dry-run-nál derült ki.
+
+**Javítás.** A `getKanbanCard` importot kivettem a `src/__tests__/night-gate.test.ts` import
+sorából -- a fájlban máshol nincs rá hivatkozás (`grep -n "getKanbanCard" ...` egyetlen sort ad,
+magát az import sort).
+
+**Mérés:** `lint-ratchet.sh` (a worktree saját másolatán, hogy a `$ROOT` a worktree-re oldódjon
+fel, ne a fő klónra) a javítás UTÁN: exit 0, "no rule got worse (433 findings, baseline holds)",
+`@typescript-eslint/no-unused-vars` 273 (baseline 273, egyezik). `night-gate.test.ts` noisy-run
+vitest: 22/22 PASS. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** fullstack landolási dry-run-ja találta, MikroB adta a Fix-Direction-t (komment
+32720), a javítást backend végezte.
+
+**Hivatkozás:** kártya 2ba008f2, komment 32720 (Fix-Direction), `src/__tests__/night-gate.test.ts`.
+
+## 2026-11-16 -- e3cf26d0: d5638d28 round-4 gate follow-up -- land-guard fail-open on a missing shared lib + 4 unpinned LOWs
+
+**Kontextus:** WhiteHat (üzenet 19821) + RedHat (32303) a d5638d28 round-4 gate-ek (@3e15b6c2e,
+mind GO) mellett 5 LOW-tételt jelzett, amik önmagukban nem buktatták a GO-t, de nem voltak
+pinnelve: a legfontosabb (LOW-2), hogy ha a megosztott
+`store/degraded-orchestrator-land-guard-lib.sh` hiányzik, a lander csak "command not found"-ot ír
+és FOLYTATJA -- fail-open a check saját forrásolási hibáján.
+
+**Javítás:**
+- **LOW-2:** `store/mopsi-land.sh` és `store/mopsion-land.sh` (a `cleancore-land.sh` symlink ez
+  utóbbira) bare `.` forrásolása exit-státusz ellenőrzés nélkül ment -- mindhárom lander
+  `set -uo pipefail`-t használ (`-e` nélkül), tehát a hiányzó lib "command not found" hibája NEM
+  állította meg a futást, a guard csendben soha nem futott le. Javítva: `if ! . "..."; then die 3
+  "... refusing to land without this check (card e3cf26d0)"; fi`. A `marveen-land.sh` a guard
+  SAJÁT, beágyazott másolatát hordozza, nem forrásolja a megosztott libet, tehát ez a konkrét
+  hibamód nem érinti.
+- **LOW-1:** a `readDegradedOrchestratorState()`/`isDegradedOrchestratorBlocking()` eddigi minden
+  tesztje explicit path-ot adott vagy env-override-ot állított -- semmi nem futtatta a VALÓS
+  production default-utat (se override, se argumentum). Pótolva. RedHat LOW (a két PUBLIC
+  függvény opcionális `path` paramétere eltávolítva -- semelyik valós hívó nem adott át ilyet; az
+  alsó szintű `readDegradedOrchestratorState()` megtartja a saját két-paraméteres szerződését a
+  direkt tesztjeihez).
+- **LOW-3:** `mopsi-land.sh --selftest` nem volt bekötve semmilyen suite-ba -- bekötve a
+  `landing-downward-check.test.ts` `describe.each`-ébe, mért padló 75.
+- **LOW-4:** a forrás-sorrend pin
+  (`agent-start-restart-degraded-orchestrator-real.test.ts`) nyers `indexOf`-ot futtatott a
+  forrásszövegen, tehát egy kikommentezett hívás (`// const refusal =
+  degradedOrchestratorRefusal(...)`) is illeszkedett volna. `stripComments()` segédfüggvény
+  pótolva (ugyanaz a technika, mint `agent-working-dir-single-source.test.ts` saját
+  `stripComments`-je) az `indexOf` elé.
+
+**Kész, ha:** guard lib átnevezve -> mindhárom lander refuse-ol (nem-nulla, semmi nem pusholva) --
+`land-guard-lib-missing-fail-closed.test.ts` (symlink-farm próba, a die() üzenet SZÖVEGÉT nézi, nem
+csak a bash "No such file" sorát, mert az utóbbi a régi, sérülékeny kódon is megjelenik); LOW-1/
+LOW-4 red-on-mutant tesztek pótolva; mopsi selftest bekötve; az explicit-path hiányzó fájl esete
+továbbra is OFF-ot olvas (változatlan, tesztelve).
+
+**Mérés:** `fleet-test.sh --ref card/e3cf26d0` (4 fájl: `degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `landing-downward-check.test.ts`,
+`land-guard-lib-missing-fail-closed.test.ts`): 4 Test Files passed (4), 42 Tests passed (42).
+`npx tsc --noEmit` tiszta.
+
+**Ki döntött:** WhiteHat (üzenet 19821) + RedHat (32303) lelet. backend végezte a javítást.
+Gate-SHA: 69631bae486fd506855c9c0c6172da245cf3d890. Gate: QA + Cybersec + Cybered (kártya saját
+előírása).
+
+## e3cf26d0 round 2: QA2 FAIL (komment 32542) két hiányzó pont javítva
+
+A round 1 REVIEW (f73ca32a0) alatt QA2 két Kész-ha-pontot talált nyitva (relézve MikroB üzenet
+20096-ban):
+
+1. **Explicit-path hiányzó fájl még OFF-ot olvasott.** A `readDegradedOrchestratorState(explicitPath)`
+   egy hiányzó, EXPLICIT path argumentumra `off`-ot adott vissza, holott MikroB döntés 32246(b)
+   már korábban (d5638d28 round 4) fail-closed-ra állította az env-override ugyanilyen esetét. MikroB
+   üzenet 20096: a 32246(b) döntés az explicit-path alakra is vonatkozik -- egy hívó által átadott
+   path ugyanolyan hívó-kontrollált érték, mint az env override, a hiánya ugyanúgy anomália, nem az
+   owner szándékos OFF-ja. Javítva: a hiányzó-path OFF-ág mostantól CSAK a valódi production
+   default-ra érvényes (se env override, se explicit argumentum) -- mindkét másik eset
+   (`unreadable`) lesz. A két régi, az ELŐZŐ viselkedést pinnelő teszt frissítve az ÚJ
+   viselkedésre, plusz egy külön teszt a változatlan valódi-default esetre.
+2. **MikroB addendum (kártya komment 32433, RedHat GO d5638d28 @49bb67aef üzenet 19908): a
+   `kanban.ts`/`kanban-force-actors.ts` actor-szűkítése unpinned volt egy olyan mutánsra, ami egy
+   nem-string actort az owner-bypasshoz juttatna.** Pótolva: unit pin `kanban-force-actors.test.ts`-ben
+   (`isForceActor` egy toString/valueOf-fal "mikrob"-nak látszó objektumra és egy `['mikrob']`
+   tömbre is `false`-t kell adjon -- a `Set.has()` SameValueZero-szemantikáját pinneli egy
+   coerce-elő összehasonlításra cserélő mutáns ellen); 3 integrációs pin
+   `kanban-move-degraded-orchestrator-guard.test.ts`-ben (POST /move, PUT, POST create-as-done,
+   mindhárom `actor:["mikrob"], force:true`-t küld degraded állapotban, és az owner-bypass NEM
+   érvényesül).
+
+**Mérés:** `fleet-test.sh --ref card/e3cf26d0` (`degraded-orchestrator-guard.test.ts`,
+`kanban-force-actors.test.ts`, `kanban-move-degraded-orchestrator-guard.test.ts`): 3 Test Files
+passed (3), 60 Tests passed (60). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** QA2 FAIL (komment 32542), relézve MikroB üzenet 20096-ban. backend végezte a
+javítást. Gate-SHA: 8c23bbd67a41f9c61e79daaabb0b8d712d5cd4bc. Gate: QA + Cybersec + Cybered
+(kártya saját előírása).
+
+## e3cf26d0 round 4: rebase a 2ba008f2 round 4 (F1 polarity) tetejére + cybersec2 LOW záró
+(exit-127 hiányzó guard-függvény)
+
+A kártya a sima-SKIP gate-sorrend miatt a 2ba008f2 C1 (credential-scope fence) befejezéséig nem
+mehetett live-ra (HARD PRECONDITION, lásd a kártya saját leírását) -- a `card/2ba008f2` közben
+round 4-et kapott (F1 polarity fail-closed, lásd a fenti 2ba008f2 bejegyzést), ezért a
+`card/e3cf26d0` ágat (korábbi tipp: `ccb8f67ff5b1c046255c32662a991a4ebbb2373f`) rebase-elni kellett
+az új `origin/card/2ba008f2` tetejére (`704b4d5cf87041858e30be140b94f1043cf94360`), MikroB üzenet
+20150 utasítása szerint. A DECISIONS.md append-only ütközést kézzel oldottam (a HEAD blokk, majd
+az e3cf26d0 saját round-4 blokkja, konfliktus-jelölő nélkül).
+
+Ugyanabban a körben MikroB üzenet 20150 második pontja a cybersec2 SKIP (komment 32575) alatt
+hagyott LOW-t kérte zárni: a round 1-ben (LOW-2) fixelt eset egy TELJESEN HIÁNYZÓ guard lib-re
+vonatkozott (`. lib` maga bukik, a bare-`.` exit-kódja nem-nulla); a cybersec2 mérés szerint egy
+olyan lib, ami LÉTEZIK és TISZTÁN SOURCE-OLÓDIK, de nem definiálja a
+`check_degraded_orchestrator_guard` függvényt (üres/csonka fájl), más hibaosztály: `. lib` 0-val
+tér vissza, a `if ! . lib` ág nem fut, a hívás SIKERESEN lefut `command not found`-dal (exit 127),
+és a lander a kapcsolóval FOLYTATJA -- ugyanaz a fail-open-a-crash-ra család, mint az F1 (2ba008f2),
+csak egy állapottal arrébb.
+
+**A javítás:** `store/mopsi-land.sh` és `store/mopsion-land.sh` (a `store/cleancore-land.sh`
+symlink automatikusan lefedve) a meglévő `if ! . "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"; then die 3 ...; fi`
+blokk UTÁN egy explicit szimbólum-jelenlét-ellenőrzést kapott:
+`declare -F check_degraded_orchestrator_guard >/dev/null || die 3 "...truncated/empty lib?..."`
+(nem részsztring-keresés, a kódminőségi alapelvek 12. pontja szerint).
+
+**Mutáció-bizonyíték:** a két lander script másolatát a scratchpadbe mentve, az új
+`declare -F ...` sor helyére `true # MUTANT`-ot írva, a célzott vitest-fájl 3/6 tesztje pirosra
+váltott (a 3 új eset); visszaállítás után 6/6 zöld -- a javítás load-bearing.
+
+**Kész, ha:** egy üres/csonka lib stub refuse-olja a mopsion-land-et, selftestben bizonyítva --
+`land-guard-lib-missing-fail-closed.test.ts` új `describe.each` blokkja (`farmWithEmptyGuardLib()`,
+3 lander × 1 teszt) pinneli: `status===3`, az üzenet tartalmazza a
+`sourced but did not define check_degraded_orchestrator_guard` szöveget, NEM tartalmazza a
+`degraded-orchestrator mode is ON` szöveget.
+
+**Mérés:** `fleet-test.sh --ref 33636282adbb72b3d8d2fdf2dc4ccd25ae14ec6d` (6 fájl:
+`land-guard-lib-missing-fail-closed.test.ts`, `degraded-orchestrator-guard.test.ts`,
+`kanban-force-actors.test.ts`, `kanban-move-degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `landing-downward-check.test.ts`):
+6 Test Files passed (6), 82 Tests passed (82). `bash store/mopsi-land.sh --selftest`: 80/80 PASS.
+`bash store/mopsion-land.sh --selftest`: 116/116 PASS (változatlan a 2ba008f2 round 4 óta, ez a kör
+csak vitest-tesztet adott, bash `--selftest` esetet nem). `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** MikroB üzenet 20150 (rebase-utasítás + cybersec2 32575 LOW zárása). backend
+végezte. Gate-SHA: 33636282adbb72b3d8d2fdf2dc4ccd25ae14ec6d. Gate: QA + Cybersec + Cybered (kártya
+saját előírása) -- delta re-gate csak az e körben változott részre (MikroB üzenet 20150: "its
+gates will re-check only that delta").
+
+### e3cf26d0 round 5: CYBERED NO-GO 32605 fix -- a switch-file parity teszt stale pin volt, nem viselkedés-lyuk
+
+**Cause:** Cybered NO-GO (komment 32605, round 4, Gate-SHA 8cfad7d74) azt mérte, hogy
+`src/__tests__/degraded-orchestrator-switch-parity.test.ts` "missing file: TS and bash agree" esete
+PIROS a round-4 ágon, miközben a base (704b4d5cf) alatt zöld -- nem flaky, determinisztikus. A
+round 2 úgy módosította `readDegradedOrchestratorState(explicitPath)`-t, hogy egy HIÁNYZÓ EXPLICIT
+útra `'unreadable'`-t adjon vissza, de a parity teszt a TS oldalt továbbra is egy explicit fixture
+útvonallal hajtotta a "missing file" sorban, a bash oldalt pedig `missing=OFF`-ként modellezte --
+ez egy OLYAN hívási alak, amit SEMMILYEN valós hívó nem használ (minden production hívás argumentum
+nélkül megy: a hívó vagy env override-ot állít, vagy a default-ra hagyatkozik). A bash lib
+(`store/degraded-orchestrator-land-guard-lib.sh` / `store/marveen-land.sh` 120-131. sor) már
+rendelkezik egy `_OVERRIDE_SET` ággal: a semmire mutató override ON (fail-closed), a sosem írt
+default path OFF -- a két oldal MÁR megegyezik, ha úgy hajtjuk, ahogy a production tényleg hívja
+őket. Stale pin volt, nem viselkedés-lyuk.
+
+**Fix:** `src/__tests__/degraded-orchestrator-switch-parity.test.ts`-ben a `bashSideIsOn()` egy
+`overrideSet` paramétert kapott (a hiányzó-path ág most ezt adja vissza, nem feltétlen `false`-t); a
+`FIXTURES` tömbből törölve a régi, explicit-pathos "missing file" sor (minden más fixture-sor valódi
+fájlt ír, ott ez az ág sosem triggerel). Két új, dedikált teszt váltja: (a) "missing file, override
+set to a missing path: TS and bash agree (ON)" -- `DEGRADED_ORCHESTRATOR_SWITCH` egy hiányzó útra
+állítva, `readDegradedOrchestratorState()` ARGUMENTUM NÉLKÜL (a valós hívási alak) a
+`bashSideIsOn(missingPath, true)`-hoz hasonlítva; (b) "missing file, genuine default (no override,
+no explicit arg): TS and bash agree (OFF)" -- env törölve, `readDegradedOrchestratorState()`
+argumentum nélkül a `bashSideIsOn(degradedOrchestratorSwitchPath(), false)`-hoz hasonlítva. Nincs
+viselkedés-változás a guard-ban, csak a teszt hívási alakja igazodott a valósághoz.
+
+**Mutáció-bizonyíték:** a `bashSideIsOn` hiányzó-path ága visszamutálva feltétlen `return false`-ra
+-> `degraded-orchestrator-switch-parity.test.ts` önállóan futtatva 1/19 piros (pontosan az új
+override-missing teszt, `expected false to be true`); visszaállítva (diff IDENTIKUS a backuppal) ->
+19/19 zöld.
+
+**Mérés:** `fleet-test.sh --ref 3b15170ea236ac3f7f9eb530326520fe587345a7` (10 fájl:
+`agent-restart-degraded-orchestrator-guard.test.ts`, `agent-start-degraded-orchestrator-guard.test.ts`,
+`agent-start-restart-degraded-orchestrator-real.test.ts`, `degraded-orchestrator-guard.test.ts`,
+`degraded-orchestrator-land-guard-selftest.test.ts`, `degraded-orchestrator-switch-parity.test.ts`,
+`kanban-move-degraded-orchestrator-guard.test.ts`, `kanban-force-actors.test.ts`,
+`landing-downward-check.test.ts`, `land-guard-lib-missing-fail-closed.test.ts`): 10 Test Files
+passed (10), 115 Tests passed (115). `npx tsc --noEmit` tiszta. A round-4 behaviorális teszt az
+üres/csonka-lib fail-closed esetre (`land-guard-lib-missing-fail-closed.test.ts` `describe.each`
+blokkja, `declare -F` alapú) VÁLTOZATLAN ebben a körben, és benne van a fenti 10 fájlos futásban --
+cybersec (MikroB üzenet 20198 addendum) ezt a sha-t nem mérte, cybered 8cfad7d74-n mérte zártnak.
+
+**Ki döntött:** cybered NO-GO (32605) a 2ba008f2-t (704b4d5cf, teljesen gate-elve) proposer-ként;
+MikroB üzenet 20198 megerősítette, hogy `origin/card/e3cf26d0` már 704b4d5cf-re van rebase-elve
+(nem kellett újra rebase-elni). backend végezte. Gate-SHA:
+3b15170ea236ac3f7f9eb530326520fe587345a7. Gate: QA + Cybersec (WhiteHat) -- RedHat (cybered)
+javasolta a fixet, tehát a biztonsági re-gate WhiteHat (4f. munkavégzési szabály).
+
+## 2026-11-16 -- 9ea8dcb8: self-pace-gate nohup/claude false positive -- scratchpad-útvonal ártalmatlan szó, nem a futó parancs
+
+DevO (üzenet 20038) jelezte rögtön a 2e04a52e hook élesítése után: a
+`scripts/self-pace-gate.mjs` `SELF_PACE_BASH_PATTERNS` tömbjének nohup/setsid/disown-önújraindítást
+figyelő sora (`/\b(nohup|setsid|disown)\b[\s\S]*\bclaude\b/i`) horgonyozatlan volt -- a célnevet a
+szegmens BÁRHOL később megtalálta, nem csak a tényleges futó parancsszóban. Minden ügynök
+scratchpad-útvonala `/tmp/claude-1000/...` alakú, tehát egy háttérbe küldött, csak odalogoló parancs
+(`nohup bash store/marveen-land.sh ... > /tmp/claude-1000/x/log 2>&1 &`) is elutasításra került,
+holott a cél-bináris sosem indult el.
+
+**Javítás:** a regex-sort egy `nohupRelaunchesClaude()` függvényre cseréltem (a kódminőségi
+alapelvek 12. pontja szerint: szimbólum-jelenlét sosem részsztring). A függvény a trigger-szó
+(nohup/setsid/disown) UTÁNI tokent nézi, átlépve a `heredocOwnerRunsBody` már meglévő pass-through
+prefix-listáján (env-hozzárendelés, sudo/env/nice/time/exec/command/stdbuf), és csak akkor jelez,
+ha az így kapott parancsszó basename-je PONTOSAN a cél-bináris neve -- egy láncolt
+`nohup setsid <cél>` is lefedve, mert a `setsid` maga is trigger-szó, a scan onnantól újraindul.
+A hívó oldalt (`SELF_PACE_BASH_PATTERNS.some(...)`) kiterjesztettem, hogy a tömb elemei lehessenek
+regex VAGY függvény.
+
+**Kész, ha (a kártya saját listája):**
+- `nohup bash store/marveen-land.sh ... > /tmp/claude-1000/x/log 2>&1 &` -> allowed (teszt: "does
+  NOT misfire on claude inside a scratchpad path argument, not the command word").
+- `nohup <cél> ...`, `setsid <cél> -p ...`, `nohup env X=1 <cél> ...`,
+  `nohup /abs/path/<cél> ...` -> továbbra is denied (teszt: "still denies every real
+  nohup/setsid/disown + claude relaunch shape", 5 alak).
+- governance-gates suite zöld; a régi regexre visszamutáló mutáns (a fix sorát visszaírva az
+  eredeti unanchored regexre) az új allow-esetet pirosra fordítja.
+
+**Mérés:** `npx vitest run src/__tests__/governance-gates.test.ts` (uncommitted fán, a mutáció-próba
+miatt nem `fleet-test.sh --ref`-fel, hanem `noisy-run.sh`-n át, a `fleet-test.sh --ref` csak
+committolt git-refet tesztel): 271 Test (271) passed a javított kódon; a regex-mutánson 1/271 piros
+(pont az új allow-eset), visszaállítva ismét 271/271 zöld. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** DevO lelete (üzenet 20038), MikroB nudger-dispatch (self-advance, msg 20189).
+backend végezte a javítást. Gate-SHA: 7066c34750d629291c8a4631563fd176d586d5d0. Gate: QA +
+Cybersec (a kártya saját előírása).
+
+### 9ea8dcb8 round 2: CYBERSEC NO-GO 32608 fix -- a wrapper-szó-lista maga volt a lyuk, nem a hiányos lista
+
+**Cause:** cybersec NO-GO (komment 32608, Gate-SHA 6dc4c450b) mérte, hogy a round 1
+`nohupRelaunchesClaude()` függvénye (a trigger-szó utáni első tokent sétáltatta végig egy fix
+prefix-listán: env-hozzárendelés, sudo/env/nice/time/exec/command/stdbuf) 14 valódi
+self-respawn alakot ENGED át, amit a régi, széles regex még tiltott: `setsid -f`/`--fork`,
+`nohup nice -n`, `timeout`, `sudo -u`, `env -i`, `stdbuf -oL`, `/usr/bin/env`, egy idézett vagy
+`$(which ...)`-szubsztituált parancsszó, `bash -c`/`sh -c`/`bash -lc` törzsön belüli indítás,
+`xargs`. A sétáló megoldás MAGA volt a lyuk: bármelyik wrapper, ami nincs a fix listán, vagy egy
+listás wrapper a SAJÁT opciójával (`-f`, `-n 10`, `-u user`, `-i`, `-oL`), olyan tokenen állítja
+meg a sétát, ami sosem "claude" -- nem a lista hiányossága volt a hiba, hanem a séta-alapú
+szűkítés módja maga.
+
+**Fix:** cybersec saját, a valódi `gateDecision()`-t mindkét fán (régi/új) lefuttató próbájával
+VERIFIKÁLT irány: a régi, SZÉLES "claude bárhol a trigger-szó után" scan-t megtartva, csak a
+SZÓHATÁRT szűkítjük `\bclaude\b` helyett `(?<![\w-])claude(?![\w./-])`-ra. Nincs szükség
+wrapper-listára: egy path-szegmens mindig `/` vagy `-` karakterrel folytatódik (soha nem shell
+metakarakterrel vagy sima szóhatárral), így a `/tmp/claude-1000/...` scratchpad-útban a "claude"
+utáni `-` kizárja a találatot, miközben minden valódi respawn-alak (idézett, wrapperelt,
+szubsztituált, `bash -c` törzsön belüli) a "claude" szót sima szóhatárral tartalmazza, és
+továbbra is illeszkedik. A `nohupRelaunchesClaude()` függvény és a hívó oldal
+regex-vagy-függvény kiterjesztése törölve (surgical cleanup: a saját változtatásom tette
+feleslegessé).
+
+**Teszt:** `src/__tests__/governance-gates.test.ts` "still denies every real nohup/setsid/disown +
+claude relaunch shape" tesztje 21 denied-alakra bővült (az 5 régi + mind a 14 cybersec-lelet +
+2 további wrapper-variáns), az "does NOT misfire..." teszt 3 scratchpad-path allow-esetre
+(cybersec "INTENDED ALLOWS CONFIRMED" listája).
+
+**Mutáció-bizonyíték:** a fix sorát visszaírva a round 1 `nohupRelaunchesClaude()` pontos
+tartalmára (git history, commit 7066c3475) -> 1/271 piros, pontosan az új "still denies..." teszt
+(`expected false to be true`); visszaállítva (diff IDENTIKUS a backuppal) -> 271/271 zöld.
+
+**Mérés:** `fleet-test.sh --ref dc9b0e702f6d9910baa1d7755396af9677d4d43c
+src/__tests__/governance-gates.test.ts`: 1 Test File passed (1), 271 Tests passed (271).
+`npx tsc --noEmit` tiszta.
+
+**Ki döntött:** cybersec NO-GO (32608) proposer-ként (WhiteHat javasolta a fixet, saját
+verifikált próbával). backend végezte a javítást. Gate-SHA:
+dc9b0e702f6d9910baa1d7755396af9677d4d43c. Gate: QA + Cybered (RedHat) -- a proposer-szabály (4f.
+munkavégzési szabály) szerint, mert ezúttal WhiteHat (cybersec) javasolta a fixet.
+
+### 9ea8dcb8 round 4: CYBERSEC NO-GO 32639 fix -- a szóhatár-szűkítés maga vesztett el 6 régi deny-alakot
+
+**Mi történt:** A round 3 javítás (WhiteHat saját, a round-1 NO-GO-ban javasolt szóhatár-szűkítése,
+a cél-szó körüli negatív lookaround kiterjesztése) lezárta a round 1 összes 14 regresszióját, de a
+szóhatár maga is túl szűk lett: kizárta a cél-szót MÁSIK token prefixumaként/suffixumaként is, így
+6 régi deny-alak engedetté vált, hármuk a tényleges CLI valódi relaunch-je a csomagneve alatt
+(a CLI package-neve mögé írt "-code" suffixszel, npx-es és node-cli.js-es alakban), plusz három
+"wrapper script" alak (.sh, .exe suffixszel). Ezt cybersec maga fedte fel (NO-GO 32639, friss,
+42 shape-es próba, a regex, amit maga javasolt a round 1-ben), cybersec2 round-2 NO-GO-ja (32612)
+pedig MÁR ELŐRE rögzítette a helyes irányt a saját, függetlenül mért próbájával.
+
+**Javítás (cybersec2 iránya, 32612; cybersec megerősítve, 32639):** a szóhatárt EGYÁLTALÁN nem
+kell szűkíteni. A tényleges téves pozitív forrás a per-uid scratch-könyvtár komponens volt (a
+célszó után egy szám-suffix, pl. "-1000"), nem a célszó maga -- ezt kell maszkolni a teszt ELŐTT
+egy útvonal-helyettesítővel, a régi, széles mintát pedig változatlanul hagyni. Egy valódi
+relaunch-alak sosem tartalmazza ezt a szám-suffixes scratch-komponenst, tehát a maszkolás semmit
+nem veszít, amire egy relaunch-alaknak szüksége van; egy scratch-útvonal a maszkolás után már nem
+tartalmazza a sima célszót, tehát a régi minta nem sül el rajta.
+
+**Mutáció-bizonyíték:** a javítást visszaállítottam a round-2 szóhatár-szűkített alakra (maszkolás
+nélkül) -> 1/271 piros, pontosan az új "still denies ... relaunch shape" teszt (a 6 új alak
+egyikén, "expected false to be true"); visszaállítva -> 271/271 zöld, a diff byte-azonos a
+mentett verzióval.
+
+**Mérés:** `npx vitest run src/__tests__/governance-gates.test.ts` (noisy-run, commitolatlan fa,
+mutáció-próba): 271/271 a javítással, 270/271 (1 piros) a mutánson. `npx tsc --noEmit` tiszta.
+A commitolt sha-ra `fleet-test.sh --ref`-fel még nem futott ebben a szakaszban -- lásd a REVIEW-t
+a kártyán a pontos sha-val, amint lefut.
+
+**Ki döntött:** cybersec NO-GO (32639) + cybersec2 NO-GO (32612, a fix iránya). backend végezte a
+javítást. Gate: QA + Cybered (RedHat) -- a proposer-szabály (4f. munkavégzési szabály) szerint,
+mert a fix iránya ezúttal is WhiteHat-tól jött.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+## 2026-11-17 -- 9ea8dcb8: fejléc-dátum pótlása, hogy a decisions-append-union auto-merge-je lefusson (Fix-Direction komment 32722)
+
+**A hiba.** fullstack landolási dry-run-ja a merge-konfliktus szakaszban elutasítva, mielőtt a
+fleet-test egyáltalán elindult: a DECISIONS.md konfliktusa TISZTA kettős-append (develop és
+card/9ea8dcb8 is csak a végére fűz hozzá, ugyanonnan, 7deb8ecea merge-base-ről), ami
+strukturálisan megfelelne a `store/decisions-append-union.sh` `try_append_union`-jának, de a
+funkció a `## [0-9][0-9][0-9][0-9]-*` fejléc-mintát várja, és a `6dc4c450b` commit saját új
+bejegyzésének fejléce ("## 9ea8dcb8: self-pace-gate ...") dátum-prefix nélkül érkezett -- ezért
+az auto-union nem ismerte fel, és a hívó a szokásos elutasít-és-jelent útra esett.
+
+**Javítás.** A fejlécet "## 2026-11-16 -- 9ea8dcb8: ..."-re bővítettem (a commit dátuma szerint),
+egyetlen soros módosítás, tartalom-változás nélkül. Átnéztem a kártya másik két DECISIONS.md-bővítését
+(round 2, round 4): mindkettő `###` (al-fejléc) a MÁR LÉTEZŐ, most javított bejegyzés alatt, nem a
+`try_append_union` fejléc-mintájára illeszkedő top-szintű bejegyzés, tehát nem kellett bántani.
+
+**Ellenőrzés -- magam futtattam a union-függvényt, nem csak feltételeztem, hogy javít.**
+Eldobható worktree-t nyitottam a javított branch-re, `git merge --no-ff origin/develop`-ot
+futtattam (ugyanaz a konfliktus-alak, amit fullstack mért: KIZÁRÓLAG a DECISIONS.md konfliktál),
+majd a `decisions-append-union.sh`-t forrásolva meghívtam `try_append_union <worktree> DECISIONS.md`-t
+közvetlenül: RETURN=0 (sikeres resolve), a fájl `UU` helyett `M` lett, konfliktus-jelölő sor nulla,
+a javított fejléc-sor a végeredményben megvan. Az eldobható worktree-t töröltem.
+
+**Ki döntött:** fullstack landolási dry-run-ja találta, MikroB adta a Fix-Direction-t (komment
+32722), a javítást backend végezte.
+
+**Hivatkozás:** kártya 9ea8dcb8, komment 32722 (Fix-Direction), `store/decisions-append-union.sh`.
+
+## 2026-11-18: F1.3 checkpoint wiring into REVIEW posting + FABRICATED gate verdict (card 14bfc893)
+
+Wired F1.1 (store/agent-checkpoint.sh) and F1.2 (card_checkpoints table/API) together: post-review.sh
+now records a checkpoint (best-effort, fail-open) as part of posting a REVIEW. gate-closure-check.py
+--card-id/--db now returns a FABRICATED verdict (not CHECKPOINT_FAIL) when a declared Gate-SHA does
+not exist as a commit object in ANY reachable repo clone -- scoped behind an actual-clone-reachable
+check so the existing fail-open-on-unreachable-clones behavior is unchanged.
+
+**Ki dontott:** backend (sajat kartya, phase 295ae6a3 F1.3). Gate: QA + WhiteHat + RedHat (a fazis
+saja kijelolese, landolasi utak / git-integritas / kartya-allapot hitelesseg).
+
+## 2026-11-16 -- 81593084: MT-10 importerek bekötve egy futtatható CLI-be
+
+A négy MT-10 importer (import-findings.ts, import-decisions-log.ts, import-cold-memories.ts,
+import-anti-patterns.ts) már régebben elkészült és le lett tesztelve a gyerek-kártyák alatt
+(63206155/bb0cadd9/76c2efb1/33e5e4ff + 49b96b30/61348647/4ecd75d0/80ab5067, mind done), de
+sosem hívta meg őket semmi: mérve (`sqlite3 store/knowledge-graph.db "select type, count(*)
+from kg_nodes group by type"`) csak solution/card/commit sor volt, decision/finding/error_class/
+lesson/anti_pattern nulla. Ez a kártya a hiányzó hívás: `src/kg/import-mt10-cli.ts`
+(`runImportMt10Cli`/`runImportMt10`, injektált deps a teszthez) + `scripts/kg-import-mt10.ts`
+(a tényleges belépési pont), `KG_CAPTURE_ENABLED`-re kapuzva (ugyanaz a kapcsoló, amit a
+kg-backfill.ts/MT-06 is használ az írási oldalra), idempotens (minden importer saját, tartalom-
+alapú id szerint upsertel).
+
+**Mérés:** `src/__tests__/kg-import-mt10-cli.test.ts`, fleet-test.sh --ref card/81593084
+(e6c1b8fcb61b45cb8596e20591de4ab6fe853632 alapon épült dist-tel futott), 1 fájl / 7 teszt zöld.
+`tsc --noEmit` tiszta.
+
+**Ki döntött:** a kártya saját terve (MikroB 20666/c65add5a MODULTERV, 2026-10-16) + MikroB
+döntés 32210 (ne a code-review-graph saját gráfját bővítsük, külön store/knowledge-graph.db
+fájl marad, project-partícióval -- lásd a Peti 11541 döntést). Gate: QA (funkcionális, nincs
+trust-boundary-váltás) + Cybersec (KG_CAPTURE_ENABLED kapu + a DECISIONS.md/cold-memories
+olvasás secret-szűrése miatt, az import-* modulok már ezt a gate-réteget hordozzák).
+
+## 2026-11-17 -- 4e9ad774: 81593084 CYBERSEC GO komment 32549 követő -- importer-sorrend + flagValue
+
+**A hiba.** A CYBERSEC GO (komment 32549, Gate-SHA 2997183f) MEDIUM-1/MEDIUM-2/LOW-1/LOW-2
+leleteket hagyott a landolás előtt. Ebben a körben a MEDIUM-1 és a LOW-1/LOW-2 ment javításra;
+a MEDIUM-2 (SECRET_PATTERNS bővítés) NYITOTT, lásd lejjebb.
+
+**MEDIUM-1 javítva.** `runImportMt10` (import-mt10-cli.ts) az `importAntiPatterns`-t most az
+`importColdMemories` ELŐTT futtatja. A cold-memories importer `about` éle egy `card:<id>`
+csomópontra mutat, amit a négy importer közül KIZÁRÓLAG az anti-patterns importer hoz létre --
+a régi sorrendnél az első futás ezért kihagyta ezeket az éleket, és csak egy második (rerun)
+vette fel. Mutáció-bizonyított: a sorrend-javítást visszafordítva mindkét új teszt pirosra
+váltott (az élszám nőtt run1->run2-re, pontosan a MEDIUM-1 alakban), visszaállítva byte-azonos,
+10/10 zöld.
+
+**LOW-1 dokumentálva.** Az atomicitás IMPORTERENKÉNTI, nem a teljes CLI-futásra -- ha a 4.
+importer dob, a korábbiak írása megmarad. Szándékosan nem kapott közös tranzakciót: minden
+importer upsert idempotens, egy rerun a helyreállítás útja, nem egy rollback.
+
+**LOW-2 javítva.** `flagValue` (import-mt10-cli.ts) többé nem nyeli el a következő flag-et
+értékként (pl. `--kg-db --help` korábban egy `--help` nevű fájlt nyitott volna).
+
+**MEDIUM-2 NYITOTT -- termékdöntés kell, mielőtt a SECRET_PATTERNS-t (src/security/secret-gate.ts)
+bővítjük.** A kártya 6 hiányzó alakot nevezett meg (bare 64-hex, password=, unprefixed
+*_API_KEY=, Telegram bot token, base64 blob, email/phone). Mérve a teljes repóra
+(`git ls-files`, kézzel írt próba-mintákkal): a "Telegram bot token" alak MÁR le van fedve (a
+GO-komment szintetikus próbája nem adott pontosan 35 karakteres titkot, ez a próba hibája volt,
+nem a mintáé -- egy regressziós teszt most ezt pinneli). A másik öt alakra ÉLŐ ütközést mértem:
+- bare 64-hex: 16 db létező, legitim sha256-pin előfordulás (DECISIONS.md skill-pin sorok,
+  secret-gate.ts saját fixture-listája) -- egy ilyen minta a kapu SAJÁT fájljának jövőbeli
+  szerkesztését is blokkolná.
+- password=/*_API_KEY= (hossz+pont-kizárással finomítva): 20, illetve 13 fájl ütközik ma --
+  `.env.example`, vendor skill-dokumentáció placeholderek (`your_api_key_here`), és a kapu
+  SAJÁT tesztfixture-jei (pl. `secret-gate.test.ts`, `resend-key-env.test.ts`).
+- base64 blob (naiv alak-illesztés): 273 fájl ütközik -- gyakorlatilag használhatatlanul
+  széles, valódi entrópia-ellenőrzés nélkül.
+A SECRET_PATTERNS egyszerre a commit-idejű blokkoló kapu ÉS a kg/store.ts írás-ellenőrzés ÉS az
+agent-transcript.ts maszkolás forrása -- egy itt bővítés nagy hatássugarú, és a fenti mérés
+szerint vagy 30+ fájlos allowlist-bővítést igényelne, vagy a kapu kezdene legitim
+commitokat/dokumentációt blokkolni. Ez meghaladja ennek a kártyának a hatókörét: a döntés
+(bővítsük a megosztott listát az allowlist-költséggel, vagy egy KÜLÖN, csak a kg/store.ts
+írás-ellenőrzésére szánt, szűkebb mintalista legyen -- ami elhagyja az "egy forrás" elvet, amit
+a store.ts saját fejkommentje kimond) MikroB-ra/Petire vár, nincs implementálva. Az email/phone
+alakokat a GO-komment is külön, eldöntésre váró kérdésnek jelölte (nem MEDIUM), itt is az marad.
+
+**Mérés:** `src/__tests__/kg-import-mt10-cli.test.ts`, noisy-run vitest (uncommitted tree): 1
+fájl / 10 teszt zöld (6 régi + 4 új). `tsc --noEmit` tiszta.
+
+**Ki döntött:** backend (a fix szerzője), MikroB dispatch (self-advance pickup, fleet-nudger
+msg_id:20324) alapján, a 81593084 kártya CYBERSEC GO leletei szerint. A MEDIUM-2 nyitott kérdés
+MikroB/Peti döntésére vár.
+
+**Hivatkozás:** kártya 4e9ad774 (szülő: c65add5a), 81593084 (komment 32549, Gate-SHA
+2997183f), `src/kg/import-mt10-cli.ts`, `src/__tests__/kg-import-mt10-cli.test.ts`,
+`src/security/secret-gate.ts`.
+
+## 2026-11-18: F1.3 follow-up -- checkpoint timeout, FABRICATED wording, card-worktree snapshot (card 06334c7d)
+
+Non-blocking findings from CYBERSEC GO 32818 es CYBERED GO 32822 a 14bfc893-on, mind harom javitva:
+
+- **LOW-1 (CYBERSEC):** `store/post-review.sh`-ban a `record_review_checkpoint` hivasa korul nem
+  volt timeout -- egy beragadt `agent-checkpoint.sh` hivas a teljes REVIEW -> waiting lepest
+  blokkolta volna. Most `timeout ${POST_REVIEW_CHECKPOINT_TIMEOUT_S:-10}`-be csomagolva, a fail-open
+  viselkedes valtozatlan (egy timeout ugyanugy "checkpoint nem rogzitve, REVIEW valtozatlan" lesz).
+
+- **LOW-3 (CYBERSEC) / C2 (CYBERED), ugyanaz a lelet:** a checkpoint mindig az ugynok DEFAULT
+  worktree-jet (`agent/<actor>/work`) pillanatfelvetelezte, nem a kartya worktree-jet
+  (`$ROOT/card/<cardId>`, 77 letezik) -- egy kartya-modu REVIEW valos Gate-SHA-ja soha nem egyezett
+  a rogzitett head_sha-val. Most eloszor a kartya worktree-t probalja (`agent-worktree-marveen.sh
+  <actor> --card <cardId> --path`), csak akkor esik vissza a default worktree-re, ha az nem letezik.
+
+- **LOW-2 (CYBERSEC):** a FABRICATED szoveg most kimondja a korlatot -- "advisory only, not proof it
+  was never a real commit anywhere" -- es megnevezi, melyik klonokban keresett.
+
+- **C1 (CYBERED, MEDIUM-LOW):** `gate-closure-check.py`-ban az `any_clone_reachable = any(...)` csak
+  EGY klon letezeset koevetelte meg, tehat egy valodi commit FABRICATED-kent jelent meg, ha a MASIK
+  (azt tartalmazo) klon nem volt eleheto, vagy a git hivas timeoutolt. Most harom kimenet van: ha
+  EGYETLEN klon sem eleheto, a regi fail-open viselkedes marad (CHECKPOINT_FAIL/AGREE); ha NEM
+  minden klon eleheto, de a elerhetok nem talaljak a shat, UNRESOLVED (nem FABRICATED); ha MINDEN
+  klon eleheto es mind "nincs" valaszol, FABRICATED; egy timeout barmelyik elerheto klonon
+  UNRESOLVED-et ad.
+
+Mutacio-bizonyitott mindharom javitas (a fix visszaallitasaval pontosan a hozza tartozo uj teszt(ek)
+mentek pirosra, a tobbi zold maradt, majd visszaallitva byte-azonos). `store/post-review.selftest.sh`:
+37/37. `store/gate-closure-check.selftest.py`: 180/180.
+
+**Ki dontott:** backend (sajat kartya 06334c7d, phase 295ae6a3 follow-up). Gate: QA + Cybersec +
+Cybered (a kartya sajat kijelolese).
+
+## 2026-11-18: F1.3 delta -- hianyzo integraciós teszt a C1 timeout-agra (QA FAIL 32965, card 06334c7d)
+
+A C1 timeout-javitas logikaja helyes volt, de a kartya sajat Kesz-ha blokkja harom tesztesetet igert
+("git timeout stub -> UNRESOLVED" is koztuk), es ebbol csak ketto volt tenylegesen vegig-ellenorizve
+`check()`-en keresztul -- a harmadik (`Case H`) csak a `_cat_file_commit_status()` segitofuggvenyt
+tesztelte kulon, nem a teljes CLI-utat. Egy mutans, ami kikapcsolta a `any(s == "timeout")` agat,
+igy 180/180 zolden atment volna.
+
+Uj `Case I`: KETTO valodi, elerheto klon-repo a diszken (a partial-reachability ag nem sulhet el
+elsonek), egy `git` stub a PATH elejen, ami csak az EGYIK klon cat-file hivasara aluszik `sleep 5`-ot
+(`GATE_CLOSURE_GIT_TIMEOUT=0.3`), a masikra a valodi gitre exec-el. A teljes CLI-t futtatva (`main()`
+subprocess-ben) a verdikt UNRESOLVED. Mutacio-bizonyitott: a timeout-ag `if False and ...`-ra
+cserelve pontosan ez az uj eset (es csak ez) ment pirosra (`AGREE` lett `UNRESOLVED` helyett),
+visszaallitva byte-azonos. `store/gate-closure-check.selftest.py`: 181/181.
+
+**Ki dontott:** backend (sajat kartya 06334c7d delta, QA fix-direction 32965). Gate: QA (delta
+re-gate).
+
+(Pontositas: a fenti sor QA fix-direction 32965-ot idez; a pontos komment-ID a QA FAIL 32962 volt,
+a Cybered NO-GO maskent, 32965-os ID-vel, UTANA erkezett -- lasd a kovetkezo bejegyzest.)
+
+## 2026-11-18: F1.3 delta #2 -- CYBERED NO-GO 32965, 4 feltetel (card 06334c7d)
+
+A Cybered NO-GO (32965) negy feltetelt sorolt fel, a QA FAIL 32962-vel parhuzamosan erkezve:
+
+- **Feltetel 1 (MEDIUM, blokkolo, C2):** a checkpoint-sor HAMIS allitast rogzitett. A head_sha a
+  KARTYA worktree-bol jott, de a pillanatfelvetel maga tovabbra is az ugynok DEFAULT worktree-jet
+  fenykepezte (`agent-checkpoint.sh` sajat belso `agent-worktree-marveen.sh <agent> --path`
+  felbontasa, --card nelkul). A sor igy "X checkpointolva" -t allitott, mikozben a megorzott fa
+  egy FUGGETLEN tartalom volt. Javitas: `agent-checkpoint.sh` uj, opcionalis 3. pozicionalis
+  argumentuma (`worktreePath`) -- ha megadva, azt hasznalja KOZVETLENUL, nincs ujra-felbontas.
+  `post-review.sh` MOST egyszer oldja fel a worktree-t (kartya-elobb, alapertelmezett-utobb,
+  mar meglevo logika), es UGYANAZT az utat adja at explicit 3. argumentumkent
+  `agent-checkpoint.sh`-nak is, ES a head_sha-t is ebbol olvassa -- a ket ertek STRUKTURALISAN
+  nem tud tobbe elterni, mert egy valtozobol szarmazik mindket felhasznalasa. Uj valodi-szkriptes
+  teszt (`post-review.selftest.sh`): a FAKE checkpoint-szkript helyett a VALODI
+  `agent-checkpoint.sh` fut, ket KULONBOZO (card vs default) worktree-vel, es a teszt a
+  checkpoint-commit SZULOJET es FAJAT olvassa vissza git-bol, nem csak a verdiktet -- igazolva,
+  hogy a szulo a kartya HEAD-je es a fa a kartya tartalmat hordozza (nem a default worktree-et).
+
+- **Feltetel 2 (LOW-MEDIUM, C1 fele-zart):** a harom-agu logika ket hibat is hordozott. (a) Ha egy
+  elerheto klon MAR MEGTALALTA a shat, de egy MASIK konfiguralt klon nem volt elerheto, a kod
+  tovabbra is UNRESOLVED-et adott (a "nem minden klon elerheto" feltetel elsobbseget kapott az
+  "egy elerheto klon mar valaszolt IGEN"-nel szemben), noha a megtalalas onmagaban eldonti a
+  kerdest. (b) Egy olyan klon-ut, ami letezik a diszken, de NEM hasznalhato git repo (ures
+  mountpoint, serult object-store), "absent"-kent szamitott, mert a `git cat-file -e` 128-as
+  kodot ad MIND a hianyzo objektumra, MIND egy nem-repo-ra -- rc egyedul nem kulonbozteti meg a
+  kettot. Javitas: `_cat_file_commit_status()` MOST eloszor `git -C <repo> rev-parse --git-dir`-t
+  futtat, es ha az sikertelen, "unreachable"-t ad "absent" helyett; a hivo oldalon a sorrend
+  MOST: timeout -> VAN "exists" (akkor a megtalalas donti el, fuggetlenul a tobbi klon
+  elerhetosegetol) -> partial reachability -> all absent -> FABRICATED. Harom uj CLI-szintu teszt
+  (Case J/K/L): sha letezik az egyetlen elerheto klonban, a masik HIANYZIK (mindket iranyban) ->
+  CHECKPOINT_FAIL, nem UNRESOLVED; egy letezo-de-nem-repo ut + egy valodi, de a shat nem
+  tartalmazo klon -> UNRESOLVED, nem FABRICATED.
+
+- **Feltetel 3 (LOW-MEDIUM, LOW-1 fele-zart):** a sima `timeout N` csak egy OLTHATO hangot
+  korlatoz -- egy SIGTERM-et figyelmen kivul hagyo checkpoint-szkript 20 masodpercig futott egy 3
+  masodperces korlat mellett is (Cybered merese). Javitas: `timeout -k 2 N` (2 masodperces
+  kegyelmi ido, utana SIGKILL a teljes folyamat-csoportnak), es a kimenet egy temp-fajlba megy
+  (`mktemp`), nem `$(...)` pipe-ba -- egy csak a pipe irovegel maradt gyerekfolyamat sem tudja
+  tobbe blokkolni az olvasast. Uj teszt: egy `trap '' TERM` stub, 1 masodperces korlat mellett is
+  ~3 masodperc alatt megszakad (10 helyett).
+
+- **Feltetel 4 (LOW):** a ket tulelo mutans lefedve. A CLI-szintu timeout->UNRESOLVED eset mar az
+  elozo delta-ban (Case I) megvan; most hozzajott egy kulon ellenorzes, hogy a FABRICATED szoveg
+  tenylegesen tartalmazza a keresett klonok neveit ES az "advisory only" korlatozast (Case M),
+  nem csak a verdikt-szot.
+
+Mutacio-bizonyitott mindegyik: a megfelelo javitas visszaallitasaval (3. argumentum elhagyasa,
+`-k 2` torlese, a `reachable_statuses`/`_cat_file_commit_status` logika visszaallitasa az eredeti
+allapotra) PONTOSAN a hozza tartozo uj teszt(ek) mentek pirosra, minden mas zold maradt, majd
+visszaallitva byte-azonos. `store/post-review.selftest.sh`: 43/43 (volt 37/37).
+`store/gate-closure-check.selftest.py`: 185/185 (volt 181/181). `store/agent-checkpoint.sh
+--selftest`: valtozatlanul zold.
+
+**Ki dontott:** backend (sajat kartya 06334c7d delta #2, Cybered NO-GO fix-direction 32965). Gate:
+Cybered (delta re-gate), QA FAIL 32962 is lezarva ugyanezzel a munkaval (a C1 CLI-timeout resze
+mar a #1 deltaban kesz volt).
+
+## 2026-11-18 -- 5dd0842a: Koteg 25 (f0cfd842b..66d38ee45, 25 commit) upstream szinkron -- zöld fleet-test
+
+Szotasz/marveen upstream szinkron következő kötege (e5c46e87 FÁZIS része, Koteg 24 = 57044a66
+után). `git merge --no-ff 66d38ee45`, 22 konfliktusos fájl + 2 modify/delete + downstream
+auto-merge melléhatás feloldva (ennek során 5 valódi bug kiderült: duplikált `consume_approval`
+`seeme-send.py`-ban, duplikált allow/deny/isInvokedDirectly re-deklarálás `self-pace-gate.mjs`-ben,
+pozíciós-argumentum eltolódás `memories.ts`-ben, hiányzó `resumeSending` Set `context-guard-runner.ts`-ben,
+lógó `mayIssueCredentials` hívási helyek `auth.ts`/`security.ts`-ben). Commit `1825c0a32`.
+
+Teljes `fleet-test.sh` (a kártya saját "Kész, ha" pontja, nem scope-olt futás -- lásd 7c79badc:
+a scope-olt futás elrejt piros fájlokat) első köre `cb64fecd8`-n (korábbi session lint-fixe után):
+19 sikertelen teszt-fájl / 48 sikertelen teszt. Mindegyik gyökér-okra visszavezetve és javítva
+(`0acf9e1c1` + chmod-fix `9d35c7030`), lásd a kártya REVIEW-ját a fájlonkénti bontásért. Két eset
+visszautasított upstream-funkciót tesztelt (DEVKEYMINT1022 bearer-bootstrap kivétel, card 49960046;
+APPROVALCONSUME1022 HTTP-consume, `seeme-send.py` saját KEEP FORK bejegyzése) -- a teszt-fájl
+törölve, `acknowledged-conflicts.ts` + `fork-upstream-conflict-guard.test.ts` backlog bejegyzéssel
+rögzítve, nem viselkedés-hiba. Egy eset önhibából eredő regresszió volt egy korábbi körből
+(`auth-routes.test.ts`, visszaállítva). `scripts/hooks/sender_check.py` hiányzott teljesen
+(upstream-ban megvan, de a korábbi merge-kör sosem portolta) -- scope-olt port készült, csak a
+`Refused`/`_copy_check` rész, ennek a forknak a saját `outgoing-copy-gate.py` konstansaival, az
+email-approval-gate/recipient-ledger wiring (Node-oldali megfelelő: `scripts/recipient-ledger.mjs`,
+külön álló NOT ADOPTED döntés) és upstream missing-rules-file refuse-policy-ja SZÁNDÉKOSAN nem
+portolva (ez a hook Telegram-riasztásra megy, fail-open-with-warning a helyes, nem upstream email-
+küldőknek való unconditional refuse -- a hook saját docstringje dokumentálja a különbséget).
+
+**Mérés:** `fleet-test.sh` (teljes, nem scope-olt, `9d35c7030`-on): 1369 Test Files passed | 1
+skipped (1370), 42804 Tests passed | 132 skipped (42936), 0 FAIL. Duration 647.90s.
+`lint-ratchet.sh`: no rule got worse (422 finding, baseline tartja magát).
+
+**Ki döntött:** backend3 végezte (kártya felvétele: MikroB dispatch 20498). Gate-SHA:
+0acf9e1c1,9d35c7030. Gate: QA + Cybersec (WhiteHat) + Cybered (RedHat) -- ez a kör
+`src/web/routes/auth.ts`/`security.ts`-t is érintette (`auth-routes.test.ts` self-korrekció), ugyanaz
+a fájl-osztály, ami Koteg 24-en (57044a66) Cybered-et kapott. `66d38ee45` `git merge-base
+--is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
+
+## 2026-11-18 -- 5dd0842a: Koteg 25 upstream szinkron -- a korábbi "0 FAIL" mérés nem volt a végső shán, javítva 942ec654f-en
+
+A fenti 2026-11-18-i bejegyzés (`9d35c7030`-on mért 0 FAIL) utólag nem bizonyult megbízhatónak:
+a `fleet-test.sh` az a kör nem `--ref`-fel futott, hanem a `$ROOT` aktuális HEAD-jén, és egy
+párhuzamos backend2-futás (`--ref df2ebb310`) ugyanazt a megosztott `/home/neon/marveen-test`
+fát és lock-ot versenyeztette ugyanabban az ablakban -- utólag nem rekonstruálható, melyik sha-t
+tesztelte valójában. Ezután Cybered NO-GO-t adott `44100d69f`-en (approvals.ts generikus
+category-consume regresszió, W2 kártya 2a80c6cb hardening visszanyitása), a fix `8ca723623`-ra
+ment, majd QA FAIL derült ki `44100d69f`-en (tsc TS2739, `acknowledged-conflicts.ts` két párosított
+map-je nem volt szinkronban -- 4 új `ACKNOWLEDGED_CONFLICTS` kulcsnak nem volt
+`ACKNOWLEDGED_UPSTREAM_BLOBS` párja).
+
+Egy explicit `--ref 8ca723623`-cal futtatott teljes `fleet-test.sh` (most már megbízhatóan ehhez
+a shához kötve) 3 valódi, a merge-ből eredő hibát talált: (1) `agent-dir-namespace-runtime.test.ts`
+-- `fork-upstream/acknowledged-conflicts.ts` egy fenntartott azonosítót szó szerint kiírt import
+helyett; (2) `hook-registration-completeness.test.ts` -- a merge-ből portolt
+`scripts/hooks/sender_check.py`-nak nem volt regisztrációja/EXEMPT bejegyzése; (3)
+`shebang-files-executable.test.ts` -- 5 új upstream fájl (`uptime-monitor.py` + tesztje,
+`daily-log-backfill-memories.ts`, `spotlight-check.sh`, `yt_ingest_lib.py`) shebanggel, de nem
+futtatható jelzéssel trackelve. Mindhárom javítva `942ec654f`-en.
+
+**Mérés:** `fleet-test.sh --ref 942ec654f` (explicit ref, detached/setsid-nohup futás, túlélt egy
+session-restartot): 1382 Test Files passed | 1 skipped (1383), 43263 Tests passed | 132 skipped
+(43395), 0 FAIL. Duration 641.31s. `lint-ratchet.sh`: no rule got worse (420 finding, baseline
+tartja magát). `npx tsc --noEmit` ezen a shán: clean.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 942ec654f040b93d5e7a62eedbae4c88386b52a5. Gate: QA +
+Cybersec (WhiteHat) + Cybered (RedHat) -- friss kör kell MINDHÁROM kaputól ezen a shán, a korábbi
+QA FAIL és Cybered NO-GO korábbi (már javított) shákra vonatkozott. `942ec654f`
+`git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
+
+## 2026-11-18: KG write path -- KG-local secret-shape list (MEDIUM-2 from 4e9ad774, card 03dff487)
+
+Cybersec MEDIUM-2 (komment 32780 a 4e9ad774-en, eredetileg 32549 a 81593084-en): 5 a 6-bol
+secret/PII alakzat nem volt elutasitva a KG iras-utjan (src/kg/store.ts, a kozos SECRET_PATTERNS-t
+hasznalja) -- csupasz 64-hex, `password=`, nem-prefixelt `*_API_KEY=`, base64 blob, email/telefon.
+Egy titok egy cold memory-ban vagy findingben KG node body-ba kerulhet, amit ugynokok es az
+/api/kg route-ok olvasnak.
+
+MikroB dontese (a kartya leirasa): a 5 alakzat KIZAROLAG a KG write-uton (src/kg/store.ts), SOHA a
+kozos commit-gate-ben (src/security/secret-gate.ts) -- a tracked fa maga tartalmaz csupasz 64-hex-et
+15 fajlban es password-alaku hozzarendelest 37-ben (Cybersec merese), egy altalanos hozzaadas a
+kozos gate-hez a repo sajat tartalmat talalna el.
+
+Megvalositas (src/kg/store.ts, uj export-ok):
+- `findKgLocalKvSecret`/`findKgLocalSecretShape`: `password=`/`*_API_KEY=` kulcs=ertek alak,
+  min. 8 karakteres ertekkel, placeholder-kizarassal (xxx, changeme, example, `<...>`, `${...}`).
+- `findKgLocalContextualSecret`: csupasz 64-hex es base64 blob CSAK kulcs-szeru szo
+  kozelsegeben (40 karakteres ablak: key/secret/token/password/credential/api) utasitodik el --
+  context nelkul csak jelentve (ld. lejjebb), nem blokkolva, mert onmagaban mindket alak magas
+  false-positive (git sha, hash digest, base64-kodolt kep).
+- `redactKgLocalPii`: email/telefon REDAKTALVA, nem elutasitva (MikroB dontese) -- egy email/
+  telefon egy egyebkent legitim memoria/finding-szovegben nem eri meg az egesz node elvesztet.
+- `upsertNode` sorrendje: sanitize -> PII-redakcio -> kozos SECRET_PATTERNS check -> uj KG-local
+  check -> capLength. A redakcio ELOTT fut a ket secret-check elott (ugyanaz az ok, mint az F-a
+  sanitize-elobb mintaja: a ellenorzesnek es a tenylegesen tarolt szovegnek egyeznie kell).
+
+Backfill dry-run (Kesz-ha pont 3): uj `src/kg/secret-shape-scan.ts` + `scripts/
+kg-secret-shape-scan.ts` -- vegig-olvassa a MEGLEVO kg_nodes tablat (csak olvasas, sosem ir),
+es `kgLocalSecretShapeCounts`-szal (context NELKUL, szelesebb halo, mint az iras-ut) szamolja,
+hany CSOMOPONT tartalmazna legalabb egy talalatot alakzatonkent -- egy csomopont tobb talalata
+ugyanabban a mezoben egyszer szamit.
+
+Teszt-sorok alakzatonkent (pozitiv + placeholder/no-context negativ), src/__tests__/
+kg-store.test.ts uj 'KG-local secret/PII shapes' blokkjaban: password=, *_API_KEY=, 64-hex
+(context-tel/nelkule), base64 (context-tel/nelkule), email (redaktalva), telefon (redaktalva),
+plusz kozvetlen unit-tesztek a harom uj export-ra. src/__tests__/kg-secret-shape-scan.test.ts
+a dry-run dedup-logikajat pinneli (ugyanaz a csomopont ket talalattal egy mezoben egyszer
+szamit, nem kettot).
+
+Mutacio-bizonyitott mindegyik: a `findKgLocalKvSecret`, `hasKgLocalKeyContext` es
+`redactKgLocalPii` fuggvenyek egyenkent kiuresitve PONTOSAN a hozzajuk tartozo uj teszt(ek)
+mentek pirosra (2, 3, illetve 3 teszt), a tobbi zold maradt, visszaallitva byte-azonos. A
+dry-run dedup-agat eltavolitva a dedikalt pin-teszt ment pirosra (1 -> 2), a tobbi zold maradt.
+
+`src/security/secret-gate.ts`: `git diff` ures (Kesz-ha pont 2). tsc clean.
+`lint-ratchet.sh --show`: 422 (12+140+270), mindharom szabaly a baseline-on, nincs regresszio.
+src/__tests__/kg-store.test.ts: 36/36. src/__tests__/kg-secret-shape-scan.test.ts: 2/2.
+
+**Ki dontott:** backend (sajat kartya 03dff487, MikroB dontese a kartya leirasaban, Cybersec
+MEDIUM-2 ajanlas alapjan). Gate: QA, Cybersec (a kartya sajat kijelolese).
+
+## 2026-11-18: 03dff487 delta -- CYBERSEC NO-GO 33019 (F1 ReDoS, F2 redaction-before-check, F3 missed spellings)
+
+Cybersec's NO-GO on bc68b1b6f (comment 33019, probe-proven, QA/QA2 PASS already stood) found 3
+MEDIUM regressions in the KG-local secret/PII work above. All three fixed in this delta, same
+Gate-SHA line convention.
+
+**F1 (ReDoS):** the email regex's unbounded `+` quantifiers made redactKgLocalPii O(n^2) on
+adversarial input (measured by Cybersec: 33 s on 200 KB of "a." repeats, synchronous, inside the
+KG write transaction). Fixed by bounding the local-part to 64 chars (RFC 5321) and the domain to
+255 -- every match attempt now costs at most ~320 chars, making the scan linear. Regression test:
+a 200 KB "a." field finishes under 1 s (was 29-33 s before the fix, measured via mutation revert).
+
+**F2 (redaction before secret checks):** PII redaction ran BEFORE assertNoSecretShape/
+assertNoKgLocalSecretShape, so a phone-shaped digit run embedded inside a 64-hex or base64 secret
+split the hex/base64 run around the redacted span and dodged the contextual check entirely (both
+of Cybersec's probe inputs reproduced live). Fixed by running both secret checks on the sanitized-
+but-not-yet-redacted text, then redacting for storage only -- the checks and the eventually-stored
+text no longer need to agree on PII content, only on absence of secret shapes.
+
+**F3 (missed common spellings):** the kv-secret regex required a literal `_` before `API_KEY`
+(missed bare `API_KEY=`), had no `passwd`/`secret`/`token` alternatives, and `\b` in front of a
+bare `password` never matched after an underscore (`DB_PASSWORD=`) since `_` is a word character
+-- no boundary exists there. A JSON key's closing quote (`"password":`) and a quoted value
+containing spaces (`password = "my long pass phrase"`) also broke the old pattern. The context
+regex for bare 64-hex/base64 had the identical underscore-boundary gap (`JWT_SECRET=`/
+`SIGNING_KEY=` never seen) and only looked BEFORE the value, missing "<64hex> is the token"
+phrasing. Fixed: an optional `[A-Za-z0-9]*[_ -]` prefix on the kv-secret keyword (so `_`/`-`/space
+all count as separators), `passwd`/`secret`/`token` added to the alternation, an optional quote
+consumed after the keyword, and two value forms (quoted, any non-newline char; unquoted, no
+whitespace/quote/comma/semicolon). The context regex now excludes only LETTERS on either side
+(lookaround, not `\b`) and checks a 40-char window before AND a 20-char window after the match.
+Every previously-caught control (password=hunter2hunter2, SERVICE_API_KEY=..., "the secret:
+<64hex>", "token <64hex>") still catches, and the placeholder exemptions (`<...>`, `${...}`) still
+pass.
+
+**LOW (unmeasured, flagged, fixed anyway):** scripts/kg-secret-shape-scan.ts called openKgDb()
+unconditionally, which creates+migrates a missing path -- not read-only against a fresh
+`--kg-db` path. Fixed with an existsSync() guard that exits 1 instead of creating a database for
+a dry-run tool.
+
+**Verification.** 6 new rows in src/__tests__/kg-store.test.ts reproducing Cybersec's exact probe
+inputs (F1 timing budget, F2 both hex/base64 inputs, F3 all 5 missed spellings, F3
+underscore-context + after-value context, F3 controls-still-caught + placeholders-still-exempt).
+All 3 fixes mutation-proven independently (revert each, confirm exactly its own new test(s) go
+red, nothing else, then restore): F1 revert -> 1 test red (29.3 s measured, matching the NO-GO's
+own order of magnitude); F2 revert -> exactly its 2 tests red; F3 (kv regex) revert -> 1 test red;
+F3 (context regex) revert -> 1 test red. Full importer sweep: every kg-*.test.ts file (22 files,
+338 tests) green, no regression in any other kg-store.ts caller. tsc clean. lint-ratchet.sh
+--show: 422 (12+140+270), all 3 rules at baseline, unchanged. src/security/secret-gate.ts diff
+against f85b188a6: empty (shared gate still untouched).
+
+**Ki dontott:** backend (sajat kartya 03dff487 delta, Cybersec NO-GO 33019 ketelezesei alapjan).
+Gate: QA (re-confirm) + Cybersec (delta re-gate, a kartya sajat kijelolese).
+
+## 2026-11-18: 03dff487 delta round 2 -- CYBERSEC NO-GO 33019 round 2 (F4: the F3 fix re-introduced the F1 ReDoS class)
+
+**F4 (MEDIUM, regression introduced by the round-1 F3 fix).** Round 1 added an optional
+`(?:[A-Za-z0-9]*[_ -])?` prefix group in front of the kv-secret keyword alternation, so that a
+leading `_`/`-`/space would count as a separator. But the prefix group is OPTIONAL and unbounded,
+so on a long alphanumeric run with no separator anywhere in it, the regex engine retries the
+`[A-Za-z0-9]*` from every failed start position before giving up and trying the next position --
+the same O(n^2) class as the original F1 email-regex ReDoS. Cybersec measured 35.2 s on a 200 KB
+all-"a" run and 63.8 s on a 100 KB "ab1"-repeated run.
+
+The prefix was never load-bearing: the keyword alternation (`api[_-]?key|passwd|password|secret|
+token`) already matches as a plain substring inside `DB_PASSWORD=`, `SERVICE_API_KEY=`,
+`JWT_SECRET=` without any separator-matching prefix in front of it -- `password` is a substring of
+`DB_PASSWORD`, `api_key`/`api-key` is a substring of `SERVICE_API_KEY`, `secret` is a substring of
+`JWT_SECRET`. Fixed by simply dropping the prefix group; group numbering in
+`findKgLocalKvSecret()` is unchanged (it was always a non-capturing wrapper around the keyword,
+not a capture group of its own).
+
+**Verification.** `findKgLocalKvSecret` exported for direct testing (previously file-local). 3 new
+rows in src/__tests__/kg-store.test.ts: a 200 KB all-"a" run and a 100 KB "ab1"-repeated run must
+each finish under 1 s (was 35.2 s / 63.8 s pre-fix), and all 7 of round 1's F3 spellings plus the
+SERVICE_API_KEY control must still be caught with the prefix gone. Mutation-proven: reverting to
+the prefixed regex and re-running the suite caused the run to exceed a 90 s wall-clock budget
+without completing (consistent with Cybersec's own 35-64 s per-case measurements) -- confirmed the
+regression reproduces, then restored the fix and re-confirmed 45/45 green. Full kg-*.test.ts
+importer sweep: 22 files, 341 tests green (was 338, +3). tsc clean. lint-ratchet.sh --show: 422
+(12+140+270), all 3 rules at baseline, unchanged. src/security/secret-gate.ts diff: empty.
+
+**Ki dontott:** backend (sajat kartya 03dff487 delta round 2, Cybersec NO-GO 33019 round 2 (F4)
+alapjan, Fix-Direction replay-verified by Cybersec in the card comment). Gate: QA (re-confirm) +
+Cybersec (delta re-gate round 2, a kartya sajat kijelolese).
+
+## 2026-11-18 -- a42d27e1: gate-pretriage.sh --trunk land-parity -- F1/F2 owned (cybersec GO 20497)
+
+A kártya alap funkcióját (opt-in `--trunk` land-parity a `gate-pretriage.sh`-ban: valódi
+merge-with-trunk fán futó lint-ratchet + DECISIONS append-union dry-run + importer-sweep
+`fleet-test.sh`) WhiteHat (cybersec) GO-val zárta (337a240c3, REVIEW 32842), de a GO F1/F2
+MEDIUM leletek tulajdonlásához kötve: a szekció a heartbeat-consolidated B-szekció önjáró
+útján, MINDEN gate előtt, EMBERI/PreToolUse-hook nélkül futtatja a KÁRTYA SAJÁT ágának
+harness-scriptjeit (`store/lint-ratchet.sh`, `store/fleet-test.sh`) és teszt-fájljait --
+ez a kockázat-réteg, amit egy gate-dispatch (diff-olvasás + hook alatt) amúgy lefed, de ez az
+automatikus út nem.
+
+**F1 (MEDIUM, bizalmi határ) -- javítva `c07d26d8`-n.** A megoldás a cybersec javasolt (a) opció:
+ha a `--trunk`-kal mért merge diffje harness/config fájlt érint (`.eslintrc*`, `eslint.config.*`,
+`vitest.config.*`, `vitest.workspace.*`, `package.json`, `package-lock.json`,
+`store/lint-ratchet.sh`, `store/fleet-test.sh`), a lint-ratchet + importer-sweep MÉRÉS teljesen
+KIMARAD (`land-parity-measurement-skipped` info lelet), nem fut le az ág saját, esetleg módosított
+harness-kódja felügyelet nélkül. A (b) opciót (a `--trunk` kikapcsolása az automatikus
+heartbeat-útról) NEM választottuk -- az a kártya egész célját (3 valós landolás-bukás, lásd a
+kártya leírását) nullázná vissza minden kártyán, nem csak a harness-ot érintőkön.
+
+**F2 (MEDIUM, false red) -- javítva ugyanitt.** A `fleet-test.sh` `die()` 2-vel (rossz usage) vagy
+3-mal (harness/setup hiba: lock-timeout, npm ci, stale-build refusal) lép ki MIELŐTT egyetlen
+teszt is lefutna -- ez eddig `importer-sweep-red`-ként ment a kártyára. Mostantól csak `rc=1`
+ÉS egy valódi FAIL/"N failed" sor együtt számít piros leletnek; minden más nemzéró rc
+`importer-sweep-unmeasured` info lelet.
+
+**Mérés:** 2 új pozitív kontroll-teszt (`gate-pretriage.sh -- --trunk trust boundary (F1/F2...)`,
+`src/__tests__/gate-pretriage.test.ts`): egy szintetikus `package.json`-t érintő trunk-merge
+`land-parity-measurement-skipped`-et ad, NEM futtatja a lint/importer lépéseket; egy hamis,
+rc=3-mal kilépő `fleet-test.sh` `importer-sweep-unmeasured`-et ad, NEM `importer-sweep-red`-et.
+Teljes `gate-pretriage*` suite (3 fájl, 117 teszt) PASS. `npx tsc --noEmit`: tiszta. ESLint az
+érintett fájlokon: 1 előzetesen ismert, a bázison is meglévő `no-unsafe-argument` hiba (nem új,
+nem ezen a kártyán keletkezett).
+
+**F3-F5 (LOW) -- elfogadva, nem javítva ezen a körön.** F3 (a "clean merge" szöveg nem
+különbözteti meg "már trunk-ban van"-tól), F4 (idézetlen `for f in $changed_src` + nem escapelt
+grep -E), F5 (EXIT trap REPO-path interpolációja, árva worktree egy killelt futásnál) -- mindhárom
+LOW, cybersec saját szavaival "nothing attacker-controlled reaches the trap today", nem feltétele
+a GO-nak. Nyitva marad egy jövőbeli hardening körre, ha valaki a scriptet újra bővíti.
+
+**Ki döntött:** backend3 végezte (saját kártya). Gate-SHA: c07d26d84c52d53fb461b028749058c9434b841b. Gate: QA +
+Cybersec (a kártya saját kijelölése) -- mindkettő már GO/PASS volt a korábbi shán (QA PASS
+32848, CYBERSEC GO 20497), ez a kör csak az előbbi GO feltételét (F1/F2 tulajdonlása) teljesíti,
+funkcionális/API-viselkedés nem változott a 3 meglévő Kész-ha kontrollon kívül -- azok újra-futtatva
+is zöldek maradnak (lásd a teszt-eredményt fent).
+
+## 2026-11-18 -- a42d27e1 (javítás): F1 TÉVESEN "javítva"-ként szerepelt fent -- a valódi zárás a
+`--trunk` opt-in-né tétele, nem a harness-fájl-allowlist
+
+**Helyesbítés a fenti (Gate-SHA c07d26d84) bejegyzéshez.** A fenti entry "F1 ... javítva" állítása
+TÉVES volt -- Cybersec NO-GO 33120 (6a8a7b848-on, MikroB döntés msg 20826) ezt blokkolta: a
+harness-fájl-allowlist (`.eslintrc*`, `vitest.config.*`, `package.json`, stb.) csak akkor hagyja ki
+a mérést, ha a diff EZEKET érinti -- az importer-sweep viszont a kártya SAJÁT, meglévő teszt-
+fájljait (és az azok által importált, változott src-fájlokat) futtatja le `fleet-test.sh`/vitest
+alatt, FELÜGYELET NÉLKÜL, a heartbeat-consolidated önjáró útján, minden 30 percben, MIELŐTT
+bármelyik gate elolvasná a diffet -- ez a domináns eset (egy rendes, nem-harness src-fájl, amit egy
+meglévő teszt importál), és a harness-allowlist erre semmit nem tesz.
+
+**A valódi javítás.** A `gate-pretriage-card.sh` teljes `--trunk` (land-parity) szekciója mostantól
+EXPLICIT opt-in: a szkript saját CLI-jén egy ÚJ `--trunk` flag kell hozzá (alapértelmezés: KI), és
+csak akkor fut a trunk-fetch + a `gate-pretriage.sh --trunk` hívás, ha ezt a hívó megadta. A
+heartbeat-consolidated önjáró út (`gate-pretriage-card.sh <cardId>`, flag nélkül) ettől a ponttól
+SOHA nem adja meg -- a szekció NEM csak egy allowlist mögött szűkül, hanem EGYÁLTALÁN nem fut le
+azon az úton. Egy gate-ügynök a saját, eldobható gate-worktree-jéből futtathatja a `--trunk`
+flaggel, ha a land-parity mérést akarja -- ott már van felügyelő fél az eredményhez.
+
+**Teszt:** 4 új eset (`src/__tests__/gate-pretriage-card.test.ts`, "--trunk land-parity measurement
+is opt-in only"): egy harness-fájlt érintő commit `--trunk` NÉLKÜL semmilyen land-parity leletet nem
+ad (a szekció egyáltalán nem fut); UGYANAZ a commit `--trunk`-kal megadva ADJA a
+`land-parity-measurement-skipped` leletet (bizonyítja, hogy a flag tényleg visszakapcsolja a
+szekciót, nem csak egy hibás fixture); a `--trunk` flag valóban a top-level arg-parseren szerepel;
+és egy szöveges pin arra, hogy a `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md` saját
+`gate-pretriage-card.sh` hívása SOHA nem tartalmazza a `--trunk` szót. Teljes
+`gate-pretriage*` suite (3 fájl, 121 teszt, 117+4) PASS. `npx tsc --noEmit`: tiszta.
+`lint-ratchet.sh --show`: 422 lelet, alapvonal tart, 0 új. A két érintett shell-selftest
+(`gate-pretriage-attribution.selftest.sh` 16/16, `card-build-route.selftest.sh` 70/70) is zöld.
+
+**Ki döntött:** MikroB (msg 20826, Cybersec NO-GO 33120 alapján) -- "I do NOT accept that residual",
+az opcionális docs-only elfogadást a kötelező kódjavításra emelte. backend3 végezte.
+
+**Hivatkozás:** kártya a42d27e1, Cybersec NO-GO 33120 (6a8a7b848-on), MikroB msg 20826,
+`store/gate-pretriage-card.sh`, `src/__tests__/gate-pretriage-card.test.ts`,
+`seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`.
+
+## 2026-11-18 -- 1df5360b: email-kapu safe-prefix allowlist -- szinonima-igék szélesítve a tiltott szóhalmazban
+
+**Döntés:** WhiteHat2 GO a bf7a7335-ön (Gate-SHA e1aa7437, komment 9092) MARADT, nem blokkoló
+LOW leletet jelzett: a három email-kapu (`scripts/email-send-gate.mjs`,
+`scripts/hooks/email-approval-gate.py`, `scripts/hooks/outgoing-copy-gate.py`) saját
+`EMAIL_SAFE_TOOL_RE`/`_EMAIL_SAFE_TOOL_RE` negatív lookaheadje csak a `send|reply|forward`
+szavakat zárta ki egy safe-prefix (search/get/list/read/draft) ÉS 18 mért küldő-szinonima
+(dispatch, deliver, submit, transmit, post, publish, relay, respond, fwd, mail_out, ship,
+answer, xmit, snd, rply) kombinációja mindhárom kapun átmegy. Élőben ma nem kihasználható
+(nincs Gmail/Resend szerver bekötve), de a következő küldő MCP-szerverrel az lesz.
+
+**Javítás (surgical, a meglévő regex-mechanizmus szélesítve, nem a card által javasolt teljes
+allowlist-csere):** mindhárom kapu saját regex-másolatában (nincs közös import, ez a fájlok
+saját, dokumentált konvenciója) a negatív lookahead szóhalmaza kibővült a mért 18 formát fedő
+15 egyedi szinonimával. A regex 3 bájtra NEM azonos a három kapuban (az alap verb-készlet is
+eltér: `email-send-gate.mjs`/`email-approval-gate.py` `search|get|list|read|draft`,
+`outgoing-copy-gate.py` `search|get|list|read|delete`, Koteg 23a szerint), de a bővített
+szóhalmaz maga azonos mindhárom helyen.
+
+**Miért nem a teljes explicit-allowlist (a card által javasolt "tartós javítás"):** egy valódi,
+explicit, teljes toolnév-lista (default-deny) a Gmail connector + Resend MCP teljes, hitelesen
+mért operáció-katalógusát igényelné -- ennek hiányában egy kitalált lista FALSE DENY kockázatot
+hordozna (egy valódi, biztonságos olvasó/draft tool neve kimaradna, és letiltaná a normál
+munkát), ami rosszabb kimenet, mint a mai LOW lelet. A szóhalmaz-szélesítés ugyanazt a "deny-lista
+egy allow-listában" tulajdonságot hordozza tovább (egy JÖVŐBELI, itt nem enumerált szinonima
+ismét átmehetne) -- ez tudatosan maradt NYITOTT kockázat, dokumentálva, nem elrejtve. A teljes
+allowlist-csere ezért külön, nagyobb kártyaként marad, ha a döntéshozó (MikroB/Peti) ezt
+választja a jelenlegi, kisebb kockázatú javítás helyett.
+
+**Mérés:** canary-tesztek mindhárom kapu saját teszt-fájljában, mind a 18 formára (pontosan a
+WhiteHat2 mérési listájából), plusz a meglévő biztonságos nevek (search_threads, get_email,
+create_draft, draft_email stb.) regresszió nélkül. `email-approval-gate.test.py` és
+`outgoing-copy-gate.test.py` (python3 -I): teljesen zöld, mindhárom gate saját suite-ja.
+`email-send-gate.test.ts`: új teszt a 18 formára, fleet-test-tel igazolva.
+
+**Ki döntött:** backend (a fix szerzője), MikroB kanban-sor alapján (kártya 1df5360b, forrás:
+WhiteHat2 GO a bf7a7335-ön). A teljes allowlist-csere döntése nyitva marad.
+
+**Hivatkozás:** kártya 1df5360b, bf7a7335 (komment 9092, Gate-SHA e1aa7437),
+`scripts/email-send-gate.mjs`, `scripts/hooks/email-approval-gate.py`,
+`scripts/hooks/outgoing-copy-gate.py`.
+
+## 2026-11-18 -- f19cb1e1: agent-id-header generátor pinje a valódi detektorra cserélve, a detektor saját hézagai javítva
+
+**Döntés:** CYBERSEC GO F1 a ca6d7b9d-n (Gate-SHA 4a0845f9) jelezte, hogy a card ca6d7b9d saját,
+kézzel írt regexe (`agent-id-header-argv-pin.test.ts` "MUTATION PIN" assertje) csak a pontos régi
+alakot fogja: egy hosszú `--header "Authorization: Bearer ..."` kapcsoló, egy kisbetűs
+`authorization: bearer`, egy `-H` utáni sortörés, és curl saját `--oauth2-bearer "$(...)"`
+kapcsolója mind átment rajta. Mérve: a `token-in-argv-guard.test.ts` MÁR LÉTEZŐ, erősebb
+`findCurlInvocations`/`leaksTokenInArgv` detektora (ami a teljes `src/` fát scanneli, agent-
+scaffold.ts-t is beleértve) a `--header` és a sortöréses alakot MÁR elkapja -- de a kisbetűs
+alakot és a `--oauth2-bearer`-t ŐK IS átengedik, tehát a hiba nem csak a kis pin-teszté, hanem
+magáé a megosztott detektoré.
+
+**Javítás:** (1) `leaksTokenInArgv` (token-in-argv-guard.test.ts): `/i` flag a header-minta
+case-insensitive illesztéséhez, plusz egy külön `--oauth2-bearer[\s=]+...` minta -- ennek nincs
+fájl-alapú szankcionált alakja, ezért sosem mentesül a `-H @` kivétel alól. (2)
+agent-id-header-argv-pin.test.ts: a régi, kézzel írt "MUTATION PIN" regex-assert törölve, helyette
+a SAJÁT (nincs megosztott import, lásd lentebb) másolata a javított detektornak, és a generált
+blokkot a VALÓS detektorral ellenőrzi, nem substring-mintával (kódminőségi 12. elv).
+
+**Miért nincs megosztott import a két teszt-fájl között:** próbáltam `import { findCurlInvocations,
+leaksTokenInArgv } from './token-in-argv-guard.test.js'`-t -- ez a .test.ts fájl TELJES modulját
+betöltötte, ami a benne lévő describe/it hívásokat IS újra regisztrálta ebben a futásban (mérve:
+19850 teszt helyett 39701, pontosan a duplázódás jele). A megoldás: saját másolat mindkét kapuban,
+ugyanaz a konvenció, amit az email-kapuk (scripts/email-send-gate.mjs, scripts/hooks/email-
+approval-gate.py, scripts/hooks/outgoing-copy-gate.py) már követnek.
+
+**"és a többi generált szekció" (a kártya szövege):** a `token-in-argv-guard.test.ts` saját
+SRC_FILES scanje (src/**/*.ts, __tests__ kivéve) MÁR lefedi agent-scaffold.ts TELJES forrását, nem
+csak buildAgentIdHeaderBody-t -- a detektor-szintű javítás (case-insensitive + --oauth2-bearer)
+ezért automatikusan kiterjed minden generátor-függvényre a fájlban, külön per-függvény teszt
+nélkül.
+
+**Mérés:** mutáció-bizonyított mindkét kapun külön -- a detektor visszaállítva a régi (case-
+sensitive, --oauth2-bearer nélküli) alakra: token-in-argv-guard.test.ts-ben pontosan a 2 új canary
+(lowercase, --oauth2-bearer) piros, semmi más (19847/19849); agent-id-header-argv-pin.test.ts-ben a
+detektor-szintű mutáció-pin teszt az M3 (lowercase) esetnél piros (a `for...of` az első dobásnál
+megáll). Visszaállítva: mindkettő teljesen zöld (19852/19852 a két fájl együtt). tsc --noEmit
+tiszta. lint-ratchet.sh --show: 422, mindhárom szabály alapvonalon.
+
+**Ki döntött:** backend (a fix szerzője), MikroB kanban-sor alapján (kártya f19cb1e1, forrás:
+RedHat e73b17ef GO, komment 19571, egyezik a WhiteHat2 F1-gyel a ca6d7b9d-n).
+
+**Hivatkozás:** kártya f19cb1e1, ca6d7b9d (CYBERSEC GO, Gate-SHA 4a0845f9), e73b17ef,
+`src/__tests__/token-in-argv-guard.test.ts`, `src/__tests__/agent-id-header-argv-pin.test.ts`.
+
+## 2026-11-18 -- 339ad171: cybersec2 CYBERSEC NO-GO (komment 33084) 3 lelet javítva a card_landings done-guardon
+
+**A hiba.** A CYBERSEC NO-GO (komment 33084, Gate-SHA 45429adb8) három leletet hagyott az F2.2
+card_landings done-guardon (`src/web/kanban-card-landings-guard.ts`), F1-et és F2-t blokkolóként,
+F3-at "ugyanebben a körben javítandó"-ként jelölve.
+
+**F1 javítva (MEDIUM).** A guard saját warn-kommentje szó szerint idézi a "Landing: n/a"
+kibúvó-sort, és az ungated kártyák kibúvó-keresése szerző-szűrő nélkül futott -- egy egyszer
+warn-olt, nem gate-elt kártya a KÖVETKEZŐ (enforce) ellenőrzésnél önmagát mentette ki. A
+kibúvó-keresés most kihagyja a guard saját (GUARD_AUTHOR) kommentjeit és minden
+generált/automatizált (GENERATED_COMMENT_AUTHORS) kommentet.
+
+**F2 javítva (MEDIUM).** A sha-kötés szabály (MikroB komment 28280) csak akkor futott, ha volt
+gate-elt sha -- egy SOHA nem gate-elt kártya (nincs builder REVIEW Gate-SHA sorral) egyetlen
+card_landings sor létezésére átment, pontosan a "card_id-n önmagán alapuló landolás" eset, amit
+a szabály tilt (pl. egy docs commit, ami csak annyit ír, "lásd card <id>"). Egy nem gate-elt
+kártya most ugyanúgy viselkedik, mint egy nulla sorral rendelkező: nincs mihez kötni a landolást.
+
+**F3 javítva (MEDIUM-LOW).** A `latestGatedSha()` a legújabb REVIEW-alakú, Gate-SHA-t viselő
+kommentet vette, szerzőtől függetlenül -- egy gate saját visszaigazolása (vagy egy generált
+komment) felülírhatta a valódi builder-átadást, amit a gate-ek tényleg megítéltek. Most csak
+nem-gate, nem-generált szerző kommentje jelölheti ki a gate-elt shát -- a
+`kanban-gate-completeness-guard.ts` saját `GATE_AGENT_NAMES`-ét és a
+`kanban-landed-guard.ts` `GENERATED_COMMENT_AUTHORS`-ét újrahasznosítva, nem újra levezetve.
+
+**F4/F5 nyitva marad.** Cybersec2 saját verdiktje szerint LOW, illetve INFO, nem része a NO-GO-nak
+-- dokumentált, ismert korlátként marad, ugyanúgy, mint a testvér-guardokon (F5).
+
+**Mérés:** 7 új teszt (29 összesen: 22 régi + 7 új), mind PASS. Regresszió: a guard saját
+suite-ja + 6 testvér close-door guard/route suite a kanban.ts-ben (ugyanaz a kör, amit QA2 az 1.
+körben futtatott) -- 249/249, 0 új bukás. `tsc --noEmit` tiszta. `lint-ratchet.sh --show`: 422
+lelet, alapvonal tart, 0 új.
+
+**Ki döntött:** backend3 (a fix szerzője), cybersec2 CYBERSEC NO-GO Fix-Direction-je alapján
+(komment 33084). Delta re-gate (Peti szabály, 2026-11-14): diff + célzott suite-ok, nincs teljes
+fleet-test ebben a körben.
+
+**Hivatkozás:** kártya 339ad171 (szülő: 471d0fdc), cybersec2 NO-GO komment 33084 (Gate-SHA
+45429adb8), REVIEW komment 33095 (Gate-SHA 2f34c9948), `src/web/kanban-card-landings-guard.ts`,
+`src/__tests__/kanban-card-landings-guard.test.ts`.
+
+## 2026-11-18: Server-side REVIEW-presence guard for waiting transitions (card 18fbb3a8)
+
+Added src/web/kanban-review-presence-guard.ts: warn-only, fires when a card moves to `waiting`
+with no recent REVIEW comment from its own assignee in the last 30 minutes. Backstops a direct
+PUT/POST .../move to waiting that bypasses store/post-review.sh entirely (manual curl, a
+different script, a bug) -- the same empty-REVIEW shape 88b67fb4 closed for post-review.sh
+callers, now closed for the ones that skip it. Wired into both the PUT and POST /move handlers
+in src/web/routes/kanban.ts, right after the existing specTemplateGuardCheck call. Never blocks
+the transition, same discipline as kanban-spec-template-guard.ts.
+
+**Ki dontott:** backend (sajat kartya, F3.1 follow-up grilling note). Gate: QA + Cybersec.
+
+## 2026-11-18 -- b715a0b1: TOKENVAK915 follow-up (25ea084c WhiteHat2) -- mindhárom pont már teljesült, kódváltozás nélkül
+
+**L1 (a lényeg, mutáns pirosítás).** A kártya azt feltételezte, hogy a TOKENVAK915-javítás
+(context-restart-gate-runner.ts és context-guard-runner.ts configDirFor-ja, MAIN_AGENT_ID ->
+mainAgentConfigDir) nincs pinelve. Ez közben egy MÁSIK kártyán (25ea084c, QA2 L1 lelet) már
+megépült: a src/__tests__/main-config-dir-wiring.test.ts (commit 750698ab6, már az origin/develop-en)
+pontosan ezt a delegálást pineli. Ellenőriztem kézzel: mindkét runner configDirFor-jában a
+MAIN_AGENT_ID ágat feltétel nélküli `undefined`-ra írtam vissza, lefuttattam a tesztfájlt --
+pontosan a két célzott teszt ("resolves through the real function") ment pirosra, a harmadik
+("a non-main agent never reaches mainAgentConfigDir") zöld maradt (helyesen, mert az az ág
+nem ágazik a mutált kódra). A fájlokat byte-azonosra visszaállítottam (`diff -q` tiszta).
+
+**L2 (MAIN_AGENT_CONFIG_DIR hitelesség, döntés).** A `resolveMainAgentConfigDir()`
+(src/web/agent-process.ts) MÁR validál: `expandAndValidateConfigDir` (shell-biztonsági
+whitelist + `..`-tiltás + tilde-szabályok) ÉS `existsSync` -- hiányzó vagy érvénytelen érték
+esetén fail-open NULL-ra esik (megosztott `~/.claude` marad), nem egy hamis gyökérre. A kártya
+által javasolt "csak a saját home alatt" megszorítást A KÓD SZÁNDÉKOSAN NEM vezeti be
+(config-dir-path.ts:28-29 saját kommentje: "legitimate non-home locations like
+'/var/lib/claude-coding' still work") -- ez egy MEGLÉVŐ, tudatos döntés, nem hiányosság: az
+üzemeltető szándékosan választhat home-on kívüli konfig-gyökeret (pl. különálló Claude-login egy
+másik lemezen/felhasználón). Döntés: a jelenlegi existence+shell-safety validáció elegendő
+megbízási szint a ~/.claude/projects hamis fájljához képest (a hamisítás továbbra is helyi fájlrendszer-
+hozzáférést igényel, amit a fail-open-null már lekezel); a home-dir-megszorítást NEM vezetjük be.
+
+**L3 (readdir-költség, mérve).** A kártya "1327 fájlnál ~7-11 ms" mérésének megfelelő, uncachelt
+szinkron readdir+stat hurok TÉNYLEG létezik: `readLastConversationTsFromProjectDir` és
+`readTranscriptMtimeFromProjectDir` (src/web/active-model.ts) -- ezeket hívja
+`msSinceTranscriptWrite` a context-restart-gate-runner.ts-ben és a context-guard-runner.ts
+tick-je, 5 percenkénti ciklusban, agensenként. (A MÁSIK olvasó, `readContextTokensFromProjectDir`,
+MÁR async + 3s TTL-cache + in-flight-coalescing -- card 9a2fd3f7 -- tehát az NEM ez a gond.)
+Élő mérés: a legnagyobb jsonl-könyvtáron (607 fájl, /home/neon/.claude/projects/-home-neon-marveen)
+a readdir+stat hurok 6.6 ms. 18 regisztrált agenssel, 2 runnerrel, 5 perces ciklusonként: legfeljebb
+~18*2*7-14ms ≈ 250-500 ms szinkron CPU 300 másodpercenként, ami <0,2%-os terhelés és egyedi hívásként
+jóval a d3dc35bf/9a2fd3f7 kártyák által mért, másodperces-blokkolást okozó eset alatt marad (azok
+többszáz MB-os teljes fájlbeolvasást cacheltek, nem egy 1327-elemű readdir-t). Döntés: a jelenlegi
+hívási gyakoriság NEM indokolja a cache bevezetését -- a kártya saját feltétele ("csak akkor javítsd,
+ha a hívási gyakoriság indokolja") erre nem teljesül, spekulatív optimalizálás nem kerül be
+(karpathy-guidelines: egyszerűség először).
+
+**Ki döntött:** backend (vizsgálat + mérés), a döntést a kártya saját feltételei alapján magam
+rögzítettem, kódváltozás nélkül.
+
+**Hivatkozás:** kártya b715a0b1, forrás 25ea084c (WhiteHat2 CYBERSEC GO, msg 12178),
+src/__tests__/main-config-dir-wiring.test.ts (commit 750698ab6), src/web/agent-process.ts,
+src/config-dir-path.ts, src/web/active-model.ts.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+## 2026-11-18: b715a0b1 follow-up -- third configDirFor copy pinned, mainConfigRoots explicit-root candidate validated (card 5423775c, Cybered GO 32882 conditions)
+
+Cybered's GO on b715a0b1 (comment 32882, Gate-SHA de9eb2ebd) left 3 non-blocking conditions. C3
+(3 ms/call measurement, no cache needed) required no action. C1 and C2 fixed here:
+
+**C1 -- third configDirFor copy unpinned.** The L1 pin (card d79a69b5/25ea084c) covers
+context-restart-gate-runner.ts and context-guard-runner.ts's own local configDirFor() copies
+(main-config-dir-wiring.test.ts). src/web/delivery-turn-check.ts carries a THIRD, independent copy
+-- not exported, not imported by any test. Reverting it to the pre-fix unconditional `undefined`
+for MAIN_AGENT_ID left the whole suite green (Cybered's own measurement). Fixed: exported
+configDirFor from delivery-turn-check.ts and added two cases to main-config-dir-wiring.test.ts
+(real delegation to mainAgentConfigDir with the real working dir; non-main agent never reaches
+it). The mainConfigRoots() explicit-root candidate (inbound-probe.ts) was likewise unpinned --
+no test asserted a malformed/unsafe value was ever rejected. Fixed together with C2 below (the
+same code change pins both).
+
+**C2 -- watchdogs read the raw MAIN_AGENT_CONFIG_DIR value, the launcher validates it.**
+inbound-probe.ts's mainConfigRoots() expanded the raw setting with its OWN ad-hoc tilde rule
+(`raw.startsWith('~') ? join(homedir(), raw.slice(1)) : raw`) and pushed the result unchecked.
+The launcher's resolveMainAgentConfigDir() (agent-process.ts) instead runs the same raw value
+through expandAndValidateConfigDir (config-dir-path.ts): a character whitelist, a `..`-traversal
+reject, and a strict tilde-form check (bare `~` or a leading `~/` only). A watchdog could
+therefore probe a root the launcher would have refused to ever export as CLAUDE_CONFIG_DIR (a
+`..`-traversal path, a mid-string `~`, a shell-significant character) -- a value the main session
+never actually ran under. No DECISIONS.md entry asserted the two already shared validation (the
+L2 premise checked here is "the agent bearer cannot write the setting", a different question), so
+the fix is the code change, not a correction. mainConfigRoots() now calls
+expandAndValidateConfigDir(raw, homedir()) and only pushes the result when non-null -- the exact
+same gauntlet the launcher applies, so the two can no longer disagree about what MAIN_AGENT_CONFIG_DIR
+means. existsSync is NOT re-applied here (unlike the launcher): a watchdog probing a root that
+does not exist is already harmless by mainConfigRoots()'s own design (a candidate not in use
+yields an older/no timestamp, "newest wins" answers the question) -- only path-safety, not
+existence, was the actual gap.
+
+**Verification.** New src/__tests__/main-config-roots-explicit-dir-validation.test.ts (5 cases: a
+well-formed `~/`-prefixed value included and correctly expanded; `..`-traversal rejected;
+mid-string `~` rejected; a shell-significant character rejected; no setting -> exactly the 2
+default roots). main-config-dir-wiring.test.ts gained 2 cases for delivery-turn-check.ts's
+configDirFor. Fleet-test command not yet run on this delta (scoped per the delta-regate rule --
+see REVIEW); locally: src/__tests__/main-config-dir-wiring.test.ts (5/5),
+src/__tests__/main-config-roots-explicit-dir-validation.test.ts (5/5),
+src/__tests__/delivery-turn-check.test.ts + inbound-probe.test.ts + inbound-probe-rotated-root.test.ts
++ token-usage-main-launcher-config-dir.test.ts + schedule-inflight-config-dir.test.ts all green
+(310+291 across the two combined runs, no overlap double-counted). Mutation-proven: reverting the
+C2 fix (back to the raw tilde-only expansion) turned exactly the 3 new rejection cases red, nothing
+else; reverting delivery-turn-check.ts's configDirFor to the pre-fix unconditional `undefined` turned
+exactly the 1 new delegation case red, nothing else. tsc clean. lint-ratchet.sh --show: 422, all 3
+rules at baseline (unchanged from before this delta).
+
+**Ki dontott:** backend (sajat kartya 5423775c, Cybered GO 32882 C1/C2 kovetelmenyei alapjan). Gate:
+QA + Cybered (a kartya sajat kijelolese).
+
+## 2026-11-18 -- 154cbbd0: email-gate matcher kis-nagybetű-érzékenység (F1) + inlineImages
+## P1/P2 mutáció-fedettség (a2cb71f1 maradék LOW leletek)
+
+RedHat a2cb71f1 komment 20438 maga mondta, hogy a Claude Code matcher kis-nagybetű-érzékenységét
+nem mérte. Megmértem (WebSearch): a PreToolUse matcherek kis-nagybetű-érzékenyek és teljes-egyezést
+várnak (`^(?:matcher)$`) -- az `EMAIL_GATE_MATCHER` gmail/resend szerver-horgony alternatívái csak
+az ELSŐ betűt variálták, így egy "GMAIL"/"gMail" nevű szerver a kaput megkerülte. Javítva teljes
+kis-nagybetű-érzéketlen karakterosztályra, szinkronban a tracked `.claude/settings.json`-nal és 2
+teszt-fájllal.
+
+P1/P2: a2cb71f1-nél csak az ELSŐ inline kép hash-elése volt pinelve (P1), és a `path`-ág csak egy
+egyetlen-elemű listán volt tesztelve (P2). Hozzáadva: két-képes teszt (P1), és egy olyan eset,
+ahol a `path`-ot hordozó elem a lista MÁSODIK tagja (P2).
+
+**Delta (CYBERED NO-GO 33233):** az első P2-teszt egy path-ONLY (content nélküli) második elemet
+használt -- ha az `if path:` ágat kivesszük, a tétel a KÜLÖNÁLLÓ "hiányzó content" ág miatt
+akkor is elutasításra kerülne, tehát a mutáns zöld maradt volna, a REVIEW "index-0 mutáns pirosra
+vált" állítása hamis volt erre a konkrét esetre. Javítva: a második elem path ÉS érvényes content
+mezőt is kap, így az elutasítás KIZÁRÓLAG a `path`-ellenőrzéstől függ. Mutáció-bizonyítva: az
+`if path:` blokk kivételével a teszt valóban pirosra vált, visszaállítva zöld.
+
+**Mérés:** `fleet-test.sh --ref 1a50ca711` (F1, 3 érintett fájl, delta-szabály szerint szűkítve,
+LOW kártya): 3 Test Files passed, 184 Tests passed. `email-extract-parity.test.py` (P1/P2,
+`python3 -I`): minden check zöld, mutáció-teszt a fenti deltánál megerősítve. `tsc --noEmit`:
+tiszta. `lint-ratchet.sh --show`: 420 lelet/3 szabály, a session-alapvonallal egyezik (12/140/268).
+
+**Ki döntött:** backend (saját kártya). Gate-SHA: fe92ec25147794cf7f8954963ab66710859dc6ad.
+Gate: QA + Cybered (a kártya saját kijelölése).
+
+## 2026-11-15 -- b5d19a32: project-root anchor moved to STORE_DIR, sweep refuses symlinked .claude/CLAUDE.md/settings.json
+
+**Decision:** Card b5d19a32 (source: CYBERSEC GO on card eed22288, MEDIUM pre-existing on develop 8c6f30fb). Finding: the project-root anchor used to live at `agents/<name>/.claude/project-root-anchor.json`, a path the agent itself can write to or replace -- including by making `agents/<name>/.claude` a symlink into another agent's `.claude` dir. The anchor sweeper then resolves the victim's real `settings.json` through that symlink and rewrites its hook paths using drift the attacker (agent A) chose, not the victim's own history.
+
+**Fix:** moved the anchor store to `STORE_DIR/project-root-anchors/<name>.json` (no agent process can write under `STORE_DIR`), and added `hasSymlinkedScaffoldPath(name)` in `agent-scaffold.ts`, which `lstatSync`s the agent's `.claude` dir, `CLAUDE.md`, and `settings.json` and refuses the whole sweep (`ensureProjectRootAnchor` returns early with a warn log) if any of the three is a symlink.
+
+**Test:** `src/__tests__/project-root-anchor.test.ts`, two new cases: (a) agent-attacker's `.claude` symlinked to agent-victim's `.claude`, with a drifted STORE_DIR anchor seeded for attacker -- asserts the sweep refuses and victim's `settings.json` is byte-identical afterward; (b) an anchor file planted under the agent's own (legacy) `.claude` dir is ignored -- the sweep treats it as "no anchor yet" and writes the real baseline to STORE_DIR instead. `fleet-test.sh --ref 2ae712bfd src/__tests__/project-root-anchor.test.ts`: 1 file, 9/9 green.
+
+**Who decided:** backend (card b5d19a32, dispatched by MikroB msg 18944 off CYBERSEC GO on eed22288). Gate: QA + Cybersec. Gate-SHA: 2ae712bfd.
+
+## 2026-11-15 -- card 2d5ad4d2 (b7540305 follow-up, CYBERSEC F1 MEDIUM: graphify symlink bypass + stale pin/approval szöveg)
+
+**F1 (symlink bypass):** `store/graphify.sh build`-nek a GHSA-pcc4-rvhr-2pr8 kompenzáló
+tiltó-predikátuma (`find ... -type f ...`, card b7540305) csak VALÓDI fájlt vizsgált --
+egy védett kiterjesztésre (pl. `x.F90`) nevezett SZIMLINK, akármire is mutatott, átjutott
+rajta és elérte a pinnelt binárist. Mért bizonyíték: egy canary-symlink
+(`ln -s innocuous.txt canary.F90`) a régi predikátummal lefutott, a `graphify` hívást
+a FAKE_BIN naplója szerint TÉNYLEGESEN elérte. Javítás: a predikátum mostantól
+`\( -type f -o -type l \)`. Mutáció-ellenőrzés: a régi (`-type f` only) alakra visszaállítva
+a `store/graphify-fortran-guard.selftest.sh` új symlink-canary esete pontosan PIROSRA vált
+(2 esetben), a javítással visszazöldül.
+
+**Szöveg-korrekció (2. rész):** a `store/watched-repos.json` graphify-bejegyzése és a
+`store/graphify.sh` fejlett-kommentje avítottan "Peti approval pending"-ként hivatkozott a
+8317aeb4 jóváhagyásra. Tényleges állapot: a jóváhagyás 18:32-kor lejárt (timeout), és Peti
+(Telegram 12932) a verzió-bumpokat a heti/kétheti eszköz-ellenőrzésre halasztotta, nem egy
+különálló élő-frissítési ablakra. A `graphify.sh` kommentjét frissítettem (ÉLŐ kód, nem
+append-only napló, szabad javítani); a `watched-repos.json` note mezejéhez -- ami maga is
+dátumozott, hozzáfűzős bejegyzésekből áll, ugyanúgy mint ez a fájl -- egy ÚJ, 2026-11-15-ös
+dátumozott szegmenst fűztem a VÉGÉRE, ami korrigálja a 2026-10-31-es bejegyzés keretezését,
+nem törölve/szerkesztve azt. Ugyanitt rögzítve: az élesben futó binárs verziója 0.9.35
+(nem a regisztrált 0.9.67 pin), a tiszta cél a heti ellenőrzéshez >=0.9.70 -- a 2026-10-09-es
+bejegyzésben dokumentált `pipx install --force graphifyy==0.9.67` parancs NEM tekinthető a
+CVE javításának, mert a 0.9.67 maga is a 0.7.2-0.9.69 érintett tartományba esik (ezt a
+2026-10-09-es bejegyzés a fa4a875d-es CVE-lelet ELŐTT íródott, ezért hiányzik belőle ez a
+figyelmeztetés).
+
+**Teszt:** `store/graphify-fortran-guard.selftest.sh` 10/10 PASS (5 régi eset + 1 új
+symlink-canary eset, 2 check), `bash -n store/graphify.sh` tiszta, `watched-repos.json`
+JSON-validált a szerkesztés után, `git diff --stat` 3 fájl (selftest +16, graphify.sh
++11/-4, watched-repos.json +4/-2 -- a note-mező egyetlen string, a JSON-diff ezért csak
+2 sort mutat a tartalmi hozzáfűzés ellenére).
+
+Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15, kártya dffbb55f (RedHat c0408a1c comment 18896 follow-up): mopsion-suite-run.sh D1
+marveen-fa felismerese path-prefix minta helyett marker-alapura valtott (git toplevel + saját
+store/fleet-test.sh jelenlete), es minden argumentum `realpath -m` utan megy a markeren at. Ez
+zarja a 3 mert kerulouttat (literal ".." szegmens, symlink argumentum, gate-worktree cwd + relativ
+argumentum) es RedHat 7 tulelo mutansat (K5, K7b, K9, K9b, K10b, K12, K13). Gate-SHA:
+38f4ef91528df9f110bdce8d96349ecd4b55141e. Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-14 -- 5dd48e5d: kontextus-tömörítés küszöb felső sapkával 200k tokenre (Peti 13835)
+
+**Kontextus:** a token-használat mérése (kártya 2ad5ba6c, 2026-11-14) azt mutatta, hogy egy tömörítés 240-420k tokent olvas vissza egy 1M-ablakos modellen (opus-5) -- a 75%-os percentage-küszöb (2026-08-14-es szabály) ott 750k-nál indul, ami ezt a drága újraolvasást ritkán, de nagy méretben engedi megtörténni. Peti (Telegram 13835): sapkázni a küszöböt 200 000 tokenre, a 75%-os szabály MELLETT, nem helyette.
+
+**Döntés:** `threshold_tokens_for_model()` mostantól `min(ablak * COMPACT_PCT/100, COMPACT_MAX_TOKENS)`. `COMPACT_MAX_TOKENS` alapértelmezés 200000, env-felülírható (`COMPACT_MAX_TOKENS`), validálva a repo már bevált mintájával (kártya b1813ab2, a "00"/"000" tanulság): nem-numerikus, üres VAGY csupa-nulla érték visszaesik 200000-re -- a validáció a `compact_max_tokens()` függvényben fut MINDEN híváskor, nem egyszer a script indulásakor, mert a selftest (és egy valódi hívó) a változót egy MÁR FUTÓ shellben egy függvényhívás elé prefixként állítja, nem új script-indítással -- egy egyszeri, top-level validáció ezt sosem futtatná újra (ez volt az első implementáció hibája, saját teszttel elkapva, mielőtt landolt volna). Kis ablakos modellen (ahol a 75% már a sapka alatt van) a sapka nem változtat semmit -- csak lefelé húz, sosem felfelé. CLAUDE.md "Kontextus-tömörítés küszöb" szakasza frissítve, ugyanebben a commitban.
+
+**Teszt:** `context-compact-monitor.sh --selftest` 43/43 PASS (6 új eset: 1M-ablak sapkázva 200k-ra, 200k-ablak változatlan 150k-n, a százalék felülírható marad sapkázva, a sapka maga felülírható, nem-numerikus és csupa-nulla ("00") sapka-érték visszaesik 200000-re). Mutáció-ellenőrizve (visszaállítva): a sapka-logika teljes eltávolítása 6/43 pirosat ad; a validáció eltávolítása (csak a nem-numerikus/csupa-nulla eseteket) 2/43 pirosat ad.
+
+**Nincs benne:** a monitor cron/heartbeat-ként fut (minden hívás friss script-betöltés, nincs tartós állapot a régi küszöb-logikára), ezért a "live monitor without restart" Kész-ha pont architekturálisan eleve teljesül, nem igényelt külön munkát.
+
+**Ki döntött:** Peti (Telegram 13835, 2026-11-14 19:11), MikroB (kártya 5dd48e5d dispatch, msg 18561). backend3 végezte a javítást. Gate: QA + Cybersec.
+
+## 2026-11-16 -- 12d91d4b: fleet-resume.sh belső timeoutjai konfigurálhatóvá tétele, land-blokkoló flake javítása
+
+**Probléma:** DevO teljes fleet-test.sh land-futásai 5x megbuktak timeout miatt olyan fájlokban,
+amiket a landolt kártyák nem is érintettek (msg 19798, 19913): `offload-batch-health.test.ts`,
+`store-selftests-all-run.test.ts` (ezen belül `fleet-resume.selftest.sh`), és
+`claude-md-split-reachability.test.ts`. Mindhárom fájlt mértem alone vs. szándékos párhuzamos
+terhelés alatt (MikroB jóváhagyásával, msg 19950/19951 után szintetikus terhelés már nem futott).
+A `fleet-resume.selftest.sh` valódi flakét reprodukált load avg 20-40 alatt: egyszer a 8.
+tesztben (a kimenő `timeout 20` elfogyott a kumulatív fork/exec-késleltetés miatt, mielőtt a
+8. lépés lefutott volna), egyszer a 3. tesztben (az `INSTALLED_CHECK` saját, korábban HARDCODE-olt
+`timeout 10`-je sült ki extrém fork/exec-kontenció alatt, teljesen más ágra lökve a fleet-resume.sh
+futását).
+
+**Fix:** `store/fleet-resume.sh`-ban a korábban hardcode-olt belső `timeout N` hívások (installed
+check, active-check, start, vram, load-read, agent-cap) mind env-seammé váltak, ugyanazzal a
+konvencióval, mint a már meglévő `FLEET_RESUME_CLEANUP_TIMEOUT` -- az alapértékek változatlanok, az
+éles viselkedés nem változik. A selftest a saját, hermetikus stub-jainak fork/exec-késleltetését
+60s-re nyitja ezeken a seameken. A 8. teszt assertje wall-clock (`END-START <= 10`, ami a
+timeout-tűztől függetlenül buktatott kontenció alatt) helyett viselkedés-alapúra váltott: a stub
+"too slow" jelzése (amit csak az 5s sleep VÉGÉN ír ki) hiányát nézi, ami bizonyítja, hogy az 1s
+CLEANUP_TIMEOUT valóban megölte, nem csak kifutott a host-zaj alatt. `offload-batch-health.test.ts`
+és `claude-md-split-reachability.test.ts` nem módosult (az utóbbit MikroB kifejezett kérésére nem
+érintettem -- az a 2ec21127 kártyával landol, commit 15e089afd).
+
+**Teszt:** `store/fleet-resume.selftest.sh` önmagában 17/17 zöld. Mutáció-bizonyítás: a
+`CLEANUP_SCRIPT` köré tett `timeout` wrapper ideiglenes eltávolítása a fleet-resume.sh-ban pontosan
+a 2 érintett assertet buktatta pirosra (15/17), visszaállítva újra 17/17. Teljes `fleet-test.sh`
+futás (`--ref b14b94fef`, a 3-slotos szemaforon át): 1344 Test Files passed, 1 skipped, 1 FAIL --
+a bukás egy ettől a kártyától FÜGGETLEN fájlban (`graph-tooling-selftests.test.ts`,
+gpu-driver-install-setup selftest), nem a 3 célfájl egyikében. `lint-ratchet.sh`: nem romlott
+(433 lelet, baseline tart).
+
+**Ki döntött:** MikroB (dispatch msg 19923, a landolási bottleneck feloldására), backend2 végezte.
+Gate: QA.
+
+## 2026-11-15: agent-boot-reconcile.sh H1-H3 keményítés (kártya aceda032, RedHat 17886 maradéka, 43d98136 szülő)
+
+**Döntés:** a kártya mindhárom nem blokkoló leletét javítottuk, nem csak dokumentáltuk tovább.
+
+- **H1:** a `weekly-hard-stop.json` HIÁNYA marad fail-open (szándékos, változatlan -- nincs mit
+  megállítani egy sosem írt fájlon). A bug a JELEN LÉVŐ, de nem értelmezhető fájl volt (csonka JSON,
+  üres, BOM, tömb-gyökér, könyvtár a fájl helyén) -- ez eddig inaktívnak olvasódott, mostantól
+  fail-closed (nincs indítás, egy naplósor). `-f` helyett `-e`, hogy egy könyvtár is átmenjen az
+  ellenőrzésen, ne ugorja át érintetlenül.
+- **H2:** a BLOKKOLT-szűrő kis-/nagybetű-független, és a cím ÉS minden label név ellen illeszt
+  (korábban: kis-nagybetű érzékeny, csak cím). Nem vállalt rész: valódi Unicode-homoglif védelem
+  (kirill T stb.) -- ehhez egy confusables-tábla kellene, RedHat mérése szerint ma 0 élő populáció,
+  szándékosan nyitva hagyva.
+- **H3a:** egy waiting+REVIEW kártya, amit a `gate-closure-check.py` már AGREE-nek olvas (minden
+  kijelölt gate elfogadta, ugyanazon sha-n), többé nem számít közelgő munkának -- a timer 5 perces
+  (nem boot-egyszeri) backstopja korábban végtelenségig újraindíthatta egy már lezárt kártya
+  építőjét.
+- **H3b:** a kártya-azonosítót mostantól `^[0-9a-f]{8}$` alakra szűrjük, mielőtt a from:mikrob
+  resume-üzenetbe vagy a Telegram-összesítőbe kerülne.
+
+**Mérés:** `store/agent-boot-reconcile.selftest.sh` -- 83 ok sor, 0 valós bukás (a "FAIL" szó csak
+három ÁTMENŐ teszt-címkében fordul elő: fetch-fail, fetch-error-object, start-http-fail), exit 0.
+13 új teszt (pozitív + mutáns-bizonyíték pár mind a négy javításra), a meglévő 20 változatlan
+viselkedéssel megy át az új hex8 fixture-azonosítók alatt (a régi `cardAAA`-stílusú azonosítók a
+H3b saját szűrőjét csendben kizárták volna, ezért át kellett nevezni mindet). `tsc --noEmit -p .`
+tiszta (nincs .ts változás).
+
+**Ki döntött:** RedHat lelete (komment 17886, Gate-SHA 1199bea9, a 43d98136 szülőkártya gate-jén),
+javítás: DevO (fullstack), card aceda032. Gate: QA + Cybered.
+
+## 2026-11-18 -- 50684453: correction to e3d14be9's consumer survey + unresolved Gate line (CYBERED GO 21225 R1, not reopened)
+
+**Context:** follow-up to the e3d14be9 entry above (2026-10-17, Gate-SHA 45fb4e0b). That entry's
+category-1 claim and its closing Gate line were both measured wrong by Cybered's GO (comment
+21225, R1) on the same sha; this is the append-only correction, not a reopening of e3d14be9 --
+the F1 code fix itself (`return resolved`) is correct and unaffected.
+
+**Correction 1 (R1, category-1 claim).** The e3d14be9 entry's point 1 says "the most common
+shell consumers (notify.sh, limit-monitor.sh, morning-briefing.sh, disk-space-guard.sh,
+stuck-modal-guard.sh, host-restart-watchdog.sh, unit-fail-notify.sh, fleet-memory-gate.sh) go
+through `scripts/lib/owner-chat.sh`, which does not read `TELEGRAM_STATE_DIR` itself." Re-read
+just now (grep on the live scripts, 2026-11-18): true for exactly 2 of the 8 named scripts
+(`notify.sh` sources `owner-chat.sh`; `morning-briefing.sh` sources it too, AND deliberately sets
+`TELEGRAM_STATE_DIR=$NO_CHANNEL_STATE` before calling it). FALSE for the other 6: `fleet-memory-gate.sh`
+(line 90), `host-restart-watchdog.sh` (28), `unit-fail-notify.sh` (18), `disk-space-guard.sh`
+(57), `stuck-modal-guard.sh` (49), and `limit-monitor.sh` (97) all read
+`"${TELEGRAM_STATE_DIR:-}"` directly, with no validation, and derive their `.env`/`access.json`
+paths from it unvalidated. Cybered also measured (code-read only, not run) the same raw,
+unvalidated pattern in 5 hook files outside this category: `telegram_fallback_send.py`,
+`telegram-ack.py`, `marveen-commands.py`, `telegram_progress.py`, `channel-inbox-drain.py` --
+confirmed the same way just now (`os.environ.get("TELEGRAM_STATE_DIR")`, no realpath/containment
+check, in all five).
+
+**Why this does not change the e3d14be9 verdict.** The consequence of a redirected
+`TELEGRAM_STATE_DIR` on these 6 scripts + 5 hooks is the SAME class e3d14be9's own category-2
+already named: a different notification target / bot token, not an authorization bypass --
+there is no allowlist-of-SENDERS check in any of them (confirmed by reading: none compares an
+inbound sender against `allowFrom`; `access.json` there only ever supplies an outbound chat id or
+a token). And the attacker capability required to redirect the env var (write access inside the
+checkout, same UID as the real `.env`/`access.json`) already lets that same attacker edit the
+REAL files directly -- a shared validator here would not remove any capability the attacker does
+not already have through a more direct path. The LOW severity holds; only the REASON stated in
+the original entry was wrong (the scripts are not structurally unaffected, they're affected but
+low-consequence-and-already-equally-exposed).
+
+**Decision on the card's point 2 (common validator helper): NOT built, documented reason instead.**
+Wiring the quota-bridge.py resolution logic (or an equivalent shared shell/python helper) into 6
+shell scripts and 5 hook files is a real, multi-file production change for a finding that is LOW
+severity with no live attacker model beyond "has write access to this agent's own checkout" --
+the same UID that could already rewrite the real `.env`/`access.json` these scripts read, with no
+validation to bypass at all. Per the karpathy-guidelines surgical-change principle and the
+e3d14be9 entry's own established policy for its category 2 (same reasoning, correctly reasoned
+there), a flotta-wide refactor against an already-equal-privilege threat does not earn its
+complexity. If `TELEGRAM_STATE_DIR` is ever set from an untrusted or lower-privilege source (a
+systemd unit, a different-UID service, a container boundary) this decision is reopened --
+re-checked just now: still zero `.service` files set it (`grep -rl TELEGRAM_STATE_DIR
+scripts/systemd/*.service` -- 0 matches), matching the original entry's point 3.
+
+**Correction 2 (card point 3, KC2/KC3, documentation only, inherited from 01dea2f0/e3d14be9, not
+re-opened).** Cybered's KC2: the `return resolved` fix in quota-bridge.py returns the path
+resolved AT THE TIME OF THE CALL that reads `TELEGRAM_STATE_DIR`; it does not pin the directory
+itself. If the resolved directory is later renamed and a symlink put in its place (same
+checkout-write privilege as the original vector), the NEXT read follows the new symlink --
+measured by Cybered on a synthetic tree. The fix closes the specific vector it was built for
+(retargeting the symlink the env var itself points at, after acceptance) and narrows but does not
+generally close the TOCTOU class. KC3: the fallback candidate path
+(`<checkout>/.claude/channels/telegram`) is returned raw, unvalidated, inherited unchanged from
+before 01dea2f0 -- not today exploited (the live first candidate is a real directory, not a
+symlink, checked by `ls -ld`), but not hardened either. Both are LOW, both are pre-existing
+(inherited), neither is reopened by this correction; a hardening card (resolved dir-fd, or
+revalidating the fallback the same way) is optional future work, not required here.
+
+**Correction 3 (card point 4, stale Gate line).** The e3d14be9 entry's own closing line says "Gate:
+QA + Cybersec" with a now-superseded justification ("NEM mirror-case ... a tényleges fix szerzője
+backend, az ellenőrző Cybersec, nem azonosak"). MikroB's actual designation on that card (message
+13425/comment 21223) was QA + RedHat, because the fix direction came from Cybersec (mirror-case
+rule, `gate-dispatch-check-who-designed-the-fix`) -- Cybered's own GO on the card flagged the same
+drift (comment 21225). The e3d14be9 entry above is left as originally written (append-only, per
+the tail-write convention); this entry states the corrected designation for anyone reading the
+old one: **the actual gate on e3d14be9 was QA + RedHat (CYBERED GO comment 21225, QA PASS comment
+21240), not QA + Cybersec.**
+
+**Measured:** `grep -n "TELEGRAM_STATE_DIR" scripts/fleet-memory-gate.sh
+scripts/host-restart-watchdog.sh scripts/unit-fail-notify.sh scripts/disk-space-guard.sh
+scripts/stuck-modal-guard.sh scripts/limit-monitor.sh` -- all 6 match (raw `${VAR:-}` read).
+`grep -n "TELEGRAM_STATE_DIR\|owner-chat" scripts/notify.sh scripts/morning-briefing.sh` -- both
+source `owner-chat.sh`, morning-briefing.sh additionally overrides the var to empty before doing
+so. `grep -n "TELEGRAM_STATE_DIR" scripts/hooks/telegram_fallback_send.py
+scripts/hooks/telegram-ack.py scripts/hooks/marveen-commands.py scripts/hooks/telegram_progress.py
+scripts/hooks/channel-inbox-drain.py` -- all 5 read `os.environ.get(...)` raw. `grep -rl
+TELEGRAM_STATE_DIR scripts/systemd/*.service` -- 0 matches (no live unit sets it), unchanged from
+e3d14be9's own point 3. No code changed by this card; append-only documentation per the card's own
+scope.
+
+**Who decided:** backend (own card, correcting Cybered's R1 on e3d14be9). Gate: QA + Cybersec2
+(the correcting measurement came from Cybered's gate on a different card, so not a mirror-case
+for the gate itself; QA + Cybersec2 per this card's own designation).
+
+## 2026-11-16: self-pace-gate self-schedule residuals (kartya a6c7780d, RedHat msg 19773 pont 3, MEDIUM, upstream-mal kozos)
+
+RedHat a 2e04a52e gate-jen (NO-GO, msg 19773) harom, upstreammal KOZOS maradek rest nevezett meg a
+`scripts/self-pace-gate.mjs` `scheduleSurfaceDeny()`-jen: (a) printf/echo-irt script-fajl utolagos
+futtatasa, (b) `curl -K <fajl>` (nem stdin), (c) `base64 -d | sh`, (d) tobb valtozobol osszerakott
+store-ut. Mind a negy ugyanaz a modul sajat fejkommentjeben MAR dokumentalt korlat egy-egy pelddaja:
+a hivatkozas csak akkor eszlelheto, ha a parancs SAJAT SZOVEGE tartalmazza -- ezek mind azt erik el,
+hogy ne tartalmazza.
+
+**Megerositve meresssel** (nem talalas elott): mind a negy alak `ALLOW`-t ad a VALODI
+`gateDecision()`/`scheduleSurfaceDeny()`-n keresztul, probaval igazolva, mielott hozzanyultam volna.
+
+**Javitas -- csak (b) es (c), amik LOKALISAN, a shell modellezese nelkul bizonyithatok:**
+- `curlConfigFileRefs`: ha egy curl parancs `-K`/`--config`-ja VALODI lokalis fajlra mutat (nem
+  `-`), a hook (szinkron, a sajat gepen, a Bash-hivas ELOTT fut) beolvassa azt a fajlt
+  (meret-korlatos, try/catch) es a tartalmat is atfuttatja a sched-surface egyezesen.
+- `decodedBase64Refs`: ha a parancs tartalmazza a `base64` szot ES egy stdin-olvaso shellbe
+  pipe-ol (a MAR bizonyitott `STDIN_SHELL_RX` / `HAS_PIPE_RX`+`WRAPPER_POSITION_BARE_SHELL_RX`
+  felteteit hasznalva, amit `executableStrings` is pont ezert hasznal), minden base64-alaku
+  tokent dekodol es a dekodolt szoveget is atfuttatja az egyezesen.
+
+Mindket uj ellenorzes CSAK HOZZAAD tiltast (barmi felbonthatatlan -- hianyzo fajl, `$`-expanzio,
+nincs base64/pipe-shell alak -- csendben at van engedve, nem uj tiltas), es csak akkor tilt, ha a
+fajl/dekodolt tartalom VALODI hivatkozast tartalmaz -- nem feltetlenul minden `curl -K` vagy
+`base64` hasznalatot (hamis-pozitiv teszt mindkettore).
+
+**(a) es (d) SZANDEKOSAN NYITVA marad:** (a) lezarasa minden futtatott script-fajl TARTALMANAK
+olvasasat jelentene -- ez a sajat repo scriptjeit (amik PONT errol a funkciorol szolnak) rendszeresen
+elvagna; a modul fejkommentje mar most "szandekosan megengedett"-nek mondja. (d) teljes
+shell-valtozo-interpretaciot igenyelne, amit upstream sem csinal. Mindket pont a modul fejkommentjebe
+irva NEVESITVE (nem csak "assembled at run time" altalanossaggal), hogy kesobb ne tunjon uj
+resznek vagy mulasztasnak.
+
+**Teszt:** `src/__tests__/self-pace-indirect-reference-residuals.test.ts`, 11 uj teszt (1/alak + 2
+hamis-pozitiv-or a zart alakokra + 2 invariant-valtozatlansag). Mutacio-ellenorzes: a fix
+visszaallitasaval PONTOSAN a 2 "CLOSED" teszt valt vorosre, a tobbi zold marad; visszaallitva ismet
+zold. A teljes gate-erintett teszt-csalad (23 fajl, egyezik Cybered sajat 2e04a52e-mereset) 1227
+PASS + 98 skip. `tsc --noEmit` tiszta (3, korabbrol ismert, FUGGETLEN parse5-hiba leszamitva).
+ESLint es `node --check` tiszta.
+
+**Ki döntött:** RedHat lelete (msg 19773) adta az iranyt. backend2 vegezte a javitast. Gate: QA +
+Cybersec + Cybered (a kartya sajat kijelolese).
+
+## 2026-11-15: Ügynök-újraindítás utáni munkamenet-igazolás -- olcsó (C) irány, nem kemény blokkolás (kártya d66b7681)
+
+**Döntés:** a context-guard resume-mechanizmusába NEM épül kemény blokkolás (resume-injektálás
+megállítása + MikroB-értesítés minden elavult handoffnál) -- az flotta-szintű dispatch-késleltetést
+vezetne be és az önjáró flotta ellen hatna túl alacsony küszöbnél. Helyette egy olcsó, additív
+irány (C) ment élesbe: (1) a stale resume-prompt eresítve egy KONKRÉT, MÉRHETŐ első lépéssel
+(`git ls-remote` + `git cat-file` minden sha-ra amit a handoff állít, és minden megnevezett kártya
+státuszának újraolvasása kanban-ból, MIELŐTT bármilyen land/push/PUT done megtörténne); (2) egy
+strukturált, agent-onkénti restart-log (`store/context-guard-restart-log.jsonl`, egy JSON-sor
+minden resume-injektálásnál: agent, handoff-kor percben, stale-jelző, az adott prompt-variáns
+neve), ami mérhetővé teszi, követik-e az ügynökök az instrukciót; (3) legalább egy teszt, ami
+pinneli, hogy a stale ág tényleg tartalmazza az eresített sort.
+
+**Mit indokolt:** a backend3 restart (~30 perc elavult HANDOFF) dupla landolással végződött -- a
+puszta szöveges figyelmeztetés ("FIGYELEM: a HANDOFF.md ELAVULT") már korábban is létezett a
+resume-promptban, de nem volt elég konkrét ahhoz, hogy megállítsa az agensit. Plan-grilling (kártya
+d66b7681 komment 31547) talált egy nyitott kérdést: a hiba oka az volt, hogy az agens nem olvasta/
+követte a figyelmeztetést, vagy hogy a figyelmeztetés maga nem volt elég erős? A kemény blokkolás
+az első esetre sem segítene önmagában (egy agens, aki egy szöveges figyelmeztetést átugrik, egy
+másikat is átugorhat), és a második esetre a (C) irány már elég -- ezért nem volt ok a nagyobb,
+visszafordíthatatlan architektúra-döntésre ráugrani anélkül, hogy a mérés megmutatná, kell-e
+egyáltalán.
+
+**Nyitva hagyva, saját kártyán (ha indokolt):** a kemény blokkolás (resume-injektálás megállítása)
+csak akkor kap saját kártyát, ha a restart-log ismétlődő stale-handoff-utáni landolást mutat --
+azaz a (C) mérés maga dönti el, kell-e a nagyobb beavatkozás.
+
+**Ki döntött:** MikroB (msg 18804, válasz a fullstack plan-grilling kérdésére, komment 31547/
+msg 18803). Gate: QA.
+
+## 2026-11-18 -- a7f206a5: retraction marker tightened to the REVIEW's own author/mikrob, first-sha-only
+
+**Decision:** Card a7f206a5 (source: WhiteHat 84fed4ee gate, comment 20580, landed). The
+`VISSZAVONVA:`/`RETRACTED:` marker (card 84fed4ee) that excludes a stale REVIEW from
+`declared_shas()` had two gaps measured live by WhiteHat:
+
+F1: `_retraction_shas_after` applied no author filter at all -- any commenter, including a
+generated draft author (local-llm, gate-pretriage), could retract someone else's real REVIEW.
+
+F2: the retraction line's EVERY hex token counted, so "VISSZAVONVA: B (visszaallitva A-ra)" --
+the exact sentence shape the original 101f1702 incident's prose used -- retracted both B (the
+one actually withdrawn) and A (the one restored to), leaving no live REVIEW and the real,
+intended sha unverified (NOSHA/UNRESOLVED instead of AGREE).
+
+**Fix:** `_retraction_shas_after(comments, index, review_author)` now only accepts a retraction
+comment whose author is the REVIEW's own author or `mikrob` (per WhiteHat's own suggestion, and
+excludes generated authors via the existing `_is_generated_author`), and only takes the FIRST
+sha-shaped token per retraction line, reusing `_line_shas()`'s own parent-marker/path-token
+exclusions rather than a bare token scan. `_latest_declaring_review` passes the REVIEW's author
+through. F4 (gate-dispatch-check.sh / gate-pretriage-card.sh not recognising the marker at all)
+is WhiteHat's own INFO-severity, explicitly out of the card's stated success criteria, and is
+left for a separate card.
+
+**Test:** `store/gate-closure-check.selftest.py`, 9 new cases: 3 pin F1 (unrelated author,
+local-llm, gate-pretriage all fail to retract; mikrob succeeds), 2 pin F2 (first-sha-only is
+correct; a verdict on the wrongly-surviving sha under the OLD code reads UNRESOLVED, not AGREE),
+2 pin case-insensitivity of the keyword and of the sha token (WhiteHat's M3/M6). Mutation-proven:
+reverted `gate-closure-check.py` only (selftest file kept at HEAD) -- exactly 4 of the 9 new
+cases (the ones that distinguish old from new behaviour; the other 5 pass under either version
+by construction, e.g. mikrob was never excluded by the old code either) went RED, everything
+else (195 pre-existing cases) stayed GREEN. Restored, re-ran: 204/204 green.
+
+**Measured:** `python3 store/gate-closure-check.selftest.py`: 204 case(s), PASS (pre-fix: 200
+pass / 4 fail, exactly the F1 x3 + F2-control cases). `python3 -m py_compile`: clean.
+
+**Who decided:** backend (own card). Gate: QA + Cybered (fix direction came from WhiteHat, so
+the security gate is Cybered, per the card's own designation).
+
+## 2026-11-16 11:01 -- 0ca2322b: fleet-test.sh TEST_TREE detektor maradek vak alakjai -- `readonly
+## TEST_TREE`-vel lezarva, nem regex-formankent
+
+c5f98f82 kovetokartya (QA2 32214, RedHat 19592, mindketto @bea353d23). A regex-alapu statikus
+detektor (`fleet-test-no-test-tree-reassignment-after-guard.test.ts`) csak a literalis
+`TEST_TREE=` reszstringet ismeri fel, ezert vak maradt: `: "${TEST_TREE:=...}"` (assign-default),
+`TEST_TREE[0]=`, `TEST_TREE+=`, `mapfile`/`readarray TEST_TREE`, egy `for`/`select TEST_TREE in
+...` ciklusvaltozo, `printf -v` (idezve vagy ragasztva), `declare -n`/`local -n` indirekcio, es a
+nev/`=` kozotti backslash-ujsor torese. Es semmit nem mondott a `cd "$ROOT"` HIVAS UTANI
+szakaszrol.
+
+**Dontes (MikroB komment 32226, RedHat javaslatara, komment 32216): NEM regex-formankent
+bovitjuk a detektort, hanem `readonly TEST_TREE`-t teszunk a guard vege utan.** Bash ekkor MINDEN
+kesobbi iras-format visszadob runtime "readonly variable" hibaval -- az EGESZ osztalyt egy sorban
+zarja le, nem csak azokat a formakat, amiket valaki eppen felsorolt. A statikus detektor marad,
+mint olcso elso-vonal (a legegyszerubb, nyers `TEST_TREE=` hibat meg a szkript futasa elott
+elkapja), de a strukturalis vedelem a readonly deklaracio.
+
+**Verifikacio (valodi bash-futtatassal, nem csak string-mintaillesztessel):** a szkript sajat
+szovegebol kivonva a `readonly TEST_TREE`-ig tarto elotagot, majd ALAHOZZA mindegyik felsorolt
+irasi forma -> MIND elbukik "readonly variable" hibaval, az `assign-default` KIVETELEVEL (ez
+NOOP, nem bypass: a `:=` csak akkor ir, ha a valtozo ures/nincs beallitva, es a TEST_TREE a 31.
+sorban MAR nem-ures erteket kapott, mire ide erunk -- tehat ez a forma soha nem lehetett
+tenyleges kihasznalas, csak egy olyan alak, ami a regex-detektort nem erdekelte). "After-cd
+window" pin: a szkript elotagjat a VALODI `cd "$ROOT"` hivasig kivonva, majd azutan probalva irni
+-> ugyanugy elbukik -- a readonly a futas HATRALEVO egesz reszere vonatkozik, nem csak a
+guard-vege-es-cd kozti resre. Mutacio-bizonyitas: a `readonly TEST_TREE` sor ideiglenes
+eltavolitasaval MIND A 15 teszt (`fleet-test-tree-readonly-after-guard.test.ts`) pirosra valt
+(az irasi formak mind sikeresek lesznek), visszaallitva ismet zold. 3 fleet-test selftest
+(`fleet-test-incomplete-run`, `fleet-test-priority-lane`, `fleet-test-cpu-slot-env`) zold.
+
+**Ki döntött:** backend2 (self-advance, MikroB prioritas 19621: 0ca2322b a 214ca312 utan,
+mindketto sajat korabban gate-elt munka follow-upja). Gate: QA + Cybered.
+
+## 2026-11-16 -- b296b810: project-less kanban cards can no longer be created
+
+Peti 14008 (2026-11-16): 411 live cards had an empty project between 2026-09-26 and 2026-11-15,
+all reclassified by hand (title tag / parent) since nothing enforced the field. Both
+card-creation paths (POST /api/kanban and POST /api/kanban/:id/breakdown/accept) now resolve a
+project in order: (1) an explicit project wins; (2) the parent card's project is inherited;
+(3) a recognised title tag ([mopsion]/[cleancore] -> mopsion, [MikroB]/[marveen] -> MikroB)
+derives one; (4) if none resolve, a speaking 400 instead of a silent NULL row. PUT /api/kanban/:id
+applies the same resolution only when the caller actually tries to CLEAR project to empty -- a PUT
+that never mentions the field leaves the existing value untouched.
+
+The title-tag mapping ([cleancore] -> mopsion) is intentionally a NEW, separate table from the
+existing CANONICAL_PROJECTS used for an explicit project STRING value, which deliberately keeps
+'CleanCore' and 'mopsion' apart (card 1b02ed3a's staged rebrand, protecting historical cards) --
+this derivation only fires for a brand NEW card naming no project at all, where the live name
+(mopsion) is correct.
+
+**Mérés:** scripts/__tests__... n/a (TS-only card). src/__tests__/kanban-project-required.test.ts,
+18 new cases, mutation-proven (disabling each of the 3 guard sites -- POST, PUT-clear,
+breakdown/accept -- flips the matching case red, restored clean). 13 pre-existing test files
+updated to carry an explicit project in fixtures that previously had none (unrelated features --
+id echo, assignee alias, gemini-ok marker, claim routes, parent-cycle detection). Full run: 41
+test files / 569 tests green. tsc --noEmit clean.
+
+**Nincs benne:** POST /api/ideas/:id/promote and /promote-breakdown (src/web/routes/ideas.ts) is
+a THIRD card-creation path that can still create a project-less card -- out of this card's named
+file scope (src/web/routes/kanban.ts only), flagged for a follow-up.
+
+**Ki döntött:** Peti kérése alapján backend implementálja; Gate: QA + Cybersec.
+
+## 2026-11-16 -- b296b810 round 2: non-string project values no longer bypass the guard
+
+Cybersec2 NO-GO (comment 32437, F1 MEDIUM) on round 1: PUT /api/kanban/:id accepted a
+non-string, non-null `project` ([""], [null], a number, a boolean, an object) because
+normalizeProjectName only inspected string values, and better-sqlite3 silently bound a
+one-element array to its element, storing a blank/garbage project with HTTP 200 -- the exact
+blank-project class round 1 closed for a plain string. Fixed by rejecting any `project` key in
+the PUT body that is neither a string nor null/undefined with 400
+INVALID_PROJECT_TYPE_MESSAGE, before normalizeProjectName runs at all; a malformed value never
+reaches the title-tag/parent fallback either.
+
+**Mérés:** src/__tests__/kanban-project-required.test.ts, fleet-test.sh --ref card/b296b810,
+24/24 passed. tsc --noEmit clean.
+
+**Ki döntött:** Cybersec2 lelet, backend javítja. Gate: QA (delta) + Cybersec2.
+
+## 2026-11-18 -- f490ae53: entry-side hysteresis for quota-bridge's outage-declaration kill
+
+**Decision:** Card f490ae53 (MikroB URGENT, 8 fleet-wide tmux-server/channel restarts measured on 2026-11-18). Root cause: `store/quota-bridge.py`'s `kill_pid_holder()` SIGTERMs the real Telegram plugin poller and takes over `bot.pid` as soon as `mikrob_down()` reads true, confirmed only by a bare consecutive-count (`banner_streak >= CONFIRM_CHECKS`), with no minimum real-time span between the confirming readings. `store/quota-bridge.log` shows a 21:52:31 kill followed by a 21:52:35 "MikroB recovered" (4s), repeated many times that day and on 2026-11-14 -- the real poller dies, `channels.sh` sees `bot.pid` hijacked/disappeared, and after its 180s grace restarts the whole channels session, which journalctl shows taking the entire shared tmux server (11-13 agent panes) down with it.
+
+**Fix:** added `confirm_outage()`/`load_outage_confirm_config()` to `store/quota-switchback.py`, mirroring the existing SWITCHBACK-HYSTERESIS-V1 recovery-side rule (`confirm_switchback`) for the ENTRY direction: N down readings must span a minimum real-time gap, not just be counted -- a single healthy reading anywhere in the trailing window resets the run, so a flap of any length never confirms regardless of poll timing (e.g. a process-restart edge producing two near-instant readings). Config lives in `store/switchback-hysteresis.json` (`confirmProbesIn`/`minGapSecIn`, defaults 2/45s, matching the old `CONFIRM_CHECKS`/`POLL_HEALTHY_SEC` intent). `quota-bridge.py`'s `main()` loop now records each probe via `record_outage_probe()` and gates `kill_pid_holder()` on `should_declare_outage()` -- both small, pure-ish, directly testable without driving the infinite loop or touching the network.
+
+**Test:** `store/quota-switchback.selftest.py` (+5 cases: the 4s flap does not confirm, two close-together down readings without a real gap do not confirm, a genuinely sustained outage spanning the gap DOES confirm, a straddling healthy reading still breaks the run, and the config loader's default). `store/quota-bridge.selftest.py` (+4 cases: `should_declare_outage()` rejects the flap AND `kill_pid_holder()` is never called for it -- i.e. `bot.pid` is never overwritten on an aborted takeover -- plus the positive control that a confirmed sustained outage still reaches `kill_pid_holder()` exactly once). `python3 -I store/quota-switchback.selftest.py`: 18/18 green. `python3 -I store/quota-bridge.selftest.py`: 44/44 green. `python3 -m py_compile`: clean on both runtime files.
+
+**Who decided:** fullstack (card f490ae53, MikroB-approved fix shape per msg 21151). Gate: QA + Cybersec + Cybered (kills the live channel poller). Gate-SHA: 48a269f4a.
+
+## 2026-11-19 -- f490ae53: fix Cybered NO-GO B2 (outage_probe_log not cleared on recovery)
+
+**Decision:** Cybered NO-GO 33404 (B2) and QA correction 33446 on Gate-SHA 81fb03ab8: `outage_loop()`'s recovery branch reset `state["probe_log"]`/`banner_streak`/`notified_outage` but left `state["outage_probe_log"]` (the entry-side hysteresis run added by the 2026-11-18 fix above) untouched. A trailing pre-recovery down-run that already spanned `min_gap_sec` survived the recovery, so a single fresh down reading right after MikroB came back could immediately re-confirm the outage and kill the real Telegram poller again -- the exact class B2 was raised to close.
+
+**Fix:** `store/quota-bridge.py`, `outage_loop()` recovery branch: added `state["outage_probe_log"] = []` alongside the existing reset.
+
+**Test:** `store/quota-bridge.selftest.py` (+2 cases): drives `outage_loop()` through the real recovery branch (`confirm_switchback` mocked True) with a pre-recovery `outage_probe_log` already spanning `min_gap_sec`, asserts it is wiped to `[]`, then replays `should_declare_outage()` with one post-recovery down reading and asserts it does not re-confirm. Mutation-checked: removing the new clear line turns this test red (45/46 vs 46/46). `python3 -I store/quota-bridge.selftest.py`: 46/46 green. `python3 -I store/quota-switchback.selftest.py`: 18/18 green (unchanged). `python3 -m py_compile`: clean.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21319). Gate: QA + Cybersec + Cybered. Gate-SHA: dd59183ce981335dae9825dcf84ac30c59ba9cb9.
+
+## 2026-11-19 -- f490ae53: fix Cybersec NO-GO F1b/F2 (stale-run age bound + hostile-config loader)
+
+**Decision:** Cybersec NO-GO 33392/33574 on top of the B2 fix (Gate-SHA deaa3ffe4): two MEDIUM regressions in the entry-side hysteresis (card f490ae53's 2026-11-18 fix) were still open. F1b: `confirm_outage()` had no maximum age on the trailing down-run, so a probe_log surviving a process restart could combine an hours-old down reading with a single fresh one and declare an outage immediately, on data no longer evidence of a CURRENT outage. F2: `load_outage_confirm_config()` only caught `(OSError, ValueError, TypeError, JSONDecodeError)`; a hostile/malformed `switchback-hysteresis.json` (`1e999`/`-1e999` -> `OverflowError`, a non-dict JSON root -> `AttributeError`) crashed `main()` before the loop (no fallback takeover during a real outage), and an in-range-looking-but-weak value (`confirmProbesIn:1, minGapSecIn:0`) or an absurd one (`10**30`) was accepted outright.
+
+**Fix:** `store/quota-switchback.py`: `confirm_outage()` gained `max_age_sec`/`now` parameters -- entries older than `max_age_sec` are dropped from the trailing run before the count/span check, so a stale entry can no longer stand in for a missing fresh one. `load_outage_confirm_config()` now catches any `Exception`, requires the JSON root to be a dict, and clamps `confirmProbesIn`/`minGapSecIn` to sane bounds (2..10, 15..3600) -- anything outside either range, or any read/parse exception, falls back to the documented defaults `(2, 45)` with a warning on stderr (not a silent clamp to the boundary). `store/quota-bridge.py`: `should_declare_outage()` threads `max_age_sec`/`now` through to `confirm_outage()`; `main()`'s loop now calls it with the new `OUTAGE_PROBE_MAX_AGE_SEC` constant (`POLL_HEALTHY_SEC * 10` = 450s).
+
+**Test:** `store/quota-switchback.selftest.py` (+13 cases): the F1b bug reproduced without the bound (still confirms) and closed with it (does not confirm), a positive control that a genuinely recent sustained outage still confirms under the bound, and 9 F2 cases (both `OverflowError` shapes, four non-dict JSON roots, the weakened-by-one-edited-number config, both `10**30` extremes, and a valid in-bounds config passing through unclamped). `store/quota-bridge.selftest.py` (+1 case): a wiring pin that `main()` actually passes `max_age_sec=OUTAGE_PROBE_MAX_AGE_SEC` to `should_declare_outage()`, not the default `None` -- mutation-checked (dropping the kwarg at the call site turns it red). `python3 -I store/quota-switchback.selftest.py`: 31/31 green. `python3 -I store/quota-bridge.selftest.py`: 47/47 green. `python3 -m py_compile`: clean on all four files.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21331, Fix-Direction per WhiteHat 33392/33574). Gate: QA + Cybersec + Cybered. Gate-SHA: (see next commit, git rev-parse HEAD).
+
+## 2026-11-19 -- f490ae53: fix Cybered NO-GO 33576 (restart leg, clock-step, main() wiring)
+
+**Decision:** Cybered NO-GO 33576 on top of the F1b/F2 fix (Gate-SHA 57edc7c41), reaching three open items: (3) restart leg -- a persisted down reading of ANY age plus one fresh down still killed the poller (600s, 30 days, and a 1h clock step all gave kills=1 on deaa3ffe4); (4) `time.time()` is not monotonic, so a wall-clock step (either direction) between two down readings also confirmed; (5) the selftests did not pin `main()`'s own wiring -- deleting the `record_outage_probe()` call, or replacing the `should_declare_outage()` call with a bare `True`, left every existing selftest green. WhiteHat LOW (33574) also flagged that the B2 fix's second new assertion passed even without the fix (a 4s gap vs. the 45s span check already rejected it on its own, independent of the clear).
+
+**Fix:** `store/quota-switchback.py`: `confirm_outage()`'s age filter is now two-sided (`0 <= (now - ts) <= max_age_sec`), rejecting a future-dated entry (negative age) the same way it rejects a stale one -- closing the clock-step bypass (a one-sided check lets a bogus future timestamp, from a forward-clock glitch that later corrects, count as perpetually fresh and manufacture an arbitrary span with an unrelated older reading). New `prune_stale_outage_probes()` applies the same two-sided rule to a whole probe_log. `store/quota-bridge.py`: `main()` now prunes the persisted `outage_probe_log` with this function right after `load_state()` (defense in depth at process start, on top of the existing per-call filtering); both the prune call and the `should_declare_outage()` call now pass `now=time.time()` explicitly (this module's own, overridable clock name) instead of relying on `quota_switchback`'s separate default, so a test driving the real `main()` only needs to override one clock. The B2 test's weak second assertion was tightened (the fresh reading now lands 600s after the stale tail instead of 4s, so an un-cleared log would wrongly confirm and a cleared one correctly does not).
+
+**Test:** `store/quota-switchback.selftest.py` (+2): a future-dated-entry case reproducing the one-sided bypass inline (as a literal mutant of the old condition, not a call into the fixed function) and the fixed function correctly rejecting it. `store/quota-bridge.selftest.py` (+11): a `main()`-driving harness (adapted from Cybered's own replay harness, `agents/cybered/handoff-artifacts/f490ae53/harness_f490_r2.py`) with positive/negative controls, the 600s and 30-day restart-leg cases, +1h/-1h clock-step cases, and two wiring mutants (`should_declare_outage` forced `True`, `record_outage_probe` no-op) that must turn the controls red. All new assertions mutation-checked by hand before posting (each one verified to flip red under the specific regression it claims to catch) except the load-time prune call, which is explicitly noted in-code as NOT independently pinned (confirm_outage's own per-call filtering already covers every tested scenario; the prune call is kept as the defense-in-depth Cybered asked for, not because a test distinguishes its absence). `python3 -I store/quota-switchback.selftest.py`: 33/33 green. `python3 -I store/quota-bridge.selftest.py`: 55/55 green. `python3 -m py_compile`: clean.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21334, Fix-Direction per Cybered NO-GO 33576 + WhiteHat LOW 33574). Gate: QA + Cybersec + Cybered. Gate-SHA: (see next commit, git rev-parse HEAD).
+
+## 2026-11-19: f490ae53: fix Cybersec NO-GO (load-time prune of outage_probe_log was itself a regression)
+
+**Problem:** the previous round's load-time `prune_stale_outage_probes()` call in `quota-bridge.py`'s `main()` -- added as explicitly-unpinned defense-in-depth on top of `confirm_outage()`'s own per-call age filter -- was itself a false-confirmation hole (Cybersec NO-GO on Gate-SHA 8b74003492f3c503c284958e2db3dc800546b734). `prune_stale_outage_probes()` filters the WHOLE persisted `outage_probe_log` by age, including healthy (`ok=True`) entries that serve as recovery boundaries in `confirm_outage()`'s backward walk. After a backward clock step followed by a restart, a healthy reading recorded (by the old, correct clock) chronologically AFTER an old down reading can look future-dated relative to the new, stepped-back "now" and get deleted outright -- permanently, since the pruned state is what gets saved back to disk. Deleting that boundary lets `confirm_outage()`'s backward scan reach PAST it into an even older down reading that still happens to look fresh enough under the age bound, merging it with one new probe into a false outage confirmation (demonstrated: `kills=1` with the prune present, `kills=0` with it removed, on the same repro driven through the real `main()`). `confirm_outage()`'s own per-call filtering already closes the plain restart leg (an old down reading + one fresh down, no healthy reading between) without any load-time pruning.
+
+**Fix:** `store/quota-bridge.py`: deleted the load-time `prune_stale_outage_probes()` call (and its surrounding comments) from `main()`; decision-time age filtering inside `should_declare_outage()`/`confirm_outage()` (unchanged) is the only age bound now. `store/quota-switchback.py`: deleted the now-unused `prune_stale_outage_probes()` function (no remaining callers, no independent unit test existed for it).
+
+**Test:** `store/quota-bridge.selftest.py` (+1, net 55->56): new case D4 reproduces the exact regression through the real `main()` -- a persisted log with an old down reading, a healthy reading, and a newer down reading (the healthy one future-dated relative to a stepped-back restart clock) plus one fresh probe, asserting `kills=0`. Mutation-verified by hand: re-adding the deleted prune call (and the deleted function) turns exactly this one assertion red (`kills=1`), all 55 others stay green. Updated the comment on the existing D-case (no longer references the removed call) and added an honest-note after the existing +1h/-1h clock-step cases (QA2 33606): those two do not independently exercise the two-sided direction of the age bound (verified: still `kills=0` under a one-sided mutant of `confirm_outage`'s filter) -- that direction is pinned separately at the pure-function level in `quota-switchback.selftest.py`. `python3 -I store/quota-switchback.selftest.py`: 33/33 green. `python3 -I store/quota-bridge.selftest.py`: 56/56 green. `python3 -m py_compile`: clean.
+
+**Who decided:** fullstack (card f490ae53, MikroB dispatch msg 21353, Fix-Direction per WhiteHat). Gate: QA + Cybersec + Cybered. Gate-SHA: (see next commit, git rev-parse HEAD).
+
+## 2026-11-16 -- eaf56df5: hosszkorlát-tesztek + ESC a lapitando halmazba, U+001C-1E/tag karakterek mert dontessel kihagyva (e6b2742b RedHat GO kovetok)
+
+RedHat CYBERED GO az e6b2742b-n (komment 15294) ket LOW rest nevezett meg a scripts/hooks/shared-
+memory-inject.py inditó-kontextus lapitasán: 1. a keywords (200) es rovid mezok (64) hosszkorlatja
+nincs tesztben rogzitve (E14/E15 mutans zold); 2. a `_cap_and_flatten` nem lapitja a U+001C-U+001E,
+ESC (0x1B) es U+E0000 tag karaktereket -- merni kellett, okozhatnak-e sor-kitorest az inditó
+kontextusban.
+
+**1. pont javitasa:** ket uj teszt a session-memory-inject-own-curated.test.ts-ben, ami a tenyleges
+vagott+utotag kimenetet asserteli a valodi konstans-ertekeknel (keywords 200, rovid mezo 64).
+
+**2. pont mert valasz:** U+001C/1D/1E nem resze a VT100/ANSI vezerlo-grammatikanak, semelyik
+terminal (tmux/xterm/iTerm) nem nyit uj sort rajuk; Python sajat `str.splitlines()`-a hataroknak
+tekinti oket, de a script sosem hiv `.splitlines()`-t a memoria-tartalmon (grep-ellenorizve), tehat
+ez a tagabb definicio sosem fut ra ezekre az adatokra. DONTES: kimaradnak a lapitando halmazbol,
+teszttel rogzitve (a karakter lapitatlanul atmegy, pontosan egy sor marad). A tag-blokk
+(U+E0000-U+E007F): lathatatlan karakterek, nincs sor-kitoresi szemantikajuk semelyik renderelonel
+sem -- KULON, nem e kartyahoz tartozo injekcios osztaly (rejtett szoveg, nem hamis sor-kezdes),
+ugyanaz a hatarvonal amit RedHat sajat jegyzete mar meghuzott. DONTES: ugyanazon okbol kimarad,
+teszttel rogzitve. ESC (0x1B): MASKEPPEN -- nem maga sortores, de minden ANSI/VT100 kurzor-
+mozgato/sor-torlo escape-sorozat egybajtos BEVEZETOJE, es a flotta sajat tmux capture-pane/
+send-keys gepezete pontosan olyan ANSI-ismero terminal, amin egy ilyen sorozat mukodne, ha ez a
+szoveg kesobb egy terminalon at jelenik meg. Egy onallo ESC byte-nak nincs jogos hasznalata
+memoria-tartalomban, tehat olcso hatastalanitani ugyanugy, mint a tobbi karaktert (szokozre
+csereles, nincs szukseg sorozat-elemzesre). DONTES: bekerult a `_LINE_BREAK_CHARS`-ba, a meglevo
+7 osztaly osszes tesztjevel (content + keywords/agent_id/created_label + mutacio-proba) egyutt
+lefedve a kozos `LINE_BREAK_CASES` tombon keresztul.
+
+**Teszt:** `shared-memory-inject-provenance.test.ts` + `session-memory-inject-own-curated.test.ts`
+71/71 PASS. `tsc --noEmit` tiszta (a 3, korabbrol ismert, FUGGETLEN parse5-hianyos hibat
+leszamitva). `lint-ratchet.sh`: 441 lelet, baseline tartja. `python3 -c "import ast; ast.parse(...)"`:
+a hook forrasa tovabbra is szintaktikailag ervenyes. Mutacio-ellenorzes: a ket hosszkorlat
+1000-szeresre bontasa 2 tesztet buktat (pontosan a 2 uj korlat-teszt); az ESC eltavolitasa a
+`_LINE_BREAK_CHARS`-bol 4 tesztet buktat (content + a 3 OTHER_FIELDS eset). Mindket mutans
+visszaallitva, ismet zold.
+
+**Ki döntött:** RedHat CYBERED GO (e6b2742b, komment 15294) adta a fix-iranyt es a merendo
+kerdest; backend2 vegezte a merest/dontest/javitast. Gate: QA + Cybersec (a kartya sajat
+kijelolese).
+
+## 2026-11-16 -- 6b7a606d: watchdog.sh REFUSEs on a checker exit other than 0/1
+
+RedHat LOW on ae5af304 (msg 19513): agent_launch_env's --bad-content-characters and
+--same-as-fleet-token sub-calls used a bare `if CMD; then`, collapsing every non-zero exit
+(1 = legitimate no-match, but also 2, a kill signal, or a crash) into the same "no match"
+branch -- a checker crash on either call could again let a corrupted own-token file through.
+Fixed by capturing the exit code explicitly: only exit 1 means no-match now, anything else
+REFUSEs as checker-failed.
+
+Rebased onto current develop (base 92db6b69a) instead of the earlier, now-stale f5a3de9b9
+attempt: develop already carries the checker-side crash-safety fix (card bc32d233,
+oauth_token_file_check.py) via a different, equivalent-or-stronger mechanism
+(`errors="replace"` plus a generic fail-closed-on-any-exception in both CLI branches) than the
+decode-maps-to-exit-0/other-exceptions-map-to-exit-2 split this card's earlier attempt
+(d816ef444) used independently -- confirmed no residual gap by diffing scripts/watchdog.sh
+against the earlier e0e56cfaa attempt (empty diff, same fix) and
+scripts/lib/oauth_token_file_check.py against the earlier c75524f91 attempt (bc32d233's version
+is a superset of the same guarantee). Only the watchdog.sh-side fence was actually missing from
+develop; the checker-side fence had already landed under bc32d233.
+
+**Mérés:** scripts/__tests__/watchdog-config-isolation.test.sh, 4 new cases (55-58, renumbered
+from the earlier attempt's 53-56 to sit after the already-landed 53-54): a stub checker exits 2
+/ is killed by SIGKILL on each sub-call while behaving normally for the main resolve() call.
+Mutation-proven: reverting watchdog.sh's fix flips exactly 55/56/57 red (the exact fail-open
+reproduced), #58 pins the exit-0/exit-1 behaviour stays unchanged. Full suite: 68/68 green with
+the fix, 65/68 (3 red) reverted.
+
+**Ki döntött:** RedHat lelete (msg 19513) alapján backend javítja. Gate: QA + Cybered.
+
+## 2026-11-16 -- 2ec21127 rebase: Cybered NO-GO fix + egy fuggetlen timeout-flake javitas
+
+**Dontes:** a 2ec21127 (CLAUDE.md base-prompt diet) rebase utani CYBERED NO-GO (komment 32333) ket
+dolgot talalt: (1) develop sajat `scripts/claude-md-split-reachability-check.selftest.py`-ja (a
+cc72cb3e 6791d3f88 kommitja altal keszitett, keményebb verzio) egy esete, `update-baseline-reword-
+index`, a 4. szabaly INDEX-bullet-jeben akarta atirni "a készítő SOHA nem ellenőrzi a sajátját"
+szoveget -- ez a diet altal mar elvett magyarazo-prozahoz tartozott, tehat a shortened CLAUDE.md-ben
+mar nincs ott, es a feltetlen `replace_once` AssertionError-ral a teljes selftestet elszakitotta.
+Javitas: a CLAUDE.md-oldali csere feltetelesse valt (csak ha a szoveg tenyleg ott van), a docs/rules-
+oldali csere maradt, a teszt celja (a conservation-reword workflow) valtozatlan. 30/30 zold utana.
+
+(2) Fuggetlenul a rebase-tol, MikroB jelzese (uzenet 19800) alapjan: a `claude-md-split-reachability.
+test.ts` ugyanazon tesztje (a 10 RedHat-mutans + in-place-weakening kontroll) idotullepett DevO
+`d66b7681` landolasan is, 7-8 parhuzamos fleet-test suite alatt. Kozvetlenul merve (nem vitesten at):
+a selftest ONMAGABAN 29.3 masodpercet vett igenybe a mostani valodi egyidejű terheles alatt (load
+average ~5) -- mar a regi 30000ms keret SZELEN, a vitest sajat folyamat-inditasi rafordulasa nelkul
+is. Javitas: a teszt sajat timeout-ja 30000 -> 90000 ms (3x a mert, terhelt futasido), SEMMI mas nem
+valtozott (ugyanaz a 30 eset, ugyanazok a mutansok). A valodi atereszto-kepesseg-problemat (egy
+kozos fa/lock minden futast sorba allit, fuggetlenul a fajl-kortol) a c5ff36bf kartya oldja meg
+(naplozas-only commit mar bent, QA-ra var); ez itt egy lokalis, surgical patch, hogy ez a teszt addig
+ne flakeljen a mar ismert gyokerok miatt.
+
+**Ellenorzes:** `scripts/claude-md-split-reachability-check.selftest.py` kozvetlenul futtatva 30/30;
+`fleet-test.sh --ref <uj sha> src/__tests__/claude-md-split-reachability.test.ts` ketszer lefuttatva
+a vegso tippen, mindket alkalommal 2/2 zold (29.73s, bo margoval a 90s alatt).
+
+**Ki döntött:** Cybered NO-GO (komment 32333) + MikroB kovetkezo-lepes (uzenet 19800/19805).
+backend3 vegezte. Gate: QA + Cybersec + Cybered (delta re-gate, csak a rebase-mechanika + ez a ket
+javitas, nem teljes suite).
+
+## 2026-11-19 -- 2ec21127: Token 8 land refused on develop drift, fixed (CLAUDE.md 4g/22a-22e merge + reachability-test timeout)
+
+Land attempt (marveen-land.sh --card 2ec21127 --agent backend3) was REFUSED on CONFLICTS merging
+card tip a81e5a8e into a fresh origin/develop: CLAUDE.md, DECISIONS.md,
+src/__tests__/claude-md-split-reachability.test.ts. Root cause: develop gained rule 4g and
+sub-rules 22a-22e (with short clauses) after this card's own base-prompt-diet pass touched the
+same index -- this card's HEAD already carried 22a-22e in an even terser (bold+link-only) form but
+was missing 4g entirely, and the reachability test's timeout constant diverged (develop still had
+an older 26-case/60000ms measurement from card 517ba7f6, superseded by this card's own 30-case/
+90000ms measurement from 2026-11-16, card 2ec21127 itself, msg 19800).
+
+Fix: merged origin/develop into card/2ec21127. CLAUDE.md: added rule 4g in the branch's own
+terse style (bold title + link, no prose clause, matching 22a-22e's existing style on this
+branch), corrected the sub-rule count line from "37 sor" to "43 sor" (22 main + 21 lettered subs,
+matching develop's own stated total once 4g is counted). claude-md-split-reachability.test.ts:
+kept this branch's 90000ms/30-case version (newer, supersedes develop's). DECISIONS.md: both
+sides append-only, unioned theirs-first via store/decisions-sync-resolve.sh (rc=0 on
+--check-last-merge). One unrelated clean auto-merge: src/__tests__/dismiss-feedback-draft-modal-retry.test.ts
+deleted on develop (not touched on this branch), deletion accepted (standard 3-way merge rule,
+no conflict).
+
+**Mérés:** tsc --noEmit on the merge result: clean. vitest run
+claude-md-split-reachability.test.ts: 1 Test File passed (1), 2 Tests passed (2), 29.84s (under
+the 90000ms budget, consistent with this branch's own measurement). secret-gate PASS, 351 files.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 912955f06f119feb9fe4bcc840c23c6860fc61fc (merge commit,
+sha copied via `git rev-parse HEAD`, not retyped). Gate: QA + Cybered + Cybersec + Cybersec2
+per the card's designated set (all four already agreed on a81e5a8e) -- needs a fresh verdict on
+this sha before landing.
+
+## 2026-11-19 -- 2ec21127: CYBERED NO-GO fix -- rule 4g's index bullet lost the Gate-SHA: token
+
+RedHat NO-GO (komment 33823) on fca1ecead: the terse rewrite of rule 4g's index bullet in CLAUDE.md
+dropped the "Cél: ... Gate-SHA: ... TÉNYLEGESEN…" clause, losing the verbatim `Gate-SHA:` protocol
+token the top-of-file rule requires, and making the bullet fail
+scripts/claude-md-index-shrink-check.py's verbatim-substring check against
+docs/rules/munkavegzesi-szabalyok.md (the composed replacement clause was not an exact quote of
+the source file). Fix: restored develop's own exact 4g line byte-for-byte (including the ellipsis
+character, not a period) instead of composing a new clause.
+
+**Mérés:** scripts/claude-md-index-shrink-check.py origin/develop CLAUDE.md: "RESULT: OK" (0
+missing bullets, 0 changed bold titles, 0 moved/lost protocol tokens). vitest run
+claude-md-split-reachability.test.ts: 2 Tests passed (2). tsc --noEmit: clean.
+
+**Ki döntött:** RedHat lelet (CYBERED NO-GO 33823), backend3 javítás. Gate-SHA:
+a04d3410ad9fd6388169c6409a81c43074d2c3ba (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
+Cybered + Cybersec + Cybersec2, delta re-gate ezen a shán (MikroB üzenet 21446: "one-line
+CLAUDE.md-only re-gate follows").
+
+## 2026-11-18 -- 58342cec: precedence tests for shared-memory-inject --agent vs cwd (M2/M4/M5)
+
+**Decision:** Card 58342cec (source: cybersec2 GO on 44091907, comment 21098, point 6/N1). The
+cwd-agent-arg fix at 4108addd had 3 of 8 tried mutations survive the then-16-case suite: M2
+(identification from the LAST path segment instead of the element right after "agents"), M4 (an
+unidentifiable cwd swapped for a different non-gate name instead of the literal "fleet"), M5
+(cwd-derivation taking precedence over --agent when the cwd itself carries a non-fleet
+"agents/<x>" segment -- the exact precedence test cybersec2 asked for).
+
+**Fix:** test-only card, no production code change. Added 7 cases to
+`src/__tests__/shared-memory-inject-cwd-agent-arg.test.ts` (6 -> 13): the 3 remaining named cwd
+shapes (empty string, live clone root, upper-cased agents/CYBERSEC) and the 3 mutation pins.
+
+**Test:** mutation-proven one at a time in an isolated worktree -- M2 (`parts[-1]` instead of
+`parts[i+1]`): exactly the M2 case went red. M4 (`"fleet"` swapped for `"unknown-caller"`):
+exactly the M4 case went red (the literal-value assertion is what catches it). M5 (cwd-derivation
+first): 2 cases went red (the M5 case itself, and the upper-cased-cwd-with-override case, which
+legitimately shares the same agents/<x> segment). Restored the real code after each, confirmed
+byte-identical (empty diff), re-ran: 13/13 green throughout.
+
+**Measured:** `fleet-test.sh --ref 5cadc2bccdfbcd4faddf3c193d7bca83c99ba2f6
+src/__tests__/shared-memory-inject-cwd-agent-arg.test.ts
+src/__tests__/shared-memory-inject-gate-exclusion.test.ts`: 2 Test Files passed, 19 Tests passed.
+`tsc --noEmit`: clean. `lint-ratchet.sh --show`: 420 findings/3 rules, session baseline (12/140/268).
+
+**Who decided:** backend (own card). Gate: QA + WhiteHat (the card's own designation).
+
+## 2026-11-15 -- 651ee11f (758e06dd follow-up L1/L2/L3): buildUpdateScriptEnv moved from a denylist to an allowlist
+
+**Döntés:** `buildUpdateScriptEnv` started from the FULL inherited `process.env` and deleted specific known-bad keys (NODE_ENV, conditionally POST_MERGE_MODE). update.sh reads several control switches straight from its own environment with no CLI-flag equivalent -- FORCE_REBUILD, UPDATE_AUTO_REBASE, RESEED_FLEET, REGEN_CLAUDEMD, POST_MERGE_OLD_SHA -- none of which the denylist named, so any of them inherited from whatever launched this dashboard process (a debug run, a systemd unit, an operator shell) silently rode along into every ordinary fork-pull update, not just the one invocation that meant to set it (L3). Separately: L1, the one call site the POST_MERGE_MODE special-case comment referenced (a raw upstream fetch+merge handed to update.sh in POST_MERGE_MODE) was removed as dead code under card 55885cb1, but the comment and the strip-logic still described it as live. L2: that strip logic used `'POST_MERGE_MODE' in extraEnv`, which walks the prototype chain -- a polluted `Object.prototype` would make it true for an extraEnv that owns nothing, wrongly treating an inherited value as caller-provided and letting it survive.
+
+**Fix:** `buildUpdateScriptEnv` now builds from a `BASE_ENV_KEYS` allowlist (PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR, SHELL -- login/shell basics, never a control switch), reading each from `process.env` only if set, then layers `extraEnv` on top via `Object.assign` (own-properties-only, closing L2 structurally rather than with a second `in`-style check). NODE_ENV is deliberately excluded from the allowlist (AUTOUPDNODEENV905, card c116696f) and explicitly `delete`d besides, as a named guard against a future allowlist edit silently reopening that incident. POST_MERGE_MODE/POST_MERGE_OLD_SHA need no special-case code any more -- not being base keys is enough to keep an inherited value out, while a future caller can still set either through `extraEnv` like any other switch (L1 resolved: the dead-call-site comment is gone, the generic capability is kept).
+
+**Teszt:** New `update-env-allowlist.test.ts` -- per the card's own "Kész, ha": each of the 5 named control switches gets a pair of tests (inherited does NOT cross over / extraEnv value DOES), plus base-key-survives and arbitrary-var-excluded cases, plus an L2 closure test using a REAL `Object.prototype` pollution (with `Object.hasOwn` controls proving the pollution is real and extraEnv still owns nothing) -- my first version of that test read `env.POST_MERGE_MODE` directly and failed against my OWN correct fix, because a plain property read on ANY object picks up a polluted prototype regardless of what the function did; fixed to assert `Object.hasOwn(env, ...)` instead, the property that actually reflects what `Object.assign` copied. Updated the one existing test whose assumption the fix deliberately inverts (`update-node-env-strip.test.ts`'s "other inherited env vars survive untouched" -> now asserts they do NOT). 24/24 new+updated tests PASS; full blast-radius (every test file importing `routes/updates.js`: update-post-merge-mode-strip, updates-open-upstream-sync-check, updates-apply-upstream-sync-gate-handler, cli-update-offer, operator-endpoints): 119/119 PASS. Mutation-verified: reverting `buildUpdateScriptEnv` to the exact old denylist shape turned exactly 8 cases red (the 5 control-switch-not-inherited cases, the arbitrary-var case, the L2 pollution case, and the updated node-env-strip case) -- `update-post-merge-mode-strip.test.ts` stayed fully green under the mutant, confirming it alone was never sufficient coverage for this card. `npx tsc --noEmit` clean.
+
+**Ki döntött:** fullstack (self-advance rule 11, oldest unblocked planned card, 767.2h; WhiteHat2 CYBERSEC GO on 758e06dd named the three findings). Gate: QA + Cybered. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15 -- 651ee11f fix round 2: CYBERED NO-GO on 1cc5be855, F1 (systemctl --user) + F2 (prototype pollution at the real process boundary)
+
+**Döntés:** RedHat's NO-GO on the round-1 allowlist fix (previous entry) found two gaps the 24/119 green suite never exercised, because every test asserted properties of the RETURNED object, never what the spawned child actually receives. F1: `BASE_ENV_KEYS` dropped `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS`, which `systemctl --user` needs to reach the user session bus; update.sh's own `daemon-reload` calls (after it patches/creates unit files) and its `_unit_drift` check are written `2>/dev/null || true` / treat-failure-as-ok, so the loss was SILENT -- measured on this host, `systemctl --user daemon-reload` exits 1 with only the other base keys set, exits 0 with `XDG_RUNTIME_DIR` restored. F2: `Object.hasOwn(env, 'POST_MERGE_MODE') === false` is true to the statement but not to the OS boundary -- node's `spawn()` copies the child env with a `for...in` loop, which walks the prototype chain. Measured: a plain `{}` env with a polluted `Object.prototype.FORCE_REBUILD` DOES reach a really-spawned child (`'polluted'` read back from the child's own `process.env`), even though the returned object never owns that key. Related and reachable the same way: an `extraEnv` with an own `"__proto__"` key (the shape `JSON.parse` produces, not object-literal proto-set syntax) makes `Object.assign(plainEnv, extraEnv)` invoke `Object.prototype`'s inherited `__proto__` setter and change the plain env's actual prototype -- measured, the injected payload then also reaches the child.
+
+Which other update.sh-read env vars are intentionally left out of the allowlist (RedHat asked this be stated explicitly): `MAIN_AGENT_ID`, `BOT_NAME`, `OWNER_NAME`, `WEB_PORT` all fall back to `.env` when unset (update.sh greps `$INSTALL_DIR/.env` directly), and `MARVEEN_LANG` falls back to `.lang` -- none of these need to cross over from the dashboard process's own environment, the on-disk fallback is the intended source either way.
+
+**Fix:** (F1) Added `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` to `BASE_ENV_KEYS` -- neither is a control switch or a code-loading variable, both are what `systemctl --user` needs. (F2) `buildUpdateScriptEnv` now builds `env` with `Object.create(null)` instead of a plain `{}`. A null-prototype object has no inherited enumerable properties at all, so a `for...in` walk (node's own child-env copy, and any future consumer) only ever sees what this function actually assigned -- closing the pollution path structurally, the same "own-properties-only" shape the L2 fix already used for `Object.assign`. It also defuses the `extraEnv.__proto__`-own-key case: against a null-prototype object there is no inherited `__proto__` accessor to trigger, so `Object.assign` just creates an ordinary own data property literally named `"__proto__"`, never a prototype change (measured both ways).
+
+**Teszt:** Added to `update-env-allowlist.test.ts`: (F1) three tests -- `systemctl --user daemon-reload` actually spawned with the built env succeeds; a control proving the SAME built env minus those two keys fails (so the first test isn't vacuous); and a value-level survives-unchanged test matching the file's existing PATH/HOME pattern (the first two `it.skipIf`'d on hosts with no running user session bus, discriminating assertion is the control). (F2) four tests, all via `spawnSync` reading the CHILD's own `process.env`, not the returned object: a polluted `Object.prototype.FORCE_REBUILD` is not seen by a child spawned with the built (null-prototype) env, with a control proving the SAME pollution DOES reach a child spawned with a plain `{}` env; an `extraEnv` with an own `"__proto__"` key (via `JSON.parse`, matching RedHat's exact vector) cannot set the built env's prototype or reach the child, with a control proving the same shape DOES change a plain object's prototype via `Object.assign`. 126/126 (119 prior + 7 new) PASS across the full blast-radius (every test file importing `routes/updates.js`). `npx tsc --noEmit` clean. Mutation-verified independently: reverting only the F1 `BASE_ENV_KEYS` addition turns exactly 2 cases red (the real-spawn success test + the value-survives test; the control test is unaffected since it deletes the keys itself either way); reverting only `Object.create(null)` back to `{}` turns exactly the other 2 F2 real-spawn tests red, nothing else. Both mutants restored and re-verified (126/126) before landing.
+
+**Ki döntött:** fullstack (CYBERED NO-GO on the round-1 landing, dispatch msg 19211 from MikroB). Gate: QA + Cybered (re-gate). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-16 -- 808cd7fc: Opus 5.5 / Sonnet 5.5 cache-olvasási ár 0.05x, nem 0.1x (heti arlista-check talalat)
+
+**Kontextus:** a `model-pricing-weekly-check` ütemezett heartbeat (kártya 270e3ef4 folytatása) a `src/costops/model-pricing.ts` és a `web/app-token-usage.js` ártábláját a hivatalos árlistával (platform.claude.com/docs/en/about-claude/pricing, lekérve 2026-11-16) vetette össze.
+
+**Döntés:** valós eltérés, javítva.
+
+- A hivatalos oldal lábjegyzete szerint "Cache hits and refreshes on Claude Opus 5.5 and Claude Sonnet 5.5 are priced at 0.05x the base input price. All other models use the standard 0.1x multiplier." Opus 5.5: $0.20/MTok (nem $0.40). Sonnet 5.5: $0.10/MTok (nem $0.20).
+- `model-pricing.ts` egyetlen globális `CACHE_READ_MULTIPLIER`-t (0.1) alkalmazott MINDEN modellre -- 2x túlárazta a cache-olvasást mindkét modellen. Javítás: `ModelRate` kapott egy opcionális `cacheReadMultiplier` felülírást (alapértelmezett a globális marad), `claude-opus-5-5` és `claude-sonnet-5-5` sora 0.05-re állítva.
+- `app-token-usage.js`-ben az `opus-5-5` sora már saját `cr` mezővel rendelkezett, de rossz értékkel (0.40 -> 0.20). A `sonnet-5-5` viszont a sima `sonnet-5`-tel OSZTOTTA a `TU_SONNET5_PRICE` objektumot (cr 0.20) -- ez a sonnet-5-nek helyes, a sonnet-5-5-nek NEM. Saját `TU_SONNET5_5_PRICE` (cr 0.10) bevezetve, a `token-usage-pricing-fallthrough.test.ts` extraktora frissítve, hogy ezt az új blokkot is kivegye.
+
+**Teszt:** `src/__tests__/costops-model-pricing.test.ts` két új eset (0.05x mindkét modellen, kontroll: a testvér-modellek -- opus-5, sonnet-5 -- változatlanul 0.1x-en). `src/__tests__/token-usage-pricing-fallthrough.test.ts` két új eset (sonnet-5-5 saját cr, opus-5-5 javított cr). `fleet-test.sh --ref eafdf710790805e0643e43239d478ec523495ffe` -- Test Files 2 passed (2), Tests 25 passed (25), 2026-11-16 09:06. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** a heti arlista-check heartbeat találata, nincs emberi döntés-pont (mechanikus javítás a hivatalos forrás ellen ellenőrizve). backend végezte. Gate: QA.
+
+## 2026-11-16 -- 89ccf629: egress-guard 3. kör -- if/case/coproc ALLOW-rés + 5 redaktor-szivárgás zárva (7e01b349 RedHat NO-GO follow-up)
+
+**Kontextus:** RedHat (cybered) NO-GO-ja a 7e01b349 kártyán (komment 15353, Gate-SHA 80c807065f5beb531a976ab2053431b1c1701cda) három, egymástól független rést mért: (1) a bash-egress-guard.py csoport-nyitó `{` felismerése a `if`-feltételben és `case`-mintában kihagyta ezt a két kulcsszót, valamint a `coproc`-ot, így egy ott nyitott `{ ... }` blokk ALLOW-ként futott át a kapun; (2) az activity_memory_capture.py redaktora 5 valós titok-alakra nem illett (AWS_SECRET_ACCESS_KEY, egyszeres idézőjeles JSON-kulcs, wget --http-password, glued -p, --pass); (3) egy 4 szintű, kizárólag benignus $( )/{ } beágyazás enforce módban hamis BLOCK-ot adhat -- ezt nem feltételezésként, hanem méréssel kellett megcáfolni/megerősíteni.
+
+**Döntés:**
+
+- `bash-egress-guard.py`: a `_BARE_GROUP_OPEN_RX` kulcsszó-alternációja kiegészítve `if`-fel és `coproc`-kal, plusz egy `(?<!\()\)` alternatíva a `case`-minta záró `)`-jére (a függvény-def üres `()`-jétől egy karakteres negatív lookbehind-del elválasztva). Ismert, el nem fogadott rés: egy belső szóközt tartalmazó `f( )` nincs kizárva -- ritka, ártalmatlan duplikált lelet, nem hamis ALLOW.
+- `activity_memory_capture.py`: (a) `aws[_\-]?secret[_\-]?access[_\-]?key` explicit alternatíva a kv-minta kulcsnév-alternációjában; (b) új, egyszeres idézőjeles JSON-kulcs regex a meglévő dupla idézőjeles mellett; (c) a flag-alapú minta kiterjesztve glued `-p` (mysql), `--pass`, `--http-password`-szal. A glued `-p(?=\S)` először hamis pozitívot adott prózában ("gh-p[REDACTED]" a "gh-pages"-ből) -- javítva egy `(?<![\w-])` negatív lookbehind-del, ami csak valódi flag-pozíción illeszkedik. Ismert, szándékosan nyitva hagyott rés: a meglévő `-u(?=\S)` ugyanezt a védelmet nem kapta meg (nincs ebben a kártyában).
+- Mérés (nem kódváltozás): a flotta teljes, valódi, commitolt shell-korpusza (`store/**/*.sh` + `scripts/**/*.sh`, 72 797 sor) a VALÓDI `analyse()` függvényen átfuttatva -- 0 depth>3 fail-closed hamis pozitív. Ez empirikusan megerősíti a meglévő kódkommentet: a 4 szintű beágyazás ebben a korpuszban kizárólag adverzariális, nem fordul elő valós flotta-parancsban.
+
+**Teszt:** `bash-egress-guard.selftest.py` 160 -> 165/165 PASS (5 új eset: if-feltétel `{`, case-minta `{`, coproc `{`, függvény-def `)` kontroll, case+localhost-idióma ALLOW kontroll). `activity-memory-capture.selftest.py` 75 -> 81/81 PASS (6 új eset: az 5 redaktor-javítás + a gh-pages hamis-pozitív kontroll). Mutáció-ellenőrzés közvetlen in-process monkeypatch-csel (nem a selftest subprocess-harness-én át, mert egy sed-alapú első próba szintaxist tört): mindhárom új egress-guard eset BLOCK->ALLOW-ra fordul, ha a regex visszaáll a javítás előtti alakra; mind az 5 redaktor-javítás valós szintetikus titok-értékkel `[REDACTED]`-et ad. `npx tsc --noEmit` tiszta. Scoped fleet-test (`--ref be6b1122d`, `src/__tests__/bash-egress-guard-wiring.test.ts`, `src/__tests__/activity-hook-redaction.test.ts`, `src/__tests__/hook-registration-completeness.test.ts`): 3 fájl, 68 teszt, mind zöld.
+
+**Nincs benne:** a kártya saját számozott listáján kívüli, RedHat által is megnevezett `eval`/függvény-test-csoport ALLOW-alakok nincsenek zárva (külön kártya nélkül nem bontva ki); a depth>3 enforce-mód tényleges élesítése/kikapcsolása nem e kártya része, csak a mérési eredmény.
+
+**Ki döntött:** RedHat (cybered) NO-GO-ja + saját számozott elfogadási kritériuma a 7e01b349 kártyán. backend végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
 ## 2026-11-19 -- card 0ae1166e round 2 (F8: node_modules/dist allowlist by TYPE, not NAME)
 
 **Kontextus:** CYBERED GO 34321 (delta, round 2) a store/marveen-card-worktree-cleanup.sh F1-F4

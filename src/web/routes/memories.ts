@@ -16,6 +16,7 @@ import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { HybridSearchTrace } from '../../db.js'
+import { resolveDateFilter } from '../../date-range.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -217,7 +218,8 @@ function stripDiacritics(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '')
 }
 
-function containsSuspiciousContent(content: string): boolean {
+// Exported: routes/daily-log.ts's memory-mirror filter (Koteg 25) reuses this same classifier.
+export function containsSuspiciousContent(content: string): boolean {
   const plain = stripDiacritics(content)
   return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(content) || pattern.test(plain))
 }
@@ -422,6 +424,22 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Card f90928e3: date= / since= / until= narrow the search to a created_at
+    // window. An unknown expression is a 400 with the accepted forms: a filter
+    // that is silently dropped would answer a wider question than the one asked.
+    // The window goes INTO every search branch below (like `category`), never
+    // after the LIMIT.
+    const dateFilter = resolveDateFilter({
+      date: url.searchParams.get('date'),
+      since: url.searchParams.get('since'),
+      until: url.searchParams.get('until'),
+    })
+    if (!dateFilter.ok) {
+      json(res, { error: dateFilter.error }, 400)
+      return true
+    }
+    const tsRange = dateFilter.filter?.ts
+
     let results: Memory[]
     // Per-row provenance for the keyword branches:
     // 'strict' (the AND pass), 'relaxed' (the OR pass), 'substring' (the LIKE
@@ -443,9 +461,12 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // agent_id in an unauthenticated write body. Every other caller omits it, unaffected.
     const selfAuthenticatedOnly = url.searchParams.get('self_authenticated') === '1'
     if (q && mode === 'hybrid') {
-      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory, selfAuthenticatedOnly)
+      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory, selfAuthenticatedOnly, tsRange)
     } else if (q && agentId) {
-      results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory)
+      // selfAuthenticatedOnly omitted (false) -- this plain agent-scoped search path never
+      // restricts to authenticated-only writes; tsRange is the 8th positional param now that
+      // selfAuthenticatedOnly sits at the 7th (see searchAgentMemories's combined signature).
+      results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory, undefined, tsRange)
       keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
         // Same content-shape exclusion as searchAgentMemories itself (card 3bcc1242 part 1) --
@@ -471,41 +492,44 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         // + ESCAPE '\' pins `%`/`_`/`\` in the raw query literal, the same LIKE-wildcard-injection
         // fix applied to db.ts's searchAgentMemories fallback in this same batch.
         const pattern = `%${escapeLike(q)}%`
+        // Koteg 25: tsRange (date-window) joins the m.-aliased, shape-filtered query above --
+        // same reasoning as db.ts's searchAgentMemories fallback in this same batch.
+        const dt = tsRange ? ' AND m.created_at >= ? AND m.created_at <= ?' : ''
         results = (searchCategory
           ? db2.prepare(
               `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')
-               AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
-            ).all(agentId, searchCategory, pattern, pattern, ...shapeFilter.params, limit)
+               AND (${shapeFilter.sql})${dt} ORDER BY accessed_at DESC LIMIT ?`
+            ).all(agentId, searchCategory, pattern, pattern, ...shapeFilter.params, ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit)
           : db2.prepare(
               `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')
-               AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
-            ).all(agentId, pattern, pattern, ...shapeFilter.params, limit)) as Memory[]
+               AND (${shapeFilter.sql})${dt} ORDER BY accessed_at DESC LIMIT ?`
+            ).all(agentId, pattern, pattern, ...shapeFilter.params, ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit)) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory, searchTrace)
+      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory, searchTrace, tsRange)
       keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
         keywordMatchKind = 'substring'
         const db2 = getDb()
         const pattern = `%${escapeLike(q)}%`
-        results = (searchCategory
-          // MEMKWSEARCH1018: keywords joins the fallback here, as it already
-          // does on the agent-scoped branch above. Without it the two paths
-          // disagree about what a memory IS: fts5 indexes content AND keywords
-          // (see the memories_fts migration), the agent branch searches both,
-          // and this one searched content alone -- so a row findable with
-          // ?agent= was invisible without it, with a header that says
-          // relaxed=false. A zero that looks like a real answer is the whole
-          // cost of this bug, which is why the fix is the parity, not a new mode.
-          ? db2.prepare("SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND category = ? ORDER BY accessed_at DESC LIMIT ?").all(pattern, pattern, searchCategory, limit)
-          : db2.prepare("SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?").all(pattern, pattern, limit)) as Memory[]
+        // MEMKWSEARCH1018: keywords joins the fallback here, as it already
+        // does on the agent-scoped branch above. Without it the two paths
+        // disagree about what a memory IS: fts5 indexes content AND keywords
+        // (see the memories_fts migration), the agent branch searches both,
+        // and this one searched content alone -- so a row findable with
+        // ?agent= was invisible without it, with a header that says
+        // relaxed=false. A zero that looks like a real answer is the whole
+        // cost of this bug, which is why the fix is the parity, not a new mode.
+        const dt = tsRange ? ' AND created_at >= ? AND created_at <= ?' : ''
+        results = db2.prepare(`SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\')${searchCategory ? ' AND category = ?' : ''}${dt} ORDER BY accessed_at DESC LIMIT ?`)
+          .all(pattern, pattern, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit) as Memory[]
       }
     } else if (agentId) {
-      // Category goes into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined, offset)
+      // Category and date window go into the query, not a post-filter: see getAgentMemories.
+      results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange)
     } else {
       // Category goes into the query here too, not a post-filter: see getMemoriesForChat.
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined, tsRange)
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
@@ -540,6 +564,12 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       }
     })
+    // The window actually applied, appended last so a caller matching the
+    // earlier fields keeps working. A side the caller left open stays empty
+    // (`date=2026-10-01..`). The filter never relaxes: no tag means no window.
+    const dateTag = dateFilter.filter
+      ? `; date=${dateFilter.filter.from ?? ''}..${dateFilter.filter.to ?? ''}`
+      : ''
     // The body of this endpoint is a bare array and several callers index into
     // it, so the trace rides a header rather than changing the shape.
     if (q && mode === 'hybrid') {
@@ -549,7 +579,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
           ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly};` +
           // Appended, not inserted: a caller matching the earlier fields keeps
           // working. Vector-only rows dropped below the similarity floor.
-          ` vector-dropped=${hybridTrace.vectorDropped ?? 0}`,
+          ` vector-dropped=${hybridTrace.vectorDropped ?? 0}` + dateTag,
       )
     } else if (q) {
       // The label the endpoint owed its callers. `relaxed=true` means no row
@@ -557,7 +587,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // caller answering "do we have anything on this" can tell the two apart
       // without asking twice. `strict=true` says the caller demanded a real
       // match, and an empty body then means exactly what it looks like.
-      res.setHeader('X-Memory-Search', `strict=${strictOnly}; relaxed=${searchTrace.relaxed}; hits=${results.length}`)
+      res.setHeader('X-Memory-Search', `strict=${strictOnly}; relaxed=${searchTrace.relaxed}; hits=${results.length}${dateTag}`)
     } else {
       // The listing branches owe a label too. Without one the caller cannot
       // tell "this endpoint does not label its answers" from "this answer was
@@ -571,7 +601,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // body alone cannot see that.
       res.setHeader(
         'X-Memory-Search',
-        `listing=true; hits=${results.length}; truncated=${results.length >= limit}`,
+        `listing=true; hits=${results.length}; truncated=${results.length >= limit}${dateTag}`,
       )
     }
     jsonMaybeGzip(req, res, formatted)

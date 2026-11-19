@@ -10,6 +10,7 @@ import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { operatorGateDecision } from './web/operator-gate.js'
+import { nightGateDecision } from './web/night-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleOperator } from './web/routes/operator.js'
@@ -220,6 +221,17 @@ export function startWebServer(port = 3420): http.Server {
         logger.warn({ path, method, device: auth.kind === 'device' ? auth.device : undefined, reason: operatorDenied }, 'operator gate: denied')
         res.writeHead(403, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Forbidden for this credential', reason: operatorDenied }))
+        return
+      }
+    }
+    // Card 2ba008f2: same deny-by-default shape as the operator gate above, same chokepoint,
+    // before any handler runs -- a 'night' scoped key reaches only its own 3-item allowlist.
+    if (requiresAuth(path, method)) {
+      const nightDenied = nightGateDecision(auth, path, method)
+      if (nightDenied) {
+        logger.warn({ path, method, device: auth.kind === 'device' ? auth.device : undefined, reason: nightDenied }, 'night gate: denied')
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Forbidden for this credential', reason: nightDenied }))
         return
       }
     }
