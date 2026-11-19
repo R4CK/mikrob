@@ -978,6 +978,16 @@ fi
 # only interact in that a card can never contribute more synthetic leaves than this ceiling, whatever
 # the run-wide budget allows elsewhere.
 OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
+# NON-INTEGER GUARD (card 81025eb5, Cybered GO 33203 on 27c54ceb): this value feeds
+# `head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"` below with no guard -- a non-numeric value makes
+# head error out (no decomposition, silently), and a negative value is head's own "all but the
+# last N lines" syntax, which can hand back MORE candidates than the ceiling is meant to allow.
+# Same shape as the OFFLOAD_MAX_SUBTASKS guard above (bare 0 or a non-zero-leading run of up to 9
+# digits, so leading-zero octal confusion and >= 2^63 overflow are both rejected the same way).
+if ! [[ "$OFFLOAD_DECOMPOSE_MAX_PER_CARD" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  echo "offload-dispatch: OFFLOAD_DECOMPOSE_MAX_PER_CARD='$OFFLOAD_DECOMPOSE_MAX_PER_CARD' is not an integer -- falling back to the documented default (3)" >&2
+  OFFLOAD_DECOMPOSE_MAX_PER_CARD=3
+fi
 # shellcheck source=./card-decompose-templates.sh
 . "$HERE/card-decompose-templates.sh"
 # shellcheck source=./decompose-sample-context.sh
