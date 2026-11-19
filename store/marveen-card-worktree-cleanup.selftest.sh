@@ -29,7 +29,7 @@ echo base > "$MAIN/notes.txt"
 git -C "$MAIN" add .
 git -C "$MAIN" commit -qm base
 
-printf '%s\n' '*.local' 'node_modules/' 'dist/' > "$MAIN/.gitignore"
+printf '%s\n' '*.local' 'node_modules' 'dist/' > "$MAIN/.gitignore"
 git -C "$MAIN" add .gitignore
 git -C "$MAIN" commit -qm "add gitignore (F3 fixture)"
 
@@ -178,16 +178,49 @@ bash "$CLEANUP" --apply --yes >/dev/null 2>&1
 check "F3: worktree with the ignored file was NOT removed" test -d "$ROOT/card/iii000"
 check "F3: the ignored file itself still exists" test -f "$ROOT/card/iii000/secret.local"
 
-# --- Case G2 (F3 control): an ALLOWLISTED ignored dir (node_modules) must NOT block removal -------
+# --- Case G2 (F3 control): a SYMLINKED node_modules (the real fleet convention) must NOT block --
+# removal -- the worktree itself is removed, but the symlink TARGET (shared store elsewhere)
+# survives, since removal only unlinks the symlink.
 mk_card_worktree jjj111
 land_card jjj111
-mkdir -p "$ROOT/card/jjj111/node_modules"
-echo "x" > "$ROOT/card/jjj111/node_modules/pkg.js"
+mkdir -p "$WORK/shared-node-modules-jjj111"
+echo "x" > "$WORK/shared-node-modules-jjj111/pkg.js"
+ln -s "$WORK/shared-node-modules-jjj111" "$ROOT/card/jjj111/node_modules"
 out_g2="$(bash "$CLEANUP" --dry-run 2>&1)"
-check "F3 control: an allowlisted ignored dir (node_modules) still classifies REMOVABLE" \
+check "F3 control: a SYMLINKED node_modules still classifies REMOVABLE" \
   bash -c "echo \"\$1\" | grep -q 'REMOVABLE.*card jjj111'" _ "$out_g2"
 bash "$CLEANUP" --apply --yes >/dev/null 2>&1
-check "F3 control: the node_modules-only worktree WAS removed" test ! -d "$ROOT/card/jjj111"
+check "F3 control: the symlinked-node_modules worktree WAS removed" test ! -d "$ROOT/card/jjj111"
+check "F3 control: the symlink TARGET survives the removal" test -f "$WORK/shared-node-modules-jjj111/pkg.js"
+
+# --- Case G3 (F8): a REAL (non-symlink) ignored node_modules dir with unique content BLOCKS ------
+# the sweep -- the pre-F8 allowlist matched on NAME alone, so a real node_modules/dist holding
+# irreplaceable data (e.g. a local .env dropped there, or a never-rebuilt artifact) was swept
+# silently. Confirmed live on the real fleet worktree root before this fix: node_modules is a
+# symlink in all 101 real card worktrees that have one, dist is a real directory in 3 -- so this
+# is the fleet's actual shape, not a hypothetical.
+mk_card_worktree lll333
+land_card lll333
+mkdir -p "$ROOT/card/lll333/node_modules"
+echo "only copy" > "$ROOT/card/lll333/node_modules/only-copy.bin"
+out_g3="$(bash "$CLEANUP" --dry-run 2>&1)"
+check "F8: a REAL (non-symlink) node_modules with content classifies SKIP, not REMOVABLE" \
+  bash -c "echo \"\$1\" | grep -q 'SKIP.*card lll333'" _ "$out_g3"
+bash "$CLEANUP" --apply --yes >/dev/null 2>&1
+check "F8: the real-node_modules worktree was NOT removed" test -d "$ROOT/card/lll333"
+check "F8: the unique file inside it still exists" test -f "$ROOT/card/lll333/node_modules/only-copy.bin"
+
+# --- Case G4 (F8): a REAL (non-symlink) ignored dist dir with unique content BLOCKS the sweep ----
+mk_card_worktree mmm444
+land_card mmm444
+mkdir -p "$ROOT/card/mmm444/dist"
+echo "only copy" > "$ROOT/card/mmm444/dist/only-copy.bin"
+out_g4="$(bash "$CLEANUP" --dry-run 2>&1)"
+check "F8: a REAL (non-symlink) dist with content classifies SKIP, not REMOVABLE" \
+  bash -c "echo \"\$1\" | grep -q 'SKIP.*card mmm444'" _ "$out_g4"
+bash "$CLEANUP" --apply --yes >/dev/null 2>&1
+check "F8: the real-dist worktree was NOT removed" test -d "$ROOT/card/mmm444"
+check "F8: the unique file inside it still exists" test -f "$ROOT/card/mmm444/dist/only-copy.bin"
 
 # --- Case H (F4): a card/<id> entry reached only through a SYMLINK hides a live process -----------
 # (cybered F4 / cybersec INFO: IDLE compared the worktree path STRING against /proc's already-

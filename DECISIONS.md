@@ -26723,3 +26723,30 @@ kitalálva.
 **Ki döntött:** backend3, a merge feloldása és verifikációja önállóan; a kártya priorizálása és a
 Card A/B/C sávosítás MikroB iránymutatása (msg 19483). Gate: QA + Cybersec + Cybered (trust-boundary
 fájlok: settings.json, hooks, routes, db.ts, kanban.ts). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-19 -- card 0ae1166e round 2 (F8: node_modules/dist allowlist by TYPE, not NAME)
+
+**Kontextus:** CYBERED GO 34321 (delta, round 2) a store/marveen-card-worktree-cleanup.sh F1-F4
+javítására, de egy ÚJ MEDIUM-LOW leletet is hozott (F8): a CLEAN ellenőrzés node_modules/dist
+allowlistje a NÉV alapján engedett át egy ignorált bejegyzést, a TÍPUSÁT (symlink vs valódi
+könyvtár) nem nézte. Mért bizonyíték a valós worktree-gyökéren (olvasás, semmi nem törölve): 103
+kártya-worktree-ből node_modules symlink 101-ben, valódi könyvtár 0-ban; dist valódi könyvtár
+3-ban (5dd0842a, 51c68eeb, 57044a66), symlink 0-ban -- tehát egy valódi dist/ ritka, de létező,
+és egy jövőbeli valódi node_modules (vagy bármi, amit valaki helyben, nem symlinkelve hagy ott)
+csendben elveszett volna egy --apply futásnál.
+
+**Döntés (MikroB, CYBERED GO 34321 + QA2 PASS 34317 után):** F8 a landolás ELŐTT javítandó, nem
+elfogadott follow-up (a rule 22 köre: sosem törölj commitolatlan/pótolhatatlan munkát). Javítás:
+az allowlist node_modules/dist-et KIZÁRÓLAG symlinkként mentesíti; egy valódi (nem-symlink)
+ignorált könyvtár bármilyen tartalommal blokkolja a sweep-et, névtől függetlenül (MikroB
+egyszerűsített iránya a két felkínált opció közül).
+
+**Mérés:** 2 új selftest eset (valódi node_modules és valódi dist egyedi fájllal -> SKIP, nem
+törölve), a régi G2 kontroll symlinkre átírva (a fleet valós mintája: node_modules symlink a
+megosztott store-ba, a cél a törlés után is megmarad) -- ez NEM gyengíti a kontrollt, ugyanazt
+állítja mint korábban (symlinkelt node_modules REMOVABLE), csak valósághű fixture-rel. 41/41
+PASS. Mutáció: a TÍPUS-ellenőrzés visszaállítása a régi NÉV-csak formára pontosan a 2 új F8
+esetet (6 assertion) bukatja pirosra, mást nem.
+
+Gate: QA2 + Cybersec + Cybered (delta, round 2). **Ki döntött:** MikroB (CYBERED GO 34321 utáni
+döntés), a javítást DevO (fullstack) végezte.

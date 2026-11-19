@@ -69,15 +69,37 @@ is_landed() {
   git -C "$MAIN" merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH"
 }
 
-# CLEAN requires no uncommitted changes AND no ignored files outside the known symlink
+# CLEAN requires no uncommitted changes AND no ignored files outside the known SYMLINK
 # allowlist (node_modules/dist) -- `git status --porcelain` alone does not list ignored files,
 # and `git worktree remove` does not refuse on them either, so without this check a landed,
 # "clean" worktree can still lose real local files (.env, local DBs) on removal (F3).
+#
+# The allowlist is by TYPE (symlink), not by name alone (F8): the fleet convention is that
+# node_modules/dist under a card worktree are symlinks into the shared main clone, so removing
+# the worktree only unlinks the symlink and the real target survives elsewhere. A REAL (non-
+# symlink) ignored directory called node_modules or dist can still hold unique, irreplaceable
+# content (.env, a build artifact nobody else has) and is NOT exempt -- any ignored entry that
+# is not itself a symlink blocks the sweep, regardless of its name.
 is_clean() {
-  local path="$1" ignored
+  local path="$1" ignored_raw line entry name
   [ -z "$(git -C "$path" status --porcelain 2>&1)" ] || return 1
-  ignored="$(git -C "$path" status --porcelain --ignored 2>&1 | grep -v -E '^!! (node_modules|dist)/?$')"
-  [ -z "$ignored" ]
+  ignored_raw="$(git -C "$path" status --porcelain --ignored 2>&1)"
+  [ -z "$ignored_raw" ] && return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    entry="${line:3}"
+    name="${entry%/}"
+    case "$name" in
+      node_modules|dist)
+        [ -L "$path/$name" ] && continue
+        return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done <<< "$ignored_raw"
+  return 0
 }
 
 # classify PATH CARD_ID LIVE_TARGETS -> prints "REMOVABLE" or "SKIP <reason>"
