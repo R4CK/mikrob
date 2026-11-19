@@ -28738,3 +28738,35 @@ claude-md-split-reachability.test.ts: 2 Tests passed (2). tsc --noEmit: clean.
 a04d3410ad9fd6388169c6409a81c43074d2c3ba (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
 Cybered + Cybersec + Cybersec2, delta re-gate ezen a shán (MikroB üzenet 21446: "one-line
 CLAUDE.md-only re-gate follows").
+
+## 2026-11-19 -- 29803f39: FLEET_PYTHON_VENV használati idejű uid/mode/realpath ellenőrzés
+
+A write-time ellenőrzés (validateFleetPythonVenvDir, kártya 2bf0d884) csak egyszer fut, a
+Settings-oldal mentésekor -- egy akkor biztonságos könyvtár bármikor utána chmod-olható nyitottá,
+vagy a bin/-je kicserélhető, és minden ezutáni indítás még mindig megbízna benne. A fleetVenvBin()
+(src/fleet-venv.ts) ezért minden indításkor újra ellenőriz: realpath feloldás, a könyvtár és a
+bin/ uid-tulajdona, a könyvtár/bin/ semmilyen esetben nem group/other-writable, a szülők csak akkor
+lehetnek group/other-writable, ha sticky bit is van rajtuk (a szokásos /tmp, /var/tmp konvenció --
+nélküle minden /tmp alatti venv, beleértve minden teszt-fixture-t is, örökre elutasítva lenne,
+függetlenül a venv saját jogosultságaitól), és a bin/python3 nem lehet a könyvtáron kívülre mutató
+symlink. Bukás esetén fail-closed (a prefix üres marad), a visszautasítás oka bekerül a logba
+(mindkét hívási pont: src/web/agent-process.ts, scripts/fleet-venv-prefix.mjs).
+
+A write-time ellenőrzésen (config-registry.ts) egy hiányzó pozitív teszt is bekerült a uid-ágra
+(WhiteHat2 mérése, komment 21461): /usr elutasítva, nem a flotta-folyamat saját uid-je.
+
+Szándékosan NEM módosítva: a write-time ellenőrzés továbbra is elfogad egy még nem létező
+útvonalat -- ennek már van explicit tesztje és indoklása a developon (fleetVenvBin egy hiányzó
+könyvtárat off-ként kezel, nincs mit eltérítenie), tehát ez egy már lezárt döntés, nem egy
+nyitott rés.
+
+**Mérés:** vitest run fleet-venv-path.test.ts + fleet-venv-settings-write-validation.test.ts +
+launch-path-venv-pin.test.ts: 3 Test File, 83/83 Test passed. tsc --noEmit: clean. Mutációs
+ellenőrzés: a useTimeIntegrityReason() hívás eltávolításával pontosan a 4 új elfogadási
+kritérium-teszt (chmod 777 könyvtár, chmod 777 bin/, kívülre mutató symlink, /usr uid-pin) bukott
+el, a többi 46 zöld maradt.
+
+**Ki döntött:** backend, mikrob 21568 nudge-ra folytatva (37 perces megakadás egy korábbi
+landolási-szemafor várakozás és félreértés miatt, lásd a kártya kommentjeit). Gate-SHA:
+72a3eb448a585a2d9ccc03b70a394db9f9d667ec (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
+Cybersec (kártya leírása szerint).
