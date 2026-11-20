@@ -739,7 +739,7 @@ window._i18n.en = {
   'localLlm.firstDraft.save_error': 'Could not save the switch, please retry.',
   'localLlm.firstDraft.load_error': 'Could not load the switch state.',
   'localLlm.offload.title':      'Offload aggressiveness',
-  'localLlm.offload.desc':       'How much mechanical code to hand to the local GPU. Higher = more offload, fewer Claude tokens.',
+  'localLlm.offload.desc':       'How hard a task may be and still get a LOCAL verdict. Every task gets a local draft (since 2026-09-18, card 3c075d74) -- this only decides how much online review it needs: LOCAL means a lighter check, ONLINE means a mandatory full online review. Higher = more tasks stay LOCAL.',
   'localLlm.offload.off':        'Off (0)',
   'localLlm.offload.max':        'Max (100)',
   'localLlm.offload.optimal':    'Optimum',

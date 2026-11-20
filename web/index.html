@@ -1241,20 +1241,17 @@
               <p id="llmRampNumbers" class="llm-ramp-numbers" hidden></p>
             </div>
 
-            <!-- Coding-difficulty threshold dropdown (card afcfe93e): the hardest coding task that may
-                 still be drafted locally. Higher aggressiveness -> harder allowed. Only coding levels.
-                 KEPT (not replaced by the slider): 346d3933 (now done) delivered the auto-aggressiveness
-                 RAMP (the slider VALUE auto-tracks the weekly quota), not a per-category difficulty/
-                 security tier-ORDERING that could drive per-category activation. So this dropdown still
-                 owns the coding-difficulty control; the slider's auto behaviour is surfaced by the
-                 ramp-status block above.
-                 R2 NOTE (card f1e33cfb, comment 34749): the phase audit said this dropdown has no
-                 caller AND that the aggressiveness slider only labels the draft. Independently checked
-                 src/local-llm-router.ts routeTask() -- the dropdown is confirmed dead (codingDifficultyThreshold
-                 only matters when a caller passes --difficulty, and none does), but the SLIDER is NOT a
-                 label: it feeds defaultDifficultyForAggressiveness() which sets the real local/online
-                 threshold on every call. Keeping the slider editable pending MikroB's answer (msg 22233);
-                 the dropdown removal below is independently confirmed, done regardless of that answer. -->
+            <!-- Card f1e33cfb (MikroB msg 22235, resolving comment 34749): the phase audit (36dc9240)
+                 originally said this slider only labels the draft and the coding-difficulty dropdown
+                 (card afcfe93e) owned the real threshold. Checked src/local-llm-router.ts routeTask()
+                 directly: the dropdown is confirmed dead (codingDifficultyThreshold only matters when a
+                 caller passes --difficulty, and none does), but the SLIDER feeds
+                 defaultDifficultyForAggressiveness(), the REAL local/online threshold on every call --
+                 kept editable, dropdown removed. Since 3c075d74 (2026-09-18) every task gets a local
+                 draft regardless; the verdict this slider drives only decides how much online review it
+                 gets (LOCAL = lighter check, ONLINE = mandatory full review) -- see localLlm.offload.desc
+                 for the operator-facing wording. A measured LOCAL-vs-ONLINE count beside the slider is
+                 planned once R1 (954a6a93, /api/llm/chain) lands -- blocked, still `planned`. -->
           </div>
 
           <!-- Task routing (card e5fc1fb4, Peti 2026-09-06). This section REPLACES the former

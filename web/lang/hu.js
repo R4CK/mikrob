@@ -994,7 +994,7 @@ window._i18n.hu = {
   'localLlm.firstDraft.save_error': 'A kapcsoló mentése nem sikerült, próbáld újra.',
   'localLlm.firstDraft.load_error': 'A kapcsoló állapota nem tölthető be.',
   'localLlm.offload.title':      'Offload agresszivitás',
-  'localLlm.offload.desc':       'Mennyi mechanikus kód-részt adjunk ki a helyi GPU-nak. Magasabb érték = több offload, kevesebb Claude-token.',
+  'localLlm.offload.desc':       'Meddig terjedő nehézségű feladat maradhat LOCAL verdikttel. Minden feladat kap helyi draftot (2026-09-18 óta, kártya 3c075d74) -- ez csak azt dönti el, mekkora online felülvizsgálat kell hozzá: LOCAL = könnyebb ellenőrzés, ONLINE = kötelező teljes online átnézés. Magasabb érték = több feladat marad LOCAL.',
   'localLlm.offload.off':        'Ki (0)',
   'localLlm.offload.max':        'Max (100)',
   'localLlm.offload.optimal':    'Optimum',
