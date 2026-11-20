@@ -29332,7 +29332,7 @@ a merge-delta saját REVIEW-ja.
 Gate: QA + Cybersec (a dispatch szerint, mert `/compact`-ot küld ágens-panelekbe). **Ki
 döntött:** MikroB (dispatch), a javítást DevO (fullstack) végezte.
 
-## fleet-test.sh / marveen-land.sh: finish-notification polling helyett (kártya c4590365)
+## 2026-11-20 -- fleet-test.sh / marveen-land.sh: finish-notification polling helyett (kártya c4590365)
 
 **Probléma:** Peti Telegram 13835 (2026-11-14): mérve ~2400 agent-hívás/nap, ami csak egy futó
 `fleet-test.sh`/`marveen-land.sh` folyamatot néz (tail/sleep/státusz-ellenőrzés), minden egyes
