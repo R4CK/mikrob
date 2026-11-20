@@ -504,7 +504,7 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
   it('a released 503 records outcome=blocked, not error (card cbeeba61)', async () => {
     const reserveSlot = vi.fn(() => true)
     const releaseSlot = vi.fn(() => true)
-    const recordDetail = vi.fn((_hivasId: string, _cardId: string, _detail: { outcome: string }) => true)
+    const recordDetail = vi.fn<(hivasId: string, cardId: string, detail: { outcome: string }) => boolean>(() => true)
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'http', httpStatus: 503 }))
     await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot, releaseSlot, recordDetail)
     expect(releaseSlot).toHaveBeenCalledTimes(1)
@@ -515,7 +515,7 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
   it('a non-503 failure records outcome=error (the slot stays spent, card cbeeba61)', async () => {
     const reserveSlot = vi.fn(() => true)
     const releaseSlot = vi.fn(() => true)
-    const recordDetail = vi.fn((_hivasId: string, _cardId: string, _detail: { outcome: string }) => true)
+    const recordDetail = vi.fn<(hivasId: string, cardId: string, detail: { outcome: string }) => boolean>(() => true)
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota', httpStatus: 429 }))
     await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot, releaseSlot, recordDetail)
     expect(releaseSlot).not.toHaveBeenCalled()

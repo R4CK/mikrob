@@ -366,7 +366,6 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     }
 
     it('appends a row with the SAME hivas_id carrying model/duration/outcome/task-type (Kesz-ha)', async () => {
-      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
       const recordGhostCallDetail = await freshRecordGhostCallDetail()
       const hivasId = 'deadbeefcafef00d'
       const mod = await import('../gemini-ghost-budget.js')
@@ -414,7 +413,7 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
         model: 'gemini-flash-latest', durationMs: 10, outcome: 'ok', taskType: 'ghost-rank',
       })
       const rows = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
-      const detailRow = rows.find((r) => r.hivas_id === hivasId)!
+      const detailRow = rows.find((r) => r.hivas_id === hivasId) as Record<string, unknown>
       expect(Object.keys(detailRow).sort()).toEqual(
         ['duracio_s', 'feladattipus', 'hivas_id', 'hivo', 'ido', 'kartya', 'modell', 'seged', 'status'].sort(),
       )

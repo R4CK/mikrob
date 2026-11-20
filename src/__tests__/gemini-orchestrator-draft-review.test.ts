@@ -628,7 +628,7 @@ describe('reviewOneCard() (card 626df838)', () => {
   // receive 'blocked' exactly when the slot was released, 'error' otherwise.
   it('a released 503 records outcome=blocked, not error (card cbeeba61)', async () => {
     const releaseSlot = vi.fn((): boolean => true)
-    const recordDetail = vi.fn((_hivasId: string, _cardId: string, _detail: { outcome: string }) => true)
+    const recordDetail = vi.fn<(hivasId: string, cardId: string, detail: { outcome: string }) => boolean>(() => true)
     const deps = { ...baseDeps(), releaseSlot, recordDetail }
     deps.callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'http', httpStatus: 503 }))
     await reviewOneCard('c1', 'key', deps)
@@ -639,7 +639,7 @@ describe('reviewOneCard() (card 626df838)', () => {
 
   it('a non-503 failure records outcome=error (the slot stays spent, card cbeeba61)', async () => {
     const releaseSlot = vi.fn((): boolean => true)
-    const recordDetail = vi.fn((_hivasId: string, _cardId: string, _detail: { outcome: string }) => true)
+    const recordDetail = vi.fn<(hivasId: string, cardId: string, detail: { outcome: string }) => boolean>(() => true)
     const deps = { ...baseDeps(), releaseSlot, recordDetail }
     deps.callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota', httpStatus: 429 }))
     await reviewOneCard('c1', 'key', deps)
