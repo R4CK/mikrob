@@ -510,8 +510,26 @@
         </div>
       </div>
 
-      <!-- GPU-utilization spectrum + model-distribution swimlane relocated onto the Live-load
-           page (llmMonitorPage, card f1e33cfb) -- Overview no longer shows them directly. -->
+      <!-- LLM today (card f1e33cfb, MikroB msg 22311): the full GPU-spectrum canvas + model-
+           distribution swimlane relocated onto the Live-load page only (no duplicate live
+           instances); Overview keeps ONE slim tile -- GPU busy/idle + VRAM one-liner, today's
+           local call count, link to Live load. Once R1 (954a6a93, /api/llm/chain) lands, this
+           same tile gets the chain numbers (FreeLLM/local/online) instead of the local-only
+           count -- ovwLlmTodayCard/loadLlmTodayTile() are built to be upgraded in place, not
+           thrown away. -->
+      <div class="overview-card ovw-llmtoday-card" id="ovwLlmTodayCard">
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.llmToday.title">LLM ma</h3>
+          <span class="overview-card-meta" data-i18n="overview.meta.live">élő állapot</span>
+        </div>
+        <div class="ovw-llmtoday-body">
+          <p class="ovw-llmtoday-gpu" id="ovwLlmTodayGpu">—</p>
+          <p class="ovw-llmtoday-calls" id="ovwLlmTodayCalls">—</p>
+        </div>
+        <div class="ovw-llmtoday-footer">
+          <a href="#" class="ovw-llmtoday-detail-link" data-page="llmMonitor" data-i18n="overview.llmToday.detail_link">Részletek →</a>
+        </div>
+      </div>
 
       <div class="overview-grid">
         <div class="overview-card">

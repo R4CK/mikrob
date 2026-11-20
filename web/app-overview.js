@@ -151,6 +151,7 @@ async function loadOverview() {
     void loadLocalLlmInfo()
     void loadCostEstimatesWidget()
     void loadGeminiOverviewTile()
+    void loadLlmTodayTile()
     // The spectrum + model-distribution widget starters used to run here; card f1e33cfb moved
     // them to switchPage('llmMonitor') -- both cards now live on the Live-load page, Overview no
     // longer shows them directly.
@@ -230,6 +231,46 @@ async function loadOverview() {
 const OVW_SPECTRUM_WINDOW_MS = 5 * 60 * 1000
 const OVW_SPECTRUM_POLL_MS = 5000
 const OVW_SPECTRUM_COLORS = ['#0d3b3e', '#2f6fed', '#8b5cf6', '#f0883e', '#e5484d']
+// LLM today (card f1e33cfb, MikroB msg 22311): the slim Overview tile that replaces the full
+// GPU-spectrum canvas + model-distribution swimlane (both relocated onto the Live-load page
+// only). One-shot snapshot, no own poll loop -- refreshed with the rest of Overview on
+// loadOverview(). Built to be upgraded in place once R1 (954a6a93, /api/llm/chain) lands: the
+// local-only call count becomes the chain's FreeLLM/local/online numbers, same card/ids.
+async function loadLlmTodayTile() {
+  const gpuEl = document.getElementById('ovwLlmTodayGpu')
+  const callsEl = document.getElementById('ovwLlmTodayCalls')
+  if (!gpuEl || !callsEl) return
+  try {
+    const [statusRes, usageRes] = await Promise.all([
+      fetch('/api/local-llm/status'),
+      fetch('/api/local-llm/usage'),
+    ])
+    if (!statusRes.ok) throw new Error('HTTP ' + statusRes.status)
+    if (!usageRes.ok) throw new Error('HTTP ' + usageRes.status)
+    const status = await statusRes.json()
+    const usage = await usageRes.json()
+
+    const gpu = status.gpu
+    if (!gpu) {
+      gpuEl.textContent = t('overview.llmToday.no_gpu')
+    } else {
+      const hasUtil = typeof gpu.util_pct === 'number'
+      const busy = hasUtil && gpu.util_pct >= 10
+      const label = t(busy ? 'overview.llmToday.gpu_busy' : 'overview.llmToday.gpu_idle')
+      const util = hasUtil ? Math.round(gpu.util_pct) + '%' : '—'
+      const vram = (typeof gpu.mem_used_mb === 'number' && typeof gpu.mem_total_mb === 'number' && gpu.mem_total_mb > 0)
+        ? llmFmtVram(gpu.mem_used_mb) + ' / ' + llmFmtVram(gpu.mem_total_mb)
+        : '—'
+      gpuEl.textContent = t('overview.llmToday.gpu_line', { label, util, vram })
+    }
+    callsEl.textContent = t('overview.llmToday.calls_today', { n: usage.today || 0 })
+  } catch {
+    // Rule 12: say the read failed, do not show a blank or fabricated line.
+    gpuEl.textContent = t('overview.llmToday.error')
+    callsEl.textContent = ''
+  }
+}
+
 let _ovwSpectrumSamples = [] // {ts, util, memUsed, memTotal, tasks}
 let _ovwSpectrumPollTimer = null
 let _ovwSpectrumRafId = null
@@ -1363,6 +1404,17 @@ async function loadLlmDistWidget() {
 // the generic nav-link handler -- wire it explicitly here.
 ;(function wireCostDetailLink() {
   const link = document.querySelector('.ovw-cost-detail-link[data-page]')
+  if (!link) return
+  link.addEventListener('click', (e) => {
+    e.preventDefault()
+    const pageId = link.dataset.page
+    if (pageId && typeof switchPage === 'function') switchPage(pageId)
+  })
+})()
+
+// Same reasoning as wireCostDetailLink above, for the LLM-today overview tile (card f1e33cfb).
+;(function wireLlmTodayDetailLink() {
+  const link = document.querySelector('.ovw-llmtoday-detail-link[data-page]')
   if (!link) return
   link.addEventListener('click', (e) => {
     e.preventDefault()

@@ -10544,6 +10544,14 @@ body {
   white-space: nowrap;
 }
 
+/* LLM today overview tile (card f1e33cfb), same mirrors-.ovw-cost-* convention as .ovw-gemini-*. */
+.ovw-llmtoday-card { margin-top: 14px; margin-bottom: 20px; }
+.ovw-llmtoday-body { display: flex; flex-direction: column; gap: 4px; }
+.ovw-llmtoday-gpu, .ovw-llmtoday-calls { font-size: 13px; margin: 0; }
+.ovw-llmtoday-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border, #333); }
+.ovw-llmtoday-detail-link { font-size: 12px; color: var(--accent, #4a9eff); text-decoration: none; white-space: nowrap; }
+.ovw-llmtoday-detail-link:hover { text-decoration: underline; }
+
 /* Overview tile (mirrors .ovw-cost-* layout, own namespace per card 01b51197's own precedent) */
 .ovw-gemini-card { margin-top: 14px; margin-bottom: 20px; }
 .ovw-gemini-quota-row { display: flex; align-items: center; gap: 10px; }
