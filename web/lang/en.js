@@ -715,6 +715,16 @@ window._i18n.en = {
   'skills.health.nodesc':        'Missing description',
   'skills.health.empty':         'Empty',
 
+  // --- Providers page (card f1e33cfb): Local model / FreeLLM / Gemini merged, tabbed ---
+  'providers.page_title':        'Providers',
+  'providers.page_subtitle':     'Local model, FreeAPI LLM and Gemini -- switch, status, call log',
+  'providers.tab.local':         'Local model',
+  'providers.tab.freellm':       'FreeLLM',
+  'providers.tab.gemini':        'Gemini',
+  'nav.providers':                'Providers',
+  'localLlm.subtab.status':      'Status',
+  'localLlm.subtab.catalog':     'Catalog',
+
   // --- Local LLM (Ollama offload) ---
   'localLlm.page_title':         'Local LLM',
   'localLlm.page_subtitle':      'Control the local offload model (Ollama on the WSL GPU)',

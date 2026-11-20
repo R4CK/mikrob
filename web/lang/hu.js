@@ -970,6 +970,16 @@ window._i18n.hu = {
   'skills.health.nodesc':        'Hiányzó leírás',
   'skills.health.empty':         'Üres',
 
+  // --- Szolgáltatók oldal (kártya f1e33cfb): Lokális modell / FreeLLM / Gemini összevonva, tabos ---
+  'providers.page_title':        'Szolgáltatók',
+  'providers.page_subtitle':     'Lokális modell, FreeAPI LLM és Gemini -- kapcsoló, állapot, hívásnapló',
+  'providers.tab.local':         'Lokális modell',
+  'providers.tab.freellm':       'FreeLLM',
+  'providers.tab.gemini':        'Gemini',
+  'nav.providers':                'Szolgáltatók',
+  'localLlm.subtab.status':      'Állapot',
+  'localLlm.subtab.catalog':     'Katalógus',
+
   // --- Local LLM (Ollama offload) ---
   'localLlm.page_title':         'Lokális LLM',
   'localLlm.page_subtitle':      'A helyi offload modell (Ollama a WSL GPU-n) vezérlése',

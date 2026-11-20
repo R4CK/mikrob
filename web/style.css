@@ -3100,6 +3100,12 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .tab-panel { padding: 0 24px 24px; }
 .tab-panel[hidden] { display: none; }
 
+/* Nested tabs (Providers page, card f1e33cfb: Local model tab's Állapot/Katalógus sub-tabs) --
+   the outer .tab-panel already carries the 24px gutter, so the nested nav/panels drop their own
+   horizontal padding to avoid stacking to 48px. */
+.tab-panel .tab-nav-sub { padding: 0; margin-bottom: 16px; }
+.tab-panel .tab-panel { padding: 0 0 24px; }
+
 /* === Agent Overview === */
 .agent-overview-grid {
   display: grid;

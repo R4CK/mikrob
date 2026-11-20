@@ -778,10 +778,11 @@ let ovwLlmDistRouting = null
 const OVW_LLMDIST_POLL_MS = 15000
 let _ovwLlmDistPollTimer = null
 
-/** Card e5fc1fb4: a lane label click opens the Local LLM page on that model's row. */
+/** Card e5fc1fb4: a lane label click opens the Providers page on that model's row (card f1e33cfb:
+ *  Local LLM merged into Providers; its tab is the default active one, no extra tab-switch needed). */
 function ovwLlmDistOpenModel(name) {
   window._llmHighlightModel = name
-  const link = document.querySelector('.sb-link[data-page="localLlm"]')
+  const link = document.querySelector('.sb-link[data-page="providers"]')
   if (link) link.click()
 }
 
@@ -1374,6 +1375,9 @@ async function loadLlmDistWidget() {
     e.preventDefault()
     const pageId = link.dataset.page
     if (pageId && typeof switchPage === 'function') switchPage(pageId)
+    // Providers page (card f1e33cfb): land directly on the Gemini tab, not the default Local model one.
+    const providerTab = link.dataset.providerTab
+    if (providerTab && typeof _switchProviderTab === 'function') _switchProviderTab(providerTab)
   })
 })()
 
