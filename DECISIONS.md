@@ -28903,3 +28903,11 @@ Mutacio-ellenorzes: a `needs-fleet-oauth.mjs` uj ellenorzesenek visszavonasaval 
 **Ki döntött:** Fron Ted (fron-ted), MikroB dispatch alapján (Peti 14295, Telegram, inter-agent msg_id:21875).
 
 **Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb), commit 80178547a.
+
+## 2026-11-20 -- FreeLLM calls panel aligned to backend2's real contract (kártya ebe20efe, delta)
+
+**Döntés:** A kártya REVIEW-ja az eredeti, javasolt kontraktus-mock ellen épült; backend2 ezután közzétette a valós alakot (msg 21882, branch fix/freellm-call-journal-685f25cb). Három eltérés javítva: `ts` unix MÁSODPERC (nem ms), `outcome` enum `'429'` (nem `'rate_429'`), `counts_24h`/`counts_7d` alakja `{total, ok, fail}` (nem 5-szeres bontás). Új `fail_reason` mező a kimenet-cellában jelenik meg zárójelben (rule 12). NYITOTT RÉS: a kártya saját szövege 24h/7d bontást kér (successful/failed/stalled/429), a backend `counts` objektuma csak total/ok/fail-t ad -- NEM szimulálok kliens-oldali bontást a limitált `calls[]` listából (alulszámolna a lekérdezési ablakon túl), a per-sor `outcome` oszlop viszont megtartja a valós megkülönböztetést soronként. Jelezve backend2-nek + MikroB-nak (msg 21908), nem blokkoló.
+
+**Ki döntött:** Fron Ted (fron-ted), a kontraktus forrása backend2 (685f25cb).
+
+**Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb), commit 2b47ef7b9.
