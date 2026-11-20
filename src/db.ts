@@ -10048,6 +10048,45 @@ export function getLlmLedgerSummary(days: number): LlmLedgerSummary {
   }
 }
 
+export interface FreellmCallRow {
+  ts: number
+  agent_id: string
+  card_id: string | null
+  model: string | null
+  ok: boolean
+  fail_reason: string | null
+  latency_ms: number | null
+}
+
+// Card 685f25cb: the FreeLLM dashboard page needs a per-call list. llm_ledger ALREADY carries one
+// row per freellm call (appendLlmLedgerRow, called from freellm-call.sh's _freellm_ledger_log on
+// every exit path) -- no prompt/response content, no key material, ever written to this table.
+// The real gap was that nothing queried it for this page; no new journal file needed.
+export function getFreellmCallRows(params: { sinceS: number; limit: number }): FreellmCallRow[] {
+  const rows = db.prepare(`
+    SELECT ts, agent_id, card_id, model, ok, fail_reason, latency_ms
+    FROM llm_ledger WHERE provider = 'freellm' AND ts >= ?
+    ORDER BY ts DESC LIMIT ?
+  `).all(params.sinceS, params.limit) as Array<Omit<FreellmCallRow, 'ok'> & { ok: number }>
+  return rows.map((r) => ({ ...r, ok: r.ok === 1 }))
+}
+
+export function getFreellmCallCounts(sinceS: number): { total: number; ok: number; fail: number } {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS total, SUM(ok) AS ok, SUM(1 - ok) AS fail
+    FROM llm_ledger WHERE provider = 'freellm' AND ts >= ?
+  `).get(sinceS) as { total: number; ok: number | null; fail: number | null }
+  return { total: row.total, ok: row.ok ?? 0, fail: row.fail ?? 0 }
+}
+
+export function getLatestFreellmFailure(sinceS: number): { ts: number; fail_reason: string | null } | undefined {
+  return db.prepare(`
+    SELECT ts, fail_reason FROM llm_ledger
+    WHERE provider = 'freellm' AND ok = 0 AND ts >= ?
+    ORDER BY ts DESC LIMIT 1
+  `).get(sinceS) as { ts: number; fail_reason: string | null } | undefined
+}
+
 // The decay-sweep cadence. Lives HERE, beside the prune it drives, because
 // db.ts is what needs it for the lag tolerance below and memory.ts already
 // imports from db.ts -- putting it there would close an import cycle.

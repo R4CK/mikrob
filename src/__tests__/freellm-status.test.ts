@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { rmSync, writeFileSync, symlinkSync, readFileSync, existsSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { initDatabase, getDb, addKanbanComment } from '../db.js'
+import { initDatabase, appendLlmLedgerRow } from '../db.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 // ONE real, writable tmp dir for the whole file -- STORE_DIR is read into a module-level
@@ -89,21 +89,21 @@ describe('GET /api/freellm/status', () => {
     expect(out.body.enabled).toBe(false)
   })
 
-  it('counts successful + failed freellm drafts in the last 24h, splits calls vs drafts', async () => {
+  it('counts successful + failed freellm calls in the last 24h, splits calls vs drafts (card 685f25cb: sourced from llm_ledger)', async () => {
     const now = Math.floor(Date.now() / 1000)
-    addKanbanComment('cardX', 'local-llm', '[LOCAL-LLM DRAFT | freellm] draft text 1')
-    addKanbanComment('cardY', 'local-llm', '[LOCAL-LLM DRAFT | freellm] draft text 2')
-    addKanbanComment('cardZ', 'local-llm', '[LOCAL-LLM DRAFT | freellm FAILED] rc=3 timeout')
-    // a non-freellm local draft (no "| freellm" header) must not be counted at all
-    addKanbanComment('cardW', 'local-llm', '[LOCAL-LLM DRAFT] plain local draft')
-    // an OLD freellm draft outside the 24h window must not be counted
-    getDb().prepare("INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES ('old','local-llm','[LOCAL-LLM DRAFT | freellm] stale',?)").run(now - 25 * 3600)
+    appendLlmLedgerRow({ agentId: 'backend2', cardId: 'cardX', taskType: 'offload', provider: 'freellm', ok: true, nowS: now })
+    appendLlmLedgerRow({ agentId: 'backend3', cardId: 'cardY', taskType: 'offload', provider: 'freellm', ok: true, nowS: now })
+    appendLlmLedgerRow({ agentId: 'backend2', cardId: 'cardZ', taskType: 'offload', provider: 'freellm', ok: false, failReason: 'http_404', nowS: now })
+    // a non-freellm provider row must not be counted at all
+    appendLlmLedgerRow({ agentId: 'backend2', taskType: 'offload', provider: 'local', ok: true, nowS: now })
+    // an OLD freellm row outside the 24h window must not be counted
+    appendLlmLedgerRow({ agentId: 'backend2', taskType: 'offload', provider: 'freellm', ok: true, nowS: now - 25 * 3600 })
 
     const { ctx, out } = mkRequest('/api/freellm/status', 'GET')
     await tryHandleFreellmStatus(ctx)
     expect(out.body.calls).toBe(3)
     expect(out.body.drafts).toBe(2)
-    expect(out.body.lastError).toContain('FAILED')
+    expect(out.body.lastError).toContain('http_404')
   })
 })
 
