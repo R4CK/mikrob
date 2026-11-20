@@ -55,4 +55,15 @@ describe('card-branch-sync-develop.sh selftest', () => {
     expect(out).toContain('dirty tracked file')
     expect(out).not.toContain('FAIL')
   }, 120_000)
+
+  // CYBERSEC NO-GO 35145, M10/M11: Case 5 above never reaches the append-only backstop at
+  // runtime (the dirty-tree guard refuses first), so a mutant that kept the backstop's TEXT but
+  // disabled its semantics stayed green. Case 6 drives a real, non-conflicting merge that still
+  // violates the append-only invariant, so the backstop actually fires and this pins that it does.
+  it('selftest Case 6: a distant rewrite merged with zero git conflict still trips the append-only backstop', () => {
+    const out = execFileSync('bash', [SCRIPT, '--selftest'], { encoding: 'utf-8', timeout: 120_000 })
+    expect(out).toContain('append-only backstop fires at runtime')
+    expect(out).toContain('backstop undo restored HEAD')
+    expect(out).not.toContain('FAIL')
+  }, 120_000)
 })

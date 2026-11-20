@@ -30,6 +30,7 @@ let decisionsDiff = ''
 // above, so every pre-existing test (one sha per test) is untouched.
 let decisionsDiffBySha: Record<string, string> = {}
 let diffShouldFail = false
+let mergeBaseShouldFail = false
 export let diffCalls: string[][] = []
 vi.mock('node:child_process', () => ({
   execFile: (
@@ -41,9 +42,14 @@ vi.mock('node:child_process', () => ({
     const a = [...args]
     diffCalls.push(a)
     queueMicrotask(() => {
+      if (a.includes('merge-base')) {
+        if (mergeBaseShouldFail) { cb(new Error('no merge base'), ''); return }
+        cb(null, 'mergebasesha')
+        return
+      }
       if (a.includes('diff')) {
         if (diffShouldFail) { cb(new Error('bad revision'), ''); return }
-        const sha = a[5] // git() prepends ['-C', repo, ...]: ['-C', repo, 'diff', '--no-color', `${sha}^1`, sha, '--', 'DECISIONS.md']
+        const sha = a[5] // git() prepends ['-C', repo, ...]: ['-C', repo, 'diff', '--no-color', `${sha}^1`, sha, '--', 'DECISIONS.md'] (entry-presence guard) or ['-C', repo, 'diff', '--no-color', <merge-base>, sha, '--', 'DECISIONS.md'] (header guard, F2)
         cb(null, (sha !== undefined && sha in decisionsDiffBySha) ? decisionsDiffBySha[sha]! : decisionsDiff)
         return
       }
@@ -81,6 +87,7 @@ beforeEach(() => {
   decisionsDiff = ''
   decisionsDiffBySha = {}
   diffShouldFail = false
+  mergeBaseShouldFail = false
   diffCalls = []
 })
 
@@ -372,6 +379,46 @@ describe('decisionsHeaderGuardVerdict (blocking path, all cards)', () => {
     comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
     decisionsDiff = '+**2026-11-20 -- not dated**\n'
     const v = await decisionsHeaderGuardVerdict('c1', 'waiting', true, 'mikrob')
+    expect(v.blocked).toBe(false)
+  })
+
+  // CYBERSEC NO-GO 35145, check 4 / M7: the suite only ever exercised force=true with an
+  // allowlisted actor ('mikrob'), so a mutant that drops isForceActor() entirely and treats any
+  // truthy `force` as a bypass survived green (33/33). These two rows pin the two cases that
+  // actually distinguish isForceActor()'s real logic from "any truthy force bypasses".
+  it('force=true from a NON-allowlisted actor does NOT bypass the block (M7)', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', true, 'fullstack')
+    expect(v.blocked).toBe(true)
+  })
+
+  it('force=false from an allowlisted actor does NOT bypass the block (M7)', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'mikrob')
+    expect(v.blocked).toBe(true)
+  })
+
+  // CYBERSEC NO-GO 35145 F2: decisionsHeaderGuardVerdict used to diff only `<sha>^1 <sha>`, the
+  // Gate-SHA's own last commit -- invisible to a bad header added by an EARLIER commit on the
+  // same card branch. It must now diff merge-base(mainRef, sha)..sha instead.
+  it('diffs merge-base(mainRef, sha)..sha, not sha^1..sha, so a header added in an EARLIER commit of the branch is still caught (F2)', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    // What the whole-card diff (merge-base..sha) would show, including a bad header that an
+    // earlier commit on the branch introduced, with a clean commit on top of it.
+    decisionsDiff = '+**2026-11-20 -- added by an earlier commit on this branch**\n+## 2026-11-20 -- a later, clean entry\n'
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
+    expect(v.blocked).toBe(true)
+    expect(diffCalls.some((a) => a.includes('merge-base') && a.includes('origin/develop') && a.includes(SHA))).toBe(true)
+    expect(diffCalls.some((a) => a.includes('diff') && a.includes(`${SHA}^1`))).toBe(false)
+  })
+
+  it('fails open (allows) when merge-base itself cannot resolve', async () => {
+    comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
+    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    mergeBaseShouldFail = true
+    const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
     expect(v.blocked).toBe(false)
   })
 

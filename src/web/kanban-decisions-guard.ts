@@ -96,7 +96,7 @@ async function decisionsEntryState(
  * can check (no declared sha, unmapped/repo-less project, repo missing on disk). Shared by both
  * exported entry points so they can never disagree about which cards are in scope.
  */
-function resolveCheck(cardId: string, comments: readonly Comment[]): { sha: string; repo: string } | null {
+function resolveCheck(cardId: string, comments: readonly Comment[]): { sha: string; repo: string; mainRef: string } | null {
   const sha = latestReviewGateSha(comments)
   if (sha === null) return null
 
@@ -106,7 +106,7 @@ function resolveCheck(cardId: string, comments: readonly Comment[]): { sha: stri
   const target = PROJECT_REPOS[project]
   if (target === undefined) return null
   if (!existsSync(`${target.root}/.git`)) return null
-  return { sha, repo: target.root }
+  return { sha, repo: target.root, mainRef: target.mainRef }
 }
 
 /**
@@ -189,7 +189,7 @@ export async function decisionsGuardVerdict(
     return { blocked: false }
   }
 
-  let resolved: { sha: string; repo: string } | null
+  let resolved: { sha: string; repo: string; mainRef: string } | null
   try {
     resolved = resolveCheck(cardId, comments)
   } catch (err) {
@@ -253,7 +253,7 @@ export async function decisionsHeaderGuardVerdict(
     return { blocked: false }
   }
 
-  let resolved: { sha: string; repo: string } | null
+  let resolved: { sha: string; repo: string; mainRef: string } | null
   try {
     resolved = resolveCheck(cardId, comments)
   } catch (err) {
@@ -264,7 +264,14 @@ export async function decisionsHeaderGuardVerdict(
 
   let diff: string
   try {
-    const res = await git(resolved.repo, ['diff', '--no-color', `${resolved.sha}^1`, resolved.sha, '--', 'DECISIONS.md'])
+    // merge-base(mainRef, sha), not sha^1 -- a card branch is usually several commits ahead of
+    // mainRef by the time it gates, and a bad header added in an EARLIER commit of the card
+    // (not the tip) would be invisible to a sha^1..sha single-commit diff (CYBERSEC NO-GO 35145
+    // F2, card 84f90b4e). The whole-card diff against where it forked from mainRef is what
+    // actually lands, so that is what must be checked.
+    const base = await git(resolved.repo, ['merge-base', resolved.mainRef, resolved.sha])
+    if (!base.ok) return { blocked: false }
+    const res = await git(resolved.repo, ['diff', '--no-color', base.out, resolved.sha, '--', 'DECISIONS.md'])
     if (!res.ok) return { blocked: false }
     diff = res.out
   } catch (err) {

@@ -131,6 +131,42 @@ run_selftest() {
     no "dirty tracked file was modified; got: $(cat "$R/tracked.txt")"
   fi
 
+  # Case 6 (CYBERSEC NO-GO 35145, M10/M11): a distant REWRITE of an existing entry on the card
+  # branch, padded far enough from develop's own distant append that git's 3-way merge sees NO
+  # conflict at all (decisions-append-only-guard.sh's own selftest Case 1 fixture, reused here).
+  # The sync's own `git merge` therefore succeeds cleanly (merge_sha != before_sha) with no
+  # conflicted path to route through decisions-sync-resolve.sh -- this is the only selftest case
+  # that actually DRIVES the append-only backstop block at runtime. Case 5 above never reaches
+  # it (the dirty-tree guard refuses first). Without a case like this, a mutant that keeps the
+  # backstop's TEXT but disables its semantics (M10: `if false && ! decisions_append_only_check_merge
+  # ...`; M11: the `git -C "$WT" reset --merge ...` line commented out, text kept) stayed green,
+  # because nothing ever made the real check return non-zero.
+  rm -rf "$R"; mkdir -p "$R"
+  git -C "$R" init -q -b develop
+  git -C "$R" config user.email t@t; git -C "$R" config user.name t
+  git -C "$R" config commit.gpgsign false
+  {
+    printf '## 2026-01-01 -- old entry\n\nDontes: Peti NO-GO.\n\n'
+    seq 1 40 | sed 's/^/padding line /'
+    printf '\n'
+  } >"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md; git -C "$R" commit -qm base
+  git -C "$R" checkout -qb card-branch
+  sed -i 's/Dontes: Peti NO-GO\./Dontes: Peti GO./' "$R/DECISIONS.md"
+  git -C "$R" commit -qam "rewrite old decision (distant)"
+  git -C "$R" checkout -q develop
+  printf '\n## 2026-01-02 -- new entry (develop)\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "develop entry"
+  git -C "$R" checkout -q card-branch
+  before="$(git -C "$R" rev-parse HEAD)"
+  out="$(bash "$0" "$R" develop 2>&1)"; rc=$?
+  if [ "$rc" -eq 2 ]; then ok "distant rewrite + parallel append: append-only backstop fires at runtime (rc=2)"; else no "expected the backstop to fire rc=2, got rc=$rc: $out"; fi
+  if [ "$(git -C "$R" rev-parse HEAD)" = "$before" ]; then ok "backstop undo restored HEAD to before_sha"; else no "HEAD not restored after backstop fired"; fi
+  case "$out" in
+    *"append-only backstop"*) ok "the refusal message names the backstop" ;;
+    *) no "refusal message did not mention the backstop; got: $out" ;;
+  esac
+
   echo "$([ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL")"
   exit "$fail"
 }

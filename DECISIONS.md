@@ -29657,7 +29657,7 @@ exactly the 3 mismatch-detection assertions red, the other 3 stay green. Gate me
 self-advance pickup per fleet-nudger msg 22361. Gate: QA + Cybersec + Cybered per the card's own
 `Gate:` line (round 1 of a phased closure -- REVIEW scopes the verdict request to this round's
 Kész-ha items only).
-## 84f90b4e: card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh (2026-11-20)
+## 2026-11-20 -- 84f90b4e: card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh
 
 **Context:** proposed scope rejected (MikroB decision, card comment, 2026-11-20): a raw
 `DECISIONS.md merge=union` .gitattributes driver would have been the GENERAL auto-merge an
@@ -29771,3 +29771,65 @@ named -- this delta is the normalize + the forward-looking lint, not a full-file
 
 **Ki döntött:** MikroB scope-add (card 84f90b4e, comment 1795199177), found while backend was
 landing a01d8a3d. backend implemented. Gate: QA + Cybersec per the card's own Gate line.
+
+## 2026-11-20 -- 84f90b4e delta: header-diff range fix + this card's own header + mutant kills (CYBERSEC NO-GO 35145)
+
+**Context:** CYBERSEC NO-GO 35145 on `14aa85f63`. F1: this card's own prior delta added a
+DECISIONS.md entry with a card-id-first, undated header (line 29660) -- the exact regression the
+card exists to close. Confirmed live by the gate (scratch repo, real
+`store/card-branch-sync-develop.sh`): the dated-header control resolves (rc 0), the card's own
+header refuses (rc 1, `UU DECISIONS.md`). F2: `decisionsHeaderGuardVerdict` only diffed
+`<Gate-SHA>^1 <Gate-SHA>` -- the tip commit alone -- so a bad header added by an EARLIER commit on
+the same card branch (exactly how F1 slipped past its own REVIEW) was invisible to it. Also named:
+two mutants surviving on `card-branch-sync-develop-selftest.test.ts` (M10: the backstop's `if`
+condition replaced with `if false && ! decisions_append_only_check_merge ...`; M11: the
+`reset --merge "$before_sha"` undo line commented out, text kept) and one on
+`kanban-decisions-guard.test.ts` (M7: `isForceActor` dropped, any truthy `force` treated as a
+bypass) -- all three text-preserving, semantics-breaking.
+
+**Fix:**
+1. `DECISIONS.md`: renamed the line-29660 header from `## 84f90b4e: card-branch-sync-develop.sh --
+   the missing caller of decisions-sync-resolve.sh (2026-11-20)` to `## 2026-11-20 -- 84f90b4e:
+   card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh` -- header line
+   only, no body change.
+2. `src/web/kanban-decisions-guard.ts`: `decisionsHeaderGuardVerdict` now resolves
+   `merge-base(mainRef, Gate-SHA)` first and diffs that against `Gate-SHA`, instead of
+   `Gate-SHA^1`. `resolveCheck()` now also returns the project's `mainRef` (`origin/develop` for
+   marveen) so the header guard can compute it; the sibling entry-presence guard
+   (`decisionsEntryState`, used by `decisionsGuardVerdict`/`decisionsGuardCheck`) is unchanged --
+   NO-GO 35145 named only the header guard's range, not that one.
+3. `store/card-branch-sync-develop.sh`: added selftest Case 6 -- a distant rewrite of an existing
+   entry on the card branch plus a distant, unrelated append on develop (same padded-fixture shape
+   `decisions-append-only-guard.sh`'s own selftest Case 1 uses to force a ZERO-conflict 3-way
+   merge) actually drives the append-only backstop at runtime, unlike Case 5 (which the dirty-tree
+   guard refuses before the backstop is ever reached).
+4. `src/__tests__/kanban-decisions-guard.test.ts`: +4 cases -- the F2 merge-base-range pin (asserts
+   a `merge-base` call against `mainRef`+Gate-SHA happens and no `Gate-SHA^1` diff call is ever
+   made), a merge-base-failure fail-open case, and the two M7-killing negative force rows
+   (`force=true` from a non-allowlisted actor; `force=false` from an allowlisted actor -- neither
+   bypasses).
+
+**Test:** `kanban-decisions-guard.test.ts`: 1 Test File passed (1), 37 Tests passed (37) (was 33).
+`card-branch-sync-develop-selftest.test.ts`: 1 Test File passed (1), 6 Tests passed (6); the
+script's own `--selftest` now runs 14 checks (was 11), all `ok`. `decisions-sync-resolve-selftest`
+alongside both: 3 Test Files passed (3), 48 Tests passed (48). Kanban route regression
+(`kanban-move-audit`, `kanban-dispatch-put`, `kanban-move-expected-status`,
+`kanban-put-unknown-field`): 4 Test Files passed (4), 24 Tests passed (24). `npx tsc --noEmit`:
+clean. `npx eslint` on the 3 touched TS files: clean.
+
+Mutation-verified (card-branch-sync-develop.sh, both restored byte-identical via diff): M10 (`if
+false && ! decisions_append_only_check_merge ...`) turned exactly 3 of Case 6's assertions red
+(rc=0 instead of 2, HEAD not restored, message mismatch); M11 (undo line commented out) turned
+exactly 1 red (HEAD not restored; rc still 2 and the message still fires, since `die 2` itself is
+untouched by this mutant). M7 was not re-mutated this round (the two new negative rows are built
+directly from `isForceActor`'s real two-condition logic -- `force=true`+non-allowlisted and
+`force=false`+allowlisted -- each of which only passes if both conditions are actually checked).
+
+**Nincs benne:** L1-L6 and M8/M9 from the same NO-GO (untracked predictable temp-file name,
+fenced-code false positive, lint weaker than the resolver it protects, route-site wiring
+unpinned, etc.) -- MikroB's scope-add (msg 22501) named only F1, F2, M10/M11 and M7 for this
+round; the rest are tracked in the gate comment for a future round.
+
+**Ki döntött:** CYBERSEC NO-GO (35145, Gate-SHA `14aa85f634a9575843e0cf71905514a297067766`),
+scoped by MikroB (msg 22501). backend fixed it (the guard's own author, per the 4b rule another
+agent gates it). Gate: QA + Cybersec per MikroB's dispatch.
