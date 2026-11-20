@@ -37,9 +37,15 @@ def build_world(tmp):
     (root / "store").mkdir()
     (root / "store" / "fleet-test.sh").write_text("#!/bin/bash\necho hi\n")
     (root / "store" / "untracked-runtime.json").write_text("{}")
+    # tracked fixtures named like the exempt scripts, so a CYBERSEC F1 case (the exemption
+    # matching because the WRITE TARGET happens to be named marveen-land.sh/update.sh, not
+    # because the command actually invokes it) exercises a real tracked-path check.
+    (root / "store" / "update.sh").write_text("#!/bin/bash\necho real\n")
+    (root / "store" / "marveen-land.sh").write_text("#!/bin/bash\necho real\n")
     (root / "agents" / "backend3").mkdir(parents=True)
     (root / "agents" / "backend3" / "CLAUDE.md").write_text("notes")
-    _git(root, "add", "store/fleet-test.sh", "agents/backend3/CLAUDE.md")
+    _git(root, "add", "store/fleet-test.sh", "store/update.sh", "store/marveen-land.sh",
+         "agents/backend3/CLAUDE.md")
     _git(root, "commit", "-q", "-m", "init")
 
     worktrees = tmp / "worktrees"
@@ -143,6 +149,22 @@ def main():
             # the exemption is per-segment, not whole-command: a real update.sh/marveen-land.sh
             # invocation in one segment must not exempt an unrelated write in another segment
             (BLOCK, f"sed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'} && bash update.sh", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            # CYBERSEC F1 (card 0c3b13b5, same Gate-SHA): the TARGET of the write happens to be
+            # named update.sh/marveen-land.sh, but the command does not INVOKE either script --
+            # must still be BLOCKed (a write to the real script file is exactly what must not
+            # slip through, not less protected than any other tracked file).
+            (BLOCK, f"sed -i 's/a/b/' {root / 'store' / 'update.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            (BLOCK, f"echo hi > {root / 'store' / 'marveen-land.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            # CYBERSEC F2 (card 0c3b13b5, same Gate-SHA): a QUOTED target used to collapse to an
+            # empty string before target-extraction ran, so the write was never checked at all.
+            (BLOCK, f'echo hi > "{root / "store" / "fleet-test.sh"}"', root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            (BLOCK, f"sed -i 's/a/b/' '{root / 'store' / 'fleet-test.sh'}'", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            (BLOCK, f'echo hi | tee "{root / "store" / "fleet-test.sh"}"', root,
              E(MARVEEN_AGENT_ID="backend3")),
             # escape hatch
             (ALLOW, f"MARVEEN_ALLOW_LIVE_EDIT=1 sed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}",

@@ -51,6 +51,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -75,9 +76,15 @@ _QUOTED_RX = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.S)
 _SEGMENT_SPLIT_RX = re.compile(r"&&|\|\||[;|]")
 
 _SED_I_RX = re.compile(r"\bsed\b.*\s-\w*i\w*\b")
-_TEE_RX = re.compile(r"\btee\b\s+(?:-a\s+)?(\S+)")
-_REDIRECT_RX = re.compile(r">{1,2}\s*(\S+)")
-_GIT_CHECKOUT_RX = re.compile(r"\bgit\s+checkout\b[^\n]*--\s+(\S+)")
+# Target group accepts a quoted string OR a bare word -- CYBERSEC F2 (card 0c3b13b5): the old
+# code ran these against a copy where every quoted span had been BLANKED to '' / "" before
+# extraction, so a quoted redirect/tee target (the exact thing an agent would naturally write,
+# `echo x > "/home/neon/marveen/store/fleet-test.sh"`) collapsed to an empty target and was
+# never checked at all (silent ALLOW). These now run against the REAL segment text instead.
+_QUOTED_OR_WORD = r"'[^']*'|\"(?:\\.|[^\"\\])*\"|\S+"
+_TEE_RX = re.compile(r"\btee\b\s+(?:-a\s+)?(" + _QUOTED_OR_WORD + r")")
+_REDIRECT_RX = re.compile(r">{1,2}\s*(" + _QUOTED_OR_WORD + r")")
+_GIT_CHECKOUT_RX = re.compile(r"\bgit\s+checkout\b[^\n]*--\s+(" + _QUOTED_OR_WORD + r")")
 
 
 def _live_root() -> Path:
@@ -98,20 +105,39 @@ def _self_agent(cwd: str | None) -> str | None:
     return None
 
 
-def _strip_quoted_literals(cmd: str) -> str:
-    return _QUOTED_RX.sub(lambda m: "''" if m.group(0)[0] == "'" else '""', cmd)
+def _neutralize_quotes(cmd: str) -> str:
+    """SAME-LENGTH placeholder for quoted spans (interior -> 'x', quote chars kept), used ONLY
+    to find segment/comment boundaries without a `;`/`&&`/`#` INSIDE a quoted string being
+    mistaken for a real one. Because it is length-preserving, the offsets found in it slice
+    correctly into the ORIGINAL (still-quoted) cmd text -- unlike the old blank-to-'' approach,
+    which also destroyed quoted TARGETS for every regex that ran after it (CYBERSEC F2)."""
+    return _QUOTED_RX.sub(lambda m: m.group(0)[0] + "x" * (len(m.group(0)) - 2) + m.group(0)[-1], cmd)
 
 
 _COMMENT_START_RX = re.compile(r"(?:^|\s)#")
 
 
 def _strip_trailing_comment(cmd: str) -> str:
-    """Drop a bash `#` comment (after quote-stripping, so a quoted '#' survived as '' already
-    and can't be mistaken for one). A trailing comment mentioning a filename used to shift
-    _SED_I_RX's naive last-token target extraction onto the comment text instead of the real
-    file (found alongside the QA FAIL on card 0c3b13b5 while fixing EXEMPT_SCRIPT_RX)."""
-    m = _COMMENT_START_RX.search(cmd)
+    """Drop a bash `#` comment, found via the neutralized copy (so a quoted '#' is never
+    mistaken for one) but sliced from the REAL cmd at the same offset. A trailing comment
+    mentioning a filename used to shift _SED_I_RX's naive last-token target extraction onto the
+    comment text instead of the real file (found alongside the QA FAIL on card 0c3b13b5 while
+    fixing EXEMPT_SCRIPT_RX)."""
+    m = _COMMENT_START_RX.search(_neutralize_quotes(cmd))
     return cmd[: m.start()] if m else cmd
+
+
+def _split_segments(cmd: str) -> list[str]:
+    """Split on &&/||/;/| OUTSIDE quotes, found via the neutralized copy but sliced from the
+    REAL cmd at the same offsets (same reasoning as _strip_trailing_comment)."""
+    neutral = _neutralize_quotes(cmd)
+    segments: list[str] = []
+    pos = 0
+    for m in _SEGMENT_SPLIT_RX.finditer(neutral):
+        segments.append(cmd[pos:m.start()])
+        pos = m.end()
+    segments.append(cmd[pos:])
+    return [s.strip() for s in segments if s.strip()]
 
 
 def _is_tracked(root: Path, rel: str) -> bool:
@@ -155,16 +181,25 @@ def _file_target(payload: dict) -> str | None:
     return fp if isinstance(fp, str) and fp else None
 
 
+def _sed_i_target(seg: str) -> str | None:
+    try:
+        toks = [t for t in shlex.split(seg, posix=True) if t]
+    except ValueError:
+        toks = [t for t in seg.split() if t]  # unbalanced quotes -> best-effort fallback
+    toks = [t for t in toks if not t.startswith("-")]
+    return toks[-1] if len(toks) >= 2 else None  # toks[0] is "sed" itself
+
+
 def _bash_targets(cmd: str) -> list[str]:
-    scrubbed = _strip_trailing_comment(_strip_quoted_literals(cmd))
+    no_comment = _strip_trailing_comment(cmd)
     targets: list[str] = []
-    for seg in (s.strip() for s in _SEGMENT_SPLIT_RX.split(scrubbed) if s.strip()):
+    for seg in _split_segments(no_comment):
         if EXEMPT_SCRIPT_RX.search(seg):
             continue  # this segment itself runs marveen-land.sh/update.sh -- exempt, not the whole command
         if _SED_I_RX.search(seg):
-            toks = [t for t in seg.split() if t and not t.startswith("-")]
-            if len(toks) >= 2:  # toks[0] is "sed" itself only if unquoted; guard anyway
-                targets.append(toks[-1])
+            t = _sed_i_target(seg)
+            if t:
+                targets.append(t)
         m = _TEE_RX.search(seg)
         if m:
             targets.append(m.group(1))
@@ -174,7 +209,7 @@ def _bash_targets(cmd: str) -> list[str]:
         m = _GIT_CHECKOUT_RX.search(seg)
         if m:
             targets.append(m.group(1))
-    return [t.strip("'\"") for t in targets if t and t not in ("/dev/null",)]
+    return [t.strip("'\"") for t in targets if t and t.strip("'\"") not in ("/dev/null", "")]
 
 
 def _deny(rel: str, agent: str | None) -> None:
