@@ -29329,3 +29329,43 @@ hiba leszámítva, ugyanaz mint a 60aeca01 delta-nál mérve).
 **Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást.
 Gate: a delta a 62fc59ac8-on már megadott QA + Cybered sign-offot nem ismétli meg; ez a komment
 a merge-delta saját REVIEW-ja.
+
+## a01d8a3d: Shadow-mode agent-identity mismatch logging on schedule routes (2026-11-20)
+
+**Context:** The fleet shares one dashboard Bearer token; any token holder can self-declare any
+agent identity in the `agent` field of schedule creation/update with zero check against the
+caller's own authenticated identity. Confirmed by reading the full handler (both branches) -- no
+`ctx.auth` reference anywhere in `src/web/routes/schedules.ts` before this change.
+
+**Overlap check vs 2520b85a / 52114c2f / ccbb718a:** not a duplicate. Those slices are the general
+shift of every dashboard HTTP call from the shared token to a per-agent key, then (ccbb718a)
+enforcing it fleet-wide; 52114c2f (round 6, still gating) measured 0% real adoption as of
+2026-11-07. This card's hole is independent of that rollout: it exists regardless of whether a
+caller's own key machinery from 2520b85a is deployed, because it is about the schedules route
+never checking `ctx.auth` at all. The fix reuses the SAME DeviceKeyScope/auth-gate machinery
+52114c2f measures (`agentKeyToAgentId`, `ctx.auth.agent`) rather than building new infrastructure.
+Full analysis: card a01d8a3d comment 34940.
+
+**Decision:** shadow mode only, this round. Added `callerAgentIdentity`/`warnIfAgentMismatch` to
+both the create and update schedule handlers in `src/web/routes/schedules.ts`: when the caller's
+`ctx.auth`-derived identity and the declared `agent` field are both present and differ, log a
+`logger.warn` with both values (mirrors the existing `owner_mismatch` memory-PUT warn pattern) --
+never refuse the write. Enforce (owner/MikroB-only restriction + "cannot act as another agent"
+refusal test, the card's remaining Kész-ha item) is explicitly deferred to a follow-up round,
+gated on 52114c2f's own key rollout landing first -- enforcing now would reject every agent's own
+self-reschedule/disable-on-busy traffic the same way ccbb718a's premature enforce would have (per
+52114c2f's own 0%-adoption measurement).
+
+**Test:** `src/__tests__/schedule-agent-identity-shadow.test.ts`, 6 new tests (device-key mismatch,
+X-Agent-Id-token mismatch, matching identity, plain-token no-claim, non-agent device key, update
+mismatch). Mutation-verified: reverting only the two `warnIfAgentMismatch(...)` call sites turns
+exactly the 3 mismatch-detection assertions red, the other 3 stay green. Gate measurement
+(`fleet-test.sh --ref f0413d8f1`, this file + `schedule-once.test.ts` + `schedules-module.test.ts`):
+3 test files passed, 49 tests passed, 1.23s.
+
+**Not in this round:** the enforce/refusal restriction and its test -- see above.
+
+**Who decided:** backend, design+overlap verdict posted as card comment 34940 (GO-WITH-CHANGES),
+self-advance pickup per fleet-nudger msg 22361. Gate: QA + Cybersec + Cybered per the card's own
+`Gate:` line (round 1 of a phased closure -- REVIEW scopes the verdict request to this round's
+Kész-ha items only).
