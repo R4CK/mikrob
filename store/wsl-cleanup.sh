@@ -38,6 +38,22 @@ DRY_RUN=0
 
 MIN_AGE_MIN="${WSL_CLEANUP_MIN_AGE_MIN:-120}"       # throwaway worktrees: 2h
 TMP_MIN_AGE_MIN="${WSL_CLEANUP_TMP_MIN_AGE_MIN:-2880}" # /tmp entries: 48h
+# INFO (card e2425f05, scope extension comment 33299, Cybered GO 33297 on 8cb1e168): neither knob
+# had an integer guard -- both feed a `[ "$age_min" -ge "$MIN_AGE_MIN" ]`/find -mmin comparison, so
+# a non-numeric value throws a shell "integer expression expected" error (MIN_AGE_MIN) or makes
+# find silently treat the whole expression as invalid (TMP_MIN_AGE_MIN), either way an unclear
+# failure far from the actual bad input. Same guard shape MikroB specified (^[1-9][0-9]{0,8}$, no
+# bare 0): 0 is itself dangerous here, not just a weird edge case -- it means "every entry is old
+# enough", the exact same all-fresh-considered-old bug class WSL_HOME_CLEANUP_MIN_AGE_HOURS=0 was
+# fixed for on card 8cb1e168, so 0 is refused like any other invalid value, not accepted.
+if ! [[ "$MIN_AGE_MIN" =~ ^[1-9][0-9]{0,8}$ ]]; then
+  echo "wsl-cleanup: WSL_CLEANUP_MIN_AGE_MIN='$MIN_AGE_MIN' is not a positive integer -- falling back to the documented default (120)" >&2
+  MIN_AGE_MIN=120
+fi
+if ! [[ "$TMP_MIN_AGE_MIN" =~ ^[1-9][0-9]{0,8}$ ]]; then
+  echo "wsl-cleanup: WSL_CLEANUP_TMP_MIN_AGE_MIN='$TMP_MIN_AGE_MIN' is not a positive integer -- falling back to the documented default (2880)" >&2
+  TMP_MIN_AGE_MIN=2880
+fi
 
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 # env-overridable (default unchanged) so a selftest can point the /tmp sweep at a throwaway
@@ -203,16 +219,33 @@ sweep_tmp() {
   # stopped it from pointing the "mindepth 1 -maxdepth 1 ... rm -rf" sweep at /, /home or $HOME.
   # Only the real /tmp, or a path actually UNDER /tmp (a test's own disposable sandbox dir), may
   # be swept.
-  case "$WSL_CLEANUP_TMP_DIR" in
+  # Cybered GO 33173 (card 657f12a3): the check above was LEXICAL -- a value shaped like
+  # "<under /tmp>/x/../outer" matched the /tmp/* string pattern even though it resolves OUTSIDE
+  # /tmp, so the sweep would run against a directory this guard was supposed to block. Resolve
+  # with realpath FIRST, require the RESOLVED path to be exactly /tmp or start with /tmp/ (slash
+  # included, so "/tmpfoo" is rejected too), and sweep the resolved path itself so what gets
+  # checked is exactly what gets enumerated/removed.
+  # LOW fail-open (Cybered GO 33287 on 657f12a3): a realpath FAILURE (rc 1/127/137/139 -- missing
+  # binary, killed, OOM) fell back to the RAW, unresolved value, which is exactly the lexical
+  # string this guard exists to stop trusting -- the traversal-escape case this guard is meant to
+  # block (measured dry-run: 4/4) passes straight through on a realpath failure. Fail CLOSED
+  # instead: a realpath failure refuses the sweep, the same as a resolved path outside /tmp.
+  local resolved
+  if ! resolved="$(realpath -m -- "$WSL_CLEANUP_TMP_DIR" 2>/dev/null)"; then
+    say "REFUSING /tmp sweep: realpath failed to resolve WSL_CLEANUP_TMP_DIR='$WSL_CLEANUP_TMP_DIR' -- not trusting the raw value"
+    return 1
+  fi
+  case "$resolved" in
     /tmp|/tmp/*) ;;
     *)
-      say "REFUSING /tmp sweep: WSL_CLEANUP_TMP_DIR='$WSL_CLEANUP_TMP_DIR' is not /tmp or under /tmp/"
+      say "REFUSING /tmp sweep: WSL_CLEANUP_TMP_DIR='$WSL_CLEANUP_TMP_DIR' resolves to '$resolved', not /tmp or under /tmp/"
       return 1
       ;;
   esac
-  local entry name mtime now age_min
+  WSL_CLEANUP_TMP_DIR="$resolved"
+  local entry name mtime now age_min entry_q
   now=$(date +%s)
-  local removed=0 skipped_fresh_inner=0 skipped_stat=0
+  local removed=0 skipped_fresh_inner=0 skipped_stat=0 skipped_rm_failed=0
   # NUL-delimited (-print0 / read -r -d ''), not newline-delimited: a /tmp entry's name is
   # attacker-reachable (any local process can create one), and a newline inside a name would
   # otherwise split one entry into two read() iterations -- the second one a bogus, usually
@@ -235,10 +268,22 @@ sweep_tmp() {
       skipped_fresh_inner=$((skipped_fresh_inner + 1))
       continue
     fi
-    run_argv rm -rf -- "$entry"
-    removed=$((removed + 1))
+    # 657f12a3 (Cybered GO 33173): removed was incremented unconditionally -- a failed rm (e.g.
+    # permission denied, or the entry vanishing again between the checks above and this call) was
+    # still counted as "removed", making the summary line claim a cleanup that did not happen.
+    if run_argv rm -rf -- "$entry"; then
+      removed=$((removed + 1))
+    else
+      skipped_rm_failed=$((skipped_rm_failed + 1))
+      # LOW log-line forgery (Cybered GO 33287 on 657f12a3): $entry is an attacker-reachable
+      # name (anyone can create a /tmp entry) and `say` uses plain `echo` -- a newline or control
+      # char inside the name would print as literal bytes, letting a crafted name forge what
+      # looks like a second, unrelated log line. %q quotes it into a single shell-safe token.
+      printf -v entry_q '%q' "$entry"
+      say "rm failed for $entry_q"
+    fi
   done < <(find "$WSL_CLEANUP_TMP_DIR" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
-  say "/tmp sweep: removed $removed, skipped (fresh inner file): $skipped_fresh_inner, skipped (stat failed): $skipped_stat"
+  say "/tmp sweep: removed $removed, skipped (fresh inner file): $skipped_fresh_inner, skipped (stat failed): $skipped_stat, skipped (rm failed): $skipped_rm_failed"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

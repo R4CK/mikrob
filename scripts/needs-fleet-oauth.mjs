@@ -34,6 +34,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
+import { isCustomProviderFieldUnusable } from './lib/custom-provider-field-check.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
@@ -77,6 +78,20 @@ try {
   const { needsFleetOauthFor, isClaudeAgent } = await import(join(projectRoot, 'dist', 'web', 'agent-process.js'))
 
   const config = readConfig(agentDir)
+
+  // Card 11c6cab4 round 3 (RedHat comment 32213): a customProvider key that is present but not a
+  // usable non-empty string (number/object/empty string) used to compute customProviderId as
+  // null below, the SAME value as "no customProvider at all" -- so an agent on the default
+  // shared-auth mode fell straight into the "needed" branch and watchdog.sh's --launch-env
+  // printed isolation=no, never reaching the refusal that watchdog-provider-env.mjs (the second
+  // launch site) already had for this exact value. This decision is undecidable, not "needed",
+  // the same way a corrupt agent-config.json already throws above and lands on exit 2: this
+  // script's own caller (watchdog.sh) turns ANY non-zero/non-"not-needed" exit into
+  // REFUSE:fleet-oauth-undecidable, so throwing here reuses that existing fail-closed path
+  // instead of inventing a second one.
+  if (isCustomProviderFieldUnusable(config)) {
+    throw new Error('customProvider: field present but not a usable non-empty string -- undecidable, not "not configured"')
+  }
 
   // Mirrors agent-process.ts's own launch-site computation (startAgentProcessUnlocked), in the
   // same order: resolve the model through the SAME alias/profile chain, then resolveOpenRouterModel

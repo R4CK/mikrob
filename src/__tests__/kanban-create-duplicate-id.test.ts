@@ -43,9 +43,9 @@ describe('POST /api/kanban with a taken id', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
   it('answers 409 with the id, and leaves the existing card untouched', async () => {
-    expect((await post({ id: 'sync-42', title: 'First' })).status).toBe(200)
+    expect((await post({ id: 'sync-42', title: 'First', project: 'MikroB' })).status).toBe(200)
     const before = getKanbanCard('sync-42')
-    const again = await post({ id: 'sync-42', title: 'Second', description: 'other' })
+    const again = await post({ id: 'sync-42', title: 'Second', description: 'other', project: 'MikroB' })
     expect(again.status).toBe(409)
     expect(again.body).toMatchObject({ id: 'sync-42', archived: false })
     expect(typeof again.body.error).toBe('string')
@@ -53,36 +53,36 @@ describe('POST /api/kanban with a taken id', () => {
   })
 
   it('says when the existing card is archived (it is not in the board list)', async () => {
-    await post({ id: 'sync-43', title: 'Old' })
+    await post({ id: 'sync-43', title: 'Old', project: 'MikroB' })
     // Koteg 24 (card 57044a66): archiveKanbanCard returns ArchiveKanbanCardResult, not boolean.
     expect(archiveKanbanCard('sync-43')).toEqual({ ok: true })
     const before = getKanbanCard('sync-43')
-    const again = await post({ id: 'sync-43', title: 'Old' })
+    const again = await post({ id: 'sync-43', title: 'Old', project: 'MikroB' })
     expect(again.status).toBe(409)
     expect(again.body).toMatchObject({ id: 'sync-43', archived: true })
     expect(getKanbanCard('sync-43')).toEqual(before)
   })
 
   it('the supplied id is compared after trimming, as it is stored', async () => {
-    await post({ id: 'sync-44', title: 'First' })
-    expect((await post({ id: '  sync-44 ', title: 'Second' })).status).toBe(409)
+    await post({ id: 'sync-44', title: 'First', project: 'MikroB' })
+    expect((await post({ id: '  sync-44 ', title: 'Second', project: 'MikroB' })).status).toBe(409)
   })
 
   it('any other insert error is still an error, not a 409 (here: a status the table refuses)', async () => {
-    await expect(post({ id: 'sync-45', title: 'Bad', status: 'nonsense' })).rejects.toThrow(/CHECK constraint/)
+    await expect(post({ id: 'sync-45', title: 'Bad', status: 'nonsense', project: 'MikroB' })).rejects.toThrow(/CHECK constraint/)
     expect(getKanbanCard('sync-45')).toBeUndefined()
   })
 
   it('a GENERATED id that collides is not the caller\'s conflict: still an error, not a 409', async () => {
-    await post({ id: 'abcd1234', title: 'Holder' })
+    await post({ id: 'abcd1234', title: 'Holder', project: 'MikroB' })
     uuid.next = 'abcd1234-0000-4000-8000-000000000000'
-    await expect(post({ title: 'Unlucky' })).rejects.toThrow(/UNIQUE constraint/)
+    await expect(post({ title: 'Unlucky', project: 'MikroB' })).rejects.toThrow(/UNIQUE constraint/)
     expect(getKanbanCard('abcd1234')?.title).toBe('Holder')
   })
 
   it('control: cards without a supplied id still get fresh ids', async () => {
-    const a = await post({ title: 'A' })
-    const b = await post({ title: 'B' })
+    const a = await post({ title: 'A', project: 'MikroB' })
+    const b = await post({ title: 'B', project: 'MikroB' })
     expect([a.status, b.status]).toEqual([200, 200])
     expect(a.body.id).not.toBe(b.body.id)
   })

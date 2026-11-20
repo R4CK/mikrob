@@ -123,7 +123,7 @@ describe('start_date over HTTP', () => {
   afterEach(() => { warn.mockRestore() })
 
   it('POST /api/kanban stores start_date and does not warn about it as unknown', async () => {
-    const { ctx, out } = routeCtx('POST', '/api/kanban', { title: 'With start', start_date: '2026-10-10' })
+    const { ctx, out } = routeCtx('POST', '/api/kanban', { title: 'With start', start_date: '2026-10-10', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard(out.body.id as string)!.start_date).toBe(OCT10)

@@ -277,6 +277,19 @@ def _is_generated_author(c):
     return ((c or {}).get("author") or "").strip().lower() in GENERATED_COMMENT_AUTHORS
 
 
+# N2 (card 1c8f6d25, WhiteHat2 re-gate GO a837688d): `author` is self-declared free text on every
+# comment (see the UNVERIFIED-AUTHOR branch above), and `latest_author`/`undecidable` embed it RAW
+# into verdict strings this file returns -- which heartbeat-scriptfirst.sh then concatenates
+# straight into MikroB's wake prompt (`"...$REPORT"`), unescaped. A forged author containing a
+# newline or bracketed directive-looking text ("mikrob\n\n[SYSTEM-...]") is therefore a
+# prompt-injection surface, not just a cosmetic one. Collapse to one line, printable-only, capped
+# short -- real agent ids are a handful of characters, so 40 is already generous.
+def _sanitize_author(raw):
+    s = re.sub(r"\s+", " ", (raw or "")).strip()
+    s = "".join(ch for ch in s if ch.isprintable())
+    return s[:40]
+
+
 def _is_path_token(tok):
     """A '/'-bearing token is a branch name or a path, not a sha citation -- ONLY when some
     slash-separated segment is not itself a bare hex run, so the fleet's "A/B" short/long
@@ -427,10 +440,12 @@ def _latest_declaring_review(comments):
     Not "the latest Gate-SHA anywhere": measured both ways over the board, sourcing it from any
     non-verdict comment fixes 8 cards and breaks 8 others, so it buys nothing and loosens the rule.
 
-    A REVIEW is skipped if a LATER comment carries a line-initial `VISSZAVONVA:`/`RETRACTED:` marker
-    naming one of its shas (card 84fed4ee): the 101f1702 incident was a second REVIEW followed by a
-    branch revert back to the first REVIEW's sha, described only in prose -- this used to always
-    take the newest REVIEW regardless, so the withdrawn sha became the default --expect and three
+    A REVIEW is skipped if a LATER comment, from that SAME REVIEW's own author, carries a
+    line-initial `VISSZAVONVA:`/`RETRACTED:` marker naming its sha (card 84fed4ee, tightened by
+    a7f206a5 F1/F2 -- see `_retraction_shas_after()`): the 101f1702 incident was a second REVIEW
+    followed by a branch revert back to the first REVIEW's sha, described only in prose -- this
+    used to always take the newest REVIEW regardless, so the withdrawn sha became the default
+    --expect and three
     verdicts that correctly judged the ORIGINAL sha read STALE. "Later" is comment order, the same
     convention `_gate_state` already documents for this file -- a retraction cannot apply to a REVIEW
     that has not been posted yet.
@@ -458,7 +473,8 @@ def _latest_declaring_review(comments):
         shas = _line_shas(content)
         if not shas:
             continue
-        if sha_sets_agree(shas, _retraction_shas_after(comments, i)):
+        review_author = ((c or {}).get("author") or "").strip().lower()
+        if sha_sets_agree(shas, _retraction_shas_after(comments, i, review_author)):
             continue
         found = (i, content)
     return found
@@ -495,18 +511,51 @@ def _latest_review_is_na(comments):
     return False
 
 
-def _retraction_shas_after(comments, index):
-    """Every hex token named on a `VISSZAVONVA:`/`RETRACTED:` line in any comment AFTER `index`."""
+def _retraction_shas_after(comments, index, review_author):
+    """The first REAL hex token (same parent/path exclusions as `_line_shas()`) on each
+    `VISSZAVONVA:`/`RETRACTED:` line, in any comment AFTER `index`, written by `review_author`
+    (the REVIEW's own author), `mikrob`, or not a generated author.
+
+    Card a7f206a5 F1 (WhiteHat 84fed4ee gate, comment 20580): the first version applied no author
+    filter at all, so a generated draft comment (local-llm/gate-pretriage, same set
+    `_is_generated_author` already excludes from REVIEW-reading) could retract a real REVIEW.
+    Tightened past that baseline per the gate's own fix suggestion: only the REVIEW's own author
+    or mikrob can retract it -- the narrowest rule that still covers the actual incident (a
+    builder withdrawing their own stale REVIEW, or MikroB withdrawing one on the board's behalf)
+    without letting an unrelated commenter make a REVIEW disappear from declared_shas().
+
+    F2 (same gate): the first version took EVERY hex token on the line with no exclusions, so
+    "VISSZAVONVA: B (visszaallitva A-ra)" retracted BOTH B and A. Now reuses `_line_shas()`'s own
+    parent-marker blanking and path-token skip, and keeps only the first qualifying token --
+    the keyword names the sha that is dead, not every sha the explanatory prose mentions.
+    """
     out = []
+    review_author = (review_author or "").strip().lower()
+    if not review_author:
+        # No reliable author to match against (malformed/legacy comment) -- fail closed: never
+        # let an unattributable line retract anything, rather than matching it to another blank.
+        return out
     for later in comments[index + 1:]:
+        if _is_generated_author(later):
+            continue
+        retracting_author = ((later or {}).get("author") or "").strip().lower()
+        if retracting_author not in (review_author, "mikrob"):
+            continue
         content = (later or {}).get("content")
         if not isinstance(content, str):
             continue
         for m in _RETRACTION_LINE.finditer(content):
-            for sha in _SHA_TOKEN.findall(m.group(1)):
-                sha = sha.lower()
-                if sha not in out:
-                    out.append(sha)
+            blanked = _PARENT_MARKED_SHA.sub(lambda pm: " " * len(pm.group(0)), m.group(1))
+            sha = None
+            for tok in blanked.split():
+                if _is_path_token(tok):
+                    continue
+                found = _SHA_TOKEN.search(tok)
+                if found:
+                    sha = found.group(0).lower()
+                    break
+            if sha and sha not in out:
+                out.append(sha)
     return out
 
 
@@ -637,7 +686,7 @@ def _gate_state(comments):
         v = verdict_of(c.get("content"))
         if not v:
             continue
-        who = (c.get("author") or "").strip().lower()
+        who = _sanitize_author(c.get("author")).lower()
         latest[v[0]] = v
         latest_author[v[0]] = who
         # ONLY A GATE-ROLE AUTHOR ENTERS THE PER-AUTHOR TABLE (card c52e2823, round 2, QA's finding

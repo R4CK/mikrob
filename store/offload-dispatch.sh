@@ -76,6 +76,116 @@ GEMINI_AGY_CALL="$HERE/gemini-agy-call.sh"
 # refused, else=call failure). OFFLOAD_FREELLM_CALL overrides the path for tests.
 FREELLM_CALL="${OFFLOAD_FREELLM_CALL:-$HERE/freellm-call.sh}"
 
+# redact_secrets (card 6d8ef952, Peti 13829/13838 comment 31309): the content gate above no
+# longer REFUSES a freellm card on category/PII grounds, but "a card with an embedded token is
+# drafted (not refused) and the outgoing request body contains [REDACTED:<kind>] instead of the
+# token" -- so a literal credential VALUE (not a category keyword) must never reach the stdin
+# piped into FREELLM_CALL. This is a SEPARATE, narrower problem than the category gate: pattern-
+# match known credential SHAPES and replace each match in place, leaving the rest of the text
+# (including personal data -- Peti 13838, PII is explicitly NOT masked) untouched. Best-effort by
+# construction (an arbitrary secret has no universal shape), not a fail-closed guarantee like the
+# project/tag/blokkolt gates above -- it catches the common, structurally-recognizable shapes
+# (bearer/JWT, well-known vendor key prefixes, connection-string userinfo, explicit
+# password/token/secret/api_key/connection-string assignments). Read via stdin, write via stdout,
+# same convention as the is_gemini_blocked title/desc pipe above (no argv length ceiling).
+redact_secrets() {
+  python3 -I -c '
+import re, sys
+
+text = sys.stdin.buffer.read().decode("utf-8", "replace")
+
+PATTERNS = [
+    ("jwt",            re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
+    ("aws-key",        re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("github-token",   re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("github-pat",     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
+    ("gitlab-token",   re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
+    ("slack-token",    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    # https://hooks.slack.com/services/<team>/<channel>/<token> -- a Slack incoming-webhook URL
+    # IS the credential (anyone with the URL can post as the integration), card 81eb57b5 M1.
+    ("slack-webhook",  re.compile(r"\bhttps://hooks\.slack\.com/services/[A-Za-z0-9/]+\b")),
+    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
+    # ya29.<...> -- Google OAuth2 bearer access token (distinct from the AIza... API-key shape
+    # above), card 81eb57b5 M1.
+    ("google-oauth-token", re.compile(r"\bya29\.[A-Za-z0-9_-]{20,}\b")),
+    ("npm-token",      re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b")),
+    ("openai-key",     re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    # Vendor secret-key prefixes whose body contains "-"/"_" segments, which the flat openai-key
+    # pattern above (no separators allowed after "sk-") never matched (Cybersec GO 31533 M1):
+    # Anthropic sk-ant-api03-.../sk-ant-oat01-... (incl. our own OAuth token), OpenAI
+    # project keys sk-proj-..., OpenRouter sk-or-v1-..., Stripe live secret keys sk_live_..., and
+    # Groq gsk_... .
+    ("vendor-secret-key",
+     re.compile(r"\b(?:sk-ant-api03|sk-ant-oat01|sk-proj|sk-or-v1|sk_live|gsk)[-_][A-Za-z0-9_-]{10,}\b")),
+    # Telegram bot token: <numeric bot id>:<secret> (card 81eb57b5 M1, Cybersec GO 31533; widened
+    # per MikroB 18891 -- the real shape varies, {35} alone missed valid 34/40-char secrets).
+    ("telegram-bot-token", re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,60}\b")),
+    # PEM private-key block (RSA/EC/OpenSSH/generic PKCS8) -- whole block, no partial reveal.
+    # Body length BOUNDED at 8 KiB (MikroB 18891 MEDIUM-1): an unbounded "[\s\S]+?" forces the
+    # regex engine to scan ahead for a never-found END on EVERY BEGIN occurrence, and with many
+    # BEGIN markers spread through the text that is O(n^2) overall (measured on repeated-BEGIN
+    # input: 100k chars 1.46s, 400k chars 20s per leaf). The cap bounds the per-occurrence scan
+    # to a fixed ceiling, so total cost stays O(occurrences * cap) instead of O(occurrences * n)
+    # -- an 8192-char ceiling covers even an RSA-8192 PEM body (base64 of the DER, a few KB) with
+    # room to spare, while a flood of unterminated BEGIN markers on attack input now fails to
+    # match (leaves those markers unredacted) instead of hanging the leaf.
+    ("pem-private-key",
+     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,8192}?-----END [A-Z ]*PRIVATE KEY-----")),
+    # A bare 64-char hex token (our own dashboard-token shape, store/.dashboard-token).
+    ("hex-token-64",   re.compile(r"\b[0-9a-fA-F]{64}\b")),
+    ("bearer-token",   re.compile(r"\bBearer\s+[A-Za-z0-9._-]{10,}", re.IGNORECASE)),
+    # scheme://user:password@host -- connection strings (postgres, mysql, mongodb, redis, amqp, ...)
+    ("connection-string",
+     re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+:([^\s/@]+)@")),
+    # curl -u user:pass -- the same userinfo credential as connection-string above, but as a curl
+    # CLI flag rather than a "scheme://" URL, so the "://" anchor above never sees it (card
+    # 81eb57b5 M1, exact shape from Cybersec GO 31533).
+    ("curl-userpass",
+     re.compile(r"(-u\s+[^\s:\x27\"]+:)([^\s\x27\"]+)")),
+    # [A-Z0-9_]*(TOKEN|SECRET|KEY)=value -- env-var-style assignment (card 81eb57b5 M1, Cybersec
+    # GO 31533). Distinct from credential-assignment below: that pattern requires a \b word
+    # boundary immediately before its stem word ("token", "access_key", ...), which never matches
+    # when the stem is glued onto a longer identifier by "_" (a "_" IS a word character, so
+    # "CLAUDE_CODE_OAUTH_TOKEN=" or "AWS_SECRET_ACCESS_KEY=" never reached \btoken\b /
+    # \baccess_key\b). This pattern anchors the boundary at the START of the whole identifier
+    # instead, so any ALL-CAPS env-var name ending in TOKEN/SECRET/KEY matches regardless of what
+    # is glued in front of it.
+    ("env-credential-assignment",
+     re.compile(r"\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|KEY)\s*[:=]\s*[\"\x27]?([^\s\"\x27,;\[\]]{4,})")),
+    # explicit key=value / key: value / key = "value" assignment of a secret-shaped field,
+    # value quoted or bare, up to the next whitespace/quote/comma. Applied LAST (see the loop
+    # below) and the value excludes "[" / "]" so it never re-captures a "[REDACTED:...]" marker a
+    # preceding, more specific pattern already left behind -- without that exclusion "token:
+    # ghp_xxx" double-redacted into "token: [REDACTED:credential-assignment]", losing the more
+    # specific "github-token" kind the github-token pattern had already correctly identified.
+    ("credential-assignment",
+     re.compile(
+         r"\b(password|passwd|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token)"
+         r"\s*[:=]\s*[\"\x27]?([^\s\"\x27,;\[\]]{4,})",
+         re.IGNORECASE,
+     )),
+]
+
+def _mask(kind):
+    def _repl(m):
+        # connection-string / credential-assignment: keep the matched PREFIX (scheme://user: or
+        # "password=") AND SUFFIX (the trailing "@" of a connection string) intact, redacting only
+        # the captured secret VALUE group itself, so the surrounding structure (which is not
+        # itself a secret) stays legible.
+        if m.lastindex:
+            prefix = m.group(0)[: m.start(m.lastindex) - m.start(0)]
+            suffix = m.group(0)[m.end(m.lastindex) - m.start(0):]
+            return f"{prefix}[REDACTED:{kind}]{suffix}"
+        return f"[REDACTED:{kind}]"
+    return _repl
+
+for kind, pat in PATTERNS:
+    text = pat.sub(_mask(kind), text)
+
+sys.stdout.buffer.write(text.encode("utf-8"))
+'
+}
+
 # gemini_rest_fallback_enabled: returns 0 if the REST path is explicitly requested, 1 (agy) otherwise.
 # Missing file = OFF = agy is default; present = REST fallback.
 gemini_rest_fallback_enabled() { [[ -f "$HERE/gemini-rest-fallback-enabled" ]]; }
@@ -142,6 +252,7 @@ GEMINI_ROUTE="$(get_gemini_route)"
 # Returns 1 (false/allowed) only when all four gates pass AND the classifier ran to completion.
 is_gemini_blocked() {
   local project="$1" tags="$2" title="${3:-}" desc="${4:-}" require_marker="${5:-1}"
+  local extra_projects="${6:-}" skip_category="${7:-0}"
   local rc
   # Distinct "allowed" exit code (WhiteHat2 H2, matches the Python ALLOWED_RC constant below):
   # cannot collide with a bare Python exception (1) or any shell/OS failure code, so only a
@@ -154,6 +265,11 @@ import sys, unicodedata, re
 project  = sys.argv[1]
 tags_csv = sys.argv[2] if len(sys.argv) > 2 else ""
 require_marker = sys.argv[3] if len(sys.argv) > 3 else "1"
+# extra_projects / skip_category (card 6d8ef952, Peti 13829/13838): is_freellm_blocked passes
+# these two ADDITIONAL to is_gemini_blocked; the other, default-arg Gemini call sites are
+# untouched -- this widens ONLY the freellm route, never the shared Gemini one.
+extra_projects_csv = sys.argv[4] if len(sys.argv) > 4 else ""
+skip_category = (sys.argv[5] if len(sys.argv) > 5 else "0") == "1"
 ALLOWED_RC = 42  # must match the bash-side check below
 
 # title/desc come over stdin (WhiteHat2 H1): NUL-separated, no argv length ceiling, no cap needed
@@ -270,8 +386,9 @@ def has_unmapped_letter(s):
     decomposed = unicodedata.normalize("NFKD", s.translate(_HOMOGLYPH_MAP))
     return any(ord(ch) > 127 and unicodedata.category(ch).startswith("L") for ch in decomposed)
 
-# 1. Project allowlist (fail-closed: empty/unknown = blocked).
-ALLOWED_PROJECTS = {"mikrob"}
+# 1. Project allowlist (fail-closed: empty/unknown = blocked). extra_projects_csv (freellm only,
+# card 6d8ef952) adds to the set without changing the default Gemini call sites.
+ALLOWED_PROJECTS = {"mikrob"} | {norm(p) for p in extra_projects_csv.split(",") if p.strip()}
 if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
     sys.exit(0)  # blocked
 
@@ -352,8 +469,8 @@ for tag in all_tags:
     # equalled "sec". See tag_tokens_of()s own comment above for the mechanism.
     tag_tokens = tag_tokens_of(tag)
     if "blokkolt" in tag_tokens:
-        sys.exit(0)  # blocked
-    if any(tok in BLOCKED_TAGS for tok in tag_tokens):
+        sys.exit(0)  # blocked -- explicit human override, never skippable
+    if any(tok in BLOCKED_TAGS for tok in tag_tokens) and not skip_category:
         sys.exit(0)  # blocked
     # F2(c)/M3 (card c8a6e1da, RedHat NO-GO 2. kor, komment 18638): split-letter form ("[S E C]",
     # "[S.E.C]", "[S-E-C]", "[S EC]") writes a blocked word one letter (or short fragment) at a
@@ -414,15 +531,20 @@ for tag in all_tags:
                 continue
             _run_stripped = _run_joined[:_stripped_len]
             for _candidate in (_run_joined, _run_stripped):
-                if _candidate and (_candidate == "blokkolt" or _candidate in BLOCKED_TAGS):
+                if _candidate == "blokkolt":
+                    sys.exit(0)  # blocked -- explicit human override, never skippable
+                if _candidate and _candidate in BLOCKED_TAGS and not skip_category:
                     sys.exit(0)  # blocked
     # F2(d) (card c8a6e1da): digit-suffix form ("[SEC2]", "BLOKKOLT2", "MOPSION2") appends a bare
     # digit directly after the blocked word with no delimiter at all, so it never split into its
     # own token above in the first place -- strip a trailing digit run and re-check.
     for tok in tag_tokens:
         stripped = re.sub(r"[0-9]+$", "", tok)
-        if stripped and stripped != tok and (stripped == "blokkolt" or stripped in BLOCKED_TAGS):
-            sys.exit(0)  # blocked
+        if stripped and stripped != tok:
+            if stripped == "blokkolt":
+                sys.exit(0)  # blocked -- explicit human override, never skippable
+            if stripped in BLOCKED_TAGS and not skip_category:
+                sys.exit(0)  # blocked
 
 # 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
 # Leading-boundary-only stems (RedHat 17510 finding 1): matches a stem at the start of a word,
@@ -454,7 +576,9 @@ if has_unmapped_letter(title) or has_unmapped_letter(desc):
 # of the sec/blokkolt/mopsion shapes may be shielded.
 _whole_title_tokens = tag_tokens_of(title)
 for _tok in _whole_title_tokens:
-    if _tok == "blokkolt" or _tok in BLOCKED_TAGS:
+    if _tok == "blokkolt":
+        sys.exit(0)  # blocked -- explicit human override, never skippable
+    if _tok in BLOCKED_TAGS and not skip_category:
         sys.exit(0)  # blocked
 
 title_n = norm(title)
@@ -483,7 +607,12 @@ TENANT_ISOLATION_RE = re.compile(
     r"|(elkulonit|szetvalaszt|izol|szepara|elvalaszt|kulonvalaszt|kulonit).{0,40}berlo",
     re.DOTALL,
 )
-if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
+# skip_category (card 6d8ef952, Peti 13829/13838, freellm only): the category/PII inference
+# below (SENS_RE stems, tenant-isolation co-occurrence, per-tag stem match) is the "content gate
+# as a LIMIT" Peti ordered removed for freellm -- it stops REFUSING on these grounds. It stays
+# unchanged and still blocks Gemini (default skip_category=False) and the explicit project/
+# tag-category(BLOCKED_TAGS)/blokkolt/marker gates above and below, which are untouched.
+if not skip_category and (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
         or TENANT_ISOLATION_RE.search(title_n) or TENANT_ISOLATION_RE.search(desc_n)):
     sys.exit(0)  # blocked
 
@@ -492,7 +621,7 @@ if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
 # "[Biztonsag]" (the bracket-tag case from 1b) would otherwise sail through on tag-exact-match
 # alone, even though its own text names a sensitive stem. Measured: a neutral-titled card tagged
 # "jelszo-rotacio"/"szamla"/"[Biztonsag]" was previously ALLOWED through this gate.
-if any(SENS_RE.search(t) for t in tags_n):
+if not skip_category and any(SENS_RE.search(t) for t in tags_n):
     sys.exit(0)  # blocked
 
 # 5. POSITIVE MARKER REQUIRED (card c23ea72f, RedHat structural recommendation komment 18638 on
@@ -518,7 +647,7 @@ if require_marker != "0" and not any(norm(tag) == GEMINI_OK_TAG for tag in all_t
     sys.exit(0)  # blocked -- no explicit positive marker
 
 sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, completed "allowed" verdict
-' "$project" "$tags" "$require_marker"
+' "$project" "$tags" "$require_marker" "$extra_projects" "$skip_category"
   rc=$?
   [[ "$rc" -eq 42 ]] && return 1  # must match the Python-side ALLOWED_RC constant above
   return 0
@@ -568,7 +697,31 @@ print("true" if isinstance(d, dict) and d.get("enabled") is True else "false")
 PYEOF
 )"
   [[ "$skip_enabled" == "true" ]] && require_marker=0
-  is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" "$require_marker"
+  # mopsion allowlist widening + category/PII content-gate no longer refusing (card 6d8ef952,
+  # Peti 13829/13838 "igen, vedd le") -- freellm ONLY, via the two extra params above. Gemini's
+  # own gate (every other is_gemini_blocked call site) keeps the strict defaults untouched.
+  is_gemini_blocked "$1" "$2" "${3:-}" "${4:-}" "$require_marker" "mopsion" "1"
+}
+
+# FREELLM-FIRST COOLDOWN (card 6d8ef952, Peti Telegram 13820/13823): a quota/rate-exhausted freellm
+# call (rc=3, see try_freellm_first_for_leaf below) parks the freellm-first route for this many
+# seconds so the SAME exhausted quota is not re-hit leaf-by-leaf for the rest of the sweep -- every
+# leaf in that window falls straight through to local instead. File holds one bare unix timestamp
+# ("resume trying freellm after this"); missing/malformed file = not in cooldown (fail-open on the
+# cooldown ITSELF is correct here, unlike a content gate: the worst case is one wasted freellm call,
+# not a security gap -- is_freellm_blocked's own gates still run first either way).
+FREELLM_COOLDOWN_FILE="${OFFLOAD_FREELLM_COOLDOWN_FILE:-$HERE/freellm-cooldown-until}"
+FREELLM_COOLDOWN_SECONDS="${OFFLOAD_FREELLM_COOLDOWN_SECONDS:-300}"
+freellm_in_cooldown() {
+  [[ -f "$FREELLM_COOLDOWN_FILE" ]] || return 1
+  local until; until="$(cat "$FREELLM_COOLDOWN_FILE" 2>/dev/null)"
+  [[ "$until" =~ ^[0-9]+$ ]] || return 1
+  (( $(date +%s) < until ))
+}
+freellm_start_cooldown() {
+  local until=$(( $(date +%s) + FREELLM_COOLDOWN_SECONDS ))
+  local tmp="$FREELLM_COOLDOWN_FILE.tmp.$$"
+  printf '%s' "$until" > "$tmp" 2>/dev/null && mv -f "$tmp" "$FREELLM_COOLDOWN_FILE" 2>/dev/null
 }
 
 # --- F3 ROUTING-TABLE SHADOW LOGGING (card cdde2666, MikroB plan-grilling verdict comments
@@ -811,12 +964,20 @@ freellm_draft_comment_body() {
 #               existing 2-strikes ceiling so a genuinely broken freellm backend does not retry it
 #               forever on every sweep either.
 try_freellm_for_leaf() {
-  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
+  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}" assignee="${6:-}"
   [[ -x "$FREELLM_CALL" ]] || return 1
 
   local out rc=0 errfile
   errfile="$(mktemp)"
-  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
+  # Card 685f25cb (MikroB measured audit, 2026-11-20): every freellm_call.sh ledger row was
+  # agent_id=unknown/card_id=NULL because this call site never set FREELLM_CALLER/FREELLM_CARD_ID
+  # -- the dashboard calls page cannot attribute a single real call. post_id is already the exact
+  # kanban card id the draft/fail comment above is posted to; assignee is the leaf's own agent,
+  # threaded in from the two site wrappers below (defaults to empty -> freellm-call.sh's own
+  # "unknown" fallback when a caller, such as the --test-freellm-fallback-site harness, has none).
+  # Combined with 6d8ef952's content-gate masking (redact_secrets): attribution env vars and the
+  # redaction pipe are independent concerns, both apply.
+  out="$(printf '%s' "$task" | redact_secrets | FREELLM_CALLER="${assignee:-unknown}" FREELLM_CARD_ID="$post_id" bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
   # Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named error messages (model
   # 404, token mismatch) used to be thrown away right here by this call's `2>/dev/null` -- the
   # one thing that script fixed (naming instead of staying silent), this caller immediately
@@ -897,6 +1058,55 @@ print(text[:300])
   return 1
 }
 
+# try_freellm_first_for_leaf (card 6d8ef952, Peti Telegram 13820/13823): the FREELLM-FIRST route --
+# every eligible leaf tries freellm BEFORE local, not only as a fallback after local is exhausted.
+# Deliberately NOT a thin wrapper around try_freellm_for_leaf: that function's rc=4 branch marks
+# categorical-online (no retry, skip straight to the online agent) and its "anything else" branch
+# counts a strike toward OFFLOAD_LEAF_MAX_ATTEMPTS -- both are correct ONLY when local has already
+# been tried and this is the last resort. Here local has NOT been tried yet, so:
+#   rc=0            -> drafted. Same attempts_op success + post_draft as try_freellm_for_leaf.
+#   rc=3 (quota/429) -> start the cooldown (freellm_start_cooldown), fall through to local. NO
+#                       attempts_op call -- a quota-exhausted freellm is not this LEAF's failure.
+#   rc=4 (gate)     -> fall through to local. NO attempts_op categorical-online here: marking it
+#                       would skip the local attempt entirely, the opposite of "falls through to
+#                       local, never to a less-filtered path" (card Kesz-ha).
+#   rc=2 (disabled) or anything else (transient/network/auth) -> fall through to local, no bookkeeping
+#                       (same "route is simply off" or genuinely-broken-backend reasoning as
+#                       try_freellm_for_leaf's own rc=2/else branches, just without a strike here --
+#                       the strike belongs to whichever path actually gets tried and fails).
+# Returns 0 = drafted (caller returns immediately), 1 = try local next.
+try_freellm_first_for_leaf() {
+  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_project="$4" leaf_tags="$5" task="$6" post_id="$7" synthetic="${8:-false}"
+  [[ -x "$FREELLM_CALL" ]] || return 1
+  if freellm_in_cooldown; then
+    echo "offload-dispatch: leaf $leaf_id -> freellm-first skipped (cooldown active), trying local" >&2
+    return 1
+  fi
+  if is_freellm_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
+    echo "offload-dispatch: leaf $leaf_id -> freellm-first blocked (project/tag/content gate), trying local" >&2
+    return 1
+  fi
+
+  local out rc=0
+  out="$(printf '%s' "$task" | redact_secrets | bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
+
+  if [[ $rc -eq 0 && -n "${out// }" ]]; then
+    attempts_op success "$leaf_id" >/dev/null
+    local body; body="$(freellm_draft_comment_body "$leaf_title" "$out" "$synthetic")"
+    curl -s -X POST "$DASH/api/kanban/$post_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
+    echo "offload-dispatch: leaf $leaf_id -> posted FREELLM DRAFT (freellm-first)" >&2
+    return 0
+  fi
+  if [[ $rc -eq 3 ]]; then
+    freellm_start_cooldown
+    echo "offload-dispatch: leaf $leaf_id -> freellm-first quota/rate exhausted (rc=3), cooldown ${FREELLM_COOLDOWN_SECONDS}s, trying local" >&2
+    return 1
+  fi
+  echo "offload-dispatch: leaf $leaf_id -> freellm-first skipped (rc=$rc), trying local" >&2
+  return 1
+}
+
 # gemini_second_opinion_comment_body: same contract as gemini_draft_comment_body (card a92e9913),
 # but with a DISTINCT header (card f0b3b674 C6) -- a second-opinion draft on a categorical-ONLINE
 # leaf must never read like the quota-stop draft it is not: the online agent's own work and the
@@ -967,17 +1177,40 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 # and any value >= 2^63 (wraps negative in bash's 64-bit arithmetic). ^(0|[1-9][0-9]{0,8})$ allows
 # bare 0 or a non-zero-leading run of up to 9 digits (max 999999999), well under 2^63.
 if ! [[ "$OFFLOAD_MAX_SUBTASKS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
-  echo "offload-dispatch: OFFLOAD_MAX_SUBTASKS='$OFFLOAD_MAX_SUBTASKS' is not an integer -- falling back to the documented default (15)" >&2
+  # LOG-LINE FORGERY (CWE-117, card e2406a43, same pattern as wsl-cleanup.sh's %q fix on
+  # e2425f05): the raw env value is attacker-reachable (anything that can set env for this
+  # process) and was echoed verbatim -- a newline/control char inside it could forge a second,
+  # unrelated log line. %q quotes it into a single shell-safe token.
+  printf -v subtasks_val_q '%q' "$OFFLOAD_MAX_SUBTASKS"
+  echo "offload-dispatch: OFFLOAD_MAX_SUBTASKS=$subtasks_val_q is not an integer -- falling back to the documented default (15)" >&2
   OFFLOAD_MAX_SUBTASKS=15
 fi
 
 # DECOMPOSE (card 501c489f, MikroB verdikt komment 6007). Per-card ceiling on SYNTHETIC (not real
 # kanban-child) subtasks the deterministic templates in card-decompose-templates.sh may generate for
-# a single card in one invocation -- the verdict's own suggested number ("javaslat: max 3"). This is
-# separate from OFFLOAD_MAX_SUBTASKS above (the whole-run GPU-call budget across every leaf); the two
-# only interact in that a card can never contribute more synthetic leaves than this ceiling, whatever
-# the run-wide budget allows elsewhere.
-OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
+# a single card in one invocation -- the verdict's own suggested number ("javaslat: max 3").
+# REMOVED (card 6d8ef952, Peti Telegram 13829/13838 "no limitation", MikroB msg 18628/18638): this
+# was the "per-card 3-leaf cap" comment 31306 named as a gate to remove -- a throttle on how many
+# mechanical fragments even get a draft attempt, not a security decision. Default is now unbounded
+# (card_decompose_candidates' own output, uncapped); OFFLOAD_DECOMPOSE_MAX_PER_CARD stays
+# settable for an ops-side GPU-call-volume throttle if ever needed, but no longer defaults to 3.
+# Still separate from OFFLOAD_MAX_SUBTASKS above (the whole-run GPU-call budget across every leaf).
+OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-0}"
+# NON-INTEGER GUARD (card 81025eb5, Cybered GO 33203 on 27c54ceb, kept across 6d8ef952's default
+# change): this value feeds `head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"` below with no guard -- a
+# non-numeric value makes head error out (no decomposition, silently), and a negative value is
+# head's own "all but the last N lines" syntax, which can hand back MORE candidates than the
+# ceiling is meant to allow. Same shape as the OFFLOAD_MAX_SUBTASKS guard above (bare 0 or a
+# non-zero-leading run of up to 9 digits, so leading-zero octal confusion and >= 2^63 overflow are
+# both rejected the same way). Falls back to 0 (unbounded), not the old 3, to match this card's
+# "no limitation" default above.
+if ! [[ "$OFFLOAD_DECOMPOSE_MAX_PER_CARD" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  # LOG-LINE FORGERY (CWE-117, card e2406a43): same reasoning as the OFFLOAD_MAX_SUBTASKS guard
+  # above -- %q quotes the attacker-reachable raw env value into a single shell-safe token.
+  printf -v per_card_val_q '%q' "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"
+  echo "offload-dispatch: OFFLOAD_DECOMPOSE_MAX_PER_CARD=$per_card_val_q is not an integer -- falling back to the documented default (0, unbounded)" >&2
+  OFFLOAD_DECOMPOSE_MAX_PER_CARD=0
+fi
 # shellcheck source=./card-decompose-templates.sh
 . "$HERE/card-decompose-templates.sh"
 # shellcheck source=./decompose-sample-context.sh
@@ -1094,20 +1327,26 @@ PY
 
 # Mutant-B target (the try_leaf-exhausted site, below).
 freellm_fallback_exhausted_site() {
-  local leaf_project="$1" leaf_tags="$2" leaf_title="$3" leaf_desc="$4" leaf_id="$5" task="$6" post_id="$7" synthetic="$8"
+  local leaf_project="$1" leaf_tags="$2" leaf_title="$3" leaf_desc="$4" leaf_id="$5" task="$6" post_id="$7" synthetic="$8" assignee="${9:-}"
   is_freellm_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" ||
-    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }
+    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$assignee" && return 0; }
   return 1
 }
 
 # Mutant-A target (the CAPACITY_HOLD sweep site, further down).
+#
+# lveto (the inherited parent security-signal ONLINE verdict) no longer skips the attempt here
+# (card 6d8ef952, Peti Telegram 13829/13838, MikroB msg 18628/18638: "no limitation" -- a
+# content-ONLINE verdict decides who reviews/builds the card, not whether a draft is attempted).
+# Only is_freellm_blocked (project allowlist, explicit BLOKKOLT-* override, the gemini-ok marker
+# requirement -- genuine "nothing to draft with"/capacity-shaped reasons) still skips.
 freellm_fallback_capacity_hold_site() {
-  local lveto="$1" lproject="$2" ltags="$3" ltitle="$4" ldesc="$5" lid="$6" ltask="$7" lpost_id="$8" lsynthetic="$9"
-  if [[ "$lveto" == "true" ]] || is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
+  local lveto="$1" lproject="$2" ltags="$3" ltitle="$4" ldesc="$5" lid="$6" ltask="$7" lpost_id="$8" lsynthetic="$9" lassignee="${10:-}"
+  if is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
     attempts_op categorical-online "$lid" >/dev/null
     echo "offload-dispatch: leaf $lid -> freellm blocked under capacity hold (veto=$lveto, project=$lproject), no attempt" >&2
     return 1
-  elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
+  elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic" "$lassignee"; then
     return 0
   fi
   return 1
@@ -1324,7 +1563,13 @@ print("|".join(encoded))
   local candidates
   candidates="$(card_decompose_candidates "$ltitle
 $ldesc
-$ltags" 2>/dev/null | head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD")"
+$ltags" 2>/dev/null)"
+  # OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 (the default) means unbounded -- a positive value is an
+  # explicit ops-side throttle, applied only then (head -n 0 would print zero lines, the opposite
+  # of "no cap").
+  if [[ "$OFFLOAD_DECOMPOSE_MAX_PER_CARD" -gt 0 ]] 2>/dev/null; then
+    candidates="$(printf '%s' "$candidates" | head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD")"
+  fi
   [[ -n "${candidates// }" ]] || { printf '%s' "$raw"; return; }
 
   # VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f, Gate-SHA dad7994b): the per-fragment
@@ -1730,6 +1975,13 @@ if [[ "${1:-}" == "--test-sanitize-path-component" ]]; then
   sanitize_path_component "${2-}"
   exit 0
 fi
+# --test-redact-secrets: pipes stdin through redact_secrets and prints the result on stdout --
+# the direct unit-level entry point for the credential-masking selftest (card 81eb57b5, Cybersec
+# GO 31533 M1), instead of exercising the whole try_freellm_first_for_leaf pipeline per shape.
+if [[ "${1:-}" == "--test-redact-secrets" ]]; then
+  redact_secrets
+  exit 0
+fi
 if [[ "${1:-}" == "--test-resolve" ]]; then
   resolve_leaves
   exit 0
@@ -1776,6 +2028,17 @@ if [[ "${1:-}" == "--test-attempts-op" ]]; then
   [[ "${1:-}" == "--file" ]] && { ATTEMPTS_FILE="$2"; export ATTEMPTS_FILE; }
   [[ -z "$op" || -z "$leaf" ]] && { echo "usage: --test-attempts-op OP LEAF [--file PATH]" >&2; exit 2; }
   attempts_op "$op" "$leaf"
+  exit 0
+fi
+
+# --test-subtasks-budget-reached ATTEMPTED: exposes the main loop's leaf-call budget comparison
+# (card e2406a43, follow-up to 81025eb5) against the real, already-guarded OFFLOAD_MAX_SUBTASKS --
+# the guard above runs unconditionally before this flag is handled, so the value here is exactly
+# what the real dispatch loop would compare against. Prints "reached"/"ok".
+if [[ "${1:-}" == "--test-subtasks-budget-reached" ]]; then
+  shift
+  attempted="${1:-0}"
+  if (( attempted >= OFFLOAD_MAX_SUBTASKS )); then echo "reached"; else echo "ok"; fi
   exit 0
 fi
 
@@ -1866,10 +2129,12 @@ fi
 # "<leafId> <outcome>" per line (card 4eb3743e, "Kesz, ha" 1/2: the GPU-hold case, by name, drafting
 # via freellm).
 #
-# GATE PARITY (WhiteHat NO-GO 28484, M1, card 4eb3743e delta): mirrors the production CAPACITY_HOLD
-# branch exactly -- veto_online=true OR is_gemini_blocked(project, tags, title, desc) means the leaf
-# never reaches freellm-call.sh at all ("blocked"), checked via the SAME --check-freellm-blocked
-# sub-command this script exposes (no second copy of the gate decision).
+# GATE PARITY (WhiteHat NO-GO 28484, M1, card 4eb3743e delta; veto_online stopped gating here per
+# card 6d8ef952, Peti "no limitation"): mirrors the production CAPACITY_HOLD branch exactly --
+# only is_gemini_blocked(project, tags, title, desc) means the leaf never reaches freellm-call.sh
+# ("blocked"), checked via the SAME --check-freellm-blocked sub-command this script exposes (no
+# second copy of the gate decision). veto_online is accepted on the leaf shape but no longer
+# consulted.
 if [[ "${1:-}" == "--test-capacity-route" ]]; then
   shift
   # Deliberately NOT the base64/pipe writer+reader shape the main leaf loop uses (see
@@ -1886,11 +2151,9 @@ for l in leaves:
     tags = l.get("tags", "")
     title = l.get("title", "")
     desc = l.get("description", "")
-    blocked = bool(l.get("veto_online", False))
-    if not blocked:
-        bp = subprocess.run(["bash", self_script, "--check-freellm-blocked", project, tags, title, desc],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        blocked = bp.returncode != 42  # 42 is the ONE deliberate "allowed" outcome
+    bp = subprocess.run(["bash", self_script, "--check-freellm-blocked", project, tags, title, desc],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    blocked = bp.returncode != 42  # 42 is the ONE deliberate "allowed" outcome
     if blocked:
         print(l["id"], "blocked")
         continue
@@ -1921,13 +2184,36 @@ if [[ "${1:-}" == "--test-freellm-fallback-site" ]]; then
   hdr_file="$(mktemp)"
   site="${1:-}"; shift
   case "$site" in
-    exhausted) freellm_fallback_exhausted_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" ;;
-    capacity-hold) freellm_fallback_capacity_hold_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-false}" ;;
+    exhausted) freellm_fallback_exhausted_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" "${9:-}" ;;
+    capacity-hold) freellm_fallback_capacity_hold_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-false}" "${10:-}" ;;
     *) echo "usage: --test-freellm-fallback-site exhausted|capacity-hold <args...>" >&2; exit 2 ;;
   esac
   rc=$?
   rm -f "$hdr_file"
   exit "$rc"
+fi
+
+# --test-freellm-first-site LID TITLE DESC PROJECT TAGS TASK POSTID [SYNTHETIC] : calls the REAL
+# try_freellm_first_for_leaf directly (card 6d8ef952) -- same pattern as --test-freellm-fallback-site
+# above, no reimplementation. Prints "drafted"/"fallthrough" and exits 0/1.
+if [[ "${1:-}" == "--test-freellm-first-site" ]]; then
+  shift
+  hdr_file="$(mktemp)"
+  if try_freellm_first_for_leaf "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}"; then
+    echo "drafted"; rm -f "$hdr_file"; exit 0
+  fi
+  echo "fallthrough"; rm -f "$hdr_file"; exit 1
+fi
+
+# --test-freellm-cooldown : exercises freellm_in_cooldown/freellm_start_cooldown directly (card
+# 6d8ef952) against the overridable OFFLOAD_FREELLM_COOLDOWN_FILE/OFFLOAD_FREELLM_COOLDOWN_SECONDS
+# env vars, without ever calling freellm-call.sh. "start" calls freellm_start_cooldown then prints
+# "cooling"/"clear" per freellm_in_cooldown; "check" only prints "cooling"/"clear".
+if [[ "${1:-}" == "--test-freellm-cooldown" ]]; then
+  shift
+  [[ "${1:-}" == "start" ]] && freellm_start_cooldown
+  if freellm_in_cooldown; then echo "cooling"; else echo "clear"; fi
+  exit 0
 fi
 
 CARD="${1:-}"
@@ -2065,14 +2351,20 @@ try_leaf() {
 
 $leaf_desc"
 
-  # VETO INHERITANCE (card e11167c5, Cybersec F1 on 501c489f): a synthetic fragment whose PARENT
-  # was vetoed ONLINE on the parent's own full (untruncated) text never gets a local attempt of its
-  # own -- the decision was already made, once, on text this fragment's own (necessarily bounded)
-  # copy may not even contain. Never re-derive it here from the fragment's truncated text.
-  if [[ "$synthetic" == "true" && "$veto_online" == "true" ]]; then
-    attempts_op categorical-online "$leaf_id" >/dev/null
-    echo "offload-dispatch: leaf $leaf_id -> categorical online (parent veto inherited), no local attempt" >&2
-    return 1
+  # VETO INHERITANCE, NO LONGER A SKIP (card e11167c5 introduced this, card 6d8ef952 removes the
+  # skip: Peti Telegram 13829/13838 "no limitation", MikroB msg 18628/18638 confirming the reading
+  # -- a content-ONLINE verdict decides who reviews/builds the fragment's real card, not whether a
+  # draft is attempted). veto_online is accepted and still flows through (card_route_shadow_log
+  # measurement, callers unchanged) but no longer short-circuits here.
+  : "$veto_online"
+
+  # FREELLM-FIRST ROUTE (card 6d8ef952, Peti Telegram 13820/13823): try freellm BEFORE local for
+  # every leaf that reaches this point -- "minden munka menjen oda [freellmbe]". On drafted (rc=0)
+  # return immediately; on quota/gate/disabled/other failure fall through to the existing local-RAG
+  # path below unchanged. try_freellm_first_for_leaf never touches attempts_op on a non-success exit
+  # (see its own header) -- the local attempt that follows still gets its normal bookkeeping.
+  if try_freellm_first_for_leaf "$leaf_id" "$leaf_title" "$leaf_desc" "$leaf_project" "$leaf_tags" "$task" "$post_id" "$synthetic"; then
+    return 0
   fi
 
   # GEMINI ROUTE, LOCAL LLM NOT AVAILABLE (card a92e9913): skip the RAG call entirely.
@@ -2186,7 +2478,7 @@ $leaf_desc"
       fi
       # FREELLM FALLBACK (card 4eb3743e, gate parity: WhiteHat NO-GO 28484 M1). Extracted to
       # freellm_fallback_exhausted_site (card 5aa686f0) -- see that function's own header.
-      freellm_fallback_exhausted_site "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" "$leaf_id" "$task" "$post_id" "$synthetic" && return 0
+      freellm_fallback_exhausted_site "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" "$leaf_id" "$task" "$post_id" "$synthetic" "$leaf_assignee_raw" && return 0
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
@@ -2295,7 +2587,7 @@ $ldesc"
     # anywhere else here. Apply both before any freellm attempt, and mark categorical-online on a
     # block -- same permanent-block pattern as the veto check inside try_leaf. Extracted to
     # freellm_fallback_capacity_hold_site (card 5aa686f0) -- see that function's own header.
-    if freellm_fallback_capacity_hold_site "$lveto" "$lproject" "$ltags" "$ltitle" "$ldesc" "$lid" "$ltask" "$lpost_id" "$lsynthetic"; then
+    if freellm_fallback_capacity_hold_site "$lveto" "$lproject" "$ltags" "$ltitle" "$ldesc" "$lid" "$ltask" "$lpost_id" "$lsynthetic" "$lassignee_raw"; then
       drafted=$(( drafted + 1 ))
     fi
   elif try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic" "$lveto"; then
