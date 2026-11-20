@@ -595,6 +595,41 @@ rm -f "$TREE_TICKET" 2>/dev/null
 TREE_LOCK_WAIT_S=$(( $(date +%s) - TREE_TICKET_START ))
 TREE_LOCK_ACQUIRED_AT="$(date +%s)"
 
+# >>> ORPHAN_CLEANUP_BLOCK_START (card fc1bb414, behavior test extracts between these two markers)
+# ORPHANED WORKER CLEANUP (card fc1bb414): neither this script's own EXIT trap (line 123/729,
+# tmpdir/run_log only) nor a SIGTERM/SIGKILL/SIGSEGV hitting a PAST run's vitest invocation ever
+# kills that run's forked vitest workers (vitest/dist/workers/forks.js) -- a sibling process
+# dying does not take its siblings down with it, and bash forwards no signal to a foreground
+# pipeline's children by default. Measured live, same session: a run killed by a host-level
+# segfault (fleet-test.sh's own "INCOMPLETE RUN" branch below fired) was followed minutes later
+# by two DIFFERENT selftests (rea-bwrap-sandbox, then post-review) each blamed once for
+# "left the shared tracked tree dirty: M CLAUDE.md" in the NEXT run -- the same "different
+# selftest each time, both green standalone" shape e5c13c0e's own REVIEW described, which that
+# card's fix (claude-md-main-section-writers.test.ts's atomic/skip-if-unchanged restore) does not
+# reach: an ORPHANED worker from the prior, already-dead run can still be mid-write while this
+# run's own store-selftests-all-run.test.ts takes its before/after snapshot, so the real actor and
+# the blamed selftest are two different processes entirely.
+#
+# Safe to kill unconditionally here, scoped by cwd AND by the real worker's own script path
+# (never a bare 'vitest' substring, which a wrapper/snapshot shell's OWN argv can contain
+# literally -- measured live: `pgrep -f 'vitest'` matched this very cleanup command's own
+# ancestor process, whose argv happened to quote the word "vitest", with nothing to do with any
+# actual vitest process): this point is reached only AFTER the exclusive flock above, so by
+# construction no OTHER legitimately-running fleet-test.sh can also be past this point for the
+# SAME $TEST_TREE right now -- anything still alive with its cwd inside $TEST_TREE AND the real
+# vitest worker's own compiled entry point in its argv is leftover from a run that is no longer
+# the lock holder, i.e. already dead or abandoned.
+if [ -d "$TEST_TREE" ]; then
+  for _orphan_pid in $(pgrep -f 'vitest/dist/workers/forks\.js' 2>/dev/null); do
+    _orphan_cwd="$(readlink -f "/proc/$_orphan_pid/cwd" 2>/dev/null || true)"
+    if [ -n "$_orphan_cwd" ] && [ "$_orphan_cwd" = "$TEST_TREE" ]; then
+      echo "fleet-test.sh: killing orphaned vitest process $_orphan_pid (cwd=$_orphan_cwd, left over from a prior killed/crashed run)" >&2
+      kill -9 "$_orphan_pid" 2>/dev/null || true
+    fi
+  done
+fi
+# <<< ORPHAN_CLEANUP_BLOCK_END
+
 # Create once, reuse forever. `git worktree add --detach` fails if the path exists, so the
 # create and the update paths are deliberately separate.
 # >>> DESTRUCTIVE_RESET_BLOCK_START (card e6df15da C1 behavior test extracts between these two markers)
