@@ -28958,3 +28958,32 @@ mozdul a másik mutánsnál (34 eset összesen).
 
 **Ki döntött:** Cybersec GO (34759, Gate-SHA 3f97f0a43, két MEDIUM lelet). backend2 végezte a
 javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA + Cybersec.
+
+## 2026-11-20 -- CYBERSEC NO-GO 34780 javítás a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** Cybersec2 NO-GO (34780, Gate-SHA d03808411) az F1+F2 javításon egy REGRESSZIÓT (N1)
+és két új leletet (N2, N3) talált. N1: a `_strip_trailing_comment` a komment-kezdettől a TELJES
+string VÉGÉIG vágott, nem csak a saját soráig -- egy komment-sor egy többsoros Bash-parancsban
+az ÍRÁS ELŐTT így elrejtette az egész írást (régi BLOCK -> új ALLOW regresszió), holott a
+komment-sor + új írás a normál agent-Bash-hívás alakja. Javítás: soronkénti vágás, csak a
+komment saját sorának végéig. N2: a cél-regexek (tee/redirect/git-checkout) a VALÓDI, idézett
+szegmens-szövegen futottak, tehát egy idézett stringen BELÜLI `>` (egy commit-üzenet, egy echo
+argumentum) valódi redirectnek tűnt (téves denial). Javítás: a match-et a neutralizált
+(idézet-vak) másolaton keresi, a célt a valódi szövegből ugyanazon offszeten vágja ki. N3: a
+névalapú mentesség-regex engedte, hogy egy hívó szegmens SAJÁT kimenet-redirectje egy MÁSIK
+git-követett fájlba írjon a mentesség mögé bújva (`bash update.sh > <éles>/store/fleet-test.sh`
+téves ALLOW volt, mert a teljes szegmens kimaradt a célkeresésből, amint "hívásnak" matchelt);
+emellett a `\S*/?` engedte, hogy egy szóköz nélküli redirect direkt update.sh-ba hívásnak
+tűnjön. Javítás: a névalapú mentesség TELJES eltávolítása -- egy sima hívásnak nincs
+sed/tee/redirect/checkout célja, tehát a mentesség sosem volt szükséges egy ilyen hívás
+engedélyezéséhez, csak (hibásan) egy veszélyes cél kihagyásához.
+
+**Mutáció-bizonyítva:** mindhárom javítás egymástól függetlenül, eldobható másolaton visszaállítva
+-> pontosan a saját regressziós esete(i) váltanak pirosra, semelyik másik eset nem mozdul.
+Selftest: 44/44 zöld (34 korábbi + 3 N1 + 2 N2 + 5 N3).
+
+**Mérés (fán 0301ae533):** live-checkout-write-guard.selftest.py 44/44 zöld.
+
+**Ki döntött:** Cybersec2 NO-GO (34780, Gate-SHA d03808411, N1 regresszió + N2/N3 lelet).
+backend2 végezte a javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA +
+Cybersec (cybersec2 a delta-t gateli, saját NO-GO-ja szerint).
