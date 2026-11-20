@@ -28894,3 +28894,15 @@ src/__tests__/agent-auth-header-behaviour.test.ts` -- 6/6, 295ms) and via the se
 
 **Ki döntött:** backend (sp-systematic-debugging self-catch, not a gate finding). Gate: delta
 re-gate requested (QA + Cybersec + Cybered) on Gate-SHA 2a6c3ec2134e1dec60b26f0a85e85fefba122039.
+
+## 2026-11-20 -- 52114c2f: round 6, widen mikrob cwd resolution past the exact repo root
+
+**Kontextus:** round 5's REVIEW (33801ecf5) got a mixed delta re-gate: QA PASS, but CYBERSEC2 NO-GO 34825 and CYBERED NO-GO 34827 both reconfirmed the SAME MEDIUM independently -- the mikrob branch added in round 1 (CYBERSEC2 NO-GO 34709) only resolved when `$PWD` equalled `$MARVEEN_MAIN` exactly. CYBERED's measurement: an absolute-path command from another cwd, or a `cd` into a `store/` script, is an ordinary state for the main agent's own session, not an edge case -- every such cwd refused (exit 2, empty stdout), and the root CLAUDE.md recipes that pipe this helper into `curl` turn that into a bare 401 with no hint why.
+
+**Döntés:** resolve to "mikrob" for ANY cwd under `$MARVEEN_MAIN`, or under the mikrob worktree (`$MARVEEN_WORKTREES/mikrob`, default `/home/neon/marveen-agent-worktrees/mikrob`), not only an exact match. The `agents/*` branch still runs first and claims anything under `agents/`, so this never overlaps with a real per-agent cwd. Per mikrob's own addendum (msg 22309): a surviving mutant that falls back to the REQUESTED agent name instead of the hardcoded literal `"mikrob"` would pass every existing test (all of them request `mikrob` itself) while handing out ANY agent's key from this cwd -- pinned with a new case (repo root, no id env, requesting a DIFFERENT agent -> still refused) in both the shell selftest and the vitest file, mutation-verified by reproducing the mutant and confirming it fails that specific case, then restoring the fix.
+
+**Rollout (R1, mikrob msg 22309 item 2 -- a condition, not code):** no real `.dashboard-agent-key` file should be minted for any gate-role agent (qa, qa2, cybersec, cybersec2, cybered) until key files are out of same-UID reach. This widened mikrob-resolution change does not itself mint any key (standing constraint, unchanged) -- noting the condition here so the post-landing rollout step respects it.
+
+**Teszt:** `store/agent-auth-header.selftest.sh` 22 -> 26/26 PASS (4 new cases). Targeted `fleet-test.sh` run recorded in the REVIEW comment. `npx tsc --noEmit` clean.
+
+**Ki döntött:** cybersec2 NO-GO 34825, cybered NO-GO 34827 (both reconfirming independently), mikrob addendum msg 22309 (mutant-pin + rollout note). backend végezte. Gate: delta re-gate (QA + Cybersec + Cybered) on this round's Gate-SHA.
