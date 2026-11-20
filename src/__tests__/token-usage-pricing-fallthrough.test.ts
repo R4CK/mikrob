@@ -31,9 +31,10 @@ function extractBlock(re: RegExp): string {
 
 function loadTuPriceForModel(): (model: string | null) => { in: number; out: number; cw: number; cr: number } {
   const sonnet5 = extractBlock(/const TU_SONNET5_PRICE\s*=\s*\{/)
+  const sonnet55 = extractBlock(/const TU_SONNET5_5_PRICE\s*=\s*\{/)
   const pricing = extractBlock(/const TU_MODEL_PRICING\s*=\s*\{/)
   const fn = extractBlock(/function tuPriceForModel\s*\([^)]*\)\s*\{/)
-  const body = `${sonnet5}\n${pricing}\n${fn}\nreturn tuPriceForModel`
+  const body = `${sonnet5}\n${sonnet55}\n${pricing}\n${fn}\nreturn tuPriceForModel`
    
   return new Function(body)()
 }
@@ -67,5 +68,22 @@ describe('tuPriceForModel prefix-matching (weekly pricing check, card 270e3ef4)'
     const rate = tuPriceForModel('gpt-4o')
     expect(rate.in).toBe(3.0)
     expect(rate.out).toBe(15.0)
+  })
+
+  // 2026-11-16 weekly check (card 808cd7fc): Sonnet 5.5 used to share TU_SONNET5_PRICE with plain
+  // Sonnet 5, which gave it the WRONG cache-read price -- Sonnet 5.5's cache hits are 0.05x base
+  // input ($0.10), not the 0.1x ($0.20) standard rate plain Sonnet 5 actually has.
+  it('Sonnet 5.5 has its own cache-read price (0.10), not Sonnet 5\'s (0.20)', () => {
+    const tuPriceForModel = loadTuPriceForModel()
+    const sonnet55 = tuPriceForModel('claude-sonnet-5-5-20261001')
+    expect(sonnet55.cr).toBe(0.10)
+    const sonnet5 = tuPriceForModel('claude-sonnet-5-20260601')
+    expect(sonnet5.cr).toBe(0.20)
+  })
+
+  it('Opus 5.5 has its own cache-read price (0.20), not the standard 0.1x of its input (0.40)', () => {
+    const tuPriceForModel = loadTuPriceForModel()
+    const rate = tuPriceForModel('claude-opus-5-5-20261001')
+    expect(rate.cr).toBe(0.20)
   })
 })

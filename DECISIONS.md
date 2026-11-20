@@ -28738,3 +28738,82 @@ claude-md-split-reachability.test.ts: 2 Tests passed (2). tsc --noEmit: clean.
 a04d3410ad9fd6388169c6409a81c43074d2c3ba (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
 Cybered + Cybersec + Cybersec2, delta re-gate ezen a shán (MikroB üzenet 21446: "one-line
 CLAUDE.md-only re-gate follows").
+
+## 2026-11-18 -- 58342cec: precedence tests for shared-memory-inject --agent vs cwd (M2/M4/M5)
+
+**Decision:** Card 58342cec (source: cybersec2 GO on 44091907, comment 21098, point 6/N1). The
+cwd-agent-arg fix at 4108addd had 3 of 8 tried mutations survive the then-16-case suite: M2
+(identification from the LAST path segment instead of the element right after "agents"), M4 (an
+unidentifiable cwd swapped for a different non-gate name instead of the literal "fleet"), M5
+(cwd-derivation taking precedence over --agent when the cwd itself carries a non-fleet
+"agents/<x>" segment -- the exact precedence test cybersec2 asked for).
+
+**Fix:** test-only card, no production code change. Added 7 cases to
+`src/__tests__/shared-memory-inject-cwd-agent-arg.test.ts` (6 -> 13): the 3 remaining named cwd
+shapes (empty string, live clone root, upper-cased agents/CYBERSEC) and the 3 mutation pins.
+
+**Test:** mutation-proven one at a time in an isolated worktree -- M2 (`parts[-1]` instead of
+`parts[i+1]`): exactly the M2 case went red. M4 (`"fleet"` swapped for `"unknown-caller"`):
+exactly the M4 case went red (the literal-value assertion is what catches it). M5 (cwd-derivation
+first): 2 cases went red (the M5 case itself, and the upper-cased-cwd-with-override case, which
+legitimately shares the same agents/<x> segment). Restored the real code after each, confirmed
+byte-identical (empty diff), re-ran: 13/13 green throughout.
+
+**Measured:** `fleet-test.sh --ref 5cadc2bccdfbcd4faddf3c193d7bca83c99ba2f6
+src/__tests__/shared-memory-inject-cwd-agent-arg.test.ts
+src/__tests__/shared-memory-inject-gate-exclusion.test.ts`: 2 Test Files passed, 19 Tests passed.
+`tsc --noEmit`: clean. `lint-ratchet.sh --show`: 420 findings/3 rules, session baseline (12/140/268).
+
+**Who decided:** backend (own card). Gate: QA + WhiteHat (the card's own designation).
+
+## 2026-11-15 -- 651ee11f (758e06dd follow-up L1/L2/L3): buildUpdateScriptEnv moved from a denylist to an allowlist
+
+**Döntés:** `buildUpdateScriptEnv` started from the FULL inherited `process.env` and deleted specific known-bad keys (NODE_ENV, conditionally POST_MERGE_MODE). update.sh reads several control switches straight from its own environment with no CLI-flag equivalent -- FORCE_REBUILD, UPDATE_AUTO_REBASE, RESEED_FLEET, REGEN_CLAUDEMD, POST_MERGE_OLD_SHA -- none of which the denylist named, so any of them inherited from whatever launched this dashboard process (a debug run, a systemd unit, an operator shell) silently rode along into every ordinary fork-pull update, not just the one invocation that meant to set it (L3). Separately: L1, the one call site the POST_MERGE_MODE special-case comment referenced (a raw upstream fetch+merge handed to update.sh in POST_MERGE_MODE) was removed as dead code under card 55885cb1, but the comment and the strip-logic still described it as live. L2: that strip logic used `'POST_MERGE_MODE' in extraEnv`, which walks the prototype chain -- a polluted `Object.prototype` would make it true for an extraEnv that owns nothing, wrongly treating an inherited value as caller-provided and letting it survive.
+
+**Fix:** `buildUpdateScriptEnv` now builds from a `BASE_ENV_KEYS` allowlist (PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR, SHELL -- login/shell basics, never a control switch), reading each from `process.env` only if set, then layers `extraEnv` on top via `Object.assign` (own-properties-only, closing L2 structurally rather than with a second `in`-style check). NODE_ENV is deliberately excluded from the allowlist (AUTOUPDNODEENV905, card c116696f) and explicitly `delete`d besides, as a named guard against a future allowlist edit silently reopening that incident. POST_MERGE_MODE/POST_MERGE_OLD_SHA need no special-case code any more -- not being base keys is enough to keep an inherited value out, while a future caller can still set either through `extraEnv` like any other switch (L1 resolved: the dead-call-site comment is gone, the generic capability is kept).
+
+**Teszt:** New `update-env-allowlist.test.ts` -- per the card's own "Kész, ha": each of the 5 named control switches gets a pair of tests (inherited does NOT cross over / extraEnv value DOES), plus base-key-survives and arbitrary-var-excluded cases, plus an L2 closure test using a REAL `Object.prototype` pollution (with `Object.hasOwn` controls proving the pollution is real and extraEnv still owns nothing) -- my first version of that test read `env.POST_MERGE_MODE` directly and failed against my OWN correct fix, because a plain property read on ANY object picks up a polluted prototype regardless of what the function did; fixed to assert `Object.hasOwn(env, ...)` instead, the property that actually reflects what `Object.assign` copied. Updated the one existing test whose assumption the fix deliberately inverts (`update-node-env-strip.test.ts`'s "other inherited env vars survive untouched" -> now asserts they do NOT). 24/24 new+updated tests PASS; full blast-radius (every test file importing `routes/updates.js`: update-post-merge-mode-strip, updates-open-upstream-sync-check, updates-apply-upstream-sync-gate-handler, cli-update-offer, operator-endpoints): 119/119 PASS. Mutation-verified: reverting `buildUpdateScriptEnv` to the exact old denylist shape turned exactly 8 cases red (the 5 control-switch-not-inherited cases, the arbitrary-var case, the L2 pollution case, and the updated node-env-strip case) -- `update-post-merge-mode-strip.test.ts` stayed fully green under the mutant, confirming it alone was never sufficient coverage for this card. `npx tsc --noEmit` clean.
+
+**Ki döntött:** fullstack (self-advance rule 11, oldest unblocked planned card, 767.2h; WhiteHat2 CYBERSEC GO on 758e06dd named the three findings). Gate: QA + Cybered. Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-15 -- 651ee11f fix round 2: CYBERED NO-GO on 1cc5be855, F1 (systemctl --user) + F2 (prototype pollution at the real process boundary)
+
+**Döntés:** RedHat's NO-GO on the round-1 allowlist fix (previous entry) found two gaps the 24/119 green suite never exercised, because every test asserted properties of the RETURNED object, never what the spawned child actually receives. F1: `BASE_ENV_KEYS` dropped `XDG_RUNTIME_DIR`/`DBUS_SESSION_BUS_ADDRESS`, which `systemctl --user` needs to reach the user session bus; update.sh's own `daemon-reload` calls (after it patches/creates unit files) and its `_unit_drift` check are written `2>/dev/null || true` / treat-failure-as-ok, so the loss was SILENT -- measured on this host, `systemctl --user daemon-reload` exits 1 with only the other base keys set, exits 0 with `XDG_RUNTIME_DIR` restored. F2: `Object.hasOwn(env, 'POST_MERGE_MODE') === false` is true to the statement but not to the OS boundary -- node's `spawn()` copies the child env with a `for...in` loop, which walks the prototype chain. Measured: a plain `{}` env with a polluted `Object.prototype.FORCE_REBUILD` DOES reach a really-spawned child (`'polluted'` read back from the child's own `process.env`), even though the returned object never owns that key. Related and reachable the same way: an `extraEnv` with an own `"__proto__"` key (the shape `JSON.parse` produces, not object-literal proto-set syntax) makes `Object.assign(plainEnv, extraEnv)` invoke `Object.prototype`'s inherited `__proto__` setter and change the plain env's actual prototype -- measured, the injected payload then also reaches the child.
+
+Which other update.sh-read env vars are intentionally left out of the allowlist (RedHat asked this be stated explicitly): `MAIN_AGENT_ID`, `BOT_NAME`, `OWNER_NAME`, `WEB_PORT` all fall back to `.env` when unset (update.sh greps `$INSTALL_DIR/.env` directly), and `MARVEEN_LANG` falls back to `.lang` -- none of these need to cross over from the dashboard process's own environment, the on-disk fallback is the intended source either way.
+
+**Fix:** (F1) Added `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` to `BASE_ENV_KEYS` -- neither is a control switch or a code-loading variable, both are what `systemctl --user` needs. (F2) `buildUpdateScriptEnv` now builds `env` with `Object.create(null)` instead of a plain `{}`. A null-prototype object has no inherited enumerable properties at all, so a `for...in` walk (node's own child-env copy, and any future consumer) only ever sees what this function actually assigned -- closing the pollution path structurally, the same "own-properties-only" shape the L2 fix already used for `Object.assign`. It also defuses the `extraEnv.__proto__`-own-key case: against a null-prototype object there is no inherited `__proto__` accessor to trigger, so `Object.assign` just creates an ordinary own data property literally named `"__proto__"`, never a prototype change (measured both ways).
+
+**Teszt:** Added to `update-env-allowlist.test.ts`: (F1) three tests -- `systemctl --user daemon-reload` actually spawned with the built env succeeds; a control proving the SAME built env minus those two keys fails (so the first test isn't vacuous); and a value-level survives-unchanged test matching the file's existing PATH/HOME pattern (the first two `it.skipIf`'d on hosts with no running user session bus, discriminating assertion is the control). (F2) four tests, all via `spawnSync` reading the CHILD's own `process.env`, not the returned object: a polluted `Object.prototype.FORCE_REBUILD` is not seen by a child spawned with the built (null-prototype) env, with a control proving the SAME pollution DOES reach a child spawned with a plain `{}` env; an `extraEnv` with an own `"__proto__"` key (via `JSON.parse`, matching RedHat's exact vector) cannot set the built env's prototype or reach the child, with a control proving the same shape DOES change a plain object's prototype via `Object.assign`. 126/126 (119 prior + 7 new) PASS across the full blast-radius (every test file importing `routes/updates.js`). `npx tsc --noEmit` clean. Mutation-verified independently: reverting only the F1 `BASE_ENV_KEYS` addition turns exactly 2 cases red (the real-spawn success test + the value-survives test; the control test is unaffected since it deletes the keys itself either way); reverting only `Object.create(null)` back to `{}` turns exactly the other 2 F2 real-spawn tests red, nothing else. Both mutants restored and re-verified (126/126) before landing.
+
+**Ki döntött:** fullstack (CYBERED NO-GO on the round-1 landing, dispatch msg 19211 from MikroB). Gate: QA + Cybered (re-gate). Gate-SHA: lásd REVIEW komment.
+
+## 2026-11-16 -- 808cd7fc: Opus 5.5 / Sonnet 5.5 cache-olvasási ár 0.05x, nem 0.1x (heti arlista-check talalat)
+
+**Kontextus:** a `model-pricing-weekly-check` ütemezett heartbeat (kártya 270e3ef4 folytatása) a `src/costops/model-pricing.ts` és a `web/app-token-usage.js` ártábláját a hivatalos árlistával (platform.claude.com/docs/en/about-claude/pricing, lekérve 2026-11-16) vetette össze.
+
+**Döntés:** valós eltérés, javítva.
+
+- A hivatalos oldal lábjegyzete szerint "Cache hits and refreshes on Claude Opus 5.5 and Claude Sonnet 5.5 are priced at 0.05x the base input price. All other models use the standard 0.1x multiplier." Opus 5.5: $0.20/MTok (nem $0.40). Sonnet 5.5: $0.10/MTok (nem $0.20).
+- `model-pricing.ts` egyetlen globális `CACHE_READ_MULTIPLIER`-t (0.1) alkalmazott MINDEN modellre -- 2x túlárazta a cache-olvasást mindkét modellen. Javítás: `ModelRate` kapott egy opcionális `cacheReadMultiplier` felülírást (alapértelmezett a globális marad), `claude-opus-5-5` és `claude-sonnet-5-5` sora 0.05-re állítva.
+- `app-token-usage.js`-ben az `opus-5-5` sora már saját `cr` mezővel rendelkezett, de rossz értékkel (0.40 -> 0.20). A `sonnet-5-5` viszont a sima `sonnet-5`-tel OSZTOTTA a `TU_SONNET5_PRICE` objektumot (cr 0.20) -- ez a sonnet-5-nek helyes, a sonnet-5-5-nek NEM. Saját `TU_SONNET5_5_PRICE` (cr 0.10) bevezetve, a `token-usage-pricing-fallthrough.test.ts` extraktora frissítve, hogy ezt az új blokkot is kivegye.
+
+**Teszt:** `src/__tests__/costops-model-pricing.test.ts` két új eset (0.05x mindkét modellen, kontroll: a testvér-modellek -- opus-5, sonnet-5 -- változatlanul 0.1x-en). `src/__tests__/token-usage-pricing-fallthrough.test.ts` két új eset (sonnet-5-5 saját cr, opus-5-5 javított cr). `fleet-test.sh --ref eafdf710790805e0643e43239d478ec523495ffe` -- Test Files 2 passed (2), Tests 25 passed (25), 2026-11-16 09:06. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** a heti arlista-check heartbeat találata, nincs emberi döntés-pont (mechanikus javítás a hivatalos forrás ellen ellenőrizve). backend végezte. Gate: QA.
+
+## 2026-11-16 -- 89ccf629: egress-guard 3. kör -- if/case/coproc ALLOW-rés + 5 redaktor-szivárgás zárva (7e01b349 RedHat NO-GO follow-up)
+
+**Kontextus:** RedHat (cybered) NO-GO-ja a 7e01b349 kártyán (komment 15353, Gate-SHA 80c807065f5beb531a976ab2053431b1c1701cda) három, egymástól független rést mért: (1) a bash-egress-guard.py csoport-nyitó `{` felismerése a `if`-feltételben és `case`-mintában kihagyta ezt a két kulcsszót, valamint a `coproc`-ot, így egy ott nyitott `{ ... }` blokk ALLOW-ként futott át a kapun; (2) az activity_memory_capture.py redaktora 5 valós titok-alakra nem illett (AWS_SECRET_ACCESS_KEY, egyszeres idézőjeles JSON-kulcs, wget --http-password, glued -p, --pass); (3) egy 4 szintű, kizárólag benignus $( )/{ } beágyazás enforce módban hamis BLOCK-ot adhat -- ezt nem feltételezésként, hanem méréssel kellett megcáfolni/megerősíteni.
+
+**Döntés:**
+
+- `bash-egress-guard.py`: a `_BARE_GROUP_OPEN_RX` kulcsszó-alternációja kiegészítve `if`-fel és `coproc`-kal, plusz egy `(?<!\()\)` alternatíva a `case`-minta záró `)`-jére (a függvény-def üres `()`-jétől egy karakteres negatív lookbehind-del elválasztva). Ismert, el nem fogadott rés: egy belső szóközt tartalmazó `f( )` nincs kizárva -- ritka, ártalmatlan duplikált lelet, nem hamis ALLOW.
+- `activity_memory_capture.py`: (a) `aws[_\-]?secret[_\-]?access[_\-]?key` explicit alternatíva a kv-minta kulcsnév-alternációjában; (b) új, egyszeres idézőjeles JSON-kulcs regex a meglévő dupla idézőjeles mellett; (c) a flag-alapú minta kiterjesztve glued `-p` (mysql), `--pass`, `--http-password`-szal. A glued `-p(?=\S)` először hamis pozitívot adott prózában ("gh-p[REDACTED]" a "gh-pages"-ből) -- javítva egy `(?<![\w-])` negatív lookbehind-del, ami csak valódi flag-pozíción illeszkedik. Ismert, szándékosan nyitva hagyott rés: a meglévő `-u(?=\S)` ugyanezt a védelmet nem kapta meg (nincs ebben a kártyában).
+- Mérés (nem kódváltozás): a flotta teljes, valódi, commitolt shell-korpusza (`store/**/*.sh` + `scripts/**/*.sh`, 72 797 sor) a VALÓDI `analyse()` függvényen átfuttatva -- 0 depth>3 fail-closed hamis pozitív. Ez empirikusan megerősíti a meglévő kódkommentet: a 4 szintű beágyazás ebben a korpuszban kizárólag adverzariális, nem fordul elő valós flotta-parancsban.
+
+**Teszt:** `bash-egress-guard.selftest.py` 160 -> 165/165 PASS (5 új eset: if-feltétel `{`, case-minta `{`, coproc `{`, függvény-def `)` kontroll, case+localhost-idióma ALLOW kontroll). `activity-memory-capture.selftest.py` 75 -> 81/81 PASS (6 új eset: az 5 redaktor-javítás + a gh-pages hamis-pozitív kontroll). Mutáció-ellenőrzés közvetlen in-process monkeypatch-csel (nem a selftest subprocess-harness-én át, mert egy sed-alapú első próba szintaxist tört): mindhárom új egress-guard eset BLOCK->ALLOW-ra fordul, ha a regex visszaáll a javítás előtti alakra; mind az 5 redaktor-javítás valós szintetikus titok-értékkel `[REDACTED]`-et ad. `npx tsc --noEmit` tiszta. Scoped fleet-test (`--ref be6b1122d`, `src/__tests__/bash-egress-guard-wiring.test.ts`, `src/__tests__/activity-hook-redaction.test.ts`, `src/__tests__/hook-registration-completeness.test.ts`): 3 fájl, 68 teszt, mind zöld.
+
+**Nincs benne:** a kártya saját számozott listáján kívüli, RedHat által is megnevezett `eval`/függvény-test-csoport ALLOW-alakok nincsenek zárva (külön kártya nélkül nem bontva ki); a depth>3 enforce-mód tényleges élesítése/kikapcsolása nem e kártya része, csak a mérési eredmény.
+
+**Ki döntött:** RedHat (cybered) NO-GO-ja + saját számozott elfogadási kritériuma a 7e01b349 kártyán. backend végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
