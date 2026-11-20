@@ -28843,3 +28843,64 @@ Which other update.sh-read env vars are intentionally left out of the allowlist 
 Mutacio-ellenorzes: a `needs-fleet-oauth.mjs` uj ellenorzesenek visszavonasaval az eredeti hiba pontosan reprodukalodik (isolation=yes, fleet-token exportalva) az 53-57. eseteken; a 58-59. mutacio-pin zold maradt. Visszaallitva, ismet zold.
 
 **Ki döntött:** RedHat (cybered) LOW NO-GO, komment 32213. backend vegezte a javitast. Gate-SHA: a9af9e15a. Gate: QA + Cybered.
+Gate: QA + Cybersec (a dispatch szerint, mert `/compact`-ot küld ágens-panelekbe). **Ki
+döntött:** MikroB (dispatch), a javítást DevO (fullstack) végezte.
+
+## fleet-test.sh / marveen-land.sh: finish-notification polling helyett (kártya c4590365)
+
+**Probléma:** Peti Telegram 13835 (2026-11-14): mérve ~2400 agent-hívás/nap, ami csak egy futó
+`fleet-test.sh`/`marveen-land.sh` folyamatot néz (tail/sleep/státusz-ellenőrzés), minden egyes
+hívás egy teljes kontextus-újraolvasással.
+
+**Döntés:** mindkét script a saját futása VÉGÉN egyetlen inter-agent üzenetet postol
+(`POST /api/messages`) a hívó ügynöknek -- `fleet-test.sh`-nál `fleet_test_notify_finish()`
+(`FLEET_TEST_CALLER_AGENT` env jelzi, kér-e értesítést), `marveen-land.sh`-nál
+`land_notify_finish()` (a `--card`/plain-agent egyszeri futás útján, `land_batch` belső
+`land_with_retry` fallback-körén kívül -- az a kör egy batch-survivor agentet hív, nem "aki
+elindította ezt a futást"). A verdikt (PASS/FAIL ill. LANDED/REFUSED), egy összefoglaló sor és a
+log útvonala megy az üzenetben. Best-effort, sosem blokkolja és sosem változtatja meg a futás
+saját $rc/$status-át (token hiánya, log-mappa hiba, vagy a POST sikertelensége mind csendben
+visszatér).
+
+**Mért hiba és javítás, SZÓ SZERINTI eltérés a kártya szövegétől:** a kártya "from system"-et írt
+elő; mérve (élő `curl` reprodukció, 2026-11-20): a `/api/messages` POST a `"from":"system"`-et
+HTTP 403-mal elutasítja (`"from is reserved for in-process system senders"`) -- ez az érték
+kizárólag a dashboard-folyamaton BELÜLI íróknak van fenntartva, egy külső (Bearer-tokenes
+curl-hívás) soha nem az. Ha a kártya szövegét szó szerint követtem volna, a funkció NÉMÁN sosem
+tűzött volna el (minden hívás 403-at kapott volna, válasz-ellenőrzés nélkül ez észrevétlen
+marad). A tényleges megoldás: ÖNCÍMZETT üzenet (`from == to == a hívó ügynök neve`) -- ez elfogadott
+(200 OK) és pontosan azt adja, amire a hívónak szüksége van: egy "kész a futásod" jelzés saját
+magának.
+
+**Megölt futás, üzenet nélkül (Kész-ha kérdés, mért válasz):** mindkét scriptben a notify-hívás a
+NORMÁL, szekvenciális befejezési útban van (nem egy signal-trap-ben) -- `fleet-test.sh`-nál a
+`vitest run` utáni sorban, `marveen-land.sh`-nál a `land_one`/`land_batch` visszatérése után. Egy
+SIGKILL (OOM, kézi `kill -9`) ezt a pontot soha nem éri el, tehát nincs üzenet. `marveen-land.sh`
+TERM/HUP/INT trapjai (`_land_sig_stop`) a land-run-journalba írnak egy "aborted" bejegyzést (ez a
+staleness-mechanizmus), de NEM hívják a `land_notify_finish`-t -- egy szándékosan megszakított
+futás is üzenet nélkül marad. Ez egy tudatosan vállalt fail-silent rés (a notify-mechanizmus
+sosem kerülhet a futás kritikus útjába), nem hiba, de a hívó ügynöknek számolnia kell vele: ha a
+futást ő maga vagy más megszakítja, a válaszra várva NEM fog üzenetet kapni.
+
+**Skill-frissítés:** a kártya a `gate-worktree-pattern` / `sp-verification-before-completion`
+skilleket nevezte meg -- mérve, ezek NEM tartalmaznak `fleet-test.sh`/`marveen-land.sh` polling
+útmutatást (a `gate-worktree-pattern` egy különálló, rövid vitest-hívást dokumentál gate
+worktree-ben, nem a megosztott szemafor-scriptet). A tényleges, naponta használt útmutatás a
+`project-workflow` ("Tesztfuttatás" szekció) és a `shared-checkout-safe-commit` (Step 6) skillben
+él -- ezekbe kerültek a "ne pollozz, várd meg az üzenetet" sorok.
+
+**Mérés:** élő füst-teszt (`fleet-test.sh`, smoke, 2026-11-20 07:29): üzenet id 21898 helyesen
+megérkezett (`from_agent: fullstack, to_agent: fullstack`), tartalom a PASS verdikttel, a
+Test Files/Tests összefoglalóval és a log-útvonallal. `marveen-land.sh` `--selftest-land-notify`:
+3/3 PASS (LANDED-eset, REFUSED-eset kártya nélkül "n/a" fallback-kal, negatív kontroll: token-fájl
+nélkül nem megy POST). Előtte/utána Bash-hívásszám (tail/sleep/fleet-test-státusz naponta): az
+"előtte" a kártya saját mérése (~2400/nap, 2026-11-14); az "utána" szám ezen a landoláson még NEM
+mérhető (a funkció csak most landol, a flotta-szintű hatás a következő napok tényleges
+hívásszámában látszik majd, nem itt).
+
+**Nincs benne:** a `land_batch` belső `land_with_retry` fallback-körének saját notify-ja (lásd a
+fenti indoklást); a polling-guidance-tisztítás nem terjed ki minden skillre, csak a két
+tényleges belépési pontra (`project-workflow`, `shared-checkout-safe-commit`).
+
+Gate: QA + Cybersec (a kártya saját kijelölése). **Ki döntött:** MikroB (kártya c4590365, Peti
+13835), a megvalósítást DevO (fullstack) végezte.

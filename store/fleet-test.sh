@@ -74,6 +74,50 @@ fleet_test_log_lock_event() { # $1=event(run|timeout) $2=wait_s $3=run_s(or -) $
     >>"$LOCK_LOG" 2>/dev/null || true
 }
 
+# FINISH NOTIFICATION (card c4590365, Peti 13835): replaces a caller having to poll (tail/sleep/
+# repeated status checks) a backgrounded run -- measured ~2,400 such Bash calls/day fleet-wide,
+# each re-reading a full context just to look at a running fleet-test. Opt-in via
+# FLEET_TEST_CALLER_AGENT (the agent that started this run, same idea as the X-Agent-Id header
+# used elsewhere for self-identification) -- NOT every one of those 2,400 calls, only the ones a
+# caller explicitly asks to be notified about, so this does not itself become a new source of
+# constant traffic. Best-effort: a notification failure must never change $status or crash the
+# run it is reporting on.
+#
+# The run's own log ($run_log, set further down) is a `mktemp` file removed on EXIT -- a path to
+# it would dangle the instant this script exits. This copies it into a durable, caller-visible
+# location FIRST, and only when a notification was actually requested (so the ~2,400 un-notified
+# calls/day do not also start writing log files nobody asked for).
+FLEET_TEST_LOG_DIR="${FLEET_TEST_LOG_DIR:-${ROOT}-fleet-test-logs}"
+fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
+  local caller="$1" st="$2" src_log="$3" tok="$ROOT/store/.dashboard-token"
+  [ -r "$tok" ] || return 0
+  mkdir -p "$FLEET_TEST_LOG_DIR" 2>/dev/null || return 0
+  local dest_log="$FLEET_TEST_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
+  cp "$src_log" "$dest_log" 2>/dev/null || return 0
+  local verdict="PASS"; [ "$st" -eq 0 ] || verdict="FAIL"
+  local summary
+  summary="$(grep -E '(Test Files|Tests)[[:space:]]+[0-9]+' "$dest_log" 2>/dev/null | tail -2)"
+  [ -n "$summary" ] || summary="(no Test Files/Tests summary line found -- see log)"
+  local hdr; hdr="$(mktemp)"; chmod 600 "$hdr"
+  printf 'Authorization: Bearer %s\n' "$(cat "$tok")" > "$hdr"
+  # "from": caller, not "system" -- the dashboard rejects "system" as a sender over this
+  # Bearer-token HTTP API with 403 "from is reserved for in-process system senders" (that value
+  # is reserved for writers inside the dashboard process itself; curl is never one). A self
+  # addressed message (from==to==caller) is accepted and is exactly what the caller needs: a
+  # "your run finished" ping to itself. Measured live (card c4590365 smoke test, 2026-11-20):
+  # every "from":"system" call this function made silently 403'd, so the feature this exists to
+  # provide had never actually fired.
+  python3 -c '
+import json, sys
+print(json.dumps({"from": sys.argv[1], "to": sys.argv[1],
+                   "content": "[fleet-test.sh] " + sys.argv[2] + " (exit " + sys.argv[3] + ")\n" +
+                              sys.argv[4] + "\nLog: " + sys.argv[5]}))
+' "$caller" "$verdict" "$st" "$summary" "$dest_log" \
+    | curl -fsS -m 15 -o /dev/null -H "@$hdr" -H 'Content-Type: application/json' \
+        -X POST "http://127.0.0.1:${WEB_PORT:-3420}/api/messages" --data-binary @- 2>/dev/null
+  rm -f "$hdr"
+}
+
 # PRIORITY LANE FOR LANDS (card b7d8ecc4). marveen-land.sh holds its own exclusive develop-push
 # lock for the ENTIRE duration of this script's run (merge -> fleet-test -> push), so every minute
 # a land's fleet-test call sits in a plain FIFO queue is a minute EVERY OTHER land is blocked too,
@@ -802,5 +846,9 @@ fi
 
 TREE_LOCK_RUN_S=$(( $(date +%s) - TREE_LOCK_ACQUIRED_AT ))
 fleet_test_log_lock_event run "$TREE_LOCK_WAIT_S" "$TREE_LOCK_RUN_S" "$status"
+
+if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
+  fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$status" "$run_log" || true
+fi
 
 exit "$status"
