@@ -133,10 +133,24 @@ def main():
             # untracked target -> allowed
             (ALLOW, f"echo '{{}}' > {root / 'store' / 'untracked-runtime.json'}", root,
              E(MARVEEN_AGENT_ID="backend3")),
-            # marveen-land.sh / update.sh named in the command -> exempt
-            (ALLOW, f"bash store/marveen-land.sh backend3 > {root / 'store' / 'fleet-test.sh'}",
+            # a plain invocation of marveen-land.sh/update.sh has no sed/tee/redirect/checkout
+            # target of its own -> allowed, same as any other command with no file target
+            (ALLOW, "bash store/marveen-land.sh backend3", root, E(MARVEEN_AGENT_ID="backend3")),
+            (ALLOW, "bash update.sh", root, E(MARVEEN_AGENT_ID="backend3")),
+            (ALLOW, f"bash update.sh > /dev/null", root, E(MARVEEN_AGENT_ID="backend3")),
+            # CYBERSEC NO-GO 34780 N3 (card 0c3b13b5, same Gate-SHA): a by-name exemption for an
+            # invoking segment used to skip that segment's OWN redirect check too, so the
+            # invocation's output-redirect smuggled a write to a DIFFERENT tracked file past the
+            # guard. The exemption was dropped -- these must BLOCK like any other redirect.
+            (BLOCK, f"bash store/marveen-land.sh backend3 > {root / 'store' / 'fleet-test.sh'}",
              root, E(MARVEEN_AGENT_ID="backend3")),
-            (ALLOW, f"bash update.sh > {root / 'store' / 'fleet-test.sh'}", root,
+            (BLOCK, f"bash update.sh > {root / 'store' / 'fleet-test.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            # CYBERSEC NO-GO 34780 N3 residual: a no-space redirect directly into update.sh
+            # itself (the old exemption regex's bare `\S*/?` would have swallowed the `>` into
+            # its optional path-prefix group and misread this as an INVOCATION of update.sh).
+            (BLOCK, f"echo>{root / 'store' / 'update.sh'}", root, E(MARVEEN_AGENT_ID="backend3")),
+            (BLOCK, f"echo hi>{root / 'store' / 'update.sh'}", root,
              E(MARVEEN_AGENT_ID="backend3")),
             # QA FAIL regression (card 0c3b13b5): the exempt-script check used to be a bare
             # substring search on the whole raw command, so merely MENTIONING the script name
@@ -165,6 +179,22 @@ def main():
             (BLOCK, f"sed -i 's/a/b/' '{root / 'store' / 'fleet-test.sh'}'", root,
              E(MARVEEN_AGENT_ID="backend3")),
             (BLOCK, f'echo hi | tee "{root / "store" / "fleet-test.sh"}"', root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            # CYBERSEC NO-GO 34780 N1 (card 0c3b13b5, same Gate-SHA): the prior fix stripped a
+            # `#` comment to the END OF THE WHOLE STRING, so a comment line BEFORE a write in a
+            # multi-line command (the normal shape of an agent Bash call) hid the write entirely.
+            (BLOCK, f"# a note\nsed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            (BLOCK, f"echo hi # note\nsed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            (BLOCK, f"# c\necho x | tee {root / 'store' / 'fleet-test.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            # CYBERSEC NO-GO 34780 N2 (card 0c3b13b5, same Gate-SHA): the target regexes now run
+            # over the REAL, quoted segment text, so a `>` INSIDE a quoted string (a commit
+            # message, a comment) used to be misread as a real redirect operator.
+            (ALLOW, f'echo "changed store -> {root / "store" / "fleet-test.sh"} in the worktree"',
+             root, E(MARVEEN_AGENT_ID="backend3")),
+            (ALLOW, f'git commit -m "x > {root / "store" / "fleet-test.sh"}"', root,
              E(MARVEEN_AGENT_ID="backend3")),
             # escape hatch
             (ALLOW, f"MARVEEN_ALLOW_LIVE_EDIT=1 sed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}",

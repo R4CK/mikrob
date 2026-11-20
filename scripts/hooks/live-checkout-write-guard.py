@@ -27,8 +27,12 @@ WHAT STAYS ALLOWED:
     a brand new file nothing has committed yet);
   - anything under the calling agent's own agents/<agent>/ directory -- that tree is
     the agent's own turf, not the shared one these incidents were about;
-  - MikroB (no sub-agent identity resolves to it) and anything update.sh/
-    marveen-land.sh itself runs (matched by name in the Bash command).
+  - MikroB (no sub-agent identity resolves to it); a plain invocation of update.sh/
+    marveen-land.sh itself is never flagged because it contains no sed/tee/redirect/
+    `git checkout --` operator -- NOT because the script's name is special-cased (a
+    by-name exemption was tried and dropped, CYBERSEC NO-GO 34780 N3: it let an
+    invocation's OWN output-redirect smuggle a write to a different tracked file past
+    the guard, e.g. `bash update.sh > <live>/store/fleet-test.sh`).
 
 Self-identity: MARVEEN_AGENT_ID / CLAUDE_AGENT_ID env (same precedence as
 bash-egress-guard.py / agent-key-secret-guard.py), falling back to a
@@ -60,14 +64,6 @@ ALLOW_ENV = "MARVEEN_ALLOW_LIVE_EDIT"
 KILL_ENV = "LIVE_CHECKOUT_WRITE_GUARD"
 
 EXEMPT_AGENTS = {"mikrob"}
-# Anchored to the START of a (quote-stripped, &&/||/;/|-split) segment, optionally after an
-# interpreter (`bash `, `sh `, `.`) and a path prefix -- NOT a bare substring search on the raw
-# command. A substring search let a command exempt itself by merely MENTIONING the script name
-# anywhere (e.g. a trailing `# update.sh` comment) without actually invoking it (QA FAIL on
-# card 0c3b13b5, c42e55cf1/3f97f0a43 Gate-SHA).
-EXEMPT_SCRIPT_RX = re.compile(
-    r"^(?:(?:bash|sh|\.)\s+)?\S*/?(marveen-land\.sh|update\.sh)\b"
-)
 
 _AGENT_ID_RX = r"[a-z][a-z0-9-]{0,31}"
 _CWD_AGENT_RX = re.compile(r"(?:^|/)agents/(" + _AGENT_ID_RX + r")(?:/|$)")
@@ -118,13 +114,29 @@ _COMMENT_START_RX = re.compile(r"(?:^|\s)#")
 
 
 def _strip_trailing_comment(cmd: str) -> str:
-    """Drop a bash `#` comment, found via the neutralized copy (so a quoted '#' is never
-    mistaken for one) but sliced from the REAL cmd at the same offset. A trailing comment
-    mentioning a filename used to shift _SED_I_RX's naive last-token target extraction onto the
-    comment text instead of the real file (found alongside the QA FAIL on card 0c3b13b5 while
-    fixing EXEMPT_SCRIPT_RX)."""
-    m = _COMMENT_START_RX.search(_neutralize_quotes(cmd))
-    return cmd[: m.start()] if m else cmd
+    """Drop each bash `#` comment, found via the neutralized copy (so a quoted '#' is never
+    mistaken for one) but sliced from the REAL cmd at the same offsets -- up to the END OF ITS
+    OWN LINE only, not to the end of the whole string. CYBERSEC NO-GO 34780 (card 0c3b13b5,
+    regression on the prior fix): stripping to end-of-string meant a comment line BEFORE a
+    write in a multi-line command (the normal shape of an agent Bash call) hid the write
+    entirely -- `# note\nsed -i ... <live-file>` went from BLOCK to ALLOW."""
+    neutral = _neutralize_quotes(cmd)
+    n = len(neutral)
+    out: list[str] = []
+    pos = 0
+    search_from = 0
+    while search_from <= n:
+        m = _COMMENT_START_RX.search(neutral, search_from)
+        if not m:
+            break
+        start = m.start()
+        nl = neutral.find("\n", start)
+        end = nl if nl != -1 else n
+        out.append(cmd[pos:start])
+        pos = end
+        search_from = end
+    out.append(cmd[pos:])
+    return "".join(out)
 
 
 def _split_segments(cmd: str) -> list[str]:
@@ -191,24 +203,30 @@ def _sed_i_target(seg: str) -> str | None:
 
 
 def _bash_targets(cmd: str) -> list[str]:
+    """CYBERSEC NO-GO 34780 N2+N3 (card 0c3b13b5): every match is LOCATED in the neutralized
+    (quote-blind) copy of the segment, so a `>`/`#`/etc INSIDE a quoted string is never mistaken
+    for a real operator -- but the TARGET substring is sliced out of the REAL segment text at
+    that same offset, so a quoted target is not re-blinded by the search itself. An exempt
+    segment (one that itself invokes marveen-land.sh/update.sh) still has its OWN redirect/tee/
+    sed/checkout targets checked: `bash update.sh > <live>/store/fleet-test.sh` must not use the
+    exempt invocation to smuggle a write to a DIFFERENT tracked file past the guard."""
     no_comment = _strip_trailing_comment(cmd)
     targets: list[str] = []
     for seg in _split_segments(no_comment):
-        if EXEMPT_SCRIPT_RX.search(seg):
-            continue  # this segment itself runs marveen-land.sh/update.sh -- exempt, not the whole command
-        if _SED_I_RX.search(seg):
+        neutral_seg = _neutralize_quotes(seg)
+        if _SED_I_RX.search(neutral_seg):
             t = _sed_i_target(seg)
             if t:
                 targets.append(t)
-        m = _TEE_RX.search(seg)
+        m = _TEE_RX.search(neutral_seg)
         if m:
-            targets.append(m.group(1))
-        m = _REDIRECT_RX.search(seg)
+            targets.append(seg[m.start(1):m.end(1)])
+        m = _REDIRECT_RX.search(neutral_seg)
         if m:
-            targets.append(m.group(1))
-        m = _GIT_CHECKOUT_RX.search(seg)
+            targets.append(seg[m.start(1):m.end(1)])
+        m = _GIT_CHECKOUT_RX.search(neutral_seg)
         if m:
-            targets.append(m.group(1))
+            targets.append(seg[m.start(1):m.end(1)])
     return [t.strip("'\"") for t in targets if t and t.strip("'\"") not in ("/dev/null", "")]
 
 
