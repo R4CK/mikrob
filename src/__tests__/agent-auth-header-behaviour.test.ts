@@ -120,16 +120,20 @@ describe('store/agent-auth-header.sh behaviour (card 52114c2f F4, pinned via rea
       // the SAME benign under-load flake this sandbox's own fleet-test.sh documents for vitest's
       // birpc timeout (card 54699bbb). 10s gives real headroom without masking a logic bug: the
       // probe's OUTCOME (401 vs 200) is still exactly what this test asserts on.
+      // Round-4 re-measurement (2026-11-20): the 10s curl --max-time above is itself longer than
+      // vitest's own default 5000ms per-test timeout, so under heavier contention the TEST died
+      // first ("Test timed out in 5000ms") before curl's own allowance ran out -- the 10s fix was
+      // incomplete without raising this test's own timeout to match.
       const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '10' })
       expect(status).toBe(0)
       expect(out).toBe('Authorization: Bearer shared-token-value')
-    })
+    }, 15000)
 
     it('a valid (200) own key is used as-is, not the shared token', () => {
       writeFileSync(join(work, 'agents', 'backend', '.dashboard-agent-key'), 'own-agent-key-value')
       const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '10' })
       expect(status).toBe(0)
       expect(out).toBe('Authorization: Bearer own-agent-key-value')
-    })
+    }, 15000)
   })
 })
