@@ -33,7 +33,13 @@
 #   context-compact-monitor.sh --selftest    # verify the decision logic, no DB/tmux needed
 #
 # Exit: 0 ok | 2 bad usage | 3 environment problem
-set -uo pipefail
+set -ufo pipefail
+# -f (noglob): CYBERSEC NO-GO 34466 (card a2028f35 delta), F1. TARGET_AGENTS now comes from the
+# live fleet roster (agent-controlled directory names, not a hardcoded literal) and is iterated
+# with plain word-splitting (`for agent in $TARGET_AGENTS`) further down -- without -f, a roster
+# name like `a*` would glob-expand against this process's cwd instead of being treated as one
+# agent name. The allowlist in live_target_agents_from_json (below) is the primary fix; this is
+# defense in depth for every TARGET_AGENTS loop, including the static fallback/override paths.
 
 ROOT="/home/neon/marveen"
 DB="$ROOT/store/claudeclaw.db"
@@ -137,14 +143,25 @@ threshold_tokens_for_model() {
 # names minus the exclude list, sorted. Pure/isolated so the selftest exercises it against a
 # fixture instead of a live API call -- the whole point of this card is that the roster changes
 # without editing this script, so the test has to prove that by varying the fixture, not the code.
+# CYBERSEC NO-GO 34466 (card a2028f35 delta), F1 MEDIUM: a roster name is an agent-controlled
+# directory name under agents/ (same-UID mkdir is enough), and used to reach this function
+# unsanitized -- a hostile name like "q';drop/**/table/**/victim;--" or "a*" flowed straight into
+# read_agent_ctx's SQL string splice and the TARGET_AGENTS word-split/glob loop. ALLOWLIST is the
+# same alphabet sanitizeAgentName (src/web/sanitize.ts) produces: lowercase a-z0-9-, 1-50 chars,
+# must not start with '-' (fullmatch, not search -- a partial match would accept the hostile
+# string as long as some substring looked valid).
+_ALLOWED_AGENT_NAME_RE='^[a-z0-9][a-z0-9-]{0,49}$'
 live_target_agents_from_json() {
   python3 -c "
-import json, sys
+import json, re, sys
 agents = json.loads(sys.argv[1])
 exclude = set(sys.argv[2].split())
-names = [a['name'] for a in agents if a.get('running') and a.get('name') not in exclude]
+allowed = re.compile(sys.argv[3])
+names = [a['name'] for a in agents
+         if a.get('running') and a.get('name') not in exclude
+         and isinstance(a.get('name'), str) and allowed.fullmatch(a['name'])]
 print(' '.join(sorted(names)))
-" "$1" "$2" 2>/dev/null
+" "$1" "$2" "$_ALLOWED_AGENT_NAME_RE" 2>/dev/null
 }
 
 COOLDOWN_MIN="${COMPACT_COOLDOWN_MIN:-45}"
@@ -267,11 +284,16 @@ PY
 # NEWEST NON-ZERO ROW: bookkeeping rows carry zeros, and a zero is not a measurement. Same rule as
 # readContextTokensFromProjectDir, which walks back to the last usage line with a positive total.
 read_agent_ctx() {
+  # Defense in depth (CYBERSEC NO-GO 34466, F1): $2 should already be allowlist-filtered by
+  # live_target_agents_from_json before it reaches here, but this function has its own callers
+  # (the selftest exercises it directly) -- doubling an embedded single quote is the standard
+  # sqlite3-CLI escape and makes this safe even if that invariant is ever violated upstream.
+  local agent_escaped="${2//\'/\'\'}"
   sqlite3 "$1" "SELECT (input_tokens + cache_read_tokens + cache_creation_tokens) || ' ' ||
                        timestamp || ' ' ||
                        CASE WHEN model IS NULL OR model IN ('', '<synthetic>') THEN '?' ELSE model END
                 FROM token_usage
-                WHERE agent='$2' AND timestamp > $(( $3 - 7200 ))
+                WHERE agent='$agent_escaped' AND timestamp > $(( $3 - 7200 ))
                   AND (input_tokens + cache_read_tokens + cache_creation_tokens) > 0
                 ORDER BY timestamp DESC LIMIT 1;" 2>/dev/null
 }
@@ -534,6 +556,35 @@ if [ "${1:-}" = "--selftest" ]; then
     "$(live_target_agents_from_json '[{"name":"backend","running":false}]' mikrob)"
   s "malformed JSON fails closed to empty, not a crash" "" \
     "$(live_target_agents_from_json 'not json' mikrob)"
+
+  # --- HOSTILE ROSTER NAMES (CYBERSEC NO-GO 34466, card a2028f35 delta, F1 MEDIUM) ----------------
+  # A roster name comes from GET /api/agents, i.e. a directory name under agents/ -- same-UID
+  # mkdir is enough to control it. These are the exact strings cybersec2/cybersec measured reaching
+  # the SQL splice and the TARGET_AGENTS word-split/glob loop before the allowlist existed.
+  hostile_json='[{"name":"q'"'"';drop/**/table/**/victim;--","running":true},
+    {"name":"a*","running":true},{"name":"x y","running":true},{"name":"backend","running":true}]'
+  s "hostile roster names (sql-splice payload, glob, whitespace) are all dropped, only the real agent survives" \
+    "backend" "$(live_target_agents_from_json "$hostile_json" "")"
+  s "a name that is only punctuation (no leading alnum) is dropped" "backend" \
+    "$(live_target_agents_from_json '[{"name":"--","running":true},{"name":"backend","running":true}]' "")"
+  s "a 51-char name (one over the sanitizeAgentName cap) is dropped" "backend" \
+    "$(live_target_agents_from_json "[{\"name\":\"$(printf 'a%.0s' $(seq 1 51))\",\"running\":true},{\"name\":\"backend\",\"running\":true}]" "")"
+  s "a name that is not a string (number) is dropped, not crashed on" "backend" \
+    "$(live_target_agents_from_json '[{"name":123,"running":true},{"name":"backend","running":true}]' "")"
+
+  # Mutation control: without the allowlist, the sql-splice payload used to reach read_agent_ctx
+  # and drop a real table (this is what cybersec2/cybersec proved live against a throwaway DB).
+  # Prove the allowlist is load-bearing by calling read_agent_ctx with it directly (bypassing the
+  # roster function), on a throwaway DB, and confirming the quote-doubling defense-in-depth holds
+  # even when an unsanitized name reaches this function some other way.
+  vdb="$sttmp/victim.sqlite"
+  sqlite3 "$vdb" "CREATE TABLE token_usage (agent TEXT, model TEXT, timestamp INTEGER,
+    input_tokens INTEGER, cache_creation_tokens INTEGER, cache_read_tokens INTEGER,
+    output_tokens INTEGER, model2 TEXT);
+    CREATE TABLE victim (n INTEGER); INSERT INTO victim VALUES (1);" 2>/dev/null
+  read_agent_ctx "$vdb" "x'; DROP TABLE victim; --" "$qnow" >/dev/null 2>&1
+  s "read_agent_ctx quote-doubling defense: victim table survives a raw sql-splice name" "1" \
+    "$(sqlite3 "$vdb" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='victim';" 2>/dev/null)"
 
   [ "$fails" -eq 0 ] && { echo "selftest OK (63 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
