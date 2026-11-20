@@ -5290,6 +5290,9 @@ A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
 - **cold**: Hosszútávú tanulságok, történeti döntések, archívum
 - **shared**: Más ágenseknek is releváns információk
 
+Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.
+A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.
+
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
 A memória mentés, a napi napló és a keresés pontos curl-receptjét NE írd bele ide: azokat a
