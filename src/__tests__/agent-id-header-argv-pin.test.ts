@@ -81,8 +81,11 @@ function extractFn(name: string): string {
 describe('buildAgentIdHeaderBody never puts the token in curl argv', () => {
   const body = extractFn('buildAgentIdHeaderBody')
 
-  it('uses the stdin idiom (printf | curl -H @-)', () => {
-    expect(body).toContain("printf 'Authorization: Bearer %s")
+  it('uses the stdin idiom (agent-auth-header.sh | curl -H @-)', () => {
+    // Card 52114c2f: the printf idiom moved INTO store/agent-auth-header.sh itself, so the
+    // generated body no longer spells "Authorization: Bearer" at all -- it just pipes the
+    // per-agent helper's stdout into curl's @- stdin idiom.
+    expect(body).toContain('agent-auth-header.sh')
     expect(body).toContain('curl -H @-')
   })
 
