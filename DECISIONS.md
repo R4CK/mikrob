@@ -29330,7 +29330,7 @@ hiba leszámítva, ugyanaz mint a 60aeca01 delta-nál mérve).
 Gate: a delta a 62fc59ac8-on már megadott QA + Cybered sign-offot nem ismétli meg; ez a komment
 a merge-delta saját REVIEW-ja.
 
-## a01d8a3d: Shadow-mode agent-identity mismatch logging on schedule routes (2026-11-20)
+## 2026-11-20 -- a01d8a3d: Shadow-mode agent-identity mismatch logging on schedule routes
 
 **Context:** The fleet shares one dashboard Bearer token; any token holder can self-declare any
 agent identity in the `agent` field of schedule creation/update with zero check against the
