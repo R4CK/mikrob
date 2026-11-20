@@ -29329,8 +29329,6 @@ hiba leszámítva, ugyanaz mint a 60aeca01 delta-nál mérve).
 **Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást.
 Gate: a delta a 62fc59ac8-on már megadott QA + Cybered sign-offot nem ismétli meg; ez a komment
 a merge-delta saját REVIEW-ja.
-Gate: QA + Cybersec (a dispatch szerint, mert `/compact`-ot küld ágens-panelekbe). **Ki
-döntött:** MikroB (dispatch), a javítást DevO (fullstack) végezte.
 
 ## 2026-11-20 -- fleet-test.sh / marveen-land.sh: finish-notification polling helyett (kártya c4590365)
 
