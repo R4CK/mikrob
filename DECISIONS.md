@@ -28893,3 +28893,27 @@ Mutacio-ellenorzes: a `needs-fleet-oauth.mjs` uj ellenorzesenek visszavonasaval 
 **Nincs benne:** `attempt` (kísérlet-szám) mező a hívás-listában -- `freellm-call.sh` ezt jelenleg nem méri, nincs a kártya elfogadási listáján; Fron Ted jelezte, utólag pótolható, ha blokkol. A valós upstream-szolgáltató (`provider`) kiolvasása a válasz-törzsből -- külön kártya nélkül nem bontva ki.
 
 **Ki döntött:** Peti Telegram 14295 + MikroB mért gyökérok-elemzése (kártya leírás + msg 21888 audit-korrekció). backend2 végezte. Gate: QA + Cybersec (a kártya saját kijelölése).
+
+## 2026-11-20 -- live-checkout-write-guard.py PreToolUse hook (kártya 0c3b13b5)
+
+**Döntés:** két élő incidens (2026-11-20 11:55 backend, 12:24 backend3) sub-agent közvetlenül a
+LIVE checkoutba (`/home/neon/marveen`) írt egy tracked fájlt a saját worktree helyett, a második
+blokkolta Peti jóváhagyott `update.sh`-ját. Új `scripts/hooks/live-checkout-write-guard.py`
+PreToolUse hook (matcher `Bash|Write|Edit|MultiEdit|NotebookEdit`) elutasít egy tracked
+útvonalra menő írást, ha a hívó sub-agent identitásra oldódik (MikroB és `marveen-land.sh`/
+`update.sh` mentes), és a saját worktree-jét jelöli ki helyette. Untracked runtime útvonal
+(`store/*.json`, logok, az ügynök saját `agents/<név>/` fája) változatlanul engedett.
+
+**Mit:** a hook maga + `live-checkout-write-guard.selftest.py` (26/26 zöld) elsőre a CHECKOUT-only
+`.claude/settings.json`-ba ment be; a `hook-registration-completeness.test.ts` SEEDING/CHECKOUT
+megkülönböztetése miatt ez önmagában nem ért volna el semelyik frissen seedelt sub-agentet, ami
+pont a kártya célja lett volna. Javítva: `injectLiveCheckoutWriteGuard`/`ensureLiveCheckoutWriteGuard`
+pár az `agent-scaffold.ts`-ben + a boot-time migrációs ciklus a `web.ts`-ben, ugyanaz a minta mint a
+meglévő `ensureDbWriteGuard`.
+
+**Teszt:** teljes `fleet-test.sh --ref 3c5a761da28873129510cfc4ac2f50eaef822eae`: 1396 fájl zöld,
+1 skipped (1397); 43958 teszt zöld, 132 skipped (44090). `lint-ratchet.sh`: alapvonal tart (420
+lelet). Az 5 önhibás bukás (2 hook-registration-completeness rés, 3 project-settings-hook-anchor
+pin-eltérés, mind a pin-tesztek frissítésének kihagyásából) javítva, nem reprodukálódik.
+
+**Ki döntött:** MikroB (kártya 0c3b13b5, dispatch). backend2 végezte. Gate: QA + Cybersec.
