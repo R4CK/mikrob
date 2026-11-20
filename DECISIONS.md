@@ -29555,3 +29555,65 @@ időzített regressziós eset, mindegyik < 1 mp + 20 fuzz-eset véletlen komment
 
 **Ki döntött:** Cybersec2 NO-GO (4. kör, Gate-SHA 0301ae533, végtelen ciklus). backend2 végezte
 a javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA + Cybersec.
+## 2026-11-20 -- context-compact-monitor.sh: a cél-ágenslista a live flotta-roster, nem egy literál (kártya a2028f35)
+
+**Probléma:** a `TARGET_AGENTS` alapértéke fixen `backend backend2 fullstack cybered cybersec`
+volt, felülírás nélkül -- tehát `backend3`, `cybersec2`, `qa`, `qa2` SOHA nem lett compactolva,
+függetlenül a kontextusuk méretétől. 2026-11-19 este `qa2` (~20:4x) és `cybersec2` (~21:5x,
+~91%) context-guard restartot kapott. Ez a kódminőségi 14. elv (semmi nem lehet kódba égetve)
+megsértése is: a roster a flotta aktuális állapotától, nem egy script-beli konstanstól kellene
+függjön.
+
+**Döntés (MikroB dispatch, msg_id:21821):** a `TARGET_AGENTS` most a `GET /api/agents`
+(`running:true`) hívásból származik, egy konfigurálható exclude-listával
+(`COMPACT_EXCLUDE_AGENTS`, alapértelmezés `mikrob` -- az orchestrátor, ugyanaz az indok mint
+korábban volt a hardcode-ban: egy mid-flight compact ott az egész flottát zavarná, nem egy
+dolgozót). A `COMPACT_TARGET_AGENTS` explicit felülírás megmaradt (teszteléshez/opt-inhez). Ha a
+roster-lekérdezés sikertelen (nincs token, dashboard nem válaszol, hibás JSON), egy LOGOLT,
+degradált biztonsági-háló lista (`TARGET_AGENTS_FALLBACK`, a régi 5 név + backend3/cybersec2/
+qa/qa2) ugrik be -- ez nem az elsődleges mechanizmus, csak védőháló, hogy egy API-kiesés ne
+fagyassza le csendben a teljes monitort.
+
+**Mérés:** élő `--dry-run` a fixelés után azonnal megmutatta a hiba valódi méretét -- `qa`
+627k/200k kontextussal (sonnet-5 ablak, 50%-os küszöb 100k) korábban LÁTHATATLAN volt a
+monitornak, mert nem szerepelt a hardcode-ban. 8 új selftest-eset (`live_target_agents_from_json`
+tiszta, fixture-alapú: futó/nem-futó szűrés, exclude-lista, hozzáadott/eltávolított ágens a
+script módosítása nélkül megjelenik/eltűnik, hibás JSON fail-closed üresre), összesen 63/63 PASS.
+A meglévő `context-compact-monitor-no-direct-pane-write.test.ts` (6/6) változatlanul zöld --
+a `/api/agents/:agent/compact` hívási út nem változott.
+
+Gate: QA + Cybersec (a dispatch szerint, mert `/compact`-ot küld ágens-panelekbe). **Ki
+döntött:** MikroB (dispatch), a javítást DevO (fullstack) végezte.
+
+## 2026-11-20 -- context-compact-monitor.sh: TARGET_AGENTS-roster unszanitizált agent-nevek -- delta-fix (kártya a2028f35, CYBERSEC NO-GO 34466)
+
+A kártya a2028f35 eredeti fixje (Gate-SHA 5d6b6fc20) a hardkódolt `TARGET_AGENTS` listát a
+`GET /api/agents` élő roszterre cserélte -- helyesen oldotta meg az eredeti hibát (backend3,
+cybersec2, qa, qa2 nem kapott kontextus-tömörítést), de cybersec2 NO-GO-t adott rá (komment 34466,
+F1 MEDIUM): a roszter NÉV-mezője (agents/ alatti könyvtárnevek + futó tmux-session) ellenőrzés
+nélkül jutott el három nyelőbe `store/context-compact-monitor.sh`-ban -- `for agent in $TARGET_AGENTS`
+(shell word-splitting + pathname globbing), `read_agent_ctx` (nyers SQL-string-splice a sqlite3
+CLI felé, az adatbázis írható módban nyitva), és a `/api/agents/${agent}/compact` URL-útvonal.
+
+**A döntés:** az allowlist-regexet NEM a NO-GO komment szó szerinti javaslatából vettem (cybersec2
+és a sibling cybersec komment egymástól eltérő regexet adott), hanem a rendszer MÁR LÉTEZŐ,
+hitelesnek számító névábécéjéből vezettem le: `src/web/sanitize.ts` `sanitizeAgentName()`
+függvényéből (kisbetű, NFD-normalizált, `[a-z0-9-]`-n kívül mindent levág, kötőjelet összevon/levág,
+max 50 karakter) -> `^[a-z0-9][a-z0-9-]{0,49}$` fullmatch. Ez azért fontos, mert a két verdikt
+javaslata EGYMÁSTÓL is különbözött -- ha bármelyiket szó szerint követtem volna, a regex nem
+egyezett volna a tényleges névábécével, és a különbség csak egy jövőbeli éles névnél derült volna ki.
+`read_agent_ctx`-ben emellett az agent-érték idézőjel-duplázása (defense in depth, cybersec2 saját
+javaslata) zárja be a sqlite3 string-splice-t egy második réteggel, és `set -uo pipefail` ->
+`set -ufo pipefail` (`-f`, noglob) zárja a shell-glob nyelőt.
+
+**Mérés:** 5 új selftest-eset (`store/context-compact-monitor.sh --selftest`, mind zöld): SQL-splice
++ glob + whitespace nevű hoszt-roszter kiszűrve; csak-írásjel névből nem marad semmi; 51 karakteres
+név kiszűrve; nem-string `name` mező kiszűrve; `read_agent_ctx` idézőjel-duplázásának bizonyítása
+egy eldobható sqlite-DB-n. Mindkét új védelem mutáció-teszttel igazolt terhelő (`guards-that-pin-
+behaviour`): az allowlist `.* `-re gyengítve 3 selftest-eset lesz FAIL, az idézőjel-duplázás
+kivéve 1 eset lesz FAIL. Regresszió: `fleet-test.sh --ref b6e512d85` a
+`context-compact-monitor-no-direct-pane-write.test.ts`-n -- 6/6 zöld.
+
+Gate-SHA: b6e512d85ca090c5a8d2fb01a92aded214eab04b (delta re-gate kérve cybersec-től, mivel
+cybersec2 adta az eredeti NO-GO-t és a fix-irányt). **Ki döntött:** cybersec2 (NO-GO, komment 34466),
+a fixet DevO (fullstack) készítette.
