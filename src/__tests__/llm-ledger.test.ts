@@ -246,11 +246,11 @@ describe('llm_ledger: route GET/PUT /api/llm-ledger/budget/:agent', () => {
   // agent device key from a human one.
   const AGENT_KEY = { kind: 'device', device: 'agent:backend3' } as const
   it('PUT refuses an agent:<id> device key (403) -- an agent is not a human, even with its own key (F1)', async () => {
-    const asAgentKey = await putAs(AGENT_KEY, 'qa2', { daily_budget: 1 })
+    const asAgentKey = await putAs(AGENT_KEY, 'fron-ted', { daily_budget: 1 })
     expect(asAgentKey.status).toBe(403)
-    expect(getAgentLlmBudget('qa2').source).toBe('platform') // nothing written
+    expect(getAgentLlmBudget('fron-ted').source).toBe('platform') // nothing written
     // Control: a genuinely human device key (not the agent:<id> shape) still works, unaffected.
-    const asHumanDevice = await putAs(DEVICE, 'qa2', { daily_budget: 100 })
+    const asHumanDevice = await putAs(DEVICE, 'fron-ted', { daily_budget: 100 })
     expect(asHumanDevice.status).toBe(200)
   })
 

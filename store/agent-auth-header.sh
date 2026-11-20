@@ -64,9 +64,19 @@ probe_rejected() {
   [ "$code" = "401" ]
 }
 
+# Card 52114c2f (CYBERSEC NO-GO 34686, F3): a key file with a second line was emitted verbatim,
+# which `curl -H @-` turns into a SECOND header line -- a same-UID writer of the file could inject
+# e.g. a forged X-Agent-Id next to the real key. Use only the first line, and treat any embedded
+# control character (a lone CR, or anything else non-printable) the same way as a dead/junk key.
 if [ -s "$KEY_FILE" ]; then
-  VALUE="$(cat "$KEY_FILE")"
-  if probe_rejected "$VALUE"; then
+  VALUE="$(head -n1 -- "$KEY_FILE")"
+  VALUE="${VALUE%$'\r'}"
+  LINE_COUNT="$(grep -c '' "$KEY_FILE" 2>/dev/null || echo 0)"
+  if [[ "$VALUE" =~ [[:cntrl:]] ]] || [ "$LINE_COUNT" -gt 1 ]; then
+    echo "agent-auth-header.sh: malformed agent key file for '$AGENT' ($KEY_FILE has a control character or more than one line, possible header injection), falling back to the shared token" >&2
+    [ -s "$SHARED_TOKEN_FILE" ] || die 4 "malformed agent key and no shared token at $SHARED_TOKEN_FILE"
+    VALUE="$(cat "$SHARED_TOKEN_FILE")"
+  elif probe_rejected "$VALUE"; then
     echo "agent-auth-header.sh: agent key for '$AGENT' was rejected by the server (401, revoked/expired/junk), falling back to the shared token" >&2
     [ -s "$SHARED_TOKEN_FILE" ] || die 4 "agent key rejected and no shared token at $SHARED_TOKEN_FILE"
     VALUE="$(cat "$SHARED_TOKEN_FILE")"

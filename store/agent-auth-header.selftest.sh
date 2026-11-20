@@ -234,6 +234,42 @@ else
   fail "an invalid agent-name argument is rejected (rc=$RC, stdout: $OUT)"
 fi
 
+# Case 15 (F3, CYBERSEC NO-GO 34686): a key file with a SECOND line (header-injection shape) is
+# treated as malformed -- falls back to the shared token, never emits the second line.
+echo "shared-token-value" > "$MAIN_DIR/store/.dashboard-token"
+printf 'own-agent-key-value\nX-Agent-Id: forged\n' > "$AGENTS_ROOT/backend/.dashboard-agent-key"
+OUT="$(bash "$SCRIPT" backend 2>"$WORK/stderr15")"
+if [ "$OUT" = "Authorization: Bearer shared-token-value" ]; then
+  pass "a multi-line key file falls back to the shared token, not the injected header"
+else
+  fail "a multi-line key file falls back to the shared token, not the injected header (got: $OUT)"
+fi
+if grep -q "possible header injection" "$WORK/stderr15"; then
+  pass "a multi-line key file logs a header-injection warning"
+else
+  fail "a multi-line key file logs a header-injection warning"
+fi
+
+# Case 16: a single-line key file with an embedded control character (e.g. a lone CR) is also
+# treated as malformed, not passed through.
+printf 'own-agent-key\rvalue' > "$AGENTS_ROOT/backend/.dashboard-agent-key"
+OUT="$(bash "$SCRIPT" backend 2>"$WORK/stderr16")"
+if [ "$OUT" = "Authorization: Bearer shared-token-value" ]; then
+  pass "a key with an embedded control character falls back to the shared token"
+else
+  fail "a key with an embedded control character falls back to the shared token (got: $OUT)"
+fi
+
+# Case 17 (mutation check): a plain, well-formed key with a normal trailing newline (the shape
+# `echo >file` always produces) is still used as-is -- case 15/16 are not just rejecting every key.
+printf 'own-agent-key-value\n' > "$AGENTS_ROOT/backend/.dashboard-agent-key"
+OUT="$(bash "$SCRIPT" backend 2>"$WORK/stderr17")"
+if [ "$OUT" = "Authorization: Bearer own-agent-key-value" ]; then
+  pass "a well-formed single-line key file (trailing newline) is still used as-is"
+else
+  fail "a well-formed single-line key file (trailing newline) is still used as-is (got: $OUT)"
+fi
+
 if [ "$FAIL" -eq 0 ]; then
   echo "selftest: PASS"
   exit 0
