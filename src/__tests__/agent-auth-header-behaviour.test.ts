@@ -114,14 +114,20 @@ describe('store/agent-auth-header.sh behaviour (card 52114c2f F4, pinned via rea
 
     it('a revoked (401) own key falls back to the shared token, with a distinct warning', () => {
       writeFileSync(join(work, 'agents', 'backend', '.dashboard-agent-key'), 'revoked-key-value')
-      const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '3' })
+      // Card 52114c2f (QA 34710/34711 pin, measured under fleet-test's shared, contended
+      // sandbox): the mock listens fine, but a 3s --max-time occasionally elapsed before curl's
+      // own process got scheduled, so the probe came back inconclusive ("000") instead of 401 --
+      // the SAME benign under-load flake this sandbox's own fleet-test.sh documents for vitest's
+      // birpc timeout (card 54699bbb). 10s gives real headroom without masking a logic bug: the
+      // probe's OUTCOME (401 vs 200) is still exactly what this test asserts on.
+      const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '10' })
       expect(status).toBe(0)
       expect(out).toBe('Authorization: Bearer shared-token-value')
     })
 
     it('a valid (200) own key is used as-is, not the shared token', () => {
       writeFileSync(join(work, 'agents', 'backend', '.dashboard-agent-key'), 'own-agent-key-value')
-      const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '3' })
+      const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '10' })
       expect(status).toBe(0)
       expect(out).toBe('Authorization: Bearer own-agent-key-value')
     })
