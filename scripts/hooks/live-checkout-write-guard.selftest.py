@@ -132,6 +132,18 @@ def main():
              root, E(MARVEEN_AGENT_ID="backend3")),
             (ALLOW, f"bash update.sh > {root / 'store' / 'fleet-test.sh'}", root,
              E(MARVEEN_AGENT_ID="backend3")),
+            # QA FAIL regression (card 0c3b13b5): the exempt-script check used to be a bare
+            # substring search on the whole raw command, so merely MENTIONING the script name
+            # anywhere (e.g. a trailing comment) disabled the guard for an unrelated write --
+            # this must still be BLOCKed, the comment does not actually invoke anything.
+            (BLOCK, f"sed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'} # update.sh", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            (BLOCK, f"echo hi > {root / 'store' / 'fleet-test.sh'} # marveen-land.sh", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            # the exemption is per-segment, not whole-command: a real update.sh/marveen-land.sh
+            # invocation in one segment must not exempt an unrelated write in another segment
+            (BLOCK, f"sed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'} && bash update.sh", root,
+             E(MARVEEN_AGENT_ID="backend3")),
             # escape hatch
             (ALLOW, f"MARVEEN_ALLOW_LIVE_EDIT=1 sed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}",
              root, E(MARVEEN_AGENT_ID="backend3")),

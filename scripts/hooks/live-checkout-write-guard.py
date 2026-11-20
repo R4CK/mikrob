@@ -59,7 +59,14 @@ ALLOW_ENV = "MARVEEN_ALLOW_LIVE_EDIT"
 KILL_ENV = "LIVE_CHECKOUT_WRITE_GUARD"
 
 EXEMPT_AGENTS = {"mikrob"}
-EXEMPT_SCRIPT_RX = re.compile(r"\b(marveen-land\.sh|update\.sh)\b")
+# Anchored to the START of a (quote-stripped, &&/||/;/|-split) segment, optionally after an
+# interpreter (`bash `, `sh `, `.`) and a path prefix -- NOT a bare substring search on the raw
+# command. A substring search let a command exempt itself by merely MENTIONING the script name
+# anywhere (e.g. a trailing `# update.sh` comment) without actually invoking it (QA FAIL on
+# card 0c3b13b5, c42e55cf1/3f97f0a43 Gate-SHA).
+EXEMPT_SCRIPT_RX = re.compile(
+    r"^(?:(?:bash|sh|\.)\s+)?\S*/?(marveen-land\.sh|update\.sh)\b"
+)
 
 _AGENT_ID_RX = r"[a-z][a-z0-9-]{0,31}"
 _CWD_AGENT_RX = re.compile(r"(?:^|/)agents/(" + _AGENT_ID_RX + r")(?:/|$)")
@@ -93,6 +100,18 @@ def _self_agent(cwd: str | None) -> str | None:
 
 def _strip_quoted_literals(cmd: str) -> str:
     return _QUOTED_RX.sub(lambda m: "''" if m.group(0)[0] == "'" else '""', cmd)
+
+
+_COMMENT_START_RX = re.compile(r"(?:^|\s)#")
+
+
+def _strip_trailing_comment(cmd: str) -> str:
+    """Drop a bash `#` comment (after quote-stripping, so a quoted '#' survived as '' already
+    and can't be mistaken for one). A trailing comment mentioning a filename used to shift
+    _SED_I_RX's naive last-token target extraction onto the comment text instead of the real
+    file (found alongside the QA FAIL on card 0c3b13b5 while fixing EXEMPT_SCRIPT_RX)."""
+    m = _COMMENT_START_RX.search(cmd)
+    return cmd[: m.start()] if m else cmd
 
 
 def _is_tracked(root: Path, rel: str) -> bool:
@@ -137,9 +156,11 @@ def _file_target(payload: dict) -> str | None:
 
 
 def _bash_targets(cmd: str) -> list[str]:
-    scrubbed = _strip_quoted_literals(cmd)
+    scrubbed = _strip_trailing_comment(_strip_quoted_literals(cmd))
     targets: list[str] = []
     for seg in (s.strip() for s in _SEGMENT_SPLIT_RX.split(scrubbed) if s.strip()):
+        if EXEMPT_SCRIPT_RX.search(seg):
+            continue  # this segment itself runs marveen-land.sh/update.sh -- exempt, not the whole command
         if _SED_I_RX.search(seg):
             toks = [t for t in seg.split() if t and not t.startswith("-")]
             if len(toks) >= 2:  # toks[0] is "sed" itself only if unquoted; guard anyway
@@ -203,8 +224,6 @@ def main() -> None:
             if not isinstance(raw, str):
                 sys.exit(0)
             if f"{ALLOW_ENV}=1" in raw:
-                sys.exit(0)
-            if EXEMPT_SCRIPT_RX.search(raw):
                 sys.exit(0)
             for cand in _bash_targets(raw):
                 rel = _check_path(cand, cwd, agent, root)
