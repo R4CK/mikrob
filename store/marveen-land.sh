@@ -492,8 +492,14 @@ sync_live_install() {
     # a step that exists nowhere in code, so the next dependency-bump land hits the exact same gap.
     # This does not auto-install either (same risk, unchanged) -- it only makes the gap loud instead
     # of silent, by diffing the two lockfile-relevant files across the fast-forward.
-    if ! git -C "$MAIN" diff --quiet "$before" HEAD -- package.json package-lock.json 2>/dev/null; then
-      say "live install's package.json/package-lock.json changed by this fast-forward -- run 'npm ci --include=dev' in $MAIN by hand (card 5d365589 N3), or the live node_modules stays on the OLD dependency set"
+    # card 426adb21: a blind diff --quiet on both files fired on EVERY landing, because
+    # bump_fork_version (above) touches package.json's "version" field every time. Measured
+    # 2026-11-20: 4+ landings in one day advised npm ci with package-lock.json byte-identical and
+    # package.json differing only in "version" -- one agent ran it, needlessly risky against a
+    # concurrent fleet-test.sh reading the same node_modules. npm_ci_advisory_needed (sourced
+    # above) only fires on a real lockfile change or a package.json change outside "version".
+    if npm_ci_advisory_needed "$MAIN" "$before" HEAD; then
+      say "live install's package.json/package-lock.json changed by this fast-forward -- run 'npm ci --include=dev' in $MAIN by hand (card 5d365589 N3, refined by card 426adb21), or the live node_modules stays on the OLD dependency set"
     fi
   else
     say "live install ($MAIN) NOT fast-forwarded (dirty tree or diverged) -- sync it by hand, tell MikroB"
@@ -569,6 +575,8 @@ rebuild_live_install() {
 . "$(dirname "$0")/bump-fork-version.sh"
 # shellcheck source=./bump-upstream-version.sh
 . "$(dirname "$0")/bump-upstream-version.sh"
+# shellcheck source=./npm-ci-advisory-check.sh
+. "$(dirname "$0")/npm-ci-advisory-check.sh"
 # downward_check (card dfff9b37): what ELSE rides along in origin/develop..<branch>. Shared verbatim
 # with cleancore-land.sh. REPORTS here by default and refuses only under --card <id> -- the reason
 # is measured and written out in landing-downward-check.sh's header (marveen lands whole agent

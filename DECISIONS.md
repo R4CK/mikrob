@@ -29947,3 +29947,24 @@ reserve/release/record szkriptekkel, 4 előzetes 'agy' sorral used=4-re állítv
 3 érintett fájlban. Mutáció: a fix visszaállítva mindkét hívási pontban fix outcome='error'-ra
 -- mind a 4 új pin-teszt pirosra vált (2+2 mockolt + a valós-szkriptes pár); visszaállítva,
 210/210 zöld. `tsc --noEmit` tiszta (ugyanaz a 2 ismert parse5-hiba).
+
+## 2026-11-20 -- marveen-land.sh: npm-ci advisory no longer fires on a version-only bump (kártya 426adb21)
+
+**Measured:** `sync_live_install`'s "run npm ci by hand" advisory fired on `git diff --quiet
+"$before" HEAD -- package.json package-lock.json`, which is true on EVERY fork-own landing
+because `bump_fork_version` touches package.json's `version` field every time. Four landings in
+one day (e5c13c0e, 11c6cab4, ebe20efe, 1c8f6d25) advised npm ci with package-lock.json
+byte-identical and package.json differing only in `version`; one agent ran it on the live
+install because of it (11c6cab4), risky against a concurrent fleet-test.sh reading the same
+node_modules. Reproduced again on c4590365 (merge 1f2744597, base d5374f947): zero diff on both
+files for the merge itself, advisory still fired off the separate version-bump commit.
+
+**Döntés:** új `store/npm-ci-advisory-check.sh`, `npm_ci_advisory_needed <repo> <before> <after>`.
+Advise when package-lock.json changed at all, or when package.json changed in any field other
+than the top-level `version` string (parses both blobs as JSON, not a diff-text pattern match;
+fails closed -- advises -- on anything unparsable). `sync_live_install` now calls this instead of
+the blind two-file `diff --quiet`.
+
+**Ki döntött:** MikroB (kártyanyitás a mérésre), DevO (fullstack, mérés + javítás).
+**Hivatkozás:** kártya `426adb21`; `store/npm-ci-advisory-check.sh`, `store/marveen-land.sh`
+(`sync_live_install`).

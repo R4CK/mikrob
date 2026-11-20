@@ -230,6 +230,10 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   // green-looking, never run" class this file exists to close, one script over (the identical
   // class recurred on quota-shutdown-guard.sh above and vendored-skill-integrity.py before that).
   { file: 'marveen-land.sh', args: ['--selftest-land-notify'] },
+  // New this card (426adb21): carries its selftest as an argument, same shape as its sibling
+  // bump-fork-version.sh right above -- wired here at birth instead of joining the "written,
+  // committed, green-looking, never run" class this file exists to close.
+  { file: 'npm-ci-advisory-check.sh', args: ['--selftest'] },
 ]
 
 /** True iff `file` is a same-directory SYMLINK ALIAS of another file already in `files` -- e.g. the
