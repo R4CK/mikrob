@@ -221,7 +221,11 @@ describe('buildMemorySearchLabelBody', () => {
 // PROJECT_ROOT.
 describe('the STATIC CLAUDE.md block matches the generator (card 5a15cd5a)', () => {
   const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
-  const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+  const AUTH_HEADER_HELPER_RE = /[^\s"'`]*\/store\/agent-auth-header\.sh/g
+  const normalize = (s: string) =>
+    s
+      .replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+      .replace(AUTH_HEADER_HELPER_RE, '<PROJECT_ROOT>/store/agent-auth-header.sh')
 
   it("the committed section in THIS checkout's own CLAUDE.md equals the generator output, modulo PROJECT_ROOT", async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')

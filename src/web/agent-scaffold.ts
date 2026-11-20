@@ -510,6 +510,7 @@ export function hookScriptAlreadyEffectiveInOtherScope(
 // would also match paths of other projects (or ~/.claude/agents/).
 export const INSTALL_ANCHORED_SUFFIXES = [
   '/store/.dashboard-token',
+  '/store/agent-auth-header.sh',
   '/scripts/hooks/',
   '/scripts/skill-index.sh',
   '/scripts/skill-lint.mjs',

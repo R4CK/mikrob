@@ -170,7 +170,10 @@ describe('f22ef741: the ensureAgentIdHeaderSection static commit matches its own
     // than importing the test process's own PROJECT_ROOT/MAIN_AGENT_ID) keeps the pin meaningful
     // for drift in the surrounding prose without being a deployment-config oracle.
     const root = readFileSync(ROOT_CLAUDE_MD_PATH, 'utf-8')
-    const normalize = (s: string): string => s.replace(/cat [^ \n]*\/store\/\.dashboard-token/g, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+    const normalize = (s: string): string =>
+      s
+        .replace(/cat [^ \n]*\/store\/\.dashboard-token/g, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+        .replace(/[^\s"'`]*\/store\/agent-auth-header\.sh/g, '<PROJECT_ROOT>/store/agent-auth-header.sh')
     const begin = root.indexOf(AGENT_ID_HEADER_BEGIN)
     expect(begin, 'agent-id-header block missing from committed root CLAUDE.md').toBeGreaterThanOrEqual(0)
     const nameMatch = /X-Agent-Id: ([^"\s]+)/.exec(root.slice(begin))
