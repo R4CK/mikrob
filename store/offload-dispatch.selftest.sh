@@ -1149,6 +1149,46 @@ run_fallback_site "$DISPATCH" "${CAPHOLD_ARGS[@]}"
 check "L1 baseline (capacity-hold site, real code): blocked shape never reaches freellm-call.sh" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
 
+# ---- card 685f25cb (MikroB measured audit, 2026-11-20): every freellm_call.sh ledger row was
+# agent_id=unknown/card_id=NULL because try_freellm_for_leaf never set FREELLM_CALLER/
+# FREELLM_CARD_ID. Pin that the real assignee + post_id now reach the stub's environment, through
+# BOTH guard-site wrappers (the new trailing arg each threads through to try_freellm_for_leaf). ---
+FREELLM_ENV_STUB="$TMPDIR/freellm-env-stub.sh"
+FREELLM_ENV_OUT="$TMPDIR/freellm-env-out.txt"
+cat > "$FREELLM_ENV_STUB" << 'EOF'
+#!/usr/bin/env bash
+printf 'CALLER=%s CARD_ID=%s\n' "${FREELLM_CALLER:-}" "${FREELLM_CARD_ID:-}" > "$FREELLM_ENV_OUT_FILE"
+exit 2
+EOF
+chmod +x "$FREELLM_ENV_STUB"
+
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "attrib cim" "attrib leiras" attribleaf "task text" attribcard false backend2 \
+  >/dev/null 2>&1
+check "card 685f25cb: exhausted-site wiring passes assignee/post_id to freellm-call.sh as FREELLM_CALLER/FREELLM_CARD_ID" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=backend2 CARD_ID=attribcard"
+
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site capacity-hold false mikrob gemini-ok "attrib cim2" "attrib leiras2" attribleaf2 "task text" attribcard2 false backend3 \
+  >/dev/null 2>&1
+check "card 685f25cb: capacity-hold-site wiring passes assignee/post_id to freellm-call.sh as FREELLM_CALLER/FREELLM_CARD_ID" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=backend3 CARD_ID=attribcard2"
+
+# ---- card 685f25cb: an UNSET assignee (e.g. the plain --test-freellm-fallback-site baseline
+# calls above, which never pass one) falls back to "unknown", not an empty string -- the
+# dashboard's calls list must never show a blank agent. -----------------------------------------
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "attrib cim3" "attrib leiras3" attribleaf3 "task text" attribcard3 false \
+  >/dev/null 2>&1
+check "card 685f25cb: a missing assignee falls back to FREELLM_CALLER=unknown, never blank" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=unknown CARD_ID=attribcard3"
+
 # --- F3 routing-table shadow logging (card cdde2666) -------------------------------------------
 # --test-route-shadow calls card_route_shadow_log() directly, the SAME function and only call
 # site the main leaf loop uses -- not a reimplementation.
@@ -1349,8 +1389,8 @@ M1_MUTANT_DISPATCH="$TMPDIR/offload-dispatch-mutant.sh"
 python3 - "$DISPATCH" "$M1_MUTANT_DISPATCH" << 'PYEOF'
 import sys
 src = open(sys.argv[1], encoding="utf-8").read()
-old = '    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }'
-new = '  }\n}\ntry_freellm_for_leaf_direct_bypass() {\n    { try_freellm_for_leaf $leaf_id $leaf_title $task $post_id $synthetic && return 0; }'
+old = '    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$assignee" && return 0; }'
+new = '  }\n}\ntry_freellm_for_leaf_direct_bypass() {\n    { try_freellm_for_leaf $leaf_id $leaf_title $task $post_id $synthetic $assignee && return 0; }'
 assert old in src, "fixture line not found -- production call site text changed, update the mutant"
 open(sys.argv[2], "w", encoding="utf-8").write(src.replace(old, new, 1))
 PYEOF
