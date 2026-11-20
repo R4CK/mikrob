@@ -29331,8 +29331,8 @@ Gate: a delta a 62fc59ac8-on már megadott QA + Cybered sign-offot nem ismétli 
 a merge-delta saját REVIEW-ja.
 ---
 
-**2026-11-16 -- Kártya 60aeca01: e7f91eb9 + d8d035f8 utómunka (szerző-trim, szomszéd fogyasztók,
-refusal-alakú generált komment, model-pin viselkedési teszt)**
+## 2026-11-16 -- Kártya 60aeca01: e7f91eb9 + d8d035f8 utómunka (szerző-trim, szomszéd fogyasztók,
+refusal-alakú generált komment, model-pin viselkedési teszt)
 
 Forrás: WhiteHat2 (e7f91eb9, komment 16689) F1/F3/F4/F5, plusz d8d035f8 N1. Mind a két szülő-kártya
 mar landolt; ez a maradek 5 lelet lezarasa.
@@ -29435,6 +29435,228 @@ kanban-decisions-guard, kg-import-decisions-log) -> 5 Test Files passed (5), 37 
 a delta a 6042ce6df-en már megadott QA + Cybersec2 sign-offot nem ismétli meg; ez a komment a
 merge-delta saját REVIEW-ja (kanban komment 33410).
 
+## 2026-11-20 -- live-checkout-write-guard.py PreToolUse hook (kártya 0c3b13b5)
+
+**Döntés:** két élő incidens (2026-11-20 11:55 backend, 12:24 backend3) sub-agent közvetlenül a
+LIVE checkoutba (`/home/neon/marveen`) írt egy tracked fájlt a saját worktree helyett, a második
+blokkolta Peti jóváhagyott `update.sh`-ját. Új `scripts/hooks/live-checkout-write-guard.py`
+PreToolUse hook (matcher `Bash|Write|Edit|MultiEdit|NotebookEdit`) elutasít egy tracked
+útvonalra menő írást, ha a hívó sub-agent identitásra oldódik (MikroB és `marveen-land.sh`/
+`update.sh` mentes), és a saját worktree-jét jelöli ki helyette. Untracked runtime útvonal
+(`store/*.json`, logok, az ügynök saját `agents/<név>/` fája) változatlanul engedett.
+
+**Mit:** a hook maga + `live-checkout-write-guard.selftest.py` (26/26 zöld) elsőre a CHECKOUT-only
+`.claude/settings.json`-ba ment be; a `hook-registration-completeness.test.ts` SEEDING/CHECKOUT
+megkülönböztetése miatt ez önmagában nem ért volna el semelyik frissen seedelt sub-agentet, ami
+pont a kártya célja lett volna. Javítva: `injectLiveCheckoutWriteGuard`/`ensureLiveCheckoutWriteGuard`
+pár az `agent-scaffold.ts`-ben + a boot-time migrációs ciklus a `web.ts`-ben, ugyanaz a minta mint a
+meglévő `ensureDbWriteGuard`.
+
+**Teszt:** teljes `fleet-test.sh --ref 3c5a761da28873129510cfc4ac2f50eaef822eae`: 1396 fájl zöld,
+1 skipped (1397); 43958 teszt zöld, 132 skipped (44090). `lint-ratchet.sh`: alapvonal tart (420
+lelet). Az 5 önhibás bukás (2 hook-registration-completeness rés, 3 project-settings-hook-anchor
+pin-eltérés, mind a pin-tesztek frissítésének kihagyásából) javítva, nem reprodukálódik.
+
+**Ki döntött:** MikroB (kártya 0c3b13b5, dispatch). backend2 végezte. Gate: QA + Cybersec.
+
+## 2026-11-20 -- QA FAIL fix: EXEMPT_SCRIPT_RX bypass a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** QA (34714. komment, Gate-SHA 3f97f0a43) élőben reprodukálta: a `marveen-land.sh`/
+`update.sh` mentesség egy sima substring-keresés volt a TELJES nyers Bash parancson, tehát egy
+sub-agent elég volt, ha BÁRHOL megemlítette a script nevét (pl. egy záró `# update.sh` komment),
+és a guard a TELJES parancsra kikapcsolt -- pont a fc1bb414 incidens, amit a kártya megszüntetni
+hivatott. Javítás: a regex a (idézett literálokból tisztított, `&&`/`||`/`;`/`|` mentén
+szegmentált) parancsszegmens ELEJÉRE horgonyzott, és szegmensenként, nem a teljes nyers szövegen
+alkalmazva -- csak az a szegmens mentes, amelyik TÉNYLEGESEN a scriptet futtatja.
+
+A javítás közben a saját új teszt egy MÁSIK, ezzel összefüggő hiányt is felfedett: egy záró
+shell-komment a `sed -i` naiv utolsó-token célkeresését a komment-szövegre csúsztatta a valós
+fájlútvonal helyett. Javítva: `_strip_trailing_comment`, a szegmentálás előtt alkalmazva.
+
+**Mutáció-bizonyítva:** mindkét javítás visszaállítva egy eldobható másolaton -> pontosan a 3 új
+regressziós eset vált pirosra (29/3), a többi zöld marad.
+
+**Ki döntött:** QA FAIL (34714, Gate-SHA 3f97f0a43) -> Fix-Direction: backend2 (a guard szerzője,
+a javítást a 4b. szabály szerint más gatel-eli). backend2 végezte a javítást. Gate: QA + Cybersec.
+
+## 2026-11-20 -- CYBERSEC F1+F2 javítás a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** Cybersec GO (34759, Gate-SHA 3f97f0a43) két MEDIUM leletet is jelzett a mentesség-ág
+Bash útján. F1: a mentesség akkor is matchelt, ha a CÉL (nem a hívott program) volt
+`marveen-land.sh`/`update.sh` nevű, pl. `sed -i s/a/b/ store/update.sh` mentes volt, holott nem a
+scriptet futtatja, hanem RÁ ír -- az előző (QA FAIL) javítás anchor-regex-e ezt már lezárta,
+rögzítő fixture-fájlok + regressziós eset hozzáadva. F2: idézett redirect/tee/sed-i cél a régi
+`_strip_quoted_literals` miatt a cél-regexek ELŐTT ürült üres idézőpárra, tehát egy teljesen
+hétköznapi `echo x > "fleet-test.sh"` alak sosem lett ellenőrizve (néma ALLOW). Javítás: a
+destruktív üres-idézőpárra-cserélés helyett egy HOSSZ-MEGTARTÓ neutralizáló
+(`_neutralize_quotes`) csak a szegmens-/komment-határok megtalálására szolgál
+(`_split_segments`), a cél-kinyerés a VALÓDI, idézett szegmens-szövegen fut; a három
+cél-regex idézett-string-VAGY-sima-szó mintára bővült, a `sed -i` tokenizálás `shlex`-re váltott.
+
+**Mutáció-bizonyítva:** az F1 anchor visszaállítva -> pontosan a 2 új F1-eset pirosra vált;
+az F2 idézet-kezelő visszaállítva -> pontosan a 3 új F2-eset pirosra vált; semelyik eset nem
+mozdul a másik mutánsnál (34 eset összesen).
+
+**Ki döntött:** Cybersec GO (34759, Gate-SHA 3f97f0a43, két MEDIUM lelet). backend2 végezte a
+javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA + Cybersec.
+
+## 2026-11-20 -- CYBERSEC NO-GO 34780 javítás a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** Cybersec2 NO-GO (34780, Gate-SHA d03808411) az F1+F2 javításon egy REGRESSZIÓT (N1)
+és két új leletet (N2, N3) talált. N1: a `_strip_trailing_comment` a komment-kezdettől a TELJES
+string VÉGÉIG vágott, nem csak a saját soráig -- egy komment-sor egy többsoros Bash-parancsban
+az ÍRÁS ELŐTT így elrejtette az egész írást (régi BLOCK -> új ALLOW regresszió), holott a
+komment-sor + új írás a normál agent-Bash-hívás alakja. Javítás: soronkénti vágás, csak a
+komment saját sorának végéig. N2: a cél-regexek (tee/redirect/git-checkout) a VALÓDI, idézett
+szegmens-szövegen futottak, tehát egy idézett stringen BELÜLI `>` (egy commit-üzenet, egy echo
+argumentum) valódi redirectnek tűnt (téves denial). Javítás: a match-et a neutralizált
+(idézet-vak) másolaton keresi, a célt a valódi szövegből ugyanazon offszeten vágja ki. N3: a
+névalapú mentesség-regex engedte, hogy egy hívó szegmens SAJÁT kimenet-redirectje egy MÁSIK
+git-követett fájlba írjon a mentesség mögé bújva (`bash update.sh > <éles>/store/fleet-test.sh`
+téves ALLOW volt, mert a teljes szegmens kimaradt a célkeresésből, amint "hívásnak" matchelt);
+emellett a `\S*/?` engedte, hogy egy szóköz nélküli redirect direkt update.sh-ba hívásnak
+tűnjön. Javítás: a névalapú mentesség TELJES eltávolítása -- egy sima hívásnak nincs
+sed/tee/redirect/checkout célja, tehát a mentesség sosem volt szükséges egy ilyen hívás
+engedélyezéséhez, csak (hibásan) egy veszélyes cél kihagyásához.
+
+**Mutáció-bizonyítva:** mindhárom javítás egymástól függetlenül, eldobható másolaton visszaállítva
+-> pontosan a saját regressziós esete(i) váltanak pirosra, semelyik másik eset nem mozdul.
+Selftest: 44/44 zöld (34 korábbi + 3 N1 + 2 N2 + 5 N3).
+
+**Mérés (fán 0301ae533):** live-checkout-write-guard.selftest.py 44/44 zöld.
+
+**Ki döntött:** Cybersec2 NO-GO (34780, Gate-SHA d03808411, N1 regresszió + N2/N3 lelet).
+backend2 végezte a javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA +
+Cybersec (cybersec2 a delta-t gateli, saját NO-GO-ja szerint).
+
+## 2026-11-20 -- CYBERSEC NO-GO (4. kör): végtelen ciklus a komment-levágásban (kártya 0c3b13b5, delta)
+
+**Döntés:** cybersec2 egy ÚJABB NO-GO-t adott a soronkénti komment-levágás javítására (`0301ae533`):
+a `_COMMENT_START_RX = r"(?:^|\s)#"` FOGYASZTÓ `\s`-sel illesztett, tehát ha a `#` NEM az első
+sorban állt, a match kezdete (`m.start()`) a `#` ELŐTTI sortörésre esett. A `neutral.find("\n",
+start)` ezután UGYANAZT a sortörést találta meg azonnal (a keresés pont `start`-tól indul, és
+ott épp sortörés van), tehát `end == start`, és a ciklus SOHA nem haladt előre -- végtelen ciklus
+bármely többsoros parancson, amiben a `#` nem az első sorban van. A flotta fail-closed hook-
+wrapperje alatt egy soha nem visszatérő guard effektíve MINDEN ilyen szokásos Bash-hívást
+TILTANA (timeout). Javítás: a fogyasztó `\s` helyett zero-width lookbehind
+(`(?:^|(?<=\s))#`), így `m.start()` mindig a `#` maga, sosem az előtte álló whitespace -- a
+`find("\n", start)` ettől a ponttól indul, és garantáltan -1-et VAGY egy `start`-nál NAGYOBB
+indexet ad. Védelmi második réteg: explicit progress-guard (`if end <= search_from: break`),
+ha egy jövőbeli regex-módosítás újra megnyitná ezt a hibaosztályt.
+
+**Mutáció-bizonyítva:** a regex-javítás ÖNMAGÁBAN visszaállítva (a progress-guard marad) -- a
+teszt-korpusz összes esete továbbra is zöld marad (a guard önmagában már elég ehhez a
+korpuszhoz, korai `break`-kel, a komment levágása nélkül, de a kimaradt írás a maradék szövegben
+még megtalálható marad). A regex-javítás ÉS a progress-guard EGYÜTT visszaállítva -- pontosan a
+várt 3 időzített eset esik timeout-ba (5 mp-es subprocess-plafonnál).
+
+**Mérés (fán 85d9c48d6):** live-checkout-write-guard.selftest.py 71/71 zöld (47 korábbi + 4
+időzített regressziós eset, mindegyik < 1 mp + 20 fuzz-eset véletlen komment-pozícióval).
+
+**Ki döntött:** Cybersec2 NO-GO (4. kör, Gate-SHA 0301ae533, végtelen ciklus). backend2 végezte
+a javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA + Cybersec.
+## 2026-11-20 -- context-compact-monitor.sh: a cél-ágenslista a live flotta-roster, nem egy literál (kártya a2028f35)
+
+**Probléma:** a `TARGET_AGENTS` alapértéke fixen `backend backend2 fullstack cybered cybersec`
+volt, felülírás nélkül -- tehát `backend3`, `cybersec2`, `qa`, `qa2` SOHA nem lett compactolva,
+függetlenül a kontextusuk méretétől. 2026-11-19 este `qa2` (~20:4x) és `cybersec2` (~21:5x,
+~91%) context-guard restartot kapott. Ez a kódminőségi 14. elv (semmi nem lehet kódba égetve)
+megsértése is: a roster a flotta aktuális állapotától, nem egy script-beli konstanstól kellene
+függjön.
+
+**Döntés (MikroB dispatch, msg_id:21821):** a `TARGET_AGENTS` most a `GET /api/agents`
+(`running:true`) hívásból származik, egy konfigurálható exclude-listával
+(`COMPACT_EXCLUDE_AGENTS`, alapértelmezés `mikrob` -- az orchestrátor, ugyanaz az indok mint
+korábban volt a hardcode-ban: egy mid-flight compact ott az egész flottát zavarná, nem egy
+dolgozót). A `COMPACT_TARGET_AGENTS` explicit felülírás megmaradt (teszteléshez/opt-inhez). Ha a
+roster-lekérdezés sikertelen (nincs token, dashboard nem válaszol, hibás JSON), egy LOGOLT,
+degradált biztonsági-háló lista (`TARGET_AGENTS_FALLBACK`, a régi 5 név + backend3/cybersec2/
+qa/qa2) ugrik be -- ez nem az elsődleges mechanizmus, csak védőháló, hogy egy API-kiesés ne
+fagyassza le csendben a teljes monitort.
+
+**Mérés:** élő `--dry-run` a fixelés után azonnal megmutatta a hiba valódi méretét -- `qa`
+627k/200k kontextussal (sonnet-5 ablak, 50%-os küszöb 100k) korábban LÁTHATATLAN volt a
+monitornak, mert nem szerepelt a hardcode-ban. 8 új selftest-eset (`live_target_agents_from_json`
+tiszta, fixture-alapú: futó/nem-futó szűrés, exclude-lista, hozzáadott/eltávolított ágens a
+script módosítása nélkül megjelenik/eltűnik, hibás JSON fail-closed üresre), összesen 63/63 PASS.
+A meglévő `context-compact-monitor-no-direct-pane-write.test.ts` (6/6) változatlanul zöld --
+a `/api/agents/:agent/compact` hívási út nem változott.
+
+Gate: QA + Cybersec (a dispatch szerint, mert `/compact`-ot küld ágens-panelekbe). **Ki
+döntött:** MikroB (dispatch), a javítást DevO (fullstack) végezte.
+
+## 2026-11-20 -- context-compact-monitor.sh: TARGET_AGENTS-roster unszanitizált agent-nevek -- delta-fix (kártya a2028f35, CYBERSEC NO-GO 34466)
+
+A kártya a2028f35 eredeti fixje (Gate-SHA 5d6b6fc20) a hardkódolt `TARGET_AGENTS` listát a
+`GET /api/agents` élő roszterre cserélte -- helyesen oldotta meg az eredeti hibát (backend3,
+cybersec2, qa, qa2 nem kapott kontextus-tömörítést), de cybersec2 NO-GO-t adott rá (komment 34466,
+F1 MEDIUM): a roszter NÉV-mezője (agents/ alatti könyvtárnevek + futó tmux-session) ellenőrzés
+nélkül jutott el három nyelőbe `store/context-compact-monitor.sh`-ban -- `for agent in $TARGET_AGENTS`
+(shell word-splitting + pathname globbing), `read_agent_ctx` (nyers SQL-string-splice a sqlite3
+CLI felé, az adatbázis írható módban nyitva), és a `/api/agents/${agent}/compact` URL-útvonal.
+
+**A döntés:** az allowlist-regexet NEM a NO-GO komment szó szerinti javaslatából vettem (cybersec2
+és a sibling cybersec komment egymástól eltérő regexet adott), hanem a rendszer MÁR LÉTEZŐ,
+hitelesnek számító névábécéjéből vezettem le: `src/web/sanitize.ts` `sanitizeAgentName()`
+függvényéből (kisbetű, NFD-normalizált, `[a-z0-9-]`-n kívül mindent levág, kötőjelet összevon/levág,
+max 50 karakter) -> `^[a-z0-9][a-z0-9-]{0,49}$` fullmatch. Ez azért fontos, mert a két verdikt
+javaslata EGYMÁSTÓL is különbözött -- ha bármelyiket szó szerint követtem volna, a regex nem
+egyezett volna a tényleges névábécével, és a különbség csak egy jövőbeli éles névnél derült volna ki.
+`read_agent_ctx`-ben emellett az agent-érték idézőjel-duplázása (defense in depth, cybersec2 saját
+javaslata) zárja be a sqlite3 string-splice-t egy második réteggel, és `set -uo pipefail` ->
+`set -ufo pipefail` (`-f`, noglob) zárja a shell-glob nyelőt.
+
+**Mérés:** 5 új selftest-eset (`store/context-compact-monitor.sh --selftest`, mind zöld): SQL-splice
++ glob + whitespace nevű hoszt-roszter kiszűrve; csak-írásjel névből nem marad semmi; 51 karakteres
+név kiszűrve; nem-string `name` mező kiszűrve; `read_agent_ctx` idézőjel-duplázásának bizonyítása
+egy eldobható sqlite-DB-n. Mindkét új védelem mutáció-teszttel igazolt terhelő (`guards-that-pin-
+behaviour`): az allowlist `.* `-re gyengítve 3 selftest-eset lesz FAIL, az idézőjel-duplázás
+kivéve 1 eset lesz FAIL. Regresszió: `fleet-test.sh --ref b6e512d85` a
+`context-compact-monitor-no-direct-pane-write.test.ts`-n -- 6/6 zöld.
+
+Gate-SHA: b6e512d85ca090c5a8d2fb01a92aded214eab04b (delta re-gate kérve cybersec-től, mivel
+cybersec2 adta az eredeti NO-GO-t és a fix-irányt). **Ki döntött:** cybersec2 (NO-GO, komment 34466),
+a fixet DevO (fullstack) készítette.
+
+## 2026-11-20 -- a01d8a3d: Shadow-mode agent-identity mismatch logging on schedule routes
+
+**Context:** The fleet shares one dashboard Bearer token; any token holder can self-declare any
+agent identity in the `agent` field of schedule creation/update with zero check against the
+caller's own authenticated identity. Confirmed by reading the full handler (both branches) -- no
+`ctx.auth` reference anywhere in `src/web/routes/schedules.ts` before this change.
+
+**Overlap check vs 2520b85a / 52114c2f / ccbb718a:** not a duplicate. Those slices are the general
+shift of every dashboard HTTP call from the shared token to a per-agent key, then (ccbb718a)
+enforcing it fleet-wide; 52114c2f (round 6, still gating) measured 0% real adoption as of
+2026-11-07. This card's hole is independent of that rollout: it exists regardless of whether a
+caller's own key machinery from 2520b85a is deployed, because it is about the schedules route
+never checking `ctx.auth` at all. The fix reuses the SAME DeviceKeyScope/auth-gate machinery
+52114c2f measures (`agentKeyToAgentId`, `ctx.auth.agent`) rather than building new infrastructure.
+Full analysis: card a01d8a3d comment 34940.
+
+**Decision:** shadow mode only, this round. Added `callerAgentIdentity`/`warnIfAgentMismatch` to
+both the create and update schedule handlers in `src/web/routes/schedules.ts`: when the caller's
+`ctx.auth`-derived identity and the declared `agent` field are both present and differ, log a
+`logger.warn` with both values (mirrors the existing `owner_mismatch` memory-PUT warn pattern) --
+never refuse the write. Enforce (owner/MikroB-only restriction + "cannot act as another agent"
+refusal test, the card's remaining Kész-ha item) is explicitly deferred to a follow-up round,
+gated on 52114c2f's own key rollout landing first -- enforcing now would reject every agent's own
+self-reschedule/disable-on-busy traffic the same way ccbb718a's premature enforce would have (per
+52114c2f's own 0%-adoption measurement).
+
+**Test:** `src/__tests__/schedule-agent-identity-shadow.test.ts`, 6 new tests (device-key mismatch,
+X-Agent-Id-token mismatch, matching identity, plain-token no-claim, non-agent device key, update
+mismatch). Mutation-verified: reverting only the two `warnIfAgentMismatch(...)` call sites turns
+exactly the 3 mismatch-detection assertions red, the other 3 stay green. Gate measurement
+(`fleet-test.sh --ref f0413d8f1`, this file + `schedule-once.test.ts` + `schedules-module.test.ts`):
+3 test files passed, 49 tests passed, 1.23s.
+
+**Not in this round:** the enforce/refusal restriction and its test -- see above.
+
+**Who decided:** backend, design+overlap verdict posted as card comment 34940 (GO-WITH-CHANGES),
+self-advance pickup per fleet-nudger msg 22361. Gate: QA + Cybersec + Cybered per the card's own
+`Gate:` line (round 1 of a phased closure -- REVIEW scopes the verdict request to this round's
+Kész-ha items only).
 ## 84f90b4e: card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh (2026-11-20)
 
 **Context:** proposed scope rejected (MikroB decision, card comment, 2026-11-20): a raw
