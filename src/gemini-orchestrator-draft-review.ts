@@ -57,8 +57,8 @@ import { readFileSync, lstatSync, realpathSync } from 'node:fs'
 import { join, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
-import { reserveGhostCallSlot, releaseGhostCallSlot } from './gemini-ghost-budget.js'
+import { geminiGenerate, DEFAULT_GEMINI_MODEL, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
+import { reserveGhostCallSlot, releaseGhostCallSlot, recordGhostCallDetail, randomHivasId } from './gemini-ghost-budget.js'
 import { getSecret } from './web/vault.js'
 import { getKanbanCard, getKanbanComments, addKanbanComment, getLabelsForCard } from './db.js'
 import { isGeminiOrchestratorEnabled, readFallbackRoute, isBlockedByLandedFilter } from './gemini-orchestrator.js'
@@ -320,11 +320,17 @@ export async function reviewOneCard(
     // on the SAME counter gemini-agy-call.sh uses, atomically, right before the real network
     // call below -- not once per tick. Required (not optional) so every call site states its
     // policy explicitly, same as every other deps field here.
-    reserveSlot: (cardId: string) => boolean
+    reserveSlot: (cardId: string, status?: 'ok' | 'error', segedHivoPath?: string, hivasId?: string) => boolean
     // Card 5cb861e6: un-spends a reservation on a retriable 503 (see reserveSlot's own comment
     // for why that matters). Optional, defaulting to the real releaseGhostCallSlot, so existing
     // deps object literals (production and test) that predate this field keep compiling unchanged.
     releaseSlot?: (cardId: string) => boolean
+    // Card cbeeba61: logs model/duration/outcome/tokens for the reservation row reserveSlot above
+    // just wrote (same hivas_id). Optional, same "predates this field" compiling rationale as
+    // releaseSlot above.
+    recordDetail?: (hivasId: string, cardId: string, detail: {
+      model: string; durationMs: number; outcome: 'ok' | 'error' | 'blocked'; totalTokens?: number; taskType: string
+    }, segedHivoPath?: string) => boolean
     // Injectable (mirrors readDraft) so the pure decision logic stays testable without touching
     // the real filesystem -- defaults to the real, fs-backed resolveDraftPathSafely.
     resolveDraftPath?: (relPath: string) => string | null
@@ -401,17 +407,29 @@ export async function reviewOneCard(
   // before the real network call, not once per tick -- a tick carrying many eligible drafts must
   // stop making real Gemini calls the moment the shared fleet-wide budget is out, not after
   // exhausting every eligible card in its own queue.
-  if (!deps.reserveSlot(cardId)) return { id: cardId, reviewed: false, reason: 'hourly_cap_reached' }
+  const hivasId = randomHivasId()
+  if (!deps.reserveSlot(cardId, 'ok', undefined, hivasId)) return { id: cardId, reviewed: false, reason: 'hourly_cap_reached' }
+  const recordDetail = deps.recordDetail ?? recordGhostCallDetail
 
   const prompt = buildReviewPrompt(meta, draftText)
+  const startMs = Date.now()
   const result = await deps.callGemini({ apiKey, prompt })
+  const durationMs = Date.now() - startMs
   if (!result.ok || !result.text) {
     // Card 5cb861e6: a 503 did not come from anything the fleet's own usage caused -- un-spend
     // the slot reserved above. Every other failure reason keeps the spend (a real, attributable
     // call outcome).
-    if (result.httpStatus === 503) (deps.releaseSlot ?? releaseGhostCallSlot)(cardId)
+    const released = result.httpStatus === 503
+    if (released) (deps.releaseSlot ?? releaseGhostCallSlot)(cardId)
+    // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording 'error' here re-spends the
+    // slot just released above, since calls_of()/dedupeCalls take the LAST row per hivas_id.
+    // 'blocked' marks the row without undoing the release.
+    recordDetail(hivasId, cardId, { model: DEFAULT_GEMINI_MODEL, durationMs, outcome: released ? 'blocked' : 'error', taskType: 'ghost-review' })
     return { id: cardId, reviewed: false, reason: result.reason ?? 'no_response' }
   }
+  recordDetail(hivasId, cardId, {
+    model: DEFAULT_GEMINI_MODEL, durationMs, outcome: 'ok', totalTokens: result.totalTokens, taskType: 'ghost-review',
+  })
 
   const verdict = parseReviewResponse(result.text)
   if (!verdict) return { id: cardId, reviewed: false, reason: 'invalid_response_schema' }

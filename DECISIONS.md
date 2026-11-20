@@ -29882,3 +29882,68 @@ fail-closed módon -- a funkció nem tud csendben eltűnni. Vissza az eredeti k�
 Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
 kérve QA2 + CYBERED-től, csak ezen a soron). **Ki döntött:** Cybered (komment 34648), a fixet
 DevO (fullstack) készítette.
+
+---
+
+## 2026-11-20 -- Kártya cbeeba61: Gemini Ghost hívások model/duration/outcome nélkül logolva
+
+**Kontextus:** Peti Telegram 14348 (2026-11-20 15:14, Gemini calls page screenshot): model
+'ismeretlen' 154 soron, nincs idő/token/rating, a napló majdnem mind hivo='quota-bridge-ghost',
+kartya='n/a (ordering-sweep)'. Mérve: `store/seged-hivo-naplo.jsonl` 164 sorából 162 a Ghost
+pipeline-tól (`src/gemini-ghost-budget.ts`, seged='agy-ghost'). A `src/web/routes/gemini-
+calls.ts` lap KIZÁRÓLAG ezt a jsonl fájlt olvassa, hivas_id szerint, "utolsó sor nyer"
+(dedupeCalls) -- NEM az llm_ledger táblát, bár a RawRow interfész már deklarálja a modell/
+duracio_s/tokens_total mezőket (az olvasó oldal már kész volt rá, az ÍRÓ oldal soha nem
+töltötte ki).
+
+**Gyökér-ok:** `reserveGhostCallSlot()` csak a BUDGET-foglalás sorát írja (hívás ELŐTT, hogy a
+check-then-append atomi legyen) -- hardcode `feladattipus: 'kod'`, nincs model/duration/token.
+A valós hálózati hívás (`gemini-orchestrator.ts` rangsorolás, `gemini-orchestrator-draft-
+review.ts` kártya-review) UTÁN sosem írt gazdagabb sort.
+
+**Döntés:** új `recordGhostCallDetail(hivasId, cardId, detail, segedHivoPath?)` függvény
+(`gemini-ghost-budget.ts`), amit a hívó a VALÓS hívás UTÁN hív, a reserveGhostCallSlot-nak ÁTADOTT
+UGYANAZZAL a hivas_id-vel (új `randomHivasId()` export, a hívó generálja ELŐRE és adja át
+mindkét függvénynek -- `reserveGhostCallSlot` kapott egy opcionális 4. `hivasId` paramétert,
+visszamenőleg kompatibilis, a visszatérési típusa VÁLTOZATLAN `boolean`, hogy a meglévő
+`if (!reserveSlot(...))` hívóhelyek és teszt-stub-ok ne törjenek). A detail-sor UGYANAZZAL a
+hivas_id-vel megy -- a page dedupeCalls-ja ezt mutatja, nem kettőzi a hívásszámot. Igazi task
+type ('ghost-rank' a rangsorolásnak, 'ghost-review' a kártya-review-nak), a valós model id (a
+REST út DEFAULT_GEMINI_MODEL-je, az agy-CLI út AGY_MODEL-je -- ez utóbbi csak a `gemini-
+orchestrator.ts` saját route-választásából ismert, ezért a modell nevet onnan vezettem át
+explicit paraméterként, nem a decideGeminiOrder saját tippjéből). Nincs prompt/response szöveg
+logolva (a `GhostCallDetail` típusnak nincs is ilyen mezője). ÚJ llm_ledger sor is íródik
+(provider=gemini, agent=quota-bridge-ghost), best-effort, fire-and-forget -- egy hiba itt soha
+nem változtatja meg a hívó eredményét.
+
+**Teszt:** 204/204 zöld a 3 érintett teszt-fájlban (`gemini-ghost-budget.test.ts` +4 új eset
+valódi flock+python3 sandbox-ban: model/duration/outcome/task-type a helyes sorban, error-ágon
+nincs tokens_total, a sor KIZÁRÓLAG a deklarált metaadat-mezőket tartalmazza (nincs prompt-
+tartalom), llm_ledger sor is íródik; `gemini-orchestrator.test.ts` + `gemini-orchestrator-draft-
+review.test.ts` meglévő 200 teszt zöld marad változatlanul). `tsc --noEmit` tiszta (a 2 ismert,
+független parse5-hiba leszámítva). Mutáció: a RECORD_DETAIL_SCRIPT task_type-ját visszaírtam
+'kod'-ra -- a 2 új "right task type" teszt pirosra vált; visszaállítva, 204/204 zöld.
+
+**Nincs benne:** a "Gemini page többé nem mutat ismeretlen-t" kritérium élő méréssel (a kártya
+saját "measured after one real tick" pontja) -- ez landolás UTÁN, egy valós Ghost tick-kel
+igazolható, külön kommentben követi, ugyanúgy mint 9fb61222/9963bf35 élő mérései.
+
+**Ki döntött:** Peti (Telegram 14348) + MikroB (kártya cbeeba61). backend2 végezte a javítást.
+Gate: QA + Cybersec (a kártya saját kijelölése).
+
+**Delta re-gate (ab107c21c -> jelen commit):** Cybersec2 NO-GO (kártya cbeeba61, msg 22428):
+az új detail-sor ugyanazzal a hivas_id-vel, status='error', közvetlenül a releaseSlot utáni
+503-on, visszaírja a kártya 5cb861e6 saját un-spend-jét (calls_of()/dedupeCalls az UTOLSÓ sort
+nézi egy hivas_id-re, és a RESERVE_SCRIPT budget-számlálója csak a status='blocked' sort zárja
+ki) -- mérve: used 1 -> 0 release-en -> 1 vissza a record-on. Javítás: a két hívási pont
+(gemini-orchestrator.ts decideGeminiOrder, gemini-orchestrator-draft-review.ts reviewOneCard)
+most outcome='blocked'-ot ír, ha a slot-ot released-eltük (result.httpStatus===503), 'error'-t
+egyébként -- a GhostCallDetail típus már eleve ismerte a 'blocked' értéket, a gemini-calls.ts
+olvasó oldal is kezeli (kizárja az órai ablakból, saját summary-bucket-je van). Teszt: 6 új eset
+(gemini-orchestrator.test.ts +2, gemini-orchestrator-draft-review.test.ts +2, mockolt
+recordDetail-lel a pontos outcome-ot pinolva; gemini-ghost-budget.test.ts +2, a VALÓS
+reserve/release/record szkriptekkel, 4 előzetes 'agy' sorral used=4-re állítva, igazolva hogy a
+'blocked' út used-et 4-en tartja, az 'error' kontroll pedig vissza 5-re spendeli). 210/210 zöld a
+3 érintett fájlban. Mutáció: a fix visszaállítva mindkét hívási pontban fix outcome='error'-ra
+-- mind a 4 új pin-teszt pirosra vált (2+2 mockolt + a valós-szkriptes pár); visszaállítva,
+210/210 zöld. `tsc --noEmit` tiszta (ugyanaz a 2 ismert parse5-hiba).
