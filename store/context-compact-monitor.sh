@@ -40,13 +40,26 @@ DB="$ROOT/store/claudeclaw.db"
 STATE="$ROOT/store/context-compact-state.json"
 LOG="$ROOT/store/context-compact-monitor.log"
 
-# Ceiling-runners only (measured 2026-08-06). qa/fron-teddy are already at target and must not be
-# touched -- compacting an agent that is not the problem is pure cost.
+# ROSTER SOURCE (card a2028f35): the live fleet roster (GET /api/agents, running:true), not a
+# literal list. The old hardcoded "backend backend2 fullstack cybered cybersec" silently excluded
+# every agent added since -- backend3/cybersec2/qa/qa2 were NEVER compacted no matter how high
+# their context climbed (qa2 and cybersec2 hit ~91% and were context-guard restarted 2026-11-19).
+# live_target_agents (defined below, after HDR_FILE exists) computes TARGET_AGENTS from this.
 #
 # mikrob is EXCLUDED by default despite carrying the largest context (632k measured). It is the
 # orchestrator: it dispatches, gates and answers Peti, and a mid-flight compact there disturbs the
-# whole fleet rather than one worker. Opt it in deliberately via COMPACT_TARGET_AGENTS if wanted.
-TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-backend backend2 fullstack cybered cybersec}"
+# whole fleet rather than one worker. Opt it in deliberately via COMPACT_EXCLUDE_AGENTS (remove it
+# from the list) if wanted.
+#
+# COMPACT_TARGET_AGENTS, if set, still OVERRIDES the roster entirely (explicit opt-in / testing),
+# same override name as before for backward compatibility.
+COMPACT_EXCLUDE_AGENTS="${COMPACT_EXCLUDE_AGENTS:-mikrob}"
+# The pre-roster fallback, used ONLY if the live roster cannot be fetched (no token, dashboard
+# down, bad JSON) -- a degraded safety net, not the primary mechanism (which is the live query
+# below). Logged loudly when it is used, so a persistent outage here is not another silent 8-day
+# freeze.
+TARGET_AGENTS_FALLBACK="backend backend2 fullstack cybered cybersec backend3 cybersec2 qa qa2"
+TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-}"
 
 # THRESHOLD IS A PERCENTAGE OF THE MODEL CONTEXT WINDOW, NOT A TOKEN COUNT (Peti rule, CLAUDE.md
 # 2026-08-14, commit 4f315c8; card 35533cca). A fixed token count means something different on every
@@ -120,6 +133,20 @@ threshold_tokens_for_model() {
   max_tokens="$(compact_max_tokens)"
   if [ "$pct_threshold" -lt "$max_tokens" ]; then echo "$pct_threshold"; else echo "$max_tokens"; fi
 }
+# live_target_agents_from_json <agents-json> <exclude-list> -> space-separated running agent
+# names minus the exclude list, sorted. Pure/isolated so the selftest exercises it against a
+# fixture instead of a live API call -- the whole point of this card is that the roster changes
+# without editing this script, so the test has to prove that by varying the fixture, not the code.
+live_target_agents_from_json() {
+  python3 -c "
+import json, sys
+agents = json.loads(sys.argv[1])
+exclude = set(sys.argv[2].split())
+names = [a['name'] for a in agents if a.get('running') and a.get('name') not in exclude]
+print(' '.join(sorted(names)))
+" "$1" "$2" 2>/dev/null
+}
+
 COOLDOWN_MIN="${COMPACT_COOLDOWN_MIN:-45}"
 # Only trust a reading this fresh; a stale row means the agent is parked, and compacting a parked
 # session wakes it up for nothing.
@@ -486,7 +513,29 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "NOTE: running as root, skipping the read-only-file atomicity case (counter)"
   fi
 
-  [ "$fails" -eq 0 ] && { echo "selftest OK (55 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
+  # --- LIVE ROSTER (card a2028f35: derive TARGET_AGENTS from the fleet, not a literal) -----------
+  # The old hardcoded list meant adding an agent to the fleet never got it compacted until someone
+  # remembered to edit this file by hand. These prove the set reacts to the roster, not to a diff.
+  agents_json='[{"name":"backend","running":true},{"name":"qa2","running":true},
+    {"name":"mikrob","running":true},{"name":"fron-ted","running":false}]'
+  s "running agents, sorted, minus the exclude list" "backend qa2" \
+    "$(live_target_agents_from_json "$agents_json" mikrob)"
+  s "a non-running agent is never included" "backend qa2" \
+    "$(live_target_agents_from_json "$agents_json" mikrob)"
+  s "an agent ADDED to the roster (running) appears without any script change" "backend fron-ted qa2" \
+    "$(live_target_agents_from_json '[{"name":"backend","running":true},{"name":"qa2","running":true},{"name":"fron-ted","running":true}]' mikrob)"
+  s "an agent REMOVED from the roster (stopped) disappears without any script change" "backend" \
+    "$(live_target_agents_from_json '[{"name":"backend","running":true},{"name":"qa2","running":false}]' mikrob)"
+  s "empty exclude list excludes nobody" "backend mikrob qa2" \
+    "$(live_target_agents_from_json "$agents_json" "")"
+  s "multiple names in the exclude list" "qa2" \
+    "$(live_target_agents_from_json "$agents_json" "backend mikrob")"
+  s "no running agents -> empty, not an error" "" \
+    "$(live_target_agents_from_json '[{"name":"backend","running":false}]' mikrob)"
+  s "malformed JSON fails closed to empty, not a crash" "" \
+    "$(live_target_agents_from_json 'not json' mikrob)"
+
+  [ "$fails" -eq 0 ] && { echo "selftest OK (63 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
 
 [ -r "$DB" ] || { echo "context-compact-monitor.sh: cannot read $DB" >&2; exit 3; }
@@ -499,6 +548,23 @@ HDR_FILE=""   # stays empty if the token is unreadable; every caller checks this
 if [ -r "$TOKEN_FILE" ]; then
   HDR_FILE="$(mktemp)"; trap 'rm -f "$HDR_FILE"' EXIT; chmod 600 "$HDR_FILE"
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+fi
+
+# Resolve TARGET_AGENTS now that HDR_FILE exists. COMPACT_TARGET_AGENTS, if the caller set it,
+# wins outright (explicit opt-in / testing). Otherwise query the live roster; fall back to the
+# static safety-net list (logged loudly) only if the roster itself is unavailable.
+if [ -z "$TARGET_AGENTS" ]; then
+  roster=""
+  if [ -n "$HDR_FILE" ]; then
+    agents_json="$(curl -fsS -m 15 -H "@$HDR_FILE" "http://127.0.0.1:${WEB_PORT:-3420}/api/agents" 2>/dev/null)"
+    [ -n "$agents_json" ] && roster="$(live_target_agents_from_json "$agents_json" "$COMPACT_EXCLUDE_AGENTS")"
+  fi
+  if [ -n "$roster" ]; then
+    TARGET_AGENTS="$roster"
+  else
+    log "WARN: live roster unavailable, falling back to the static safety-net list ($TARGET_AGENTS_FALLBACK)"
+    TARGET_AGENTS="$TARGET_AGENTS_FALLBACK"
+  fi
 fi
 
 # QUARANTINE TRIPWIRE (Cybered NO-GO, comment 11790, finding 2). The fail-closed branch below is

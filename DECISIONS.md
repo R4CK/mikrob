@@ -28843,3 +28843,32 @@ Which other update.sh-read env vars are intentionally left out of the allowlist 
 Mutacio-ellenorzes: a `needs-fleet-oauth.mjs` uj ellenorzesenek visszavonasaval az eredeti hiba pontosan reprodukalodik (isolation=yes, fleet-token exportalva) az 53-57. eseteken; a 58-59. mutacio-pin zold maradt. Visszaallitva, ismet zold.
 
 **Ki döntött:** RedHat (cybered) LOW NO-GO, komment 32213. backend vegezte a javitast. Gate-SHA: a9af9e15a. Gate: QA + Cybered.
+## context-compact-monitor.sh: a cél-ágenslista a live flotta-roster, nem egy literál (kártya a2028f35)
+
+**Probléma:** a `TARGET_AGENTS` alapértéke fixen `backend backend2 fullstack cybered cybersec`
+volt, felülírás nélkül -- tehát `backend3`, `cybersec2`, `qa`, `qa2` SOHA nem lett compactolva,
+függetlenül a kontextusuk méretétől. 2026-11-19 este `qa2` (~20:4x) és `cybersec2` (~21:5x,
+~91%) context-guard restartot kapott. Ez a kódminőségi 14. elv (semmi nem lehet kódba égetve)
+megsértése is: a roster a flotta aktuális állapotától, nem egy script-beli konstanstól kellene
+függjön.
+
+**Döntés (MikroB dispatch, msg_id:21821):** a `TARGET_AGENTS` most a `GET /api/agents`
+(`running:true`) hívásból származik, egy konfigurálható exclude-listával
+(`COMPACT_EXCLUDE_AGENTS`, alapértelmezés `mikrob` -- az orchestrátor, ugyanaz az indok mint
+korábban volt a hardcode-ban: egy mid-flight compact ott az egész flottát zavarná, nem egy
+dolgozót). A `COMPACT_TARGET_AGENTS` explicit felülírás megmaradt (teszteléshez/opt-inhez). Ha a
+roster-lekérdezés sikertelen (nincs token, dashboard nem válaszol, hibás JSON), egy LOGOLT,
+degradált biztonsági-háló lista (`TARGET_AGENTS_FALLBACK`, a régi 5 név + backend3/cybersec2/
+qa/qa2) ugrik be -- ez nem az elsődleges mechanizmus, csak védőháló, hogy egy API-kiesés ne
+fagyassza le csendben a teljes monitort.
+
+**Mérés:** élő `--dry-run` a fixelés után azonnal megmutatta a hiba valódi méretét -- `qa`
+627k/200k kontextussal (sonnet-5 ablak, 50%-os küszöb 100k) korábban LÁTHATATLAN volt a
+monitornak, mert nem szerepelt a hardcode-ban. 8 új selftest-eset (`live_target_agents_from_json`
+tiszta, fixture-alapú: futó/nem-futó szűrés, exclude-lista, hozzáadott/eltávolított ágens a
+script módosítása nélkül megjelenik/eltűnik, hibás JSON fail-closed üresre), összesen 63/63 PASS.
+A meglévő `context-compact-monitor-no-direct-pane-write.test.ts` (6/6) változatlanul zöld --
+a `/api/agents/:agent/compact` hívási út nem változott.
+
+Gate: QA + Cybersec (a dispatch szerint, mert `/compact`-ot küld ágens-panelekbe). **Ki
+döntött:** MikroB (dispatch), a javítást DevO (fullstack) végezte.
