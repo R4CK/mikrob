@@ -29996,3 +29996,47 @@ ennek a kártyának a hatóköre, külön kártyaként érdemes jelenteni.
 
 **Ki döntött:** Peti (Telegram 14354) + MikroB (kártya 9963bf35). backend2 végezte a javítást.
 Gate: QA + Cybersec (a kártya saját kijelölése).
+
+## 2026-11-20 a88ebef5 reopen: diff-head diagnostic instead of blind retries
+
+**Context:** card a88ebef5 was reopened by MikroB (msg 22525) after its first fix
+(isolating claude-md-main-section-writers.test.ts via vi.mock) proved insufficient --
+the exact same "left the shared tracked tree dirty: M CLAUDE.md" signature recurred on
+the very first post-land attempt of 51c68eeb, this time blaming offload-dispatch.selftest.sh
+instead of the originally-flagged scripts.
+
+**Decision:** instead of another blind retry or another single-file fix, add diagnostic
+instrumentation to store-selftests-all-run.test.ts's runGuardedSelftest: on a dirt-check
+failure, print the first 20 lines of `git diff` for every newly-dirty tracked path inside
+the thrown error. The blamed selftest is often an innocent bystander on a shared,
+concurrently-landed tree -- the diff content itself (which managed section moved) narrows
+the real writer even when the blamed selftest is not the actual cause.
+
+**Ruled out this round (code-level, not just grep):**
+- `rea-bwrap-sandbox.selftest.sh` -- its only "CLAUDE" grep hit is the env var name
+  `CLAUDE_CODE_MESSAGING_TOKEN` (false positive), zero real CLAUDE.md touches on reading
+  the full 696-line script.
+- MikroB's 18 named test files (federation-inbox, federation-directory, agent-put-fields,
+  managed-settings, main-agent-*, etc.) -- all either mock `PROJECT_ROOT` via
+  `vi.mock('../config.js', ...)` to an isolated tmpdir, or are read-only against the real
+  path. No second writer found by this method.
+- `ensureFederationClaudeMdSection()` (federation/onboarding.ts) -- a real, documented,
+  unfixed gap (it is gated by federation enabled-state, not by `MAIN_AGENT_ID`, so it is
+  not the 965b0b2b no-op-guard bug class), but measured CURRENTLY INERT against the shared
+  test tree: `grep -c "MARVEEN-FEDERATION:BEGIN" /home/neon/marveen-test/CLAUDE.md` returns
+  0 matches, so with federation disabled (the default) this function is a true no-op there.
+  Tracked as a separate LOW follow-up card, not fixed here (enabling federation legitimately
+  needs the write).
+
+**Four separate 30-minute CLAUDE.md hash-watcher rounds** (200ms poll resolution, spanning
+this and the prior session, overlapping at least 4 live full-suite fleet-test.sh runs)
+produced zero genuine change-detected events -- only the identical startup baseline hash
+every time. This negative result does not prove the bug is gone; it means passive polling
+at this resolution cannot catch it, so the fix is to make the NEXT failure self-diagnosing
+instead of continuing to poll blindly.
+
+**Gate-SHA:** committed on top of `20bd4d3decaf820f057b73fd6108147a8ef031a6` (the diff-head
+instrumentation itself); this DECISIONS.md entry is part of the same follow-up commit whose
+sha is reported in the card's next REVIEW comment.
+
+**Ki döntött:** MikroB (msg 22599/22605/22606) + backend3 (investigation + fix).
