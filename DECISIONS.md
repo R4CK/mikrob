@@ -29049,3 +29049,34 @@ a fájl egyéb 5-jegyű számai mind komment-kártya-ID-k, a komment-levágás u
 Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
 kérve QA2 + CYBERED-től). **Ki döntött:** WhiteHat (komment 34613) + MikroB (HOLD, komment 34615,
 az innen következő Fix-Direction), a fixet DevO (fullstack) készítette.
+
+## c4590365: CYBERED NO-GO 34645 -- fleet_test_on_exit a takarítás UTÁN, nem ELŐTT notifikál (komment 34645)
+
+Cybered lelete az `f8fadba3e` fixen: a `fleet_test_on_exit()` a `rm -f "$run_log"` +
+`rm -rf "$TMPDIR"` sort a notifikáló blokk ELŐTT futtatta, és a `store/fleet-test.sh` a
+`$TMPDIR`-t EXPORTOLJA (215. sor) -- tehát a notifikáló blokk placeholder-ágának `mktemp` hívása
+a már törölt `$TMPDIR` alá próbált volna fájlt létrehozni és csendben elhasalt, a `notify_log`
+üres maradt, a `fleet_test_notify_finish` sosem futott. EGYETLEN kilépési útvonalon (sem
+`die()`-nál, sem sikeres futásnál) nem ment ki üzenet. Emellett egy valódi `run_log` a sikeres
+ágon a notifikáló blokk ELŐTT törlődött, mire a notifier olvasni akarta volna.
+
+A korábbi fix saját selftestje (Case 6) a mutáns mellett is zölden futott, mert a `TMPDIR`-t csak
+LOKÁLIS bash-változóként állította be a gyermek-processzben, EXPORT nélkül -- a `mktemp` ezért a
+sima `/tmp`-et használta, sosem a (nem-exportált) `$TMPDIR`-t, tehát a teszt nem a valós hibát
+mérte.
+
+**Döntés:** a `fleet_test_on_exit()`-ben a notifikáló blokk ELŐRE kerül, a takarítás
+(`rm -f "$run_log"`, `rm -rf "$TMPDIR"`) UTÁNA fut. Ezzel a notifier mindig a még létező
+`$TMPDIR`-ban/`$run_log`-ban dolgozik.
+
+**Mérés:** a selftest Case 6 most már `export TMPDIR=...`-t használ (nem csak lokális
+változót), így tényleg a Cybered által leírt elhasalási módot gyakorolja -- a régi (takarítás
+előbb) kóddal visszajátszva Case 6 és az új Case 6b (sikeres, rc=0 kilépés, `run_log` a
+exportolt `$TMPDIR`-n belül) mindkettő pirosra fordul, a javítással vissza zöld
+(`fleet-test-notify-injection.selftest.sh`, most 8 eset, PASS). Case 6b új: egy normál PASS
+kilépés, exportolt `TMPDIR`, a `run_log` a `TMPDIR` alatt -- igazolja, hogy a log tartalma
+kiolvasásra kerül a törlés ELŐTT.
+
+Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
+kérve QA2 + CYBERED-től). **Ki döntött:** Cybered (komment 34645), a fixet DevO (fullstack)
+készítette.

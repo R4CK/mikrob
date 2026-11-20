@@ -223,8 +223,11 @@ export TMPDIR
 # this builds a one-line placeholder log for the notifier instead of skipping notification.
 fleet_test_on_exit() {
   local st=$?
-  rm -f "${run_log:-}" 2>/dev/null
-  rm -rf "$TMPDIR"
+  # Notify BEFORE any cleanup below (CYBERED NO-GO 34645, card c4590365): $TMPDIR is exported
+  # (so mktemp for the placeholder resolves inside it) and $run_log lives inside it too -- doing
+  # the rm -rf first meant mktemp for the placeholder failed silently (no dir to create the file
+  # in) and a real run_log was deleted before fleet_test_notify_finish ever read it, so NOTHING
+  # was ever posted, on every exit path, pass or die().
   if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
     local notify_log="${run_log:-}" made_placeholder=0
     if [ -z "$notify_log" ] || [ ! -r "$notify_log" ]; then
@@ -237,6 +240,8 @@ fleet_test_on_exit() {
     [ -n "$notify_log" ] && fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$st" "$notify_log"
     [ "$made_placeholder" -eq 1 ] && rm -f "$notify_log" 2>/dev/null
   fi
+  rm -f "${run_log:-}" 2>/dev/null
+  rm -rf "$TMPDIR"
   return 0
 }
 trap fleet_test_on_exit EXIT

@@ -168,17 +168,21 @@ else
   echo "  FAIL unparseable log did not fall back: $body"; fail=1
 fi
 
-# --- Case 6 (WhiteHat F-A, comment 34613): an early die()-style exit, BEFORE run_log ever
-# existed, must still notify, with the REAL exit code, via the fleet_test_on_exit trap -- not
-# only a run that reaches the bottom of the script. Runs in a REAL child bash process so the EXIT
-# trap actually fires (a trap is per-process; sourcing the function into THIS process and calling
-# it directly would not prove the trap mechanism itself works).
+# --- Case 6 (WhiteHat F-A, comment 34613; CYBERED NO-GO 34645 on the first fix attempt): an
+# early die()-style exit, BEFORE run_log ever existed, must still notify, with the REAL exit
+# code, via the fleet_test_on_exit trap -- not only a run that reaches the bottom of the script.
+# Runs in a REAL child bash process so the EXIT trap actually fires (a trap is per-process;
+# sourcing the function into THIS process and calling it directly would not prove the trap
+# mechanism itself works). TMPDIR is EXPORTED here (Cybered's exact finding: the real script
+# exports TMPDIR at line ~215, so a selftest that only sets it as a local variable never exercises
+# the "mktemp resolves inside the just-removed TMPDIR" failure mode -- the first fix attempt's
+# Case 6 passed for this wrong reason).
 n=$((n+1))
 : > "$STUB_POST_LOG"
 DIE3_TMPDIR="$(mktemp -d)"
 bash -c '
   . "$1"
-  TMPDIR="$2"
+  export TMPDIR="$2"
   export FLEET_TEST_CALLER_AGENT="$3"
   # The trap is registered by sourcing $FUNCS_WITH_TRAP above (its own last line), not here --
   # this proves the REAL script'"'"'s registration line, not a hand-written stand-in for it.
@@ -189,11 +193,36 @@ line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
 body="${line#*$'\t'}"
 if printf '%s' "$body" | grep -q 'FAIL (exit 3)' \
   && printf '%s' "$body" | grep -qi 'summary unavailable, see log'; then
-  echo "  ok   early die()-style exit (no run_log ever set) still notifies, real exit code 3"
+  echo "  ok   early die()-style exit (no run_log ever set), TMPDIR exported, still notifies, real exit code 3"
 else
   echo "  FAIL early die()-style exit did not notify correctly: $body"; fail=1
 fi
 [ -d "$DIE3_TMPDIR" ] && rmdir "$DIE3_TMPDIR" 2>/dev/null
+
+# --- Case 6b (CYBERED NO-GO 34645, second part: run_log itself lives inside the exported TMPDIR
+# and must be READ before fleet_test_on_exit deletes it). A normal PASS exit (rc=0) with a real
+# run_log containing a parseable summary, TMPDIR exported, run_log path inside TMPDIR.
+n=$((n+1))
+: > "$STUB_POST_LOG"
+PASS_TMPDIR="$(mktemp -d)"
+bash -c '
+  . "$1"
+  export TMPDIR="$2"
+  export FLEET_TEST_CALLER_AGENT="$3"
+  run_log="$TMPDIR/run.log"
+  printf " Test Files  1 passed (1)\n      Tests  1 passed (1)\n" > "$run_log"
+  exit 0
+' _ "$FUNCS_WITH_TRAP" "$PASS_TMPDIR" "fullstack"
+line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+body="${line#*$'\t'}"
+if printf '%s' "$body" | grep -q 'Test Files  1 passed' \
+  && printf '%s' "$body" | grep -q 'Tests  1 passed' \
+  && printf '%s' "$body" | grep -q 'PASS (exit 0)'; then
+  echo "  ok   normal PASS exit, TMPDIR exported, run_log inside TMPDIR, read before deletion"
+else
+  echo "  FAIL PASS exit with run_log inside exported TMPDIR did not notify correctly: $body"; fail=1
+fi
+[ -d "$PASS_TMPDIR" ] && rm -rf "$PASS_TMPDIR" 2>/dev/null
 
 # --- Negative control (guards-that-pin-behaviour): no readable token file -> no POST sent.
 n=$((n+1))
