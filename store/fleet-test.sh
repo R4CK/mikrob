@@ -213,7 +213,33 @@ FLEET_TEST_TMPDIR_ROOT="${FLEET_TEST_TMPDIR_ROOT:-${ROOT}-tmp}"
 mkdir -p "$FLEET_TEST_TMPDIR_ROOT" 2>/dev/null || true
 TMPDIR="$(mktemp -d "${FLEET_TEST_TMPDIR_ROOT}/run-XXXXXX" 2>/dev/null || mktemp -d)"
 export TMPDIR
-trap 'rm -rf "$TMPDIR"' EXIT
+
+# Single EXIT trap for the WHOLE script (WhiteHat F-A, card c4590365, comment 34613): every early
+# die() exit (lock/CPU-slot timeout, checkout/npm ci/build failure -- 15+ call sites below) used
+# to skip the notify call entirely, which previously only ran at the bottom of a completed vitest
+# run. A caller told "wait for the message, do not poll" would then hang forever on the single
+# most common non-pass outcome (rc=3). One trap, registered once as early as $TMPDIR exists,
+# fires on EVERY exit path with the REAL $? -- $run_log does not exist yet on an early die(), so
+# this builds a one-line placeholder log for the notifier instead of skipping notification.
+fleet_test_on_exit() {
+  local st=$?
+  rm -f "${run_log:-}" 2>/dev/null
+  rm -rf "$TMPDIR"
+  if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
+    local notify_log="${run_log:-}" made_placeholder=0
+    if [ -z "$notify_log" ] || [ ! -r "$notify_log" ]; then
+      notify_log="$(mktemp 2>/dev/null)" || notify_log=""
+      if [ -n "$notify_log" ]; then
+        made_placeholder=1
+        printf '(no test run output -- exited before vitest started or printed anything)\n' > "$notify_log"
+      fi
+    fi
+    [ -n "$notify_log" ] && fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$st" "$notify_log"
+    [ "$made_placeholder" -eq 1 ] && rm -f "$notify_log" 2>/dev/null
+  fi
+  return 0
+}
+trap fleet_test_on_exit EXIT
 
 # THE SHARED CPU-CAPACITY POOL (card 492a6d5c, backend3's measurement on card 779cd6a7). This is a
 # SEPARATE question from LOCK_FILE above: that lock says "is it safe to touch the tree" (correctness,
@@ -819,7 +845,9 @@ else
 fi
 
 run_log="$(mktemp)"
-trap 'rm -f "$run_log"; rm -rf "$TMPDIR"' EXIT
+# No separate trap here: fleet_test_on_exit (registered once, near the top) already cleans up
+# $run_log and $TMPDIR and notifies -- re-registering EXIT here would REPLACE that handler and
+# bring back exactly the die()-skips-notify gap this fix closes.
 if [ ${#ARGS[@]} -gt 0 ]; then
   npx vitest run ${WORKER_ARGS[@]+"${WORKER_ARGS[@]}"} "${ARGS[@]}" 2>&1 | tee "$run_log"
 else
@@ -896,8 +924,7 @@ fi
 TREE_LOCK_RUN_S=$(( $(date +%s) - TREE_LOCK_ACQUIRED_AT ))
 fleet_test_log_lock_event run "$TREE_LOCK_WAIT_S" "$TREE_LOCK_RUN_S" "$status"
 
-if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
-  fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$status" "$run_log" || true
-fi
-
+# Notification itself now happens in the single fleet_test_on_exit EXIT trap (registered once,
+# right after $TMPDIR exists), not here -- that is what makes die()'s 15+ early-exit call sites
+# notify too, instead of only a run that reaches this line.
 exit "$status"

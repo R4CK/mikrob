@@ -29009,3 +29009,43 @@ lefedettként.
 Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
 kérve QA2 + CYBERED-től, MikroB korlátozása szerint). **Ki döntött:** MikroB (helyesbítés, komment
 34623, CYBERED GO 34622 LOW-1 mérése alapján), a fixet DevO (fullstack) készítette.
+
+## c4590365: WhiteHat F-A/F-B/F-C -- EXIT-trap notifikáció, dry-run verdikt, selftest-bekötés (komment 34613)
+
+**Kontextus:** MikroB (34615) HOLD-ra tette a landolást, mert a QA2+CYBERED delta-gate előtt
+WhiteHat (nem a kijelölt gate, de a leletei érdemiek) három hibát talált a sima
+`fleet_test_notify_finish`/`land_notify_finish` hívás-mintán:
+
+- **F-A MEDIUM:** a `fleet_test_notify_finish` hívás csak a futás VÉGÉN, a sikeres vitest-futás
+  után állt -- a korai `die 3` kilépések (lock/CPU-slot timeout, checkout/npm ci/build hiba, 15+
+  hívási hely) ezt megelőzően léptek ki, tehát egy "ne pollozz, várd meg az üzenetet" hívó a
+  leggyakoribb nem-siker kimeneten (rc=3) örökre várt volna.
+- **F-B MEDIUM:** a `marveen-land.sh --dry-run` ága `return 0`-val tér vissza, és a hívók az rc=0
+  -et "LANDED"-re fordították -- egy dry-run előnézet így LANDED-ként ment volna ki.
+- **F-C LOW:** az új notifier-ek selftestje (`--selftest-land-notify`) létezett, de semmi nem
+  futtatta automatikusan (a "megírva, commitolva, zölden néz ki, soha nem fut" osztály, kártya
+  46194693 mintája).
+
+**Döntés:** (A) EGY `fleet_test_on_exit()` EXIT trap, a `$TMPDIR` létrehozása UTÁN azonnal
+regisztrálva (store/fleet-test.sh), ami MINDEN kilépési útra lefut a VALÓDI `$?`-vel -- a korábbi
+két külön trap (TMPDIR-takarítás, run_log-takarítás) és a futás-végi explicit hívás helyett. Egy
+korai `die()`-nál (még nincs `run_log`) egy placeholder logot ad a notifier-nek, amit a
+`SUMMARY_CHAR_CAP` fallback-ja ("summary unavailable, see log") egységesen kezel. (B)
+`land_notify_finish()` új, 4. (`dry`) paramétere: ha `dry=1`, a verdikt mindig `DRY-RUN`,
+függetlenül az `rc`-től -- az rc-táblázat elé ágyazva, hogy a dry mindig nyerjen. Mindkét
+hívási hely (`--card` mód, sima agent mód) átadja a már létező `$DRY` változót. (C)
+`marveen-land.sh --selftest-land-notify` felvéve a `store-selftests-all-run.test.ts`
+`MODE_SELFTESTS` listájába, plusz egy új `OK_SHAPES` minta (a kötőjeles
+`selftest-land-notify:` prefix nem illik a meglévő `selftest: ... case(s), PASS` mintára).
+
+**Mérés:** 2 új eset `fleet-test-notify-injection.selftest.sh`-ban (most 7): korai `die()`-stílusú
+kilépés (sosem volt `run_log`) VALÓDI gyermek-bash-processzben, a tényleges
+`trap fleet_test_on_exit EXIT` sort is kinyerve (nem csak a függvénytestet) -- egy mutáns, ami a
+regisztráló sort törli, pirosra fordítja ezt az esetet. 1 új eset `--selftest-land-notify`-ban
+(most 4): `dry=1` -> `DRY-RUN`, sosem `LANDED`; mutáció-teszttel igazolt. A port-ütközés-ellenőrző
+(`store-selftests-all-run.test.ts`) tiszta `marveen-land.sh`-ra (a stub szerver port 0-t használ,
+a fájl egyéb 5-jegyű számai mind komment-kártya-ID-k, a komment-levágás után nulla találat).
+
+Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
+kérve QA2 + CYBERED-től). **Ki döntött:** WhiteHat (komment 34613) + MikroB (HOLD, komment 34615,
+az innen következő Fix-Direction), a fixet DevO (fullstack) készítette.

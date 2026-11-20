@@ -2154,18 +2154,26 @@ land_with_retry() {
 # (line ~2253): that loop's $agent is a batch survivor, not "the agent that started this run" --
 # the batch's own caller already gets ONE result via its own return path, and a single survivor's
 # fallback-path finish is not the run the caller is waiting on.
-land_notify_finish() { # $1=caller_agent $2=rc $3=card_id (may be empty)
-  local caller="$1" rc="$2" card="${3:-}" tf
+land_notify_finish() { # $1=caller_agent $2=rc $3=card_id (may be empty) $4=dry (1 if --dry-run, may be empty)
+  local caller="$1" rc="$2" card="${3:-}" dry="${4:-0}" tf
   tf="$(_kc_token_file 2>/dev/null)" || return 0
   [ -f "$tf" ] || return 0
   local verdict
-  case "$rc" in
-    0) verdict="LANDED" ;;
-    2) verdict="BAD-USAGE" ;;
-    3) verdict="REFUSED" ;;
-    4) verdict="FAILED" ;;
-    *) verdict="UNKNOWN" ;;
-  esac
+  # WhiteHat F-B MEDIUM (card c4590365, comment 34613): land_one's dry-run branch (line ~1937)
+  # returns 0 on a PREVIEW that never pushed anything -- without this check that rc=0 maps to
+  # "LANDED" the same as a real landing, so a caller told "wait for the message, do not poll"
+  # would be told a dry-run push actually happened. Checked BEFORE the rc table so dry always wins.
+  if [ "$dry" = "1" ]; then
+    verdict="DRY-RUN"
+  else
+    case "$rc" in
+      0) verdict="LANDED" ;;
+      2) verdict="BAD-USAGE" ;;
+      3) verdict="REFUSED" ;;
+      4) verdict="FAILED" ;;
+      *) verdict="UNKNOWN" ;;
+    esac
+  fi
   # "from": caller, not "system" -- the dashboard rejects "system" over this Bearer-token HTTP
   # API with 403 "from is reserved for in-process system senders" (curl is never in-process).
   # A self-addressed message (from==to==caller) is accepted. Measured live, card c4590365: the
@@ -2795,6 +2803,20 @@ if [ "${1:-}" = "--selftest-land-notify-inner" ]; then
     echo "  ok   land_notify_finish(rc=3, no card): REFUSED verdict, card falls back to n/a"
   else
     echo "  FAIL land_notify_finish(rc=3): body=[$body]"; fail=1
+  fi
+
+  # WhiteHat F-B MEDIUM (comment 34613): a --dry-run preview returns rc=0, same as a real landing
+  # -- without the dry flag this would post "LANDED" for a run that never pushed anything.
+  n=$((n+1))
+  : >"$STUB_POST_LOG"
+  land_notify_finish "fullstack" 0 "card-abc" "1"
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  body="${line#*$'\t'}"
+  if printf '%s' "$body" | grep -q 'DRY-RUN (exit 0)' \
+    && ! printf '%s' "$body" | grep -q 'LANDED'; then
+    echo "  ok   land_notify_finish(rc=0, dry=1): DRY-RUN verdict, never LANDED"
+  else
+    echo "  FAIL land_notify_finish(rc=0, dry=1): body=[$body]"; fail=1
   fi
 
   # Negative control (guards-that-pin-behaviour): with no readable token file, nothing is posted.
@@ -3963,7 +3985,7 @@ if [ "$TARGET" = "--card" ]; then
   LAND_CARD="$CARD_BRANCH_ID"
   CARD_BRANCH_MODE=1
   land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"; _land_rc=$?
-  land_notify_finish "$CARD_AGENT" "$_land_rc" "$CARD_BRANCH_ID"
+  land_notify_finish "$CARD_AGENT" "$_land_rc" "$CARD_BRANCH_ID" "$DRY"
   exit "$_land_rc"
 fi
 
@@ -4071,7 +4093,7 @@ case "$TARGET" in
   '') die 2 "usage: marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]] | marveen-land.sh --card <id> --agent <agent> [--dry-run] | marveen-land.sh --all [--dry-run]" ;;
   *)
     land_with_retry "$TARGET" "$DRY"; _land_rc=$?
-    land_notify_finish "$TARGET" "$_land_rc" "${LAND_CARD:-}"
+    land_notify_finish "$TARGET" "$_land_rc" "${LAND_CARD:-}" "$DRY"
     exit "$_land_rc"
     ;;
 esac

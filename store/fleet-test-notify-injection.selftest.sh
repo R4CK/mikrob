@@ -18,8 +18,21 @@ trap 'kill "${stub_pid:-}" 2>/dev/null; rm -rf "$TMP"' EXIT
 FUNCS="$TMP/funcs.sh"
 sed -n '/^fleet_test_safe_summary() {/,/^}/p' "$SRC" > "$FUNCS"
 sed -n '/^fleet_test_notify_finish() {/,/^}/p' "$SRC" >> "$FUNCS"
+sed -n '/^fleet_test_on_exit() {/,/^}/p' "$SRC" >> "$FUNCS"
 grep -q '^fleet_test_safe_summary() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_safe_summary from $SRC -- source and selftest have drifted"; exit 1; }
 grep -q '^fleet_test_notify_finish() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_notify_finish from $SRC -- source and selftest have drifted"; exit 1; }
+grep -q '^fleet_test_on_exit() {' "$FUNCS" || { echo "FAIL: could not extract fleet_test_on_exit from $SRC -- source and selftest have drifted"; exit 1; }
+
+# A SEPARATE file for Case 6 below: $FUNCS (just sourced into THIS process) must not itself
+# register the EXIT trap -- that would stomp this script's own stub-server cleanup trap. This
+# second file carries the REAL registration line too, so a mutant that deletes/comments out the
+# `trap fleet_test_on_exit EXIT` call site in the live script (leaving the function itself intact)
+# is still caught: Case 6 sources THIS file in its own child process and relies on the line below
+# to install the trap, not a hand-written `trap` call of its own.
+FUNCS_WITH_TRAP="$TMP/funcs-with-trap.sh"
+cp "$FUNCS" "$FUNCS_WITH_TRAP"
+grep -m1 '^trap fleet_test_on_exit EXIT$' "$SRC" >> "$FUNCS_WITH_TRAP"
+grep -q '^trap fleet_test_on_exit EXIT$' "$FUNCS_WITH_TRAP" || { echo "FAIL: could not find the real 'trap fleet_test_on_exit EXIT' registration in $SRC -- source and selftest have drifted"; exit 1; }
 # shellcheck disable=SC1090
 . "$FUNCS"
 
@@ -53,6 +66,7 @@ ROOT="$TMP/unused-root"
 # fleet_test_safe_summary references this global, but it's assigned OUTSIDE the function body in
 # the real file (so the sed extraction above never pulls it in) -- set it here to the same value.
 SUMMARY_CHAR_CAP=300
+export SUMMARY_CHAR_CAP
 
 fail=0; n=0
 
@@ -153,6 +167,33 @@ if printf '%s' "$body" | grep -q 'summary unavailable, see log'; then
 else
   echo "  FAIL unparseable log did not fall back: $body"; fail=1
 fi
+
+# --- Case 6 (WhiteHat F-A, comment 34613): an early die()-style exit, BEFORE run_log ever
+# existed, must still notify, with the REAL exit code, via the fleet_test_on_exit trap -- not
+# only a run that reaches the bottom of the script. Runs in a REAL child bash process so the EXIT
+# trap actually fires (a trap is per-process; sourcing the function into THIS process and calling
+# it directly would not prove the trap mechanism itself works).
+n=$((n+1))
+: > "$STUB_POST_LOG"
+DIE3_TMPDIR="$(mktemp -d)"
+bash -c '
+  . "$1"
+  TMPDIR="$2"
+  export FLEET_TEST_CALLER_AGENT="$3"
+  # The trap is registered by sourcing $FUNCS_WITH_TRAP above (its own last line), not here --
+  # this proves the REAL script'"'"'s registration line, not a hand-written stand-in for it.
+  # Simulates an early die() call: run_log was never set, something failed, exit 3.
+  exit 3
+' _ "$FUNCS_WITH_TRAP" "$DIE3_TMPDIR" "fullstack"
+line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+body="${line#*$'\t'}"
+if printf '%s' "$body" | grep -q 'FAIL (exit 3)' \
+  && printf '%s' "$body" | grep -qi 'summary unavailable, see log'; then
+  echo "  ok   early die()-style exit (no run_log ever set) still notifies, real exit code 3"
+else
+  echo "  FAIL early die()-style exit did not notify correctly: $body"; fail=1
+fi
+[ -d "$DIE3_TMPDIR" ] && rmdir "$DIE3_TMPDIR" 2>/dev/null
 
 # --- Negative control (guards-that-pin-behaviour): no readable token file -> no POST sent.
 n=$((n+1))
