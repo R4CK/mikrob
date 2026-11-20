@@ -83,9 +83,10 @@ describe('buildAgentIdHeaderBody never puts the token in curl argv', () => {
 
   it('uses the stdin idiom (agent-auth-header.sh | curl -H @-)', () => {
     // Card 52114c2f: the printf idiom moved INTO store/agent-auth-header.sh itself, so the
-    // generated body no longer spells "Authorization: Bearer" at all -- it just pipes the
-    // per-agent helper's stdout into curl's @- stdin idiom.
-    expect(body).toContain('agent-auth-header.sh')
+    // generated SOURCE (this extracts raw TS source text, not the evaluated string) no longer
+    // spells "Authorization: Bearer" at all -- it references the agentAuthHeaderPath constant
+    // and pipes the per-agent helper's stdout into curl's @- stdin idiom.
+    expect(body).toContain('agentAuthHeaderPath')
     expect(body).toContain('curl -H @-')
   })
 
