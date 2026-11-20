@@ -118,6 +118,142 @@ async function freellmPostStatus(enabled) {
   }
 }
 
+// --- Call log (card ebe20efe, Peti 14295) --------------------------------------------------
+// Contract (agreed with backend2, Pair-BE 685f25cb): GET /api/freellm/calls?since=&limit=
+//   -> { calls: [{ ts, agent, card, model, provider, outcome, duration_ms, attempt }, ...],
+//        counts_24h: { ok, fail, stalled, rate_429, auth }, counts_7d: { same shape } }
+// calls are newest-first, capped by `limit`. outcome is a closed enum (ok/fail/stalled/429/auth)
+// but rendered through a lookup with a safe fallback, so an unexpected future value never breaks
+// the page.
+const FREELLM_CALLS_LIMIT = 50
+const FREELLM_OUTCOME_KEYS = ['ok', 'fail', 'stalled', 'rate_429', 'auth']
+let _freellmCallsRefreshBound = false
+
+function freellmOutcomeLabel(outcome) {
+  return t('freellm.calls.outcome.' + outcome) || String(outcome)
+}
+
+// Rows the table highlights as failed (rule 12: the operator needs the bad ones to stand out).
+function freellmOutcomeIsFailure(outcome) {
+  return outcome !== 'ok'
+}
+
+function freellmFmtDuration(ms) {
+  if (ms == null || isNaN(ms)) return '—'
+  if (ms < 1000) return Math.round(ms) + ' ms'
+  return (ms / 1000).toFixed(1) + ' s'
+}
+
+function freellmFmtTime(ts) {
+  if (ts == null || isNaN(ts)) return '—'
+  try {
+    return new Date(ts).toLocaleString()
+  } catch {
+    return '—'
+  }
+}
+
+function freellmSetCallsLoading(on) {
+  const el = document.getElementById('freellmCallsLoading')
+  if (el) el.hidden = !on
+}
+
+function freellmSetCallsError(msg) {
+  const el = document.getElementById('freellmCallsError')
+  if (!el) return
+  if (msg) {
+    el.hidden = false
+    el.textContent = msg
+  } else {
+    el.hidden = true
+    el.textContent = ''
+  }
+}
+
+function freellmSetCallsEmpty(on) {
+  const el = document.getElementById('freellmCallsEmpty')
+  if (el) el.hidden = !on
+}
+
+function freellmRenderCountsRow(elId, counts) {
+  const el = document.getElementById(elId)
+  if (!el) return
+  el.textContent = ''
+  const safe = counts || {}
+  FREELLM_OUTCOME_KEYS.forEach((key) => {
+    const span = document.createElement('span')
+    span.className = 'freellm-calls-count-chip freellm-calls-count-chip--' + key
+    span.textContent = freellmOutcomeLabel(key) + ': ' + String(safe[key] || 0)
+    el.appendChild(span)
+  })
+}
+
+function freellmRenderCallsTable(calls) {
+  const tbody = document.getElementById('freellmCallsTbody')
+  if (!tbody) return
+  tbody.textContent = ''
+  calls.forEach((call) => {
+    const tr = document.createElement('tr')
+    if (freellmOutcomeIsFailure(call.outcome)) tr.className = 'freellm-calls-row--failed'
+    const cells = [
+      freellmFmtTime(call.ts),
+      call.agent != null ? String(call.agent) : '—',
+      call.card != null ? String(call.card) : '—',
+      call.model != null ? String(call.model) : '—',
+      freellmOutcomeLabel(call.outcome),
+      freellmFmtDuration(call.duration_ms),
+    ]
+    cells.forEach((text) => {
+      const td = document.createElement('td')
+      td.textContent = text
+      tr.appendChild(td)
+    })
+    tbody.appendChild(tr)
+  })
+}
+
+async function freellmLoadCalls() {
+  freellmSetCallsLoading(true)
+  freellmSetCallsError(null)
+  freellmSetCallsEmpty(false)
+  const countsEl = document.getElementById('freellmCallsCounts')
+  const tableWrap = document.getElementById('freellmCallsTableWrap')
+
+  try {
+    const res = await fetch('/api/freellm/calls?limit=' + FREELLM_CALLS_LIMIT)
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    const calls = Array.isArray(data.calls) ? data.calls : []
+
+    freellmRenderCountsRow('freellmCounts24h', data.counts_24h)
+    freellmRenderCountsRow('freellmCounts7d', data.counts_7d)
+    if (countsEl) countsEl.hidden = false
+
+    if (calls.length === 0) {
+      freellmSetCallsEmpty(true)
+      if (tableWrap) tableWrap.hidden = true
+    } else {
+      freellmRenderCallsTable(calls)
+      if (tableWrap) tableWrap.hidden = false
+    }
+  } catch (e) {
+    freellmSetCallsError(t('freellm.calls.load_error'))
+    if (countsEl) countsEl.hidden = true
+    if (tableWrap) tableWrap.hidden = true
+  } finally {
+    freellmSetCallsLoading(false)
+  }
+}
+
+function freellmSetupCalls() {
+  const refreshBtn = document.getElementById('freellmCallsRefreshBtn')
+  if (refreshBtn && !_freellmCallsRefreshBound) {
+    _freellmCallsRefreshBound = true
+    refreshBtn.addEventListener('click', () => freellmLoadCalls())
+  }
+  freellmLoadCalls()
+}
+
 function freellmSetup() {
   const toggle = document.getElementById('freellmToggle')
   if (toggle && !_freellmToggleBound) {
@@ -135,7 +271,8 @@ function freellmSetup() {
 async function loadFreellm() {
   freellmSetup()
   freellmSetupKeys()
-  // Live refresh of status while the page is open (5s poll like local-llm)
+  freellmSetupCalls()
+  // Live refresh of status + calls while the page is open (5s poll like local-llm)
   if (_freellmStatusPollTimer) clearInterval(_freellmStatusPollTimer)
   _freellmStatusPollTimer = setInterval(() => {
     if (document.getElementById('freellmPage') && document.getElementById('freellmPage').hidden) {
@@ -143,6 +280,7 @@ async function loadFreellm() {
       return
     }
     freellmLoadStatus()
+    freellmLoadCalls()
   }, 5000)
 }
 
