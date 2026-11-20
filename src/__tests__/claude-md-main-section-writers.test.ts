@@ -22,8 +22,33 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
-import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
+import { REPO_ROOT } from './helpers/repo-location.js'
 import { atomicWriteFileSync } from '../web/atomic-write.js'
+
+// Card a88ebef5: PROJECT_ROOT below used to resolve to the real, shared fleet-test.sh tree's repo
+// root, so every write this file's writers performed against `join(PROJECT_ROOT, 'CLAUDE.md')` --
+// even the atomic, skip-if-unchanged ones from the e5c13c0e fix further down -- landed on the one
+// GIT-TRACKED root CLAUDE.md every other vitest worker file in the same fleet-test.sh run shares.
+// Atomicity only rules out a concurrent reader seeing a half-written file; it does nothing about a
+// concurrent `git status --porcelain` (store-selftests-all-run.test.ts's dirty-tree guard) seeing
+// the file genuinely differ from HEAD for the whole write-to-restore window, however short. Measured
+// after the e5c13c0e fix landed: 51c68eeb was STILL refused 3 more times, a different selftest
+// blamed each time (offload-dispatch, post-review, pipx-version-check) -- the same false-attribution
+// class, just not fully closed by atomicity alone. Redirecting PROJECT_ROOT to an isolated mkdtemp
+// sandbox for this file removes the shared tracked file from the write path entirely, the same
+// pattern agent-scaffold-main-claude-md-zero-diff.test.ts already uses for the same class of writer.
+// `vi.mock` factories are hoisted above every static import AND every local top-level `const` in
+// this file -- a sibling module loaded transitively (agent-config.ts) reads PROJECT_ROOT at ITS
+// OWN module top level, so even a lazy getter closing over a local const (initialised further
+// down this file) hits the same TDZ once that sibling resolves first. `mkdtempSync` itself is an
+// imported BUILTIN binding (node:fs, already resolved before user code runs), not a local const,
+// so computing the sandbox path INLINE here, with no local-const indirection, has no ordering
+// dependency on anything else in this file.
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>()
+  return { ...actual, PROJECT_ROOT: mkdtempSync(join(tmpdir(), 'claude-md-writers-root-')) }
+})
+import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
 
 // Card e5c13c0e, second finding (MikroB, msg 21612): agentDir(MAIN_AGENT_ID) below used to
 // resolve to the REAL PROJECT_ROOT/agents/<MAIN_AGENT_ID> -- a path OUTSIDE git's tracked set
@@ -81,9 +106,17 @@ export function restoreTrackedFileIfChanged(path: string, original: string): voi
   if (current !== original) atomicWriteFileSync(path, original)
 }
 
-const WEB_TS_PATH = join(PROJECT_ROOT, 'src', 'web.ts')
-const AGENT_PROCESS_TS_PATH = join(PROJECT_ROOT, 'src', 'web', 'agent-process.ts')
+// Source files to parse are read from the REAL checkout (REPO_ROOT, independent of the config.js
+// mock above) -- only the writers' own write TARGET (ROOT_CLAUDE_MD_PATH, via the mocked
+// PROJECT_ROOT) is redirected.
+const WEB_TS_PATH = join(REPO_ROOT, 'src', 'web.ts')
+const AGENT_PROCESS_TS_PATH = join(REPO_ROOT, 'src', 'web', 'agent-process.ts')
 const ROOT_CLAUDE_MD_PATH = join(PROJECT_ROOT, 'CLAUDE.md')
+
+// Seed the isolated copy with the real committed content so "leaves it untouched" stays a
+// meaningful assertion (byte-for-byte against what is actually committed), not an assertion about
+// an empty sandbox file.
+writeFileSync(ROOT_CLAUDE_MD_PATH, readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8'), 'utf-8')
 
 // Card 7e202dbf (RedHat F1, on f22ef741/965b0b2b): the ORIGINAL regex here
 // (`ensure\w*Section\(\s*MAIN_AGENT_ID\s*\)`) was blind to a mutant that keeps the

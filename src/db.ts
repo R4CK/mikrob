@@ -10,6 +10,7 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from './schema/agent-messages-ddl.js'
 import { isQuietMessageClass } from './web/message-wake.js'
 import { isForbiddenAssignee, isInvalidAssigneeShape, FORBIDDEN_ASSIGNEE_MESSAGE, INVALID_ASSIGNEE_TYPE_MESSAGE } from './web/kanban-assignee-guard.js'
+import { isGeneratedCommentAuthor } from './web/kanban-landed-guard.js'
 import {
   MARKER_SOURCE,
   NODE_CARD,
@@ -5920,12 +5921,15 @@ export function reconcileKanbanRelations(opts?: { apply?: boolean }): ReconcileR
     .prepare('SELECT id, description, parent_id FROM kanban_cards')
     .all() as RelationSourceCard[]
   const comments = db
-    .prepare('SELECT card_id, content FROM kanban_comments')
-    .all() as { card_id: string; content: string }[]
+    .prepare('SELECT card_id, content, author FROM kanban_comments')
+    .all() as { card_id: string; content: string; author: string | null }[]
 
   const wanted: RelationEdge[] = []
   for (const card of cards) wanted.push(...cardEdges(card))
-  for (const c of comments) wanted.push(...commentEdges(c.card_id, c.content))
+  // Card 60aeca01 (F3): same generated-author exclusion as the live write path above, applied to
+  // the full-recompute sweep -- a stray relation edge from an old local-llm draft would otherwise
+  // survive every reconcile forever, since the sweep is this module's only way to delete one.
+  for (const c of comments) if (!isGeneratedCommentAuthor(c.author)) wanted.push(...commentEdges(c.card_id, c.content))
 
   return {
     ...reconcileRelationSource(MARKER_SOURCE, wanted, opts),
@@ -6716,7 +6720,12 @@ export function addKanbanComment(cardId: string, author: string, content: string
   // Card 6cd61430: the REVIEW comment carrying `Gate-SHA:` is the fleet's most common marker, and
   // it arrives here. noteRelations cannot fail this write -- see its own comment for why that
   // isolation is deliberate rather than defensive.
-  noteRelations(commentEdges(cardId, content))
+  //
+  // Card 60aeca01 (F3): a generated (local-llm/gate-pretriage/gemini-orch-review) comment's
+  // unescaped output can contain a stray "Gate-SHA: <sha>"-looking line with no human having
+  // declared it -- the same risk kanban-landed-guard.ts and kanban-gate-completeness-guard.ts
+  // already guard their own readers against, now closed for the relation graph too.
+  if (!isGeneratedCommentAuthor(author)) noteRelations(commentEdges(cardId, content))
   return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now, automated }
 }
 

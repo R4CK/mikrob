@@ -144,6 +144,19 @@ export const GENERATED_COMMENT_AUTHORS: ReadonlySet<string> = new Set([
   'gemini-orch-review',
 ])
 
+/**
+ * `GENERATED_COMMENT_AUTHORS.has(author)` on its own only catches an exact-cased, untrimmed
+ * match. The Python side (`gate-closure-check.py`'s `_is_generated_author`) already does
+ * `.strip().lower()` before comparing; every TS reader of this set compared case-insensitively
+ * but not trim-insensitively (card 60aeca01, F1: a dashboard-posted `" local-llm "` author with
+ * incidental whitespace passed the Python check and failed this one). One function so the four
+ * TS call sites (this file, kanban-gate-completeness-guard.ts x3, kanban-draft-review-guard.ts)
+ * can't drift on normalisation the way they drifted on trimming.
+ */
+export function isGeneratedCommentAuthor(author: string | null | undefined): boolean {
+  return GENERATED_COMMENT_AUTHORS.has((author ?? '').trim().toLowerCase())
+}
+
 export interface LandedVerdict {
   readonly blocked: boolean
   readonly message?: string
@@ -186,7 +199,7 @@ async function claimedCommits(cardId: string, repo: string): Promise<Claimed> {
   const nonGenerated: string[] = []
   let skippedGenerated = 0
   for (const c of getKanbanComments(cardId)) {
-    if (GENERATED_COMMENT_AUTHORS.has(c.author ?? '')) {
+    if (isGeneratedCommentAuthor(c.author)) {
       skippedGenerated += 1
       continue
     }
