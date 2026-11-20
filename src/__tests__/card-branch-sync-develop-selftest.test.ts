@@ -39,6 +39,20 @@ describe('card-branch-sync-develop.sh selftest', () => {
   it('reverts the merge if the append-only backstop catches a violation, never leaves it half-applied', () => {
     const code = readFileSync(SCRIPT, 'utf-8')
     expect(code).toContain('decisions_append_only_check_merge')
-    expect(code).toMatch(/git -C "\$WT" reset --hard "\$before_sha"/)
+    // --merge, not --hard (Cybersec NO-GO 35056): --hard would silently discard any uncommitted
+    // tracked edit sitting in the worktree, which is exactly what a WhiteHat probe hit.
+    expect(code).toMatch(/git -C "\$WT" reset --merge "\$before_sha"/)
+    expect(code).not.toMatch(/reset --hard "\$before_sha"/)
   })
+
+  it('refuses to run on a dirty tree before touching anything (Cybersec NO-GO 35056)', () => {
+    const code = readFileSync(SCRIPT, 'utf-8')
+    expect(code).toMatch(/git -C "\$WT" status --porcelain/)
+  })
+
+  it('selftest Case 5: a dirty tracked file survives a refused sync untouched', () => {
+    const out = execFileSync('bash', [SCRIPT, '--selftest'], { encoding: 'utf-8', timeout: 120_000 })
+    expect(out).toContain('dirty tracked file')
+    expect(out).not.toContain('FAIL')
+  }, 120_000)
 })

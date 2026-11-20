@@ -29476,3 +29476,34 @@ missing SYNC-direction caller for agents' own branch updates.
 
 **Ki döntött:** backend, re-scoped per MikroB's decision (card comment, msg 22392). Gate: QA +
 Cybersec per the card's own Gate line.
+
+## 2026-11-20 -- 84f90b4e delta: dirty-tree guard + reset --merge, not reset --hard (Cybersec NO-GO 35056)
+
+**Context:** Cybersec NO-GO 35056 on `3980043db`: `card-branch-sync-develop.sh`'s append-only
+backstop undid a resolved-but-invariant-violating merge with `git reset --hard "$before_sha"`,
+which discards ANY local tracked edit unconditionally -- a WhiteHat scratch probe lost an
+uncommitted `tracked.txt` change this way, where a plain `git merge` would have kept it.
+
+**Fix:** two changes, both in `store/card-branch-sync-develop.sh`. (1) A dirty-tree guard at the
+top: `git status --porcelain` non-empty refuses immediately (exit 2, clear message) before the
+script touches anything, so a caller with uncommitted local changes never reaches the merge in
+the first place. (2) The backstop undo now uses `git reset --merge "$before_sha"` instead of
+`reset --hard` -- defense in depth for the undo path itself, in case anything local is present
+by the time it runs despite the guard above.
+
+**Test:** `src/__tests__/card-branch-sync-develop-selftest.test.ts`, +3 cases. Selftest Case 5
+(dirty tracked file + the a2028f35-shape conflict that would otherwise auto-resolve): refused
+before any commit, the dirty file's content survives byte-for-byte. Two structural pins:
+`reset --merge "$before_sha"` present and `reset --hard "$before_sha"` absent; the dirty-tree
+`git status --porcelain` check present. Mutation-verified: removing the dirty-tree guard turns
+Case 5's "refused"/"no commit" assertions red (the file-survives assertion stays green on this
+particular fixture, since nothing in it happens to touch `tracked.txt`); reverting
+`reset --merge` back to `reset --hard` flips both structural pin assertions. Restored
+byte-identical via diff both times. Local run: 1 Test File passed (1), 6 Tests passed (6).
+
+**Nincs benne:** no change to the resolver logic itself (`decisions-sync-resolve.sh`,
+`try_append_union`) -- this delta is only about what happens to the WORKTREE when the backstop
+fires, not when or why it fires.
+
+**Ki döntött:** Cybersec NO-GO (35056, Gate-SHA 3980043db). backend fixed it (the script's own
+author, per the 4b rule another agent gates it). Gate: QA + Cybersec per MikroB's dispatch.

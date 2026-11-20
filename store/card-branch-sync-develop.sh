@@ -24,8 +24,10 @@
 #         append-only backstop (decisions-append-only-guard.sh) re-verified the result.
 # exit 1  a real conflict remains (not DECISIONS.md alone, or not a pure append) -- the merge is
 #         left OPEN exactly as a plain `git merge` would leave it; resolve by hand.
-# exit 2  used wrongly, OR the resolved merge somehow still violated the append-only invariant --
-#         the merge is undone (`git reset --hard` back to the pre-merge commit) rather than left
+# exit 2  used wrongly, OR the worktree had uncommitted changes (refused before touching
+#         anything), OR the resolved merge somehow still violated the append-only invariant --
+#         the merge is undone (`git reset --merge` back to the pre-merge commit, never
+#         `reset --hard`, so a local tracked edit cannot be silently discarded) rather than left
 #         half-applied, so a false-positive resolve can never land silently.
 set -u
 
@@ -106,6 +108,29 @@ run_selftest() {
     no "already-up-to-date case changed something or failed: rc=$rc out=$out"
   fi
 
+  # Case 5 (Cybersec NO-GO 35056): a dirty tracked file in the worktree, PLUS the a2028f35-shape
+  # conflict that would otherwise auto-resolve -- must refuse before touching anything, and the
+  # dirty file's uncommitted content must survive byte-for-byte.
+  mk_repo
+  printf '## 2026-01-01 -- entry A\n## 2026-01-02 -- entry B (card)\n' >"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md; git -C "$R" commit -qm "card entry"
+  git -C "$R" checkout -q develop
+  printf '## 2026-01-01 -- entry A\n## 2026-01-03 -- entry C (develop)\n' >"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md; git -C "$R" commit -qm "develop entry"
+  git -C "$R" checkout -q card-branch
+  printf 'tracked\n' >"$R/tracked.txt"; git -C "$R" add tracked.txt; git -C "$R" commit -qm "tracked base"
+  dirty_content="uncommitted local edit, must survive"
+  printf '%s\n' "$dirty_content" >"$R/tracked.txt"
+  before="$(git -C "$R" rev-parse HEAD)"
+  out="$(bash "$0" "$R" develop 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then ok "dirty tree is refused (rc=$rc)"; else no "dirty tree should refuse, got rc=0: $out"; fi
+  if [ "$(git -C "$R" rev-parse HEAD)" = "$before" ]; then ok "dirty-tree refusal touched no commit"; else no "dirty-tree refusal still created a commit"; fi
+  if [ "$(cat "$R/tracked.txt")" = "$dirty_content" ]; then
+    ok "dirty tracked file's content survived untouched"
+  else
+    no "dirty tracked file was modified; got: $(cat "$R/tracked.txt")"
+  fi
+
   echo "$([ "$fail" -eq 0 ] && echo "selftest: PASS" || echo "selftest: FAIL")"
   exit "$fail"
 }
@@ -122,6 +147,14 @@ WT="${1:-$PWD}"
 REF="${2:-origin/develop}"
 [ -d "$WT/.git" ] || [ -f "$WT/.git" ] || die 2 "$WT is not a git working tree"
 git -C "$WT" rev-parse --verify --quiet "$REF" >/dev/null || die 2 "$REF does not resolve in $WT (fetch it first)"
+
+# DIRTY-TREE GUARD (Cybersec NO-GO 35056 on the 3980043db round): a `git merge` on a dirty tree
+# can fail in ways this script does not expect, and the append-only backstop below undoes the
+# MERGE -- it was never designed to also be safe to run over whatever local edits happened to be
+# sitting in the tree before this script started. Refusing up front, before anything runs, is
+# cheaper and clearer than making the undo path try to be safe for a state it should never see.
+dirty="$(git -C "$WT" status --porcelain)"
+[ -z "$dirty" ] || die 2 "$WT has uncommitted changes -- commit or stash them first, this script only runs on a clean tree"
 
 before_sha="$(git -C "$WT" rev-parse HEAD)"
 
@@ -141,7 +174,13 @@ rm -f /tmp/card-branch-sync-develop.$$
 merge_sha="$(git -C "$WT" rev-parse HEAD)"
 if [ "$merge_sha" != "$before_sha" ]; then
   if ! decisions_append_only_check_merge "$WT" "$merge_sha" "DECISIONS.md"; then
-    git -C "$WT" reset --hard "$before_sha"
+    # `reset --merge`, NOT `reset --hard` (Cybersec NO-GO 35056): --hard discards ANY local
+    # tracked change unconditionally, which is the exact bug a dirty tree hit in a WhiteHat
+    # probe. The dirty-tree guard above should mean there is nothing local left to lose by the
+    # time we get here, but this is the undo path for a caught invariant violation, not the
+    # place to rely on an earlier check staying correct forever -- --merge keeps that guarantee
+    # even if it does not, since it refuses instead of silently discarding on a real conflict.
+    git -C "$WT" reset --merge "$before_sha"
     die 2 "append-only backstop caught a violation on the merge result -- undone, back at $before_sha"
   fi
 fi
