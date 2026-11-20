@@ -28893,3 +28893,41 @@ Mutacio-ellenorzes: a `needs-fleet-oauth.mjs` uj ellenorzesenek visszavonasaval 
 **Nincs benne:** `attempt` (kísérlet-szám) mező a hívás-listában -- `freellm-call.sh` ezt jelenleg nem méri, nincs a kártya elfogadási listáján; Fron Ted jelezte, utólag pótolható, ha blokkol. A valós upstream-szolgáltató (`provider`) kiolvasása a válasz-törzsből -- külön kártya nélkül nem bontva ki.
 
 **Ki döntött:** Peti Telegram 14295 + MikroB mért gyökérok-elemzése (kártya leírás + msg 21888 audit-korrekció). backend2 végezte. Gate: QA + Cybersec (a kártya saját kijelölése).
+
+## 2026-11-20 -- FreeLLM page call list + status blanking fix (kártya ebe20efe)
+
+**Döntés:** A `freellmRenderStatus()` korábban (kártya 5ae7e8be pt.4 / WhiteHat2 R3) MINDEN `lastError`-t "ismeretlen állapotnak" kezelt, és üresre törte a toggle/label/hívásszám mezőket akkor is, ha a státusz-lekérdezés magától sikeres volt (HTTP 200, valós adatok) -- ez pont azt rejtette el, amit Peti látni akart. Az új viselkedés: a valós mezők előbb jelennek meg, a hibaértesítés mellettük, nem helyettük -- a valóban sikertelen fetch (a `catch` ág) továbbra is üresre törli, mert ott TÉNYLEG nincs friss adat. A régi, "bármilyen lastError = ismeretlen" döntést ez a kártya hatályon kívül helyezi; a pinnelt regressziós teszt frissült, a `src/__tests__/freellm-error-section-visibility.test.ts` fájlban dokumentálva, miért.
+
+Új hívás-napló panel (`#freellm`): 24h/7d per-kimenet számlálók + legutóbbi hívások táblája (idő, ügynök, kártya, modell, kimenet, időtartam), legújabb elöl, sikertelen sorok kiemelve. Kontraktus: `GET /api/freellm/calls?since=&limit=`, egyeztetve backend2-vel (Pair-BE 685f25cb), a frontend védekezően épült (ismeretlen `outcome` érték nem töri el az oldalt).
+
+**Ki döntött:** Fron Ted (fron-ted), MikroB dispatch alapján (Peti 14295, Telegram, inter-agent msg_id:21875).
+
+**Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb), commit 80178547a.
+
+## 2026-11-20 -- FreeLLM calls panel aligned to backend2's real contract (kártya ebe20efe, delta)
+
+**Döntés:** A kártya REVIEW-ja az eredeti, javasolt kontraktus-mock ellen épült; backend2 ezután közzétette a valós alakot (msg 21882, branch fix/freellm-call-journal-685f25cb). Három eltérés javítva: `ts` unix MÁSODPERC (nem ms), `outcome` enum `'429'` (nem `'rate_429'`), `counts_24h`/`counts_7d` alakja `{total, ok, fail}` (nem 5-szeres bontás). Új `fail_reason` mező a kimenet-cellában jelenik meg zárójelben (rule 12). NYITOTT RÉS: a kártya saját szövege 24h/7d bontást kér (successful/failed/stalled/429), a backend `counts` objektuma csak total/ok/fail-t ad -- NEM szimulálok kliens-oldali bontást a limitált `calls[]` listából (alulszámolna a lekérdezési ablakon túl), a per-sor `outcome` oszlop viszont megtartja a valós megkülönböztetést soronként. Jelezve backend2-nek + MikroB-nak (msg 21908), nem blokkoló.
+
+**Ki döntött:** Fron Ted (fron-ted), a kontraktus forrása backend2 (685f25cb).
+
+**Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb), commit 2b47ef7b9.
+
+## 2026-11-20 -- FreeLLM calls panel consolidated with backend2's landed fix (kártya ebe20efe)
+
+**Döntés:** MikroB HOLD-ja (34494) jelezte: backend2 (685f25cb) SAJÁT, tőlem függetlenül megírt javítást adott a `freellmRenderStatus` lastError-törlési hibájára, a két ág pedig ütközne landoláskor (mindkettő ugyanazt a függvényt írja át, más szöveggel). A `card/685f25cb` branch 19 commit-tal elmaradt a jelenlegi developtól (mérve: `git merge-base`), ezért NEM arra rebase-eltem (az más kártyák konfliktusait húzta volna be feleslegesen) -- helyette közvetlenül diffeltem a saját `freellmRenderStatus`/`freellmLoadStatus` kódomat backend2 landolt verziója ellen: a LOGIKA már bájtra azonos volt (ugyanaz a gyökér-ok, ugyanaz a javítás), csak a komment-szöveg tért el. A kommentet átvettem szó szerint, így a megosztott régió most valódi no-op diff backend2 landolt verziójához képest -- a két ág landolási sorrendje mostantól mindegy, nincs ütközés.
+
+Mellékesen pontosítva: a `fail_reason` csak a generikus 'fail' kimenetnél jelenik meg zárójelben -- auth/429/stalled esetén a kimenet-felirat már megmondja, miért, a nyers backend-string (auth_401, quota_429, az üres-kódú http_ a megakadt kísérletre) törtnek nézne ki szó szerint kiírva.
+
+**Ki döntött:** MikroB HOLD (34494) + QA2 lelet (34520) + QA FAIL (34523, a korábbi {total,ok,fail} alakon, már javítva egy korábbi commit-ban). Fron Ted (fron-ted) végezte a konszolidációt.
+
+**Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb @ e839af1d0), commit e95cd0695.
+
+## 2026-11-20 -- FreeLLM calls panel merged onto landed 685f25cb (kártya ebe20efe, delta)
+
+**Döntés:** backend2 kártyája (685f25cb) landolt a developra (a6de7f140). MikroB terve szerint (34566/22111): developot merge-eltem a card/ebe20efe branch-be, EGY verziót tartva a `src/__tests__/freellm-error-section-visibility.test.ts`-ben (mindkét kártya assertion-jét összevontam egyetlen tesztbe, mert ugyanazt a javítást pinnelték, függetlenül megírva), a `DECISIONS.md`-ben pedig megtartva a "theirs-first" sorrendet (685f25cb bejegyzése előbb, a rebase iránya ezt automatikusan adta). Az `app-freellm.js` megosztott régiója már korábban (előző delta) bájtra azonos volt a landolt verzióval, ezért a merge itt NEM-konfliktusos volt a saját kiegészítéseim felett.
+
+**Ellenőrzés:** `git merge-base --is-ancestor a6de7f140 HEAD` -> igaz (MikroB kért pontos bizonyíték-sor). Teljes `fleet-test.sh --ref dba2aea3e`: 1397/1398 fájl, 44002/44134 teszt zöld (132 skipped). `npx tsc --noEmit` tiszta. `lint-ratchet.sh` alapvonal tart (420 lelet).
+
+**Ki döntött:** MikroB terve (34566, 22111). Fron Ted (fron-ted) végezte a merge-et.
+
+**Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb, landolt a6de7f140-ban), commit dba2aea3e.

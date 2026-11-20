@@ -122,16 +122,28 @@ describe('freellm error section visibility (card fd5fcc2c, RedHat N1 / QA F3 pin
     expect(dom.els.get('freellmLastError')!.textContent).toBe('')
   })
 
-  it('a lastError next to fresh enabled/calls/drafts renders the real numbers, not dashes (card 685f25cb pin: lastError is a per-call fact, not a failed status read)', () => {
+  // SUPERSEDED by cards 685f25cb (backend2) and ebe20efe (fron-ted) -- independently arrived at
+  // the same fix: the card 5ae7e8be pt.4 / WhiteHat2 R3 decision treated ANY payload.lastError as
+  // "the whole read is untrustworthy" and blanked the real numbers underneath it. In practice the
+  // freellm status endpoint legitimately returns a successful read (HTTP 200, real enabled/
+  // calls/drafts) that ALSO carries the most recent failed call's lastError -- that is a per-call
+  // fact, not evidence the fetch itself failed, and blanking on it hid valid data every time
+  // anything had ever failed. The real "fetch failed, no fresh data at all" case is covered
+  // separately by D3a below, which is unaffected by this change.
+  it('a payload with a real read AND a lastError shows the real numbers beside the error, not dashes (cards 685f25cb/ebe20efe, supersedes 5ae7e8be pt.4)', () => {
+    renderStatus({ enabled: true, calls: 7, drafts: 3 }) // a healthy load first
+    expect(dom.els.get('freellmCallsCount')!.textContent).toBe('7')
     renderStatus({ enabled: true, calls: 7, drafts: 3, lastError: 'FreeLLM call failed: auth_401' })
     expect(dom.els.get('freellmCallsCount')!.textContent).toBe('7')
     expect(dom.els.get('freellmDraftsCount')!.textContent).toBe('3')
-    expect(dom.els.get('freellmLabel')!.textContent).not.toBe('—')
+    expect(dom.els.get('freellmLabel')!.textContent).toBe('freellm.status.on')
     expect(dom.els.get('freellmToggle')!.disabled).toBe(false)
     expect(dom.els.get('freellmErrorSection')!.hidden).toBe(false)
-    // A subsequent clean response (no lastError) just hides the notice -- the numbers were never stale.
+    expect(dom.els.get('freellmLastError')!.textContent).toBe('FreeLLM call failed: auth_401')
+    // A subsequent clean response (no lastError) hides the error notice and keeps showing numbers.
     renderStatus({ enabled: true, calls: 8, drafts: 3 })
     expect(dom.els.get('freellmCallsCount')!.textContent).toBe('8')
+    expect(dom.els.get('freellmToggle')!.disabled).toBe(false)
     expect(dom.els.get('freellmErrorSection')!.hidden).toBe(true)
   })
 
