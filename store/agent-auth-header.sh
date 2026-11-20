@@ -14,6 +14,8 @@ set -euo pipefail
 
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 AGENTS_ROOT="${MARVEEN_AGENTS_ROOT:-/home/neon/marveen/agents}"
+MARVEEN_WORKTREES="${MARVEEN_WORKTREES:-/home/neon/marveen-agent-worktrees}"
+MIKROB_WORKTREE="$MARVEEN_WORKTREES/mikrob"
 
 die() { echo "agent-auth-header.sh: $2" >&2; exit "$1"; }
 
@@ -41,18 +43,28 @@ if [ -z "$SELF" ]; then
       ;;
   esac
 fi
-# Card 52114c2f (CYBERSEC2 NO-GO 34709, F1): the main channel agent (mikrob) has no
-# agents/mikrob directory, no MARVEEN_AGENT_ID/CLAUDE_AGENT_ID (measured: neither is set in its
-# env), and runs with cwd at the repo root -- the cwd-fallback above never matched it, so EVERY
-# root CLAUDE.md recipe would refuse (exit 2) and mikrob would lose API access entirely. The repo
-# root is a DISTINCT, equally verifiable cwd signal (not a guess): resolve it to "mikrob"
-# specifically there, never any other name. mikrob has no key file under AGENTS_ROOT, so this
-# falls through to the existing missing-key-file fallback below and keeps using the shared token,
-# exactly like before per-agent keys existed, until mikrob gets its own.
-if [ -z "$SELF" ] && [ "${PWD%/}" = "${MARVEEN_MAIN%/}" ]; then
-  SELF="mikrob"
+# Card 52114c2f (CYBERSEC2 NO-GO 34709, F1; widened after CYBERSEC2 NO-GO 34825 + CYBERED NO-GO
+# 34827, F1'): the main channel agent (mikrob) has no agents/mikrob directory, no
+# MARVEEN_AGENT_ID/CLAUDE_AGENT_ID, and its cwd is not pinned to the exact repo root -- an
+# absolute-path command from another cwd, or a `cd` into a store/ script or the mikrob worktree,
+# is ordinary, not an edge case (CYBERED's measurement). An exact-match-only check on
+# $MARVEEN_MAIN therefore refused mikrob from every one of those, losing API access. Resolve to
+# "mikrob" for ANY cwd under $MARVEEN_MAIN (the agents/* branch above already runs first and
+# claims anything under agents/, so this never overlaps with a real per-agent cwd) or under the
+# mikrob worktree. mikrob has no key file under AGENTS_ROOT, so this falls through to the
+# existing missing-key-file fallback below and keeps using the shared token, exactly like before
+# per-agent keys existed, until mikrob gets its own. The hardcoded literal "mikrob" (never
+# "$AGENT") is load-bearing: a surviving mutant that fell back to the REQUESTED name instead would
+# let this branch hand out ANY agent's key from the repo root, defeating caller-binding entirely
+# for this cwd (mikrob msg 22309 addendum) -- selftest case 22 pins this.
+if [ -z "$SELF" ]; then
+  case "${PWD%/}/" in
+    "${MARVEEN_MAIN%/}/"* | "${MIKROB_WORKTREE%/}/"*)
+      SELF="mikrob"
+      ;;
+  esac
 fi
-[ -n "$SELF" ] || die 2 "cannot determine caller identity (MARVEEN_AGENT_ID/CLAUDE_AGENT_ID unset, cwd not under agents/<name> or the repo root)"
+[ -n "$SELF" ] || die 2 "cannot determine caller identity (MARVEEN_AGENT_ID/CLAUDE_AGENT_ID unset, cwd not under agents/<name>, MARVEEN_MAIN, or the mikrob worktree)"
 [ "$SELF" = "$AGENT" ] || die 2 "refusing: caller identity does not match the requested agent"
 
 KEY_FILE="$AGENTS_ROOT/$AGENT/.dashboard-agent-key"

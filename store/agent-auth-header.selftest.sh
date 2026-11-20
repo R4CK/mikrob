@@ -297,6 +297,50 @@ else
   fail "an unknown cwd outside agents/ and the repo root is still refused (rc=$RC, stdout: $OUT)"
 fi
 
+# Case 20 (CYBERSEC2 NO-GO 34825 + CYBERED NO-GO 34827, F1' -- widened past the exact repo root):
+# a SUBDIRECTORY of the repo root (e.g. store/) is an ordinary mikrob cwd, not an edge case --
+# must resolve the same as case 18, not refuse.
+set +e
+OUT="$(cd "$MAIN_DIR/store" && env -u MARVEEN_AGENT_ID -u CLAUDE_AGENT_ID bash "$SCRIPT" mikrob 2>"$WORK/stderr20")"
+RC=$?
+set -e
+if [ "$RC" -eq 0 ] && [ "$OUT" = "Authorization: Bearer shared-token-value" ]; then
+  pass "the main agent from a SUBDIRECTORY of the repo root still gets a header"
+else
+  fail "the main agent from a SUBDIRECTORY of the repo root still gets a header (rc=$RC, stdout: $OUT)"
+fi
+
+# Case 21: the mikrob worktree (a separate directory, outside the repo root entirely) must also
+# resolve, same reasoning as case 20.
+WORKTREES_DIR="$WORK/worktrees"
+mkdir -p "$WORKTREES_DIR/mikrob"
+export MARVEEN_WORKTREES="$WORKTREES_DIR"
+set +e
+OUT="$(cd "$WORKTREES_DIR/mikrob" && env -u MARVEEN_AGENT_ID -u CLAUDE_AGENT_ID bash "$SCRIPT" mikrob 2>"$WORK/stderr21")"
+RC=$?
+set -e
+if [ "$RC" -eq 0 ] && [ "$OUT" = "Authorization: Bearer shared-token-value" ]; then
+  pass "the mikrob worktree cwd still gets a header"
+else
+  fail "the mikrob worktree cwd still gets a header (rc=$RC, stdout: $OUT)"
+fi
+
+# Case 22 (mutation pin, mikrob msg 22309 addendum): from the repo root, with no env var,
+# requesting a DIFFERENT agent's name must still be REFUSED. This is the case that catches a
+# mutant which falls back to the REQUESTED name ("$AGENT") instead of the hardcoded "mikrob" --
+# such a mutant would still pass cases 18/20/21 (which always request 'mikrob' itself) while
+# silently handing out any agent's key from this cwd.
+set +e
+OUT="$(cd "$MAIN_DIR" && env -u MARVEEN_AGENT_ID -u CLAUDE_AGENT_ID bash "$SCRIPT" backend 2>"$WORK/stderr22")"
+RC=$?
+set -e
+if [ "$RC" -eq 2 ] && [ -z "$OUT" ]; then
+  pass "requesting a DIFFERENT agent's key from the repo root is still refused"
+else
+  fail "requesting a DIFFERENT agent's key from the repo root is still refused (rc=$RC, stdout: $OUT)"
+fi
+unset MARVEEN_WORKTREES
+
 if [ "$FAIL" -eq 0 ]; then
   echo "selftest: PASS"
   exit 0

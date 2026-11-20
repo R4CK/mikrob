@@ -40,9 +40,10 @@ afterEach(() => {
   rmSync(work, { recursive: true, force: true })
 })
 
-function run(agent: string, env: Record<string, string> = {}): { out: string; status: number } {
+function run(agent: string, env: Record<string, string> = {}, cwd?: string): { out: string; status: number } {
   try {
     const out = execFileSync('bash', [SCRIPT, agent], {
+      cwd,
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         MARVEEN_AGENTS_ROOT: join(work, 'agents'),
@@ -121,6 +122,27 @@ describe('store/agent-auth-header.sh behaviour (card 52114c2f F4, pinned via rea
     const { out, status } = run('qa2')
     expect(status).toBe(2)
     expect(out).toBe('')
+  })
+
+  describe('F1\': mikrob resolves from any cwd under MARVEEN_MAIN, not only the exact repo root (CYBERSEC2 NO-GO 34825 / CYBERED NO-GO 34827)', () => {
+    it('cwd = a SUBDIRECTORY of the repo root, no id env, requesting mikrob -> falls back to the shared token', () => {
+      // run() hardcodes MARVEEN_AGENT_ID: 'backend' as its base, overridden here to '' (bash
+      // treats an empty env var the same as unset for ${VAR:-fallback}) to simulate mikrob's own
+      // real env (no MARVEEN_AGENT_ID/CLAUDE_AGENT_ID at all).
+      const { out, status } = run('mikrob', { MARVEEN_AGENT_ID: '' }, join(work, 'main', 'store'))
+      expect(status).toBe(0)
+      expect(out).toBe('Authorization: Bearer shared-token-value')
+    })
+
+    // Mutation pin (mikrob msg 22309 addendum): a mutant that falls back to the REQUESTED name
+    // ("$AGENT") instead of the hardcoded "mikrob" string would still pass the case above (it
+    // always requests 'mikrob'), while silently handing out ANY agent's key from this cwd. This
+    // case is the one that actually exercises that distinction.
+    it('cwd = the repo root, no id env, requesting a DIFFERENT agent\'s key -> still refused', () => {
+      const { out, status } = run('backend', { MARVEEN_AGENT_ID: '' }, join(work, 'main'))
+      expect(status).toBe(2)
+      expect(out).toBe('')
+    })
   })
 
   describe('F3: revoked/junk-key fallback (real HTTP probe)', () => {
