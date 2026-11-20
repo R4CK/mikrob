@@ -28931,3 +28931,15 @@ Mellékesen pontosítva: a `fail_reason` csak a generikus 'fail' kimenetnél jel
 **Ki döntött:** MikroB terve (34566, 22111). Fron Ted (fron-ted) végezte a merge-et.
 
 **Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb, landolt a6de7f140-ban), commit dba2aea3e.
+
+## 2026-11-20 -- LLM pages reorganized: Providers page + Live-load page (kártya f1e33cfb, delta)
+
+**Döntés:** a fázis (36dc9240, MikroB target-struktúra 34489) 4 oldalt ír elő a 6 régi helyett. Ebben a körben a két NEM R1-függő elem készült el: (1) "Szolgáltatók" oldal -- a Lokális modell, FreeLLM és Gemini oldalak egy tabos oldalba vonva (régi pageId-k redirectelnek, a "team"->"agents" minta szerint); a Lokális modell tabon belül Állapot/Katalógus al-tab; a nehézségi küszöb dropdown törölve (kód-ellenőrzéssel megerősítve: sosem hívott --difficulty paraméterrel); az agresszivitás csúszka SZERKESZTHETŐ marad, mert a valós helyi/online routing küszöböt állítja (nem csak felirat), MikroB jóváhagyásával (msg 22235) átírva igaz leírásra (3c075d74 óta minden feladat kap helyi draftot, a verdikt csak az online ellenőrzés mélységét dönti el). (2) "Élő terhelés" oldal -- a GPU-kihasználtsági spektrum és a modell-elosztási úszósáv áthelyezve az Áttekintés oldalról az átnevezett llmMonitorPage-re (pageId megtartva), a vertikális "ALATT" elrendezés megtartva (Peti döntése, nem változott). Mindkét widget poll/rAF ciklusa most a `switchPage('llmMonitor')`-hoz kötött, nem az Áttekintéshez.
+
+**Blokkolva:** a fennmaradó 3 elem (LLM route landing oldal, Call log+cost összevonás, Overview "LLM today" csempe) az R1 (954a6a93, `/api/llm/chain`) backend-végpontjától függ, az még `planned`, nincs elkezdve.
+
+**Ellenőrzés:** scope-olt tesztek 10/10 + 5/5 fájl zöld; teljes `fleet-test.sh` kétszer futtatva (69da00d5a és 18145eba9 commitokon), mindkétszer 1396-1397/1398 fájl zöld, 1 nem-kapcsolódó flaky selftest (`mopsion-suite-run.selftest.sh`, terhelés alatti timing-hiba, nem ismétlődött a második futáson). `lint-ratchet.sh` alapvonal tart (420 lelet).
+
+**Ki döntött:** MikroB terve (36dc9240 komment 34489) + Peti jóváhagyása (14302/14306/14308). Fron Ted (fron-ted) a végrehajtó; az agresszivitás-csúszka és a nehézségi-dropdown kódbeli ellenőrzését saját maga végezte, a döntést MikroB erősítette meg (22235).
+
+**Hivatkozás:** kártya f1e33cfb (fázis 36dc9240), commit 18145eba9.
