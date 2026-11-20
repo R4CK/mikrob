@@ -28943,3 +28943,13 @@ Mellékesen pontosítva: a `fail_reason` csak a generikus 'fail' kimenetnél jel
 **Ki döntött:** MikroB terve (36dc9240 komment 34489) + Peti jóváhagyása (14302/14306/14308). Fron Ted (fron-ted) a végrehajtó; az agresszivitás-csúszka és a nehézségi-dropdown kódbeli ellenőrzését saját maga végezte, a döntést MikroB erősítette meg (22235).
 
 **Hivatkozás:** kártya f1e33cfb (fázis 36dc9240), commit 18145eba9.
+
+## 2026-11-20 -- LLM today Overview tile added back per MikroB (kártya f1e33cfb, delta)
+
+**Döntés:** az előző delta (item 2) teljesen eltávolította a GPU-spektrum canvas-t és a modell-elosztási úszósávot az Áttekintésről, csak az Élő terhelés oldalon hagyva. MikroB (üzenet 22311, a fázis 36dc9240 komment 34489 egyeztetett struktúráját idézve: "Overview keeps ONE slim 'LLM today' tile") ezt pontosította: a két teljes widget NEM duplikálódik (marad az Élő terhelés oldalon egyedül), de az Áttekintésen egy ÚJ, karcsú csempe ("LLM ma") jelenik meg -- GPU foglalt/üresjárat + VRAM egy sorban, a mai napi helyi hívásszám, és egy Részletek-link az Élő terhelés oldalra, a Gemini/Cost csempék mintáját követve. A csempe szándékosan úgy épült, hogy R1 (954a6a93, `/api/llm/chain`) landolása után a helyi-csak hívásszám helyén a lánc valós FreeLLM/local/online számai jelenjenek meg, ugyanazon kártya/id-kon.
+
+**Adatforrás:** `GET /api/local-llm/status` (gpu.util_pct/mem_used_mb/mem_total_mb) és `GET /api/local-llm/usage` (today) -- mindkettő már létező végpont, nem igényelt új backend-munkát ebben a körben.
+
+**Ki döntött:** MikroB (üzenet 22311), Peti eredeti jóváhagyása (14302/14306/14308) a fázis struktúrájára. Fron Ted (fron-ted) a végrehajtó.
+
+**Hivatkozás:** kártya f1e33cfb (fázis 36dc9240), commit 7eb8ab91d.
