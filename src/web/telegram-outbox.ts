@@ -14,11 +14,17 @@
 // telegram_fallback_send.py's existing direct-send path both stay as-is; this is a NEW
 // path, default OFF (MIKROB_TG_OUTBOX env flag), used by the fallback sender FIRST (other
 // call sites are future rounds, not this one).
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { channelStateDir } from '../channel-provider.js'
+import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { readFileOr } from './agent-config.js'
 import { sendTelegramMessage } from './telegram.js'
-import { listDueTelegramOutbox, markTelegramOutboxSent, markTelegramOutboxFailed } from '../db.js'
+import { normalizeChatId } from '../owner-chat.js'
+import { ALLOWED_CHAT_ID } from '../config.js'
+import {
+  listDueTelegramOutbox, markTelegramOutboxSent, markTelegramOutboxFailed,
+  markTelegramOutboxTerminallyFailed, redactStaleTelegramOutboxText,
+} from '../db.js'
 import { logger } from '../logger.js'
 
 export const OUTBOX_FLAG_ENV = 'MIKROB_TG_OUTBOX'
@@ -52,6 +58,46 @@ export function sanitizeOutboxError(message: string): string {
   return message.replace(TOKEN_SHAPE_RX, '<redacted>').slice(0, MAX_STORED_ERROR_LEN)
 }
 
+/**
+ * Is `chatId` a chat this install actually knows about (CYBERSEC/CYBERED
+ * NO-GO 35157 F-C, RedHat 22517)? Before this, any dashboard-token holder
+ * could enqueue a send to an ARBITRARY chat_id through the main bot --
+ * the outbox's own validation only checked shape (string/number), never
+ * membership. The allowlist is the SAME set the channel plugin already
+ * trusts for inbound: the configured owner chat (ALLOWED_CHAT_ID) plus
+ * every id in access.json's allowFrom/groups/channels (the exact
+ * heuristic resolveOwnerChatId already uses) -- not a new, separate trust
+ * boundary.
+ */
+export function isAllowedOutboxChatId(
+  chatId: string,
+  readAccessFile: (path: string) => string = (p) => readFileSync(p, 'utf-8'),
+  configured: string | null = ALLOWED_CHAT_ID,
+  provider: ChannelProviderType = 'telegram',
+): boolean {
+  const target = normalizeChatId(chatId)
+  if (!target) return false
+  if (normalizeChatId(configured) === target) return true
+  try {
+    const raw = JSON.parse(readAccessFile(join(channelStateDir(provider), 'access.json'))) as Record<string, unknown>
+    if (Array.isArray(raw.allowFrom)) {
+      for (const entry of raw.allowFrom) {
+        if (normalizeChatId(typeof entry === 'number' ? String(entry) : (entry as string)) === target) return true
+      }
+    }
+    for (const mapKey of ['groups', 'channels'] as const) {
+      const map = raw[mapKey]
+      if (!map || typeof map !== 'object') continue
+      for (const key of Object.keys(map as Record<string, unknown>)) {
+        if (normalizeChatId(key) === target) return true
+      }
+    }
+  } catch {
+    // No access.json / unreadable / not JSON: nothing else to allow.
+  }
+  return false
+}
+
 function readMarveenTelegramToken(): string | null {
   // Same resolution as readMarveenTelegramConfig/refreshMarveenBotUsername in telegram.ts.
   const envPath = join(channelStateDir('telegram'), '.env')
@@ -72,6 +118,16 @@ function realSender(): TelegramSender {
 const HEALTH_WARN_AT_ATTEMPTS = 3
 
 /**
+ * Give-up threshold (CYBERSEC/CYBERED NO-GO 35157 F-F, RedHat 22517): a row
+ * that is still failing after this many consecutive attempts goes terminal
+ * ('failed') instead of retrying every 300s forever. Not specified
+ * numerically by the finding; chosen so a row gets a real chance to recover
+ * from a transient outage (health warning already fires at 3) before giving
+ * up -- roughly 20 minutes of total backoff at the 5s/300s-capped schedule.
+ */
+export const MAX_ATTEMPTS = 10
+
+/**
  * Drains every row currently due, once. `sender` is injectable for tests;
  * production goes through startTelegramOutboxDrain(), which supplies the real
  * one and also holds the single-flight guard (CYBERED NO-GO 35157 B1: a bare
@@ -86,7 +142,13 @@ export async function drainTelegramOutboxOnce(sender: TelegramSender, now = Date
     } catch (err) {
       const newAttempts = row.attempts + 1
       const raw = err instanceof Error ? err.message : String(err)
-      markTelegramOutboxFailed(row.id, sanitizeOutboxError(raw), Date.now() + nextRetryDelayMs(newAttempts))
+      const sanitized = sanitizeOutboxError(raw)
+      if (newAttempts >= MAX_ATTEMPTS) {
+        markTelegramOutboxTerminallyFailed(row.id, sanitized)
+        logger.warn({ outboxId: row.id, chatId: row.chat_id, attempts: newAttempts }, 'telegram-outbox: giving up after max consecutive failures, marking failed (terminal)')
+        continue
+      }
+      markTelegramOutboxFailed(row.id, sanitized, Date.now() + nextRetryDelayMs(newAttempts))
       // Fires exactly once per row, at the moment it crosses 3 consecutive failures
       // (attempts only increases for a row that hasn't succeeded yet -- a row that
       // succeeds leaves listDueTelegramOutbox's result for good) -- not on every tick
@@ -97,6 +159,15 @@ export async function drainTelegramOutboxOnce(sender: TelegramSender, now = Date
     }
   }
 }
+
+/**
+ * Retention (CYBERSEC/CYBERED NO-GO 35157 F-G, RedHat 22517): clears the
+ * message TEXT of terminal (sent/failed) rows older than this, keeping the
+ * receipt metadata. Not specified numerically by the finding; 24h is chosen
+ * as a generous window to inspect a recent delivery/failure before the body
+ * is redacted.
+ */
+export const TEXT_RETENTION_MS = 24 * 60 * 60 * 1000
 
 const DRAIN_INTERVAL_MS = 10_000
 
@@ -121,5 +192,8 @@ export function startTelegramOutboxDrain(sender: TelegramSender = realSender()):
     drainTelegramOutboxOnce(sender)
       .catch((err) => logger.warn({ err }, 'telegram-outbox: drain tick failed'))
       .finally(() => { draining = false })
+    // Cheap (small table, indexed by status), so it rides the same tick as the
+    // drain rather than needing its own interval -- F-G retention.
+    redactStaleTelegramOutboxText(Date.now(), TEXT_RETENTION_MS)
   }, DRAIN_INTERVAL_MS)
 }

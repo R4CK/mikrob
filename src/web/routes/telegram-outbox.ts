@@ -3,7 +3,7 @@
 // HTTP shape for telegram_fallback_send.py to hand a message over.
 import { readBody, json } from '../http-helpers.js'
 import { enqueueTelegramOutbox } from '../../db.js'
-import { isTelegramOutboxEnabled } from '../telegram-outbox.js'
+import { isTelegramOutboxEnabled, isAllowedOutboxChatId } from '../telegram-outbox.js'
 import type { RouteContext } from './types.js'
 
 const MAX_TEXT_LEN = 4096 // Telegram's own sendMessage limit.
@@ -37,6 +37,10 @@ export async function tryHandleTelegramOutbox(ctx: RouteContext): Promise<boolea
   }
   if (typeof idempotency_key !== 'string' || !IDEMPOTENCY_KEY_RX.test(idempotency_key)) {
     json(res, { error: 'idempotency_key is required (1-128 chars, [A-Za-z0-9._:-])' }, 400)
+    return true
+  }
+  if (!isAllowedOutboxChatId(String(chat_id))) {
+    json(res, { error: 'chat_id is not on this install\'s allowlist' }, 403)
     return true
   }
 

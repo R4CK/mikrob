@@ -12,15 +12,24 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   initDatabase, enqueueTelegramOutbox, getTelegramOutboxRow, listDueTelegramOutbox,
-  markTelegramOutboxSent, markTelegramOutboxFailed,
+  markTelegramOutboxSent, markTelegramOutboxFailed, markTelegramOutboxTerminallyFailed,
+  redactStaleTelegramOutboxText,
 } from '../db.js'
 
 const warnSpy = vi.hoisted(() => vi.fn())
 vi.mock('../logger.js', () => ({ logger: { warn: warnSpy, info: () => {}, error: () => {} } }))
 
+// Route-level tests below all use chat_id '1' -- pin it as the configured owner chat so
+// those tests exercise the enqueue contract, not the F-C allowlist (covered separately,
+// with its own readAccessFile/configured injection, in `isAllowedOutboxChatId` below).
+vi.mock('../config.js', async () => {
+  const actual = await vi.importActual('../config.js')
+  return { ...actual, ALLOWED_CHAT_ID: '1' }
+})
+
 import {
   nextRetryDelayMs, sanitizeOutboxError, drainTelegramOutboxOnce, isTelegramOutboxEnabled,
-  startTelegramOutboxDrain, OUTBOX_FLAG_ENV, type TelegramSender,
+  startTelegramOutboxDrain, isAllowedOutboxChatId, MAX_ATTEMPTS, OUTBOX_FLAG_ENV, type TelegramSender,
 } from '../web/telegram-outbox.js'
 import { tryHandleTelegramOutbox } from '../web/routes/telegram-outbox.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -196,6 +205,123 @@ describe('drainTelegramOutboxOnce', () => {
     await drainTelegramOutboxOnce(sender)
     expect(sender).not.toHaveBeenCalled()
   })
+
+  it('F-F: a row still failing at MAX_ATTEMPTS goes terminal (failed), not another retry', async () => {
+    const row = enqueueTelegramOutbox('1', 'hi', 'k-terminal')
+    const failing: TelegramSender = async () => { throw new Error('down') }
+    let now = Date.now()
+    for (let i = 0; i < MAX_ATTEMPTS; i++) {
+      await drainTelegramOutboxOnce(failing, now)
+      const reloaded = getTelegramOutboxRow(row.id)!
+      if (reloaded.status === 'failed') break
+      now = reloaded.next_retry_at + 1
+    }
+    const final = getTelegramOutboxRow(row.id)!
+    expect(final.status).toBe('failed')
+    expect(final.attempts).toBe(MAX_ATTEMPTS)
+    // Terminal: a further tick must not call the sender again (the row is no
+    // longer selected by listDueTelegramOutbox once status is not 'pending').
+    const senderAfter: TelegramSender = vi.fn(async () => 1)
+    await drainTelegramOutboxOnce(senderAfter, now + 10_000_000)
+    expect(senderAfter).not.toHaveBeenCalled()
+  })
+
+  it('F-E: a later row of the SAME chat waits for an earlier still-pending row, even if due', async () => {
+    const now = Date.now()
+    const first = enqueueTelegramOutbox('1', 'first', 'k-order-1', now - 1000)
+    const second = enqueueTelegramOutbox('1', 'second', 'k-order-2', now - 1000)
+    const sender: TelegramSender = vi.fn(async () => 1)
+    await drainTelegramOutboxOnce(sender, now)
+    expect(sender).toHaveBeenCalledTimes(1)
+    expect(sender).toHaveBeenCalledWith('1', 'first')
+    expect(getTelegramOutboxRow(first.id)!.status).toBe('sent')
+    expect(getTelegramOutboxRow(second.id)!.status).toBe('pending')
+
+    // Now that the first row is terminal (sent), the second becomes eligible.
+    await drainTelegramOutboxOnce(sender, now)
+    expect(sender).toHaveBeenCalledTimes(2)
+    expect(sender).toHaveBeenLastCalledWith('1', 'second')
+  })
+
+  it('F-E: a later row of a DIFFERENT chat is unaffected by an earlier blocked row', async () => {
+    const now = Date.now()
+    enqueueTelegramOutbox('1', 'blocked chat', 'k-chat1', now - 1000)
+    const other = enqueueTelegramOutbox('2', 'other chat', 'k-chat2', now - 1000)
+    const sender: TelegramSender = vi.fn(async () => 1)
+    await drainTelegramOutboxOnce(sender, now)
+    expect(sender).toHaveBeenCalledWith('1', 'blocked chat')
+    expect(sender).toHaveBeenCalledWith('2', 'other chat')
+    expect(getTelegramOutboxRow(other.id)!.status).toBe('sent')
+  })
+})
+
+describe('markTelegramOutboxTerminallyFailed', () => {
+  it('sets status failed, increments attempts, and stores the error', () => {
+    const row = enqueueTelegramOutbox('1', 'a', 'k-term-direct')
+    markTelegramOutboxFailed(row.id, 'first failure', Date.now() + 5000)
+    const newAttempts = markTelegramOutboxTerminallyFailed(row.id, 'giving up')
+    expect(newAttempts).toBe(2)
+    const reloaded = getTelegramOutboxRow(row.id)!
+    expect(reloaded.status).toBe('failed')
+    expect(reloaded.last_error).toBe('giving up')
+  })
+})
+
+describe('redactStaleTelegramOutboxText (F-G retention)', () => {
+  it('clears text on a terminal row older than the retention window, keeps the receipt', () => {
+    const now = Date.now()
+    const row = enqueueTelegramOutbox('1', 'secret body', 'k-retain-sent')
+    markTelegramOutboxSent(row.id, 555, now - 25 * 60 * 60 * 1000) // 25h ago, sent_at in the past
+    const changed = redactStaleTelegramOutboxText(now, 24 * 60 * 60 * 1000)
+    expect(changed).toBe(1)
+    const reloaded = getTelegramOutboxRow(row.id)!
+    expect(reloaded.text).toBe('')
+    expect(reloaded.message_id).toBe(555) // receipt metadata kept
+    expect(reloaded.status).toBe('sent')
+  })
+
+  it('does not touch a terminal row within the retention window', () => {
+    const now = Date.now()
+    const row = enqueueTelegramOutbox('1', 'recent body', 'k-retain-recent')
+    markTelegramOutboxSent(row.id, 1, now - 1000) // 1s ago
+    redactStaleTelegramOutboxText(now, 24 * 60 * 60 * 1000)
+    expect(getTelegramOutboxRow(row.id)!.text).toBe('recent body')
+  })
+
+  it('never touches a pending row, regardless of age', () => {
+    const now = Date.now()
+    const row = enqueueTelegramOutbox('1', 'still pending', 'k-retain-pending', now - 100 * 24 * 60 * 60 * 1000)
+    redactStaleTelegramOutboxText(now, 24 * 60 * 60 * 1000)
+    expect(getTelegramOutboxRow(row.id)!.text).toBe('still pending')
+  })
+})
+
+describe('isAllowedOutboxChatId (F-C)', () => {
+  it('allows the configured owner chat id', () => {
+    expect(isAllowedOutboxChatId('123', () => '{}', '123')).toBe(true)
+  })
+
+  it('rejects an arbitrary chat_id not on the allowlist', () => {
+    expect(isAllowedOutboxChatId('999', () => '{}', '123')).toBe(false)
+  })
+
+  it('allows a chat id found in access.json allowFrom', () => {
+    const access = JSON.stringify({ allowFrom: ['555'] })
+    expect(isAllowedOutboxChatId('555', () => access, null)).toBe(true)
+  })
+
+  it('allows a chat id found in access.json groups', () => {
+    const access = JSON.stringify({ groups: { '-777': {} } })
+    expect(isAllowedOutboxChatId('-777', () => access, null)).toBe(true)
+  })
+
+  it('rejects when access.json is unreadable and no configured id matches', () => {
+    expect(isAllowedOutboxChatId('555', () => { throw new Error('ENOENT') }, null)).toBe(false)
+  })
+
+  it('rejects the installer placeholder "0" as a configured id', () => {
+    expect(isAllowedOutboxChatId('0', () => '{}', '0')).toBe(false)
+  })
 })
 
 describe('isTelegramOutboxEnabled / startTelegramOutboxDrain (default-off contract)', () => {
@@ -324,5 +450,12 @@ describe('POST /api/telegram/outbox (route)', () => {
     const { ctx } = fakeReq({})
     ctx.path = '/api/other'
     expect(await tryHandleTelegramOutbox(ctx)).toBe(false)
+  })
+
+  it('F-C: rejects a chat_id not on this install\'s allowlist with 403', async () => {
+    process.env[OUTBOX_FLAG_ENV] = '1'
+    const { ctx, out } = fakeReq({ chat_id: '999999', text: 'hi', idempotency_key: 'k-not-allowed' })
+    expect(await tryHandleTelegramOutbox(ctx)).toBe(true)
+    expect(out.status).toBe(403)
   })
 })

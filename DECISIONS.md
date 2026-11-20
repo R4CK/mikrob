@@ -29786,3 +29786,79 @@ a future round if MikroB/cybered decide to prioritize them.
 
 **Ki döntött:** cybered (NO-GO 35157, comments 35155/35157), backend (this fix). Gate: QA + Cybersec
 + Cybered (delta re-gate, per the NO-GO's own closing line).
+
+## 2026-11-20 -- ea3e7316 delta 2: F-C/F-E/F-F/F-G now blocking (MikroB scope correction, msg 22518, after RedHat 22517)
+
+**Context:** MikroB message 22518, sent after RedHat (comment 22517) mapped the NO-GO 35157's
+non-blocking findings onto MikroB's own gate checklist: F-C, F-E, F-F, F-G are now BLOCKING for
+this re-gate (not optional/fold-in-where-cheap as the original NO-GO framed them). F-D (crash
+between send and markSent) and F-L1 (env sink) stay non-blocking, documented only.
+
+**Fix (F-C, arbitrary chat_id):** any dashboard-token holder could enqueue a send to an ARBITRARY
+chat_id through the main bot -- the route's own validation only checked chat_id's shape (string
+or number), never membership. `isAllowedOutboxChatId` (telegram-outbox.ts) checks the SAME trust
+boundary the channel plugin already enforces for inbound: the configured owner chat
+(`ALLOWED_CHAT_ID`) plus every id in `access.json`'s `allowFrom`/`groups`/`channels` -- the exact
+heuristic `resolveOwnerChatId` (owner-chat.ts) already uses, not a new, separate list to maintain.
+The route now returns 403 for a chat_id outside this set, checked after the existing shape
+validation, before `enqueueTelegramOutbox`.
+
+**Fix (F-E, per-chat ordering):** `listDueTelegramOutbox` (db.ts) gained a `NOT EXISTS` clause: a
+row is only selected if no EARLIER (lower id) `pending` row exists for the same `chat_id`, due or
+not. A later row of the same chat now waits behind an earlier one that is still mid-backoff or
+mid-retry, instead of jumping ahead just because its own `next_retry_at` happened to be due
+first. Other chats are unaffected (the subquery is scoped to `chat_id`).
+
+**Fix (F-F, terminal state):** a row now goes `status='failed'` (terminal, a value the schema
+already reserved but nothing wrote) after `MAX_ATTEMPTS` (10, chosen -- not specified numerically
+by the finding; ~20 minutes of total backoff at the existing 5s/300s-capped schedule, long enough
+to survive a short outage, short enough to stop retrying a permanently-dead send) consecutive
+failures, instead of retrying every 300s forever. New db.ts function
+`markTelegramOutboxTerminallyFailed` sets the terminal status; `drainTelegramOutboxOnce` decides
+which of `markTelegramOutboxFailed` (retry) or this (give up) to call based on `newAttempts`.
+
+**Fix (F-G, retention):** new db.ts function `redactStaleTelegramOutboxText(now, olderThanMs)`
+clears `text` (keeping `id`/`chat_id`/`status`/`attempts`/`message_id`/`sent_at`/`created_at`, the
+receipt) on any `sent`/`failed` row older than the window; `pending` rows are never touched
+regardless of age. Window chosen as 24h (`TEXT_RETENTION_MS`) -- not specified numerically by the
+finding; long enough to inspect a recent delivery/failure, short enough that message BODIES do not
+accumulate indefinitely in the dashboard's db file. Wired into the same 10s drain tick in
+`startTelegramOutboxDrain` (cheap query on a small table, no need for its own interval).
+
+**Test:** `src/__tests__/telegram-outbox.test.ts` -- 14 new cases: F-F terminal transition + no
+further sends after terminal; F-E same-chat blocking + cross-chat independence;
+`markTelegramOutboxTerminallyFailed` direct unit test; `redactStaleTelegramOutboxText` (clears
+stale terminal text, leaves recent terminal text, never touches pending); `isAllowedOutboxChatId`
+(configured-id match, access.json allowFrom/groups match, unreadable access.json, installer
+placeholder "0" rejected) + one route-level 403 case. `ALLOWED_CHAT_ID` mocked to `'1'` for the
+file (via `vi.mock('../config.js', ...)`) so the pre-existing route tests, which all use chat_id
+`'1'`, keep exercising the enqueue contract rather than silently passing/failing on the new F-C
+check by accident.
+
+**Mutation-verified (restored byte-identical via diff each time):**
+- F-C: removing the 403 check from the route turned exactly the new F-C route test red (200
+  instead of 403).
+- F-E: dropping the `NOT EXISTS` clause from `listDueTelegramOutbox` turned the same-chat-ordering
+  test red (sender called 2 times instead of 1 on the first drain).
+- F-F: removing the `MAX_ATTEMPTS` branch (always calling `markTelegramOutboxFailed`) turned the
+  terminal-transition test red (`status` stayed `'pending'` instead of becoming `'failed'`).
+- F-G: changing `cutoff = now - olderThanMs` to `now + olderThanMs` turned the
+  within-retention-window test red (a 1s-old row's text was wrongly cleared).
+
+**Measured:** `npx vitest run src/__tests__/telegram-outbox.test.ts`: 40/40 passed (was 26).
+Alongside `card-checkpoints.test.ts` + `approvals-chat-approved.test.ts` +
+`kanban-decisions-guard.test.ts` + `owner-chat-parity.test.ts` (shared `src/db.ts`/`owner-chat.ts`
+blast radius): 5 Test Files passed (5), 118 Tests passed (118). `python3
+scripts/hooks/telegram_fallback_send.selftest.py`: 29/29, unchanged (this delta touches no Python
+file). `bash scripts/__tests__/telegram-fallback-dedup.test.sh`: 15/15, unchanged. `npx tsc
+--noEmit`: clean. `npx eslint` on the 4 changed/touched files: clean.
+
+**Nincs benne (per MikroB 22518, stays non-blocking, documented not fixed):** F-D (a crash between
+a successful Bot API send and `markTelegramOutboxSent` writing the receipt would retry and send
+again -- the outbox has no exactly-once delivery guarantee across a crash mid-write, only
+at-least-once); F-L1 (env sink, from the original NO-GO's non-blocking list, not re-described
+here).
+
+**Ki döntött:** RedHat (comment 22517, mapped the NO-GO's findings to MikroB's gate checklist),
+MikroB (message 22518, made F-C/F-E/F-F/F-G blocking for this round), backend (this fix). Gate: QA
++ Cybersec + Cybered (delta re-gate, per MikroB's own closing line in 22518).

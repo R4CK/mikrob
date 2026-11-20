@@ -11008,10 +11008,25 @@ export function getTelegramOutboxRow(id: number): TelegramOutboxRow | undefined 
   return db.prepare('SELECT * FROM telegram_outbox WHERE id = ?').get(id) as TelegramOutboxRow | undefined
 }
 
-/** Rows due for a delivery attempt right now, oldest first. */
+/**
+ * Rows due for a delivery attempt right now, oldest first -- but a row is
+ * skipped if an EARLIER (lower id) pending row for the SAME chat_id exists,
+ * due or not (CYBERSEC/CYBERED NO-GO 35157 F-E, RedHat 22517): per-chat
+ * order must hold under retry, so a later row of the same chat waits until
+ * the earlier one reaches a terminal state (sent, or 'failed' after
+ * MAX_ATTEMPTS), instead of jumping ahead while the earlier one is still
+ * mid-backoff. Other chats are unaffected -- the NOT EXISTS is scoped to
+ * chat_id.
+ */
 export function listDueTelegramOutbox(now = Date.now(), limit = 25): TelegramOutboxRow[] {
   return db.prepare(
-    `SELECT * FROM telegram_outbox WHERE status = 'pending' AND next_retry_at <= ? ORDER BY id ASC LIMIT ?`,
+    `SELECT * FROM telegram_outbox t
+     WHERE t.status = 'pending' AND t.next_retry_at <= ?
+       AND NOT EXISTS (
+         SELECT 1 FROM telegram_outbox e
+         WHERE e.chat_id = t.chat_id AND e.status = 'pending' AND e.id < t.id
+       )
+     ORDER BY t.id ASC LIMIT ?`,
   ).all(now, limit) as TelegramOutboxRow[]
 }
 
@@ -11023,13 +11038,44 @@ export function markTelegramOutboxSent(id: number, messageId: number | null, now
 
 /**
  * Records a failed delivery attempt and schedules the next one. Stays
- * 'pending' (not 'failed') -- a 'failed' row is this table's RETRY state, not
- * a terminal one: the outbox's whole point is to keep retrying through a
- * channel-process restart (card f490ae53) rather than giving up.
+ * 'pending' (not 'failed') -- the caller (drainTelegramOutboxOnce) is the one
+ * that decides when attempts has crossed MAX_ATTEMPTS and switches to
+ * markTelegramOutboxTerminallyFailed instead of calling this again.
  */
 export function markTelegramOutboxFailed(id: number, sanitizedError: string, nextRetryAt: number): number {
   db.prepare(
     `UPDATE telegram_outbox SET attempts = attempts + 1, last_error = ?, next_retry_at = ? WHERE id = ?`,
   ).run(sanitizedError, nextRetryAt, id)
   return (db.prepare('SELECT attempts FROM telegram_outbox WHERE id = ?').get(id) as { attempts: number }).attempts
+}
+
+/**
+ * Terminal give-up (CYBERSEC/CYBERED NO-GO 35157 F-F, RedHat 22517): after
+ * MAX_ATTEMPTS consecutive failures, status becomes 'failed' -- a reserved
+ * value the schema already had but nothing wrote -- instead of retrying
+ * every 300s forever. `attempts` still increments so the row's history is
+ * accurate; `next_retry_at` is left as-is (the row is no longer selected by
+ * listDueTelegramOutbox once its status is not 'pending').
+ */
+export function markTelegramOutboxTerminallyFailed(id: number, sanitizedError: string): number {
+  db.prepare(
+    `UPDATE telegram_outbox SET status = 'failed', attempts = attempts + 1, last_error = ? WHERE id = ?`,
+  ).run(sanitizedError, id)
+  return (db.prepare('SELECT attempts FROM telegram_outbox WHERE id = ?').get(id) as { attempts: number }).attempts
+}
+
+/**
+ * Retention (CYBERSEC/CYBERED NO-GO 35157 F-G, RedHat 22517): a row that has
+ * reached a terminal state (sent or failed) loses its message TEXT once it is
+ * older than `olderThanMs` -- the receipt (id, chat_id, status, attempts,
+ * message_id, sent_at, created_at) is kept, only the body is redacted. A
+ * 'pending' row (still retrying) is never touched, regardless of age.
+ */
+export function redactStaleTelegramOutboxText(now: number, olderThanMs: number): number {
+  const cutoff = now - olderThanMs
+  const res = db.prepare(
+    `UPDATE telegram_outbox SET text = ''
+     WHERE status IN ('sent', 'failed') AND text != '' AND COALESCE(sent_at, created_at) < ?`,
+  ).run(cutoff)
+  return res.changes
 }
