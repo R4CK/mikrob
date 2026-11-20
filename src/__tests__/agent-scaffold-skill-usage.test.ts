@@ -15,7 +15,12 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { SKILL_USAGE_DATA } from '../web/skill-usage-data.js'
-import { buildDevOFamilySkillUsageBody, buildTesterFamilySkillUsageBody } from '../web/agent-scaffold.js'
+import {
+  buildDevOFamilySkillUsageBody,
+  buildTesterFamilySkillUsageBody,
+  buildJogaszFamilySkillUsageBody,
+  buildMarketingFamilySkillUsageBody,
+} from '../web/agent-scaffold.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCAFFOLD = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
@@ -326,6 +331,72 @@ describe('SKILL_USAGE_DATA (generated from store/skill-role-map.md)', () => {
     // white-hat-security-testing is WhiteHat/WhiteHat2's sign-off tool, not Teszter's --
     // must not be in the curated table (card 17eeebe6: removed from the local skillset).
     expect(rendered).not.toContain('white-hat-security-testing')
+    expect(rendered).toContain('store/skill-role-map.md')
+  })
+
+  // Card 3a60633b: Jogász gets a curated table for the mandatory sourced-investigation method
+  // (Peti Telegram 12225). Mirrors the Tester precedent above.
+  it('JOGASZ_FAMILY is defined and names jogasz', () => {
+    expect(SCAFFOLD).toContain("const JOGASZ_FAMILY = new Set(")
+    const familySet = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('const JOGASZ_FAMILY = new Set('),
+      SCAFFOLD.indexOf('const JOGASZ_FAMILY = new Set(') + 60,
+    )
+    expect(familySet).toContain("'jogasz'")
+  })
+
+  it('buildSkillUsageBody dispatches jogasz to the Jogász curated table', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('JOGASZ_FAMILY.has(name)) return buildJogaszFamilySkillUsageBody()')
+  })
+
+  it('Jogász curated table carries the previously-unreferenced compliance skills', () => {
+    const rendered = buildJogaszFamilySkillUsageBody()
+    expect(rendered).toContain('contract-review-redline')
+    expect(rendered).toContain('gdpr-audit-prep')
+    expect(rendered).toContain('ai-act-readiness')
+    expect(rendered).toContain('fork-adopt-investigation')
+    expect(rendered).toContain('iso27001-audit-prep')
+    expect(rendered).toContain('soc2-audit-prep')
+    expect(rendered).toContain('interview-me')
+    expect(rendered).toContain('humanize-writing')
+    expect(rendered).toContain('store/skill-role-map.md')
+  })
+
+  // Card f27512c9: Marketing gets a curated table (Peti Telegram 12231). Mirrors the Jogász
+  // precedent above.
+  it('MARKETING_FAMILY is defined and names marketing', () => {
+    expect(SCAFFOLD).toContain("const MARKETING_FAMILY = new Set(")
+    const familySet = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('const MARKETING_FAMILY = new Set('),
+      SCAFFOLD.indexOf('const MARKETING_FAMILY = new Set(') + 60,
+    )
+    expect(familySet).toContain("'marketing'")
+  })
+
+  it('buildSkillUsageBody dispatches marketing to the Marketing curated table', () => {
+    const dispatch = SCAFFOLD.slice(
+      SCAFFOLD.indexOf('function buildSkillUsageBody('),
+      SCAFFOLD.indexOf('export function ensureSkillUsageSection('),
+    )
+    expect(dispatch).toContain('MARKETING_FAMILY.has(name)) return buildMarketingFamilySkillUsageBody()')
+  })
+
+  it('Marketing curated table carries the previously-0-use brand/measurement skills and drops the FE-only entries', () => {
+    const rendered = buildMarketingFamilySkillUsageBody()
+    expect(rendered).toContain('brand-foundations-strategy')
+    expect(rendered).toContain('competitive-analysis')
+    expect(rendered).toContain('seo-technical-audit')
+    expect(rendered).toContain('campaign-analytics')
+    expect(rendered).toContain('pricing-strategy')
+    expect(rendered).toContain('humanize-writing')
+    // frontend-design-research / d3-data-visualization are FE's job, not marketing's (card
+    // f27512c9: dropped from Core).
+    expect(rendered).not.toContain('frontend-design-research')
+    expect(rendered).not.toContain('d3-data-visualization')
     expect(rendered).toContain('store/skill-role-map.md')
   })
 

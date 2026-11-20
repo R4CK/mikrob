@@ -33,6 +33,8 @@ Severity (CRITICAL/HIGH/MEDIUM/LOW/INFO) with CVSS-style reasoning (attack vecto
 ### 6. Verdict & gate
 Explicit **GO / NO-GO**. NO-GO if any unresolved CRITICAL/HIGH. You are one of the two mandatory gates (with QA); both must PASS before DONE. Never sign off on code you authored.
 
+**Evidence type (rule 4g, card c77013a1).** After the GO/NO-GO word and the `Gate-SHA:` line, tag every substantive claim: `OBSERVATION: <what you ran/measured, on which sha>`, `DERIVATION: <what follows from it>`, `CONCLUSION: <the final claim>`, `UNKNOWN: <what you did not check>`. A green suite number is an OBSERVATION, not a CONCLUSION — don't let it stand in for the verdict word itself.
+
 ## Core attack domains (detail in references/)
 - **Authentication** → `references/auth-authz.md` (token forgery/confusion, expiry, single-use, enumeration, disabled-user-still-authenticates).
 - **Authorization / multi-tenancy** → `references/auth-authz.md` (IDOR, horizontal/vertical privilege bypass, RBAC holes, server-side enforcement).

@@ -21,6 +21,11 @@
 export interface ModelRate {
   inputPerMTok: number // USD per 1,000,000 input tokens
   outputPerMTok: number // USD per 1,000,000 output tokens
+  // Per-model override for the cache-read multiplier. Opus 5.5 and Sonnet 5.5 price cache
+  // hits/refreshes at 0.05x base input, not the 0.1x every other model uses (official pricing
+  // page, footnote: "All other models use the standard 0.1x multiplier", fetched 2026-11-16,
+  // model-pricing-weekly-check heartbeat, card 808cd7fc). Omitted = CACHE_READ_MULTIPLIER.
+  cacheReadMultiplier?: number
 }
 
 export const CACHE_READ_MULTIPLIER = 0.1
@@ -40,7 +45,7 @@ export const MODEL_PRICING: Readonly<Record<string, ModelRate>> = {
   'claude-fable-5-1': { inputPerMTok: 10.0, outputPerMTok: 50.0 }, // same price as fable-5; explicit entry needed because lookup is strict-equality
   'claude-fable-5': { inputPerMTok: 10.0, outputPerMTok: 50.0 },
   'claude-mythos-5': { inputPerMTok: 10.0, outputPerMTok: 50.0 },
-  'claude-opus-5-5': { inputPerMTok: 4.0, outputPerMTok: 20.0 }, // lower than opus-5 (5/25); source: platform.claude.com/docs 2026-10-12
+  'claude-opus-5-5': { inputPerMTok: 4.0, outputPerMTok: 20.0, cacheReadMultiplier: 0.05 }, // lower than opus-5 (5/25); source: platform.claude.com/docs 2026-10-12
   'claude-opus-5': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-8': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-7': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
@@ -48,7 +53,7 @@ export const MODEL_PRICING: Readonly<Record<string, ModelRate>> = {
   'claude-opus-4-5': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-1': { inputPerMTok: 15.0, outputPerMTok: 75.0 }, // retired, still billable on Bedrock/Google Cloud
   'claude-opus-4': { inputPerMTok: 15.0, outputPerMTok: 75.0 }, // retired, still billable on Google Cloud
-  'claude-sonnet-5-5': { inputPerMTok: 2.0, outputPerMTok: 10.0 }, // same price as sonnet-5; explicit entry needed because lookup is strict-equality
+  'claude-sonnet-5-5': { inputPerMTok: 2.0, outputPerMTok: 10.0, cacheReadMultiplier: 0.05 }, // same input/output price as sonnet-5, but NOT the same cache-read price -- see cacheReadMultiplier doc
   'claude-sonnet-5': { inputPerMTok: 2.0, outputPerMTok: 10.0 }, // standing rate, not a temporary intro price
   'claude-sonnet-4-6': { inputPerMTok: 3.0, outputPerMTok: 15.0 },
   'claude-sonnet-4-5': { inputPerMTok: 3.0, outputPerMTok: 15.0 },
@@ -85,7 +90,7 @@ export function estimateCostUsd(model: string | null | undefined, counts: TokenC
   return (
     (counts.input_tokens * rate.inputPerMTok +
       (counts.output_tokens + counts.thinking_tokens) * rate.outputPerMTok +
-      counts.cache_read_tokens * rate.inputPerMTok * CACHE_READ_MULTIPLIER +
+      counts.cache_read_tokens * rate.inputPerMTok * (rate.cacheReadMultiplier ?? CACHE_READ_MULTIPLIER) +
       counts.cache_creation_tokens * rate.inputPerMTok * CACHE_WRITE_MULTIPLIER) /
     1_000_000
   )

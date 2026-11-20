@@ -117,6 +117,60 @@ check "MUTATION: an absurdly high threshold un-skips staleCard, proving the excl
 invalid_env_out="$(CARD=freshCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=10m bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
 check "a non-integer OFFLOAD_STALE_IN_PROGRESS_SECONDS falls back to the 600s default instead of silently zeroing every leaf" "$invalid_env_out" "freshCard"
 
+# LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66): the old
+# ^[0-9]+$ regex accepted 08/09 (bash arithmetic treats a 0-prefixed literal as octal and 08/09
+# are invalid octal digits -> the `((...))` comparisons this value feeds would error, not compare),
+# 010 (decimal 10 misread as octal 8), and anything >= 2^63 (wraps negative in bash's signed
+# 64-bit arithmetic). Each of these must now trip the same documented-default fallback as a
+# non-numeric value. 12abc/abc12 additionally pin the regex's own anchors: abc12 only fails
+# ^(...)$ because of the ^ anchor (it ends in a valid digit run), 12abc only fails because of the
+# $ anchor (it starts with one) -- dropping either anchor would wrongly accept one of these two.
+for bad in 08 09 010 9223372036854775808 12abc abc12; do
+  stale_bad_out="$(CARD=freshCard OFFLOAD_STALE_IN_PROGRESS_SECONDS="$bad" bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+  check "OFFLOAD_STALE_IN_PROGRESS_SECONDS='$bad' falls back to the 600s default (freshCard still resolves)" "$stale_bad_out" "freshCard"
+done
+
+# S FALLBACK VALUE PINNED (card 27c54ceb, Kesz-ha "S/T fallback values asserted"): the existing
+# fresh(100s)/stale(700s) pair above only pins the true default somewhere in [100s, 700s]. This
+# boundary pair, with OFFLOAD_STALE_IN_PROGRESS_SECONDS UNSET (the real default path, not an
+# explicit override), pins it at exactly 600s.
+python3 -c "
+import json, time
+now = int(time.time())
+cards = [
+    {'id':'justUnderCard','title':'599s','description':'x','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-599},
+    {'id':'justOverCard','title':'601s','description':'x','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-601},
+]
+json.dump(cards, open('$TMPDIR/fixture-stale-boundary.json', 'w'))
+"
+just_under_out="$(CARD=justUnderCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+check "S PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched 599s ago (just under the true 600s default) still resolves" "$just_under_out" "justUnderCard"
+just_over_out="$(CARD=justOverCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-boundary.json")"
+check "S PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched 601s ago (just over the true 600s default) is excluded" "$just_over_out" "[]"
+
+# S DEFAULT MUTANT PIN (card 81025eb5, Cybered GO 33203 on 27c54ceb): the 599/601 boundary pair
+# above does NOT bracket 600 exactly, so a 600->601 default mutant survives it -- is_stale_in_progress()
+# compares with `>=` (offload-dispatch.sh, is_stale_in_progress), so age 599 resolves and age 601 is
+# excluded under BOTH the real default (600) and a 601 mutant alike; neither age differs between the
+# two. Age EXACTLY 600 is the only value where the two defaults disagree: real 600 -> 600>=600 true ->
+# excluded; mutant 601 -> 600>=601 false -> resolves. This is that exact age.
+python3 -c "
+import json, time
+now = int(time.time())
+cards = [{'id':'exactCard','title':'600s','description':'x','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-600}]
+json.dump(cards, open('$TMPDIR/fixture-stale-exact.json', 'w'))
+"
+exact_out="$(CARD=exactCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-exact.json")"
+check "S DEFAULT MUTANT PIN: with OFFLOAD_STALE_IN_PROGRESS_SECONDS unset, a leaf dispatched EXACTLY 600s ago is excluded (kills a 600->601 default mutant that 599/601 alone cannot)" "$exact_out" "[]"
+
+# S FALLBACK-LITERAL MUTANT PIN (card 81025eb5): the invalid-input loop above (OFFLOAD_STALE_IN_PROGRESS_SECONDS
+# falls back to 600 on a bad value) only ever checked a 100s-aged fresh leaf, which stays resolved
+# under any fallback >= 101s -- it cannot tell a correct fallback (600) from a mutated one (601).
+# Same exact-600-age trick as above, but WITH an invalid env value, so this pins the FALLBACK literal
+# itself, not the `:-600` default-expansion literal (two different lines in offload-dispatch.sh).
+stale_fallback_exact_out="$(CARD=exactCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=nope bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale-exact.json")"
+check "S FALLBACK-LITERAL MUTANT PIN: an invalid OFFLOAD_STALE_IN_PROGRESS_SECONDS falls back to exactly 600s (a 601s-aged leaf would still resolve under a 601 fallback, this one is excluded)" "$stale_fallback_exact_out" "[]"
+
 # --- decompose wrapper (card 501c489f, MikroB verdikt komment 6007) -------------------------------
 # ISOLATION (d39fc5e7 QA finding): card_decompose_candidates() reads DECOMPOSE_STOP_STATE_FILE to
 # check which types are currently disabled. If the live store/decompose-type-disabled.json has all
@@ -301,6 +355,77 @@ check "OFFLOAD_DECOMPOSE_MAX_PER_CARD remains settable as an explicit ops-side t
 zero_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 means unbounded, not zero candidates (head -n 0 pitfall)" "$zero_count" "4"
 
+# NON-INTEGER/NEGATIVE GUARD (card 81025eb5, Cybered GO 33203 on 27c54ceb): OFFLOAD_DECOMPOSE_MAX_PER_CARD
+# feeds `head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"` with no guard before this card -- a non-numeric
+# value made head error with no output (candidates="" -> silent fallback to the WHOLE card, no
+# decomposition at all), and a negative value is head's own "all but the last N lines" syntax,
+# which can hand back MORE candidates than the ceiling allows. decompCard (fixture.json, defined
+# above) matches exactly 2 template types -- small enough that each of these actually changes the
+# observable leaf count, not just the log line.
+decompose_stderr="$TMPDIR/decompose-stderr.log"
+
+# "abc": head errors before writing anything -> unguarded, candidates="" -> whole-card fallback
+# (1 leaf, decompCard itself). Guarded: falls back to the documented default (3), 2 <= 3, unaffected.
+abc_count="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" 2>"$decompose_stderr" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' falls back to the default (0, unbounded): decompCard still decomposes into both leaves" "$abc_count" "2"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc is not an integer -- falling back to the documented default (0, unbounded)" "$decompose_stderr" && echo yes)" "yes"
+
+# FALLBACK LITERAL PIN (card e2406a43, updated for 6d8ef952's "no limitation" default): the 2-leaf
+# fixture above cannot distinguish "falls back to 0/unbounded" from "falls back to any cap >= 2" --
+# a mutant that changes the fallback literal to a small positive cap would survive undetected. Use
+# the 4-template fixture instead: an invalid value must fall back to EXACTLY unbounded (4), not a
+# smaller cap.
+abc4_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" 2>/dev/null | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "FALLBACK LITERAL PIN: OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' on a 4-match fixture falls back to unbounded (4)" "$abc4_count" "4"
+
+# "-1": unguarded, head -n -1 on 2 candidate lines prints "all but the last 1" = 1 line, UNDER the
+# intended ceiling by accident here but demonstrating the same head-syntax hijack the card warns
+# about (on a longer candidate list this direction flips to MORE than the ceiling). Guarded: falls
+# back to 0/unbounded -- still both leaves.
+neg_count="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" 2>"$decompose_stderr" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 falls back to the default (0, unbounded): decompCard still decomposes into both leaves, head's own -N syntax does not leak through" "$neg_count" "2"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 is not an integer -- falling back to the documented default (0, unbounded)" "$decompose_stderr" && echo yes)" "yes"
+
+# ZERO HANDLING -- SEMANTICS CHANGED by card 6d8ef952 (Peti "no limitation" directive): "0" used to
+# mean "decompose nothing synthetically" (whole-card, non-synthetic fallback); it is now the
+# DEFAULT value and means "unbounded" (see the resolver's own "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0
+# (the default) means unbounded" comment above try_leaf). The old "explicit disable" behavior this
+# block pinned no longer exists -- there is deliberately no longer a way to force a zero-candidate
+# whole-card fallback via this variable. Covered already by the zero_count check near the top of
+# this section (0 -> 4, unbounded); kept here only to pin that 0 is still accepted with no fallback
+# log line (it is a valid value, not an invalid one falling back to the default).
+zero_decompose_stderr="$TMPDIR/decompose-zero-stderr.log"
+CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" >/dev/null 2>"$zero_decompose_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 is accepted as-is, no fallback log line" \
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 is not an integer" "$zero_decompose_stderr" && echo fallback-fired || echo clean)" "clean"
+
+# "08": leading-zero/octal shape, same convention as the MAX_SUBTASKS/TTL/STALE guards -- head
+# itself parses "08" as decimal 8 either way, so this fixture cannot show a behavioral difference;
+# pinned by log line only, consistent with the sibling guards' own documented limits.
+zero8_stderr="$TMPDIR/decompose-zero8-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=08 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$zero8_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='08' prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=08 is not an integer -- falling back to the documented default (0, unbounded)" "$zero8_stderr" && echo yes)" "yes"
+
+# LOG-LINE FORGERY PIN (CWE-117, card e2406a43 LOW-1, Cybered GO 34272): same reasoning as the
+# OFFLOAD_MAX_SUBTASKS pair above -- every PER_CARD value checked so far %q's to itself unchanged,
+# so a revert of this guard's %q escaping back to a raw echo would pass every check above untouched.
+decompose_nl_stderr="$TMPDIR/decompose-nl-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=$'1\nFAKE LOG LINE INJECTED' bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$decompose_nl_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with an embedded newline: exactly one stderr line (no forged second line)" \
+  "$(wc -l < "$decompose_nl_stderr" | tr -d ' ')" "1"
+
+decompose_esc_stderr="$TMPDIR/decompose-esc-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=$'\x1b[31mRED' bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$decompose_esc_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: exactly one stderr line" \
+  "$(wc -l < "$decompose_esc_stderr" | tr -d ' ')" "1"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: %q-escaped, no literal ESC byte reaches the log" \
+  "$(grep -cP '\x1b' "$decompose_esc_stderr" || true)" "0"
+
+# Valid-value-honoured case already covered above (cap5_count: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1).
+
 # --- attempts_op state machine -------------------------------------------------------------------
 AF="$TMPDIR/attempts.json"
 op() { bash "$DISPATCH" --test-attempts-op "$1" "$2" --file "$AF"; }
@@ -340,6 +465,163 @@ json.dump(d, open('$AF', 'w'))
 "
 r="$(EXHAUSTED_TTL_SECONDS=86400 op check leafX)"
 check "an exhausted entry older than the TTL resets to pending on the next check" "$(st "$r")|$(at "$r")" "pending|0"
+
+# NON-INTEGER ENV GUARD, sibling env 1/3 (card 660e3b66, same bug class as f8e7f7cb's
+# OFFLOAD_STALE_IN_PROGRESS_SECONDS fix). Before the fix, a non-integer EXHAUSTED_TTL_SECONDS
+# crashed attempts_op()'s python `int(...)` call with an uncaught ValueError.
+python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['leafX']['updated_at'] = int(time.time()) - 100000
+json.dump(d, open('$AF', 'w'))
+"
+ttl_stderr="$TMPDIR/ttl-stderr.log"
+r="$(EXHAUSTED_TTL_SECONDS=30d bash "$DISPATCH" --test-attempts-op check leafX --file "$AF" 2>"$ttl_stderr")"
+check "a non-integer EXHAUSTED_TTL_SECONDS falls back to the 86400s default (the old entry still resets to pending)" "$(st "$r")|$(at "$r")" "pending|0"
+check "a non-integer EXHAUSTED_TTL_SECONDS prints the documented fallback log line" \
+  "$(grep -qF "EXHAUSTED_TTL_SECONDS='30d' is not an integer -- falling back to the documented default (86400s)" "$ttl_stderr" && echo yes)" "yes"
+
+# LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66) -- see the same
+# comment on the OFFLOAD_STALE_IN_PROGRESS_SECONDS block above for why each of these must fail.
+for bad in 08 09 010 9223372036854775808 12abc abc12; do
+  leaf_id="ttlBad_${bad//[^a-zA-Z0-9]/_}"
+  bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_id" --file "$AF" >/dev/null
+  bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_id" --file "$AF" >/dev/null
+  python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['$leaf_id']['updated_at'] = int(time.time()) - 100000
+json.dump(d, open('$AF', 'w'))
+"
+  r="$(EXHAUSTED_TTL_SECONDS="$bad" bash "$DISPATCH" --test-attempts-op check "$leaf_id" --file "$AF")"
+  check "EXHAUSTED_TTL_SECONDS='$bad' falls back to the 86400s default ($leaf_id resets to pending)" "$(st "$r")|$(at "$r")" "pending|0"
+done
+
+# T FALLBACK VALUE PINNED (card 27c54ceb, Kesz-ha "S/T fallback values asserted"): the explicit
+# EXHAUSTED_TTL_SECONDS=86400 test above and the invalid-env fallback tests only pin the true
+# default somewhere under 100000s. This boundary pair, with EXHAUSTED_TTL_SECONDS UNSET (the real
+# default path), pins it at exactly 86400s.
+leaf_ttl_under="ttlBoundaryUnder"
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_under" --file "$AF" >/dev/null
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_under" --file "$AF" >/dev/null
+python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['$leaf_ttl_under']['updated_at'] = int(time.time()) - 86399
+json.dump(d, open('$AF', 'w'))
+"
+r="$(bash "$DISPATCH" --test-attempts-op check "$leaf_ttl_under" --file "$AF")"
+check "T PIN: with EXHAUSTED_TTL_SECONDS unset, an exhausted entry aged 86399s (just under the true 86400s default) stays exhausted" "$(st "$r")" "exhausted"
+
+leaf_ttl_over="ttlBoundaryOver"
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_over" --file "$AF" >/dev/null
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_over" --file "$AF" >/dev/null
+python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['$leaf_ttl_over']['updated_at'] = int(time.time()) - 86401
+json.dump(d, open('$AF', 'w'))
+"
+r="$(bash "$DISPATCH" --test-attempts-op check "$leaf_ttl_over" --file "$AF")"
+check "T PIN: with EXHAUSTED_TTL_SECONDS unset, an exhausted entry aged 86401s (just over the true 86400s default) resets to pending" "$(st "$r")|$(at "$r")" "pending|0"
+
+# T FALLBACK-LITERAL MUTANT PIN (card 81025eb5, Cybered GO 33203 on 27c54ceb): the invalid-input
+# tests above (EXHAUSTED_TTL_SECONDS=30d / bad leading-zero values) only ever check an entry aged
+# 100000s past the TTL -- that stays "reset to pending" whether the fallback is the real 86400 or a
+# mutated 86401, so they cannot tell the two apart. Re-run the SAME 86401-aged boundary case the T
+# PIN above uses, but WITH an invalid env value, so a mutation to the FALLBACK literal (not the
+# `:-86400` default-expansion literal) is caught too.
+leaf_ttl_fallback_over="ttlFallbackBoundaryOver"
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_fallback_over" --file "$AF" >/dev/null
+bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_ttl_fallback_over" --file "$AF" >/dev/null
+python3 -c "
+import json, time
+d = json.load(open('$AF'))
+d['$leaf_ttl_fallback_over']['updated_at'] = int(time.time()) - 86401
+json.dump(d, open('$AF', 'w'))
+"
+r="$(EXHAUSTED_TTL_SECONDS=notanumber bash "$DISPATCH" --test-attempts-op check "$leaf_ttl_fallback_over" --file "$AF")"
+check "T FALLBACK-LITERAL MUTANT PIN: an invalid EXHAUSTED_TTL_SECONDS falls back to exactly 86400s (an 86401s-aged entry resets to pending; a mutated 86401 fallback would keep it exhausted)" "$(st "$r")|$(at "$r")" "pending|0"
+
+# NON-INTEGER ENV GUARD, sibling env 2/3. Before the fix, a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS
+# would reach both attempts_op()'s python `int(...)` and the shell retry-ceiling comparison.
+attempts_stderr="$TMPDIR/attempts-stderr.log"
+AF3="$TMPDIR/attempts-maxattempts.json"
+bash "$DISPATCH" --test-attempts-op transient-fail leafMaxAttemptsGuard --file "$AF3" >/dev/null
+r="$(OFFLOAD_LEAF_MAX_ATTEMPTS=four bash "$DISPATCH" --test-attempts-op transient-fail leafMaxAttemptsGuard --file "$AF3" 2>"$attempts_stderr")"
+check "a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS falls back to the default ceiling (2): 2nd transient failure exhausts" "$(st "$r")|$(at "$r")" "exhausted|2"
+check "a non-integer OFFLOAD_LEAF_MAX_ATTEMPTS prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_LEAF_MAX_ATTEMPTS='four' is not an integer -- falling back to the documented default (2)" "$attempts_stderr" && echo yes)" "yes"
+
+# LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66) -- see the same
+# comment on the OFFLOAD_STALE_IN_PROGRESS_SECONDS block above for why each of these must fail.
+for bad in 08 09 010 9223372036854775808 12abc abc12; do
+  leaf_id="leafMaxAttemptsBad_${bad//[^a-zA-Z0-9]/_}"
+  af_bad="$TMPDIR/attempts-maxattempts-$leaf_id.json"
+  bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_id" --file "$af_bad" >/dev/null
+  r="$(OFFLOAD_LEAF_MAX_ATTEMPTS="$bad" bash "$DISPATCH" --test-attempts-op transient-fail "$leaf_id" --file "$af_bad")"
+  check "OFFLOAD_LEAF_MAX_ATTEMPTS='$bad' falls back to the default ceiling (2): 2nd transient failure exhausts" "$(st "$r")|$(at "$r")" "exhausted|2"
+done
+
+# NON-INTEGER ENV GUARD, sibling env 3/3.
+subtasks_stderr="$TMPDIR/subtasks-stderr.log"
+bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
+OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
+check "a non-integer OFFLOAD_MAX_SUBTASKS prints the documented fallback log line" \
+  "$(grep -qF "OFFLOAD_MAX_SUBTASKS=lots is not an integer -- falling back to the documented default (15)" "$subtasks_stderr" && echo yes)" "yes"
+
+# LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66) -- see the same
+# comment on the OFFLOAD_STALE_IN_PROGRESS_SECONDS block above for why each of these must fail.
+for bad in 08 09 010 9223372036854775808 12abc abc12; do
+  bad_stderr="$TMPDIR/subtasks-bad-stderr.log"
+  OFFLOAD_MAX_SUBTASKS="$bad" bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$bad_stderr"
+  check "OFFLOAD_MAX_SUBTASKS='$bad' prints the documented fallback log line" \
+    "$(grep -qF "OFFLOAD_MAX_SUBTASKS=$bad is not an integer -- falling back to the documented default (15)" "$bad_stderr" && echo yes)" "yes"
+done
+
+# LOG-LINE FORGERY PIN (CWE-117, card e2406a43 LOW-1, Cybered GO 34272): the leading-zero/overflow
+# checks above all pin VALUES that happen to %q to themselves unchanged (no shell-special chars), so
+# a mutant that reverts the %q escaping back to a raw echo of $OFFLOAD_MAX_SUBTASKS leaves every one
+# of them green -- the fix for the actual log-forgery bug was itself unpinned. These two values are
+# hostile: a literal newline (would print as a second, forged log line if echoed raw) and an ANSI/ESC
+# sequence (would inject raw terminal escapes into the log if echoed raw). Both fail the integer
+# regex the same way any other garbage does, so they hit the identical fallback branch; the only
+# question is whether %q renders them as ONE safe, single-line token or lets them through raw.
+nl_stderr="$TMPDIR/subtasks-nl-stderr.log"
+OFFLOAD_MAX_SUBTASKS=$'1\nFAKE LOG LINE INJECTED' bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$nl_stderr"
+check "OFFLOAD_MAX_SUBTASKS with an embedded newline: exactly one stderr line (no forged second line)" \
+  "$(wc -l < "$nl_stderr" | tr -d ' ')" "1"
+
+esc_stderr="$TMPDIR/subtasks-esc-stderr.log"
+OFFLOAD_MAX_SUBTASKS=$'\x1b[31mRED' bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$esc_stderr"
+check "OFFLOAD_MAX_SUBTASKS with a raw ESC byte: exactly one stderr line" \
+  "$(wc -l < "$esc_stderr" | tr -d ' ')" "1"
+check "OFFLOAD_MAX_SUBTASKS with a raw ESC byte: %q-escaped, no literal ESC byte reaches the log" \
+  "$(grep -cP '\x1b' "$esc_stderr" || true)" "0"
+
+# BARE-0 ACCEPTED, NOT REJECTED (card 81025eb5, Cybered GO 33203 on 27c54ceb): the regex is
+# `^(0|[1-9][0-9]{0,8})$`, so a bare "0" is a VALID value, not an invalid one -- an explicit
+# OFFLOAD_MAX_SUBTASKS=0 (meaning "offload nothing this run") must be honoured, not silently
+# rejected and replaced with the 15 fallback.
+zero_stderr="$TMPDIR/subtasks-zero-stderr.log"
+OFFLOAD_MAX_SUBTASKS=0 bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$zero_stderr"
+check "OFFLOAD_MAX_SUBTASKS=0 is accepted as-is, no fallback log line" \
+  "$(grep -qF "OFFLOAD_MAX_SUBTASKS=0 is not an integer" "$zero_stderr" && echo fallback-fired || echo clean)" "clean"
+
+# DEFAULT/FALLBACK LITERAL PIN (card e2406a43, follow-up to 81025eb5): the log-line checks above
+# only pin the DOCUMENTED NUMBER in the message text, not the actual value OFFLOAD_MAX_SUBTASKS is
+# set to -- a mutant that changes the real default/fallback literal (15 -> 16) in BOTH assignments
+# survives every check above untouched, since the message's own "(15)" is a separate string literal.
+# --test-subtasks-budget-reached exposes the real post-guard value against the exact comparison the
+# main loop uses, so this pins the literal's actual runtime effect, not its description.
+check "DEFAULT LITERAL PIN: unset OFFLOAD_MAX_SUBTASKS, attempted=14 (< 15) does not reach the budget" \
+  "$(bash "$DISPATCH" --test-subtasks-budget-reached 14)" "ok"
+check "DEFAULT LITERAL PIN: unset OFFLOAD_MAX_SUBTASKS, attempted=15 (== 15) reaches the budget" \
+  "$(bash "$DISPATCH" --test-subtasks-budget-reached 15)" "reached"
+check "FALLBACK LITERAL PIN: OFFLOAD_MAX_SUBTASKS=lots (invalid) falls back to 15, attempted=14 does not reach" \
+  "$(OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-subtasks-budget-reached 14)" "ok"
+check "FALLBACK LITERAL PIN: OFFLOAD_MAX_SUBTASKS=lots (invalid) falls back to 15, attempted=15 reaches" \
+  "$(OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-subtasks-budget-reached 15)" "reached"
 
 # --- concurrency: N parallel transient-fail calls on a fresh leaf must not lose an update -----------
 AF2="$TMPDIR/attempts-conc.json"
@@ -746,7 +1028,8 @@ check "freellm sensitive card -> exit code 4" "$sensitive_rc" "4"
 # live API: every leaf got a freellm routing DECISION instead of the old unconditional skip, and
 # the gate still tells them apart.
 gpu_hold_out="$(printf '[{"id":"leafPlain","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafWithMarker","project":"mikrob","tags":"gemini-ok","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt"},{"id":"leafSensitive","project":"mikrob","title":"authz modul","description":"irj meg egy authz ellenorzest"}]' \
-  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-no-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
+  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-no-token.txt" \
+    OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
 check "GPU-hold case: all three leaves got a freellm routing decision (3 output lines, named by leaf id)" \
   "$(printf '%s\n' "$gpu_hold_out" | wc -l | tr -d ' ')" "3"
 check "card 392d7104 (Peti 13201): a clean leaf WITHOUT the gemini-ok marker never reaches freellm-call.sh (blocked)" \
@@ -860,6 +1143,7 @@ chmod +x "$FREELLM_STUB"
 run_fallback_site() { # $1=script path, $2=site, $3..=site args -> sets $rc, writes/clears $MARKER first
   rm -f "$MARKER"
   FREELLM_ATTEMPT_MARKER="$MARKER" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" DASHBOARD_URL="http://127.0.0.1:1" \
+    OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
     bash "$1" --test-freellm-fallback-site "${@:2}" >/dev/null 2>&1
   rc=$?
 }
@@ -889,6 +1173,46 @@ check "card 6d8ef952 (real capacity-hold site): lveto=true + gemini-ok marker re
 run_fallback_site "$DISPATCH" "${CAPHOLD_VETO_BLOCKED_ARGS[@]}"
 check "card 6d8ef952 (real capacity-hold site): lveto=true WITHOUT the marker still blocked (is_freellm_blocked, not the veto)" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
+
+# ---- card 685f25cb (MikroB measured audit, 2026-11-20): every freellm_call.sh ledger row was
+# agent_id=unknown/card_id=NULL because try_freellm_for_leaf never set FREELLM_CALLER/
+# FREELLM_CARD_ID. Pin that the real assignee + post_id now reach the stub's environment, through
+# BOTH guard-site wrappers (the new trailing arg each threads through to try_freellm_for_leaf). ---
+FREELLM_ENV_STUB="$TMPDIR/freellm-env-stub.sh"
+FREELLM_ENV_OUT="$TMPDIR/freellm-env-out.txt"
+cat > "$FREELLM_ENV_STUB" << 'EOF'
+#!/usr/bin/env bash
+printf 'CALLER=%s CARD_ID=%s\n' "${FREELLM_CALLER:-}" "${FREELLM_CARD_ID:-}" > "$FREELLM_ENV_OUT_FILE"
+exit 2
+EOF
+chmod +x "$FREELLM_ENV_STUB"
+
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "attrib cim" "attrib leiras" attribleaf "task text" attribcard false backend2 \
+  >/dev/null 2>&1
+check "card 685f25cb: exhausted-site wiring passes assignee/post_id to freellm-call.sh as FREELLM_CALLER/FREELLM_CARD_ID" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=backend2 CARD_ID=attribcard"
+
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site capacity-hold false mikrob gemini-ok "attrib cim2" "attrib leiras2" attribleaf2 "task text" attribcard2 false backend3 \
+  >/dev/null 2>&1
+check "card 685f25cb: capacity-hold-site wiring passes assignee/post_id to freellm-call.sh as FREELLM_CALLER/FREELLM_CARD_ID" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=backend3 CARD_ID=attribcard2"
+
+# ---- card 685f25cb: an UNSET assignee (e.g. the plain --test-freellm-fallback-site baseline
+# calls above, which never pass one) falls back to "unknown", not an empty string -- the
+# dashboard's calls list must never show a blank agent. -----------------------------------------
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "attrib cim3" "attrib leiras3" attribleaf3 "task text" attribcard3 false \
+  >/dev/null 2>&1
+check "card 685f25cb: a missing assignee falls back to FREELLM_CALLER=unknown, never blank" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=unknown CARD_ID=attribcard3"
 
 # --- F3 routing-table shadow logging (card cdde2666) -------------------------------------------
 # --test-route-shadow calls card_route_shadow_log() directly, the SAME function and only call
@@ -1038,6 +1362,7 @@ rm -f "$MARKER"
 timeout 20 env DASHBOARD_URL="http://127.0.0.1:$M1_CAP_PORT" OFFLOAD_INSTALLED="$M1_CAP_INSTALLED" \
   OFFLOAD_VRAM_GUARD="$M1_CAP_VRAM_BUSY" OFFLOAD_FREELLM_CALL="$FREELLM_STUB" FREELLM_ATTEMPT_MARKER="$MARKER" \
   ATTEMPTS_FILE="$TMPDIR/m1cap-attempts.json" ATTEMPTS_LOCK="$TMPDIR/m1cap-attempts.lock" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
   bash "$DISPATCH" m1caphold >/dev/null 2>&1
 check "M1 (a): real entry point (bash DISPATCH <card>, not --test-* hook), capacity-hold branch: blocked shape never reaches freellm-call.sh" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
@@ -1089,8 +1414,8 @@ M1_MUTANT_DISPATCH="$TMPDIR/offload-dispatch-mutant.sh"
 python3 - "$DISPATCH" "$M1_MUTANT_DISPATCH" << 'PYEOF'
 import sys
 src = open(sys.argv[1], encoding="utf-8").read()
-old = '    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }'
-new = '  }\n}\ntry_freellm_for_leaf_direct_bypass() {\n    { try_freellm_for_leaf $leaf_id $leaf_title $task $post_id $synthetic && return 0; }'
+old = '    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$assignee" && return 0; }'
+new = '  }\n}\ntry_freellm_for_leaf_direct_bypass() {\n    { try_freellm_for_leaf $leaf_id $leaf_title $task $post_id $synthetic $assignee && return 0; }'
 assert old in src, "fixture line not found -- production call site text changed, update the mutant"
 open(sys.argv[2], "w", encoding="utf-8").write(src.replace(old, new, 1))
 PYEOF

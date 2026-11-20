@@ -52,19 +52,20 @@ function freellmResetStatusDisplay() {
   if (draftsCount) draftsCount.textContent = '—'
 }
 
+// Card 685f25cb (MikroB root-cause measurement, 2026-11-20): lastError is a PER-CALL fact (the
+// most recent failed freellm call, if any within the window), not a sign that this status READ
+// itself failed. A live 200 response with real enabled/calls/drafts next to a lastError is valid,
+// current data -- it must render normally, with the error notice shown alongside it. The earlier
+// version treated any truthy lastError as "status unknown" and blanked the whole panel, which is
+// why the page showed nothing even while freellm was working. freellmResetStatusDisplay() is still
+// used, deliberately, by the actual "we have no fresh data at all" paths: the fetch-throws catch
+// block in freellmLoadStatus below.
 function freellmRenderStatus(data) {
   const toggle = document.getElementById('freellmToggle')
   const label = document.getElementById('freellmLabel')
   const callsCount = document.getElementById('freellmCallsCount')
   const draftsCount = document.getElementById('freellmDraftsCount')
 
-  if (data.lastError) {
-    // Do not set the fresh fields first and then overwrite them -- the payload's own enabled/
-    // calls/drafts next to an error are not trustworthy, so skip straight to the neutral display.
-    freellmResetStatusDisplay()
-    freellmShowErrorSection(String(data.lastError))
-    return
-  }
   if (toggle) { toggle.checked = !!data.enabled; toggle.disabled = false }
   if (label) {
     label.textContent = t(data.enabled ? 'freellm.status.on' : 'freellm.status.off')
@@ -72,7 +73,12 @@ function freellmRenderStatus(data) {
   }
   if (callsCount) callsCount.textContent = String(data.calls || 0)
   if (draftsCount) draftsCount.textContent = String(data.drafts || 0)
-  freellmHideErrorSection()
+
+  if (data.lastError) {
+    freellmShowErrorSection(String(data.lastError))
+  } else {
+    freellmHideErrorSection()
+  }
 }
 
 async function freellmLoadStatus() {

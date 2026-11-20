@@ -45,12 +45,12 @@ const AUTH_ARGV_PATTERN = '-H[[:space:]]*["\']Authorization:[[:space:]]*Bearer'
 // path -> allowed line numbers (git grep -nE output, 1-indexed)
 const ALLOWLIST: Record<string, number[]> = {
   'DECISIONS.md': [1164, 4931, 14889, 15034, 15076, 15747, 20372, 20893, 23170], // historical decision entries about this exact fix (this branch's own new entries were moved to the file's true tail, after origin/develop's own appends, per decisions-tail-append-guard); 23170 is card 0120d19a's own entry naming upstream's rejected inline form to explain the conflict it resolves
-  'README.md': [229], // fork-fejlesztés bullet NAMING the anti-pattern it fixed, not an invocation (229 on the merge result: card 64f56f97's README addition shifted it to 226 on develop, card 5cb861e6's own one-line addition shifts it to 227, card b768770a's Gemini-agy fork entry shifts it to 228, card 6ec8e9d8's affaan-m/ECC skills bullet shifts it to 229)
+  'README.md': [230], // fork-fejlesztés bullet NAMING the anti-pattern it fixed, not an invocation (230 on the merge result: card 64f56f97's README addition shifted it to 226 on develop, card 5cb861e6's own one-line addition shifts it to 227, card b768770a's Gemini-agy fork entry shifts it to 228, card 6ec8e9d8's affaan-m/ECC skills bullet shifts it to 229, card b1813ab2's own /tmp inode-guard bullet shifts it to 230)
   'docs/memoria-szuro-hamis-pozitiv-negativ-meres.md': [223], // doc table example row with a placeholder "X" token, not an invocation
   'scripts/agent-msg-get.sh': [30], // comment naming the anti-pattern, not an invocation (shifted by the PORT chain, card d06a325d/#1869)
   'scripts/install-prod-tree-guard-hook.sh': [204, 269], // comment naming the anti-pattern, not an invocation
   'store/kanban-comment-lib.sh': [48], // comment naming the anti-pattern, not an invocation (shifted from 45 by card 56b14f14's git-common-dir fix)
-  'store/mopsion-suite-run.sh': [260], // comment naming the anti-pattern, not an invocation (shifted from 255 by card 56b14f14's git-common-dir fix, then to 260 by card 22835648's env-compat-lib.sh sourcing)
+  'store/mopsion-suite-run.sh': [273], // comment naming the anti-pattern, not an invocation (shifted from 255 by card 56b14f14's git-common-dir fix, to 260 by card 22835648's env-compat-lib.sh sourcing, then to 273 by card dffbb55f's D1 rework)
   'store/sync-agent-templates.sh': [112, 131, 140, 215, 406, 416, 444, 465, 480, 488, 519], // the rewriter's own docstring + test fixtures
   'store/szotasz-marveen-daily-check.sh': [24], // comment naming the anti-pattern, not an invocation
   'scripts/__tests__/supabase-q-token-hiding.test.sh': [192], // mutation-control fixture: a python one-liner that writes a MUTATED supabase-q.sh putting the token in argv, to prove the suite's own test 1 would catch it -- not an invocation. Line shifted from 189 when the stub grew a -H @- capture branch (card 13b2648e).

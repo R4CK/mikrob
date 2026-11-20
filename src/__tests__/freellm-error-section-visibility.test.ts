@@ -122,18 +122,17 @@ describe('freellm error section visibility (card fd5fcc2c, RedHat N1 / QA F3 pin
     expect(dom.els.get('freellmLastError')!.textContent).toBe('')
   })
 
-  it('an error payload resets the stale calls/drafts/label instead of leaving the last good values (card 5ae7e8be pt.4 / WhiteHat2 R3)', () => {
-    renderStatus({ enabled: true, calls: 7, drafts: 3 }) // a healthy load first, so there IS stale state to clear
+  it('a lastError next to fresh enabled/calls/drafts renders the real numbers, not dashes (card 685f25cb pin: lastError is a per-call fact, not a failed status read)', () => {
+    renderStatus({ enabled: true, calls: 7, drafts: 3, lastError: 'FreeLLM call failed: auth_401' })
     expect(dom.els.get('freellmCallsCount')!.textContent).toBe('7')
-    renderStatus({ enabled: true, calls: 7, drafts: 3, lastError: 'connect ECONNREFUSED' })
-    expect(dom.els.get('freellmCallsCount')!.textContent).toBe('—')
-    expect(dom.els.get('freellmDraftsCount')!.textContent).toBe('—')
-    expect(dom.els.get('freellmLabel')!.textContent).toBe('—')
-    expect(dom.els.get('freellmToggle')!.disabled).toBe(true)
-    // A subsequent healthy response re-enables the toggle and restores real numbers.
+    expect(dom.els.get('freellmDraftsCount')!.textContent).toBe('3')
+    expect(dom.els.get('freellmLabel')!.textContent).not.toBe('—')
+    expect(dom.els.get('freellmToggle')!.disabled).toBe(false)
+    expect(dom.els.get('freellmErrorSection')!.hidden).toBe(false)
+    // A subsequent clean response (no lastError) just hides the notice -- the numbers were never stale.
     renderStatus({ enabled: true, calls: 8, drafts: 3 })
     expect(dom.els.get('freellmCallsCount')!.textContent).toBe('8')
-    expect(dom.els.get('freellmToggle')!.disabled).toBe(false)
+    expect(dom.els.get('freellmErrorSection')!.hidden).toBe(true)
   })
 
   it('does not double-escape the error text (RedHat N2 / WhiteHat2 F1 cosmetic fix)', () => {

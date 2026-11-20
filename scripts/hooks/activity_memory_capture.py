@@ -96,7 +96,7 @@ _SECRET_PATTERNS = [
     re.compile(
         r'(?i)((?:token|secret|password|passwd|pwd|pass|api[_\-]?key|apikey|auth|credential|'
         r'private[_\-]?key|access[_\-]?token|refresh[_\-]?token|id[_\-]?token|client[_\-]?secret|'
-        r'secret[_\-]?key|cookie|signature)\s*[=:]\s*)'
+        r'secret[_\-]?key|cookie|signature|aws[_\-]?secret[_\-]?access[_\-]?key)\s*[=:]\s*)'
         r'(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^\s,;&]{6,})'
     ),
     # JSON-QUOTED key/value pairs (WhiteHat F3, card 35dc6dbe): the pattern above requires `=`/`:`
@@ -114,6 +114,17 @@ _SECRET_PATTERNS = [
         r'private[_\-]?key|access[_\-]?token|refresh[_\-]?token|id[_\-]?token|client[_\-]?secret)'
         r'"\s*:\s*")[^"]*(?=")'
     ),
+    # Card 89ccf629 (RedHat R2 follow-up on 7e01b349, comment 15353): the SAME gap, but
+    # SINGLE-quoted -- `{'password': 'value'}`, the common Python dict-repr/log shape, not strict
+    # JSON (which requires double quotes), but just as real a leak: the pattern above only matches
+    # a double-quoted key, so a single-quoted one sailed through whole. Mirrors the double-quoted
+    # pattern exactly, single-quote for single-quote -- same bounded `[^']*` (not `.*`), same
+    # linear-time reasoning.
+    re.compile(
+        r"(?i)('(?:token|secret|password|passwd|pwd|api[_\-]?key|apikey|auth|credential|"
+        r"private[_\-]?key|access[_\-]?token|refresh[_\-]?token|id[_\-]?token|client[_\-]?secret)"
+        r"'\s*:\s*')[^']*(?=')"
+    ),
     # Authorization HEADER LINES and curl CREDENTIAL FLAGS, by POSITION rather than by scheme name
     # (WhiteHat F3 follow-up: `Token`/`ApiKey` schemes leaked, because the only prior pattern in
     # this file matched the literal word `bearer`). WhiteHat F5 flagged the naive alternative --
@@ -130,8 +141,27 @@ _SECRET_PATTERNS = [
     # escape handling as the key=value pattern above. (2) `-uadmin:pw` (glued, no space) was not
     # matched at all -- `-u\s+` requires a separating space. Added as its own zero-width-lookahead
     # alternative so the whole glued `user:pass` collapses to one redaction.
+    #
+    # Card 89ccf629 (RedHat R2 follow-up on 7e01b349, comment 15353): three more flag shapes named
+    # in that follow-up. (3) `wget --http-password VALUE` -- a wget-specific spelling the flag list
+    # never had, added as its own `[= ]` alternative, same shape as `--password[= ]`. (4)
+    # `mysql -pVALUE` (glued, no separator) -- mysql's own canonical short flag for the password,
+    # not covered by `-u(?=\S)`'s glued-username handling. `-p(?=\S)` mirrors it, with a
+    # `(?<![\w-])` guard the existing `-u(?=\S)` alternative does NOT have: without it, this
+    # matched the "-p" inside ordinary prose glued to a preceding letter -- measured regression,
+    # "the gh-pages branch needs a rebuild" redacted to "the gh-p[REDACTED] branch needs a
+    # rebuild" (the selftest's own prose-not-falsely-redacted fixture caught this immediately).
+    # The guard requires the `-` not be preceded by a word character or another `-`, so it only
+    # fires at an actual flag position (start of string, or after whitespace/a shell operator),
+    # never mid-word. KNOWN, ACCEPTED TRADEOFF beyond that: `-p` is also a common short flag for
+    # unrelated things in other tools (a port number, a parallelism count, a glob pattern) when it
+    # DOES sit at a real flag position -- a glued `-p5432`/`-p4` would still be redacted there, same
+    # "fail-safe over-redaction, not a leak" posture this file already accepts for `-u`'s glued
+    # form and the `--gpu-util` false-positive noted in 7e01b349's own gate. (5) `cmd --pass VALUE`
+    # -- `--password[= ]` was covered, the shorter `--pass[= ]` spelling was not.
     re.compile(
-        r'(-u\s+|-u(?=\S)|--user[= ]|--password[= ]|--oauth2-bearer[= ]|[Aa]uthorization:\s*\S+\s+)'
+        r'(-u\s+|-u(?=\S)|(?<![\w-])-p(?=\S)|--user[= ]|--password[= ]|--pass[= ]|--http-password[= ]|'
+        r'--oauth2-bearer[= ]|[Aa]uthorization:\s*\S+\s+)'
         r'(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|\S+)'
     ),
     # Bare `Authorization: <value>` with NO scheme word (RedHat F3b): the pattern above requires a

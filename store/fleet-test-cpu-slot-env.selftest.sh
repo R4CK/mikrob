@@ -24,7 +24,7 @@ ok()  { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  FAIL %s\n       %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
 out="$(env -u MIKROB_SUITE_SLOTS -u CLEANCORE_SUITE_SLOTS "$RUN" --cpu-slots 2>/dev/null)"
-[ "$out" = "2" ] && ok "neither var set -> the documented default (2)" \
+[ "$out" = "3" ] && ok "neither var set -> the documented default (3)" \
   || bad "default" "got [$out]"
 
 out="$(MIKROB_SUITE_SLOTS=7 env -u CLEANCORE_SUITE_SLOTS "$RUN" --cpu-slots 2>/dev/null)"

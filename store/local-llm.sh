@@ -712,12 +712,37 @@ if [[ "$GATEWAY_ENABLED" == "true" ]]; then
   GATEWAY_AUTH_HDR="$(mktemp)"; chmod 0600 "$GATEWAY_AUTH_HDR"
   printf 'Authorization: Bearer %s\n' "$GATEWAY_AUTH_TOKEN" > "$GATEWAY_AUTH_HDR"
 
+  # CUSTOM-PREFIX FIX (card 29ceef23, RedHat standing condition on Cybered GO 30273 / card
+  # 9b25cc84): the pulled-check above proves Ollama has $MODEL, but freellmapi's OWN router
+  # decides what a bare model STRING means independent of that -- isAutoModel/isFusionModel match
+  # on the string itself ("auto", "auto:*", "fusion", "fusion:*"), and an unmatched string can fall
+  # through to a catalog platform's model id (measured collisions: qwen3-coder, command-r,
+  # command-a, mistral-nemo, codestral, and the platform:model_id form groq:openai/gpt-oss-120b --
+  # none of these can ever be enumerated completely, the catalog changes). A static or
+  # dynamically-fetched denylist only ever covers names someone thought to check.
+  #
+  # Prefixing the wire model id with "custom:" (freellmapi's own endpoint-qualified-id syntax,
+  # server/src/lib/endpoint-scope.ts qualifiedModelMemberId/ENDPOINT_ID_SEPARATOR -- our single
+  # registered custom endpoint needs no "#<handle>" suffix, per that module's own comment: "a
+  # single-endpoint install never sees a qualified id anywhere") makes the string structurally
+  # incapable of matching isAutoModel/isFusionModel (neither check's pattern can match something
+  # starting with "custom:") or any catalog platform's id (no catalog platform is named "custom").
+  # LIVE-VERIFIED against the running freellmapi (loopback, read-only observation of the
+  # X-Routed-Via response header, no code path other than this already-shipped gateway mode was
+  # exercised): "custom:<the real pulled model>" resolves to custom/<that model> exactly like the
+  # unprefixed name already did; "custom:auto", "custom:fusion" and "custom:qwen3-coder" (none of
+  # which exist on our own endpoint) all come back 404 "not in the catalog" -- never routed
+  # anywhere else, confirming the virtual-model and catalog checks cannot see past the "custom:"
+  # prefix. This closes the WHOLE class, not a named subset: a future catalog addition needs no
+  # change here.
+  GATEWAY_WIRE_MODEL="custom:$MODEL"
+
   # Same sampling-parameter contract as the direct path, minus "think" (an Ollama
   # /api/generate-specific field with no OpenAI chat-completions equivalent) and minus "seed"
   # (not guaranteed to round-trip through every OpenAI-compatible backend) -- a known, narrower
   # parity gap versus the direct path, acceptable because this branch is OFF by default; F3 (the
   # card that turns it on) owns deciding whether that gap matters for its callers.
-  GATEWAY_REQ=$(SYSTEM="$SYSTEM" MODEL="$MODEL" PROMPT="$PROMPT" python3 -c '
+  GATEWAY_REQ=$(SYSTEM="$SYSTEM" MODEL="$GATEWAY_WIRE_MODEL" PROMPT="$PROMPT" python3 -c '
 import json, os
 messages = []
 s = os.environ.get("SYSTEM", "")

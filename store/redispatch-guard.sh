@@ -179,12 +179,107 @@ for c in cards:
 # read-only (prints the computed path and exits before any fetch/create), so calling it here is
 # cheap and never creates a worktree that doesn't already exist. The path is asked FROM the scripts,
 # never hardcoded, same rule as everywhere else this repo resolves an agent's worktree.
+#
+# Card c2dd3cfa L2 follow-up: the two scripts above miss the LANDING worktree
+# (/home/neon/marveen-land-<agent>-<pid>, marveen-land.sh) and any card/gate worktree the agent is
+# actively driving (card/<id> under agent-worktree-marveen.sh's shared ROOT, or
+# cc-gate-<card>-<agent>-<sha> under cc-gate-worktree.sh) -- a conflict-resolution or test run in
+# one of those was invisible to the busy check, the exact false-"stuck" shape b2f71cdc already
+# fixed for the agent's own two worktrees. Rather than re-deriving every such script's own naming
+# convention a second time here (which needs an edit every time a new worktree kind is added), ask
+# git what worktrees exist -- that list is a property of the repository, not of this script. Being
+# over-inclusive here is deliberate and safe: card/gate worktrees are not agent-namespaced by path
+# alone, so this can list a PEER agent's worktree too, but _agent_background_busy's pane-descendant
+# check (L1 below) is what scopes a hit back to the right agent, not this function.
+#
+# CYBERSEC NO-GO 31912, HIGH-1: `git worktree list` always includes the MAIN clone itself as its
+# first entry. The main clone is not a worktree any agent "drives work in" (it is fetch/landing-base
+# only, per the marveen-worktree-fegyelme rule), and every agent's own claude/node process has its
+# cwd under it (agents/<name> sits inside the main clone) -- so without this exclusion, EVERY live
+# agent's own session process satisfies the pane-descendant + cwd-in-list check, and
+# _agent_background_busy reports busy fleet-wide, always, strictly worse than the single-agent
+# false-busy this card exists to fix. Measured live: 9/9 agents busy at the un-excluded shape, 0/9
+# once the main clone is excluded. Excluded by the same `${MARVEEN_MAIN:-/home/neon/marveen}`
+# default agent-worktree-marveen.sh itself uses, not a bare hardcoded path, so a `MARVEEN_MAIN`
+# override (the selftest's own hermetic fixture, or a future redeploy) stays correct too.
+_all_registered_worktree_paths() { # -> every worktree git knows about for the marveen repo, one per line, MINUS the main clone itself
+  # marveen-land.sh, agent-worktree-marveen.sh (card/<id>) and cc-gate-worktree.sh all operate on
+  # THIS repo, not the mopsion/CleanCore one agent-worktree.sh (no -marveen suffix) manages -- `-C`
+  # must anchor on a marveen checkout, or `git worktree list` answers for the wrong repository
+  # entirely (measured: it silently listed every CleanCore worktree instead).
+  local main main_clone
+  main="$(/home/neon/marveen/store/agent-worktree-marveen.sh "${1:-}" --path 2>/dev/null)" || main=""
+  [ -n "$main" ] && [ -d "$main" ] || main="/home/neon/marveen"
+  main_clone="${MARVEEN_MAIN:-/home/neon/marveen}"
+  git -C "$main" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | grep -vxF "$main_clone"
+}
+
 _agent_worktree_paths() { # $1=agent -> prints each existing worktree dir for this agent, one per line
   local agent="$1" p
   p="$(/home/neon/marveen/store/agent-worktree.sh "$agent" --path 2>/dev/null)" || p=""
   [ -n "$p" ] && [ -d "$p" ] && echo "$p"
   p="$(/home/neon/marveen/store/agent-worktree-marveen.sh "$agent" --path 2>/dev/null)" || p=""
   [ -n "$p" ] && [ -d "$p" ] && echo "$p"
+  for p in /home/neon/marveen-land-"$agent"-*; do
+    [ -d "$p" ] && echo "$p"
+  done
+  _all_registered_worktree_paths "$agent"
+}
+
+# Card c2dd3cfa L1 follow-up: which tmux pane this agent's panel is. Empty if the session/pane is
+# not currently running -- nothing can be a live descendant of a pane that does not exist.
+_tmux_pane_pid() { # $1=agent
+  tmux list-panes -t "agent-$1" -F '#{pane_pid}' 2>/dev/null | head -1
+}
+
+# $1=pid -> prints its parent pid, or nothing if the process is gone. Reads /proc/<pid>/stat
+# rather than `ps`, and strips up through the LAST ')' rather than splitting on spaces, because
+# the parenthesised comm field can itself contain spaces or parens (code-quality rule 12: a naive
+# split would misread the ppid for a process named e.g. "my (weird) proc").
+_ppid_of() {
+  local stat rest
+  stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  rest="${stat##*) }"
+  set -- $rest
+  printf '%s' "${2:-}"
+}
+
+# $1=pid $2=ancestor -> exit 0 if $1 IS $2 or a descendant of $2 (walking up via ppid); exit 1
+# otherwise, including once the chain reaches pid 1/0 (true init, or the process exited mid-walk)
+# without ever passing through $2. Bounded hop count so a misread can never spin forever.
+_is_descendant_of() {
+  local pid="$1" anc="$2" cur="$1" hops=0
+  [ -n "$anc" ] && [ -n "$pid" ] || return 1
+  while [ -n "$cur" ] && [ "$cur" != "0" ] && [ "$cur" != "1" ]; do
+    [ "$cur" = "$anc" ] && return 0
+    hops=$((hops + 1)); [ "$hops" -ge 500 ] && return 1
+    cur="$(_ppid_of "$cur")" || return 1
+  done
+  return 1
+}
+
+# CYBERSEC NO-GO 31912, MEDIUM-2: _agent_background_busy used to loop over every worktree path and,
+# for EACH one, scan every /proc/<pid> and readlink its cwd -- O(worktrees x procs), measured 112s
+# on this host (130 worktrees x 267 procs) once HIGH-1's main-clone exclusion stopped the old
+# first-match short-circuit from hiding the cost. A guard called once per heartbeat tick per agent
+# cannot spend ~2 minutes per call. This inverts the loop: walk the pane's own descendants (a
+# handful of pids, via `pgrep -P`, same shape as a ppid walk) and read EACH of their cwds exactly
+# once, instead of reading every /proc cwd once per worktree.
+_pane_descendant_pids() { # $1=pane_pid -> prints pane_pid itself, then every live descendant, one per line
+  local pane="$1" p k
+  [ -n "$pane" ] || return 1
+  echo "$pane"
+  local -a frontier=("$pane") next
+  while [ "${#frontier[@]}" -gt 0 ]; do
+    next=()
+    for p in "${frontier[@]}"; do
+      for k in $(pgrep -P "$p" 2>/dev/null); do
+        echo "$k"
+        next+=("$k")
+      done
+    done
+    frontier=("${next[@]}")
+  done
 }
 
 # Card b2f71cdc (two independent occurrences of the same root, 6c118f45 then b37eaa5a): the
@@ -194,27 +289,41 @@ _agent_worktree_paths() { # $1=agent -> prints each existing worktree dir for th
 # to a genuinely dead agent, and the 60-minute sibling-handover rule (3a) fired on it, handing the
 # card to a sibling who then independently rebuilt the SAME fix. This asks a question the
 # subagent-ownership check (active-subagents.json) cannot answer for a plain foreground bash
-# command: is there a live, non-shell process whose cwd sits inside the agent's own worktree right
-# now? A bare shell/tmux-server process there is NOT evidence of work -- that is exactly the corpse a
-# finished background job leaves behind, and counting it would make this permanently "busy" for any
-# agent that ever cd'd into its own worktree.
-_agent_background_busy() { # $1=agent ; exit 0 = a live non-shell process has its cwd in the
-                            # agent's own worktree (exit 1 = none found)
-  local agent="$1" wt d cwd comm
+# command: is there a live, non-shell process whose cwd sits inside one of the agent's worktrees
+# right now? A bare shell/tmux-server process there is NOT evidence of work -- that is exactly the
+# corpse a finished background job leaves behind, and counting it would make this permanently
+# "busy" for any agent that ever cd'd into its own worktree.
+#
+# Card c2dd3cfa L1 follow-up: cwd-in-worktree ALONE is not enough either -- a dead selftest fixture
+# that got reparented off its own process tree (ppid 342, observed ~7.9h old) kept its cwd pointed
+# at the backend worktree from before its real parent exited, and this check reported "busy"
+# forever even though the process has nothing left to do with the agent. The actual question is
+# narrower: is this a live descendant of the agent's OWN tmux pane right now? A corpse reparented
+# to init/a subreaper is not -- its ppid chain no longer passes through the pane.
+_agent_background_busy() { # $1=agent ; exit 0 = a live non-shell process, descended from the
+                            # agent's own tmux pane, has its cwd in one of the agent's worktrees
+                            # (exit 1 = none found, or the agent has no live pane)
+  local agent="$1" pane_pid d pid cwd comm wt
+  pane_pid="$(_tmux_pane_pid "$agent")"
+  [ -n "$pane_pid" ] || return 1
+  local -a worktrees=()
   while IFS= read -r wt; do
-    [ -n "$wt" ] || continue
-    for d in /proc/[0-9]*; do
-      [ -e "$d/cwd" ] || continue
-      cwd="$(readlink "$d/cwd" 2>/dev/null)" || continue
+    [ -n "$wt" ] && worktrees+=("$wt")
+  done < <(_agent_worktree_paths "$agent" | sort -u)
+  [ "${#worktrees[@]}" -gt 0 ] || return 1
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    d="/proc/$pid"
+    [ -e "$d/cwd" ] || continue
+    cwd="$(readlink "$d/cwd" 2>/dev/null)" || continue
+    comm="$(tr -d '\0' < "$d/comm" 2>/dev/null)" || continue
+    case "$comm" in bash|sh|dash|zsh|tmux|"tmux: server") continue ;; esac
+    for wt in "${worktrees[@]}"; do
       case "$cwd" in
-        "$wt"|"$wt"/*) ;;
-        *) continue ;;
+        "$wt"|"$wt"/*) return 0 ;;
       esac
-      comm="$(tr -d '\0' < "$d/comm" 2>/dev/null)" || continue
-      case "$comm" in bash|sh|dash|zsh|tmux|"tmux: server") continue ;; esac
-      return 0
     done
-  done < <(_agent_worktree_paths "$agent")
+  done < <(_pane_descendant_pids "$pane_pid")
   return 1
 }
 
@@ -934,13 +1043,89 @@ PY
     IFS=$'\t' read -r cc2 clt2 clu2 <<<"$(_ledger_get "$CARDD" cybersec)"
     [ "$clt2" = "1000" ] || { echo "FAIL dual-agent-ledger: cybersec's last_ts was clobbered (now $clt2, expected 1000 unchanged)"; fails=$((fails+1)); }
 
+    # 15b) Card c2dd3cfa L2: _all_registered_worktree_paths must ACTUALLY ask git, not just exist
+    # as dead code -- deliberately NOT hermetic like every other test here: it queries the REAL
+    # marveen repo's real worktrees (read-only, `git worktree list`, no side effects), because that
+    # is the one way to prove the git-querying mechanism itself works end to end without faking a
+    # worktree. Run BEFORE test 16 below installs its _agent_worktree_paths/_tmux_pane_pid stubs,
+    # so this calls the real, unstubbed functions. The one fact this process can assert about
+    # itself without faking anything: ITS OWN worktree is a real, currently-registered git
+    # worktree, so it must appear in the output for the agent this session runs as.
+    real_paths="$(_all_registered_worktree_paths fullstack)"
+    printf '%s\n' "$real_paths" | grep -qF "/home/neon/marveen-agent-worktrees/fullstack" || {
+      echo "FAIL all-registered-worktrees: this agent's own live worktree did not appear in git worktree list output"
+      fails=$((fails+1))
+    }
+
+    # 15c) Card c2dd3cfa L2: the per-agent landing-worktree glob. Hermetic -- a scoped,
+    # cleaned-up directory under the REAL landing-worktree parent (marveen-land.sh always names
+    # these /home/neon/marveen-land-<agent>-<pid>), using the fake agent id "bgtest-land" so it
+    # cannot collide with any real agent's in-flight landing.
+    land_dir="/home/neon/marveen-land-bgtest-land-999999"
+    mkdir -p "$land_dir"
+    printf '%s\n' "$(_agent_worktree_paths bgtest-land 2>/dev/null)" | grep -qF "$land_dir" || {
+      echo "FAIL agent-worktree-paths-land: a landing worktree matching marveen-land-<agent>-* was not listed"
+      fails=$((fails+1))
+    }
+    rmdir "$land_dir" 2>/dev/null
+
+    # 15d) WIRING: _agent_worktree_paths must call _all_registered_worktree_paths (card c2dd3cfa
+    # L2) -- source assertion, same posture as tests 17/18 below, since test 16 next overrides
+    # the function for the rest of the run.
+    awp_src="$(sed -n '/^_agent_worktree_paths()/,/^}/p' "$0" | sed -E 's/(^|[[:space:]])#.*$//')"
+    printf '%s\n' "$awp_src" | grep -q '_all_registered_worktree_paths' || {
+      echo "FAIL agent-worktree-paths-wiring: does not call _all_registered_worktree_paths"; fails=$((fails+1)); }
+
+    # 15e) CYBERSEC NO-GO 31912, HIGH-1: the REAL _all_registered_worktree_paths output must NOT
+    # contain the main clone itself -- deliberately non-hermetic, same posture as 15b, since the
+    # live main clone (/home/neon/marveen on this host) is the one real fact this process can check
+    # without faking a repo. If this regresses (the grep -vxF exclusion removed), every agent's own
+    # cwd (agents/<name>, nested under the main clone) would again satisfy this list, reproducing
+    # the fleet-wide false-busy the NO-GO found.
+    printf '%s\n' "$real_paths" | grep -qxF "${MARVEEN_MAIN:-/home/neon/marveen}" && {
+      echo "FAIL all-registered-worktrees-main-excluded: the main clone itself appeared in the worktree list"
+      fails=$((fails+1))
+    }
+
+    # 15f) CYBERSEC NO-GO 31912, HIGH-1 (faithful fixture): a live process whose cwd sits under
+    # agents/<name> -- i.e. under the MAIN CLONE, not under any of the agent's own registered
+    # worktrees -- must NOT count as busy. Uses the real (unstubbed) _agent_worktree_paths/
+    # _all_registered_worktree_paths for a fake agent id, so the real main-clone exclusion is what
+    # is under test, not a fixture that already assumes the fix. Only _tmux_pane_pid is stubbed
+    # (to point at this test's own pid), and the cwd used is a real, pre-existing directory
+    # (/home/neon/marveen/agents/fullstack) -- read-only `cd`, nothing created or modified there.
+    _tmux_pane_pid() { [ "$1" = "bgtest-highone" ] && echo "$$"; }
+    ( cd /home/neon/marveen/agents/fullstack && exec sleep 5 ) &
+    bg_pid=$!
+    sleep 0.3
+    t0=$(date +%s%N)
+    _agent_background_busy bgtest-highone && {
+      echo "FAIL bg-busy-main-clone: a process whose cwd sits under the main clone (agents/<name>) was wrongly treated as busy"
+      fails=$((fails+1))
+    }
+    t1=$(date +%s%N)
+    kill "$bg_pid" 2>/dev/null; wait "$bg_pid" 2>/dev/null
+
+    # 15g) CYBERSEC NO-GO 31912, MEDIUM-2: the same real call above must not cost anywhere near the
+    # measured 112s of the old O(worktrees x procs) loop -- generous ~2s ceiling (the card's own
+    # "Done when"), on the live host's real worktree count.
+    elapsed_ms=$(( (t1 - t0) / 1000000 ))
+    [ "$elapsed_ms" -lt 2000 ] || {
+      echo "FAIL bg-busy-perf: _agent_background_busy took ${elapsed_ms}ms against the real worktree list, expected well under 2000ms"
+      fails=$((fails+1))
+    }
+
     # 16) Card b2f71cdc: a live non-shell process whose cwd sits inside the agent's own worktree
-    # counts as busy, and a bare shell process alone does not. Override _agent_worktree_paths so
-    # the test is hermetic (no live agent-worktree.sh/agent-worktree-marveen.sh calls). Every
-    # spawned process is killed and reaped right after its assertion, pass or fail -- this test must
-    # never leave a live process behind.
+    # counts as busy, and a bare shell process alone does not. Override _agent_worktree_paths AND
+    # _tmux_pane_pid so the test is hermetic (no live agent-worktree.sh/agent-worktree-marveen.sh/
+    # tmux calls) -- the pane stub names THIS TEST SCRIPT's own pid ($$) as the stand-in pane, so a
+    # process this script spawns directly really is a descendant of it, same as a real agent's
+    # background job really is a descendant of its real tmux pane. Every spawned process is killed
+    # and reaped right after its assertion, pass or fail -- this test must never leave a live
+    # process behind.
     bg_wt="$tmpdir/bg-worktree"; mkdir -p "$bg_wt"
     _agent_worktree_paths() { [ "$1" = "bgtest" ] && echo "$bg_wt"; }
+    _tmux_pane_pid() { [ "$1" = "bgtest" ] && echo "$$"; }
     bg_cleanup() { [ -n "${bg_pid:-}" ] && kill "$bg_pid" 2>/dev/null; [ -n "${bg_pid:-}" ] && wait "$bg_pid" 2>/dev/null; bg_pid=""; }
     # (a) nothing running there -> not busy
     _agent_background_busy bgtest && { echo "FAIL bg-busy-empty: reported busy with nothing running"; fails=$((fails+1)); }
@@ -957,6 +1142,66 @@ PY
     sleep 0.3
     _agent_background_busy bgtest && { echo "FAIL bg-busy-shell-only: a bare shell process must not count as busy"; fails=$((fails+1)); }
     bg_cleanup
+    # (d) no live pane at all (agent absent/parked) -> not busy, even with a real process sitting
+    # in the worktree -- there is nothing for it to be a descendant OF.
+    _tmux_pane_pid() { [ "$1" = "bgtest-nopane" ] && echo ""; [ "$1" = "bgtest" ] && echo "$$"; }
+    _agent_worktree_paths() { [ "$1" = "bgtest-nopane" ] && echo "$bg_wt"; [ "$1" = "bgtest" ] && echo "$bg_wt"; }
+    ( cd "$bg_wt" && exec sleep 5 ) &
+    bg_pid=$!
+    sleep 0.3
+    _agent_background_busy bgtest-nopane && { echo "FAIL bg-busy-no-pane: reported busy with no live tmux pane for the agent"; fails=$((fails+1)); }
+    bg_cleanup
+    # (e) Card c2dd3cfa L1: a process whose cwd sits in the worktree but whose ppid chain does NOT
+    # pass through the agent's own pane -- an orphan reparented off its real parent (exactly the
+    # ~7.9h-old dash-stub.py fixture corpse that motivated this fix, ppid 342, cwd still pointed at
+    # the backend worktree) -- must NOT count as busy, even though it satisfies the cwd+comm check
+    # the pre-fix code relied on alone. Orphan it for real: an intermediate bash backgrounds a
+    # sleep, then exits before the sleep does, so the kernel reparents the sleep away from the
+    # intermediate (and the intermediate was this test's own direct child, so the sleep is no
+    # longer anyone's descendant back to $$ either).
+    # The leaf writes its OWN pid (inner $$, which survives the exec unchanged) before exec'ing
+    # into sleep, and is backgrounded from an OUTER bash that exits right away -- that outer shell
+    # was this test's own direct child, but the leaf is the OUTER's child, not this test's, so once
+    # the outer exits the leaf is reparented away from both. (An earlier version of this fixture
+    # captured the OUTER's pid via `( exec sleep 5 ) &; echo "$!"` instead -- that double-subshell
+    # form makes `$!` the pid of the WAITING parent of the actual sleep, not sleep itself, so
+    # killing it left the real leaf running for its full 5s and leaking into later tests.)
+    orphan_pid_file="$tmpdir/orphan_pid"
+    bash -c '
+      bash -c "echo \$\$ > \"'"$orphan_pid_file"'\"; cd \"'"$bg_wt"'\"; exec sleep 5" &
+      exit 0
+    ' &
+    mid_pid=$!
+    wait "$mid_pid" 2>/dev/null
+    sleep 0.3
+    orphan_pid="$(cat "$orphan_pid_file" 2>/dev/null)"
+    if [ -d "/proc/$orphan_pid" ]; then
+      _agent_background_busy bgtest && {
+        echo "FAIL bg-busy-orphan: an orphaned process (cwd matches, comm matches, but NOT a descendant of the pane) was wrongly counted as busy"
+        fails=$((fails+1))
+      }
+      # `wait` cannot reap this pid (it is not this shell's child any more, that is the whole
+      # point of the orphan) -- so poll instead of assuming `kill` took effect by the next line,
+      # or a later test could transiently observe this orphan still dying in its own worktree.
+      kill "$orphan_pid" 2>/dev/null
+      for _i in 1 2 3 4 5 6 7 8 9 10; do [ -d "/proc/$orphan_pid" ] || break; sleep 0.1; done
+    else
+      echo "FAIL bg-busy-orphan: setup did not produce a live orphan to test against (pid $orphan_pid gone)"
+      fails=$((fails+1))
+    fi
+    # (f) Card c2dd3cfa L3: a sibling directory that merely SHARES $wt as a string PREFIX
+    # ("$wt-sibling", no path separator) must not count, even though a `"$wt"*` mutant (dropping
+    # the required `/` before the wildcard) would match it. Spawned directly under this test's own
+    # pid, so it passes the descendant check -- the only thing under test here is the cwd match.
+    sibling_wt="${bg_wt}-sibling"; mkdir -p "$sibling_wt"
+    ( cd "$sibling_wt" && exec sleep 5 ) &
+    bg_pid=$!
+    sleep 0.3
+    _agent_background_busy bgtest && {
+      echo "FAIL bg-busy-sibling-prefix: a directory sharing \$wt as a bare string prefix was wrongly treated as inside it"
+      fails=$((fails+1))
+    }
+    bg_cleanup
 
     # 17) WIRING: _agent_busy must actually call _agent_background_busy -- a source assertion
     # (code-quality rule 12 posture), because the stub _agent_busy used by the `check)` tests above
@@ -964,6 +1209,29 @@ PY
     agent_busy_src="$(sed -n '/^_agent_busy()/,/^}/p' "$0" | sed -E 's/(^|[[:space:]])#.*$//')"
     printf '%s\n' "$agent_busy_src" | grep -q '_agent_background_busy' || {
       echo "FAIL agent-busy-wiring: _agent_busy does not call _agent_background_busy"; fails=$((fails+1)); }
+
+    # 18) WIRING: Card c2dd3cfa L1 -- _agent_background_busy must actually call _tmux_pane_pid AND
+    # _pane_descendant_pids (round 2, CYBERSEC NO-GO 31912 MEDIUM-2: the pane-descendant check moved
+    # from a per-candidate _is_descendant_of call to the inverted-loop _pane_descendant_pids), same
+    # posture as test 17: the stub installed by test 16 above is a complete replacement, not evidence
+    # the REAL function performs the pane-descendant check. Read from $0 (the script file), not from
+    # the shell's current function table, so the test 16 overrides in effect at this point in the run
+    # cannot hide a gap.
+    bg_busy_src="$(sed -n '/^_agent_background_busy()/,/^}/p' "$0" | sed -E 's/(^|[[:space:]])#.*$//')"
+    printf '%s\n' "$bg_busy_src" | grep -q '_tmux_pane_pid' || {
+      echo "FAIL bg-busy-wiring: _agent_background_busy does not call _tmux_pane_pid"; fails=$((fails+1)); }
+    printf '%s\n' "$bg_busy_src" | grep -q '_pane_descendant_pids' || {
+      echo "FAIL bg-busy-wiring: _agent_background_busy does not call _pane_descendant_pids"; fails=$((fails+1)); }
+
+    # 19) _ppid_of / _is_descendant_of: direct unit checks on the real functions (not stubbed by
+    # anything above).
+    sleep 9999 &
+    child_pid=$!
+    [ "$(_ppid_of "$child_pid")" = "$$" ] || { echo "FAIL ppid-of: did not read a direct child's real ppid"; fails=$((fails+1)); }
+    _is_descendant_of "$child_pid" "$$" || { echo "FAIL is-descendant-child: a direct child was not recognized as a descendant of its parent"; fails=$((fails+1)); }
+    _is_descendant_of "$$" "$$" || { echo "FAIL is-descendant-self: a pid is its own ancestor (base case)"; fails=$((fails+1)); }
+    kill "$child_pid" 2>/dev/null; wait "$child_pid" 2>/dev/null
+    _is_descendant_of "1" "$$" && { echo "FAIL is-descendant-unrelated: pid 1 was wrongly treated as a descendant of this test shell"; fails=$((fails+1)); }
 
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi

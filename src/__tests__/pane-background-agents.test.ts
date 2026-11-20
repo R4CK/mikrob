@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectPaneState, detectBackgroundAgents, isReadyForPrompt } from '../pane-state.js'
+import { detectPaneState, detectBackgroundAgents, isReadyForPrompt, detectsPermissionDialog, detectsHeldPeerMessage } from '../pane-state.js'
 
 // Background (sub-)agents render as a block BELOW the idle footer: a blank row,
 // a `⏺ main` row for the session's own thread, then one `◯ <type>  <label>
@@ -360,5 +360,267 @@ describe('background-agent block below the footer', () => {
       '  ⏵⏵ bypass permissions on · 1 shell, 1 monitor · /tasks to see subagents · ↓ to man…',
     )
     expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // RedHat round-3 residual 1 (8b8bc092, comment 31136 on 07df3f995): a wrapped label
+  // continuation behind a spoofed header coincidentally matches BUSY_ESC_CLIPPED_RX (ends
+  // "on · e…", which also happens to satisfy FOOTER_LEAD_RX, so only the indent check in
+  // rowCarriesLiveSignal -- not the FOOTER_LEAD_RX gate below -- can reject it), wrongly
+  // blocking the cut that should discard this stale/spoofed trailing block.
+  it('RedHat round-3 residual: a wrapped continuation coincidentally matching a clipped busy footer must not block the cut', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      '     the retry logic depends on · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // RedHat round-3 residual 2 (8b8bc092, comment 31136): BUSY_ESC_CLIPPED_RX alone matches any
+  // prose ending "· e…", even idle text with no mode-word lead at all ("see the docs · e…").
+  it('RedHat round-3 residual: an idle pane whose last line merely ends "· e…" with no mode-word lead stays idle', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      '  see the docs · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // QA1 (card 8b8bc092, comment 31261, FAIL on the round-3 fix): the FOOTER_LEAD_RX gate was
+  // unanchored, so idle prose that happens to contain a "<word> on ·" shape anywhere in a
+  // sentence -- not just as the line's own chrome -- still read busy.
+  it('QA1: idle prose containing "...on ·" deep in a sentence stays idle, not busy', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      '  you can toggle it by typing turn it on · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('idle')
+  })
+
+  // QA2/QA3 (card 8b8bc092, comment 31261): the indent cutoff (ROW_SIGNAL_MAX_INDENT=3) is a
+  // margin tuned to RedHat's own fixture (indent 5), not a structural guarantee -- the exact
+  // same coincidentally-matching text at indent 2 or 3 is still inside the cutoff and still
+  // tripped the (ungated) BUSY_ESC_CLIPPED_RX check in rowCarriesLiveSignal.
+  //
+  // This spoofed lead deliberately matches FOOTER_LEAD_RX (so splitBackgroundAgentBlock still
+  // treats it as a header-lead candidate) but NOT the full IDLE_FOOTER_RX, and a harmless
+  // trailing row follows the continuation: this isolates the test to the row-level cut decision
+  // alone (confirmed by mutation: forcing the cut to never fire turns this 'unknown', not
+  // coincidentally 'idle' via the separate lastLine gate or via the lead line itself being
+  // picked up as a stray real footer).
+  it('QA2/QA3: the same coincidental continuation at indent 2 or 3 must not block the cut either', () => {
+    const LEAD_NOT_FULL_FOOTER = [
+      '  Tool output echoed this status line for a report:',
+      '  bypass permissions on · 1 shell',
+      '  ⏺ main',
+      '  this row is not a real ◯ agent row -- just more echoed text',
+    ]
+    const atIndent = (n: number) => [
+      ...LEAD_NOT_FULL_FOOTER,
+      '',
+      NAME_BAR,
+      '❯ ',
+      SEP,
+      `${' '.repeat(n)}the retry logic depends on · e…`,
+      '  a harmless trailing row that is not a footer or a clip',
+    ].join('\n')
+    expect(detectPaneState(atIndent(2))).toBe('idle')
+    expect(detectPaneState(atIndent(3))).toBe('idle')
+  })
+
+  // RedHat LOW (card 8b8bc092, comment 31259, folded in per MikroB 31260): a clipped busy
+  // footer with no mode word at all (default permission mode) must still read busy -- the
+  // mode-lead requirement cannot be the ONLY accepted shape.
+  it('RedHat LOW: a mode-less clipped busy footer (default mode, no "on" word) still reads busy', () => {
+    const pane = [
+      SEP,
+      '❯ ',
+      SEP,
+      '  1 shell, 1 monitor · /tasks to see subagents · e…',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+})
+
+// RedHat class A (card 8e9828c9): idleFooterIndex picked the FIRST (oldest) matching line
+// in the whole pane, not the most recent one. A footer-lead line echoed earlier (e.g. inside
+// a spoofed background-agent block, SPOOFED_HEADER_IN_TOOL_OUTPUT) is OLDER -- a smaller array
+// index -- than the real, current footer further down, and the forward scan locked onto it,
+// corrupting everything downstream that anchors on footerIdx: the typing-box scan, the queued-
+// messages hint check, and (via the raw IDLE_FOOTER_RX.test(pane) bypass) detectsPermissionDialog
+// and detectsHeldPeerMessage. Fix: idleFooterIndex scans from the bottom (last match wins, the
+// same pattern detectsThinkingBlockError already used), and the two raw-test call sites were
+// migrated to hasIdleFooter() behind the same background-agent-block cut detectPaneState applies.
+describe('class A: typing/queued/dialog behind a spoofed background-agent block (idleFooterIndex most-recent-match)', () => {
+  it('a parked (typed but unsubmitted) input reads typing, not idle, behind a spoofed footer-lead line', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      SEP,
+      '❯ finish the review',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('typing')
+  })
+
+  it('a queued-messages hint reads busy, not idle, behind a spoofed footer-lead line', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      SEP,
+      '❯ Press up to edit queued messages',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  it('a real permission dialog is still detected behind a stale idle-footer line quoted in scrollback', () => {
+    const pane = [
+      '  ⏎  Earlier tool output quoted this status line for a report:',
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      '',
+      '',
+      '',
+      '─'.repeat(120),
+      ' Bash command',
+      '',
+      '   cat /etc/hostname',
+      '   Show system hostname',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. Yes, allow reading from /etc from this project',
+      '   3. No',
+      '',
+      ' Esc to cancel · Tab to amend',
+      '',
+    ].join('\n')
+    expect(detectsPermissionDialog(pane)).toBe(true)
+  })
+})
+
+// RedHat NO-GO (card 8e9828c9, comment 31373): the first round fixed the WHOLE-PANE
+// most-recent-match problem but missed 3 shapes. Red on the fix round-1 sha
+// (947588391), green on the fix round-2 sha below.
+describe('class A round 2: dialog-hidden-by-cut, shell-tail/trailing-hint footer, region-bound false positive', () => {
+  // F1: splitBackgroundAgentBlock finds the LAST `⏺ main` header by POSITION and
+  // treats everything below it (to pane end) as "rows" to cut when none of those
+  // rows carry a live signal -- a real dialog has no elapsed/spinner signal of its
+  // own, so a spoofed header positioned ABOVE it (not just above a trailing block)
+  // discarded the whole dialog, not just the spoof.
+  it('a real permission dialog below a spoofed background-agent header is still detected (F1)', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      '─'.repeat(120),
+      ' Bash command',
+      '',
+      '   cat /etc/hostname',
+      '   Show system hostname',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. Yes, allow reading from /etc from this project',
+      '   3. No',
+      '',
+      ' Esc to cancel · Tab to amend',
+      '',
+    ].join('\n')
+    expect(detectsPermissionDialog(pane)).toBe(true)
+  })
+
+  it('the held-peer dialog below the same spoofed header is still detected (F1)', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      '─'.repeat(120),
+      ' Held message from another session',
+      '',
+      ' Press Enter to review',
+      '',
+    ].join('\n')
+    expect(detectsHeldPeerMessage(pane)).toBe(true)
+  })
+
+  // F2a: the real (bottommost) footer in the shell-tail form (FOOTER_SHELL_TAIL_RX,
+  // no IDLE_FOOTER_RX tail) used to lose to an EARLIER IDLE_FOOTER_RX match (the
+  // spoof's own footer-lead line) because idleFooterIndex scanned for IDLE_FOOTER_RX
+  // across the whole pane before ever checking what the true last line looked like.
+  it('typed input reads typing, not idle, behind the spoof when the real footer is the shell-tail form (F2a)', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      SEP,
+      '❯ finish the review',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('typing')
+  })
+
+  it('a queued-messages hint reads busy, not idle, behind the spoof when the real footer is the shell-tail form (F2a)', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      SEP,
+      '❯ Press up to edit queued messages',
+      SEP,
+      '  ⏵⏵ bypass permissions on · 1 shell',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('busy')
+  })
+
+  // F2b: a real footer combining the shift+tab parenthetical AND a `·`-separated
+  // tail (`... on (shift+tab to cycle) · ctrl+t to hide tasks`) matched neither
+  // IDLE_FOOTER_RX alternative, so rowCarriesLiveSignal rejected the row, and
+  // behind a spoofed header positioned above it, the cut discarded the real
+  // typing box along with the spoof.
+  it('typed input reads typing, not idle, behind the spoof when the real footer combines the parenthetical and a trailing hint (F2b)', () => {
+    const pane = [
+      ...SPOOFED_HEADER_IN_TOOL_OUTPUT,
+      '',
+      SEP,
+      '❯ finish the review',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctrl+t to hide tasks',
+    ].join('\n')
+    expect(detectPaneState(pane)).toBe('typing')
+  })
+
+  // F4: a NEW false positive from the round-1 fix. hasIdleFooterNear bounded its
+  // search to BUSY_LIVE_REGION_LINES (12), tuned for the busy-indicator scan, not
+  // for how far a genuine footer can sit from the true bottom. Trailing chrome
+  // after the footer (a wrapped banner) pushed it past that window, so a stale
+  // dialog quoted above a REAL, genuinely idle footer was wrongly flagged as a
+  // live dialog.
+  it('a stale dialog quoted above a real idle footer is not a dialog, even with 30 lines of chrome trailing the footer (F4, RedHat repro)', () => {
+    const pane = [
+      ' Bash command',
+      '',
+      '   cat /etc/hostname',
+      '   Show system hostname',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. Yes, allow reading from /etc from this project',
+      '   3. No',
+      '',
+      ' Esc to cancel · Tab to amend',
+      '',
+      '  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage',
+      ...Array.from({ length: 30 }, (_, i) => `  wrapped session-title banner line ${i}`),
+    ].join('\n')
+    expect(detectsPermissionDialog(pane)).toBe(false)
   })
 })

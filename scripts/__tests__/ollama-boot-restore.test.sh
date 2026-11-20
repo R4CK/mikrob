@@ -11,7 +11,14 @@ set -u
 
 PASS=0; FAIL=0
 TMPDIR_BASE="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_BASE"' EXIT
+OK_SERVER_PIDS=()
+stop_ok_servers() {
+  local p
+  for p in "${OK_SERVER_PIDS[@]:-}"; do
+    [ -n "$p" ] && kill "$p" 2>/dev/null
+  done
+}
+trap 'stop_ok_servers; rm -rf "$TMPDIR_BASE"' EXIT
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 
@@ -22,6 +29,38 @@ fresh_case() { local d; d="$TMPDIR_BASE/case-$1"; mkdir -p "$d"; echo "$d"; }
 
 # A dead loopback port so ollama_up() always fails without touching the real Ollama on this box.
 DEAD_HOST="http://127.0.0.1:1"
+
+# Card a49d1e1a F1/F2: these findings are about Ollama genuinely answering /api/tags, not merely
+# a port being "up" per the pid/port override -- so a real (loopback-only) HTTP server, not another
+# shell variable, is what makes the distinction real. Prints "http://127.0.0.1:<port> <pid>" (QA2
+# FAIL comment 30353: the caller MUST be `OK_HOST="$(start_ok_server)"` for the URL, which runs this
+# whole function in a command-substitution SUBSHELL -- a `$!`-into-array mutation inside that
+# subshell is lost the instant it exits, so the top-level OK_SERVER_PIDS array the EXIT trap reads
+# never actually gets the pid and the server leaks forever. Printing the pid alongside the URL lets
+# the caller append it to the array AT THE TOP LEVEL, outside any subshell.
+start_ok_server() {
+  local port
+  port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+  python3 - "$port" <<'PY' >/dev/null 2>&1 &
+import http.server, socketserver, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *a):
+        pass
+with socketserver.TCPServer(("127.0.0.1", int(sys.argv[1])), H) as httpd:
+    httpd.serve_forever()
+PY
+  local pid=$!
+  local tries=0
+  while [ "$tries" -lt 50 ]; do
+    curl -fsS -m 1 "http://127.0.0.1:$port/api/tags" >/dev/null 2>&1 && break
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  echo "http://127.0.0.1:$port $pid"
+}
 
 run() {
   # $1=state_dir $2=port_check(up|down) $3=uptime_file(or '') $4=dmesg_file(or '') ; rest = extra env
@@ -230,7 +269,10 @@ fi
 # branch had ZERO coverage. These cases PATH-shim a fake `journalctl` (no override env var set) so
 # the real branch runs, against a script copy (mutation-pinning needs an editable copy).
 JBIN_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_BASE" "$JBIN_DIR"' EXIT
+# QA2 FAIL comment 30353: a bare `trap ... EXIT` REPLACES the whole-script trap set at line 21, not
+# chains onto it -- dropping stop_ok_servers here would leak the F1/F2 ok-server (started further
+# below, after this line) even with its pid correctly tracked.
+trap 'stop_ok_servers; rm -rf "$TMPDIR_BASE" "$JBIN_DIR"' EXIT
 write_fake_journalctl() {
   # $1 = exit code, $2 = stdout text (may be empty)
   cat > "$JBIN_DIR/journalctl" <<EOF
@@ -371,7 +413,9 @@ fi
 # `env -i PATH HOME` -- the same narrow env channel-monitor.ts's buildOllamaRestoreEnv() hands this
 # script in production (ollama-boot-restore-narrow-env.test.ts pins that narrowness on the TS side).
 SBIN_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_BASE" "$JBIN_DIR" "$SBIN_DIR"' EXIT
+# Same trap-replacement hazard as above (QA2 FAIL comment 30353) -- stop_ok_servers must stay in
+# every EXIT trap reassignment from here to end of file, since the F1/F2 ok-server starts after this.
+trap 'stop_ok_servers; rm -rf "$TMPDIR_BASE" "$JBIN_DIR" "$SBIN_DIR"' EXIT
 
 write_fake_systemctl() {
   # $1 = exit code for the shim to return.
@@ -391,14 +435,15 @@ run_real_systemctl() {
   # triggers alert_owner() (card 84181422), and without this the real HOME above would make
   # alert_owner read this box's REAL ~/.claude/channels/telegram/.env and send a REAL Telegram
   # message every time this test runs.
-  local state="$1" script="${2:-$SCRIPT}" capture="$3"
+  local state="$1" script="${2:-$SCRIPT}" capture="$3" host="${4:-$DEAD_HOST}"
   env -i PATH="$SBIN_DIR:$JBIN_DIR:/usr/bin:/bin" HOME="$HOME" \
     OLLAMA_TEST_SYSTEMCTL_CAPTURE="$capture" \
-    OLLAMA_HOST="$DEAD_HOST" \
+    OLLAMA_HOST="$host" \
     OLLAMA_RESTORE_STATE_DIR="$state" \
     OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
     OLLAMA_RESTORE_UPTIME_OVERRIDE="$state/uptime" \
     OLLAMA_RESTORE_ALERT_DRYRUN=1 \
+    OLLAMA_RESTORE_PROBE_SLEEP_SEC=0 \
     bash "$script" 2>&1
 }
 
@@ -461,14 +506,16 @@ else
   fail "failure streak did not leave the expected .ollama-boot-restore-fail-alerted stamp"
 fi
 
-# --- Card 84181422: a success after a failure streak clears the stamp ---------------------------
+# --- Card a49d1e1a F1/F2: a start that genuinely brings Ollama up (not just rc=0) clears the stamp
+read -r OK_HOST OK_HOST_PID <<<"$(start_ok_server)"
+OK_SERVER_PIDS+=("$OK_HOST_PID")
 write_fake_systemctl 0
 CAP5="$(mktemp -d)"
-out="$(run_real_systemctl "$d" "$SCRIPT" "$CAP5")"
+out="$(run_real_systemctl "$d" "$SCRIPT" "$CAP5" "$OK_HOST")"
 if [ -f "$d/.ollama-boot-restore-fail-alerted" ]; then
-  fail "a successful start did not clear the fail-alerted stamp: $out"
+  fail "a genuinely successful restart (Ollama answering) did not clear the fail-alerted stamp: $out"
 else
-  pass "a successful start after a failure streak clears the fail-alerted stamp"
+  pass "a genuinely successful restart (Ollama answering) clears the fail-alerted stamp"
 fi
 
 # A fresh failure after the stamp was cleared must alert again (streak restarted, not permanently
@@ -480,6 +527,182 @@ if echo "$out" | grep -q 'ALERT_DRYRUN'; then
   pass "a NEW failure streak (after a clearing success) alerts again"
 else
   fail "a new failure streak after a cleared stamp did not alert: $out"
+fi
+
+# --- Card a49d1e1a F1: rc=0 but Ollama never answers must ALSO alert (not just a nonzero rc) ------
+d="$(fresh_case rc0-never-answers-alerts)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+write_fake_systemctl 0
+CAP7="$(mktemp -d)"
+ALERTS=0
+for sweep in 1 2 3; do
+  out="$(run_real_systemctl "$d" "$SCRIPT" "$CAP7")"
+  if echo "$out" | grep -q 'ALERT_DRYRUN'; then ALERTS=$((ALERTS + 1)); fi
+done
+if [ "$ALERTS" -eq 1 ]; then
+  pass "rc=0 with Ollama never answering alerts exactly once across 3 sweeps (F1)"
+else
+  fail "expected exactly 1 alert for a successful-rc/dead-probe streak across 3 sweeps, got $ALERTS"
+fi
+if echo "$out" | grep -q 'still not answering'; then
+  pass "the F1 alert path still logs the probe-exhausted message too"
+else
+  fail "F1 path did not log the probe-exhausted message: $out"
+fi
+
+# --- Card a49d1e1a F2: a manual recovery (found healthy on a LATER sweep) clears the stamp, -------
+# even though THIS script never ran a successful restart itself.
+d="$(fresh_case manual-recovery-clears-stamp)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+write_fake_systemctl 1
+CAP8="$(mktemp -d)"
+run_real_systemctl "$d" "$SCRIPT" "$CAP8" >/dev/null
+if [ ! -f "$d/.ollama-boot-restore-fail-alerted" ]; then
+  fail "setup failed: failure streak did not leave a stamp to clear"
+fi
+# Someone fixes Ollama by hand; the NEXT sweep sees it already up via the pid/port guard, before
+# ever reaching the restart logic.
+out="$(run "$d" up '' '')"
+if [ -f "$d/.ollama-boot-restore-fail-alerted" ]; then
+  fail "a manually-recovered Ollama (found via pid/port check) did not clear the fail-alerted stamp: $out"
+else
+  pass "a manually-recovered Ollama (found via pid/port check on a later sweep) clears the fail-alerted stamp (F2)"
+fi
+
+# --- Card a49d1e1a F3: the stamp must be set ONLY after a CONFIRMED send ------------------------
+d="$(fresh_case send-failure-no-stamp)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+write_fake_systemctl 1
+CAP9="$(mktemp -d)"
+out="$(env -i PATH="$SBIN_DIR:$JBIN_DIR:/usr/bin:/bin" HOME="$HOME" \
+  OLLAMA_TEST_SYSTEMCTL_CAPTURE="$CAP9" \
+  OLLAMA_HOST="$DEAD_HOST" \
+  OLLAMA_RESTORE_STATE_DIR="$d" \
+  OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
+  OLLAMA_RESTORE_UPTIME_OVERRIDE="$d/uptime" \
+  OLLAMA_RESTORE_ALERT_FAIL_OVERRIDE=1 \
+  OLLAMA_RESTORE_PROBE_SLEEP_SEC=0 \
+  bash "$SCRIPT" 2>&1)"
+if [ -f "$d/.ollama-boot-restore-fail-alerted" ]; then
+  fail "a confirmed-FAILED alert send still left a rate-limit stamp behind: $out"
+else
+  pass "a failed alert send leaves no stamp (F3)"
+fi
+# The next sweep must retry the alert, not stay silent because of a stamp that should not exist.
+out2="$(env -i PATH="$SBIN_DIR:$JBIN_DIR:/usr/bin:/bin" HOME="$HOME" \
+  OLLAMA_TEST_SYSTEMCTL_CAPTURE="$CAP9" \
+  OLLAMA_HOST="$DEAD_HOST" \
+  OLLAMA_RESTORE_STATE_DIR="$d" \
+  OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
+  OLLAMA_RESTORE_UPTIME_OVERRIDE="$d/uptime" \
+  OLLAMA_RESTORE_ALERT_FAIL_OVERRIDE=1 \
+  OLLAMA_RESTORE_PROBE_SLEEP_SEC=0 \
+  bash "$SCRIPT" 2>&1)"
+if echo "$out2" | grep -q 'ALERT sendMessage FAILED'; then
+  pass "the next sweep retries the alert after an undelivered send, instead of staying silent (F3)"
+else
+  fail "next sweep did not retry the alert after a failed send: $out2"
+fi
+
+# --- Card a49d1e1a F4: the owner-facing alert text is accented Hungarian, not ASCII-stripped -----
+# WhiteHat2 F3/F4 (comment 30347): the old `grep -o ... | grep -q` shape passes if ANY ONE of the
+# two known alert strings (rc!=0, and the F1 rc=0-never-answers one) has an accent -- it was
+# vacuously green even with accents stripped from one of them. Now requires BOTH known strings to
+# be present (non-vacuity: asserts the population, not just "found something") AND each one
+# individually accented.
+ALERT_STRING_COUNT="$(grep -coE '"Ollama boot-restore[^"]*"' "$SCRIPT")"
+ACCENTED_ALERT_STRING_COUNT="$(grep -oE '"Ollama boot-restore[^"]*"' "$SCRIPT" | grep -cP '[áéíóöőúüű]')"
+if [ "$ALERT_STRING_COUNT" -eq 2 ] && [ "$ACCENTED_ALERT_STRING_COUNT" -eq 2 ]; then
+  pass "the owner-facing failure alert text uses Hungarian accents (F4)"
+else
+  fail "the owner-facing failure alert text is missing accents or strings: found $ALERT_STRING_COUNT alert string(s), $ACCENTED_ALERT_STRING_COUNT accented"
+fi
+
+# --- Card a49d1e1a F1 (real): alert_owner must treat a REJECTED send (HTTP 401/400/429/500), not --
+# only a transport failure, as undelivered. WhiteHat2 F1 (comment 30347, QA2-confirmed): the old
+# `curl -s -o /dev/null -K -` had no --fail, so curl exits 0 on ANY HTTP response -- this drives
+# the REAL curl branch (no FAIL_OVERRIDE/DRYRUN seam) against a loopback server that actually
+# answers with a given status, which the override seam can never exercise.
+start_status_server() {
+  local code="$1" port
+  port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+  python3 - "$port" "$code" <<'PY' >/dev/null 2>&1 &
+import http.server, socketserver, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(int(sys.argv[2]))
+        self.end_headers()
+    def log_message(self, *a):
+        pass
+with socketserver.TCPServer(("127.0.0.1", int(sys.argv[1])), H) as httpd:
+    httpd.serve_forever()
+PY
+  local pid=$!
+  local tries=0
+  while [ "$tries" -lt 50 ]; do
+    curl -s -m 1 -o /dev/null "http://127.0.0.1:$port/" 2>/dev/null
+    [ $? -ne 7 ] && break  # 7 = connection refused; anything else means the server IS listening
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  echo "http://127.0.0.1:$port $pid"
+}
+
+# A fresh, fully synthetic HOME -- never touches this box's real Telegram credentials. INSTALL_DIR
+# has no .env in this worktree, so ALLOWED_CHAT_ID falls through to this fake TELEGRAM_CHAT_ID.
+FAKE_HOME="$(mktemp -d)"
+mkdir -p "$FAKE_HOME/.claude/channels/telegram"
+printf 'TELEGRAM_BOT_TOKEN=fake-test-token\nTELEGRAM_CHAT_ID=fake-test-chat\n' \
+  > "$FAKE_HOME/.claude/channels/telegram/.env"
+
+read -r REJECT_URL REJECT_PID <<<"$(start_status_server 401)"
+OK_SERVER_PIDS+=("$REJECT_PID")
+d="$(fresh_case alert-rejected-by-telegram)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+write_fake_systemctl 1
+CAP10="$(mktemp -d)"
+out="$(env -i PATH="$SBIN_DIR:$JBIN_DIR:/usr/bin:/bin" HOME="$FAKE_HOME" \
+  OLLAMA_TEST_SYSTEMCTL_CAPTURE="$CAP10" \
+  OLLAMA_HOST="$DEAD_HOST" \
+  OLLAMA_RESTORE_STATE_DIR="$d" \
+  OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
+  OLLAMA_RESTORE_UPTIME_OVERRIDE="$d/uptime" \
+  OLLAMA_RESTORE_TELEGRAM_API_BASE_OVERRIDE="$REJECT_URL" \
+  bash "$SCRIPT" 2>&1)"
+if echo "$out" | grep -q 'ALERT sendMessage FAILED' && ! echo "$out" | grep -q 'owner alerted via direct Bot API'; then
+  pass "a rejected send (HTTP 401) is treated as a real failure, not a delivered alert (F1-real)"
+else
+  fail "a rejected send (HTTP 401) was NOT treated as a failure: $out"
+fi
+if [ -f "$d/.ollama-boot-restore-fail-alerted" ]; then
+  fail "a rejected send (HTTP 401) still left a rate-limit stamp behind"
+else
+  pass "a rejected send (HTTP 401) leaves no stamp (F1-real)"
+fi
+
+read -r ACCEPT_URL ACCEPT_PID <<<"$(start_status_server 200)"
+OK_SERVER_PIDS+=("$ACCEPT_PID")
+d="$(fresh_case alert-accepted-by-telegram)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+write_fake_systemctl 1
+CAP11="$(mktemp -d)"
+out="$(env -i PATH="$SBIN_DIR:$JBIN_DIR:/usr/bin:/bin" HOME="$FAKE_HOME" \
+  OLLAMA_TEST_SYSTEMCTL_CAPTURE="$CAP11" \
+  OLLAMA_HOST="$DEAD_HOST" \
+  OLLAMA_RESTORE_STATE_DIR="$d" \
+  OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
+  OLLAMA_RESTORE_UPTIME_OVERRIDE="$d/uptime" \
+  OLLAMA_RESTORE_TELEGRAM_API_BASE_OVERRIDE="$ACCEPT_URL" \
+  bash "$SCRIPT" 2>&1)"
+if echo "$out" | grep -q 'owner alerted via direct Bot API' && [ -f "$d/.ollama-boot-restore-fail-alerted" ]; then
+  pass "an accepted send (HTTP 200) through the real curl path is treated as delivered (control for F1-real)"
+else
+  fail "an accepted send (HTTP 200) through the real curl path was NOT treated as delivered: $out"
 fi
 
 # --- Mutant-kill: reverting the real branch to a bare nohup, with the dryrun string UNCHANGED, ----
@@ -506,6 +729,7 @@ echo "600.0 1200.0" > "$d/uptime"
 echo "kernel: clean, nothing interesting here" > "$d/dmesg"
 out="$(OLLAMA_HOST="$DEAD_HOST" OLLAMA_RESTORE_STATE_DIR="$d" OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
   OLLAMA_RESTORE_UPTIME_OVERRIDE="$d/uptime" OLLAMA_RESTORE_DMESG_OVERRIDE="$d/dmesg" \
+  OLLAMA_RESTORE_ALERT_DRYRUN=1 OLLAMA_RESTORE_PROBE_SLEEP_SEC=0 \
   OLLAMA_RESTORE_START_CMD_OVERRIDE=true bash "$SCRIPT" 2>&1)"
 if echo "$out" | grep -q 'restart attempted but /api/tags still not answering'; then
   pass "a start command that never brings Ollama up is reported, not silently swallowed"

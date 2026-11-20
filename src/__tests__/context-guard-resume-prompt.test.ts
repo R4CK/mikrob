@@ -90,6 +90,32 @@ describe('resumePrompt carries the restart-window re-read on every variant', () 
   }
 })
 
+// card d66b7681 (MikroB GO, msg 18804, condition 1 and 3): a backend3 restart
+// with a ~30min-stale handoff ended in a double landing. The plain "FIGYELEM
+// elavult" warning was not concrete enough to stop it -- this pins that the
+// stale variant now carries a MEASURABLE first step (verify named shas and
+// card statuses against live sources before any irreversible action), not
+// just another warning line. Only the stale variant needs this: a fresh or
+// no-handoff resume has nothing in it to verify yet.
+describe('resumePrompt carries a concrete pre-landing verification step on the stale variant (card d66b7681)', () => {
+  it('stale handoff: names the concrete git + kanban verification, before any irreversible step', () => {
+    const p = resumePrompt('samu', '/x/HANDOFF.md', true, 42)
+    expect(p).toContain('git ls-remote')
+    expect(p).toContain('git cat-file')
+    expect(p).toContain('MIELŐTT BÁRMILYEN land/push/PUT done')
+    expect(p).toContain('api/kanban/')
+  })
+  it('fresh handoff: no verification step is injected (nothing stale to re-check)', () => {
+    expect(resumePrompt('samu', '/x/HANDOFF.md', true)).not.toContain('git ls-remote')
+  })
+  it('no handoff: no verification step is injected (nothing named to re-check)', () => {
+    expect(resumePrompt('samu', '/x/HANDOFF.md', false)).not.toContain('git ls-remote')
+  })
+  it('unmeasurable freshness: no verification step is injected (different variant, its own caution line)', () => {
+    expect(resumePrompt('samu', '/x/HANDOFF.md', true, 'unknown')).not.toContain('git ls-remote')
+  })
+})
+
 // Review msg 14197: the main agent's channel is the OWNER's Telegram, and
 // session meta must never go there (standing owner preference; a 3am status
 // notice went out exactly this way on 2026-08-05). The closing line is

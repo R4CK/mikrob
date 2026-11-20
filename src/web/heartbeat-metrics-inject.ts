@@ -151,7 +151,16 @@ function renderTokenPruneLine(p: ParsedMetrics, firstLine: string): string {
     return '- FIGYELEM, token_usage prune allapota NEM MEGHATAROZHATO: '
       + 'ervenytelen retention/tolerance konfiguracio.'
   }
-  return `- token_usage prune: rendben (${tp['lag_hours']} ora lemaradas, tures ${tp['tolerance_hours']} ora)`
+  if (tp['state'] === 'ok') {
+    return `- token_usage prune: rendben (${tp['lag_hours']} ora lemaradas, tures ${tp['tolerance_hours']} ora)`
+  }
+  // Fail-closed (card 771c1219): an unrecognized state must never read as "rendben" --
+  // a future/unknown instrument value is a loud FIGYELEM, not a silent pass-through.
+  // CYBERED L2 (card 6590b228): the echoed value is instrument output, not our own data --
+  // strip control characters/newlines and cap length before it goes into the digest.
+  const safeState = tp['state'].replace(/[\x00-\x1f\x7f]+/g, '').slice(0, 80)
+  return `- FIGYELEM, token_usage prune allapota ISMERETLEN: '${safeState}' (nem a vart `
+    + "'ok'/'empty'/'stale'/'invalid' egyike)."
 }
 
 function renderSections(p: ParsedMetrics, firstLine: string): string {

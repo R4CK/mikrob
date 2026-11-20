@@ -919,12 +919,20 @@ freellm_draft_comment_body() {
 #               existing 2-strikes ceiling so a genuinely broken freellm backend does not retry it
 #               forever on every sweep either.
 try_freellm_for_leaf() {
-  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
+  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}" assignee="${6:-}"
   [[ -x "$FREELLM_CALL" ]] || return 1
 
   local out rc=0 errfile
   errfile="$(mktemp)"
-  out="$(printf '%s' "$task" | redact_secrets | bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
+  # Card 685f25cb (MikroB measured audit, 2026-11-20): every freellm_call.sh ledger row was
+  # agent_id=unknown/card_id=NULL because this call site never set FREELLM_CALLER/FREELLM_CARD_ID
+  # -- the dashboard calls page cannot attribute a single real call. post_id is already the exact
+  # kanban card id the draft/fail comment above is posted to; assignee is the leaf's own agent,
+  # threaded in from the two site wrappers below (defaults to empty -> freellm-call.sh's own
+  # "unknown" fallback when a caller, such as the --test-freellm-fallback-site harness, has none).
+  # Combined with 6d8ef952's content-gate masking (redact_secrets): attribution env vars and the
+  # redaction pipe are independent concerns, both apply.
+  out="$(printf '%s' "$task" | redact_secrets | FREELLM_CALLER="${assignee:-unknown}" FREELLM_CARD_ID="$post_id" bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
   # Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named error messages (model
   # 404, token mismatch) used to be thrown away right here by this call's `2>/dev/null` -- the
   # one thing that script fixed (naming instead of staying silent), this caller immediately
@@ -1115,6 +1123,23 @@ try_gemini_second_opinion_for_leaf() {
 # budget, so the cap always lands on leaves that still have something to try (grilling change #4 -- the
 # filter runs before the cut, not after, so a large Feladat does not starve its 16th+ leaf forever).
 OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
+# NON-INTEGER GUARD (card 660e3b66, RedHat non-blocking in f8e7f7cb's GO, comment 17102): same
+# bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below -- a non-integer value reaches the
+# `(( attempted >= OFFLOAD_MAX_SUBTASKS ))` arithmetic comparison, which throws a bash syntax
+# error instead of comparing, silently stopping local-first drafting with no trace of why.
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): ^[0-9]+$ still accepted a leading-zero
+# value (bash treats 08/09 as invalid octal literals in arithmetic, 010 as octal 8 not decimal 10)
+# and any value >= 2^63 (wraps negative in bash's 64-bit arithmetic). ^(0|[1-9][0-9]{0,8})$ allows
+# bare 0 or a non-zero-leading run of up to 9 digits (max 999999999), well under 2^63.
+if ! [[ "$OFFLOAD_MAX_SUBTASKS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  # LOG-LINE FORGERY (CWE-117, card e2406a43, same pattern as wsl-cleanup.sh's %q fix on
+  # e2425f05): the raw env value is attacker-reachable (anything that can set env for this
+  # process) and was echoed verbatim -- a newline/control char inside it could forge a second,
+  # unrelated log line. %q quotes it into a single shell-safe token.
+  printf -v subtasks_val_q '%q' "$OFFLOAD_MAX_SUBTASKS"
+  echo "offload-dispatch: OFFLOAD_MAX_SUBTASKS=$subtasks_val_q is not an integer -- falling back to the documented default (15)" >&2
+  OFFLOAD_MAX_SUBTASKS=15
+fi
 
 # DECOMPOSE (card 501c489f, MikroB verdikt komment 6007). Per-card ceiling on SYNTHETIC (not real
 # kanban-child) subtasks the deterministic templates in card-decompose-templates.sh may generate for
@@ -1126,6 +1151,21 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 # settable for an ops-side GPU-call-volume throttle if ever needed, but no longer defaults to 3.
 # Still separate from OFFLOAD_MAX_SUBTASKS above (the whole-run GPU-call budget across every leaf).
 OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-0}"
+# NON-INTEGER GUARD (card 81025eb5, Cybered GO 33203 on 27c54ceb, kept across 6d8ef952's default
+# change): this value feeds `head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"` below with no guard -- a
+# non-numeric value makes head error out (no decomposition, silently), and a negative value is
+# head's own "all but the last N lines" syntax, which can hand back MORE candidates than the
+# ceiling is meant to allow. Same shape as the OFFLOAD_MAX_SUBTASKS guard above (bare 0 or a
+# non-zero-leading run of up to 9 digits, so leading-zero octal confusion and >= 2^63 overflow are
+# both rejected the same way). Falls back to 0 (unbounded), not the old 3, to match this card's
+# "no limitation" default above.
+if ! [[ "$OFFLOAD_DECOMPOSE_MAX_PER_CARD" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  # LOG-LINE FORGERY (CWE-117, card e2406a43): same reasoning as the OFFLOAD_MAX_SUBTASKS guard
+  # above -- %q quotes the attacker-reachable raw env value into a single shell-safe token.
+  printf -v per_card_val_q '%q' "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"
+  echo "offload-dispatch: OFFLOAD_DECOMPOSE_MAX_PER_CARD=$per_card_val_q is not an integer -- falling back to the documented default (0, unbounded)" >&2
+  OFFLOAD_DECOMPOSE_MAX_PER_CARD=0
+fi
 # shellcheck source=./card-decompose-templates.sh
 . "$HERE/card-decompose-templates.sh"
 # shellcheck source=./decompose-sample-context.sh
@@ -1137,10 +1177,29 @@ OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-0}"
 ATTEMPTS_FILE="${ATTEMPTS_FILE:-$HERE/offload-attempts.json}"
 ATTEMPTS_LOCK="${ATTEMPTS_LOCK:-$HERE/.offload-attempts.lock}"
 EXHAUSTED_TTL_SECONDS="${EXHAUSTED_TTL_SECONDS:-86400}"
+# NON-INTEGER GUARD (card 660e3b66, same bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below):
+# attempts_op()'s python does `int(os.environ.get("EXHAUSTED_TTL_SECONDS", ...))` -- a non-integer
+# value raises ValueError there instead of being caught here, silently losing the exhausted-entry
+# expiry check instead of falling back to the documented default.
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$EXHAUSTED_TTL_SECONDS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  echo "offload-dispatch: EXHAUSTED_TTL_SECONDS='$EXHAUSTED_TTL_SECONDS' is not an integer -- falling back to the documented default (86400s)" >&2
+  EXHAUSTED_TTL_SECONDS=86400
+fi
 # Card 501c489f, MikroB verdikt komment 6007, requirement 6: 3 -> 2. Only the TRANSIENT-failure
 # threshold moves; categorical-online (router says ONLINE) was already a single-call jump straight
 # to exhausted and stays that way, just landing on this same new ceiling.
 OFFLOAD_LEAF_MAX_ATTEMPTS="${OFFLOAD_LEAF_MAX_ATTEMPTS:-2}"
+# NON-INTEGER GUARD (card 660e3b66, same bug class as OFFLOAD_STALE_IN_PROGRESS_SECONDS below):
+# reaches both attempts_op()'s python `int(...)` and the shell arithmetic comparison at the
+# per-leaf retry-ceiling check -- a non-integer value breaks either silently.
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$OFFLOAD_LEAF_MAX_ATTEMPTS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
+  echo "offload-dispatch: OFFLOAD_LEAF_MAX_ATTEMPTS='$OFFLOAD_LEAF_MAX_ATTEMPTS' is not an integer -- falling back to the documented default (2)" >&2
+  OFFLOAD_LEAF_MAX_ATTEMPTS=2
+fi
 
 # STALE-IN-PROGRESS SKIP (card eeebd2b5). Measured twice (041b6a47 msg 1808; card #1804) that a
 # draft landing on an in_progress leaf the online agent has ALREADY been carrying for a while
@@ -1153,7 +1212,9 @@ OFFLOAD_STALE_IN_PROGRESS_SECONDS="${OFFLOAD_STALE_IN_PROGRESS_SECONDS:-600}"
 # leaf is resolved -- the uncaught exception aborts that python process with no stdout, and because
 # resolve_leaves()'s caller redirects stderr to /dev/null, the whole function silently returns empty,
 # so EVERY leaf (including a fresh "planned" one) resolves to zero, with no trace of why.
-if ! [[ "$OFFLOAD_STALE_IN_PROGRESS_SECONDS" =~ ^[0-9]+$ ]]; then
+# TIGHTENED (card 27c54ceb, Cybered GO 32951 on 660e3b66): see the OFFLOAD_MAX_SUBTASKS comment
+# above for why ^[0-9]+$ was not enough (leading-zero octal confusion, >= 2^63 overflow).
+if ! [[ "$OFFLOAD_STALE_IN_PROGRESS_SECONDS" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
   echo "offload-dispatch: OFFLOAD_STALE_IN_PROGRESS_SECONDS='$OFFLOAD_STALE_IN_PROGRESS_SECONDS' is not an integer -- falling back to the documented default (600s)" >&2
   OFFLOAD_STALE_IN_PROGRESS_SECONDS=600
 fi
@@ -1221,9 +1282,9 @@ PY
 
 # Mutant-B target (the try_leaf-exhausted site, below).
 freellm_fallback_exhausted_site() {
-  local leaf_project="$1" leaf_tags="$2" leaf_title="$3" leaf_desc="$4" leaf_id="$5" task="$6" post_id="$7" synthetic="$8"
+  local leaf_project="$1" leaf_tags="$2" leaf_title="$3" leaf_desc="$4" leaf_id="$5" task="$6" post_id="$7" synthetic="$8" assignee="${9:-}"
   is_freellm_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" ||
-    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }
+    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$assignee" && return 0; }
   return 1
 }
 
@@ -1235,12 +1296,12 @@ freellm_fallback_exhausted_site() {
 # Only is_freellm_blocked (project allowlist, explicit BLOKKOLT-* override, the gemini-ok marker
 # requirement -- genuine "nothing to draft with"/capacity-shaped reasons) still skips.
 freellm_fallback_capacity_hold_site() {
-  local lveto="$1" lproject="$2" ltags="$3" ltitle="$4" ldesc="$5" lid="$6" ltask="$7" lpost_id="$8" lsynthetic="$9"
+  local lveto="$1" lproject="$2" ltags="$3" ltitle="$4" ldesc="$5" lid="$6" ltask="$7" lpost_id="$8" lsynthetic="$9" lassignee="${10:-}"
   if is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
     attempts_op categorical-online "$lid" >/dev/null
     echo "offload-dispatch: leaf $lid -> freellm blocked under capacity hold (veto=$lveto, project=$lproject), no attempt" >&2
     return 1
-  elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
+  elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic" "$lassignee"; then
     return 0
   fi
   return 1
@@ -1918,6 +1979,17 @@ if [[ "${1:-}" == "--test-attempts-op" ]]; then
   exit 0
 fi
 
+# --test-subtasks-budget-reached ATTEMPTED: exposes the main loop's leaf-call budget comparison
+# (card e2406a43, follow-up to 81025eb5) against the real, already-guarded OFFLOAD_MAX_SUBTASKS --
+# the guard above runs unconditionally before this flag is handled, so the value here is exactly
+# what the real dispatch loop would compare against. Prints "reached"/"ok".
+if [[ "${1:-}" == "--test-subtasks-budget-reached" ]]; then
+  shift
+  attempted="${1:-0}"
+  if (( attempted >= OFFLOAD_MAX_SUBTASKS )); then echo "reached"; else echo "ok"; fi
+  exit 0
+fi
+
 # --check-blocked PROJECT TAGS [TITLE [DESC]]: exposes is_gemini_blocked to external callers (card
 # 23a14c4b, WhiteHat F1 NO-GO comment 17666) so a single vocabulary/normalization serves both this
 # script's own dispatch path and any other caller -- no second copy of the sensitive-word list to
@@ -2060,8 +2132,8 @@ if [[ "${1:-}" == "--test-freellm-fallback-site" ]]; then
   hdr_file="$(mktemp)"
   site="${1:-}"; shift
   case "$site" in
-    exhausted) freellm_fallback_exhausted_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" ;;
-    capacity-hold) freellm_fallback_capacity_hold_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-false}" ;;
+    exhausted) freellm_fallback_exhausted_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" "${9:-}" ;;
+    capacity-hold) freellm_fallback_capacity_hold_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-false}" "${10:-}" ;;
     *) echo "usage: --test-freellm-fallback-site exhausted|capacity-hold <args...>" >&2; exit 2 ;;
   esac
   rc=$?
@@ -2354,7 +2426,7 @@ $leaf_desc"
       fi
       # FREELLM FALLBACK (card 4eb3743e, gate parity: WhiteHat NO-GO 28484 M1). Extracted to
       # freellm_fallback_exhausted_site (card 5aa686f0) -- see that function's own header.
-      freellm_fallback_exhausted_site "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" "$leaf_id" "$task" "$post_id" "$synthetic" && return 0
+      freellm_fallback_exhausted_site "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" "$leaf_id" "$task" "$post_id" "$synthetic" "$leaf_assignee_raw" && return 0
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
@@ -2463,7 +2535,7 @@ $ldesc"
     # anywhere else here. Apply both before any freellm attempt, and mark categorical-online on a
     # block -- same permanent-block pattern as the veto check inside try_leaf. Extracted to
     # freellm_fallback_capacity_hold_site (card 5aa686f0) -- see that function's own header.
-    if freellm_fallback_capacity_hold_site "$lveto" "$lproject" "$ltags" "$ltitle" "$ldesc" "$lid" "$ltask" "$lpost_id" "$lsynthetic"; then
+    if freellm_fallback_capacity_hold_site "$lveto" "$lproject" "$ltags" "$ltitle" "$ldesc" "$lid" "$ltask" "$lpost_id" "$lsynthetic" "$lassignee_raw"; then
       drafted=$(( drafted + 1 ))
     fi
   elif try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic" "$lveto"; then

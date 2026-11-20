@@ -214,7 +214,7 @@ describe('createKanbanCard / updateKanbanCard structural backstop (WhiteHat F1/F
 
 describe('POST /api/kanban/:id/breakdown/accept bypasses the route guard without the backstop (F2)', () => {
   beforeEach(() => {
-    createKanbanCard({ id: 'parent1', title: 'parent', status: 'planned', assignee: 'backend2' })
+    createKanbanCard({ id: 'parent1', title: 'parent', status: 'planned', assignee: 'backend2', project: 'test' })
   })
 
   it('refuses a subtask with assignee="mikrob" (QA\'s own live repro) with 400, no card created', async () => {
@@ -284,14 +284,14 @@ describe('POST /api/kanban refuses assignee="mikrob"', () => {
   })
 
   it('a real role agent still creates the card normally (control)', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'ok01', title: 'x', status: 'planned', assignee: 'backend2' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'ok01', title: 'x', status: 'planned', assignee: 'backend2', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard('ok01')?.assignee).toBe('backend2')
   })
 
   it('no assignee at all still creates the card normally (control)', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'ok02', title: 'x', status: 'planned' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'ok02', title: 'x', status: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(getKanbanCard('ok02')).toBeTruthy()
     void out

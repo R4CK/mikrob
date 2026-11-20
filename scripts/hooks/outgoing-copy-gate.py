@@ -1609,6 +1609,7 @@ def accentless_evidence(tok_pos, text):
             and not (w in AMBIGUOUS_NAME_TRIGGER and text[p:p + 1].isupper())}
 
 
+
 # FIFOTIMEOUT924 (card 0dab76a3, Cybered C1 HIGH on 087e4418): a plain
 # open()+read() on a FIFO with no writer blocks forever, past this hook's
 # timeout -- and a timed-out PreToolUse hook does not block the tool call, it
@@ -1621,6 +1622,44 @@ def accentless_evidence(tok_pos, text):
 # of collect_bash_body (see the module docstring), so it keeps its own copy
 # of this too.
 _MAX_BODY_FILE_BYTES = 1024 * 1024  # 1 MiB
+
+# Koteg 24 (card 57044a66, HARDERMAILGATES1019 follow-up): is_harder_mail_tool/
+# collect_harder_mail_text are NOT duplicated here like collect_bash_body/collect_mcp_body
+# below -- collect_harder_mail_text shells out to the harder-mail server's own render module
+# (path validation, subprocess, timeout); a second hand-copy of that is a drift risk the
+# plain text-extraction functions below are not, so this one IS imported from email_extract.py,
+# same GUARDED-import shape upstream used for its own (REJECTED, see classify_mail_tool below)
+# verbatim-move of collect_bash_body/collect_mcp_body: a bare ImportError would escape the
+# __main__ net (it fires during module load), exit 1, and PreToolUse treats 1 as NON-blocking --
+# the send would run UNCHECKED. The stub keeps the harder-mail path fail-closed through the
+# existing unreadable branch; classify_mail_tool is imported too only because
+# collect_harder_mail_text's own module needs it resolvable, not for this file's own
+# EMAIL_SERVER_RE-based classification (NOT ADOPTED, see email-send-gate.mjs's entry).
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from email_extract import classify_mail_tool, collect_harder_mail_text, is_harder_mail_tool  # noqa: E402
+except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
+    _EXTRACT_ERR = repr(_extract_exc)
+
+    def collect_harder_mail_text(tool_input: dict):
+        return ("", f"az email_extract modul nem toltheto be ({_EXTRACT_ERR})")
+
+    def is_harder_mail_tool(tool_name):
+        return False
+
+    def classify_mail_tool(tool_name):
+        # Without the shared classifier nothing can be classified precisely.
+        # Crude SUPERSET instead: every outbound name holds one of these words,
+        # so each lands on the unreadable (fail-closed) branch of main();
+        # manage_email keeps its operation test, and plain reads (search /
+        # read / list) still pass.
+        n = str(tool_name or "").lower()
+        if n == "bash":
+            return None
+        if "manage_email" in n:
+            return "manage_email"
+        return "draft" if re.search(r"send|draft|reply|forward", n) else None
+
 
 
 def _safe_read_text(path: str):
@@ -1711,6 +1750,8 @@ def collect_mcp_body(tool_input: dict):
     fields = ("body", "text", "html", "htmlBody", "message", "subject", "content", "forwardText")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
     return "\n".join(got)
+
+
 
 
 # --- Telegram reply (GATETG816) ---------------------------------------------
@@ -2308,8 +2349,20 @@ _EMAIL_SERVER_RE = re.compile(r"__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__", re.
 # originally, reopened by the Koteg 23a prefix widening. Fixed by moving the negative lookahead
 # to the START of the pattern, so it scans the WHOLE name for a dangerous word, not just the
 # tail after the verb.
+#
+# Card bf7a7335 CYBERSEC GO LOW (comment 9092, same twin finding on all three gates): the
+# lookahead only excluded send/reply/forward, so safe-prefix + ANY OTHER sending synonym still
+# read as safe (measured 18 forms: draft_and_dispatch/_deliver/_submit/_transmit/_post/_publish/
+# _relay/_respond, get_and_respond, read_and_fwd, draft_and_mail_out, search_and_deliver,
+# list_and_post, draft_then_ship, read_and_answer, draft_and_xmit, draft_snd, get_rply). Widened
+# the danger-word alternation to the full synonym set measured against the real finding; this is
+# a deny-list inside an allow-list, so a FUTURE unenumerated synonym is still a residual risk
+# (the durable fix the card points at is an explicit full-name allowlist, left as a separate,
+# larger change).
 _EMAIL_SAFE_TOOL_RE = re.compile(
-    r"^(?!.*(?:send|reply|forward))[A-Za-z0-9_-]*(?:search|get|list|read|delete)[-_]", re.I
+    r"^(?!.*(?:send|reply|forward|dispatch|deliver|submit|transmit|post|publish|relay|respond"
+    r"|fwd|mail[-_]?out|ship|answer|xmit|snd|rply))[A-Za-z0-9_-]*(?:search|get|list|read|delete)[-_]",
+    re.I,
 )
 # Koteg 23a: two curated look-alikes whose SUFFIX names a real read/settings noun, not a send,
 # even though a naive verb-prefix match would call them dangerous (forwarding_SETTINGS is not a
@@ -2388,6 +2441,11 @@ def main():
 
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input") or {}
+    # Koteg 24 (card 57044a66, HARDERMAILGATES1019 follow-up): needed below to route a
+    # formatted harder-mail letter to collect_harder_mail_text instead of the raw-markup
+    # collect_mcp_body. classify_mail_tool here is the GUARDED import's fail-closed stub
+    # when email_extract is not loadable, same as elsewhere in this file.
+    mail_kind = classify_mail_tool(tool)
 
     # GATECOPY828: the scaffold wires this hook onto reply AND edit_message (an edit
     # can replace a working code block with a broken one). The dispatch must recognise
@@ -2399,6 +2457,16 @@ def main():
     # (on Discord a backslash is a literal the author typed).
     if re.search(r"discord.*__(reply|edit_message)$", tool, re.I):
         channel_gate(tool_input, "Discord", unescape_mdv2=False)  # exits; never falls through
+    # Koteg 24 (card 57044a66, HARDERMAILGATES1019 follow-up): checked FIRST, ahead of
+    # _EMAIL_DRAFT_OPTIONAL_RE below -- harder-mail's create_draft/send_mail/send_mail_auto
+    # bare names ALSO match that generic draft/send-name regex (and others further down), so
+    # a formatted (html/markdown) letter was being audited on its raw, untouched markup
+    # (collect_mcp_body) instead of the server's own rendered text (collect_harder_mail_text) --
+    # exactly the tag-split-word / render-reject / render-unavailable / unknown-body_format
+    # cases the dedicated harder-mail render tests exist to catch, and did catch (measured:
+    # they failed against the elif-ordered placement before this fix, passed after).
+    if is_harder_mail_tool(tool) and tool_input.get("body_format") not in (None, ""):
+        text, unreadable = collect_harder_mail_text(tool_input)
     # COPYGATEMATCHER904 closed in the fork's own structure (see _MANAGE_EMAIL_OUTBOUND_OPS
     # above): manage_email is checked FIRST and by OPERATION, not by name, so a multiplexed
     # mail tool's send/reply/forward is audited even though its bare name never contains
@@ -2407,7 +2475,7 @@ def main():
     # (mcp__google-workspace__v2_manage_email) -- the old anchor `(^|__)manage_email$` required
     # "manage_email" to immediately follow "__" or start-of-string, so a prefixed name fell
     # through to sys.exit(0) with no audit at all.
-    if re.search(r"(^|__)[A-Za-z0-9_-]*manage_email$", tool, re.I):
+    elif re.search(r"(^|__)[A-Za-z0-9_-]*manage_email$", tool, re.I):
         op = str(tool_input.get("operation") or tool_input.get("action") or "").strip().lower().replace("-", "_")
         if op in _MANAGE_EMAIL_DRAFT_OPS:
             text = collect_mcp_body(tool_input)
@@ -2466,6 +2534,11 @@ def main():
         if not text.strip():
             sys.exit(0)
         unreadable = None
+    elif mail_kind in _AUDITED_MAIL_KINDS:
+        # The formatted-harder-mail case is caught by the top-of-chain `if` above (it must
+        # run before _EMAIL_DRAFT_OPTIONAL_RE, not after it) -- this is the plain-text /
+        # non-harder-mail remainder of what that kind covers.
+        text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         # Card 74181db2: a Bot API send written in Bash is the ONLY Telegram route a role

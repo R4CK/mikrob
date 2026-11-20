@@ -1,4 +1,5 @@
 import type http from 'node:http'
+import type { DeviceKeyScope } from '../auth-device-keys.js'
 
 // Shared shape every route handler in this folder consumes. The dispatcher in
 // src/web.ts builds it once per request and walks each module's tryHandle*
@@ -24,7 +25,7 @@ export interface RouteContext {
    *  against the roster but NOT authenticated -- one shared token means it can
    *  be typed by anyone, so it may warn and attribute, never authorize.
    *  Lets routes distinguish a human session from a token/fleet caller. */
-  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string; deviceId?: number; agent?: string; scope?: 'full' | 'operator' }
+  auth?: { kind: 'token' | 'session' | 'federation' | 'device'; user?: string; peer?: string; device?: string; deviceId?: number; agent?: string; scope?: DeviceKeyScope }
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<boolean>
