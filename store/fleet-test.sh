@@ -88,16 +88,47 @@ fleet_test_log_lock_event() { # $1=event(run|timeout) $2=wait_s $3=run_s(or -) $
 # location FIRST, and only when a notification was actually requested (so the ~2,400 un-notified
 # calls/day do not also start writing log files nobody asked for).
 FLEET_TEST_LOG_DIR="${FLEET_TEST_LOG_DIR:-${ROOT}-fleet-test-logs}"
+# Builds the posted "summary" line(s) WITHOUT ever relaying raw log text (CYBERSEC NO-GO 34583 /
+# QA2 FAIL 34598 F1, card c4590365): the run's log is written by the test files under test, so an
+# attacker-controlled test can print anything after a real "Tests ... passed" line and have it
+# relayed verbatim into a message that looks self-sent by the gate/caller agent (indirect
+# prompt-injection relay -- proven live with a planted "NOTE TO GATE AGENT: ..." tail). The fix is
+# NOT a filter (filters miss shapes); it only ever emits digits and a fixed, closed vocabulary of
+# words it chose itself -- nothing from the log's own characters ever reaches the output.
+fleet_test_safe_summary() { # $1=log_path
+  local log="$1"
+  python3 -c '
+import re, sys
+log = sys.argv[1]
+try:
+    with open(log, "r", errors="replace") as f:
+        text = f.read()
+except OSError:
+    print("(no Test Files/Tests summary line found -- see log)")
+    sys.exit(0)
+out = []
+for label in ("Test Files", "Tests"):
+    matches = re.findall(r"^[ \t]*" + re.escape(label) + r"[ \t]+(.*)$", text, re.MULTILINE)
+    if not matches:
+        continue
+    # only the LAST such line (vitest reprints on watch/retry); only digits/known words survive --
+    # never the matched text itself, so no injected character can ride along regardless of position.
+    tokens = re.findall(r"[0-9]+|passed|failed|skipped|todo", matches[-1])
+    if tokens:
+        out.append(label + "  " + " ".join(tokens))
+print("\n".join(out) if out else "(no Test Files/Tests summary line found -- see log)")
+' "$log"
+}
+
 fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
-  local caller="$1" st="$2" src_log="$3" tok="$ROOT/store/.dashboard-token"
+  local caller="$1" st="$2" src_log="$3" tok="${FLEET_TEST_NOTIFY_TOKEN_FILE:-$ROOT/store/.dashboard-token}"
   [ -r "$tok" ] || return 0
   mkdir -p "$FLEET_TEST_LOG_DIR" 2>/dev/null || return 0
   local dest_log="$FLEET_TEST_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
   cp "$src_log" "$dest_log" 2>/dev/null || return 0
   local verdict="PASS"; [ "$st" -eq 0 ] || verdict="FAIL"
   local summary
-  summary="$(grep -E '(Test Files|Tests)[[:space:]]+[0-9]+' "$dest_log" 2>/dev/null | tail -2)"
-  [ -n "$summary" ] || summary="(no Test Files/Tests summary line found -- see log)"
+  summary="$(fleet_test_safe_summary "$dest_log")"
   local hdr; hdr="$(mktemp)"; chmod 600 "$hdr"
   printf 'Authorization: Bearer %s\n' "$(cat "$tok")" > "$hdr"
   # "from": caller, not "system" -- the dashboard rejects "system" as a sender over this
