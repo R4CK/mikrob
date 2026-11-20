@@ -53,8 +53,7 @@ describe('LLM today tile: loader (loadLlmTodayTile)', () => {
     const body = fnBody(APP_OVERVIEW, FN)
     expect(body).toContain("typeof gpu.util_pct === 'number'")
     expect(body).toContain('gpu.util_pct >= 10')
-    expect(body).toContain("t('overview.llmToday.gpu_busy')")
-    expect(body).toContain("t('overview.llmToday.gpu_idle')")
+    expect(body).toContain("busy ? 'overview.llmToday.gpu_busy' : 'overview.llmToday.gpu_idle'")
   })
 
   it('renders VRAM as used/total only when both numbers are present and total > 0', () => {
@@ -143,8 +142,10 @@ describe('LLM today tile: CSS and i18n', () => {
   }
 
   it('every overview.llmToday.* key referenced from app-overview.js exists in both lang files', () => {
+    // Broad match (not just direct t('...') calls): gpu_busy/gpu_idle appear inside a ternary
+    // whose result is passed to t() via a variable, not as a literal t('...') argument.
     const refs = new Set<string>()
-    for (const m of APP_OVERVIEW.matchAll(/t\('(overview\.llmToday\.[a-zA-Z_]+)'/g)) refs.add(m[1] ?? '')
+    for (const m of APP_OVERVIEW.matchAll(/'(overview\.llmToday\.[a-zA-Z_]+)'/g)) refs.add(m[1] ?? '')
     expect(refs.size).toBeGreaterThan(5)
     for (const k of refs) {
       expect(HU, k).toContain(`'${k}':`)
