@@ -10071,12 +10071,37 @@ export function getFreellmCallRows(params: { sinceS: number; limit: number }): F
   return rows.map((r) => ({ ...r, ok: r.ok === 1 }))
 }
 
-export function getFreellmCallCounts(sinceS: number): { total: number; ok: number; fail: number } {
+export interface FreellmOutcomeCounts {
+  ok: number
+  fail: number
+  stalled: number
+  rate_429: number
+  auth: number
+}
+
+// Mirrors freellmOutcome() in src/web/routes/freellm-status.ts exactly (same four fail_reason
+// shapes freellm-call.sh itself writes: auth_401/auth_403, quota_429, the empty-code "http_" a
+// fully-stalled retry loop leaves, everything else). Computed in SQL rather than by fetching every
+// row in the window, because the window can hold thousands of rows (measured: 6092 in the current
+// period) and the counts must cover the whole window regardless of the `calls` list's own limit.
+export function getFreellmOutcomeCounts(sinceS: number): FreellmOutcomeCounts {
   const row = db.prepare(`
-    SELECT COUNT(*) AS total, SUM(ok) AS ok, SUM(1 - ok) AS fail
+    SELECT
+      SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS ok,
+      SUM(CASE WHEN ok = 0 AND COALESCE(fail_reason, '') LIKE 'auth\\_%' ESCAPE '\\' THEN 1 ELSE 0 END) AS auth,
+      SUM(CASE WHEN ok = 0 AND COALESCE(fail_reason, '') = 'quota_429' THEN 1 ELSE 0 END) AS rate_429,
+      SUM(CASE WHEN ok = 0 AND COALESCE(fail_reason, '') = 'http_' THEN 1 ELSE 0 END) AS stalled,
+      SUM(CASE WHEN ok = 0
+            AND COALESCE(fail_reason, '') NOT LIKE 'auth\\_%' ESCAPE '\\'
+            AND COALESCE(fail_reason, '') != 'quota_429'
+            AND COALESCE(fail_reason, '') != 'http_'
+          THEN 1 ELSE 0 END) AS fail
     FROM llm_ledger WHERE provider = 'freellm' AND ts >= ?
-  `).get(sinceS) as { total: number; ok: number | null; fail: number | null }
-  return { total: row.total, ok: row.ok ?? 0, fail: row.fail ?? 0 }
+  `).get(sinceS) as { ok: number | null; auth: number | null; rate_429: number | null; stalled: number | null; fail: number | null }
+  return {
+    ok: row.ok ?? 0, fail: row.fail ?? 0, stalled: row.stalled ?? 0,
+    rate_429: row.rate_429 ?? 0, auth: row.auth ?? 0,
+  }
 }
 
 export function getLatestFreellmFailure(sinceS: number): { ts: number; fail_reason: string | null } | undefined {

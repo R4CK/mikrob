@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readBody, json } from '../http-helpers.js'
 import { STORE_DIR } from '../../config.js'
-import { getFreellmCallRows, getFreellmCallCounts, getLatestFreellmFailure } from '../../db.js'
+import { getFreellmCallRows, getFreellmOutcomeCounts, getLatestFreellmFailure } from '../../db.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
@@ -44,19 +44,21 @@ function writeFreellmEnabled(enabled: boolean): void {
 // all (MikroB root-cause measurement, card 685f25cb, 2026-11-20).
 function freellmCounters24h(): { calls: number; drafts: number; lastError: string | null } {
   const cutoff = Math.floor(Date.now() / 1000) - 24 * 3600
-  const counts = getFreellmCallCounts(cutoff)
+  const counts = getFreellmOutcomeCounts(cutoff)
   const latestFailure = getLatestFreellmFailure(cutoff)
   return {
-    calls: counts.total,
+    calls: counts.ok + counts.fail + counts.stalled + counts.rate_429 + counts.auth,
     drafts: counts.ok,
     lastError: latestFailure ? `FreeLLM call failed: ${latestFailure.fail_reason ?? 'unknown'}` : null,
   }
 }
 
 // Normalizes llm_ledger's fail_reason strings (set by freellm-call.sh's own exit handling) into
-// the outcome vocabulary card 685f25cb asks for. fail_reason is never prompt/response content --
-// it is one of a fixed, short set of labels freellm-call.sh itself writes (auth_401, auth_403,
-// quota_429, http_<code>, http_<code> with an empty code for a stalled/timed-out attempt).
+// the outcome vocabulary agreed with Fron Ted (card 685f25cb / ebe20efe, msg 21876): fail_reason
+// is never prompt/response content -- it is one of a fixed, short set of labels freellm-call.sh
+// itself writes (auth_401, auth_403, quota_429, http_<code>, http_<code> with an empty code for a
+// stalled/fully-timed-out attempt). MUST stay in sync with getFreellmOutcomeCounts's SQL (db.ts),
+// which buckets the same four shapes for the window-wide counts.
 function freellmOutcome(ok: boolean, failReason: string | null): string {
   if (ok) return 'ok'
   if (!failReason) return 'fail'
@@ -99,12 +101,16 @@ async function handleFreellmCalls(ctx: RouteContext): Promise<void> {
       agent: r.agent_id,
       card: r.card_id,
       model: r.model,
+      // Reserved: freellm-call.sh's FREELLM_MODEL is the ROUTING request ("auto"), not the real
+      // upstream that answered it -- the OpenAI-compatible response body is never parsed for that
+      // today, so there is nothing truthful to put here yet. Always null until that is added.
+      provider: null,
       outcome: freellmOutcome(r.ok, r.fail_reason),
       fail_reason: r.fail_reason,
       duration_ms: r.latency_ms,
     })),
-    counts_24h: getFreellmCallCounts(now - 24 * 3600),
-    counts_7d: getFreellmCallCounts(now - 7 * 24 * 3600),
+    counts_24h: getFreellmOutcomeCounts(now - 24 * 3600),
+    counts_7d: getFreellmOutcomeCounts(now - 7 * 24 * 3600),
   })
 }
 

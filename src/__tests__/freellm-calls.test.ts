@@ -41,7 +41,7 @@ describe('GET /api/freellm/calls', () => {
     expect(out.body.calls[0].outcome).toBe('fail')
     expect(out.body.calls[0].fail_reason).toBe('http_404')
     expect(out.body.calls[1].outcome).toBe('ok')
-    expect(out.body.counts_24h).toEqual({ total: 2, ok: 1, fail: 1 })
+    expect(out.body.counts_24h).toEqual({ ok: 1, fail: 1, stalled: 0, rate_429: 0, auth: 0 })
   })
 
   it('maps fail_reason to the outcome vocabulary: auth, 429, stalled, generic fail', async () => {
@@ -55,6 +55,8 @@ describe('GET /api/freellm/calls', () => {
     await tryHandleFreellmStatus(ctx)
     const outcomes = out.body.calls.map((c: any) => c.outcome)
     expect(outcomes).toEqual(['fail', 'stalled', '429', 'auth'])
+    // the window-wide counts bucket the same four rows the same way, independent of `limit`
+    expect(out.body.counts_24h).toEqual({ ok: 0, fail: 1, stalled: 1, rate_429: 1, auth: 1 })
   })
 
   it('never leaks prompt or key material -- only the fixed metadata fields are present', async () => {
@@ -64,7 +66,8 @@ describe('GET /api/freellm/calls', () => {
     const { ctx, out } = mkRequest('/api/freellm/calls')
     await tryHandleFreellmStatus(ctx)
     const row = out.body.calls[0]
-    expect(Object.keys(row).sort()).toEqual(['agent', 'card', 'duration_ms', 'fail_reason', 'model', 'outcome', 'ts'].sort())
+    expect(Object.keys(row).sort()).toEqual(['agent', 'card', 'duration_ms', 'fail_reason', 'model', 'outcome', 'provider', 'ts'].sort())
+    expect(row.provider).toBeNull()
   })
 
   it('a non-freellm provider row is excluded', async () => {
@@ -81,6 +84,9 @@ describe('GET /api/freellm/calls', () => {
     const { ctx, out } = mkRequest('/api/freellm/calls')
     await tryHandleFreellmStatus(ctx)
     expect(out.body.calls).toHaveLength(0)
+    // the 24h/7d counts are their own SQL query, computed independently of the capped `calls`
+    // list -- an 8-day-old row must be excluded from those too, not just from the returned rows.
+    expect(out.body.counts_7d).toEqual({ ok: 0, fail: 0, stalled: 0, rate_429: 0, auth: 0 })
   })
 
   it('rejects an out-of-range limit with 400', async () => {
