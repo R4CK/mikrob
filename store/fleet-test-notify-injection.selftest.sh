@@ -50,6 +50,9 @@ export FLEET_TEST_NOTIFY_TOKEN_FILE
 FLEET_TEST_LOG_DIR="$TMP/logs"
 export FLEET_TEST_LOG_DIR
 ROOT="$TMP/unused-root"
+# fleet_test_safe_summary references this global, but it's assigned OUTSIDE the function body in
+# the real file (so the sed extraction above never pulls it in) -- set it here to the same value.
+SUMMARY_CHAR_CAP=300
 
 fail=0; n=0
 
@@ -110,6 +113,45 @@ if printf '%s' "$body" | grep -q 'Test Files  1 failed 5 passed' \
   echo "  ok   honest multi-count log reported correctly (not vacuously stripped to nothing)"
 else
   echo "  FAIL honest log not reported correctly: $body"; fail=1
+fi
+
+# --- Case 4 (MikroB Fix-Direction 34623, correcting the "bounded by construction" claim: CYBERED
+# measured 1.4 MB / 3 MB summaries on 8ceff051a, since the closed-vocabulary fix bounds WHICH
+# characters survive, not HOW MANY). A pathological line with a huge token run must fall back to
+# the literal, not a truncated multi-KB fragment.
+n=$((n+1))
+LOG4="$TMP/run4.log"
+python3 -c '
+with open("'"$LOG4"'", "w") as f:
+    f.write(" Test Files  1 passed (1)\n")
+    f.write("      Tests  " + ("passed " * 500000) + "(1)\n")
+'
+: > "$STUB_POST_LOG"
+fleet_test_notify_finish "fullstack" 0 "$LOG4"
+line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+body="${line#*$'\t'}"
+body_len=${#body}
+if printf '%s' "$body" | grep -q 'summary unavailable, see log' && [ "$body_len" -lt 2100 ]; then
+  echo "  ok   oversized (3+ MB) summary falls back to the literal, body stays capped (len=$body_len)"
+else
+  echo "  FAIL oversized summary not capped: body_len=$body_len, body prefix: ${body:0:200}"; fail=1
+fi
+
+# --- Case 5: a log with no parseable Test Files/Tests line also falls back to the same literal.
+n=$((n+1))
+LOG5="$TMP/run5.log"
+cat >"$LOG5" <<'EOF'
+some unrelated build output
+no vitest summary lines here at all
+EOF
+: > "$STUB_POST_LOG"
+fleet_test_notify_finish "fullstack" 1 "$LOG5"
+line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+body="${line#*$'\t'}"
+if printf '%s' "$body" | grep -q 'summary unavailable, see log'; then
+  echo "  ok   unparseable log falls back to the same literal"
+else
+  echo "  FAIL unparseable log did not fall back: $body"; fail=1
 fi
 
 # --- Negative control (guards-that-pin-behaviour): no readable token file -> no POST sent.

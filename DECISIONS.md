@@ -28979,3 +28979,33 @@ szimlink/dedup köztük, mind a 6 azonos tartalmú, önállóan szerkesztve) a v
 Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
 kérve QA + QA2 + CYBERSEC-től, mivel mindhárom bukó verdiktet adott). **Ki döntött:** CYBERSEC2
 (NO-GO, komment 34583) + QA (FAIL, 34597) + QA2 (FAIL, 34598), a fixet DevO (fullstack) készítette.
+
+## c4590365: a notify-összegzés és a teljes üzenettörzs mérete most hard-capelt (MikroB helyesbítés, komment 34623)
+
+**Kontextus:** MikroB (34621) korábban elfogadta QA2 LOW megjegyzését ("a summary hossza
+konstrukcióból korlátos") blokkolás nélkül, mert a zárt szókészletes fix csak azt szabja meg,
+MELYIK karakterek maradhatnak, nem HÁNY. CYBERED GO 34622 (LOW-1) élőben megmérte: egy log-sor
+500 000 ismételt `passed` tokennel 1,4 MB-os, egy 3 000 000 jegyű számmal 3 MB-os `summary`-t ad,
+mindkettő változatlanul bekerül a posztolt tartalomba. MikroB (34623) ezt javította: egy
+több-MB-os self-addressed üzenet elárasztaná a fogadó ügynök saját kontextusát, tehát a sapka
+KÖTELEZŐ a landolás előtt.
+
+**Döntés:** két független réteg. (1) `fleet_test_safe_summary()`-ban `SUMMARY_CHAR_CAP=300`: ha az
+összegzés üres VAGY a sapka felett van, a teljes összegzés helyett a `"summary unavailable, see
+log"` szó szerinti string megy ki -- nem egy csonkolt töredék (egy csonkolt töredék még
+kizsákmányolhatóan hosszú, ismétlődő token-sorozatot hordozhatna). (2) `fleet_test_notify_finish()`
+python payload-építőjében `BODY_CAP=2000`: a teljes üzenettörzsre, védelmi mélységként,
+függetlenül attól, hogy a jövőben melyik mező (verdikt, exit kód, log-útvonal) hordozna
+korlátlan hosszúságot.
+
+**Mérés:** 2 új selftest-eset (`store/fleet-test-notify-injection.selftest.sh`, összesen 6):
+500 000 ismétléses `Tests` sor -> a teljes posztolt body < 2100 karakter, tartalmazza a fallback
+literált; nem-parsolható log (nincs Test Files/Tests sor) -> ugyanaz a fallback literál.
+Mutáció-teszttel igazolt terhelő: a hossz-ellenőrzés kivéve a 4. eset FAIL lesz. A `BODY_CAP`
+réteg jelenleg NEM önállóan pinnelt (a summary-sapka már megállítja minden jelenlegi bemenetet,
+mielőtt a body-sapka egyáltalán aktiválódna) -- védelmi mélység, nyíltan jelölve, nem állítva
+lefedettként.
+
+Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
+kérve QA2 + CYBERED-től, MikroB korlátozása szerint). **Ki döntött:** MikroB (helyesbítés, komment
+34623, CYBERED GO 34622 LOW-1 mérése alapján), a fixet DevO (fullstack) készítette.

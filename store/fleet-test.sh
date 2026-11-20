@@ -95,16 +95,26 @@ FLEET_TEST_LOG_DIR="${FLEET_TEST_LOG_DIR:-${ROOT}-fleet-test-logs}"
 # prompt-injection relay -- proven live with a planted "NOTE TO GATE AGENT: ..." tail). The fix is
 # NOT a filter (filters miss shapes); it only ever emits digits and a fixed, closed vocabulary of
 # words it chose itself -- nothing from the log's own characters ever reaches the output.
+# SUMMARY_CHAR_CAP: MikroB Fix-Direction 34623 (correcting 34621's "bounded by construction" --
+# CYBERED measured 1.4 MB / 3 MB summaries on 8ceff051a, LOW-1 in GO 34622: a log line like
+# "Tests  " followed by hundreds of thousands of repeated digit/word tokens still produces a
+# multi-MB string, since the closed-vocabulary fix bounds WHICH characters survive, not HOW MANY).
+# A multi-MB self-addressed message would flood the receiving agent's own context. Fail-closed to
+# the literal fallback string (never a truncated fragment, which could still carry an exploitably
+# long run of the same token) whenever the summary is empty OR over the cap.
+SUMMARY_CHAR_CAP=300
 fleet_test_safe_summary() { # $1=log_path
   local log="$1"
   python3 -c '
 import re, sys
+CAP = int(sys.argv[2])
+FALLBACK = "summary unavailable, see log"
 log = sys.argv[1]
 try:
     with open(log, "r", errors="replace") as f:
         text = f.read()
 except OSError:
-    print("(no Test Files/Tests summary line found -- see log)")
+    print(FALLBACK)
     sys.exit(0)
 out = []
 for label in ("Test Files", "Tests"):
@@ -116,8 +126,9 @@ for label in ("Test Files", "Tests"):
     tokens = re.findall(r"[0-9]+|passed|failed|skipped|todo", matches[-1])
     if tokens:
         out.append(label + "  " + " ".join(tokens))
-print("\n".join(out) if out else "(no Test Files/Tests summary line found -- see log)")
-' "$log"
+summary = "\n".join(out)
+print(summary if summary and len(summary) <= CAP else FALLBACK)
+' "$log" "$SUMMARY_CHAR_CAP"
 }
 
 fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
@@ -138,11 +149,18 @@ fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
   # "your run finished" ping to itself. Measured live (card c4590365 smoke test, 2026-11-20):
   # every "from":"system" call this function made silently 403'd, so the feature this exists to
   # provide had never actually fired.
+  # BODY_CHAR_CAP: second, defense-in-depth cap on the WHOLE message body (MikroB Fix-Direction
+  # 34623 point (a)), independent of the summary's own cap above -- so a future caller/path change
+  # that feeds something unbounded into any other field here (verdict, exit code, dest_log path)
+  # still cannot produce a multi-MB self-addressed message.
   python3 -c '
 import json, sys
-print(json.dumps({"from": sys.argv[1], "to": sys.argv[1],
-                   "content": "[fleet-test.sh] " + sys.argv[2] + " (exit " + sys.argv[3] + ")\n" +
-                              sys.argv[4] + "\nLog: " + sys.argv[5]}))
+BODY_CAP = 2000
+content = ("[fleet-test.sh] " + sys.argv[2] + " (exit " + sys.argv[3] + ")\n" +
+           sys.argv[4] + "\nLog: " + sys.argv[5])
+if len(content) > BODY_CAP:
+    content = content[:BODY_CAP] + "... [truncated, see log]"
+print(json.dumps({"from": sys.argv[1], "to": sys.argv[1], "content": content}))
 ' "$caller" "$verdict" "$st" "$summary" "$dest_log" \
     | curl -fsS -m 15 -o /dev/null -H "@$hdr" -H 'Content-Type: application/json' \
         -X POST "http://127.0.0.1:${WEB_PORT:-3420}/api/messages" --data-binary @- 2>/dev/null
