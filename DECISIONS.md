@@ -28937,3 +28937,24 @@ regressziós eset vált pirosra (29/3), a többi zöld marad.
 
 **Ki döntött:** QA FAIL (34714, Gate-SHA 3f97f0a43) -> Fix-Direction: backend2 (a guard szerzője,
 a javítást a 4b. szabály szerint más gatel-eli). backend2 végezte a javítást. Gate: QA + Cybersec.
+
+## 2026-11-20 -- CYBERSEC F1+F2 javítás a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** Cybersec GO (34759, Gate-SHA 3f97f0a43) két MEDIUM leletet is jelzett a mentesség-ág
+Bash útján. F1: a mentesség akkor is matchelt, ha a CÉL (nem a hívott program) volt
+`marveen-land.sh`/`update.sh` nevű, pl. `sed -i s/a/b/ store/update.sh` mentes volt, holott nem a
+scriptet futtatja, hanem RÁ ír -- az előző (QA FAIL) javítás anchor-regex-e ezt már lezárta,
+rögzítő fixture-fájlok + regressziós eset hozzáadva. F2: idézett redirect/tee/sed-i cél a régi
+`_strip_quoted_literals` miatt a cél-regexek ELŐTT ürült üres idézőpárra, tehát egy teljesen
+hétköznapi `echo x > "fleet-test.sh"` alak sosem lett ellenőrizve (néma ALLOW). Javítás: a
+destruktív üres-idézőpárra-cserélés helyett egy HOSSZ-MEGTARTÓ neutralizáló
+(`_neutralize_quotes`) csak a szegmens-/komment-határok megtalálására szolgál
+(`_split_segments`), a cél-kinyerés a VALÓDI, idézett szegmens-szövegen fut; a három
+cél-regex idézett-string-VAGY-sima-szó mintára bővült, a `sed -i` tokenizálás `shlex`-re váltott.
+
+**Mutáció-bizonyítva:** az F1 anchor visszaállítva -> pontosan a 2 új F1-eset pirosra vált;
+az F2 idézet-kezelő visszaállítva -> pontosan a 3 új F2-eset pirosra vált; semelyik eset nem
+mozdul a másik mutánsnál (34 eset összesen).
+
+**Ki döntött:** Cybersec GO (34759, Gate-SHA 3f97f0a43, két MEDIUM lelet). backend2 végezte a
+javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA + Cybersec.
