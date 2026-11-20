@@ -29434,6 +29434,127 @@ kanban-decisions-guard, kg-import-decisions-log) -> 5 Test Files passed (5), 37 
 **Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást. Gate:
 a delta a 6042ce6df-en már megadott QA + Cybersec2 sign-offot nem ismétli meg; ez a komment a
 merge-delta saját REVIEW-ja (kanban komment 33410).
+
+## 2026-11-20 -- live-checkout-write-guard.py PreToolUse hook (kártya 0c3b13b5)
+
+**Döntés:** két élő incidens (2026-11-20 11:55 backend, 12:24 backend3) sub-agent közvetlenül a
+LIVE checkoutba (`/home/neon/marveen`) írt egy tracked fájlt a saját worktree helyett, a második
+blokkolta Peti jóváhagyott `update.sh`-ját. Új `scripts/hooks/live-checkout-write-guard.py`
+PreToolUse hook (matcher `Bash|Write|Edit|MultiEdit|NotebookEdit`) elutasít egy tracked
+útvonalra menő írást, ha a hívó sub-agent identitásra oldódik (MikroB és `marveen-land.sh`/
+`update.sh` mentes), és a saját worktree-jét jelöli ki helyette. Untracked runtime útvonal
+(`store/*.json`, logok, az ügynök saját `agents/<név>/` fája) változatlanul engedett.
+
+**Mit:** a hook maga + `live-checkout-write-guard.selftest.py` (26/26 zöld) elsőre a CHECKOUT-only
+`.claude/settings.json`-ba ment be; a `hook-registration-completeness.test.ts` SEEDING/CHECKOUT
+megkülönböztetése miatt ez önmagában nem ért volna el semelyik frissen seedelt sub-agentet, ami
+pont a kártya célja lett volna. Javítva: `injectLiveCheckoutWriteGuard`/`ensureLiveCheckoutWriteGuard`
+pár az `agent-scaffold.ts`-ben + a boot-time migrációs ciklus a `web.ts`-ben, ugyanaz a minta mint a
+meglévő `ensureDbWriteGuard`.
+
+**Teszt:** teljes `fleet-test.sh --ref 3c5a761da28873129510cfc4ac2f50eaef822eae`: 1396 fájl zöld,
+1 skipped (1397); 43958 teszt zöld, 132 skipped (44090). `lint-ratchet.sh`: alapvonal tart (420
+lelet). Az 5 önhibás bukás (2 hook-registration-completeness rés, 3 project-settings-hook-anchor
+pin-eltérés, mind a pin-tesztek frissítésének kihagyásából) javítva, nem reprodukálódik.
+
+**Ki döntött:** MikroB (kártya 0c3b13b5, dispatch). backend2 végezte. Gate: QA + Cybersec.
+
+## 2026-11-20 -- QA FAIL fix: EXEMPT_SCRIPT_RX bypass a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** QA (34714. komment, Gate-SHA 3f97f0a43) élőben reprodukálta: a `marveen-land.sh`/
+`update.sh` mentesség egy sima substring-keresés volt a TELJES nyers Bash parancson, tehát egy
+sub-agent elég volt, ha BÁRHOL megemlítette a script nevét (pl. egy záró `# update.sh` komment),
+és a guard a TELJES parancsra kikapcsolt -- pont a fc1bb414 incidens, amit a kártya megszüntetni
+hivatott. Javítás: a regex a (idézett literálokból tisztított, `&&`/`||`/`;`/`|` mentén
+szegmentált) parancsszegmens ELEJÉRE horgonyzott, és szegmensenként, nem a teljes nyers szövegen
+alkalmazva -- csak az a szegmens mentes, amelyik TÉNYLEGESEN a scriptet futtatja.
+
+A javítás közben a saját új teszt egy MÁSIK, ezzel összefüggő hiányt is felfedett: egy záró
+shell-komment a `sed -i` naiv utolsó-token célkeresését a komment-szövegre csúsztatta a valós
+fájlútvonal helyett. Javítva: `_strip_trailing_comment`, a szegmentálás előtt alkalmazva.
+
+**Mutáció-bizonyítva:** mindkét javítás visszaállítva egy eldobható másolaton -> pontosan a 3 új
+regressziós eset vált pirosra (29/3), a többi zöld marad.
+
+**Ki döntött:** QA FAIL (34714, Gate-SHA 3f97f0a43) -> Fix-Direction: backend2 (a guard szerzője,
+a javítást a 4b. szabály szerint más gatel-eli). backend2 végezte a javítást. Gate: QA + Cybersec.
+
+## 2026-11-20 -- CYBERSEC F1+F2 javítás a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** Cybersec GO (34759, Gate-SHA 3f97f0a43) két MEDIUM leletet is jelzett a mentesség-ág
+Bash útján. F1: a mentesség akkor is matchelt, ha a CÉL (nem a hívott program) volt
+`marveen-land.sh`/`update.sh` nevű, pl. `sed -i s/a/b/ store/update.sh` mentes volt, holott nem a
+scriptet futtatja, hanem RÁ ír -- az előző (QA FAIL) javítás anchor-regex-e ezt már lezárta,
+rögzítő fixture-fájlok + regressziós eset hozzáadva. F2: idézett redirect/tee/sed-i cél a régi
+`_strip_quoted_literals` miatt a cél-regexek ELŐTT ürült üres idézőpárra, tehát egy teljesen
+hétköznapi `echo x > "fleet-test.sh"` alak sosem lett ellenőrizve (néma ALLOW). Javítás: a
+destruktív üres-idézőpárra-cserélés helyett egy HOSSZ-MEGTARTÓ neutralizáló
+(`_neutralize_quotes`) csak a szegmens-/komment-határok megtalálására szolgál
+(`_split_segments`), a cél-kinyerés a VALÓDI, idézett szegmens-szövegen fut; a három
+cél-regex idézett-string-VAGY-sima-szó mintára bővült, a `sed -i` tokenizálás `shlex`-re váltott.
+
+**Mutáció-bizonyítva:** az F1 anchor visszaállítva -> pontosan a 2 új F1-eset pirosra vált;
+az F2 idézet-kezelő visszaállítva -> pontosan a 3 új F2-eset pirosra vált; semelyik eset nem
+mozdul a másik mutánsnál (34 eset összesen).
+
+**Ki döntött:** Cybersec GO (34759, Gate-SHA 3f97f0a43, két MEDIUM lelet). backend2 végezte a
+javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA + Cybersec.
+
+## 2026-11-20 -- CYBERSEC NO-GO 34780 javítás a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** Cybersec2 NO-GO (34780, Gate-SHA d03808411) az F1+F2 javításon egy REGRESSZIÓT (N1)
+és két új leletet (N2, N3) talált. N1: a `_strip_trailing_comment` a komment-kezdettől a TELJES
+string VÉGÉIG vágott, nem csak a saját soráig -- egy komment-sor egy többsoros Bash-parancsban
+az ÍRÁS ELŐTT így elrejtette az egész írást (régi BLOCK -> új ALLOW regresszió), holott a
+komment-sor + új írás a normál agent-Bash-hívás alakja. Javítás: soronkénti vágás, csak a
+komment saját sorának végéig. N2: a cél-regexek (tee/redirect/git-checkout) a VALÓDI, idézett
+szegmens-szövegen futottak, tehát egy idézett stringen BELÜLI `>` (egy commit-üzenet, egy echo
+argumentum) valódi redirectnek tűnt (téves denial). Javítás: a match-et a neutralizált
+(idézet-vak) másolaton keresi, a célt a valódi szövegből ugyanazon offszeten vágja ki. N3: a
+névalapú mentesség-regex engedte, hogy egy hívó szegmens SAJÁT kimenet-redirectje egy MÁSIK
+git-követett fájlba írjon a mentesség mögé bújva (`bash update.sh > <éles>/store/fleet-test.sh`
+téves ALLOW volt, mert a teljes szegmens kimaradt a célkeresésből, amint "hívásnak" matchelt);
+emellett a `\S*/?` engedte, hogy egy szóköz nélküli redirect direkt update.sh-ba hívásnak
+tűnjön. Javítás: a névalapú mentesség TELJES eltávolítása -- egy sima hívásnak nincs
+sed/tee/redirect/checkout célja, tehát a mentesség sosem volt szükséges egy ilyen hívás
+engedélyezéséhez, csak (hibásan) egy veszélyes cél kihagyásához.
+
+**Mutáció-bizonyítva:** mindhárom javítás egymástól függetlenül, eldobható másolaton visszaállítva
+-> pontosan a saját regressziós esete(i) váltanak pirosra, semelyik másik eset nem mozdul.
+Selftest: 44/44 zöld (34 korábbi + 3 N1 + 2 N2 + 5 N3).
+
+**Mérés (fán 0301ae533):** live-checkout-write-guard.selftest.py 44/44 zöld.
+
+**Ki döntött:** Cybersec2 NO-GO (34780, Gate-SHA d03808411, N1 regresszió + N2/N3 lelet).
+backend2 végezte a javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA +
+Cybersec (cybersec2 a delta-t gateli, saját NO-GO-ja szerint).
+
+## 2026-11-20 -- CYBERSEC NO-GO (4. kör): végtelen ciklus a komment-levágásban (kártya 0c3b13b5, delta)
+
+**Döntés:** cybersec2 egy ÚJABB NO-GO-t adott a soronkénti komment-levágás javítására (`0301ae533`):
+a `_COMMENT_START_RX = r"(?:^|\s)#"` FOGYASZTÓ `\s`-sel illesztett, tehát ha a `#` NEM az első
+sorban állt, a match kezdete (`m.start()`) a `#` ELŐTTI sortörésre esett. A `neutral.find("\n",
+start)` ezután UGYANAZT a sortörést találta meg azonnal (a keresés pont `start`-tól indul, és
+ott épp sortörés van), tehát `end == start`, és a ciklus SOHA nem haladt előre -- végtelen ciklus
+bármely többsoros parancson, amiben a `#` nem az első sorban van. A flotta fail-closed hook-
+wrapperje alatt egy soha nem visszatérő guard effektíve MINDEN ilyen szokásos Bash-hívást
+TILTANA (timeout). Javítás: a fogyasztó `\s` helyett zero-width lookbehind
+(`(?:^|(?<=\s))#`), így `m.start()` mindig a `#` maga, sosem az előtte álló whitespace -- a
+`find("\n", start)` ettől a ponttól indul, és garantáltan -1-et VAGY egy `start`-nál NAGYOBB
+indexet ad. Védelmi második réteg: explicit progress-guard (`if end <= search_from: break`),
+ha egy jövőbeli regex-módosítás újra megnyitná ezt a hibaosztályt.
+
+**Mutáció-bizonyítva:** a regex-javítás ÖNMAGÁBAN visszaállítva (a progress-guard marad) -- a
+teszt-korpusz összes esete továbbra is zöld marad (a guard önmagában már elég ehhez a
+korpuszhoz, korai `break`-kel, a komment levágása nélkül, de a kimaradt írás a maradék szövegben
+még megtalálható marad). A regex-javítás ÉS a progress-guard EGYÜTT visszaállítva -- pontosan a
+várt 3 időzített eset esik timeout-ba (5 mp-es subprocess-plafonnál).
+
+**Mérés (fán 85d9c48d6):** live-checkout-write-guard.selftest.py 71/71 zöld (47 korábbi + 4
+időzített regressziós eset, mindegyik < 1 mp + 20 fuzz-eset véletlen komment-pozícióval).
+
+**Ki döntött:** Cybersec2 NO-GO (4. kör, Gate-SHA 0301ae533, végtelen ciklus). backend2 végezte
+a javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA + Cybersec.
 ## context-compact-monitor.sh: a cél-ágenslista a live flotta-roster, nem egy literál (kártya a2028f35)
 
 **Probléma:** a `TARGET_AGENTS` alapértéke fixen `backend backend2 fullstack cybered cybersec`
