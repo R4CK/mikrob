@@ -28976,6 +28976,6 @@ frissíti a `seed-skills/project-workflow/SKILL.md`-t és mind a 6
 `seed-fleet-agents/*/.claude/skills/shared-checkout-safe-commit/SKILL.md` másolatot (nincs
 szimlink/dedup köztük, mind a 6 azonos tartalmú, önállóan szerkesztve) a várakozás-útmutatással.
 
-Gate-SHA: 0c5d00987b3d39c860a7ee03bd979eaaf9ef123f (delta re-gate kérve QA + QA2 + CYBERSEC-től,
-mivel mindhárom bukó verdiktet adott). **Ki döntött:** CYBERSEC2 (NO-GO, komment
-34583) + QA (FAIL, 34597) + QA2 (FAIL, 34598), a fixet DevO (fullstack) készítette.
+Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
+kérve QA + QA2 + CYBERSEC-től, mivel mindhárom bukó verdiktet adott). **Ki döntött:** CYBERSEC2
+(NO-GO, komment 34583) + QA (FAIL, 34597) + QA2 (FAIL, 34598), a fixet DevO (fullstack) készítette.
