@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync, copyFileSync, writeFileSync, readFileSync, mkdirSy
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 import { resolveHourlyLimit, resolveDailyGhostLimit } from '../gemini-ghost-budget.js'
 
 describe('resolveHourlyLimit() -- M2 regression (card 612058c2 NO-GO): fail-closed on bad env', () => {
@@ -351,6 +352,107 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     const ok = reserveGhostCallSlot('card1')
     expect(ok).toBe(false)
   }, 20_000)
+
+  // Card cbeeba61 (Peti Telegram 14348): recordGhostCallDetail() -- the Ghost calls page
+  // (src/web/routes/gemini-calls.ts) reads model/duracio_s/tokens_total/status/feladattipus
+  // straight from this same ledger file, keyed by hivas_id. Before this card the reservation
+  // row above was the ONLY row most Ghost calls ever got (154 rows measured as model='ismeretlen').
+  describe('recordGhostCallDetail()', () => {
+    async function freshRecordGhostCallDetail() {
+      const mod = await import('../gemini-ghost-budget.js')
+      const sandboxedSegedHivo = join(td, 'scripts', 'seged-hivo.py')
+      return (hivasId: string, cardId: string, detail: Parameters<typeof mod.recordGhostCallDetail>[2]) =>
+        mod.recordGhostCallDetail(hivasId, cardId, detail, sandboxedSegedHivo)
+    }
+
+    it('appends a row with the SAME hivas_id carrying model/duration/outcome/task-type (Kesz-ha)', async () => {
+      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+      const recordGhostCallDetail = await freshRecordGhostCallDetail()
+      const hivasId = 'deadbeefcafef00d'
+      const mod = await import('../gemini-ghost-budget.js')
+      expect(mod.reserveGhostCallSlot('card1', 'ok', join(td, 'scripts', 'seged-hivo.py'), hivasId)).toBe(true)
+      const ok = recordGhostCallDetail(hivasId, 'card1', {
+        model: 'gemini-flash-latest', durationMs: 1234, outcome: 'ok', totalTokens: 456, taskType: 'ghost-rank',
+      })
+      expect(ok).toBe(true)
+      const rows = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      // Both rows exist (reservation + detail, same hivas_id) -- the PAGE's own dedupeCalls (last
+      // row per hivas_id wins) is what makes the detail row the one that's actually shown; this
+      // test pins that BOTH rows carry the same hivas_id and that the detail row has the right shape.
+      expect(rows.filter((r) => r.hivas_id === hivasId).length).toBe(2)
+      const detailRow = rows[rows.length - 1]!
+      expect(detailRow.hivas_id).toBe(hivasId)
+      expect(detailRow.kartya).toBe('card1')
+      expect(detailRow.feladattipus).toBe('ghost-rank')
+      expect(detailRow.status).toBe('ok')
+      expect(detailRow.modell).toBe('gemini-flash-latest')
+      expect(detailRow.duracio_s).toBeCloseTo(1.234, 3)
+      expect(detailRow.tokens_total).toBe(456)
+    }, 20_000)
+
+    it('an error outcome is recorded with the right status and no tokens_total field', async () => {
+      const recordGhostCallDetail = await freshRecordGhostCallDetail()
+      const hivasId = 'errorerrorerror1'
+      const ok = recordGhostCallDetail(hivasId, 'card2', {
+        model: 'gemini-flash-latest', durationMs: 500, outcome: 'error', taskType: 'ghost-review',
+      })
+      expect(ok).toBe(true)
+      const rows = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      const detailRow = rows.find((r) => r.hivas_id === hivasId)!
+      expect(detailRow.status).toBe('error')
+      expect(detailRow.feladattipus).toBe('ghost-review')
+      expect('tokens_total' in detailRow).toBe(false)
+    }, 20_000)
+
+    // Kesz-ha: "no prompt content in either log (test)". GhostCallDetail's own TYPE has no
+    // prompt/response field at all -- this proves the WRITTEN row matches that, not just the
+    // type (a future edit could still smuggle prompt text into model/taskType as a string).
+    it('never writes prompt or response text, only metadata -- the written row has no such field', async () => {
+      const recordGhostCallDetail = await freshRecordGhostCallDetail()
+      const hivasId = 'noprompteverhere'
+      recordGhostCallDetail(hivasId, 'card3', {
+        model: 'gemini-flash-latest', durationMs: 10, outcome: 'ok', taskType: 'ghost-rank',
+      })
+      const rows = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      const detailRow = rows.find((r) => r.hivas_id === hivasId)!
+      expect(Object.keys(detailRow).sort()).toEqual(
+        ['duracio_s', 'feladattipus', 'hivas_id', 'hivo', 'ido', 'kartya', 'modell', 'seged', 'status'].sort(),
+      )
+    }, 20_000)
+
+    it('also writes an llm_ledger row (provider=gemini, agent=quota-bridge-ghost)', async () => {
+      const ledgerDb = join(td, 'llm-ledger-test.db')
+      execFileSync('python3', ['-c', `
+import sqlite3
+con = sqlite3.connect(${JSON.stringify(ledgerDb)})
+con.execute('''CREATE TABLE llm_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, agent_id TEXT NOT NULL,
+  card_id TEXT, task_type TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK(provider IN ("local","gemini","freellm")), model TEXT,
+  ok INTEGER NOT NULL, fail_reason TEXT, latency_ms INTEGER, prompt_chars INTEGER,
+  response_chars INTEGER, draft_accepted INTEGER, claude_token_equiv INTEGER)''')
+con.commit()
+`])
+      const savedDb = process.env.LLM_LEDGER_DB
+      process.env.LLM_LEDGER_DB = ledgerDb
+      try {
+        const recordGhostCallDetail = await freshRecordGhostCallDetail()
+        recordGhostCallDetail('ledgerhivasid001', 'card4', {
+          model: 'gemini-flash-latest', durationMs: 777, outcome: 'ok', taskType: 'ghost-rank',
+        })
+      } finally {
+        if (savedDb === undefined) delete process.env.LLM_LEDGER_DB
+        else process.env.LLM_LEDGER_DB = savedDb
+      }
+      const out = execFileSync('python3', ['-c', `
+import sqlite3
+con = sqlite3.connect(${JSON.stringify(ledgerDb)})
+row = con.execute("SELECT agent_id, card_id, provider, task_type FROM llm_ledger WHERE card_id='card4'").fetchone()
+print(row[0], row[1], row[2], row[3])
+`]).toString().trim()
+      expect(out).toBe('quota-bridge-ghost card4 gemini ghost-rank')
+    }, 20_000)
+  })
 })
 
 // F5 (card 6b7c2c25, WhiteHat GO 612058c2 komment 19967): the DEFAULT call path (no third
