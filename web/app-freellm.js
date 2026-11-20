@@ -218,8 +218,11 @@ function freellmRenderCallsTable(calls) {
   calls.forEach((call) => {
     const tr = document.createElement('tr')
     if (freellmOutcomeIsFailure(call.outcome)) tr.className = 'freellm-calls-row--failed'
-    // rule 12: a failed row shows WHY, not just that it failed.
-    const outcomeText = call.fail_reason
+    // rule 12: the generic 'fail' outcome shows WHY via fail_reason (e.g. an HTTP status) --
+    // auth/429/stalled already say why through the outcome label itself, and their raw
+    // fail_reason strings (auth_401, quota_429, the empty-code http_ for a stalled attempt) would
+    // look like broken, half-translated text if appended verbatim.
+    const outcomeText = call.outcome === 'fail' && call.fail_reason
       ? freellmOutcomeLabel(call.outcome) + ' (' + freellmFailReasonLabel(call.fail_reason) + ')'
       : freellmOutcomeLabel(call.outcome)
     const cells = [

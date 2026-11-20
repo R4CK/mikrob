@@ -211,6 +211,15 @@ describe('freellmRenderCallsTable', () => {
     const tbody = run([{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: 'ok', fail_reason: null, duration_ms: 1 }])
     expect(tbody.children[0].children[4].textContent).toBe('Success')
   })
+
+  it('does NOT append fail_reason for auth/429/stalled -- the raw backend string (auth_401, quota_429, http_) would look broken appended verbatim; the outcome label already says why', () => {
+    const auth = run([{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: 'auth', fail_reason: 'auth_401', duration_ms: 1 }])
+    expect(auth.children[0].children[4].textContent).toBe('Auth error')
+    const rate = run([{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: '429', fail_reason: 'quota_429', duration_ms: 1 }])
+    expect(rate.children[0].children[4].textContent).toBe('Rate limited (429)')
+    const stalled = run([{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: 'stalled', fail_reason: 'http_', duration_ms: 1 }])
+    expect(stalled.children[0].children[4].textContent).toBe('Stalled')
+  })
 })
 
 describe('freellmLoadCalls (fetch wiring)', () => {
