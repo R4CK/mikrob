@@ -12,10 +12,13 @@ directory, and points the guard at THAT via env, instead of mutating the real
 """
 import json
 import os
+import random
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 GUARD = Path(__file__).with_name("live-checkout-write-guard.py")
@@ -59,13 +62,36 @@ def build_world(tmp):
     return root, worktrees, agent_wt, outside
 
 
-def verdict(tool_name, tool_input, cwd, env_extra):
+TIMEOUT = "timeout"
+
+
+def verdict(tool_name, tool_input, cwd, env_extra, timeout_s=5):
     payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input, "cwd": str(cwd)})
     env = dict(os.environ)
     env.update(env_extra)
-    p = subprocess.run([sys.executable, str(GUARD)], input=payload, capture_output=True,
-                        text=True, env=env)
+    try:
+        p = subprocess.run([sys.executable, str(GUARD)], input=payload, capture_output=True,
+                            text=True, env=env, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        # a hang here is a real finding, not test infra noise: under the fleet's fail-closed
+        # hook wrapper, a guard that never returns effectively DENIES the call via timeout.
+        return TIMEOUT, f"(no output within {timeout_s}s)"
     return (BLOCK if p.returncode == 2 else ALLOW), (p.stderr or "").strip()
+
+
+def timed_verdict(tool_name, tool_input, cwd, env_extra, budget_s):
+    """Like verdict(), but additionally fails if the call did not return within budget_s --
+    even if the returncode would have been correct eventually. CYBERSEC NO-GO (card 0c3b13b5,
+    round 4): _strip_trailing_comment looped forever on a comment line not on line 1, which
+    verdict()'s subprocess.run would otherwise mask as a slow pass/fail instead of a timeout."""
+    t0 = time.monotonic()
+    got, msg = verdict(tool_name, tool_input, cwd, env_extra, timeout_s=max(budget_s * 3, 5))
+    elapsed = time.monotonic() - t0
+    if got == TIMEOUT:
+        return got, msg, elapsed
+    if elapsed > budget_s:
+        return TIMEOUT, f"{msg} (took {elapsed:.2f}s, budget {budget_s}s)", elapsed
+    return got, msg, elapsed
 
 
 def main():
@@ -233,6 +259,51 @@ def main():
                 failures.append((cmd, str(cwd), expected, got, msg))
             print(f"  [{'ok ' if ok else 'FAIL'}] {expected:5} {cmd!r}")
 
+        # CYBERSEC NO-GO (card 0c3b13b5, round 4): _strip_trailing_comment looped forever when a
+        # `#` comment was not on line 1 -- under the fleet's fail-closed hook wrapper, a guard
+        # that never returns effectively DENIES every such call via timeout. Each case here must
+        # both resolve to the right verdict AND finish well under a 1s budget.
+        timed_cases = [
+            (1.0, BLOCK, f"ls\n# b\n{root / 'store' / 'fleet-test.sh'} sed -i\n"
+                         f"sed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            (1.0, BLOCK, f"ls\n# b\nls\nsed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+            (1.0, BLOCK, "ls\n" * 20 + f"# b\nsed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}",
+             root, E(MARVEEN_AGENT_ID="backend3")),
+            (1.0, BLOCK, "\n".join(["echo x # note"] * 10)
+                         + f"\nsed -i 's/a/b/' {root / 'store' / 'fleet-test.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
+        ]
+        for budget, expected, cmd, cwd, env in timed_cases:
+            got, msg, elapsed = timed_verdict("Bash", {"command": cmd}, cwd, env, budget)
+            ok = got == expected
+            if not ok:
+                failures.append((cmd, str(cwd), expected, got, msg))
+            print(f"  [{'ok ' if ok else 'FAIL'}] {expected:5} ({elapsed:.3f}s) {cmd!r}")
+
+        # Fuzz: a handful of randomized multi-line commands, comment lines at random positions
+        # (including position 0 and the last line), must all resolve within budget regardless
+        # of verdict (the shape being fuzzed is "does it terminate", not a specific verdict).
+        rng = random.Random(0)
+        for i in range(20):
+            n_lines = rng.randint(1, 8)
+            comment_lines = {rng.randint(0, n_lines - 1) for _ in range(rng.randint(0, 3))}
+            lines = []
+            for li in range(n_lines):
+                word = "".join(rng.choices(string.ascii_lowercase, k=rng.randint(1, 6)))
+                line = f"echo {word}"
+                if li in comment_lines:
+                    line += f" # {word}"
+                lines.append(line)
+            fuzz_cmd = "\n".join(lines)
+            got, msg, elapsed = timed_verdict("Bash", {"command": fuzz_cmd}, root,
+                                               E(MARVEEN_AGENT_ID="backend3"), 1.0)
+            ok = got != TIMEOUT
+            if not ok:
+                failures.append((fuzz_cmd, str(root), "not-timeout", got, msg))
+            print(f"  [{'ok ' if ok else 'FAIL'}] fuzz#{i:02d} ({elapsed:.3f}s) {fuzz_cmd!r}")
+
         # Kill switch must actually kill it.
         got, _ = verdict("Edit", {"file_path": str(root / "store" / "fleet-test.sh")}, root,
                           {**base_env, "MARVEEN_AGENT_ID": "backend3", "LIVE_CHECKOUT_WRITE_GUARD": "off"})
@@ -242,7 +313,7 @@ def main():
         print(f"  [{'ok ' if ok else 'FAIL'}] {ALLOW:5} (kill switch off)")
 
         print()
-        total = len(cases) + len(bash_cases) + 1
+        total = len(cases) + len(bash_cases) + len(timed_cases) + 20 + 1
         if failures:
             print(f"{len(failures)} / {total} FAILED:")
             for cmd, cwd, exp, got, msg in failures:

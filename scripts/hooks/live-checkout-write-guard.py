@@ -110,7 +110,7 @@ def _neutralize_quotes(cmd: str) -> str:
     return _QUOTED_RX.sub(lambda m: m.group(0)[0] + "x" * (len(m.group(0)) - 2) + m.group(0)[-1], cmd)
 
 
-_COMMENT_START_RX = re.compile(r"(?:^|\s)#")
+_COMMENT_START_RX = re.compile(r"(?:^|(?<=\s))#")
 
 
 def _strip_trailing_comment(cmd: str) -> str:
@@ -119,7 +119,19 @@ def _strip_trailing_comment(cmd: str) -> str:
     OWN LINE only, not to the end of the whole string. CYBERSEC NO-GO 34780 (card 0c3b13b5,
     regression on the prior fix): stripping to end-of-string meant a comment line BEFORE a
     write in a multi-line command (the normal shape of an agent Bash call) hid the write
-    entirely -- `# note\nsed -i ... <live-file>` went from BLOCK to ALLOW."""
+    entirely -- `# note\nsed -i ... <live-file>` went from BLOCK to ALLOW.
+
+    CYBERSEC NO-GO (card 0c3b13b5, round 4): the first per-line fix matched the comment start
+    with a CONSUMING `\\s` (`(?:^|\\s)#`), so `m.start()` landed on the NEWLINE BEFORE a `#` that
+    is not on line 1 -- `neutral.find("\\n", start)` then immediately found that SAME newline
+    (search begins at `start`, and `neutral[start]` IS that newline), so `end == start` and the
+    loop never advanced: an infinite loop on any comment not on the first line (hook timeout,
+    which under the fleet's fail-closed wrapper denies every such Bash call). Fixed with a
+    zero-width lookbehind instead of a consuming `\\s`, so `m.start()` is always the `#` itself
+    (never the preceding whitespace) -- `find("\\n", start)` then starts one position AFTER that
+    whitespace and is guaranteed to return either -1 or an index > start, so `end > start`
+    strictly and `search_from` strictly increases every iteration. The `end <= search_from`
+    check below is a defensive progress guard on top of that guarantee, not reachable today."""
     neutral = _neutralize_quotes(cmd)
     n = len(neutral)
     out: list[str] = []
@@ -132,6 +144,8 @@ def _strip_trailing_comment(cmd: str) -> str:
         start = m.start()
         nl = neutral.find("\n", start)
         end = nl if nl != -1 else n
+        if end <= search_from:
+            break  # no forward progress possible -- should be unreachable, see docstring
         out.append(cmd[pos:start])
         pos = end
         search_from = end
