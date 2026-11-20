@@ -115,6 +115,7 @@ const EXPECTED: Record<string, string[]> = {
     'npm-protect-guard.py @ Bash', 'symlinked-node-modules-guard.py @ Bash', 'agent-key-secret-guard.py @ Bash',
     'blast-radius-guard.py @ Edit|Write|MultiEdit', 'cd-chain-guard.py @ Bash', 'bash-egress-guard.py @ Bash',
     'noisy-command-guard.py @ Bash', 'pentest-tool-install-guard.py @ Bash',
+    'live-checkout-write-guard.py @ Bash|Write|Edit|MultiEdit|NotebookEdit',
   ],
   Stop: [
     'marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py',
@@ -213,6 +214,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'bash-egress-guard.py', matcher: 'Bash' },
   { script: 'noisy-command-guard.py', matcher: 'Bash' },
   { script: 'pentest-tool-install-guard.py', matcher: 'Bash' },
+  { script: 'live-checkout-write-guard.py', matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit' },
   { script: 'memory-frontmatter-gate.py', matcher: 'Write|Edit|MultiEdit' },
   { script: 'memory-frontmatter-bash-gate.py', matcher: 'Bash' },
 ]
