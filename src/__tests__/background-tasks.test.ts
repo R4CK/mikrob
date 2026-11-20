@@ -369,12 +369,21 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
 // environment" -- captured once when the server first started -- not the `env` option passed to
 // this `tmux new-session` client call. BG_PROMPT therefore arrived EMPTY in the pane every time
 // except when this was the very first session on a cold server (masking the bug in a one-off
-// manual test). Repro: point the mocked claude resolver at a real, tiny shell script that writes
-// $BG_PROMPT to a file, run spawnBackgroundTask through the REAL tmux binary (no `claude` process
-// ever starts -- only `/bin/true`-class stand-ins, same convention as the describe blocks above),
-// and read that file back.
-describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNING tmux server (card 68eaeb93)', () => {
+// manual test). Repro: point the mocked claude resolver at a real, tiny shell script, run
+// spawnBackgroundTask through the REAL tmux binary (no `claude` process ever starts -- only
+// `/bin/true`-class stand-ins, same convention as the describe blocks above), and read back what
+// the stand-in actually received.
+//
+// Card 99ade79b round 2 (CYBERSEC NO-GO 34703 F1/F2): the prompt no longer reaches the pane via
+// BG_PROMPT at all (env AND argv leaks closed) -- it is piped to the stand-in's STDIN instead. The
+// stand-in below records both its own argv (must never contain the prompt text -- this is the
+// NO-GO's F1, one level past the tmux-client argv the test at "card 99ade79b" above already
+// covers) and its stdin (must be exactly the prompt -- this is the "pane still receives it" half
+// of the card's own acceptance criterion).
+describe('spawnBackgroundTask: prompt reaches the pane via stdin, never argv or env (card 68eaeb93 + 99ade79b round 2)', () => {
   let outFile: string
+  let argvFile: string
+  let envFile: string
   let sessionName: string | undefined
 
   beforeEach(async () => {
@@ -384,7 +393,13 @@ describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNI
     const dir = mkdtempSync(join(tmpdir(), 'bg-prompt-repro-'))
     const scriptPath = join(dir, 'fake-claude.sh')
     outFile = join(dir, 'out.txt')
-    writeFileSync(scriptPath, `#!/bin/bash\nprintf '%s' "$BG_PROMPT" > ${JSON.stringify(outFile)}\n`, { mode: 0o700 })
+    argvFile = join(dir, 'argv.txt')
+    envFile = join(dir, 'env.txt')
+    writeFileSync(
+      scriptPath,
+      `#!/bin/bash\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\ncat > ${JSON.stringify(outFile)}\nenv > ${JSON.stringify(envFile)}\n`,
+      { mode: 0o700 }
+    )
     claudeResolveState.binPath = scriptPath
   })
 
@@ -397,7 +412,7 @@ describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNI
     sessionName = undefined
   })
 
-  it('a prompt reaches the pane even though this process already has a running tmux server', async () => {
+  it('a prompt reaches the pane via stdin even though this process already has a running tmux server, and never appears in the stand-in\'s own argv', async () => {
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
     const prompt = 'repro prompt for card 68eaeb93, with spaces'
 
@@ -416,5 +431,12 @@ describe('spawnBackgroundTask: BG_PROMPT must reach the pane on an ALREADY-RUNNI
     }
 
     expect(seen).toBe(prompt)
+    const argvSeen = existsSync(argvFile) ? readFileSync(argvFile, 'utf-8') : ''
+    expect(argvSeen).not.toContain(prompt)
+    // CYBERSEC NO-GO 34703 F2: the round-1 fix introduced `export BG_PROMPT=...` in the pane,
+    // putting the prompt into the claude process's own environ too. Round 2 drops that export.
+    const envSeen = existsSync(envFile) ? readFileSync(envFile, 'utf-8') : ''
+    expect(envSeen).not.toContain(prompt)
+    expect(envSeen).not.toMatch(/^BG_PROMPT=/m)
   }, 10_000)
 })

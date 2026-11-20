@@ -41,12 +41,13 @@ function bgTaskEnv(): NodeJS.ProcessEnv {
   return env
 }
 
-// Card 99ade79b (MEDIUM, self-audit 2026-11-20): the prompt used to be spelled directly into the
-// `tmux new-session` CLIENT call's own argv (`-e BG_PROMPT=${prompt}`, below) -- readable by any
-// local user via /proc/<pid>/cmdline of THIS process's tmux client while it runs, and bounded by
-// ARG_MAX. A 0600 temp file crosses argv as a PATH instead (never sensitive); the pane reads the
-// prompt back from the file into its own exported BG_PROMPT (card 68eaeb93's proven mechanism --
-// see the `-e` comment below), then deletes the file.
+// Card 99ade79b (MEDIUM, self-audit 2026-11-20; round 2 after CYBERSEC NO-GO 34703): the prompt
+// used to be spelled directly into the `tmux new-session` CLIENT call's own argv
+// (`-e BG_PROMPT=${prompt}`), and after round 1's fix, into `claude`'s own argv and the pane's
+// environ instead -- both readable by any local same-uid process for as long as the respective
+// process runs, and bounded by ARG_MAX. A 0600 temp file crosses argv as a PATH only (never
+// sensitive); the pane feeds it to `claude -p` directly via stdin redirection (never an exported
+// env var, never an argv), then deletes the file once `claude` has read it.
 function writePromptFile(prompt: string): string {
   const file = join(tmpdir(), `bg-prompt-${randomBytes(8).toString('hex')}.tmp`)
   writeFileSync(file, prompt, { mode: 0o600 })
@@ -103,12 +104,19 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
     // FLEETVENV923 (Köteg 12, upstream 0bea3cd7): the fleet venv's bin/ first, as in every agent
     // launch -- same mechanism already adopted in scripts/watchdog.sh and agent-process.ts.
     `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,
-    `${resolvedClaudeBin} -p "$BG_PROMPT" --output-format text 2>&1`,
+    // Card 99ade79b (CYBERSEC NO-GO 34703, F1 MEDIUM, reconfirmed by cybersec 2026-11-20): the
+    // prior fix only moved the prompt out of the tmux CLIENT's own argv -- it still landed in
+    // `claude`'s OWN argv via `-p "$BG_PROMPT"` (readable for the whole run, not just the client
+    // call) and ALSO into the pane's environ via `export BG_PROMPT=...` (F2, a regression this
+    // same fix introduced). `-p` with no positional prompt reads the prompt from stdin, so
+    // redirecting the temp file into it crosses neither argv nor environ.
+    `${resolvedClaudeBin} -p --output-format text < "$BG_PROMPT_FILE" 2>&1`,
   ].join(' && ')
 
-  const promptFile = writePromptFile(prompt)
+  let promptFile: string | undefined
 
   try {
+    promptFile = writePromptFile(prompt)
     execFileSync(resolvedTmuxBin, [
       'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
       // BGPROMPTEMPTY1018 (card 68eaeb93, WhiteHat2 a5ef4771 gate finding): `new-session`'s own
@@ -120,15 +128,18 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
       // sets it on the SESSION itself, which always takes effect regardless of server age
       // (tmux(1), GLOBAL AND SESSION ENVIRONMENT: "If a variable exists in both, the value from
       // the session environment is used"). Only the FILE PATH crosses argv here (card 99ade79b) --
-      // never the prompt text itself.
+      // never the prompt text itself, and (card 99ade79b round 2) never via an exported env var
+      // either -- the file is read directly as stdin by `claude -p` inside shellCmd, then removed.
       '-e', `BG_PROMPT_FILE=${promptFile}`,
-      `export BG_PROMPT="$(cat "$BG_PROMPT_FILE")"; rm -f "$BG_PROMPT_FILE"; ${shellCmd}; echo '___BG_DONE___'; sleep 5`,
+      `${shellCmd}; rm -f "$BG_PROMPT_FILE"; echo '___BG_DONE___'; sleep 5`,
     ], {
       timeout: 5000,
       env: bgTaskEnv(),
     })
   } catch (err) {
-    try { unlinkSync(promptFile) } catch { /* already gone or never written */ }
+    if (promptFile) {
+      try { unlinkSync(promptFile) } catch { /* already gone or never written */ }
+    }
     logger.error({ err, id, session }, 'Failed to spawn background task tmux session')
     finishBackgroundTask(id, 'failed', '(spawn failed)')
     return { error: 'Nem sikerült elindítani a háttérfeladatot' }
