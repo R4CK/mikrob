@@ -116,6 +116,21 @@ function execWithKillRetry(runner: string, args: readonly string[], file: string
   }
 }
 
+// Card a88ebef5 reopened (MikroB, msg 22525): the dirt-check names WHICH selftest was running
+// when the tree turned up dirty, but not WHAT changed -- on a shared, concurrently-landed tree
+// that selftest is often an innocent bystander (confirmed for offload-dispatch.selftest.sh,
+// 2026-11-20: zero references to CLAUDE.md anywhere in that script). The diff content itself
+// narrows the real writer (which managed section moved) even when the blamed selftest is not
+// the actual cause.
+function diffHead(repoRoot: string, path: string): string {
+  try {
+    const out = execFileSync('git', ['-C', repoRoot, 'diff', '--', path], { encoding: 'utf-8' })
+    return out.split('\n').slice(0, 20).join('\n')
+  } catch (e) {
+    return `(git diff failed: ${(e as Error).message})`
+  }
+}
+
 function runGuardedSelftest(repoRoot: string, runner: string, file: string, args: readonly string[] = []): string {
   guardedCallCount++
   const store = join(repoRoot, 'store')
@@ -123,10 +138,14 @@ function runGuardedSelftest(repoRoot: string, runner: string, file: string, args
   const out = execWithKillRetry(runner, [join(store, file), ...args], file)
   const dirtied = newlyDirty(before, trackedDirtySet(repoRoot))
   if (dirtied.length > 0) {
+    const diffs = dirtied
+      .map((line) => line.slice(3).trim())
+      .map((path) => `--- diff head for ${path} ---\n${diffHead(repoRoot, path)}`)
+      .join('\n')
     throw new Error(
       `${file} left the shared tracked tree dirty (card 99a4a2d4): ${dirtied.join(', ')}. ` +
         `A selftest may read the shared tree freely, but must not modify or delete a tracked ` +
-        `file in it -- write to a disposable copy/mktemp sandbox instead.`,
+        `file in it -- write to a disposable copy/mktemp sandbox instead.\n${diffs}`,
     )
   }
   return out
