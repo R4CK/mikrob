@@ -28849,3 +28849,13 @@ Which other update.sh-read env vars are intentionally left out of the allowlist 
 **Nincs benne:** L2 (`mvdk_` prefix in `secret-write-guard.py`) and the 24h per-agent `authKind=agent-key` adoption measurement from the original 52114c2f entry above -- both separate, not part of this NO-GO's required fix set.
 
 **Ki döntött:** RedHat (cybered) NO-GO 34673 + WhiteHat (cybersec) NO-GO 34686/34694, Fix-Direction from MikroB dispatch msg 22100/22108. backend végezte. Gate: QA + Cybersec + Cybered (delta re-gate on the fix, per MikroB's closing instruction).
+
+## 2026-11-20 -- 52114c2f: CYBERSEC2 NO-GO 34709 follow-up -- main agent (mikrob) had no identity to resolve
+
+**Kontextus:** WhiteHat2 NO-GO 34709 on the round-2 Gate-SHA (407f2feb9): measured that mikrob (the main channel agent, cwd at the repo root) has neither `MARVEEN_AGENT_ID`/`CLAUDE_AGENT_ID` set nor an `agents/mikrob` directory, so F2's self-check in `agent-auth-header.sh` would refuse (exit 2, no header) for every root CLAUDE.md recipe mikrob's own session runs -- a real, live regression this round's F2 fix introduced (route + header-injection fixes confirmed fine by the same verdict).
+
+**Döntés:** `agent-auth-header.sh` resolves `SELF` to `mikrob` specifically when cwd equals `MARVEEN_MAIN` (the repo root) AND no env var is set -- a distinct, equally verifiable cwd signal, not a catch-all (an unknown cwd outside both `agents/` and the repo root is still refused). mikrob has no key file under `AGENTS_ROOT`, so this falls through to the pre-existing missing-key-file fallback and keeps using the shared token, unchanged from before per-agent keys existed, until mikrob gets its own.
+
+**Teszt:** `agent-auth-header.selftest.sh` 21 -> 23/23 PASS (2 new cases per WhiteHat2's own request: main-cwd resolves and gets a header via the shared-token fallback; an unrelated unknown cwd is still refused). `npx tsc --noEmit` clean.
+
+**Ki döntött:** WhiteHat2 (cybersec2) NO-GO 34709, Fix-Direction via MikroB msg 22166. backend végezte. Gate: delta re-gate after the update window (MikroB's instruction).

@@ -41,7 +41,18 @@ if [ -z "$SELF" ]; then
       ;;
   esac
 fi
-[ -n "$SELF" ] || die 2 "cannot determine caller identity (MARVEEN_AGENT_ID/CLAUDE_AGENT_ID unset, cwd not under agents/<name>)"
+# Card 52114c2f (CYBERSEC2 NO-GO 34709, F1): the main channel agent (mikrob) has no
+# agents/mikrob directory, no MARVEEN_AGENT_ID/CLAUDE_AGENT_ID (measured: neither is set in its
+# env), and runs with cwd at the repo root -- the cwd-fallback above never matched it, so EVERY
+# root CLAUDE.md recipe would refuse (exit 2) and mikrob would lose API access entirely. The repo
+# root is a DISTINCT, equally verifiable cwd signal (not a guess): resolve it to "mikrob"
+# specifically there, never any other name. mikrob has no key file under AGENTS_ROOT, so this
+# falls through to the existing missing-key-file fallback below and keeps using the shared token,
+# exactly like before per-agent keys existed, until mikrob gets its own.
+if [ -z "$SELF" ] && [ "${PWD%/}" = "${MARVEEN_MAIN%/}" ]; then
+  SELF="mikrob"
+fi
+[ -n "$SELF" ] || die 2 "cannot determine caller identity (MARVEEN_AGENT_ID/CLAUDE_AGENT_ID unset, cwd not under agents/<name> or the repo root)"
 [ "$SELF" = "$AGENT" ] || die 2 "refusing: caller identity does not match the requested agent"
 
 KEY_FILE="$AGENTS_ROOT/$AGENT/.dashboard-agent-key"

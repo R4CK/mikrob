@@ -270,6 +270,33 @@ else
   fail "a well-formed single-line key file (trailing newline) is still used as-is (got: $OUT)"
 fi
 
+# Case 18 (F1, CYBERSEC2 NO-GO 34709): the main channel agent (mikrob) has no agents/mikrob
+# directory and no MARVEEN_AGENT_ID/CLAUDE_AGENT_ID -- cwd at the repo root alone must still
+# resolve an identity and produce a header (falling back to the shared token, since mikrob has
+# no key file).
+echo "shared-token-value" > "$MAIN_DIR/store/.dashboard-token"
+set +e
+OUT="$(cd "$MAIN_DIR" && env -u MARVEEN_AGENT_ID -u CLAUDE_AGENT_ID bash "$SCRIPT" mikrob 2>"$WORK/stderr18")"
+RC=$?
+set -e
+if [ "$RC" -eq 0 ] && [ "$OUT" = "Authorization: Bearer shared-token-value" ]; then
+  pass "the main agent (cwd = repo root, no env var) still gets a header via the shared-token fallback"
+else
+  fail "the main agent (cwd = repo root, no env var) still gets a header via the shared-token fallback (rc=$RC, stdout: $OUT)"
+fi
+
+# Case 19: an UNKNOWN cwd outside both agents/ and the repo root, with no env var, is still
+# refused -- the repo-root resolution added for case 18 must not become a catch-all.
+set +e
+OUT="$(cd "$WORK" && env -u MARVEEN_AGENT_ID -u CLAUDE_AGENT_ID bash "$SCRIPT" mikrob 2>"$WORK/stderr19")"
+RC=$?
+set -e
+if [ "$RC" -eq 2 ] && [ -z "$OUT" ]; then
+  pass "an unknown cwd outside agents/ and the repo root is still refused"
+else
+  fail "an unknown cwd outside agents/ and the repo root is still refused (rc=$RC, stdout: $OUT)"
+fi
+
 if [ "$FAIL" -eq 0 ]; then
   echo "selftest: PASS"
   exit 0
