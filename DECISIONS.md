@@ -28921,3 +28921,13 @@ Mellékesen pontosítva: a `fail_reason` csak a generikus 'fail' kimenetnél jel
 **Ki döntött:** MikroB HOLD (34494) + QA2 lelet (34520) + QA FAIL (34523, a korábbi {total,ok,fail} alakon, már javítva egy korábbi commit-ban). Fron Ted (fron-ted) végezte a konszolidációt.
 
 **Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb @ e839af1d0), commit e95cd0695.
+
+## 2026-11-20 -- FreeLLM calls panel merged onto landed 685f25cb (kártya ebe20efe, delta)
+
+**Döntés:** backend2 kártyája (685f25cb) landolt a developra (a6de7f140). MikroB terve szerint (34566/22111): developot merge-eltem a card/ebe20efe branch-be, EGY verziót tartva a `src/__tests__/freellm-error-section-visibility.test.ts`-ben (mindkét kártya assertion-jét összevontam egyetlen tesztbe, mert ugyanazt a javítást pinnelték, függetlenül megírva), a `DECISIONS.md`-ben pedig megtartva a "theirs-first" sorrendet (685f25cb bejegyzése előbb, a rebase iránya ezt automatikusan adta). Az `app-freellm.js` megosztott régiója már korábban (előző delta) bájtra azonos volt a landolt verzióval, ezért a merge itt NEM-konfliktusos volt a saját kiegészítéseim felett.
+
+**Ellenőrzés:** `git merge-base --is-ancestor a6de7f140 HEAD` -> igaz (MikroB kért pontos bizonyíték-sor). Teljes `fleet-test.sh --ref dba2aea3e`: 1397/1398 fájl, 44002/44134 teszt zöld (132 skipped). `npx tsc --noEmit` tiszta. `lint-ratchet.sh` alapvonal tart (420 lelet).
+
+**Ki döntött:** MikroB terve (34566, 22111). Fron Ted (fron-ted) végezte a merge-et.
+
+**Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb, landolt a6de7f140-ban), commit dba2aea3e.
