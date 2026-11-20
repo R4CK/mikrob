@@ -642,6 +642,30 @@ export function readAgentCustomProvider(name: string): string | null {
   return null
 }
 
+// Card 11c6cab4 (RedHat R1 follow-up on 657b32f2, comment 14986): readAgentCustomProvider()
+// above collapses "the key is absent" and "the key is present but not a usable non-empty
+// string" (a number, object, array, or an empty/whitespace-only string) to the SAME null --
+// correct for every other caller (they only need "is a provider configured"), but it means a
+// present-but-garbage value is silently read as "not configured", so the launcher's remote
+// refusal (refuseRemoteCustomProvider) and every other customProvider-gated decision never
+// fires. This is the exact "present but unusable silently falls back" failure class the
+// oauthTokenFile field already refuses loudly for (see agent-oauth-token-file.ts's own doc
+// comment) -- same stance, applied here. A malformed/unreadable config file (JSON.parse throws)
+// is NOT this function's concern; it is indistinguishable from "absent" here on purpose, same as
+// readAgentCustomProvider's own catch above -- a config-wide read failure is a different,
+// broader problem than one unusable field.
+export function isAgentCustomProviderFieldUnusable(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    if (!('customProvider' in config)) return false
+    const value = config.customProvider
+    return !(typeof value === 'string' && value.trim())
+  } catch {
+    return false
+  }
+}
+
 // Set (non-empty string) or clear (empty/whitespace/null/undefined) the per-agent custom
 // provider id. A JSON PUT body can send an explicit `null` to mean "clear it", same as empty
 // string -- a request body is attacker/caller-controlled input, so this stays defensive even

@@ -902,5 +902,84 @@ esac
 
 rm -f "$STUB_CHECKER"
 
+# --- card 11c6cab4 round 3 (RedHat comment 32213): needs-fleet-oauth.mjs computed
+# customProviderId with the OLD "any non-string -> null" rule, so a present-but-unusable
+# customProvider on the common shared-auth path was read as "no customProvider at all" --
+# FLEET_OAUTH_NEEDED went to 1 and watchdog.sh restarted the agent on the SHARED fleet login,
+# never reaching watchdog-provider-env.mjs's own refusal for this exact value (case 24/34 above
+# only reach that refusal because customProvider was a USABLE string there). These pin that the
+# undecidable classification now happens before the fleet-oauth branch, for the default
+# shared-auth agent specifically (the case RedHat measured). ---
+
+AGENT_SHARED_BYO="$FIXTURE_INSTALL/agents/shared-garbage-provider-agent"
+mkdir -p "$AGENT_SHARED_BYO/.claude-config"
+
+# 59) BLOCKING (round-3 repro): customProvider a number, default shared auth -> refuse
+#     (fleet-oauth-undecidable), NEVER isolation=no (which would restart on the shared login).
+printf '{"customProvider": 1}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "59: customProvider=1, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "59: customProvider=1, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+
+# 60) customProvider an empty object.
+printf '{"customProvider": {}}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "60: customProvider={}, shared auth -> refuse (undecidable)" ;;
+  *) fail "60: customProvider={}, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 61) customProvider an empty array.
+printf '{"customProvider": []}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "61: customProvider=[], shared auth -> refuse (undecidable)" ;;
+  *) fail "61: customProvider=[], shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 62) customProvider the boolean true.
+printf '{"customProvider": true}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "62: customProvider=true, shared auth -> refuse (undecidable)" ;;
+  *) fail "62: customProvider=true, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 63) a remote (ssh) agent on shared auth with the same garbage customProvider -- RedHat also
+#     measured the remote refusal in watchdog-provider-env.mjs is unreachable via this same path.
+printf '{"customProvider": 1, "remoteHost": "build-box", "remoteWorkdir": "/home/agent/work"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "63: remote agent, customProvider=1, shared auth -> refuse (undecidable)" ;;
+  *) fail "63: remote agent, customProvider=1, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 64) MUTATION PIN: the ordinary shared-auth, no-customProvider case must be UNAFFECTED --
+#     still isolation=yes with the fleet token prefix, same as case 28/50 above.
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "64: no customProvider, shared auth -> unaffected, still fleet-token isolation" ;;
+  *) fail "64: no customProvider, shared auth -> unaffected, still fleet-token isolation" "$OUT" ;;
+esac
+
+# 65) MUTATION PIN: a USABLE customProvider string must still take the ordinary refuse path
+#     through watchdog-provider-env.mjs (isolation=refuse reason=provider-env-unavailable, same
+#     as case 24/34) -- round 3's new check must not swallow the already-working usable-string case.
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+printf '{"customProvider": "my-ollama-endpoint"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=provider-env-unavailable") pass "65: usable customProvider string -> still the ordinary (non-undecidable) refuse path" ;;
+  *) fail "65: usable customProvider string -> still the ordinary (non-undecidable) refuse path" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+
+
+
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

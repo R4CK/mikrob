@@ -95,6 +95,53 @@ describe('watchdog-provider-env parity: ground truth (TS source) vs watchdog pat
     }
   })
 
+  // Card 11c6cab4 R3: a customProvider value present but not a usable non-empty string must
+  // refuse (exit non-zero, no output) -- the same posture as R1's launcher-side fix, but this
+  // script re-derives the check from its own parsed config since it is fixture-tested against a
+  // temp directory, not the real agents/ tree readAgentCustomProvider()/
+  // isAgentCustomProviderFieldUnusable() resolve against.
+  it('customProvider present but a number: refuses, prints nothing', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'watchdog-provider-env-parity-'))
+    try {
+      writeFileSync(join(tmp, 'agent-config.json'), JSON.stringify({ customProvider: 123, model: 'claude-sonnet-5' }))
+      const { out, status } = watchdogPath(tmp, 'parity-fixture-agent')
+      expect(status).not.toBe(0)
+      expect(out).toBe('')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it('customProvider present but empty/whitespace-only: refuses, prints nothing', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'watchdog-provider-env-parity-'))
+    try {
+      writeFileSync(join(tmp, 'agent-config.json'), JSON.stringify({ customProvider: '   ', model: 'claude-sonnet-5' }))
+      const { out, status } = watchdogPath(tmp, 'parity-fixture-agent')
+      expect(status).not.toBe(0)
+      expect(out).toBe('')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  // Card 11c6cab4 R3: a remote (ssh) agent must refuse too -- this script's output has no effect
+  // on the remote launch path (agent-process.ts's refuseRemoteCustomProvider comment), so it must
+  // not silently compute and print a value nothing will use.
+  it('a remote agent (remoteHost + remoteWorkdir set): refuses, prints nothing', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'watchdog-provider-env-parity-'))
+    try {
+      writeFileSync(
+        join(tmp, 'agent-config.json'),
+        JSON.stringify({ model: 'claude-sonnet-5', remoteHost: 'build-box', remoteWorkdir: '/home/agent/work' }),
+      )
+      const { out, status } = watchdogPath(tmp, 'parity-fixture-agent')
+      expect(status).not.toBe(0)
+      expect(out).toBe('')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
   // Claude + authMode shared (the common case): no provider env from EITHER side -- this agent's
   // credentials are the fleet token / own setup-token path above this function in watchdog.sh,
   // not resolveProviderEnv's job.
