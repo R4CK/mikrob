@@ -218,6 +218,23 @@ for key, value in (
     r = amc._redact(f'{key}={value}')
     check(f'kv-compound-{key}', r, [value], ['[REDACTED]'])
 
+# Card 89ccf629 (RedHat R2 follow-up on 7e01b349, comment 15353): 5 more real leaks named in that
+# follow-up, in the same classes as the fixtures above.
+r = amc._redact('AWS_SECRET_ACCESS_KEY=SuperSecretValue123')
+check('kv-compound-AWS_SECRET_ACCESS_KEY', r, ['SuperSecretValue123'], ['[REDACTED]'])
+r = amc._redact("{'password':'SuperSecretValue123'}")
+check('json-key-single-quoted-password', r, ['SuperSecretValue123'], ["'password':'[REDACTED]'"])
+r = amc._redact('wget --http-password SuperSecretValue123 https://example.com')
+check('wget-http-password-flag', r, ['SuperSecretValue123'], ['[REDACTED]'])
+r = amc._redact('mysql -pSuperSecretValue123 -uadmin')
+check('mysql-glued-p-flag', r, ['SuperSecretValue123'], ['[REDACTED]'])
+r = amc._redact('curl --pass SuperSecretValue123 https://example.com')
+check('curl-pass-flag', r, ['SuperSecretValue123'], ['[REDACTED]'])
+# CONTROL: the glued `-p` flag must not fire on ordinary prose/identifiers where "-p" is glued to
+# a PRECEDING word character (not a real flag position) -- measured regression during this fix.
+r = amc._redact('the gh-pages branch needs a rebuild')
+check('glued-p-flag-no-false-positive-on-prose', r, ['[REDACTED]'], [])
+
 # Quoted VALUES in the key=value pattern: the bare-value branch excludes quote characters from its
 # own character class, so a value that STARTS with a quote never matched at all.
 r = amc._redact('password="super secret value"')

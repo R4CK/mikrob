@@ -294,6 +294,17 @@ esac
 [ "$TEST_TREE" -ef "$ROOT" ] \
   && die 2 "FLEET_TEST_TREE ($TEST_TREE) IS the live install ($ROOT) -- refusing before the reset/clean/checkout below would run against it. Point FLEET_TEST_TREE at a disposable worktree instead."
 # <<< ROOT_GUARD_BLOCK_END
+# Card 0ca2322b (c5f98f82 follow-up, MikroB comment 32226 on RedHat's suggestion, comment 32216):
+# the regex-based detector just below (fleet-test-no-test-tree-reassignment-after-guard.test.ts)
+# only scans the TEXT of the gap between the guard above and the real `cd "$ROOT"` call -- it is
+# blind to any write form that does not spell "TEST_TREE=" literally (mapfile/readarray, a for/
+# select loop variable, printf -v, declare -n/local -n indirection, a backslash-newline split
+# between the name and "="), and it covers nothing AFTER the `cd` call at all. `readonly` closes
+# the whole class in one line, structurally, for the REST of this script's run (not just the gap):
+# bash itself refuses every one of those write forms at runtime with "readonly variable", not just
+# the ones this file's author thought to enumerate. The static detector stays as a cheap backstop
+# that still catches the most common mistake (a plain `TEST_TREE=...`) before the script even runs.
+readonly TEST_TREE
 
 REF=""
 ARGS=()
@@ -497,6 +508,24 @@ Inspect by hand: git -C $TEST_TREE status"
   # weaken what it protects.
   if [ -f "$TEST_TREE/.git" ]; then
     rm -f "$TEST_TREE/store/.dashboard-token" "$TEST_TREE/store/claudeclaw.db" "$TEST_TREE/store/.claude-oauth-token"
+    # SAME CLASS, ONE DIRECTORY OVER (card e5c13c0e). `agents/` is gitignored wholesale
+    # (CLAUDE.md's own fleet agents live there in the LIVE install, but this is the disposable
+    # TEST tree -- nothing under here is ever legitimately persistent across runs), so a test
+    # that scaffolds a real agent directory as its own fixture (claude-md-main-section-
+    # writers.test.ts's MAIN_AGENT_ID pin-test, before it was isolated via vi.mock) leaves a stub
+    # that `git clean -fdq` above never touches. Measured live: that stub survived across this
+    # agent's own scoped runs and then made a LATER, unrelated full-suite run's
+    # listAgentNames()-based agent discovery see a phantom agent -- a schedule-runner test's 'all'
+    # fan-out fired the main agent twice because of it. Gitignored content accumulating in a
+    # disposable worktree is never a prior run's state worth keeping, so wipe it every time.
+    # Kept inside this SAME if-block, not a second one (CYBERSEC NO-GO on an earlier round,
+    # comment 34209): fleet-test-self-heals-stray-live-marker.test.ts's mutation-proof check
+    # does a plain text search for the safety-guard line's own exact source and asserts it
+    # disappears when stripped -- a second, separate occurrence of that literal line (even one
+    # quoted verbatim in an explanatory comment like this one almost was) would still match
+    # after the strip, silently defeating the test. Describing the guard's shape in prose here
+    # instead of quoting it is deliberate, not an accident of wording.
+    rm -rf "$TEST_TREE/agents"
   fi
 fi
 # <<< DESTRUCTIVE_RESET_BLOCK_END

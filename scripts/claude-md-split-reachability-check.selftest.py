@@ -279,24 +279,30 @@ case("no baseline file at all (pinned bullets have nothing to compare against)",
 d, claude_md, rules_dir = sandbox()
 try:
     establish_clean_baseline(claude_md, rules_dir)
-    # Reword BOTH the rule file and CLAUDE.md's own index bullet for rule 4, identically -- the
-    # same invariant the rule-21/live-drift fix (card cc72cb3e rebase) closed: the bullet and its
-    # linked rule file's full text must stay verbatim-consistent, or check_index_structure's
-    # per-bullet check (now reading rules_dir's own copy, not a hardcoded live path) rightly
-    # flags it. This test is only about the CONSERVATION reword workflow, so both copies move
-    # together; staying out of sync is exactly the real-world bug rule-21 had, tested elsewhere.
+    # Reword the rule file's full text for rule 4 -- this is the CONSERVATION reword workflow
+    # under test, not the index-structure invariant (that one is covered elsewhere, by the
+    # mutants that touch a bold title or a link). Card 2ec21127 (CLAUDE.md base-prompt diet)
+    # shortens rule 4's CLAUDE.md index bullet to title+link only, so "a készítő SOHA nem
+    # ellenőrzi a sajátját" -- part of the DROPPED explanatory prose, never the bold title --
+    # no longer exists in CLAUDE.md at all; rewording it there too (as a pre-diet version of
+    # this test did, to keep both copies "verbatim-consistent") would now just re-add text the
+    # diet intentionally removed. Rewording the rules_dir copy alone still exercises exactly
+    # what this block checks: the phrase existed in the pre-split monolith (OLD_REF) and, after
+    # the reword, exists nowhere in the new corpus (not in rules_dir any more, and CLAUDE.md
+    # never had it post-diet) -- line-conservation must flag that as missing, same as before.
     replace_once(
         rules_dir / "munkavegzesi-szabalyok.md",
         "a készítő SOHA nem ellenőrzi a sajátját",
         "a készítő a kockázat-alapú tiering szerint ritkán ellenőrzi a sajátját (szándékos reword a selftesthez)",
         "update-baseline-reword",
     )
-    replace_once(
-        claude_md,
-        "a készítő SOHA nem ellenőrzi a sajátját",
-        "a készítő a kockázat-alapú tiering szerint ritkán ellenőrzi a sajátját (szándékos reword a selftesthez)",
-        "update-baseline-reword-index",
-    )
+    if "a készítő SOHA nem ellenőrzi a sajátját" in claude_md.read_text(encoding="utf-8"):
+        replace_once(
+            claude_md,
+            "a készítő SOHA nem ellenőrzi a sajátját",
+            "a készítő a kockázat-alapú tiering szerint ritkán ellenőrzi a sajátját (szándékos reword a selftesthez)",
+            "update-baseline-reword-index",
+        )
     rc, out = run_checker(claude_md, rules_dir)
     if rc != 0:
         ok("a reworded binding line turns the checker red before --update-baseline")

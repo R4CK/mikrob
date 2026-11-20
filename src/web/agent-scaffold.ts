@@ -4396,7 +4396,17 @@ const FLEET_AUTH_BLOCK_RE = new RegExp(
   `${FLEET_AUTH_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${FLEET_AUTH_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildFleetAuthBody(): string {
+// Card 2ec21127 (Token 8, MikroB condition 3): short form is the default emission; the full
+// legacy block (pre-shrink wording, byte-identical to the historical committed text) is kept
+// available via this env flag ONLY so a zero-diff/regression test can assert both shapes still
+// render, not because any live agent is meant to run on it long-term.
+export const LEGACY_GENERATED_BLOCKS_ENV = 'CLAUDE_MD_LEGACY_GENERATED_BLOCKS'
+
+export function legacyGeneratedBlocksEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ['1', 'on', 'true', 'yes'].includes(String(env[LEGACY_GENERATED_BLOCKS_ENV] ?? '').trim().toLowerCase())
+}
+
+function buildFleetAuthBodyLong(): string {
   return [
     '## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)',
     '',
@@ -4425,6 +4435,35 @@ export function buildFleetAuthBody(): string {
     '   saját creds-könyvtár, saját OAuth). A másolás auditálhatatlan, és más megbízó',
     '   adatához is hozzáférést ad.',
   ].join('\n')
+}
+
+// Short form (card 2ec21127, Token 8 base-prompt diet): the mechanism explanation (default auth
+// path, MAIN_AGENT_ISOLATED_CONFIG, claudeConfigDir) is background -- moved to
+// docs/rules/flotta-auth-mechanizmus.md. The two MEGSZEGHETETLEN rules stay inline VERBATIM: they
+// are the actionable gist (what to do when an agent shows "Not logged in", and the standing ban
+// on copying another agent's credential), not a description of the mechanism.
+function buildFleetAuthBodyShort(): string {
+  const mechanismDoc = join(PROJECT_ROOT, 'docs', 'rules', 'flotta-auth-mechanizmus.md')
+  return [
+    '## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)',
+    '',
+    `Háttér (auth-mechanizmus, MAIN_AGENT_ISOLATED_CONFIG, claudeConfigDir): ${mechanismDoc}`,
+    '',
+    'AMI VISZONT MEGSZEGHETETLEN:',
+    '',
+    '1. Ha egy agent "Not logged in"-t mutat, a javítás a TOKEN-FORRÁS, nem egy kézzel',
+    '   elhelyezett vagy symlinkelt `.credentials.json`. A kézi credential-elhelyezés hozta',
+    '   vissza a 401-kaszkádot minden alkalommal: a lejárt fájl a Claude Code precedenciája',
+    '   miatt akkor is nyer az érvényes env-tokennel szemben, ha az ott van mellette.',
+    '2. SOHA ne másold át másik agent tokenjét vagy credentialjét. Új agent SAJÁT,',
+    '   per-agent tokent és saját külső-szolgáltatás setupot kap (saját email, egyedi port,',
+    '   saját creds-könyvtár, saját OAuth). A másolás auditálhatatlan, és más megbízó',
+    '   adatához is hozzáférést ad.',
+  ].join('\n')
+}
+
+export function buildFleetAuthBody(env: NodeJS.ProcessEnv = process.env): string {
+  return legacyGeneratedBlocksEnabled(env) ? buildFleetAuthBodyLong() : buildFleetAuthBodyShort()
 }
 
 // Same five-rule idempotency contract as ensureFleetRosterSection / ensureAutonomySection /

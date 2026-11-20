@@ -391,6 +391,27 @@ remove_entry() {
 }
 
 main() {
+  # 8cb1e168 (Cybered GO 33187 on 09ed7ef6): WSL_HOME_CLEANUP_MIN_AGE_HOURS=0 or a negative value
+  # makes every entry read as old regardless of its real mtime -- find_recent_or_failed() turns it
+  # into `find ... -mmin -0` (or a double-negative minute count), which never matches any file, so
+  # find_recent_or_failed always returns false ("not recently modified") and every DISPOSABLE-named
+  # entry proceeds straight to removal, however new it actually is. A non-integer already fails
+  # closed via the arithmetic in find_recent_or_failed erroring out. Refuse to run at all for any
+  # value that is not a positive integer, so the failure is loud and up front, not a silent
+  # miscount buried in the age check.
+  # Cybered NO-GO 33289: the first cut (`''|*[!0-9]*|0`) still let two spellings of the same hole
+  # through. "00"/"000" is numerically zero but matches none of those three alternatives (not
+  # empty, no non-digit char, not literally "0"), so it reached the arithmetic unrefused and
+  # produced the same -mmin -0 everything-is-old bug. And bash's 64-bit integer arithmetic wraps
+  # silently (no overflow error) for a minute count at or above 2^63, so an all-digit value that
+  # large also slipped past the old check and came out the other side of `MIN_AGE_HOURS * 60` as a
+  # small/negative number. A leading-non-zero-digit, length-bounded regex closes both: at most 9
+  # digits is 114,000+ years of hours, far below where the multiply-by-60 could wrap.
+  if ! [[ "$MIN_AGE_HOURS" =~ ^[1-9][0-9]{0,8}$ ]]; then
+    echo "wsl-home-cleanup: WSL_HOME_CLEANUP_MIN_AGE_HOURS must be a positive integer (got '$MIN_AGE_HOURS') -- refusing to run" >&2
+    return 2
+  fi
+
   local MODE="dry-run" CONFIRMED=0 arg
   for arg in "$@"; do
     case "$arg" in
