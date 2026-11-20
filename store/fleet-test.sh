@@ -245,6 +245,14 @@ fleet_test_on_exit() {
   return 0
 }
 trap fleet_test_on_exit EXIT
+# Without these, a SIGTERM/INT/HUP kill is reported as "PASS (exit 0)" with partial counts: bash's
+# $? inside an EXIT trap reflects the status of the last command that ran, not 128+signal, and a
+# killed vitest can leave a log with a real-looking (but incomplete) summary line (CYBERED
+# NO-GO 34648, card c4590365, comment 34648). Exiting explicitly with the conventional 128+signal
+# code from a dedicated handler makes fleet_test_on_exit see the real $? and report FAIL.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 # THE SHARED CPU-CAPACITY POOL (card 492a6d5c, backend3's measurement on card 779cd6a7). This is a
 # SEPARATE question from LOCK_FILE above: that lock says "is it safe to touch the tree" (correctness,

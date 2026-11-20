@@ -29080,3 +29080,26 @@ kiolvasásra kerül a törlés ELŐTT.
 Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
 kérve QA2 + CYBERED-től). **Ki döntött:** Cybered (komment 34645), a fixet DevO (fullstack)
 készítette.
+
+## c4590365: CYBERED NO-GO 34648 -- SIGTERM/INT/HUP alatti kilövés hamis PASS-t jelentett (komment 34648)
+
+Cybered új F4 lelete (MEDIUM) a visszaellenőrzött `1b3f296ef`-en: egy SIGTERM/INT/HUP-pal kilőtt
+futás `PASS (exit 0)`-ot jelentett, részleges számokkal -- a bash EXIT trapen belüli `$?` az
+utolsó futott parancs státuszát mutatja, nem a 128+szignál kódot, és a kilőtt vitest-folyamat
+log-ja valós-kinézetű, de nem teljes összefoglaló sort hagyhat hátra.
+
+**Döntés:** az `fleet_test_on_exit() EXIT` trap regisztrációja mellé három explicit szignál-trap:
+`trap 'exit 143' TERM`, `trap 'exit 130' INT`, `trap 'exit 129' HUP` -- ezek a hagyományos
+128+szignál kóddal térnek vissza, amit az EXIT trap már a VALÓDI kilövés-okként lát, tehát a
+notifier `FAIL (exit 143)`-t (stb.) jelent, nem `PASS`-t.
+
+**Mérés:** új Case 6c a `fleet-test-notify-injection.selftest.sh`-ban (most 9 eset): egy valódi
+gyermek-processz, ami a tényleges `trap 'exit 143' TERM` sort (forrásból kinyerve, nem kézzel
+írt másolat) a saját EXIT-trapjével együtt örökli, `sleep 30` közben SIGTERM-et kap -- a
+posztolt body `FAIL (exit 143)`. Mutáció-teszt: a három szignál-trap sor eltávolítása a forrásból
+a selftest saját drift-védő `grep`-jét futtatja pirosra ("source and selftest have drifted"),
+fail-closed módon -- a funkció nem tud csendben eltűnni. Vissza az eredeti kóddal: 9/9 PASS.
+
+Gate-SHA: ld. a kártya c4590365 legfrissebb REVIEW kommentjének `Gate-SHA:` sorát (delta re-gate
+kérve QA2 + CYBERED-től, csak ezen a soron). **Ki döntött:** Cybered (komment 34648), a fixet
+DevO (fullstack) készítette.

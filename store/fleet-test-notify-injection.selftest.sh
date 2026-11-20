@@ -33,6 +33,13 @@ FUNCS_WITH_TRAP="$TMP/funcs-with-trap.sh"
 cp "$FUNCS" "$FUNCS_WITH_TRAP"
 grep -m1 '^trap fleet_test_on_exit EXIT$' "$SRC" >> "$FUNCS_WITH_TRAP"
 grep -q '^trap fleet_test_on_exit EXIT$' "$FUNCS_WITH_TRAP" || { echo "FAIL: could not find the real 'trap fleet_test_on_exit EXIT' registration in $SRC -- source and selftest have drifted"; exit 1; }
+# The signal traps (CYBERED NO-GO 34648): without these, bash's $? inside the EXIT trap reflects
+# the last command's status, not 128+signal, so a SIGTERM/INT/HUP kill is misreported as PASS.
+# Extracted from source (not hand-written) so a mutant deleting one of these lines is caught.
+grep -m1 "^trap 'exit 143' TERM$" "$SRC" >> "$FUNCS_WITH_TRAP"
+grep -m1 "^trap 'exit 130' INT$" "$SRC" >> "$FUNCS_WITH_TRAP"
+grep -m1 "^trap 'exit 129' HUP$" "$SRC" >> "$FUNCS_WITH_TRAP"
+grep -q "^trap 'exit 143' TERM$" "$FUNCS_WITH_TRAP" || { echo "FAIL: could not find the real TERM trap in $SRC -- source and selftest have drifted"; exit 1; }
 # shellcheck disable=SC1090
 . "$FUNCS"
 
@@ -223,6 +230,36 @@ else
   echo "  FAIL PASS exit with run_log inside exported TMPDIR did not notify correctly: $body"; fail=1
 fi
 [ -d "$PASS_TMPDIR" ] && rm -rf "$PASS_TMPDIR" 2>/dev/null
+
+# --- Case 6c (CYBERED NO-GO 34648): a SIGTERM kill mid-run must report FAIL (exit 143), not
+# PASS (exit 0). Without the TERM/INT/HUP traps, bash's $? inside the EXIT trap reflects the
+# last command's status (here, a sleep killed by the signal returns a status that is NOT 128+n
+# in all shells/versions), and a partial-looking log could read as a real summary. Real child
+# process so the signal delivery and trap interaction are genuine, not simulated.
+n=$((n+1))
+: > "$STUB_POST_LOG"
+TERM_TMPDIR="$(mktemp -d)"
+bash -c '
+  . "$1"
+  export TMPDIR="$2"
+  export FLEET_TEST_CALLER_AGENT="$3"
+  run_log="$TMPDIR/run.log"
+  printf " Test Files  1 passed (1)\n      Tests  1 passed (1)\n" > "$run_log"
+  sleep 30
+' _ "$FUNCS_WITH_TRAP" "$TERM_TMPDIR" "fullstack" &
+child_pid=$!
+for _i in $(seq 1 50); do kill -0 "$child_pid" 2>/dev/null && break; sleep 0.1; done
+sleep 0.3
+kill -TERM "$child_pid" 2>/dev/null
+wait "$child_pid" 2>/dev/null
+line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+body="${line#*$'\t'}"
+if printf '%s' "$body" | grep -q 'FAIL (exit 143)'; then
+  echo "  ok   SIGTERM mid-run reports FAIL (exit 143), not a false PASS"
+else
+  echo "  FAIL SIGTERM mid-run did not report FAIL (exit 143): $body"; fail=1
+fi
+[ -d "$TERM_TMPDIR" ] && rm -rf "$TERM_TMPDIR" 2>/dev/null
 
 # --- Negative control (guards-that-pin-behaviour): no readable token file -> no POST sent.
 n=$((n+1))
