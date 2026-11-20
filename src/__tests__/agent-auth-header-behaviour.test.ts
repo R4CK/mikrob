@@ -1,19 +1,25 @@
-// Card 52114c2f (CYBERSEC NO-GO 34686/34694, F4): mutation-tested with real vitest mutants against
-// store/agent-auth-header.sh -- H1 (own-key branch disabled), H2 (shared-token fallback check
-// removed) and H3 (wrong key file path) all SURVIVED when only this card's own targeted file set
-// ran (8 files / 126 tests), because none of those files executes the script. The shell selftest
-// (store/agent-auth-header.selftest.sh) kills all three, but it only runs via the full-suite
-// auto-discovery in store-selftests-all-run.test.ts -- a delta re-gate that names a targeted file
-// list (the fleet's own convention, see memory "Delta re-gate: verify only the changed part")
-// would not include that discovery file and would miss a regression in any of these three
-// behaviours. This file execs the real script directly so the same three behaviours are pinned
-// even in a targeted run.
+// Card 52114c2f (CYBERSEC NO-GO 34686/34694, F4; extended by QA 34710/34711): mutation-tested
+// with real vitest mutants against store/agent-auth-header.sh -- H1 (own-key branch disabled),
+// H2 (shared-token fallback check removed) and H3 (wrong key file path) all SURVIVED when only
+// this card's own targeted file set ran (8 files / 126 tests), because none of those files
+// executes the script. The shell selftest (store/agent-auth-header.selftest.sh) kills all three,
+// but it only runs via the full-suite auto-discovery in store-selftests-all-run.test.ts -- a
+// delta re-gate that names a targeted file list (the fleet's own convention, see memory
+// "Delta re-gate: verify only the changed part") would not include that discovery file and would
+// miss a regression in any of these three behaviours. This file execs the real script directly
+// so the same three behaviours are pinned even in a targeted run.
+//
+// QA 34710/34711 (same Gate-SHA, 407f2feb9): the H1-H3 pin above left F2 (caller binding) and F3
+// (revoked/junk-key fallback) uncovered by this same targeted-run reasoning -- a later edit could
+// silently reopen either without any test in this file's own set going red. Added below.
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCRIPT = join(__dirname, '..', '..', 'store', 'agent-auth-header.sh')
@@ -77,5 +83,47 @@ describe('store/agent-auth-header.sh behaviour (card 52114c2f F4, pinned via rea
     expect(status).toBe(0)
     expect(out).toBe('Authorization: Bearer backend-key-value')
     expect(out).not.toContain('qa2-key-value')
+  })
+
+  it('F2: refuses (exit 2, nothing on stdout) when the caller requests ANOTHER agent\'s key', () => {
+    mkdirSync(join(work, 'agents', 'qa2'), { recursive: true })
+    writeFileSync(join(work, 'agents', 'qa2', '.dashboard-agent-key'), 'qa2-key-value')
+    // run() already sets MARVEEN_AGENT_ID=backend; request qa2's key instead.
+    const { out, status } = run('qa2')
+    expect(status).toBe(2)
+    expect(out).toBe('')
+  })
+
+  describe('F3: revoked/junk-key fallback (real HTTP probe)', () => {
+    let server: Server
+    let probeUrl: string
+
+    beforeEach(async () => {
+      server = createServer((req, res) => {
+        const auth = req.headers.authorization ?? ''
+        res.statusCode = auth === 'Bearer revoked-key-value' ? 401 : 200
+        res.end()
+      })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      probeUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/agents`
+    })
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    it('a revoked (401) own key falls back to the shared token, with a distinct warning', () => {
+      writeFileSync(join(work, 'agents', 'backend', '.dashboard-agent-key'), 'revoked-key-value')
+      const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '3' })
+      expect(status).toBe(0)
+      expect(out).toBe('Authorization: Bearer shared-token-value')
+    })
+
+    it('a valid (200) own key is used as-is, not the shared token', () => {
+      writeFileSync(join(work, 'agents', 'backend', '.dashboard-agent-key'), 'own-agent-key-value')
+      const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '3' })
+      expect(status).toBe(0)
+      expect(out).toBe('Authorization: Bearer own-agent-key-value')
+    })
   })
 })

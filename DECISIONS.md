@@ -28859,3 +28859,13 @@ Which other update.sh-read env vars are intentionally left out of the allowlist 
 **Teszt:** `agent-auth-header.selftest.sh` 21 -> 23/23 PASS (2 new cases per WhiteHat2's own request: main-cwd resolves and gets a header via the shared-token fallback; an unrelated unknown cwd is still refused). `npx tsc --noEmit` clean.
 
 **Ki döntött:** WhiteHat2 (cybersec2) NO-GO 34709, Fix-Direction via MikroB msg 22166. backend végezte. Gate: delta re-gate after the update window (MikroB's instruction).
+
+## 2026-11-20 -- 52114c2f: QA 34710/34711 coverage gap -- F2/F3 mutant pins added
+
+**Kontextus:** QA (34710/34711) on Gate-SHA 407f2feb9: the F4 mutant-pin added for WhiteHat's H1-H3 left F2 (caller binding) and F3 (revoked/junk-key fallback) uncovered by the same targeted-run reasoning -- a later edit to either could silently reopen it without any test in that file's own set going red. Everything else on 407f2feb9 confirmed (140/140 + 21/21 + 19/19, tsc clean).
+
+**Döntés:** `src/__tests__/agent-auth-header-behaviour.test.ts` gets two more direct-exec cases: F2 (a caller bound to one agent requesting another agent's key is refused, exit 2, nothing on stdout) and F3 (a real, local `node:http` mock server answering 401 for one specific key and 200 for every other -- a revoked key falls back to the shared token, a valid key is used as-is).
+
+**Teszt:** `npx tsc --noEmit` clean. Targeted `fleet-test.sh` run pending the active update window (MikroB msg 22146); result recorded in the REVIEW comment.
+
+**Ki döntött:** QA (qa2) 34710/34711. backend végezte. Gate: delta re-gate after the update window.
