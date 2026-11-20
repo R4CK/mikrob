@@ -151,8 +151,9 @@ async function loadOverview() {
     void loadLocalLlmInfo()
     void loadCostEstimatesWidget()
     void loadGeminiOverviewTile()
-    // startOvwLlmDist()/startOvwSpectrum() moved to switchPage('llmMonitor') -- card f1e33cfb
-    // relocated both cards onto the Live-load page, Overview no longer shows them directly.
+    // The spectrum + model-distribution widget starters used to run here; card f1e33cfb moved
+    // them to switchPage('llmMonitor') -- both cards now live on the Live-load page, Overview no
+    // longer shows them directly.
     const banner = document.getElementById('updateBanner')
     if (banner) {
       const u = d.upstreamUpdate
