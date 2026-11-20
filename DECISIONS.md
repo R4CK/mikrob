@@ -28911,3 +28911,13 @@ Mutacio-ellenorzes: a `needs-fleet-oauth.mjs` uj ellenorzesenek visszavonasaval 
 **Ki döntött:** Fron Ted (fron-ted), a kontraktus forrása backend2 (685f25cb).
 
 **Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb), commit 2b47ef7b9.
+
+## 2026-11-20 -- FreeLLM calls panel consolidated with backend2's landed fix (kártya ebe20efe)
+
+**Döntés:** MikroB HOLD-ja (34494) jelezte: backend2 (685f25cb) SAJÁT, tőlem függetlenül megírt javítást adott a `freellmRenderStatus` lastError-törlési hibájára, a két ág pedig ütközne landoláskor (mindkettő ugyanazt a függvényt írja át, más szöveggel). A `card/685f25cb` branch 19 commit-tal elmaradt a jelenlegi developtól (mérve: `git merge-base`), ezért NEM arra rebase-eltem (az más kártyák konfliktusait húzta volna be feleslegesen) -- helyette közvetlenül diffeltem a saját `freellmRenderStatus`/`freellmLoadStatus` kódomat backend2 landolt verziója ellen: a LOGIKA már bájtra azonos volt (ugyanaz a gyökér-ok, ugyanaz a javítás), csak a komment-szöveg tért el. A kommentet átvettem szó szerint, így a megosztott régió most valódi no-op diff backend2 landolt verziójához képest -- a két ág landolási sorrendje mostantól mindegy, nincs ütközés.
+
+Mellékesen pontosítva: a `fail_reason` csak a generikus 'fail' kimenetnél jelenik meg zárójelben -- auth/429/stalled esetén a kimenet-felirat már megmondja, miért, a nyers backend-string (auth_401, quota_429, az üres-kódú http_ a megakadt kísérletre) törtnek nézne ki szó szerint kiírva.
+
+**Ki döntött:** MikroB HOLD (34494) + QA2 lelet (34520) + QA FAIL (34523, a korábbi {total,ok,fail} alakon, már javítva egy korábbi commit-ban). Fron Ted (fron-ted) végezte a konszolidációt.
+
+**Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb @ e839af1d0), commit e95cd0695.
