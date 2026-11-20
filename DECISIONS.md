@@ -28893,3 +28893,13 @@ Mutacio-ellenorzes: a `needs-fleet-oauth.mjs` uj ellenorzesenek visszavonasaval 
 **Nincs benne:** `attempt` (kísérlet-szám) mező a hívás-listában -- `freellm-call.sh` ezt jelenleg nem méri, nincs a kártya elfogadási listáján; Fron Ted jelezte, utólag pótolható, ha blokkol. A valós upstream-szolgáltató (`provider`) kiolvasása a válasz-törzsből -- külön kártya nélkül nem bontva ki.
 
 **Ki döntött:** Peti Telegram 14295 + MikroB mért gyökérok-elemzése (kártya leírás + msg 21888 audit-korrekció). backend2 végezte. Gate: QA + Cybersec (a kártya saját kijelölése).
+
+## 2026-11-20 -- FreeLLM page call list + status blanking fix (kártya ebe20efe)
+
+**Döntés:** A `freellmRenderStatus()` korábban (kártya 5ae7e8be pt.4 / WhiteHat2 R3) MINDEN `lastError`-t "ismeretlen állapotnak" kezelt, és üresre törte a toggle/label/hívásszám mezőket akkor is, ha a státusz-lekérdezés magától sikeres volt (HTTP 200, valós adatok) -- ez pont azt rejtette el, amit Peti látni akart. Az új viselkedés: a valós mezők előbb jelennek meg, a hibaértesítés mellettük, nem helyettük -- a valóban sikertelen fetch (a `catch` ág) továbbra is üresre törli, mert ott TÉNYLEG nincs friss adat. A régi, "bármilyen lastError = ismeretlen" döntést ez a kártya hatályon kívül helyezi; a pinnelt regressziós teszt frissült, a `src/__tests__/freellm-error-section-visibility.test.ts` fájlban dokumentálva, miért.
+
+Új hívás-napló panel (`#freellm`): 24h/7d per-kimenet számlálók + legutóbbi hívások táblája (idő, ügynök, kártya, modell, kimenet, időtartam), legújabb elöl, sikertelen sorok kiemelve. Kontraktus: `GET /api/freellm/calls?since=&limit=`, egyeztetve backend2-vel (Pair-BE 685f25cb), a frontend védekezően épült (ismeretlen `outcome` érték nem töri el az oldalt).
+
+**Ki döntött:** Fron Ted (fron-ted), MikroB dispatch alapján (Peti 14295, Telegram, inter-agent msg_id:21875).
+
+**Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb), commit 80178547a.
