@@ -2146,6 +2146,53 @@ land_with_retry() {
   done
 }
 
+# Card c4590365 (Peti 13835): one inter-agent message when a single-run land (--card or plain-agent
+# mode) finishes, so the calling agent does not have to poll/tail/sleep on this process. Mirrors
+# fleet-test.sh's fleet_test_notify_finish -- same /api/messages, self-addressed (from=caller,
+# to=caller; "from":"system" is rejected with HTTP 403, reserved for in-process senders), best-effort, never
+# changes $rc. Deliberately NOT wired into land_batch's internal land_with_retry fallback loop
+# (line ~2253): that loop's $agent is a batch survivor, not "the agent that started this run" --
+# the batch's own caller already gets ONE result via its own return path, and a single survivor's
+# fallback-path finish is not the run the caller is waiting on.
+land_notify_finish() { # $1=caller_agent $2=rc $3=card_id (may be empty) $4=dry (1 if --dry-run, may be empty)
+  local caller="$1" rc="$2" card="${3:-}" dry="${4:-0}" tf
+  tf="$(_kc_token_file 2>/dev/null)" || return 0
+  [ -f "$tf" ] || return 0
+  local verdict
+  # WhiteHat F-B MEDIUM (card c4590365, comment 34613): land_one's dry-run branch (line ~1937)
+  # returns 0 on a PREVIEW that never pushed anything -- without this check that rc=0 maps to
+  # "LANDED" the same as a real landing, so a caller told "wait for the message, do not poll"
+  # would be told a dry-run push actually happened. Checked BEFORE the rc table so dry always wins.
+  if [ "$dry" = "1" ]; then
+    verdict="DRY-RUN"
+  else
+    case "$rc" in
+      0) verdict="LANDED" ;;
+      2) verdict="BAD-USAGE" ;;
+      3) verdict="REFUSED" ;;
+      4) verdict="FAILED" ;;
+      *) verdict="UNKNOWN" ;;
+    esac
+  fi
+  # "from": caller, not "system" -- the dashboard rejects "system" over this Bearer-token HTTP
+  # API with 403 "from is reserved for in-process system senders" (curl is never in-process).
+  # A self-addressed message (from==to==caller) is accepted. Measured live, card c4590365: the
+  # fleet-test.sh sibling of this function had used "system" the same way and every call 403'd
+  # silently (best-effort, never surfaced).
+  local payload
+  payload="$(python3 -c '
+import json, sys
+card = sys.argv[3] or "n/a"
+print(json.dumps({"from": sys.argv[1], "to": sys.argv[1],
+                   "content": "[marveen-land.sh] " + sys.argv[2] + " (exit " + sys.argv[4] + ")\n" +
+                              "agent=" + sys.argv[1] + " card=" + card}))
+' "$caller" "$verdict" "$card" "$rc" 2>/dev/null)"
+  [ -n "$payload" ] || return 0
+  printf 'Authorization: Bearer %s\n' "$(cat "$tf")" \
+    | curl -fsS -m 15 -o /dev/null -H @- -H 'Content-Type: application/json' \
+      -X POST "$KANBAN_COMMENT_API/api/messages" --data-binary "$payload" 2>/dev/null || true
+}
+
 # BATCHED LANDING (card 6ec8e9d8, MikroB plan-grilling GO msg 18291/comment 30593). Merges several
 # gate-green --card branches into ONE worktree, runs fleet-test.sh ONCE on the combined result, and
 # pushes ONCE -- instead of land_with_retry's one-card-at-a-time serial cost (measured 12-38 min per
@@ -2690,6 +2737,102 @@ if [ "${1:-}" = "--selftest-land-lock-release-inner" ]; then
   echo
   if [ "$fail" -eq 0 ]; then echo "selftest-land-lock-release: $n case(s), PASS"; exit 0
   else echo "selftest-land-lock-release: $n case(s), FAIL"; exit 1
+  fi
+fi
+
+# Self-test for land_notify_finish (card c4590365). Same reason as --selftest-land-lock-release
+# above: the function is defined after the main --selftest block's exit point, so it has to be
+# called for real, through a real stub HTTP server, not reasoned about from source text.
+if [ "${1:-}" = "--selftest-land-notify" ]; then
+  LNTMP="$(mktemp -d)"
+  cat >"$LNTMP/stub.py" <<'EOS'
+import http.server, os, socketserver, sys
+LOG_FILE = os.environ["STUB_POST_LOG"]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        with open(LOG_FILE, "a") as f:
+            f.write(self.path + "\t" + body.decode(errors="replace") + "\n")
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a):
+        pass
+with socketserver.TCPServer(("127.0.0.1", 0), H) as httpd:
+    print(httpd.server_address[1]); sys.stdout.flush()
+    httpd.serve_forever()
+EOS
+  STUB_POST_LOG="$LNTMP/post.log" python3 "$LNTMP/stub.py" >"$LNTMP/port.txt" 2>"$LNTMP/stub-err.txt" &
+  stub_pid=$!
+  trap 'kill "$stub_pid" 2>/dev/null; rm -rf "$LNTMP"' EXIT
+  for _i in $(seq 1 50); do [ -s "$LNTMP/port.txt" ] && break; sleep 0.1; done
+  stub_port="$(cat "$LNTMP/port.txt" 2>/dev/null)"
+  exec env STUB_POST_LOG="$LNTMP/post.log" \
+    KANBAN_COMMENT_API="http://127.0.0.1:$stub_port" \
+    KANBAN_COMMENT_TOKEN_FILE="$LNTMP/token" \
+    bash "$0" --selftest-land-notify-inner "$LNTMP" "$stub_pid"
+fi
+
+if [ "${1:-}" = "--selftest-land-notify-inner" ]; then
+  LNTMP="$2"; stub_pid="$3"
+  trap 'kill "$stub_pid" 2>/dev/null; rm -rf "$LNTMP"' EXIT
+  echo dummy-token >"$KANBAN_COMMENT_TOKEN_FILE"
+  fail=0; n=0
+
+  n=$((n+1))
+  land_notify_finish "fullstack" 0 "card-abc"
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  path="${line%%$'\t'*}"; body="${line#*$'\t'}"
+  if [ "$path" = "/api/messages" ] \
+    && printf '%s' "$body" | grep -q '"to": *"fullstack"' \
+    && printf '%s' "$body" | grep -q '"from": *"fullstack"' \
+    && printf '%s' "$body" | grep -q 'LANDED (exit 0)' \
+    && printf '%s' "$body" | grep -q 'card=card-abc'; then
+    echo "  ok   land_notify_finish(rc=0): posts to /api/messages, from=caller, to=caller, LANDED, correct card"
+  else
+    echo "  FAIL land_notify_finish(rc=0): path=[$path] body=[$body]"; fail=1
+  fi
+
+  n=$((n+1))
+  : >"$STUB_POST_LOG"
+  land_notify_finish "backend" 3 ""
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  body="${line#*$'\t'}"
+  if printf '%s' "$body" | grep -q '"to": *"backend"' \
+    && printf '%s' "$body" | grep -q 'REFUSED (exit 3)' \
+    && printf '%s' "$body" | grep -q 'card=n/a'; then
+    echo "  ok   land_notify_finish(rc=3, no card): REFUSED verdict, card falls back to n/a"
+  else
+    echo "  FAIL land_notify_finish(rc=3): body=[$body]"; fail=1
+  fi
+
+  # WhiteHat F-B MEDIUM (comment 34613): a --dry-run preview returns rc=0, same as a real landing
+  # -- without the dry flag this would post "LANDED" for a run that never pushed anything.
+  n=$((n+1))
+  : >"$STUB_POST_LOG"
+  land_notify_finish "fullstack" 0 "card-abc" "1"
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  body="${line#*$'\t'}"
+  if printf '%s' "$body" | grep -q 'DRY-RUN (exit 0)' \
+    && ! printf '%s' "$body" | grep -q 'LANDED'; then
+    echo "  ok   land_notify_finish(rc=0, dry=1): DRY-RUN verdict, never LANDED"
+  else
+    echo "  FAIL land_notify_finish(rc=0, dry=1): body=[$body]"; fail=1
+  fi
+
+  # Negative control (guards-that-pin-behaviour): with no readable token file, nothing is posted.
+  n=$((n+1))
+  rm -f "$KANBAN_COMMENT_TOKEN_FILE"
+  : >"$STUB_POST_LOG"
+  land_notify_finish "fullstack" 0 "card-abc"
+  if [ ! -s "$STUB_POST_LOG" ]; then
+    echo "  ok   land_notify_finish with no token file: no POST sent (fail-silent, never blocks the land)"
+  else
+    echo "  FAIL land_notify_finish with no token file: a POST was sent anyway: $(cat "$STUB_POST_LOG")"; fail=1
+  fi
+
+  echo
+  if [ "$fail" -eq 0 ]; then echo "selftest-land-notify: $n case(s), PASS"; exit 0
+  else echo "selftest-land-notify: $n case(s), FAIL"; exit 1
   fi
 fi
 
@@ -3841,8 +3984,9 @@ if [ "$TARGET" = "--card" ]; then
   [ -n "$CARD_AGENT" ] || die 2 "--card requires --agent <name> for attribution (locking, fleet-test queue, version-bump commit message)"
   LAND_CARD="$CARD_BRANCH_ID"
   CARD_BRANCH_MODE=1
-  land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"
-  exit $?
+  land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"; _land_rc=$?
+  land_notify_finish "$CARD_AGENT" "$_land_rc" "$CARD_BRANCH_ID" "$DRY"
+  exit "$_land_rc"
 fi
 
 # Card 6ec8e9d8 (MikroB GO, msg 18291/comment 30593): `marveen-land.sh --batch <id1>:<agent1>,<id2>:<agent2>,...`
@@ -3948,7 +4092,8 @@ case "$TARGET" in
     ;;
   '') die 2 "usage: marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]] | marveen-land.sh --card <id> --agent <agent> [--dry-run] | marveen-land.sh --all [--dry-run]" ;;
   *)
-    land_with_retry "$TARGET" "$DRY"
-    exit $?
+    land_with_retry "$TARGET" "$DRY"; _land_rc=$?
+    land_notify_finish "$TARGET" "$_land_rc" "${LAND_CARD:-}" "$DRY"
+    exit "$_land_rc"
     ;;
 esac
