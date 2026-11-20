@@ -105,6 +105,19 @@ describe('GET /api/freellm/status', () => {
     expect(out.body.drafts).toBe(2)
     expect(out.body.lastError).toContain('http_404')
   })
+
+  it('excludes known test callers (test-agent/selftest/queue) from the counters', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    appendLlmLedgerRow({ agentId: 'selftest', taskType: 'offload', provider: 'freellm', ok: true, nowS: now })
+    appendLlmLedgerRow({ agentId: 'test-agent', taskType: 'offload', provider: 'freellm', ok: false, failReason: 'quota_429', nowS: now })
+    appendLlmLedgerRow({ agentId: 'queue', taskType: 'offload', provider: 'freellm', ok: false, failReason: 'auth_401', nowS: now })
+
+    const { ctx, out } = mkRequest('/api/freellm/status', 'GET')
+    await tryHandleFreellmStatus(ctx)
+    expect(out.body.calls).toBe(0)
+    expect(out.body.drafts).toBe(0)
+    expect(out.body.lastError).toBeNull()
+  })
 })
 
 describe('PUT /api/freellm/status', () => {

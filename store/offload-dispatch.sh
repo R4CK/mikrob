@@ -811,12 +811,18 @@ freellm_draft_comment_body() {
 #               existing 2-strikes ceiling so a genuinely broken freellm backend does not retry it
 #               forever on every sweep either.
 try_freellm_for_leaf() {
-  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
+  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}" assignee="${6:-}"
   [[ -x "$FREELLM_CALL" ]] || return 1
 
   local out rc=0 errfile
   errfile="$(mktemp)"
-  out="$(printf '%s' "$task" | bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
+  # Card 685f25cb (MikroB measured audit, 2026-11-20): every freellm_call.sh ledger row was
+  # agent_id=unknown/card_id=NULL because this call site never set FREELLM_CALLER/FREELLM_CARD_ID
+  # -- the dashboard calls page cannot attribute a single real call. post_id is already the exact
+  # kanban card id the draft/fail comment above is posted to; assignee is the leaf's own agent,
+  # threaded in from the two site wrappers below (defaults to empty -> freellm-call.sh's own
+  # "unknown" fallback when a caller, such as the --test-freellm-fallback-site harness, has none).
+  out="$(printf '%s' "$task" | FREELLM_CALLER="${assignee:-unknown}" FREELLM_CARD_ID="$post_id" bash "$FREELLM_CALL" 2>"$errfile")" || rc=$?
   # Card 555419a8 (Cybersec M1 on af8ddbf0): freellm-call.sh's own named error messages (model
   # 404, token mismatch) used to be thrown away right here by this call's `2>/dev/null` -- the
   # one thing that script fixed (naming instead of staying silent), this caller immediately
@@ -1104,20 +1110,20 @@ PY
 
 # Mutant-B target (the try_leaf-exhausted site, below).
 freellm_fallback_exhausted_site() {
-  local leaf_project="$1" leaf_tags="$2" leaf_title="$3" leaf_desc="$4" leaf_id="$5" task="$6" post_id="$7" synthetic="$8"
+  local leaf_project="$1" leaf_tags="$2" leaf_title="$3" leaf_desc="$4" leaf_id="$5" task="$6" post_id="$7" synthetic="$8" assignee="${9:-}"
   is_freellm_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" ||
-    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }
+    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$assignee" && return 0; }
   return 1
 }
 
 # Mutant-A target (the CAPACITY_HOLD sweep site, further down).
 freellm_fallback_capacity_hold_site() {
-  local lveto="$1" lproject="$2" ltags="$3" ltitle="$4" ldesc="$5" lid="$6" ltask="$7" lpost_id="$8" lsynthetic="$9"
+  local lveto="$1" lproject="$2" ltags="$3" ltitle="$4" ldesc="$5" lid="$6" ltask="$7" lpost_id="$8" lsynthetic="$9" lassignee="${10:-}"
   if [[ "$lveto" == "true" ]] || is_freellm_blocked "$lproject" "$ltags" "$ltitle" "$ldesc"; then
     attempts_op categorical-online "$lid" >/dev/null
     echo "offload-dispatch: leaf $lid -> freellm blocked under capacity hold (veto=$lveto, project=$lproject), no attempt" >&2
     return 1
-  elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic"; then
+  elif try_freellm_for_leaf "$lid" "$ltitle" "$ltask" "$lpost_id" "$lsynthetic" "$lassignee"; then
     return 0
   fi
   return 1
@@ -1931,8 +1937,8 @@ if [[ "${1:-}" == "--test-freellm-fallback-site" ]]; then
   hdr_file="$(mktemp)"
   site="${1:-}"; shift
   case "$site" in
-    exhausted) freellm_fallback_exhausted_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" ;;
-    capacity-hold) freellm_fallback_capacity_hold_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-false}" ;;
+    exhausted) freellm_fallback_exhausted_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" "${9:-}" ;;
+    capacity-hold) freellm_fallback_capacity_hold_site "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-false}" "${10:-}" ;;
     *) echo "usage: --test-freellm-fallback-site exhausted|capacity-hold <args...>" >&2; exit 2 ;;
   esac
   rc=$?
@@ -2196,7 +2202,7 @@ $leaf_desc"
       fi
       # FREELLM FALLBACK (card 4eb3743e, gate parity: WhiteHat NO-GO 28484 M1). Extracted to
       # freellm_fallback_exhausted_site (card 5aa686f0) -- see that function's own header.
-      freellm_fallback_exhausted_site "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" "$leaf_id" "$task" "$post_id" "$synthetic" && return 0
+      freellm_fallback_exhausted_site "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" "$leaf_id" "$task" "$post_id" "$synthetic" "$leaf_assignee_raw" && return 0
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
@@ -2305,7 +2311,7 @@ $ldesc"
     # anywhere else here. Apply both before any freellm attempt, and mark categorical-online on a
     # block -- same permanent-block pattern as the veto check inside try_leaf. Extracted to
     # freellm_fallback_capacity_hold_site (card 5aa686f0) -- see that function's own header.
-    if freellm_fallback_capacity_hold_site "$lveto" "$lproject" "$ltags" "$ltitle" "$ldesc" "$lid" "$ltask" "$lpost_id" "$lsynthetic"; then
+    if freellm_fallback_capacity_hold_site "$lveto" "$lproject" "$ltags" "$ltitle" "$ldesc" "$lid" "$ltask" "$lpost_id" "$lsynthetic" "$lassignee_raw"; then
       drafted=$(( drafted + 1 ))
     fi
   elif try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic" "$lveto"; then

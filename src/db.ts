@@ -10062,12 +10062,14 @@ export interface FreellmCallRow {
 // row per freellm call (appendLlmLedgerRow, called from freellm-call.sh's _freellm_ledger_log on
 // every exit path) -- no prompt/response content, no key material, ever written to this table.
 // The real gap was that nothing queried it for this page; no new journal file needed.
-export function getFreellmCallRows(params: { sinceS: number; limit: number }): FreellmCallRow[] {
+export function getFreellmCallRows(params: { sinceS: number; limit: number; excludeAgents?: string[] }): FreellmCallRow[] {
+  const excl = params.excludeAgents ?? []
+  const exclClause = excl.length > 0 ? `AND agent_id NOT IN (${excl.map(() => '?').join(',')})` : ''
   const rows = db.prepare(`
     SELECT ts, agent_id, card_id, model, ok, fail_reason, latency_ms
-    FROM llm_ledger WHERE provider = 'freellm' AND ts >= ?
+    FROM llm_ledger WHERE provider = 'freellm' AND ts >= ? ${exclClause}
     ORDER BY ts DESC LIMIT ?
-  `).all(params.sinceS, params.limit) as Array<Omit<FreellmCallRow, 'ok'> & { ok: number }>
+  `).all(params.sinceS, ...excl, params.limit) as Array<Omit<FreellmCallRow, 'ok'> & { ok: number }>
   return rows.map((r) => ({ ...r, ok: r.ok === 1 }))
 }
 
@@ -10084,7 +10086,8 @@ export interface FreellmOutcomeCounts {
 // fully-stalled retry loop leaves, everything else). Computed in SQL rather than by fetching every
 // row in the window, because the window can hold thousands of rows (measured: 6092 in the current
 // period) and the counts must cover the whole window regardless of the `calls` list's own limit.
-export function getFreellmOutcomeCounts(sinceS: number): FreellmOutcomeCounts {
+export function getFreellmOutcomeCounts(sinceS: number, excludeAgents: string[] = []): FreellmOutcomeCounts {
+  const exclClause = excludeAgents.length > 0 ? `AND agent_id NOT IN (${excludeAgents.map(() => '?').join(',')})` : ''
   const row = db.prepare(`
     SELECT
       SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS ok,
@@ -10096,20 +10099,21 @@ export function getFreellmOutcomeCounts(sinceS: number): FreellmOutcomeCounts {
             AND COALESCE(fail_reason, '') != 'quota_429'
             AND COALESCE(fail_reason, '') != 'http_'
           THEN 1 ELSE 0 END) AS fail
-    FROM llm_ledger WHERE provider = 'freellm' AND ts >= ?
-  `).get(sinceS) as { ok: number | null; auth: number | null; rate_429: number | null; stalled: number | null; fail: number | null }
+    FROM llm_ledger WHERE provider = 'freellm' AND ts >= ? ${exclClause}
+  `).get(sinceS, ...excludeAgents) as { ok: number | null; auth: number | null; rate_429: number | null; stalled: number | null; fail: number | null }
   return {
     ok: row.ok ?? 0, fail: row.fail ?? 0, stalled: row.stalled ?? 0,
     rate_429: row.rate_429 ?? 0, auth: row.auth ?? 0,
   }
 }
 
-export function getLatestFreellmFailure(sinceS: number): { ts: number; fail_reason: string | null } | undefined {
+export function getLatestFreellmFailure(sinceS: number, excludeAgents: string[] = []): { ts: number; fail_reason: string | null } | undefined {
+  const exclClause = excludeAgents.length > 0 ? `AND agent_id NOT IN (${excludeAgents.map(() => '?').join(',')})` : ''
   return db.prepare(`
     SELECT ts, fail_reason FROM llm_ledger
-    WHERE provider = 'freellm' AND ok = 0 AND ts >= ?
+    WHERE provider = 'freellm' AND ok = 0 AND ts >= ? ${exclClause}
     ORDER BY ts DESC LIMIT 1
-  `).get(sinceS) as { ts: number; fail_reason: string | null } | undefined
+  `).get(sinceS, ...excludeAgents) as { ts: number; fail_reason: string | null } | undefined
 }
 
 // The decay-sweep cadence. Lives HERE, beside the prune it drives, because

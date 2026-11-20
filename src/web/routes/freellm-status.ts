@@ -37,6 +37,12 @@ function writeFreellmEnabled(enabled: boolean): void {
   atomicWriteFileSync(FREELLM_ENABLED_PATH, JSON.stringify({ enabled }) + '\n', { mode: 0o600 })
 }
 
+// Card 685f25cb (MikroB follow-up, msg 21888): names of callers that are not real production
+// traffic -- excluded from the dashboard's real-traffic counts by default so a manual/selftest
+// freellm-call.sh invocation never inflates what the operator reads as live usage. Opt back in
+// per-request with ?includeTest=1 (GET /api/freellm/calls only; /status always excludes).
+const FREELLM_TEST_CALLER_IDS = ['test-agent', 'selftest', 'queue']
+
 // Card 685f25cb: counters now come from llm_ledger (provider='freellm'), one row per REAL call --
 // success and failure both -- appended by freellm-call.sh's own _freellm_ledger_log on every exit
 // path (card e96d56c5 F4). The earlier version counted only kanban_comments rows left by the
@@ -44,8 +50,8 @@ function writeFreellmEnabled(enabled: boolean): void {
 // all (MikroB root-cause measurement, card 685f25cb, 2026-11-20).
 function freellmCounters24h(): { calls: number; drafts: number; lastError: string | null } {
   const cutoff = Math.floor(Date.now() / 1000) - 24 * 3600
-  const counts = getFreellmOutcomeCounts(cutoff)
-  const latestFailure = getLatestFreellmFailure(cutoff)
+  const counts = getFreellmOutcomeCounts(cutoff, FREELLM_TEST_CALLER_IDS)
+  const latestFailure = getLatestFreellmFailure(cutoff, FREELLM_TEST_CALLER_IDS)
   return {
     calls: counts.ok + counts.fail + counts.stalled + counts.rate_429 + counts.auth,
     drafts: counts.ok,
@@ -94,7 +100,10 @@ async function handleFreellmCalls(ctx: RouteContext): Promise<void> {
     sinceS = now - FREELLM_CALLS_DEFAULT_WINDOW_S
   }
 
-  const rows = getFreellmCallRows({ sinceS, limit })
+  const includeTest = url.searchParams.get('includeTest') === '1'
+  const excludeAgents = includeTest ? [] : FREELLM_TEST_CALLER_IDS
+
+  const rows = getFreellmCallRows({ sinceS, limit, excludeAgents })
   json(res, {
     calls: rows.map((r) => ({
       ts: r.ts,
@@ -109,8 +118,8 @@ async function handleFreellmCalls(ctx: RouteContext): Promise<void> {
       fail_reason: r.fail_reason,
       duration_ms: r.latency_ms,
     })),
-    counts_24h: getFreellmOutcomeCounts(now - 24 * 3600),
-    counts_7d: getFreellmOutcomeCounts(now - 7 * 24 * 3600),
+    counts_24h: getFreellmOutcomeCounts(now - 24 * 3600, excludeAgents),
+    counts_7d: getFreellmOutcomeCounts(now - 7 * 24 * 3600, excludeAgents),
   })
 }
 

@@ -89,6 +89,24 @@ describe('GET /api/freellm/calls', () => {
     expect(out.body.counts_7d).toEqual({ ok: 0, fail: 0, stalled: 0, rate_429: 0, auth: 0 })
   })
 
+  it('excludes known test callers (test-agent/selftest/queue) from rows and counts by default', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    appendLlmLedgerRow({ agentId: 'backend2', taskType: 'offload', provider: 'freellm', ok: true, nowS: now })
+    appendLlmLedgerRow({ agentId: 'selftest', taskType: 'offload', provider: 'freellm', ok: true, nowS: now })
+    appendLlmLedgerRow({ agentId: 'test-agent', taskType: 'offload', provider: 'freellm', ok: false, failReason: 'quota_429', nowS: now })
+    appendLlmLedgerRow({ agentId: 'queue', taskType: 'offload', provider: 'freellm', ok: false, failReason: 'auth_401', nowS: now })
+
+    const { ctx, out } = mkRequest('/api/freellm/calls')
+    await tryHandleFreellmStatus(ctx)
+    expect(out.body.calls).toHaveLength(1)
+    expect(out.body.calls[0].agent).toBe('backend2')
+    expect(out.body.counts_24h).toEqual({ ok: 1, fail: 0, stalled: 0, rate_429: 0, auth: 0 })
+
+    const { ctx: ctx2, out: out2 } = mkRequest('/api/freellm/calls?includeTest=1')
+    await tryHandleFreellmStatus(ctx2)
+    expect(out2.body.calls).toHaveLength(4)
+  })
+
   it('rejects an out-of-range limit with 400', async () => {
     const { ctx, out } = mkRequest('/api/freellm/calls?limit=0')
     await tryHandleFreellmStatus(ctx)
