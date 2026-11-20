@@ -1799,10 +1799,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(transcriptMatch[1])
     // Caller gate BEFORE the 404: a shared-token holder must not be able to
     // probe which agents exist by reading the not-found/forbidden difference.
+    //
+    // Card 52114c2f (CYBERED NO-GO 34673, F1): TRANSCRIPT_CALLER_KINDS includes 'device', and
+    // 'device' alone is NOT human -- an agent:<id> device key (card 9655494c) resolves to the
+    // same shape, which would let any agent holding its own key read ANY allowlisted agent's
+    // full transcript once one exists in store/transcript-allowlist.json. rejectIfNotHumanAuth
+    // (card 93ed929a, RedHat 16876 B1) is the shared predicate that excludes an agent device key
+    // from every other write route; reusing it here closes the same gap for this read route.
     if (!kindAllowed(ctx.auth, TRANSCRIPT_CALLER_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
+    if (rejectIfNotHumanAuth(ctx)) return true
     if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     if (!isTranscriptAllowed(name)) {
       json(res, { error: 'Transcript access is not enabled for this agent' }, 403)
