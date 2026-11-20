@@ -29329,3 +29329,13 @@ hiba leszámítva, ugyanaz mint a 60aeca01 delta-nál mérve).
 **Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást.
 Gate: a delta a 62fc59ac8-on már megadott QA + Cybered sign-offot nem ismétli meg; ez a komment
 a merge-delta saját REVIEW-ja.
+
+## 2026-11-20 -- Side-effect health panel built contract-first (kártya 2d9c0bb2)
+
+**Döntés:** a Pair-BE kártya (0a527826, "F4 Side-effect health board") még `planned` volt, amikor a FE munka elkezdődött -- a `contract-first-dashboard-widget` skill szerint haladva, ajánlott kontraktust tettem közzé mindkét kártya kommentjében: `GET /api/health/effects` -> `{ effects: [{ kind, status: 'ok'|'red', consecutiveFailures, lastError, lastCheckedAt }] }`. A panel GLOBÁLIS (a `<main>` tetején, a meglévő `#branchDriftBanner`/`#authSetupBanner` mintáját követve) -- minden oldalon látható, nem oldal-specifikus, mert az egészség-állapot nem egy adott oldalhoz tartozik. CSAK a vörös (egészségtelen) bejegyzéseket mutatja; egészséges állapotban a panel teljesen `hidden`, nem foglal helyet. 30 másodpercenkénti frissítés, függetlenül az aktív oldaltól. Meglévő oldal/navigáció NEM módosult (Peti 14288 korlátja).
+
+**Ellenőrzés:** scope-olt teszt (22 teszt) + teljes `fleet-test.sh`: 1399/1400 fájl, 44066/44198 teszt zöld (132 skipped), `lint-ratchet.sh` alapvonal tart (420 lelet).
+
+**Ki döntött:** MikroB kártya-leírása (2d9c0bb2) + Peti 14288 (additív-csak korlát). Fron Ted (fron-ted) a végrehajtó, a kontraktus FE-oldali javaslat, backend (0a527826 felelőse) megerősítésére/korrekciójára vár.
+
+**Hivatkozás:** kártya 2d9c0bb2 (Pair-BE 0a527826), commit 00f226e84.
