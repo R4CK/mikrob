@@ -10808,6 +10808,31 @@ body {
    otherwise override the UA's [hidden] { display: none }. */
 .branch-drift-banner { border-left-color: var(--warning, #d97706); }
 .branch-drift-banner[hidden] { display: none; }
+
+/* Side-effect health panel (card 2d9c0bb2): same banner shell as .auth-setup-banner, red
+   accent since it only ever shows when something needs a person (rule: a healthy state takes
+   no space, so this panel has no "all good" rendering at all). */
+.side-effect-health-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger, #dc2626);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger, #dc2626) 8%, transparent);
+  font-size: 13px;
+}
+.side-effect-health-panel[hidden] { display: none; }
+.side-effect-health-header { font-weight: 600; }
+.side-effect-health-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.side-effect-health-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.side-effect-health-kind { font-weight: 600; color: var(--danger, #dc2626); white-space: nowrap; }
+.side-effect-health-error { color: var(--text-muted); }
+@media (max-width: 480px) {
+  .side-effect-health-row { flex-direction: column; gap: 2px; }
+}
 .branch-drift-banner code,
 .updates-branch-notice code {
   background: var(--bg);
