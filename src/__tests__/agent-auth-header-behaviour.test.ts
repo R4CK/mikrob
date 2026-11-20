@@ -13,13 +13,16 @@
 // (revoked/junk-key fallback) uncovered by this same targeted-run reasoning -- a later edit could
 // silently reopen either without any test in this file's own set going red. Added below.
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+
+const execFileAsync = promisify(execFile)
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCRIPT = join(__dirname, '..', '..', 'store', 'agent-auth-header.sh')
@@ -58,6 +61,32 @@ function run(agent: string, env: Record<string, string> = {}): { out: string; st
     const e = err as { status?: number; stdout?: string }
     return { out: (e.stdout ?? '').trim(), status: e.status ?? 1 }
   }
+}
+
+// Card 52114c2f round-5 (2026-11-20, root-caused via sp-systematic-debugging, NOT a contention
+// flake as the F3 tests below previously claimed): execFileSync blocks the Node.js event loop for
+// its entire duration. The F3 tests' mock HTTP server lives in THIS SAME process (createServer
+// below) -- while the script's own curl probe is running as a descendant of execFileSync, the
+// event loop that would accept() and answer that connection cannot run until execFileSync
+// returns, which cannot happen until curl gets a response. Reproduced deterministically (3/3,
+// zero load) as curl exit 28 "0 bytes received" after the full --max-time. Fixed by using
+// execFile (async) only for these two probe tests, so the server can actually respond.
+function runAsync(agent: string, env: Record<string, string> = {}): Promise<{ out: string; status: number }> {
+  return execFileAsync('bash', [SCRIPT, agent], {
+    env: {
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+      MARVEEN_AGENTS_ROOT: join(work, 'agents'),
+      MARVEEN_MAIN: join(work, 'main'),
+      MARVEEN_AGENT_ID: 'backend',
+      AGENT_AUTH_HEADER_PROBE_URL: 'http://127.0.0.1:1/unreachable',
+      AGENT_AUTH_HEADER_PROBE_TIMEOUT: '1',
+      ...env,
+    },
+    encoding: 'utf8',
+  }).then(
+    ({ stdout }) => ({ out: stdout.trim(), status: 0 }),
+    (err: { code?: number; stdout?: string }) => ({ out: (err.stdout ?? '').trim(), status: err.code ?? 1 })
+  )
 }
 
 describe('store/agent-auth-header.sh behaviour (card 52114c2f F4, pinned via real execFileSync)', () => {
@@ -112,26 +141,19 @@ describe('store/agent-auth-header.sh behaviour (card 52114c2f F4, pinned via rea
       await new Promise<void>((resolve) => server.close(() => resolve()))
     })
 
-    it('a revoked (401) own key falls back to the shared token, with a distinct warning', () => {
+    it('a revoked (401) own key falls back to the shared token, with a distinct warning', async () => {
       writeFileSync(join(work, 'agents', 'backend', '.dashboard-agent-key'), 'revoked-key-value')
-      // Card 52114c2f (QA 34710/34711 pin, measured under fleet-test's shared, contended
-      // sandbox): the mock listens fine, but a 3s --max-time occasionally elapsed before curl's
-      // own process got scheduled, so the probe came back inconclusive ("000") instead of 401 --
-      // the SAME benign under-load flake this sandbox's own fleet-test.sh documents for vitest's
-      // birpc timeout (card 54699bbb). 10s gives real headroom without masking a logic bug: the
-      // probe's OUTCOME (401 vs 200) is still exactly what this test asserts on.
-      // Round-4 re-measurement (2026-11-20): the 10s curl --max-time above is itself longer than
-      // vitest's own default 5000ms per-test timeout, so under heavier contention the TEST died
-      // first ("Test timed out in 5000ms") before curl's own allowance ran out -- the 10s fix was
-      // incomplete without raising this test's own timeout to match.
-      const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '10' })
+      // See runAsync's own comment above: this test's mock server lives in this process, so the
+      // probe must run via execFile (async), not execFileSync, or the event loop can never
+      // answer it.
+      const { out, status } = await runAsync('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '10' })
       expect(status).toBe(0)
       expect(out).toBe('Authorization: Bearer shared-token-value')
     }, 15000)
 
-    it('a valid (200) own key is used as-is, not the shared token', () => {
+    it('a valid (200) own key is used as-is, not the shared token', async () => {
       writeFileSync(join(work, 'agents', 'backend', '.dashboard-agent-key'), 'own-agent-key-value')
-      const { out, status } = run('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '10' })
+      const { out, status } = await runAsync('backend', { AGENT_AUTH_HEADER_PROBE_URL: probeUrl, AGENT_AUTH_HEADER_PROBE_TIMEOUT: '10' })
       expect(status).toBe(0)
       expect(out).toBe('Authorization: Bearer own-agent-key-value')
     }, 15000)
