@@ -152,6 +152,17 @@ def main():
             (BLOCK, f"echo>{root / 'store' / 'update.sh'}", root, E(MARVEEN_AGENT_ID="backend3")),
             (BLOCK, f"echo hi>{root / 'store' / 'update.sh'}", root,
              E(MARVEEN_AGENT_ID="backend3")),
+            # QA FAIL round 2 (34781, card 0c3b13b5, same Gate-SHA): the exact two shapes QA
+            # reproduced live -- a redirect riding on the SAME segment as a real invocation,
+            # with no `;`/`&&`/`|` needed to separate them. Fixed by the same N3 change (the
+            # exemption no longer skips target-checking for its own segment).
+            (BLOCK, f"bash {root / 'store' / 'update.sh'} > {root / 'store' / 'fleet-test.sh'}",
+             root, E(MARVEEN_AGENT_ID="backend3")),
+            (BLOCK, f". {root / 'store' / 'marveen-land.sh'} > {root / 'store' / 'fleet-test.sh'}",
+             root, E(MARVEEN_AGENT_ID="backend3")),
+            # QA's negative control: piping still denies via the pre-existing segment split.
+            (BLOCK, f"bash update.sh | tee {root / 'store' / 'fleet-test.sh'}", root,
+             E(MARVEEN_AGENT_ID="backend3")),
             # QA FAIL regression (card 0c3b13b5): the exempt-script check used to be a bare
             # substring search on the whole raw command, so merely MENTIONING the script name
             # anywhere (e.g. a trailing comment) disabled the guard for an unrelated write --
