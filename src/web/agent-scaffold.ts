@@ -5291,24 +5291,10 @@ A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
 
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
-Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.
-A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.
-
-Memória mentés:
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'
-
-Napi napló (append-only):
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'
-
-Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -D /tmp/mem-fejlec-AGENT_NAME.txt "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
-grep -i '^x-memory-search' /tmp/mem-fejlec-AGENT_NAME.txt
-
-A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni. A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
-relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
-relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
-Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a &strict=1-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
-Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva. A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
+A memória mentés, a napi napló és a keresés pontos curl-receptjét NE írd bele ide: azokat a
+process-indítás saját, idempotens generátora (ensureMemorySaveSection, ensureDailyLogSection,
+ensureMemorySearchLabelSection) illeszti be az agent saját CLAUDE.md-jébe közvetlenül e sor
+alá, az agent saját kulcsával (agentAuthHeaderPath), nem a megosztott tokennel.
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 
@@ -5605,6 +5591,96 @@ export function ensureMessageCloseSection(name: string): void {
 
   const updated = MSGCLOSE_BLOCK_RE.test(existing)
     ? existing.replace(MSGCLOSE_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+const MEMORY_SAVE_BEGIN = '<!-- BEGIN GENERATED: memory-save (auto-generated, do not edit by hand) -->'
+const MEMORY_SAVE_END = '<!-- END GENERATED: memory-save -->'
+const MEMORY_SAVE_BLOCK_RE = new RegExp(
+  `${MEMORY_SAVE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MEMORY_SAVE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Card 52114c2f: the memory-save recipe used to live only in the one-time, LLM-written
+// new-agent CLAUDE.md prompt (never regenerated afterward), still reading the shared token
+// via tokenPath. This makes it a proper idempotent-replace section like the others, on the
+// per-agent helper (agentAuthHeaderPath) instead.
+export function buildMemorySaveBody(name: string): string {
+  return [
+    '## Memória mentés',
+    '',
+    'Fontos döntést/tanulságot azonnal ments:',
+    '```bash',
+    `${agentAuthHeaderPath} ${name} \\`,
+    `| curl -H @- -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" \\`,
+    `  -d '{"agent_id":"${name}","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'`,
+    '```',
+  ].join('\n')
+}
+
+/** Idempotently ensures the memory-save block is present and current; same no-op-on-main
+ *  contract as ensureMessageCloseSection. */
+export function ensureMemorySaveSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${MEMORY_SAVE_BEGIN}\n${buildMemorySaveBody(name)}\n${MEMORY_SAVE_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = MEMORY_SAVE_BLOCK_RE.test(existing)
+    ? existing.replace(MEMORY_SAVE_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+const DAILY_LOG_BEGIN = '<!-- BEGIN GENERATED: daily-log (auto-generated, do not edit by hand) -->'
+const DAILY_LOG_END = '<!-- END GENERATED: daily-log -->'
+const DAILY_LOG_BLOCK_RE = new RegExp(
+  `${DAILY_LOG_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${DAILY_LOG_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Card 52114c2f: same fix as buildMemorySaveBody/ensureMemorySaveSection, for the daily-log
+// recipe (also stuck on tokenPath in the one-time new-agent prompt).
+export function buildDailyLogBody(name: string): string {
+  return [
+    '## Napi napló (append-only)',
+    '```bash',
+    `${agentAuthHeaderPath} ${name} \\`,
+    `| curl -H @- -s -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" \\`,
+    `  -d '{"agent_id":"${name}","content":"## HH:MM -- Tema\\nMi tortent, mi lett az eredmeny"}'`,
+    '```',
+  ].join('\n')
+}
+
+/** Idempotently ensures the daily-log block is present and current; same no-op-on-main
+ *  contract as ensureMessageCloseSection. */
+export function ensureDailyLogSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${DAILY_LOG_BEGIN}\n${buildDailyLogBody(name)}\n${DAILY_LOG_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = DAILY_LOG_BLOCK_RE.test(existing)
+    ? existing.replace(DAILY_LOG_BLOCK_RE, block)
     : existing.trimEnd() + '\n\n' + block + '\n'
 
   if (updated === existing) return
