@@ -41,6 +41,34 @@ function cardIdInAddedLineRx(cardId: string): RegExp {
   return new RegExp(`^\\+(?!\\+).*\\b${escaped}\\b`, 'i')
 }
 
+// Same leading-`+` convention as cardIdInAddedLineRx (added-by-this-diff, never the
+// `+++ b/DECISIONS.md` file header). Two known header shapes this guard must catch:
+//  (a) a `## ` entry header missing the leading date (the original a01d8a3d bug: a
+//      card-id-first `## a01d8a3d: Title (date)` header instead of `## YYYY-MM-DD -- Title`).
+//  (b) a bold-text entry header opening with a date instead of `## ` (the card 60aeca01 bug:
+//      `**2026-11-16 -- Title**`). Scoped to "starts with a date right after `**`" so it never
+//      flags an ordinary inline bold sub-field label (`**Döntés:**`, `**Context:**`, ...), which
+//      this file uses throughout and is not a new top-level entry.
+const ADDED_HASH_HEADER_RX = /^\+(?!\+)## /
+const ADDED_BOLD_DATED_HEADER_RX = /^\+(?!\+)\*\*\d{4}-\d{2}-\d{2}/
+// The dated-header shape store/decisions-append-union.sh's try_append_union() requires of BOTH
+// sides before it will auto-resolve a pure-append conflict (its own `header_glob`, "## " followed
+// by 4 digits then "-"). A card 60aeca01 entry used a bold-text header instead and made
+// try_append_union correctly, but silently, refuse to auto-resolve any future merge touching that
+// region -- this check catches the shape at REVIEW time instead of at land time.
+const DATED_HASH_HEADER_RX = /^## \d{4}-/
+
+function addedNonDatedHeaders(diff: string): string[] {
+  return diff
+    .split('\n')
+    .filter(
+      (l) =>
+        (ADDED_HASH_HEADER_RX.test(l) && !DATED_HASH_HEADER_RX.test(l.slice(1))) ||
+        ADDED_BOLD_DATED_HEADER_RX.test(l),
+    )
+    .map((l) => l.slice(1))
+}
+
 interface Comment {
   readonly author: string
   readonly content: string
@@ -187,5 +215,74 @@ export async function decisionsGuardVerdict(
       `sor. Írj egy döntésnapló-sort a DECISIONS.md VÉGÉRE (farokba-írás szabály), hivatkozva a ` +
       `kártya ID-jére, majd próbáld újra. Ha tudatosan át akarsz lépni rajta, MikroB force: true ` +
       `értékkel megteheti.`,
+  }
+}
+
+/**
+ * Blocks a transition INTO `waiting` for ANY card (not scoped to isNonTrivialCard -- a
+ * malformed header breaks try_append_union's auto-merge for every future card that touches the
+ * same region of the file, regardless of this card's own risk tier) whose REVIEW's declared
+ * Gate-SHA diff adds a top-level DECISIONS.md `## ` header that is not in the file's dated
+ * format (`## YYYY-MM-DD ...`). MikroB scope-add (card 84f90b4e, comment 1795199177), after a
+ * bold-text header (card 60aeca01) made try_append_union refuse a later auto-merge.
+ */
+export async function decisionsHeaderGuardVerdict(
+  cardId: string,
+  nextStatus: unknown,
+  force: boolean,
+  actor?: string,
+): Promise<LandedVerdict> {
+  if (nextStatus !== 'waiting') return { blocked: false }
+  if (isForceActor(force, actor)) return { blocked: false }
+
+  let card: ReturnType<typeof getKanbanCard>
+  try {
+    card = getKanbanCard(cardId)
+  } catch (err) {
+    logger.warn({ err, cardId }, 'decisions-header-guard could not read the card; allowing the move')
+    return { blocked: false }
+  }
+  if (!card) return { blocked: false }
+  if (card.status === 'waiting') return { blocked: false }
+
+  let comments: Comment[]
+  try {
+    comments = getKanbanComments(cardId)
+  } catch (err) {
+    logger.warn({ err, cardId }, 'decisions-header-guard could not read comments; allowing the move')
+    return { blocked: false }
+  }
+
+  let resolved: { sha: string; repo: string } | null
+  try {
+    resolved = resolveCheck(cardId, comments)
+  } catch (err) {
+    logger.warn({ err, cardId }, 'decisions-header-guard could not resolve the gate-sha/repo; allowing the move')
+    return { blocked: false }
+  }
+  if (resolved === null) return { blocked: false }
+
+  let diff: string
+  try {
+    const res = await git(resolved.repo, ['diff', '--no-color', `${resolved.sha}^1`, resolved.sha, '--', 'DECISIONS.md'])
+    if (!res.ok) return { blocked: false }
+    diff = res.out
+  } catch (err) {
+    logger.warn({ err, cardId }, 'decisions-header-guard could not diff the gate-sha; allowing the move')
+    return { blocked: false }
+  }
+
+  const badHeaders = addedNonDatedHeaders(diff)
+  if (badHeaders.length === 0) return { blocked: false }
+
+  return {
+    blocked: true,
+    message:
+      `Ez a kártya nem adható át gate-re: a Gate-SHA (${resolved.sha}) diffje a DECISIONS.md-be ` +
+      `nem dátumozott formátumú fejsort ad hozzá (${badHeaders.join('; ')}). A kötelező forma ` +
+      `"## YYYY-MM-DD -- Cím" vagy "## YYYY-MM-DD: Cím" -- enélkül a try_append_union auto-merge ` +
+      `(store/decisions-append-union.sh) ezen a bejegyzésen (fail-closed, helyesen) refuse-olni ` +
+      `fog egy jövőbeli landolásnál. Javítsd a fejsort, majd próbáld újra. Ha tudatosan át akarsz ` +
+      `lépni rajta, MikroB force: true értékkel megteheti.`,
   }
 }

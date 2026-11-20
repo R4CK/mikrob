@@ -29729,3 +29729,45 @@ fires, not when or why it fires.
 
 **Ki döntött:** Cybersec NO-GO (35056, Gate-SHA 3980043db). backend fixed it (the script's own
 author, per the 4b rule another agent gates it). Gate: QA + Cybersec per MikroB's dispatch.
+
+## 2026-11-20 -- 84f90b4e delta: dated-header normalize + REVIEW-time header-format lint (MikroB scope-add 22462)
+
+**Context:** while landing card a01d8a3d, `try_append_union` correctly, but silently, refused to
+auto-resolve a pure-append merge because develop's own DECISIONS.md carried one entry (card
+60aeca01, 2026-11-16) with a bold-text header (`**2026-11-16 -- ...**`) instead of the file's
+`## YYYY-MM-DD -- Title` convention. MikroB scoped the fix into this card (comment 1795199177):
+normalize that one header (header line only, no content change), and add a check that catches a
+non-dated DECISIONS.md header at REVIEW time, so the next one is caught before it reaches
+develop, not discovered mid-land.
+
+**Fix:**
+1. `DECISIONS.md`: the card 60aeca01 entry's header changed from
+   `**2026-11-16 -- Kártya 60aeca01: ...**` to `## 2026-11-16 -- Kártya 60aeca01: ...` -- header
+   line only, the entry's content below it is untouched.
+2. `src/web/kanban-decisions-guard.ts`: new `decisionsHeaderGuardVerdict()`, wired into both
+   kanban close paths (PUT and /move) in `src/web/routes/kanban.ts`, same place as the existing
+   `decisionsGuardVerdict()`. Blocks a transition into `waiting` when the card's declared
+   Gate-SHA diff adds a DECISIONS.md header that is either (a) a `## ` header missing the leading
+   date (the original a01d8a3d bug: a card-id-first header), or (b) a bold-text header opening
+   with a date instead of `## ` (the card 60aeca01 bug). Unlike the sibling entry-presence guard,
+   this one is NOT scoped to `isNonTrivialCard` -- a malformed header breaks `try_append_union`'s
+   auto-merge for every future card touching that region of the file, regardless of this card's
+   own risk tier. Same `force: true` escape hatch as the existing guard.
+
+**Test:** `src/__tests__/kanban-decisions-guard.test.ts`, +13 cases covering both bad shapes,
+both good shapes (dash and colon date separators), the no-Gate-SHA/no-repo/diff-failure/force/
+non-waiting/re-assert fail-open paths, and that a pre-existing bold header appearing only as
+unchanged context (no leading `+`) never trips it. Mutation-verified: replacing the check's
+result with an always-empty array turns exactly the 3 header-detection assertions red, nothing
+else moves; restored byte-identical via diff. Local run (this file alone): 1 Test File passed
+(1), 33 Tests passed (33). Broader run (this file + the 4 decisions-themed selftest files): 5
+Test Files passed (5), 49 Tests passed (49). 11 kanban-route test files (move/put/dispatch/stuck/
+get-by-id/new-dev-stop wiring) alongside it: 11 Test Files passed (11), 75 Tests passed (75), no
+regression from the new call sites. `npx tsc --noEmit`: clean.
+
+**Nincs benne:** no change to `try_append_union`/`decisions-sync-resolve.sh` themselves, and no
+sweep of the rest of DECISIONS.md for other possible non-dated headers beyond the one MikroB
+named -- this delta is the normalize + the forward-looking lint, not a full-file audit.
+
+**Ki döntött:** MikroB scope-add (card 84f90b4e, comment 1795199177), found while backend was
+landing a01d8a3d. backend implemented. Gate: QA + Cybersec per the card's own Gate line.
