@@ -366,7 +366,14 @@ decompose_stderr="$TMPDIR/decompose-stderr.log"
 abc_count="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" 2>"$decompose_stderr" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' falls back to the default (3): decompCard still decomposes into both leaves, not a whole-card fallback" "$abc_count" "2"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' prints the documented fallback log line" \
-  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' is not an integer -- falling back to the documented default (3)" "$decompose_stderr" && echo yes)" "yes"
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc is not an integer -- falling back to the documented default (3)" "$decompose_stderr" && echo yes)" "yes"
+
+# FALLBACK LITERAL PIN (card e2406a43): the "3" above is only exercised against a 2-leaf fixture,
+# where any cap >= 2 looks identical -- a mutant that changes the fallback literal (3 -> 4) would
+# survive undetected. Use the 4-template fixture instead: an invalid value must fall back to
+# EXACTLY 3, not 4 or unlimited.
+abc4_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" 2>/dev/null | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "FALLBACK LITERAL PIN: OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' on a 4-match fixture caps to exactly 3" "$abc4_count" "3"
 
 # "-1": unguarded, head -n -1 on 2 candidate lines prints "all but the last 1" = 1 line, UNDER the
 # intended ceiling by accident here but demonstrating the same head-syntax hijack the card warns
@@ -375,7 +382,20 @@ check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' prints the documented fallback log l
 neg_count="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" 2>"$decompose_stderr" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 falls back to the default (3): decompCard still decomposes into both leaves, head's own -N syntax does not leak through" "$neg_count" "2"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 prints the documented fallback log line" \
-  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD='-1' is not an integer -- falling back to the documented default (3)" "$decompose_stderr" && echo yes)" "yes"
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 is not an integer -- falling back to the documented default (3)" "$decompose_stderr" && echo yes)" "yes"
+
+# ZERO HANDLING (card e2406a43): "0" is a VALID value per the regex (bare 0 is allowed), meaning
+# "decompose nothing synthetically" -- head -n 0 yields zero candidates, which the resolver treats
+# the same as "no template matched": fall back to the whole card as ONE non-synthetic leaf. This
+# must be HONOURED (0 is not replaced by the 3-default), not left unguarded.
+zero_decompose_stderr="$TMPDIR/decompose-zero-stderr.log"
+zero_result="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" 2>"$zero_decompose_stderr")"
+zero_count="$(printf '%s' "$zero_result" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+zero_synthetic="$(printf '%s' "$zero_result" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["synthetic"])')"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 is honoured: zero synthetic candidates, whole-card fallback (1 leaf)" "$zero_count" "1"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 whole-card fallback leaf is NOT synthetic" "$zero_synthetic" "False"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 is accepted as-is, no fallback log line" \
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 is not an integer" "$zero_decompose_stderr" && echo fallback-fired || echo clean)" "clean"
 
 # "08": leading-zero/octal shape, same convention as the MAX_SUBTASKS/TTL/STALE guards -- head
 # itself parses "08" as decimal 8 either way, so this fixture cannot show a behavioral difference;
@@ -383,7 +403,22 @@ check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 prints the documented fallback log line
 zero8_stderr="$TMPDIR/decompose-zero8-stderr.log"
 CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=08 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$zero8_stderr"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='08' prints the documented fallback log line" \
-  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD='08' is not an integer -- falling back to the documented default (3)" "$zero8_stderr" && echo yes)" "yes"
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=08 is not an integer -- falling back to the documented default (3)" "$zero8_stderr" && echo yes)" "yes"
+
+# LOG-LINE FORGERY PIN (CWE-117, card e2406a43 LOW-1, Cybered GO 34272): same reasoning as the
+# OFFLOAD_MAX_SUBTASKS pair above -- every PER_CARD value checked so far %q's to itself unchanged,
+# so a revert of this guard's %q escaping back to a raw echo would pass every check above untouched.
+decompose_nl_stderr="$TMPDIR/decompose-nl-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=$'1\nFAKE LOG LINE INJECTED' bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$decompose_nl_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with an embedded newline: exactly one stderr line (no forged second line)" \
+  "$(wc -l < "$decompose_nl_stderr" | tr -d ' ')" "1"
+
+decompose_esc_stderr="$TMPDIR/decompose-esc-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=$'\x1b[31mRED' bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$decompose_esc_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: exactly one stderr line" \
+  "$(wc -l < "$decompose_esc_stderr" | tr -d ' ')" "1"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: %q-escaped, no literal ESC byte reaches the log" \
+  "$(grep -cP '\x1b' "$decompose_esc_stderr" || true)" "0"
 
 # Valid-value-honoured case already covered above (cap5_count: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1).
 
@@ -524,37 +559,65 @@ for bad in 08 09 010 9223372036854775808 12abc abc12; do
   check "OFFLOAD_LEAF_MAX_ATTEMPTS='$bad' falls back to the default ceiling (2): 2nd transient failure exhausts" "$(st "$r")|$(at "$r")" "exhausted|2"
 done
 
-# NON-INTEGER ENV GUARD, sibling env 3/3. OFFLOAD_MAX_SUBTASKS has no isolated test hook of its
-# own (it only guards the main dispatch loop's leaf-call budget, which none of this file's
-# --test-* hooks exercise) -- the guard itself runs unconditionally before ANY --test-* flag is
-# handled, so its log line is still observable through any existing hook even though the budget
-# comparison it protects is not reachable from here. A "still returns pending|0" check would be
-# vacuous (that path never touches OFFLOAD_MAX_SUBTASKS either way), so this is log-line only.
+# NON-INTEGER ENV GUARD, sibling env 3/3.
 subtasks_stderr="$TMPDIR/subtasks-stderr.log"
 bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
 OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
 check "a non-integer OFFLOAD_MAX_SUBTASKS prints the documented fallback log line" \
-  "$(grep -qF "OFFLOAD_MAX_SUBTASKS='lots' is not an integer -- falling back to the documented default (15)" "$subtasks_stderr" && echo yes)" "yes"
+  "$(grep -qF "OFFLOAD_MAX_SUBTASKS=lots is not an integer -- falling back to the documented default (15)" "$subtasks_stderr" && echo yes)" "yes"
 
 # LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66) -- see the same
 # comment on the OFFLOAD_STALE_IN_PROGRESS_SECONDS block above for why each of these must fail.
-# Log-line only, same reasoning as the 'lots' case above (no reachable behavioral hook here).
 for bad in 08 09 010 9223372036854775808 12abc abc12; do
   bad_stderr="$TMPDIR/subtasks-bad-stderr.log"
   OFFLOAD_MAX_SUBTASKS="$bad" bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$bad_stderr"
   check "OFFLOAD_MAX_SUBTASKS='$bad' prints the documented fallback log line" \
-    "$(grep -qF "OFFLOAD_MAX_SUBTASKS='$bad' is not an integer -- falling back to the documented default (15)" "$bad_stderr" && echo yes)" "yes"
+    "$(grep -qF "OFFLOAD_MAX_SUBTASKS=$bad is not an integer -- falling back to the documented default (15)" "$bad_stderr" && echo yes)" "yes"
 done
+
+# LOG-LINE FORGERY PIN (CWE-117, card e2406a43 LOW-1, Cybered GO 34272): the leading-zero/overflow
+# checks above all pin VALUES that happen to %q to themselves unchanged (no shell-special chars), so
+# a mutant that reverts the %q escaping back to a raw echo of $OFFLOAD_MAX_SUBTASKS leaves every one
+# of them green -- the fix for the actual log-forgery bug was itself unpinned. These two values are
+# hostile: a literal newline (would print as a second, forged log line if echoed raw) and an ANSI/ESC
+# sequence (would inject raw terminal escapes into the log if echoed raw). Both fail the integer
+# regex the same way any other garbage does, so they hit the identical fallback branch; the only
+# question is whether %q renders them as ONE safe, single-line token or lets them through raw.
+nl_stderr="$TMPDIR/subtasks-nl-stderr.log"
+OFFLOAD_MAX_SUBTASKS=$'1\nFAKE LOG LINE INJECTED' bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$nl_stderr"
+check "OFFLOAD_MAX_SUBTASKS with an embedded newline: exactly one stderr line (no forged second line)" \
+  "$(wc -l < "$nl_stderr" | tr -d ' ')" "1"
+
+esc_stderr="$TMPDIR/subtasks-esc-stderr.log"
+OFFLOAD_MAX_SUBTASKS=$'\x1b[31mRED' bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$esc_stderr"
+check "OFFLOAD_MAX_SUBTASKS with a raw ESC byte: exactly one stderr line" \
+  "$(wc -l < "$esc_stderr" | tr -d ' ')" "1"
+check "OFFLOAD_MAX_SUBTASKS with a raw ESC byte: %q-escaped, no literal ESC byte reaches the log" \
+  "$(grep -cP '\x1b' "$esc_stderr" || true)" "0"
 
 # BARE-0 ACCEPTED, NOT REJECTED (card 81025eb5, Cybered GO 33203 on 27c54ceb): the regex is
 # `^(0|[1-9][0-9]{0,8})$`, so a bare "0" is a VALID value, not an invalid one -- an explicit
 # OFFLOAD_MAX_SUBTASKS=0 (meaning "offload nothing this run") must be honoured, not silently
-# rejected and replaced with the 15 fallback. Same log-line-only reasoning as above: absence of the
-# fallback message is the only observable signal here.
+# rejected and replaced with the 15 fallback.
 zero_stderr="$TMPDIR/subtasks-zero-stderr.log"
 OFFLOAD_MAX_SUBTASKS=0 bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$zero_stderr"
 check "OFFLOAD_MAX_SUBTASKS=0 is accepted as-is, no fallback log line" \
-  "$(grep -qF "OFFLOAD_MAX_SUBTASKS='0'" "$zero_stderr" && echo fallback-fired || echo clean)" "clean"
+  "$(grep -qF "OFFLOAD_MAX_SUBTASKS=0 is not an integer" "$zero_stderr" && echo fallback-fired || echo clean)" "clean"
+
+# DEFAULT/FALLBACK LITERAL PIN (card e2406a43, follow-up to 81025eb5): the log-line checks above
+# only pin the DOCUMENTED NUMBER in the message text, not the actual value OFFLOAD_MAX_SUBTASKS is
+# set to -- a mutant that changes the real default/fallback literal (15 -> 16) in BOTH assignments
+# survives every check above untouched, since the message's own "(15)" is a separate string literal.
+# --test-subtasks-budget-reached exposes the real post-guard value against the exact comparison the
+# main loop uses, so this pins the literal's actual runtime effect, not its description.
+check "DEFAULT LITERAL PIN: unset OFFLOAD_MAX_SUBTASKS, attempted=14 (< 15) does not reach the budget" \
+  "$(bash "$DISPATCH" --test-subtasks-budget-reached 14)" "ok"
+check "DEFAULT LITERAL PIN: unset OFFLOAD_MAX_SUBTASKS, attempted=15 (== 15) reaches the budget" \
+  "$(bash "$DISPATCH" --test-subtasks-budget-reached 15)" "reached"
+check "FALLBACK LITERAL PIN: OFFLOAD_MAX_SUBTASKS=lots (invalid) falls back to 15, attempted=14 does not reach" \
+  "$(OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-subtasks-budget-reached 14)" "ok"
+check "FALLBACK LITERAL PIN: OFFLOAD_MAX_SUBTASKS=lots (invalid) falls back to 15, attempted=15 reaches" \
+  "$(OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-subtasks-budget-reached 15)" "reached"
 
 # --- concurrency: N parallel transient-fail calls on a fresh leaf must not lose an update -----------
 AF2="$TMPDIR/attempts-conc.json"
