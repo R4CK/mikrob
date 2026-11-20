@@ -1,5 +1,8 @@
 import { randomBytes } from 'node:crypto'
 import { execSync, execFileSync } from 'node:child_process'
+import { writeFileSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   createBackgroundTaskAtomic, finishBackgroundTask, getBackgroundTasks,
   getBackgroundTask, getRunningBackgroundTasks, markOrphanedTasksFailed,
@@ -32,10 +35,22 @@ const CHANNEL_ENV_VARS_TO_STRIP = [
   'TELEGRAM_STATE_DIR', 'SLACK_STATE_DIR', 'DISCORD_STATE_DIR', 'GOOGLECHAT_STATE_DIR', 'TEAMS_STATE_DIR',
 ] as const
 
-function bgTaskEnv(prompt: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, BG_PROMPT: prompt }
+function bgTaskEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
   for (const key of CHANNEL_ENV_VARS_TO_STRIP) delete env[key]
   return env
+}
+
+// Card 99ade79b (MEDIUM, self-audit 2026-11-20): the prompt used to be spelled directly into the
+// `tmux new-session` CLIENT call's own argv (`-e BG_PROMPT=${prompt}`, below) -- readable by any
+// local user via /proc/<pid>/cmdline of THIS process's tmux client while it runs, and bounded by
+// ARG_MAX. A 0600 temp file crosses argv as a PATH instead (never sensitive); the pane reads the
+// prompt back from the file into its own exported BG_PROMPT (card 68eaeb93's proven mechanism --
+// see the `-e` comment below), then deletes the file.
+function writePromptFile(prompt: string): string {
+  const file = join(tmpdir(), `bg-prompt-${randomBytes(8).toString('hex')}.tmp`)
+  writeFileSync(file, prompt, { mode: 0o600 })
+  return file
 }
 
 function bgSessionName(id: string): string {
@@ -91,6 +106,8 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
     `${resolvedClaudeBin} -p "$BG_PROMPT" --output-format text 2>&1`,
   ].join(' && ')
 
+  const promptFile = writePromptFile(prompt)
+
   try {
     execFileSync(resolvedTmuxBin, [
       'new-session', '-d', '-s', session, '-x', '200', '-y', '50',
@@ -99,17 +116,19 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
       // starts a brand-new tmux SERVER. On an already-running server (the normal case -- this
       // process's own earlier sessions keep it alive), a new session's shell instead inherits the
       // server's "global environment", captured once when the server itself first started, so
-      // BG_PROMPT arrives empty in the pane no matter what `env` is passed here. `-e` sets it on
-      // the SESSION itself, which always takes effect regardless of server age (tmux(1), GLOBAL
-      // AND SESSION ENVIRONMENT: "If a variable exists in both, the value from the session
-      // environment is used").
-      '-e', `BG_PROMPT=${prompt}`,
-      `${shellCmd}; echo '___BG_DONE___'; sleep 5`,
+      // BG_PROMPT_FILE would arrive empty in the pane no matter what `env` is passed here. `-e`
+      // sets it on the SESSION itself, which always takes effect regardless of server age
+      // (tmux(1), GLOBAL AND SESSION ENVIRONMENT: "If a variable exists in both, the value from
+      // the session environment is used"). Only the FILE PATH crosses argv here (card 99ade79b) --
+      // never the prompt text itself.
+      '-e', `BG_PROMPT_FILE=${promptFile}`,
+      `export BG_PROMPT="$(cat "$BG_PROMPT_FILE")"; rm -f "$BG_PROMPT_FILE"; ${shellCmd}; echo '___BG_DONE___'; sleep 5`,
     ], {
       timeout: 5000,
-      env: bgTaskEnv(prompt),
+      env: bgTaskEnv(),
     })
   } catch (err) {
+    try { unlinkSync(promptFile) } catch { /* already gone or never written */ }
     logger.error({ err, id, session }, 'Failed to spawn background task tmux session')
     finishBackgroundTask(id, 'failed', '(spawn failed)')
     return { error: 'Nem sikerült elindítani a háttérfeladatot' }

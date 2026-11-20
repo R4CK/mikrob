@@ -19,7 +19,10 @@ const claudeResolveState = vi.hoisted(() => ({ shouldThrow: true, binPath: '/bin
 // the dangerous channel vars never reach it, WITHOUT changing behaviour for the existing tests in
 // this file -- every call (including non-'new-session' ones, and tmuxBin()'s own `which` lookup
 // via execSync, which this does not touch) still runs the real implementation.
-const execFileCallLog = vi.hoisted(() => ({ newSessionEnvs: [] as (NodeJS.ProcessEnv | undefined)[] }))
+const execFileCallLog = vi.hoisted(() => ({
+  newSessionEnvs: [] as (NodeJS.ProcessEnv | undefined)[],
+  newSessionArgs: [] as (readonly string[])[],
+}))
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return {
@@ -28,6 +31,7 @@ vi.mock('node:child_process', async (importOriginal) => {
       if (args?.[0] === 'new-session') {
         const env = (options as { env?: NodeJS.ProcessEnv } | undefined)?.env
         execFileCallLog.newSessionEnvs.push(env)
+        execFileCallLog.newSessionArgs.push(args)
       }
       return actual.execFileSync(file, args as string[], options as Parameters<typeof actual.execFileSync>[2])
     },
@@ -289,6 +293,7 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
     initDatabase(':memory:')
     claudeResolveState.shouldThrow = false
     execFileCallLog.newSessionEnvs.length = 0
+    execFileCallLog.newSessionArgs.length = 0
     savedEnv = {}
     for (const key of Object.keys(plantedVars)) {
       savedEnv[key] = process.env[key]
@@ -315,14 +320,46 @@ describe('spawnBackgroundTask: channel env vars must never reach `tmux new-sessi
     }
   })
 
-  it('leaves unrelated env vars (PATH, BG_PROMPT) untouched', async () => {
+  it('leaves unrelated env vars (PATH) untouched', async () => {
     const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
 
     spawnBackgroundTask('marveen', 'yet another prompt')
 
     const spawnedEnv = execFileCallLog.newSessionEnvs[0]
     expect(spawnedEnv?.PATH).toBe(process.env.PATH)
-    expect(spawnedEnv?.BG_PROMPT).toBe('yet another prompt')
+  })
+
+  // Card 99ade79b (MEDIUM): the prompt no longer rides in this `env` object at all -- it is
+  // written to a 0600 temp file and only the file's PATH crosses into the tmux client's argv/env.
+  it('never puts the raw prompt into the `env` object passed to execFileSync', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+
+    spawnBackgroundTask('marveen', 'a prompt that must not leak into env')
+
+    const spawnedEnv = execFileCallLog.newSessionEnvs[0]
+    expect(spawnedEnv?.BG_PROMPT).toBeUndefined()
+    expect(JSON.stringify(spawnedEnv)).not.toContain('a prompt that must not leak into env')
+  })
+
+  // Card 99ade79b (MEDIUM, self-audit 2026-11-20): the prompt used to be spelled directly into
+  // this `execFileSync` call's own argv (`-e BG_PROMPT=${prompt}`) -- readable by any local user
+  // via /proc/<pid>/cmdline of the tmux CLIENT process while it runs. Only a temp-file PATH may
+  // appear in argv now, never the prompt text.
+  it('never puts the raw prompt text into the tmux client argv (card 99ade79b)', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const distinctivePrompt = 'ARGVLEAKPIN-distinctive-prompt-marker-with spaces'
+
+    spawnBackgroundTask('marveen', distinctivePrompt)
+
+    expect(execFileCallLog.newSessionArgs.length).toBe(1)
+    const args = execFileCallLog.newSessionArgs[0] ?? []
+    for (const arg of args) {
+      expect(arg).not.toContain(distinctivePrompt)
+    }
+    // The file-path pointer IS expected to appear somewhere in argv (the `-e BG_PROMPT_FILE=...`
+    // pair) -- a vacuous pass (e.g. the prompt never reaching this call at all) would also satisfy
+    // the loop above, so pin that the mechanism is actually present.
+    expect(args.some((a) => a.includes('BG_PROMPT_FILE='))).toBe(true)
   })
 })
 
