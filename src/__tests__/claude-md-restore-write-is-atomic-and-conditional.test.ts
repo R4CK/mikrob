@@ -30,7 +30,6 @@ import { readFileSync, statSync, rmSync, mkdtempSync, writeFileSync } from 'node
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
-import { randomBytes } from 'node:crypto'
 import { restoreTrackedFileIfChanged } from './claude-md-main-section-writers.test.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
