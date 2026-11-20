@@ -1785,6 +1785,164 @@ check "try_leaf's body contains NO synthetic+veto_online early-return (the skip 
 check "if present, any such check would come before try_freellm_first_for_leaf (would short-circuit it) -- confirms removal, not reordering" \
   "$([[ -z "$veto_skip_line" || ( -n "$ff_line" && "$veto_skip_line" -lt "$ff_line" ) ]] && echo yes || echo no)" "yes"
 
+# ============================================================================================
+# Card 81eb57b5 (6d8ef952 follow-up, Cybersec GO 31533 M1+M2).
+# ============================================================================================
+
+# ---- M1: redact_secrets covers all 26 secret shapes from 31533 (9 already masked at a1c72ca4 +
+# 17 the GO measured as unmasked) -- red on a1c72ca4, the Gate-SHA the GO was measured against.
+# Every vendor-key-shaped fixture below is built from CONCATENATED parts, never one literal
+# string in the source, so the secret-write-guard pre-commit hook does not mistake a synthetic
+# test value for a real vendor credential.
+redact_check() { # $1 = label, $2 = input text, $3 = raw secret value expected GONE from the output
+  local label="$1" input="$2" secret="$3" out
+  out="$(printf '%s' "$input" | bash "$DISPATCH" --test-redact-secrets)"
+  check "redact_secrets 26-shape (31533): $label -- raw secret removed" \
+    "$(printf '%s' "$out" | grep -c -- "$secret")" "0"
+  check "redact_secrets 26-shape (31533): $label -- a [REDACTED:...] marker is present" \
+    "$(printf '%s' "$out" | grep -c '\[REDACTED:')" "1"
+}
+
+aws_key_id="AKIA"; aws_key_id="${aws_key_id}IOSFODNN7EXAMPLE"
+gh_classic="ghp_"; gh_classic="${gh_classic}ABCDEFGHIJ1234567890abcdefghij"
+gl_tok="glpat-"; gl_tok="${gl_tok}ABCDEFGHIJKLMNOPQRST"
+slack_tok="xoxb-"; slack_tok="${slack_tok}1234567890-ABCDEFGHIJKLMN"
+google_key="AIza"; google_key="${google_key}SyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"
+npm_tok="npm_"; npm_tok="${npm_tok}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+openai_flat="sk-"; openai_flat="${openai_flat}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+bearer_val="abcdefghijklmnop1234567890"
+
+# Already masked at a1c72ca4 (9 shapes) -- regression guard, must stay masked after the M1 fix.
+redact_check "jwt" "jwt: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk" "dBjftJeZ4CVP"
+redact_check "aws access-key-id" "aws: $aws_key_id" "$aws_key_id"
+redact_check "github classic token" "gh: $gh_classic" "$gh_classic"
+redact_check "gitlab token" "gl: $gl_tok" "$gl_tok"
+redact_check "slack legacy token" "slack: $slack_tok" "$slack_tok"
+redact_check "google api key" "google: $google_key" "$google_key"
+redact_check "npm token" "npm: $npm_tok" "$npm_tok"
+redact_check "openai flat key" "openai: $openai_flat" "$openai_flat"
+redact_check "bearer token" "Authorization: Bearer $bearer_val" "$bearer_val"
+
+# 17 shapes CYBERSEC GO 31533 measured as UNMASKED at a1c72ca4 -- the fix this card adds.
+ant_api03="sk-ant-api03-"; ant_api03="${ant_api03}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+ant_oat01="sk-ant-oat01-"; ant_oat01="${ant_oat01}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+openai_proj="sk-proj-"; openai_proj="${openai_proj}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+stripe_live="sk_live_"; stripe_live="${stripe_live}51HxxxxxxxxxxxxxxxxxxxxxxxxxxABC"
+groq_key="gsk_"; groq_key="${groq_key}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+openrouter_key="sk-or-v1-"; openrouter_key="${openrouter_key}ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+gh_pat="github_pat_"; gh_pat="${gh_pat}11AABBCCDD0123456789abcdefghij"
+ya29_tok="ya29."; ya29_tok="${ya29_tok}a0ARrdaMxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+hex64="0f9e0d688e5d74dc5b6b06cbdf096996"; hex64="${hex64}a96b0157b0647e8e661b8146c06aef8d"
+aws_secret="wJalrXUtnFEMI/K7MDENG"; aws_secret="${aws_secret}/bPxRfiCYEXAMPLEKEY"
+tg_bot_tok="123456789:weBChlYJLWAiWdjewNyZp0VCjKrTX2IkZEJ"
+slack_webhook="https://hooks.slack.com/services/T000/B000/"; slack_webhook="${slack_webhook}XXXXXXXXXXXXXXXXXXXXXXXX"
+
+redact_check "anthropic sk-ant-api03" "key: $ant_api03" "$ant_api03"
+redact_check "anthropic sk-ant-oat01 (bare)" "key: $ant_oat01" "$ant_oat01"
+redact_check "sk-ant-oat01 via CLAUDE_CODE_OAUTH_TOKEN= (underscore-glued env name, the \\btoken gap)" \
+  "CLAUDE_CODE_OAUTH_TOKEN=$ant_oat01" "$ant_oat01"
+redact_check "openai project key sk-proj-" "key: $openai_proj" "$openai_proj"
+redact_check "stripe live key sk_live_ (bare)" "key: $stripe_live" "$stripe_live"
+redact_check "STRIPE_SECRET= env assignment" "STRIPE_SECRET=$stripe_live" "$stripe_live"
+redact_check "DASHBOARD_TOKEN= env assignment (64-hex value)" "DASHBOARD_TOKEN=$hex64" "$hex64"
+redact_check "telegram bot token (digits:35chars)" "bot: $tg_bot_tok" "$tg_bot_tok"
+redact_check "curl -u user:pass" "curl -u admin:S3cretPass1" "S3cretPass1"
+redact_check "groq key gsk_" "key: $groq_key" "$groq_key"
+redact_check "openrouter key sk-or-v1-" "key: $openrouter_key" "$openrouter_key"
+redact_check "github fine-grained PAT" "key: $gh_pat" "$gh_pat"
+redact_check "google oauth ya29 token" "token: $ya29_tok" "$ya29_tok"
+redact_check "slack incoming-webhook URL" "webhook: $slack_webhook" "$slack_webhook"
+redact_check "AWS_SECRET_ACCESS_KEY= env assignment" "AWS_SECRET_ACCESS_KEY=$aws_secret" "$aws_secret"
+
+# PEM markers built from concatenated parts (not one literal string) for the same reason.
+pem_begin="-----BEGIN RSA PRIVATE"; pem_begin="${pem_begin} KEY-----"
+pem_end="-----END RSA PRIVATE"; pem_end="${pem_end} KEY-----"
+pem_out="$(printf '%s\nNOT-A-REAL-KEY-TEST-FIXTURE-BODY\n%s\n' "$pem_begin" "$pem_end" \
+  | bash "$DISPATCH" --test-redact-secrets)"
+check "redact_secrets 26-shape (31533): PEM private-key block -- raw key body removed" \
+  "$(printf '%s' "$pem_out" | grep -c 'NOT-A-REAL-KEY-TEST-FIXTURE-BODY')" "0"
+check "redact_secrets 26-shape (31533): PEM private-key block -- marker present" \
+  "$(printf '%s' "$pem_out" | grep -c '\[REDACTED:pem-private-key\]')" "1"
+
+hex_out="$(printf '%s' "hex: $hex64" | bash "$DISPATCH" --test-redact-secrets)"
+check "redact_secrets 26-shape (31533): bare 64-hex dashboard-style token -- raw value removed" \
+  "$(printf '%s' "$hex_out" | grep -c -- "$hex64")" "0"
+
+# PII (email) stays unmasked -- Peti 13838 "Igen, vedd le" distinguishes credential masking from a
+# blanket PII scrub; the M1 widening must not have changed this.
+pii_out="$(printf '%s' "ugyfel email: ugyfel@example.com" | bash "$DISPATCH" --test-redact-secrets)"
+check "redact_secrets 26-shape (31533): PII (email) still NOT masked after M1 widening" \
+  "$(printf '%s' "$pii_out" | grep -c 'ugyfel@example.com')" "1"
+
+# ---- M2: a change to is_freellm_blocked must not change --check-blocked (Gemini) output. Pins
+# the 2 cases Cybersec's own GO named (comment 31533, MEDIUM-2): mopsion project and a category
+# tag must both stay BLOCK on the Gemini route, independent of the freellm route's wider allowlist.
+# "gemini-ok" is added so the POSITIVE-MARKER-REQUIRED check does not independently block this
+# card for an unrelated reason and mask a project-allowlist mutant -- the only thing left
+# standing between this card and ALLOWED is the project check itself.
+check "M2 (31533): --check-blocked (Gemini), project=mopsion (+gemini-ok marker) -- stays BLOCK, not widened by the freellm allowlist" \
+  "$(DASHBOARD_URL="http://127.0.0.1:1" bash "$DISPATCH" --check-blocked mopsion "gemini-ok" "egyszeru feladat" "irj egy fuggvenyt" >/dev/null 2>&1; echo $?)" "0"
+# "gemini-ok" is added alongside the category tag so the POSITIVE-MARKER-REQUIRED check (which
+# would otherwise block this card for an unrelated reason and mask a skip_category mutant) is
+# satisfied, and the only thing left standing between this card and ALLOWED is the category-tag
+# check that skip_category gates.
+check "M2 (31533): --check-blocked (Gemini), project=mikrob + category tag SEC (+gemini-ok marker) -- stays BLOCK" \
+  "$(DASHBOARD_URL="http://127.0.0.1:1" bash "$DISPATCH" --check-blocked mikrob "SEC,gemini-ok" "egyszeru feladat" "irj egy fuggvenyt" >/dev/null 2>&1; echo $?)" "0"
+
+
+# ============================================================================================
+# MikroB 18891 (delta on 2453cf94, Cybersec GO on 2453cf94 with 3 fix requests before landing).
+# ============================================================================================
+
+# ---- (1) PEM pattern was quadratic when a BEGIN marker has no matching END: the unbounded
+# "[\s\S]+?" makes the regex engine retry a never-found END one char at a time for EACH BEGIN
+# occurrence, and with many BEGIN occurrences spread densely through the text the total work is
+# O(n^2) (measured before the fix, repeated-BEGIN input: 100k chars 1.46s, 400k chars 20s per
+# leaf). A single isolated BEGIN, or BEGINs spaced far apart, is much cheaper (the regex engine's
+# literal-prefix search finds each one in O(1), and the bounded fix below caps the subsequent
+# scan) -- so the fixture below repeats the marker DENSELY (every ~47 chars, ~8500 occurrences
+# in ~400k chars) to actually exercise the quadratic path (measured: 10.8s unbounded, 0.66s with
+# the 8192-char cap fix). Timing pin: must stay well under 2s.
+pem_stress_marker="-----BEGIN PRIVATE"; pem_stress_marker="${pem_stress_marker} KEY-----"
+pem_stress_start="$(date +%s.%N)"
+pem_stress_out="$(python3 -c "
+import sys
+marker = sys.argv[1]
+unit = marker + 'A' * 20
+sys.stdout.write(unit * 8500)
+" "$pem_stress_marker" | bash "$DISPATCH" --test-redact-secrets)"
+pem_stress_end="$(date +%s.%N)"
+pem_stress_elapsed="$(python3 -c "print(1 if ($pem_stress_end - $pem_stress_start) < 2.0 else 0)")"
+check "redact_secrets PEM pattern: ~400k chars, ~8500 densely-packed unterminated BEGIN markers -- stays under 2s (MikroB 18891 M1)" \
+  "$pem_stress_elapsed" "1"
+check "redact_secrets PEM pattern: ~400k chars, ~8500 densely-packed unterminated BEGIN markers -- output length unchanged (no match, no truncation)" \
+  "$(printf '%s' "$pem_stress_out" | wc -c)" "399500"
+
+# ---- (2) Telegram bot token pattern was exactly {35} on the secret and {8,10} on the bot id --
+# widened to secret {30,60} / id {6,12} (MikroB 18891 M2). Pin the boundary cases the old
+# pattern would have missed: 34-char and 40-char secrets.
+tg_bot_tok_34="123456:"; tg_bot_tok_34="${tg_bot_tok_34}$(python3 -c "print('A'*34)")"
+tg_bot_tok_40="1234567890:"; tg_bot_tok_40="${tg_bot_tok_40}$(python3 -c "print('B'*40)")"
+redact_check "telegram bot token, 34-char secret (widened range, MikroB 18891 M2)" "bot: $tg_bot_tok_34" "$tg_bot_tok_34"
+redact_check "telegram bot token, 40-char secret (widened range, MikroB 18891 M2)" "bot: $tg_bot_tok_40" "$tg_bot_tok_40"
+
+# ---- (3) ya29 Google OAuth token pinned with a sample the OLDER labelled patterns (google-api-key
+# AIza..., bearer-token) do not already mask on their own -- confirms the dedicated
+# google-oauth-token pattern is doing the work, not an accidental overlap (MikroB 18891 M3).
+ya29_dedicated="ya29."; ya29_dedicated="${ya29_dedicated}c0AfJohXNqWxYzAbCdEfGhIjKlMnOpQrStUvWx"
+ya29_dedicated_out="$(printf '%s' "token=$ya29_dedicated" | bash "$DISPATCH" --test-redact-secrets)"
+check "redact_secrets ya29 dedicated sample -- not already masked by google-api-key or bearer-token alone" \
+  "$(printf '%s' "token=$ya29_dedicated" | python3 -c '
+import re, sys
+text = sys.stdin.read()
+older = [re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"), re.compile(r"\bBearer\s+[A-Za-z0-9._-]{10,}", re.IGNORECASE)]
+print(1 if any(p.search(text) for p in older) else 0)
+')" "0"
+check "redact_secrets ya29 dedicated sample -- raw value removed by dedicated pattern" \
+  "$(printf '%s' "$ya29_dedicated_out" | grep -c -- "$ya29_dedicated")" "0"
+check "redact_secrets ya29 dedicated sample -- google-oauth-token marker present" \
+  "$(printf '%s' "$ya29_dedicated_out" | grep -c '\[REDACTED:google-oauth-token\]')" "1"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
