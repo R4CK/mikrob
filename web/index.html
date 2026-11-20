@@ -161,7 +161,7 @@
           </a>
           <a href="#" class="sb-link" data-page="llmMonitor">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="12" height="6" rx="1"/><line x1="17" y1="17" x2="21" y2="17"/></svg>
-            <span class="sb-label">LLM monitor</span>
+            <span class="sb-label" data-i18n="nav.llmMonitor">Élő terhelés</span>
           </a>
           <a href="#" class="sb-link" data-page="llmLedger">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
@@ -510,6 +510,100 @@
         </div>
       </div>
 
+      <!-- GPU-utilization spectrum + model-distribution swimlane relocated onto the Live-load
+           page (llmMonitorPage, card f1e33cfb) -- Overview no longer shows them directly. -->
+
+      <div class="overview-grid">
+        <div class="overview-card">
+          <div class="overview-card-head">
+            <h3 data-i18n="overview.card.team">Csapat</h3>
+            <span class="overview-card-meta" id="overviewTeamMeta" data-i18n="overview.meta.live">élő állapot</span>
+          </div>
+          <div class="team-graph overview-team-graph" id="overviewTeamGrid"></div>
+        </div>
+        <div class="overview-card">
+          <div class="overview-card-head">
+            <h3 data-i18n="overview.card.activity">Aktivitás</h3>
+          </div>
+          <div class="overview-activity" id="overviewActivity"></div>
+        </div>
+      </div>
+
+      <!-- Token-cost estimate widget (card 01b51197, pair-BE d2cfa818).
+           Hidden until loadCostEstimatesWidget() confirms the endpoint exists. -->
+      <div class="overview-card ovw-cost-card" id="ovwCostCard" hidden>
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.cost.title">Becsült tokenköltség</h3>
+          <span class="overview-card-meta" id="ovwCostMeta" data-i18n="overview.cost.meta_today">mai nap</span>
+        </div>
+        <div id="ovwCostBody">
+          <p class="ovw-cost-loading" data-i18n="common.loading">Betöltés...</p>
+        </div>
+        <div class="ovw-cost-footer" id="ovwCostFooter" hidden>
+          <span class="ovw-cost-total-label" data-i18n="overview.cost.total">Összesen</span>
+          <span class="ovw-cost-total-value" id="ovwCostTotal">—</span>
+          <a href="#" class="ovw-cost-detail-link" data-page="costs" data-i18n="overview.cost.detail_link">Részletek →</a>
+        </div>
+        <p class="ovw-cost-note" id="ovwCostNote" hidden></p>
+      </div>
+
+      <!-- Gemini (agy) calls overview tile (card 57da740c, Peti 11282/11285). Hidden until
+           loadGeminiOverviewTile() confirms GET /api/gemini-calls exists (pair-BE 64788453,
+           contract-first). Nothing existing on this page is removed by adding this card. -->
+      <div class="overview-card ovw-gemini-card" id="ovwGeminiCard" hidden>
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.gemini.title">Gemini-hívások</h3>
+          <span class="overview-card-meta gemini-stop-badge" id="ovwGeminiStopBadge" hidden data-i18n="geminiCalls.stop.badge">STOP</span>
+        </div>
+        <div class="ovw-gemini-quota-row">
+          <span class="ovw-gemini-bar-track"><span class="ovw-gemini-bar-fill" id="ovwGeminiBarFill"></span></span>
+          <span class="ovw-gemini-quota-label" id="ovwGeminiQuotaLabel">—</span>
+        </div>
+        <div class="ovw-gemini-footer">
+          <span class="ovw-gemini-today" id="ovwGeminiToday">—</span>
+          <a href="#" class="ovw-gemini-detail-link" data-page="providers" data-provider-tab="gemini" data-i18n="overview.gemini.detail_link">Részletek →</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Live-load page (card 87be1810, pair-BE a5bbfb98, phase aecd9a12; renamed/extended by
+         card f1e33cfb, phase 36dc9240, item 4: "GPU, per-agent timeline") ===
+         Peti's design ref: store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg.
+         GPU-utilization spectrum + model-distribution swimlane (relocated from Overview) above the
+         KPI row + Swimlane Timeline (Tasks) + workload time-series + models table, the latter
+         rendered by loadLlmMonitor() in app-llm-monitor.js from /api/task-summary and
+         /api/task-events. Page id/pageId kept as llmMonitorPage/llmMonitor (no blast-radius reason
+         to rename the id, only the visible title changes). -->
+    <div class="page" id="llmMonitorPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="llmMon.page_title">Élő terhelés</h1>
+            <p class="subtitle" data-i18n="llmMon.page_subtitle">GPU-kihasználtság, modell-elosztás, feladat-idővonal ügynökönként és modellhasználat a választott időablakban</p>
+          </div>
+          <div class="llm-mon-controls">
+            <label for="llmMonWindow" class="llm-mon-window-label" data-i18n="llmMon.window.label">Időablak</label>
+            <select id="llmMonWindow" class="input llm-mon-window">
+              <option value="1" data-i18n="llmMon.window.1h">Utolsó 1 óra</option>
+              <option value="6" selected data-i18n="llmMon.window.6h">Utolsó 6 óra</option>
+              <option value="24" data-i18n="llmMon.window.24h">Utolsó 24 óra</option>
+              <option value="168" data-i18n="llmMon.window.7d">Utolsó 7 nap</option>
+            </select>
+            <button class="btn-secondary btn-compact" id="llmMonRefreshBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              <span data-i18n="common.btn.refresh">Frissítés</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- GPU-utilization spectrum (card cf61fcac) + model-distribution swimlane (card d6ecb003),
+           relocated from Overview (card f1e33cfb): same ids/markup, same JS, same vertical stacking
+           (Peti: "ALATT" -- dist sits directly below spectrum, not beside it), only the location
+           and the start/stop-poll trigger (now switchPage('llmMonitor')) changed. -->
+
       <!-- Live local-LLM utilization spectrum (card cf61fcac, Peti kep-minta): continuously
            scrolling waveform showing GPU util%/VRAM/active-tasks in real time. Populated by
            ovwSpectrumPoll() in app.js -- prefers GET /api/local-llm/utilization-history (backend2,
@@ -566,89 +660,6 @@
         <div class="ovw-llmdist-kpis" id="ovwLlmDistKpis"></div>
         <div id="ovwLlmDistBody">
           <p class="ovw-llmdist-loading" data-i18n="common.loading">Betöltés...</p>
-        </div>
-      </div>
-
-      <div class="overview-grid">
-        <div class="overview-card">
-          <div class="overview-card-head">
-            <h3 data-i18n="overview.card.team">Csapat</h3>
-            <span class="overview-card-meta" id="overviewTeamMeta" data-i18n="overview.meta.live">élő állapot</span>
-          </div>
-          <div class="team-graph overview-team-graph" id="overviewTeamGrid"></div>
-        </div>
-        <div class="overview-card">
-          <div class="overview-card-head">
-            <h3 data-i18n="overview.card.activity">Aktivitás</h3>
-          </div>
-          <div class="overview-activity" id="overviewActivity"></div>
-        </div>
-      </div>
-
-      <!-- Token-cost estimate widget (card 01b51197, pair-BE d2cfa818).
-           Hidden until loadCostEstimatesWidget() confirms the endpoint exists. -->
-      <div class="overview-card ovw-cost-card" id="ovwCostCard" hidden>
-        <div class="overview-card-head">
-          <h3 data-i18n="overview.cost.title">Becsült tokenköltség</h3>
-          <span class="overview-card-meta" id="ovwCostMeta" data-i18n="overview.cost.meta_today">mai nap</span>
-        </div>
-        <div id="ovwCostBody">
-          <p class="ovw-cost-loading" data-i18n="common.loading">Betöltés...</p>
-        </div>
-        <div class="ovw-cost-footer" id="ovwCostFooter" hidden>
-          <span class="ovw-cost-total-label" data-i18n="overview.cost.total">Összesen</span>
-          <span class="ovw-cost-total-value" id="ovwCostTotal">—</span>
-          <a href="#" class="ovw-cost-detail-link" data-page="costs" data-i18n="overview.cost.detail_link">Részletek →</a>
-        </div>
-        <p class="ovw-cost-note" id="ovwCostNote" hidden></p>
-      </div>
-
-      <!-- Gemini (agy) calls overview tile (card 57da740c, Peti 11282/11285). Hidden until
-           loadGeminiOverviewTile() confirms GET /api/gemini-calls exists (pair-BE 64788453,
-           contract-first). Nothing existing on this page is removed by adding this card. -->
-      <div class="overview-card ovw-gemini-card" id="ovwGeminiCard" hidden>
-        <div class="overview-card-head">
-          <h3 data-i18n="overview.gemini.title">Gemini-hívások</h3>
-          <span class="overview-card-meta gemini-stop-badge" id="ovwGeminiStopBadge" hidden data-i18n="geminiCalls.stop.badge">STOP</span>
-        </div>
-        <div class="ovw-gemini-quota-row">
-          <span class="ovw-gemini-bar-track"><span class="ovw-gemini-bar-fill" id="ovwGeminiBarFill"></span></span>
-          <span class="ovw-gemini-quota-label" id="ovwGeminiQuotaLabel">—</span>
-        </div>
-        <div class="ovw-gemini-footer">
-          <span class="ovw-gemini-today" id="ovwGeminiToday">—</span>
-          <a href="#" class="ovw-gemini-detail-link" data-page="providers" data-provider-tab="gemini" data-i18n="overview.gemini.detail_link">Részletek →</a>
-        </div>
-      </div>
-    </div>
-
-    <!-- === LLM monitor page (card 87be1810, pair-BE a5bbfb98, phase aecd9a12) ===
-         Peti's design ref: store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg.
-         KPI row + Swimlane Timeline (Tasks) + workload time-series + models table, all
-         rendered by loadLlmMonitor() in app-llm-monitor.js from /api/task-summary and
-         /api/task-events. -->
-    <div class="page" id="llmMonitorPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="llmMon.page_title">LLM monitor</h1>
-            <p class="subtitle" data-i18n="llmMon.page_subtitle">Feladat-idővonal ügynökönként, terhelés és modellhasználat a választott időablakban</p>
-          </div>
-          <div class="llm-mon-controls">
-            <label for="llmMonWindow" class="llm-mon-window-label" data-i18n="llmMon.window.label">Időablak</label>
-            <select id="llmMonWindow" class="input llm-mon-window">
-              <option value="1" data-i18n="llmMon.window.1h">Utolsó 1 óra</option>
-              <option value="6" selected data-i18n="llmMon.window.6h">Utolsó 6 óra</option>
-              <option value="24" data-i18n="llmMon.window.24h">Utolsó 24 óra</option>
-              <option value="168" data-i18n="llmMon.window.7d">Utolsó 7 nap</option>
-            </select>
-            <button class="btn-secondary btn-compact" id="llmMonRefreshBtn">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-              </svg>
-              <span data-i18n="common.btn.refresh">Frissítés</span>
-            </button>
-          </div>
         </div>
       </div>
 

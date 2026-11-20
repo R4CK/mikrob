@@ -262,7 +262,7 @@ window._i18n.hu = {
 
   'nav.updates':      'Frissítések',
   'nav.costs':        'Költségek',
-  'nav.llmMonitor':   'LLM monitor',
+  'nav.llmMonitor':   'Élő terhelés',
 
   // --- Overview ---
   'overview.card.team_meta':     'élő állapot',
@@ -2722,8 +2722,8 @@ window._i18n.hu = {
   'geminiCalls.rating.result.eldobva':   'Eldobva',
   'geminiCalls.rating.result.unknown':   'Ismeretlen',
   // LLM monitor page (card 87be1810)
-  'llmMon.page_title':          'LLM monitor',
-  'llmMon.page_subtitle':       'Feladat-idővonal ügynökönként, terhelés és modellhasználat a választott időablakban',
+  'llmMon.page_title':          'Élő terhelés',
+  'llmMon.page_subtitle':       'GPU-kihasználtság, modell-elosztás, feladat-idővonal ügynökönként és modellhasználat a választott időablakban',
   'llmMon.window.label':        'Időablak',
   'llmMon.window.1h':           'Utolsó 1 óra',
   'llmMon.window.6h':           'Utolsó 6 óra',

@@ -109,7 +109,11 @@ function switchPage(pageId) {
   if (pageId === 'messages') loadMessagesPage()
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'costs') loadCosts()
-  if (pageId === 'llmMonitor') loadLlmMonitor()
+  // Card f1e33cfb ("Live load" page): the GPU-spectrum canvas + model-distribution swimlane,
+  // relocated here from Overview, keep their own 5s/15s polls alongside loadLlmMonitor()'s
+  // one-shot task-timeline load. Both polls self-stop by checking llmMonitorPage.hidden.
+  if (pageId !== 'llmMonitor') { stopOvwSpectrum(); stopOvwLlmDist() }
+  if (pageId === 'llmMonitor') { loadLlmMonitor(); startOvwSpectrum(); startOvwLlmDist() }
   if (pageId === 'kg') loadKgPage()
   if (pageId === 'llmLedger') initLlmLedgerPage()
   if (pageId === 'ideas') loadIdeasPage()

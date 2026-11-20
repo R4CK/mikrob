@@ -151,8 +151,8 @@ async function loadOverview() {
     void loadLocalLlmInfo()
     void loadCostEstimatesWidget()
     void loadGeminiOverviewTile()
-    startOvwLlmDist()
-    startOvwSpectrum()
+    // startOvwLlmDist()/startOvwSpectrum() moved to switchPage('llmMonitor') -- card f1e33cfb
+    // relocated both cards onto the Live-load page, Overview no longer shows them directly.
     const banner = document.getElementById('updateBanner')
     if (banner) {
       const u = d.upstreamUpdate
@@ -325,7 +325,8 @@ async function ovwSpectrumPoll() {
 }
 
 function ovwSpectrumDraw() {
-  const page = document.getElementById('overviewPage')
+  // Card f1e33cfb: relocated onto llmMonitorPage ("Live load"), not overviewPage any more.
+  const page = document.getElementById('llmMonitorPage')
   if (!page || page.hidden) { _ovwSpectrumRafId = null; return }
   const canvas = document.getElementById('ovwSpectrumCanvas')
   if (canvas) {
@@ -450,7 +451,8 @@ function startOvwSpectrum() {
   ovwSpectrumPoll()
   void ovwSpectrumPollLastGen()
   _ovwSpectrumPollTimer = setInterval(() => {
-    if (document.getElementById('overviewPage').hidden) { stopOvwSpectrum(); return }
+    // Card f1e33cfb: relocated onto llmMonitorPage ("Live load"), not overviewPage any more.
+    if (document.getElementById('llmMonitorPage').hidden) { stopOvwSpectrum(); return }
     ovwSpectrumPoll()
     void ovwSpectrumPollLastGen()
     // Reduced-motion: no rAF loop running, so redraw once per poll tick instead.
@@ -1107,7 +1109,8 @@ function startOvwLlmDist() {
   stopOvwLlmDist()
   void loadLlmDistWidget()
   _ovwLlmDistPollTimer = setInterval(() => {
-    if (document.getElementById('overviewPage').hidden) { stopOvwLlmDist(); return }
+    // Card f1e33cfb: relocated onto llmMonitorPage ("Live load"), not overviewPage any more.
+    if (document.getElementById('llmMonitorPage').hidden) { stopOvwLlmDist(); return }
     void loadLlmDistWidget()
   }, OVW_LLMDIST_POLL_MS)
 }

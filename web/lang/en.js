@@ -262,7 +262,7 @@ window._i18n.en = {
 
   'nav.updates':      'Updates',
   'nav.costs':        'Costs',
-  'nav.llmMonitor':   'LLM monitor',
+  'nav.llmMonitor':   'Live load',
 
   // --- Overview ---
   'overview.card.team_meta':     'live status',
@@ -2719,8 +2719,8 @@ window._i18n.en = {
   'geminiCalls.rating.result.eldobva':   'Discarded',
   'geminiCalls.rating.result.unknown':   'Unknown',
   // LLM monitor page (card 87be1810)
-  'llmMon.page_title':          'LLM monitor',
-  'llmMon.page_subtitle':       'Task timeline per agent, workload and model usage in the selected window',
+  'llmMon.page_title':          'Live load',
+  'llmMon.page_subtitle':       'GPU utilization, model distribution, task timeline per agent and model usage in the selected window',
   'llmMon.window.label':        'Window',
   'llmMon.window.1h':           'Past 1 hour',
   'llmMon.window.6h':           'Past 6 hours',
