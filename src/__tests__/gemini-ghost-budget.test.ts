@@ -420,6 +420,65 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
       )
     }, 20_000)
 
+    // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c, delta re-gate): a caller that reserves,
+    // releases on a 503, then records the detail row with outcome='error' re-spends the slot --
+    // calls_of()/RESERVE_SCRIPT's own budget count only excludes status='blocked', and the
+    // detail row (same hivas_id, appended after the release's own 'blocked' row) becomes the LAST
+    // row for that hivas_id, overriding it back to spent. Measured on the pre-fix call sites:
+    // used 1 -> 0 on release -> 1 again on record. The fix (gemini-orchestrator.ts /
+    // gemini-orchestrator-draft-review.ts) now records outcome='blocked' instead of 'error' when
+    // the slot was released. This pins the full reserve+release+record cycle with the REAL
+    // scripts: 'blocked' must NOT re-spend, 'error' (recorded without a release) must.
+    // Isolates the SPEND counter ('used', shared across agy/agy-ghost/agy-heavy) from the
+    // separate agy-ghost-only gross attempt counter (card 5cb861e6): 4 pre-existing 'agy' rows
+    // (a different engine, so they never touch ghost_attempts_hour) bring 'used' to 4/5. A single
+    // agy-ghost reserve+release+record('blocked') cycle must leave 'used' back at 4, not 5 --
+    // proven by a 6th direct reservation still being granted.
+    it('recording outcome=blocked after a release does not re-spend the shared slot', async () => {
+      for (let i = 0; i < 4; i++) appendRow(i * 60, 'ok', 'backend2') // 4 direct 'agy' rows: used=4
+      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+      const mod = await import('../gemini-ghost-budget.js')
+      const sandboxedSegedHivo = join(td, 'scripts', 'seged-hivo.py')
+      const releaseGhostCallSlot = (cardId: string) => mod.releaseGhostCallSlot(cardId, sandboxedSegedHivo)
+      const recordGhostCallDetail = await freshRecordGhostCallDetail()
+
+      const hivasIdBlocked = 'blockedcycle00001'
+      expect(reserveGhostCallSlot('card5')).toBe(true) // used 4->5 (shared cap hit)
+      expect(releaseGhostCallSlot('card5')).toBe(true) // used back to 4
+      recordGhostCallDetail(hivasIdBlocked, 'card5', {
+        model: 'gemini-flash-latest', durationMs: 50, outcome: 'blocked', taskType: 'ghost-rank',
+      })
+      const rowsAfterBlocked = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      expect(rowsAfterBlocked.filter((r) => r.hivas_id === hivasIdBlocked).pop()!.status).toBe('blocked')
+      // used must still be 4 (<5): a direct 'agy' reservation (a different engine, so the
+      // agy-ghost-only attempt cap cannot be what grants this) succeeds.
+      expect(reserveGhostCallSlot('card6')).toBe(true)
+    }, 30_000)
+
+    // Control: the EXACT pre-fix defect. A call that is released but then WRONGLY recorded as
+    // 'error' (what the orchestrator call sites did before this fix) DOES re-spend the shared
+    // slot -- its hivas_id's last row ends in 'error', which the 'used' filter does NOT exclude,
+    // so the same 6th reservation that succeeded above is refused here.
+    it('control: recording outcome=error after a release DOES re-spend the shared slot (pre-fix defect)', async () => {
+      for (let i = 0; i < 4; i++) appendRow(i * 60, 'ok', 'backend2') // 4 direct 'agy' rows: used=4
+      const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+      const mod = await import('../gemini-ghost-budget.js')
+      const sandboxedSegedHivo = join(td, 'scripts', 'seged-hivo.py')
+      const releaseGhostCallSlot = (cardId: string) => mod.releaseGhostCallSlot(cardId, sandboxedSegedHivo)
+      const recordGhostCallDetail = await freshRecordGhostCallDetail()
+
+      const hivasIdError = 'errorcycle000001'
+      expect(reserveGhostCallSlot('card5')).toBe(true) // used 4->5
+      expect(releaseGhostCallSlot('card5')).toBe(true) // used back to 4
+      recordGhostCallDetail(hivasIdError, 'card5', {
+        model: 'gemini-flash-latest', durationMs: 50, outcome: 'error', taskType: 'ghost-rank',
+      })
+      const rowsAfterError = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      expect(rowsAfterError.filter((r) => r.hivas_id === hivasIdError).pop()!.status).toBe('error')
+      // used is wrongly back to 5 (re-spent) -- a direct 'agy' reservation is refused.
+      expect(reserveGhostCallSlot('card6')).toBe(false)
+    }, 30_000)
+
     it('also writes an llm_ledger row (provider=gemini, agent=quota-bridge-ghost)', async () => {
       const ledgerDb = join(td, 'llm-ledger-test.db')
       execFileSync('python3', ['-c', `

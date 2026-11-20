@@ -419,8 +419,12 @@ export async function reviewOneCard(
     // Card 5cb861e6: a 503 did not come from anything the fleet's own usage caused -- un-spend
     // the slot reserved above. Every other failure reason keeps the spend (a real, attributable
     // call outcome).
-    if (result.httpStatus === 503) (deps.releaseSlot ?? releaseGhostCallSlot)(cardId)
-    recordDetail(hivasId, cardId, { model: DEFAULT_GEMINI_MODEL, durationMs, outcome: 'error', taskType: 'ghost-review' })
+    const released = result.httpStatus === 503
+    if (released) (deps.releaseSlot ?? releaseGhostCallSlot)(cardId)
+    // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording 'error' here re-spends the
+    // slot just released above, since calls_of()/dedupeCalls take the LAST row per hivas_id.
+    // 'blocked' marks the row without undoing the release.
+    recordDetail(hivasId, cardId, { model: DEFAULT_GEMINI_MODEL, durationMs, outcome: released ? 'blocked' : 'error', taskType: 'ghost-review' })
     return { id: cardId, reviewed: false, reason: result.reason ?? 'no_response' }
   }
   recordDetail(hivasId, cardId, {

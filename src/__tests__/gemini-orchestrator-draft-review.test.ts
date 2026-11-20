@@ -622,6 +622,31 @@ describe('reviewOneCard() (card 626df838)', () => {
     const result = await reviewOneCard('c1', 'key', deps)
     expect(result.reason).toBe('http')
   })
+
+  // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording outcome='error' on a released
+  // 503 undid releaseSlot's own un-spend (last-row-per-hivas_id semantics). recordDetail must
+  // receive 'blocked' exactly when the slot was released, 'error' otherwise.
+  it('a released 503 records outcome=blocked, not error (card cbeeba61)', async () => {
+    const releaseSlot = vi.fn((): boolean => true)
+    const recordDetail = vi.fn((_hivasId: string, _cardId: string, _detail: { outcome: string }) => true)
+    const deps = { ...baseDeps(), releaseSlot, recordDetail }
+    deps.callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'http', httpStatus: 503 }))
+    await reviewOneCard('c1', 'key', deps)
+    expect(releaseSlot).toHaveBeenCalledTimes(1)
+    expect(recordDetail).toHaveBeenCalledTimes(1)
+    expect(recordDetail.mock.calls[0]![2].outcome).toBe('blocked')
+  })
+
+  it('a non-503 failure records outcome=error (the slot stays spent, card cbeeba61)', async () => {
+    const releaseSlot = vi.fn((): boolean => true)
+    const recordDetail = vi.fn((_hivasId: string, _cardId: string, _detail: { outcome: string }) => true)
+    const deps = { ...baseDeps(), releaseSlot, recordDetail }
+    deps.callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota', httpStatus: 429 }))
+    await reviewOneCard('c1', 'key', deps)
+    expect(releaseSlot).not.toHaveBeenCalled()
+    expect(recordDetail).toHaveBeenCalledTimes(1)
+    expect(recordDetail.mock.calls[0]![2].outcome).toBe('error')
+  })
 })
 
 // ── reviewCardsStoppingOnCapReached: F4 (card 6b7c2c25) ──────────────────────────────────────

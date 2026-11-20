@@ -312,9 +312,13 @@ export async function decideGeminiOrder(
     // usage caused -- un-spend the slot reserved above so it does not count against the hourly
     // cap. Every other failure reason (auth/quota/model_missing/bad_response) keeps the spend:
     // those reflect a real, attributable call outcome.
-    if (result.httpStatus === 503) releaseSlot(ORDERING_BUDGET_CARD_ID)
+    const released = result.httpStatus === 503
+    if (released) releaseSlot(ORDERING_BUDGET_CARD_ID)
+    // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording 'error' here re-spends the
+    // slot just released above, since calls_of()/dedupeCalls take the LAST row per hivas_id.
+    // 'blocked' marks the row without undoing the release.
     recordDetail(hivasId, ORDERING_BUDGET_CARD_ID, {
-      model: modelName, durationMs, outcome: 'error', taskType: 'ghost-rank',
+      model: modelName, durationMs, outcome: released ? 'blocked' : 'error', taskType: 'ghost-rank',
     })
     return { ok: false, reason: result.reason ?? 'no_response' }
   }

@@ -29603,3 +29603,20 @@ igazolható, külön kommentben követi, ugyanúgy mint 9fb61222/9963bf35 élő 
 
 **Ki döntött:** Peti (Telegram 14348) + MikroB (kártya cbeeba61). backend2 végezte a javítást.
 Gate: QA + Cybersec (a kártya saját kijelölése).
+
+**Delta re-gate (ab107c21c -> jelen commit):** Cybersec2 NO-GO (kártya cbeeba61, msg 22428):
+az új detail-sor ugyanazzal a hivas_id-vel, status='error', közvetlenül a releaseSlot utáni
+503-on, visszaírja a kártya 5cb861e6 saját un-spend-jét (calls_of()/dedupeCalls az UTOLSÓ sort
+nézi egy hivas_id-re, és a RESERVE_SCRIPT budget-számlálója csak a status='blocked' sort zárja
+ki) -- mérve: used 1 -> 0 release-en -> 1 vissza a record-on. Javítás: a két hívási pont
+(gemini-orchestrator.ts decideGeminiOrder, gemini-orchestrator-draft-review.ts reviewOneCard)
+most outcome='blocked'-ot ír, ha a slot-ot released-eltük (result.httpStatus===503), 'error'-t
+egyébként -- a GhostCallDetail típus már eleve ismerte a 'blocked' értéket, a gemini-calls.ts
+olvasó oldal is kezeli (kizárja az órai ablakból, saját summary-bucket-je van). Teszt: 6 új eset
+(gemini-orchestrator.test.ts +2, gemini-orchestrator-draft-review.test.ts +2, mockolt
+recordDetail-lel a pontos outcome-ot pinolva; gemini-ghost-budget.test.ts +2, a VALÓS
+reserve/release/record szkriptekkel, 4 előzetes 'agy' sorral used=4-re állítva, igazolva hogy a
+'blocked' út used-et 4-en tartja, az 'error' kontroll pedig vissza 5-re spendeli). 210/210 zöld a
+3 érintett fájlban. Mutáció: a fix visszaállítva mindkét hívási pontban fix outcome='error'-ra
+-- mind a 4 új pin-teszt pirosra vált (2+2 mockolt + a valós-szkriptes pár); visszaállítva,
+210/210 zöld. `tsc --noEmit` tiszta (ugyanaz a 2 ismert parse5-hiba).
