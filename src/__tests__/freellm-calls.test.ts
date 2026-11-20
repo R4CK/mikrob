@@ -65,7 +65,7 @@ describe('GET /api/freellm/calls', () => {
 
     const { ctx, out } = mkRequest('/api/freellm/calls')
     await tryHandleFreellmStatus(ctx)
-    const row = out.body.calls[0]
+    const row = out.body.calls[0] as Record<string, unknown>
     expect(Object.keys(row).sort()).toEqual(['agent', 'card', 'duration_ms', 'fail_reason', 'model', 'outcome', 'provider', 'ts'].sort())
     expect(row.provider).toBeNull()
   })
