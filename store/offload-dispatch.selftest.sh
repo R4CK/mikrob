@@ -342,15 +342,18 @@ check "CONTROL: a real single open child is resolved as-is, never synthetically 
 off_ids="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=3 CARD_DECOMPOSE=off bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))')"
 check "MUTATION: CARD_DECOMPOSE=off -> the exact fixture that decomposed above now falls back to the whole card" "$off_ids" "decompCard"
 
-# GPU-BUDGET CAP (requirement 3, "javaslat: max 3"): a fixture whose text matches all four template
-# types, capped by OFFLOAD_DECOMPOSE_MAX_PER_CARD.
+# GPU-BUDGET CAP REMOVED (card 6d8ef952, Peti Telegram 13829/13838 "no limitation" -- the
+# per-card 3-leaf cap comment 31306 named as a gate to remove): a fixture whose text matches all
+# four template types now gets all four, by default, not capped to 3.
 cat > "$TMPDIR/fixture-allfour.json" <<'EOF'
 [{"id":"allFourCard","title":"[BE] Teszt, i18n, readme es interface egyszerre","description":"Kell unit test, i18n forditas, readme frissites es egy TypeScript interface type definition is.","status":"planned","assignee":"backend2","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]}]
 EOF
 all4_count="$(CARD=allFourCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-check "GPU-BUDGET CAP: 4 template types match, OFFLOAD_DECOMPOSE_MAX_PER_CARD default(3) caps it" "$all4_count" "3"
+check "NO CAP: 4 template types match, all 4 are returned by default (no limitation)" "$all4_count" "4"
 cap5_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-check "GPU-BUDGET CAP is CONFIGURABLE: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1, not a hardcoded 3" "$cap5_count" "1"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD remains settable as an explicit ops-side throttle: =1 caps to 1" "$cap5_count" "1"
+zero_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 means unbounded, not zero candidates (head -n 0 pitfall)" "$zero_count" "4"
 
 # NON-INTEGER/NEGATIVE GUARD (card 81025eb5, Cybered GO 33203 on 27c54ceb): OFFLOAD_DECOMPOSE_MAX_PER_CARD
 # feeds `head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD"` with no guard before this card -- a non-numeric
@@ -364,18 +367,39 @@ decompose_stderr="$TMPDIR/decompose-stderr.log"
 # "abc": head errors before writing anything -> unguarded, candidates="" -> whole-card fallback
 # (1 leaf, decompCard itself). Guarded: falls back to the documented default (3), 2 <= 3, unaffected.
 abc_count="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" 2>"$decompose_stderr" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' falls back to the default (3): decompCard still decomposes into both leaves, not a whole-card fallback" "$abc_count" "2"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' falls back to the default (0, unbounded): decompCard still decomposes into both leaves" "$abc_count" "2"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' prints the documented fallback log line" \
-  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' is not an integer -- falling back to the documented default (3)" "$decompose_stderr" && echo yes)" "yes"
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc is not an integer -- falling back to the documented default (0, unbounded)" "$decompose_stderr" && echo yes)" "yes"
+
+# FALLBACK LITERAL PIN (card e2406a43, updated for 6d8ef952's "no limitation" default): the 2-leaf
+# fixture above cannot distinguish "falls back to 0/unbounded" from "falls back to any cap >= 2" --
+# a mutant that changes the fallback literal to a small positive cap would survive undetected. Use
+# the 4-template fixture instead: an invalid value must fall back to EXACTLY unbounded (4), not a
+# smaller cap.
+abc4_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=abc bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" 2>/dev/null | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "FALLBACK LITERAL PIN: OFFLOAD_DECOMPOSE_MAX_PER_CARD='abc' on a 4-match fixture falls back to unbounded (4)" "$abc4_count" "4"
 
 # "-1": unguarded, head -n -1 on 2 candidate lines prints "all but the last 1" = 1 line, UNDER the
 # intended ceiling by accident here but demonstrating the same head-syntax hijack the card warns
 # about (on a longer candidate list this direction flips to MORE than the ceiling). Guarded: falls
-# back to 3, 2 <= 3, unaffected -- still both leaves.
+# back to 0/unbounded -- still both leaves.
 neg_count="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" 2>"$decompose_stderr" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 falls back to the default (3): decompCard still decomposes into both leaves, head's own -N syntax does not leak through" "$neg_count" "2"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 falls back to the default (0, unbounded): decompCard still decomposes into both leaves, head's own -N syntax does not leak through" "$neg_count" "2"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 prints the documented fallback log line" \
-  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD='-1' is not an integer -- falling back to the documented default (3)" "$decompose_stderr" && echo yes)" "yes"
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 is not an integer -- falling back to the documented default (0, unbounded)" "$decompose_stderr" && echo yes)" "yes"
+
+# ZERO HANDLING -- SEMANTICS CHANGED by card 6d8ef952 (Peti "no limitation" directive): "0" used to
+# mean "decompose nothing synthetically" (whole-card, non-synthetic fallback); it is now the
+# DEFAULT value and means "unbounded" (see the resolver's own "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0
+# (the default) means unbounded" comment above try_leaf). The old "explicit disable" behavior this
+# block pinned no longer exists -- there is deliberately no longer a way to force a zero-candidate
+# whole-card fallback via this variable. Covered already by the zero_count check near the top of
+# this section (0 -> 4, unbounded); kept here only to pin that 0 is still accepted with no fallback
+# log line (it is a valid value, not an invalid one falling back to the default).
+zero_decompose_stderr="$TMPDIR/decompose-zero-stderr.log"
+CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" >/dev/null 2>"$zero_decompose_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 is accepted as-is, no fallback log line" \
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=0 is not an integer" "$zero_decompose_stderr" && echo fallback-fired || echo clean)" "clean"
 
 # "08": leading-zero/octal shape, same convention as the MAX_SUBTASKS/TTL/STALE guards -- head
 # itself parses "08" as decimal 8 either way, so this fixture cannot show a behavioral difference;
@@ -383,7 +407,22 @@ check "OFFLOAD_DECOMPOSE_MAX_PER_CARD=-1 prints the documented fallback log line
 zero8_stderr="$TMPDIR/decompose-zero8-stderr.log"
 CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=08 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$zero8_stderr"
 check "OFFLOAD_DECOMPOSE_MAX_PER_CARD='08' prints the documented fallback log line" \
-  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD='08' is not an integer -- falling back to the documented default (3)" "$zero8_stderr" && echo yes)" "yes"
+  "$(grep -qF "OFFLOAD_DECOMPOSE_MAX_PER_CARD=08 is not an integer -- falling back to the documented default (0, unbounded)" "$zero8_stderr" && echo yes)" "yes"
+
+# LOG-LINE FORGERY PIN (CWE-117, card e2406a43 LOW-1, Cybered GO 34272): same reasoning as the
+# OFFLOAD_MAX_SUBTASKS pair above -- every PER_CARD value checked so far %q's to itself unchanged,
+# so a revert of this guard's %q escaping back to a raw echo would pass every check above untouched.
+decompose_nl_stderr="$TMPDIR/decompose-nl-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=$'1\nFAKE LOG LINE INJECTED' bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$decompose_nl_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with an embedded newline: exactly one stderr line (no forged second line)" \
+  "$(wc -l < "$decompose_nl_stderr" | tr -d ' ')" "1"
+
+decompose_esc_stderr="$TMPDIR/decompose-esc-stderr.log"
+CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=$'\x1b[31mRED' bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" >/dev/null 2>"$decompose_esc_stderr"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: exactly one stderr line" \
+  "$(wc -l < "$decompose_esc_stderr" | tr -d ' ')" "1"
+check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: %q-escaped, no literal ESC byte reaches the log" \
+  "$(grep -cP '\x1b' "$decompose_esc_stderr" || true)" "0"
 
 # Valid-value-honoured case already covered above (cap5_count: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1).
 
@@ -524,37 +563,65 @@ for bad in 08 09 010 9223372036854775808 12abc abc12; do
   check "OFFLOAD_LEAF_MAX_ATTEMPTS='$bad' falls back to the default ceiling (2): 2nd transient failure exhausts" "$(st "$r")|$(at "$r")" "exhausted|2"
 done
 
-# NON-INTEGER ENV GUARD, sibling env 3/3. OFFLOAD_MAX_SUBTASKS has no isolated test hook of its
-# own (it only guards the main dispatch loop's leaf-call budget, which none of this file's
-# --test-* hooks exercise) -- the guard itself runs unconditionally before ANY --test-* flag is
-# handled, so its log line is still observable through any existing hook even though the budget
-# comparison it protects is not reachable from here. A "still returns pending|0" check would be
-# vacuous (that path never touches OFFLOAD_MAX_SUBTASKS either way), so this is log-line only.
+# NON-INTEGER ENV GUARD, sibling env 3/3.
 subtasks_stderr="$TMPDIR/subtasks-stderr.log"
 bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
 OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$subtasks_stderr"
 check "a non-integer OFFLOAD_MAX_SUBTASKS prints the documented fallback log line" \
-  "$(grep -qF "OFFLOAD_MAX_SUBTASKS='lots' is not an integer -- falling back to the documented default (15)" "$subtasks_stderr" && echo yes)" "yes"
+  "$(grep -qF "OFFLOAD_MAX_SUBTASKS=lots is not an integer -- falling back to the documented default (15)" "$subtasks_stderr" && echo yes)" "yes"
 
 # LEADING-ZERO/OCTAL + OVERFLOW GUARD (card 27c54ceb, Cybered GO 32951 on 660e3b66) -- see the same
 # comment on the OFFLOAD_STALE_IN_PROGRESS_SECONDS block above for why each of these must fail.
-# Log-line only, same reasoning as the 'lots' case above (no reachable behavioral hook here).
 for bad in 08 09 010 9223372036854775808 12abc abc12; do
   bad_stderr="$TMPDIR/subtasks-bad-stderr.log"
   OFFLOAD_MAX_SUBTASKS="$bad" bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$bad_stderr"
   check "OFFLOAD_MAX_SUBTASKS='$bad' prints the documented fallback log line" \
-    "$(grep -qF "OFFLOAD_MAX_SUBTASKS='$bad' is not an integer -- falling back to the documented default (15)" "$bad_stderr" && echo yes)" "yes"
+    "$(grep -qF "OFFLOAD_MAX_SUBTASKS=$bad is not an integer -- falling back to the documented default (15)" "$bad_stderr" && echo yes)" "yes"
 done
+
+# LOG-LINE FORGERY PIN (CWE-117, card e2406a43 LOW-1, Cybered GO 34272): the leading-zero/overflow
+# checks above all pin VALUES that happen to %q to themselves unchanged (no shell-special chars), so
+# a mutant that reverts the %q escaping back to a raw echo of $OFFLOAD_MAX_SUBTASKS leaves every one
+# of them green -- the fix for the actual log-forgery bug was itself unpinned. These two values are
+# hostile: a literal newline (would print as a second, forged log line if echoed raw) and an ANSI/ESC
+# sequence (would inject raw terminal escapes into the log if echoed raw). Both fail the integer
+# regex the same way any other garbage does, so they hit the identical fallback branch; the only
+# question is whether %q renders them as ONE safe, single-line token or lets them through raw.
+nl_stderr="$TMPDIR/subtasks-nl-stderr.log"
+OFFLOAD_MAX_SUBTASKS=$'1\nFAKE LOG LINE INJECTED' bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$nl_stderr"
+check "OFFLOAD_MAX_SUBTASKS with an embedded newline: exactly one stderr line (no forged second line)" \
+  "$(wc -l < "$nl_stderr" | tr -d ' ')" "1"
+
+esc_stderr="$TMPDIR/subtasks-esc-stderr.log"
+OFFLOAD_MAX_SUBTASKS=$'\x1b[31mRED' bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$esc_stderr"
+check "OFFLOAD_MAX_SUBTASKS with a raw ESC byte: exactly one stderr line" \
+  "$(wc -l < "$esc_stderr" | tr -d ' ')" "1"
+check "OFFLOAD_MAX_SUBTASKS with a raw ESC byte: %q-escaped, no literal ESC byte reaches the log" \
+  "$(grep -cP '\x1b' "$esc_stderr" || true)" "0"
 
 # BARE-0 ACCEPTED, NOT REJECTED (card 81025eb5, Cybered GO 33203 on 27c54ceb): the regex is
 # `^(0|[1-9][0-9]{0,8})$`, so a bare "0" is a VALID value, not an invalid one -- an explicit
 # OFFLOAD_MAX_SUBTASKS=0 (meaning "offload nothing this run") must be honoured, not silently
-# rejected and replaced with the 15 fallback. Same log-line-only reasoning as above: absence of the
-# fallback message is the only observable signal here.
+# rejected and replaced with the 15 fallback.
 zero_stderr="$TMPDIR/subtasks-zero-stderr.log"
 OFFLOAD_MAX_SUBTASKS=0 bash "$DISPATCH" --test-attempts-op check leafSubtasksGuard --file "$TMPDIR/attempts-subtasks.json" >/dev/null 2>"$zero_stderr"
 check "OFFLOAD_MAX_SUBTASKS=0 is accepted as-is, no fallback log line" \
-  "$(grep -qF "OFFLOAD_MAX_SUBTASKS='0'" "$zero_stderr" && echo fallback-fired || echo clean)" "clean"
+  "$(grep -qF "OFFLOAD_MAX_SUBTASKS=0 is not an integer" "$zero_stderr" && echo fallback-fired || echo clean)" "clean"
+
+# DEFAULT/FALLBACK LITERAL PIN (card e2406a43, follow-up to 81025eb5): the log-line checks above
+# only pin the DOCUMENTED NUMBER in the message text, not the actual value OFFLOAD_MAX_SUBTASKS is
+# set to -- a mutant that changes the real default/fallback literal (15 -> 16) in BOTH assignments
+# survives every check above untouched, since the message's own "(15)" is a separate string literal.
+# --test-subtasks-budget-reached exposes the real post-guard value against the exact comparison the
+# main loop uses, so this pins the literal's actual runtime effect, not its description.
+check "DEFAULT LITERAL PIN: unset OFFLOAD_MAX_SUBTASKS, attempted=14 (< 15) does not reach the budget" \
+  "$(bash "$DISPATCH" --test-subtasks-budget-reached 14)" "ok"
+check "DEFAULT LITERAL PIN: unset OFFLOAD_MAX_SUBTASKS, attempted=15 (== 15) reaches the budget" \
+  "$(bash "$DISPATCH" --test-subtasks-budget-reached 15)" "reached"
+check "FALLBACK LITERAL PIN: OFFLOAD_MAX_SUBTASKS=lots (invalid) falls back to 15, attempted=14 does not reach" \
+  "$(OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-subtasks-budget-reached 14)" "ok"
+check "FALLBACK LITERAL PIN: OFFLOAD_MAX_SUBTASKS=lots (invalid) falls back to 15, attempted=15 reaches" \
+  "$(OFFLOAD_MAX_SUBTASKS=lots bash "$DISPATCH" --test-subtasks-budget-reached 15)" "reached"
 
 # --- concurrency: N parallel transient-fail calls on a fresh leaf must not lose an update -----------
 AF2="$TMPDIR/attempts-conc.json"
@@ -988,15 +1055,22 @@ seclabel_out="$(printf '[{"id":"leafSecTag","project":"mikrob","tags":"sec","tit
 check "M1 fix: sec-tagged card + neutral text is blocked under capacity hold (never reaches freellm-call.sh)" \
   "$seclabel_out" "leafSecTag blocked"
 
-# Case 6 (WhiteHat NO-GO 28484, M1 fix -- CAPACITY_HOLD with veto_online=true): a synthetic
-# fragment whose parent was vetoed ONLINE on the parent's full (untruncated) text must never get
-# a freellm attempt either, even under GPU-hold where try_leaf (which checks this inline) is
-# never called -- --test-capacity-route reads the leaf's own "veto_online" field the same way the
-# real CAPACITY_HOLD branch reads lveto, and must block regardless of project/tags/content.
-veto_check_out="$(printf '[{"id":"leafVetoed","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt","veto_online":true}]' \
+# Case 6 (card 6d8ef952, Peti Telegram 13829/13838 "no limitation", MikroB msg 18628/18638):
+# veto_online no longer skips the freellm attempt under capacity hold -- a synthetic fragment
+# whose parent was vetoed ONLINE on content/security grounds still gets a draft attempt; the
+# decision-shaped parent card itself stays ONLINE for review regardless (untouched by this).
+# Only is_freellm_blocked (project/tag/marker -- genuine "nothing to draft with") still blocks.
+veto_check_out="$(printf '[{"id":"leafVetoed","project":"mikrob","tags":"gemini-ok","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt","veto_online":true}]' \
   | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
-check "M1 fix: a veto_online=true leaf is blocked under capacity hold (parent-level security veto honored)" \
-  "$veto_check_out" "leafVetoed blocked"
+check "card 6d8ef952: a veto_online=true leaf is NOT blocked by the veto alone (only is_freellm_blocked gates it)" \
+  "$veto_check_out" "leafVetoed failed"
+
+# Case 6b: the same veto_online=true leaf, but WITHOUT the gemini-ok marker, IS still blocked --
+# proves the removal is specific to the security veto, not a blanket bypass of is_freellm_blocked.
+veto_no_marker_out="$(printf '[{"id":"leafVetoedNoMarker","project":"mikrob","title":"egyszeru segedfuggveny","description":"irj egy kis segedfuggvenyt","veto_online":true}]' \
+  | FREELLM_SWITCH="$TMPDIR/freellm-enabled.json" FREELLM_AUTH_TOKEN_FILE="$TMPDIR/freellm-token.txt" bash "$DISPATCH" --test-capacity-route 2>/dev/null)"
+check "card 6d8ef952: veto_online=true WITHOUT the gemini-ok marker is still blocked (is_freellm_blocked, not the veto)" \
+  "$veto_no_marker_out" "leafVetoedNoMarker blocked"
 
 # ============================================================================================
 # Card 5aa686f0 (392d7104 follow-up, WhiteHat LOW 28818): L1 (behavioral pins for the freellm
@@ -1078,6 +1152,14 @@ run_fallback_site() { # $1=script path, $2=site, $3..=site args -> sets $rc, wri
 # this shape by default (no skip file), so the REAL guard must never let the stub run.
 EXHAUSTED_ARGS=(exhausted mikrob "" "egyszeru feladat" "irj egy fuggvenyt" leaf1 "task text" leaf1 false)
 CAPHOLD_ARGS=(capacity-hold false mikrob "" "title" "desc" leaf2 "task" leaf2 false)
+# card 6d8ef952 (real freellm_fallback_capacity_hold_site, not the --test-capacity-route
+# reimplementation above): lveto=true must NOT by itself block the real site function any more --
+# only is_freellm_blocked may. CAPHOLD_VETO_LEAKS has the gemini-ok marker (is_freellm_blocked
+# allows it) and must leak; CAPHOLD_VETO_BLOCKED has no marker (is_freellm_blocked still blocks
+# it) and must stay clean -- together they prove the veto argument is ignored while
+# is_freellm_blocked is still consulted, not a blanket bypass.
+CAPHOLD_VETO_LEAKS_ARGS=(capacity-hold true mikrob gemini-ok title desc leaf2c task leaf2c false)
+CAPHOLD_VETO_BLOCKED_ARGS=(capacity-hold true mikrob "" title desc leaf2d task leaf2d false)
 
 run_fallback_site "$DISPATCH" "${EXHAUSTED_ARGS[@]}"
 check "L1 baseline (exhausted site, real code): blocked shape never reaches freellm-call.sh" \
@@ -1085,6 +1167,52 @@ check "L1 baseline (exhausted site, real code): blocked shape never reaches free
 run_fallback_site "$DISPATCH" "${CAPHOLD_ARGS[@]}"
 check "L1 baseline (capacity-hold site, real code): blocked shape never reaches freellm-call.sh" \
   "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
+run_fallback_site "$DISPATCH" "${CAPHOLD_VETO_LEAKS_ARGS[@]}"
+check "card 6d8ef952 (real capacity-hold site): lveto=true + gemini-ok marker reaches freellm-call.sh (veto no longer gates it)" \
+  "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "leaked"
+run_fallback_site "$DISPATCH" "${CAPHOLD_VETO_BLOCKED_ARGS[@]}"
+check "card 6d8ef952 (real capacity-hold site): lveto=true WITHOUT the marker still blocked (is_freellm_blocked, not the veto)" \
+  "$([[ -f "$MARKER" ]] && echo leaked || echo clean)" "clean"
+
+# ---- card 685f25cb (MikroB measured audit, 2026-11-20): every freellm_call.sh ledger row was
+# agent_id=unknown/card_id=NULL because try_freellm_for_leaf never set FREELLM_CALLER/
+# FREELLM_CARD_ID. Pin that the real assignee + post_id now reach the stub's environment, through
+# BOTH guard-site wrappers (the new trailing arg each threads through to try_freellm_for_leaf). ---
+FREELLM_ENV_STUB="$TMPDIR/freellm-env-stub.sh"
+FREELLM_ENV_OUT="$TMPDIR/freellm-env-out.txt"
+cat > "$FREELLM_ENV_STUB" << 'EOF'
+#!/usr/bin/env bash
+printf 'CALLER=%s CARD_ID=%s\n' "${FREELLM_CALLER:-}" "${FREELLM_CARD_ID:-}" > "$FREELLM_ENV_OUT_FILE"
+exit 2
+EOF
+chmod +x "$FREELLM_ENV_STUB"
+
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "attrib cim" "attrib leiras" attribleaf "task text" attribcard false backend2 \
+  >/dev/null 2>&1
+check "card 685f25cb: exhausted-site wiring passes assignee/post_id to freellm-call.sh as FREELLM_CALLER/FREELLM_CARD_ID" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=backend2 CARD_ID=attribcard"
+
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site capacity-hold false mikrob gemini-ok "attrib cim2" "attrib leiras2" attribleaf2 "task text" attribcard2 false backend3 \
+  >/dev/null 2>&1
+check "card 685f25cb: capacity-hold-site wiring passes assignee/post_id to freellm-call.sh as FREELLM_CALLER/FREELLM_CARD_ID" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=backend3 CARD_ID=attribcard2"
+
+# ---- card 685f25cb: an UNSET assignee (e.g. the plain --test-freellm-fallback-site baseline
+# calls above, which never pass one) falls back to "unknown", not an empty string -- the
+# dashboard's calls list must never show a blank agent. -----------------------------------------
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" DASHBOARD_URL="http://127.0.0.1:1" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$TMPDIR/no-skip-file-does-not-exist" \
+  bash "$DISPATCH" --test-freellm-fallback-site exhausted mikrob gemini-ok "attrib cim3" "attrib leiras3" attribleaf3 "task text" attribcard3 false \
+  >/dev/null 2>&1
+check "card 685f25cb: a missing assignee falls back to FREELLM_CALLER=unknown, never blank" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=unknown CARD_ID=attribcard3"
 
 # --- F3 routing-table shadow logging (card cdde2666) -------------------------------------------
 # --test-route-shadow calls card_route_shadow_log() directly, the SAME function and only call
@@ -1286,8 +1414,8 @@ M1_MUTANT_DISPATCH="$TMPDIR/offload-dispatch-mutant.sh"
 python3 - "$DISPATCH" "$M1_MUTANT_DISPATCH" << 'PYEOF'
 import sys
 src = open(sys.argv[1], encoding="utf-8").read()
-old = '    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0; }'
-new = '  }\n}\ntry_freellm_for_leaf_direct_bypass() {\n    { try_freellm_for_leaf $leaf_id $leaf_title $task $post_id $synthetic && return 0; }'
+old = '    { try_freellm_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$assignee" && return 0; }'
+new = '  }\n}\ntry_freellm_for_leaf_direct_bypass() {\n    { try_freellm_for_leaf $leaf_id $leaf_title $task $post_id $synthetic $assignee && return 0; }'
 assert old in src, "fixture line not found -- production call site text changed, update the mutant"
 open(sys.argv[2], "w", encoding="utf-8").write(src.replace(old, new, 1))
 PYEOF
@@ -1465,6 +1593,197 @@ m1_redact_case "userinfo (URL user:pass@host)" \
 
 kill "$M1_STUB_PID" 2>/dev/null
 wait "$M1_STUB_PID" 2>/dev/null
+
+# ---- card 6d8ef952: freellm-FIRST route (helyi -> freellm -> online REVERSED to freellm -> helyi
+# -> online, Peti Telegram 13820/13823) -------------------------------------------------------
+# All cases drive the REAL try_freellm_first_for_leaf via --test-freellm-first-site, and the real
+# cooldown helpers via --test-freellm-cooldown -- no reimplementation, same pattern as the L1
+# fallback-site tests above. A stub FREELLM_CALL (env OFFLOAD_FREELLM_CALL) stands in for the real
+# freellm-call.sh so these never touch the network; its own content/switch/token logic is covered
+# by freellm-call.sh's own selftest, not duplicated here.
+FF_SKIP="$TMPDIR/ff-skip-gemini-ok.json"
+echo '{"enabled": true}' > "$FF_SKIP"
+FF_COOLDOWN="$TMPDIR/ff-cooldown-until"
+FF_STUB="$TMPDIR/ff-stub.sh"
+FF_MARKER="$TMPDIR/ff-attempt-marker"
+
+make_ff_stub() { # $1 = exit code to return (0 drafts "ff-draft-output")
+  cat > "$FF_STUB" <<EOF
+#!/usr/bin/env bash
+touch "$FF_MARKER"
+cat >/dev/null
+if [[ "\$1" == "" && "${1}" == "0" ]]; then :; fi
+case "${1}" in
+  0) echo "ff-draft-output"; exit 0 ;;
+  *) exit ${1} ;;
+esac
+EOF
+  chmod +x "$FF_STUB"
+}
+
+run_ff_first() { # $1=leafId $2=title $3=desc $4=project $5=tags -> sets $rc, $out
+  out="$(OFFLOAD_FREELLM_CALL="$FF_STUB" OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$FF_SKIP" \
+    OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN" DASHBOARD_URL="http://127.0.0.1:1" \
+    bash "$DISPATCH" --test-freellm-first-site "$1" "$2" "$3" "$4" "$5" "task text" "$1" false 2>/dev/null)"
+  rc=$?
+}
+
+# Case 1: success -> "drafted", exit 0, attempt reaches the stub.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF1 "title" "desc" mikrob ""
+check "freellm-first success: prints drafted" "$out" "drafted"
+check "freellm-first success: exit 0" "$rc" "0"
+check "freellm-first success: stub was actually invoked" "$([[ -f "$FF_MARKER" ]] && echo yes || echo no)" "yes"
+
+# Case 2: rc=3 (quota/429) -> fallthrough, exit 1, and a cooldown file is written.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 3
+run_ff_first leafF2 "title" "desc" mikrob ""
+check "freellm-first rc=3 (quota): prints fallthrough" "$out" "fallthrough"
+check "freellm-first rc=3 (quota): exit 1" "$rc" "1"
+check "freellm-first rc=3 (quota): cooldown file written" "$([[ -f "$FF_COOLDOWN" ]] && echo yes || echo no)" "yes"
+
+# Case 3: cooldown active -> the leaf never reaches the stub at all (marker absent), fallthrough.
+rm -f "$FF_MARKER"
+make_ff_stub 0
+run_ff_first leafF3 "title" "desc" mikrob ""
+check "freellm-first under active cooldown: prints fallthrough" "$out" "fallthrough"
+check "freellm-first under active cooldown: stub NEVER invoked" "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
+
+# Case 4: rc=4 (content gate inside freellm-call.sh itself) -> fallthrough, exit 1, NO cooldown
+# written (a content-gate refusal is not a quota event -- it must not block the NEXT leaf's
+# freellm-first attempt).
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 4
+run_ff_first leafF4 "title" "desc" mikrob ""
+check "freellm-first rc=4 (content gate): prints fallthrough" "$out" "fallthrough"
+check "freellm-first rc=4 (content gate): exit 1" "$rc" "1"
+check "freellm-first rc=4 (content gate): no cooldown written" "$([[ -f "$FF_COOLDOWN" ]] && echo yes || echo no)" "no"
+
+# Case 5: rc=2 (disabled / switch off) -> fallthrough, exit 1, no cooldown.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 2
+run_ff_first leafF5 "title" "desc" mikrob ""
+check "freellm-first rc=2 (disabled): prints fallthrough" "$out" "fallthrough"
+check "freellm-first rc=2 (disabled): no cooldown written" "$([[ -f "$FF_COOLDOWN" ]] && echo yes || echo no)" "no"
+
+# Case 6 (card 6d8ef952 scope change, Peti 13829/13838 "igen, vedd le"): the project allowlist is
+# WIDENED to mikrob+mopsion for freellm -- a mopsion leaf now DOES reach the stub and drafts.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF6 "title" "desc" mopsion ""
+check "freellm-first project allowlist: mopsion leaf now reaches the stub (widened, 6d8ef952)" \
+  "$([[ -f "$FF_MARKER" ]] && echo reached || echo missing)" "reached"
+check "freellm-first project allowlist: mopsion leaf drafts" "$out" "drafted"
+
+# Case 6b: an UNRELATED project (not mikrob, not mopsion) is still blocked -- the widening is
+# exactly two names, not a removal of the allowlist itself.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF6b "title" "desc" cleancore ""
+check "freellm-first project allowlist: unrelated project still blocked" \
+  "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
+check "freellm-first project allowlist: unrelated project falls through" "$out" "fallthrough"
+
+# Case 7 (card 6d8ef952 scope change): the category/PII content gate no longer REFUSES a freellm
+# card -- a sensitive-worded mikrob leaf now reaches the stub and drafts (masking of actual
+# credential VALUES, tested separately below, is the real protection now, not a refusal).
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF7 "authz check" "irj meg egy authz ellenorzest" mikrob ""
+check "freellm-first content gate (prefilter): sensitive leaf now reaches the stub (6d8ef952)" \
+  "$([[ -f "$FF_MARKER" ]] && echo reached || echo missing)" "reached"
+check "freellm-first content gate (prefilter): sensitive leaf drafts" "$out" "drafted"
+
+# Case 7b: an explicit BLOKKOLT-* tag is a human override, not a category inference -- it still
+# blocks even after the content-gate loosening above.
+rm -f "$FF_MARKER" "$FF_COOLDOWN"
+make_ff_stub 0
+run_ff_first leafF7b "title" "desc" mikrob "BLOKKOLT-Peti-stop"
+check "freellm-first content gate: BLOKKOLT-* tag still blocks (human override, not category)" \
+  "$([[ -f "$FF_MARKER" ]] && echo leaked || echo clean)" "clean"
+check "freellm-first content gate: BLOKKOLT-* tag falls through" "$out" "fallthrough"
+
+# --- redact_secrets: a card with an embedded credential drafts (not refused), and the body the
+# stub actually RECEIVES never contains the raw secret -- the "Kesz, ha" pin from comment 31309
+# (MikroB decision on Peti 13838): "the outgoing request body contains [REDACTED:...] instead of
+# the token". FF_STUB_CAPTURE writes stdin to a file instead of discarding it, so the test can
+# inspect exactly what left the machine.
+FF_CAPTURED="$TMPDIR/ff-captured-body"
+make_ff_stub_capture() { # $1 = exit code to return
+  cat > "$FF_STUB" <<EOF
+#!/usr/bin/env bash
+touch "$FF_MARKER"
+cat > "$FF_CAPTURED"
+case "${1}" in
+  0) echo "ff-draft-output"; exit 0 ;;
+  *) exit ${1} ;;
+esac
+EOF
+  chmod +x "$FF_STUB"
+}
+rm -f "$FF_MARKER" "$FF_COOLDOWN" "$FF_CAPTURED"
+make_ff_stub_capture 0
+out="$(OFFLOAD_FREELLM_CALL="$FF_STUB" OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$FF_SKIP" \
+  OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN" DASHBOARD_URL="http://127.0.0.1:1" \
+  bash "$DISPATCH" --test-freellm-first-site leafF8 "credential leak" "live key, do not leak" mikrob "" \
+  "token: ghp_ABCDEFGHIJ1234567890abcdefghij" leafF8 false 2>/dev/null)"
+check "redact_secrets: sensitive leaf still drafts (not refused)" "$out" "drafted"
+check "redact_secrets: outgoing body does NOT contain the raw token" \
+  "$(grep -c "ghp_ABCDEFGHIJ1234567890abcdefghij" "$FF_CAPTURED" 2>/dev/null)" "0"
+check "redact_secrets: outgoing body contains the redaction marker instead" \
+  "$(grep -c "REDACTED:github-token" "$FF_CAPTURED" 2>/dev/null)" "1"
+
+# Case 9 (Peti 13838 "Igen, vedd le" -- PII is explicitly NOT masked, only credentials are): a
+# card with a personal email address drafts, and the email passes through the outgoing body
+# UNMASKED -- distinguishing the new credential-masking behaviour from a blanket PII scrub.
+rm -f "$FF_MARKER" "$FF_COOLDOWN" "$FF_CAPTURED"
+make_ff_stub_capture 0
+out="$(OFFLOAD_FREELLM_CALL="$FF_STUB" OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$FF_SKIP" \
+  OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN" DASHBOARD_URL="http://127.0.0.1:1" \
+  bash "$DISPATCH" --test-freellm-first-site leafF9 "contact update" "hivd vissza" mikrob "" \
+  "ugyfel email: ugyfel@example.com" leafF9 false 2>/dev/null)"
+check "redact_secrets: PII (email) is NOT masked, passes through unredacted" \
+  "$(grep -c "ugyfel@example.com" "$FF_CAPTURED" 2>/dev/null)" "1"
+
+# --- freellm_in_cooldown / freellm_start_cooldown direct pins (via --test-freellm-cooldown) ------
+FF_COOLDOWN2="$TMPDIR/ff-cooldown2"
+rm -f "$FF_COOLDOWN2"
+check "cooldown helper: no file yet -> clear" \
+  "$(OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN2" bash "$DISPATCH" --test-freellm-cooldown check)" "clear"
+check "cooldown helper: start -> cooling" \
+  "$(OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN2" OFFLOAD_FREELLM_COOLDOWN_SECONDS=300 bash "$DISPATCH" --test-freellm-cooldown start)" "cooling"
+check "cooldown helper: already-expired timestamp -> clear" \
+  "$(echo 1 > "$FF_COOLDOWN2"; OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN2" bash "$DISPATCH" --test-freellm-cooldown check)" "clear"
+check "cooldown helper: malformed content -> clear (fail-open on the cooldown itself, not a gate)" \
+  "$(echo "not-a-number" > "$FF_COOLDOWN2"; OFFLOAD_FREELLM_COOLDOWN_FILE="$FF_COOLDOWN2" bash "$DISPATCH" --test-freellm-cooldown check)" "clear"
+
+# --- STRUCTURAL pin: try_leaf calls try_freellm_first_for_leaf BEFORE the GEMINI_ROUTE/local-RAG
+# branch (word-boundary source pin, same technique as the other "X calls Y" pins in this file --
+# card 6d8ef952's Kesz-ha is "every draft goes to freellm first", so the ORDER matters, not just
+# the function's existence). ----------------------------------------------------------------------
+# CODE-ONLY lines (comment lines stripped) -- a prose comment mentioning the function name by
+# name (which this file's own header comments do, deliberately, for readability) must never count
+# as the call the mutation proof needs to catch removal of.
+TRY_LEAF_BODY="$(awk '/^try_leaf\(\) \{/{found=1; next} found && /^\}$/{exit} found{print}' "$DISPATCH" | grep -v '^\s*#')"
+ff_line="$(printf '%s\n' "$TRY_LEAF_BODY" | grep -n 'try_freellm_first_for_leaf' | head -1 | cut -d: -f1)"
+rag_line="$(printf '%s\n' "$TRY_LEAF_BODY" | grep -n '"\$RAG" --auto' | head -1 | cut -d: -f1)"
+check "try_leaf's body contains a try_freellm_first_for_leaf call" "$([[ -n "$ff_line" ]] && echo yes || echo no)" "yes"
+check "try_leaf's body contains the local RAG (\$RAG) call" "$([[ -n "$rag_line" ]] && echo yes || echo no)" "yes"
+check "try_leaf calls try_freellm_first_for_leaf BEFORE the local RAG (\$RAG) call" \
+  "$([[ -n "$ff_line" && -n "$rag_line" && "$ff_line" -lt "$rag_line" ]] && echo yes || echo no)" "yes"
+
+# STRUCTURAL pin: try_leaf's body must NOT contain a synthetic+veto_online early-return before
+# try_freellm_first_for_leaf (card 6d8ef952, Peti "no limitation" -- the veto no longer skips the
+# attempt). A removed-then-reintroduced skip here would be invisible to any --test-capacity-route
+# or --test-freellm-fallback-site case above, since those exercise different code paths
+# (the capacity-hold sweep branch, not try_leaf's own synthetic-fragment branch).
+veto_skip_line="$(printf '%s\n' "$TRY_LEAF_BODY" | grep -n 'synthetic.*==.*true.*veto_online.*==.*true' | head -1 | cut -d: -f1)"
+check "try_leaf's body contains NO synthetic+veto_online early-return (the skip was removed, not just moved)" \
+  "$([[ -z "$veto_skip_line" ]] && echo yes || echo no)" "yes"
+check "if present, any such check would come before try_freellm_first_for_leaf (would short-circuit it) -- confirms removal, not reordering" \
+  "$([[ -z "$veto_skip_line" || ( -n "$ff_line" && "$veto_skip_line" -lt "$ff_line" ) ]] && echo yes || echo no)" "yes"
 
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
