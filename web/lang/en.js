@@ -1059,7 +1059,13 @@ window._i18n.en = {
   'freellm.calls.outcome.stalled':   'Stalled',
   'freellm.calls.outcome.429':       'Rate limited (429)',
   'freellm.calls.outcome.auth':      'Auth error',
+  'freellm.calls.outcome.unknown':   'Unknown ({outcome})',
+  'freellm.calls.fail_reason.http_400': 'bad request (400)',
   'freellm.calls.fail_reason.http_404': 'endpoint not found (404)',
+  'freellm.calls.fail_reason.http_500': 'server error (500)',
+  'freellm.calls.fail_reason.http_502': 'bad gateway (502)',
+  'freellm.calls.fail_reason.http_503': 'service unavailable (503)',
+  'freellm.calls.fail_reason.unknown': 'Error: {reason}',
 
   // --- Connectors (MCP) ---
   'connectors.page_title':       'MCP connectors',

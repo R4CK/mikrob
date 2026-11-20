@@ -135,8 +135,16 @@ const FREELLM_CALLS_LIMIT = 50
 const FREELLM_COUNT_FIELDS = ['ok', 'fail', 'stalled', 'rate_429', 'auth']
 let _freellmCallsRefreshBound = false
 
+// Cybersec MEDIUM (card ebe20efe, gate on e594a37f3): the real t() (web/app.js) returns the
+// lookup KEY ITSELF on a miss, which is a truthy non-empty string -- a `t(key) || fallback` or
+// `if (translated) ...` check never catches a miss in production, only in a test whose own fakeT
+// happens to return '' instead (exactly the card d96f1418 root cause, repeated here). The correct
+// miss test is comparing the result AGAINST the key it was looked up with.
 function freellmOutcomeLabel(outcome) {
-  return t('freellm.calls.outcome.' + outcome) || String(outcome)
+  const key = 'freellm.calls.outcome.' + outcome
+  const label = t(key)
+  if (label !== key) return label
+  return t('freellm.calls.outcome.unknown', { outcome: String(outcome) })
 }
 
 // The aggregate counts object spells the 429 bucket 'rate_429'; a call row's own outcome value
@@ -148,11 +156,14 @@ function freellmCountFieldLabel(field) {
 }
 
 // A technical fail_reason code (e.g. "http_404") gets a translated label if we have one, else a
-// de-snaked fallback ("http 404") rather than the raw underscored string -- rule 12.
+// generic, still-descriptive i18n fallback carrying the raw code (rule 12) -- never the bare
+// underscored string, and never a raw, unresolved i18n key either (see the comment above
+// freellmOutcomeLabel for why a truthy/miss check on t() does not work).
 function freellmFailReasonLabel(reason) {
-  const known = t('freellm.calls.fail_reason.' + reason)
-  if (known) return known
-  return String(reason).replace(/_/g, ' ')
+  const key = 'freellm.calls.fail_reason.' + reason
+  const label = t(key)
+  if (label !== key) return label
+  return t('freellm.calls.fail_reason.unknown', { reason: String(reason) })
 }
 
 // Rows the table highlights as failed (rule 12: the operator needs the bad ones to stand out).

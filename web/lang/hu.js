@@ -1314,7 +1314,13 @@ window._i18n.hu = {
   'freellm.calls.outcome.stalled':   'Megakadt',
   'freellm.calls.outcome.429':       'Túlterhelt (429)',
   'freellm.calls.outcome.auth':      'Hitelesítési hiba',
+  'freellm.calls.outcome.unknown':   'Ismeretlen ({outcome})',
+  'freellm.calls.fail_reason.http_400': 'hibás kérés (400)',
   'freellm.calls.fail_reason.http_404': 'a végpont nem található (404)',
+  'freellm.calls.fail_reason.http_500': 'szerverhiba (500)',
+  'freellm.calls.fail_reason.http_502': 'rossz gateway (502)',
+  'freellm.calls.fail_reason.http_503': 'a szolgáltatás jelenleg nem elérhető (503)',
+  'freellm.calls.fail_reason.unknown': 'Hiba: {reason}',
 
   // --- Connectors (MCP) ---
   'connectors.page_title':       'MCP összekötők',

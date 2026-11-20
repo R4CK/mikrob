@@ -17,6 +17,7 @@ const HTML = readFileSync(join(ROOT, 'web', 'index.html'), 'utf8')
 const CSS = readFileSync(join(ROOT, 'web', 'style.css'), 'utf8')
 const EN = readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf8')
 const HU = readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf8')
+const APP_JS = readFileSync(join(ROOT, 'web', 'app.js'), 'utf8')
 
 function extract(name: string): string {
   let start = SRC.indexOf(`function ${name}(`)
@@ -60,17 +61,25 @@ function makeDocument(ids: string[]) {
   }
 }
 
-function fakeT(key: string): string {
-  const map: Record<string, string> = {
-    'freellm.calls.outcome.ok': 'Success',
-    'freellm.calls.outcome.fail': 'Failed',
-    'freellm.calls.outcome.stalled': 'Stalled',
-    'freellm.calls.outcome.429': 'Rate limited (429)',
-    'freellm.calls.outcome.auth': 'Auth error',
-    'freellm.calls.fail_reason.http_404': 'endpoint not found (404)',
-    'freellm.calls.load_error': 'Could not load the call log. Try again.',
-  }
-  return map[key] ?? ''
+// Cybersec MEDIUM (gate on e594a37f3): the real t() (web/app.js) returns the lookup KEY ITSELF
+// on a miss -- a fakeT that instead returns '' on a miss (the previous version of this helper)
+// hides a `t(key) || fallback` bug, because '' is falsy and a real miss is not. This mirrors the
+// real function's miss behavior exactly (key echoed back, {param} interpolation applied) so a
+// fallback-detection bug shows up here the same way it would in production.
+const FAKE_T_MAP: Record<string, string> = {
+  'freellm.calls.outcome.ok': 'Success',
+  'freellm.calls.outcome.fail': 'Failed',
+  'freellm.calls.outcome.stalled': 'Stalled',
+  'freellm.calls.outcome.429': 'Rate limited (429)',
+  'freellm.calls.outcome.auth': 'Auth error',
+  'freellm.calls.outcome.unknown': 'Unknown ({outcome})',
+  'freellm.calls.fail_reason.http_404': 'endpoint not found (404)',
+  'freellm.calls.fail_reason.unknown': 'Error: {reason}',
+  'freellm.calls.load_error': 'Could not load the call log. Try again.',
+}
+function fakeT(key: string, params: Record<string, unknown> = {}): string {
+  const template = FAKE_T_MAP[key] ?? key
+  return template.replace(/\{(\w+)\}/g, (_: string, k: string) => String(params[k] ?? `{${k}}`))
 }
 
 let freellmOutcomeLabel: (outcome: string) => string
@@ -102,8 +111,10 @@ describe('freellmOutcomeLabel', () => {
     expect(freellmOutcomeLabel('429')).toBe('Rate limited (429)')
   })
 
-  it('falls back to the raw outcome string for an unexpected value (future-proofing the enum)', () => {
-    expect(freellmOutcomeLabel('some_new_outcome')).toBe('some_new_outcome')
+  it('falls back to a translated, descriptive message for an unexpected value, never a raw/unresolved i18n key (future-proofing the enum)', () => {
+    const result = freellmOutcomeLabel('some_new_outcome')
+    expect(result).toBe('Unknown (some_new_outcome)')
+    expect(result).not.toBe('freellm.calls.outcome.some_new_outcome')
   })
 })
 
@@ -202,9 +213,11 @@ describe('freellmRenderCallsTable', () => {
     expect(tbody.children[0].children[4].textContent).toBe('Failed (endpoint not found (404))')
   })
 
-  it('falls back to a de-snaked fail_reason for an unrecognized reason code', () => {
+  it('falls back to a translated generic message (carrying the raw code) for an unrecognized reason, never a raw/unresolved i18n key', () => {
     const tbody = run([{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: 'fail', fail_reason: 'some_new_reason', duration_ms: 1 }])
-    expect(tbody.children[0].children[4].textContent).toBe('Failed (some new reason)')
+    const text = tbody.children[0].children[4].textContent
+    expect(text).toBe('Failed (Error: some_new_reason)')
+    expect(text).not.toContain('freellm.calls.fail_reason.')
   })
 
   it('shows the plain outcome with no parenthetical when fail_reason is null', () => {
@@ -333,7 +346,13 @@ const FREELLM_CALLS_I18N_KEYS = [
   'freellm.calls.outcome.stalled',
   'freellm.calls.outcome.429',
   'freellm.calls.outcome.auth',
+  'freellm.calls.outcome.unknown',
+  'freellm.calls.fail_reason.http_400',
   'freellm.calls.fail_reason.http_404',
+  'freellm.calls.fail_reason.http_500',
+  'freellm.calls.fail_reason.http_502',
+  'freellm.calls.fail_reason.http_503',
+  'freellm.calls.fail_reason.unknown',
 ]
 
 describe('freellm calls panel: i18n parity', () => {
@@ -341,6 +360,67 @@ describe('freellm calls panel: i18n parity', () => {
     it(`key "${key}" exists in both hu.js and en.js`, () => {
       expect(HU).toContain(`'${key}':`)
       expect(EN).toContain(`'${key}':`)
+    })
+  }
+})
+
+// --- Cybersec MEDIUM (gate on e594a37f3): exercise the REAL t() (web/app.js), with the REAL
+// en.js/hu.js dictionaries, not fakeT. A `t(key) || fallback` or `if (translated) ...` miss-check
+// bug would only show up here, or in production -- fakeT's old '' -on-miss behavior hid it (see
+// card d96f1418 for the same bug class on the Settings page).
+function makeRealT(lang: 'en' | 'hu') {
+  const win: Record<string, unknown> = { _lang: lang, _brandTokens: {} }
+  for (const l of ['en', 'hu'] as const) new Function('window', l === 'en' ? EN : HU)(win)
+  const tStart = APP_JS.indexOf('window.t = function t(')
+  const tEnd = APP_JS.indexOf('\n  }\n', tStart)
+  if (tStart < 0 || tEnd < 0) throw new Error('window.t missing from web/app.js')
+  const tSrc = APP_JS.slice(tStart + 'window.t = '.length, tEnd + 4)
+  return new Function('window', 'localStorage', `return ${tSrc}`)(win, { getItem: () => null }) as (
+    key: string, params?: Record<string, unknown>,
+  ) => string
+}
+
+describe('freellm outcome/fail_reason labels against the REAL t() and REAL dictionaries', () => {
+  function build(lang: 'en' | 'hu') {
+    const realT = makeRealT(lang)
+    const body =
+      `${extract('freellmOutcomeLabel')}\n${extract('freellmFailReasonLabel')}\n` +
+      'return { freellmOutcomeLabel, freellmFailReasonLabel }'
+    const factory = new Function('t', body) as (
+      t: unknown,
+    ) => { freellmOutcomeLabel: (o: string) => string; freellmFailReasonLabel: (r: string) => string }
+    return factory(realT)
+  }
+
+  for (const lang of ['en', 'hu'] as const) {
+    it(`[${lang}] a known outcome never renders a raw/unresolved i18n key`, () => {
+      const { freellmOutcomeLabel: label } = build(lang)
+      for (const outcome of ['ok', 'fail', 'stalled', '429', 'auth']) {
+        expect(label(outcome)).not.toBe('freellm.calls.outcome.' + outcome)
+      }
+    })
+
+    it(`[${lang}] an unexpected outcome renders a translated message carrying the raw value, never a raw i18n key`, () => {
+      const { freellmOutcomeLabel: label } = build(lang)
+      const result = label('some_totally_new_outcome')
+      expect(result).not.toBe('freellm.calls.outcome.some_totally_new_outcome')
+      expect(result).not.toBe('freellm.calls.outcome.unknown')
+      expect(result).toContain('some_totally_new_outcome')
+    })
+
+    it(`[${lang}] a known fail_reason never renders a raw/unresolved i18n key`, () => {
+      const { freellmFailReasonLabel: label } = build(lang)
+      for (const reason of ['http_400', 'http_404', 'http_500', 'http_502', 'http_503']) {
+        expect(label(reason)).not.toBe('freellm.calls.fail_reason.' + reason)
+      }
+    })
+
+    it(`[${lang}] an unexpected fail_reason renders a translated message carrying the raw code, never a raw i18n key`, () => {
+      const { freellmFailReasonLabel: label } = build(lang)
+      const result = label('http_418')
+      expect(result).not.toBe('freellm.calls.fail_reason.http_418')
+      expect(result).not.toBe('freellm.calls.fail_reason.unknown')
+      expect(result).toContain('http_418')
     })
   }
 })
