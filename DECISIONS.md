@@ -28917,3 +28917,23 @@ lelet). Az 5 önhibás bukás (2 hook-registration-completeness rés, 3 project-
 pin-eltérés, mind a pin-tesztek frissítésének kihagyásából) javítva, nem reprodukálódik.
 
 **Ki döntött:** MikroB (kártya 0c3b13b5, dispatch). backend2 végezte. Gate: QA + Cybersec.
+
+## 2026-11-20 -- QA FAIL fix: EXEMPT_SCRIPT_RX bypass a live-checkout-write-guard.py-ban (kártya 0c3b13b5, delta)
+
+**Döntés:** QA (34714. komment, Gate-SHA 3f97f0a43) élőben reprodukálta: a `marveen-land.sh`/
+`update.sh` mentesség egy sima substring-keresés volt a TELJES nyers Bash parancson, tehát egy
+sub-agent elég volt, ha BÁRHOL megemlítette a script nevét (pl. egy záró `# update.sh` komment),
+és a guard a TELJES parancsra kikapcsolt -- pont a fc1bb414 incidens, amit a kártya megszüntetni
+hivatott. Javítás: a regex a (idézett literálokból tisztított, `&&`/`||`/`;`/`|` mentén
+szegmentált) parancsszegmens ELEJÉRE horgonyzott, és szegmensenként, nem a teljes nyers szövegen
+alkalmazva -- csak az a szegmens mentes, amelyik TÉNYLEGESEN a scriptet futtatja.
+
+A javítás közben a saját új teszt egy MÁSIK, ezzel összefüggő hiányt is felfedett: egy záró
+shell-komment a `sed -i` naiv utolsó-token célkeresését a komment-szövegre csúsztatta a valós
+fájlútvonal helyett. Javítva: `_strip_trailing_comment`, a szegmentálás előtt alkalmazva.
+
+**Mutáció-bizonyítva:** mindkét javítás visszaállítva egy eldobható másolaton -> pontosan a 3 új
+regressziós eset vált pirosra (29/3), a többi zöld marad.
+
+**Ki döntött:** QA FAIL (34714, Gate-SHA 3f97f0a43) -> Fix-Direction: backend2 (a guard szerzője,
+a javítást a 4b. szabály szerint más gatel-eli). backend2 végezte a javítást. Gate: QA + Cybersec.
