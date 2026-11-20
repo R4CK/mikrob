@@ -28817,3 +28817,15 @@ Which other update.sh-read env vars are intentionally left out of the allowlist 
 **Nincs benne:** a kártya saját számozott listáján kívüli, RedHat által is megnevezett `eval`/függvény-test-csoport ALLOW-alakok nincsenek zárva (külön kártya nélkül nem bontva ki); a depth>3 enforce-mód tényleges élesítése/kikapcsolása nem e kártya része, csak a mérési eredmény.
 
 **Ki döntött:** RedHat (cybered) NO-GO-ja + saját számozott elfogadási kritériuma a 7e01b349 kártyán. backend végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
+
+## 2026-11-20 -- 52114c2f: per-agent dashboard auth header, slice 2.5 of 2520b85a
+
+**Kontextus:** ccbb718a mérése (2026-11-07, komment 28848): 100% authKind=legacy-token, ZERO authKind=agent-key a flotta valódi HTTP-hívásaiban, mert a CLAUDE.md és a seed-sablonok a megosztott-token curl mintát írták elő. Az enforce mód (ccbb718a) a mai forgalom 100%-át törte volna.
+
+**Döntés:** új `agent-auth-header.sh` helper ad minden agentnek saját kulcs-fejléket (fallback a megosztott tokenre, ha a kulcs hiányzik/lejárt, naplózott figyelmeztetéssel, sosem néma hiba); az 5 generált curl-recept (memory-save, napi napló, memória-keresés, agent-id/system-direktíva, inter-agent válasz) ezt a helpert hívja, a token sosem kerül argv-ba. A memory-save/daily-log inline, duplikált curl-receptjét a `generateClaudeMd` egyszeri new-agent promptjában idempotens generátorokra (`ensureMemorySaveSection`/`ensureDailyLogSection`/`ensureMemorySearchLabelSection`) cserélte -- ez szüntette meg azt a duplikációt, ami korábban a két kópia szétdriftelését okozta.
+
+**Teszt:** `fleet-test.sh` teljes suite (szemafor-szkripten át, 17. szabály), Gate-SHA aea69044cb203c504d2ce2262b0911adc652b7c7: Test Files 1394 passed | 1 skipped (1395), Tests 43860 passed | 132 skipped (43992), 777.44s. `lint-ratchet.sh`: no rule got worse (420 findings, baseline holds). A `claude-md-split-reachability-check.py` conservation-ellenőrzés a 3 printf->agent-auth-header.sh átfogalmazást intentional rewordingként elfogadva (`--update-baseline`, a 2 korábbi, nem-kapcsolódó bejegyzés -- kártya 5dd48e5d -- megtartva).
+
+**Nincs benne:** a 24 órás authKind=agent-key mérés ágensenkénti aránya (cél: minden futó agent > 0) és a ccbb718a utóméréses -- ezek a kulcsok flottaszintű kiosztása (még nem történt meg) után következnek, külön REVIEW-ban.
+
+**Ki döntött:** a kártya saját elfogadási kritériuma (MikroB, 2520b85a slice 2.5). backend végezte. Gate: QA + Cybersec + Cybered (auth minden agentre, flottaszinten).
