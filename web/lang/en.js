@@ -1059,9 +1059,6 @@ window._i18n.en = {
   'freellm.calls.outcome.stalled':   'Stalled',
   'freellm.calls.outcome.429':       'Rate limited (429)',
   'freellm.calls.outcome.auth':      'Auth error',
-  'freellm.calls.count.total':       'Total',
-  'freellm.calls.count.ok':          'Success',
-  'freellm.calls.count.fail':        'Failed',
   'freellm.calls.fail_reason.http_404': 'endpoint not found (404)',
 
   // --- Connectors (MCP) ---

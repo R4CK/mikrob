@@ -119,28 +119,32 @@ async function freellmPostStatus(enabled) {
 }
 
 // --- Call log (card ebe20efe, Peti 14295) --------------------------------------------------
-// Contract (backend2, Pair-BE 685f25cb, msg_id:21882, branch fix/freellm-call-journal-685f25cb
-// commit 192fdc6a7 -- not yet landed at the time this was written): GET /api/freellm/calls?
-// since=<unix_s>&limit=<1..500>
-//   -> { calls: [{ ts: <unix SECONDS>, agent, card, model, outcome: 'ok'|'fail'|'auth'|'429'|
-//          'stalled', fail_reason: <string>|null, duration_ms }, ...], // newest first
-//        counts_24h: { total, ok, fail }, counts_7d: { same shape } }
-// `ts` is unix SECONDS, not ms (Date() needs *1000). outcome is a closed enum but rendered
-// through a lookup with a safe fallback, so an unexpected future value never breaks the page.
-// counts_24h/7d only give total/ok/fail (not a per-failure-kind breakdown) -- the card's own
-// "successful, failed, stalled, 429" counter wording asks for more than that; flagged to
-// backend2 + MikroB (msg_id:21901 thread) as a possible follow-up. The per-row outcome column
-// in the table below still shows the real stalled/429/auth distinction per call.
+// Contract (backend2, Pair-BE 685f25cb, msg_id:21895, reconciling an earlier draft 21882 after a
+// MikroB scope correction -- branch fix/freellm-call-journal-685f25cb, commit cb3e9e23a, not yet
+// landed): GET /api/freellm/calls?since=<unix_s>&limit=<1..500>
+//   -> { calls: [{ ts: <unix SECONDS>, agent, card, model, provider: null (reserved, never
+//          populated today), outcome: 'ok'|'fail'|'auth'|'429'|'stalled', fail_reason: <string>|
+//          null, duration_ms }, ...], // newest first, no `attempt` field (not recorded today)
+//        counts_24h: { ok, fail, stalled, rate_429, auth }, counts_7d: { same shape } }
+// `ts` is unix SECONDS, not ms (Date() needs *1000). The counts object's key for the 429 bucket
+// is `rate_429`, but a ROW's own outcome value for the same thing is the string '429' -- two
+// different spellings for the same case, both handled below. outcome is a closed enum but
+// rendered through a lookup with a safe fallback, so an unexpected future value never breaks the
+// page. `provider` and `attempt` are not rendered (the panel never used them).
 const FREELLM_CALLS_LIMIT = 50
-const FREELLM_COUNT_FIELDS = ['total', 'ok', 'fail']
+const FREELLM_COUNT_FIELDS = ['ok', 'fail', 'stalled', 'rate_429', 'auth']
 let _freellmCallsRefreshBound = false
 
 function freellmOutcomeLabel(outcome) {
   return t('freellm.calls.outcome.' + outcome) || String(outcome)
 }
 
+// The aggregate counts object spells the 429 bucket 'rate_429'; a call row's own outcome value
+// spells the same case '429'. Route 'rate_429' to the same label as outcome '429' rather than
+// requiring (and risking someone forgetting) a second, parallel translation key.
 function freellmCountFieldLabel(field) {
-  return t('freellm.calls.count.' + field) || String(field)
+  const outcomeKey = field === 'rate_429' ? '429' : field
+  return freellmOutcomeLabel(outcomeKey)
 }
 
 // A technical fail_reason code (e.g. "http_404") gets a translated label if we have one, else a
