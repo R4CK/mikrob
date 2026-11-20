@@ -29434,3 +29434,45 @@ kanban-decisions-guard, kg-import-decisions-log) -> 5 Test Files passed (5), 37 
 **Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást. Gate:
 a delta a 6042ce6df-en már megadott QA + Cybersec2 sign-offot nem ismétli meg; ez a komment a
 merge-delta saját REVIEW-ja (kanban komment 33410).
+
+## 84f90b4e: card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh (2026-11-20)
+
+**Context:** proposed scope rejected (MikroB decision, card comment, 2026-11-20): a raw
+`DECISIONS.md merge=union` .gitattributes driver would have been the GENERAL auto-merge an
+earlier card (cbb66abf) explicitly rejected, since it would silently union a real edit to an
+existing entry, not just a tail append. Re-scoped to the real, measured gap instead: today
+(2026-11-20) a2028f35 (4 times), c4590365, 6d8ef952 and 30aa8b29 each needed a manual
+develop-into-card merge with a hand-resolved DECISIONS.md conflict and a fresh gate round --
+despite `store/decisions-sync-resolve.sh` (card edf9c837) already resolving exactly this
+append-append shape, proven by its own --selftest. The gap was never correctness; it was that
+nothing called it. An agent syncing by hand runs a plain `git merge origin/develop`, hits the
+conflict, and resolves it manually, because `docs/rules/marveen-worktree-fegyelme.md` never
+mentioned the resolver existed.
+
+**Fix:** `store/card-branch-sync-develop.sh [<worktree>] [<integration-ref>]` -- the one command
+to run instead of a raw `git merge`. Performs the merge itself; on a conflict limited to
+DECISIONS.md alone, calls `decisions-sync-resolve.sh` (forwarding the caller's integration ref
+via `DECISIONS_SYNC_INTEGRATION_REFS`, since that script checks MERGE_HEAD against a hardcoded
+default of `origin/develop origin/main` otherwise) and commits the result; any other conflict
+shape is left open exactly as a plain `git merge` would leave it. After a successful merge
+(auto-resolved or clean), re-verifies the append-only invariant via
+`decisions_append_only_check_merge` and `git reset --hard`s back to the pre-merge commit if it
+is ever violated, so a false-positive resolve can never land silently. Documented in
+`docs/rules/marveen-worktree-fegyelme.md` so it is actually found.
+
+**Test:** `src/__tests__/card-branch-sync-develop-selftest.test.ts` running the script's own
+`--selftest` (4 cases: the exact a2028f35 shape resolves with no manual step and the correct
+tail order; a real edit to an existing entry stays refused with the merge left open; a conflict
+on a non-DECISIONS file stays refused; already-up-to-date is a clean no-op) plus 2 structural
+pin tests. Mutation-verified: reverting the `DECISIONS_SYNC_INTEGRATION_REFS="$REF"` forwarding
+(the actual bug caught while building this) turns the a2028f35-shape case and its structural pin
+red; restored byte-identical, confirmed via diff. `fleet-test.sh`-equivalent local run (this file
++ decisions-sync-resolve-selftest + decisions-append-union-selftest): 3 Test Files passed (3), 11
+Tests passed (11). `npx tsc --noEmit` clean.
+
+**Nincs benne:** wiring this into `marveen-land.sh`/`mopsion-land.sh` themselves -- those already
+call `try_append_union` directly in the correct (ours-first) direction; this card is only the
+missing SYNC-direction caller for agents' own branch updates.
+
+**Ki döntött:** backend, re-scoped per MikroB's decision (card comment, msg 22392). Gate: QA +
+Cybersec per the card's own Gate line.
