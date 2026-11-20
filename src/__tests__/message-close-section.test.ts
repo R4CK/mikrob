@@ -54,7 +54,7 @@ function setup(agent: string, content: string) {
 const read = (agent: string) => readFileSync(join(tmpRoot, 'agents', agent, 'CLAUDE.md'), 'utf-8')
 
 describe('message-close section: what it says (ACKONCLOSE927)', () => {
-  const body = buildMessageCloseBody()
+  const body = buildMessageCloseBody('backend')
 
   it('tells the reader to close an INCOMING report with notify:false', () => {
     expect(body).toMatch(/BEJÖVŐ RIPORT[\s\S]{0,120}"notify":false/)

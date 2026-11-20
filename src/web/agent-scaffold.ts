@@ -79,6 +79,12 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, A
 // 200; this had been silently killing sub-agent memory saves and searches.
 const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 
+// Card 52114c2f (2520b85a slice 2.5): helper that prints the right
+// "Authorization: Bearer <value>" line for curl -H @- -- an agent's own
+// agent:<id> device key when it has one (card 9655494c), the shared token
+// otherwise. Same absolute-path reasoning as tokenPath above.
+const agentAuthHeaderPath = join(PROJECT_ROOT, 'store', 'agent-auth-header.sh')
+
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
 // installs a bare `node` is not on that PATH, so the hook exits 127 -- which
 // Claude Code treats as a NON-blocking error and lets the tool call through:
@@ -3535,7 +3541,7 @@ function buildAutonomyBody(name: string): string {
     'Az autonóm műveletek fokozatait a store/autonomy-config.json szabályozza (level: 1=csak jelez, 2=javasol+jóváhagyás, 3=autonóm+jelent). Mielőtt önállóan cselekszel, nézd meg az adott kategória szintjét.',
     '',
     '**Level 1 (csak jelez)**: küldj inter-agent értesítést a főágensnek, de NE végezd el a műveletet. Ezután ÁLLJ MEG.',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -d '{"from":"${name}","to":"${MAIN_AGENT_ID}","content":"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek."}'`,
+    `${agentAuthHeaderPath} ${name} | curl -s -H @- -X POST ${dashboardOrigin}/api/messages -H "Content-Type: application/json" -d '{"from":"${name}","to":"${MAIN_AGENT_ID}","content":"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek."}'`,
     'A payload EGYSZERES idézőjelben megy. A `-d "{...}"` dupla idézőjeles alak TILOS: a shell a',
     'backtickot és a `$(...)`-t VÉGREHAJTJA a payloadon belül, a szöveg helyére a parancs KIMENETE',
     'kerül, és a küldés HTTP 200-at ad -- semmi nem jelzi. Ha a szövegbe egy `\'` is kerülne, ne a',
@@ -3550,11 +3556,11 @@ function buildAutonomyBody(name: string): string {
     '**Level 2 (jóváhagyás szükséges)**: kérj jóváhagyást az API-n MIELŐTT cselekszel.',
     '',
     'Jóváhagyás kérése (POST):',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
+    `${agentAuthHeaderPath} ${name} | curl -s -H @- -X POST ${dashboardOrigin}/api/approvals -H "Content-Type: application/json" -d '{"agent_id":"${name}","category":"CATEGORY_KEY","action_description":"Mit tervezel elvégezni és miért","timeout_seconds":3600}'`,
     'A válaszban kapott id-vel kérdezheted le a döntést.',
     '',
     'Döntés lekérdezése (GET, 60 mp-enként ismételve):',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/approvals/<id>"`,
+    `${agentAuthHeaderPath} ${name} | curl -s -H @- "${dashboardOrigin}/api/approvals/<id>"`,
     'status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
     '',
     '**Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.',
@@ -4600,7 +4606,7 @@ export function buildSystemDirectiveAuthBody(name: string): string {
     // rejects it. The pipe form below is the fleet's standard shape everywhere
     // else in these instructions anyway, and there is no request body here, so
     // reading the header from stdin cannot swallow one.
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -H @- -s ${dashboardOrigin}/api/messages/<N>`,
+    `${agentAuthHeaderPath} ${name} | curl -H @- -s ${dashboardOrigin}/api/messages/<N>`,
     '```',
     `Elfogadás feltétele MIND: a sor létezik; from_agent="${SYSTEM_DIRECTIVE_SENDER}"; to_agent="${name}";`,
     'a status NEM "failed"; és a content szó szerint a direktíva szövege (a `[SYSTEM-DIREKTIVA ...]`',
@@ -4680,7 +4686,7 @@ export function buildAgentIdHeaderBody(name: string): string {
     'nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',
     '',
     '```bash',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`,
+    `${agentAuthHeaderPath} ${name} \\`,
     `| curl -H @- -s -X PUT ${dashboardOrigin}/api/memories/<id> \\`,
     '  -H "Content-Type: application/json" \\',
     `  -H "X-Agent-Id: ${name}" \\`,
@@ -5040,7 +5046,7 @@ export function buildMemorySearchLabelBody(name: string): string {
     'keresés receptje `-D`-vel megy, és a `grep` NEM opcionális:',
     '',
     '```bash',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -D /tmp/mem-fejlec-${name}.txt \\`,
+    `${agentAuthHeaderPath} ${name} | curl -s -H @- -D /tmp/mem-fejlec-${name}.txt \\`,
     `  "${dashboardOrigin}/api/memories?agent=${name}&q=KULCSSZO"`,
     `grep -i '^x-memory-search' /tmp/mem-fejlec-${name}.txt`,
     '```',
@@ -5556,7 +5562,7 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
   `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildMessageCloseBody(): string {
+export function buildMessageCloseBody(name: string): string {
   return [
     '## Üzenet lezárása: bejövő riportnál `notify:false`',
     '',
@@ -5570,7 +5576,7 @@ export function buildMessageCloseBody(): string {
     '  feladó várakozó sorát 1-ről 4-re vitte).',
     '',
     '```bash',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`,
+    `${agentAuthHeaderPath} ${name} \\`,
     `| curl -H @- -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
     `  --data-binary '{"status":"done","notify":false}'`,
     '```',
@@ -5588,7 +5594,7 @@ export function ensureMessageCloseSection(name: string): void {
   const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody()}\n${MSGCLOSE_END}`
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(name)}\n${MSGCLOSE_END}`
 
   let existing: string
   try {
