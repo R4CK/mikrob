@@ -28931,3 +28931,159 @@ Mellékesen pontosítva: a `fail_reason` csak a generikus 'fail' kimenetnél jel
 **Ki döntött:** MikroB terve (34566, 22111). Fron Ted (fron-ted) végezte a merge-et.
 
 **Hivatkozás:** kártya ebe20efe (Pair-BE 685f25cb, landolt a6de7f140-ban), commit dba2aea3e.
+
+_(Megjegyzés: a lenti négy, card/6d8ef952-n eredetileg a "2026-11-14 -- 88e2ffe1" bejegyzés cherry-pick-megjegyzése UTÁN beszúrt tétel a marveen-land.sh tail-append ellenőrzése miatt ide, a fájl végére került át -- tartalmuk változatlan.)_
+
+## 2026-11-14: freellm-first routing az offload-dispatch.sh-ban (kártya 6d8ef952)
+
+**Döntés:** minden leaf-draft kísérlet ELŐSZÖR a freellmapi-n megy, csak utána a helyi (Ollama 7B),
+csak utána online -- az eddigi "helyi -> freellm (csak helyi-kimerülésnél) -> online" sorrend
+megfordítva. Peti Telegram 13820/13823 (2026-11-14 19:06): "freellmapi: bekapcsolva legyen és
+dolgozzon! ... Minden munka menjen oda! Ha elfogyott a keret, akkor marad a claude és a local-llm."
+
+**Mit:** új `try_freellm_first_for_leaf()` függvény a `try_leaf()` elején (a VETO INHERITANCE
+ellenőrzés UTÁN, a GEMINI ROUTE/helyi RAG hívás ELŐTT). Nem a meglévő `try_freellm_for_leaf()`
+újrahasznosítása: annak rc=4 ága `categorical-online`-t jelöl (teljesen kihagyva a helyi próbát is),
+ami ITT helytelen lenne, mert a helyi még nem futott -- a kártya saját "Kész, ha" pontja explicit
+kéri, hogy a content-gate elutasítás a helyi útra essen át, ne egy szűrtlenebb útra. Ezért az új
+függvény rc=0 (draft) / rc=3 (kvóta/429, cooldown-ot indít, `FREELLM_COOLDOWN_SECONDS`=300s
+alapértelmezett, env felülírható) / rc=2,4,egyéb (átesik a helyire, attempts_op-bejegyzés nélkül --
+a strike azé az úté, ami tényleg lefut és elbukik) ágakra bomlik, saját cooldown-fájllal
+(`freellm-cooldown-until`). A projekt-allowlist (csak mikrob) és a content gate (`is_freellm_blocked`,
+`freellm-call.sh` saját gate-je) VÁLTOZATLAN -- ezeket a kártya explicit tiltotta szélesíteni.
+
+**Mérés:** a meglévő `card-build-route-24h-measure.sh` már felismeri a `[LOCAL-LLM DRAFT | freellm]`
+fejlécet (saját selftest-fixture igazolja), tehát a freellm-first draftok a route-megoszlás mérésben
+minden kódváltás nélkül megjelennek.
+
+**Teszt:** `offload-dispatch.selftest.sh` 175 passed, 0 failed (18 új eset: siker, rc=3 cooldown-indítás,
+aktív cooldown alatt a stub SOHA nem hívódik, rc=4/rc=2 átesés cooldown nélkül, projekt-allowlist és
+content-gate változatlan maradása, cooldown-helper direkt pin-ek, strukturális sorrend-pin). Mutáció-
+bizonyítva: a `try_leaf()`-beli hívás kikommentezve, a két sorrend-pin pontosan pirosra vált (173/2),
+visszaállítva zöld (175/0) -- a mutáns ELSŐ verziója egy puszta substring-grep miatt (a hívás fölötti
+saját prózai komment is tartalmazta a függvénynevet) hamisan zöld maradt, javítva komment-sorok
+kiszűrésével a vizsgált szövegből, mielőtt a mutáció-bizonyítás megismétlődött.
+
+**Ki döntött:** Peti (13820/13823) -> MikroB dispatch (msg_id:18560), backend2 végrehajtása.
+
+## 2026-11-14 -- freellm-first rework: mopsion allowlist widened, content gate stops refusing, credentials masked (card 6d8ef952, scope delta)
+
+Peti Telegram 13829 (19:09) + 13838 "Igen, vedd le" (answer to MikroB 13832): the freellm-first
+routing card's scope widened mid-flight. Two of its requirements landed in this increment
+(offload-dispatch.sh, `store/offload-dispatch.selftest.sh`):
+
+1. **Project allowlist widened to mikrob + mopsion for freellm only.** `is_gemini_blocked` gained
+   two additive parameters (`extra_projects_csv`, `skip_category`) that `is_freellm_blocked`
+   passes as `"mopsion"` / `"1"`; every other call site (Gemini's own routing) keeps the old
+   defaults, so Gemini's allowlist/content-gate behaviour is byte-identical to before -- verified
+   directly: `--check-blocked mopsion gemini-ok ...` still returns blocked (rc=0) after this
+   change, only `--check-freellm-blocked` returns allowed (rc=42).
+2. **Content gate (category/PII stem match, `SENS_RE`/`TENANT_ISOLATION_RE`/`BLOCKED_TAGS`) no
+   longer REFUSES a freellm card.** The explicit human-override tag `BLOKKOLT-*` is UNCHANGED and
+   still blocks (it is a deliberate instruction, not a category inference) -- split out of every
+   one of the four code sites that used to test it alongside `BLOCKED_TAGS` in the same
+   condition.
+3. **New `redact_secrets()` function** (pattern-based, best-effort by construction, not a
+   fail-closed guarantee like the gates above): masks recognizable credential SHAPES (JWT, AWS/
+   GitHub/GitLab/Slack/Google/npm/OpenAI key prefixes, bearer tokens, connection-string userinfo,
+   explicit `password=`/`token:`/`secret=` assignments) to `[REDACTED:<kind>]` on the exact text
+   piped into `FREELLM_CALL` from both real egress call sites (`try_freellm_for_leaf`,
+   `try_freellm_first_for_leaf`). Personal data (names/emails/phones) is explicitly NOT masked
+   (Peti 13838) -- pinned by a selftest case asserting an email address survives unredacted in the
+   captured outgoing body.
+
+Measured: `offload-dispatch.selftest.sh` 184/0 (10 new/changed cases: mopsion now reaches the
+stub and drafts, an unrelated project still does not, a sensitive-worded card now reaches the
+stub and drafts, a `BLOKKOLT-*` tag still blocks, a card with an embedded GitHub-token-shaped
+secret drafts with the raw token absent and `[REDACTED:github-token]` present in the captured
+stub body, a card with a plain email drafts with the email present unredacted). Mutation-proof:
+reverting the allowlist param to `""` flips exactly the 2 allowlist-widening cases back to
+blocked; removing `redact_secrets` from the two pipe sites flips exactly the 2 masking cases
+(raw token reappears, marker disappears). Gate parity: `--check-blocked` (Gemini) on the same
+mopsion/sensitive-content inputs is unchanged from before this commit.
+
+NOT done in this increment, still open on card 6d8ef952: the "every dispatch path" requirement
+(heartbeat C 4b, self-advance-pickup) and the removal of capacity-only routing / card-build-route
+ONLINE-verdict / priority / 3-leaf-cap skip-gates -- those live outside offload-dispatch.sh and
+are separate, larger pieces of work.
+
+**Ki döntött:** Peti (13829/13838) -> MikroB (comment 31309, card 6d8ef952) -> backend2 végrehajtása.
+
+## 2026-11-14 -- card 6d8ef952 delta: removed the remaining gates that skipped a draft attempt (comment 31306 point 2)
+
+**Kontextus:** Peti Telegram 13829/13838, MikroB comments 31306/31309/31314 (this card):
+"freellm/local every piece of work, no limitation" -- the gates that currently SKIP a draft
+attempt (not the gates that decide who builds/reviews the card) had to go. This increment closes
+the two such gates that lived inside `store/offload-dispatch.sh`:
+
+1. **Security-veto inheritance no longer skips the attempt.** A synthetic mechanical fragment
+   whose parent got a security-signal ONLINE verdict (deterministic-money/auth-tenant-scope/
+   sec-label, card e11167c5) used to short-circuit straight to `categorical-online`, with no
+   freellm or local attempt at all -- both in `try_leaf()` (the real per-leaf path) and in
+   `freellm_fallback_capacity_hold_site()` (the GPU-hold sweep branch). Both sites now ignore the
+   veto; only `is_freellm_blocked()` (project allowlist, explicit `BLOKKOLT-*` human override, the
+   `gemini-ok` marker requirement -- genuine "nothing to draft with" reasons) can still block. The
+   decision-shaped parent card itself is untouched: `card-build-route.sh`'s ONLINE verdict still
+   means the role agent does a full independent review, exactly as before (MikroB confirmation,
+   msg 18628/18638).
+2. **The per-card 3-leaf decompose cap is removed.** `OFFLOAD_DECOMPOSE_MAX_PER_CARD` (default 3,
+   "javaslat: max 3" per card 501c489f's original verdict) capped how many mechanical fragments of
+   a deterministic-ONLINE card could even get a draft attempt; a card matching 4+ template types
+   silently lost the 4th+. Default changed to 0 = unbounded (`head -n 0`'s "print nothing" pitfall
+   is explicitly guarded against -- the cap is only applied when the value is `>0`); the variable
+   stays settable as an explicit ops-side GPU-call-volume throttle if ever needed.
+
+**NOT in scope for store/offload-dispatch.sh (already handled elsewhere):** `self-advance-pickup.sh`
+already called `offload-dispatch.sh` regardless of the router's verdict (card 2be7e3e5, confirmed
+unchanged this session); `card-build-route.sh`'s own priority-based ONLINE gate was already removed
+in an earlier change (its own file comments, pre-dating this card); the "model-busy"/"too-long"/
+"route-check-failed" reasons MikroB asked about are card-build-route.sh verdict categories never
+consulted by offload-dispatch.sh's actual draft path at all, so there was nothing to remove there.
+heartbeat C 4b (the third dispatch site) is MikroB's own orchestration, done on their side (msg
+18628/18638, backup `/home/neon/marveen-backups/heartbeat-consolidated.SKILL.md.bak-20261114-2240`).
+
+**Teszt:** `offload-dispatch.selftest.sh` 186 -> 190/190 (4 new/changed cases: the real
+`freellm_fallback_capacity_hold_site` now leaks on `lveto=true`+marker and still blocks without
+the marker; a structural pin confirms `try_leaf`'s body has no synthetic+veto_online early-return
+before the freellm-first call; the 4-template-type fixture now returns all 4 by default, 1 with
+an explicit throttle, 0 proven to mean unbounded not zero). Mutation-proofed: each of the 3 code
+changes (capacity-hold site condition, try_leaf's removed block, the cap default) reverted
+individually -> exactly the matching new test(s) go red, rest green; restored after each. `tsc
+--noEmit`: pre-existing unrelated failures only (`parse5` module missing in
+`src/__tests__/app-js-html-sinks.test.ts` and its helper -- not touched by this change, not new).
+
+**Ki döntött:** Peti (13829/13838) -> MikroB (comment 31306, card 6d8ef952) -> backend2 végrehajtása,
+confirmed by MikroB inter-agent msg 18628/18638.
+
+## 2026-11-15 -- card 6d8ef952: skip_category narrowing proposed then reverted (Peti 13943 "Teljes" + 13944 "Mehet")
+
+**Context:** 1506d10d's replay against the full-bypass gate (331abf9c3) found 99/155 sensitive
+cards would route to freellm under the "igen, vedd le" (13838) widening. MikroB (msg 18733) read
+Peti's answer narrowly -- only the mopsion/cleancore project+tag block and the secret/PII stems
+were named in 13832, "undecidable = sensitive" -- and had backend2 narrow `skip_category` to drop
+only those two things via `FREELLM_EXEMPT_TAGS`/`FREELLM_EXEMPT_STEMS` (commit 3a37bc071,
+REVIEW/Gate-SHA posted). Before that landed, MikroB asked Peti directly (13942) and got 13943
+"Teljes" + 13944 "Mehet" -- the full BLOCKED_TAGS category bypass is approved as originally built,
+not the narrowed version (msg 18744, superseding 18733).
+
+**Decision:** `3a37bc071` reverted clean (`16394f26b`, no force-push, history kept) on
+`card/6d8ef952`. `is_freellm_blocked()` is back to `is_gemini_blocked(... , "mopsion", "1")` --
+`skip_category=1` bypasses BLOCKED_TAGS/SENS_RE/TENANT_ISOLATION_RE entirely for the freellm
+route; `BLOKKOLT-*` stays a non-skippable human override; the `gemini-ok` positive-marker
+requirement (card 392d7104) is unchanged and still gates every card regardless of tags.
+
+**Verified post-revert:** `offload-dispatch.selftest.sh` 190 passed, 0 failed. Direct
+`--check-freellm-blocked` probes (project=mikrob, required for the project-allowlist check to
+even reach the tag/content gates): `SEC,gemini-ok` title/desc mentioning "authz" -> rc=42
+(allowed, full bypass); `gemini-ok,BLOKKOLT-tisztazas` tag -> rc=0 (blocked, override never
+skippable); `[BLOKKOLT-stop]` title-prefix + `gemini-ok` tag -> rc=0 (blocked, same); `SEC` tag
+with no `gemini-ok` marker -> rc=0 (blocked, marker still required).
+
+1506d10d's replay against this (the real, un-narrowed) gate is expected to reproduce the 99/155
+figure as the approved widening, not a defect -- reported split by reason on that card, F-B closed
+there; the 4 structural-classifier signals (deterministic-document-assembly /
+deterministic-auth-tenant-scope) do not need a separate decision now (MikroB msg 18758).
+
+**Ki döntött:** Peti (Telegram 13832 proposal narrowly read by MikroB -> 13942 direct question ->
+13943 "Teljes" + 13944 "Mehet" = full bypass approved) -> MikroB (msg 18733 narrow, superseded by
+18744, action specified in 18758) -> backend2 végrehajtása (revert `16394f26b`).
