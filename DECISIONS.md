@@ -29719,3 +29719,70 @@ synchronously this round).
 
 **Ki döntött:** MikroB (card ea3e7316, dispatch), self-advance pickup. backend implemented. Gate:
 QA + Cybersec + Cybered per the card's own `Gate:` line.
+
+## 2026-11-20 -- ea3e7316 delta: B1 single-flight guard + B2 idempotency-key nonce (CYBERED NO-GO 35157)
+
+**Context:** CYBERED NO-GO 35157 on `1512f74c4` (cybersec2 35155 agrees on B2), flag `MIKROB_TG_OUTBOX`
+still off, nothing live. B1: `startTelegramOutboxDrain`'s bare `setInterval(10s)` does not wait for
+the in-flight `drainTelegramOutboxOnce()` promise to settle, so a slow Telegram call outlives one
+tick and every later tick re-drains the SAME still-pending row. Measured by cybered: 1 row with a
+25s send was sent 3 times; 6 rows at 4s each were sent 12 times. B2: `telegram_fallback_send.py`'s
+`outbox_idempotency_key(sid, chat_id, text)` was a pure content hash with no time/nonce component,
+and `sid` falls back to the literal string `"default"` outside a Claude session (e.g. a scheduled
+task) -- so a genuinely repeated message (same chat, same text, e.g. a daily "nothing to report")
+collided with its own earlier send's key and was silently swallowed: the dashboard's `ON CONFLICT
+DO NOTHING` returned the ALREADY-SENT row, the script printed `{"ok": true, "outbox": true}` and
+exited 0, and the second message never went out.
+
+**Fix (B1):** `src/web/telegram-outbox.ts` -- `startTelegramOutboxDrain` now holds a `draining`
+boolean closed over the interval; a tick that fires while the previous drain's promise is still
+pending is a no-op, not a second overlapping drain. Also made `sender: TelegramSender =
+realSender()` an (optional, defaulted) parameter instead of always calling `realSender()` inside
+the function body, purely so a test can inject a controllable slow sender -- production call site
+(`web.ts`) passes no argument, unchanged behaviour there.
+
+**Fix (B2):** `scripts/hooks/telegram_fallback_send.py` -- `outbox_idempotency_key` takes an
+optional `nonce`; when omitted (the default, i.e. every existing call site unchanged) a fresh
+`secrets.token_hex(16)` is mixed in, so two separately-triggered calls with identical
+sid/chat_id/text now get DIFFERENT keys and both actually enqueue. A new `--idempotency-key KEY`
+CLI flag lets a caller that genuinely wants retry-dedup semantics (re-running this exact call
+because the first run's outcome was unknown) supply its OWN stable key across its own retries --
+opt-in, caller-owned, not inferred from content. No current call site in this repo implements such
+a retry loop yet (grepped: `telegram_fallback_send.py` has exactly one caller shape, no retry
+wrapper), so this is a forward-compatible seam, not a behaviour this round exercises in production.
+
+**Test:** `src/__tests__/telegram-outbox.test.ts` -- new `describe` block
+("single-flight guard (CYBERED NO-GO 35157 B1)") with fake timers: a sender that never resolves
+until told to is called once across 3 ticks of the 10s interval, then exactly once more after a 4th
+tick once the row is `sent` and no due rows remain. `scripts/hooks/telegram_fallback_send.selftest.py`
+-- updated the determinism checks to pass an explicit `nonce` (still deterministic given the SAME
+nonce), added a check that two no-nonce calls never collide, replaced the old "two retried calls
+carry the SAME key" end-to-end case (that was literally the bug) with two new end-to-end cases: (1)
+two separately-triggered identical sends now produce two POSTs with two DIFFERENT keys; (2) two
+calls with an explicit, identical `--idempotency-key` still produce two POSTs carrying that exact
+caller-supplied key verbatim.
+
+**Mutation-verified (restored byte-identical via diff each time):**
+- B1: reverting `startTelegramOutboxDrain` to the pre-fix bare `setInterval` (no `draining` guard)
+  turned the new single-flight test red: the sender was called 3 times instead of 1 across the
+  three 10s ticks before the slow send resolves.
+- B2: reverting `outbox_idempotency_key`'s nonce mixing to the old pure-content hash turned exactly
+  4 of the 29 selftest checks red (the two determinism-with-nonce checks that now need a `nonce` arg,
+  the no-nonce-collision check, and the B2 end-to-end "two sends get different keys" check) while
+  the other 25 (including the opt-in `--idempotency-key` case, which does not depend on the default
+  path) stayed green.
+
+**Measured:** `npx vitest run src/__tests__/telegram-outbox.test.ts`: 26/26 passed (was 22).
+`python3 scripts/hooks/telegram_fallback_send.selftest.py`: 29/29 passed (was 25).
+`bash scripts/__tests__/telegram-fallback-dedup.test.sh`: 15/15 passed, unchanged (does not exercise
+outbox mode). `npx tsc --noEmit`: clean. `npx eslint src/web/telegram-outbox.ts
+src/__tests__/telegram-outbox.test.ts`: clean.
+
+**Nincs benne (unchanged from the parent round, per the NO-GO's own non-blocking list, folded in
+where cheap, else noted):** F-C (arbitrary chat_id through the main bot, needs an allowlist), F-D
+(ambiguous-timeout-retried possible duplicate), F-E ordering, F-F no terminal state, F-G body
+retention, F-L1 env sink -- none of these are touched by this delta; they remain open findings for
+a future round if MikroB/cybered decide to prioritize them.
+
+**Ki döntött:** cybered (NO-GO 35157, comments 35155/35157), backend (this fix). Gate: QA + Cybersec
++ Cybered (delta re-gate, per the NO-GO's own closing line).

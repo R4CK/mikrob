@@ -223,6 +223,45 @@ describe('isTelegramOutboxEnabled / startTelegramOutboxDrain (default-off contra
   })
 })
 
+describe('startTelegramOutboxDrain: single-flight guard (CYBERED NO-GO 35157 B1)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('a send slower than the interval is never started twice for the same row', async () => {
+    process.env[OUTBOX_FLAG_ENV] = '1'
+    const row = enqueueTelegramOutbox('1', 'slow send', 'k-slow')
+    let resolveSend: (id: number) => void
+    const sender: TelegramSender = vi.fn(() => new Promise<number>((resolve) => { resolveSend = resolve }))
+
+    const handle = startTelegramOutboxDrain(sender)
+    try {
+      // First tick starts the (never-yet-resolved) send.
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(sender).toHaveBeenCalledTimes(1)
+
+      // Two more ticks fire while the first send is still in flight -- the bug
+      // (bare setInterval, no guard) would call the sender again on each of
+      // these; the fix must skip them.
+      await vi.advanceTimersByTimeAsync(10_000)
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(sender).toHaveBeenCalledTimes(1)
+
+      // Let the slow send finish, then confirm the NEXT tick behaves normally
+      // (no due row left, sender not called again).
+      resolveSend!(42)
+      await vi.waitFor(() => expect(getTelegramOutboxRow(row.id)!.status).toBe('sent'))
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(sender).toHaveBeenCalledTimes(1)
+    } finally {
+      clearInterval(handle)
+    }
+  })
+})
+
 describe('POST /api/telegram/outbox (route)', () => {
   function fakeReq(body: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
     const out: { status: number; body: any } = { status: 0, body: null }

@@ -74,8 +74,9 @@ const HEALTH_WARN_AT_ATTEMPTS = 3
 /**
  * Drains every row currently due, once. `sender` is injectable for tests;
  * production goes through startTelegramOutboxDrain(), which supplies the real
- * one. No internal re-entrancy guard -- the caller (one setInterval) is the
- * single-flight boundary, same convention as message-router.ts's tick guard.
+ * one and also holds the single-flight guard (CYBERED NO-GO 35157 B1: a bare
+ * setInterval does NOT wait for a slow send -- a 25s call left 3 overlapping
+ * ticks all draining the same still-pending row, 3 sends for 1 row).
  */
 export async function drainTelegramOutboxOnce(sender: TelegramSender, now = Date.now()): Promise<void> {
   for (const row of listDueTelegramOutbox(now)) {
@@ -103,11 +104,22 @@ const DRAIN_INTERVAL_MS = 10_000
  * Starts the drain interval when MIKROB_TG_OUTBOX=1, else does nothing (the
  * flag's whole point: zero behaviour change by default). Mirrors the
  * webOnly-gated start*() functions in web.ts (startMessageRouter et al.).
+ *
+ * `sender` is injectable for tests (production omits it and gets realSender()).
+ *
+ * Single-flight guard (CYBERED NO-GO 35157 B1): a tick that fires while the
+ * PREVIOUS drain is still running (a slow send outliving the 10s interval) is
+ * a no-op, not a second overlapping drain -- otherwise the same still-pending
+ * row gets sent again by every tick that fires before the first send settles.
  */
-export function startTelegramOutboxDrain(): ReturnType<typeof setInterval> | undefined {
+export function startTelegramOutboxDrain(sender: TelegramSender = realSender()): ReturnType<typeof setInterval> | undefined {
   if (!isTelegramOutboxEnabled()) return undefined
-  const sender = realSender()
+  let draining = false
   return setInterval(() => {
-    drainTelegramOutboxOnce(sender).catch((err) => logger.warn({ err }, 'telegram-outbox: drain tick failed'))
+    if (draining) return
+    draining = true
+    drainTelegramOutboxOnce(sender)
+      .catch((err) => logger.warn({ err }, 'telegram-outbox: drain tick failed'))
+      .finally(() => { draining = false })
   }, DRAIN_INTERVAL_MS)
 }

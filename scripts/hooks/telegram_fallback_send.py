@@ -41,17 +41,26 @@ it, surviving this process -- or the whole tmux server -- dying right after).
 The Bot API token itself is still read, exactly as before, if (and only if)
 there is a progress placeholder to clear for this chat -- a narrower, unrelated,
 pre-existing use (see clear_placeholder), not part of delivering this message.
-idempotency_key is derived from (session id, chat_id, text), so
-re-running this exact call (the same session retrying the same send) enqueues
-at most once, never a duplicate. If the outbox call fails for ANY reason
-(dashboard down, flag mis-set downstream, network error), this falls through
-to the normal direct-send path below -- outbox mode never makes delivery LESS
-reliable than before, only more so.
+By default idempotency_key is a fresh random nonce PER INVOCATION (combined
+with sid/chat_id/text), so two separately-triggered sends -- even an
+identical, legitimately-repeated message, e.g. a scheduled task's daily
+"nothing to report" -- are never silently collapsed into one (CYBERED NO-GO
+35157 B2: the old sha(sid, chat, text)-only key, with sid defaulting to
+"default" outside a Claude session, deduped a genuine repeat as if it were a
+retry -- 200 "sent", nothing queued, exit 0 ok:true, and the second message
+never went out). A caller that DOES want retry semantics (re-running this
+exact call because the first run's outcome was unknown) passes
+--idempotency-key with its OWN stable key, reused across its own retries;
+nothing in this script invents that stability on the caller's behalf. If the
+outbox call fails for ANY reason (dashboard down, flag mis-set downstream,
+network error), this falls through to the normal direct-send path below --
+outbox mode never makes delivery LESS reliable than before, only more so.
 """
 import sys
 import os
 import json
 import hashlib
+import secrets
 import urllib.error
 import urllib.request
 
@@ -68,14 +77,20 @@ def outbox_token_file():
     return os.environ.get("TELEGRAM_OUTBOX_TOKEN_FILE") or os.path.join(ROOT, "store", ".dashboard-token")
 
 
-def outbox_idempotency_key(sid, chat_id, text):
-    raw = "%s:%s:%s" % (sid, chat_id, text)
+def outbox_idempotency_key(sid, chat_id, text, nonce=None):
+    """`nonce` defaults to a fresh random value, so by default every call is its
+    own key regardless of how similar sid/chat_id/text are to a past call --
+    see the OUTBOX MODE docstring (CYBERED NO-GO 35157 B2). Pass a caller-owned
+    stable `nonce` to get retry-dedup semantics instead."""
+    raw = "%s:%s:%s:%s" % (sid, chat_id, text, nonce if nonce is not None else secrets.token_hex(16))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def try_outbox_enqueue(sd, sid, chat_id, text):
+def try_outbox_enqueue(sd, sid, chat_id, text, idempotency_key=None):
     """Best-effort: True if the message is durably enqueued, False for any
-    reason at all (caller falls through to a direct send either way)."""
+    reason at all (caller falls through to a direct send either way).
+    `idempotency_key`, when given, is used VERBATIM (caller-supplied, see
+    --idempotency-key); otherwise a fresh one is derived with a random nonce."""
     try:
         with open(outbox_token_file(), encoding="utf-8") as f:
             dash_token = f.read().strip()
@@ -86,7 +101,7 @@ def try_outbox_enqueue(sd, sid, chat_id, text):
     payload = {
         "chat_id": str(chat_id),
         "text": text[:MAX_LEN],
-        "idempotency_key": outbox_idempotency_key(sid, chat_id, text[:MAX_LEN]),
+        "idempotency_key": idempotency_key or outbox_idempotency_key(sid, chat_id, text[:MAX_LEN]),
     }
     req = urllib.request.Request(
         outbox_api().rstrip("/") + "/api/telegram/outbox",
@@ -195,7 +210,7 @@ def clear_placeholder(sd, sid, chat_id):
 
 
 def parse_args(argv):
-    pos, sid, sdir = [], None, None
+    pos, sid, sdir, idem_key = [], None, None, None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -203,21 +218,23 @@ def parse_args(argv):
             sid = argv[i + 1]; i += 2; continue
         if a == "--state-dir" and i + 1 < len(argv):
             sdir = argv[i + 1]; i += 2; continue
+        if a == "--idempotency-key" and i + 1 < len(argv):
+            idem_key = argv[i + 1]; i += 2; continue
         pos.append(a); i += 1
-    return pos, sid, sdir
+    return pos, sid, sdir, idem_key
 
 
 def main():
-    pos, cli_sid, cli_dir = parse_args(sys.argv[1:])
+    pos, cli_sid, cli_dir, cli_idem_key = parse_args(sys.argv[1:])
     if len(pos) < 2:
         sys.stderr.write("usage: telegram_fallback_send.py <chat_id> <text> "
-                         "[--sid SID] [--state-dir DIR]\n")
+                         "[--sid SID] [--state-dir DIR] [--idempotency-key KEY]\n")
         sys.exit(2)
     chat_id, text = pos[0], pos[1]
     sd = state_dir(cli_dir)
     sid = session_id(cli_sid)
 
-    if os.environ.get("MIKROB_TG_OUTBOX") == "1" and try_outbox_enqueue(sd, sid, chat_id, text):
+    if os.environ.get("MIKROB_TG_OUTBOX") == "1" and try_outbox_enqueue(sd, sid, chat_id, text, cli_idem_key):
         clear_placeholder(sd, sid, chat_id)
         log(sd, f"[fallback-send] enqueued via durable outbox chat={chat_id} sid={sid}")
         print(json.dumps({"ok": True, "outbox": True}, ensure_ascii=False))

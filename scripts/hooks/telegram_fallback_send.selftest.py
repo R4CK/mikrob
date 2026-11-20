@@ -34,15 +34,20 @@ def check(label, got, want):
 
 
 # ---------------------------------------------------------------------------
-# outbox_idempotency_key: deterministic, and sensitive to every input it takes.
+# outbox_idempotency_key: deterministic ONLY when given the same explicit
+# nonce; random (never collides) by default (CYBERED NO-GO 35157 B2 fix --
+# see the OUTBOX MODE docstring).
 # ---------------------------------------------------------------------------
-k1 = tfs.outbox_idempotency_key("sid-a", "123", "hello")
-k2 = tfs.outbox_idempotency_key("sid-a", "123", "hello")
-check("idempotency key is deterministic for identical input", k1, k2)
-check("idempotency key changes with sid", k1 != tfs.outbox_idempotency_key("sid-b", "123", "hello"), True)
-check("idempotency key changes with chat_id", k1 != tfs.outbox_idempotency_key("sid-a", "456", "hello"), True)
-check("idempotency key changes with text", k1 != tfs.outbox_idempotency_key("sid-a", "123", "bye"), True)
-check("idempotency key is a 64-char lowercase hex sha256", k1, hashlib.sha256(b"sid-a:123:hello").hexdigest())
+k1 = tfs.outbox_idempotency_key("sid-a", "123", "hello", nonce="n1")
+k2 = tfs.outbox_idempotency_key("sid-a", "123", "hello", nonce="n1")
+check("idempotency key is deterministic for identical input+nonce", k1, k2)
+check("idempotency key changes with sid", k1 != tfs.outbox_idempotency_key("sid-b", "123", "hello", nonce="n1"), True)
+check("idempotency key changes with chat_id", k1 != tfs.outbox_idempotency_key("sid-a", "456", "hello", nonce="n1"), True)
+check("idempotency key changes with text", k1 != tfs.outbox_idempotency_key("sid-a", "123", "bye", nonce="n1"), True)
+check("idempotency key changes with nonce", k1 != tfs.outbox_idempotency_key("sid-a", "123", "hello", nonce="n2"), True)
+check("idempotency key is a 64-char lowercase hex sha256", k1, hashlib.sha256(b"sid-a:123:hello:n1").hexdigest())
+check("WITHOUT an explicit nonce, two calls with identical sid/chat/text never collide (B2 fix)",
+      tfs.outbox_idempotency_key("sid-a", "123", "hello") != tfs.outbox_idempotency_key("sid-a", "123", "hello"), True)
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +217,10 @@ try:
         _Handler.requests.clear()
 
     # ---------------------------------------------------------------------
-    # No duplicate send on retry: the SAME (sid, chat_id, text) called twice via main()
-    # produces two outbox POSTs (the dashboard's own UNIQUE idempotency_key constraint is what
-    # actually dedups storage-side -- src/db.ts's enqueueTelegramOutbox test covers that), but
-    # BOTH calls here must carry the IDENTICAL idempotency_key, which is the half of the
-    # contract this script owns.
+    # CYBERED NO-GO 35157 B2: by DEFAULT, a legitimately-repeated send (same sid,
+    # chat_id, text -- e.g. a scheduled task's daily "nothing to report") is NOT
+    # silently deduped -- each call gets its own idempotency_key, so both
+    # actually enqueue.
     # ---------------------------------------------------------------------
     with tempfile.TemporaryDirectory() as tmp:
         sd = _state_dir_with_token(tmp)
@@ -227,14 +231,42 @@ try:
         env["TELEGRAM_OUTBOX_API"] = base
         env["TELEGRAM_OUTBOX_TOKEN_FILE"] = dash_token_file
         env["MIKROB_TG_OUTBOX"] = "1"
-        subprocess.run([sys.executable, SCRIPT, "777", "retry me", "--state-dir", sd, "--sid", "same-sid"],
+        subprocess.run([sys.executable, SCRIPT, "777", "same text twice", "--state-dir", sd, "--sid", "same-sid"],
                        env=env, capture_output=True, text=True, timeout=15)
-        subprocess.run([sys.executable, SCRIPT, "777", "retry me", "--state-dir", sd, "--sid", "same-sid"],
+        subprocess.run([sys.executable, SCRIPT, "777", "same text twice", "--state-dir", sd, "--sid", "same-sid"],
                        env=env, capture_output=True, text=True, timeout=15)
         posts = _outbox_posts()
-        check("retry: two calls produce two POSTs", len(posts), 2)
+        check("B2: two separately-triggered identical sends produce two POSTs", len(posts), 2)
         keys = [json.loads(p["body"].decode("utf-8"))["idempotency_key"] for p in posts]
-        check("retry: both carry the SAME idempotency_key (dedup is possible downstream)", keys[0], keys[1])
+        check("B2: without an explicit key, repeated sends get DIFFERENT idempotency_keys (not deduped)",
+              keys[0] != keys[1], True)
+        _Handler.requests.clear()
+
+    # ---------------------------------------------------------------------
+    # CYBERED NO-GO 35157 B2: a caller that WANTS retry-dedup passes its own
+    # stable --idempotency-key, reused across its own retries -- that is still
+    # supported, opt-in, caller-owned.
+    # ---------------------------------------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        sd = _state_dir_with_token(tmp)
+        dash_token_file = os.path.join(tmp, "dashboard-token")
+        with open(dash_token_file, "w", encoding="utf-8") as f:
+            f.write("dash-secret-token\n")
+        env = dict(os.environ)
+        env["TELEGRAM_OUTBOX_API"] = base
+        env["TELEGRAM_OUTBOX_TOKEN_FILE"] = dash_token_file
+        env["MIKROB_TG_OUTBOX"] = "1"
+        subprocess.run([sys.executable, SCRIPT, "777", "retry me", "--state-dir", sd, "--sid", "same-sid",
+                        "--idempotency-key", "caller-owned-retry-key"],
+                       env=env, capture_output=True, text=True, timeout=15)
+        subprocess.run([sys.executable, SCRIPT, "777", "retry me", "--state-dir", sd, "--sid", "same-sid",
+                        "--idempotency-key", "caller-owned-retry-key"],
+                       env=env, capture_output=True, text=True, timeout=15)
+        posts = _outbox_posts()
+        check("explicit --idempotency-key: two calls produce two POSTs", len(posts), 2)
+        keys = [json.loads(p["body"].decode("utf-8"))["idempotency_key"] for p in posts]
+        check("explicit --idempotency-key: both carry the CALLER'S key verbatim (opt-in dedup)",
+              keys, ["caller-owned-retry-key", "caller-owned-retry-key"])
         _Handler.requests.clear()
 finally:
     server.shutdown()
