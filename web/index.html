@@ -277,6 +277,19 @@
       </span>
     </div>
 
+    <!-- Side-effect health panel (card 2d9c0bb2, pair-BE 0a527826, contract-first): one entry
+         per side-effect kind (land, gate dispatch, Telegram send, offload draft, memory embed,
+         scheduled task), shown ONLY when red (3+ consecutive failures) -- a fully healthy state
+         takes no space. Global, like #branchDriftBanner/#authSetupBanner above: visible on
+         every page, not just Overview. Populated by loadSideEffectHealth() in
+         app-health-panel.js, GET /api/health/effects (proposed contract, pair-BE not landed). -->
+    <div id="sideEffectHealthPanel" class="side-effect-health-panel" hidden role="alert" aria-live="polite">
+      <div class="side-effect-health-header">
+        <strong data-i18n="healthPanel.title">Mellékhatás-egészség</strong>
+      </div>
+      <ul class="side-effect-health-list" id="sideEffectHealthList"></ul>
+    </div>
+
     <div id="authSetupBanner" class="auth-setup-banner" hidden>
       <span data-i18n="auth.banner.text">Add a username+password login for browser access.</span>
       <span class="auth-setup-banner-actions">
@@ -4697,6 +4710,7 @@
   <script src="/app-theme-lang.js"></script> <!-- slice 40: Theme + Language toggle -->
   <script src="/app-elements.js"></script>
   <script src="/app-helpers.js"></script>   <!-- slice 41: Toast, SVG icons, escapeHtml, STATUS labels -->
+  <script src="/app-health-panel.js"></script>  <!-- card 2d9c0bb2: global side-effect health banner, after app-helpers.js for t()/escapeHtml() -->
   <script src="/app-page-switch.js"></script>
   <script src="/app-kanban.js"></script>
   <script src="/app-modals.js"></script>
