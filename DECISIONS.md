@@ -29185,3 +29185,147 @@ Gate-SHA: lásd REVIEW komment.
 **Nincs benne:** egy valós szegfault élő reprodukálása a fix igazolására (a MikroB-féle update-ablak is tiltja most az új fleet-test.sh/marveen-land.sh indítást, és egyébként is zavarná a landolási forgalmat) -- a fix helyessége a viselkedési teszten és a hiányzó signal-propagáció kódban igazolt tényén nyugszik, nem egy harmadik élő balesten.
 
 **Ki döntött:** backend3 (önálló gyökérok-vizsgálat, MikroB eredeti hipotézisének felülvizsgálatával). Gate: QA + Cybersec (a kártya saját kijelölése). Gate-SHA: lásd REVIEW komment.
+## 2026-11-16 10:22 -- Kártya 30aa8b29: assignee=mikrob tiltás maradékai (sablon, lathatatlan karakterek, nyers INSERT utak)
+
+**Forrás:** kovetokartya az e25a549a lezarasahoz (RedHat 16106, QA 10687), Peti szabaly 10943
+(assignee soha nem mikrob). Gate: QA + Cybered.
+
+**R1 (sablon-hiba):** `templates/CLAUDE.md.template` 156. sora az "Uj kartya" curl-pelda
+`assignee`-jebe `{{MAIN_AGENT_ID}}`-t irt -- ez ezen a telepitesen `mikrob`-ra rendereli, amit a
+sajat guard-ja elutasitana. Javitva egy sorsa-fuggetlen `SZEREP_UGYNOK` placeholderre, plusz egy
+sor, ami kimondja: az assignee mindig szerep-ugynok, soha a fo-ugynok sajat neve. Grep-auditalva
+az osszes `templates/` es `seed-skills/` fajl `assignee` kornyezetben allo `MAIN_AGENT_ID`-jere --
+mas talalat nem volt.
+
+**R2 (teszt-les):** az U+115F/U+1160/U+3164/U+FFA0/U+200B-U+200D/U+2060 lathatatlan/toltokarakter-
+csoport MINDEGYIKE mar helyesen tiltott volt (`isForbiddenAssignee`-t direktben probalva, mind
+`true`), de csak harom (U+115F, U+3164, U+200B) kapott korabban sajat pinnelt tesztet. A maradek
+ot (U+1160, U+FFA0, U+200C, U+200D, U+2060) most egy uj, dedikalt teszteset rogziti egyenkent
+(`src/__tests__/kanban-assignee-guard.test.ts`).
+
+**R3 (nyers INSERT/UPDATE utak, a valodi gap):** ket hely irta a `kanban_cards.assignee` oszlopot
+a `src/web/kanban-assignee-guard.ts` write-hatara MELLETT, nem az altal:
+  1. `src/web/fleet-transfer.ts` fleet-import -- egy tars-flotta exportjabol nyers `db.prepare(...).run(...)`-
+     tel masolta be a kartyakat. Javitas: import elott `isInvalidAssigneeShape`/`isForbiddenAssignee`-vel
+     szurve, tiltott/rossz-alaku ertek `null`-ra esik (a kartya ettol fuggetlenul letrejon, nem dobodik
+     el) -- ugyanaz az elv, mint a mellette allo `importedLabelColor` sanitizalas.
+  2. `scripts/kartya-es-ertesites.py` (a ClaudeClaw-vendorolt, MASIK fleet-nevkonvenciot hasznalo
+     kartyafelveteli/kommentelo eszkoz, sajat `COORDINATOR='marveen'` konstanssal, amire a FLEETKIVETEL922
+     teszt szerint SZANDEKOSAN szabad kartyat nyitni -- ez NEM a mi mikrob-tilalmunk hatokore).
+     Döntés: a guard ide a MI VALODI koordinatorunk neve ("mikrob") ellen vonatkozzon, NEM a szkript
+     sajat COORDINATOR-konstansa ellen -- a ket nev kulonbozo rendszer, kulonbozo jogos hasznalat.
+     Uj `_tiltott_felelos()` fuggveny `_felelos_feloldas()` elejen, ami a mar meglevo `gyanus()`
+     (altalanos, BARMELY felelosre vonatkozo vegyes-irasrendszeru homoglifa-szures) MELLETT, nem
+     helyette fut: csak azt a ket resret zarja, amit `gyanus()` szandekosan nem fed -- tiszta ASCII
+     eset/szokoz/irasjel/nem-betu-lathatatlan alakok, es a magyar ekezet-helyettesites (mikrób,
+     mikrőb stb.), ugyanaz a hianyossag-par, mint a TS `isForbiddenAssignee` round-5 fixe.
+     Elso proba (fail-closed minden nem-ASCII maradekra, az `isForbiddenAssignee` TS-mintajat
+     szorol-szora atvetve) a `kartya-mezomozgatas.test.py` 2 meglevo tesztjet torte (26/27: egy
+     MASIK, nem-koordinator nevre -- "sаmmu", Cirill а -- irt homoglifa-probat a sajat, felreveto
+     uzenetevel takart el a `gyanus()` ELOL) -- a `gyanus()` mar lefedi a betu-kategoriaju
+     homoglifakat BARMELY nevre, a ketto nem helyettesitheti egymast ugyanazzal a logikaval.
+     Javitva: a fail-closed residue-szabaly eltavolitva, csak a literalis azonossag (+ekezet-levetel)
+     marad `_tiltott_felelos`-ban.
+
+**Teszt:** uj `src/__tests__/kanban-assignee-guard.test.ts` esetek (R2: 5 uj pin, R4: "mi krob"
+belso-szokozos alak); uj `src/__tests__/fleet-transfer.test.ts` eset (forbidden/malformed assignee
+import -> null, kontrollal); uj `scripts/__tests__/kartya-mikrob-tiltas.test.py` (18 allitas: create
++ comment-mode mindket iras-uton, negativ kontroll a sajat COORDINATOR='marveen' konvenciora).
+Minden meglevo `kartya-*.test.py` (14 fajl) es a `kanban-assignee-guard`/`fleet-transfer` TS-tesztek
+zoldek maradtak.
+
+Mutacio-ellenorzes: a fleet-transfer sanitizalas kikapcsolasaval 1 TS-teszt vorosre valt; a Python
+`_tiltott_felelos()` hivas kikapcsolasaval 12/18 allitas vorosre valt (create-mod minden ASCII-alakja
++ comment-mod, ez utobbi csak `--assignee-uj`-vel izolalva a masik, nem-kapcsolodo "ismeretlen nev"
+kaputol). Mindket mutans visszaallitva, ismet zold. `npx tsc --noEmit` tiszta (ugyanaz a 3, korabbrol
+ismert, parse5-hianyos hiba), `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+**Ki döntött:** backend2 (self-advance pickup, a kártya 2 napnál régebbi `planned` elemkent
+elsobbseget kapott a 6b. szabaly szerint). Gate: QA + Cybered.
+
+## 2026-11-16 10:53 -- 30aa8b29 delta: Cybered NO-GO 3 leletenek javitasa (bidi-override, NFKC pin,
+## refusal-szoveg) + a 16449 kiegeszites harom tesztlyuka a kanban-id-guardon
+
+Cybered NO-GO @9ca093266 (komment 32255) QA PASS (@9ca093266, komment 32256) mellett. Delta-fix a
+13846. szabaly szerint: csak a NO-GO-ban megnevezett reszt erintve, nem teljes re-futas.
+
+**FINDING 1 (MEDIUM-LOW), javitva:** bidi-override alak -- U+202E (RLO) + "borkim" (a nev
+visszafele) -- a szuro-utani szoveg "borkim" (nem "mikrob"), tehat semelyik egyenloseg-ellenorzes
+nem latta, holott egy bidi-tudatos megjelenitoben "mikrob"-kent jelenik meg. A javitas NEM a bidi
+MEGJELENITES szimulalasa, hanem jelenlet-alapu fail-closed: barmely explicit/implicit bidi-vezerlo
+karakter (U+061C, U+200E-F, U+202A-E, U+2066-9) eleve tiltott -- egy szerep-ugynok nevenek soha
+nincs jogos oka bidi-vezerlore. Uj `hasBidiControl()` (TS, kanban-assignee-guard.ts) es
+`_van_bidi_vezerlo()` (Python, kartya-es-ertesites.py), mindket `isForbiddenAssignee`/
+`_tiltott_felelos` elejen hivva.
+
+**FINDING 2 (LOW-MEDIUM), javitva:** a Python `_azonossag_egyezes` NFKC-lepesenek kikapcsolasa
+18/18 zold maradt -- semmi nem gyakorolta a fullwidth/kompatibilis-alak utat, amit az NFKC pont
+kinyit. Uj teszteset: fullwidth "ｍｉｋｒｏｂ" (U+FF4D stb.) a `kartya-mikrob-tiltas.test.py`-ben.
+
+**FINDING 3 (LOW), javitva:** a MEGTAGADVA-uzenet a szkript sajat COORDINATOR konstansat
+("marveen") nevezte meg, holott a tiltott nev "mikrob" -- felrevezeto. Javitva: az uzenet most a
+valodi tiltott nevet ("mikrob") nevezi meg, es kulon mondat zarja ki a felreertest (a szkript
+sajat COORDINATOR="marveen" konvenciojat ez nem erinti).
+
+**Supplement 16449 (kanban-id-guard, 3 tesztlyuk), lezarva uj pinekkel (nem kódmódosítással -- a
+regex/renderer MAR helyesen viselkedik, csak nem volt rajuk mutáció-bizonyított teszt):**
+1. `KANBAN_ID_RE`-nek nincs `m` flag-je -- egy beagyazott-ujsoros id ma elutasitva, de egy jovobeli
+   `m` hozzaadas egyetlen tiszta sort engedne at egy rosszindulatu elso sor mellett. Uj teszt:
+   `'x$(evil)\nclean123'` pinnelve `false`-ra.
+2.+3. a FAIL-CLOSED uzenet `("${JSON.stringify(id)}")` alakja egyszerre dupla-idezi (a sajat
+   literal `"` + JSON.stringify sajat `"`-je) ES escapeli a beagyazott idezojelet. Egy teszt
+   (`'a"b'` -> `(""a\"b"")` pontos resz-string) mindket mutanst (a literal idezojel elhagyasa, a
+   `JSON.stringify(id)` nyers `id`-re csereje) elkapja.
+
+**Mutacio-bizonyitas (mindegyik visszaallitva ellenorzes utan):**
+- TS `hasBidiControl` hivasanak kikapcsolasa -> 1 teszt piros (az RLO-forditott eset).
+- Python `_van_bidi_vezerlo` hivasanak kikapcsolasa -> pontosan a 2 uj RLO-allitas piros
+  (20/22 zold).
+- Python NFKC lepes eltavolitasa -> pontosan a 2 uj fullwidth-allitas piros (20/22 zold).
+- `KANBAN_ID_RE` `m` flag hozzaadasa -> az uj ujsoros-id teszt piros.
+- A FAIL-CLOSED uzenet literal idezojelenek elhagyasa, ILLETVE a `JSON.stringify(id)` nyers `id`-re
+  cserelese -> mindket esetben ugyanaz az 1 teszt piros (a `'a"b'` pontos resz-string pin).
+
+**Verifikacio:** `kanban-assignee-guard.test.ts` + `kanban-id-guard.test.ts` + `fleet-transfer.test.ts`
++ `team-notes-fleet-transfer.test.ts` -> 106/106 zold. Mind a 16 `kartya-*.test.py` (a
+`kartya-mikrob-tiltas.test.py` most 22/22) zold. `npx tsc --noEmit` tiszta (ugyanaz a 3,
+korabbrol ismert parse5-hianyos hiba). `lint-ratchet.sh`: 441 lelet, baseline tartja.
+
+**Ki döntött:** backend2 (delta-fix a Cybered NO-GO-ra, QA PASS mar megvolt a gate-poolbol).
+Gate: QA + Cybered (re-gate).
+
+---
+
+## 2026-11-19 -- Kártya 30aa8b29 delta: develop-drift merge-konfliktus feloldása (MikroB msg 21053)
+
+**Kontextus:** a batch land dry-run (DevO msg 21050) valódi konfliktust talált a már gate-elt
+30aa8b29 (Gate-SHA 62fc59ac8) és origin/develop között -- ez a kártya is régi develop ponton
+állt. Két valódi tartalmi konfliktus: DECISIONS.md (sorrend-jellegű, mint a testvér-kártyáknál)
+és `src/web/fleet-transfer.ts` (valódi forrás-konfliktus, nem csak sorrend).
+
+**Döntés (DECISIONS.md):** ugyanaz az algoritmus mint a 60aeca01 delta-nál: develop oldal elöl,
+a kártya saját bejegyzése a fájl végére. `store/decisions-sync-resolve.sh --check-last-merge`
+rc=0.
+
+**Döntés (fleet-transfer.ts):** két, EGYMÁSTÓL FÜGGETLEN funkció ütközött ugyanazon a két
+helyen, mindkettőt meg kellett tartani (unió, nem egyik-vagy-másik):
+1. Import-sor: a kártya saját `isForbiddenAssignee`/`isInvalidAssigneeShape` importja
+   (`kanban-assignee-guard.js`) ÉS a develop-en közben landolt `registerScheduledTask`/
+   `ScheduledTaskWritten` import (`schedule-registry.js`/`scheduled-tasks-io.js`) -- mindkettőt
+   valóban HASZNÁLJA a fájl más pontja (ellenőrizve grep-pel: `ScheduledTaskWritten` az 1321.
+   sorban, `registerScheduledTask` az 1598. sorban, `isInvalidAssigneeShape`/
+   `isForbiddenAssignee` az 1371. sorban).
+2. A kanban_cards import INSERT: a kártya saját `safeAssignee` szanitizálása (Peti 10943, a
+   tiltott assignee nem juthat be egy peer exportból importált kártyán sem) ÉS a develop-en
+   közben landolt `version` oszlop (optimista zárolás) egyszerre kell -- az INSERT oszloplistája
+   és a VALUES placeholder-ei a `version`-t is tartalmazzák, de a `c.assignee ?? null` helyén a
+   szanitizált `safeAssignee` marad.
+
+**Teszt:** `tsc --noEmit` a fleet-transfer.ts-re tiszta (a 2 korábbról ismert, FÜGGETLEN parse5
+hiba leszámítva, ugyanaz mint a 60aeca01 delta-nál mérve).
+
+**Nincs benne:** landolás -- a delta-gate után DevO landolja (MikroB utasítása).
+
+**Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást.
+Gate: a delta a 62fc59ac8-on már megadott QA + Cybered sign-offot nem ismétli meg; ez a komment
+a merge-delta saját REVIEW-ja.
