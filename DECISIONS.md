@@ -29947,3 +29947,52 @@ reserve/release/record szkriptekkel, 4 előzetes 'agy' sorral used=4-re állítv
 3 érintett fájlban. Mutáció: a fix visszaállítva mindkét hívási pontban fix outcome='error'-ra
 -- mind a 4 új pin-teszt pirosra vált (2+2 mockolt + a valós-szkriptes pár); visszaállítva,
 210/210 zöld. `tsc --noEmit` tiszta (ugyanaz a 2 ismert parse5-hiba).
+
+---
+
+## 2026-11-20 -- Kártya 9963bf35: Gemini a kódolási láncban FreeLLM mellett, newDevStop nélkül
+
+**Kontextus:** Peti Telegram 14354 (2026-11-20 15:26): tegyük be a Gemini-hívást a kódolási láncba
+FreeLLM mellé, anélkül hogy az új-fejlesztés-stopra várna -- ez felülírja a 2026-10-11-es "Gemini
+csak newDevStop alatt" szabályt a draftolásra. A heti 5/órás Gemini-budget mostantól a
+kártya-kódolásé. Meglévő infra: `try_gemini_for_leaf` (GOAL1/GOAL2, kártya f0b3b674, jelenleg
+kikapcsolva élesben -- a heavy-flag fájl hiányzik), `is_gemini_blocked` (titok/kategória/
+gemini-ok-jelölő kapu, minden Gemini-hívóhely közös), `gemini-agy-call.sh` saját 5/órás,
+flotta-szintű, flock-kal védett kerete (már saját selftesttel bizonyított 6. hívás -> exit 5).
+
+**Döntés:** új `try_gemini_coding_chain_for_leaf` függvény, új `gemini_coding_chain_enabled`
+kapcsolóval (alapból KI, ugyanaz a fail-closed konvenció mint minden Gemini-kapcsoló itt --
+MikroB kapcsolja be gate után). A `try_leaf` láncban a freellm-first bukása UTÁN, a helyi RAG
+ELŐTT hívódik -- "FreeLLM -> Gemini -> local -> online". Nincs saját elő-foglalás a megosztott
+5/órás kereten (szemben a HEAVY útvonal 3/5-ös al-sapkájával): ez az útvonal a TELJES megosztott
+keretet kapja, a `gemini-agy-call.sh` saját órás ellenőrzése már elutasítja a 6. hívást
+(exit 5), és `try_gemini_for_leaf` ezt már helyesen fallthrough-ként kezeli.
+
+**Attribúció-javítás (ugyanaz a hibaosztály mint 685f25cb/9fb61222 a freellmnél):**
+`try_gemini_for_leaf` KÉT ága közül SEM állította be a hívó agent/kártya azonosítóját eddig. A
+REST ág (`gemini-offload-call.sh`) megvolt a `GEMINI_CALLER`/`GEMINI_CARD_ID` -> llm_ledger
+drótozása (kártya e96d56c5), de a hívóhely sosem állította be -- `unknown`/NULL lett belőle. Az
+AGY ág (a jelenlegi élesben aktív alapértelmezés) rögzített `--hivo mikrob`-ot a valós
+felelőstől függetlenül, ÉS a `gemini-agy-call.sh` maga SOHA nem ír llm_ledger sort (csak a saját
+seged-hivo naplóját) -- így eddig SEMMI Gemini-hívás nem volt látható a dashboard
+calls-nézetében. Mindkettő javítva: assignee átvezetve (hiányzó esetén `unknown`, nem a
+kártya-alapértelmezett `mikrob`), és az AGY ágra egy explicit `llm-ledger-append.py` hívás
+került BE a hívóhelyen (nem a megosztott `gemini-agy-call.sh`-ban, amit a Ghost pipeline is
+használ a saját naplózásával -- a hatókör csak `offload-dispatch.sh` saját hívóhelyére szűkül).
+
+**Teszt:** `offload-dispatch.selftest.sh` 322/322 zöld (312 + 10 új eset: 3 strukturális sorrend-
+pin, 5 viselkedési eset a `--test-gemini-coding-chain-site` harnesen -- kapcsoló KI/BE, hiányzó
+gemini-ok jelölő, szimulált kvóta-kimerülés (rc=5, megegyezik a `gemini-agy-call.sh` saját órás
+visszautasításával), llm_ledger attribúció). Mutáció: a híváshely eltávolítása, a kapcsoló-
+ellenőrzés kikapcsolása, és a kapu-ellenőrzés kikapcsolása mindhárom esetben pirosra fordítja a
+megfelelő új tesztet; mindhárom visszaállítva, 322/322 zöld.
+
+**Nincs benne:** az "élő leaf-kártya tényleg Gemini draftot kap" kritérium (a kártya saját
+"measured live once" elfogadási pontja) -- ez landolás UTÁN, a kapcsoló MikroB általi
+bekapcsolásával és egy valós sweep-el igazolható, külön kommentben követi, ugyanúgy mint a
+9fb61222 1 órás mérése. A `try_gemini_second_opinion_for_leaf` (GOAL2, advisory second-opinion)
+ugyanezt a `--hivo mikrob` hibaosztályt hordozza, de az egy KÜLÖNÁLLÓ, tanácsadó funkció -- nem
+ennek a kártyának a hatóköre, külön kártyaként érdemes jelenteni.
+
+**Ki döntött:** Peti (Telegram 14354) + MikroB (kártya 9963bf35). backend2 végezte a javítást.
+Gate: QA + Cybersec (a kártya saját kijelölése).

@@ -1785,6 +1785,109 @@ check "try_leaf's body contains NO synthetic+veto_online early-return (the skip 
 check "if present, any such check would come before try_freellm_first_for_leaf (would short-circuit it) -- confirms removal, not reordering" \
   "$([[ -z "$veto_skip_line" || ( -n "$ff_line" && "$veto_skip_line" -lt "$ff_line" ) ]] && echo yes || echo no)" "yes"
 
+# --- STRUCTURAL pin: try_leaf calls try_gemini_coding_chain_for_leaf AFTER freellm-first falls
+# through but BEFORE local RAG (card 9963bf35, "FreeLLM -> Gemini -> local -> online"). ------------
+gc_line="$(printf '%s\n' "$TRY_LEAF_BODY" | grep -n 'try_gemini_coding_chain_for_leaf' | head -1 | cut -d: -f1)"
+check "try_leaf's body contains a try_gemini_coding_chain_for_leaf call" "$([[ -n "$gc_line" ]] && echo yes || echo no)" "yes"
+check "try_leaf calls try_gemini_coding_chain_for_leaf AFTER try_freellm_first_for_leaf" \
+  "$([[ -n "$ff_line" && -n "$gc_line" && "$ff_line" -lt "$gc_line" ]] && echo yes || echo no)" "yes"
+check "try_leaf calls try_gemini_coding_chain_for_leaf BEFORE the local RAG (\$RAG) call" \
+  "$([[ -n "$gc_line" && -n "$rag_line" && "$gc_line" -lt "$rag_line" ]] && echo yes || echo no)" "yes"
+
+# ============================================================================================
+# Card 9963bf35 (Peti Telegram 14354): Gemini in the coding chain, next to FreeLLM, unconditional
+# on newDevStop. All cases drive the REAL try_gemini_coding_chain_for_leaf via
+# --test-gemini-coding-chain-site -- no reimplementation, same pattern as --test-freellm-first-site.
+# GEMINI_AGY_CALL/GEMINI_OFFLOAD are newly overridable (OFFLOAD_GEMINI_AGY_CALL/
+# OFFLOAD_GEMINI_OFFLOAD) specifically so this can stub either backend without touching the real
+# CLI/network path -- neither was overridable before this card, so try_gemini_for_leaf itself had
+# NO selftest coverage at all before now (only structural/grep pins on its callers).
+# ============================================================================================
+GC_FLAG="$TMPDIR/gemini-coding-chain-enabled"
+GC_AGY_STUB="$TMPDIR/gc-agy-stub.sh"
+GC_MARKER="$TMPDIR/gc-attempt-marker"
+GC_LEDGER_DB="$TMPDIR/gc-ledger.db"
+rm -f "$GC_LEDGER_DB"
+python3 -c "
+import sqlite3
+con = sqlite3.connect('$GC_LEDGER_DB')
+con.execute('''CREATE TABLE llm_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, agent_id TEXT NOT NULL,
+  card_id TEXT, task_type TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK(provider IN (\"local\",\"gemini\",\"freellm\")), model TEXT,
+  ok INTEGER NOT NULL, fail_reason TEXT, latency_ms INTEGER, prompt_chars INTEGER,
+  response_chars INTEGER, draft_accepted INTEGER, claude_token_equiv INTEGER)''')
+con.commit()
+"
+
+make_gc_agy_stub() { # $1 = exit code to return (0 drafts "gc-draft-output")
+  cat > "$GC_AGY_STUB" <<EOF
+#!/usr/bin/env bash
+touch "$GC_MARKER"
+case "${1}" in
+  0) echo "gc-draft-output"; exit 0 ;;
+  *) exit ${1} ;;
+esac
+EOF
+  chmod +x "$GC_AGY_STUB"
+}
+
+run_gc_site() { # $1=leafId $2=title $3=desc $4=project $5=tags $6=assignee(optional) -> sets $rc, $out
+  out="$(OFFLOAD_GEMINI_AGY_CALL="$GC_AGY_STUB" DASHBOARD_URL="http://127.0.0.1:1" \
+    LLM_LEDGER_DB="$GC_LEDGER_DB" \
+    bash "$DISPATCH" --test-gemini-coding-chain-site "$1" "$2" "$3" "$4" "$5" "task text" "$1" false "${6:-}" 2>/dev/null)"
+  rc=$?
+}
+
+# Case 1: flag OFF (default) -> never reaches the stub, falls through, no bookkeeping.
+rm -f "$GC_FLAG" "$GC_MARKER"
+make_gc_agy_stub 0
+unset GEMINI_CODING_CHAIN_FLAG
+run_gc_site leafG1 "title" "desc" mikrob "gemini-ok"
+check "gemini coding-chain, flag OFF: prints fallthrough" "$out" "fallthrough"
+check "gemini coding-chain, flag OFF: stub NEVER invoked" "$([[ -f "$GC_MARKER" ]] && echo leaked || echo clean)" "clean"
+
+# Case 2: flag ON + allowed project/marker -> drafted, stub invoked.
+rm -f "$GC_MARKER"
+export GEMINI_CODING_CHAIN_FLAG="$GC_FLAG"
+echo on > "$GC_FLAG"
+run_gc_site leafG2 "title" "desc" mikrob "gemini-ok" backend2
+check "gemini coding-chain, flag ON + allowed: prints drafted" "$out" "drafted"
+check "gemini coding-chain, flag ON + allowed: stub was invoked" "$([[ -f "$GC_MARKER" ]] && echo yes || echo no)" "yes"
+
+# Case 3 (Kesz-ha: "a card with secret-shaped text or a forbidden category never reaches Gemini"):
+# no gemini-ok marker tag -> is_gemini_blocked's positive-marker requirement blocks it, same gate
+# every other Gemini call site in this file uses.
+rm -f "$GC_MARKER"
+run_gc_site leafG3 "title" "desc" mikrob ""
+check "gemini coding-chain, missing gemini-ok marker: prints fallthrough" "$out" "fallthrough"
+check "gemini coding-chain, missing gemini-ok marker: stub NEVER invoked" "$([[ -f "$GC_MARKER" ]] && echo leaked || echo clean)" "clean"
+
+# Case 4 (Kesz-ha: "the 6th card in an hour skips Gemini and goes local"): gemini-agy-call.sh's
+# OWN hourly cap (already selftested there: 5 calls -> 6th exits 5, see gemini-agy-call.selftest.sh
+# "hourly: 5 recent agy calls -> 6th blocked, exit 5") is what actually enforces the count: this
+# pins that THIS call site correctly treats that refusal as fallthrough, not a crash/hang/retry.
+rm -f "$GC_MARKER"
+make_gc_agy_stub 5
+run_gc_site leafG4 "title" "desc" mikrob "gemini-ok"
+check "gemini coding-chain, quota-exhausted (simulated rc=5, matches gemini-agy-call.sh's own hourly refusal): prints fallthrough" "$out" "fallthrough"
+check "gemini coding-chain, quota-exhausted: stub WAS invoked (reached the call, quota itself said no)" "$([[ -f "$GC_MARKER" ]] && echo yes || echo no)" "yes"
+make_gc_agy_stub 0
+
+# Case 5 (card 9963bf35 attribution, same bug class as 685f25cb/9fb61222): a successful
+# coding-chain draft must write an llm_ledger row attributed to the real assignee, provider=gemini.
+python3 -c "
+import sqlite3
+con = sqlite3.connect('$GC_LEDGER_DB')
+row = con.execute(\"SELECT agent_id, card_id, provider FROM llm_ledger WHERE provider='gemini' AND card_id='leafG2'\").fetchone()
+print(row[0] if row else 'NO_ROW', row[2] if row else '', row[1] if row else '')
+" > "$TMPDIR/gc-ledger-check.txt" 2>/dev/null || echo "QUERY_FAILED" > "$TMPDIR/gc-ledger-check.txt"
+check "gemini coding-chain draft writes an llm_ledger row (agent=backend2, provider=gemini)" \
+  "$(cat "$TMPDIR/gc-ledger-check.txt")" "backend2 gemini leafG2"
+
+unset GEMINI_CODING_CHAIN_FLAG
+rm -f "$GC_FLAG"
+
 # ============================================================================================
 # Card 81eb57b5 (6d8ef952 follow-up, Cybersec GO 31533 M1+M2).
 # ============================================================================================

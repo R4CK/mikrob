@@ -64,8 +64,12 @@ DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 RAG="$HERE/local-llm-rag.sh"
 RESOLVE="$HERE/graphify-resolve.py"
-GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
-GEMINI_AGY_CALL="$HERE/gemini-agy-call.sh"
+# card 9963bf35: overridable like FREELLM_CALL below, so a selftest can stub either Gemini
+# backend without touching the real CLI/network path -- neither was overridable before this,
+# so try_gemini_for_leaf had no selftest coverage at all (only structural/grep pins on its
+# callers, see f0b3b674's GOAL1/GOAL2 tests).
+GEMINI_OFFLOAD="${OFFLOAD_GEMINI_OFFLOAD:-$HERE/gemini-offload-call.sh}"
+GEMINI_AGY_CALL="${OFFLOAD_GEMINI_AGY_CALL:-$HERE/gemini-agy-call.sh}"
 # FREELLM ROUTE (card 4eb3743e, Peti 12494 "legyen moduralis, kikapcsolhato"): a second, independent
 # fallback for when the LOCAL (7B) path is out for a CAPACITY reason (vram-hold/model-busy/
 # gpu-util-hold, see the VRAM_GUARD sweep-level check below) or local attempts are exhausted on a
@@ -808,6 +812,22 @@ gemini_heavy_second_opinion_enabled() {
   [[ -f "$GEMINI_HEAVY_FLAG" ]]
 }
 
+# CODING-CHAIN FLAG (card 9963bf35, Peti Telegram 14354): a THIRD, independent switch -- Gemini
+# tried right after freellm-first falls through, BEFORE local, in NORMAL operation (no newDevStop
+# wait, supersedes the 2026-10-11 "Gemini only under newDevStop" rule for this chain position).
+# Distinct from GEMINI_HEAVY_FLAG above: that one is a fallback AFTER local is exhausted, sub-capped
+# at 3 of the shared 5/hour so the stop-period draft path and Ghost keep headroom. This one is the
+# PRIMARY use of the shared budget per Peti's own framing ("the 5/hour Gemini budget is for card
+# coding") -- no sub-cap of its own, it just shares gemini-agy-call.sh's existing hourly ceiling
+# like every other consumer (counted via the same 'agy'-tagged rows that script's own hourly check
+# already reads). Fail-closed default off, same shipped-safe convention as every other Gemini flag
+# here -- MikroB creates the file after gates GO/PASS.
+GEMINI_CODING_CHAIN_FLAG="${GEMINI_CODING_CHAIN_FLAG:-$HERE/gemini-coding-chain-enabled}"
+gemini_coding_chain_enabled() {
+  [[ "${OFFLOAD_NO_GEMINI:-0}" == "1" ]] && return 1
+  [[ -f "$GEMINI_CODING_CHAIN_FLAG" ]]
+}
+
 # HEAVY BUDGET SUB-RESERVATION (card f0b3b674 C2): "UGYANAZ a kozos 5/ora ablak ... NEM uj, kulon
 # szamlalo" -- shares gemini-agy-call.sh's existing fleet-wide hourly window and flock
 # (gemini-agy-call.hourly.lock), exactly as src/gemini-ghost-budget.ts's reserveGhostCallSlot()
@@ -894,13 +914,27 @@ gemini_draft_comment_body() {
 
 # try_gemini_for_leaf: call Gemini (via agy by default, REST if toggle present) for a leaf and
 # post the draft comment. Records a transient attempt on API failure.
+#
+# ATTRIBUTION (card 9963bf35, same bug class as 685f25cb/9fb61222 for freellm): neither branch
+# used to record who the call was for. The REST branch (gemini-offload-call.sh) already HAS
+# GEMINI_CALLER/GEMINI_CARD_ID -> llm_ledger wiring (card e96d56c5 F4) but this call site never
+# set the env vars, so every row landed as agent=unknown/card=NULL. The AGY branch is worse: it
+# hardcoded --hivo mikrob regardless of the real assignee, AND gemini-agy-call.sh itself never
+# writes an llm_ledger row at all (only its own seged-hivo log + a daily-log line) -- so under
+# the production default (gemini-rest-fallback-enabled flag absent), NO Gemini call from this
+# function was ever visible to GET /api/freellm/calls-equivalent reporting. Fixed both: assignee
+# threaded through (falls back to 'unknown' same as every other provider), and an explicit
+# llm-ledger-append.py call added for the AGY branch (gemini-agy-call.sh itself is shared with
+# the Ghost pipeline, which logs its own rows separately -- not touching that script keeps this
+# change scoped to offload-dispatch.sh's own call site only).
 try_gemini_for_leaf() {
-  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
+  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}" assignee="${6:-}"
 
-  local out rc=0
+  local out rc=0 start_ms
+  start_ms="$(date +%s%3N 2>/dev/null || echo 0)"
   if gemini_rest_fallback_enabled; then
     [[ -x "$GEMINI_OFFLOAD" ]] || return 1
-    out="$(printf '%s' "$task" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
+    out="$(printf '%s' "$task" | GEMINI_CALLER="${assignee:-unknown}" GEMINI_CARD_ID="$post_id" bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
   else
     [[ -x "$GEMINI_AGY_CALL" ]] || return 1
     # Synthetic leaf IDs (e.g. "c65add5a~test-scaffold") strip the ~type suffix for --kartya.
@@ -910,13 +944,19 @@ try_gemini_for_leaf() {
     prompt_file="$mappa_dir/prompt.txt"
     printf '%s' "$task" > "$prompt_file"
     out="$(bash "$GEMINI_AGY_CALL" \
-      --hivo mikrob \
+      --hivo "${assignee:-unknown}" \
       --kartya "$base_id" \
       --feladattipus adat \
       --kategoria safe \
       --prompt "$prompt_file" \
       --mappa "$mappa_dir" 2>/dev/null)" || rc=$?
     rm -rf "$mappa_dir" 2>/dev/null || true
+    local elapsed_ms; elapsed_ms=$(( $(date +%s%3N 2>/dev/null || echo 0) - start_ms ))
+    (( elapsed_ms < 0 )) && elapsed_ms=0
+    local ledger_ok_flag=(--ok); [[ "$rc" -eq 0 ]] || ledger_ok_flag=(--fail --fail-reason "agy_rc_${rc}")
+    python3 "$HERE/llm-ledger-append.py" --agent "${assignee:-unknown}" --task-type coding-chain \
+      --provider gemini --model agy "${ledger_ok_flag[@]}" --latency-ms "$elapsed_ms" --card "$base_id" \
+      >/dev/null 2>&1 || true
   fi
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
@@ -1105,6 +1145,28 @@ try_freellm_first_for_leaf() {
   fi
   echo "offload-dispatch: leaf $leaf_id -> freellm-first skipped (rc=$rc), trying local" >&2
   return 1
+}
+
+# try_gemini_coding_chain_for_leaf (card 9963bf35, Peti Telegram 14354): the CODING-CHAIN Gemini
+# slot -- tried right after try_freellm_first_for_leaf falls through (freellm failed/off/quota),
+# BEFORE local, in NORMAL operation (no newDevStop wait). Gated by its own flag
+# (gemini_coding_chain_enabled, default off) and the SAME secret/category/positive-marker gate
+# every other Gemini call site uses (is_gemini_blocked) -- "same gates as FreeLLM before any text
+# leaves" per the card's own text. No pre-reservation against the shared hourly budget: unlike
+# the HEAVY path's reserve_heavy_gemini_slot (a deliberate 3-of-5 sub-cap so stop-period drafts
+# and Ghost keep headroom), this path gets the FULL shared ceiling -- gemini-agy-call.sh's own
+# hourly check (or gemini-offload-call.sh's REST equivalent) already refuses the 6th call in the
+# rolling window, and try_gemini_for_leaf already treats that refusal as "fall through to local"
+# (rc!=0, attempts_op transient-fail, return 1) -- no new budget bookkeeping needed here.
+# Returns 0 = drafted (caller returns immediately), 1 = try local next.
+try_gemini_coding_chain_for_leaf() {
+  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_project="$4" leaf_tags="$5" task="$6" post_id="$7" synthetic="${8:-false}" assignee="${9:-}"
+  gemini_coding_chain_enabled || return 1
+  if is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
+    echo "offload-dispatch: leaf $leaf_id -> gemini coding-chain blocked (project/tag/content gate/missing gemini-ok), trying local" >&2
+    return 1
+  fi
+  try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$assignee"
 }
 
 # gemini_second_opinion_comment_body: same contract as gemini_draft_comment_body (card a92e9913),
@@ -2205,6 +2267,18 @@ if [[ "${1:-}" == "--test-freellm-first-site" ]]; then
   echo "fallthrough"; rm -f "$hdr_file"; exit 1
 fi
 
+# --test-gemini-coding-chain-site LID TITLE DESC PROJECT TAGS TASK POSTID [SYNTHETIC] [ASSIGNEE] :
+# calls the REAL try_gemini_coding_chain_for_leaf directly (card 9963bf35) -- same pattern as
+# --test-freellm-first-site above, no reimplementation. Prints "drafted"/"fallthrough" and exits 0/1.
+if [[ "${1:-}" == "--test-gemini-coding-chain-site" ]]; then
+  shift
+  hdr_file="$(mktemp)"
+  if try_gemini_coding_chain_for_leaf "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" "${9:-}"; then
+    echo "drafted"; rm -f "$hdr_file"; exit 0
+  fi
+  echo "fallthrough"; rm -f "$hdr_file"; exit 1
+fi
+
 # --test-freellm-cooldown : exercises freellm_in_cooldown/freellm_start_cooldown directly (card
 # 6d8ef952) against the overridable OFFLOAD_FREELLM_COOLDOWN_FILE/OFFLOAD_FREELLM_COOLDOWN_SECONDS
 # env vars, without ever calling freellm-call.sh. "start" calls freellm_start_cooldown then prints
@@ -2367,10 +2441,18 @@ $leaf_desc"
     return 0
   fi
 
+  # GEMINI CODING-CHAIN (card 9963bf35, Peti Telegram 14354): try Gemini next, still BEFORE local,
+  # still unconditional on newDevStop. Own flag (gemini_coding_chain_enabled, default off), own
+  # gate (is_gemini_blocked, same as every other Gemini site), no attempts_op bookkeeping on a
+  # non-success exit -- same contract as the freellm-first call just above.
+  if try_gemini_coding_chain_for_leaf "$leaf_id" "$leaf_title" "$leaf_desc" "$leaf_project" "$leaf_tags" "$task" "$post_id" "$synthetic" "$leaf_assignee_raw"; then
+    return 0
+  fi
+
   # GEMINI ROUTE, LOCAL LLM NOT AVAILABLE (card a92e9913): skip the RAG call entirely.
   if [[ "$GEMINI_ROUTE" == "gemini" && "${LOCAL_LLM_AVAILABLE:-1}" -eq 0 ]]; then
     if gemini_route_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
-      try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+      try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$leaf_assignee_raw" && return 0
     else
       echo "offload-dispatch: leaf $leaf_id -> gemini blocked (project=$leaf_project)" >&2
     fi
@@ -2467,14 +2549,14 @@ $leaf_desc"
     if [[ "${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS" ]]; then
       # GEMINI FALLBACK when local LLM is exhausted (card a92e9913): try Gemini before giving up.
       if [[ "$GEMINI_ROUTE" == "gemini" ]] && gemini_route_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
-        try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+        try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$leaf_assignee_raw" && return 0
       # HEAVY SECOND-OPINION, GOAL 1 (card f0b3b674 C1/C2/C3): the SAME fallback-after-local-
       # exhaustion path, but WITHOUT requiring quota-stop (GEMINI_ROUTE=='gemini') -- "Gemini runs
       # in normal operation too, within the fleet-wide 5/hour budget". Gated by its OWN flag
       # (default off) and its OWN shared-budget-with-subcap reservation, independent of the
       # existing gemini_route_enabled()/stop-state flag above so the two paths never conflate.
       elif gemini_heavy_second_opinion_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" && reserve_heavy_gemini_slot "$leaf_id"; then
-        try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+        try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" "$leaf_assignee_raw" && return 0
       fi
       # FREELLM FALLBACK (card 4eb3743e, gate parity: WhiteHat NO-GO 28484 M1). Extracted to
       # freellm_fallback_exhausted_site (card 5aa686f0) -- see that function's own header.
