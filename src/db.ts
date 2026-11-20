@@ -2500,6 +2500,32 @@ export function initDatabase(dbPathOverride?: string): void {
   // cannot outlive its card; deleteKanbanCard must sweep this table first (same
   // pattern as kanban_dependencies).
   migrateCardCheckpoints()
+
+  // --- Telegram outbox (card ea3e7316, F2 Durable Telegram outbox with receipts) ---
+  // A durable queue for outgoing Telegram sends that must survive a channel-process
+  // restart (dead poller/tmux-server crash, card f490ae53) instead of being silently
+  // lost. idempotency_key is UNIQUE so a retried enqueue of the same logical message
+  // never creates a second row (no duplicate send). A failed delivery attempt stays
+  // 'pending' and is retried (next_retry_at) -- the card's own spec has no give-up
+  // condition, only a visibility warning after 3 consecutive failures (see
+  // telegram-outbox.ts); 'failed' is a reserved terminal value for a future manual
+  // intervention path, not written by anything in this round.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS telegram_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_retry_at INTEGER NOT NULL,
+      message_id INTEGER,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      sent_at INTEGER
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_telegram_outbox_due ON telegram_outbox(status, next_retry_at)`)
 }
 
 // Exported so tests can run a down+re-up cycle on the same db handle (MikroB M1).
@@ -10946,4 +10972,64 @@ export function claimCommandWriteEvidence(chatId: string, messageId: string, now
     'INSERT OR IGNORE INTO command_write_evidence (chat_id, message_id, used_at) VALUES (?, ?, ?)',
   ).run(chatId, messageId, nowMs)
   return r.changes === 1
+}
+
+// --- Telegram outbox (card ea3e7316) ---
+
+export interface TelegramOutboxRow {
+  id: number
+  chat_id: string
+  text: string
+  idempotency_key: string
+  status: 'pending' | 'sent' | 'failed'
+  attempts: number
+  next_retry_at: number
+  message_id: number | null
+  last_error: string | null
+  created_at: number
+  sent_at: number | null
+}
+
+/**
+ * Enqueues a Telegram send, or returns the EXISTING row if idempotency_key was
+ * already seen (no duplicate row, no reset of its attempts/status -- a retried
+ * enqueue of the same logical message is a no-op, not a fresh send).
+ */
+export function enqueueTelegramOutbox(chatId: string, text: string, idempotencyKey: string, now = Date.now()): TelegramOutboxRow {
+  db.prepare(
+    `INSERT INTO telegram_outbox (chat_id, text, idempotency_key, status, attempts, next_retry_at, created_at)
+     VALUES (?, ?, ?, 'pending', 0, ?, ?)
+     ON CONFLICT(idempotency_key) DO NOTHING`,
+  ).run(chatId, text, idempotencyKey, now, now)
+  return db.prepare('SELECT * FROM telegram_outbox WHERE idempotency_key = ?').get(idempotencyKey) as TelegramOutboxRow
+}
+
+export function getTelegramOutboxRow(id: number): TelegramOutboxRow | undefined {
+  return db.prepare('SELECT * FROM telegram_outbox WHERE id = ?').get(id) as TelegramOutboxRow | undefined
+}
+
+/** Rows due for a delivery attempt right now, oldest first. */
+export function listDueTelegramOutbox(now = Date.now(), limit = 25): TelegramOutboxRow[] {
+  return db.prepare(
+    `SELECT * FROM telegram_outbox WHERE status = 'pending' AND next_retry_at <= ? ORDER BY id ASC LIMIT ?`,
+  ).all(now, limit) as TelegramOutboxRow[]
+}
+
+export function markTelegramOutboxSent(id: number, messageId: number | null, now = Date.now()): void {
+  db.prepare(
+    `UPDATE telegram_outbox SET status = 'sent', message_id = ?, sent_at = ?, last_error = NULL WHERE id = ?`,
+  ).run(messageId, now, id)
+}
+
+/**
+ * Records a failed delivery attempt and schedules the next one. Stays
+ * 'pending' (not 'failed') -- a 'failed' row is this table's RETRY state, not
+ * a terminal one: the outbox's whole point is to keep retrying through a
+ * channel-process restart (card f490ae53) rather than giving up.
+ */
+export function markTelegramOutboxFailed(id: number, sanitizedError: string, nextRetryAt: number): number {
+  db.prepare(
+    `UPDATE telegram_outbox SET attempts = attempts + 1, last_error = ?, next_retry_at = ? WHERE id = ?`,
+  ).run(sanitizedError, nextRetryAt, id)
+  return (db.prepare('SELECT attempts FROM telegram_outbox WHERE id = ?').get(id) as { attempts: number }).attempts
 }

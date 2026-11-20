@@ -30,13 +30,79 @@ TELEGRAM_STATE_DIR else ~/.claude/channels/telegram; token from <state_dir>/.env
 (TELEGRAM_BOT_TOKEN=); session id from --sid else CLAUDE_CODE_SESSION_ID else
 "default". Bot API base from TELEGRAM_API_BASE (default https://api.telegram.org)
 so tests can point it at a local stub.
+
+OUTBOX MODE (card ea3e7316, MIKROB_TG_OUTBOX=1): when set, this script never
+reads the Bot API token to DELIVER the message -- it POSTs {chat_id, text,
+idempotency_key} to the dashboard's durable outbox (/api/telegram/outbox)
+instead, authenticated with the dashboard's OWN Bearer token (store/.dashboard-
+token, the same one every other dashboard API call uses), and exits 0 as soon
+as the message is durably enqueued (the dashboard's own drain loop delivers
+it, surviving this process -- or the whole tmux server -- dying right after).
+The Bot API token itself is still read, exactly as before, if (and only if)
+there is a progress placeholder to clear for this chat -- a narrower, unrelated,
+pre-existing use (see clear_placeholder), not part of delivering this message.
+idempotency_key is derived from (session id, chat_id, text), so
+re-running this exact call (the same session retrying the same send) enqueues
+at most once, never a duplicate. If the outbox call fails for ANY reason
+(dashboard down, flag mis-set downstream, network error), this falls through
+to the normal direct-send path below -- outbox mode never makes delivery LESS
+reliable than before, only more so.
 """
 import sys
 import os
 import json
+import hashlib
+import urllib.error
 import urllib.request
 
 MAX_LEN = 4000  # Telegram hard limit is 4096; match the Stop hook's trim.
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+def outbox_api():
+    # Function, not a module constant (matches api_base()'s own convention below):
+    # read fresh each call, so an env override set after import -- as every test here does --
+    # actually takes effect.
+    return os.environ.get("TELEGRAM_OUTBOX_API", "http://localhost:3420")
+
+
+def outbox_token_file():
+    return os.environ.get("TELEGRAM_OUTBOX_TOKEN_FILE") or os.path.join(ROOT, "store", ".dashboard-token")
+
+
+def outbox_idempotency_key(sid, chat_id, text):
+    raw = "%s:%s:%s" % (sid, chat_id, text)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def try_outbox_enqueue(sd, sid, chat_id, text):
+    """Best-effort: True if the message is durably enqueued, False for any
+    reason at all (caller falls through to a direct send either way)."""
+    try:
+        with open(outbox_token_file(), encoding="utf-8") as f:
+            dash_token = f.read().strip()
+    except Exception:
+        return False
+    if not dash_token:
+        return False
+    payload = {
+        "chat_id": str(chat_id),
+        "text": text[:MAX_LEN],
+        "idempotency_key": outbox_idempotency_key(sid, chat_id, text[:MAX_LEN]),
+    }
+    req = urllib.request.Request(
+        outbox_api().rstrip("/") + "/api/telegram/outbox",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + dash_token},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status != 200:
+                return False
+            json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception as e:
+        log(sd, "[fallback-send] outbox enqueue failed, falling back to direct send: %s" % e)
+        return False
+    return True
 
 
 def api_base():
@@ -89,11 +155,16 @@ def api(tok, method, payload):
         return json.loads(r.read().decode())
 
 
-def clear_placeholder(sd, sid, chat_id, tok):
+def clear_placeholder(sd, sid, chat_id):
     """Delete this session's pending placeholder(s) for `chat_id` and trim the
     pending list -- the exact bookkeeping telegram_progress_reply_clear.py does
     when the reply tool fires, so the Stop hook won't re-deliver. Best-effort:
-    any failure is logged, never raised (the message is already out)."""
+    any failure is logged, never raised (the message is already out).
+
+    Reads the Bot API token ONLY if there is actually a placeholder to delete
+    (the common case has none) -- card ea3e7316's outbox-mode caller never
+    reads the token for the message it is delivering, and this keeps that true
+    for its placeholder cleanup too, not just for the send itself."""
     path = os.path.join(sd, "progress", f"{sid}.json")
     try:
         pend = json.load(open(path))
@@ -103,6 +174,10 @@ def clear_placeholder(sd, sid, chat_id, tok):
     for p in pend:
         (drop if str(p.get("chat_id")) == str(chat_id) else keep).append(p)
     if not drop:
+        return
+    tok = token(sd)
+    if not tok:
+        log(sd, "[fallback-send] placeholder pending but no token to clear it with")
         return
     for p in drop:
         try:
@@ -142,6 +217,12 @@ def main():
     sd = state_dir(cli_dir)
     sid = session_id(cli_sid)
 
+    if os.environ.get("MIKROB_TG_OUTBOX") == "1" and try_outbox_enqueue(sd, sid, chat_id, text):
+        clear_placeholder(sd, sid, chat_id)
+        log(sd, f"[fallback-send] enqueued via durable outbox chat={chat_id} sid={sid}")
+        print(json.dumps({"ok": True, "outbox": True}, ensure_ascii=False))
+        sys.exit(0)
+
     tok = token(sd)
     if not tok:
         sys.stderr.write("telegram_fallback_send: no TELEGRAM_BOT_TOKEN in "
@@ -160,7 +241,7 @@ def main():
 
     # Delivered -> mirror the reply tool: clear the placeholder so the Stop hook
     # does not re-deliver the same answer.
-    clear_placeholder(sd, sid, chat_id, tok)
+    clear_placeholder(sd, sid, chat_id)
     mid = (resp.get("result") or {}).get("message_id")
     log(sd, f"[fallback-send] delivered chat={chat_id} message_id={mid} "
             f"(placeholder cleared) sid={sid}")

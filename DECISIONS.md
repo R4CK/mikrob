@@ -29657,3 +29657,65 @@ exactly the 3 mismatch-detection assertions red, the other 3 stay green. Gate me
 self-advance pickup per fleet-nudger msg 22361. Gate: QA + Cybersec + Cybered per the card's own
 `Gate:` line (round 1 of a phased closure -- REVIEW scopes the verdict request to this round's
 Kész-ha items only).
+
+## 2026-11-20 -- ea3e7316: F2 Durable Telegram outbox with receipts (dsh Outbox idea)
+
+**Context:** idea source deepseek-ai/dsh-superagent-prototype @8c32a9dc (MIT, research prototype) --
+reimplemented on our own stack, no code vendored. Outgoing Telegram sends from the fallback path
+(`scripts/hooks/telegram_fallback_send.py`, used when the in-session reply tool's MCP plugin has
+dropped) were a single direct Bot API call with no durability: if the fleet tmux server died
+mid-send -- measured 8 times in one day on card f490ae53 -- the message was simply gone, with
+nothing to retry it. Constraint (Peti 14288): additive only, every existing connection point
+(reply tool, `/api/messages`, `/api/kanban`, scheduled tasks, marveen-land.sh, gate keywords) stays
+untouched; new behaviour behind a flag, default OFF until gated.
+
+**Decision:** a new `telegram_outbox` SQLite table (`src/db.ts`), owned by the always-on dashboard
+server process rather than any individual agent pane/tmux session -- "survives a restart" is a
+property of where the state lives (the server's own db file), not of anything the drain loop does
+at restart time. `idempotency_key` is UNIQUE, so a retried enqueue of the same logical message
+(same session id + chat_id + text) is a no-op, never a duplicate send. A new `POST
+/api/telegram/outbox` route (`src/web/routes/telegram-outbox.ts`) is the enqueue side, gated:
+returns 503 when `MIKROB_TG_OUTBOX` is unset, so a caller never queues into a void. A new
+`startTelegramOutboxDrain()` interval (`src/web/telegram-outbox.ts`, wired into `src/web.ts` the
+same way `startScheduleRunner`/`startMessageRouter` are) is the delivery side: 5s/10s/20s/.../300s
+capped backoff, and a single `logger.warn` the moment a row crosses 3 consecutive failures (not
+repeated every tick after) -- the card's own spec has no give-up condition, so a failing row keeps
+retrying forever at the capped interval rather than being dropped. `telegram_fallback_send.py` is
+the ONE call site wired this round (the card's own text: "used by the fallback sender first", other
+call sites are future rounds): when the flag is on it POSTs to the new route using the dashboard's
+OWN Bearer token (`store/.dashboard-token`) and never touches the Bot API token to deliver the
+message at all (the Bot API token is still read, exactly as before, only if there happens to be an
+unrelated progress-placeholder to clear for that chat); if the outbox call fails for any reason
+(dashboard down, network error, flag mismatch), it falls through to the pre-existing direct-send
+path unchanged -- outbox mode can never make delivery less reliable than before.
+
+**Test:** `src/__tests__/telegram-outbox.test.ts` (25 cases): idempotent enqueue (repeat key ->
+same row, no reset of an already-sent row), due-row selection, sent/failed transitions, a
+real-file (not `:memory:`) restart test (two independent `initDatabase()` calls against the same
+on-disk file see exactly what the prior one left pending), the 5s-doubling/300s-cap backoff
+schedule, token-shape error redaction, the exactly-once health warning at the 3rd consecutive
+failure (and that 2 failures + a recovery never logs it), the default-off flag contract, and the
+route's validation/503/no-duplicate-on-repeat-key behaviour. `scripts/hooks/telegram_fallback_send.selftest.py`
+(25 cases, local HTTP capture server standing in for both the dashboard and the Bot API): outbox
+mode enqueues and never calls the Bot API's sendMessage; outbox mode OFF (default) is byte-for-byte
+the pre-existing direct-send behaviour; an outbox-endpoint failure OR an unreachable dashboard both
+fall through to the direct path and still deliver; a retried call with the same (session, chat,
+text) produces two POSTs with the IDENTICAL idempotency_key. Mutation-verified: disabling the
+health-warn gate flips exactly the 2 related assertions; removing the backoff cap flips exactly the
+"caps at 300s" assertion; gating the outbox branch off (`if False and ...`) flips the outbox-mode
+assertions in the Python selftest while leaving the direct-mode ones green. Restored byte-identical
+via diff each time. `npx tsc --noEmit`: clean. `npx eslint` on the 3 new TS files: clean. Targeted
+run alongside `card-checkpoints.test.ts` + `approvals-chat-approved.test.ts` +
+`kanban-decisions-guard.test.ts` (shared `src/db.ts`/`src/web.ts` blast radius): 3 Test Files
+passed (3), 61 Tests passed (61).
+
+**Not in this round:** any OTHER call site for the outbox besides `telegram_fallback_send.py` (the
+reply tool itself is a vendored plugin and stays untouched, per the card's own constraint); a
+terminal give-up/escalation state (the `failed` status value exists in the schema's CHECK
+constraint for a possible future manual-intervention path, but nothing writes it yet -- a failing
+row retries forever at the capped backoff instead); a GET endpoint to read a row's delivery
+receipt back (the receipt -- `message_id` -- is recorded on the row once sent, but nothing reads it
+synchronously this round).
+
+**Ki döntött:** MikroB (card ea3e7316, dispatch), self-advance pickup. backend implemented. Gate:
+QA + Cybersec + Cybered per the card's own `Gate:` line.
