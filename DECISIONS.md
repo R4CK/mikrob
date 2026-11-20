@@ -28987,3 +28987,30 @@ Selftest: 44/44 zöld (34 korábbi + 3 N1 + 2 N2 + 5 N3).
 **Ki döntött:** Cybersec2 NO-GO (34780, Gate-SHA d03808411, N1 regresszió + N2/N3 lelet).
 backend2 végezte a javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA +
 Cybersec (cybersec2 a delta-t gateli, saját NO-GO-ja szerint).
+
+## 2026-11-20 -- CYBERSEC NO-GO (4. kör): végtelen ciklus a komment-levágásban (kártya 0c3b13b5, delta)
+
+**Döntés:** cybersec2 egy ÚJABB NO-GO-t adott a soronkénti komment-levágás javítására (`0301ae533`):
+a `_COMMENT_START_RX = r"(?:^|\s)#"` FOGYASZTÓ `\s`-sel illesztett, tehát ha a `#` NEM az első
+sorban állt, a match kezdete (`m.start()`) a `#` ELŐTTI sortörésre esett. A `neutral.find("\n",
+start)` ezután UGYANAZT a sortörést találta meg azonnal (a keresés pont `start`-tól indul, és
+ott épp sortörés van), tehát `end == start`, és a ciklus SOHA nem haladt előre -- végtelen ciklus
+bármely többsoros parancson, amiben a `#` nem az első sorban van. A flotta fail-closed hook-
+wrapperje alatt egy soha nem visszatérő guard effektíve MINDEN ilyen szokásos Bash-hívást
+TILTANA (timeout). Javítás: a fogyasztó `\s` helyett zero-width lookbehind
+(`(?:^|(?<=\s))#`), így `m.start()` mindig a `#` maga, sosem az előtte álló whitespace -- a
+`find("\n", start)` ettől a ponttól indul, és garantáltan -1-et VAGY egy `start`-nál NAGYOBB
+indexet ad. Védelmi második réteg: explicit progress-guard (`if end <= search_from: break`),
+ha egy jövőbeli regex-módosítás újra megnyitná ezt a hibaosztályt.
+
+**Mutáció-bizonyítva:** a regex-javítás ÖNMAGÁBAN visszaállítva (a progress-guard marad) -- a
+teszt-korpusz összes esete továbbra is zöld marad (a guard önmagában már elég ehhez a
+korpuszhoz, korai `break`-kel, a komment levágása nélkül, de a kimaradt írás a maradék szövegben
+még megtalálható marad). A regex-javítás ÉS a progress-guard EGYÜTT visszaállítva -- pontosan a
+várt 3 időzített eset esik timeout-ba (5 mp-es subprocess-plafonnál).
+
+**Mérés (fán 85d9c48d6):** live-checkout-write-guard.selftest.py 71/71 zöld (47 korábbi + 4
+időzített regressziós eset, mindegyik < 1 mp + 20 fuzz-eset véletlen komment-pozícióval).
+
+**Ki döntött:** Cybersec2 NO-GO (4. kör, Gate-SHA 0301ae533, végtelen ciklus). backend2 végezte
+a javítást (a guard szerzője, 4b. szabály szerint más gatel-eli). Gate: QA + Cybersec.
