@@ -119,18 +119,36 @@ async function freellmPostStatus(enabled) {
 }
 
 // --- Call log (card ebe20efe, Peti 14295) --------------------------------------------------
-// Contract (agreed with backend2, Pair-BE 685f25cb): GET /api/freellm/calls?since=&limit=
-//   -> { calls: [{ ts, agent, card, model, provider, outcome, duration_ms, attempt }, ...],
-//        counts_24h: { ok, fail, stalled, rate_429, auth }, counts_7d: { same shape } }
-// calls are newest-first, capped by `limit`. outcome is a closed enum (ok/fail/stalled/429/auth)
-// but rendered through a lookup with a safe fallback, so an unexpected future value never breaks
-// the page.
+// Contract (backend2, Pair-BE 685f25cb, msg_id:21882, branch fix/freellm-call-journal-685f25cb
+// commit 192fdc6a7 -- not yet landed at the time this was written): GET /api/freellm/calls?
+// since=<unix_s>&limit=<1..500>
+//   -> { calls: [{ ts: <unix SECONDS>, agent, card, model, outcome: 'ok'|'fail'|'auth'|'429'|
+//          'stalled', fail_reason: <string>|null, duration_ms }, ...], // newest first
+//        counts_24h: { total, ok, fail }, counts_7d: { same shape } }
+// `ts` is unix SECONDS, not ms (Date() needs *1000). outcome is a closed enum but rendered
+// through a lookup with a safe fallback, so an unexpected future value never breaks the page.
+// counts_24h/7d only give total/ok/fail (not a per-failure-kind breakdown) -- the card's own
+// "successful, failed, stalled, 429" counter wording asks for more than that; flagged to
+// backend2 + MikroB (msg_id:21901 thread) as a possible follow-up. The per-row outcome column
+// in the table below still shows the real stalled/429/auth distinction per call.
 const FREELLM_CALLS_LIMIT = 50
-const FREELLM_OUTCOME_KEYS = ['ok', 'fail', 'stalled', 'rate_429', 'auth']
+const FREELLM_COUNT_FIELDS = ['total', 'ok', 'fail']
 let _freellmCallsRefreshBound = false
 
 function freellmOutcomeLabel(outcome) {
   return t('freellm.calls.outcome.' + outcome) || String(outcome)
+}
+
+function freellmCountFieldLabel(field) {
+  return t('freellm.calls.count.' + field) || String(field)
+}
+
+// A technical fail_reason code (e.g. "http_404") gets a translated label if we have one, else a
+// de-snaked fallback ("http 404") rather than the raw underscored string -- rule 12.
+function freellmFailReasonLabel(reason) {
+  const known = t('freellm.calls.fail_reason.' + reason)
+  if (known) return known
+  return String(reason).replace(/_/g, ' ')
 }
 
 // Rows the table highlights as failed (rule 12: the operator needs the bad ones to stand out).
@@ -144,10 +162,11 @@ function freellmFmtDuration(ms) {
   return (ms / 1000).toFixed(1) + ' s'
 }
 
-function freellmFmtTime(ts) {
-  if (ts == null || isNaN(ts)) return '—'
+// ts from the backend is unix SECONDS, not milliseconds.
+function freellmFmtTime(tsSeconds) {
+  if (tsSeconds == null || isNaN(tsSeconds)) return '—'
   try {
-    return new Date(ts).toLocaleString()
+    return new Date(tsSeconds * 1000).toLocaleString()
   } catch {
     return '—'
   }
@@ -180,10 +199,10 @@ function freellmRenderCountsRow(elId, counts) {
   if (!el) return
   el.textContent = ''
   const safe = counts || {}
-  FREELLM_OUTCOME_KEYS.forEach((key) => {
+  FREELLM_COUNT_FIELDS.forEach((field) => {
     const span = document.createElement('span')
-    span.className = 'freellm-calls-count-chip freellm-calls-count-chip--' + key
-    span.textContent = freellmOutcomeLabel(key) + ': ' + String(safe[key] || 0)
+    span.className = 'freellm-calls-count-chip freellm-calls-count-chip--' + field
+    span.textContent = freellmCountFieldLabel(field) + ': ' + String(safe[field] || 0)
     el.appendChild(span)
   })
 }
@@ -195,12 +214,16 @@ function freellmRenderCallsTable(calls) {
   calls.forEach((call) => {
     const tr = document.createElement('tr')
     if (freellmOutcomeIsFailure(call.outcome)) tr.className = 'freellm-calls-row--failed'
+    // rule 12: a failed row shows WHY, not just that it failed.
+    const outcomeText = call.fail_reason
+      ? freellmOutcomeLabel(call.outcome) + ' (' + freellmFailReasonLabel(call.fail_reason) + ')'
+      : freellmOutcomeLabel(call.outcome)
     const cells = [
       freellmFmtTime(call.ts),
       call.agent != null ? String(call.agent) : '—',
       call.card != null ? String(call.card) : '—',
       call.model != null ? String(call.model) : '—',
-      freellmOutcomeLabel(call.outcome),
+      outcomeText,
       freellmFmtDuration(call.duration_ms),
     ]
     cells.forEach((text) => {

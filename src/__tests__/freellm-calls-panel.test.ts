@@ -65,8 +65,12 @@ function fakeT(key: string): string {
     'freellm.calls.outcome.ok': 'Success',
     'freellm.calls.outcome.fail': 'Failed',
     'freellm.calls.outcome.stalled': 'Stalled',
-    'freellm.calls.outcome.rate_429': 'Rate limited (429)',
+    'freellm.calls.outcome.429': 'Rate limited (429)',
     'freellm.calls.outcome.auth': 'Auth error',
+    'freellm.calls.count.total': 'Total',
+    'freellm.calls.count.ok': 'Success',
+    'freellm.calls.count.fail': 'Failed',
+    'freellm.calls.fail_reason.http_404': 'endpoint not found (404)',
     'freellm.calls.load_error': 'Could not load the call log. Try again.',
   }
   return map[key] ?? ''
@@ -98,7 +102,7 @@ beforeAll(() => {
 describe('freellmOutcomeLabel', () => {
   it('resolves a known outcome to its translated label', () => {
     expect(freellmOutcomeLabel('ok')).toBe('Success')
-    expect(freellmOutcomeLabel('rate_429')).toBe('Rate limited (429)')
+    expect(freellmOutcomeLabel('429')).toBe('Rate limited (429)')
   })
 
   it('falls back to the raw outcome string for an unexpected value (future-proofing the enum)', () => {
@@ -124,8 +128,8 @@ describe('freellmRenderCountsRow', () => {
   function run(counts: Record<string, number> | undefined) {
     const { document, els } = makeDocument(['row'])
     const body =
-      `const FREELLM_OUTCOME_KEYS = ['ok', 'fail', 'stalled', 'rate_429', 'auth']\n` +
-      `${extract('freellmOutcomeLabel')}\n${extract('freellmRenderCountsRow')}\n` +
+      `const FREELLM_COUNT_FIELDS = ['total', 'ok', 'fail']\n` +
+      `${extract('freellmCountFieldLabel')}\n${extract('freellmRenderCountsRow')}\n` +
       'return { freellmRenderCountsRow }'
     const factory = new Function('document', 't', body) as (
       document: unknown, t: unknown,
@@ -134,16 +138,17 @@ describe('freellmRenderCountsRow', () => {
     return els.get('row')!
   }
 
-  it('renders one chip per outcome key, in order, with real counts', () => {
-    const row = run({ ok: 10, fail: 2, stalled: 1, rate_429: 0, auth: 0 })
-    expect(row.children.length).toBe(5)
-    expect(row.children[0].textContent).toBe('Success: 10')
-    expect(row.children[1].textContent).toBe('Failed: 2')
+  it('renders one chip per count field (total/ok/fail), in order, with real counts', () => {
+    const row = run({ total: 12, ok: 10, fail: 2 })
+    expect(row.children.length).toBe(3)
+    expect(row.children[0].textContent).toBe('Total: 12')
+    expect(row.children[1].textContent).toBe('Success: 10')
+    expect(row.children[2].textContent).toBe('Failed: 2')
   })
 
   it('defaults every missing count to 0 rather than throwing or rendering "undefined"', () => {
     const row = run(undefined)
-    expect(row.children[0].textContent).toBe('Success: 0')
+    expect(row.children[0].textContent).toBe('Total: 0')
   })
 })
 
@@ -151,7 +156,7 @@ describe('freellmRenderCallsTable', () => {
   function run(calls: Array<Record<string, unknown>>) {
     const { document, els } = makeDocument(['freellmCallsTbody'])
     const body =
-      `${extract('freellmOutcomeLabel')}\n${extract('freellmOutcomeIsFailure')}\n` +
+      `${extract('freellmOutcomeLabel')}\n${extract('freellmFailReasonLabel')}\n${extract('freellmOutcomeIsFailure')}\n` +
       `${extract('freellmFmtDuration')}\n${extract('freellmFmtTime')}\n${extract('freellmRenderCallsTable')}\n` +
       'return { freellmRenderCallsTable }'
     const factory = new Function('document', 't', body) as (
@@ -161,8 +166,8 @@ describe('freellmRenderCallsTable', () => {
     return els.get('freellmCallsTbody')!
   }
 
-  it('renders one row per call with 6 cells in column order', () => {
-    const tbody = run([{ ts: 1700000000000, agent: 'backend2', card: 'ebe20efe', model: 'llama3', outcome: 'ok', duration_ms: 1200 }])
+  it('renders one row per call with 6 cells in column order (ts is unix SECONDS)', () => {
+    const tbody = run([{ ts: 1700000000, agent: 'backend2', card: 'ebe20efe', model: 'llama3', outcome: 'ok', duration_ms: 1200 }])
     expect(tbody.children.length).toBe(1)
     const row = tbody.children[0]
     expect(row.children.length).toBe(6)
@@ -190,6 +195,21 @@ describe('freellmRenderCallsTable', () => {
     expect(row.children[2].textContent).toBe('—')
     expect(row.children[3].textContent).toBe('—')
   })
+
+  it('appends the fail_reason to the outcome text when present (rule 12: show WHY, not just that it failed)', () => {
+    const tbody = run([{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: 'fail', fail_reason: 'http_404', duration_ms: 1 }])
+    expect(tbody.children[0].children[4].textContent).toBe('Failed (endpoint not found (404))')
+  })
+
+  it('falls back to a de-snaked fail_reason for an unrecognized reason code', () => {
+    const tbody = run([{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: 'fail', fail_reason: 'some_new_reason', duration_ms: 1 }])
+    expect(tbody.children[0].children[4].textContent).toBe('Failed (some new reason)')
+  })
+
+  it('shows the plain outcome with no parenthetical when fail_reason is null', () => {
+    const tbody = run([{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: 'ok', fail_reason: null, duration_ms: 1 }])
+    expect(tbody.children[0].children[4].textContent).toBe('Success')
+  })
 })
 
 describe('freellmLoadCalls (fetch wiring)', () => {
@@ -198,8 +218,8 @@ describe('freellmLoadCalls (fetch wiring)', () => {
     const { document, els } = makeDocument(ids)
     const body =
       'const FREELLM_CALLS_LIMIT = 50\n' +
-      `const FREELLM_OUTCOME_KEYS = ['ok', 'fail', 'stalled', 'rate_429', 'auth']\n` +
-      `${extract('freellmOutcomeLabel')}\n${extract('freellmOutcomeIsFailure')}\n` +
+      `const FREELLM_COUNT_FIELDS = ['total', 'ok', 'fail']\n` +
+      `${extract('freellmOutcomeLabel')}\n${extract('freellmCountFieldLabel')}\n${extract('freellmFailReasonLabel')}\n${extract('freellmOutcomeIsFailure')}\n` +
       `${extract('freellmFmtDuration')}\n${extract('freellmFmtTime')}\n` +
       `${extract('freellmSetCallsLoading')}\n${extract('freellmSetCallsError')}\n${extract('freellmSetCallsEmpty')}\n` +
       `${extract('freellmRenderCountsRow')}\n${extract('freellmRenderCallsTable')}\n${extract('freellmLoadCalls')}\n` +
@@ -214,7 +234,7 @@ describe('freellmLoadCalls (fetch wiring)', () => {
     const { els, factory, document } = build()
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ calls: [], counts_24h: { ok: 0, fail: 0, stalled: 0, rate_429: 0, auth: 0 }, counts_7d: { ok: 0, fail: 0, stalled: 0, rate_429: 0, auth: 0 } }),
+      json: async () => ({ calls: [], counts_24h: { total: 0, ok: 0, fail: 0 }, counts_7d: { total: 0, ok: 0, fail: 0 } }),
     })
     const { freellmLoadCalls } = factory(document, fakeT, fetchSpy)
     await freellmLoadCalls()
@@ -230,7 +250,7 @@ describe('freellmLoadCalls (fetch wiring)', () => {
       ok: true,
       json: async () => ({
         calls: [{ ts: 1, agent: 'a', card: 'c', model: 'm', outcome: 'ok', duration_ms: 1 }],
-        counts_24h: { ok: 1 }, counts_7d: { ok: 1 },
+        counts_24h: { total: 1, ok: 1, fail: 0 }, counts_7d: { total: 1, ok: 1, fail: 0 },
       }),
     })
     const { freellmLoadCalls } = factory(document, fakeT, fetchSpy)
@@ -301,8 +321,12 @@ const FREELLM_CALLS_I18N_KEYS = [
   'freellm.calls.outcome.ok',
   'freellm.calls.outcome.fail',
   'freellm.calls.outcome.stalled',
-  'freellm.calls.outcome.rate_429',
+  'freellm.calls.outcome.429',
   'freellm.calls.outcome.auth',
+  'freellm.calls.count.total',
+  'freellm.calls.count.ok',
+  'freellm.calls.count.fail',
+  'freellm.calls.fail_reason.http_404',
 ]
 
 describe('freellm calls panel: i18n parity', () => {

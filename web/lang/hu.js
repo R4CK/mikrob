@@ -1312,8 +1312,12 @@ window._i18n.hu = {
   'freellm.calls.outcome.ok':        'Sikeres',
   'freellm.calls.outcome.fail':      'Sikertelen',
   'freellm.calls.outcome.stalled':   'Megakadt',
-  'freellm.calls.outcome.rate_429':  'Túlterhelt (429)',
+  'freellm.calls.outcome.429':       'Túlterhelt (429)',
   'freellm.calls.outcome.auth':      'Hitelesítési hiba',
+  'freellm.calls.count.total':       'Összes',
+  'freellm.calls.count.ok':          'Sikeres',
+  'freellm.calls.count.fail':        'Sikertelen',
+  'freellm.calls.fail_reason.http_404': 'a végpont nem található (404)',
 
   // --- Connectors (MCP) ---
   'connectors.page_title':       'MCP összekötők',

@@ -11373,10 +11373,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .freellm-calls-count-chip--ok { color: var(--success, #10b981); }
-.freellm-calls-count-chip--fail,
-.freellm-calls-count-chip--stalled,
-.freellm-calls-count-chip--rate_429,
-.freellm-calls-count-chip--auth { color: var(--error, #ef4444); }
+.freellm-calls-count-chip--fail { color: var(--error, #ef4444); }
 .freellm-calls-table-wrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
