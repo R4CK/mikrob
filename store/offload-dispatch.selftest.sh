@@ -1214,6 +1214,35 @@ OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT"
 check "card 685f25cb: a missing assignee falls back to FREELLM_CALLER=unknown, never blank" \
   "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=unknown CARD_ID=attribcard3"
 
+# ---- card 9fb61222 (follow-up to 685f25cb): try_freellm_first_for_leaf (the freellm-FIRST route,
+# card 6d8ef952) never got the same FREELLM_CALLER/FREELLM_CARD_ID wiring -- every ledger row from
+# it still showed agent_id=unknown/card_id=NULL. Pin the fix through --test-freellm-first-site,
+# the real call site, same env-capturing stub as above. is_freellm_blocked's gemini-ok marker
+# check defaults ON, so this needs its own skip-file + a fresh cooldown file (same requirement
+# as the freellm-first cases further below in this file, run_ff_first). ------------------------
+ATTRIB_FF_SKIP="$TMPDIR/attrib-ff-skip-gemini-ok.json"
+echo '{"enabled": true}' > "$ATTRIB_FF_SKIP"
+ATTRIB_FF_COOLDOWN="$TMPDIR/attrib-ff-cooldown-until"
+rm -f "$ATTRIB_FF_COOLDOWN"
+
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$ATTRIB_FF_SKIP" OFFLOAD_FREELLM_COOLDOWN_FILE="$ATTRIB_FF_COOLDOWN" \
+  DASHBOARD_URL="http://127.0.0.1:1" \
+  bash "$DISPATCH" --test-freellm-first-site attribleaf4 "attrib cim4" "attrib leiras4" mikrob "" "task text" attribcard4 false backend2 \
+  >/dev/null 2>&1
+check "card 9fb61222: freellm-first site wiring passes assignee/post_id to freellm-call.sh as FREELLM_CALLER/FREELLM_CARD_ID" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=backend2 CARD_ID=attribcard4"
+
+rm -f "$FREELLM_ENV_OUT"
+OFFLOAD_FREELLM_CALL="$FREELLM_ENV_STUB" FREELLM_ENV_OUT_FILE="$FREELLM_ENV_OUT" \
+  OFFLOAD_FREELLM_SKIP_GEMINI_OK_CHECK="$ATTRIB_FF_SKIP" OFFLOAD_FREELLM_COOLDOWN_FILE="$ATTRIB_FF_COOLDOWN" \
+  DASHBOARD_URL="http://127.0.0.1:1" \
+  bash "$DISPATCH" --test-freellm-first-site attribleaf5 "attrib cim5" "attrib leiras5" mikrob "" "task text" attribcard5 false \
+  >/dev/null 2>&1
+check "card 9fb61222: freellm-first site with a missing assignee falls back to FREELLM_CALLER=unknown, never blank" \
+  "$(cat "$FREELLM_ENV_OUT" 2>/dev/null)" "CALLER=unknown CARD_ID=attribcard5"
+
 # --- F3 routing-table shadow logging (card cdde2666) -------------------------------------------
 # --test-route-shadow calls card_route_shadow_log() directly, the SAME function and only call
 # site the main leaf loop uses -- not a reimplementation.
@@ -1773,6 +1802,17 @@ check "try_leaf's body contains a try_freellm_first_for_leaf call" "$([[ -n "$ff
 check "try_leaf's body contains the local RAG (\$RAG) call" "$([[ -n "$rag_line" ]] && echo yes || echo no)" "yes"
 check "try_leaf calls try_freellm_first_for_leaf BEFORE the local RAG (\$RAG) call" \
   "$([[ -n "$ff_line" && -n "$rag_line" && "$ff_line" -lt "$rag_line" ]] && echo yes || echo no)" "yes"
+
+# STRUCTURAL pin (card 9fb61222): the try_freellm_first_for_leaf call line must thread
+# leaf_assignee_raw, not leaf_assignee -- the latter defaults an unassigned card's empty
+# assignee to "mikrob" (line ~1497, `"assignee": l.get("assignee") or "mikrob"`), which would
+# wrongly attribute every unassigned leaf's freellm-first calls to mikrob instead of falling
+# back to "unknown" the way try_freellm_for_leaf's own sibling call sites do (leaf_assignee_raw
+# stays empty for an unassigned card). Caught in review before landing, no live incident --
+# this test is the one that would have caught it.
+ff_call_line="$(printf '%s\n' "$TRY_LEAF_BODY" | grep 'try_freellm_first_for_leaf "')"
+check "try_leaf's try_freellm_first_for_leaf call threads leaf_assignee_raw (not the mikrob-defaulted leaf_assignee)" \
+  "$(printf '%s' "$ff_call_line" | grep -o 'leaf_assignee_raw')" "leaf_assignee_raw"
 
 # STRUCTURAL pin: try_leaf's body must NOT contain a synthetic+veto_online early-return before
 # try_freellm_first_for_leaf (card 6d8ef952, Peti "no limitation" -- the veto no longer skips the

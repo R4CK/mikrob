@@ -29434,3 +29434,36 @@ kanban-decisions-guard, kg-import-decisions-log) -> 5 Test Files passed (5), 37 
 **Ki döntött:** MikroB (msg 21053). backend2 végezte a merge-et és a konfliktus-feloldást. Gate:
 a delta a 6042ce6df-en már megadott QA + Cybersec2 sign-offot nem ismétli meg; ez a komment a
 merge-delta saját REVIEW-ja (kanban komment 33410).
+
+---
+
+## 2026-11-20 -- Kártya 9fb61222: freellm-first hívások 'unknown' agent/card attribúciója
+
+**Kontextus:** 685f25cb (2026-11-20) mérve megadta, hogy a `GET /api/freellm/calls` legfrissebb
+sorai agent='unknown', card=null -- a FreeLLM-FIRST útvonal (`try_freellm_first_for_leaf`,
+kártya 6d8ef952) soha nem állította be a `FREELLM_CALLER`/`FREELLM_CARD_ID` env-eket a
+freellm-call.sh hívásakor, ellentétben a testvér `try_freellm_for_leaf`-fel, amit 685f25cb már
+megjavított.
+
+**Döntés:** ugyanaz a drótozás mint 685f25cb-ben -- `try_freellm_first_for_leaf` kapott egy
+`assignee` paramétert, `try_leaf` a saját `leaf_assignee`-jét adja át rajta, és a
+`freellm-call.sh` hívás `FREELLM_CALLER="${assignee:-unknown}" FREELLM_CARD_ID="$post_id"`-vel
+megy, pontosan ugyanaz a "unknown" alapérték hiányzó assignee-nél, mint a testvér függvénynél.
+
+**Teljes hívó-leltár** (grep: freellm-call.sh / FREELLM_ / :3001, nem-teszt/nem-selftest
+fájlokon): kizárólag `store/offload-dispatch.sh` két függvénye hívja a freellm-call.sh-t
+(`try_freellm_for_leaf` -- már javítva 685f25cb-ben; `try_freellm_first_for_leaf` -- ez a
+kártya javítja). A `src/web/freellmapi-client.ts` admin-session kliens kulcskezelésre (soha
+nem ír llm_ledger sort), a `gemini-offload-call.sh`/`local-llm.sh` más provider (gemini/local),
+a kártya saját illusztratív 'route-classify'/'kg-capture' példái pedig grep-pel igazoltan sosem
+hívják a freellm-call.sh-t -- mindhárom kívül esik ezen a kártyán.
+
+**Teszt:** `offload-dispatch.selftest.sh` 312/312 zöld (310 + 2 új attribúciós eset). Mutáció:
+a 2 új eset pirosra vált, ha csak a fix sort állítom vissza (a selftest-eket megtartva) --
+`got: CALLER= CARD_ID=` -- majd zöld a fix visszaállításával.
+
+**Nincs benne:** az 1 órás élő-forgalom mérés (a kártya saját elfogadási kritériuma, <10%
+unknown-arány) -- ez landolás után, külön kommentként követi.
+
+**Ki döntött:** MikroB (kártya 9fb61222, 685f25cb mérésének folytatása). backend2 végezte a
+javítást. Gate: QA (a kártya saját kijelölése).
