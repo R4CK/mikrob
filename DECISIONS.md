@@ -28869,3 +28869,28 @@ Which other update.sh-read env vars are intentionally left out of the allowlist 
 **Teszt:** `npx tsc --noEmit` clean. Targeted `fleet-test.sh` run pending the active update window (MikroB msg 22146); result recorded in the REVIEW comment.
 
 **Ki döntött:** QA (qa2) 34710/34711. backend végezte. Gate: delta re-gate after the update window.
+
+## 2026-11-20 -- 52114c2f: F3 probe test deadlock (not a contention flake) fixed
+
+**Kontextus:** after the QA F2/F3 pin landed, the F3 "revoked key falls back" test kept failing
+with the same assertion mismatch on every re-run, including under measurably light fleet-test.sh
+lock contention. It had been treated as the sandbox's known, documented contention flake
+(per an earlier round's own comment in the test file) -- that diagnosis was wrong.
+
+**Döntés:** reproduced the failure deterministically (3/3) in total isolation, zero load, outside
+fleet-test.sh. Root cause: `execFileSync` blocks the Node.js event loop for its full duration; the
+F3 tests' mock HTTP server runs in-process (`createServer(...).listen()`), so the event loop that
+would answer the script's own curl probe cannot run until `execFileSync` returns -- which cannot
+happen until curl gets a response. A deadlock, broken only by curl's own `--max-time` timing out.
+Fixed by using `execFile` (async, via `promisify`) only for the two F3 probe tests, so the event
+loop stays free to answer the probe; H1-H3/F2 are unaffected (no in-process server to block on).
+No production file changed.
+
+**Teszt:** reproduced via a standalone Node script outside the suite (curl exit 28, "0 bytes
+received"); fixed version passes standalone (`npx vitest run
+src/__tests__/agent-auth-header-behaviour.test.ts` -- 6/6, 295ms) and via the semaphore
+(`fleet-test.sh --ref 2a6c3ec2134e1dec60b26f0a85e85fefba122039` -- 143/143, 1.81s). `npx tsc
+--noEmit` clean.
+
+**Ki döntött:** backend (sp-systematic-debugging self-catch, not a gate finding). Gate: delta
+re-gate requested (QA + Cybersec + Cybered) on Gate-SHA 2a6c3ec2134e1dec60b26f0a85e85fefba122039.
