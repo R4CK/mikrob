@@ -19,6 +19,31 @@ Any time you need a checkout at a SPECIFIC commit that is not your own working t
 Never gate inside another agent's worktree -- live, half-finished work lives there. Never commit
 in the shared clone.
 
+## Marveen gates: the worktree path MUST be OUTSIDE `agents/` (card 7c72640e)
+
+`store/cc-gate-worktree.sh` below is CleanCore/mopsion-only -- for the marveen repo itself, gates
+use a plain `git worktree add --detach <path> <sha>` (no wrapper script exists yet). That `<path>`
+must sit OUTSIDE the `agents/` tree, e.g. under `$HOME/gate-worktrees/` or `mktemp -d`, the same
+way `cc-gate-worktree.sh`'s own `GATE_ROOT="${CC_GATE_ROOT:-$HOME}"` already defaults outside
+`agents/`.
+
+Reason: several of the fleet's own guards (`token-in-argv-guard.test.ts` among them) walk the
+WHOLE installed `agents/` tree to scan every agent's shipped CLAUDE.md/skill/handoff content. A
+worktree created at `agents/<agent>/.worktrees/<gate>/` is a full checkout, including that
+worktree's own copy of every test file -- including this very guard's deliberately-bad fixture
+strings -- and the walk re-scans those fixtures as if they were live, shipped content. Measured
+2026-11-20 (msg 21979): a577d0a4's land was REFUSED by 37 false failures, all under
+`agents/qa2/.worktrees/gate-30aa8b29/src/__tests__/*.test.ts`. The guard itself now also skips any
+nested-worktree directory it finds under `agents/` (belt-and-suspenders), but the correct fix is
+not to put a gate worktree there in the first place.
+
+```bash
+WT="$(mktemp -d "$HOME/gate-worktrees/gate-XXXXXX")" || WT="$(mktemp -d)"
+git worktree add --detach "$WT" <sha>
+# ... test in "$WT" ...
+git worktree remove "$WT"   # only after the gate's own result has been posted
+```
+
 ## Procedure
 
 ```bash
