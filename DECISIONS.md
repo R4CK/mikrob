@@ -30365,3 +30365,17 @@ via DASHBOARD_LANG, matching the existing passing test in cli-launch-gate.test.t
 
 **Ki döntött:** backend (self-advance, oldest dispatchable planned leaf per rule 6b, created
 2026-08-xx / card af6466a5, WhiteHat 6b10a6b8 GO @ c5ecc99e). Gate: QA + Cybersec (WhiteHat).
+
+## 2026-11-21 -- card 23a14ae1: agent listing requires a real definition; watchdog INSTALL_DIR anchored, not $0-derived
+
+**Kontextus:** 2026-11-20, Peti Telegram 14380 -- a dashboard team-oldala egy fantom "Logs" ügynököt mutatott. A folder agents/logs egy, 2026-11-06 21:33-kor futott watchdog-run melléktermeke volt (watchdog.log/dashboard.log odaírva), majd a settings-migrálás .claude/settings.json + agent-config.json-t is tett bele. Peti jóváhagyására (14383) törölve, archívum: store/archive-agents-logs-20261120.tgz.
+
+**Döntés:**
+
+- `listAgentNames()` (src/web/agent-config.ts, a dashboard/team-oldal és a settings-migrálási sweep egyetlen valódi csomópontja) mostantól csak olyan agents/ alkönyvtárat sorol fel, amelyben van CLAUDE.md. Az `agentDirNames()` és `listAllAgentNames()` SZÁNDÉKOSAN megengedő maradt -- a fájl saját dokumentációja szerint ezeket a lifecycle-sweepek (context-guard) is használják, amelyeknek egy még-félig-scaffoldolt ügynököt (nincs még CLAUDE.md) sem szabad kihagyniuk (2026-08-04-es csendes-heartbeat incidens, amit a HIDDEN_AGENT_SENTINEL kettéválasztás már megold).
+- `scripts/watchdog.sh` INSTALL_DIR-je korábban `$(dirname "$0")/..`-ból jött -- törékeny, mert ez a script (más watchdog-testvéreivel ellentétben) nincs semmilyen repó-beli telepítési lépéssel regisztrálva (lásd scripts/main-inbox-observer.sh fejléce), tehát semmi nem rögzíti, honnan hívják valójában. Mostantól fix alapértelmezett, `WATCHDOG_INSTALL_DIR`-rel felülírható (teszteknek), függetlenül `$0`-tól. A 2026-11-06-i pontos hívási útvonalat nem sikerült rekonstruálni (a mai crontab nem tartalmaz watchdog.sh-bejegyzést, az archívum nem tartalmaz scripts/ másolatot) -- nyitott kérdésként jelentve, nem kitalálva.
+
+**Teszt:** új src/__tests__/agent-dir-needs-definition.test.ts (csupasz, csak *.log fájlokat tartalmazó agents/logs NEM listázott; listAllAgentNames() megengedő marad) -- a javítás előtti kódon PIROS, utána ZÖLD. Két watchdog-fixture teszt (watchdog-config-isolation, watchdog-main-loop-refuse-alert) frissítve `WATCHDOG_INSTALL_DIR` export-tal, mert a régi $0-követő viselkedésre épültek az izolációjukban. Teljes watchdog shell-teszt suite zöld. ~65 listAgentNames()-re hivatkozó vitest fájl egyenként ellenőrizve zöld (egy fixture, context-guard-hidden-worker.test.ts, javítva: a saját agent() helperje nem adott CLAUDE.md-t a fixture-öknek). `tsc --noEmit` tiszta.
+
+Gate: QA. **Ki döntött:** DevO (fullstack).
+**Hivatkozás:** kártya `23a14ae1`; `src/web/agent-config.ts`, `scripts/watchdog.sh`, `src/__tests__/agent-dir-needs-definition.test.ts`.
