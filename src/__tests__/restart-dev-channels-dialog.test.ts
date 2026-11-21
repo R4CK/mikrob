@@ -203,6 +203,9 @@ describe('context guard: the resume prompt follows the dialog', () => {
       contextTokens: null,
       idleMs: null,
       dailyHandoffDue: false,
+      newCardDispatchDue: false,
+      newCardId: null,
+      newCardTitle: null,
       usageLimited: false,
       pendingResumeExpiresAtMs: null,
     }, DEFAULT_CONTEXT_GUARD)

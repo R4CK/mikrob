@@ -30611,3 +30611,30 @@ el, a többi 46 zöld maradt.
 landolási-szemafor várakozás és félreértés miatt, lásd a kártya kommentjeit). Gate-SHA:
 72a3eb448a585a2d9ccc03b70a394db9f9d667ec (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
 Cybersec (kártya leírása szerint).
+## 2026-11-15 -- card f5f78e13: Token 6b new-card-dispatch context-guard tier (core, opt-in)
+
+**Döntés:** plan-grilling (comment 31685) rendezte a kártya nyitott kérdését: a dispatch-time
+fresh-session mechanizmust a context-guard MEGLÉVŐ handoffRequest/await-handoff state machine-jébe
+drótoztuk be ÖTÖDIK triggerként (actPct, idle-flush, daily mellé), nem egy második mechanizmusként --
+pontosan azt az invariánst követve, amit az auto-restart.ts kommentje már kimond a nightly-restart
+esetre ("Handoffs have ONE owner").
+
+Újdonság: `newCardHandoffEnabled` config flag (default FALSE, mint idleFlushEnabled/dailyHandoffEnabled),
+`getInProgressCardIdForAgent()` DB-helper (db.ts), `newCardDispatchDue`/`forgetNewCardDispatchRecord`
+tiszta predikátumok (context-guard.ts), futtató-oldali drótozás (context-guard-runner.ts) és saját
+prompt-szöveg (`newCardDispatchHandoffPrompt`) -- az utóbbi azért kell, mert a fallback
+`handoffPrompt(pctRound ?? 0, ...)` hamis "~0% kritikus" riasztást adna egy egészséges sessionre,
+ugyanaz a csapda, amit az idle/daily tier is elkerül.
+
+A rekord (lastDispatchedCard Map) KIZÁRÓLAG decision-time-kor halad előre (mint lastDailyHandoff),
+NEM minden sweepnél -- mutáció-teszttel igazolva: az "every-sweep-advance" mutáns némán elnyelné a
+"due" jelzést egy olyan sweepen, amit egy magasabb rangú tier megelőzött volna.
+
+Mérve: tsc --noEmit clean; 341/341 teszt zöld (context-guard family + 2 új fájl: 17 + 3 teszt).
+2 mutáns (ranking csere, every-sweep-advance) mindkettő pirosra fordult a megfelelő tesztnél.
+
+**NYITVA marad (a kártya Kész-ha 2-3. pontja):** a flag ma senkinél nincs bekapcsolva -- a
+token-usage-report.py előtte/utána mérés és az élő "dispatch új session-t hoz létre" ellenőrzés
+csak egy valódi agent bekapcsolása után mérhető. A kártya `in_progress` marad, nem `waiting`.
+
+Gate: QA + Cybersec (a kártya saját gate-sora). **Ki döntött:** DevO (fullstack).
