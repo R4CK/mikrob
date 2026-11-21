@@ -1,0 +1,54 @@
+Overview
+Design stable, well-documented interfaces that are hard to misuse. Good interfaces make the right thing easy and the wrong thing hard. This applies to REST APIs, GraphQL schemas, module boundaries, component props, and any surface where one piece of code talks to another.
+
+When to Use
+- Designing new API endpoints
+- Defining module boundaries or contracts between teams
+- Creating component prop interfaces
+- Establishing database schema that informs API shape
+- Changing existing public interfaces
+
+Core Principles
+
+Common Rationalizations
+| Rationalization | Reality |
+|---|---|
+| "We'll document the API later" | The types ARE the documentation. Define them first. |
+| "We don't need pagination for now" | You will the moment someone has 100+ items. Add it from the start. |
+| "PATCH is complicated, let's just use PUT" | PUT requires the full object every time. PATCH is what clients actually want. |
+| "We'll version the API when we need to" | Breaking changes without versioning break consumers. Design for extension from the start. |
+| "Nobody uses that undocumented behavior" | Hyrum's Law: if it's observable, somebody depends on it. Treat every public behavior as a commitment. |
+| "We can just maintain two versions" | Multiple versions multiply maintenance cost and create diamond dependency problems. Prefer the One-Version Rule. |
+| "Internal APIs don't need contracts" | Internal consumers are still consumers. Contracts prevent coupling and enable parallel work. |
+| "Accepting the Idempotency-Key header is enough" | The header is the contract; storing the key against the result is the implementation. A key you accept but don't honour tells the client retrying is safe when it isn't. |
+| "Our queue guarantees exactly-once delivery" | No queue does across a consumer crash — the broker's ack and your side effect are not in one transaction. Design for at-least-once with idempotent processing. |
+| "Duplicate requests are rare" | They're *correlated*. Retries spike exactly when a dependency is degraded — the moment duplicates are most likely and most expensive. |
+
+Red Flags
+- Endpoints that return different shapes depending on conditions
+- Inconsistent error formats across endpoints
+- Validation scattered throughout internal code instead of at boundaries
+- Breaking changes to existing fields (type changes, removals)
+- List endpoints without pagination
+- Verbs in REST URLs (`/api/createTask`, `/api/getUsers`)
+- Third-party API responses used without validation or sanitization
+- A `SELECT` for an idempotency key followed by an `INSERT` — that's a race, not a guard
+- An idempotency key derived from a UUID, timestamp, or anything else regenerated per attempt
+- The same key accepted with a different request body, silently returning the first response
+- A key retention window shorter than the longest path that can re-deliver the request
+
+Verification
+After designing an API:
+
+- [ ] Every endpoint has typed input and output schemas
+- [ ] Error responses follow a single consistent format
+- [ ] Validation happens at system boundaries only
+- [ ] List endpoints support pagination
+- [ ] New fields are additive and optional (backward compatible)
+- [ ] Naming follows consistent conventions across all endpoints
+- [ ] API documentation or types are committed alongside the implementation
+- [ ] State-changing endpoints either honour an idempotency key or are documented as unsafe to retry
+- [ ] The key is claimed in one atomic operation, guarded by a unique constraint
+- [ ] A reused key with a different payload fails loudly rather than replaying the wrong response
+- [ ] The in-flight-duplicate response is a deliberate choice (409, wait, or 202) rather than whatever falls out
+- [ ] Key retention outlives the longest retry path, including dead-letter replay
