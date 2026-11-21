@@ -380,11 +380,21 @@ describe('session-outage engagement (card 612058c2)', () => {
       expect(writtenState?.route).toBe('gemini')
     })
 
+    // Card c7c1aa2e: this case pins an EXACT boundary (ageMs <= SESSION_OUTAGE_STALE_MS), so it
+    // cannot tolerate any real elapsed time between the mock's Date.now() (computing `heartbeat`
+    // in the readFileSync fake) and the runner's own Date.now() (computing `ageMs`) -- under fleet
+    // load the gap between those two real-clock reads can exceed 0ms and tip the age over the
+    // threshold. Freeze the clock so both reads see the identical instant.
     it('a heartbeat exactly at the staleness boundary (15 min) still engages', async () => {
-      sessionOutageActive = true
-      sessionOutageHeartbeatAgoMs = 15 * 60 * 1000
-      await runGeminiFallbackCheck()
-      expect(writtenState?.route).toBe('gemini')
+      vi.useFakeTimers()
+      try {
+        sessionOutageActive = true
+        sessionOutageHeartbeatAgoMs = 15 * 60 * 1000
+        await runGeminiFallbackCheck()
+        expect(writtenState?.route).toBe('gemini')
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('a heartbeat just past the staleness boundary (15 min + 1s) does NOT engage', async () => {
