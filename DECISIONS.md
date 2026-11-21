@@ -30429,3 +30429,40 @@ cannot block `update.sh` regardless).
 
 **Ki döntött:** backend, self-advance pickup (MikroB-project dispatch priority, fleet-nudger msg
 22491/22504). Gate: QA + Cybersec per the card's own `Gate:` line.
+
+## 2026-11-16 -- e892e00c (WhiteHat F1-F3, 7b0b822f): GET /api/kanban/stuck idle-definíció egyeztetés + limit/gzip
+
+**Probléma:** F1 (MEDIUM) -- a végpont "idle" definíciója (last-status-event VAGY nem-automatizált
+komment) nem azonos a 3. szabály/heartbeat-consolidated D szekciójának `updated_at`/[NN%]-alapú
+"beragadt" definíciójával. Élő mérés (card leírása): 10 kártyából 2-nél eltér (3f1bb23d: updated_at
+szerint 212 s, a végpont szerint 14,8 nap). F2 (LOW) -- nincs limit/gzip (a heartbeat-summary és a
+GET /api/kanban mintájához képest). F3 (LOW) -- a küszöb-konstans és a metódus-szűrő nincs tesztben
+rögzítve.
+
+**Döntés (F1):** NEM a definíciót igazítottuk a heartbeathez (az eseményalapú definíció
+szándékos -- lásd getStuckKanbanCards saját fejkommentje db.ts-ben, "az automated flag ugyanazon
+oka miatt"), és NEM is neveztük át a végpontot (a `/api/kanban/stuck` elnevezés és a kliens-oldali
+hívók stabilak maradnak). Helyette a route-handlerben explicit figyelmeztető komment rögzíti a
+divergenciát, és egy teszt PINNEL egy konkrét esetet (`stays idle even after a bare updated_at
+bump...`): egy kártya, amin csak az `updated_at` mozdul (szimulálva egy [NN%] cím-PUT-ot, sem
+kanban_card_events, sem komment nem történik), a végpont TOVÁBBRA IS idle-nek látja -- ez pontosan
+az a divergencia, amit a lelet mér. Ha valaki a jövőben a számítást updated_at-re írná át, ez a
+teszt PIROSRA vált.
+
+**Fix (F2):** a GET /api/kanban/stuck most `jsonMaybeGzip`-et használ (ugyanaz a helper, amit a GET
+/api/kanban és a relations/files végpontok már használnak ebben a fájlban -- nem új mechanizmus),
+és ugyanazt a `limit=` konvenciót követi, mint a GET /api/kanban (kártya 514a9fb3 M1): nem-szám ->
+400, különben `.slice(0, limit)`.
+
+**Fix (F3):** új tesztek: a `STUCK_KANBAN_IDLE_THRESHOLD_SEC` exportált konstansra épülő
+küszöb-pin (pontosan a küszöbnél még nem idle), és a POST metódus válasza (a route NEM a saját
+idle-listáját adja vissza -- a single-card-path 405 catch-all kapja el, nem a 404/ambiguity).
+
+**Teszt:** `npx vitest run src/__tests__/kanban-stuck-route.test.ts src/__tests__/stuck-kanban-cards.test.ts
+src/__tests__/kanban-upstream-items-5aaf7209.test.ts` -> 3 fájl, 48/48 PASS. Mutation-proof: a
+kanban.ts route-változás visszaállítva (git stash) -- a két ÚJ F2-teszt (limit, gzip) pirosra vált
+("expected 3 to be 2", "expected undefined to be 'gzip'"), a többi zöld marad; visszaállítva, újra
+48/48 zöld. typecheck (`npx tsc --noEmit -p .`) tiszta.
+
+**Ki döntött:** backend (self-advance, rule 6b legrégebbi dispatchelhető planned levél; kártya
+e892e00c, forrás: 7b0b822f CYBERSEC GO nem-blokkoló leletei, msg 10266). Gate: QA + Cybersec.
