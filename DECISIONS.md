@@ -30638,3 +30638,23 @@ token-usage-report.py előtte/utána mérés és az élő "dispatch új session-
 csak egy valódi agent bekapcsolása után mérhető. A kártya `in_progress` marad, nem `waiting`.
 
 Gate: QA + Cybersec (a kártya saját gate-sora). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-21 -- card f5f78e13: GuardInputs literal mismatch fix (gate-bounce 23012)
+
+Three consecutive gate verdicts (QA2 FAIL 36983, QA FAIL 36988, CYBERSEC NO-GO 36995) on the
+squash-rebased f5f78e13 (Gate-SHA 670556be1) all flagged the SAME root cause: three test files
+that landed on origin/develop after this card's original gate --
+src/__tests__/context-guard-busy-overdue.test.ts, src/__tests__/context-guard-minutes-cap.test.ts,
+src/__tests__/context-guard-resume-giveup.test.ts -- build GuardInputs literals that predate
+this card's three new required fields (newCardDispatchDue, newCardId, newCardTitle), so tsc
+--noEmit failed with TS2322/TS2345 on all three.
+
+MikroB's gate-bounce decision (comment 23012): not a bounce loop or a design problem, one fix
+round approved, Fix-Direction = add the 3 fields to those 3 literals with the same defaults the
+card's own 7 test files already use (false/null/null), fields stay required (not made optional).
+
+Fix applied, Gate-SHA 0be86ea12265eceb8f60b5844a2e1d462020ef4d: +9/-0 lines across exactly those
+3 files. Verified: npx tsc --noEmit clean; npx vitest run on all 22 context-guard*.test.ts files
+-> 365/365 PASS.
+
+Gate: QA + Cybersec (card's own gate row). **Ki döntött:** backend, Fix-Direction from MikroB.
