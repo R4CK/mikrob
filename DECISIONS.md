@@ -28739,84 +28739,6 @@ a04d3410ad9fd6388169c6409a81c43074d2c3ba (sha `git rev-parse HEAD`-ből kopizva)
 Cybered + Cybersec + Cybersec2, delta re-gate ezen a shán (MikroB üzenet 21446: "one-line
 CLAUDE.md-only re-gate follows").
 
-## 2026-11-15 -- F8 compiled skill packs for non-Claude models (card 2746165b)
-
-Non-Claude calls (`freellm-call.sh` / `local-llm.sh`) carried only the raw per-task prompt
-template (`store/local-llm-skills/<task>.txt`), never any `~/.claude/skills` rule/pitfall
-content. Added `store/llm-skill-pack-build.py`, driven by `store/llm-skill-pack-map.json`,
-which compiles only the rule+pitfall sections of the relevant SKILL.md/rule-doc into a short
-(<=1500 token) pack per F3 route-table task type (`store/card-route-table.json`: test-scaffold,
-i18n-keys, doc-update, type-def, default). Both call sites now prepend the pack for their task
-label and log `pack=<task>@<sha12>` to `store/llm-skill-pack-usage.log`.
-
-Deliberate choice: the generated `.txt` pack contains prose only, no filesystem paths or
-hostnames -- source provenance (paths + sha) lives only in a sidecar `<task>.meta.json` that
-is never sent to a model, so the pack stays safe on the freellm cloud route (the card's own
-"a pack that names an internal path or host goes local-only" constraint).
-
-Measured limit, not a gap in the implementation: a real A/B replay of the 10 most recent
-historic `Draft-Review:` verdicts (kanban_comments, 2026-11-15) showed 9 of 10 failures were
-hallucinated repo structure (invented imports/files/functions), not missing skill-rule
-awareness -- only 1 of 10 was actually one of this card's four mechanical task types. A
-generic rule+pitfall pack cannot fix repo-grounding hallucination by itself; that needs real
-file content in the prompt, which stays the caller's responsibility.
-
-**Teszt:** `store/llm-skill-pack-build.selftest.sh` 3/3 (uj), `store/local-llm-rag.selftest.sh`
-5/5 es `store/local-llm-model-routing.selftest.sh` 5/5 valtozatlanul zold (regresszio).
-
-**Ki dontott:** MikroB dispatch (msg_id:19011) -> backend3 vegrehajtasa.
-
-## 2026-11-15 -- F8 delta: path containment + secret scan a skill-pack builderen (card 2746165b, QA FAIL 31746)
-
-A QA FAIL 31746 bebizonyitotta: `expand()`-nek nem volt containment-ellenorzese (sima
-abspath/expanduser), es az extract() pipeline-nak semmilyen secret-scanje -- egy hibas
-`store/llm-skill-pack-map.json` bejegyzes (elgepeles, rossz copy-paste, vagy rosszhiszemu
-szerkesztes, ugyanazzal a fajlrendszer-hozzaferessel, amivel minden ugynok mar rendelkezik)
-csendben kikuldhetett volna egy tetszoleges fajlt, vagy egy forrasban ulo titkot, a freellm
-felhos utvonalon.
-
-Javitas fail-closed mindket tengelyen (refuse, nem maszkolas): `expand()` realpath-eli minden
-forrast es megtagadja, ha az a `~/.claude/skills` vagy `docs/rules` gyokereken kivul esik
-(symlink-escape ugyanugy elkapva, mint a ff7ecc74 kartya mas skill-sync kodjaban); `build_one()`
-a kinyert szoveget atfuttatja a `store/freellm-call.sh` egress-kapujaval azonos
-SECRET_PATTERNS-listan (portolva, nem importalva) es megtagadja az egesz buildet talalatra.
-A `doc-update` map-bejegyzes abszolut `/home/neon/marveen` ut helyett repo-relativ lett (ez
-pont az a worktree-fegyelem-hiba volt, amit ez a session korabban mar maga is elkovetett es
-javitott).
-
-**Teszt:** `store/llm-skill-pack-build.selftest.sh` 1/4 -> 4/4 (2 uj, pinnelt eset: path-escape
-es secret-match, mindkettő mutacioval igazolva -- a megfelelo check-hivas kivetelevel a sajat
-tesztje bukik). QA repro (kulso stand-in secret fajl) kezzel megismetelve: containment-check
-megtagadja, mielott a fajl egyaltalan megnyilna.
-
-**Ki dontott:** MikroB dispatch (msg_id:19038, QA FAIL 31746) -> backend3 vegrehajtasa.
-
-## 2026-11-15 -- 2746165b delta: marveen-land fleet-test caught two real land-blocking bugs
-
-**Kontextus:** marveen-land.sh --card 2746165b fleet-test (real, on the merge result, not a
-contention artifact) failed 3 cases in src/__tests__/store-selftests-all-run.test.ts:
-freellm-call-retry.selftest.sh and freellm-call.selftest.sh both exited non-zero, and
-llm-skill-pack-build.selftest.sh's own success shape went unrecognized by the meta-test.
-
-**Döntés:** (1) the "default" skill pack's source (karpathy-guidelines) carries an attribution
-link ending in a 19-digit tweet ID; once prepended to PROMPT, that digit run matched
-freellm-call.sh's pre-existing PII cc_number pattern, refusing every real call that used the
-default pack (exit 4). Fixed in store/llm-skill-pack-build.py: markdown link URLs are stripped
-during extraction, anchor text kept -- a URL is not instructional content, and is exactly the
-shape that can accidentally look like a secret/ID. (2) store/freellm-call.selftest.sh's F1
-byte-for-byte round-trip tests asserted no prefix is ever prepended to the sent payload -- true
-before this card, intentionally false now. Fixed by stripping the known default-pack prefix
-before comparing, keeping the real injection-safety guarantee (the payload text itself is never
-mangled/executed) without pinning a shape this card deliberately changes. (3) added a new
-OK_SHAPES entry to src/__tests__/store-selftests-all-run.test.ts for
-llm-skill-pack-build.selftest.sh's own reporting shape, per that file's own documented practice.
-
-**Teszt:** freellm-call-retry.selftest.sh 25/25 (was 17/25), freellm-call.selftest.sh 61/61 (was
-59/61), llm-skill-pack-build.selftest.sh 5/5 (new case added, mutation-verified: reverting the
-URL-strip call turns exactly that case red).
-
-**Ki döntött:** marveen-land.sh's own real fleet-test run caught this; backend3 diagnosed and
-fixed.
 ## 2026-11-18 -- 58342cec: precedence tests for shared-memory-inject --agent vs cwd (M2/M4/M5)
 
 **Decision:** Card 58342cec (source: cybersec2 GO on 44091907, comment 21098, point 6/N1). The
@@ -30609,3 +30531,82 @@ Gate: QA. **Ki döntött:** DevO (fullstack).
 **Nincs benne:** no marveen-specific gate-worktree creation WRAPPER script was written (unlike cc-gate-worktree.sh) -- the skill now documents the correct path by hand; building an equivalent script is a separate, not-yet-raised card.
 
 **Ki döntött:** a kártya saját elfogadási kritériuma (MikroB). backend végezte. Gate: QA + Cybersec.
+
+## 2026-11-15 -- F8 compiled skill packs for non-Claude models (card 2746165b)
+
+Non-Claude calls (`freellm-call.sh` / `local-llm.sh`) carried only the raw per-task prompt
+template (`store/local-llm-skills/<task>.txt`), never any `~/.claude/skills` rule/pitfall
+content. Added `store/llm-skill-pack-build.py`, driven by `store/llm-skill-pack-map.json`,
+which compiles only the rule+pitfall sections of the relevant SKILL.md/rule-doc into a short
+(<=1500 token) pack per F3 route-table task type (`store/card-route-table.json`: test-scaffold,
+i18n-keys, doc-update, type-def, default). Both call sites now prepend the pack for their task
+label and log `pack=<task>@<sha12>` to `store/llm-skill-pack-usage.log`.
+
+Deliberate choice: the generated `.txt` pack contains prose only, no filesystem paths or
+hostnames -- source provenance (paths + sha) lives only in a sidecar `<task>.meta.json` that
+is never sent to a model, so the pack stays safe on the freellm cloud route (the card's own
+"a pack that names an internal path or host goes local-only" constraint).
+
+Measured limit, not a gap in the implementation: a real A/B replay of the 10 most recent
+historic `Draft-Review:` verdicts (kanban_comments, 2026-11-15) showed 9 of 10 failures were
+hallucinated repo structure (invented imports/files/functions), not missing skill-rule
+awareness -- only 1 of 10 was actually one of this card's four mechanical task types. A
+generic rule+pitfall pack cannot fix repo-grounding hallucination by itself; that needs real
+file content in the prompt, which stays the caller's responsibility.
+
+**Teszt:** `store/llm-skill-pack-build.selftest.sh` 3/3 (uj), `store/local-llm-rag.selftest.sh`
+5/5 es `store/local-llm-model-routing.selftest.sh` 5/5 valtozatlanul zold (regresszio).
+
+**Ki dontott:** MikroB dispatch (msg_id:19011) -> backend3 vegrehajtasa.
+
+## 2026-11-15 -- F8 delta: path containment + secret scan a skill-pack builderen (card 2746165b, QA FAIL 31746)
+
+A QA FAIL 31746 bebizonyitotta: `expand()`-nek nem volt containment-ellenorzese (sima
+abspath/expanduser), es az extract() pipeline-nak semmilyen secret-scanje -- egy hibas
+`store/llm-skill-pack-map.json` bejegyzes (elgepeles, rossz copy-paste, vagy rosszhiszemu
+szerkesztes, ugyanazzal a fajlrendszer-hozzaferessel, amivel minden ugynok mar rendelkezik)
+csendben kikuldhetett volna egy tetszoleges fajlt, vagy egy forrasban ulo titkot, a freellm
+felhos utvonalon.
+
+Javitas fail-closed mindket tengelyen (refuse, nem maszkolas): `expand()` realpath-eli minden
+forrast es megtagadja, ha az a `~/.claude/skills` vagy `docs/rules` gyokereken kivul esik
+(symlink-escape ugyanugy elkapva, mint a ff7ecc74 kartya mas skill-sync kodjaban); `build_one()`
+a kinyert szoveget atfuttatja a `store/freellm-call.sh` egress-kapujaval azonos
+SECRET_PATTERNS-listan (portolva, nem importalva) es megtagadja az egesz buildet talalatra.
+A `doc-update` map-bejegyzes abszolut `/home/neon/marveen` ut helyett repo-relativ lett (ez
+pont az a worktree-fegyelem-hiba volt, amit ez a session korabban mar maga is elkovetett es
+javitott).
+
+**Teszt:** `store/llm-skill-pack-build.selftest.sh` 1/4 -> 4/4 (2 uj, pinnelt eset: path-escape
+es secret-match, mindkettő mutacioval igazolva -- a megfelelo check-hivas kivetelevel a sajat
+tesztje bukik). QA repro (kulso stand-in secret fajl) kezzel megismetelve: containment-check
+megtagadja, mielott a fajl egyaltalan megnyilna.
+
+**Ki dontott:** MikroB dispatch (msg_id:19038, QA FAIL 31746) -> backend3 vegrehajtasa.
+
+## 2026-11-15 -- 2746165b delta: marveen-land fleet-test caught two real land-blocking bugs
+
+**Kontextus:** marveen-land.sh --card 2746165b fleet-test (real, on the merge result, not a
+contention artifact) failed 3 cases in src/__tests__/store-selftests-all-run.test.ts:
+freellm-call-retry.selftest.sh and freellm-call.selftest.sh both exited non-zero, and
+llm-skill-pack-build.selftest.sh's own success shape went unrecognized by the meta-test.
+
+**Döntés:** (1) the "default" skill pack's source (karpathy-guidelines) carries an attribution
+link ending in a 19-digit tweet ID; once prepended to PROMPT, that digit run matched
+freellm-call.sh's pre-existing PII cc_number pattern, refusing every real call that used the
+default pack (exit 4). Fixed in store/llm-skill-pack-build.py: markdown link URLs are stripped
+during extraction, anchor text kept -- a URL is not instructional content, and is exactly the
+shape that can accidentally look like a secret/ID. (2) store/freellm-call.selftest.sh's F1
+byte-for-byte round-trip tests asserted no prefix is ever prepended to the sent payload -- true
+before this card, intentionally false now. Fixed by stripping the known default-pack prefix
+before comparing, keeping the real injection-safety guarantee (the payload text itself is never
+mangled/executed) without pinning a shape this card deliberately changes. (3) added a new
+OK_SHAPES entry to src/__tests__/store-selftests-all-run.test.ts for
+llm-skill-pack-build.selftest.sh's own reporting shape, per that file's own documented practice.
+
+**Teszt:** freellm-call-retry.selftest.sh 25/25 (was 17/25), freellm-call.selftest.sh 61/61 (was
+59/61), llm-skill-pack-build.selftest.sh 5/5 (new case added, mutation-verified: reverting the
+URL-strip call turns exactly that case red).
+
+**Ki döntött:** marveen-land.sh's own real fleet-test run caught this; backend3 diagnosed and
+fixed.
