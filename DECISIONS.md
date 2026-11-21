@@ -31087,3 +31087,27 @@ auth-fajta -> 403, semmi nem változik a lemezen; böngésző-session és ember 
 Mutáció-pin: a kapu nélküli 50b05aa47-en a 8 új refused-eset pirosra vált (403 helyett 200).
 
 Gate-SHA: 735115880. Gate: QA + Cybersec (WhiteHat2). **Ki döntött:** backend.
+
+## 2026-11-21 -- card 52114c2f: stale-branch merge of origin/develop (develop tip 1643d16ea)
+
+**Kontextus:** a 0a8acdb0e gated sha-n QA PASS + CYBERSEC GO + CYBERED GO mindhárom designált
+gate megegyezett, de a `marveen-land.sh --card 52114c2f` ekkor már CONFLICTS-szal (exit 4) lefutott:
+a card branch 89 commit-tal volt mögötte origin/develop-nek (merge-base `eda324298`), mert a lock
+hosszan más landolásokon (b3b73630, 270b2950, 84f90b4e stb.) volt. Az egyetlen ütköző fájl a
+DECISIONS.md volt, append-only szerkezetű konfliktus (két oldal más-más új bejegyzést fűzött a
+fájl végéhez, nem egymást módosították).
+
+**Javítás:** `git merge origin/develop` a card/52114c2f ágon, a DECISIONS.md konfliktust a három
+marker-sor eltávolításával oldva fel, mindkét oldal bejegyzéseit sorrendben megtartva (ez a
+bejegyzés most a tényleges fájlvégre kerül, a `decisions_entry_required` kapu miatt). A kártya
+saját tartalma (24 fájl, agent-auth-header munka) a merge után is pontosan egyezik az eredeti
+0a8acdb0e delta-val -- `git diff origin/develop..HEAD --stat` csak a card saját fájljait mutatja.
+
+**Teszt:** `npx tsc --noEmit` tiszta. A card saját 10 érintett teszt-fájlja (agent-auth-header-behaviour,
+agent-id-header-argv-pin, agent-scaffold-dashboard-origin, agent-transcript-caller-gate,
+claude-md-main-section-writers, llm-ledger, memory-save-daily-log-section,
+memory-search-label-backfill, message-close-section, system-directive-auth-section):
+145/145 PASS, Gate-SHA aab1c5f02113ce9b32d085bd9b63e9d38fc03038.
+
+**Ki döntött:** MikroB (msg 23075: retry a land a friss QA PASS-szal). backend végezte a
+stale-branch merge-et és a re-REVIEW-t.
