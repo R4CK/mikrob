@@ -17,7 +17,10 @@ WHAT THIS BLOCKS, for the calling agent's OWN identity (self) only:
   - reading/copying a DIFFERENT agent's `.dashboard-agent-key` file (any command whose arguments
     reference `agents/<other>/.dashboard-agent-key`);
   - `dashboard-user -- agent-key:mint|rotate|revoke <other>` or
-    `agent-key-provision.sh <other> [--rotate|--revoke]`, for a <other> that is not self.
+    `agent-key-provision.sh <other> [--rotate|--revoke]`, for a <other> that is not self;
+  - `agent-auth-header.sh <other>` (card 52114c2f), the per-agent auth-header helper every
+    generated CLAUDE.md curl recipe now calls -- it already refuses a mismatched identity itself
+    (its own F2 fix), but this guard is the documented first layer and must see the invocation.
 
 Self-identity comes from MARVEEN_AGENT_ID / CLAUDE_AGENT_ID (same precedence as
 bash-egress-guard.py's _resolve_agent), falling back to a `.../agents/<name>(/|$)` match in the
@@ -68,6 +71,15 @@ _PROVISION_SH_RX = re.compile(
     r"\bagent-key-provision\.sh\s+(" + _AGENT_ID_RX + r")\b"
 )
 
+# Card 52114c2f (CYBERED NO-GO 34673, F2): store/agent-auth-header.sh <agent> reads the key for
+# ITS OWN argument, not for the caller's self -- its filename contains neither "agent-key" nor
+# "dashboard-agent-key", so the early-exit check below never even ran it through the regexes
+# above. The script itself now refuses a mismatched identity (its own F2 fix), but this guard is
+# the documented first layer, so it must see the invocation at all.
+_AUTH_HEADER_SH_RX = re.compile(
+    r"\bagent-auth-header\.sh\s+(" + _AGENT_ID_RX + r")\b"
+)
+
 _CWD_AGENT_RX = re.compile(r"(?:^|/)agents/(" + _AGENT_ID_RX + r")(?:/|$)")
 
 _QUOTED_RX = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", re.S)
@@ -104,7 +116,7 @@ def main():
     raw = ti.get("command") if isinstance(ti, dict) else None
     if not isinstance(raw, str):
         sys.exit(0)
-    if "agent-key" not in raw and "dashboard-agent-key" not in raw:
+    if "agent-key" not in raw and "dashboard-agent-key" not in raw and "agent-auth-header" not in raw:
         sys.exit(0)
     if f"{ALLOW_ENV}=1" in raw:
         sys.exit(0)
@@ -118,7 +130,7 @@ def main():
 
         scrubbed = _strip_quoted_literals(raw)
         targets = set()
-        for rx in (_KEY_FILE_RX, _MINT_CLI_RX, _PROVISION_SH_RX):
+        for rx in (_KEY_FILE_RX, _MINT_CLI_RX, _PROVISION_SH_RX, _AUTH_HEADER_SH_RX):
             targets.update(m.group(1).lower() for m in rx.finditer(scrubbed))
 
         other = sorted(t for t in targets if t != self_agent)

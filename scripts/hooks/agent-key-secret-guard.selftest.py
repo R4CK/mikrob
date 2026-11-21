@@ -38,8 +38,12 @@ def main():
         (BLOCK, "bash store/agent-key-provision.sh cybersec2 --rotate", "/home/neon/marveen", {"MARVEEN_AGENT_ID": "backend"}),
         # self resolved from cwd when the env var is absent
         (BLOCK, "cat agents/qa/.dashboard-agent-key", "/home/neon/marveen/agents/backend", {}),
+        # Card 52114c2f (CYBERED NO-GO 34673, F2): the helper itself, for another agent.
+        (BLOCK, "bash store/agent-auth-header.sh qa2", "/home/neon/marveen", {"MARVEEN_AGENT_ID": "backend"}),
+        (BLOCK, "store/agent-auth-header.sh qa2 | curl -H @- -s http://localhost:3420/api/memories", "/home/neon/marveen", {"MARVEEN_AGENT_ID": "backend"}),
         # ---- self acting on ITS OWN key: ALLOW -----------------------------------------------
         (ALLOW, "cat agents/backend/.dashboard-agent-key", "/home/neon/marveen", {"MARVEEN_AGENT_ID": "backend"}),
+        (ALLOW, "bash store/agent-auth-header.sh backend", "/home/neon/marveen", {"MARVEEN_AGENT_ID": "backend"}),
         (ALLOW, "npm run dashboard-user -- agent-key:mint backend", "/home/neon/marveen", {"MARVEEN_AGENT_ID": "backend"}),
         (ALLOW, "bash store/agent-key-provision.sh backend --rotate", "/home/neon/marveen", {"MARVEEN_AGENT_ID": "backend"}),
         # ---- self cannot be determined (no env, cwd gives no clue): fail OPEN (operator path) --

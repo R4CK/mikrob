@@ -611,6 +611,18 @@ rebuild_live_install() {
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
+  # Card 8ca1f91d (MikroB comment 20797/20816): --selftest re-invokes "$0" as a REAL subprocess
+  # (the fixturecard/degraded-orchestrator-guard cases below), which goes through the SAME
+  # land-run-journal.sh path a genuine run would -- when $0 is the live checkout (this script run
+  # directly against /home/neon/marveen, not an agent's own worktree), that writes real
+  # "fixturecard" rows into the LIVE store/land-runs.jsonl (measured: exactly this wrote 4 such
+  # rows there). Route every nested subprocess at its own throwaway journal for the whole
+  # --selftest run, and verify at the end that the file the DEFAULT path would have used is
+  # untouched.
+  _SELFTEST_DEFAULT_JOURNAL="$(dirname "$0")/land-runs.jsonl"
+  _SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_JOURNAL_TMPDIR="$(mktemp -d)"
+  export LAND_RUN_JOURNAL_FILE="$_SELFTEST_JOURNAL_TMPDIR/land-runs.jsonl"
   agent_of() { case "$1" in agent/*/work) b="${1#agent/}"; echo "${b%/work}" ;; *) echo "" ;; esac; }
   t "extracts agent name from a work branch" "$(agent_of 'agent/backend/work')" "backend"
   t "rejects a non-agent branch" "$(agent_of 'develop')" ""
@@ -618,6 +630,16 @@ if [ "${1:-}" = "--selftest" ]; then
   # Downward range check (card dfff9b37) -- the cases live in the shared lib so the two landers
   # cannot end up testing different things about the same code.
   downward_selftest_cases
+
+  # CYBERED NO-GO LOW (card 8ca1f91d, comment 33127, mutants L10/L11): a grep pin on THIS file's
+  # own source, not a stubbed call -- a future edit that drops DOWNWARD_CHECK_REPO from either
+  # land_one's or the batch-landing loop's downward_check call silently reintroduces the original
+  # 5dd0842a false positive, with the 404-exemption tests above giving no signal (they stub around
+  # the env var entirely). Lives here, not in the shared lib, because only marveen-land.sh has a
+  # Szotasz/marveen upstream remote to wire this for at all.
+  t "both downward_check call sites (land_one + batch landing) export DOWNWARD_CHECK_REPO" \
+    "$(grep -c 'DOWNWARD_CHECK_REPO="\$wt" downward_check' "$0")" "2"
+
   # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
   conflict_marker_selftest_cases
 
@@ -1338,6 +1360,11 @@ STUBEOF
   rm -rf "$CRASHBIN"
   rm -rf "$(dirname "$DGSW")"
 
+  t "the LIVE land-runs.jsonl journal (default path) is untouched by this --selftest run" \
+    "$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)" \
+    "$_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE"
+  rm -rf "$_SELFTEST_JOURNAL_TMPDIR"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -1613,7 +1640,10 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # decision 3 in landing-downward-check.sh.
   local down_log
   down_log="$(g log --no-merges --format='%h%x09%s' "origin/$DEFAULT_BRANCH..$branch")"
-  downward_check "$down_log" "$LAND_CARD" "$ALLOW_STACKED" "$([ -n "$LAND_CARD" ] && echo 1 || echo 0)" "$agent" || {
+  # DOWNWARD_CHECK_REPO (card 8ca1f91d, Cybersec NO-GO F1): $wt shares marveen's own `upstream`
+  # remote config (it is a worktree of $MAIN, not a separate clone), so the 404-card exemption can
+  # confirm a citing commit is actually reachable from upstream/develop, not merely forged/deleted.
+  DOWNWARD_CHECK_REPO="$wt" downward_check "$down_log" "$LAND_CARD" "$ALLOW_STACKED" "$([ -n "$LAND_CARD" ] && echo 1 || echo 0)" "$agent" || {
     echo "$agent: REFUSED -- commits belonging to OTHER cards are in $branch. Nothing merged, nothing pushed."
     return 4
   }
@@ -2391,7 +2421,8 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     fi
 
     down_log="$(git -C "$wt" log --no-merges --format='%h%x09%s' "$pre_head..$branch")"
-    if ! downward_check "$down_log" "$card" "$ALLOW_STACKED" 1 "$agent" 2>/dev/null; then
+    # DOWNWARD_CHECK_REPO (card 8ca1f91d, Cybersec NO-GO F1) -- same reasoning as land_one's call.
+    if ! DOWNWARD_CHECK_REPO="$wt" downward_check "$down_log" "$card" "$ALLOW_STACKED" 1 "$agent" 2>/dev/null; then
       _batch_drop "$card" "foreign-card commits on $branch (downward check)"; continue
     fi
 

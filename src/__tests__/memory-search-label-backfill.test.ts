@@ -178,10 +178,14 @@ describe('buildMemorySearchLabelBody', () => {
     expect(b).toContain('[Napló')
   })
 
-  it('the CLAUDE.md template carries the same date-filter line', () => {
+  // Card 52114c2f: the one-time new-agent prompt's static copy of this prose was removed
+  // (it duplicated the generator and drifted -- see FINDING 34495/34496); the prompt now
+  // points at the generator instead of restating the recipe, so the pin is "points at the
+  // right generator", not "carries the same literal line" (that would re-introduce the
+  // duplication this test used to guard against).
+  it('the CLAUDE.md one-time prompt points at ensureMemorySearchLabelSection instead of duplicating the recipe', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
-    expect(src).toContain('Időszakra szűrés: &date=tegnap')
-    expect(src).toContain('&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN')
+    expect(src).toContain('ensureMemorySearchLabelSection')
   })
 
   // There used to be an assertion here that the block warns the tier filter
@@ -221,7 +225,11 @@ describe('buildMemorySearchLabelBody', () => {
 // PROJECT_ROOT.
 describe('the STATIC CLAUDE.md block matches the generator (card 5a15cd5a)', () => {
   const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
-  const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+  const AUTH_HEADER_HELPER_RE = /[^\s"'`]*\/store\/agent-auth-header\.sh/g
+  const normalize = (s: string) =>
+    s
+      .replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+      .replace(AUTH_HEADER_HELPER_RE, '<PROJECT_ROOT>/store/agent-auth-header.sh')
 
   it("the committed section in THIS checkout's own CLAUDE.md equals the generator output, modulo PROJECT_ROOT", async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')

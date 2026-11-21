@@ -73,6 +73,23 @@ describe('transcript route: caller gate (named principals only)', () => {
     expect(out.body).toEqual({ error: CRED_403 })
   })
 
+  it('refuses an agent:<id> device key -- a fleet agent holding its OWN key is not a human (card 52114c2f, CYBERED NO-GO 34673 F1)', async () => {
+    // TRANSCRIPT_CALLER_KINDS lists 'device' as allowed, but an agent:<id> device key (card
+    // 9655494c) resolves to that same shape -- without this check, any agent holding its own
+    // key could read ANY allowlisted agent's full transcript once one exists in
+    // store/transcript-allowlist.json. rejectIfNotHumanAuth is the predicate every other
+    // human-only write route already uses to exclude it.
+    const { ctx, out } = fakeCtx(TRANSCRIPT, { kind: 'device', device: 'agent:attacker', deviceId: 1 })
+    expect(await tryHandleAgents(ctx, WEB_DIR)).toBe(true)
+    expect(out.status).toBe(403)
+    // rejectIfNotHumanAuth answers with its own message, not the plain CRED_403 the kind-only
+    // gate above it uses -- both are 403, but asserting the exact body proves THIS check (not
+    // just a coincidental re-check of the already-passing kind gate) is what fired.
+    expect(out.body).toEqual({
+      error: 'This operation requires a browser session or a device key, not the shared agent token.',
+    })
+  })
+
   it('lets a logged-in human PAST the caller gate (the target gate then decides)', async () => {
     // With no store/transcript-allowlist.json the target gate refuses -- which
     // is the point: a DIFFERENT 403, proving the caller gate was cleared and
