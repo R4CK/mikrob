@@ -215,3 +215,45 @@ describe('send-path helper (scripts/approval-consume.py, f2c5edb0)', () => {
     expect(res.status).toBe(0)
   })
 })
+
+// CYBERED NO-GO 32995 (card 5dd0842a, Koteg 25, 2026-11-18): the upstream merge briefly adopted a
+// generic category-consume branch (handleCategoryConsume/consumeCategoryApproval) that let the
+// shared bearer token burn ANY approved approval of ANY category through this same POST
+// /consume route -- 200, self-declared consumed_by, no binding to approval.agent_id -- including a
+// no-hash cloud_spend row. That is exactly the cross-feature-burn primitive the W2 fix (card
+// 2a80c6cb) closed on consume-oneshot, reopened behind this route's URL shape. The adoption was
+// reverted in full (src/fork-upstream/acknowledged-conflicts.ts 'src/web/routes/approvals.ts' KEEP
+// FORK entry); this pins the reverted (safe) behavior so a future re-adoption trips a test, not
+// just a prose rule.
+describe('POST /consume never burns a non-email_send approval (CYBERED 32995 regression guard)', () => {
+  it('an approved fleet_import_apply row with its own content_hash is refused, not burned', async () => {
+    approval('burn1', { category: 'fleet_import_apply', hash: HASH })
+    const { ctx, out } = consumeCtx('burn1', { category: 'fleet_import_apply', content_hash: HASH, consumer: 'attacker-not-a-tool' })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(409)
+    expect(out.body.ok).toBe(false)
+    expect(out.body.reason).toBe('wrong_category')
+    const row = getApproval('burn1')!
+    expect(row.consumed_at).toBeNull()
+    expect(row.consumed_by).toBeNull()
+  })
+
+  it('an approved cloud_spend row with NO content_hash is refused, not burned', async () => {
+    createApproval({ id: 'burn2', agent_id: 'agent-a', category: 'cloud_spend', action_description: 'x', content_hash: null })
+    resolveApproval('burn2', 'approved', 'owner-a-tg-101')
+    const { ctx, out } = consumeCtx('burn2', { category: 'cloud_spend', consumer: 'attacker-not-a-tool' })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(400)
+    const row = getApproval('burn2')!
+    expect(row.consumed_at).toBeNull()
+  })
+
+  it('the legitimate email_send path still works after the revert (no regression)', async () => {
+    approval('e1')
+    const { ctx, out } = consumeCtx('e1', { content_hash: HASH, consumer: 'send-tool', message_id: '<m@example.org>' })
+    await tryHandleApprovals(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.ok).toBe(true)
+    expect(getApproval('e1')!.consumed_at).not.toBeNull()
+  })
+})

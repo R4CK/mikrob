@@ -81,7 +81,20 @@ vi.mock('node:child_process', () => ({
     return { stdin: { end: (s: string) => { stdinBuf = s } } }
   },
 }))
-vi.mock('node:fs', () => ({ existsSync: () => true }))
+// isForceActor() (kanban-force-actors.ts) reads a session-outage marker via readFileSync before
+// checking FORCE_ACTORS; without it here the call throws a non-ENOENT TypeError, which
+// isSessionOutageActive() treats as "marker exists but unreadable" (fail closed), denying the
+// mikrob force bypass this suite's own "honours force only for an exempt actor" test expects
+// (card 2ba008f2 round 1 a2307bf11, found by QA2 in the full suite -- none of the 4 gate rounds
+// ran this file). ENOENT means no marker at all, i.e. normal operation.
+vi.mock('node:fs', () => ({
+  existsSync: () => true,
+  readFileSync: () => {
+    const err = new Error('ENOENT: no such file or directory') as NodeJS.ErrnoException
+    err.code = 'ENOENT'
+    throw err
+  },
+}))
 
 const { landedGuardVerdict } = await import('../web/kanban-landed-guard.js')
 
@@ -215,6 +228,32 @@ describe('a machine-generated comment is not a landing claim (cards a7b7fe43, f9
     onMain = new Set()
     expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
     expect(infoLogs[0]).toMatchObject({ reason: 'no-commit-named', skippedGeneratedComments: 1 })
+  })
+
+  // Card 60aeca01 F1 (e7f91eb9 follow-up, WhiteHat2 INFO): the dashboard API takes `author` as
+  // plain request-body text, so a stray leading/trailing space is not hypothetical. The Python
+  // side (gate-closure-check.py's _is_generated_author) already does .strip().lower(); this
+  // pins the same for the TS reader, which previously compared the raw string with no trim.
+  it('still excludes a generated author with incidental whitespace padding', async () => {
+    comments = [
+      { author: 'fron-ted', content: `REVIEW: kesz, commit ${SHA_A} (local main).` },
+      { author: ' local-llm ', content: `[LOCAL-LLM DRAFT] pelda: "javitva a ${SHA_B} commitban"` },
+    ]
+    onMain = new Set([SHA_B])
+    const v = await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(v.blocked).toBe(true)
+    expect(v.message).not.toContain(SHA_B.slice(0, 8))
+  })
+
+  it('still excludes a generated author with different casing AND whitespace together', async () => {
+    comments = [
+      { author: 'fron-ted', content: `REVIEW: kesz, commit ${SHA_A} (local main).` },
+      { author: ' Local-LLM ', content: `[LOCAL-LLM DRAFT] pelda: "javitva a ${SHA_B} commitban"` },
+    ]
+    onMain = new Set([SHA_B])
+    const v = await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(v.blocked).toBe(true)
+    expect(v.message).not.toContain(SHA_B.slice(0, 8))
   })
 })
 

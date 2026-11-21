@@ -165,7 +165,24 @@ OWN_CURATED_MAX_KEYWORDS_CHARS = 200
 # not just \n -- counts as a line break here (WhiteHat N3: U+0085/U+2028/U+2029/\v/\f all rode
 # through the content-only fix unflattened). Escaped explicitly (not pasted as raw bytes) so the
 # source itself never carries an invisible line-breaking character.
-_LINE_BREAK_CHARS = ("\n", "\r", "\v", "\f", "\u0085", "\u2028", "\u2029")
+#
+# Card eaf56df5 (RedHat GO on e6b2742b, komment 15294, R3): measured whether any FURTHER control
+# character needs to join this set. U+001C/U+001D/U+001E (File/Group/Record Separator) and the
+# invisible Unicode "tag" block (U+E0000-U+E007F) do NOT start a new visual line in any terminal
+# this fleet renders through (not part of the VT100/ANSI control grammar; grep-confirmed this
+# script never calls `.splitlines()` on memory content either, so Python's own wider line-boundary
+# definition for those three characters never executes against this data) -- left OUT, same
+# conclusion RedHat already reached independently. The tag block is a SEPARATE invisible-text
+# injection class (content that reads as empty but carries hidden characters), not a fake-line-
+# start, and stays out of scope for the same reason RedHat named it only as an INFO note.
+# ESC (\x1b, U+001B) is different: it is not itself a line break, but it is the one-byte
+# INTRODUCER for every ANSI/VT100 cursor-position and line-clear escape sequence (e.g. `\x1b[H`,
+# `\x1b[2K`) -- the fleet's own tmux capture-pane/send-keys machinery is exactly the kind of
+# ANSI-aware terminal such a sequence would work against if this injected text is later displayed
+# or echoed through one. A bare ESC byte has no legitimate use in memory content, so it is cheap
+# to disarm here the same way as every other character in this set: replace with a space, which
+# breaks any escape sequence it would otherwise start without needing to parse the sequence grammar.
+_LINE_BREAK_CHARS = ("\n", "\r", "\v", "\f", "\u0085", "\u2028", "\u2029", "\x1b")
 
 
 def _cap_and_flatten(value, max_chars):

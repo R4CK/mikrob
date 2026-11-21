@@ -19,6 +19,20 @@ import sys
 # sys.path[0] whenever either is run as a script (and both only ever are).
 from gate_author_role import author_role, canonical_gate
 
+# GENERATED-COMMENT AUTHORS (card 60aeca01, F3/F4 -- e7f91eb9/d8d035f8 follow-up). Mirrors
+# gate-closure-check.py's own GENERATED_COMMENT_AUTHORS (and kanban-landed-guard.ts's, TS side) --
+# duplicated, not imported, same reasoning as that file's own comment on the set. Without this, a
+# machine-generated comment (a local-llm draft, or a gate-pretriage candidate note) whose raw,
+# unfenced text happens to start with a verdict-shaped first line and carry a Gate-SHA line for
+# THIS sha is read by the FAIL branch below exactly like a real gate's refusal -- the FAIL branch
+# is deliberately NOT author-role-checked (see its own comment), so nothing else in this file was
+# stopping a generated comment from blocking a landing it never actually gated.
+GENERATED_COMMENT_AUTHORS = {"local-llm", "gate-pretriage"}
+
+
+def _is_generated_author(c):
+    return ((c or {}).get("author") or "").strip().lower() in GENERATED_COMMENT_AUTHORS
+
 # Rule 4c: the verdict word is the comment's FIRST line. Rule 4b: `Gate-SHA:` is its own line.
 #
 # `QA2?` -- A GATE ROLE MAY BE STAFFED BY MORE THAN ONE AGENT (card c52e2823). Rule 4 requires
@@ -117,6 +131,8 @@ def main():
     qa_passes, other_passes, unattributed, fails, any_pass = [], [], [], [], False
     for c in comments:
         if not isinstance(c, dict):
+            continue
+        if _is_generated_author(c):
             continue
         text = (c.get("content") or "").strip()
         first = text.split("\n")[0].strip()

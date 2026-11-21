@@ -135,21 +135,37 @@ describe('the default sender: an authenticated directive that waits for an idle 
 
 describe('restartOptsFromBody: the /restart route wakes a --continue restart unless told not to', () => {
   it('empty or {} body: --continue with a wake', () => {
-    expect(restartOptsFromBody('')).toEqual({ fresh: false, wake: { reason: 'api-restart' } })
-    expect(restartOptsFromBody('{}')).toEqual({ fresh: false, wake: { reason: 'api-restart' } })
+    expect(restartOptsFromBody('')).toEqual({ fresh: false, wake: { reason: 'api-restart' }, force: false })
+    expect(restartOptsFromBody('{}')).toEqual({ fresh: false, wake: { reason: 'api-restart' }, force: false })
   })
   it('{"wake": false} turns the wake off (a caller that wakes the agent itself)', () => {
-    expect(restartOptsFromBody('{"wake": false}')).toEqual({ fresh: false })
+    expect(restartOptsFromBody('{"wake": false}')).toEqual({ fresh: false, force: false })
   })
   it('a fresh restart never wakes, even when asked', () => {
-    expect(restartOptsFromBody('{"fresh": true}')).toEqual({ fresh: true })
-    expect(restartOptsFromBody('{"fresh": true, "wake": true}')).toEqual({ fresh: true })
+    expect(restartOptsFromBody('{"fresh": true}')).toEqual({ fresh: true, force: false })
+    expect(restartOptsFromBody('{"fresh": true, "wake": true}')).toEqual({ fresh: true, force: false })
   })
   it('only the literal false switches it off; an unreadable body keeps the defaults', () => {
-    expect(restartOptsFromBody('{"wake": "no"}')).toEqual({ fresh: false, wake: { reason: 'api-restart' } })
-    expect(restartOptsFromBody('{"wake": 0}')).toEqual({ fresh: false, wake: { reason: 'api-restart' } })
-    expect(restartOptsFromBody('not json')).toEqual({ fresh: false, wake: { reason: 'api-restart' } })
-    expect(restartOptsFromBody('null')).toEqual({ fresh: false, wake: { reason: 'api-restart' } })
+    expect(restartOptsFromBody('{"wake": "no"}')).toEqual({ fresh: false, wake: { reason: 'api-restart' }, force: false })
+    expect(restartOptsFromBody('{"wake": 0}')).toEqual({ fresh: false, wake: { reason: 'api-restart' }, force: false })
+    expect(restartOptsFromBody('not json')).toEqual({ fresh: false, wake: { reason: 'api-restart' }, force: false })
+    expect(restartOptsFromBody('null')).toEqual({ fresh: false, wake: { reason: 'api-restart' }, force: false })
+  })
+  // Round 4 (CYBERED NO-GO 32270 Finding 2): force/actor must survive BOTH branches of this
+  // function (the early return for fresh/wake:false, and the continue-with-wake fallthrough) --
+  // nothing pinned this, so removing either assignment stayed green.
+  it('force:true + actor:"mikrob" survive the fresh/wake:false early-return branch', () => {
+    expect(restartOptsFromBody('{"fresh": true, "force": true, "actor": "mikrob"}')).toEqual({
+      fresh: true, force: true, actor: 'mikrob',
+    })
+    expect(restartOptsFromBody('{"wake": false, "force": true, "actor": "mikrob"}')).toEqual({
+      fresh: false, force: true, actor: 'mikrob',
+    })
+  })
+  it('force:true + actor:"mikrob" survive the continue-with-wake branch', () => {
+    expect(restartOptsFromBody('{"force": true, "actor": "mikrob"}')).toEqual({
+      fresh: false, wake: { reason: 'api-restart' }, force: true, actor: 'mikrob',
+    })
   })
 })
 

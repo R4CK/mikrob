@@ -153,8 +153,11 @@ printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H
 ```bash
 printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:{{WEB_PORT}}/api/kanban \
   -H "Content-Type: application/json" \
-  -d '{"title":"CÍM","status":"planned","assignee":"{{MAIN_AGENT_ID}}","priority":"normal"}'
+  -d '{"title":"CÍM","status":"planned","assignee":"SZEREP_UGYNOK","priority":"normal"}'
 ```
+Az `assignee` mindig egy FELELŐS SZEREP-ÜGYNÖK (pl. `backend`, `qa`), SOHA nem {{BOT_NAME}} saját neve
+({{MAIN_AGENT_ID}}) -- {{BOT_NAME}} kioszt, nem tulajdonol kártyát (6a. szabály), és ezt a kanban
+API a write-határon elutasítja.
 
 Kártya mozgatása:
 ```bash
@@ -337,6 +340,7 @@ printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H
 ### Fontos:
 - A feladat csak akkor fut le, ha a te tmux session-öd fut
 - NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API
+- NE szerkeszd kézzel a `~/.claude/scheduled-tasks/` fájljait: a runner csak az API-n át írt (regisztrált) feladatot indítja, egy kézzel létrehozott vagy módosított feladat NEM fut le. Módosítás: `PUT /api/schedules/<név>`
 - A dashboardon (http://localhost:{{WEB_PORT}}) vizuálisan is kezelheted az ütemezéseket
 
 ## Inter-agent kommunikáció

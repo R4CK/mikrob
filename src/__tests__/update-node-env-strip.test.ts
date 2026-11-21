@@ -48,9 +48,9 @@ describe('buildUpdateScriptEnv strips NODE_ENV before spawning update.sh (card c
     expect(env.NODE_ENV).toBeUndefined()
   })
 
-  it('other inherited env vars survive untouched -- this deletes ONE key, not the whole environment', () => {
+  it('card 651ee11f: an arbitrary non-base inherited env var does NOT survive -- buildUpdateScriptEnv moved to an allowlist (base login keys + extraEnv only), see update-env-allowlist.test.ts for the full contract', () => {
     process.env[marker] = 'still-here'
     const env = buildUpdateScriptEnv({})
-    expect(env[marker]).toBe('still-here')
+    expect(env[marker]).toBeUndefined()
   })
 })

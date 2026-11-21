@@ -110,11 +110,20 @@ Input:  the card's comments JSON on stdin (the /api/kanban/<id>/comments shape).
         card's latest REVIEW `Gate-SHA:` line; `--no-expect` disables the check entirely.
         Optional --no-landed: skip the "is it on the main branch" check (card e65c480a). For a
         caller that has no clones, or is deliberately asking only about verdict consistency.
+        Optional --card <id>: also check card_landings for an authoritative row naming the judged
+        sha (card 634a188c). Omitted -> only the git-ancestry check runs, exactly as before this
+        card. A card whose latest REVIEW/comment carries a line-initial `Landing: n/a` is exempt
+        from BOTH the card_landings and the git-ancestry checks (no code to land).
         Optional argv[1] gates omitted -> inferred from the verdicts present, and the output says
         so, because an UNSTATED designation is exactly how a missing third gate goes unnoticed.
 Output: exactly one line.
         AGREE|<sha>|<details>        every designated gate's latest verdict passes, on one sha
         DISAGREE|<details>           the delta-gate hazard: latest verdicts name different shas
+        FABRICATED|<sha>|<why>       (--card-id/--db only) the REVIEW's declared sha does not
+                                     exist as a commit object in any known repo at all -- not a
+                                     checkpoint gap (CHECKPOINT_FAIL), a hand-typed or
+                                     hallucinated sha that was never a real commit anywhere
+                                     (card 14bfc893).
         FAILED|<details>             a designated gate's latest verdict is a FAIL/NO-GO
         MISSING|<details>            a designated gate has no verdict at all
         NOSHA|<details>              a latest verdict carries no Gate-SHA, so agreement is unprovable
@@ -142,12 +151,20 @@ Output: exactly one line.
                                      clone holds the commit, the ref does not resolve, git failed),
                                      which is fail-closed for the same reason UNRESOLVED is. The
                                      `why` says which of the two. `--no-landed` disables the check.
+        NOT-LANDED|<sha>|<why>       (needs --card) card_landings carries no row for this card
+                                     naming the judged sha -- either no row at all, or rows exist
+                                     for other work. Stronger than UNLANDED: nothing but a real
+                                     marveen-land.sh/mopsion-land.sh run writes a row, so this
+                                     cannot be fooled by a sha that merely happens to resolve in a
+                                     clone. Checked BEFORE the git-ancestry check and short-circuits
+                                     it; a `landed` row does not skip the git check that follows.
         UNREADABLE|<why>
 Exit:   0 always. The caller decides -- this is a readout, not a gate on the gate.
 """
 import json
 import os
 import re
+import subprocess
 import sys
 
 # The role names and the author->role fold both live in gate_author_role.py, so that the tool
@@ -160,7 +177,7 @@ from gate_author_role import GATE_ROLES, author_role, canonical_gate  # noqa: E4
 # separate, later cards) reads the SAME source instead of growing another copy.
 from gate_verdict_tokens import VERDICT_RE as _VERDICT, PASSING  # noqa: E402
 from sha_content_equivalence import (  # noqa: E402
-    _SHARED_CHURN, _MAIN_REF_OVERRIDE, _git,
+    _SHARED_CHURN, _MAIN_REF_OVERRIDE, _git, _CLONES, _GIT_TIMEOUT,
     shas_agree, sha_sets_agree, _clone_holding, _clone_and_ref_holding,
     _is_version_bump, _bump_parent_hint, content_verdict,
 )
@@ -260,6 +277,19 @@ def _is_generated_author(c):
     return ((c or {}).get("author") or "").strip().lower() in GENERATED_COMMENT_AUTHORS
 
 
+# N2 (card 1c8f6d25, WhiteHat2 re-gate GO a837688d): `author` is self-declared free text on every
+# comment (see the UNVERIFIED-AUTHOR branch above), and `latest_author`/`undecidable` embed it RAW
+# into verdict strings this file returns -- which heartbeat-scriptfirst.sh then concatenates
+# straight into MikroB's wake prompt (`"...$REPORT"`), unescaped. A forged author containing a
+# newline or bracketed directive-looking text ("mikrob\n\n[SYSTEM-...]") is therefore a
+# prompt-injection surface, not just a cosmetic one. Collapse to one line, printable-only, capped
+# short -- real agent ids are a handful of characters, so 40 is already generous.
+def _sanitize_author(raw):
+    s = re.sub(r"\s+", " ", (raw or "")).strip()
+    s = "".join(ch for ch in s if ch.isprintable())
+    return s[:40]
+
+
 def _is_path_token(tok):
     """A '/'-bearing token is a branch name or a path, not a sha citation -- ONLY when some
     slash-separated segment is not itself a bare hex run, so the fleet's "A/B" short/long
@@ -311,6 +341,44 @@ _RETRACTION_LINE = re.compile(r"^\s*(?:VISSZAVONVA|RETRACTED)\s*:\s*(.+)$", re.I
 # _SHARED_CHURN and PASSING (card ec34c025) now live in sha_content_equivalence.py and
 # gate_verdict_tokens.py respectively, imported at the top of this file.
 
+# `Landing: n/a` (card 634a188c): the same documented spelling rule 4e already established for
+# `Gate-SHA: n/a (config-only)` -- a card with no code to land (config-only, research) has nothing
+# a card_landings row or a git-ancestry check could ever confirm, and both checks below must be
+# told so explicitly rather than guessing from an empty result. Line-initial, same convention.
+_LANDING_LINE = re.compile(r"^\s*Landing\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+
+
+def _landing_exempt(comments):
+    """Does the comment `declared_shas()` itself would read the judged Gate-SHA from -- the latest,
+    not-retracted, REVIEW-shaped comment that carries a Gate-SHA line -- ALSO carry a line-initial
+    `Landing: n/a`? Skips BOTH the card_landings and the git-ancestry landed checks for this card,
+    the same way `--no-landed` does for the caller.
+
+    QA FAIL (comment 31861, card 634a188c): the first version of this function scanned EVERY
+    comment on the card, from ANY author, which let anyone who can post a kanban comment exempt a
+    real, declared, never-landed Gate-SHA from NOT-LANDED/UNLANDED forever, just by posting one
+    throwaway comment reading "Landing: n/a" anywhere on the card.
+
+    Cybersec2 NO-GO round 2 (comment 31869): the first fix narrowed the scan to "the latest
+    REVIEW-shaped comment", but that selection did not require a Gate-SHA line -- so a LATER,
+    unrelated comment that merely started with the word "REVIEW" (e.g. "REVIEW (addendum)\n
+    Landing: n/a", no Gate-SHA at all) still won the "latest REVIEW" slot and exempted a REAL,
+    earlier-declared, unlanded sha it says nothing about. Fixed by reusing declared_shas()'s own
+    comment-selection helper verbatim (not a second regex that can drift from it): the exemption
+    can now only ever come from the exact comment whose Gate-SHA line supplies the judged sha. A
+    comment with no Gate-SHA line never wins that selection, so it can never carry the exemption
+    either -- consistent with the fact that an exemption on a card with NO declared sha at all
+    never reaches this code anyway (NOSHA fires first).
+    """
+    found = _latest_declaring_review(comments)
+    if found is None:
+        return False
+    _, content = found
+    for m in _LANDING_LINE.finditer(content):
+        if m.group(1).strip().lower().startswith("n/a"):
+            return True
+    return False
+
 
 def _line_shas(content):
     """Every hex token cited on the comment's `Gate-SHA:` line(s), lowercased, in written order and
@@ -361,16 +429,23 @@ def verdict_of(content):
             tuple(shas) if shas else None)
 
 
-def declared_shas(comments):
-    """The shas the LATEST, NOT-RETRACTED `REVIEW` comment says this card delivers, [] if none says.
+def _latest_declaring_review(comments):
+    """(index, content) of the LATEST, NOT-RETRACTED, REVIEW-shaped comment that carries a Gate-SHA
+    line, or None if no comment qualifies. The single shared selection both declared_shas() (which
+    sha is judged) and _landing_exempt() (which comment's `Landing: n/a`, if any, applies to that
+    sha) must agree on -- card 634a188c, Cybersec2 NO-GO round 2 (comment 31869): an exemption read
+    from a DIFFERENT comment than the one supplying the judged sha let an unrelated, Gate-SHA-less
+    "REVIEW (addendum)" comment exempt a real sha it never declared.
 
     Not "the latest Gate-SHA anywhere": measured both ways over the board, sourcing it from any
     non-verdict comment fixes 8 cards and breaks 8 others, so it buys nothing and loosens the rule.
 
-    A REVIEW is skipped if a LATER comment carries a line-initial `VISSZAVONVA:`/`RETRACTED:` marker
-    naming one of its shas (card 84fed4ee): the 101f1702 incident was a second REVIEW followed by a
-    branch revert back to the first REVIEW's sha, described only in prose -- declared_shas() always
-    took the newest REVIEW regardless, so the withdrawn sha became the default --expect and three
+    A REVIEW is skipped if a LATER comment, from that SAME REVIEW's own author, carries a
+    line-initial `VISSZAVONVA:`/`RETRACTED:` marker naming its sha (card 84fed4ee, tightened by
+    a7f206a5 F1/F2 -- see `_retraction_shas_after()`): the 101f1702 incident was a second REVIEW
+    followed by a branch revert back to the first REVIEW's sha, described only in prose -- this
+    used to always take the newest REVIEW regardless, so the withdrawn sha became the default
+    --expect and three
     verdicts that correctly judged the ORIGINAL sha read STALE. "Later" is comment order, the same
     convention `_gate_state` already documents for this file -- a retraction cannot apply to a REVIEW
     that has not been posted yet.
@@ -380,7 +455,7 @@ def declared_shas(comments):
     explicit n/a is itself a declaration, just an empty one, and must not leave an earlier REVIEW's
     sha standing as the default expectation.
     """
-    found = []
+    found = None
     for i, c in enumerate(comments):
         if _is_generated_author(c):
             continue
@@ -398,10 +473,18 @@ def declared_shas(comments):
         shas = _line_shas(content)
         if not shas:
             continue
-        if sha_sets_agree(shas, _retraction_shas_after(comments, i)):
+        review_author = ((c or {}).get("author") or "").strip().lower()
+        if sha_sets_agree(shas, _retraction_shas_after(comments, i, review_author)):
             continue
-        found = shas
+        found = (i, content)
     return found
+
+
+def declared_shas(comments):
+    """The shas the LATEST, NOT-RETRACTED `REVIEW` comment says this card delivers, [] if none says.
+    See _latest_declaring_review() for the selection rule."""
+    found = _latest_declaring_review(comments)
+    return _line_shas(found[1]) if found else []
 
 
 def _latest_review_is_na(comments):
@@ -428,18 +511,51 @@ def _latest_review_is_na(comments):
     return False
 
 
-def _retraction_shas_after(comments, index):
-    """Every hex token named on a `VISSZAVONVA:`/`RETRACTED:` line in any comment AFTER `index`."""
+def _retraction_shas_after(comments, index, review_author):
+    """The first REAL hex token (same parent/path exclusions as `_line_shas()`) on each
+    `VISSZAVONVA:`/`RETRACTED:` line, in any comment AFTER `index`, written by `review_author`
+    (the REVIEW's own author), `mikrob`, or not a generated author.
+
+    Card a7f206a5 F1 (WhiteHat 84fed4ee gate, comment 20580): the first version applied no author
+    filter at all, so a generated draft comment (local-llm/gate-pretriage, same set
+    `_is_generated_author` already excludes from REVIEW-reading) could retract a real REVIEW.
+    Tightened past that baseline per the gate's own fix suggestion: only the REVIEW's own author
+    or mikrob can retract it -- the narrowest rule that still covers the actual incident (a
+    builder withdrawing their own stale REVIEW, or MikroB withdrawing one on the board's behalf)
+    without letting an unrelated commenter make a REVIEW disappear from declared_shas().
+
+    F2 (same gate): the first version took EVERY hex token on the line with no exclusions, so
+    "VISSZAVONVA: B (visszaallitva A-ra)" retracted BOTH B and A. Now reuses `_line_shas()`'s own
+    parent-marker blanking and path-token skip, and keeps only the first qualifying token --
+    the keyword names the sha that is dead, not every sha the explanatory prose mentions.
+    """
     out = []
+    review_author = (review_author or "").strip().lower()
+    if not review_author:
+        # No reliable author to match against (malformed/legacy comment) -- fail closed: never
+        # let an unattributable line retract anything, rather than matching it to another blank.
+        return out
     for later in comments[index + 1:]:
+        if _is_generated_author(later):
+            continue
+        retracting_author = ((later or {}).get("author") or "").strip().lower()
+        if retracting_author not in (review_author, "mikrob"):
+            continue
         content = (later or {}).get("content")
         if not isinstance(content, str):
             continue
         for m in _RETRACTION_LINE.finditer(content):
-            for sha in _SHA_TOKEN.findall(m.group(1)):
-                sha = sha.lower()
-                if sha not in out:
-                    out.append(sha)
+            blanked = _PARENT_MARKED_SHA.sub(lambda pm: " " * len(pm.group(0)), m.group(1))
+            sha = None
+            for tok in blanked.split():
+                if _is_path_token(tok):
+                    continue
+                found = _SHA_TOKEN.search(tok)
+                if found:
+                    sha = found.group(0).lower()
+                    break
+            if sha and sha not in out:
+                out.append(sha)
     return out
 
 
@@ -570,7 +686,7 @@ def _gate_state(comments):
         v = verdict_of(c.get("content"))
         if not v:
             continue
-        who = (c.get("author") or "").strip().lower()
+        who = _sanitize_author(c.get("author")).lower()
         latest[v[0]] = v
         latest_author[v[0]] = who
         # ONLY A GATE-ROLE AUTHOR ENTERS THE PER-AUTHOR TABLE (card c52e2823, round 2, QA's finding
@@ -941,8 +1057,80 @@ def _unlanded_line(verdict):
     return "UNLANDED|%s|the gates agree, but the delivery is not on the main branch (%s)" % (sha, why)
 
 
-def _landed_or(enabled, candidates, agree_line):
-    """AGREE only survives if the delivery is actually on the main branch (card e65c480a).
+# Card 634a188c (F2.1's authoritative record, F2 Fazis: "Landed state from git, not from the
+# agent"). card_landings is written by marveen-land.sh/mopsion-land.sh ONLY after a verified push
+# (src/card-landing-ancestry.ts re-verifies server-side before the row is written), so a row naming
+# the judged sha is stronger evidence than the UNLANDED check above -- that one can only ask git
+# ABOUT a sha a human or an agent typed, never whether a land SCRIPT actually ran. The row's absence
+# closes the gap the Fazis context names directly: "cards close on Gate-SHAs typed into comments;
+# marveen-land.sh prints a sha but does not write it anywhere authoritative" -- a post-/compact
+# fabricated landing sha (measured live, 2026-11-01) can still happen to resolve in a clone and pass
+# the ancestry check below; it cannot also have a card_landings row, because nothing but a real
+# land-script run writes one.
+_DEFAULT_LANDINGS_DB = os.environ.get("GATE_CLOSURE_DB", "/home/neon/marveen/store/claudeclaw.db")
+
+
+def _card_landing_rows(card_id, db_path=None):
+    """[(work_sha, merge_sha), ...] recorded for `card_id`, or None if the table could not be read
+    AT ALL (missing db file, missing table, sqlite error) -- distinct from an empty list, which
+    means the table WAS read and genuinely holds no row for this card yet."""
+    import sqlite3 as _sqlite3
+    path = db_path or _DEFAULT_LANDINGS_DB
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        conn = _sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=5)
+    except _sqlite3.Error:
+        return None
+    try:
+        cur = conn.execute("SELECT work_sha, merge_sha FROM card_landings WHERE card_id = ?", (card_id,))
+        return [(r[0], r[1]) for r in cur.fetchall()]
+    except _sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _db_landed_verdict(card_id, candidates, db_path=None):
+    """('landed'|'not-landed'|'unresolvable', why|None) for whether card_landings backs up one of
+    `candidates` (the judged shas) for `card_id`.
+
+    MikroB's own requirement on this card (comment 28281, a8a83d48's Cybersec2 GO): never accept a
+    row on card_id alone -- a commit subject merely MENTIONING a card ("see card ffffffff") used to
+    mint a row for it before the write side closed that hole, so a row's presence for this card_id
+    is checked FURTHER, against the sha the gates actually judged, not trusted on its own.
+    """
+    rows = _card_landing_rows(card_id, db_path)
+    if rows is None:
+        return "unresolvable", "card_landings could not be read"
+    if not rows:
+        return "not-landed", (
+            "no card_landings row exists for card %s -- marveen-land.sh/mopsion-land.sh have not "
+            "recorded a verified push for it yet" % card_id)
+    for work_sha, merge_sha in rows:
+        # QA FAIL 31861, LOW: shas_agree(x, "") is True for any x (empty string is a prefix of
+        # everything), so an empty/blank work_sha or merge_sha must never reach it -- not exploitable
+        # via the only real writer today (card-landings.ts rejects empty shas with 400), but a future
+        # direct-sqlite3 writer or test fixture could otherwise defeat this check silently.
+        if any(((work_sha or "").strip() and shas_agree(cand, work_sha))
+               or ((merge_sha or "").strip() and shas_agree(cand, merge_sha))
+               for cand in candidates):
+            return "landed", None
+    recorded = ", ".join(sorted({s for pair in rows for s in pair}))
+    return "not-landed", (
+        "card_landings has %d landing(s) for card %s but none name the judged sha(s) %s "
+        "(recorded: %s)" % (len(rows), card_id, ",".join(candidates), recorded))
+
+
+def _not_landed_line(sha, why):
+    """NOT-LANDED|<sha>|<why>. Distinct from UNLANDED: this is the card_landings table saying so,
+    not a git-ancestry guess."""
+    return "NOT-LANDED|%s|%s" % (sha, why)
+
+
+def _landed_or(enabled, candidates, agree_line, card_id=None, comments=None):
+    """AGREE only survives if the delivery is actually on the main branch (card e65c480a) AND,
+    when a card id is given, if card_landings backs that up (card 634a188c).
 
     Card e21b816b, Cybersec F-2: with the check skipped (`--no-landed`) an AGREE used to come out
     byte-identical to one that actually verified the branch, and a non-default `GATE_CLOSURE_MAIN_REF`
@@ -950,9 +1138,22 @@ def _landed_or(enabled, candidates, agree_line):
     trace either -- a reader could not tell "verified on the branch" from "the question was never
     asked" or "asked against some other ref than the usual one". Both now say so in the AGREE line
     itself, not in a side channel the caller has to know to check.
+
+    THE DB CHECK RUNS FIRST AND CAN SHORT-CIRCUIT, THE GIT CHECK CANNOT BE SHORT-CIRCUITED BY IT.
+    A `not-landed` DB verdict is authoritative (nothing but a real land-script run writes a row) and
+    returns immediately. A `landed` DB verdict does NOT skip the existing git-ancestry check below --
+    this file's own established pattern (UNRESOLVED/UNLANDED) is fail-closed when a check cannot be
+    made, so an `unresolvable` DB verdict (no `--card`, missing db, sqlite error) falls through to the
+    unchanged git check rather than silently blocking or silently passing.
     """
     if not enabled:
         return agree_line + " [landed-check skipped: --no-landed]"
+    if comments is not None and _landing_exempt(comments):
+        return agree_line + " [landed-check skipped: Landing: n/a]"
+    if card_id:
+        state, why = _db_landed_verdict(card_id, candidates)
+        if state == "not-landed":
+            return _not_landed_line(candidates[0], why)
     verdict = landed_verdict(candidates)
     if verdict is not None:
         return _unlanded_line(verdict)
@@ -966,7 +1167,7 @@ def _landed_or(enabled, candidates, agree_line):
 # (see "WHY THE COMPARISON IS NOT SHA EQUALITY") already explains at length.
 
 
-def check(comments, designated=None, expect=None, use_declared=True, check_landed=True):
+def check(comments, designated=None, expect=None, use_declared=True, check_landed=True, card_id=None):
     latest, undecidable = _gate_state(comments)
     unverified = unattributed_gates(comments)
     inferred = designated is None
@@ -1073,7 +1274,8 @@ def check(comments, designated=None, expect=None, use_declared=True, check_lande
         why = ("no --expect given" if source == "--no-expect"
                else "no REVIEW comment declares a Gate-SHA, so the delivered commit is unchecked")
         return _landed_or(check_landed, shas[0],
-                          "AGREE|%s|%s%s (%s)" % (_fmt_shas(shas[0]), detail, suffix, why))
+                          "AGREE|%s|%s%s (%s)" % (_fmt_shas(shas[0]), detail, suffix, why),
+                          card_id, comments)
 
     if sha_sets_agree(shas[0], declared):
         # CARD cb8ef4f5: the EQUAL-sha branch never asked content_verdict's question at all, because
@@ -1093,7 +1295,8 @@ def check(comments, designated=None, expect=None, use_declared=True, check_lande
                    "NEW REVIEW should not produce it going forward)" % (
                        _fmt_shas(shas[0]), agreed, hint_s)
         return _landed_or(check_landed, list(shas[0]) + list(declared),
-                          "AGREE|%s|%s%s" % (_fmt_shas(shas[0]), detail, suffix))
+                          "AGREE|%s|%s%s" % (_fmt_shas(shas[0]), detail, suffix),
+                          card_id, comments)
 
     # The sha differs from the declared one. On this board that is usually benign -- a work commit
     # versus the landing that carried it -- so the difference is judged by CONTENT before it is
@@ -1103,7 +1306,8 @@ def check(comments, designated=None, expect=None, use_declared=True, check_lande
     if kind == "same":
         return _landed_or(check_landed, list(shas[0]) + list(declared),
                           "AGREE|%s|%s%s (differs from %s per %s, but %s)" % (
-                              _fmt_shas(shas[0]), detail, suffix, joined, source, why))
+                              _fmt_shas(shas[0]), detail, suffix, joined, source, why),
+                          card_id, comments)
     if kind == "differs":
         # Deliberately NOT "the gates are stale". Measured on card edd4c3bf, the opposite happens
         # too: the deliverable moved on in an INFO-ONLY comment that says "nem uj REVIEW", the gates
@@ -1136,9 +1340,19 @@ def main():
     expect = None
     use_declared = True
     check_landed = True
+    # Distinct from `card_id` below (--card-id, the unrelated checkpoint-coverage feature, card
+    # <checkpoint>): this one feeds the card_landings-backed NOT-LANDED check (card 634a188c).
+    landing_card_id = None
     if "--no-landed" in argv:
         check_landed = False
         argv = [a for a in argv if a != "--no-landed"]
+    if "--card" in argv:
+        i = argv.index("--card")
+        if i + 1 >= len(argv) or not argv[i + 1].strip():
+            print("UNREADABLE|--card needs a card id")
+            return
+        landing_card_id = argv[i + 1].strip()
+        del argv[i:i + 2]
     if "--no-expect" in argv:
         use_declared = False
         argv = [a for a in argv if a != "--no-expect"]
@@ -1183,26 +1397,154 @@ def main():
             print("UNREADABLE|not a gate name: %s" % ", ".join(unknown))
             return
 
-    result = check(comments, designated, expect, use_declared, check_landed)
+    result = check(comments, designated, expect, use_declared, check_landed, landing_card_id)
 
-    if card_id and db_path:
+    # M2 (card 0c03aa06, WhiteHat2 M2 + RedHat on 295ae6a3): the checkpoint/FABRICATED overlay
+    # below must only ever NARROW an AGREE, exactly like the landing check above it (check()'s own
+    # "only narrows AGREE" rule) -- never replace a FAILED/DISAGREE/MISSING/etc verdict, or a
+    # NO-GO silently disappears behind CHECKPOINT_FAIL/FABRICATED/UNRESOLVED.
+    if card_id and db_path and result.startswith("AGREE"):
         rev_shas = declared_shas(comments)
         if rev_shas:
             check_sha = next(iter(rev_shas))
-            covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
-            if not covered:
-                result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+            # F1.3 (card 14bfc893): a checkpoint gap (CHECKPOINT_FAIL) means "this is a real
+            # commit, just not one of this card's recorded checkpoints" -- a sha that is not a
+            # commit object ANYWHERE is a different, worse problem (hand-typed or hallucinated),
+            # and must say so distinctly rather than read as the same ordinary coverage gap.
+            #
+            # Card 06334c7d (CYBERED C1 on 14bfc893's own GO): the old `any_clone_reachable =
+            # any(...)` only required ONE clone directory to exist, so a real commit that lives
+            # ONLY in the second clone was reported FABRICATED whenever that second clone was
+            # unmounted (or its own git call simply timed out) -- "I could not check the clone
+            # this commit actually lives in" was misread as "I checked every clone and found
+            # nothing".
+            #
+            # Three outcomes now, by how much was actually checked:
+            #   - NO clone reachable at all: unchanged fail-open fallthrough (the original, most
+            #     common case -- a dev box with no clones configured) -- same as always.
+            #   - SOME but not ALL clones reachable, and the reachable one(s) answer "not found":
+            #     UNRESOLVED, not FABRICATED -- the unreachable clone could still hold it, so
+            #     "not found where I could look" is not "does not exist anywhere" (the actual
+            #     finding: the old code reported FABRICATED here).
+            #   - EVERY clone reachable: a timeout on any of them is UNRESOLVED (the same
+            #     fail-closed-to-UNRESOLVED convention `check()` already uses elsewhere in this
+            #     file for "cannot check"); every one genuinely answering "absent" is FABRICATED.
+            # CYBERED C1 condition 2 (card 06334c7d NO-GO 32965): two refinements over the first
+            # cut. (a) A reachable clone that ANSWERS "exists" settles the question on its own --
+            # it must not be outranked by a DIFFERENT, unreachable configured clone, which says
+            # nothing either way. (b) A clone path that exists on disk but is not a usable repo
+            # (empty mountpoint, corrupt object store, dubious-ownership refusal) must count as
+            # "unreachable", not "absent" -- `git cat-file -e <missing>` and `git -C <non-repo>
+            # cat-file ...` both exit 128, so rc alone cannot distinguish "answered no" from
+            # "could not answer"; _cat_file_commit_status now checks repo validity first.
+            clone_paths = [p for _n, p, _r in _CLONES]
+            statuses = [_cat_file_commit_status(p, check_sha) for p in clone_paths]
+            reachable_statuses = [s for s in statuses if s != "unreachable"]
+            if not reachable_statuses:
+                pass  # no clone reachable at all -- defer entirely to the coverage overlay below
+            elif any(s == "timeout" for s in reachable_statuses):
+                result = "UNRESOLVED|%s|%s|a git call timed out while checking whether this " \
+                    "commit exists (--card-id/--db FABRICATED check)" % (check_sha, check_sha)
+            elif any(s == "exists" for s in reachable_statuses):
+                pass  # a real commit -- not fabricated; coverage is the overlay's job, not this one
+            elif len(reachable_statuses) < len(clone_paths):
+                result = "UNRESOLVED|%s|%s|not found in the %d reachable clone(s), but %d " \
+                    "configured clone(s) could not be reached -- cannot confirm it does not " \
+                    "exist there" % (check_sha, check_sha, len(reachable_statuses),
+                                      len(clone_paths) - len(reachable_statuses))
+            elif all(s == "absent" for s in reachable_statuses):
+                # LOW-2 (CYBERSEC on the same GO): name the limitation, not just the verdict --
+                # this only means "not found in the configured clones", never "proven to never
+                # have existed anywhere" (an unreachable or unconfigured repo would say so).
+                result = "FABRICATED|%s|does not exist as a commit object in any of the %d " \
+                    "configured clones searched (%s) -- advisory only, not proof it was never " \
+                    "a real commit anywhere" % (
+                        check_sha, len(_CLONES), ", ".join(nm for nm, _p, _r in _CLONES))
+
+            # M2 continued (card 0c03aa06): the FABRICATED check above only looks at the FIRST
+            # declared sha. If it left result AGREE, overlay checkpoint coverage for EVERY
+            # declared sha (rule 4b's multi-commit Gate-SHA), not just the first -- a card
+            # delta-gated across a work-commit/landing-commit pair read a false gap before if only
+            # the first one happened to lack a checkpoint.
+            if result.startswith("AGREE"):
+                states = [(_checkpoint_coverage(card_id, s, db_path), s) for s in rev_shas]
+                if not any(cov is True for (cov, _reason), _sha in states):
+                    gaps = [(sha, reason) for (cov, reason), sha in states if cov is False]
+                    if gaps:
+                        result = "CHECKPOINT_FAIL|%s|%s" % (
+                            ",".join(s for s, _ in gaps), "; ".join(r for _, r in gaps))
+                    else:
+                        # F3 (card 0c03aa06, Cybered 31713): every sha answered None (zero
+                        # checkpoint rows recorded for this card at all) -- a transitional skip,
+                        # not a gap, so the verdict stays AGREE. But a plain "AGREE" here is
+                        # byte-identical to a genuinely verified AGREE, and the card forbids
+                        # wiring any --card-id caller until that distinction is explicit. Append
+                        # a token a caller can branch on instead of silently reading "never
+                        # checked" as "checked and fine".
+                        result = "%s|CHECKPOINT_NONE" % result
 
     print(result)
 
 
-def _checkpoint_coverage(card_id, gate_sha, db_path):
-    """Return (covered: bool, reason: str|None).
+def _cat_file_commit_status(repo, sha):
+    """('exists' | 'absent' | 'timeout' | 'unreachable') for whether `sha^{commit}` resolves in
+    `repo`. Deliberately separate from sha_content_equivalence.py's own `_git` (card 06334c7d,
+    CYBERED C1): that helper's documented contract is "any failure -- missing git, missing clone,
+    timeout -- is a plain False", which is the right call for the AGREE/DISAGREE machinery that
+    consumes it everywhere else, but conflates "git could not answer" with "git answered no" for
+    the ONE caller (the FABRICATED check below) where that distinction is the entire point.
+    Narrowly scoped here rather than changing `_git` itself, so every other caller's behaviour is
+    unaffected.
+    """
+    if not os.path.isdir(repo):
+        return "unreachable"
+    # CYBERED C1 condition 2b (card 06334c7d NO-GO 32965): a path that exists but is not a
+    # usable repo (empty mountpoint, corrupt object store, dubious-ownership refusal) must read
+    # as "unreachable", not "absent" -- git exits 128 for a missing clone object just the same
+    # as it does for a missing object in a real repo, so rc alone cannot separate the two.
+    try:
+        gd = subprocess.run(("git", "-C", repo, "rev-parse", "--git-dir"),
+                             capture_output=True, text=True, timeout=_GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except (OSError, subprocess.SubprocessError):
+        return "unreachable"
+    if gd.returncode != 0:
+        return "unreachable"
+    try:
+        p = subprocess.run(("git", "-C", repo, "cat-file", "-e", sha + "^{commit}"),
+                            capture_output=True, text=True, timeout=_GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except (OSError, subprocess.SubprocessError):
+        return "unreachable"
+    return "exists" if p.returncode == 0 else "absent"
 
-    covered=True if no checkpoints recorded yet (transitional / no-checkpoint workflow) or if
-    gate_sha matches a head_sha in card_checkpoints. covered=False only when at least one
-    checkpoint exists for the card but the declared sha is not among them (genuine gap).
-    Errors accessing the DB are fail-open to avoid blocking the board on infra issues.
+
+def _checkpoint_coverage(card_id, gate_sha, db_path):
+    """Return (covered, reason) where covered is True | False | None.
+
+    True  = this card has at least one recorded checkpoint matching gate_sha (by prefix, M1 below),
+            OR no checkpoint matches but gate_sha is already landed on origin (the "or origin" leg
+            M1 also asked for: a REVIEW naming the LANDING merge, not the work commit a checkpoint
+            was taken from, must not read as a gap).
+    False = checkpoints exist for this card, gate_sha matches none of them, AND it is not landed
+            on origin either -- a genuine gap.
+    None  = no checkpoints recorded for this card AT ALL (distinct from True on purpose -- RedHat's
+            finding on 295ae6a3/card 0c03aa06: agent-checkpoint.sh never wrote a row until this
+            card wired it, so every pre-existing card has zero rows, and collapsing that into the
+            same True a real match gets would make "never checked" indistinguishable from "checked
+            and fine". main() currently treats None the same as a pass-through -- exactly RedHat's
+            own "or state explicitly the feature stays off" alternative: nothing calls this with
+            --card-id in production today (measured on this board), so this is not yet a live
+            blocking switch; flipping that is a separate, fleet-wide decision, not this card's).
+    Errors accessing the DB are fail-open (None) to avoid blocking the board on infra issues.
+
+    M1 (WhiteHat2, card 0c03aa06): the old equality check (`head_sha = gate_sha[:40]`) compared a
+    SHORT sha (rule 4b allows 7-40 hex in a REVIEW) against the full 40-hex head_sha it never
+    equals, so every short-sha REVIEW read as a gap. `LIKE ? || '%'` is a prefix match either way:
+    unchanged for a full 40-hex gate_sha (nothing else can share it as a strict prefix in practice),
+    correct for a short one.
     """
     try:
         import sqlite3 as _sqlite3
@@ -1213,22 +1555,25 @@ def _checkpoint_coverage(card_id, gate_sha, db_path):
             ).fetchone()
             count = row[0] if row else 0
             if count == 0:
-                return True, None
+                return None, None
             sha_norm = gate_sha.lower()[:40]
             match = conn.execute(
-                "SELECT n FROM card_checkpoints WHERE card_id = ? AND head_sha = ?",
+                "SELECT n FROM card_checkpoints WHERE card_id = ? AND head_sha LIKE ? || '%'",
                 (card_id, sha_norm),
             ).fetchone()
         finally:
             conn.close()
         if match:
             return True, None
+        landed = landed_verdict([sha_norm])
+        if landed is None:
+            return True, None
         return False, (
-            "Gate-SHA %s not in any recorded checkpoint for card %s (%d checkpoint(s) exist)"
-            % (gate_sha[:12], card_id, count)
+            "Gate-SHA %s not in any recorded checkpoint for card %s (%d checkpoint(s) exist), and "
+            "it is not landed on origin either" % (gate_sha[:12], card_id, count)
         )
     except Exception:  # noqa: BLE001 -- DB missing / locked / corrupt: fail-open
-        return True, None
+        return None, None
 
 
 if __name__ == "__main__":

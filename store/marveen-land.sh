@@ -96,6 +96,162 @@ MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
+# Card d5638d28: structural refusal while degraded-orchestrator mode is on, same switch file and
+# same fail-closed-on-unreadable rule as src/degraded-orchestrator-guard.ts (the TS port used by
+# the kanban move-to-done guard and the POST /api/agents/:name/start route) -- missing file = OFF
+# (card's own Kesz, ha #1), present-but-unparseable = treated as ON (MikroB decision, inter-agent
+# msg 19506: an unreadable switch is an anomaly, not evidence the owner turned it off). Unlike the
+# other two gated actions, landing is never owner/Telegram-triggered in practice (Peti never calls
+# this script directly), so there is no bypass here -- passing --actor mikrob is the one way past
+# it, reusing the SAME allowlist name src/kanban-force-actors.ts hardcodes (duplicated here on
+# purpose: bash cannot import that TS module, and the name is the single fact that has to match).
+#
+# Round 2 (CYBERED NO-GO 32207 F3, MikroB Fix-Direction 32209 #3): the ONLY valid shape is an
+# object with exactly one key, "enabled", whose value is a real JSON boolean. Anything else that
+# parses (wrong type, wrong/extra/typo key, non-object top level like a bare `true`/`[]`/`1`) is
+# treated the SAME as a parse failure -- ON. This must stay byte-for-byte the same rule as
+# classifySwitchPayload() in src/degraded-orchestrator-guard.ts; the shared fixture-parity test
+# (degraded-orchestrator-switch-parity.test.ts) feeds both implementations the same payload set.
+# Round 3 (CYBERED NO-GO 32245 F1, MikroB decision 32246): capture whether the caller explicitly
+# set this env var, BEFORE applying the default. Kesz ha #1 now reads: "default path absent = OFF;
+# explicit override to a missing path = refuse; override to {"enabled": false} = OFF" -- an
+# override the caller set but that resolves to nothing is a broken configuration, not a statement
+# of normal mode, unlike the DEFAULT path simply never having been written yet.
+_DEGRADED_ORCHESTRATOR_SWITCH_OVERRIDE_SET=0
+[ -n "${DEGRADED_ORCHESTRATOR_SWITCH:-}" ] && _DEGRADED_ORCHESTRATOR_SWITCH_OVERRIDE_SET=1
+DEGRADED_ORCHESTRATOR_SWITCH="${DEGRADED_ORCHESTRATOR_SWITCH:-$MAIN/store/degraded-orchestrator-enabled.json}"
+degraded_orchestrator_is_on() {
+  # python3 missing from PATH means this check CANNOT RUN AT ALL -- the old code let a 127
+  # (command not found) from the subprocess below propagate as this function's own nonzero exit,
+  # which the caller read as "not on", landing proceeded. Every way the check cannot run is
+  # degraded, same posture as the unreadable/corrupt file case below.
+  command -v python3 >/dev/null 2>&1 || return 0
+  if [ ! -e "$DEGRADED_ORCHESTRATOR_SWITCH" ]; then
+    [ "$_DEGRADED_ORCHESTRATOR_SWITCH_OVERRIDE_SET" = 1 ] && return 0 # explicit override to nowhere: can't verify, fail closed (ON)
+    return 1 # default path never written: legit OFF (Kesz ha #1)
+  fi
+  python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)  # unreadable/corrupt: fail closed, treat as ON
+if not isinstance(data, dict) or list(data.keys()) != ["enabled"] or not isinstance(data["enabled"], bool):
+    sys.exit(0)  # wrong shape/type/extra/typo key: same fail-closed rule as the TS guard
+sys.exit(0 if data["enabled"] else 1)
+' "$DEGRADED_ORCHESTRATOR_SWITCH"
+  # Round 3 (RedHat 32245 F1): three-valued read on the subprocess's own exit code -- ONLY an
+  # explicit exit 1 (the python script's own `sys.exit(1)` for a confirmed {"enabled": false})
+  # means OFF. Anything else (0 explicit ON, or an unexpected 126/127/139/etc from python3 itself
+  # crashing/being killed) means ON, so a corrupted interpreter state cannot silently read as OFF
+  # the way a bare nonzero-vs-zero check would.
+  [ $? = 1 ] && return 1
+  return 0
+}
+# Card 2ba008f2 (WhiteHat2 probe on origin/develop, round 3): the --actor mikrob bypass below is
+# self-declared, just like src/kanban-force-actors.ts's isForceActor() -- same shared-token
+# caller can send it. That module already refuses the bypass outright while a session outage is
+# active (store/mikrob-session-outage.json), regardless of the switch's own state; this ports the
+# SAME check here so the bash landers cannot grant via --actor what the TS guard now denies via
+# force+actor. Mirrors isSessionOutageActive() field-for-field (active/heartbeat, same staleness
+# and future-skew windows, same fail-closed-on-malformed rule) -- not imported (bash cannot import
+# a TS module), kept in exact lockstep the same way the switch-file contract above already is.
+_MIKROB_SESSION_OUTAGE_PATH="${MIKROB_SESSION_OUTAGE_PATH:-$MAIN/store/mikrob-session-outage.json}"
+# Round 4 (CYBERSEC NO-GO 32558 F1, Fix-Direction): the previous version read the subprocess exit
+# code as `[ $? = 0 ]` -- ONLY an exact python exit 0 meant "active". Exit 1 was the intended
+# "normal" signal, but EVERY other outcome (an uncaught exception default exit 1, a kill 137, a
+# segfault 139, a failed interpreter start from a bad PYTHONHOME, rc 127) ALSO fell into "not
+# active", wrongly granting the --actor mikrob bypass on a crash. Sentinel-based now, same shape
+# as degraded_orchestrator_is_on's own three-valued read a few lines up: ONLY a dedicated,
+# unlikely-to-collide sentinel exit code (3, not 0 or 1, which real crashes commonly produce)
+# means "normal" (not active); everything else -- the explicit fail-closed exit 0, a plain
+# exception's default exit 1, or any crash code -- means active (deny the bypass). The whole body
+# is wrapped in try/except BaseException so nothing can escape as an unsentineled exit. `-I`
+# (isolated mode) stops a cwd-local json.py or stray PYTHON* env var from shadowing the stdlib
+# modules this depends on.
+_session_outage_active() {
+  # Same posture as degraded_orchestrator_is_on: if the check cannot run at all, that is not
+  # "verified inactive" -- fail closed (deny the bypass). degraded_orchestrator_is_on's own
+  # python3-missing fail-closed-to-ON below makes the die() fire either way in that case.
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 -I -c '
+import sys
+
+def main():
+    import json, time
+    try:
+        with open(sys.argv[1]) as f:
+            raw = f.read()
+    except FileNotFoundError:
+        sys.exit(3)  # no marker: normal operation (sentinel)
+    except Exception:
+        sys.exit(0)  # exists but unreadable: fail closed
+    try:
+        data = json.loads(raw)
+    except Exception:
+        sys.exit(0)  # corrupt/empty: fail closed
+    if not isinstance(data, dict):
+        sys.exit(0)
+    active = data.get("active")
+    if not isinstance(active, bool):
+        sys.exit(0)  # malformed active field: fail closed
+    if active is False:
+        sys.exit(3)  # explicitly inactive: normal operation (sentinel)
+    heartbeat = data.get("heartbeat")
+    if not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool):
+        sys.exit(0)  # malformed heartbeat: fail closed
+    MIN_H, MAX_H = 1_600_000_000, 4_000_000_000
+    if heartbeat < MIN_H or heartbeat > MAX_H:
+        sys.exit(0)  # implausible value (e.g. ms instead of s): fail closed
+    age_ms = (time.time() - heartbeat) * 1000
+    STALE_MS, FUTURE_TOLERANCE_MS = 15 * 60 * 1000, 60 * 1000
+    if age_ms > STALE_MS:
+        sys.exit(3)  # genuinely stale: normal operation resumes (sentinel)
+    if age_ms < -FUTURE_TOLERANCE_MS:
+        sys.exit(3)  # modest clock skew beyond tolerance: normal operation (sentinel)
+    sys.exit(0)  # fresh and active: fence holds
+
+try:
+    main()
+except SystemExit:
+    raise  # the sentinel/fail-closed exits FROM main() itself must propagate untouched
+except BaseException:
+    sys.exit(0)  # anything unforeseen escaping main(): fail closed, never silently "normal"
+' "$_MIKROB_SESSION_OUTAGE_PATH"
+  local rc=$?
+  [ "$rc" = 3 ] && return 1
+  return 0
+}
+
+check_degraded_orchestrator_guard() { # $1 = actor (may be empty)
+  local actor="${1:-}"
+  if [ "$actor" = "mikrob" ] && ! _session_outage_active; then
+    return 0
+  fi
+  if degraded_orchestrator_is_on; then
+    die 3 "degraded-orchestrator mode is ON ($DEGRADED_ORCHESTRATOR_SWITCH) -- landing is not allowed while degraded (card d5638d28). Owner override: --actor mikrob."
+  fi
+}
+# Run the check HERE, before any of the git/lock-file infra checks further down (several of which
+# die with the same exit code 3 for unrelated reasons, which would otherwise race this one and
+# make a test pass for the wrong reason). Scans the raw argv directly rather than waiting for the
+# real option parser near the bottom of this file, which runs far later and well after several
+# other refusals. Skipped for --selftest, which exercises unrelated internal functions and never
+# touches git or the kill switch.
+if [ "${1:-}" != "--selftest" ]; then
+  _degraded_guard_actor=""
+  _degraded_guard_args=("$@")
+  for ((_dgi = 0; _dgi < ${#_degraded_guard_args[@]}; _dgi++)); do
+    case "${_degraded_guard_args[$_dgi]}" in
+      --actor) _degraded_guard_actor="${_degraded_guard_args[$((_dgi + 1))]:-}" ;;
+      --actor=*) _degraded_guard_actor="${_degraded_guard_args[$_dgi]#--actor=}" ;;
+    esac
+  done
+  check_degraded_orchestrator_guard "$_degraded_guard_actor"
+  unset _degraded_guard_actor _degraded_guard_args _dgi
+fi
+
 # Card 9d1ee327 (CYBERSEC NO-GO 28823 LOW item 1): a signal received while bash blocks on a
 # FOREGROUND subshell or pipeline is deferred until that subshell exits -- non-interactive bash
 # only acts on a pending trap between commands, not while synchronously waiting on a child via
@@ -336,8 +492,14 @@ sync_live_install() {
     # a step that exists nowhere in code, so the next dependency-bump land hits the exact same gap.
     # This does not auto-install either (same risk, unchanged) -- it only makes the gap loud instead
     # of silent, by diffing the two lockfile-relevant files across the fast-forward.
-    if ! git -C "$MAIN" diff --quiet "$before" HEAD -- package.json package-lock.json 2>/dev/null; then
-      say "live install's package.json/package-lock.json changed by this fast-forward -- run 'npm ci --include=dev' in $MAIN by hand (card 5d365589 N3), or the live node_modules stays on the OLD dependency set"
+    # card 426adb21: a blind diff --quiet on both files fired on EVERY landing, because
+    # bump_fork_version (above) touches package.json's "version" field every time. Measured
+    # 2026-11-20: 4+ landings in one day advised npm ci with package-lock.json byte-identical and
+    # package.json differing only in "version" -- one agent ran it, needlessly risky against a
+    # concurrent fleet-test.sh reading the same node_modules. npm_ci_advisory_needed (sourced
+    # above) only fires on a real lockfile change or a package.json change outside "version".
+    if npm_ci_advisory_needed "$MAIN" "$before" HEAD; then
+      say "live install's package.json/package-lock.json changed by this fast-forward -- run 'npm ci --include=dev' in $MAIN by hand (card 5d365589 N3, refined by card 426adb21), or the live node_modules stays on the OLD dependency set"
     fi
   else
     say "live install ($MAIN) NOT fast-forwarded (dirty tree or diverged) -- sync it by hand, tell MikroB"
@@ -413,6 +575,8 @@ rebuild_live_install() {
 . "$(dirname "$0")/bump-fork-version.sh"
 # shellcheck source=./bump-upstream-version.sh
 . "$(dirname "$0")/bump-upstream-version.sh"
+# shellcheck source=./npm-ci-advisory-check.sh
+. "$(dirname "$0")/npm-ci-advisory-check.sh"
 # downward_check (card dfff9b37): what ELSE rides along in origin/develop..<branch>. Shared verbatim
 # with cleancore-land.sh. REPORTS here by default and refuses only under --card <id> -- the reason
 # is measured and written out in landing-downward-check.sh's header (marveen lands whole agent
@@ -1080,6 +1244,99 @@ print(rest[19])
   else
     echo "  FAIL marveen-land-run-fg-killable.selftest.sh not found next to $0 -- wiring broken"; fail=1
   fi
+
+  # Card d5638d28 round 3 (RedHat NO-GO 32245 F4d), ported from cleancore-land.sh's own parity
+  # cases: one end-to-end refusal case for THIS lander's own degraded-orchestrator guard -- the
+  # shared lib's unit behaviour is already covered by degraded-orchestrator-land-guard.selftest.sh,
+  # but nothing proved marveen-land.sh actually wires check_degraded_orchestrator_guard in BEFORE
+  # it would otherwise proceed. The guard runs before argument parsing, so no real MAIN/git
+  # fixture is needed -- a fixture cardId/sha is enough.
+  n=$((n+1))
+  DGSW="$(mktemp -d)/switch.json"
+  printf '{"enabled": true}' > "$DGSW"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator guard wired in: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator guard wired in: guard never fired: $out"; fail=1 ;;
+  esac
+
+  # Card d5638d28 round 4 (CYBERED NO-GO 32270 Finding 2): the F4d case above only ever tried
+  # no --actor at all -- RedHat's own mutant (widening the shared lib's actor allowlist to accept
+  # ANY non-empty name) left this selftest green, because nothing here ever supplied an --actor.
+  # Card 2ba008f2 round 3: pin a nonexistent MIKROB_SESSION_OUTAGE_PATH so this case (and the
+  # non-owner one below) do not depend on whether a REAL outage happens to be active right now.
+  NOOUT="$(mktemp -d)/no-outage.json"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$NOOUT" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) echo "  FAIL degraded-orchestrator owner bypass: --actor mikrob was still refused: $out"; fail=1 ;;
+  esac
+
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$NOOUT" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor someone-else 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator non-owner actor: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator non-owner actor: guard did not refuse a non-owner --actor: $out"; fail=1 ;;
+  esac
+
+  # Card 2ba008f2 round 3 (WhiteHat2 probe on origin/develop): the --actor mikrob bypass above
+  # must NOT apply while a session outage is active, even though the switch itself is ON -- same
+  # "refused outright during outage" rule as src/kanban-force-actors.ts's isForceActor().
+  OUTJ="$(mktemp -d)/outage.json"
+  printf '{"active": true, "heartbeat": %s}' "$(date +%s)" > "$OUTJ"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator owner bypass during outage: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator owner bypass during outage: --actor mikrob was NOT refused while the session outage marker is active: $out"; fail=1 ;;
+  esac
+
+  # Same outage marker, but the switch itself is OFF: the bypass is irrelevant here (no ON state
+  # to bypass), so the lander must proceed normally -- an outage must not turn an OFF switch into
+  # a refusal on its own.
+  DGSWOFF="$(mktemp -d)/switch-off.json"
+  printf '{"enabled": false}' > "$DGSWOFF"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSWOFF" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) echo "  FAIL switch OFF during outage: lander refused even though the switch itself is OFF: $out"; fail=1 ;;
+  esac
+
+  # Round 4 (CYBERSEC NO-GO 32558 F1): _session_outage_active's python3 subprocess crashing (an
+  # uncaught exception's default exit 1, a kill 137, a segfault 139) must refuse the --actor
+  # mikrob bypass, same as a fresh active marker -- the old `[ $? = 0 ]` read let any non-zero,
+  # non-intended exit fall through to "not active", wrongly granting the bypass. The PATH stub
+  # below crashes ONLY the outage-check's own inline script (matched by a string unique to it,
+  # "FileNotFoundError", that the switch-file reader's script never contains) and passes every
+  # other python3 invocation through to the real interpreter, so the switch check itself still
+  # runs correctly and this pins the outage check specifically, not a side effect of the switch
+  # read also failing.
+  CRASHBIN="$(mktemp -d)"
+  REAL_PYTHON3="$(command -v python3)"
+  cat > "$CRASHBIN/python3" <<STUBEOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    *FileNotFoundError*) exit "\${STUB_CRASH_CODE:-1}" ;;
+  esac
+done
+exec "$REAL_PYTHON3" "\$@"
+STUBEOF
+  chmod +x "$CRASHBIN/python3"
+  for code in 1 137 139; do
+    n=$((n+1))
+    out="$(STUB_CRASH_CODE=$code PATH="$CRASHBIN:$PATH" DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+    rc=$?
+    case "$out" in
+      *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL outage-check python3 crash (exit $code) refuses: wrong exit code $rc"; fail=1; } ;;
+      *) echo "  FAIL outage-check python3 crash (exit $code) refuses: --actor mikrob was NOT refused: $out"; fail=1 ;;
+    esac
+  done
+  rm -rf "$CRASHBIN"
+  rm -rf "$(dirname "$DGSW")"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -1897,6 +2154,53 @@ land_with_retry() {
   done
 }
 
+# Card c4590365 (Peti 13835): one inter-agent message when a single-run land (--card or plain-agent
+# mode) finishes, so the calling agent does not have to poll/tail/sleep on this process. Mirrors
+# fleet-test.sh's fleet_test_notify_finish -- same /api/messages, self-addressed (from=caller,
+# to=caller; "from":"system" is rejected with HTTP 403, reserved for in-process senders), best-effort, never
+# changes $rc. Deliberately NOT wired into land_batch's internal land_with_retry fallback loop
+# (line ~2253): that loop's $agent is a batch survivor, not "the agent that started this run" --
+# the batch's own caller already gets ONE result via its own return path, and a single survivor's
+# fallback-path finish is not the run the caller is waiting on.
+land_notify_finish() { # $1=caller_agent $2=rc $3=card_id (may be empty) $4=dry (1 if --dry-run, may be empty)
+  local caller="$1" rc="$2" card="${3:-}" dry="${4:-0}" tf
+  tf="$(_kc_token_file 2>/dev/null)" || return 0
+  [ -f "$tf" ] || return 0
+  local verdict
+  # WhiteHat F-B MEDIUM (card c4590365, comment 34613): land_one's dry-run branch (line ~1937)
+  # returns 0 on a PREVIEW that never pushed anything -- without this check that rc=0 maps to
+  # "LANDED" the same as a real landing, so a caller told "wait for the message, do not poll"
+  # would be told a dry-run push actually happened. Checked BEFORE the rc table so dry always wins.
+  if [ "$dry" = "1" ]; then
+    verdict="DRY-RUN"
+  else
+    case "$rc" in
+      0) verdict="LANDED" ;;
+      2) verdict="BAD-USAGE" ;;
+      3) verdict="REFUSED" ;;
+      4) verdict="FAILED" ;;
+      *) verdict="UNKNOWN" ;;
+    esac
+  fi
+  # "from": caller, not "system" -- the dashboard rejects "system" over this Bearer-token HTTP
+  # API with 403 "from is reserved for in-process system senders" (curl is never in-process).
+  # A self-addressed message (from==to==caller) is accepted. Measured live, card c4590365: the
+  # fleet-test.sh sibling of this function had used "system" the same way and every call 403'd
+  # silently (best-effort, never surfaced).
+  local payload
+  payload="$(python3 -c '
+import json, sys
+card = sys.argv[3] or "n/a"
+print(json.dumps({"from": sys.argv[1], "to": sys.argv[1],
+                   "content": "[marveen-land.sh] " + sys.argv[2] + " (exit " + sys.argv[4] + ")\n" +
+                              "agent=" + sys.argv[1] + " card=" + card}))
+' "$caller" "$verdict" "$card" "$rc" 2>/dev/null)"
+  [ -n "$payload" ] || return 0
+  printf 'Authorization: Bearer %s\n' "$(cat "$tf")" \
+    | curl -fsS -m 15 -o /dev/null -H @- -H 'Content-Type: application/json' \
+      -X POST "$KANBAN_COMMENT_API/api/messages" --data-binary "$payload" 2>/dev/null || true
+}
+
 # BATCHED LANDING (card 6ec8e9d8, MikroB plan-grilling GO msg 18291/comment 30593). Merges several
 # gate-green --card branches into ONE worktree, runs fleet-test.sh ONCE on the combined result, and
 # pushes ONCE -- instead of land_with_retry's one-card-at-a-time serial cost (measured 12-38 min per
@@ -2441,6 +2745,102 @@ if [ "${1:-}" = "--selftest-land-lock-release-inner" ]; then
   echo
   if [ "$fail" -eq 0 ]; then echo "selftest-land-lock-release: $n case(s), PASS"; exit 0
   else echo "selftest-land-lock-release: $n case(s), FAIL"; exit 1
+  fi
+fi
+
+# Self-test for land_notify_finish (card c4590365). Same reason as --selftest-land-lock-release
+# above: the function is defined after the main --selftest block's exit point, so it has to be
+# called for real, through a real stub HTTP server, not reasoned about from source text.
+if [ "${1:-}" = "--selftest-land-notify" ]; then
+  LNTMP="$(mktemp -d)"
+  cat >"$LNTMP/stub.py" <<'EOS'
+import http.server, os, socketserver, sys
+LOG_FILE = os.environ["STUB_POST_LOG"]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        with open(LOG_FILE, "a") as f:
+            f.write(self.path + "\t" + body.decode(errors="replace") + "\n")
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a):
+        pass
+with socketserver.TCPServer(("127.0.0.1", 0), H) as httpd:
+    print(httpd.server_address[1]); sys.stdout.flush()
+    httpd.serve_forever()
+EOS
+  STUB_POST_LOG="$LNTMP/post.log" python3 "$LNTMP/stub.py" >"$LNTMP/port.txt" 2>"$LNTMP/stub-err.txt" &
+  stub_pid=$!
+  trap 'kill "$stub_pid" 2>/dev/null; rm -rf "$LNTMP"' EXIT
+  for _i in $(seq 1 50); do [ -s "$LNTMP/port.txt" ] && break; sleep 0.1; done
+  stub_port="$(cat "$LNTMP/port.txt" 2>/dev/null)"
+  exec env STUB_POST_LOG="$LNTMP/post.log" \
+    KANBAN_COMMENT_API="http://127.0.0.1:$stub_port" \
+    KANBAN_COMMENT_TOKEN_FILE="$LNTMP/token" \
+    bash "$0" --selftest-land-notify-inner "$LNTMP" "$stub_pid"
+fi
+
+if [ "${1:-}" = "--selftest-land-notify-inner" ]; then
+  LNTMP="$2"; stub_pid="$3"
+  trap 'kill "$stub_pid" 2>/dev/null; rm -rf "$LNTMP"' EXIT
+  echo dummy-token >"$KANBAN_COMMENT_TOKEN_FILE"
+  fail=0; n=0
+
+  n=$((n+1))
+  land_notify_finish "fullstack" 0 "card-abc"
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  path="${line%%$'\t'*}"; body="${line#*$'\t'}"
+  if [ "$path" = "/api/messages" ] \
+    && printf '%s' "$body" | grep -q '"to": *"fullstack"' \
+    && printf '%s' "$body" | grep -q '"from": *"fullstack"' \
+    && printf '%s' "$body" | grep -q 'LANDED (exit 0)' \
+    && printf '%s' "$body" | grep -q 'card=card-abc'; then
+    echo "  ok   land_notify_finish(rc=0): posts to /api/messages, from=caller, to=caller, LANDED, correct card"
+  else
+    echo "  FAIL land_notify_finish(rc=0): path=[$path] body=[$body]"; fail=1
+  fi
+
+  n=$((n+1))
+  : >"$STUB_POST_LOG"
+  land_notify_finish "backend" 3 ""
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  body="${line#*$'\t'}"
+  if printf '%s' "$body" | grep -q '"to": *"backend"' \
+    && printf '%s' "$body" | grep -q 'REFUSED (exit 3)' \
+    && printf '%s' "$body" | grep -q 'card=n/a'; then
+    echo "  ok   land_notify_finish(rc=3, no card): REFUSED verdict, card falls back to n/a"
+  else
+    echo "  FAIL land_notify_finish(rc=3): body=[$body]"; fail=1
+  fi
+
+  # WhiteHat F-B MEDIUM (comment 34613): a --dry-run preview returns rc=0, same as a real landing
+  # -- without the dry flag this would post "LANDED" for a run that never pushed anything.
+  n=$((n+1))
+  : >"$STUB_POST_LOG"
+  land_notify_finish "fullstack" 0 "card-abc" "1"
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  body="${line#*$'\t'}"
+  if printf '%s' "$body" | grep -q 'DRY-RUN (exit 0)' \
+    && ! printf '%s' "$body" | grep -q 'LANDED'; then
+    echo "  ok   land_notify_finish(rc=0, dry=1): DRY-RUN verdict, never LANDED"
+  else
+    echo "  FAIL land_notify_finish(rc=0, dry=1): body=[$body]"; fail=1
+  fi
+
+  # Negative control (guards-that-pin-behaviour): with no readable token file, nothing is posted.
+  n=$((n+1))
+  rm -f "$KANBAN_COMMENT_TOKEN_FILE"
+  : >"$STUB_POST_LOG"
+  land_notify_finish "fullstack" 0 "card-abc"
+  if [ ! -s "$STUB_POST_LOG" ]; then
+    echo "  ok   land_notify_finish with no token file: no POST sent (fail-silent, never blocks the land)"
+  else
+    echo "  FAIL land_notify_finish with no token file: a POST was sent anyway: $(cat "$STUB_POST_LOG")"; fail=1
+  fi
+
+  echo
+  if [ "$fail" -eq 0 ]; then echo "selftest-land-notify: $n case(s), PASS"; exit 0
+  else echo "selftest-land-notify: $n case(s), FAIL"; exit 1
   fi
 fi
 
@@ -3539,6 +3939,21 @@ fi
 DRY=0; LAND_CARD=""; ALLOW_STACKED=""; ALLOW_ARCHIVE=0; ALLOW_UNGATED_CARDS=""
 TARGET="${1:-}"; [ $# -gt 0 ] && shift
 
+# Card d5638d28: --actor was already consumed by the degraded-orchestrator guard check at the top
+# of this script (before any infra/lock checks). Strip it here too, before any of the three
+# mode-specific parsers (--card, --batch, the plain-agent/--all loop) see argv -- they do not know
+# the flag and would otherwise die with "unknown option: --actor".
+_land_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --actor) shift ;;
+    --actor=*) ;;
+    *) _land_args+=("$1") ;;
+  esac
+  shift
+done
+set -- "${_land_args[@]}"
+
 # card cd3e577b (F1): `marveen-land.sh --card <id> --agent <agent> [--dry-run]` lands the card's OWN
 # card/<id> worktree branch (created by `agent-worktree-marveen.sh <agent> --card <id>`) instead of
 # the agent's shared agent/<agent>/work branch. Parsed separately from the existing per-agent
@@ -3577,8 +3992,9 @@ if [ "$TARGET" = "--card" ]; then
   [ -n "$CARD_AGENT" ] || die 2 "--card requires --agent <name> for attribution (locking, fleet-test queue, version-bump commit message)"
   LAND_CARD="$CARD_BRANCH_ID"
   CARD_BRANCH_MODE=1
-  land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"
-  exit $?
+  land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"; _land_rc=$?
+  land_notify_finish "$CARD_AGENT" "$_land_rc" "$CARD_BRANCH_ID" "$DRY"
+  exit "$_land_rc"
 fi
 
 # Card 6ec8e9d8 (MikroB GO, msg 18291/comment 30593): `marveen-land.sh --batch <id1>:<agent1>,<id2>:<agent2>,...`
@@ -3684,7 +4100,8 @@ case "$TARGET" in
     ;;
   '') die 2 "usage: marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]] | marveen-land.sh --card <id> --agent <agent> [--dry-run] | marveen-land.sh --all [--dry-run]" ;;
   *)
-    land_with_retry "$TARGET" "$DRY"
-    exit $?
+    land_with_retry "$TARGET" "$DRY"; _land_rc=$?
+    land_notify_finish "$TARGET" "$_land_rc" "${LAND_CARD:-}" "$DRY"
+    exit "$_land_rc"
     ;;
 esac

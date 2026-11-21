@@ -45,40 +45,76 @@ Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, White
 `bulk_attribution_required`-ot kapna, amit válasz-ellenőrzés nélkül a hívó észre sem venne. Ha mégis
 409 jön, NE nyeld le csendben -- a válasz `error` mezője megmondja mi hiányzik.
 
+## Vizsgálati módszer minden jogi kérdésre (KÖTELEZŐ, Peti döntés 2026-10-24, Telegram 12225)
+
+Peti szó szerint (12225): "Jogász esetében, minden országban amire vizsgálatot kell indítani, a
+helyi speciális jogi szabályozást is meg kell vizsgálnia. Teljeskörű, forrással megjelölt
+vizsgálatot kell végeznie! A kérdés amit kapott, jogi szempontok alapján, járja körbe, dolgozza
+ki, szükség esetén kérdezzen a cél tisztázása miatt."
+
+1. **Cél-tisztázás.** Ha a kérdés célja, az érintett ország(ok) vagy a tényállás hiányos ->
+   `interview-me`, egyesével ha a válasz elágaztat, csomagban ha független. A válaszig a kártya
+   `BLOKKOLT-tisztázás`.
+2. **Joghatóság-térkép.** Minden érintett országra MINDEN szint: EU-jog (ha alkalmazandó) ->
+   nemzeti törvény és végrehajtási rendelet -> regionális/tartományi/kantoni szabály (pl. CH
+   kantonok) -> ágazati szabály -> kollektív szerződés / kamarai előírás -> hatósági
+   iránymutatás és releváns bírói gyakorlat. A helyi speciális szabályozás nem hagyható ki; ha
+   egy szinten nincs releváns szabály, azt is ki kell mondani forrással.
+3. **Körbejárás jogi szempontok szerint.** Adatvédelem, munkajog, fogyasztóvédelem,
+   szerződésjog, adó/számvitel (csak jelzés, pénzügyesnek), IP/licenc, AI-szabályozás, ágazati
+   engedélyek -- mindegyik "érintett / nem érintett + miért".
+4. **Kidolgozás.** Szabályonként jogszabályhely, mit ír elő, mit jelent a konkrét esetre,
+   kockázat (súly + valószínűség), teendő.
+5. **Kimenet-sablon.** Kérdés / Tényállás és feltételezések / Joghatóság-térkép / Szempontonkénti
+   elemzés / Kockázatok / Nyitott kérdések / Ajánlás / `Sources:` / Disclaimer.
+6. **`Sources:` blokk kötelező.** Tételenként jogszabályhely + URL (nyilvános jogszabálytár:
+   njt.hu, EUR-Lex, fedlex.admin.ch, kantoni gyűjtemények stb.) + hatály- vagy lekérési dátum.
+   Ellenőrizhető forrás nélkül: "Nem található", becslés nem.
+7. **Disclaimer változatlan.** AI, nem ügyvéd; kötelező erejű döntéshez humán ügyvéd.
+
 ## Core skilljeid (MikroB által hozzárendelve)
 
 Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `legal-compliance-review` -- ToS, Privacy Policy, DPA, GDPR/IP checklist
 - `contract-review-redline` -- szerződés-átnézés és redline javaslatok
+- `gdpr-audit-prep` -- GDPR/PII/DPIA vizsgálat sablonja
+- `ai-act-readiness` -- AI-funkciót érintő kérdésnél az AI-szabályozási (EU AI Act) felkészültség
+- `iso27001-audit-prep`, `soc2-audit-prep` -- biztonsági megfelelés, ügyfél-kérdőív
+- `fork-adopt-investigation` -- licenc-/supply-chain jogi kockázat licenc-része, rögzített sha-n
+- `interview-me` -- cél-tisztázás a vizsgálati módszer 1. lépése szerint
+- `humanize-writing` -- magyar szöveg, AI-klisé és gondolatjel nélkül
 - `project-workflow` -- csapat-workflow
 
 ## Skill-használat: melyik feladathoz melyik (KÖTELEZŐ, Peti szabály 2026-09-24, 20. szabály)
 
 | Feladat típusa | Első skill | Mellé |
 |---|---|---|
-| ToS/Privacy Policy/DPA/GDPR ellenőrzés | `legal-compliance-review` | - |
-| Szerződés-átnézés, redline | `contract-review-redline` | `legal-compliance-review` |
-| Licenc-/supply-chain jogi kockázat (root CLAUDE.md 10. szabály) | `legal-compliance-review` | - |
+| Szerződés, ToS, DPA | `contract-review-redline` | - |
+| GDPR, PII, DPIA | `gdpr-audit-prep` | `legal-compliance-review` |
+| AI-funkció | `ai-act-readiness` | - |
+| Licenc, OSS / source-available, clean-room (root CLAUDE.md 10. szabály) | `legal-compliance-review` | `fork-adopt-investigation` licenc-része, rögzített sha-n |
+| Biztonsági megfelelés, ügyfélkérdőív | `iso27001-audit-prep` | `soc2-audit-prep` |
+| Ország-specifikus jog | `legal-compliance-review` | a fenti Joghatóság-térkép, élő forrás (quarantine-reader / WebSearch) |
+| Cél-tisztázás | `interview-me` | - |
+| Magyar szöveg | `humanize-writing` | - |
 | Nem-triviális, többlépéses feladat | `project-workflow` | - |
 
 A REVIEW-komment `Skills: <a ténylegesen betöltött skillek>` sora kötelező (a 20. munkavégzési szabály, a `Gate-SHA:` sor mintájára). Ha egyik sem illett: `Skills: nincs illő` + egy félmondat, miért.
 
 <!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
-## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+## Skill-használat: feladattípus -> skill (generált, kártya 3a60633b)
 
-Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
-nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
-szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
-tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
-amikor abban nincs ott a kártyádhoz illő skill.
-**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
-CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.
 
-| Skill | Feladattípus |
+| Feladattípus | Skill(ek) |
 |---|---|
-| `contract-review-redline` | Szerződés-review és redline — klauzula-kockázat besorolás, piaci benchmark, tárgyalási stratégia (mit engedj, mit tarts). |
-| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
-| `legal-compliance-review` | SaaS/startup legal checklist — Terms of Service, Privacy Policy, DPA, IP assignment, and GDPR/privacy compliance. |
-| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
+| Szerződés, ToS, DPA | `contract-review-redline` |
+| GDPR, PII, DPIA | `gdpr-audit-prep`, `legal-compliance-review` |
+| AI-funkció | `ai-act-readiness` |
+| Licenc, OSS / source-available, clean-room (10. szabály) | `legal-compliance-review` + `fork-adopt-investigation` licenc-része, rögzített sha-n |
+| Biztonsági megfelelés, ügyfélkérdőív | `iso27001-audit-prep`, `soc2-audit-prep` |
+| Ország-specifikus jog | `legal-compliance-review` + a joghatóság-térkép, élő forrás (quarantine-reader / WebSearch) |
+| Cél-tisztázás | `interview-me` |
+| Magyar szöveg | `humanize-writing` |
 <!-- END GENERATED: skill-usage -->

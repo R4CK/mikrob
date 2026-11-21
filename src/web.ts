@@ -10,6 +10,7 @@ import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { operatorGateDecision } from './web/operator-gate.js'
+import { nightGateDecision } from './web/night-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
 import { tryHandleOperator } from './web/routes/operator.js'
@@ -21,7 +22,7 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureDbWriteGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureAgentKeySecretGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGateSharedMemoryInjectAgentArg, ensureSharedMemoryInject, ensureGovernanceGateCommands, ensureDestructiveGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureLanguageSection, ensureWebSearchEnvelope } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureDbWriteGuard, ensureLiveCheckoutWriteGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureAgentKeySecretGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGateSharedMemoryInjectAgentArg, ensureSharedMemoryInject, ensureGovernanceGateCommands, ensureDestructiveGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureLanguageSection, ensureWebSearchEnvelope } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -49,6 +50,7 @@ import { startModelFallbackRunner } from './web/model-fallback-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
 import { startKanbanArchiveRunner } from './web/kanban-archive-runner.js'
 import { startContextRestartGateRunner, setMainSweepHook } from './web/context-restart-gate-runner.js'
+import { startEventLoopLagMonitor } from './web/event-loop-lag-monitor.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
@@ -108,6 +110,8 @@ import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleProjectPriority } from './web/routes/project-priority.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
+import { tryHandleTelegramOutbox } from './web/routes/telegram-outbox.js'
+import { startTelegramOutboxDrain } from './web/telegram-outbox.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleLlmLedger } from './web/routes/llm-ledger.js'
@@ -222,6 +226,17 @@ export function startWebServer(port = 3420): http.Server {
         return
       }
     }
+    // Card 2ba008f2: same deny-by-default shape as the operator gate above, same chokepoint,
+    // before any handler runs -- a 'night' scoped key reaches only its own 3-item allowlist.
+    if (requiresAuth(path, method)) {
+      const nightDenied = nightGateDecision(auth, path, method)
+      if (nightDenied) {
+        logger.warn({ path, method, device: auth.kind === 'device' ? auth.device : undefined, reason: nightDenied }, 'night gate: denied')
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Forbidden for this credential', reason: nightDenied }))
+        return
+      }
+    }
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
       auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent }
@@ -291,6 +306,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleProjectPriority(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
+      if (await tryHandleTelegramOutbox(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleLlmLedger(routeCtx)) return
@@ -461,6 +477,10 @@ export function startWebServer(port = 3420): http.Server {
 
   const scheduleInterval = webOnly ? undefined : startScheduleRunner()
   if (!webOnly) logger.info('Schedule runner started (60s poll)')
+  // Card ea3e7316: default OFF (MIKROB_TG_OUTBOX!=1), itself checks the flag and returns
+  // undefined -- startTelegramOutboxDrain() is always safe to call unconditionally.
+  const telegramOutboxInterval = webOnly ? undefined : startTelegramOutboxDrain()
+  if (!webOnly && telegramOutboxInterval) logger.info('Telegram outbox drain started (10s poll)')
   // HBFABRIC1003 (B): a missing heartbeat digest is reported, whatever its route.
   const heartbeatGapInterval = webOnly ? undefined : startHeartbeatGapGuard()
 
@@ -584,6 +604,13 @@ export function startWebServer(port = 3420): http.Server {
     startContextRestartGateRunner()
     logger.info('Context-restart gate runner started (per-agent poll, 3min initial delay)')
   }
+
+  // Event-loop-lag monitor: detects a blocked event loop from ANY source (a sync
+  // shell-out, a runaway loop, a giant parse) and logs a WARN, so a wedge surfaces in
+  // seconds instead of when a human notices the dashboard is unresponsive. Runs on a
+  // web-only instance too: the loop it watches is the web server's.
+  const eventLoopLag = startEventLoopLagMonitor()
+  logger.info(`Event-loop-lag monitor started (${eventLoopLag.sampleMs / 1000}s window, WARN past ${eventLoopLag.warnMs}ms block)`)
 
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
   if (!webOnly) {
@@ -734,6 +761,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       const govPatched: string[] = []
       const npmGuardPatched: string[] = []
       const dbWriteGuardPatched: string[] = []
+      const liveCheckoutWriteGuardPatched: string[] = []
       const blastGuardPatched: string[] = []
       const pentestGuardPatched: string[] = []
       const symlinkNmGuardPatched: string[] = []
@@ -780,6 +808,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         else if (ensureBashEgressDeny(agentName, bashDenyDir)) bashEgressPatched.push(agentName)
         if (ensureNpmProtectGuard(agentName)) npmGuardPatched.push(agentName)
         if (ensureDbWriteGuard(agentName)) dbWriteGuardPatched.push(agentName)
+        if (ensureLiveCheckoutWriteGuard(agentName)) liveCheckoutWriteGuardPatched.push(agentName)
         if (ensureBlastRadiusGuard(agentName)) blastGuardPatched.push(agentName)
         if (ensurePentestToolInstallGuard(agentName)) pentestGuardPatched.push(agentName)
         if (ensureSymlinkedNodeModulesGuard(agentName)) symlinkNmGuardPatched.push(agentName)
@@ -817,6 +846,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (rootPatched.length) logger.info({ patched: rootPatched }, 'CLAUDE.md install-anchored paths re-anchored on the current PROJECT_ROOT (HOSTMOVE923)')
       if (npmGuardPatched.length) logger.info({ patched: npmGuardPatched }, 'npm-protect guard backfilled into agent settings.json')
       if (dbWriteGuardPatched.length) logger.info({ patched: dbWriteGuardPatched }, 'db-write guard backfilled into agent settings.json')
+      if (liveCheckoutWriteGuardPatched.length) logger.info({ patched: liveCheckoutWriteGuardPatched }, 'live-checkout-write guard backfilled into agent settings.json')
       if (blastGuardPatched.length) logger.info({ patched: blastGuardPatched }, 'blast-radius guard backfilled into agent settings.json')
       if (pentestGuardPatched.length) logger.info({ patched: pentestGuardPatched }, 'pentest-tool-install guard backfilled into agent settings.json')
       if (symlinkNmGuardPatched.length) logger.info({ patched: symlinkNmGuardPatched }, 'symlinked-node-modules guard backfilled into agent settings.json')
@@ -881,6 +911,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   server.close = (cb?: (err?: Error) => void) => {
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
+    if (telegramOutboxInterval) clearInterval(telegramOutboxInterval)
     clearInterval(heartbeatGapInterval)
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
     workerLivenessCancelled = true
@@ -901,6 +932,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(contextGuardInterval)
     clearInterval(approvalTimeoutInterval)
     clearInterval(authSessionSweepInterval)
+    eventLoopLag.stop()
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)

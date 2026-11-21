@@ -7556,6 +7556,33 @@ button.graph-rel-jump:focus-visible { outline: 2px solid var(--accent); outline-
 .md-rendered pre code { background: none; padding: 0; }
 .md-rendered :not(pre) > code { border-radius: 3px; padding: 1px 5px; }
 
+/* MARVEENGAPS1020 (b): skills waiting for approval */
+.skills-pending {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--warning, #d4a52c);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+.skills-pending-title { font-size: 15px; margin: 0 0 6px; }
+.skills-pending-intro { font-size: 13px; color: var(--text-secondary); margin: 0 0 12px; line-height: 1.5; }
+.skills-pending-card { border-top: 1px solid var(--border); padding: 12px 0 4px; }
+.skills-pending-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.skills-pending-meta { font-size: 12px; color: var(--text-muted); }
+.skills-pending-sub { font-size: 12px; font-weight: 600; margin: 10px 0 4px; color: var(--text-secondary); }
+.skills-pending-findings { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.skills-pending-pattern { display: inline-block; min-width: 150px; font-weight: 600; color: var(--danger); margin-right: 6px; }
+.skills-pending-excerpt { display: block; color: var(--text-muted); white-space: pre-wrap; }
+.skills-pending-warn { font-size: 12px; color: var(--danger); margin-top: 6px; }
+.skills-pending-target { font-size: 13px; font-weight: 600; margin: 6px 0 2px; }
+.skills-pending-target.is-global { color: var(--danger); }
+.skills-pending-sub.is-flagged { color: var(--danger); }
+.skills-pending-file { font-size: 12px; margin: 2px 0; overflow-wrap: anywhere; }
+.skills-pending-file summary.is-flagged { color: var(--danger); }
+.skills-pending-file pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-code); padding: 10px; border-radius: 6px; font-size: 12px; }
+.skills-pending-sha { font-family: monospace; font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.skills-pending-actions { display: flex; gap: 8px; margin: 10px 0 6px; flex-wrap: wrap; }
 .skills-stats {
   display: flex;
   gap: 12px;
@@ -11291,11 +11318,96 @@ body {
   line-height: 1.4;
 }
 
+/* === FreeAPI LLM call log (card ebe20efe) === */
+.freellm-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.freellm-calls-loading,
+.freellm-calls-empty {
+  padding: 12px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.freellm-calls-error {
+  padding: 12px;
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid var(--error, #ef4444);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+}
+.freellm-calls-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.freellm-calls-counts[hidden] {
+  display: none;
+}
+.freellm-calls-counts-group {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.freellm-calls-counts-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 48px;
+}
+.freellm-calls-counts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.freellm-calls-count-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.freellm-calls-count-chip--ok { color: var(--success, #10b981); }
+.freellm-calls-count-chip--fail,
+.freellm-calls-count-chip--stalled,
+.freellm-calls-count-chip--rate_429,
+.freellm-calls-count-chip--auth { color: var(--error, #ef4444); }
+.freellm-calls-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.freellm-calls-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.freellm-calls-table th,
+.freellm-calls-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.freellm-calls-table th {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.freellm-calls-row--failed td { background: rgba(239, 68, 68, 0.08); }
+
 /* Responsive: 375px minimum (rule 13) */
 @media (max-width: 480px) {
   .freellm-metrics {
     grid-template-columns: 1fr;
   }
+  .freellm-calls-counts-group { flex-direction: column; align-items: flex-start; }
 }
 
 /* === FreeAPI LLM provider key form (card fd5fcc2c point 5) === */

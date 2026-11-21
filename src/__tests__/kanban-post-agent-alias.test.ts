@@ -32,19 +32,19 @@ describe('POST /api/kanban -- agent -> assignee alias', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
   it('a body carrying `agent` (not `assignee`) still gets an owner', async () => {
-    const { ctx, out } = postCtx({ title: 'Aliased card', agent: 'newton' })
+    const { ctx, out } = postCtx({ title: 'Aliased card', agent: 'newton', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(getKanbanCard(out.body.id)?.assignee).toBe('newton')
   })
 
   it('an explicit `assignee` wins over `agent` when both are sent', async () => {
-    const { ctx, out } = postCtx({ title: 'Both fields', agent: 'newton', assignee: 'ada' })
+    const { ctx, out } = postCtx({ title: 'Both fields', agent: 'newton', assignee: 'ada', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(getKanbanCard(out.body.id)?.assignee).toBe('ada')
   })
 
   it('a body with neither field still creates a (gazdatlan) card, unchanged behavior', async () => {
-    const { ctx, out } = postCtx({ title: 'No owner at all' })
+    const { ctx, out } = postCtx({ title: 'No owner at all', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(getKanbanCard(out.body.id)?.assignee).toBeNull()
   })
@@ -55,7 +55,7 @@ describe('POST /api/kanban -- agent -> assignee alias', () => {
   // the alias anyway, silently overriding a caller's deliberate "no owner" -- this test goes
   // red on that specific regression, not just on the alias disappearing entirely.
   it('an explicit `assignee: null` is left alone -- `agent` does not override a deliberate null', async () => {
-    const { ctx, out } = postCtx({ title: 'Deliberately unowned', agent: 'newton', assignee: null })
+    const { ctx, out } = postCtx({ title: 'Deliberately unowned', agent: 'newton', assignee: null, project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(getKanbanCard(out.body.id)?.assignee).toBeNull()
   })
@@ -70,7 +70,7 @@ describe('POST /api/kanban -- unknown fields are warned, not rejected', () => {
   afterEach(() => { warn.mockRestore() })
 
   it('an unrecognised key logs a WARN naming the key, but the write still succeeds', async () => {
-    const { ctx, out } = postCtx({ title: 'Typo field', descrpition: 'oops' })
+    const { ctx, out } = postCtx({ title: 'Typo field', descrpition: 'oops', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard(out.body.id)?.title).toBe('Typo field')
@@ -81,13 +81,13 @@ describe('POST /api/kanban -- unknown fields are warned, not rejected', () => {
   })
 
   it('`agent` itself is never warned as unknown -- it is a recognised, handled key', async () => {
-    const { ctx } = postCtx({ title: 'Agent only', agent: 'newton' })
+    const { ctx } = postCtx({ title: 'Agent only', agent: 'newton', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(warn).not.toHaveBeenCalled()
   })
 
   it('a fully known body (writable fields + id) logs no warning', async () => {
-    const { ctx } = postCtx({ id: 'k1', title: 'Clean card', status: 'planned', assignee: 'newton' })
+    const { ctx } = postCtx({ id: 'k1', title: 'Clean card', status: 'planned', assignee: 'newton', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(warn).not.toHaveBeenCalled()
   })
@@ -98,7 +98,7 @@ describe('POST /api/kanban -- unknown fields are warned, not rejected', () => {
   // this fix the known-field set borrowed KANBAN_WRITABLE_FIELDS wholesale, so these two
   // were treated as "known" and silently dropped with no warning.
   it('sort_order and archived_at are warned and dropped, not silently accepted', async () => {
-    const { ctx, out } = postCtx({ title: 'Sneaky fields', sort_order: 99, archived_at: 12345 })
+    const { ctx, out } = postCtx({ title: 'Sneaky fields', sort_order: 99, archived_at: 12345, project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     const card = getKanbanCard(out.body.id)
     expect(card?.archived_at).toBeNull()
@@ -114,7 +114,7 @@ describe('POST /api/kanban -- unknown fields are warned, not rejected', () => {
   // `agent` unconditionally right after, before the unknown-key loop ran, so the bad value
   // vanished with no alias AND no warning. It must now fall through and be warned.
   it('a non-string `agent` is warned as unknown, not silently dropped', async () => {
-    const { ctx, out } = postCtx({ title: 'Bad agent type', agent: ['newton'] })
+    const { ctx, out } = postCtx({ title: 'Bad agent type', agent: ['newton'], project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(getKanbanCard(out.body.id)?.assignee).toBeNull()
     expect(warn).toHaveBeenCalledWith(
@@ -124,7 +124,7 @@ describe('POST /api/kanban -- unknown fields are warned, not rejected', () => {
   })
 
   it('one warn call lists every unknown key, not one call per key', async () => {
-    const { ctx } = postCtx({ title: 'Two typos', descrpition: 'oops', statuss: 'planned' })
+    const { ctx } = postCtx({ title: 'Two typos', descrpition: 'oops', statuss: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(warn).toHaveBeenCalledTimes(1)
     expect(warn).toHaveBeenCalledWith(

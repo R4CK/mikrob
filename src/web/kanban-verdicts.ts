@@ -27,6 +27,7 @@ import {
 // top level. Reused rather than re-derived so the POST-side designation check (below) and the
 // enforcing guard's own parse agree by construction instead of by discipline.
 import { extractGateLine, parseGateDesignation, latestReviewGateSha, type GateAgent } from './kanban-gate-completeness-guard.js'
+import { noGoRoundCapCheck } from './kanban-nogo-round-cap.js'
 import type { RouteContext } from './routes/types.js'
 
 export function isAgentVerdictRecordEnabled(): boolean {
@@ -259,6 +260,11 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
     // states a Fix-Direction: line -- a plain NO-GO/FAIL does not propose anything by itself.
     if ((verdict === 'FAIL' || verdict === 'NO-GO') && authorStatedFixDirection(getKanbanComments(cardId), author)) {
       addKanbanFixProposal(cardId, author, providedSha)
+    }
+    // F5 (card a577d0a4): only a FAIL/NO-GO can extend a failed-round streak -- a PASS/GO write
+    // can only ever shorten or break one, so there is nothing for the cap check to find there.
+    if (verdict === 'FAIL' || verdict === 'NO-GO') {
+      noGoRoundCapCheck(cardId)
     }
     json(res, row, 201)
     return true

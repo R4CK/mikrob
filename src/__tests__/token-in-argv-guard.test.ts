@@ -11,8 +11,9 @@
 // call, where `curl -X POST ... \` and `-H "Authorization: Bearer $TOK" \` are on different lines --
 // exactly the miss I made scanning by eye before writing this guard. The scanner below joins a curl
 // invocation across backslash-continued lines before testing it, the same way bash itself does.
-import { describe, it, expect } from 'vitest'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { existsSync, readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, dirname, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
@@ -95,7 +96,16 @@ function findCurlInvocations(source: string): CurlInvocation[] {
  * `Bearer <token>` and `Bearer %s`, and inventing that on no evidence is how guards get disabled.
  */
 function leaksTokenInArgv(invocation: string): boolean {
-  if (!/Authorization:\s*Bearer\s*(\$(\(|\{|[A-Za-z_])|`)/.test(invocation)) return false
+  // Card f19cb1e1 (CYBERSEC GO F1 on ca6d7b9d, comment on Gate-SHA 4a0845f9): this rule was
+  // case-sensitive on the header NAME/scheme (`authorization: bearer $(...)` survived) and had no
+  // rule at all for curl's OWN `--oauth2-bearer <token>` flag, which puts a bearer token in argv
+  // without ever spelling the word "Authorization". Both measured live against this exact
+  // function: neither tripped it before this fix. `/i` covers the first; a dedicated check below
+  // covers the second, since `--oauth2-bearer` has no sanctioned file-based form to exempt.
+  const headerBearer = /Authorization:\s*Bearer\s*(\$(\(|\{|[A-Za-z_])|`)/i.test(invocation)
+  const oauth2Bearer = /--oauth2-bearer[\s=]+["'`]?(\$(\(|\{|[A-Za-z_])|`)/i.test(invocation)
+  if (!headerBearer && !oauth2Bearer) return false
+  if (oauth2Bearer) return true
   // The sanctioned form reads the header from a file (`-H @"$hdr_file"` / `-H @"$hdr"` / `-H @"$hf"`);
   // that never matches the Bearer-in-argv pattern above in the first place, but keep this as an
   // explicit second check so a future refactor that keeps BOTH forms in one invocation still trips.
@@ -245,12 +255,39 @@ function scanDir(dir: string): string[] {
 // about. No other tree currently ships a `.template` file (checked), so this is a pure addition.
 const TEXT_FILE = /\.(md|sh|py|js|mjs|cjs|ts|json|template)$/
 
+/**
+ * True iff `dir` is the root of a nested git worktree -- it carries a `.git` FILE (not a
+ * directory) pointing at the main repo's `.git/worktrees/<name>`. `git worktree add` always
+ * writes this file at the checkout root, so its presence (and being a FILE, never a directory,
+ * which is what a normal repo's `.git` is) is structural evidence, not a name guess.
+ */
+function isNestedWorktreeRoot(dir: string): boolean {
+  const gitPath = join(dir, '.git')
+  if (!existsSync(gitPath)) return false
+  try {
+    return statSync(gitPath).isFile()
+  } catch {
+    return false
+  }
+}
+
 function scanTree(dir: string, base: string = dir): string[] {
   const out: string[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
-    if (entry.isDirectory()) out.push(...scanTree(full, base))
-    else if (TEXT_FILE.test(entry.name)) out.push(relative(base, full))
+    if (entry.isDirectory()) {
+      // Card 7c72640e: a gate/QA agent's disposable worktree under agents/<agent>/.worktrees/ is a
+      // full checkout, including a copy of THIS file's own fixture strings (deliberately-bad curl
+      // examples the tests below exist to exercise). Walking into it re-scans those fixtures as if
+      // they were live, shipped agent content, and false-reds every land while any such worktree
+      // exists (measured 2026-11-20, msg 21979: a577d0a4 land REFUSED by 37 failures, all under
+      // agents/qa2/.worktrees/gate-30aa8b29/src/__tests__/*.test.ts). `.worktrees` is excluded by
+      // name (the fleet's own convention, belt-and-suspenders); `isNestedWorktreeRoot` catches the
+      // same shape structurally wherever it sits, including a gate worktree created at some other
+      // path under agents/.
+      if (entry.name === '.worktrees' || isNestedWorktreeRoot(full)) continue
+      out.push(...scanTree(full, base))
+    } else if (TEXT_FILE.test(entry.name)) out.push(relative(base, full))
   }
   return out
 }
@@ -966,6 +1003,33 @@ describe('the scanner itself catches what a naive single-line regex would miss',
     expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
   })
 
+  // Card f19cb1e1 (CYBERSEC GO F1 on ca6d7b9d): the header NAME/scheme match was case-sensitive,
+  // so a lowercase `authorization: bearer $(...)` survived both this guard and the smaller
+  // generator pin test unnoticed.
+  it('flags a lowercase "authorization: bearer" header, not just the capitalized spelling', () => {
+    const script = 'curl -s -H "authorization: bearer $(cat store/.dashboard-token)" "$DASH/api/x"'
+    expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toHaveLength(1)
+  })
+
+  // Card f19cb1e1 (same finding): curl's own `--oauth2-bearer <token>` flag puts a bearer token
+  // in argv WITHOUT ever spelling the word "Authorization" -- a rule anchored on that word alone
+  // is blind to it by construction. No sanctioned file-based form exists for this flag, so it is
+  // never exempted the way `-H @"$hdr"` exempts the header form.
+  it('flags --oauth2-bearer sourced from a variable or substitution', () => {
+    for (const script of [
+      'curl -s --oauth2-bearer "$(cat store/.dashboard-token)" "$DASH/api/x"',
+      'curl -s --oauth2-bearer="${TOK}" "$DASH/api/x"',
+      'curl -s --oauth2-bearer "$TOK" "$DASH/api/x"',
+    ]) {
+      expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text)), script).toHaveLength(1)
+    }
+  })
+
+  it('does NOT flag --oauth2-bearer with a literal, non-interpolated placeholder (doc example)', () => {
+    const script = 'curl -s --oauth2-bearer "<token>" "$DASH/api/x"'
+    expect(findCurlInvocations(script).filter((c) => leaksTokenInArgv(c.text))).toEqual([])
+  })
+
   it('does NOT flag a MENTION of the pattern inside a comment or doc string (not a real curl call)', () => {
     // The guard only inspects lines that actually contain `curl`; a comment describing the bug class
     // without the word "curl" on the same joined invocation is data, not code.
@@ -1198,5 +1262,63 @@ describe('provenance-gate.py never tells an agent to put the token in curl argv 
   it('no emitted directive text puts the token in curl argv', () => {
     const match = PROVENANCE_GATE.match(ARGV_BEARER_RE)
     expect(match, match ? `found: ${match[0]}` : undefined).toBeNull()
+  })
+})
+
+// Card 7c72640e: a nested gate/QA worktree under agents/<agent>/.worktrees/ carries a full copy of
+// this very test file, including its deliberately-bad LEAK_LINE fixtures -- scanning it as if it
+// were live, shipped agent content false-reds every land while any such worktree exists (measured
+// 2026-11-20, msg 21979: 37 failures under agents/qa2/.worktrees/gate-30aa8b29).
+describe('scanTree excludes nested gate/QA worktrees under agents/ (card 7c72640e)', () => {
+  let root: string
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'token-argv-guard-worktree-test-'))
+  })
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('a nested worktree copy of this guard\'s own fixture file is NOT walked', () => {
+    const nested = join(root, 'agent-x', '.worktrees', 'gate-abc123')
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(nested, '.git'), 'gitdir: /home/neon/marveen/.git/worktrees/gate-abc123\n')
+    mkdirSync(join(nested, 'src', '__tests__'), { recursive: true })
+    writeFileSync(
+      join(nested, 'src', '__tests__', 'token-in-argv-guard.test.ts'),
+      "const LEAK_LINE = 'curl -s -H \"Authorization: Bearer $TOK\" \"$DASH/api/x\"'\n",
+    )
+    expect(scanTree(root)).toEqual([])
+  })
+
+  it('a nested worktree is excluded even without the .worktrees name, by the .git FILE alone', () => {
+    const nested = join(root, 'agent-x', 'some-other-dirname')
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(nested, '.git'), 'gitdir: /home/neon/marveen/.git/worktrees/gate-abc123\n')
+    writeFileSync(join(nested, 'offender.sh'), 'curl -s -H "Authorization: Bearer $TOK" "$DASH/api/x"\n')
+    expect(scanTree(root)).toEqual([])
+  })
+
+  it('an ordinary file in the agent\'s own tree, outside any worktree, is still walked (negative control)', () => {
+    const agentDir = join(root, 'agent-x')
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(join(agentDir, 'CLAUDE.md'), 'a real leak: curl -s -H "Authorization: Bearer $TOK" "$DASH/api/x"\n')
+    expect(scanTree(root)).toEqual([join('agent-x', 'CLAUDE.md')])
+    // The underlying detection logic (what the walk feeds into) is unaffected by this fix --
+    // confirmed directly, independent of the exemption any specific filename (e.g. HANDOFF.md)
+    // may carry.
+    const source = readFileSync(join(agentDir, 'CLAUDE.md'), 'utf-8')
+    expect(findCurlInvocations(source).filter((c) => leaksTokenInArgv(c.text))).toHaveLength(1)
+  })
+
+  it('a non-.git directory literally named ".git" (a directory, not a worktree marker) is still walked', () => {
+    // isNestedWorktreeRoot must check the entry is a FILE, not merely present -- a real repo's own
+    // top-level `.git` is a DIRECTORY, and this guard must not treat every normal repo as a
+    // worktree to skip.
+    const dir = join(root, 'agent-x')
+    mkdirSync(join(dir, '.git'), { recursive: true })
+    writeFileSync(join(dir, 'CLAUDE.md'), 'hello\n')
+    expect(scanTree(root)).toEqual([join('agent-x', 'CLAUDE.md')])
   })
 })

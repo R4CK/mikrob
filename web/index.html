@@ -1076,6 +1076,7 @@
           Új skillt a jobb felső "Új skill" gombbal tudsz létrehozni vagy importálni.
         </div>
       </div>
+      <div class="skills-pending" id="skillsPending" hidden></div>
       <div class="skills-stats" id="skillsStats"></div>
       <div class="skills-toolbar">
         <div class="skills-search-wrap">
@@ -1454,6 +1455,43 @@
             <span class="freellm-metric-label" data-i18n="freellm.metrics.drafts">Draftok</span>
             <span class="freellm-metric-value" id="freellmDraftsCount">0</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Call log (card ebe20efe, Peti 14295): per-outcome 24h/7d counters + the latest calls,
+           newest first. Contract: GET /api/freellm/calls?since=&limit= (Pair-BE 685f25cb). -->
+      <div class="freellm-section">
+        <h2 class="freellm-section-title" data-i18n="freellm.calls.title">Hívás-napló</h2>
+        <div class="freellm-toolbar">
+          <button type="button" id="freellmCallsRefreshBtn" class="btn-secondary btn-compact" data-i18n="freellm.calls.refresh">Frissítés</button>
+        </div>
+        <div id="freellmCallsLoading" class="freellm-calls-loading" data-i18n="freellm.calls.loading" hidden>Betöltés…</div>
+        <div id="freellmCallsError" class="freellm-calls-error" role="status" aria-live="polite" hidden></div>
+        <div id="freellmCallsEmpty" class="freellm-calls-empty" data-i18n="freellm.calls.empty" hidden>Még nincs hívás.</div>
+        <div id="freellmCallsCounts" class="freellm-calls-counts" hidden>
+          <div class="freellm-calls-counts-group">
+            <span class="freellm-calls-counts-label" data-i18n="freellm.calls.window_24h">24 óra</span>
+            <span class="freellm-calls-counts-row" id="freellmCounts24h"></span>
+          </div>
+          <div class="freellm-calls-counts-group">
+            <span class="freellm-calls-counts-label" data-i18n="freellm.calls.window_7d">7 nap</span>
+            <span class="freellm-calls-counts-row" id="freellmCounts7d"></span>
+          </div>
+        </div>
+        <div class="freellm-calls-table-wrap" id="freellmCallsTableWrap" hidden>
+          <table class="freellm-calls-table">
+            <thead>
+              <tr>
+                <th data-i18n="freellm.calls.col.time">Idő</th>
+                <th data-i18n="freellm.calls.col.agent">Ügynök</th>
+                <th data-i18n="freellm.calls.col.card">Kártya</th>
+                <th data-i18n="freellm.calls.col.model">Modell</th>
+                <th data-i18n="freellm.calls.col.outcome">Eredmény</th>
+                <th data-i18n="freellm.calls.col.duration">Időtartam</th>
+              </tr>
+            </thead>
+            <tbody id="freellmCallsTbody"></tbody>
+          </table>
         </div>
       </div>
 

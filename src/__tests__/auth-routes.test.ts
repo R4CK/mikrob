@@ -231,7 +231,9 @@ describe('POST /api/auth/password', () => {
   // Card 49960046 (RedHat 17005 X3): the bearer break-glass reset used to work with no
   // current_password proof at all -- that is exactly the self-escalation path this card closes.
   // The shared token must now be refused here unconditionally; the real break-glass path is the
-  // local CLI (`npm run dashboard-user -- reset-password`).
+  // local CLI (`npm run dashboard-user -- reset-password`). Assertions widened (Koteg 25): also
+  // pins the adopted CLI_RECOVERY_ONLY error code, and that the rejected attempt's OWN new
+  // password does not work either (not just that the old one still does).
   it('rejects the token break-glass path -- retired, use the local CLI instead', async () => {
     await seedUser('alice')
     const denied = await call('POST', '/api/auth/password', {
@@ -239,6 +241,9 @@ describe('POST /api/auth/password', () => {
       body: { username: 'alice', new_password: 'token-reset-pass' },
     })
     expect(denied.res.statusCode).toBe(403)
+    expect(denied.json().code).toBe('cli_recovery_only')
+    // the attempted new password must NOT work -- the denied call changed nothing
+    expect((await call('POST', '/api/auth/login', { body: { username: 'alice', password: 'token-reset-pass' } })).res.statusCode).toBe(401)
     // the old password must still work -- the denied call changed nothing
     const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
     expect(login.res.statusCode).toBe(200)
@@ -374,5 +379,16 @@ describe('credential-kind allowlists (default-deny for future kinds)', () => {
     await seedUser('alice')
     const reset = await call('POST', '/api/auth/password', { auth: TOKEN_AUTH, body: { username: 'alice', new_password: 'legit-reset-pw' } })
     expect(reset.res.statusCode).toBe(403)
+  })
+
+  // Negative control adopted from upstream (Koteg 25): proves the token-break-glass retirement
+  // above did not over-tighten the session path too.
+  it('the session path still changes a password (the allowlist did not over-tighten)', async () => {
+    await seedUser('alice')
+    const r = await call('POST', '/api/auth/password', {
+      auth: { kind: 'session', user: 'alice' },
+      body: { current_password: GOOD_PW, new_password: 'legit-new-pw' },
+    })
+    expect(r.res.statusCode).toBe(200)
   })
 })

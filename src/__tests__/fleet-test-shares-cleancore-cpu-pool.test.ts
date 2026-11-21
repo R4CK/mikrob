@@ -277,16 +277,17 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
     return { stderr }
   }
 
-  it('queues, then gives up loudly, when both slots are held by cleancore-suite-run.sh-shaped locks', () => {
+  it('queues, then gives up loudly, when all slots are held by cleancore-suite-run.sh-shaped locks', () => {
     mkdirSync(`${anchor}/store`, { recursive: true })
     holdSlot(1, 4)
     holdSlot(2, 4)
+    holdSlot(3, 4)
     const { stderr } = runPastCpuSlot({
       MARVEEN_MAIN: anchor,
       CLEANCORE_SUITE_WAIT_MAX_S: '2',
       CLEANCORE_SUITE_POLL_S: '1',
     })
-    expect(stderr).toMatch(/all 2 shared CPU slot\(s\) busy/)
+    expect(stderr).toMatch(/all 3 shared CPU slot\(s\) busy/)
     expect(stderr).toMatch(/no shared CPU slot after/)
     // Never reached the tree-lock stage: the CPU-slot stage itself was the one that gave up.
     expect(stderr).not.toMatch(/another suite run holds the fleet lock/)
@@ -370,6 +371,7 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
       mkdirSync(`${anchor}/store`, { recursive: true })
       holdSlot(1, 5)
       holdSlot(2, 5)
+      holdSlot(3, 5)
       await runPastCpuSlotAsync({
         MARVEEN_MAIN: anchor,
         CLEANCORE_SUITE_WAIT_MAX_S: '2',

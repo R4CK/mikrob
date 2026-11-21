@@ -98,22 +98,54 @@ function newlyDirty(before: ReadonlySet<string>, after: ReadonlySet<string>): st
 // counts calls the real loop made.
 let guardedCallCount = 0
 
+// Card fa375169: under the shared 3-slot fleet-test cap, mopsion-suite-run.selftest.sh was
+// OS-killed (SIGKILL, not a vitest timeout -- execFileSync reports `status: null, signal:
+// 'SIGKILL'`) mid-run (fullstack land log, card 517ba7f6 comment 32609). Measured standalone with
+// `/usr/bin/time -v`: peak RSS 12.8 MB -- the script itself is not memory-heavy, so the kill is
+// host-level contention (another concurrent fleet-test slot's aggregate memory pressure), not this
+// selftest's own fault. A timeout raise would not help a process that is killed outright rather
+// than running long, so this is a single retry after a short backoff, not a budget change.
+function execWithKillRetry(runner: string, args: readonly string[], file: string): string {
+  try {
+    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env: process.env })
+  } catch (e) {
+    const err = e as { signal?: string | null; status?: number | null }
+    if (err.signal !== 'SIGKILL') throw e
+    console.error(`${file}: killed (SIGKILL) on first attempt, likely host-level memory contention -- retrying once`)
+    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env: process.env })
+  }
+}
+
+// Card a88ebef5 reopened (MikroB, msg 22525): the dirt-check names WHICH selftest was running
+// when the tree turned up dirty, but not WHAT changed -- on a shared, concurrently-landed tree
+// that selftest is often an innocent bystander (confirmed for offload-dispatch.selftest.sh,
+// 2026-11-20: zero references to CLAUDE.md anywhere in that script). The diff content itself
+// narrows the real writer (which managed section moved) even when the blamed selftest is not
+// the actual cause.
+function diffHead(repoRoot: string, path: string): string {
+  try {
+    const out = execFileSync('git', ['-C', repoRoot, 'diff', '--', path], { encoding: 'utf-8' })
+    return out.split('\n').slice(0, 20).join('\n')
+  } catch (e) {
+    return `(git diff failed: ${(e as Error).message})`
+  }
+}
+
 function runGuardedSelftest(repoRoot: string, runner: string, file: string, args: readonly string[] = []): string {
   guardedCallCount++
   const store = join(repoRoot, 'store')
   const before = trackedDirtySet(repoRoot)
-  const out = execFileSync(runner, [join(store, file), ...args], {
-    encoding: 'utf-8',
-    timeout: 180_000,
-    // Inherit nothing that could make a selftest take a different path than it does by hand.
-    env: process.env,
-  })
+  const out = execWithKillRetry(runner, [join(store, file), ...args], file)
   const dirtied = newlyDirty(before, trackedDirtySet(repoRoot))
   if (dirtied.length > 0) {
+    const diffs = dirtied
+      .map((line) => line.slice(3).trim())
+      .map((path) => `--- diff head for ${path} ---\n${diffHead(repoRoot, path)}`)
+      .join('\n')
     throw new Error(
       `${file} left the shared tracked tree dirty (card 99a4a2d4): ${dirtied.join(', ')}. ` +
         `A selftest may read the shared tree freely, but must not modify or delete a tracked ` +
-        `file in it -- write to a disposable copy/mktemp sandbox instead.`,
+        `file in it -- write to a disposable copy/mktemp sandbox instead.\n${diffs}`,
     )
   }
   return out
@@ -212,6 +244,15 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   // self-contained (every case writes to a mktemp dir, never to the live store) and safe to run
   // under execFileSync's inherited env.
   { file: 'quota-shutdown-guard.sh', args: ['--selftest'] },
+  // WhiteHat F-C LOW (card c4590365, comment 34613): land_notify_finish's selftest existed
+  // (`--selftest-land-notify`) but nothing in the suite ran it -- the exact "written, committed,
+  // green-looking, never run" class this file exists to close, one script over (the identical
+  // class recurred on quota-shutdown-guard.sh above and vendored-skill-integrity.py before that).
+  { file: 'marveen-land.sh', args: ['--selftest-land-notify'] },
+  // New this card (426adb21): carries its selftest as an argument, same shape as its sibling
+  // bump-fork-version.sh right above -- wired here at birth instead of joining the "written,
+  // committed, green-looking, never run" class this file exists to close.
+  { file: 'npm-ci-advisory-check.sh', args: ['--selftest'] },
 ]
 
 /** True iff `file` is a same-directory SYMLINK ALIAS of another file already in `files` -- e.g. the
@@ -306,6 +347,10 @@ const OK_SHAPES: readonly RegExp[] = [
   // distinct from the local-llm-rag entry above ("all N checks passed", no period, different
   // noun). Captured non-zero N keeps the non-vacuous guarantee: `all 0 cases pass.` does not match.
   /selftest: all ([1-9]\d*) cases pass\./,
+  // marveen-land.sh --selftest-land-notify style (card c4590365, F-C): `selftest-land-notify: N
+  // case(s), PASS` -- a HYPHENATED prefix, so it does not contain the literal "selftest: " the
+  // case\(s\), PASS entry above requires. Captured non-zero N keeps the non-vacuous guarantee.
+  /selftest-land-notify: ([1-9]\d*) case\(s\), PASS/,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {
@@ -506,6 +551,40 @@ describe('the shared-tracked-tree guard is name-independent (card 99a4a2d4)', ()
       writeFileSync(probe, `#!/bin/sh\necho "selftest: 1 passed, 0 failed"\n`)
       chmodSync(probe, 0o755)
       expect(() => runGuardedSelftest(repo, 'sh', 'probe.sh', [repo])).not.toThrow()
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  // Card fa375169: a host-level SIGKILL (the mopsion-suite-run.selftest.sh incident) must not fail
+  // the whole gate on the first unlucky attempt -- runGuardedSelftest retries exactly once.
+  it('a selftest that gets SIGKILLed on its first attempt succeeds on the retry', () => {
+    const repo = makeFixtureRepo()
+    try {
+      const probe = join(repo, 'store', 'probe.sh')
+      const marker = join(repo, 'store', '.ran-once')
+      // First invocation: no marker yet -- create it and kill itself (simulates the OS-level
+      // SIGKILL). Second invocation (the retry): marker exists -- succeed normally.
+      writeFileSync(
+        probe,
+        `#!/bin/sh\nif [ -e "${marker}" ]; then\n  echo "selftest: 1 passed, 0 failed"\nelse\n  touch "${marker}"\n  kill -KILL $$\nfi\n`,
+      )
+      chmodSync(probe, 0o755)
+      expect(() => runGuardedSelftest(repo, 'sh', 'probe.sh', [])).not.toThrow()
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  // Card fa375169: a REAL defect (the selftest's own assertion failing, not a host-level kill)
+  // must still fail loud -- the retry is scoped to SIGKILL only, not "any failure".
+  it('a selftest that fails on its own merits is NOT retried into a false pass', () => {
+    const repo = makeFixtureRepo()
+    try {
+      const probe = join(repo, 'store', 'probe.sh')
+      writeFileSync(probe, `#!/bin/sh\necho "boom" >&2\nexit 1\n`)
+      chmodSync(probe, 0o755)
+      expect(() => runGuardedSelftest(repo, 'sh', 'probe.sh', [])).toThrow()
     } finally {
       rmSync(repo, { recursive: true, force: true })
     }
