@@ -30365,3 +30365,67 @@ via DASHBOARD_LANG, matching the existing passing test in cli-launch-gate.test.t
 
 **Ki döntött:** backend (self-advance, oldest dispatchable planned leaf per rule 6b, created
 2026-08-xx / card af6466a5, WhiteHat 6b10a6b8 GO @ c5ecc99e). Gate: QA + Cybersec (WhiteHat).
+
+## 2026-11-20 -- b34f791c: commit the MARVEEN-FEDERATION block so a dashboard boot stops dirtying the tracked root CLAUDE.md
+
+**Context:** measured 2026-11-20 19:45 (DevO msg 22485): `update.sh` refused (exit 3, dirty tree)
+because the live `CLAUDE.md` carried an uncommitted `MARVEEN-FEDERATION` managed block.
+`ensureFederationClaudeMdSection` (src/web/federation/onboarding.ts) writes this block into the
+git-tracked root `CLAUDE.md` on every boot when federation is enabled; the write is already
+idempotent for UNCHANGED config (`applyFederationBlock` returns null when the rendered result
+equals the existing content), but develop's own committed `CLAUDE.md` never carried the block --
+so every boot after every `update.sh`/pull re-inserted it, dirtying the tree again before the
+NEXT `update.sh` could run. Self-perpetuating: pull (clean) -> boot (dirty) -> update.sh refuses
+-> [manual stash] -> pull (clean) -> boot (dirty) -> ...
+`claude-md-main-section-writers.test.ts`'s own scope note (card 7e202dbf/f22ef741) had already
+flagged this exact class as real but out of that card's scope, deferred to a follow-up -- this is
+that follow-up.
+
+**Decision (of the two options the card offered):** commit the block this live install's config
+currently renders (enabled, no peers, `catalog-first` routing), rather than moving the dynamic
+part to a gitignored include file. The committed-content approach is the simpler of the two
+(karpathy "simplicity first") and fully satisfies the card's Kész-ha: as long as the federation
+config (enabled-state, peer list, routing mode, `WEB_PORT`) does not change between boots -- true
+in normal operation, a config CHANGE is a rare, deliberate admin action, not boot-time churn --
+the write stays a true no-op forever. A future deliberate config change dirtying the tree once,
+the same way editing any other tracked file does, is accepted as correct behaviour, not a defect
+this round needs to prevent. The gitignored-indirection design (a static `@file`-reference block
+in `CLAUDE.md` pointing at a dynamic, gitignored file) would be immune to config-change re-dirty
+too, but is materially more code and more test surface for a problem this round's own
+acceptance criteria do not ask to solve; left as a documented alternative if a future config
+change makes committed-content re-dirty frequent enough to matter.
+
+**Fix:** `CLAUDE.md` -- appended the exact block the live install currently renders (byte-identical
+to the live, previously-uncommitted diff). The pre-existing, separately-seeded owner policy
+section (`FEDERATION_POLICY_ANCHOR`, committed earlier, mid-file) is untouched.
+
+**Test:** new `src/__tests__/claude-md-federation-block-committed-idempotent.test.ts`, 4 cases:
+(1) re-rendering the SAME config the committed block itself describes is a no-op
+(`applyFederationBlock` returns null); (2) round-trip (remove then re-insert) reproduces the
+original file exactly, byte for byte -- no blank-line leak on the disable/enable cycle; (3) the
+owner policy anchor appears exactly once and sits before the managed block, untouched by a
+no-op re-render; (4) `BEGIN`/`END` each appear exactly once (no duplicate/corrupted block).
+Identity values (`mainAgentId`, `webPort`) are extracted FROM the committed block's own text,
+not imported from env-dependent constants (`MAIN_AGENT_ID` defaults to `marveen` in a disposable
+fleet-test.sh worktree with no `.env`, vs this deployment's real `mikrob`) -- the same caution
+the pre-existing agent-id-header pin test already takes, so this test holds in any worktree, not
+only the real deployment.
+
+Mutation-verified (restored byte-identical via diff): removing `applyFederationBlock`'s
+`result === content ? null : result` short-circuit (always returning the rendered result) turned
+exactly 2 of the 4 assertions red (the no-op and the policy-preserved-by-no-op cases); the other
+2 (round-trip, BEGIN/END count) stayed green, as expected (they do not depend on the short-circuit).
+
+Measured: `src/__tests__/claude-md-federation-block-committed-idempotent.test.ts`: 1 Test File
+passed (1), 4 Tests passed (4). Alongside the three existing CLAUDE.md/federation-writer suites
+(`claude-md-main-section-writers`, `agent-scaffold-main-claude-md-zero-diff`,
+`federation-lifecycle`): 4 Test Files passed (4), 55 Tests passed (55), no regression.
+`npx tsc --noEmit`: clean. `npx eslint` on the new test file: clean.
+
+**Nincs benne:** the gitignored-indirection redesign (documented above as the rejected
+alternative); re-committing on every future federation config change (expected, one-time, not
+automated); sub-agent `agents/*/CLAUDE.md` files (confirmed not git-tracked, `git ls-files` --
+cannot block `update.sh` regardless).
+
+**Ki döntött:** backend, self-advance pickup (MikroB-project dispatch priority, fleet-nudger msg
+22491/22504). Gate: QA + Cybersec per the card's own `Gate:` line.
