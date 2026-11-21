@@ -401,6 +401,15 @@ async function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig,
   }
 }
 
+// Card 60aeca01 (d8d035f8 N1): the existing model-pin coverage only source-greps checkAgent's body
+// (model-pinned-agents.test.ts) -- a test that mutated the pin check to a no-op would still pass.
+// checkAgent itself is not otherwise exported because every OTHER path through it needs tmux/pane/
+// config I/O mocked six deep (see model-step-down-starts-fresh.test.ts's own note on this). The
+// pinned branch is the one exception: it returns on literally the function's first line, before any
+// of that I/O runs, so a real call is cheap to assert on. Exported for that one behavioural test,
+// same escape-hatch idiom as `_mainModelIoForTest` above.
+export const _checkAgentForTest = checkAgent
+
 /**
  * The read-only per-agent tier state the dashboard renders (card 5d2002b5 redesign, point 4).
  * Recomputes the fleet tier from the live weekly % (seeded with the in-memory tier so the hysteresis

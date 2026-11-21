@@ -33,20 +33,39 @@
 #   context-compact-monitor.sh --selftest    # verify the decision logic, no DB/tmux needed
 #
 # Exit: 0 ok | 2 bad usage | 3 environment problem
-set -uo pipefail
+set -ufo pipefail
+# -f (noglob): CYBERSEC NO-GO 34466 (card a2028f35 delta), F1. TARGET_AGENTS now comes from the
+# live fleet roster (agent-controlled directory names, not a hardcoded literal) and is iterated
+# with plain word-splitting (`for agent in $TARGET_AGENTS`) further down -- without -f, a roster
+# name like `a*` would glob-expand against this process's cwd instead of being treated as one
+# agent name. The allowlist in live_target_agents_from_json (below) is the primary fix; this is
+# defense in depth for every TARGET_AGENTS loop, including the static fallback/override paths.
 
 ROOT="/home/neon/marveen"
 DB="$ROOT/store/claudeclaw.db"
 STATE="$ROOT/store/context-compact-state.json"
 LOG="$ROOT/store/context-compact-monitor.log"
 
-# Ceiling-runners only (measured 2026-08-06). qa/fron-teddy are already at target and must not be
-# touched -- compacting an agent that is not the problem is pure cost.
+# ROSTER SOURCE (card a2028f35): the live fleet roster (GET /api/agents, running:true), not a
+# literal list. The old hardcoded "backend backend2 fullstack cybered cybersec" silently excluded
+# every agent added since -- backend3/cybersec2/qa/qa2 were NEVER compacted no matter how high
+# their context climbed (qa2 and cybersec2 hit ~91% and were context-guard restarted 2026-11-19).
+# live_target_agents (defined below, after HDR_FILE exists) computes TARGET_AGENTS from this.
 #
 # mikrob is EXCLUDED by default despite carrying the largest context (632k measured). It is the
 # orchestrator: it dispatches, gates and answers Peti, and a mid-flight compact there disturbs the
-# whole fleet rather than one worker. Opt it in deliberately via COMPACT_TARGET_AGENTS if wanted.
-TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-backend backend2 fullstack cybered cybersec}"
+# whole fleet rather than one worker. Opt it in deliberately via COMPACT_EXCLUDE_AGENTS (remove it
+# from the list) if wanted.
+#
+# COMPACT_TARGET_AGENTS, if set, still OVERRIDES the roster entirely (explicit opt-in / testing),
+# same override name as before for backward compatibility.
+COMPACT_EXCLUDE_AGENTS="${COMPACT_EXCLUDE_AGENTS:-mikrob}"
+# The pre-roster fallback, used ONLY if the live roster cannot be fetched (no token, dashboard
+# down, bad JSON) -- a degraded safety net, not the primary mechanism (which is the live query
+# below). Logged loudly when it is used, so a persistent outage here is not another silent 8-day
+# freeze.
+TARGET_AGENTS_FALLBACK="backend backend2 fullstack cybered cybersec backend3 cybersec2 qa qa2"
+TARGET_AGENTS="${COMPACT_TARGET_AGENTS:-}"
 
 # THRESHOLD IS A PERCENTAGE OF THE MODEL CONTEXT WINDOW, NOT A TOKEN COUNT (Peti rule, CLAUDE.md
 # 2026-08-14, commit 4f315c8; card 35533cca). A fixed token count means something different on every
@@ -120,6 +139,31 @@ threshold_tokens_for_model() {
   max_tokens="$(compact_max_tokens)"
   if [ "$pct_threshold" -lt "$max_tokens" ]; then echo "$pct_threshold"; else echo "$max_tokens"; fi
 }
+# live_target_agents_from_json <agents-json> <exclude-list> -> space-separated running agent
+# names minus the exclude list, sorted. Pure/isolated so the selftest exercises it against a
+# fixture instead of a live API call -- the whole point of this card is that the roster changes
+# without editing this script, so the test has to prove that by varying the fixture, not the code.
+# CYBERSEC NO-GO 34466 (card a2028f35 delta), F1 MEDIUM: a roster name is an agent-controlled
+# directory name under agents/ (same-UID mkdir is enough), and used to reach this function
+# unsanitized -- a hostile name like "q';drop/**/table/**/victim;--" or "a*" flowed straight into
+# read_agent_ctx's SQL string splice and the TARGET_AGENTS word-split/glob loop. ALLOWLIST is the
+# same alphabet sanitizeAgentName (src/web/sanitize.ts) produces: lowercase a-z0-9-, 1-50 chars,
+# must not start with '-' (fullmatch, not search -- a partial match would accept the hostile
+# string as long as some substring looked valid).
+_ALLOWED_AGENT_NAME_RE='^[a-z0-9][a-z0-9-]{0,49}$'
+live_target_agents_from_json() {
+  python3 -c "
+import json, re, sys
+agents = json.loads(sys.argv[1])
+exclude = set(sys.argv[2].split())
+allowed = re.compile(sys.argv[3])
+names = [a['name'] for a in agents
+         if a.get('running') and a.get('name') not in exclude
+         and isinstance(a.get('name'), str) and allowed.fullmatch(a['name'])]
+print(' '.join(sorted(names)))
+" "$1" "$2" "$_ALLOWED_AGENT_NAME_RE" 2>/dev/null
+}
+
 COOLDOWN_MIN="${COMPACT_COOLDOWN_MIN:-45}"
 # Only trust a reading this fresh; a stale row means the agent is parked, and compacting a parked
 # session wakes it up for nothing.
@@ -240,11 +284,16 @@ PY
 # NEWEST NON-ZERO ROW: bookkeeping rows carry zeros, and a zero is not a measurement. Same rule as
 # readContextTokensFromProjectDir, which walks back to the last usage line with a positive total.
 read_agent_ctx() {
+  # Defense in depth (CYBERSEC NO-GO 34466, F1): $2 should already be allowlist-filtered by
+  # live_target_agents_from_json before it reaches here, but this function has its own callers
+  # (the selftest exercises it directly) -- doubling an embedded single quote is the standard
+  # sqlite3-CLI escape and makes this safe even if that invariant is ever violated upstream.
+  local agent_escaped="${2//\'/\'\'}"
   sqlite3 "$1" "SELECT (input_tokens + cache_read_tokens + cache_creation_tokens) || ' ' ||
                        timestamp || ' ' ||
                        CASE WHEN model IS NULL OR model IN ('', '<synthetic>') THEN '?' ELSE model END
                 FROM token_usage
-                WHERE agent='$2' AND timestamp > $(( $3 - 7200 ))
+                WHERE agent='$agent_escaped' AND timestamp > $(( $3 - 7200 ))
                   AND (input_tokens + cache_read_tokens + cache_creation_tokens) > 0
                 ORDER BY timestamp DESC LIMIT 1;" 2>/dev/null
 }
@@ -486,7 +535,58 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "NOTE: running as root, skipping the read-only-file atomicity case (counter)"
   fi
 
-  [ "$fails" -eq 0 ] && { echo "selftest OK (55 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
+  # --- LIVE ROSTER (card a2028f35: derive TARGET_AGENTS from the fleet, not a literal) -----------
+  # The old hardcoded list meant adding an agent to the fleet never got it compacted until someone
+  # remembered to edit this file by hand. These prove the set reacts to the roster, not to a diff.
+  agents_json='[{"name":"backend","running":true},{"name":"qa2","running":true},
+    {"name":"mikrob","running":true},{"name":"fron-ted","running":false}]'
+  s "running agents, sorted, minus the exclude list" "backend qa2" \
+    "$(live_target_agents_from_json "$agents_json" mikrob)"
+  s "a non-running agent is never included" "backend qa2" \
+    "$(live_target_agents_from_json "$agents_json" mikrob)"
+  s "an agent ADDED to the roster (running) appears without any script change" "backend fron-ted qa2" \
+    "$(live_target_agents_from_json '[{"name":"backend","running":true},{"name":"qa2","running":true},{"name":"fron-ted","running":true}]' mikrob)"
+  s "an agent REMOVED from the roster (stopped) disappears without any script change" "backend" \
+    "$(live_target_agents_from_json '[{"name":"backend","running":true},{"name":"qa2","running":false}]' mikrob)"
+  s "empty exclude list excludes nobody" "backend mikrob qa2" \
+    "$(live_target_agents_from_json "$agents_json" "")"
+  s "multiple names in the exclude list" "qa2" \
+    "$(live_target_agents_from_json "$agents_json" "backend mikrob")"
+  s "no running agents -> empty, not an error" "" \
+    "$(live_target_agents_from_json '[{"name":"backend","running":false}]' mikrob)"
+  s "malformed JSON fails closed to empty, not a crash" "" \
+    "$(live_target_agents_from_json 'not json' mikrob)"
+
+  # --- HOSTILE ROSTER NAMES (CYBERSEC NO-GO 34466, card a2028f35 delta, F1 MEDIUM) ----------------
+  # A roster name comes from GET /api/agents, i.e. a directory name under agents/ -- same-UID
+  # mkdir is enough to control it. These are the exact strings cybersec2/cybersec measured reaching
+  # the SQL splice and the TARGET_AGENTS word-split/glob loop before the allowlist existed.
+  hostile_json='[{"name":"q'"'"';drop/**/table/**/victim;--","running":true},
+    {"name":"a*","running":true},{"name":"x y","running":true},{"name":"backend","running":true}]'
+  s "hostile roster names (sql-splice payload, glob, whitespace) are all dropped, only the real agent survives" \
+    "backend" "$(live_target_agents_from_json "$hostile_json" "")"
+  s "a name that is only punctuation (no leading alnum) is dropped" "backend" \
+    "$(live_target_agents_from_json '[{"name":"--","running":true},{"name":"backend","running":true}]' "")"
+  s "a 51-char name (one over the sanitizeAgentName cap) is dropped" "backend" \
+    "$(live_target_agents_from_json "[{\"name\":\"$(printf 'a%.0s' $(seq 1 51))\",\"running\":true},{\"name\":\"backend\",\"running\":true}]" "")"
+  s "a name that is not a string (number) is dropped, not crashed on" "backend" \
+    "$(live_target_agents_from_json '[{"name":123,"running":true},{"name":"backend","running":true}]' "")"
+
+  # Mutation control: without the allowlist, the sql-splice payload used to reach read_agent_ctx
+  # and drop a real table (this is what cybersec2/cybersec proved live against a throwaway DB).
+  # Prove the allowlist is load-bearing by calling read_agent_ctx with it directly (bypassing the
+  # roster function), on a throwaway DB, and confirming the quote-doubling defense-in-depth holds
+  # even when an unsanitized name reaches this function some other way.
+  vdb="$sttmp/victim.sqlite"
+  sqlite3 "$vdb" "CREATE TABLE token_usage (agent TEXT, model TEXT, timestamp INTEGER,
+    input_tokens INTEGER, cache_creation_tokens INTEGER, cache_read_tokens INTEGER,
+    output_tokens INTEGER, model2 TEXT);
+    CREATE TABLE victim (n INTEGER); INSERT INTO victim VALUES (1);" 2>/dev/null
+  read_agent_ctx "$vdb" "x'; DROP TABLE victim; --" "$qnow" >/dev/null 2>&1
+  s "read_agent_ctx quote-doubling defense: victim table survives a raw sql-splice name" "1" \
+    "$(sqlite3 "$vdb" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='victim';" 2>/dev/null)"
+
+  [ "$fails" -eq 0 ] && { echo "selftest OK (63 cases)"; exit 0; } || { echo "selftest FAILED: $fails"; exit 1; }
 fi
 
 [ -r "$DB" ] || { echo "context-compact-monitor.sh: cannot read $DB" >&2; exit 3; }
@@ -499,6 +599,23 @@ HDR_FILE=""   # stays empty if the token is unreadable; every caller checks this
 if [ -r "$TOKEN_FILE" ]; then
   HDR_FILE="$(mktemp)"; trap 'rm -f "$HDR_FILE"' EXIT; chmod 600 "$HDR_FILE"
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+fi
+
+# Resolve TARGET_AGENTS now that HDR_FILE exists. COMPACT_TARGET_AGENTS, if the caller set it,
+# wins outright (explicit opt-in / testing). Otherwise query the live roster; fall back to the
+# static safety-net list (logged loudly) only if the roster itself is unavailable.
+if [ -z "$TARGET_AGENTS" ]; then
+  roster=""
+  if [ -n "$HDR_FILE" ]; then
+    agents_json="$(curl -fsS -m 15 -H "@$HDR_FILE" "http://127.0.0.1:${WEB_PORT:-3420}/api/agents" 2>/dev/null)"
+    [ -n "$agents_json" ] && roster="$(live_target_agents_from_json "$agents_json" "$COMPACT_EXCLUDE_AGENTS")"
+  fi
+  if [ -n "$roster" ]; then
+    TARGET_AGENTS="$roster"
+  else
+    log "WARN: live roster unavailable, falling back to the static safety-net list ($TARGET_AGENTS_FALLBACK)"
+    TARGET_AGENTS="$TARGET_AGENTS_FALLBACK"
+  fi
 fi
 
 # QUARANTINE TRIPWIRE (Cybered NO-GO, comment 11790, finding 2). The fail-closed branch below is

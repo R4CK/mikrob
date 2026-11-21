@@ -27,7 +27,7 @@ import { getKanbanCard, getKanbanComments, listKanbanCards, getKanbanVerdictsFor
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
 import { isAgentVerdictRecordEnabled, GATE_ROLE_AGENTS, shasMatch } from './kanban-verdicts.js'
-import { GENERATED_COMMENT_AUTHORS, type LandedVerdict } from './kanban-landed-guard.js'
+import { isGeneratedCommentAuthor, type LandedVerdict } from './kanban-landed-guard.js'
 
 // KNOWN TRUST-BOUNDARY LIMIT (F-N3, card c188f357, documented per MikroB decision -- option A:
 // document + pin-test, no code change; option B, widening authenticated agent-key issuance so
@@ -246,7 +246,7 @@ function latestReviewAt(comments: readonly Comment[]): number | null {
       // guard against, applied to THIS boundary -- a local-llm draft comment opening with "REVIEW"
       // must never move the round boundary, any more than a real gate agent's own verdict can
       // (the GATE_AGENT_NAMES check right beside this one).
-      return REVIEW_RX.test(c.content ?? '') && !GATE_AGENT_NAMES.has(author) && !GENERATED_COMMENT_AUTHORS.has(author)
+      return REVIEW_RX.test(c.content ?? '') && !GATE_AGENT_NAMES.has(author) && !isGeneratedCommentAuthor(c.author)
     })
     .map((c) => c.created_at)
   return stamps.length ? Math.max(...stamps) : null
@@ -271,7 +271,7 @@ export function latestReviewGateSha(comments: readonly Comment[]): string | null
   let best: { ts: number; content: string } | null = null
   for (const c of comments) {
     const author = (c.author ?? '').toLowerCase()
-    if (GATE_AGENT_NAMES.has(author) || GENERATED_COMMENT_AUTHORS.has(author)) continue
+    if (GATE_AGENT_NAMES.has(author) || isGeneratedCommentAuthor(c.author)) continue
     if (!REVIEW_RX.test(c.content ?? '')) continue
     // `>=`, not `>`: comments come in ascending (ties: insertion) order, and two REVIEW hand-offs
     // written within the same second (common in tests, and possible live) must resolve to the
@@ -541,7 +541,7 @@ function currentRoundStartTs(comments: readonly Comment[], knownOtherCardIds: Re
     // -- the same risk latestReviewAt() above guards against, applied to this (PRIMARY) boundary
     // mechanism, since it reads Gate-SHA lines from every comment with no author filter at all.
     const author = (c.author ?? '').toLowerCase()
-    if (GENERATED_COMMENT_AUTHORS.has(author)) continue
+    if (isGeneratedCommentAuthor(c.author)) continue
     const isNonGate = !GATE_AGENT_NAMES.has(author)
     for (const s of extractGateShas(c.content ?? '', knownOtherCardIds)) {
       const idx = entries.findIndex((e) => s.startsWith(e.sha) || e.sha.startsWith(s))

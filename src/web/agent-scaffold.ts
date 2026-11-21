@@ -1045,6 +1045,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectGitProtectGuard(existing)
   injectNpmProtectGuard(existing)
   injectDbWriteGuard(existing)
+  injectLiveCheckoutWriteGuard(existing)
   injectSymlinkedNodeModulesGuard(existing)
   injectAgentKeySecretGuard(existing)
   injectBlastRadiusGuard(existing)
@@ -1848,6 +1849,52 @@ export function ensureDbWriteGuard(name: string): boolean {
   if (ptuJson.includes('db-write-guard.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectDbWriteGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Idempotently wire the live-checkout-write-guard PreToolUse hook (card 0c3b13b5): blocks a
+// sub-agent's Bash/Write/Edit/MultiEdit/NotebookEdit call from touching a TRACKED file in the live
+// checkout /home/neon/marveen -- two incidents (backend 11:55, backend3 12:24) edited files there
+// directly instead of in their own worktree, the second blocking a Peti-approved update.sh. Applied
+// to EVERY agent, main included: the live checkout is reachable from any agent's cwd via an
+// absolute path, not just the main agent's own session.
+export function injectLiveCheckoutWriteGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'live-checkout-write-guard.py'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash|Write|Edit|MultiEdit|NotebookEdit',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('live-checkout-write-guard.py')),
+    entry,
+  ]
+}
+
+// Same reasoning as ensureDbWriteGuard: injectLiveCheckoutWriteGuard alone reaches an agent only
+// when its settings.json is regenerated, so this runs in the startup migration loop to arm
+// already-provisioned agents on a dashboard restart.
+export function ensureLiveCheckoutWriteGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'live-checkout-write-guard.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('live-checkout-write-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectLiveCheckoutWriteGuard(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
