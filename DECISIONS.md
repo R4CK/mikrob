@@ -29863,3 +29863,31 @@ undated `## ` header so they still exercise what they claim (force-actor bypass,
 earlier-commit coverage) -- 37/37 PASS. `npx tsc --noEmit` clean.
 
 **Ki döntött:** MikroB (msg 22885, re: my escalation 22884). backend executed. Gate: QA + Cybersec.
+
+## 2026-11-21 -- 84f90b4e delta: escape the literal stars in header_glob_bold (Cybersec NO-GO 36415, F1 MEDIUM)
+
+**Context:** CYBERSEC NO-GO on the previous round (b07086dfc): `header_glob_bold='**[0-9][0-9][0-9][0-9]-*'`
+was used unquoted in `case ... in $header_glob_bold)`, where a leading `**` is two shell glob
+wildcards, not two literal characters. The pattern actually meant "any text, then 4 digits, a
+dash, anything", matching ANY line containing a bare `YYYY-` anywhere -- not only a line that
+starts with `**YYYY-`. Measured regression (cybersec2): both sides continuing the LAST EXISTING
+entry with ordinary prose that happens to contain a date, or a ticket-number-shaped string,
+wrongly auto-unioned instead of being refused -- gluing two unrelated continuations under one
+entry's header.
+
+**Fix:** escaped the stars, `'\*\*[0-9][0-9][0-9][0-9]-*'`. Added two probes to the function's
+own pattern-safety self-check (a dated prose line, a ticket-number-shaped string) and two
+selftest cases pinning the regression directly (`both-continue-existing-entry-dated-prose-mid-line`,
+`both-continue-existing-entry-ticket-number-mid-line`), both refused with the fix, both
+mutation-verified to resolve (wrongly) when the stars are unescaped again.
+
+**Mérés:** `decisions-append-union.sh --selftest`: full suite PASS with the escaped pattern.
+Mutation check: reverting to the unescaped pattern makes the two new regression probes trip the
+function's own safety self-check, which then refuses EVERY call -- the whole selftest suite goes
+from PASS to a mass FAIL (confirms the probes are load-bearing, caught via the existing
+fail-closed mechanism rather than a new one). `npx tsc --noEmit` clean. `kanban-decisions-guard.test.ts`
++ `card-branch-sync-develop-selftest.test.ts`: 44/44 PASS (unaffected by this delta -- no TS file
+changed).
+
+**Ki döntött:** Cybersec (cybersec2) NO-GO, komment 36415, MikroB dispatch 22893/22897. backend
+fixed it. Gate: QA2 + Cybersec (delta re-gate).

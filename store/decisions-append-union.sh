@@ -339,7 +339,14 @@ try_append_union() {
   # existing boundary was the bug. Hardcoded, NOT the caller's `header_glob` argument: it is a
   # fixed grandfather allowance for one known legacy spelling, not a configurable pattern, so it
   # carries none of the injection surface the comment above worries about for $3.
-  local header_glob_bold='**[0-9][0-9][0-9][0-9]-*'
+  # THE STARS MUST BE ESCAPED (Cybersec NO-GO, comment 36415, F1 MEDIUM): unescaped, a leading
+  # `**` in a glob pattern is two wildcards, not two literal characters, so the pattern meant
+  # "any text, then 4 digits, a dash, anything" -- matching ANY line containing a bare `YYYY-`
+  # anywhere, not only one that STARTS with `**YYYY-`. That let a dated prose line continuing the
+  # last existing entry count as a new boundary, exactly the axis this pattern exists to close
+  # (measured: both sides continuing with "...2026-11-20 mid-line" wrongly auto-unioned, instead
+  # of refusing). Escaping restores "literal `**` then a date" as the only match.
+  local header_glob_bold='\*\*[0-9][0-9][0-9][0-9]-*'
   # CONCATENATION ORDER (card edf9c837), an ARGUMENT for the same reason the header pattern is one:
   # a caller in this repo decides it, never ambient state.
   #
@@ -565,7 +572,8 @@ try_append_union() {
   # the caller did not ask for -- the same class of silent substitution this whole function refuses.
   local probe
   for probe in '' '## ' '## quoted heading in a body' 'ordinary body prose' '---' '***' '___' \
-    '**' '**Döntés:**' '**ordinary bold body prose**'; do
+    '**' '**Döntés:**' '**ordinary bold body prose**' \
+    'ordinary prose continuing with a date 2026-11-20 mid-line' 'see ticket 1234-abc'; do
     case "$probe" in
     $header_glob|$header_glob_bold) return 1 ;;
     esac
@@ -1035,6 +1043,38 @@ body of B
 body of B
 ## 2026-11-18 -- entry C (right)
 "
+
+  # F1 REGRESSION (Cybersec NO-GO, comment 36415): header_glob_bold must match a LITERAL leading
+  # `**`, not use it as two unescaped wildcards. Unescaped, the pattern matches ANY line
+  # containing a bare `YYYY-` anywhere -- so a plain prose continuation of the LAST EXISTING entry
+  # that merely happens to contain a date gets mistaken for a new entry boundary, and the two
+  # sides' continuations are wrongly glued under entry A's header instead of being refused. This
+  # is the exact "both sides continuing the same existing entry" axis header_glob (without _bold)
+  # already has a sibling case for above (`both-continue-existing-entry`) -- here with a dated
+  # prose line, which only the escaped pattern still catches.
+  setup_conflict both-continue-existing-entry-dated-prose-mid-line \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+folytatás BAL, lásd 2026-11-20-i mérést
+" \
+    "## 2026-01-01 -- entry A
+folytatás JOBB, lásd 2026-11-20-i mérést
+"
+  t_refused "both sides continuing the same entry with a DATED prose line is still refused (F1 regression)"
+
+  # Same shape, a ticket-number-looking digits-dash string instead of a date -- the pattern must
+  # not key on \"four digits then a dash\" alone without the leading literal `**`.
+  setup_conflict both-continue-existing-entry-ticket-number-mid-line \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+see ticket 1234-abc (left)
+" \
+    "## 2026-01-01 -- entry A
+see ticket 5678-def (right)
+"
+  t_refused "both sides continuing the same entry with a ticket-number-shaped string is still refused (F1 regression)"
 
   # ORDER (card edf9c837). The same fixture, resolved the other way round. Red on the code before
   # the order argument existed -- that version ignored a fourth argument entirely and always emitted
