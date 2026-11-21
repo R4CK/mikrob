@@ -97,6 +97,7 @@ common_env() { # $1 = case name -- own state/wake/active files per case, no cros
   export HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN="$TMP/nmdrift-sync.sh"
   export HEARTBEAT_SCRIPTFIRST_STATE_FILE="$TMP/state-$case_name.txt"
   export HEARTBEAT_SCRIPTFIRST_PENDING_FILE="$TMP/pending-$case_name.txt"
+  export HEARTBEAT_SCRIPTFIRST_FLAGS_STATE_FILE="$TMP/flags-$case_name.txt"
   export HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE="$TMP/active-subagents-$case_name.json"
   export HEARTBEAT_SCRIPTFIRST_FIXTURE_DIR="$TMP/fixtures"
   export WAKE_CALLS="$TMP/wake-calls-$case_name.txt"
@@ -104,7 +105,7 @@ common_env() { # $1 = case name -- own state/wake/active files per case, no cros
   echo '{"state":"ok","retention_days":30,"tolerance_hours":48,"lag_hours":-700,"oldest_age_days":1}' \
     > "$HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE"
   : > "$WAKE_CALLS"
-  rm -f "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE"
+  rm -f "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" "$HEARTBEAT_SCRIPTFIRST_FLAGS_STATE_FILE"
   echo '[]' > "$HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE"
 }
 
@@ -403,19 +404,114 @@ OUT="$(bash "$BIN" 2>&1)"
 check "N1: gate-sha-first REVIEW recognised" "REVIEW-no-gate-dispatched-yet" "$OUT"
 check "N1: card id present" "cardN1" "$OUT"
 
-# --- N3 (card 1c8f6d25): hard-stop active=True must wake, not just change a report line -------------
+# --- N1 pin gap (WhiteHat2 L6): a `Skills:` line ahead of REVIEW must ALSO be skipped -- its own
+# --- alternation branch in LEAD_SKIP, not exercised by the Gate-SHA-only case above.
+common_env n1skillsfirst
+python3 -c "
+import json
+cards = [{'id':'cardN1b','status':'waiting','title':'some card','assignee':'backend','parent_id':None,'updated_at':0}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([], open('$TMP/fixtures/agents.json','w'))
+comments = [{'author':'backend','content':'Skills: karpathy-guidelines\nREVIEW: done, skills-first order'}]
+json.dump(comments, open('$TMP/fixtures/comments-cardN1b.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "N1-skills: Skills:-first REVIEW recognised" "REVIEW-no-gate-dispatched-yet" "$OUT"
+check "N1-skills: card id present" "cardN1b" "$OUT"
+
+# --- N1 pin gap (WhiteHat2 L6), blank branch: a STANDALONE bare blank line ahead of REVIEW is
+# --- NOT a meaningful pin by itself -- the consuming has_review regex already starts with its
+# --- own `\s*`, so it skips a lone blank line with or without LEAD_SKIP's blank-line branch at
+# --- all (measured: removing that branch from LEAD_SKIP changes nothing for this case). The
+# --- branch only does real work in COMBINATION, when a blank line separates Gate-SHA:/Skills:
+# --- lead lines from REVIEW -- the realistic shape (rule 4b/4c: Gate-SHA + Skills lines, then a
+# --- blank separator, then prose). Kept as a documented non-pin, not faked into a pin.
+common_env n1blankfirst
+python3 -c "
+import json
+cards = [{'id':'cardN1c','status':'waiting','title':'some card','assignee':'backend','parent_id':None,'updated_at':0}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([], open('$TMP/fixtures/agents.json','w'))
+comments = [{'author':'backend','content':'\n\nREVIEW: done, blank-line-first order'}]
+json.dump(comments, open('$TMP/fixtures/comments-cardN1c.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "N1-blank: blank-line-first REVIEW recognised" "REVIEW-no-gate-dispatched-yet" "$OUT"
+check "N1-blank: card id present" "cardN1c" "$OUT"
+
+# --- N1 pin gap (WhiteHat2 L6), the ACTUAL pin: Gate-SHA + Skills + a blank separator, all ahead
+# --- of REVIEW, in the realistic order (rule 4b/4c). Here the blank branch is NOT redundant: by
+# --- the time the blank line is reached, LEAD_SKIP has already consumed the Gate-SHA/Skills text,
+# --- so the OUTER \s* alone cannot skip it -- only LEAD_SKIP's own blank-line alternative can.
+# --- Removing the Skills: branch, the Gate-SHA: branch, OR the blank-line branch each break this.
+common_env n1combinedlead
+python3 -c "
+import json
+cards = [{'id':'cardN1d','status':'waiting','title':'some card','assignee':'backend','parent_id':None,'updated_at':0}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([], open('$TMP/fixtures/agents.json','w'))
+comments = [{'author':'backend','content':'Gate-SHA: aaa0000\nSkills: karpathy-guidelines\n\nREVIEW: done, gate-sha+skills+blank lead'}]
+json.dump(comments, open('$TMP/fixtures/comments-cardN1d.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "N1-combined: Gate-SHA+Skills+blank lead REVIEW recognised" "REVIEW-no-gate-dispatched-yet" "$OUT"
+check "N1-combined: card id present" "cardN1d" "$OUT"
+
+# --- N3 (card 1c8f6d25) + F1 (card b7fe4a95): hard-stop active=True must wake ON THE TRANSITION,
+# --- not on every tick it stays true -- a weekly hard-stop lasts days, so state-based waking would
+# --- page MikroB every 10 minutes for the whole duration.
 common_env n3hardstop
 echo '[]' > "$TMP/fixtures/kanban.json"
 echo '[]' > "$TMP/fixtures/agents.json"
 export HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE="$TMP/hard-stop-n3.json"
 echo '{"active": true, "newDevStopActive": false}' > "$HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE"
 OUT="$(bash "$BIN" 2>&1)"
-unset HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE
-check "N3: hard-stop active=True wakes" "actionable=1" "$OUT"
+check "N3: hard-stop active=True wakes (transition in)" "actionable=1" "$OUT"
 check "N3: hard-stop line present" "HARD-STOP: active=True" "$OUT"
 check "N3: wake recorded" "WOKE" "$(cat "$WAKE_CALLS")"
 
-# --- N3b: load-guard HOLD must wake too (same finding, the other half) ------------------------------
+# --- F1 (Kesz-ha, card b7fe4a95): sustained HOLD/hard-stop over 5 ticks wakes EXACTLY ONCE --------
+# Same hard-stop file, held constant (no edit between runs) across 5 ticks. The FIRST tick above
+# already woke (the transition in); 4 more ticks at the SAME value must add zero further wakes.
+: > "$WAKE_CALLS"
+for _i in 1 2 3 4; do bash "$BIN" >/dev/null 2>&1; done
+WOKE_COUNT="$(grep -c '^WOKE:' "$WAKE_CALLS" 2>/dev/null)"; WOKE_COUNT="${WOKE_COUNT:-0}"
+if [ "$WOKE_COUNT" -eq 0 ]; then
+  echo "  ok   F1: sustained hard-stop over 4 more ticks wakes zero additional times"
+else
+  echo "  FAIL F1: sustained hard-stop woke $WOKE_COUNT more times over 4 ticks (expected 0)"; fail=1
+fi
+# Clearing it (transition OUT) must wake again.
+echo '{"active": false, "newDevStopActive": false}' > "$HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE"
+: > "$WAKE_CALLS"
+OUT="$(bash "$BIN" 2>&1)"
+check "F1: hard-stop clearing wakes (transition out)" "WOKE" "$(cat "$WAKE_CALLS")"
+unset HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE
+
+# --- N3 newDevStopActive half (pin gap, WhiteHat2 L3): the newDevStopActive branch is its own
+# --- flag, tracked independently of `active` -- exercised on its own (active stays false) so a
+# --- mutant that only fixes/removes the `active` half cannot hide behind this flag's coverage.
+common_env n3newdev
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+export HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE="$TMP/hard-stop-n3newdev.json"
+echo '{"active": false, "newDevStopActive": true}' > "$HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE"
+OUT="$(bash "$BIN" 2>&1)"
+check "N3-newdev: newDevStopActive=True wakes (transition in)" "actionable=1" "$OUT"
+check "N3-newdev: wake recorded" "WOKE" "$(cat "$WAKE_CALLS")"
+# Sustained (same file, unedited) over 3 more ticks: zero additional wakes.
+: > "$WAKE_CALLS"
+for _i in 1 2 3; do bash "$BIN" >/dev/null 2>&1; done
+WOKE_COUNT="$(grep -c '^WOKE:' "$WAKE_CALLS" 2>/dev/null)"; WOKE_COUNT="${WOKE_COUNT:-0}"
+if [ "$WOKE_COUNT" -eq 0 ]; then
+  echo "  ok   N3-newdev: sustained newDevStopActive over 3 more ticks wakes zero additional times"
+else
+  echo "  FAIL N3-newdev: sustained newDevStopActive woke $WOKE_COUNT more times over 3 ticks (expected 0)"; fail=1
+fi
+unset HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE
+
+# --- N3b (pin gap, WhiteHat2 L3/F1): load-guard HOLD must wake on transition, and a SUSTAINED HOLD
+# --- must not keep re-waking (same bug, the load-guard half).
 common_env n3loadguard
 echo '[]' > "$TMP/fixtures/kanban.json"
 echo '[]' > "$TMP/fixtures/agents.json"
@@ -427,8 +523,21 @@ EOF
 chmod +x "$TMP/loadguard-hold.sh"
 export HEARTBEAT_SCRIPTFIRST_LOADGUARD_BIN="$TMP/loadguard-hold.sh"
 OUT="$(bash "$BIN" 2>&1)"
-check "N3b: load-guard HOLD wakes" "actionable=1" "$OUT"
+check "N3b: load-guard HOLD wakes (transition in)" "actionable=1" "$OUT"
 check "N3b: wake recorded" "WOKE" "$(cat "$WAKE_CALLS")"
+: > "$WAKE_CALLS"
+for _i in 1 2 3; do bash "$BIN" >/dev/null 2>&1; done
+WOKE_COUNT="$(grep -c '^WOKE:' "$WAKE_CALLS" 2>/dev/null)"; WOKE_COUNT="${WOKE_COUNT:-0}"
+if [ "$WOKE_COUNT" -eq 0 ]; then
+  echo "  ok   N3b: sustained HOLD over 3 more ticks wakes zero additional times"
+else
+  echo "  FAIL N3b: sustained HOLD woke $WOKE_COUNT more times over 3 ticks (expected 0)"; fail=1
+fi
+# Recovering to ADMIT (transition out) must wake again.
+export HEARTBEAT_SCRIPTFIRST_LOADGUARD_BIN="$TMP/loadguard-admit.sh"
+: > "$WAKE_CALLS"
+OUT="$(bash "$BIN" 2>&1)"
+check "N3b: recovering to ADMIT wakes (transition out)" "WOKE" "$(cat "$WAKE_CALLS")"
 
 # --- N4 (card 1c8f6d25): a previously-FAILED wake's report must be replayed, not lost ----------------
 common_env n4pendingreplay
@@ -440,10 +549,61 @@ bash "$BIN" >/dev/null 2>&1   # first run: wake fails, report lands in the pendi
 [ -s "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" ] || { echo "  FAIL N4: pending file empty after a failed wake, cannot test replay"; fail=1; }
 export HEARTBEAT_SCRIPTFIRST_WAKE_BIN="$TMP/wake-recorder.sh"
 export HEARTBEAT_SCRIPTFIRST_QUOTA_BIN="$TMP/quota-ok.sh"
+# Clear the backlog of "WOKE-ATTEMPT" lines the FIRST (failing) run left behind -- the plain
+# substring "WOKE" is also a substring of "WOKE-ATTEMPT", so without this clear the check below
+# would pass vacuously even if the SECOND run's own wake never fires.
+: > "$WAKE_CALLS"
 OUT="$(bash "$BIN" 2>&1)"
 check "N4: pending backlog replayed into the report" "PENDING-REPLAY" "$OUT"
-check "N4: replay wakes (even though this round alone is routine)" "WOKE" "$(cat "$WAKE_CALLS")"
-check "N4: pending file cleared after successful replay" "" "$(cat "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" 2>/dev/null)"
+check "N4: replay forces actionable (pin: ACTIONABLE=1 in the replay block)" "WOKE:" "$(cat "$WAKE_CALLS")"
+# A `check` call with an empty needle is itself vacuous (`case "$3" in *""*)` matches ANY string,
+# since `*` concatenated with nothing is still `*`) -- this pin gap's own original root cause.
+# Assert emptiness directly instead.
+N4_PENDING_AFTER="$(cat "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" 2>/dev/null)"
+if [ -z "$N4_PENDING_AFTER" ]; then
+  echo "  ok   N4: pending file cleared after successful replay (pin: the read-and-clear)"
+else
+  echo "  FAIL N4: pending file cleared after successful replay -> expected empty, got: $N4_PENDING_AFTER"; fail=1
+fi
+# "QUOTA:" alone is vacuous -- EVERY tick's own report has a QUOTA: line regardless of the fold.
+# "NEW:backend" is unique to round 1's content (quota-new.sh); round 2 uses quota-ok.sh (plain
+# "NEW:"), so this string can only appear in round 2's output if the OLD backlog was actually
+# folded into it, not just referenced by a PENDING-REPLAY marker with nothing after it.
+check "N4: replay body folded into the report (pin: add \"\$PENDING_BACKLOG\")" "NEW:backend" "$OUT"
+
+# --- F2 (Kesz-ha, card b7fe4a95): a 200 KB pending backlog must wake WITHOUT E2BIG, and the ------
+# --- pending file must stay bounded afterward (no manual purge needed, unlike the old unbounded
+# --- replay which died with "Argument list too long" above ~128 KB and never recovered).
+common_env f2boundedreplay
+export HEARTBEAT_SCRIPTFIRST_WAKE_BIN="$TMP/wake-recorder.sh"
+export HEARTBEAT_SCRIPTFIRST_QUOTA_BIN="$TMP/quota-ok.sh"
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+python3 -c "open('$HEARTBEAT_SCRIPTFIRST_PENDING_FILE','w').write('X' * 200000)"
+OUT="$(bash "$BIN" 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then echo "  ok   F2: 200 KB pending backlog replays without E2BIG (exit 0)"; else echo "  FAIL F2: exit $RC (expected 0) -- $OUT"; fail=1; fi
+check_absent "F2: no E2BIG/Argument-list-too-long" "too long" "$OUT"
+PENDING_BYTES_AFTER="$(wc -c < "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" 2>/dev/null || echo 999999)"
+if [ "$PENDING_BYTES_AFTER" -le 8192 ]; then
+  echo "  ok   F2: pending file bounded after a successful replay ($PENDING_BYTES_AFTER B)"
+else
+  echo "  FAIL F2: pending file not bounded after replay ($PENDING_BYTES_AFTER B, expected <=8192)"; fail=1
+fi
+
+# --- F2 append-side cap (pin: the cap applies on the WAKE-FAILS path too, not just the read side) ---
+common_env f2boundedappend
+export HEARTBEAT_SCRIPTFIRST_WAKE_BIN="$TMP/wake-fails.sh"
+export HEARTBEAT_SCRIPTFIRST_QUOTA_BIN="$TMP/quota-new.sh"
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+python3 -c "open('$HEARTBEAT_SCRIPTFIRST_PENDING_FILE','w').write('Y' * 200000)"
+bash "$BIN" >/dev/null 2>&1
+PENDING_BYTES_AFTER_FAIL="$(wc -c < "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" 2>/dev/null || echo 999999)"
+if [ "$PENDING_BYTES_AFTER_FAIL" -le 8192 ]; then
+  echo "  ok   F2: pending file bounded even after ANOTHER failed wake appends to an already-huge backlog ($PENDING_BYTES_AFTER_FAIL B)"
+else
+  echo "  FAIL F2: pending file grew unbounded after a failed wake ($PENDING_BYTES_AFTER_FAIL B, expected <=8192)"; fail=1
+fi
 
 # --- NM1. node_modules drift detected -> actionable, ERR not raised (it is DRIFT, not a tool fault) -
 common_env nmdrift
