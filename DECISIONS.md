@@ -31215,3 +31215,50 @@ re-gate requested (QA + Cybersec + Cybered) on Gate-SHA 2a6c3ec2134e1dec60b26f0a
 **Teszt:** `store/agent-auth-header.selftest.sh` 22 -> 26/26 PASS (4 new cases). Targeted `fleet-test.sh` run recorded in the REVIEW comment. `npx tsc --noEmit` clean.
 
 **Ki döntött:** cybersec2 NO-GO 34825, cybered NO-GO 34827 (both reconfirming independently), mikrob addendum msg 22309 (mutant-pin + rollout note). backend végezte. Gate: delta re-gate (QA + Cybersec + Cybered) on this round's Gate-SHA.
+## 2026-11-15 -- card f5f78e13: Token 6b new-card-dispatch context-guard tier (core, opt-in)
+
+**Döntés:** plan-grilling (comment 31685) rendezte a kártya nyitott kérdését: a dispatch-time
+fresh-session mechanizmust a context-guard MEGLÉVŐ handoffRequest/await-handoff state machine-jébe
+drótoztuk be ÖTÖDIK triggerként (actPct, idle-flush, daily mellé), nem egy második mechanizmusként --
+pontosan azt az invariánst követve, amit az auto-restart.ts kommentje már kimond a nightly-restart
+esetre ("Handoffs have ONE owner").
+
+Újdonság: `newCardHandoffEnabled` config flag (default FALSE, mint idleFlushEnabled/dailyHandoffEnabled),
+`getInProgressCardIdForAgent()` DB-helper (db.ts), `newCardDispatchDue`/`forgetNewCardDispatchRecord`
+tiszta predikátumok (context-guard.ts), futtató-oldali drótozás (context-guard-runner.ts) és saját
+prompt-szöveg (`newCardDispatchHandoffPrompt`) -- az utóbbi azért kell, mert a fallback
+`handoffPrompt(pctRound ?? 0, ...)` hamis "~0% kritikus" riasztást adna egy egészséges sessionre,
+ugyanaz a csapda, amit az idle/daily tier is elkerül.
+
+A rekord (lastDispatchedCard Map) KIZÁRÓLAG decision-time-kor halad előre (mint lastDailyHandoff),
+NEM minden sweepnél -- mutáció-teszttel igazolva: az "every-sweep-advance" mutáns némán elnyelné a
+"due" jelzést egy olyan sweepen, amit egy magasabb rangú tier megelőzött volna.
+
+Mérve: tsc --noEmit clean; 341/341 teszt zöld (context-guard family + 2 új fájl: 17 + 3 teszt).
+2 mutáns (ranking csere, every-sweep-advance) mindkettő pirosra fordult a megfelelő tesztnél.
+
+**NYITVA marad (a kártya Kész-ha 2-3. pontja):** a flag ma senkinél nincs bekapcsolva -- a
+token-usage-report.py előtte/utána mérés és az élő "dispatch új session-t hoz létre" ellenőrzés
+csak egy valódi agent bekapcsolása után mérhető. A kártya `in_progress` marad, nem `waiting`.
+
+Gate: QA + Cybersec (a kártya saját gate-sora). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-21 -- card f5f78e13: GuardInputs literal mismatch fix (gate-bounce 23012)
+
+Three consecutive gate verdicts (QA2 FAIL 36983, QA FAIL 36988, CYBERSEC NO-GO 36995) on the
+squash-rebased f5f78e13 (Gate-SHA 670556be1) all flagged the SAME root cause: three test files
+that landed on origin/develop after this card's original gate --
+src/__tests__/context-guard-busy-overdue.test.ts, src/__tests__/context-guard-minutes-cap.test.ts,
+src/__tests__/context-guard-resume-giveup.test.ts -- build GuardInputs literals that predate
+this card's three new required fields (newCardDispatchDue, newCardId, newCardTitle), so tsc
+--noEmit failed with TS2322/TS2345 on all three.
+
+MikroB's gate-bounce decision (comment 23012): not a bounce loop or a design problem, one fix
+round approved, Fix-Direction = add the 3 fields to those 3 literals with the same defaults the
+card's own 7 test files already use (false/null/null), fields stay required (not made optional).
+
+Fix applied, Gate-SHA 0be86ea12265eceb8f60b5844a2e1d462020ef4d: +9/-0 lines across exactly those
+3 files. Verified: npx tsc --noEmit clean; npx vitest run on all 22 context-guard*.test.ts files
+-> 365/365 PASS.
+
+Gate: QA + Cybersec (card's own gate row). **Ki döntött:** backend, Fix-Direction from MikroB.

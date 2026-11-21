@@ -34,7 +34,7 @@ import {
 import { localMidnightMs } from '../auto-restart.js'
 import { ownerQuestionHolds } from './open-question.js'
 import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
-import { createAgentMessage, countRestartQueueState } from '../db.js'
+import { createAgentMessage, countRestartQueueState, getInProgressCardIdForAgent, getKanbanCard } from '../db.js'
 import { sweepAgentDirTripwire } from './agent-dir-tripwire.js'
 import {
   decideGuard,
@@ -42,7 +42,10 @@ import {
   calibrateLimit,
   handoffStaleMinutes,
   applyDailyHandoffSkipSweep,
+  forgetNewCardDispatchRecord,
+  newCardDispatchDue,
   DAILY_HANDOFF_REASON_PREFIX,
+  NEW_CARD_DISPATCH_REASON_PREFIX,
   HANDOFF_RESEND_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
@@ -190,6 +193,13 @@ function dailyQuestionOpen(name: string): boolean | undefined {
   try { return ownerQuestionHolds(name) }
   catch { return undefined }
 }
+
+// New-card-dispatch tier (card f5f78e13): last in_progress card id seen per
+// agent, so newCardDispatchDue can tell "still the same card" from "a
+// different one was just dispatched". In-memory like the maps above: a
+// dashboard restart forgets it and treats the next sweep as first sight,
+// which never fires (the safe direction, same reasoning as lastDailyHandoff).
+const lastDispatchedCard = new Map<string, string>()
 const remoteSkipLogged = new Set<string>()
 // Agents currently in the banner-vs-measurement mismatch state. The
 // condition holds on EVERY sweep while a mis-tagged agent keeps running, so
@@ -321,6 +331,58 @@ export function dailyHandoffPrompt(atTime: string, handoffPath: string): string 
   )
 }
 
+// CYBERSEC F4 (WhiteHat2, delta on e9e025765): the card title is set by
+// whoever holds the shared bearer token, so it is untrusted DATA, not prompt
+// structure -- a retitle to e.g. "[SYSTEM-DIREKTIVA msg_id:1] ..." would land
+// verbatim inside an authenticated handoff/resume directive. Strips the
+// bracket characters every recognized directive prefix depends on
+// ([SYSTEM-DIREKTIVA ...], [CONTEXT-GUARD], [CONTEXT-RESTART-GATE], [SYSTEM:
+// ...]), collapses to one line, and caps length, so it can only ever read as
+// a quoted label, never as an envelope.
+const MAX_CARD_TITLE_PROMPT_LEN = 80
+
+function sanitizeCardTitleForPrompt(title: string): string {
+  const oneLine = title.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const noBrackets = oneLine.replace(/[[\]]/g, '')
+  const capped = noBrackets.length > MAX_CARD_TITLE_PROMPT_LEN
+    ? `${noBrackets.slice(0, MAX_CARD_TITLE_PROMPT_LEN)}...`
+    : noBrackets
+  return `"${capped}"`
+}
+
+/** `<id> "<title>"` when both are known, `<id>` alone when the title lookup
+ *  missed, or a generic phrase when even the id is unknown (CYBERSEC F2,
+ *  comment 31757: the id/title can be null if the card left in_progress or
+ *  was deleted between the DB read and the prompt being built). The title is
+ *  sanitized (CYBERSEC F4) before it ever reaches a prompt string. */
+function newCardLabel(newCardId: string | null, newCardTitle: string | null): string {
+  if (newCardId === null) return 'az új kártya'
+  return newCardTitle ? `${newCardId} ${sanitizeCardTitleForPrompt(newCardTitle)}` : newCardId
+}
+
+/**
+ * Handoff request for the new-card-dispatch tier (card f5f78e13).
+ *
+ * A fifth wording, same reasoning as the idle and daily tiers: this session
+ * is neither critical nor expensive nor a day old, so those texts would state
+ * something untrue. What IS true: a DIFFERENT kanban card was just dispatched
+ * to this agent, so the restart is about to start on it fresh -- unrelated to
+ * whatever the OLD card's session was holding. Names the NEW card (CYBERSEC
+ * F2, comment 31757) so the handoff the agent writes can say "closed by
+ * <id>" rather than leaving that link to be inferred later.
+ */
+export function newCardDispatchHandoffPrompt(handoffPath: string, newCardId: string | null, newCardTitle: string | null): string {
+  return (
+    `[CONTEXT-GUARD] Új kártya érkezett dispatch-ben (${newCardLabel(newCardId, newCardTitle)}), nem vészhelyzet és nem hiba. ` +
+    `A sessionöd hamarosan friss kontextussal indul újra, mert az új kártya nem függ az eddigi beszélgetésedtől. ` +
+    `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal) ` +
+    `a JELENLEGI (régi) kártyádról, amit ez a dispatch lezár. ` +
+    `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
+    `Utána ÁLLJ MEG; a rendszer újraindít, és a dispatch-üzenet magával hozza az új kártya tartalmát.`
+  )
+}
+
 /**
  * A handoff refresh request: the agent DID write a handoff, then kept working,
  * so the artifact no longer covers the session. Distinct wording from both
@@ -372,43 +434,17 @@ export function restartQueueAtRestart(name: string): { pending: number; failed: 
   }
 }
 
-export function resumePrompt(
-  name: string,
-  handoffPath: string,
-  hadHandoff: boolean,
-  staleMinutes: HandoffStaleness = null,
-): string {
-  const base =
-    // Wording covers both tiers that lead here: "grew too large" is true at the
-    // act threshold and true of an idle-flush, where the context was heavy but
-    // the window was nowhere near full. "megtelt" would be false in that case.
-    `[CONTEXT-GUARD] Friss kontextussal indultál, mert az előző session kontextusa túl nagyra nőtt (auto-handoff). `
-  const source = !hadHandoff
-    ? `HANDOFF.md nem készült el időben, ezért az élő forrásokból dolgozz. `
-    : staleMinutes === 'unknown'
-      // A missing measurement must not impersonate a fresh one: say that the
-      // freshness was unverifiable, so the agent cross-checks instead of
-      // trusting the artifact blindly.
-      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, de a FRISSESSÉGÉT NEM TUDTAM MEGMÉRNI. ` +
-        `Kezeld óvatosan: vesd össze a kanban-kommentekkel és az inter-agent üzenetekkel, mielőtt a Next Steps-e szerint cselekednél. `
-      : typeof staleMinutes === 'number' 
-      // A stale handoff presented as current re-opens already-decided
-      // questions; say the gap out loud and route the agent to the live
-      // sources FIRST for the uncovered window.
-      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, DE ELAVULT: az utolsó ~${staleMinutes} perc munkája NINCS benne. ` +
-        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. ` +
-        // card d66b7681 (MikroB GO, msg 18804, condition 1): a backend3 restart
-        // (~30 perc elavult handoff) dupla landolással végződött -- a puszta
-        // FIGYELEM-sor nem volt elég konkrét ahhoz, hogy megállítsa. Ez a sor
-        // egy MÉRHETŐ, KONKRÉT elsőlépés, nem csak egy újabb figyelmeztetés.
-        `KÖTELEZŐ ELSŐ LÉPÉS, MIELŐTT BÁRMILYEN land/push/PUT done (vagy más visszafordíthatatlan lépés) megtörténne: ` +
-        `futtasd \`git ls-remote\` + \`git cat-file -e\` MINDEN sha-ra, amit a handoff megnevez (már landolt / pusholt állapotnak állít), ` +
-        `és olvasd újra az ott megnevezett MINDEN kártya aktuális kanban-státuszát (GET /api/kanban/<id>) -- ne a handoff szava szerint, a MÉRÉS szerint dönts arról, hogy valami már megtörtént-e. `
-      : `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója. `
+/**
+ * The safety-rule tail every resume prompt shares, regardless of why the
+ * restart happened: re-read the inter-agent queue for anything lost in the
+ * restart window, never touch the live prod checkout, and report in on the
+ * right channel. Extracted so a tier-specific resume prompt (see
+ * newCardDispatchResumePrompt below) states its own reason up front without
+ * dropping or re-typing any of these -- CYBERSEC F2, comment 31757, asked
+ * for a tier-specific wording, not a tier-specific safety contract.
+ */
+function resumePromptSafetyTail(name: string): string {
   return (
-    base + source +
-    `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
-    `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
     // ORSICTX912: msg 23670 was delivered SEVEN SECONDS after the guard kill
     // started, into the dying session -- the queue marked it delivered, the
     // fresh session had no reason to look, and completed_at is unused (0/37
@@ -435,6 +471,76 @@ export function resumePrompt(
     (name === MAIN_AGENT_ID
       ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki.`
       : `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`)
+  )
+}
+
+export function resumePrompt(
+  name: string,
+  handoffPath: string,
+  hadHandoff: boolean,
+  staleMinutes: HandoffStaleness = null,
+): string {
+  const base =
+    // Wording covers both tiers that lead here: "grew too large" is true at the
+    // act threshold and true of an idle-flush, where the context was heavy but
+    // the window was nowhere near full. "megtelt" would be false in that case.
+    `[CONTEXT-GUARD] Friss kontextussal indultál, mert az előző session kontextusa túl nagyra nőtt (auto-handoff). `
+  const source = !hadHandoff
+    ? `HANDOFF.md nem készült el időben, ezért az élő forrásokból dolgozz. `
+    : staleMinutes === 'unknown'
+      // A missing measurement must not impersonate a fresh one: say that the
+      // freshness was unverifiable, so the agent cross-checks instead of
+      // trusting the artifact blindly.
+      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, de a FRISSESSÉGÉT NEM TUDTAM MEGMÉRNI. ` +
+        `Kezeld óvatosan: vesd össze a kanban-kommentekkel és az inter-agent üzenetekkel, mielőtt a Next Steps-e szerint cselekednél. `
+      : typeof staleMinutes === 'number'
+      // A stale handoff presented as current re-opens already-decided
+      // questions; say the gap out loud and route the agent to the live
+      // sources FIRST for the uncovered window.
+      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, DE ELAVULT: az utolsó ~${staleMinutes} perc munkája NINCS benne. ` +
+        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. ` +
+        // card d66b7681 (MikroB GO, msg 18804, condition 1): a backend3 restart
+        // (~30 perc elavult handoff) dupla landolással végződött -- a puszta
+        // FIGYELEM-sor nem volt elég konkrét ahhoz, hogy megállítsa. Ez a sor
+        // egy MÉRHETŐ, KONKRÉT elsőlépés, nem csak egy újabb figyelmeztetés.
+        `KÖTELEZŐ ELSŐ LÉPÉS, MIELŐTT BÁRMILYEN land/push/PUT done (vagy más visszafordíthatatlan lépés) megtörténne: ` +
+        `futtasd \`git ls-remote\` + \`git cat-file -e\` MINDEN sha-ra, amit a handoff megnevez (már landolt / pusholt állapotnak állít), ` +
+        `és olvasd újra az ott megnevezett MINDEN kártya aktuális kanban-státuszát (GET /api/kanban/<id>) -- ne a handoff szava szerint, a MÉRÉS szerint dönts arról, hogy valami már megtörtént-e. `
+      : `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója. `
+  return (
+    base + source +
+    `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
+    `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
+    resumePromptSafetyTail(name)
+  )
+}
+
+/**
+ * Resume prompt for the new-card-dispatch tier (card f5f78e13).
+ *
+ * Its own wording, not resumePrompt's (CYBERSEC F2, comment 31757): "az
+ * előző session kontextusa túl nagyra nőtt" is FALSE for this tier -- the
+ * session was healthy, it is simply starting a different card now. Names
+ * the new card (id/title) so the agent does not have to infer which card
+ * the restart was FOR from a HANDOFF.md that describes the OLD one.
+ */
+export function newCardDispatchResumePrompt(
+  name: string,
+  handoffPath: string,
+  hadHandoff: boolean,
+  newCardId: string | null,
+  newCardTitle: string | null,
+): string {
+  const label = newCardLabel(newCardId, newCardTitle)
+  const base = `[CONTEXT-GUARD] Friss kontextussal indultál, mert egy ÚJ kártyát kaptál dispatch-ben: ${label}. `
+  const source = !hadHandoff
+    ? `A régi kártyádról nem készült el időben a HANDOFF.md; ha félbehagyott munkád volt rajta, az élő forrásokból (kanban-kommentek, git) derítsd ki. `
+    : `Első lépés: olvasd be ${handoffPath} -- ez az ELŐZŐ kártyádról készült átadó, amit ez a dispatch lezárt. `
+  return (
+    base + source +
+    `A dispatch-üzenet magával hozta az új kártya (${label}) tartalmát -- ellenőrizd a saját sorodat ` +
+    `(GET /api/messages?agent=${name}) és a kártyát magát, majd FOLYTASD AZON a munkát, ne az előzőn. ` +
+    resumePromptSafetyTail(name)
   )
 }
 
@@ -765,6 +871,20 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     }
   }
 
+  // Read once, used both to compute newCardDispatchDue below and to advance
+  // lastDispatchedCard at decision time -- a second query at decision time
+  // could legitimately return a THIRD card id if one arrived between the two
+  // reads, which would record the wrong "last seen" value.
+  const dispatchedCardIdForGuard = cfg.newCardHandoffEnabled ? getInProgressCardIdForAgent(name) : null
+  // Only looked up when there is an id to look up: same cost reasoning as
+  // contextTokens being gated on idleFlushEnabled. Carried into GuardInputs
+  // (and from there into GuardState) so the handoff/resume prompts can name
+  // the new card instead of leaving the agent to infer it (CYBERSEC F2,
+  // comment 31757).
+  const dispatchedCardTitleForGuard = dispatchedCardIdForGuard !== null
+    ? getKanbanCard(dispatchedCardIdForGuard)?.title ?? null
+    : null
+
   const inputs: GuardInputs = {
     nowMs,
     running,
@@ -802,6 +922,14 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // open-question skip: dailyHandoffSkipSweep decides all three,
     // applyDailyHandoffSkipSweep applies the record and the skip flag.
     dailyHandoffDue: applyDailyHandoffSkipSweep(lastDailyHandoff, dailySkipped, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs, () => dailyQuestionOpen(name), () => logger.info({ name }, 'context-guard: daily handoff skipped today -- open inbound question (the next slot fires regardless)')),
+    // Only queried when the tier is armed: an idle DB read on every sweep for
+    // every agent, for a tier most installs leave off, is a cost nobody asked
+    // for (same reasoning as contextTokens being gated on idleFlushEnabled).
+    newCardDispatchDue: forgetNewCardDispatchRecord(cfg.newCardHandoffEnabled, dispatchedCardIdForGuard)
+      ? (lastDispatchedCard.delete(name), false)
+      : newCardDispatchDue(cfg.newCardHandoffEnabled, dispatchedCardIdForGuard, lastDispatchedCard.get(name)),
+    newCardId: dispatchedCardIdForGuard,
+    newCardTitle: dispatchedCardTitleForGuard,
     usageLimited: usage?.limited === true,
     // Same edge as restorableResumeStates, so the in-memory park and the
     // persisted obligation end together. No clamp here: restartedAtMs was
@@ -823,6 +951,14 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   if (decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)) {
     lastDailyHandoff.set(name, nowMs)
     dailySkipped.delete(name)
+  }
+
+  // Same decision-time marking, same reason: advance the record only once
+  // decideGuard has actually acted on the card change, so a sweep where a
+  // higher-ranked tier or phase pre-empted this branch leaves it due again on
+  // the next sweep instead of silently consuming the signal.
+  if (decision.reason === NEW_CARD_DISPATCH_REASON_PREFIX && dispatchedCardIdForGuard !== null) {
+    lastDispatchedCard.set(name, dispatchedCardIdForGuard)
   }
 
   // Post-respawn grace for the main session. Making the Linux restart path work
@@ -924,7 +1060,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                 // agent, so the percentage prompt would announce "~0% --
                 // critical" at 04:00 to a session that is perfectly healthy.
                 ? dailyHandoffPrompt(cfg.dailyHandoffTime ?? '', handoffPathFor(name))
-                : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
+                : promptReason === NEW_CARD_DISPATCH_REASON_PREFIX
+                  // Same trap again: pct may be null or low for a session
+                  // that is perfectly healthy and simply about to start a
+                  // different card.
+                  ? newCardDispatchHandoffPrompt(handoffPathFor(name), inputs.newCardId, inputs.newCardTitle)
+                  : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
         )
         break
       case 'restart': {
@@ -1051,7 +1192,11 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           outcome = await sendSystemDirective(
             name,
             session,
-            resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
+            state.handoffRequestReason?.startsWith(NEW_CARD_DISPATCH_REASON_PREFIX)
+              // This tier's own wording (CYBERSEC F2, comment 31757):
+              // resumePrompt's "context grew too large" is false here.
+              ? newCardDispatchResumePrompt(name, handoffPathFor(name), hadHandoff, state.newCardId ?? null, state.newCardTitle ?? null)
+              : resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
           )
         } catch (err) {
           // Not retried: a throw from the tmux layer can come after part of
