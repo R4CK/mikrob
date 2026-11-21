@@ -29997,7 +29997,7 @@ ennek a kártyának a hatóköre, külön kártyaként érdemes jelenteni.
 **Ki döntött:** Peti (Telegram 14354) + MikroB (kártya 9963bf35). backend2 végezte a javítást.
 Gate: QA + Cybersec (a kártya saját kijelölése).
 
-## Ghost pipeline a lokális LLM-en, Gemini-kvóta nélkül (kártya 0291283d)
+## 2026-11-20 -- kártya 0291283d: Ghost pipeline a lokális LLM-en, Gemini-kvóta nélkül
 
 Peti (Telegram 14354, 2026-11-20): a Ghost pipeline-nak nincs saját kvótája, és nem ehet bele a
 Gemini kódolási kvótába. Mérve 2026-11-20: a `store/seged-hivo-naplo.jsonl` 164 sorából 162 Ghost
