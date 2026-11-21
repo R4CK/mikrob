@@ -29996,3 +29996,42 @@ ennek a kártyának a hatóköre, külön kártyaként érdemes jelenteni.
 
 **Ki döntött:** Peti (Telegram 14354) + MikroB (kártya 9963bf35). backend2 végezte a javítást.
 Gate: QA + Cybersec (a kártya saját kijelölése).
+
+## 2026-11-21 -- Kártya 035d02fc: WSL-watchdog utómunka -- OK-illesztés fail-open, N2 pin, hermetikus selftest
+
+**Mért probléma (4 nyitott pont a 58badae1-ről, komment 17862/17823):**
+1. A generált PS1-ben `$out -match "OK"` kis- és nagybetűtől független és nem horgonyzott --
+   az UNHEALTHY sor saját `channel_ok=0/1` szövege tartalmazza az "ok" alsztringet, tehát
+   `$probeExit`-től függetlenül is teljesíthette a feltételt.
+2. N2 (komment 17822): a meglévő selftest csak azt pinnelte, hogy a grace-túllépés ág után
+   VALAMILYEN záró kapcsos zárójel következik, nem azt, hogy a skip-számláló tényleg
+   TELÍTŐDIK `$MaxFreshSkips`-nél, nem pedig nullázódik (pont az a hiba, amit N2 javított).
+3. A selftest `run_isolated()`-je minden hívási pontra (a B2-eseteket kivéve) rábízta magát,
+   hogy `INSTALL_WSL_WATCHDOG_DISABLE_FLAG` nincs beállítva -- enélkül az installer SAJÁT
+   alapértelmezése (a valódi, gitignored host-állapot jelzőfájl) élesben olvasódott be, és ha
+   az létezett, csendben "disabled"-re kényszerítette a TASK_STATE-et független tesztesetekben.
+4. `install-wsl-watchdog.selftest.sh` a `scripts/` alatt él, nem a `store/` alatt, tehát a
+   `store-selftests-all-run.test.ts` glob-ja SOHA nem fedezte fel -- 70+ helyes, zöld eset
+   sosem futott le semmilyen CI-ban.
+
+**Döntés:** (1) `$out -cmatch '^OK'`-ra váltás. (2) a selftestbe egy hatókörbe szűkített pin
+(`BOOTLOOP_BRANCH`), ami a helyes telítődés-sort VÁRJA és a régi nullázó sor HIÁNYÁT pinneli.
+(3) `run_isolated()` mostantól alapértelmezetten egy scratch útvonalra állítja a
+`DISABLE_FLAG`-et, hacsak a hívó explicit nem adott meg mást; regressziós eset bizonyítja, hogy
+egy valódi élő jelzőfájl a script saját alapértelmezett útvonalán nem olvasódik be.
+(4) `install-wsl-watchdog.selftest.sh` bekötve egy új vitest fájlba
+(`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`), ami egyúttal pinneli
+`startup.sh` jelző-korai-kilépését is (sorrend, else-ág, külön log-sor) -- ez 58badae1-nél
+leszállt, de sosem volt pinnelve.
+
+**Nincs benne (szándékosan):** Q1 (`classify_task_state` `rc!=0` + üres kimenet ->
+"not-found", jelző nélkül fail-open) -- ezt MikroB már korábban MEDIUM, jelzővel enyhített,
+elfogadott maradék kockázatként rögzítette (17803/17823). Az egyetlen javítás, amit biztonsággal
+megkonstruálhatnék, a schtasks stderr-szövegét illesztené, ami pont azt a nyelvfüggő
+szöveg-illesztési problémát hozná vissza, amit ez a kártyalánc (H1', komment 17781) kifejezetten
+elkerült az `<Enabled>` XML-tag felé fordulva. MikroB/QA döntésére hagyva.
+
+**Ki döntött:** MikroB (kártyanyitás). DevO (fullstack) mérte és javította.
+**Hivatkozás:** kártya `035d02fc`; `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`, `scripts/startup.sh`,
+`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`.
