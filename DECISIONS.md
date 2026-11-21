@@ -30951,6 +30951,52 @@ severity, not just a missing refusal). 71/71 green with the fix (was 69/69). tsc
 
 **Ki döntött:** RedHat (Cybered) lelete alapján backend korrigálja; Gate: QA + Cybered.
 
+## 2026-11-15 -- kg-search.selftest.sh leak-check scope (card afc0d569)
+
+MikroB merese: a F1 leak-check `grep -slF ... /tmp/tmp.*` alakja a teljes rendszer `/tmp`-et
+pasztazta fajltipus-szures nelkul -- egy MASIK folyamat elhagyott FIFO-ja (nyito, iro nelkul
+blokkol a vegtelenig) 3 landolast is vorosre vitt (3bad1678 x2, ec34c025). Javitas: a
+`kg-search.sh` futtatasa `TMPDIR="$WORKDIR"`-dal tortenik (a sajat mktemp-je -- ha lenne -- ide
+irna, nem a megosztott `/tmp`-be), a leak-check pedig `find -type f`-fel kizarolag rendes
+fajlt nyit meg, soha FIFO-t/socketet.
+
+**Teszt:** `kg-search.selftest.sh` 6/6 valtozatlanul zold. Kezzel reprodukalva: `mkfifo
+/tmp/tmp.<x>` + a regi glob-alak -> `timeout 10` utan exit 124 (tenyleges akasztas); ugyanaz a
+FIFO a javitott koddal -> exit 0, 0s alatt, 30s timeout alatt marad.
+
+**Ki dontott:** MikroB dispatch (msg_id:19071) -> backend3 vegrehajtasa.
+
+## 2026-11-15 -- card b3b73630: main-agent skill write human-gate
+
+**Döntés:** POST /api/agents/<MAIN_AGENT_ID>/skills (src/web/routes/agents-skills.ts) írt egyenesen
+a globális ~/.claude/skills gyökérbe (minden ügynök betölti onnan), auth-kind ellenőrzés nélkül --
+Cybersec F1 lelete (31601 komment a 7c79badc kártyán, Gate-SHA 8bb6abcb3, már az e1f43d02c alapon is
+jelen volt, nem regresszió). A javítás a dashboard már meglévő rejectIfNotHumanAuth kapuját
+(auth.ts:124) köti be a MAIN_AGENT_ID célpontra: megosztott bearer / federation / agent:<id> device
+key -> 403, semmi nem íródik; böngésző-session / ember device key -> 200 (a dashboard generate gomb
+így tovább működik). Sub-agent célpontok (saját, nem flotta-szintű skills mappa) érintetlenek.
+
+A kártya 3. kritériuma (federation-eset a /api/skills/pending útvonalakon) ELMARADT: azok az
+útvonalak csak a még nem landolt card/7c79badc ágon léteznek (jelenleg újra-munkálás alatt), MikroB
+döntése szerint (msg 18939) ez a pin arra a kártyára kerül át.
+
+Gate-SHA: b24a2fa0d. Gate: QA + Cybersec. **Ki döntött:** backend.
+
+## 2026-11-15 -- card b3b73630 (follow-up): CYBERSEC NO-GO 31782 (WhiteHat2) javítása -- import/delete kapu
+
+**Döntés:** a fenti human-gate csak a POST /api/agents/<MAIN_AGENT_ID>/skills (generate) útvonalra
+került rá; WhiteHat2 (CYBERSEC NO-GO 31782 a 50b05aa47-en) mérte, hogy a két testvér-útvonal --
+POST /api/agents/<MAIN_AGENT_ID>/skills/import és DELETE /api/agents/<MAIN_AGENT_ID>/skills/<name>
+-- ugyanúgy a globális ~/.claude/skills gyökérbe ír, auth-kind ellenőrzés nélkül. MikroB döntése
+(msg 19287): ugyanaz a rejectIfNotHumanAuth kapu mindkét útvonalra, MAIN_AGENT_ID célpontra. Nincs
+új jogosultsági mechanizmus, csak a meglévő kapu bedrótozása.
+
+Teszt (src/__tests__/agents-skills-main-agent-human-gate.test.ts): mindkét útvonalon a 4 nem-ember
+auth-fajta -> 403, semmi nem változik a lemezen; böngésző-session és ember device key -> 200.
+Mutáció-pin: a kapu nélküli 50b05aa47-en a 8 új refused-eset pirosra vált (403 helyett 200).
+
+Gate-SHA: 735115880. Gate: QA + Cybersec (WhiteHat2). **Ki döntött:** backend.
+
 ## 2026-11-18 -- 51c68eeb: Koteg 26 upstream szinkron (66d38ee45..a4545a8a0, 25 commit)
 
 A szülő-fázis e5c46e87 (Szotasz/marveen UPSTREAM-SYNC) következő kötege Köteg 25 (5dd0842a) után.
