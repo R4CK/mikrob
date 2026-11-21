@@ -244,6 +244,9 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   // self-contained (every case writes to a mktemp dir, never to the live store) and safe to run
   // under execFileSync's inherited env.
   { file: 'quota-shutdown-guard.sh', args: ['--selftest'] },
+  // Card dd051a9f: carries its selftest as an argument like its siblings above, wired here at
+  // birth so it is not left as another "written, committed, green-looking, never run" control.
+  { file: 'npm-live-install-drift-check.sh', args: ['--selftest'] },
   // WhiteHat F-C LOW (card c4590365, comment 34613): land_notify_finish's selftest existed
   // (`--selftest-land-notify`) but nothing in the suite ran it -- the exact "written, committed,
   // green-looking, never run" class this file exists to close, one script over (the identical
