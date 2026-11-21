@@ -26733,3 +26733,11 @@ What was genuinely missing and built now: `store/marveen-card-worktree-cleanup.s
 Docs closed (f8fde8e9, F4.5): README "Git/worktree/landolási infrastruktúra" section's `--card` bullet extended with the opt-in dispatch flag + the new cleanup sweep; `docs/rules/marveen-worktree-fegyelme.md` gained a full "Kártyánkénti ág + worktree (card mode)" section (it previously said nothing about card mode at all, only the per-agent worktree); this DECISIONS.md tail entry.
 
 **Ki döntött:** DevO (fullstack), cards ec587638 + 0ae1166e + f8fde8e9, Gate-SHA 528f6fe72 (0ae1166e; ec587638/f8fde8e9 are verification/docs-only, no new commit of their own).
+
+## 2026-11-21 -- correction to the 2026-11-17 F4.4/F4.5 entry: 0ae1166e went NO-GO then landed clean
+
+**Kontextus:** the 2026-11-17 entry above named Gate-SHA 528f6fe72 for 0ae1166e as if the card were closed. Minutes after that entry was written, Cybered NO-GO (comment 32641, F1-F4: wrong-card branch capture, detached-HEAD landed check, ignored-file deletion, symlinked live-process blindness) and Cybersec NO-GO (comment 32647, 2 MEDIUMs, same removal-path bug class) both landed, and this card's own QA2 FAIL (comment 32655) caught the docs describing a NO-GO'd, unlanded script as shipped -- correctly, at the time.
+
+**Correction:** 0ae1166e went through rework (commits 976274bdc, 6ea8316b4 fixing the F1-F4/F8 findings), then CYBERED GO + CYBERSEC GO (x2) + QA PASS + QA2 PASS on final Gate-SHA `8ff3adcced874713df2c936a9d6d332baaac0036`, landed on origin/develop via merge `23167344f0eb967d155b1b698d53ea545739c4bc` (develop tip `bbb9282ec33b59aa911ab1f36cfc0f68c807b852`), MikroB closure confirmed. `store/marveen-card-worktree-cleanup.sh` as it exists on origin/develop today was re-verified line-by-line against the README/`marveen-worktree-fegyelme.md` text this card (f8fde8e9) ships: `--dry-run` default, `--apply` requires `--yes`, REMOVABLE only when LANDED + IDLE + CLEAN all hold -- the docs text is accurate to the shipped script as of this correction, not merely as originally (prematurely) claimed.
+
+**Ki döntött:** DevO (fullstack), re-verification for card f8fde8e9 after 0ae1166e's final landing. Gate-SHA: see this card's own REVIEW comment.
