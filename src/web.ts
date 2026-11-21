@@ -110,6 +110,8 @@ import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleProjectPriority } from './web/routes/project-priority.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
+import { tryHandleTelegramOutbox } from './web/routes/telegram-outbox.js'
+import { startTelegramOutboxDrain } from './web/telegram-outbox.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleLlmLedger } from './web/routes/llm-ledger.js'
@@ -304,6 +306,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleProjectPriority(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
+      if (await tryHandleTelegramOutbox(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleLlmLedger(routeCtx)) return
@@ -474,6 +477,10 @@ export function startWebServer(port = 3420): http.Server {
 
   const scheduleInterval = webOnly ? undefined : startScheduleRunner()
   if (!webOnly) logger.info('Schedule runner started (60s poll)')
+  // Card ea3e7316: default OFF (MIKROB_TG_OUTBOX!=1), itself checks the flag and returns
+  // undefined -- startTelegramOutboxDrain() is always safe to call unconditionally.
+  const telegramOutboxInterval = webOnly ? undefined : startTelegramOutboxDrain()
+  if (!webOnly && telegramOutboxInterval) logger.info('Telegram outbox drain started (10s poll)')
   // HBFABRIC1003 (B): a missing heartbeat digest is reported, whatever its route.
   const heartbeatGapInterval = webOnly ? undefined : startHeartbeatGapGuard()
 
@@ -904,6 +911,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   server.close = (cb?: (err?: Error) => void) => {
     clearInterval(routerInterval)
     clearInterval(scheduleInterval)
+    if (telegramOutboxInterval) clearInterval(telegramOutboxInterval)
     clearInterval(heartbeatGapInterval)
     if (pluginMonitorInterval) clearInterval(pluginMonitorInterval)
     workerLivenessCancelled = true
