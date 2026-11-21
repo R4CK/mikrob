@@ -28185,112 +28185,6 @@ zarja a 3 mert kerulouttat (literal ".." szegmens, symlink argumentum, gate-work
 argumentum) es RedHat 7 tulelo mutansat (K5, K7b, K9, K9b, K10b, K12, K13). Gate-SHA:
 38f4ef91528df9f110bdce8d96349ecd4b55141e. Gate: QA + Cybersec. **Ki döntött:** DevO (fullstack).
 
-## 2026-11-18 -- 51c68eeb: Koteg 26 upstream szinkron (66d38ee45..a4545a8a0, 25 commit)
-
-A szülő-fázis e5c46e87 (Szotasz/marveen UPSTREAM-SYNC) következő kötege Köteg 25 (5dd0842a) után.
-`git merge --no-ff a4545a8a0` az `origin/develop@afe121d22`-re, 22 konfliktusos fájl feloldva
-(`6deef1741`). Fontosabb döntések: update.sh/watchdog.sh/background-tasks.ts/connectors.ts/
-updates.ts -- az upstream async/argv-alapú perf-fix-jei felvéve, a fork lazy-bin-resolver és
-rollback-guard mintái megtartva fölöttük; channel-mcp-reconnect.ts -- az upstream typed-command
-reconnect-átírása (#2179) felvéve a fork saját dokumentált elavult cursor-navigation kódja helyett;
-approvals.ts -- union mindkét security-check (owner-session gate #2156 + meglévő GPU-driver
-hard fail-closed); auth.ts -- az upstream mayIssueCredentials/OWNER_SESSION_REQUIRED alapfunkció
-NEM került át (bootstrap-kivétel, kártya 49960046), de a rá épülő nem-konfliktusos Köteg 26
-hívási helyekhez (#2175) a fork saját, session-only implementációja került be ugyanazokkal az
-exportált nevekkel; web/app.js + allowlist -- STUB (ours), a fájl és az allowlist byte-identikus
-a merge előtti HEAD-del (a fájl szabványos felbontási szabálya,
-`src/fork-upstream/acknowledged-conflicts.ts`). Két nem-portolt régió nevesítve: (1) upstream
-fleet-freeze frontend-drótozás (wireFleetFreeze/renderFleetFreeze) -- a style.css additív
-`.fleet-freeze-*` szabályai felkerültek (jelenleg holt CSS), a JS fél hiányzik, külön kártya kell;
-(2) upstream 4540f195f (SETUPTOKENWIZ1022, "log in" mód a Claude Plans panelhez) -- a backend fél
-tisztán felment (claude-plans-login.ts, setup-token-login.ts, web.ts drótozás, commitNewPlan a
-claude-plans.ts-ben), de a frontend a web/app-claude-plans.js-ben élő panelhez kötődne, aminek
-NINCS mode-selector/token-auth/edit-infrastruktúrája (a panel-port kártya, 1c810029, 2026-11-07-én
-lett kész, de csak a Köteg 3-korabeli egyszerű formát hozta át) -- a login-UI tesztjei
-(claude-plans-login-ui.test.ts) describe.skip-pel maradtak, a backend-drótozást ellenőrző
-leírás futva (lásd a src/fork-upstream/acknowledged-conflicts.ts bejegyzés 2026-11-18-i, javított
-szövegét és az 1c810029 kártyára tett kommentet, komment 33267).
-
-Két javítási kör a merge után: (f3f1ed7db) async-mock hiányok két meglévő teszt-fájlban,
-auth.ts mayIssueCredentials export-hiány, lint-ratchet alapvonal frissítés; (c325e2e6e) update.sh/
-update-finalize.sh natív-modul-rebuild gate visszaállítása az upstream multi-line retry formára
-(a saját egysoros || alakom törte az update-rebuild-gated.test.ts-t), pinolt szám/leltár-frissítés
-nyolc tesztfájlban (sync-child census, pane-writer census, hook-anchor leltár, KNOWN_SYNC_ROUTES),
-két hiányzó lang-leírás; (3f28b164b) három shebanges script tényleges `git update-index --chmod=+x`
-commitolása -- az első próbálkozás csak az indexet érintette commit nélkül, elveszett a fleet-test
-friss checkout-ján; (da460ff8f + 99b0ff860) claude-plans-login-ui.test.ts három web/app.js-függő
-describe blokkjának describe.skip-elése dátumozott jegyzettel, a jegyzet egy saját-köri javítással
-(a panel NEM hiányzik, csak a mode-selector-infrastruktúrája -- lásd fent).
-
-**Mérés:** `fleet-test.sh --ref 99b0ff860` (= `da460ff8f` + 2 kommentkülönbség, kód-identikus,
-`git diff` ellenőrizve) 1406 Test Files passed | 1 skipped (1407), 43795 Tests passed | 144 skipped
-(43940), 1 FAIL -- `store-selftests-all-run.test.ts`-ben, a "tracked tree dirtied: M CLAUDE.md"
-hiba, HÁROM egymást követő teljes futáson HÁROM KÜLÖNBÖZŐ, egymással össze NEM tartozó
-selftest-re esve (mopsion-suite-run, offload-dispatch, post-review -- none of these three scripts
-touched by this card commits). Önmagában (`npx vitest run` a saját card-worktree-ben, konkurens
-fleet-test nélkül) ugyanez a fájl 162/162 zöld. Ez egy ismert, megosztott `/home/neon/marveen-test`
-fa-kontenció alatti false-positive (lásd `shared-fleet-test-tree-contention-fakes-lint-ratchet-
-parse-errors` memória-minta, ugyanaz az osztály), nem ebből a kötegből eredő regresszió.
-`npx tsc --noEmit` ezen a shán: clean. `npm run build`: clean. `lint-ratchet.sh`: no rule got
-worse (443 finding, baseline tartja magát).
-
-**Ki döntött:** backend3 végezte. Gate-SHA: 99b0ff860d780a5e28da50356370749edf43bb75. Gate: QA +
-Cybersec (WhiteHat) + Cybered (RedHat) -- a kötegben trust-boundary fájl van (auth.ts, approvals.ts,
-claude-plans-login.ts, settings.ts érintett az upstream commitokban). `99b0ff860`
-`git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
-
-
-## 2026-11-18 -- 51c68eeb: Koteg 26 delta -- RedHat C2 feloldva, a /stop es /resume valodi feloldasi utat mutat
-
-RedHat GO (komment 33311, Gate-SHA 4aeb9055694351cfcf15fe2397c9c9d9f7b3ef1b) ket landolasi
-feltetelt nevezett meg a mar kesz Koteg 26 batch mellett. C1 (nincs dashboard-felhasznalo
-az elesben) Peti/MikroB dontese, nem erre a kartyara tartozik. C2: a dashboard piros savjaban
-levo "Feloldas" gomb nulla bekotessel all a web/app.js-ben (grep: fleet, freeze, unfreeze,
-FleetFreeze mind 0), es az /stop + /resume Telegram-valaszok, valamint docs/fleet-freeze.md
-pont erre a nem-mukodo gombra kuldtek a gazdat -- telefonrol olvasva ez rosszabb, mint a
-csend.
-
-Javitas (nem a gomb portolasa -- az kulon kartyat/scope-ot igenyelne, lasd a REVIEW-ban
-nevesitve): a harom szoveg (src/web/builtin-commands.ts /stop + /resume valasz, docs/
-fleet-freeze.md) mind a ket tenylegesen mukodo utat nevezi meg: (1) store/fleet-freeze.json
-torlese a gepen (a fleet-freeze.ts modul sajat, mar dokumentalt "CLI-free way out"-ja),
-(2) hitelesitett POST /api/fleet/unfreeze hivas, ha mar van dashboard-bejelentkezes (C1
-felteve). fleet-freeze.test.ts: 37/37 zold, semelyik teszt nem fuggott a regi szoveg
-pontos szavaitol (grep-pelve ellenorizve).
-
-**Mertek:** npx tsc --noEmit ezen a shan: clean. npx vitest run fleet-freeze.test.ts: 37/37
-zold. Teljes fleet-test.sh ezen a delta-shan nincs lefuttatva kulon (bash-only + 2 TS/doc
-fajl, nem kodfuggo valtozas -- a QA/WhiteHat/RedHat delta-gate dontse, kell-e teljes kor).
-
-**Ki dontott:** backend3 vegezte. Gate-SHA: c13d691d05e7b2af03889a4214199a4480a56594. Delta scope: src/web/builtin-commands.ts
-(2 reply-string csere), docs/fleet-freeze.md (1 szakasz javitasa) -- a Koteg 26 batch tobbi
-resze (merge + korabbi fixupok) valtozatlan, lasd a korabbi 51c68eeb bejegyzeseket.
-
-## 2026-11-19 -- 51c68eeb: Koteg 26 land refused on develop drift, fixed (background-tasks.test.ts await), redone theirs-first after RedHat C33478
-
-First attempt at this fixup (merge beedd6369 + docs commit 567b13aa4, pushed and reviewed in
-comment 33469) resolved the DECISIONS.md conflict by hand, ours-first -- RedHat's delta re-gate
-(comment 33478) caught two problems: decisions_tail_append_ok returned rc=1 against develop (the
-card's own entry sat mid-file relative to develop's later history), and my REVIEW quoted a
-hand-retyped, truncated sha. Both are process mistakes already on file (always-copy-gate-sha-from-git-rev-parse-never-retype),
-now actually hit.
-
-Redone with the right tool: `store/decisions-sync-resolve.sh` in a fresh detached worktree off
-the still-gated ba1a3f7a8, merging origin/develop theirs-first (the script's own stated purpose,
-card edf9c837 -- an agent syncing onto its own branch must put the integration branch's content
-first so its own entry stays a clean tail-append relative to develop's history). The
-background-tasks.test.ts await fix from the first attempt is unchanged and re-verified.
-
-**Mérés:** `store/decisions-sync-resolve.sh --check-last-merge`: rc=0 (append-only invariant
-holds against develop both ways). `tsc --noEmit`: clean. `vitest run background-tasks.test.ts
-background-tasks-async-tmux.test.ts`: 2 Test Files passed (2), 33 Tests passed (33) -- same
-result as the first attempt, confirming RedHat's own measurement (33/33, production-await mutant
-red) independently.
-
-**Ki döntött:** backend3 végezte. Gate-SHA: 16be03fbe94a4dcaa84c3ba67fa71a67c17bbc54 (merge commit; sha copied via
-`git rev-parse HEAD`, not retyped). Supersedes beedd6369/567b13aa4 (force-pushed over, same
-card branch, no other agent had based work on them). Gate: QA + Cybersec (WhiteHat) + Cybered
-(RedHat) per the card's designated set -- needs a fresh verdict on this sha.
 ## 2026-11-14 -- 5dd48e5d: kontextus-tömörítés küszöb felső sapkával 200k tokenre (Peti 13835)
 
 **Kontextus:** a token-használat mérése (kártya 2ad5ba6c, 2026-11-14) azt mutatta, hogy egy tömörítés 240-420k tokent olvas vissza egy 1M-ablakos modellen (opus-5) -- a 75%-os percentage-küszöb (2026-08-14-es szabály) ott 750k-nál indul, ami ezt a drága újraolvasást ritkán, de nagy méretben engedi megtörténni. Peti (Telegram 13835): sapkázni a küszöböt 200 000 tokenre, a 75%-os szabály MELLETT, nem helyette.
@@ -30637,6 +30531,139 @@ Gate: QA. **Ki döntött:** DevO (fullstack).
 **Nincs benne:** no marveen-specific gate-worktree creation WRAPPER script was written (unlike cc-gate-worktree.sh) -- the skill now documents the correct path by hand; building an equivalent script is a separate, not-yet-raised card.
 
 **Ki döntött:** a kártya saját elfogadási kritériuma (MikroB). backend végezte. Gate: QA + Cybersec.
+## 2026-11-19 -- card 0ae1166e round 2 (F8: node_modules/dist allowlist by TYPE, not NAME)
+
+**Kontextus:** CYBERED GO 34321 (delta, round 2) a store/marveen-card-worktree-cleanup.sh F1-F4
+javítására, de egy ÚJ MEDIUM-LOW leletet is hozott (F8): a CLEAN ellenőrzés node_modules/dist
+allowlistje a NÉV alapján engedett át egy ignorált bejegyzést, a TÍPUSÁT (symlink vs valódi
+könyvtár) nem nézte. Mért bizonyíték a valós worktree-gyökéren (olvasás, semmi nem törölve): 103
+kártya-worktree-ből node_modules symlink 101-ben, valódi könyvtár 0-ban; dist valódi könyvtár
+3-ban (5dd0842a, 51c68eeb, 57044a66), symlink 0-ban -- tehát egy valódi dist/ ritka, de létező,
+és egy jövőbeli valódi node_modules (vagy bármi, amit valaki helyben, nem symlinkelve hagy ott)
+csendben elveszett volna egy --apply futásnál.
+
+**Döntés (MikroB, CYBERED GO 34321 + QA2 PASS 34317 után):** F8 a landolás ELŐTT javítandó, nem
+elfogadott follow-up (a rule 22 köre: sosem törölj commitolatlan/pótolhatatlan munkát). Javítás:
+az allowlist node_modules/dist-et KIZÁRÓLAG symlinkként mentesíti; egy valódi (nem-symlink)
+ignorált könyvtár bármilyen tartalommal blokkolja a sweep-et, névtől függetlenül (MikroB
+egyszerűsített iránya a két felkínált opció közül).
+
+**Mérés:** 2 új selftest eset (valódi node_modules és valódi dist egyedi fájllal -> SKIP, nem
+törölve), a régi G2 kontroll symlinkre átírva (a fleet valós mintája: node_modules symlink a
+megosztott store-ba, a cél a törlés után is megmarad) -- ez NEM gyengíti a kontrollt, ugyanazt
+állítja mint korábban (symlinkelt node_modules REMOVABLE), csak valósághű fixture-rel. 41/41
+PASS. Mutáció: a TÍPUS-ellenőrzés visszaállítása a régi NÉV-csak formára pontosan a 2 új F8
+esetet (6 assertion) bukatja pirosra, mást nem.
+
+Gate: QA2 + Cybersec + Cybered (delta, round 2). **Ki döntött:** MikroB (CYBERED GO 34321 utáni
+döntés), a javítást DevO (fullstack) végezte.
+
+## 2026-11-18 -- 51c68eeb: Koteg 26 upstream szinkron (66d38ee45..a4545a8a0, 25 commit)
+
+A szülő-fázis e5c46e87 (Szotasz/marveen UPSTREAM-SYNC) következő kötege Köteg 25 (5dd0842a) után.
+`git merge --no-ff a4545a8a0` az `origin/develop@afe121d22`-re, 22 konfliktusos fájl feloldva
+(`6deef1741`). Fontosabb döntések: update.sh/watchdog.sh/background-tasks.ts/connectors.ts/
+updates.ts -- az upstream async/argv-alapú perf-fix-jei felvéve, a fork lazy-bin-resolver és
+rollback-guard mintái megtartva fölöttük; channel-mcp-reconnect.ts -- az upstream typed-command
+reconnect-átírása (#2179) felvéve a fork saját dokumentált elavult cursor-navigation kódja helyett;
+approvals.ts -- union mindkét security-check (owner-session gate #2156 + meglévő GPU-driver
+hard fail-closed); auth.ts -- az upstream mayIssueCredentials/OWNER_SESSION_REQUIRED alapfunkció
+NEM került át (bootstrap-kivétel, kártya 49960046), de a rá épülő nem-konfliktusos Köteg 26
+hívási helyekhez (#2175) a fork saját, session-only implementációja került be ugyanazokkal az
+exportált nevekkel; web/app.js + allowlist -- STUB (ours), a fájl és az allowlist byte-identikus
+a merge előtti HEAD-del (a fájl szabványos felbontási szabálya,
+`src/fork-upstream/acknowledged-conflicts.ts`). Két nem-portolt régió nevesítve: (1) upstream
+fleet-freeze frontend-drótozás (wireFleetFreeze/renderFleetFreeze) -- a style.css additív
+`.fleet-freeze-*` szabályai felkerültek (jelenleg holt CSS), a JS fél hiányzik, külön kártya kell;
+(2) upstream 4540f195f (SETUPTOKENWIZ1022, "log in" mód a Claude Plans panelhez) -- a backend fél
+tisztán felment (claude-plans-login.ts, setup-token-login.ts, web.ts drótozás, commitNewPlan a
+claude-plans.ts-ben), de a frontend a web/app-claude-plans.js-ben élő panelhez kötődne, aminek
+NINCS mode-selector/token-auth/edit-infrastruktúrája (a panel-port kártya, 1c810029, 2026-11-07-én
+lett kész, de csak a Köteg 3-korabeli egyszerű formát hozta át) -- a login-UI tesztjei
+(claude-plans-login-ui.test.ts) describe.skip-pel maradtak, a backend-drótozást ellenőrző
+leírás futva (lásd a src/fork-upstream/acknowledged-conflicts.ts bejegyzés 2026-11-18-i, javított
+szövegét és az 1c810029 kártyára tett kommentet, komment 33267).
+
+Két javítási kör a merge után: (f3f1ed7db) async-mock hiányok két meglévő teszt-fájlban,
+auth.ts mayIssueCredentials export-hiány, lint-ratchet alapvonal frissítés; (c325e2e6e) update.sh/
+update-finalize.sh natív-modul-rebuild gate visszaállítása az upstream multi-line retry formára
+(a saját egysoros || alakom törte az update-rebuild-gated.test.ts-t), pinolt szám/leltár-frissítés
+nyolc tesztfájlban (sync-child census, pane-writer census, hook-anchor leltár, KNOWN_SYNC_ROUTES),
+két hiányzó lang-leírás; (3f28b164b) három shebanges script tényleges `git update-index --chmod=+x`
+commitolása -- az első próbálkozás csak az indexet érintette commit nélkül, elveszett a fleet-test
+friss checkout-ján; (da460ff8f + 99b0ff860) claude-plans-login-ui.test.ts három web/app.js-függő
+describe blokkjának describe.skip-elése dátumozott jegyzettel, a jegyzet egy saját-köri javítással
+(a panel NEM hiányzik, csak a mode-selector-infrastruktúrája -- lásd fent).
+
+**Mérés:** `fleet-test.sh --ref 99b0ff860` (= `da460ff8f` + 2 kommentkülönbség, kód-identikus,
+`git diff` ellenőrizve) 1406 Test Files passed | 1 skipped (1407), 43795 Tests passed | 144 skipped
+(43940), 1 FAIL -- `store-selftests-all-run.test.ts`-ben, a "tracked tree dirtied: M CLAUDE.md"
+hiba, HÁROM egymást követő teljes futáson HÁROM KÜLÖNBÖZŐ, egymással össze NEM tartozó
+selftest-re esve (mopsion-suite-run, offload-dispatch, post-review -- none of these three scripts
+touched by this card commits). Önmagában (`npx vitest run` a saját card-worktree-ben, konkurens
+fleet-test nélkül) ugyanez a fájl 162/162 zöld. Ez egy ismert, megosztott `/home/neon/marveen-test`
+fa-kontenció alatti false-positive (lásd `shared-fleet-test-tree-contention-fakes-lint-ratchet-
+parse-errors` memória-minta, ugyanaz az osztály), nem ebből a kötegből eredő regresszió.
+`npx tsc --noEmit` ezen a shán: clean. `npm run build`: clean. `lint-ratchet.sh`: no rule got
+worse (443 finding, baseline tartja magát).
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 99b0ff860d780a5e28da50356370749edf43bb75. Gate: QA +
+Cybersec (WhiteHat) + Cybered (RedHat) -- a kötegben trust-boundary fájl van (auth.ts, approvals.ts,
+claude-plans-login.ts, settings.ts érintett az upstream commitokban). `99b0ff860`
+`git merge-base --is-ancestor` origin/develop-nek NEM ancestor-je még (landolás előtt áll).
+
+
+## 2026-11-18 -- 51c68eeb: Koteg 26 delta -- RedHat C2 feloldva, a /stop es /resume valodi feloldasi utat mutat
+
+RedHat GO (komment 33311, Gate-SHA 4aeb9055694351cfcf15fe2397c9c9d9f7b3ef1b) ket landolasi
+feltetelt nevezett meg a mar kesz Koteg 26 batch mellett. C1 (nincs dashboard-felhasznalo
+az elesben) Peti/MikroB dontese, nem erre a kartyara tartozik. C2: a dashboard piros savjaban
+levo "Feloldas" gomb nulla bekotessel all a web/app.js-ben (grep: fleet, freeze, unfreeze,
+FleetFreeze mind 0), es az /stop + /resume Telegram-valaszok, valamint docs/fleet-freeze.md
+pont erre a nem-mukodo gombra kuldtek a gazdat -- telefonrol olvasva ez rosszabb, mint a
+csend.
+
+Javitas (nem a gomb portolasa -- az kulon kartyat/scope-ot igenyelne, lasd a REVIEW-ban
+nevesitve): a harom szoveg (src/web/builtin-commands.ts /stop + /resume valasz, docs/
+fleet-freeze.md) mind a ket tenylegesen mukodo utat nevezi meg: (1) store/fleet-freeze.json
+torlese a gepen (a fleet-freeze.ts modul sajat, mar dokumentalt "CLI-free way out"-ja),
+(2) hitelesitett POST /api/fleet/unfreeze hivas, ha mar van dashboard-bejelentkezes (C1
+felteve). fleet-freeze.test.ts: 37/37 zold, semelyik teszt nem fuggott a regi szoveg
+pontos szavaitol (grep-pelve ellenorizve).
+
+**Mertek:** npx tsc --noEmit ezen a shan: clean. npx vitest run fleet-freeze.test.ts: 37/37
+zold. Teljes fleet-test.sh ezen a delta-shan nincs lefuttatva kulon (bash-only + 2 TS/doc
+fajl, nem kodfuggo valtozas -- a QA/WhiteHat/RedHat delta-gate dontse, kell-e teljes kor).
+
+**Ki dontott:** backend3 vegezte. Gate-SHA: c13d691d05e7b2af03889a4214199a4480a56594. Delta scope: src/web/builtin-commands.ts
+(2 reply-string csere), docs/fleet-freeze.md (1 szakasz javitasa) -- a Koteg 26 batch tobbi
+resze (merge + korabbi fixupok) valtozatlan, lasd a korabbi 51c68eeb bejegyzeseket.
+
+## 2026-11-19 -- 51c68eeb: Koteg 26 land refused on develop drift, fixed (background-tasks.test.ts await), redone theirs-first after RedHat C33478
+
+First attempt at this fixup (merge beedd6369 + docs commit 567b13aa4, pushed and reviewed in
+comment 33469) resolved the DECISIONS.md conflict by hand, ours-first -- RedHat's delta re-gate
+(comment 33478) caught two problems: decisions_tail_append_ok returned rc=1 against develop (the
+card's own entry sat mid-file relative to develop's later history), and my REVIEW quoted a
+hand-retyped, truncated sha. Both are process mistakes already on file (always-copy-gate-sha-from-git-rev-parse-never-retype),
+now actually hit.
+
+Redone with the right tool: `store/decisions-sync-resolve.sh` in a fresh detached worktree off
+the still-gated ba1a3f7a8, merging origin/develop theirs-first (the script's own stated purpose,
+card edf9c837 -- an agent syncing onto its own branch must put the integration branch's content
+first so its own entry stays a clean tail-append relative to develop's history). The
+background-tasks.test.ts await fix from the first attempt is unchanged and re-verified.
+
+**Mérés:** `store/decisions-sync-resolve.sh --check-last-merge`: rc=0 (append-only invariant
+holds against develop both ways). `tsc --noEmit`: clean. `vitest run background-tasks.test.ts
+background-tasks-async-tmux.test.ts`: 2 Test Files passed (2), 33 Tests passed (33) -- same
+result as the first attempt, confirming RedHat's own measurement (33/33, production-await mutant
+red) independently.
+
+**Ki döntött:** backend3 végezte. Gate-SHA: 16be03fbe94a4dcaa84c3ba67fa71a67c17bbc54 (merge commit; sha copied via
+`git rev-parse HEAD`, not retyped). Supersedes beedd6369/567b13aa4 (force-pushed over, same
+card branch, no other agent had based work on them). Gate: QA + Cybersec (WhiteHat) + Cybered
+(RedHat) per the card's designated set -- needs a fresh verdict on this sha.
 
 ## 2026-11-21 -- 51c68eeb merge-fixup: WATCHDOG_INSTALL_DIR not set in the bash-sandbox.test.ts fixture call
 
