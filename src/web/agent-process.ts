@@ -90,8 +90,8 @@ import { fleetVenvBin } from '../fleet-venv.js'
 // with a warning, because a fleet venv at such a path is a config mistake).
 // Exported for unit tests; `exists` is the seam.
 export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists: (p: string) => boolean = existsSync): string {
-  const { prefix, refused } = fleetVenvBin(venvDir, exists)
-  if (refused) logger.warn({ venvDir }, 'fleetVenvPathPrefix: venv path is not absolute or contains a shell-active character; PATH prefix skipped')
+  const { prefix, refused, reason } = fleetVenvBin(venvDir, exists)
+  if (refused) logger.warn({ venvDir, reason }, 'fleetVenvPathPrefix: venv path refused, PATH prefix skipped')
   return prefix
 }
 import { getEffectiveSettingValue } from '../settings-store.js'

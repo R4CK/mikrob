@@ -19,8 +19,8 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const { resolveFleetVenvDir, fleetVenvBin } = await import(join(projectRoot, 'dist', 'fleet-venv.js'))
 
 const venvDir = resolveFleetVenvDir(projectRoot)
-const { prefix, refused } = fleetVenvBin(venvDir)
+const { prefix, refused, reason } = fleetVenvBin(venvDir)
 if (refused) {
-  process.stderr.write(`fleet-venv-prefix: FLEET_PYTHON_VENV (${venvDir}) is not an absolute path or contains a shell-active character; PATH prefix skipped\n`)
+  process.stderr.write(`fleet-venv-prefix: FLEET_PYTHON_VENV (${venvDir}) refused${reason ? `: ${reason}` : ''}; PATH prefix skipped\n`)
 }
 process.stdout.write(prefix)

@@ -65,6 +65,8 @@ WAKE_BIN="${HEARTBEAT_SCRIPTFIRST_WAKE_BIN:-$ROOT/store/sched-wake-mikrob.sh}"
 STATE_FILE="${HEARTBEAT_SCRIPTFIRST_STATE_FILE:-$ROOT/store/.heartbeat-scriptfirst-last.txt}"
 PENDING_FILE="${HEARTBEAT_SCRIPTFIRST_PENDING_FILE:-$ROOT/store/.heartbeat-scriptfirst-pending.txt}"
 ACTIVE_SUBAGENTS_FILE="${HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE:-$ROOT/store/active-subagents.json}"
+NMDRIFT_BIN="${HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN:-$ROOT/store/npm-live-install-drift-check.sh}"
+MAIN_REPO="${HEARTBEAT_SCRIPTFIRST_MAIN_REPO:-/home/neon/marveen}"
 HARDSTOP_FILE="${HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE:-$ROOT/store/weekly-hard-stop.json}"
 # card d8f44d15 req 3: fixture seam for /api/token-usage/daily-lag, same style as _get's
 # FIXTURE_DIR -- a plain file holding the JSON body, read instead of curled when set.
@@ -333,7 +335,21 @@ except Exception as e:
   esac
 fi
 
-# --- N4 (card 1c8f6d25): replay a previously FAILED wake's report, instead of leaving it stuck in
+# --- 12) live node_modules drift from package-lock.json (card dd051a9f) -------------------------
+# marveen-land.sh's sync_live_install() fast-forwards $MAIN's package.json/package-lock.json on
+# every landing but never runs npm ci there (card 5d365589 N3, deliberate), and its "run npm ci by
+# hand" line goes into a backgrounded land-run log nobody is tailing (land-run-journal.sh). This
+# makes the gap loud on the heartbeat instead, so it stops depending on a human noticing a stale
+# install before something breaks in production.
+ND_OUT="$(bash "$NMDRIFT_BIN" --repo "$MAIN_REPO" 2>&1)"; ND_RC=$?
+case "$ND_RC" in
+  0) add "NODE-MODULES-SYNC: $(printf '%s' "$ND_OUT" | head -1)" ;;
+  1) add "NODE-MODULES-DRIFT: $ND_OUT"; ACTIONABLE=1 ;;
+  3) add "NODE-MODULES-SYNC: check not applicable -- $(printf '%s' "$ND_OUT" | head -1)" ;;
+  *) err "npm-live-install-drift-check.sh exited $ND_RC: $ND_OUT" ;;
+esac
+
+# --- 13) N4 (card 1c8f6d25): replay a previously FAILED wake's report, instead of leaving it stuck in
 # --- PENDING_FILE forever. Read-and-clear here so a wake that fails AGAIN re-appends fresh (below)
 # --- rather than this block re-reading the same backlog on every future tick.
 PENDING_BACKLOG="$(cat "$PENDING_FILE" 2>/dev/null || true)"
@@ -344,7 +360,7 @@ if [ -n "$PENDING_BACKLOG" ]; then
   add "$PENDING_BACKLOG"
 fi
 
-# --- 12) token_usage_daily staleness (card d8f44d15 req 3): classifyTokenPruneLag already --------
+# --- 14) token_usage_daily staleness (card d8f44d15 req 3): classifyTokenPruneLag already --------
 # existed (HBDBKUSZOB823) but was never called from anywhere -- a guard nobody reads is not a
 # guard. ACTIONABLE only on 'stale' (a real multi-sweep-cycle miss); 'ok'/'empty' are silent,
 # 'invalid' is a config fault and wakes via err() same as any other allowlist miss.

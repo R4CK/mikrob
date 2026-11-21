@@ -560,6 +560,23 @@ except Exception:
   PROMPT="${USER_TPL//\{\{INPUT\}\}/${ESCAPED_INPUT//&/\\&}}"
 fi
 
+# F8 skill pack (card 2746165b, phase 82a113ba): prepend the compiled rule+pitfall pack for
+# this task type (store/llm-skill-packs/<task>.txt, built by llm-skill-pack-build.py from the
+# F3 route-table task types). TASK is already charset-validated above when non-empty; an empty
+# TASK (bare chat/no --task) falls back to the generic "default" pack. Best-effort: a missing
+# pack directory or file just skips the prepend, same fail-open philosophy as log_usage below --
+# this never blocks the actual model call.
+PACK_TASK="${TASK:-default}"
+PACK_DIR="$HERE/llm-skill-packs"
+PACK_FILE="$PACK_DIR/$PACK_TASK.txt"
+[[ -f "$PACK_FILE" ]] || { PACK_TASK="default"; PACK_FILE="$PACK_DIR/default.txt"; }
+if [[ -f "$PACK_FILE" ]]; then
+  PACK_SHA="$(sha256sum "$PACK_FILE" 2>/dev/null | cut -c1-12)"
+  PROMPT="$(cat "$PACK_FILE")"$'\n\n---\n\n'"$PROMPT"
+  printf '%s\t%s\t%s\tlocal\tpack=%s@%s\n' "$(date +%s)" "${CALLER:-direct}" "$PACK_TASK" "$PACK_TASK" "$PACK_SHA" \
+    >> "$HERE/llm-skill-pack-usage.log" 2>/dev/null || true
+fi
+
 # GATEWAY MODE (card f3f4b571, F2): a pure switch-file read, no dependency on anything defined
 # later in the script -- safe to resolve this early. The actual branch (which DOES depend on
 # _elapsed/_queue_finish/log_usage, all defined below) sits right before GEN_CMD further down.
