@@ -37,6 +37,9 @@ cp "$WATCHDOG" "$FIXTURE_INSTALL/scripts/watchdog.sh"
 # install must carry it too, same as the watchdog script itself.
 cp "$REPO_DIR/scripts/lib/oauth_token_file_check.py" "$FIXTURE_INSTALL/scripts/lib/oauth_token_file_check.py"
 WD="$FIXTURE_INSTALL/scripts/watchdog.sh"
+# Card 23a14ae1: INSTALL_DIR no longer follows $0 (that derivation is what let a stray invocation
+# resolve to agents/logs on 2026-11-06) -- point it at the fixture install explicitly instead.
+export WATCHDOG_INSTALL_DIR="$FIXTURE_INSTALL"
 # Card 3ae2411d round 2: needs-fleet-oauth.mjs resolves the compiled dist relative to its OWN
 # location (scripts/needs-fleet-oauth.mjs -> ../dist), which the fixture install does not carry.
 # Point watchdog.sh at the real repo's copy instead of copying it in -- the script takes the
