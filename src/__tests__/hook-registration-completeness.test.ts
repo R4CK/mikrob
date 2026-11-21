@@ -130,6 +130,8 @@ const EXEMPT: Record<string, string> = {
     'selftest for auto_obs_capture.py; the hook itself is unwired, see its own EXEMPT entry',
   'telegram_fallback_send.py':
     'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
+  'telegram_fallback_send.selftest.py':
+    'selftest for telegram_fallback_send.py; the hook itself is a CLI, not a settings hook, see its own EXEMPT entry',
   // telegram-image-resize.sh deliberately NOT exempted here (UPSTREAM-SYNC BATCH 4, card
   // 0b550d89): an earlier round already decided against this (src/fork-upstream/
   // acknowledged-conflicts.ts ~line 1855/1859) -- the file does not exist in this fork at all

@@ -49,7 +49,7 @@ import { cardLandingsGuardVerdict } from '../kanban-card-landings-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
-import { decisionsGuardVerdict, decisionsGuardCheck } from '../kanban-decisions-guard.js'
+import { decisionsGuardVerdict, decisionsGuardCheck, decisionsHeaderGuardVerdict } from '../kanban-decisions-guard.js'
 import { degradedOrchestratorRefusal } from '../../degraded-orchestrator-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
@@ -1166,8 +1166,29 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // Card 7b0b822f: a live, on-demand "which in_progress cards are idle right now" scan -- see
   // getStuckKanbanCards's own comment in db.ts for why this is deliberately separate from (not a
   // replacement for) the event-driven stuck_incidents mechanism under /api/stuck-incidents.
+  //
+  // Card e892e00c (WhiteHat F1 on 7b0b822f): this endpoint's "idle" is NOT the same definition
+  // root CLAUDE.md rule 3 / heartbeat-consolidated's D section use for "beragadt" (10 minutes of
+  // an unmoved `updated_at`/[NN%] marker). It is last-status-EVENT-or-non-automated-comment based
+  // (see getStuckKanbanCards), which deliberately ignores a bare title/percentage PUT -- measured
+  // divergence on live data: a card can be "fresh" by updated_at (a recent [NN%] edit) while this
+  // endpoint still reports it idle for days, or the reverse. Do NOT wire automation (re-dispatch,
+  // auto-park, etc.) on top of this endpoint assuming it agrees with rule 3 -- it answers a
+  // different question (genuine work-trace idleness, not raw-field staleness).
   if (path === '/api/kanban/stuck' && method === 'GET') {
-    json(res, getStuckKanbanCards())
+    let cards = getStuckKanbanCards()
+    // Card e892e00c F2: same limit convention as GET /api/kanban (card 514a9fb3 M1) and the same
+    // gzip helper the other heavy list endpoints in this file already use -- no new mechanism.
+    const limitRaw = url.searchParams.get('limit')
+    if (limitRaw !== null) {
+      const limitNum = Number(limitRaw)
+      if (!Number.isInteger(limitNum) || limitNum < 0) {
+        json(res, { error: `Érvénytelen limit: ${limitRaw}` }, 400)
+        return true
+      }
+      cards = cards.slice(0, limitNum)
+    }
+    jsonMaybeGzip(req, res, cards)
     return true
   }
 
@@ -1640,6 +1661,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = await decisionsGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
     }
+    {
+      const v = await decisionsHeaderGuardVerdict(id, data.status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'decisions_header_dated_required', error: v.message }, 409); return true }
+    }
     // Card d5638d28: same refusal as the /move handler's sibling block -- guarding one of the
     // two close paths guards neither (card 9cc72f2c's own reasoning, above).
     if (data.status === 'done') {
@@ -1979,6 +2004,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     {
       const v = await decisionsGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
+    }
+    {
+      const v = await decisionsHeaderGuardVerdict(id, status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'decisions_header_dated_required', error: v.message }, 409); return true }
     }
     // Card d5638d28: refuse a transition INTO done while degraded-orchestrator mode is on,
     // regardless of who/what is moving the card -- see degraded-orchestrator-guard.ts.

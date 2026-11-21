@@ -50,6 +50,9 @@ const { listAgentNames, listAllAgentNames, HIDDEN_AGENT_SENTINEL } = await impor
 
 function agent(name: string, hidden = false): void {
   mkdirSync(join(AGENTS, name), { recursive: true })
+  // Card 23a14ae1: listAgentNames() now requires a real agent definition (CLAUDE.md), so every
+  // fixture agent here needs one -- this file tests the hidden/visible distinction, not that gate.
+  writeFileSync(join(AGENTS, name, 'CLAUDE.md'), 'x')
   if (hidden) writeFileSync(join(AGENTS, name, HIDDEN_AGENT_SENTINEL), '')
 }
 
