@@ -332,6 +332,14 @@ try_append_union() {
   # costs the refusal of an undated append -- it is kept as the stricter of two equivalent choices,
   # not because anything measured requires it.
   local header_glob="${3:-## [0-9][0-9][0-9][0-9]-*}"
+  # LEGACY BOLD-DATED HEADER (card 84f90b4e, MikroB decision msg 22885): DECISIONS.md is
+  # append-only -- an existing entry's header is never rewritten in place, so a pre-existing entry
+  # that opens with `**YYYY-MM-DD` instead of `## YYYY-MM-DD` (card 60aeca01's entry) stays that
+  # way forever. Fixing the file was the wrong fix; this parser refusing to recognise a valid
+  # existing boundary was the bug. Hardcoded, NOT the caller's `header_glob` argument: it is a
+  # fixed grandfather allowance for one known legacy spelling, not a configurable pattern, so it
+  # carries none of the injection surface the comment above worries about for $3.
+  local header_glob_bold='**[0-9][0-9][0-9][0-9]-*'
   # CONCATENATION ORDER (card edf9c837), an ARGUMENT for the same reason the header pattern is one:
   # a caller in this repo decides it, never ambient state.
   #
@@ -556,9 +564,10 @@ try_append_union() {
   # path), because quietly substituting a different pattern would resolve the merge under a rule
   # the caller did not ask for -- the same class of silent substitution this whole function refuses.
   local probe
-  for probe in '' '## ' '## quoted heading in a body' 'ordinary body prose' '---' '***' '___'; do
+  for probe in '' '## ' '## quoted heading in a body' 'ordinary body prose' '---' '***' '___' \
+    '**' '**Döntés:**' '**ordinary bold body prose**'; do
     case "$probe" in
-    $header_glob) return 1 ;;
+    $header_glob|$header_glob_bold) return 1 ;;
     esac
   done
 
@@ -566,7 +575,7 @@ try_append_union() {
     local rest="$1" line
     while IFS= read -r line; do
       case "${line%$'\r'}" in
-      $header_glob) return 0 ;;
+      $header_glob|$header_glob_bold) return 0 ;;
       esac
       _is_blank_or_rule "$line" && continue
       return 1
@@ -678,10 +687,10 @@ try_append_union() {
   case "$prefix" in
   *$'\n'$'\n')
     case "${joined_last_line%$'\r'}" in
-    $header_glob) : ;; # first_added's own last line is a header -- already the accepted shape
+    $header_glob|$header_glob_bold) : ;; # first_added's own last line is a header -- already the accepted shape
     *)
       _is_blank_or_rule "$joined_last_line" || case "${second_first_line%$'\r'}" in
-      $header_glob) joined="${joined}"$'\n' ;;
+      $header_glob|$header_glob_bold) joined="${joined}"$'\n' ;;
       esac
       ;;
     esac
@@ -1000,6 +1009,31 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     "## 2026-01-01 -- entry A
 ## 2026-01-02 -- entry B (left)
 ## 2026-01-03 -- entry C (right)
+"
+
+  # LEGACY BOLD-DATED HEADER AS A NEW ENTRY'S OWN BOUNDARY (card 84f90b4e, MikroB decision msg
+  # 22885): DECISIONS.md is append-only -- the real card 60aeca01 entry opens with
+  # `**2026-11-16 ...**` instead of `## 2026-11-16 ...` and is never rewritten to match. Before
+  # this card, header_glob recognised only `## `, so `_starts_new_entry` refused a remainder
+  # whose OWN first line used the bold-dated form -- not because of any real disagreement, the
+  # exact failure mode this file exists to avoid. header_glob_bold closes it. (Mutation-verified:
+  # reverting `$header_glob|$header_glob_bold` back to `$header_glob` in _starts_new_entry turns
+  # this case red -- "entry B" never reaches a header, the whole remainder, and the union refuses.)
+  setup_conflict pure-append-new-entry-uses-legacy-bold-header \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+**2026-11-17 -- entry B (left, legacy bold form)**
+body of B
+" \
+    "## 2026-01-01 -- entry A
+## 2026-11-18 -- entry C (right)
+"
+  t_resolved "a new entry using the legacy bold-dated header form still auto-unions" \
+    "## 2026-01-01 -- entry A
+**2026-11-17 -- entry B (left, legacy bold form)**
+body of B
+## 2026-11-18 -- entry C (right)
 "
 
   # ORDER (card edf9c837). The same fixture, resolved the other way round. Red on the code before

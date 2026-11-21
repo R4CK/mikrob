@@ -312,17 +312,20 @@ describe('decisionsGuardCheck (warn-only side effect, trivial cards only)', () =
   })
 })
 
-// Card 84f90b4e (MikroB scope-add, comment 1795199177): a bold-text header (card 60aeca01) made
+// Card 84f90b4e (MikroB scope-add, comment 1795199177): an undated header shape made
 // try_append_union correctly, but silently, refuse a later auto-merge. This blocks the shape at
 // REVIEW time, for ANY card (not scoped to isNonTrivialCard -- a malformed header breaks the
 // auto-merge for every future card touching that region, regardless of this card's own tier).
 describe('decisionsHeaderGuardVerdict (blocking path, all cards)', () => {
-  it('blocks when the diff adds a bold-text header instead of a dated "## " one', async () => {
+  // MikroB decision (msg 22885, 2026-11-21): a bold-dated header (card 60aeca01's own legacy
+  // shape) is no longer flagged -- decisions-append-union.sh now accepts it as a valid entry
+  // boundary (header_glob_bold), and DECISIONS.md's append-only rule means the existing entry
+  // using it is never rewritten, so there is nothing left to catch here.
+  it('does NOT block a bold-dated header -- try_append_union now accepts that boundary shape', async () => {
     comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
-    decisionsDiff = '+**2026-11-20 -- not a dated header**\n+leírás...\n'
+    decisionsDiff = '+**2026-11-20 -- a dated bold header**\n+leírás...\n'
     const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
-    expect(v.blocked).toBe(true)
-    expect(v.message).toContain(SHA)
+    expect(v.blocked).toBe(false)
   })
 
   it('blocks when the diff adds a "## " header missing the leading date', async () => {
@@ -357,7 +360,7 @@ describe('decisionsHeaderGuardVerdict (blocking path, all cards)', () => {
     card.priority = 'normal'
     card.title = 'plain card'
     comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
-    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    decisionsDiff = '+## Kártya 60aeca01: utómunka (undated hash header)\n'
     const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
     expect(v.blocked).toBe(true)
   })
@@ -377,7 +380,7 @@ describe('decisionsHeaderGuardVerdict (blocking path, all cards)', () => {
 
   it('force actor bypasses the block', async () => {
     comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
-    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    decisionsDiff = '+## Kártya 60aeca01: utómunka (undated hash header)\n'
     const v = await decisionsHeaderGuardVerdict('c1', 'waiting', true, 'mikrob')
     expect(v.blocked).toBe(false)
   })
@@ -388,14 +391,14 @@ describe('decisionsHeaderGuardVerdict (blocking path, all cards)', () => {
   // actually distinguish isForceActor()'s real logic from "any truthy force bypasses".
   it('force=true from a NON-allowlisted actor does NOT bypass the block (M7)', async () => {
     comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
-    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    decisionsDiff = '+## Kártya 60aeca01: utómunka (undated hash header)\n'
     const v = await decisionsHeaderGuardVerdict('c1', 'waiting', true, 'fullstack')
     expect(v.blocked).toBe(true)
   })
 
   it('force=false from an allowlisted actor does NOT bypass the block (M7)', async () => {
     comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
-    decisionsDiff = '+**2026-11-20 -- not dated**\n'
+    decisionsDiff = '+## Kártya 60aeca01: utómunka (undated hash header)\n'
     const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'mikrob')
     expect(v.blocked).toBe(true)
   })
@@ -407,7 +410,7 @@ describe('decisionsHeaderGuardVerdict (blocking path, all cards)', () => {
     comments = [{ content: `REVIEW: done\nGate-SHA: ${SHA}` }]
     // What the whole-card diff (merge-base..sha) would show, including a bad header that an
     // earlier commit on the branch introduced, with a clean commit on top of it.
-    decisionsDiff = '+**2026-11-20 -- added by an earlier commit on this branch**\n+## 2026-11-20 -- a later, clean entry\n'
+    decisionsDiff = '+## Kártya 60aeca01: added by an earlier commit on this branch\n+## 2026-11-20 -- a later, clean entry\n'
     const v = await decisionsHeaderGuardVerdict('c1', 'waiting', false, 'fullstack')
     expect(v.blocked).toBe(true)
     expect(diffCalls.some((a) => a.includes('merge-base') && a.includes('origin/develop') && a.includes(SHA))).toBe(true)

@@ -42,30 +42,23 @@ function cardIdInAddedLineRx(cardId: string): RegExp {
 }
 
 // Same leading-`+` convention as cardIdInAddedLineRx (added-by-this-diff, never the
-// `+++ b/DECISIONS.md` file header). Two known header shapes this guard must catch:
-//  (a) a `## ` entry header missing the leading date (the original a01d8a3d bug: a
-//      card-id-first `## a01d8a3d: Title (date)` header instead of `## YYYY-MM-DD -- Title`).
-//  (b) a bold-text entry header opening with a date instead of `## ` (the card 60aeca01 bug:
-//      `**2026-11-16 -- Title**`). Scoped to "starts with a date right after `**`" so it never
-//      flags an ordinary inline bold sub-field label (`**Döntés:**`, `**Context:**`, ...), which
-//      this file uses throughout and is not a new top-level entry.
+// `+++ b/DECISIONS.md` file header). Catches a `## ` entry header missing the leading date (the
+// original a01d8a3d bug: a card-id-first `## a01d8a3d: Title (date)` header instead of
+// `## YYYY-MM-DD -- Title`).
+//
+// A bold-text header opening with a date (`**YYYY-MM-DD -- Title**`, the card 60aeca01 shape) is
+// NOT flagged (card 84f90b4e, MikroB decision msg 22885): store/decisions-append-union.sh's
+// try_append_union() now accepts that form as a valid entry boundary too (its hardcoded
+// header_glob_bold), so it no longer silently refuses to auto-merge around it, and DECISIONS.md
+// is append-only -- an existing entry using this legacy spelling is never going to be rewritten,
+// so flagging it here would only ever block a true revert/no-op change.
 const ADDED_HASH_HEADER_RX = /^\+(?!\+)## /
-const ADDED_BOLD_DATED_HEADER_RX = /^\+(?!\+)\*\*\d{4}-\d{2}-\d{2}/
-// The dated-header shape store/decisions-append-union.sh's try_append_union() requires of BOTH
-// sides before it will auto-resolve a pure-append conflict (its own `header_glob`, "## " followed
-// by 4 digits then "-"). A card 60aeca01 entry used a bold-text header instead and made
-// try_append_union correctly, but silently, refuse to auto-resolve any future merge touching that
-// region -- this check catches the shape at REVIEW time instead of at land time.
 const DATED_HASH_HEADER_RX = /^## \d{4}-/
 
 function addedNonDatedHeaders(diff: string): string[] {
   return diff
     .split('\n')
-    .filter(
-      (l) =>
-        (ADDED_HASH_HEADER_RX.test(l) && !DATED_HASH_HEADER_RX.test(l.slice(1))) ||
-        ADDED_BOLD_DATED_HEADER_RX.test(l),
-    )
+    .filter((l) => ADDED_HASH_HEADER_RX.test(l) && !DATED_HASH_HEADER_RX.test(l.slice(1)))
     .map((l) => l.slice(1))
 }
 

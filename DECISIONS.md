@@ -29331,8 +29331,8 @@ Gate: a delta a 62fc59ac8-on már megadott QA + Cybered sign-offot nem ismétli 
 a merge-delta saját REVIEW-ja.
 ---
 
-## 2026-11-16 -- Kártya 60aeca01: e7f91eb9 + d8d035f8 utómunka (szerző-trim, szomszéd fogyasztók,
-refusal-alakú generált komment, model-pin viselkedési teszt)
+**2026-11-16 -- Kártya 60aeca01: e7f91eb9 + d8d035f8 utómunka (szerző-trim, szomszéd fogyasztók,
+refusal-alakú generált komment, model-pin viselkedési teszt)**
 
 Forrás: WhiteHat2 (e7f91eb9, komment 16689) F1/F3/F4/F5, plusz d8d035f8 N1. Mind a két szülő-kártya
 mar landolt; ez a maradek 5 lelet lezarasa.
@@ -29833,3 +29833,33 @@ round; the rest are tracked in the gate comment for a future round.
 **Ki döntött:** CYBERSEC NO-GO (35145, Gate-SHA `14aa85f634a9575843e0cf71905514a297067766`),
 scoped by MikroB (msg 22501). backend fixed it (the guard's own author, per the 4b rule another
 agent gates it). Gate: QA + Cybersec per MikroB's dispatch.
+
+## 2026-11-21 -- 84f90b4e delta: reverted the 60aeca01 header rewrite, fixed the parser instead (MikroB decision msg 22885)
+
+**Context:** the previous round in this card (2026-11-20, see above) normalized the 2026-11-16
+60aeca01 entry's header from its legacy bold form (`**2026-11-16 -- ...**`) to the dated `## `
+convention, because `try_append_union` could not recognise the bold form as an entry boundary.
+That rewrite was itself the mistake: DECISIONS.md is append-only, and an existing entry's header
+is never edited in place, even to fix its formatting. The land script's own `decisions_tail_append_ok`
+check caught it correctly (REFUSED -- not a pure tail append) when this card came up for landing.
+
+**Fix:** reverted the 60aeca01 header back to its original bold form (see the entry dated
+2026-11-16 above, unchanged from the original). Instead, `store/decisions-append-union.sh`'s
+`try_append_union()` now carries a second, hardcoded entry-boundary pattern
+(`header_glob_bold='**[0-9][0-9][0-9][0-9]-*'`), checked alongside the existing `header_glob`
+everywhere the latter was, so a remainder opening with a legacy bold-dated header is recognised
+as a valid new-entry boundary. `src/web/kanban-decisions-guard.ts`'s REVIEW-time guard no longer
+flags an added bold-dated header either (it used to, for exactly the case this round undoes).
+
+**Nincs benne:** no change to the guard's handling of a genuinely UNDATED header (bold or `## `)
+-- that stays refused, same as before this round.
+
+**Mérés:** `decisions-append-union.sh --selftest` +1 case (`a new entry using the legacy
+bold-dated header form still auto-unions`), mutation-verified: reverting the
+`$header_glob|$header_glob_bold` alternation back to `$header_glob` alone turns exactly this case
+red (FAIL, union refused), every other case stays green. `kanban-decisions-guard.test.ts`: 1 new
+case + 5 existing cases' fixtures switched from the no-longer-blocked bold-dated shape to an
+undated `## ` header so they still exercise what they claim (force-actor bypass, M7, F2
+earlier-commit coverage) -- 37/37 PASS. `npx tsc --noEmit` clean.
+
+**Ki döntött:** MikroB (msg 22885, re: my escalation 22884). backend executed. Gate: QA + Cybersec.
