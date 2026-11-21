@@ -4567,6 +4567,38 @@ export function kanbanAssigneeExists(name: string): boolean {
   return db.prepare('SELECT 1 FROM kanban_cards WHERE assignee = ? COLLATE NOCASE LIMIT 1').get(name) !== undefined
 }
 
+/**
+ * The id of the in_progress card this agent is currently working, for the
+ * context-guard new-card-dispatch tier (card f5f78e13). Picks the one whose
+ * most recent move-to-in_progress EVENT is newest, not the one with the
+ * newest `updated_at` -- `updated_at` moves on any comment, including one
+ * posted by an unrelated gate/tool on a DIFFERENT in_progress card this same
+ * agent holds (CYBERSEC F1, comment 31757: live board had 4 agents with
+ * more than one in_progress card, including this tier's own live-proof
+ * target), which would flap the tier's "current card" every time anyone
+ * commented. `kanban_card_events` rows are written only by real status
+ * transitions (moveKanbanCard / card creation), never by a comment, so
+ * joining on the newest such event is immune to that. Picks the most
+ * recently dispatched one when an agent somehow holds more than one -- a
+ * known simplification (that case should not happen per the fleet's
+ * one-card-at-a-time workflow, but this must not throw if it briefly does).
+ * Returns null when the agent holds none, which the tier reads as "nothing
+ * dispatched, never fires".
+ */
+export function getInProgressCardIdForAgent(assignee: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT c.id AS id
+       FROM kanban_card_events e
+       JOIN kanban_cards c ON c.id = e.card_id
+       WHERE c.assignee = ? COLLATE NOCASE AND c.status = 'in_progress' AND c.archived_at IS NULL
+         AND e.to_status = 'in_progress'
+       ORDER BY e.created_at DESC, e.id DESC LIMIT 1`,
+    )
+    .get(assignee) as { id: string } | undefined
+  return row?.id ?? null
+}
+
 // How long each card has stood in in_progress, summed over every separate stay.
 //
 // Read off kanban_card_events, which records from_status -> to_status per move.

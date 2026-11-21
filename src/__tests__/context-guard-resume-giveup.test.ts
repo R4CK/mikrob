@@ -85,6 +85,9 @@ describe('resume give-up', () => {
         idleMs: null,
         usageLimited: false,
         pendingResumeExpiresAtMs: null,
+        newCardDispatchDue: false,
+        newCardId: null,
+        newCardTitle: null,
       },
       { ...DEFAULT_CONTEXT_GUARD, enabled: true },
     )

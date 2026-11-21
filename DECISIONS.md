@@ -31215,6 +31215,71 @@ re-gate requested (QA + Cybersec + Cybered) on Gate-SHA 2a6c3ec2134e1dec60b26f0a
 **Teszt:** `store/agent-auth-header.selftest.sh` 22 -> 26/26 PASS (4 new cases). Targeted `fleet-test.sh` run recorded in the REVIEW comment. `npx tsc --noEmit` clean.
 
 **Ki döntött:** cybersec2 NO-GO 34825, cybered NO-GO 34827 (both reconfirming independently), mikrob addendum msg 22309 (mutant-pin + rollout note). backend végezte. Gate: delta re-gate (QA + Cybersec + Cybered) on this round's Gate-SHA.
+## 2026-11-15 -- card f5f78e13: Token 6b new-card-dispatch context-guard tier (core, opt-in)
+
+**Döntés:** plan-grilling (comment 31685) rendezte a kártya nyitott kérdését: a dispatch-time
+fresh-session mechanizmust a context-guard MEGLÉVŐ handoffRequest/await-handoff state machine-jébe
+drótoztuk be ÖTÖDIK triggerként (actPct, idle-flush, daily mellé), nem egy második mechanizmusként --
+pontosan azt az invariánst követve, amit az auto-restart.ts kommentje már kimond a nightly-restart
+esetre ("Handoffs have ONE owner").
+
+Újdonság: `newCardHandoffEnabled` config flag (default FALSE, mint idleFlushEnabled/dailyHandoffEnabled),
+`getInProgressCardIdForAgent()` DB-helper (db.ts), `newCardDispatchDue`/`forgetNewCardDispatchRecord`
+tiszta predikátumok (context-guard.ts), futtató-oldali drótozás (context-guard-runner.ts) és saját
+prompt-szöveg (`newCardDispatchHandoffPrompt`) -- az utóbbi azért kell, mert a fallback
+`handoffPrompt(pctRound ?? 0, ...)` hamis "~0% kritikus" riasztást adna egy egészséges sessionre,
+ugyanaz a csapda, amit az idle/daily tier is elkerül.
+
+A rekord (lastDispatchedCard Map) KIZÁRÓLAG decision-time-kor halad előre (mint lastDailyHandoff),
+NEM minden sweepnél -- mutáció-teszttel igazolva: az "every-sweep-advance" mutáns némán elnyelné a
+"due" jelzést egy olyan sweepen, amit egy magasabb rangú tier megelőzött volna.
+
+Mérve: tsc --noEmit clean; 341/341 teszt zöld (context-guard family + 2 új fájl: 17 + 3 teszt).
+2 mutáns (ranking csere, every-sweep-advance) mindkettő pirosra fordult a megfelelő tesztnél.
+
+**NYITVA marad (a kártya Kész-ha 2-3. pontja):** a flag ma senkinél nincs bekapcsolva -- a
+token-usage-report.py előtte/utána mérés és az élő "dispatch új session-t hoz létre" ellenőrzés
+csak egy valódi agent bekapcsolása után mérhető. A kártya `in_progress` marad, nem `waiting`.
+
+Gate: QA + Cybersec (a kártya saját gate-sora). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-21 -- card f5f78e13: GuardInputs literal mismatch fix (gate-bounce 23012)
+
+Three consecutive gate verdicts (QA2 FAIL 36983, QA FAIL 36988, CYBERSEC NO-GO 36995) on the
+squash-rebased f5f78e13 (Gate-SHA 670556be1) all flagged the SAME root cause: three test files
+that landed on origin/develop after this card's original gate --
+src/__tests__/context-guard-busy-overdue.test.ts, src/__tests__/context-guard-minutes-cap.test.ts,
+src/__tests__/context-guard-resume-giveup.test.ts -- build GuardInputs literals that predate
+this card's three new required fields (newCardDispatchDue, newCardId, newCardTitle), so tsc
+--noEmit failed with TS2322/TS2345 on all three.
+
+MikroB's gate-bounce decision (comment 23012): not a bounce loop or a design problem, one fix
+round approved, Fix-Direction = add the 3 fields to those 3 literals with the same defaults the
+card's own 7 test files already use (false/null/null), fields stay required (not made optional).
+
+Fix applied, Gate-SHA 0be86ea12265eceb8f60b5844a2e1d462020ef4d: +9/-0 lines across exactly those
+3 files. Verified: npx tsc --noEmit clean; npx vitest run on all 22 context-guard*.test.ts files
+-> 365/365 PASS.
+
+Gate: QA + Cybersec (card's own gate row). **Ki döntött:** backend, Fix-Direction from MikroB.
+
+## 2026-11-17 -- F4.4/F4.5: card worktree cleanup sweep + dispatch/self-advance docs (cards 0ae1166e, f8fde8e9, phase ed332869)
+
+**Döntés:** F4.3 (`marveen-land.sh --card <id>`) and the dispatch/self-advance card-mode wiring (`store/self-advance-pickup.sh` step 4b, gated by `MARVEEN_CARD_WORKTREE=1`) were already fully implemented and shipped before this boot-reconcile pass -- confirmed by git history (real landed merges on origin/develop for card/57044a66, card/d5638d28, card/2e04a52e, card/ae5af304, card/7c79badc, card/214ca312, card/eff5c2f6, card/ff43b10e, card/c4ef7da5, card/594da483, card/ff7ecc74, card/cc72cb3e, card/c2dd3cfa, card/34f846cc, card/1aeed1ca, card/abd4970c and others -- "one real card built and landed in card mode" was already satisfied many times over). ec587638 (F4.3) closed as verification-only (61/61 selftest cases fresh).
+
+What was genuinely missing and built now: `store/marveen-card-worktree-cleanup.sh` (0ae1166e, F4.4) -- removes a per-card worktree only when LANDED (branch tip ancestor of origin/develop) + IDLE (no live process cwd/fd under it, TOCTOU-safe double-scan) + CLEAN (git status empty); dry-run default, `--apply` needs `--yes` (same convention as `wsl-home-cleanup.sh`, rule 22). 16-case selftest in a throwaway fixture repo, mutation-checked (dropping any one of the three classify() checks turns it red).
+
+Docs closed (f8fde8e9, F4.5): README "Git/worktree/landolási infrastruktúra" section's `--card` bullet extended with the opt-in dispatch flag + the new cleanup sweep; `docs/rules/marveen-worktree-fegyelme.md` gained a full "Kártyánkénti ág + worktree (card mode)" section (it previously said nothing about card mode at all, only the per-agent worktree); this DECISIONS.md tail entry.
+
+**Ki döntött:** DevO (fullstack), cards ec587638 + 0ae1166e + f8fde8e9, Gate-SHA 528f6fe72 (0ae1166e; ec587638/f8fde8e9 are verification/docs-only, no new commit of their own).
+
+## 2026-11-21 -- correction to the 2026-11-17 F4.4/F4.5 entry: 0ae1166e went NO-GO then landed clean
+
+**Kontextus:** the 2026-11-17 entry above named Gate-SHA 528f6fe72 for 0ae1166e as if the card were closed. Minutes after that entry was written, Cybered NO-GO (comment 32641, F1-F4: wrong-card branch capture, detached-HEAD landed check, ignored-file deletion, symlinked live-process blindness) and Cybersec NO-GO (comment 32647, 2 MEDIUMs, same removal-path bug class) both landed, and this card's own QA2 FAIL (comment 32655) caught the docs describing a NO-GO'd, unlanded script as shipped -- correctly, at the time.
+
+**Correction:** 0ae1166e went through rework (commits 976274bdc, 6ea8316b4 fixing the F1-F4/F8 findings), then CYBERED GO + CYBERSEC GO (x2) + QA PASS + QA2 PASS on final Gate-SHA `8ff3adcced874713df2c936a9d6d332baaac0036`, landed on origin/develop via merge `23167344f0eb967d155b1b698d53ea545739c4bc` (develop tip `bbb9282ec33b59aa911ab1f36cfc0f68c807b852`), MikroB closure confirmed. `store/marveen-card-worktree-cleanup.sh` as it exists on origin/develop today was re-verified line-by-line against the README/`marveen-worktree-fegyelme.md` text this card (f8fde8e9) ships: `--dry-run` default, `--apply` requires `--yes`, REMOVABLE only when LANDED + IDLE + CLEAN all hold -- the docs text is accurate to the shipped script as of this correction, not merely as originally (prematurely) claimed.
+
+**Ki döntött:** DevO (fullstack), re-verification for card f8fde8e9 after 0ae1166e's final landing. Gate-SHA: see this card's own REVIEW comment.
 ## 2026-11-18 -- 51c68eeb: Koteg 26 upstream szinkron (66d38ee45..a4545a8a0, 25 commit)
 
 A szülő-fázis e5c46e87 (Szotasz/marveen UPSTREAM-SYNC) következő kötege Köteg 25 (5dd0842a) után.

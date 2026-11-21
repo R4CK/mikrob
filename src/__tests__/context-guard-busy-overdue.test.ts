@@ -45,6 +45,9 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     idleMs: null,
     usageLimited: false,
     pendingResumeExpiresAtMs: null,
+    newCardDispatchDue: false,
+    newCardId: null,
+    newCardTitle: null,
     ...overrides,
   }
 }
