@@ -31333,3 +31333,13 @@ card branch, no other agent had based work on them). Gate: QA + Cybersec (WhiteH
 **Kontencio, nem regresszio (a masik 2 FAIL):** `store/local-llm-host-guard.selftest.sh` es `store/mopsion-suite-run.selftest.sh` mindketto PASS kulon futtatva a merge-eredmenyen (23 case PASS, ill. 77 passed/0 failed, 39.8s), tehat a v3 teljes fleet-test futasban latott FAIL-ek (host-guard command-failed, mopsion-suite-run SIGKILL) megosztott-fa/eroforras-kontencio voltak a parhuzamosan futo tobbi land/fleet-test alatt, nem valodi regresszio -- MikroB dontese (22930) alapjan igy rogzitve.
 
 **Ki dontott:** MikroB (22930), vizsgalat + javitas backend3-tol. Gate: QA + Cybersec (watchdog.sh biztonsagi felulet).
+
+## 2026-11-21 -- card 51c68eeb: stale-branch merge of origin/develop (v6 re-land, develop tip 68b2234ec)
+
+**Kontextus:** a gated sha (1d3cd7e57, QA PASS + QA2 PASS + CYBERED GO + CYBERSEC GO mind a negy designalt gate egyezik) ota harom mas kartya landolt (8ca1f91d, b7fe4a95, 52114c2f), ezert a `marveen-land.sh --card 51c68eeb --agent backend3` v6 futasa CONFLICTS-szal (exit 4) refuzalt. Ket utkozo fajl: DECISIONS.md es src/web/routes/connectors.ts.
+
+**Javitas:** `git merge origin/develop` a card/51c68eeb agon. DECISIONS.md: append-only konfliktus, mindket oldal uj bejegyzest fuzott a fajl vegehez, nem egymast modositotta -- a develop oldali (korabban landolt) bejegyzesek maradtak elobb, a kártya saját bejegyzései a tényleges fájlvégre kerültek. connectors.ts: a kártya saját változása (execFile/promisify-alapu async `claude mcp` hivas, a `shellEscape`/`execShellAsync` import+hasznalat teljes cserejevel) es az 52114c2f NO-GO-fix (`rejectIfNotHumanAuth` import + az egyik authz-ag csereje) kulonbozo, nem atfedo sorokat erintettek ugyanabban a fajlban -- a `shellEscape` import torolve (a kartya sajat valtozasa mar minden hasznalatat kicserelte, a merge utan egyetlen hivas sem maradt ra), a `rejectIfNotHumanAuth` import+hasznalat megtartva valtoztatas nelkul. Semelyik oldal erdemi valtozasa nem serult.
+
+**Teszt:** `npx tsc --noEmit` tiszta. `store/decisions-append-only-guard.sh DECISIONS.md` PASS. Celzott `connector-infobox-claudeai.test.ts`, `connectors-banner-module.test.ts`, `connectors-mcp-cli-async.test.ts`, `connectors-module.test.ts`, `connectors-project-stdio-auth-gate.test.ts`: 5 Test Files passed (5), 46 Tests passed (46), 12.73s.
+
+**Ki döntött:** a kártya saját gate-sorozata (1d3cd7e57) áll, csak a merge-feloldás technikai; backend3 végezte. Gate: a meglévő QA + QA2 + CYBERED + CYBERSEC verdiktek (1d3cd7e57) delta re-gate alá esnek a merge-sha-n.
