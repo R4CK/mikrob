@@ -44,6 +44,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { logger } from './logger.js'
 import {
   decideGeminiFallback,
   switchNotification,
@@ -313,7 +314,7 @@ export async function runGeminiFallbackCheck(
     const { confirmProbes, minGapSec } = loadHysteresisConfigSync(
       p => readFileSync(p, 'utf-8'), HYSTERESIS_CONFIG_PATH)
     if (!confirmSwitchback(probeLog, confirmProbes, minGapSec)) {
-      console.log('[gemini-runner] claude_recovered not yet confirmed by hysteresis -- staying on Gemini')
+      logger.info('[gemini-runner] claude_recovered not yet confirmed by hysteresis -- staying on Gemini')
       action = { kind: 'none' }
     }
   }

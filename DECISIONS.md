@@ -30557,3 +30557,25 @@ esetet (6 assertion) bukatja pirosra, mást nem.
 
 Gate: QA2 + Cybersec + Cybered (delta, round 2). **Ki döntött:** MikroB (CYBERED GO 34321 utáni
 döntés), a javítást DevO (fullstack) végezte.
+
+## 2026-11-20 -- 99ade79b: weekly self-audit -- BG_PROMPT argv leak, stray console.log, test-coverage check
+
+**Kontextus:** MikroB heti self-audit (2026-11-20, Peti standing task), read-only audit develop 70e34813e-n. 1. MEDIUM: src/web/routes/background-tasks.ts:106 a teljes háttérfeladat-promptot a tmux new-session CLIENT hívás saját argv-jába tette (`-e BG_PROMPT=${prompt}`), ami /proc/<pid>/cmdline-on olvasható bármely helyi felhasználónak, és ARG_MAX-szal korlátos. 2. LOW: 4 landolt viselkedés-változás (0cd77895d, 634c5969b+0fc842710, 388d84f6a, d9b6c36f2) ugyanabban a commitban nem kapott tesztet. 3. LOW: src/gemini-fallback-runner.ts egy ÚJ console.log sora (card 7f112c2f) nem a megosztott loggert használta.
+
+**Döntés:** (1) a prompt 0600-as ideiglenes fájlba kerül; csak a fájl ÚTJA kerül argv-ba/session-env-be (`-e BG_PROMPT_FILE=...`), a pane a fájl tartalmából exportálja a BG_PROMPT-ot a meglévő shellCmd elé, majd törli a fájlt -- megtartva a 68eaeb93 viselkedést (a promptnak NEM üresen kell megérkeznie egy már futó tmux szerveren). (2) megvizsgálva: mind a 4 névvel megnevezett viselkedés-változásnak VAN már dedikált, elnevezett regressziós tesztje, ugyanazon az erőfeszítésen belül felvéve (lásd Teszt). Nincs kódváltozás ehhez a ponthoz. (3) az ÚJ console.log sor (a 2026-11-13-i hysteresis switch-back kapunál, card 7f112c2f) most a megosztott loggeren megy át; a fájl másik 6 console.log hívása a saját, korábbi, szándékos konvenciója (15 perces cron-futtató, a teljes stdout-ja a store/run-gemini-fallback.sh saját log fájljába kerül) -- ezeket nem érintettem.
+
+**Teszt:** `npx tsc --noEmit` tiszta. `fleet-test.sh` (szemafor-szkripten át) targetelt futás: src/__tests__/background-tasks.test.ts (új teszt: a prompt nem kerül argv-ba, meglévő 68eaeb93 valódi-tmux-szerveres teszt zöld marad), src/gemini-fallback-runner.test.ts. A 4 meglévő coverage-teszt helye: project-root-anchor.test.ts (b4bbfa260), pane-background-agents.test.ts + pane-state.test.ts (6a6798ca6), http-helpers-read-body-drain-cap.test.ts, kg-capture-pipeline.test.ts (b041a3775).
+
+**Nincs benne:** a fájl többi 6 console.log hívása nem lett loggerre állítva (szándékosan, a fájl saját konvenciója, lásd Döntés). A tmux pane-en BELÜL futó `claude -p "$BG_PROMPT"` hívás saját argv-ja (a belső claude-folyamat cmdline-ja) NEM ennek a kártyának a hatóköre -- csak a KÜLSŐ tmux-client hívás argv-ja, amit a self-audit megnevezett.
+
+**Ki döntött:** MikroB heti self-audit lelete. backend végezte. Gate: QA + Cybersec.
+
+## 2026-11-20 -- 99ade79b: round 2, CYBERSEC NO-GO 34703 (claude's own argv + a new environ leak)
+
+**Kontextus:** round 1's own DECISIONS.md entry explicitly scoped the inner `claude -p "$BG_PROMPT"` call's own argv as OUT of the card's scope ("a tmux pane-en BELÜL futó ... hívás saját argv-ja ... NEM ennek a kártyának a hatóköre"). cybersec2 (NO-GO 34703) and then cybersec (reconfirming, independent measurement) disagreed: the card's own acceptance criterion ("prompt no longer in argv") names no such carve-out, and the claude process's argv is readable for the entire run, not just the brief tmux-client call round 1 actually fixed. cybersec's measurement also found a NEW regression round 1 itself introduced: the pane now `export`s BG_PROMPT, putting the prompt into the claude process's environ too (F2 LOW).
+
+**Döntés:** `claude -p` with no positional prompt argument reads the prompt from stdin, so the pane now redirects the existing 0600 temp file into it directly (`claude -p --output-format text < "$BG_PROMPT_FILE"`) instead of exporting its contents to BG_PROMPT first. The prompt now crosses neither argv nor environ anywhere in the chain; only the temp file's PATH crosses argv (via `-e BG_PROMPT_FILE=...`), unchanged from round 1 and never sensitive. Also moved `writePromptFile()` inside the existing try block (previously between task-creation and the try, so a write failure bypassed the catch's cleanup -- same orphaned-running-row class as card ca593869, a LOW cybersec's own measurement flagged as a derived consequence, not separately scored).
+
+**Teszt:** rewrote the card 68eaeb93 regression test's stand-in script to capture its own argv, stdin, and env instead of reading BG_PROMPT back out of the pane's environment (the mechanism the fix removes) -- asserts the prompt reaches the stand-in via stdin, and appears in neither its argv nor its env. Mutation-verified: reverting only the two production lines this round changed back to the vulnerable form makes the new assertion fail (empty stdin). `npx tsc --noEmit` clean. Targeted run recorded in the REVIEW comment.
+
+**Ki döntött:** cybersec2 NO-GO 34703 (F1), cybersec reconfirming F1 + new F2. backend végezte. Gate: delta re-gate (QA + Cybersec) on this round's Gate-SHA.
