@@ -54,11 +54,17 @@ case "$sub" in
     if [ -f "$d/fail-new" ]; then echo "fake spawn failure" >&2; rc=1
     else
       prev=""
+      promptfile=""
       for a in "$@"; do
         if [ "$prev" = "-s" ]; then printf '%s\\n' "$a" >> "$d/sessions"; fi
+        case "$a" in BG_PROMPT_FILE=*) promptfile="\${a#BG_PROMPT_FILE=}" ;; esac
         prev="$a"
       done
-      printf '%s' "$BG_PROMPT" > "$d/prompt"
+      if [ -n "$promptfile" ] && [ -f "$promptfile" ]; then
+        cat "$promptfile" > "$d/prompt"
+      else
+        printf '%s' "$BG_PROMPT" > "$d/prompt"
+      fi
     fi ;;
 esac
 printf 'end %s\\n' "$sub" >> "$d/calls.log"
@@ -171,7 +177,7 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     expect(stall).toBeLessThan(STALL_MAX_MS)
   })
 
-  it('POST starts the tmux session with the prompt in BG_PROMPT without stalling the loop', async () => {
+  it('POST starts the tmux session with the prompt reaching the pane via BG_PROMPT_FILE without stalling the loop', async () => {
     put('sleep', String(SLEEP_S))
     let r: { status: number; json: any } | undefined
     const stall = await stallDuring(async () => {
