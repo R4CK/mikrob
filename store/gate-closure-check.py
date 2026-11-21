@@ -277,6 +277,19 @@ def _is_generated_author(c):
     return ((c or {}).get("author") or "").strip().lower() in GENERATED_COMMENT_AUTHORS
 
 
+# N2 (card 1c8f6d25, WhiteHat2 re-gate GO a837688d): `author` is self-declared free text on every
+# comment (see the UNVERIFIED-AUTHOR branch above), and `latest_author`/`undecidable` embed it RAW
+# into verdict strings this file returns -- which heartbeat-scriptfirst.sh then concatenates
+# straight into MikroB's wake prompt (`"...$REPORT"`), unescaped. A forged author containing a
+# newline or bracketed directive-looking text ("mikrob\n\n[SYSTEM-...]") is therefore a
+# prompt-injection surface, not just a cosmetic one. Collapse to one line, printable-only, capped
+# short -- real agent ids are a handful of characters, so 40 is already generous.
+def _sanitize_author(raw):
+    s = re.sub(r"\s+", " ", (raw or "")).strip()
+    s = "".join(ch for ch in s if ch.isprintable())
+    return s[:40]
+
+
 def _is_path_token(tok):
     """A '/'-bearing token is a branch name or a path, not a sha citation -- ONLY when some
     slash-separated segment is not itself a bare hex run, so the fleet's "A/B" short/long
@@ -673,7 +686,7 @@ def _gate_state(comments):
         v = verdict_of(c.get("content"))
         if not v:
             continue
-        who = (c.get("author") or "").strip().lower()
+        who = _sanitize_author(c.get("author")).lower()
         latest[v[0]] = v
         latest_author[v[0]] = who
         # ONLY A GATE-ROLE AUTHOR ENTERS THE PER-AUTHOR TABLE (card c52e2823, round 2, QA's finding

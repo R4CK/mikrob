@@ -38,8 +38,8 @@ import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
-import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
-import { reserveGhostCallSlot, releaseGhostCallSlot } from './gemini-ghost-budget.js'
+import { geminiGenerate, DEFAULT_GEMINI_MODEL, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
+import { reserveGhostCallSlot, releaseGhostCallSlot, recordGhostCallDetail, randomHivasId } from './gemini-ghost-budget.js'
 import { getSecret } from './web/vault.js'
 import { initDatabase, listKanbanCards, getLabelsForAllCards } from './db.js'
 
@@ -70,6 +70,10 @@ export function isRestFallbackEnabled(): boolean {
 }
 
 const AGY_CALL_SCRIPT = join(STORE, 'gemini-agy-call.sh')
+// Card cbeeba61: mirrors store/gemini-agy-call.sh's own MODEL default exactly (same env override
+// name) -- purely for DETAIL LOGGING (recordGhostCallDetail) when the agy path is in effect, never
+// read by the real network call itself (that happens inside gemini-agy-call.sh, independently).
+const AGY_MODEL = process.env.GEMINI_AGY_MODEL || 'gemini-3.8-flash-medium'
 // WhiteHat M1 (card b768770a, comment 27860): the wrapper's own seged-hivo.py pause() can sleep up
 // to SEGED_SZUNET_MAX_S=720s before even starting the (default 120s) helper call, plus lock-wait on
 // the shared hourly flock -- 120_000 was shorter than that worst case, so a ranking call landing
@@ -275,8 +279,17 @@ export async function decideGeminiOrder(
   cards: readonly OrchestratorCard[],
   apiKey: string | null,
   callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = geminiGenerate,
-  reserveSlot: (cardId: string) => boolean = reserveGhostCallSlot,
+  reserveSlot: (cardId: string, status?: 'ok' | 'error', segedHivoPath?: string, hivasId?: string) => boolean = reserveGhostCallSlot,
   releaseSlot: (cardId: string) => boolean = releaseGhostCallSlot,
+  // Card cbeeba61: logs model/duration/outcome/tokens for the reservation row reserveSlot above
+  // just wrote (same hivas_id, see recordGhostCallDetail's own header) -- diagnostic only, never
+  // changes the decision below. modelName must match whichever backend the injected callGemini
+  // actually talks to (runGeminiOrchestratorSweep passes AGY_MODEL or DEFAULT_GEMINI_MODEL
+  // accordingly); this function has no way to know that on its own, since callGemini is opaque.
+  recordDetail: (hivasId: string, cardId: string, detail: {
+    model: string; durationMs: number; outcome: 'ok' | 'error' | 'blocked'; totalTokens?: number; taskType: string
+  }, segedHivoPath?: string) => boolean = recordGhostCallDetail,
+  modelName: string = DEFAULT_GEMINI_MODEL,
 ): Promise<OrchestratorDecision> {
   const eligible = cards.filter(
     (c) => (c.status === 'planned' || c.status === 'in_progress') && isEligibleForGeminiOrdering(c),
@@ -285,20 +298,33 @@ export async function decideGeminiOrder(
 
   // WhiteHat2 H1 (card 612058c2 NO-GO @c5e5ec28): same shared fleet-wide hourly budget as the
   // draft-review call below, spent right before the real network call, not once per tick.
-  if (!reserveSlot(ORDERING_BUDGET_CARD_ID)) return { ok: false, reason: 'hourly_cap_reached' }
+  const hivasId = randomHivasId()
+  if (!reserveSlot(ORDERING_BUDGET_CARD_ID, 'ok', undefined, hivasId)) return { ok: false, reason: 'hourly_cap_reached' }
 
   const metadata = buildOrderingMetadata(eligible)
   const prompt = buildOrderingPrompt(metadata)
 
+  const startMs = Date.now()
   const result = await callGemini({ apiKey, prompt })
+  const durationMs = Date.now() - startMs
   if (!result.ok || !result.text) {
     // Card 5cb861e6: a 503 (provider overloaded) did not come from anything the fleet's own
     // usage caused -- un-spend the slot reserved above so it does not count against the hourly
     // cap. Every other failure reason (auth/quota/model_missing/bad_response) keeps the spend:
     // those reflect a real, attributable call outcome.
-    if (result.httpStatus === 503) releaseSlot(ORDERING_BUDGET_CARD_ID)
+    const released = result.httpStatus === 503
+    if (released) releaseSlot(ORDERING_BUDGET_CARD_ID)
+    // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording 'error' here re-spends the
+    // slot just released above, since calls_of()/dedupeCalls take the LAST row per hivas_id.
+    // 'blocked' marks the row without undoing the release.
+    recordDetail(hivasId, ORDERING_BUDGET_CARD_ID, {
+      model: modelName, durationMs, outcome: released ? 'blocked' : 'error', taskType: 'ghost-rank',
+    })
     return { ok: false, reason: result.reason ?? 'no_response' }
   }
+  recordDetail(hivasId, ORDERING_BUDGET_CARD_ID, {
+    model: modelName, durationMs, outcome: 'ok', totalTokens: result.totalTokens, taskType: 'ghost-rank',
+  })
 
   const order = parseOrderingResponse(result.text, eligible.map((c) => c.id))
   if (!order) return { ok: false, reason: 'invalid_response_schema' }
@@ -347,6 +373,9 @@ export async function runGeminiOrchestratorSweep(
   // An injected callGemini (e.g. from tests) bypasses this routing and is used as-is.
   let effectiveCallGemini = callGemini
   let apiKey: string | null = null
+  // Card cbeeba61: the model-id passed to decideGeminiOrder's detail logging must track the SAME
+  // branch chosen below -- effectiveCallGemini is opaque by the time decideGeminiOrder sees it.
+  let modelName = DEFAULT_GEMINI_MODEL
   if (callGemini === geminiGenerate && !isRestFallbackEnabled()) {
     const firstEligible = cards.find(
       (c) => (c.status === 'planned' || c.status === 'in_progress') && isEligibleForGeminiOrdering(c),
@@ -354,6 +383,7 @@ export async function runGeminiOrchestratorSweep(
     if (firstEligible) {
       const ayCardId = firstEligible.id
       effectiveCallGemini = (opts: GeminiCallOptions) => callGeminiViaAgy(opts.prompt, ayCardId)
+      modelName = AGY_MODEL
     }
     // no eligible cards: effectiveCallGemini stays as geminiGenerate but decideGeminiOrder
     // will return no_eligible_cards before making any call, so apiKey stays null (never used)
@@ -361,7 +391,7 @@ export async function runGeminiOrchestratorSweep(
     apiKey = getSecret(GEMINI_VAULT_KEY_ID) ?? null
   }
 
-  const decision = await decideGeminiOrder(cards, apiKey, effectiveCallGemini, reserveSlot, releaseSlot)
+  const decision = await decideGeminiOrder(cards, apiKey, effectiveCallGemini, reserveSlot, releaseSlot, undefined, modelName)
 
   if (!decision.ok) {
     console.log(`[gemini-orchestrator] fail-closed, no action (reason=${decision.reason ?? 'unknown'}).`)

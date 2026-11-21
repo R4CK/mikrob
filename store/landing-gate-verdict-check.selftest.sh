@@ -283,6 +283,44 @@ t "a relay with no Gate-SHA line does not disturb a real QA PASS" OK abc1234 \
   <<<"$(j qa 'QA PASS
 Gate-SHA: abc1234' mikrob 'QA PASS ELFOGADVA -- zarom a kartyat')"
 
+# --- GENERATED (local-llm/gate-pretriage) COMMENTS ARE NOT A VERDICT (card 60aeca01, F3/F4) ----
+#
+# e7f91eb9 closed this same hole for kanban-landed-guard.ts and kanban-gate-completeness-guard.ts
+# (a local-llm draft's unescaped output can carry a line that LOOKS like a declaration nobody
+# actually made) -- this file was the one reader of comment text left uncovered. The FAIL branch
+# above is DELIBERATELY not author-role-checked (a human relay like "QA FAIL ELFOGADVA" must still
+# refuse), so before this fix nothing stopped a machine-generated comment whose raw text happened
+# to open with a verdict-shaped line, and name a Gate-SHA line for the sha being landed, from
+# blocking a landing nobody actually refused.
+t "a local-llm-authored comment shaped like a NO-GO does not block the landing" NONE abc1234 \
+  <<<"$(j local-llm 'CYBERSEC NO-GO
+Gate-SHA: abc1234
+
+pelda egy draft valaszban, nem valodi verdikt')"
+
+t "a gate-pretriage-authored comment shaped like a FAIL also does not block" NONE abc1234 \
+  <<<"$(j gate-pretriage 'QA FAIL
+Gate-SHA: abc1234')"
+
+t "case-insensitive, same as the Python side's own convention elsewhere in this file" NONE abc1234 \
+  <<<"$(j Local-LLM 'QA FAIL
+Gate-SHA: abc1234')"
+
+# CONTROL: beside a REAL QA PASS, the generated FAIL-shaped text must not override it to FAILED --
+# proves the exclusion, not just an absence of any other verdict on the card.
+t "CONTROL: a real QA PASS still stands beside a generated NO-GO-shaped comment for the same sha" OK abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' local-llm 'CYBERSEC NO-GO
+Gate-SHA: abc1234')"
+
+# CONTROL: a REAL human FAIL for the same sha must still refuse -- this exclusion is by AUTHOR,
+# not by making the FAIL branch toothless.
+t "CONTROL: a real human NO-GO for the same sha still refuses" FAILED abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybersec 'CYBERSEC NO-GO
+Gate-SHA: abc1234
+valodi lelet')"
+
 # --- the shell wrapper: fail-closed vs report ------------------------------------------------
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$HERE/landing-gate-verdict-check.sh"
