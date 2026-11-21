@@ -30245,3 +30245,67 @@ here).
 **Ki döntött:** RedHat (comment 22517, mapped the NO-GO's findings to MikroB's gate checklist),
 MikroB (message 22518, made F-C/F-E/F-F/F-G blocking for this round), backend (this fix). Gate: QA
 + Cybersec + Cybered (delta re-gate, per MikroB's own closing line in 22518).
+## 2026-11-15 -- card 0c03aa06: checkpoint-coverage short-sha/origin + keep NO-GO + sweep bounds
+
+**Döntés:** gate-closure-check.py `_checkpoint_coverage` returns True|False|None (None = zero
+checkpoint rows for the card, distinct from a verified match); matches `head_sha` by prefix (M1,
+fixes a short Gate-SHA REVIEW reading as CHECKPOINT_FAIL) or via the existing `landed_verdict`
+machinery when the sha is already on origin (the "or origin" leg). `main()` checks every declared
+Gate-SHA, not just the first (fixes order-dependence), and only overwrites a result that already
+starts with AGREE, so a standing NO-GO/FAIL is never masked by CHECKPOINT_FAIL (M2).
+`agent-checkpoint.sh` gained a forgery-binding check (refuse before any write when the calling
+agent isn't the card's `kanban_cards.assignee`, fail-open only when the card/DB row is missing)
+and now writes the actual `card_checkpoints` row (previously fully inert -- no HTTP route, no
+write path). Gate-SHA: 5ef23f011.
+
+Delta round on CYBERED NO-GO 31713 (F1/F2/F3): `--older-than-days` above 36500 (100 years) is now
+rejected outright rather than trusted to stay negative under 64-bit arithmetic (the old 999999999
+pin never overflowed, so it was green on the unfixed base too); forced base-10 arithmetic so a
+leading-zero value doesn't hit bash octal parsing. Added a ref-still-resolves assertion after
+every `--dry-run` call (a mutant that also deletes under dry-run now goes red). CLI output for a
+zero-checkpoint-row card now appends an explicit `CHECKPOINT_NONE` token instead of a plain AGREE,
+since the card forbids wiring any `--card-id` caller until that distinction is explicit and no
+card has rows today. Gate-SHA: 483b88c27.
+
+Both rounds: `gate-closure-check.selftest.py` and `agent-checkpoint.sh --selftest` green, plus the
+`store-selftests-all-run.test.ts` TS wrapper (157/157). No HTTP endpoint was built for checkpoints
+-- the write happens directly via `sqlite3` from the agent's own shell, matching what the card
+asked for.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card 0c03aa06 (delta round 3): F1b -- sweep cap wrap-around
+
+**Döntés:** Cybered NO-GO 31725: the `--older-than-days` cap check ran `$((10#$older_days))`
+BEFORE comparing against 36500, and that arithmetic is 64-bit signed -- a digit string at or
+above 2^63 (9223372036854775808, 18446744073709551615) wraps to a small/negative number and
+sails under the cap, reproducing the exact failure the card exists for. Fixed by bounding the
+digit-STRING LENGTH before any arithmetic runs (`case "$older_days" in ??????*) die ... ;; esac`
+-- 36500 is 5 digits, so 6+ digits is already over cap, no wrap can hide behind a comparison
+that never executes). Pinned with both values, red on 5ef23f011 and 483b88c27.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card 0c03aa06 (delta round 3b): third pin value added
+
+**Döntés:** MikroB asked for the exact pin value 18446744073709551616 (2^64) alongside the
+9223372036854775808/18446744073709551615 pair already in place from the F1b fix above. Same
+digit-length rejection path (the fix bounds STRING LENGTH, not value), added for literal coverage
+of the named value. No behavioural change, test-only.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-19 -- card 0c03aa06 (delta: merge-resolution fix never committed)
+
+**Döntés:** The 29bbe6b91 origin/develop merge resolution removed develop's two inline
+`_checkpoint_coverage` calls from `gate-closure-check.py`'s FABRICATED-detection block (so only
+the multi-sha overlay decides CHECKPOINT_FAIL) -- but that edit was made and selftest-verified in
+the worktree's uncommitted working tree, never `git add`+committed, so the pushed 29bbe6b91 still
+carried develop's original single-sha branches. CYBERED NO-GO 34202 / QA2 FAIL 34203 caught it
+(gate-closure-check.selftest.py 2/209 red at 29bbe6b91: F1 multi-sha-second-covers, F3
+CHECKPOINT_NONE). Root-caused via `git status`/`git diff HEAD` showing the file as
+uncommitted-modified; fixed by committing exactly that already-reviewed diff (132709e59, 1 file,
+-6/+2 lines) and verifying `git diff --stat HEAD` is empty post-commit before re-running the
+selftest (209/209 PASS on the committed state, not the working tree).
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
