@@ -100,6 +100,19 @@ EOF
 chmod +x "$FAKEBIN/schtasks.sh" "$FAKEBIN/powershell.sh" "$FAKEBIN/wsl.sh" "$FAKEBIN/wslpath.sh"
 
 run_isolated() { # runs $BIN with the fake-bin overrides ALWAYS set, regardless of DRY_RUN
+  # Hermetic-selftest fix (card 035d02fc): without an explicit override,
+  # install-wsl-watchdog.sh's own default DISABLE_FLAG resolves to
+  # $INSTALL_DIR/store/.wsl-watchdog-disabled -- the REAL, gitignored,
+  # host-state flag file for whichever checkout $BIN lives in. Every call
+  # site below except the B2 cases relies on this function's env, not an
+  # explicit override, so without a default here they would silently read
+  # that live file: if it happens to exist (e.g. during a real Disable
+  # window), TASK_STATE gets forced to "disabled" for cases that are
+  # supposed to be exercising something else entirely (H1/H2/F1/...),
+  # making them pass or fail for the wrong reason depending on live host
+  # state the test never declared. Default to a scratch path that can never
+  # exist unless a caller deliberately sets the var first (the B2 cases do).
+  INSTALL_WSL_WATCHDOG_DISABLE_FLAG="${INSTALL_WSL_WATCHDOG_DISABLE_FLAG:-$TMP/.wsl-watchdog-disabled-absent-by-default}" \
   INSTALL_WSL_WATCHDOG_SCHTASKS_BIN="$FAKEBIN/schtasks.sh" \
   INSTALL_WSL_WATCHDOG_POWERSHELL_BIN="$FAKEBIN/powershell.sh" \
   INSTALL_WSL_WATCHDOG_WSLEXE_BIN="$FAKEBIN/wsl.sh" \
@@ -125,6 +138,30 @@ assert_no_real_calls() { # $1 = label
 }
 
 echo "install-wsl-watchdog controls"
+
+# --- hermetic-selftest regression (card 035d02fc): a call site that does
+#     NOT override INSTALL_WSL_WATCHDOG_DISABLE_FLAG must never read the
+#     real, live flag file at $BIN's own natural default location
+#     ($INSTALL_DIR/store/.wsl-watchdog-disabled, where $INSTALL_DIR is
+#     dirname($BIN)/..) -- regardless of whether that file happens to exist
+#     on this host at the time. Create it for real at that exact path, run
+#     an ordinary dry-run through run_isolated with NO override, and confirm
+#     it still registers (proves the default stayed hermetic); then remove
+#     it and confirm the SAME case behaves identically either way.
+REAL_INSTALL_DIR="$(cd "$(dirname "$BIN")/.." && pwd)"
+REAL_DISABLE_FLAG="$REAL_INSTALL_DIR/store/.wsl-watchdog-disabled"
+mkdir -p "$REAL_INSTALL_DIR/store"
+LIVE_FLAG_PRE_EXISTED=0
+[ -f "$REAL_DISABLE_FLAG" ] && LIVE_FLAG_PRE_EXISTED=1
+[ "$LIVE_FLAG_PRE_EXISTED" -eq 0 ] && : > "$REAL_DISABLE_FLAG"
+mkdir -p "$TMP/run_hermetic"
+: > "$CALL_LOG"
+OUT_HERMETIC="$(run_dry "$TMP/run_hermetic")"
+[ "$LIVE_FLAG_PRE_EXISTED" -eq 0 ] && rm -f "$REAL_DISABLE_FLAG"
+check "hermetic: a real live flag file at BIN's own default path is NOT read by a call site with no override" \
+  "DRY-RUN: would register" "$OUT_HERMETIC"
+check_absent "hermetic: the live-flag case never falls back to skipping /Create" \
+  "skipping /Create" "$OUT_HERMETIC"
 
 # --- 0. safety: dry-run must require the scratch-dir seam, not silently
 #        fall through to a real-looking default -------------------------------
@@ -203,6 +240,21 @@ else
   check_line "N2: exceeding MaxFreshSkips falls through to normal counting" \
     '  }' "$(printf '%s\n' "$PS1_CODE" | sed -n '/if (\$freshSkips -lt \$MaxFreshSkips)/,/^  }/p')"
   check "N2: boot-loop case is logged distinctly" "treating as a boot-loop" "$PS1_CONTENT"
+
+  # N2 pin (card 035d02fc): comment 17822 measured that the ORIGINAL selftest
+  # pinned only that SOME closing brace follows the grace-exceeded branch,
+  # not the actual counter value written there -- a mutant that reset
+  # FreshSkipCountFile to "0" instead of saturating it at $MaxFreshSkips
+  # (reintroducing the exact bug the N2 fix closed: only 1 read in every
+  # $MaxFreshSkips counts toward $fails during a sustained boot-loop) would
+  # have survived that check. Scope to the boot-loop branch specifically (not
+  # the unrelated, legitimate reset-to-0 in the $healthy block above it) and
+  # pin both the correct value AND the absence of the old wrong one.
+  BOOTLOOP_BRANCH="$(printf '%s\n' "$PS1_CODE" | sed -n '/treating as a boot-loop/,/^}/p')"
+  check_line "N2: boot-loop branch SATURATES the skip counter at MaxFreshSkips" \
+    '  Set-Content -Path $FreshSkipCountFile -Value "$MaxFreshSkips"' "$BOOTLOOP_BRANCH"
+  check_line_absent "N2: boot-loop branch never resets the skip counter to 0 (the bug N2 closed)" \
+    '  Set-Content -Path $FreshSkipCountFile -Value "0"' "$BOOTLOOP_BRANCH"
 
   # --- unaffected behavior: MaxFails/MaxRestarts bound still intact --------
   check_line "MaxFails bound intact (exact line)" '$MaxFails    = 3   # consecutive fails (~15 min @ 5-min cadence) before a restart' "$PS1_CONTENT"
@@ -402,7 +454,9 @@ if [ -f "$PS1_PATH" ]; then
   PS1_CODE_X="$(strip_ps1_comments < "$PS1_PATH")"
   check_line "X1: restart threshold uses -ge (not -gt)" 'if ($fails -ge $MaxFails) {' "$PS1_CODE_X"
   check_line "X2: restart-attempt bound uses -le (not -lt)" '  if ($restarts -le $MaxRestarts) {' "$PS1_CODE_X"
-  check_line "X3: healthy requires BOTH exit-0 AND OK-match (-and, not -or)" '$healthy = ($probeExit -eq 0) -and ($out -match "OK")' "$PS1_CODE_X"
+  check_line "X3: healthy requires BOTH exit-0 AND OK-match (-and, not -or)" "\$healthy = (\$probeExit -eq 0) -and (\$out -cmatch '^OK')" "$PS1_CODE_X"
+  check_absent "OK-match fail-open: case-insensitive unanchored -match is gone from code" '-match "OK"' "$PS1_CODE_X"
+  check_absent "OK-match fail-open: raw text never reintroduces the loose match either" '-match "OK"' "$PS1_CONTENT"
   check_line "X4: the wedged distro is actually terminated before relaunch" '    & wsl.exe --terminate $Distro 2>$null' "$PS1_CODE_X"
   check_line "X5: a healthy read resets the restart-count state" '  Set-Content -Path $RestartCountFile -Value "0"' "$PS1_CODE_X"
 fi

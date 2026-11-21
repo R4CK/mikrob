@@ -76,7 +76,7 @@ describe('POST /api/kanban refuses a non-conforming client-supplied id', () => {
   })
 
   it('a well-formed client-supplied id is still accepted (control)', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'my-card_01', title: 'x', status: 'planned' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'my-card_01', title: 'x', status: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getKanbanCard('my-card_01')).toBeTruthy()
@@ -90,7 +90,7 @@ describe('POST /api/kanban refuses a non-conforming client-supplied id', () => {
   })
 
   it('no id supplied at all still auto-generates one normally (control)', async () => {
-    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { title: 'x', status: 'planned' })
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { title: 'x', status: 'planned', project: 'test' })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(typeof out.body.id).toBe('string')
@@ -99,7 +99,7 @@ describe('POST /api/kanban refuses a non-conforming client-supplied id', () => {
 
 describe('PUT /api/kanban/:id refuses a non-conforming parent_id', () => {
   beforeEach(async () => {
-    await tryHandleKanban(fakeCtx('/api/kanban', 'POST', { id: 'existing1', title: 'x', status: 'planned' }).ctx)
+    await tryHandleKanban(fakeCtx('/api/kanban', 'POST', { id: 'existing1', title: 'x', status: 'planned', project: 'test' }).ctx)
   })
 
   it('is refused with 400, parent_id unchanged', async () => {
@@ -110,7 +110,7 @@ describe('PUT /api/kanban/:id refuses a non-conforming parent_id', () => {
   })
 
   it('clearing parent_id to null is unaffected (control)', async () => {
-    await tryHandleKanban(fakeCtx('/api/kanban', 'POST', { id: 'parent-ok', title: 'p', status: 'planned' }).ctx)
+    await tryHandleKanban(fakeCtx('/api/kanban', 'POST', { id: 'parent-ok', title: 'p', status: 'planned', project: 'test' }).ctx)
     await tryHandleKanban(fakeCtx('/api/kanban/existing1', 'PUT', { parent_id: 'parent-ok' }).ctx)
     const { ctx, out } = fakeCtx('/api/kanban/existing1', 'PUT', { parent_id: null })
     expect(await tryHandleKanban(ctx)).toBe(true)
@@ -157,5 +157,32 @@ describe('kanbanMoveInstructions: fail-closed renderer (both isMainAgent branche
     const out = kanbanMoveInstructions('ok$(x)', 'backend2')
     expect(out).not.toContain('curl')
     expect(out).toMatch(/FAIL-CLOSED/)
+  })
+
+  // Cybered NO-GO supplement (card 30aa8b29, MikroB comment 16449, 3 residual test holes on
+  // KANBAN_ID_RE / its renderer -- all 3 mutants stayed green with no pin, so adding each one here.
+  //
+  // (1) The regex has no `m` flag, so `^`/`$` anchor to the WHOLE string, not per line -- the
+  // guard rejects an id with an embedded newline today. If a future edit ever adds `m`, `^`/`$`
+  // would anchor per LINE instead, and a payload with a malicious first line and a clean second
+  // line would pass on that second line alone. Pinned directly: adding `m` to KANBAN_ID_RE must
+  // turn this test red.
+  it('rejects an id with an embedded newline, even when the line after it is well-formed (pins the no-m-flag regex)', () => {
+    expect(isValidKanbanId('x$(evil)\nclean123')).toBe(false)
+    const out = kanbanMoveInstructions('x$(evil)\nclean123', 'backend2')
+    expect(out).not.toContain('curl')
+    expect(out).toMatch(/FAIL-CLOSED/)
+  })
+
+  // (2)+(3) The FAIL-CLOSED message wraps the bad id in a LITERAL `("...")` AND passes it through
+  // JSON.stringify -- so for an id containing a double quote, the rendered text has a doubled
+  // outer quote (""...") from the literal + the escaped inner quote (\") from JSON.stringify.
+  // Two mutants stayed green with no pin: dropping the literal outer quotes (leaving only
+  // JSON.stringify's own pair), and replacing JSON.stringify(id) with the raw id (which would
+  // leave the inner `"` unescaped, breaking the quoting instead of escaping it). This one
+  // assertion, on the exact rendered substring, catches both.
+  it('double-quotes AND JSON-escapes the id inside the FAIL-CLOSED message', () => {
+    const out = kanbanMoveInstructions('a"b', 'backend2')
+    expect(out).toContain('(""a\\"b"")')
   })
 })

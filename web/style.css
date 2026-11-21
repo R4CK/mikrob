@@ -11335,11 +11335,96 @@ body {
   line-height: 1.4;
 }
 
+/* === FreeAPI LLM call log (card ebe20efe) === */
+.freellm-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.freellm-calls-loading,
+.freellm-calls-empty {
+  padding: 12px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.freellm-calls-error {
+  padding: 12px;
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid var(--error, #ef4444);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+}
+.freellm-calls-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.freellm-calls-counts[hidden] {
+  display: none;
+}
+.freellm-calls-counts-group {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.freellm-calls-counts-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 48px;
+}
+.freellm-calls-counts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.freellm-calls-count-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.freellm-calls-count-chip--ok { color: var(--success, #10b981); }
+.freellm-calls-count-chip--fail,
+.freellm-calls-count-chip--stalled,
+.freellm-calls-count-chip--rate_429,
+.freellm-calls-count-chip--auth { color: var(--error, #ef4444); }
+.freellm-calls-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.freellm-calls-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.freellm-calls-table th,
+.freellm-calls-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.freellm-calls-table th {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.freellm-calls-row--failed td { background: rgba(239, 68, 68, 0.08); }
+
 /* Responsive: 375px minimum (rule 13) */
 @media (max-width: 480px) {
   .freellm-metrics {
     grid-template-columns: 1fr;
   }
+  .freellm-calls-counts-group { flex-direction: column; align-items: flex-start; }
 }
 
 /* === FreeAPI LLM provider key form (card fd5fcc2c point 5) === */

@@ -40,7 +40,7 @@ import {
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, isAgentCustomProviderFieldUnusable, readAgentExtraChannels, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
 import { provisionFleetSkills } from './skill-map-provisioner.js'
 import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
@@ -2470,6 +2470,15 @@ async function startAgentProcessUnlocked(
   // heuristic in resolveProviderEnv, so a setup-token field cannot "take effect" alongside one
   // either (see agent-oauth-token-file.ts's own isCustomProvider comment).
   const customProviderId = readAgentCustomProvider(name)
+  // Card 11c6cab4 R1: a customProvider value that is PRESENT but not a usable non-empty string
+  // (number, object, empty-after-trim) reads as null above, identical to "not configured" --
+  // which would silently skip every customProvider-gated decision below (the remote refusal,
+  // the oauth-bypass, resolveProviderEnv's own registry lookup). Refuse loudly instead, the same
+  // fail-closed stance oauthTokenFile already takes a few lines above.
+  if (isAgentCustomProviderFieldUnusable(name)) {
+    logger.error({ name }, 'customProvider: agent NOT started (field present but not a usable string, refusing rather than reading it as unset)')
+    return { ok: false, error: 'customProvider: configured value is not a usable non-empty string' }
+  }
   const ownOauth = decideOwnOauthToken({
     configRead: readAgentConfigForOauthDecision(join(dir, 'agent-config.json')),
     isMainAgent: name === MAIN_AGENT_ID,

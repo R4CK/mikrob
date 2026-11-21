@@ -490,6 +490,65 @@ fi
 kill "$r11_pid" 2>/dev/null
 wait "$r11_pid" 2>/dev/null
 
+# --- MIN_AGE_HOURS positive-integer guard (Cybered GO 33187 on 09ed7ef6, card 8cb1e168) --------
+# 0/-5/1.5/empty must refuse to run (non-zero exit, nothing classified as removable); a normal
+# value still works. Separate throwaway candidate so this block doesn't depend on fixture state
+# left behind by the R11/R9 block above.
+# Cybered NO-GO 33289: the first guard (`''|*[!0-9]*|0`) missed two spellings of the same hole --
+# a leading-zero zero ("00"/"000", numerically zero but matches none of those three alternatives)
+# and a value whose minute count overflows bash's 64-bit arithmetic (2^63 and above, which wraps
+# silently instead of erroring). "010" is added too: not itself a hole, but it was silently read
+# as octal 8 under the old code instead of refused -- the fixed regex refuses it (leading zero).
+rm -rf "$FAKE_HOME"; mkdir -p "$FAKE_HOME"
+minage_dir="$FAKE_HOME/qa-gate-minage-fresh"
+mkdir -p "$minage_dir"
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+old_min_age_hours="$MIN_AGE_HOURS"
+for bad_value in 0 -5 1.5 "" 00 010 9223372036854775807; do
+  MIN_AGE_HOURS="$bad_value"
+  out="$(main --dry-run 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    ok "MIN_AGE_HOURS='$bad_value': main() refuses to run (rc=$rc)"
+  else
+    bad "MIN_AGE_HOURS='$bad_value': main() exited 0, expected a refusal" "$out"
+  fi
+  if printf '%s\n' "$out" | grep -q "DISPOSABLE\|summary:"; then
+    bad "MIN_AGE_HOURS='$bad_value': classification output was printed despite the refusal" "$out"
+  else
+    ok "MIN_AGE_HOURS='$bad_value': nothing was classified as removable (refused before classifying)"
+  fi
+done
+
+# 9-DIGIT CEILING BOUNDARY PIN (card e2425f05, scope extension comment 33299, Cybered GO 33297 on
+# 8cb1e168): the guard regex is ^[1-9][0-9]{0,8}$ -- at most 9 digits total. The bad_value loop
+# above never tests a value AT the digit-count boundary, so a {0,9} or {0,7} mutant (one digit
+# too many or too few allowed) survives it. 999999999 (exactly 9 digits) must be ACCEPTED;
+# 1000000000 (10 digits) must be REFUSED.
+MIN_AGE_HOURS=999999999
+out="$(main --dry-run 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "MIN_AGE_HOURS=999999999 (9 digits, the ceiling): main() runs, not refused"
+else
+  bad "MIN_AGE_HOURS=999999999 (9 digits, the ceiling) was refused (rc=$rc), expected to run" "$out"
+fi
+
+MIN_AGE_HOURS=1000000000
+out="$(main --dry-run 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ]; then
+  ok "MIN_AGE_HOURS=1000000000 (10 digits, one over the ceiling): main() refuses to run (rc=$rc)"
+else
+  bad "MIN_AGE_HOURS=1000000000 (10 digits, one over the ceiling) exited 0, expected a refusal" "$out"
+fi
+
+MIN_AGE_HOURS="$old_min_age_hours"
+touch -d '1 hour ago' "$minage_dir"
+normal_out="$(main --dry-run 2>&1)"; normal_rc=$?
+if [ "$normal_rc" -eq 0 ]; then
+  ok "MIN_AGE_HOURS='$old_min_age_hours' (normal value): main() still runs (rc=0)"
+else
+  bad "a normal MIN_AGE_HOURS value stopped main() from running (rc=$normal_rc)" "$normal_out"
+fi
+
 # --- C1 (RedHat MEDIUM, Cybered gate on 0116755a @ e3ac5b1a6, card 89e8cb90) -- a git that dies
 # SILENTLY (non-zero rc, empty output -- the rc 137/127/1 OOM-kill/missing-binary/generic-error
 # shape) must be treated as "found a problem" (SKIP), not as "nothing to report" (proceed). Shim

@@ -65,6 +65,7 @@ WAKE_BIN="${HEARTBEAT_SCRIPTFIRST_WAKE_BIN:-$ROOT/store/sched-wake-mikrob.sh}"
 STATE_FILE="${HEARTBEAT_SCRIPTFIRST_STATE_FILE:-$ROOT/store/.heartbeat-scriptfirst-last.txt}"
 PENDING_FILE="${HEARTBEAT_SCRIPTFIRST_PENDING_FILE:-$ROOT/store/.heartbeat-scriptfirst-pending.txt}"
 ACTIVE_SUBAGENTS_FILE="${HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE:-$ROOT/store/active-subagents.json}"
+HARDSTOP_FILE="${HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE:-$ROOT/store/weekly-hard-stop.json}"
 # card d8f44d15 req 3: fixture seam for /api/token-usage/daily-lag, same style as _get's
 # FIXTURE_DIR -- a plain file holding the JSON body, read instead of curled when set.
 TOKENLAG_FIXTURE="${HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE:-}"
@@ -132,11 +133,17 @@ WLS="$(cat "$ROOT/store/weekly-limit-stop.json" 2>/dev/null)"
 [ -n "$WLS" ] && add "WEEKLY-LIMIT-STOP: $WLS"
 
 # --- 4) hard-stop (new, auto-computed flag) -------------------------------------------------------
-HS="$(cat "$ROOT/store/weekly-hard-stop.json" 2>/dev/null)"
+HS="$(cat "$HARDSTOP_FILE" 2>/dev/null)"
 if [ -n "$HS" ]; then
   HS_ACTIVE="$(printf '%s' "$HS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("active"))' 2>/dev/null)"
   HS_NEWDEV="$(printf '%s' "$HS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("newDevStopActive"))' 2>/dev/null)"
   add "HARD-STOP: active=$HS_ACTIVE newDevStopActive=$HS_NEWDEV"
+  # N3 (card 1c8f6d25): either flag being on used to just be a line in the report, never flagged
+  # ACTIONABLE -- so a flip into hard-stop or newDevStop only woke MikroB if some OTHER section
+  # happened to be actionable too. A sustained state keeps re-firing every tick; relying on the
+  # CHANGED-diff alone to dedup was exactly what silenced the transition itself.
+  [ "$HS_ACTIVE" = "True" ] && ACTIONABLE=1
+  [ "$HS_NEWDEV" = "True" ] && ACTIONABLE=1
 fi
 
 # --- 5) load-guard -------------------------------------------------------------------------------
@@ -146,6 +153,9 @@ if [ "$LG_RC" -gt 1 ]; then
   err "load-guard-check.sh exited $LG_RC"
 elif ! printf '%s' "$LG_OUT" | grep -qE '^(ADMIT|HOLD)\b'; then
   err "load-guard-check.sh output unrecognised: $LG_OUT"
+elif printf '%s' "$LG_OUT" | grep -q '^HOLD\b'; then
+  # N3: a HOLD verdict was a recognised (non-err) shape, so it never woke MikroB either.
+  ACTIONABLE=1
 fi
 
 # --- one shared kanban snapshot for 6/7/11 -------------------------------------------------------
@@ -198,7 +208,14 @@ import json, sys, re
 try: comments = json.load(sys.stdin)
 except Exception: sys.exit(0)
 comments = comments if isinstance(comments, list) else (comments or {}).get("comments") or []
-has_review = any(re.match(r"\s*(REVIEW|K[EÉ]SZ|DONE|ELK[EÉ]SZ[UÜ]LT|BEFEJEZ)", (c.get("content") or ""), re.I) for c in comments)
+# N1 (card 1c8f6d25): a REVIEW whose Gate-SHA line (rule 4b) precedes the word REVIEW used to be
+# invisible here, because this only matched REVIEW at content[0]. Skip the same leading
+# Gate-SHA:/Skills:/blank lines gate-closure-check.py already skips (_LEAD_SKIP) before matching.
+LEAD_SKIP = re.compile(r"^(?:\s*Gate-SHA:[^\n]*\n|\s*Skills:[^\n]*\n|\s*\n)*", re.I)
+def body(content):
+    content = content or ""
+    return content[LEAD_SKIP.match(content).end():]
+has_review = any(re.match(r"\s*(REVIEW|K[EÉ]SZ|DONE|ELK[EÉ]SZ[UÜ]LT|BEFEJEZ)", body(c.get("content")), re.I) for c in comments)
 has_verdict = any(re.match(r"'"$VERDICT_RX"'", (c.get("content") or ""), re.I) for c in comments)
 print("1" if (has_review and not has_verdict) else "0")
 ' 2>/dev/null)"
@@ -314,6 +331,17 @@ except Exception as e:
       ;;
     *) err "idle-park check failed: $IDLE_RAW" ;;
   esac
+fi
+
+# --- N4 (card 1c8f6d25): replay a previously FAILED wake's report, instead of leaving it stuck in
+# --- PENDING_FILE forever. Read-and-clear here so a wake that fails AGAIN re-appends fresh (below)
+# --- rather than this block re-reading the same backlog on every future tick.
+PENDING_BACKLOG="$(cat "$PENDING_FILE" 2>/dev/null || true)"
+if [ -n "$PENDING_BACKLOG" ]; then
+  : > "$PENDING_FILE"
+  ACTIONABLE=1
+  add "PENDING-REPLAY (korabban sikertelen wake, most ujra probalva):"
+  add "$PENDING_BACKLOG"
 fi
 
 # --- 12) token_usage_daily staleness (card d8f44d15 req 3): classifyTokenPruneLag already --------

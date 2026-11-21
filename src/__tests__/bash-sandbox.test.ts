@@ -137,7 +137,7 @@ describe('the launch paths carry the file', () => {
     mkdirSync(join(fx, 'scripts'), { recursive: true })
     mkdirSync(join(fx, 'store', 'bash-sandbox'), { recursive: true })
     writeFileSync(join(fx, 'scripts', 'watchdog.sh'), readFileSync(join(REPO, 'scripts', 'watchdog.sh')))
-    const run = (id: string) => execFileSync('bash', [join(fx, 'scripts', 'watchdog.sh'), '--sandbox-flag', id], { encoding: 'utf-8' }).trim()
+    const run = (id: string) => execFileSync('bash', [join(fx, 'scripts', 'watchdog.sh'), '--sandbox-flag', id], { encoding: 'utf-8', env: { ...process.env, WATCHDOG_INSTALL_DIR: fx } }).trim()
     expect(run('soma')).toBe('flag=')
     writeFileSync(join(fx, 'store', 'bash-sandbox', 'soma.settings.json'), '{}')
     expect(run('soma')).toBe(`flag= --settings '${join(fx, 'store', 'bash-sandbox', 'soma.settings.json')}'`)

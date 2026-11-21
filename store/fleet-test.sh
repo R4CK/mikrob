@@ -74,6 +74,99 @@ fleet_test_log_lock_event() { # $1=event(run|timeout) $2=wait_s $3=run_s(or -) $
     >>"$LOCK_LOG" 2>/dev/null || true
 }
 
+# FINISH NOTIFICATION (card c4590365, Peti 13835): replaces a caller having to poll (tail/sleep/
+# repeated status checks) a backgrounded run -- measured ~2,400 such Bash calls/day fleet-wide,
+# each re-reading a full context just to look at a running fleet-test. Opt-in via
+# FLEET_TEST_CALLER_AGENT (the agent that started this run, same idea as the X-Agent-Id header
+# used elsewhere for self-identification) -- NOT every one of those 2,400 calls, only the ones a
+# caller explicitly asks to be notified about, so this does not itself become a new source of
+# constant traffic. Best-effort: a notification failure must never change $status or crash the
+# run it is reporting on.
+#
+# The run's own log ($run_log, set further down) is a `mktemp` file removed on EXIT -- a path to
+# it would dangle the instant this script exits. This copies it into a durable, caller-visible
+# location FIRST, and only when a notification was actually requested (so the ~2,400 un-notified
+# calls/day do not also start writing log files nobody asked for).
+FLEET_TEST_LOG_DIR="${FLEET_TEST_LOG_DIR:-${ROOT}-fleet-test-logs}"
+# Builds the posted "summary" line(s) WITHOUT ever relaying raw log text (CYBERSEC NO-GO 34583 /
+# QA2 FAIL 34598 F1, card c4590365): the run's log is written by the test files under test, so an
+# attacker-controlled test can print anything after a real "Tests ... passed" line and have it
+# relayed verbatim into a message that looks self-sent by the gate/caller agent (indirect
+# prompt-injection relay -- proven live with a planted "NOTE TO GATE AGENT: ..." tail). The fix is
+# NOT a filter (filters miss shapes); it only ever emits digits and a fixed, closed vocabulary of
+# words it chose itself -- nothing from the log's own characters ever reaches the output.
+# SUMMARY_CHAR_CAP: MikroB Fix-Direction 34623 (correcting 34621's "bounded by construction" --
+# CYBERED measured 1.4 MB / 3 MB summaries on 8ceff051a, LOW-1 in GO 34622: a log line like
+# "Tests  " followed by hundreds of thousands of repeated digit/word tokens still produces a
+# multi-MB string, since the closed-vocabulary fix bounds WHICH characters survive, not HOW MANY).
+# A multi-MB self-addressed message would flood the receiving agent's own context. Fail-closed to
+# the literal fallback string (never a truncated fragment, which could still carry an exploitably
+# long run of the same token) whenever the summary is empty OR over the cap.
+SUMMARY_CHAR_CAP=300
+fleet_test_safe_summary() { # $1=log_path
+  local log="$1"
+  python3 -c '
+import re, sys
+CAP = int(sys.argv[2])
+FALLBACK = "summary unavailable, see log"
+log = sys.argv[1]
+try:
+    with open(log, "r", errors="replace") as f:
+        text = f.read()
+except OSError:
+    print(FALLBACK)
+    sys.exit(0)
+out = []
+for label in ("Test Files", "Tests"):
+    matches = re.findall(r"^[ \t]*" + re.escape(label) + r"[ \t]+(.*)$", text, re.MULTILINE)
+    if not matches:
+        continue
+    # only the LAST such line (vitest reprints on watch/retry); only digits/known words survive --
+    # never the matched text itself, so no injected character can ride along regardless of position.
+    tokens = re.findall(r"[0-9]+|passed|failed|skipped|todo", matches[-1])
+    if tokens:
+        out.append(label + "  " + " ".join(tokens))
+summary = "\n".join(out)
+print(summary if summary and len(summary) <= CAP else FALLBACK)
+' "$log" "$SUMMARY_CHAR_CAP"
+}
+
+fleet_test_notify_finish() { # $1=caller_agent $2=status $3=run_log_path
+  local caller="$1" st="$2" src_log="$3" tok="${FLEET_TEST_NOTIFY_TOKEN_FILE:-$ROOT/store/.dashboard-token}"
+  [ -r "$tok" ] || return 0
+  mkdir -p "$FLEET_TEST_LOG_DIR" 2>/dev/null || return 0
+  local dest_log="$FLEET_TEST_LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
+  cp "$src_log" "$dest_log" 2>/dev/null || return 0
+  local verdict="PASS"; [ "$st" -eq 0 ] || verdict="FAIL"
+  local summary
+  summary="$(fleet_test_safe_summary "$dest_log")"
+  local hdr; hdr="$(mktemp)"; chmod 600 "$hdr"
+  printf 'Authorization: Bearer %s\n' "$(cat "$tok")" > "$hdr"
+  # "from": caller, not "system" -- the dashboard rejects "system" as a sender over this
+  # Bearer-token HTTP API with 403 "from is reserved for in-process system senders" (that value
+  # is reserved for writers inside the dashboard process itself; curl is never one). A self
+  # addressed message (from==to==caller) is accepted and is exactly what the caller needs: a
+  # "your run finished" ping to itself. Measured live (card c4590365 smoke test, 2026-11-20):
+  # every "from":"system" call this function made silently 403'd, so the feature this exists to
+  # provide had never actually fired.
+  # BODY_CHAR_CAP: second, defense-in-depth cap on the WHOLE message body (MikroB Fix-Direction
+  # 34623 point (a)), independent of the summary's own cap above -- so a future caller/path change
+  # that feeds something unbounded into any other field here (verdict, exit code, dest_log path)
+  # still cannot produce a multi-MB self-addressed message.
+  python3 -c '
+import json, sys
+BODY_CAP = 2000
+content = ("[fleet-test.sh] " + sys.argv[2] + " (exit " + sys.argv[3] + ")\n" +
+           sys.argv[4] + "\nLog: " + sys.argv[5])
+if len(content) > BODY_CAP:
+    content = content[:BODY_CAP] + "... [truncated, see log]"
+print(json.dumps({"from": sys.argv[1], "to": sys.argv[1], "content": content}))
+' "$caller" "$verdict" "$st" "$summary" "$dest_log" \
+    | curl -fsS -m 15 -o /dev/null -H "@$hdr" -H 'Content-Type: application/json' \
+        -X POST "http://127.0.0.1:${WEB_PORT:-3420}/api/messages" --data-binary @- 2>/dev/null
+  rm -f "$hdr"
+}
+
 # PRIORITY LANE FOR LANDS (card b7d8ecc4). marveen-land.sh holds its own exclusive develop-push
 # lock for the ENTIRE duration of this script's run (merge -> fleet-test -> push), so every minute
 # a land's fleet-test call sits in a plain FIFO queue is a minute EVERY OTHER land is blocked too,
@@ -120,7 +213,46 @@ FLEET_TEST_TMPDIR_ROOT="${FLEET_TEST_TMPDIR_ROOT:-${ROOT}-tmp}"
 mkdir -p "$FLEET_TEST_TMPDIR_ROOT" 2>/dev/null || true
 TMPDIR="$(mktemp -d "${FLEET_TEST_TMPDIR_ROOT}/run-XXXXXX" 2>/dev/null || mktemp -d)"
 export TMPDIR
-trap 'rm -rf "$TMPDIR"' EXIT
+
+# Single EXIT trap for the WHOLE script (WhiteHat F-A, card c4590365, comment 34613): every early
+# die() exit (lock/CPU-slot timeout, checkout/npm ci/build failure -- 15+ call sites below) used
+# to skip the notify call entirely, which previously only ran at the bottom of a completed vitest
+# run. A caller told "wait for the message, do not poll" would then hang forever on the single
+# most common non-pass outcome (rc=3). One trap, registered once as early as $TMPDIR exists,
+# fires on EVERY exit path with the REAL $? -- $run_log does not exist yet on an early die(), so
+# this builds a one-line placeholder log for the notifier instead of skipping notification.
+fleet_test_on_exit() {
+  local st=$?
+  # Notify BEFORE any cleanup below (CYBERED NO-GO 34645, card c4590365): $TMPDIR is exported
+  # (so mktemp for the placeholder resolves inside it) and $run_log lives inside it too -- doing
+  # the rm -rf first meant mktemp for the placeholder failed silently (no dir to create the file
+  # in) and a real run_log was deleted before fleet_test_notify_finish ever read it, so NOTHING
+  # was ever posted, on every exit path, pass or die().
+  if [ -n "${FLEET_TEST_CALLER_AGENT:-}" ]; then
+    local notify_log="${run_log:-}" made_placeholder=0
+    if [ -z "$notify_log" ] || [ ! -r "$notify_log" ]; then
+      notify_log="$(mktemp 2>/dev/null)" || notify_log=""
+      if [ -n "$notify_log" ]; then
+        made_placeholder=1
+        printf '(no test run output -- exited before vitest started or printed anything)\n' > "$notify_log"
+      fi
+    fi
+    [ -n "$notify_log" ] && fleet_test_notify_finish "$FLEET_TEST_CALLER_AGENT" "$st" "$notify_log"
+    [ "$made_placeholder" -eq 1 ] && rm -f "$notify_log" 2>/dev/null
+  fi
+  rm -f "${run_log:-}" 2>/dev/null
+  rm -rf "$TMPDIR"
+  return 0
+}
+trap fleet_test_on_exit EXIT
+# Without these, a SIGTERM/INT/HUP kill is reported as "PASS (exit 0)" with partial counts: bash's
+# $? inside an EXIT trap reflects the status of the last command that ran, not 128+signal, and a
+# killed vitest can leave a log with a real-looking (but incomplete) summary line (CYBERED
+# NO-GO 34648, card c4590365, comment 34648). Exiting explicitly with the conventional 128+signal
+# code from a dedicated handler makes fleet_test_on_exit see the real $? and report FAIL.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 # THE SHARED CPU-CAPACITY POOL (card 492a6d5c, backend3's measurement on card 779cd6a7). This is a
 # SEPARATE question from LOCK_FILE above: that lock says "is it safe to touch the tree" (correctness,
@@ -294,6 +426,17 @@ esac
 [ "$TEST_TREE" -ef "$ROOT" ] \
   && die 2 "FLEET_TEST_TREE ($TEST_TREE) IS the live install ($ROOT) -- refusing before the reset/clean/checkout below would run against it. Point FLEET_TEST_TREE at a disposable worktree instead."
 # <<< ROOT_GUARD_BLOCK_END
+# Card 0ca2322b (c5f98f82 follow-up, MikroB comment 32226 on RedHat's suggestion, comment 32216):
+# the regex-based detector just below (fleet-test-no-test-tree-reassignment-after-guard.test.ts)
+# only scans the TEXT of the gap between the guard above and the real `cd "$ROOT"` call -- it is
+# blind to any write form that does not spell "TEST_TREE=" literally (mapfile/readarray, a for/
+# select loop variable, printf -v, declare -n/local -n indirection, a backslash-newline split
+# between the name and "="), and it covers nothing AFTER the `cd` call at all. `readonly` closes
+# the whole class in one line, structurally, for the REST of this script's run (not just the gap):
+# bash itself refuses every one of those write forms at runtime with "readonly variable", not just
+# the ones this file's author thought to enumerate. The static detector stays as a cheap backstop
+# that still catches the most common mistake (a plain `TEST_TREE=...`) before the script even runs.
+readonly TEST_TREE
 
 REF=""
 ARGS=()
@@ -452,6 +595,41 @@ rm -f "$TREE_TICKET" 2>/dev/null
 TREE_LOCK_WAIT_S=$(( $(date +%s) - TREE_TICKET_START ))
 TREE_LOCK_ACQUIRED_AT="$(date +%s)"
 
+# >>> ORPHAN_CLEANUP_BLOCK_START (card fc1bb414, behavior test extracts between these two markers)
+# ORPHANED WORKER CLEANUP (card fc1bb414): neither this script's own EXIT trap (line 123/729,
+# tmpdir/run_log only) nor a SIGTERM/SIGKILL/SIGSEGV hitting a PAST run's vitest invocation ever
+# kills that run's forked vitest workers (vitest/dist/workers/forks.js) -- a sibling process
+# dying does not take its siblings down with it, and bash forwards no signal to a foreground
+# pipeline's children by default. Measured live, same session: a run killed by a host-level
+# segfault (fleet-test.sh's own "INCOMPLETE RUN" branch below fired) was followed minutes later
+# by two DIFFERENT selftests (rea-bwrap-sandbox, then post-review) each blamed once for
+# "left the shared tracked tree dirty: M CLAUDE.md" in the NEXT run -- the same "different
+# selftest each time, both green standalone" shape e5c13c0e's own REVIEW described, which that
+# card's fix (claude-md-main-section-writers.test.ts's atomic/skip-if-unchanged restore) does not
+# reach: an ORPHANED worker from the prior, already-dead run can still be mid-write while this
+# run's own store-selftests-all-run.test.ts takes its before/after snapshot, so the real actor and
+# the blamed selftest are two different processes entirely.
+#
+# Safe to kill unconditionally here, scoped by cwd AND by the real worker's own script path
+# (never a bare 'vitest' substring, which a wrapper/snapshot shell's OWN argv can contain
+# literally -- measured live: `pgrep -f 'vitest'` matched this very cleanup command's own
+# ancestor process, whose argv happened to quote the word "vitest", with nothing to do with any
+# actual vitest process): this point is reached only AFTER the exclusive flock above, so by
+# construction no OTHER legitimately-running fleet-test.sh can also be past this point for the
+# SAME $TEST_TREE right now -- anything still alive with its cwd inside $TEST_TREE AND the real
+# vitest worker's own compiled entry point in its argv is leftover from a run that is no longer
+# the lock holder, i.e. already dead or abandoned.
+if [ -d "$TEST_TREE" ]; then
+  for _orphan_pid in $(pgrep -f 'vitest/dist/workers/forks\.js' 2>/dev/null); do
+    _orphan_cwd="$(readlink -f "/proc/$_orphan_pid/cwd" 2>/dev/null || true)"
+    if [ -n "$_orphan_cwd" ] && [ "$_orphan_cwd" = "$TEST_TREE" ]; then
+      echo "fleet-test.sh: killing orphaned vitest process $_orphan_pid (cwd=$_orphan_cwd, left over from a prior killed/crashed run)" >&2
+      kill -9 "$_orphan_pid" 2>/dev/null || true
+    fi
+  done
+fi
+# <<< ORPHAN_CLEANUP_BLOCK_END
+
 # Create once, reuse forever. `git worktree add --detach` fails if the path exists, so the
 # create and the update paths are deliberately separate.
 # >>> DESTRUCTIVE_RESET_BLOCK_START (card e6df15da C1 behavior test extracts between these two markers)
@@ -497,6 +675,24 @@ Inspect by hand: git -C $TEST_TREE status"
   # weaken what it protects.
   if [ -f "$TEST_TREE/.git" ]; then
     rm -f "$TEST_TREE/store/.dashboard-token" "$TEST_TREE/store/claudeclaw.db" "$TEST_TREE/store/.claude-oauth-token"
+    # SAME CLASS, ONE DIRECTORY OVER (card e5c13c0e). `agents/` is gitignored wholesale
+    # (CLAUDE.md's own fleet agents live there in the LIVE install, but this is the disposable
+    # TEST tree -- nothing under here is ever legitimately persistent across runs), so a test
+    # that scaffolds a real agent directory as its own fixture (claude-md-main-section-
+    # writers.test.ts's MAIN_AGENT_ID pin-test, before it was isolated via vi.mock) leaves a stub
+    # that `git clean -fdq` above never touches. Measured live: that stub survived across this
+    # agent's own scoped runs and then made a LATER, unrelated full-suite run's
+    # listAgentNames()-based agent discovery see a phantom agent -- a schedule-runner test's 'all'
+    # fan-out fired the main agent twice because of it. Gitignored content accumulating in a
+    # disposable worktree is never a prior run's state worth keeping, so wipe it every time.
+    # Kept inside this SAME if-block, not a second one (CYBERSEC NO-GO on an earlier round,
+    # comment 34209): fleet-test-self-heals-stray-live-marker.test.ts's mutation-proof check
+    # does a plain text search for the safety-guard line's own exact source and asserts it
+    # disappears when stripped -- a second, separate occurrence of that literal line (even one
+    # quoted verbatim in an explanatory comment like this one almost was) would still match
+    # after the strip, silently defeating the test. Describing the guard's shape in prose here
+    # instead of quoting it is deliberate, not an accident of wording.
+    rm -rf "$TEST_TREE/agents"
   fi
 fi
 # <<< DESTRUCTIVE_RESET_BLOCK_END
@@ -697,7 +893,9 @@ else
 fi
 
 run_log="$(mktemp)"
-trap 'rm -f "$run_log"; rm -rf "$TMPDIR"' EXIT
+# No separate trap here: fleet_test_on_exit (registered once, near the top) already cleans up
+# $run_log and $TMPDIR and notifies -- re-registering EXIT here would REPLACE that handler and
+# bring back exactly the die()-skips-notify gap this fix closes.
 if [ ${#ARGS[@]} -gt 0 ]; then
   npx vitest run ${WORKER_ARGS[@]+"${WORKER_ARGS[@]}"} "${ARGS[@]}" 2>&1 | tee "$run_log"
 else
@@ -774,4 +972,7 @@ fi
 TREE_LOCK_RUN_S=$(( $(date +%s) - TREE_LOCK_ACQUIRED_AT ))
 fleet_test_log_lock_event run "$TREE_LOCK_WAIT_S" "$TREE_LOCK_RUN_S" "$status"
 
+# Notification itself now happens in the single fleet_test_on_exit EXIT trap (registered once,
+# right after $TMPDIR exists), not here -- that is what makes die()'s 15+ early-exit call sites
+# notify too, instead of only a run that reaches this line.
 exit "$status"

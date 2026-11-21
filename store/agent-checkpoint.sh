@@ -34,6 +34,21 @@ agent_checkpoint() {
   case "$agent" in *[!a-z0-9-]*|-*|'') die 2 "agent name must match [a-z0-9-]+ (got: $agent)" ;; esac
   case "$card" in *[!0-9a-f]*|'') die 2 "card id must be hex (got: $card)" ;; esac
 
+  # Forgery binding (card 0c03aa06, RedHat finding on 295ae6a3): refuse BEFORE touching the
+  # worktree or creating anything if the card's kanban assignee is recorded and names a DIFFERENT
+  # agent -- nothing else here checks that the caller actually owns the card it is checkpointing.
+  # FAIL-OPEN only on ambiguity ($DB missing, or this specific card has no row yet), matching this
+  # file's existing fail-open posture (see sweep_checkpoints' DB-missing die being the one place
+  # that's NOT ambiguous -- its whole job IS the DB). A refused forgery must leave no trace: this
+  # runs first, so nothing is created at all, not even the checkpoint commit.
+  if [ -f "$DB" ]; then
+    local assignee
+    assignee="$(sqlite3 "$DB" "SELECT assignee FROM kanban_cards WHERE id = '$card'" 2>/dev/null || true)"
+    if [ -n "$assignee" ] && [ "${assignee,,}" != "${agent,,}" ]; then
+      die 1 "checkpoint refused: card $card is assigned to '$assignee', not '$agent' (forgery binding, card 0c03aa06)"
+    fi
+  fi
+
   # C2 (card 06334c7d NO-GO 32965): an optional explicit worktree path, so a caller that already
   # resolved a specific worktree (e.g. post-review.sh's card-worktree-first head_sha lookup) can
   # make the snapshot and the recorded head_sha come from the EXACT SAME tree. Without this, the
@@ -101,6 +116,16 @@ agent_checkpoint() {
     [ "$n" -le "$max_attempts" ] || die 1 "update-ref: $max_attempts attempts, all claimed -- giving up"
   done
 
+  # Wire the write (card 0c03aa06, RedHat finding on 295ae6a3): the ref above is the authoritative
+  # checkpoint; this row is what lets gate-closure-check.py's _checkpoint_coverage actually find it.
+  # Best-effort and non-fatal -- $DB missing (e.g. a test fixture, or MARVEEN_DB pointed elsewhere)
+  # must not fail a checkpoint that otherwise succeeded; the git ref is still the source of truth.
+  if [ -f "$DB" ]; then
+    sqlite3 "$DB" "INSERT INTO card_checkpoints (card_id, n, sha, head_sha, agent, created_at)
+      VALUES ('$card', (SELECT COALESCE(MAX(n), 0) + 1 FROM card_checkpoints WHERE card_id = '$card'),
+              '$commit', '$head', '$agent', strftime('%s', 'now'));" 2>/dev/null || true
+  fi
+
   echo "$ref $commit"
 }
 
@@ -116,10 +141,23 @@ sweep_checkpoints() {
     esac
   done
   case "$older_days" in ''|*[!0-9]*) die 2 "--older-than-days must be a positive integer (got: $older_days)" ;; esac
+  # F1 (card 0c03aa06, Cybered 31713): the un-capped value fed into date-arithmetic wraps for a
+  # mistyped or injected huge threshold -- measured: 1000000000000000 and 213503982334601 both
+  # delete a card's refs done minutes ago, not just astronomically large inputs. 36500 days
+  # (100 years) is far past any real retention need, so anything above it is rejected outright
+  # rather than trusted to stay negative.
+  # F1b (Cybered 31725): the numeric comparison below runs $((10#$older_days)) FIRST, and that is
+  # 64-bit signed arithmetic -- a digit string at or above 2^63 wraps to a small or negative number
+  # BEFORE the -gt 36500 check ever sees it, sailing under the cap (measured: 9223372036854775808
+  # and 18446744073709551615 both still delete a done-today card's refs). Bound the STRING LENGTH
+  # before any arithmetic touches it at all: 36500 is 5 digits, so 6+ digits is already over cap,
+  # no wrap can hide behind a comparison that never runs.
+  case "$older_days" in ??????*) die 2 "--older-than-days too large (max 36500, got: $older_days)" ;; esac
+  [ "$((10#$older_days))" -gt 36500 ] && die 2 "--older-than-days too large (max 36500, got: $older_days)"
 
   [ -f "$DB" ] || die 1 "DB not found: $DB (set MARVEEN_DB to override)"
 
-  local cutoff=$(( $(date +%s) - older_days * 86400 ))
+  local cutoff=$(( $(date +%s) - (10#$older_days) * 86400 ))
   local card_ids
   card_ids="$(sqlite3 "$DB" "SELECT id FROM kanban_cards WHERE status='done' AND updated_at < $cutoff" 2>&1)" \
     || die 1 "sqlite3 query failed: $card_ids"
@@ -342,6 +380,60 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
   fi
 
+  # --- forgery binding + DB write wiring (card 0c03aa06, RedHat finding on 295ae6a3) -------------
+  ckptdb="$tmp/ckpt-claudeclaw.db"
+  sqlite3 "$ckptdb" "
+    CREATE TABLE kanban_cards (id TEXT, assignee TEXT);
+    CREATE TABLE card_checkpoints (
+      card_id TEXT NOT NULL, n INTEGER NOT NULL, sha TEXT NOT NULL, head_sha TEXT NOT NULL,
+      agent TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (card_id, n)
+    );
+    INSERT INTO kanban_cards VALUES ('deadbeef11', 'owneragent');
+  "
+  run_wt owneragent >/dev/null
+  owner_head="$(git -C "$TEST_ROOT/owneragent" rev-parse HEAD)"
+
+  # The card's real owner succeeds, and the row actually lands with the right columns.
+  if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_WORKTREES="$TEST_ROOT" MARVEEN_DB="$ckptdb" \
+      bash "$0" owneragent deadbeef11)"; then
+    ok "the card's own owner can checkpoint it"
+  else
+    no "the card's own owner was refused: $out"
+  fi
+  row="$(sqlite3 "$ckptdb" "SELECT card_id, head_sha, agent FROM card_checkpoints WHERE card_id = 'deadbeef11'")"
+  [ "$row" = "deadbeef11|$owner_head|owneragent" ] \
+    && ok "the write actually lands in card_checkpoints, with the real HEAD and agent" \
+    || no "expected deadbeef11|$owner_head|owneragent in card_checkpoints, got: $row"
+
+  # An impostor (a different agent than the card's assignee) is refused, BEFORE anything is
+  # created: no new git ref, no new row -- a refused forgery must leave no trace.
+  run_wt impostoragent >/dev/null
+  refs_before="$(git -C "$TEST_MAIN" for-each-ref 'refs/mikrob/ckpt/deadbeef11/' | wc -l)"
+  rows_before="$(sqlite3 "$ckptdb" "SELECT COUNT(*) FROM card_checkpoints WHERE card_id = 'deadbeef11'")"
+  if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_WORKTREES="$TEST_ROOT" MARVEEN_DB="$ckptdb" \
+      bash "$0" impostoragent deadbeef11 2>&1)"; then
+    no "an impostor agent was NOT refused: $out"
+  else
+    printf '%s' "$out" | grep -q "forgery binding" \
+      && ok "an agent that is not the card's assignee is refused, with the forgery-binding message" \
+      || no "refused, but not with the expected forgery-binding message: $out"
+  fi
+  refs_after="$(git -C "$TEST_MAIN" for-each-ref 'refs/mikrob/ckpt/deadbeef11/' | wc -l)"
+  rows_after="$(sqlite3 "$ckptdb" "SELECT COUNT(*) FROM card_checkpoints WHERE card_id = 'deadbeef11'")"
+  [ "$refs_before" = "$refs_after" ] && ok "a refused forgery creates no new checkpoint ref" \
+    || no "refs/mikrob/ckpt/deadbeef11/ grew from $refs_before to $refs_after after a refused forgery"
+  [ "$rows_before" = "$rows_after" ] && ok "a refused forgery writes no new row" \
+    || no "card_checkpoints rows for deadbeef11 grew from $rows_before to $rows_after after a refused forgery"
+
+  # Control: an UNKNOWN card (no kanban_cards row at all) is ambiguous, not provably forged, so the
+  # fail-open posture lets it through -- same posture as _checkpoint_coverage's own count==0 case.
+  if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_WORKTREES="$TEST_ROOT" MARVEEN_DB="$ckptdb" \
+      bash "$0" owneragent deadbeef09)"; then
+    ok "a card with no kanban_cards row at all fails open (ambiguous, not refused)"
+  else
+    no "an unknown card should fail open, not be refused: $out"
+  fi
+
   # --- sweep selftest (card 1778f6ac F1.1.2) ---
   sweep_db="$tmp/sweep.db"
   sqlite3 "$sweep_db" "
@@ -361,6 +453,15 @@ if [ "${1:-}" = "--selftest" ]; then
     && no "sweep --dry-run listed open card's ref (should not): $dry_out" \
     || ok "sweep --dry-run skipped open card"
 
+  # F2 (card 0c03aa06, Cybered 31713): a dry-run that ALSO deletes (e.g. a `git update-ref -d`
+  # mutant dropped next to the "would delete:" echo) previously stayed green, since nothing
+  # checked the ref still existed after a dry-run -- only the printed text was asserted.
+  if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/oldcard01/1" >/dev/null 2>&1; then
+    ok "sweep --dry-run did not actually delete the old card's ref"
+  else
+    no "sweep --dry-run deleted a ref it should have only listed"
+  fi
+
   MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$sweep_db" bash "$0" --sweep --older-than-days 1 >/dev/null
   if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/oldcard01/1" >/dev/null 2>&1; then
     no "old card's ref still exists after sweep"
@@ -371,6 +472,61 @@ if [ "${1:-}" = "--selftest" ]; then
     ok "open card's ref kept after sweep"
   else
     no "open card's ref was deleted (should not)"
+  fi
+
+  # Huge --older-than-days (card 0c03aa06, WhiteHat2 finding on 295ae6a3; Cybered 31713 F1 delta).
+  # The OLD pin used 999999999: a cutoff built from it goes deeply NEGATIVE under plain 64-bit
+  # arithmetic, so it behaved identically whether or not a cap existed (vacuous -- it could never
+  # go red). Measured: values like 1000000000000000 and 213503982334601 DO make the pre-fix
+  # (uncapped) formula wrap and delete a just-done card's refs. The fix is a hard cap (36500 days,
+  # 100 years) rather than trusting the arithmetic to stay negative, so EVERY value past the cap is
+  # now rejected outright -- including the old 999999999 pin itself.
+  huge_db="$tmp/huge-sweep.db"
+  sqlite3 "$huge_db" "
+    CREATE TABLE kanban_cards (id TEXT, status TEXT, updated_at INTEGER);
+    INSERT INTO kanban_cards VALUES ('donetoday1', 'done', $(date +%s));
+  "
+  git -C "$TEST_MAIN" update-ref "refs/mikrob/ckpt/donetoday1/1" "$sweep_head"
+
+  # At the cap (accepted): still correctly deletes nothing of a card done today.
+  if huge_out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days 36500 2>&1)"; then
+    printf '%s' "$huge_out" | grep -q "donetoday1" \
+      && no "--older-than-days 36500 (at cap) dry-run would delete a card done TODAY: $huge_out" \
+      || ok "--older-than-days 36500 (at cap) deletes nothing of a card done today"
+  else
+    no "--older-than-days 36500 (at cap) should be ACCEPTED, got refused: $huge_out"
+  fi
+  if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/donetoday1/1" >/dev/null 2>&1; then
+    ok "--older-than-days 36500 (at cap) dry-run did not actually delete the today card's ref"
+  else
+    no "--older-than-days 36500 (at cap) dry-run deleted a ref it should have only listed"
+  fi
+
+  # Past the cap (rejected outright): the old vacuous pin (999999999) plus the two values that
+  # measurably delete today's refs on the uncapped base.
+  # F1b (Cybered 31725): 9223372036854775808 (2^63) and 18446744073709551615 (2^64-1) both wrap
+  # the OLD bare-arithmetic cap check to a small/negative number and sailed under it -- the
+  # string-length bound above must reject them before any arithmetic runs.
+  for _huge_days in 999999999 1000000000000000 213503982334601 9223372036854775808 18446744073709551615 18446744073709551616; do
+    if out="$(MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days "$_huge_days" 2>&1)"; then
+      no "--older-than-days $_huge_days should have been rejected (cap 36500), got: $out"
+    else
+      printf '%s' "$out" | grep -q "too large" \
+        && ok "--older-than-days $_huge_days is rejected (cap 36500)" \
+        || no "--older-than-days $_huge_days refused, but not with the cap message: $out"
+    fi
+    if git -C "$TEST_MAIN" rev-parse --verify "refs/mikrob/ckpt/donetoday1/1" >/dev/null 2>&1; then
+      ok "--older-than-days $_huge_days: today card's ref untouched after rejection"
+    else
+      no "--older-than-days $_huge_days: today card's ref is gone after a refused sweep"
+    fi
+  done
+
+  # L3 (same card): a leading-zero value must not hit bash's octal arithmetic (base-10 pin).
+  if MARVEEN_MAIN="$TEST_MAIN" MARVEEN_DB="$huge_db" bash "$0" --sweep --dry-run --older-than-days 08 >/dev/null 2>&1; then
+    ok "--older-than-days 08 (leading zero) is accepted, not an octal arithmetic error"
+  else
+    no "--older-than-days 08 (leading zero) failed -- likely bash octal arithmetic"
   fi
 
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
