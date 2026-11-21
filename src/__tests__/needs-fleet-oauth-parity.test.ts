@@ -133,4 +133,40 @@ describe('needs-fleet-oauth parity: ground truth (TS source) vs watchdog path (d
       rmSync(tmp, { recursive: true, force: true })
     }
   })
+
+  // Card 11c6cab4 round 3 (RedHat comment 32213): a customProvider key present but not a usable
+  // non-empty string used to compute customProviderId as null here, the SAME value as "no
+  // customProvider at all" -- so the default shared-auth agent fell into the plain "needed"
+  // branch (exit 0) instead of the undecidable one (exit 2), and watchdog.sh's --launch-env never
+  // reached the refusal watchdog-provider-env.mjs already had for this exact value. Must exit 2
+  // (undecidable), never exit 0/"needed" or exit 1/"not-needed".
+  const UNUSABLE_CUSTOM_PROVIDER_FIXTURES = [
+    { name: 'customProvider a number', config: { customProvider: 1 } },
+    { name: 'customProvider an empty object', config: { customProvider: {} } },
+    { name: 'customProvider an empty array', config: { customProvider: [] } },
+    { name: 'customProvider the boolean true', config: { customProvider: true } },
+    { name: 'customProvider an empty string', config: { customProvider: '' } },
+    { name: 'customProvider whitespace-only', config: { customProvider: '   ' } },
+  ]
+
+  it.each(UNUSABLE_CUSTOM_PROVIDER_FIXTURES)('$name: undecidable (exit 2), never a silent decision', ({ config }) => {
+    const tmp = mkdtempSync(join(tmpdir(), 'needs-fleet-oauth-parity-'))
+    try {
+      writeFileSync(join(tmp, 'agent-config.json'), JSON.stringify(config))
+      let status: number | null = null
+      let stdout = ''
+      try {
+        stdout = execFileSync(process.execPath, [SCRIPT, tmp], { stdio: 'pipe', encoding: 'utf-8' })
+        status = 0
+      } catch (err) {
+        const e = err as { status?: number | null; stdout?: string }
+        status = e.status ?? null
+        stdout = e.stdout ?? ''
+      }
+      expect(status).toBe(2)
+      expect(stdout).toBe('')
+    } finally {
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
 })

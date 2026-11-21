@@ -140,6 +140,12 @@ A script idempotens: létrehozza egyszer a `{{INSTALL_DIR}}-test` worktree-t, ut
 a megadott commitra reseteli, és symlinkeli az élő `node_modules`-t (nincs második `npm ci`).
 Ne hozz ad-hoc temp worktree-t -- pont ezt váltja ki.
 
+**Ne pollozd a háttérbe indított futást (kártya c4590365, Peti 13835).** Ha a szemafor-sor miatt
+háttérbe indítod a `store/fleet-test.sh`-t vagy a `store/marveen-land.sh`-t, ne `tail`/`sleep`/
+státusz-ismétlés ciklusban várj rá -- mindkét script, amikor végez, pontosan egy inter-agent
+üzenetet küld a hívó ügynöknek (verdikt + összegző sor + log-útvonal); azt az üzenetet várd meg,
+ne a futást.
+
 ## Upstreammel KÖZÖS teszt-fájl bővítését ACKNOWLEDGED_CONFLICTS követi (kártya e00e7ff3)
 
 Ha egy marveen teszt-fájl VÉGÉRE fűzöl új `describe` blokkot, és az a fájl az upstreamben is létezik,

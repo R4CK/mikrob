@@ -7,11 +7,11 @@
 // with no consumer is inert by design, not a gap in this card.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { tryHandleAgents } from '../web/routes/agents.js'
-import { agentDir, agentConfigRoot, readAgentCustomProvider, writeAgentCustomProvider } from '../web/agent-config.js'
+import { agentDir, agentConfigRoot, readAgentCustomProvider, writeAgentCustomProvider, isAgentCustomProviderFieldUnusable } from '../web/agent-config.js'
 import { scaffoldAgentDir } from '../web/agent-scaffold.js'
 import { checkAgentPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../web/agent-put-fields.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -45,6 +45,50 @@ describe('readAgentCustomProvider / writeAgentCustomProvider (unit)', () => {
     writeAgentCustomProvider(AGENT, 'something')
     writeAgentCustomProvider(AGENT, '   ')
     expect(readAgentCustomProvider(AGENT)).toBeNull()
+  })
+})
+
+// Card 11c6cab4 R1 (RedHat follow-up, comment 14986): readAgentCustomProvider() reads both
+// "absent" and "present but unusable" as null -- correct for that function's own callers, but
+// the launcher needs to tell them apart to refuse loudly on the latter (see
+// custom-provider-launcher-wiring.test.ts for the launcher-side pin). These write the config
+// file directly (not via writeAgentCustomProvider, which the normal PUT-validated path already
+// rejects these shapes through, per card 91188f92 above) -- the exact fleet-transfer-import
+// bypass readAgentCustomProvider's own doc comment names as the real-world path to a
+// present-but-garbage value.
+describe('isAgentCustomProviderFieldUnusable (unit, card 11c6cab4)', () => {
+  function writeRawConfig(value: unknown): void {
+    const configPath = join(agentDir(AGENT), 'agent-config.json')
+    writeFileSync(configPath, JSON.stringify({ customProvider: value }))
+  }
+
+  it('false when the key is absent entirely', () => {
+    expect(isAgentCustomProviderFieldUnusable(AGENT)).toBe(false)
+  })
+
+  it('false when the key holds a usable non-empty string', () => {
+    writeRawConfig('my-ollama')
+    expect(isAgentCustomProviderFieldUnusable(AGENT)).toBe(false)
+  })
+
+  it('true when the key is present but a number (the R1 repro)', () => {
+    writeRawConfig(123)
+    expect(isAgentCustomProviderFieldUnusable(AGENT)).toBe(true)
+  })
+
+  it('true when the key is present but an object', () => {
+    writeRawConfig({ id: 'nested' })
+    expect(isAgentCustomProviderFieldUnusable(AGENT)).toBe(true)
+  })
+
+  it('true when the key is present but an empty/whitespace-only string', () => {
+    writeRawConfig('   ')
+    expect(isAgentCustomProviderFieldUnusable(AGENT)).toBe(true)
+  })
+
+  it('false when the config file itself is malformed JSON (a different, broader failure -- not this check)', () => {
+    writeFileSync(join(agentDir(AGENT), 'agent-config.json'), '{not valid json')
+    expect(isAgentCustomProviderFieldUnusable(AGENT)).toBe(false)
   })
 })
 

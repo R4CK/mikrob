@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 // SCHEDRECHECK1007 (a #1749 review follow-up): a tick reads the task list ONCE,
 // and every await inside it -- here: the fire of the task before -- lets the
@@ -84,6 +85,17 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
   SCHEDULED_TASK_BODY_WARN_CHARS: 20_000,
   MAX_SCHEDULED_TASK_PROMPT_LEN: 50_000,
 }))
+
+// Card e5c13c0e: defaults to [] (the file's existing "no agent dirs in the test's PROJECT_ROOT"
+// assumption, see the 'all'-fires-at-main test below), but is overridable per-test so that test
+// can ALSO cover the real failure mode it was blind to: listAgentNames() returning MAIN_AGENT_ID
+// itself (a leaked/stray agents/<MAIN_AGENT_ID> dir -- happened for real, see schedule-runner.ts's
+// resolveTargetAgents fix) must not double-fire the main agent.
+const mockListAgentNames = vi.fn((): string[] => [])
+vi.mock('../web/agent-config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/agent-config.js')>()
+  return { ...actual, listAgentNames: () => mockListAgentNames() }
+})
 
 vi.mock('../web/agent-process.js', () => ({
   clearFeedbackModalAndRecheck: () => false,
@@ -243,5 +255,20 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     await runOneTick()
     expect(sentTo(MAIN_CHANNELS_SESSION)).toHaveLength(1)
     expect(sentTo(MAIN_CHANNELS_SESSION)[0].prompt).toContain('to everyone')
+  })
+
+  // Card e5c13c0e: measured for real -- a leaked agents/<MAIN_AGENT_ID> stub directory (from an
+  // unrelated test's fixture leak, since agents/ is gitignored and fleet-test.sh's tree reset
+  // does not clean it) made listAgentNames() return MAIN_AGENT_ID alongside the real sub-agents,
+  // and the 'all' fan-out fired the main agent TWICE (expected length 1, got 2). Fixed in
+  // resolveTargetAgents (schedule-runner.ts): MAIN_AGENT_ID is excluded from the running-agents
+  // list before being prepended, regardless of what listAgentNames() returns.
+  it("an 'all' task still fires at the main agent exactly once even if listAgentNames() wrongly includes it", async () => {
+    const { MAIN_CHANNELS_SESSION } = await import('../web/main-agent.js')
+    mockListAgentNames.mockReturnValueOnce([MAIN_AGENT_ID, 'backend'])
+    mockListScheduledTasks.mockReturnValue([task({ name: 'cc-all-task', prompt: 'to everyone', agent: 'all' })])
+    await runOneTick()
+    expect(sentTo(MAIN_CHANNELS_SESSION)).toHaveLength(1)
+    expect(sentTo('agent-backend')).toHaveLength(1)
   })
 })
