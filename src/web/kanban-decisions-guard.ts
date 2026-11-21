@@ -41,6 +41,27 @@ function cardIdInAddedLineRx(cardId: string): RegExp {
   return new RegExp(`^\\+(?!\\+).*\\b${escaped}\\b`, 'i')
 }
 
+// Same leading-`+` convention as cardIdInAddedLineRx (added-by-this-diff, never the
+// `+++ b/DECISIONS.md` file header). Catches a `## ` entry header missing the leading date (the
+// original a01d8a3d bug: a card-id-first `## a01d8a3d: Title (date)` header instead of
+// `## YYYY-MM-DD -- Title`).
+//
+// A bold-text header opening with a date (`**YYYY-MM-DD -- Title**`, the card 60aeca01 shape) is
+// NOT flagged (card 84f90b4e, MikroB decision msg 22885): store/decisions-append-union.sh's
+// try_append_union() now accepts that form as a valid entry boundary too (its hardcoded
+// header_glob_bold), so it no longer silently refuses to auto-merge around it, and DECISIONS.md
+// is append-only -- an existing entry using this legacy spelling is never going to be rewritten,
+// so flagging it here would only ever block a true revert/no-op change.
+const ADDED_HASH_HEADER_RX = /^\+(?!\+)## /
+const DATED_HASH_HEADER_RX = /^## \d{4}-/
+
+function addedNonDatedHeaders(diff: string): string[] {
+  return diff
+    .split('\n')
+    .filter((l) => ADDED_HASH_HEADER_RX.test(l) && !DATED_HASH_HEADER_RX.test(l.slice(1)))
+    .map((l) => l.slice(1))
+}
+
 interface Comment {
   readonly author: string
   readonly content: string
@@ -68,7 +89,7 @@ async function decisionsEntryState(
  * can check (no declared sha, unmapped/repo-less project, repo missing on disk). Shared by both
  * exported entry points so they can never disagree about which cards are in scope.
  */
-function resolveCheck(cardId: string, comments: readonly Comment[]): { sha: string; repo: string } | null {
+function resolveCheck(cardId: string, comments: readonly Comment[]): { sha: string; repo: string; mainRef: string } | null {
   const sha = latestReviewGateSha(comments)
   if (sha === null) return null
 
@@ -78,7 +99,7 @@ function resolveCheck(cardId: string, comments: readonly Comment[]): { sha: stri
   const target = PROJECT_REPOS[project]
   if (target === undefined) return null
   if (!existsSync(`${target.root}/.git`)) return null
-  return { sha, repo: target.root }
+  return { sha, repo: target.root, mainRef: target.mainRef }
 }
 
 /**
@@ -161,7 +182,7 @@ export async function decisionsGuardVerdict(
     return { blocked: false }
   }
 
-  let resolved: { sha: string; repo: string } | null
+  let resolved: { sha: string; repo: string; mainRef: string } | null
   try {
     resolved = resolveCheck(cardId, comments)
   } catch (err) {
@@ -187,5 +208,81 @@ export async function decisionsGuardVerdict(
       `sor. Írj egy döntésnapló-sort a DECISIONS.md VÉGÉRE (farokba-írás szabály), hivatkozva a ` +
       `kártya ID-jére, majd próbáld újra. Ha tudatosan át akarsz lépni rajta, MikroB force: true ` +
       `értékkel megteheti.`,
+  }
+}
+
+/**
+ * Blocks a transition INTO `waiting` for ANY card (not scoped to isNonTrivialCard -- a
+ * malformed header breaks try_append_union's auto-merge for every future card that touches the
+ * same region of the file, regardless of this card's own risk tier) whose REVIEW's declared
+ * Gate-SHA diff adds a top-level DECISIONS.md `## ` header that is not in the file's dated
+ * format (`## YYYY-MM-DD ...`). MikroB scope-add (card 84f90b4e, comment 1795199177), after a
+ * bold-text header (card 60aeca01) made try_append_union refuse a later auto-merge.
+ */
+export async function decisionsHeaderGuardVerdict(
+  cardId: string,
+  nextStatus: unknown,
+  force: boolean,
+  actor?: string,
+): Promise<LandedVerdict> {
+  if (nextStatus !== 'waiting') return { blocked: false }
+  if (isForceActor(force, actor)) return { blocked: false }
+
+  let card: ReturnType<typeof getKanbanCard>
+  try {
+    card = getKanbanCard(cardId)
+  } catch (err) {
+    logger.warn({ err, cardId }, 'decisions-header-guard could not read the card; allowing the move')
+    return { blocked: false }
+  }
+  if (!card) return { blocked: false }
+  if (card.status === 'waiting') return { blocked: false }
+
+  let comments: Comment[]
+  try {
+    comments = getKanbanComments(cardId)
+  } catch (err) {
+    logger.warn({ err, cardId }, 'decisions-header-guard could not read comments; allowing the move')
+    return { blocked: false }
+  }
+
+  let resolved: { sha: string; repo: string; mainRef: string } | null
+  try {
+    resolved = resolveCheck(cardId, comments)
+  } catch (err) {
+    logger.warn({ err, cardId }, 'decisions-header-guard could not resolve the gate-sha/repo; allowing the move')
+    return { blocked: false }
+  }
+  if (resolved === null) return { blocked: false }
+
+  let diff: string
+  try {
+    // merge-base(mainRef, sha), not sha^1 -- a card branch is usually several commits ahead of
+    // mainRef by the time it gates, and a bad header added in an EARLIER commit of the card
+    // (not the tip) would be invisible to a sha^1..sha single-commit diff (CYBERSEC NO-GO 35145
+    // F2, card 84f90b4e). The whole-card diff against where it forked from mainRef is what
+    // actually lands, so that is what must be checked.
+    const base = await git(resolved.repo, ['merge-base', resolved.mainRef, resolved.sha])
+    if (!base.ok) return { blocked: false }
+    const res = await git(resolved.repo, ['diff', '--no-color', base.out, resolved.sha, '--', 'DECISIONS.md'])
+    if (!res.ok) return { blocked: false }
+    diff = res.out
+  } catch (err) {
+    logger.warn({ err, cardId }, 'decisions-header-guard could not diff the gate-sha; allowing the move')
+    return { blocked: false }
+  }
+
+  const badHeaders = addedNonDatedHeaders(diff)
+  if (badHeaders.length === 0) return { blocked: false }
+
+  return {
+    blocked: true,
+    message:
+      `Ez a kártya nem adható át gate-re: a Gate-SHA (${resolved.sha}) diffje a DECISIONS.md-be ` +
+      `nem dátumozott formátumú fejsort ad hozzá (${badHeaders.join('; ')}). A kötelező forma ` +
+      `"## YYYY-MM-DD -- Cím" vagy "## YYYY-MM-DD: Cím" -- enélkül a try_append_union auto-merge ` +
+      `(store/decisions-append-union.sh) ezen a bejegyzésen (fail-closed, helyesen) refuse-olni ` +
+      `fog egy jövőbeli landolásnál. Javítsd a fejsort, majd próbáld újra. Ha tudatosan át akarsz ` +
+      `lépni rajta, MikroB force: true értékkel megteheti.`,
   }
 }

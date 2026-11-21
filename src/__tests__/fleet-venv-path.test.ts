@@ -9,11 +9,11 @@
 // scripts/fleet-venv-prefix.sh for the shell ones. Which files build a launch
 // PATH is pinned tree-wide in launch-path-venv-pin.test.ts.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { fleetVenvPathPrefix } from '../web/agent-process.js'
 import { resolveFleetVenvDir, fleetVenvBin } from '../fleet-venv.js'
 import { SETTINGS_REGISTRY } from '../config-registry.js'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, rmSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -27,9 +27,29 @@ const CONFIG = readFileSync(join(__dirname, '..', 'config.ts'), 'utf-8')
 const CHANNELS_SH = readFileSync(join(__dirname, '..', '..', 'scripts', 'channels.sh'), 'utf-8')
 const HELPER_SH = readFileSync(join(__dirname, '..', '..', 'scripts', 'fleet-venv-prefix.sh'), 'utf-8')
 
+// The use-time integrity check (card 29803f39) always reads the real
+// filesystem (uid/mode/symlink state is exactly what a boolean `exists` seam
+// would let a test fake past), so any test that expects fleetVenvBin/
+// fleetVenvPathPrefix to ACCEPT a venv now needs a real directory, not a
+// fake path plus a stub `exists`. A rejection path that never reaches the
+// integrity check (missing bin/, relative, shell-active char) can still use
+// a fake path.
+const dirs: string[] = []
+function realVenv(name = 'venv'): string {
+  const base = mkdtempSync(join(tmpdir(), 'fleet-venv-real-'))
+  dirs.push(base)
+  const d = join(base, name)
+  mkdirSync(join(d, 'bin'), { recursive: true })
+  return d
+}
+afterEach(() => {
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
+})
+
 describe('fleetVenvPathPrefix', () => {
-  it('returns "<venv>/bin:" when the bin directory exists', () => {
-    expect(fleetVenvPathPrefix('/Users/x/.klaudia-venv', (p) => p === '/Users/x/.klaudia-venv/bin')).toBe('/Users/x/.klaudia-venv/bin:')
+  it('returns "<venv>/bin:" when the bin directory exists and the venv passes the use-time integrity check', () => {
+    const d = realVenv()
+    expect(fleetVenvPathPrefix(d)).toBe(`${d}/bin:`)
   })
 
   it('returns "" when the bin directory is missing (a missing venv disables the prefix)', () => {
@@ -47,14 +67,79 @@ describe('fleetVenvPathPrefix', () => {
   })
 
   it('accepts a path with a space (safe inside the double quotes)', () => {
-    expect(fleetVenvPathPrefix('/Users/x/my venv', () => true)).toBe('/Users/x/my venv/bin:')
+    const d = realVenv('my venv')
+    expect(fleetVenvPathPrefix(d)).toBe(`${d}/bin:`)
   })
 
   it('refuses a relative path: it would resolve against each launch command\'s own cd (#1626 review)', () => {
     for (const rel of ['venv', './venv', '../venv', 'a/b/venv']) {
       expect(fleetVenvPathPrefix(rel, () => true)).toBe('')
-      expect(fleetVenvBin(rel, () => true)).toEqual({ prefix: '', refused: true })
+      const res = fleetVenvBin(rel, () => true)
+      expect(res.prefix).toBe('')
+      expect(res.refused).toBe(true)
     }
+  })
+})
+
+// Card 29803f39: the write-time check (config-registry.ts's
+// validateFleetPythonVenvDir, card 2bf0d884) only runs once, when the
+// Settings page saves the value. These pin the USE-TIME re-check in
+// fleetVenvBin, which runs on every launch.
+describe('fleetVenvBin use-time integrity check (card 29803f39)', () => {
+  it('positive control: an own, non-group/other-writable directory is accepted', () => {
+    const d = realVenv()
+    const res = fleetVenvBin(d)
+    expect(res.refused).toBe(false)
+    expect(res.prefix).toBe(`${d}/bin:`)
+  })
+
+  it('rejects a directory that was chmod 777 after it was written', () => {
+    const d = realVenv()
+    chmodSync(d, 0o777)
+    const res = fleetVenvBin(d)
+    expect(res.refused).toBe(true)
+    expect(res.prefix).toBe('')
+    expect(res.reason).toMatch(/group- or other-writable/)
+  })
+
+  it('rejects a bin/ directory that was (re)created as 777 after the venv was set up', () => {
+    const d = realVenv()
+    chmodSync(join(d, 'bin'), 0o777)
+    const res = fleetVenvBin(d)
+    expect(res.refused).toBe(true)
+    expect(res.prefix).toBe('')
+    expect(res.reason).toMatch(/group- or other-writable/)
+  })
+
+  it('rejects bin/python3 being a symlink that points outside the venv directory', () => {
+    const d = realVenv()
+    const outside = mkdtempSync(join(tmpdir(), 'fleet-venv-outside-'))
+    dirs.push(outside)
+    const outsidePython = join(outside, 'python3')
+    writeFileSync(outsidePython, '#!/bin/sh\necho pwned\n')
+    symlinkSync(outsidePython, join(d, 'bin', 'python3'))
+    const res = fleetVenvBin(d)
+    expect(res.refused).toBe(true)
+    expect(res.prefix).toBe('')
+    expect(res.reason).toMatch(/symlink pointing outside/)
+  })
+
+  it('accepts bin/python3 being a symlink that points INSIDE the venv directory', () => {
+    const d = realVenv()
+    const realPython = join(d, 'real-python3')
+    writeFileSync(realPython, '#!/bin/sh\necho ok\n')
+    symlinkSync(realPython, join(d, 'bin', 'python3'))
+    const res = fleetVenvBin(d)
+    expect(res.refused).toBe(false)
+    expect(res.prefix).toBe(`${d}/bin:`)
+  })
+
+  it('rejects a directory not owned by this process, e.g. /usr (positive pin, WhiteHat2 13498)', () => {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null
+    if (uid === 0) return // running as root: /usr IS owned by this uid, nothing to pin
+    const res = fleetVenvBin('/usr')
+    expect(res.refused).toBe(true)
+    expect(res.reason).toMatch(/not owned by the fleet process's own uid/)
   })
 })
 
@@ -179,7 +264,7 @@ describe('channels.sh and the TypeScript launchers resolve FLEET_PYTHON_VENV the
 
   it('a refused path is NAMED in channels-failures.log, not silently dropped', () => {
     expect(run({ env: 'FLEET_PYTHON_VENV=$HOME/bad$venv', venvs: ['bad$venv'] }).log).toContain('shell-active character')
-    expect(run({ env: 'FLEET_PYTHON_VENV=relvenv', venvs: ['relvenv'] }).log).toContain('(relvenv) is not an absolute path')
+    expect(run({ env: 'FLEET_PYTHON_VENV=relvenv', venvs: ['relvenv'] }).log).toContain('(relvenv) refused: the path is not absolute')
   })
 
   it('no dist yet: no prefix, and the reason is named in channels-failures.log', () => {
