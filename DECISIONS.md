@@ -30950,3 +30950,18 @@ remote mutant actually exports the fleet token -- isolation=yes -- confirming th
 severity, not just a missing refusal). 71/71 green with the fix (was 69/69). tsc --noEmit clean.
 
 **Ki döntött:** RedHat (Cybered) lelete alapján backend korrigálja; Gate: QA + Cybered.
+
+## 2026-11-15 -- kg-search.selftest.sh leak-check scope (card afc0d569)
+
+MikroB merese: a F1 leak-check `grep -slF ... /tmp/tmp.*` alakja a teljes rendszer `/tmp`-et
+pasztazta fajltipus-szures nelkul -- egy MASIK folyamat elhagyott FIFO-ja (nyito, iro nelkul
+blokkol a vegtelenig) 3 landolast is vorosre vitt (3bad1678 x2, ec34c025). Javitas: a
+`kg-search.sh` futtatasa `TMPDIR="$WORKDIR"`-dal tortenik (a sajat mktemp-je -- ha lenne -- ide
+irna, nem a megosztott `/tmp`-be), a leak-check pedig `find -type f`-fel kizarolag rendes
+fajlt nyit meg, soha FIFO-t/socketet.
+
+**Teszt:** `kg-search.selftest.sh` 6/6 valtozatlanul zold. Kezzel reprodukalva: `mkfifo
+/tmp/tmp.<x>` + a regi glob-alak -> `timeout 10` utan exit 124 (tenyleges akasztas); ugyanaz a
+FIFO a javitott koddal -> exit 0, 0s alatt, 30s timeout alatt marad.
+
+**Ki dontott:** MikroB dispatch (msg_id:19071) -> backend3 vegrehajtasa.
