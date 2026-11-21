@@ -777,10 +777,17 @@ export function listAllAgentNames(): string[] {
 }
 
 export function listAgentNames(): string[] {
-  // Hide technical workers explicitly opted out via the sentinel file. Cheap
-  // fs stat -- one extra existsSync per agent dir per tick; the agent list is
-  // small (~6 today).
+  // Card 23a14ae1: a directory under agents/ with no agent definition is not an agent -- the
+  // 2026-11-06 "Logs" phantom was agents/logs, a plain dir a stray watchdog run had written
+  // watchdog.log/dashboard.log into, with no CLAUDE.md of its own. agentDirNames() stays
+  // permissive (any directory) because it also feeds lifecycle sweeps that must never miss a
+  // real agent; this is the display/migration choke point, so the definition check belongs here.
   return listAllAgentNames().filter((f) => {
+    try { return existsSync(join(AGENTS_BASE_DIR, f, 'CLAUDE.md')) } catch { return false }
+  }).filter((f) => {
+    // Hide technical workers explicitly opted out via the sentinel file. Cheap
+    // fs stat -- one extra existsSync per agent dir per tick; the agent list is
+    // small (~6 today).
     try { return !existsSync(join(AGENTS_BASE_DIR, f, HIDDEN_AGENT_SENTINEL)) } catch { return false }
   })
 }

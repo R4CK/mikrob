@@ -31,6 +31,7 @@ import {
 import { measuredModelLines, effortLine, modelSummary, modelStateLine, registerBuiltinCommands, type ModelSummaryInput } from '../web/builtin-commands.js'
 import { resolveCommand, clearCommandsForTest } from '../web/commands.js'
 import { logger } from '../logger.js'
+import { CLI_VERSION_OVERRIDE_ENV, resetClaudeCliVersionCache } from '../web/claude-cli-version.js'
 // Expected clock strings are built with the app's own formatter: CI runs in
 // UTC, a hard-coded "14:52" only held in Budapest time.
 import { formatDayClock } from '../web/system-status.js'
@@ -693,6 +694,54 @@ describe('a model the CLI refuses', () => {
   it('lastRejectionMessage reads a message wrapped across pane lines', () => {
     const pane = '  ⎿  API error: 400\n     {"type":"error","error":{"type":"invalid_request_error","message":"Claude\n     Code 2.1.110 does not support this model"}}'
     expect(lastRejectionMessage(pane)).toBe('Claude Code 2.1.110 does not support this model')
+  })
+})
+
+// Card af6466a5 (WhiteHat L2, 6b10a6b8): a syntactically valid choice from
+// store/model-choices.json can still be a model the INSTALLED CLI cannot
+// launch -- the same PICKERCLIKAPU923 gate POST/PUT /api/agents already
+// apply (cli-launch-gate.test.ts), now wired into the owner's own /model
+// switch too (main-model.ts setModel). Without it, the OWNER'S OWN session
+// could end up silently deaf on an unsupported model, not just a sub-agent's.
+describe('card af6466a5: /model refuses a choice the installed CLI cannot launch', () => {
+  function writeGatedChoice() {
+    writeFileSync(join(dir, 'model-choices.json'), JSON.stringify({
+      opus55: { id: 'claude-opus-5-5', purpose: 'heavy', default_hold_minutes: 120 },
+    }))
+  }
+
+  afterEach(() => {
+    delete process.env[CLI_VERSION_OVERRIDE_ENV]
+    resetClaudeCliVersionCache()
+  })
+
+  it('refuses the switch and sends nothing when the installed CLI is below the recorded minimum', async () => {
+    writeGatedChoice()
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.110'
+    const d = deps()
+    const r = await setModel(['opus55'], d)
+    expect(r.ok).toBe(false)
+    expect(r.text).toContain('2.1.280')
+    expect(r.text).toContain('claude-opus-5-5')
+    expect(d.sent).toEqual([])
+    expect(existsSync(d.holdFile)).toBe(false)
+  })
+
+  it('allows the switch once the installed CLI meets the recorded minimum', async () => {
+    writeGatedChoice()
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.280'
+    const d = deps()
+    const r = await setModel(['opus55'], d)
+    expect(r.ok).toBe(true)
+    expect(d.sent).toEqual(['/model claude-opus-5-5'])
+  })
+
+  it('never refuses a choice with no recorded CLI constraint (unmeasured CLI fails open too)', async () => {
+    writeChoices()
+    process.env[CLI_VERSION_OVERRIDE_ENV] = ''
+    const d = deps()
+    const r = await setModel(['opus'], d)
+    expect(r.ok).toBe(true)
   })
 })
 

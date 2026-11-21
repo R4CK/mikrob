@@ -30245,6 +30245,318 @@ here).
 **Ki döntött:** RedHat (comment 22517, mapped the NO-GO's findings to MikroB's gate checklist),
 MikroB (message 22518, made F-C/F-E/F-F/F-G blocking for this round), backend (this fix). Gate: QA
 + Cybersec + Cybered (delta re-gate, per MikroB's own closing line in 22518).
+## 2026-11-15 -- card 0c03aa06: checkpoint-coverage short-sha/origin + keep NO-GO + sweep bounds
+
+**Döntés:** gate-closure-check.py `_checkpoint_coverage` returns True|False|None (None = zero
+checkpoint rows for the card, distinct from a verified match); matches `head_sha` by prefix (M1,
+fixes a short Gate-SHA REVIEW reading as CHECKPOINT_FAIL) or via the existing `landed_verdict`
+machinery when the sha is already on origin (the "or origin" leg). `main()` checks every declared
+Gate-SHA, not just the first (fixes order-dependence), and only overwrites a result that already
+starts with AGREE, so a standing NO-GO/FAIL is never masked by CHECKPOINT_FAIL (M2).
+`agent-checkpoint.sh` gained a forgery-binding check (refuse before any write when the calling
+agent isn't the card's `kanban_cards.assignee`, fail-open only when the card/DB row is missing)
+and now writes the actual `card_checkpoints` row (previously fully inert -- no HTTP route, no
+write path). Gate-SHA: 5ef23f011.
+
+Delta round on CYBERED NO-GO 31713 (F1/F2/F3): `--older-than-days` above 36500 (100 years) is now
+rejected outright rather than trusted to stay negative under 64-bit arithmetic (the old 999999999
+pin never overflowed, so it was green on the unfixed base too); forced base-10 arithmetic so a
+leading-zero value doesn't hit bash octal parsing. Added a ref-still-resolves assertion after
+every `--dry-run` call (a mutant that also deletes under dry-run now goes red). CLI output for a
+zero-checkpoint-row card now appends an explicit `CHECKPOINT_NONE` token instead of a plain AGREE,
+since the card forbids wiring any `--card-id` caller until that distinction is explicit and no
+card has rows today. Gate-SHA: 483b88c27.
+
+Both rounds: `gate-closure-check.selftest.py` and `agent-checkpoint.sh --selftest` green, plus the
+`store-selftests-all-run.test.ts` TS wrapper (157/157). No HTTP endpoint was built for checkpoints
+-- the write happens directly via `sqlite3` from the agent's own shell, matching what the card
+asked for.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card 0c03aa06 (delta round 3): F1b -- sweep cap wrap-around
+
+**Döntés:** Cybered NO-GO 31725: the `--older-than-days` cap check ran `$((10#$older_days))`
+BEFORE comparing against 36500, and that arithmetic is 64-bit signed -- a digit string at or
+above 2^63 (9223372036854775808, 18446744073709551615) wraps to a small/negative number and
+sails under the cap, reproducing the exact failure the card exists for. Fixed by bounding the
+digit-STRING LENGTH before any arithmetic runs (`case "$older_days" in ??????*) die ... ;; esac`
+-- 36500 is 5 digits, so 6+ digits is already over cap, no wrap can hide behind a comparison
+that never executes). Pinned with both values, red on 5ef23f011 and 483b88c27.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card 0c03aa06 (delta round 3b): third pin value added
+
+**Döntés:** MikroB asked for the exact pin value 18446744073709551616 (2^64) alongside the
+9223372036854775808/18446744073709551615 pair already in place from the F1b fix above. Same
+digit-length rejection path (the fix bounds STRING LENGTH, not value), added for literal coverage
+of the named value. No behavioural change, test-only.
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-19 -- card 0c03aa06 (delta: merge-resolution fix never committed)
+
+**Döntés:** The 29bbe6b91 origin/develop merge resolution removed develop's two inline
+`_checkpoint_coverage` calls from `gate-closure-check.py`'s FABRICATED-detection block (so only
+the multi-sha overlay decides CHECKPOINT_FAIL) -- but that edit was made and selftest-verified in
+the worktree's uncommitted working tree, never `git add`+committed, so the pushed 29bbe6b91 still
+carried develop's original single-sha branches. CYBERED NO-GO 34202 / QA2 FAIL 34203 caught it
+(gate-closure-check.selftest.py 2/209 red at 29bbe6b91: F1 multi-sha-second-covers, F3
+CHECKPOINT_NONE). Root-caused via `git status`/`git diff HEAD` showing the file as
+uncommitted-modified; fixed by committing exactly that already-reviewed diff (132709e59, 1 file,
+-6/+2 lines) and verifying `git diff --stat HEAD` is empty post-commit before re-running the
+selftest (209/209 PASS on the committed state, not the working tree).
+
+Gate: QA + Cybersec + Cybered (Cybered's NO-GO/re-gate call). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-20 -- marveen-land.sh: npm-ci advisory no longer fires on a version-only bump (kártya 426adb21)
+
+**Measured:** `sync_live_install`'s "run npm ci by hand" advisory fired on `git diff --quiet
+"$before" HEAD -- package.json package-lock.json`, which is true on EVERY fork-own landing
+because `bump_fork_version` touches package.json's `version` field every time. Four landings in
+one day (e5c13c0e, 11c6cab4, ebe20efe, 1c8f6d25) advised npm ci with package-lock.json
+byte-identical and package.json differing only in `version`; one agent ran it on the live
+install because of it (11c6cab4), risky against a concurrent fleet-test.sh reading the same
+node_modules. Reproduced again on c4590365 (merge 1f2744597, base d5374f947): zero diff on both
+files for the merge itself, advisory still fired off the separate version-bump commit.
+
+**Döntés:** új `store/npm-ci-advisory-check.sh`, `npm_ci_advisory_needed <repo> <before> <after>`.
+Advise when package-lock.json changed at all, or when package.json changed in any field other
+than the top-level `version` string (parses both blobs as JSON, not a diff-text pattern match;
+fails closed -- advises -- on anything unparsable). `sync_live_install` now calls this instead of
+the blind two-file `diff --quiet`.
+
+**Ki döntött:** MikroB (kártyanyitás a mérésre), DevO (fullstack, mérés + javítás).
+**Hivatkozás:** kártya `426adb21`; `store/npm-ci-advisory-check.sh`, `store/marveen-land.sh`
+(`sync_live_install`).
+
+## 2026-11-16 -- af6466a5 (WhiteHat L1+L2, 6b10a6b8 PICKERCLIKAPU923): CLI-launch gate -- behavioral POST test + wired into /model
+
+**Problem:** L1 -- POST /api/agents (agent-create) was gated against the installed CLI's measured
+capability (card 6b10a6b8), but the only test exercising that call site was a source-grep "wiring
+contract" count of `refuseIfCliCannotLaunch(` occurrences in agents.ts. Deleting the real POST call
+site while leaving a reference to the function's name elsewhere in the file would not drop that
+count below its threshold -- a false green, measured directly in this session (removed the POST
+call site: the new behavioral test went red, the old source-grep test stayed green). L2 -- the same
+gate was never wired into main-model.ts's `setModel` (the owner's own `/model` command): a
+syntactically valid choice from store/model-choices.json could still be a model the installed CLI
+cannot launch, silencing the OWNER'S OWN session, not just a sub-agent's.
+
+**Fix:** added a real behavioral POST test (src/__tests__/cli-launch-gate.test.ts, mirroring the
+existing PUT behavioral tests) that drives tryHandleAgents end to end and asserts the 400/no-create
+and 200/model-persisted outcomes. Wired `refuseIfCliCannotLaunch` into `setModel` (src/web/main-model.ts),
+right where the choice is resolved, before the quiet-check/send -- same function POST/PUT already
+use, no second implementation. `model-fallback-runner.ts` was deliberately NOT touched: it only ever
+writes models from the fleet's own fixed tier ladder (model-catalog.ts), not an owner-chosen id, so
+the same CLI-version gate has no realistic refusal case there and adding it would mean a second,
+unreviewed risk surface on the unattended quota-downgrade path for no real protection.
+
+**Teszt:** `npx vitest run src/__tests__/cli-launch-gate.test.ts src/__tests__/main-model.test.ts` ->
+2 files, 83/83 PASS. Mutation-proof (both directions, this session): removing the new POST call
+site in agents.ts turned the new POST behavioral test red while the old wiring-contract test stayed
+green (the exact gap this card reports); removing the new `setModel` gate in main-model.ts turned
+the new af6466a5 describe block's refusal test red, the rest of the file (81 pre-existing tests)
+stayed green. Fix restored after each probe, both files re-verified green.
+
+INFO item (localized, non-i18n error message) was already closed by a prior change --
+`cliLaunchRefusalText` in agents.ts already carries full Hungarian accents and switches to English
+via DASHBOARD_LANG, matching the existing passing test in cli-launch-gate.test.ts. Not touched here.
+
+**Ki döntött:** backend (self-advance, oldest dispatchable planned leaf per rule 6b, created
+2026-08-xx / card af6466a5, WhiteHat 6b10a6b8 GO @ c5ecc99e). Gate: QA + Cybersec (WhiteHat).
+
+## 2026-11-20 -- b34f791c: commit the MARVEEN-FEDERATION block so a dashboard boot stops dirtying the tracked root CLAUDE.md
+
+**Context:** measured 2026-11-20 19:45 (DevO msg 22485): `update.sh` refused (exit 3, dirty tree)
+because the live `CLAUDE.md` carried an uncommitted `MARVEEN-FEDERATION` managed block.
+`ensureFederationClaudeMdSection` (src/web/federation/onboarding.ts) writes this block into the
+git-tracked root `CLAUDE.md` on every boot when federation is enabled; the write is already
+idempotent for UNCHANGED config (`applyFederationBlock` returns null when the rendered result
+equals the existing content), but develop's own committed `CLAUDE.md` never carried the block --
+so every boot after every `update.sh`/pull re-inserted it, dirtying the tree again before the
+NEXT `update.sh` could run. Self-perpetuating: pull (clean) -> boot (dirty) -> update.sh refuses
+-> [manual stash] -> pull (clean) -> boot (dirty) -> ...
+`claude-md-main-section-writers.test.ts`'s own scope note (card 7e202dbf/f22ef741) had already
+flagged this exact class as real but out of that card's scope, deferred to a follow-up -- this is
+that follow-up.
+
+**Decision (of the two options the card offered):** commit the block this live install's config
+currently renders (enabled, no peers, `catalog-first` routing), rather than moving the dynamic
+part to a gitignored include file. The committed-content approach is the simpler of the two
+(karpathy "simplicity first") and fully satisfies the card's Kész-ha: as long as the federation
+config (enabled-state, peer list, routing mode, `WEB_PORT`) does not change between boots -- true
+in normal operation, a config CHANGE is a rare, deliberate admin action, not boot-time churn --
+the write stays a true no-op forever. A future deliberate config change dirtying the tree once,
+the same way editing any other tracked file does, is accepted as correct behaviour, not a defect
+this round needs to prevent. The gitignored-indirection design (a static `@file`-reference block
+in `CLAUDE.md` pointing at a dynamic, gitignored file) would be immune to config-change re-dirty
+too, but is materially more code and more test surface for a problem this round's own
+acceptance criteria do not ask to solve; left as a documented alternative if a future config
+change makes committed-content re-dirty frequent enough to matter.
+
+**Fix:** `CLAUDE.md` -- appended the exact block the live install currently renders (byte-identical
+to the live, previously-uncommitted diff). The pre-existing, separately-seeded owner policy
+section (`FEDERATION_POLICY_ANCHOR`, committed earlier, mid-file) is untouched.
+
+**Test:** new `src/__tests__/claude-md-federation-block-committed-idempotent.test.ts`, 4 cases:
+(1) re-rendering the SAME config the committed block itself describes is a no-op
+(`applyFederationBlock` returns null); (2) round-trip (remove then re-insert) reproduces the
+original file exactly, byte for byte -- no blank-line leak on the disable/enable cycle; (3) the
+owner policy anchor appears exactly once and sits before the managed block, untouched by a
+no-op re-render; (4) `BEGIN`/`END` each appear exactly once (no duplicate/corrupted block).
+Identity values (`mainAgentId`, `webPort`) are extracted FROM the committed block's own text,
+not imported from env-dependent constants (`MAIN_AGENT_ID` defaults to `marveen` in a disposable
+fleet-test.sh worktree with no `.env`, vs this deployment's real `mikrob`) -- the same caution
+the pre-existing agent-id-header pin test already takes, so this test holds in any worktree, not
+only the real deployment.
+
+Mutation-verified (restored byte-identical via diff): removing `applyFederationBlock`'s
+`result === content ? null : result` short-circuit (always returning the rendered result) turned
+exactly 2 of the 4 assertions red (the no-op and the policy-preserved-by-no-op cases); the other
+2 (round-trip, BEGIN/END count) stayed green, as expected (they do not depend on the short-circuit).
+
+Measured: `src/__tests__/claude-md-federation-block-committed-idempotent.test.ts`: 1 Test File
+passed (1), 4 Tests passed (4). Alongside the three existing CLAUDE.md/federation-writer suites
+(`claude-md-main-section-writers`, `agent-scaffold-main-claude-md-zero-diff`,
+`federation-lifecycle`): 4 Test Files passed (4), 55 Tests passed (55), no regression.
+`npx tsc --noEmit`: clean. `npx eslint` on the new test file: clean.
+
+**Nincs benne:** the gitignored-indirection redesign (documented above as the rejected
+alternative); re-committing on every future federation config change (expected, one-time, not
+automated); sub-agent `agents/*/CLAUDE.md` files (confirmed not git-tracked, `git ls-files` --
+cannot block `update.sh` regardless).
+
+**Ki döntött:** backend, self-advance pickup (MikroB-project dispatch priority, fleet-nudger msg
+22491/22504). Gate: QA + Cybersec per the card's own `Gate:` line.
+
+## 2026-11-16 -- e892e00c (WhiteHat F1-F3, 7b0b822f): GET /api/kanban/stuck idle-definíció egyeztetés + limit/gzip
+
+**Probléma:** F1 (MEDIUM) -- a végpont "idle" definíciója (last-status-event VAGY nem-automatizált
+komment) nem azonos a 3. szabály/heartbeat-consolidated D szekciójának `updated_at`/[NN%]-alapú
+"beragadt" definíciójával. Élő mérés (card leírása): 10 kártyából 2-nél eltér (3f1bb23d: updated_at
+szerint 212 s, a végpont szerint 14,8 nap). F2 (LOW) -- nincs limit/gzip (a heartbeat-summary és a
+GET /api/kanban mintájához képest). F3 (LOW) -- a küszöb-konstans és a metódus-szűrő nincs tesztben
+rögzítve.
+
+**Döntés (F1):** NEM a definíciót igazítottuk a heartbeathez (az eseményalapú definíció
+szándékos -- lásd getStuckKanbanCards saját fejkommentje db.ts-ben, "az automated flag ugyanazon
+oka miatt"), és NEM is neveztük át a végpontot (a `/api/kanban/stuck` elnevezés és a kliens-oldali
+hívók stabilak maradnak). Helyette a route-handlerben explicit figyelmeztető komment rögzíti a
+divergenciát, és egy teszt PINNEL egy konkrét esetet (`stays idle even after a bare updated_at
+bump...`): egy kártya, amin csak az `updated_at` mozdul (szimulálva egy [NN%] cím-PUT-ot, sem
+kanban_card_events, sem komment nem történik), a végpont TOVÁBBRA IS idle-nek látja -- ez pontosan
+az a divergencia, amit a lelet mér. Ha valaki a jövőben a számítást updated_at-re írná át, ez a
+teszt PIROSRA vált.
+
+**Fix (F2):** a GET /api/kanban/stuck most `jsonMaybeGzip`-et használ (ugyanaz a helper, amit a GET
+/api/kanban és a relations/files végpontok már használnak ebben a fájlban -- nem új mechanizmus),
+és ugyanazt a `limit=` konvenciót követi, mint a GET /api/kanban (kártya 514a9fb3 M1): nem-szám ->
+400, különben `.slice(0, limit)`.
+
+**Fix (F3):** új tesztek: a `STUCK_KANBAN_IDLE_THRESHOLD_SEC` exportált konstansra épülő
+küszöb-pin (pontosan a küszöbnél még nem idle), és a POST metódus válasza (a route NEM a saját
+idle-listáját adja vissza -- a single-card-path 405 catch-all kapja el, nem a 404/ambiguity).
+
+**Teszt:** `npx vitest run src/__tests__/kanban-stuck-route.test.ts src/__tests__/stuck-kanban-cards.test.ts
+src/__tests__/kanban-upstream-items-5aaf7209.test.ts` -> 3 fájl, 48/48 PASS. Mutation-proof: a
+kanban.ts route-változás visszaállítva (git stash) -- a két ÚJ F2-teszt (limit, gzip) pirosra vált
+("expected 3 to be 2", "expected undefined to be 'gzip'"), a többi zöld marad; visszaállítva, újra
+48/48 zöld. typecheck (`npx tsc --noEmit -p .`) tiszta.
+
+**Ki döntött:** backend (self-advance, rule 6b legrégebbi dispatchelhető planned levél; kártya
+e892e00c, forrás: 7b0b822f CYBERSEC GO nem-blokkoló leletei, msg 10266). Gate: QA + Cybersec.
+
+## 2026-11-21 -- Kártya 035d02fc: WSL-watchdog utómunka -- OK-illesztés fail-open, N2 pin, hermetikus selftest
+
+**Mért probléma (4 nyitott pont a 58badae1-ről, komment 17862/17823):**
+1. A generált PS1-ben `$out -match "OK"` kis- és nagybetűtől független és nem horgonyzott --
+   az UNHEALTHY sor saját `channel_ok=0/1` szövege tartalmazza az "ok" alsztringet, tehát
+   `$probeExit`-től függetlenül is teljesíthette a feltételt.
+2. N2 (komment 17822): a meglévő selftest csak azt pinnelte, hogy a grace-túllépés ág után
+   VALAMILYEN záró kapcsos zárójel következik, nem azt, hogy a skip-számláló tényleg
+   TELÍTŐDIK `$MaxFreshSkips`-nél, nem pedig nullázódik (pont az a hiba, amit N2 javított).
+3. A selftest `run_isolated()`-je minden hívási pontra (a B2-eseteket kivéve) rábízta magát,
+   hogy `INSTALL_WSL_WATCHDOG_DISABLE_FLAG` nincs beállítva -- enélkül az installer SAJÁT
+   alapértelmezése (a valódi, gitignored host-állapot jelzőfájl) élesben olvasódott be, és ha
+   az létezett, csendben "disabled"-re kényszerítette a TASK_STATE-et független tesztesetekben.
+4. `install-wsl-watchdog.selftest.sh` a `scripts/` alatt él, nem a `store/` alatt, tehát a
+   `store-selftests-all-run.test.ts` glob-ja SOHA nem fedezte fel -- 70+ helyes, zöld eset
+   sosem futott le semmilyen CI-ban.
+
+**Döntés:** (1) `$out -cmatch '^OK'`-ra váltás. (2) a selftestbe egy hatókörbe szűkített pin
+(`BOOTLOOP_BRANCH`), ami a helyes telítődés-sort VÁRJA és a régi nullázó sor HIÁNYÁT pinneli.
+(3) `run_isolated()` mostantól alapértelmezetten egy scratch útvonalra állítja a
+`DISABLE_FLAG`-et, hacsak a hívó explicit nem adott meg mást; regressziós eset bizonyítja, hogy
+egy valódi élő jelzőfájl a script saját alapértelmezett útvonalán nem olvasódik be.
+(4) `install-wsl-watchdog.selftest.sh` bekötve egy új vitest fájlba
+(`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`), ami egyúttal pinneli
+`startup.sh` jelző-korai-kilépését is (sorrend, else-ág, külön log-sor) -- ez 58badae1-nél
+leszállt, de sosem volt pinnelve.
+
+**Nincs benne (szándékosan):** Q1 (`classify_task_state` `rc!=0` + üres kimenet ->
+"not-found", jelző nélkül fail-open) -- ezt MikroB már korábban MEDIUM, jelzővel enyhített,
+elfogadott maradék kockázatként rögzítette (17803/17823). Az egyetlen javítás, amit biztonsággal
+megkonstruálhatnék, a schtasks stderr-szövegét illesztené, ami pont azt a nyelvfüggő
+szöveg-illesztési problémát hozná vissza, amit ez a kártyalánc (H1', komment 17781) kifejezetten
+elkerült az `<Enabled>` XML-tag felé fordulva. MikroB/QA döntésére hagyva.
+
+**Ki döntött:** MikroB (kártyanyitás). DevO (fullstack) mérte és javította.
+**Hivatkozás:** kártya `035d02fc`; `scripts/install-wsl-watchdog.sh`,
+`scripts/install-wsl-watchdog.selftest.sh`, `scripts/startup.sh`,
+`src/__tests__/wsl-watchdog-disable-flag-early-exit.test.ts`.
+
+## 2026-11-21 -- card 23a14ae1: agent listing requires a real definition; watchdog INSTALL_DIR anchored, not $0-derived
+
+**Kontextus:** 2026-11-20, Peti Telegram 14380 -- a dashboard team-oldala egy fantom "Logs" ügynököt mutatott. A folder agents/logs egy, 2026-11-06 21:33-kor futott watchdog-run melléktermeke volt (watchdog.log/dashboard.log odaírva), majd a settings-migrálás .claude/settings.json + agent-config.json-t is tett bele. Peti jóváhagyására (14383) törölve, archívum: store/archive-agents-logs-20261120.tgz.
+
+**Döntés:**
+
+- `listAgentNames()` (src/web/agent-config.ts, a dashboard/team-oldal és a settings-migrálási sweep egyetlen valódi csomópontja) mostantól csak olyan agents/ alkönyvtárat sorol fel, amelyben van CLAUDE.md. Az `agentDirNames()` és `listAllAgentNames()` SZÁNDÉKOSAN megengedő maradt -- a fájl saját dokumentációja szerint ezeket a lifecycle-sweepek (context-guard) is használják, amelyeknek egy még-félig-scaffoldolt ügynököt (nincs még CLAUDE.md) sem szabad kihagyniuk (2026-08-04-es csendes-heartbeat incidens, amit a HIDDEN_AGENT_SENTINEL kettéválasztás már megold).
+- `scripts/watchdog.sh` INSTALL_DIR-je korábban `$(dirname "$0")/..`-ból jött -- törékeny, mert ez a script (más watchdog-testvéreivel ellentétben) nincs semmilyen repó-beli telepítési lépéssel regisztrálva (lásd scripts/main-inbox-observer.sh fejléce), tehát semmi nem rögzíti, honnan hívják valójában. Mostantól fix alapértelmezett, `WATCHDOG_INSTALL_DIR`-rel felülírható (teszteknek), függetlenül `$0`-tól. A 2026-11-06-i pontos hívási útvonalat nem sikerült rekonstruálni (a mai crontab nem tartalmaz watchdog.sh-bejegyzést, az archívum nem tartalmaz scripts/ másolatot) -- nyitott kérdésként jelentve, nem kitalálva.
+
+**Teszt:** új src/__tests__/agent-dir-needs-definition.test.ts (csupasz, csak *.log fájlokat tartalmazó agents/logs NEM listázott; listAllAgentNames() megengedő marad) -- a javítás előtti kódon PIROS, utána ZÖLD. Két watchdog-fixture teszt (watchdog-config-isolation, watchdog-main-loop-refuse-alert) frissítve `WATCHDOG_INSTALL_DIR` export-tal, mert a régi $0-követő viselkedésre épültek az izolációjukban. Teljes watchdog shell-teszt suite zöld. ~65 listAgentNames()-re hivatkozó vitest fájl egyenként ellenőrizve zöld (egy fixture, context-guard-hidden-worker.test.ts, javítva: a saját agent() helperje nem adott CLAUDE.md-t a fixture-öknek). `tsc --noEmit` tiszta.
+
+Gate: QA. **Ki döntött:** DevO (fullstack).
+**Hivatkozás:** kártya `23a14ae1`; `src/web/agent-config.ts`, `scripts/watchdog.sh`, `src/__tests__/agent-dir-needs-definition.test.ts`.
+
+## 2026-11-20 -- 7c72640e: live-agents argv-guard false-reds every land while a gate worktree sits under agents/*/.worktrees
+
+**Kontextus:** 2026-11-20 09:20 (backend2, msg 21979): a577d0a4 land REFUSED by 37 token-in-argv-guard.test.ts failures, all under agents/qa2/.worktrees/gate-30aa8b29/src/__tests__/*.test.ts -- the guard walks the live `agents/` tree by design (card b8859278) and re-scanned a sibling gate worktree's copy of its OWN fixture strings (deliberately-bad curl examples the tests exist to exercise). Same class as a prior finding (card 2ec21127).
+
+**Döntés:** `scanTree()` (the walker behind `INSTALLED_AGENT_DOCS`) now skips any directory named `.worktrees`, and any directory that is itself the root of a nested git worktree (a `.git` FILE, not a directory -- the structural marker `git worktree add` always writes), while keeping the real-agent CLAUDE.md/HANDOFF/skill content it was built to scan. Process half: the `gate-worktree-pattern` skill now names an explicit path OUTSIDE `agents/` for marveen gates (no marveen-specific wrapper script exists yet, unlike `cc-gate-worktree.sh` for CleanCore/mopsion), so the next gate does not recreate the same shape.
+
+**Teszt:** `fleet-test.sh --ref 8de70d1b4346b2bc6bfe5cb6271d3c83753e9035 src/__tests__/token-in-argv-guard.test.ts`: Test Files 1 passed (1), Tests 20304 passed (20304), 3.40s. New fixtures added: a nested-worktree copy of this guard's own test file (by name AND by the structural `.git`-file check alone) is excluded from the walk; an ordinary file directly in an agent's own tree, outside any worktree, is still walked (negative control) and the underlying leak-detection logic still flags it; a directory literally named `.git` that is a DIRECTORY (an ordinary repo root, not a worktree) is NOT excluded.
+
+**Nincs benne:** no marveen-specific gate-worktree creation WRAPPER script was written (unlike cc-gate-worktree.sh) -- the skill now documents the correct path by hand; building an equivalent script is a separate, not-yet-raised card.
+
+**Ki döntött:** a kártya saját elfogadási kritériuma (MikroB). backend végezte. Gate: QA + Cybersec.
+## 2026-11-19 -- card 0ae1166e round 2 (F8: node_modules/dist allowlist by TYPE, not NAME)
+
+**Kontextus:** CYBERED GO 34321 (delta, round 2) a store/marveen-card-worktree-cleanup.sh F1-F4
+javítására, de egy ÚJ MEDIUM-LOW leletet is hozott (F8): a CLEAN ellenőrzés node_modules/dist
+allowlistje a NÉV alapján engedett át egy ignorált bejegyzést, a TÍPUSÁT (symlink vs valódi
+könyvtár) nem nézte. Mért bizonyíték a valós worktree-gyökéren (olvasás, semmi nem törölve): 103
+kártya-worktree-ből node_modules symlink 101-ben, valódi könyvtár 0-ban; dist valódi könyvtár
+3-ban (5dd0842a, 51c68eeb, 57044a66), symlink 0-ban -- tehát egy valódi dist/ ritka, de létező,
+és egy jövőbeli valódi node_modules (vagy bármi, amit valaki helyben, nem symlinkelve hagy ott)
+csendben elveszett volna egy --apply futásnál.
+
+**Döntés (MikroB, CYBERED GO 34321 + QA2 PASS 34317 után):** F8 a landolás ELŐTT javítandó, nem
+elfogadott follow-up (a rule 22 köre: sosem törölj commitolatlan/pótolhatatlan munkát). Javítás:
+az allowlist node_modules/dist-et KIZÁRÓLAG symlinkként mentesíti; egy valódi (nem-symlink)
+ignorált könyvtár bármilyen tartalommal blokkolja a sweep-et, névtől függetlenül (MikroB
+egyszerűsített iránya a két felkínált opció közül).
+
+**Mérés:** 2 új selftest eset (valódi node_modules és valódi dist egyedi fájllal -> SKIP, nem
+törölve), a régi G2 kontroll symlinkre átírva (a fleet valós mintája: node_modules symlink a
+megosztott store-ba, a cél a törlés után is megmarad) -- ez NEM gyengíti a kontrollt, ugyanazt
+állítja mint korábban (symlinkelt node_modules REMOVABLE), csak valósághű fixture-rel. 41/41
+PASS. Mutáció: a TÍPUS-ellenőrzés visszaállítása a régi NÉV-csak formára pontosan a 2 új F8
+esetet (6 assertion) bukatja pirosra, mást nem.
+
+Gate: QA2 + Cybersec + Cybered (delta, round 2). **Ki döntött:** MikroB (CYBERED GO 34321 utáni
+döntés), a javítást DevO (fullstack) végezte.
 2026-11-15, kártya f3343af0 (QA FAIL a koraibbi fixen): a relogin pending-markert elobb csak egy
 friss epoch jelezte, env-fellulirhato uton -- bármely, store/-ba iro folyamat elplanthatta es a
 timestampet újraírva vegtelenul elfojthatta volna a weekly-usage olvasast. Javitas: a marker utja
