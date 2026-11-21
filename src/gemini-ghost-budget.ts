@@ -44,6 +44,7 @@
 // the network call -- so the spent slot is recorded per actual call attempt, not at the end of a
 // tick (the other half of H1: "a felhasznalt keret hivasonkent irodjon, ne a tick vegen").
 import { spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -89,8 +90,14 @@ export function resolveDailyGhostLimit(raw: string | undefined): number {
 const DAILY_GHOST_LIMIT = resolveDailyGhostLimit(process.env.GEMINI_AGY_GHOST_DAILY_LIMIT)
 
 // Runs under `flock -x -w <N> <lock> python3 -I - <seged_hivo_path> <hourly_limit> <card_id>
-// <status> <daily_ghost_limit>`: the lock is held for exactly this count-then-append critical
-// section, mirroring gemini-agy-call.sh's own flock (store/gemini-agy-call.sh HOURLY_LOCK).
+// <status> <daily_ghost_limit> <hivas_id>`: the lock is held for exactly this count-then-append
+// critical section, mirroring gemini-agy-call.sh's own flock (store/gemini-agy-call.sh HOURLY_LOCK).
+//
+// hivas_id (card 9963bf35 follow-up to cbeeba61): the caller may pass its OWN pre-generated
+// hivas_id (empty string = generate one here, byte-identical to before this card) so it can later
+// correlate recordGhostCallDetail()'s enrichment row to THIS exact reservation row (same hivas_id
+// = "last row wins" per scripts/seged-hivo.py's calls_of()/the gemini-calls.ts route's dedupeCalls)
+// instead of appearing as a second, separately-counted call.
 const RESERVE_SCRIPT = `
 import datetime, importlib.util, os, sys, time
 spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
@@ -100,6 +107,7 @@ limit = int(sys.argv[2])
 card_id = sys.argv[3]
 status = sys.argv[4]
 daily_ghost_limit = int(sys.argv[5])
+caller_hivas_id = sys.argv[6] if len(sys.argv) > 6 else ''
 window_start = time.time() - 3600
 today = datetime.datetime.now().astimezone().date().isoformat()
 used = 0
@@ -140,7 +148,7 @@ if used >= limit:
     sys.exit(2)
 sh.append_log({
     'ido': datetime.datetime.now().isoformat(),
-    'hivas_id': os.urandom(8).hex(),
+    'hivas_id': caller_hivas_id or os.urandom(8).hex(),
     'seged': 'agy-ghost',
     'hivo': 'quota-bridge-ghost',
     'kartya': card_id,
@@ -162,13 +170,14 @@ export function reserveGhostCallSlot(
   cardId: string,
   status: 'ok' | 'error' = 'ok',
   segedHivoPath: string = SEGED_HIVO,
+  hivasId: string = '',
 ): boolean {
   let result: ReturnType<typeof spawnSync>
   try {
     result = spawnSync(
       'flock',
       ['-x', '-w', String(LOCK_WAIT_S), HOURLY_LOCK, 'python3', '-I', '-', segedHivoPath,
-       String(HOURLY_LIMIT), cardId, status, String(DAILY_GHOST_LIMIT)],
+       String(HOURLY_LIMIT), cardId, status, String(DAILY_GHOST_LIMIT), hivasId],
       { input: RESERVE_SCRIPT, encoding: 'utf-8', timeout: (LOCK_WAIT_S + 10) * 1000 },
     )
   } catch {
@@ -249,4 +258,108 @@ export function releaseGhostCallSlot(
   }
   if (result.error) return false
   return result.status === 0
+}
+
+// Card cbeeba61 (Peti Telegram 14348): the Ghost calls page (src/web/routes/gemini-calls.ts)
+// reads store/seged-hivo-naplo.jsonl directly, keyed by hivas_id (dedupeCalls: last row with a
+// given hivas_id wins, same rule scripts/seged-hivo.py's own calls_of() uses). Before this card,
+// reserveGhostCallSlot's own reservation row was the ONLY row most Ghost calls ever got -- no
+// model, duration or token count, and feladattipus hardcoded 'kod' -- so the page showed
+// model='ismeretlen' for essentially every Ghost-sourced row (154 of them, measured). This
+// records a SECOND row with the SAME hivas_id right after the real network call completes,
+// carrying the fields the page already knows how to read (modell/duracio_s/tokens_total/status/
+// feladattipus) -- it REPLACES what dedupeCalls shows for that call, it does not add a second
+// one. NEVER logs prompt or response text, only metadata (card's own explicit requirement).
+
+/** Generates a hivas_id in the SAME 16-hex-char shape RESERVE_SCRIPT's own `os.urandom(8).hex()`
+ *  produces, so a caller can generate one up front, pass it into reserveGhostCallSlot's hivasId
+ *  param, and reuse the identical value here to correlate the two rows. */
+export function randomHivasId(): string {
+  return randomBytes(8).toString('hex')
+}
+
+export interface GhostCallDetail {
+  /** The real model id requested (e.g. gemini-flash-latest), never a guess. */
+  model: string
+  durationMs: number
+  outcome: 'ok' | 'error' | 'blocked'
+  /** Only when the API reported it (metering only, never prompt/response content). */
+  totalTokens?: number
+  /** Truthful task type -- 'ghost-rank' (decideGeminiOrder) or 'ghost-review' (reviewOneCard),
+   *  never the old hardcoded 'kod'. */
+  taskType: string
+}
+
+const RECORD_DETAIL_SCRIPT = `
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
+sh = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sh)
+hivas_id = sys.argv[2]
+card_id = sys.argv[3]
+task_type = sys.argv[4]
+status = sys.argv[5]
+model = sys.argv[6]
+duracio_s = float(sys.argv[7])
+tokens_raw = sys.argv[8]
+row = {
+    'ido': datetime.datetime.now().isoformat(),
+    'hivas_id': hivas_id,
+    'seged': 'agy-ghost',
+    'hivo': 'quota-bridge-ghost',
+    'kartya': card_id,
+    'feladattipus': task_type,
+    'status': status,
+    'modell': model,
+    'duracio_s': duracio_s,
+}
+if tokens_raw:
+    row['tokens_total'] = int(tokens_raw)
+sh.append_log(row)
+print('OK')
+sys.exit(0)
+`
+
+/**
+ * Best-effort, fire-and-forget (card cbeeba61): this is diagnostic detail for an already-decided
+ * call outcome, not budget enforcement -- unlike reserveGhostCallSlot/releaseGhostCallSlot, a
+ * failure here must never change whether the caller's own result is treated as success or
+ * failure. Takes the SAME flock as the other two (the read-then-append inside RECORD_DETAIL_SCRIPT
+ * is a plain append, but sharing the lock keeps every seged-hivo-naplo.jsonl writer serialized).
+ * Also appends an llm_ledger row (provider=gemini) so the same call shows up in any llm_ledger-
+ * based reporting, same shape freellm-call.sh/gemini-offload-call.sh already write for their own
+ * providers.
+ */
+export function recordGhostCallDetail(
+  hivasId: string,
+  cardId: string,
+  detail: GhostCallDetail,
+  segedHivoPath: string = SEGED_HIVO,
+): boolean {
+  let ok = false
+  try {
+    const result = spawnSync(
+      'flock',
+      ['-x', '-w', String(LOCK_WAIT_S), HOURLY_LOCK, 'python3', '-I', '-', segedHivoPath,
+       hivasId, cardId, detail.taskType, detail.outcome, detail.model,
+       String(detail.durationMs / 1000), detail.totalTokens !== undefined ? String(detail.totalTokens) : ''],
+      { input: RECORD_DETAIL_SCRIPT, encoding: 'utf-8', timeout: (LOCK_WAIT_S + 10) * 1000 },
+    )
+    ok = !result.error && result.status === 0
+  } catch {
+    ok = false
+  }
+  try {
+    const okFlag = detail.outcome === 'ok' ? ['--ok'] : ['--fail', '--fail-reason', detail.outcome]
+    spawnSync(
+      'python3',
+      [join(STORE, 'llm-ledger-append.py'), '--agent', 'quota-bridge-ghost', '--task-type', detail.taskType,
+       '--provider', 'gemini', '--model', detail.model, ...okFlag,
+       '--latency-ms', String(Math.round(detail.durationMs)), '--card', cardId],
+      { timeout: 10_000 },
+    )
+  } catch {
+    // best-effort, same fire-and-forget convention as every other llm_ledger writer
+  }
+  return ok
 }

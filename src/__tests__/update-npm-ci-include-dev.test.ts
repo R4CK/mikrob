@@ -43,7 +43,12 @@ describe('update path survives NODE_ENV=production (AUTOUPDNODEENV905)', () => {
     expect(spawnCall).toContain('env: buildUpdateScriptEnv(')
     const helperIdx = route.indexOf('function buildUpdateScriptEnv(')
     expect(helperIdx).toBeGreaterThan(-1)
-    const helperBody = route.slice(helperIdx, helperIdx + 300)
+    // Anchor to the helper's own `return env` rather than a fixed char count (card 651ee11f,
+    // CYBERSEC NO-GO F1+F2 fix round): a fixed window breaks the moment unrelated, legitimate
+    // lines (new allowlist entries, their explanatory comments) grow the body before this line.
+    const returnIdx = route.indexOf('return env', helperIdx)
+    expect(returnIdx).toBeGreaterThan(-1)
+    const helperBody = route.slice(helperIdx, returnIdx + 'return env'.length)
     expect(helperBody).toContain('delete env.NODE_ENV')
   })
 })

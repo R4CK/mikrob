@@ -69,6 +69,22 @@ const HUNGARIAN_LATIN_EXTRA = new Set([
   'Á', 'É', 'Í', 'Ó', 'Ö', 'Ő', 'Ú', 'Ü', 'Ű',
 ])
 
+// Cybered NO-GO FINDING 1 (card 30aa8b29, Gate-SHA 9ca093266): a bidi-override spelling --
+// U+202E (RLO) followed by "borkim" (the name reversed) -- answered POST/PUT 200 and was stored
+// as-is. lettersAndDigitsOnly() strips format characters (\p{Cf}, which includes every bidi
+// control) BEFORE the comparison, so the filtered text is "borkim", which is not "mikrob"
+// literally or de-accented -- no rule ever sees that a bidi-aware renderer displays it reversed,
+// i.e. as "mikrob". A bidi control has no legitimate reason to appear in an agent/assignee name
+// at all, so this fails closed on PRESENCE rather than trying to simulate bidi rendering: any of
+// the explicit/implicit bidi format characters (Arabic Letter Mark, LRM/RLM, the 5 embedding/
+// override/isolate controls, the 4 isolate controls) makes the value forbidden outright.
+const BIDI_CONTROL_RE = /[؜‎‏‪-‮⁦-⁩]/
+
+/** True when `value` contains any bidi control character -- see the comment above. */
+export function hasBidiControl(value: string): boolean {
+  return BIDI_CONTROL_RE.test(value)
+}
+
 /**
  * Card 80ab5067 delta (QA FAIL 28436, then fleet-test regression on commands-read.test.ts): true
  * when, after NFKC + letters/digits-only filtering, `value` still carries a character outside
@@ -125,11 +141,14 @@ export function deaccentedIdentityForMatch(value: string): string {
  * at all (fail-closed, card 80ab5067 delta: no confusables table to keep extending, see
  * {@link hasNonAsciiIdentityResidue}), or a Hungarian-diacritic substitution into the literal
  * name once de-accented (card 80ab5067 round 5, QA FAIL 28510, see
- * {@link deaccentedIdentityForMatch}). A non-string value is never forbidden here -- see
- * isInvalidAssigneeShape for that check.
+ * {@link deaccentedIdentityForMatch}), or any bidi control character at all (card 30aa8b29,
+ * CYBERED FINDING 1, see {@link hasBidiControl}) -- a bidi-overridden spelling that strips to a
+ * reversed-but-otherwise-clean string would otherwise slip every other check. A non-string value
+ * is never forbidden here -- see isInvalidAssigneeShape for that check.
  */
 export function isForbiddenAssignee(value: unknown): boolean {
   if (typeof value !== 'string') return false
+  if (hasBidiControl(value)) return true
   if (hasNonAsciiIdentityResidue(value)) return true
   if (normalizeIdentityForMatch(value) === FORBIDDEN_ASSIGNEE) return true
   return deaccentedIdentityForMatch(value) === FORBIDDEN_ASSIGNEE

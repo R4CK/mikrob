@@ -353,10 +353,55 @@ check "wake-fails: attempted" "WOKE-ATTEMPT" "$(cat "$WAKE_CALLS")"
 check "wake-fails: report persisted to pending file" "QUOTA:" "$(cat "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" 2>/dev/null)"
 
 # --- 11. Diffed-but-not-actionable run: changes stdout report but does NOT wake ----------------------
+# Uses a benign ADMIT-text change (reason string differs, verdict stays ADMIT) -- a HOLD change
+# used to be the example here, but N3 below fixes HOLD to be actionable, so it is no longer a valid
+# "changed but not actionable" case.
 common_env changednotactionable
 echo '[]' > "$TMP/fixtures/kanban.json"
 echo '[]' > "$TMP/fixtures/agents.json"
-bash "$BIN" >/dev/null 2>&1   # first run establishes baseline
+bash "$BIN" >/dev/null 2>&1   # first run establishes baseline (default loadguard-admit.sh)
+cat > "$TMP/loadguard-admit2.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "ADMIT other_reason"
+EOF
+chmod +x "$TMP/loadguard-admit2.sh"
+export HEARTBEAT_SCRIPTFIRST_LOADGUARD_BIN="$TMP/loadguard-admit2.sh"
+OUT="$(bash "$BIN" 2>&1)"
+check "changed-not-actionable: changed=1" "changed=1" "$OUT"
+check "changed-not-actionable: actionable=0" "actionable=0" "$OUT"
+check_absent "changed-not-actionable: no wake" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- N1 (card 1c8f6d25): a REVIEW whose Gate-SHA line (rule 4b) precedes the word REVIEW used to --
+# --- be invisible to the no-gate-dispatched-yet check (it only matched REVIEW at content start).
+common_env n1gateshafirst
+python3 -c "
+import json
+cards = [{'id':'cardN1','status':'waiting','title':'some card','assignee':'backend','parent_id':None,'updated_at':0}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([], open('$TMP/fixtures/agents.json','w'))
+comments = [{'author':'backend','content':'Gate-SHA: aaa0000\nREVIEW: done, gate-sha-first order'}]
+json.dump(comments, open('$TMP/fixtures/comments-cardN1.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "N1: gate-sha-first REVIEW recognised" "REVIEW-no-gate-dispatched-yet" "$OUT"
+check "N1: card id present" "cardN1" "$OUT"
+
+# --- N3 (card 1c8f6d25): hard-stop active=True must wake, not just change a report line -------------
+common_env n3hardstop
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+export HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE="$TMP/hard-stop-n3.json"
+echo '{"active": true, "newDevStopActive": false}' > "$HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE"
+OUT="$(bash "$BIN" 2>&1)"
+unset HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE
+check "N3: hard-stop active=True wakes" "actionable=1" "$OUT"
+check "N3: hard-stop line present" "HARD-STOP: active=True" "$OUT"
+check "N3: wake recorded" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- N3b: load-guard HOLD must wake too (same finding, the other half) ------------------------------
+common_env n3loadguard
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
 cat > "$TMP/loadguard-hold.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "HOLD soft (stop_new_dispatch)"
@@ -365,9 +410,23 @@ EOF
 chmod +x "$TMP/loadguard-hold.sh"
 export HEARTBEAT_SCRIPTFIRST_LOADGUARD_BIN="$TMP/loadguard-hold.sh"
 OUT="$(bash "$BIN" 2>&1)"
-check "changed-not-actionable: changed=1" "changed=1" "$OUT"
-check "changed-not-actionable: actionable=0" "actionable=0" "$OUT"
-check_absent "changed-not-actionable: no wake" "WOKE" "$(cat "$WAKE_CALLS")"
+check "N3b: load-guard HOLD wakes" "actionable=1" "$OUT"
+check "N3b: wake recorded" "WOKE" "$(cat "$WAKE_CALLS")"
+
+# --- N4 (card 1c8f6d25): a previously-FAILED wake's report must be replayed, not lost ----------------
+common_env n4pendingreplay
+export HEARTBEAT_SCRIPTFIRST_WAKE_BIN="$TMP/wake-fails.sh"
+export HEARTBEAT_SCRIPTFIRST_QUOTA_BIN="$TMP/quota-new.sh"
+echo '[]' > "$TMP/fixtures/kanban.json"
+echo '[]' > "$TMP/fixtures/agents.json"
+bash "$BIN" >/dev/null 2>&1   # first run: wake fails, report lands in the pending file
+[ -s "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" ] || { echo "  FAIL N4: pending file empty after a failed wake, cannot test replay"; fail=1; }
+export HEARTBEAT_SCRIPTFIRST_WAKE_BIN="$TMP/wake-recorder.sh"
+export HEARTBEAT_SCRIPTFIRST_QUOTA_BIN="$TMP/quota-ok.sh"
+OUT="$(bash "$BIN" 2>&1)"
+check "N4: pending backlog replayed into the report" "PENDING-REPLAY" "$OUT"
+check "N4: replay wakes (even though this round alone is routine)" "WOKE" "$(cat "$WAKE_CALLS")"
+check "N4: pending file cleared after successful replay" "" "$(cat "$HEARTBEAT_SCRIPTFIRST_PENDING_FILE" 2>/dev/null)"
 
 # --- d8f44d15 req 3: token_usage_daily lag -- 'stale' wakes --------------------------------------
 common_env tokenlagstale

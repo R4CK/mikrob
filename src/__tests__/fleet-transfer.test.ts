@@ -1123,4 +1123,32 @@ describe('importFleet: kanban card columns', () => {
     expect(row.start_date).toBe(1789000000)
     expect(row.due_date).toBe(1790000000)
   })
+
+  // Card 30aa8b29 R3: this INSERT writes straight to sqlite, bypassing the createKanbanCard
+  // route guard that refuses assignee="mikrob" (Peti 10943). A peer's fleet export is untrusted
+  // input, so the import must sanitize it the same way importedLabelColor already does for a
+  // malformed label colour, rather than trusting the peer's assignee column verbatim.
+  it('a card with assignee="mikrob" (or a disguised variant) is imported unassigned, not rejected or trusted', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const cards = [
+      { id: 'forbidden1', title: 'Card', status: 'planned', priority: 'normal', sort_order: 0, created_at: 1, updated_at: 1, assignee: 'mikrob' },
+      { id: 'forbidden2', title: 'Card', status: 'planned', priority: 'normal', sort_order: 1, created_at: 1, updated_at: 1, assignee: '  MikroB  ' },
+      { id: 'malformed1', title: 'Card', status: 'planned', priority: 'normal', sort_order: 2, created_at: 1, updated_at: 1, assignee: ['mikrob'] },
+      { id: 'ok1', title: 'Card', status: 'planned', priority: 'normal', sort_order: 3, created_at: 1, updated_at: 1, assignee: 'backend3' },
+    ]
+    const fleet = JSON.parse(MINIMAL_FLEET)
+    fleet.kanban.cards = cards
+    dbRuns.length = 0
+    importFleet(JSON.stringify(fleet), { apply: true })
+    const inserts = dbRuns.filter((r) => /INTO kanban_cards/.test(r.sql))
+    const assigneeOf = (id: string) => {
+      const ins = inserts.find((r) => r.args[0] === id)!
+      const cols = ins.sql.slice(ins.sql.indexOf('(') + 1, ins.sql.indexOf(')')).split(',').map((c) => c.trim())
+      return Object.fromEntries(cols.map((c, i) => [c, ins.args[i]])).assignee
+    }
+    expect(assigneeOf('forbidden1')).toBeNull()
+    expect(assigneeOf('forbidden2')).toBeNull()
+    expect(assigneeOf('malformed1')).toBeNull()
+    expect(assigneeOf('ok1')).toBe('backend3')
+  })
 })

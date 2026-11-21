@@ -277,6 +277,19 @@ def _is_generated_author(c):
     return ((c or {}).get("author") or "").strip().lower() in GENERATED_COMMENT_AUTHORS
 
 
+# N2 (card 1c8f6d25, WhiteHat2 re-gate GO a837688d): `author` is self-declared free text on every
+# comment (see the UNVERIFIED-AUTHOR branch above), and `latest_author`/`undecidable` embed it RAW
+# into verdict strings this file returns -- which heartbeat-scriptfirst.sh then concatenates
+# straight into MikroB's wake prompt (`"...$REPORT"`), unescaped. A forged author containing a
+# newline or bracketed directive-looking text ("mikrob\n\n[SYSTEM-...]") is therefore a
+# prompt-injection surface, not just a cosmetic one. Collapse to one line, printable-only, capped
+# short -- real agent ids are a handful of characters, so 40 is already generous.
+def _sanitize_author(raw):
+    s = re.sub(r"\s+", " ", (raw or "")).strip()
+    s = "".join(ch for ch in s if ch.isprintable())
+    return s[:40]
+
+
 def _is_path_token(tok):
     """A '/'-bearing token is a branch name or a path, not a sha citation -- ONLY when some
     slash-separated segment is not itself a bare hex run, so the fleet's "A/B" short/long
@@ -673,7 +686,7 @@ def _gate_state(comments):
         v = verdict_of(c.get("content"))
         if not v:
             continue
-        who = (c.get("author") or "").strip().lower()
+        who = _sanitize_author(c.get("author")).lower()
         latest[v[0]] = v
         latest_author[v[0]] = who
         # ONLY A GATE-ROLE AUTHOR ENTERS THE PER-AUTHOR TABLE (card c52e2823, round 2, QA's finding
@@ -1386,7 +1399,11 @@ def main():
 
     result = check(comments, designated, expect, use_declared, check_landed, landing_card_id)
 
-    if card_id and db_path:
+    # M2 (card 0c03aa06, WhiteHat2 M2 + RedHat on 295ae6a3): the checkpoint/FABRICATED overlay
+    # below must only ever NARROW an AGREE, exactly like the landing check above it (check()'s own
+    # "only narrows AGREE" rule) -- never replace a FAILED/DISAGREE/MISSING/etc verdict, or a
+    # NO-GO silently disappears behind CHECKPOINT_FAIL/FABRICATED/UNRESOLVED.
+    if card_id and db_path and result.startswith("AGREE"):
         rev_shas = declared_shas(comments)
         if rev_shas:
             check_sha = next(iter(rev_shas))
@@ -1424,16 +1441,12 @@ def main():
             statuses = [_cat_file_commit_status(p, check_sha) for p in clone_paths]
             reachable_statuses = [s for s in statuses if s != "unreachable"]
             if not reachable_statuses:
-                covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
-                if not covered:
-                    result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+                pass  # no clone reachable at all -- defer entirely to the coverage overlay below
             elif any(s == "timeout" for s in reachable_statuses):
                 result = "UNRESOLVED|%s|%s|a git call timed out while checking whether this " \
                     "commit exists (--card-id/--db FABRICATED check)" % (check_sha, check_sha)
             elif any(s == "exists" for s in reachable_statuses):
-                covered, reason = _checkpoint_coverage(card_id, check_sha, db_path)
-                if not covered:
-                    result = "CHECKPOINT_FAIL|%s|%s" % (check_sha, reason)
+                pass  # a real commit -- not fabricated; coverage is the overlay's job, not this one
             elif len(reachable_statuses) < len(clone_paths):
                 result = "UNRESOLVED|%s|%s|not found in the %d reachable clone(s), but %d " \
                     "configured clone(s) could not be reached -- cannot confirm it does not " \
@@ -1447,6 +1460,28 @@ def main():
                     "configured clones searched (%s) -- advisory only, not proof it was never " \
                     "a real commit anywhere" % (
                         check_sha, len(_CLONES), ", ".join(nm for nm, _p, _r in _CLONES))
+
+            # M2 continued (card 0c03aa06): the FABRICATED check above only looks at the FIRST
+            # declared sha. If it left result AGREE, overlay checkpoint coverage for EVERY
+            # declared sha (rule 4b's multi-commit Gate-SHA), not just the first -- a card
+            # delta-gated across a work-commit/landing-commit pair read a false gap before if only
+            # the first one happened to lack a checkpoint.
+            if result.startswith("AGREE"):
+                states = [(_checkpoint_coverage(card_id, s, db_path), s) for s in rev_shas]
+                if not any(cov is True for (cov, _reason), _sha in states):
+                    gaps = [(sha, reason) for (cov, reason), sha in states if cov is False]
+                    if gaps:
+                        result = "CHECKPOINT_FAIL|%s|%s" % (
+                            ",".join(s for s, _ in gaps), "; ".join(r for _, r in gaps))
+                    else:
+                        # F3 (card 0c03aa06, Cybered 31713): every sha answered None (zero
+                        # checkpoint rows recorded for this card at all) -- a transitional skip,
+                        # not a gap, so the verdict stays AGREE. But a plain "AGREE" here is
+                        # byte-identical to a genuinely verified AGREE, and the card forbids
+                        # wiring any --card-id caller until that distinction is explicit. Append
+                        # a token a caller can branch on instead of silently reading "never
+                        # checked" as "checked and fine".
+                        result = "%s|CHECKPOINT_NONE" % result
 
     print(result)
 
@@ -1487,12 +1522,29 @@ def _cat_file_commit_status(repo, sha):
 
 
 def _checkpoint_coverage(card_id, gate_sha, db_path):
-    """Return (covered: bool, reason: str|None).
+    """Return (covered, reason) where covered is True | False | None.
 
-    covered=True if no checkpoints recorded yet (transitional / no-checkpoint workflow) or if
-    gate_sha matches a head_sha in card_checkpoints. covered=False only when at least one
-    checkpoint exists for the card but the declared sha is not among them (genuine gap).
-    Errors accessing the DB are fail-open to avoid blocking the board on infra issues.
+    True  = this card has at least one recorded checkpoint matching gate_sha (by prefix, M1 below),
+            OR no checkpoint matches but gate_sha is already landed on origin (the "or origin" leg
+            M1 also asked for: a REVIEW naming the LANDING merge, not the work commit a checkpoint
+            was taken from, must not read as a gap).
+    False = checkpoints exist for this card, gate_sha matches none of them, AND it is not landed
+            on origin either -- a genuine gap.
+    None  = no checkpoints recorded for this card AT ALL (distinct from True on purpose -- RedHat's
+            finding on 295ae6a3/card 0c03aa06: agent-checkpoint.sh never wrote a row until this
+            card wired it, so every pre-existing card has zero rows, and collapsing that into the
+            same True a real match gets would make "never checked" indistinguishable from "checked
+            and fine". main() currently treats None the same as a pass-through -- exactly RedHat's
+            own "or state explicitly the feature stays off" alternative: nothing calls this with
+            --card-id in production today (measured on this board), so this is not yet a live
+            blocking switch; flipping that is a separate, fleet-wide decision, not this card's).
+    Errors accessing the DB are fail-open (None) to avoid blocking the board on infra issues.
+
+    M1 (WhiteHat2, card 0c03aa06): the old equality check (`head_sha = gate_sha[:40]`) compared a
+    SHORT sha (rule 4b allows 7-40 hex in a REVIEW) against the full 40-hex head_sha it never
+    equals, so every short-sha REVIEW read as a gap. `LIKE ? || '%'` is a prefix match either way:
+    unchanged for a full 40-hex gate_sha (nothing else can share it as a strict prefix in practice),
+    correct for a short one.
     """
     try:
         import sqlite3 as _sqlite3
@@ -1503,22 +1555,25 @@ def _checkpoint_coverage(card_id, gate_sha, db_path):
             ).fetchone()
             count = row[0] if row else 0
             if count == 0:
-                return True, None
+                return None, None
             sha_norm = gate_sha.lower()[:40]
             match = conn.execute(
-                "SELECT n FROM card_checkpoints WHERE card_id = ? AND head_sha = ?",
+                "SELECT n FROM card_checkpoints WHERE card_id = ? AND head_sha LIKE ? || '%'",
                 (card_id, sha_norm),
             ).fetchone()
         finally:
             conn.close()
         if match:
             return True, None
+        landed = landed_verdict([sha_norm])
+        if landed is None:
+            return True, None
         return False, (
-            "Gate-SHA %s not in any recorded checkpoint for card %s (%d checkpoint(s) exist)"
-            % (gate_sha[:12], card_id, count)
+            "Gate-SHA %s not in any recorded checkpoint for card %s (%d checkpoint(s) exist), and "
+            "it is not landed on origin either" % (gate_sha[:12], card_id, count)
         )
     except Exception:  # noqa: BLE001 -- DB missing / locked / corrupt: fail-open
-        return True, None
+        return None, None
 
 
 if __name__ == "__main__":
