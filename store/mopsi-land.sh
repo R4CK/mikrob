@@ -173,6 +173,17 @@ if [ "${1:-}" = "--selftest" ]; then
   export GIT_ALLOW_PROTOCOL=file
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
+  # Card 8ca1f91d (MikroB comment 20797/20816): --selftest re-invokes "$0" as a REAL subprocess
+  # (the fixturecard/degraded-orchestrator-guard cases below), which goes through the SAME
+  # land-run-journal.sh path a genuine run would -- when $0 is the live checkout, that writes real
+  # "fixturecard" rows into the LIVE store/land-runs.jsonl (measured on the sibling marveen-land.sh:
+  # exactly this wrote 4 such rows there). Route every nested subprocess at its own throwaway
+  # journal for the whole --selftest run, and verify at the end that the file the DEFAULT path
+  # would have used is untouched.
+  _SELFTEST_DEFAULT_JOURNAL="$(dirname "$0")/land-runs.jsonl"
+  _SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_JOURNAL_TMPDIR="$(mktemp -d)"
+  export LAND_RUN_JOURNAL_FILE="$_SELFTEST_JOURNAL_TMPDIR/land-runs.jsonl"
 
   # Self-check for the guard above: a push attempt to a ssh:// URL must be BLOCKED BY GIT ITSELF
   # (not merely refused by this script's own remote-identity check), proving GIT_ALLOW_PROTOCOL is
@@ -448,6 +459,11 @@ STUBEOF
   rm -rf "$CRASHBIN"
 
   rm -rf "$(dirname "$DGSW")"
+
+  t "the LIVE land-runs.jsonl journal (default path) is untouched by this --selftest run" \
+    "$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)" \
+    "$_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE"
+  rm -rf "$_SELFTEST_JOURNAL_TMPDIR"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail

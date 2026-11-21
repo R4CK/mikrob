@@ -1,0 +1,14 @@
+{
+  "task": "i18n-keys",
+  "sha256_12": "cc76e3a6b7cd",
+  "est_tokens": 502,
+  "token_cap": 1500,
+  "truncated": false,
+  "sources": [
+    {
+      "path": "/home/neon/.claude/skills/i18n-parity-sweep/SKILL.md",
+      "mode": "sections",
+      "sha256_12": "326e6be24c52"
+    }
+  ]
+}

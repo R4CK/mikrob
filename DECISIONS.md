@@ -30557,6 +30557,729 @@ esetet (6 assertion) bukatja pirosra, mást nem.
 
 Gate: QA2 + Cybersec + Cybered (delta, round 2). **Ki döntött:** MikroB (CYBERED GO 34321 utáni
 döntés), a javítást DevO (fullstack) végezte.
+
+## 2026-11-20 -- 99ade79b: weekly self-audit -- BG_PROMPT argv leak, stray console.log, test-coverage check
+
+**Kontextus:** MikroB heti self-audit (2026-11-20, Peti standing task), read-only audit develop 70e34813e-n. 1. MEDIUM: src/web/routes/background-tasks.ts:106 a teljes háttérfeladat-promptot a tmux new-session CLIENT hívás saját argv-jába tette (`-e BG_PROMPT=${prompt}`), ami /proc/<pid>/cmdline-on olvasható bármely helyi felhasználónak, és ARG_MAX-szal korlátos. 2. LOW: 4 landolt viselkedés-változás (0cd77895d, 634c5969b+0fc842710, 388d84f6a, d9b6c36f2) ugyanabban a commitban nem kapott tesztet. 3. LOW: src/gemini-fallback-runner.ts egy ÚJ console.log sora (card 7f112c2f) nem a megosztott loggert használta.
+
+**Döntés:** (1) a prompt 0600-as ideiglenes fájlba kerül; csak a fájl ÚTJA kerül argv-ba/session-env-be (`-e BG_PROMPT_FILE=...`), a pane a fájl tartalmából exportálja a BG_PROMPT-ot a meglévő shellCmd elé, majd törli a fájlt -- megtartva a 68eaeb93 viselkedést (a promptnak NEM üresen kell megérkeznie egy már futó tmux szerveren). (2) megvizsgálva: mind a 4 névvel megnevezett viselkedés-változásnak VAN már dedikált, elnevezett regressziós tesztje, ugyanazon az erőfeszítésen belül felvéve (lásd Teszt). Nincs kódváltozás ehhez a ponthoz. (3) az ÚJ console.log sor (a 2026-11-13-i hysteresis switch-back kapunál, card 7f112c2f) most a megosztott loggeren megy át; a fájl másik 6 console.log hívása a saját, korábbi, szándékos konvenciója (15 perces cron-futtató, a teljes stdout-ja a store/run-gemini-fallback.sh saját log fájljába kerül) -- ezeket nem érintettem.
+
+**Teszt:** `npx tsc --noEmit` tiszta. `fleet-test.sh` (szemafor-szkripten át) targetelt futás: src/__tests__/background-tasks.test.ts (új teszt: a prompt nem kerül argv-ba, meglévő 68eaeb93 valódi-tmux-szerveres teszt zöld marad), src/gemini-fallback-runner.test.ts. A 4 meglévő coverage-teszt helye: project-root-anchor.test.ts (b4bbfa260), pane-background-agents.test.ts + pane-state.test.ts (6a6798ca6), http-helpers-read-body-drain-cap.test.ts, kg-capture-pipeline.test.ts (b041a3775).
+
+**Nincs benne:** a fájl többi 6 console.log hívása nem lett loggerre állítva (szándékosan, a fájl saját konvenciója, lásd Döntés). A tmux pane-en BELÜL futó `claude -p "$BG_PROMPT"` hívás saját argv-ja (a belső claude-folyamat cmdline-ja) NEM ennek a kártyának a hatóköre -- csak a KÜLSŐ tmux-client hívás argv-ja, amit a self-audit megnevezett.
+
+**Ki döntött:** MikroB heti self-audit lelete. backend végezte. Gate: QA + Cybersec.
+
+## 2026-11-20 -- 99ade79b: round 2, CYBERSEC NO-GO 34703 (claude's own argv + a new environ leak)
+
+**Kontextus:** round 1's own DECISIONS.md entry explicitly scoped the inner `claude -p "$BG_PROMPT"` call's own argv as OUT of the card's scope ("a tmux pane-en BELÜL futó ... hívás saját argv-ja ... NEM ennek a kártyának a hatóköre"). cybersec2 (NO-GO 34703) and then cybersec (reconfirming, independent measurement) disagreed: the card's own acceptance criterion ("prompt no longer in argv") names no such carve-out, and the claude process's argv is readable for the entire run, not just the brief tmux-client call round 1 actually fixed. cybersec's measurement also found a NEW regression round 1 itself introduced: the pane now `export`s BG_PROMPT, putting the prompt into the claude process's environ too (F2 LOW).
+
+**Döntés:** `claude -p` with no positional prompt argument reads the prompt from stdin, so the pane now redirects the existing 0600 temp file into it directly (`claude -p --output-format text < "$BG_PROMPT_FILE"`) instead of exporting its contents to BG_PROMPT first. The prompt now crosses neither argv nor environ anywhere in the chain; only the temp file's PATH crosses argv (via `-e BG_PROMPT_FILE=...`), unchanged from round 1 and never sensitive. Also moved `writePromptFile()` inside the existing try block (previously between task-creation and the try, so a write failure bypassed the catch's cleanup -- same orphaned-running-row class as card ca593869, a LOW cybersec's own measurement flagged as a derived consequence, not separately scored).
+
+**Teszt:** rewrote the card 68eaeb93 regression test's stand-in script to capture its own argv, stdin, and env instead of reading BG_PROMPT back out of the pane's environment (the mechanism the fix removes) -- asserts the prompt reaches the stand-in via stdin, and appears in neither its argv nor its env. Mutation-verified: reverting only the two production lines this round changed back to the vulnerable form makes the new assertion fail (empty stdin). `npx tsc --noEmit` clean. Targeted run recorded in the REVIEW comment.
+
+**Ki döntött:** cybersec2 NO-GO 34703 (F1), cybersec reconfirming F1 + new F2. backend végezte. Gate: delta re-gate (QA + Cybersec) on this round's Gate-SHA.
+
+## 2026-11-19 -- 29803f39: FLEET_PYTHON_VENV használati idejű uid/mode/realpath ellenőrzés
+
+A write-time ellenőrzés (validateFleetPythonVenvDir, kártya 2bf0d884) csak egyszer fut, a
+Settings-oldal mentésekor -- egy akkor biztonságos könyvtár bármikor utána chmod-olható nyitottá,
+vagy a bin/-je kicserélhető, és minden ezutáni indítás még mindig megbízna benne. A fleetVenvBin()
+(src/fleet-venv.ts) ezért minden indításkor újra ellenőriz: realpath feloldás, a könyvtár és a
+bin/ uid-tulajdona, a könyvtár/bin/ semmilyen esetben nem group/other-writable, a szülők csak akkor
+lehetnek group/other-writable, ha sticky bit is van rajtuk (a szokásos /tmp, /var/tmp konvenció --
+nélküle minden /tmp alatti venv, beleértve minden teszt-fixture-t is, örökre elutasítva lenne,
+függetlenül a venv saját jogosultságaitól), és a bin/python3 nem lehet a könyvtáron kívülre mutató
+symlink. Bukás esetén fail-closed (a prefix üres marad), a visszautasítás oka bekerül a logba
+(mindkét hívási pont: src/web/agent-process.ts, scripts/fleet-venv-prefix.mjs).
+
+A write-time ellenőrzésen (config-registry.ts) egy hiányzó pozitív teszt is bekerült a uid-ágra
+(WhiteHat2 mérése, komment 21461): /usr elutasítva, nem a flotta-folyamat saját uid-je.
+
+Szándékosan NEM módosítva: a write-time ellenőrzés továbbra is elfogad egy még nem létező
+útvonalat -- ennek már van explicit tesztje és indoklása a developon (fleetVenvBin egy hiányzó
+könyvtárat off-ként kezel, nincs mit eltérítenie), tehát ez egy már lezárt döntés, nem egy
+nyitott rés.
+
+**Mérés:** vitest run fleet-venv-path.test.ts + fleet-venv-settings-write-validation.test.ts +
+launch-path-venv-pin.test.ts: 3 Test File, 83/83 Test passed. tsc --noEmit: clean. Mutációs
+ellenőrzés: a useTimeIntegrityReason() hívás eltávolításával pontosan a 4 új elfogadási
+kritérium-teszt (chmod 777 könyvtár, chmod 777 bin/, kívülre mutató symlink, /usr uid-pin) bukott
+el, a többi 46 zöld maradt.
+
+**Ki döntött:** backend, mikrob 21568 nudge-ra folytatva (37 perces megakadás egy korábbi
+landolási-szemafor várakozás és félreértés miatt, lásd a kártya kommentjeit). Gate-SHA:
+72a3eb448a585a2d9ccc03b70a394db9f9d667ec (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
+Cybersec (kártya leírása szerint).
+## 2026-11-20 -- 84f90b4e: card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh
+
+**Context:** proposed scope rejected (MikroB decision, card comment, 2026-11-20): a raw
+`DECISIONS.md merge=union` .gitattributes driver would have been the GENERAL auto-merge an
+earlier card (cbb66abf) explicitly rejected, since it would silently union a real edit to an
+existing entry, not just a tail append. Re-scoped to the real, measured gap instead: today
+(2026-11-20) a2028f35 (4 times), c4590365, 6d8ef952 and 30aa8b29 each needed a manual
+develop-into-card merge with a hand-resolved DECISIONS.md conflict and a fresh gate round --
+despite `store/decisions-sync-resolve.sh` (card edf9c837) already resolving exactly this
+append-append shape, proven by its own --selftest. The gap was never correctness; it was that
+nothing called it. An agent syncing by hand runs a plain `git merge origin/develop`, hits the
+conflict, and resolves it manually, because `docs/rules/marveen-worktree-fegyelme.md` never
+mentioned the resolver existed.
+
+**Fix:** `store/card-branch-sync-develop.sh [<worktree>] [<integration-ref>]` -- the one command
+to run instead of a raw `git merge`. Performs the merge itself; on a conflict limited to
+DECISIONS.md alone, calls `decisions-sync-resolve.sh` (forwarding the caller's integration ref
+via `DECISIONS_SYNC_INTEGRATION_REFS`, since that script checks MERGE_HEAD against a hardcoded
+default of `origin/develop origin/main` otherwise) and commits the result; any other conflict
+shape is left open exactly as a plain `git merge` would leave it. After a successful merge
+(auto-resolved or clean), re-verifies the append-only invariant via
+`decisions_append_only_check_merge` and `git reset --hard`s back to the pre-merge commit if it
+is ever violated, so a false-positive resolve can never land silently. Documented in
+`docs/rules/marveen-worktree-fegyelme.md` so it is actually found.
+
+**Test:** `src/__tests__/card-branch-sync-develop-selftest.test.ts` running the script's own
+`--selftest` (4 cases: the exact a2028f35 shape resolves with no manual step and the correct
+tail order; a real edit to an existing entry stays refused with the merge left open; a conflict
+on a non-DECISIONS file stays refused; already-up-to-date is a clean no-op) plus 2 structural
+pin tests. Mutation-verified: reverting the `DECISIONS_SYNC_INTEGRATION_REFS="$REF"` forwarding
+(the actual bug caught while building this) turns the a2028f35-shape case and its structural pin
+red; restored byte-identical, confirmed via diff. `fleet-test.sh`-equivalent local run (this file
++ decisions-sync-resolve-selftest + decisions-append-union-selftest): 3 Test Files passed (3), 11
+Tests passed (11). `npx tsc --noEmit` clean.
+
+**Nincs benne:** wiring this into `marveen-land.sh`/`mopsion-land.sh` themselves -- those already
+call `try_append_union` directly in the correct (ours-first) direction; this card is only the
+missing SYNC-direction caller for agents' own branch updates.
+
+**Ki döntött:** backend, re-scoped per MikroB's decision (card comment, msg 22392). Gate: QA +
+Cybersec per the card's own Gate line.
+
+## 2026-11-20 -- 84f90b4e delta: dirty-tree guard + reset --merge, not reset --hard (Cybersec NO-GO 35056)
+
+**Context:** Cybersec NO-GO 35056 on `3980043db`: `card-branch-sync-develop.sh`'s append-only
+backstop undid a resolved-but-invariant-violating merge with `git reset --hard "$before_sha"`,
+which discards ANY local tracked edit unconditionally -- a WhiteHat scratch probe lost an
+uncommitted `tracked.txt` change this way, where a plain `git merge` would have kept it.
+
+**Fix:** two changes, both in `store/card-branch-sync-develop.sh`. (1) A dirty-tree guard at the
+top: `git status --porcelain` non-empty refuses immediately (exit 2, clear message) before the
+script touches anything, so a caller with uncommitted local changes never reaches the merge in
+the first place. (2) The backstop undo now uses `git reset --merge "$before_sha"` instead of
+`reset --hard` -- defense in depth for the undo path itself, in case anything local is present
+by the time it runs despite the guard above.
+
+**Test:** `src/__tests__/card-branch-sync-develop-selftest.test.ts`, +3 cases. Selftest Case 5
+(dirty tracked file + the a2028f35-shape conflict that would otherwise auto-resolve): refused
+before any commit, the dirty file's content survives byte-for-byte. Two structural pins:
+`reset --merge "$before_sha"` present and `reset --hard "$before_sha"` absent; the dirty-tree
+`git status --porcelain` check present. Mutation-verified: removing the dirty-tree guard turns
+Case 5's "refused"/"no commit" assertions red (the file-survives assertion stays green on this
+particular fixture, since nothing in it happens to touch `tracked.txt`); reverting
+`reset --merge` back to `reset --hard` flips both structural pin assertions. Restored
+byte-identical via diff both times. Local run: 1 Test File passed (1), 6 Tests passed (6).
+
+**Nincs benne:** no change to the resolver logic itself (`decisions-sync-resolve.sh`,
+`try_append_union`) -- this delta is only about what happens to the WORKTREE when the backstop
+fires, not when or why it fires.
+
+**Ki döntött:** Cybersec NO-GO (35056, Gate-SHA 3980043db). backend fixed it (the script's own
+author, per the 4b rule another agent gates it). Gate: QA + Cybersec per MikroB's dispatch.
+
+## 2026-11-20 -- 84f90b4e delta: dated-header normalize + REVIEW-time header-format lint (MikroB scope-add 22462)
+
+**Context:** while landing card a01d8a3d, `try_append_union` correctly, but silently, refused to
+auto-resolve a pure-append merge because develop's own DECISIONS.md carried one entry (card
+60aeca01, 2026-11-16) with a bold-text header (`**2026-11-16 -- ...**`) instead of the file's
+`## YYYY-MM-DD -- Title` convention. MikroB scoped the fix into this card (comment 1795199177):
+normalize that one header (header line only, no content change), and add a check that catches a
+non-dated DECISIONS.md header at REVIEW time, so the next one is caught before it reaches
+develop, not discovered mid-land.
+
+**Fix:**
+1. `DECISIONS.md`: the card 60aeca01 entry's header changed from
+   `**2026-11-16 -- Kártya 60aeca01: ...**` to `## 2026-11-16 -- Kártya 60aeca01: ...` -- header
+   line only, the entry's content below it is untouched.
+2. `src/web/kanban-decisions-guard.ts`: new `decisionsHeaderGuardVerdict()`, wired into both
+   kanban close paths (PUT and /move) in `src/web/routes/kanban.ts`, same place as the existing
+   `decisionsGuardVerdict()`. Blocks a transition into `waiting` when the card's declared
+   Gate-SHA diff adds a DECISIONS.md header that is either (a) a `## ` header missing the leading
+   date (the original a01d8a3d bug: a card-id-first header), or (b) a bold-text header opening
+   with a date instead of `## ` (the card 60aeca01 bug). Unlike the sibling entry-presence guard,
+   this one is NOT scoped to `isNonTrivialCard` -- a malformed header breaks `try_append_union`'s
+   auto-merge for every future card touching that region of the file, regardless of this card's
+   own risk tier. Same `force: true` escape hatch as the existing guard.
+
+**Test:** `src/__tests__/kanban-decisions-guard.test.ts`, +13 cases covering both bad shapes,
+both good shapes (dash and colon date separators), the no-Gate-SHA/no-repo/diff-failure/force/
+non-waiting/re-assert fail-open paths, and that a pre-existing bold header appearing only as
+unchanged context (no leading `+`) never trips it. Mutation-verified: replacing the check's
+result with an always-empty array turns exactly the 3 header-detection assertions red, nothing
+else moves; restored byte-identical via diff. Local run (this file alone): 1 Test File passed
+(1), 33 Tests passed (33). Broader run (this file + the 4 decisions-themed selftest files): 5
+Test Files passed (5), 49 Tests passed (49). 11 kanban-route test files (move/put/dispatch/stuck/
+get-by-id/new-dev-stop wiring) alongside it: 11 Test Files passed (11), 75 Tests passed (75), no
+regression from the new call sites. `npx tsc --noEmit`: clean.
+
+**Nincs benne:** no change to `try_append_union`/`decisions-sync-resolve.sh` themselves, and no
+sweep of the rest of DECISIONS.md for other possible non-dated headers beyond the one MikroB
+named -- this delta is the normalize + the forward-looking lint, not a full-file audit.
+
+**Ki döntött:** MikroB scope-add (card 84f90b4e, comment 1795199177), found while backend was
+landing a01d8a3d. backend implemented. Gate: QA + Cybersec per the card's own Gate line.
+
+## 2026-11-20 -- 84f90b4e delta: header-diff range fix + this card's own header + mutant kills (CYBERSEC NO-GO 35145)
+
+**Context:** CYBERSEC NO-GO 35145 on `14aa85f63`. F1: this card's own prior delta added a
+DECISIONS.md entry with a card-id-first, undated header (line 29660) -- the exact regression the
+card exists to close. Confirmed live by the gate (scratch repo, real
+`store/card-branch-sync-develop.sh`): the dated-header control resolves (rc 0), the card's own
+header refuses (rc 1, `UU DECISIONS.md`). F2: `decisionsHeaderGuardVerdict` only diffed
+`<Gate-SHA>^1 <Gate-SHA>` -- the tip commit alone -- so a bad header added by an EARLIER commit on
+the same card branch (exactly how F1 slipped past its own REVIEW) was invisible to it. Also named:
+two mutants surviving on `card-branch-sync-develop-selftest.test.ts` (M10: the backstop's `if`
+condition replaced with `if false && ! decisions_append_only_check_merge ...`; M11: the
+`reset --merge "$before_sha"` undo line commented out, text kept) and one on
+`kanban-decisions-guard.test.ts` (M7: `isForceActor` dropped, any truthy `force` treated as a
+bypass) -- all three text-preserving, semantics-breaking.
+
+**Fix:**
+1. `DECISIONS.md`: renamed the line-29660 header from `## 84f90b4e: card-branch-sync-develop.sh --
+   the missing caller of decisions-sync-resolve.sh (2026-11-20)` to `## 2026-11-20 -- 84f90b4e:
+   card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh` -- header line
+   only, no body change.
+2. `src/web/kanban-decisions-guard.ts`: `decisionsHeaderGuardVerdict` now resolves
+   `merge-base(mainRef, Gate-SHA)` first and diffs that against `Gate-SHA`, instead of
+   `Gate-SHA^1`. `resolveCheck()` now also returns the project's `mainRef` (`origin/develop` for
+   marveen) so the header guard can compute it; the sibling entry-presence guard
+   (`decisionsEntryState`, used by `decisionsGuardVerdict`/`decisionsGuardCheck`) is unchanged --
+   NO-GO 35145 named only the header guard's range, not that one.
+3. `store/card-branch-sync-develop.sh`: added selftest Case 6 -- a distant rewrite of an existing
+   entry on the card branch plus a distant, unrelated append on develop (same padded-fixture shape
+   `decisions-append-only-guard.sh`'s own selftest Case 1 uses to force a ZERO-conflict 3-way
+   merge) actually drives the append-only backstop at runtime, unlike Case 5 (which the dirty-tree
+   guard refuses before the backstop is ever reached).
+4. `src/__tests__/kanban-decisions-guard.test.ts`: +4 cases -- the F2 merge-base-range pin (asserts
+   a `merge-base` call against `mainRef`+Gate-SHA happens and no `Gate-SHA^1` diff call is ever
+   made), a merge-base-failure fail-open case, and the two M7-killing negative force rows
+   (`force=true` from a non-allowlisted actor; `force=false` from an allowlisted actor -- neither
+   bypasses).
+
+**Test:** `kanban-decisions-guard.test.ts`: 1 Test File passed (1), 37 Tests passed (37) (was 33).
+`card-branch-sync-develop-selftest.test.ts`: 1 Test File passed (1), 6 Tests passed (6); the
+script's own `--selftest` now runs 14 checks (was 11), all `ok`. `decisions-sync-resolve-selftest`
+alongside both: 3 Test Files passed (3), 48 Tests passed (48). Kanban route regression
+(`kanban-move-audit`, `kanban-dispatch-put`, `kanban-move-expected-status`,
+`kanban-put-unknown-field`): 4 Test Files passed (4), 24 Tests passed (24). `npx tsc --noEmit`:
+clean. `npx eslint` on the 3 touched TS files: clean.
+
+Mutation-verified (card-branch-sync-develop.sh, both restored byte-identical via diff): M10 (`if
+false && ! decisions_append_only_check_merge ...`) turned exactly 3 of Case 6's assertions red
+(rc=0 instead of 2, HEAD not restored, message mismatch); M11 (undo line commented out) turned
+exactly 1 red (HEAD not restored; rc still 2 and the message still fires, since `die 2` itself is
+untouched by this mutant). M7 was not re-mutated this round (the two new negative rows are built
+directly from `isForceActor`'s real two-condition logic -- `force=true`+non-allowlisted and
+`force=false`+allowlisted -- each of which only passes if both conditions are actually checked).
+
+**Nincs benne:** L1-L6 and M8/M9 from the same NO-GO (untracked predictable temp-file name,
+fenced-code false positive, lint weaker than the resolver it protects, route-site wiring
+unpinned, etc.) -- MikroB's scope-add (msg 22501) named only F1, F2, M10/M11 and M7 for this
+round; the rest are tracked in the gate comment for a future round.
+
+**Ki döntött:** CYBERSEC NO-GO (35145, Gate-SHA `14aa85f634a9575843e0cf71905514a297067766`),
+scoped by MikroB (msg 22501). backend fixed it (the guard's own author, per the 4b rule another
+agent gates it). Gate: QA + Cybersec per MikroB's dispatch.
+
+## 2026-11-21 -- 84f90b4e delta: reverted the 60aeca01 header rewrite, fixed the parser instead (MikroB decision msg 22885)
+
+**Context:** the previous round in this card (2026-11-20, see above) normalized the 2026-11-16
+60aeca01 entry's header from its legacy bold form (`**2026-11-16 -- ...**`) to the dated `## `
+convention, because `try_append_union` could not recognise the bold form as an entry boundary.
+That rewrite was itself the mistake: DECISIONS.md is append-only, and an existing entry's header
+is never edited in place, even to fix its formatting. The land script's own `decisions_tail_append_ok`
+check caught it correctly (REFUSED -- not a pure tail append) when this card came up for landing.
+
+**Fix:** reverted the 60aeca01 header back to its original bold form (see the entry dated
+2026-11-16 above, unchanged from the original). Instead, `store/decisions-append-union.sh`'s
+`try_append_union()` now carries a second, hardcoded entry-boundary pattern
+(`header_glob_bold='**[0-9][0-9][0-9][0-9]-*'`), checked alongside the existing `header_glob`
+everywhere the latter was, so a remainder opening with a legacy bold-dated header is recognised
+as a valid new-entry boundary. `src/web/kanban-decisions-guard.ts`'s REVIEW-time guard no longer
+flags an added bold-dated header either (it used to, for exactly the case this round undoes).
+
+**Nincs benne:** no change to the guard's handling of a genuinely UNDATED header (bold or `## `)
+-- that stays refused, same as before this round.
+
+**Mérés:** `decisions-append-union.sh --selftest` +1 case (`a new entry using the legacy
+bold-dated header form still auto-unions`), mutation-verified: reverting the
+`$header_glob|$header_glob_bold` alternation back to `$header_glob` alone turns exactly this case
+red (FAIL, union refused), every other case stays green. `kanban-decisions-guard.test.ts`: 1 new
+case + 5 existing cases' fixtures switched from the no-longer-blocked bold-dated shape to an
+undated `## ` header so they still exercise what they claim (force-actor bypass, M7, F2
+earlier-commit coverage) -- 37/37 PASS. `npx tsc --noEmit` clean.
+
+**Ki döntött:** MikroB (msg 22885, re: my escalation 22884). backend executed. Gate: QA + Cybersec.
+
+## 2026-11-21 -- 84f90b4e delta: escape the literal stars in header_glob_bold (Cybersec NO-GO 36415, F1 MEDIUM)
+
+**Context:** CYBERSEC NO-GO on the previous round (b07086dfc): `header_glob_bold='**[0-9][0-9][0-9][0-9]-*'`
+was used unquoted in `case ... in $header_glob_bold)`, where a leading `**` is two shell glob
+wildcards, not two literal characters. The pattern actually meant "any text, then 4 digits, a
+dash, anything", matching ANY line containing a bare `YYYY-` anywhere -- not only a line that
+starts with `**YYYY-`. Measured regression (cybersec2): both sides continuing the LAST EXISTING
+entry with ordinary prose that happens to contain a date, or a ticket-number-shaped string,
+wrongly auto-unioned instead of being refused -- gluing two unrelated continuations under one
+entry's header.
+
+**Fix:** escaped the stars, `'\*\*[0-9][0-9][0-9][0-9]-*'`. Added two probes to the function's
+own pattern-safety self-check (a dated prose line, a ticket-number-shaped string) and two
+selftest cases pinning the regression directly (`both-continue-existing-entry-dated-prose-mid-line`,
+`both-continue-existing-entry-ticket-number-mid-line`), both refused with the fix, both
+mutation-verified to resolve (wrongly) when the stars are unescaped again.
+
+**Mérés:** `decisions-append-union.sh --selftest`: full suite PASS with the escaped pattern.
+Mutation check: reverting to the unescaped pattern makes the two new regression probes trip the
+function's own safety self-check, which then refuses EVERY call -- the whole selftest suite goes
+from PASS to a mass FAIL (confirms the probes are load-bearing, caught via the existing
+fail-closed mechanism rather than a new one). `npx tsc --noEmit` clean. `kanban-decisions-guard.test.ts`
++ `card-branch-sync-develop-selftest.test.ts`: 44/44 PASS (unaffected by this delta -- no TS file
+changed).
+
+**Ki döntött:** Cybersec (cybersec2) NO-GO, komment 36415, MikroB dispatch 22893/22897. backend
+fixed it. Gate: QA2 + Cybersec (delta re-gate).
+
+## 2026-11-15 -- F8 compiled skill packs for non-Claude models (card 2746165b)
+
+Non-Claude calls (`freellm-call.sh` / `local-llm.sh`) carried only the raw per-task prompt
+template (`store/local-llm-skills/<task>.txt`), never any `~/.claude/skills` rule/pitfall
+content. Added `store/llm-skill-pack-build.py`, driven by `store/llm-skill-pack-map.json`,
+which compiles only the rule+pitfall sections of the relevant SKILL.md/rule-doc into a short
+(<=1500 token) pack per F3 route-table task type (`store/card-route-table.json`: test-scaffold,
+i18n-keys, doc-update, type-def, default). Both call sites now prepend the pack for their task
+label and log `pack=<task>@<sha12>` to `store/llm-skill-pack-usage.log`.
+
+Deliberate choice: the generated `.txt` pack contains prose only, no filesystem paths or
+hostnames -- source provenance (paths + sha) lives only in a sidecar `<task>.meta.json` that
+is never sent to a model, so the pack stays safe on the freellm cloud route (the card's own
+"a pack that names an internal path or host goes local-only" constraint).
+
+Measured limit, not a gap in the implementation: a real A/B replay of the 10 most recent
+historic `Draft-Review:` verdicts (kanban_comments, 2026-11-15) showed 9 of 10 failures were
+hallucinated repo structure (invented imports/files/functions), not missing skill-rule
+awareness -- only 1 of 10 was actually one of this card's four mechanical task types. A
+generic rule+pitfall pack cannot fix repo-grounding hallucination by itself; that needs real
+file content in the prompt, which stays the caller's responsibility.
+
+**Teszt:** `store/llm-skill-pack-build.selftest.sh` 3/3 (uj), `store/local-llm-rag.selftest.sh`
+5/5 es `store/local-llm-model-routing.selftest.sh` 5/5 valtozatlanul zold (regresszio).
+
+**Ki dontott:** MikroB dispatch (msg_id:19011) -> backend3 vegrehajtasa.
+
+## 2026-11-15 -- F8 delta: path containment + secret scan a skill-pack builderen (card 2746165b, QA FAIL 31746)
+
+A QA FAIL 31746 bebizonyitotta: `expand()`-nek nem volt containment-ellenorzese (sima
+abspath/expanduser), es az extract() pipeline-nak semmilyen secret-scanje -- egy hibas
+`store/llm-skill-pack-map.json` bejegyzes (elgepeles, rossz copy-paste, vagy rosszhiszemu
+szerkesztes, ugyanazzal a fajlrendszer-hozzaferessel, amivel minden ugynok mar rendelkezik)
+csendben kikuldhetett volna egy tetszoleges fajlt, vagy egy forrasban ulo titkot, a freellm
+felhos utvonalon.
+
+Javitas fail-closed mindket tengelyen (refuse, nem maszkolas): `expand()` realpath-eli minden
+forrast es megtagadja, ha az a `~/.claude/skills` vagy `docs/rules` gyokereken kivul esik
+(symlink-escape ugyanugy elkapva, mint a ff7ecc74 kartya mas skill-sync kodjaban); `build_one()`
+a kinyert szoveget atfuttatja a `store/freellm-call.sh` egress-kapujaval azonos
+SECRET_PATTERNS-listan (portolva, nem importalva) es megtagadja az egesz buildet talalatra.
+A `doc-update` map-bejegyzes abszolut `/home/neon/marveen` ut helyett repo-relativ lett (ez
+pont az a worktree-fegyelem-hiba volt, amit ez a session korabban mar maga is elkovetett es
+javitott).
+
+**Teszt:** `store/llm-skill-pack-build.selftest.sh` 1/4 -> 4/4 (2 uj, pinnelt eset: path-escape
+es secret-match, mindkettő mutacioval igazolva -- a megfelelo check-hivas kivetelevel a sajat
+tesztje bukik). QA repro (kulso stand-in secret fajl) kezzel megismetelve: containment-check
+megtagadja, mielott a fajl egyaltalan megnyilna.
+
+**Ki dontott:** MikroB dispatch (msg_id:19038, QA FAIL 31746) -> backend3 vegrehajtasa.
+
+## 2026-11-15 -- 2746165b delta: marveen-land fleet-test caught two real land-blocking bugs
+
+**Kontextus:** marveen-land.sh --card 2746165b fleet-test (real, on the merge result, not a
+contention artifact) failed 3 cases in src/__tests__/store-selftests-all-run.test.ts:
+freellm-call-retry.selftest.sh and freellm-call.selftest.sh both exited non-zero, and
+llm-skill-pack-build.selftest.sh's own success shape went unrecognized by the meta-test.
+
+**Döntés:** (1) the "default" skill pack's source (karpathy-guidelines) carries an attribution
+link ending in a 19-digit tweet ID; once prepended to PROMPT, that digit run matched
+freellm-call.sh's pre-existing PII cc_number pattern, refusing every real call that used the
+default pack (exit 4). Fixed in store/llm-skill-pack-build.py: markdown link URLs are stripped
+during extraction, anchor text kept -- a URL is not instructional content, and is exactly the
+shape that can accidentally look like a secret/ID. (2) store/freellm-call.selftest.sh's F1
+byte-for-byte round-trip tests asserted no prefix is ever prepended to the sent payload -- true
+before this card, intentionally false now. Fixed by stripping the known default-pack prefix
+before comparing, keeping the real injection-safety guarantee (the payload text itself is never
+mangled/executed) without pinning a shape this card deliberately changes. (3) added a new
+OK_SHAPES entry to src/__tests__/store-selftests-all-run.test.ts for
+llm-skill-pack-build.selftest.sh's own reporting shape, per that file's own documented practice.
+
+**Teszt:** freellm-call-retry.selftest.sh 25/25 (was 17/25), freellm-call.selftest.sh 61/61 (was
+59/61), llm-skill-pack-build.selftest.sh 5/5 (new case added, mutation-verified: reverting the
+URL-strip call turns exactly that case red).
+
+**Ki döntött:** marveen-land.sh's own real fleet-test run caught this; backend3 diagnosed and
+fixed.
+
+---
+
+## 2026-11-16 -- 270b2950: remote agent on shared auth still isolation=no; pin customProvider:null
+
+11c6cab4 RedHat residual (comment 32213, carried into the round-3 GO 32340): closing the
+customProvider-unusable gap left two smaller items open. **MEDIUM-LOW:** a remote (ssh) agent
+(remoteHost+remoteWorkdir) with no customProvider on the default shared-auth mode had no check
+at all in needs-fleet-oauth.mjs -- it fell into the plain "needed" branch, same as any local
+Claude agent, and watchdog.sh then either silently printed isolation=no (no local .claude-config
+for a remote agent) or, when one happened to exist, actually exported the shared fleet token to
+a process that runs on a different host -- a real token-leak shape, not just a cosmetic gap.
+**LOW:** an explicit `customProvider: null` was already correctly classified as unusable by the
+shared classifier, but no test pinned it by name.
+
+**Fix:** needs-fleet-oauth.mjs now calls the same resolveRemoteConfig() watchdog-provider-env.mjs
+already uses, and refuses (fleet-oauth-undecidable) for a configured remote agent before ever
+reaching the fleet-token branch. The customProvider:null case needed no code change -- only a
+named test.
+
+**Mérés:** scripts/__tests__/watchdog-config-isolation.test.sh cases 60/61, mutation-proven
+(disabling either check flips the matching case red; with a .claude-config fixture present, the
+remote mutant actually exports the fleet token -- isolation=yes -- confirming the real-leak
+severity, not just a missing refusal). 71/71 green with the fix (was 69/69). tsc --noEmit clean.
+
+**Ki döntött:** RedHat (Cybered) lelete alapján backend korrigálja; Gate: QA + Cybered.
+
+## 2026-11-15 -- kg-search.selftest.sh leak-check scope (card afc0d569)
+
+MikroB merese: a F1 leak-check `grep -slF ... /tmp/tmp.*` alakja a teljes rendszer `/tmp`-et
+pasztazta fajltipus-szures nelkul -- egy MASIK folyamat elhagyott FIFO-ja (nyito, iro nelkul
+blokkol a vegtelenig) 3 landolast is vorosre vitt (3bad1678 x2, ec34c025). Javitas: a
+`kg-search.sh` futtatasa `TMPDIR="$WORKDIR"`-dal tortenik (a sajat mktemp-je -- ha lenne -- ide
+irna, nem a megosztott `/tmp`-be), a leak-check pedig `find -type f`-fel kizarolag rendes
+fajlt nyit meg, soha FIFO-t/socketet.
+
+**Teszt:** `kg-search.selftest.sh` 6/6 valtozatlanul zold. Kezzel reprodukalva: `mkfifo
+/tmp/tmp.<x>` + a regi glob-alak -> `timeout 10` utan exit 124 (tenyleges akasztas); ugyanaz a
+FIFO a javitott koddal -> exit 0, 0s alatt, 30s timeout alatt marad.
+
+**Ki dontott:** MikroB dispatch (msg_id:19071) -> backend3 vegrehajtasa.
+
+## 2026-11-15 -- card b3b73630: main-agent skill write human-gate
+
+**Döntés:** POST /api/agents/<MAIN_AGENT_ID>/skills (src/web/routes/agents-skills.ts) írt egyenesen
+a globális ~/.claude/skills gyökérbe (minden ügynök betölti onnan), auth-kind ellenőrzés nélkül --
+Cybersec F1 lelete (31601 komment a 7c79badc kártyán, Gate-SHA 8bb6abcb3, már az e1f43d02c alapon is
+jelen volt, nem regresszió). A javítás a dashboard már meglévő rejectIfNotHumanAuth kapuját
+(auth.ts:124) köti be a MAIN_AGENT_ID célpontra: megosztott bearer / federation / agent:<id> device
+key -> 403, semmi nem íródik; böngésző-session / ember device key -> 200 (a dashboard generate gomb
+így tovább működik). Sub-agent célpontok (saját, nem flotta-szintű skills mappa) érintetlenek.
+
+A kártya 3. kritériuma (federation-eset a /api/skills/pending útvonalakon) ELMARADT: azok az
+útvonalak csak a még nem landolt card/7c79badc ágon léteznek (jelenleg újra-munkálás alatt), MikroB
+döntése szerint (msg 18939) ez a pin arra a kártyára kerül át.
+
+Gate-SHA: b24a2fa0d. Gate: QA + Cybersec. **Ki döntött:** backend.
+
+## 2026-11-15 -- card b3b73630 (follow-up): CYBERSEC NO-GO 31782 (WhiteHat2) javítása -- import/delete kapu
+
+**Döntés:** a fenti human-gate csak a POST /api/agents/<MAIN_AGENT_ID>/skills (generate) útvonalra
+került rá; WhiteHat2 (CYBERSEC NO-GO 31782 a 50b05aa47-en) mérte, hogy a két testvér-útvonal --
+POST /api/agents/<MAIN_AGENT_ID>/skills/import és DELETE /api/agents/<MAIN_AGENT_ID>/skills/<name>
+-- ugyanúgy a globális ~/.claude/skills gyökérbe ír, auth-kind ellenőrzés nélkül. MikroB döntése
+(msg 19287): ugyanaz a rejectIfNotHumanAuth kapu mindkét útvonalra, MAIN_AGENT_ID célpontra. Nincs
+új jogosultsági mechanizmus, csak a meglévő kapu bedrótozása.
+
+Teszt (src/__tests__/agents-skills-main-agent-human-gate.test.ts): mindkét útvonalon a 4 nem-ember
+auth-fajta -> 403, semmi nem változik a lemezen; böngésző-session és ember device key -> 200.
+Mutáció-pin: a kapu nélküli 50b05aa47-en a 8 új refused-eset pirosra vált (403 helyett 200).
+
+Gate-SHA: 735115880. Gate: QA + Cybersec (WhiteHat2). **Ki döntött:** backend.
+
+## 2026-11-18 -- 8ca1f91d: marveen-land.sh stacked-check false positive (upstream card refs) -- lezarva, delta-regate utan
+
+5dd0842a (upstream Koteg 25) landolasat a stacked-card detekcio refuzalta, mert egy upstream
+(Szotasz/marveen) commit "card 513c886e"-t irt a subjectjebe, amit a mi tablunkon 404. A
+javitas (store/landing-downward-check.sh "downward_check"): egy, a logban nevezett card id,
+ami a mi tablunkon confirmed 404 ES minden ra hivatkozo commit upstream/develop ancestor-je
+(DOWNWARD_CHECK_REPO, csak marveen-land.sh allitja -- a tobbi landernek nincs ilyen remote-ja),
+az allow-listazott idekent kezelendo, nem foreign work. Negy delta-kor a gate-eken:
+
+1. CYBERSEC NO-GO (komment 33090) + CYBERSEC2 NO-GO (komment 33098): a bare 404 nem bizonyitek
+   (rossz service/route/stale build is 404-azhat mindenre); a 404 valasz TESTENEK a mi tablunk
+   sajat not-found alakjat kell hordoznia ("Kartya nem talalhato: <id>"), es minden hivatkozo
+   commitnak upstream/develop ancestor-nek kell lennie -- fixeltve egy korben (667a33fb3).
+2. Journal-isolation fix (1aeea3b64): a --selftest a /bin/bash-t valodi subprocessent hivja ujra, ami
+   elesben a live store/land-runs.jsonl-be irt fixturecard sorokat, amig egy worktree-n kivul
+   futott; minden belso subprocess sajat LAND_RUN_JOURNAL_FILE-ra all at.
+3. CYBERED NO-GO (komment 33127, blocking): a rovid "upstream/develop" nev egy helyi branch
+   vagy tag altal arnyekolhato (git refs/heads es refs/tags ELOBB probalja, mint
+   refs/remotes-ot) -- fully qualified refs/remotes/upstream/develop-ra javitva (d5a9dd71b).
+4. DevO LAND REFUSED (komment 33172) a mar QA PASS + CYBERED GO alatt allo d5a9dd71b-en: a
+   fleet-test determinisztikus szamelteresi hibat talalt, amit QA rosszul minositett
+   ("bash-only diff, nincs vitest-szurfeszt" -- de ez a TS teszt FUT es SZAMLAL bash
+   selftest-case-okat). A javitas (25813215d): a card egy uj, CSAK marveen-land.sh sajat
+   blokkjahoz tartozo selftest-case-et adott (a "both call sites export DOWNWARD_CHECK_REPO"
+   grep-pin, CYBERED LOW mutants L10/L11), asszimmetrikusan novelve marveen sajat szamat a
+   cleancore-eihoz kepest -- a teszt kemenykodolt "39" bazisszama 40-re javitva, mertek
+   alapjan (bash store/marveen-land.sh --selftest -> 120; bash store/cleancore-land.sh
+   --selftest -> 134; 134-54 = 80 = 120-40).
+
+**Mertek:** teljes fleet-test.sh --ref 25813215d: 1370 Test Files passed | 1 skipped (1371),
+42928 Tests passed | 132 skipped (43060), 0 FAIL. Duration 691.65s. npx tsc --noEmit: clean.
+lint-ratchet.sh: no rule got worse (422 finding, baseline tartja magat).
+
+**Ki dontott:** backend3 vegezte, tobb delta-kor CYBERSEC/CYBERSEC2/CYBERED NO-GO-ira es DevO
+land-refuse-ere valaszolva. Gate-SHA: 25813215d5c684e0debd9680dbb45f0bee15aed4. Gate: QA + Cybered (MikroB 2026-11-18: mindket
+cybersec es cybersec2 irt Fix-Direction-t ezen a kartyan, a security slot RedHate megy).
+
+## 2026-11-15 -- Seed the 38 FE-assigned skills missing from fron-ted/fron-teddy (card f651b26c)
+
+A `store/agent-skill-drift-sync.sh` heartbeat jelezte, hogy 38 skill csak fron-ted LIVE
+`.claude/skills`-eben letezik, a `seed-fleet-agents/{fron-ted,fron-teddy}` snapshotbol hianyzik
+(ez utobbit uj klon provisioninggel hasznaljak, a futo sibling-sync nem erinti). A 38 pontosan
+egyezik a `store/skill-role-map.json` fron-ted role + fleet-core listajaval -- athelyezve a
+globalis `~/.claude/skills/` forrasbol mindket seed fara, igy a ket fa most byte-azonos (80 skill).
+
+Tudatos dontes: fron-ted live masolata meg 10 TOVABBI skillt is tartalmaz (a11y-audit,
+api-design, architecture-decision-records, context-budget, database-migrations,
+hexagonal-architecture, postgres-patterns, search-first, tdd-workflow, verification-loop), DE
+ezek NINCSENEK a skill-role-map.json fron-ted/fleet-core listajan -- nem hivatalosan kiosztott
+FE-skill, ezert NEM kerultek be a seedbe. Nevesitve a REVIEW-ban, nem csendben kihagyva.
+
+**Teszt:** `store/agent-skill-drift-sync.sh --telegram` utana is `missing=0`
+`sibling-pair-findings=0` (a live sync mar korabban lefutott, ez a kartya a seed-snapshotot
+zarta fel kulon).
+
+**Ki dontott:** MikroB dispatch (msg_id:19011) -> backend3 vegrehajtasa.
+## 2026-11-15 -- card b7fe4a95 (1c8f6d25 follow-up, WhiteHat2 F1/F2 + 8 pin gap)
+
+**Döntés:** WhiteHat2 CYBERSEC GO 31505 a heartbeat-scriptfirst.sh N1-N4 javítását (ba6075bfd)
+landolhatónak minősítette, de a weekly-task átkötését két MEDIUM lelet (F1, F2) és 8 túlélt
+mutáns miatt blokkolta.
+
+F1 (state vs transition): a hard-stop/newDevStop/load-guard-HOLD jelzők ÁLLAPOT alapján
+állították az ACTIONABLE-t, nem ÁTMENET alapján -- egy tartós (napokig tartó) heti stop vagy
+load-guard HOLD ezért MINDEN tickben felébresztette MikroB-ot, pont az ellen, amiért a szkript
+létezik. Javítás: egy külön flags-state fájl (`.heartbeat-scriptfirst-flags-last.txt`) rögzíti
+az ELŐZŐ tick értékét mindhárom jelzőre, és csak a VÁLTOZÁS ébreszt -- a cold-start alapérték a
+NORMÁL állapot (False/ADMIT), nem egy üres string, különben az első valaha lefutó tick is
+feleslegesen ébresztene egy teljesen rendben lévő rendszeren (ezt mérve találtam, nem a terv
+része volt -- az első implementáció pont ezt a hibát vezette be, a selftest fogta meg).
+
+F2 (unbounded replay): egy sikertelen wake a TELJES riportot hozzáfűzte a pending fájlhoz, és
+minden további tick a TELJES backlogot próbálta visszajátszani -- ~128 KB felett `Argument list
+too long` (rc 126), és onnan nincs visszaút kézi törlés nélkül. Javítás: a visszajátszás az
+utolsó 8192 B-re van vágva (a teljes méret kiírva, semmi nem vész el nyomtalanul), és a
+hozzáfűzés oldala UGYANÚGY vágva minden sikertelen tick után.
+
+8 pin gap (31505 mutáció-mérése): mind a 8 lezárva -- N2 collapse/printable (gate-closure-check.py
+`_sanitize_author`, két KÜLÖN eset: szóközök futtatása a collapse-ra, ESC+RLO a printable-szűrőre,
+mert egy közös "nincs \n" teszt mindkettőt egyszerre fedte, vakon), N1 skills-skip (saját eset),
+N3 newDevStopActive fél (saját, tartós eset), N4 actionable/clear/fold (mindhárom, lásd lejjebb a
+teszt-önkorrekciót).
+
+**Teszt-önkorrekció, ugyanebben a körben:** az N1 blank-skip "pin" ÉS az N4 clear/fold eredeti
+pinjei maguk is vakok voltak, ezt közvetlenül mérve találtam, nem feltételezve -- lásd a
+`guards-that-pin-behaviour` skillt. (1) N1 blank-skip: a `has_review` regex saját `\s*`-je
+MINDIG lenyeli az önálló üres sort, a LEAD_SKIP saját üres-sor ágát feleslegessé teszi -- mérve:
+az ág eltávolítása NULLA esetben változtat kimenetet, ezért a HALOTT kódot töröltem (egyszerűsítés),
+nem egy hamis pint tartottam meg. A valódi pin egy KOMBINÁLT eset (Gate-SHA+Skills+üres sor
+egymás után REVIEW előtt), ahol az üres sor ágára VALÓBAN szükség volna, ha létezne -- de mivel
+nem létezik, ez is csak a Gate-SHA/Skills ágakat pinneli. (2) N4 "cleared"/"folded" pin: a
+`check` helper üres needle-lel (`check ... ""`) MINDIG igaz (a `case *""*` minta bármit
+illeszkedik), így a két eredeti pin semmit nem mért -- közvetlen `[ -z ... ]` ellenőrzésre,
+illetve egy a backlogra EGYEDI needle-re (`NEW:backend`, ami csak az 1. kör tartalmában van)
+cserélve. Mindhárom hiba mutációval megerősítve (a megfelelő mutáns PONTOSAN a saját tesztjét
+buktatja, a javított tesztek előtt NEM buktatta).
+
+**Teszt:** heartbeat-scriptfirst.selftest.sh összes eset PASS (F1 5-tickes tartós-állapot eset,
+F2 200 KB-os visszajátszás E2BIG nélkül + korlátozott méret, 8 pin gap mindegyike); gate-closure-check.selftest.py
+171 eset PASS (169+2, N2 collapse/printable külön). Mind a 8+3(önkorrekció) mutáns egyenként
+futtatva, a megfelelő teszt(ek) pontosan pirosra váltanak, visszaállítva zöld.
+
+Gate: QA + Cybersec (31505 F1/F2 + pin gap re-gate). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-21 -- card 52114c2f: stale-branch merge of origin/develop (develop tip 1643d16ea)
+
+**Kontextus:** a 0a8acdb0e gated sha-n QA PASS + CYBERSEC GO + CYBERED GO mindhárom designált
+gate megegyezett, de a `marveen-land.sh --card 52114c2f` ekkor már CONFLICTS-szal (exit 4) lefutott:
+a card branch 89 commit-tal volt mögötte origin/develop-nek (merge-base `eda324298`), mert a lock
+hosszan más landolásokon (b3b73630, 270b2950, 84f90b4e stb.) volt. Az egyetlen ütköző fájl a
+DECISIONS.md volt, append-only szerkezetű konfliktus (két oldal más-más új bejegyzést fűzött a
+fájl végéhez, nem egymást módosították).
+
+**Javítás:** `git merge origin/develop` a card/52114c2f ágon, a DECISIONS.md konfliktust a három
+marker-sor eltávolításával oldva fel, mindkét oldal bejegyzéseit sorrendben megtartva (ez a
+bejegyzés most a tényleges fájlvégre kerül, a `decisions_entry_required` kapu miatt). A kártya
+saját tartalma (24 fájl, agent-auth-header munka) a merge után is pontosan egyezik az eredeti
+0a8acdb0e delta-val -- `git diff origin/develop..HEAD --stat` csak a card saját fájljait mutatja.
+
+**Teszt:** `npx tsc --noEmit` tiszta. A card saját 10 érintett teszt-fájlja (agent-auth-header-behaviour,
+agent-id-header-argv-pin, agent-scaffold-dashboard-origin, agent-transcript-caller-gate,
+claude-md-main-section-writers, llm-ledger, memory-save-daily-log-section,
+memory-search-label-backfill, message-close-section, system-directive-auth-section):
+145/145 PASS, Gate-SHA aab1c5f02113ce9b32d085bd9b63e9d38fc03038.
+
+**Ki döntött:** MikroB (msg 23075: retry a land a friss QA PASS-szal). backend végezte a
+stale-branch merge-et és a re-REVIEW-t.
+
+_(A lenti hat 52114c2f-bejegyzés eredetileg a 2026-11-20 -- 7e01b349 kártya bejegyzése után lett beszúrva, nem a fájl végére; ez megsértette a tail-append szabályt. A tartalom változatlan, csak a helyzete mozgatva a fájl végére.)_
+
+## 2026-11-20 -- 52114c2f: per-agent dashboard auth header, slice 2.5 of 2520b85a
+
+**Kontextus:** ccbb718a mérése (2026-11-07, komment 28848): 100% authKind=legacy-token, ZERO authKind=agent-key a flotta valódi HTTP-hívásaiban, mert a CLAUDE.md és a seed-sablonok a megosztott-token curl mintát írták elő. Az enforce mód (ccbb718a) a mai forgalom 100%-át törte volna.
+
+**Döntés:** új `agent-auth-header.sh` helper ad minden agentnek saját kulcs-fejléket (fallback a megosztott tokenre, ha a kulcs hiányzik/lejárt, naplózott figyelmeztetéssel, sosem néma hiba); az 5 generált curl-recept (memory-save, napi napló, memória-keresés, agent-id/system-direktíva, inter-agent válasz) ezt a helpert hívja, a token sosem kerül argv-ba. A memory-save/daily-log inline, duplikált curl-receptjét a `generateClaudeMd` egyszeri new-agent promptjában idempotens generátorokra (`ensureMemorySaveSection`/`ensureDailyLogSection`/`ensureMemorySearchLabelSection`) cserélte -- ez szüntette meg azt a duplikációt, ami korábban a két kópia szétdriftelését okozta.
+
+**Teszt:** `fleet-test.sh` teljes suite (szemafor-szkripten át, 17. szabály), Gate-SHA aea69044cb203c504d2ce2262b0911adc652b7c7: Test Files 1394 passed | 1 skipped (1395), Tests 43860 passed | 132 skipped (43992), 777.44s. `lint-ratchet.sh`: no rule got worse (420 findings, baseline holds). A `claude-md-split-reachability-check.py` conservation-ellenőrzés a 3 printf->agent-auth-header.sh átfogalmazást intentional rewordingként elfogadva (`--update-baseline`, a 2 korábbi, nem-kapcsolódó bejegyzés -- kártya 5dd48e5d -- megtartva).
+
+**Nincs benne:** a 24 órás authKind=agent-key mérés ágensenkénti aránya (cél: minden futó agent > 0) és a ccbb718a utóméréses -- ezek a kulcsok flottaszintű kiosztása (még nem történt meg) után következnek, külön REVIEW-ban.
+
+**Ki döntött:** a kártya saját elfogadási kritériuma (MikroB, 2520b85a slice 2.5). backend végezte. Gate: QA + Cybersec + Cybered (auth minden agentre, flottaszinten).
+
+## 2026-11-20 -- 52114c2f: CYBERED+CYBERSEC NO-GO fix round -- device-key-as-human on 4 routes, caller-unbound helper, header injection, mutant pin
+
+**Kontextus:** RedHat NO-GO 34673 (@470962629): `kind === 'device'` alone treated as human on 4 write routes let an agent's OWN `agent:<id>` key act as a human on llm-ledger budget PUT, agent transcript GET, project-scope stdio connector add, and fleet import apply=true; `store/agent-auth-header.sh` printed ANY named agent's key with no binding to the caller; a present-but-dead key had no fallback (acceptance-criterion mismatch). WhiteHat NO-GO 34686/34694 on the same sha, same core on F1/F2 (independently measured), plus two of its own: a multi-line key file injects a second HTTP header through `curl -H @-`, and the three helper behaviours (own key used, fail-closed with no token, correct key path) are pinned only by the shell selftest -- a targeted/delta-regate vitest run that does not include `store-selftests-all-run.test.ts`'s full-suite auto-discovery would miss a regression in any of them.
+
+**Döntés:**
+
+- F1 (both gates): all 4 sites now route through `rejectIfNotHumanAuth` (`src/web/routes/auth.ts`, pre-existing predicate from card 93ed929a) instead of a bare `kind !== 'session' && kind !== 'device'` check. `connectors.ts` project-stdio-add and `fleet.ts` import apply=true are fixed for symmetry even though both are currently dead code behind their own hard `= true` fail-closed flags (`CONNECTORS_PROJECT_STDIO_FAIL_CLOSED`, `FLEET_IMPORT_APPLY_FAIL_CLOSED`) -- no real key was minted to exercise either live path, matching the standing constraint.
+- F2: `store/agent-auth-header.sh` now derives the caller's own identity (`MARVEEN_AGENT_ID`/`CLAUDE_AGENT_ID`, falling back to a cwd `agents/<name>` match) and refuses, fail-closed, when the requested agent does not match or self cannot be determined at all -- the opposite of `agent-key-secret-guard.py`'s own documented fail-open posture, because this script IS the credential boundary that guard sits in front of. `agent-key-secret-guard.py` now also recognizes `agent-auth-header.sh <other>` invocations (early-exit trigger word + cross-agent-target regex).
+- F3 (acceptance-mismatch): the helper now probes its own key against a cheap authenticated endpoint before trusting it; a 401 triggers the same fallback-with-warning path as a missing/empty key file (an unreachable probe is inconclusive, no behaviour change, to avoid a dashboard-down false fallback).
+- F3 (WhiteHat, header injection): the helper now reads only the FIRST line of the key file and refuses (falls back, same as a dead key) if that line contains a control character or the file has more than one line -- a same-UID writer of the key file can no longer inject a second header line through `curl -H @-`.
+- F4 (WhiteHat, mutant pin): new `src/__tests__/agent-auth-header-behaviour.test.ts` execs `agent-auth-header.sh` directly via `execFileSync` and pins the three behaviours (own key used, fail-closed with no token anywhere, correct agent's key file read) independently of the full-suite selftest auto-discovery, so a targeted delta-regate file list catches a regression in any of the three.
+- L1 (agent-name argument validation) closed as part of F2 (`^[a-z][a-z0-9-]{0,31}$`). L2 (`secret-write-guard.py` missing the `mvdk_` prefix) is NOT part of this round -- separate LOW, not yet started.
+- No real `.dashboard-agent-key` file was minted for any agent during this fix (standing constraint, unchanged).
+
+**Teszt:** `agent-auth-header.selftest.sh` 21/21 PASS (3 new cases for the header-injection fix: multi-line file, embedded control char, well-formed single-line control). `agent-key-secret-guard.selftest.py` 19/19 PASS. `npx tsc --noEmit` clean. Targeted `fleet-test.sh --ref <this commit>` covering `llm-ledger.test.ts`, `llm-ledger-dashboard.test.ts`, `agent-transcript-caller-gate.test.ts`, `agent-transcript.test.ts`, `fleet-import-auth-gate.test.ts`, `fleet-export-auth-gate.test.ts`, `connectors-project-stdio-auth-gate.test.ts`, `agent-auth-header-behaviour.test.ts` -- result recorded in the REVIEW comment, not here (frozen at commit time would go stale).
+
+**Nincs benne:** L2 (`mvdk_` prefix in `secret-write-guard.py`) and the 24h per-agent `authKind=agent-key` adoption measurement from the original 52114c2f entry above -- both separate, not part of this NO-GO's required fix set.
+
+**Ki döntött:** RedHat (cybered) NO-GO 34673 + WhiteHat (cybersec) NO-GO 34686/34694, Fix-Direction from MikroB dispatch msg 22100/22108. backend végezte. Gate: QA + Cybersec + Cybered (delta re-gate on the fix, per MikroB's closing instruction).
+
+## 2026-11-20 -- 52114c2f: CYBERSEC2 NO-GO 34709 follow-up -- main agent (mikrob) had no identity to resolve
+
+**Kontextus:** WhiteHat2 NO-GO 34709 on the round-2 Gate-SHA (407f2feb9): measured that mikrob (the main channel agent, cwd at the repo root) has neither `MARVEEN_AGENT_ID`/`CLAUDE_AGENT_ID` set nor an `agents/mikrob` directory, so F2's self-check in `agent-auth-header.sh` would refuse (exit 2, no header) for every root CLAUDE.md recipe mikrob's own session runs -- a real, live regression this round's F2 fix introduced (route + header-injection fixes confirmed fine by the same verdict).
+
+**Döntés:** `agent-auth-header.sh` resolves `SELF` to `mikrob` specifically when cwd equals `MARVEEN_MAIN` (the repo root) AND no env var is set -- a distinct, equally verifiable cwd signal, not a catch-all (an unknown cwd outside both `agents/` and the repo root is still refused). mikrob has no key file under `AGENTS_ROOT`, so this falls through to the pre-existing missing-key-file fallback and keeps using the shared token, unchanged from before per-agent keys existed, until mikrob gets its own.
+
+**Teszt:** `agent-auth-header.selftest.sh` 21 -> 23/23 PASS (2 new cases per WhiteHat2's own request: main-cwd resolves and gets a header via the shared-token fallback; an unrelated unknown cwd is still refused). `npx tsc --noEmit` clean.
+
+**Ki döntött:** WhiteHat2 (cybersec2) NO-GO 34709, Fix-Direction via MikroB msg 22166. backend végezte. Gate: delta re-gate after the update window (MikroB's instruction).
+
+## 2026-11-20 -- 52114c2f: QA 34710/34711 coverage gap -- F2/F3 mutant pins added
+
+**Kontextus:** QA (34710/34711) on Gate-SHA 407f2feb9: the F4 mutant-pin added for WhiteHat's H1-H3 left F2 (caller binding) and F3 (revoked/junk-key fallback) uncovered by the same targeted-run reasoning -- a later edit to either could silently reopen it without any test in that file's own set going red. Everything else on 407f2feb9 confirmed (140/140 + 21/21 + 19/19, tsc clean).
+
+**Döntés:** `src/__tests__/agent-auth-header-behaviour.test.ts` gets two more direct-exec cases: F2 (a caller bound to one agent requesting another agent's key is refused, exit 2, nothing on stdout) and F3 (a real, local `node:http` mock server answering 401 for one specific key and 200 for every other -- a revoked key falls back to the shared token, a valid key is used as-is).
+
+**Teszt:** `npx tsc --noEmit` clean. Targeted `fleet-test.sh` run pending the active update window (MikroB msg 22146); result recorded in the REVIEW comment.
+
+**Ki döntött:** QA (qa2) 34710/34711. backend végezte. Gate: delta re-gate after the update window.
+
+## 2026-11-20 -- 52114c2f: F3 probe test deadlock (not a contention flake) fixed
+
+**Kontextus:** after the QA F2/F3 pin landed, the F3 "revoked key falls back" test kept failing
+with the same assertion mismatch on every re-run, including under measurably light fleet-test.sh
+lock contention. It had been treated as the sandbox's known, documented contention flake
+(per an earlier round's own comment in the test file) -- that diagnosis was wrong.
+
+**Döntés:** reproduced the failure deterministically (3/3) in total isolation, zero load, outside
+fleet-test.sh. Root cause: `execFileSync` blocks the Node.js event loop for its full duration; the
+F3 tests' mock HTTP server runs in-process (`createServer(...).listen()`), so the event loop that
+would answer the script's own curl probe cannot run until `execFileSync` returns -- which cannot
+happen until curl gets a response. A deadlock, broken only by curl's own `--max-time` timing out.
+Fixed by using `execFile` (async, via `promisify`) only for the two F3 probe tests, so the event
+loop stays free to answer the probe; H1-H3/F2 are unaffected (no in-process server to block on).
+No production file changed.
+
+**Teszt:** reproduced via a standalone Node script outside the suite (curl exit 28, "0 bytes
+received"); fixed version passes standalone (`npx vitest run
+src/__tests__/agent-auth-header-behaviour.test.ts` -- 6/6, 295ms) and via the semaphore
+(`fleet-test.sh --ref 2a6c3ec2134e1dec60b26f0a85e85fefba122039` -- 143/143, 1.81s). `npx tsc
+--noEmit` clean.
+
+**Ki döntött:** backend (sp-systematic-debugging self-catch, not a gate finding). Gate: delta
+re-gate requested (QA + Cybersec + Cybered) on Gate-SHA 2a6c3ec2134e1dec60b26f0a85e85fefba122039.
+
+## 2026-11-20 -- 52114c2f: round 6, widen mikrob cwd resolution past the exact repo root
+
+**Kontextus:** round 5's REVIEW (33801ecf5) got a mixed delta re-gate: QA PASS, but CYBERSEC2 NO-GO 34825 and CYBERED NO-GO 34827 both reconfirmed the SAME MEDIUM independently -- the mikrob branch added in round 1 (CYBERSEC2 NO-GO 34709) only resolved when `$PWD` equalled `$MARVEEN_MAIN` exactly. CYBERED's measurement: an absolute-path command from another cwd, or a `cd` into a `store/` script, is an ordinary state for the main agent's own session, not an edge case -- every such cwd refused (exit 2, empty stdout), and the root CLAUDE.md recipes that pipe this helper into `curl` turn that into a bare 401 with no hint why.
+
+**Döntés:** resolve to "mikrob" for ANY cwd under `$MARVEEN_MAIN`, or under the mikrob worktree (`$MARVEEN_WORKTREES/mikrob`, default `/home/neon/marveen-agent-worktrees/mikrob`), not only an exact match. The `agents/*` branch still runs first and claims anything under `agents/`, so this never overlaps with a real per-agent cwd. Per mikrob's own addendum (msg 22309): a surviving mutant that falls back to the REQUESTED agent name instead of the hardcoded literal `"mikrob"` would pass every existing test (all of them request `mikrob` itself) while handing out ANY agent's key from this cwd -- pinned with a new case (repo root, no id env, requesting a DIFFERENT agent -> still refused) in both the shell selftest and the vitest file, mutation-verified by reproducing the mutant and confirming it fails that specific case, then restoring the fix.
+
+**Rollout (R1, mikrob msg 22309 item 2 -- a condition, not code):** no real `.dashboard-agent-key` file should be minted for any gate-role agent (qa, qa2, cybersec, cybersec2, cybered) until key files are out of same-UID reach. This widened mikrob-resolution change does not itself mint any key (standing constraint, unchanged) -- noting the condition here so the post-landing rollout step respects it.
+
+**Teszt:** `store/agent-auth-header.selftest.sh` 22 -> 26/26 PASS (4 new cases). Targeted `fleet-test.sh` run recorded in the REVIEW comment. `npx tsc --noEmit` clean.
+
+**Ki döntött:** cybersec2 NO-GO 34825, cybered NO-GO 34827 (both reconfirming independently), mikrob addendum msg 22309 (mutant-pin + rollout note). backend végezte. Gate: delta re-gate (QA + Cybersec + Cybered) on this round's Gate-SHA.
+## 2026-11-15 -- card f5f78e13: Token 6b new-card-dispatch context-guard tier (core, opt-in)
+
+**Döntés:** plan-grilling (comment 31685) rendezte a kártya nyitott kérdését: a dispatch-time
+fresh-session mechanizmust a context-guard MEGLÉVŐ handoffRequest/await-handoff state machine-jébe
+drótoztuk be ÖTÖDIK triggerként (actPct, idle-flush, daily mellé), nem egy második mechanizmusként --
+pontosan azt az invariánst követve, amit az auto-restart.ts kommentje már kimond a nightly-restart
+esetre ("Handoffs have ONE owner").
+
+Újdonság: `newCardHandoffEnabled` config flag (default FALSE, mint idleFlushEnabled/dailyHandoffEnabled),
+`getInProgressCardIdForAgent()` DB-helper (db.ts), `newCardDispatchDue`/`forgetNewCardDispatchRecord`
+tiszta predikátumok (context-guard.ts), futtató-oldali drótozás (context-guard-runner.ts) és saját
+prompt-szöveg (`newCardDispatchHandoffPrompt`) -- az utóbbi azért kell, mert a fallback
+`handoffPrompt(pctRound ?? 0, ...)` hamis "~0% kritikus" riasztást adna egy egészséges sessionre,
+ugyanaz a csapda, amit az idle/daily tier is elkerül.
+
+A rekord (lastDispatchedCard Map) KIZÁRÓLAG decision-time-kor halad előre (mint lastDailyHandoff),
+NEM minden sweepnél -- mutáció-teszttel igazolva: az "every-sweep-advance" mutáns némán elnyelné a
+"due" jelzést egy olyan sweepen, amit egy magasabb rangú tier megelőzött volna.
+
+Mérve: tsc --noEmit clean; 341/341 teszt zöld (context-guard family + 2 új fájl: 17 + 3 teszt).
+2 mutáns (ranking csere, every-sweep-advance) mindkettő pirosra fordult a megfelelő tesztnél.
+
+**NYITVA marad (a kártya Kész-ha 2-3. pontja):** a flag ma senkinél nincs bekapcsolva -- a
+token-usage-report.py előtte/utána mérés és az élő "dispatch új session-t hoz létre" ellenőrzés
+csak egy valódi agent bekapcsolása után mérhető. A kártya `in_progress` marad, nem `waiting`.
+
+Gate: QA + Cybersec (a kártya saját gate-sora). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-21 -- card f5f78e13: GuardInputs literal mismatch fix (gate-bounce 23012)
+
+Three consecutive gate verdicts (QA2 FAIL 36983, QA FAIL 36988, CYBERSEC NO-GO 36995) on the
+squash-rebased f5f78e13 (Gate-SHA 670556be1) all flagged the SAME root cause: three test files
+that landed on origin/develop after this card's original gate --
+src/__tests__/context-guard-busy-overdue.test.ts, src/__tests__/context-guard-minutes-cap.test.ts,
+src/__tests__/context-guard-resume-giveup.test.ts -- build GuardInputs literals that predate
+this card's three new required fields (newCardDispatchDue, newCardId, newCardTitle), so tsc
+--noEmit failed with TS2322/TS2345 on all three.
+
+MikroB's gate-bounce decision (comment 23012): not a bounce loop or a design problem, one fix
+round approved, Fix-Direction = add the 3 fields to those 3 literals with the same defaults the
+card's own 7 test files already use (false/null/null), fields stay required (not made optional).
+
+Fix applied, Gate-SHA 0be86ea12265eceb8f60b5844a2e1d462020ef4d: +9/-0 lines across exactly those
+3 files. Verified: npx tsc --noEmit clean; npx vitest run on all 22 context-guard*.test.ts files
+-> 365/365 PASS.
+
+Gate: QA + Cybersec (card's own gate row). **Ki döntött:** backend, Fix-Direction from MikroB.
+
+## 2026-11-17 -- F4.4/F4.5: card worktree cleanup sweep + dispatch/self-advance docs (cards 0ae1166e, f8fde8e9, phase ed332869)
+
+**Döntés:** F4.3 (`marveen-land.sh --card <id>`) and the dispatch/self-advance card-mode wiring (`store/self-advance-pickup.sh` step 4b, gated by `MARVEEN_CARD_WORKTREE=1`) were already fully implemented and shipped before this boot-reconcile pass -- confirmed by git history (real landed merges on origin/develop for card/57044a66, card/d5638d28, card/2e04a52e, card/ae5af304, card/7c79badc, card/214ca312, card/eff5c2f6, card/ff43b10e, card/c4ef7da5, card/594da483, card/ff7ecc74, card/cc72cb3e, card/c2dd3cfa, card/34f846cc, card/1aeed1ca, card/abd4970c and others -- "one real card built and landed in card mode" was already satisfied many times over). ec587638 (F4.3) closed as verification-only (61/61 selftest cases fresh).
+
+What was genuinely missing and built now: `store/marveen-card-worktree-cleanup.sh` (0ae1166e, F4.4) -- removes a per-card worktree only when LANDED (branch tip ancestor of origin/develop) + IDLE (no live process cwd/fd under it, TOCTOU-safe double-scan) + CLEAN (git status empty); dry-run default, `--apply` needs `--yes` (same convention as `wsl-home-cleanup.sh`, rule 22). 16-case selftest in a throwaway fixture repo, mutation-checked (dropping any one of the three classify() checks turns it red).
+
+Docs closed (f8fde8e9, F4.5): README "Git/worktree/landolási infrastruktúra" section's `--card` bullet extended with the opt-in dispatch flag + the new cleanup sweep; `docs/rules/marveen-worktree-fegyelme.md` gained a full "Kártyánkénti ág + worktree (card mode)" section (it previously said nothing about card mode at all, only the per-agent worktree); this DECISIONS.md tail entry.
+
+**Ki döntött:** DevO (fullstack), cards ec587638 + 0ae1166e + f8fde8e9, Gate-SHA 528f6fe72 (0ae1166e; ec587638/f8fde8e9 are verification/docs-only, no new commit of their own).
+
+## 2026-11-21 -- correction to the 2026-11-17 F4.4/F4.5 entry: 0ae1166e went NO-GO then landed clean
+
+**Kontextus:** the 2026-11-17 entry above named Gate-SHA 528f6fe72 for 0ae1166e as if the card were closed. Minutes after that entry was written, Cybered NO-GO (comment 32641, F1-F4: wrong-card branch capture, detached-HEAD landed check, ignored-file deletion, symlinked live-process blindness) and Cybersec NO-GO (comment 32647, 2 MEDIUMs, same removal-path bug class) both landed, and this card's own QA2 FAIL (comment 32655) caught the docs describing a NO-GO'd, unlanded script as shipped -- correctly, at the time.
+
+**Correction:** 0ae1166e went through rework (commits 976274bdc, 6ea8316b4 fixing the F1-F4/F8 findings), then CYBERED GO + CYBERSEC GO (x2) + QA PASS + QA2 PASS on final Gate-SHA `8ff3adcced874713df2c936a9d6d332baaac0036`, landed on origin/develop via merge `23167344f0eb967d155b1b698d53ea545739c4bc` (develop tip `bbb9282ec33b59aa911ab1f36cfc0f68c807b852`), MikroB closure confirmed. `store/marveen-card-worktree-cleanup.sh` as it exists on origin/develop today was re-verified line-by-line against the README/`marveen-worktree-fegyelme.md` text this card (f8fde8e9) ships: `--dry-run` default, `--apply` requires `--yes`, REMOVABLE only when LANDED + IDLE + CLEAN all hold -- the docs text is accurate to the shipped script as of this correction, not merely as originally (prematurely) claimed.
+
+**Ki döntött:** DevO (fullstack), re-verification for card f8fde8e9 after 0ae1166e's final landing. Gate-SHA: see this card's own REVIEW comment.
 2026-11-15, kártya f3343af0 (QA FAIL a koraibbi fixen): a relogin pending-markert elobb csak egy
 friss epoch jelezte, env-fellulirhato uton -- bármely, store/-ba iro folyamat elplanthatta es a
 timestampet újraírva vegtelenul elfojthatta volna a weekly-usage olvasast. Javitas: a marker utja

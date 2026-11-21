@@ -87,8 +87,8 @@ import { fleetVenvBin } from '../fleet-venv.js'
 // with a warning, because a fleet venv at such a path is a config mistake).
 // Exported for unit tests; `exists` is the seam.
 export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists: (p: string) => boolean = existsSync): string {
-  const { prefix, refused } = fleetVenvBin(venvDir, exists)
-  if (refused) logger.warn({ venvDir }, 'fleetVenvPathPrefix: venv path is not absolute or contains a shell-active character; PATH prefix skipped')
+  const { prefix, refused, reason } = fleetVenvBin(venvDir, exists)
+  if (refused) logger.warn({ venvDir, reason }, 'fleetVenvPathPrefix: venv path refused, PATH prefix skipped')
   return prefix
 }
 import { getEffectiveSettingValue } from '../settings-store.js'
@@ -96,7 +96,7 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureLocalFirstSection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureProjectRootAnchor, ensureMessageCloseSection, ensureSkillUsageSection, ensureLanguageSection } from './agent-scaffold.js'
+import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureLocalFirstSection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureProjectRootAnchor, ensureMessageCloseSection, ensureSkillUsageSection, ensureLanguageSection, ensureMemorySaveSection, ensureDailyLogSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -2744,6 +2744,8 @@ async function startAgentProcessUnlocked(
     ensureMessageCloseSection(name)
     ensureSkillUsageSection(name)
     ensureLanguageSection(name)
+    ensureMemorySaveSection(name)
+    ensureDailyLogSection(name)
     ensureProjectRootAnchor(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram

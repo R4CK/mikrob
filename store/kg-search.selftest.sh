@@ -96,16 +96,27 @@ check() {
 # against the pre-fix script (that is the whole point of the mutation check).
 set +e
 
-# -s suppresses "Is a directory" noise (the same tmp.* glob also matches other processes' temp
-# DIRECTORIES, e.g. other mktemp -d callers on this shared box).
-before=$(grep -slF "$FAKE_TOKEN" /tmp/tmp.* 2>/dev/null | wc -l)
+# Card afc0d569 (MikroB measurement, 2026-11-15): the old check globbed SYSTEM /tmp/tmp.* with
+# no file-type restriction, so a FIFO leaked by some OTHER process's mktemp -- open() on a FIFO
+# with no writer blocks forever -- hung this selftest and reddened every land's fleet-test (hit
+# 3bad1678 x2, ec34c025). TMPDIR="$WORKDIR" confines kg-search.sh's own mktemp calls (today it
+# makes none -- see the F1 history above -- this guard is for a regression that reintroduces
+# one) to this test's own private, disposable directory, so nothing from any other process can
+# ever land in the scanned set; `-type f` additionally means only a REGULAR file is ever opened,
+# so even a FIFO/socket/device inside $WORKDIR itself could never reach grep.
+leak_count() {
+  find "$WORKDIR" -maxdepth 1 -type f -name 'tmp.*' -print0 2>/dev/null \
+    | xargs -0 -r grep -slF "$FAKE_TOKEN" 2>/dev/null | wc -l
+}
 
-KG_SEARCH_API="http://127.0.0.1:$PORT" bash "$WORKDIR/kg-search.sh" search --q selftest --project x --json \
+before=$(leak_count)
+
+TMPDIR="$WORKDIR" KG_SEARCH_API="http://127.0.0.1:$PORT" bash "$WORKDIR/kg-search.sh" search --q selftest --project x --json \
   >/dev/null 2>"$WORKDIR/run1.err"
 
-after=$(grep -slF "$FAKE_TOKEN" /tmp/tmp.* 2>/dev/null | wc -l)
+after=$(leak_count)
 [ "$after" -le "$before" ]
-check "$?" "F1: no token-bearing /tmp file left behind after a run ($before -> $after)"
+check "$?" "F1: no token-bearing tmp file left behind after a run, scoped to \$WORKDIR ($before -> $after)"
 
 grep -q "Bearer $FAKE_TOKEN" "$CAPTURE_LOG"
 check "$?" "F1-sanity: server actually received the real Bearer token via the pipe"
