@@ -17,18 +17,106 @@
 // directory does not exist for MAIN_AGENT_ID, which would otherwise mask exactly
 // the regression 965b0b2b found (removing the guard is a RED mutant only if the
 // write target exists to receive it).
-import { describe, it, expect } from 'vitest'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { describe, it, expect, vi } from 'vitest'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import ts from 'typescript'
+import { REPO_ROOT } from './helpers/repo-location.js'
+import { atomicWriteFileSync } from '../web/atomic-write.js'
+
+// Card a88ebef5: PROJECT_ROOT below used to resolve to the real, shared fleet-test.sh tree's repo
+// root, so every write this file's writers performed against `join(PROJECT_ROOT, 'CLAUDE.md')` --
+// even the atomic, skip-if-unchanged ones from the e5c13c0e fix further down -- landed on the one
+// GIT-TRACKED root CLAUDE.md every other vitest worker file in the same fleet-test.sh run shares.
+// Atomicity only rules out a concurrent reader seeing a half-written file; it does nothing about a
+// concurrent `git status --porcelain` (store-selftests-all-run.test.ts's dirty-tree guard) seeing
+// the file genuinely differ from HEAD for the whole write-to-restore window, however short. Measured
+// after the e5c13c0e fix landed: 51c68eeb was STILL refused 3 more times, a different selftest
+// blamed each time (offload-dispatch, post-review, pipx-version-check) -- the same false-attribution
+// class, just not fully closed by atomicity alone. Redirecting PROJECT_ROOT to an isolated mkdtemp
+// sandbox for this file removes the shared tracked file from the write path entirely, the same
+// pattern agent-scaffold-main-claude-md-zero-diff.test.ts already uses for the same class of writer.
+// `vi.mock` factories are hoisted above every static import AND every local top-level `const` in
+// this file -- a sibling module loaded transitively (agent-config.ts) reads PROJECT_ROOT at ITS
+// OWN module top level, so even a lazy getter closing over a local const (initialised further
+// down this file) hits the same TDZ once that sibling resolves first. `mkdtempSync` itself is an
+// imported BUILTIN binding (node:fs, already resolved before user code runs), not a local const,
+// so computing the sandbox path INLINE here, with no local-const indirection, has no ordering
+// dependency on anything else in this file.
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>()
+  return { ...actual, PROJECT_ROOT: mkdtempSync(join(tmpdir(), 'claude-md-writers-root-')) }
+})
 import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
+
+// Card e5c13c0e, second finding (MikroB, msg 21612): agentDir(MAIN_AGENT_ID) below used to
+// resolve to the REAL PROJECT_ROOT/agents/<MAIN_AGENT_ID> -- a path OUTSIDE git's tracked set
+// (agents/ is gitignored) but still physically inside the ONE shared fleet-test.sh tree every
+// concurrent full-suite land run and every sibling vitest worker file reads and writes.
+// `git clean -fdq` (fleet-test.sh's own tree reset, run before every suite) does NOT remove
+// gitignored paths, so a transient create-then-delete fixture here can collide with, or outlive,
+// a concurrent run's own use of the identical path -- measured live: the pin-test's stub
+// (`agents/marveen/CLAUDE.md`) leaked and survived across two of this agent's own scoped test
+// runs, then made schedule-runner-fire-current-def.test.ts's listAgentNames() see a phantom
+// 'marveen' agent directory in a LATER, unrelated full-suite land run, duplicating the 'all'
+// fan-out to the main agent (expected length 1, got 2) -- a real, reproducible FAIL that had
+// nothing to do with that card's own diff.
+//
+// FIX: mock agent-config.js's agentDir() for this file only, redirecting it to a per-process
+// mkdtemp sandbox instead of the real, shared PROJECT_ROOT/agents. The writer functions under
+// test import agentDir from this same module and call it internally (not injectable any other
+// way), so mocking the module -- the pattern already used by agent-extra-channels.test.ts for
+// the same class of problem -- is what actually redirects their internal path resolution too,
+// not just this file's own direct calls.
+const ISOLATED_AGENTS_BASE = mkdtempSync(join(tmpdir(), 'claude-md-writers-agents-'))
+vi.mock('../web/agent-config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/agent-config.js')>()
+  return { ...actual, agentDir: (name: string) => join(ISOLATED_AGENTS_BASE, name) }
+})
 import { agentDir } from '../web/agent-config.js'
 import * as agentScaffold from '../web/agent-scaffold.js'
 import { buildAgentIdHeaderBody } from '../web/agent-scaffold.js'
 
-const WEB_TS_PATH = join(PROJECT_ROOT, 'src', 'web.ts')
-const AGENT_PROCESS_TS_PATH = join(PROJECT_ROOT, 'src', 'web', 'agent-process.ts')
+// Card e5c13c0e: the restore below targets the real GIT-TRACKED root CLAUDE.md, shared by every
+// concurrent fleet-test.sh run and every other vitest worker file in THIS run. A plain
+// `writeFileSync` truncates the file before writing the new bytes (open with O_TRUNC, then a
+// separate write() syscall) -- not atomic, so a concurrent `git status --porcelain` (exactly what
+// store-selftests-all-run.test.ts's dirty-tree guard does, around each of its 165 sequential
+// selftests) can observe the file mid-truncate and report it as unexpectedly modified, blaming
+// whichever selftest happened to be running at that microsecond. Measured: 51c68eeb/8ca1f91d land
+// attempts were refused on "left the shared tracked tree dirty: M CLAUDE.md" a DIFFERENT selftest
+// each time (offload-dispatch, then mopsion-suite-run) -- consistent with a timing-dependent false
+// attribution, not a real defect in either selftest (both green standalone, every time).
+//
+// THE FIX, two parts: (1) skip the write ENTIRELY when the content already matches (true on every
+// passing run, since every writer here is asserted to be a no-op for MAIN_AGENT_ID) -- zero writes
+// means zero race window in the common case; (2) when a write IS needed (a writer actually failed
+// its no-op contract), use atomicWriteFileSync (write-to-sibling-tmp + rename) so the ONE
+// unavoidable write is atomic -- a concurrent reader sees either the old or the new content,
+// never a truncated intermediate state.
+export function restoreTrackedFileIfChanged(path: string, original: string): void {
+  let current: string
+  try {
+    current = readFileSync(path, 'utf-8')
+  } catch {
+    atomicWriteFileSync(path, original)
+    return
+  }
+  if (current !== original) atomicWriteFileSync(path, original)
+}
+
+// Source files to parse are read from the REAL checkout (REPO_ROOT, independent of the config.js
+// mock above) -- only the writers' own write TARGET (ROOT_CLAUDE_MD_PATH, via the mocked
+// PROJECT_ROOT) is redirected.
+const WEB_TS_PATH = join(REPO_ROOT, 'src', 'web.ts')
+const AGENT_PROCESS_TS_PATH = join(REPO_ROOT, 'src', 'web', 'agent-process.ts')
 const ROOT_CLAUDE_MD_PATH = join(PROJECT_ROOT, 'CLAUDE.md')
+
+// Seed the isolated copy with the real committed content so "leaves it untouched" stays a
+// meaningful assertion (byte-for-byte against what is actually committed), not an assertion about
+// an empty sandbox file.
+writeFileSync(ROOT_CLAUDE_MD_PATH, readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8'), 'utf-8')
 
 // Card 7e202dbf (RedHat F1, on f22ef741/965b0b2b): the ORIGINAL regex here
 // (`ensure\w*Section\(\s*MAIN_AGENT_ID\s*\)`) was blind to a mutant that keeps the
@@ -138,8 +226,9 @@ describe('f22ef741/7e202dbf: every MAIN-branch CLAUDE.md section-writer gives 0 
       const agentAfter = readFileSync(agentClaudeMdPath, 'utf-8')
       expect(agentAfter, `${name} wrote into agentDir(MAIN_AGENT_ID)/CLAUDE.md`).toBe(agentStub)
     } finally {
-      // Always restore the real committed file byte-for-byte, regardless of outcome.
-      writeFileSync(ROOT_CLAUDE_MD_PATH, rootBefore, 'utf-8')
+      // Restore the real committed file byte-for-byte, regardless of outcome -- but only touch
+      // disk (atomically) if a writer actually changed it. See restoreTrackedFileIfChanged above.
+      restoreTrackedFileIfChanged(ROOT_CLAUDE_MD_PATH, rootBefore)
 
       if (agentClaudeMdPreexisted && agentClaudeMdBackup !== null) {
         writeFileSync(agentClaudeMdPath, agentClaudeMdBackup, 'utf-8')

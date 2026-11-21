@@ -28,6 +28,7 @@ import {
 import { RESERVED_AGENT_IDS, safeJoin, sanitizeAgentName } from './sanitize.js'
 import { detachSkillSymlinkIfAny } from './skill-map-provisioner.js'
 import { importedLabelColor } from '../css-color.js'
+import { isForbiddenAssignee, isInvalidAssigneeShape } from './kanban-assignee-guard.js'
 import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
 import { getBindings } from './vault-bindings.js'
@@ -1358,13 +1359,22 @@ export function importFleet(
         if (!c.id || !c.title || !c.status || !c.priority || c.sort_order == null) {
           logger.warn({ id: c.id }, 'Fleet import: skipping kanban card with missing required fields'); continue
         }
+        // Card 30aa8b29 R3: this import writes straight to sqlite, bypassing the
+        // createKanbanCard/route guard that refuses assignee="mikrob" (Peti 10943). A peer's
+        // export is untrusted input -- sanitize the same way importedLabelColor above does,
+        // rather than rejecting the whole card.
+        let safeAssignee = c.assignee ?? null
+        if (isInvalidAssigneeShape(safeAssignee) || isForbiddenAssignee(safeAssignee)) {
+          logger.warn({ id: c.id }, 'Fleet import: card assignee is forbidden or malformed, importing unassigned')
+          safeAssignee = null
+        }
         db.prepare(
           `INSERT OR IGNORE INTO kanban_cards
            (id, title, description, test_steps, status, assignee, priority, project,
             due_date, start_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at,
             claimed_by, claimed_at, claim_expires_at, version)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
+        ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, safeAssignee,
           c.priority, c.project ?? null, c.due_date ?? null, c.start_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null,
           // The claim lock rides along: a card someone was working on stays

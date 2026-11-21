@@ -518,6 +518,28 @@ for bad_value in 0 -5 1.5 "" 00 010 9223372036854775807; do
     ok "MIN_AGE_HOURS='$bad_value': nothing was classified as removable (refused before classifying)"
   fi
 done
+
+# 9-DIGIT CEILING BOUNDARY PIN (card e2425f05, scope extension comment 33299, Cybered GO 33297 on
+# 8cb1e168): the guard regex is ^[1-9][0-9]{0,8}$ -- at most 9 digits total. The bad_value loop
+# above never tests a value AT the digit-count boundary, so a {0,9} or {0,7} mutant (one digit
+# too many or too few allowed) survives it. 999999999 (exactly 9 digits) must be ACCEPTED;
+# 1000000000 (10 digits) must be REFUSED.
+MIN_AGE_HOURS=999999999
+out="$(main --dry-run 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "MIN_AGE_HOURS=999999999 (9 digits, the ceiling): main() runs, not refused"
+else
+  bad "MIN_AGE_HOURS=999999999 (9 digits, the ceiling) was refused (rc=$rc), expected to run" "$out"
+fi
+
+MIN_AGE_HOURS=1000000000
+out="$(main --dry-run 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ]; then
+  ok "MIN_AGE_HOURS=1000000000 (10 digits, one over the ceiling): main() refuses to run (rc=$rc)"
+else
+  bad "MIN_AGE_HOURS=1000000000 (10 digits, one over the ceiling) exited 0, expected a refusal" "$out"
+fi
+
 MIN_AGE_HOURS="$old_min_age_hours"
 touch -d '1 hour ago' "$minage_dir"
 normal_out="$(main --dry-run 2>&1)"; normal_rc=$?

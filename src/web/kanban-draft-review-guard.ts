@@ -31,7 +31,7 @@
 import { getKanbanCard, getKanbanComments } from '../db.js'
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
-import { GENERATED_COMMENT_AUTHORS, type LandedVerdict } from './kanban-landed-guard.js'
+import { isGeneratedCommentAuthor, type LandedVerdict } from './kanban-landed-guard.js'
 
 /**
  * The review marker, at the START of a line.
@@ -124,7 +124,7 @@ export function newestDraftAt(comments: readonly Comment[]): number | null {
 export function hasDraftReview(comments: readonly Comment[], newestDraft: number): boolean {
   return comments.some(
     (c) =>
-      !GENERATED_COMMENT_AUTHORS.has((c.author ?? '').toLowerCase()) &&
+      !isGeneratedCommentAuthor(c.author) &&
       (c.created_at ?? 0) >= newestDraft &&
       DRAFT_REVIEW_RX.test(c.content ?? '')
   )
