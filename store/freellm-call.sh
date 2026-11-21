@@ -255,6 +255,25 @@ fi
 # ---- read prompt ---------------------------------------------------------------
 PROMPT="${*:-$(cat)}"
 
+# F8 skill pack (card 2746165b, phase 82a113ba): prepend the compiled rule+pitfall pack for
+# this task type (store/llm-skill-packs/<task>.txt, built by llm-skill-pack-build.py from the
+# F3 route-table task types) before anything else touches PROMPT, so the content gate below
+# also scans the pack text. FREELLM_TASK_LABEL is caller-supplied and untrusted as a path
+# component -- charset-validated here (mirrors local-llm.sh's --task allowlist) before any
+# join, falling back to "default" on a bad name, a missing pack, or a missing pack dir.
+# Best-effort: never blocks the actual API call.
+PACK_TASK="$FREELLM_TASK_LABEL"
+[[ "$PACK_TASK" =~ ^[a-z0-9_-]{1,64}$ ]] || PACK_TASK="default"
+PACK_DIR="$ROOT/store/llm-skill-packs"
+PACK_FILE="$PACK_DIR/$PACK_TASK.txt"
+[[ -f "$PACK_FILE" ]] || { PACK_TASK="default"; PACK_FILE="$PACK_DIR/default.txt"; }
+if [[ -f "$PACK_FILE" ]]; then
+  PACK_SHA="$(sha256sum "$PACK_FILE" 2>/dev/null | cut -c1-12)"
+  PROMPT="$(cat "$PACK_FILE")"$'\n\n---\n\n'"$PROMPT"
+  printf '%s\t%s\t%s\tfreellm\tpack=%s@%s\n' "$(date +%s)" "$FREELLM_CALLER" "$PACK_TASK" "$PACK_TASK" "$PACK_SHA" \
+    >> "$ROOT/store/llm-skill-pack-usage.log" 2>/dev/null || true
+fi
+
 # ---- content gate: real category check (F2, WhiteHat2 NO-GO 25366) -------------------
 # The card's Korlatok name gemini-agy-category-check.py as the content gate that must run
 # caller-side; the removed inline regex was a weaker, English-only, word-list copy, trivially
