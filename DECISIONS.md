@@ -31100,3 +31100,118 @@ F2 200 KB-os visszajátszás E2BIG nélkül + korlátozott méret, 8 pin gap min
 futtatva, a megfelelő teszt(ek) pontosan pirosra váltanak, visszaállítva zöld.
 
 Gate: QA + Cybersec (31505 F1/F2 + pin gap re-gate). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-21 -- card 52114c2f: stale-branch merge of origin/develop (develop tip 1643d16ea)
+
+**Kontextus:** a 0a8acdb0e gated sha-n QA PASS + CYBERSEC GO + CYBERED GO mindhárom designált
+gate megegyezett, de a `marveen-land.sh --card 52114c2f` ekkor már CONFLICTS-szal (exit 4) lefutott:
+a card branch 89 commit-tal volt mögötte origin/develop-nek (merge-base `eda324298`), mert a lock
+hosszan más landolásokon (b3b73630, 270b2950, 84f90b4e stb.) volt. Az egyetlen ütköző fájl a
+DECISIONS.md volt, append-only szerkezetű konfliktus (két oldal más-más új bejegyzést fűzött a
+fájl végéhez, nem egymást módosították).
+
+**Javítás:** `git merge origin/develop` a card/52114c2f ágon, a DECISIONS.md konfliktust a három
+marker-sor eltávolításával oldva fel, mindkét oldal bejegyzéseit sorrendben megtartva (ez a
+bejegyzés most a tényleges fájlvégre kerül, a `decisions_entry_required` kapu miatt). A kártya
+saját tartalma (24 fájl, agent-auth-header munka) a merge után is pontosan egyezik az eredeti
+0a8acdb0e delta-val -- `git diff origin/develop..HEAD --stat` csak a card saját fájljait mutatja.
+
+**Teszt:** `npx tsc --noEmit` tiszta. A card saját 10 érintett teszt-fájlja (agent-auth-header-behaviour,
+agent-id-header-argv-pin, agent-scaffold-dashboard-origin, agent-transcript-caller-gate,
+claude-md-main-section-writers, llm-ledger, memory-save-daily-log-section,
+memory-search-label-backfill, message-close-section, system-directive-auth-section):
+145/145 PASS, Gate-SHA aab1c5f02113ce9b32d085bd9b63e9d38fc03038.
+
+**Ki döntött:** MikroB (msg 23075: retry a land a friss QA PASS-szal). backend végezte a
+stale-branch merge-et és a re-REVIEW-t.
+
+_(A lenti hat 52114c2f-bejegyzés eredetileg a 2026-11-20 -- 7e01b349 kártya bejegyzése után lett beszúrva, nem a fájl végére; ez megsértette a tail-append szabályt. A tartalom változatlan, csak a helyzete mozgatva a fájl végére.)_
+
+## 2026-11-20 -- 52114c2f: per-agent dashboard auth header, slice 2.5 of 2520b85a
+
+**Kontextus:** ccbb718a mérése (2026-11-07, komment 28848): 100% authKind=legacy-token, ZERO authKind=agent-key a flotta valódi HTTP-hívásaiban, mert a CLAUDE.md és a seed-sablonok a megosztott-token curl mintát írták elő. Az enforce mód (ccbb718a) a mai forgalom 100%-át törte volna.
+
+**Döntés:** új `agent-auth-header.sh` helper ad minden agentnek saját kulcs-fejléket (fallback a megosztott tokenre, ha a kulcs hiányzik/lejárt, naplózott figyelmeztetéssel, sosem néma hiba); az 5 generált curl-recept (memory-save, napi napló, memória-keresés, agent-id/system-direktíva, inter-agent válasz) ezt a helpert hívja, a token sosem kerül argv-ba. A memory-save/daily-log inline, duplikált curl-receptjét a `generateClaudeMd` egyszeri new-agent promptjában idempotens generátorokra (`ensureMemorySaveSection`/`ensureDailyLogSection`/`ensureMemorySearchLabelSection`) cserélte -- ez szüntette meg azt a duplikációt, ami korábban a két kópia szétdriftelését okozta.
+
+**Teszt:** `fleet-test.sh` teljes suite (szemafor-szkripten át, 17. szabály), Gate-SHA aea69044cb203c504d2ce2262b0911adc652b7c7: Test Files 1394 passed | 1 skipped (1395), Tests 43860 passed | 132 skipped (43992), 777.44s. `lint-ratchet.sh`: no rule got worse (420 findings, baseline holds). A `claude-md-split-reachability-check.py` conservation-ellenőrzés a 3 printf->agent-auth-header.sh átfogalmazást intentional rewordingként elfogadva (`--update-baseline`, a 2 korábbi, nem-kapcsolódó bejegyzés -- kártya 5dd48e5d -- megtartva).
+
+**Nincs benne:** a 24 órás authKind=agent-key mérés ágensenkénti aránya (cél: minden futó agent > 0) és a ccbb718a utóméréses -- ezek a kulcsok flottaszintű kiosztása (még nem történt meg) után következnek, külön REVIEW-ban.
+
+**Ki döntött:** a kártya saját elfogadási kritériuma (MikroB, 2520b85a slice 2.5). backend végezte. Gate: QA + Cybersec + Cybered (auth minden agentre, flottaszinten).
+
+## 2026-11-20 -- 52114c2f: CYBERED+CYBERSEC NO-GO fix round -- device-key-as-human on 4 routes, caller-unbound helper, header injection, mutant pin
+
+**Kontextus:** RedHat NO-GO 34673 (@470962629): `kind === 'device'` alone treated as human on 4 write routes let an agent's OWN `agent:<id>` key act as a human on llm-ledger budget PUT, agent transcript GET, project-scope stdio connector add, and fleet import apply=true; `store/agent-auth-header.sh` printed ANY named agent's key with no binding to the caller; a present-but-dead key had no fallback (acceptance-criterion mismatch). WhiteHat NO-GO 34686/34694 on the same sha, same core on F1/F2 (independently measured), plus two of its own: a multi-line key file injects a second HTTP header through `curl -H @-`, and the three helper behaviours (own key used, fail-closed with no token, correct key path) are pinned only by the shell selftest -- a targeted/delta-regate vitest run that does not include `store-selftests-all-run.test.ts`'s full-suite auto-discovery would miss a regression in any of them.
+
+**Döntés:**
+
+- F1 (both gates): all 4 sites now route through `rejectIfNotHumanAuth` (`src/web/routes/auth.ts`, pre-existing predicate from card 93ed929a) instead of a bare `kind !== 'session' && kind !== 'device'` check. `connectors.ts` project-stdio-add and `fleet.ts` import apply=true are fixed for symmetry even though both are currently dead code behind their own hard `= true` fail-closed flags (`CONNECTORS_PROJECT_STDIO_FAIL_CLOSED`, `FLEET_IMPORT_APPLY_FAIL_CLOSED`) -- no real key was minted to exercise either live path, matching the standing constraint.
+- F2: `store/agent-auth-header.sh` now derives the caller's own identity (`MARVEEN_AGENT_ID`/`CLAUDE_AGENT_ID`, falling back to a cwd `agents/<name>` match) and refuses, fail-closed, when the requested agent does not match or self cannot be determined at all -- the opposite of `agent-key-secret-guard.py`'s own documented fail-open posture, because this script IS the credential boundary that guard sits in front of. `agent-key-secret-guard.py` now also recognizes `agent-auth-header.sh <other>` invocations (early-exit trigger word + cross-agent-target regex).
+- F3 (acceptance-mismatch): the helper now probes its own key against a cheap authenticated endpoint before trusting it; a 401 triggers the same fallback-with-warning path as a missing/empty key file (an unreachable probe is inconclusive, no behaviour change, to avoid a dashboard-down false fallback).
+- F3 (WhiteHat, header injection): the helper now reads only the FIRST line of the key file and refuses (falls back, same as a dead key) if that line contains a control character or the file has more than one line -- a same-UID writer of the key file can no longer inject a second header line through `curl -H @-`.
+- F4 (WhiteHat, mutant pin): new `src/__tests__/agent-auth-header-behaviour.test.ts` execs `agent-auth-header.sh` directly via `execFileSync` and pins the three behaviours (own key used, fail-closed with no token anywhere, correct agent's key file read) independently of the full-suite selftest auto-discovery, so a targeted delta-regate file list catches a regression in any of the three.
+- L1 (agent-name argument validation) closed as part of F2 (`^[a-z][a-z0-9-]{0,31}$`). L2 (`secret-write-guard.py` missing the `mvdk_` prefix) is NOT part of this round -- separate LOW, not yet started.
+- No real `.dashboard-agent-key` file was minted for any agent during this fix (standing constraint, unchanged).
+
+**Teszt:** `agent-auth-header.selftest.sh` 21/21 PASS (3 new cases for the header-injection fix: multi-line file, embedded control char, well-formed single-line control). `agent-key-secret-guard.selftest.py` 19/19 PASS. `npx tsc --noEmit` clean. Targeted `fleet-test.sh --ref <this commit>` covering `llm-ledger.test.ts`, `llm-ledger-dashboard.test.ts`, `agent-transcript-caller-gate.test.ts`, `agent-transcript.test.ts`, `fleet-import-auth-gate.test.ts`, `fleet-export-auth-gate.test.ts`, `connectors-project-stdio-auth-gate.test.ts`, `agent-auth-header-behaviour.test.ts` -- result recorded in the REVIEW comment, not here (frozen at commit time would go stale).
+
+**Nincs benne:** L2 (`mvdk_` prefix in `secret-write-guard.py`) and the 24h per-agent `authKind=agent-key` adoption measurement from the original 52114c2f entry above -- both separate, not part of this NO-GO's required fix set.
+
+**Ki döntött:** RedHat (cybered) NO-GO 34673 + WhiteHat (cybersec) NO-GO 34686/34694, Fix-Direction from MikroB dispatch msg 22100/22108. backend végezte. Gate: QA + Cybersec + Cybered (delta re-gate on the fix, per MikroB's closing instruction).
+
+## 2026-11-20 -- 52114c2f: CYBERSEC2 NO-GO 34709 follow-up -- main agent (mikrob) had no identity to resolve
+
+**Kontextus:** WhiteHat2 NO-GO 34709 on the round-2 Gate-SHA (407f2feb9): measured that mikrob (the main channel agent, cwd at the repo root) has neither `MARVEEN_AGENT_ID`/`CLAUDE_AGENT_ID` set nor an `agents/mikrob` directory, so F2's self-check in `agent-auth-header.sh` would refuse (exit 2, no header) for every root CLAUDE.md recipe mikrob's own session runs -- a real, live regression this round's F2 fix introduced (route + header-injection fixes confirmed fine by the same verdict).
+
+**Döntés:** `agent-auth-header.sh` resolves `SELF` to `mikrob` specifically when cwd equals `MARVEEN_MAIN` (the repo root) AND no env var is set -- a distinct, equally verifiable cwd signal, not a catch-all (an unknown cwd outside both `agents/` and the repo root is still refused). mikrob has no key file under `AGENTS_ROOT`, so this falls through to the pre-existing missing-key-file fallback and keeps using the shared token, unchanged from before per-agent keys existed, until mikrob gets its own.
+
+**Teszt:** `agent-auth-header.selftest.sh` 21 -> 23/23 PASS (2 new cases per WhiteHat2's own request: main-cwd resolves and gets a header via the shared-token fallback; an unrelated unknown cwd is still refused). `npx tsc --noEmit` clean.
+
+**Ki döntött:** WhiteHat2 (cybersec2) NO-GO 34709, Fix-Direction via MikroB msg 22166. backend végezte. Gate: delta re-gate after the update window (MikroB's instruction).
+
+## 2026-11-20 -- 52114c2f: QA 34710/34711 coverage gap -- F2/F3 mutant pins added
+
+**Kontextus:** QA (34710/34711) on Gate-SHA 407f2feb9: the F4 mutant-pin added for WhiteHat's H1-H3 left F2 (caller binding) and F3 (revoked/junk-key fallback) uncovered by the same targeted-run reasoning -- a later edit to either could silently reopen it without any test in that file's own set going red. Everything else on 407f2feb9 confirmed (140/140 + 21/21 + 19/19, tsc clean).
+
+**Döntés:** `src/__tests__/agent-auth-header-behaviour.test.ts` gets two more direct-exec cases: F2 (a caller bound to one agent requesting another agent's key is refused, exit 2, nothing on stdout) and F3 (a real, local `node:http` mock server answering 401 for one specific key and 200 for every other -- a revoked key falls back to the shared token, a valid key is used as-is).
+
+**Teszt:** `npx tsc --noEmit` clean. Targeted `fleet-test.sh` run pending the active update window (MikroB msg 22146); result recorded in the REVIEW comment.
+
+**Ki döntött:** QA (qa2) 34710/34711. backend végezte. Gate: delta re-gate after the update window.
+
+## 2026-11-20 -- 52114c2f: F3 probe test deadlock (not a contention flake) fixed
+
+**Kontextus:** after the QA F2/F3 pin landed, the F3 "revoked key falls back" test kept failing
+with the same assertion mismatch on every re-run, including under measurably light fleet-test.sh
+lock contention. It had been treated as the sandbox's known, documented contention flake
+(per an earlier round's own comment in the test file) -- that diagnosis was wrong.
+
+**Döntés:** reproduced the failure deterministically (3/3) in total isolation, zero load, outside
+fleet-test.sh. Root cause: `execFileSync` blocks the Node.js event loop for its full duration; the
+F3 tests' mock HTTP server runs in-process (`createServer(...).listen()`), so the event loop that
+would answer the script's own curl probe cannot run until `execFileSync` returns -- which cannot
+happen until curl gets a response. A deadlock, broken only by curl's own `--max-time` timing out.
+Fixed by using `execFile` (async, via `promisify`) only for the two F3 probe tests, so the event
+loop stays free to answer the probe; H1-H3/F2 are unaffected (no in-process server to block on).
+No production file changed.
+
+**Teszt:** reproduced via a standalone Node script outside the suite (curl exit 28, "0 bytes
+received"); fixed version passes standalone (`npx vitest run
+src/__tests__/agent-auth-header-behaviour.test.ts` -- 6/6, 295ms) and via the semaphore
+(`fleet-test.sh --ref 2a6c3ec2134e1dec60b26f0a85e85fefba122039` -- 143/143, 1.81s). `npx tsc
+--noEmit` clean.
+
+**Ki döntött:** backend (sp-systematic-debugging self-catch, not a gate finding). Gate: delta
+re-gate requested (QA + Cybersec + Cybered) on Gate-SHA 2a6c3ec2134e1dec60b26f0a85e85fefba122039.
+
+## 2026-11-20 -- 52114c2f: round 6, widen mikrob cwd resolution past the exact repo root
+
+**Kontextus:** round 5's REVIEW (33801ecf5) got a mixed delta re-gate: QA PASS, but CYBERSEC2 NO-GO 34825 and CYBERED NO-GO 34827 both reconfirmed the SAME MEDIUM independently -- the mikrob branch added in round 1 (CYBERSEC2 NO-GO 34709) only resolved when `$PWD` equalled `$MARVEEN_MAIN` exactly. CYBERED's measurement: an absolute-path command from another cwd, or a `cd` into a `store/` script, is an ordinary state for the main agent's own session, not an edge case -- every such cwd refused (exit 2, empty stdout), and the root CLAUDE.md recipes that pipe this helper into `curl` turn that into a bare 401 with no hint why.
+
+**Döntés:** resolve to "mikrob" for ANY cwd under `$MARVEEN_MAIN`, or under the mikrob worktree (`$MARVEEN_WORKTREES/mikrob`, default `/home/neon/marveen-agent-worktrees/mikrob`), not only an exact match. The `agents/*` branch still runs first and claims anything under `agents/`, so this never overlaps with a real per-agent cwd. Per mikrob's own addendum (msg 22309): a surviving mutant that falls back to the REQUESTED agent name instead of the hardcoded literal `"mikrob"` would pass every existing test (all of them request `mikrob` itself) while handing out ANY agent's key from this cwd -- pinned with a new case (repo root, no id env, requesting a DIFFERENT agent -> still refused) in both the shell selftest and the vitest file, mutation-verified by reproducing the mutant and confirming it fails that specific case, then restoring the fix.
+
+**Rollout (R1, mikrob msg 22309 item 2 -- a condition, not code):** no real `.dashboard-agent-key` file should be minted for any gate-role agent (qa, qa2, cybersec, cybersec2, cybered) until key files are out of same-UID reach. This widened mikrob-resolution change does not itself mint any key (standing constraint, unchanged) -- noting the condition here so the post-landing rollout step respects it.
+
+**Teszt:** `store/agent-auth-header.selftest.sh` 22 -> 26/26 PASS (4 new cases). Targeted `fleet-test.sh` run recorded in the REVIEW comment. `npx tsc --noEmit` clean.
+
+**Ki döntött:** cybersec2 NO-GO 34825, cybered NO-GO 34827 (both reconfirming independently), mikrob addendum msg 22309 (mutant-pin + rollout note). backend végezte. Gate: delta re-gate (QA + Cybersec + Cybered) on this round's Gate-SHA.

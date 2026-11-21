@@ -130,8 +130,11 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
     expect(fnBody).toContain('${dashboardOrigin}/api/memories')
   })
 
-  it('references dashboardOrigin in the daily-log API curl example', () => {
-    expect(fnBody).toContain('${dashboardOrigin}/api/daily-log')
+  // Card 52114c2f: the inline daily-log curl example moved out of this one-time prompt and
+  // into ensureDailyLogSection's generated block (buildDailyLogBody), to stop the two copies
+  // drifting apart; the prompt now points at the generator instead of duplicating the recipe.
+  it('points at ensureDailyLogSection instead of duplicating the daily-log curl example', () => {
+    expect(fnBody).toContain('ensureDailyLogSection')
   })
 
   // GH #944: the curl examples always used the absolute ${tokenPath}, but the

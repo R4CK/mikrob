@@ -141,8 +141,7 @@ describe('buildSystemDirectiveAuthBody', () => {
     // token-in-argv guard scans agent-scaffold.ts and rejects that shape; the
     // pipe form is what the rest of these instructions already use.
     const body = buildSystemDirectiveAuthBody('agent-a')
-    expect(body).toContain("printf 'Authorization: Bearer %s\\n'")
-    expect(body).toContain('curl -H @- -s')
+    expect(body).toContain('agent-auth-header.sh agent-a | curl -H @- -s')
     expect(body).not.toContain('-H "Authorization: Bearer')
   })
 })
@@ -259,7 +258,10 @@ describe('the directive channel owns a sender id that no other writer uses (card
 // comparison is exact -- every word, every line -- and only the path VALUE is abstracted away).
 describe('the STATIC CLAUDE.md block matches the generator (card f390a08e)', () => {
   const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
-  const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+  const AUTH_HEADER_SCRIPT_RE = /\S+\/store\/agent-auth-header\.sh/g
+  const normalize = (s: string) => s
+    .replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+    .replace(AUTH_HEADER_SCRIPT_RE, '<PROJECT_ROOT>/store/agent-auth-header.sh')
 
   it('the committed section in THIS checkout\'s own CLAUDE.md equals the generator output, modulo PROJECT_ROOT', async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')

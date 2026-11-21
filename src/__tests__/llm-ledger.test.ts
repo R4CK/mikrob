@@ -239,6 +239,21 @@ describe('llm_ledger: route GET/PUT /api/llm-ledger/budget/:agent', () => {
     expect(asDevice.status).toBe(200)
   })
 
+  // Card 52114c2f (CYBERED NO-GO 34673, F1): reproduced live by RedHat before this fix -- PUT as
+  // kind 'device' device 'agent:backend3' gave 200 and wrote the budget row for backend3 (i.e.
+  // ANOTHER agent could lower/raise qa2's budget using its own agent:<id> key). The plain
+  // kind!=='session'/'device' check above let this through because it never distinguished an
+  // agent device key from a human one.
+  const AGENT_KEY = { kind: 'device', device: 'agent:backend3' } as const
+  it('PUT refuses an agent:<id> device key (403) -- an agent is not a human, even with its own key (F1)', async () => {
+    const asAgentKey = await putAs(AGENT_KEY, 'fron-ted', { daily_budget: 1 })
+    expect(asAgentKey.status).toBe(403)
+    expect(getAgentLlmBudget('fron-ted').source).toBe('platform') // nothing written
+    // Control: a genuinely human device key (not the agent:<id> shape) still works, unaffected.
+    const asHumanDevice = await putAs(DEVICE, 'fron-ted', { daily_budget: 100 })
+    expect(asHumanDevice.status).toBe(200)
+  })
+
   it('PUT takes updated_by from the authenticated principal, never from the request body (F1)', async () => {
     await putAs(SESSION, 'backend3', { daily_budget: 100, actor: 'mikrob (forged)' })
     const row = getDb().prepare('SELECT updated_by FROM agent_llm_budget WHERE agent_id = ?').get('backend3') as { updated_by: string }
