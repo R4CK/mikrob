@@ -30611,3 +30611,237 @@ el, a többi 46 zöld maradt.
 landolási-szemafor várakozás és félreértés miatt, lásd a kártya kommentjeit). Gate-SHA:
 72a3eb448a585a2d9ccc03b70a394db9f9d667ec (sha `git rev-parse HEAD`-ből kopizva). Gate: QA +
 Cybersec (kártya leírása szerint).
+## 2026-11-20 -- 84f90b4e: card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh
+
+**Context:** proposed scope rejected (MikroB decision, card comment, 2026-11-20): a raw
+`DECISIONS.md merge=union` .gitattributes driver would have been the GENERAL auto-merge an
+earlier card (cbb66abf) explicitly rejected, since it would silently union a real edit to an
+existing entry, not just a tail append. Re-scoped to the real, measured gap instead: today
+(2026-11-20) a2028f35 (4 times), c4590365, 6d8ef952 and 30aa8b29 each needed a manual
+develop-into-card merge with a hand-resolved DECISIONS.md conflict and a fresh gate round --
+despite `store/decisions-sync-resolve.sh` (card edf9c837) already resolving exactly this
+append-append shape, proven by its own --selftest. The gap was never correctness; it was that
+nothing called it. An agent syncing by hand runs a plain `git merge origin/develop`, hits the
+conflict, and resolves it manually, because `docs/rules/marveen-worktree-fegyelme.md` never
+mentioned the resolver existed.
+
+**Fix:** `store/card-branch-sync-develop.sh [<worktree>] [<integration-ref>]` -- the one command
+to run instead of a raw `git merge`. Performs the merge itself; on a conflict limited to
+DECISIONS.md alone, calls `decisions-sync-resolve.sh` (forwarding the caller's integration ref
+via `DECISIONS_SYNC_INTEGRATION_REFS`, since that script checks MERGE_HEAD against a hardcoded
+default of `origin/develop origin/main` otherwise) and commits the result; any other conflict
+shape is left open exactly as a plain `git merge` would leave it. After a successful merge
+(auto-resolved or clean), re-verifies the append-only invariant via
+`decisions_append_only_check_merge` and `git reset --hard`s back to the pre-merge commit if it
+is ever violated, so a false-positive resolve can never land silently. Documented in
+`docs/rules/marveen-worktree-fegyelme.md` so it is actually found.
+
+**Test:** `src/__tests__/card-branch-sync-develop-selftest.test.ts` running the script's own
+`--selftest` (4 cases: the exact a2028f35 shape resolves with no manual step and the correct
+tail order; a real edit to an existing entry stays refused with the merge left open; a conflict
+on a non-DECISIONS file stays refused; already-up-to-date is a clean no-op) plus 2 structural
+pin tests. Mutation-verified: reverting the `DECISIONS_SYNC_INTEGRATION_REFS="$REF"` forwarding
+(the actual bug caught while building this) turns the a2028f35-shape case and its structural pin
+red; restored byte-identical, confirmed via diff. `fleet-test.sh`-equivalent local run (this file
++ decisions-sync-resolve-selftest + decisions-append-union-selftest): 3 Test Files passed (3), 11
+Tests passed (11). `npx tsc --noEmit` clean.
+
+**Nincs benne:** wiring this into `marveen-land.sh`/`mopsion-land.sh` themselves -- those already
+call `try_append_union` directly in the correct (ours-first) direction; this card is only the
+missing SYNC-direction caller for agents' own branch updates.
+
+**Ki döntött:** backend, re-scoped per MikroB's decision (card comment, msg 22392). Gate: QA +
+Cybersec per the card's own Gate line.
+
+## 2026-11-20 -- 84f90b4e delta: dirty-tree guard + reset --merge, not reset --hard (Cybersec NO-GO 35056)
+
+**Context:** Cybersec NO-GO 35056 on `3980043db`: `card-branch-sync-develop.sh`'s append-only
+backstop undid a resolved-but-invariant-violating merge with `git reset --hard "$before_sha"`,
+which discards ANY local tracked edit unconditionally -- a WhiteHat scratch probe lost an
+uncommitted `tracked.txt` change this way, where a plain `git merge` would have kept it.
+
+**Fix:** two changes, both in `store/card-branch-sync-develop.sh`. (1) A dirty-tree guard at the
+top: `git status --porcelain` non-empty refuses immediately (exit 2, clear message) before the
+script touches anything, so a caller with uncommitted local changes never reaches the merge in
+the first place. (2) The backstop undo now uses `git reset --merge "$before_sha"` instead of
+`reset --hard` -- defense in depth for the undo path itself, in case anything local is present
+by the time it runs despite the guard above.
+
+**Test:** `src/__tests__/card-branch-sync-develop-selftest.test.ts`, +3 cases. Selftest Case 5
+(dirty tracked file + the a2028f35-shape conflict that would otherwise auto-resolve): refused
+before any commit, the dirty file's content survives byte-for-byte. Two structural pins:
+`reset --merge "$before_sha"` present and `reset --hard "$before_sha"` absent; the dirty-tree
+`git status --porcelain` check present. Mutation-verified: removing the dirty-tree guard turns
+Case 5's "refused"/"no commit" assertions red (the file-survives assertion stays green on this
+particular fixture, since nothing in it happens to touch `tracked.txt`); reverting
+`reset --merge` back to `reset --hard` flips both structural pin assertions. Restored
+byte-identical via diff both times. Local run: 1 Test File passed (1), 6 Tests passed (6).
+
+**Nincs benne:** no change to the resolver logic itself (`decisions-sync-resolve.sh`,
+`try_append_union`) -- this delta is only about what happens to the WORKTREE when the backstop
+fires, not when or why it fires.
+
+**Ki döntött:** Cybersec NO-GO (35056, Gate-SHA 3980043db). backend fixed it (the script's own
+author, per the 4b rule another agent gates it). Gate: QA + Cybersec per MikroB's dispatch.
+
+## 2026-11-20 -- 84f90b4e delta: dated-header normalize + REVIEW-time header-format lint (MikroB scope-add 22462)
+
+**Context:** while landing card a01d8a3d, `try_append_union` correctly, but silently, refused to
+auto-resolve a pure-append merge because develop's own DECISIONS.md carried one entry (card
+60aeca01, 2026-11-16) with a bold-text header (`**2026-11-16 -- ...**`) instead of the file's
+`## YYYY-MM-DD -- Title` convention. MikroB scoped the fix into this card (comment 1795199177):
+normalize that one header (header line only, no content change), and add a check that catches a
+non-dated DECISIONS.md header at REVIEW time, so the next one is caught before it reaches
+develop, not discovered mid-land.
+
+**Fix:**
+1. `DECISIONS.md`: the card 60aeca01 entry's header changed from
+   `**2026-11-16 -- Kártya 60aeca01: ...**` to `## 2026-11-16 -- Kártya 60aeca01: ...` -- header
+   line only, the entry's content below it is untouched.
+2. `src/web/kanban-decisions-guard.ts`: new `decisionsHeaderGuardVerdict()`, wired into both
+   kanban close paths (PUT and /move) in `src/web/routes/kanban.ts`, same place as the existing
+   `decisionsGuardVerdict()`. Blocks a transition into `waiting` when the card's declared
+   Gate-SHA diff adds a DECISIONS.md header that is either (a) a `## ` header missing the leading
+   date (the original a01d8a3d bug: a card-id-first header), or (b) a bold-text header opening
+   with a date instead of `## ` (the card 60aeca01 bug). Unlike the sibling entry-presence guard,
+   this one is NOT scoped to `isNonTrivialCard` -- a malformed header breaks `try_append_union`'s
+   auto-merge for every future card touching that region of the file, regardless of this card's
+   own risk tier. Same `force: true` escape hatch as the existing guard.
+
+**Test:** `src/__tests__/kanban-decisions-guard.test.ts`, +13 cases covering both bad shapes,
+both good shapes (dash and colon date separators), the no-Gate-SHA/no-repo/diff-failure/force/
+non-waiting/re-assert fail-open paths, and that a pre-existing bold header appearing only as
+unchanged context (no leading `+`) never trips it. Mutation-verified: replacing the check's
+result with an always-empty array turns exactly the 3 header-detection assertions red, nothing
+else moves; restored byte-identical via diff. Local run (this file alone): 1 Test File passed
+(1), 33 Tests passed (33). Broader run (this file + the 4 decisions-themed selftest files): 5
+Test Files passed (5), 49 Tests passed (49). 11 kanban-route test files (move/put/dispatch/stuck/
+get-by-id/new-dev-stop wiring) alongside it: 11 Test Files passed (11), 75 Tests passed (75), no
+regression from the new call sites. `npx tsc --noEmit`: clean.
+
+**Nincs benne:** no change to `try_append_union`/`decisions-sync-resolve.sh` themselves, and no
+sweep of the rest of DECISIONS.md for other possible non-dated headers beyond the one MikroB
+named -- this delta is the normalize + the forward-looking lint, not a full-file audit.
+
+**Ki döntött:** MikroB scope-add (card 84f90b4e, comment 1795199177), found while backend was
+landing a01d8a3d. backend implemented. Gate: QA + Cybersec per the card's own Gate line.
+
+## 2026-11-20 -- 84f90b4e delta: header-diff range fix + this card's own header + mutant kills (CYBERSEC NO-GO 35145)
+
+**Context:** CYBERSEC NO-GO 35145 on `14aa85f63`. F1: this card's own prior delta added a
+DECISIONS.md entry with a card-id-first, undated header (line 29660) -- the exact regression the
+card exists to close. Confirmed live by the gate (scratch repo, real
+`store/card-branch-sync-develop.sh`): the dated-header control resolves (rc 0), the card's own
+header refuses (rc 1, `UU DECISIONS.md`). F2: `decisionsHeaderGuardVerdict` only diffed
+`<Gate-SHA>^1 <Gate-SHA>` -- the tip commit alone -- so a bad header added by an EARLIER commit on
+the same card branch (exactly how F1 slipped past its own REVIEW) was invisible to it. Also named:
+two mutants surviving on `card-branch-sync-develop-selftest.test.ts` (M10: the backstop's `if`
+condition replaced with `if false && ! decisions_append_only_check_merge ...`; M11: the
+`reset --merge "$before_sha"` undo line commented out, text kept) and one on
+`kanban-decisions-guard.test.ts` (M7: `isForceActor` dropped, any truthy `force` treated as a
+bypass) -- all three text-preserving, semantics-breaking.
+
+**Fix:**
+1. `DECISIONS.md`: renamed the line-29660 header from `## 84f90b4e: card-branch-sync-develop.sh --
+   the missing caller of decisions-sync-resolve.sh (2026-11-20)` to `## 2026-11-20 -- 84f90b4e:
+   card-branch-sync-develop.sh -- the missing caller of decisions-sync-resolve.sh` -- header line
+   only, no body change.
+2. `src/web/kanban-decisions-guard.ts`: `decisionsHeaderGuardVerdict` now resolves
+   `merge-base(mainRef, Gate-SHA)` first and diffs that against `Gate-SHA`, instead of
+   `Gate-SHA^1`. `resolveCheck()` now also returns the project's `mainRef` (`origin/develop` for
+   marveen) so the header guard can compute it; the sibling entry-presence guard
+   (`decisionsEntryState`, used by `decisionsGuardVerdict`/`decisionsGuardCheck`) is unchanged --
+   NO-GO 35145 named only the header guard's range, not that one.
+3. `store/card-branch-sync-develop.sh`: added selftest Case 6 -- a distant rewrite of an existing
+   entry on the card branch plus a distant, unrelated append on develop (same padded-fixture shape
+   `decisions-append-only-guard.sh`'s own selftest Case 1 uses to force a ZERO-conflict 3-way
+   merge) actually drives the append-only backstop at runtime, unlike Case 5 (which the dirty-tree
+   guard refuses before the backstop is ever reached).
+4. `src/__tests__/kanban-decisions-guard.test.ts`: +4 cases -- the F2 merge-base-range pin (asserts
+   a `merge-base` call against `mainRef`+Gate-SHA happens and no `Gate-SHA^1` diff call is ever
+   made), a merge-base-failure fail-open case, and the two M7-killing negative force rows
+   (`force=true` from a non-allowlisted actor; `force=false` from an allowlisted actor -- neither
+   bypasses).
+
+**Test:** `kanban-decisions-guard.test.ts`: 1 Test File passed (1), 37 Tests passed (37) (was 33).
+`card-branch-sync-develop-selftest.test.ts`: 1 Test File passed (1), 6 Tests passed (6); the
+script's own `--selftest` now runs 14 checks (was 11), all `ok`. `decisions-sync-resolve-selftest`
+alongside both: 3 Test Files passed (3), 48 Tests passed (48). Kanban route regression
+(`kanban-move-audit`, `kanban-dispatch-put`, `kanban-move-expected-status`,
+`kanban-put-unknown-field`): 4 Test Files passed (4), 24 Tests passed (24). `npx tsc --noEmit`:
+clean. `npx eslint` on the 3 touched TS files: clean.
+
+Mutation-verified (card-branch-sync-develop.sh, both restored byte-identical via diff): M10 (`if
+false && ! decisions_append_only_check_merge ...`) turned exactly 3 of Case 6's assertions red
+(rc=0 instead of 2, HEAD not restored, message mismatch); M11 (undo line commented out) turned
+exactly 1 red (HEAD not restored; rc still 2 and the message still fires, since `die 2` itself is
+untouched by this mutant). M7 was not re-mutated this round (the two new negative rows are built
+directly from `isForceActor`'s real two-condition logic -- `force=true`+non-allowlisted and
+`force=false`+allowlisted -- each of which only passes if both conditions are actually checked).
+
+**Nincs benne:** L1-L6 and M8/M9 from the same NO-GO (untracked predictable temp-file name,
+fenced-code false positive, lint weaker than the resolver it protects, route-site wiring
+unpinned, etc.) -- MikroB's scope-add (msg 22501) named only F1, F2, M10/M11 and M7 for this
+round; the rest are tracked in the gate comment for a future round.
+
+**Ki döntött:** CYBERSEC NO-GO (35145, Gate-SHA `14aa85f634a9575843e0cf71905514a297067766`),
+scoped by MikroB (msg 22501). backend fixed it (the guard's own author, per the 4b rule another
+agent gates it). Gate: QA + Cybersec per MikroB's dispatch.
+
+## 2026-11-21 -- 84f90b4e delta: reverted the 60aeca01 header rewrite, fixed the parser instead (MikroB decision msg 22885)
+
+**Context:** the previous round in this card (2026-11-20, see above) normalized the 2026-11-16
+60aeca01 entry's header from its legacy bold form (`**2026-11-16 -- ...**`) to the dated `## `
+convention, because `try_append_union` could not recognise the bold form as an entry boundary.
+That rewrite was itself the mistake: DECISIONS.md is append-only, and an existing entry's header
+is never edited in place, even to fix its formatting. The land script's own `decisions_tail_append_ok`
+check caught it correctly (REFUSED -- not a pure tail append) when this card came up for landing.
+
+**Fix:** reverted the 60aeca01 header back to its original bold form (see the entry dated
+2026-11-16 above, unchanged from the original). Instead, `store/decisions-append-union.sh`'s
+`try_append_union()` now carries a second, hardcoded entry-boundary pattern
+(`header_glob_bold='**[0-9][0-9][0-9][0-9]-*'`), checked alongside the existing `header_glob`
+everywhere the latter was, so a remainder opening with a legacy bold-dated header is recognised
+as a valid new-entry boundary. `src/web/kanban-decisions-guard.ts`'s REVIEW-time guard no longer
+flags an added bold-dated header either (it used to, for exactly the case this round undoes).
+
+**Nincs benne:** no change to the guard's handling of a genuinely UNDATED header (bold or `## `)
+-- that stays refused, same as before this round.
+
+**Mérés:** `decisions-append-union.sh --selftest` +1 case (`a new entry using the legacy
+bold-dated header form still auto-unions`), mutation-verified: reverting the
+`$header_glob|$header_glob_bold` alternation back to `$header_glob` alone turns exactly this case
+red (FAIL, union refused), every other case stays green. `kanban-decisions-guard.test.ts`: 1 new
+case + 5 existing cases' fixtures switched from the no-longer-blocked bold-dated shape to an
+undated `## ` header so they still exercise what they claim (force-actor bypass, M7, F2
+earlier-commit coverage) -- 37/37 PASS. `npx tsc --noEmit` clean.
+
+**Ki döntött:** MikroB (msg 22885, re: my escalation 22884). backend executed. Gate: QA + Cybersec.
+
+## 2026-11-21 -- 84f90b4e delta: escape the literal stars in header_glob_bold (Cybersec NO-GO 36415, F1 MEDIUM)
+
+**Context:** CYBERSEC NO-GO on the previous round (b07086dfc): `header_glob_bold='**[0-9][0-9][0-9][0-9]-*'`
+was used unquoted in `case ... in $header_glob_bold)`, where a leading `**` is two shell glob
+wildcards, not two literal characters. The pattern actually meant "any text, then 4 digits, a
+dash, anything", matching ANY line containing a bare `YYYY-` anywhere -- not only a line that
+starts with `**YYYY-`. Measured regression (cybersec2): both sides continuing the LAST EXISTING
+entry with ordinary prose that happens to contain a date, or a ticket-number-shaped string,
+wrongly auto-unioned instead of being refused -- gluing two unrelated continuations under one
+entry's header.
+
+**Fix:** escaped the stars, `'\*\*[0-9][0-9][0-9][0-9]-*'`. Added two probes to the function's
+own pattern-safety self-check (a dated prose line, a ticket-number-shaped string) and two
+selftest cases pinning the regression directly (`both-continue-existing-entry-dated-prose-mid-line`,
+`both-continue-existing-entry-ticket-number-mid-line`), both refused with the fix, both
+mutation-verified to resolve (wrongly) when the stars are unescaped again.
+
+**Mérés:** `decisions-append-union.sh --selftest`: full suite PASS with the escaped pattern.
+Mutation check: reverting to the unescaped pattern makes the two new regression probes trip the
+function's own safety self-check, which then refuses EVERY call -- the whole selftest suite goes
+from PASS to a mass FAIL (confirms the probes are load-bearing, caught via the existing
+fail-closed mechanism rather than a new one). `npx tsc --noEmit` clean. `kanban-decisions-guard.test.ts`
++ `card-branch-sync-develop-selftest.test.ts`: 44/44 PASS (unaffected by this delta -- no TS file
+changed).
+
+**Ki döntött:** Cybersec (cybersec2) NO-GO, komment 36415, MikroB dispatch 22893/22897. backend
+fixed it. Gate: QA2 + Cybersec (delta re-gate).

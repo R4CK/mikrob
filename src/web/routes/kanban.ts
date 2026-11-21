@@ -49,7 +49,7 @@ import { cardLandingsGuardVerdict } from '../kanban-card-landings-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
-import { decisionsGuardVerdict, decisionsGuardCheck } from '../kanban-decisions-guard.js'
+import { decisionsGuardVerdict, decisionsGuardCheck, decisionsHeaderGuardVerdict } from '../kanban-decisions-guard.js'
 import { degradedOrchestratorRefusal } from '../../degraded-orchestrator-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
@@ -1661,6 +1661,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = await decisionsGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
     }
+    {
+      const v = await decisionsHeaderGuardVerdict(id, data.status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'decisions_header_dated_required', error: v.message }, 409); return true }
+    }
     // Card d5638d28: same refusal as the /move handler's sibling block -- guarding one of the
     // two close paths guards neither (card 9cc72f2c's own reasoning, above).
     if (data.status === 'done') {
@@ -2000,6 +2004,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     {
       const v = await decisionsGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
+    }
+    {
+      const v = await decisionsHeaderGuardVerdict(id, status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'decisions_header_dated_required', error: v.message }, 409); return true }
     }
     // Card d5638d28: refuse a transition INTO done while degraded-orchestrator mode is on,
     // regardless of who/what is moving the card -- see degraded-orchestrator-guard.ts.
