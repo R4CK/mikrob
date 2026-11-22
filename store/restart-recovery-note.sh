@@ -34,8 +34,9 @@
 # sends. A duplicate recovery note is cheap noise; a silently-skipped one after a real restart is
 # the incident this script exists to prevent.
 #
-# Exit: 0 ok | 1 the initial kanban/messages fetch failed (fail-closed visibility, not silent) |
-#       2 bad usage
+# Exit: 0 ok | 1 the initial kanban/messages fetch failed (fail-closed visibility, not silent), or
+#       (in --apply mode) at least one recovery note did not get a 2xx -- the boot id is then NOT
+#       recorded, so the next --apply retries | 2 bad usage
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,6 +85,13 @@ fi
 
 KANBAN_JSON="$(curl -s --max-time 15 -H @"$hdr_file" "$DASH/api/kanban?status=in_progress&limit=500" 2>/dev/null)"
 [ -n "$KANBAN_JSON" ] || die 1 "GET /api/kanban?status=in_progress failed (empty response)"
+# CYBERSEC NO-GO 37713 LOW-4: the full kanban JSON (card descriptions included) used to travel as
+# a python3 argv string -- visible to same-user processes via /proc/<pid>/cmdline, and capped at
+# roughly 131072 bytes (E2BIG past ~57 in-flight cards at today's size). A temp file has neither
+# limit and is not readable via /proc/<pid>/cmdline.
+KANBAN_FILE="$(mktemp)"
+trap 'rm -f "$hdr_file" "$KANBAN_FILE"' EXIT
+printf '%s' "$KANBAN_JSON" > "$KANBAN_FILE"
 
 BACKLOG_JSON="$(curl -s --max-time 15 -H @"$hdr_file" "$DASH/api/messages/backlog" 2>/dev/null)"
 [ -n "$BACKLOG_JSON" ] || BACKLOG_JSON="[]"
@@ -97,9 +105,8 @@ waiting_cards_for_stale() {
   python3 -c '
 import json, sys
 stale_lines = sys.argv[1]
-kanban = json.loads(sys.argv[2])
-dash = sys.argv[3]
-hdr_file = sys.argv[4]
+dash = sys.argv[2]
+hdr_file = sys.argv[3]
 import subprocess
 
 pairs = []  # (agent, card)
@@ -123,13 +130,14 @@ for agent, card in pairs:
     if rec.get("status") == "waiting":
         created_at = rec.get("created_at", 0)
         print(f"{agent}\t{card}\t{created_at}")
-' "$STALE_OUT" "$KANBAN_JSON" "$DASH" "$hdr_file"
+' "$STALE_OUT" "$DASH" "$hdr_file"
 }
 
 PLAN="$(python3 -c '
 import json, sys
 
-kanban = json.loads(sys.argv[1])
+with open(sys.argv[1]) as _f:
+    kanban = json.load(_f)
 backlog = json.loads(sys.argv[2])
 stale_waiting_raw = sys.argv[3]  # agent\tcard\tcreated_at lines
 gate_agents = sys.argv[4].split()
@@ -167,12 +175,16 @@ plan = []
 for agent, cards in sorted(agent_cards.items()):
     cards_sorted = [cid for cid, _ in sorted(cards, key=lambda x: x[1])]
     b = backlog_by_agent.get(agent)
-    backlog_count = b.get("count", 0) if b else 0
-    backlog_age_s = b.get("oldest_age_s", b.get("oldest_age", 0)) if b else 0
+    # CYBERSEC NO-GO 37713 MEDIUM-1: GET /api/messages/backlog returns {agent, pending,
+    # oldestAgeSeconds} (src/db.ts getPendingBacklogByAgent) -- "count"/"oldest_age_s" never
+    # existed on the real endpoint, so every note silently said "Unread backlog: none" even with
+    # real pending messages. Read the real keys first; keep the old names only as a fallback.
+    backlog_count = b.get("pending", b.get("count", 0)) if b else 0
+    backlog_age_s = b.get("oldestAgeSeconds", b.get("oldest_age_s", b.get("oldest_age", 0))) if b else 0
     plan.append({"agent": agent, "cards": cards_sorted, "backlog_count": backlog_count, "backlog_age_s": backlog_age_s})
 
 print(json.dumps(plan))
-' "$KANBAN_JSON" "$BACKLOG_JSON" "$(waiting_cards_for_stale)" "$GATE_AGENTS")"
+' "$KANBAN_FILE" "$BACKLOG_JSON" "$(waiting_cards_for_stale)" "$GATE_AGENTS")"
 
 [ -n "$PLAN" ] && [ "$PLAN" != "null" ] || die 1 "failed to build recovery plan (malformed kanban/backlog JSON)"
 
@@ -188,6 +200,7 @@ fixed_text = sys.argv[3]
 dash = sys.argv[4]
 hdr_file = sys.argv[5]
 
+all_2xx = True
 for entry in plan:
     agent = entry["agent"]
     cards = entry["cards"]
@@ -205,16 +218,30 @@ for entry in plan:
          "--data-binary", payload, f"{dash}/api/messages"],
         capture_output=True, text=True,
     )
-    print(f"SENT agent={agent} http={res.stdout.strip()} cards={cards_part} backlog={backlog_part}")
+    http_code = res.stdout.strip()
+    if not http_code.startswith("2"):
+        all_2xx = False
+    print(f"SENT agent={agent} http={http_code} cards={cards_part} backlog={backlog_part}")
+
+# CYBERSEC NO-GO 37713 LOW-1: in apply mode, the exit code tells the caller whether every send
+# came back 2xx -- a failed send must not let the caller record the boot id (that would block the
+# retry for the rest of this boot), matching the header comment "fails toward over-notifying, not
+# under-notifying". dry-run never sends anything, so it always counts as fully successful.
+sys.exit(0 if (mode == "dry-run" or all_2xx) else 1)
 ' "$PLAN" "$mode" "$FIXED_TEXT" "$DASH" "$hdr_file"
 }
 
 send_or_print
+SEND_RC=$?
 
 if [ "$mode" = "apply" ]; then
-  if [ -n "$boot_id" ]; then
+  if [ "$SEND_RC" -ne 0 ]; then
+    echo "WARN: not every recovery note returned 2xx -- boot id NOT recorded, next --apply will retry" >&2
+  elif [ -n "$boot_id" ]; then
     printf '%s' "$boot_id" > "$STATE_FILE"
   else
     echo "WARN: boot id unknown ($BOOT_ID_FILE unreadable) -- idempotency not recorded, next --apply will resend" >&2
   fi
 fi
+
+exit "$SEND_RC"
