@@ -377,9 +377,10 @@ describe('D3e: freellmHintLooksSafe enforces its length boundary precisely (card
 })
 
 // --- D4 (RedHat 25333): the Retry button was 68x38px at 375px width, under the 44px touch target
-// (rule 13). Fixed by extending the existing #localLlmPage min-height convention to #freellmPage.
-describe('D4: freellm buttons meet the 44px touch-target minimum (rule 13)', () => {
-  it('scopes a 44px min-height rule to #freellmPage, matching the #localLlmPage convention', () => {
-    expect(CSS).toMatch(/#freellmPage \.btn-compact,\s*\n#freellmPage \.btn-primary,\s*\n#freellmPage \.btn-secondary \{ min-height: 44px; \}/)
+// (rule 13). Fixed by extending the existing #localLlmPage min-height convention to #freellmPage;
+// card f1e33cfb merged both (plus geminiCallsPage) into #providersPage's tabs, re-scoping the rule.
+describe('D4: Providers page buttons meet the 44px touch-target minimum (rule 13)', () => {
+  it('scopes a 44px min-height rule to #providersPage, covering all three merged tabs', () => {
+    expect(CSS).toMatch(/#providersPage \.btn-compact,\s*\n#providersPage \.btn-primary,\s*\n#providersPage \.btn-secondary \{ min-height: 44px; \}/)
   })
 })

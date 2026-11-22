@@ -262,7 +262,7 @@ window._i18n.en = {
 
   'nav.updates':      'Updates',
   'nav.costs':        'Costs',
-  'nav.llmMonitor':   'LLM monitor',
+  'nav.llmMonitor':   'Live load',
 
   // --- Overview ---
   'overview.card.team_meta':     'live status',
@@ -715,6 +715,16 @@ window._i18n.en = {
   'skills.health.nodesc':        'Missing description',
   'skills.health.empty':         'Empty',
 
+  // --- Providers page (card f1e33cfb): Local model / FreeLLM / Gemini merged, tabbed ---
+  'providers.page_title':        'Providers',
+  'providers.page_subtitle':     'Local model, FreeAPI LLM and Gemini -- switch, status, call log',
+  'providers.tab.local':         'Local model',
+  'providers.tab.freellm':       'FreeLLM',
+  'providers.tab.gemini':        'Gemini',
+  'nav.providers':                'Providers',
+  'localLlm.subtab.status':      'Status',
+  'localLlm.subtab.catalog':     'Catalog',
+
   // --- Local LLM (Ollama offload) ---
   'localLlm.page_title':         'Local LLM',
   'localLlm.page_subtitle':      'Control the local offload model (Ollama on the WSL GPU)',
@@ -729,7 +739,7 @@ window._i18n.en = {
   'localLlm.firstDraft.save_error': 'Could not save the switch, please retry.',
   'localLlm.firstDraft.load_error': 'Could not load the switch state.',
   'localLlm.offload.title':      'Offload aggressiveness',
-  'localLlm.offload.desc':       'How much mechanical code to hand to the local GPU. Higher = more offload, fewer Claude tokens.',
+  'localLlm.offload.desc':       'How hard a task may be and still get a LOCAL verdict. Every task gets a local draft (since 2026-09-18, card 3c075d74) -- this only decides how much online review it needs: LOCAL means a lighter check, ONLINE means a mandatory full online review. Higher = more tasks stay LOCAL.',
   'localLlm.offload.off':        'Off (0)',
   'localLlm.offload.max':        'Max (100)',
   'localLlm.offload.optimal':    'Optimum',
@@ -2645,6 +2655,15 @@ window._i18n.en = {
   'overview.card.team':          'Team',
   'overview.card.activity':      'Activity',
   'overview.meta.live':          'live status',
+  'overview.llmToday.title':        'LLM today',
+  'overview.llmToday.detail_link':  'Details →',
+  'overview.llmToday.gpu_busy':     'Busy',
+  'overview.llmToday.gpu_idle':     'Idle',
+  'overview.llmToday.gpu_line':     'GPU: {label} ({util}) · VRAM {vram}',
+  'overview.llmToday.no_gpu':       'No GPU detected',
+  'overview.llmToday.calls_today':  '{n} local call(s) today',
+  'overview.llmToday.error':        'Could not load.',
+
   'overview.spectrum.title':      'Local LLM utilization',
   'overview.spectrum.collecting': 'Collecting data…',
   'overview.spectrum.no_gpu':     'No GPU data.',
@@ -2709,8 +2728,8 @@ window._i18n.en = {
   'geminiCalls.rating.result.eldobva':   'Discarded',
   'geminiCalls.rating.result.unknown':   'Unknown',
   // LLM monitor page (card 87be1810)
-  'llmMon.page_title':          'LLM monitor',
-  'llmMon.page_subtitle':       'Task timeline per agent, workload and model usage in the selected window',
+  'llmMon.page_title':          'Live load',
+  'llmMon.page_subtitle':       'GPU utilization, model distribution, task timeline per agent and model usage in the selected window',
   'llmMon.window.label':        'Window',
   'llmMon.window.1h':           'Past 1 hour',
   'llmMon.window.6h':           'Past 6 hours',

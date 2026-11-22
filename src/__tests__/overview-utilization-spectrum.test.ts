@@ -33,13 +33,15 @@ function fnBody(source: string, startMarker: string): string {
 }
 
 describe('overview spectrum: markup placement and accessibility', () => {
-  it('sits between the stat tiles and the team/activity grid on the Áttekintés page', () => {
-    const statsIdx = HTML.indexOf('id="statSkillsSub"')
+  // Card f1e33cfb (phase 36dc9240, item 4 "Live load"): relocated from the Áttekintés page onto
+  // the Live-load page (llmMonitorPage), inside the .llm-mon-live-grid, above the task-timeline.
+  it('sits inside llmMonitorPage, before the task-timeline KPIs', () => {
+    const pageIdx = HTML.indexOf('id="llmMonitorPage"')
     const spectrumIdx = HTML.indexOf('id="ovwSpectrumCard"')
-    const gridIdx = HTML.indexOf('class="overview-grid"')
-    expect(statsIdx).toBeGreaterThan(-1)
-    expect(spectrumIdx).toBeGreaterThan(statsIdx)
-    expect(gridIdx).toBeGreaterThan(spectrumIdx)
+    const kpisIdx = HTML.indexOf('id="llmMonKpis"')
+    expect(pageIdx).toBeGreaterThan(-1)
+    expect(spectrumIdx).toBeGreaterThan(pageIdx)
+    expect(kpisIdx).toBeGreaterThan(spectrumIdx)
   })
 
   it('the canvas is decorative (aria-hidden) -- the data must live elsewhere as real text', () => {
@@ -113,13 +115,16 @@ describe('overview spectrum: data source with graceful fallback', () => {
 })
 
 describe('overview spectrum: lifecycle wired into page navigation', () => {
-  it('starts when the Áttekintés page loads', () => {
-    const body = fnBody(APP, 'async function loadOverview()')
-    expect(body).toContain('startOvwSpectrum()')
+  // Card f1e33cfb: relocated onto the Live-load page (pageId 'llmMonitor'); starts/stops there now,
+  // not with Overview's own loadOverview().
+  it('starts when the Live-load page loads, not from loadOverview()', () => {
+    const overviewBody = fnBody(APP, 'async function loadOverview()')
+    expect(overviewBody).not.toContain('startOvwSpectrum()')
+    expect(APP).toContain("if (pageId === 'llmMonitor') { loadLlmMonitor(); startOvwSpectrum(); startOvwLlmDist() }")
   })
 
-  it('stops (interval + rAF) when navigating away from the page', () => {
-    const idx = APP.indexOf("if (pageId !== 'overview') stopOvwSpectrum()")
+  it('stops (interval + rAF) when navigating away from the Live-load page', () => {
+    const idx = APP.indexOf("if (pageId !== 'llmMonitor') { stopOvwSpectrum(); stopOvwLlmDist() }")
     expect(idx).toBeGreaterThan(-1)
   })
 
@@ -131,7 +136,7 @@ describe('overview spectrum: lifecycle wired into page navigation', () => {
 
   it('the poll loop self-stops if the page was hidden without switchPage running (safety net)', () => {
     const body = fnBody(APP, 'function startOvwSpectrum()')
-    expect(body).toContain("document.getElementById('overviewPage').hidden")
+    expect(body).toContain("document.getElementById('llmMonitorPage').hidden")
     expect(body).toContain('stopOvwSpectrum()')
   })
 })
