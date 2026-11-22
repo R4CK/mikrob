@@ -1,32 +1,44 @@
-// Card dcb196f9 (MikroB, URGENT, Peti Telegram 14489/14492, 2026-11-22): "Megoldas-tar" live
-// nebula graph -- agents + knowledge-graph nodes as one connected graph, with glowing search
-// trails from an agent node to its hit nodes that cool down and fade over ~15s.
+// Card dcb196f9 (MikroB, URGENT): "Megoldas-tar" live nebula graph -- agents + knowledge-graph
+// nodes as one connected graph, with glowing search trails from an agent node to its hit nodes
+// that cool down and fade over ~15s.
+//
+// Round 4 (Peti requirement change, msg 23664, 2026-11-22, Telegram 14507-14510): the flat 2D
+// canvas view becomes a real 3D, mouse/touch-rotatable scene -- dense glowing particle-cloud
+// clusters (not a grid), a volumetric gas haze per cluster, thin links between hub nodes, curved
+// 3D search-trail arcs, orbit controls with idle auto-rotate that stops on interaction. Built with
+// three.js (CDN, pinned 0.128.0, verified live -- see index.html) + its classic OrbitControls.js,
+// after checking for a pre-built 3D force-graph lib (rule 10/GitHub-first): the "dense glowing
+// irregular blob of particles per cluster" + volumetric haze + custom cooling-trail look needs
+// per-cluster custom Object3D construction either way, so plain three.js (full control, smaller
+// dependency surface, no extra force-graph/d3-force-3d/kapsule chain to vendor) was the better fit
+// than wrapping a generic force-graph library and fighting its own node-rendering assumptions.
 //
 // Pair-BE: a1d57d99 (backend2) -- GET /api/kg/graph and GET /api/kg/activity. Both cards were
-// `planned`/undispatched when this was built, so EVERY network call below degrades to the
+// `planned`/undispatched when this was first built, so EVERY network call below degrades to the
 // existing honest "not available yet" state (kgShowDisabledState, already proven on this same
 // page for the other /api/kg/* endpoints) -- it never fabricates demo nodes/edges/trails for a
 // real user (rule 13 of kodminosegi-alapelvek: UI always shows real DB-backed data). The mock
-// data in this file is used ONLY by the unit tests and by the local fps-measurement harness
-// (never reachable from loadKgNebula()/the real page).
+// data is used ONLY by the unit tests and the local fps-measurement harness (never reachable from
+// kgNebulaLoad()/the real page).
 //
-// Proposed contract (posted as dcb196f9 comment + a1d57d99 cross-reference, since BE had not
-// posted one yet at build time -- align or override in review):
+// Proposed contract (unchanged from round 1, still the mock data shape the unit tests use):
 //   GET /api/kg/graph?project=&limit=500
 //     -> { nodes: [{ id, type, label, project }], edges: [{ source, target, type }] }
 //   GET /api/kg/activity?since=<ms>
 //     -> { events: [{ agent_id, ts, hit: [nodeId, ...] }], config: { fadeDurationMs } }
-//   config.fadeDurationMs is read every poll and overrides the 15000 default (code-quality rule
-//   14: the fade time is not a baked-in constant, it is always what the last config response
-//   said, with 15000 as the only-until-BE-lands fallback).
+//   config.fadeDurationMs is read every poll and overrides the 15000 default (rule 14: the fade
+//   time is not a baked-in constant, it is always what the last config response said).
 
 const KG_NEBULA_DEFAULT_FADE_MS = 15000
 const KG_NEBULA_POLL_MS = 4000
 
 // Colour-blind-safe-ish categorical palette: golden-angle hue stepping (137.508 deg) starting
 // from a fixed seed hue, fixed S/L tuned for legibility on the dark nebula background. Index i
-// maps 1:1 to the CSS class `.kg-neb-c<i>` in style.css (canvas drawing uses the hex value
-// directly -- CSS classes are only for the legend DOM, which must stay free of inline styles).
+// maps 1:1 to the CSS class `.kg-neb-c<i>` in style.css (legend DOM only -- CSP: class-only, no
+// inline style attributes; the 3D scene uses the same hex/hsl values directly as material colour,
+// which is WebGL state, not a CSSOM/style mutation, so it is outside style-src's scope). This same
+// palette is reused for BOTH the per-agent colour and the per-topic-cluster colour -- two
+// different index spaces (agent index vs. bucket index), same deterministic function.
 const KG_NEBULA_PALETTE_SIZE = 24
 function kgNebulaPaletteColor(index) {
   const i = ((index % KG_NEBULA_PALETTE_SIZE) + KG_NEBULA_PALETTE_SIZE) % KG_NEBULA_PALETTE_SIZE
@@ -100,7 +112,7 @@ function kgNebulaTrailRgba(baseColorCss, nowMs, startMs, fadeMs) {
   const r = Math.round(255 * (1 - coolT) + base.r * coolT)
   const g = Math.round(255 * (1 - coolT) + base.g * coolT)
   const b = Math.round(255 * (1 - coolT) + base.b * coolT)
-  return `rgba(${r},${g},${b},${alpha.toFixed(3)})`
+  return { r, g, b, alpha, css: `rgba(${r},${g},${b},${alpha.toFixed(3)})` }
 }
 
 function kgNebulaHslToRgb(hslCss) {
@@ -137,95 +149,126 @@ function kgNebulaActiveTrails(events, nowMs, fadeMs) {
   return out
 }
 
-// --- Deterministic static layout ---------------------------------------------------------------
-// Golden-angle spiral seeded ONLY by stable input order (node array index + project bucket), no
-// Math.random anywhere -- same nodes/edges in, same positions out, every time (testable).
-// One-time settle (repulsion + spring), then frozen: the "736 nodes without freezing" requirement
-// is about the BROWSER not locking up, which a per-frame O(n^2) simulation on 736 nodes would
-// risk -- settling once and redrawing static positions every frame is what the fps budget needs.
+// --- Deterministic 3D layout --------------------------------------------------------------------
+// Everything below is a pure function of (nodes, edges) -- same input, same output, every time,
+// hash-seeded (never Math.random), so it is unit-testable without a WebGL context and the "736
+// nodes without freezing" requirement needs no per-frame simulation: it settles once on load,
+// positions are frozen, and the render loop only moves the camera (OrbitControls) and the trails.
+
+// Bucket key is project+type together, not project alone (kept from round 3, msg 23643): a single
+// bucket per project reads as one uniformly-dense field, not distinct topic clouds. type+project
+// is real, structural data from the graph contract (never a fabricated "community" label).
+function kgNebulaBucketKey(node) {
+  return (node.project || '_global') + '::' + (node.type || '_')
+}
 
 function kgNebulaProjectBuckets(nodes) {
-  const projects = [...new Set(nodes.map((n) => n.project || '_global'))].sort()
+  const keys = [...new Set(nodes.map(kgNebulaBucketKey))].sort()
   const map = new Map()
-  projects.forEach((p, i) => map.set(p, i))
+  keys.forEach((k, i) => map.set(k, i))
   return map
 }
 
-function kgNebulaInitialPositions(nodes, width, height) {
+// Even distribution of n points over a sphere of the given radius -- the classic golden-angle
+// (Fibonacci sphere) construction, fully deterministic. Used for BOTH the topic-cluster centres
+// and the agent ring (now a sphere, not a 2D circle), so "5 agents" and "12 clusters" both spread
+// out in true 3D instead of collapsing onto one plane.
+function kgNebulaFibonacciSpherePoints(n, radius) {
+  const N = Math.max(1, n)
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5))
+  const points = []
+  for (let i = 0; i < N; i++) {
+    const y = N === 1 ? 0 : 1 - (i / (N - 1)) * 2
+    const radiusAtY = Math.sqrt(Math.max(0, 1 - y * y))
+    const theta = goldenAngle * i
+    points.push({
+      x: Math.cos(theta) * radiusAtY * radius,
+      y: y * radius,
+      z: Math.sin(theta) * radiusAtY * radius,
+    })
+  }
+  return points
+}
+
+const KG_NEBULA_CLUSTER_ORBIT_R = 150
+const KG_NEBULA_BLOB_BASE = 13
+const KG_NEBULA_BLOB_MIN = 22
+const KG_NEBULA_BLOB_MAX = 68
+
+// Per-node 3D position: a topic-cluster centre (one per project::type bucket, spread on a sphere)
+// plus a deterministic jittered offset INSIDE a blob around that centre. The offset radius is
+// biased toward the centre (rFrac = w^1.6, not w) -- a dense glowing core fading to a sparse halo
+// at the edge, which is what reads as "nebula" in Peti's reference images, instead of a uniform
+// ball of dots.
+function kgNebulaNode3DPositions(nodes) {
   const buckets = kgNebulaProjectBuckets(nodes)
   const nBuckets = Math.max(1, buckets.size)
-  const clusterR = Math.min(width, height) * 0.32
-  // Spiral radius must scale with how many nodes land in each cluster -- a fixed per-node step
-  // (the original *9) spirals a few-hundred-node bucket out past the canvas edge before the sim
-  // even starts; the settle step then just pins those nodes to the boundary, which measured as a
-  // hollow corner-to-corner wireframe at 736 nodes instead of a nebula cluster (dcb196f9 preview
-  // screenshot before this fix).
+  const centers = kgNebulaFibonacciSpherePoints(nBuckets, KG_NEBULA_CLUSTER_ORBIT_R)
   const bucketCounts = new Map()
   for (const node of nodes) {
-    const b = buckets.get(node.project || '_global') || 0
+    const b = buckets.get(kgNebulaBucketKey(node)) || 0
     bucketCounts.set(b, (bucketCounts.get(b) || 0) + 1)
   }
   const positions = new Map()
-  const perBucketIndex = new Map()
   for (const node of nodes) {
-    const bucket = buckets.get(node.project || '_global') || 0
-    const idx = perBucketIndex.get(bucket) || 0
-    perBucketIndex.set(bucket, idx + 1)
-    const clusterAngle = (bucket / nBuckets) * Math.PI * 2
-    const cx = Math.cos(clusterAngle) * clusterR
-    const cy = Math.sin(clusterAngle) * clusterR
+    const bucket = buckets.get(kgNebulaBucketKey(node)) || 0
+    const center = centers[bucket] || { x: 0, y: 0, z: 0 }
     const bucketSize = bucketCounts.get(bucket) || 1
-    const spiralScale = (clusterR * 0.85) / Math.sqrt(bucketSize)
-    const spiralAngle = idx * 2.399963229728653 // golden angle, radians
-    const spiralR = Math.sqrt(idx + 1) * spiralScale
-    // A perfectly symmetric sunflower spiral, repulsed by a perfectly symmetric force, settles
-    // into a perfectly regular lattice -- that is what read as a "rectangular grid" in the
-    // dcb196f9 preview MikroB flagged (2026-11-22). A small, deterministic (hash-of-id-seeded,
-    // never Math.random) jitter on the STARTING position breaks that symmetry once, up front, so
-    // the settle below relaxes into an irregular, organic-looking scatter instead of re-finding
-    // the lattice.
-    const jitterSeed = kgNebulaHashString(node.id)
-    const jitterAngle = (jitterSeed % 360) * (Math.PI / 180)
-    const jitterR = ((jitterSeed >> 8) % 100) / 100 * spiralScale * 0.55
+    const blobR = Math.min(KG_NEBULA_BLOB_MAX, Math.max(KG_NEBULA_BLOB_MIN, KG_NEBULA_BLOB_BASE * Math.sqrt(bucketSize)))
+    // Three INDEPENDENTLY-SALTED hashes, not one hash sliced into bit ranges. Real and synthetic
+    // node ids are often short, near-identical strings (e.g. "n12"/"n24"/"n36") -- this polynomial
+    // hash stays in a narrow numeric band for such ids, so `(seed >>> 7) % 10007` and
+    // `(seed >>> 14) % 10007` were both near-constant across an entire bucket (measured: 61 of 62
+    // nodes in one cluster landed within half a screen pixel of each other, 3D nebula preview,
+    // 2026-11-22) -- the shift only divides an already-small number further down, it does not
+    // redistribute entropy. Hashing three different strings scatters each of u/v/w independently.
+    const u = (kgNebulaHashString(node.id + ':u') % 10007) / 10007
+    const v = (kgNebulaHashString(node.id + ':v') % 10007) / 10007
+    const w = (kgNebulaHashString(node.id + ':w') % 10007) / 10007
+    const theta = u * Math.PI * 2
+    const cosPhi = 1 - 2 * v
+    const sinPhi = Math.sqrt(Math.max(0, 1 - cosPhi * cosPhi))
+    const dirX = Math.cos(theta) * sinPhi
+    const dirY = cosPhi
+    const dirZ = Math.sin(theta) * sinPhi
+    const rFrac = Math.pow(w, 1.6)
+    const r = blobR * rFrac
     positions.set(node.id, {
-      x: cx + Math.cos(spiralAngle) * spiralR + Math.cos(jitterAngle) * jitterR,
-      y: cy + Math.sin(spiralAngle) * spiralR + Math.sin(jitterAngle) * jitterR,
-      vx: 0, vy: 0,
-      cx, cy, bucket,
+      x: center.x + dirX * r, y: center.y + dirY * r, z: center.z + dirZ * r,
+      bucket,
     })
   }
   return positions
 }
 
-// Per-bucket (project) gas-cloud geometry for the soft nebula glow -- centroid + spread of the
-// SETTLED positions (not the pre-settle spiral), so the glow actually sits where the cluster
-// ended up. Pure function of positions/nodes, used by the draw loop and testable on its own.
-function kgNebulaClusterGeometry(nodes, positions) {
-  const sums = new Map() // bucket -> { sx, sy, n, maxR }
+// Per-bucket gas-cloud geometry (centroid + spread of the ACTUAL node positions, not the blobR
+// input) -- the volumetric haze sprite sits exactly where its cluster's particles ended up.
+function kgNebulaClusterGeometry3D(nodes, positions) {
+  const sums = new Map()
   for (const node of nodes) {
     const p = positions.get(node.id)
     if (!p) continue
     const bucket = typeof p.bucket === 'number' ? p.bucket : 0
-    if (!sums.has(bucket)) sums.set(bucket, { sx: 0, sy: 0, n: 0 })
+    if (!sums.has(bucket)) sums.set(bucket, { sx: 0, sy: 0, sz: 0, n: 0 })
     const s = sums.get(bucket)
-    s.sx += p.x; s.sy += p.y; s.n += 1
+    s.sx += p.x; s.sy += p.y; s.sz += p.z; s.n += 1
   }
   const out = []
   for (const [bucket, s] of sums) {
-    const cx = s.sx / s.n, cy = s.sy / s.n
+    const cx = s.sx / s.n, cy = s.sy / s.n, cz = s.sz / s.n
     let maxR = 0
     for (const node of nodes) {
       const p = positions.get(node.id)
       if (!p || (p.bucket || 0) !== bucket) continue
-      maxR = Math.max(maxR, Math.hypot(p.x - cx, p.y - cy))
+      maxR = Math.max(maxR, Math.hypot(p.x - cx, p.y - cy, p.z - cz))
     }
-    out.push({ bucket, cx, cy, r: Math.max(40, maxR * 1.25), count: s.n })
+    out.push({ bucket, cx, cy, cz, r: Math.max(20, maxR * 1.3), count: s.n })
   }
   return out
 }
 
-// Node degree (edge count) per node id -- drives glow size/brightness so hubs read as brighter
-// "stars" and leaves as faint dust, instead of every node being an identical uniform dot.
+// Node degree (edge count) per node id -- drives which nodes are promoted to "hub cores" (bigger,
+// brighter, linked) vs. plain dust.
 function kgNebulaDegreeMap(nodes, edges) {
   const deg = new Map(nodes.map((n) => [n.id, 0]))
   for (const e of edges) {
@@ -235,108 +278,80 @@ function kgNebulaDegreeMap(nodes, edges) {
   return deg
 }
 
-// Deterministic ring placement for agent entities, OUTSIDE the node clusters, so every agent is
-// its own visible, positioned node (not a shared point at the canvas centre). Sorted agent-id
-// order keeps it stable frame to frame and testable; `ringR` is picked by the caller from the
-// actual settled layout extent so agents sit just past the outermost cluster, never on top of it.
-function kgNebulaAgentRingPositions(agentIds, ringRx, ringRy) {
-  const rx = ringRx
-  const ry = typeof ringRy === 'number' ? ringRy : ringRx
+// The top `topPerBucket` nodes by degree in EACH topic cluster become hub cores -- "dense,
+// colored hubs" per Peti's reference images, spread across every cluster rather than just the
+// global top-N (which would starve small clusters of a hub entirely). A degree-0 node is never a
+// hub even if a bucket is all leaves.
+function kgNebulaHubNodeIds(nodes, edges, topPerBucket) {
+  const degree = kgNebulaDegreeMap(nodes, edges)
+  const buckets = kgNebulaProjectBuckets(nodes)
+  const byBucket = new Map()
+  for (const node of nodes) {
+    const b = buckets.get(kgNebulaBucketKey(node)) || 0
+    if (!byBucket.has(b)) byBucket.set(b, [])
+    byBucket.get(b).push({ id: node.id, degree: degree.get(node.id) || 0 })
+  }
+  const top = typeof topPerBucket === 'number' ? topPerBucket : 2
+  const hubs = new Set()
+  for (const [, arr] of byBucket) {
+    arr.sort((a, b) => b.degree - a.degree || (a.id < b.id ? -1 : 1))
+    for (let i = 0; i < Math.min(top, arr.length); i++) {
+      if (arr[i].degree > 0) hubs.add(arr[i].id)
+    }
+  }
+  return hubs
+}
+
+// Agent entities placed on an outer sphere, past every topic cluster -- sorted order keeps it
+// stable frame to frame and testable.
+function kgNebulaAgentSpherePositions(agentIds, radius) {
   const sorted = [...new Set(agentIds)].sort()
-  const n = Math.max(1, sorted.length)
+  const points = kgNebulaFibonacciSpherePoints(sorted.length, radius)
   const out = new Map()
-  sorted.forEach((id, i) => {
-    const angle = (i / n) * Math.PI * 2 - Math.PI / 2
-    out.set(id, { x: Math.cos(angle) * rx, y: Math.sin(angle) * ry })
-  })
+  sorted.forEach((id, i) => out.set(id, points[i]))
   return out
 }
 
-function kgNebulaSettleStep(nodes, edges, positions, w, h) {
-  const arr = nodes.map((n) => positions.get(n.id))
-  // Density-adaptive repulsion: a fixed force constant/cutoff (originally copied from the
-  // small ~10-node per-node mini-graph in app-kg.js) overpowers a 700+-node layout in a canvas
-  // this small -- EVERY pair ends up within range, and the accumulated push flings nearly every
-  // node straight into a canvas corner where the hard clamp then pins it (measured: 676/736 nodes
-  // at the four corners before this fix, a hollow wireframe instead of a nebula). Scaling the
-  // force and its cutoff to the natural inter-node spacing at this density keeps it a LOCAL
-  // decluttering nudge instead of a global explosion, at any node count.
-  const idealSpacing = Math.sqrt((w * h) / Math.max(1, arr.length))
-  const repulsionCutoff = idealSpacing * 3
-  const repulsionK = idealSpacing * idealSpacing * 0.6
-  const maxSpeed = Math.max(2, idealSpacing * 0.5)
-  for (let i = 0; i < arr.length; i++) {
-    for (let j = i + 1; j < arr.length; j++) {
-      const dx = arr[j].x - arr[i].x
-      const dy = arr[j].y - arr[i].y
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1
-      if (dist > repulsionCutoff) continue
-      const force = repulsionK / (dist * dist)
-      const fx = (dx / dist) * force, fy = (dy / dist) * force
-      arr[i].vx -= fx; arr[i].vy -= fy
-      arr[j].vx += fx; arr[j].vy += fy
-    }
-  }
-  const byId = positions
-  for (const e of edges) {
-    const a = byId.get(e.source), b = byId.get(e.target)
-    if (!a || !b) continue
-    const dx = b.x - a.x, dy = b.y - a.y
-    const dist = Math.sqrt(dx * dx + dy * dy) || 1
-    // A same-project edge pulls harder than a cross-project one -- without this, every edge pulls
-    // equally regardless of community, and the whole graph settles into one undifferentiated
-    // blob with uniform density (part of what read as a "grid" rather than distinct nebula
-    // clusters of varying density in the dcb196f9 preview).
-    const sameBucket = a.bucket === b.bucket
-    const force = (dist - 36) * (sameBucket ? 0.028 : 0.01)
-    const fx = (dx / dist) * force, fy = (dy / dist) * force
-    a.vx += fx; a.vy += fy
-    b.vx -= fx; b.vy -= fy
-  }
-  // Content stays within an inner region, not the full canvas -- the outer margin is reserved for
-  // the agent ring (kgNebulaAgentRingPositions) so agents sit clearly OUTSIDE the star field
-  // instead of buried inside it.
-  const contentHalfW = w / 2 * 0.78
-  const contentHalfH = h / 2 * 0.78
-  for (const p of arr) {
-    // Gentle pull back toward the node's own cluster centre -- keeps a community looking like a
-    // soft cloud even when a cross-cluster edge spring would otherwise drag it toward the canvas
-    // wall; the hard clamp below stays only as a last-resort safety net, not the main containment.
-    if (typeof p.cx === 'number') { p.vx += (p.cx - p.x) * 0.0015; p.vy += (p.cy - p.y) * 0.0015 }
-    p.vx *= 0.82; p.vy *= 0.82
-    // Velocity cap: no single step may move a node further than a fraction of the natural
-    // inter-node spacing -- the actual bug-stopper, independent of how the forces above are
-    // tuned. Without this, any transient force spike (e.g. two nodes initialised very close
-    // together) still shoots a node to the wall in a handful of iterations.
-    const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
-    if (speed > maxSpeed) { const s = maxSpeed / speed; p.vx *= s; p.vy *= s }
-    p.x += p.vx; p.y += p.vy
-    p.x = Math.max(-contentHalfW, Math.min(contentHalfW, p.x))
-    p.y = Math.max(-contentHalfH, Math.min(contentHalfH, p.y))
-  }
+// Quadratic-curve control point for a 3D search-trail arc, bowed to an arbitrary direction
+// perpendicular to the agent->hit line (picked via cross-product with a reference "up" axis,
+// falling back to a different reference when the line is nearly parallel to it so the cross
+// product never degenerates to zero). Deterministic per (agent, hit) pair via hash, so the curve
+// never flickers frame to frame but different trails do not all bow identically.
+function kgNebulaCurveControl3D(ax, ay, az, bx, by, bz, seedKey) {
+  const mx = (ax + bx) / 2, my = (ay + by) / 2, mz = (az + bz) / 2
+  const dx = bx - ax, dy = by - ay, dz = bz - az
+  const len = Math.hypot(dx, dy, dz) || 1
+  const ndy = dy / len
+  let ux = 0, uy = 1, uz = 0
+  if (Math.abs(ndy) > 0.98) { ux = 1; uy = 0; uz = 0 }
+  let px = dy * uz - dz * uy
+  let py = dz * ux - dx * uz
+  let pz = dx * uy - dy * ux
+  const plen = Math.hypot(px, py, pz) || 1
+  px /= plen; py /= plen; pz /= plen
+  const sign = kgNebulaHashString(seedKey) % 2 === 0 ? 1 : -1
+  const bow = Math.min(len * 0.22, 70) * sign
+  return { cx: mx + px * bow, cy: my + py * bow, cz: mz + pz * bow }
 }
 
-function kgNebulaLayout(nodes, edges, width, height, iterations) {
-  const positions = kgNebulaInitialPositions(nodes, width, height)
-  const iter = typeof iterations === 'number' ? iterations : 90
-  for (let i = 0; i < iter; i++) kgNebulaSettleStep(nodes, edges, positions, width, height)
-  return positions
-}
-
-// --- Page wiring (DOM/network -- not covered by the pure-function unit tests above) -----------
+// --- Page wiring (DOM/three.js/network -- not covered by the pure-function unit tests above,
+// same split as every other classic-script module on this page) --------------------------------
 
 const kgNebulaState = {
   open: false,
   nodes: [], edges: [], positions: null, nodeIndex: new Map(),
   events: [], fadeDurationMs: KG_NEBULA_DEFAULT_FADE_MS, sinceMs: 0,
-  pollTimer: null, rafId: null, reduced: false,
+  pollTimer: null, reduced: false,
   lastProject: '',
-  degree: new Map(), clusters: [], outerRingRx: 160, outerRingRy: 160,
+  degree: new Map(), hubIds: new Set(), clusters: [], outerR: 260,
+  // three.js runtime handles -- created in kgNebula3DBuildScene, torn down in kgNebula3DDispose.
+  renderer: null, scene: null, camera: null, controls: null, rafId: null,
+  pointsByBucket: [], // [{ bucket, points, ids: [nodeId...] }] -- ids[i] matches positions[i*3..]
+  trailObjects: new Map(), // eventKey -> { line, headSprite, material, headMaterial }
+  dotTexture: null, hazeTexture: null,
+  resizeObserver: null,
 }
 
-// Real container size drives the layout/draw -- the CSS gives the wrap a tall min-height (fill
-// the panel, rule per MikroB/Peti feedback 2026-11-22) so rect.height is now meaningful; the old
-// `w * 0.6` guess only exists as a fallback for a test/JSDOM rect that reports height 0.
 function kgNebulaCanvasSize(canvas) {
   const rect = canvas.parentElement.getBoundingClientRect()
   const w = Math.max(240, rect.width)
@@ -364,12 +379,14 @@ async function kgNebulaFetchActivity(sinceMs) {
 }
 
 function kgNebulaShowMessage(key) {
+  kgNebula3DDispose()
   const wrap = kgNebulaEl('kgNebulaCanvasWrap')
   if (!wrap) return
   wrap.innerHTML = `<div class="kg-nebula-msg">${escapeHtml(t(key))}</div>`
 }
 
 function kgNebulaShowErrorWithRetry() {
+  kgNebula3DDispose()
   const wrap = kgNebulaEl('kgNebulaCanvasWrap')
   if (!wrap) return
   wrap.innerHTML = `<div class="kg-nebula-msg kg-nebula-msg-error">
@@ -407,26 +424,23 @@ async function kgNebulaLoad() {
   const edges = Array.isArray(data.edges) ? data.edges : []
   if (!nodes.length) { kgNebulaShowMessage('kg.nebula.empty'); return }
 
+  kgNebula3DDispose()
   kgNebulaRestoreCanvas()
   kgNebulaState.nodes = nodes
   kgNebulaState.edges = edges
   kgNebulaState.nodeIndex = new Map(nodes.map((n) => [n.id, n]))
+  kgNebulaState.positions = kgNebulaNode3DPositions(nodes)
+  kgNebulaState.degree = kgNebulaDegreeMap(nodes, edges)
+  kgNebulaState.hubIds = kgNebulaHubNodeIds(nodes, edges, 2)
+  kgNebulaState.clusters = kgNebulaClusterGeometry3D(nodes, kgNebulaState.positions)
+  const maxClusterR = kgNebulaState.clusters.reduce((m, c) => Math.max(m, c.r), 0)
+  kgNebulaState.outerR = KG_NEBULA_CLUSTER_ORBIT_R + maxClusterR + 90
 
   const canvas = kgNebulaEl('kgNebulaCanvas')
-  const { w, h } = kgNebulaCanvasSize(canvas)
-  kgNebulaState.positions = kgNebulaLayout(nodes, edges, w, h)
-  kgNebulaState.degree = kgNebulaDegreeMap(nodes, edges)
-  kgNebulaState.clusters = kgNebulaClusterGeometry(nodes, kgNebulaState.positions)
-  // Elliptical ring matching the canvas aspect ratio, just inside the edge -- the content itself
-  // is clamped to ~78% of each half-extent (kgNebulaSettleStep), so this sits in the margin
-  // between the star field and the frame instead of overlapping it or running off-screen on a
-  // wide (desktop) or tall (mobile) canvas.
-  kgNebulaState.outerRingRx = w / 2 * 0.86
-  kgNebulaState.outerRingRy = h / 2 * 0.90
-
+  kgNebula3DBuildScene(canvas)
   kgNebulaRenderLegend()
   kgNebulaStartPolling()
-  kgNebulaStartLoop()
+  kgNebula3DStart()
 }
 
 function kgNebulaRenderLegend() {
@@ -455,7 +469,6 @@ async function kgNebulaPollOnce() {
     kgNebulaState.sinceMs = events.reduce((max, e) => Math.max(max, e.ts || 0), kgNebulaState.sinceMs)
     kgNebulaRenderLegend()
   }
-  // Trim: no point holding events older than 2x the fade window.
   const cutoff = Date.now() - kgNebulaState.fadeDurationMs * 2
   kgNebulaState.events = kgNebulaState.events.filter((e) => e.ts >= cutoff)
 }
@@ -470,148 +483,208 @@ function kgNebulaStopPolling() {
   if (kgNebulaState.pollTimer) { clearInterval(kgNebulaState.pollTimer); kgNebulaState.pollTimer = null }
 }
 
-// Quadratic control point offset to the side of the agent->hit line, deterministic per
-// (agent, hit) pair (hash-seeded) so the curve direction never flickers frame to frame, but two
-// different trails do not all bow the exact same way -- that would read as a fan, not gas.
-function kgNebulaCurveControl(ax, ay, bx, by, seedKey) {
-  const mx = (ax + bx) / 2, my = (ay + by) / 2
-  const dx = bx - ax, dy = by - ay
-  const len = Math.hypot(dx, dy) || 1
-  const nx = -dy / len, ny = dx / len
-  const sign = kgNebulaHashString(seedKey) % 2 === 0 ? 1 : -1
-  const bow = Math.min(len * 0.18, 60) * sign
-  return { cx: mx + nx * bow, cy: my + ny * bow }
+// --- three.js scene ------------------------------------------------------------------------------
+
+// A soft circular glow, drawn once into an offscreen canvas and reused as a texture for every
+// particle/haze sprite -- avoids per-node/per-frame gradient allocation (the round-3 2D canvas
+// version paid a createRadialGradient+fill cost per node per frame; a texture is built ONCE here).
+function kgNebulaMakeGlowTexture(sizePx, coreAlpha) {
+  const c = document.createElement('canvas')
+  c.width = sizePx; c.height = sizePx
+  const ctx = c.getContext('2d')
+  const r = sizePx / 2
+  const grad = ctx.createRadialGradient(r, r, 0, r, r, r)
+  grad.addColorStop(0, `rgba(255,255,255,${coreAlpha})`)
+  grad.addColorStop(0.4, `rgba(255,255,255,${coreAlpha * 0.55})`)
+  grad.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, sizePx, sizePx)
+  const tex = new THREE.CanvasTexture(c)
+  tex.needsUpdate = true
+  return tex
 }
 
-function kgNebulaDrawFrame() {
-  const canvas = kgNebulaEl('kgNebulaCanvas')
-  if (!canvas || !kgNebulaState.positions) return
-  const dpr = window.devicePixelRatio || 1
+function kgNebulaMakeLabelSprite(text, colorCss) {
+  const c = document.createElement('canvas')
+  const scale = 4
+  c.width = 160 * scale; c.height = 40 * scale
+  const ctx = c.getContext('2d')
+  ctx.scale(scale, scale)
+  ctx.font = '600 16px sans-serif'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = colorCss
+  ctx.fillText(text, 2, 20)
+  const tex = new THREE.CanvasTexture(c)
+  tex.needsUpdate = true
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false })
+  const sprite = new THREE.Sprite(mat)
+  sprite.scale.set(28, 7, 1)
+  return sprite
+}
+
+function kgNebula3DDispose() {
+  if (kgNebulaState.resizeObserver) { kgNebulaState.resizeObserver.disconnect(); kgNebulaState.resizeObserver = null }
+  if (kgNebulaState.rafId) { cancelAnimationFrame(kgNebulaState.rafId); kgNebulaState.rafId = null }
+  if (kgNebulaState.controls) { kgNebulaState.controls.dispose(); kgNebulaState.controls = null }
+  if (kgNebulaState.scene) {
+    kgNebulaState.scene.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose()
+      if (obj.material) {
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+        for (const m of mats) { if (m.map) m.map.dispose(); m.dispose() }
+      }
+    })
+  }
+  if (kgNebulaState.renderer) { kgNebulaState.renderer.dispose(); kgNebulaState.renderer = null }
+  kgNebulaState.scene = null
+  kgNebulaState.camera = null
+  kgNebulaState.pointsByBucket = []
+  kgNebulaState.trailObjects = new Map()
+  kgNebulaState.dotTexture = null
+  kgNebulaState.hazeTexture = null
+}
+
+function kgNebula3DBuildScene(canvas) {
+  if (!canvas || typeof THREE === 'undefined') { kgNebulaShowErrorWithRetry(); return }
   const { w, h } = kgNebulaCanvasSize(canvas)
-  if (canvas.width !== Math.round(w * dpr)) canvas.width = Math.round(w * dpr)
-  if (canvas.height !== Math.round(h * dpr)) canvas.height = Math.round(h * dpr)
-  const ctx = canvas.getContext('2d')
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  ctx.fillStyle = '#05060a'
-  ctx.fillRect(0, 0, w, h)
-  ctx.save()
-  ctx.translate(w / 2, h / 2)
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+  renderer.setSize(w, h, false)
+  renderer.setClearColor(0x05060a, 1)
 
-  // 1. Soft per-cluster gas clouds (additive, low alpha radial gradient) -- the "nebula" backdrop
-  // behind the stars/dust, one per project bucket, sized/positioned from the settled layout.
-  ctx.globalCompositeOperation = 'lighter'
-  for (const c of kgNebulaState.clusters) {
-    const grad = ctx.createRadialGradient(c.cx, c.cy, 0, c.cx, c.cy, c.r)
-    grad.addColorStop(0, 'rgba(130,150,235,0.22)')
-    grad.addColorStop(0.5, 'rgba(100,80,180,0.12)')
-    grad.addColorStop(1, 'rgba(100,80,180,0)')
-    ctx.fillStyle = grad
-    ctx.beginPath()
-    ctx.arc(c.cx, c.cy, c.r, 0, Math.PI * 2)
-    ctx.fill()
-  }
+  const scene = new THREE.Scene()
+  const camera = new THREE.PerspectiveCamera(50, w / h, 1, 5000)
+  const camDist = kgNebulaState.outerR * 2.3
+  camera.position.set(camDist * 0.6, camDist * 0.35, camDist * 0.7)
+  camera.lookAt(0, 0, 0)
 
-  // 2. Faint edges (the connective tissue of the graph, not the focal point).
-  ctx.globalCompositeOperation = 'source-over'
-  ctx.strokeStyle = 'rgba(140,150,180,0.10)'
-  ctx.lineWidth = 1
-  for (const e of kgNebulaState.edges) {
-    const a = kgNebulaState.positions.get(e.source)
-    const b = kgNebulaState.positions.get(e.target)
-    if (!a || !b) continue
-    ctx.beginPath()
-    ctx.moveTo(a.x, a.y)
-    ctx.lineTo(b.x, b.y)
-    ctx.stroke()
-  }
+  kgNebulaState.reduced = kgNebulaReducedMotion()
+  const note = kgNebulaEl('kgNebulaReducedNote')
+  if (note) note.hidden = !kgNebulaState.reduced
 
-  // 3. KG nodes as stardust -- size/brightness scale with degree (hubs glow brighter/bigger),
-  // each with its own small glow halo so the field reads as soft particles, not flat grey dots.
-  ctx.globalCompositeOperation = 'lighter'
+  const controls = new THREE.OrbitControls(camera, renderer.domElement)
+  controls.enableDamping = true
+  controls.dampingFactor = 0.08
+  controls.minDistance = kgNebulaState.outerR * 0.6
+  controls.maxDistance = kgNebulaState.outerR * 5
+  controls.autoRotate = !kgNebulaState.reduced
+  controls.autoRotateSpeed = 0.6
+  controls.addEventListener('start', () => { controls.autoRotate = false })
+
+  kgNebulaState.dotTexture = kgNebulaMakeGlowTexture(64, 1)
+  kgNebulaState.hazeTexture = kgNebulaMakeGlowTexture(256, 0.5)
+
+  // 1. Per-cluster particle dust + volumetric gas haze.
+  kgNebulaState.pointsByBucket = []
+  const byBucket = new Map()
   for (const node of kgNebulaState.nodes) {
     const p = kgNebulaState.positions.get(node.id)
     if (!p) continue
-    const degree = kgNebulaState.degree.get(node.id) || 0
-    const r = 1.4 + Math.min(3.2, Math.sqrt(degree) * 0.9)
-    const alpha = Math.min(0.85, 0.38 + Math.min(1, degree / 6) * 0.3)
-    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 4)
-    glow.addColorStop(0, `rgba(200,210,255,${alpha})`)
-    glow.addColorStop(1, 'rgba(200,210,255,0)')
-    ctx.fillStyle = glow
-    ctx.beginPath()
-    ctx.arc(p.x, p.y, r * 4, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.beginPath()
-    ctx.fillStyle = `rgba(220,228,255,${Math.min(1, alpha + 0.2)})`
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
-    ctx.fill()
+    if (!byBucket.has(p.bucket)) byBucket.set(p.bucket, [])
+    byBucket.get(p.bucket).push({ node, p })
+  }
+  for (const [bucket, entries] of byBucket) {
+    const color = new THREE.Color(kgNebulaPaletteColor(bucket))
+    const positions = new Float32Array(entries.length * 3)
+    const ids = new Array(entries.length)
+    entries.forEach((e, i) => {
+      positions[i * 3] = e.p.x; positions[i * 3 + 1] = e.p.y; positions[i * 3 + 2] = e.p.z
+      ids[i] = e.node.id
+    })
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    const mat = new THREE.PointsMaterial({
+      color, map: kgNebulaState.dotTexture, size: 3.4, sizeAttenuation: true,
+      transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false,
+    })
+    const points = new THREE.Points(geo, mat)
+    scene.add(points)
+    kgNebulaState.pointsByBucket.push({ bucket, points, ids })
+  }
+  for (const c of kgNebulaState.clusters) {
+    const color = kgNebulaPaletteColor(c.bucket)
+    const hazeMat = new THREE.SpriteMaterial({
+      map: kgNebulaState.hazeTexture, color: new THREE.Color(color),
+      transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
+    })
+    const haze = new THREE.Sprite(hazeMat)
+    haze.position.set(c.cx, c.cy, c.cz)
+    haze.scale.setScalar(c.r * 2.6)
+    scene.add(haze)
   }
 
-  // 4. Agent entities -- each on its own ring position (never the canvas centre), own colour,
-  // own glow + label, so an agent reads as a thing in the graph, not an invisible emitter.
-  const activeAgentIds = [...new Set(kgNebulaState.events.map((e) => e.agent_id))]
-  const agentPositions = kgNebulaAgentRingPositions(
-    activeAgentIds.length ? activeAgentIds : KG_NEBULA_KNOWN_AGENTS,
-    kgNebulaState.outerRingRx,
-    kgNebulaState.outerRingRy,
-  )
-  for (const [agentId, pos] of agentPositions) {
-    const color = kgNebulaAgentColor(agentId)
-    const glow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 20)
-    glow.addColorStop(0, color)
-    glow.addColorStop(1, 'rgba(0,0,0,0)')
-    ctx.globalAlpha = 0.5
-    ctx.fillStyle = glow
-    ctx.beginPath()
-    ctx.arc(pos.x, pos.y, 20, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.globalAlpha = 1
-    ctx.beginPath()
-    ctx.fillStyle = color
-    ctx.arc(pos.x, pos.y, 4.5, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.globalCompositeOperation = 'source-over'
-    ctx.fillStyle = 'rgba(230,234,245,0.9)'
-    ctx.font = '10px sans-serif'
-    ctx.textAlign = pos.x >= 0 ? 'left' : 'right'
-    ctx.fillText(agentId, pos.x + (pos.x >= 0 ? 8 : -8), pos.y + 3)
-    ctx.globalCompositeOperation = 'lighter'
+  // 2. Hub cores -- bigger, brighter, cyan-white (matches Peti's reference), plus thin links
+  // between any two hubs that actually share a graph edge.
+  const hubPositions = []
+  const hubIndexById = new Map()
+  for (const node of kgNebulaState.nodes) {
+    if (!kgNebulaState.hubIds.has(node.id)) continue
+    const p = kgNebulaState.positions.get(node.id)
+    if (!p) continue
+    hubIndexById.set(node.id, hubPositions.length)
+    hubPositions.push(p)
   }
+  if (hubPositions.length) {
+    const positions = new Float32Array(hubPositions.length * 3)
+    hubPositions.forEach((p, i) => { positions[i * 3] = p.x; positions[i * 3 + 1] = p.y; positions[i * 3 + 2] = p.z })
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    const mat = new THREE.PointsMaterial({
+      color: new THREE.Color(0xbfe8ff), map: kgNebulaState.dotTexture, size: 7.5, sizeAttenuation: true,
+      transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
+    })
+    scene.add(new THREE.Points(geo, mat))
 
-  // 5. Search trails: a gentle curve from the agent's own ring position to each hit node, hot
-  // white at birth cooling into the agent colour, alpha fading over fadeDurationMs (config, not
-  // hardcoded -- rule 14). Reduced-motion: one static frame, no per-frame alpha animation.
-  if (!kgNebulaState.reduced) {
-    const now = Date.now()
-    for (const ev of kgNebulaState.events) {
-      const alpha = kgNebulaTrailAlpha(now, ev.ts, kgNebulaState.fadeDurationMs)
-      if (alpha <= 0) continue
-      const color = kgNebulaAgentColor(ev.agent_id)
-      const rgba = kgNebulaTrailRgba(color, now, ev.ts, kgNebulaState.fadeDurationMs)
-      const origin = agentPositions.get(ev.agent_id) || { x: 0, y: 0 }
-      for (const hitId of (ev.hit || [])) {
-        const b = kgNebulaState.positions.get(hitId)
-        if (!b) continue
-        const { cx, cy } = kgNebulaCurveControl(origin.x, origin.y, b.x, b.y, ev.agent_id + ':' + hitId)
-        ctx.beginPath()
-        ctx.strokeStyle = rgba
-        ctx.lineWidth = 2
-        ctx.moveTo(origin.x, origin.y)
-        ctx.quadraticCurveTo(cx, cy, b.x, b.y)
-        ctx.stroke()
-        // Glowing head at the hit end -- the "arrival" moment of the search trail.
-        const headGlow = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, 9)
-        headGlow.addColorStop(0, rgba)
-        headGlow.addColorStop(1, 'rgba(0,0,0,0)')
-        ctx.fillStyle = headGlow
-        ctx.beginPath()
-        ctx.arc(b.x, b.y, 9, 0, Math.PI * 2)
-        ctx.fill()
-      }
+    const linkPositions = []
+    for (const e of kgNebulaState.edges) {
+      const ai = hubIndexById.get(e.source), bi = hubIndexById.get(e.target)
+      if (ai === undefined || bi === undefined) continue
+      const a = hubPositions[ai], b = hubPositions[bi]
+      linkPositions.push(a.x, a.y, a.z, b.x, b.y, b.z)
+    }
+    if (linkPositions.length) {
+      const lgeo = new THREE.BufferGeometry()
+      lgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(linkPositions), 3))
+      const lmat = new THREE.LineBasicMaterial({ color: 0x8fa0c8, transparent: true, opacity: 0.35 })
+      scene.add(new THREE.LineSegments(lgeo, lmat))
     }
   }
-  ctx.globalCompositeOperation = 'source-over'
-  ctx.restore()
+
+  // 3. Agent entities on an outer sphere -- own colour sphere + glow + label sprite.
+  const activeAgentIds = [...new Set(kgNebulaState.events.map((e) => e.agent_id))]
+  const agentIds = activeAgentIds.length ? activeAgentIds : KG_NEBULA_KNOWN_AGENTS
+  const agentPositions = kgNebulaAgentSpherePositions(agentIds, kgNebulaState.outerR)
+  const agentMeshes = new Map()
+  const sphereGeo = new THREE.SphereGeometry(4, 12, 10)
+  for (const [agentId, pos] of agentPositions) {
+    const color = new THREE.Color(kgNebulaAgentColor(agentId))
+    const sphere = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color }))
+    sphere.position.set(pos.x, pos.y, pos.z)
+    scene.add(sphere)
+    const glowMat = new THREE.SpriteMaterial({
+      map: kgNebulaState.dotTexture, color, transparent: true, opacity: 0.55,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    })
+    const glow = new THREE.Sprite(glowMat)
+    glow.position.copy(sphere.position)
+    glow.scale.setScalar(22)
+    scene.add(glow)
+    const label = kgNebulaMakeLabelSprite(agentId, kgNebulaAgentColor(agentId))
+    const outward = new THREE.Vector3(pos.x, pos.y, pos.z).normalize()
+    label.position.set(pos.x + outward.x * 14, pos.y + outward.y * 14 + 6, pos.z + outward.z * 14)
+    scene.add(label)
+    agentMeshes.set(agentId, { sphere, glow, label, pos })
+  }
+  kgNebulaState.agentMeshes = agentMeshes
+
+  kgNebulaState.renderer = renderer
+  kgNebulaState.scene = scene
+  kgNebulaState.camera = camera
+  kgNebulaState.controls = controls
+
+  const ro = new ResizeObserver(() => kgNebula3DResize())
+  ro.observe(canvas.parentElement)
+  kgNebulaState.resizeObserver = ro
 
   if (!canvas.dataset.kgNebulaClickWired) {
     canvas.dataset.kgNebulaClickWired = '1'
@@ -619,38 +692,117 @@ function kgNebulaDrawFrame() {
   }
 }
 
-function kgNebulaHandleClick(ev) {
+function kgNebula3DResize() {
   const canvas = kgNebulaEl('kgNebulaCanvas')
-  if (!canvas || !kgNebulaState.positions) return
-  const r = canvas.getBoundingClientRect()
-  const x = ev.clientX - r.left - r.width / 2
-  const y = ev.clientY - r.top - r.height / 2
-  let hit = null
-  let best = 14
-  for (const node of kgNebulaState.nodes) {
-    const p = kgNebulaState.positions.get(node.id)
-    if (!p) continue
-    const d = Math.hypot(p.x - x, p.y - y)
-    if (d < best) { best = d; hit = node }
-  }
-  if (hit) void kgSelectNode(hit.id)
+  if (!canvas || !kgNebulaState.renderer || !kgNebulaState.camera) return
+  const { w, h } = kgNebulaCanvasSize(canvas)
+  kgNebulaState.camera.aspect = w / h
+  kgNebulaState.camera.updateProjectionMatrix()
+  kgNebulaState.renderer.setSize(w, h, false)
 }
 
-function kgNebulaStartLoop() {
-  kgNebulaState.reduced = kgNebulaReducedMotion()
-  const note = kgNebulaEl('kgNebulaReducedNote')
-  if (note) note.hidden = !kgNebulaState.reduced
-  kgNebulaDrawFrame()
-  if (kgNebulaState.reduced) return // static fallback: draw once, no rAF loop
+function kgNebulaDisposeTrailObject(obj) {
+  kgNebulaState.scene.remove(obj.line)
+  kgNebulaState.scene.remove(obj.headSprite)
+  obj.line.geometry.dispose()
+  obj.material.dispose()
+  obj.headMaterial.dispose()
+}
+
+// Updates the live search-trail arcs each frame: one quadratic-bezier 3D curve per (agent, hit)
+// pair, hot-white cooling into the agent's colour, alpha fading over fadeDurationMs. Objects are
+// created lazily and reused across frames (keyed by agent+hit+ts, unique per search even if the
+// same pair is hit twice) and disposed once their trail fully fades -- no per-frame allocation of
+// geometry for a trail that is still alive, only a position/attribute update.
+function kgNebula3DUpdateTrails(now) {
+  const scene = kgNebulaState.scene
+  if (!scene) return
+  const seenKeys = new Set()
+  if (!kgNebulaState.reduced) {
+    for (const ev of kgNebulaState.events) {
+      const alpha = kgNebulaTrailAlpha(now, ev.ts, kgNebulaState.fadeDurationMs)
+      if (alpha <= 0) continue
+      const origin = kgNebulaState.agentMeshes && kgNebulaState.agentMeshes.get(ev.agent_id)
+      if (!origin) continue
+      const color = kgNebulaAgentColor(ev.agent_id)
+      for (const hitId of (ev.hit || [])) {
+        const b = kgNebulaState.positions.get(hitId)
+        if (!b) continue
+        const key = ev.agent_id + ':' + hitId + ':' + ev.ts
+        seenKeys.add(key)
+        const rgb = kgNebulaTrailRgba(color, now, ev.ts, kgNebulaState.fadeDurationMs)
+        let obj = kgNebulaState.trailObjects.get(key)
+        if (!obj) {
+          const { cx, cy, cz } = kgNebulaCurveControl3D(origin.pos.x, origin.pos.y, origin.pos.z, b.x, b.y, b.z, key)
+          const curve = new THREE.QuadraticBezierCurve3(
+            new THREE.Vector3(origin.pos.x, origin.pos.y, origin.pos.z),
+            new THREE.Vector3(cx, cy, cz),
+            new THREE.Vector3(b.x, b.y, b.z),
+          )
+          const pts = curve.getPoints(24)
+          const geo = new THREE.BufferGeometry().setFromPoints(pts)
+          const material = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 })
+          const line = new THREE.Line(geo, material)
+          const headMaterial = new THREE.SpriteMaterial({
+            map: kgNebulaState.dotTexture, color: 0xffffff, transparent: true,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+          })
+          const headSprite = new THREE.Sprite(headMaterial)
+          headSprite.position.set(b.x, b.y, b.z)
+          headSprite.scale.setScalar(10)
+          scene.add(line)
+          scene.add(headSprite)
+          obj = { line, headSprite, material, headMaterial }
+          kgNebulaState.trailObjects.set(key, obj)
+        }
+        obj.material.color.setRGB(rgb.r / 255, rgb.g / 255, rgb.b / 255)
+        obj.material.opacity = rgb.alpha
+        obj.headMaterial.color.setRGB(rgb.r / 255, rgb.g / 255, rgb.b / 255)
+        obj.headMaterial.opacity = rgb.alpha
+      }
+    }
+  }
+  for (const [key, obj] of kgNebulaState.trailObjects) {
+    if (!seenKeys.has(key)) { kgNebulaDisposeTrailObject(obj); kgNebulaState.trailObjects.delete(key) }
+  }
+}
+
+function kgNebula3DRenderOnce() {
+  if (!kgNebulaState.renderer) return
+  kgNebula3DUpdateTrails(Date.now())
+  kgNebulaState.controls.update()
+  kgNebulaState.renderer.render(kgNebulaState.scene, kgNebulaState.camera)
+}
+
+function kgNebula3DStart() {
+  if (!kgNebulaState.renderer) return
+  if (kgNebulaState.reduced) { kgNebula3DRenderOnce(); return } // static frame, no rAF loop
   const tick = () => {
-    kgNebulaDrawFrame()
+    kgNebula3DRenderOnce()
     kgNebulaState.rafId = requestAnimationFrame(tick)
   }
   kgNebulaState.rafId = requestAnimationFrame(tick)
 }
 
-function kgNebulaStopLoop() {
-  if (kgNebulaState.rafId) { cancelAnimationFrame(kgNebulaState.rafId); kgNebulaState.rafId = null }
+function kgNebulaHandleClick(ev) {
+  if (!kgNebulaState.renderer || !kgNebulaState.camera) return
+  const canvas = kgNebulaEl('kgNebulaCanvas')
+  const rect = canvas.getBoundingClientRect()
+  const ndc = new THREE.Vector2(
+    ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+    -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+  )
+  const raycaster = new THREE.Raycaster()
+  raycaster.params.Points.threshold = 5
+  raycaster.setFromCamera(ndc, kgNebulaState.camera)
+  let best = null
+  for (const group of kgNebulaState.pointsByBucket) {
+    const hits = raycaster.intersectObject(group.points)
+    if (hits.length && (!best || hits[0].distance < best.distance)) {
+      best = { distance: hits[0].distance, nodeId: group.ids[hits[0].index] }
+    }
+  }
+  if (best) void kgSelectNode(best.nodeId)
 }
 
 function kgNebulaToggle() {
@@ -664,7 +816,7 @@ function kgNebulaToggle() {
     void kgNebulaLoad()
   } else {
     kgNebulaStopPolling()
-    kgNebulaStopLoop()
+    kgNebula3DDispose()
   }
 }
 
@@ -691,10 +843,14 @@ window.kgNebulaAgentColor = kgNebulaAgentColor
 window.kgNebulaAgentColorIndex = kgNebulaAgentColorIndex
 window.kgNebulaBuildLegend = kgNebulaBuildLegend
 window.kgNebulaActiveTrails = kgNebulaActiveTrails
-window.kgNebulaLayout = kgNebulaLayout
 window.kgNebulaWireToolbar = kgNebulaWireToolbar
 window.kgNebulaToggle = kgNebulaToggle
-window.kgNebulaClusterGeometry = kgNebulaClusterGeometry
 window.kgNebulaDegreeMap = kgNebulaDegreeMap
-window.kgNebulaAgentRingPositions = kgNebulaAgentRingPositions
-window.kgNebulaCurveControl = kgNebulaCurveControl
+window.kgNebulaBucketKey = kgNebulaBucketKey
+window.kgNebulaProjectBuckets = kgNebulaProjectBuckets
+window.kgNebulaFibonacciSpherePoints = kgNebulaFibonacciSpherePoints
+window.kgNebulaNode3DPositions = kgNebulaNode3DPositions
+window.kgNebulaClusterGeometry3D = kgNebulaClusterGeometry3D
+window.kgNebulaHubNodeIds = kgNebulaHubNodeIds
+window.kgNebulaAgentSpherePositions = kgNebulaAgentSpherePositions
+window.kgNebulaCurveControl3D = kgNebulaCurveControl3D

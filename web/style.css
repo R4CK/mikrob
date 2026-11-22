@@ -11252,7 +11252,12 @@ body {
   background: #05060a;
   overflow: hidden;
 }
-.kg-nebula-canvas { width: 100%; height: 100%; min-height: min(70vh, 760px); display: block; cursor: pointer; touch-action: manipulation; }
+/* touch-action: none (not "manipulation") -- the canvas is now a 3D scene with its own drag-to-rotate
+   and pinch-to-zoom (OrbitControls), so the browser's own pan/zoom gesture handling must stay fully
+   out of its way instead of racing it. cursor:grab signals the rotate affordance; OrbitControls swaps
+   it to "grabbing" on mousedown via the DOM (not a CSS rule, so no companion class needed here). */
+.kg-nebula-canvas { width: 100%; height: 100%; min-height: min(70vh, 760px); display: block; cursor: grab; touch-action: none; }
+.kg-nebula-canvas:active { cursor: grabbing; }
 .kg-nebula-msg {
   display: flex;
   flex-direction: column;

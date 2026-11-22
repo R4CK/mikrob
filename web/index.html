@@ -12,6 +12,14 @@
        ?token= bootstrap URL on the already-authenticated desktop -- the token
        never travels through chat). MIT, dependency-free, same CDN as xterm. -->
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"></script>
+  <!-- Card dcb196f9 round 4 (Peti requirement change, msg 23664, 2026-11-22): the KG nebula view
+       becomes a real 3D rotatable scene. three.js + its classic (non-ES-module) OrbitControls.js
+       pinned to the same revision (0.128.0) -- the two MUST match revision or the controls throw;
+       verified live (curl -o /dev/null -w "%{http_code}") that both paths 200 at this exact pin
+       before adding them, not assumed from docs. Same CDN/CSP pattern as the xterm/qrcode scripts
+       above (script-src already allowlists cdn.jsdelivr.net as an origin). -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="/lang/hu.js"></script>
   <script src="/lang/en.js"></script>
   <link rel="icon" href="/api/marveen/avatar">

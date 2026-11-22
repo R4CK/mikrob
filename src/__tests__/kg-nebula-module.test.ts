@@ -1,7 +1,10 @@
-// Card dcb196f9 -- Megoldas-tar live nebula graph (agents + KG nodes, flashing search trails).
-// Pure-function layer of web/app-kg-nebula.js, executed under a window shim (same recipe as
-// llm-monitor-module.test.ts): trail fade/colour math, deterministic per-agent colour
-// assignment, legend building, and the deterministic static layout.
+// Card dcb196f9 -- Megoldas-tar live nebula graph (agents + KG nodes, flashing search trails),
+// round 4: a real 3D scene (Peti requirement change, msg 23664). Pure-function layer of
+// web/app-kg-nebula.js, executed under a window shim (same recipe as llm-monitor-module.test.ts):
+// trail fade/colour math, deterministic per-agent colour assignment, legend building, and the
+// deterministic 3D layout (cluster spheres, node blobs, hub selection, agent sphere, curve bow).
+// three.js itself is NOT imported here -- these are the plain-JS math functions the 3D scene
+// consumes, the same split this page already uses for every other classic-script module.
 import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,19 +12,23 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const WEB = join(__dirname, '../../web')
 
-type Pos = { x: number; y: number }
+type Vec3 = { x: number; y: number; z: number }
 type Win = {
   kgNebulaTrailAlpha: (nowMs: number, startMs: number, fadeMs: number) => number
-  kgNebulaTrailRgba: (baseColorCss: string, nowMs: number, startMs: number, fadeMs: number) => string
+  kgNebulaTrailRgba: (baseColorCss: string, nowMs: number, startMs: number, fadeMs: number) => { r: number; g: number; b: number; alpha: number; css: string }
   kgNebulaAgentColor: (agentId: string) => string
   kgNebulaAgentColorIndex: (agentId: string) => number
   kgNebulaBuildLegend: (agentIds: string[]) => { agentId: string; color: string; paletteIndex: number }[]
   kgNebulaActiveTrails: (events: { agent_id: string; ts: number; hit: string[] }[], nowMs: number, fadeMs: number) => unknown[]
-  kgNebulaLayout: (nodes: { id: string; project?: string }[], edges: { source: string; target: string }[], w: number, h: number, iterations?: number) => Map<string, Pos>
   kgNebulaDegreeMap: (nodes: { id: string }[], edges: { source: string; target: string }[]) => Map<string, number>
-  kgNebulaClusterGeometry: (nodes: { id: string }[], positions: Map<string, Pos & { bucket?: number }>) => { bucket: number; cx: number; cy: number; r: number; count: number }[]
-  kgNebulaAgentRingPositions: (agentIds: string[], ringR: number) => Map<string, Pos>
-  kgNebulaCurveControl: (ax: number, ay: number, bx: number, by: number, seedKey: string) => { cx: number; cy: number }
+  kgNebulaBucketKey: (node: { project?: string; type?: string }) => string
+  kgNebulaProjectBuckets: (nodes: { project?: string; type?: string }[]) => Map<string, number>
+  kgNebulaFibonacciSpherePoints: (n: number, radius: number) => Vec3[]
+  kgNebulaNode3DPositions: (nodes: { id: string; project?: string; type?: string }[]) => Map<string, Vec3 & { bucket: number }>
+  kgNebulaClusterGeometry3D: (nodes: { id: string }[], positions: Map<string, Vec3 & { bucket?: number }>) => { bucket: number; cx: number; cy: number; cz: number; r: number; count: number }[]
+  kgNebulaHubNodeIds: (nodes: { id: string }[], edges: { source: string; target: string }[], topPerBucket?: number) => Set<string>
+  kgNebulaAgentSpherePositions: (agentIds: string[], radius: number) => Map<string, Vec3>
+  kgNebulaCurveControl3D: (ax: number, ay: number, az: number, bx: number, by: number, bz: number, seedKey: string) => { cx: number; cy: number; cz: number }
 }
 
 let win: Win
@@ -36,7 +43,7 @@ describe('the module is importable without a DOM', () => {
   it('exposes the pure helpers', () => {
     expect(typeof win.kgNebulaTrailAlpha).toBe('function')
     expect(typeof win.kgNebulaAgentColor).toBe('function')
-    expect(typeof win.kgNebulaLayout).toBe('function')
+    expect(typeof win.kgNebulaNode3DPositions).toBe('function')
   })
 })
 
@@ -56,9 +63,9 @@ describe('kgNebulaTrailAlpha -- 15s (configurable) linear fade, measured with fa
   it('is measured at 15s +/- 1s: alpha is ~0 within that band and not before it', () => {
     vi.useFakeTimers()
     const start = Date.now()
-    vi.advanceTimersByTime(14000) // 1s before nominal end
+    vi.advanceTimersByTime(14000)
     expect(win.kgNebulaTrailAlpha(Date.now(), start, 15000)).toBeGreaterThan(0)
-    vi.advanceTimersByTime(2000) // 1s after nominal end
+    vi.advanceTimersByTime(2000)
     expect(win.kgNebulaTrailAlpha(Date.now(), start, 15000)).toBe(0)
     vi.useRealTimers()
   })
@@ -70,7 +77,7 @@ describe('kgNebulaTrailAlpha -- 15s (configurable) linear fade, measured with fa
     vi.useRealTimers()
   })
   it('never goes negative or above 1 for out-of-range inputs', () => {
-    expect(win.kgNebulaTrailAlpha(1000, 2000, 15000)).toBe(1) // "started in the future" clamps to 1
+    expect(win.kgNebulaTrailAlpha(1000, 2000, 15000)).toBe(1)
     expect(win.kgNebulaTrailAlpha(100000, 0, 15000)).toBe(0)
   })
 })
@@ -81,14 +88,11 @@ describe('kgNebulaTrailRgba -- hot-white birth cooling into the agent colour, al
     const start = Date.now()
     const base = win.kgNebulaAgentColor('backend')
     const atBirth = win.kgNebulaTrailRgba(base, Date.now(), start, 15000)
-    const m = /rgba\((\d+),(\d+),(\d+),([\d.]+)\)/.exec(atBirth)!
-    const [, r, g, b, a] = m.map(Number) as unknown as number[]
-    expect(Number(a)).toBe(1)
-    expect(Number(r) + Number(g) + Number(b)).toBeGreaterThan(600) // close to 255*3 = white
+    expect(atBirth.alpha).toBe(1)
+    expect(atBirth.r + atBirth.g + atBirth.b).toBeGreaterThan(600) // close to 255*3 = white
     vi.advanceTimersByTime(14999)
     const nearEnd = win.kgNebulaTrailRgba(base, Date.now(), start, 15000)
-    const m2 = /rgba\((\d+),(\d+),(\d+),([\d.]+)\)/.exec(nearEnd)!
-    expect(Number(m2[4])).toBeLessThan(0.01)
+    expect(nearEnd.alpha).toBeLessThan(0.01)
     vi.useRealTimers()
   })
 })
@@ -132,7 +136,7 @@ describe('kgNebulaActiveTrails -- drops fully-faded events', () => {
     const t0 = Date.now()
     const events = [
       { agent_id: 'backend', ts: t0, hit: ['n1'] },
-      { agent_id: 'qa', ts: t0 - 20000, hit: ['n2'] }, // already expired at default 15000ms
+      { agent_id: 'qa', ts: t0 - 20000, hit: ['n2'] },
     ]
     const active = win.kgNebulaActiveTrails(events, Date.now(), 15000)
     expect(active).toHaveLength(1)
@@ -141,41 +145,7 @@ describe('kgNebulaActiveTrails -- drops fully-faded events', () => {
   })
 })
 
-describe('kgNebulaLayout -- deterministic static force layout', () => {
-  const nodes = [
-    { id: 'a', project: 'marveen' }, { id: 'b', project: 'marveen' },
-    { id: 'c', project: 'mopsion' }, { id: 'd', project: 'mopsion' },
-  ]
-  const edges = [{ source: 'a', target: 'b' }, { source: 'c', target: 'd' }]
-
-  it('is deterministic: identical input gives identical positions', () => {
-    const p1 = win.kgNebulaLayout(nodes, edges, 400, 300, 40)
-    const p2 = win.kgNebulaLayout(nodes, edges, 400, 300, 40)
-    for (const n of nodes) {
-      expect(p1.get(n.id)).toEqual(p2.get(n.id))
-    }
-  })
-
-  it('places every node within the canvas bounds', () => {
-    const p = win.kgNebulaLayout(nodes, edges, 400, 300, 40)
-    for (const n of nodes) {
-      const pos = p.get(n.id)!
-      expect(Math.abs(pos.x)).toBeLessThanOrEqual(200)
-      expect(Math.abs(pos.y)).toBeLessThanOrEqual(150)
-    }
-  })
-
-  it('does not blow up or hang on a larger synthetic graph (perf smoke, not the real fps measurement)', () => {
-    const big = Array.from({ length: 200 }, (_, i) => ({ id: 'n' + i, project: i % 3 === 0 ? 'marveen' : 'mopsion' }))
-    const bigEdges = Array.from({ length: 150 }, (_, i) => ({ source: 'n' + i, target: 'n' + ((i + 1) % 200) }))
-    const start = performance.now()
-    const p = win.kgNebulaLayout(big, bigEdges, 800, 600, 60)
-    expect(p.size).toBe(200)
-    expect(performance.now() - start).toBeLessThan(2000)
-  })
-})
-
-describe('kgNebulaDegreeMap -- node glow/size driver (MikroB feedback 2026-11-22: hubs should read brighter than leaves)', () => {
+describe('kgNebulaDegreeMap -- node glow/size driver (hubs should read brighter than leaves)', () => {
   it('counts edges per node, zero for an isolated node', () => {
     const nodes = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'lonely' }]
     const edges = [{ source: 'a', target: 'b' }, { source: 'a', target: 'c' }]
@@ -186,54 +156,155 @@ describe('kgNebulaDegreeMap -- node glow/size driver (MikroB feedback 2026-11-22
   })
 })
 
-describe('kgNebulaClusterGeometry -- per-project gas-cloud centroid/radius for the nebula backdrop', () => {
-  it('centres each cluster on the mean of its own settled nodes, not the canvas origin', () => {
+describe('kgNebulaBucketKey / kgNebulaProjectBuckets -- project+type topic clusters', () => {
+  it('buckets by project+type together, not project alone', () => {
+    const nodes = [
+      { id: 'a', project: 'marveen', type: 'solution' },
+      { id: 'b', project: 'marveen', type: 'card' },
+      { id: 'c', project: 'mopsion', type: 'solution' },
+    ]
+    const buckets = win.kgNebulaProjectBuckets(nodes)
+    expect(buckets.size).toBe(3)
+  })
+})
+
+describe('kgNebulaFibonacciSpherePoints -- even 3D spread, deterministic', () => {
+  it('is deterministic: same n/radius gives the same points', () => {
+    const p1 = win.kgNebulaFibonacciSpherePoints(8, 100)
+    const p2 = win.kgNebulaFibonacciSpherePoints(8, 100)
+    expect(p1).toEqual(p2)
+  })
+  it('places every point at (approximately) the requested radius from the origin', () => {
+    const points = win.kgNebulaFibonacciSpherePoints(12, 150)
+    for (const p of points) {
+      expect(Math.hypot(p.x, p.y, p.z)).toBeCloseTo(150, 5)
+    }
+  })
+  it('does not collapse distinct points onto the same spot (no two clusters overlap exactly)', () => {
+    const points = win.kgNebulaFibonacciSpherePoints(10, 100)
+    const seen = new Set(points.map((p) => JSON.stringify(p)))
+    expect(seen.size).toBe(10)
+  })
+  it('handles n=1 without dividing by zero', () => {
+    const points = win.kgNebulaFibonacciSpherePoints(1, 100)
+    expect(points).toHaveLength(1)
+    expect(Number.isFinite(points[0].x)).toBe(true)
+  })
+})
+
+describe('kgNebulaNode3DPositions -- deterministic per-cluster blob layout', () => {
+  const nodes = [
+    { id: 'a', project: 'marveen', type: 'solution' },
+    { id: 'b', project: 'marveen', type: 'solution' },
+    { id: 'c', project: 'mopsion', type: 'card' },
+  ]
+
+  it('is deterministic: identical input gives identical positions', () => {
+    const p1 = win.kgNebulaNode3DPositions(nodes)
+    const p2 = win.kgNebulaNode3DPositions(nodes)
+    for (const n of nodes) expect(p1.get(n.id)).toEqual(p2.get(n.id))
+  })
+
+  it('places every node within its own cluster blob radius of its bucket centre', () => {
+    const positions = win.kgNebulaNode3DPositions(nodes)
+    const buckets = win.kgNebulaProjectBuckets(nodes)
+    const centers = win.kgNebulaFibonacciSpherePoints(buckets.size, 150)
+    for (const n of nodes) {
+      const p = positions.get(n.id)!
+      const bucket = buckets.get(win.kgNebulaBucketKey(n))!
+      const c = centers[bucket]
+      const d = Math.hypot(p.x - c.x, p.y - c.y, p.z - c.z)
+      expect(d).toBeLessThanOrEqual(70 + 0.01) // KG_NEBULA_BLOB_MAX
+    }
+  })
+
+  it('does not blow up or hang on a larger synthetic graph (perf smoke)', () => {
+    const big = Array.from({ length: 736 }, (_, i) => ({
+      id: 'n' + i, project: i % 3 === 0 ? 'marveen' : 'mopsion', type: ['solution', 'skill', 'card', 'agent-note'][i % 4],
+    }))
+    const start = performance.now()
+    const p = win.kgNebulaNode3DPositions(big)
+    expect(p.size).toBe(736)
+    expect(performance.now() - start).toBeLessThan(500)
+  })
+})
+
+describe('kgNebulaClusterGeometry3D -- per-topic gas-cloud centroid/radius', () => {
+  it('centres each cluster on the mean of its own settled nodes, not the origin', () => {
     const nodes = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
     const positions = new Map([
-      ['a', { x: 10, y: 10, bucket: 0 }],
-      ['b', { x: 30, y: 10, bucket: 0 }],
-      ['c', { x: -100, y: -100, bucket: 1 }],
+      ['a', { x: 10, y: 10, z: 0, bucket: 0 }],
+      ['b', { x: 30, y: 10, z: 0, bucket: 0 }],
+      ['c', { x: -100, y: -100, z: 50, bucket: 1 }],
     ])
-    const clusters = win.kgNebulaClusterGeometry(nodes, positions)
+    const clusters = win.kgNebulaClusterGeometry3D(nodes, positions)
     const c0 = clusters.find((c) => c.bucket === 0)!
     const c1 = clusters.find((c) => c.bucket === 1)!
     expect(c0.cx).toBeCloseTo(20, 5)
     expect(c0.cy).toBeCloseTo(10, 5)
     expect(c0.count).toBe(2)
     expect(c1.cx).toBeCloseTo(-100, 5)
+    expect(c1.cz).toBeCloseTo(50, 5)
     expect(c1.count).toBe(1)
   })
 })
 
-describe('kgNebulaAgentRingPositions -- each agent is its own positioned entity (MikroB feedback 2026-11-22: "agents are not visible as entities")', () => {
-  it('gives every agent a distinct point on the ring, deterministic regardless of input order', () => {
-    const p1 = win.kgNebulaAgentRingPositions(['backend', 'qa', 'cybered'], 100)
-    const p2 = win.kgNebulaAgentRingPositions(['cybered', 'backend', 'qa'], 100)
+describe('kgNebulaHubNodeIds -- hub cores spread across clusters, never a degree-0 leaf', () => {
+  it('picks the top-degree node(s) per bucket, not just the global top', () => {
+    const nodes = [
+      { id: 'a1', project: 'p1' }, { id: 'a2', project: 'p1' }, { id: 'a3', project: 'p1' },
+      { id: 'b1', project: 'p2' }, { id: 'b2', project: 'p2' },
+    ]
+    const edges = [
+      { source: 'a1', target: 'a2' }, { source: 'a1', target: 'a3' }, // a1 degree 2 (cluster p1 hub)
+      { source: 'b1', target: 'b2' }, // b1/b2 degree 1 each
+    ]
+    const hubs = win.kgNebulaHubNodeIds(nodes, edges, 1)
+    expect(hubs.has('a1')).toBe(true)
+    expect(hubs.has('b1') || hubs.has('b2')).toBe(true) // p2 still gets its own hub
+  })
+  it('never promotes a degree-0 node to hub', () => {
+    const nodes = [{ id: 'lonely', project: 'p1' }]
+    const hubs = win.kgNebulaHubNodeIds(nodes, [], 2)
+    expect(hubs.size).toBe(0)
+  })
+})
+
+describe('kgNebulaAgentSpherePositions -- each agent its own positioned entity in 3D', () => {
+  it('gives every agent a distinct point, deterministic regardless of input order', () => {
+    const p1 = win.kgNebulaAgentSpherePositions(['backend', 'qa', 'cybered'], 100)
+    const p2 = win.kgNebulaAgentSpherePositions(['cybered', 'backend', 'qa'], 100)
     expect(p1.get('backend')).toEqual(p2.get('backend'))
     expect(p1.get('qa')).toEqual(p2.get('qa'))
     const seen = new Set(['backend', 'qa', 'cybered'].map((id) => JSON.stringify(p1.get(id))))
-    expect(seen.size).toBe(3) // no two agents collapse onto the same point
+    expect(seen.size).toBe(3)
   })
 
-  it('places every agent at the requested ring radius from the centre', () => {
-    const p = win.kgNebulaAgentRingPositions(['backend', 'qa', 'cybered', 'fron-ted'], 150)
+  it('places every agent at the requested sphere radius from the centre', () => {
+    const p = win.kgNebulaAgentSpherePositions(['backend', 'qa', 'cybered', 'fron-ted'], 150)
     for (const pos of p.values()) {
-      expect(Math.hypot(pos.x, pos.y)).toBeCloseTo(150, 5)
+      expect(Math.hypot(pos.x, pos.y, pos.z)).toBeCloseTo(150, 5)
     }
   })
 })
 
-describe('kgNebulaCurveControl -- trails are curved, not straight lines through one centre point', () => {
+describe('kgNebulaCurveControl3D -- trails are curved 3D arcs, not straight lines', () => {
   it('returns a control point off the direct line between the two endpoints', () => {
-    const { cx, cy } = win.kgNebulaCurveControl(0, 0, 100, 0, 'backend:n1')
-    // The midpoint of a straight line from (0,0) to (100,0) is (50,0); a real bow moves cy off 0.
+    const { cx, cy, cz } = win.kgNebulaCurveControl3D(0, 0, 0, 100, 0, 0, 'backend:n1')
     expect(cx).toBeCloseTo(50, 0)
-    expect(Math.abs(cy)).toBeGreaterThan(0)
+    expect(Math.abs(cy) + Math.abs(cz)).toBeGreaterThan(0)
   })
 
   it('is deterministic for the same agent/hit pair', () => {
-    const a = win.kgNebulaCurveControl(0, 0, 100, 40, 'qa:n7')
-    const b = win.kgNebulaCurveControl(0, 0, 100, 40, 'qa:n7')
+    const a = win.kgNebulaCurveControl3D(0, 0, 0, 100, 40, 20, 'qa:n7')
+    const b = win.kgNebulaCurveControl3D(0, 0, 0, 100, 40, 20, 'qa:n7')
     expect(a).toEqual(b)
+  })
+
+  it('stays well-defined (no NaN) when the line is parallel to the reference up axis', () => {
+    const { cx, cy, cz } = win.kgNebulaCurveControl3D(0, 0, 0, 0, 100, 0, 'edge-case')
+    expect(Number.isFinite(cx)).toBe(true)
+    expect(Number.isFinite(cy)).toBe(true)
+    expect(Number.isFinite(cz)).toBe(true)
   })
 })
