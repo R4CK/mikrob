@@ -31622,3 +31622,21 @@ Selftest: 91/91 PASS (83 régi + 8 új). Teljes suite (`fleet-test.sh --ref 4f8a
 **Ki döntött:** CYBERED lelete (37718), MikroB Fix-Direction nélküli dispatch-je (üzenet 23544). A javítás végrehajtója DevO (fullstack).
 
 **Hivatkozás:** kártya 58e8cd74, commit 4f8a12dc8.
+
+## 2026-11-22 -- Megoldás-tár élő nebula gráf-nézet (kártya dcb196f9)
+
+**Döntés:** Peti kérésére (Telegram 14489/14492) a Megoldás-tár oldal kapott egy élő gráf-nézetet: ügynökök + tudásgráf-csomópontok egy közös canvas-on, felvillanó, lehülő-és-elhalványuló keresési útvonalakkal ágensenként eltérő színnel. Renderelő: Canvas2D egyszeri (nem per-frame) erő-alapú statikus elrendezéssel, a meglévő, már élesített per-csomópont mini-gráf technikáját (kgSimulateStep, app-kg.js) kiterjesztve -- NEM d3-force/three.js, mert a repónak nincs se bundlere, se meglévő d3/three függősége, és a tényleges kockázat (700+ csomópont lefagyasztja a böngészőt) a per-frame szimuláció elhagyásával oldódik meg, nem a motor cseréjével (indoklás részletesen a kártya REVIEW-jában).
+
+Pair-BE (a1d57d99, backend2) a build idején még `planned` volt, kontraktus nélkül -- FE egy saját javasolt kontraktus ellen épült (GET /api/kg/graph, GET /api/kg/activity, mindkettő dokumentálva a kártya 37775/37776 kommentjében), minden valós hívás 404-en a meglévő becsületes "nincs meg még" állapotra esik vissza (SOHA nem jelenít meg kitalált demo-gráfot vagy -útvonalat).
+
+Mérési lelet a saját munkámban, javítva ugyanazon a körön: az első erő-elrendezés paraméterei (260-as taszítóerő, 220px hatótávolság) a meglévő ~10-csomópontos mini-gráfból lettek átvéve, és 736 csomópontnál egy kis canvason túlvezérelték a réteget -- valós böngészős screenshot (Playwright, headless Chromium) mutatta meg, hogy 676/736 csomópont a canvas négy sarkára volt szorítva (üres sarok-dróthálónak nézett ki, nem nebulának). Javítás: a taszítóerő és a hatótávolság sűrűség-arányosra skálázva (ideális térköz = sqrt(canvas-terület / csomópontszám)), plusz egy lépésenkénti sebesség-plafon, hogy semmilyen átmeneti erőkilengés ne tudjon egy csomópontot a falhoz vágni. Ugyanazon a rögzítésen újramérve: 3/736 csomópont a sarkok közelében (676-ról), 60,8 fps fenntartva, 155ms egyszeri elrendezés-beállás (281ms-ről).
+
+fps mérés: valós headless Chromium (Playwright), 736 csomópont / 582 él szintetikus rögzítésen, telefon-szerű 360x216-os canvas: 60,8 fps / 3mp (183 keret), medián kereten­kénti rajzolási költség 0,2ms. A tooling nem tud CPU-t fékezni, tehát ez NEM közép-kategóriás mobil mérés -- a 0,2ms vs. a 30fps-hez szükséges 33ms-es keret-büdzsé (>100x tartalék) megalapozott bizalmat ad, de QA-nak jelölve DevTools 4x-6x CPU-fékezéssel vagy valós eszközön újra kell ellenőriznie, mielőtt a (c) Kész-ha pont véglegesen zárható.
+
+Ágensenkénti szín: determinisztikus kliens-oldali szín-hozzárendelés (arany-szög (golden-angle) árnyalat-léptetés, 24 paletta-hely), nem adatbázis-vezérelt szín-kulcs (ahogy a MikroB-kiegészítés 37764 kommentje javasolta) -- indoklás: ez stabil és egyedi backend-tárolás nélkül is, és ha a1d57d99 kontraktusa később explicit szín-kulcsot ad, azt preferálom majd a kliens-hash helyett, látható változás nélkül a felhasználó számára (dokumentálva az app-kg-nebula.js fejlécében). Az elhalványodási idő (alapértelmezés 15000ms) VISZONT valóban konfig-vezérelt: minden lekérdezéskor a /api/kg/activity válasz config.fadeDurationMs mezőjéből jön, sosem van a render-útvonalba sütve (14. kódminőségi szabály).
+
+Tesztelés: src/__tests__/kg-nebula-module.test.ts, 15/15 zöld (hamis-órás (fake timer) 15s+-1s elhalványodás-mérés, determinisztikus ágens-szín-hozzárendelés egyedi fleet-ágensekre + ismeretlen ágensre, legjelölő-dedup, determinisztikus+korlátos elrendezés, 200-csomópontos teljesítmény-füst-teszt). Egy meglévő HTML-szelet-teszt (kg-dashboard-widget.test.ts) rögzített ablakmérete (4000->5000 karakter) bővítve, mert az új jelölés túltolta -- ugyanazok az assertion-ök, csak szélesebb ablak. Teljes KG-suite + string-kontraktus tesztek `fleet-test.sh --ref 2657ccc23`-on: 27 fájl / 403 teszt zöld.
+
+**Ki döntött:** Peti (Telegram 14489/14492), MikroB dispatch (üzenet 23611/23616). A megvalósítás végrehajtója Fron Ted.
+
+**Hivatkozás:** kártya dcb196f9 (fázis c65add5a), commit ec3e320b9 + 2657ccc23, Pair-BE a1d57d99 (backend2).
