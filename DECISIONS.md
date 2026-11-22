@@ -31298,3 +31298,38 @@ Docs closed (f8fde8e9, F4.5): README "Git/worktree/landolási infrastruktúra" s
 **Mérés, Gate-SHA 6fd3c94a62cd3a6417caee6f70ce10d1565a1e46:** targeted 5-file run (agent-worktree-marveen, landing-gate-verdict-check, selftest-harness-env-isolation, store-selftests-all-run, landing-downward-check) 228/228 PASS; fleet-test tree journal (`/home/neon/marveen-test/store/land-runs.jsonl`) unchanged at 107280 lines (identical tail entry) before and after; no new live `/api/messages` row during the run window. Full fleet-test suite on this sha: 1413 test files, 49081/49214 tests PASS, 1 flake (`land-run-journal.selftest.sh` -- reproduces PASS standalone and with the identical forced dead-env replicated by hand, twice; not a regression from this change). Two concurrent fleet-test runs against this same sha (serialized by fleet-test.sh's own lock): run A 228/228 PASS, run B 185/185 PASS, journal unchanged at 107280 lines across both, no leaked live message.
 
 **Ki döntött:** backend3, card 1634bf55, round 2, Gate-SHA 6fd3c94a62cd3a6417caee6f70ce10d1565a1e46 (pending this DECISIONS.md commit's own sha). Gate: QA + Cybersec + Cybered (comment 37609), re-dispatched after round 2.
+
+## 2026-11-20 -- kártya 0291283d: Ghost pipeline a lokális LLM-en, Gemini-kvóta nélkül
+
+Peti (Telegram 14354, 2026-11-20): a Ghost pipeline-nak nincs saját kvótája, és nem ehet bele a
+Gemini kódolási kvótába. Mérve 2026-11-20: a `store/seged-hivo-naplo.jsonl` 164 sorából 162 Ghost
+(rangsorolás `src/gemini-orchestrator.ts` + review `src/gemini-orchestrator-draft-review.ts`)
+hívás volt, ami a közös óránkénti 5-ös Gemini-ablakot (`src/gemini-ghost-budget.ts`) osztotta meg
+egy valós kártya-kódolási hívással (az utolsó 2026-10-25 óta egy darab volt). Lásd memória
+`ghost-to-local-llm-gemini-in-coding-chain-decision`.
+
+**Build:** új modul `src/gemini-ghost-local.ts` (`callLocalLlmForGhost`, `alwaysAvailableSlot`,
+`recordLocalGhostCallDetail`, `GHOST_LOCAL_MODEL` = `hf.co/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-
+GGUF:Q4_K_M`) lett a `runGeminiOrchestratorSweep` és a `runGeminiOrchestratorDraftReviewSweep`
+alapértelmezett `callGemini`/`reserveSlot`/`releaseSlot`/`recordDetail` injektálása, a
+`gemini-orchestrator.ts`/`gemini-orchestrator-draft-review.ts` hívó-wrapperekben. A
+`decideGeminiOrder`/`reviewOneCard` maga változatlan (generikus/injektálható marad) -- csak a
+sweep-wrapperek saját default-paraméterei mutatnak most a lokálisra. Nincs `seged-hivo-naplo.jsonl`
+sor a lokális hívásokra (az a Gemini-kvóta mérésére szolgál, egy lokális hívás nem fogyaszt
+Gemini-kvótát); a diagnosztikai log kizárólag az `llm_ledger`-be megy (`llm-ledger-append.py
+--provider local`). GPU-flock-busy (`local-llm.sh` exit 6) `reason=gpu_busy`-ra fordul, és
+struktúrálisan (nincs Gemini-hívás a hívásláncban), nem csak feltételesen, nincs Gemini-visszaesés.
+
+**Teszt:** `gemini-ghost-local.test.ts` 12/12 zöld; `gemini-orchestrator.test.ts` 94/94 zöld (a
+régi, agy-útvonalat alapértelmezésként feltételező describe-blokk lecserélve egy helyi-LLM
+alapértelmezést igazoló blokkra); `gemini-orchestrator-draft-review.test.ts` 82/82 zöld (új
+`node:child_process`/`db.js` mock + egy új describe-blokk). `tsc --noEmit`: tiszta (2 már korábban
+is meglévő, nem kapcsolódó parse5 hiba kivételével). `eslint`: 0 probléma a 7 érintett fájlon.
+
+**Nincs benne:** a kártya "measured over a real tick" kritériumai (0 Gemini-hívás + N lokális
+hívás egy valódi harness-ticken, és hogy a `seged-hivo-naplo.jsonl` tényleg nem kap új sort élesben)
+egység-teszttel igazolva, élő méréssel még nem -- ugyanaz a halasztás, mint a 9963bf35/9fb61222
+kártyák saját élő-mérési pontjainál.
+
+**Ki döntött:** Peti (Telegram 14354) + MikroB (kártya 0291283d, reassignment message 22658).
+backend2 végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
