@@ -18,6 +18,20 @@ import { fileURLToPath } from 'node:url'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
+// Card 1634bf55: without this, the subprocess below inherits this process's OWN env as-is, and
+// kanban-comment-lib.sh's live default (http://localhost:3420) plus its git-common-dir token
+// fallback can reach the real dashboard with the real token even from this worktree -- confirmed
+// live (a +3-byte write to the real store/land-runs.jsonl, three real /api/messages posts, during
+// a concurrent fleet-test, msg 23386 + MikroB comment 37609). Forced unconditionally so no future
+// nested selftest case here can forget it either.
+const DEAD_SELFTEST_ENV: Readonly<Record<string, string>> = {
+  KANBAN_COMMENT_API: 'http://127.0.0.1:1',
+  KANBAN_COMMENT_TOKEN_FILE: '/nonexistent/no-such-dir/no-token',
+  GATE_CHECK_API: 'http://127.0.0.1:1',
+  GATE_CHECK_TOKEN_FILE: '/nonexistent/no-such-dir/no-token',
+  LAND_RUN_JOURNAL_FILE: '/nonexistent/no-such-dir/land-runs.jsonl',
+}
+
 function selftest(script: string): { status: number; out: string } {
   try {
     // stderr is folded in deliberately: a sourcing failure (a missing shared lib) prints there and
@@ -26,6 +40,7 @@ function selftest(script: string): { status: number; out: string } {
       encoding: 'utf-8',
       stdio: 'pipe',
       cwd: REPO,
+      env: { ...process.env, ...DEAD_SELFTEST_ENV },
     })
     return { status: 0, out }
   } catch (e) {
@@ -73,7 +88,7 @@ describe('marveen-land.sh --selftest-land-lock-release', () => {
         stdio: 'pipe',
         cwd: REPO,
         timeout: 50_000,
-        env: { ...process.env, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' },
+        env: { ...process.env, ...DEAD_SELFTEST_ENV, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' },
       })
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string }
@@ -106,6 +121,7 @@ describe('marveen-land.sh --selftest-land-batch', () => {
         stdio: 'pipe',
         cwd: REPO,
         timeout: 170_000,
+        env: { ...process.env, ...DEAD_SELFTEST_ENV },
       })
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string }
