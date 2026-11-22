@@ -178,14 +178,78 @@ function kgNebulaInitialPositions(nodes, width, height) {
     const spiralScale = (clusterR * 0.85) / Math.sqrt(bucketSize)
     const spiralAngle = idx * 2.399963229728653 // golden angle, radians
     const spiralR = Math.sqrt(idx + 1) * spiralScale
+    // A perfectly symmetric sunflower spiral, repulsed by a perfectly symmetric force, settles
+    // into a perfectly regular lattice -- that is what read as a "rectangular grid" in the
+    // dcb196f9 preview MikroB flagged (2026-11-22). A small, deterministic (hash-of-id-seeded,
+    // never Math.random) jitter on the STARTING position breaks that symmetry once, up front, so
+    // the settle below relaxes into an irregular, organic-looking scatter instead of re-finding
+    // the lattice.
+    const jitterSeed = kgNebulaHashString(node.id)
+    const jitterAngle = (jitterSeed % 360) * (Math.PI / 180)
+    const jitterR = ((jitterSeed >> 8) % 100) / 100 * spiralScale * 0.55
     positions.set(node.id, {
-      x: cx + Math.cos(spiralAngle) * spiralR,
-      y: cy + Math.sin(spiralAngle) * spiralR,
+      x: cx + Math.cos(spiralAngle) * spiralR + Math.cos(jitterAngle) * jitterR,
+      y: cy + Math.sin(spiralAngle) * spiralR + Math.sin(jitterAngle) * jitterR,
       vx: 0, vy: 0,
-      cx, cy,
+      cx, cy, bucket,
     })
   }
   return positions
+}
+
+// Per-bucket (project) gas-cloud geometry for the soft nebula glow -- centroid + spread of the
+// SETTLED positions (not the pre-settle spiral), so the glow actually sits where the cluster
+// ended up. Pure function of positions/nodes, used by the draw loop and testable on its own.
+function kgNebulaClusterGeometry(nodes, positions) {
+  const sums = new Map() // bucket -> { sx, sy, n, maxR }
+  for (const node of nodes) {
+    const p = positions.get(node.id)
+    if (!p) continue
+    const bucket = typeof p.bucket === 'number' ? p.bucket : 0
+    if (!sums.has(bucket)) sums.set(bucket, { sx: 0, sy: 0, n: 0 })
+    const s = sums.get(bucket)
+    s.sx += p.x; s.sy += p.y; s.n += 1
+  }
+  const out = []
+  for (const [bucket, s] of sums) {
+    const cx = s.sx / s.n, cy = s.sy / s.n
+    let maxR = 0
+    for (const node of nodes) {
+      const p = positions.get(node.id)
+      if (!p || (p.bucket || 0) !== bucket) continue
+      maxR = Math.max(maxR, Math.hypot(p.x - cx, p.y - cy))
+    }
+    out.push({ bucket, cx, cy, r: Math.max(40, maxR * 1.25), count: s.n })
+  }
+  return out
+}
+
+// Node degree (edge count) per node id -- drives glow size/brightness so hubs read as brighter
+// "stars" and leaves as faint dust, instead of every node being an identical uniform dot.
+function kgNebulaDegreeMap(nodes, edges) {
+  const deg = new Map(nodes.map((n) => [n.id, 0]))
+  for (const e of edges) {
+    if (deg.has(e.source)) deg.set(e.source, deg.get(e.source) + 1)
+    if (deg.has(e.target)) deg.set(e.target, deg.get(e.target) + 1)
+  }
+  return deg
+}
+
+// Deterministic ring placement for agent entities, OUTSIDE the node clusters, so every agent is
+// its own visible, positioned node (not a shared point at the canvas centre). Sorted agent-id
+// order keeps it stable frame to frame and testable; `ringR` is picked by the caller from the
+// actual settled layout extent so agents sit just past the outermost cluster, never on top of it.
+function kgNebulaAgentRingPositions(agentIds, ringRx, ringRy) {
+  const rx = ringRx
+  const ry = typeof ringRy === 'number' ? ringRy : ringRx
+  const sorted = [...new Set(agentIds)].sort()
+  const n = Math.max(1, sorted.length)
+  const out = new Map()
+  sorted.forEach((id, i) => {
+    const angle = (i / n) * Math.PI * 2 - Math.PI / 2
+    out.set(id, { x: Math.cos(angle) * rx, y: Math.sin(angle) * ry })
+  })
+  return out
 }
 
 function kgNebulaSettleStep(nodes, edges, positions, w, h) {
@@ -219,11 +283,21 @@ function kgNebulaSettleStep(nodes, edges, positions, w, h) {
     if (!a || !b) continue
     const dx = b.x - a.x, dy = b.y - a.y
     const dist = Math.sqrt(dx * dx + dy * dy) || 1
-    const force = (dist - 36) * 0.02
+    // A same-project edge pulls harder than a cross-project one -- without this, every edge pulls
+    // equally regardless of community, and the whole graph settles into one undifferentiated
+    // blob with uniform density (part of what read as a "grid" rather than distinct nebula
+    // clusters of varying density in the dcb196f9 preview).
+    const sameBucket = a.bucket === b.bucket
+    const force = (dist - 36) * (sameBucket ? 0.028 : 0.01)
     const fx = (dx / dist) * force, fy = (dy / dist) * force
     a.vx += fx; a.vy += fy
     b.vx -= fx; b.vy -= fy
   }
+  // Content stays within an inner region, not the full canvas -- the outer margin is reserved for
+  // the agent ring (kgNebulaAgentRingPositions) so agents sit clearly OUTSIDE the star field
+  // instead of buried inside it.
+  const contentHalfW = w / 2 * 0.78
+  const contentHalfH = h / 2 * 0.78
   for (const p of arr) {
     // Gentle pull back toward the node's own cluster centre -- keeps a community looking like a
     // soft cloud even when a cross-cluster edge spring would otherwise drag it toward the canvas
@@ -237,8 +311,8 @@ function kgNebulaSettleStep(nodes, edges, positions, w, h) {
     const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
     if (speed > maxSpeed) { const s = maxSpeed / speed; p.vx *= s; p.vy *= s }
     p.x += p.vx; p.y += p.vy
-    p.x = Math.max(-w / 2 + 10, Math.min(w / 2 - 10, p.x))
-    p.y = Math.max(-h / 2 + 10, Math.min(h / 2 - 10, p.y))
+    p.x = Math.max(-contentHalfW, Math.min(contentHalfW, p.x))
+    p.y = Math.max(-contentHalfH, Math.min(contentHalfH, p.y))
   }
 }
 
@@ -257,6 +331,17 @@ const kgNebulaState = {
   events: [], fadeDurationMs: KG_NEBULA_DEFAULT_FADE_MS, sinceMs: 0,
   pollTimer: null, rafId: null, reduced: false,
   lastProject: '',
+  degree: new Map(), clusters: [], outerRingRx: 160, outerRingRy: 160,
+}
+
+// Real container size drives the layout/draw -- the CSS gives the wrap a tall min-height (fill
+// the panel, rule per MikroB/Peti feedback 2026-11-22) so rect.height is now meaningful; the old
+// `w * 0.6` guess only exists as a fallback for a test/JSDOM rect that reports height 0.
+function kgNebulaCanvasSize(canvas) {
+  const rect = canvas.parentElement.getBoundingClientRect()
+  const w = Math.max(240, rect.width)
+  const h = Math.max(240, rect.height > 0 ? rect.height : Math.min(760, w * 0.72))
+  return { w, h }
 }
 
 function kgNebulaReducedMotion() {
@@ -328,10 +413,16 @@ async function kgNebulaLoad() {
   kgNebulaState.nodeIndex = new Map(nodes.map((n) => [n.id, n]))
 
   const canvas = kgNebulaEl('kgNebulaCanvas')
-  const rect = canvas.parentElement.getBoundingClientRect()
-  const w = Math.max(240, rect.width)
-  const h = Math.max(240, Math.min(560, w * 0.6))
+  const { w, h } = kgNebulaCanvasSize(canvas)
   kgNebulaState.positions = kgNebulaLayout(nodes, edges, w, h)
+  kgNebulaState.degree = kgNebulaDegreeMap(nodes, edges)
+  kgNebulaState.clusters = kgNebulaClusterGeometry(nodes, kgNebulaState.positions)
+  // Elliptical ring matching the canvas aspect ratio, just inside the edge -- the content itself
+  // is clamped to ~78% of each half-extent (kgNebulaSettleStep), so this sits in the margin
+  // between the star field and the frame instead of overlapping it or running off-screen on a
+  // wide (desktop) or tall (mobile) canvas.
+  kgNebulaState.outerRingRx = w / 2 * 0.86
+  kgNebulaState.outerRingRy = h / 2 * 0.90
 
   kgNebulaRenderLegend()
   kgNebulaStartPolling()
@@ -379,13 +470,24 @@ function kgNebulaStopPolling() {
   if (kgNebulaState.pollTimer) { clearInterval(kgNebulaState.pollTimer); kgNebulaState.pollTimer = null }
 }
 
+// Quadratic control point offset to the side of the agent->hit line, deterministic per
+// (agent, hit) pair (hash-seeded) so the curve direction never flickers frame to frame, but two
+// different trails do not all bow the exact same way -- that would read as a fan, not gas.
+function kgNebulaCurveControl(ax, ay, bx, by, seedKey) {
+  const mx = (ax + bx) / 2, my = (ay + by) / 2
+  const dx = bx - ax, dy = by - ay
+  const len = Math.hypot(dx, dy) || 1
+  const nx = -dy / len, ny = dx / len
+  const sign = kgNebulaHashString(seedKey) % 2 === 0 ? 1 : -1
+  const bow = Math.min(len * 0.18, 60) * sign
+  return { cx: mx + nx * bow, cy: my + ny * bow }
+}
+
 function kgNebulaDrawFrame() {
   const canvas = kgNebulaEl('kgNebulaCanvas')
   if (!canvas || !kgNebulaState.positions) return
   const dpr = window.devicePixelRatio || 1
-  const rect = canvas.parentElement.getBoundingClientRect()
-  const w = Math.max(240, rect.width)
-  const h = Math.max(240, Math.min(560, w * 0.6))
+  const { w, h } = kgNebulaCanvasSize(canvas)
   if (canvas.width !== Math.round(w * dpr)) canvas.width = Math.round(w * dpr)
   if (canvas.height !== Math.round(h * dpr)) canvas.height = Math.round(h * dpr)
   const ctx = canvas.getContext('2d')
@@ -395,7 +497,23 @@ function kgNebulaDrawFrame() {
   ctx.save()
   ctx.translate(w / 2, h / 2)
 
-  ctx.strokeStyle = 'rgba(140,150,180,0.12)'
+  // 1. Soft per-cluster gas clouds (additive, low alpha radial gradient) -- the "nebula" backdrop
+  // behind the stars/dust, one per project bucket, sized/positioned from the settled layout.
+  ctx.globalCompositeOperation = 'lighter'
+  for (const c of kgNebulaState.clusters) {
+    const grad = ctx.createRadialGradient(c.cx, c.cy, 0, c.cx, c.cy, c.r)
+    grad.addColorStop(0, 'rgba(130,150,235,0.22)')
+    grad.addColorStop(0.5, 'rgba(100,80,180,0.12)')
+    grad.addColorStop(1, 'rgba(100,80,180,0)')
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.arc(c.cx, c.cy, c.r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // 2. Faint edges (the connective tissue of the graph, not the focal point).
+  ctx.globalCompositeOperation = 'source-over'
+  ctx.strokeStyle = 'rgba(140,150,180,0.10)'
   ctx.lineWidth = 1
   for (const e of kgNebulaState.edges) {
     const a = kgNebulaState.positions.get(e.source)
@@ -407,16 +525,62 @@ function kgNebulaDrawFrame() {
     ctx.stroke()
   }
 
+  // 3. KG nodes as stardust -- size/brightness scale with degree (hubs glow brighter/bigger),
+  // each with its own small glow halo so the field reads as soft particles, not flat grey dots.
   ctx.globalCompositeOperation = 'lighter'
   for (const node of kgNebulaState.nodes) {
     const p = kgNebulaState.positions.get(node.id)
     if (!p) continue
+    const degree = kgNebulaState.degree.get(node.id) || 0
+    const r = 1.4 + Math.min(3.2, Math.sqrt(degree) * 0.9)
+    const alpha = Math.min(0.85, 0.38 + Math.min(1, degree / 6) * 0.3)
+    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 4)
+    glow.addColorStop(0, `rgba(200,210,255,${alpha})`)
+    glow.addColorStop(1, 'rgba(200,210,255,0)')
+    ctx.fillStyle = glow
     ctx.beginPath()
-    ctx.fillStyle = 'rgba(180,195,230,0.55)'
-    ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2)
+    ctx.arc(p.x, p.y, r * 4, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.fillStyle = `rgba(220,228,255,${Math.min(1, alpha + 0.2)})`
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2)
     ctx.fill()
   }
 
+  // 4. Agent entities -- each on its own ring position (never the canvas centre), own colour,
+  // own glow + label, so an agent reads as a thing in the graph, not an invisible emitter.
+  const activeAgentIds = [...new Set(kgNebulaState.events.map((e) => e.agent_id))]
+  const agentPositions = kgNebulaAgentRingPositions(
+    activeAgentIds.length ? activeAgentIds : KG_NEBULA_KNOWN_AGENTS,
+    kgNebulaState.outerRingRx,
+    kgNebulaState.outerRingRy,
+  )
+  for (const [agentId, pos] of agentPositions) {
+    const color = kgNebulaAgentColor(agentId)
+    const glow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 20)
+    glow.addColorStop(0, color)
+    glow.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.globalAlpha = 0.5
+    ctx.fillStyle = glow
+    ctx.beginPath()
+    ctx.arc(pos.x, pos.y, 20, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalAlpha = 1
+    ctx.beginPath()
+    ctx.fillStyle = color
+    ctx.arc(pos.x, pos.y, 4.5, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.fillStyle = 'rgba(230,234,245,0.9)'
+    ctx.font = '10px sans-serif'
+    ctx.textAlign = pos.x >= 0 ? 'left' : 'right'
+    ctx.fillText(agentId, pos.x + (pos.x >= 0 ? 8 : -8), pos.y + 3)
+    ctx.globalCompositeOperation = 'lighter'
+  }
+
+  // 5. Search trails: a gentle curve from the agent's own ring position to each hit node, hot
+  // white at birth cooling into the agent colour, alpha fading over fadeDurationMs (config, not
+  // hardcoded -- rule 14). Reduced-motion: one static frame, no per-frame alpha animation.
   if (!kgNebulaState.reduced) {
     const now = Date.now()
     for (const ev of kgNebulaState.events) {
@@ -424,18 +588,24 @@ function kgNebulaDrawFrame() {
       if (alpha <= 0) continue
       const color = kgNebulaAgentColor(ev.agent_id)
       const rgba = kgNebulaTrailRgba(color, now, ev.ts, kgNebulaState.fadeDurationMs)
+      const origin = agentPositions.get(ev.agent_id) || { x: 0, y: 0 }
       for (const hitId of (ev.hit || [])) {
         const b = kgNebulaState.positions.get(hitId)
         if (!b) continue
+        const { cx, cy } = kgNebulaCurveControl(origin.x, origin.y, b.x, b.y, ev.agent_id + ':' + hitId)
         ctx.beginPath()
         ctx.strokeStyle = rgba
         ctx.lineWidth = 2
-        ctx.moveTo(0, 0)
-        ctx.lineTo(b.x, b.y)
+        ctx.moveTo(origin.x, origin.y)
+        ctx.quadraticCurveTo(cx, cy, b.x, b.y)
         ctx.stroke()
+        // Glowing head at the hit end -- the "arrival" moment of the search trail.
+        const headGlow = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, 9)
+        headGlow.addColorStop(0, rgba)
+        headGlow.addColorStop(1, 'rgba(0,0,0,0)')
+        ctx.fillStyle = headGlow
         ctx.beginPath()
-        ctx.fillStyle = rgba
-        ctx.arc(b.x, b.y, 4, 0, Math.PI * 2)
+        ctx.arc(b.x, b.y, 9, 0, Math.PI * 2)
         ctx.fill()
       }
     }
@@ -524,3 +694,7 @@ window.kgNebulaActiveTrails = kgNebulaActiveTrails
 window.kgNebulaLayout = kgNebulaLayout
 window.kgNebulaWireToolbar = kgNebulaWireToolbar
 window.kgNebulaToggle = kgNebulaToggle
+window.kgNebulaClusterGeometry = kgNebulaClusterGeometry
+window.kgNebulaDegreeMap = kgNebulaDegreeMap
+window.kgNebulaAgentRingPositions = kgNebulaAgentRingPositions
+window.kgNebulaCurveControl = kgNebulaCurveControl

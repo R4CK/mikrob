@@ -18,6 +18,10 @@ type Win = {
   kgNebulaBuildLegend: (agentIds: string[]) => { agentId: string; color: string; paletteIndex: number }[]
   kgNebulaActiveTrails: (events: { agent_id: string; ts: number; hit: string[] }[], nowMs: number, fadeMs: number) => unknown[]
   kgNebulaLayout: (nodes: { id: string; project?: string }[], edges: { source: string; target: string }[], w: number, h: number, iterations?: number) => Map<string, Pos>
+  kgNebulaDegreeMap: (nodes: { id: string }[], edges: { source: string; target: string }[]) => Map<string, number>
+  kgNebulaClusterGeometry: (nodes: { id: string }[], positions: Map<string, Pos & { bucket?: number }>) => { bucket: number; cx: number; cy: number; r: number; count: number }[]
+  kgNebulaAgentRingPositions: (agentIds: string[], ringR: number) => Map<string, Pos>
+  kgNebulaCurveControl: (ax: number, ay: number, bx: number, by: number, seedKey: string) => { cx: number; cy: number }
 }
 
 let win: Win
@@ -168,5 +172,68 @@ describe('kgNebulaLayout -- deterministic static force layout', () => {
     const p = win.kgNebulaLayout(big, bigEdges, 800, 600, 60)
     expect(p.size).toBe(200)
     expect(performance.now() - start).toBeLessThan(2000)
+  })
+})
+
+describe('kgNebulaDegreeMap -- node glow/size driver (MikroB feedback 2026-11-22: hubs should read brighter than leaves)', () => {
+  it('counts edges per node, zero for an isolated node', () => {
+    const nodes = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'lonely' }]
+    const edges = [{ source: 'a', target: 'b' }, { source: 'a', target: 'c' }]
+    const deg = win.kgNebulaDegreeMap(nodes, edges)
+    expect(deg.get('a')).toBe(2)
+    expect(deg.get('b')).toBe(1)
+    expect(deg.get('lonely')).toBe(0)
+  })
+})
+
+describe('kgNebulaClusterGeometry -- per-project gas-cloud centroid/radius for the nebula backdrop', () => {
+  it('centres each cluster on the mean of its own settled nodes, not the canvas origin', () => {
+    const nodes = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+    const positions = new Map([
+      ['a', { x: 10, y: 10, bucket: 0 }],
+      ['b', { x: 30, y: 10, bucket: 0 }],
+      ['c', { x: -100, y: -100, bucket: 1 }],
+    ])
+    const clusters = win.kgNebulaClusterGeometry(nodes, positions)
+    const c0 = clusters.find((c) => c.bucket === 0)!
+    const c1 = clusters.find((c) => c.bucket === 1)!
+    expect(c0.cx).toBeCloseTo(20, 5)
+    expect(c0.cy).toBeCloseTo(10, 5)
+    expect(c0.count).toBe(2)
+    expect(c1.cx).toBeCloseTo(-100, 5)
+    expect(c1.count).toBe(1)
+  })
+})
+
+describe('kgNebulaAgentRingPositions -- each agent is its own positioned entity (MikroB feedback 2026-11-22: "agents are not visible as entities")', () => {
+  it('gives every agent a distinct point on the ring, deterministic regardless of input order', () => {
+    const p1 = win.kgNebulaAgentRingPositions(['backend', 'qa', 'cybered'], 100)
+    const p2 = win.kgNebulaAgentRingPositions(['cybered', 'backend', 'qa'], 100)
+    expect(p1.get('backend')).toEqual(p2.get('backend'))
+    expect(p1.get('qa')).toEqual(p2.get('qa'))
+    const seen = new Set(['backend', 'qa', 'cybered'].map((id) => JSON.stringify(p1.get(id))))
+    expect(seen.size).toBe(3) // no two agents collapse onto the same point
+  })
+
+  it('places every agent at the requested ring radius from the centre', () => {
+    const p = win.kgNebulaAgentRingPositions(['backend', 'qa', 'cybered', 'fron-ted'], 150)
+    for (const pos of p.values()) {
+      expect(Math.hypot(pos.x, pos.y)).toBeCloseTo(150, 5)
+    }
+  })
+})
+
+describe('kgNebulaCurveControl -- trails are curved, not straight lines through one centre point', () => {
+  it('returns a control point off the direct line between the two endpoints', () => {
+    const { cx, cy } = win.kgNebulaCurveControl(0, 0, 100, 0, 'backend:n1')
+    // The midpoint of a straight line from (0,0) to (100,0) is (50,0); a real bow moves cy off 0.
+    expect(cx).toBeCloseTo(50, 0)
+    expect(Math.abs(cy)).toBeGreaterThan(0)
+  })
+
+  it('is deterministic for the same agent/hit pair', () => {
+    const a = win.kgNebulaCurveControl(0, 0, 100, 40, 'qa:n7')
+    const b = win.kgNebulaCurveControl(0, 0, 100, 40, 'qa:n7')
+    expect(a).toEqual(b)
   })
 })
