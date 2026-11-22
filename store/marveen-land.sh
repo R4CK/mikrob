@@ -1625,6 +1625,59 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     return 0
   fi
 
+  # Card e9e1e771: the 507e8167 check above only runs on the "already an ancestor of develop"
+  # shortcut -- $branch genuinely has unlanded work by this point. But unlanded is not the same as
+  # the RIGHT commit: gate_verdict_check (further down) only asks "is there a verdict for the EXACT
+  # sha about to land", which an old, still-valid-looking verdict on a SUPERSEDED sha satisfies on
+  # its own. Measured live on 0ae1166e: the local card/<id> ref sat one commit BEHIND the sha the
+  # latest REVIEW actually claimed (the missing commit was a selftest fix), and nothing here asked --
+  # fleet-test, not this check, was the only thing that happened to catch it. The mirror case is a
+  # ref AHEAD of the Gate-SHA with a commit nobody reviewed at all. Compare the branch tip against
+  # the card's LATEST REVIEW Gate-SHA (same helper the 507e8167 check uses) and refuse on either
+  # direction, unless the only difference is per-landing churn (package.json/DECISIONS.md/README.md,
+  # the same set gate-closure-check.py already treats as not worth re-gating).
+  if [ -n "$LAND_CARD" ]; then
+    local _gsha_verdict; _gsha_verdict="$(card_review_gate_sha "$LAND_CARD")"
+    local _gsha_kind="${_gsha_verdict%%|*}" _gsha_detail="${_gsha_verdict#*|}"
+    if [ "$_gsha_kind" = "OK" ]; then
+      # rule 4b's multi-commit Gate-SHA line names several commits the card's own work rides on
+      # together (e.g. a fix + its docs commit); the LAST one is the newest claim this REVIEW makes.
+      local -a _gsha_list; IFS=',' read -ra _gsha_list <<<"$_gsha_detail"
+      local _latest_gate_sha="${_gsha_list[${#_gsha_list[@]}-1]}"
+      _latest_gate_sha="${_latest_gate_sha// /}"
+      if [ -n "$_latest_gate_sha" ] && [ "$work_sha" != "$_latest_gate_sha" ]; then
+        local _gsha_mismatch=""
+        if g cat-file -e "${_latest_gate_sha}^{commit}" 2>/dev/null \
+          && g merge-base --is-ancestor "$work_sha" "$_latest_gate_sha" 2>/dev/null; then
+          _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is BEHIND card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha -- this ref was never updated to the sha the REVIEW actually claims (card e9e1e771, the 0ae1166e shape)"
+        elif g cat-file -e "${_latest_gate_sha}^{commit}" 2>/dev/null \
+          && g merge-base --is-ancestor "$_latest_gate_sha" "$branch" 2>/dev/null; then
+          local _gsha_non_churn
+          _gsha_non_churn="$(g log --name-only --format= "${_latest_gate_sha}..$branch" \
+            | awk 'NF' | sort -u | awk -F/ '{print $NF}' \
+            | grep -vxE 'package\.json|DECISIONS\.md|README\.md' || true)"
+          if [ -n "$_gsha_non_churn" ]; then
+            _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is AHEAD of card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha with a non-churn commit touching: $(echo "$_gsha_non_churn" | tr '\n' ' ') -- that commit was never reviewed/gated (card e9e1e771)"
+          fi
+        else
+          _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) does not contain card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha at all (neither is an ancestor of the other) -- this card/<id> ref looks stale or unrelated (card e9e1e771)"
+        fi
+        if [ -n "$_gsha_mismatch" ]; then
+          if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
+            say "$agent: Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch -- TOLERATED by --allow-ungated"
+            _note_ungated_landing "$agent" "$LAND_CARD" "Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch"
+          else
+            echo "$agent: REFUSED -- Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch." >&2
+            echo "$agent: Fetch and branch -f card/$LAND_CARD to the Gate-SHA, or re-push and post a" >&2
+            echo "$agent: new REVIEW naming the current tip, then re-run. Override with" >&2
+            echo "$agent: --allow-ungated if this is deliberate." >&2
+            return 4
+          fi
+        fi
+      fi
+    fi
+  fi
+
   local wt="/home/neon/marveen-land-${agent}-$$"
   rm -rf "$wt"
   g worktree add --detach -q "$wt" "origin/$DEFAULT_BRANCH" || die 3 "could not create the landing worktree for $agent"
