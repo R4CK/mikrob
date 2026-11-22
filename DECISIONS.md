@@ -31577,3 +31577,34 @@ Gate: QA + Cybersec (a kártya saját kijelölése).
 
 **Hivatkozás:** kártya fb3fff4d, kártya 68eaeb93, decisions-guard WARN 33180, cybersec2 komment
 33183 (F1), `src/web/routes/background-tasks.ts`.
+
+## 2026-11-22 -- restart-recovery-note.sh: real backlog shape + send-failure safety (kártya 7c1e6a65, delta)
+
+**Döntés:** CYBERSEC/CYBERSEC2 NO-GO (komment 37713/37714, sha 83c2571fe) talált egy MEDIUM
+hibát: `store/restart-recovery-note.sh` a `GET /api/messages/backlog` sorokat `count`/`oldest_age_s`
+kulcsokkal olvasta, miközben a valódi végpont (`src/db.ts getPendingBacklogByAgent`) `pending`/
+`oldestAgeSeconds` alakot ad -- a hátralévő-üzenet-szám ezért minden élő agensnél "none" lett,
+pont azt az információt hiányolva, amiért a kártya készült (a restart után nem olvasott
+üzenetek jelzése). A selftest saját hamis tábláz-fixturéja a script ugyanazt a hibás alakot
+találta ki, ezért vak volt rá. Javítás: a valódi kulcsok elsők, a régiek csak visszaesésként
+maradtak; a selftest fixturéja a valódi alakra állt.
+
+Ugyanebben a körben (LOW-1, LOW-4, ugyanaz a gate-lelet): `--apply` most csak akkor írja ki a
+boot-id állapotfájlt, ha MINDEN küldés 2xx-et kapott (korábban egy sikertelen küldés is
+"elintézettnek" jelölte a bootot, blokkolva az ismételt próbát); a teljes `/api/kanban` JSON most
+egy ideiglenes fájlon megy a python3-nak argv helyett (korábban `/proc/<pid>/cmdline`-on látható
+volt, és egy argv-méretkorlát kb. 57 egyidejű kártyánál E2BIG-et okozott volna).
+
+**Ellenőrzés:** TDD -- az új selftest-esetek előbb íródtak, majd bizonyítottan PIROSAK voltak a
+javítás előtti kódon (a sha 83c2571fe scriptjét egy ideiglenes mappában a saját
+land-run-stale-check.sh testvérével együtt futtatva, a MEDIUM-1 és LOW-1 eseteket pontosan
+elbuktatva), ZÖLDEK a javítás után. `bash store/restart-recovery-note.selftest.sh`: 15/15 PASS
+(a korábbi 8 eset + 7 új: oldest-first két-kártyás eset, a valódi backlog-szám a küldött
+tartalomban, a `[RESTART-RECOVERY]` prefix, az argumentum nélküli és a `--dry-run` hívás semmit
+nem küld, és a LOW-1 hiba-szimuláció + pozitív kontroll). Targeted `fleet-test.sh --ref` a
+delta-sha-n (lásd a kártya REVIEW-ját a pontos sha-ért).
+
+**Ki döntött:** CYBERSEC/CYBERSEC2 lelete (37713/37714), MikroB Fix-Direction-je (23540). A
+javítás végrehajtója DevO (fullstack).
+
+**Hivatkozás:** kártya 7c1e6a65 (fázis 5978afaa), delta-sha a REVIEW-ban.
