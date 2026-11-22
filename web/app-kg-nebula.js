@@ -155,6 +155,16 @@ function kgNebulaInitialPositions(nodes, width, height) {
   const buckets = kgNebulaProjectBuckets(nodes)
   const nBuckets = Math.max(1, buckets.size)
   const clusterR = Math.min(width, height) * 0.32
+  // Spiral radius must scale with how many nodes land in each cluster -- a fixed per-node step
+  // (the original *9) spirals a few-hundred-node bucket out past the canvas edge before the sim
+  // even starts; the settle step then just pins those nodes to the boundary, which measured as a
+  // hollow corner-to-corner wireframe at 736 nodes instead of a nebula cluster (dcb196f9 preview
+  // screenshot before this fix).
+  const bucketCounts = new Map()
+  for (const node of nodes) {
+    const b = buckets.get(node.project || '_global') || 0
+    bucketCounts.set(b, (bucketCounts.get(b) || 0) + 1)
+  }
   const positions = new Map()
   const perBucketIndex = new Map()
   for (const node of nodes) {
@@ -164,12 +174,15 @@ function kgNebulaInitialPositions(nodes, width, height) {
     const clusterAngle = (bucket / nBuckets) * Math.PI * 2
     const cx = Math.cos(clusterAngle) * clusterR
     const cy = Math.sin(clusterAngle) * clusterR
+    const bucketSize = bucketCounts.get(bucket) || 1
+    const spiralScale = (clusterR * 0.85) / Math.sqrt(bucketSize)
     const spiralAngle = idx * 2.399963229728653 // golden angle, radians
-    const spiralR = Math.sqrt(idx + 1) * 9
+    const spiralR = Math.sqrt(idx + 1) * spiralScale
     positions.set(node.id, {
       x: cx + Math.cos(spiralAngle) * spiralR,
       y: cy + Math.sin(spiralAngle) * spiralR,
       vx: 0, vy: 0,
+      cx, cy,
     })
   }
   return positions
@@ -177,13 +190,24 @@ function kgNebulaInitialPositions(nodes, width, height) {
 
 function kgNebulaSettleStep(nodes, edges, positions, w, h) {
   const arr = nodes.map((n) => positions.get(n.id))
+  // Density-adaptive repulsion: a fixed force constant/cutoff (originally copied from the
+  // small ~10-node per-node mini-graph in app-kg.js) overpowers a 700+-node layout in a canvas
+  // this small -- EVERY pair ends up within range, and the accumulated push flings nearly every
+  // node straight into a canvas corner where the hard clamp then pins it (measured: 676/736 nodes
+  // at the four corners before this fix, a hollow wireframe instead of a nebula). Scaling the
+  // force and its cutoff to the natural inter-node spacing at this density keeps it a LOCAL
+  // decluttering nudge instead of a global explosion, at any node count.
+  const idealSpacing = Math.sqrt((w * h) / Math.max(1, arr.length))
+  const repulsionCutoff = idealSpacing * 3
+  const repulsionK = idealSpacing * idealSpacing * 0.6
+  const maxSpeed = Math.max(2, idealSpacing * 0.5)
   for (let i = 0; i < arr.length; i++) {
     for (let j = i + 1; j < arr.length; j++) {
       const dx = arr[j].x - arr[i].x
       const dy = arr[j].y - arr[i].y
       const dist = Math.sqrt(dx * dx + dy * dy) || 1
-      if (dist > 220) continue // bounded repulsion radius keeps this near-linear in practice
-      const force = 260 / (dist * dist)
+      if (dist > repulsionCutoff) continue
+      const force = repulsionK / (dist * dist)
       const fx = (dx / dist) * force, fy = (dy / dist) * force
       arr[i].vx -= fx; arr[i].vy -= fy
       arr[j].vx += fx; arr[j].vy += fy
@@ -201,7 +225,17 @@ function kgNebulaSettleStep(nodes, edges, positions, w, h) {
     b.vx -= fx; b.vy -= fy
   }
   for (const p of arr) {
+    // Gentle pull back toward the node's own cluster centre -- keeps a community looking like a
+    // soft cloud even when a cross-cluster edge spring would otherwise drag it toward the canvas
+    // wall; the hard clamp below stays only as a last-resort safety net, not the main containment.
+    if (typeof p.cx === 'number') { p.vx += (p.cx - p.x) * 0.0015; p.vy += (p.cy - p.y) * 0.0015 }
     p.vx *= 0.82; p.vy *= 0.82
+    // Velocity cap: no single step may move a node further than a fraction of the natural
+    // inter-node spacing -- the actual bug-stopper, independent of how the forces above are
+    // tuned. Without this, any transient force spike (e.g. two nodes initialised very close
+    // together) still shoots a node to the wall in a handful of iterations.
+    const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
+    if (speed > maxSpeed) { const s = maxSpeed / speed; p.vx *= s; p.vy *= s }
     p.x += p.vx; p.y += p.vy
     p.x = Math.max(-w / 2 + 10, Math.min(w / 2 - 10, p.x))
     p.y = Math.max(-h / 2 + 10, Math.min(h / 2 - 10, p.y))
