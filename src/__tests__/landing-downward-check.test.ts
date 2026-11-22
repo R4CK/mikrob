@@ -219,8 +219,14 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // this card (cleancore-land.sh not in its diff) -- only the shared lib (+17 cases: the
     // 404-card-ref fold-in mechanism, its CYBERSEC2/CYBERED hardening rounds, and the real-git
     // ancestry/shadow-ref cases) and marveen's own block (+1, above) moved.
+    //
+    // mv's own-case constant moves 40 -> 41 with card 44a0c98e (orphaned 07f1fe6e delta: M1 rfk
+    // exit-capture, L1 KILL comment fix, L2 group-HUP pin): one new selftest case
+    // (run_orphan_probe_group) in marveen-land-run-fg-killable.selftest.sh, folded into
+    // marveen-land.sh's own --selftest total the same way as every other bump above --
+    // marveen-only own-block, cleancore-land.sh untouched.
     expect(cc).toBeGreaterThan(54) // 54 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(40) // 40 = marveen-land.sh's own cases
-    expect(cc - 54).toBe(mv - 40) // the same shared block, in both
+    expect(mv).toBeGreaterThan(41) // 41 = marveen-land.sh's own cases
+    expect(cc - 54).toBe(mv - 41) // the same shared block, in both
   })
 })
