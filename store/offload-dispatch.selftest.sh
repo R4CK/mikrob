@@ -427,6 +427,11 @@ check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: %q-escaped, no litera
 # Valid-value-honoured case already covered above (cap5_count: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1).
 
 # --- attempts_op state machine -------------------------------------------------------------------
+# ISOLATION (card a5c827ca): attempts_op() flocks ATTEMPTS_LOCK, which defaults to the real, shared
+# store/.offload-attempts.lock -- every --test-attempts-op call below scopes --file to $TMPDIR but
+# none of them scoped the lock, so under a concurrent fleet-test run they contended for the same
+# flock as a live offload-dispatch.sh sweep on the host. Scope it here, once, for every call below.
+export ATTEMPTS_LOCK="$TMPDIR/.offload-attempts.lock"
 AF="$TMPDIR/attempts.json"
 op() { bash "$DISPATCH" --test-attempts-op "$1" "$2" --file "$AF"; }
 
