@@ -123,6 +123,12 @@ PYEOF
 # (ISMERETLEN), nem 0 (="minden agens leallt"). A {} es a hiányzó-"running"-sémahiba a sum()-ot
 # máskülönben csendben 0-ra vinné, ami 99%-nál élesen leállítana a gépet egy puszta
 # séma-elcsúszás miatt.
+# Card 58e8cd74 W2 (RedHat CYBERED GO ccbfece8, komment 19944): a "running" kulcs LETET nezte,
+# a TIPUSAT nem -- egy int 0/1 vagy string "true"/"false" ertek is atment volna a truthy
+# checken, es "running":0 (int, nem JSON bool false) a REGI kodban falsy -> STOPPED-kent
+# szamolodott, azaz egy sema-elcsuszas eppen azt a "minden agens leallt" allapotot hamisitotta
+# meg, amit ez a fuggveny eredetileg fail-closeddá akart tenni. Most csak a valodi bool
+# True/False szamit; minden mas tipus -1-et ad, ugyanazzal az uttal, mint a hianyzo kulcs.
 _qsg_parse_agents() {
   python3 -c '
 import json,sys
@@ -130,7 +136,7 @@ try:
     agents=json.load(sys.stdin)
 except Exception:
     print(-1); raise SystemExit
-if not isinstance(agents, list) or len(agents) == 0 or any(not isinstance(a, dict) or "running" not in a for a in agents):
+if not isinstance(agents, list) or len(agents) == 0 or any(not isinstance(a, dict) or "running" not in a or not isinstance(a.get("running"), bool) for a in agents):
     print(-1); raise SystemExit
 n=sum(1 for a in agents if a.get("running") and a.get("name") != "mikrob")
 print(n)
@@ -405,6 +411,7 @@ if [ "$SELFTEST" = "1" ]; then
       _QSG_TOKEN_FILE_OVERRIDE="$READABLE_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
       _QSG_AGENTS_JSON_OVERRIDE="$json" \
       bash "$0" --selftest-subprocess >/dev/null 2>&1
+    SHAPE_TEST_RC=$?
     t "${label}: shutdown marker $([ "$want_marker" = YES ] && echo CREATED || echo NOT-created)" \
       "$([ -f "$FAKE_MARKER5" ] && echo YES || echo NO)" "$want_marker"
   }
@@ -412,6 +419,21 @@ if [ "$SELFTEST" = "1" ]; then
   _shape_test "malformed shape {} at 99%% (not a list)" '{}' "NO"
   _shape_test "malformed shape [] at 99%% (empty list, schema drift)" '[]' "NO"
   _shape_test "malformed shape, entry missing 'running' key, at 99%%" '[{"name":"backend"}]' "NO"
+
+  # Card 58e8cd74 W2: a "running" ertek TIPUSA nem bool -- egy int 0 ugyanazt a falsy-truthy
+  # mintat adja, mint a JSON false, de a REGI kod (csak letet nezte, tipust nem) ezt simán
+  # STOPPED-kent szamolta volna (running_flotta=0 -> 99%-nal ELINDITOTTA volna a leallitast,
+  # YES). A javitas utan tipus-elcsuszasra -1 (ISMERETLEN) jon, tehat a marker NEM johet letre.
+  _shape_test "W2: running value is int 0 (not JSON bool false) at 99%% -- must stay UNKNOWN (NO), not a false-positive all-stopped trigger" \
+    '[{"name":"backend","running":0}]' "NO"
+  _shape_test "W2: running value is string \"false\" at 99%% -- truthy-string bug would have counted this as RUNNING; must stay UNKNOWN (NO)" \
+    '[{"name":"backend","running":"false"}]' "NO"
+  # Positive control for W2: a real, correctly-typed bool shape at 99% must be UNCHANGED by the
+  # type check -- this is the same assertion as the "legitimate shape ... MUST still trigger"
+  # case below, repeated here so the W2 diff's own test block proves it did not break the
+  # legitimate path on its own.
+  _shape_test "W2 positive control: real bool running:false/true shape at 99%% -- type check must not reject legitimate JSON booleans" \
+    '[{"name":"mikrob","running":true},{"name":"backend","running":false}]' "YES"
   # Positive control: a LEGITIMATE all-stopped shape must still shut down -- the F-RH-T2 fix
   # must stay fail-closed for malformed input, not become fail-open for every input.
   _shape_test "legitimate shape, mikrob excluded + backend stopped, at 99%% -- MUST still trigger" \
@@ -421,6 +443,25 @@ if [ "$SELFTEST" = "1" ]; then
   # parse-hiba -> -1) pin nelkul maradt, egy mutans ami ott 0-t adna vissza eszrevetlen maradna.
   _shape_test "non-JSON API body (parse error) at 99%% -- must stay UNKNOWN, not 0" \
     'not valid json at all' "NO"
+
+  # Card 58e8cd74 W1: a token OLVASHATO volt (nem a token_unreadable ag), de a flotta-allapot
+  # MEGIS ismeretlen maradt (itt: nem-JSON API-valasz) ES a heti sav 99% -- a REGI kod ide esett
+  # le csendben "OK, nincs feltetel teljesitve" exit 0-val, mert a token_unreadable ag csak a
+  # token HIANYAT kezelte, ezt az esetet nem. Most ugyanaz a nem-nulla exit + SKIP-sor jar neki,
+  # mint a token-hiany agnak.
+  rm -f "$FAKE_MARKER5" "$SUBPROC_STATE5"
+  : > "$SUBPROC_LOG5"
+  timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_SHAPE" _QSG_NO_TELEGRAM=1 \
+    _QSG_STATE_OVERRIDE="$SUBPROC_STATE5" _QSG_LOG_OVERRIDE="$SUBPROC_LOG5" \
+    _QSG_TOKEN_FILE_OVERRIDE="$READABLE_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
+    _QSG_AGENTS_JSON_OVERRIDE='not valid json at all' \
+    bash "$0" --selftest-subprocess >/dev/null 2>&1
+  W1_RC=$?
+  t "W1: readable token + malformed API body + percent=99: exit 1 (degraded, not silent OK)" "$W1_RC" "1"
+  t "W1: readable token + malformed API body + percent=99: log names the ISMERETLEN/API SKIP reason, not plain OK" \
+    "$(grep -c 'SKIP (degradalt).*ISMERETLEN' "$SUBPROC_LOG5" 2>/dev/null || echo 0)" "1"
+  t "W1: readable token + malformed API body + percent=99: shutdown marker still NOT created (degraded != triggered)" \
+    "$([ -f "$FAKE_MARKER5" ] && echo YES || echo NO)" "NO"
 
   # CYBERED B1 (delta-gate NO-GO, komment 20091, MEDIUM, F-RH-F3 osztaly): a
   # _QSG_AGENTS_JSON_OVERRIDE flag nelkul, env-bol is eljutott a TRIGGER-ig, mert nem volt a
@@ -831,6 +872,19 @@ fi
 # tokenrol olvas, amit itt nem tudtunk beolvasni).
 if [ "$token_unreadable" = "1" ]; then
   log "SKIP (degradalt): token-fajl hianyzik/olvashatatlan, a kvota-allapot ISMERETLEN marad -- ez nem OK, kezi ellenorzes ajanlott."
+  exit 1
+fi
+
+# Card 58e8cd74 W1 (RedHat CYBERED GO ccbfece8, komment 19944): a token_unreadable ag fentebb
+# csak a token HIANYAT/olvashatatlansagat kezeli. Ha a token OLVASHATO volt, de a flotta-allapot
+# MEGIS ismeretlen maradt (401, hibas API-alak, nem-JSON valasz) ES a heti sav mar 99%, a REGI
+# kod ide esett le "OK, nincs feltetel teljesitve" exit 0-val -- ugyanaz a hibaosztaly, mint a
+# token-hianynal: a leallitas jogosan kimaradt, de senki nem tud rola. Ez a token_unreadable-tol
+# FUGGETLEN minden tobbi ISMERETLEN-okot (running_flotta=-1) lefedi ugyanazzal a nem-nulla
+# kilepessel es SKIP-sorral.
+if [ "$percent" -ge 99 ] 2>/dev/null && [ "$running_flotta" = "-1" ]; then
+  log "SKIP (degradalt): flotta-allapot ISMERETLEN (API hiba vagy rossz valasz-alak) heti kvota ${percent}%-nal -- ez nem OK, kezi ellenorzes ajanlott."
+  send_telegram "Flotta: quota-shutdown-guard flotta-allapota ISMERETLEN (API hiba/rossz alak) heti kvota ${percent}%-nal -- a kvota-alapu automatikus leallitas ezert kimaradt ebben a korben. Kezi ellenorzes ajanlott."
   exit 1
 fi
 
