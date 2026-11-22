@@ -31549,3 +31549,31 @@ Gate: QA, Cybersec (delta re-gate a 8405ebed4 GO felett). **Ki döntött:** DevO
 **Ki döntött:** MikroB (üzenet 22311), Peti eredeti jóváhagyása (14302/14306/14308) a fázis struktúrájára. Fron Ted (fron-ted) a végrehajtó.
 
 **Hivatkozás:** kártya f1e33cfb (fázis 36dc9240), commit 7eb8ab91d.
+## 2026-11-18 -- fb3fff4d: a `tmux new-session -e BG_PROMPT=...` argv-láthatóság elfogadott
+## kockázat (decisions-guard WARN 33180, cybersec2 komment 33183 F1)
+
+**A döntés.** A 68eaeb93 fixje (`368a83990`, kártya saját REVIEW 33179) a prompt szövegét
+`tmux new-session -e BG_PROMPT=<prompt>` argv-elemként adja át, hogy egy már futó tmux-szerveren
+is elérje a pane-t (korábban csak a kliens `env` opciója vitte, ami csak hideg szerver-indításnál
+hat). cybersec2 N2-je (33183) jelezte: ez a prompt szövegét a tmux-kliens hívás `/proc/<pid>/cmdline`
+-jében átmenetileg LÁTHATÓVÁ teszi (korábban csak a kliens saját, tulajdonos-only `/proc/<pid>/environ`
+-jében volt). **Elfogadott, nem javított kockázat:** a pane ezután lefuttatja a
+`claude -p "$BG_PROMPT"` hívást is, ami a prompt szövegét UGYANÚGY argv-be teszi a `claude`
+processz indulásakor -- ez tehát egy már meglévő, elfogadott exponálási alakzat MÁSODIK,
+átmeneti előfordulása, nem egy ÚJ kategória. A fájl-alapú `launchSecretRef`/`LAUNCH_SECRETS_DIR`
+mintát (agent-process.ts) a 68eaeb93 REVIEW explicit megfontolta és elvetette (plusz fájl-I/O +
+árva-takarítási terhet adna egy olyan funkcióhoz, ahol a prompt amúgy sem titok -- ágens-feladat
+szöveg, nem hitelesítő adat).
+
+**Hatókör.** Ez a döntés KIZÁRÓLAG a `spawnBackgroundTask` BG_PROMPT útját érinti (háttér-ágens
+feladat-szöveg, host-lokális, root-only `/proc` olvasás szükséges a kihasználásához). NEM vonatkozik
+csatorna-tokenre/titokra: a `CHANNEL_ENV_VARS_TO_STRIP` lista (TELEGRAM_BOT_TOKEN stb.) explicit
+`unset`-elve van a pane parancs ELSŐ lépéseként (kártya fb3fff4d 2. pont, lásd a kártya REVIEW-ját),
+sosem kerül argv-be.
+
+**Ki döntött:** backend (saját kártya, a WARN 33180-ra válaszul). Gate-SHA: fbebfbef1
+(68eaeb93 saját fixje 368a83990-nél már gatelve: CYBERSEC GO 33188, QA PASS 33186, QA2 PASS 33185).
+Gate: QA + Cybersec (a kártya saját kijelölése).
+
+**Hivatkozás:** kártya fb3fff4d, kártya 68eaeb93, decisions-guard WARN 33180, cybersec2 komment
+33183 (F1), `src/web/routes/background-tasks.ts`.
