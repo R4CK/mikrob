@@ -7,7 +7,7 @@
 // without wading through connection/CRUD code -- the pattern src/db.ts already uses for
 // src/schema/agent-messages-ddl.ts.
 
-export const KG_SCHEMA_VERSION = 2
+export const KG_SCHEMA_VERSION = 3
 
 export interface Migration {
   version: number
@@ -161,9 +161,40 @@ const V2_UP: readonly string[] = [
 
 const V2_DOWN: readonly string[] = [`DROP TABLE IF EXISTS kg_worker_heartbeat`]
 
+// V3 (card a1d57d99): append-only log of agent search activity (/api/kg/search and
+// /api/kg/for-card calls), distinct from kg_usage -- kg_usage is the offered/used feedback
+// contract with its own anti-inflation rule, this is a general audit trail the live-graph FE
+// polls to animate per-agent search trails. query is stored already-redacted (see
+// redactKgLocalSecretsForLog in store.ts) -- a raw secret-shaped query never reaches this table.
+const V3_UP: readonly string[] = [
+  `CREATE TABLE kg_search_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent         TEXT NOT NULL,
+    ts_ms         INTEGER NOT NULL,
+    query         TEXT,
+    hit_node_ids  TEXT NOT NULL DEFAULT '[]'
+  )`,
+  `CREATE INDEX kg_search_events_ts ON kg_search_events(ts_ms)`,
+  // No no-delete trigger here, unlike kg_usage/kg_audit: a row, once written, is never MODIFIED
+  // (no_update still holds, same append-only guarantee for the data that exists), but the
+  // retention cap (Kesz-ha requirement) has to prune the OLDEST rows on write, which is a DELETE
+  // by construction -- a hard ABORT-on-DELETE trigger would make the retention cap itself
+  // impossible to implement in this table.
+  `CREATE TRIGGER kg_search_events_no_update BEFORE UPDATE ON kg_search_events
+   BEGIN SELECT RAISE(ABORT, 'kg_search_events is append-only'); END`,
+]
+
+// Rollback-tested (rule 11): down drops the trim/query-side table only, nothing else references it.
+const V3_DOWN: readonly string[] = [
+  `DROP TRIGGER IF EXISTS kg_search_events_no_update`,
+  `DROP INDEX IF EXISTS kg_search_events_ts`,
+  `DROP TABLE IF EXISTS kg_search_events`,
+]
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, up: V1_UP, down: V1_DOWN },
   { version: 2, up: V2_UP, down: V2_DOWN },
+  { version: 3, up: V3_UP, down: V3_DOWN },
 ]
 
 export const KG_NODE_TYPES = [

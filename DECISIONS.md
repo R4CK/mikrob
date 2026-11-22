@@ -31622,3 +31622,61 @@ Selftest: 91/91 PASS (83 régi + 8 új). Teljes suite (`fleet-test.sh --ref 4f8a
 **Ki döntött:** CYBERED lelete (37718), MikroB Fix-Direction nélküli dispatch-je (üzenet 23544). A javítás végrehajtója DevO (fullstack).
 
 **Hivatkozás:** kártya 58e8cd74, commit 4f8a12dc8.
+
+## 2026-11-22 -- Tudásgráf élő gráf-nézet + ügynök-keresési aktivitás napló (kártya a1d57d99)
+
+**Döntés:** MikroB URGENT dispatch-je (üzenet 23612, Peti Telegram 14495 nyomán) két új, csak-olvasó
+végpontot kért a tudásgráfhoz, Fron Ted (fron-ted) párhuzamosan épülő nebula-nézetéhez
+(`Pair-FE: dcb196f9`): `GET /api/kg/graph?project=&limit=` (csomópont+él lista a frontend
+gráf-rajzoláshoz, body/titok mező nélkül, `KG_GRAPH_MAX_NODES` sapkával, alapérték 500) és egy
+ügynök-keresési aktivitás-napló, amit a FE pollozva színkódolt, halványuló "keresési nyom"
+animációhoz használ fel. A kész-ha komment-37764-es update (Peti Telegram 14492) előírta, hogy
+minden esemény hordozzon ügynök-id-t, szerver-idő (ms) bélyeget és a talált csomópont-id-ket, és
+hogy a halványulási idő (alapérték 15000 ms) adatbázisból jöjjön, API-n olvashatóan -- a kontraktus
+komment 37799-ben ment ki, MIELŐTT a kódolás elkezdődött (contract-first-codev).
+
+**Tervezési döntések:**
+- **Új tábla, nem `kg_usage`.** A `kg_usage` tábla az offered/used feedback-kontraktusé, saját
+  anti-inflation szabállyal -- a keresési esemény-napló egy ÚJ, önálló `kg_search_events` tábla
+  (V3 schema migráció), hogy a két fogalom ne keveredjen.
+- **Szándékos eltérés az append-only mintától.** A `kg_usage`/`kg_audit` mintájától eltérően a
+  `kg_search_events` csak egy no-UPDATE triggert kap, no-DELETE-et NEM: a kártya kötelező
+  megtartási sapkája (`KG_ACTIVITY_RETENTION_ROWS`) a legrégebbi sorok DELETE-tel történő
+  törlését igényli, egy teljes ABORT-on-DELETE trigger ezt lehetetlenné tenné.
+- **Redakció, nem elutasítás.** A meglévő `findKgLocalKvSecret`/`findKgLocalContextualSecret`
+  (elutasító, írás-idejű) mellé egy ÚJ, redaktáló függvény (`redactKgLocalSecretsForLog`,
+  `src/kg/store.ts`) került: egy titok-alakú keresési lekérdezésnek TOVÁBBRA IS futnia és
+  eredményt kell adnia, csak a NAPLÓZOTT másolat legyen szkennelve. A függvény a `store.ts`-ben
+  már egyszer (33019 F1/F3/F4 NO-GO-k után) ReDoS-biztonságosra javított regex-konstansokat
+  (`KG_LOCAL_KV_SECRET_RX`, `KG_LOCAL_HEX64_RX`, `KG_LOCAL_BASE64_BLOB_RX`,
+  `hasKgLocalKeyContext`) újrahasznosítja, új mintát nem vezet be -- dedikált 200KB-os
+  adverzariális-input teszt (<1000ms) igazolja, hogy nem nyit új ReDoS-t.
+- **Per-ügynök szín NEM backend-mező.** Fron Ted FE-je egy determinisztikus, kliens-oldali
+  palettát (golden-angle hue-lépés) használ, kizárólag `agent_id`-re kulcsolva (komment 37777) --
+  az aktivitás-esemény `agent_id` mezője maga a "stabil szín-kulcs", amit a 37764-es update kért,
+  nincs szükség külön szín-oszlopra az adatbázisban.
+- **Polling, nem SSE.** A `/api/kg/activity?since=` pollozó végpont lett, nem SSE-stream -- ez
+  illeszkedik Fron Ted már megépített FE-jéhez (4s-es pollozás) és a meglévő `task-events.ts`
+  mintához (`since` paraméter, limit+1 truncation-detektálás).
+- **Minden üzleti érték DB-ből** (kódminőségi 14. elv): `KG_GRAPH_MAX_NODES` (int, 500, 1-2000),
+  `KG_ACTIVITY_FADE_MS` (int, 15000, 1000-120000), `KG_ACTIVITY_RETENTION_ROWS` (int, 5000,
+  100-100000) -- mindhárom a `config-registry.ts`-ben regisztrált, DB-ből olvasott beállítás, nem
+  kódba égetett konstans.
+- A meglévő `/api/kg/search`, `/api/kg/for-card`, `/api/kg/stats` válasz-alak és szemantika
+  VÁLTOZATLAN -- az új esemény-rögzítés egy best-effort, try/catch-be csomagolt mellékhatás a
+  meglévő handlerekben, sosem töri a válaszukat.
+
+**Ellenőrzés:** Karpathy-loop szerint, siker-kritérium-vezérelt. Teljes KG-suite egy futásban:
+`src/__tests__/kg-schema.test.ts`, `kg-store.test.ts`, `kg-graph.test.ts`,
+`kg-search-events.test.ts`, `kg-graph-activity-route.test.ts`, `kg-search-route.test.ts`,
+`kg-for-card.test.ts`, `kg-stats-route.test.ts` -- 102/102 teszt zöld (8 fájl), a worktree
+HEAD-jén. A kész-ha-ban nevesített végpont-a-végpontig teszt (`/api/kg/search` X-Agent-Id-vel ->
+megjelenik a `/api/kg/activity`-ban) és a redakció-a-tárolt-sorban teszt
+(`kg-graph-activity-route.test.ts`) mindkettő a listában, zölden. Rollback: a V3 migráció
+`V3_DOWN`-ja a séma-tesztben (`kg-schema.test.ts`) a meglévő create/drop/round-trip mintán megy
+át. Gate-SHA a kártya REVIEW kommentjében.
+
+**Ki döntött:** MikroB dispatch-je (üzenet 23612, Peti Telegram 14495 URGENT + 14492 komment-update
+a 37764-ben). A végrehajtó Backend 2.
+
+**Hivatkozás:** kártya a1d57d99, kontraktus-komment 37799, kész-ha update-komment 37764.
