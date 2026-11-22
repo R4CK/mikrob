@@ -428,6 +428,13 @@ if [ "$SELFTEST" = "1" ]; then
     '[{"name":"backend","running":0}]' "NO"
   _shape_test "W2: running value is string \"false\" at 99%% -- truthy-string bug would have counted this as RUNNING; must stay UNKNOWN (NO)" \
     '[{"name":"backend","running":"false"}]' "NO"
+  # Card 58e8cd74 F-3 (CYBERED NO-GO 37718): null and the empty string are both Python-falsy, same
+  # as the int 0 case above -- without the strict bool check, the OLD code counted either as
+  # STOPPED (n=0 -> a false-positive shutdown trigger at 99%). These were not pinned before.
+  _shape_test "F-3: running value is JSON null at 99%% -- Python-falsy, must stay UNKNOWN (NO), not a false-positive all-stopped trigger" \
+    '[{"name":"backend","running":null}]' "NO"
+  _shape_test "F-3: running value is an empty string at 99%% -- Python-falsy, must stay UNKNOWN (NO), not a false-positive all-stopped trigger" \
+    '[{"name":"backend","running":""}]' "NO"
   # Positive control for W2: a real, correctly-typed bool shape at 99% must be UNCHANGED by the
   # type check -- this is the same assertion as the "legitimate shape ... MUST still trigger"
   # case below, repeated here so the W2 diff's own test block proves it did not break the
@@ -462,6 +469,80 @@ if [ "$SELFTEST" = "1" ]; then
     "$(grep -c 'SKIP (degradalt).*ISMERETLEN' "$SUBPROC_LOG5" 2>/dev/null || echo 0)" "1"
   t "W1: readable token + malformed API body + percent=99: shutdown marker still NOT created (degraded != triggered)" \
     "$([ -f "$FAKE_MARKER5" ] && echo YES || echo NO)" "NO"
+  # Card 58e8cd74 F-3 (CYBERED NO-GO 37718): nothing pinned that send_telegram actually fires on
+  # this degraded path -- dropping the alert line left the suite fully green. _QSG_NO_TELEGRAM=1
+  # leaves a positive TELEGRAM-SUPPRESSED trace in LOG instead of silently doing nothing, so this
+  # asserts the alert attempt happened, not just its absence.
+  t "W1/F-3: readable token + malformed API body + percent=99: send_telegram fired (TELEGRAM-SUPPRESSED trace in LOG), not silently skipped" \
+    "$(grep -c 'TELEGRAM-SUPPRESSED.*ISMERETLEN' "$SUBPROC_LOG5" 2>/dev/null || echo 0)" "1"
+
+  # Card 58e8cd74 F-1 (CYBERED NO-GO 37718, BLOCKING): everything above injects the API body
+  # through _QSG_AGENTS_JSON_OVERRIDE, which bypasses curl entirely -- it never exercises the
+  # real `curl | _qsg_parse_agents` pipeline, so it could not see a curl TRANSPORT failure
+  # (connection refused, the --max-time 10 timeout) under `set -o pipefail` appending a second
+  # "-1" line instead of replacing the value, leaving the OLD "= -1" string check false and the
+  # guard silently OK at 99%. A PATH-shadowed curl stub forces the real curl branch to see each
+  # transport failure (exit 7 = connection refused, exit 28 = operation timeout) without actually
+  # waiting out a real timeout or needing a truly unreachable host; any argv not naming
+  # /api/agents (there are none on this path, but the stub is exact on purpose) passes through to
+  # the REAL curl binary untouched.
+  STUBDIR="$TMPD/curl-stub-bin"
+  mkdir -p "$STUBDIR"
+  REAL_CURL="$(command -v curl)"
+  cat > "$STUBDIR/curl" <<STUBEOF
+#!/bin/bash
+for a in "\$@"; do
+  case "\$a" in
+    *"/api/agents"*)
+      if [ -n "\${QSG_STUB_CURL_FAIL_CODE:-}" ]; then
+        exit "\$QSG_STUB_CURL_FAIL_CODE"
+      fi
+      ;;
+  esac
+done
+exec "$REAL_CURL" "\$@"
+STUBEOF
+  chmod +x "$STUBDIR/curl"
+
+  _curl_fail_test() {
+    local label="$1" fail_code="$2"
+    rm -f "$FAKE_MARKER5" "$SUBPROC_STATE5"
+    : > "$SUBPROC_LOG5"
+    timeout 3 env PATH="$STUBDIR:$PATH" QSG_STUB_CURL_FAIL_CODE="$fail_code" \
+      SHUTDOWN_EXE="$FAKE_SHUTDOWN_SHAPE" _QSG_NO_TELEGRAM=1 \
+      _QSG_STATE_OVERRIDE="$SUBPROC_STATE5" _QSG_LOG_OVERRIDE="$SUBPROC_LOG5" \
+      _QSG_TOKEN_FILE_OVERRIDE="$READABLE_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
+      _QSG_API_OVERRIDE="http://127.0.0.1:1/unused" \
+      bash "$0" --selftest-subprocess >/dev/null 2>&1
+    local rc=$?
+    t "F-1: ${label}: exit 1 (degraded, not silent OK)" "$rc" "1"
+    t "F-1: ${label}: shutdown marker NOT created" \
+      "$([ -f "$FAKE_MARKER5" ] && echo YES || echo NO)" "NO"
+  }
+
+  _curl_fail_test "real curl path, connection refused (stub exit 7) at percent=99" 7
+  _curl_fail_test "real curl path, operation timeout (stub exit 28) at percent=99" 28
+  # Positive control: with the stub curl present but QSG_STUB_CURL_FAIL_CODE unset, it passes
+  # straight through to the real curl binary -- the F-RH-A1-style positive control elsewhere
+  # already proves the real curl path works end to end against a live fake server; this just
+  # proves the STUB ITSELF is a no-op when the failure code is not set, so the two FAIL tests
+  # above are testing the injected failure, not some side effect of the stub's mere presence.
+  rm -f "$FAKE_MARKER5" "$SUBPROC_STATE5"
+  EMPTY_API_PORT_F1="$(python3 -c '
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+')"
+  timeout 3 env PATH="$STUBDIR:$PATH" \
+    SHUTDOWN_EXE="$FAKE_SHUTDOWN_SHAPE" _QSG_NO_TELEGRAM=1 \
+    _QSG_STATE_OVERRIDE="$SUBPROC_STATE5" _QSG_LOG_OVERRIDE="$SUBPROC_LOG5" \
+    _QSG_TOKEN_FILE_OVERRIDE="$READABLE_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
+    _QSG_API_OVERRIDE="http://127.0.0.1:$EMPTY_API_PORT_F1/unused" \
+    bash "$0" --selftest-subprocess >/dev/null 2>&1
+  t "F-1 positive control: curl stub present but QSG_STUB_CURL_FAIL_CODE unset -- passes through to real curl (connection refused on the empty port), exit 1, same as unstubbed" \
+    "$?" "1"
 
   # CYBERED B1 (delta-gate NO-GO, komment 20091, MEDIUM, F-RH-F3 osztaly): a
   # _QSG_AGENTS_JSON_OVERRIDE flag nelkul, env-bol is eljutott a TRIGGER-ig, mert nem volt a
@@ -835,6 +916,19 @@ if [ -z "$FORCE_REASON" ]; then
     log "WARN: token-fajl hianyzik vagy olvashatatlan ($TOKEN_FILE) -- flotta-allapot ISMERETLEN, a kvota-alapu automatikus leallitas (FELTETEL 1) ebben a korben SKIP."
     send_telegram "Flotta: quota-shutdown-guard nem tudja leolvasni a token-fajlt ($TOKEN_FILE) -- a flotta-allapot ISMERETLEN, a kvota-alapu automatikus leallitas ezert kimaradt ebben a korben. Kezi ellenorzes ajanlott."
   fi
+fi
+
+# Card 58e8cd74 F-1 (RedHat CYBERED NO-GO 37718): under `set -o pipefail`, a curl TRANSPORT
+# failure (connection refused, the --max-time 10 timeout) makes the whole
+# `curl | _qsg_parse_agents` pipeline exit non-zero even though _qsg_parse_agents ALREADY printed
+# "-1" for the empty/invalid stdin it got -- the `|| echo -1` fallback then APPENDS a second "-1"
+# line instead of replacing anything, so running_flotta becomes a two-line value and every later
+# `[ "$running_flotta" = "-1" ]` string check is silently false, falling through to a plain OK at
+# 99%. Normalise unconditionally, right after the value is set, instead of relying on string
+# equality of a possibly multi-line value: anything that is not exactly "-1" or a plain
+# non-negative integer collapses to -1, whatever produced it.
+if ! [[ "$running_flotta" =~ ^(-1|[0-9]+)$ ]]; then
+  running_flotta=-1
 fi
 
 # --- FELTETEL 2: legkesobb ma este 20:00 (Europe/Budapest, ez a rendszer lokal ideje) ---
