@@ -3081,6 +3081,19 @@
           <input type="checkbox" id="kgStrictToggle">
           <span data-i18n="kg.filter.strict">szigorú (nincs engedékeny visszaesés)</span>
         </label>
+        <button type="button" class="btn-secondary btn-compact" id="kgNebulaToggleBtn" aria-expanded="false" data-i18n="kg.nebula.toggle">Élő hálózat</button>
+      </div>
+
+      <!-- Card dcb196f9: live nebula graph (agents + KG nodes, flashing search trails) -->
+      <div class="kg-nebula-section" id="kgNebulaSection" hidden>
+        <div class="kg-nebula-head">
+          <h2 class="kg-nebula-title" data-i18n="kg.nebula.title">Élő gráf (nebula)</h2>
+          <span class="kg-nebula-legend" id="kgNebulaLegend"></span>
+        </div>
+        <p class="kg-nebula-reduced-note" id="kgNebulaReducedNote" data-i18n="kg.nebula.reduced_motion_note" hidden>A mozgás-csökkentett beállításod miatt a nyomok statikusan jelennek meg, animáció nélkül.</p>
+        <div class="kg-nebula-canvas-wrap" id="kgNebulaCanvasWrap">
+          <canvas id="kgNebulaCanvas" class="kg-nebula-canvas"></canvas>
+        </div>
       </div>
 
       <div class="kg-layout">
@@ -4700,6 +4713,7 @@
   <script src="/app-overview.js"></script>
   <script src="/app-gemini-calls.js"></script>  <!-- card 57da740c: Gemini-calls page + overview tile; after app-overview.js so loadGeminiOverviewTile() can be called from loadOverview() -->
   <script src="/app-kg.js"></script>  <!-- card 8bb7cf54 (MT-11): Megoldas-tar (knowledge graph) page -->
+  <script src="/app-kg-nebula.js"></script>  <!-- card dcb196f9: live nebula graph view, after app-kg.js for kgFetch/kgSelectNode/kgState sharing -->
   <script src="/app-llm-ledger.js"></script>  <!-- card 52c48470: F4 LLM usage ledger by provider/task/agent -->
   <script src="/app-llm-monitor.js"></script>   <!-- card 87be1810: LLM monitor page (task-events swimlane); after app-overview.js for the shared ovw-llmdist CSS/idiom -->
   <script src="/app-autonomy.js"></script>
