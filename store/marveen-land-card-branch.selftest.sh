@@ -1018,6 +1018,113 @@ else
   fail=1
 fi
 
+# Card e9e1e771: the 507e8167 stale-ref check above only runs on the "already an ancestor of
+# develop" shortcut. On a genuinely NEW landing (branch not yet landed at all) nothing compares the
+# branch tip against the card's latest REVIEW Gate-SHA -- a ref one commit BEHIND that Gate-SHA (the
+# 0ae1166e shape: an old, still-verdicted sha that a later REVIEW superseded with a fix) lands a
+# commit that was never gated as final, and a ref AHEAD of it with an un-reviewed commit lands
+# ungated work. gate_verdict_check alone cannot catch the "behind" case: it only asks "is there a
+# verdict for the EXACT sha about to land", and an old, still-valid-looking verdict on the superseded
+# sha satisfies it.
+
+# Scenario 1: ref BEHIND the latest REVIEW Gate-SHA.
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/aaa994 develop
+echo "aaa994 content" > "$MAIN/aaa994.txt"
+git -C "$MAIN" add aaa994.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card aaa994: add aaa994.txt"
+SHA_GGG994_OLD="$(git -C "$MAIN" rev-parse card/aaa994)"
+# The "newer" commit a later REVIEW claims -- kept on its own branch so the object stays reachable,
+# but never merged into card/aaa994 itself (the ref stays stale/behind).
+git -C "$MAIN" checkout -q -b aaa994-newer card/aaa994
+echo "aaa994 fix" > "$MAIN/aaa994-fix.txt"
+git -C "$MAIN" add aaa994-fix.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card aaa994: the fix a later REVIEW claims"
+SHA_GGG994_NEW="$(git -C "$MAIN" rev-parse aaa994-newer)"
+git -C "$MAIN" checkout -q develop
+# A QA PASS on the CURRENT (stale) tip, so gate_verdict_check alone is satisfied and cannot explain
+# the refusal below -- isolating that the NEW check (card e9e1e771), not the old verdict-sha check,
+# is what catches this case.
+printf '[{"author":"backend","content":"REVIEW: ready\\nGate-SHA: %s"},{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' \
+  "$SHA_GGG994_NEW" "$SHA_GGG994_OLD" > "$GET_DIR/aaa994.json"
+set_gate_line aaa994 "QA"
+
+n=$((n + 1))
+land_card aaa994 backend
+if [ "$rc" != 0 ] && grep -q "REFUSED -- Gate-SHA mismatch" "$OUT_FILE" && grep -q "BEHIND" "$OUT_FILE" && grep -q "$SHA_GGG994_NEW" "$OUT_FILE"; then
+  echo "  ok   a ref one commit BEHIND the latest REVIEW Gate-SHA is refused (card e9e1e771, the 0ae1166e shape)"
+else
+  echo "  FAIL expected a Gate-SHA-mismatch/BEHIND refusal naming $SHA_GGG994_NEW -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-aaa994.ndjson" ]; then
+  echo "  ok   the behind-Gate-SHA refusal recorded NO card_landings row"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings"; fail=1
+fi
+
+# Scenario 2: ref AHEAD of the latest REVIEW Gate-SHA with a non-churn (real code) commit.
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/bbb993 develop
+echo "bbb993 content" > "$MAIN/bbb993.txt"
+git -C "$MAIN" add bbb993.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card bbb993: add bbb993.txt"
+SHA_HHH993_GATED="$(git -C "$MAIN" rev-parse card/bbb993)"
+set_gate_line bbb993 "QA"
+# An un-reviewed real-code commit added AFTER the REVIEW was posted -- the branch moved on, the
+# REVIEW/Gate-SHA did not.
+echo "bbb993 extra, never reviewed" > "$MAIN/bbb993-extra.txt"
+git -C "$MAIN" add bbb993-extra.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card bbb993: unreviewed extra change"
+SHA_HHH993_TIP="$(git -C "$MAIN" rev-parse card/bbb993)"
+git -C "$MAIN" checkout -q develop
+# A QA PASS on the CURRENT (ahead, unreviewed) tip, so gate_verdict_check alone is satisfied and
+# cannot explain the refusal below -- isolating that the NEW check (card e9e1e771), not the old
+# verdict-sha check, is what catches this case.
+printf '[{"author":"backend","content":"REVIEW: ready\\nGate-SHA: %s"},{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' \
+  "$SHA_HHH993_GATED" "$SHA_HHH993_TIP" > "$GET_DIR/bbb993.json"
+
+n=$((n + 1))
+land_card bbb993 backend
+if [ "$rc" != 0 ] && grep -q "REFUSED -- Gate-SHA mismatch" "$OUT_FILE" && grep -q "AHEAD" "$OUT_FILE" && grep -q "bbb993-extra.txt" "$OUT_FILE"; then
+  echo "  ok   a ref AHEAD of the latest REVIEW Gate-SHA with a non-churn commit is refused (card e9e1e771)"
+else
+  echo "  FAIL expected a Gate-SHA-mismatch/AHEAD refusal naming bbb993-extra.txt -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-bbb993.ndjson" ]; then
+  echo "  ok   the ahead-non-churn refusal recorded NO card_landings row"
+else
+  echo "  FAIL a refused landing must never call POST /api/card-landings"; fail=1
+fi
+
+# Scenario 3: tip == Gate-SHA (the ordinary case), and tip == Gate-SHA + a DECISIONS.md-only commit
+# (per-landing churn gate-closure-check.py already accepts) -- both must PROCEED, not refuse.
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/ccc992 develop
+echo "ccc992 content" > "$MAIN/ccc992.txt"
+git -C "$MAIN" add ccc992.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card ccc992: add ccc992.txt"
+SHA_III992_GATED="$(git -C "$MAIN" rev-parse card/ccc992)"
+echo "## 2026-11-22 -- ccc992 decision" >> "$MAIN/DECISIONS.md"
+git -C "$MAIN" add DECISIONS.md
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "docs(DECISIONS): record ccc992 decision"
+SHA_III992_TIP="$(git -C "$MAIN" rev-parse card/ccc992)"
+git -C "$MAIN" checkout -q develop
+printf '[{"author":"backend","content":"REVIEW: ready\\nGate-SHA: %s"},{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' \
+  "$SHA_III992_GATED" "$SHA_III992_TIP" > "$GET_DIR/ccc992.json"
+set_gate_line ccc992 "QA"
+
+n=$((n + 1))
+land_card ccc992 backend
+if [ "$rc" = 0 ] && grep -q "LANDED card/ccc992 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   a ref AHEAD of the latest REVIEW Gate-SHA by a DECISIONS.md-only commit still lands (card e9e1e771)"
+else
+  echo "  FAIL expected ccc992 to land past the churn-only commit -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""
