@@ -31549,3 +31549,33 @@ Gate: QA, Cybersec (delta re-gate a 8405ebed4 GO felett). **Ki döntött:** DevO
 **Ki döntött:** MikroB (üzenet 22311), Peti eredeti jóváhagyása (14302/14306/14308) a fázis struktúrájára. Fron Ted (fron-ted) a végrehajtó.
 
 **Hivatkozás:** kártya f1e33cfb (fázis 36dc9240), commit 7eb8ab91d.
+
+## 2026-11-22 -- marveen-land.sh --card: elavult/eltéro Gate-SHA ellen refúzió (kártya e9e1e771)
+
+**Döntés:** a `--card` módú landolás eddig csak az "already an ancestor of develop" rövidzárlat
+ágán (507e8167) hasonlította össze az ág csúcsát a kártya legutóbbi REVIEW-jának Gate-SHA-jával.
+Egy VALÓDI, új landolásnál semmi nem végezte el ugyanezt az ellenőrzést: egy csúcs, ami EGY
+COMMITTAL A GATE-SHA MÖGÖTT állt (0ae1166e-n mérve élőben -- egy hiányzó selftestet javító commit
+még nem volt a ref-ben, és csak a fleet-test, nem ez a kapu, fogta meg), vagy egy csúcs, ami egy
+nem-gate-elt commitTAL AZ ELÉ állt, simán landolt. A `gate_verdict_check` önmagában nem elég: csak
+azt kérdezi, van-e verdikt a PONTOS landolandó shára, egy régi, de még érvényesnek látszó verdikt
+egy már felülírt shán is kielégíti.
+
+**Javítás:** a merge-worktree létrehozása előtt, `--card` módban, az ág csúcsát összehasonlítjuk a
+kártya legutóbbi REVIEW Gate-SHA-jával (`card_review_gate_sha`, ugyanaz a helper, amit az 507e8167
+már használ). Refúzió, ha a csúcs MÖGÖTTE van, vagy ELŐTTE van bármilyen nem per-landolási-churn
+committal (package.json/DECISIONS.md/README.md -- ugyanaz a halmaz, amit a
+`gate-closure-check.py` már kivesz). A `--allow-ungated` marad az explicit, naplózott override,
+ugyanúgy mint minden más `--card`-os kapu ebben a fájlban.
+
+**Teszt (TDD):** új selftest-szcenáriók (`marveen-land-card-branch.selftest.sh`): csúcs a
+Gate-SHA mögött -> REFÚZIÓ; csúcs a Gate-SHA előtt nem-churn committal -> REFÚZIÓ; csúcs ==
+Gate-SHA és csúcs == Gate-SHA + csak-DECISIONS.md commit -> mindkettő PROCEED. Minden új eset
+saját, a tényleges csúcsra kiállított PASS verdiktet kap, hogy a megfigyelt refúzió KIZÁRÓLAG az
+új ellenőrzésből jöhessen, ne a `gate_verdict_check` saját hiányzó-verdikt refúziójából. RED a
+javítás előtt (mindkét refúziós eset simán landolt), GREEN utána: 66/66 PASS. A meglévő 507e8167
+regressziós tesztek változatlanul zöldek.
+
+**Nincs benne (a kártya szerint):** melyik refből landol a script.
+
+**Ki döntött:** DevO (fullstack), önálló mérés + implementáció (kártya e9e1e771), gate: QA + Cybersec.
