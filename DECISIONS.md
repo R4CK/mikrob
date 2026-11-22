@@ -31640,3 +31640,22 @@ Tesztelés: src/__tests__/kg-nebula-module.test.ts, 15/15 zöld (hamis-órás (f
 **Ki döntött:** Peti (Telegram 14489/14492), MikroB dispatch (üzenet 23611/23616). A megvalósítás végrehajtója Fron Ted.
 
 **Hivatkozás:** kártya dcb196f9 (fázis c65add5a), commit ec3e320b9 + 2657ccc23, Pair-BE a1d57d99 (backend2).
+
+## 2026-11-22 -- Megoldás-tár nebula gráf, vizuális javítási kör (kártya dcb196f9, 2. forduló)
+
+**Döntés:** MikroB konkrét vizuális lelete (üzenet 23631, Peti 18:15-ös kártya-követelménye alapján) az első kész-jelentett verziót screenshot alapján NEM fogadta el Peti-review előtt: 1) a 736 csomópont szabályos rács/napkitörés-mintázatban ült, nem organikus felhőkben; 2) nem volt izzás/köd, csak sima szürke pontok; 3) minden útvonal EGY közös középpontból indult, az ágensek nem jelentek meg saját entitásként; 4) az útvonalak egyenes vonalak voltak; 5) a canvas ~360x215px volt egy 500x400-as keretben, üres hellyel.
+
+Javítás ugyanazon a körön, mind az öt pontra:
+1. **Rács-törés**: a korábbi tökéletesen szimmetrikus arany-szög (golden-angle) spirál + szimmetrikus taszítóerő tökéletes rácsba rendeződött (fizikai törvényszerűség, nem hiba a taszítóerő-képletben). Javítás: determinisztikus, csomópont-id-ből hash-elt (NEM Math.random) kis elmozdítás a kiinduló pozíción, ami egyszer, induláskor töri meg a szimmetriát -- az utána következő beállás emiatt már szabálytalan, organikus szórt mintázatba rendeződik, nem találja vissza a rácsot. Emellett az azonos projekt-csomópontok közötti élek erősebb rugóerőt kapnak (0.028 vs. 0.01), mint a projektek közöttiek, hogy a sűrűség ténylegesen változzon klaszterenként, ne egyetlen egynemű folt legyen.
+2. **Izzás**: additív (lighter composite) radiális gradiens minden csomóponton (méret+fényesség a fokszámmal arányos -- a csomó-pontok/hubok fényesebbek, mint a levelek), plusz egy halk, additív "gáz-felhő" radiális gradiens projekt-klaszterenként (a klaszter TÉNYLEGES, beállás utáni súlyközéppontja és sugara alapján, nem a kiinduló terv szerint).
+3. **Ágens-entitások**: minden ágens saját, a canvas méretarányához igazított ellipszis-gyűrű pozíción jelenik meg (nem a csomópont-mezőn belül, hanem azon kívül, elkülönítve), saját izzással és felirattal; az útvonalak innen indulnak, nem a canvas közepéről.
+4. **Görbe útvonalak**: másodfokú Bézier-görbe determinisztikus (ágens+találat-id hash-elt), oldalirányú kontrollponttal -- minden útvonal máshogy ível, nem legyező-szerűen egyformán --, plusz izzó "érkezési fej" a találati csomópontnál.
+5. **Méret**: a canvas-wrap CSS min-height-je 70vh (asztali) / 62vh (mobil) lett a korábbi fix 240px helyett -- a panel kitölti a rendelkezésre álló helyet, a JS pedig a TÉNYLEGES konténer-magasságot olvassa (nem egy `szélesség*0.6` becslést) a layout és a rajzolás méretezéséhez.
+
+Mérés (Playwright, headless Chromium, valós 736-csomópontos/582-élű szintetikus rögzítés, CPU-fékezés nélkül -- ugyanaz a korlátozás, mint az első körben): 1440x900 asztali nézeten 45,5 fps, 390x844 mobil nézeten 60,4 fps, mindkettő jóval a 30fps-es küszöb felett. Két friss képernyőkép készült (1440x900 és 390x844, valós viewport-méretek, nem a korábbi kicsi teszt-keret) és elküldve MikroB-nak.
+
+Tesztelés: 8 új egységteszt az új tiszta függvényekre (kgNebulaDegreeMap, kgNebulaClusterGeometry, kgNebulaAgentRingPositions, kgNebulaCurveControl) -- 21/21 zöld a nebula-suite-ban, 87/87 zöld a nebula+dashboard-widget suite-okon együtt.
+
+**Ki döntött:** MikroB vizuális lelete (üzenet 23631), Peti eredeti kártya-követelménye (18:15, Telegram 14492). A javítás végrehajtója Fron Ted.
+
+**Hivatkozás:** kártya dcb196f9 (fázis c65add5a), commit 831eac6f6, Pair-BE a1d57d99 (backend2, még nem élő).
