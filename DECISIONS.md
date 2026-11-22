@@ -31549,3 +31549,17 @@ Gate: QA, Cybersec (delta re-gate a 8405ebed4 GO felett). **Ki döntött:** DevO
 **Ki döntött:** MikroB (üzenet 22311), Peti eredeti jóváhagyása (14302/14306/14308) a fázis struktúrájára. Fron Ted (fron-ted) a végrehajtó.
 
 **Hivatkozás:** kártya f1e33cfb (fázis 36dc9240), commit 7eb8ab91d.
+
+## 2026-11-22 -- quota-shutdown-guard.sh: pipefail double-line bug + pin gaps (kártya 58e8cd74, delta)
+
+**Döntés:** CYBERED NO-GO 37718 (F-1, MEDIUM, blokkoló): `set -o pipefail` alatt egy curl transport-hiba (connection refused, a --max-time 10 timeout) a teljes `curl | _qsg_parse_agents` csővezetéket nem-nullára futtatta, pedig a `_qsg_parse_agents` már kiírta a "-1"-et a kapott üres/érvénytelen stdinre -- a `|| echo -1` fallback ekkor EGY MÁSODIK "-1" sort fűzött hozzá a helyett, ami a `running_flotta`-t kétsoros értékké tette, és a későbbi `= "-1"` string-egyenlőség csendben hamis lett: a guard 99%-nál csendben OK-val tért vissza, pont azt a csendes-degradált osztályt, amiért a kártya létezik. Javítás: `running_flotta` feltétel nélküli normalizálása rögtön a beállítás után -- bármi, ami nem pontosan "-1" vagy egy sima nemnegatív egész, -1-re esik vissza, függetlenül attól, mi okozta. Nincs Fix-Direction sor a 37718-ban, a javítás iránya saját döntés, a CYBERED által scratch-kópián validált alakot követve.
+
+TDD: PATH-árnyékolt curl-stub kényszeríti a valódi curl-ágat connection-refused (exit 7) és timeout (exit 28) hibára, valós hálózati elérhetetlenség vagy valós 10s várakozás nélkül; pozitív kontroll igazolja, hogy a stub átlátszó no-op, ha nincs hibára utasítva. RED-GREEN bizonyítva: a normalizáló blokk eltávolításával pontosan 3 assertion esett el (a két curl-fail teszt + a pozitív kontroll), semmi más.
+
+F-3 (LOW, ride-along): pin gap-ek pótolva -- `running` érték JSON null és üres string eset (Python-falsy, ugyanaz az osztály mint a korábbi int-0/string-"false" javítás), és egy pozitív pin, hogy a send_telegram TÉNYLEGESEN tüzel (TELEGRAM-SUPPRESSED trace a LOG-ban) a degradált úton. F-2 és F-4 tudatosan NEM javítva -- pre-existing, ezen a körön kívül (MikroB dispatch).
+
+Selftest: 91/91 PASS (83 régi + 8 új). Teljes suite (`fleet-test.sh --ref 4f8a12dc8`): 1415/1416 test file, 49133/49265 teszt zöld.
+
+**Ki döntött:** CYBERED lelete (37718), MikroB Fix-Direction nélküli dispatch-je (üzenet 23544). A javítás végrehajtója DevO (fullstack).
+
+**Hivatkozás:** kártya 58e8cd74, commit 4f8a12dc8.
