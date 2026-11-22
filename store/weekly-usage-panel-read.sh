@@ -46,6 +46,87 @@ trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# PENDING-RELOGIN MARKER (card f3343af0, hardened in a QA FAIL follow-up): see
+# weekly-usage-relogin.sh for why this exists. If a relogin is in flight the panel is sitting on a
+# /login dialog, not a shell prompt -- sending "/usage" there types into the dialog and kills the
+# login (measured 2026-10-14, "Login interrupted" twice). Checked FIRST, before any tmux call, so
+# a pending relogin never gets a stray keystroke from this script.
+#
+# QA FAIL (2026-11-15): a bare fresh-mtime check in an env-overridable path could be PLANTED by any
+# process able to write a file (store/ is shared-trust) -- no owner/perm check, no tie to a live
+# relogin, so a rewritten timestamp suppressed every read indefinitely. Fixed: the path is fixed in
+# production (the env override below only takes effect under WU_RELOGIN_TEST_MODE=1, set by tests
+# only); the marker must be a REGULAR file (not a symlink), owned by the current user, mode 0600,
+# and its first line must be the PID of a process that is both alive and whose /proc cmdline names
+# this exact script -- a marker that fails ANY of these is treated as not-pending, same as if the
+# file did not exist, regardless of how fresh its timestamp looks. The TTL freshness check is kept
+# as a second, independent requirement (belt-and-suspenders): the holder process self-expires the
+# marker after the same TTL anyway, so this can never be stricter than that in practice.
+if [ "${WU_RELOGIN_TEST_MODE:-0}" = "1" ]; then
+  PENDING_MARKER="${WU_RELOGIN_PENDING_MARKER:-${STORE}/.weekly-usage-relogin-pending}"
+  PENDING_TTL_SEC="${WU_RELOGIN_PENDING_TTL_SEC:-1800}"
+else
+  PENDING_MARKER="${STORE}/.weekly-usage-relogin-pending"
+  PENDING_TTL_SEC=1800
+fi
+pending_marker_valid() {
+  [ -f "$PENDING_MARKER" ] || return 1
+  [ -h "$PENDING_MARKER" ] && return 1   # a symlink is never trusted, whatever it points to
+  local owner_uid mode marker_pid marker_ts now_ts
+  owner_uid="$(stat -c '%u' "$PENDING_MARKER" 2>/dev/null || echo -1)"
+  [ "$owner_uid" = "$(id -u)" ] || return 1
+  mode="$(stat -c '%a' "$PENDING_MARKER" 2>/dev/null || echo '')"
+  [ "$mode" = "600" ] || return 1
+  marker_pid="$(sed -n '1p' "$PENDING_MARKER" 2>/dev/null)"
+  marker_ts="$(sed -n '2p' "$PENDING_MARKER" 2>/dev/null)"
+  [ -n "$marker_pid" ] && [ "$marker_pid" -gt 0 ] 2>/dev/null || return 1
+  [ -n "$marker_ts" ] && [ "$marker_ts" -gt 0 ] 2>/dev/null || return 1
+  now_ts="$(date +%s)"
+  [ $((now_ts - marker_ts)) -lt "$PENDING_TTL_SEC" ] || return 1
+  kill -0 "$marker_pid" 2>/dev/null || return 1
+  tr '\0' '\n' < "/proc/$marker_pid/cmdline" 2>/dev/null | grep -q 'weekly-usage-relogin\.sh' || return 1
+  return 0
+}
+# SKIP-STREAK ESCALATION (Cybersec MEDIUM-1, card f3343af0): the marker's OWN freshness check
+# above can be kept green forever by a same-user process that replants a fresh epoch every
+# <30 min with no real relogin in flight (measured: `--hold-marker` rerun directly, or a decoy
+# process exec'd under the script's own name) -- the TTL alone cannot tell that apart from a
+# genuinely slow, still-pending relogin, because the decoy controls the very timestamp the TTL
+# check reads. So track OUR OWN first-observed time, in a file the marker's owner cannot touch
+# (we write it, they never do), and once a marker has been honored continuously for >= 2x the
+# TTL, stop honoring it and fall through to the normal flow -- which raises the normal failure/
+# alert path instead of silently skipping forever. A single legitimate relogin never reaches
+# this (the holder self-expires its own marker at 1x TTL); only a marker kept artificially fresh
+# past that point does.
+# Cybersec MEDIUM-3 (card f3343af0 delta-gate): under test mode this path must be EXPLICITLY
+# supplied by the caller -- never silently fall back to the live production file the way
+# PENDING_MARKER above does. A test that sets WU_RELOGIN_TEST_MODE=1 without also setting
+# WU_RELOGIN_SKIP_STREAK_FILE would otherwise read/write the REAL store/.weekly-usage-relogin-
+# skip-streak, and a stale streak left there makes the first tick of a genuine relogin escalate
+# immediately and type into the login dialog it is meant to protect.
+if [ "${WU_RELOGIN_TEST_MODE:-0}" = "1" ]; then
+  SKIP_STREAK_FILE="${WU_RELOGIN_SKIP_STREAK_FILE:?WU_RELOGIN_SKIP_STREAK_FILE must be set under WU_RELOGIN_TEST_MODE=1 -- refusing to touch the live streak file}"
+else
+  SKIP_STREAK_FILE="${STORE}/.weekly-usage-relogin-skip-streak"
+fi
+if pending_marker_valid; then
+  now_ts="$(date +%s)"
+  streak_start="$(cat "$SKIP_STREAK_FILE" 2>/dev/null || true)"
+  if ! [ "$streak_start" -gt 0 ] 2>/dev/null; then
+    streak_start="$now_ts"
+    ( umask 177; printf '%s\n' "$streak_start" > "$SKIP_STREAK_FILE" ) 2>/dev/null || true
+  fi
+  if [ $((now_ts - streak_start)) -ge $((2 * PENDING_TTL_SEC)) ]; then
+    echo "ESCALATE: relogin marker has been honored for >= 2x the TTL (${PENDING_TTL_SEC}s) without clearing -- treating as stuck or artificially kept fresh, no longer skipping." >&2
+    rm -f "$SKIP_STREAK_FILE" 2>/dev/null || true
+  else
+    echo "SKIP: relogin pending"
+    exit 0
+  fi
+else
+  rm -f "$SKIP_STREAK_FILE" 2>/dev/null || true
+fi
+
 # REBOOT-SURVIVABILITY (2026-07-31): a tmux session does NOT survive a machine reboot.
 # The isolated .credentials.json (with a ~month-long refresh token) DOES. So on reboot the
 # creds are still valid but the PANEL is gone -- and the old behaviour ("fail -> escalate to

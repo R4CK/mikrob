@@ -31366,3 +31366,165 @@ unknown-arány) -- ez landolás után, külön kommentként követi.
 
 **Ki döntött:** MikroB (kártya 9fb61222, 685f25cb mérésének folytatása). backend2 végezte a
 javítást. Gate: QA (a kártya saját kijelölése).
+
+2026-11-15, kártya f3343af0 (QA FAIL a koraibbi fixen): a relogin pending-markert elobb csak egy
+friss epoch jelezte, env-fellulirhato uton -- bármely, store/-ba iro folyamat elplanthatta es a
+timestampet újraírva vegtelenul elfojthatta volna a weekly-usage olvasast. Javitas: a marker utja
+eleses a termelesben (env felulirás csak WU_RELOGIN_TEST_MODE=1 alatt), a marker 0600 modban,
+tulajdonosa az aktualis user, es egy ELO folyamat pid-jet hordozza (egy kulon --hold-marker
+gyermek, sajat sessionnel, ami a marker tényleges irasat vegzi es a TTL lejartig tartja), amelynek
+/proc cmdline-ja a weekly-usage-relogin.sh nevet viseli -- az olvaso MINDEGYIK feltetelt ellenorzi,
+nem csak a timestampet. Gate: QA, Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 (CYBERSEC GO 31727, két feltétel lezárása)
+
+**Döntés:** Cybersec GO-t adott a pending-marker keményítésre (bbc06abf7), két feltétellel:
+MEDIUM-2 (a `start`/`--hold-marker` FIFO-kézfogás határolatlan `read` -- ha a gyermek a jelzés
+előtt elhal, `start` örökre blokkol) és MEDIUM-1 (egy same-user álprocessz, pl.
+`exec -a weekly-usage-relogin.sh sleep 600` vagy egy közvetlen `--hold-marker &` hívás, a
+markert örökké frissen tarthatja, és örökké elfojthatja az olvasást).
+
+Javítás: (1) a FIFO-kézfogás `timeout`-tal határolt -- mért tény: egy puszta `read -t N < fifo`
+NEM elég, mert a FIFO `open()`-je magában blokkol íróra várva, MÉG a `read` saját időzítője
+előtt; a `timeout` a teljes nyitás+olvasás műveletet egy megölhető gyermekfolyamatba csomagolja.
+Határidő után `start` FAIL-lel kilép, NEM érinti a panelt (fail-closed). (2) a `--hold-marker`
+megtagadja a futást, ha nem kapja meg a `start` saját kézfogó FIFO-ját (env-változó + tényleges
+named pipe) -- ez a közvetlen, egysoros hívást zárja le, NEM a same-user álprocesszt (azt egy
+script-szintű ellenőrzés nem képes megkülönböztetni a valós tartótól). (3) az olvasó oldalon egy
+SKIP-sorozat-fájl követi, MIÓTA fogadja el folyamatosan a markert -- 2x TTL (alapesetben 1 óra)
+folyamatos elfogadás után leállítja a SKIP-elést és átesik a normál (riasztó) útra, mert egy
+valós relogin sosem tart ennyit (a tartó saját magát lejáratja 1x TTL-nél).
+
+Mellékes lelet a javítás közben: a `--hold-marker` jelzése `printf x` (newline nélkül) volt --
+bash `read` nem-nulla kóddal tér vissza, ha EOF-ot ér delimiter előtt, MÉG ha az adat megérkezett
+is. Ez a kézfogás saját ellenőrzését hamis negatívra futtatta volna; javítva `printf 'x\n'`-re,
+mérve közvetlenül mindkét alakon.
+
+Teszt: src/__tests__/weekly-usage-relogin-pending-marker.test.ts 22/22 PASS (6 új eset); a teljes
+weekly-usage sibling-sweep (7 fájl) 394/394 PASS; tsc --noEmit tiszta. Mindhárom fix mutánsonként
+bizonyítva pontosan a saját tesztjét futtatja pirosra (a határolatlan read visszaállítása és a
+hold-marker kapu eltávolítása FÜGGETLENÜL lefagyasztja a tesztet, ami maga is bizonyíték -- külső
+timeout-tal elkapva; az escalation eltávolítása pontosan 1 tesztet buktat).
+
+Gate: QA, Cybersec (re-gate a GO feltételeire). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 follow-up: FIFO leak fix (MikroB lelet, msg 19070)
+
+Mikrob mérte: a `weekly-usage-relogin.sh` `start` ága a kézfogó FIFO-t egy puszta `mktemp -u`
+útvonalon hozta létre, közvetlenül a `/tmp` gyökerében (`/tmp/tmp.XXXXXXXXXX`). Ha a `start`
+mkfifo és a régi `rm -f` között megszakadt (teszt-timeout, fleet-test kill), a FIFO ott maradt --
+mérve: két ilyen 14:12-kor és 14:18-kor. A `store/kg-search.selftest.sh` saját
+`grep -slF ... /tmp/tmp.*` mintája ráesett a leakelt FIFO-ra, és örökre blokkolt az `open()`-en
+(nincs író), ami a `store-selftests-all-run` futást időzítette ki, és visszadobott 3 landolást
+(3bad1678 kétszer, ec34c025). MikroB kézzel feloldotta és eltávolította a leakelt FIFO-kat.
+
+Javítás: a FIFO a saját, privát `mktemp -d` könyvtárán BELÜL él (`"$dir/fifo"`, nem bare `/tmp`
+útvonal), `trap ... EXIT INT TERM`-mel takarítva. Mérve direktben (nem csak logika alapján):
+egy puszta SIGTERM a `start` folyamatra NEM szakítja meg azt, amíg a `timeout`/`read` blokkol --
+a GNU `timeout` a felügyelt gyermekét SAJÁT process-csoportba teszi, és a bash is elhalasztja a
+trap futtatását, amíg a foreground parancsra vár. SIGKILL-t pedig semmi nem fog el, se a régi,
+se az új kód -- a valódi strukturális védelem nem az, hogy a takarítás MINDIG lefut, hanem hogy
+AMI megmarad, az egy könyvtár, nem egy FIFO a `/tmp` gyökerében: egy `grep /tmp/tmp.*`-szerű
+pásztázás egy könyvtáron azonnal hibát ad ("Is a directory"), nem blokkol -- egy bare FIFO-n
+viszont örökre blokkolna. Ez pontosan a mért tünetet zárja le, a kill pontos időzítésétől
+függetlenül.
+
+Teszt (src/__tests__/weekly-usage-relogin-pending-marker.test.ts, új eset): `start`-ot SIGKILL-
+li a kézfogás közben (saját, izolált `TMPDIR` alatt, hogy ne keveredjen más ügynök egyidejű
+folyamataival), és ellenőrzi, hogy a megmaradt bejegyzés SOHA nem FIFO, ÉS hogy egy
+`timeout`-tal határolt, a kg-search mintáját pontosan követő `grep` scan nem akad el (rc != 124).
+Mutáns-próba: a régi `mktemp -u` + bare `rm -f` alakra visszaállítva a teszt pirosra vált
+(`expected true to be false` a FIFO-ellenőrzésen) -- majd a javítással visszazöldül.
+
+Teszt: a célzott fájl 23/23 PASS; a 4 testvér-fájl (code-intake, redaction, panel-size,
+cron-shell-pane-writers) 51/51 PASS; `bash -n` a módosított scripten tiszta; tsc --noEmit tiszta.
+
+Gate: QA, Cybersec (delta re-gate a korábbi GO-k felett). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 delta-gate (CYBERSEC GO on 7df1b166, 1 feltetel: MEDIUM-3 skip-streak teszt-szivargas)
+
+CYBERSEC GO a d6f0c0a83 FIFO-javitasra, egy feltetellel landolas elott: a
+weekly-usage-relogin-pending-marker.test.ts `runReader` segedje beallitotta a
+`WU_RELOGIN_TEST_MODE=1`-et, de a `WU_RELOGIN_SKIP_STREAK_FILE` utvonalat NEM -- a
+`weekly-usage-panel-read.sh` SKIP-STREAK-escalacios logikaja (Cybersec MEDIUM-1, card f3343af0)
+emiatt minden teszt-futasnal a VALODI eles `store/.weekly-usage-relogin-skip-streak` fajlt irta/
+olvasta (a `STORE` valtozo a scriptben FIX `/home/neon/marveen/store`, nem a worktree sajat utja).
+Egy itt maradt elavult streak-fajl azt eredmenyezhette volna, hogy egy VALODI relogin elso tickje
+azonnal escalal, es a login-dialogusba gepel -- pontosan az a hiba, amit a MEDIUM-1 fix el akart
+keruelni.
+
+Javitas ketfele szinten:
+1. A teszt-segedben (`runReader`): minden hivas alapertelmezetten a saját mktemp-dir-jen
+   beluli `skip-streak` utvonalat kapja (`WU_RELOGIN_SKIP_STREAK_FILE`), amit egy explicit
+   `env` felulirhat -- ugyanaz a minta, mint a `WU_RELOGIN_PENDING_MARKER`-nel.
+2. A scriptben (melyseg-vedelem): `WU_RELOGIN_TEST_MODE=1` alatt a `WU_RELOGIN_SKIP_STREAK_FILE`
+   mostantol KOTELEZO (`${VAR:?hibaszoveg}`) -- ha egy jovobeli teszt ujra elfelejtene beallitani,
+   a script AZONNAL, hangosan megall, nem csendben az eles fajlra esik vissza. Merve: a valtozo
+   nelkuli hivas `exit 1`-et ad, "WU_RELOGIN_SKIP_STREAK_FILE must be set under
+   WU_RELOGIN_TEST_MODE=1" uzenettel, MIELOTT bármi irna/olvasna.
+
+Masik feltetel (hang elleni korlat): a `runReader`/`runRelogin` ket `execFileSync` hivasa nem
+kapott kulso idokorlatot -- egy jovobeli regresszio (pl. a FIFO-kezfogas megakad) a tesztet
+orokre fuggesztette volna, nem egyszeruen pirosra valtotta. Mindkettő `timeout: 15_000` lett
+(a leghosszabb belso `WU_RELOGIN_FIFO_TIMEOUT_SEC` eset 10 masodperces, a vitest globalis
+`testTimeout` 60 masodperces -- a 15s a kettő kozott, feleslegesen szoros hatarido nelkul).
+
+Teszt: a celzott fajl 23/23 PASS (az uj default streak-utvonallal egyutt). Testver-fajlok
+(code-intake, redaction, panel-size, panel-revive-states, cron-shell-pane-writers) 78/78 PASS
+egyutt futtatva. Kezi mutacio-proba: a script hivasa `WU_RELOGIN_TEST_MODE=1`-gyel es
+`WU_RELOGIN_SKIP_STREAK_FILE` NELKUL azonnal `exit 1`-et ad a hianyzo-vedelem uzenettel --
+a regi kod csendben az eles fajlra esett volna. `bash -n` a modositott scripten tiszta,
+`tsc --noEmit` tiszta.
+
+Gate: QA, Cybersec (delta re-gate a 7df1b166 GO felett). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 delta-gate (Cybersec MEDIUM-4: a mktemp-d trap nem allitja meg a TERM/INT-et)
+
+Cybersec GO (8405ebed4, komment 31834) egy felteteles NO-GO-t rejtett: a d6f0c0a83-ban bevezetett
+`trap 'rm -rf "$_wu_fifo_dir" ...' EXIT INT TERM` regressziot hozott. A trap CSAK takaritott, nem
+allt ki -- INT/TERM lefuttatta a trap-testet, majd a script EGYSZERUEN FOLYTATTA a tobbi sort
+(ensure_pane es tovabb). Egy Ctrl-C vagy egy felugyelo `timeout`-ja `start`-on ezert tovabb nem
+allitotta meg a folyamatot, az pedig tovabbment a login-dialogus fele -- pontosan az a
+belegepeles-osztaly, amit ez a kartya meg akar akadalyozni.
+
+Ket kulon ok, ket kulon javitas:
+1. **A trap maga nem allt ki.** Minden jel-kezelo most mar explicit `exit 143`-at (TERM) vagy
+   `exit 130`-at (INT) is futtat a sajat takaritasa UTAN, es megoli a leszakitott
+   `--hold-marker` tartot is -- de az EXIT trap ezt NEM teheti meg (a tarto a SIKERES futas
+   utan is tovabb kell eljen, 1 sikeres `start` 15-25 masodpercig fut, a tarto viszont percekig).
+2. **Bash elhalasztja a trapot, amig az ELOTERI gyermek-parancs vissza nem ter.** A kezfogas-varas
+   (`timeout ... read`) korabban kozvetlenul az elotetben futott -- egy TERM a varas kozben csak
+   akkor futott le, amikor a `timeout` SAJAT idokorlata (akar 10-30mp) lejart, nem azonnal. Mert
+   egy HATTERBE tett job-on vart `wait` MASKENT viselkedik: a jel erkezesekor azonnal visszater
+   (kulon, izolalt bash-teszttel megerositve: egy elotetben futo `sleep 10`-en a trap 10mp-et
+   var, egy hatterbe tett + `wait`-elt ugyanazon `sleep 10`-en a trap ~2mp-nel (a tenyleges
+   jelkuldes idopontjaban) lefut). Javitas: a `timeout` hatterbe kerul, majd `wait`-elunk ra.
+
+Ket uj teszt (`weekly-usage-relogin-pending-marker.test.ts`, MEDIUM-4 describe blokk):
+- TERM egy soha nem jelzo tarto mellett: `start` 143-mal, azonnal (nem varja ki a 30mp-es FIFO
+  idokorlatot), nulla tmux-hivassal, a fifo-dir eltavolitva.
+- TERM EGY KESLEKEDO (de vegul sikeresen jelzo) tarto mellett -- ez a PONTOS cybersec-regressziot
+  reprodukalja: a tarto 4mp mulva tenylegesen elindulna es jelezne, a TERM 1mp-nel erkezik, MEGIS
+  `start` azonnal 143-mal kilep, nem varja meg a kesei sikeres kezfogast es nem folytatja
+  `ensure_pane`-be.
+
+Harom cybersec LOW-1 mutans lezarva, kezzel mutalva es visszaallitva mindharomnal:
+- a `:?` szigoru ellenorzes visszaallitva a regi `:-` eleselegi alakra -> piros (a mar meglevo
+  MEDIUM-3 teszt most mar NEM NEVESITETT szoveget kap stderr-en, hanem a normal-mod hibajat --
+  ez buktatja az allitast).
+- a jel-kezelok `exit`-je torolve -> piros (mindket uj MEDIUM-4 teszt).
+- a jel-kezelok TELJES torlese -> piros (ugyanaz a ketto, `code=-1` a vart 143 helyett).
+- a sikeres-kezfogas utani kulonallo `rm -rf "$_wu_fifo_dir"` sor torolve -> piros (uj,
+  "sikeres kezfogas rogton eltavolitja a fifo-dirt" teszt).
+
+Egy FONTOS buktato a teszt megirasa kozben: a hamis holder-shim sajat `sleep 4` hivasa a
+teszt-infra SAJAT, no-op `sleep` fake-jet talalta meg a PATH-on (ugyanaz a fake, amivel a
+relogin-script SAJAT belso sleep-jeit gyorsitjuk fel mas tesztekben) -- a holder nem is
+keslekedett, azonnal elindult, a teszt pedig a vart 20mp-es idotullepesig futott. Javitas:
+`/bin/sleep 4` abszolut uttal a shimben.
+
+Teszt: a celzott fajl 27/27 PASS (23 regi + 4 uj). Testver-fajlok (code-intake, redaction,
+panel-size, panel-revive-states, cron-shell-pane-writers) 82/82 PASS egyutt futtatva. `bash -n`
+mindket modositott scripten tiszta, `tsc --noEmit` tiszta.
+
+Gate: QA, Cybersec (delta re-gate a 8405ebed4 GO felett). **Ki döntött:** DevO (fullstack).
