@@ -160,6 +160,13 @@ set_gate_line bbb222 "QA"
 for c in ccc333 ddd444; do set_gate_line "$c" ""; done
 
 OUT_FILE="$WORK/out.txt"
+# Card 1634bf55 (backend report msg 23386 + MikroB comment 37609): every call below runs the REAL
+# --card land path end to end, including its real land-run-journal.sh started/heartbeat/finished
+# writes -- $LAND's own dirname is THIS file's real store/ directory, so without an explicit
+# override those writes default straight onto the LIVE store/land-runs.jsonl. Confirmed live: a
+# +3-byte write to that file during a concurrent fleet-test with no other land running. Routed to
+# this fixture's own throwaway $WORK, same as every other land selftest already does.
+LAND_RUN_JOURNAL_TMP="$WORK/land-runs.jsonl"
 land_card() { # $1 = card id, $2 = agent, extra args passed through
   local card="$1" agent="$2"; shift 2
   MARVEEN_MAIN="$MAIN" \
@@ -167,6 +174,7 @@ land_card() { # $1 = card id, $2 = agent, extra args passed through
     MARVEEN_LAND_DEVELOP_LOCK_FILE="$LOCK_DIR/.marveen-land-develop.lock" \
     KANBAN_COMMENT_API="http://127.0.0.1:$stub_port" KANBAN_COMMENT_TOKEN_FILE="$TOKEN_TMP" \
     GATE_CHECK_API="http://127.0.0.1:$stub_port" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
+    LAND_RUN_JOURNAL_FILE="$LAND_RUN_JOURNAL_TMP" \
     timeout 30 bash "$LAND" --card "$card" --agent "$agent" "$@" >"$OUT_FILE" 2>&1
   rc=$?
 }

@@ -57,8 +57,9 @@ import { readFileSync, lstatSync, realpathSync } from 'node:fs'
 import { join, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { geminiGenerate, DEFAULT_GEMINI_MODEL, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
+import { DEFAULT_GEMINI_MODEL, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
 import { reserveGhostCallSlot, releaseGhostCallSlot, recordGhostCallDetail, randomHivasId } from './gemini-ghost-budget.js'
+import { callLocalLlmForGhost, alwaysAvailableSlot, recordLocalGhostCallDetail, GHOST_LOCAL_MODEL } from './gemini-ghost-local.js'
 import { getSecret } from './web/vault.js'
 import { getKanbanCard, getKanbanComments, addKanbanComment, getLabelsForCard } from './db.js'
 import { isGeminiOrchestratorEnabled, readFallbackRoute, isBlockedByLandedFilter } from './gemini-orchestrator.js'
@@ -334,8 +335,14 @@ export async function reviewOneCard(
     // Injectable (mirrors readDraft) so the pure decision logic stays testable without touching
     // the real filesystem -- defaults to the real, fs-backed resolveDraftPathSafely.
     resolveDraftPath?: (relPath: string) => string | null
+    // Card 0291283d: must match whichever backend callGemini actually talks to (the production
+    // sweep passes GHOST_LOCAL_MODEL) -- same "opaque callGemini" reasoning as decideGeminiOrder's
+    // own modelName param in gemini-orchestrator.ts. Optional, defaults to DEFAULT_GEMINI_MODEL so
+    // existing deps object literals that predate this field keep compiling unchanged.
+    modelName?: string
   },
 ): Promise<DraftReviewResult> {
+  const modelName = deps.modelName ?? DEFAULT_GEMINI_MODEL
   const resolveDraftPath = deps.resolveDraftPath ?? resolveDraftPathSafely
 
   let comments: Comment[]
@@ -424,11 +431,11 @@ export async function reviewOneCard(
     // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording 'error' here re-spends the
     // slot just released above, since calls_of()/dedupeCalls take the LAST row per hivas_id.
     // 'blocked' marks the row without undoing the release.
-    recordDetail(hivasId, cardId, { model: DEFAULT_GEMINI_MODEL, durationMs, outcome: released ? 'blocked' : 'error', taskType: 'ghost-review' })
+    recordDetail(hivasId, cardId, { model: modelName, durationMs, outcome: released ? 'blocked' : 'error', taskType: 'ghost-review' })
     return { id: cardId, reviewed: false, reason: result.reason ?? 'no_response' }
   }
   recordDetail(hivasId, cardId, {
-    model: DEFAULT_GEMINI_MODEL, durationMs, outcome: 'ok', totalTokens: result.totalTokens, taskType: 'ghost-review',
+    model: modelName, durationMs, outcome: 'ok', totalTokens: result.totalTokens, taskType: 'ghost-review',
   })
 
   const verdict = parseReviewResponse(result.text)
@@ -479,10 +486,15 @@ export async function reviewCardsStoppingOnCapReached(
  * in no particular order (unlike 1/4's order queue -- a first-pass opinion has no sequencing
  * requirement, it only needs to eventually happen for every eligible card). A single card's
  * failure never stops the sweep.
+ *
+ * Card 0291283d: this review call goes through the LOCAL model, never Gemini -- no API key read.
+ * reserveSlot/recordDetail/modelName default to the local, budget-free versions
+ * (gemini-ghost-local.ts) accordingly; an injected callGemini (tests) still works exactly as
+ * before, since reviewOneCard's own shape is unchanged.
  */
 export async function runGeminiOrchestratorDraftReviewSweep(
   listCardIds: () => string[] = listDraftCardIds,
-  callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = geminiGenerate,
+  callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = callLocalLlmForGhost,
 ): Promise<DraftReviewSweepSummary> {
   if (!isGeminiOrchestratorEnabled()) {
     console.log('[gemini-orchestrator-draft-review] kill switch is OFF -- no-op.')
@@ -493,7 +505,8 @@ export async function runGeminiOrchestratorDraftReviewSweep(
     return { ran: false, reason: 'not_gemini_route' }
   }
 
-  const apiKey = getSecret(GEMINI_VAULT_KEY_ID) ?? null
+  const usingLocal = callGemini === callLocalLlmForGhost
+  const apiKey = usingLocal ? null : (getSecret(GEMINI_VAULT_KEY_ID) ?? null)
   const deps = {
     readCard: (id: string) => getKanbanCard(id),
     readComments: (id: string) => getKanbanComments(id) as unknown as Comment[],
@@ -501,7 +514,9 @@ export async function runGeminiOrchestratorDraftReviewSweep(
     readDraft: (absPath: string) => readFileSync(absPath, 'utf-8'),
     postComment: (id: string, author: string, content: string) => addKanbanComment(id, author, content),
     callGemini,
-    reserveSlot: reserveGhostCallSlot,
+    reserveSlot: usingLocal ? alwaysAvailableSlot : reserveGhostCallSlot,
+    recordDetail: usingLocal ? recordLocalGhostCallDetail : recordGhostCallDetail,
+    modelName: usingLocal ? GHOST_LOCAL_MODEL : DEFAULT_GEMINI_MODEL,
   }
 
   const results = await reviewCardsStoppingOnCapReached(listCardIds(), (id) => reviewOneCard(id, apiKey, deps))

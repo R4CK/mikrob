@@ -36,6 +36,35 @@ MODE="${1:-start}"
 # gives the probe its OWN credentials.json + refresh-token lineage, so one login sticks.
 PROBE_CONFIG_DIR="/home/neon/.claude-usage-probe"
 
+# PENDING-RELOGIN MARKER (card f3343af0, hardened in a QA FAIL follow-up): weekly-usage-panel-read.sh
+# types "/usage" into this same panel on a timer. While a relogin is in flight the panel sits on a
+# waiting /login dialog instead of a shell prompt, so that keystroke lands on the dialog -- measured
+# 2026-10-14, two login flows in a row died with "Login interrupted" because the reader's /usage text
+# was typed into the dialog.
+#
+# QA FAIL (2026-11-15): the first version gated SKIP on nothing but a fresh mtime in an
+# env-overridable path -- any process able to write ANY file (store/ is shared-trust, every agent can)
+# could plant a marker and suppress every weekly-usage read indefinitely by rewriting the timestamp
+# every <30 min, with no tie to a real relogin. Fixed: the marker path is fixed in production (the env
+# override below only takes effect under WU_RELOGIN_TEST_MODE=1, set by tests only); the marker is
+# written mode 0600 via umask (no separate chmod window) and carries the PID of the process actually
+# holding the relogin open, not just a timestamp; weekly-usage-panel-read.sh additionally verifies
+# ownership, mode, and that the PID is alive AND its cmdline names this script before honoring it.
+if [ "${WU_RELOGIN_TEST_MODE:-0}" = "1" ]; then
+  PENDING_MARKER="${WU_RELOGIN_PENDING_MARKER:-/home/neon/marveen/store/.weekly-usage-relogin-pending}"
+  PENDING_TTL_SEC="${WU_RELOGIN_PENDING_TTL_SEC:-1800}"
+else
+  PENDING_MARKER="/home/neon/marveen/store/.weekly-usage-relogin-pending"
+  PENDING_TTL_SEC=1800
+fi
+
+# Writes the marker atomically at 0600 (umask, not a post-hoc chmod -- no window where the file is
+# briefly world-readable) with OUR OWN pid (line 1) and the start epoch (line 2). Called only from
+# inside --hold-marker, whose process is the one meant to stay alive for the pending window.
+write_pending_marker() {
+  ( umask 177; printf '%s\n%s\n' "$$" "$(date +%s)" > "$PENDING_MARKER" ) 2>/dev/null || true
+}
+
 ensure_pane() {
   tmux has-session -t "$PANE" 2>/dev/null && return 0
   # 700, matching ~/.claude: the dir holds .credentials.json (card 90424157 F2).
@@ -174,6 +203,7 @@ case "$MODE" in
     tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 8
     if tmux capture-pane -t "$PANE" -p 2>/dev/null | grep -qiE 'Login successful|Welcome back'; then
       tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 2
+      rm -f "$PENDING_MARKER" 2>/dev/null || true
       echo "OK: login successful, panel Max-authed."
       exit 0
     fi
@@ -183,6 +213,78 @@ case "$MODE" in
     exit 1
     ;;
   start)
+    # Mark the relogin as pending BEFORE anything touches the panel, so a reader tick that lands
+    # between this line and the first send-keys below still sees it and skips (vs. a window where
+    # the marker only appears after the panel is already mid-dialog).
+    #
+    # The marker's pid must stay alive for the WHOLE pending window (until --paste or the TTL), but
+    # this `start` invocation itself only runs for ~15-25s (the sleeps below) and then returns --
+    # Peti's actual OAuth click-and-paste can take minutes. So a detached --hold-marker child (own
+    # session via setsid, survives this invocation's exit) is what the marker's pid names; it writes
+    # the marker itself, holds for up to PENDING_TTL_SEC, then self-expires. A FIFO handshake (not a
+    # sleep/poll) blocks this invocation only until the child confirms the marker is actually on
+    # disk, so the "written before the panel is touched" guarantee still holds exactly.
+    #
+    # BOUNDED (Cybersec MEDIUM-2, card f3343af0): the read used to have no timeout -- if the
+    # holder child died before signalling (measured by simulating a no-op `setsid`), this `start`
+    # invocation blocked FOREVER on the FIFO read. FAIL CLOSED on timeout: no confirmed marker
+    # means we do not know the pending-state actually landed, so the panel must NOT be touched as
+    # if it did -- a failed `start` the operator can re-run is strictly better than the stray
+    # keystroke into a live login dialog this whole mechanism exists to prevent.
+    # The FIFO lives inside its OWN mktemp -d, never a bare mktemp -u path in /tmp root (MikroB
+    # finding, card f3343af0): two leaked at 14:12/14:18 when `start` was killed between mkfifo and
+    # the old rm -f, and kg-search.selftest.sh's `grep /tmp/tmp.*` blocked forever on the leaked
+    # FIFO, timing out store-selftests-all-run and refusing 3 unrelated lands. A directory can be
+    # removed with a trap that fires on EXIT/INT/TERM (SIGKILL still leaks, but that is outside any
+    # trap's reach); a bare file has no such parent to clean it up by.
+    _wu_fifo_timeout="${WU_RELOGIN_FIFO_TIMEOUT_SEC:-10}"
+    _wu_fifo_dir="$(mktemp -d)"
+    _wu_hold_pid=""
+    # Cybersec MEDIUM-4 (card f3343af0 delta-gate, regression from the mktemp-d fix): the previous
+    # trap only cleaned up, it never exited -- INT/TERM ran the trap body and then fell through to
+    # the rest of `start` (ensure_pane and beyond), so a Ctrl-C or a supervisor's `timeout` on
+    # `start` no longer stopped it; it went on to drive the login dialog it was told to abandon.
+    # Each signal trap now also kills the detached holder and exits with the conventional
+    # 128+signum code (143 for TERM, 130 for INT) so the caller can tell a signal killed it from an
+    # ordinary failure.
+    # The EXIT trap only removes the fifo dir -- it must NOT kill the holder on a normal, successful
+    # exit: the holder is DESIGNED to outlive this invocation (see the comment above), so a kill
+    # here would tear down the pending marker the instant `start` returns, breaking every ordinary
+    # run. Only an aborted run (INT/TERM) should take the holder down with it.
+    trap 'rm -rf "$_wu_fifo_dir" 2>/dev/null || true' EXIT
+    trap '[ -n "$_wu_hold_pid" ] && kill "$_wu_hold_pid" 2>/dev/null; rm -rf "$_wu_fifo_dir" 2>/dev/null || true; exit 143' TERM
+    trap '[ -n "$_wu_hold_pid" ] && kill "$_wu_hold_pid" 2>/dev/null; rm -rf "$_wu_fifo_dir" 2>/dev/null || true; exit 130' INT
+    _wu_fifo="$_wu_fifo_dir/fifo"
+    mkfifo "$_wu_fifo" 2>/dev/null || true
+    WU_RELOGIN_HOLD_SIGNAL_FIFO="$_wu_fifo" setsid bash "$0" --hold-marker >/dev/null 2>&1 </dev/null &
+    _wu_hold_pid=$!
+    disown 2>/dev/null || true
+    # `read -t` alone does NOT bound this: the blocking part is the FIFO's open() itself (it waits
+    # for a writer to open the other end), which happens as part of the `< fifo` redirection
+    # BEFORE `read` ever starts running, so its own -t never gets a chance to apply. Measured
+    # directly: a bare `read -t 1 < fifo` with no writer still blocked past a 3s outer timeout.
+    # `timeout` wraps the WHOLE redirection+read in a child process it can kill by signal,
+    # interrupting the blocked open() -- confirmed this actually unblocks it (rc 124 at ~2s).
+    #
+    # Cybersec MEDIUM-4: bash defers a trap until the FOREGROUND command it is running returns, so
+    # running `timeout` directly in the foreground here (the original shape) meant INT/TERM during
+    # the wait did not actually fire the trap until the FIFO timeout itself elapsed -- measured: a
+    # TERM at t+2s with a 10s FIFO timeout was not honored until t+8s or later. `wait` on a
+    # BACKGROUNDED job, unlike a foreground command, returns as soon as the signal arrives, so the
+    # trap fires immediately -- measured directly (trap fired at t+2s instead of waiting out the
+    # child).
+    _wu_handshake_ok=0
+    if [ -p "$_wu_fifo" ]; then
+      timeout "$_wu_fifo_timeout" bash -c 'read -r _ < "$1"' _ "$_wu_fifo" 2>/dev/null &
+      _wu_handshake_pid=$!
+      wait "$_wu_handshake_pid" && _wu_handshake_ok=1
+    fi
+    rm -rf "$_wu_fifo_dir" 2>/dev/null || true
+    if [ "$_wu_handshake_ok" -ne 1 ]; then
+      kill "$_wu_hold_pid" 2>/dev/null || true
+      echo "FAIL: pending-marker handshake did not confirm within ${_wu_fifo_timeout}s -- not touching the panel." >&2
+      exit 1
+    fi
     ensure_pane || { echo "FAIL: cannot ensure panel" >&2; exit 1; }
     # Widen the window BEFORE /login prints the URL. tmux does NOT reflow existing scrollback,
     # so resizing after the URL is printed leaves it wrapped/truncated (the &state= param spills
@@ -229,11 +331,61 @@ print(url)
     tmux capture-pane -t "$PANE" -p -J 2>/dev/null | grep -v '^$' | tail -8 | redact_code >&2
     exit 1
     ;;
+  --hold-marker)
+    # Internal, not part of the public usage line: a detached child `start` backgrounds to hold the
+    # pending marker alive for the actual duration of a relogin. Writes the marker with ITS OWN pid
+    # (the long-lived one the reader's liveness check verifies), signals the parent `start` over the
+    # handshake FIFO that the write landed, then sleeps up to PENDING_TTL_SEC and self-expires --
+    # only removing a marker that still names this same pid, so it never clobbers a NEWER holder's
+    # marker from a second relogin started after a wedged first one timed out.
+    #
+    # REFUSE UNLESS INVOKED BY `start` (Cybersec MEDIUM-1, card f3343af0): a bare
+    # `bash weekly-usage-relogin.sh --hold-marker &` used to write a perfectly valid marker with
+    # NO relogin in flight at all -- rerun every <30 min, it suppressed every weekly-usage read
+    # indefinitely. Checking the handshake FIFO `start` already sets up cannot AUTHENTICATE the
+    # caller (same-user trust zone -- the env var is forgeable by anything running as this user),
+    # but it does close the one-line direct-invocation path, the realistic careless/accidental
+    # case. The deliberate same-user decoy (a process that fakes its own cmdline to pass the
+    # reader's match) is closed on the READER side instead, by the SKIP-streak escalation in
+    # weekly-usage-panel-read.sh -- this check cannot see that case and does not claim to.
+    if [ -z "${WU_RELOGIN_HOLD_SIGNAL_FIFO:-}" ] || [ ! -p "${WU_RELOGIN_HOLD_SIGNAL_FIFO:-}" ]; then
+      echo "FAIL: --hold-marker must be invoked by 'start' (missing/invalid handshake FIFO)." >&2
+      exit 1
+    fi
+    write_pending_marker
+    # Newline-terminated (card f3343af0, MEDIUM-2 follow-up): bash's `read` returns non-zero if it
+    # hits EOF before seeing the delimiter, even when it DID read the byte -- a bare `printf x`
+    # (no newline) made every handshake register as a read FAILURE once the parent side started
+    # checking read's exit status (it used to be swallowed by `|| true`). Measured directly:
+    # `printf x` -> read exit 1 despite the data arriving; `printf 'x\n'` -> read exit 0.
+    printf 'x\n' > "$WU_RELOGIN_HOLD_SIGNAL_FIFO" 2>/dev/null || true
+    # Hold until our own marker is gone (cleared by a successful --paste) or the TTL elapses --
+    # checked against REAL wall-clock time (date) on every iteration, not one long sleep, so this
+    # self-expires correctly even when `sleep` is PATH-shimmed to a no-op for OTHER delays in this
+    # script (a real test need, not just defensiveness -- see weekly-usage-relogin-pending-marker.test.ts).
+    _wu_start_ts="$(sed -n '2p' "$PENDING_MARKER" 2>/dev/null || echo 0)"
+    while [ -f "$PENDING_MARKER" ]; do
+      _wu_now="$(date +%s)"
+      [ $((_wu_now - _wu_start_ts)) -lt "$PENDING_TTL_SEC" ] || break
+      sleep 1 2>/dev/null || true
+    done
+    if [ -f "$PENDING_MARKER" ] && [ "$(sed -n '1p' "$PENDING_MARKER" 2>/dev/null)" = "$$" ]; then
+      rm -f "$PENDING_MARKER" 2>/dev/null || true
+    fi
+    exit 0
+    ;;
   --redact-stdin)
     # Test/diagnostic seam: pipe text in, get the SAME redaction the --paste failure dump applies.
     # Exposed so the redaction is directly testable -- the failure branch itself needs a live panel,
     # and an untested redaction is exactly the kind of thing that silently stops redacting.
     redact_code
+    ;;
+  --debug-marker-path)
+    # Test-only seam, zero side effects: prints the RESOLVED marker path so a test can prove the
+    # env override is ignored outside WU_RELOGIN_TEST_MODE=1 without ever touching the real
+    # production marker file (card f3343af0 QA FAIL follow-up).
+    printf '%s\n' "$PENDING_MARKER"
+    exit 0
     ;;
   *)
     echo "usage: $0 [start|--check|--paste (code on stdin)|--paste-file <0600-file>]" >&2; exit 2 ;;

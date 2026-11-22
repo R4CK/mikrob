@@ -31280,6 +31280,334 @@ Docs closed (f8fde8e9, F4.5): README "Git/worktree/landolási infrastruktúra" s
 **Correction:** 0ae1166e went through rework (commits 976274bdc, 6ea8316b4 fixing the F1-F4/F8 findings), then CYBERED GO + CYBERSEC GO (x2) + QA PASS + QA2 PASS on final Gate-SHA `8ff3adcced874713df2c936a9d6d332baaac0036`, landed on origin/develop via merge `23167344f0eb967d155b1b698d53ea545739c4bc` (develop tip `bbb9282ec33b59aa911ab1f36cfc0f68c807b852`), MikroB closure confirmed. `store/marveen-card-worktree-cleanup.sh` as it exists on origin/develop today was re-verified line-by-line against the README/`marveen-worktree-fegyelme.md` text this card (f8fde8e9) ships: `--dry-run` default, `--apply` requires `--yes`, REMOVABLE only when LANDED + IDLE + CLEAN all hold -- the docs text is accurate to the shipped script as of this correction, not merely as originally (prematurely) claimed.
 
 **Ki döntött:** DevO (fullstack), re-verification for card f8fde8e9 after 0ae1166e's final landing. Gate-SHA: see this card's own REVIEW comment.
+
+## 2026-11-22 -- card 1634bf55: land selftests were reaching live state during fleet-test
+
+**Kontextus:** two refused lands in one morning both pointed at the same bug class. e7a591cb was refused by landing-downward-check.test.ts because the live store/land-runs.jsonl (gitignored, so the existing dirty-tree guard cannot see it) grew +3 bytes during the fleet-test with no other land running. Separately, three self-addressed inter-agent messages (23383-23385, agent=backend, card=n/a, FAILED/LANDED) landed on the live message queue during the same kind of run.
+
+**Döntés:** store/marveen-land-card-branch.selftest.sh's land_card() helper was found, with evidence, to stub KANBAN_COMMENT_API/KANBAN_COMMENT_TOKEN_FILE/GATE_CHECK_API/GATE_CHECK_TOKEN_FILE for its ~20 real `marveen-land.sh --card` invocations but never LAND_RUN_JOURNAL_FILE -- so every one of those invocations wrote onto the live journal. Fixed with a one-line override to the fixture's own $WORK dir; verified standalone (61/61) with the live journal's line count and tail unchanged before/after. The exact historical call site for the live /api/messages leak (23383-23385) was not pinned down by static tracing; backend's own comment (msg 23386) independently attributes it to selftest-land-batch harness spillover. Rather than keep hunting one exact call, the fix closes the whole class structurally: both generic test-runner harnesses that discover and run every land selftest (store-selftests-all-run.test.ts's execWithKillRetry, landing-downward-check.test.ts's selftest() helper and its two standalone describes) now force a dead KANBAN_COMMENT_API/GATE_CHECK_API, an unreadable token-file path, and a never-created journal path onto every selftest they run, unconditionally -- no individual script has to remember to stub itself (CLAUDE.md kódminőségi alapelv 6, "Strukturális védelem a fegyelem helyett"). Added selftest-harness-env-isolation.test.ts proving the override both stops a leak (0 POSTs to a recording fake endpoint) and is mutation-sensitive (removing the override makes an identical probe hit the recorder). Proven under concurrency: landing-downward-check.test.ts run twice in parallel via fleet-test.sh (serialized by its own lock), both 9/9 PASS, live journal and live message queue both unchanged across the run.
+
+**Ki döntött:** backend3, card 1634bf55, Gate-SHA 695678e82. Gate: QA + Cybersec + Cybered (comment 37609 widened scope).
+
+## 2026-11-22 -- card 1634bf55 round 2: the round-1 fix only closed 2 of 4 leaking harnesses
+
+**Kontextus:** CYBERED NO-GO (comment 37616), QA2 FAIL (comment 37617), CYBERSEC NO-GO (reported via msg 23415) and cybersec2 NO-GO (comment 37618) all independently found the same gap in the round-1 fix (Gate-SHA 90d374379): `src/__tests__/agent-worktree-marveen.test.ts` (unstubbed `execFileSync` call sites around lines 83, 565, 824) and `src/__tests__/landing-gate-verdict-check.test.ts` (drives `store/landing-gate-verdict-check.selftest.sh`, which runs the real land script with no journal override) were never touched by round 1 and still leaked the identical shape live -- CYBERED's own run recorded 3 POSTs to `/api/messages` byte-for-byte matching 23383-23385 and +64 rows to the fleet-test tree's journal. CYBERED/cybersec2 also found `selftest-harness-env-isolation.test.ts` (round 1's proof test) mutation-insensitive: it defined its own local copy of the dead-env values and exercised only a recorder probe, never the real harness code, so deleting the override from either real harness left it green.
+
+**Döntés:** moved the dead-env values and the override logic into one real module, `src/__tests__/setup/isolate-land-selftest-state.ts`, exporting `DEAD_LAND_SELFTEST_ENV` and `applyDeadLandSelftestEnv()`. Registered it as a global vitest `setupFiles` entry (`vitest.config.ts`), so it runs once per worker before any test module loads and forces the dead `KANBAN_COMMENT_API`/`KANBAN_COMMENT_TOKEN_FILE`/`GATE_CHECK_API`/`GATE_CHECK_TOKEN_FILE`/`LAND_RUN_JOURNAL_FILE` values into every test file's `process.env` -- closing `agent-worktree-marveen.test.ts` and `landing-gate-verdict-check.test.ts` structurally, without hand-editing either (same "Strukturális védelem a fegyelem helyett" principle as round 1). `store-selftests-all-run.test.ts`'s `execWithKillRetry` and `landing-downward-check.test.ts`'s `selftest()` helper now import the same `DEAD_LAND_SELFTEST_ENV` constant from the shared module instead of a local copy, keeping their own explicit defense-in-depth spread. Rewrote `selftest-harness-env-isolation.test.ts` to call the real exported `applyDeadLandSelftestEnv()` (not a redefinition), added a check that `vitest.config.ts` still registers the setup file, and kept a MUTANT case proving an unstubbed call site leaks when the real function is never called.
+
+**Mérés, Gate-SHA 6fd3c94a62cd3a6417caee6f70ce10d1565a1e46:** targeted 5-file run (agent-worktree-marveen, landing-gate-verdict-check, selftest-harness-env-isolation, store-selftests-all-run, landing-downward-check) 228/228 PASS; fleet-test tree journal (`/home/neon/marveen-test/store/land-runs.jsonl`) unchanged at 107280 lines (identical tail entry) before and after; no new live `/api/messages` row during the run window. Full fleet-test suite on this sha: 1413 test files, 49081/49214 tests PASS, 1 flake (`land-run-journal.selftest.sh` -- reproduces PASS standalone and with the identical forced dead-env replicated by hand, twice; not a regression from this change). Two concurrent fleet-test runs against this same sha (serialized by fleet-test.sh's own lock): run A 228/228 PASS, run B 185/185 PASS, journal unchanged at 107280 lines across both, no leaked live message.
+
+**Ki döntött:** backend3, card 1634bf55, round 2, Gate-SHA 6fd3c94a62cd3a6417caee6f70ce10d1565a1e46 (pending this DECISIONS.md commit's own sha). Gate: QA + Cybersec + Cybered (comment 37609), re-dispatched after round 2.
+
+## 2026-11-20 -- kártya 0291283d: Ghost pipeline a lokális LLM-en, Gemini-kvóta nélkül
+
+Peti (Telegram 14354, 2026-11-20): a Ghost pipeline-nak nincs saját kvótája, és nem ehet bele a
+Gemini kódolási kvótába. Mérve 2026-11-20: a `store/seged-hivo-naplo.jsonl` 164 sorából 162 Ghost
+(rangsorolás `src/gemini-orchestrator.ts` + review `src/gemini-orchestrator-draft-review.ts`)
+hívás volt, ami a közös óránkénti 5-ös Gemini-ablakot (`src/gemini-ghost-budget.ts`) osztotta meg
+egy valós kártya-kódolási hívással (az utolsó 2026-10-25 óta egy darab volt). Lásd memória
+`ghost-to-local-llm-gemini-in-coding-chain-decision`.
+
+**Build:** új modul `src/gemini-ghost-local.ts` (`callLocalLlmForGhost`, `alwaysAvailableSlot`,
+`recordLocalGhostCallDetail`, `GHOST_LOCAL_MODEL` = `hf.co/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-
+GGUF:Q4_K_M`) lett a `runGeminiOrchestratorSweep` és a `runGeminiOrchestratorDraftReviewSweep`
+alapértelmezett `callGemini`/`reserveSlot`/`releaseSlot`/`recordDetail` injektálása, a
+`gemini-orchestrator.ts`/`gemini-orchestrator-draft-review.ts` hívó-wrapperekben. A
+`decideGeminiOrder`/`reviewOneCard` maga változatlan (generikus/injektálható marad) -- csak a
+sweep-wrapperek saját default-paraméterei mutatnak most a lokálisra. Nincs `seged-hivo-naplo.jsonl`
+sor a lokális hívásokra (az a Gemini-kvóta mérésére szolgál, egy lokális hívás nem fogyaszt
+Gemini-kvótát); a diagnosztikai log kizárólag az `llm_ledger`-be megy (`llm-ledger-append.py
+--provider local`). GPU-flock-busy (`local-llm.sh` exit 6) `reason=gpu_busy`-ra fordul, és
+struktúrálisan (nincs Gemini-hívás a hívásláncban), nem csak feltételesen, nincs Gemini-visszaesés.
+
+**Teszt:** `gemini-ghost-local.test.ts` 12/12 zöld; `gemini-orchestrator.test.ts` 94/94 zöld (a
+régi, agy-útvonalat alapértelmezésként feltételező describe-blokk lecserélve egy helyi-LLM
+alapértelmezést igazoló blokkra); `gemini-orchestrator-draft-review.test.ts` 82/82 zöld (új
+`node:child_process`/`db.js` mock + egy új describe-blokk). `tsc --noEmit`: tiszta (2 már korábban
+is meglévő, nem kapcsolódó parse5 hiba kivételével). `eslint`: 0 probléma a 7 érintett fájlon.
+
+**Nincs benne:** a kártya "measured over a real tick" kritériumai (0 Gemini-hívás + N lokális
+hívás egy valódi harness-ticken, és hogy a `seged-hivo-naplo.jsonl` tényleg nem kap új sort élesben)
+egység-teszttel igazolva, élő méréssel még nem -- ugyanaz a halasztás, mint a 9963bf35/9fb61222
+kártyák saját élő-mérési pontjainál.
+
+**Ki döntött:** Peti (Telegram 14354) + MikroB (kártya 0291283d, reassignment message 22658).
+backend2 végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
+
+---
+
+## 2026-11-20 -- Kártya 9fb61222: freellm-first hívások 'unknown' agent/card attribúciója
+
+**Kontextus:** 685f25cb (2026-11-20) mérve megadta, hogy a `GET /api/freellm/calls` legfrissebb
+sorai agent='unknown', card=null -- a FreeLLM-FIRST útvonal (`try_freellm_first_for_leaf`,
+kártya 6d8ef952) soha nem állította be a `FREELLM_CALLER`/`FREELLM_CARD_ID` env-eket a
+freellm-call.sh hívásakor, ellentétben a testvér `try_freellm_for_leaf`-fel, amit 685f25cb már
+megjavított.
+
+**Döntés:** ugyanaz a drótozás mint 685f25cb-ben -- `try_freellm_first_for_leaf` kapott egy
+`assignee` paramétert, `try_leaf` a saját `leaf_assignee`-jét adja át rajta, és a
+`freellm-call.sh` hívás `FREELLM_CALLER="${assignee:-unknown}" FREELLM_CARD_ID="$post_id"`-vel
+megy, pontosan ugyanaz a "unknown" alapérték hiányzó assignee-nél, mint a testvér függvénynél.
+
+**Teljes hívó-leltár** (grep: freellm-call.sh / FREELLM_ / :3001, nem-teszt/nem-selftest
+fájlokon): kizárólag `store/offload-dispatch.sh` két függvénye hívja a freellm-call.sh-t
+(`try_freellm_for_leaf` -- már javítva 685f25cb-ben; `try_freellm_first_for_leaf` -- ez a
+kártya javítja). A `src/web/freellmapi-client.ts` admin-session kliens kulcskezelésre (soha
+nem ír llm_ledger sort), a `gemini-offload-call.sh`/`local-llm.sh` más provider (gemini/local),
+a kártya saját illusztratív 'route-classify'/'kg-capture' példái pedig grep-pel igazoltan sosem
+hívják a freellm-call.sh-t -- mindhárom kívül esik ezen a kártyán.
+
+**Teszt:** `offload-dispatch.selftest.sh` 312/312 zöld (310 + 2 új attribúciós eset). Mutáció:
+a 2 új eset pirosra vált, ha csak a fix sort állítom vissza (a selftest-eket megtartva) --
+`got: CALLER= CARD_ID=` -- majd zöld a fix visszaállításával.
+
+**Nincs benne:** az 1 órás élő-forgalom mérés (a kártya saját elfogadási kritériuma, <10%
+unknown-arány) -- ez landolás után, külön kommentként követi.
+
+**Ki döntött:** MikroB (kártya 9fb61222, 685f25cb mérésének folytatása). backend2 végezte a
+javítást. Gate: QA (a kártya saját kijelölése).
+
+2026-11-15, kártya f3343af0 (QA FAIL a koraibbi fixen): a relogin pending-markert elobb csak egy
+friss epoch jelezte, env-fellulirhato uton -- bármely, store/-ba iro folyamat elplanthatta es a
+timestampet újraírva vegtelenul elfojthatta volna a weekly-usage olvasast. Javitas: a marker utja
+eleses a termelesben (env felulirás csak WU_RELOGIN_TEST_MODE=1 alatt), a marker 0600 modban,
+tulajdonosa az aktualis user, es egy ELO folyamat pid-jet hordozza (egy kulon --hold-marker
+gyermek, sajat sessionnel, ami a marker tényleges irasat vegzi es a TTL lejartig tartja), amelynek
+/proc cmdline-ja a weekly-usage-relogin.sh nevet viseli -- az olvaso MINDEGYIK feltetelt ellenorzi,
+nem csak a timestampet. Gate: QA, Cybersec. **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 (CYBERSEC GO 31727, két feltétel lezárása)
+
+**Döntés:** Cybersec GO-t adott a pending-marker keményítésre (bbc06abf7), két feltétellel:
+MEDIUM-2 (a `start`/`--hold-marker` FIFO-kézfogás határolatlan `read` -- ha a gyermek a jelzés
+előtt elhal, `start` örökre blokkol) és MEDIUM-1 (egy same-user álprocessz, pl.
+`exec -a weekly-usage-relogin.sh sleep 600` vagy egy közvetlen `--hold-marker &` hívás, a
+markert örökké frissen tarthatja, és örökké elfojthatja az olvasást).
+
+Javítás: (1) a FIFO-kézfogás `timeout`-tal határolt -- mért tény: egy puszta `read -t N < fifo`
+NEM elég, mert a FIFO `open()`-je magában blokkol íróra várva, MÉG a `read` saját időzítője
+előtt; a `timeout` a teljes nyitás+olvasás műveletet egy megölhető gyermekfolyamatba csomagolja.
+Határidő után `start` FAIL-lel kilép, NEM érinti a panelt (fail-closed). (2) a `--hold-marker`
+megtagadja a futást, ha nem kapja meg a `start` saját kézfogó FIFO-ját (env-változó + tényleges
+named pipe) -- ez a közvetlen, egysoros hívást zárja le, NEM a same-user álprocesszt (azt egy
+script-szintű ellenőrzés nem képes megkülönböztetni a valós tartótól). (3) az olvasó oldalon egy
+SKIP-sorozat-fájl követi, MIÓTA fogadja el folyamatosan a markert -- 2x TTL (alapesetben 1 óra)
+folyamatos elfogadás után leállítja a SKIP-elést és átesik a normál (riasztó) útra, mert egy
+valós relogin sosem tart ennyit (a tartó saját magát lejáratja 1x TTL-nél).
+
+Mellékes lelet a javítás közben: a `--hold-marker` jelzése `printf x` (newline nélkül) volt --
+bash `read` nem-nulla kóddal tér vissza, ha EOF-ot ér delimiter előtt, MÉG ha az adat megérkezett
+is. Ez a kézfogás saját ellenőrzését hamis negatívra futtatta volna; javítva `printf 'x\n'`-re,
+mérve közvetlenül mindkét alakon.
+
+Teszt: src/__tests__/weekly-usage-relogin-pending-marker.test.ts 22/22 PASS (6 új eset); a teljes
+weekly-usage sibling-sweep (7 fájl) 394/394 PASS; tsc --noEmit tiszta. Mindhárom fix mutánsonként
+bizonyítva pontosan a saját tesztjét futtatja pirosra (a határolatlan read visszaállítása és a
+hold-marker kapu eltávolítása FÜGGETLENÜL lefagyasztja a tesztet, ami maga is bizonyíték -- külső
+timeout-tal elkapva; az escalation eltávolítása pontosan 1 tesztet buktat).
+
+Gate: QA, Cybersec (re-gate a GO feltételeire). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 follow-up: FIFO leak fix (MikroB lelet, msg 19070)
+
+Mikrob mérte: a `weekly-usage-relogin.sh` `start` ága a kézfogó FIFO-t egy puszta `mktemp -u`
+útvonalon hozta létre, közvetlenül a `/tmp` gyökerében (`/tmp/tmp.XXXXXXXXXX`). Ha a `start`
+mkfifo és a régi `rm -f` között megszakadt (teszt-timeout, fleet-test kill), a FIFO ott maradt --
+mérve: két ilyen 14:12-kor és 14:18-kor. A `store/kg-search.selftest.sh` saját
+`grep -slF ... /tmp/tmp.*` mintája ráesett a leakelt FIFO-ra, és örökre blokkolt az `open()`-en
+(nincs író), ami a `store-selftests-all-run` futást időzítette ki, és visszadobott 3 landolást
+(3bad1678 kétszer, ec34c025). MikroB kézzel feloldotta és eltávolította a leakelt FIFO-kat.
+
+Javítás: a FIFO a saját, privát `mktemp -d` könyvtárán BELÜL él (`"$dir/fifo"`, nem bare `/tmp`
+útvonal), `trap ... EXIT INT TERM`-mel takarítva. Mérve direktben (nem csak logika alapján):
+egy puszta SIGTERM a `start` folyamatra NEM szakítja meg azt, amíg a `timeout`/`read` blokkol --
+a GNU `timeout` a felügyelt gyermekét SAJÁT process-csoportba teszi, és a bash is elhalasztja a
+trap futtatását, amíg a foreground parancsra vár. SIGKILL-t pedig semmi nem fog el, se a régi,
+se az új kód -- a valódi strukturális védelem nem az, hogy a takarítás MINDIG lefut, hanem hogy
+AMI megmarad, az egy könyvtár, nem egy FIFO a `/tmp` gyökerében: egy `grep /tmp/tmp.*`-szerű
+pásztázás egy könyvtáron azonnal hibát ad ("Is a directory"), nem blokkol -- egy bare FIFO-n
+viszont örökre blokkolna. Ez pontosan a mért tünetet zárja le, a kill pontos időzítésétől
+függetlenül.
+
+Teszt (src/__tests__/weekly-usage-relogin-pending-marker.test.ts, új eset): `start`-ot SIGKILL-
+li a kézfogás közben (saját, izolált `TMPDIR` alatt, hogy ne keveredjen más ügynök egyidejű
+folyamataival), és ellenőrzi, hogy a megmaradt bejegyzés SOHA nem FIFO, ÉS hogy egy
+`timeout`-tal határolt, a kg-search mintáját pontosan követő `grep` scan nem akad el (rc != 124).
+Mutáns-próba: a régi `mktemp -u` + bare `rm -f` alakra visszaállítva a teszt pirosra vált
+(`expected true to be false` a FIFO-ellenőrzésen) -- majd a javítással visszazöldül.
+
+Teszt: a célzott fájl 23/23 PASS; a 4 testvér-fájl (code-intake, redaction, panel-size,
+cron-shell-pane-writers) 51/51 PASS; `bash -n` a módosított scripten tiszta; tsc --noEmit tiszta.
+
+Gate: QA, Cybersec (delta re-gate a korábbi GO-k felett). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 delta-gate (CYBERSEC GO on 7df1b166, 1 feltetel: MEDIUM-3 skip-streak teszt-szivargas)
+
+CYBERSEC GO a d6f0c0a83 FIFO-javitasra, egy feltetellel landolas elott: a
+weekly-usage-relogin-pending-marker.test.ts `runReader` segedje beallitotta a
+`WU_RELOGIN_TEST_MODE=1`-et, de a `WU_RELOGIN_SKIP_STREAK_FILE` utvonalat NEM -- a
+`weekly-usage-panel-read.sh` SKIP-STREAK-escalacios logikaja (Cybersec MEDIUM-1, card f3343af0)
+emiatt minden teszt-futasnal a VALODI eles `store/.weekly-usage-relogin-skip-streak` fajlt irta/
+olvasta (a `STORE` valtozo a scriptben FIX `/home/neon/marveen/store`, nem a worktree sajat utja).
+Egy itt maradt elavult streak-fajl azt eredmenyezhette volna, hogy egy VALODI relogin elso tickje
+azonnal escalal, es a login-dialogusba gepel -- pontosan az a hiba, amit a MEDIUM-1 fix el akart
+keruelni.
+
+Javitas ketfele szinten:
+1. A teszt-segedben (`runReader`): minden hivas alapertelmezetten a saját mktemp-dir-jen
+   beluli `skip-streak` utvonalat kapja (`WU_RELOGIN_SKIP_STREAK_FILE`), amit egy explicit
+   `env` felulirhat -- ugyanaz a minta, mint a `WU_RELOGIN_PENDING_MARKER`-nel.
+2. A scriptben (melyseg-vedelem): `WU_RELOGIN_TEST_MODE=1` alatt a `WU_RELOGIN_SKIP_STREAK_FILE`
+   mostantol KOTELEZO (`${VAR:?hibaszoveg}`) -- ha egy jovobeli teszt ujra elfelejtene beallitani,
+   a script AZONNAL, hangosan megall, nem csendben az eles fajlra esik vissza. Merve: a valtozo
+   nelkuli hivas `exit 1`-et ad, "WU_RELOGIN_SKIP_STREAK_FILE must be set under
+   WU_RELOGIN_TEST_MODE=1" uzenettel, MIELOTT bármi irna/olvasna.
+
+Masik feltetel (hang elleni korlat): a `runReader`/`runRelogin` ket `execFileSync` hivasa nem
+kapott kulso idokorlatot -- egy jovobeli regresszio (pl. a FIFO-kezfogas megakad) a tesztet
+orokre fuggesztette volna, nem egyszeruen pirosra valtotta. Mindkettő `timeout: 15_000` lett
+(a leghosszabb belso `WU_RELOGIN_FIFO_TIMEOUT_SEC` eset 10 masodperces, a vitest globalis
+`testTimeout` 60 masodperces -- a 15s a kettő kozott, feleslegesen szoros hatarido nelkul).
+
+Teszt: a celzott fajl 23/23 PASS (az uj default streak-utvonallal egyutt). Testver-fajlok
+(code-intake, redaction, panel-size, panel-revive-states, cron-shell-pane-writers) 78/78 PASS
+egyutt futtatva. Kezi mutacio-proba: a script hivasa `WU_RELOGIN_TEST_MODE=1`-gyel es
+`WU_RELOGIN_SKIP_STREAK_FILE` NELKUL azonnal `exit 1`-et ad a hianyzo-vedelem uzenettel --
+a regi kod csendben az eles fajlra esett volna. `bash -n` a modositott scripten tiszta,
+`tsc --noEmit` tiszta.
+
+Gate: QA, Cybersec (delta re-gate a 7df1b166 GO felett). **Ki döntött:** DevO (fullstack).
+
+## 2026-11-15 -- card f3343af0 delta-gate (Cybersec MEDIUM-4: a mktemp-d trap nem allitja meg a TERM/INT-et)
+
+Cybersec GO (8405ebed4, komment 31834) egy felteteles NO-GO-t rejtett: a d6f0c0a83-ban bevezetett
+`trap 'rm -rf "$_wu_fifo_dir" ...' EXIT INT TERM` regressziot hozott. A trap CSAK takaritott, nem
+allt ki -- INT/TERM lefuttatta a trap-testet, majd a script EGYSZERUEN FOLYTATTA a tobbi sort
+(ensure_pane es tovabb). Egy Ctrl-C vagy egy felugyelo `timeout`-ja `start`-on ezert tovabb nem
+allitotta meg a folyamatot, az pedig tovabbment a login-dialogus fele -- pontosan az a
+belegepeles-osztaly, amit ez a kartya meg akar akadalyozni.
+
+Ket kulon ok, ket kulon javitas:
+1. **A trap maga nem allt ki.** Minden jel-kezelo most mar explicit `exit 143`-at (TERM) vagy
+   `exit 130`-at (INT) is futtat a sajat takaritasa UTAN, es megoli a leszakitott
+   `--hold-marker` tartot is -- de az EXIT trap ezt NEM teheti meg (a tarto a SIKERES futas
+   utan is tovabb kell eljen, 1 sikeres `start` 15-25 masodpercig fut, a tarto viszont percekig).
+2. **Bash elhalasztja a trapot, amig az ELOTERI gyermek-parancs vissza nem ter.** A kezfogas-varas
+   (`timeout ... read`) korabban kozvetlenul az elotetben futott -- egy TERM a varas kozben csak
+   akkor futott le, amikor a `timeout` SAJAT idokorlata (akar 10-30mp) lejart, nem azonnal. Mert
+   egy HATTERBE tett job-on vart `wait` MASKENT viselkedik: a jel erkezesekor azonnal visszater
+   (kulon, izolalt bash-teszttel megerositve: egy elotetben futo `sleep 10`-en a trap 10mp-et
+   var, egy hatterbe tett + `wait`-elt ugyanazon `sleep 10`-en a trap ~2mp-nel (a tenyleges
+   jelkuldes idopontjaban) lefut). Javitas: a `timeout` hatterbe kerul, majd `wait`-elunk ra.
+
+Ket uj teszt (`weekly-usage-relogin-pending-marker.test.ts`, MEDIUM-4 describe blokk):
+- TERM egy soha nem jelzo tarto mellett: `start` 143-mal, azonnal (nem varja ki a 30mp-es FIFO
+  idokorlatot), nulla tmux-hivassal, a fifo-dir eltavolitva.
+- TERM EGY KESLEKEDO (de vegul sikeresen jelzo) tarto mellett -- ez a PONTOS cybersec-regressziot
+  reprodukalja: a tarto 4mp mulva tenylegesen elindulna es jelezne, a TERM 1mp-nel erkezik, MEGIS
+  `start` azonnal 143-mal kilep, nem varja meg a kesei sikeres kezfogast es nem folytatja
+  `ensure_pane`-be.
+
+Harom cybersec LOW-1 mutans lezarva, kezzel mutalva es visszaallitva mindharomnal:
+- a `:?` szigoru ellenorzes visszaallitva a regi `:-` eleselegi alakra -> piros (a mar meglevo
+  MEDIUM-3 teszt most mar NEM NEVESITETT szoveget kap stderr-en, hanem a normal-mod hibajat --
+  ez buktatja az allitast).
+- a jel-kezelok `exit`-je torolve -> piros (mindket uj MEDIUM-4 teszt).
+- a jel-kezelok TELJES torlese -> piros (ugyanaz a ketto, `code=-1` a vart 143 helyett).
+- a sikeres-kezfogas utani kulonallo `rm -rf "$_wu_fifo_dir"` sor torolve -> piros (uj,
+  "sikeres kezfogas rogton eltavolitja a fifo-dirt" teszt).
+
+Egy FONTOS buktato a teszt megirasa kozben: a hamis holder-shim sajat `sleep 4` hivasa a
+teszt-infra SAJAT, no-op `sleep` fake-jet talalta meg a PATH-on (ugyanaz a fake, amivel a
+relogin-script SAJAT belso sleep-jeit gyorsitjuk fel mas tesztekben) -- a holder nem is
+keslekedett, azonnal elindult, a teszt pedig a vart 20mp-es idotullepesig futott. Javitas:
+`/bin/sleep 4` abszolut uttal a shimben.
+
+Teszt: a celzott fajl 27/27 PASS (23 regi + 4 uj). Testver-fajlok (code-intake, redaction,
+panel-size, panel-revive-states, cron-shell-pane-writers) 82/82 PASS egyutt futtatva. `bash -n`
+mindket modositott scripten tiszta, `tsc --noEmit` tiszta.
+
+Gate: QA, Cybersec (delta re-gate a 8405ebed4 GO felett). **Ki döntött:** DevO (fullstack).
+## 2026-11-20 -- LLM pages reorganized: Providers page + Live-load page (kártya f1e33cfb, delta)
+
+**Döntés:** a fázis (36dc9240, MikroB target-struktúra 34489) 4 oldalt ír elő a 6 régi helyett. Ebben a körben a két NEM R1-függő elem készült el: (1) "Szolgáltatók" oldal -- a Lokális modell, FreeLLM és Gemini oldalak egy tabos oldalba vonva (régi pageId-k redirectelnek, a "team"->"agents" minta szerint); a Lokális modell tabon belül Állapot/Katalógus al-tab; a nehézségi küszöb dropdown törölve (kód-ellenőrzéssel megerősítve: sosem hívott --difficulty paraméterrel); az agresszivitás csúszka SZERKESZTHETŐ marad, mert a valós helyi/online routing küszöböt állítja (nem csak felirat), MikroB jóváhagyásával (msg 22235) átírva igaz leírásra (3c075d74 óta minden feladat kap helyi draftot, a verdikt csak az online ellenőrzés mélységét dönti el). (2) "Élő terhelés" oldal -- a GPU-kihasználtsági spektrum és a modell-elosztási úszósáv áthelyezve az Áttekintés oldalról az átnevezett llmMonitorPage-re (pageId megtartva), a vertikális "ALATT" elrendezés megtartva (Peti döntése, nem változott). Mindkét widget poll/rAF ciklusa most a `switchPage('llmMonitor')`-hoz kötött, nem az Áttekintéshez.
+
+**Blokkolva:** a fennmaradó 3 elem (LLM route landing oldal, Call log+cost összevonás, Overview "LLM today" csempe) az R1 (954a6a93, `/api/llm/chain`) backend-végpontjától függ, az még `planned`, nincs elkezdve.
+
+**Ellenőrzés:** scope-olt tesztek 10/10 + 5/5 fájl zöld; teljes `fleet-test.sh` kétszer futtatva (69da00d5a és 18145eba9 commitokon), mindkétszer 1396-1397/1398 fájl zöld, 1 nem-kapcsolódó flaky selftest (`mopsion-suite-run.selftest.sh`, terhelés alatti timing-hiba, nem ismétlődött a második futáson). `lint-ratchet.sh` alapvonal tart (420 lelet).
+
+**Ki döntött:** MikroB terve (36dc9240 komment 34489) + Peti jóváhagyása (14302/14306/14308). Fron Ted (fron-ted) a végrehajtó; az agresszivitás-csúszka és a nehézségi-dropdown kódbeli ellenőrzését saját maga végezte, a döntést MikroB erősítette meg (22235).
+
+**Hivatkozás:** kártya f1e33cfb (fázis 36dc9240), commit 18145eba9.
+
+## 2026-11-20 -- LLM today Overview tile added back per MikroB (kártya f1e33cfb, delta)
+
+**Döntés:** az előző delta (item 2) teljesen eltávolította a GPU-spektrum canvas-t és a modell-elosztási úszósávot az Áttekintésről, csak az Élő terhelés oldalon hagyva. MikroB (üzenet 22311, a fázis 36dc9240 komment 34489 egyeztetett struktúráját idézve: "Overview keeps ONE slim 'LLM today' tile") ezt pontosította: a két teljes widget NEM duplikálódik (marad az Élő terhelés oldalon egyedül), de az Áttekintésen egy ÚJ, karcsú csempe ("LLM ma") jelenik meg -- GPU foglalt/üresjárat + VRAM egy sorban, a mai napi helyi hívásszám, és egy Részletek-link az Élő terhelés oldalra, a Gemini/Cost csempék mintáját követve. A csempe szándékosan úgy épült, hogy R1 (954a6a93, `/api/llm/chain`) landolása után a helyi-csak hívásszám helyén a lánc valós FreeLLM/local/online számai jelenjenek meg, ugyanazon kártya/id-kon.
+
+**Adatforrás:** `GET /api/local-llm/status` (gpu.util_pct/mem_used_mb/mem_total_mb) és `GET /api/local-llm/usage` (today) -- mindkettő már létező végpont, nem igényelt új backend-munkát ebben a körben.
+
+**Ki döntött:** MikroB (üzenet 22311), Peti eredeti jóváhagyása (14302/14306/14308) a fázis struktúrájára. Fron Ted (fron-ted) a végrehajtó.
+
+**Hivatkozás:** kártya f1e33cfb (fázis 36dc9240), commit 7eb8ab91d.
+## 2026-11-18 -- fb3fff4d: a `tmux new-session -e BG_PROMPT=...` argv-láthatóság elfogadott
+## kockázat (decisions-guard WARN 33180, cybersec2 komment 33183 F1)
+
+**A döntés.** A 68eaeb93 fixje (`368a83990`, kártya saját REVIEW 33179) a prompt szövegét
+`tmux new-session -e BG_PROMPT=<prompt>` argv-elemként adja át, hogy egy már futó tmux-szerveren
+is elérje a pane-t (korábban csak a kliens `env` opciója vitte, ami csak hideg szerver-indításnál
+hat). cybersec2 N2-je (33183) jelezte: ez a prompt szövegét a tmux-kliens hívás `/proc/<pid>/cmdline`
+-jében átmenetileg LÁTHATÓVÁ teszi (korábban csak a kliens saját, tulajdonos-only `/proc/<pid>/environ`
+-jében volt). **Elfogadott, nem javított kockázat:** a pane ezután lefuttatja a
+`claude -p "$BG_PROMPT"` hívást is, ami a prompt szövegét UGYANÚGY argv-be teszi a `claude`
+processz indulásakor -- ez tehát egy már meglévő, elfogadott exponálási alakzat MÁSODIK,
+átmeneti előfordulása, nem egy ÚJ kategória. A fájl-alapú `launchSecretRef`/`LAUNCH_SECRETS_DIR`
+mintát (agent-process.ts) a 68eaeb93 REVIEW explicit megfontolta és elvetette (plusz fájl-I/O +
+árva-takarítási terhet adna egy olyan funkcióhoz, ahol a prompt amúgy sem titok -- ágens-feladat
+szöveg, nem hitelesítő adat).
+
+**Hatókör.** Ez a döntés KIZÁRÓLAG a `spawnBackgroundTask` BG_PROMPT útját érinti (háttér-ágens
+feladat-szöveg, host-lokális, root-only `/proc` olvasás szükséges a kihasználásához). NEM vonatkozik
+csatorna-tokenre/titokra: a `CHANNEL_ENV_VARS_TO_STRIP` lista (TELEGRAM_BOT_TOKEN stb.) explicit
+`unset`-elve van a pane parancs ELSŐ lépéseként (kártya fb3fff4d 2. pont, lásd a kártya REVIEW-ját),
+sosem kerül argv-be.
+
+**Ki döntött:** backend (saját kártya, a WARN 33180-ra válaszul). Gate-SHA: fbebfbef1
+(68eaeb93 saját fixje 368a83990-nél már gatelve: CYBERSEC GO 33188, QA PASS 33186, QA2 PASS 33185).
+Gate: QA + Cybersec (a kártya saját kijelölése).
+
+**Hivatkozás:** kártya fb3fff4d, kártya 68eaeb93, decisions-guard WARN 33180, cybersec2 komment
+33183 (F1), `src/web/routes/background-tasks.ts`.
+
+## 2026-11-22 -- restart-recovery-note.sh: real backlog shape + send-failure safety (kártya 7c1e6a65, delta)
+
+**Döntés:** CYBERSEC/CYBERSEC2 NO-GO (komment 37713/37714, sha 83c2571fe) talált egy MEDIUM
+hibát: `store/restart-recovery-note.sh` a `GET /api/messages/backlog` sorokat `count`/`oldest_age_s`
+kulcsokkal olvasta, miközben a valódi végpont (`src/db.ts getPendingBacklogByAgent`) `pending`/
+`oldestAgeSeconds` alakot ad -- a hátralévő-üzenet-szám ezért minden élő agensnél "none" lett,
+pont azt az információt hiányolva, amiért a kártya készült (a restart után nem olvasott
+üzenetek jelzése). A selftest saját hamis tábláz-fixturéja a script ugyanazt a hibás alakot
+találta ki, ezért vak volt rá. Javítás: a valódi kulcsok elsők, a régiek csak visszaesésként
+maradtak; a selftest fixturéja a valódi alakra állt.
+
+Ugyanebben a körben (LOW-1, LOW-4, ugyanaz a gate-lelet): `--apply` most csak akkor írja ki a
+boot-id állapotfájlt, ha MINDEN küldés 2xx-et kapott (korábban egy sikertelen küldés is
+"elintézettnek" jelölte a bootot, blokkolva az ismételt próbát); a teljes `/api/kanban` JSON most
+egy ideiglenes fájlon megy a python3-nak argv helyett (korábban `/proc/<pid>/cmdline`-on látható
+volt, és egy argv-méretkorlát kb. 57 egyidejű kártyánál E2BIG-et okozott volna).
+
+**Ellenőrzés:** TDD -- az új selftest-esetek előbb íródtak, majd bizonyítottan PIROSAK voltak a
+javítás előtti kódon (a sha 83c2571fe scriptjét egy ideiglenes mappában a saját
+land-run-stale-check.sh testvérével együtt futtatva, a MEDIUM-1 és LOW-1 eseteket pontosan
+elbuktatva), ZÖLDEK a javítás után. `bash store/restart-recovery-note.selftest.sh`: 15/15 PASS
+(a korábbi 8 eset + 7 új: oldest-first két-kártyás eset, a valódi backlog-szám a küldött
+tartalomban, a `[RESTART-RECOVERY]` prefix, az argumentum nélküli és a `--dry-run` hívás semmit
+nem küld, és a LOW-1 hiba-szimuláció + pozitív kontroll). Targeted `fleet-test.sh --ref` a
+delta-sha-n (lásd a kártya REVIEW-ját a pontos sha-ért).
+
+**Ki döntött:** CYBERSEC/CYBERSEC2 lelete (37713/37714), MikroB Fix-Direction-je (23540). A
+javítás végrehajtója DevO (fullstack).
+
+**Hivatkozás:** kártya 7c1e6a65 (fázis 5978afaa), delta-sha a REVIEW-ban.
 ## 2026-11-18 -- 51c68eeb: Koteg 26 upstream szinkron (66d38ee45..a4545a8a0, 25 commit)
 
 A szülő-fázis e5c46e87 (Szotasz/marveen UPSTREAM-SYNC) következő kötege Köteg 25 (5dd0842a) után.

@@ -31,8 +31,10 @@ export interface GeminiResult {
   ok: boolean
   /** Model text on success. */
   text?: string
-  /** Machine-readable failure class -- what the caller branches on. */
-  reason?: 'no_key' | 'auth' | 'quota' | 'model_missing' | 'network' | 'bad_response' | 'http' | 'blocked'
+  /** Machine-readable failure class -- what the caller branches on.
+   *  'gpu_busy' (card 0291283d): the local-LLM GPU flock is held by another call -- the caller
+   *  should wait/skip, never treat this as a reason to fall back to a different provider. */
+  reason?: 'no_key' | 'auth' | 'quota' | 'model_missing' | 'network' | 'bad_response' | 'http' | 'blocked' | 'gpu_busy'
   /** Human-readable detail, ALWAYS key-redacted. */
   detail?: string
   httpStatus?: number

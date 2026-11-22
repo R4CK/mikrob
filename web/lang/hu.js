@@ -262,7 +262,7 @@ window._i18n.hu = {
 
   'nav.updates':      'Frissítések',
   'nav.costs':        'Költségek',
-  'nav.llmMonitor':   'LLM monitor',
+  'nav.llmMonitor':   'Élő terhelés',
 
   // --- Overview ---
   'overview.card.team_meta':     'élő állapot',
@@ -970,6 +970,16 @@ window._i18n.hu = {
   'skills.health.nodesc':        'Hiányzó leírás',
   'skills.health.empty':         'Üres',
 
+  // --- Szolgáltatók oldal (kártya f1e33cfb): Lokális modell / FreeLLM / Gemini összevonva, tabos ---
+  'providers.page_title':        'Szolgáltatók',
+  'providers.page_subtitle':     'Lokális modell, FreeAPI LLM és Gemini -- kapcsoló, állapot, hívásnapló',
+  'providers.tab.local':         'Lokális modell',
+  'providers.tab.freellm':       'FreeLLM',
+  'providers.tab.gemini':        'Gemini',
+  'nav.providers':                'Szolgáltatók',
+  'localLlm.subtab.status':      'Állapot',
+  'localLlm.subtab.catalog':     'Katalógus',
+
   // --- Local LLM (Ollama offload) ---
   'localLlm.page_title':         'Lokális LLM',
   'localLlm.page_subtitle':      'A helyi offload modell (Ollama a WSL GPU-n) vezérlése',
@@ -984,7 +994,7 @@ window._i18n.hu = {
   'localLlm.firstDraft.save_error': 'A kapcsoló mentése nem sikerült, próbáld újra.',
   'localLlm.firstDraft.load_error': 'A kapcsoló állapota nem tölthető be.',
   'localLlm.offload.title':      'Offload agresszivitás',
-  'localLlm.offload.desc':       'Mennyi mechanikus kód-részt adjunk ki a helyi GPU-nak. Magasabb érték = több offload, kevesebb Claude-token.',
+  'localLlm.offload.desc':       'Meddig terjedő nehézségű feladat maradhat LOCAL verdikttel. Minden feladat kap helyi draftot (2026-09-18 óta, kártya 3c075d74) -- ez csak azt dönti el, mekkora online felülvizsgálat kell hozzá: LOCAL = könnyebb ellenőrzés, ONLINE = kötelező teljes online átnézés. Magasabb érték = több feladat marad LOCAL.',
   'localLlm.offload.off':        'Ki (0)',
   'localLlm.offload.max':        'Max (100)',
   'localLlm.offload.optimal':    'Optimum',
@@ -2673,6 +2683,15 @@ window._i18n.hu = {
   'overview.card.team':          'Csapat',
   'overview.card.activity':      'Aktivitás',
   'overview.meta.live':          'élő állapot',
+  'overview.llmToday.title':        'LLM ma',
+  'overview.llmToday.detail_link':  'Részletek →',
+  'overview.llmToday.gpu_busy':     'Foglalt',
+  'overview.llmToday.gpu_idle':     'Üresjárat',
+  'overview.llmToday.gpu_line':     'GPU: {label} ({util}) · VRAM {vram}',
+  'overview.llmToday.no_gpu':       'Nincs GPU',
+  'overview.llmToday.calls_today':  '{n} helyi hívás ma',
+  'overview.llmToday.error':        'Nem sikerült betölteni.',
+
   'overview.spectrum.title':      'Helyi LLM kihasználtság',
   'overview.spectrum.collecting': 'Adatgyűjtés folyamatban…',
   'overview.spectrum.no_gpu':     'Nincs GPU-adat.',
@@ -2737,8 +2756,8 @@ window._i18n.hu = {
   'geminiCalls.rating.result.eldobva':   'Eldobva',
   'geminiCalls.rating.result.unknown':   'Ismeretlen',
   // LLM monitor page (card 87be1810)
-  'llmMon.page_title':          'LLM monitor',
-  'llmMon.page_subtitle':       'Feladat-idővonal ügynökönként, terhelés és modellhasználat a választott időablakban',
+  'llmMon.page_title':          'Élő terhelés',
+  'llmMon.page_subtitle':       'GPU-kihasználtság, modell-elosztás, feladat-idővonal ügynökönként és modellhasználat a választott időablakban',
   'llmMon.window.label':        'Időablak',
   'llmMon.window.1h':           'Utolsó 1 óra',
   'llmMon.window.6h':           'Utolsó 6 óra',

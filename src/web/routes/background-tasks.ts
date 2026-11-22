@@ -56,6 +56,24 @@ function writePromptFile(prompt: string): string {
   return file
 }
 
+// CHANBGUNSETEFFECTIVE1019 (card fb3fff4d, CYBERSEC GO on 68eaeb93 @368a83990, point 2): deleting
+// a key from the `env` option (bgTaskEnv above) has the SAME cold-server-only limitation as
+// BG_PROMPT did (card 68eaeb93) -- on an already-running server, the pane's shell starts from the
+// server's persistent GLOBAL environment, not this client call's `env`. A channel var that ever
+// reached the server's global env via a stray `set-environment -g` (or an earlier session that
+// inherited it before a5ef4771 landed) would stay there across every later `new-session` call,
+// `env` option notwithstanding. An explicit `unset` as the FIRST thing the pane's own shell runs
+// closes that gap regardless of server age, the same way `-e BG_PROMPT=...` did for BG_PROMPT.
+const UNSET_CHANNEL_VARS_CMD = `unset ${CHANNEL_ENV_VARS_TO_STRIP.join(' ')}`
+
+// CHANBGPROMPTCAP1020 (card fb3fff4d, CYBERSEC GO on 68eaeb93 @368a83990, point 1): a prompt of
+// 16 KiB (16384 bytes) or more makes `tmux new-session -e BG_PROMPT=...` fail with tmux's own
+// "command too long" error -- fail-closed already (spawnBackgroundTask's catch marks the task
+// 'failed'), but opaque: the caller gets a generic "Nem sikerult elinditani" with no indication
+// WHY. Capping explicitly, before any row is created, replaces that with a named, actionable
+// error at the exact measured boundary.
+const MAX_PROMPT_BYTES = 16 * 1024
+
 function bgSessionName(id: string): string {
   return `bg-${id}`
 }
@@ -92,6 +110,11 @@ export async function spawnBackgroundTask(agentId: string, prompt: string): Prom
   // checkAndFinalize ever clears (only web.ts's own startup sweep does). Three such failures
   // exhausted the agent's MAX_CONCURRENT slots with zero tasks actually running, until a dashboard
   // restart. Resolving both binaries first means a PATH gap throws before anything is recorded.
+  const promptBytes = Buffer.byteLength(prompt, 'utf-8')
+  if (promptBytes >= MAX_PROMPT_BYTES) {
+    return { error: `A prompt túl nagy (${promptBytes} bájt, limit ${MAX_PROMPT_BYTES} bájt) a háttérfeladat elindításához.` }
+  }
+
   const resolvedTmuxBin = tmuxBin()
   const resolvedClaudeBin = claudeBin()
 
@@ -104,6 +127,9 @@ export async function spawnBackgroundTask(agentId: string, prompt: string): Prom
   }
 
   const shellCmd = [
+    // CHANBGUNSETEFFECTIVE1019: see the const's own comment above -- must run before anything
+    // else so a leaked channel var never reaches the claude invocation below.
+    UNSET_CHANNEL_VARS_CMD,
     // FLEETVENV923 (Köteg 12, upstream 0bea3cd7): the fleet venv's bin/ first, as in every agent
     // launch -- same mechanism already adopted in scripts/watchdog.sh and agent-process.ts.
     `export PATH="${fleetVenvPathPrefix()}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`,

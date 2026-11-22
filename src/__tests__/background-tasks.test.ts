@@ -469,3 +469,113 @@ describe('spawnBackgroundTask: prompt reaches the pane via stdin, never argv or 
     expect(envSeen).not.toMatch(/^BG_PROMPT=/m)
   }, 10_000)
 })
+
+// Card fb3fff4d point 1 (CYBERSEC GO on 68eaeb93 @368a83990): a prompt of 16 KiB or more makes
+// `tmux new-session -e BG_PROMPT=...` fail with tmux's own opaque "command too long" error. The
+// explicit cap in spawnBackgroundTask must catch this BEFORE any row is created or any tmux call
+// is attempted, with a named, readable error.
+describe('spawnBackgroundTask: a 16 KiB+ prompt gets a named, readable error (card fb3fff4d)', () => {
+  beforeEach(async () => {
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+  })
+
+  it('rejects a prompt at the 16 KiB boundary before touching the DB or tmux', async () => {
+    claudeResolveState.shouldThrow = true // irrelevant: the cap must fire before claudeBin() is even called
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const { getRunningBackgroundTasks } = await import('../db.js')
+
+    const hugePrompt = 'x'.repeat(16 * 1024)
+    const result = await spawnBackgroundTask('marveen', hugePrompt)
+
+    expect(result).toHaveProperty('error')
+    expect((result as { error: string }).error).toMatch(/16384|túl nagy/)
+    expect(getRunningBackgroundTasks()).toEqual([])
+  })
+
+  it('CONTROL: a prompt one byte under the boundary is NOT rejected by the cap', async () => {
+    claudeResolveState.shouldThrow = false
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const { getBackgroundTasks } = await import('../db.js')
+
+    const almostHugePrompt = 'x'.repeat(16 * 1024 - 1)
+    spawnBackgroundTask('marveen', almostHugePrompt)
+
+    // includeFinished=true: the real tmux spawn may itself fail in this sandboxed environment,
+    // same convention as the ca593869 CONTROL test above -- only the insert is being pinned here.
+    expect(getBackgroundTasks('marveen', true).length).toBe(1)
+  })
+})
+
+// Card fb3fff4d point 2 (CYBERSEC GO on 68eaeb93 @368a83990): the a5ef4771 channel-var strip only
+// ever removed the key from the `env` OPTION passed to `tmux new-session` -- the exact same cold-
+// server-only limitation BG_PROMPT had (card 68eaeb93). This test proves the strip is now
+// effective even when a channel var is already sitting in the server's persistent GLOBAL
+// environment (the one scenario the a5ef4771 describe block above cannot reach, because it only
+// ever asserts on the `env` option this process's OWN execFileSync call received, not on what a
+// pane started against an already-polluted server actually sees). A PRIVATE tmux server (its own
+// TMUX_TMPDIR, never touched by any other test in this file) is started cold, a channel var is
+// planted on it via `set-environment -g` -- the real mechanism a stray pre-a5ef4771 session or a
+// manual `tmux set-environment -g` could have left behind -- and ONLY THEN does
+// spawnBackgroundTask run against that already-warm, already-polluted server.
+describe('spawnBackgroundTask: the channel-var strip must be effective on an already-running, globally-polluted tmux server (card fb3fff4d)', () => {
+  let privateTmuxTmpdir: string
+  let savedTmuxTmpdir: string | undefined
+  let sessionName: string | undefined
+  let outFile: string
+
+  beforeEach(async () => {
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+    claudeResolveState.shouldThrow = false
+
+    savedTmuxTmpdir = process.env.TMUX_TMPDIR
+    privateTmuxTmpdir = mkdtempSync(join(tmpdir(), 'bg-private-tmux-'))
+    process.env.TMUX_TMPDIR = privateTmuxTmpdir
+
+    // Cold-start the private server, then plant the channel var GLOBALLY on it -- this is the
+    // state a leaked var in the server's persistent global env looks like, independent of
+    // whatever `env` any later `new-session` client call passes.
+    execFileSync('tmux', ['start-server'])
+    execFileSync('tmux', ['set-environment', '-g', 'TELEGRAM_BOT_TOKEN', '123456:leaked-global-token'])
+
+    const dir = mkdtempSync(join(tmpdir(), 'bg-prompt-repro-'))
+    const scriptPath = join(dir, 'fake-claude.sh')
+    outFile = join(dir, 'out.txt')
+    writeFileSync(scriptPath, `#!/bin/bash\nprintf '%s' "\${TELEGRAM_BOT_TOKEN:-UNSET}" > ${JSON.stringify(outFile)}\n`, { mode: 0o700 })
+    claudeResolveState.binPath = scriptPath
+  })
+
+  afterEach(() => {
+    claudeResolveState.binPath = '/bin/true'
+    claudeResolveState.shouldThrow = true
+    if (sessionName) {
+      try { execFileSync('tmux', ['kill-session', '-t', sessionName]) } catch { /* already gone */ }
+    }
+    sessionName = undefined
+    try { execFileSync('tmux', ['kill-server']) } catch { /* already gone */ }
+    if (savedTmuxTmpdir === undefined) delete process.env.TMUX_TMPDIR
+    else process.env.TMUX_TMPDIR = savedTmuxTmpdir
+  })
+
+  it('the pane does not see a channel var already planted in the server\'s global environment', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+    const prompt = 'repro prompt for card fb3fff4d'
+
+    const task = await spawnBackgroundTask('marveen', prompt)
+    if ('error' in task) throw new Error(task.error)
+    sessionName = task.tmux_session ?? undefined
+
+    const deadline = Date.now() + 5000
+    let seen = ''
+    while (Date.now() < deadline) {
+      if (existsSync(outFile)) {
+        seen = readFileSync(outFile, 'utf-8')
+        if (seen) break
+      }
+      await new Promise((r) => setTimeout(r, 100))
+    }
+
+    expect(seen).toBe('UNSET')
+  }, 10_000)
+})

@@ -3100,6 +3100,12 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .tab-panel { padding: 0 24px 24px; }
 .tab-panel[hidden] { display: none; }
 
+/* Nested tabs (Providers page, card f1e33cfb: Local model tab's Állapot/Katalógus sub-tabs) --
+   the outer .tab-panel already carries the 24px gutter, so the nested nav/panels drop their own
+   horizontal padding to avoid stacking to 48px. */
+.tab-panel .tab-nav-sub { padding: 0; margin-bottom: 16px; }
+.tab-panel .tab-panel { padding: 0 0 24px; }
+
 /* === Agent Overview === */
 .agent-overview-grid {
   display: grid;
@@ -10297,15 +10303,12 @@ body {
   font-style: italic;
 }
 
-/* Rule 13: comfortable touch targets on the Local LLM controls */
-#localLlmPage .btn-compact,
-#localLlmPage .btn-primary,
-#localLlmPage .btn-secondary { min-height: 44px; }
-/* Rule 13 (RedHat D4, card fd5fcc2c, delta gate 25333): the freellm Retry button measured
-   68x38px at 375px width, under the 44px minimum -- same convention as #localLlmPage above. */
-#freellmPage .btn-compact,
-#freellmPage .btn-primary,
-#freellmPage .btn-secondary { min-height: 44px; }
+/* Rule 13: comfortable touch targets on the Providers page controls (card f1e33cfb merged
+   localLlmPage/freellmPage/geminiCallsPage into providersPage's tabs -- same selectors,
+   re-scoped to the tab-panel ids so the 44px guarantee still applies). */
+#providersPage .btn-compact,
+#providersPage .btn-primary,
+#providersPage .btn-secondary { min-height: 44px; }
 /* Rule 13, scoped to the new controls only (card 9bf6a1e0) -- the rest of the Föderáció page's
    compact buttons (reveal/rotate/edit/delete on peer cards) predate this and are unaffected, so
    they stay unaltered rather than folding an unrelated fleet-wide fix into this card's diff. */
@@ -10557,6 +10560,14 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* LLM today overview tile (card f1e33cfb), same mirrors-.ovw-cost-* convention as .ovw-gemini-*. */
+.ovw-llmtoday-card { margin-top: 14px; margin-bottom: 20px; }
+.ovw-llmtoday-body { display: flex; flex-direction: column; gap: 4px; }
+.ovw-llmtoday-gpu, .ovw-llmtoday-calls { font-size: 13px; margin: 0; }
+.ovw-llmtoday-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border, #333); }
+.ovw-llmtoday-detail-link { font-size: 12px; color: var(--accent, #4a9eff); text-decoration: none; white-space: nowrap; }
+.ovw-llmtoday-detail-link:hover { text-decoration: underline; }
 
 /* Overview tile (mirrors .ovw-cost-* layout, own namespace per card 01b51197's own precedent) */
 .ovw-gemini-card { margin-top: 14px; margin-bottom: 20px; }

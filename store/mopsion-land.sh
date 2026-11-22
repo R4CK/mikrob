@@ -741,9 +741,27 @@ STUBEOF
 
   rm -rf "$(dirname "$DGSW")"
 
-  t "the LIVE land-runs.jsonl journal (default path) is untouched by this --selftest run" \
-    "$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)" \
-    "$_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE"
+  # Card cf03d401 (MikroB, urgent): a straight before/after `wc -l` equality check races every
+  # OTHER concurrent land, which legitimately appends its own started/heartbeat/finished lines to
+  # this SAME live file via land-run-journal.sh while this selftest is still running (measured on
+  # marveen-land.sh's identical assert: fullstack f8fde8e9 v3 got 103777 want 103773, diff 4;
+  # fron-ted f1e33cfb retry3 got 104257 want 104253 -- both refused with nothing actually wrong).
+  # The guard's real intent (comment above) is narrower than "the file must not change": it only
+  # needs to catch THIS selftest run leaking its own fixture rows through the live path instead of
+  # $LAND_RUN_JOURNAL_FILE. So check content, not count -- scan only the lines appended since this
+  # run started, for this run's own markers (the literal "fixturecard" card id every fixture
+  # invocation above uses, and this run's own tmpdir path, which would appear if
+  # LAND_RUN_JOURNAL_FILE's value itself got logged verbatim by a leaking line). A concurrent
+  # sibling's real rows never contain either string.
+  _SELFTEST_DEFAULT_JOURNAL_LINES_AFTER="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_LEAKED_LINE=""
+  if [ "$_SELFTEST_DEFAULT_JOURNAL_LINES_AFTER" -gt "$_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE" ]; then
+    _SELFTEST_LEAKED_LINE="$(tail -n "+$((_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE + 1))" "$_SELFTEST_DEFAULT_JOURNAL" 2>/dev/null \
+      | grep -F -e "fixturecard" -e "$_SELFTEST_JOURNAL_TMPDIR" || true)"
+  fi
+  t "the LIVE land-runs.jsonl journal (default path) gained no fixture row from this --selftest run" \
+    "$([ -n "$_SELFTEST_LEAKED_LINE" ] && echo "LEAKED" || echo "clean")" \
+    "clean"
   rm -rf "$_SELFTEST_JOURNAL_TMPDIR"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
