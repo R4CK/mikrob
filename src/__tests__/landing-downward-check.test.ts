@@ -15,22 +15,18 @@ import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEAD_LAND_SELFTEST_ENV as DEAD_SELFTEST_ENV } from './setup/isolate-land-selftest-state.js'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-// Card 1634bf55: without this, the subprocess below inherits this process's OWN env as-is, and
-// kanban-comment-lib.sh's live default (http://localhost:3420) plus its git-common-dir token
-// fallback can reach the real dashboard with the real token even from this worktree -- confirmed
-// live (a +3-byte write to the real store/land-runs.jsonl, three real /api/messages posts, during
-// a concurrent fleet-test, msg 23386 + MikroB comment 37609). Forced unconditionally so no future
-// nested selftest case here can forget it either.
-const DEAD_SELFTEST_ENV: Readonly<Record<string, string>> = {
-  KANBAN_COMMENT_API: 'http://127.0.0.1:1',
-  KANBAN_COMMENT_TOKEN_FILE: '/nonexistent/no-such-dir/no-token',
-  GATE_CHECK_API: 'http://127.0.0.1:1',
-  GATE_CHECK_TOKEN_FILE: '/nonexistent/no-such-dir/no-token',
-  LAND_RUN_JOURNAL_FILE: '/nonexistent/no-such-dir/land-runs.jsonl',
-}
+// Card 1634bf55 (CYBERED NO-GO 37616 F-3): without this, the subprocess below inherits this
+// process's OWN env as-is, and kanban-comment-lib.sh's live default (http://localhost:3420)
+// plus its git-common-dir token fallback can reach the real dashboard with the real token even
+// from this worktree -- confirmed live (a +3-byte write to the real store/land-runs.jsonl, three
+// real /api/messages posts, during a concurrent fleet-test, msg 23386 + MikroB comment 37609).
+// DEAD_SELFTEST_ENV is the SAME object the global `isolate-land-selftest-state.ts` setup file
+// forces into process.env for every worker; spreading it again here, unconditionally, is
+// explicit defense-in-depth for this file's own nested selftest cases.
 
 function selftest(script: string): { status: number; out: string } {
   try {

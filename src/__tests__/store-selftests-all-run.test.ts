@@ -48,28 +48,24 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { DEAD_LAND_SELFTEST_ENV as DEAD_SELFTEST_ENV } from './setup/isolate-land-selftest-state.js'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const STORE = join(REPO_ROOT, 'store')
 
-// Card 1634bf55 (backend report msg 23386 + MikroB comment 37609): a selftest that forgets to
-// stub its own kanban-comment/journal env (the land scripts' own documented contract -- see e.g.
-// marveen-land.sh's --selftest-land-batch) falls through kanban-comment-lib.sh's live default
-// (http://localhost:3420) AND _kc_token_file's git-common-dir fallback, which reaches the REAL
-// store/.dashboard-token even from an unrelated worktree -- confirmed live (+3 bytes in the real
-// store/land-runs.jsonl during a concurrent fleet-test, three real /api/messages posts). Every
-// selftest this file runs gets these forced here, UNCONDITIONALLY (not `??=`), so no individual
-// script has to remember it and no ambient env (this process's own, or a future one) can leak
-// through: a dead port for the dashboard API, a token file that can never be read, and a journal
-// path under a directory that is never created, so even an accidental default-path append fails
-// closed instead of landing on the shared tree.
-const DEAD_SELFTEST_ENV: Readonly<Record<string, string>> = {
-  KANBAN_COMMENT_API: 'http://127.0.0.1:1',
-  KANBAN_COMMENT_TOKEN_FILE: '/nonexistent/no-such-dir/no-token',
-  GATE_CHECK_API: 'http://127.0.0.1:1',
-  GATE_CHECK_TOKEN_FILE: '/nonexistent/no-such-dir/no-token',
-  LAND_RUN_JOURNAL_FILE: '/nonexistent/no-such-dir/land-runs.jsonl',
-}
+// Card 1634bf55 (backend report msg 23386 + MikroB comment 37609; CYBERED NO-GO 37616
+// F-3: a locally-redefined copy here could drift from the global one and nobody would
+// notice). A selftest that forgets to stub its own kanban-comment/journal env (the land
+// scripts' own documented contract -- see e.g. marveen-land.sh's --selftest-land-batch)
+// falls through kanban-comment-lib.sh's live default (http://localhost:3420) AND
+// _kc_token_file's git-common-dir fallback, which reaches the REAL store/.dashboard-token
+// even from an unrelated worktree -- confirmed live (+3 bytes in the real
+// store/land-runs.jsonl during a concurrent fleet-test, three real /api/messages posts).
+// DEAD_SELFTEST_ENV is the SAME object the global `isolate-land-selftest-state.ts` setup
+// file forces into process.env for every worker (so the two files not covered here or in
+// landing-downward-check.test.ts -- agent-worktree-marveen.test.ts, landing-gate-verdict-
+// check.test.ts -- are covered too); spreading it again here, UNCONDITIONALLY, is explicit
+// defense-in-depth for this file's own selftests, not the only place it is applied.
 
 // Card 99a4a2d4 (WhiteHat F1 on ff7e1b0a, comment 6640): the EXISTING static detector
 // (selftests-do-not-mutate-the-shared-tree.test.ts) matches destructive commands by NAME/SHAPE --

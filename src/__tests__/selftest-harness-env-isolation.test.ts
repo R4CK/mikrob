@@ -2,19 +2,25 @@
 // to stub KANBAN_COMMENT_API/KANBAN_COMMENT_TOKEN_FILE/LAND_RUN_JOURNAL_FILE reaches the REAL
 // dashboard and the REAL store/land-runs.jsonl -- confirmed live (three real /api/messages posts,
 // a +3-byte write to the real journal, during a concurrent fleet-test with no other land running).
-// The fix forces a dead KANBAN_COMMENT_API/GATE_CHECK_API + an unreadable token file + a
-// never-created journal path onto every selftest this suite's own harnesses run
-// (store-selftests-all-run.test.ts's execWithKillRetry, landing-downward-check.test.ts's
-// selftest() and its two standalone describes), UNCONDITIONALLY, so no individual script has to
-// remember it.
 //
-// This file proves the override actually closes the hole, with a RECORDING fake endpoint standing
-// in for "the live dashboard" (never the real one): a probe script that sources the REAL
-// store/kanban-comment-lib.sh -- exactly the shared code every land/selftest script uses -- and
-// calls its real kanban_comment_on, exactly as a selftest that forgot to stub would. Case 1 proves
-// zero live POSTs reach the recorder once the override wins. Case 2 is the MUTANT: the identical
-// probe, run WITHOUT the override (simulating the pre-fix harness), proves the recorder DOES
-// receive the POST -- so a future edit that drops the override from either harness turns this red.
+// CYBERED NO-GO (comment 37616, F-3) on this file's first version: it defined its OWN copy of the
+// dead-env values and spread them INSIDE the test's own execFileSync call, so it never touched the
+// real harness code at all -- deleting the override from BOTH store-selftests-all-run.test.ts's
+// execWithKillRetry AND landing-downward-check.test.ts's selftest() left this file green, because
+// nothing it did exercised either one. It also only proved the probe script CAN leak, which was
+// never in doubt (two more files, agent-worktree-marveen.test.ts and landing-gate-verdict-
+// check.test.ts, already proved that live, unstubbed, in the real suite).
+//
+// The fix (this same card, same commit) moved the dead-env values into ONE real module,
+// src/__tests__/setup/isolate-land-selftest-state.ts, with an EXPORTED function
+// (applyDeadLandSelftestEnv) that both a global vitest `setupFiles` entry calls once per worker
+// (closing the two files nobody edited) AND the two harness files call explicitly (defense in
+// depth). "protection, real mechanism" below imports and calls that REAL function -- not a local
+// redefinition -- so if its body is ever gutted to a no-op, that case goes red. "global setup
+// actually ran" separately checks that THIS test file's own worker already has the dead values in
+// process.env before any test body runs, proving the `setupFiles` wiring in vitest.config.ts is
+// live, not just the function existing unused. "vitest.config.ts still registers the setup file"
+// is a plain structural check against the registration line itself going missing.
 //
 // The recorder runs as a separate PYTHON subprocess, not an in-process Node http.createServer:
 // execFileSync below is synchronous and blocks this process's own event loop for its whole
@@ -23,22 +29,15 @@
 // window with zero hits, looking exactly like a false negative). Same reason every real land
 // selftest in this repo (marveen-land-card-branch.selftest.sh, kanban-comment-lib.selftest.sh)
 // shells out to a python recorder instead.
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DEAD_LAND_SELFTEST_ENV, applyDeadLandSelftestEnv } from './setup/isolate-land-selftest-state.js'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const LIB = join(REPO_ROOT, 'store', 'kanban-comment-lib.sh')
-
-const DEAD_SELFTEST_ENV: Readonly<Record<string, string>> = {
-  KANBAN_COMMENT_API: 'http://127.0.0.1:1',
-  KANBAN_COMMENT_TOKEN_FILE: '/nonexistent/no-such-dir/no-token',
-  GATE_CHECK_API: 'http://127.0.0.1:1',
-  GATE_CHECK_TOKEN_FILE: '/nonexistent/no-such-dir/no-token',
-  LAND_RUN_JOURNAL_FILE: '/nonexistent/no-such-dir/land-runs.jsonl',
-}
 
 const RECORDER_PY = `
 import http.server, sys
@@ -58,31 +57,29 @@ with http.server.HTTPServer(("127.0.0.1", 0), H) as srv:
 `
 
 let recorderProc: ChildProcess | undefined
+let savedEnv: Record<string, string | undefined> | undefined
 
-async function startRecorder(work: string): Promise<{ url: string; logFile: string }> {
-  const logFile = join(work, 'recorder.log')
-  writeFileSync(logFile, '')
-  const portFile = join(work, 'recorder.port')
-  recorderProc = spawn('python3', ['-c', RECORDER_PY, logFile], {
-    stdio: ['ignore', 'pipe', 'ignore'],
-  })
-  let portOut = ''
-  recorderProc.stdout?.on('data', (c: Buffer) => {
-    portOut += c.toString()
-  })
-  for (let i = 0; i < 100 && !/\d+/.test(portOut); i++) {
-    await new Promise((r) => setTimeout(r, 50))
+beforeEach(() => {
+  // These tests deliberately mutate process.env.KANBAN_COMMENT_API/KANBAN_COMMENT_TOKEN_FILE to
+  // simulate an ambient leak; restore so one test's mutation cannot leak into the next test in
+  // this same file (vitest isolates per FILE by default, not per `it`).
+  savedEnv = {
+    KANBAN_COMMENT_API: process.env.KANBAN_COMMENT_API,
+    KANBAN_COMMENT_TOKEN_FILE: process.env.KANBAN_COMMENT_TOKEN_FILE,
   }
-  const m = /(\d+)/.exec(portOut)
-  if (!m) throw new Error(`recorder never printed a port (got: ${portOut})`)
-  writeFileSync(portFile, m[1])
-  return { url: `http://127.0.0.1:${m[1]}`, logFile }
-}
+})
 
 afterEach(() => {
   if (recorderProc) {
     recorderProc.kill()
     recorderProc = undefined
+  }
+  if (savedEnv) {
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+    savedEnv = undefined
   }
 })
 
@@ -97,45 +94,80 @@ function readHits(logFile: string): Array<{ path: string; body: string }> {
     })
 }
 
+async function startRecorder(work: string): Promise<{ url: string; logFile: string }> {
+  const logFile = join(work, 'recorder.log')
+  writeFileSync(logFile, '')
+  recorderProc = spawn('python3', ['-c', RECORDER_PY, logFile], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  let portOut = ''
+  recorderProc.stdout?.on('data', (c: Buffer) => {
+    portOut += c.toString()
+  })
+  for (let i = 0; i < 100 && !/\d+/.test(portOut); i++) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  const m = /(\d+)/.exec(portOut)
+  if (!m) throw new Error(`recorder never printed a port (got: ${portOut})`)
+  return { url: `http://127.0.0.1:${m[1]}`, logFile }
+}
+
 function writeProbe(work: string): string {
   const probe = join(work, 'probe.sh')
-  // Exactly what a forgetful land selftest does: source the shared lib and post a comment, with
-  // NO override of its own -- relying entirely on whatever the caller's env leaves it.
+  // Exactly what agent-worktree-marveen.test.ts's unstubbed call sites do (CYBERED F-1): source
+  // the shared lib and post a comment, with NO override of their own -- relying entirely on
+  // whatever the caller's inherited env (process.env, spread as-is) leaves them.
   writeFileSync(probe, `#!/usr/bin/env bash\nset -u\n. "${LIB}"\nkanban_comment_on "probe-card" "PROBE-BODY"\n`)
   return probe
 }
 
-describe('card 1634bf55: dead KANBAN_COMMENT_API override actually stops a leaking selftest', () => {
-  it('a selftest that never stubs anything cannot reach the recorder once the dead-env override wins', async () => {
+describe('card 1634bf55: the real applyDeadLandSelftestEnv mechanism, exercised directly', () => {
+  it('global setup actually ran: this worker\'s process.env is already dead before any test body runs', () => {
+    // No manipulation in this test -- if vitest.config.ts's setupFiles entry for
+    // isolate-land-selftest-state.ts is ever removed, this is the assertion that goes red, because
+    // nothing else in this file would have set these values yet.
+    expect(process.env.KANBAN_COMMENT_API).toBe(DEAD_LAND_SELFTEST_ENV.KANBAN_COMMENT_API)
+    expect(process.env.LAND_RUN_JOURNAL_FILE).toBe(DEAD_LAND_SELFTEST_ENV.LAND_RUN_JOURNAL_FILE)
+  })
+
+  it('vitest.config.ts still registers the setup file', () => {
+    // Text check, not a static import: vitest.config.ts sits outside src/ (tsconfig rootDir),
+    // so importing it as a module would break the tsc build for this test file.
+    const configSrc = readFileSync(join(REPO_ROOT, 'vitest.config.ts'), 'utf-8')
+    expect(configSrc).toMatch(/setupFiles:\s*\[[^\]]*isolate-land-selftest-state\.ts/s)
+  })
+
+  it('protection, real mechanism: an unstubbed call site cannot reach an ambient leak target once applyDeadLandSelftestEnv runs', async () => {
     const work = mkdtempSync(join(tmpdir(), 'selftest-isolation-'))
     const { url: recorderUrl, logFile } = await startRecorder(work)
     const tokenFile = join(work, 'token')
     writeFileSync(tokenFile, 'probe-token\n')
+    // Simulate an ambient leak: something upstream pointed KANBAN_COMMENT_API at a live-shaped
+    // target (the recorder stands in for the real dashboard).
+    process.env.KANBAN_COMMENT_API = recorderUrl
+    process.env.KANBAN_COMMENT_TOKEN_FILE = tokenFile
+    // The REAL exported function, not a local copy -- this is what the global setupFile calls
+    // once per worker, and what store-selftests-all-run.test.ts / landing-downward-check.test.ts
+    // call explicitly before their own exec calls.
+    applyDeadLandSelftestEnv()
     const probe = writeProbe(work)
-    execFileSync('bash', [probe], {
-      encoding: 'utf-8',
-      // Ambient env points KANBAN_COMMENT_API at the recorder (the realistic leak shape: an
-      // inherited/ambient value, or kanban-comment-lib.sh's own live default) -- then the dead
-      // override is spread on top, exactly as execWithKillRetry/selftest() do.
-      env: { ...process.env, KANBAN_COMMENT_API: recorderUrl, KANBAN_COMMENT_TOKEN_FILE: tokenFile, ...DEAD_SELFTEST_ENV },
-    })
+    // Exactly the vulnerable shape: an UNSTUBBED call site, plain spread, no override of its own.
+    execFileSync('bash', [probe], { encoding: 'utf-8', env: { ...process.env } })
     expect(readHits(logFile)).toHaveLength(0)
     rmSync(work, { recursive: true, force: true })
   })
 
-  it('MUTANT: the identical probe DOES reach the recorder once the dead-env override is removed', async () => {
+  it('MUTANT: the identical unstubbed call site DOES leak when applyDeadLandSelftestEnv is never called', async () => {
     const work = mkdtempSync(join(tmpdir(), 'selftest-isolation-mutant-'))
     const { url: recorderUrl, logFile } = await startRecorder(work)
     const tokenFile = join(work, 'token')
     writeFileSync(tokenFile, 'probe-token\n')
+    // Same ambient leak as above, but the real function is never called -- the pre-fix shape for
+    // a call site nobody remembered to stub (agent-worktree-marveen.test.ts, before this card).
+    process.env.KANBAN_COMMENT_API = recorderUrl
+    process.env.KANBAN_COMMENT_TOKEN_FILE = tokenFile
     const probe = writeProbe(work)
-    execFileSync('bash', [probe], {
-      encoding: 'utf-8',
-      // Same ambient leak shape as above, but WITHOUT the fix's override -- the pre-fix harness
-      // shape. If this ever stops reaching the recorder, the probe itself has drifted from what
-      // the real bug looked like and this sensitivity check has gone silently vacuous.
-      env: { ...process.env, KANBAN_COMMENT_API: recorderUrl, KANBAN_COMMENT_TOKEN_FILE: tokenFile },
-    })
+    execFileSync('bash', [probe], { encoding: 'utf-8', env: { ...process.env } })
     const hits = readHits(logFile)
     expect(hits.length).toBeGreaterThanOrEqual(1)
     expect(hits[0]?.path).toBe('/api/kanban/probe-card/comments')
