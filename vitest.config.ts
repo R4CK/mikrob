@@ -89,6 +89,11 @@ export default defineConfig({
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/isolate-local-llm-state.ts',
       './src/__tests__/setup/default-ssh-dir-seam.ts',
+      // Card 1634bf55 (CYBERED NO-GO 37616, F-1/F-2): forces a dead KANBAN_COMMENT_API/
+      // GATE_CHECK_API/journal path into every worker's process.env before any test
+      // module imports, so an unstubbed land/gate selftest call site can no longer
+      // reach the live dashboard or the live journal just by spreading process.env.
+      './src/__tests__/setup/isolate-land-selftest-state.ts',
     ],
   },
 })
