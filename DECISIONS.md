@@ -31299,6 +31299,74 @@ Docs closed (f8fde8e9, F4.5): README "Git/worktree/landolási infrastruktúra" s
 
 **Ki döntött:** backend3, card 1634bf55, round 2, Gate-SHA 6fd3c94a62cd3a6417caee6f70ce10d1565a1e46 (pending this DECISIONS.md commit's own sha). Gate: QA + Cybersec + Cybered (comment 37609), re-dispatched after round 2.
 
+## 2026-11-20 -- kártya 0291283d: Ghost pipeline a lokális LLM-en, Gemini-kvóta nélkül
+
+Peti (Telegram 14354, 2026-11-20): a Ghost pipeline-nak nincs saját kvótája, és nem ehet bele a
+Gemini kódolási kvótába. Mérve 2026-11-20: a `store/seged-hivo-naplo.jsonl` 164 sorából 162 Ghost
+(rangsorolás `src/gemini-orchestrator.ts` + review `src/gemini-orchestrator-draft-review.ts`)
+hívás volt, ami a közös óránkénti 5-ös Gemini-ablakot (`src/gemini-ghost-budget.ts`) osztotta meg
+egy valós kártya-kódolási hívással (az utolsó 2026-10-25 óta egy darab volt). Lásd memória
+`ghost-to-local-llm-gemini-in-coding-chain-decision`.
+
+**Build:** új modul `src/gemini-ghost-local.ts` (`callLocalLlmForGhost`, `alwaysAvailableSlot`,
+`recordLocalGhostCallDetail`, `GHOST_LOCAL_MODEL` = `hf.co/bigatuna/Qwen3.5-9b-Sushi-Coder-RL-
+GGUF:Q4_K_M`) lett a `runGeminiOrchestratorSweep` és a `runGeminiOrchestratorDraftReviewSweep`
+alapértelmezett `callGemini`/`reserveSlot`/`releaseSlot`/`recordDetail` injektálása, a
+`gemini-orchestrator.ts`/`gemini-orchestrator-draft-review.ts` hívó-wrapperekben. A
+`decideGeminiOrder`/`reviewOneCard` maga változatlan (generikus/injektálható marad) -- csak a
+sweep-wrapperek saját default-paraméterei mutatnak most a lokálisra. Nincs `seged-hivo-naplo.jsonl`
+sor a lokális hívásokra (az a Gemini-kvóta mérésére szolgál, egy lokális hívás nem fogyaszt
+Gemini-kvótát); a diagnosztikai log kizárólag az `llm_ledger`-be megy (`llm-ledger-append.py
+--provider local`). GPU-flock-busy (`local-llm.sh` exit 6) `reason=gpu_busy`-ra fordul, és
+struktúrálisan (nincs Gemini-hívás a hívásláncban), nem csak feltételesen, nincs Gemini-visszaesés.
+
+**Teszt:** `gemini-ghost-local.test.ts` 12/12 zöld; `gemini-orchestrator.test.ts` 94/94 zöld (a
+régi, agy-útvonalat alapértelmezésként feltételező describe-blokk lecserélve egy helyi-LLM
+alapértelmezést igazoló blokkra); `gemini-orchestrator-draft-review.test.ts` 82/82 zöld (új
+`node:child_process`/`db.js` mock + egy új describe-blokk). `tsc --noEmit`: tiszta (2 már korábban
+is meglévő, nem kapcsolódó parse5 hiba kivételével). `eslint`: 0 probléma a 7 érintett fájlon.
+
+**Nincs benne:** a kártya "measured over a real tick" kritériumai (0 Gemini-hívás + N lokális
+hívás egy valódi harness-ticken, és hogy a `seged-hivo-naplo.jsonl` tényleg nem kap új sort élesben)
+egység-teszttel igazolva, élő méréssel még nem -- ugyanaz a halasztás, mint a 9963bf35/9fb61222
+kártyák saját élő-mérési pontjainál.
+
+**Ki döntött:** Peti (Telegram 14354) + MikroB (kártya 0291283d, reassignment message 22658).
+backend2 végezte a javítást. Gate: QA + Cybersec (a kártya saját kijelölése).
+
+---
+
+## 2026-11-20 -- Kártya 9fb61222: freellm-first hívások 'unknown' agent/card attribúciója
+
+**Kontextus:** 685f25cb (2026-11-20) mérve megadta, hogy a `GET /api/freellm/calls` legfrissebb
+sorai agent='unknown', card=null -- a FreeLLM-FIRST útvonal (`try_freellm_first_for_leaf`,
+kártya 6d8ef952) soha nem állította be a `FREELLM_CALLER`/`FREELLM_CARD_ID` env-eket a
+freellm-call.sh hívásakor, ellentétben a testvér `try_freellm_for_leaf`-fel, amit 685f25cb már
+megjavított.
+
+**Döntés:** ugyanaz a drótozás mint 685f25cb-ben -- `try_freellm_first_for_leaf` kapott egy
+`assignee` paramétert, `try_leaf` a saját `leaf_assignee`-jét adja át rajta, és a
+`freellm-call.sh` hívás `FREELLM_CALLER="${assignee:-unknown}" FREELLM_CARD_ID="$post_id"`-vel
+megy, pontosan ugyanaz a "unknown" alapérték hiányzó assignee-nél, mint a testvér függvénynél.
+
+**Teljes hívó-leltár** (grep: freellm-call.sh / FREELLM_ / :3001, nem-teszt/nem-selftest
+fájlokon): kizárólag `store/offload-dispatch.sh` két függvénye hívja a freellm-call.sh-t
+(`try_freellm_for_leaf` -- már javítva 685f25cb-ben; `try_freellm_first_for_leaf` -- ez a
+kártya javítja). A `src/web/freellmapi-client.ts` admin-session kliens kulcskezelésre (soha
+nem ír llm_ledger sort), a `gemini-offload-call.sh`/`local-llm.sh` más provider (gemini/local),
+a kártya saját illusztratív 'route-classify'/'kg-capture' példái pedig grep-pel igazoltan sosem
+hívják a freellm-call.sh-t -- mindhárom kívül esik ezen a kártyán.
+
+**Teszt:** `offload-dispatch.selftest.sh` 312/312 zöld (310 + 2 új attribúciós eset). Mutáció:
+a 2 új eset pirosra vált, ha csak a fix sort állítom vissza (a selftest-eket megtartva) --
+`got: CALLER= CARD_ID=` -- majd zöld a fix visszaállításával.
+
+**Nincs benne:** az 1 órás élő-forgalom mérés (a kártya saját elfogadási kritériuma, <10%
+unknown-arány) -- ez landolás után, külön kommentként követi.
+
+**Ki döntött:** MikroB (kártya 9fb61222, 685f25cb mérésének folytatása). backend2 végezte a
+javítást. Gate: QA (a kártya saját kijelölése).
+
 2026-11-15, kártya f3343af0 (QA FAIL a koraibbi fixen): a relogin pending-markert elobb csak egy
 friss epoch jelezte, env-fellulirhato uton -- bármely, store/-ba iro folyamat elplanthatta es a
 timestampet újraírva vegtelenul elfojthatta volna a weekly-usage olvasast. Javitas: a marker utja

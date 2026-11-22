@@ -1116,7 +1116,7 @@ print(text[:300])
 #                       the strike belongs to whichever path actually gets tried and fails).
 # Returns 0 = drafted (caller returns immediately), 1 = try local next.
 try_freellm_first_for_leaf() {
-  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_project="$4" leaf_tags="$5" task="$6" post_id="$7" synthetic="${8:-false}"
+  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_project="$4" leaf_tags="$5" task="$6" post_id="$7" synthetic="${8:-false}" assignee="${9:-}"
   [[ -x "$FREELLM_CALL" ]] || return 1
   if freellm_in_cooldown; then
     echo "offload-dispatch: leaf $leaf_id -> freellm-first skipped (cooldown active), trying local" >&2
@@ -1128,7 +1128,10 @@ try_freellm_first_for_leaf() {
   fi
 
   local out rc=0
-  out="$(printf '%s' "$task" | redact_secrets | bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
+  # Card 9fb61222 (follow-up to 685f25cb's try_freellm_for_leaf fix): this freellm-first route
+  # never set FREELLM_CALLER/FREELLM_CARD_ID either, so every ledger row from it still showed
+  # agent_id=unknown/card_id=NULL. Same wiring as try_freellm_for_leaf above.
+  out="$(printf '%s' "$task" | redact_secrets | FREELLM_CALLER="${assignee:-unknown}" FREELLM_CARD_ID="$post_id" bash "$FREELLM_CALL" 2>/dev/null)" || rc=$?
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
     attempts_op success "$leaf_id" >/dev/null
@@ -2255,13 +2258,13 @@ if [[ "${1:-}" == "--test-freellm-fallback-site" ]]; then
   exit "$rc"
 fi
 
-# --test-freellm-first-site LID TITLE DESC PROJECT TAGS TASK POSTID [SYNTHETIC] : calls the REAL
-# try_freellm_first_for_leaf directly (card 6d8ef952) -- same pattern as --test-freellm-fallback-site
-# above, no reimplementation. Prints "drafted"/"fallthrough" and exits 0/1.
+# --test-freellm-first-site LID TITLE DESC PROJECT TAGS TASK POSTID [SYNTHETIC] [ASSIGNEE] : calls
+# the REAL try_freellm_first_for_leaf directly (card 6d8ef952) -- same pattern as
+# --test-freellm-fallback-site above, no reimplementation. Prints "drafted"/"fallthrough" and exits 0/1.
 if [[ "${1:-}" == "--test-freellm-first-site" ]]; then
   shift
   hdr_file="$(mktemp)"
-  if try_freellm_first_for_leaf "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}"; then
+  if try_freellm_first_for_leaf "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" "${9:-}"; then
     echo "drafted"; rm -f "$hdr_file"; exit 0
   fi
   echo "fallthrough"; rm -f "$hdr_file"; exit 1
@@ -2437,7 +2440,7 @@ $leaf_desc"
   # return immediately; on quota/gate/disabled/other failure fall through to the existing local-RAG
   # path below unchanged. try_freellm_first_for_leaf never touches attempts_op on a non-success exit
   # (see its own header) -- the local attempt that follows still gets its normal bookkeeping.
-  if try_freellm_first_for_leaf "$leaf_id" "$leaf_title" "$leaf_desc" "$leaf_project" "$leaf_tags" "$task" "$post_id" "$synthetic"; then
+  if try_freellm_first_for_leaf "$leaf_id" "$leaf_title" "$leaf_desc" "$leaf_project" "$leaf_tags" "$task" "$post_id" "$synthetic" "$leaf_assignee_raw"; then
     return 0
   fi
 
