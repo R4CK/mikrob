@@ -34,7 +34,19 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DEAD_LAND_SELFTEST_ENV, applyDeadLandSelftestEnv } from './setup/isolate-land-selftest-state.js'
+
+// CYBERED GO 37626, F-5(a): a STATIC top-level import of isolate-land-selftest-state.ts here would
+// trigger that module's own module-load-time call to applyDeadLandSelftestEnv() the moment THIS test
+// file is loaded -- identical to what the vitest.config.ts setupFiles entry does -- making "global
+// setup actually ran" pass even with the setupFiles entry removed, because the test file's own import
+// would do the exact same thing. Importing the module only INSIDE later test bodies (after the first
+// test's assertion already ran) means the first test sees ONLY whatever setupFiles already forced.
+type SetupModule = typeof import('./setup/isolate-land-selftest-state.js')
+let setupModule: SetupModule | undefined
+async function loadSetupModule(): Promise<SetupModule> {
+  setupModule ??= await import('./setup/isolate-land-selftest-state.js')
+  return setupModule
+}
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const LIB = join(REPO_ROOT, 'store', 'kanban-comment-lib.sh')
@@ -122,22 +134,44 @@ function writeProbe(work: string): string {
 }
 
 describe('card 1634bf55: the real applyDeadLandSelftestEnv mechanism, exercised directly', () => {
-  it('global setup actually ran: this worker\'s process.env is already dead before any test body runs', () => {
-    // No manipulation in this test -- if vitest.config.ts's setupFiles entry for
-    // isolate-land-selftest-state.ts is ever removed, this is the assertion that goes red, because
-    // nothing else in this file would have set these values yet.
-    expect(process.env.KANBAN_COMMENT_API).toBe(DEAD_LAND_SELFTEST_ENV.KANBAN_COMMENT_API)
-    expect(process.env.LAND_RUN_JOURNAL_FILE).toBe(DEAD_LAND_SELFTEST_ENV.LAND_RUN_JOURNAL_FILE)
+  it('global setup actually ran: this worker\'s process.env is already dead before this file imports the module', () => {
+    // No import of isolate-land-selftest-state.ts above this point in the file (see
+    // loadSetupModule) -- if vitest.config.ts's setupFiles entry for it is ever removed, this is
+    // the assertion that goes red, because nothing else would have set these values yet. The
+    // literal values are duplicated from DEAD_LAND_SELFTEST_ENV on purpose: importing that
+    // constant here would itself trigger the module's load-time side effect (CYBERED GO 37626,
+    // F-5a), making this check pass even with setupFiles removed.
+    expect(process.env.KANBAN_COMMENT_API).toBe('http://127.0.0.1:1')
+    expect(process.env.LAND_RUN_JOURNAL_FILE).toBe('/nonexistent/no-such-dir/land-runs.jsonl')
   })
 
-  it('vitest.config.ts still registers the setup file', () => {
+  it('vitest.config.ts still registers the setup file as an active (non-commented) entry', () => {
     // Text check, not a static import: vitest.config.ts sits outside src/ (tsconfig rootDir),
     // so importing it as a module would break the tsc build for this test file.
+    // CYBERED GO 37626, F-5b: strip `//`-to-end-of-line comments before matching, otherwise a
+    // commented-out setupFiles entry (text still present, never loaded) passes this check while
+    // the actual leak returns.
     const configSrc = readFileSync(join(REPO_ROOT, 'vitest.config.ts'), 'utf-8')
-    expect(configSrc).toMatch(/setupFiles:\s*\[[^\]]*isolate-land-selftest-state\.ts/s)
+    const withoutLineComments = configSrc
+      .split('\n')
+      .map((line) => line.replace(/\/\/.*$/, ''))
+      .join('\n')
+    expect(withoutLineComments).toMatch(/setupFiles:\s*\[[^\]]*isolate-land-selftest-state\.ts/s)
+  })
+
+  it('the dead values are actually dead: unreachable loopback port and nonexistent paths', async () => {
+    // CYBERED GO 37626, F-6: pins the literal shape so a mutant pointing these at something
+    // reachable (e.g. a real port, an existing writable path) is caught, not just "some string".
+    const { DEAD_LAND_SELFTEST_ENV } = await loadSetupModule()
+    expect(DEAD_LAND_SELFTEST_ENV.KANBAN_COMMENT_API).toBe('http://127.0.0.1:1')
+    expect(DEAD_LAND_SELFTEST_ENV.GATE_CHECK_API).toBe('http://127.0.0.1:1')
+    expect(existsSync(DEAD_LAND_SELFTEST_ENV.KANBAN_COMMENT_TOKEN_FILE)).toBe(false)
+    expect(existsSync(DEAD_LAND_SELFTEST_ENV.GATE_CHECK_TOKEN_FILE)).toBe(false)
+    expect(existsSync(DEAD_LAND_SELFTEST_ENV.LAND_RUN_JOURNAL_FILE)).toBe(false)
   })
 
   it('protection, real mechanism: an unstubbed call site cannot reach an ambient leak target once applyDeadLandSelftestEnv runs', async () => {
+    const { applyDeadLandSelftestEnv } = await loadSetupModule()
     const work = mkdtempSync(join(tmpdir(), 'selftest-isolation-'))
     const { url: recorderUrl, logFile } = await startRecorder(work)
     const tokenFile = join(work, 'token')
