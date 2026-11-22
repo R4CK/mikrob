@@ -48,9 +48,24 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { DEAD_LAND_SELFTEST_ENV as DEAD_SELFTEST_ENV } from './setup/isolate-land-selftest-state.js'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const STORE = join(REPO_ROOT, 'store')
+
+// Card 1634bf55 (backend report msg 23386 + MikroB comment 37609; CYBERED NO-GO 37616
+// F-3: a locally-redefined copy here could drift from the global one and nobody would
+// notice). A selftest that forgets to stub its own kanban-comment/journal env (the land
+// scripts' own documented contract -- see e.g. marveen-land.sh's --selftest-land-batch)
+// falls through kanban-comment-lib.sh's live default (http://localhost:3420) AND
+// _kc_token_file's git-common-dir fallback, which reaches the REAL store/.dashboard-token
+// even from an unrelated worktree -- confirmed live (+3 bytes in the real
+// store/land-runs.jsonl during a concurrent fleet-test, three real /api/messages posts).
+// DEAD_SELFTEST_ENV is the SAME object the global `isolate-land-selftest-state.ts` setup
+// file forces into process.env for every worker (so the two files not covered here or in
+// landing-downward-check.test.ts -- agent-worktree-marveen.test.ts, landing-gate-verdict-
+// check.test.ts -- are covered too); spreading it again here, UNCONDITIONALLY, is explicit
+// defense-in-depth for this file's own selftests, not the only place it is applied.
 
 // Card 99a4a2d4 (WhiteHat F1 on ff7e1b0a, comment 6640): the EXISTING static detector
 // (selftests-do-not-mutate-the-shared-tree.test.ts) matches destructive commands by NAME/SHAPE --
@@ -106,13 +121,19 @@ let guardedCallCount = 0
 // selftest's own fault. A timeout raise would not help a process that is killed outright rather
 // than running long, so this is a single retry after a short backoff, not a budget change.
 function execWithKillRetry(runner: string, args: readonly string[], file: string): string {
+  // Spread AFTER process.env, never before: a selftest that explicitly passes its own
+  // KANBAN_COMMENT_API etc. via a nested `exec env ...` (e.g. marveen-land.sh's own
+  // --selftest-land-batch/--selftest-land-notify wrappers) still wins inside its own subprocess --
+  // this only forces the value this TOP-level invocation starts with, closing exactly the gap
+  // where a script forgets to stub at all.
+  const env = { ...process.env, ...DEAD_SELFTEST_ENV }
   try {
-    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env: process.env })
+    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
   } catch (e) {
     const err = e as { signal?: string | null; status?: number | null }
     if (err.signal !== 'SIGKILL') throw e
     console.error(`${file}: killed (SIGKILL) on first attempt, likely host-level memory contention -- retrying once`)
-    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env: process.env })
+    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
   }
 }
 

@@ -15,8 +15,18 @@ import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEAD_LAND_SELFTEST_ENV as DEAD_SELFTEST_ENV } from './setup/isolate-land-selftest-state.js'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+// Card 1634bf55 (CYBERED NO-GO 37616 F-3): without this, the subprocess below inherits this
+// process's OWN env as-is, and kanban-comment-lib.sh's live default (http://localhost:3420)
+// plus its git-common-dir token fallback can reach the real dashboard with the real token even
+// from this worktree -- confirmed live (a +3-byte write to the real store/land-runs.jsonl, three
+// real /api/messages posts, during a concurrent fleet-test, msg 23386 + MikroB comment 37609).
+// DEAD_SELFTEST_ENV is the SAME object the global `isolate-land-selftest-state.ts` setup file
+// forces into process.env for every worker; spreading it again here, unconditionally, is
+// explicit defense-in-depth for this file's own nested selftest cases.
 
 function selftest(script: string): { status: number; out: string } {
   try {
@@ -26,6 +36,7 @@ function selftest(script: string): { status: number; out: string } {
       encoding: 'utf-8',
       stdio: 'pipe',
       cwd: REPO,
+      env: { ...process.env, ...DEAD_SELFTEST_ENV },
     })
     return { status: 0, out }
   } catch (e) {
@@ -73,7 +84,7 @@ describe('marveen-land.sh --selftest-land-lock-release', () => {
         stdio: 'pipe',
         cwd: REPO,
         timeout: 50_000,
-        env: { ...process.env, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' },
+        env: { ...process.env, ...DEAD_SELFTEST_ENV, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' },
       })
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string }
@@ -106,6 +117,7 @@ describe('marveen-land.sh --selftest-land-batch', () => {
         stdio: 'pipe',
         cwd: REPO,
         timeout: 170_000,
+        env: { ...process.env, ...DEAD_SELFTEST_ENV },
       })
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string }
