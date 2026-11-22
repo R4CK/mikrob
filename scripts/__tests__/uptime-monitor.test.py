@@ -837,6 +837,31 @@ def check(name, ok, detail=""):
         FAILS.append(name)
 
 
+def capture_failure_evidence(name, folder):
+    # card a5c827ca case 3: this test has failed under full-suite fleet-test load with a traceback
+    # (JSONDecodeError on an empty file) that matches NEITHER this file's own json.load() calls NOR
+    # uptime-monitor.py's -- meaning the real cause is still unidentified. Best-effort, never raises:
+    # a logging failure here must not turn a real PASS/FAIL into something else.
+    try:
+        log_dir = os.environ.get("FLEET_TEST_LOG_DIR") or os.environ.get("TMPDIR") or tempfile.gettempdir()
+        os.makedirs(log_dir, exist_ok=True)
+        dest = os.path.join(log_dir, "uptime-monitor-failure-%s-%s.json" % (
+            time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), "".join(c if c.isalnum() else "_" for c in name)[:40]))
+        ps = subprocess.run(["ps", "-eo", "pid,ppid,pgid,lstart,cmd"], capture_output=True, text=True, timeout=10)
+        evidence = {"case": name, "folder": folder, "ps_eo_pid_ppid_pgid_lstart_cmd": ps.stdout}
+        for fname in ("state.json", "log.jsonl", "messages.txt"):
+            p = os.path.join(folder, fname)
+            try:
+                evidence[fname] = open(p, encoding="utf-8").read()
+            except OSError as e:
+                evidence[fname] = "<unreadable: %s>" % e
+        with open(dest, "w", encoding="utf-8") as fh:
+            json.dump(evidence, fh, indent=2)
+        print("  failure evidence: %s" % dest)
+    except Exception as e:  # noqa: BLE001 -- best-effort capture, must never fail the real test
+        print("  failure evidence capture failed (best-effort, ignored): %s" % e)
+
+
 def gate_probe():
     sys.dont_write_bytecode = True
     spec = importlib.util.spec_from_file_location("uptime_monitor_test", SCRIPT)
@@ -870,8 +895,11 @@ def main():
     try:
         gate_probe()
         for name, f in CASES.items():
-            ok, detail = f(SCRIPT, srv, tempfile.mkdtemp(dir=root))
+            folder = tempfile.mkdtemp(dir=root)
+            ok, detail = f(SCRIPT, srv, folder)
             check(name, ok, detail)
+            if not ok:
+                capture_failure_evidence(name, folder)
         src = open(SCRIPT, encoding="utf-8").read()
         for name, old, new, case in MUTANTS:
             if src.count(old) != 1:
