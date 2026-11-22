@@ -31622,3 +31622,27 @@ Selftest: 91/91 PASS (83 régi + 8 új). Teljes suite (`fleet-test.sh --ref 4f8a
 **Ki döntött:** CYBERED lelete (37718), MikroB Fix-Direction nélküli dispatch-je (üzenet 23544). A javítás végrehajtója DevO (fullstack).
 
 **Hivatkozás:** kártya 58e8cd74, commit 4f8a12dc8.
+
+## 2026-11-22 -- quota-bridge.py: heti limit ghost-villogás, banner-ből olvasott deadline (kártya 7c2f9564)
+
+**Döntés:** Peti 12486 (2026-10-27): heti limit alatt a Ghost átvétel / "visszatért" üzenet 7:00 és 8:02 között ötször váltakozott. Gyökérok: `quota-check.sh` a `quota-reset-countdown.json`-t egy mikrob-channels-en belül futó scheduled task-ként írja -- pont az a session, amit a heti limit lefagyaszt -- ezért heti limitnél a fájl SOHA nem keletkezik, és a `recovery_probe_due()` "nincs fájl -> próbálj minden körben" ága végzi a villogást.
+
+Javítás: `recovery_probe_due()` a hiányzó-fájl ágon a próba előtt megkísérli a deadline-t közvetlenül a mikrob-channels tmux pane élő banner-szövegéből kiolvasni (`parse_banner_reset_epoch`, új függvény), mielőtt visszaesne a minden-körös próbára. A banner-ből olvasott deadline-nál a próbák közt `WEEKLY_PROBE_INTERVAL_SEC` (3 óra, Peti 2-3 órás javaslata szerint) a minimális rés, állapotot (`state["banner_probe_at"]`) a kártya `outage_loop()`-ban perzisztálva. Az 5 órás (fájl-alapú) ág KÓDJA ÉRINTETLEN -- a banner-fallback csak a hiányzó-fájl kivétel ágon fut, soha nem a meglévő, akár hibás/implauzibilis fájl-tartalmú ágakon.
+
+A banner-parser valódi, MikroB által a Claude Code transzkriptumokból grep-elt (nem feltételezett) alakokra lett pinnelve: "resets Mon D, Npm (Zone)" (dátum, év nélkül, Dec->Jan évváltással), "resets Npm (Zone)" (dátum nélkül, mai nap, ha már elmúlt -> holnapra görgetve), "resets Nam/pm (UTC)" (idozóna lehet UTC is, nem csak névvel), és a reset-záradék NÉLKÜLI alakok ("reached your weekly limit for Opus.", "hit your monthly spend limit") -- ezek `None`-t adnak, ugyanazt a fail-safe (próbálj) irányt, mint egy valóban feldolgozhatatlan szöveg.
+
+Elfogadási kritériumok (kártya saját "Kész, ha" listája):
+1. Szimulált heti banner -> a bridge a bannerből olvasott deadline-t használja: selftest-esetek `parse_banner_reset_epoch: ...` és `recovery_probe_due: first call with a known far-off weekly deadline PROBES once`.
+2. Próbák közti idő heti deadline-nál >= 2 óra: selftest `recovery_probe_due: a second call 60s later is SUPPRESSED` + `the throttle interval is >= 2h` + `a call >= the throttle interval later PROBES again`. Az 5 órás ág selftestjei (74-ből 11 eset) változatlanul zöldek.
+3. Ismeretlen/parse-olhatatlan banner -> fail-safe próba: selftest `no reset clause in the banner -> probe` + `unparseable banner tz -> probe`.
+4. "Now using usage credits" -> nincs Ghost-átvétel: ellenőrizve, hogy `LIMIT_RE` nem illeszkedik rá (a fragmentumok mind a "limit" szót igénylik) -- kódváltozás nem szükséges, csak egy pinnelő selftest-eset.
+
+TDD: a selftest-eket ELŐSZÖR írtam meg, RED-et mértem (`AttributeError: module 'quota_bridge' has no attribute 'parse_banner_reset_epoch'`), majd implementáltam a GREEN-ig.
+
+Teszt: `quota-bridge.selftest.py` 74/74 PASS (55 régi + 19 új, 0 regresszió -- a régi `recovery_probe_due = lambda now=None: True` stub-okat `**kw`-ra kellett bővíteni, mert az `outage_loop()` hívás most `state=`-et is ad át, maga az assertion-logika nem változott). `quota-switchback.selftest.py` 33/33 PASS (érintetlen, csak ellenőrizve). `py_compile` OK.
+
+Nincs benne: `quota-check.sh` cron-megbízhatóságának javítása (miért nem ír countdown fájlt a heti esetben más okból sem) -- a kártya a `quota-bridge.py` oldali gyökérokra scope-olt, a `quota-check.sh` maga nem módosult.
+
+**Ki döntött:** Peti javaslata (12486), a banner-formátum MikroB valós transzkript-grep-je (nem paraphrase) a feloldáshoz. A javítás végrehajtója DevO (fullstack).
+
+**Hivatkozás:** kártya 7c2f9564, Gate-SHA a REVIEW-ban.
