@@ -1514,9 +1514,13 @@ acquire_land_lock() {
 # through to the ordinary REFUSED path unchanged; $_CARRY_FORWARD_DETAIL set to WHY, for the
 # --dry-run/verbose trail only, never shown as a refusal reason -- the ordinary one already is).
 #
-# Check 1: every commit in gate_sha..branch is a plain 2-parent merge (`git rev-list --merges` vs
-# `--no-merges` on the SAME range must together account for every commit, with zero non-merges) --
-# a single authored commit hiding in the range must NOT carry forward, it needs an actual re-gate.
+# Check 1: walking ONLY the card's own first-parent chain from branch back to (not including)
+# gate_sha, every commit encountered is a plain 2-parent merge -- NOT "every commit in the whole
+# gate_sha..branch range is a merge": that range also contains, via the merge's SECOND parent,
+# every bit of unrelated history origin/develop picked up from everyone else since gate_sha, which
+# is normal and must never be penalised (that is the entire POINT of a drift merge). What must
+# never appear on the card's OWN first-parent line is a genuine authored commit -- that needs an
+# actual re-gate, it cannot carry forward.
 # Check 2 (only reached if check 1 holds): for EACH such merge, `git show --remerge-diff` is empty
 # -- a hand-resolved conflict is not what this card covers.
 # Check 3: "the card's own files" = the diff between merge-base(gate_sha, origin/$DEFAULT_BRANCH)
@@ -1527,21 +1531,25 @@ _carry_forward_ok() {
   local gate_sha="$1" branch="$2"
   _CARRY_FORWARD_DETAIL=""
 
-  local _cf_non_merges
-  _cf_non_merges="$(g rev-list --no-merges "${gate_sha}..$branch" 2>/dev/null || true)"
-  if [ -n "$_cf_non_merges" ]; then
-    _CARRY_FORWARD_DETAIL="an authored (non-merge) commit is in range: $(echo "$_cf_non_merges" | head -1 | cut -c1-12)"
+  local -a _cf_mainline
+  mapfile -t _cf_mainline < <(g rev-list --first-parent "${gate_sha}..$branch" 2>/dev/null || true)
+  if [ "${#_cf_mainline[@]}" -eq 0 ]; then
+    _CARRY_FORWARD_DETAIL="nothing on the card's own first-parent line beyond gate_sha -- nothing to carry forward"
     return 1
   fi
-  local -a _cf_merges
-  mapfile -t _cf_merges < <(g rev-list --merges "${gate_sha}..$branch" 2>/dev/null || true)
-  if [ "${#_cf_merges[@]}" -eq 0 ]; then
-    _CARRY_FORWARD_DETAIL="range has no commits at all, or no merge commits -- nothing to carry forward"
-    return 1
-  fi
-  local _cf_m
-  for _cf_m in "${_cf_merges[@]}"; do
-    if [ -n "$(g show --remerge-diff "$_cf_m" 2>/dev/null)" ]; then
+  local _cf_m _cf_parent_count
+  for _cf_m in "${_cf_mainline[@]}"; do
+    _cf_parent_count="$(g rev-list --parents -n1 "$_cf_m" 2>/dev/null | wc -w)"
+    # rev-list --parents -n1 <sha> prints "<sha> <parent1> [<parent2> ...]" -- subtract the sha itself.
+    if [ "$(( _cf_parent_count - 1 ))" -lt 2 ]; then
+      _CARRY_FORWARD_DETAIL="an authored (non-merge) commit is on the card's own first-parent line: $(g rev-parse --short "$_cf_m")"
+      return 1
+    fi
+    # --format= (card b20d2062, measured): `git show --remerge-diff` ALWAYS prints the commit's own
+    # header (commit/Merge/Author/Date/message) even when the diff body is empty, so a bare
+    # `[ -n "$(g show --remerge-diff ...)" ]` is non-empty for every merge, clean or not -- caught
+    # by this scenario's own happy-path selftest case going red on a genuinely conflict-free merge.
+    if [ -n "$(g show --format= --remerge-diff "$_cf_m" 2>/dev/null)" ]; then
       _CARRY_FORWARD_DETAIL="merge $(g rev-parse --short "$_cf_m") has a non-empty --remerge-diff (hand-resolved conflict)"
       return 1
     fi
@@ -1564,7 +1572,7 @@ _carry_forward_ok() {
     return 1
   fi
 
-  _CARRY_FORWARD_DETAIL="merge-only range (${#_cf_merges[@]} merge commit(s)), all --remerge-diff empty; card's own file(s) (${_cf_owned[*]}) byte-identical between $gate_sha and $branch"
+  _CARRY_FORWARD_DETAIL="card's own first-parent line is merge-only (${#_cf_mainline[@]} merge commit(s)), all --remerge-diff empty; card's own file(s) (${_cf_owned[*]}) byte-identical between $gate_sha and $branch"
   return 0
 }
 
@@ -1638,12 +1646,14 @@ gate_sha_tip_check() {
       # incidents (e2425f05, 11c6cab4, 1c8f6d25, 0c03aa06, f3343af0) that otherwise needed a
       # manual MikroB decision + gate restatement every time. Scoped to --card mode only by the
       # caller (land_one passes CARD_ALLOW_CARRY_FORWARD; land_batch always passes 0).
-      if [ "$allow_carry_forward" = "1" ] \
-        && _carry_forward_ok "$_latest_gate_sha_resolved" "$branch"; then
-        say "$agent: carry-forward (card b20d2062): $_CARRY_FORWARD_DETAIL"
-        GATE_SHA_TIP_CARRY_FORWARD_DETAIL="$_CARRY_FORWARD_DETAIL"
-        GATE_SHA_TIP_CARRY_FORWARD_OLD_SHA="$_latest_gate_sha_resolved"
-        return 0
+      if [ "$allow_carry_forward" = "1" ]; then
+        if _carry_forward_ok "$_latest_gate_sha_resolved" "$branch"; then
+          say "$agent: carry-forward (card b20d2062): $_CARRY_FORWARD_DETAIL"
+          GATE_SHA_TIP_CARRY_FORWARD_DETAIL="$_CARRY_FORWARD_DETAIL"
+          GATE_SHA_TIP_CARRY_FORWARD_OLD_SHA="$_latest_gate_sha_resolved"
+          return 0
+        fi
+        say "$agent: carry-forward (card b20d2062) did not apply, falling through to the ordinary refusal: $_CARRY_FORWARD_DETAIL"
       fi
       _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is AHEAD of card $card's latest REVIEW Gate-SHA $_latest_gate_sha_resolved with a non-churn commit touching: $(echo "$_gsha_non_churn" | tr '\n' ' ') -- that commit was never reviewed/gated (card e9e1e771)"
     fi

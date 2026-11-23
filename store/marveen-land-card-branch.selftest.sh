@@ -191,6 +191,25 @@ set_verdict() { # $1 = card id, $2 = "pass"|"fail"|none (default: remove fixture
   esac
 }
 
+# card b20d2062: gate_sha_tip_check's own REVIEW-Gate-SHA reader (card_review_gate_sha) only sees a
+# comment that OPENS with "REVIEW" -- set_verdict above never writes one, so every existing test in
+# this file leaves that check a no-op. This helper writes BOTH the REVIEW-opening comment (so
+# gate_sha_tip_check has something to compare the branch tip against) and the QA PASS/FAIL comment
+# (so gate_verdict_check/card_designated_gates_agree still see a verdict), both naming the SAME sha.
+set_review_and_verdict() { # $1 = card id, $2 = sha, $3 = "pass"|"fail"
+  python3 -c '
+import json, sys
+cid, sha, kind = sys.argv[1:4]
+verdict = "QA PASS" if kind == "pass" else "QA FAIL"
+data = [
+    {"author": "backend", "content": "REVIEW: ready\nGate-SHA: " + sha},
+    {"author": "qa", "content": verdict + "\nGate-SHA: " + sha},
+]
+with open(sys.argv[4], "w") as f:
+    json.dump(data, f)
+' "$1" "$2" "$3" "$GET_DIR/$1.json"
+}
+
 echo "marveen-land.sh --card <id> --agent <agent> selftest (card cd3e577b)"
 
 # card cd3e577b R1: --card mode defaults to refuse-mode gate_verdict_check, so these mechanics
@@ -1198,6 +1217,188 @@ if [ "$rc" != 0 ] && grep -q "REFUSED" "$OUT_FILE" && grep -q "does not resolve 
   echo "  ok   an unresolvable Gate-SHA prefix is refused with its own named message (card 35f67e7d)"
 else
   echo "  FAIL expected fff988 to refuse naming the unresolvable prefix -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# --- card b20d2062: --allow-carry-forward ------------------------------------------------------
+# Scenario 7 (criterion 2): a conflict-free develop-drift merge that never touches the card's own
+# file -- the exact shape of 5 real incidents (e2425f05, 11c6cab4, 1c8f6d25, 0c03aa06, f3343af0).
+# With --allow-carry-forward, this must land WITHOUT a fresh re-gate, and post a CARRY-FORWARD
+# comment authored "marveen-land".
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/b2001d develop
+echo "b2001d content" > "$MAIN/b2001d.txt"
+git -C "$MAIN" add b2001d.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card b2001d: add b2001d.txt"
+SHA_B2001D_OLD="$(git -C "$MAIN" rev-parse card/b2001d)"
+git -C "$MAIN" checkout -q develop
+echo "other work landed" > "$MAIN/drift-b2001d.txt"
+git -C "$MAIN" add drift-b2001d.txt
+git -C "$MAIN" -c user.email=o@o -c user.name=o commit -qm "another card: unrelated develop work"
+git -C "$MAIN" push -q origin develop
+git -C "$MAIN" checkout -q card/b2001d
+git -C "$MAIN" fetch -q origin develop
+git -C "$MAIN" -c user.email=s@s -c user.name=s merge -q --no-edit origin/develop
+git -C "$MAIN" checkout -q develop
+
+set_review_and_verdict b2001d "$SHA_B2001D_OLD" pass
+set_gate_line b2001d "QA"
+
+n=$((n + 1))
+land_card b2001d backend --allow-carry-forward
+if [ "$rc" = 0 ] && grep -q "LANDED card/b2001d" "$OUT_FILE" \
+  && [ -f "$CAPTURE_DIR/b2001d.ndjson" ] \
+  && grep -q '"author": "marveen-land"' "$CAPTURE_DIR/b2001d.ndjson" \
+  && grep -q "CARRY-FORWARD" "$CAPTURE_DIR/b2001d.ndjson"; then
+  echo "  ok   --allow-carry-forward lands a conflict-free develop-drift merge without a fresh re-gate, posts a marveen-land CARRY-FORWARD comment (card b20d2062)"
+else
+  echo "  FAIL expected b2001d to carry-forward and land -> rc=$rc:"; tail -20 "$OUT_FILE" | sed 's/^/       /'
+  echo "       capture: $(cat "$CAPTURE_DIR/b2001d.ndjson" 2>/dev/null)"; fail=1
+fi
+
+# Scenario 8 (criterion 1): the IDENTICAL drift-merge shape, but WITHOUT the flag -- must refuse
+# exactly as it always has. Pins "flag off = today's behavior, unchanged".
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/b2002d develop
+echo "b2002d content" > "$MAIN/b2002d.txt"
+git -C "$MAIN" add b2002d.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card b2002d: add b2002d.txt"
+SHA_B2002D_OLD="$(git -C "$MAIN" rev-parse card/b2002d)"
+git -C "$MAIN" checkout -q develop
+echo "even more unrelated work" > "$MAIN/drift-b2002d.txt"
+git -C "$MAIN" add drift-b2002d.txt
+git -C "$MAIN" -c user.email=o@o -c user.name=o commit -qm "another card: more unrelated develop work"
+git -C "$MAIN" push -q origin develop
+git -C "$MAIN" checkout -q card/b2002d
+git -C "$MAIN" fetch -q origin develop
+git -C "$MAIN" -c user.email=s@s -c user.name=s merge -q --no-edit origin/develop
+git -C "$MAIN" checkout -q develop
+
+set_review_and_verdict b2002d "$SHA_B2002D_OLD" pass
+set_gate_line b2002d "QA"
+
+n=$((n + 1))
+land_card b2002d backend
+if [ "$rc" != 0 ] && grep -q "REFUSED -- Gate-SHA mismatch" "$OUT_FILE" && grep -q "AHEAD" "$OUT_FILE"; then
+  echo "  ok   flag OFF: the SAME conflict-free drift merge is still refused exactly as before this card (criterion 1)"
+else
+  echo "  FAIL expected b2002d to refuse without --allow-carry-forward -> rc=$rc:"; tail -20 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# Scenario 9 (criterion 3a): an AUTHORED (non-merge) commit hides in the range after the drift
+# merge -- must still refuse even WITH the flag.
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/b2003d develop
+echo "b2003d content" > "$MAIN/b2003d.txt"
+git -C "$MAIN" add b2003d.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card b2003d: add b2003d.txt"
+SHA_B2003D_OLD="$(git -C "$MAIN" rev-parse card/b2003d)"
+git -C "$MAIN" checkout -q develop
+echo "yet more unrelated work" > "$MAIN/drift-b2003d.txt"
+git -C "$MAIN" add drift-b2003d.txt
+git -C "$MAIN" -c user.email=o@o -c user.name=o commit -qm "another card: yet more unrelated develop work"
+git -C "$MAIN" push -q origin develop
+git -C "$MAIN" checkout -q card/b2003d
+git -C "$MAIN" fetch -q origin develop
+git -C "$MAIN" -c user.email=s@s -c user.name=s merge -q --no-edit origin/develop
+echo "sneaky, never-reviewed change" > "$MAIN/b2003d-extra.txt"
+git -C "$MAIN" add b2003d-extra.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card b2003d: unreviewed extra change (authored, not a merge)"
+git -C "$MAIN" checkout -q develop
+
+set_review_and_verdict b2003d "$SHA_B2003D_OLD" pass
+set_gate_line b2003d "QA"
+
+n=$((n + 1))
+land_card b2003d backend --allow-carry-forward
+if [ "$rc" != 0 ] && grep -q "REFUSED -- Gate-SHA mismatch" "$OUT_FILE" && grep -q "AHEAD" "$OUT_FILE"; then
+  echo "  ok   an authored (non-merge) commit in range is NOT carried forward even with the flag (criterion 3)"
+else
+  echo "  FAIL expected b2003d to refuse despite --allow-carry-forward -> rc=$rc:"; tail -20 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# Scenario 10 (criterion 3b): a REAL merge conflict (both sides touch the same line), forcing a
+# hand resolution -- non-empty --remerge-diff. Must still refuse even WITH the flag.
+git -C "$MAIN" checkout -q develop
+echo "shared line original" > "$MAIN/shared-b2004d.txt"
+git -C "$MAIN" add shared-b2004d.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "seed shared-b2004d.txt"
+git -C "$MAIN" push -q origin develop
+
+git -C "$MAIN" checkout -q -b card/b2004d develop
+echo "b2004d content" > "$MAIN/b2004d.txt"
+git -C "$MAIN" add b2004d.txt
+echo "shared line CARD version" > "$MAIN/shared-b2004d.txt"
+git -C "$MAIN" add shared-b2004d.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card b2004d: add own file + touch the shared line"
+SHA_B2004D_OLD="$(git -C "$MAIN" rev-parse card/b2004d)"
+
+git -C "$MAIN" checkout -q develop
+echo "shared line DEVELOP version" > "$MAIN/shared-b2004d.txt"
+git -C "$MAIN" add shared-b2004d.txt
+git -C "$MAIN" -c user.email=o@o -c user.name=o commit -qm "develop: touch the same shared line differently"
+git -C "$MAIN" push -q origin develop
+
+git -C "$MAIN" checkout -q card/b2004d
+git -C "$MAIN" fetch -q origin develop
+if git -C "$MAIN" -c user.email=s@s -c user.name=s merge -q --no-edit origin/develop; then
+  echo "  FAIL setup error: expected a real conflict on shared-b2004d.txt, merge succeeded cleanly"; fail=1
+else
+  echo "resolved by hand" > "$MAIN/shared-b2004d.txt"
+  git -C "$MAIN" add shared-b2004d.txt
+  git -C "$MAIN" -c user.email=s@s -c user.name=s commit -q --no-edit
+fi
+git -C "$MAIN" checkout -q develop
+
+set_review_and_verdict b2004d "$SHA_B2004D_OLD" pass
+set_gate_line b2004d "QA"
+
+n=$((n + 1))
+land_card b2004d backend --allow-carry-forward
+if [ "$rc" != 0 ] && grep -q "REFUSED -- Gate-SHA mismatch" "$OUT_FILE" && grep -q "AHEAD" "$OUT_FILE"; then
+  echo "  ok   a hand-resolved conflict (non-empty --remerge-diff) is NOT carried forward even with the flag (criterion 3)"
+else
+  echo "  FAIL expected b2004d to refuse despite --allow-carry-forward -> rc=$rc:"; tail -20 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# Scenario 11 (criterion 3c): a CLEAN auto-merge (no conflict, empty --remerge-diff) that still
+# changes the card's own file -- develop independently edits a DIFFERENT line of the SAME file the
+# card owns, so git auto-merges without a hitch, but the owned file is no longer byte-identical.
+# Must still refuse: checks 1+2 passing is not enough on its own.
+git -C "$MAIN" checkout -q develop
+printf 'line1\nline2\nline3\n' > "$MAIN/b2005d-owned.txt"
+git -C "$MAIN" add b2005d-owned.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "seed b2005d-owned.txt"
+git -C "$MAIN" push -q origin develop
+
+git -C "$MAIN" checkout -q -b card/b2005d develop
+sed -i 's/line1/line1-CARD/' "$MAIN/b2005d-owned.txt"
+git -C "$MAIN" add b2005d-owned.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card b2005d: edit line1 of its own file"
+SHA_B2005D_OLD="$(git -C "$MAIN" rev-parse card/b2005d)"
+
+git -C "$MAIN" checkout -q develop
+sed -i 's/line3/line3-DEVELOP/' "$MAIN/b2005d-owned.txt"
+git -C "$MAIN" add b2005d-owned.txt
+git -C "$MAIN" -c user.email=o@o -c user.name=o commit -qm "develop: edit line3 of the same file (non-overlapping)"
+git -C "$MAIN" push -q origin develop
+
+git -C "$MAIN" checkout -q card/b2005d
+git -C "$MAIN" fetch -q origin develop
+if ! git -C "$MAIN" -c user.email=s@s -c user.name=s merge -q --no-edit origin/develop; then
+  echo "  FAIL setup error: expected a CLEAN auto-merge on b2005d-owned.txt (non-overlapping lines)"; fail=1
+  git -C "$MAIN" merge --abort 2>/dev/null
+fi
+git -C "$MAIN" checkout -q develop
+
+set_review_and_verdict b2005d "$SHA_B2005D_OLD" pass
+set_gate_line b2005d "QA"
+
+n=$((n + 1))
+land_card b2005d backend --allow-carry-forward
+if [ "$rc" != 0 ] && grep -q "REFUSED -- Gate-SHA mismatch" "$OUT_FILE" && grep -q "AHEAD" "$OUT_FILE"; then
+  echo "  ok   a clean auto-merge that still changes the card's OWN file is NOT carried forward (merge-only + empty remerge-diff alone is not enough, card b20d2062)"
+else
+  echo "  FAIL expected b2005d to refuse despite --allow-carry-forward -> rc=$rc:"; tail -20 "$OUT_FILE" | sed 's/^/       /'; fail=1
 fi
 
 rm -rf "$WORK"
