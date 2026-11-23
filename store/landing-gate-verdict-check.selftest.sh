@@ -40,6 +40,16 @@ for i in range(0, len(args), 2):
 print(json.dumps({"comments": out}))' "$@"
 }
 
+jid() { # like j, but author/content/id TRIPLES -- needed for Supersedes, which targets a comment id
+  python3 -c '
+import json, sys
+out = []
+args = sys.argv[1:]
+for i in range(0, len(args), 3):
+    out.append({"author": args[i], "content": args[i + 1], "id": int(args[i + 2])})
+print(json.dumps({"comments": out}))' "$@"
+}
+
 echo "landing-gate-verdict-check selftest"
 
 t "a QA PASS naming the sha satisfies the gate" OK abc1234 \
@@ -320,6 +330,69 @@ t "CONTROL: a real human NO-GO for the same sha still refuses" FAILED abc1234 \
 Gate-SHA: abc1234' cybersec 'CYBERSEC NO-GO
 Gate-SHA: abc1234
 valodi lelet')"
+
+# --- SUPERSEDES (card 22c4c31f, MikroB Fix-Direction) ----------------------------------------
+#
+# A config-only re-gate (rule 4e) keeps the same Gate-SHA, so an old FAIL on that sha would
+# otherwise outrank a later PASS forever, and --allow-ungated cannot reach a FAILED verdict by
+# design. The opt-in: a PASS carrying `Supersedes: <comment-id>` lifts exactly that FAIL, only if
+# it is the SAME author (literal, not the QA/QA2 role-fold used everywhere else), on the same sha,
+# and the FAIL comes BEFORE the PASS in the comment list.
+
+t "a same-sha FAIL then a same-AUTHOR PASS with Supersedes clears it -> OK" OK abc1234 \
+  <<<"$(jid qa 'QA FAIL
+Gate-SHA: abc1234
+broken, config drifted' 10 qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 11)"
+
+t "the identical FAIL/PASS pair WITHOUT the Supersedes line stays FAILED (today's behaviour pinned)" FAILED abc1234 \
+  <<<"$(jid qa 'QA FAIL
+Gate-SHA: abc1234
+broken, config drifted' 10 qa 'QA PASS
+Gate-SHA: abc1234' 11)"
+
+# "never cross-role": qa2's verdict counts as QA's everywhere else (rule 4 load-balancing), but
+# NOT here -- the agent lifting a FAIL must be the literal same author that wrote it.
+t "cross-author Supersedes (qa2 PASS naming a qa FAIL's id) does NOT clear it -- stays FAILED" FAILED abc1234 \
+  <<<"$(jid qa 'QA FAIL
+Gate-SHA: abc1234
+broken' 10 qa2 'QA2 PASS
+Gate-SHA: abc1234
+Supersedes: 10' 11)"
+
+t "Supersedes naming a comment that is not a FAIL at all leaves the real FAIL untouched -- stays FAILED" FAILED abc1234 \
+  <<<"$(jid backend 'REVIEW: done
+Gate-SHA: abc1234' 10 qa 'QA FAIL
+Gate-SHA: abc1234
+broken' 11 qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 12)"
+
+t "Supersedes naming an EARLIER PASS's id (not a FAIL) leaves the real FAIL untouched -- stays FAILED" FAILED abc1234 \
+  <<<"$(jid qa 'QA PASS
+Gate-SHA: abc1234' 10 qa 'QA FAIL
+Gate-SHA: abc1234
+broken' 11 qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 12)"
+
+# Relayed FAILs (MikroB's "ELFOGADVA" restatement) are not supersedable by this line -- their
+# author is never a real gate author, so condition (b) can never match, by construction.
+t "a relayed MikroB FAIL cannot be superseded even by the real gate's own PASS -- stays FAILED" FAILED abc1234 \
+  <<<"$(jid mikrob 'QA FAIL ELFOGADVA, vissza in_progress-be
+Gate-SHA: abc1234' 10 qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 11)"
+
+# ORDERING (condition (c)), mutation target: the FAIL must come BEFORE the PASS in the list. If
+# the FAIL is appended AFTER a PASS that happens to name its id in advance, it must still refuse.
+t "MUTATION-PIN: a Supersedes line naming a FAIL that comes AFTER it in the list does not clear it" FAILED abc1234 \
+  <<<"$(jid qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 9 qa 'QA FAIL
+Gate-SHA: abc1234
+broken' 10)"
 
 # --- the shell wrapper: fail-closed vs report ------------------------------------------------
 # shellcheck source=./landing-gate-verdict-check.sh
