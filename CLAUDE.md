@@ -600,3 +600,18 @@ előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEG
 együtt a verzióit is törli, így utána semmiből nem állítható vissza. Ha mégis törölnöd kell,
 előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).
 <!-- END GENERATED: agent-id-header -->
+
+<!-- BEGIN GENERATED: background-checkpoint (auto-generated, do not edit by hand) -->
+## Hosszú háttér-munka: menet közbeni mentés, folytatás a mentett részből
+
+A kulcsfal (kulcsváltás) és az újraindulás (context-guard, kulcsváltás) a futó háttér-alügynököt és a háttérben
+futó parancsot leállítja: a fő beszélgetés folytatódik, a háttér-munka nem, és ami nincs fájlban, elvész.
+
+- Ha egy háttér-alügynök vagy háttér-futás várhatóan 15 percnél tovább dolgozik, kb. 10 percenként mentse a
+  részeredményt fájlba, a munkakönyvtárad alatt (a scratchpad session-hez kötött /tmp-mappa: új session, például a
+  context-guard friss indítása, vagy gép-újraindulás után nincs meg). A háttér-alügynök briefjébe ezt írd bele, a
+  fájl útjával együtt.
+- A mentésbe NE kerüljön titok, token vagy személyes adat; git által figyelmen kívül hagyott helyre (.gitignore-os almappa) menjen, soha ne olyan fájlba, ami commitba kerülhet.
+- Újraindulás vagy kulcsfal után ELŐBB a mentett részt olvasd be, és onnan folytasd, ne elölről.
+- A lapra (vagy a HANDOFF.md-be) egy sor: hol a mentett rész (út), és mi a következő lépés.
+<!-- END GENERATED: background-checkpoint -->

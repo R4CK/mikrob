@@ -2308,32 +2308,6 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // card ebf7d95c: the only way to read ONE card used to be GET /api/kanban and filtering the whole
-  // list client-side -- PUT/DELETE on this exact path already worked, so a 404 here read as "the
-  // card doesn't exist / a sync bug" rather than "this verb was never wired up", and repeatedly
-  // confused both Teszter and MikroB into the wrong diagnosis. Deliberately placed AFTER every
-  // other single-segment /api/kanban/<word> GET route above (archived, labels, assignees,
-  // heartbeat-summary): kanbanCardMatch's `([^/]+)` matches any one segment, including those literal
-  // words, so this must not shadow them -- an id can never collide with a route checked first.
-  if (kanbanCardMatch && method === 'GET') {
-    const id = decodeURIComponent(kanbanCardMatch[1])
-    const card = getKanbanCard(id)
-    if (!card) { json(res, { error: `Kártya nem található: ${id}` }, 404); return true }
-    // Same derived fields as the list, so a caller that opened one card sees what the board shows.
-    // card d06a325d/58669bf2: merged with kanban_card_blockers, same reasoning as the list route.
-    const blockers = [...getUnmetKanbanPredecessors(id)]
-    const seenBlockerIds = new Set(blockers.map((c) => c.id))
-    for (const b of getUnmetCardBlockers(id)) {
-      if (!seenBlockerIds.has(b.id)) { blockers.push(b); seenBlockerIds.add(b.id) }
-    }
-    json(res, {
-      ...card,
-      blocked: blockers.length > 0,
-      blockedBy: blockers.map((c) => ({ id: c.id, title: c.title, status: c.status })),
-    })
-    return true
-  }
-
   const kanbanUnarchiveMatch = path.match(/^\/api\/kanban\/([^/]+)\/unarchive$/)
   if (kanbanUnarchiveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanUnarchiveMatch[1])
@@ -2723,6 +2697,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): this route used to be SHADOWED by an
+  // older `kanbanCardMatch && method === 'GET'` handler (card ebf7d95c) placed earlier in this
+  // function -- same path/method match, so it always won and this entire block was dead code
+  // (kanban-single-card-and-filters.test.ts caught it: missing fields=/unknown-param handling,
+  // the plain "Kártya nem található: <id>" 404 with no prefix note, no last_status_at/
+  // active_seconds). The old handler is removed; this one (fields=, includeArchived via
+  // listKanbanCards, the fuller 404) is strictly its superset.
+  //
   // Card 12b0f698: one card, in the list element's own shape (seq, the columns,
   // last_status_at, labels, blockers), archived or not; comments have their own
   // route. The list's 400 hint has long pointed callers here while this answered
