@@ -89,13 +89,18 @@ describe('GET /api/schedules: prompts only on request (card 12b0f698)', () => {
 describe('the dashboard schedule editor still gets the prompt (card 12b0f698)', () => {
   // The editor fills its prompt field from the loaded list (openEditSchedule reads
   // task.prompt); without the prompts there it would open empty, and a save would write
-  // the empty prompt back. web/app.js has no browser harness here, so this pins the call.
+  // the empty prompt back. web/app-schedules.js has no browser harness here, so this pins
+  // the call. (card 1535f7f9, Koteg 28 upstream sync: this fork split the monolithic
+  // web/app.js into web/app-*.js slices, card 4f5e43e6 -- loadSchedules/openEditSchedule
+  // live in app-schedules.js, the idle-flush hint's own /api/schedules call in app-agents.js.)
   it('loadSchedules asks for include=prompt, the idle-flush hint does not need it', () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-    const app = readFileSync(join(root, 'web', 'app.js'), 'utf-8')
+    const app = readFileSync(join(root, 'web', 'app-schedules.js'), 'utf-8')
     const load = app.slice(app.indexOf('async function loadSchedules()'), app.indexOf('async function loadPendingRetries()'))
     expect(load).toContain("fetch('/api/schedules?include=prompt')")
     const edit = app.slice(app.indexOf('function openEditSchedule(task)'), app.indexOf('// Save schedule (create or update)'))
     expect(edit).toContain("document.getElementById('schedulePrompt').value = task.prompt || ''")
+    const idleFlushCaller = readFileSync(join(root, 'web', 'app-agents.js'), 'utf-8')
+    expect(idleFlushCaller).toContain("fetch('/api/schedules')")
   })
 })

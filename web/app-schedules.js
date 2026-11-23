@@ -261,8 +261,12 @@ async function loadScheduleAgents() {
 
 async function loadSchedules() {
   try {
+    // Card 12b0f698: GET /api/schedules leaves prompts out by default (most readers only need a
+    // name/cron/flag, and ~2338 tasks' worth of prompt text is wasted on every read) -- but the
+    // edit modal (openEditSchedule) fills schedulePrompt from this same loaded list, so a save
+    // right after open would otherwise write back an empty prompt. ?include=prompt opts back in.
     const [schedulesRes] = await Promise.all([
-      fetch('/api/schedules'),
+      fetch('/api/schedules?include=prompt'),
       loadScheduleAgents(),
     ])
     schedules = await schedulesRes.json()

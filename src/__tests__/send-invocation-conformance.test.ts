@@ -73,6 +73,10 @@ describe('FLEETTOFLAG1025 v4: the known agents come from the install (agents/ + 
     mkdirSync(join(root, 'scripts', 'hooks'), { recursive: true })
     copyFileSync(GATE_PY, join(root, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
     copyFileSync(join(ROOT, 'scripts', 'email-send-gate.mjs'), join(root, 'scripts', 'email-send-gate.mjs'))
+    // email-send-gate.mjs imports its allow/deny/isInvokedDirectly helpers from ./hook-lib.mjs
+    // (card bb0ae7fa) -- the temp root needs its own copy too, or the dynamic import below throws
+    // ERR_MODULE_NOT_FOUND.
+    copyFileSync(join(ROOT, 'scripts', 'hook-lib.mjs'), join(root, 'scripts', 'hook-lib.mjs'))
     const mod = await import(pathToFileURL(join(root, 'scripts', 'email-send-gate.mjs')).href)
     return { py: pythonVerdicts(CMDS, null, join(root, 'scripts', 'hooks', 'outgoing-copy-gate.py')),
       js: CMDS.map((c) => mod.isSendInvocation(c)) }

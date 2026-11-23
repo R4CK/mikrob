@@ -183,7 +183,11 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   // Koteg 24 (card 57044a66, HARDERMAILGATES1019 follow-up): send_mail/send_mail_auto added to
   // the widened matcher for all three hooks, same "union" reasoning (upstream's own batch only
   // widened email-approval-gate.py).
-  { script: 'outgoing-copy-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send_mail.*' },
+  // Koteg 28 upstream sync (card 1535f7f9, MS365MAIL1024): the hyphenated Microsoft Graph MCP
+  // tool-name alternatives (send[-_]mail, reply[-_]mail[-_]message, ...) added to all three,
+  // same as EMAIL_GATE_MATCHER (src/web/agent-scaffold.ts) -- those tool names never fired these
+  // hooks before.
+  { script: 'outgoing-copy-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*' },
   { script: 'email-approval-gate.py', matcher: 'Bash' },
   { script: 'email-approval-gate.py', matcher: '.*send_email.*' },
   { script: 'email-approval-gate.py', matcher: '.*manage_email.*' },
@@ -191,7 +195,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'email-approval-gate.py', matcher: '.*__[A-Za-z0-9_-]*[Gg][Mm][Aa][Ii][Ll][A-Za-z0-9_-]*__.*' },
   { script: 'email-approval-gate.py', matcher: '.*__[A-Za-z0-9_-]*[Rr][Ee][Ss][Ee][Nn][Dd][A-Za-z0-9_-]*__.*' },
   { script: 'email-approval-gate.py', matcher: '.*draft_email.*' },
-  { script: 'email-approval-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send_mail.*' },
+  { script: 'email-approval-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*' },
   { script: 'credential-gate.py', matcher: 'Bash' },
   { script: 'credential-gate.py', matcher: '.*send_email.*' },
   { script: 'credential-gate.py', matcher: '.*manage_email.*' },
@@ -199,7 +203,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'credential-gate.py', matcher: '.*__[A-Za-z0-9_-]*[Gg][Mm][Aa][Ii][Ll][A-Za-z0-9_-]*__.*' },
   { script: 'credential-gate.py', matcher: '.*__[A-Za-z0-9_-]*[Rr][Ee][Ss][Ee][Nn][Dd][A-Za-z0-9_-]*__.*' },
   { script: 'credential-gate.py', matcher: '.*draft_email.*' },
-  { script: 'credential-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send_mail.*' },
+  { script: 'credential-gate.py', matcher: '.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*' },
   { script: 'db-write-guard.py', matcher: 'Bash|Write|Edit|MultiEdit' },
   { script: 'channel-image-resize.sh', matcher: 'Read' },
   { script: 'egress-gate.mjs', matcher: 'WebFetch' },
