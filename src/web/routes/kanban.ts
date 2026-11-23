@@ -1150,14 +1150,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Card 5aaf7209 item 1 + card 12b0f698 (upstream baeb14a79): an unknown query-parameter used
     // to be ACCEPTED and silently ignored -- measured on the live install, six agents tried three
     // different names (includeArchived/archived/include_archived) for the same intent, none got
-    // feedback. Card 514a9fb3 M1's `limit=` is DROPPED from the known set here (card 12b0f698):
-    // `fields=` now does the same ceiling job better (narrow the payload instead of truncating the
-    // set), and `ids=` covers the "I already know which ones" case `limit` was a crude stand-in for.
-    const KNOWN_PARAMS = new Set(['agent', 'assignee', 'includeArchived', 'status', 'ids', 'fields'])
+    // feedback.
+    // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): card 12b0f698's `fields=`/`ids=` are the
+    // better way to narrow a read, but this fork's own regression test (card 514a9fb3, Gate-SHA
+    // 813c22cc) pins `limit=` as still LIVE: store/gate-pretriage-card.sh (?limit=500) and
+    // store/reconstruction-landed-sweep.sh (?limit=600) both call it in production today. Kept,
+    // not dropped -- an upstream deprecation this fork cannot adopt until both scripts move off it.
+    const KNOWN_PARAMS = new Set(['agent', 'assignee', 'includeArchived', 'status', 'ids', 'fields', 'limit'])
     const unknown = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
     if (unknown.length) {
       json(res, {
-        error: 'unknown query parameter',
+        // Named, not generic (card 5aaf7209 item 1): the operator has to be able to tell WHICH
+        // parameter was rejected without reading past the first field.
+        error: `unknown query parameter: ${unknown.join(', ')}`,
         unknown,
         known: [...KNOWN_PARAMS],
         hint: 'a lapok szurese "agent" (vagy "assignee"), "status", "ids", a mezoke "fields"; '
@@ -1185,7 +1190,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const isConfigured = [OWNER_NAME, BOT_NAME, ...listAgentNames()].some((n) => n.toLowerCase() === wanted)
       if (!isConfigured && !kanbanAssigneeExists(agent)) {
         json(res, {
-          error: 'unknown agent', agent,
+          error: `unknown agent: ${agent}`, agent,
           hint: 'lásd GET /api/kanban/assignees az elfogadott nevekért, vagy egy a táblán már szereplő assignee (kis/nagybetű mindegy)',
         }, 400)
         return true
@@ -1215,6 +1220,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const { fields } = fieldsParse
+    // card 514a9fb3 M1a: fail-closed the same way the other filters do, never silently ignored.
+    const limitRaw = ctx.url.searchParams.get('limit')
+    let limit: number | null = null
+    if (limitRaw !== null) {
+      limit = Number(limitRaw)
+      if (!Number.isInteger(limit) || limit < 1) {
+        json(res, { error: 'Az limit érvénytelen. Egész szám, legalább 1.' }, 400)
+        return true
+      }
+    }
     // A narrowed read that leaves out labels/blockers/blocked/blockedBy does not build their map.
     const labelsByCard = !fields || fields.has('labels') ? getLabelsForAllCards() : new Map()
     const blockersByCard = !fields || fields.has('blockers') ? getBlockersForAllCards() : new Map()
@@ -1245,7 +1260,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         } : {}),
       }
     })
-    jsonMaybeGzip(req, res, fields ? cards.map((card) => pickFields(card, fields)) : cards)
+    const limited = limit !== null ? cards.slice(0, limit) : cards
+    jsonMaybeGzip(req, res, fields ? limited.map((card) => pickFields(card, fields)) : limited)
     return true
   }
 
@@ -2718,7 +2734,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const unknown = [...url.searchParams.keys()].filter((k) => k !== 'fields')
     if (unknown.length) {
       json(res, {
-        error: 'unknown query parameter',
+        // Named, not generic (card 5aaf7209 item 1): the operator has to be able to tell WHICH
+        // parameter was rejected without reading past the first field.
+        error: `unknown query parameter: ${unknown.join(', ')}`,
         unknown,
         known: ['fields'],
         hint: 'egy lap: legfeljebb ?fields=; tobb lap: GET /api/kanban?ids=<id1>,<id2>',

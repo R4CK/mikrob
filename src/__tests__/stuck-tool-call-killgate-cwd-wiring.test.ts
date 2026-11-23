@@ -37,7 +37,7 @@ vi.mock('node:child_process', () => ({
   },
 }))
 vi.mock('../logger.js', () => ({ logger: { info: h.info, warn: h.warn, error: vi.fn(), debug: h.debug } }))
-vi.mock('../platform.js', () => ({ resolveFromPath: () => '/usr/bin/tmux' }))
+vi.mock('../platform.js', () => ({ resolveFromPath: () => '/usr/bin/tmux', makeLazyBinResolver: () => () => '/usr/bin/tmux' }))
 vi.mock('../config.js', () => ({ PROJECT_ROOT: '/nonexistent-project-root', STORE_DIR: '/nonexistent-store-dir' }))
 vi.mock('../web/agent-process.js', () => ({ capturePane: () => h.pane, isAgentRunning: () => false, agentSessionName: (a: string) => a, agentHasChannel: () => true }))
 vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => [], readAgentRemoteHost: () => null }))

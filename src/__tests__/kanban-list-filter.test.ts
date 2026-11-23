@@ -97,10 +97,15 @@ describe('the route actually applies the filters', () => {
 
 describe('the wiring is in the route (not just in this test)', () => {
   it('the GET handler reads both parameters and filters the list', () => {
+    // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync, card 12b0f698): status filtering moved
+    // from an in-memory filterValues()/cards.filter() pass to being pushed into SQL via
+    // db.ts's listKanbanCards({ statuses }) -- fewer whole-board reads (measured: ~79/night,
+    // 18.7 MB). agent/assignee stays its own equality check, not filterValues either.
+    // filterValues() itself is unchanged and still exported for its other callers (tested above).
     const handler = ROUTE.slice(ROUTE.indexOf("path === '/api/kanban' && method === 'GET'"))
-    expect(handler).toContain("filterValues(ctx.url, 'status')")
-    expect(handler).toContain("filterValues(ctx.url, 'assignee')")
-    expect(handler).toMatch(/cards = cards\.filter/)
+    expect(handler).toContain("csvParam(ctx.url.searchParams, 'status')")
+    expect(handler).toContain("searchParams.get('agent') ?? ctx.url.searchParams.get('assignee')")
+    expect(handler).toMatch(/statuses \? \{ statuses \} : \{\}/)
   })
 
   it('the helper drops blank values (so `?status=` is not a match-nothing filter)', () => {

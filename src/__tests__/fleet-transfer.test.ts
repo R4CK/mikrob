@@ -120,7 +120,10 @@ vi.mock('../config.js', () => ({
   OWNER_NAME: 'Szabolcs',
   CHANNEL_PROVIDER: 'telegram',
   // config.ts builds it from web/sanitize.ts plus the voice channel id in effect.
-  RESERVED_AGENT_IDS: ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna'],
+  // 'system-directive' (SYSTEM_DIRECTIVE_SENDER) is part of sanitize.ts's FIXED_RESERVED_AGENT_IDS
+  // (Koteg 24, card 57044a66) -- a mock missing it would make the real reserved-sender test
+  // fixtures (card b46a4b7e) pass for the wrong reason.
+  RESERVED_AGENT_IDS: ['system', 'system-directive', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna'],
 }))
 
 vi.mock('../web/vault-bindings.js', () => ({

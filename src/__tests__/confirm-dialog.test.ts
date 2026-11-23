@@ -1,7 +1,12 @@
 /**
- * The app's own confirmation dialog (web/app.js confirmDialog), in place of the native confirm(), and the
- * first actions moved onto it: the agent's stop and delete buttons (the main-agent restart button has its
- * own handler test, marveen-restart-button-force.test.ts).
+ * The app's own confirmation dialog (web/app-modals.js confirmDialog), in place of the native
+ * confirm(), and the first actions moved onto it: the agent's stop and delete buttons (the
+ * main-agent restart button has its own handler test, marveen-restart-button-force.test.ts).
+ *
+ * RE-HOMED (card 1535f7f9, Koteg 28 upstream sync): upstream ships this in its one monolithic
+ * web/app.js; this fork already split that file into web/app-*.js slices (card 4f5e43e6), and
+ * app-modals.js ("Utility modal helpers") is the slice for exactly this kind of generic widget --
+ * see its own file-top comment.
  *
  * The SHIPPED function runs against a small fake DOM: only the explicit confirm button resolves true;
  * Cancel, the close button, Escape and the backdrop resolve false; Cancel holds the focus, so Enter on a
@@ -11,12 +16,12 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const APP = readFileSync(new URL('../../web/app.js', import.meta.url), 'utf-8')
+const APP = readFileSync(new URL('../../web/app-modals.js', import.meta.url), 'utf-8')
 const HU = readFileSync(new URL('../../web/lang/hu.js', import.meta.url), 'utf-8')
 const EN = readFileSync(new URL('../../web/lang/en.js', import.meta.url), 'utf-8')
 
 const fnStart = APP.indexOf('function confirmDialog(')
-const fnEnd = APP.indexOf('\n// The confirmation for a reset, per row and per tab.', fnStart)
+const fnEnd = APP.indexOf('\n// === Clipboard fallback (non-secure context / legacy browser) ===', fnStart)
 const FN = APP.slice(fnStart, fnEnd)
 
 interface FakeEl {
@@ -135,9 +140,12 @@ describe('confirmDialog', () => {
 })
 
 describe('the agent actions use it', () => {
+  // RE-HOMED (card 1535f7f9): stop/delete/main-agent-restart live in app-agent-detail.js, not
+  // app-modals.js (which only hosts the confirmDialog widget itself) -- same split as above.
+  const AGENT_DETAIL = readFileSync(new URL('../../web/app-agent-detail.js', import.meta.url), 'utf-8')
   const handler = (anchor: string, endMarker: string) => {
-    const i = APP.indexOf(anchor)
-    return i < 0 ? '' : APP.slice(i, APP.indexOf(endMarker, i))
+    const i = AGENT_DETAIL.indexOf(anchor)
+    return i < 0 ? '' : AGENT_DETAIL.slice(i, AGENT_DETAIL.indexOf(endMarker, i))
   }
   const STOP = handler("document.getElementById('agentStopBtn').addEventListener('click'", 'try {')
   const DELETE = handler("document.getElementById('deleteAgentBtn').onclick = async () => {", 'try {')

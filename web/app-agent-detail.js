@@ -109,7 +109,13 @@ async function openAgentDetail(agentName) {
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
   document.getElementById('deleteAgentBtn').onclick = async () => {
-    if (!confirm(t('agents.confirm.delete', { name: currentAgent.name }))) return
+    const ok = await confirmDialog({
+      title: t('agents.confirm.delete_title'),
+      message: t('agents.confirm.delete', { name: currentAgent.name }),
+      okLabel: t('agents.confirm.delete_ok'),
+      danger: true,
+    })
+    if (!ok) return
     try {
       await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' })
       closeModal(agentDetailOverlay)
@@ -401,7 +407,13 @@ function postMarveenRestart(force) {
 }
 
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
-  if (!confirm(t('agents.confirm.hard_restart'))) return
+  const hardRestartConfirm = {
+    title: t('agents.confirm.hard_restart_title'),
+    message: t('agents.confirm.hard_restart'),
+    okLabel: t('agents.confirm.hard_restart_ok'),
+    danger: true,
+  }
+  if (!await confirmDialog(hardRestartConfirm)) return
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
@@ -410,7 +422,13 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
       const blocked = await res.clone().json().catch(() => ({}))
       if (blocked.error === 'restart-blocked') {
         const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-        if (!confirm(t(key))) { showToast(t('agents.toast.restart_not_forced')); return }
+        const forceConfirm = {
+          title: t('agents.confirm.hard_restart_title'),
+          message: t(key),
+          okLabel: t('agents.confirm.force_restart_ok'),
+          danger: true,
+        }
+        if (!await confirmDialog(forceConfirm)) { showToast(t('agents.toast.restart_not_forced')); return }
         res = await postMarveenRestart(true)
       }
     }
@@ -458,7 +476,13 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
 
 document.getElementById('agentStopBtn').addEventListener('click', async () => {
   if (!currentAgent) return
-  if (!confirm(t('agents.confirm.stop'))) return
+  const ok = await confirmDialog({
+    title: t('agents.confirm.stop_title'),
+    message: t('agents.confirm.stop'),
+    okLabel: t('agents.confirm.stop_ok'),
+    danger: true,
+  })
+  if (!ok) return
 
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/stop`, { method: 'POST' })

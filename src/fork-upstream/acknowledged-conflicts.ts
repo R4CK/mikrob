@@ -5464,17 +5464,23 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "is added back to this array, the door is open again.",
   },
   'src/web/fleet-transfer.ts': {
-    needle: "isReservedSenderId(String(agent.name ?? ''))",
+    needle: 'RESERVED_AGENT_IDS.includes(String(agent.name ?? \'\'))',
     file: 'src/web/fleet-transfer.ts',
     expect: 'present',
     because:
-      "isReservedSenderId (the 'fourth door', card b46a4b7e) is the fork's own self-escalation " +
-      "closure upstream names differently (RESERVED_AGENT_IDS/VOICECHANNELID1022) -- it refuses an " +
+      "RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync, FLEETRESERVEDNAME1021/VOICECHANNELID1022): " +
+      "the 'fourth door' (card b46a4b7e) now closes on RESERVED_AGENT_IDS.includes() instead of the " +
+      "narrower isReservedSenderId ({'system','system-directive'} only). RESERVED_AGENT_IDS is a " +
+      "strict superset (sanitize.ts's FIXED_RESERVED_AGENT_IDS -- 'system', SYSTEM_DIRECTIVE_SENDER, " +
+      "'heartbeat', 'telegram-coordinator', 'channel-coordinator' -- plus the voice-channel id in " +
+      "effect), and FIXED_RESERVED_AGENT_IDS was fixed (Koteg 24, card 57044a66) to still carry " +
+      "SYSTEM_DIRECTIVE_SENDER, so this widening does not narrow the door back down. It refuses an " +
       'imported/created agent whose name collides with a reserved system sender id. If this call is ' +
-      "dropped from agent creation/import validation, the fourth door reopens. (Residual name-" +
-      "collision hygiene gap for VOICE_CHANNEL_AGENT_ID = 'hanna', traced NOT privilege-escalating " +
-      "by WhiteHat comment 26763, tracked separately by card 13999f11 -- not a reason to touch this " +
-      "call.)",
+      "dropped from agent creation/import validation (or narrowed back to isReservedSenderId without " +
+      "re-confirming FIXED_RESERVED_AGENT_IDS still carries SYSTEM_DIRECTIVE_SENDER), the fourth door " +
+      "reopens. (Residual name-collision hygiene gap for VOICE_CHANNEL_AGENT_ID = 'hanna', traced NOT " +
+      "privilege-escalating by WhiteHat comment 26763, tracked separately by card 13999f11 -- not a " +
+      "reason to touch this call.)",
   },
   'src/web/routes/fleet.ts': {
     needle: "const FLEET_IMPORT_APPROVAL_CATEGORY = 'fleet_import_apply'",
@@ -5607,24 +5613,22 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "block every Bash call of the main agent (measured: ImportError, rc=1). If _is_mcp_send " +
       "disappears, someone merged upstream's version over this fork's adaptation.",
   },
-  // Card 7f0efce3 (fullstack/DevO, 2026-10-31): agent-bundle.ts's entry above KEEPS FORK because
-  // this fork's isReservedSenderId (system-directive-id.ts) blocks system/system-directive
-  // impersonation, while upstream's competing check (RESERVED_AGENT_IDS = FIXED_RESERVED_AGENT_IDS
-  // from sanitize.ts) is a wider list this fork does not have. Adoption needs config.ts +
-  // sanitize.ts additions and a review of every name-validation site -- too large for a drift
-  // round. If FIXED_RESERVED_AGENT_IDS appears in sanitize.ts, the adoption was attempted and
-  // this refusal needs re-reading (is isReservedSenderId still the single authority?).
-  // Verified absent before writing (grep -c FIXED_RESERVED_AGENT_IDS src/web/sanitize.ts = 0).
+  // Card 7f0efce3 (fullstack/DevO, 2026-10-31) deferred this adoption; card 1535f7f9 (Koteg 28
+  // upstream sync, FLEETRESERVEDNAME1021/VOICECHANNELID1022) RE-DECIDED and completed it: both
+  // agent-bundle.ts (lines ~409-414, ~622) and fleet-transfer.ts now check
+  // RESERVED_AGENT_IDS.includes(name) instead of the narrower isReservedSenderId, safe because
+  // sanitize.ts's FIXED_RESERVED_AGENT_IDS was fixed (Koteg 24, card 57044a66) to still carry
+  // SYSTEM_DIRECTIVE_SENDER. See the matching 'src/web/fleet-transfer.ts' entry above.
   'src/web/agent-bundle.ts': {
-    needle: 'FIXED_RESERVED_AGENT_IDS',
-    file: 'src/web/sanitize.ts',
-    expect: 'absent',
+    needle: 'RESERVED_AGENT_IDS.includes(name)',
+    file: 'src/web/agent-bundle.ts',
+    expect: 'present',
     because:
-      "upstream's RESERVED_AGENT_IDS = FIXED_RESERVED_AGENT_IDS (sanitize.ts) widens " +
-      "the reserved-name check beyond this fork's isReservedSenderId; adoption was deferred " +
-      "(card 7f0efce3) because it needs config.ts + sanitize.ts additions, not just this file. " +
-      "If FIXED_RESERVED_AGENT_IDS appears in sanitize.ts, the adoption was started and the " +
-      "agent-bundle.ts refusal needs re-reading.",
+      "RESERVED_AGENT_IDS (config.ts, built from sanitize.ts's FIXED_RESERVED_AGENT_IDS plus the " +
+      "voice-channel id in effect) is the fork's reserved-sender-name closure here, replacing the " +
+      "narrower isReservedSenderId ({'system','system-directive'} only) as of card 1535f7f9. If " +
+      "this call is dropped from agent creation/import validation, a created or imported agent can " +
+      "mint a reserved system sender id.",
   },
 }
 

@@ -2,6 +2,73 @@
 // Globals from app.js: t, escapeHtml, showToast, currentAgent
 // Globals from here used by app-auth-channel.js: showSudoModal
 // Globals from here used by app-onboarding.js: showSudoModal
+// Globals from here used by app-agent-detail.js (and any future caller): confirmDialog
+
+// Card 1535f7f9 (Koteg 28 upstream sync, #2258-area): the app's own confirmation dialog, in
+// place of the native confirm() -- a native confirm() blocks the whole tab and cannot carry a
+// danger/primary distinction or extra content (see confirmSettingsReset's use of `content`
+// upstream). Only the explicit confirm button resolves true; Cancel, the close button, Escape
+// and the backdrop all resolve false. Cancel holds the focus so a stray Enter right after open
+// changes nothing. Texts go in through textContent only (never innerHTML) -- title/message are
+// never attacker-controlled here, but this keeps every future caller safe by construction.
+function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '' }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div')
+    overlay.className = 'modal-overlay active'
+    overlay.setAttribute('role', 'dialog')
+    overlay.setAttribute('aria-modal', 'true')
+
+    const modal = document.createElement('div')
+    modal.className = wide ? 'modal modal-wide' : 'modal'
+
+    const header = document.createElement('div')
+    header.className = 'modal-header'
+    const titleEl = document.createElement('h2')
+    titleEl.textContent = title
+    const closeBtn = document.createElement('button')
+    closeBtn.type = 'button'
+    closeBtn.className = 'modal-close'
+    closeBtn.textContent = '×'
+    header.append(titleEl, closeBtn)
+
+    const body = document.createElement('div')
+    body.className = 'modal-body confirm-dialog' + (bodyClass ? ' ' + bodyClass : '')
+    const messageEl = document.createElement('p')
+    messageEl.textContent = message
+    body.appendChild(messageEl)
+    if (content) body.appendChild(content)
+    const actions = document.createElement('div')
+    actions.className = 'confirm-dialog-actions'
+    const cancelBtn = document.createElement('button')
+    cancelBtn.type = 'button'
+    cancelBtn.className = 'btn-secondary'
+    cancelBtn.textContent = t('common.cancel')
+    const okBtn = document.createElement('button')
+    okBtn.type = 'button'
+    okBtn.className = danger ? 'btn-danger' : 'btn-primary'
+    okBtn.textContent = okLabel
+    actions.append(cancelBtn, okBtn)
+    body.appendChild(actions)
+
+    modal.append(header, body)
+    overlay.appendChild(modal)
+
+    const finish = (answer) => {
+      document.removeEventListener('keydown', onKey)
+      overlay.remove()
+      resolve(answer)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') finish(false) }
+    document.addEventListener('keydown', onKey)
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false) })
+    closeBtn.addEventListener('click', () => finish(false))
+    cancelBtn.addEventListener('click', () => finish(false))
+    okBtn.addEventListener('click', () => finish(true))
+
+    document.body.appendChild(overlay)
+    cancelBtn.focus()
+  })
+}
 
 // === Sudo modal for managed-settings.json (Slack setup pre-flight) ===
 function showSudoModal(sudoCommand, onRetry) {
