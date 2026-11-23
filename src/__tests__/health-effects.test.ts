@@ -3,8 +3,7 @@
 // (mkdtemp'd) store dir, same shape as freellm-status.test.ts.
 import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { vi } from 'vitest'
 import { initDatabase, getDb } from '../db.js'
