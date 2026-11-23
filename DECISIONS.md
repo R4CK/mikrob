@@ -32147,3 +32147,41 @@ propagates a real failure.
 **Ki döntött:** MikroB kártya-leírása (2d9c0bb2) + Peti 14288 (additív-csak korlát). Fron Ted (fron-ted) a végrehajtó, a kontraktus FE-oldali javaslat, backend (0a527826 felelőse) megerősítésére/korrekciójára vár.
 
 **Hivatkozás:** kártya 2d9c0bb2 (Pair-BE 0a527826), commit 00f226e84.
+
+## 2026-11-23 -- marveen-land.sh: nothing-to-land must never post LANDED (kártya 2d27b27b)
+
+`land_one` ugyanazt a 0-s kilépőkódot adta vissza akkor is, ha egy valódi landolás
+(push+ancestor-ellenőrzés sikerült), ÉS akkor is, ha a célágat SOSEM hozták létre --
+`land_notify_finish` pedig MINDKÉT esetet "LANDED" szövegre fordította. Egy `--card`
+landolás egy nem létező ágra ezért ugyanazt a "LANDED (exit 0)" inter-agent üzenetet
+küldte, mintha valóban landolt volna valami. Élőben kétszer mérve: msg 24070 (kártya
+39253062) és msg 24150 (kártya 380a5e16) -- mindkettőt csak az ellenkező oldali ügynök
+saját, független `card_landings`/ancestor-ellenőrzése fogta meg, a notify szövege önmagában
+hamis riasztást adott volna.
+
+**Javítás:** a hiányzó-ág útvonal most egy ÚJ, különálló kódot ad vissza (6, nem 5 --
+az 5-öt `land_with_retry` már belső push-verseny jelzésre használja). `land_notify_finish`
+a 6-ot NOTHING-TO-LAND-ra fordítja, sosem LANDED-re. Semelyik külső szkript nem ágaz
+`marveen-land.sh` saját process-exit kódjára (grep-elve `store/*.sh`), minden hívó a
+land-run-journal-t vagy ezt a notify-szöveget olvassa -- pont ez a felszín, amit a javítás
+zár.
+
+**Ellenőrzés:** `marveen-land.sh --selftest-land-notify` új esettel (rc=6 ->
+NOTHING-TO-LAND), mutáció-próbával megerősítve -- a case-6 leképezés kivétele PONTOSAN ezt
+az esetet fordítja vissza. `marveen-land-card-branch.selftest.sh` új, valódi end-to-end
+esettel (`--card` egy sosem létezett ágra: rc=6, NOTHING-TO-LAND szöveg, nincs
+`card_landings` sor), mutáció-próbával a valós `land_one` javítás ellen -- visszaállítva a
+pontos élő hamis-pozitív szöveget reprodukálja. Teljes regresszió: card-branch selftest
+70/70, `--selftest-land-notify` 5/5, beágyazott `--selftest` 121/121 (egy futás egy nem
+kapcsolódó, már korábban is létező HUP-időzítési flakiness-t mutatott párhuzamos terhelés
+alatt, elszigetelten megerősítve tiszta zöldnek). `--selftest-land-batch` J-HUP/J-INT
+esetei byte-azonosan bukkak a MÓDOSÍTATLAN `origin/develop`-on is (ugyanaz a 2 bukás,
+ugyanaz a 19 siker) -- ez egy ELŐZETES, ettől a változástól független teszt-fixture
+időzítési flakiness, külön jelentve, itt nem javítva.
+
+**Ki döntött:** a leletet fullstack mérte élőben (msg 24070/24150), a kártyát és a
+javítási irányt a "Kész, ha:" lista adta (kártya 2d27b27b leírása). A végrehajtó backend
+(self-advance, rule 11).
+
+**Hivatkozás:** kártya 2d27b27b (duplikátum: 3a4f27e8); `store/marveen-land.sh`
+(`land_one`, `land_notify_finish`); commit `6f94d20da`.
