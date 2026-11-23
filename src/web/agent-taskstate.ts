@@ -168,19 +168,16 @@ export function buildTaskStateInjection(r: AgentTaskState): string {
   // forge a framing line.
   const lines: string[] = [
     SENTINEL,
-    // Source-neutral wording: the same record is replayed after a compact, a
-    // resume, a /clear AND a crash respawn (source=startup, added 2026-07-27),
-    // so it must not claim a compact happened. The /clear wording is upstream's
-    // (adopted card 272361eb): 'clear' has been a replay source on both sides
-    // since 1ce3fd90, but this sentence still listed three of the four, so an
-    // agent restarted after a /clear read a description of someone else's
-    // situation. taskstate-injection-names-every-replay-source.test.ts now pins
-    // the sentence to the set -- the drift this file has already suffered twice.
-    // REQUIRED by that test even on this (not-own) branch -- its fixture record
-    // carries no `writer`, which routes here, and it still asserts 'NEM uj
-    // feladat'/'FOLYTASD' in the output -- so this line cannot be replaced by
-    // the provenance warning below, only joined by it.
-    'A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben (tomorites, resume, /clear vagy osszeomlas utani ujraindulas). Ez NEM uj feladat -- FOLYTASD onnan ahol abbamaradt. NE INDITSD ujra a mar kesz lepeseket, es NE delegald ujra amit mar atadtal.',
+    // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): this branch used to reuse the OWN
+    // branch's imperative sentence verbatim ("...FOLYTASD onnan ahol abbamaradt. NE INDITSD
+    // ujra... NE delegald ujra...") -- which directly undermines the whole point of #2263 (a
+    // record that is not demonstrably the recipient's own must carry NO imperative to continue,
+    // skip or re-delegate). Replaced with a non-imperative sibling that still names every
+    // REPLAY_SOURCES member (taskstate-injection-names-every-replay-source.test.ts pins the set,
+    // on THIS branch too -- its fixture carries no `writer`) and still says 'NEM uj feladat', but
+    // drops the "FOLYTASD"/"NE INDITSD"/"NE delegald ujra" commands agent-taskstate-writer.test.ts
+    // (#2263) requires absent here.
+    'A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben (tomorites, resume, /clear vagy osszeomlas utani ujraindulas). Ez NEM uj feladat, de nem igazoltan a sajat korabbi munkad -- lasd a FIGYELEM sort lentebb, mielott barmit kezdenel vele.',
     // Upstream's provenance warning (adopted alongside the sentence above, not
     // instead of it): this branch is reached precisely because ownership is NOT
     // demonstrated, so say that explicitly too.

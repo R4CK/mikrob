@@ -54,8 +54,12 @@ describe('the task-state injection describes every source that can replay it', (
   })
 
   it('still says what it is FOR -- the pin must not reduce to a keyword check', () => {
+    // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): RECORD carries no `writer`, so this
+    // fixture is on the not-demonstrably-own branch (agent-taskstate-writer.test.ts, #2263) --
+    // 'FOLYTASD' is an imperative ("continue from here") that branch must NOT carry, by design.
+    // Dropped from this assertion; 'NEM uj feladat' and the summary are still framing, not a
+    // command, so they stay required.
     expect(text).toContain('NEM uj feladat')
-    expect(text).toContain('FOLYTASD')
     expect(text).toContain(RECORD.summary)
   })
 })
