@@ -105,6 +105,12 @@ case("a designated gate never verdicted at all",
      [c("qa", V % "bbbb2222")], "MISSING", "qa,cybersec")
 case("no verdict anywhere on the card",
      [c("mikrob", "dispatcheltem a gate-eknek")], "MISSING")
+case("space-separated two-arg designation (card a46e4f04) is UNREADABLE, never a silent AGREE",
+     [c("qa", V % "bbbb2222")], "UNREADABLE", "QA", extra=("CYBERSEC",))
+case("...and three space-separated args is still UNREADABLE, not a merge of the first two",
+     [c("qa", V % "bbbb2222")], "UNREADABLE", "QA", extra=("CYBERSEC", "CYBERED"))
+case("the comma form on the SAME two gates still works (regression control)",
+     [c("qa", V % "bbbb2222"), c("cybersec", S % "bbbb2222")], "AGREE", "QA,CYBERSEC")
 case("the LATEST verdict of a gate is a FAIL, even though an older one passed",
      [c("qa", V % "aaaa1111"), c("qa", "QA FAIL\nGate-SHA: bbbb2222")], "FAILED")
 case("an open NO-GO outranks the sha question",
