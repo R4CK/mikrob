@@ -32024,3 +32024,98 @@ Test Files 1 passed (1), Tests 7 passed (7), Duration 40.58s.
 Cybered (a kártya saját Gate-sora: "landing guard, decides pushes to origin/develop").
 **Hivatkozás:** kártya 22c4c31f, blokkolt kártya 055114ee (komment 33786/33789), Gate-SHA
 4dcf827dc7f3ecb4aa3fc75eddf2cf04e203b7b2.
+
+## 2026-11-23 -- per-agent MCP deny-lista meglévő ügynökökre (kártya c69a8da2)
+
+**Kontextus:** e25e2bbc mérése (kártya c69a8da2 leírása): a flotta tool_use adatai szerint
+resend 0, stitch 0, hostinger 1 (a fő ügynöktől), filesystem 23, playwright 2245 előfordulás --
+a közös `~/.claude.json` mcpServers listája (filesystem, Stitch, hostinger, playwright) MINDEN
+ügynöknek betöltődik, a tényleges használattól függetlenül. Az `AGENT_INHERITED_MCP_SERVERS`
+mechanizmus (`src/web/mcp-inheritance.ts`, `config-registry.ts`) már megoldja ugyanezt, de
+EXPLICIT csak új ügynök létrehozásakor fut ("a meglévő ügynöktől semmit nem vesz el") -- a
+meglévő 17 ügynökre visszamenőleg sosem futott.
+
+**Mérés (store/mcp-agent-usage-measure.py, teljes elérhető előzmény):** filesystem/Stitch/
+hostinger: 0 tényleges `mcp__<szerver>__*` tool_use bármelyik al-ügynöknél. playwright:
+backend2 6, cybered 14, fron-ted 181, qa 95, qa2 28, teszter 983 (teszter saját `.mcp.json`-ja
+már amúgy is deklarálja). context7: backend2 1, cybersec2 1, elemzo 1 (saját `.mcp.json`-ban
+is deklarálva kettőnél). Minden más ügynöknél (backend, backend3, cybersec, fron-teddy, jogasz,
+marketing, penzugy, videooo, fullstack): egyik közös szerver sem volt mérten használva.
+
+**Döntés:** a `deniedMcpServers` mechanizmust (settings.json-mező, blokkol a forrástól
+függetlenül -- kártya 67e73b48/1d31cfcc, 2026-10-10 bejegyzés) retroaktívan alkalmazom a
+meglévő 17 ügynökre, `store/mcp-agent-denylist-apply.sh`-n át:
+- SOHA nem tagadott: `code-review-graph`, `context7` (az `AGENT_INHERITED_MCP_SERVERS`
+  alapértelmezése, MikroB döntés 67e73b48 N2), és bármi, amit az ügynök SAJÁT `.mcp.json`-ja
+  deklarál (egy denylist-egyezés a forrástól függetlenül blokkol, tehát egy ügynök saját,
+  szerepéhez tartozó szerverét sosem szabad odatenni).
+- A közös szerverek köre LIVE-OLVASOTT a valódi `~/.claude.json`-ból, nem hardkódolt a
+  scriptben -- egy jövőbeli hozzáadás/törlés ott automatikusan követve van.
+- A per-ügynök kivétel (ki tart meg mit a mért szükséglet szerint) `store/
+  mcp-agent-allowlist.json`-ban, ADAT, nem kód: backend2/cybered/fron-ted/qa/qa2 megtartja a
+  playwright-ot (mért valódi használat); senki más nem kap extra tagot.
+- Visszaállás: `--rollback --yes` minden érintett ügynök `deniedMcpServers`-ét `[]`-ra állítja,
+  egy lépésben (kártya követelmény 3).
+- resend: SEM a közös `~/.claude.json`-ban, SEM egyetlen ügynök saját `.mcp.json`-jában nincs
+  betöltve ma -- a kártya 4. pontja ("resend csak ahol szerep-szükséglet, vagy senkinél")
+  jelenleg üresen igaz, nincs teendő.
+
+**Teszt:** `mcp-agent-denylist-apply.selftest.sh`, 14/14 PASS, fixture-only (sosem érinti a
+valós `~/.claude.json`-t vagy a valós ügynök-fákat). Mutáció-ellenőrzés: az `own_servers`
+kivonás eltávolítása a deny-számításból 2 esetet pirosra fordít (agentC saját `.mcp.json`-ban
+deklarált hostinger-ét téves módon megtagadná) -- a védelem terhelő.
+
+**Nincs benne:** a `--apply --yes` LIVE futtatása a valós ügynök-fán. A mechanizmus a FÁJLBA
+ÍRÁST jelenti (egy ügynök következő session-indulásakor lép életbe), nem él restartot és nem
+kér Peti jóváhagyást a maga jogán -- de a kártya saját Gate-je (QA + WhiteHat) a döntő, mielőtt
+a `--apply` tényleges futtatása megtörténne.
+
+**Ki döntött:** MikroB dispatch-je (kártya c69a8da2, e25e2bbc mérés alapján). A végrehajtó
+DevO/fullstack.
+
+**Hivatkozás:** kártya c69a8da2; `src/web/mcp-inheritance.ts`, DECISIONS.md 2026-10-10 bejegyzés
+(kártya 67e73b48/1d31cfcc) a `deniedMcpServers` mechanizmus eredeti hitelesítéséhez.
+
+## 2026-11-23 -- CYBERSEC NO-GO fix: the per-agent MCP deny-list now survives re-provisioning (kártya c69a8da2)
+
+**Kontextus:** cybersec NO-GO (Gate-SHA 211c89011, komment): a 211c89011-es retrofit a
+`deniedMcpServers`-t közvetlenül az ügynökök `settings.json`-jába írta, de `agent-process.ts`
+`provisionIsolatedConfigDir`-je MINDEN session-indításkor újraszámolja és force-set-eli ezt a
+mezőt -- CSAK a gyökér `.mcp.json`-ból (ami ma csak `code-review-graph`+`context7`-t tartalmaz),
+a közös `~/.claude.json` szervereit sosem nézte. A számítás ezért mindig üres deny-t adott,
+ami a KÖVETKEZŐ provision-kor felülírta a retrofit írását -- a kontroll sikert jelentett, de
+semmit nem ért el (MEDIUM).
+
+**Döntés (gyökér-fix, strukturális, nem egyszeri fájlírás):** a `provisionIsolatedConfigDir`
+saját `deniedMcpServers`-számítása most a gyökér .mcp.json ÉS a közös `~/.claude.json` szervereit
+EGYÜTT veszi figyelembe, az `AGENT_INHERITED_MCP_SERVERS` lista MELLETT az új
+`readPerAgentExtraKeep()` (store/mcp-agent-allowlist.json, ugyanaz az adatfájl, amit a
+store/mcp-agent-denylist-apply.sh is olvas) és a már meglévő `projectScopedServerNames(cwd)`
+(az ügynök saját `.mcp.json`-ja) is bővíti a megtartott kört. Így a számítás MINDEN session-
+indításkor a helyes eredményt adja, nem csak egyszer egy külső script írása után.
+
+**LOW-1 (mcp-agent-denylist-apply.sh):** egy LÉTEZŐ, de nem-parse-olható `~/.claude.json` vagy
+allowlist-fájl korábban csendben üres halmazzá vált, és a `--apply` mindenkinek `deny=(none)`-t
+írt vagy mindent letiltott. Fix: `validate_json_file()` a futás ELEJÉN ellenőrzi mindkét fájlt,
+és egy parse-hiba esetén a teljes futás megtagadja magát (exit 3), nem fut tovább rossz adattal.
+
+**LOW-2 (mcp-agent-denylist-apply.sh):** a `--apply` korábban TELJESEN FELÜLÍRTA a
+`deniedMcpServers` mezőt, és a `--rollback` `[]`-ra állította -- mindkettő törölt volna egy
+máshonnan odaírt, független biztonsági tiltást. Fix: `apply` most EGYESÍT (a meglévő nevek ÉS a
+számított nevek uniója), a `rollback` pedig csak a JELENLEG kiszámított neveket vonja ki a
+meglévőkből, a független bejegyzéseket érintetlenül hagyva.
+
+**Teszt:** `mcp-inheritance.test.ts` 6 új eset (36/36 összesen) -- felhasználói-szintű szerver
+letiltása, gyökér+felhasználói együtt, per-ügynök extra-keep szűkítése egy ügynökre, saját
+`.mcp.json` sosincs letiltva, hibás allowlist-fájl üres (nem dobó) extra-keep-et ad, és a
+cybersec saját regressziós próbájának pontos megismétlése (két egymást követő provision ugyanazt
+a helyes denylist-et adja, nem `[]`-t a második körben). `mcp-agent-denylist-apply.selftest.sh`
+21/21 (7 új eset LOW-1/LOW-2-re). `tsc --noEmit` tiszta. `isolated-config-mcp-reconcile.test.ts`
++ 4 másik kapcsolódó szuit (68 teszt összesen) zöld, nincs regresszió a megosztott
+`agent-process.ts`-en (94 hívó).
+
+**Ki döntött:** cybersec NO-GO (kártya c69a8da2), MikroB Fix-Direction nélkül, a route a
+végrehajtóé. A végrehajtó DevO/fullstack.
+
+**Hivatkozás:** kártya c69a8da2; `src/web/mcp-inheritance.ts`, `src/web/agent-process.ts`
+(`provisionIsolatedConfigDir`); korábbi bejegyzés a 211c89011 retrofit-ről ugyanezen a napon.
