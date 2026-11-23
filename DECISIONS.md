@@ -32193,7 +32193,7 @@ csak-merge tartományra szűkítve). A végrehajtó backend.
 **Hivatkozás:** kártya b20d2062; `store/marveen-land.sh` (`_carry_forward_ok`,
 `gate_sha_tip_check`), `src/web/kanban-landed-guard.ts`, `src/__tests__/kanban-gate-completeness-guard.test.ts`.
 
-## Carry-forward landolás: 2 NO-GO javítás, delta-regate (kártya b20d2062, 2026-11-23)
+## 2026-11-23 -- Carry-forward landolás: 2 NO-GO javítás, delta-regate (kártya b20d2062)
 
 A fenti carry-forward feature (`_carry_forward_ok`) első gate-körén CYBERED (komment 38261) és
 CYBERSEC (komment 38262) egymástól függetlenül ugyanazt a biztonsági hibaosztályt találta meg,
