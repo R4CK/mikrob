@@ -1486,6 +1486,83 @@ acquire_land_lock() {
   return 1
 }
 
+# gate_sha_tip_check (card 9d9d5ab2): the e9e1e771/35f67e7d Gate-SHA tip-vs-REVIEW check, extracted
+# out of land_one so land_batch's per-card loop can reuse the SAME logic instead of re-implementing
+# it (CYBERSEC FOLLOW-UP-A on e9e1e771: land_batch had no such check at all, a BEHIND ref was
+# accepted by --batch --dry-run).
+#
+# Usage: gate_sha_tip_check <card> <branch> <agent> <work_sha> <allow_ungated 0|1>
+# Returns: 0 (no mismatch, or tolerated by allow_ungated) | 4 (refused, message already on stderr)
+# Sets GATE_SHA_TIP_TOLERATED_REASON (global, non-empty iff rc=0 because allow_ungated tolerated a
+# mismatch/unresolvable sha) -- the caller decides what to do with it (land_one calls
+# _note_ungated_landing, land_batch folds it into surv_ungated_reason).
+gate_sha_tip_check() {
+  local card="$1" branch="$2" agent="$3" work_sha="$4" allow_ungated="$5"
+  GATE_SHA_TIP_TOLERATED_REASON=""
+  [ -n "$card" ] || return 0
+
+  local _gsha_verdict; _gsha_verdict="$(card_review_gate_sha "$card")"
+  local _gsha_kind="${_gsha_verdict%%|*}" _gsha_detail="${_gsha_verdict#*|}"
+  [ "$_gsha_kind" = "OK" ] || return 0
+
+  # rule 4b's multi-commit Gate-SHA line names several commits the card's own work rides on
+  # together (e.g. a fix + its docs commit); the LAST one is the newest claim this REVIEW makes.
+  local -a _gsha_list; IFS=',' read -ra _gsha_list <<<"$_gsha_detail"
+  local _latest_gate_sha="${_gsha_list[${#_gsha_list[@]}-1]}"
+  _latest_gate_sha="${_latest_gate_sha// /}"
+  [ -n "$_latest_gate_sha" ] || return 0
+
+  # Card 35f67e7d: resolve the REVIEW's Gate-SHA to its full 40-char commit sha before comparing.
+  # work_sha (the caller's) is already full; a short Gate-SHA naming the SAME commit failed the old
+  # raw string compare and was then misread by the ancestry fallback as the tip being BEHIND --
+  # false REFUSED, hit live landing both cf678d23 and 7c2f9564. An unresolvable or ambiguous Gate-
+  # SHA refuses explicitly here too, never silently treated as "no mismatch".
+  local _latest_gate_sha_resolved
+  _latest_gate_sha_resolved="$(g rev-parse --verify "${_latest_gate_sha}^{commit}" 2>/dev/null)"
+  if [ -z "$_latest_gate_sha_resolved" ]; then
+    if [ "$allow_ungated" = "1" ]; then
+      say "$agent: Gate-SHA mismatch (card 35f67e7d): card $card's latest REVIEW Gate-SHA '$_latest_gate_sha' does not resolve to a commit -- TOLERATED by --allow-ungated"
+      GATE_SHA_TIP_TOLERATED_REASON="Gate-SHA '$_latest_gate_sha' unresolvable (card 35f67e7d)"
+      return 0
+    fi
+    echo "$agent: REFUSED -- card $card's latest REVIEW Gate-SHA '$_latest_gate_sha'" >&2
+    echo "$agent: does not resolve to a commit (unknown or ambiguous prefix) -- fails" >&2
+    echo "$agent: CLOSED rather than silently skip the check (card 35f67e7d). Post a" >&2
+    echo "$agent: REVIEW naming an unambiguous sha, or override with --allow-ungated if" >&2
+    echo "$agent: this is deliberate." >&2
+    return 4
+  fi
+
+  [ "$work_sha" != "$_latest_gate_sha_resolved" ] || return 0
+
+  local _gsha_mismatch=""
+  if g merge-base --is-ancestor "$work_sha" "$_latest_gate_sha_resolved" 2>/dev/null; then
+    _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is BEHIND card $card's latest REVIEW Gate-SHA $_latest_gate_sha_resolved -- this ref was never updated to the sha the REVIEW actually claims (card e9e1e771, the 0ae1166e shape)"
+  elif g merge-base --is-ancestor "$_latest_gate_sha_resolved" "$branch" 2>/dev/null; then
+    local _gsha_non_churn
+    _gsha_non_churn="$(g log --name-only --format= "${_latest_gate_sha_resolved}..$branch" \
+      | awk 'NF' | sort -u | awk -F/ '{print $NF}' \
+      | grep -vxE 'package\.json|DECISIONS\.md|README\.md' || true)"
+    if [ -n "$_gsha_non_churn" ]; then
+      _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is AHEAD of card $card's latest REVIEW Gate-SHA $_latest_gate_sha_resolved with a non-churn commit touching: $(echo "$_gsha_non_churn" | tr '\n' ' ') -- that commit was never reviewed/gated (card e9e1e771)"
+    fi
+  else
+    _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) does not contain card $card's latest REVIEW Gate-SHA $_latest_gate_sha_resolved at all (neither is an ancestor of the other) -- this card/<id> ref looks stale or unrelated (card e9e1e771)"
+  fi
+  [ -n "$_gsha_mismatch" ] || return 0
+
+  if [ "$allow_ungated" = "1" ]; then
+    say "$agent: Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch -- TOLERATED by --allow-ungated"
+    GATE_SHA_TIP_TOLERATED_REASON="Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch"
+    return 0
+  fi
+  echo "$agent: REFUSED -- Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch." >&2
+  echo "$agent: Fetch and branch -f card/$card to the Gate-SHA, or re-push and post a" >&2
+  echo "$agent: new REVIEW naming the current tip, then re-run. Override with" >&2
+  echo "$agent: --allow-ungated if this is deliberate." >&2
+  return 4
+}
+
 land_one() {
   local agent="$1" dry="$2"
   # card cd3e577b (F1): a THIRD, optional argument overrides which branch gets landed -- the
@@ -1642,66 +1719,14 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # the card's LATEST REVIEW Gate-SHA (same helper the 507e8167 check uses) and refuse on either
   # direction, unless the only difference is per-landing churn (package.json/DECISIONS.md/README.md,
   # the same set gate-closure-check.py already treats as not worth re-gating).
+  #
+  # Card 9d9d5ab2: this is now gate_sha_tip_check (defined above land_one) so land_batch's per-card
+  # loop can reuse the exact same logic instead of re-implementing it.
   if [ -n "$LAND_CARD" ]; then
-    local _gsha_verdict; _gsha_verdict="$(card_review_gate_sha "$LAND_CARD")"
-    local _gsha_kind="${_gsha_verdict%%|*}" _gsha_detail="${_gsha_verdict#*|}"
-    if [ "$_gsha_kind" = "OK" ]; then
-      # rule 4b's multi-commit Gate-SHA line names several commits the card's own work rides on
-      # together (e.g. a fix + its docs commit); the LAST one is the newest claim this REVIEW makes.
-      local -a _gsha_list; IFS=',' read -ra _gsha_list <<<"$_gsha_detail"
-      local _latest_gate_sha="${_gsha_list[${#_gsha_list[@]}-1]}"
-      _latest_gate_sha="${_latest_gate_sha// /}"
-      if [ -n "$_latest_gate_sha" ]; then
-        # Card 35f67e7d: resolve the REVIEW's Gate-SHA to its full 40-char commit sha before
-        # comparing. work_sha (above) is already full; a short Gate-SHA naming the SAME commit
-        # failed the old raw string compare and was then misread by the ancestry fallback as the
-        # tip being BEHIND -- false REFUSED, hit live landing both cf678d23 and 7c2f9564. An
-        # unresolvable or ambiguous Gate-SHA refuses explicitly here too, never silently treated
-        # as "no mismatch".
-        local _latest_gate_sha_resolved
-        _latest_gate_sha_resolved="$(g rev-parse --verify "${_latest_gate_sha}^{commit}" 2>/dev/null)"
-        if [ -z "$_latest_gate_sha_resolved" ]; then
-          if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
-            say "$agent: Gate-SHA mismatch (card 35f67e7d): card $LAND_CARD's latest REVIEW Gate-SHA '$_latest_gate_sha' does not resolve to a commit -- TOLERATED by --allow-ungated"
-            _note_ungated_landing "$agent" "$LAND_CARD" "Gate-SHA '$_latest_gate_sha' unresolvable (card 35f67e7d)"
-          else
-            echo "$agent: REFUSED -- card $LAND_CARD's latest REVIEW Gate-SHA '$_latest_gate_sha'" >&2
-            echo "$agent: does not resolve to a commit (unknown or ambiguous prefix) -- fails" >&2
-            echo "$agent: CLOSED rather than silently skip the check (card 35f67e7d). Post a" >&2
-            echo "$agent: REVIEW naming an unambiguous sha, or override with --allow-ungated if" >&2
-            echo "$agent: this is deliberate." >&2
-            return 4
-          fi
-        elif [ "$work_sha" != "$_latest_gate_sha_resolved" ]; then
-          local _gsha_mismatch=""
-          if g merge-base --is-ancestor "$work_sha" "$_latest_gate_sha_resolved" 2>/dev/null; then
-            _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is BEHIND card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha_resolved -- this ref was never updated to the sha the REVIEW actually claims (card e9e1e771, the 0ae1166e shape)"
-          elif g merge-base --is-ancestor "$_latest_gate_sha_resolved" "$branch" 2>/dev/null; then
-            local _gsha_non_churn
-            _gsha_non_churn="$(g log --name-only --format= "${_latest_gate_sha_resolved}..$branch" \
-              | awk 'NF' | sort -u | awk -F/ '{print $NF}' \
-              | grep -vxE 'package\.json|DECISIONS\.md|README\.md' || true)"
-            if [ -n "$_gsha_non_churn" ]; then
-              _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is AHEAD of card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha_resolved with a non-churn commit touching: $(echo "$_gsha_non_churn" | tr '\n' ' ') -- that commit was never reviewed/gated (card e9e1e771)"
-            fi
-          else
-            _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) does not contain card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha_resolved at all (neither is an ancestor of the other) -- this card/<id> ref looks stale or unrelated (card e9e1e771)"
-          fi
-          if [ -n "$_gsha_mismatch" ]; then
-            if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
-              say "$agent: Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch -- TOLERATED by --allow-ungated"
-              _note_ungated_landing "$agent" "$LAND_CARD" "Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch"
-            else
-              echo "$agent: REFUSED -- Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch." >&2
-              echo "$agent: Fetch and branch -f card/$LAND_CARD to the Gate-SHA, or re-push and post a" >&2
-              echo "$agent: new REVIEW naming the current tip, then re-run. Override with" >&2
-              echo "$agent: --allow-ungated if this is deliberate." >&2
-              return 4
-            fi
-          fi
-        fi
-      fi
-    fi
+    gate_sha_tip_check "$LAND_CARD" "$branch" "$agent" "$work_sha" "$CARD_ALLOW_UNGATED"
+    local _gsha_tip_rc=$?
+    [ "$_gsha_tip_rc" -eq 0 ] || return "$_gsha_tip_rc"
+    [ -z "$GATE_SHA_TIP_TOLERATED_REASON" ] || _note_ungated_landing "$agent" "$LAND_CARD" "$GATE_SHA_TIP_TOLERATED_REASON"
   fi
 
   local wt="/home/neon/marveen-land-${agent}-$$"
@@ -2488,7 +2513,7 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     return 0
   }
 
-  local card agent branch pre_head land_sha down_log mb merge_err conflicted gate_rc desig_rc work_sha
+  local card agent branch pre_head land_sha down_log mb merge_err conflicted gate_rc desig_rc work_sha gsha_tip_rc
 
   _batch_drop() { # $1 = card id, $2 = reason -- names the drop out loud, not just into the journal
     drop_cards+=("$1"); drop_reasons+=("$2")
@@ -2534,6 +2559,23 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     case ",$(printf '%s' "$ALLOW_UNGATED_CARDS" | tr 'A-F' 'a-f' | tr -d '[:space:]')," in
       *",$card,"*) card_ungated_ok=1 ;;
     esac
+
+    # Card 9d9d5ab2 (CYBERSEC FOLLOW-UP-A on e9e1e771): the same tip-vs-latest-REVIEW-Gate-SHA
+    # check land_one's single-card path runs, reused here via gate_sha_tip_check (not
+    # re-implemented) so a card whose card/<id> tip is BEHIND/AHEAD-with-ungated-code/unrelated to
+    # its own latest REVIEW's Gate-SHA is dropped, not merged, same rules including the
+    # DECISIONS.md/package.json/README.md churn exception. One card's mismatch only drops that
+    # card -- the loop's own `continue` lets the rest of the batch proceed.
+    gate_sha_tip_check "$card" "$branch" "$agent" "$work_sha" "$card_ungated_ok"
+    gsha_tip_rc=$?
+    if [ "$gsha_tip_rc" -ne 0 ]; then
+      _batch_drop "$card" "Gate-SHA mismatch vs latest REVIEW (card 9d9d5ab2, reusing the e9e1e771/35f67e7d check -- see the refusal above for BEHIND/AHEAD/unresolvable detail)"
+      continue
+    fi
+    if [ -n "$GATE_SHA_TIP_TOLERATED_REASON" ]; then
+      surv_ungated_reason[$card]="${surv_ungated_reason[$card]:+${surv_ungated_reason[$card]}; }$GATE_SHA_TIP_TOLERATED_REASON"
+    fi
+
     GATE_CHECK_OVERRIDE_ARMED="$card_ungated_ok" gate_verdict_check "$card" "$land_sha" refuse >/dev/null 2>&1
     gate_rc=$?
     if [ "$gate_rc" -eq 2 ]; then
@@ -3986,6 +4028,86 @@ print(json.dumps({
     echo "  ok   case S: s1 (clean) lands, s2 (QA PASS but its designated cybersec gate posted NO-GO for this sha) dropped, never overridable even though s2 is also in --allow-ungated-cards"
   else
     echo "  FAIL case S: s1 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/s1" "origin/develop" 2>/dev/null && echo yes || echo no), s2 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/s2" "origin/develop" 2>/dev/null && echo yes || echo no); output:"; echo "$out_s" | sed 's/^/    /'; fail=1
+  fi
+
+  # --- case T (card 9d9d5ab2, reusing the e9e1e771/35f67e7d Gate-SHA tip check in batch mode): a
+  # card whose branch tip is BEHIND its latest REVIEW's Gate-SHA (t1) and a card AHEAD of it with a
+  # non-churn commit (t2) must both be DROPPED by the batch -- same rule land_one's single-card path
+  # already enforces (e9e1e771), reused here via gate_sha_tip_check (card 9d9d5ab2) rather than
+  # re-implemented. A clean, ordinary card (t3) in the SAME batch call must still land: one card's
+  # mismatch refusal must not silently stop the others.
+  n=$((n+1))
+  MAIN="$(_lb_mkmain caseT)"
+  _lb_mkcard t1 t1.txt hello
+  T1_OLD="$(git -C "$MAIN" rev-parse card/t1)"
+  git -C "$MAIN" checkout -q -b t1-newer card/t1
+  echo "t1 fix" >"$MAIN/t1-fix.txt"
+  git -C "$MAIN" add t1-fix.txt
+  git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m "card t1: the fix a later REVIEW claims"
+  T1_NEW="$(git -C "$MAIN" rev-parse t1-newer)"
+  git -C "$MAIN" checkout -q develop
+
+  _lb_mkcard t2 t2.txt hello
+  T2_GATED="$(git -C "$MAIN" rev-parse card/t2)"
+  git -C "$MAIN" checkout -q card/t2
+  echo "t2 extra, never reviewed" >"$MAIN/t2-extra.txt"
+  git -C "$MAIN" add t2-extra.txt
+  git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m "card t2: unreviewed extra change"
+  T2_TIP="$(git -C "$MAIN" rev-parse card/t2)"
+  git -C "$MAIN" checkout -q develop
+
+  _lb_mkcard t3 t3.txt hello
+  T3_TIP="$(git -C "$MAIN" rev-parse card/t3)"
+
+  python3 -c '
+import json
+print(json.dumps([
+  {"id": "t1", "description": "Gate: qa"},
+  {"id": "t2", "description": "Gate: qa"},
+  {"id": "t3", "description": "Gate: qa"},
+]))' >"$LBTMP/caseT-kanban.json"
+  python3 -c '
+import json, sys
+t1_new, t1_old, t2_gated, t2_tip, t3_tip = sys.argv[1:6]
+print(json.dumps({
+  "t1": [{"author": "backend", "content": f"REVIEW: ready\nGate-SHA: {t1_new}"},
+         {"author": "qa", "content": f"QA PASS\nGate-SHA: {t1_old}"}],
+  "t2": [{"author": "backend", "content": f"REVIEW: ready\nGate-SHA: {t2_gated}"},
+         {"author": "qa", "content": f"QA PASS\nGate-SHA: {t2_tip}"}],
+  "t3": [{"author": "backend", "content": f"REVIEW: ready\nGate-SHA: {t3_tip}"},
+         {"author": "qa", "content": f"QA PASS\nGate-SHA: {t3_tip}"}],
+}))' "$T1_NEW" "$T1_OLD" "$T2_GATED" "$T2_TIP" "$T3_TIP" >"$LBTMP/caseT-comments.json"
+  : >"$LBTMP/caseT-post-log"
+  : >"$LBTMP/caseT-gate-port"
+  STUB_KANBAN_LIST_FILE="$LBTMP/caseT-kanban.json" STUB_COMMENTS_FILE="$LBTMP/caseT-comments.json" \
+    STUB_POST_LOG="$LBTMP/caseT-post-log" python3 "$LBTMP/stub-dashboard-gates.py" \
+    >"$LBTMP/caseT-gate-port" 2>/dev/null &
+  t_gate_stub_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$LBTMP/caseT-gate-port" ] && break
+    sleep 0.2
+  done
+  t_gate_stub_port="$(cat "$LBTMP/caseT-gate-port" 2>/dev/null)"
+  echo dummy >"$LBTMP/caseT-token"
+  export STUB_COUNTER_FILE="$LBTMP/caseT-count"
+  TEST_CMD="$LBTMP/stub-ok.sh"
+  ALLOW_UNGATED_CARDS=""
+  GATE_CHECK_API="http://127.0.0.1:${t_gate_stub_port}" GATE_CHECK_TOKEN_FILE="$LBTMP/caseT-token" \
+    KANBAN_COMMENT_API="http://127.0.0.1:${t_gate_stub_port}" KANBAN_COMMENT_TOKEN_FILE="$LBTMP/caseT-token" \
+    land_batch 0 "t1:fixture" "t2:fixture" "t3:fixture" >"$LBTMP/out-t.txt" 2>&1
+  out_t="$(cat "$LBTMP/out-t.txt")"
+  kill "$t_gate_stub_pid" 2>/dev/null; wait "$t_gate_stub_pid" 2>/dev/null
+  git -C "$MAIN" fetch -q origin develop 2>/dev/null
+  if printf '%s' "$out_t" | grep -q "dropping t1 -- Gate-SHA mismatch" \
+     && printf '%s' "$out_t" | grep -q "dropping t2 -- Gate-SHA mismatch" \
+     && printf '%s' "$out_t" | grep -q "BEHIND" \
+     && printf '%s' "$out_t" | grep -q "t2-extra.txt" \
+     && git -C "$MAIN" merge-base --is-ancestor "card/t3" "origin/develop" 2>/dev/null \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/t1" "origin/develop" 2>/dev/null \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/t2" "origin/develop" 2>/dev/null; then
+    echo "  ok   case T (card 9d9d5ab2): t1 (BEHIND its latest REVIEW Gate-SHA) and t2 (AHEAD with a non-churn commit) are both dropped by the SAME check land_one uses (e9e1e771/35f67e7d, reused via gate_sha_tip_check), t3 (clean) still lands -- one card's mismatch does not silently stop the batch"
+  else
+    echo "  FAIL case T: t1 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/t1" "origin/develop" 2>/dev/null && echo yes || echo no), t2 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/t2" "origin/develop" 2>/dev/null && echo yes || echo no), t3 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/t3" "origin/develop" 2>/dev/null && echo yes || echo no); output:"; echo "$out_t" | sed 's/^/    /'; fail=1
   fi
 
   # --- case E: --batch is the ONLY entry point -- its absence leaves land_one/land_with_retry's
