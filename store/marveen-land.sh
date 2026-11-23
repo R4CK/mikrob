@@ -1258,11 +1258,17 @@ print(rest[19])
   # run's totals.
   rfk_script="$(dirname "$0")/marveen-land-run-fg-killable.selftest.sh"
   if [ -f "$rfk_script" ]; then
-    rfk_out="$(bash "$rfk_script" 2>&1)"
+    rfk_out="$(bash "$rfk_script" 2>&1)"; rfk_rc=$?
     rfk_cases=$(printf '%s\n' "$rfk_out" | grep -c '^  ok \|^  FAIL ')
     n=$((n + rfk_cases))
     printf '%s\n' "$rfk_out" | grep '^  ok \|^  FAIL '
     printf '%s\n' "$rfk_out" | grep -q '^  FAIL ' && fail=1
+    # M1 fix (card 07f1fe6e delta, CYBERSEC GO 29356 M1): a FATAL inside the nested script exits 1
+    # without printing any '  FAIL' line, so grep never fires and the vacuous run reads as PASS.
+    [ "$rfk_rc" -eq 0 ] || { echo "  FAIL marveen-land-run-fg-killable.selftest.sh exited $rfk_rc (FATAL or crash -- see output above)"; fail=1; }
+    # Minimum case count guards against a silent early-exit that produces zero output lines:
+    # the nested script currently has 7 cases; fewer means it bailed before finishing.
+    [ "$rfk_cases" -ge 7 ] || { echo "  FAIL rfk_cases=$rfk_cases < 7 expected -- nested selftest bailed early or its output format changed"; fail=1; }
   else
     echo "  FAIL marveen-land-run-fg-killable.selftest.sh not found next to $0 -- wiring broken"; fail=1
   fi
@@ -2207,9 +2213,12 @@ land_with_retry() {
   # wrapped tree (no job-control subshell to reparent onto) and now orphan it instead -- a
   # regression in the opposite direction from M1. HUP and INT are trappable, so they get the same
   # group-kill as TERM. KILL cannot be trapped by any shell (SIGKILL always goes straight to
-  # default disposition) -- a group-directed KILL kills every process in the group including the
-  # wrapped tree itself, so nothing orphans; a lander-pid-only KILL still orphans the tree, same
-  # inherent gap TERM had before this fix and with no code-level mitigation possible.
+  # default disposition). With set -m, run_fg_killable puts the wrapped subshell in its OWN
+  # process group (pgid = that subshell's pid), not the lander's group. A group-directed KILL to
+  # the LANDER's group therefore does NOT reach the wrapped tree and still orphans it -- same
+  # inherent gap as a lander-pid-only KILL, with no code-level mitigation possible.
+  # (card 07f1fe6e delta, CYBERSEC GO 29356 L1: prior comment incorrectly stated group KILL killed
+  # the wrapped tree; Cybersec measured the orphan.)
   _land_sig_stop() { # $1 = signal name (TERM/HUP/INT), $2 = its POSIX exit code (128+signum)
     _run_finished=1
     [ -n "${run_fg_killable_pid:-}" ] && kill -"$1" -- "-$run_fg_killable_pid" 2>/dev/null

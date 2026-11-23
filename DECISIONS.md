@@ -31652,3 +31652,32 @@ regressziós tesztek változatlanul zöldek.
 **Nincs benne (a kártya szerint):** melyik refből landol a script.
 
 **Ki döntött:** DevO (fullstack), önálló mérés + implementáció (kártya e9e1e771), gate: QA + Cybersec.
+
+**2026-11-08 card 07f1fe6e delta (CYBERSEC GO 29356 M1/L1/L2) -- rfk selftest vacuous-pin fix:**
+M1: `rfk_rc=$?` capture after rfk selftest invocation + `[ "$rfk_rc" -eq 0 ]` check + min case count (`>= 7`). A FATAL exit (exit 1, no FAIL lines) in the nested selftest was invisible to `--selftest` before this fix -- deleting the HUP trap registration caused `--selftest` to report PASS 89 cases. Now confirmed: mutant exits 1 from `--selftest`. L1: corrected comment that incorrectly claimed group-directed KILL kills the wrapped tree; with `set -m` the wrapped subshell is in its own pgid, so KILL to the lander's group still orphans it. L2: added group-directed HUP probe (`run_orphan_probe_group` using `setsid` to make the lander a session/group leader, then `kill -HUP -- -pgid`); 7th selftest case, all 7 pass. **Ki döntött:** backend (delta per MikroB msg_id:17384, orphan recovered via card 44a0c98e per msg_id:19158). Gate: QA + Cybersec. Gate-SHA: see REVIEW comment.
+
+## 2026-11-22 -- landing-downward-check.test.ts mv own-case constant 40 -> 41 (card 44a0c98e)
+
+**Kontextus:** card 44a0c98e (07f1fe6e orphaned delta: M1 rfk exit-capture `rfk_rc=$?`, L1 KILL
+comment fix, L2 group-directed-HUP pin via `run_orphan_probe_group`) land REFUSED by fleet-test:
+its diff adds exactly one new selftest case to marveen-land.sh's own `--selftest` block
+(`run_orphan_probe_group` in marveen-land-run-fg-killable.selftest.sh), so mv's own-case total
+moves 40 -> 41, but develop's landing-downward-check.test.ts (modified same day by card 1634bf55)
+still hardcoded 40 -- the shared downward-check symmetry assertion (`cc - 54 === mv - 40`) failed
+by exactly 1 (80 vs 81).
+
+**Döntés:** bump the `mv` own-case constant from 40 to 41 in
+src/__tests__/landing-downward-check.test.ts, with a one-line comment naming card 44a0c98e, same
+style as the prior bumps (78339a8a, 2ba008f2, 8ca1f91d) already in that file. Surgical: one
+constant + one comment, no other test edits. Rebased card/44a0c98e onto current origin/develop
+(single-parent, not a merge) so this card's own two DECISIONS.md entries land provably at the
+file's true tail -- an earlier merge-based attempt broke the tail-append invariant twice
+(QA2 FAIL 36829/36831 on sha 81716ab37, QA2 FAIL on 8622760de) by carrying a mid-file splice
+through unchanged; rebasing replays only this card's own commits onto develop's current bytes.
+
+**Ellenőrzés:** targeted run `store/fleet-test.sh --ref <rebased-sha>
+src/__tests__/landing-downward-check.test.ts` -> 1 test file passed (1), 9 tests passed (9).
+decisions-tail-append-guard.sh --check-branch against origin/develop's current tip: rc=0.
+
+Gate: QA, Cybersec (delta re-gate over the superseded cf073a99b / 8622760de gates). **Ki döntött:**
+MikroB (msg_id 23510/23519), végezte backend.

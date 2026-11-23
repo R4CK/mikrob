@@ -190,6 +190,52 @@ case "$hup_result" in
   *) bad "HUP left the wrapped command's child running as an orphan -- HUP trap not effective" ;;
 esac
 
+# L2 group-directed HUP pin (card 07f1fe6e delta, CYBERSEC GO 29356 L2): Cybersec proved that a
+# HUP sent to the lander's WHOLE PROCESS GROUP (kill -HUP -- -<pgid>) also causes the trap to
+# fire correctly and kills the wrapped tree.  To test this, we use `setsid` to make the outer
+# bash a new session/group leader (pgid = outer_pid), then send HUP to the whole group via the
+# negative-pid form.  After setsid the outer bash is the only member of its own group; run_fg_killable
+# puts the wrapped subshell into a SEPARATE group (set -m), so the group-directed HUP hits the
+# outer bash only, the trap fires, and the trap in turn group-kills the wrapped tree -- no orphan.
+run_orphan_probe_group() {
+  local sig="$1" trap_src="$2" gc_mark outer_pid gc_pid result
+  gc_mark="/tmp/run-fg-killable-selftest-gc-grp.$$.$RANDOM"
+  rm -f "$gc_mark"
+  setsid bash -c '
+'"$FN_SRC"'
+'"$trap_src"'
+run_fg_killable "/tmp" "bash '"$WRAPPED_CMD_SCRIPT"' '"$gc_mark"'"
+' &
+  outer_pid=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ -s "$gc_mark" ] && break; sleep 0.2; done
+  gc_pid="$(cat "$gc_mark" 2>/dev/null)"
+  if [ -z "$gc_pid" ]; then
+    kill -9 "$outer_pid" 2>/dev/null
+    rm -f "$gc_mark"
+    echo "NOGRANDCHILD"
+    return
+  fi
+  # Group-directed HUP: negative-pid form targets all processes with pgid = outer_pid.
+  # After setsid the outer bash IS the group leader, so pgid == outer_pid.
+  kill -"$sig" -- -"$outer_pid" 2>/dev/null
+  sleep 1
+  if kill -0 "$gc_pid" 2>/dev/null; then
+    result=1
+    kill -9 "$gc_pid" 2>/dev/null
+  else
+    result=0
+  fi
+  rm -f "$gc_mark"
+  echo "$result"
+}
+
+hup_group_result="$(run_orphan_probe_group HUP "$HUP_TRAP_SRC")"
+case "$hup_group_result" in
+  0) ok "group-directed HUP (kill -HUP -- -pgid) also kills the wrapped tree -- no orphan" ;;
+  NOGRANDCHILD) bad "grandchild never started in the group-HUP probe -- cannot pin the group-directed case" ;;
+  *) bad "group-directed HUP left the wrapped tree running as an orphan -- trap did not fire via group signal" ;;
+esac
+
 rm -f "$WRAPPED_CMD_SCRIPT"
 
 echo "marveen-land.sh run_fg_killable selftest done"
