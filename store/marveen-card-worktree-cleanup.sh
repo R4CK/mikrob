@@ -59,14 +59,36 @@ path_under_targets() {
 
 DEFAULT_BRANCH=""
 
-# LANDED requires BOTH: the branch tip is an ancestor of origin/<default-branch>, AND the
-# worktree's own HEAD is actually that branch (not detached, not switched) -- otherwise a
-# detached commit that is not on any ref would be orphaned by the removal (F2).
+# A branch tip that is merely an ancestor of origin/<default-branch> is NOT proof anything landed
+# (L1, cybersec 37506): a freshly created card branch with no commit of its own sits AT the exact
+# commit it was branched from, which is trivially an ancestor of origin/develop whether or not the
+# card was ever touched. Real proof is structural: the branch tip was actually MERGED IN, i.e. it
+# appears as a non-first parent of some merge commit on origin/<default-branch> (first-parent is
+# the "ours" mainline side of every merge in this history and proves nothing about this branch).
+#
+# The git call is captured into a variable FIRST, not piped live into awk: awk's early `exit` on
+# a match closes its stdin while `git rev-list` may still be mid-write on a large history, and
+# under `set -o pipefail` the SIGPIPE-killed git's non-zero status becomes the pipeline's status
+# even though awk/grep both succeeded -- an intermittent false "not merged" on a real match,
+# reproduced directly: identical inputs, re-run moments later with the live pipe removed, same
+# match, no failure. A finished command substitution has nothing left to signal.
+was_merged_in() {
+  local tip="$1" merges
+  merges="$(git -C "$MAIN" rev-list "origin/$DEFAULT_BRANCH" --merges --parents 2>/dev/null)"
+  awk -v t="$tip" 'NF>2 { for (i=3;i<=NF;i++) if ($i==t) { print "y"; exit } }' <<< "$merges" \
+    | grep -q y
+}
+
+# LANDED requires ALL of: the worktree's own HEAD is actually the branch (not detached, not
+# switched -- otherwise a detached commit that is not on any ref would be orphaned by the removal,
+# F2), the branch ref exists, the branch tip is an ancestor of origin/<default-branch>, AND the
+# branch tip was actually merged in (was_merged_in) -- the last check is what closes L1.
 is_landed() {
   local path="$1" branch="$2"
   [ "$(git -C "$path" symbolic-ref -q HEAD 2>/dev/null)" = "refs/heads/$branch" ] || return 1
   git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch" || return 1
-  git -C "$MAIN" merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH"
+  git -C "$MAIN" merge-base --is-ancestor "$branch" "origin/$DEFAULT_BRANCH" || return 1
+  was_merged_in "$(git -C "$MAIN" rev-parse "$branch")"
 }
 
 # CLEAN requires no uncommitted changes AND no ignored files outside the known SYMLINK

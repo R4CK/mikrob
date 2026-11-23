@@ -1,7 +1,7 @@
 // Card 64f56f97 requirement 1: fireCardBuildRoute must shell out to card-build-route.sh with
 // CARD_BUILD_ROUTE_DISPATCHER=api, and must never throw or reject regardless of what the
 // script does -- the contract the kanban route handlers rely on to call it fire-and-forget.
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 
 interface FakeChild extends EventEmitter {
@@ -51,7 +51,9 @@ vi.mock('../logger.js', () => ({
   },
 }))
 
-const { fireCardBuildRoute, __resetRouteDispatchStateForTests } = await import('../web/kanban-route-dispatch.js')
+const { fireCardBuildRoute, fireCardWorktree, __resetRouteDispatchStateForTests } = await import('../web/kanban-route-dispatch.js')
+
+const ORIGINAL_MARVEEN_CARD_WORKTREE = process.env.MARVEEN_CARD_WORKTREE
 
 beforeEach(() => {
   nextStdout = ''
@@ -60,6 +62,12 @@ beforeEach(() => {
   warnLogs = []
   infoLogs = []
   __resetRouteDispatchStateForTests()
+  delete process.env.MARVEEN_CARD_WORKTREE
+})
+
+afterEach(() => {
+  if (ORIGINAL_MARVEEN_CARD_WORKTREE === undefined) delete process.env.MARVEEN_CARD_WORKTREE
+  else process.env.MARVEEN_CARD_WORKTREE = ORIGINAL_MARVEEN_CARD_WORKTREE
 })
 
 describe('fireCardBuildRoute', () => {
@@ -89,6 +97,47 @@ describe('fireCardBuildRoute', () => {
     expect(() => fireCardBuildRoute('ghi789')).not.toThrow()
     spawns[0]!.child.emit('error', new Error('ENOENT'))
     expect(warnLogs[0]).toMatchObject({ cardId: 'ghi789' })
+  })
+})
+
+// L3 / RedHat F-1 (card 562698d4): self-advance-pickup.sh's step 4b only fires on the self-advance
+// pickup path -- MikroB's own /move or PUT dispatch never read MARVEEN_CARD_WORKTREE at all, so the
+// flag only ever reached a fraction of planned->in_progress transitions. These pin fireCardWorktree's
+// own scoping (same env var, same `[MikroB]` title gate self-advance-pickup.sh uses) at the dispatch
+// level, independent of which route handler calls it.
+describe('fireCardWorktree (L3, card 562698d4)', () => {
+  it('flag OFF (unset): never spawns, even with an agent and a [MikroB] title', () => {
+    fireCardWorktree('cardA', 'backend2', '[MikroB] some card')
+    expect(spawns).toHaveLength(0)
+  })
+
+  it('flag ON, no agent: never spawns', () => {
+    process.env.MARVEEN_CARD_WORKTREE = '1'
+    fireCardWorktree('cardB', undefined, '[MikroB] some card')
+    expect(spawns).toHaveLength(0)
+  })
+
+  it('flag ON, agent present, title has NO [MikroB] tag: never spawns', () => {
+    process.env.MARVEEN_CARD_WORKTREE = '1'
+    fireCardWorktree('cardC', 'backend2', 'an ordinary mopsion card')
+    expect(spawns).toHaveLength(0)
+  })
+
+  it('flag ON, agent present, [MikroB] title: spawns agent-worktree-marveen.sh <agent> --card <id>', () => {
+    process.env.MARVEEN_CARD_WORKTREE = '1'
+    fireCardWorktree('cardD', 'backend2', '[MikroB] some card')
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0]!.args.some((a) => a.includes('agent-worktree-marveen.sh'))).toBe(true)
+    expect(spawns[0]!.args).toContain('backend2')
+    expect(spawns[0]!.args).toContain('--card')
+    expect(spawns[0]!.args).toContain('cardD')
+  })
+
+  it('never throws on a spawn-level error event', () => {
+    process.env.MARVEEN_CARD_WORKTREE = '1'
+    expect(() => fireCardWorktree('cardE', 'backend2', '[MikroB] some card')).not.toThrow()
+    expect(() => spawns[0]!.child.emit('error', new Error('ENOENT'))).not.toThrow()
+    expect(warnLogs[0]).toMatchObject({ cardId: 'cardE', agent: 'backend2' })
   })
 })
 

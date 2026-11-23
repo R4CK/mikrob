@@ -241,6 +241,21 @@ check "F4: the symlinked, in-use worktree was NOT removed" test -e "$FIXTURE_ROO
 kill "$sleep_pid_h" 2>/dev/null
 wait "$sleep_pid_h" 2>/dev/null
 
+# --- Case I (L1): a FRESH card branch with NO commit of its own is NOT vacuously REMOVABLE -------
+# (cybersec L1, 37506: the branch tip at creation time equals develop's tip, which trivially IS an
+# ancestor of origin/develop regardless of whether anything was ever landed -- is_landed must not
+# treat "never diverged" as "landed".)
+git -C "$MAIN" branch "card/nnn555" develop
+mkdir -p "$FIXTURE_ROOT/card"
+git -C "$MAIN" worktree add -q "$FIXTURE_ROOT/card/nnn555" "card/nnn555"
+out_i="$(bash "$CLEANUP" --dry-run 2>&1)"
+check "L1: a fresh, never-committed card worktree classifies SKIP, not REMOVABLE" \
+  bash -c "echo \"\$1\" | grep -q 'SKIP.*card nnn555'" _ "$out_i"
+check "L1: dry-run names the not-landed reason for nnn555" \
+  bash -c "echo \"\$1\" | grep -q 'not landed'" _ "$out_i"
+bash "$CLEANUP" --apply --yes >/dev/null 2>&1
+check "L1: the fresh worktree was NOT removed" test -d "$FIXTURE_ROOT/card/nnn555"
+
 # --- Mutant checks: a reader that silently finds zero candidates must not look like success ------
 # (guards-that-pin-behaviour point 8: assert non-vacuity)
 out_empty_root="$(MARVEEN_WORKTREES="$(mktemp -d)" bash "$CLEANUP" --dry-run 2>&1)"
