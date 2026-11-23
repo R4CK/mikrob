@@ -45,7 +45,10 @@
 // every agent regardless of this list, and that must stay a conscious choice
 // about what lives in the root file, not an assumption that this filter covers it.
 
+import { readFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
 
 export const INHERITED_MCP_SETTING = 'AGENT_INHERITED_MCP_SERVERS'
@@ -103,4 +106,25 @@ export function logNotInherited(name: string, path: 'scaffold' | 'seed' | 'seed-
  */
 export function toDeniedMcpServerEntries(dropped: string[]): Array<{ serverName: string }> {
   return dropped.map((serverName) => ({ serverName }))
+}
+
+/**
+ * Card c69a8da2 (cybersec NO-GO on the first pass): per-agent widening of the inherited-MCP
+ * allowlist, read fresh on every call from store/mcp-agent-allowlist.json -- DATA, not code, so
+ * granting an agent an extra server (measured need, e.g. playwright for qa) is a one-line JSON
+ * edit, never a code change. Same fail-closed posture as readInheritableMcpServerNames: a
+ * missing, unreadable or malformed file, or an agent not named in it, is an EMPTY set -- the
+ * narrower (more denied) result, never the wider one, since this governs a security denylist.
+ */
+export function readPerAgentExtraKeep(agentName: string): Set<string> {
+  const path = join(STORE_DIR, 'mcp-agent-allowlist.json')
+  try {
+    if (!existsSync(path)) return new Set()
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>
+    const list = parsed[agentName]
+    if (!Array.isArray(list)) return new Set()
+    return new Set(list.filter((s): s is string => typeof s === 'string'))
+  } catch {
+    return new Set()
+  }
 }

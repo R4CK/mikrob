@@ -92,7 +92,7 @@ export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists:
   return prefix
 }
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited, toDeniedMcpServerEntries } from './mcp-inheritance.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, readPerAgentExtraKeep, logNotInherited, toDeniedMcpServerEntries } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
@@ -1374,18 +1374,38 @@ function provisionIsolatedConfigDir(
     // on every provision, same posture as enabledPlugins above: recomputed from the current root
     // .mcp.json + allowlist, never preserved stale from an older copy. The main agent is exempt
     // (its config mirrors the operator's own, same exemption as readInheritableMcpServerNames).
+    //
+    // Card c69a8da2 (cybersec NO-GO): root .mcp.json was the ONLY source considered here, but the
+    // operator's own user-level ~/.claude.json carries MCP servers (filesystem, Stitch, hostinger,
+    // playwright, measured 2026-11-23) that reach every agent the exact same way root .mcp.json
+    // does -- a prior fix that wrote deniedMcpServers directly into an agent's settings.json as a
+    // one-off edit was silently erased by the NEXT provision, because this block recomputed from
+    // root-only data (which never names those servers) and force-set the field to that narrower
+    // result. Folding the user-level set into the SAME computation closes that gap structurally:
+    // the denylist is correct again every time this function runs, not just once. The per-agent
+    // extra-keep (readPerAgentExtraKeep) and the agent's own project-scope .mcp.json entries
+    // (projectScopedServerNames, already used by the seed/gap-fill paths above) both widen what
+    // THIS agent specifically is allowed to keep, without touching the global list.
     if (name === MAIN_AGENT_ID) {
       delete settings.deniedMcpServers
     } else {
-      const rootMcpPath = join(PROJECT_ROOT, '.mcp.json')
-      let rootServers: Record<string, unknown> = {}
-      if (existsSync(rootMcpPath)) {
+      const readMcpServers = (path: string): Record<string, unknown> => {
+        if (!existsSync(path)) return {}
         try {
-          const parsed = JSON.parse(readFileSync(rootMcpPath, 'utf-8')) as { mcpServers?: unknown }
-          if (isPlainObject(parsed.mcpServers)) rootServers = parsed.mcpServers as Record<string, unknown>
-        } catch { /* unparseable root file -- nothing to deny-list from it */ }
+          const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { mcpServers?: unknown }
+          return isPlainObject(parsed.mcpServers) ? (parsed.mcpServers as Record<string, unknown>) : {}
+        } catch {
+          return {}
+        }
       }
-      const { dropped } = filterInheritableMcpServers(rootServers, readInheritableMcpServerNames())
+      const rootServers = readMcpServers(join(PROJECT_ROOT, '.mcp.json'))
+      const userServers = readMcpServers(join(homedir(), '.claude.json'))
+      const allowed = new Set([
+        ...readInheritableMcpServerNames(),
+        ...readPerAgentExtraKeep(name),
+        ...projectScopedServerNames(cwd),
+      ])
+      const { dropped } = filterInheritableMcpServers({ ...rootServers, ...userServers }, allowed)
       settings.deniedMcpServers = toDeniedMcpServerEntries(dropped)
     }
     // Keys the isolated file already carries that the shared file never

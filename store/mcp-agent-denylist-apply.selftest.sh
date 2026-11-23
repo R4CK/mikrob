@@ -88,6 +88,37 @@ check "rollback clears agentB's deniedMcpServers" \
 check "rollback clears agentC's deniedMcpServers" \
   bash -c "python3 -c \"import json; assert json.load(open('\$1')).get('deniedMcpServers') == []\"" _ "$MAIN/agents/agentC/.claude-config/settings.json"
 
+# --- cybersec LOW-1: a PRESENT but unparseable user config aborts the whole run, not "deny nothing" -
+cp "$WORK/fake-claude.json" "$WORK/fake-claude.json.bak"
+printf 'not json' > "$WORK/fake-claude.json"
+out_low1="$(bash "$SCRIPT" --dry-run 2>&1)"; rc_low1=$?
+check "LOW-1: unparseable user config refuses (nonzero exit), not a silent empty report" test "$rc_low1" != 0
+check "LOW-1: no per-agent deny line is printed at all" \
+  bash -c "! echo \"\$1\" | grep -q 'deny:'" _ "$out_low1"
+mv "$WORK/fake-claude.json.bak" "$WORK/fake-claude.json"
+
+cp "$WORK/fake-allowlist.json" "$WORK/fake-allowlist.json.bak"
+printf 'not json' > "$WORK/fake-allowlist.json"
+out_low1b="$(bash "$SCRIPT" --dry-run 2>&1)"; rc_low1b=$?
+check "LOW-1: unparseable allowlist file also refuses, not a silent fallback to {}" test "$rc_low1b" != 0
+mv "$WORK/fake-allowlist.json.bak" "$WORK/fake-allowlist.json"
+
+# --- cybersec LOW-2: apply MERGES with a pre-existing denial, never drops it -----------------------
+mk_agent agentE '{"mcpServers": {}}'
+printf '{"deniedMcpServers": [{"serverName": "evil-pre"}]}' > "$MAIN/agents/agentE/.claude-config/settings.json"
+bash "$SCRIPT" --apply --yes >/dev/null 2>&1
+check "LOW-2: apply keeps a pre-existing unrelated denial (evil-pre) after merging" \
+  bash -c "python3 -c \"import json; d=json.load(open('\$1')); names={e['serverName'] for e in d['deniedMcpServers']}; assert 'evil-pre' in names\"" _ "$MAIN/agents/agentE/.claude-config/settings.json"
+check "LOW-2: apply ALSO added the computed denylist alongside it" \
+  bash -c "python3 -c \"import json; d=json.load(open('\$1')); names={e['serverName'] for e in d['deniedMcpServers']}; assert 'filesystem' in names\"" _ "$MAIN/agents/agentE/.claude-config/settings.json"
+
+# --- cybersec LOW-2: rollback removes only what THIS mechanism computed, not the unrelated entry ---
+bash "$SCRIPT" --rollback --yes >/dev/null 2>&1
+check "LOW-2: rollback removed the computed names (filesystem) for agentE" \
+  bash -c "python3 -c \"import json; d=json.load(open('\$1')); names={e['serverName'] for e in d['deniedMcpServers']}; assert 'filesystem' not in names\"" _ "$MAIN/agents/agentE/.claude-config/settings.json"
+check "LOW-2: rollback left the pre-existing unrelated denial (evil-pre) untouched" \
+  bash -c "python3 -c \"import json; d=json.load(open('\$1')); names={e['serverName'] for e in d['deniedMcpServers']}; assert 'evil-pre' in names\"" _ "$MAIN/agents/agentE/.claude-config/settings.json"
+
 # --- mutant-adjacent control: an agent missing settings.json entirely is skipped, not crashed -------
 mkdir -p "$MAIN/agents/agentD"
 printf '%s' '{"mcpServers": {}}' > "$MAIN/agents/agentD/.mcp.json"

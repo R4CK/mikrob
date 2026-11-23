@@ -47,6 +47,19 @@ NEVER_DENY="code-review-graph,context7"
 
 say() { echo "mcp-agent-denylist-apply: $*"; }
 
+# cybersec LOW-1: a PRESENT but unparseable user config or allowlist file used to silently
+# become an empty set (load_keys()'s own try/except), so --apply would then over-deny (every
+# global server denied for every agent) or under-deny (every agent's extra-keep lost) without any
+# sign anything was wrong. A torn read is not hypothetical here -- the claude CLI itself rewrites
+# ~/.claude.json often. Fail CLOSED the other way: a file that EXISTS but does not parse aborts
+# the whole run instead of silently feeding a wrong set into every agent's computation.
+validate_json_file() {
+  local path="$1" label="$2"
+  [ -f "$path" ] || return 0
+  python3 -I -c "import json,sys; json.load(open(sys.argv[1]))" "$path" 2>/dev/null \
+    || { echo "mcp-agent-denylist-apply: $label at $path exists but is not valid JSON -- refusing to compute anything from it." >&2; return 1; }
+}
+
 compute_for_agent() {
   # prints the denylist (comma-separated, may be empty) for one agent on stdout
   local agent="$1"
@@ -78,6 +91,9 @@ print(",".join(sorted(deny)))
 PYEOF
 }
 
+# cybersec LOW-2: apply used to REPLACE deniedMcpServers wholesale, so a denial someone else put
+# there (an unrelated security decision) was silently wiped on the first apply. Now MERGES: the
+# computed names are UNION-ed with whatever the file already carries, never dropped.
 apply_for_agent() {
   local agent="$1" deny_csv="$2"
   local settings="$AGENTS_DIR/$agent/.claude-config/settings.json"
@@ -85,26 +101,36 @@ apply_for_agent() {
   python3 -I - "$settings" "$deny_csv" <<'PYEOF'
 import json, sys
 settings_path, deny_csv = sys.argv[1:3]
-deny = [s for s in deny_csv.split(",") if s]
+computed = {s for s in deny_csv.split(",") if s}
 with open(settings_path) as f:
     data = json.load(f)
-data["deniedMcpServers"] = [{"serverName": s} for s in deny]
+existing = data.get("deniedMcpServers") or []
+existing_names = {e.get("serverName") for e in existing if isinstance(e, dict) and e.get("serverName")}
+merged = sorted(existing_names | computed)
+data["deniedMcpServers"] = [{"serverName": s} for s in merged]
 with open(settings_path, "w") as f:
     json.dump(data, f, indent=4)
     f.write("\n")
 PYEOF
 }
 
+# cybersec LOW-2 (rollback side): used to set deniedMcpServers=[] unconditionally, which would
+# also wipe an unrelated denial someone else added. Rollback now removes ONLY the names THIS
+# mechanism would currently compute for that agent, leaving anything else in the file untouched.
 rollback_for_agent() {
-  local agent="$1"
+  local agent="$1" deny_csv="$2"
   local settings="$AGENTS_DIR/$agent/.claude-config/settings.json"
   [ -f "$settings" ] || { say "SKIP $agent: no settings.json at $settings"; return 1; }
-  python3 -I - "$settings" <<'PYEOF'
+  python3 -I - "$settings" "$deny_csv" <<'PYEOF'
 import json, sys
-settings_path = sys.argv[1]
+settings_path, deny_csv = sys.argv[1:3]
+computed = {s for s in deny_csv.split(",") if s}
 with open(settings_path) as f:
     data = json.load(f)
-data["deniedMcpServers"] = []
+existing = data.get("deniedMcpServers") or []
+existing_names = {e.get("serverName") for e in existing if isinstance(e, dict) and e.get("serverName")}
+remaining = sorted(existing_names - computed)
+data["deniedMcpServers"] = [{"serverName": s} for s in remaining]
 with open(settings_path, "w") as f:
     json.dump(data, f, indent=4)
     f.write("\n")
@@ -125,6 +151,8 @@ main() {
 
   [ -f "$USER_CONFIG" ] || { echo "mcp-agent-denylist-apply: no user config at $USER_CONFIG" >&2; return 3; }
   [ -d "$AGENTS_DIR" ] || { echo "mcp-agent-denylist-apply: no agents dir at $AGENTS_DIR" >&2; return 3; }
+  validate_json_file "$USER_CONFIG" "user config" || return 3
+  validate_json_file "$ALLOWLIST_FILE" "per-agent allowlist" || return 3
 
   if [ "$MODE" != "dry-run" ] && [ "$CONFIRMED" != 1 ]; then
     echo "mcp-agent-denylist-apply: --apply/--rollback requires --yes (read the --dry-run report first). Refusing." >&2
@@ -152,9 +180,11 @@ main() {
         fi
         ;;
       rollback)
-        if rollback_for_agent "$agent"; then
+        local deny_csv
+        deny_csv="$(compute_for_agent "$agent")"
+        if rollback_for_agent "$agent" "$deny_csv"; then
           touched=$((touched + 1))
-          say "rolled back $agent: deniedMcpServers=[]"
+          say "rolled back $agent: removed ${deny_csv:-(none)}"
         fi
         ;;
     esac
