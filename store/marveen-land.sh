@@ -492,8 +492,14 @@ sync_live_install() {
     # a step that exists nowhere in code, so the next dependency-bump land hits the exact same gap.
     # This does not auto-install either (same risk, unchanged) -- it only makes the gap loud instead
     # of silent, by diffing the two lockfile-relevant files across the fast-forward.
-    if ! git -C "$MAIN" diff --quiet "$before" HEAD -- package.json package-lock.json 2>/dev/null; then
-      say "live install's package.json/package-lock.json changed by this fast-forward -- run 'npm ci --include=dev' in $MAIN by hand (card 5d365589 N3), or the live node_modules stays on the OLD dependency set"
+    # card 426adb21: a blind diff --quiet on both files fired on EVERY landing, because
+    # bump_fork_version (above) touches package.json's "version" field every time. Measured
+    # 2026-11-20: 4+ landings in one day advised npm ci with package-lock.json byte-identical and
+    # package.json differing only in "version" -- one agent ran it, needlessly risky against a
+    # concurrent fleet-test.sh reading the same node_modules. npm_ci_advisory_needed (sourced
+    # above) only fires on a real lockfile change or a package.json change outside "version".
+    if npm_ci_advisory_needed "$MAIN" "$before" HEAD; then
+      say "live install's package.json/package-lock.json changed by this fast-forward -- run 'npm ci --include=dev' in $MAIN by hand (card 5d365589 N3, refined by card 426adb21), or the live node_modules stays on the OLD dependency set"
     fi
   else
     say "live install ($MAIN) NOT fast-forwarded (dirty tree or diverged) -- sync it by hand, tell MikroB"
@@ -569,6 +575,8 @@ rebuild_live_install() {
 . "$(dirname "$0")/bump-fork-version.sh"
 # shellcheck source=./bump-upstream-version.sh
 . "$(dirname "$0")/bump-upstream-version.sh"
+# shellcheck source=./npm-ci-advisory-check.sh
+. "$(dirname "$0")/npm-ci-advisory-check.sh"
 # downward_check (card dfff9b37): what ELSE rides along in origin/develop..<branch>. Shared verbatim
 # with cleancore-land.sh. REPORTS here by default and refuses only under --card <id> -- the reason
 # is measured and written out in landing-downward-check.sh's header (marveen lands whole agent
@@ -603,6 +611,18 @@ rebuild_live_install() {
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
+  # Card 8ca1f91d (MikroB comment 20797/20816): --selftest re-invokes "$0" as a REAL subprocess
+  # (the fixturecard/degraded-orchestrator-guard cases below), which goes through the SAME
+  # land-run-journal.sh path a genuine run would -- when $0 is the live checkout (this script run
+  # directly against /home/neon/marveen, not an agent's own worktree), that writes real
+  # "fixturecard" rows into the LIVE store/land-runs.jsonl (measured: exactly this wrote 4 such
+  # rows there). Route every nested subprocess at its own throwaway journal for the whole
+  # --selftest run, and verify at the end that the file the DEFAULT path would have used is
+  # untouched.
+  _SELFTEST_DEFAULT_JOURNAL="$(dirname "$0")/land-runs.jsonl"
+  _SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_JOURNAL_TMPDIR="$(mktemp -d)"
+  export LAND_RUN_JOURNAL_FILE="$_SELFTEST_JOURNAL_TMPDIR/land-runs.jsonl"
   agent_of() { case "$1" in agent/*/work) b="${1#agent/}"; echo "${b%/work}" ;; *) echo "" ;; esac; }
   t "extracts agent name from a work branch" "$(agent_of 'agent/backend/work')" "backend"
   t "rejects a non-agent branch" "$(agent_of 'develop')" ""
@@ -610,6 +630,16 @@ if [ "${1:-}" = "--selftest" ]; then
   # Downward range check (card dfff9b37) -- the cases live in the shared lib so the two landers
   # cannot end up testing different things about the same code.
   downward_selftest_cases
+
+  # CYBERED NO-GO LOW (card 8ca1f91d, comment 33127, mutants L10/L11): a grep pin on THIS file's
+  # own source, not a stubbed call -- a future edit that drops DOWNWARD_CHECK_REPO from either
+  # land_one's or the batch-landing loop's downward_check call silently reintroduces the original
+  # 5dd0842a false positive, with the 404-exemption tests above giving no signal (they stub around
+  # the env var entirely). Lives here, not in the shared lib, because only marveen-land.sh has a
+  # Szotasz/marveen upstream remote to wire this for at all.
+  t "both downward_check call sites (land_one + batch landing) export DOWNWARD_CHECK_REPO" \
+    "$(grep -c 'DOWNWARD_CHECK_REPO="\$wt" downward_check' "$0")" "2"
+
   # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
   conflict_marker_selftest_cases
 
@@ -1228,11 +1258,17 @@ print(rest[19])
   # run's totals.
   rfk_script="$(dirname "$0")/marveen-land-run-fg-killable.selftest.sh"
   if [ -f "$rfk_script" ]; then
-    rfk_out="$(bash "$rfk_script" 2>&1)"
+    rfk_out="$(bash "$rfk_script" 2>&1)"; rfk_rc=$?
     rfk_cases=$(printf '%s\n' "$rfk_out" | grep -c '^  ok \|^  FAIL ')
     n=$((n + rfk_cases))
     printf '%s\n' "$rfk_out" | grep '^  ok \|^  FAIL '
     printf '%s\n' "$rfk_out" | grep -q '^  FAIL ' && fail=1
+    # M1 fix (card 07f1fe6e delta, CYBERSEC GO 29356 M1): a FATAL inside the nested script exits 1
+    # without printing any '  FAIL' line, so grep never fires and the vacuous run reads as PASS.
+    [ "$rfk_rc" -eq 0 ] || { echo "  FAIL marveen-land-run-fg-killable.selftest.sh exited $rfk_rc (FATAL or crash -- see output above)"; fail=1; }
+    # Minimum case count guards against a silent early-exit that produces zero output lines:
+    # the nested script currently has 7 cases; fewer means it bailed before finishing.
+    [ "$rfk_cases" -ge 7 ] || { echo "  FAIL rfk_cases=$rfk_cases < 7 expected -- nested selftest bailed early or its output format changed"; fail=1; }
   else
     echo "  FAIL marveen-land-run-fg-killable.selftest.sh not found next to $0 -- wiring broken"; fail=1
   fi
@@ -1330,6 +1366,28 @@ STUBEOF
   rm -rf "$CRASHBIN"
   rm -rf "$(dirname "$DGSW")"
 
+  # Card cf03d401 (MikroB, urgent): a straight before/after `wc -l` equality check races every
+  # OTHER concurrent land, which legitimately appends its own started/heartbeat/finished lines to
+  # this SAME live file via land-run-journal.sh while this selftest is still running (measured:
+  # fullstack f8fde8e9 v3 got 103777 want 103773, diff 4; fron-ted f1e33cfb retry3 got 104257 want
+  # 104253 -- both refused with nothing actually wrong). The guard's real intent (comment above)
+  # is narrower than "the file must not change": it only needs to catch THIS selftest run leaking
+  # its own fixture rows through the live path instead of $LAND_RUN_JOURNAL_FILE. So check content,
+  # not count -- scan only the lines appended since this run started, for this run's own markers
+  # (the literal "fixturecard" card id every fixture invocation above uses, and this run's own
+  # tmpdir path, which would appear if LAND_RUN_JOURNAL_FILE's value itself got logged verbatim by
+  # a leaking line). A concurrent sibling's real rows never contain either string.
+  _SELFTEST_DEFAULT_JOURNAL_LINES_AFTER="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_LEAKED_LINE=""
+  if [ "$_SELFTEST_DEFAULT_JOURNAL_LINES_AFTER" -gt "$_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE" ]; then
+    _SELFTEST_LEAKED_LINE="$(tail -n "+$((_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE + 1))" "$_SELFTEST_DEFAULT_JOURNAL" 2>/dev/null \
+      | grep -F -e "fixturecard" -e "$_SELFTEST_JOURNAL_TMPDIR" || true)"
+  fi
+  t "the LIVE land-runs.jsonl journal (default path) gained no fixture row from this --selftest run" \
+    "$([ -n "$_SELFTEST_LEAKED_LINE" ] && echo "LEAKED" || echo "clean")" \
+    "clean"
+  rm -rf "$_SELFTEST_JOURNAL_TMPDIR"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -1426,6 +1484,83 @@ acquire_land_lock() {
   # itself) -- a selftest pin below greps for that invariant across the whole file.
   release_land_lock_fd
   return 1
+}
+
+# gate_sha_tip_check (card 9d9d5ab2): the e9e1e771/35f67e7d Gate-SHA tip-vs-REVIEW check, extracted
+# out of land_one so land_batch's per-card loop can reuse the SAME logic instead of re-implementing
+# it (CYBERSEC FOLLOW-UP-A on e9e1e771: land_batch had no such check at all, a BEHIND ref was
+# accepted by --batch --dry-run).
+#
+# Usage: gate_sha_tip_check <card> <branch> <agent> <work_sha> <allow_ungated 0|1>
+# Returns: 0 (no mismatch, or tolerated by allow_ungated) | 4 (refused, message already on stderr)
+# Sets GATE_SHA_TIP_TOLERATED_REASON (global, non-empty iff rc=0 because allow_ungated tolerated a
+# mismatch/unresolvable sha) -- the caller decides what to do with it (land_one calls
+# _note_ungated_landing, land_batch folds it into surv_ungated_reason).
+gate_sha_tip_check() {
+  local card="$1" branch="$2" agent="$3" work_sha="$4" allow_ungated="$5"
+  GATE_SHA_TIP_TOLERATED_REASON=""
+  [ -n "$card" ] || return 0
+
+  local _gsha_verdict; _gsha_verdict="$(card_review_gate_sha "$card")"
+  local _gsha_kind="${_gsha_verdict%%|*}" _gsha_detail="${_gsha_verdict#*|}"
+  [ "$_gsha_kind" = "OK" ] || return 0
+
+  # rule 4b's multi-commit Gate-SHA line names several commits the card's own work rides on
+  # together (e.g. a fix + its docs commit); the LAST one is the newest claim this REVIEW makes.
+  local -a _gsha_list; IFS=',' read -ra _gsha_list <<<"$_gsha_detail"
+  local _latest_gate_sha="${_gsha_list[${#_gsha_list[@]}-1]}"
+  _latest_gate_sha="${_latest_gate_sha// /}"
+  [ -n "$_latest_gate_sha" ] || return 0
+
+  # Card 35f67e7d: resolve the REVIEW's Gate-SHA to its full 40-char commit sha before comparing.
+  # work_sha (the caller's) is already full; a short Gate-SHA naming the SAME commit failed the old
+  # raw string compare and was then misread by the ancestry fallback as the tip being BEHIND --
+  # false REFUSED, hit live landing both cf678d23 and 7c2f9564. An unresolvable or ambiguous Gate-
+  # SHA refuses explicitly here too, never silently treated as "no mismatch".
+  local _latest_gate_sha_resolved
+  _latest_gate_sha_resolved="$(g rev-parse --verify "${_latest_gate_sha}^{commit}" 2>/dev/null)"
+  if [ -z "$_latest_gate_sha_resolved" ]; then
+    if [ "$allow_ungated" = "1" ]; then
+      say "$agent: Gate-SHA mismatch (card 35f67e7d): card $card's latest REVIEW Gate-SHA '$_latest_gate_sha' does not resolve to a commit -- TOLERATED by --allow-ungated"
+      GATE_SHA_TIP_TOLERATED_REASON="Gate-SHA '$_latest_gate_sha' unresolvable (card 35f67e7d)"
+      return 0
+    fi
+    echo "$agent: REFUSED -- card $card's latest REVIEW Gate-SHA '$_latest_gate_sha'" >&2
+    echo "$agent: does not resolve to a commit (unknown or ambiguous prefix) -- fails" >&2
+    echo "$agent: CLOSED rather than silently skip the check (card 35f67e7d). Post a" >&2
+    echo "$agent: REVIEW naming an unambiguous sha, or override with --allow-ungated if" >&2
+    echo "$agent: this is deliberate." >&2
+    return 4
+  fi
+
+  [ "$work_sha" != "$_latest_gate_sha_resolved" ] || return 0
+
+  local _gsha_mismatch=""
+  if g merge-base --is-ancestor "$work_sha" "$_latest_gate_sha_resolved" 2>/dev/null; then
+    _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is BEHIND card $card's latest REVIEW Gate-SHA $_latest_gate_sha_resolved -- this ref was never updated to the sha the REVIEW actually claims (card e9e1e771, the 0ae1166e shape)"
+  elif g merge-base --is-ancestor "$_latest_gate_sha_resolved" "$branch" 2>/dev/null; then
+    local _gsha_non_churn
+    _gsha_non_churn="$(g log --name-only --format= "${_latest_gate_sha_resolved}..$branch" \
+      | awk 'NF' | sort -u | awk -F/ '{print $NF}' \
+      | grep -vxE 'package\.json|DECISIONS\.md|README\.md' || true)"
+    if [ -n "$_gsha_non_churn" ]; then
+      _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is AHEAD of card $card's latest REVIEW Gate-SHA $_latest_gate_sha_resolved with a non-churn commit touching: $(echo "$_gsha_non_churn" | tr '\n' ' ') -- that commit was never reviewed/gated (card e9e1e771)"
+    fi
+  else
+    _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) does not contain card $card's latest REVIEW Gate-SHA $_latest_gate_sha_resolved at all (neither is an ancestor of the other) -- this card/<id> ref looks stale or unrelated (card e9e1e771)"
+  fi
+  [ -n "$_gsha_mismatch" ] || return 0
+
+  if [ "$allow_ungated" = "1" ]; then
+    say "$agent: Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch -- TOLERATED by --allow-ungated"
+    GATE_SHA_TIP_TOLERATED_REASON="Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch"
+    return 0
+  fi
+  echo "$agent: REFUSED -- Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch." >&2
+  echo "$agent: Fetch and branch -f card/$card to the Gate-SHA, or re-push and post a" >&2
+  echo "$agent: new REVIEW naming the current tip, then re-run. Override with" >&2
+  echo "$agent: --allow-ungated if this is deliberate." >&2
+  return 4
 }
 
 land_one() {
@@ -1573,6 +1708,27 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     return 0
   fi
 
+  # Card e9e1e771: the 507e8167 check above only runs on the "already an ancestor of develop"
+  # shortcut -- $branch genuinely has unlanded work by this point. But unlanded is not the same as
+  # the RIGHT commit: gate_verdict_check (further down) only asks "is there a verdict for the EXACT
+  # sha about to land", which an old, still-valid-looking verdict on a SUPERSEDED sha satisfies on
+  # its own. Measured live on 0ae1166e: the local card/<id> ref sat one commit BEHIND the sha the
+  # latest REVIEW actually claimed (the missing commit was a selftest fix), and nothing here asked --
+  # fleet-test, not this check, was the only thing that happened to catch it. The mirror case is a
+  # ref AHEAD of the Gate-SHA with a commit nobody reviewed at all. Compare the branch tip against
+  # the card's LATEST REVIEW Gate-SHA (same helper the 507e8167 check uses) and refuse on either
+  # direction, unless the only difference is per-landing churn (package.json/DECISIONS.md/README.md,
+  # the same set gate-closure-check.py already treats as not worth re-gating).
+  #
+  # Card 9d9d5ab2: this is now gate_sha_tip_check (defined above land_one) so land_batch's per-card
+  # loop can reuse the exact same logic instead of re-implementing it.
+  if [ -n "$LAND_CARD" ]; then
+    gate_sha_tip_check "$LAND_CARD" "$branch" "$agent" "$work_sha" "$CARD_ALLOW_UNGATED"
+    local _gsha_tip_rc=$?
+    [ "$_gsha_tip_rc" -eq 0 ] || return "$_gsha_tip_rc"
+    [ -z "$GATE_SHA_TIP_TOLERATED_REASON" ] || _note_ungated_landing "$agent" "$LAND_CARD" "$GATE_SHA_TIP_TOLERATED_REASON"
+  fi
+
   local wt="/home/neon/marveen-land-${agent}-$$"
   rm -rf "$wt"
   g worktree add --detach -q "$wt" "origin/$DEFAULT_BRANCH" || die 3 "could not create the landing worktree for $agent"
@@ -1605,7 +1761,10 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # decision 3 in landing-downward-check.sh.
   local down_log
   down_log="$(g log --no-merges --format='%h%x09%s' "origin/$DEFAULT_BRANCH..$branch")"
-  downward_check "$down_log" "$LAND_CARD" "$ALLOW_STACKED" "$([ -n "$LAND_CARD" ] && echo 1 || echo 0)" "$agent" || {
+  # DOWNWARD_CHECK_REPO (card 8ca1f91d, Cybersec NO-GO F1): $wt shares marveen's own `upstream`
+  # remote config (it is a worktree of $MAIN, not a separate clone), so the 404-card exemption can
+  # confirm a citing commit is actually reachable from upstream/develop, not merely forged/deleted.
+  DOWNWARD_CHECK_REPO="$wt" downward_check "$down_log" "$LAND_CARD" "$ALLOW_STACKED" "$([ -n "$LAND_CARD" ] && echo 1 || echo 0)" "$agent" || {
     echo "$agent: REFUSED -- commits belonging to OTHER cards are in $branch. Nothing merged, nothing pushed."
     return 4
   }
@@ -2099,9 +2258,12 @@ land_with_retry() {
   # wrapped tree (no job-control subshell to reparent onto) and now orphan it instead -- a
   # regression in the opposite direction from M1. HUP and INT are trappable, so they get the same
   # group-kill as TERM. KILL cannot be trapped by any shell (SIGKILL always goes straight to
-  # default disposition) -- a group-directed KILL kills every process in the group including the
-  # wrapped tree itself, so nothing orphans; a lander-pid-only KILL still orphans the tree, same
-  # inherent gap TERM had before this fix and with no code-level mitigation possible.
+  # default disposition). With set -m, run_fg_killable puts the wrapped subshell in its OWN
+  # process group (pgid = that subshell's pid), not the lander's group. A group-directed KILL to
+  # the LANDER's group therefore does NOT reach the wrapped tree and still orphans it -- same
+  # inherent gap as a lander-pid-only KILL, with no code-level mitigation possible.
+  # (card 07f1fe6e delta, CYBERSEC GO 29356 L1: prior comment incorrectly stated group KILL killed
+  # the wrapped tree; Cybersec measured the orphan.)
   _land_sig_stop() { # $1 = signal name (TERM/HUP/INT), $2 = its POSIX exit code (128+signum)
     _run_finished=1
     [ -n "${run_fg_killable_pid:-}" ] && kill -"$1" -- "-$run_fg_killable_pid" 2>/dev/null
@@ -2144,6 +2306,53 @@ land_with_retry() {
     [ -n "$_run_id" ] && bash "$_ljd" heartbeat "$_run_id" >/dev/null 2>&1 || true
     say "$agent: another agent landed during the merge+test window -- re-merging onto the new origin/$DEFAULT_BRANCH and verifying again (attempt $attempt/$MAX_ATTEMPTS)"
   done
+}
+
+# Card c4590365 (Peti 13835): one inter-agent message when a single-run land (--card or plain-agent
+# mode) finishes, so the calling agent does not have to poll/tail/sleep on this process. Mirrors
+# fleet-test.sh's fleet_test_notify_finish -- same /api/messages, self-addressed (from=caller,
+# to=caller; "from":"system" is rejected with HTTP 403, reserved for in-process senders), best-effort, never
+# changes $rc. Deliberately NOT wired into land_batch's internal land_with_retry fallback loop
+# (line ~2253): that loop's $agent is a batch survivor, not "the agent that started this run" --
+# the batch's own caller already gets ONE result via its own return path, and a single survivor's
+# fallback-path finish is not the run the caller is waiting on.
+land_notify_finish() { # $1=caller_agent $2=rc $3=card_id (may be empty) $4=dry (1 if --dry-run, may be empty)
+  local caller="$1" rc="$2" card="${3:-}" dry="${4:-0}" tf
+  tf="$(_kc_token_file 2>/dev/null)" || return 0
+  [ -f "$tf" ] || return 0
+  local verdict
+  # WhiteHat F-B MEDIUM (card c4590365, comment 34613): land_one's dry-run branch (line ~1937)
+  # returns 0 on a PREVIEW that never pushed anything -- without this check that rc=0 maps to
+  # "LANDED" the same as a real landing, so a caller told "wait for the message, do not poll"
+  # would be told a dry-run push actually happened. Checked BEFORE the rc table so dry always wins.
+  if [ "$dry" = "1" ]; then
+    verdict="DRY-RUN"
+  else
+    case "$rc" in
+      0) verdict="LANDED" ;;
+      2) verdict="BAD-USAGE" ;;
+      3) verdict="REFUSED" ;;
+      4) verdict="FAILED" ;;
+      *) verdict="UNKNOWN" ;;
+    esac
+  fi
+  # "from": caller, not "system" -- the dashboard rejects "system" over this Bearer-token HTTP
+  # API with 403 "from is reserved for in-process system senders" (curl is never in-process).
+  # A self-addressed message (from==to==caller) is accepted. Measured live, card c4590365: the
+  # fleet-test.sh sibling of this function had used "system" the same way and every call 403'd
+  # silently (best-effort, never surfaced).
+  local payload
+  payload="$(python3 -c '
+import json, sys
+card = sys.argv[3] or "n/a"
+print(json.dumps({"from": sys.argv[1], "to": sys.argv[1],
+                   "content": "[marveen-land.sh] " + sys.argv[2] + " (exit " + sys.argv[4] + ")\n" +
+                              "agent=" + sys.argv[1] + " card=" + card}))
+' "$caller" "$verdict" "$card" "$rc" 2>/dev/null)"
+  [ -n "$payload" ] || return 0
+  printf 'Authorization: Bearer %s\n' "$(cat "$tf")" \
+    | curl -fsS -m 15 -o /dev/null -H @- -H 'Content-Type: application/json' \
+      -X POST "$KANBAN_COMMENT_API/api/messages" --data-binary "$payload" 2>/dev/null || true
 }
 
 # BATCHED LANDING (card 6ec8e9d8, MikroB plan-grilling GO msg 18291/comment 30593). Merges several
@@ -2304,7 +2513,7 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     return 0
   }
 
-  local card agent branch pre_head land_sha down_log mb merge_err conflicted gate_rc desig_rc work_sha
+  local card agent branch pre_head land_sha down_log mb merge_err conflicted gate_rc desig_rc work_sha gsha_tip_rc
 
   _batch_drop() { # $1 = card id, $2 = reason -- names the drop out loud, not just into the journal
     drop_cards+=("$1"); drop_reasons+=("$2")
@@ -2336,7 +2545,8 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     fi
 
     down_log="$(git -C "$wt" log --no-merges --format='%h%x09%s' "$pre_head..$branch")"
-    if ! downward_check "$down_log" "$card" "$ALLOW_STACKED" 1 "$agent" 2>/dev/null; then
+    # DOWNWARD_CHECK_REPO (card 8ca1f91d, Cybersec NO-GO F1) -- same reasoning as land_one's call.
+    if ! DOWNWARD_CHECK_REPO="$wt" downward_check "$down_log" "$card" "$ALLOW_STACKED" 1 "$agent" 2>/dev/null; then
       _batch_drop "$card" "foreign-card commits on $branch (downward check)"; continue
     fi
 
@@ -2349,6 +2559,23 @@ print(json.dumps({"mode":"batch","cards":sys.argv[1].split(",") if sys.argv[1] e
     case ",$(printf '%s' "$ALLOW_UNGATED_CARDS" | tr 'A-F' 'a-f' | tr -d '[:space:]')," in
       *",$card,"*) card_ungated_ok=1 ;;
     esac
+
+    # Card 9d9d5ab2 (CYBERSEC FOLLOW-UP-A on e9e1e771): the same tip-vs-latest-REVIEW-Gate-SHA
+    # check land_one's single-card path runs, reused here via gate_sha_tip_check (not
+    # re-implemented) so a card whose card/<id> tip is BEHIND/AHEAD-with-ungated-code/unrelated to
+    # its own latest REVIEW's Gate-SHA is dropped, not merged, same rules including the
+    # DECISIONS.md/package.json/README.md churn exception. One card's mismatch only drops that
+    # card -- the loop's own `continue` lets the rest of the batch proceed.
+    gate_sha_tip_check "$card" "$branch" "$agent" "$work_sha" "$card_ungated_ok"
+    gsha_tip_rc=$?
+    if [ "$gsha_tip_rc" -ne 0 ]; then
+      _batch_drop "$card" "Gate-SHA mismatch vs latest REVIEW (card 9d9d5ab2, reusing the e9e1e771/35f67e7d check -- see the refusal above for BEHIND/AHEAD/unresolvable detail)"
+      continue
+    fi
+    if [ -n "$GATE_SHA_TIP_TOLERATED_REASON" ]; then
+      surv_ungated_reason[$card]="${surv_ungated_reason[$card]:+${surv_ungated_reason[$card]}; }$GATE_SHA_TIP_TOLERATED_REASON"
+    fi
+
     GATE_CHECK_OVERRIDE_ARMED="$card_ungated_ok" gate_verdict_check "$card" "$land_sha" refuse >/dev/null 2>&1
     gate_rc=$?
     if [ "$gate_rc" -eq 2 ]; then
@@ -2690,6 +2917,102 @@ if [ "${1:-}" = "--selftest-land-lock-release-inner" ]; then
   echo
   if [ "$fail" -eq 0 ]; then echo "selftest-land-lock-release: $n case(s), PASS"; exit 0
   else echo "selftest-land-lock-release: $n case(s), FAIL"; exit 1
+  fi
+fi
+
+# Self-test for land_notify_finish (card c4590365). Same reason as --selftest-land-lock-release
+# above: the function is defined after the main --selftest block's exit point, so it has to be
+# called for real, through a real stub HTTP server, not reasoned about from source text.
+if [ "${1:-}" = "--selftest-land-notify" ]; then
+  LNTMP="$(mktemp -d)"
+  cat >"$LNTMP/stub.py" <<'EOS'
+import http.server, os, socketserver, sys
+LOG_FILE = os.environ["STUB_POST_LOG"]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        with open(LOG_FILE, "a") as f:
+            f.write(self.path + "\t" + body.decode(errors="replace") + "\n")
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a):
+        pass
+with socketserver.TCPServer(("127.0.0.1", 0), H) as httpd:
+    print(httpd.server_address[1]); sys.stdout.flush()
+    httpd.serve_forever()
+EOS
+  STUB_POST_LOG="$LNTMP/post.log" python3 "$LNTMP/stub.py" >"$LNTMP/port.txt" 2>"$LNTMP/stub-err.txt" &
+  stub_pid=$!
+  trap 'kill "$stub_pid" 2>/dev/null; rm -rf "$LNTMP"' EXIT
+  for _i in $(seq 1 50); do [ -s "$LNTMP/port.txt" ] && break; sleep 0.1; done
+  stub_port="$(cat "$LNTMP/port.txt" 2>/dev/null)"
+  exec env STUB_POST_LOG="$LNTMP/post.log" \
+    KANBAN_COMMENT_API="http://127.0.0.1:$stub_port" \
+    KANBAN_COMMENT_TOKEN_FILE="$LNTMP/token" \
+    bash "$0" --selftest-land-notify-inner "$LNTMP" "$stub_pid"
+fi
+
+if [ "${1:-}" = "--selftest-land-notify-inner" ]; then
+  LNTMP="$2"; stub_pid="$3"
+  trap 'kill "$stub_pid" 2>/dev/null; rm -rf "$LNTMP"' EXIT
+  echo dummy-token >"$KANBAN_COMMENT_TOKEN_FILE"
+  fail=0; n=0
+
+  n=$((n+1))
+  land_notify_finish "fullstack" 0 "card-abc"
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  path="${line%%$'\t'*}"; body="${line#*$'\t'}"
+  if [ "$path" = "/api/messages" ] \
+    && printf '%s' "$body" | grep -q '"to": *"fullstack"' \
+    && printf '%s' "$body" | grep -q '"from": *"fullstack"' \
+    && printf '%s' "$body" | grep -q 'LANDED (exit 0)' \
+    && printf '%s' "$body" | grep -q 'card=card-abc'; then
+    echo "  ok   land_notify_finish(rc=0): posts to /api/messages, from=caller, to=caller, LANDED, correct card"
+  else
+    echo "  FAIL land_notify_finish(rc=0): path=[$path] body=[$body]"; fail=1
+  fi
+
+  n=$((n+1))
+  : >"$STUB_POST_LOG"
+  land_notify_finish "backend" 3 ""
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  body="${line#*$'\t'}"
+  if printf '%s' "$body" | grep -q '"to": *"backend"' \
+    && printf '%s' "$body" | grep -q 'REFUSED (exit 3)' \
+    && printf '%s' "$body" | grep -q 'card=n/a'; then
+    echo "  ok   land_notify_finish(rc=3, no card): REFUSED verdict, card falls back to n/a"
+  else
+    echo "  FAIL land_notify_finish(rc=3): body=[$body]"; fail=1
+  fi
+
+  # WhiteHat F-B MEDIUM (comment 34613): a --dry-run preview returns rc=0, same as a real landing
+  # -- without the dry flag this would post "LANDED" for a run that never pushed anything.
+  n=$((n+1))
+  : >"$STUB_POST_LOG"
+  land_notify_finish "fullstack" 0 "card-abc" "1"
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  body="${line#*$'\t'}"
+  if printf '%s' "$body" | grep -q 'DRY-RUN (exit 0)' \
+    && ! printf '%s' "$body" | grep -q 'LANDED'; then
+    echo "  ok   land_notify_finish(rc=0, dry=1): DRY-RUN verdict, never LANDED"
+  else
+    echo "  FAIL land_notify_finish(rc=0, dry=1): body=[$body]"; fail=1
+  fi
+
+  # Negative control (guards-that-pin-behaviour): with no readable token file, nothing is posted.
+  n=$((n+1))
+  rm -f "$KANBAN_COMMENT_TOKEN_FILE"
+  : >"$STUB_POST_LOG"
+  land_notify_finish "fullstack" 0 "card-abc"
+  if [ ! -s "$STUB_POST_LOG" ]; then
+    echo "  ok   land_notify_finish with no token file: no POST sent (fail-silent, never blocks the land)"
+  else
+    echo "  FAIL land_notify_finish with no token file: a POST was sent anyway: $(cat "$STUB_POST_LOG")"; fail=1
+  fi
+
+  echo
+  if [ "$fail" -eq 0 ]; then echo "selftest-land-notify: $n case(s), PASS"; exit 0
+  else echo "selftest-land-notify: $n case(s), FAIL"; exit 1
   fi
 fi
 
@@ -3707,6 +4030,86 @@ print(json.dumps({
     echo "  FAIL case S: s1 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/s1" "origin/develop" 2>/dev/null && echo yes || echo no), s2 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/s2" "origin/develop" 2>/dev/null && echo yes || echo no); output:"; echo "$out_s" | sed 's/^/    /'; fail=1
   fi
 
+  # --- case T (card 9d9d5ab2, reusing the e9e1e771/35f67e7d Gate-SHA tip check in batch mode): a
+  # card whose branch tip is BEHIND its latest REVIEW's Gate-SHA (t1) and a card AHEAD of it with a
+  # non-churn commit (t2) must both be DROPPED by the batch -- same rule land_one's single-card path
+  # already enforces (e9e1e771), reused here via gate_sha_tip_check (card 9d9d5ab2) rather than
+  # re-implemented. A clean, ordinary card (t3) in the SAME batch call must still land: one card's
+  # mismatch refusal must not silently stop the others.
+  n=$((n+1))
+  MAIN="$(_lb_mkmain caseT)"
+  _lb_mkcard t1 t1.txt hello
+  T1_OLD="$(git -C "$MAIN" rev-parse card/t1)"
+  git -C "$MAIN" checkout -q -b t1-newer card/t1
+  echo "t1 fix" >"$MAIN/t1-fix.txt"
+  git -C "$MAIN" add t1-fix.txt
+  git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m "card t1: the fix a later REVIEW claims"
+  T1_NEW="$(git -C "$MAIN" rev-parse t1-newer)"
+  git -C "$MAIN" checkout -q develop
+
+  _lb_mkcard t2 t2.txt hello
+  T2_GATED="$(git -C "$MAIN" rev-parse card/t2)"
+  git -C "$MAIN" checkout -q card/t2
+  echo "t2 extra, never reviewed" >"$MAIN/t2-extra.txt"
+  git -C "$MAIN" add t2-extra.txt
+  git -C "$MAIN" -c user.email=t@t -c user.name=t commit -q -m "card t2: unreviewed extra change"
+  T2_TIP="$(git -C "$MAIN" rev-parse card/t2)"
+  git -C "$MAIN" checkout -q develop
+
+  _lb_mkcard t3 t3.txt hello
+  T3_TIP="$(git -C "$MAIN" rev-parse card/t3)"
+
+  python3 -c '
+import json
+print(json.dumps([
+  {"id": "t1", "description": "Gate: qa"},
+  {"id": "t2", "description": "Gate: qa"},
+  {"id": "t3", "description": "Gate: qa"},
+]))' >"$LBTMP/caseT-kanban.json"
+  python3 -c '
+import json, sys
+t1_new, t1_old, t2_gated, t2_tip, t3_tip = sys.argv[1:6]
+print(json.dumps({
+  "t1": [{"author": "backend", "content": f"REVIEW: ready\nGate-SHA: {t1_new}"},
+         {"author": "qa", "content": f"QA PASS\nGate-SHA: {t1_old}"}],
+  "t2": [{"author": "backend", "content": f"REVIEW: ready\nGate-SHA: {t2_gated}"},
+         {"author": "qa", "content": f"QA PASS\nGate-SHA: {t2_tip}"}],
+  "t3": [{"author": "backend", "content": f"REVIEW: ready\nGate-SHA: {t3_tip}"},
+         {"author": "qa", "content": f"QA PASS\nGate-SHA: {t3_tip}"}],
+}))' "$T1_NEW" "$T1_OLD" "$T2_GATED" "$T2_TIP" "$T3_TIP" >"$LBTMP/caseT-comments.json"
+  : >"$LBTMP/caseT-post-log"
+  : >"$LBTMP/caseT-gate-port"
+  STUB_KANBAN_LIST_FILE="$LBTMP/caseT-kanban.json" STUB_COMMENTS_FILE="$LBTMP/caseT-comments.json" \
+    STUB_POST_LOG="$LBTMP/caseT-post-log" python3 "$LBTMP/stub-dashboard-gates.py" \
+    >"$LBTMP/caseT-gate-port" 2>/dev/null &
+  t_gate_stub_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$LBTMP/caseT-gate-port" ] && break
+    sleep 0.2
+  done
+  t_gate_stub_port="$(cat "$LBTMP/caseT-gate-port" 2>/dev/null)"
+  echo dummy >"$LBTMP/caseT-token"
+  export STUB_COUNTER_FILE="$LBTMP/caseT-count"
+  TEST_CMD="$LBTMP/stub-ok.sh"
+  ALLOW_UNGATED_CARDS=""
+  GATE_CHECK_API="http://127.0.0.1:${t_gate_stub_port}" GATE_CHECK_TOKEN_FILE="$LBTMP/caseT-token" \
+    KANBAN_COMMENT_API="http://127.0.0.1:${t_gate_stub_port}" KANBAN_COMMENT_TOKEN_FILE="$LBTMP/caseT-token" \
+    land_batch 0 "t1:fixture" "t2:fixture" "t3:fixture" >"$LBTMP/out-t.txt" 2>&1
+  out_t="$(cat "$LBTMP/out-t.txt")"
+  kill "$t_gate_stub_pid" 2>/dev/null; wait "$t_gate_stub_pid" 2>/dev/null
+  git -C "$MAIN" fetch -q origin develop 2>/dev/null
+  if printf '%s' "$out_t" | grep -q "dropping t1 -- Gate-SHA mismatch" \
+     && printf '%s' "$out_t" | grep -q "dropping t2 -- Gate-SHA mismatch" \
+     && printf '%s' "$out_t" | grep -q "BEHIND" \
+     && printf '%s' "$out_t" | grep -q "t2-extra.txt" \
+     && git -C "$MAIN" merge-base --is-ancestor "card/t3" "origin/develop" 2>/dev/null \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/t1" "origin/develop" 2>/dev/null \
+     && ! git -C "$MAIN" merge-base --is-ancestor "card/t2" "origin/develop" 2>/dev/null; then
+    echo "  ok   case T (card 9d9d5ab2): t1 (BEHIND its latest REVIEW Gate-SHA) and t2 (AHEAD with a non-churn commit) are both dropped by the SAME check land_one uses (e9e1e771/35f67e7d, reused via gate_sha_tip_check), t3 (clean) still lands -- one card's mismatch does not silently stop the batch"
+  else
+    echo "  FAIL case T: t1 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/t1" "origin/develop" 2>/dev/null && echo yes || echo no), t2 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/t2" "origin/develop" 2>/dev/null && echo yes || echo no), t3 landed=$(git -C "$MAIN" merge-base --is-ancestor "card/t3" "origin/develop" 2>/dev/null && echo yes || echo no); output:"; echo "$out_t" | sed 's/^/    /'; fail=1
+  fi
+
   # --- case E: --batch is the ONLY entry point -- its absence leaves land_one/land_with_retry's
   # own code path untouched (flag off = byte-identical to today, per the design). Proven by the
   # EXISTING --selftest-land-lock-release cases above still passing unmodified -- restated here as
@@ -3841,8 +4244,9 @@ if [ "$TARGET" = "--card" ]; then
   [ -n "$CARD_AGENT" ] || die 2 "--card requires --agent <name> for attribution (locking, fleet-test queue, version-bump commit message)"
   LAND_CARD="$CARD_BRANCH_ID"
   CARD_BRANCH_MODE=1
-  land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"
-  exit $?
+  land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"; _land_rc=$?
+  land_notify_finish "$CARD_AGENT" "$_land_rc" "$CARD_BRANCH_ID" "$DRY"
+  exit "$_land_rc"
 fi
 
 # Card 6ec8e9d8 (MikroB GO, msg 18291/comment 30593): `marveen-land.sh --batch <id1>:<agent1>,<id2>:<agent2>,...`
@@ -3948,7 +4352,8 @@ case "$TARGET" in
     ;;
   '') die 2 "usage: marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]] | marveen-land.sh --card <id> --agent <agent> [--dry-run] | marveen-land.sh --all [--dry-run]" ;;
   *)
-    land_with_retry "$TARGET" "$DRY"
-    exit $?
+    land_with_retry "$TARGET" "$DRY"; _land_rc=$?
+    land_notify_finish "$TARGET" "$_land_rc" "${LAND_CARD:-}" "$DRY"
+    exit "$_land_rc"
     ;;
 esac

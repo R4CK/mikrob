@@ -230,7 +230,15 @@ describe('AC8: the window is applied in SQL before the LIMIT, in every branch', 
     }
   })
 
+  // Card e7a591cb: hybridSearch() always awaits generateEmbedding() (db.ts ~9088), even when the
+  // keyword leg alone already answers the query -- so this case made a REAL network call to the
+  // embedding service with no row's embedding column populated to even use the result. Normally
+  // fast, but under concurrent fleet load that real call occasionally outran vitest's 5000ms test
+  // timeout, refusing unrelated lands. Stub fetch like the vector-leg test below does; none of
+  // this test's rows carry an embedding, so vectorSearch still returns nothing and the expected
+  // fts=1; vector=0 trace is unchanged -- only the real I/O is removed.
   it('hybrid, keyword leg: windowed before fusion', async () => {
+    vi.stubGlobal('fetch', async () => ({ json: async () => ({ embedding: [1, 0, 0] }) }))
     const pad = 'egyeb reszletek '.repeat(12)
     insertRow({ content: `${pad} billingo ${pad}`, createdAt: TARGET_TS })
     for (let i = 0; i < NOISE_ROWS; i++) insertRow({ content: `billingo billingo hiba ${i}`, keywords: 'billingo', createdAt: NOISE_TS + i })

@@ -41,6 +41,16 @@ describe('validateFleetPythonVenvDir (card 2bf0d884)', () => {
     expect(validateFleetPythonVenvDir(d)).toMatch(/group- vagy other-writable/)
   })
 
+  // Positive pin for the uid branch specifically (WhiteHat2 13498, card 29803f39):
+  // the above two cases are both mode-based (0o022 bits), so deleting the
+  // separate `st.uid !== uid` check entirely stays green against them. /usr is
+  // mode 755 (not group/other-writable) but root-owned on every real install.
+  it('rejects a directory not owned by this process, e.g. /usr', () => {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null
+    if (uid === 0) return // running as root: nothing to pin
+    expect(validateFleetPythonVenvDir('/usr')).toMatch(/UID-jének tulajdona/)
+  })
+
   it('rejects an other-writable directory', () => {
     const d = tmp(0o707)
     expect(validateFleetPythonVenvDir(d)).toMatch(/group- vagy other-writable/)

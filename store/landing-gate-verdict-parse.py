@@ -19,6 +19,20 @@ import sys
 # sys.path[0] whenever either is run as a script (and both only ever are).
 from gate_author_role import author_role, canonical_gate
 
+# GENERATED-COMMENT AUTHORS (card 60aeca01, F3/F4 -- e7f91eb9/d8d035f8 follow-up). Mirrors
+# gate-closure-check.py's own GENERATED_COMMENT_AUTHORS (and kanban-landed-guard.ts's, TS side) --
+# duplicated, not imported, same reasoning as that file's own comment on the set. Without this, a
+# machine-generated comment (a local-llm draft, or a gate-pretriage candidate note) whose raw,
+# unfenced text happens to start with a verdict-shaped first line and carry a Gate-SHA line for
+# THIS sha is read by the FAIL branch below exactly like a real gate's refusal -- the FAIL branch
+# is deliberately NOT author-role-checked (see its own comment), so nothing else in this file was
+# stopping a generated comment from blocking a landing it never actually gated.
+GENERATED_COMMENT_AUTHORS = {"local-llm", "gate-pretriage"}
+
+
+def _is_generated_author(c):
+    return ((c or {}).get("author") or "").strip().lower() in GENERATED_COMMENT_AUTHORS
+
 # Rule 4c: the verdict word is the comment's FIRST line. Rule 4b: `Gate-SHA:` is its own line.
 #
 # `QA2?` -- A GATE ROLE MAY BE STAFFED BY MORE THAN ONE AGENT (card c52e2823). Rule 4 requires
@@ -58,6 +72,18 @@ CLAIMS = re.compile(r"^(QA)2?\b|^(CYBERSEC|WHITEHAT)2?\b|^(CYBERED|REDHAT)\b", r
 GATE_SHA_LINE = re.compile(r"^\s*Gate-SHA:\s*(.+)", re.I)
 HEX = re.compile(r"[0-9a-f]{7,40}", re.I)
 
+# SUPERSEDES (card 22c4c31f, MikroB Fix-Direction, msg 21415 + comment 33786 on 055114ee). A gate's
+# OWN later verdict on the SAME sha may override its OWN earlier FAIL -- the opt-in the config-only
+# re-gate case (rule 4e) needs, since a config-only fix legitimately keeps the same Gate-SHA and the
+# old FAIL would otherwise outrank the new PASS forever, and --allow-ungated cannot reach a FAILED
+# verdict by design (it only tolerates a MISSING one). Deliberately narrow: this is NOT the same
+# fold the author-role check uses elsewhere (QA2's verdict counts as QA's for the mandatory-gate
+# check) -- here "qa supersedes qa, qa2 supersedes qa2, never cross-role" per the Fix-Direction
+# means the LITERAL author string, because the agent that re-checked and the agent whose earlier
+# FAIL is being lifted must be the same one: a sibling did not necessarily re-run the same check.
+SUPERSEDES_LINE = re.compile(r"^\s*Supersedes:\s*(.+)", re.I)
+COMMENT_ID = re.compile(r"\d+")
+
 
 def shas_in(text):
     found = set()
@@ -67,6 +93,16 @@ def shas_in(text):
             for tok in HEX.findall(m.group(1)):
                 found.add(tok.lower())
     return found
+
+
+def supersedes_ids(text):
+    ids = set()
+    for line in text.split("\n"):
+        m = SUPERSEDES_LINE.match(line)
+        if m:
+            for tok in COMMENT_ID.findall(m.group(1)):
+                ids.add(int(tok))
+    return ids
 
 
 def claimed_role(first_line):
@@ -115,12 +151,20 @@ def main():
         return 0
 
     qa_passes, other_passes, unattributed, fails, any_pass = [], [], [], [], False
+    # fails_by_id: only FAILs that name THIS sha, keyed by comment id -- the thing a later PASS's
+    # Supersedes line can reach. Built incrementally as we scan, so a PASS can only supersede a FAIL
+    # that already appears EARLIER in `comments` (condition (c)): if the FAIL comes later in the
+    # list it simply is not in this dict yet when the PASS is processed, so nothing matches it.
+    fails_by_id = {}
     for c in comments:
         if not isinstance(c, dict):
+            continue
+        if _is_generated_author(c):
             continue
         text = (c.get("content") or "").strip()
         first = text.split("\n")[0].strip()
         who = c.get("author") or "?"
+        cid = c.get("id")
         if PASS.match(first):
             any_pass = True
             if covers(shas_in(text), sha):
@@ -136,13 +180,22 @@ def main():
                 # come from the gate is not that gate's verdict, and that is the cheap half.
                 if author_role(who) != claimed_role(first):
                     unattributed.append(f"{who}: {first[:40]}")
-                # Rule 4 makes QA mandatory on EVERY card; a security gate is risk-tiered on top.
-                # So a lone `CYBERSEC GO` is not evidence the card was gated, only that half of it
-                # was -- it is reported, but it does not satisfy the check.
-                elif QA.match(first):
-                    qa_passes.append(f"{who}: {first[:40]}")
                 else:
-                    other_passes.append(f"{who}: {first[:40]}")
+                    # SUPERSEDES opt-in (card 22c4c31f): a LEGITIMATE PASS (author checked above)
+                    # may name earlier FAIL comment ids to lift. Condition (b), literal author
+                    # match, not the QA/QA2 role-fold -- see the module docstring on SUPERSEDES_LINE.
+                    for target_id in supersedes_ids(text):
+                        target = fails_by_id.get(target_id)
+                        if (target is not None and not target["superseded"]
+                                and target["who"].strip().lower() == who.strip().lower()):
+                            target["superseded"] = True
+                    # Rule 4 makes QA mandatory on EVERY card; a security gate is risk-tiered on
+                    # top. So a lone `CYBERSEC GO` is not evidence the card was gated, only that
+                    # half of it was -- it is reported, but it does not satisfy the check.
+                    if QA.match(first):
+                        qa_passes.append(f"{who}: {first[:40]}")
+                    else:
+                        other_passes.append(f"{who}: {first[:40]}")
         elif FAIL.match(first):
             if covers(shas_in(text), sha):
                 # DELIBERATELY NOT AUTHOR-CHECKED, and the asymmetry is the whole design. An
@@ -150,13 +203,20 @@ def main():
                 # Requiring a role author here would DROP relayed refusals -- MikroB's own
                 # "<GATE> <VERDICT> ELFOGADVA" restatement is the routine shape on this board --
                 # and let a landing proceed over a stated NO-GO. That is strictly worse than the
-                # hole being closed, so a failing verdict stands whoever wrote it.
-                fails.append(f"{who}: {first[:40]}")
+                # hole being closed, so a failing verdict stands whoever wrote it. A relayed FAIL's
+                # `who` (e.g. "mikrob") can never literal-match a real gate author's Supersedes
+                # line, so it stays unsupersedable by construction (Fix-Direction condition (b)).
+                entry = {"who": who, "label": f"{who}: {first[:40]}", "superseded": False}
+                fails.append(entry)
+                if cid is not None:
+                    fails_by_id[cid] = entry
 
     # A failing verdict for THIS sha outranks a passing one: a re-gate after a fix lands a new sha,
-    # so a pass and a fail naming the same sha means the fix was never re-gated.
-    if fails:
-        print("FAILED|" + "; ".join(fails))
+    # so a pass and a fail naming the same sha means the fix was never re-gated -- UNLESS that fail
+    # was explicitly superseded by the opt-in above.
+    active_fails = [f["label"] for f in fails if not f["superseded"]]
+    if active_fails:
+        print("FAILED|" + "; ".join(active_fails))
     elif qa_passes:
         extra = ("; also " + "; ".join(other_passes)) if other_passes else ""
         print("OK|" + "; ".join(qa_passes) + extra)

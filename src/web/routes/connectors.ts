@@ -14,6 +14,8 @@ import { atomicWriteFileSync } from '../atomic-write.js'
 import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } from '../agent-config.js'
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
+import { rejectIfNotHumanAuth } from './auth.js'
+import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf, readVaultAcl, vaultReadRefused, vaultAclMode } from '../vault-acl.js'
@@ -487,9 +489,12 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     // fleet agent holds could otherwise plant an arbitrary command there. Same human-only
     // posture as POST /api/fleet/import?apply=true (fleet.ts, card 68254bd7): a browser session
     // or a device key, never the shared 'token' credential.
-    if (data.scope === 'project' && data.type === 'stdio' && ctx.auth?.kind !== 'session' && ctx.auth?.kind !== 'device') {
-      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Connectors: project-scope stdio add rejected for non-human credential')
-      json(res, { error: 'A project-scope stdio connector requires a browser session or a device key, not the shared agent token.' }, 403)
+    // Card 52114c2f (CYBERED NO-GO 34673, F1): the plain kind!=='session'/'device' check below
+    // treats ANY device key as human, but an agent:<id> device key (card 9655494c) resolves to
+    // the same 'device' shape -- once the fail-closed flag above lifts, any agent holding its
+    // own key could plant a command every other agent loads. rejectIfNotHumanAuth excludes an
+    // agent device key the same way every other human-only write route already does.
+    if (data.scope === 'project' && data.type === 'stdio' && rejectIfNotHumanAuth(ctx)) {
       return true
     }
 

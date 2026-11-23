@@ -688,6 +688,30 @@ export function readAgentCustomProvider(name: string): string | null {
   return null
 }
 
+// Card 11c6cab4 (RedHat R1 follow-up on 657b32f2, comment 14986): readAgentCustomProvider()
+// above collapses "the key is absent" and "the key is present but not a usable non-empty
+// string" (a number, object, array, or an empty/whitespace-only string) to the SAME null --
+// correct for every other caller (they only need "is a provider configured"), but it means a
+// present-but-garbage value is silently read as "not configured", so the launcher's remote
+// refusal (refuseRemoteCustomProvider) and every other customProvider-gated decision never
+// fires. This is the exact "present but unusable silently falls back" failure class the
+// oauthTokenFile field already refuses loudly for (see agent-oauth-token-file.ts's own doc
+// comment) -- same stance, applied here. A malformed/unreadable config file (JSON.parse throws)
+// is NOT this function's concern; it is indistinguishable from "absent" here on purpose, same as
+// readAgentCustomProvider's own catch above -- a config-wide read failure is a different,
+// broader problem than one unusable field.
+export function isAgentCustomProviderFieldUnusable(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    if (!('customProvider' in config)) return false
+    const value = config.customProvider
+    return !(typeof value === 'string' && value.trim())
+  } catch {
+    return false
+  }
+}
+
 // Set (non-empty string) or clear (empty/whitespace/null/undefined) the per-agent custom
 // provider id. A JSON PUT body can send an explicit `null` to mean "clear it", same as empty
 // string -- a request body is attacker/caller-controlled input, so this stays defensive even
@@ -804,10 +828,17 @@ export function listAllAgentNames(): string[] {
 }
 
 export function listAgentNames(): string[] {
-  // Hide technical workers explicitly opted out via the sentinel file. Cheap
-  // fs stat -- one extra existsSync per agent dir per tick; the agent list is
-  // small (~6 today).
+  // Card 23a14ae1: a directory under agents/ with no agent definition is not an agent -- the
+  // 2026-11-06 "Logs" phantom was agents/logs, a plain dir a stray watchdog run had written
+  // watchdog.log/dashboard.log into, with no CLAUDE.md of its own. agentDirNames() stays
+  // permissive (any directory) because it also feeds lifecycle sweeps that must never miss a
+  // real agent; this is the display/migration choke point, so the definition check belongs here.
   return listAllAgentNames().filter((f) => {
+    try { return existsSync(join(AGENTS_BASE_DIR, f, 'CLAUDE.md')) } catch { return false }
+  }).filter((f) => {
+    // Hide technical workers explicitly opted out via the sentinel file. Cheap
+    // fs stat -- one extra existsSync per agent dir per tick; the agent list is
+    // small (~6 today).
     try { return !existsSync(join(AGENTS_BASE_DIR, f, HIDDEN_AGENT_SENTINEL)) } catch { return false }
   })
 }

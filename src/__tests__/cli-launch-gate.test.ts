@@ -11,11 +11,29 @@ import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
-import { tryHandleAgents, refuseIfCliCannotLaunch } from '../web/routes/agents.js'
 import { agentDir, readAgentModel } from '../web/agent-config.js'
 import { scaffoldAgentDir } from '../web/agent-scaffold.js'
 import { CLI_VERSION_OVERRIDE_ENV, resetClaudeCliVersionCache } from '../web/claude-cli-version.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+// Card af6466a5 (WhiteHat L1, 6b10a6b8): POST /api/agents (agent-create) was gated by this card
+// too, but the only test that covered the call site was the source-grep "wiring contract" test
+// below (a text count of `refuseIfCliCannotLaunch(`, comments included) -- it does not drive the
+// route at all, so a regression that deletes the POST call site but leaves a comment mentioning
+// the function name by name would keep the count unchanged and the suite green. The personality
+// generation step (generateClaudeMd/generateSoulMd) and the team-notification write
+// (createAgentMessage) are stubbed: neither is this card's concern, and both are slow/have side
+// effects outside the test (a real LLM call, a real row in the live message queue).
+vi.mock('../web/agent-scaffold.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../web/agent-scaffold.js')>()
+  return { ...orig, generateClaudeMd: vi.fn(async () => '# stub\n'), generateSoulMd: vi.fn(async () => '# stub\n') }
+})
+vi.mock('../db.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../db.js')>()
+  return { ...orig, createAgentMessage: vi.fn() }
+})
+
+const { tryHandleAgents, refuseIfCliCannotLaunch } = await import('../web/routes/agents.js')
 
 const AGENT = 'clitest-6b10a6b8'
 
@@ -125,6 +143,57 @@ describe('PUT /api/agents/:name -- CLI-launch gate wired into the real route', (
     const r = await putModel(AGENT, "x'; id; echo '")
     expect(r.status).toBe(400)
     expect(r.body?.error).not.toContain('Claude Code CLI')
+  })
+})
+
+const POST_AGENT_REFUSED = 'clitest-post-refused-6b10a6b8'
+const POST_AGENT_ALLOWED = 'clitest-post-allowed-6b10a6b8'
+
+async function postAgent(name: string, model: string): Promise<{ status: number; body: any }> {
+  const req = new EventEmitter() as unknown as RouteContext['req']
+  ;(req as unknown as { headers: Record<string, string> }).headers = {}
+  const out: { status: number; body: any } = { status: 0, body: null }
+  const res = {
+    writeHead(status: number) { out.status = status; return res },
+    end(chunk?: string) { if (chunk) out.body = JSON.parse(chunk) },
+    setHeader() {},
+  }
+  const url = new URL('http://localhost:3420/api/agents')
+  process.nextTick(() => {
+    ;(req as unknown as EventEmitter).emit(
+      'data',
+      Buffer.from(JSON.stringify({ name, description: 'cli-launch-gate POST test agent', model })),
+    )
+    ;(req as unknown as EventEmitter).emit('end')
+  })
+  const handled = await tryHandleAgents(
+    { req, res, path: url.pathname, method: 'POST', url } as unknown as RouteContext,
+    join(PROJECT_ROOT, 'web'),
+  )
+  expect(handled).toBe(true)
+  return { status: out.status || 200, body: out.body }
+}
+
+describe('POST /api/agents -- CLI-launch gate wired into the real route', () => {
+  afterEach(() => {
+    rmSync(agentDir(POST_AGENT_REFUSED), { recursive: true, force: true })
+    rmSync(agentDir(POST_AGENT_ALLOWED), { recursive: true, force: true })
+  })
+
+  it('400s and does NOT create the agent when the installed CLI cannot launch the model', async () => {
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.110'
+    const r = await postAgent(POST_AGENT_REFUSED, 'claude-opus-5-5')
+    expect(r.status).toBe(400)
+    expect(r.body?.error).toContain('2.1.280')
+    expect(existsSync(agentDir(POST_AGENT_REFUSED))).toBe(false) // the refusal must happen before scaffolding
+  })
+
+  it('200s and creates the agent on the chosen model once the installed CLI can launch it', async () => {
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.280'
+    const r = await postAgent(POST_AGENT_ALLOWED, 'claude-opus-5-5')
+    expect(r.status).toBe(200)
+    expect(r.body?.ok).toBe(true)
+    expect(readAgentModel(POST_AGENT_ALLOWED)).toBe('claude-opus-5-5')
   })
 })
 

@@ -16,6 +16,46 @@ vi.mock('../gemini-orchestrator.js', () => ({
   }),
 }))
 
+// Card 0291283d: sweep-level coverage of the default (local-LLM) wiring needs the sweep's own
+// db.js reads mocked -- reviewOneCard()'s OWN tests below inject deps directly and never touch
+// these, so this mock has no effect on them.
+let dbCardsById: Record<string, { title: string; description: string | null; project: string | null }> = {}
+let dbCommentsById: Record<string, { author: string; content: string; created_at: number }[]> = {}
+vi.mock('../db.js', () => ({
+  getKanbanCard: vi.fn((id: string) => dbCardsById[id]),
+  getKanbanComments: vi.fn((id: string) => dbCommentsById[id] ?? []),
+  addKanbanComment: vi.fn(),
+  getLabelsForCard: vi.fn(() => []),
+}))
+
+// Card 0291283d: forces the LOCAL model's execFileSync call (gemini-ghost-local.ts's
+// callLocalLlmForGhost) -- a string resolves with that stdout, an object with `status` throws
+// like execFileSync does on a non-zero exit (mirrors local-llm.sh's documented exit codes).
+let forcedLocalLlmResult: string | { status: number } | null = null
+vi.mock('node:child_process', async (orig) => {
+  const real = await orig<typeof import('node:child_process')>()
+  return {
+    ...real,
+    execFileSync: vi.fn((...args: Parameters<typeof real.execFileSync>) => {
+      const file = String(args[0])
+      if (file.includes('local-llm.sh')) {
+        if (forcedLocalLlmResult === null) throw new Error('forcedLocalLlmResult not set in test')
+        if (typeof forcedLocalLlmResult === 'string') return forcedLocalLlmResult
+        throw Object.assign(new Error(`local-llm.sh exit ${forcedLocalLlmResult.status}`), forcedLocalLlmResult)
+      }
+      return real.execFileSync(...args)
+    }),
+    spawnSync: vi.fn((...args: Parameters<typeof real.spawnSync>) => {
+      const argv = (args[1] as string[] | undefined) ?? []
+      // Diagnostic-only llm_ledger write -- never hit the real sqlite DB from a unit test.
+      if (argv.some((a) => String(a).includes('llm-ledger-append.py'))) {
+        return { status: 0, stdout: '' } as ReturnType<typeof real.spawnSync>
+      }
+      return real.spawnSync(...args)
+    }),
+  }
+})
+
 import {
   isEligibleForGeminiDraftReview,
   containsSecretShape,
@@ -33,6 +73,7 @@ import {
   type DraftReviewCardMeta,
 } from '../gemini-orchestrator-draft-review.js'
 import { DRAFTS_DIR } from '../gemini-orchestrator-draft-cleanup.js'
+import { GHOST_LOCAL_MODEL } from '../gemini-ghost-local.js'
 import { GENERATED_COMMENT_AUTHORS } from '../web/kanban-landed-guard.js'
 import { mkdtempSync, mkdirSync, symlinkSync, linkSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -42,6 +83,9 @@ import type { GeminiResult } from '../gemini-client.js'
 beforeEach(() => {
   killSwitchEnabled = false
   fallbackRoute = 'claude'
+  dbCardsById = {}
+  dbCommentsById = {}
+  forcedLocalLlmResult = null
   vi.clearAllMocks()
 })
 
@@ -622,6 +666,31 @@ describe('reviewOneCard() (card 626df838)', () => {
     const result = await reviewOneCard('c1', 'key', deps)
     expect(result.reason).toBe('http')
   })
+
+  // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording outcome='error' on a released
+  // 503 undid releaseSlot's own un-spend (last-row-per-hivas_id semantics). recordDetail must
+  // receive 'blocked' exactly when the slot was released, 'error' otherwise.
+  it('a released 503 records outcome=blocked, not error (card cbeeba61)', async () => {
+    const releaseSlot = vi.fn((): boolean => true)
+    const recordDetail = vi.fn<(hivasId: string, cardId: string, detail: { outcome: string }) => boolean>(() => true)
+    const deps = { ...baseDeps(), releaseSlot, recordDetail }
+    deps.callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'http', httpStatus: 503 }))
+    await reviewOneCard('c1', 'key', deps)
+    expect(releaseSlot).toHaveBeenCalledTimes(1)
+    expect(recordDetail).toHaveBeenCalledTimes(1)
+    expect(recordDetail.mock.calls[0]![2].outcome).toBe('blocked')
+  })
+
+  it('a non-503 failure records outcome=error (the slot stays spent, card cbeeba61)', async () => {
+    const releaseSlot = vi.fn((): boolean => true)
+    const recordDetail = vi.fn<(hivasId: string, cardId: string, detail: { outcome: string }) => boolean>(() => true)
+    const deps = { ...baseDeps(), releaseSlot, recordDetail }
+    deps.callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota', httpStatus: 429 }))
+    await reviewOneCard('c1', 'key', deps)
+    expect(releaseSlot).not.toHaveBeenCalled()
+    expect(recordDetail).toHaveBeenCalledTimes(1)
+    expect(recordDetail.mock.calls[0]![2].outcome).toBe('error')
+  })
 })
 
 // ── reviewCardsStoppingOnCapReached: F4 (card 6b7c2c25) ──────────────────────────────────────
@@ -681,5 +750,62 @@ describe('runGeminiOrchestratorDraftReviewSweep() (card 626df838)', () => {
     const summary = await runGeminiOrchestratorDraftReviewSweep(() => [])
     expect(summary.ran).toBe(true)
     expect(summary.results).toEqual([])
+  })
+})
+
+// Card 0291283d (Peti Telegram 14354): the review call moves to the LOCAL model, off the Gemini
+// budget entirely -- same "default wiring, not just the injected-deps shape" coverage as
+// gemini-orchestrator.test.ts's analogous describe block for the ranking sweep.
+describe('runGeminiOrchestratorDraftReviewSweep default route uses the local LLM, never Gemini (card 0291283d)', () => {
+  const cardId = 'ghostlocal1'
+  const draftDir = join(DRAFTS_DIR, cardId)
+
+  beforeEach(() => {
+    rmSync(draftDir, { recursive: true, force: true })
+    mkdirSync(draftDir, { recursive: true })
+    writeFileSync(join(draftDir, '1-leaf.md'), 'draft body text')
+    dbCardsById[cardId] = { title: 'Boring infra fix', description: 'nothing sensitive', project: 'MikroB' }
+    dbCommentsById[cardId] = [
+      { author: 'local-llm', content: `draft ref: a draft fajlban marad: drafts/${cardId}/1-leaf.md. DRAFT-ONLY:`, created_at: 100 },
+    ]
+  })
+  afterAll(() => rmSync(draftDir, { recursive: true, force: true }))
+
+  it('no callGemini override: local-llm.sh is called with the pinned model, never reaches the network, and the review posts', async () => {
+    killSwitchEnabled = true
+    fallbackRoute = 'gemini'
+    forcedLocalLlmResult = '{"verdict":"USABLE","reason":"fine"}'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network disabled in test -- Gemini must never be reached'))
+
+    const summary = await runGeminiOrchestratorDraftReviewSweep(() => [cardId])
+
+    expect(fetchSpy, '0 Gemini calls (card 0291283d Kesz-ha #1)').not.toHaveBeenCalled()
+    expect(summary.results).toEqual([{ id: cardId, reviewed: true }])
+    const { execFileSync, spawnSync } = await import('node:child_process')
+    const localCall = vi.mocked(execFileSync).mock.calls.find((c) => String(c[0]).includes('local-llm.sh'))
+    expect(localCall, 'local-llm.sh should have been called').toBeDefined()
+    const argv = localCall![1] as string[]
+    expect(argv[argv.indexOf('--model') + 1]).toBe(GHOST_LOCAL_MODEL)
+    const ledgerCall = vi.mocked(spawnSync).mock.calls.find((c) =>
+      (c[1] as string[] | undefined)?.some((a) => String(a).includes('llm-ledger-append.py')),
+    )
+    expect(ledgerCall, 'llm-ledger-append.py should have been called').toBeDefined()
+    const ledgerArgv = ledgerCall![1] as string[]
+    expect(ledgerArgv[ledgerArgv.indexOf('--provider') + 1]).toBe('local')
+    const segedHivoCall = vi.mocked(spawnSync).mock.calls.find((c) =>
+      (c[1] as string[] | undefined)?.some((a) => String(a).includes('seged-hivo.py')),
+    )
+    expect(segedHivoCall, 'scripts/seged-hivo.py (the Gemini budget writer) must NOT be called').toBeUndefined()
+  })
+
+  it('local-llm.sh exits 6 (GPU lock busy): the card is skipped, never falls back to Gemini', async () => {
+    killSwitchEnabled = true
+    fallbackRoute = 'gemini'
+    forcedLocalLlmResult = { status: 6 }
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network disabled in test -- Gemini must never be reached'))
+
+    const summary = await runGeminiOrchestratorDraftReviewSweep(() => [cardId])
+
+    expect(summary.results![0]!.reviewed).toBe(false)
   })
 })

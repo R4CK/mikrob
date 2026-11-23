@@ -301,6 +301,57 @@ def _os_lanc_belyeg(db, card_id, now):
 # nev nem automatikusan hiba -- lasd _felelos_feloldas.
 ISMERT_FELELOSOK = FLEET | {COORDINATOR, GAZDA}
 
+# Card 30aa8b29 R3: ez a szkript nyers INSERT/UPDATE-tel ir a kanban_cards tablaba, tehat a
+# src/web/kanban-assignee-guard.ts write-hataron allo tilasa (assignee=="mikrob", Peti 10943) ide
+# nem ert el -- ez a szkript MAS, vendorolt feloldassal es SAJAT, jogos koordinator-konvencioval
+# dolgozik (COORDINATOR='marveen', amire a FLEETKIVETEL922 teszt szerint SZANDEKOSAN szabad
+# kartyat nyitni), tehat NEM a COORDINATOR konstanst, hanem a MI VALODI flottank tiltott nevet
+# ("mikrob") kell itt is kizarni -- de a letezo gyanus() mar lefedi az ALTALANOS, BARMELY
+# felelosre vonatkozo vegyes-irasrendszeru/homoglifa-csalit (26/27-es teszt a vegyes irasrendszeru
+# uzenetet varja, nem egy koordinator-specifikus uzenetet). Ez a fuggveny CSAK azt a resret zarja,
+# amit gyanus() SZANDEKOSAN nem fed: tiszta ASCII eset/szokoz/irasjel-alakok (gyanus csak nem-ASCII
+# betut nez), es a magyar ekezet-helyettesites (gyanus a magyar ekezeteket kivetel, nem gyanusnak
+# tartja -- lasd isForbiddenAssignee round-5 fixet, kanban-assignee-guard.ts, ugyanez a hianyossag).
+_VALODI_KOORDINATOR_TILTOTT_NEV = 'mikrob'
+
+# Cybered NO-GO FINDING 1 (card 30aa8b29, TS mirror: kanban-assignee-guard.ts hasBidiControl()).
+# A bidi-override spelling (U+202E RLO + "borkim", the name reversed) de-accents/alnum-filters to
+# "borkim" -- not "mikrob" -- so no literal-equality check ever sees that a bidi-aware renderer
+# displays it reversed, i.e. as "mikrob". No legitimate role-agent name needs a bidi control
+# character, so this fails closed on PRESENCE alone.
+_BIDI_CONTROL_CHARS = frozenset('؜‎‏‪‫‬‭‮'
+                                 '⁦⁧⁨⁩')
+
+
+def _van_bidi_vezerlo(s):
+    return any(c in _BIDI_CONTROL_CHARS for c in s)
+
+
+def _csak_betu_szam(s):
+    return ''.join(c for c in s if c.isalnum())
+
+
+def _azonossag_egyezes(s):
+    return _csak_betu_szam(unicodedata.normalize('NFKC', s)).lower()
+
+
+def _ekezet_nelkuli_azonossag(s):
+    nfd = unicodedata.normalize('NFD', _azonossag_egyezes(s))
+    return ''.join(c for c in nfd if not unicodedata.combining(c))
+
+
+def _tiltott_felelos(nev):
+    """Igaz, ha a nev a VALODI flotta koordinatorat ("mikrob") jelenti egy tiszta ASCII
+    eset/szokoz/irasjel/lathatatlan-nem-betu alakban, vagy magyar ekezet-helyettesitessel,
+    vagy barmilyen bidi-vezerlo karaktert tartalmaz (lasd _van_bidi_vezerlo fent).
+    A nem-ASCII BETU-alapu homoglifakat (Cirill/Gorog stb.) szandekosan a letezo gyanus()
+    fogja el, a sajat (altalanos, nem koordinator-specifikus) uzenetevel."""
+    if _van_bidi_vezerlo(nev):
+        return True
+    if _azonossag_egyezes(nev) == _VALODI_KOORDINATOR_TILTOTT_NEV:
+        return True
+    return _ekezet_nelkuli_azonossag(nev) == _VALODI_KOORDINATOR_TILTOTT_NEV
+
 
 def _gazda_figyelmeztetes(conn):
     """A gazdanak cimzett inter-agent ertesites SZERKEZETILEG nem kezbesitheto (GAZDAUZENET921,
@@ -338,6 +389,14 @@ def _felelos_feloldas(nyers):
     nev = nyers.strip()
     if not nev:
         sys.exit('MEGTAGADVA: ures felelos-nev.')
+    # Card 30aa8b29 R3 (Peti 10943): a koordinator SOHA nem lehet felelos -- o kioszt, nem
+    # tulajdonol kartyat. Ez a homoglifa-kapu ELOTT fut, mert maga a "{COORDINATOR}" alak ASCII,
+    # azt a gyanus() nem is nezi.
+    if _tiltott_felelos(nev):
+        sys.exit(f'MEGTAGADVA: a felelos nem lehet a VALODI flotta-koordinator '
+                 f'("{_VALODI_KOORDINATOR_TILTOTT_NEV}"), sem annak egy eset-, szokoz-, irasjel-, '
+                 f'lathatatlan- vagy hasonmas-betus alakja (Peti 10943). (Ez a szkript sajat '
+                 f'COORDINATOR="{COORDINATOR}" konvenciojat NEM erinti.)')
     # HOMOGLIFA: a felelos-mezo a legrosszabb hely egy lathatatlan betucserere -- a nev
     # HELYESNEK LATSZIK, a kartya viszont sajat, egy-elemu oszlopba kerul, es a "kinel all
     # a dontes" kerdesre a tabla csendben rosszul valaszol. Ugyanaz a szures, mint a cimen.

@@ -173,6 +173,17 @@ if [ "${1:-}" = "--selftest" ]; then
   export GIT_ALLOW_PROTOCOL=file
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
+  # Card 8ca1f91d (MikroB comment 20797/20816): --selftest re-invokes "$0" as a REAL subprocess
+  # (the fixturecard/degraded-orchestrator-guard cases below), which goes through the SAME
+  # land-run-journal.sh path a genuine run would -- when $0 is the live checkout, that writes real
+  # "fixturecard" rows into the LIVE store/land-runs.jsonl (measured on the sibling marveen-land.sh:
+  # exactly this wrote 4 such rows there). Route every nested subprocess at its own throwaway
+  # journal for the whole --selftest run, and verify at the end that the file the DEFAULT path
+  # would have used is untouched.
+  _SELFTEST_DEFAULT_JOURNAL="$(dirname "$0")/land-runs.jsonl"
+  _SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_JOURNAL_TMPDIR="$(mktemp -d)"
+  export LAND_RUN_JOURNAL_FILE="$_SELFTEST_JOURNAL_TMPDIR/land-runs.jsonl"
 
   # Self-check for the guard above: a push attempt to a ssh:// URL must be BLOCKED BY GIT ITSELF
   # (not merely refused by this script's own remote-identity check), proving GIT_ALLOW_PROTOCOL is
@@ -448,6 +459,29 @@ STUBEOF
   rm -rf "$CRASHBIN"
 
   rm -rf "$(dirname "$DGSW")"
+
+  # Card cf03d401 (MikroB, urgent): a straight before/after `wc -l` equality check races every
+  # OTHER concurrent land, which legitimately appends its own started/heartbeat/finished lines to
+  # this SAME live file via land-run-journal.sh while this selftest is still running (measured on
+  # marveen-land.sh's identical assert: fullstack f8fde8e9 v3 got 103777 want 103773, diff 4;
+  # fron-ted f1e33cfb retry3 got 104257 want 104253 -- both refused with nothing actually wrong).
+  # The guard's real intent (comment above) is narrower than "the file must not change": it only
+  # needs to catch THIS selftest run leaking its own fixture rows through the live path instead of
+  # $LAND_RUN_JOURNAL_FILE. So check content, not count -- scan only the lines appended since this
+  # run started, for this run's own markers (the literal "fixturecard" card id every fixture
+  # invocation above uses, and this run's own tmpdir path, which would appear if
+  # LAND_RUN_JOURNAL_FILE's value itself got logged verbatim by a leaking line). A concurrent
+  # sibling's real rows never contain either string.
+  _SELFTEST_DEFAULT_JOURNAL_LINES_AFTER="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_LEAKED_LINE=""
+  if [ "$_SELFTEST_DEFAULT_JOURNAL_LINES_AFTER" -gt "$_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE" ]; then
+    _SELFTEST_LEAKED_LINE="$(tail -n "+$((_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE + 1))" "$_SELFTEST_DEFAULT_JOURNAL" 2>/dev/null \
+      | grep -F -e "fixturecard" -e "$_SELFTEST_JOURNAL_TMPDIR" || true)"
+  fi
+  t "the LIVE land-runs.jsonl journal (default path) gained no fixture row from this --selftest run" \
+    "$([ -n "$_SELFTEST_LEAKED_LINE" ] && echo "LEAKED" || echo "clean")" \
+    "clean"
+  rm -rf "$_SELFTEST_JOURNAL_TMPDIR"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail

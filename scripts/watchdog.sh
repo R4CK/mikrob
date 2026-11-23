@@ -2,7 +2,14 @@
 # Watchdog: checks sessions every 5 minutes, restarts if missing.
 # Cron: */5 * * * * ~/marveen/scripts/watchdog.sh
 
-INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Card 23a14ae1: deriving INSTALL_DIR from $0 broke on 2026-11-06 when watchdog.sh ran from an
+# unexpected invocation path and resolved to agents/logs -- it then mkdir -p'd logs/ THERE,
+# which is how a plain log-only directory got listed as a phantom agent on the dashboard.
+# Architecturally this script is never installed/registered by any in-repo step (it needs a
+# crontab entry nothing creates, see scripts/main-inbox-observer.sh's header), so there is no
+# install-time substitution to keep it anchored the way the systemd-launched siblings are.
+# WATCHDOG_INSTALL_DIR lets tests/alternate hosts override it; the default is the one real path.
+INSTALL_DIR="${WATCHDOG_INSTALL_DIR:-/home/neon/marveen}"
 LOG="$INSTALL_DIR/logs/watchdog.log"
 mkdir -p "$INSTALL_DIR/logs"
 

@@ -122,18 +122,29 @@ describe('freellm error section visibility (card fd5fcc2c, RedHat N1 / QA F3 pin
     expect(dom.els.get('freellmLastError')!.textContent).toBe('')
   })
 
-  it('an error payload resets the stale calls/drafts/label instead of leaving the last good values (card 5ae7e8be pt.4 / WhiteHat2 R3)', () => {
-    renderStatus({ enabled: true, calls: 7, drafts: 3 }) // a healthy load first, so there IS stale state to clear
+  // SUPERSEDED by cards 685f25cb (backend2) and ebe20efe (fron-ted) -- independently arrived at
+  // the same fix: the card 5ae7e8be pt.4 / WhiteHat2 R3 decision treated ANY payload.lastError as
+  // "the whole read is untrustworthy" and blanked the real numbers underneath it. In practice the
+  // freellm status endpoint legitimately returns a successful read (HTTP 200, real enabled/
+  // calls/drafts) that ALSO carries the most recent failed call's lastError -- that is a per-call
+  // fact, not evidence the fetch itself failed, and blanking on it hid valid data every time
+  // anything had ever failed. The real "fetch failed, no fresh data at all" case is covered
+  // separately by D3a below, which is unaffected by this change.
+  it('a payload with a real read AND a lastError shows the real numbers beside the error, not dashes (cards 685f25cb/ebe20efe, supersedes 5ae7e8be pt.4)', () => {
+    renderStatus({ enabled: true, calls: 7, drafts: 3 }) // a healthy load first
     expect(dom.els.get('freellmCallsCount')!.textContent).toBe('7')
-    renderStatus({ enabled: true, calls: 7, drafts: 3, lastError: 'connect ECONNREFUSED' })
-    expect(dom.els.get('freellmCallsCount')!.textContent).toBe('—')
-    expect(dom.els.get('freellmDraftsCount')!.textContent).toBe('—')
-    expect(dom.els.get('freellmLabel')!.textContent).toBe('—')
-    expect(dom.els.get('freellmToggle')!.disabled).toBe(true)
-    // A subsequent healthy response re-enables the toggle and restores real numbers.
+    renderStatus({ enabled: true, calls: 7, drafts: 3, lastError: 'FreeLLM call failed: auth_401' })
+    expect(dom.els.get('freellmCallsCount')!.textContent).toBe('7')
+    expect(dom.els.get('freellmDraftsCount')!.textContent).toBe('3')
+    expect(dom.els.get('freellmLabel')!.textContent).toBe('freellm.status.on')
+    expect(dom.els.get('freellmToggle')!.disabled).toBe(false)
+    expect(dom.els.get('freellmErrorSection')!.hidden).toBe(false)
+    expect(dom.els.get('freellmLastError')!.textContent).toBe('FreeLLM call failed: auth_401')
+    // A subsequent clean response (no lastError) hides the error notice and keeps showing numbers.
     renderStatus({ enabled: true, calls: 8, drafts: 3 })
     expect(dom.els.get('freellmCallsCount')!.textContent).toBe('8')
     expect(dom.els.get('freellmToggle')!.disabled).toBe(false)
+    expect(dom.els.get('freellmErrorSection')!.hidden).toBe(true)
   })
 
   it('does not double-escape the error text (RedHat N2 / WhiteHat2 F1 cosmetic fix)', () => {
@@ -366,9 +377,10 @@ describe('D3e: freellmHintLooksSafe enforces its length boundary precisely (card
 })
 
 // --- D4 (RedHat 25333): the Retry button was 68x38px at 375px width, under the 44px touch target
-// (rule 13). Fixed by extending the existing #localLlmPage min-height convention to #freellmPage.
-describe('D4: freellm buttons meet the 44px touch-target minimum (rule 13)', () => {
-  it('scopes a 44px min-height rule to #freellmPage, matching the #localLlmPage convention', () => {
-    expect(CSS).toMatch(/#freellmPage \.btn-compact,\s*\n#freellmPage \.btn-primary,\s*\n#freellmPage \.btn-secondary \{ min-height: 44px; \}/)
+// (rule 13). Fixed by extending the existing #localLlmPage min-height convention to #freellmPage;
+// card f1e33cfb merged both (plus geminiCallsPage) into #providersPage's tabs, re-scoping the rule.
+describe('D4: Providers page buttons meet the 44px touch-target minimum (rule 13)', () => {
+  it('scopes a 44px min-height rule to #providersPage, covering all three merged tabs', () => {
+    expect(CSS).toMatch(/#providersPage \.btn-compact,\s*\n#providersPage \.btn-primary,\s*\n#providersPage \.btn-secondary \{ min-height: 44px; \}/)
   })
 })

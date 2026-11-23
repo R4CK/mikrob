@@ -1618,8 +1618,10 @@ function currentEnabledTask(name: string): ScheduledTask | null {
 // agent for 'all', otherwise the one agent (the main agent when unset).
 function resolveTargetAgents(task: ScheduledTask): string[] {
   if (task.agent === 'all') {
-    // Broadcast to all running agents + main
-    const running = listAgentNames().filter(a => isAgentRunning(a))
+    // Broadcast to all running agents + main. listAgentNames() can include the main agent's own
+    // directory (card e5c13c0e: a leaked/stray agents/<MAIN_AGENT_ID> dir made this happen for
+    // real) -- exclude it here rather than deduping after the fact, since it is always prepended.
+    const running = listAgentNames().filter(a => isAgentRunning(a) && a !== MAIN_AGENT_ID)
     return [MAIN_AGENT_ID, ...running]
   }
   return [task.agent || MAIN_AGENT_ID]
@@ -2610,9 +2612,10 @@ export async function runScheduledTaskNow(
   }
 
   const now = Date.now()
-  const targets = task.agent === 'all'
-    ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
-    : [task.agent || MAIN_AGENT_ID]
+  // Same target-resolution rule as the cron path (resolveTargetAgents) -- was duplicated here
+  // with its own copy of the 'all' branch, which had the same missing MAIN_AGENT_ID-dedupe bug
+  // (card e5c13c0e). Call the one function instead of maintaining two copies.
+  const targets = resolveTargetAgents(task)
 
   const summary: string[] = []
   for (const agentName of targets) {

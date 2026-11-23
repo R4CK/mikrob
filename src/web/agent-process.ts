@@ -40,7 +40,7 @@ import {
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, isAgentCustomProviderFieldUnusable, readAgentExtraChannels, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
 import { provisionFleetSkills } from './skill-map-provisioner.js'
 import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
@@ -90,16 +90,16 @@ import { fleetVenvBin } from '../fleet-venv.js'
 // with a warning, because a fleet venv at such a path is a config mistake).
 // Exported for unit tests; `exists` is the seam.
 export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists: (p: string) => boolean = existsSync): string {
-  const { prefix, refused } = fleetVenvBin(venvDir, exists)
-  if (refused) logger.warn({ venvDir }, 'fleetVenvPathPrefix: venv path is not absolute or contains a shell-active character; PATH prefix skipped')
+  const { prefix, refused, reason } = fleetVenvBin(venvDir, exists)
+  if (refused) logger.warn({ venvDir, reason }, 'fleetVenvPathPrefix: venv path refused, PATH prefix skipped')
   return prefix
 }
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited, toDeniedMcpServerEntries } from './mcp-inheritance.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, readPerAgentExtraKeep, logNotInherited, toDeniedMcpServerEntries } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureLocalFirstSection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureProjectRootAnchor, ensureMessageCloseSection, ensureSkillUsageSection, ensureLanguageSection, ensureStrictApiSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
+import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureLocalFirstSection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureProjectRootAnchor, ensureMessageCloseSection, ensureSkillUsageSection, ensureLanguageSection, ensureStrictApiSection, ensureMemorySaveSection, ensureDailyLogSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -1407,18 +1407,38 @@ function provisionIsolatedConfigDir(
     // on every provision, same posture as enabledPlugins above: recomputed from the current root
     // .mcp.json + allowlist, never preserved stale from an older copy. The main agent is exempt
     // (its config mirrors the operator's own, same exemption as readInheritableMcpServerNames).
+    //
+    // Card c69a8da2 (cybersec NO-GO): root .mcp.json was the ONLY source considered here, but the
+    // operator's own user-level ~/.claude.json carries MCP servers (filesystem, Stitch, hostinger,
+    // playwright, measured 2026-11-23) that reach every agent the exact same way root .mcp.json
+    // does -- a prior fix that wrote deniedMcpServers directly into an agent's settings.json as a
+    // one-off edit was silently erased by the NEXT provision, because this block recomputed from
+    // root-only data (which never names those servers) and force-set the field to that narrower
+    // result. Folding the user-level set into the SAME computation closes that gap structurally:
+    // the denylist is correct again every time this function runs, not just once. The per-agent
+    // extra-keep (readPerAgentExtraKeep) and the agent's own project-scope .mcp.json entries
+    // (projectScopedServerNames, already used by the seed/gap-fill paths above) both widen what
+    // THIS agent specifically is allowed to keep, without touching the global list.
     if (name === MAIN_AGENT_ID) {
       delete settings.deniedMcpServers
     } else {
-      const rootMcpPath = join(PROJECT_ROOT, '.mcp.json')
-      let rootServers: Record<string, unknown> = {}
-      if (existsSync(rootMcpPath)) {
+      const readMcpServers = (path: string): Record<string, unknown> => {
+        if (!existsSync(path)) return {}
         try {
-          const parsed = JSON.parse(readFileSync(rootMcpPath, 'utf-8')) as { mcpServers?: unknown }
-          if (isPlainObject(parsed.mcpServers)) rootServers = parsed.mcpServers as Record<string, unknown>
-        } catch { /* unparseable root file -- nothing to deny-list from it */ }
+          const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { mcpServers?: unknown }
+          return isPlainObject(parsed.mcpServers) ? (parsed.mcpServers as Record<string, unknown>) : {}
+        } catch {
+          return {}
+        }
       }
-      const { dropped } = filterInheritableMcpServers(rootServers, readInheritableMcpServerNames())
+      const rootServers = readMcpServers(join(PROJECT_ROOT, '.mcp.json'))
+      const userServers = readMcpServers(join(homedir(), '.claude.json'))
+      const allowed = new Set([
+        ...readInheritableMcpServerNames(),
+        ...readPerAgentExtraKeep(name),
+        ...projectScopedServerNames(cwd),
+      ])
+      const { dropped } = filterInheritableMcpServers({ ...rootServers, ...userServers }, allowed)
       settings.deniedMcpServers = toDeniedMcpServerEntries(dropped)
     }
     // Keys the isolated file already carries that the shared file never
@@ -2500,6 +2520,15 @@ async function startAgentProcessUnlocked(
   // heuristic in resolveProviderEnv, so a setup-token field cannot "take effect" alongside one
   // either (see agent-oauth-token-file.ts's own isCustomProvider comment).
   const customProviderId = readAgentCustomProvider(name)
+  // Card 11c6cab4 R1: a customProvider value that is PRESENT but not a usable non-empty string
+  // (number, object, empty-after-trim) reads as null above, identical to "not configured" --
+  // which would silently skip every customProvider-gated decision below (the remote refusal,
+  // the oauth-bypass, resolveProviderEnv's own registry lookup). Refuse loudly instead, the same
+  // fail-closed stance oauthTokenFile already takes a few lines above.
+  if (isAgentCustomProviderFieldUnusable(name)) {
+    logger.error({ name }, 'customProvider: agent NOT started (field present but not a usable string, refusing rather than reading it as unset)')
+    return { ok: false, error: 'customProvider: configured value is not a usable non-empty string' }
+  }
   const ownOauth = decideOwnOauthToken({
     configRead: readAgentConfigForOauthDecision(join(dir, 'agent-config.json')),
     isMainAgent: name === MAIN_AGENT_ID,
@@ -2788,6 +2817,8 @@ async function startAgentProcessUnlocked(
     ensureMessageCloseSection(name)
     ensureSkillUsageSection(name)
     ensureLanguageSection(name)
+    ensureMemorySaveSection(name)
+    ensureDailyLogSection(name)
     ensureProjectRootAnchor(name)
     // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
     ensureStrictApiSection(name)

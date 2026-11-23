@@ -157,6 +157,79 @@ foreign_cards() {
 # live board. Reuses gate-closure-check.py's own verdict logic rather than re-deriving "does this
 # card have an unresolved rejection" from raw comments a second time -- that tool already does
 # exactly this, with its own extensive test coverage.
+#
+# Card 8ca1f91d: an upstream (Szotasz/marveen) commit subject can carry "(card 513c886e)" for a
+# card that lives on THEIR board, not ours -- cards_in_subject has no way to tell a foreign-board
+# id from one of our own stacked cards, since both are just 8 hex chars after the word "card". The
+# false positive this card fixes: 5dd0842a (upstream Koteg 25) was refused landing because an
+# upstream commit named card 513c886e, 404 on our board. Confirmed existence, not inferred from a
+# downstream parse failure: a timeout/5xx/malformed response answers "exists" (rc 0), the same
+# fail-closed default downward_check already has for anything it cannot positively rule out.
+#
+# CYBERSEC2 NO-GO F1 (card 8ca1f91d, comment 33098): a bare 404 status is not proof -- a wrong
+# base path, a proxy with no route, a stale dashboard build (card 2dd78397) or GATE_CHECK_API
+# pointed at the wrong service can all answer 404 to EVERY id, which the first version of this
+# function waived as "not a card" across the board. Fail-closed now requires the 404 body to be
+# OUR board's own not-found answer, naming this exact id -- any 404 whose body does not carry
+# that shape still answers "exists", the same posture as an unreachable API or a 5xx.
+#
+# CYBERED NO-GO LOW-MEDIUM (comment 33127, non-blocking): the original `*'"error"'*"$id"*`
+# match is looser than "our board's own not-found answer" -- a DIFFERENT service that happens to
+# echo the requested id inside any "error" field (e.g. `{"error":"Not Found: /api/kanban/<id>"}`
+# or a separate "path" field naming it) would also match. Anchored on the EXACT phrase the
+# dashboard source emits (src/web/routes/kanban.ts, `Kártya nem található: <id>`, measured live)
+# instead of two independent wildcards.
+#   _card_exists_on_board <id>  -- rc 0 = exists (or unknown/unconfirmed), rc 1 = confirmed 404
+_card_exists_on_board() {
+  local id="$1" raw http_code body
+  raw="$(printf 'Authorization: Bearer %s\n' "$(cat "${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}" 2>/dev/null)" \
+    | curl -sS -m 20 -H @- -w '\n%{http_code}' "${GATE_CHECK_API:-http://127.0.0.1:3420}/api/kanban/$id" 2>/dev/null)"
+  [ -n "$raw" ] || return 0
+  http_code="${raw##*$'\n'}"
+  body="${raw%$'\n'*}"
+  [ "$http_code" = "404" ] || return 0
+  case "$body" in
+    *"Kártya nem található: $id"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# CYBERSEC NO-GO F1 (card 8ca1f91d, comment 33090): a confirmed 404 alone is still forgeable by
+# whoever controls the commit subject -- a fleet agent can write "(card 00000000)" for a fabricated
+# id, or DELETE a real card through the open API, and either way the id now 404s like a genuine
+# upstream-board reference. Scoping the exemption to commits that are themselves REACHABLE FROM
+# `upstream/develop` (card's own first option) closes this: a forged or locally-authored commit can
+# never be an ancestor of a remote branch it was never pushed to, no matter what its subject claims.
+# When the caller gives no repo (the other three landers -- cleancore/mopsion/mopsi -- have no
+# Szotasz/marveen upstream relationship at all) or the repo has no `upstream` remote, this always
+# answers "not confirmed", so the 404 exemption never applies there -- same refuse-everything-
+# foreign behaviour those landers already had before this card.
+#
+# CYBERED NO-GO F1 (comment 33127, blocking): the SHORT name `upstream/develop` is ambiguous --
+# git's own disambiguation order tries refs/tags/ and refs/heads/ BEFORE refs/remotes/, so a
+# LOCAL branch or tag literally named `upstream/develop` wins over the real remote-tracking ref.
+# Branches/tags are shared across every worktree of the same repo (unlike HEAD and the index), so
+# one `git branch upstream/develop <forged-sha>` or `git tag upstream/develop <forged-sha>` from
+# ANY agent's worktree -- the same actor this guard exists to distrust -- defeats the whole check
+# for every landing. Measured live by Cybered: rc flips 1 -> 0 the moment either ref is planted.
+# Fully qualifying the ref (`refs/remotes/upstream/develop`) is immune to both, since neither a
+# branch nor a tag can ever share that namespace.
+#   _upstream_ancestor_commits_only <id> <log> <repo>  -- rc 0 = every commit in <log> that names
+#   <id> is an ancestor of upstream/develop in <repo> (and at least one such commit exists); rc 1
+#   otherwise, including "no repo given" and "id named by zero commits" (should not happen -- the
+#   id came from this same log's own distinct_cards).
+_upstream_ancestor_commits_only() {
+  local id="$1" log="$2" repo="$3" sha subj any=0
+  [ -n "$repo" ] || return 1
+  while IFS=$'\t' read -r sha subj; do
+    [ -n "$sha" ] || continue
+    printf '%s\n' "$(cards_in_subject "$subj")" | grep -qx "$id" || continue
+    any=1
+    git -C "$repo" merge-base --is-ancestor "$sha" refs/remotes/upstream/develop 2>/dev/null || return 1
+  done <<< "$log"
+  [ "$any" = "1" ]
+}
+
 _foreign_card_verdict() {
   local id="$1" body verdict
   body="$(printf 'Authorization: Bearer %s\n' "$(cat "${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}" 2>/dev/null)" \
@@ -243,8 +316,36 @@ downward_check() {
   n="$(printf '%s\n' "$log" | grep -c . || true)"
   cards="$(printf '%s\n' "$log" | distinct_cards | tr '\n' ' ')"
   unattr="$(printf '%s\n' "$log" | unattributed_commits)"
-  fgc="$(printf '%s\n' "$log" | foreign_commits "$own" "$allow")"
-  fgn="$(printf '%s\n' "$log" | foreign_cards "$own" "$allow")"
+
+  # Card 8ca1f91d: a card id named in the log that is confirmed 404 on OUR board (an upstream
+  # repo's own card reference, a typo, a deleted card) is not foreign work -- there is nothing of
+  # ours to check or refuse on. Fold confirmed-404 ids into the allow set BEFORE classifying, the
+  # same treatment --allow-stacked gives an id the operator vouches for, so foreign_commits/
+  # foreign_cards (and, downstream, foreign_card_gate_check) never see them as foreign at all.
+  #
+  # CYBERSEC NO-GO F1 (comment 33090): 404 alone is not enough -- also require every commit that
+  # names the id to be an ancestor of upstream/develop in DOWNWARD_CHECK_REPO (unset for the three
+  # landers with no such remote, so the exemption never fires there). See
+  # _upstream_ancestor_commits_only's own header for why a forged/local commit can never pass this.
+  local nonexistent="" _own_lc _allow_lc _repo
+  _own_lc="$(printf '%s' "${own:-}" | tr 'A-F' 'a-f')"
+  _allow_lc=",$(printf '%s' "${allow:-}" | tr 'A-F' 'a-f' | tr -d '[:space:]'),"
+  _repo="${DOWNWARD_CHECK_REPO:-}"
+  while IFS= read -r _nid; do
+    [ -n "$_nid" ] || continue
+    [ "$_nid" = "$_own_lc" ] && continue
+    case "$_allow_lc" in *",$_nid,"*) continue ;; esac
+    if ! _card_exists_on_board "$_nid" && _upstream_ancestor_commits_only "$_nid" "$log" "$_repo"; then
+      nonexistent="$nonexistent,$_nid"
+    fi
+  done <<< "$(printf '%s\n' "$log" | distinct_cards)"
+  local effective_allow="$allow$nonexistent"
+  if [ -n "$nonexistent" ]; then
+    echo "  $label: not fleet cards (404 on this board, not foreign work): ${nonexistent#,}"
+  fi
+
+  fgc="$(printf '%s\n' "$log" | foreign_commits "$own" "$effective_allow")"
+  fgn="$(printf '%s\n' "$log" | foreign_cards "$own" "$effective_allow")"
 
   echo "  $label: $n commit(s) ride along; cards named: ${cards:-none}"
   # An override that leaves no trace is the same silence this check exists to end: without this
@@ -302,6 +403,11 @@ downward_selftest_cases() {
   # here where it could silently drift from the one this file actually ships.
   local real_foreign_card_verdict
   real_foreign_card_verdict="$(declare -f _foreign_card_verdict)"
+  # Same reason, same mechanism, for the newer _card_exists_on_board / _upstream_ancestor_commits_only
+  # (card 8ca1f91d).
+  local real_card_exists_on_board real_upstream_ancestor_commits_only
+  real_card_exists_on_board="$(declare -f _card_exists_on_board)"
+  real_upstream_ancestor_commits_only="$(declare -f _upstream_ancestor_commits_only)"
 
   # Every rc_of/downward_check case below runs foreign_card_gate_check on whatever foreign cards it
   # finds -- stub the network step so the suite needs no dashboard and no network (same reason the
@@ -309,6 +415,15 @@ downward_selftest_cases() {
   # case (no verdict yet at all) rather than accidentally exercising the FAILED path everywhere.
   # Cases further down override this locally to exercise foreign_card_gate_check itself.
   _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
+
+  # Card 8ca1f91d: same reason as the _foreign_card_verdict stub above -- downward_check now also
+  # calls _card_exists_on_board on every distinct card id in the log, and every fixture id in this
+  # suite (11111111, 22222222, ...) is made up, not a real board card. Without this stub the real
+  # curl-based implementation would hit the live dashboard, get a genuine 404 for every one of
+  # them, and fold them ALL into "not a fleet card" -- silently flipping every existing "refuses"
+  # case in this file into a pass. Default to "exists" so the pre-existing cases keep meaning what
+  # they always meant; the 404 cases further down override this locally for the one id under test.
+  _card_exists_on_board() { return 0; }
 
   t "anchored: reads the id after 'card'" \
     "$(cards_in_subject 'feat(x): thing (card 0f7f7fe9, round 4)')" "0f7f7fe9"
@@ -465,6 +580,253 @@ downward_selftest_cases() {
   t "a foreign card that already AGREE-closes does not trip the gate check" \
     "$(rc_of "$L" 11111111 '' 0)" "0"
   _foreign_card_verdict() { echo "MISSING|no gate verdict on this card at all"; }
+
+  # Card 8ca1f91d: the stacked-card false positive this card fixes. An upstream (or otherwise
+  # foreign-board) commit can say "(card <id>)" for an id that is simply not one of our fleet
+  # cards -- 5dd0842a (upstream Koteg 25) was refused this way over card 513c886e, 404 on our
+  # board. A card id that is confirmed 404 AND whose every citing commit is confirmed to be an
+  # upstream/develop ancestor (Cybersec NO-GO F1, comment 33090) must be treated like an
+  # allow-listed one: no refusal, no gate-verdict check (there is nothing of ours to check),
+  # reported so it is never silent. _upstream_ancestor_commits_only is stubbed "confirmed" here so
+  # these cases isolate the 404-fold-in mechanism; the real ancestry check gets its own real-git
+  # cases further below.
+  L="$(printf 'aaa1111\tfeat: own (card 11111111)\nbbb2222\tfeat(upstream): port a thing (card 513c886e)\n')"
+  _card_exists_on_board() { [ "$1" = "513c886e" ] && return 1 || return 0; }
+  _upstream_ancestor_commits_only() { return 0; }
+  t "a 404-and-upstream-ancestor card ref lands WITHOUT --allow-stacked (the upstream-commit false positive)" \
+    "$(rc_of "$L" 11111111)" "0"
+  t "...the 404 id is reported, not silently dropped" \
+    "$(downward_check "$L" 11111111 '' 1 test 2>/dev/null | grep -c 'not fleet cards (404 on this board, not foreign work): 513c886e')" "1"
+  t "...and it is NOT counted among the (empty) foreign cards" \
+    "$(printf '%s\n' "$L" | foreign_cards 11111111 ',513c886e' | grep -c .)" "0"
+  _card_exists_on_board() { return 0; }
+
+  # CYBERSEC NO-GO F1 (comment 33090): a 404 WITHOUT upstream-ancestor confirmation must still
+  # refuse -- the fabricated-id and deleted-card bypass. Same 404 id as above, but the ancestry
+  # check now says "no" (the default when no repo is even given, DOWNWARD_CHECK_REPO unset, same
+  # as the three non-marveen landers always have it).
+  _card_exists_on_board() { [ "$1" = "513c886e" ] && return 1 || return 0; }
+  _upstream_ancestor_commits_only() { return 1; }
+  t "a 404 id with NO upstream-ancestor confirmation (no repo given) is still refused" \
+    "$(rc_of "$L" 11111111)" "1"
+  _card_exists_on_board() { return 0; }
+
+  # The other half of the same acceptance criterion: a card id that DOES exist is not waved away
+  # just because it looks the same shape as the 404 case above -- the existing refusal (tested
+  # extensively above with real fixture ids, _card_exists_on_board stubbed to "exists") still
+  # holds. Re-asserted here explicitly against the 404 path so the two behaviours are pinned side
+  # by side, not just independently plausible.
+  L="$(printf 'aaa1111\tfeat: own (card 11111111)\nbbb2222\tfix: someone else (card 22222222)\n')"
+  t "a REAL, still-existing stacked fleet card is still refused (not swept up by the 404 fix)" \
+    "$(rc_of "$L" 11111111)" "1"
+
+  # CYBERSEC2 NO-GO F1 (comment 33098), the REAL _card_exists_on_board, not a stub -- a bare 404
+  # status from the WRONG service/route (not our board) must not read as "not a card". Restored
+  # from the capture taken before the stub above was ever installed, same reasoning as
+  # c266ec74's own "THE REAL NETWORK PATH" case further down this function (one capture per
+  # function being un-stubbed, taken once at the top of this suite).
+  eval "$real_card_exists_on_board"
+  t "REAL network path: unreachable (connection refused) still answers exists" \
+    "$(GATE_CHECK_API=http://127.0.0.1:1 _card_exists_on_board deadbeef; echo $?)" "0"
+
+  # A real local server that genuinely answers 404, but NOT with our board's own not-found shape
+  # (http.server's stock error page, serving an empty throwaway directory) -- the exact "wrong
+  # service on the port" shape cybersec2's F1 names. python3 -m http.server needs no custom
+  # handler code here; its default 404 body is plain HTML, never `{"error":...}`.
+  tmp="$(mktemp -d)"
+  # Port derived from this process's own pid (not a fixed number) so two concurrent fleet agents
+  # running this same shared-lib selftest never race for the same port.
+  local _fakesrv_port=$((20000 + ($$ % 10000)))
+  python3 -m http.server "$_fakesrv_port" --directory "$tmp" >/dev/null 2>&1 &
+  local _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: a genuine 404 from a server whose body is NOT our board's shape still answers exists" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "0"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+  rm -rf "$tmp"
+
+  # CYBERED non-blocking LOW-MEDIUM/LOW (comment 33127, mutants L2/L3/L4): a custom fake server,
+  # one case each, pinning the exact-phrase match and the status gate against real HTTP responses
+  # (not stubs). _fs_status/_fs_body select the response; log_message is silenced the same way the
+  # plain http.server case above runs quietly.
+  _fakesrv_port=$((20000 + (($$ + 1) % 10000)))
+  _FS_STATUS=404 _FS_BODY='{"error":"Kártya nem található: deadbeef"}' python3 - "$_fakesrv_port" <<'PY' >/dev/null 2>&1 &
+import http.server, os, sys
+port = int(sys.argv[1])
+status = int(os.environ["_FS_STATUS"])
+body = os.environ["_FS_BODY"].encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: our board's EXACT not-found phrase confirms the 404 (positive control for the tightened match)" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "1"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+
+  _fakesrv_port=$((20000 + (($$ + 2) % 10000)))
+  _FS_STATUS=404 _FS_BODY='{"error":"Not Found: /api/kanban/deadbeef"}' python3 - "$_fakesrv_port" <<'PY' >/dev/null 2>&1 &
+import http.server, os, sys
+port = int(sys.argv[1])
+status = int(os.environ["_FS_STATUS"])
+body = os.environ["_FS_BODY"].encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: a 404 that merely echoes the id in an unrelated error field is NOT our board's phrase (kills L2)" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "0"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+
+  _fakesrv_port=$((20000 + (($$ + 3) % 10000)))
+  _FS_STATUS=404 _FS_BODY='' python3 - "$_fakesrv_port" <<'PY' >/dev/null 2>&1 &
+import http.server, os, sys
+port = int(sys.argv[1])
+status = int(os.environ["_FS_STATUS"])
+body = os.environ["_FS_BODY"].encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: a 404 with an EMPTY body still answers exists (kills L4)" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "0"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+
+  _fakesrv_port=$((20000 + (($$ + 4) % 10000)))
+  _FS_STATUS=500 _FS_BODY='{"error":"Kártya nem található: deadbeef"}' python3 - "$_fakesrv_port" <<'PY' >/dev/null 2>&1 &
+import http.server, os, sys
+port = int(sys.argv[1])
+status = int(os.environ["_FS_STATUS"])
+body = os.environ["_FS_BODY"].encode()
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PY
+  _fakesrv_pid=$!
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null -m 1 "http://127.0.0.1:$_fakesrv_port/" && break
+    sleep 0.2
+  done
+  t "REAL network path: a 500 with the board's own not-found phrase (wrong status) still answers exists (kills L3)" \
+    "$(GATE_CHECK_API=http://127.0.0.1:$_fakesrv_port GATE_CHECK_TOKEN_FILE=/dev/null _card_exists_on_board deadbeef; echo $?)" "0"
+  kill "$_fakesrv_pid" >/dev/null 2>&1
+  wait "$_fakesrv_pid" 2>/dev/null
+
+  _card_exists_on_board() { return 0; }
+  _upstream_ancestor_commits_only() { return 1; }
+
+  # CYBERSEC NO-GO F1 (comment 33090), the REAL _upstream_ancestor_commits_only, not a stub -- a
+  # genuinely upstream commit passes, a LOCALLY FORGED commit naming the exact same card id does
+  # not, even though both 404 identically on the board. Builds a real "upstream" remote: one
+  # commit lives only there (the true upstream reference); a second, same-subject commit is
+  # authored locally (the forgery) and is never pushed anywhere -- merge-base --is-ancestor can
+  # only ever say yes for the first.
+  tmp="$(mktemp -d)"
+  (
+    cd "$tmp" || exit 1
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    git init -q upstream-bare --bare
+    git init -q repo && cd repo || exit 1
+    git checkout -q -b develop
+    git commit -q --allow-empty -m 'chore: upstream base'
+    git remote add upstream ../upstream-bare
+    git push -q upstream develop
+    git commit -q --allow-empty -m 'feat(upstream): port a thing (card 513c886e)'
+    git push -q upstream develop
+    git fetch -q upstream
+  ) >/dev/null 2>&1
+  eval "$real_upstream_ancestor_commits_only"
+  local _real_upstream_sha _forged_sha
+  _real_upstream_sha="$(git -C "$tmp/repo" rev-parse upstream/develop)"
+  (
+    cd "$tmp/repo" || exit 1
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+    git reset -q --hard HEAD^
+    # Same card-id subject, but a different TREE (a forged commit never has byte-identical
+    # content to the real one it is impersonating) -- without this, --allow-empty + the same
+    # message + the same second can reproduce the IDENTICAL sha of the already-pushed upstream
+    # commit, which would trivially (and wrongly) pass the ancestor check too.
+    echo forged > forged-marker.txt
+    git add forged-marker.txt
+    git commit -q -m 'feat(upstream): port a thing (card 513c886e)'
+  ) >/dev/null 2>&1
+  _forged_sha="$(git -C "$tmp/repo" rev-parse HEAD)"
+  L="$(printf '%s\tfeat(upstream): port a thing (card 513c886e)\n' "$_real_upstream_sha")"
+  t "REAL git path: a commit that IS an upstream/develop ancestor confirms the id" \
+    "$(_upstream_ancestor_commits_only 513c886e "$L" "$tmp/repo"; echo $?)" "0"
+  L="$(printf '%s\tfeat(upstream): port a thing (card 513c886e)\n' "$_forged_sha")"
+  t "REAL git path: a LOCALLY FORGED commit (same subject, different sha) does NOT confirm the id" \
+    "$(_upstream_ancestor_commits_only 513c886e "$L" "$tmp/repo"; echo $?)" "1"
+  t "REAL git path: no repo given never confirms, even for the real upstream sha" \
+    "$(_upstream_ancestor_commits_only 513c886e "$(printf '%s\tfeat(upstream): port a thing (card 513c886e)\n' "$_real_upstream_sha")" ''; echo $?)" "1"
+
+  # CYBERED NO-GO F1 (comment 33127, BLOCKING): a locally planted branch or tag named exactly
+  # `upstream/develop` must NOT be able to vouch for the forged commit -- git's own ref
+  # disambiguation tries refs/heads/ and refs/tags/ BEFORE refs/remotes/, so the short name
+  # `upstream/develop` resolved to whichever one was planted, defeating the whole guard (measured:
+  # rc flipped 1 -> 0 the moment either was planted, on the pre-fix code). Still the SAME forged
+  # commit (_forged_sha, never pushed anywhere) -- only a shadow ref changes.
+  git -C "$tmp/repo" branch upstream/develop "$_forged_sha"
+  t "REAL git path: a PLANTED LOCAL BRANCH named upstream/develop does not vouch for a forged commit" \
+    "$(_upstream_ancestor_commits_only 513c886e "$L" "$tmp/repo"; echo $?)" "1"
+  git -C "$tmp/repo" branch -D upstream/develop >/dev/null 2>&1
+  git -C "$tmp/repo" tag upstream/develop "$_forged_sha"
+  t "REAL git path: a PLANTED LOCAL TAG named upstream/develop does not vouch for a forged commit either" \
+    "$(_upstream_ancestor_commits_only 513c886e "$L" "$tmp/repo"; echo $?)" "1"
+  git -C "$tmp/repo" tag -d upstream/develop >/dev/null 2>&1
+  # Sensitivity check: with NEITHER shadow ref planted, the real upstream commit still confirms --
+  # proves the two cases above are refused BECAUSE of the fully-qualified ref, not because
+  # merge-base now refuses everything.
+  t "REAL git path: ...and with no shadow ref planted, the real upstream commit still confirms" \
+    "$(_upstream_ancestor_commits_only 513c886e "$(printf '%s\tfeat(upstream): port a thing (card 513c886e)\n' "$_real_upstream_sha")" "$tmp/repo"; echo $?)" "0"
+
+  rm -rf "$tmp"
+  _upstream_ancestor_commits_only() { return 1; }
 
   # Card c266ec74 (Cybersec DELTA NO-GO on Gate-SHA 177dcccf, reproduced live): "could not check" is
   # NOT "checked and clean". Before this fix, neither an unreachable dashboard API nor a broken

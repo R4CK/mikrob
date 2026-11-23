@@ -11,6 +11,8 @@ import { hybridKgSearch, KgSearchError } from '../../kg/search.js'
 import { buildForCardPackage } from '../../kg/for-card.js'
 import { recordKgOffered } from '../../kg/usage.js'
 import { getWorkerHeartbeat, isWorkerActive } from '../../kg/worker-heartbeat.js'
+import { getKgGraph } from '../../kg/graph.js'
+import { recordKgSearchEvent, getKgActivityEvents } from '../../kg/search-events.js'
 import { OLLAMA_URL } from '../../config.js'
 import { logger } from '../../logger.js'
 import type { RouteContext } from './types.js'
@@ -177,6 +179,18 @@ export async function tryHandleKg(ctx: RouteContext): Promise<boolean> {
         snippetMaxLines: numberSetting('KG_SNIPPET_MAX_LINES', 60),
       })
       res.setHeader('X-KG-Search', `relaxed=${meta.relaxed}; hits=${meta.hits}; scope=${meta.scope}`)
+      // Card a1d57d99: best-effort activity log for the live-graph FE -- never breaks the
+      // search response itself, same posture as recordKgOffered below.
+      try {
+        const agent = ctx.auth?.kind === 'token' ? ctx.auth.agent ?? 'unknown' : 'unknown'
+        recordKgSearchEvent(
+          kgDb(),
+          { agent, tsMs: Date.now(), query: q ?? null, hitNodeIds: results.map((r) => r.id) },
+          numberSetting('KG_ACTIVITY_RETENTION_ROWS', 5000)
+        )
+      } catch (err) {
+        logger.warn({ err }, 'kg-search: recordKgSearchEvent failed, search response still served')
+      }
       json(res, { results, meta })
     } catch (err) {
       if (err instanceof KgSearchError) {
@@ -209,14 +223,66 @@ export async function tryHandleKg(ctx: RouteContext): Promise<boolean> {
     // itself -- the agent still gets its for-card answer either way.
     try {
       const offeredIds = [...pkg.solutions, ...pkg.known_pitfalls, ...pkg.decisions].map((e) => e.card_id)
+      const agent = ctx.auth?.kind === 'token' ? ctx.auth.agent ?? 'unknown' : 'unknown'
       if (offeredIds.length > 0) {
-        const agent = ctx.auth?.kind === 'token' ? ctx.auth.agent ?? 'unknown' : 'unknown'
         recordKgOffered(kgDb(), cardId, offeredIds, agent)
       }
+      // Card a1d57d99: same activity log as /api/kg/search, keyed on the for-card caller's agent.
+      recordKgSearchEvent(
+        kgDb(),
+        { agent, tsMs: Date.now(), query: `for-card:${cardId}`, hitNodeIds: offeredIds },
+        numberSetting('KG_ACTIVITY_RETENTION_ROWS', 5000)
+      )
     } catch (err) {
-      logger.warn({ err }, 'kg-for-card: recordKgOffered failed, package still served')
+      logger.warn({ err }, 'kg-for-card: recordKgOffered/recordKgSearchEvent failed, package still served')
     }
     json(res, pkg)
+    return true
+  }
+
+  if (path === '/api/kg/graph' && method === 'GET') {
+    if (!kgEnabled()) {
+      json(res, { error: 'kg_disabled' }, 404)
+      return true
+    }
+    const project = url.searchParams.get('project') ?? undefined
+    if (project && project.length > MAX_Q_LEN) {
+      json(res, { error: 'project_too_long' }, 400)
+      return true
+    }
+    const maxNodes = numberSetting('KG_GRAPH_MAX_NODES', 500)
+    const limitRaw = url.searchParams.get('limit')
+    let limit = maxNodes
+    if (limitRaw !== null && limitRaw.trim() !== '') {
+      const n = parseInt(limitRaw, 10)
+      if (!Number.isFinite(n) || n <= 0) {
+        json(res, { error: 'limit_invalid' }, 400)
+        return true
+      }
+      limit = Math.min(n, maxNodes)
+    }
+    json(res, getKgGraph(kgDb(), project, limit))
+    return true
+  }
+
+  if (path === '/api/kg/activity' && method === 'GET') {
+    if (!kgEnabled()) {
+      json(res, { error: 'kg_disabled' }, 404)
+      return true
+    }
+    const sinceRaw = url.searchParams.get('since')
+    let sinceMs = 0
+    if (sinceRaw !== null && sinceRaw.trim() !== '') {
+      const n = Number(sinceRaw)
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+        json(res, { error: 'since_invalid' }, 400)
+        return true
+      }
+      sinceMs = n
+    }
+    const events = getKgActivityEvents(kgDb(), sinceMs, 500)
+    const fadeDurationMs = numberSetting('KG_ACTIVITY_FADE_MS', 15000)
+    json(res, { events, config: { fadeDurationMs } })
     return true
   }
 

@@ -1,0 +1,19 @@
+{
+  "task": "test-scaffold",
+  "sha256_12": "166992aa8e68",
+  "est_tokens": 1488,
+  "token_cap": 1500,
+  "truncated": true,
+  "sources": [
+    {
+      "path": "/home/neon/.claude/skills/sp-test-driven-development/SKILL.md",
+      "mode": "sections",
+      "sha256_12": "bf1b8216e523"
+    },
+    {
+      "path": "/home/neon/.claude/skills/vitest-react-router-guard/SKILL.md",
+      "mode": "sections",
+      "sha256_12": "976df091d304"
+    }
+  ]
+}

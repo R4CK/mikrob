@@ -374,6 +374,36 @@ fi
 git -C "$TMP/fake-main" worktree remove --force "$TMP/cardtrees/$PREV_CARD2" >/dev/null 2>&1
 
 echo
+echo "-- a done card whose branch ref is an ancestor, but the worktree is DETACHED with an extra unlanded commit, is left alone (L2) --"
+rm -rf "$TMP/markers" "$TMP/cardtrees"
+PREV_CARD3="dddd4444"
+board "$PREV_CARD3:[MikroB] still in progress:done" "$NEXT_CARD:[MikroB] next card:in_progress"
+mkdir -p "$TMP/markers"
+printf '%s' "$PREV_CARD3" > "$TMP/markers/backend2"
+mkdir -p "$TMP/cardtrees"
+git -C "$TMP/fake-main" worktree add -q "$TMP/cardtrees/$PREV_CARD3" -b "card/$PREV_CARD3" HEAD
+git -C "$TMP/cardtrees/$PREV_CARD3" checkout -q --detach
+echo "unlanded work" > "$TMP/cardtrees/$PREV_CARD3/unlanded.txt"
+git -C "$TMP/cardtrees/$PREV_CARD3" add unlanded.txt
+git -C "$TMP/cardtrees/$PREV_CARD3" -c user.email=s@s -c user.name=s commit -qm "detached unlanded commit"
+detached_head3="$(git -C "$TMP/cardtrees/$PREV_CARD3" rev-parse HEAD)"
+STUB_CARD_WORKTREE=1 STUB_ROUTE="$TMP/route-online.sh" run backend2 "$NEXT_CARD" >/dev/null 2>&1; rc=$?
+assert_exit "$rc" 0 "detached-head-previous round -> still picks up"
+if [ -d "$TMP/cardtrees/$PREV_CARD3" ]; then
+  PASS=$((PASS+1)); printf 'OK   a detached-HEAD previous worktree (extra unlanded commit) is left alone (L2)\n'
+else
+  FAIL=$((FAIL+1)); FAILED+=("a detached-HEAD previous worktree with an extra unlanded commit must not be removed (L2)")
+  printf 'FAIL the detached-HEAD previous worktree was removed (L2)\n'
+fi
+if [ -d "$TMP/cardtrees/$PREV_CARD3" ] && [ "$(git -C "$TMP/cardtrees/$PREV_CARD3" rev-parse HEAD)" = "$detached_head3" ]; then
+  PASS=$((PASS+1)); printf 'OK   the detached unlanded commit is still HEAD (not orphaned) (L2)\n'
+else
+  FAIL=$((FAIL+1)); FAILED+=("the detached unlanded commit must still be HEAD, not orphaned by a removal (L2)")
+  printf 'FAIL the detached unlanded commit is gone or no longer HEAD (L2)\n'
+fi
+git -C "$TMP/fake-main" worktree remove --force "$TMP/cardtrees/$PREV_CARD3" >/dev/null 2>&1
+
+echo
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
 if [ "$FAIL" -gt 0 ]; then

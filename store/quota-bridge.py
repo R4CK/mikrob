@@ -32,7 +32,11 @@ alive then) and is deliberately ignored here.
 No secrets are hardcoded: the bot token is read from the telegram channel .env,
 the dashboard token from store/.dashboard-token, both at call time.
 """
-import importlib.util, json, os, re, subprocess, sys, time, urllib.request, urllib.parse, urllib.error, signal
+import datetime, importlib.util, json, os, re, subprocess, sys, time, urllib.request, urllib.parse, urllib.error, signal
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover -- stdlib on every supported runtime (3.9+)
+    ZoneInfo = None
 
 HOME = os.path.expanduser("~")
 MARVEEN = "/home/neon/marveen"
@@ -168,8 +172,89 @@ RECOVERY_PROBE_WINDOW_SEC = 180     # start probing 3 minutes before the known d
 COUNTDOWN_MAX_TRUSTED_SEC = 6 * 3600
 COUNTDOWN_FILE = f"{STORE}/quota-reset-countdown.json"
 
+# --- Banner-derived deadline for a WEEKLY limit (card 7c2f9564) ------------------------------
+#
+# ROOT CAUSE: quota-check.sh writes COUNTDOWN_FILE as a scheduled task running INSIDE
+# mikrob-channels -- the very session a weekly limit freezes -- so for a weekly stop that file
+# never gets written at all, and the "no file -> probe every pass" branch below used to be the
+# only option, which is the flapping Peti reported (Ghost handover / "MikroB is back" alternating
+# every few minutes). This process can always read the live banner itself (mikrob_banner_present
+# already captures the pane), so when the file is absent it tries that first instead of probing
+# blind on every pass.
+#
+# Real captured forms (MikroB's cross-session message, grepped straight from Claude Code
+# transcripts, not a paraphrase -- the separator is U+00B7, a middle dot, not a hyphen):
+#   "You've hit your weekly limit · resets Oct 29, 3pm (Europe/Budapest)"   -- date, no year
+#   "You've hit your weekly limit · resets 3pm (Europe/Budapest)"           -- no date (today)
+#   "You've hit your session limit · resets 12am (UTC)"                      -- tz can be UTC
+#   "You've hit your session limit · resets 10pm (Europe/Budapest)"
+#   "You've reached your weekly limit for Opus."                   -- model-scoped, no reset clause
+#   "You've hit your monthly spend limit · raise it at https://..."         -- no reset clause
+#
+# Re-probing EVERY 2-3 hours while the weekly deadline is known but still far off (Peti's own
+# suggestion) keeps a stale/wrong banner read from latching the Ghost silent for days -- the fail-
+# safe direction is still "probe", this just bounds how often.
+WEEKLY_PROBE_INTERVAL_SEC = 3 * 3600          # re-probe at least this often even when far off
+WEEKLY_DEADLINE_MAX_TRUSTED_SEC = 9 * 24 * 3600   # a weekly reset is at most ~7 days out
+_MONTH_ABBR = {m.lower(): i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1)}
+# Deliberately does NOT match the no-reset-clause forms ("reached your weekly limit for Opus.",
+# "hit your monthly spend limit · raise it at ...") -- neither contains a "resets ..." clause
+# at all, so they fall through to None below, same as truly unparseable text.
+_BANNER_RESET_RE = re.compile(
+    r"resets\s+(?:([A-Za-z]{3,9})\s+(\d{1,2}),?\s*)?"
+    r"(\d{1,2})(?::(\d{2}))?\s*([ap]m)\s*\(\s*([^)]+?)\s*\)",
+    re.I)
 
-def recovery_probe_due(now=None):
+
+def parse_banner_reset_epoch(text, now=None):
+    """Parse a live 'resets ...' clause out of captured pane text into an epoch, or None.
+
+    None covers BOTH fail-safe cases on purpose, and callers must treat them identically: a banner
+    with no reset clause at all (a known limit with nothing to wait for) and text this parser
+    cannot make sense of. Either way there is nothing trustworthy to suppress a probe with.
+    """
+    now = time.time() if now is None else now
+    if not text:
+        return None
+    m = _BANNER_RESET_RE.search(text)
+    if not m:
+        return None
+    mon_s, day_s, hour_s, min_s, ampm, tz_name = m.groups()
+    month = _MONTH_ABBR.get((mon_s or "").lower())
+    if mon_s and month is None:
+        return None   # unrecognised month spelling -> unparseable, not a silent wrong guess
+    if ZoneInfo is None:
+        return None
+    try:
+        tz_name = tz_name.strip()
+        tz = ZoneInfo("UTC") if tz_name.upper() == "UTC" else ZoneInfo(tz_name)
+    except Exception:
+        return None
+    hour = int(hour_s) % 12
+    if ampm.lower() == "pm":
+        hour += 12
+    minute = int(min_s) if min_s else 0
+    try:
+        now_dt = datetime.datetime.fromtimestamp(now, tz)
+        if month is not None:
+            candidate = datetime.datetime(now_dt.year, month, int(day_s), hour, minute, tzinfo=tz)
+            # No year in the banner -- roll into next year if that date has clearly already
+            # passed (more than a day back), i.e. the Dec -> Jan rollover.
+            if candidate < now_dt - datetime.timedelta(days=1):
+                candidate = candidate.replace(year=candidate.year + 1)
+        else:
+            # Do NOT roll a just-passed no-date time to "tomorrow": the sole caller
+            # (recovery_probe_due) treats the result as a one-shot deadline, and rolling forward
+            # turns "the deadline just passed" into "~24h away", silencing the probe exactly when
+            # it matters most (Cybersec MEDIUM-1, card 7c2f9564, gate comment 37865).
+            candidate = now_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    except (ValueError, OverflowError):
+        return None   # e.g. Feb 30 -- malformed, not ours to guess at
+    return candidate.timestamp()
+
+
+def recovery_probe_due(now=None, state=None, pane_text=None):
     """True when the recovery probe should run this pass. Fail-safe: True on any doubt.
 
     MUST NOT RAISE. This runs inside outage_loop's only exit path: an exception here does not
@@ -177,6 +262,10 @@ def recovery_probe_due(now=None):
     and the Ghost dies mid-outage with the getUpdates slot claimed. The broad except is deliberate
     for that reason -- the file is written by another process and read while a quota outage is
     already in progress, which is the worst moment to discover an unhandled shape.
+
+    `state` (outage_loop's own persisted dict) and `pane_text` are optional purely so the selftest
+    can drive the banner-fallback branch without a live tmux pane; outage_loop always passes its
+    real state, and omits pane_text so this reads the live pane itself.
     """
     now = time.time() if now is None else now
     try:
@@ -184,7 +273,23 @@ def recovery_probe_due(now=None):
             with open(COUNTDOWN_FILE) as f:
                 deadline = json.load(f).get("deadline")
         except (OSError, ValueError):
-            return True                  # no file / unreadable -> today's behaviour
+            # No countdown file -- try the live banner before falling back to "probe every pass".
+            text = pane_text if pane_text is not None else _capture_mikrob_pane()
+            banner_deadline = parse_banner_reset_epoch(text, now=now)
+            if banner_deadline is None:
+                return True               # no reset clause, or unparseable -> today's behaviour
+            remaining = banner_deadline - now
+            if remaining <= RECOVERY_PROBE_WINDOW_SEC:
+                return True               # deadline reached, passed, or within the window
+            if remaining > WEEKLY_DEADLINE_MAX_TRUSTED_SEC:
+                return True               # implausible -> do not trust it into silence
+            if state is None:
+                return True               # nothing to throttle with -> fail-safe: probe
+            last = state.get("banner_probe_at")
+            if isinstance(last, (int, float)) and now - last < WEEKLY_PROBE_INTERVAL_SEC:
+                return False              # probed recently enough -> stay quiet, no flapping
+            state["banner_probe_at"] = now
+            return True
         # bool is a subclass of int and would sail through the isinstance check below; it is
         # nonsense as a deadline, and rejecting it here keeps the arithmetic honest rather than
         # letting True quietly mean "epoch 1".
@@ -269,15 +374,19 @@ def send(token, chat_id, text):
         tg_api(token, "sendMessage", {"chat_id": chat_id, "text": text[i:i+3900]})
 
 
-def mikrob_banner_present():
-    """True if the mikrob-channels pane currently shows a usage-limit banner."""
+def _capture_mikrob_pane():
+    """Raw text of the mikrob-channels tmux pane, or "" if it cannot be read."""
     try:
-        out = subprocess.run(
+        return subprocess.run(
             ["tmux", "capture-pane", "-t", MIKROB_PANE, "-p", "-S", "-40"],
             capture_output=True, text=True, timeout=10).stdout
     except Exception:
-        return False
-    return bool(LIMIT_RE.search(out))
+        return ""
+
+
+def mikrob_banner_present():
+    """True if the mikrob-channels pane currently shows a usage-limit banner."""
+    return bool(LIMIT_RE.search(_capture_mikrob_pane()))
 
 
 def mikrob_heartbeat_stale():
@@ -595,7 +704,9 @@ def outage_loop(token, state):
             # consecutive clear probes, the oldest and newest of that run at least `min_gap_sec`
             # apart. src/gemini-fallback.ts's confirmSwitchback applies the identical rule from the
             # same store/switchback-hysteresis.json for its own Claude<->Gemini switch-back.
-            if not recovery_probe_due():
+            probe_due = recovery_probe_due(state=state)
+            save_state(state)   # persists banner_probe_at when the banner fallback just set it
+            if not probe_due:
                 if not probe_suppressed:
                     log("known reset deadline still far off -> suppressing recovery probe (no flapping)")
                     probe_suppressed = True

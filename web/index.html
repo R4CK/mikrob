@@ -12,6 +12,14 @@
        ?token= bootstrap URL on the already-authenticated desktop -- the token
        never travels through chat). MIT, dependency-free, same CDN as xterm. -->
   <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"></script>
+  <!-- Card dcb196f9 round 4 (Peti requirement change, msg 23664, 2026-11-22): the KG nebula view
+       becomes a real 3D rotatable scene. three.js + its classic (non-ES-module) OrbitControls.js
+       pinned to the same revision (0.128.0) -- the two MUST match revision or the controls throw;
+       verified live (curl -o /dev/null -w "%{http_code}") that both paths 200 at this exact pin
+       before adding them, not assumed from docs. Same CDN/CSP pattern as the xterm/qrcode scripts
+       above (script-src already allowlists cdn.jsdelivr.net as an origin). -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="/lang/hu.js"></script>
   <script src="/lang/en.js"></script>
   <link rel="icon" href="/api/marveen/avatar">
@@ -161,11 +169,7 @@
           </a>
           <a href="#" class="sb-link" data-page="llmMonitor">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="12" height="6" rx="1"/><line x1="17" y1="17" x2="21" y2="17"/></svg>
-            <span class="sb-label">LLM monitor</span>
-          </a>
-          <a href="#" class="sb-link" data-page="geminiCalls">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-            <span class="sb-label" data-i18n="nav.geminiCalls">Gemini hívások</span>
+            <span class="sb-label" data-i18n="nav.llmMonitor">Élő terhelés</span>
           </a>
           <a href="#" class="sb-link" data-page="llmLedger">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
@@ -200,13 +204,9 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>
             <span class="sb-label">Vault</span>
           </a>
-          <a href="#" class="sb-link" data-page="localLlm">
+          <a href="#" class="sb-link" data-page="providers">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
-            <span class="sb-label">Lokális LLM</span>
-          </a>
-          <a href="#" class="sb-link" data-page="freellm">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm1-13h-2v6h2zm0 8h-2v2h2z"/></svg>
-            <span class="sb-label" data-i18n="nav.freellm">FreeAPI LLM</span>
+            <span class="sb-label" data-i18n="nav.providers">Szolgáltatók</span>
           </a>
         </div>
       </div>
@@ -286,6 +286,19 @@
       <span class="auth-setup-banner-actions">
         <button class="auth-setup-banner-close" id="branchDriftDismiss" aria-label="Dismiss">&times;</button>
       </span>
+    </div>
+
+    <!-- Side-effect health panel (card 2d9c0bb2, pair-BE 0a527826, contract-first): one entry
+         per side-effect kind (land, gate dispatch, Telegram send, offload draft, memory embed,
+         scheduled task), shown ONLY when red (3+ consecutive failures) -- a fully healthy state
+         takes no space. Global, like #branchDriftBanner/#authSetupBanner above: visible on
+         every page, not just Overview. Populated by loadSideEffectHealth() in
+         app-health-panel.js, GET /api/health/effects (proposed contract, pair-BE not landed). -->
+    <div id="sideEffectHealthPanel" class="side-effect-health-panel" hidden role="alert" aria-live="polite">
+      <div class="side-effect-health-header">
+        <strong data-i18n="healthPanel.title">Mellékhatás-egészség</strong>
+      </div>
+      <ul class="side-effect-health-list" id="sideEffectHealthList"></ul>
     </div>
 
     <div id="authSetupBanner" class="auth-setup-banner" hidden>
@@ -529,6 +542,118 @@
         </div>
       </div>
 
+      <!-- LLM today (card f1e33cfb, MikroB msg 22311): the full GPU-spectrum canvas + model-
+           distribution swimlane relocated onto the Live-load page only (no duplicate live
+           instances); Overview keeps ONE slim tile -- GPU busy/idle + VRAM one-liner, today's
+           local call count, link to Live load. Once R1 (954a6a93, /api/llm/chain) lands, this
+           same tile gets the chain numbers (FreeLLM/local/online) instead of the local-only
+           count -- ovwLlmTodayCard/loadLlmTodayTile() are built to be upgraded in place, not
+           thrown away. -->
+      <div class="overview-card ovw-llmtoday-card" id="ovwLlmTodayCard">
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.llmToday.title">LLM ma</h3>
+          <span class="overview-card-meta" data-i18n="overview.meta.live">élő állapot</span>
+        </div>
+        <div class="ovw-llmtoday-body">
+          <p class="ovw-llmtoday-gpu" id="ovwLlmTodayGpu">—</p>
+          <p class="ovw-llmtoday-calls" id="ovwLlmTodayCalls">—</p>
+        </div>
+        <div class="ovw-llmtoday-footer">
+          <a href="#" class="ovw-llmtoday-detail-link" data-page="llmMonitor" data-i18n="overview.llmToday.detail_link">Részletek →</a>
+        </div>
+      </div>
+
+      <div class="overview-grid">
+        <div class="overview-card">
+          <div class="overview-card-head">
+            <h3 data-i18n="overview.card.team">Csapat</h3>
+            <span class="overview-card-meta" id="overviewTeamMeta" data-i18n="overview.meta.live">élő állapot</span>
+          </div>
+          <div class="team-graph overview-team-graph" id="overviewTeamGrid"></div>
+        </div>
+        <div class="overview-card">
+          <div class="overview-card-head">
+            <h3 data-i18n="overview.card.activity">Aktivitás</h3>
+          </div>
+          <div class="overview-activity" id="overviewActivity"></div>
+        </div>
+      </div>
+
+      <!-- Token-cost estimate widget (card 01b51197, pair-BE d2cfa818).
+           Hidden until loadCostEstimatesWidget() confirms the endpoint exists. -->
+      <div class="overview-card ovw-cost-card" id="ovwCostCard" hidden>
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.cost.title">Becsült tokenköltség</h3>
+          <span class="overview-card-meta" id="ovwCostMeta" data-i18n="overview.cost.meta_today">mai nap</span>
+        </div>
+        <div id="ovwCostBody">
+          <p class="ovw-cost-loading" data-i18n="common.loading">Betöltés...</p>
+        </div>
+        <div class="ovw-cost-footer" id="ovwCostFooter" hidden>
+          <span class="ovw-cost-total-label" data-i18n="overview.cost.total">Összesen</span>
+          <span class="ovw-cost-total-value" id="ovwCostTotal">—</span>
+          <a href="#" class="ovw-cost-detail-link" data-page="costs" data-i18n="overview.cost.detail_link">Részletek →</a>
+        </div>
+        <p class="ovw-cost-note" id="ovwCostNote" hidden></p>
+      </div>
+
+      <!-- Gemini (agy) calls overview tile (card 57da740c, Peti 11282/11285). Hidden until
+           loadGeminiOverviewTile() confirms GET /api/gemini-calls exists (pair-BE 64788453,
+           contract-first). Nothing existing on this page is removed by adding this card. -->
+      <div class="overview-card ovw-gemini-card" id="ovwGeminiCard" hidden>
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.gemini.title">Gemini-hívások</h3>
+          <span class="overview-card-meta gemini-stop-badge" id="ovwGeminiStopBadge" hidden data-i18n="geminiCalls.stop.badge">STOP</span>
+        </div>
+        <div class="ovw-gemini-quota-row">
+          <span class="ovw-gemini-bar-track"><span class="ovw-gemini-bar-fill" id="ovwGeminiBarFill"></span></span>
+          <span class="ovw-gemini-quota-label" id="ovwGeminiQuotaLabel">—</span>
+        </div>
+        <div class="ovw-gemini-footer">
+          <span class="ovw-gemini-today" id="ovwGeminiToday">—</span>
+          <a href="#" class="ovw-gemini-detail-link" data-page="providers" data-provider-tab="gemini" data-i18n="overview.gemini.detail_link">Részletek →</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Live-load page (card 87be1810, pair-BE a5bbfb98, phase aecd9a12; renamed/extended by
+         card f1e33cfb, phase 36dc9240, item 4: "GPU, per-agent timeline") ===
+         Peti's design ref: store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg.
+         GPU-utilization spectrum + model-distribution swimlane (relocated from Overview) above the
+         KPI row + Swimlane Timeline (Tasks) + workload time-series + models table, the latter
+         rendered by loadLlmMonitor() in app-llm-monitor.js from /api/task-summary and
+         /api/task-events. Page id/pageId kept as llmMonitorPage/llmMonitor (no blast-radius reason
+         to rename the id, only the visible title changes). -->
+    <div class="page" id="llmMonitorPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="llmMon.page_title">Élő terhelés</h1>
+            <p class="subtitle" data-i18n="llmMon.page_subtitle">GPU-kihasználtság, modell-elosztás, feladat-idővonal ügynökönként és modellhasználat a választott időablakban</p>
+          </div>
+          <div class="llm-mon-controls">
+            <label for="llmMonWindow" class="llm-mon-window-label" data-i18n="llmMon.window.label">Időablak</label>
+            <select id="llmMonWindow" class="input llm-mon-window">
+              <option value="1" data-i18n="llmMon.window.1h">Utolsó 1 óra</option>
+              <option value="6" selected data-i18n="llmMon.window.6h">Utolsó 6 óra</option>
+              <option value="24" data-i18n="llmMon.window.24h">Utolsó 24 óra</option>
+              <option value="168" data-i18n="llmMon.window.7d">Utolsó 7 nap</option>
+            </select>
+            <button class="btn-secondary btn-compact" id="llmMonRefreshBtn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              <span data-i18n="common.btn.refresh">Frissítés</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- GPU-utilization spectrum (card cf61fcac) + model-distribution swimlane (card d6ecb003),
+           relocated from Overview (card f1e33cfb): same ids/markup, same JS, same vertical stacking
+           (Peti: "ALATT" -- dist sits directly below spectrum, not beside it), only the location
+           and the start/stop-poll trigger (now switchPage('llmMonitor')) changed. -->
+
       <!-- Live local-LLM utilization spectrum (card cf61fcac, Peti kep-minta): continuously
            scrolling waveform showing GPU util%/VRAM/active-tasks in real time. Populated by
            ovwSpectrumPoll() in app.js -- prefers GET /api/local-llm/utilization-history (backend2,
@@ -588,89 +713,6 @@
         </div>
       </div>
 
-      <div class="overview-grid">
-        <div class="overview-card">
-          <div class="overview-card-head">
-            <h3 data-i18n="overview.card.team">Csapat</h3>
-            <span class="overview-card-meta" id="overviewTeamMeta" data-i18n="overview.meta.live">élő állapot</span>
-          </div>
-          <div class="team-graph overview-team-graph" id="overviewTeamGrid"></div>
-        </div>
-        <div class="overview-card">
-          <div class="overview-card-head">
-            <h3 data-i18n="overview.card.activity">Aktivitás</h3>
-          </div>
-          <div class="overview-activity" id="overviewActivity"></div>
-        </div>
-      </div>
-
-      <!-- Token-cost estimate widget (card 01b51197, pair-BE d2cfa818).
-           Hidden until loadCostEstimatesWidget() confirms the endpoint exists. -->
-      <div class="overview-card ovw-cost-card" id="ovwCostCard" hidden>
-        <div class="overview-card-head">
-          <h3 data-i18n="overview.cost.title">Becsült tokenköltség</h3>
-          <span class="overview-card-meta" id="ovwCostMeta" data-i18n="overview.cost.meta_today">mai nap</span>
-        </div>
-        <div id="ovwCostBody">
-          <p class="ovw-cost-loading" data-i18n="common.loading">Betöltés...</p>
-        </div>
-        <div class="ovw-cost-footer" id="ovwCostFooter" hidden>
-          <span class="ovw-cost-total-label" data-i18n="overview.cost.total">Összesen</span>
-          <span class="ovw-cost-total-value" id="ovwCostTotal">—</span>
-          <a href="#" class="ovw-cost-detail-link" data-page="costs" data-i18n="overview.cost.detail_link">Részletek →</a>
-        </div>
-        <p class="ovw-cost-note" id="ovwCostNote" hidden></p>
-      </div>
-
-      <!-- Gemini (agy) calls overview tile (card 57da740c, Peti 11282/11285). Hidden until
-           loadGeminiOverviewTile() confirms GET /api/gemini-calls exists (pair-BE 64788453,
-           contract-first). Nothing existing on this page is removed by adding this card. -->
-      <div class="overview-card ovw-gemini-card" id="ovwGeminiCard" hidden>
-        <div class="overview-card-head">
-          <h3 data-i18n="overview.gemini.title">Gemini-hívások</h3>
-          <span class="overview-card-meta gemini-stop-badge" id="ovwGeminiStopBadge" hidden data-i18n="geminiCalls.stop.badge">STOP</span>
-        </div>
-        <div class="ovw-gemini-quota-row">
-          <span class="ovw-gemini-bar-track"><span class="ovw-gemini-bar-fill" id="ovwGeminiBarFill"></span></span>
-          <span class="ovw-gemini-quota-label" id="ovwGeminiQuotaLabel">—</span>
-        </div>
-        <div class="ovw-gemini-footer">
-          <span class="ovw-gemini-today" id="ovwGeminiToday">—</span>
-          <a href="#" class="ovw-gemini-detail-link" data-page="geminiCalls" data-i18n="overview.gemini.detail_link">Részletek →</a>
-        </div>
-      </div>
-    </div>
-
-    <!-- === LLM monitor page (card 87be1810, pair-BE a5bbfb98, phase aecd9a12) ===
-         Peti's design ref: store/design-refs/local-llm-swimlane-mockup-2026-09-03.jpg.
-         KPI row + Swimlane Timeline (Tasks) + workload time-series + models table, all
-         rendered by loadLlmMonitor() in app-llm-monitor.js from /api/task-summary and
-         /api/task-events. -->
-    <div class="page" id="llmMonitorPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="llmMon.page_title">LLM monitor</h1>
-            <p class="subtitle" data-i18n="llmMon.page_subtitle">Feladat-idővonal ügynökönként, terhelés és modellhasználat a választott időablakban</p>
-          </div>
-          <div class="llm-mon-controls">
-            <label for="llmMonWindow" class="llm-mon-window-label" data-i18n="llmMon.window.label">Időablak</label>
-            <select id="llmMonWindow" class="input llm-mon-window">
-              <option value="1" data-i18n="llmMon.window.1h">Utolsó 1 óra</option>
-              <option value="6" selected data-i18n="llmMon.window.6h">Utolsó 6 óra</option>
-              <option value="24" data-i18n="llmMon.window.24h">Utolsó 24 óra</option>
-              <option value="168" data-i18n="llmMon.window.7d">Utolsó 7 nap</option>
-            </select>
-            <button class="btn-secondary btn-compact" id="llmMonRefreshBtn">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-              </svg>
-              <span data-i18n="common.btn.refresh">Frissítés</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
       <p class="llm-mon-meta" id="llmMonMeta"></p>
       <p class="llm-mon-status-line" id="llmMonStatus" role="status" aria-live="polite" hidden></p>
 
@@ -702,47 +744,7 @@
       <div class="llm-mon-detail" id="llmMonDetail" role="dialog" aria-label="Task details" hidden></div>
     </div>
 
-    <!-- === Gemini calls page (card 57da740c, pair-BE 64788453, contract-first) ===
-         GET /api/gemini-calls not landed yet -- #geminiPageStatus shows loading/not-available/
-         error, #geminiPageBody (quota, STOP banner, summaries, call list) only populated on a
-         real 200 response, never invented data (kódminőségi 12. elv). -->
-    <div class="page" id="geminiCallsPage" hidden>
-      <h1 data-i18n="geminiCalls.title">Gemini-hívások</h1>
-      <p class="gemini-page-sub" data-i18n="geminiCalls.subtitle">Óránkénti keret, hívásnapló és értékelés -- a prompt tartalma soha nem kerül ide, csak sha256.</p>
-
-      <p class="gemini-page-status" id="geminiPageStatus" role="status" aria-live="polite"></p>
-
-      <div id="geminiPageBody" hidden>
-        <div class="gemini-stop-banner" id="geminiStopBanner" role="alert" hidden>
-          <strong data-i18n="geminiCalls.stop.title">STOP-flag aktív</strong>
-          <span id="geminiStopReason"></span>
-        </div>
-
-        <section class="llm-section gemini-quota-section">
-          <h2 class="llm-section-title" data-i18n="geminiCalls.quota.title">Óránkénti keret</h2>
-          <div class="gemini-quota-row">
-            <span class="gemini-quota-bar" id="geminiQuotaBar"><span class="gemini-quota-bar-fill" id="geminiQuotaBarFill"></span></span>
-            <span class="gemini-quota-label" id="geminiQuotaLabel">—</span>
-          </div>
-          <p class="gemini-quota-next-free" id="geminiQuotaNextFree"></p>
-        </section>
-
-        <section class="llm-section">
-          <h2 class="llm-section-title" data-i18n="geminiCalls.summary.by_model_title">Összesítő modellenként</h2>
-          <div id="geminiSummaryByModel"></div>
-        </section>
-
-        <section class="llm-section">
-          <h2 class="llm-section-title" data-i18n="geminiCalls.summary.by_task_title">Összesítő feladattípusonként</h2>
-          <div id="geminiSummaryByTaskType"></div>
-        </section>
-
-        <section class="llm-section">
-          <h2 class="llm-section-title" data-i18n="geminiCalls.list.title">Hívás-napló</h2>
-          <div class="gemini-calls-table-wrap llm-activity-scroll" id="geminiCallsTableWrap"></div>
-        </section>
-      </div>
-    </div>
+    <!-- Gemini calls content moved into providersPage's Gemini tab (card f1e33cfb). -->
 
     <!-- === Kanban Page === -->
     <div class="page" id="kanbanPage" hidden>
@@ -1203,331 +1205,410 @@
       </section>
     </div>
 
-    <!-- === Local LLM Page === -->
-    <div class="page" id="localLlmPage" hidden>
+    <!-- === Providers Page (card f1e33cfb, phase 36dc9240, MikroB target structure comment 34489):
+         local-LLM + FreeLLM + Gemini merged into one page, tabbed. Old pageIds 'localLlm'/'freellm'/
+         'geminiCalls' redirect here (app-page-switch.js) -- same "'team' merges into 'agents'" pattern
+         already used for the agents page, so old deep-links and nav code paths keep working. -->
+    <div class="page" id="providersPage" hidden>
       <div class="page-header">
         <div class="page-header-row">
           <div>
-            <h1 data-i18n="localLlm.page_title">Lokális LLM</h1>
-            <p class="subtitle" data-i18n="localLlm.page_subtitle">A helyi offload modell (Ollama a WSL GPU-n) vezérlése</p>
+            <h1 data-i18n="providers.page_title">Szolgáltatók</h1>
+            <p class="subtitle" data-i18n="providers.page_subtitle">Lokális modell, FreeAPI LLM és Gemini -- kapcsoló, állapot, hívásnapló</p>
           </div>
           <button class="btn-secondary btn-compact" id="llmRefreshBtn" data-i18n="localLlm.btn.refresh">Frissítés</button>
         </div>
-      </div>
-
-      <!-- Section order (Peti, 2026-08-16, card a05c39c9): Status -> Offload-agresszivitás ->
-           Kategóriák -> Használat-mérték -> Feladatok és kártyák. Overrides the earlier layout;
-           each block's own content/ids/logic are unchanged, only their position moved. -->
-
-      <!-- Master kill-switch (card d57d8a01, Peti Telegram 10951): the ONE on/off every local-first
-           entry point reads first. Placed above Status, deliberately -- it is the control that
-           decides whether anything below even matters. -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.firstDraft.title">Helyi LLM -- fő kapcsoló</h2>
-        <p class="llm-offload-desc" data-i18n="localLlm.firstDraft.desc">Ha ki van kapcsolva, minden belépési pont (kártya-draft, routing, i18n-draft, offload) ONLINE-ra esik -- a helyi modellt semmi nem hívja meg.</p>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <input type="checkbox" id="llmFirstDraftToggle" aria-describedby="llmFirstDraftMsg" style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0;cursor:pointer;">
-          <span id="llmFirstDraftLabel" data-i18n="localLlm.firstDraft.on">Bekapcsolva</span>
-        </div>
-        <div id="llmFirstDraftMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
-      </div>
-
-      <!-- Status -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.status.title">Állapot</h2>
-        <div class="llm-status-grid" id="llmStatusGrid">
-          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+        <div class="tab-nav" id="providersTabNav">
+          <button class="tab-btn active" data-provider-tab="local" data-i18n="providers.tab.local">Lokális modell</button>
+          <button class="tab-btn" data-provider-tab="freellm" data-i18n="providers.tab.freellm">FreeLLM</button>
+          <button class="tab-btn" data-provider-tab="gemini" data-i18n="providers.tab.gemini">Gemini</button>
         </div>
       </div>
 
-      <!-- Models (card e5fc1fb4: moved directly under Status -- every installed model with its
-           switch is the first thing the operator sees; the pull row stays with it) -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.models.title">Modellek</h2>
-        <p class="llm-models-summary" id="llmModelsSummary" role="status" aria-live="polite"></p>
-        <div class="llm-models" id="llmModels">
-          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+      <!-- ===== Tab: Local model ===== -->
+      <div class="tab-panel" id="tabProviderLocal">
+        <div class="tab-nav tab-nav-sub" id="localLlmSubTabNav">
+          <button class="tab-btn active" data-local-tab="status" data-i18n="localLlm.subtab.status">Állapot</button>
+          <button class="tab-btn" data-local-tab="catalog" data-i18n="localLlm.subtab.catalog">Katalógus</button>
         </div>
-        <div class="llm-pull-row">
-          <input type="text" id="llmPullInput" class="llm-input" data-i18n-placeholder="localLlm.models.pull_placeholder" placeholder="pl. qwen2.5-coder:7b" autocomplete="off" spellcheck="false">
-          <button class="btn-primary btn-compact" id="llmPullBtn" data-i18n="localLlm.models.pull_btn">Letöltés</button>
-        </div>
-        <div class="llm-pull-progress" id="llmPullProgress" hidden></div>
-      </div>
 
-      <!-- Offload aggressiveness slider (card 48f3b675) -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.offload.title">Offload agresszivitás</h2>
-        <p class="llm-offload-desc" data-i18n="localLlm.offload.desc">Mennyi mechanikus kód-részt adjunk ki a helyi GPU-nak. Magasabb érték = több offload, kevesebb Claude-token.</p>
-        <div class="llm-offload-row">
-          <input type="range" id="llmOffloadSlider" class="llm-offload-slider" min="0" max="100" step="1" value="50" aria-label="Offload agresszivitás (0-100)">
-          <output id="llmOffloadValue" class="llm-offload-value">50</output>
-        </div>
-        <div class="llm-offload-legend">
-          <span data-i18n="localLlm.offload.off">Ki (0)</span>
-          <button type="button" id="llmOffloadOptimalBtn" class="llm-offload-optimal-btn" title="A GPU alig terhelt -> ajánlott offload-szint">
-            <span data-i18n="localLlm.offload.optimal">Optimum</span>: <span id="llmOffloadOptimal">75</span>
-          </button>
-          <span data-i18n="localLlm.offload.max">Max (100)</span>
-        </div>
-        <div id="llmOffloadMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
+        <!-- Sub-tab: Állapot -->
+        <div class="tab-panel" id="localLlmSubStatus">
+          <!-- Section order (Peti, 2026-08-16, card a05c39c9): Status -> Offload-agresszivitás ->
+               Kategóriák -> Használat-mérték -> Feladatok és kártyák. Overrides the earlier layout;
+               each block's own content/ids/logic are unchanged, only their position moved. -->
 
-        <!-- Auto-ramp status (card 8b4ddcf0 tier-activation, backed by 346d3933's contract):
-             GET /api/local-llm/offload-config returns aggressivenessSource ('auto'|'manual') and
-             ramp {weeklyPct, newDevStop, floor, autoAggressiveness, autoDifficulty}. When on Auto,
-             the weekly quota drives the slider (leans toward 100 as the weekly limit nears); a
-             manual drag takes over until the operator hands control back. Contents rendered by
-             llmRenderRamp() in app.js; hidden/neutral when no live weekly reading exists. -->
-        <div id="llmOffloadRamp" class="llm-ramp" role="status" aria-live="polite" hidden>
-          <div class="llm-ramp-head">
-            <span id="llmRampSource" class="llm-ramp-source"></span>
-            <button type="button" id="llmRampAutoBtn" class="llm-ramp-auto-btn" hidden></button>
+          <!-- Master kill-switch (card d57d8a01, Peti Telegram 10951): the ONE on/off every local-first
+               entry point reads first. Placed above Status, deliberately -- it is the control that
+               decides whether anything below even matters. -->
+          <div class="llm-section">
+            <h2 class="llm-section-title" data-i18n="localLlm.firstDraft.title">Helyi LLM -- fő kapcsoló</h2>
+            <p class="llm-offload-desc" data-i18n="localLlm.firstDraft.desc">Ha ki van kapcsolva, minden belépési pont (kártya-draft, routing, i18n-draft, offload) ONLINE-ra esik -- a helyi modellt semmi nem hívja meg.</p>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <input type="checkbox" id="llmFirstDraftToggle" aria-describedby="llmFirstDraftMsg" style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0;cursor:pointer;">
+              <span id="llmFirstDraftLabel" data-i18n="localLlm.firstDraft.on">Bekapcsolva</span>
+            </div>
+            <div id="llmFirstDraftMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
           </div>
-          <p id="llmRampDetail" class="llm-ramp-detail"></p>
-          <p id="llmRampNumbers" class="llm-ramp-numbers" hidden></p>
-        </div>
 
-        <!-- Coding-difficulty threshold dropdown (card afcfe93e): the hardest coding task that may
-             still be drafted locally. Higher aggressiveness -> harder allowed. Only coding levels.
-             KEPT (not replaced by the slider): 346d3933 (now done) delivered the auto-aggressiveness
-             RAMP (the slider VALUE auto-tracks the weekly quota), not a per-category difficulty/
-             security tier-ORDERING that could drive per-category activation. So this dropdown still
-             owns the coding-difficulty control; the slider's auto behaviour is surfaced by the
-             ramp-status block above. -->
-        <div class="llm-offload-difficulty">
-          <label for="llmOffloadDifficulty" class="llm-offload-difficulty-label" data-i18n="localLlm.offload.difficulty.label">Kódolási nehézségi küszöb</label>
-          <p class="llm-offload-desc" data-i18n="localLlm.offload.difficulty.desc">Meddig terjedő nehézségű kódolási feladat adható ki a helyi modellnek. Magasabb küszöb = nehezebb feladatok is helyben.</p>
-          <select id="llmOffloadDifficulty" class="llm-offload-difficulty-select" aria-describedby="llmOffloadDifficultyHint llmOffloadDifficultyNote">
-            <option value="auto" data-i18n="localLlm.offload.difficulty.auto">Automatikus (a csúszkából)</option>
-            <option value="trivial" data-i18n="localLlm.offload.difficulty.trivial">Triviális — snippet / regex / formázás</option>
-            <option value="isolated" data-i18n="localLlm.offload.difficulty.isolated">Izolált — függvény / teszt / típus</option>
-            <option value="module" data-i18n="localLlm.offload.difficulty.module">Modul — több-függvényes (egy fájl)</option>
-          </select>
-          <p id="llmOffloadDifficultyHint" class="llm-offload-difficulty-hint" role="status" aria-live="polite"></p>
-          <p id="llmOffloadDifficultyNote" class="llm-offload-difficulty-note" data-i18n="localLlm.offload.difficulty.online_only">Feature (több-fájlos) és architektúra/wiring: mindig online (Claude) — a helyi 7B ezeket nem tudja megbízhatóan.</p>
-        </div>
-      </div>
-
-      <!-- Task routing (card e5fc1fb4, Peti 2026-09-06). This section REPLACES the former
-           "Kategóriák" block: the same --task presets from GET /api/local-llm/categories (backed by
-           store/local-llm-skills/*.txt, never a hardcoded list) with the same real enable/disable
-           switch (store/local-llm.sh reads disabledCategories before any --task -- enforcement, not
-           decoration), now joined with the model each preset is routed to and why, from
-           GET /api/local-llm/routing (pair-BE ecf38e5a). Two panels below: the categories that always
-           run online (router ceilings) and the latest card-level LOCAL/ONLINE verdicts. When the
-           routing endpoint is absent the switches still work and the section says so. -->
-      <div class="llm-section" id="llmRoutingSection">
-        <h2 class="llm-section-title" data-i18n="localLlm.routing.title">Feladat-routing</h2>
-        <p class="llm-offload-desc" data-i18n="localLlm.routing.desc">Melyik feladattípus melyik modellre megy, és miért. A kapcsoló valódi: kikapcsolt preset innentől online (Claude) fut.</p>
-        <div id="llmRoutingSummary" class="llm-routing-summary" role="status" aria-live="polite"></div>
-        <div id="llmCategoriesMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
-        <div class="llm-categories-list" id="llmCategoriesList">
-          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
-        </div>
-        <div class="llm-routing-cols">
-          <div class="llm-routing-col">
-            <h3 class="llm-subsection-title" data-i18n="localLlm.routing.always_online_title">Mindig online</h3>
-            <p class="llm-hint" data-i18n="localLlm.routing.always_online_desc">Ezeket a kategóriákat a router sosem adja a helyi modellnek, a csúszkától függetlenül.</p>
-            <div id="llmRoutingAlwaysOnline" class="llm-routing-list"></div>
+          <!-- Status -->
+          <div class="llm-section">
+            <h2 class="llm-section-title" data-i18n="localLlm.status.title">Állapot</h2>
+            <div class="llm-status-grid" id="llmStatusGrid">
+              <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+            </div>
           </div>
-          <div class="llm-routing-col">
-            <h3 class="llm-subsection-title" data-i18n="localLlm.routing.decisions_title">Utolsó kártya-döntések</h3>
-            <p class="llm-hint" data-i18n="localLlm.routing.decisions_desc">A card-build-route döntései dispatch-időben: helyi draft vagy online, és az ok.</p>
-            <div id="llmRoutingDecisions" class="llm-routing-list"></div>
+
+          <!-- Models (card e5fc1fb4: moved directly under Status -- every installed model with its
+               switch is the first thing the operator sees; the pull row stays with it) -->
+          <div class="llm-section">
+            <h2 class="llm-section-title" data-i18n="localLlm.models.title">Modellek</h2>
+            <p class="llm-models-summary" id="llmModelsSummary" role="status" aria-live="polite"></p>
+            <div class="llm-models" id="llmModels">
+              <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+            </div>
+            <div class="llm-pull-row">
+              <input type="text" id="llmPullInput" class="llm-input" data-i18n-placeholder="localLlm.models.pull_placeholder" placeholder="pl. qwen2.5-coder:7b" autocomplete="off" spellcheck="false">
+              <button class="btn-primary btn-compact" id="llmPullBtn" data-i18n="localLlm.models.pull_btn">Letöltés</button>
+            </div>
+            <div class="llm-pull-progress" id="llmPullProgress" hidden></div>
           </div>
-        </div>
-      </div>
 
-      <!-- Usage metrics -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.usage.title">Használat</h2>
-        <div class="llm-status-grid" id="llmUsageTiles">
-          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
-        </div>
+          <!-- Offload aggressiveness slider (card 48f3b675) -->
+          <div class="llm-section">
+            <h2 class="llm-section-title" data-i18n="localLlm.offload.title">Offload agresszivitás</h2>
+            <p class="llm-offload-desc" data-i18n="localLlm.offload.desc">Mennyi mechanikus kód-részt adjunk ki a helyi GPU-nak. Magasabb érték = több offload, kevesebb Claude-token.</p>
+            <div class="llm-offload-row">
+              <input type="range" id="llmOffloadSlider" class="llm-offload-slider" min="0" max="100" step="1" value="50" aria-label="Offload agresszivitás (0-100)">
+              <output id="llmOffloadValue" class="llm-offload-value">50</output>
+            </div>
+            <div class="llm-offload-legend">
+              <span data-i18n="localLlm.offload.off">Ki (0)</span>
+              <button type="button" id="llmOffloadOptimalBtn" class="llm-offload-optimal-btn" title="A GPU alig terhelt -> ajánlott offload-szint">
+                <span data-i18n="localLlm.offload.optimal">Optimum</span>: <span id="llmOffloadOptimal">75</span>
+              </button>
+              <span data-i18n="localLlm.offload.max">Max (100)</span>
+            </div>
+            <div id="llmOffloadMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
 
-        <div class="llm-usage-cols">
-          <div class="llm-usage-block">
-            <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_agent">Ügynökök szerint</h3>
-            <div class="llm-usage-bars" id="llmUsageByCaller"></div>
+            <!-- Auto-ramp status (card 8b4ddcf0 tier-activation, backed by 346d3933's contract):
+                 GET /api/local-llm/offload-config returns aggressivenessSource ('auto'|'manual') and
+                 ramp {weeklyPct, newDevStop, floor, autoAggressiveness, autoDifficulty}. When on Auto,
+                 the weekly quota drives the slider (leans toward 100 as the weekly limit nears); a
+                 manual drag takes over until the operator hands control back. Contents rendered by
+                 llmRenderRamp() in app.js; hidden/neutral when no live weekly reading exists. -->
+            <div id="llmOffloadRamp" class="llm-ramp" role="status" aria-live="polite" hidden>
+              <div class="llm-ramp-head">
+                <span id="llmRampSource" class="llm-ramp-source"></span>
+                <button type="button" id="llmRampAutoBtn" class="llm-ramp-auto-btn" hidden></button>
+              </div>
+              <p id="llmRampDetail" class="llm-ramp-detail"></p>
+              <p id="llmRampNumbers" class="llm-ramp-numbers" hidden></p>
+            </div>
+
+            <!-- Card f1e33cfb (MikroB msg 22235, resolving comment 34749): the phase audit (36dc9240)
+                 originally said this slider only labels the draft and the coding-difficulty dropdown
+                 (card afcfe93e) owned the real threshold. Checked src/local-llm-router.ts routeTask()
+                 directly: the dropdown is confirmed dead (codingDifficultyThreshold only matters when a
+                 caller passes --difficulty, and none does), but the SLIDER feeds
+                 defaultDifficultyForAggressiveness(), the REAL local/online threshold on every call --
+                 kept editable, dropdown removed. Since 3c075d74 (2026-09-18) every task gets a local
+                 draft regardless; the verdict this slider drives only decides how much online review it
+                 gets (LOCAL = lighter check, ONLINE = mandatory full review) -- see localLlm.offload.desc
+                 for the operator-facing wording. A measured LOCAL-vs-ONLINE count beside the slider is
+                 planned once R1 (954a6a93, /api/llm/chain) lands -- blocked, still `planned`. -->
           </div>
-          <div class="llm-usage-block">
-            <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_source">Forrás és feladat szerint</h3>
-            <div id="llmUsageBySource"></div>
+
+          <!-- Task routing (card e5fc1fb4, Peti 2026-09-06). This section REPLACES the former
+               "Kategóriák" block: the same --task presets from GET /api/local-llm/categories (backed by
+               store/local-llm-skills/*.txt, never a hardcoded list) with the same real enable/disable
+               switch (store/local-llm.sh reads disabledCategories before any --task -- enforcement, not
+               decoration), now joined with the model each preset is routed to and why, from
+               GET /api/local-llm/routing (pair-BE ecf38e5a). Two panels below: the categories that always
+               run online (router ceilings) and the latest card-level LOCAL/ONLINE verdicts. When the
+               routing endpoint is absent the switches still work and the section says so. -->
+          <div class="llm-section" id="llmRoutingSection">
+            <h2 class="llm-section-title" data-i18n="localLlm.routing.title">Feladat-routing</h2>
+            <p class="llm-offload-desc" data-i18n="localLlm.routing.desc">Melyik feladattípus melyik modellre megy, és miért. A kapcsoló valódi: kikapcsolt preset innentől online (Claude) fut.</p>
+            <div id="llmRoutingSummary" class="llm-routing-summary" role="status" aria-live="polite"></div>
+            <div id="llmCategoriesMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
+            <div class="llm-categories-list" id="llmCategoriesList">
+              <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+            </div>
+            <div class="llm-routing-cols">
+              <div class="llm-routing-col">
+                <h3 class="llm-subsection-title" data-i18n="localLlm.routing.always_online_title">Mindig online</h3>
+                <p class="llm-hint" data-i18n="localLlm.routing.always_online_desc">Ezeket a kategóriákat a router sosem adja a helyi modellnek, a csúszkától függetlenül.</p>
+                <div id="llmRoutingAlwaysOnline" class="llm-routing-list"></div>
+              </div>
+              <div class="llm-routing-col">
+                <h3 class="llm-subsection-title" data-i18n="localLlm.routing.decisions_title">Utolsó kártya-döntések</h3>
+                <p class="llm-hint" data-i18n="localLlm.routing.decisions_desc">A card-build-route döntései dispatch-időben: helyi draft vagy online, és az ok.</p>
+                <div id="llmRoutingDecisions" class="llm-routing-list"></div>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <div class="llm-usage-block">
-          <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_day">Utolsó 14 nap</h3>
-          <div class="llm-usage-daychart" id="llmUsageByDay"></div>
-        </div>
+          <!-- Usage metrics -->
+          <div class="llm-section">
+            <h2 class="llm-section-title" data-i18n="localLlm.usage.title">Használat</h2>
+            <div class="llm-status-grid" id="llmUsageTiles">
+              <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+            </div>
 
-        <div class="llm-usage-block">
-          <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.recent">Aktivitás (mai nap)</h3>
-          <div class="llm-queue-filter" role="group" aria-label="Szűrés státusz szerint" data-i18n-aria-label="localLlm.queue.filter.aria">
-            <button type="button" class="llm-queue-filter-btn active" data-status="" data-i18n="localLlm.queue.filter.all">Mind</button>
-            <button type="button" class="llm-queue-filter-btn" data-status="pending" data-i18n="localLlm.queue.filter.pending">Várakozó</button>
-            <button type="button" class="llm-queue-filter-btn" data-status="running" data-i18n="localLlm.queue.filter.running">Fut</button>
-            <button type="button" class="llm-queue-filter-btn" data-status="done" data-i18n="localLlm.queue.filter.done">Kész</button>
-            <button type="button" class="llm-queue-filter-btn" data-status="failed" data-i18n="localLlm.queue.filter.failed">Sikertelen</button>
+            <div class="llm-usage-cols">
+              <div class="llm-usage-block">
+                <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_agent">Ügynökök szerint</h3>
+                <div class="llm-usage-bars" id="llmUsageByCaller"></div>
+              </div>
+              <div class="llm-usage-block">
+                <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_source">Forrás és feladat szerint</h3>
+                <div id="llmUsageBySource"></div>
+              </div>
+            </div>
+
+            <div class="llm-usage-block">
+              <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.by_day">Utolsó 14 nap</h3>
+              <div class="llm-usage-daychart" id="llmUsageByDay"></div>
+            </div>
+
+            <div class="llm-usage-block">
+              <h3 class="llm-usage-subtitle" data-i18n="localLlm.usage.recent">Aktivitás (mai nap)</h3>
+              <div class="llm-queue-filter" role="group" aria-label="Szűrés státusz szerint" data-i18n-aria-label="localLlm.queue.filter.aria">
+                <button type="button" class="llm-queue-filter-btn active" data-status="" data-i18n="localLlm.queue.filter.all">Mind</button>
+                <button type="button" class="llm-queue-filter-btn" data-status="pending" data-i18n="localLlm.queue.filter.pending">Várakozó</button>
+                <button type="button" class="llm-queue-filter-btn" data-status="running" data-i18n="localLlm.queue.filter.running">Fut</button>
+                <button type="button" class="llm-queue-filter-btn" data-status="done" data-i18n="localLlm.queue.filter.done">Kész</button>
+                <button type="button" class="llm-queue-filter-btn" data-status="failed" data-i18n="localLlm.queue.filter.failed">Sikertelen</button>
+              </div>
+              <div class="llm-usage-table-wrap llm-activity-scroll" id="llmUsageRecent"></div>
+            </div>
           </div>
-          <div class="llm-usage-table-wrap llm-activity-scroll" id="llmUsageRecent"></div>
-        </div>
-      </div>
 
-      <!-- Model recommendations + HuggingFace search -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.rec.title">Ajánlott modellek</h2>
-        <p class="llm-hint" id="llmRecsGpuHint" data-i18n="localLlm.rec.hint">A legjobb kódmodellek erre a GPU-ra (GTX 1660 Ti, 6 GB VRAM). Az ~5 GB feletti modellek CPU-ra csúsznak és lassabbak.</p>
-        <div class="llm-rec-stale-banner" id="llmRecsStaleBanner" role="status" aria-live="polite" hidden></div>
-        <div class="llm-recs" id="llmRecs">
-          <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
-        </div>
-
-        <h3 class="llm-usage-subtitle llm-hf-title" data-i18n="localLlm.hf.title">HuggingFace keresés</h3>
-        <p class="llm-hint" data-i18n="localLlm.hf.hint">Keress GGUF kódmodelleket a HuggingFace-en; a GGUF találatok közvetlenül húzhatók Ollamába.</p>
-        <div class="llm-hf-filters">
-          <input type="text" id="llmHfQuery" class="llm-input" data-i18n-placeholder="localLlm.hf.query_placeholder" placeholder="Keresés (pl. qwen coder, deepseek)" autocomplete="off" spellcheck="false" maxlength="80">
-          <select id="llmHfTask" class="llm-select" data-i18n-aria-label="localLlm.hf.task_label" aria-label="Feladat">
-            <option value="text-generation" data-i18n="localLlm.hf.task_codegen">Szöveggenerálás (kód)</option>
-            <option value="" data-i18n="localLlm.hf.task_any">Bármely</option>
-          </select>
-          <select id="llmHfSort" class="llm-select" data-i18n-aria-label="localLlm.hf.sort_label" aria-label="Rendezés">
-            <option value="downloads" data-i18n="localLlm.hf.sort_downloads">Letöltések</option>
-            <option value="likes" data-i18n="localLlm.hf.sort_likes">Kedvelések</option>
-            <option value="trending" data-i18n="localLlm.hf.sort_trending">Trending</option>
-            <option value="lastModified" data-i18n="localLlm.hf.sort_recent">Legutóbbi</option>
-          </select>
-          <label class="llm-hf-toggle">
-            <input type="checkbox" id="llmHfGguf" checked>
-            <span data-i18n="localLlm.hf.gguf_only">Csak GGUF (Ollama húzható)</span>
-          </label>
-          <button class="btn-primary btn-compact" id="llmHfSearchBtn" data-i18n="localLlm.hf.search_btn">Szűrés indítása</button>
-        </div>
-        <div class="llm-hf-results" id="llmHfResults">
-          <div class="llm-empty" data-i18n="localLlm.hf.initial">Indíts egy keresést a fenti szűrőkkel.</div>
-        </div>
-      </div>
-
-      <!-- Quick test -->
-      <div class="llm-section">
-        <h2 class="llm-section-title" data-i18n="localLlm.test.title">Gyorsteszt</h2>
-        <p class="llm-hint" data-i18n="localLlm.test.hint">Próbáld ki a helyi modellt a RAG wrapperen keresztül (mikrob memóriával).</p>
-        <textarea id="llmTestPrompt" class="llm-textarea" rows="3" data-i18n-placeholder="localLlm.test.placeholder" placeholder="Írj egy promptot..." maxlength="4000"></textarea>
-        <div class="llm-test-row">
-          <button class="btn-primary btn-compact" id="llmTestBtn" data-i18n="localLlm.test.run_btn">Futtatás</button>
-          <span class="llm-charcount" id="llmTestCount"></span>
-        </div>
-        <div class="llm-test-output" id="llmTestOutput" hidden></div>
-      </div>
-
-      <!-- Terminal / logs + running -->
-      <div class="llm-section">
-        <div class="llm-logs-header">
-          <h2 class="llm-section-title" data-i18n="localLlm.logs.title">Terminál és futó feladatok</h2>
-          <div class="llm-log-tabs" role="tablist">
-            <button class="llm-log-tab active" data-source="bridge" data-i18n="localLlm.logs.bridge">Quota-bridge</button>
-            <button class="llm-log-tab" data-source="ollama" data-i18n="localLlm.logs.ollama">Ollama</button>
+          <!-- Terminal / logs + running -->
+          <div class="llm-section">
+            <div class="llm-logs-header">
+              <h2 class="llm-section-title" data-i18n="localLlm.logs.title">Terminál és futó feladatok</h2>
+              <div class="llm-log-tabs" role="tablist">
+                <button class="llm-log-tab active" data-source="bridge" data-i18n="localLlm.logs.bridge">Quota-bridge</button>
+                <button class="llm-log-tab" data-source="ollama" data-i18n="localLlm.logs.ollama">Ollama</button>
+              </div>
+            </div>
+            <div class="llm-running" id="llmRunning"></div>
+            <pre class="llm-terminal" id="llmTerminal"><span class="llm-muted" data-i18n="common.loading">Betöltés...</span></pre>
           </div>
         </div>
-        <div class="llm-running" id="llmRunning"></div>
-        <pre class="llm-terminal" id="llmTerminal"><span class="llm-muted" data-i18n="common.loading">Betöltés...</span></pre>
-      </div>
-    </div>
 
-    <!-- === FreeAPI LLM Page === -->
-    <div class="page" id="freellmPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="freellm.page_title">FreeAPI LLM</h1>
-            <p class="subtitle" data-i18n="freellm.page_subtitle">Offload útvonal nyilvántartás</p>
-          </div>
-        </div>
-      </div>
+        <!-- Sub-tab: Katalógus (card f1e33cfb: "model catalog/HF/test into a Models tab") -->
+        <div class="tab-panel" id="localLlmSubCatalog" hidden>
+          <!-- Model recommendations + HuggingFace search -->
+          <div class="llm-section">
+            <h2 class="llm-section-title" data-i18n="localLlm.rec.title">Ajánlott modellek</h2>
+            <p class="llm-hint" id="llmRecsGpuHint" data-i18n="localLlm.rec.hint">A legjobb kódmodellek erre a GPU-ra (GTX 1660 Ti, 6 GB VRAM). Az ~5 GB feletti modellek CPU-ra csúsznak és lassabbak.</p>
+            <div class="llm-rec-stale-banner" id="llmRecsStaleBanner" role="status" aria-live="polite" hidden></div>
+            <div class="llm-recs" id="llmRecs">
+              <div class="llm-loading" data-i18n="common.loading">Betöltés...</div>
+            </div>
 
-      <!-- Master on/off switch (contract-first: GET/PUT /api/freellm/status) -->
-      <div class="freellm-section">
-        <h2 class="freellm-section-title" data-i18n="freellm.title">FreeAPI LLM offload</h2>
-        <p class="freellm-desc" data-i18n="freellm.desc">Harmadik féltől származó nyílt LLM szolgáltatás az offload útvonalhoz. Ki/be kapcsolható; a kimenő tartalom mopsion/PII miatt már nem blokkolt -- csak az észlelt hitelesítő adatok (token/kulcs/jelszó) vannak [REDACTED]-ként maszkolva, mielőtt a tartalom elhagyja a gépet.</p>
-        <div class="freellm-control">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-            <input type="checkbox" id="freellmToggle" aria-describedby="freellmMsg" style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0;cursor:pointer;">
-            <span id="freellmLabel" class="freellm-label" data-i18n="freellm.status.on">Bekapcsolva</span>
+            <h3 class="llm-usage-subtitle llm-hf-title" data-i18n="localLlm.hf.title">HuggingFace keresés</h3>
+            <p class="llm-hint" data-i18n="localLlm.hf.hint">Keress GGUF kódmodelleket a HuggingFace-en; a GGUF találatok közvetlenül húzhatók Ollamába.</p>
+            <div class="llm-hf-filters">
+              <input type="text" id="llmHfQuery" class="llm-input" data-i18n-placeholder="localLlm.hf.query_placeholder" placeholder="Keresés (pl. qwen coder, deepseek)" autocomplete="off" spellcheck="false" maxlength="80">
+              <select id="llmHfTask" class="llm-select" data-i18n-aria-label="localLlm.hf.task_label" aria-label="Feladat">
+                <option value="text-generation" data-i18n="localLlm.hf.task_codegen">Szöveggenerálás (kód)</option>
+                <option value="" data-i18n="localLlm.hf.task_any">Bármely</option>
+              </select>
+              <select id="llmHfSort" class="llm-select" data-i18n-aria-label="localLlm.hf.sort_label" aria-label="Rendezés">
+                <option value="downloads" data-i18n="localLlm.hf.sort_downloads">Letöltések</option>
+                <option value="likes" data-i18n="localLlm.hf.sort_likes">Kedvelések</option>
+                <option value="trending" data-i18n="localLlm.hf.sort_trending">Trending</option>
+                <option value="lastModified" data-i18n="localLlm.hf.sort_recent">Legutóbbi</option>
+              </select>
+              <label class="llm-hf-toggle">
+                <input type="checkbox" id="llmHfGguf" checked>
+                <span data-i18n="localLlm.hf.gguf_only">Csak GGUF (Ollama húzható)</span>
+              </label>
+              <button class="btn-primary btn-compact" id="llmHfSearchBtn" data-i18n="localLlm.hf.search_btn">Szűrés indítása</button>
+            </div>
+            <div class="llm-hf-results" id="llmHfResults">
+              <div class="llm-empty" data-i18n="localLlm.hf.initial">Indíts egy keresést a fenti szűrőkkel.</div>
+            </div>
           </div>
-          <div id="freellmMsg" class="freellm-msg" role="status" aria-live="polite"></div>
-        </div>
-      </div>
 
-      <!-- Metrics -->
-      <div class="freellm-section">
-        <h2 class="freellm-section-title" data-i18n="freellm.metrics.title">Mérések</h2>
-        <div class="freellm-metrics">
-          <div class="freellm-metric">
-            <span class="freellm-metric-label" data-i18n="freellm.metrics.calls">Hívások</span>
-            <span class="freellm-metric-value" id="freellmCallsCount">0</span>
-          </div>
-          <div class="freellm-metric">
-            <span class="freellm-metric-label" data-i18n="freellm.metrics.drafts">Draftok</span>
-            <span class="freellm-metric-value" id="freellmDraftsCount">0</span>
+          <!-- Quick test -->
+          <div class="llm-section">
+            <h2 class="llm-section-title" data-i18n="localLlm.test.title">Gyorsteszt</h2>
+            <p class="llm-hint" data-i18n="localLlm.test.hint">Próbáld ki a helyi modellt a RAG wrapperen keresztül (mikrob memóriával).</p>
+            <textarea id="llmTestPrompt" class="llm-textarea" rows="3" data-i18n-placeholder="localLlm.test.placeholder" placeholder="Írj egy promptot..." maxlength="4000"></textarea>
+            <div class="llm-test-row">
+              <button class="btn-primary btn-compact" id="llmTestBtn" data-i18n="localLlm.test.run_btn">Futtatás</button>
+              <span class="llm-charcount" id="llmTestCount"></span>
+            </div>
+            <div class="llm-test-output" id="llmTestOutput" hidden></div>
           </div>
         </div>
       </div>
 
-      <!-- Error state (RedHat N1 / QA F3, 25256/25239: the wrapper must be the thing that gets
-           unhidden -- app-freellm.js freellmShowErrorSection()/freellmHideErrorSection() own it). -->
-      <div class="freellm-section" id="freellmErrorSection" hidden>
-        <h2 class="freellm-section-title" data-i18n="freellm.error.title">Utolsó hiba</h2>
-        <div id="freellmLastError" class="freellm-error" role="status" aria-live="polite"></div>
-        <button type="button" id="freellmErrorRetryBtn" class="btn-secondary btn-compact" data-i18n="freellm.error.retry">Újra</button>
+      <!-- ===== Tab: FreeLLM ===== -->
+      <div class="tab-panel" id="tabProviderFreellm" hidden>
+        <!-- Master on/off switch (contract-first: GET/PUT /api/freellm/status) -->
+        <div class="freellm-section">
+          <h2 class="freellm-section-title" data-i18n="freellm.title">FreeAPI LLM offload</h2>
+          <p class="freellm-desc" data-i18n="freellm.desc">Harmadik féltől származó nyílt LLM szolgáltatás az offload útvonalhoz. Ki/be kapcsolható; a kimenő tartalom mopsion/PII miatt már nem blokkolt -- csak az észlelt hitelesítő adatok (token/kulcs/jelszó) vannak [REDACTED]-ként maszkolva, mielőtt a tartalom elhagyja a gépet.</p>
+          <div class="freellm-control">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+              <input type="checkbox" id="freellmToggle" aria-describedby="freellmMsg" style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0;cursor:pointer;">
+              <span id="freellmLabel" class="freellm-label" data-i18n="freellm.status.on">Bekapcsolva</span>
+            </div>
+            <div id="freellmMsg" class="freellm-msg" role="status" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <!-- Metrics -->
+        <div class="freellm-section">
+          <h2 class="freellm-section-title" data-i18n="freellm.metrics.title">Mérések</h2>
+          <div class="freellm-metrics">
+            <div class="freellm-metric">
+              <span class="freellm-metric-label" data-i18n="freellm.metrics.calls">Hívások</span>
+              <span class="freellm-metric-value" id="freellmCallsCount">0</span>
+            </div>
+            <div class="freellm-metric">
+              <span class="freellm-metric-label" data-i18n="freellm.metrics.drafts">Draftok</span>
+              <span class="freellm-metric-value" id="freellmDraftsCount">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Call log (card ebe20efe, Peti 14295): per-outcome 24h/7d counters + the latest calls,
+             newest first. Contract: GET /api/freellm/calls?since=&limit= (Pair-BE 685f25cb). -->
+        <div class="freellm-section">
+          <h2 class="freellm-section-title" data-i18n="freellm.calls.title">Hívás-napló</h2>
+          <div class="freellm-toolbar">
+            <button type="button" id="freellmCallsRefreshBtn" class="btn-secondary btn-compact" data-i18n="freellm.calls.refresh">Frissítés</button>
+          </div>
+          <div id="freellmCallsLoading" class="freellm-calls-loading" data-i18n="freellm.calls.loading" hidden>Betöltés…</div>
+          <div id="freellmCallsError" class="freellm-calls-error" role="status" aria-live="polite" hidden></div>
+          <div id="freellmCallsEmpty" class="freellm-calls-empty" data-i18n="freellm.calls.empty" hidden>Még nincs hívás.</div>
+          <div id="freellmCallsCounts" class="freellm-calls-counts" hidden>
+            <div class="freellm-calls-counts-group">
+              <span class="freellm-calls-counts-label" data-i18n="freellm.calls.window_24h">24 óra</span>
+              <span class="freellm-calls-counts-row" id="freellmCounts24h"></span>
+            </div>
+            <div class="freellm-calls-counts-group">
+              <span class="freellm-calls-counts-label" data-i18n="freellm.calls.window_7d">7 nap</span>
+              <span class="freellm-calls-counts-row" id="freellmCounts7d"></span>
+            </div>
+          </div>
+          <div class="freellm-calls-table-wrap" id="freellmCallsTableWrap" hidden>
+            <table class="freellm-calls-table">
+              <thead>
+                <tr>
+                  <th data-i18n="freellm.calls.col.time">Idő</th>
+                  <th data-i18n="freellm.calls.col.agent">Ügynök</th>
+                  <th data-i18n="freellm.calls.col.card">Kártya</th>
+                  <th data-i18n="freellm.calls.col.model">Modell</th>
+                  <th data-i18n="freellm.calls.col.outcome">Eredmény</th>
+                  <th data-i18n="freellm.calls.col.duration">Időtartam</th>
+                </tr>
+              </thead>
+              <tbody id="freellmCallsTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Error state (RedHat N1 / QA F3, 25256/25239: the wrapper must be the thing that gets
+             unhidden -- app-freellm.js freellmShowErrorSection()/freellmHideErrorSection() own it). -->
+        <div class="freellm-section" id="freellmErrorSection" hidden>
+          <h2 class="freellm-section-title" data-i18n="freellm.error.title">Utolsó hiba</h2>
+          <div id="freellmLastError" class="freellm-error" role="status" aria-live="polite"></div>
+          <button type="button" id="freellmErrorRetryBtn" class="btn-secondary btn-compact" data-i18n="freellm.error.retry">Újra</button>
+        </div>
+
+        <!-- Provider key form (card fd5fcc2c point 5, Peti 12500, Pair-BE 08d1aa90).
+             POST/GET/DELETE /api/freellm/keys. The full key is NEVER shown back -- only the
+             backend's own masked "***...last4" string. The field clears right after a save. -->
+        <div class="freellm-section">
+          <h2 class="freellm-section-title" data-i18n="freellm.keys.title">Szolgáltatói kulcsok</h2>
+          <p class="freellm-desc" data-i18n="freellm.keys.desc">A kulcsokat a marveen nem tárolja és nem logolja -- csak továbbítja a freellmapi szolgáltatásnak. Beállítás után csak az utolsó 4 karakter látható.</p>
+          <div class="freellm-keys-list">
+            <div class="freellm-key-row" data-provider="groq">
+              <span class="freellm-key-provider" data-i18n="freellm.keys.provider.groq">Groq</span>
+              <input type="password" id="freellmKeyInput_groq" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_groq freellmKeyMsg_groq">
+              <button type="button" id="freellmKeySaveBtn_groq" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
+              <button type="button" id="freellmKeyDeleteBtn_groq" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
+              <span id="freellmKeyStatus_groq" class="freellm-key-status" role="status" aria-live="polite"></span>
+              <div id="freellmKeyMsg_groq" class="freellm-key-msg" role="status" aria-live="polite"></div>
+            </div>
+            <div class="freellm-key-row" data-provider="cerebras">
+              <span class="freellm-key-provider" data-i18n="freellm.keys.provider.cerebras">Cerebras</span>
+              <input type="password" id="freellmKeyInput_cerebras" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_cerebras freellmKeyMsg_cerebras">
+              <button type="button" id="freellmKeySaveBtn_cerebras" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
+              <button type="button" id="freellmKeyDeleteBtn_cerebras" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
+              <span id="freellmKeyStatus_cerebras" class="freellm-key-status" role="status" aria-live="polite"></span>
+              <div id="freellmKeyMsg_cerebras" class="freellm-key-msg" role="status" aria-live="polite"></div>
+            </div>
+            <div class="freellm-key-row" data-provider="google_ai_studio">
+              <span class="freellm-key-provider" data-i18n="freellm.keys.provider.google_ai_studio">Google AI Studio</span>
+              <input type="password" id="freellmKeyInput_google_ai_studio" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_google_ai_studio freellmKeyMsg_google_ai_studio">
+              <button type="button" id="freellmKeySaveBtn_google_ai_studio" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
+              <button type="button" id="freellmKeyDeleteBtn_google_ai_studio" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
+              <span id="freellmKeyStatus_google_ai_studio" class="freellm-key-status" role="status" aria-live="polite"></span>
+              <div id="freellmKeyMsg_google_ai_studio" class="freellm-key-msg" role="status" aria-live="polite"></div>
+            </div>
+            <div class="freellm-key-row" data-provider="openrouter">
+              <span class="freellm-key-provider" data-i18n="freellm.keys.provider.openrouter">OpenRouter</span>
+              <input type="password" id="freellmKeyInput_openrouter" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_openrouter freellmKeyMsg_openrouter">
+              <button type="button" id="freellmKeySaveBtn_openrouter" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
+              <button type="button" id="freellmKeyDeleteBtn_openrouter" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
+              <span id="freellmKeyStatus_openrouter" class="freellm-key-status" role="status" aria-live="polite"></span>
+              <div id="freellmKeyMsg_openrouter" class="freellm-key-msg" role="status" aria-live="polite"></div>
+            </div>
+            <div class="freellm-key-row" data-provider="mistral">
+              <span class="freellm-key-provider" data-i18n="freellm.keys.provider.mistral">Mistral</span>
+              <input type="password" id="freellmKeyInput_mistral" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_mistral freellmKeyMsg_mistral">
+              <button type="button" id="freellmKeySaveBtn_mistral" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
+              <button type="button" id="freellmKeyDeleteBtn_mistral" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
+              <span id="freellmKeyStatus_mistral" class="freellm-key-status" role="status" aria-live="polite"></span>
+              <div id="freellmKeyMsg_mistral" class="freellm-key-msg" role="status" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- Provider key form (card fd5fcc2c point 5, Peti 12500, Pair-BE 08d1aa90).
-           POST/GET/DELETE /api/freellm/keys. The full key is NEVER shown back -- only the
-           backend's own masked "***...last4" string. The field clears right after a save. -->
-      <div class="freellm-section">
-        <h2 class="freellm-section-title" data-i18n="freellm.keys.title">Szolgáltatói kulcsok</h2>
-        <p class="freellm-desc" data-i18n="freellm.keys.desc">A kulcsokat a marveen nem tárolja és nem logolja -- csak továbbítja a freellmapi szolgáltatásnak. Beállítás után csak az utolsó 4 karakter látható.</p>
-        <div class="freellm-keys-list">
-          <div class="freellm-key-row" data-provider="groq">
-            <span class="freellm-key-provider" data-i18n="freellm.keys.provider.groq">Groq</span>
-            <input type="password" id="freellmKeyInput_groq" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_groq freellmKeyMsg_groq">
-            <button type="button" id="freellmKeySaveBtn_groq" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
-            <button type="button" id="freellmKeyDeleteBtn_groq" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
-            <span id="freellmKeyStatus_groq" class="freellm-key-status" role="status" aria-live="polite"></span>
-            <div id="freellmKeyMsg_groq" class="freellm-key-msg" role="status" aria-live="polite"></div>
+      <!-- ===== Tab: Gemini ===== -->
+      <div class="tab-panel" id="tabProviderGemini" hidden>
+        <p class="gemini-page-sub" data-i18n="geminiCalls.subtitle">Óránkénti keret, hívásnapló és értékelés -- a prompt tartalma soha nem kerül ide, csak sha256.</p>
+        <p class="gemini-page-status" id="geminiPageStatus" role="status" aria-live="polite"></p>
+
+        <div id="geminiPageBody" hidden>
+          <div class="gemini-stop-banner" id="geminiStopBanner" role="alert" hidden>
+            <strong data-i18n="geminiCalls.stop.title">STOP-flag aktív</strong>
+            <span id="geminiStopReason"></span>
           </div>
-          <div class="freellm-key-row" data-provider="cerebras">
-            <span class="freellm-key-provider" data-i18n="freellm.keys.provider.cerebras">Cerebras</span>
-            <input type="password" id="freellmKeyInput_cerebras" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_cerebras freellmKeyMsg_cerebras">
-            <button type="button" id="freellmKeySaveBtn_cerebras" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
-            <button type="button" id="freellmKeyDeleteBtn_cerebras" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
-            <span id="freellmKeyStatus_cerebras" class="freellm-key-status" role="status" aria-live="polite"></span>
-            <div id="freellmKeyMsg_cerebras" class="freellm-key-msg" role="status" aria-live="polite"></div>
-          </div>
-          <div class="freellm-key-row" data-provider="google_ai_studio">
-            <span class="freellm-key-provider" data-i18n="freellm.keys.provider.google_ai_studio">Google AI Studio</span>
-            <input type="password" id="freellmKeyInput_google_ai_studio" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_google_ai_studio freellmKeyMsg_google_ai_studio">
-            <button type="button" id="freellmKeySaveBtn_google_ai_studio" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
-            <button type="button" id="freellmKeyDeleteBtn_google_ai_studio" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
-            <span id="freellmKeyStatus_google_ai_studio" class="freellm-key-status" role="status" aria-live="polite"></span>
-            <div id="freellmKeyMsg_google_ai_studio" class="freellm-key-msg" role="status" aria-live="polite"></div>
-          </div>
-          <div class="freellm-key-row" data-provider="openrouter">
-            <span class="freellm-key-provider" data-i18n="freellm.keys.provider.openrouter">OpenRouter</span>
-            <input type="password" id="freellmKeyInput_openrouter" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_openrouter freellmKeyMsg_openrouter">
-            <button type="button" id="freellmKeySaveBtn_openrouter" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
-            <button type="button" id="freellmKeyDeleteBtn_openrouter" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
-            <span id="freellmKeyStatus_openrouter" class="freellm-key-status" role="status" aria-live="polite"></span>
-            <div id="freellmKeyMsg_openrouter" class="freellm-key-msg" role="status" aria-live="polite"></div>
-          </div>
-          <div class="freellm-key-row" data-provider="mistral">
-            <span class="freellm-key-provider" data-i18n="freellm.keys.provider.mistral">Mistral</span>
-            <input type="password" id="freellmKeyInput_mistral" class="freellm-key-input" autocomplete="new-password" spellcheck="false" aria-describedby="freellmKeyStatus_mistral freellmKeyMsg_mistral">
-            <button type="button" id="freellmKeySaveBtn_mistral" class="btn-primary btn-compact" data-i18n="freellm.keys.save_btn">Mentés</button>
-            <button type="button" id="freellmKeyDeleteBtn_mistral" class="btn-secondary btn-compact freellm-key-delete-btn" data-i18n="freellm.keys.delete_btn" hidden>Törlés</button>
-            <span id="freellmKeyStatus_mistral" class="freellm-key-status" role="status" aria-live="polite"></span>
-            <div id="freellmKeyMsg_mistral" class="freellm-key-msg" role="status" aria-live="polite"></div>
-          </div>
+
+          <section class="llm-section gemini-quota-section">
+            <h2 class="llm-section-title" data-i18n="geminiCalls.quota.title">Óránkénti keret</h2>
+            <div class="gemini-quota-row">
+              <span class="gemini-quota-bar" id="geminiQuotaBar"><span class="gemini-quota-bar-fill" id="geminiQuotaBarFill"></span></span>
+              <span class="gemini-quota-label" id="geminiQuotaLabel">—</span>
+            </div>
+            <p class="gemini-quota-next-free" id="geminiQuotaNextFree"></p>
+          </section>
+
+          <section class="llm-section">
+            <h2 class="llm-section-title" data-i18n="geminiCalls.summary.by_model_title">Összesítő modellenként</h2>
+            <div id="geminiSummaryByModel"></div>
+          </section>
+
+          <section class="llm-section">
+            <h2 class="llm-section-title" data-i18n="geminiCalls.summary.by_task_title">Összesítő feladattípusonként</h2>
+            <div id="geminiSummaryByTaskType"></div>
+          </section>
+
+          <section class="llm-section">
+            <h2 class="llm-section-title" data-i18n="geminiCalls.list.title">Hívás-napló</h2>
+            <div class="gemini-calls-table-wrap llm-activity-scroll" id="geminiCallsTableWrap"></div>
+          </section>
         </div>
       </div>
     </div>
@@ -3036,6 +3117,19 @@
           <input type="checkbox" id="kgStrictToggle">
           <span data-i18n="kg.filter.strict">szigorú (nincs engedékeny visszaesés)</span>
         </label>
+        <button type="button" class="btn-secondary btn-compact" id="kgNebulaToggleBtn" aria-expanded="false" data-i18n="kg.nebula.toggle">Élő hálózat</button>
+      </div>
+
+      <!-- Card dcb196f9: live nebula graph (agents + KG nodes, flashing search trails) -->
+      <div class="kg-nebula-section" id="kgNebulaSection" hidden>
+        <div class="kg-nebula-head">
+          <h2 class="kg-nebula-title" data-i18n="kg.nebula.title">Élő gráf (nebula)</h2>
+          <span class="kg-nebula-legend" id="kgNebulaLegend"></span>
+        </div>
+        <p class="kg-nebula-reduced-note" id="kgNebulaReducedNote" data-i18n="kg.nebula.reduced_motion_note" hidden>A mozgás-csökkentett beállításod miatt a nyomok statikusan jelennek meg, animáció nélkül.</p>
+        <div class="kg-nebula-canvas-wrap" id="kgNebulaCanvasWrap">
+          <canvas id="kgNebulaCanvas" class="kg-nebula-canvas"></canvas>
+        </div>
       </div>
 
       <div class="kg-layout">
@@ -4637,6 +4731,7 @@
   <script src="/app-theme-lang.js"></script> <!-- slice 40: Theme + Language toggle -->
   <script src="/app-elements.js"></script>
   <script src="/app-helpers.js"></script>   <!-- slice 41: Toast, SVG icons, escapeHtml, STATUS labels -->
+  <script src="/app-health-panel.js"></script>  <!-- card 2d9c0bb2: global side-effect health banner, after app-helpers.js for t()/escapeHtml() -->
   <script src="/app-page-switch.js"></script>
   <script src="/app-kanban.js"></script>
   <script src="/app-modals.js"></script>
@@ -4661,6 +4756,7 @@
   <script src="/app-overview.js"></script>
   <script src="/app-gemini-calls.js"></script>  <!-- card 57da740c: Gemini-calls page + overview tile; after app-overview.js so loadGeminiOverviewTile() can be called from loadOverview() -->
   <script src="/app-kg.js"></script>  <!-- card 8bb7cf54 (MT-11): Megoldas-tar (knowledge graph) page -->
+  <script src="/app-kg-nebula.js"></script>  <!-- card dcb196f9: live nebula graph view, after app-kg.js for kgFetch/kgSelectNode/kgState sharing -->
   <script src="/app-llm-ledger.js"></script>  <!-- card 52c48470: F4 LLM usage ledger by provider/task/agent -->
   <script src="/app-llm-monitor.js"></script>   <!-- card 87be1810: LLM monitor page (task-events swimlane); after app-overview.js for the shared ovw-llmdist CSS/idiom -->
   <script src="/app-autonomy.js"></script>

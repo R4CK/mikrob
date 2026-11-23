@@ -48,9 +48,24 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { DEAD_LAND_SELFTEST_ENV as DEAD_SELFTEST_ENV } from './setup/isolate-land-selftest-state.js'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
 const STORE = join(REPO_ROOT, 'store')
+
+// Card 1634bf55 (backend report msg 23386 + MikroB comment 37609; CYBERED NO-GO 37616
+// F-3: a locally-redefined copy here could drift from the global one and nobody would
+// notice). A selftest that forgets to stub its own kanban-comment/journal env (the land
+// scripts' own documented contract -- see e.g. marveen-land.sh's --selftest-land-batch)
+// falls through kanban-comment-lib.sh's live default (http://localhost:3420) AND
+// _kc_token_file's git-common-dir fallback, which reaches the REAL store/.dashboard-token
+// even from an unrelated worktree -- confirmed live (+3 bytes in the real
+// store/land-runs.jsonl during a concurrent fleet-test, three real /api/messages posts).
+// DEAD_SELFTEST_ENV is the SAME object the global `isolate-land-selftest-state.ts` setup
+// file forces into process.env for every worker (so the two files not covered here or in
+// landing-downward-check.test.ts -- agent-worktree-marveen.test.ts, landing-gate-verdict-
+// check.test.ts -- are covered too); spreading it again here, UNCONDITIONALLY, is explicit
+// defense-in-depth for this file's own selftests, not the only place it is applied.
 
 // Card 99a4a2d4 (WhiteHat F1 on ff7e1b0a, comment 6640): the EXISTING static detector
 // (selftests-do-not-mutate-the-shared-tree.test.ts) matches destructive commands by NAME/SHAPE --
@@ -106,13 +121,34 @@ let guardedCallCount = 0
 // selftest's own fault. A timeout raise would not help a process that is killed outright rather
 // than running long, so this is a single retry after a short backoff, not a budget change.
 function execWithKillRetry(runner: string, args: readonly string[], file: string): string {
+  // Spread AFTER process.env, never before: a selftest that explicitly passes its own
+  // KANBAN_COMMENT_API etc. via a nested `exec env ...` (e.g. marveen-land.sh's own
+  // --selftest-land-batch/--selftest-land-notify wrappers) still wins inside its own subprocess --
+  // this only forces the value this TOP-level invocation starts with, closing exactly the gap
+  // where a script forgets to stub at all.
+  const env = { ...process.env, ...DEAD_SELFTEST_ENV }
   try {
-    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env: process.env })
+    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
   } catch (e) {
     const err = e as { signal?: string | null; status?: number | null }
     if (err.signal !== 'SIGKILL') throw e
     console.error(`${file}: killed (SIGKILL) on first attempt, likely host-level memory contention -- retrying once`)
-    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env: process.env })
+    return execFileSync(runner, args, { encoding: 'utf-8', timeout: 180_000, env })
+  }
+}
+
+// Card a88ebef5 reopened (MikroB, msg 22525): the dirt-check names WHICH selftest was running
+// when the tree turned up dirty, but not WHAT changed -- on a shared, concurrently-landed tree
+// that selftest is often an innocent bystander (confirmed for offload-dispatch.selftest.sh,
+// 2026-11-20: zero references to CLAUDE.md anywhere in that script). The diff content itself
+// narrows the real writer (which managed section moved) even when the blamed selftest is not
+// the actual cause.
+function diffHead(repoRoot: string, path: string): string {
+  try {
+    const out = execFileSync('git', ['-C', repoRoot, 'diff', '--', path], { encoding: 'utf-8' })
+    return out.split('\n').slice(0, 20).join('\n')
+  } catch (e) {
+    return `(git diff failed: ${(e as Error).message})`
   }
 }
 
@@ -123,10 +159,14 @@ function runGuardedSelftest(repoRoot: string, runner: string, file: string, args
   const out = execWithKillRetry(runner, [join(store, file), ...args], file)
   const dirtied = newlyDirty(before, trackedDirtySet(repoRoot))
   if (dirtied.length > 0) {
+    const diffs = dirtied
+      .map((line) => line.slice(3).trim())
+      .map((path) => `--- diff head for ${path} ---\n${diffHead(repoRoot, path)}`)
+      .join('\n')
     throw new Error(
       `${file} left the shared tracked tree dirty (card 99a4a2d4): ${dirtied.join(', ')}. ` +
         `A selftest may read the shared tree freely, but must not modify or delete a tracked ` +
-        `file in it -- write to a disposable copy/mktemp sandbox instead.`,
+        `file in it -- write to a disposable copy/mktemp sandbox instead.\n${diffs}`,
     )
   }
   return out
@@ -225,6 +265,18 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   // self-contained (every case writes to a mktemp dir, never to the live store) and safe to run
   // under execFileSync's inherited env.
   { file: 'quota-shutdown-guard.sh', args: ['--selftest'] },
+  // Card dd051a9f: carries its selftest as an argument like its siblings above, wired here at
+  // birth so it is not left as another "written, committed, green-looking, never run" control.
+  { file: 'npm-live-install-drift-check.sh', args: ['--selftest'] },
+  // WhiteHat F-C LOW (card c4590365, comment 34613): land_notify_finish's selftest existed
+  // (`--selftest-land-notify`) but nothing in the suite ran it -- the exact "written, committed,
+  // green-looking, never run" class this file exists to close, one script over (the identical
+  // class recurred on quota-shutdown-guard.sh above and vendored-skill-integrity.py before that).
+  { file: 'marveen-land.sh', args: ['--selftest-land-notify'] },
+  // New this card (426adb21): carries its selftest as an argument, same shape as its sibling
+  // bump-fork-version.sh right above -- wired here at birth instead of joining the "written,
+  // committed, green-looking, never run" class this file exists to close.
+  { file: 'npm-ci-advisory-check.sh', args: ['--selftest'] },
 ]
 
 /** True iff `file` is a same-directory SYMLINK ALIAS of another file already in `files` -- e.g. the
@@ -319,6 +371,15 @@ const OK_SHAPES: readonly RegExp[] = [
   // distinct from the local-llm-rag entry above ("all N checks passed", no period, different
   // noun). Captured non-zero N keeps the non-vacuous guarantee: `all 0 cases pass.` does not match.
   /selftest: all ([1-9]\d*) cases pass\./,
+  // llm-skill-pack-build.selftest.sh style (card 2746165b): `[i/N] <desc>` then an indented
+  // `ok` (or `ok (...)`) line per case, final bare `SELFTEST OK`. Same family as the
+  // `ok ... selftest: PASS` entry above -- at least one `ok` line is required before the final
+  // line, the same non-vacuous guarantee, just a different final word.
+  /^\s*ok\b[\s\S]*\nSELFTEST OK$/m,
+  // marveen-land.sh --selftest-land-notify style (card c4590365, F-C): `selftest-land-notify: N
+  // case(s), PASS` -- a HYPHENATED prefix, so it does not contain the literal "selftest: " the
+  // case\(s\), PASS entry above requires. Captured non-zero N keeps the non-vacuous guarantee.
+  /selftest-land-notify: ([1-9]\d*) case\(s\), PASS/,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {

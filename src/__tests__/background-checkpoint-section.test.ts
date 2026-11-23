@@ -112,7 +112,7 @@ describe('background-checkpoint section: idempotent insert and update', () => {
   })
 
   it('leaves another generated section untouched', () => {
-    const other = `<!-- BEGIN GENERATED: message-close (auto-generated, do not edit by hand) -->\n${buildMessageCloseBody()}\n<!-- END GENERATED: message-close -->`
+    const other = `<!-- BEGIN GENERATED: message-close (auto-generated, do not edit by hand) -->\n${buildMessageCloseBody('agent-d')}\n<!-- END GENERATED: message-close -->`
     setup('agent-d', `# D\n\n${other}\n`)
     ensureBackgroundCheckpointSection('agent-d')
     const out = read('agent-d')

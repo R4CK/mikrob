@@ -27,6 +27,8 @@ mkdir -p "$FIXTURE_INSTALL/scripts/lib" "$FIXTURE_INSTALL/store" "$FIXTURE_INSTA
 cp "$WATCHDOG" "$FIXTURE_INSTALL/scripts/watchdog.sh"
 cp "$REPO_DIR/scripts/lib/oauth_token_file_check.py" "$FIXTURE_INSTALL/scripts/lib/oauth_token_file_check.py"
 WD="$FIXTURE_INSTALL/scripts/watchdog.sh"
+# Card 23a14ae1: INSTALL_DIR no longer follows $0 -- point it at the fixture install explicitly.
+export WATCHDOG_INSTALL_DIR="$FIXTURE_INSTALL"
 
 AGENT="$FIXTURE_INSTALL/agents/undecidable-agent"
 printf 'test agent\n' > "$AGENT/CLAUDE.md"

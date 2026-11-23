@@ -27,6 +27,7 @@ import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID } from '../config.js'
 import { updateEnvFile } from '../env.js'
 import { isValidModelId } from '../model-id.js'
 import { contextLimitForModel } from '../context-guard.js'
+import { refuseIfCliCannotLaunch } from './routes/agents.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { readActiveModelFromProjectDir } from './active-model.js'
 import { configDirFor } from './context-restart-gate-runner.js'
@@ -527,6 +528,15 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
   const { choice, hold } = parsed
   let effort = parsed.effort
   if (choice && !isValidModelId(choice.id)) return fail(`Nem váltottam: érvénytelen modell-azonosító: ${choice.id}`)
+  // Card af6466a5 (WhiteHat L2, 6b10a6b8): a syntactically valid choice from
+  // store/model-choices.json can still be one the INSTALLED CLI cannot launch
+  // -- the same PICKERCLIKAPU923 gate POST/PUT /api/agents already apply, now
+  // also on the owner's own /model switch. Without it, the OWNER'S OWN session
+  // (not a sub-agent) could end up silently deaf on an unsupported model.
+  if (choice) {
+    const cliRefusal = await refuseIfCliCannotLaunch(choice.id)
+    if (cliRefusal) return fail(cliRefusal.message)
+  }
   let effortDropped: string | null = null
   if (effort) {
     const target = choice?.id ?? readHold(deps.holdFile).state?.model ?? configured

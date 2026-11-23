@@ -1,0 +1,28 @@
+Mikor használd
+- Új namespace kerül az EN locale-ba és a többi nyelv nem kapja meg
+- Parity test / CI fail: "EN-copy violation in de/es/fr/it/pl"
+- i18n fordítási sprint (df12479a-típusú kártyák)
+
+Procedure
+
+QA gate: double-brace ICU szintaxis ellenőrzés (KÖTELEZŐ, MikroB calibration 2026-07-13)
+A projekt `i18next-icu`-t használ: **single-brace `{name}`** a helyes ICU formátum. A `{{name}}` dupla-brace INVALID -- runtime silently fallback-el, a placeholder nem renderel.
+
+**Gate szabály**: minden i18n-t érintő kártya sign-off-ja ELŐTT kötelező double-brace sweep ALL 7 locale-fájlban, AZ ADOTT COMMIT-ON (nem HEAD-en!):
+
+```python
+import json, re, sys
+
+Buktatók
+- **WSL2/NTFS caching**: soha ne használj több Python processzt ugyanarra a locale fájlra. Egy session = egy processz = load-all/apply-all/write-all.
+- **git add -A tilos**: shared checkout, más agent módosíthatott más fájlokat. Csak a saját i18n fájljaidat addd.
+- **LEGIT_SAME false positive**: FR, IT, ES sok kognátot tartalmaz ami pontosan ugyanúgy íródik mint EN (Date, Description, Module, Finance, Photos stb.). Ezek NEM hibák. Frissítsd a LEGIT_WORDS listát ha új kategória kerül elő.
+- **Plural forms**: ICU MessageFormat (`{count, plural, one {...} other {...}}`) csak akkor fordítandó, ha a szöveg valóban más (pl. PL 4 formájú plurális). FR-ben `site`/`sites` ugyanaz.
+- **Template-only strings**: ha az EN value csupa `{placeholder}` és elválasztó (`{score} / 5`, `{value} m²`), ez LEGIT_SAME, nem fordítandó.
+- **Stale HEAD csapda**: ha a kártya egy korábbi commit hash-t jelöl, mindig `git show <sha>:file`-lal ellenőrizz -- a HEAD-en esetleg már javítva van, de a commit-en nem volt az! (Valós eset: 4573921 double-brace volt, a1d9f96 javította; HEAD-en check = téves PASS.)
+
+Ellenőrzés
+- `is_legit()` filter után 0 maradó violation az adott névtérben
+- Double-brace sweep: 0 `{{...}}` találat mind a 7 locale-ban AZ ADOTT COMMIT SHA-N
+- `i18n-locale-guard.test.ts` 14/14 passing
+- Commit SHA dokumentálva a kártya kommentjében

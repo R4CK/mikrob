@@ -185,7 +185,7 @@ fi
 
 n=$((n + 1))
 if [ -L "$ROOT/card/deadbeef12/node_modules" ]; then
-  echo "  ok   a card worktree's node_modules is a symlink (real-deps has no --card mode yet)"
+  echo "  ok   a card worktree's node_modules stays a symlink without MARVEEN_WORKTREE_REAL_DEPS=1 (same opt-in default as agent mode; see agent-worktree-deps.selftest.sh for the --card real-deps path)"
 else
   echo "  FAIL expected node_modules to be a symlink in the card worktree"; fail=1
 fi

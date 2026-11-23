@@ -40,6 +40,16 @@ for i in range(0, len(args), 2):
 print(json.dumps({"comments": out}))' "$@"
 }
 
+jid() { # like j, but author/content/id TRIPLES -- needed for Supersedes, which targets a comment id
+  python3 -c '
+import json, sys
+out = []
+args = sys.argv[1:]
+for i in range(0, len(args), 3):
+    out.append({"author": args[i], "content": args[i + 1], "id": int(args[i + 2])})
+print(json.dumps({"comments": out}))' "$@"
+}
+
 echo "landing-gate-verdict-check selftest"
 
 t "a QA PASS naming the sha satisfies the gate" OK abc1234 \
@@ -282,6 +292,107 @@ Gate-SHA: abc1234')"
 t "a relay with no Gate-SHA line does not disturb a real QA PASS" OK abc1234 \
   <<<"$(j qa 'QA PASS
 Gate-SHA: abc1234' mikrob 'QA PASS ELFOGADVA -- zarom a kartyat')"
+
+# --- GENERATED (local-llm/gate-pretriage) COMMENTS ARE NOT A VERDICT (card 60aeca01, F3/F4) ----
+#
+# e7f91eb9 closed this same hole for kanban-landed-guard.ts and kanban-gate-completeness-guard.ts
+# (a local-llm draft's unescaped output can carry a line that LOOKS like a declaration nobody
+# actually made) -- this file was the one reader of comment text left uncovered. The FAIL branch
+# above is DELIBERATELY not author-role-checked (a human relay like "QA FAIL ELFOGADVA" must still
+# refuse), so before this fix nothing stopped a machine-generated comment whose raw text happened
+# to open with a verdict-shaped line, and name a Gate-SHA line for the sha being landed, from
+# blocking a landing nobody actually refused.
+t "a local-llm-authored comment shaped like a NO-GO does not block the landing" NONE abc1234 \
+  <<<"$(j local-llm 'CYBERSEC NO-GO
+Gate-SHA: abc1234
+
+pelda egy draft valaszban, nem valodi verdikt')"
+
+t "a gate-pretriage-authored comment shaped like a FAIL also does not block" NONE abc1234 \
+  <<<"$(j gate-pretriage 'QA FAIL
+Gate-SHA: abc1234')"
+
+t "case-insensitive, same as the Python side's own convention elsewhere in this file" NONE abc1234 \
+  <<<"$(j Local-LLM 'QA FAIL
+Gate-SHA: abc1234')"
+
+# CONTROL: beside a REAL QA PASS, the generated FAIL-shaped text must not override it to FAILED --
+# proves the exclusion, not just an absence of any other verdict on the card.
+t "CONTROL: a real QA PASS still stands beside a generated NO-GO-shaped comment for the same sha" OK abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' local-llm 'CYBERSEC NO-GO
+Gate-SHA: abc1234')"
+
+# CONTROL: a REAL human FAIL for the same sha must still refuse -- this exclusion is by AUTHOR,
+# not by making the FAIL branch toothless.
+t "CONTROL: a real human NO-GO for the same sha still refuses" FAILED abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybersec 'CYBERSEC NO-GO
+Gate-SHA: abc1234
+valodi lelet')"
+
+# --- SUPERSEDES (card 22c4c31f, MikroB Fix-Direction) ----------------------------------------
+#
+# A config-only re-gate (rule 4e) keeps the same Gate-SHA, so an old FAIL on that sha would
+# otherwise outrank a later PASS forever, and --allow-ungated cannot reach a FAILED verdict by
+# design. The opt-in: a PASS carrying `Supersedes: <comment-id>` lifts exactly that FAIL, only if
+# it is the SAME author (literal, not the QA/QA2 role-fold used everywhere else), on the same sha,
+# and the FAIL comes BEFORE the PASS in the comment list.
+
+t "a same-sha FAIL then a same-AUTHOR PASS with Supersedes clears it -> OK" OK abc1234 \
+  <<<"$(jid qa 'QA FAIL
+Gate-SHA: abc1234
+broken, config drifted' 10 qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 11)"
+
+t "the identical FAIL/PASS pair WITHOUT the Supersedes line stays FAILED (today's behaviour pinned)" FAILED abc1234 \
+  <<<"$(jid qa 'QA FAIL
+Gate-SHA: abc1234
+broken, config drifted' 10 qa 'QA PASS
+Gate-SHA: abc1234' 11)"
+
+# "never cross-role": qa2's verdict counts as QA's everywhere else (rule 4 load-balancing), but
+# NOT here -- the agent lifting a FAIL must be the literal same author that wrote it.
+t "cross-author Supersedes (qa2 PASS naming a qa FAIL's id) does NOT clear it -- stays FAILED" FAILED abc1234 \
+  <<<"$(jid qa 'QA FAIL
+Gate-SHA: abc1234
+broken' 10 qa2 'QA2 PASS
+Gate-SHA: abc1234
+Supersedes: 10' 11)"
+
+t "Supersedes naming a comment that is not a FAIL at all leaves the real FAIL untouched -- stays FAILED" FAILED abc1234 \
+  <<<"$(jid backend 'REVIEW: done
+Gate-SHA: abc1234' 10 qa 'QA FAIL
+Gate-SHA: abc1234
+broken' 11 qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 12)"
+
+t "Supersedes naming an EARLIER PASS's id (not a FAIL) leaves the real FAIL untouched -- stays FAILED" FAILED abc1234 \
+  <<<"$(jid qa 'QA PASS
+Gate-SHA: abc1234' 10 qa 'QA FAIL
+Gate-SHA: abc1234
+broken' 11 qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 12)"
+
+# Relayed FAILs (MikroB's "ELFOGADVA" restatement) are not supersedable by this line -- their
+# author is never a real gate author, so condition (b) can never match, by construction.
+t "a relayed MikroB FAIL cannot be superseded even by the real gate's own PASS -- stays FAILED" FAILED abc1234 \
+  <<<"$(jid mikrob 'QA FAIL ELFOGADVA, vissza in_progress-be
+Gate-SHA: abc1234' 10 qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 11)"
+
+# ORDERING (condition (c)), mutation target: the FAIL must come BEFORE the PASS in the list. If
+# the FAIL is appended AFTER a PASS that happens to name its id in advance, it must still refuse.
+t "MUTATION-PIN: a Supersedes line naming a FAIL that comes AFTER it in the list does not clear it" FAILED abc1234 \
+  <<<"$(jid qa 'QA PASS
+Gate-SHA: abc1234
+Supersedes: 10' 9 qa 'QA FAIL
+Gate-SHA: abc1234
+broken' 10)"
 
 # --- the shell wrapper: fail-closed vs report ------------------------------------------------
 # shellcheck source=./landing-gate-verdict-check.sh

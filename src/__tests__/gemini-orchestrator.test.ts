@@ -16,6 +16,11 @@ let forcedSpawnResult: { status: number | null; stdout?: string; error?: Error; 
 // all (QA2 27856, Kesz-ha #4 fix): forcing a non-42 exit on --check-blocked would make every
 // card ineligible before the branch is ever entered.
 let forcedAgySpawnResult: { status: number | null; stdout?: string; error?: Error } | null = null
+// Card 0291283d: forces the LOCAL model's execFileSync call (gemini-ghost-local.ts's
+// callLocalLlmForGhost) independently of the spawnSync forcing above -- a string means "resolve
+// with this stdout", an object with `status` means "throw like execFileSync does on a non-zero
+// exit" (status mirrors local-llm.sh's own documented exit codes).
+let forcedLocalLlmResult: string | { status: number } | null = null
 
 vi.mock('node:child_process', async (orig) => {
   const real = await orig<typeof import('node:child_process')>()
@@ -25,8 +30,23 @@ vi.mock('node:child_process', async (orig) => {
       const argv = (args[1] as string[] | undefined) ?? []
       const isAgyCall = argv.some((a) => String(a).includes('gemini-agy-call.sh'))
       if (isAgyCall && forcedAgySpawnResult) return forcedAgySpawnResult as ReturnType<typeof real.spawnSync>
+      // Card 0291283d: recordLocalGhostCallDetail's diagnostic llm_ledger write must never hit the
+      // REAL sqlite DB from a unit test -- fixed harmless success, no test needs to inspect it
+      // (unlike the agy/check-blocked calls above, which drive the decision under test).
+      if (argv.some((a) => String(a).includes('llm-ledger-append.py'))) {
+        return { status: 0, stdout: '' } as ReturnType<typeof real.spawnSync>
+      }
       if (forcedSpawnResult) return forcedSpawnResult as ReturnType<typeof real.spawnSync>
       return real.spawnSync(...args)
+    }),
+    execFileSync: vi.fn((...args: Parameters<typeof real.execFileSync>) => {
+      const file = String(args[0])
+      if (file.includes('local-llm.sh')) {
+        if (forcedLocalLlmResult === null) throw new Error('forcedLocalLlmResult not set in test')
+        if (typeof forcedLocalLlmResult === 'string') return forcedLocalLlmResult
+        throw Object.assign(new Error(`local-llm.sh exit ${forcedLocalLlmResult.status}`), forcedLocalLlmResult)
+      }
+      return real.execFileSync(...args)
     }),
   }
 })
@@ -84,6 +104,7 @@ import {
   runAsEntryPoint,
   type OrchestratorCard,
 } from '../gemini-orchestrator.js'
+import { GHOST_LOCAL_MODEL } from '../gemini-ghost-local.js'
 
 function card(over: Partial<OrchestratorCard> = {}): OrchestratorCard {
   return { id: 'c1', title: 'Add a retry button', labels: [], project: 'MikroB', status: 'planned', ...over }
@@ -96,6 +117,7 @@ beforeEach(() => {
   writtenQueue = null
   forcedSpawnResult = null
   forcedAgySpawnResult = null
+  forcedLocalLlmResult = null
   vi.restoreAllMocks()
 })
 
@@ -496,6 +518,32 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
     await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot, releaseSlot)
     expect(releaseSlot).not.toHaveBeenCalled()
   })
+
+  // Cybersec2 NO-GO (card cbeeba61, Gate-SHA ab107c21c): recording outcome='error' on a released
+  // 503 undid releaseSlot's own un-spend, since calls_of()/dedupeCalls take the LAST row per
+  // hivas_id and RESERVE_SCRIPT's budget count excludes only status='blocked'. recordDetail must
+  // receive 'blocked' exactly when the slot was released, 'error' otherwise.
+  it('a released 503 records outcome=blocked, not error (card cbeeba61)', async () => {
+    const reserveSlot = vi.fn(() => true)
+    const releaseSlot = vi.fn(() => true)
+    const recordDetail = vi.fn<(hivasId: string, cardId: string, detail: { outcome: string }) => boolean>(() => true)
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'http', httpStatus: 503 }))
+    await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot, releaseSlot, recordDetail)
+    expect(releaseSlot).toHaveBeenCalledTimes(1)
+    expect(recordDetail).toHaveBeenCalledTimes(1)
+    expect(recordDetail.mock.calls[0]![2].outcome).toBe('blocked')
+  })
+
+  it('a non-503 failure records outcome=error (the slot stays spent, card cbeeba61)', async () => {
+    const reserveSlot = vi.fn(() => true)
+    const releaseSlot = vi.fn(() => true)
+    const recordDetail = vi.fn<(hivasId: string, cardId: string, detail: { outcome: string }) => boolean>(() => true)
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota', httpStatus: 429 }))
+    await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot, releaseSlot, recordDetail)
+    expect(releaseSlot).not.toHaveBeenCalled()
+    expect(recordDetail).toHaveBeenCalledTimes(1)
+    expect(recordDetail.mock.calls[0]![2].outcome).toBe('error')
+  })
 })
 
 describe('runGeminiOrchestratorSweep (conditions 1+4+7: kill switch, route gate, never closes a card)', () => {
@@ -650,49 +698,66 @@ describe('runGeminiOrchestratorSweep agy routing (card b768770a)', () => {
 // so the branch's own equality check sees the real function and actually picks callGeminiViaAgy.
 // Verified at the spawnSync boundary (which script got invoked), not at the mock-callGemini
 // boundary, because that boundary is exactly what was never exercised before.
-describe('runGeminiOrchestratorSweep default route actually invokes callGeminiViaAgy (card b768770a, QA2 27856 Kesz-ha #4)', () => {
-  it('no callGemini override + REST fallback absent + an eligible card: the agy script is spawned with --kartya = that card id, and its result becomes the queue', async () => {
+// Card 0291283d (Peti Telegram 14354): Ghost's ranking call moves to the LOCAL model, off the
+// Gemini budget entirely -- replaces the retired agy/REST routing coverage above (callGeminiViaAgy
+// itself is kept, unused by this sweep, in case a future caller wants a direct agy path again).
+describe('runGeminiOrchestratorSweep default route uses the local LLM, never Gemini (card 0291283d)', () => {
+  it('no callGemini override + an eligible card: local-llm.sh is called with the pinned model, never gemini-agy-call.sh, and its output becomes the queue', async () => {
     killSwitchJson = JSON.stringify({ enabled: true })
     fallbackStateJson = JSON.stringify({ route: 'gemini' })
-    restFallbackPresent = false
-    forcedAgySpawnResult = { status: 0, stdout: '["only1"]\n' }
+    forcedLocalLlmResult = '["only1"]\n'
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network disabled in test -- Gemini must never be reached'))
     const loadCards = vi.fn(() => [card({ id: 'only1', labels: ['gemini-ok'] })])
 
-    // No callGemini arg -- this is the real default param (geminiGenerate), so
-    // `callGemini === geminiGenerate` at line 325 is true and the branch actually runs.
-    await runGeminiOrchestratorSweep(loadCards, undefined, () => true)
+    // No callGemini arg -- the real default (callLocalLlmForGhost).
+    await runGeminiOrchestratorSweep(loadCards)
 
-    const { spawnSync } = await import('node:child_process')
+    expect(fetchSpy, '0 Gemini calls (card 0291283d Kesz-ha #1)').not.toHaveBeenCalled()
+    const { execFileSync, spawnSync } = await import('node:child_process')
+    const localCall = vi.mocked(execFileSync).mock.calls.find((c) => String(c[0]).includes('local-llm.sh'))
+    expect(localCall, 'local-llm.sh should have been called').toBeDefined()
+    const argv = localCall![1] as string[]
+    expect(argv[argv.indexOf('--model') + 1]).toBe(GHOST_LOCAL_MODEL)
     const agyCall = vi.mocked(spawnSync).mock.calls.find((c) =>
       (c[1] as string[] | undefined)?.some((a) => String(a).includes('gemini-agy-call.sh')),
     )
-    expect(agyCall, 'gemini-agy-call.sh should have been spawned').toBeDefined()
-    const argv = agyCall![1] as string[]
-    expect(argv[argv.indexOf('--kartya') + 1]).toBe('only1')
-    expect(argv).toContain('--kategoria')
-    expect(argv[argv.indexOf('--kategoria') + 1]).toBe('safe')
-    // Not just "a spawn happened" -- THIS call's result must be the one that drove the decision.
+    expect(agyCall, 'gemini-agy-call.sh must NOT be called from this sweep any more').toBeUndefined()
     expect(writtenQueue).toMatchObject({ order: ['only1'] })
   })
 
-  it('a mutated branch (agy never picked) is caught: forcing geminiGenerate to run instead leaves the agy script unspawned and the queue empty', async () => {
-    // Mutation-equivalence check (karpathy-guidelines self-review, not a real mutant run): this
-    // pins what SHOULD fail if someone deletes the `effectiveCallGemini = ...callGeminiViaAgy...`
-    // assignment -- by simulating that exact deleted-branch state via REST fallback ON, which
-    // takes the same "effectiveCallGemini stays geminiGenerate" path the deleted mutant would.
+  it('local-llm.sh exits 6 (GPU lock busy): fail-closed, nothing written, Gemini never called', async () => {
     killSwitchJson = JSON.stringify({ enabled: true })
     fallbackStateJson = JSON.stringify({ route: 'gemini' })
-    restFallbackPresent = true
-    forcedSpawnResult = null
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network disabled in test'))
+    forcedLocalLlmResult = { status: 6 }
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network disabled in test -- Gemini must never be reached'))
     const loadCards = vi.fn(() => [card({ id: 'only2', labels: ['gemini-ok'] })])
 
-    await runGeminiOrchestratorSweep(loadCards, undefined, () => true)
+    await runGeminiOrchestratorSweep(loadCards)
+
+    expect(writtenQueue).toBeNull()
+  })
+
+  it('records the local call into llm_ledger with provider=local, never into seged-hivo-naplo.jsonl (the Gemini-budget log)', async () => {
+    killSwitchJson = JSON.stringify({ enabled: true })
+    fallbackStateJson = JSON.stringify({ route: 'gemini' })
+    forcedLocalLlmResult = '["only3"]\n'
+    const loadCards = vi.fn(() => [card({ id: 'only3', labels: ['gemini-ok'] })])
+
+    await runGeminiOrchestratorSweep(loadCards)
 
     const { spawnSync } = await import('node:child_process')
-    const agyCall = vi.mocked(spawnSync).mock.calls.find((c) =>
-      (c[1] as string[] | undefined)?.some((a) => String(a).includes('gemini-agy-call.sh')),
+    const ledgerCall = vi.mocked(spawnSync).mock.calls.find((c) =>
+      (c[1] as string[] | undefined)?.some((a) => String(a).includes('llm-ledger-append.py')),
     )
-    expect(agyCall, 'agy script must NOT be spawned when the REST toggle is on').toBeUndefined()
+    expect(ledgerCall, 'llm-ledger-append.py should have been called').toBeDefined()
+    const argv = ledgerCall![1] as string[]
+    expect(argv[argv.indexOf('--provider') + 1]).toBe('local')
+    expect(argv[argv.indexOf('--model') + 1]).toBe(GHOST_LOCAL_MODEL)
+    // seged-hivo.py (the Gemini hourly/daily budget writer, seged-hivo-naplo.jsonl) must never
+    // be invoked for a local call -- that log's 'agy-ghost' tag means "spent a Gemini slot".
+    const segedHivoCall = vi.mocked(spawnSync).mock.calls.find((c) =>
+      (c[1] as string[] | undefined)?.some((a) => String(a).includes('seged-hivo.py')),
+    )
+    expect(segedHivoCall, 'scripts/seged-hivo.py must NOT be called for a local Ghost call').toBeUndefined()
   })
 })

@@ -6,7 +6,7 @@ import { migrate, migrateDown } from '../kg/store.js'
 // same file reproduces the identical schema -- the "rm + rebuild" recovery path (MODULTERV
 // section 4) is just this twice in a row on a real file, tested for real here via :memory:.
 
-const KG_TABLES = ['kg_nodes', 'kg_edges', 'kg_anchors', 'kg_usage', 'kg_capture_queue', 'kg_audit', 'kg_worker_heartbeat']
+const KG_TABLES = ['kg_nodes', 'kg_edges', 'kg_anchors', 'kg_usage', 'kg_capture_queue', 'kg_audit', 'kg_worker_heartbeat', 'kg_search_events']
 
 function tableNames(db: Database.Database): string[] {
   return (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'kg_%'").all() as {
@@ -53,6 +53,19 @@ describe('kg schema migration', () => {
     // A second round trip must not accumulate duplicate objects or throw.
     migrateDown(db, 0)
     expect(() => migrate(db)).not.toThrow()
+    db.close()
+  })
+
+  it('kg_search_events (card a1d57d99): rows cannot be UPDATEd, but CAN be DELETEd (retention cap)', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    db.prepare(`INSERT INTO kg_search_events (agent, ts_ms, query, hit_node_ids) VALUES (?, ?, ?, ?)`)
+      .run('backend2', 1700000000000, 'q', '[]')
+    expect(() => db.prepare(`UPDATE kg_search_events SET agent = 'other'`).run()).toThrow(
+      /append-only/
+    )
+    // Retention trimming is a DELETE, not an UPDATE -- must stay possible (schema.ts V3 comment).
+    expect(() => db.prepare(`DELETE FROM kg_search_events WHERE agent = 'backend2'`).run()).not.toThrow()
     db.close()
   })
 

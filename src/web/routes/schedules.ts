@@ -23,7 +23,34 @@ import {
   registerScheduledTask, unregisterScheduledTask, verifyScheduledTask, describeVerdict,
 } from '../schedule-registry.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
+
+// Card a01d8a3d (shadow mode, before any enforce): POST/PUT /api/schedules take the agent whose
+// session a task runs in from the request BODY (`data.agent`), with no comparison to the caller's
+// own authenticated identity -- any caller that clears the generic bearer gate can self-schedule
+// as ANY agent. Deriving identity from `ctx.auth` reuses the SAME agent-key/X-Agent-Id machinery
+// 52114c2f measures; a plain shared-token or session caller (no agent claim at all) yields null
+// and is never flagged -- that caller is the owner-equivalent path this card leaves untouched.
+// Logs only; never refuses. Enforce (restricting writes to session/owner, or a caller scheduling
+// only for itself) is a separate, later round gated on 52114c2f's own key rollout landing first
+// (see the card's design-comment for the full reasoning).
+function callerAgentIdentity(ctx: RouteContext): string | null {
+  const auth = ctx.auth
+  if (!auth) return null
+  if (auth.kind === 'device') return agentKeyToAgentId(auth.device ?? null)
+  if (auth.kind === 'token') return auth.agent ?? null
+  return null
+}
+
+function warnIfAgentMismatch(ctx: RouteContext, name: string, declaredAgent: string | undefined): void {
+  const callerIdentity = callerAgentIdentity(ctx)
+  if (!callerIdentity || !declaredAgent || declaredAgent === callerIdentity) return
+  logger.warn(
+    { name, path: ctx.path, callerIdentity, declaredAgent },
+    'schedules: caller identity does not match the declared agent field (shadow mode, not refused)'
+  )
+}
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
 // traversal. sanitizeScheduleName strips everything outside [a-z0-9-] (so no
@@ -228,6 +255,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const dir = join(SCHEDULED_TASKS_DIR, name)
     if (existsSync(dir)) { json(res, { error: 'Schedule already exists' }, 409); return true }
 
+    warnIfAgentMismatch(ctx, name, data.agent)
     const written = writeScheduledTask(name, {
       description: data.description || '',
       prompt: data.prompt.trim(),
@@ -289,6 +317,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       return true
     }
     if (refuseIfForeign(res, name)) return true
+    warnIfAgentMismatch(ctx, name, data.agent)
     const written = writeScheduledTask(name, data)
     if (!registerAfterWrite(res, name, 'api:update', written)) return true
     logger.info({ name }, 'Scheduled task updated')
