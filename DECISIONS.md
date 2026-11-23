@@ -32192,3 +32192,66 @@ csak-merge tartományra szűkítve). A végrehajtó backend.
 
 **Hivatkozás:** kártya b20d2062; `store/marveen-land.sh` (`_carry_forward_ok`,
 `gate_sha_tip_check`), `src/web/kanban-landed-guard.ts`, `src/__tests__/kanban-gate-completeness-guard.test.ts`.
+
+## Carry-forward landolás: 2 NO-GO javítás, delta-regate (kártya b20d2062, 2026-11-23)
+
+A fenti carry-forward feature (`_carry_forward_ok`) első gate-körén CYBERED (komment 38261) és
+CYBERSEC (komment 38262) egymástól függetlenül ugyanazt a biztonsági hibaosztályt találta meg,
+plusz egy harmadik, külön hibát és egy időzítési hibát:
+
+**F-1/HIGH-1 (mindkét gate):** egy üres `--remerge-diff` csak azt bizonyítja, hogy a merge
+konfliktusmentes volt -- NEM azt, hogy a bekerült tartalom `origin/develop`-ról jött. Egy TETSZŐLEGES
+nem-review-zott ág (oldalág, másik kártya le nem landolt munkája) konfliktusmentes merge-je is üres
+remerge-diffet ad. Javítás: a kártya first-parent láncán MINDEN merge MINDEN nem-első szülőjének
+függetlenül `origin/$DEFAULT_BRANCH` ősének kell lennie (`git merge-base --is-ancestor`), nem csak a
+diff-nek kell üresnek lennie.
+
+**F-2/MEDIUM:** `[ -n "$(g show --format= --remerge-diff "$m")" ]` egy git HIBÁT (nem-nulla kilépés,
+régi git, hiányzó objektum) ugyanúgy olvasott, mint "bizonyítottan tiszta" -- mindkettő üres
+kimenetet ad. Javítás: a kilépőkód explicit elkapása, bármilyen nem-nulla eset refúzió.
+
+**F-3/HIGH (Cybered) -- check-to-merge verseny:** a carry-forward bizonyíték `gate_sha_tip_check`
+idején a `$branch` NÉVRE futott, a tényleges `git merge --no-ff "$branch"` pedig később, lock-wait +
+DECISIONS.md-ellenőrzés + downward_check UTÁN ugyanazt a nevet olvasta újra -- egy helyi hook vagy
+konkurens folyamat ebben az ablakban nem-review-zott tartalomra mozdíthatta a ref-et. Javítás:
+mindkét hívás a korán, a verseny-ablak ELŐTT felvett `$work_sha`-t használja, nem a ref-nevet -- ez
+mellékesen a SIMA (nem carry-forward) landolási útvonal kisebb azonos rését is zárja.
+
+**MEDIUM-2 (Cybersec):** `core.quotepath=true` (git alapérték) egy nem-ASCII fájlnevet idézett
+C-string literálként ír ki (`"caf\303\251.sh"`); ha ezt a literált később pathspecként használjuk a
+bájt-azonosság ellenőrzésben, az semmilyen valós fájlra nem illeszkedik, és a check hamisan
+"nincs eltérés"-t jelez. Javítás: `-c core.quotepath=false` minden ilyen útvonalat előállító/
+felhasználó git-hívásra.
+
+**F-5 (Cybered) -- komment-időzítés:** a CARRY-FORWARD kanban-komment eddig a bizonyíték sikere
+UTÁN, de a merge/fleet-test/push SOROZAT ELŐTT ment ki -- egy későbbi refúzió (merge-konfliktus,
+bukó fleet-test, elvesztett push-verseny) hamis "Landing proceeds" állítást hagyott egy sosem
+landolt kártyán. Javítás: a komment a push `origin/$DEFAULT_BRANCH`-en való független
+visszaellenőrzése UTÁN megy ki, szövege "Landed."-re javítva.
+
+**LOW leletek (M1/M4/M5 mutánsok, Cybersec), mért, nem feltételezett eredmény:** M1 (parent-count
+check) és M5 (owned-set-empty guard) ESETÉRE dedikált selftest-eset készült (b2008d, b2010d), DE a
+mutáció-próba nem tudta kimutatni, hogy a teszt KIZÁRÓLAG az adott guard-tól függ ezen a git
+verzión/eset-alakon: `git show --format= --remerge-diff <sha>` egy hiteles, nem-merge commitra git
+2.53.0-n a commit TELJES, nem-üres diffjét adja -- ez megmérve EGYENESEN CÁFOLJA Cybersec 38262
+komment saját, kimondottan LEVEZETÉSKÉNT jelölt állítását, hogy ez a check "nem fut" egy nem-merge
+commitra. A parent-count check és az owned-set-empty guard védelmi-rétegként marad a kódban, a két
+teszteset regresszióként marad, de M1/M5 NEM jelölhető "pinnelt"-nek -- ezt a REVIEW is így közli,
+nem overclaim-elve a mutáció-eredményt. M4 (`CARD_BRANCH_MODE=1` gate) és F-4 (comment-author
+trust-boundary, a szerver-oldali re-verifikáció hiánya) elfogadott LOW maradék-kockázat, a gate-ek
+saját súlyozása szerint, nem volt MikroB explicit must-fix listáján.
+
+**Ellenőrzés:** `store/marveen-land-card-branch.selftest.sh` 74→81 eset (7 új: b2006d-b2012d), MIND
+mutáció-próbával -- F-1/MEDIUM-2/F-2/F-3/M2 esetében a célzott mutáns PONTOSAN a saját esetét
+fordítja vörösre, máshol nem. Beágyazott `marveen-land.sh --selftest` 121/121, `--selftest-land-batch`
+21/21, mindkettő regresszió nélkül. `src/__tests__/kanban-gate-completeness-guard.test.ts` +
+`kanban-landed-guard.test.ts` 186/186, bár ezen a körön TS kódot nem érintett a javítás. Minden
+mérés `fb0ad7f75` (gate_sha a NO-GO-kon) feletti commitra, `e180af36d` sha-n.
+
+**Ki döntött:** a NO-GO-k javítási iránya mindkét gate saját komentjében (38261, 38262); a prioritás
+és a "fejezd be waiting + REVIEW + új Gate-SHA"-val MikroB (msg 24098/24100/24104). A végrehajtó
+backend.
+
+**Hivatkozás:** kártya b20d2062; CYBERED komment 38261, CYBERSEC komment 38262; commit `e180af36d`;
+`store/marveen-land.sh` (`_carry_forward_ok`, `gate_sha_tip_check`, `land_one`),
+`store/marveen-land-card-branch.selftest.sh`.
