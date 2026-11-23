@@ -48,6 +48,7 @@ const ALLOWLIST: Record<string, number[]> = {
   'README.md': [230], // fork-fejlesztés bullet NAMING the anti-pattern it fixed, not an invocation (230 on the merge result: card 64f56f97's README addition shifted it to 226 on develop, card 5cb861e6's own one-line addition shifts it to 227, card b768770a's Gemini-agy fork entry shifts it to 228, card 6ec8e9d8's affaan-m/ECC skills bullet shifts it to 229, card b1813ab2's own /tmp inode-guard bullet shifts it to 230)
   'docs/memoria-szuro-hamis-pozitiv-negativ-meres.md': [223], // doc table example row with a placeholder "X" token, not an invocation
   'scripts/agent-msg-get.sh': [30], // comment naming the anti-pattern, not an invocation (shifted by the PORT chain, card d06a325d/#1869)
+  'scripts/marveen-api.sh': [5], // comment naming the exact anti-pattern this script exists to replace (#2232), not an invocation -- the script itself reads the token via scripts/lib/marveen_api.py, never in an argv
   'scripts/install-prod-tree-guard-hook.sh': [204, 269], // comment naming the anti-pattern, not an invocation
   'store/kanban-comment-lib.sh': [48], // comment naming the anti-pattern, not an invocation (shifted from 45 by card 56b14f14's git-common-dir fix)
   'store/mopsion-suite-run.sh': [273], // comment naming the anti-pattern, not an invocation (shifted from 255 by card 56b14f14's git-common-dir fix, to 260 by card 22835648's env-compat-lib.sh sourcing, then to 273 by card dffbb55f's D1 rework)

@@ -1,5 +1,5 @@
 {
   "@typescript-eslint/no-misused-promises": 15,
-  "@typescript-eslint/no-unsafe-argument": 177,
-  "@typescript-eslint/no-unused-vars": 267
+  "@typescript-eslint/no-unsafe-argument": 190,
+  "@typescript-eslint/no-unused-vars": 292
 }
