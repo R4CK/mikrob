@@ -6066,7 +6066,7 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
   `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildMessageCloseBody(): string {
+export function buildMessageCloseBody(strict = false): string {
   return [
     '## Üzenet lezárása: bejövő riportnál `notify:false`',
     '',
@@ -6079,11 +6079,22 @@ export function buildMessageCloseBody(): string {
     '  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a',
     '  feladó várakozó sorát 1-ről 4-re vitte).',
     '',
-    '```bash',
-    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`,
-    `| curl -H @- -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
-    `  --data-binary '{"status":"done","notify":false}'`,
-    '```',
+    // card 1535f7f9 (Koteg 28 upstream sync, #2232 follow-up): this block still had the raw
+    // printf|curl recipe for a strict agent too, so a strict agent's dontAsk mode auto-denied
+    // every message close (strict-profile-api-recipes.test.ts caught it: '$(' present even in a
+    // strict-a CLAUDE.md). message-close is already a real marveen_api.py verb (scripts/lib/
+    // marveen_api.py line ~39) -- just never wired into this generator.
+    ...(strict ? [
+      '```bash',
+      `${apiHelper} message-close <id> --no-notify`,
+      '```',
+    ] : [
+      '```bash',
+      `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`,
+      `| curl -H @- -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
+      `  --data-binary '{"status":"done","notify":false}'`,
+      '```',
+    ]),
     'A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem',
     'történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
     'Egy MÁR lezárt (done/failed) üzenet újabb lezárása 409-et ad (`Message already closed`): az első',
@@ -6098,7 +6109,7 @@ export function ensureMessageCloseSection(name: string): void {
   const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody()}\n${MSGCLOSE_END}`
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(agentRunsStrict(name))}\n${MSGCLOSE_END}`
 
   let existing: string
   try {
