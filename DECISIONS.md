@@ -31681,3 +31681,19 @@ decisions-tail-append-guard.sh --check-branch against origin/develop's current t
 
 Gate: QA, Cybersec (delta re-gate over the superseded cf073a99b / 8622760de gates). **Ki döntött:**
 MikroB (msg_id 23510/23519), végezte backend.
+
+## 2026-11-22 -- agent-worktree-deps.sh --card mode: kártya-worktree-k is kaphatnak valódi node_modules-t (kártya cf678d23)
+
+**Döntés:** a 0b23ec28 kártya óta az ügynök-worktree-k `node_modules`-a OPT-IN (`MARVEEN_WORKTREE_REAL_DEPS=1`) valódi könyvtárrá válhat a megosztott fő klónra mutató szimlink helyett, lezárva a `cd node_modules && rm -rf ../src` kiszökési osztályt (9dc0fba8). A `store/agent-worktree-deps.sh` viszont kizárólag ÜGYNÖKNÉV szerint kulcsolt -- a per-kártya worktree-mechanizmus (F4, dc185b52) `--card` módja soha nem kapta meg ezt a védelmet, a kártya-worktree `node_modules`-a MINDIG szimlink maradt, a környezeti változótól függetlenül.
+
+**Javítás:** `store/agent-worktree-deps.sh` kap egy `--card <kártyaID>` módot az ügynöknév-pozícionális argumentum helyett, ugyanazt az útvonalat (`$ROOT/card/<id>`) és hex/hossz-ellenőrzést használva, mint `agent-worktree-marveen.sh`. Az utóbbi script `node_modules`-blokkja már nem zárja ki a `--card` módot a `MARVEEN_WORKTREE_REAL_DEPS=1` alól.
+
+**Teszt (TDD):** új `agent-worktree-deps.selftest.sh`, 17 eset. A kiszökés-teszt `readlink -f node_modules/..`-t használ, NEM `cd .. && pwd`-t -- a bash `cd` builtinje alapértelmezésben LOGIKAILAG oldja fel a `..`-t (nem követi a szimlinket), tehát sosem fogta volna meg a valódi sebezhetőséget (ami kernel-szintű útvonal-feloldásról szól, pl. `rm -rf ../src`). Élőben mérve: a teszt első változata `cd ..`-vel HAMISAN zölden ment át a javítás előtti szimlink-eseten is; a `readlink -f` helyesen PIROSAN bukott rajta (a $MAIN-be lépett ki), és zölden ment át a valódi könyvtáron. Két további hamis-zöld kockázatot is javítottam (tartalom-jelenlét ellenőrzés, ami a szimlinken át is igaz lett volna, függetlenül attól, hogy az apply tényleg lefutott-e) `[ ! -L ... ]` feltétel hozzáadásával.
+
+**Regresszió:** `agent-worktree-marveen.selftest.sh` 18/18 PASS változatlanul (egy elavult komment frissítve: az alapértelmezett, env-változó nélküli eset továbbra is szimlink, de már nem azért, mert a `--card` mód "még nem létezik").
+
+**Kész, ha (a kártya saját sorai):** `--check` jelzi a valódi vs szimlink állapotot -- megvan (exit 0 valódi/hiányzó, exit 4 szimlink, mindkét módra). Nincs `..`-kiszökés a fő klónba (selftest) -- megvan, `readlink -f` alapú.
+
+**Ki döntött:** DevO (fullstack), önálló mérés + implementáció (kártya cf678d23, F4.2.2), gate: a kártya szülője (F4.2, 20f2b522) szerint QA.
+
+**Hivatkozás:** kártya cf678d23 (szülő: 20f2b522, fázis 4a179ad5), commit 316ad06d3.

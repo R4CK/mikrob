@@ -35,8 +35,9 @@
 # So the fast path stays fast and this is the explicit, deliberate step.
 #
 # Usage:
-#   agent-worktree-deps.sh <agent>            # make node_modules real (idempotent)
-#   agent-worktree-deps.sh <agent> --check    # report the current shape, change nothing
+#   agent-worktree-deps.sh <agent>                   # make node_modules real (idempotent)
+#   agent-worktree-deps.sh <agent> --check           # report the current shape, change nothing
+#   agent-worktree-deps.sh --card <cardId> [--check] # same, for a per-card worktree (card cf678d23)
 #
 # Env overrides (tests only):
 #   MARVEEN_MAIN         default /home/neon/marveen
@@ -50,17 +51,34 @@ ROOT="${MARVEEN_WORKTREES:-/home/neon/marveen-agent-worktrees}"
 
 die() { echo "agent-worktree-deps.sh: $2" >&2; exit "$1"; }
 
-AGENT="${1:-}"
-[ -n "$AGENT" ] || die 2 "usage: agent-worktree-deps.sh <agent> [--check]"
-case "$AGENT" in
-  *[!a-z0-9-]*|-*|'') die 2 "agent name must match [a-z0-9-]+ (got: $AGENT)" ;;
-esac
-MODE="${2:-apply}"
+AGENT=""
+CARD=""
+if [ "${1:-}" = "--card" ]; then
+  shift
+  CARD="${1:-}"
+  [ -n "$CARD" ] || die 2 "--card needs a card id"
+  # Same hex/length shape agent-worktree-marveen.sh already validates -- kept identical so the
+  # two tools never disagree about what a valid card id looks like.
+  case "$CARD" in *[!0-9a-f]*|'') die 2 "card id must be hex (got: $CARD)" ;; esac
+  [ "${#CARD}" -ge 6 ] || die 2 "card id too short (got: $CARD)"
+  shift
+  TREE="$ROOT/card/$CARD"
+  BOOTSTRAP_HINT="store/agent-worktree-marveen.sh <agent> --card $CARD"
+else
+  AGENT="${1:-}"
+  [ -n "$AGENT" ] || die 2 "usage: agent-worktree-deps.sh <agent> [--check] | --card <cardId> [--check]"
+  case "$AGENT" in
+    *[!a-z0-9-]*|-*|'') die 2 "agent name must match [a-z0-9-]+ (got: $AGENT)" ;;
+  esac
+  shift
+  TREE="$ROOT/$AGENT"
+  BOOTSTRAP_HINT="store/agent-worktree-marveen.sh $AGENT"
+fi
+MODE="${1:-apply}"
 case "$MODE" in apply|--check) ;; *) die 2 "second argument must be --check, if given" ;; esac
 
-TREE="$ROOT/$AGENT"
 NM="$TREE/node_modules"
-[ -e "$TREE/.git" ] || die 3 "no worktree at $TREE -- run store/agent-worktree-marveen.sh $AGENT first"
+[ -e "$TREE/.git" ] || die 3 "no worktree at $TREE -- run $BOOTSTRAP_HINT first"
 
 # Order matters: a symlink to a directory answers YES to -d as well, so -L has to be asked first.
 shape() {
