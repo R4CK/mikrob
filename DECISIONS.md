@@ -32389,3 +32389,48 @@ backend.
 **Hivatkozás:** kártya b20d2062; CYBERED komment 38261, CYBERSEC komment 38262; commit `e180af36d`;
 `store/marveen-land.sh` (`_carry_forward_ok`, `gate_sha_tip_check`, `land_one`),
 `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-23 16:15 -- fleet-resume.sh: Z1/Z2/Z3 follow-up on RedHat f22cf4f4 comment 19990 (card 39253062)
+
+**Döntés:** three fixes to store/fleet-resume.sh + its selftest:
+Z1 -- the selftest's section-B assertion ("cleanup is never invoked with --apply/--yes") grepped the
+human-readable OUTPUT for a literal substring the stub never echoes regardless of actual args, so it
+stayed green against 3 measured mutants (cleanup called with `--apply --yes`, with `--yes --apply`,
+or with section-C printing the HANDOFF.md body instead of its path). Replaced with: (a) logging the
+cleanup stub's real argv to a file and asserting it is empty (matches the production contract --
+CLEANUP_SCRIPT is invoked with zero args), which kills both argument-order mutants and any other arg
+a future mutant might add; (b) a new assertion that the HANDOFF.md body text never reaches stdout.
+Also confirmed (not a code change) that the card's "nothing runs the selftest at landing time" half
+of Z1 is already false: card 711a7e57's generic store-selftests-all-run.test.ts auto-discovery
+already picks up fleet-resume.selftest.sh by its `.selftest.sh` suffix (verified: `fleet-resume
+passes` in that suite), landed after RedHat's original finding.
+Z2 -- the GPU gate (vram-guard-check.sh) ran AFTER the ollama.service start decision, so an ADMIT/
+HOLD verdict was pure reporting and could never stop an --apply start. Reordered: the gate now runs
+first, and an --apply start is skipped (not attempted) when it reports HOLD; an ADMIT still starts as
+before. Declined the card's other ask -- a new "dmesg dxgvmbus" check -- after measuring: this host's
+live dmesg carries 3793 `dxgk: dxgkio_escape: Ioctl failed` lines right now on an otherwise-healthy
+GPU, so a naive dxg/dxgvmbus substring grep would be a false-positive generator, which is exactly the
+mistake scripts/gpu-crashloop-guard.sh already made and fixed (card 970a90c3: tightened from a bare
+`dxg` substring to a BUG/Oops/Call-Trace window with a `dxg<sym>+0x.../0x...` stack-frame SHAPE).
+That script already detects a real GPU/dxg crash-loop and masks ollama.service on it, and
+fleet-resume.sh's section A already refuses to start a masked unit -- so the protection Z2 asks for
+structurally exists via a better-tuned mechanism; a second, naive detector in fleet-resume.sh would
+regress, not improve, on it.
+Z3 -- the Authorization-header temp file for the /api/agents call relied on a bare `rm -f` after
+curl, which never runs if the script is SIGTERM'd mid-request, leaking a bearer token on disk. Added
+an EXIT trap right after the file is created (same pattern the selftest's own top-level trap uses).
+**Miért:** cybersec red-team follow-up on an already-landed card (f22cf4f4), explicitly not blocking
+that land; this is the tracking card for exactly these 3 items plus a 4th (readPerAgentExtraKeep
+coverage) from the SAME delta-gate round but on a DIFFERENT card (c69a8da2) -- do not confuse the two.
+**Ellenőrzés:** 24/24 selftest cases pass (was 17; +1 HANDOFF-content guard, +2 Z2 HOLD/ADMIT cases,
++1 Z3 SIGTERM case, net of renumbering). Mutation-proof, measured against BOTH the fixed script and
+the pre-fix script on origin/develop: all 3 Z1 mutants (cleanup `--apply --yes`, `--yes --apply`, and
+a HANDOFF-content-leak mutant) turn the fixed selftest red and the old one green; the Z2 HOLD case and
+the Z3 SIGTERM case both turn red against the pre-fix store/fleet-resume.sh and green against the
+fix. Verified through the real auto-discovery wiring: `npx vitest run
+src/__tests__/store-selftests-all-run.test.ts -t fleet-resume` -- 1 passed (`fleet-resume passes`).
+**Ki döntött:** fullstack (implementation + verification), gate: QA + WhiteHat (changes an
+ollama-start/GPU-gating decision path).
+**Hivatkozás:** card 39253062; comment 19990 on card f22cf4f4 (RedHat CYBERED GO, Gate-SHA
+2ec8de55); scripts/gpu-crashloop-guard.sh + card 970a90c3 (existing dxg-detection this decision
+defers to).
