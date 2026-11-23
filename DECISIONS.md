@@ -29083,3 +29083,46 @@ EGYIK sem fedett át a köteg saját korábbi szűkített futásaival -- pontosa
 
 **Ki döntött:** backend3 javította a CYBERED NO-GO-t és futtatta a teljes fleet-testet, MikroB
 utasítására (msg 21740).
+
+## 2026-11-23 -- Koteg 28 upstream-sync REVIEW-ra kész, 3 valódi fleet-test red javítva (kártya 1535f7f9)
+
+**Döntés:** a 6b457343..baeb14a79 (50 commit) upstream-batch merge-eredményén (`card/1535f7f9` worktree)
+futtatott teljes `fleet-test.sh` run (1. mérés, commit 5f45b3b211dcc2c07d4277bcec0100d8caea6f9e) 4
+fájlban 10 red tesztet mutatott. Mind a 4-et gyökér-okig követtem (`sp-systematic-debugging`):
+
+1. `skills-dir-queue.test.ts` (5 teszt) -- NEM kódhiba, a teszt elvárása volt elavult: a batch
+   szándékosan landolt 3 fail-closed biztonsági kaput (`isPendingRoute` human-session gate,
+   `FLEET_IMPORT_APPLY_FAIL_CLOSED`, `SKILLS_ASSIGN_FAIL_CLOSED`, lásd kártyák 7c79badc/68254bd7/
+   54e6f4c8). A teszt javítva: hitelesítés hozzáadva a pending-queue híváshoz, a fleet
+   import/assign eseteket "hard-refused regardless of..." névre és 403-as elvárásra átírva.
+2. `slack-smoke-test-async.test.ts` (2 teszt) -- VALÓDI hiányosság: egy korábbi merge-döntés a
+   teljes upstream hunkot (szerializált smoke-test futás + stderr megtartása siker esetén) holt
+   kódnak kezelte, pedig kellett. Port: `smokeTestQueue`/`runSlackSmokeTest` a
+   `skills-dir-queue.ts` saját FIFO-mintáját utánozva, `src/web/routes/agents.ts`-ben.
+3. `context-guard-idle-flush-background-veto.test.ts` (2 teszt) -- a teszt `agent-config.js`
+   mockja hiányos volt: `checkAgent` (context-guard-runner.ts) 4 újabb exportot hív közvetlenül
+   (`agentConfigRoot`, `readAgentClaudePlan`, `readAgentClaudeConfigDir`,
+   `listRejectedAgentDirNames`), a hiányuk a belső try/catch-ben csendben elnyelődött, így az
+   ügynök sosem haladt tovább `idle`-ből. Pótolva a mockban.
+
+A javítást commitolva (`860a5b1c4ac5a5cd8f4a30716af34791773debfa`), 2. teljes `fleet-test.sh` futás
+ugyanezen a shán: **1 FAIL, 1467 passed, 3 skipped (1471 fájl); 1 FAIL, 47022 passed, 161 skipped
+(47184 teszt)**. A megmaradt 1 red (`store-selftests-all-run.test.ts` >
+`freellm-call-retry passes`, "left the shared tracked tree dirty: M CLAUDE.md") a már ismert,
+környezeti false-red osztály (kártya 329bda2d: egyidejű fleet-test futások piszkítják a megosztott
+fát) -- NEM ehhez a kártyához tartozó hiba, nem a diffemben érintett terület.
+
+**Miért:** a 4b/4d szabály szerint a mérést a tényleges shához kötve kell rögzíteni, és a 3 valódi
+piros közül kettő tényleg kódhiány volt (nem csak elavult teszt), tehát a javítás helyes volt, nem
+csak a teszt "igazítása" a kódhoz.
+
+**Ellenőrzés:** teljes `fleet-test.sh --ref 860a5b1c4ac5a5cd8f4a30716af34791773debfa`, a szemafor-
+szkripten át (17. szabály): Test Files 1 failed | 1467 passed | 3 skipped (1471); Tests 1 failed |
+47022 passed | 161 skipped (47184). A `git merge-base --is-ancestor baeb14a79 origin/develop`
+jelenleg FALSE -- a kártya 1. "Kész, ha" pontja landolás után teljesül, ez a bejegyzés a REVIEW/
+gate-ra bocsátás állapotát rögzíti, nem a végleges landolást.
+
+**Ki döntött:** backend2 (implementáció + gyökér-ok vizsgálat + fix), gate: QA + Cybersec + Cybered
+(trust-boundary klauzula: auth, sender-gate, mail-gate, egress érintve a batch-ben).
+
+**Hivatkozás:** kártya 1535f7f9 (FÁZIS e5c46e87), Gate-SHA 860a5b1c4ac5a5cd8f4a30716af34791773debfa.
