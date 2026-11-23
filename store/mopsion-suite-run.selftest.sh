@@ -736,6 +736,30 @@ fi
 # THE REAL LOCK MAY LEGITIMATELY BE BUSY (another agent's genuine landing/suite in flight): this
 # acquires it NON-BLOCKING and SKIPS the case rather than queueing behind a run that can take
 # 60-90 minutes -- a selftest that can hang on live fleet traffic is worse than one that skips.
+#
+# FLEET_TEST_TREE IS OVERRIDDEN to a dedicated, non-/tmp scratch worktree (card 6d5a248d). The
+# tree-lock holder below (tree_lock_pid) is this case's ONLY guard against the real fleet-test.sh
+# child actually reaching checkout/vitest, and that guard is a plain `sleep 25` subshell with no
+# protection if THIS SCRIPT ITSELF is SIGKILLed (card fa375169 measured exactly that, under the
+# shared 3-slot cap): bash cannot trap SIGKILL, so cleanup_case15 never runs, fleet_test_pid and
+# tree_lock_pid become orphans, and if tree_lock_pid happens to die in the same event (plausible --
+# same cgroup, similar size), the orphaned fleet_test_pid is free to acquire the now-unheld REAL
+# lock and run a full, unsupervised 60-90 minute suite against whatever FLEET_TEST_TREE resolves
+# to. Pointing it at a disposable path makes that outcome harmless instead of trying to win the
+# race: LOCK_FILE and the CPU-slot pool are both derived from ROOT, not from TEST_TREE (see the
+# comment block above fleet-test.sh's own CPU_SLOTS section), so this case's lock- and
+# slot-contention assertions below stay exactly as meaningful with the override in place -- only
+# the checkout/build/vitest destination changes. A /tmp path is refused by fleet-test.sh itself
+# (its own temp-dir guard), so this uses a dedicated path under the existing
+# marveen-scratch-worktrees convention instead, cleaned up before (stale leftover from a prior
+# SIGKILLed run) and after.
+CASE15_TREE="/home/neon/marveen-scratch-worktrees/selftest-mopsion-suite-run-case15"
+cleanup_case15_tree() {
+  git -C /home/neon/marveen worktree remove --force "$CASE15_TREE" >/dev/null 2>&1 || true
+  rm -rf "$CASE15_TREE" 2>/dev/null || true
+}
+cleanup_case15_tree  # stale leftover from an earlier SIGKILLed run, if any -- clean before, not just after
+
 REAL_TREE_LOCK="/home/neon/marveen-test.lock"
 REV_ANCHOR="$TMP/reverse-anchor"
 mkdir -p "$REV_ANCHOR/store"
@@ -744,7 +768,14 @@ fleet_test_pid=""
 cleanup_case15() {
   [[ -n "$fleet_test_pid" ]] && kill -9 "$fleet_test_pid" 2>/dev/null
   [[ -n "$tree_lock_pid" ]] && kill -9 "$tree_lock_pid" 2>/dev/null
+  cleanup_case15_tree
 }
+
+# Regression pin (Kész, ha #2): the REAL shared tree's CLAUDE.md must be byte-identical before and
+# after this case, proven by checksum rather than assumed from the FLEET_TEST_TREE override above.
+REAL_CLAUDE_MD="/home/neon/marveen-test/CLAUDE.md"
+real_claude_md_before=""
+[ -f "$REAL_CLAUDE_MD" ] && real_claude_md_before="$(sha256sum "$REAL_CLAUDE_MD" | cut -d' ' -f1)"
 
 exec 8>"$REAL_TREE_LOCK"
 if ! flock -n 8; then
@@ -758,7 +789,7 @@ else
   sleep 0.3
 
   MARVEEN_MAIN="$REV_ANCHOR" CLEANCORE_SUITE_SLOTS=2 CLEANCORE_SUITE_POLL_S=1 \
-    FLEET_TEST_LOCK_WAIT=20 \
+    FLEET_TEST_LOCK_WAIT=20 FLEET_TEST_TREE="$CASE15_TREE" \
     bash "$HERE/fleet-test.sh" --ref HEAD >"$TMP/case15-fleet-test.out" 2>&1 &
   fleet_test_pid=$!
   HOLDERS+=("$fleet_test_pid")  # card 7a0aa34d: cleanup_case15 only runs if this script reaches it
@@ -795,6 +826,18 @@ else
   cleanup_case15
   wait "$fleet_test_pid" 2>/dev/null
   wait "$tree_lock_pid" 2>/dev/null
+
+  # The regression pin itself: whatever the real fleet-test.sh child actually did (blocked on the
+  # lock the whole time, or -- the bug this fixes -- slipped past it and ran for real), the REAL
+  # shared tree's CLAUDE.md must read back exactly as it did before this case started.
+  real_claude_md_after=""
+  [ -f "$REAL_CLAUDE_MD" ] && real_claude_md_after="$(sha256sum "$REAL_CLAUDE_MD" | cut -d' ' -f1)"
+  if [ "$real_claude_md_before" = "$real_claude_md_after" ]; then
+    ok "the REAL shared tree's CLAUDE.md is byte-identical before/after case 15 (FLEET_TEST_TREE override holds)"
+  else
+    bad "case 15's real fleet-test.sh child touched the REAL shared tree's CLAUDE.md" \
+      "before=$real_claude_md_before after=$real_claude_md_after"
+  fi
 fi
 
 # --- 16. tree provenance: worktree HEAD and node_modules'/main-clone HEAD are both named, and a
