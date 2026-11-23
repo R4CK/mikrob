@@ -22,9 +22,9 @@ vi.mock('node:fs', async (orig) => {
   }
 })
 
-import { initDatabase, getDb, getDashboardUser } from '../db.js'
-import { tryHandleAuth } from '../web/routes/auth.js'
+import { initDatabase, getDb, getDashboardUser, createDashboardUser } from '../db.js'
 import { tryHandleAutonomy } from '../web/routes/autonomy.js'
+import { hashPassword } from '../web/password-hash.js'
 import { _clearSessionCacheForTest, createSession } from '../web/auth-sessions.js'
 import { SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -62,8 +62,12 @@ async function call(handler: Handler, method: string, path: string, auth: RouteC
 
 const setLevel = (auth: RouteContext['auth'], key: string, level: number, headers: Record<string, string> = {}) =>
   call(tryHandleAutonomy, 'POST', '/api/autonomy', auth, { key, level }, headers)
-const addUser = (auth: RouteContext['auth'], username: string) =>
-  call(tryHandleAuth, 'POST', '/api/auth/users', auth, { username, password: 'super-secret-pw' })
+// Card 49960046 (RedHat 17005 X1): creating a dashboard user, including the first, is a
+// session-only mint path -- the shared token gets FORBIDDEN_KIND (403) even with zero
+// dashboard_users rows (see auth.ts's own comment at this exact check). The real first-run path
+// is the local CLI (scripts/dashboard-user.ts), so a test fixture that wants "a login exists"
+// creates the row directly, the same way the CLI would, not through the HTTP route with a token.
+const addOwnerDirectly = async (username = 'owner') => createDashboardUser(username, await hashPassword('super-secret-pw'))
 
 beforeAll(() => {
   process.env.NODE_ENV = 'test'
@@ -76,16 +80,24 @@ beforeEach(() => {
   seed()
 })
 
-describe('first-run setup (no dashboard user yet): the token still raises', () => {
-  it('raises email_send to 3', async () => {
-    expect((await setLevel(TOKEN_AUTH, 'email_send', 3)).status).toBe(200)
-    expect(levelOf('email_send')).toBe(3)
+// RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): upstream's mayIssueCredentials carries a
+// first-run exception (no dashboard_users row yet -> the token may still mint/raise). This fork
+// retired that exact exception (card 49960046, RedHat 17005 finding X1: the shared bearer could
+// mint itself a session with zero dashboard_users rows and escalate from there) -- there is no
+// first-run carve-out anywhere in this fork, by design. The title/behavior below is the fork's
+// actual answer, not upstream's.
+describe('first-run setup (no dashboard user yet): the token still cannot raise a level', () => {
+  it('raising is refused the same as with a login already present', async () => {
+    const r = await setLevel(TOKEN_AUTH, 'email_send', 3)
+    expect(r.status).toBe(403)
+    expect(r.json().code).toBe('owner_session_required')
+    expect(levelOf('email_send')).toBe(2)
   })
 })
 
 describe('once a login exists, the token cannot raise a level', () => {
   beforeEach(async () => {
-    expect((await addUser(TOKEN_AUTH, 'owner')).status).toBe(201)
+    await addOwnerDirectly()
     seed()
   })
 

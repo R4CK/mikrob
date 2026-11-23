@@ -27,9 +27,9 @@ vi.mock('../web/fleet-transfer.js', async (orig) => {
   }
 })
 
-import { initDatabase, getDb, getDashboardUser } from '../db.js'
-import { tryHandleAuth } from '../web/routes/auth.js'
+import { initDatabase, getDb, getDashboardUser, createDashboardUser } from '../db.js'
 import { tryHandleFleet } from '../web/routes/fleet.js'
+import { hashPassword } from '../web/password-hash.js'
 import { _clearSessionCacheForTest, createSession } from '../web/auth-sessions.js'
 import { SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -61,8 +61,11 @@ const dryRun = (auth: RouteContext['auth']) => call(tryHandleFleet, 'POST', '/ap
 const exportWithVault = (auth: RouteContext['auth'], headers: Record<string, string> = {}) =>
   call(tryHandleFleet, 'GET', '/api/fleet/export', auth, undefined, { 'x-vault-password': VAULT_PW, ...headers })
 const plainExport = (auth: RouteContext['auth']) => call(tryHandleFleet, 'GET', '/api/fleet/export', auth)
-const addUser = (auth: RouteContext['auth'], username: string) =>
-  call(tryHandleAuth, 'POST', '/api/auth/users', auth, JSON.stringify({ username, password: 'super-secret-pw' }))
+// Card 49960046 (RedHat 17005 X1): creating a dashboard user, including the first, is a
+// session-only mint path -- the shared token gets FORBIDDEN_KIND (403) even with zero
+// dashboard_users rows. The real first-run path is the local CLI (scripts/dashboard-user.ts), so
+// a fixture that wants "a login exists" creates the row directly, not through the HTTP route.
+const addOwnerDirectly = async (username = 'owner') => createDashboardUser(username, await hashPassword('super-secret-pw'))
 
 beforeAll(() => {
   process.env.NODE_ENV = 'test'
@@ -76,18 +79,28 @@ beforeEach(() => {
   h.exports = []
 })
 
-describe('first-run setup (no dashboard user yet): the token still imports and exports', () => {
-  it('applies an import and exports with the vault', async () => {
-    expect((await applyImport(TOKEN_AUTH)).status).toBe(200)
-    expect(h.imports).toEqual([{ raw: FLEET_BODY, apply: true, vaultPassword: undefined }])
-    expect((await exportWithVault(TOKEN_AUTH)).status).toBe(200)
-    expect(h.exports).toEqual([{ vaultPassword: VAULT_PW }])
+// RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): upstream's mayIssueCredentials carries a
+// first-run exception (no dashboard_users row yet -> the token may still act as owner). This fork
+// retired that exact exception (card 49960046, RedHat 17005 finding X1: the shared bearer could
+// mint itself a session with zero dashboard_users rows and escalate from there, chaining into
+// exactly this fleet-import-apply/vault-export surface) -- no first-run carve-out anywhere in
+// this fork, by design. The behavior below is the fork's actual answer, not upstream's.
+describe('first-run setup (no dashboard user yet): the token still cannot import or export the vault', () => {
+  it('an applied import and a vault export are both refused the same as with a login already present', async () => {
+    const imp = await applyImport(TOKEN_AUTH)
+    expect(imp.status).toBe(403)
+    expect(imp.json().code).toBe('owner_session_required')
+    expect(h.imports).toEqual([])
+    const exp = await exportWithVault(TOKEN_AUTH)
+    expect(exp.status).toBe(403)
+    expect(exp.json().code).toBe('owner_session_required')
+    expect(h.exports).toEqual([])
   })
 })
 
 describe('once a login exists, the token cannot apply an import or export the vault', () => {
   beforeEach(async () => {
-    expect((await addUser(TOKEN_AUTH, 'owner')).status).toBe(201)
+    await addOwnerDirectly()
   })
 
   it('an applied import is refused before anything is imported', async () => {

@@ -1304,6 +1304,27 @@ export function gateDecision(toolName, toolInput, cwd) {
   ) {
     return { deny: true, kind: 'email-server-default-deny' }
   }
+  // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync, MS365MAIL1024): the comment above this
+  // block used to claim "MS365 send/draft tool NAMES are still gated at the hook-fires-at-all
+  // layer" as the reason to skip them here -- that was WRONG. EMAIL_GATE_MATCHER firing only
+  // means this hook RUNS; without a matching deny here, gateDecision fell through to the
+  // default ALLOW at the bottom of this function, so an ms365 send-mail/reply-mail-message/
+  // send-draft-message call went through unchallenged. Upstream's full mailKind/classifyMailTool
+  // branch (Graph-shaped recipient parsing + an unverified-recipient ledger check) is still NOT
+  // adopted -- same tangled-with-the-rejected-ledger reasoning as the hunk two comments up -- but
+  // the NAME-based half of it does not need that ledger at all, so it is adopted on its own here,
+  // same "the widening alone makes the hook fire, this makes it actually deny" precedent as
+  // Koteg 23a/24 above. Hyphenated Microsoft Graph MCP tool names (MS365MAIL1024's own list).
+  if (/(^|[-_])(?:send[-_]mail|reply[-_]mail[-_]message|reply[-_]all[-_]mail[-_]message|forward[-_]mail[-_]message|send[-_]shared[-_]mailbox[-_]mail|reply[-_]shared[-_]mailbox[-_]mail|reply[-_]all[-_]shared[-_]mailbox[-_]mail|forward[-_]shared[-_]mailbox[-_]mail|forward[-_]calendar[-_]event|reply[-_]to[-_]group[-_]thread)$/i.test(name)) {
+    return { deny: true, kind: 'connector-send' }
+  }
+  if (/(^|[-_])(?:send[-_]draft[-_]message|send[-_]shared[-_]mailbox[-_]draft)$/i.test(name)) {
+    return { deny: true, kind: 'send-draft' }
+  }
+  // create-draft-email/update-mail-message/reply-draft/... (anything that only CREATES or EDITS a
+  // draft, never sends) stay open here, same philosophy as gmail/resend drafts elsewhere in this
+  // file -- the actual send is send-draft-message above. Upstream's unverified-recipient ledger
+  // check on these (Graph-shaped recipient parsing) is the NOT-adopted part; see the file-top note.
   return { deny: false }
 }
 
