@@ -87,9 +87,11 @@
 #   MARVEEN_LAND_DEVELOP_LOCK_KEEPALIVE_S default 300 -- how often to refresh the PAUSED-SEMAPHORE
 #                       comment on the waiting card so a long queue is not mistaken for a stuck card.
 #
-# Exit: 0 landed (or dry-run clean, or nothing to land) | 2 bad usage | 3 refused a precondition
-#       | 4 merge/verify/push failed
+# Exit: 0 landed (or dry-run clean) | 2 bad usage | 3 refused a precondition
+#       | 4 merge/verify/push failed | 6 nothing to land (no such branch -- never pushed anything)
 #       (5 is internal: land_one lost the push race; land_with_retry consumes it and never leaks it)
+#       (card 2d27b27b: 6 used to be folded into 0 here, which made land_notify_finish post a false
+#       "LANDED" for a run that pushed nothing at all -- see its own call site for the fix)
 set -uo pipefail
 
 MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
@@ -1582,7 +1584,11 @@ land_one() {
   export FLEET_TEST_PRIORITY=land
   KANBAN_COMMENT_AGENT="$agent"
 
-  g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 0; }
+  # card 2d27b27b: a distinct rc, not 0 -- 0 also means "genuinely landed, push verified" further
+  # down in this function, and land_notify_finish mapped both to the same "LANDED" text. A caller
+  # trusting that notice (or a closure sweep) would report a phantom landing for a branch that was
+  # never even pushed. land_with_retry's `rc -ne 5` loop-guard is unaffected (6 != 5).
+  g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 6; }
 
   # Card a8a83d48 (F2.1.2): the branch tip BEFORE the merge commit -- what a REVIEW's Gate-SHA
   # names and what a gate actually verdicted on (see the big comment near "Gate-SHA: $gate_sha"
@@ -2333,6 +2339,9 @@ land_notify_finish() { # $1=caller_agent $2=rc $3=card_id (may be empty) $4=dry 
       2) verdict="BAD-USAGE" ;;
       3) verdict="REFUSED" ;;
       4) verdict="FAILED" ;;
+      # card 2d27b27b: land_one returns 6 (never 0) when there was no branch to land at all -- it
+      # never pushed anything, so this must never read as LANDED to a caller or closure sweep.
+      6) verdict="NOTHING-TO-LAND" ;;
       *) verdict="UNKNOWN" ;;
     esac
   fi
@@ -2997,6 +3006,20 @@ if [ "${1:-}" = "--selftest-land-notify-inner" ]; then
     echo "  ok   land_notify_finish(rc=0, dry=1): DRY-RUN verdict, never LANDED"
   else
     echo "  FAIL land_notify_finish(rc=0, dry=1): body=[$body]"; fail=1
+  fi
+
+  # card 2d27b27b: rc=6 (nothing to land, no branch existed) must read as NOTHING-TO-LAND, never
+  # LANDED -- the exact false-positive fullstack caught live (msg 24147/24150, card 380a5e16).
+  n=$((n+1))
+  : >"$STUB_POST_LOG"
+  land_notify_finish "fullstack" 6 "card-abc"
+  line="$(grep '^/api/messages' "$STUB_POST_LOG" 2>/dev/null | tail -1)"
+  body="${line#*$'\t'}"
+  if printf '%s' "$body" | grep -q 'NOTHING-TO-LAND (exit 6)' \
+    && ! printf '%s' "$body" | grep -q 'LANDED (exit'; then
+    echo "  ok   land_notify_finish(rc=6): NOTHING-TO-LAND verdict, never LANDED"
+  else
+    echo "  FAIL land_notify_finish(rc=6): body=[$body]"; fail=1
   fi
 
   # Negative control (guards-that-pin-behaviour): with no readable token file, nothing is posted.
