@@ -31848,3 +31848,38 @@ Tesztelés: a 2D-kori tiszta függvények egy része (`kgNebulaBucketKey`, `kgNe
 **Ki döntött:** Peti követelmény-változtatása (Telegram 14507-14510), MikroB dispatch (üzenet 23664). A javítás végrehajtója Fron Ted.
 
 **Hivatkozás:** kártya dcb196f9 (fázis c65add5a), commit 1783b993d, Pair-BE a1d57d99 (backend2, még nem élő).
+
+## 2026-11-23 10:35 -- landing-gate-verdict-parse.py explicit Supersedes: line (card 22c4c31f)
+
+**Döntés:** `store/landing-gate-verdict-parse.py` korábban úgy rangsorolt, hogy EGY FAIL a landolt
+sha-ra mindig felülír minden PASS-t ugyanarra a sha-ra -- ez rendben van egy re-gate-nél, ami új
+sha-t hoz, de rossz egy config-only javításnál (4e. szabály), ami szándékosan megtartja a Gate-SHA-t:
+a régi FAIL örökre felülírná az új PASS-t, és a `--allow-ungated` nem éri el ezt, mert az csak a
+HIÁNYZÓ verdiktet tolerálja, nem a FAILED-et. MikroB Fix-Direction-je (üzenet 21415 + komment 33786
+a 055114ee-n): egy `Supersedes: <comment-id>[, <comment-id>]` sort viselő PASS pontosan a megnevezett
+FAIL kommenteket emeli le, HA (a) a megnevezett komment FAIL ugyanarra a sha-ra, (b) a felülíró PASS
+szerzője SZÓ SZERINT azonos a FAIL szerzőjével (nem a QA/QA2 szerep-összevonás, ami máshol él --
+"qa supersedes qa, qa2 supersedes qa2, never cross-role": az az ügynök emelheti le a saját korábbi
+FAIL-jét, aki tényleg újra lefuttatta az ellenőrzést), és (c) a PASS időben a FAIL UTÁN jön. Egy
+továbbított FAIL (MikroB "ELFOGADVA" visszaigazolása) sosem emelhető le ezzel a sorral, mert a
+szerzője sosem egyezik szó szerint egy valódi gate-szerzővel. Minden, amit nem emelnek le explicit
+módon, a mai fail-outranks-pass viselkedést kapja.
+**Miért:** 055114ee landolása a 33789-es MIKROB-DECISION óta blokkolva (e380bc7f9c6c1eb7d3bb4ea97e1a6c0486d9e5db ugyanaz a sha, a QA/QA2 régi FAIL 32934/32935 örökre felülírta volna az új QA/QA2 PASS 33324/33318-at).
+**Ellenőrzés:** a meglévő 57-es selftest (`store/landing-gate-verdict-check.selftest.sh`) 0 regresszió
+(57/57 zöld változatlanul). 7 új eset: (1) azonos-szerzős Supersedes ténylegesen levesz egy FAIL-t ->
+OK, (2) ugyanaz Supersedes sor nélkül -> FAILED marad (a mai viselkedés rögzítve), (3) kereszt-szerzős
+Supersedes (qa2 PASS egy qa FAIL id-jét nevezi meg) -> FAILED marad, (4) Supersedes egy nem-FAIL
+kommentet nevez meg -> a valódi FAIL érintetlen, FAILED marad, (5) Supersedes egy korábbi PASS id-jét
+nevezi meg (nem FAIL-t) -> FAILED marad, (6) egy továbbított MikroB-FAIL nem emelhető le a valódi
+gate saját PASS-ával sem -> FAILED marad, (7) MUTÁCIÓ-RÖGZÍTÉS: egy Supersedes sor, ami egy UTÁNA
+jövő FAIL id-jét nevezi meg (sorrend megfordítva) -> nem veszi le, FAILED marad. Összesen 64/64 zöld.
+Mutáció-bizonyíték: a javítás visszaállítása (kizárólag a .py fájlon) után a selftest 63/64-re esett,
+pontosan az első új eset bukott el ("expected OK, got FAILED") -- a javítás visszaállítva, újra 64/64.
+A gated vitest suite (`src/__tests__/landing-gate-verdict-check.test.ts`) a teljes shell selftestet
+futtatja és a counted-pass formátumot ellenőrzi, tehát az új esetek automatikusan a gated suite
+részei, külön wrapper nélkül. A valódi `store/fleet-test.sh` szemaforon át, HEAD 4dcf827dc-n:
+Test Files 1 passed (1), Tests 7 passed (7), Duration 40.58s.
+**Ki döntött:** backend (implementáció), MikroB (Fix-Direction, üzenet 21415), gate: QA + Cybersec +
+Cybered (a kártya saját Gate-sora: "landing guard, decides pushes to origin/develop").
+**Hivatkozás:** kártya 22c4c31f, blokkolt kártya 055114ee (komment 33786/33789), Gate-SHA
+4dcf827dc7f3ecb4aa3fc75eddf2cf04e203b7b2.
