@@ -35,7 +35,7 @@ import {
   getKanbanCheckpoints, tryAddKanbanCheckpoint,
 } from '../../db.js'
 import { isForceActor, forceActors } from '../../kanban-force-actors.js'
-import { fireCardBuildRoute } from '../kanban-route-dispatch.js'
+import { fireCardBuildRoute, fireCardWorktree } from '../kanban-route-dispatch.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseMegoldasTarLines, recordKgUsageFeedback } from '../../kg/usage.js'
 import { openKgDb, kgDbPath } from '../../kg/store.js'
@@ -1763,7 +1763,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // Card 64f56f97 requirement 1: a fresh planned->in_progress transition always routes
       // through card-build-route.sh, even on this PUT path (which, unlike /move, never wakes
       // an agent -- KARTYADISPATCH1010 above). Fire-and-forget; see kanban-route-dispatch.ts.
-      if (data.status === 'in_progress' && specTemplatePrevStatus === 'planned') fireCardBuildRoute(id)
+      if (data.status === 'in_progress' && specTemplatePrevStatus === 'planned') {
+        fireCardBuildRoute(id)
+        fireCardWorktree(
+          id,
+          typeof data.assignee === 'string' ? data.assignee : before?.assignee,
+          typeof data.title === 'string' ? data.title : before?.title,
+        )
+      }
       onKanbanCardStatusChanged(id, specTemplatePrevStatus, data.status)
       const after = getKanbanCard(id)
       // Card 08bf8326 (#567): a card this one blocked may now be free to go.
@@ -2049,7 +2056,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // Card 64f56f97 requirement 1: same enforcement as the PUT handler above, for this
       // path's own fresh planned->in_progress transitions (self-advance-pickup.sh and
       // MikroB's own dispatch both move cards through /move, not PUT).
-      if (status === 'in_progress' && specTemplatePrevStatus === 'planned') fireCardBuildRoute(id)
+      if (status === 'in_progress' && specTemplatePrevStatus === 'planned') {
+        fireCardBuildRoute(id)
+        fireCardWorktree(id, before?.assignee, before?.title)
+      }
       onKanbanCardStatusChanged(id, specTemplatePrevStatus, status)
       // Card 08bf8326 (#567): a reorder inside the done column is not a closing -- only a
       // real transition to done frees the cards waiting on this one.

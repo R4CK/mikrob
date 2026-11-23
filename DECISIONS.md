@@ -31926,3 +31926,66 @@ Cases 1 and 3 were investigated (own reading + a `production-debugger` subagent)
 **Mérés, Gate-SHA e67750db6a404d2d3f423d63890ffd4ca38abdf3:** `offload-dispatch passes` via `store/fleet-test.sh --ref card/a5c827ca`: 1/1 PASS (24.77s); `offload-dispatch.selftest.sh` run directly: 324/324 PASS (was 322, +2 for the new regression guard); `tsc --noEmit` clean. The other two targeted files and the full suite were not re-run (unchanged by this delta, already green on the prior sha per QA2 37660/QA 37665/Cybersec2 37666; MikroB's instruction, msg 23460, was not to burn the shared fleet-test slot on repeated full runs).
 
 **Ki döntött:** backend3, card a5c827ca delta, Gate-SHA e67750db6a404d2d3f423d63890ffd4ca38abdf3. Gate: QA + Cybersec, re-dispatched after CYBERSEC NO-GO 37668.
+
+## 2026-11-23 -- F4 follow-ups: L1/L2/L3 fixed, F-4 landing-guard WARN kept warn-only for now (kártya 562698d4)
+
+**Kontextus:** Non-blocking leletek a F4 (4a179ad5, per-card branch + worktree on marveen) epic
+gate-jéből (064c4fbf582b3c2c592c672706b636ac15c63ec3): cybersec L1/L2/L3, cybered F-1 (ugyanaz a
+lelet mint L3), és F-4 (landing-guard WARN warn-only vagy enforce legyen).
+
+**Döntés (L1):** `store/marveen-card-worktree-cleanup.sh` `is_landed()` csak azt nézte, hogy a
+`card/<id>` ág tipje őse-e `origin/develop`-nak -- egy FRISSEN létrehozott, soha nem commitolt
+card-worktree tipje triviálisan megegyezik azzal a commit-tal, amiből ágazott, ami triviálisan
+őse origin/develop-nak, FÜGGETLENÜL attól, hogy a kártyán történt-e bármi. Fix: `was_merged_in()`
+-- strukturális bizonyíték, nem szöveg-egyezés: az ág tipje tényleg MEGJELENIK-e egy
+origin/develop-en lévő merge-commit NEM-ELSŐ szülőjeként (az első szülő minden merge-nél a
+mainline "ours" oldal, semmit nem bizonyít erről az ágról). Debug közben egy MÁSODIK, önálló
+hiba is előjött: az eredeti implementáció `git rev-list ... | awk '... exit' | grep -q y` alakban
+pipe-olt élő git process-be -- az awk korai `exit`-je időnként SIGPIPE-pel öli meg a git-et még
+write közben, és `set -o pipefail` alatt ez a git nemnulla exit kódja hamisan "not merged"-ként
+jelent meg egy VALÓS, landolt ágon (reprodukálva: azonos bemenet, pár másodperccel később
+ugyanaz a hívás sikerrel futott). Fix: a git kimenetét előbb egy változóba kell gyűjteni
+(`merges="$(...)"`), és az awk/grep ezen a változón dolgozzon, nem egy élő pipe-on.
+
+**Döntés (L2):** `store/self-advance-pickup.sh` ugyanezen hibaosztály másik előfordulása (mint a
+sweep script F2-je): a "kész" előző kártya worktree-jének törlése előtt csak a `card/<id>` ÁG
+(ref) ős-ellenőrzését futtatta, sosem azt, hogy a WORKTREE saját HEAD-je valóban az az ág-e. Egy
+detached HEAD-re állított worktree egy extra, nem-landolt commit-tal "tisztának" látszik egy
+sima `worktree remove`-nak (nincs uncommitolt diff), így az a commit némán elárvulna a törléssel.
+Fix: a törlés előtt a worktree saját `symbolic-ref HEAD`-jét is ellenőrizzük, egyezzen
+`refs/heads/card/<id>`-vel.
+
+**Döntés (L3 / RedHat F-1):** a `MARVEEN_CARD_WORKTREE` env-kapcsolót eddig KIZÁRÓLAG
+`self-advance-pickup.sh` olvasta -- egy kártya `in_progress`-be kerülhet MikroB saját `/move`
+dispatch-jén vagy egy sima actor-es `PUT`-on át is, és ezeken a kapcsoló sosem futott le. Fix: új
+`fireCardWorktree()` a `kanban-route-dispatch.ts`-ben, ugyanazzal a szabállyal mint
+self-advance-pickup.sh (env `MARVEEN_CARD_WORKTREE=1` + a kártya cím `[MikroB]` taggel), mindkét
+`planned -> in_progress` útvonalon (`PUT` és `/move`) bekötve a már meglévő `fireCardBuildRoute`
+hívás mellé. Fire-and-forget, sosem dobja el a dispatch-et.
+
+**Döntés (F-4):** a `card-landings-guard` WARN marad warn-only. Nincs mért adat a hamis-pozitív
+arányról a mérési időszak alatt; egy enforce-ra váltás kockázata (jogos landolás blokkolása) a
+jelenlegi bizonyíték mellett nagyobb, mint a warn-only haszna elmaradása. Felülvizsgálat: ha a
+mérési időszak alatt gyűlik elég adat a hamis-pozitív arányról, külön kártyán döntsön MikroB az
+enforce-ra váltásról.
+
+**Teszt:** L1 -- új "Case I" a `marveen-card-worktree-cleanup.selftest.sh`-ban (fresh, never-
+committed card worktree -> SKIP not landed), RED a fix előtt, GREEN utána, 44/44 teljes suite,
+8 egymást követő futás flake nélkül (a SIGPIPE-hiba a régi kódon determinisztikusan NEM, a
+javítás ELŐTTI `was_merged_in` első verzióján pedig időszakosan hibázott -- ezt a második hibát a
+fix masodik köre zárta). L2 -- új eset a `self-advance-pickup.selftest.sh`-ban (detached HEAD +
+extra nem-landolt commit -> a worktree és a commit is érintetlen marad), RED a fix előtt (2 FAIL),
+GREEN utána (45/45). L3 -- 5 új teszt a `kanban-route-dispatch.test.ts`-ben (`fireCardWorktree`
+leíró blokk): flag OFF, flag ON agent nélkül, flag ON [MikroB] tag nélkül, flag ON + tag + agent
+(spawn megtörténik, helyes argumentumokkal), spawn-hiba sosem dob. 14/14 ebben a fájlban, 58/58 a
+`kanban-route-dispatch(-wiring)?.test.ts` + `kanban-claim.test.ts` együtt. `tsc --noEmit` zöld.
+
+**Nincs benne:** F-3 (121 élő card worktree seep-je, élő `--apply` csak Peti jóváhagyásával,
+rule 22) -- ez a sweep script L1-fixét HASZNÁLJA, de maga a live sweep futtatása nem történt meg
+itt.
+
+**Ki döntött:** MikroB dispatch-je (kártya 562698d4, F4 epic gate 4a179ad5 non-blocking leletei,
+cybersec 37506 / cybered 37471). A végrehajtó DevO/fullstack.
+
+**Hivatkozás:** kártya 562698d4 (parent ed332869), epic gate-kártya 4a179ad5, Gate-SHA
+064c4fbf582b3c2c592c672706b636ac15c63ec3 (ahonnan a leletek jöttek).
