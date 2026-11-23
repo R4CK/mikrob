@@ -1537,10 +1537,13 @@ _carry_forward_ok() {
     _CARRY_FORWARD_DETAIL="nothing on the card's own first-parent line beyond gate_sha -- nothing to carry forward"
     return 1
   fi
-  local _cf_m _cf_parent_count
+  local _cf_m _cf_parent_count _cf_i _cf_p
+  local -a _cf_parents
   for _cf_m in "${_cf_mainline[@]}"; do
-    _cf_parent_count="$(g rev-list --parents -n1 "$_cf_m" 2>/dev/null | wc -w)"
-    # rev-list --parents -n1 <sha> prints "<sha> <parent1> [<parent2> ...]" -- subtract the sha itself.
+    read -ra _cf_parents <<<"$(g rev-list --parents -n1 "$_cf_m" 2>/dev/null)"
+    # rev-list --parents -n1 <sha> prints "<sha> <parent1> [<parent2> ...]" -- index 0 is the
+    # commit itself, parents start at index 1.
+    _cf_parent_count="${#_cf_parents[@]}"
     if [ "$(( _cf_parent_count - 1 ))" -lt 2 ]; then
       _CARRY_FORWARD_DETAIL="an authored (non-merge) commit is on the card's own first-parent line: $(g rev-parse --short "$_cf_m")"
       return 1
@@ -1549,10 +1552,35 @@ _carry_forward_ok() {
     # header (commit/Merge/Author/Date/message) even when the diff body is empty, so a bare
     # `[ -n "$(g show --remerge-diff ...)" ]` is non-empty for every merge, clean or not -- caught
     # by this scenario's own happy-path selftest case going red on a genuinely conflict-free merge.
-    if [ -n "$(g show --format= --remerge-diff "$_cf_m" 2>/dev/null)" ]; then
+    local _cf_remerge _cf_remerge_rc=0
+    _cf_remerge="$(g show --format= --remerge-diff "$_cf_m" 2>/dev/null)" || _cf_remerge_rc=$?
+    # Cybered NO-GO 38261 F-2 / Cybersec NO-GO 38262 MEDIUM-2 (same finding): a git FAILURE here
+    # (old git, missing object, a crash -- `2>/dev/null` swallows the message) printed no output
+    # EITHER, so a bare `[ -n "$out" ]` read "git failed" the same as "git proved it clean" and
+    # carried forward a merge nobody actually checked. Any non-zero exit refuses, same as a
+    # non-empty diff.
+    if [ "$_cf_remerge_rc" -ne 0 ]; then
+      _CARRY_FORWARD_DETAIL="git show --remerge-diff failed (rc=$_cf_remerge_rc) on merge $(g rev-parse --short "$_cf_m") -- cannot prove it is clean"
+      return 1
+    fi
+    if [ -n "$_cf_remerge" ]; then
       _CARRY_FORWARD_DETAIL="merge $(g rev-parse --short "$_cf_m") has a non-empty --remerge-diff (hand-resolved conflict)"
       return 1
     fi
+
+    # Cybered NO-GO 38261 F-1 / Cybersec NO-GO 38262 HIGH-1 (same finding, both blocking): an empty
+    # --remerge-diff only proves the merge is CONFLICT-FREE -- it says nothing about what the other
+    # parent(s) brought in, because a clean merge of ANY branch (a side branch, another card's
+    # unlanded work) has an empty remerge-diff too. "Develop drift" additionally requires every
+    # parent beyond the first to already be reachable from origin/$DEFAULT_BRANCH -- true for a
+    # drift merge FROM develop, false for a merge of unreviewed content from anywhere else.
+    for (( _cf_i = 2; _cf_i < _cf_parent_count; _cf_i++ )); do
+      _cf_p="${_cf_parents[$_cf_i]}"
+      if ! g merge-base --is-ancestor "$_cf_p" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+        _CARRY_FORWARD_DETAIL="merge $(g rev-parse --short "$_cf_m") brings in $(g rev-parse --short "$_cf_p" 2>/dev/null || echo "$_cf_p"), which is not reachable from origin/$DEFAULT_BRANCH"
+        return 1
+      fi
+    done
   done
 
   local _cf_base
@@ -1561,14 +1589,18 @@ _carry_forward_ok() {
     _CARRY_FORWARD_DETAIL="could not resolve merge-base($gate_sha, origin/$DEFAULT_BRANCH)"
     return 1
   fi
+  # core.quotepath=false (Cybersec NO-GO 38262 MEDIUM-2): without it, git prints a non-ASCII (or
+  # other quoted-worthy) path as a quoted C-string literal ("\303\251.sh"), which then matches no
+  # real pathspec in the `diff --quiet` byte-identity check below -- a silent fail-open on exactly
+  # the files this function exists to compare.
   local -a _cf_owned
-  mapfile -t _cf_owned < <(g diff --name-only "$_cf_base" "$gate_sha" 2>/dev/null || true)
+  mapfile -t _cf_owned < <(g -c core.quotepath=false diff --name-only "$_cf_base" "$gate_sha" 2>/dev/null || true)
   if [ "${#_cf_owned[@]}" -eq 0 ]; then
     _CARRY_FORWARD_DETAIL="card's own file set (diff of merge-base($gate_sha, origin/$DEFAULT_BRANCH)..gate_sha) is empty -- nothing to compare"
     return 1
   fi
-  if ! g diff --quiet "$gate_sha" "$branch" -- "${_cf_owned[@]}" 2>/dev/null; then
-    _CARRY_FORWARD_DETAIL="card's own file(s) changed between $gate_sha and $branch: $(g diff --name-only "$gate_sha" "$branch" -- "${_cf_owned[@]}" | tr '\n' ' ')"
+  if ! g -c core.quotepath=false diff --quiet "$gate_sha" "$branch" -- "${_cf_owned[@]}" 2>/dev/null; then
+    _CARRY_FORWARD_DETAIL="card's own file(s) changed between $gate_sha and $branch: $(g -c core.quotepath=false diff --name-only "$gate_sha" "$branch" -- "${_cf_owned[@]}" | tr '\n' ' ')"
     return 1
   fi
 
@@ -1647,7 +1679,10 @@ gate_sha_tip_check() {
       # manual MikroB decision + gate restatement every time. Scoped to --card mode only by the
       # caller (land_one passes CARD_ALLOW_CARRY_FORWARD; land_batch always passes 0).
       if [ "$allow_carry_forward" = "1" ]; then
-        if _carry_forward_ok "$_latest_gate_sha_resolved" "$branch"; then
+        # Cybered NO-GO 38261 F-3: pass the already-resolved work_sha, not the symbolic ref name
+        # -- the proof below and the merge that later lands it must be about the exact SAME sha,
+        # never two separate reads of a ref that could move in between.
+        if _carry_forward_ok "$_latest_gate_sha_resolved" "$work_sha"; then
           say "$agent: carry-forward (card b20d2062): $_CARRY_FORWARD_DETAIL"
           GATE_SHA_TIP_CARRY_FORWARD_DETAIL="$_CARRY_FORWARD_DETAIL"
           GATE_SHA_TIP_CARRY_FORWARD_OLD_SHA="$_latest_gate_sha_resolved"
@@ -1844,20 +1879,11 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     local _gsha_tip_rc=$?
     [ "$_gsha_tip_rc" -eq 0 ] || return "$_gsha_tip_rc"
     [ -z "$GATE_SHA_TIP_TOLERATED_REASON" ] || _note_ungated_landing "$agent" "$LAND_CARD" "$GATE_SHA_TIP_TOLERATED_REASON"
-    if [ -n "$GATE_SHA_TIP_CARRY_FORWARD_DETAIL" ]; then
-      # author="marveen-land" (added to GENERATED_COMMENT_AUTHORS, kanban-landed-guard.ts): this
-      # comment cites both shas in full, and if it were attributed to a non-gate human-shaped
-      # author, kanban-gate-completeness-guard.ts's currentRoundStartTs would read the NEW sha
-      # citation as a fresh round boundary, demanding a verdict AFTER this comment -- reproducing
-      # exactly the "needs a force-close" gap MikroB hit by hand on every one of the 5 real
-      # incidents this card fixes. Marking it generated keeps the round boundary where the real
-      # verdicts already are (card b20d2062).
-      kanban_comment_on "$LAND_CARD" "CARRY-FORWARD (--allow-carry-forward, card b20d2062, $agent)
-
-Gate-SHA tip moved from $GATE_SHA_TIP_CARRY_FORWARD_OLD_SHA (the latest REVIEW's gated sha) to $work_sha via a develop-drift merge only.
-$GATE_SHA_TIP_CARRY_FORWARD_DETAIL
-No new gate verdict was requested; the designated gates' latest verdicts on $GATE_SHA_TIP_CARRY_FORWARD_OLD_SHA are checked against that sha (not $work_sha) on this proven-equivalent basis. Landing proceeds." "marveen-land"
-    fi
+    # Cybered NO-GO 38261 F-5: the comment used to post HERE, before the merge/fleet-test/push even
+    # ran -- a later refusal on any of those (conflicts, a failing fleet-test, a lost push race)
+    # left a "Landing proceeds" claim on a card that never actually landed. GATE_SHA_TIP_CARRY_
+    # FORWARD_DETAIL/OLD_SHA stay set (globals, read again below); the actual kanban_comment_on
+    # call moves to after the push is independently confirmed on origin/$DEFAULT_BRANCH.
   fi
 
   local wt="/home/neon/marveen-land-${agent}-$$"
@@ -1993,8 +2019,15 @@ No new gate verdict was requested; the designated gates' latest verdicts on $GAT
 Cards: $merge_cards"
   fi
   local merge_err
+  # Cybered NO-GO 38261 F-3: merge the already-resolved work_sha, not the symbolic ref "$branch".
+  # work_sha was captured once, before the gate/carry-forward checks ran; merging it instead of
+  # re-reading the ref here closes the window Cybered demonstrated (a ref advanced between the
+  # proof and this merge lands whatever the ref points to NOW, not what was proven). Merging a sha
+  # directly produces the identical merge commit a ref pointing at that same sha would -- the
+  # explicit -m message below already supplies the commit message, so there is no ref-name-derived
+  # metadata this loses.
   if ! merge_err="$(git -C "$wt" -c user.email=mikrob@marveen.local -c user.name=mikrob \
-                    merge --no-ff "$branch" -m "$msg" 2>&1)"; then
+                    merge --no-ff "$work_sha" -m "$msg" 2>&1)"; then
     local conflicted; conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
     # NARROW AUTO-UNION (card cbb66abf): only when DECISIONS.md is the SOLE conflicted file, and
     # only when try_append_union structurally confirms both sides purely appended -- see
@@ -2303,6 +2336,25 @@ Cards: $merge_cards"
     # silently swallowed by the caller's best-effort curl.
     if [ -n "$LAND_CARD" ]; then
       record_card_landing "$LAND_CARD" "$work_sha" "$gate_sha" marveen "$agent"
+      if [ -n "$GATE_SHA_TIP_CARRY_FORWARD_DETAIL" ]; then
+        # Cybered NO-GO 38261 F-5: posted HERE, after push+fetch+ancestor-check all confirmed the
+        # merge is actually on origin/$DEFAULT_BRANCH -- never before, so a refusal anywhere in
+        # between (conflicts, a failing fleet-test, a lost push race) leaves no "Landing proceeds"
+        # claim on a card that did not land.
+        #
+        # author="marveen-land" (added to GENERATED_COMMENT_AUTHORS, kanban-landed-guard.ts): this
+        # comment cites both shas in full, and if it were attributed to a non-gate human-shaped
+        # author, kanban-gate-completeness-guard.ts's currentRoundStartTs would read the NEW sha
+        # citation as a fresh round boundary, demanding a verdict AFTER this comment -- reproducing
+        # exactly the "needs a force-close" gap MikroB hit by hand on every one of the 5 real
+        # incidents this card fixes. Marking it generated keeps the round boundary where the real
+        # verdicts already are (card b20d2062).
+        kanban_comment_on "$LAND_CARD" "CARRY-FORWARD (--allow-carry-forward, card b20d2062, $agent)
+
+Gate-SHA tip moved from $GATE_SHA_TIP_CARRY_FORWARD_OLD_SHA (the latest REVIEW's gated sha) to $work_sha via a develop-drift merge only.
+$GATE_SHA_TIP_CARRY_FORWARD_DETAIL
+No new gate verdict was requested; the designated gates' latest verdicts on $GATE_SHA_TIP_CARRY_FORWARD_OLD_SHA are checked against that sha (not $work_sha) on this proven-equivalent basis. Landed." "marveen-land"
+      fi
     else
       local _lc
       for _lc in $(printf '%s\n' "$down_log" | distinct_cards); do
