@@ -10183,6 +10183,67 @@ export function getLatestFreellmFailure(sinceS: number, excludeAgents: string[] 
   `).get(sinceS, ...excludeAgents) as { ts: number; fail_reason: string | null } | undefined
 }
 
+export interface LlmChainStageSummary {
+  provider: 'local' | 'freellm'
+  calls: number
+  ok: number
+  failReasons: Array<{ reason: string; count: number }>
+  avgLatencyMs: number | null
+}
+
+// Card 954a6a93 (GET /api/llm/chain, contract ACCEPTed Fron Ted comment 37917 / backend2 comment
+// 37945): per-stage call/ok/fail-reason/latency, local + freellm only -- 'online' calls are never
+// appended to llm_ledger (only offloaded calls are), and 'gemini' is a separate stage the FE
+// contract explicitly excludes (2026-11-20 audit: gemini is not in the live chain). Excludes
+// known test callers by default, same list/reasoning as getFreellmOutcomeCounts.
+export function getLlmChainStageSummary(sinceS: number, excludeAgents: string[] = []): LlmChainStageSummary[] {
+  const exclClause = excludeAgents.length > 0 ? `AND agent_id NOT IN (${excludeAgents.map(() => '?').join(',')})` : ''
+  const agg = db.prepare(`
+    SELECT provider, COUNT(*) AS calls, SUM(ok) AS ok, AVG(latency_ms) AS avg_latency_ms
+    FROM llm_ledger WHERE provider IN ('local','freellm') AND ts >= ? ${exclClause}
+    GROUP BY provider
+  `).all(sinceS, ...excludeAgents) as Array<{ provider: 'local' | 'freellm'; calls: number; ok: number; avg_latency_ms: number | null }>
+
+  const failRows = db.prepare(`
+    SELECT provider, COALESCE(fail_reason, 'unknown') AS reason, COUNT(*) AS count
+    FROM llm_ledger WHERE provider IN ('local','freellm') AND ts >= ? AND ok = 0 ${exclClause}
+    GROUP BY provider, reason
+  `).all(sinceS, ...excludeAgents) as Array<{ provider: 'local' | 'freellm'; reason: string; count: number }>
+
+  return (['local', 'freellm'] as const).map((provider) => {
+    const a = agg.find((r) => r.provider === provider)
+    return {
+      provider,
+      calls: a?.calls ?? 0,
+      ok: a?.ok ?? 0,
+      failReasons: failRows.filter((r) => r.provider === provider).map((r) => ({ reason: r.reason, count: r.count })),
+      avgLatencyMs: a?.avg_latency_ms ?? null,
+    }
+  })
+}
+
+export interface LlmChainDraftReviewCounts {
+  accepted: number
+  rejected: number
+}
+
+// Card 954a6a93: llm_ledger.draft_accepted is a boolean column (markLlmLedgerDraftAccepted has no
+// caller anywhere in the codebase today -- backend2's 2026-11-20 audit measured it NULL in all
+// 14804 rows), so it can only ever express accepted/not-accepted, never the 4-way
+// ELFOGADVA/RESZBEN/ELUTASITVA/FELESLEGES distinction the kanban Draft-Review comment vocabulary
+// uses. Dynamic (not hardcoded false), so the day a separate card wires a real caller, this count
+// reflects it immediately instead of staying silently stale.
+export function getLlmChainDraftReviewCounts(sinceS: number, excludeAgents: string[] = []): LlmChainDraftReviewCounts {
+  const exclClause = excludeAgents.length > 0 ? `AND agent_id NOT IN (${excludeAgents.map(() => '?').join(',')})` : ''
+  const row = db.prepare(`
+    SELECT
+      SUM(CASE WHEN draft_accepted = 1 THEN 1 ELSE 0 END) AS accepted,
+      SUM(CASE WHEN draft_accepted = 0 THEN 1 ELSE 0 END) AS rejected
+    FROM llm_ledger WHERE ts >= ? ${exclClause}
+  `).get(sinceS, ...excludeAgents) as { accepted: number | null; rejected: number | null }
+  return { accepted: row.accepted ?? 0, rejected: row.rejected ?? 0 }
+}
+
 // The decay-sweep cadence. Lives HERE, beside the prune it drives, because
 // db.ts is what needs it for the lag tolerance below and memory.ts already
 // imports from db.ts -- putting it there would close an import cycle.

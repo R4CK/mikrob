@@ -169,7 +169,9 @@ const ROUTING_FILE = join(STORE_DIR, 'local-llm-model-routing.json')
 const VRAM_GUARD_STATE_FILE = join(STORE_DIR, 'vram-guard-state.json')
 // Append-only, card-independent routing-decision audit trail (store/card-build-route.sh). Never
 // carries card TEXT, only its length -- see that script's own header.
-const CARD_BUILD_ROUTE_LOG_FILE = join(STORE_DIR, 'card-build-route.log')
+// Exported for card 954a6a93 (GET /api/llm/chain's routing section) -- same log file reused
+// rather than re-derived a second time.
+export const CARD_BUILD_ROUTE_LOG_FILE = join(STORE_DIR, 'card-build-route.log')
 // Card 64f56f97 (route-verdict coverage): soft, report-only audit of how many planned->in_progress
 // dispatches skipped card-build-route.sh entirely -- see that script's own header for why this is
 // a separate, never-blocking process rather than enforcement baked into the move endpoint itself.
