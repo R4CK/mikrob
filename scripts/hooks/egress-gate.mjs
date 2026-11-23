@@ -322,7 +322,12 @@ function isPrivateIPv6(host) {
   if (h.startsWith('::ffff:')) {
     const rest = h.slice(7)
     if (rest.includes('.')) return isPrivateIPv4(rest) // dotted decimal
-    const hexPair = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest)
+    // card 1535f7f9 (Koteg 28 upstream sync, EGRESSIPV6NEXT1025 follow-up): IPv4-translated
+    // (::ffff:0:HI:LO, RFC 2765/6052's ::ffff:0:0:0/96) has an extra `0:` group before the
+    // embedded address -- the plain 2-group pattern below missed it and fell through to the
+    // unconditional deny just past this block, denying even a PUBLIC embedded address
+    // (egress-gate-internal-names.test.ts: [::ffff:0:5db8:d822] is 93.184.216.34, public).
+    const hexPair = /^(?:0:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(rest)
     if (hexPair) {
       const hi = parseInt(hexPair[1], 16)
       const lo = parseInt(hexPair[2], 16)
