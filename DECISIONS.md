@@ -31737,3 +31737,32 @@ Nincs benne: a card e9e1e771 egyéb logikájának átírása; a `--batch` mód (
 **Ki döntött:** MikroB (23757. üzenet), bejelentve DevO (fullstack) 23752. üzenetében, aki a javítást is végrehajtotta.
 
 **Hivatkozás:** kártya 35f67e7d, Gate-SHA a REVIEW-ban (744238db2533d33728177e0699c56ab3fa686097 -- a DECISIONS.md commit ezt felülírja egy új shá-ra, a REVIEW-t az új sha-val frissítem).
+
+## 2026-11-23 -- marveen-land.sh --batch: hiányzó Gate-SHA tip-ellenőrzés a kártyánkénti ciklusban (kártya 9d9d5ab2)
+
+**Kontextus:** CYBERSEC FOLLOW-UP-A az e9e1e771-en (23619. üzenet): a `land_batch` sosem ellenőrizte
+az egyes kártyák `card/<id>` ágának csúcsát a legutóbbi REVIEW Gate-SHA-jához képest -- egy BEHIND
+(a REVIEW óta semmi új nem történt, de a REVIEW-ban állított sha már nem a csúcs) vagy AHEAD, nem
+csak farokba-írás jellegű (DECISIONS.md/package.json/README.md) commitokkal rendelkező ág simán
+landolt volna a `--batch` módon, pedig `land_one`-ban (az e9e1e771/35f67e7d kártyák óta) ugyanez a
+helyzet refúzió.
+
+**Döntés:** az e9e1e771/35f67e7d ellenőrzést kiemeltem `land_one`-ból egy önálló, újrafelhasználható
+függvénybe (`gate_sha_tip_check <card> <branch> <agent> <work_sha> <allow_ungated 0|1>`), és bekötöttem
+MINDKÉT helyre: `land_one`-ba (tisztán viselkedés-megőrző refaktor, a meglévő 69/69 egykártyás selftest
+igazolja), és `land_batch` kártyánkénti ciklusába (ez az új viselkedés) -- egy ide nem illő kártya a
+meglévő `_batch_drop` mintával esik ki, a batch többi kártyája változatlanul landol.
+
+**Teszt:** új T eset a `--selftest-land-batch`-ben (t1 BEHIND, t2 AHEAD nem-farok commit-tal -- mindkettő
+kiesik; t3 tiszta -- landol). RED a `land_batch` bekötés előtt, GREEN utána. Mutáns-teszt: a
+`gate_sha_tip_check` hívás eltávolítása (`gsha_tip_rc=0` hardcode) visszahozza a RED-et case T-n --
+az őr nem vákuum. Teljes `--selftest-land-batch`: 21/21 PASS. `--selftest-land-card-branch`: 69/69 PASS.
+`fleet-test.sh --ref 43ea360d9471c46171f199e1d950471629cd9dab -t "marveen-land"`: 12 fájl / 76 teszt PASS.
+
+**Nincs benne:** az e9e1e771/35f67e7d ellenőrzés egyéb logikájának átírása, csak a kiemelése és a
+`--batch`-be kötése.
+
+**Ki döntött:** MikroB (23802., 23812. üzenet: "35f67e7d first, then 9d9d5ab2 reusing the fixed
+compare"), végrehajtotta DevO (fullstack).
+
+**Hivatkozás:** kártya 9d9d5ab2, előzmény e9e1e771 + 35f67e7d. Gate-SHA a REVIEW-ban (komment 37968).
