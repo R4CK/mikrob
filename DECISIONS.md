@@ -31721,3 +31721,19 @@ Nincs benne: `quota-check.sh` cron-megbízhatóságának javítása (miért nem 
 **Ki döntött:** Peti javaslata (12486), a banner-formátum MikroB valós transzkript-grep-je (nem paraphrase) a feloldáshoz. A javítás végrehajtója DevO (fullstack).
 
 **Hivatkozás:** kártya 7c2f9564, Gate-SHA a REVIEW-ban.
+
+## 2026-11-23 -- marveen-land.sh: short Gate-SHA raw string-compare bug in the e9e1e771 check (kártya 35f67e7d)
+
+**Döntés:** az e9e1e771 BEHIND/AHEAD/unrelated Gate-SHA ellenőrzés raw bash string-egyezéssel hasonlította work_sha-t (mindig teljes 40-karakteres) a REVIEW `Gate-SHA:` sorához, sha-feloldás nélkül. Egy rövid-alakú Gate-SHA, ami ugyanarra a commitra mutat mint a tip, elbukta az egyezést, és a fallback ancestry-logika ezt "tip BEHIND Gate-SHA"-nak olvasta (egy commit trivialisan saját őse) -> hamis REFUSED, exit 4. Élőben előjött cf678d23 (REVIEW 37837, rövid sha 4502867f9) és 7c2f9564 (REVIEW 37894, rövid sha 0fe25f3c6) landolásánál is.
+
+Javítás: a REVIEW Gate-SHA-ja `git rev-parse --verify "<sha>^{commit}"`-tel teljes 40-karakteres commit-sha-ra lesz feloldva MIELŐTT bármilyen összehasonlítás történne. Feloldhatatlan vagy ambiguous prefix explicit, nevesített refusal (vagy --allow-ungated tolerancia), soha nem csendes elfogadás.
+
+Elfogadási kritériumok (kártya saját "Kész, ha" listája): mindkét oldal teljes 40-karakteres commit-sha-ra feloldva összehasonlítás előtt; selftest-esetek (teljes sha egyezik -> land; rövid egyedi prefix a tip-re -> land; rövid prefix egy MÁSIK commitra -> refuse; ambiguous/unknown prefix -> saját üzenettel refuse; tip behind/ahead viselkedés változatlan); mutáns, ami visszaállítja a raw string compare-t, pirosra viszi a selftestet; fleet-test zöld a szemaforon át.
+
+Teszt: `marveen-land-card-branch.selftest.sh` 69/69 PASS (66 régi + 3 új: ddd990 rövid-prefix-land, eee989 rövid-prefix-más-commit-refuse, fff988 feloldhatatlan-literal-refuse). Mutáns-teszt: a resolve-and-check blokk visszaállítása a raw string compare-re 2 a 3 új esetből pirosra fordult (ddd990, fff988), igazolva hogy az őr terhelő, nem vákuum. Fleet-test (szemafor, `--ref 744238db2 -t "marveen-land"`): 12 Test File / 76 teszt PASS.
+
+Nincs benne: a card e9e1e771 egyéb logikájának átírása; a `--batch` mód (azt a 9d9d5ab2 kártya hozza, ennek a javításnak a felhasználásával).
+
+**Ki döntött:** MikroB (23757. üzenet), bejelentve DevO (fullstack) 23752. üzenetében, aki a javítást is végrehajtotta.
+
+**Hivatkozás:** kártya 35f67e7d, Gate-SHA a REVIEW-ban (744238db2533d33728177e0699c56ab3fa686097 -- a DECISIONS.md commit ezt felülírja egy új shá-ra, a REVIEW-t az új sha-val frissítem).

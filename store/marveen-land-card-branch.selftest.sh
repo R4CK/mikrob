@@ -1125,6 +1125,81 @@ else
   echo "  FAIL expected ccc992 to land past the churn-only commit -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
 fi
 
+# Card 35f67e7d: the e9e1e771 check above compared work_sha against the REVIEW's Gate-SHA by raw
+# string equality -- a SHORT sha naming the exact same commit as the tip failed that compare and
+# was misread by the ancestry fallback as "tip BEHIND", a false REFUSED (hit live landing both
+# cf678d23 and 7c2f9564 in production). Scenarios 4-6 pin the fix: both sides are resolved to full
+# commit shas before comparing, and an unresolvable prefix refuses explicitly instead of silently
+# passing the compare (empty string != empty string would never trigger, so an unresolvable Gate-
+# SHA needs its own check, not just "happens to differ").
+
+# Scenario 4: REVIEW cites a SHORT, unique prefix of the tip -- must land (same commit, not BEHIND).
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/ddd990 develop
+echo "ddd990 content" > "$MAIN/ddd990.txt"
+git -C "$MAIN" add ddd990.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card ddd990: add ddd990.txt"
+SHA_DDD990_FULL="$(git -C "$MAIN" rev-parse card/ddd990)"
+SHA_DDD990_SHORT="$(git -C "$MAIN" rev-parse --short=10 card/ddd990)"
+git -C "$MAIN" checkout -q develop
+printf '[{"author":"backend","content":"REVIEW: ready\\nGate-SHA: %s"},{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' \
+  "$SHA_DDD990_SHORT" "$SHA_DDD990_FULL" > "$GET_DIR/ddd990.json"
+set_gate_line ddd990 "QA"
+
+n=$((n + 1))
+land_card ddd990 backend
+if [ "$rc" = 0 ] && grep -q "LANDED card/ddd990 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   a REVIEW citing a short, unique prefix of the tip lands (card 35f67e7d)"
+else
+  echo "  FAIL expected ddd990 to land despite a short Gate-SHA -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# Scenario 5: REVIEW cites a short prefix that resolves to a REAL but UNRELATED commit (develop's
+# own base, not an ancestor either way of this card's branch) -- must refuse as a mismatch, same
+# as the full-sha "unrelated" case already covered by gate_verdict_check's sibling checks above.
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/eee989 develop
+echo "eee989 content" > "$MAIN/eee989.txt"
+git -C "$MAIN" add eee989.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card eee989: add eee989.txt"
+SHA_EEE989_FULL="$(git -C "$MAIN" rev-parse card/eee989)"
+SHA_BASE_SHORT="$(git -C "$MAIN" rev-parse --short=10 develop)"
+git -C "$MAIN" checkout -q develop
+printf '[{"author":"backend","content":"REVIEW: ready\\nGate-SHA: %s"},{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' \
+  "$SHA_BASE_SHORT" "$SHA_EEE989_FULL" > "$GET_DIR/eee989.json"
+set_gate_line eee989 "QA"
+
+n=$((n + 1))
+land_card eee989 backend
+if [ "$rc" != 0 ] && grep -q "REFUSED -- Gate-SHA mismatch" "$OUT_FILE"; then
+  echo "  ok   a short prefix resolving to an unrelated real commit is refused, not silently landed (card 35f67e7d)"
+else
+  echo "  FAIL expected eee989 to refuse on an unrelated short Gate-SHA -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# Scenario 6: REVIEW cites a Gate-SHA that does not resolve to ANY commit (unknown prefix; the same
+# code path also covers a genuinely ambiguous prefix, since git rev-parse --verify's stdout is
+# empty on either failure) -- must refuse explicitly, naming the problem, never silently treated as
+# "no mismatch found".
+git -C "$MAIN" checkout -q develop
+git -C "$MAIN" checkout -q -b card/fff988 develop
+echo "fff988 content" > "$MAIN/fff988.txt"
+git -C "$MAIN" add fff988.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card fff988: add fff988.txt"
+SHA_FFF988_FULL="$(git -C "$MAIN" rev-parse card/fff988)"
+git -C "$MAIN" checkout -q develop
+printf '[{"author":"backend","content":"REVIEW: ready\\nGate-SHA: deadbeef00"},{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' \
+  "$SHA_FFF988_FULL" > "$GET_DIR/fff988.json"
+set_gate_line fff988 "QA"
+
+n=$((n + 1))
+land_card fff988 backend
+if [ "$rc" != 0 ] && grep -q "REFUSED" "$OUT_FILE" && grep -q "does not resolve to a commit" "$OUT_FILE" && grep -q "deadbeef00" "$OUT_FILE"; then
+  echo "  ok   an unresolvable Gate-SHA prefix is refused with its own named message (card 35f67e7d)"
+else
+  echo "  FAIL expected fff988 to refuse naming the unresolvable prefix -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""
