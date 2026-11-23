@@ -62,16 +62,17 @@
 // checks the --source string's FORMAT, never that the evidence is real, so an agent can
 // self-certify any address. Checked upstream's CURRENT recipient-ledger.mjs (at 6b457343):
 // isValidSource() is still a pure regex-on-the-string check -- the flaw is unfixed. NOT ADOPTED
-// again, same reason. Upstream's unrelated improvements in this same commit (a symlink-safe local
-// isInvokedDirectly() via realpathSync, and a script-header mail-import scanner via
-// openSync/readSync/closeSync) are left on the table too, since they are tangled into the same
-// diff as the rejected feature and splitting them out needs its own careful pass, not a land-sweep
-// merge resolution -- candidate for a dedicated future card if wanted (the symlink-safety piece
+// again, same reason. Upstream's unrelated symlink-safe local isInvokedDirectly() via
+// realpathSync is left on the table too (tangled into the same diff as the rejected feature,
+// splitting it out needs its own careful pass -- candidate for a dedicated future card; it
 // belongs in hook-lib.mjs so every PreToolUse gate gets it, not just this one, same reasoning as
-// the heredoc-walker import below).
-import { readFileSync } from 'node:fs'
+// the heredoc-walker import below). The script-header mail-import scanner (SCRIPTSENDGATE1020,
+// scriptRunSends() further down) IS adopted -- it is a separate, legitimate detector, not part
+// of the rejected recipient-ledger feature, and needs its own openSync/readSync/closeSync
+// (node:fs) and isAbsolute/resolve (node:path) imports above.
+import { readFileSync, openSync, readSync, closeSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, isAbsolute, resolve } from 'node:path'
 import { allow, deny, isInvokedDirectly } from './hook-lib.mjs'
 // The heredoc walker is IMPORTED, not reimplemented (card 84e31b40, generalized by card c7401c5f
 // via heredocOwnerRecords). It is the same parsing problem this gate faces, it is already hardened
@@ -1138,7 +1139,14 @@ function bareToolName(qualifiedName) {
 // only the actual send is refused), 'send_email' is the direct MCP send tool
 // (the only path the thread-reply capability below can narrow), and
 // everything else is the sub-agent governance block.
-export function gateDecision(toolName, toolInput) {
+// cwd: optional, forwarded to scriptRunSends() below to resolve a relative script path against
+// the CALLING agent's cwd (payload.cwd from the PreToolUse hook), not this script's own. Left
+// undefined (every pre-existing 2-arg caller, incl. this file's own tests) it falls back to
+// scriptRunSends()'s own process.cwd() default -- merge fix, Koteg 27: the upstream SCRIPTSENDGATE1020
+// batch introduced `scriptRunSends(cmd, cwd)` below referencing an undefined `cwd`, which threw
+// ReferenceError on every Bash call (full fleet-test, card 1124f53f round 2: ~40 email-send-gate*
+// test failures, all from this one throw).
+export function gateDecision(toolName, toolInput, cwd) {
   const name = String(toolName ?? '')
   // Any MCP send_email tool, name-agnostic (gmail or a differently-named
   // server in a customer install -> the matcher + this both key on send_email).
@@ -1501,7 +1509,7 @@ if (isInvokedDirectly(import.meta.url)) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny, kind } = gateDecision(payload?.tool_name, payload?.tool_input)
+  const { deny: shouldDeny, kind } = gateDecision(payload?.tool_name, payload?.tool_input, payload?.cwd)
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))

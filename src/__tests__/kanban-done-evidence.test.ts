@@ -1,12 +1,19 @@
-// Evidence on done (one human, many agents): an AGENT closes a card only by
-// saying what it checked. Without it a move to done lands in testing and the
-// answer says why. A human (no agent actor) closes exactly as before.
-import { describe, it, expect, beforeEach } from 'vitest'
+// Evidence on done (one human, many agents): the card's BUILDER closes it only by saying
+// what it checked. Without it a move to done lands in testing and the answer says why. A human
+// (no agent actor) closes exactly as before. CYBERED NO-GO 34342 F1: an independent closer
+// (MikroB the orchestrator, or a gate agent) closing a DIFFERENT agent's card is NOT the
+// builder self-closing -- rule 4 grants that closing authority, so it must reach done directly.
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb } from '../db.js'
-import { tryHandleKanban, KANBAN_EVIDENCE_MAX_CHARS } from '../web/routes/kanban.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+vi.mock('../web/agent-config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/agent-config.js')>()
+  return { ...actual, listAgentNames: () => ['qa', 'backend'] }
+})
+const { tryHandleKanban, KANBAN_EVIDENCE_MAX_CHARS } = await import('../web/routes/kanban.js')
 
 function fakeCtx(path: string, method: string, body?: unknown) {
   const out: { status: number; body: any } = { status: 0, body: null }
@@ -103,6 +110,25 @@ describe('move to done: evidence required from an agent', () => {
     expect(out.status).toBe(400)
     expect(readCard().status).toBe('in_progress')
   })
+
+  // CYBERED NO-GO 34342, F1: 'qa' is NOT this card's assignee (AGENT/MAIN_AGENT_ID is) -- an
+  // independent gate agent closing someone ELSE's card is exactly the closing authority rule 4
+  // grants, not the builder self-close it forbids. Must reach done directly, no evidence needed.
+  it('an independent agent (not the assignee) closes straight to done, no evidence needed', async () => {
+    const out = await call(`/api/kanban/${CARD}/move`, 'POST', { status: 'done', actor: 'qa' })
+    expect(out.body).toMatchObject({ ok: true })
+    expect(out.body.evidence_required).toBeUndefined()
+    expect(readCard().status).toBe('done')
+  })
+
+  // Same, for the orchestrator itself closing a card assigned to someone else.
+  it('MikroB (not the assignee) closes a different agent\'s card straight to done', async () => {
+    getDb().prepare('UPDATE kanban_cards SET assignee=? WHERE id=?').run('backend', CARD)
+    const out = await call(`/api/kanban/${CARD}/move`, 'POST', { status: 'done', actor: MAIN_AGENT_ID })
+    expect(out.body).toMatchObject({ ok: true })
+    expect(out.body.evidence_required).toBeUndefined()
+    expect(readCard().status).toBe('done')
+  })
 })
 
 describe('PUT cannot route around the rule', () => {
@@ -127,6 +153,15 @@ describe('PUT cannot route around the rule', () => {
   it('NEGATIVE: human PUT to done is unchanged', async () => {
     seed()
     const out = await call(`/api/kanban/${CARD}`, 'PUT', { status: 'done' })
+    expect(out.body).toMatchObject({ ok: true })
+    expect(out.body.evidence_required).toBeUndefined()
+    expect(readCard().status).toBe('done')
+  })
+
+  // CYBERED NO-GO 34342, F1 -- same PUT-side check as the /move tests above.
+  it('NEGATIVE: an independent agent (not the assignee) PUTs to done unchanged', async () => {
+    seed()
+    const out = await call(`/api/kanban/${CARD}`, 'PUT', { status: 'done', actor: 'qa' })
     expect(out.body).toMatchObject({ ok: true })
     expect(out.body.evidence_required).toBeUndefined()
     expect(readCard().status).toBe('done')

@@ -262,11 +262,16 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
 const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'force', 'reason', 'expected_status', 'evidence'] as const
 
 // Evidence on done (one human, many agents). The owner cannot re-check every
-// card a fleet of agents closes, so an AGENT may only close a card by saying
-// what it checked: a test run, a PR link, a file read back, a measured number.
-// A move to done by an agent without it lands in testing instead, and the
-// answer says why -- the work is kept, it just waits for a look. A human
-// (browser session, or a token caller naming no agent) closes as before.
+// card a fleet of agents closes, so the card's own BUILDER may only close a card by saying
+// what it checked: a test run, a PR link, a file read back, a measured number. A move to done
+// by the builder without it lands in testing instead, and the answer says why -- the work is
+// kept, it just waits for a look. A human (browser session, or a token caller naming no agent)
+// closes as before. CYBERED NO-GO 34342, F1: this must NOT catch the fleet's own independent
+// closers (MikroB/mikrob the orchestrator, qa/qa2/cybersec/cybersec2/cybered the gate agents) --
+// rule 4 is "the builder never closes its own work", not "no agent may ever close anything";
+// a DB check (14 days, kanban_card_events to_status=done) found 114 real closes by mikrob and 8
+// by qa that this redirect would have wrongly caught. isBuilderActorCloser below checks the
+// ACTOR is the card's own assignee, not merely that it is SOME known agent.
 export const KANBAN_EVIDENCE_MAX_CHARS = 2000
 
 export function isAgentActor(actor: string | undefined): boolean {
@@ -274,6 +279,16 @@ export function isAgentActor(actor: string | undefined): boolean {
   const a = actor.trim().toLowerCase()
   if (a === MAIN_AGENT_ID.toLowerCase()) return true
   return listAgentNames().some((n) => n.toLowerCase() === a)
+}
+
+// The redirect fires only when an agent is closing a card IT WAS ASSIGNED TO -- the builder
+// closing its own work, exactly what rule 4 forbids. An agent closing a DIFFERENT agent's card
+// (the orchestrator dispatching/landing, or a gate agent signing off someone else's work) is the
+// independent review the rule exists to require, not the thing it blocks.
+export function isBuilderActorCloser(actor: string | undefined, assignee: string | null | undefined): boolean {
+  if (!isAgentActor(actor)) return false
+  if (!actor || !assignee) return false
+  return actor.trim().toLowerCase() === assignee.trim().toLowerCase()
 }
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
@@ -1740,12 +1755,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // Evidence on done: the PUT carries no evidence field, so an agent closing a
-    // card through it would skip the rule. A card the agent puts to done here
-    // goes to testing instead -- unless it is already done (a whole-card PUT of
-    // an unrelated edit round-trips status:'done' and must not reopen it).
+    // Evidence on done: the PUT carries no evidence field, so the builder closing its own
+    // card through it would skip the rule. A card the BUILDER puts to done here goes to testing
+    // instead -- unless it is already done (a whole-card PUT of an unrelated edit round-trips
+    // status:'done' and must not reopen it). isBuilderActorCloser, not isAgentActor alone (CYBERED
+    // NO-GO 34342, F1): this must not catch mikrob/qa/cybersec/cybered closing someone ELSE's card.
     let putNeedsEvidence = false
-    if (data.status === 'done' && isAgentActor(who.actor) && getKanbanCard(id)?.status !== 'done') {
+    const putCardBeforeStatus = getKanbanCard(id)
+    if (data.status === 'done' && isBuilderActorCloser(who.actor, putCardBeforeStatus?.assignee) && putCardBeforeStatus?.status !== 'done') {
       data.status = 'testing'
       putNeedsEvidence = true
     }
@@ -2030,16 +2047,26 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const actor = writeActor.actor
     const hasEvidence = typeof evidence === 'string' && evidence.trim() !== ''
     // Koteg 27 (upstream #2026, "evidence on done"): NOT adopting the evidence-bypass-to-done
-    // escape hatch -- this fleet's rule 4 (CLAUDE.md, Peti 2026-07-05) is that an agent NEVER
-    // closes its own work to done, full stop, no exception for attaching evidence (see the
+    // escape hatch -- this fleet's rule 4 (CLAUDE.md, Peti 2026-07-05) is that the card's BUILDER
+    // never closes its own work to done, full stop, no exception for attaching evidence (see the
     // dispatch-template note above for the same decision, and the recipient-ledger rejection
-    // earlier this same batch for the same self-certification shape). An agent-actor move to
+    // earlier this same batch for the same self-certification shape). A builder-actor move to
     // 'done' is always redirected to 'testing' here, regardless of evidence; evidence, if
     // given, is still stored (useful metadata for whoever reviews it next). Computed BEFORE the
     // guards below so they see the EFFECTIVE status, not the raw requested one -- otherwise a
     // redirect-to-testing could trip a done-only guard (degradedOrchestratorRefusal) for a
     // transition that is no longer actually going to done.
-    const needsEvidenceRedirect = status === 'done' && isAgentActor(actor) && getKanbanCard(id)?.status !== 'done'
+    //
+    // isBuilderActorCloser, not isAgentActor alone (CYBERED NO-GO 34342, F1): an unconditional
+    // "any known agent closing to done" redirect ALSO caught the fleet's own independent closers
+    // -- MikroB/mikrob the orchestrator and qa/qa2/cybersec/cybersec2/cybered the gate agents,
+    // whose closing authority rule 4 explicitly grants. A 14-day DB check (kanban_card_events,
+    // to_status='done') found 114 real closes by mikrob and 8 by qa that the unconditional
+    // version would have wrongly redirected. The fix is narrower: redirect only when the actor
+    // IS the card's own assignee (the builder closing its own work), never when a different
+    // agent is doing the (legitimate) closing.
+    const cardBeforeMove = getKanbanCard(id)
+    const needsEvidenceRedirect = status === 'done' && isBuilderActorCloser(actor, cardBeforeMove?.assignee) && cardBeforeMove?.status !== 'done'
     const effectiveStatus: Parameters<typeof moveKanbanCard>[1] = needsEvidenceRedirect ? 'testing' : status
     if (newDevStopWouldBlock(id, effectiveStatus, force === true, actor)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)

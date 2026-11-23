@@ -46,6 +46,9 @@ describe('agent_messages DDL parity (card 26ad5302)', () => {
         // Card ad771121: priority. Same reasoning -- a column createAgentMessage writes to, and
         // the coordinator winning the boot race must create it too.
         'priority',
+        // Koteg 27, F9: seen_at. Same reasoning -- set once a message is first read, and the
+        // coordinator winning the boot race must create the column too.
+        'seen_at',
       ].sort(),
     )
     const indexes = handle

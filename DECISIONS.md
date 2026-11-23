@@ -29050,3 +29050,36 @@ passed | 2 skipped (30), 450 Tests passed, 16 skipped (466). `npx tsc --noEmit`:
 tree. Full (unscoped) fleet-test.sh still not run on this branch (time).
 
 **Ki döntött:** backend3 végezte.
+
+---
+
+**Kártya: 1124f53f (Koteg 27), 3. kör -- CYBERED NO-GO 34342 F1 javítás + teljes fleet-test.**
+
+CYBERED NO-GO 34342 F1 jelezte: a done-redirect (`isAgentActor(actor)`) BÁRMELY ismert ágenst
+elkapta, tehát mikrob/qa/qa2/cybersec*/cybered SAJÁT, idegen kártyára adott `done` lezárása is
+`testing`-re ment -- a 4. szabály a KÉSZÍTŐ önlezárását tiltja, nem minden ágens lezárását.
+Javítás: `isBuilderActorCloser(actor, assignee)` -- a redirect csak akkor sül el, ha az actor
+MAGA a kártya assignee-je. 3 új teszt (idegen ágens/mikrob idegen kártyát közvetlenül done-ba
+zár, PUT-oldali negatív eset).
+
+MikroB kötelezővé tette minden upstream-sync kártyára a TELJES (nem szűkített) fleet-test.sh
+futást a gate előtt (7c79badc tanulság: egy 20-fájlos szűkített kör 12 piros fork-tesztfájlt
+rejtett el). A teljes futás 4facd0073-on (az e5c13c0e-fixes fleet-test.sh-n át, mivel e5c13c0e
+maga még nem landolt a futás idején): **1428 Test Files passed | 3 skipped (1432), 44489 Tests
+passed | 161 skipped (44651)**. Egyetlen piros (`pipx-version-check`) önállóan futtatva kétszer
+is zöld -- megosztott fa kontendálás (több ágens egyszerre futtatott fleet-test.sh-t ugyanazon
+a lock-on), nem valódi lelet.
+
+Ez a teljes futás talált és javított (913b759→ee096f6→4facd00, mind pusholva): email-send-gate.mjs
+ReferenceError (hiányzó cwd + 5 node:fs/node:path import, a visszadobott recipient-ledger
+hunkkal együtt törölve, ~40 teszt tört el tőle); 3 duplikált lang-kulcs; hiányzó
+settings.desc.VAULT_ACL_MODE x2; egy elavult KNOWN_SYNC_ROUTES bejegyzés
+(onboarding.ts/vault-ssh-keys.ts már nem szinkron); egy elavult forrás-marker a
+kanban-spec-template-guard-wiring.test.ts-ben; egy chmod-regresszió (a korábbi `git add` a
+DrvFs-mounton visszaolvasta a 644-es módot, update-index-szel javítva, add nélkül utána); egy
+hiányzó seen_at oszlop az agent-messages-ddl.test.ts-ben (F9); és egy false-positive
+hand-copy-DDL-guard találat (egy meglévő komment átfogalmazva, SQL nem változott). Ezek közül
+EGYIK sem fedett át a köteg saját korábbi szűkített futásaival -- pontosan a 7c79badc tanulság.
+
+**Ki döntött:** backend3 javította a CYBERED NO-GO-t és futtatta a teljes fleet-testet, MikroB
+utasítására (msg 21740).
