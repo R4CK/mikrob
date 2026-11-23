@@ -499,7 +499,7 @@ describe('spawnBackgroundTask: a 16 KiB+ prompt gets a named, readable error (ca
     const { getBackgroundTasks } = await import('../db.js')
 
     const almostHugePrompt = 'x'.repeat(16 * 1024 - 1)
-    spawnBackgroundTask('marveen', almostHugePrompt)
+    await spawnBackgroundTask('marveen', almostHugePrompt)
 
     // includeFinished=true: the real tmux spawn may itself fail in this sandboxed environment,
     // same convention as the ca593869 CONTROL test above -- only the insert is being pinned here.
