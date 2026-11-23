@@ -244,9 +244,11 @@ def parse_banner_reset_epoch(text, now=None):
             if candidate < now_dt - datetime.timedelta(days=1):
                 candidate = candidate.replace(year=candidate.year + 1)
         else:
+            # Do NOT roll a just-passed no-date time to "tomorrow": the sole caller
+            # (recovery_probe_due) treats the result as a one-shot deadline, and rolling forward
+            # turns "the deadline just passed" into "~24h away", silencing the probe exactly when
+            # it matters most (Cybersec MEDIUM-1, card 7c2f9564, gate comment 37865).
             candidate = now_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if candidate <= now_dt:
-                candidate += datetime.timedelta(days=1)
     except (ValueError, OverflowError):
         return None   # e.g. Feb 30 -- malformed, not ours to guess at
     return candidate.timestamp()

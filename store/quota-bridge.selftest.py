@@ -217,18 +217,24 @@ def main() -> int:
         else:
             bad("parse_banner_reset_epoch: no-date form", f"expected {expect_b}, got {got_b}")
 
-        # Same no-date form, but the stated time has ALREADY passed today -> rolls to tomorrow.
+        # Same no-date form, but the stated time has ALREADY passed today -> stays today, in the
+        # past (Cybersec MEDIUM-1, 7c2f9564: rolling a just-passed no-date time to "tomorrow" made
+        # recovery_probe_due treat a deadline that just passed as ~24h away, silencing the probe
+        # exactly when it matters most. This is the sole caller's only use of the no-date form, so
+        # "stays in the past" (never rolls forward) is correct, not merely less wrong).
         text_b2 = "You've hit your weekly limit · resets 9am (Europe/Budapest)"
-        expect_b2 = datetime.datetime(2026, 11, 12, 9, 0, 0, tzinfo=BP).timestamp()
+        expect_b2 = datetime.datetime(2026, 11, 11, 9, 0, 0, tzinfo=BP).timestamp()
         got_b2 = m.parse_banner_reset_epoch(text_b2, now=now_a)
         if got_b2 == expect_b2:
-            ok("parse_banner_reset_epoch: no-date form already past today rolls to tomorrow")
+            ok("parse_banner_reset_epoch: no-date form already past today stays today (no rollover)")
         else:
-            bad("parse_banner_reset_epoch: no-date rollover", f"expected {expect_b2}, got {got_b2}")
+            bad("parse_banner_reset_epoch: no-date already-past form", f"expected {expect_b2}, got {got_b2}")
 
-        # Form: tz is UTC, not only a named zone -- and crosses the UTC/Budapest offset.
-        text_c = "You've hit your session limit · resets 12am (UTC)"
-        expect_c = datetime.datetime(2026, 11, 12, 0, 0, 0, tzinfo=UTC).timestamp()
+        # Form: tz is UTC, not only a named zone -- and crosses the UTC/Budapest offset. Picked
+        # still-ahead-in-UTC so this exercises tz handling only, independent of the no-date
+        # past/future branch covered separately by text_b/text_b2 above.
+        text_c = "You've hit your session limit · resets 11pm (UTC)"
+        expect_c = datetime.datetime(2026, 11, 11, 23, 0, 0, tzinfo=UTC).timestamp()
         got_c = m.parse_banner_reset_epoch(text_c, now=now_a)
         if got_c == expect_c:
             ok("parse_banner_reset_epoch: 'resets 12am (UTC)' form, tz is UTC")
@@ -330,6 +336,22 @@ def main() -> int:
             ok("recovery_probe_due: within the near-deadline window overrides the throttle")
         else:
             bad("recovery_probe_due: near-deadline window should override the throttle")
+
+        # Cybersec MEDIUM-1 (7c2f9564, gate comment 37865): a no-date deadline that just passed
+        # must probe immediately, not go quiet for up to WEEKLY_PROBE_INTERVAL_SEC right when the
+        # reset is the thing we are waiting for. Regression spec from the gate verdict verbatim:
+        # no-date banner, now = deadline + 60s, last banner_probe_at = now - 30s -> expect True.
+        text_just_passed = "You've hit your weekly limit · resets 9am (Europe/Budapest)"
+        deadline_just_passed = datetime.datetime(2026, 11, 11, 9, 0, 0, tzinfo=BP).timestamp()
+        now_just_after = deadline_just_passed + 60
+        recent_probe_state = {"banner_probe_at": now_just_after - 30}
+        if m.recovery_probe_due(now_just_after, state=recent_probe_state,
+                                 pane_text=text_just_passed) is True:
+            ok("recovery_probe_due: a no-date deadline that JUST passed probes immediately, "
+               "even with a recent banner_probe_at (Cybersec MEDIUM-1)")
+        else:
+            bad("recovery_probe_due: a just-passed no-date deadline must not be throttled",
+                recent_probe_state)
 
         # Acceptance #4: "Now using usage credits" must never be read as a limit banner in the
         # first place -- LIMIT_RE requires the word "limit", which this phrase does not contain.
