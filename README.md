@@ -253,6 +253,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Publikus fleet-digest endpoint** (`GET /api/public-digest`): szándékosan unauth, read-only státusz-végpont, ami csak nem azonosító aggregált adatot ad, és bármely hibára fail-closed minimális választ.
 - **Per-kontakt kommunikációs kalibráció**: egy ügynök gépi olvasható profil alapján igazíthatja a kommunikációt egy visszatérő emberi kontaktushoz (nyelv, verbozitás, tiltott fordulatok, fogalom-tudásgráf), amit a beszélgetési jelekből frissít.
 - **Server-oldali brand-bake**: a konfigurált márkanév már az első paintbe be van sütve a címsor- és oldalsáv-slotokba, tehát sosem villan fel és nem ragad be cache-elt default.
+- **Side-effect health board backend** (`GET /api/health/effects`, kártya 0a527826, Pair-FE 2d9c0bb2): egy health-sor minden mellékhatás-fajtára (landolás, Telegram-küldés, offload-draft, ütemezett feladat, memória-embedding), piros 3 egymást követő hiba után. Meglévő naplókra/táblákra épül (land-runs.jsonl, task_runs, telegram_outbox, offload-attempts.json, memories.embedding), nincs új instrumentáció. Additív, `store/health-effects-enabled.json` kapcsolóval alapból KI, amíg a kártya gate-elve nincs.
 
 
 ### Dokumentáció-index
