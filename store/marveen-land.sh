@@ -1651,33 +1651,53 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
       local -a _gsha_list; IFS=',' read -ra _gsha_list <<<"$_gsha_detail"
       local _latest_gate_sha="${_gsha_list[${#_gsha_list[@]}-1]}"
       _latest_gate_sha="${_latest_gate_sha// /}"
-      if [ -n "$_latest_gate_sha" ] && [ "$work_sha" != "$_latest_gate_sha" ]; then
-        local _gsha_mismatch=""
-        if g cat-file -e "${_latest_gate_sha}^{commit}" 2>/dev/null \
-          && g merge-base --is-ancestor "$work_sha" "$_latest_gate_sha" 2>/dev/null; then
-          _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is BEHIND card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha -- this ref was never updated to the sha the REVIEW actually claims (card e9e1e771, the 0ae1166e shape)"
-        elif g cat-file -e "${_latest_gate_sha}^{commit}" 2>/dev/null \
-          && g merge-base --is-ancestor "$_latest_gate_sha" "$branch" 2>/dev/null; then
-          local _gsha_non_churn
-          _gsha_non_churn="$(g log --name-only --format= "${_latest_gate_sha}..$branch" \
-            | awk 'NF' | sort -u | awk -F/ '{print $NF}' \
-            | grep -vxE 'package\.json|DECISIONS\.md|README\.md' || true)"
-          if [ -n "$_gsha_non_churn" ]; then
-            _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is AHEAD of card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha with a non-churn commit touching: $(echo "$_gsha_non_churn" | tr '\n' ' ') -- that commit was never reviewed/gated (card e9e1e771)"
-          fi
-        else
-          _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) does not contain card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha at all (neither is an ancestor of the other) -- this card/<id> ref looks stale or unrelated (card e9e1e771)"
-        fi
-        if [ -n "$_gsha_mismatch" ]; then
+      if [ -n "$_latest_gate_sha" ]; then
+        # Card 35f67e7d: resolve the REVIEW's Gate-SHA to its full 40-char commit sha before
+        # comparing. work_sha (above) is already full; a short Gate-SHA naming the SAME commit
+        # failed the old raw string compare and was then misread by the ancestry fallback as the
+        # tip being BEHIND -- false REFUSED, hit live landing both cf678d23 and 7c2f9564. An
+        # unresolvable or ambiguous Gate-SHA refuses explicitly here too, never silently treated
+        # as "no mismatch".
+        local _latest_gate_sha_resolved
+        _latest_gate_sha_resolved="$(g rev-parse --verify "${_latest_gate_sha}^{commit}" 2>/dev/null)"
+        if [ -z "$_latest_gate_sha_resolved" ]; then
           if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
-            say "$agent: Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch -- TOLERATED by --allow-ungated"
-            _note_ungated_landing "$agent" "$LAND_CARD" "Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch"
+            say "$agent: Gate-SHA mismatch (card 35f67e7d): card $LAND_CARD's latest REVIEW Gate-SHA '$_latest_gate_sha' does not resolve to a commit -- TOLERATED by --allow-ungated"
+            _note_ungated_landing "$agent" "$LAND_CARD" "Gate-SHA '$_latest_gate_sha' unresolvable (card 35f67e7d)"
           else
-            echo "$agent: REFUSED -- Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch." >&2
-            echo "$agent: Fetch and branch -f card/$LAND_CARD to the Gate-SHA, or re-push and post a" >&2
-            echo "$agent: new REVIEW naming the current tip, then re-run. Override with" >&2
-            echo "$agent: --allow-ungated if this is deliberate." >&2
+            echo "$agent: REFUSED -- card $LAND_CARD's latest REVIEW Gate-SHA '$_latest_gate_sha'" >&2
+            echo "$agent: does not resolve to a commit (unknown or ambiguous prefix) -- fails" >&2
+            echo "$agent: CLOSED rather than silently skip the check (card 35f67e7d). Post a" >&2
+            echo "$agent: REVIEW naming an unambiguous sha, or override with --allow-ungated if" >&2
+            echo "$agent: this is deliberate." >&2
             return 4
+          fi
+        elif [ "$work_sha" != "$_latest_gate_sha_resolved" ]; then
+          local _gsha_mismatch=""
+          if g merge-base --is-ancestor "$work_sha" "$_latest_gate_sha_resolved" 2>/dev/null; then
+            _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is BEHIND card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha_resolved -- this ref was never updated to the sha the REVIEW actually claims (card e9e1e771, the 0ae1166e shape)"
+          elif g merge-base --is-ancestor "$_latest_gate_sha_resolved" "$branch" 2>/dev/null; then
+            local _gsha_non_churn
+            _gsha_non_churn="$(g log --name-only --format= "${_latest_gate_sha_resolved}..$branch" \
+              | awk 'NF' | sort -u | awk -F/ '{print $NF}' \
+              | grep -vxE 'package\.json|DECISIONS\.md|README\.md' || true)"
+            if [ -n "$_gsha_non_churn" ]; then
+              _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) is AHEAD of card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha_resolved with a non-churn commit touching: $(echo "$_gsha_non_churn" | tr '\n' ' ') -- that commit was never reviewed/gated (card e9e1e771)"
+            fi
+          else
+            _gsha_mismatch="$branch (tip $(g rev-parse --short "$branch")) does not contain card $LAND_CARD's latest REVIEW Gate-SHA $_latest_gate_sha_resolved at all (neither is an ancestor of the other) -- this card/<id> ref looks stale or unrelated (card e9e1e771)"
+          fi
+          if [ -n "$_gsha_mismatch" ]; then
+            if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
+              say "$agent: Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch -- TOLERATED by --allow-ungated"
+              _note_ungated_landing "$agent" "$LAND_CARD" "Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch"
+            else
+              echo "$agent: REFUSED -- Gate-SHA mismatch (card e9e1e771): $_gsha_mismatch." >&2
+              echo "$agent: Fetch and branch -f card/$LAND_CARD to the Gate-SHA, or re-push and post a" >&2
+              echo "$agent: new REVIEW naming the current tip, then re-run. Override with" >&2
+              echo "$agent: --allow-ungated if this is deliberate." >&2
+              return 4
+            fi
           fi
         fi
       fi
