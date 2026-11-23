@@ -32147,3 +32147,48 @@ propagates a real failure.
 **Ki döntött:** MikroB kártya-leírása (2d9c0bb2) + Peti 14288 (additív-csak korlát). Fron Ted (fron-ted) a végrehajtó, a kontraktus FE-oldali javaslat, backend (0a527826 felelőse) megerősítésére/korrekciójára vár.
 
 **Hivatkozás:** kártya 2d9c0bb2 (Pair-BE 0a527826), commit 00f226e84.
+
+## 2026-11-23 -- Gépi carry-forward a marveen-land.sh-ban: konfliktusmentes develop-drift merge nem igényel új gate-kört (kártya b20d2062)
+
+**Döntés:** egy kártya-ág, ami a REVIEW-ban gate-elt sha után egy KONFLIKTUSMENTES develop-drift
+merge-dzsel előrébb jár, és ez a merge a kártya SAJÁT fájljait egy bájtnyit sem érinti, mostantól
+`--allow-carry-forward` flaggel (csak `--card` módban, alapból KIKAPCSOLVA) landolhat ÚJ gate-kör
+nélkül. A `marveen-land.sh` ugyanazt a két git-tényt ellenőrzi mechanikusan, amit MikroB/Cybered ma
+kézzel ellenőrzött 5 valós esetben egy nap alatt (e2425f05, 11c6cab4, 1c8f6d25, 0c03aa06, f3343af0):
+(1) a kártya SAJÁT first-parent láncán gate_sha és az ág csúcsa között KIZÁRÓLAG merge-commit áll,
+mindegyik `--remerge-diff`-je üres (nincs kézi konfliktus-feloldás); (2) a kártya saját fájljai
+(merge-base(gate_sha, origin/develop)..gate_sha diffje) bájtra azonosak a két sha között. Ha mindkét
+feltétel igaz, a kijelölt gate-ek MEGLÉVŐ verdiktjét a RÉGI sha-n ellenőrzi (nem az új csúcsot),
+sosem hamisít új verdiktet, és egy `CARRY-FORWARD` kommentet tesz fel `marveen-land` szerzőséggel.
+
+**Miért `marveen-land` a szerző:** a komment mindkét sha-t teljes alakban idézi egy nem-gate
+szerzőtől -- ha a komment szerzősége egy sima emberi/ügynök-névre menne, a
+`kanban-gate-completeness-guard.ts` `currentRoundStartTs` függvénye az új sha-idézést friss
+kör-nyitásnak olvasná, és a gate-eknek EZUTÁN kellene verdiktelniük -- pontosan az a rés, ami miatt
+mind az 5 valós esetben force-close kellett MikroB-tól. A `marveen-land` felvétele a
+`GENERATED_COMMENT_AUTHORS` halmazba (`src/web/kanban-landed-guard.ts`) kizárja a kommentet a
+kör-határ számításából, úgy, hogy a VALÓDI, régebbi gate-verdiktek maradnak a mérvadók.
+
+**Két hiba a fejlesztés közben, mindkettőt a selftest fogta meg:** (a) az első verzió a TELJES
+`gate_sha..branch` tartományt vizsgálta nem-merge commitra, holott ez a tartomány a merge MÁSODIK
+szülőjén át mindenki MÁS develop-ra landolt, a kártyához nem tartozó munkáját is tartalmazza -- ez
+normális, egy drift merge pont ettől drift merge; csak a kártya SAJÁT first-parent láncát szabad
+nézni. (b) `git show --remerge-diff <sha>` MINDIG kiírja a commit saját header-jét (szerző/dátum/
+üzenet) még akkor is, ha a diff törzse üres, így egy puszta `[ -n "$(...)" ]` soha nem volt üres --
+a `--format=` kapcsoló szükséges a header elnyeléséhez.
+
+**Ellenőrzés:** `store/marveen-land-card-branch.selftest.sh` 5 új, valós alakú esettel (boldog út,
+flag-ki kontroll, nem-merge commit a tartományban, kézzel feloldott konfliktus, konfliktusmentes
+auto-merge ami mégis a kártya saját fájlját módosítja) -- mind az 5 ÚJ eset mutáció-próbával: a
+javítás előtti kóddal a boldog-út eset vörösre vált, pontosan az eredeti REFUSED-et reprodukálva,
+utána zöld. `src/__tests__/kanban-gate-completeness-guard.test.ts` 2 új esettel a
+`marveen-land`-szerzőségű komment kör-határra gyakorolt (vagy nem gyakorolt) hatására, kontroll-
+eset a valódi hand-off útnak. Teljes beágyazott `marveen-land.sh --selftest` (121 eset) és
+`--selftest-land-batch` (land_batch saját, sosem carry-forwardoló útja) regresszió nélkül zöld.
+
+**Ki döntött:** MikroB kártya-leírása (b20d2062, szülő ca32423a); terv-grilling kötelező volt
+(1b. szabály, KOCKÁZATOS/HIGH tag), verdikt a kártya kommentjében (GO, hatókör `--card` módra és
+csak-merge tartományra szűkítve). A végrehajtó backend.
+
+**Hivatkozás:** kártya b20d2062; `store/marveen-land.sh` (`_carry_forward_ok`,
+`gate_sha_tip_check`), `src/web/kanban-landed-guard.ts`, `src/__tests__/kanban-gate-completeness-guard.test.ts`.
