@@ -27,6 +27,26 @@ WATCHDOG="${WATCHDOG_BIN:-$REPO_DIR/scripts/watchdog.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Card ee830675: needs-fleet-oauth.mjs and watchdog-provider-env.mjs both dynamically import
+# REPO_DIR/dist/*.js (the single-source-of-truth compiled business logic) -- but dist/ is
+# gitignored and NOT rebuilt by this checkout, so a fresh worktree with no prior `npx tsc` run
+# has no dist/ at all. Every case that should reach a real yes/no/refuse decision then hit the
+# dynamic import's ERR_MODULE_NOT_FOUND, landed in the predicate's own catch block, and came back
+# as isolation=refuse reason=fleet-oauth-undecidable regardless of the scenario under test --
+# measured: 51/77 pass with no dist/ present, 77/77 once it is built. A STALE dist/ (built from an
+# older commit than REPO_DIR's HEAD) explains the smaller, non-matching failure count seen
+# elsewhere (cases 50/64/65 on a merge commit): only the cases whose expected behaviour changed
+# since that dist was built actually disagree. Same marker convention fleet-test.sh uses for the
+# same reason (BUILT_MARKER keyed by the commit dist was built from, not an unconditional rebuild).
+DIST_BUILT_MARKER="$REPO_DIR/dist/.built-commit"
+DIST_TARGET_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$(cat "$DIST_BUILT_MARKER" 2>/dev/null)" != "$DIST_TARGET_SHA" ]; then
+  echo "watchdog-config-isolation: building dist (needs-fleet-oauth.mjs/watchdog-provider-env.mjs load compiled dist)" >&2
+  rm -f "$DIST_BUILT_MARKER"
+  (cd "$REPO_DIR" && npx tsc) || { echo "watchdog-config-isolation: dist build failed, aborting (see above)" >&2; exit 1; }
+  echo "$DIST_TARGET_SHA" > "$DIST_BUILT_MARKER"
+fi
+
 # The watchdog resolves store/.claude-oauth-token relative to its own
 # INSTALL_DIR; run it from a fixture install so the token file is ours.
 FIXTURE_INSTALL="$TMP/install"
