@@ -11,6 +11,18 @@ DISPATCH="$HERE/offload-dispatch.sh"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# REGRESSION GUARD (card a5c827ca, CYBERSEC NO-GO 37668 MEDIUM-1): the whole point of scoping
+# ATTEMPTS_LOCK/ATTEMPTS_FILE below is that this run never touches the script's own store/
+# offload-attempts.json or .offload-attempts.lock -- a lock-only fix left the file unscoped and
+# made things WORSE (writes a real file under a private lock the live sweep never takes). Snapshot
+# both paths now, before any test runs, and assert byte-for-byte unchanged (or still absent) at
+# the end -- "unchanged", not "absent", because a live checkout's store/ legitimately has a real
+# offload-attempts.json already.
+_live_attempts_file="$HERE/offload-attempts.json"
+_live_attempts_lock="$HERE/.offload-attempts.lock"
+_attempts_file_before="$(sha256sum "$_live_attempts_file" 2>/dev/null || echo absent)"
+_attempts_lock_before="$(sha256sum "$_live_attempts_lock" 2>/dev/null || echo absent)"
+
 PASS=0
 FAIL=0
 check() {
@@ -427,6 +439,18 @@ check "OFFLOAD_DECOMPOSE_MAX_PER_CARD with a raw ESC byte: %q-escaped, no litera
 # Valid-value-honoured case already covered above (cap5_count: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1).
 
 # --- attempts_op state machine -------------------------------------------------------------------
+# ISOLATION (card a5c827ca, CYBERSEC NO-GO 37668 MEDIUM-1): attempts_op() flocks ATTEMPTS_LOCK and
+# reads/writes ATTEMPTS_FILE, both defaulting to the real, shared store/.offload-attempts.lock and
+# store/offload-attempts.json. Scoping only the lock (round 1 of this card) is WORSE than doing
+# nothing: a code path that reaches attempts_op() without an explicit --file (--test-resolve,
+# --test-resolve-decompose, the m1cap case further down -- anything that does not go through
+# --test-attempts-op --file "$AF") still falls through to the default ATTEMPTS_FILE and now writes
+# the real file under a PRIVATE lock the live offload sweep never takes, i.e. no serialization at
+# all where before there was at least one shared lock. Scope the default for BOTH, once, here --
+# the --file flag on individual --test-attempts-op calls below still overrides this per call, same
+# as before.
+export ATTEMPTS_LOCK="$TMPDIR/.offload-attempts.lock"
+export ATTEMPTS_FILE="$TMPDIR/offload-attempts-default.json"
 AF="$TMPDIR/attempts.json"
 op() { bash "$DISPATCH" --test-attempts-op "$1" "$2" --file "$AF"; }
 
@@ -2085,6 +2109,13 @@ check "redact_secrets ya29 dedicated sample -- raw value removed by dedicated pa
   "$(printf '%s' "$ya29_dedicated_out" | grep -c -- "$ya29_dedicated")" "0"
 check "redact_secrets ya29 dedicated sample -- google-oauth-token marker present" \
   "$(printf '%s' "$ya29_dedicated_out" | grep -c '\[REDACTED:google-oauth-token\]')" "1"
+
+_attempts_file_after="$(sha256sum "$_live_attempts_file" 2>/dev/null || echo absent)"
+_attempts_lock_after="$(sha256sum "$_live_attempts_lock" 2>/dev/null || echo absent)"
+check "this run never wrote the script's own store/offload-attempts.json (card a5c827ca)" \
+  "$_attempts_file_after" "$_attempts_file_before"
+check "this run never touched the script's own store/.offload-attempts.lock (card a5c827ca)" \
+  "$_attempts_lock_after" "$_attempts_lock_before"
 
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"

@@ -88,6 +88,10 @@ fleet_test_log_lock_event() { # $1=event(run|timeout) $2=wait_s $3=run_s(or -) $
 # location FIRST, and only when a notification was actually requested (so the ~2,400 un-notified
 # calls/day do not also start writing log files nobody asked for).
 FLEET_TEST_LOG_DIR="${FLEET_TEST_LOG_DIR:-${ROOT}-fleet-test-logs}"
+# card a5c827ca: exported (not just a local shell var) so a test file running inside the vitest
+# child process can read it too and persist its own failure evidence (ps snapshot, state files) the
+# moment a full-suite-only flake fires, in the same directory the finish-notification copy uses.
+export FLEET_TEST_LOG_DIR
 # Builds the posted "summary" line(s) WITHOUT ever relaying raw log text (CYBERSEC NO-GO 34583 /
 # QA2 FAIL 34598 F1, card c4590365): the run's log is written by the test files under test, so an
 # attacker-controlled test can print anything after a real "Tests ... passed" line and have it

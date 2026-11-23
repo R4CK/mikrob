@@ -34,6 +34,7 @@ import {
 } from '../web/channel-poller-reap.js'
 import { channelStateDir } from '../channel-provider.js'
 import { logger } from '../logger.js'
+import { captureFailureEvidence } from './helpers/failure-evidence.js'
 
 describe('cf075d41 pure: the plugin markers and the pane ancestors', () => {
   const ps = [
@@ -247,12 +248,25 @@ describe('cf075d41 reapDetachedChannelClaudes on real processes', () => {
     const warn = vi.spyOn(logger, 'warn')
     const reaped = reapDetachedChannelClaudes({ tmuxPath: fakeTmux, channelNeedle: n })
     await sleep(600)
-    expect(alive(claude)).toBe(true)
-    expect(alive(child)).toBe(true)
-    expect(reaped).toEqual([])
-    const line = warn.mock.calls.find(([, m]) => String(m).includes('ancestor of a live pane'))
-    expect(line?.[0]).toMatchObject({ skippedPaneAncestor: [claude] })
-    warn.mockRestore()
+    try {
+      expect(alive(claude)).toBe(true)
+      expect(alive(child)).toBe(true)
+      expect(reaped).toEqual([])
+      const line = warn.mock.calls.find(([, m]) => String(m).includes('ancestor of a live pane'))
+      expect(line?.[0]).toMatchObject({ skippedPaneAncestor: [claude] })
+    } catch (e) {
+      // card a5c827ca case 1: a full-suite-only flake here has no proven interfering sibling yet.
+      // Capture the real host process table at the moment of failure instead of re-running the
+      // suite hoping to catch it with better logging next time.
+      const dest = captureFailureEvidence('pane-parent-not-stopped', {
+        claude, child, reaped, aliveClaude: alive(claude), aliveChild: alive(child),
+        warnCalls: warn.mock.calls.map(([obj, msg]) => ({ msg: String(msg), obj })),
+      })
+      console.error(`channel-poller-reap-guards (iii) failure evidence: ${dest}`)
+      throw e
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('(iv) positive control: a detached claude --channels with no live pane under it is still stopped', async () => {
