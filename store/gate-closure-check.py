@@ -1384,6 +1384,19 @@ def main():
         )
     designated = None
     if argv and argv[0].strip():
+        # LEFTOVER POSITIONAL ARGS AFTER FLAG PARSING (card a46e4f04, incident on 6d5a248d).
+        # `gate-closure-check.py QA CYBERSEC` arrives as TWO argv items, not one (the documented
+        # form is a single comma- or space-separated token, e.g. "QA,CYBERSEC" or a quoted
+        # "QA CYBERSEC"). Only argv[0] was ever read below, so CYBERSEC silently vanished and the
+        # card was judged against a QA-only designation while printing AGREE as if the stated
+        # 2-gate set had actually been checked. Fail closed instead of guessing which args to
+        # merge: a caller passing the unquoted multi-arg form gets UNREADABLE naming the comma
+        # fix, not a narrower check it never asked for.
+        if len(argv) > 1:
+            print("UNREADABLE|extra positional argument(s) after the gate designation: %s -- "
+                  "use the comma form instead, e.g. \"%s\""
+                  % (", ".join(argv[1:]), ",".join(argv)))
+            return
         designated = [g for g in re.split(r"[,\s]+", argv[0].strip()) if g]
         # A designation may name the SIBLING that actually reviewed ("qa2,cybersec"): the board's
         # own `Gate:` lines do, now that rule 4 load-balances the QA role. Normalise it to the role
