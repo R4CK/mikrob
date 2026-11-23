@@ -34,6 +34,9 @@
 
 set -euo pipefail
 
+# Card 8ab5eef3: override point for selftests, same seam as store/ensure-umask-dropin.sh.
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)/hooks"
 
 # The watchdog unit/label name keys off SERVICE_ID, matching install-linux.sh's
@@ -209,9 +212,9 @@ AccuracySec=10s
 [Install]
 WantedBy=timers.target
 TIMEREOF
-  if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-    systemctl --user daemon-reload
-    systemctl --user enable --now "$SVC.timer" 2>/dev/null || true
+  if pidof systemd >/dev/null 2>&1 && "$SYSTEMCTL_BIN" --user status >/dev/null 2>&1; then
+    "$SYSTEMCTL_BIN" --user daemon-reload
+    "$SYSTEMCTL_BIN" --user enable --now "$SVC.timer" 2>/dev/null || true
     echo "✓ Watchdog installed (systemd timer: $SVC.timer, every 60s, running $WATCHDOG)"
   else
     echo "⚠ systemd --user not available — units written to $UNIT_DIR"
