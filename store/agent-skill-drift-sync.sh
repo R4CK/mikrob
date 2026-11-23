@@ -112,6 +112,15 @@ HIST_CAP=25   # same cap update.sh's seed_copy_is_untouched uses -- a skill unfi
 # Overridable for the same reason the paths above are: a selftest must never touch the live state.
 STATE="${AGENT_SKILL_DRIFT_STATE:-$ROOT/store/agent-skill-drift-state.json}"
 
+# Card 055114ee: the SAME map the provisioner itself reads (skill-map-provisioner.ts) and
+# skill-map-consistency-check.sh already reads with this exact query shape. A skill listed here
+# (fleet-core or roles[agent]) gets its symlink created by the provisioner the next time that
+# agent STARTS -- not by this tool, and not before then. Until that start happens, the symlink
+# genuinely does not exist yet, which scan_missing_skills() below used to read as "sibling has it,
+# this member doesn't" and report/copy as a real missing-skill gap. It is not a gap: it is a
+# provisioner entry waiting for its agent's next start.
+ROLE_MAP="${AGENT_SKILL_DRIFT_ROLE_MAP:-$ROOT/store/skill-role-map.json}"
+
 # F1 STOPGAP + F2 FIX (card 85521c7e, Cybersec GO on a6abb230). scan_missing_skills() used to copy
 # from a sibling's LIVE .claude/skills/<name> directory, not from the tracked seed-fleet-agents
 # source -- a skill absent from git (e.g. adopted by hand, curl|sh install instructions, a stray
@@ -230,6 +239,27 @@ _wanted_skill() {
   [ ${#ONLY_SKILLS[@]} -eq 0 ] && return 0
   for s in "${ONLY_SKILLS[@]}"; do [ "$s" = "$1" ] && return 0; done
   return 1
+}
+
+# Card 055114ee: same query shape as skill-map-consistency-check.sh's _allowed_skills -- the set
+# of skills the provisioner will symlink for $1 (fleet-core, plus roles[$1]).
+_provisioner_managed_skills() {
+  local agent="$1"
+  python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        m = json.load(f)
+except Exception:
+    sys.exit(0)
+for s in m.get('fleet-core', []):
+    print(s)
+for s in m.get('roles', {}).get(sys.argv[2], []):
+    print(s)
+" "$ROLE_MAP" "$agent" 2>/dev/null
+}
+_is_provisioner_managed() {
+  _provisioner_managed_skills "$1" | grep -qxF "$2"
 }
 
 # --- is the target agent RUNNING? (card e667c8bd, Cybered finding, comment 20436) ------------
@@ -445,6 +475,10 @@ scan_missing_skills() {
         target_dir="$AGENTS_DIR/$m/.claude/skills/$skill"
         [ -e "$target_dir" ] && continue
 
+        # Card 055114ee: the provisioner owns this skill for $m and will symlink it in at $m's
+        # next start -- not a clone-family gap, not this tool's to report or copy.
+        _is_provisioner_managed "$m" "$skill" && continue
+
         # Card 85521c7e F2: the copy source is the TRACKED seed-fleet-agents copy, never a
         # sibling's live directory. A skill present in a live sibling but absent from every family
         # member's seed-fleet-agents was never reviewed/committed -- report it, never copy it.
@@ -522,10 +556,27 @@ scan_missing_skills() {
 scan_sibling_pair_drift() {
   SIBLING_FINDINGS=0
   SIBLING_FINDINGS_LIST=""
-  local out
+  local out raw_list line _tag _kind _family _tree member skill filtered
   out="$(MARVEEN_MAIN="$ROOT" LIVE_AGENTS_DIR="$AGENTS_DIR" SEED_DIR="$SEED_FLEET_DIR" \
          bash "$HERE/sibling-skill-drift-check.sh" 2>/dev/null)"
-  SIBLING_FINDINGS_LIST="$(printf '%s\n' "$out" | grep '^FINDING ')"
+  raw_list="$(printf '%s\n' "$out" | grep '^FINDING ')"
+  # Card 055114ee: same false-positive shape as scan_missing_skills' own gap -- a
+  # "missing-skill-name" finding here is just this tool's SECOND, independently-implemented
+  # missing-check (sibling-skill-drift-check.sh does its own name-set diff, never consulting the
+  # provisioner map). A provisioner-managed skill not yet symlinked for $member is exactly as
+  # expected here as it is in scan_missing_skills -- filter it out the same way, by the same rule.
+  filtered=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [[ "$line" == "FINDING missing-skill-name "* ]]; then
+      read -r _tag _kind _family _tree member skill <<<"$line"
+      if _is_provisioner_managed "$member" "$skill"; then
+        continue
+      fi
+    fi
+    filtered="${filtered}${line}"$'\n'
+  done <<<"$raw_list"
+  SIBLING_FINDINGS_LIST="$(printf '%s' "$filtered" | sed '/^$/d')"
   SIBLING_FINDINGS="$(printf '%s\n' "$SIBLING_FINDINGS_LIST" | sed '/^$/d' | wc -l | tr -d ' ')"
 }
 
@@ -1256,6 +1307,25 @@ agent-someone-else" bash "${BASH_SOURCE[0]}" --apply --telegram --agent agentG)"
   mkdir -p "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillF"
   printf 'SKILL F CONTENT\n' > "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillF/SKILL.md"
 
+  # skillProv: card 055114ee's own fixture. The provisioner map (skill-role-map.json) assigns this
+  # skill to backend2 and backend3, but neither has been (re)started since, so it is LIVE on
+  # backend only, with no seed-fleet-agents entry anywhere -- exactly the false-positive shape the
+  # real fron-ted/fron-teddy alert hit. This must NEVER be reported as missing or copied: it is the
+  # provisioner's job at the member's next start, not scan_missing_skills()'s.
+  mkdir -p "$tmp/family-root/agents/backend/.claude/skills/skillProv"
+  printf 'SKILL PROV CONTENT (provisioner-managed)\n' > "$tmp/family-root/agents/backend/.claude/skills/skillProv/SKILL.md"
+  mkdir -p "$tmp/family-root/store"
+  cat > "$tmp/family-root/store/skill-role-map.json" <<'EOF'
+{
+  "fleet-core": [],
+  "roles": {
+    "backend": ["skillProv"],
+    "backend2": ["skillProv"],
+    "backend3": ["skillProv"]
+  }
+}
+EOF
+
   # Forces the running-agent guard to see nothing running (deterministic parked state), so these
   # tests exercise the sync itself, not the guard -- the guard gets its own dedicated case below.
   # Without this, "backend"/"backend2"/"backend3" are also this FLEET's own real tmux session names,
@@ -1273,6 +1343,35 @@ agent-someone-else" bash "${BASH_SOURCE[0]}" --apply --telegram --agent agentG)"
     && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillA" ] \
     && echo "  ok   dry-run created nothing" \
     || { echo "  FAIL dry-run wrote a skill directory"; fail=1; }
+
+  # Card 055114ee: a provisioner-managed skill (skillProv) must not appear in the missing report at
+  # all, even though it is genuinely absent from backend2/backend3's live trees.
+  echo "$outF1" | grep -q 'skillProv' \
+    && { echo "  FAIL skillProv (provisioner-managed) was reported as missing:"; echo "$outF1"; fail=1; } \
+    || echo "  ok   skillProv (provisioner-managed, not yet symlinked) is never reported as missing"
+  fam_run --apply >/dev/null
+  [ ! -e "$tmp/family-root/agents/backend2/.claude/skills/skillProv" ] \
+    && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillProv" ] \
+    && echo "  ok   skillProv is never copied either, even under --apply (the provisioner's job, not this tool's)" \
+    || { echo "  FAIL skillProv was copied -- the provisioner-managed skip is not load-bearing"; fail=1; }
+  # MUTATION PROOF: drop skillProv from the role map and confirm the OLD behaviour comes back --
+  # otherwise the skip above could be silently vacuous (e.g. passing for an unrelated reason).
+  printf '{"fleet-core":[],"roles":{"backend":[],"backend2":[],"backend3":[]}}\n' \
+    > "$tmp/family-root/store/skill-role-map.json"
+  outF1b="$(fam_run --telegram)"
+  echo "$outF1b" | grep -q 'skillProv' \
+    && echo "  ok   MUTATION: once skillProv leaves the role map, it IS reported as missing again" \
+    || { echo "  FAIL removing skillProv from the role map did not restore the old missing-report behaviour:"; echo "$outF1b"; fail=1; }
+  cat > "$tmp/family-root/store/skill-role-map.json" <<'EOF'
+{
+  "fleet-core": [],
+  "roles": {
+    "backend": ["skillProv"],
+    "backend2": ["skillProv"],
+    "backend3": ["skillProv"]
+  }
+}
+EOF
 
   # --apply: a sibling's skill is copied from seed-fleet-agents (never the live directory),
   # byte-for-byte, into every member missing it.
