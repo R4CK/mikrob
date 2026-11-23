@@ -12,6 +12,7 @@ import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries, shellEscape } from '../sanitize.js'
 import { detachSkillSymlinkIfAny } from '../skill-map-provisioner.js'
+import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
@@ -221,8 +222,12 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       json(res, { error: 'Invalid skill path' }, 400)
       return true
     }
-    if (!existsSync(skillDir)) { json(res, { error: 'Skill not found' }, 404); return true }
-    rmSync(skillDir, { recursive: true, force: true })
+    const removed = await serializeSkillsDir(() => {
+      if (!existsSync(skillDir)) return false
+      rmSync(skillDir, { recursive: true, force: true })
+      return true
+    })
+    if (!removed) { json(res, { error: 'Skill not found' }, 404); return true }
     json(res, { ok: true })
     return true
   }

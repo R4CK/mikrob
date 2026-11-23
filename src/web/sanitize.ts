@@ -23,19 +23,23 @@ export function sanitizeAgentName(raw: string): string {
 // Ids the message layer already owns, so a main agent must never take one
 // (FLEETRESERVEDNAME1021). 'system-directive' is the in-process directive sender
 // (SYSTEM_DIRECTIVE_SENDER) and is 403'd on every POST lane; 'telegram-coordinator' is
-// 403'd too; 'hanna' (the voice channel) is accepted only from a device key and is
-// framed as the owner; 'heartbeat', 'channel-coordinator' and 'system' are hidden as
-// chat threads (CHAT_SYSTEM_AGENTS). A main agent with one of these ids could not
-// send, or would speak as something it is not. Literals, not imports: the shell
-// migration script keeps the same list, and a test pins both to the source constants.
+// 403'd too; 'heartbeat', 'channel-coordinator' and 'system' are hidden as chat threads
+// (CHAT_SYSTEM_AGENTS). A main agent with one of these ids could not send, or would
+// speak as something it is not. Literals, not imports: the shell migration script
+// keeps the same list, and a test pins both to the source constants. This is only the
+// FIXED part: the voice channel id is configurable (VOICECHANNELID1022, 'hanna' unless
+// .env sets another), so the full list, RESERVED_AGENT_IDS, is built in config.ts by
+// appending it. Kept here so this module stays a leaf with no load-time .env read.
 // Koteg 24 (card 57044a66): 'system-directive' was MISSING here -- this list's own
 // comment named 'system' as "the in-process directive sender", but SYSTEM_DIRECTIVE_SENDER
 // (system-directive-id.ts) is the literal string 'system-directive', a different value;
-// 'system' is covered separately via CHAT_SYSTEM_AGENTS. Caught by the new
-// reserved-agent-ids.test.ts (this same koteg) exercising upstream's own blob, which has
-// the identical gap -- not introduced by this merge, and not fixed by adopting it as-is.
-export const RESERVED_AGENT_IDS: readonly string[] =
-  ['system', SYSTEM_DIRECTIVE_SENDER, 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']
+// 'system' is covered separately via CHAT_SYSTEM_AGENTS. Caught by reserved-agent-ids.test.ts
+// exercising upstream's own blob, which has the identical gap -- not introduced by that
+// merge, and not fixed by adopting it as-is: upstream's FIXED_RESERVED_AGENT_IDS still omits
+// SYSTEM_DIRECTIVE_SENDER, so a wholesale adoption of upstream's list (card 1535f7f9, Koteg
+// 28 upstream sync) would have REOPENED this gap -- kept here, union of both sides.
+export const FIXED_RESERVED_AGENT_IDS: readonly string[] =
+  ['system', SYSTEM_DIRECTIVE_SENDER, 'heartbeat', 'telegram-coordinator', 'channel-coordinator']
 
 // Same rules as sanitizeAgentName -- used for skill names to prevent path traversal.
 export function sanitizeSkillName(raw: string): string {

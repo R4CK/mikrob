@@ -9,6 +9,11 @@ import { tryHandleMessages } from '../web/routes/messages.js'
 import type { RouteContext } from '../web/routes/types.js'
 import { _withVoiceChannelAllowlistForTest } from '../web/voice-channel-device-allowlist.js'
 
+// VOICE_CHANNEL_AGENT_ID is now `string | null` (upstream's dynamic VOICE_CHANNEL_ID, card
+// 12037f511) -- this suite's own first test asserts it is 'hanna' in this env, so a plain
+// non-null cast here is accurate, not a behaviour change.
+const VOICE_ID = VOICE_CHANNEL_AGENT_ID as string
+
 // HANGCSATORNA918 (owner request, 2026-09-18). The owner dictates into an
 // external voice assistant which relays the transcript to /api/messages. Before
 // this, the relay wrote as the MAIN AGENT, so the message arrived looking like
@@ -39,7 +44,7 @@ describe('voice channel identity', () => {
   })
 
   it('classifies as channel-inbound, so every receiving agent sees the provenance', () => {
-    const cls = classifyAgentMessage(VOICE_CHANNEL_AGENT_ID, 'marveen')
+    const cls = classifyAgentMessage(VOICE_ID, 'marveen')
     expect(cls).not.toBeNull()
     expect(cls!.category).toBe('channel-inbound')
     expect(cls!.safeFrom).toBe(VOICE_CHANNEL_AGENT_ID)
@@ -47,7 +52,7 @@ describe('voice channel identity', () => {
 
   it('a sub-agent recipient sees the SAME category (the framing is not main-agent-only)', () => {
     for (const to of ['mira', 'samu', 'iris']) {
-      expect(classifyAgentMessage(VOICE_CHANNEL_AGENT_ID, to)!.category).toBe('channel-inbound')
+      expect(classifyAgentMessage(VOICE_ID, to)!.category).toBe('channel-inbound')
     }
   })
 })
@@ -71,18 +76,18 @@ describe('/api/messages write guard for the voice channel', () => {
   }
 
   it('REJECTS the voice-channel id on the shared dashboard token (the forgery path)', async () => {
-    const { status, body } = await postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'token' })
+    const { status, body } = await postAs(VOICE_ID, { kind: 'token' })
     expect(status).toBe(403)
     expect(String(body?.error)).toMatch(/device key/i)
   })
 
   it('REJECTS it with no credential at all', async () => {
-    const { status } = await postAs(VOICE_CHANNEL_AGENT_ID)
+    const { status } = await postAs(VOICE_ID)
     expect(status).toBe(403)
   })
 
   it('REJECTS a browser session too -- a logged-in human is still not the relay', async () => {
-    const { status } = await postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'session' })
+    const { status } = await postAs(VOICE_ID, { kind: 'session' })
     expect(status).toBe(403)
   })
 
@@ -99,7 +104,7 @@ describe('/api/messages write guard for the voice channel', () => {
     // endpoint) and present it. With no allowlist entries configured (the
     // default -- fail-closed, "zero entries = feature off"), it must still
     // 403, even though kind==='device' alone would have passed the OLD guard.
-    const { status, body } = await postAs(VOICE_CHANNEL_AGENT_ID, {
+    const { status, body } = await postAs(VOICE_ID, {
       kind: 'device', device: 'self-minted', deviceId: 999,
     })
     expect(status).toBe(403)
@@ -116,7 +121,7 @@ describe('/api/messages write guard for the voice channel', () => {
     // returned a 403 instead of ever reaching db.
     await _withVoiceChannelAllowlistForTest([5], () =>
       expect(
-        postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'the-real-relay', deviceId: 5 }),
+        postAs(VOICE_ID, { kind: 'device', device: 'the-real-relay', deviceId: 5 }),
       ).rejects.toThrow(/prepare/),
     )
   })
@@ -125,7 +130,7 @@ describe('/api/messages write guard for the voice channel', () => {
     // Proves the check compares the actual presented id, not just "is the
     // allowlist non-empty".
     await _withVoiceChannelAllowlistForTest([5], async () => {
-      const { status } = await postAs(VOICE_CHANNEL_AGENT_ID, {
+      const { status } = await postAs(VOICE_ID, {
         kind: 'device', device: 'some-other-device', deviceId: 6,
       })
       expect(status).toBe(403)

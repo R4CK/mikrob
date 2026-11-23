@@ -712,19 +712,54 @@ What happens now:
   none), or when it is the target's own provider; otherwise that key alone is
   left out, with a warning.
 - `MAIN_AGENT_ID` must also not be an id the message layer owns
-  (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/web/sanitize.ts`):
-  `system` is refused on every POST, so a main agent with that id could not
-  send, and `hanna` is accepted only from a device key and framed as the owner.
-  `scripts/migrate-main-agent-id.sh` refuses the same ids, and a `BOT_NAME`
-  whose id is already a sub-agent, before it stops anything. The installers
+  (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/config.ts`, the fixed
+  part in `src/web/sanitize.ts`): `system` is refused on every POST, so a main
+  agent with that id could not send, and the voice channel id
+  (`VOICE_CHANNEL_ID`, `hanna` by default) is accepted only from a device key
+  and framed as the owner; the id in effect is the reserved one, and none is
+  when the voice lane is off (even `hanna` names another sender).
+  A SUB-agent under a reserved id is refused on every path that creates one:
+  `POST /api/agents` (409), the agent bundle import (a single bundle is
+  refused, a fleet bundle skips that agent with a reason), and the fleet
+  transfer import (`validateNames`, before the dry run or any write).
+  `scripts/migrate-main-agent-id.sh` refuses the same ids, a `BOT_NAME`
+  whose id is already a sub-agent, and a migration that would move the voice
+  channel id (it is resolved again against the new main agent id), before it
+  stops anything. The installers
   (`install-macos.sh`, `install-linux.sh`) derive the id from `BOT_NAME`
   without this check.
 
-**Not covered, stated out loud:** the rest of the import (agent files, settings,
-the vault, scheduled tasks) still writes with the same shared token, and on a
-single-user host an agent whose Bash is permissive can write `.env` directly.
-Closing those needs the per-agent identity decision (#1985) and per-agent OS
-users, not this filter.
+**Not covered, stated out loud:** on a single-user host an agent whose Bash is
+permissive can write `.env` directly. Closing that needs the per-agent identity
+decision (#1985) and per-agent OS users, not this filter. (The rest of the
+import no longer runs on the shared token once a login exists: see the next
+section.)
+
+# Fleet transfer: the applied import and the vault export take the owner
+
+FLEETIMPORTGATE1022. The fleet's one shared dashboard token reaches
+`/api/fleet/*` from every agent, and two of those calls were wider than the
+token should reach:
+
+- `POST /api/fleet/import?apply=true` overwrites `store/autonomy-config.json`
+  from the payload, `maxLevel` included. With `email_send` at 3 the mail
+  approval gate (`scripts/hooks/email-approval-gate.py`) lets every send
+  through; measured in a throwaway store: level 2 denies, level 3 allows. The
+  same call writes the agents' settings and the global skills.
+- `GET /api/fleet/export` with an `X-Vault-Password` returns the vault's master
+  key and every secret, encrypted with a password the CALLER chose, so the
+  caller can open it.
+
+Once a dashboard login exists, both take the owner's session
+(`mayIssueCredentials`, the predicate of the credential-issuing routes since
+DEVKEYMINT1022), checked before the body is read or anything is exported; any
+other caller gets 403 `owner_session_required`. A full device key is refused
+too. The dry run (no `apply`, writes nothing) and the export without a vault
+password (no secret; it refuses rather than leak one) stay on the token. On a
+fresh install with no dashboard user yet, the token keeps both for the setup.
+
+Related, not changed here: `POST /api/autonomy` raises a level with the token
+too, up to the category's `maxLevel` (a locked category stays at 1).
 
 # Sub-agent mail gate: sender scripts under any name
 
@@ -783,3 +818,22 @@ and the main agent's `email_send` approval gate keeps its current reach.
     cwd, not `dir`;
   - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
+
+# Autonomy levels: a raise takes the owner
+
+FLEETIMPORTGATE1022 (4). `POST /api/autonomy` raised any unlocked category up
+to its `maxLevel` with the fleet's one shared dashboard token, so any agent
+could set `email_send` to 3, and at 3 the mail approval gate
+(`scripts/hooks/email-approval-gate.py`) lets every send through. Once a
+dashboard login exists, a raise takes the owner's session
+(`mayIssueCredentials`); any other caller, a full device key included, gets
+403 `owner_session_required` and nothing is written. Lowering and setting the
+same level stay on the token: they only narrow what an agent may do. A current
+level that is not a number counts as a raise. On a fresh install with no
+dashboard user yet, the token keeps raising for the setup. The locked
+categories and `maxLevel` are checked as before.
+
+**Not covered, stated out loud:** an agent that can write files can still edit
+`store/autonomy-config.json` directly, and the mail gate reads the file, not
+this endpoint. This change closes the token path only; a write guard for that
+file is separate work.

@@ -187,6 +187,17 @@ def _bare_tool_name(name):
     idx = name.rfind("__")
     return name[idx + 2:] if idx != -1 else name
 
+
+# The scope test is now the shared classifier (email_extract.classify_mail_tool),
+# which also reaches prefixed names and send_draft. It lives in email_extract.py,
+# which loads lazily (HOOKDEPLOAD1008), so a name that cannot be any mail kind is
+# let through BEFORE the load: every name the classifier can put in scope holds
+# one of these words, so this is a superset of it, and a read-only call never
+# needs the module (classify_tool below).
+_MAYBE_MAIL_TOOL = re.compile(
+    r"send|reply|forward|draft|manage_email|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
+    re.I)
+
 # manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
 # mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the
 # tool NAME alone therefore denies reading the inbox whenever email_send sits at
@@ -230,7 +241,16 @@ def _is_explicit_draft(tool_input: dict) -> bool:
 # letter it sends can only be checked where the draft is written. An update of
 # an existing draft is not checked: it may carry only the changed fields, and a
 # missing cc there would be a false deny.
-_DRAFT_TOOL = re.compile(r"draft_email|create_draft|draft_gmail_message", re.I)
+# Read on the name with hyphens as underscores: the Graph MCP's draft writers
+# (create-draft-email, create-reply-draft, ...) are hyphenated, and before this
+# their drafts skipped the owner-CC check (MS365MAIL1024). An update stays out.
+_DRAFT_TOOL = re.compile(
+    r"draft_email|create_draft|draft_gmail_message"
+    r"|create_(shared_mailbox_)?(reply_all_|reply_|forward_)?draft", re.I)
+
+
+def _draft_tool(tool: str) -> bool:
+    return bool(_DRAFT_TOOL.search(str(tool or "").replace("-", "_")))
 _ADDR = re.compile(r"[^\s<>,;:\"'()\[\]]+@[^\s<>,;:\"'()\[\]]+")
 
 
@@ -252,11 +272,62 @@ def owner_cc_address() -> str:
     return ""
 
 
-def owner_cc_missing(tool_input: dict, owner: str) -> bool:
+# The Graph mail tool names (email_extract's _MS365_SEND/_DRAFT_SEND/_DRAFT_SUFFIXES),
+# copied so this precheck needs no module load; a test keeps the two in step.
+_MS365_TOOL_SUFFIXES = (
+    "send_mail", "send_shared_mailbox_mail", "reply_mail_message", "reply_all_mail_message",
+    "forward_mail_message", "reply_shared_mailbox_mail", "reply_all_shared_mailbox_mail",
+    "forward_shared_mailbox_mail", "forward_calendar_event", "reply_to_group_thread",
+    "send_draft_message", "send_shared_mailbox_draft",
+    "create_draft_email", "create_shared_mailbox_draft", "create_reply_draft", "create_reply_all_draft",
+    "create_forward_draft", "create_shared_mailbox_reply_draft", "create_shared_mailbox_reply_all_draft",
+    "create_shared_mailbox_forward_draft", "update_mail_message", "update_shared_mailbox_message")
+
+
+def _maybe_ms365_tool(tool: str) -> bool:
+    """Only a name hyphenated in its last segment AND ending in a Graph mail tool's name can be
+    one (email_extract.ms365_tool_kind decides), so any other call -- a hyphenated non-Graph
+    send-email or create-draft included -- never loads the extractor for these reads
+    (HOOKDEPLOAD1008)."""
+    raw = str(tool or "").lower()
+    return "-" in raw.rsplit("__", 1)[-1] and raw.replace("-", "_").endswith(_MS365_TOOL_SUFFIXES)
+
+
+def owner_cc_missing(tool_input: dict, owner: str, tool: str = "", draft: bool = False) -> bool:
     """True when the owner's address is in none of the call's to / cc / bcc
-    fields. Read straight from the MCP input, not through email_extract: that
-    collector only reads send_email-shaped tools, and a draft or a manage_email
-    call would come back with no recipients at all."""
+    fields. A Graph (ms365) call is decided by its NAME and read through
+    email_extract: a send through ms365_send_fields (only what Graph DELIVERS
+    counts, so a body-level recipient field a send does not read cannot satisfy
+    the check), a draft through ms365_recipients(include_top=False); a reason
+    (an unreadable list) means the owner cannot be proven in it, and a
+    send-draft carries no recipient of its own (its letter was checked where the
+    draft was written). Otherwise read straight from the MCP input, not through
+    email_extract: that collector only reads send_email-shaped tools, and a
+    draft or a manage_email call would come back with no recipients at all.
+    `draft` no longer picks the Graph read -- the tool's kind does -- and stays
+    in the signature for the callers' wording (piszkozat vs level)."""
+    if _maybe_ms365_tool(tool):
+        # Only a call a Graph tool NAME can be needs the extractor here, so a
+        # broken email_extract.py leaves every other call's owner check as it
+        # was (HOOKDEPLOAD1008); a load failure on this path is the loader's deny.
+        gk = _load_email_extract().ms365_tool_kind(tool)
+        if gk == "draft_send":
+            return False
+        if gk is not None:
+            extract = _load_email_extract()
+            if gk == "draft":
+                to, cc, bcc, reason = extract.ms365_recipients(tool_input, include_top=False)
+            else:
+                to, cc, bcc, _text, reason = extract.ms365_send_fields(tool_input, tool)
+            if reason:
+                return True  # cannot prove the owner is in it: fail-closed
+            found = set()
+            # The id/op tokens a send's anchor carries in `to` are not addresses:
+            # _ADDR would fish the owner out of "userId:owner@example.com" and
+            # pass a letter that goes to nobody the check saw.
+            for raw in [x for x in to + cc + bcc if not extract.is_ms365_anchor_token(x)]:
+                found.update(a.lower().rstrip(".") for a in _ADDR.findall(str(raw)))
+            return owner not in found
     found = set()
     for field in ("to", "cc", "bcc"):
         v = tool_input.get(field)
@@ -283,19 +354,19 @@ def owner_cc_scope(tool: str, kind, tool_input: dict):
     a manage_email send. send_draft is neither: it carries only a draft id, and
     its letter was checked where the draft was written."""
     if kind == "unclassified":
-        return bool(_DRAFT_TOOL.search(tool)), bool(_OWNER_CC_SEND_FALLBACK.search(tool))
-    is_draft = (kind == "draft" and bool(_DRAFT_TOOL.search(tool))) or (
+        return _draft_tool(tool), bool(_OWNER_CC_SEND_FALLBACK.search(tool))
+    is_draft = (kind == "draft" and _draft_tool(tool)) or (
         kind == "manage_email" and _is_explicit_draft(tool_input))
     is_send = kind in ("send_email", "connector_send") or (
         kind == "manage_email" and manage_email_is_send(tool_input))
     return is_draft, is_send
 
 
-def owner_cc_gate(tool_input: dict, is_draft_only: bool) -> None:
+def owner_cc_gate(tool_input: dict, is_draft_only: bool, tool: str = "") -> None:
     """Deny (exit 2) when MAIL_OWNER_CC is set and the owner is in none of the
     call's to / cc / bcc. Returns normally when the check is off or passes."""
     owner = owner_cc_address()
-    if not owner or not owner_cc_missing(tool_input, owner):
+    if not owner or not owner_cc_missing(tool_input, owner, tool=tool, draft=is_draft_only):
         return
     what = "piszkozat" if is_draft_only else "level"
     no_fields = not any(tool_input.get(f) for f in ("to", "cc", "bcc"))
@@ -711,6 +782,11 @@ def find_and_consume(anchor: str):
         con.close()
 
 
+# Upstream's verified-recipient-ledger feature (recipient_ledger.py, LEDGER_SWITCH,
+# ledger_gate + its MS365/Bash recipient-extraction helpers) NOT ADOPTED -- same standing
+# refusal as the JS twin's addRecipient()/isValidSource() (card afd64623, Cybersec HIGH):
+# the source-string format check never verifies the evidence is real, so an agent can
+# self-certify any address. Nothing in this file's live gate logic calls ledger_gate.
 def deny(msg: str):
     sys.stderr.write(f"EMAIL JOVAHAGYASI KAPU: TILTVA.\n{msg}\n")
     sys.exit(2)
@@ -802,8 +878,25 @@ def main():
     # SUPPORT_OWNER_CC). Runs BEFORE the fork's own deny-by-default scoping below, because it
     # must see draft calls too, and the deny-by-default branch's _EMAIL_SAFE_TOOL_RE early-exit
     # would otherwise let an unchecked draft call through first.
+    # Koteg 28: _maybe_ms365_tool(tool) also catches a hyphenated MS365 Graph draft name
+    # (create-draft-email, create-reply-draft, ...) that _DRAFT_TOOL's own pattern never aimed
+    # at -- without this OR term the owner-CC check was skipped entirely for a Graph draft
+    # (measured: email-approval-gate-ms365.test.py's "owner CC on a draft" cases). It also fires
+    # for an actual ms365 SEND name (send-mail, reply-mail-message, ...), which is intentional,
+    # not a mislabel: owner_cc_missing() (reached either way through this OR) resolves
+    # draft-vs-send itself via ms365_tool_kind(tool), and on a BROKEN extractor it fails closed
+    # there regardless of which branch of this OR let it in (a plain scope_kind(tool) == "draft"
+    # OR term would have missed that broken-extractor case, since scope_kind needs the same
+    # broken classifier to say "draft" in the first place; measured: the "broken extractor,
+    # owner CC: a Graph draft..." case). send_draft is excluded on purpose: owner_cc_scope's own
+    # docstring says "send_draft is neither" (its letter was checked where the draft was
+    # written, nothing here to anchor an owner-CC check to), and letting it through as a "draft"
+    # made `is_mcp_draft and not is_mcp_send: sys.exit(0)` fire before the dedicated
+    # send_draft-nem-horgonyozhato deny further down ever ran (measured regression while fixing
+    # the case above: "level 1/2: send-draft-message DENIED" both silently started exiting 0).
     is_mcp_draft = bool(_DRAFT_TOOL.search(tool)) or (
-        bool(_MULTIPLEX_TOOL.search(tool)) and _is_explicit_draft(tool_input))
+        bool(_MULTIPLEX_TOOL.search(tool)) and _is_explicit_draft(tool_input)) or (
+        _maybe_ms365_tool(tool) and scope_kind(tool) != "send_draft")
     # GMAILCONNECTOR914-class gap, caught here too (card 2337e4b0 delta on MAILCCGATE1016):
     # _SEND_TOOL only matches literal send[-_]email/manage_email by name, so a connector
     # reply/forward/send_message (mcp__claude_ai_Gmail__reply, no "send"/"email" substring)
@@ -861,7 +954,13 @@ def main():
     if is_mcp_draft or is_mcp_send:
         owner = owner_cc_address()
         if owner:
-            if owner_cc_missing(tool_input, owner):
+            # Koteg 28: `tool=` is required here -- owner_cc_missing only reads the nested
+            # Graph (ms365) recipient fields when it can see the tool name (_maybe_ms365_tool);
+            # without it, a Graph call's owner-in-ccRecipients fell through to the flat to/cc/bcc
+            # read, found nothing at that (wrong) path, and denied as "missing" even when the
+            # owner WAS in ccRecipients (measured: email-approval-gate-ms365.test.py's
+            # ccRecipients-passes case).
+            if owner_cc_missing(tool_input, owner, tool=tool):
                 what = "piszkozat" if is_mcp_draft and not is_mcp_send else "level"
                 no_fields = not any(tool_input.get(f) for f in ("to", "cc", "bcc"))
                 if no_fields and tool_input.get("messageId"):
@@ -906,6 +1005,11 @@ def main():
         # required -- a full bypass, not just a narrowed owner-CC check. Falls back to the shared
         # classifier (fail-closed: a broken email_extract.py returns "unclassified", treated as
         # in-scope here, same direction as the existing level-2 envelope-load deny).
+        #
+        # Koteg 28 (upstream baeb14a79): the incoming else-branch here called ledger_gate(),
+        # a function this file already rejected elsewhere (see the "ledger_gate ... NOT ADOPTED"
+        # standing note above, card/decision unchanged) because it lets a Bash/MCP caller
+        # self-certify any address -- not re-adopted here either, same reasoning.
         if scope_kind(tool) in (None, "draft"):
             sys.exit(0)  # not a send, or a safe draft write
 
@@ -918,7 +1022,7 @@ def main():
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
              "Jelezd a gazdanak inter-agent uzenettel vagy a dashboardon; a szint "
              "emelese a store/autonomy-config.json-ban a gazda dontese.")
-    if re.search(r"send_draft", tool, re.I):
+    if re.search(r"send[-_]draft", tool, re.I):
         # The call carries only a draftId: the gate sees neither the recipient
         # nor the text, so there is nothing an approval could be anchored to.
         # This deny fires BEFORE the shared classifier (email_extract.py) is ever
@@ -926,6 +1030,11 @@ def main():
         # send_draft unconditionally, broken classifier or not. Named here anyway (Koteg
         # 23a, upstream #1995's broken-classifier test) so the message stays accurate about
         # where the real classification would have happened had this path not already decided.
+        # Koteg 28: hyphen too -- classify_mail_tool normalizes "-" to "_" before matching
+        # MS365's hyphenated names (send-draft-message), so a Graph send-draft reaches
+        # "send_draft" kind there, but used to reach THIS underscore-only regex unmatched
+        # and fall through to the generic classifier-unreadable deny instead (measured:
+        # email-approval-gate-ms365.test.py's send-draft-message case).
         deny(prefix +
              "email_send level 2 (CHECK-BEFORE-SEND): a send_draft nem horgonyozhato. "
              "A hivas csak egy draftId-t visz, a piszkozat cimzettjet es szoveget a kapu "

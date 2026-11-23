@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 // The background-task routes talk to tmux on every poll tick (every 10 s per
 // running task), on every task-detail GET, on DELETE, on spawn and on the
@@ -28,6 +30,8 @@ d="$FAKE_TMUX_DIR"
 sub="$1"
 printf 'start %s\\n' "$*" >> "$d/calls.log"
 if [ -f "$d/sleep" ]; then sleep "$(cat "$d/sleep")"; fi
+if [ -f "$d/sleep-$sub" ]; then sleep "$(cat "$d/sleep-$sub")"; fi
+if [ -f "$d/no-server" ]; then echo "no server running on /tmp/fake-tmux" >&2; printf 'end %s\\n' "$sub" >> "$d/calls.log"; exit 1; fi
 target=""; prev=""
 for a in "$@"; do
   if [ "$prev" = "-t" ]; then target="$a"; fi
@@ -72,6 +76,7 @@ let db: typeof import('../db.js')
 let mod: typeof import('../web/routes/background-tasks.js')
 
 const put = (name: string, content: string) => writeFileSync(join(dir, name), content)
+const drop = (name: string): void => rmSync(join(dir, name), { force: true })
 const calls = (): string[] => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf-8').split('\n').filter(Boolean) : [])
 const sessions = (): string[] => (existsSync(join(dir, 'sessions')) ? readFileSync(join(dir, 'sessions'), 'utf-8').split('\n').filter(Boolean) : [])
 
@@ -125,7 +130,19 @@ beforeAll(async () => {
   db = await import('../db.js')
   mod = await import('../web/routes/background-tasks.js')
   db.initDatabase(':memory:')
-})
+  // Warm-up: the fake's first exec can be far slower than the later ones (on a
+  // loaded macOS host 2-3.3 s against 1.55 s warm, #2186), and the first GET or
+  // POST case would spend that inside the route's 5 s tmux timeout. Pay it here,
+  // once, on the path the measured cases take (the sleep included, for 0 s).
+  const warm = mkdtempSync(join(tmpdir(), 'bg-fake-warm-'))
+  try {
+    writeFileSync(join(warm, 'sleep'), '0')
+    writeFileSync(join(warm, 'sessions'), '')
+    await promisify(execFile)(join(bin, 'tmux'), ['list-sessions'], { env: { ...process.env, FAKE_TMUX_DIR: warm } })
+  } finally {
+    rmSync(warm, { recursive: true, force: true })
+  }
+}, 30_000) // a loaded host hit the default 10 s here even without the warm-up
 
 afterAll(() => {
   process.env.PATH = savedPath
@@ -169,6 +186,21 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     expect(r!.json.liveOutput).toBe('line one\nline two\n')
     expect(calls()).toContain('start capture-pane -t =bg-AA000001: -p -S -500')
     expect(stall).toBeLessThan(STALL_MAX_MS)
+  })
+
+  it('GET /api/background-tasks/:id reports a task finished while the capture was in flight', async () => {
+    // AA000002 is taken by the DELETE test below; rows persist across tests.
+    seedRunning('AA000007', 'agent-get-race', true)
+    put('pane', 'live text\n')
+    put('sleep', '1')
+    const p = call('GET', '/api/background-tasks/AA000007')
+    await vi.waitFor(() => expect(calls()).toContainEqual(expect.stringMatching(/^start capture-pane/)), { timeout: 5000 })
+    db.finishBackgroundTask('AA000007', 'failed', '(cancelled)')
+    const r = await p
+    expect(r.status).toBe(200)
+    expect(r.json.status).toBe('failed')
+    expect(r.json.output).toBe('(cancelled)')
+    expect(r.json.liveOutput).toBeNull()
   })
 
   it('POST starts the tmux session with the prompt in BG_PROMPT without stalling the loop', async () => {
@@ -371,6 +403,49 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     expect(db.getBackgroundTask('AA000006')!.status).toBe('failed')
     expect(db.getBackgroundTask('AA000006')!.output).toBe('(cancelled)')
   })
+
+  it('poll: a list-sessions that does not answer in time leaves the task running and its session alive', async () => {
+    const r = await call('POST', '/api/background-tasks', { agent_id: 'agent-slow-list', prompt: 'x' })
+    const id = r.json.id as string
+    put('sleep-list-sessions', '4') // more than the route's 3000 ms list-sessions timeout
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    await vi.waitFor(() => expect(calls()).toContainEqual(expect.stringMatching(/^start list-sessions/)), { timeout: 5000 })
+    await sleep(4500) // real time: the timed-out call has ended and the tick has finished
+    expect(db.getBackgroundTask(id)!.status).toBe('running')
+    expect(sessions()).toContain(`bg-${id}`)
+    expect(calls()).not.toContainEqual(expect.stringMatching(/^start kill-session/))
+    // tmux answers again: the next tick finishes the task with the pane's output
+    drop('sleep-list-sessions')
+    put('pane', 'slow answer\n___BG_DONE___\n')
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    await vi.waitFor(() => expect(db.getBackgroundTask(id)!.status).toBe('done'), { timeout: 10_000 })
+    expect(db.getBackgroundTask(id)!.output).toBe('slow answer')
+  }, 30_000)
+
+  it('startup sweep: a list-sessions that does not answer in time keeps the task running and polls it', async () => {
+    seedRunning('AA000009', 'agent-sweep-slow', true)
+    put('sleep-list-sessions', '4')
+    await mod.sweepOrphanedBackgroundTasks()
+    expect(db.getBackgroundTask('AA000009')!.status).toBe('running')
+    drop('sleep-list-sessions')
+    put('pane', 'swept answer\n___BG_DONE___\n')
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    await vi.waitFor(() => expect(db.getBackgroundTask('AA000009')!.status).toBe('done'), { timeout: 10_000 })
+    expect(db.getBackgroundTask('AA000009')!.output).toBe('swept answer')
+  }, 30_000)
+
+  it('no tmux server (list-sessions exits 1) still reads as a dead session, in the poll and in the sweep', async () => {
+    const r = await call('POST', '/api/background-tasks', { agent_id: 'agent-no-server', prompt: 'x' })
+    const id = r.json.id as string
+    seedRunning('AA000008', 'agent-no-server-sweep', true)
+    put('no-server', '')
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    await vi.waitFor(() => expect(db.getBackgroundTask(id)!.status).toBe('done'), { timeout: 10_000 })
+    expect(db.getBackgroundTask(id)!.output).toBe('(session ended)')
+    await mod.sweepOrphanedBackgroundTasks()
+    expect(db.getBackgroundTask('AA000008')!.status).toBe('failed')
+    expect(db.getBackgroundTask('AA000008')!.output).toBe('(orphaned on restart)')
+  }, 30_000)
 
   it('POST: a spawn that fails after the task was cancelled keeps the cancellation and still answers 429', async () => {
     put('fail-new', '1'); put('sleep', '1')

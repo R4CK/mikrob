@@ -5,6 +5,8 @@ import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type
 import { findConsumableApproval, consumeApproval, findPendingApproval } from '../../db.js'
 import { createAndNotifyApproval } from './approvals.js'
 import { agentKeyToAgentId } from '../auth-device-keys.js'
+import { serializeSkillsDir } from '../skills-dir-queue.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // Card 68254bd7 (RedHat NO-GO 14837, MikroB decision 14841): the 'session'/'device' kind-check
@@ -57,6 +59,14 @@ export function fleetImportApprovalDescription(bodyBytes: number, allowRiskyFiel
   return `${base} INCLUDING risky fields: toolDeny, securityProfile, capabilities, customProvider, settings.hooks.`
 }
 
+// FLEETIMPORTGATE1022: two of these calls take the owner's session (mayIssueCredentials, the
+// predicate that guards issuing credentials), because the fleet's one shared token reaches
+// them from every agent. An export with a vault password hands out the vault's master key and
+// every secret, encrypted with a password the caller chose. An applied import overwrites
+// store/autonomy-config.json (an agent could raise email_send to 3 and switch the mail approval
+// gate off), the agents' settings and the global skills. The plain export (no secrets) and
+// the dry run (writes nothing) stay on the token.
+
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -84,8 +94,13 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
       return true
     }
+    if (vaultPassword && !mayIssueCredentials(ctx.auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     try {
-      const exported: ExportedFleet = exportFleet({ vaultPassword: vaultPassword || undefined })
+      // The export reads skill directories; it waits for an assign's copy still running.
+      const exported: ExportedFleet = await serializeSkillsDir(() => exportFleet({ vaultPassword: vaultPassword || undefined }))
       const buf = Buffer.from(exported.data)
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -131,6 +146,9 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
     // on disk, card 8eca67f0) -- it closes the NETWORK-reachable, unlogged path to the same effect,
     // which a compromised agent could use without first getting filesystem access. Dry-run
     // (apply=false) stays open to any authenticated caller -- it writes nothing.
+    // Upstream's single `mayIssueCredentials` check (now imported above for the export route's own
+    // use, line ~101) is a strict subset of this -- not adopted here as a replacement, only kept as
+    // the import the export route needs.
     if (apply && ctx.auth?.kind !== 'session' && ctx.auth?.kind !== 'device') {
       logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Fleet import: apply=true rejected for non-human credential')
       json(res, { error: 'Fleet import (apply=true) requires a browser session or a device key, not the shared agent token.' }, 403)
@@ -201,7 +219,8 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
     // importFleet handles JSON parse (and encrypted blob detection) internally
     try {
-      const result = importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply, allowRiskyFields })
+      // The import writes skill directories; it waits for an export's zip or an assign's copy still running.
+      const result = await serializeSkillsDir(() => importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply, allowRiskyFields }))
       if ('dryRun' in result && result.errors.length > 0) {
         json(res, result, 400)
       } else {

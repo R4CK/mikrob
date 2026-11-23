@@ -18,7 +18,7 @@ import { isAllowedVoiceChannelDevice } from '../voice-channel-device-allowlist.j
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
 import { isReservedSenderId, SYSTEM_DIRECTIVE_SENDER, LEGACY_SYSTEM_SENDER } from '../system-directive-id.js'
-import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, VOICE_CHANNEL_ID_INVALID, VOICE_CHANNEL_DISABLED_BY, DEFAULT_VOICE_CHANNEL_ID, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { isAgentRunning } from '../agent-process.js'
 import { MESSAGE_ABANDON_WINDOW_MS } from '../message-abandon.js'
@@ -40,6 +40,22 @@ import type { RouteContext } from './types.js'
 // (NIGHT_COMMENT_AUTHOR in kanban.ts) -- the registered agent id the night shift (card d5638d28)
 // runs as.
 export const NIGHT_MESSAGE_SENDER = 'night-loop'
+
+// A VOICE_CHANNEL_ID that is not a usable agent id was replaced by the default in
+// config.ts (which cannot log, VOICECHANNELID1022); say so once, when the message
+// routes load -- otherwise a relay writing under the configured name would get
+// a silent 403 and the operator would not know why. When the default names
+// another sender too, the voice lane is OFF: that is an error, the relay is
+// refused until the operator picks a free id.
+const VOICE_ID_RULE = 'lowercase a-z, 0-9 and single dashes, at most 50 characters, not a system id, a SYSTEM_SENDER_IDS entry, the main agent, a sub-agent or the owner'
+if (VOICE_CHANNEL_DISABLED_BY !== undefined) {
+  logger.error(
+    { rejected: VOICE_CHANNEL_ID_INVALID, default: DEFAULT_VOICE_CHANNEL_ID, collidesWith: VOICE_CHANNEL_DISABLED_BY },
+    `voice channel lane is OFF: ${VOICE_CHANNEL_ID_INVALID === undefined ? 'VOICE_CHANNEL_ID is unset' : `VOICE_CHANNEL_ID=${JSON.stringify(VOICE_CHANNEL_ID_INVALID)} is not usable (${VOICE_ID_RULE})`}, and the default '${DEFAULT_VOICE_CHANNEL_ID}' is ${VOICE_CHANNEL_DISABLED_BY}; set VOICE_CHANNEL_ID in .env to a free id and restart`,
+  )
+} else if (VOICE_CHANNEL_ID_INVALID !== undefined) {
+  logger.warn({ rejected: VOICE_CHANNEL_ID_INVALID, using: VOICE_CHANNEL_AGENT_ID }, `VOICE_CHANNEL_ID=${JSON.stringify(VOICE_CHANNEL_ID_INVALID)} is not a usable voice channel id (${VOICE_ID_RULE}); the default '${VOICE_CHANNEL_AGENT_ID}' is used instead`)
+}
 
 // Should closing a message produce a reverse "[Result]" notification to its sender?
 //

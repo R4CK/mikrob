@@ -146,7 +146,7 @@ describe('doors 2 and 3: the bundle importers', () => {
     const dest = join(tmp, 'install')
     expect(() =>
       importAgentBundle(bundle, { resolveDest: (n) => join(dest, n) })
-    ).toThrow(/reserved for in-process system senders/)
+    ).toThrow(/reserved by the system/)
     expect(existsSync(join(dest, SYSTEM_DIRECTIVE_SENDER))).toBe(false)
   })
 
@@ -155,7 +155,7 @@ describe('doors 2 and 3: the bundle importers', () => {
     const dest = join(tmp, 'install')
     expect(() =>
       importAgentBundle(bundle, { overrideName: 'System-Directive', resolveDest: (n) => join(dest, n) })
-    ).toThrow(/reserved for in-process system senders/)
+    ).toThrow(/reserved by the system/)
     expect(existsSync(join(dest, SYSTEM_DIRECTIVE_SENDER))).toBe(false)
   })
 
@@ -180,7 +180,7 @@ describe('doors 2 and 3: the bundle importers', () => {
 
     expect(r.imported.map((a) => a.name)).toEqual(['harmless'])
     expect(r.skipped.map((s) => s.name).sort()).toEqual([LEGACY_SYSTEM_SENDER, SYSTEM_DIRECTIVE_SENDER].sort())
-    for (const s of r.skipped) expect(s.reason).toBe('reserved name')
+    for (const s of r.skipped) expect(s.reason).toBe('reserved by the system')
     expect(existsSync(join(dest, 'harmless'))).toBe(true)
     expect(existsSync(join(dest, SYSTEM_DIRECTIVE_SENDER))).toBe(false)
     expect(existsSync(join(dest, LEGACY_SYSTEM_SENDER))).toBe(false)

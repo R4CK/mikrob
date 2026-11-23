@@ -14,8 +14,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { agentDir } from './agent-config.js'
 import { sanitizeAgentName } from './sanitize.js'
-import { isReservedSenderId } from './system-directive-id.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, RESERVED_AGENT_IDS } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 
@@ -404,14 +403,16 @@ export function importAgentBundle(
     const rawName = (opts.overrideName ?? manifest.agentName).trim()
     const name = sanitizeAgentName(rawName)
     if (!name) throw new Error('Invalid agent name (empty after sanitization)')
-    if (name === MAIN_AGENT_ID) {
-      throw new Error(`Agent name "${name}" is reserved for the main agent`)
-    }
     // Card b46a4b7e: import is the OTHER door into agents/. A bundle whose manifest (or
     // ?name= override) names a reserved in-process sender would mint the identity the
     // POST /api/agents guard refuses -- and a bundle is attacker-authored end to end.
-    if (isReservedSenderId(name)) {
-      throw new Error(`Agent name "${name}" is reserved for in-process system senders`)
+    // RESERVED_AGENT_IDS (upstream, baeb14a79) replaces the narrower isReservedSenderId check --
+    // safe since FIXED_RESERVED_AGENT_IDS still carries SYSTEM_DIRECTIVE_SENDER (card 57044a66).
+    if (name === MAIN_AGENT_ID) {
+      throw new Error(`Agent name "${name}" is reserved for the main agent`)
+    }
+    if (RESERVED_AGENT_IDS.includes(name)) {
+      throw new Error(`Agent name "${name}" is reserved by the system`)
     }
 
     const hadRisky = sanitizeImportedConfig(stagedAgentDir, allowRiskyFields) ||
@@ -618,7 +619,7 @@ export function importAllAgentsBundle(
       // Card b46a4b7e, same reason as the single-agent importer above. SKIPPED rather than
       // thrown: a fleet bundle carrying one bad name must not cost the operator the other
       // fifteen agents, and the skip list is what the UI already shows.
-      if (isReservedSenderId(name)) { skipped.push({ name, reason: 'reserved name' }); continue }
+      if (RESERVED_AGENT_IDS.includes(name)) { skipped.push({ name, reason: 'reserved by the system' }); continue }
 
       const hadRisky = sanitizeImportedConfig(stagedAgentDir, allowRiskyFields) ||
         stripRiskyBundleFiles(stagedAgentDir, allowRiskyFields)

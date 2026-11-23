@@ -22,7 +22,7 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureDbWriteGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureAgentKeySecretGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGateSharedMemoryInjectAgentArg, ensureSharedMemoryInject, ensureGovernanceGateCommands, ensureDestructiveGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureLanguageSection, ensureWebSearchEnvelope } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureDbWriteGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureAgentKeySecretGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGateSharedMemoryInjectAgentArg, ensureSharedMemoryInject, ensureGovernanceGateCommands, ensureDestructiveGate, ensureChildClaudeGuard, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureLanguageSection, ensureWebSearchEnvelope, ensureBackgroundCheckpointSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -54,6 +54,7 @@ import { startKanbanArchiveRunner } from './web/kanban-archive-runner.js'
 import { startContextRestartGateRunner, setMainSweepHook } from './web/context-restart-gate-runner.js'
 import { startEventLoopLagMonitor } from './web/event-loop-lag-monitor.js'
 import { collectTokenUsage } from './web/token-usage.js'
+import { checkAgentBudgets, collectTokenUsageAndCheckBudgets } from './web/agent-budget-alerts.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
 import { tryHandleSecurity } from './web/routes/security.js'
@@ -88,6 +89,7 @@ import { tryHandleKg } from './web/routes/kg.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanbanVerdicts } from './web/kanban-verdicts.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
+import { trackSlowRequest } from './web/slow-request-log.js'
 import { tryHandleKanbanProjects } from './web/routes/kanban-projects.js'
 import { tryHandleCardLandings } from './web/routes/card-landings.js'
 import { tryHandleHeartbeat } from './web/routes/heartbeat.js'
@@ -167,6 +169,9 @@ export function startWebServer(port = 3420): http.Server {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
     const path = url.pathname
     const method = req.method || 'GET'
+    // Card 12b0f698: every request slower than SLOW_REQUEST_MS leaves one line (method,
+    // path without ids, query keys, status, size, time). Before anything can answer.
+    trackSlowRequest(res, method, url)
 
     // Set on every response, before any route writes headers (card bac41395). See
     // src/web/csp.ts for the directive-by-directive reasoning.
@@ -676,10 +681,12 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   }, 60 * 60 * 1000)
 
   const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
-    collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
+    collectTokenUsageAndCheckBudgets(collectTokenUsage, checkAgentBudgets)
+      .catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
   }, 60 * 60 * 1000)
   if (!webOnly) {
-    collectTokenUsage().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
+    collectTokenUsageAndCheckBudgets(collectTokenUsage, checkAgentBudgets)
+      .catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
     logger.info('Token usage auto-collect started (1h poll + startup)')
   }
 
@@ -727,6 +734,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     ensureMcpListChannelSection(MAIN_AGENT_ID)
     ensureMessageCloseSection(MAIN_AGENT_ID)
     ensureLanguageSection(MAIN_AGENT_ID)
+    ensureBackgroundCheckpointSection(MAIN_AGENT_ID)
   }
 
   // Owner slash commands (CMD920, spec D-4): the registry the main session's

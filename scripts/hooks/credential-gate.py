@@ -116,7 +116,7 @@ def letter_of(tool: str, tool_input: dict):
     if _is_mcp_send(tool):
         return collect_email_envelope(tool, tool_input), True
     if _LETTER_TOOL.search(tool):
-        text = collect_mcp_body(tool_input)
+        text = collect_mcp_body(tool_input, tool)
         to, cc, bcc, reason = collect_mcp_recipients(tool_input)
         if not to and tool_input.get("messageId"):
             to = [f"messageId:{tool_input['messageId']}"]

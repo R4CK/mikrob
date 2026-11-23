@@ -274,8 +274,15 @@ def main():
         # One pending entry per inbound MESSAGE, not per chat: a batched delivery
         # (several messages from one chat in one turn) leaves several entries for
         # the same chat. The answer goes to each chat (and topic) ONCE; every
-        # placeholder is still deleted (FALLBACKEGYSZER1019). A failed send does
-        # not count as sent, so the next entry of that chat retries it.
+        # placeholder for an actual answer is deleted (FALLBACKEGYSZER1019). A
+        # failed send does not count as sent, so the next entry of that chat
+        # retries it. An OUTAGE placeholder is the one exception (`continue`
+        # below, Koteg 28): it stays (edited into OUTAGE_TEXT) rather than being
+        # deleted, since there is no answer yet to replace it with -- deleting it
+        # here would lose the only visible trace that the question is still open
+        # (measured: telegram-fallback-synthetic.test.sh's "placeholder stays
+        # (no delete)" case, which an earlier `elif`-chained version broke by
+        # falling through to the unconditional delete below for this case too).
         dest_sent = set()
         for p in pend:
             cid, mid = p.get("chat_id"), p.get("message_id")
@@ -288,7 +295,8 @@ def main():
                     api(tok, "editMessageText", {"chat_id": cid, "message_id": mid, "text": OUTAGE_TEXT})
                 except Exception as e:
                     log(sd, f"[enforce] outage edit failed: {e}")
-            elif answer and dest not in dest_sent:
+                continue
+            if answer and dest not in dest_sent:
                 try:
                     res = api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000], **topic})
                     dest_sent.add(dest)

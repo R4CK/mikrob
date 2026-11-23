@@ -114,7 +114,7 @@ describe('listKanbanCards(includeArchived) -- db.ts unit', () => {
   it('includeArchived=true includes them', () => {
     createKanbanCard({ id: 'd2', title: 'D2', status: 'done' })
     archiveKanbanCard('d2', { force: true })
-    expect(listKanbanCards(true).map((c) => c.id)).toContain('d2')
+    expect(listKanbanCards({ includeArchived: true }).map((c) => c.id)).toContain('d2')
   })
 })
 

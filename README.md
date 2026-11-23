@@ -471,6 +471,10 @@ régi `store/update-health-watchdog.sh`-t, ami ugyanazt az elavult célt olvasta
 ezért induláskor karanténba is teszi ezt a scriptet, ha bárhogy visszakerülne
 (`store/quarantine/`).
 
+### Ügynökönkénti költségkeret
+
+A CostOps-konfigurációban (`costops-config.json`) ügynökönként havi keret adható (`budgets`, `scope: "agent"`), az árakat a `token_prices` adja; ár nélküli modellt a rendszer nem becsül, árazatlannak jelöl. A `warning` és a `hard` szint havonta egyszer riaszt. A `hard` szint is csak riaszt: nem állítja le és nem lassítja az ügynököt. Ha egy hónapban árazatlan tokenek is vannak, arról külön, havonta egy riasztás megy, mert azok nincsenek benne a keret százalékában.
+
 ### Remote access key enrollment
 
 A helper that lets an operator enroll a single device's SSH public key with a tightly restricted `authorized_keys` entry, then hands back a copyable connection bundle. Each device carries its own revocation id (`marveen-remote:<uuid>`) so access can be replaced or removed per device.

@@ -41,10 +41,11 @@ read_transcript): the transcript keeps growing after that round, so its last
 text may be a later internal turn's monologue -- never deliverable here.
 
 Standalone: scans every agent's per-agent telegram state dir. No marveen src
-dependency; only Python stdlib + the `tmux` binary. Bot API base is overridable
-via TELEGRAM_API_BASE (tests point it at a local stub).
+dependency; only Python stdlib + the `tmux` binary (a real send is ledgered
+through the install's own scripts/hooks/ledger_lib.py, also stdlib). Bot API
+base is overridable via TELEGRAM_API_BASE (tests point it at a local stub).
 """
-import datetime, os, glob, json, time, subprocess, urllib.request
+import datetime, os, glob, json, sys, time, subprocess, urllib.request
 
 # State dirs to scan: per-agent dirs under the fleet, plus the default dir.
 #

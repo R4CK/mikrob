@@ -7,7 +7,7 @@ import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
-import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
+import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT, RESERVED_AGENT_IDS } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, getKanbanCardStateByIdPrefix, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
 import { nicknameFor } from '../team-nicknames.js'
@@ -68,7 +68,7 @@ import {
   type AuthMode,
   readJsonObjectForWrite,
 } from '../agent-config.js'
-import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
+import { readClaudePlans } from '../claude-plans.js'
 import {
   readAgentTeam,
   writeAgentTeam,
@@ -190,6 +190,12 @@ import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js
 // card 5c134edf). Both configDirFor() implementations already handle MAIN_AGENT_ID correctly.
 import { configDirFor } from '../context-restart-gate-runner.js'
 import { kindAllowed, FORBIDDEN_KIND, rejectIfNotHumanAuth } from './auth.js'
+// Upstream (baeb14a79) pairs this import block with its own runSlackSmokeTest/runSlackSmokeTestNow
+// (promisify(execFile), a serialization queue) for the exact same event-loop-blocking problem this
+// fork already fixed under card 89d0bfde (execFileAsync + argv, wired into the smoke-test route
+// below) -- NOT adopted: upstream's version is never called anywhere in this file, and isValidModelId/
+// InvalidModelIdError are already imported above (line 36-37), so this hunk would only add dead code
+// and a duplicate import.
 
 // Which credential kinds may read a transcript. NAMED principals only: a
 // logged-in human, or a key enrolled to that human's own device. Deliberately
@@ -619,7 +625,12 @@ interface AgentDetail extends AgentSummary {
 // launcher's logic is how the two paths drift.
 export function resolveTranscriptLocation(name: string): { workingDir: string; configDir: string | undefined } {
   if (!isMainChannelsAgent(name)) {
-    return { workingDir: agentDir(name), configDir: resolveAgentConfigDir(name).configDir ?? undefined }
+    // configDirFor, not resolveAgentConfigDir: the latter only knows an explicit
+    // claudeConfigDir field and answers null for an auto-provisioned
+    // agents/<name>/.claude-config, so the listing read the host default root and
+    // showed contextTokens null while the guard (configDirFor) saw the live
+    // transcript (measured 2026-10-26 on a sub-agent of the owner's install).
+    return { workingDir: agentDir(name), configDir: configDirFor(name) }
   }
   const isolated = join(PROJECT_ROOT, '.channels-config')
   return {
@@ -1180,6 +1191,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const cliRefusal = await refuseIfCliCannotLaunch(model)
     if (cliRefusal) { json(res, { error: cliRefusal.message, code: cliRefusal.code, params: cliRefusal.params }, 400); return true }
     if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409); return true }
+    // An id the message layer owns (FLEETRESERVEDNAME1021, with the configured
+    // voice channel id, VOICECHANNELID1022): a sub-agent under it could not
+    // send, or would be framed as something it is not.
+    if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
@@ -3025,6 +3040,10 @@ function compactPrompt(): string {
 
   if (agentMatch && method === 'DELETE') {
     const name = decodeURIComponent(agentMatch[1])
+    // A directory named after the main agent is not a sub-agent: deleting it
+    // here would remove whatever it holds and strip the main agent from every
+    // team's reportsTo/delegatesTo (MAINGHOST1024).
+    if (isMainChannelsAgent(name)) { json(res, { error: 'The main agent cannot be deleted' }, 400); return true }
     const dir = agentDir(name)
     if (!existsSync(dir)) { json(res, { error: 'Agent not found' }, 404); return true }
     // Clear the desired run-state FIRST, before anything yields (upstream's

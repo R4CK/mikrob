@@ -4524,26 +4524,43 @@ export function sweepArchivedKanbanCards(): number {
   return result.changes
 }
 
-// includeArchived (card 5aaf7209 item 1): GET /api/kanban silently dropped the
-// parameter before this card -- the only way to see an archived card was a
-// direct DB read. Default false keeps every existing call site's behaviour
-// byte-identical (additive parameter, not a behaviour change for callers that
-// do not pass it).
-export function listKanbanCards(includeArchived = false): KanbanCard[] {
-  // last_status_at: when the card LAST CHANGED COLUMN, not when its row was
-  // last touched. These are not the same thing, and the difference is a real
-  // blind spot: addKanbanComment() sets updated_at, so a card that has not
-  // moved in weeks looks fresh the moment anyone comments on it. The main agent
-  // comments more than anyone, so ageing measured on updated_at is mostly
-  // measuring the watcher, not the work. Falls back to created_at for cards
-  // that have never moved (no event rows), which is the honest age for those.
-  const where = includeArchived ? '' : 'WHERE c.archived_at IS NULL'
+// last_status_at: when the card LAST CHANGED COLUMN, not when its row was
+// last touched. These are not the same thing, and the difference is a real
+// blind spot: addKanbanComment() sets updated_at, so a card that has not
+// moved in weeks looks fresh the moment anyone comments on it. The main agent
+// comments more than anyone, so ageing measured on updated_at is mostly
+// measuring the watcher, not the work. Falls back to created_at for cards
+// that have never moved (no event rows), which is the honest age for those.
+export function listKanbanCards(
+  opts: { includeArchived?: boolean; agent?: string; statuses?: readonly string[]; ids?: readonly string[] } = {},
+): KanbanCard[] {
+  // A szures SZERVER-oldalon tortenik, mert a hivo nem tudja ellenorizni, hogy megtortent-e.
+  // A defektus, amit ez javit: az `agent=` parametert a vegpont NEMAN eldobta, tehat egy
+  // ugynok a TELJES tablat kapta vissza sajatjakent (mert eset: 139 idegen lapot "sajatnak"
+  // latott, es egy elo tulajdonosi SOS-rol kezdett kerdezni).
+  const feltetelek: string[] = []
+  const ertekek: unknown[] = []
+  if (!opts.includeArchived) feltetelek.push('c.archived_at IS NULL')
+  // COLLATE NOCASE: configured names are capitalised (BOT_NAME=Marveen) while stored
+  // assignees are typically lowercase (`marveen`); an exact match found neither spelling.
+  if (opts.agent) { feltetelek.push('c.assignee = ? COLLATE NOCASE'); ertekek.push(opts.agent) }
+  // Card 12b0f698: the status and id filters run in SQL, so a narrow read never builds the
+  // whole board. An empty list is a caller's "match nothing", never "no filter".
+  if (opts.statuses) {
+    feltetelek.push(opts.statuses.length ? `c.status IN (${opts.statuses.map(() => '?').join(', ')})` : '0')
+    ertekek.push(...opts.statuses)
+  }
+  if (opts.ids) {
+    feltetelek.push(opts.ids.length ? `c.id IN (${opts.ids.map(() => '?').join(', ')})` : '0')
+    ertekek.push(...opts.ids)
+  }
+  const where = feltetelek.length ? `WHERE ${feltetelek.join(' AND ')} ` : ''
   const cards = db
     .prepare(`SELECT c.rowid AS seq, c.*,
                      COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e
                                WHERE e.card_id = c.id), c.created_at) AS last_status_at
-              FROM kanban_cards c ${where} ORDER BY c.sort_order ASC`)
-    .all() as KanbanCard[]
+              FROM kanban_cards c ${where}ORDER BY c.sort_order ASC`)
+    .all(...ertekek) as KanbanCard[]
   // In-progress dwell time per card (see sumInProgressSeconds below).
   const active = sumInProgressSeconds(cards.map((c) => c.id))
   for (const c of cards) {

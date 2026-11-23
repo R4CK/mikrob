@@ -15,17 +15,16 @@ import { homedir, hostname } from 'node:os'
 import {
   randomBytes, createCipheriv, createDecipheriv, scryptSync,
 } from 'node:crypto'
-import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER, RESERVED_AGENT_IDS } from '../config.js'
 import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { isReservedSenderId } from './system-directive-id.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import {
   MACHINE_SPECIFIC_CONFIG_KEYS, SAFE_CONFIG_IMPORT_KEYS,
   stripRiskyConfigFields, stripRiskyMcpCommands, stripRiskySettings, hasMcpCommand,
 } from './agent-bundle.js'
-import { RESERVED_AGENT_IDS, safeJoin, sanitizeAgentName } from './sanitize.js'
+import { safeJoin, sanitizeAgentName } from './sanitize.js'
 import { detachSkillSymlinkIfAny } from './skill-map-provisioner.js'
 import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
@@ -948,8 +947,16 @@ function validateNames(fleet: FleetJson): string[] {
     // directory, and SAFE_NAME_RE has already forced it lowercase. Validating a transformed
     // string while writing the original is how a guard ends up checking something other than
     // what it protects.
-    if (isReservedSenderId(String(agent.name ?? ''))) {
-      errors.push(`A(z) "${String(agent.name).slice(0, 60)}" név fenntartott a folyamaton belüli rendszer-küldőknek -- adj másik nevet az ügynöknek`)
+    //
+    // FLEETRESERVEDNAME1021 + VOICECHANNELID1022 (card 1535f7f9, Koteg 28 upstream sync):
+    // upstream's RESERVED_AGENT_IDS.includes() check is adopted here INSTEAD of the narrower
+    // isReservedSenderId ({'system','system-directive'} only) -- RESERVED_AGENT_IDS is a strict
+    // superset (also heartbeat/telegram-coordinator/channel-coordinator/the voice-channel id in
+    // effect), and now that sanitize.ts's FIXED_RESERVED_AGENT_IDS was fixed to still carry
+    // SYSTEM_DIRECTIVE_SENDER (see that file's own entry), it no longer narrows this door back
+    // down. Still checked on the VERBATIM name, same reasoning as above.
+    if (RESERVED_AGENT_IDS.includes(String(agent.name ?? ''))) {
+      errors.push(`Reserved agent.name: "${String(agent.name).slice(0, 60)}" is reserved by the system`)
     }
     // B1: avatarExt defense-in-depth guard (primary enforcement in writeAgentFiles)
     if (agent.avatar && agent.avatarExt !== undefined &&

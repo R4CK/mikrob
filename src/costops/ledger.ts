@@ -10,6 +10,7 @@ import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import type { CostOpsConfig, CostConfidence } from './config.js'
 import { estimateCostUsd } from './model-pricing.js'
+import { evaluateAgentBudgets, type AgentBudgetStatus } from './agent-budgets.js'
 
 // ---- month math (UTC, deterministic given `now`) ---------------------------
 
@@ -158,6 +159,7 @@ export interface CostSummary {
     unpriced_calls: number
     unpriced_tokens: number
   }
+  agent_budgets: AgentBudgetStatus[]
   data_freshness: number | null
   config_present: boolean
   config_errors: string[]
@@ -244,7 +246,10 @@ export function getCostSummary(
     }
   }
 
-  // token_usage: VOLUME/ACTIVITY totals, unchanged shape from v0.1.
+  // token_usage: VOLUME/ACTIVITY totals, unchanged shape from v0.1 -- plus its own
+  // static-list-price estimate (card d2cfa818, below). A SEPARATE, operator-priced estimate
+  // (the operator's own token_prices) lives on agent_budgets instead (see agent-budgets.ts);
+  // the two numbers answer different questions and are not meant to agree.
   const tu = db.prepare(`
     SELECT COUNT(*) as calls, COUNT(DISTINCT agent) as agents,
       COALESCE(SUM(input_tokens),0) as input_tokens,
@@ -299,12 +304,13 @@ export function getCostSummary(
     breakdown: { fixed_manual: round2(breakdown.fixed_manual), provider: round2(breakdown.provider), estimate: round2(breakdown.estimate) },
     budget,
     token_usage: {
-      note: 'estimated_cost_usd is a static Anthropic list-price USD estimate (see model-pricing.ts) -- kept separate from current_spend/budget above, which stay in the operator\'s own currency and never include it. Rows whose model is missing/unrecognized are excluded from the estimate and counted in unpriced_calls/unpriced_tokens instead of being silently priced at zero.',
+      note: 'estimated_cost_usd is a static Anthropic list-price USD estimate (see model-pricing.ts) -- kept separate from current_spend/budget above, which stay in the operator\'s own currency and never include it. Rows whose model is missing/unrecognized are excluded from the estimate and counted in unpriced_calls/unpriced_tokens instead of being silently priced at zero. A separate, operator-priced estimate (from token_prices) lives on agent_budgets instead.',
       calls: tu.calls, agents: tu.agents,
       input_tokens: tu.input_tokens, output_tokens: tu.output_tokens,
       cache_read_tokens: tu.cache_read_tokens, cache_creation_tokens: tu.cache_creation_tokens,
       estimated_cost_usd: round4(estimatedCostUsd), unpriced_calls: unpricedCalls, unpriced_tokens: unpricedTokens,
     },
+    agent_budgets: evaluateAgentBudgets(db, config, now),
     data_freshness: latestFreshness,
     config_present: opts.configExists ?? true,
     config_errors: opts.configErrors ?? [],

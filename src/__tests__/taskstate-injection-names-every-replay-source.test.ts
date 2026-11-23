@@ -24,7 +24,10 @@ const WORDING: Readonly<Record<string, string>> = {
   startup: 'osszeomlas', // a crash respawn arrives as source=startup
 }
 
-const RECORD: AgentTaskState = {
+// Deliberately NO `writer` field: a pre-writer on-disk record (card's own `writer` type comment,
+// agent-taskstate.ts line ~180) is a real legacy shape the runtime falls back on (`r.writer ??
+// 'unknown'`), and this fixture exercises exactly that "not demonstrably own" branch.
+const RECORD = {
   agent: 'backend2',
   summary: 'egy folyamatban levo feladat',
   doneSteps: ['elso lepes'],
@@ -33,7 +36,7 @@ const RECORD: AgentTaskState = {
   pendingDecision: '',
   ts: Date.now(),
   consumed: false,
-}
+} as unknown as AgentTaskState
 
 describe('the task-state injection describes every source that can replay it', () => {
   const text = buildTaskStateInjection(RECORD)

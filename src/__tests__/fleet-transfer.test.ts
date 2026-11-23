@@ -119,6 +119,8 @@ vi.mock('../config.js', () => ({
   BRAND_NAME: 'Marveen',
   OWNER_NAME: 'Szabolcs',
   CHANNEL_PROVIDER: 'telegram',
+  // config.ts builds it from web/sanitize.ts plus the voice channel id in effect.
+  RESERVED_AGENT_IDS: ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna'],
 }))
 
 vi.mock('../web/vault-bindings.js', () => ({
@@ -609,7 +611,9 @@ describe('importFleet: avatarExt traversal rejected', () => {
 })
 
 // ---------------------------------------------------------------------------
-// The reserved sender namespace, on the FOURTH door (card b46a4b7e, QA gate on f1565e66)
+// The reserved sender namespace, on the FOURTH door (card b46a4b7e, QA gate on f1565e66),
+// now via RESERVED_AGENT_IDS (card 1535f7f9, Koteg 28 upstream sync -- see fleet-transfer.ts's
+// own comment at this check for why RESERVED_AGENT_IDS replaces the narrower isReservedSenderId)
 // ---------------------------------------------------------------------------
 //
 // Card 5c5d7bc4 gave the system-directive channel its own sender id; b46a4b7e closed the three
@@ -653,7 +657,7 @@ describe('importFleet: reserved sender ids cannot be minted as agent names (card
 
   it.each(['system-directive', 'system'])('rejects the reserved id %j', async (name) => {
     const errors = await errorsFor(name)
-    expect(errors.some((e) => e.includes('fenntartott'))).toBe(true)
+    expect(errors.some((e) => e.includes('Reserved agent.name'))).toBe(true)
     // Named, not generic: the operator has to be able to tell WHICH name was refused.
     expect(errors.some((e) => e.includes(name))).toBe(true)
   })
@@ -1060,6 +1064,37 @@ describe('importFleet: risky fields (toolDeny/securityProfile/capabilities/custo
     it('MUTATION PIN: without stripping, command/args would be written verbatim (self-check)', () => {
       expect(JSON.stringify(RISKY_MCP)).toContain('curl')
     })
+  })
+})
+
+// FLEETRESERVEDNAME1021 + VOICECHANNELID1022: a sub-agent under a reserved id
+// (the voice channel id in effect included) is refused before any write, like
+// POST /api/agents and the agent bundle import. 'system-directive' added to upstream's
+// list -- RESERVED_AGENT_IDS (card 1535f7f9) carries it too, same reason as the
+// describe block above.
+describe('importFleet: a sub-agent under a reserved id is refused', () => {
+  const fleetWithAgent = (name: string): string => JSON.stringify({
+    ...JSON.parse(MINIMAL_FLEET),
+    agents: [{ name, config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [] }],
+  })
+
+  for (const reserved of ['system', 'system-directive', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']) {
+    it(`agent.name "${reserved}" is refused on the dry run and on apply, and nothing is written`, async () => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+      const dry = importFleet(fleetWithAgent(reserved), { apply: false }) as { errors?: string[] }
+      expect((dry.errors ?? []).join(' ')).toContain(`Reserved agent.name: "${reserved}"`)
+      vi.mocked(atomicWriteFileSync).mockClear()
+      const applied = importFleet(fleetWithAgent(reserved), { apply: true }) as { errors?: string[] }
+      expect((applied.errors ?? []).join(' ')).toContain(`Reserved agent.name: "${reserved}"`)
+      expect(atomicWriteFileSync).not.toHaveBeenCalled()
+    })
+  }
+
+  it('NEGATIVE CONTROL: an ordinary name raises no reserved error', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const r = importFleet(fleetWithAgent('alpha'), { apply: false }) as { errors?: string[] }
+    expect((r.errors ?? []).join(' ')).not.toContain('Reserved agent.name')
   })
 })
 
