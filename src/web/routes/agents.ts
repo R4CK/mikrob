@@ -2,7 +2,7 @@ import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, 
 import { CLAUDE_MODELS } from '../../model-catalog.js'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
-import { execFileAsync } from '../exec-async.js'
+import { execFileAsync, type ExecAsyncResult } from '../exec-async.js'
 import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody } from '../restart-wake.js'
@@ -191,11 +191,13 @@ import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js
 import { configDirFor } from '../context-restart-gate-runner.js'
 import { kindAllowed, FORBIDDEN_KIND, rejectIfNotHumanAuth } from './auth.js'
 // Upstream (baeb14a79) pairs this import block with its own runSlackSmokeTest/runSlackSmokeTestNow
-// (promisify(execFile), a serialization queue) for the exact same event-loop-blocking problem this
-// fork already fixed under card 89d0bfde (execFileAsync + argv, wired into the smoke-test route
-// below) -- NOT adopted: upstream's version is never called anywhere in this file, and isValidModelId/
-// InvalidModelIdError are already imported above (line 36-37), so this hunk would only add dead code
-// and a duplicate import.
+// (promisify(execFile), a serialization queue). isValidModelId/InvalidModelIdError are already
+// imported above (line 36-37), so that half of the hunk is correctly skipped (dead code/duplicate
+// import). BUT the underlying bug the queue + stderr-keep fix it carries (#2254) is real and
+// applies to this fork's own execFileAsync-based route below just as much: two overlapping smoke
+// tests can both pass on the same new gate.inbound.deliver entry, and a passing run's stderr was
+// silently dropped. Ported as smokeTestQueue below (same shape as skills-dir-queue.ts's
+// serializeSkillsDir), not upstream's unused function pair -- 1535f7f9 fleet-test fix.
 
 // Which credential kinds may read a transcript. NAMED principals only: a
 // logged-in human, or a key enrolled to that human's own device. Deliberately
@@ -798,6 +800,27 @@ const INBOX_DRAIN_CAP = 10
 // (paneCommand null => never 'dead') rather than paying that on every tick.
 function paneActivityLabel(running: boolean, pane: string | null, paneCommand: string | null = null): ActivityState {
   return activityState({ running, pane, paneCommand })
+}
+
+// One smoke test at a time, as while the call was synchronous (#2254): the script passes on
+// ANY new gate.inbound.deliver entry that lands in the agent's audit.jsonl after it started, so
+// a run overlapping another could pass on the other run's delivery. Same shape as
+// skills-dir-queue.ts's serializeSkillsDir.
+let smokeTestQueue: Promise<unknown> = Promise.resolve()
+
+async function runSlackSmokeTest(scriptPath: string, name: string): Promise<ExecAsyncResult> {
+  const run = smokeTestQueue.then(async () => {
+    const smoke = await execFileAsync('/bin/bash', [scriptPath, name], {
+      timeoutMs: 60_000,
+      env: { ...process.env, SLACK_SMOKE_TEST_ALLOWED: 'true' },
+    })
+    // execSync let the script's stderr through to the dashboard's own; the async call
+    // dropped it on success -- keep it (a failing run already returns it in `output`).
+    if (smoke.status === 0 && smoke.stderr) process.stderr.write(smoke.stderr)
+    return smoke
+  })
+  smokeTestQueue = run.catch(() => {})
+  return run
 }
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
@@ -1443,10 +1466,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // same root cause as upstream's #2188).
     // Args are passed as argv, not interpolated into a shell string, so an agent name
     // can no longer reach `bash -c`.
-    const smoke = await execFileAsync('/bin/bash', [scriptPath, name], {
-      timeoutMs: 60_000,
-      env: { ...process.env, SLACK_SMOKE_TEST_ALLOWED: 'true' },
-    })
+    const smoke = await runSlackSmokeTest(scriptPath, name)
     if (smoke.status === 0) json(res, { ok: true, output: smoke.stdout })
     else json(res, { ok: false, output: smoke.stdout + smoke.stderr }, 200)
     return true

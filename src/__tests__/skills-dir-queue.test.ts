@@ -145,7 +145,9 @@ describe('skill directory operations run one at a time', () => {
   it('an approval issued while the export zips installs after the zip ended', async () => {
     makeSkill('s0')
     const meta = q.queueGeneratedSkill({ scope: 'global' }, 's2', '---\nname: s2\ndescription: x\n---\n# s2\n')
-    const hash = JSON.parse((await call(tryHandleSkills, 'GET', `/api/skills/pending/${meta.id}`)).body.toString()).hash
+    // The pending detail route is human-only too (CYBERED NO-GO F2, card 7c79badc): without
+    // SESSION this 403s and `hash` ends up undefined, which then hash-mismatches the approve below.
+    const hash = JSON.parse((await call(tryHandleSkills, 'GET', `/api/skills/pending/${meta.id}`, undefined, SESSION)).body.toString()).hash
     process.env.FAKE_SLEEP = '1'
     process.env.PROBE_SKILL = 's2'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
@@ -161,7 +163,7 @@ describe('skill directory operations run one at a time', () => {
   it('a delete queued behind an approval of the same skill sees it installed', async () => {
     makeSkill('s0')
     const meta = q.queueGeneratedSkill({ scope: 'global' }, 's4', '---\nname: s4\ndescription: x\n---\n# s4\n')
-    const hash = JSON.parse((await call(tryHandleSkills, 'GET', `/api/skills/pending/${meta.id}`)).body.toString()).hash
+    const hash = JSON.parse((await call(tryHandleSkills, 'GET', `/api/skills/pending/${meta.id}`, undefined, SESSION)).body.toString()).hash
     process.env.FAKE_SLEEP = '1'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
@@ -196,19 +198,21 @@ describe('skill directory operations run one at a time', () => {
     expect(JSON.parse(r.body.toString())).toEqual({ error: 'Skill not found' })
   })
 
-  it('a fleet import issued while the export zips writes its skills after the zip ended', async () => {
+  it('a fleet import apply is hard-refused regardless of the export queue', async () => {
+    // Card 68254bd7 delta (RedHat NO-GO 14953, MikroB 14957): apply=true is hard fail-closed
+    // ahead of every other check, including the queue, pending the non-forgeable approval
+    // channel (card 3fb0ef97) -- it never reaches serializeSkillsDir, so it cannot write s5
+    // regardless of what the concurrent export is doing.
     makeSkill('s0')
     process.env.FAKE_SLEEP = '1'
     process.env.PROBE_SKILL = 's5'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    // An applied import is the owner's (FLEETIMPORTGATE1022).
     const imp = call(tryHandleFleet, 'POST', '/api/fleet/import?apply=true', {}, SESSION)
     const [e, i] = await Promise.all([exp, imp])
     expect(e.status).toBe(200)
-    expect(i.status).toBe(200)
-    expect(readLog()).toContain('zip end saw=no')
-    expect(existsSync(join(fakeHome, '.claude', 'skills', 's5', 'SKILL.md'))).toBe(true)
+    expect(i.status).toBe(403)
+    expect(existsSync(join(fakeHome, '.claude', 'skills', 's5', 'SKILL.md'))).toBe(false)
   })
 
   it('a fleet export issued while the export zips reads the skills after the zip ended', async () => {
@@ -217,14 +221,19 @@ describe('skill directory operations run one at a time', () => {
     H.fleetExportSawZipEnd = undefined
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    const fx = call(tryHandleFleet, 'GET', '/api/fleet/export')
+    // Fleet export is human-only (FLEETIMPORTGATE1022): without SESSION it 403s before
+    // ever touching the queue.
+    const fx = call(tryHandleFleet, 'GET', '/api/fleet/export', undefined, SESSION)
     const [e, f] = await Promise.all([exp, fx])
     expect(e.status).toBe(200)
     expect(f.status).toBe(200)
     expect(H.fleetExportSawZipEnd).toBe(true)
   })
 
-  it('an assign queued behind a delete of its skill answers 404 and keeps the agent copy', async () => {
+  it('an assign is hard-refused regardless of the export/delete queue', async () => {
+    // Card 54e6f4c8 (RedHat delta-gate 4f4cb0df R2): assign is hard fail-closed ahead of the
+    // queue, same posture as fleet import apply, pending card 3fb0ef97 -- it never reaches
+    // serializeSkillsDir, so it cannot touch the agent copy regardless of a concurrent delete.
     makeSkill('s6')
     const agentCopy = join(tmpRoot, 'agents', 'a1', '.claude', 'skills', 's6')
     mkdirSync(agentCopy, { recursive: true })
@@ -232,13 +241,12 @@ describe('skill directory operations run one at a time', () => {
     process.env.FAKE_SLEEP = '1'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
-    // The delete queues at once; the assign reads its body first, so it queues behind it.
     const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s6')
     const asg = call(tryHandleSkills, 'POST', '/api/skills/s6/assign', { agents: ['a1'] })
     const [e, d, a] = await Promise.all([exp, del, asg])
     expect(e.status).toBe(200)
     expect(d.status).toBe(200)
-    expect(a.status).toBe(404)
+    expect(a.status).toBe(403)
     expect(readFileSync(join(agentCopy, 'SKILL.md'), 'utf8')).toBe('# s6 old\n')
   })
 })

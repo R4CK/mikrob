@@ -58,9 +58,20 @@ vi.mock('../web/agent-config.js', () => ({
   listAgentNames: () => ['boni'],
   listAllAgentNames: () => ['boni'],
   agentDir: (n: string) => join(ROOT, 'agents', n),
+  // Koteg 24 (card 57044a66): checkAgent calls this directly (handoffMtime, measuredPct,
+  // the transcript probes), not only through agentDir -- a mock without it throws inside
+  // checkAgent's own try/catch, which then silently never advances the agent past 'idle'.
+  agentConfigRoot: (n: string) => join(ROOT, 'agents', n),
   readAgentModel: () => null,
   readAgentRemoteHost: () => null,
   readAgentWorksourceChannel: () => h.worksource,
+  // configDirFor's non-main branch calls resolveAgentConfigDirForRead (claude-plans.js, not
+  // mocked here), which reads this directly -- same failure shape as agentConfigRoot above.
+  readAgentClaudePlan: () => null,
+  readAgentClaudeConfigDir: () => null,
+  // Used only by agent-dir-tripwire.ts's own sweep, already wrapped in its own try/catch, but
+  // a mock missing it still logs a spurious "sweep error" every tick.
+  listRejectedAgentDirNames: () => [],
 }))
 vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => undefined }))
 vi.mock('../web/active-model.js', () => ({
