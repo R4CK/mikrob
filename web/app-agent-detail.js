@@ -407,13 +407,12 @@ function postMarveenRestart(force) {
 }
 
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
-  const hardRestartConfirm = {
+  if (!await confirmDialog({
     title: t('agents.confirm.hard_restart_title'),
     message: t('agents.confirm.hard_restart'),
     okLabel: t('agents.confirm.hard_restart_ok'),
     danger: true,
-  }
-  if (!await confirmDialog(hardRestartConfirm)) return
+  })) return
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
@@ -422,13 +421,12 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
       const blocked = await res.clone().json().catch(() => ({}))
       if (blocked.error === 'restart-blocked') {
         const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-        const forceConfirm = {
+        if (!await confirmDialog({
           title: t('agents.confirm.hard_restart_title'),
           message: t(key),
           okLabel: t('agents.confirm.force_restart_ok'),
           danger: true,
-        }
-        if (!await confirmDialog(forceConfirm)) { showToast(t('agents.toast.restart_not_forced')); return }
+        })) { showToast(t('agents.toast.restart_not_forced')); return }
         res = await postMarveenRestart(true)
       }
     }

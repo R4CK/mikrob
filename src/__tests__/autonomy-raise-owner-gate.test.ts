@@ -133,10 +133,17 @@ describe('once a login exists, the token cannot raise a level', () => {
     expect(levelOf('data_delete')).toBe(1)
   })
 
-  it("the owner's browser that also keeps the token: a valid session cookie alongside it is the owner", async () => {
+  // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): upstream's mayIssueCredentials takes a
+  // `req` param specifically to let a session COOKIE upgrade a token-resolved context to owner
+  // access. This fork's mayIssueCredentials (auth.ts) explicitly `void req`s that parameter --
+  // same card 49960046 hardening this file's other RE-DECIDED tests already cover: a resolved
+  // auth kind is trusted as-is, never re-derived from a cookie the request happens to also carry.
+  // A cookie alongside a token context therefore does NOT make the call the owner's.
+  it("a valid session cookie alongside the token does not upgrade it to the owner (no cookie fallback)", async () => {
     const u = getDashboardUser('owner')!
     const cookie = `${SESSION_COOKIE_NAME}=${createSession({ userId: u.id, username: u.username })}`
-    expect((await setLevel(TOKEN_AUTH, 'email_send', 3, { cookie })).status).toBe(200)
-    expect(levelOf('email_send')).toBe(3)
+    const r = await setLevel(TOKEN_AUTH, 'email_send', 3, { cookie })
+    expect(r.status).toBe(403)
+    expect(levelOf('email_send')).toBe(2)
   })
 })

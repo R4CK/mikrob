@@ -306,6 +306,9 @@ describe('buildTaskStateInjection: a foreign value cannot add or imitate a line 
       if (line === '') continue
       const ok = line.includes(SENTINEL)
         || line.startsWith('FIGYELEM: ')
+        // Card 1535f7f9 (Koteg 28 upstream sync): the not-own branch's own static, non-imperative
+        // framing sentence (agent-taskstate.ts) -- trusted, not record data, same class as SENTINEL.
+        || line.startsWith('A sessiond ujraindult egy FOLYAMATBAN LEVO feladat kozben')
         || /^A REKORD SZERINT[A-Z ]* \(ellenorizendo\):( ".*")?$/.test(line)
         || /^  - ".*"$/.test(line)
       expect(ok, `unexpected line: ${line}`).toBe(true)

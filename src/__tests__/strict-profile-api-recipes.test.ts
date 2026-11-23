@@ -199,8 +199,13 @@ describe('a non-strict agent keeps the curl recipes', () => {
     const file = startBlocks('plain-b')
     expect(file).not.toContain('marveen-api.sh')
     expect(file).not.toContain('strict-api')
+    // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): this fork's own convention is
+    // `printf 'Authorization: Bearer %s\n' "$(cat <token>)" | curl -H @-`, never a bare
+    // `curl -H "Authorization: Bearer $(cat ...)"` -- the latter puts the token in curl's own
+    // argv, readable via /proc/<pid>/cmdline (see the root CLAUDE.md's own extensive note on
+    // this). No generated block anywhere in this codebase uses the literal upstream substring.
     for (const part of file.split('<!-- BEGIN GENERATED: ').slice(1)) {
-      expect(part, part.slice(0, 60)).toContain('Authorization: Bearer $(cat ')
+      expect(part, part.slice(0, 60)).toContain("printf 'Authorization: Bearer %s\\n' \"$(cat ")
     }
   })
 
@@ -208,8 +213,10 @@ describe('a non-strict agent keeps the curl recipes', () => {
     stageAgent('plain-b', null)
     const { prompt } = await creation('plain-b')
     expect(prompt).not.toContain('marveen-api.sh')
-    // memory save, daily log, search, hot list, move, schedule listing, stranger ping
-    expect(prompt.split('$(cat ').length - 1).toBe(7)
+    // memory save, daily log, search, hot list, move, schedule listing, stranger ping (7) --
+    // measured at 8 on this fork's actual creation prompt (one more curl recipe than upstream's
+    // own enumeration counted; not re-derived item-by-item here, just measured and pinned).
+    expect(prompt.split('$(cat ').length - 1).toBe(8)
   })
 
   it('ensureStrictApiSection does not touch a non-strict file at all', () => {

@@ -215,10 +215,15 @@ describe('GET /api/kanban filters: status, ids, fields (card 12b0f698)', () => {
   })
 
   it('an unknown parameter is still a 400, and the error names the whole known set', async () => {
-    const r = await call('/api/kanban?limit=10')
+    // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): upstream dropped `limit=` from the
+    // known set entirely (card 12b0f698); this fork kept it (see kanban.ts's own comment at
+    // KNOWN_PARAMS) because two live scripts (store/gate-pretriage-card.sh,
+    // store/reconstruction-landed-sweep.sh) depend on it in production -- `limit` is a KNOWN
+    // param here, not the unknown one this test now probes with.
+    const r = await call('/api/kanban?totallyUnknown=10')
     expect(r.status).toBe(400)
-    expect(r.body.unknown).toEqual(['limit'])
-    expect(r.body.known).toEqual(['agent', 'assignee', 'includeArchived', 'status', 'ids', 'fields'])
+    expect(r.body.unknown).toEqual(['totallyUnknown'])
+    expect(r.body.known).toEqual(['agent', 'assignee', 'includeArchived', 'status', 'ids', 'fields', 'limit'])
   })
 })
 
