@@ -79,7 +79,7 @@ echo "watchdog launch-env isolation contract:"
 #    (matches agent-process.ts gating: no token -> intended shared mode).
 OUT="$(bash "$WD" --launch-env "$AGENT_ISO")"
 case "$OUT" in
-  isolation=no) pass "no token file -> no isolation" ;;
+  isolation=MUTANT-WRONG-EXPECTATION) pass "no token file -> no isolation" ;;
   *) fail "no token file -> no isolation" "$OUT" ;;
 esac
 
