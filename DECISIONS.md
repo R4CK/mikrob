@@ -31877,3 +31877,30 @@ az őr nem vákuum. Teljes `--selftest-land-batch`: 21/21 PASS. `--selftest-land
 compare"), végrehajtotta DevO (fullstack).
 
 **Hivatkozás:** kártya 9d9d5ab2, előzmény e9e1e771 + 35f67e7d. Gate-SHA a REVIEW-ban (komment 37968).
+
+## 2026-11-23 10:25 -- Side-effect health board backend, GET /api/health/effects (card 0a527826)
+
+**Döntés:** new route `GET /api/health/effects` returning one EffectHealth entry per side-effect
+kind, status 'red' after 3 trailing failures (per the agreed contract, Fron Ted card 2d9c0bb2
+REVIEW 34995). Implemented 5 of the 6 kinds named in the card description from real, existing
+data: `land` (store/land-runs.jsonl), `scheduled_task` (task_runs table), `telegram_send`
+(telegram_outbox table), `offload_draft` (store/offload-attempts.json), `memory_embed` (memories
+table, NULL-embedding proxy). `gate_dispatch` is deliberately left OUT of the effects array: no
+code path in the repo persists a dispatch send's own success/failure history (checked
+gate-dispatch-check.sh, .fleet-nudger-state.json, fleet-nudger-timer.log -- all stateless or
+decision-only), so reporting it would mean fabricating a status with no measurement behind it.
+Additive only (Peti 14288): new file `src/web/routes/health-effects.ts`, 2-line wiring in
+src/web.ts, no existing route/table/log touched. Feature flag
+`store/health-effects-enabled.json` ({"enabled":false} by default), strict `=== true` read,
+same convention as freellm-status.ts.
+**Miért:** the card's Pair-FE (2d9c0bb2) was done and waiting 63h with its gate on HOLD because
+this endpoint did not exist (MikroB priority bump, msg 23843).
+**Ellenőrzés:** `npx tsc --noEmit` and `npx eslint` clean. Through the real store/fleet-test.sh
+semaphore, on HEAD a0e25ba5893209b5bf0ce44a84b8f5d633b4778a: Test Files 1 passed (1), Tests 26
+passed (26), 1.23s -- unit tests for every compute function (land/scheduled_task/telegram_send/
+offload_draft/memory_embed, including streak-breaking and skip-event cases) plus route-level
+tests against a real in-memory DB (flag-off -> empty array, flag-on -> all-ok from an empty DB,
+flag-on -> a real red telegram_outbox row surfaces as red with its last_error).
+**Ki döntött:** backend (implementation + the gate_dispatch-omission decision), gate: QA +
+CYBERSEC (per the card's own Kész-ha line).
+**Hivatkozás:** card 0a527826, Pair-FE 2d9c0bb2 (contract REVIEW 34995).
