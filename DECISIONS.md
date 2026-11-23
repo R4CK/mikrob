@@ -31681,3 +31681,21 @@ decisions-tail-append-guard.sh --check-branch against origin/develop's current t
 
 Gate: QA, Cybersec (delta re-gate over the superseded cf073a99b / 8622760de gates). **Ki döntött:**
 MikroB (msg_id 23510/23519), végezte backend.
+
+## 2026-11-23 10:05 -- watchdog-config-isolation.test.sh hermetic + wired into fleet-test (card ee830675)
+
+**Döntés:** scripts/__tests__/watchdog-config-isolation.test.sh was red on origin/develop (26/75
+measured, varying) because scripts/needs-fleet-oauth.mjs and scripts/watchdog-provider-env.mjs
+dynamically import() from dist/, which is gitignored and absent from a fresh checkout. Added a
+BUILT_MARKER-gated `npx tsc` build step at the top of the .sh script, mirroring store/fleet-test.sh's
+own build convention exactly. No watchdog.sh behaviour was changed -- test-environment hermeticity
+only. Wired into fleet-test via a new src/__tests__/watchdog-config-isolation-suite-runs.test.ts
+wrapper (same shape as card d5c05548's gpu-crashloop-guard-suite-runs.test.ts).
+**Miért:** the suite was not referenced by fleet-test.sh or any src/__tests__ file, so its red went
+unnoticed; a fix needed both the hermeticity patch and a gate that would catch future regressions.
+**Ellenőrzés:** 77/77 passed in a scratch worktree (dist/ removed first) and in the main clone;
+through the real store/fleet-test.sh semaphore: GREEN (2/2, 19.44s). Mutation-proof: broke one real
+assertion in the .sh script, re-ran through fleet-test.sh, RED (76/77) -- confirms the wiring
+propagates a real failure.
+**Ki döntött:** backend (implementation + verification), gate: QA.
+**Hivatkozás:** card ee830675, Gate-SHA 6141d9e7c603ed56df3ad7044e680f9baa062cfe.
