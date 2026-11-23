@@ -1,0 +1,14 @@
+{
+  "task": "type-def",
+  "sha256_12": "024beb7a4e38",
+  "est_tokens": 950,
+  "token_cap": 1500,
+  "truncated": false,
+  "sources": [
+    {
+      "path": "/home/neon/.claude/skills/api-and-interface-design/SKILL.md",
+      "mode": "sections",
+      "sha256_12": "5dafd0c44a3a"
+    }
+  ]
+}

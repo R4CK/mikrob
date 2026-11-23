@@ -1,10 +1,10 @@
-import { statSync, readFileSync, writeFileSync } from 'node:fs'
+import { statSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
-import { listAgentNames, listAllAgentNames, agentConfigRoot, readAgentModel, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, listAllAgentNames, agentConfigRoot, readAgentModel, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { mainAgentConfigDir } from './main-transcript-root.js'
 import {
@@ -22,6 +22,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation, paneShowsContextSaturationHardError } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir, readTranscriptTailFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import { setDeliveryHoldProbe, type DeliveryHold } from './delivery-hold.js'
 import {
   readPendingResumes,
   writePendingResumes,
@@ -33,7 +34,7 @@ import {
 import { localMidnightMs } from '../auto-restart.js'
 import { ownerQuestionHolds } from './open-question.js'
 import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
-import { createAgentMessage } from '../db.js'
+import { createAgentMessage, countRestartQueueState, getInProgressCardIdForAgent, getKanbanCard } from '../db.js'
 import { sweepAgentDirTripwire } from './agent-dir-tripwire.js'
 import {
   decideGuard,
@@ -41,16 +42,23 @@ import {
   calibrateLimit,
   handoffStaleMinutes,
   applyDailyHandoffSkipSweep,
+  forgetNewCardDispatchRecord,
+  newCardDispatchDue,
   DAILY_HANDOFF_REASON_PREFIX,
+  NEW_CARD_DISPATCH_REASON_PREFIX,
   HANDOFF_RESEND_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
+  READY_TIMEOUT_MS,
+  RESUME_GIVE_UP_REASON,
+  BUSY_OVERDUE_REASON_PREFIX,
   STALE_REFRESH_REASON_PREFIX,
   SATURATION_CREDIBLE_MIN_PCT,
   saturationBannerCredible,
   usageLimitEvidenceFromTranscript,
   usageLimitVerdict,
   USAGE_LIMIT_MAX_PARK_MS,
+  buildRestartLogEntry,
   type GuardState,
   type HandoffStaleness,
   type GuardInputs,
@@ -90,6 +98,13 @@ const SATURATION_OVERRIDE_TTL_MS = 3 * INTERVAL_MS
 // (context-guard-resume-store.ts) and re-armed by restorePendingResumes() when
 // the runner starts.
 const guardStates = new Map<string, GuardState>()
+
+// Agents with a resume send in flight, for contextGuardDeliveryHold below (delivery-hold.ts):
+// the one stretch between the sweep's own inject-resume send and its outcome that no guard
+// phase covers, so the router must not deliver a message into it. Set/cleared only around the
+// sweep's own send (this fork has no separate immediate-delivery loop, unlike upstream's
+// resumeLoops/resumeTargetRunning -- not ported here, out of scope for this round).
+const resumeSending = new Set<string>()
 
 // Write-through mirror of the persisted resume obligations. Held in memory so
 // the per-sweep "drop if present" checks cost no I/O; the file is written only
@@ -178,6 +193,13 @@ function dailyQuestionOpen(name: string): boolean | undefined {
   try { return ownerQuestionHolds(name) }
   catch { return undefined }
 }
+
+// New-card-dispatch tier (card f5f78e13): last in_progress card id seen per
+// agent, so newCardDispatchDue can tell "still the same card" from "a
+// different one was just dispatched". In-memory like the maps above: a
+// dashboard restart forgets it and treats the next sweep as first sight,
+// which never fires (the safe direction, same reasoning as lastDailyHandoff).
+const lastDispatchedCard = new Map<string, string>()
 const remoteSkipLogged = new Set<string>()
 // Agents currently in the banner-vs-measurement mismatch state. The
 // condition holds on EVERY sweep while a mis-tagged agent keeps running, so
@@ -214,11 +236,13 @@ function readHighwater(): HighwaterMap {
 
 let highwater: HighwaterMap | null = null
 
-function observedHighwater(name: string, model: string, observedNow: number): number {
+// `learn` false reads the stored mark without raising it: a status read must
+// not change the thing it reports on, so only the guard's sweep writes.
+function observedHighwater(name: string, model: string, observedNow: number, learn: boolean): number {
   if (highwater === null) highwater = readHighwater()
   const entry = highwater[name]
   const prior = entry && entry.model === model ? entry.tokens : 0
-  if (observedNow > prior) {
+  if (learn && observedNow > prior) {
     highwater[name] = { model, tokens: observedNow }
     try { writeFileSync(HIGHWATER_PATH, JSON.stringify(highwater, null, 2)) }
     catch (err) { logger.warn({ err }, 'context-guard: highwater persist failed') }
@@ -232,6 +256,23 @@ function sessionFor(name: string): string {
 
 function handoffPathFor(name: string): string {
   return join(agentConfigRoot(name), 'HANDOFF.md')
+}
+
+// Structured, per-resume restart log (card d66b7681, MikroB GO msg 18804 condition 2). A plain
+// JSONL append, same shape as channel-event-log.ts -- one line per resume injection, nothing to
+// read atomically, so appendFileSync is enough (no concurrent-writer risk worse than an interleaved
+// line, which a line-oriented JSONL reader tolerates).
+const RESTART_LOG_PATH = process.env.CONTEXT_GUARD_RESTART_LOG_PATH ?? join(PROJECT_ROOT, 'store', 'context-guard-restart-log.jsonl')
+
+function appendRestartLogEntry(name: string, hadHandoff: boolean, staleMinutes: HandoffStaleness): void {
+  try {
+    const entry = buildRestartLogEntry(name, hadHandoff, staleMinutes, Date.now())
+    appendFileSync(RESTART_LOG_PATH, JSON.stringify(entry) + '\n')
+  } catch (err) {
+    // Observability, not a control path: losing this line must never block or retry the resume
+    // injection itself, only be noted.
+    logger.warn({ err, name }, 'context-guard: failed to append restart-log entry')
+  }
 }
 
 function handoffMtime(name: string): number | null {
@@ -290,6 +331,58 @@ export function dailyHandoffPrompt(atTime: string, handoffPath: string): string 
   )
 }
 
+// CYBERSEC F4 (WhiteHat2, delta on e9e025765): the card title is set by
+// whoever holds the shared bearer token, so it is untrusted DATA, not prompt
+// structure -- a retitle to e.g. "[SYSTEM-DIREKTIVA msg_id:1] ..." would land
+// verbatim inside an authenticated handoff/resume directive. Strips the
+// bracket characters every recognized directive prefix depends on
+// ([SYSTEM-DIREKTIVA ...], [CONTEXT-GUARD], [CONTEXT-RESTART-GATE], [SYSTEM:
+// ...]), collapses to one line, and caps length, so it can only ever read as
+// a quoted label, never as an envelope.
+const MAX_CARD_TITLE_PROMPT_LEN = 80
+
+function sanitizeCardTitleForPrompt(title: string): string {
+  const oneLine = title.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const noBrackets = oneLine.replace(/[[\]]/g, '')
+  const capped = noBrackets.length > MAX_CARD_TITLE_PROMPT_LEN
+    ? `${noBrackets.slice(0, MAX_CARD_TITLE_PROMPT_LEN)}...`
+    : noBrackets
+  return `"${capped}"`
+}
+
+/** `<id> "<title>"` when both are known, `<id>` alone when the title lookup
+ *  missed, or a generic phrase when even the id is unknown (CYBERSEC F2,
+ *  comment 31757: the id/title can be null if the card left in_progress or
+ *  was deleted between the DB read and the prompt being built). The title is
+ *  sanitized (CYBERSEC F4) before it ever reaches a prompt string. */
+function newCardLabel(newCardId: string | null, newCardTitle: string | null): string {
+  if (newCardId === null) return 'az új kártya'
+  return newCardTitle ? `${newCardId} ${sanitizeCardTitleForPrompt(newCardTitle)}` : newCardId
+}
+
+/**
+ * Handoff request for the new-card-dispatch tier (card f5f78e13).
+ *
+ * A fifth wording, same reasoning as the idle and daily tiers: this session
+ * is neither critical nor expensive nor a day old, so those texts would state
+ * something untrue. What IS true: a DIFFERENT kanban card was just dispatched
+ * to this agent, so the restart is about to start on it fresh -- unrelated to
+ * whatever the OLD card's session was holding. Names the NEW card (CYBERSEC
+ * F2, comment 31757) so the handoff the agent writes can say "closed by
+ * <id>" rather than leaving that link to be inferred later.
+ */
+export function newCardDispatchHandoffPrompt(handoffPath: string, newCardId: string | null, newCardTitle: string | null): string {
+  return (
+    `[CONTEXT-GUARD] Új kártya érkezett dispatch-ben (${newCardLabel(newCardId, newCardTitle)}), nem vészhelyzet és nem hiba. ` +
+    `A sessionöd hamarosan friss kontextussal indul újra, mert az új kártya nem függ az eddigi beszélgetésedtől. ` +
+    `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal) ` +
+    `a JELENLEGI (régi) kártyádról, amit ez a dispatch lezár. ` +
+    `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
+    `Utána ÁLLJ MEG; a rendszer újraindít, és a dispatch-üzenet magával hozza az új kártya tartalmát.`
+  )
+}
+
 /**
  * A handoff refresh request: the agent DID write a handoff, then kept working,
  * so the artifact no longer covers the session. Distinct wording from both
@@ -305,36 +398,53 @@ export function staleRefreshHandoffPrompt(staleMinutes: number, handoffPath: str
   )
 }
 
-export function resumePrompt(
-  name: string,
-  handoffPath: string,
-  hadHandoff: boolean,
-  staleMinutes: HandoffStaleness = null,
-): string {
-  const base =
-    // Wording covers both tiers that lead here: "grew too large" is true at the
-    // act threshold and true of an idle-flush, where the context was heavy but
-    // the window was nowhere near full. "megtelt" would be false in that case.
-    `[CONTEXT-GUARD] Friss kontextussal indultál, mert az előző session kontextusa túl nagyra nőtt (auto-handoff). `
-  const source = !hadHandoff
-    ? `HANDOFF.md nem készült el időben, ezért az élő forrásokból dolgozz. `
-    : staleMinutes === 'unknown'
-      // A missing measurement must not impersonate a fresh one: say that the
-      // freshness was unverifiable, so the agent cross-checks instead of
-      // trusting the artifact blindly.
-      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, de a FRISSESSÉGÉT NEM TUDTAM MEGMÉRNI. ` +
-        `Kezeld óvatosan: vesd össze a kanban-kommentekkel és az inter-agent üzenetekkel, mielőtt a Next Steps-e szerint cselekednél. `
-      : typeof staleMinutes === 'number' 
-      // A stale handoff presented as current re-opens already-decided
-      // questions; say the gap out loud and route the agent to the live
-      // sources FIRST for the uncovered window.
-      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, DE ELAVULT: az utolsó ~${staleMinutes} perc munkája NINCS benne. ` +
-        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. `
-      : `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója. `
+/**
+ * The queue sentence of the restart notice. The notice used to tell the main
+ * agent that messages sent to the old session "may have been lost -- check and
+ * resend them", without measuring anything. Resending is usually wrong: pending
+ * rows are delivered into the fresh session once it is ready, and the resume
+ * prompt tells the fresh session to re-read the restart window itself, so a
+ * resend lands as a duplicate in the very session that was just restarted to
+ * get its context down. The sentence now carries the counts instead; the rows
+ * the router will not retry are the failed ones. Exported so a test pins it.
+ */
+export function restartNoticeQueueText(queue: { pending: number; failed: number } | null): string {
+  if (queue === null) {
+    return ' A sor allapotat NEM tudtam megmerni -- ellenorizd kezzel, mielott barmit ujrakuldenel.'
+  }
+  return ` A sor a restart pillanataban: ${queue.pending} pending, ${queue.failed} failed (utolso ora).` +
+    (queue.failed > 0
+      ? ` A ${queue.failed} failed sort a router mar NEM probalja ujra -- ezeket nezd meg (a 'result' mezo mondja meg, miert buktak).`
+      : '') +
+    (queue.pending > 0
+      ? ` A ${queue.pending} pending sort a router a friss sessionbe kezbesiti, amint az kesz -- NE kuldd ujra, mert duplikalodik.`
+      : '') +
+    ' A regi sessionbe az utolso percekben kezbesitett uzeneteket a resume prompt alapjan a friss session maga olvassa vissza -- ezeket se kuldd ujra.' +
+    // Both promises need the resume to happen; a ready-timeout gives it up, and then nothing re-reads.
+    ' Mindez akkor all, ha a friss session elindul es megkapja a resume promptot; ha nem, a sort es ezeket az uzeneteket kezzel nezd meg.'
+}
+
+/** Counts the queue for the restart notice; a failed count yields null, not a guess. */
+export function restartQueueAtRestart(name: string): { pending: number; failed: number } | null {
+  try {
+    return countRestartQueueState(name, Math.floor(Date.now() / 1000) - 3600)
+  } catch (err) {
+    logger.warn({ err, name }, 'context-guard: queue count for the restart notice failed')
+    return null
+  }
+}
+
+/**
+ * The safety-rule tail every resume prompt shares, regardless of why the
+ * restart happened: re-read the inter-agent queue for anything lost in the
+ * restart window, never touch the live prod checkout, and report in on the
+ * right channel. Extracted so a tier-specific resume prompt (see
+ * newCardDispatchResumePrompt below) states its own reason up front without
+ * dropping or re-typing any of these -- CYBERSEC F2, comment 31757, asked
+ * for a tier-specific wording, not a tier-specific safety contract.
+ */
+function resumePromptSafetyTail(name: string): string {
   return (
-    base + source +
-    `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
-    `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
     // ORSICTX912: msg 23670 was delivered SEVEN SECONDS after the guard kill
     // started, into the dying session -- the queue marked it delivered, the
     // fresh session had no reason to look, and completed_at is unused (0/37
@@ -364,6 +474,76 @@ export function resumePrompt(
   )
 }
 
+export function resumePrompt(
+  name: string,
+  handoffPath: string,
+  hadHandoff: boolean,
+  staleMinutes: HandoffStaleness = null,
+): string {
+  const base =
+    // Wording covers both tiers that lead here: "grew too large" is true at the
+    // act threshold and true of an idle-flush, where the context was heavy but
+    // the window was nowhere near full. "megtelt" would be false in that case.
+    `[CONTEXT-GUARD] Friss kontextussal indultál, mert az előző session kontextusa túl nagyra nőtt (auto-handoff). `
+  const source = !hadHandoff
+    ? `HANDOFF.md nem készült el időben, ezért az élő forrásokból dolgozz. `
+    : staleMinutes === 'unknown'
+      // A missing measurement must not impersonate a fresh one: say that the
+      // freshness was unverifiable, so the agent cross-checks instead of
+      // trusting the artifact blindly.
+      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, de a FRISSESSÉGÉT NEM TUDTAM MEGMÉRNI. ` +
+        `Kezeld óvatosan: vesd össze a kanban-kommentekkel és az inter-agent üzenetekkel, mielőtt a Next Steps-e szerint cselekednél. `
+      : typeof staleMinutes === 'number'
+      // A stale handoff presented as current re-opens already-decided
+      // questions; say the gap out loud and route the agent to the live
+      // sources FIRST for the uncovered window.
+      ? `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója, DE ELAVULT: az utolsó ~${staleMinutes} perc munkája NINCS benne. ` +
+        `A hiányzó szakaszt az élő forrásokból pótold (kanban-kommentek, inter-agent üzenetek, hot memóriák), MIELŐTT a handoff Next Steps-e szerint cselekednél. ` +
+        // card d66b7681 (MikroB GO, msg 18804, condition 1): a backend3 restart
+        // (~30 perc elavult handoff) dupla landolással végződött -- a puszta
+        // FIGYELEM-sor nem volt elég konkrét ahhoz, hogy megállítsa. Ez a sor
+        // egy MÉRHETŐ, KONKRÉT elsőlépés, nem csak egy újabb figyelmeztetés.
+        `KÖTELEZŐ ELSŐ LÉPÉS, MIELŐTT BÁRMILYEN land/push/PUT done (vagy más visszafordíthatatlan lépés) megtörténne: ` +
+        `futtasd \`git ls-remote\` + \`git cat-file -e\` MINDEN sha-ra, amit a handoff megnevez (már landolt / pusholt állapotnak állít), ` +
+        `és olvasd újra az ott megnevezett MINDEN kártya aktuális kanban-státuszát (GET /api/kanban/<id>) -- ne a handoff szava szerint, a MÉRÉS szerint dönts arról, hogy valami már megtörtént-e. `
+      : `Első lépés: olvasd be ${handoffPath} -- ez az előző session átadója. `
+  return (
+    base + source +
+    `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
+    `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
+    resumePromptSafetyTail(name)
+  )
+}
+
+/**
+ * Resume prompt for the new-card-dispatch tier (card f5f78e13).
+ *
+ * Its own wording, not resumePrompt's (CYBERSEC F2, comment 31757): "az
+ * előző session kontextusa túl nagyra nőtt" is FALSE for this tier -- the
+ * session was healthy, it is simply starting a different card now. Names
+ * the new card (id/title) so the agent does not have to infer which card
+ * the restart was FOR from a HANDOFF.md that describes the OLD one.
+ */
+export function newCardDispatchResumePrompt(
+  name: string,
+  handoffPath: string,
+  hadHandoff: boolean,
+  newCardId: string | null,
+  newCardTitle: string | null,
+): string {
+  const label = newCardLabel(newCardId, newCardTitle)
+  const base = `[CONTEXT-GUARD] Friss kontextussal indultál, mert egy ÚJ kártyát kaptál dispatch-ben: ${label}. `
+  const source = !hadHandoff
+    ? `A régi kártyádról nem készült el időben a HANDOFF.md; ha félbehagyott munkád volt rajta, az élő forrásokból (kanban-kommentek, git) derítsd ki. `
+    : `Első lépés: olvasd be ${handoffPath} -- ez az ELŐZŐ kártyádról készült átadó, amit ez a dispatch lezárt. `
+  return (
+    base + source +
+    `A dispatch-üzenet magával hozta az új kártya (${label}) tartalmát -- ellenőrizd a saját sorodat ` +
+    `(GET /api/messages?agent=${name}) és a kártyát magát, majd FOLYTASD AZON a munkát, ne az előzőn. ` +
+    resumePromptSafetyTail(name)
+  )
+}
+
 // Exported for src/__tests__/main-config-dir-wiring.test.ts (QA2 L1, 25ea084c): the delegation to
 // mainAgentConfigDir() must be pinned on the REAL function, not a fully-mocked module, or a silent
 // revert to the pre-TOKENVAK915 unconditional `undefined` passes every existing test unnoticed.
@@ -375,6 +555,31 @@ export function configDirFor(name: string): string | undefined {
   // TOKENVAK915: the main agent's OWN isolated config root used to be skipped entirely
   // (unconditional `undefined`) -- see main-transcript-root.ts for why and the fix.
   return name === MAIN_AGENT_ID ? mainAgentConfigDir(agentConfigRoot(name)) : (resolveAgentConfigDirForRead(name) ?? undefined)
+}
+
+/** Operator notice for a resume give-up. Exported so the wording is pinned by a test. */
+export function resumeGiveUpNotice(name: string, handoffPath: string): string {
+  return `[CONTEXT-GUARD] A(z) "${name}" agent restartja utan a session ${READY_TIMEOUT_MS / 60_000} percen belul nem lett kesz, ` +
+    'ezert a folytatasi (resume) prompt NEM ment ki. Az agent vagy nem fut, vagy nem fogad promptot, vagy a handoff nelkul indult el. ' +
+    `Nezd meg a pane-t; ha all, add be neki kezzel a handoffot: ${handoffPath}`
+}
+
+/**
+ * The resume give-up is decided as action 'none', and the none-branch logs
+ * nothing, so the restarted agent could sit without its handoff pointer while
+ * nobody knew the resume path had failed. Warn, and tell a human through the
+ * same sinks as the rescue-failure alert: the main agent's own inbox is not a
+ * sink for an alert about the main agent.
+ */
+export async function reportResumeGiveUp(name: string): Promise<void> {
+  logger.warn({ name }, 'context-guard: resume give-up -- the restarted session never became ready, resume prompt not sent')
+  const text = resumeGiveUpNotice(name, handoffPathFor(name))
+  try {
+    if (name === MAIN_AGENT_ID) await notifyChannel(text)
+    else createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard resume give-up notice')
+  } catch (err) {
+    logger.error({ err, name }, 'context-guard: FAILED TO RAISE the resume give-up notice')
+  }
 }
 
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
@@ -395,7 +600,12 @@ function measureIdleMs(name: string, nowMs: number): number | null {
   return Math.max(0, nowMs - mtime)
 }
 
-async function measurePct(name: string, cfgLimit: number | null): Promise<number | null> {
+// Koteg 24 (card 57044a66): async signature + agentConfigRoot() kept per the standing
+// fork-upstream/acknowledged-conflicts.ts pin on this exact point -- this fork's
+// readContextTokensFromProjectDir is async (upstream's is sync), so upstream's sync
+// measurePct would silently return a Promise where a number|null is expected. `opts`
+// (upstream's new learn-suppression flag) is adopted; it is already referenced below.
+export async function measurePct(name: string, cfgLimit: number | null, opts: { learn?: boolean } = {}): Promise<number | null> {
   const workingDir = agentConfigRoot(name)
   const configDir = configDirFor(name)
   const tokens = await readContextTokensFromProjectDir(workingDir, configDir)
@@ -410,7 +620,7 @@ async function measurePct(name: string, cfgLimit: number | null): Promise<number
     // Calibrate against the persisted per-(agent, model) maximum, not just
     // the live reading: a fresh post-restart session must not un-learn a
     // window the previous session already proved (see HighwaterMap above).
-    limit = calibrateLimit(observedHighwater(name, model, tokens), contextLimitForModel(model))
+    limit = calibrateLimit(observedHighwater(name, model, tokens, opts.learn !== false), contextLimitForModel(model))
   }
   return tokens / limit
 }
@@ -466,6 +676,38 @@ async function performRestart(name: string): Promise<void> {
     const res = await restartAgentProcess(name, { fresh: true })
     if (!res.ok) throw new Error(res.error ?? 'agent restart failed')
   }
+}
+
+/** Is this agent fed through the worksource queue (it redelivers unacknowledged items)? */
+function onWorksource(name: string): boolean {
+  try { return readAgentWorksourceChannel(name) } catch { return false }
+}
+
+/**
+ * The "what may have been lost" sentence of the restart notice. The generic
+ * line tells the supervisor that prompts sent to the old session may be gone
+ * and to send them again. For an idle-flush restart of
+ * an agent on the worksource queue that is false twice over: it had nothing in
+ * flight, and the queue redelivers whatever it had not acknowledged. The
+ * supervisor following the generic line sent three needless status messages
+ * (~3.1M input tokens, measured 2026-09-29), so that case gets its own text.
+ * Every other case, and any agent NOT on worksource, gets the queue at restart
+ * time instead (restartNoticeQueueText): a resend advice would duplicate rows
+ * the router still delivers.
+ */
+export function restartLossLine(
+  idleFlush: boolean,
+  worksource: boolean,
+  idleMinutes: number,
+  queue: { pending: number; failed: number } | null,
+): string {
+  if (worksource && idleFlush) {
+    return (
+      `. Tetlen volt (>= ${idleMinutes} perc), folyamatban levo munka nem volt; a nyugtazatlan tetelek a sorbol ujrakezbesulnek; ` +
+      'a resume magatol megy -- NE kuldj allapot-uzenetet es NE kuldj ujra semmit.'
+    )
+  }
+  return '.' + restartNoticeQueueText(queue)
 }
 
 async function checkAgent(name: string, nowMs: number): Promise<void> {
@@ -629,6 +871,20 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     }
   }
 
+  // Read once, used both to compute newCardDispatchDue below and to advance
+  // lastDispatchedCard at decision time -- a second query at decision time
+  // could legitimately return a THIRD card id if one arrived between the two
+  // reads, which would record the wrong "last seen" value.
+  const dispatchedCardIdForGuard = cfg.newCardHandoffEnabled ? getInProgressCardIdForAgent(name) : null
+  // Only looked up when there is an id to look up: same cost reasoning as
+  // contextTokens being gated on idleFlushEnabled. Carried into GuardInputs
+  // (and from there into GuardState) so the handoff/resume prompts can name
+  // the new card instead of leaving the agent to infer it (CYBERSEC F2,
+  // comment 31757).
+  const dispatchedCardTitleForGuard = dispatchedCardIdForGuard !== null
+    ? getKanbanCard(dispatchedCardIdForGuard)?.title ?? null
+    : null
+
   const inputs: GuardInputs = {
     nowMs,
     running,
@@ -666,6 +922,14 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // open-question skip: dailyHandoffSkipSweep decides all three,
     // applyDailyHandoffSkipSweep applies the record and the skip flag.
     dailyHandoffDue: applyDailyHandoffSkipSweep(lastDailyHandoff, dailySkipped, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs, () => dailyQuestionOpen(name), () => logger.info({ name }, 'context-guard: daily handoff skipped today -- open inbound question (the next slot fires regardless)')),
+    // Only queried when the tier is armed: an idle DB read on every sweep for
+    // every agent, for a tier most installs leave off, is a cost nobody asked
+    // for (same reasoning as contextTokens being gated on idleFlushEnabled).
+    newCardDispatchDue: forgetNewCardDispatchRecord(cfg.newCardHandoffEnabled, dispatchedCardIdForGuard)
+      ? (lastDispatchedCard.delete(name), false)
+      : newCardDispatchDue(cfg.newCardHandoffEnabled, dispatchedCardIdForGuard, lastDispatchedCard.get(name)),
+    newCardId: dispatchedCardIdForGuard,
+    newCardTitle: dispatchedCardTitleForGuard,
     usageLimited: usage?.limited === true,
     // Same edge as restorableResumeStates, so the in-memory park and the
     // persisted obligation end together. No clamp here: restartedAtMs was
@@ -687,6 +951,14 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   if (decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)) {
     lastDailyHandoff.set(name, nowMs)
     dailySkipped.delete(name)
+  }
+
+  // Same decision-time marking, same reason: advance the record only once
+  // decideGuard has actually acted on the card change, so a sweep where a
+  // higher-ranked tier or phase pre-empted this branch leaves it due again on
+  // the next sweep instead of silently consuming the signal.
+  if (decision.reason === NEW_CARD_DISPATCH_REASON_PREFIX && dispatchedCardIdForGuard !== null) {
+    lastDispatchedCard.set(name, dispatchedCardIdForGuard)
   }
 
   // Post-respawn grace for the main session. Making the Linux restart path work
@@ -730,6 +1002,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     dropPendingResume(name, decision.reason)
   }
   if (decision.action === 'none') {
+    if (decision.reason === RESUME_GIVE_UP_REASON) await reportResumeGiveUp(name)
+    if (decision.reason.startsWith(BUSY_OVERDUE_REASON_PREFIX)) logger.warn({ name, reason: decision.reason }, 'context-guard: pane still busy far past the handoff deadline -- restart stays deferred')
     // Idle-flush non-decisions carry the measurement that blocked them
     // ("quiet for only 4m of 20m"), which is the only way to see the tier
     // failing to reach its threshold. It matters because the idle clock is the
@@ -786,7 +1060,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                 // agent, so the percentage prompt would announce "~0% --
                 // critical" at 04:00 to a session that is perfectly healthy.
                 ? dailyHandoffPrompt(cfg.dailyHandoffTime ?? '', handoffPathFor(name))
-                : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
+                : promptReason === NEW_CARD_DISPATCH_REASON_PREFIX
+                  // Same trap again: pct may be null or low for a session
+                  // that is perfectly healthy and simply about to start a
+                  // different card.
+                  ? newCardDispatchHandoffPrompt(handoffPathFor(name), inputs.newCardId, inputs.newCardTitle)
+                  : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
         )
         break
       case 'restart': {
@@ -878,10 +1157,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             MAIN_AGENT_ID,
             `[CONTEXT-GUARD] Ujrainditottam a(z) "${name}" agentet -- ok: ${decision.reason}` +
             (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
-            `. A regi sessionbe az utolso percekben kuldott uzenetek/utasitasok ELVESZHETTEK -- ellenorizd es kuldd ujra oket.` +
+            // The idle-flush origin comes from the SEQUENCE state: decision.reason
+            // here is the restart's own ("handoff written"), never idle-flush.
+            restartLossLine(state.idleFlushSequence === true, onWorksource(name), cfg.idleMinutes, restartQueueAtRestart(name)) +
             (typeof decision.nextState.handoffStaleMinutes === 'number'
-              // The generic "messages may be lost" line invites the wrong
-              // conclusion when the real gap is the ARTIFACT: say explicitly
+              // The queue line alone invites the wrong conclusion when the
+              // real gap is the ARTIFACT: say explicitly
               // that the handoff does not cover the tail of the session.
               ? ` FIGYELEM: a HANDOFF.md ELAVULT -- az utolso ~${decision.nextState.handoffStaleMinutes} perc munkaja nincs benne, a friss session ezt a szakaszt az elo forrasokbol kapja meg.`
               : decision.nextState.handoffStaleMinutes === 'unknown'
@@ -906,20 +1187,28 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         // GUARDHITELES903: anchored like the handoff request -- the resume
         // prompt steers a fresh session's entire first turn.
         let outcome: Awaited<ReturnType<typeof sendSystemDirective>>
+        resumeSending.add(name)
         try {
           outcome = await sendSystemDirective(
             name,
             session,
-            resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
+            state.handoffRequestReason?.startsWith(NEW_CARD_DISPATCH_REASON_PREFIX)
+              // This tier's own wording (CYBERSEC F2, comment 31757):
+              // resumePrompt's "context grew too large" is false here.
+              ? newCardDispatchResumePrompt(name, handoffPathFor(name), hadHandoff, state.newCardId ?? null, state.newCardTitle ?? null)
+              : resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
           )
         } catch (err) {
           // Not retried: a throw from the tmux layer can come after part of
           // the text already landed, and a second copy is worse than none.
           dropPendingResume(name, 'resume delivery threw')
           throw err
+        } finally {
+          resumeSending.delete(name)
         }
         if (outcome === 'sent') {
           dropPendingResume(name, 'resume delivered')
+          appendRestartLogEntry(name, hadHandoff, state.handoffStaleMinutes)
         } else {
           // Nothing was injected ('aborted-busy' / 'skipped-locked'): keep
           // the obligation and stay in await-ready, so the next sweep retries
@@ -955,7 +1244,11 @@ export async function getContextGuardStatus(): Promise<Array<{
     return {
       agent: name,
       phase: state?.phase ?? 'idle',
-      pct: cfg.enabled && !remote ? await measurePct(name, cfg.limitTokens) : null,
+      // Koteg 24 (card 57044a66): learn:false -- this is a read-only status listing, not the
+      // guard's own sweep; it must not feed its reading into the per-agent high-water mark
+      // (observedHighwater), or opening the dashboard status page would itself widen the
+      // learned context window.
+      pct: cfg.enabled && !remote ? await measurePct(name, cfg.limitTokens, { learn: false }) : null,
       enabled: cfg.enabled,
       saturationRestart: cfg.saturationRestart,
       ...cooldownStatusExtra(state),
@@ -1013,7 +1306,53 @@ export function getHardGuardPhase(name: string): string {
   return guardStates.get(name)?.phase ?? 'idle'
 }
 
+// The hold end already reported as lapsed, per agent: one warn per hold, not one
+// per router tick. One entry per agent, so it cannot grow with time.
+const lapsedHoldLogged = new Map<string, number>()
+
+function lapsed(name: string, phase: string, untilMs: number, nowMs: number): null {
+  if (lapsedHoldLogged.get(name) !== untilMs) {
+    lapsedHoldLogged.set(name, untilMs)
+    logger.warn({ name, phase, overdueMs: nowMs - untilMs }, 'context-guard: delivery hold lapsed past the phase deadline -- delivering to this agent again (fail-open)')
+  }
+  return null
+}
+
+/**
+ * The message router's delivery hold for this agent (delivery-hold.ts): from the
+ * handoff request until the fresh session has its resume prompt.
+ *
+ * - A resume prompt being typed right now holds, whatever the phase: the sweep's
+ *   inject-resume has already moved the state to cooldown when it sends, so this
+ *   is the one stretch the phase does not cover, and a message pasted now would
+ *   land in front of the resume. Bounded by how long a resume can be owed at all
+ *   (the obligation's restart time + PENDING_RESUME_TTL_MS + one sweep), which
+ *   covers both the in-run ready deadline and the longer one a restored
+ *   obligation gets: a send that never returns must not keep the inbox shut.
+ * - await-handoff and await-ready hold until the phase deadline plus one sweep.
+ *   The end is fixed by the deadline, never by `now`: a phase can outlast its
+ *   deadline (a deferral keeps await-handoff past it), and a hold renewed from
+ *   `now` on every look would last exactly as long as that does. Past it the hold
+ *   lapses, with one warn, and the agent's rows flow again (fail-open).
+ */
+export function contextGuardDeliveryHold(name: string, nowMs: number): DeliveryHold | null {
+  if (resumeSending.has(name)) {
+    const owed = pendingResumes[name]
+    // No owed resume while one is being sent should not happen; if it does, hold nothing.
+    if (!owed) return null
+    const untilMs = owed.restartedAtMs + PENDING_RESUME_TTL_MS + INTERVAL_MS
+    return nowMs < untilMs ? { phase: 'resume-sending', untilMs } : lapsed(name, 'resume-sending', untilMs, nowMs)
+  }
+  const st = guardStates.get(name)
+  if (!st || (st.phase !== 'await-handoff' && st.phase !== 'await-ready')) return null
+  const untilMs = st.deadlineMs + INTERVAL_MS
+  return nowMs < untilMs ? { phase: st.phase, untilMs } : lapsed(name, st.phase, untilMs, nowMs)
+}
+
 export function startContextGuardRunner(): NodeJS.Timeout {
+  // Before anything can put an agent into a restart sequence -- including the
+  // await-ready states re-armed just below.
+  setDeliveryHoldProbe(contextGuardDeliveryHold)
   // Before the first sweep can run, so an agent restarted by the
   // previous dashboard process is not re-armed at 'idle' and left without its
   // resume prompt.

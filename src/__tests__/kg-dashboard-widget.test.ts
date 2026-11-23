@@ -574,7 +574,9 @@ describe('kg: HTML wiring', () => {
   it('the kg page section exists with the required child elements', () => {
     const pageIdx = HTML.indexOf('id="kgPage"')
     expect(pageIdx).toBeGreaterThan(-1)
-    const slice = HTML.slice(pageIdx, pageIdx + 4000)
+    // 4000 -> 5000: card dcb196f9 inserted the nebula toggle + section between the toolbar and
+    // kg-layout, pushing kgGraphView/kgGraphCanvas/etc. further into the page markup.
+    const slice = HTML.slice(pageIdx, pageIdx + 5000)
     for (const id of [
       'kgOllamaBanner', 'kgStats', 'kgSearchInput', 'kgProjectSelect', 'kgTypeFilter',
       'kgStrictToggle', 'kgResultsMeta', 'kgResultsBody', 'kgDetailPanel', 'kgTabDetail',
@@ -587,7 +589,7 @@ describe('kg: HTML wiring', () => {
 
   it('the detail panel and graph view are hidden by default', () => {
     const pageIdx = HTML.indexOf('id="kgPage"')
-    const slice = HTML.slice(pageIdx, pageIdx + 4000)
+    const slice = HTML.slice(pageIdx, pageIdx + 5000)
     expect(slice).toMatch(/id="kgDetailPanel"\s+hidden/)
     expect(slice).toMatch(/id="kgGraphView"\s+hidden/)
     expect(slice).toMatch(/id="kgOllamaBanner"[^>]*hidden/)

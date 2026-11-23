@@ -141,9 +141,11 @@ cp "$HERE/env-compat-lib.sh" "$TMP/co-a/store/" && cp "$HERE/env-compat-lib.sh" 
 COPY_A="$TMP/co-a/store/$(basename "$RUN")"
 COPY_B="$TMP/co-b/store/$(basename "$RUN")"
 
-# Hold both slots on the ANCHOR -- the location a correct default must resolve to.
+# Hold all default slots (3, card eff5c2f6) on the ANCHOR -- the location a correct default must
+# resolve to.
 ( exec 9>"$ANCHOR/store/.cleancore-suite-slot-1.lock"; flock 9; sleep 300 ) & HOLDERS+=("$!")
 ( exec 9>"$ANCHOR/store/.cleancore-suite-slot-2.lock"; flock 9; sleep 300 ) & HOLDERS+=("$!")
+( exec 9>"$ANCHOR/store/.cleancore-suite-slot-3.lock"; flock 9; sleep 300 ) & HOLDERS+=("$!")
 sleep 0.5
 
 for co in A B; do
@@ -734,6 +736,30 @@ fi
 # THE REAL LOCK MAY LEGITIMATELY BE BUSY (another agent's genuine landing/suite in flight): this
 # acquires it NON-BLOCKING and SKIPS the case rather than queueing behind a run that can take
 # 60-90 minutes -- a selftest that can hang on live fleet traffic is worse than one that skips.
+#
+# FLEET_TEST_TREE IS OVERRIDDEN to a dedicated, non-/tmp scratch worktree (card 6d5a248d). The
+# tree-lock holder below (tree_lock_pid) is this case's ONLY guard against the real fleet-test.sh
+# child actually reaching checkout/vitest, and that guard is a plain `sleep 25` subshell with no
+# protection if THIS SCRIPT ITSELF is SIGKILLed (card fa375169 measured exactly that, under the
+# shared 3-slot cap): bash cannot trap SIGKILL, so cleanup_case15 never runs, fleet_test_pid and
+# tree_lock_pid become orphans, and if tree_lock_pid happens to die in the same event (plausible --
+# same cgroup, similar size), the orphaned fleet_test_pid is free to acquire the now-unheld REAL
+# lock and run a full, unsupervised 60-90 minute suite against whatever FLEET_TEST_TREE resolves
+# to. Pointing it at a disposable path makes that outcome harmless instead of trying to win the
+# race: LOCK_FILE and the CPU-slot pool are both derived from ROOT, not from TEST_TREE (see the
+# comment block above fleet-test.sh's own CPU_SLOTS section), so this case's lock- and
+# slot-contention assertions below stay exactly as meaningful with the override in place -- only
+# the checkout/build/vitest destination changes. A /tmp path is refused by fleet-test.sh itself
+# (its own temp-dir guard), so this uses a dedicated path under the existing
+# marveen-scratch-worktrees convention instead, cleaned up before (stale leftover from a prior
+# SIGKILLed run) and after.
+CASE15_TREE="/home/neon/marveen-scratch-worktrees/selftest-mopsion-suite-run-case15"
+cleanup_case15_tree() {
+  git -C /home/neon/marveen worktree remove --force "$CASE15_TREE" >/dev/null 2>&1 || true
+  rm -rf "$CASE15_TREE" 2>/dev/null || true
+}
+cleanup_case15_tree  # stale leftover from an earlier SIGKILLed run, if any -- clean before, not just after
+
 REAL_TREE_LOCK="/home/neon/marveen-test.lock"
 REV_ANCHOR="$TMP/reverse-anchor"
 mkdir -p "$REV_ANCHOR/store"
@@ -742,7 +768,14 @@ fleet_test_pid=""
 cleanup_case15() {
   [[ -n "$fleet_test_pid" ]] && kill -9 "$fleet_test_pid" 2>/dev/null
   [[ -n "$tree_lock_pid" ]] && kill -9 "$tree_lock_pid" 2>/dev/null
+  cleanup_case15_tree
 }
+
+# Regression pin (Kész, ha #2): the REAL shared tree's CLAUDE.md must be byte-identical before and
+# after this case, proven by checksum rather than assumed from the FLEET_TEST_TREE override above.
+REAL_CLAUDE_MD="/home/neon/marveen-test/CLAUDE.md"
+real_claude_md_before=""
+[ -f "$REAL_CLAUDE_MD" ] && real_claude_md_before="$(sha256sum "$REAL_CLAUDE_MD" | cut -d' ' -f1)"
 
 exec 8>"$REAL_TREE_LOCK"
 if ! flock -n 8; then
@@ -756,7 +789,7 @@ else
   sleep 0.3
 
   MARVEEN_MAIN="$REV_ANCHOR" CLEANCORE_SUITE_SLOTS=2 CLEANCORE_SUITE_POLL_S=1 \
-    FLEET_TEST_LOCK_WAIT=20 \
+    FLEET_TEST_LOCK_WAIT=20 FLEET_TEST_TREE="$CASE15_TREE" \
     bash "$HERE/fleet-test.sh" --ref HEAD >"$TMP/case15-fleet-test.out" 2>&1 &
   fleet_test_pid=$!
   HOLDERS+=("$fleet_test_pid")  # card 7a0aa34d: cleanup_case15 only runs if this script reaches it
@@ -793,6 +826,18 @@ else
   cleanup_case15
   wait "$fleet_test_pid" 2>/dev/null
   wait "$tree_lock_pid" 2>/dev/null
+
+  # The regression pin itself: whatever the real fleet-test.sh child actually did (blocked on the
+  # lock the whole time, or -- the bug this fixes -- slipped past it and ran for real), the REAL
+  # shared tree's CLAUDE.md must read back exactly as it did before this case started.
+  real_claude_md_after=""
+  [ -f "$REAL_CLAUDE_MD" ] && real_claude_md_after="$(sha256sum "$REAL_CLAUDE_MD" | cut -d' ' -f1)"
+  if [ "$real_claude_md_before" = "$real_claude_md_after" ]; then
+    ok "the REAL shared tree's CLAUDE.md is byte-identical before/after case 15 (FLEET_TEST_TREE override holds)"
+  else
+    bad "case 15's real fleet-test.sh child touched the REAL shared tree's CLAUDE.md" \
+      "before=$real_claude_md_before after=$real_claude_md_after"
+  fi
 fi
 
 # --- 16. tree provenance: worktree HEAD and node_modules'/main-clone HEAD are both named, and a
@@ -1008,39 +1053,75 @@ else
   bad "M1: header-file leak still present" "leftover=$leftover files: $(find "$HDRLEAK" -type f)"
 fi
 
-# --- 19. D1: REFUSE A MARVEEN TEST RUN OUTRIGHT (card c0408a1c, MikroB 18681) -------------------
+# --- 19. D1: REFUSE A MARVEEN TEST RUN OUTRIGHT (card c0408a1c, MikroB 18681; reworked dffbb55f) -
 # Measured 2026-10-12/13: qa2 and backend2 ran a marveen file through this script while sitting in
-# a marveen checkout. Both halves (cwd, and a vitest argument naming a marveen file) are exercised
-# with fake, hermetic marveen/worktrees roots -- never the real /home/neon/marveen tree.
+# a marveen checkout. The check is MARKER-based now (git toplevel + store/fleet-test.sh), not two
+# hardcoded prefixes, so every fixture below is a REAL git repo -- a bare directory is simply not a
+# marveen tree under this logic, by construction, which is exactly the point.
+mk_fake_marveen() { # $1 = dir to create and git-init with a store/fleet-test.sh marker
+  mkdir -p "$1/store" "$1/src/__tests__"
+  git -C "$1" init -q
+  : > "$1/store/fleet-test.sh"
+  git -C "$1" -c user.email=a@b -c user.name=t add -A
+  git -C "$1" -c user.email=a@b -c user.name=t commit -q -m one
+}
 FAKE_MARVEEN_MAIN="$TMP/fake-marveen-main"
-FAKE_MARVEEN_WORKTREES="$TMP/fake-marveen-worktrees"
-mkdir -p "$FAKE_MARVEEN_MAIN/src/__tests__" "$FAKE_MARVEEN_WORKTREES/someagent"
+mk_fake_marveen "$FAKE_MARVEEN_MAIN"
 touch "$FAKE_MARVEEN_MAIN/src/__tests__/gemini-offload-dispatch.test.ts"
+git -C "$FAKE_MARVEEN_MAIN" add -A
+git -C "$FAKE_MARVEEN_MAIN" -c user.email=a@b -c user.name=t commit -q -m two
+
+# A SECOND, unrelated marveen-shaped tree at an ARBITRARY path (neither a "main clone" nor under
+# any "agent-worktrees" directory) -- this is the exact gap RedHat measured live (comment 18896,
+# bypass c): a gate agent's own throwaway worktree, e.g. /home/neon/cc-gate-<card>-qa2-<sha> or
+# /home/neon/marveen-gate-worktrees/..., is neither. The marker check must refuse this one too,
+# with no override naming it specially.
+FAKE_MARVEEN_GATE_WT="$TMP/cc-gate-dffbb55f-someagent-abc123"
+mk_fake_marveen "$FAKE_MARVEEN_GATE_WT"
+touch "$FAKE_MARVEEN_GATE_WT/src/__tests__/some-gate-test.test.ts"
+git -C "$FAKE_MARVEEN_GATE_WT" add -A
+git -C "$FAKE_MARVEEN_GATE_WT" -c user.email=a@b -c user.name=t commit -q -m two
+
+# A real (non-marveen) mopsion-shaped tree, for the negative control cases below: a git repo that
+# does NOT carry store/fleet-test.sh must never be mistaken for a marveen one.
+FAKE_MOPSION_WT="$TMP/fake-mopsion-worktree"
+mkdir -p "$FAKE_MOPSION_WT"
+git -C "$FAKE_MOPSION_WT" init -q
+: > "$FAKE_MOPSION_WT/README.md"
+git -C "$FAKE_MOPSION_WT" add -A
+git -C "$FAKE_MOPSION_WT" -c user.email=a@b -c user.name=t commit -q -m one
 
 # 19a. cwd is the (fake) marveen main checkout -> REFUSED, names fleet-test.sh.
-out="$(cd "$FAKE_MARVEEN_MAIN" && env "${env_common[@]}" MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" \
-       CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
-       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+out="$(cd "$FAKE_MARVEEN_MAIN" && env "${env_common[@]}" bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
 if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- the caller's cwd" && echo "$out" | grep -q 'fleet-test.sh'; then
   ok "D1: cwd under the marveen main checkout is refused, naming fleet-test.sh"
 else
   bad "D1: a marveen-main cwd should have been refused" "rc=$rc out=$out"
 fi
 
-# 19b. cwd is a (fake) marveen agent worktree -> REFUSED, same as the main checkout.
-out="$(cd "$FAKE_MARVEEN_WORKTREES/someagent" && env "${env_common[@]}" MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" \
-       CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
-       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+# 19b (K7b, card dffbb55f): cwd is an ARBITRARY marveen checkout -- the gate-worktree shape --
+# refused by the MARKER, with no prefix naming it. This is the case the old prefix-based D1
+# missed (RedHat 18896, bypass c): neither "main clone" nor "marveen-agent-worktrees".
+out="$(cd "$FAKE_MARVEEN_GATE_WT" && env "${env_common[@]}" bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
 if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- the caller's cwd"; then
-  ok "D1: cwd under a marveen agent worktree is refused"
+  ok "D1 (K7b): cwd under an arbitrary marveen gate-worktree (no fixed prefix) is refused"
 else
-  bad "D1: a marveen-worktree cwd should have been refused" "rc=$rc out=$out"
+  bad "D1 (K7b): an arbitrary marveen gate-worktree cwd should have been refused" "rc=$rc out=$out"
 fi
 
-# 19c. cwd is clean (this selftest's own $TMP), but a vitest argument names an existing marveen
-# file by absolute path -> REFUSED, and the suggested fix quotes that same argument.
-out="$(env "${env_common[@]}" MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" \
-       CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
+# 19b-control. CONTROL: a real mopsion-shaped git repo (no store/fleet-test.sh) is NOT refused by
+# the cwd check -- proves the marker check is not blanket-failing on "any git repo".
+out="$(cd "$FAKE_MOPSION_WT" && env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree'; then
+  ok "D1 CONTROL: a real mopsion git repo (no fleet-test.sh marker) is not refused"
+else
+  bad "D1 CONTROL: a mopsion repo without the marker should not trip D1" "rc=$rc out=$out"
+fi
+
+# 19c. cwd is clean (this selftest's own $TMP, not a git repo), but a vitest argument names an
+# existing marveen file by absolute path -> REFUSED, and the suggested fix quotes that argument.
+out="$(env "${env_common[@]}" \
        bash "$RUN" no-such-agent-xyz -- "$FAKE_MARVEEN_MAIN/src/__tests__/gemini-offload-dispatch.test.ts" 2>&1)"; rc=$?
 if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- vitest argument" && echo "$out" | grep -q 'gemini-offload-dispatch.test.ts'; then
   ok "D1: a vitest argument naming a marveen file is refused, quoting the argument"
@@ -1048,11 +1129,21 @@ else
   bad "D1: a marveen-file vitest argument should have been refused" "rc=$rc out=$out"
 fi
 
+# 19c2 (K7b for arguments): a vitest argument naming a file under the ARBITRARY gate-worktree (not
+# under any fixed prefix) is refused too -- the old code's argument half had the SAME two-prefix
+# gap as the cwd half.
+out="$(env "${env_common[@]}" \
+       bash "$RUN" no-such-agent-xyz -- "$FAKE_MARVEEN_GATE_WT/src/__tests__/some-gate-test.test.ts" 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- vitest argument"; then
+  ok "D1 (K7b): a vitest argument under an arbitrary marveen gate-worktree is refused"
+else
+  bad "D1 (K7b): an arbitrary-gate-worktree vitest argument should have been refused" "rc=$rc out=$out"
+fi
+
 # 19d. CONTROL: a non-existent path that merely LOOKS like a marveen path is not refused by the
 # argument check (only a file that actually exists there counts) -- proven by reaching past D1 into
 # the ordinary "no CleanCore worktree" failure.
-out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" \
-       CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 \
        bash "$RUN" no-such-agent-xyz -- "$FAKE_MARVEEN_MAIN/src/__tests__/no-such-file.test.ts" 2>&1)"; rc=$?
 if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree'; then
   ok "D1 CONTROL: a non-existent marveen-shaped path is not refused -- only real files are"
@@ -1065,12 +1156,91 @@ fi
 FAKE_WT="$TMP/fake-pinned-worktree"
 mkdir -p "$FAKE_WT"
 out="$(cd "$FAKE_MARVEEN_MAIN" && env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=2 \
-       MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
        bash "$RUN" --worktree "$FAKE_WT" no-such-agent-xyz 2>&1)"; rc=$?
 if ! echo "$out" | grep -q "REFUSED -- the caller's cwd"; then
   ok "D1: --worktree exempts the cwd check (an explicitly pinned worktree, cwd is irrelevant)"
 else
   bad "D1: --worktree should have exempted the cwd check" "rc=$rc out=$out"
+fi
+
+# 19f (K10b, card dffbb55f): --worktree exempts the CWD check, but NOT the ARGUMENT check -- a
+# --worktree caller passing a RELATIVE marveen-file argument (resolved against its own, non-
+# marveen cwd) must still be refused. Nothing in the --worktree branch above skips the argument
+# loop; this pins that it stays that way.
+out="$(cd "$FAKE_MARVEEN_MAIN" && env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=2 \
+       bash "$RUN" --worktree "$FAKE_WT" no-such-agent-xyz -- src/__tests__/gemini-offload-dispatch.test.ts 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- vitest argument"; then
+  ok "D1 (K10b): --worktree does not exempt a relative marveen-file ARGUMENT, only the cwd"
+else
+  bad "D1 (K10b): a --worktree caller's marveen-file argument should still be refused" "rc=$rc out=$out"
+fi
+
+# 19g (K9, card dffbb55f): CLEANCORE_SUITE_ALLOW_NO_CARD=1 does not exempt the cwd check either --
+# D1 runs before the no-card override is even read, and must stay that way regardless of it.
+out="$(cd "$FAKE_MARVEEN_MAIN" && env "${env_common[@]}" CLEANCORE_SUITE_ALLOW_NO_CARD=1 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- the caller's cwd"; then
+  ok "D1 (K9): CLEANCORE_SUITE_ALLOW_NO_CARD=1 does not exempt a marveen cwd"
+else
+  bad "D1 (K9): the no-card override should not have exempted a marveen cwd" "rc=$rc out=$out"
+fi
+
+# 19h (K9b, card dffbb55f): the same override does not exempt the ARGUMENT check either.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_ALLOW_NO_CARD=1 \
+       bash "$RUN" no-such-agent-xyz -- "$FAKE_MARVEEN_MAIN/src/__tests__/gemini-offload-dispatch.test.ts" 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- vitest argument"; then
+  ok "D1 (K9b): CLEANCORE_SUITE_ALLOW_NO_CARD=1 does not exempt a marveen-file argument"
+else
+  bad "D1 (K9b): the no-card override should not have exempted a marveen-file argument" "rc=$rc out=$out"
+fi
+
+# 19i (K12, card dffbb55f): a RELATIVE marveen-file argument, resolved against the caller's cwd
+# (no --worktree this time), is refused exactly like the absolute form in 19c -- the realpath -m
+# resolution must actually be applied, not just the absolute-path branch.
+out="$(cd "$FAKE_MARVEEN_MAIN" && env "${env_common[@]}" \
+       bash "$RUN" no-such-agent-xyz -- src/__tests__/gemini-offload-dispatch.test.ts 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED"; then
+  ok "D1 (K12): a relative marveen-file argument resolved against cwd is refused"
+else
+  bad "D1 (K12): a relative marveen-file argument should have been refused" "rc=$rc out=$out"
+fi
+
+# --- 19j-l. THE THREE MEASURED BYPASSES (card dffbb55f, RedHat 18896 "a/b/c") -------------------
+
+# 19j (bypass a): a literal ".." segment in a relative argument, from a non-marveen cwd, must not
+# sail through unnormalized. realpath -m collapses it before the marker check runs.
+NONMARVEEN_CWD="$TMP/plain-cwd-for-dotdot"
+mkdir -p "$NONMARVEEN_CWD"
+out="$(cd "$NONMARVEEN_CWD" && env "${env_common[@]}" \
+       bash "$RUN" no-such-agent-xyz -- "../$(basename "$FAKE_MARVEEN_MAIN")/src/__tests__/gemini-offload-dispatch.test.ts" 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- vitest argument"; then
+  ok "D1 bypass (a): a literal '..' segment in the argument is normalized, still refused"
+else
+  bad "D1 bypass (a): a '..'-relative marveen argument should have been refused" "rc=$rc out=$out"
+fi
+
+# 19k (bypass b): a symlink living in a non-marveen directory, pointing AT a marveen file, is
+# followed to its real target -- refused by what it resolves to, not by its own (clean) path.
+SYMLINK_DIR="$TMP/plain-cwd-for-symlink"
+mkdir -p "$SYMLINK_DIR"
+ln -s "$FAKE_MARVEEN_MAIN/src/__tests__/gemini-offload-dispatch.test.ts" "$SYMLINK_DIR/innocent-looking.test.ts"
+out="$(env "${env_common[@]}" \
+       bash "$RUN" no-such-agent-xyz -- "$SYMLINK_DIR/innocent-looking.test.ts" 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- vitest argument"; then
+  ok "D1 bypass (b): a symlink pointing at a marveen file is followed and refused"
+else
+  bad "D1 bypass (b): a symlink to a marveen file should have been refused" "rc=$rc out=$out"
+fi
+
+# 19l (bypass c): the cwd is an ARBITRARY marveen gate-worktree (neither prefix) AND the argument
+# is relative -- both halves of the gap RedHat measured live, together. Already covered discretely
+# by 19b/19i; this is the combined shape actually measured on the real fleet (QA2's gate-worktree).
+out="$(cd "$FAKE_MARVEEN_GATE_WT" && env "${env_common[@]}" \
+       bash "$RUN" no-such-agent-xyz -- src/__tests__/some-gate-test.test.ts 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED"; then
+  ok "D1 bypass (c): an arbitrary gate-worktree cwd + relative argument together are refused"
+else
+  bad "D1 bypass (c): the combined gate-worktree shape should have been refused" "rc=$rc out=$out"
 fi
 
 # --- 20. D2: A GATE AGENT'S FIRST RUN ON A WAITING CARD (card c0408a1c, MikroB 18681) -----------
@@ -1170,6 +1340,41 @@ if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree' && ! echo "$
 else
   bad "M2: a casefold-variant project spelling should not have been refused" "rc=$rc out=$out"
 fi
+
+# 21e (K5, card dffbb55f): a waiting mopsion card whose ONLY comment is INFO-ONLY (not a REVIEW)
+# must be REFUSED for a gate agent too -- the gate branch accepts a builder's REVIEW, not just any
+# comment. RedHat's mutation sweep (18896) found this filter unpinned: removing the "starts with
+# REVIEW" check left the selftest fully green because nothing exercised a waiting card with a
+# non-REVIEW comment and a gate caller together.
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"info-only-waiting","project":"mopsion","status":"waiting","assignee":"the-builder","title":"x"}
+]' '{"info-only-waiting":[{"author":"the-builder","content":"INFO-ONLY PAUSED-SEMAPHORE\n\nqueueing, not a verdict"}]}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" --worktree "$TMP/fake-worktree-does-not-exist-k5" qa 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "M2 (K5): a gate agent is refused on a waiting card whose only comment is INFO-ONLY, not REVIEW"
+else
+  bad "M2 (K5): an INFO-ONLY-only waiting card should not have justified a gate agent's run" "rc=$rc out=$out"
+fi
+
+# 21f (K13, card dffbb55f): the gate-agent list covers more than just "qa" -- the selftest's D2
+# case (20) only ever exercised one name, so a mutant narrowing the list to a single gate name
+# stayed green. Pin at least cybered and cybersec2 too.
+for gate_name in cybered cybersec2; do
+  fake_api="$(card_fake_dashboard_start '[
+    {"id":"gate-list-check","project":"mopsion","status":"waiting","assignee":"the-builder","title":"x"}
+  ]' '{"gate-list-check":[{"author":"the-builder","content":"REVIEW: kesz, ime az eredmeny..."}]}')"
+  out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+         bash "$RUN" --worktree "$TMP/fake-worktree-does-not-exist-k13-$gate_name" "$gate_name" 2>&1)"; rc=$?
+  card_fake_dashboard_stop
+  if [[ $rc -eq 3 ]] && echo "$out" | grep -q -- "--worktree '$TMP/fake-worktree-does-not-exist-k13-$gate_name' does not exist" \
+     && ! echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+    ok "M2 (K13): gate agent '$gate_name' is accepted on a waiting card with a builder REVIEW comment"
+  else
+    bad "M2 (K13): gate agent '$gate_name' should have been accepted via the gate-list branch" "rc=$rc out=$out"
+  fi
+done
 
 # --- _token_file resolves to its OWN repo's token file, not the caller's cwd (card 56b14f14
 # round 2, qa2 comment 26511) -------------------------------------------------------------------

@@ -2,7 +2,14 @@
 # Watchdog: checks sessions every 5 minutes, restarts if missing.
 # Cron: */5 * * * * ~/marveen/scripts/watchdog.sh
 
-INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Card 23a14ae1: deriving INSTALL_DIR from $0 broke on 2026-11-06 when watchdog.sh ran from an
+# unexpected invocation path and resolved to agents/logs -- it then mkdir -p'd logs/ THERE,
+# which is how a plain log-only directory got listed as a phantom agent on the dashboard.
+# Architecturally this script is never installed/registered by any in-repo step (it needs a
+# crontab entry nothing creates, see scripts/main-inbox-observer.sh's header), so there is no
+# install-time substitution to keep it anchored the way the systemd-launched siblings are.
+# WATCHDOG_INSTALL_DIR lets tests/alternate hosts override it; the default is the one real path.
+INSTALL_DIR="${WATCHDOG_INSTALL_DIR:-/home/neon/marveen}"
 LOG="$INSTALL_DIR/logs/watchdog.log"
 mkdir -p "$INSTALL_DIR/logs"
 
@@ -189,11 +196,25 @@ agent_launch_env() {
       if ! head -c 20 "$OWN_TOKEN_PATH" 2>/dev/null | grep -q '^sk-ant-oat'; then
         printf '%s' "REFUSE:not-a-setup-token"; return
       fi
-      if python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --bad-content-characters "$OWN_TOKEN_PATH" 2>/dev/null; then
+      # Card 6b7a606d (RedHat LOW on ae5af304, msg 19513): the checker's own contract for these two
+      # flags is exit 0 (match) / exit 1 (no match) -- anything else (a crash, an unanticipated
+      # exception exiting 1 in a way indistinguishable from this script's own intent, a kill signal)
+      # must REFUSE, not be read as "no match" by a bare `if CMD; then`, which collapses every
+      # non-zero exit to the same "false" branch. The exit code is captured explicitly so a 3rd
+      # outcome exists.
+      python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --bad-content-characters "$OWN_TOKEN_PATH" 2>/dev/null
+      BAD_CHARS_RC=$?
+      if [ "$BAD_CHARS_RC" -eq 0 ]; then
         printf '%s' "REFUSE:content-bad-characters"; return
+      elif [ "$BAD_CHARS_RC" -ne 1 ]; then
+        printf '%s' "REFUSE:checker-failed"; return
       fi
-      if python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --same-as-fleet-token "$OWN_TOKEN_PATH" "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null; then
+      python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --same-as-fleet-token "$OWN_TOKEN_PATH" "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null
+      SAME_AS_FLEET_RC=$?
+      if [ "$SAME_AS_FLEET_RC" -eq 0 ]; then
         printf '%s' "REFUSE:same-as-fleet-token"; return
+      elif [ "$SAME_AS_FLEET_RC" -ne 1 ]; then
+        printf '%s' "REFUSE:checker-failed"; return
       fi
       printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$OWN_TOKEN_PATH')\" && "
       return

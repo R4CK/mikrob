@@ -3100,6 +3100,12 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .tab-panel { padding: 0 24px 24px; }
 .tab-panel[hidden] { display: none; }
 
+/* Nested tabs (Providers page, card f1e33cfb: Local model tab's Állapot/Katalógus sub-tabs) --
+   the outer .tab-panel already carries the 24px gutter, so the nested nav/panels drop their own
+   horizontal padding to avoid stacking to 48px. */
+.tab-panel .tab-nav-sub { padding: 0; margin-bottom: 16px; }
+.tab-panel .tab-panel { padding: 0 0 24px; }
+
 /* === Agent Overview === */
 .agent-overview-grid {
   display: grid;
@@ -7556,6 +7562,33 @@ button.graph-rel-jump:focus-visible { outline: 2px solid var(--accent); outline-
 .md-rendered pre code { background: none; padding: 0; }
 .md-rendered :not(pre) > code { border-radius: 3px; padding: 1px 5px; }
 
+/* MARVEENGAPS1020 (b): skills waiting for approval */
+.skills-pending {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--warning, #d4a52c);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+.skills-pending-title { font-size: 15px; margin: 0 0 6px; }
+.skills-pending-intro { font-size: 13px; color: var(--text-secondary); margin: 0 0 12px; line-height: 1.5; }
+.skills-pending-card { border-top: 1px solid var(--border); padding: 12px 0 4px; }
+.skills-pending-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.skills-pending-meta { font-size: 12px; color: var(--text-muted); }
+.skills-pending-sub { font-size: 12px; font-weight: 600; margin: 10px 0 4px; color: var(--text-secondary); }
+.skills-pending-findings { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.skills-pending-pattern { display: inline-block; min-width: 150px; font-weight: 600; color: var(--danger); margin-right: 6px; }
+.skills-pending-excerpt { display: block; color: var(--text-muted); white-space: pre-wrap; }
+.skills-pending-warn { font-size: 12px; color: var(--danger); margin-top: 6px; }
+.skills-pending-target { font-size: 13px; font-weight: 600; margin: 6px 0 2px; }
+.skills-pending-target.is-global { color: var(--danger); }
+.skills-pending-sub.is-flagged { color: var(--danger); }
+.skills-pending-file { font-size: 12px; margin: 2px 0; overflow-wrap: anywhere; }
+.skills-pending-file summary.is-flagged { color: var(--danger); }
+.skills-pending-file pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-code); padding: 10px; border-radius: 6px; font-size: 12px; }
+.skills-pending-sha { font-family: monospace; font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.skills-pending-actions { display: flex; gap: 8px; margin: 10px 0 6px; flex-wrap: wrap; }
 .skills-stats {
   display: flex;
   gap: 12px;
@@ -10253,15 +10286,12 @@ body {
   font-style: italic;
 }
 
-/* Rule 13: comfortable touch targets on the Local LLM controls */
-#localLlmPage .btn-compact,
-#localLlmPage .btn-primary,
-#localLlmPage .btn-secondary { min-height: 44px; }
-/* Rule 13 (RedHat D4, card fd5fcc2c, delta gate 25333): the freellm Retry button measured
-   68x38px at 375px width, under the 44px minimum -- same convention as #localLlmPage above. */
-#freellmPage .btn-compact,
-#freellmPage .btn-primary,
-#freellmPage .btn-secondary { min-height: 44px; }
+/* Rule 13: comfortable touch targets on the Providers page controls (card f1e33cfb merged
+   localLlmPage/freellmPage/geminiCallsPage into providersPage's tabs -- same selectors,
+   re-scoped to the tab-panel ids so the 44px guarantee still applies). */
+#providersPage .btn-compact,
+#providersPage .btn-primary,
+#providersPage .btn-secondary { min-height: 44px; }
 /* Rule 13, scoped to the new controls only (card 9bf6a1e0) -- the rest of the Föderáció page's
    compact buttons (reveal/rotate/edit/delete on peer cards) predate this and are unaffected, so
    they stay unaltered rather than folding an unrelated fleet-wide fix into this card's diff. */
@@ -10513,6 +10543,14 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* LLM today overview tile (card f1e33cfb), same mirrors-.ovw-cost-* convention as .ovw-gemini-*. */
+.ovw-llmtoday-card { margin-top: 14px; margin-bottom: 20px; }
+.ovw-llmtoday-body { display: flex; flex-direction: column; gap: 4px; }
+.ovw-llmtoday-gpu, .ovw-llmtoday-calls { font-size: 13px; margin: 0; }
+.ovw-llmtoday-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border, #333); }
+.ovw-llmtoday-detail-link { font-size: 12px; color: var(--accent, #4a9eff); text-decoration: none; white-space: nowrap; }
+.ovw-llmtoday-detail-link:hover { text-decoration: underline; }
 
 /* Overview tile (mirrors .ovw-cost-* layout, own namespace per card 01b51197's own precedent) */
 .ovw-gemini-card { margin-top: 14px; margin-bottom: 20px; }
@@ -11197,6 +11235,85 @@ body {
   font-size: 12px;
 }
 
+/* Card dcb196f9: live nebula graph (agents + KG nodes, flashing search trails). */
+.kg-nebula-section { margin: 12px 0 16px; }
+.kg-nebula-section[hidden] { display: none; }
+.kg-nebula-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.kg-nebula-title { font-size: 14px; font-weight: 600; margin: 0; }
+.kg-nebula-legend { display: flex; gap: 10px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap; max-width: 60vw; }
+.kg-nebula-legend-empty { font-size: 11px; color: var(--text-muted); }
+.kg-nebula-reduced-note { font-size: 11px; color: var(--text-muted); margin: 0 0 6px; }
+.kg-nebula-reduced-note[hidden] { display: none; }
+.kg-nebula-canvas-wrap {
+  position: relative;
+  min-height: min(70vh, 760px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #05060a;
+  overflow: hidden;
+}
+/* touch-action: none (not "manipulation") -- the canvas is now a 3D scene with its own drag-to-rotate
+   and pinch-to-zoom (OrbitControls), so the browser's own pan/zoom gesture handling must stay fully
+   out of its way instead of racing it. cursor:grab signals the rotate affordance; OrbitControls swaps
+   it to "grabbing" on mousedown via the DOM (not a CSS rule, so no companion class needed here). */
+.kg-nebula-canvas { width: 100%; height: 100%; min-height: min(70vh, 760px); display: block; cursor: grab; touch-action: none; }
+.kg-nebula-canvas:active { cursor: grabbing; }
+.kg-nebula-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: min(70vh, 760px);
+  padding: 24px 16px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 13px;
+}
+.kg-nebula-msg-error p { color: var(--text-muted); margin: 0; }
+
+/* Deterministic per-agent swatch classes for the legend DOM (CSP: class-only, no inline style
+   attributes -- the canvas drawing itself uses the same hex/hsl values directly in JS, which is
+   a 2D-context fill colour, not a CSSOM/style mutation, so it is outside style-src's scope). The
+   hue formula MUST stay in sync with kgNebulaPaletteColor() in app-kg-nebula.js (golden-angle
+   stepping from i=0, hue = (i*137.508 + 18) % 360, 72% sat / 62% light). */
+.kg-neb-c0  { background: hsl(18,72%,62%); }
+.kg-neb-c1  { background: hsl(156,72%,62%); }
+.kg-neb-c2  { background: hsl(293,72%,62%); }
+.kg-neb-c3  { background: hsl(71,72%,62%); }
+.kg-neb-c4  { background: hsl(208,72%,62%); }
+.kg-neb-c5  { background: hsl(346,72%,62%); }
+.kg-neb-c6  { background: hsl(123,72%,62%); }
+.kg-neb-c7  { background: hsl(261,72%,62%); }
+.kg-neb-c8  { background: hsl(38,72%,62%); }
+.kg-neb-c9  { background: hsl(176,72%,62%); }
+.kg-neb-c10 { background: hsl(313,72%,62%); }
+.kg-neb-c11 { background: hsl(91,72%,62%); }
+.kg-neb-c12 { background: hsl(228,72%,62%); }
+.kg-neb-c13 { background: hsl(6,72%,62%); }
+.kg-neb-c14 { background: hsl(143,72%,62%); }
+.kg-neb-c15 { background: hsl(281,72%,62%); }
+.kg-neb-c16 { background: hsl(58,72%,62%); }
+.kg-neb-c17 { background: hsl(196,72%,62%); }
+.kg-neb-c18 { background: hsl(333,72%,62%); }
+.kg-neb-c19 { background: hsl(111,72%,62%); }
+.kg-neb-c20 { background: hsl(248,72%,62%); }
+.kg-neb-c21 { background: hsl(26,72%,62%); }
+.kg-neb-c22 { background: hsl(163,72%,62%); }
+.kg-neb-c23 { background: hsl(301,72%,62%); }
+
+@media (max-width: 768px) {
+  .kg-nebula-canvas-wrap { min-height: min(62vh, 560px); }
+  .kg-nebula-canvas { min-height: min(62vh, 560px); }
+  .kg-nebula-legend { max-width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The JS already skips the rAF loop and draws one static frame; this is the CSS-only half of
+     the same "static fallback" requirement in case anything here ever grows a CSS transition. */
+  .kg-nebula-canvas-wrap, .kg-nebula-canvas { transition: none !important; animation: none !important; }
+}
+
 /* === FreeAPI LLM (freellm) === */
 .freellm-section {
   background: var(--bg-card);
@@ -11291,11 +11408,96 @@ body {
   line-height: 1.4;
 }
 
+/* === FreeAPI LLM call log (card ebe20efe) === */
+.freellm-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.freellm-calls-loading,
+.freellm-calls-empty {
+  padding: 12px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.freellm-calls-error {
+  padding: 12px;
+  background: rgba(239, 68, 68, 0.1);
+  border-left: 3px solid var(--error, #ef4444);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+}
+.freellm-calls-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.freellm-calls-counts[hidden] {
+  display: none;
+}
+.freellm-calls-counts-group {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.freellm-calls-counts-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  min-width: 48px;
+}
+.freellm-calls-counts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.freellm-calls-count-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.freellm-calls-count-chip--ok { color: var(--success, #10b981); }
+.freellm-calls-count-chip--fail,
+.freellm-calls-count-chip--stalled,
+.freellm-calls-count-chip--rate_429,
+.freellm-calls-count-chip--auth { color: var(--error, #ef4444); }
+.freellm-calls-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.freellm-calls-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.freellm-calls-table th,
+.freellm-calls-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.freellm-calls-table th {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.freellm-calls-row--failed td { background: rgba(239, 68, 68, 0.08); }
+
 /* Responsive: 375px minimum (rule 13) */
 @media (max-width: 480px) {
   .freellm-metrics {
     grid-template-columns: 1fr;
   }
+  .freellm-calls-counts-group { flex-direction: column; align-items: flex-start; }
 }
 
 /* === FreeAPI LLM provider key form (card fd5fcc2c point 5) === */
@@ -11383,4 +11585,117 @@ body {
   .notes-table td[data-label]::before { content: attr(data-label) ": "; color: var(--text-muted, #888); font-size: 0.85em; }
   .notes-actions { text-align: left; }
   .notes-assignee { white-space: normal; overflow-wrap: anywhere; }
+}
+
+/* === LLM Ledger page (card 52c48470) === */
+.llm-ledger-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.llm-ledger-days-filter {
+  display: flex;
+  gap: 4px;
+}
+.llm-ledger-loading,
+.llm-ledger-error,
+.llm-ledger-empty {
+  padding: 12px 0;
+  color: var(--text-secondary);
+}
+.llm-ledger-error { color: var(--danger, #e55); }
+.llm-ledger-totals {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: var(--card-bg, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 12px 0;
+}
+.llm-ledger-totals[hidden] {
+  display: none;
+}
+.llm-ledger-total-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.llm-ledger-total-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.llm-ledger-total-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+.llm-ledger-tokens-saved .llm-ledger-total-value,
+.llm-ledger-tokens-saved { color: var(--accent); }
+.llm-ledger-section { margin: 20px 0; }
+.llm-ledger-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.llm-ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+.llm-ledger-table th,
+.llm-ledger-table td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.llm-ledger-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--surface);
+}
+.llm-ledger-table tbody tr:hover { background: var(--hover-bg, rgba(255,255,255,.04)); }
+.llm-ledger-num { text-align: right; font-variant-numeric: tabular-nums; }
+.llm-ledger-provider-name { font-weight: 500; }
+.llm-ledger-no-data { color: var(--text-secondary); text-align: center; padding: 20px !important; }
+.llm-ledger-budget-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+}
+.llm-ledger-budget-view {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.llm-ledger-budget-source {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+.llm-ledger-budget-source.override { color: var(--accent); }
+.llm-ledger-budget-input {
+  width: 110px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg, var(--surface));
+  color: var(--text);
+  font-size: 0.875rem;
+}
+.llm-ledger-budget-actions {
+  display: flex;
+  gap: 4px;
+}
+@media (max-width: 600px) {
+  .llm-ledger-toolbar { flex-direction: column; align-items: flex-start; }
+  .llm-ledger-totals { gap: 16px; }
+  .llm-ledger-budget-cell { flex-wrap: wrap; min-width: 0; }
 }

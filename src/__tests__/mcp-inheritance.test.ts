@@ -158,6 +158,83 @@ describe('R1 structural fix: deniedMcpServers deny-lists what this agent did not
   })
 })
 
+// Card c69a8da2 (cybersec NO-GO): the R1 block above only ever looked at PROJECT_ROOT/.mcp.json.
+// The operator's OWN ~/.claude.json also carries mcpServers that reach every agent exactly the
+// same way (Claude Code's ancestor-directory discovery does not care which file declared a
+// server) -- a prior fix that wrote deniedMcpServers straight into an agent's settings.json as a
+// one-off file edit was silently erased by the very next provision, because this block force-set
+// the field from root-only data and never considered the user-level file at all. These tests pin
+// the real fix: the user-level set is folded into the SAME computation, a per-agent extra-keep
+// file widens the allowlist for one agent without touching the global list, and an agent's own
+// project-scope .mcp.json entry is never deny-listed even when the same name also appears
+// user-level.
+function writeAllowlist(obj: Record<string, string[]>): void {
+  writeFileSync(join(SANDBOX, 'project', 'store', 'mcp-agent-allowlist.json'), JSON.stringify(obj))
+}
+describe('R2 fix (card c69a8da2): the user-level ~/.claude.json set survives the next provision', () => {
+  it('a user-level server NOT on the allowlist is deny-listed, same as a root one', () => {
+    writeSharedDotClaude({ filesystem: def('fs'), playwright: def('pw') })
+    LIST = ''
+    ensureIsolatedChannelConfigDir('deny5', 'telegram')
+    expect(isolatedDenied('deny5')).toEqual(['filesystem', 'playwright'])
+  })
+
+  it('root AND user-level servers are BOTH considered in one denylist', () => {
+    writeProjectMcp({ 'code-review-graph': def('crg') })
+    writeSharedDotClaude({ filesystem: def('fs') })
+    LIST = 'code-review-graph'
+    ensureIsolatedChannelConfigDir('deny6', 'telegram')
+    expect(isolatedDenied('deny6')).toEqual(['filesystem'])
+  })
+
+  it('a per-agent extra-keep entry widens the allowlist for THAT agent only', () => {
+    writeSharedDotClaude({ filesystem: def('fs'), playwright: def('pw') })
+    writeAllowlist({ deny7: ['playwright'] })
+    LIST = ''
+    ensureIsolatedChannelConfigDir('deny7', 'telegram')
+    expect(isolatedDenied('deny7')).toEqual(['filesystem'])
+    ensureIsolatedChannelConfigDir('deny7-other', 'telegram')
+    expect(isolatedDenied('deny7-other')).toEqual(['filesystem', 'playwright'])
+  })
+
+  it('an agent\'s OWN project-scope .mcp.json server is never deny-listed, even if user-level also declares it', () => {
+    mkdirSync(join(SANDBOX, 'agents', 'deny8'), { recursive: true })
+    writeFileSync(join(SANDBOX, 'agents', 'deny8', '.mcp.json'), JSON.stringify({ mcpServers: { playwright: def('pw') } }))
+    writeSharedDotClaude({ filesystem: def('fs'), playwright: def('pw') })
+    LIST = ''
+    ensureIsolatedChannelConfigDir('deny8', 'telegram')
+    expect(isolatedDenied('deny8')).toEqual(['filesystem'])
+  })
+
+  it('missing or unparseable allowlist file: empty extra-keep, never throws (fail-closed, narrower not wider)', () => {
+    writeSharedDotClaude({ filesystem: def('fs'), playwright: def('pw') })
+    LIST = ''
+    expect(() => ensureIsolatedChannelConfigDir('deny9', 'telegram')).not.toThrow()
+    expect(isolatedDenied('deny9')).toEqual(['filesystem', 'playwright'])
+    writeFileSync(join(SANDBOX, 'project', 'store', 'mcp-agent-allowlist.json'), '{not json')
+    expect(() => ensureIsolatedChannelConfigDir('deny10', 'telegram')).not.toThrow()
+    expect(isolatedDenied('deny10')).toEqual(['filesystem', 'playwright'])
+  })
+
+  it('CYBERSEC regression probe: a manual deniedMcpServers write survives the NEXT provision (was wiped to [] before this fix)', () => {
+    writeSharedDotClaude({ Stitch: def('s'), filesystem: def('fs'), hostinger: def('h') })
+    LIST = ''
+    ensureIsolatedChannelConfigDir('deny11', 'telegram')
+    expect(isolatedDenied('deny11')).toEqual(['Stitch', 'filesystem', 'hostinger'])
+    // Simulate a session start re-provisioning the SAME agent again, with nothing else changed --
+    // this is exactly the step that reset the field to [] before this fix.
+    ensureIsolatedChannelConfigDir('deny11', 'telegram')
+    expect(isolatedDenied('deny11')).toEqual(['Stitch', 'filesystem', 'hostinger'])
+  })
+
+  it('unparseable user-level ~/.claude.json: nothing to deny from it, never throws', () => {
+    writeFileSync(join(SANDBOX, 'home', '.claude.json'), 'not json')
+    LIST = ''
+    expect(() => ensureIsolatedChannelConfigDir('deny12', 'telegram')).not.toThrow()
+    expect(isolatedDenied('deny12')).toEqual([])
+  })
+})
+
 describe('path 1: scaffold copies the project .mcp.json THROUGH the list', () => {
   it('(i) an unlisted server does NOT arrive; (ii) a listed one DOES', () => {
     writeProjectMcp({ 'aiam-blog': def('blog'), gmail: def('gmail') })

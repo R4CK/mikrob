@@ -15,8 +15,18 @@ import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DEAD_LAND_SELFTEST_ENV as DEAD_SELFTEST_ENV } from './setup/isolate-land-selftest-state.js'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+// Card 1634bf55 (CYBERED NO-GO 37616 F-3): without this, the subprocess below inherits this
+// process's OWN env as-is, and kanban-comment-lib.sh's live default (http://localhost:3420)
+// plus its git-common-dir token fallback can reach the real dashboard with the real token even
+// from this worktree -- confirmed live (a +3-byte write to the real store/land-runs.jsonl, three
+// real /api/messages posts, during a concurrent fleet-test, msg 23386 + MikroB comment 37609).
+// DEAD_SELFTEST_ENV is the SAME object the global `isolate-land-selftest-state.ts` setup file
+// forces into process.env for every worker; spreading it again here, unconditionally, is
+// explicit defense-in-depth for this file's own nested selftest cases.
 
 function selftest(script: string): { status: number; out: string } {
   try {
@@ -26,6 +36,7 @@ function selftest(script: string): { status: number; out: string } {
       encoding: 'utf-8',
       stdio: 'pipe',
       cwd: REPO,
+      env: { ...process.env, ...DEAD_SELFTEST_ENV },
     })
     return { status: 0, out }
   } catch (e) {
@@ -42,6 +53,10 @@ describe.each([
   // marveen carries 3 of its own + 26 shared.
   ['cleancore-land.sh', 42],
   ['marveen-land.sh', 29],
+  // Card e3cf26d0 (WhiteHat LOW-3 on d5638d28): mopsi-land.sh has carried a --selftest mode since
+  // card 7feb477b, same as the two above, and nothing ran it either -- gate agents were invoking
+  // it by hand each round instead. Floor measured directly: `bash store/mopsi-land.sh --selftest`.
+  ['mopsi-land.sh', 75],
 ])('%s --selftest', (script, floor) => {
   it('passes', { timeout: 30_000 }, () => {
     const r = selftest(script)
@@ -69,7 +84,7 @@ describe('marveen-land.sh --selftest-land-lock-release', () => {
         stdio: 'pipe',
         cwd: REPO,
         timeout: 50_000,
-        env: { ...process.env, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' },
+        env: { ...process.env, ...DEAD_SELFTEST_ENV, MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S: '5' },
       })
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string }
@@ -102,6 +117,7 @@ describe('marveen-land.sh --selftest-land-batch', () => {
         stdio: 'pipe',
         cwd: REPO,
         timeout: 170_000,
+        env: { ...process.env, ...DEAD_SELFTEST_ENV },
       })
     } catch (e) {
       const err = e as { status?: number; stdout?: string; stderr?: string }
@@ -151,6 +167,14 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // whenever that block does -- the assertion it feeds is about the SHARED block being identical
     // in both, and lowering it to make an edit fit would delete exactly that guarantee.
     //
+    // marveen-land.sh's own-case constant moved 34 -> 36 AND cc's floor moved 49 -> 51 with card
+    // 2ba008f2 round 3 (WhiteHat2 probe on origin/develop: the --actor mikrob land-guard bypass
+    // still worked during a session outage): the SAME two new cases (bypass refused while the
+    // outage marker is active, and an OFF switch still lands normally during an outage) were
+    // added to BOTH marveen-land.sh's own block AND mopsion-land.sh's own block (cleancore-land.sh
+    // is the symlink to it) -- unlike every other bump in this history, this one touches both
+    // landers' own blocks symmetrically, since the fix itself is duplicated (not shared-lib) code.
+    //
     // marveen-land.sh's own-case constant moved 3 -> 7 with card cd3e577b (F1 per-card
     // worktree/branch: card_designated_gates_agree + --card/--all gate-requirement cases), then
     // 7 -> 10 with card 3731c807 (cd3e577b follow-up: the acquire_land_lock call-site pin, the
@@ -179,8 +203,30 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // fix: one new case in marveen-land-run-fg-killable.selftest.sh, folded into marveen-land.sh's
     // own --selftest total the same way the HUP/INT cases above were) -- marveen-only own-block,
     // cleancore-land.sh untouched, same category as every other bump in this comment history.
-    expect(cc).toBeGreaterThan(49) // 49 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(34) // 34 = marveen-land.sh's own cases
-    expect(cc - 49).toBe(mv - 34) // the same shared block, in both
+    // cc 51 -> 54 and mv 36 -> 39 with card 2ba008f2 round 4 (CYBERSEC NO-GO 32558 F1:
+    // _session_outage_active's python3 crash polarity): the SAME 3 new cases (outage-check
+    // python3 crashing with exit 1/137/139 must refuse the --actor mikrob bypass) were added to
+    // BOTH marveen-land.sh's own block AND mopsion-land.sh's own block, same symmetric-duplicated-
+    // code pattern round 3 established two bumps above.
+    //
+    // mv's own-case constant moves 39 -> 40 with card 8ca1f91d (Cybered NO-GO LOW, comment
+    // 33127, mutants L10/L11): one new grep-pin case ("both downward_check call sites export
+    // DOWNWARD_CHECK_REPO") asserting on marveen-land.sh's own source text, not a stubbed
+    // function call. Lives in marveen-land.sh's own block, not the shared lib, because only it
+    // wires DOWNWARD_CHECK_REPO at all -- cleancore/mopsion/mopsi have no Szotasz/marveen
+    // upstream remote to confirm ancestry against, same asymmetric-by-design reasoning
+    // _upstream_ancestor_commits_only's own header gives. cc's own-case constant is untouched by
+    // this card (cleancore-land.sh not in its diff) -- only the shared lib (+17 cases: the
+    // 404-card-ref fold-in mechanism, its CYBERSEC2/CYBERED hardening rounds, and the real-git
+    // ancestry/shadow-ref cases) and marveen's own block (+1, above) moved.
+    //
+    // mv's own-case constant moves 40 -> 41 with card 44a0c98e (orphaned 07f1fe6e delta: M1 rfk
+    // exit-capture, L1 KILL comment fix, L2 group-HUP pin): one new selftest case
+    // (run_orphan_probe_group) in marveen-land-run-fg-killable.selftest.sh, folded into
+    // marveen-land.sh's own --selftest total the same way as every other bump above --
+    // marveen-only own-block, cleancore-land.sh untouched.
+    expect(cc).toBeGreaterThan(54) // 54 = cleancore-land.sh's own cases
+    expect(mv).toBeGreaterThan(41) // 41 = marveen-land.sh's own cases
+    expect(cc - 54).toBe(mv - 41) // the same shared block, in both
   })
 })

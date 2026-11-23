@@ -36,5 +36,44 @@ MikroB-vezérelt periodikus háló (backstop, nem elsődleges út): `bash store/
 végigsöpri az összes `agent/*/work` branch-et, amit a tulajdonos még nem landolt saját maga -- ezt
 egy ütemezett feladat futtathatja, hasonlóan a `gate-reconciler`-hez.
 
+**Develop frissítése a saját branch-edbe: `store/card-branch-sync-develop.sh [<worktree>]
+[<integration-ref>]` (kártya 84f90b4e), NE sima `git merge origin/develop`.** Mérve 2026-11-20:
+a2028f35 (4x), c4590365, 6d8ef952 és 30aa8b29 mind sima kézi `git merge`-öt futtattak, a
+DECISIONS.md-konfliktust kézzel oldották fel, és minden kör egy új gate-kört kényszerített ki --
+pedig a tiszta, csak-DECISIONS.md append-append eset már évek óta automatikusan feloldható
+lenne (`store/decisions-sync-resolve.sh`). A hiányzó darab sosem a feloldó HELYESSÉGE volt, hanem
+hogy SENKI nem hívta -- ez a script az, aminek a hívása ezt automatikusan megteszi: ha a
+konfliktus KIZÁRÓLAG a DECISIONS.md-n van és tisztán append-append, feloldja és commitolja
+(utána az append-only invariánst is visszaellenőrzi, és egy valódi sérülés esetén
+`git reset --hard`-dal visszaállítja, nem hagyja félig alkalmazva); minden más esetben a
+konfliktust NYITVA hagyja, pontosan úgy, mint egy sima `git merge` tenné.
+
 **A `store/agent-branch.sh` és `store/agent-branch-land.sh` RETIRÁLVA (törölve) -- ne hivatkozz
 rájuk, ne próbáld újraéleszteni.**
+
+## Kártyánkénti ág + worktree ("card mode") -- ed332869 F1-F4
+
+Az ügynökönkénti közös `agent/<név>/work` ág mellett (fent) létezik egy FINOMABB izoláció:
+`card/<id>` -- egy KÁRTYÁNKÉNT saját ág és worktree, hogy egy kártya commitjai sose utazzanak egy
+MÁSIK kártya landolásában (az `1cdac111`/`c40385b1` hibaosztály -- egy közös ágon ülő két kártya
+csak együtt tud landolni). Ugyanúgy STRUKTURÁLIS izoláció, mint a fenti agent-worktree (saját
+index, saját checkout), csak eggyel finomabb granularitással.
+
+1. `bash store/agent-worktree-marveen.sh <neved> --card <kártya-id>` -- `card/<id>` ág és worktree
+   létrehozása/frissítése `origin/<default-branch>`-ről (`/home/neon/marveen-agent-worktrees/card/<id>`),
+   idempotens, hibás `worktree add` esetén rollback (nem hagy árva ágat/könyvtárat, ha a hiba a saját
+   hívás alatt keletkezett -- egy MÁR LÉTEZŐ árva ágat viszont békén hagy, az a "worktree remove
+   után túlélt ág" eset). `<neved>` kötelező (attribúció), de NEM kerül az útvonalba/ágnévbe.
+2. `bash store/marveen-land.sh --card <kártya-id> --agent <neved>` -- **`--card` legyen az ELSŐ
+   argumentum**, különben nem card-branch módba kapcsol. Csak a kártya SAJÁT commitjait landolja; a
+   kártya leírásában kijelölt gate(ek) EGYÜTTES jóváhagyása kell (nem csak QA), kivéve
+   `--allow-ungated` (rögzítve a kártyán). Ugyanaz a flock-sorosítás és fleet-test-futás, mint az
+   agent-módú landolásnál. Sikeres push után `card_landings` sorba írja (card_id, work_sha,
+   merge_sha) -- ez a `card-landings` tábla, NEM a git-ancestry a landolás egyetlen bizonyítéka
+   (lásd `src/web/kanban-landed-guard.ts`, ami git-ancestry-t néz, nem ezt a táblát).
+3. Opt-in bekapcsolás a dispatch/self-advance útra: `MARVEEN_CARD_WORKTREE=1` env-mel
+   (`store/self-advance-pickup.sh` 4b lépése) -- alapértelmezés OFF, az átállás F8-ban (cutover)
+   lesz kötelezővé, addig az agent-módú közös ág is érvényes út párhuzamosan.
+4. Takarítás: `bash store/marveen-card-worktree-cleanup.sh --dry-run` listázza, melyik `card/<id>`
+   worktree távolítható (LANDOLT + nincs rajta élő folyamat + tiszta fa), `--apply --yes`
+   tényleg töröl -- élő `--apply` éles futtatása Peti jóváhagyásával (22. szabály).

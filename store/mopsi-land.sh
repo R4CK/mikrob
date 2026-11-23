@@ -92,6 +92,35 @@ TEST_TIMEOUT="${MOPSI_TEST_TIMEOUT:-1800}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
+# Card d5638d28 round 2 LOW (CYBERED NO-GO 32207, MikroB Fix-Direction 32209): same
+# degraded-orchestrator kill-switch check as marveen-land.sh / mopsion-land.sh, shared via the one
+# lib so the three cannot drift apart from each other (see that file's own header).
+# shellcheck source=./degraded-orchestrator-land-guard-lib.sh
+# Card e3cf26d0 (RedHat/WhiteHat LOW-2 on d5638d28): the old bare `.` left a missing/unreadable
+# lib as a silent "command not found" on check_degraded_orchestrator_guard below (set -u aborts on
+# an unbound VARIABLE, not on a failed/missing command, so the script kept going -- fail-open on
+# the one failure mode that matters most: the check itself cannot run).
+if ! . "$(dirname "$0")/degraded-orchestrator-land-guard-lib.sh"; then
+  die 3 "degraded-orchestrator-land-guard-lib.sh missing or failed to source -- refusing to land without this check (card e3cf26d0)"
+fi
+# Card e3cf26d0 round 4 (cybersec2 LOW, comment 32575, same fail-open-on-crash family as F1):
+# a lib that sources cleanly but is empty/truncated before defining the function leaves
+# check_degraded_orchestrator_guard undefined -- the source itself returns 0, so the check above
+# alone does not catch it, and the call below would only print "command not found" and continue.
+declare -F check_degraded_orchestrator_guard >/dev/null || die 3 "degraded-orchestrator-land-guard-lib.sh sourced but did not define check_degraded_orchestrator_guard (truncated/empty lib?) -- refusing to land without this check (card e3cf26d0)"
+if [ "${1:-}" != "--selftest" ]; then
+  _dgi_actor=""
+  _dgi_args=("$@")
+  for ((_dgi = 0; _dgi < ${#_dgi_args[@]}; _dgi++)); do
+    case "${_dgi_args[$_dgi]}" in
+      --actor) _dgi_actor="${_dgi_args[$((_dgi + 1))]:-}" ;;
+      --actor=*) _dgi_actor="${_dgi_args[$_dgi]#--actor=}" ;;
+    esac
+  done
+  check_degraded_orchestrator_guard "$_dgi_actor"
+  unset _dgi_actor _dgi_args _dgi
+fi
+
 SELF_DIR="$(dirname "$0")"
 # shellcheck source=./landing-downward-check.sh
 . "$SELF_DIR/landing-downward-check.sh"
@@ -144,6 +173,17 @@ if [ "${1:-}" = "--selftest" ]; then
   export GIT_ALLOW_PROTOCOL=file
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
+  # Card 8ca1f91d (MikroB comment 20797/20816): --selftest re-invokes "$0" as a REAL subprocess
+  # (the fixturecard/degraded-orchestrator-guard cases below), which goes through the SAME
+  # land-run-journal.sh path a genuine run would -- when $0 is the live checkout, that writes real
+  # "fixturecard" rows into the LIVE store/land-runs.jsonl (measured on the sibling marveen-land.sh:
+  # exactly this wrote 4 such rows there). Route every nested subprocess at its own throwaway
+  # journal for the whole --selftest run, and verify at the end that the file the DEFAULT path
+  # would have used is untouched.
+  _SELFTEST_DEFAULT_JOURNAL="$(dirname "$0")/land-runs.jsonl"
+  _SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_JOURNAL_TMPDIR="$(mktemp -d)"
+  export LAND_RUN_JOURNAL_FILE="$_SELFTEST_JOURNAL_TMPDIR/land-runs.jsonl"
 
   # Self-check for the guard above: a push attempt to a ssh:// URL must be BLOCKED BY GIT ITSELF
   # (not merely refused by this script's own remote-identity check), proving GIT_ALLOW_PROTOCOL is
@@ -334,6 +374,115 @@ if [ "${1:-}" = "--selftest" ]; then
   fi
   rm -rf "$L1WORK"
 
+  # Card d5638d28 round 3 (RedHat NO-GO 32245 F4d): one end-to-end refusal case for THIS lander's
+  # own degraded-orchestrator guard -- the shared lib's unit behaviour is already covered by
+  # degraded-orchestrator-land-guard.selftest.sh, but nothing proved mopsi-land.sh actually wires
+  # check_degraded_orchestrator_guard in BEFORE it would otherwise proceed. The guard runs before
+  # argument parsing, so no real MAIN/git fixture is needed -- a fixture cardId/sha is enough.
+  n=$((n+1))
+  DGSW="$(mktemp -d)/switch.json"
+  printf '{"enabled": true}' > "$DGSW"
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator guard wired in: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator guard wired in: guard never fired: $out"; fail=1 ;;
+  esac
+
+  # Card d5638d28 round 4 (CYBERED NO-GO 32270 Finding 2): the F4d case above only ever tried
+  # no --actor at all -- RedHat's own mutant (widening the shared lib's actor allowlist to accept
+  # ANY non-empty name) left this selftest green, because nothing here ever supplied an --actor.
+  # Card 2ba008f2 round 3: pin a nonexistent MIKROB_SESSION_OUTAGE_PATH so this case (and the
+  # non-owner one below) do not depend on whether a REAL outage happens to be active right now.
+  NOOUT="$(mktemp -d)/no-outage.json"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$NOOUT" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) echo "  FAIL degraded-orchestrator owner bypass: --actor mikrob was still refused: $out"; fail=1 ;;
+  esac
+
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$NOOUT" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor someone-else 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator non-owner actor: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator non-owner actor: guard did not refuse a non-owner --actor: $out"; fail=1 ;;
+  esac
+
+  # Card 2ba008f2 round 3 (WhiteHat2 probe on origin/develop): the --actor mikrob bypass above
+  # must NOT apply while a session outage is active, even though the switch itself is ON.
+  OUTJ="$(mktemp -d)/outage.json"
+  printf '{"active": true, "heartbeat": %s}' "$(date +%s)" > "$OUTJ"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  rc=$?
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL degraded-orchestrator owner bypass during outage: wrong exit code $rc"; fail=1; } ;;
+    *) echo "  FAIL degraded-orchestrator owner bypass during outage: --actor mikrob was NOT refused while the session outage marker is active: $out"; fail=1 ;;
+  esac
+
+  # Same outage marker, but the switch itself is OFF: must proceed normally.
+  DGSWOFF="$(mktemp -d)/switch-off.json"
+  printf '{"enabled": false}' > "$DGSWOFF"
+  n=$((n+1))
+  out="$(DEGRADED_ORCHESTRATOR_SWITCH="$DGSWOFF" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+  case "$out" in
+    *"degraded-orchestrator mode is ON"*) echo "  FAIL switch OFF during outage: lander refused even though the switch itself is OFF: $out"; fail=1 ;;
+  esac
+
+  # Round 4 (CYBERSEC NO-GO 32558 F1): _session_outage_active's python3 subprocess crashing (exit
+  # 1 / 137 / 139) must refuse the --actor mikrob bypass, same as a fresh active marker -- see the
+  # full rationale on marveen-land.sh's own copy of this case. The stub crashes ONLY the
+  # outage-check's own inline script and passes every other python3 call through to the real
+  # interpreter.
+  CRASHBIN="$(mktemp -d)"
+  REAL_PYTHON3="$(command -v python3)"
+  cat > "$CRASHBIN/python3" <<STUBEOF
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    *FileNotFoundError*) exit "\${STUB_CRASH_CODE:-1}" ;;
+  esac
+done
+exec "$REAL_PYTHON3" "\$@"
+STUBEOF
+  chmod +x "$CRASHBIN/python3"
+  for code in 1 137 139; do
+    n=$((n+1))
+    out="$(STUB_CRASH_CODE=$code PATH="$CRASHBIN:$PATH" DEGRADED_ORCHESTRATOR_SWITCH="$DGSW" MIKROB_SESSION_OUTAGE_PATH="$OUTJ" bash "$0" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run --actor mikrob 2>&1)"
+    rc=$?
+    case "$out" in
+      *"degraded-orchestrator mode is ON"*) [ "$rc" = 3 ] || { echo "  FAIL outage-check python3 crash (exit $code) refuses: wrong exit code $rc"; fail=1; } ;;
+      *) echo "  FAIL outage-check python3 crash (exit $code) refuses: --actor mikrob was NOT refused: $out"; fail=1 ;;
+    esac
+  done
+  rm -rf "$CRASHBIN"
+
+  rm -rf "$(dirname "$DGSW")"
+
+  # Card cf03d401 (MikroB, urgent): a straight before/after `wc -l` equality check races every
+  # OTHER concurrent land, which legitimately appends its own started/heartbeat/finished lines to
+  # this SAME live file via land-run-journal.sh while this selftest is still running (measured on
+  # marveen-land.sh's identical assert: fullstack f8fde8e9 v3 got 103777 want 103773, diff 4;
+  # fron-ted f1e33cfb retry3 got 104257 want 104253 -- both refused with nothing actually wrong).
+  # The guard's real intent (comment above) is narrower than "the file must not change": it only
+  # needs to catch THIS selftest run leaking its own fixture rows through the live path instead of
+  # $LAND_RUN_JOURNAL_FILE. So check content, not count -- scan only the lines appended since this
+  # run started, for this run's own markers (the literal "fixturecard" card id every fixture
+  # invocation above uses, and this run's own tmpdir path, which would appear if
+  # LAND_RUN_JOURNAL_FILE's value itself got logged verbatim by a leaking line). A concurrent
+  # sibling's real rows never contain either string.
+  _SELFTEST_DEFAULT_JOURNAL_LINES_AFTER="$([ -f "$_SELFTEST_DEFAULT_JOURNAL" ] && wc -l < "$_SELFTEST_DEFAULT_JOURNAL" || echo 0)"
+  _SELFTEST_LEAKED_LINE=""
+  if [ "$_SELFTEST_DEFAULT_JOURNAL_LINES_AFTER" -gt "$_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE" ]; then
+    _SELFTEST_LEAKED_LINE="$(tail -n "+$((_SELFTEST_DEFAULT_JOURNAL_LINES_BEFORE + 1))" "$_SELFTEST_DEFAULT_JOURNAL" 2>/dev/null \
+      | grep -F -e "fixturecard" -e "$_SELFTEST_JOURNAL_TMPDIR" || true)"
+  fi
+  t "the LIVE land-runs.jsonl journal (default path) gained no fixture row from this --selftest run" \
+    "$([ -n "$_SELFTEST_LEAKED_LINE" ] && echo "LEAKED" || echo "clean")" \
+    "clean"
+  rm -rf "$_SELFTEST_JOURNAL_TMPDIR"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -349,6 +498,10 @@ while [ $# -gt 0 ]; do
     --allow-ungated) ALLOW_UNGATED=1 ;;
     --allow-stacked) shift; [ $# -gt 0 ] || { echo "--allow-stacked needs a card id list" >&2; exit 2; }; ALLOW_STACKED="$1" ;;
     --allow-stacked=*) ALLOW_STACKED="${1#--allow-stacked=}" ;;
+    # Card d5638d28 round 2: --actor was already consumed by the degraded-orchestrator guard
+    # check at the top of this script.
+    --actor) shift ;;
+    --actor=*) ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift

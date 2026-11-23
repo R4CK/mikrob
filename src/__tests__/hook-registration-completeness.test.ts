@@ -70,6 +70,10 @@ const EXEMPT: Record<string, string> = {
     'shared library imported by outgoing-copy-gate.py (and the level-2 email approval gate, EMAILKAPU901 PR2); not itself a hook',
   'credential_lib.py':
     'shared library (CREDGATE1003, card 42d952bc) imported by credential-gate.py and credential-gate-cli.py: config/key/state/detector helpers; not itself a hook',
+  'sender_check.py':
+    'shared library imported by scripts/uptime-monitor.py for its outgoing-copy CONTENT check ' +
+    'before a Telegram alert send (card 5dd0842a, Koteg 25, scoped port from upstream); not a ' +
+    'PreToolUse/PostToolUse hook itself, same shape as email_extract.py above',
   'memory-save.sh':
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':
@@ -108,6 +112,8 @@ const EXEMPT: Record<string, string> = {
     'this file is a test suite, not a hook',
   'tool-log-capture.selftest.py':
     'selftest for tool-log-capture.py, which is registered; the selftest itself is not a hook',
+  'live-checkout-write-guard.selftest.py':
+    'selftest for live-checkout-write-guard.py, which is registered; the selftest itself is not a hook',
   // Card 4f15966e (backend, 2026-09-07): the four entries below PRE-DATE this test (all
   // present at pre-merge checkpoint b0e63a39) and are genuinely unwired on every
   // REGISTRATION_SURFACE -- this new completeness check is the first thing to notice, not
@@ -124,6 +130,8 @@ const EXEMPT: Record<string, string> = {
     'selftest for auto_obs_capture.py; the hook itself is unwired, see its own EXEMPT entry',
   'telegram_fallback_send.py':
     'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
+  'telegram_fallback_send.selftest.py':
+    'selftest for telegram_fallback_send.py; the hook itself is a CLI, not a settings hook, see its own EXEMPT entry',
   // telegram-image-resize.sh deliberately NOT exempted here (UPSTREAM-SYNC BATCH 4, card
   // 0b550d89): an earlier round already decided against this (src/fork-upstream/
   // acknowledged-conflicts.ts ~line 1855/1859) -- the file does not exist in this fork at all

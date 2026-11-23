@@ -22,20 +22,29 @@ echo "test-token" > "$TMP/main/store/.dashboard-token"
 
 cat > "$TMP/fakeboard.py" <<'PYEOF'
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT_FILE, POSTS_FILE = sys.argv[1], sys.argv[2]
+FAIL_POSTS_FILE = sys.argv[3]
 
 CARDS = [
+    # Two in_progress cards for the SAME agent (backend), inprog02 OLDER than inprog01 -- proves
+    # oldest-first ordering (CYBERSEC NO-GO 37713, required assertion (b)), not just a single card.
+    {'id': 'inprog02', 'status': 'in_progress', 'assignee': 'backend', 'created_at': 60},
     {'id': 'inprog01', 'status': 'in_progress', 'assignee': 'backend', 'created_at': 100},
     {'id': 'deadcard1', 'status': 'waiting', 'assignee': 'backend2', 'created_at': 50},
     {'id': 'donecard1', 'status': 'done', 'assignee': 'backend3', 'created_at': 10},
 ]
 CARDS_BY_ID = {c['id']: c for c in CARDS}
+# CYBERSEC NO-GO 37713 MEDIUM-1: the REAL GET /api/messages/backlog shape is {agent, pending,
+# oldestAgeSeconds} (src/db.ts getPendingBacklogByAgent) -- the old fixture invented
+# count/oldest_age_s, which do not exist on the real endpoint, so the selftest stayed green while
+# the production script silently read "none" for every real agent.
 BACKLOG = [
-    {'agent': 'qa', 'count': 2, 'oldest_age_s': 500},
-    {'agent': 'backend3', 'count': 1, 'oldest_age_s': 10},
+    {'agent': 'qa', 'pending': 2, 'oldestAgeSeconds': 500},
+    {'agent': 'backend3', 'pending': 1, 'oldestAgeSeconds': 10},
 ]
 
 
@@ -68,7 +77,13 @@ class H(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         with open(POSTS_FILE, 'a') as f:
             f.write(body.decode() + "\n")
-        self._send({'ok': True})
+        # Toggle for the LOW-1 selftest case (CYBERSEC NO-GO 37713): a sentinel file makes every
+        # POST answer 500 while still logging the attempt, so the test can assert the boot id was
+        # NOT recorded after a failed send.
+        if os.path.exists(FAIL_POSTS_FILE):
+            self._send({'ok': False}, 500)
+        else:
+            self._send({'ok': True})
 
 
 srv = HTTPServer(('127.0.0.1', 0), H)
@@ -80,7 +95,8 @@ PYEOF
 PORT_FILE="$TMP/port"
 POSTS_FILE="$TMP/posts.log"
 touch "$POSTS_FILE"
-python3 "$TMP/fakeboard.py" "$PORT_FILE" "$POSTS_FILE" &
+FAIL_POSTS_FILE="$TMP/fail-posts"
+python3 "$TMP/fakeboard.py" "$PORT_FILE" "$POSTS_FILE" "$FAIL_POSTS_FILE" &
 BOARD_PID=$!
 trap 'kill "$BOARD_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
 
@@ -102,11 +118,12 @@ run() {
     bash "$SCRIPT" "$@" 2>&1
 }
 
-# 1. Plain in_progress card -> appears in the plan, no backlog.
+# 1. Plain in_progress cards -> appear in the plan, no backlog, OLDEST FIRST (inprog02 @60 before
+#    inprog01 @100) -- required assertion (b).
 out="$(run --dry-run)"
-echo "$out" | grep -q "PLAN agent=backend cards=inprog01 backlog=none" \
-  && ok "in_progress card shows up for its owner" \
-  || no "in_progress card missing from plan: $out"
+echo "$out" | grep -q "PLAN agent=backend cards=inprog02, inprog01 backlog=none" \
+  && ok "in_progress cards show up for their owner, oldest first" \
+  || no "in_progress cards missing or wrongly ordered in plan: $out"
 
 # 2. A dead land run tied to a WAITING card -> that agent gains the card even with no in_progress
 #    row of its own. pid 999999999 is never a real process.
@@ -148,6 +165,31 @@ print(','.join(sorted(agents)))
   && ok "--apply sends exactly to the planned agents (backend,backend2,qa)" \
   || no "--apply sent to the wrong set: got [$sent_to]"
 
+# 5b. Required assertions (a) and (c) (CYBERSEC NO-GO 37713): inspect the qa note's own content
+# field, not just its "to" -- (a) the REAL backlog count (2, from the "pending" key) reaches the
+# text, and (c) the note starts with the [RESTART-RECOVERY] marker + the fixed text.
+qa_content="$(python3 -c "
+import json
+with open('$POSTS_FILE') as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        rec = json.loads(line)
+        if rec['to'] == 'qa':
+            print(rec['content'])
+            break
+")"
+echo "$qa_content" | grep -qF "Unread backlog: 2 message(s)" \
+  && ok "(a) qa note shows the real backlog count (2 message(s), from the pending key)" \
+  || no "(a) qa note missing the real backlog count: [$qa_content]"
+case "$qa_content" in
+  "[RESTART-RECOVERY] host restarted; check your worktree, git log and origin/develop before repeating any outward action (push, land, Telegram, comment)."*)
+    ok "(c) note starts with [RESTART-RECOVERY] + the fixed text" ;;
+  *)
+    no "(c) note does not start with [RESTART-RECOVERY] + the fixed text: [$qa_content]" ;;
+esac
+
 # 6. Second --apply for the SAME boot id is a no-op (idempotent).
 : > "$POSTS_FILE"
 out="$(TEST_BOOT_ID="boot-bbbb" run --apply)"
@@ -170,6 +212,42 @@ out="$(TEST_BOOT_ID="boot-cccc" run --dry-run)"
 echo "$out" | grep -q "^PLAN " \
   && ok "--dry-run still prints a plan even when --apply already recorded this boot id" \
   || no "--dry-run wrongly treated itself as already-sent: $out"
+
+# 9. Required assertion (d): the no-argument (bare) invocation must behave exactly like --dry-run
+# and post nothing.
+: > "$POSTS_FILE"
+run >/dev/null
+[ ! -s "$POSTS_FILE" ] \
+  && ok "(d) no-argument invocation posts nothing" \
+  || no "(d) no-argument invocation posted something: $(cat "$POSTS_FILE")"
+
+# 10. Required assertion (e): --dry-run posts nothing (explicit check on the POSTS_FILE itself,
+# not inferred from other assertions).
+: > "$POSTS_FILE"
+run --dry-run >/dev/null
+[ ! -s "$POSTS_FILE" ] \
+  && ok "(e) --dry-run posts nothing" \
+  || no "(e) --dry-run posted something: $(cat "$POSTS_FILE")"
+
+# 11. LOW-1 (CYBERSEC NO-GO 37713): when a send does not come back 2xx, the boot id must NOT be
+# recorded -- otherwise a transient dashboard failure permanently blocks the retry for that boot.
+rm -f "$TMP/boot-state"
+: > "$FAIL_POSTS_FILE"
+out="$(TEST_BOOT_ID="boot-dddd" run --apply)"
+rc=$?
+rm -f "$FAIL_POSTS_FILE"
+[ "$rc" -ne 0 ] \
+  && ok "LOW-1: --apply exits non-zero when a send does not come back 2xx" \
+  || no "LOW-1: --apply exited 0 despite a failed (500) send: $out"
+[ ! -f "$TMP/boot-state" ] \
+  && ok "LOW-1: boot id NOT recorded after a failed send (retry stays possible)" \
+  || no "LOW-1: boot id was recorded despite a failed send: $(cat "$TMP/boot-state")"
+# Positive control: with the board healthy again, the SAME boot id now sends and records fine.
+: > "$POSTS_FILE"
+out="$(TEST_BOOT_ID="boot-dddd" run --apply)"
+[ -s "$POSTS_FILE" ] && [ -f "$TMP/boot-state" ] \
+  && ok "LOW-1 positive control: once sends succeed, the same boot id sends and records normally" \
+  || no "LOW-1 positive control failed: posts=[$(cat "$POSTS_FILE" 2>/dev/null)] state=[$(cat "$TMP/boot-state" 2>/dev/null)]"
 
 kill "$BOARD_PID" 2>/dev/null
 

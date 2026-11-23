@@ -125,17 +125,49 @@ else
   # NOT --force, no rm -rf: an occupied path fails loudly instead of silently deleting someone's work.
   # Try creating a NEW branch first (the common case); fall back to an existing local branch (a
   # worktree that was removed with `git worktree remove` but whose branch survived).
-  add_err="$(git -C "$MAIN" worktree add "$TREE" -b "$BRANCH" "origin/$DEFAULT_BRANCH" 2>&1)" \
-    || add_err="$add_err"$'\n'"$(git -C "$MAIN" worktree add "$TREE" "$BRANCH" 2>&1)" \
-    || die 3 "could not create the worktree at $TREE -- git said:"$'\n'"$add_err"
+  # `set -e` is active (line 57), so every git check that may legitimately fail here goes through
+  # an `if`/`||` list -- never a bare statement -- or its failure would abort the whole script
+  # instead of reaching the fallback/rollback logic below.
+  branch_preexisted=0
+  if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then branch_preexisted=1; fi
+  add_rc=0
+  add_err="$(git -C "$MAIN" worktree add "$TREE" -b "$BRANCH" "origin/$DEFAULT_BRANCH" 2>&1)" || add_rc=$?
+  if [ "$add_rc" -ne 0 ]; then
+    # Card abd4970c (F4.2.1): `git worktree add -b` can create the BRANCH ref successfully and
+    # still fail the worktree-population step right after it (measured: an occupied target
+    # directory reproduces this every time -- git prints "branch 'X' set up to track..." THEN
+    # "fatal: ... already exists", exit 128). A dangling branch left behind here is invisible
+    # until the NEXT create attempt silently reuses it via the fallback below, as if it were the
+    # legitimate "survived a worktree remove" case, carrying whatever half-initialized state this
+    # failed attempt left on it. Only ever delete it when THIS call is what just created it
+    # (branch_preexisted=0) -- a branch that already existed before this call is the real survivor
+    # case the fallback exists for, and must never be touched.
+    if [ "$branch_preexisted" = "0" ] && git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      git -C "$MAIN" branch -D "$BRANCH" >/dev/null 2>&1 || true
+    fi
+    fallback_err="$(git -C "$MAIN" worktree add "$TREE" "$BRANCH" 2>&1)" \
+      || die 3 "could not create the worktree at $TREE -- git said:"$'\n'"$add_err"$'\n'"$fallback_err"
+    # Card 018c85d3 (F4.2.1 follow-up): the fallback above just re-attached a SURVIVOR branch (one
+    # that already existed before this call -- branch_preexisted=1, the "worktree remove left the
+    # branch behind" case). That branch's base can be arbitrarily old: origin/$DEFAULT_BRANCH may
+    # have moved on since it was created, and the fallback has no reason to notice. Warn explicitly
+    # instead of silently handing back a worktree built on a stale base -- this is informational
+    # only (never blocks the pickup), since an actively-developed card is EXPECTED to be behind the
+    # latest origin tip until it rebases.
+    if [ "$branch_preexisted" = "1" ] && ! git -C "$MAIN" merge-base --is-ancestor "origin/$DEFAULT_BRANCH" "$BRANCH"; then
+      echo "WARNING: $BRANCH is behind origin/$DEFAULT_BRANCH (branched from an older base) -- consider rebasing before building on it."
+    fi
+  fi
   echo "created $TREE on $BRANCH"
 fi
 
-# node_modules (card 0b23ec28). A directory symlink here is the enabler behind the 9dc0fba8 class:
-# `cd $TREE/node_modules && rm -rf ../src` resolves `..` inside the MAIN clone, because cd lands the
-# process in the resolved directory. store/agent-worktree-deps.sh replaces the link with a REAL
-# directory, which is the only shape where `..` cannot leave the worktree -- per-entry symlinks only
-# move the exit one level deeper (318 packages, 318 doors).
+# node_modules (card 0b23ec28, extended to --card mode by card cf678d23). A directory symlink
+# here is the enabler behind the 9dc0fba8 class: `cd $TREE/node_modules && rm -rf ../src` resolves
+# `..` inside the MAIN clone, because cd lands the process in the resolved directory.
+# store/agent-worktree-deps.sh replaces the link with a REAL directory, which is the only shape
+# where `..` cannot leave the worktree -- per-entry symlinks only move the exit one level deeper
+# (318 packages, 318 doors). agent-worktree-deps.sh now has a --card mode (cf678d23), so this
+# applies identically to card worktrees.
 #
 # THE SLOW STEP LIVES THERE, NOT HERE, and the new shape is OPT-IN for now. This script is called
 # idempotently from dispatch paths as a cheap "make sure the worktree exists"; a ~1GB copy inside it
@@ -144,18 +176,23 @@ fi
 # time (plan-grilling verdict, card 0b23ec28). Set MARVEEN_WORKTREE_REAL_DEPS=1 to get the real
 # directory at creation time.
 if [ -L "$TREE/node_modules" ]; then
-  echo "node_modules: symlink -> $MAIN/node_modules (SHARED with every worktree; \`bash store/agent-worktree-deps.sh $AGENT\` makes it real)"
+  if [ -n "$CARD" ]; then
+    echo "node_modules: symlink -> $MAIN/node_modules (SHARED with every worktree; \`bash store/agent-worktree-deps.sh --card $CARD\` makes it real)"
+  else
+    echo "node_modules: symlink -> $MAIN/node_modules (SHARED with every worktree; \`bash store/agent-worktree-deps.sh $AGENT\` makes it real)"
+  fi
 elif [ -d "$TREE/node_modules" ]; then
   echo "node_modules: real directory -- no shared-ground symlink here"
-elif [ -z "$CARD" ] && [ "${MARVEEN_WORKTREE_REAL_DEPS:-0}" = "1" ]; then
-  bash "$MAIN/store/agent-worktree-deps.sh" "$AGENT" || die 3 "could not populate node_modules"
+elif [ "${MARVEEN_WORKTREE_REAL_DEPS:-0}" = "1" ]; then
+  if [ -n "$CARD" ]; then
+    bash "$MAIN/store/agent-worktree-deps.sh" --card "$CARD" || die 3 "could not populate node_modules"
+  else
+    bash "$MAIN/store/agent-worktree-deps.sh" "$AGENT" || die 3 "could not populate node_modules"
+  fi
 else
   ln -s "$MAIN/node_modules" "$TREE/node_modules"
   if [ -n "$CARD" ]; then
-    # agent-worktree-deps.sh is keyed by AGENT (resolves the per-agent tree internally), not by card
-    # id -- it has no --card mode yet, so MARVEEN_WORKTREE_REAL_DEPS is deliberately not honoured
-    # here. A card-worktree therefore always shares node_modules with $MAIN for now.
-    echo "node_modules: linked from $MAIN/node_modules (shared -- real-deps for card worktrees is not built yet, see store/agent-worktree-deps.sh)"
+    echo "node_modules: linked from $MAIN/node_modules (shared; run \`bash store/agent-worktree-deps.sh --card $CARD\` to make it a real directory)"
   else
     echo "node_modules: linked from $MAIN/node_modules (shared; run \`bash store/agent-worktree-deps.sh $AGENT\` to make it a real directory)"
   fi

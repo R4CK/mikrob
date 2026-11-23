@@ -226,7 +226,15 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 # \$LASTEXITCODE != 0 -> that IS the total-wedge signal.
 \$out = & wsl.exe -d \$Distro -u \$WslUser -- \$Probe 2>\$null
 \$probeExit = \$LASTEXITCODE
-\$healthy = (\$probeExit -eq 0) -and (\$out -match "OK")
+# Card 035d02fc (OK-match fail-open): -match is case-INSENSITIVE and
+# unanchored, so the UNHEALTHY line's own "channel_ok=0"/"channel_ok=1" text
+# contains "ok" and used to satisfy this condition regardless of \$out's real
+# verdict -- the only thing actually gating a false-healthy read was
+# \$probeExit, which the wsl-liveness-probe.sh contract already guarantees
+# matches (exit 0 only on its own "OK" line). -cmatch '^OK' makes the text
+# check agree with that contract directly instead of relying on probeExit
+# alone to compensate for a loose string match.
+\$healthy = (\$probeExit -eq 0) -and (\$out -cmatch '^OK')
 
 if (\$healthy) {
   Set-Content -Path \$StateFile -Value "0"

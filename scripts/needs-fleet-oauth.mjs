@@ -34,6 +34,7 @@
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
+import { isCustomProviderFieldUnusable } from './lib/custom-provider-field-check.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
@@ -70,13 +71,41 @@ const VALID_AUTH_MODES = new Set(['shared', 'own_team', 'api'])
 
 try {
   const { resolveAgentModelFromConfig } = await import(join(projectRoot, 'dist', 'model-profiles.js'))
-  const { readModelProfileMap, resolveModelId, DEFAULT_MODEL } = await import(
+  const { readModelProfileMap, resolveModelId, DEFAULT_MODEL, resolveRemoteConfig } = await import(
     join(projectRoot, 'dist', 'web', 'agent-config.js')
   )
   const { resolveOpenRouterModel } = await import(join(projectRoot, 'dist', 'web', 'openrouter-models.js'))
   const { needsFleetOauthFor, isClaudeAgent } = await import(join(projectRoot, 'dist', 'web', 'agent-process.js'))
 
   const config = readConfig(agentDir)
+
+  // Card 270b2950 (RedHat residual MEDIUM-LOW off 11c6cab4 comment 32213): a configured remote
+  // (ssh) agent on the default shared-auth mode has no customProvider, so the check below never
+  // fires -- it fell straight into needsFleetOauthFor's "needed" branch, same as any local Claude
+  // agent. watchdog.sh then found no local `.claude-config` dir for it (the agent's real config
+  // lives on the remote host) and silently printed isolation=no WITHOUT ever reaching the refusal
+  // watchdog-provider-env.mjs already has for a remote agent (resolveProviderEnv has no effect on
+  // the ssh launch path at all). Same undecidable shape as the customProvider fix above, same
+  // resolveRemoteConfig import watchdog-provider-env.mjs already uses (not a hand-rolled host/
+  // workdir re-validation): a remote agent reaches REFUSE:fleet-oauth-undecidable here too,
+  // instead of a silent isolation=no that looked like a legitimate "nothing needed" decision.
+  if (resolveRemoteConfig(JSON.stringify(config)).host) {
+    throw new Error('remote agent (remoteHost/remoteWorkdir): the local fleet-oauth decision has no effect on the ssh launch path -- undecidable, not "needed"')
+  }
+
+  // Card 11c6cab4 round 3 (RedHat comment 32213): a customProvider key that is present but not a
+  // usable non-empty string (number/object/empty string) used to compute customProviderId as
+  // null below, the SAME value as "no customProvider at all" -- so an agent on the default
+  // shared-auth mode fell straight into the "needed" branch and watchdog.sh's --launch-env
+  // printed isolation=no, never reaching the refusal that watchdog-provider-env.mjs (the second
+  // launch site) already had for this exact value. This decision is undecidable, not "needed",
+  // the same way a corrupt agent-config.json already throws above and lands on exit 2: this
+  // script's own caller (watchdog.sh) turns ANY non-zero/non-"not-needed" exit into
+  // REFUSE:fleet-oauth-undecidable, so throwing here reuses that existing fail-closed path
+  // instead of inventing a second one.
+  if (isCustomProviderFieldUnusable(config)) {
+    throw new Error('customProvider: field present but not a usable non-empty string -- undecidable, not "not configured"')
+  }
 
   // Mirrors agent-process.ts's own launch-site computation (startAgentProcessUnlocked), in the
   // same order: resolve the model through the SAME alias/profile chain, then resolveOpenRouterModel

@@ -206,7 +206,16 @@ for r in rows if isinstance(rows, list) else []:
             # being thrown away.
             _psab_default="$(git -C "$MARVEEN_MAIN" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
             [ -n "$_psab_default" ] || _psab_default="develop"
-            if git -C "$MARVEEN_MAIN" merge-base --is-ancestor "card/$PREV_CARD" "origin/$_psab_default" 2>/dev/null; then
+            # L2 (cybersec 37506, same class as F2 in marveen-card-worktree-cleanup.sh): the ancestor
+            # check above asked only about the card/<id> REF as it stands in $MARVEEN_MAIN -- never
+            # whether PREV_PATH's own HEAD is still that branch. A worktree checked out --detach with
+            # an extra commit on top looks "clean" to plain `worktree remove` (no uncommitted diff),
+            # so that unlanded commit would be silently orphaned by the removal below. Require the
+            # worktree's actual checked-out ref to match before trusting the ref-only ancestor check.
+            _psab_prev_head="$(git -C "$PREV_PATH" symbolic-ref -q HEAD 2>/dev/null)"
+            if [ "$_psab_prev_head" != "refs/heads/card/$PREV_CARD" ]; then
+              echo "self-advance-pickup: card $PREV_CARD is done but the worktree ($PREV_PATH) HEAD is not card/$PREV_CARD (detached or switched) -- kept, not removed" >&2
+            elif git -C "$MARVEEN_MAIN" merge-base --is-ancestor "card/$PREV_CARD" "origin/$_psab_default" 2>/dev/null; then
               git -C "$MARVEEN_MAIN" worktree remove "$PREV_PATH" >/dev/null 2>&1 \
                 && echo "self-advance-pickup: removed done card $PREV_CARD's worktree ($PREV_PATH) -- branch card/$PREV_CARD is untouched" >&2 \
                 || echo "self-advance-pickup: card $PREV_CARD's branch is landed but the worktree ($PREV_PATH) would not remove cleanly (dirty/unpushed?) -- left in place, check by hand" >&2

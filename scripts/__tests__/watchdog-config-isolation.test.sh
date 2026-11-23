@@ -27,6 +27,26 @@ WATCHDOG="${WATCHDOG_BIN:-$REPO_DIR/scripts/watchdog.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# Card ee830675: needs-fleet-oauth.mjs and watchdog-provider-env.mjs both dynamically import
+# REPO_DIR/dist/*.js (the single-source-of-truth compiled business logic) -- but dist/ is
+# gitignored and NOT rebuilt by this checkout, so a fresh worktree with no prior `npx tsc` run
+# has no dist/ at all. Every case that should reach a real yes/no/refuse decision then hit the
+# dynamic import's ERR_MODULE_NOT_FOUND, landed in the predicate's own catch block, and came back
+# as isolation=refuse reason=fleet-oauth-undecidable regardless of the scenario under test --
+# measured: 51/77 pass with no dist/ present, 77/77 once it is built. A STALE dist/ (built from an
+# older commit than REPO_DIR's HEAD) explains the smaller, non-matching failure count seen
+# elsewhere (cases 50/64/65 on a merge commit): only the cases whose expected behaviour changed
+# since that dist was built actually disagree. Same marker convention fleet-test.sh uses for the
+# same reason (BUILT_MARKER keyed by the commit dist was built from, not an unconditional rebuild).
+DIST_BUILT_MARKER="$REPO_DIR/dist/.built-commit"
+DIST_TARGET_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$(cat "$DIST_BUILT_MARKER" 2>/dev/null)" != "$DIST_TARGET_SHA" ]; then
+  echo "watchdog-config-isolation: building dist (needs-fleet-oauth.mjs/watchdog-provider-env.mjs load compiled dist)" >&2
+  rm -f "$DIST_BUILT_MARKER"
+  (cd "$REPO_DIR" && npx tsc) || { echo "watchdog-config-isolation: dist build failed, aborting (see above)" >&2; exit 1; }
+  echo "$DIST_TARGET_SHA" > "$DIST_BUILT_MARKER"
+fi
+
 # The watchdog resolves store/.claude-oauth-token relative to its own
 # INSTALL_DIR; run it from a fixture install so the token file is ours.
 FIXTURE_INSTALL="$TMP/install"
@@ -37,6 +57,9 @@ cp "$WATCHDOG" "$FIXTURE_INSTALL/scripts/watchdog.sh"
 # install must carry it too, same as the watchdog script itself.
 cp "$REPO_DIR/scripts/lib/oauth_token_file_check.py" "$FIXTURE_INSTALL/scripts/lib/oauth_token_file_check.py"
 WD="$FIXTURE_INSTALL/scripts/watchdog.sh"
+# Card 23a14ae1: INSTALL_DIR no longer follows $0 (that derivation is what let a stray invocation
+# resolve to agents/logs on 2026-11-06) -- point it at the fixture install explicitly instead.
+export WATCHDOG_INSTALL_DIR="$FIXTURE_INSTALL"
 # Card 3ae2411d round 2: needs-fleet-oauth.mjs resolves the compiled dist relative to its OWN
 # location (scripts/needs-fleet-oauth.mjs -> ../dist), which the fixture install does not carry.
 # Point watchdog.sh at the real repo's copy instead of copying it in -- the script takes the
@@ -770,6 +793,246 @@ case "$OUT" in
   *) fail "52: an unrelated REFUSE reason (mode-not-0600) does not alert the owner" "$OUT" ;;
 esac
 rm -f "$AGENT_BYO/agent-config.json" "$FIXTURE_INSTALL/store/.watchdog-fleet-oauth-undecidable-alert"
+
+# 53-54) Card ae5af304 (RedHat follow-up, bc32d233): the own-token FILE'S CONTENT (not the config)
+# contains an invalid-UTF-8 byte. Before the fix, both --bad-content-characters and
+# --same-as-fleet-token crashed on this (UnicodeDecodeError, not an OSError, so uncaught),
+# Python's default exit code 1 on a crash being INDISTINGUISHABLE from the check's own legitimate
+# "no, clean"/"no, not a copy" answer -- watchdog.sh's `2>/dev/null` swallowed the traceback and
+# `if python3 ...; then REFUSE; fi` read the crash as "no problem", proceeding to export the
+# byte-corrupt file. The prefix check (head -c 20 | grep sk-ant-oat) runs first in watchdog.sh, so
+# the byte must come AFTER a valid-looking prefix to actually reach the Python checks.
+write_own_config
+printf '%s\x80' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=yes prefix="*"$OWN_TOKEN_FILE"*)
+    pass "53: invalid-UTF-8 byte in own token content -> resolves normally (no crash-as-clean export), fails content/same-as-fleet checks cleanly" ;;
+  *) fail "53: invalid-UTF-8 byte in own token content -> resolves normally, not a silent export via crash" "$OUT" ;;
+esac
+
+# 54) Same invalid byte, but the file IS byte-for-byte the fleet token (with the bad byte) --
+# same_as_fleet_token must detect the match without crashing, and REFUSE.
+printf '%s' "$FAKE_SETUP_TOKEN" > "$FIXTURE_INSTALL/store/.claude-oauth-token"
+printf '\x80' >> "$FIXTURE_INSTALL/store/.claude-oauth-token"
+cp "$FIXTURE_INSTALL/store/.claude-oauth-token" "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=same-as-fleet-token")
+    pass "54: own token with an invalid-UTF-8 byte, byte-identical to the fleet token -> refuse, no crash-through" ;;
+  *) fail "54: own token with an invalid-UTF-8 byte, byte-identical to the fleet token -> refuse" "$OUT" ;;
+esac
+echo "sk-test-fixture-token" > "$FIXTURE_INSTALL/store/.claude-oauth-token" # restore for any later run
+printf '%s' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+
+# --- card 6b7a606d (RedHat LOW on ae5af304, msg 19513): agent_launch_env's --bad-content-characters
+# and --same-as-fleet-token sub-calls used `if CMD; then` to read the checker's verdict, which
+# collapses EVERY non-zero exit (1 = legitimate "no match", but also 2, a kill signal, or an
+# unanticipated crash) into the same "false" branch -- a crashing checker on either of these two
+# calls used to look identical to "nothing wrong", and the restart proceeded to export the token.
+# A stub checker is used (behaves like the real one for the plain <agent-dir> resolve call, but
+# exits a 3rd way for the two flag calls) so the main-call contract stays untouched. ---
+write_own_config
+printf '%s' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+
+STUB_CHECKER="$TMP/stub-check.py"
+
+# 55) --bad-content-characters sub-call exits 2 (neither match nor no-match) -> refuse, not "no
+#     bad content found".
+cat > "$STUB_CHECKER" << STUBEOF
+#!/usr/bin/env python3
+import sys
+if len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
+    sys.exit(2)
+if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
+    sys.exit(1)
+if len(sys.argv) == 2:
+    print("SET:$OWN_TOKEN_FILE")
+    sys.exit(0)
+sys.exit(2)
+STUBEOF
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$STUB_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "55: --bad-content-characters exits 2 -> refuse, not treated as clean" ;;
+  *) fail "55: --bad-content-characters exits 2 -> refuse, not treated as clean" "$OUT" ;;
+esac
+
+# 56) --bad-content-characters sub-call killed by a signal (SIGKILL, bash reports exit 137) -- same
+#     requirement as #55, a different real-world cause (OOM kill) producing the same class of exit.
+cat > "$STUB_CHECKER" << STUBEOF
+#!/usr/bin/env python3
+import os, signal, sys
+if len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
+    os.kill(os.getpid(), signal.SIGKILL)
+if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
+    sys.exit(1)
+if len(sys.argv) == 2:
+    print("SET:$OWN_TOKEN_FILE")
+    sys.exit(0)
+sys.exit(2)
+STUBEOF
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$STUB_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "56: --bad-content-characters killed by signal (exit 137) -> refuse, not treated as clean" ;;
+  *) fail "56: --bad-content-characters killed by signal (exit 137) -> refuse, not treated as clean" "$OUT" ;;
+esac
+
+# 57) --same-as-fleet-token sub-call exits 2 -> refuse, not "no match" (symmetry with #55/#56 on
+#     the second call site).
+cat > "$STUB_CHECKER" << STUBEOF
+#!/usr/bin/env python3
+import sys
+if len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
+    sys.exit(1)
+if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
+    sys.exit(2)
+if len(sys.argv) == 2:
+    print("SET:$OWN_TOKEN_FILE")
+    sys.exit(0)
+sys.exit(2)
+STUBEOF
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$STUB_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "57: --same-as-fleet-token exits 2 -> refuse, not treated as no-match" ;;
+  *) fail "57: --same-as-fleet-token exits 2 -> refuse, not treated as no-match" "$OUT" ;;
+esac
+
+# 58) MUTATION PIN / REGRESSION: exit 0 (match) and exit 1 (no match) on both sub-calls still
+#     behave exactly as before -- tests 3, 18 and 19 above already exercise this against the REAL
+#     checker; this re-confirms it against the stub harness itself, so a mutant that always refused
+#     (defeating #55-#57 by brute force) would be caught here.
+cat > "$STUB_CHECKER" << STUBEOF
+#!/usr/bin/env python3
+import sys
+if len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
+    sys.exit(1)
+if len(sys.argv) == 4 and sys.argv[1] == "--same-as-fleet-token":
+    sys.exit(1)
+if len(sys.argv) == 2:
+    print("SET:$OWN_TOKEN_FILE")
+    sys.exit(0)
+sys.exit(2)
+STUBEOF
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$STUB_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=yes prefix="*"$OWN_TOKEN_FILE"*) pass "58: both sub-calls exit 1 (no match) -> isolation unchanged" ;;
+  *) fail "58: both sub-calls exit 1 (no match) -> isolation unchanged" "$OUT" ;;
+esac
+
+rm -f "$STUB_CHECKER"
+
+# --- card 11c6cab4 round 3 (RedHat comment 32213): needs-fleet-oauth.mjs computed
+# customProviderId with the OLD "any non-string -> null" rule, so a present-but-unusable
+# customProvider on the common shared-auth path was read as "no customProvider at all" --
+# FLEET_OAUTH_NEEDED went to 1 and watchdog.sh restarted the agent on the SHARED fleet login,
+# never reaching watchdog-provider-env.mjs's own refusal for this exact value (case 24/34 above
+# only reach that refusal because customProvider was a USABLE string there). These pin that the
+# undecidable classification now happens before the fleet-oauth branch, for the default
+# shared-auth agent specifically (the case RedHat measured). ---
+
+AGENT_SHARED_BYO="$FIXTURE_INSTALL/agents/shared-garbage-provider-agent"
+mkdir -p "$AGENT_SHARED_BYO/.claude-config"
+
+# 59) BLOCKING (round-3 repro): customProvider a number, default shared auth -> refuse
+#     (fleet-oauth-undecidable), NEVER isolation=no (which would restart on the shared login).
+printf '{"customProvider": 1}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "59: customProvider=1, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "59: customProvider=1, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+
+# 60) customProvider an empty object.
+printf '{"customProvider": {}}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "60: customProvider={}, shared auth -> refuse (undecidable)" ;;
+  *) fail "60: customProvider={}, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 61) customProvider an empty array.
+printf '{"customProvider": []}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "61: customProvider=[], shared auth -> refuse (undecidable)" ;;
+  *) fail "61: customProvider=[], shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 62) customProvider the boolean true.
+printf '{"customProvider": true}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "62: customProvider=true, shared auth -> refuse (undecidable)" ;;
+  *) fail "62: customProvider=true, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 63) a remote (ssh) agent on shared auth with the same garbage customProvider -- RedHat also
+#     measured the remote refusal in watchdog-provider-env.mjs is unreachable via this same path.
+printf '{"customProvider": 1, "remoteHost": "build-box", "remoteWorkdir": "/home/agent/work"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "63: remote agent, customProvider=1, shared auth -> refuse (undecidable)" ;;
+  *) fail "63: remote agent, customProvider=1, shared auth -> refuse (undecidable)" "$OUT" ;;
+esac
+
+# 64) MUTATION PIN: the ordinary shared-auth, no-customProvider case must be UNAFFECTED --
+#     still isolation=yes with the fleet token prefix, same as case 28/50 above.
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+printf '{"model": "claude-sonnet-5", "authMode": "shared"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
+    pass "64: no customProvider, shared auth -> unaffected, still fleet-token isolation" ;;
+  *) fail "64: no customProvider, shared auth -> unaffected, still fleet-token isolation" "$OUT" ;;
+esac
+
+# 65) MUTATION PIN: a USABLE customProvider string must still take the ordinary refuse path
+#     through watchdog-provider-env.mjs (isolation=refuse reason=provider-env-unavailable, same
+#     as case 24/34) -- round 3's new check must not swallow the already-working usable-string case.
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+printf '{"customProvider": "my-ollama-endpoint"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=provider-env-unavailable") pass "65: usable customProvider string -> still the ordinary (non-undecidable) refuse path" ;;
+  *) fail "65: usable customProvider string -> still the ordinary (non-undecidable) refuse path" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+
+# --- card 270b2950 (RedHat residual MEDIUM-LOW + LOW off 11c6cab4 comment 32213/32340):
+# (a) a remote (ssh) agent WITHOUT a customProvider, on the default shared-auth mode, had NO
+# check at all before this card -- it fell straight into needsFleetOauthFor's "needed" branch
+# (no customProvider to trip case 53-57's check), and watchdog.sh then found no local
+# `.claude-config` dir for it (its real config lives on the remote host) and silently printed
+# isolation=no, never reaching the refusal watchdog-provider-env.mjs already had for a remote
+# agent. RedHat's round-1 fixture used the wrong config keys for this case, so it went
+# unmeasured then; round 3's own GO re-measured it correctly and left it open as a residual.
+# (b) an explicit customProvider: null was never pinned by name in the shared classifier,
+# though RedHat measured it already refuses (isCustomProviderFieldUnusable's own `'customProvider'
+# in config` check is true for a present null value, same branch as 1/{}/[]/true above). ---
+
+# 66) BLOCKING (residual (a) repro): remote agent, NO customProvider, default shared auth ->
+#     refuse (fleet-oauth-undecidable), never isolation=no.
+printf '{"remoteHost": "build-box", "remoteWorkdir": "/home/agent/work"}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "66: remote agent, no customProvider, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "66: remote agent, no customProvider, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
+
+# 67) residual (b) repro: an explicit customProvider: null, default shared auth -> refuse
+#     (fleet-oauth-undecidable), same branch as 1/{}/[]/true (case 53-56), now pinned by name.
+printf '{"customProvider": null}' > "$AGENT_SHARED_BYO/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_SHARED_BYO")"
+case "$OUT" in
+  "isolation=refuse reason=fleet-oauth-undecidable") pass "67: customProvider=null, shared auth -> refuse (undecidable), not isolation=no" ;;
+  *) fail "67: customProvider=null, shared auth -> refuse (undecidable), not isolation=no" "$OUT" ;;
+esac
+rm -f "$AGENT_SHARED_BYO/agent-config.json"
 
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

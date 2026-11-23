@@ -3,15 +3,16 @@ import { join, posix } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { execShellAsync } from '../exec-async.js'
+import { atomicWriteFileSync } from '../atomic-write.js'
 import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
-import { atomicWriteFileSync } from '../atomic-write.js'
 import { agentDir } from '../agent-config.js'
 import { generateSkillMd } from '../agent-scaffold.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName, sanitizeSkillName, safeJoin, findSymlinkTaintedEntries, shellEscape } from '../sanitize.js'
 import { detachSkillSymlinkIfAny } from '../skill-map-provisioner.js'
+import { rejectIfNotHumanAuth } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // Marveen's skills live at the global ~/.claude/skills/ path (shared with
@@ -120,6 +121,10 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     const name = sanitizeAgentName(decodeURIComponent(skillImportMatch[1]))
     if (!name) { json(res, { error: 'Invalid agent name' }, 400); return true }
     if (!agentExistsFor(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Card b3b73630 (CYBERSEC NO-GO 31782): same global-root write as the POST
+    // /api/agents/:name/skills generate route above -- MAIN_AGENT_ID's skillsDir
+    // is the GLOBAL ~/.claude/skills root every fleet agent loads.
+    if (name === MAIN_AGENT_ID && rejectIfNotHumanAuth(ctx)) return true
 
     const body = await readBody(req)
     const contentType = req.headers['content-type'] || ''
@@ -204,8 +209,8 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
       } catch { /* dir gone or unreadable; nothing to do */ }
       logger.error({ err }, 'Failed to import skill')
       json(res, { error: 'Failed to extract .skill file' }, 500)
-      return true
     }
+    return true
   }
 
   const skillActionMatch = path.match(/^\/api\/agents\/([^/]+)\/skills\/([^/]+)$/)
@@ -214,6 +219,10 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     const skillName = sanitizeSkillName(decodeURIComponent(skillActionMatch[2]))
     if (!name || !skillName) { json(res, { error: 'Invalid agent or skill name' }, 400); return true }
     if (!agentExistsFor(name)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Card b3b73630 (CYBERSEC NO-GO 31782): same global-root write as the POST
+    // /api/agents/:name/skills generate route above -- MAIN_AGENT_ID's skillsDir
+    // is the GLOBAL ~/.claude/skills root every fleet agent loads.
+    if (name === MAIN_AGENT_ID && rejectIfNotHumanAuth(ctx)) return true
     let skillDir: string
     try {
       skillDir = safeJoin(skillsRootFor(name), skillName)
@@ -256,12 +265,23 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
   if (skillsMatch && method === 'POST') {
     const agentName = decodeURIComponent(skillsMatch[1])
     if (!agentExistsFor(agentName)) { json(res, { error: 'Agent not found' }, 404); return true }
+    // Card b3b73630 (Cybersec F1, comment 31601 on 7c79badc): skillsRootFor(MAIN_AGENT_ID) is the
+    // GLOBAL ~/.claude/skills root every agent loads -- the shared bearer every fleet agent holds
+    // could write there with no auth-kind check. Sub-agent targets are unaffected (their skills
+    // dir is agent-local, not fleet-wide) and keep the existing behaviour.
+    if (agentName === MAIN_AGENT_ID && rejectIfNotHumanAuth(ctx)) return true
     const body = await readBody(req)
     const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
     const skillName = sanitizeSkillName(rawSkillName || '')
     if (!skillName) { json(res, { error: 'Skill name is required' }, 400); return true }
     if (!description) { json(res, { error: 'Skill description is required' }, 400); return true }
 
+    // CYBERED NO-GO F3 (card 7c79badc): the merge had switched this to queueGeneratedSkill
+    // (MARVEENGAPS1020 b), but nothing in the dashboard can approve a per-agent pending skill
+    // (no web/*.js references /api/skills/pending from this flow, index.html's #skillsPending
+    // is an empty hidden div) -- a queue nobody can drain. Code-quality principle 5: a working
+    // feature (direct write) is not replaced without Peti. Restored to the fork's pre-merge
+    // direct-write behaviour (e1f43d02c) until a UI exists to drain the queue.
     const skillDir = join(skillsRootFor(agentName), skillName)
     if (existsSync(skillDir)) { json(res, { error: 'Skill already exists' }, 409); return true }
     mkdirSync(skillDir, { recursive: true })
@@ -269,7 +289,7 @@ export async function tryHandleAgentsSkills(ctx: RouteContext): Promise<boolean>
     try {
       const skillMd = await generateSkillMd(skillName, description)
       atomicWriteFileSync(join(skillDir, 'SKILL.md'), skillMd)
-    } catch (err) {
+    } catch {
       rmSync(skillDir, { recursive: true, force: true })
       json(res, { error: 'Failed to generate skill' }, 500)
       return true

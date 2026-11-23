@@ -65,6 +65,42 @@ WAKE_BIN="${HEARTBEAT_SCRIPTFIRST_WAKE_BIN:-$ROOT/store/sched-wake-mikrob.sh}"
 STATE_FILE="${HEARTBEAT_SCRIPTFIRST_STATE_FILE:-$ROOT/store/.heartbeat-scriptfirst-last.txt}"
 PENDING_FILE="${HEARTBEAT_SCRIPTFIRST_PENDING_FILE:-$ROOT/store/.heartbeat-scriptfirst-pending.txt}"
 ACTIVE_SUBAGENTS_FILE="${HEARTBEAT_SCRIPTFIRST_ACTIVE_SUBAGENTS_FILE:-$ROOT/store/active-subagents.json}"
+NMDRIFT_BIN="${HEARTBEAT_SCRIPTFIRST_NMDRIFT_BIN:-$ROOT/store/npm-live-install-drift-check.sh}"
+MAIN_REPO="${HEARTBEAT_SCRIPTFIRST_MAIN_REPO:-/home/neon/marveen}"
+HARDSTOP_FILE="${HEARTBEAT_SCRIPTFIRST_HARDSTOP_FILE:-$ROOT/store/weekly-hard-stop.json}"
+# card d8f44d15 req 3: fixture seam for /api/token-usage/daily-lag, same style as _get's
+# FIXTURE_DIR -- a plain file holding the JSON body, read instead of curled when set.
+TOKENLAG_FIXTURE="${HEARTBEAT_SCRIPTFIRST_TOKENLAG_FIXTURE:-}"
+# F1 (card b7fe4a95, WhiteHat2 F1/N3): a SUSTAINED state (hard-stop/newDevStop/load-guard HOLD held
+# constant for days during a weekly stop) used to wake MikroB on every single tick, because
+# ACTIONABLE was set from the STATE directly and that bypasses the CHANGED-diff dedup entirely
+# (see the final if-block: ACTIONABLE wakes regardless of CHANGED). Fix: wake only on the
+# TRANSITION (this tick's value differs from the value recorded on the PREVIOUS tick), tracked in
+# a tiny separate state file so a flag kept constant for 1000 ticks wakes exactly once (on entry).
+FLAGS_STATE_FILE="${HEARTBEAT_SCRIPTFIRST_FLAGS_STATE_FILE:-$ROOT/store/.heartbeat-scriptfirst-flags-last.txt}"
+# Defaults are the NORMAL/no-anomaly state, not empty: on a cold start (no flags-state file yet)
+# this must compare against "nothing was ever wrong" so a routine first tick (active=False,
+# ADMIT) does not itself register as a transition and force a spurious wake -- only an actual
+# first-observed anomaly (True/HOLD) differs from this baseline and correctly still wakes, same
+# as the pre-fix behaviour did unconditionally on any active=True tick.
+PREV_HS_ACTIVE="False"
+PREV_HS_NEWDEV="False"
+PREV_LG_VERDICT="ADMIT"
+if [ -f "$FLAGS_STATE_FILE" ]; then
+  while IFS='=' read -r _flag_k _flag_v; do
+    case "$_flag_k" in
+      HS_ACTIVE) PREV_HS_ACTIVE="$_flag_v" ;;
+      HS_NEWDEV) PREV_HS_NEWDEV="$_flag_v" ;;
+      LG_VERDICT) PREV_LG_VERDICT="$_flag_v" ;;
+    esac
+  done < "$FLAGS_STATE_FILE"
+fi
+# This tick's values, written back at the end -- empty/"unset" means "not computed this tick",
+# so a transient error elsewhere does not blow away a previously-known value and cause a false
+# transition the next time the flag is actually readable again.
+CUR_HS_ACTIVE="__unset__"
+CUR_HS_NEWDEV="__unset__"
+CUR_LG_VERDICT="__unset__"
 
 if [ "${HEARTBEAT_SCRIPTFIRST:-on}" = "off" ]; then
   echo "heartbeat-scriptfirst: disabled (HEARTBEAT_SCRIPTFIRST=off)"
@@ -129,11 +165,22 @@ WLS="$(cat "$ROOT/store/weekly-limit-stop.json" 2>/dev/null)"
 [ -n "$WLS" ] && add "WEEKLY-LIMIT-STOP: $WLS"
 
 # --- 4) hard-stop (new, auto-computed flag) -------------------------------------------------------
-HS="$(cat "$ROOT/store/weekly-hard-stop.json" 2>/dev/null)"
+HS="$(cat "$HARDSTOP_FILE" 2>/dev/null)"
 if [ -n "$HS" ]; then
   HS_ACTIVE="$(printf '%s' "$HS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("active"))' 2>/dev/null)"
   HS_NEWDEV="$(printf '%s' "$HS" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("newDevStopActive"))' 2>/dev/null)"
   add "HARD-STOP: active=$HS_ACTIVE newDevStopActive=$HS_NEWDEV"
+  # N3 (card 1c8f6d25): either flag being on used to just be a line in the report, never flagged
+  # ACTIONABLE -- so a flip into hard-stop or newDevStop only woke MikroB if some OTHER section
+  # happened to be actionable too.
+  # F1 (card b7fe4a95): the original "fix" set ACTIONABLE=1 from the STATE itself, so a SUSTAINED
+  # hard-stop/newDevStop (the normal case -- a weekly stop lasts days) woke MikroB on every single
+  # tick, which is exactly the token-burning problem this whole script exists to solve. Wake only
+  # on the TRANSITION: this tick's value differs from the previous tick's recorded value.
+  CUR_HS_ACTIVE="$HS_ACTIVE"
+  CUR_HS_NEWDEV="$HS_NEWDEV"
+  [ "$HS_ACTIVE" != "$PREV_HS_ACTIVE" ] && ACTIONABLE=1
+  [ "$HS_NEWDEV" != "$PREV_HS_NEWDEV" ] && ACTIONABLE=1
 fi
 
 # --- 5) load-guard -------------------------------------------------------------------------------
@@ -143,6 +190,13 @@ if [ "$LG_RC" -gt 1 ]; then
   err "load-guard-check.sh exited $LG_RC"
 elif ! printf '%s' "$LG_OUT" | grep -qE '^(ADMIT|HOLD)\b'; then
   err "load-guard-check.sh output unrecognised: $LG_OUT"
+else
+  # N3: a HOLD verdict was a recognised (non-err) shape, so it never woke MikroB either.
+  # F1 (card b7fe4a95): sustained HOLD (every tick, for the duration of a load-guard hold) used
+  # to wake every tick for the same STATE-vs-TRANSITION reason as the hard-stop flags above --
+  # wake only when the verdict differs from the previous tick's.
+  CUR_LG_VERDICT="$(printf '%s' "$LG_OUT" | grep -oE '^(ADMIT|HOLD)\b' | head -1)"
+  [ "$CUR_LG_VERDICT" != "$PREV_LG_VERDICT" ] && ACTIONABLE=1
 fi
 
 # --- one shared kanban snapshot for 6/7/11 -------------------------------------------------------
@@ -195,7 +249,20 @@ import json, sys, re
 try: comments = json.load(sys.stdin)
 except Exception: sys.exit(0)
 comments = comments if isinstance(comments, list) else (comments or {}).get("comments") or []
-has_review = any(re.match(r"\s*(REVIEW|K[EÉ]SZ|DONE|ELK[EÉ]SZ[UÜ]LT|BEFEJEZ)", (c.get("content") or ""), re.I) for c in comments)
+# N1 (card 1c8f6d25): a REVIEW whose Gate-SHA line (rule 4b) precedes the word REVIEW used to be
+# invisible here, because this only matched REVIEW at content[0]. Skip the same leading
+# Gate-SHA:/Skills: lines gate-closure-check.py already skips (_LEAD_SKIP) before matching.
+# NO separate blank-line alternative here (WhiteHat2 pin gap, card b7fe4a95): the consuming
+# has_review regex below already starts with its own `\s*`, so a bare blank line -- alone, or as
+# the leftover after the Gate-SHA:/Skills: branches have already consumed their own lines -- is
+# always absorbed there regardless. Measured directly: adding a `|\s*\n` alternative here changes
+# the outcome of NO case (dead code), so it is left out rather than kept as a pin-gap no mutant
+# can distinguish.
+LEAD_SKIP = re.compile(r"^(?:\s*Gate-SHA:[^\n]*\n|\s*Skills:[^\n]*\n)*", re.I)
+def body(content):
+    content = content or ""
+    return content[LEAD_SKIP.match(content).end():]
+has_review = any(re.match(r"\s*(REVIEW|K[EÉ]SZ|DONE|ELK[EÉ]SZ[UÜ]LT|BEFEJEZ)", body(c.get("content")), re.I) for c in comments)
 has_verdict = any(re.match(r"'"$VERDICT_RX"'", (c.get("content") or ""), re.I) for c in comments)
 print("1" if (has_review and not has_verdict) else "0")
 ' 2>/dev/null)"
@@ -313,6 +380,71 @@ except Exception as e:
   esac
 fi
 
+# F1: persist this tick's flag values for the NEXT tick's transition comparison. Only overwrites a
+# key that was actually computed this tick (the "__unset__" sentinel means "skip, carry the old
+# value forward") -- a transient error (e.g. HARDSTOP_FILE briefly unreadable) must not erase the
+# last-known value and manufacture a false transition once it is readable again.
+{
+  [ "$CUR_HS_ACTIVE" != "__unset__" ] && printf 'HS_ACTIVE=%s\n' "$CUR_HS_ACTIVE" || { [ -n "$PREV_HS_ACTIVE" ] && printf 'HS_ACTIVE=%s\n' "$PREV_HS_ACTIVE"; }
+  [ "$CUR_HS_NEWDEV" != "__unset__" ] && printf 'HS_NEWDEV=%s\n' "$CUR_HS_NEWDEV" || { [ -n "$PREV_HS_NEWDEV" ] && printf 'HS_NEWDEV=%s\n' "$PREV_HS_NEWDEV"; }
+  [ "$CUR_LG_VERDICT" != "__unset__" ] && printf 'LG_VERDICT=%s\n' "$CUR_LG_VERDICT" || { [ -n "$PREV_LG_VERDICT" ] && printf 'LG_VERDICT=%s\n' "$PREV_LG_VERDICT"; }
+  true
+} > "$FLAGS_STATE_FILE"
+
+# --- 12) live node_modules drift from package-lock.json (card dd051a9f) -------------------------
+# marveen-land.sh's sync_live_install() fast-forwards $MAIN's package.json/package-lock.json on
+# every landing but never runs npm ci there (card 5d365589 N3, deliberate), and its "run npm ci by
+# hand" line goes into a backgrounded land-run log nobody is tailing (land-run-journal.sh). This
+# makes the gap loud on the heartbeat instead, so it stops depending on a human noticing a stale
+# install before something breaks in production.
+ND_OUT="$(bash "$NMDRIFT_BIN" --repo "$MAIN_REPO" 2>&1)"; ND_RC=$?
+case "$ND_RC" in
+  0) add "NODE-MODULES-SYNC: $(printf '%s' "$ND_OUT" | head -1)" ;;
+  1) add "NODE-MODULES-DRIFT: $ND_OUT"; ACTIONABLE=1 ;;
+  3) add "NODE-MODULES-SYNC: check not applicable -- $(printf '%s' "$ND_OUT" | head -1)" ;;
+  *) err "npm-live-install-drift-check.sh exited $ND_RC: $ND_OUT" ;;
+esac
+
+# --- 13) N4 (card 1c8f6d25): replay a previously FAILED wake's report, instead of leaving it stuck in
+# --- PENDING_FILE forever. Read-and-clear here so a wake that fails AGAIN re-appends fresh (below)
+# --- rather than this block re-reading the same backlog on every future tick.
+# F2 (card b7fe4a95): the backlog used to be replayed WHOLE and the append side had no cap, so a
+# backlog above ~128 KB (MAX_ARG_STRLEN) made the wake fail with E2BIG forever, with no recovery
+# short of a manual purge, and each further failed tick appended the whole (already-huge) report
+# again, growing it further. Cap the replay to the last PENDING_CAP_BYTES, with a byte count of
+# the full backlog so nothing is silently lost from the report (just truncated, with that said).
+PENDING_CAP_BYTES="${HEARTBEAT_SCRIPTFIRST_PENDING_CAP_BYTES:-8192}"
+PENDING_BACKLOG_RAW="$(cat "$PENDING_FILE" 2>/dev/null || true)"
+if [ -n "$PENDING_BACKLOG_RAW" ]; then
+  : > "$PENDING_FILE"
+  ACTIONABLE=1
+  PENDING_BACKLOG_BYTES=$(printf '%s' "$PENDING_BACKLOG_RAW" | wc -c)
+  PENDING_BACKLOG="$(printf '%s' "$PENDING_BACKLOG_RAW" | tail -c "$PENDING_CAP_BYTES")"
+  add "PENDING-REPLAY (korabban sikertelen wake, most ujra probalva, ${PENDING_BACKLOG_BYTES} B teljes, utolso ${PENDING_CAP_BYTES} B):"
+  add "$PENDING_BACKLOG"
+fi
+
+# --- 14) token_usage_daily staleness (card d8f44d15 req 3): classifyTokenPruneLag already --------
+# existed (HBDBKUSZOB823) but was never called from anywhere -- a guard nobody reads is not a
+# guard. ACTIONABLE only on 'stale' (a real multi-sweep-cycle miss); 'ok'/'empty' are silent,
+# 'invalid' is a config fault and wakes via err() same as any other allowlist miss.
+if [ -n "$TOKENLAG_FIXTURE" ]; then
+  TOKENLAG_JSON="$(cat "$TOKENLAG_FIXTURE" 2>/dev/null)"
+else
+  TOKENLAG_JSON="$(curl -s --max-time 15 -H @"$hf" "${DASH}/api/token-usage/daily-lag" 2>/dev/null)"
+fi
+TOKENLAG_STATE="$(printf '%s' "$TOKENLAG_JSON" | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin).get("state", ""))
+except Exception: print("")
+' 2>/dev/null)"
+case "$TOKENLAG_STATE" in
+  ok|empty) add "TOKEN-USAGE-DAILY-LAG: $TOKENLAG_JSON" ;;
+  stale) add "TOKEN-USAGE-DAILY-LAG: $TOKENLAG_JSON"; ACTIONABLE=1 ;;
+  invalid) err "token-usage daily-lag reports invalid config: $TOKENLAG_JSON" ;;
+  *) err "token-usage daily-lag fetch failed or unrecognised: $TOKENLAG_JSON" ;;
+esac
+
 # --- diff against previous run (card 6d0775bb: "kimenetuk diffelve az elozo korhoz") --------------
 # The TIME line changes every second by construction -- excluded from the comparison, or every
 # single run would read as "changed" regardless of anything that actually happened.
@@ -331,7 +463,13 @@ if [ "$ACTIONABLE" = "1" ] || [ "$CHANGED" = "1" ]; then
       # F1c: a failed wake must not silently lose the signals it carried (busy-report/escalations
       # are read-and-clear downstream) -- persist the report, then fail-closed so the caller's own
       # command-type contract (see Usage above) escalates with the error.
+      # F2 (card b7fe4a95): cap the APPEND side the same way as the read side above -- otherwise a
+      # run of failed ticks grows this file by one whole report each time, with no bound, straight
+      # back into the E2BIG hole this fix exists to close.
       { date '+%Y-%m-%d %H:%M:%S %Z'; printf '%s\n' "$REPORT"; echo "---"; } >> "$PENDING_FILE"
+      if [ "$(wc -c < "$PENDING_FILE" 2>/dev/null || echo 0)" -gt "$PENDING_CAP_BYTES" ]; then
+        tail -c "$PENDING_CAP_BYTES" "$PENDING_FILE" > "${PENDING_FILE}.tmp" && mv "${PENDING_FILE}.tmp" "$PENDING_FILE"
+      fi
       echo "heartbeat-scriptfirst: WAKE-FAILED rc=$WAKE_RC -- report appended to $PENDING_FILE"
       printf '%s\n' "$REPORT"
       exit 1

@@ -75,6 +75,15 @@ export interface ContextGuardConfig {
    *  false, so the auto-restart runner keeps its own nightly restart instead
    *  of standing aside for a tier that can never fire. */
   dailyHandoffTime: string | null
+  /** New-card-dispatch tier (card f5f78e13): hand off and restart fresh when
+   *  the agent is dispatched a DIFFERENT kanban card than the one it was last
+   *  seen working. Default FALSE, like idleFlushEnabled/dailyHandoffEnabled:
+   *  it answers a fourth question (is this session about to be loaded with
+   *  unrelated work), and turning it on ends a session on a dispatch event
+   *  rather than on a measurement or a clock. Ranked LAST among the tiers --
+   *  least urgent, since the session is not in danger and not expensive, it
+   *  is simply about to start a card its transcript knows nothing about. */
+  newCardHandoffEnabled: boolean
 }
 
 export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
@@ -130,7 +139,18 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   // the tier without naming a time keeps the old nightly restart rather than
   // losing it to a tier that never fires.
   dailyHandoffTime: null,
+  newCardHandoffEnabled: false,
 }
+
+/**
+ * Upper bound for every minutes field. Each one is turned into a millisecond
+ * deadline (nowMs + minutes * 60_000), and Number.isFinite(1e308) is true while
+ * 1e308 * 60_000 is Infinity: an infinite deadline is never reached, so the
+ * phase would never time out. This is a conversion limit, not a business one
+ * (about 5800 years): it keeps the latest possible Date plus two such durations
+ * a safe integer.
+ */
+export const MAX_GUARD_MINUTES = Math.floor((Number.MAX_SAFE_INTEGER - 8.64e15) / (2 * 60_000))
 
 /** Coerce arbitrary parsed JSON into a safe, fully-populated config. */
 export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
@@ -138,7 +158,7 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
   const pct = (v: unknown, dflt: number): number =>
     (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1) ? v : dflt
   const mins = (v: unknown, dflt: number): number =>
-    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? v : dflt
+    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? Math.min(v, MAX_GUARD_MINUTES) : dflt
   let actPct = pct(o.actPct, DEFAULT_CONTEXT_GUARD.actPct)
   let hardPct = pct(o.hardPct, DEFAULT_CONTEXT_GUARD.hardPct)
   if (hardPct < actPct) hardPct = actPct // hard tier can never sit below act
@@ -168,6 +188,7 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
     // not parse as HH:MM becomes null rather than being carried through, so a
     // typo disarms the tier instead of scheduling it at an unreadable time.
     dailyHandoffTime: parseHHMM(o.dailyHandoffTime) !== null ? (o.dailyHandoffTime as string).trim() : null,
+    newCardHandoffEnabled: o.newCardHandoffEnabled === true, // default-off (opt-in), like the other tiers
   }
 }
 
@@ -303,6 +324,27 @@ export interface GuardState {
    *  sent. A re-send carries a reason of its own, and the runner needs the
    *  original one to word the prompt the same way (act / idle / daily / stale). */
   handoffRequestReason?: string
+  /** Koteg 24 (card 57044a66): set when THIS sequence's handoff request was triggered
+   *  by the idle-flush tier (reason starts with IDLE_FLUSH_REASON_PREFIX), not act/daily/stale.
+   *  The runner's restart notice wording (restartLossLine) needs the sequence's OWN origin,
+   *  not the restart action's reason (always "handoff written"), to know whether a worksource
+   *  agent's "nothing was lost, don't resend" line applies. */
+  idleFlushSequence?: boolean
+
+  /** await-handoff only: the busy-pane deferral already reported, once, that
+   *  the pane stayed busy a whole handoffTimeoutMinutes past the deadline.
+   *  Optional, and absent from every state literal that starts a sequence, so
+   *  each new handoff sequence may report once again. */
+  busyOverdueWarned?: boolean
+
+  /** New-card-dispatch tier only (card f5f78e13): the id of the card this
+   *  sequence is handing off FOR. Set at the initial handoffRequest and
+   *  carried through restartDecision into await-ready, so inject-resume can
+   *  name the new card instead of leaving the agent to infer it (CYBERSEC
+   *  F2, comment 31757). null for every other tier's sequence. */
+  newCardId?: string | null
+  /** Title of newCardId, same gating. */
+  newCardTitle?: string | null
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -422,6 +464,22 @@ export interface GuardInputs {
    *  midnight and the last-served stamp -- neither of which belongs in this
    *  clock-free module's decision function. */
   dailyHandoffDue: boolean
+  /** The new-card-dispatch tier (card f5f78e13) has a different card recorded
+   *  than last sweep. Computed by the runner with applyNewCardDispatchSweep()
+   *  against its own per-agent record map, for the same reason dailyHandoffDue
+   *  is computed outside this clock-free module: the record lives in the
+   *  runner, this module only decides what the comparison means. */
+  newCardDispatchDue: boolean
+  /** The id of the card currently in_progress for this agent, read by
+   *  getInProgressCardIdForAgent() (new-card-dispatch tier only; null when
+   *  the tier is disarmed or the agent holds no in_progress card). Only
+   *  meaningful together with newCardDispatchDue -- carried into GuardState
+   *  so the handoff and resume prompts can name the card the restart is FOR
+   *  (CYBERSEC F2, comment 31757), instead of leaving the agent to infer it
+   *  from an old, no-longer-current HANDOFF.md. */
+  newCardId: string | null
+  /** Title of newCardId, same gating. */
+  newCardTitle: string | null
   /** The session is CURRENTLY blocked by a plan usage limit, as decided by
    *  usageLimitVerdict() from the session transcript -- NOT the pane banner,
    *  which outlives the limit (see USAGE_LIMIT_REASON_PREFIX). */
@@ -674,6 +732,31 @@ export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
 export const DAILY_HANDOFF_REASON_PREFIX = 'daily-handoff'
 
 /**
+ * Reason prefix of the one-time busy-pane warning: the pane is still mid-turn a
+ * whole handoffTimeoutMinutes past the handoff deadline. The decision stays
+ * action 'none' (a busy pane is never restarted); the runner matches this
+ * prefix to log a warning, once per handoff sequence.
+ */
+export const BUSY_OVERDUE_REASON_PREFIX = 'busy-overdue'
+
+/**
+ * Reason for giving up on the resume injection: the restarted session did not
+ * become ready within READY_TIMEOUT_MS. The decision is action 'none', so the
+ * runner matches this constant to raise an alert instead of staying silent.
+ */
+export const RESUME_GIVE_UP_REASON = 'ready timeout -- giving up on resume injection'
+
+/**
+ * Reason prefix for the new-card-dispatch tier (card f5f78e13). A fifth
+ * wording: this agent's session is not near its limit, not expensive, not a
+ * day old and not idle -- it is about to be handed a kanban card its own
+ * transcript knows nothing about, so re-reading the whole prior-card history
+ * on every turn of the new card buys nothing. The runner matches this
+ * constant to pick the prompt.
+ */
+export const NEW_CARD_DISPATCH_REASON_PREFIX = 'new-card-dispatch'
+
+/**
  * Whether the daily tier can actually fire for this config.
  *
  * ONE predicate, two readers: the tier itself, and the auto-restart runner
@@ -850,6 +933,48 @@ export function applyDailyHandoffSkipSweep(
   return r.due
 }
 
+/**
+ * Pure predicate for the new-card-dispatch tier (card f5f78e13): is it due?
+ *
+ * True only when the tier is armed, a card is actually dispatched right now
+ * (null = nothing dispatched, e.g. between cards, never fires), AND a
+ * DIFFERENT card was recorded last sweep. `lastSeenCardId === undefined`
+ * (first sight of this agent, or the record was just forgotten) never fires
+ * either -- the runner seeds the record instead, the same reasoning
+ * dailyHandoffStep uses for its own first-sight seed: a guard process that
+ * starts mid-card must not treat "never recorded" as "different card".
+ */
+export function newCardDispatchDue(
+  enabled: boolean,
+  dispatchedCardId: string | null,
+  lastSeenCardId: string | undefined,
+): boolean {
+  if (!enabled) return false
+  if (dispatchedCardId === null) return false
+  if (lastSeenCardId === undefined) return false
+  return dispatchedCardId !== lastSeenCardId
+}
+
+/**
+ * Whether the runner should forget its "last seen card" record for this
+ * agent BEFORE reading newCardDispatchDue, so a disarmed tier (or an agent
+ * holding no in_progress card right now) never compares against a stale id
+ * from before the gap -- the same "disarmed forgets on every sweep" rule
+ * dailyHandoffSweep applies to its own record.
+ *
+ * Deliberately NOT bundled into an apply-and-advance helper like the daily
+ * tier's applyDailyHandoffSweep: that shape advances the record on every
+ * sweep regardless of whether decideGuard actually acted on it, which would
+ * silently consume the "due" signal on a sweep where a higher-ranked tier or
+ * a non-idle phase pre-empted this branch -- losing the trigger for that card
+ * change forever instead of it staying due until actually served. The record
+ * advances only at decision time (decision.reason === NEW_CARD_DISPATCH_REASON_PREFIX),
+ * mirroring exactly how the runner marks lastDailyHandoff served.
+ */
+export function forgetNewCardDispatchRecord(enabled: boolean, dispatchedCardId: string | null): boolean {
+  return !enabled || dispatchedCardId === null
+}
+
 /** Slack between HANDOFF.md's mtime and the last transcript activity before
  *  the handoff counts as stale. The handoff-writing turn itself touches the
  *  transcript slightly AFTER the file write (tool result + closing reply), so
@@ -915,6 +1040,47 @@ export function handoffStaleMinutes(inputs: GuardInputs): HandoffStaleness {
   return gapMs > STALE_HANDOFF_SLACK_MS ? Math.round(gapMs / 60_000) : null
 }
 
+/**
+ * One structured record per resume injection (card d66b7681, MikroB GO msg
+ * 18804 condition 2). Lets a human/agent later MEASURE whether resumed
+ * sessions actually followed the stale-handoff instruction, instead of only
+ * ever seeing the same thing twice: a backend3-style stale-handoff double
+ * landing produces no visible trace today beyond a generic restart notice.
+ *
+ * `firstActionInstructed` names WHICH resume-prompt variant fired, not a
+ * verified claim about what the agent actually did first -- the guard has no
+ * way to observe that. It is the instruction given, recorded so a later
+ * audit can at least check "was this agent told to verify, and did it still
+ * land something stale anyway".
+ */
+export interface RestartLogEntry {
+  agent: string
+  tsMs: number
+  handoffAgeMinutes: number | null
+  stale: boolean
+  firstActionInstructed: 'no-handoff-use-live-sources' | 'freshness-unmeasurable-cross-check' |
+    'stale-verify-live-before-irreversible' | 'fresh-handoff-resume'
+}
+
+/** Pure classification -- mirrors the four branches resumePrompt() picks from. */
+export function buildRestartLogEntry(
+  agent: string,
+  hadHandoff: boolean,
+  staleMinutes: HandoffStaleness,
+  tsMs: number,
+): RestartLogEntry {
+  if (!hadHandoff) {
+    return { agent, tsMs, handoffAgeMinutes: null, stale: false, firstActionInstructed: 'no-handoff-use-live-sources' }
+  }
+  if (staleMinutes === 'unknown') {
+    return { agent, tsMs, handoffAgeMinutes: null, stale: true, firstActionInstructed: 'freshness-unmeasurable-cross-check' }
+  }
+  if (typeof staleMinutes === 'number') {
+    return { agent, tsMs, handoffAgeMinutes: staleMinutes, stale: true, firstActionInstructed: 'stale-verify-live-before-irreversible' }
+  }
+  return { agent, tsMs, handoffAgeMinutes: 0, stale: false, firstActionInstructed: 'fresh-handoff-resume' }
+}
+
 export type GuardActionType = 'none' | 'request-handoff' | 'restart' | 'inject-resume'
 
 export interface GuardDecision {
@@ -953,8 +1119,19 @@ function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): Guard
 }
 
 /** staleMinutes rides into await-ready so inject-resume can tell the fresh
- *  session its handoff does not cover the last N minutes. */
-function restartDecision(nowMs: number, reason: string, staleMinutes: HandoffStaleness = null): GuardDecision {
+ *  session its handoff does not cover the last N minutes. `carryFrom`, when
+ *  given the await-handoff state this restart is leaving, forwards
+ *  handoffRequestReason/newCardId/newCardTitle into await-ready too, so a
+ *  tier-specific resume prompt (new-card-dispatch) can still identify itself
+ *  after the restart (CYBERSEC F2, comment 31757). Omitted for restarts with
+ *  no prior handoff sequence (saturation net, hard threshold straight from
+ *  idle) -- those have nothing tier-specific to carry. */
+function restartDecision(
+  nowMs: number,
+  reason: string,
+  staleMinutes: HandoffStaleness = null,
+  carryFrom: GuardState | null = null,
+): GuardDecision {
   return {
     action: 'restart',
     reason,
@@ -966,6 +1143,9 @@ function restartDecision(nowMs: number, reason: string, staleMinutes: HandoffSta
       saturatedStreak: 0,
       staleRefreshCount: 0,
       handoffStaleMinutes: staleMinutes,
+      handoffRequestReason: carryFrom?.handoffRequestReason,
+      newCardId: carryFrom?.newCardId ?? null,
+      newCardTitle: carryFrom?.newCardTitle ?? null,
     },
   }
 }
@@ -983,7 +1163,18 @@ export function decideGuard(
   const none = (reason: string, next: GuardState = state): GuardDecision =>
     ({ action: 'none', reason, nextState: next })
 
-  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
+  // A busy pane is never restarted (both await-handoff deferrals wait for the
+  // turn to end). Once per handoff sequence, a whole handoffTimeoutMinutes past
+  // the deadline, the deferral says so: same action, same state otherwise.
+  const deferBusy = (reason: string): GuardDecision => {
+    if (!state.busyOverdueWarned && nowMs >= state.deadlineMs + cfg.handoffTimeoutMinutes * 60_000) {
+      const minutes = Math.floor((nowMs - state.deadlineMs) / 60_000)
+      return none(`${BUSY_OVERDUE_REASON_PREFIX}: ${reason} (${minutes}m past the handoff deadline)`, { ...state, busyOverdueWarned: true })
+    }
+    return none(reason)
+  }
+
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled && !cfg.newCardHandoffEnabled) {
     return none('disabled', INITIAL_GUARD_STATE)
   }
 
@@ -1047,13 +1238,25 @@ export function decideGuard(
           `${DAILY_HANDOFF_REASON_PREFIX} (scheduled ${cfg.dailyHandoffTime})`,
         )
       }
+      // New-card-dispatch tier, ranked LAST -- even later than the daily slot.
+      // The three tiers above answer "about to break" / "expensive" / "a day
+      // old"; this one answers "about to start unrelated work", which is the
+      // least urgent of the four and the only one with ANOTHER mechanism
+      // already covering it today (the dispatch message itself carries the
+      // new card's context, so a missed sweep costs cache_read, not a lost
+      // instruction). Deliberately not gated on paneIdle, same reasoning as
+      // the daily tier: a busy agent gets the request and answers after its
+      // turn; await-handoff already refuses to cut a live one.
+      if (cfg.newCardHandoffEnabled && inputs.newCardDispatchDue) {
+        return handoffRequest(nowMs, inputs, cfg, NEW_CARD_DISPATCH_REASON_PREFIX, inputs.newCardId, inputs.newCardTitle)
+      }
       if (!cfg.enabled) return none('proactive guard disabled (saturation net armed)', cleared)
       if (inputs.pct === null) return none('context unmeasurable', cleared)
       return none('below threshold', cleared)
     }
 
     case 'await-handoff': {
-      if (!cfg.enabled && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
+      if (!cfg.enabled && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled && !cfg.newCardHandoffEnabled) {
         // Operator disabled the proactive guard mid-sequence; stand down.
         // Every tier that can ENTER this phase has to appear here: omitting
         // one would stand the sequence down on the sweep after it started,
@@ -1069,7 +1272,7 @@ export function decideGuard(
         // The pane tipped over while we waited for the handoff: the agent can
         // no longer act on the request, so restart now (no debounce -- the
         // act-threshold pct already corroborates a near-full context).
-        return restartDecision(nowMs, 'pane saturated during await-handoff', handoffStaleMinutes(inputs))
+        return restartDecision(nowMs, 'pane saturated during await-handoff', handoffStaleMinutes(inputs), state)
       }
       if (inputs.usageLimited) {
         // The agent cannot write (or finish writing) the handoff without
@@ -1151,6 +1354,7 @@ export function decideGuard(
               (refreshBudgetLeft ? '' : ` -- ${state.staleRefreshCount} refresh(es) already requested, accepting as-is`)
             : 'handoff written',
           staleMin,
+          state,
         )
       }
       // Same mid-turn deferral as the idle-phase hard tier: neither the hard
@@ -1159,16 +1363,31 @@ export function decideGuard(
       // sweep that finds the pane no longer busy; a turn that saturates
       // mid-flight is caught by the paneSaturated branch above.
       if (inputs.pct !== null && inputs.pct >= cfg.hardPct) {
-        if (inputs.paneBusy) return none('hard threshold during await-handoff but agent mid-turn -- deferring restart')
-        return restartDecision(nowMs, 'hard threshold during await-handoff', handoffStaleMinutes(inputs))
+        if (inputs.paneBusy) return deferBusy('hard threshold during await-handoff but agent mid-turn -- deferring restart')
+        return restartDecision(nowMs, 'hard threshold during await-handoff', handoffStaleMinutes(inputs), state)
       }
       if (nowMs >= state.deadlineMs) {
-        if (inputs.paneBusy) return none('handoff timeout but agent mid-turn -- deferring restart')
+        if (inputs.paneBusy) return deferBusy('handoff timeout but agent mid-turn -- deferring restart')
+        // New-card-dispatch tier is the odd one out here (CYBERSEC F2,
+        // comment 31757): every OTHER tier that reaches this point is acting
+        // on a session that is (claimed to be) in danger, expensive, or a
+        // day old, so force-restarting it even without a handoff is still a
+        // net win. This tier's session is none of those -- it is healthy and
+        // merely about to start unrelated work -- so a missed handoff is not
+        // worth losing a live, low-context session over. Stand down instead
+        // of forcing a restart the session does not need; the record already
+        // advanced when the request first fired (see the runner's
+        // decision.reason === NEW_CARD_DISPATCH_REASON_PREFIX write), so this
+        // is a one-shot ask, same as every other tier's single handoff
+        // request, not a retry loop.
+        if (state.handoffRequestReason?.startsWith(NEW_CARD_DISPATCH_REASON_PREFIX)) {
+          return cooldown(nowMs, cfg, 'new-card-dispatch handoff timeout -- standing down, not force-restarting a healthy session')
+        }
         // No handoff in time (agent wedged or ignored the prompt). Restart
         // anyway: taskstate + kanban + hot memories are the fallback context.
         // An OLD HANDOFF.md may still exist; measure how far behind it is so
         // the resume prompt does not present it as current.
-        return restartDecision(nowMs, 'handoff timeout -- force restart', handoffStaleMinutes(inputs))
+        return restartDecision(nowMs, 'handoff timeout -- force restart', handoffStaleMinutes(inputs), state)
       }
       return none(handoffWritten ? 'handoff written, waiting for idle pane' : 'waiting for handoff')
     }
@@ -1210,7 +1429,7 @@ export function decideGuard(
         }
       }
       if (nowMs >= state.deadlineMs) {
-        return cooldown(nowMs, cfg, 'ready timeout -- giving up on resume injection')
+        return cooldown(nowMs, cfg, RESUME_GIVE_UP_REASON)
       }
       return none('waiting for restarted session')
     }
@@ -1319,6 +1538,8 @@ function handoffRequest(
   inputs: GuardInputs,
   cfg: ContextGuardConfig,
   reason: string,
+  newCardId: string | null = null,
+  newCardTitle: string | null = null,
 ): GuardDecision {
   return {
     action: 'request-handoff',
@@ -1333,6 +1554,11 @@ function handoffRequest(
       staleRefreshCount: 0,
       handoffStaleMinutes: null,
       handoffRequestReason: reason,
+      idleFlushSequence: reason.startsWith(IDLE_FLUSH_REASON_PREFIX),
+      // Only the new-card-dispatch tier passes these (CYBERSEC F2, comment
+      // 31757); every other tier's sequence carries null, same as before.
+      newCardId,
+      newCardTitle,
     },
   }
 }

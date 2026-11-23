@@ -5,6 +5,7 @@ import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type
 import { findConsumableApproval, consumeApproval, findPendingApproval } from '../../db.js'
 import { createAndNotifyApproval } from './approvals.js'
 import { agentKeyToAgentId } from '../auth-device-keys.js'
+import { rejectIfNotHumanAuth } from './auth.js'
 import type { RouteContext } from './types.js'
 
 // Card 68254bd7 (RedHat NO-GO 14837, MikroB decision 14841): the 'session'/'device' kind-check
@@ -131,11 +132,11 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
     // on disk, card 8eca67f0) -- it closes the NETWORK-reachable, unlogged path to the same effect,
     // which a compromised agent could use without first getting filesystem access. Dry-run
     // (apply=false) stays open to any authenticated caller -- it writes nothing.
-    if (apply && ctx.auth?.kind !== 'session' && ctx.auth?.kind !== 'device') {
-      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Fleet import: apply=true rejected for non-human credential')
-      json(res, { error: 'Fleet import (apply=true) requires a browser session or a device key, not the shared agent token.' }, 403)
-      return true
-    }
+    // Card 52114c2f (CYBERED NO-GO 34673, F1): the check used to treat ANY 'device' kind as
+    // human, but an agent:<id> device key (card 9655494c) resolves to the same shape -- unlike
+    // the export gate just above in this file (which already excludes it via isHumanDevice),
+    // this one did not. rejectIfNotHumanAuth is the shared predicate for the same exclusion.
+    if (apply && rejectIfNotHumanAuth(ctx)) return true
 
     // M1: check vault password length for import side too
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {

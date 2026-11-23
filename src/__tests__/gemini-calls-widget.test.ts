@@ -358,12 +358,15 @@ describe('gemini-calls: protection on ido/modell/feladattipus (card 13671607, Re
 })
 
 describe('gemini-calls: HTML wiring', () => {
-  it('sidebar nav has a geminiCalls link', () => {
-    expect(HTML).toContain('data-page="geminiCalls"')
+  // Card f1e33cfb (phase 36dc9240): Gemini merged into the tabbed Providers page. The old
+  // geminiCalls sidebar link/page are gone; 'geminiCalls' still redirects via switchPage
+  // (app-page-switch.js) for the 2-week safety window the phase asked for.
+  it('sidebar nav has a Providers link (Gemini is now one of its tabs)', () => {
+    expect(HTML).toContain('data-page="providers"')
   })
 
-  it('the dedicated page section exists with status + body regions', () => {
-    expect(HTML).toContain('id="geminiCallsPage"')
+  it('the Gemini tab panel exists with status + body regions', () => {
+    expect(HTML).toContain('id="tabProviderGemini"')
     expect(HTML).toContain('id="geminiPageStatus"')
     expect(HTML).toContain('id="geminiPageBody"')
     expect(HTML).toContain('id="geminiStopBanner"')

@@ -876,7 +876,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
     " Re-decided 2026-09-26 (backend, card d87adb90, dashboard/web frontend 10/10, f375962c..04a2f673): +746/-54, seven regions. (1) The X-Memory-Search rescue label (renderMemSearchLabel, loadMemories) is BYTE-IDENTICAL to what the fork already carries (verified: app-memories.js has the same function, same t() keys) -- no gap, already adopted in an earlier round not individually logged here. (2) PICKERCLIKAPU923 (applyClaudeCliGate, openAgentDetail's custom-provider select branch, updateCustomModelIdRow) plus a whole new settings 'Provider-ok' tab (renderProvidersContent) for custom Anthropic-compatible endpoints -- this is the FRONTEND half of card 6b10a6b8's backend decision (agents.ts: CLI-launch gate + custom provider support), genuinely absent here (grep-confirmed: zero hits on applyClaudeCliGate/updateCustomModelIdRow/renderProvidersContent), commented on 6b10a6b8 rather than duplicated as a new card (rule 6b). (3) renderQuotaStrip grew a second `fable` parameter (a Fable/Opus quota row, its own collector and own staleness) -- the FRONTEND half of card fd8ae23f's backend decision (overview.ts: Fable quota snapshot), genuinely absent, commented on fd8ae23f. (4) renderCliUpdateOffer (CLIFRISSAJANLAS923) is a genuinely NEW feature with no existing card -- a Claude Code CLI self-update offer UI reading /api/updates/cli, needing a backend route this fork does not have at all. Raised as its own follow-up (card 6b1020ff is unrelated -- GPU/VRAM test isolation, checked, no overlap -- so this is not a duplicate). (5) The Claude Plans panel (renderClaudePlansPanel/addClaudePlan/loadClaudePlansList) grew substantially: OAuth-token-mode plan auth (vault-stored, never plaintext), a live 5h/7d usage-check button with its own error taxonomy, and a mode selector (token vs CLAUDE_CONFIG_DIR) -- growth on the ALREADY-OPEN card 1c810029 (Claude Plans settings tab port), not a new gap; commented there with the specifics so whoever picks it up ports the grown scope. (6) BRANCH_HEAL_COMMAND (Updates page branch-drift heal instructions) changed from `git checkout main && bash update.sh` to `git switch main || git switch -c main --track origin/main && bash update.sh` -- a self-contained, isolated bugfix (upstream measured: `checkout main` exits 128 on a two-remote repo where git cannot infer which remote's main to follow) with no other feature dependency. ADOPTED DIRECTLY this round in web/app-updates.js (the fork's own copy was still the old, broken form) -- same character as the fleet-helper PYTHONDONTWRITEBYTECODE fix in card 123983f3, no follow-up needed. (7) Zero hits on any previously-decided point (MiniMax, Activity-page deletion, context-guard settings UI, blockers UI, idea-box, thinking-orb) -- all untouched. Resolution at every previously-decided point unchanged; the one direct adopt is (6); blob bumped." +
     " Re-decided 2026-10-14 (backend3, card d7e1d611, Köteg 14, 5c3ab972..8887523d): upstream commit 8887523d (ROTAUTOWIRE926) grew the Claude Plans panel further -- a readiness banner (claudePlansReadinessLines, a #claudePlansReadiness div in renderClaudePlansPanel) and a manual 'switch to this plan' button (switchToClaudePlan) -- on top of the ALREADY-OPEN card 1c810029 (Claude Plans settings tab port) this entry's 2026-09-15/2026-09-26 notes already defer. Same verdict, no new gap: the panel itself (renderClaudePlansPanel) still does not exist in this fork's web/app.js, so there is nothing to attach a banner or button to. NOT ADOPTED here, growth noted on 1c810029 for whoever ports the panel. The ONE thing this round did fix: 8887523d's backend half (src/web/claude-rotation-heartbeat.ts, a brand-new file with no merge conflict to lose a decision to) landed anyway and brought its own test, src/__tests__/claude-plans-readiness-ui.test.ts, which asserts the very UI this entry defers -- skipped (describe.skip, not deleted) with a dated note pointing back here, rather than crashing the suite on every future sync of this file until 1c810029 ships. Re-enable it when the panel lands. Resolution otherwise unchanged; blob bumped." +
     " Re-decided 2026-10-15 (backend3, card f3dd0c65, Köteg 16, a095087b..6f2d2619): two conflict hunks, both resolved per this entry's standing STUB-scaffold policy WITHOUT a line-by-line audit (18,439 deleted / 478 inserted lines across the two hunks combined -- an order of magnitude past what a single merge card can hand-audit; every prior round on this entry explicitly treats the full slice-by-slice pass as its own separate undertaking, not something owed by each merge). Hunk 1 (the kanban-section region) is pre-flagged by this fork's OWN comment sitting immediately above it in app.js ('Upstream batch 8 re-introduces the full, un-modularised kanban section inline here -- not adopted structurally... flagged to MikroB/Fron Ted'), so resolving it as STUB (ours) is simply honouring that standing flag, not a fresh judgement call. Hunk 2 (the Updates-page region) is the same pattern one level down: upstream's inline content includes a migration-scan UI (loadMigrateAgents/migrateScanBtn and siblings) with no corresponding fork slice evaluated here; kept as STUB (ours), renderUpdatesVersion (the one function this entry's own comment says deliberately stays unmodularised, pinned by fork-overlay-seam.test.ts) sits immediately after hunk 2's end marker in both branches, confirmed unaffected by either resolution. No new adoption decision made in this round; if either upstream hunk carries a genuinely new, not-yet-flagged capability, it is not called out here and remains for the dedicated full-parity audit this entry has deferred since 2026-08-17. Resolution policy unchanged; blob bumped." +
-    " Re-decided 2026-10-20 (backend3, card bd32ad68, Köteg 22, 24ba58622..e2199840): five conflict hunks this round. CORRECTED on first re-read: one adoption decision WAS made here, reversing the first pass's blanket STUB verdict for ALL five. The language-toggle hunk and three of the remaining four (reaching the kanban/updates STUB boundaries this entry already names) are kept as STUB (ours), same standing policy, not re-audited line by line. The fifth -- a 'Team notes (Jegyzetek)' feature (notesLocalToday/notesFmtTs/notesAssigneeLabel/loadNotesAssignees/loadNotesPage/wireNotesPage) -- was ADOPTED, not stubbed: it ships with its own dedicated test suites (team-notes-page.test.ts, team-notes-escape.test.ts, both new this batch) covering the assignee picker, the owner-attribution wiring and XSS-escaping of every stored field, the same 'validation suite present = satisfies the gate' reasoning applied to the usage-limit-gate and token-usage.ts adoptions this same round. Inserted after escSnippet() (not adjacent to loadIdeasPage, which lives in app-ideas.js here, not app.js); wired into app-page-switch.js's switchPage dispatch (`pageId === 'notes'`) alongside the other page loaders, matching web/style.css's already-adopted .notes-* rules and web/index.html's pre-existing nav link + page container (both already in this fork, untouched by this round). If a genuinely new, not-yet-flagged capability sits in any of the four still-STUB hunks, it is not called out here and remains for the dedicated audit. Resolution policy on those four unchanged; blob bumped.",
+    " Re-decided 2026-10-20 (backend3, card bd32ad68, Köteg 22, 24ba58622..e2199840): five conflict hunks this round. CORRECTED on first re-read: one adoption decision WAS made here, reversing the first pass's blanket STUB verdict for ALL five. The language-toggle hunk and three of the remaining four (reaching the kanban/updates STUB boundaries this entry already names) are kept as STUB (ours), same standing policy, not re-audited line by line. The fifth -- a 'Team notes (Jegyzetek)' feature (notesLocalToday/notesFmtTs/notesAssigneeLabel/loadNotesAssignees/loadNotesPage/wireNotesPage) -- was ADOPTED, not stubbed: it ships with its own dedicated test suites (team-notes-page.test.ts, team-notes-escape.test.ts, both new this batch) covering the assignee picker, the owner-attribution wiring and XSS-escaping of every stored field, the same 'validation suite present = satisfies the gate' reasoning applied to the usage-limit-gate and token-usage.ts adoptions this same round. Inserted after escSnippet() (not adjacent to loadIdeasPage, which lives in app-ideas.js here, not app.js); wired into app-page-switch.js's switchPage dispatch (`pageId === 'notes'`) alongside the other page loaders, matching web/style.css's already-adopted .notes-* rules and web/index.html's pre-existing nav link + page container (both already in this fork, untouched by this round). If a genuinely new, not-yet-flagged capability sits in any of the four still-STUB hunks, it is not called out here and remains for the dedicated audit. Resolution policy on those four unchanged; blob bumped." +
+    " Re-decided 2026-11-18 (backend3, card 5dd0842a, Köteg 25, f0cfd842b..66d38ee45): one conflict hunk this round (the settings/auth/kanban/updates region, ~2800 lines), kept as STUB (ours) per this entry's standing policy -- same un-audited-line-by-line treatment every prior round has given this region. Confirmed before resolving (not assumed): the three named moved-out symbol groups (fetchAuthStatus/renderAuthCard/renderBridgeEnrollSection et al.) are genuinely present in web/app-settings-auth.js, and the fork's own next STUB section (Token Usage Monitor, app-token-usage.js) sits immediately after upstream's hunk ends in both branches, confirming the span resolved matches this entry's description exactly. No new adoption decision made; if either upstream hunk carries a genuinely new, not-yet-flagged capability, it is not called out here and remains for the dedicated full-parity audit. Resolution policy unchanged; blob bumped.",
   // Two independent additive hunks with no behavioral overlap. Fork adds: HEARTBEAT.md ignore,
   // Ingatlan/ runtime data exclusions, and per-extension keep-tracked exceptions for operational
   // scripts (store/*.sh, store/*.py, store/stitch-tools/gen.mjs) by switching store/ → store/*
@@ -2656,7 +2657,16 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "independently-maintained hook over a different paradigm for the same threat surface is the " +
     "same duplicate-wire hazard GATECOPY828 names for ensureTelegramCopyGate vs. the fork's own " +
     "ensureOutgoingCopyGate -- not an addition. If the fork's own guard is ever retired or proven " +
-    "insufficient, that is its own decision, made against THAT guard, not a reason to run both.",
+    "insufficient, that is its own decision, made against THAT guard, not a reason to run both. " +
+    "Re-measured 2026-11-16 (backend3, card 57044a66/Koteg 24): upstream moved again (commit " +
+    "61a6572bc, BASH_EGRESS_HOST_ALLOW -- judges curl-https/wget by destination host, honours " +
+    "egress-vendor-hosts.json). Checked ensureBashEgressDeny/mergeBashEgressDeny directly against " +
+    "the diff: both got new params (parserCovers, mainScopeSettingsPath) wired to the rejected " +
+    "parser; reverted to the fork's pre-merge 2-arg signatures (verified via diff against the " +
+    "pre-merge blob + tsc + fork-upstream-conflict-guard.test.ts, all clean). Resolution unchanged " +
+    "-- the fork's allowlist mechanism still covers the same ground on a first read; a full side-" +
+    "by-side against BASH_EGRESS_HOST_ALLOW specifically is deferred to its own LOW research card " +
+    "(card a93874fb, MikroB dispatch msg 19457/19483), not decided here. Blob bumped.",
 
   // Card 1eae1b41 (test/docs group of the 7f0efce3 drift decomposition, DevO, 2026-10-17). The
   // argv-token pattern: upstream's side of all three template files below puts the dashboard
@@ -3196,9 +3206,61 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'self-escalation path (chain 68254bd7/9655494c) that upstream still leaves open (bearer can ' +
     'create the first user over HTTP). WhiteHat agreed (card 417e2343 comment 26763).',
   'src/__tests__/auth-routes.test.ts':
-    'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above.',
+    'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above. ' +
+    "CORRECTED 2026-11-18 (Koteg 25, card 5dd0842a): an earlier pass of THIS SAME round's " +
+    "conflict resolution wrongly imported upstream's mayIssueCredentials/DEVKEYMINT1022 " +
+    "assumption into the pre-existing 'deletes a user and revokes their sessions' test, changing " +
+    "the TOKEN_AUTH delete-user assertion from 200 to 403 -- directly contradicting " +
+    "USER_ADMIN_KINDS = ['token', 'session'] in auth.ts, whose own comment calls token-inclusion " +
+    'deliberate, existing behavior, and the auth.ts entry above already declining DEVKEYMINT1022. ' +
+    'Caught by fleet-test (expected 200 to be 403). Reverted to the original assertion (token ' +
+    'delete succeeds, 200); the CLI_RECOVERY_ONLY code-pinning and the session-path negative-' +
+    'control additions elsewhere in the same diff are unrelated and correct, left as adopted. ' +
+    '(Previously recorded, in error, under a second, malformed key carrying this parenthetical ' +
+    'in the key STRING itself -- merged back into this one entry, same file, same blob pin.)',
   'src/__tests__/auth-recovery.test.ts':
     'KEEP FORK -- pins the HTTP break-glass retirement in src/web/routes/auth.ts above.',
+  'scripts/hooks/sender_check.py':
+    'ADOPTED, SCOPED (card 5dd0842a, Koteg 25). scripts/uptime-monitor.py (new this same Koteg) ' +
+    "imports this file for its outgoing-copy CONTENT check before a Telegram alert send; it did " +
+    "not land with uptime-monitor.py in the first pass (caught by fleet-test: FileNotFoundError). " +
+    "Ported ONLY the Refused exception + _copy_check(text), against this fork's OWN " +
+    'outgoing-copy-gate.py (unchanged, already present, different constant names than upstream -- ' +
+    'BAD_NAME_STATE/STATE_BROKEN/STATE_EMPTY/STATE_ACTIVE/BROKEN_REASON, not RULES_STATE/' +
+    'RULES_INVALID/RULES_MISSING/RULES_EMPTY). NOT ported: the email_send approval-level gate ' +
+    '(email-approval-gate.py) and the opt-in Python recipient ledger (recipient_ledger.py) ' +
+    "upstream's full sender_check.py also wires in for its OWN mail senders -- the Python ledger " +
+    'module does not exist in this fork, and the Node-side equivalent (scripts/recipient-ledger.mjs) ' +
+    'is an separately standing NOT ADOPTED decision elsewhere in this file. A Telegram alert refusing ' +
+    'to send because an UNRELATED, unconfigured ledger feature failed to load would be a new, ' +
+    'unintended failure mode, not hardening. Policy difference from upstream, deliberate: a missing/' +
+    "unreadable rules file (BAD_NAME_STATE=STATE_BROKEN, BROKEN_REASON unset) is treated like " +
+    'STATE_EMPTY (fail-open with a warning), not refused -- upstream refuses it unconditionally, ' +
+    "correct for ITS email senders (fail-closed is the documented policy there) but wrong for a " +
+    "Telegram alert (the hook's own docstring draws exactly this email-vs-Telegram line: email " +
+    'fail-closed, Telegram fail-open-with-warning). Only a genuinely broken PATTERN in a present, ' +
+    'parseable rules file (BROKEN_REASON set) still refuses.',
+  'scripts/__tests__/seeme-send-consume.test.sh':
+    "NOT ADOPTED (Koteg 25, card 5dd0842a). Upstream's own test for the HTTP-consume " +
+    'APPROVALCONSUME1022 mechanism -- the exact flow the seeme-send.py entry above already KEEPS ' +
+    "FORK against (weaker binding: a substring recipient-text match with no content-hash tie, " +
+    'no time window). The fixture spins up a fake dashboard/gateway simulating the REJECTED ' +
+    "HTTP-consume round-trip; the fork's real approval-consumption is direct-SQLite and " +
+    'content-hash-bound, so the fixture exercises a code path that does not exist here (the ' +
+    "script's actual --approval validation, UUID-shaped only, correctly refuses the test's " +
+    "non-UUID 'appr-ext-1' fixture id -- not a bug, the test assumed the wrong mechanism). " +
+    'Deleted rather than rewritten against the real mechanism: the existing hash-bound ' +
+    'consume already has its own coverage elsewhere, documented at the seeme-send.py entry.',
+  'src/__tests__/credential-issuance-owner-session.test.ts':
+    "NOT ADOPTED (Koteg 25, card 5dd0842a). Upstream's own test for mayIssueCredentials/" +
+    "DEVKEYMINT1022 -- the feature its 'first-run setup' describe block exercises is the exact " +
+    'HTTP break-glass bootstrap exception card 49960046 retired (see the auth.ts entry above). ' +
+    "Its beforeEach for the SECOND describe block (`addUser(TOKEN_AUTH, 'owner')` expected 201) " +
+    'also depends on that same rejected exception, so every test in that block fails at setup, ' +
+    "not just the first-run ones. Deleted rather than kept failing or rewritten to assert 403: " +
+    'this fork already pins the retirement via auth-routes.test.ts and auth-recovery.test.ts, so ' +
+    'a second, upstream-shaped pin on the same decision adds no coverage, only merge friction on ' +
+    'every future koteg that touches auth.ts.',
   // security.ts ENROLL_KINDS: fork is ['session'] only, upstream is ['token','session']. This IS
   // the bridge-enroll door named in fleet.ts's own comments as one of three self-escalation routes
   // the 68254bd7 chain closed (shared bearer minting a session/device credential). WhiteHat
@@ -3235,17 +3297,46 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // UPDATE WHERE clause) and atomic -- so this is not "upstream is less secure", it is that upstream
   // generalised into one function with its own exclusion-list machinery
   // (SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) that no current fork caller needs.
+  // RE-BROKEN 2026-11-18 (card 5dd0842a, Koteg 25): the merge silently adopted the category
+  // branch anyway (handleCategoryConsume in approvals.ts + consumeCategoryApproval in db.ts + the
+  // agent-scaffold.ts autonomy text pointing every agent at it), contradicting this very entry.
+  // CYBERED NO-GO 32995 on 44100d69f found it is not merely "no upgrade" but an ACTIVE REGRESSION
+  // of W2 (card 2a80c6cb): the shared bearer token can burn ANY approved row of ANY category
+  // through POST /api/approvals/:id/consume (200, self-declared consumed_by, no agent_id binding),
+  // including a no-hash cloud_spend row -- the exact cross-feature-burn primitive W2 closed on the
+  // consume-oneshot route, reopened behind a different URL shape. Reverted the adoption in full
+  // (handleCategoryConsume/consumeCategoryApproval/isCategoryKey/categoryWindowSeconds/isConsumeRef
+  // and the CATEGORY_CONSUME_*/SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES constants
+  // deleted; agent-scaffold.ts buildAutonomyBody and seed-skills/approval-request-handling/SKILL.md
+  // reverted to the pre-merge text; approvals-consume-category.test.ts deleted;
+  // approvals-prompt-contract.test.ts's two APPROVALCONSUME1022 assertions removed).
   'src/web/routes/approvals.ts':
     'KEEP FORK -- consumeEmailSendApproval + the separate generic consumeApproval (db.ts) are both ' +
     "content-hash-bound (exact payload match) and atomic single-use. Verified upstream's " +
-    'consumeCategoryApproval is EQUALLY hash-bound (content_hash IS ? in its UPDATE), so adopting ' +
-    'it is not a security upgrade -- it would only add exclusion-list machinery ' +
-    '(SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) no current fork caller needs ' +
-    '(verified by backend3, re-verified by WhiteHat at 56d302fd1, card 417e2343 comment 26763, ' +
-    'confirmed by reading upstream/develop:src/db.ts).',
+    'consumeCategoryApproval is NOT a neutral generalisation but an active regression of W2 (card ' +
+    '2a80c6cb): a shared-token holder can burn ANY approved approval of ANY category via POST ' +
+    '/api/approvals/:id/consume with no agent_id binding and a self-declared consumed_by -- the ' +
+    'cross-feature-burn primitive W2 closed on consume-oneshot, reopened on a different URL shape ' +
+    '(CYBERED NO-GO 32995, card 5dd0842a, 2026-11-18, confirmed by a live burn probe in a gate ' +
+    'worktree). Earlier verification (backend3, re-verified by WhiteHat at 56d302fd1, card 417e2343 ' +
+    'comment 26763) still holds for the hash-binding claim itself; what changed is that "adopting ' +
+    'it is not a security upgrade" undersold the risk -- it is a downgrade, and the exclusion-list ' +
+    'machinery (SERVER_CONSUMED_CATEGORIES/STANDING_DECISION_CATEGORIES) papers over, not closes, ' +
+    'the missing caller binding. Re-decide only with a bound consume (caller key == approval.agent_id, ' +
+    'or a consumer secret issued with the approval) inside the same conditional UPDATE -- option (c) ' +
+    'in 32995, not the plain category branch upstream ships.',
   'src/__tests__/approvals-delivery.test.ts':
     'KEEP FORK -- pins the current single-arg notifyOwner(approval) call shape matching ' +
     'src/web/routes/approvals.ts above.',
+  'src/__tests__/approvals-consume-category.test.ts':
+    'NOT ADOPTED (CYBERED NO-GO 32995 follow-up, Koteg 25, card 5dd0842a, 2026-11-18). Tested ' +
+    'the reverted consumeCategoryApproval/handleCategoryConsume -- the confused-deputy burn ' +
+    'regression of W2 documented at src/web/routes/approvals.ts above. Deleted rather than kept ' +
+    'failing or rewritten to assert the refusal: this fork already pins the revert there, and a ' +
+    "second, upstream-shaped test on the same reverted feature adds no coverage, only merge " +
+    'friction on the next koteg that re-touches approvals.ts. The actual regression guard lives ' +
+    "in src/__tests__/approvals-consume.test.ts's new describe block instead (reproduces " +
+    "Cybered's burn probe against the fork's own route, not upstream's test shape).",
   // auth-device-keys.ts: fork's mintAgentDeviceKey/findAgentDeviceKeys/revokeAgentDeviceKeys
   // (agent: prefix, card 9655494c F1) and upstream's mintBridgeDeviceKey/DEVICE_NAME_RE (Bridge
   // pairing, BRIDGEINSTKEY1020) solve different problems -- MERGE, not a real conflict. Verified
@@ -3306,6 +3397,12 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'NOT ADOPTED -- consistent with the existing NOT ADOPTED decision for ' +
     "scripts/hooks/bash-egress-parser.mjs above: fork's bash-egress-guard.py (allowlist-based) " +
     "covers the same threat surface. The test for a hook the fork doesn't ship stays un-adopted too.",
+  // bash-egress-host-allow.test.ts (koteg 24, card 57044a66): the TEST for BASH_EGRESS_HOST_ALLOW's
+  // ensureMainScopeBashEgressParser wiring, same un-adopted hook family as the entry above.
+  'src/__tests__/bash-egress-host-allow.test.ts':
+    'NOT ADOPTED -- same premise as bash-egress-parser.test.ts above: tests ' +
+    "ensureMainScopeBashEgressParser/bashEgressHostAllowEnabled/bashEgressParserCovers, which this " +
+    "koteg stripped from agent-scaffold.ts (duplicate-wire hazard, card 965b0b2b).",
   // hook-fail-closed.test.ts: fork's current file already asserts security.length === 17 (vs
   // upstream's 15) because Köteg 17 ported Discord reply|edit_message plus a broader gmail regex
   // and draft_email ALONGSIDE the fork's existing narrower patterns (union, not replacement, per
@@ -3543,17 +3640,34 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'with a worker_threads-based approach this fork has never reviewed -- a wholesale swap ' +
     'without dedicated WhiteHat/RedHat review would be reckless and is out of this card\'s scope ' +
     'regardless. SEPARATELY, WhiteHat measured (archived scripts/ from both trees, synthetic ' +
-    'PreToolUse JSON, SELF_PACE_AST=off): the fork ALLOWS and upstream DENIES 6 self-scheduling ' +
-    'shapes (python3 -c urllib POST, node -e fetch POST, curl to /api/sch{e,}dules, a bare file ' +
-    'write directly under ~/.claude/scheduled-tasks/, cp /dev/null into that dir, native Write ' +
-    'to a file there) -- both sides allow a 7th, variable-composed shape, so upstream is not ' +
-    'complete either. This gap is recorded, not resolved, here: follow-up card 2e04a52e ports ' +
-    "upstream's scheduleSurfaceDeny as its own surgical merge (QA + Cybersec + Cybered gate, " +
-    'the control that stopped the autonom-kor incident). The anchor below pins the fork-only AST ' +
-    'cutover mechanism as a tripwire for the wholesale-swap decision -- it does NOT satisfy ' +
-    "\"every KEEP FORK on a security surface is protected\": there is no fork-only enforcement " +
-    'fact in this file to pin (SCHEDULE_STORE_RX, allowlistBashSegmentAllowed, ' +
-    'fileToolTargetsAllowlist all exist on both sides), and it says nothing about the 6-shape gap.',
+    'PreToolUse JSON, SELF_PACE_AST=off) a 6-shape self-scheduling gap -- python3 -c urllib POST, ' +
+    'node -e fetch POST, curl to /api/sch{e,}dules, a bare file write directly under ' +
+    '~/.claude/scheduled-tasks/, cp /dev/null into that dir, native Write to a file there -- ' +
+    'where the fork ALLOWED and upstream DENIED. CLOSED, not a residual: follow-up card 2e04a52e ' +
+    're-measured all 6 shapes against the LIVE fork gate (gateDecision, not the archived-tree ' +
+    'snapshot) and found every one already denied. CORRECTED PROVENANCE (RedHat/Cybered NO-GO, ' +
+    'card 2e04a52e round 2, comment 32345): the closing code is upstream commit a328d3b41 ' +
+    '(#1999, 2026-10-20), which reached the fork via card 4f3c0287 (merge cea2c7e21, landed ' +
+    '2026-11-14) -- an upstream-port batch, not an independent fork incident; the "4x HTTP 200" ' +
+    'comment in governance-gates.test.ts describes a328d3b41\'s own upstream incident, not a ' +
+    'fork-original one. CORRECTED PIN COVERAGE: only 3 of the 6 shapes (python3 urllib, node ' +
+    'fetch, brace-expand curl) had a reopen-mutant-proven pin as of card 2e04a52e round 1; the ' +
+    'other 3 (bare file directly under the store dir, cp /dev/null into it, native ' +
+    'Write/Edit/MultiEdit on a bare file there) were added and mutation-proven in round 2. Both ' +
+    'sides still allow a 7th, variable-composed shape (shared gap, unresolved, out of ' +
+    '2e04a52e\'s scope). ROUND 2 ADDITION (RedHat Finding 1 HIGH / cybersec2 F3 LOW): upstream\'s ' +
+    'MCP filesystem write-gate (b9dadf48d, #2502, never ported) left mcp__filesystem__write_file/ ' +
+    'edit_file/create_directory/move_file completely ungated on this surface -- closed with a ' +
+    'minimal mcpDecide() reusing the existing native-Write deny logic (not upstream\'s generic ' +
+    'mcpDirDeny framework), wired into the injectSelfPaceGate hook matcher alongside MultiEdit. ' +
+    'The anchor below pins the fork-only AST cutover mechanism as a tripwire for the ' +
+    'wholesale-swap decision -- it does NOT satisfy "every KEEP FORK on a security surface is ' +
+    'protected": there is no fork-only enforcement fact in this file to pin for the 6-shape ' +
+    'question (SCHEDULE_STORE_RX, allowlistBashSegmentAllowed, fileToolTargetsAllowlist all exist ' +
+    'on both sides) -- the actual protection for that question is the governance-gates.test.ts ' +
+    'pins named above. RedHat Finding 3 (shared fork+upstream residual: printf/echo into a ' +
+    'script file run after, curl -K from an echo-written config, base64-decode-piped-to-sh, ' +
+    'string-concatenation, python chr()-built paths) is NOT closed by this card -- open follow-up.',
   'scripts/sms/seeme-send.py':
     'KEEP FORK (corrected per WhiteHat 27159 -- the case is stronger than originally stated, ' +
     'and the original description of upstream was wrong). The fork\'s approval-consumption is ' +
@@ -3596,7 +3710,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'nothing in the diff is code is withdrawn.',
   'src/web/agent-bundle.ts':
     'KEEP FORK FOR NOW, real gap flagged for a follow-up card -- this fork\'s isReservedSenderId ' +
-    '(system-directive-id.ts) blocks naming an agent "system" or "system-directive" (the message-' +
+    '(system-directive-id.ts) blocks naming an agent "system" or the SYSTEM_DIRECTIVE_SENDER id (the message-' +
     'impersonation guard from card b46a4b7e; upstream has no equivalent check at all for the ' +
     'system-directive channel, since that channel does not exist upstream). Upstream\'s competing ' +
     'check, RESERVED_AGENT_IDS (= FIXED_RESERVED_AGENT_IDS from sanitize.ts, [\'system\', ' +
@@ -3665,7 +3779,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/context-restart-gate-runner.ts': '588c35241193764152514a9ecdd196622b2fd377',
   'src/web.ts': 'cc00ef2535cb6d21698207cb2169b855e6457173',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'scripts/hooks/bash-egress-parser.mjs': '3437b7edf7f2af22f54955adb0d1c0a8e38786fe',
+  'scripts/hooks/bash-egress-parser.mjs': 'd49a230d1baf6fc45a1e612a3534a84a4052e8d9',
   'src/web/agent-scaffold.ts': '351cb47f5c60aa7e7cd41f6f1c3aca937a771a7b',
   'src/db.ts': 'a0e29d89865e34ed4b7a1c8c13027dd00d71faae',
   'src/memory.ts': 'af9f66316bd85499a8bafe47444a9b9e0ab779bd',
@@ -4023,13 +4137,21 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/routes/security.ts': '03fb34204e0a378d336f010781dae7c3b9c4e2e4',
   'src/web/fleet-transfer.ts': 'd2da1432854eaaa4ee83901089e78cafa9059f81',
   'src/__tests__/fleet-transfer.test.ts': '0efe57f4a0eabf007f23ce9bf17f5806eeb0560e',
-  'src/web/routes/approvals.ts': 'e936aa7c21253773cfb236012d90e8f005fd72d3',
+  'src/web/routes/approvals.ts': 'b741f71e0728ca1ccd64a264c344760e5833a15d',
   'src/__tests__/approvals-delivery.test.ts': '125da1f21a19f3b10a78d0a19e38d436071e68b5',
+  'src/__tests__/approvals-consume-category.test.ts': '5ef75507c2266eb46327273b7baf44cd62c61342',
+  // Koteg 25, card 5dd0842a -- three entries added in the round1 fix (0acf9e1c1) that had no
+  // matching pin here, a TS2739 compile error caught only on this re-measure (not by fleet-test's
+  // vitest run, which does not typecheck the file it never imports from a test entry point).
+  'scripts/hooks/sender_check.py': '2ffb16044eff9787eec1c9ad1e95fe5c17e8bcd4',
+  'scripts/__tests__/seeme-send-consume.test.sh': '7e854ec676346b27396432881584d728ee143114',
+  'src/__tests__/credential-issuance-owner-session.test.ts': '825abdd8ddf30f520f59785b6007c9be45bff664',
   'src/web/auth-device-keys.ts': '5be94598249441e497f9b07103ee31887d2d18f4',
   'src/__tests__/email-gate-matcher-drift.test.ts': '9874aa64605991a42a2416af87e9ac87775c4d3e',
   'src/web/routes/fleet.ts': 'e2a89a8fd215b77c16a9c5c5fe8dd2e1990e24fa',
   'src/__tests__/fixtures/app-js-html-allowlist.json': 'b4083ea9bf35f9b93516a8f334b4df6f17bb20f2',
-  'src/__tests__/bash-egress-parser.test.ts': '73bfec2ab10467163394143c0a911683f60eacb0',
+  'src/__tests__/bash-egress-parser.test.ts': 'a99286a6fece459f6ade51dffb97cfa5cddfb360',
+  'src/__tests__/bash-egress-host-allow.test.ts': 'bc9a00b4f9354d8628919c2a439c047c79b4e599',
   'src/__tests__/hook-fail-closed.test.ts': '71f2eed6b8bf16a9b97fd308819496a7b46cdda4',
   'src/__tests__/egress-allowlist-selfedit.test.ts': '4729d8baf78a6fb10084078338a674769e0e8e5f',
   // Card c8f33954, see the matching ACKNOWLEDGED_CONFLICTS entries above.
@@ -4986,6 +5108,23 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "parser.mjs' key above -- this is the TEST for that un-adopted hook. If ensureBashEgressParser " +
       "appears, the hook was adopted without re-deciding the duplication (same anchor, same file) " +
       "-- re-read both entries before adopting this test too.",
+  },
+  // Koteg 24 (card 57044a66): BASH_EGRESS_HOST_ALLOW's own commit (61a6572bc) added a SECOND,
+  // separate test for the exact same un-adopted mechanism (ensureMainScopeBashEgressParser/
+  // bashEgressHostAllowEnabled/bashEgressParserCovers/LEGACY_BASH_EGRESS_DENY -- all symbols this
+  // koteg stripped from agent-scaffold.ts, keeping only the ALREADY-adopted pre-merge
+  // ensureBashEgressDeny/mergeBashEgressDeny). Caught only by a full-project tsc run (not per-file
+  // isolated checks, which a still-conflicted sibling file was poisoning at the time) -- removed.
+  'src/__tests__/bash-egress-host-allow.test.ts': {
+    needle: 'ensureMainScopeBashEgressParser',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "Card 57044a66 (koteg 24): NOT ADOPTED, same premise as bash-egress-parser.test.ts above -- " +
+      "this is the TEST for BASH_EGRESS_HOST_ALLOW's host-allow parser wiring, which the fork's own " +
+      "bash-egress-guard.py allowlist already covers (duplicate-wire hazard, see card 965b0b2b). If " +
+      "ensureMainScopeBashEgressParser appears in agent-scaffold.ts, re-read this and the sibling " +
+      "entries before adopting this test too.",
   },
   // Card c8f33954: the fork's restart-wake behaviour (no willWake/ownsResume) is pinned by
   // src/__tests__/restart-wake.test.ts above; verified the symbol is absent today.

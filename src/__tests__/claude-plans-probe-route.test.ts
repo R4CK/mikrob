@@ -10,7 +10,8 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-probe-test-'))
 
 // STORE_DIR: claude-plans.ts now imports ./auth.js (card 6eca461e, rejectIfNotHumanAuth
 // relocation), which imports ../auth-gate.js, which reads STORE_DIR at module scope.
-vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, STORE_DIR: join(tmpRoot, 'store'), MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
+// APP_TZ (Koteg 25): also required by this round's upstream additions.
+vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, STORE_DIR: join(tmpRoot, 'store'), MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5', APP_TZ: 'Europe/Budapest' }))
 vi.mock('../settings-store.js', () => ({ getEffectiveSettingValue: () => '' }))
 vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => ({ ok: true }) }))
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: async () => ({ ok: true }) }))
@@ -60,7 +61,7 @@ const HEADERS_OK = {
   'anthropic-ratelimit-unified-7d-status': 'allowed_warning',
 }
 
-const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response('{}', { status: 200, headers: HEADERS_OK }))
+const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => { void _url; void _init; return new Response('{}', { status: 200, headers: HEADERS_OK }) })
 
 describe('POST /api/claude-plans/:id/probe', () => {
   beforeEach(() => {

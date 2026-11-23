@@ -115,5 +115,14 @@
     "note": "Card 1e763f16, RedHat F3/T11: a role+verdict pair appearing mid-sentence (not comment-initial) must not read as a verdict -- the start anchor is what keeps this null, not luck.",
     "content": "REVIEW: kesz, QA PASS run kovetkezik",
     "expected": null
+  },
+  {
+    "id": "rule-4g-tagged-body-after-header",
+    "note": "Card c77013a1, Cybered NO-GO 32980 CONDITION 2: a comment using rule 4g's OBSERVATION/DERIVATION/CONCLUSION/UNKNOWN tags in its free-text BODY, placed AFTER the verdict word and Gate-SHA/Skills header lines, must still parse to the header's verdict -- the tag lines are not themselves verdict words and must not confuse or override the parse.",
+    "content": "QA PASS\nGate-SHA: 39c61da6e\nSkills: karpathy-guidelines\n\nOBSERVATION: ran the selftest on sha 39c61da6e, 28 passed, 0 failed.\nDERIVATION: the fix holds under the TMPDIR-redirected condition that caused the earlier failures.\nCONCLUSION: safe to close.\nUNKNOWN: whether a future fleet-test env change introduces a different redirection this fix does not cover.",
+    "expected": {
+      "gate": "QA",
+      "outcome": "PASS"
+    }
   }
 ]
