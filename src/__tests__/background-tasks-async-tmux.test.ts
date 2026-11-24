@@ -58,11 +58,16 @@ case "$sub" in
     if [ -f "$d/fail-new" ]; then echo "fake spawn failure" >&2; rc=1
     else
       prev=""
+      promptfile=""
       for a in "$@"; do
         if [ "$prev" = "-s" ]; then printf '%s\\n' "$a" >> "$d/sessions"; fi
+        case "$a" in BG_PROMPT_FILE=*) promptfile="\${a#BG_PROMPT_FILE=}" ;; esac
         prev="$a"
       done
-      printf '%s' "$BG_PROMPT" > "$d/prompt"
+      # Card 99ade79b: the real prompt text never rides on BG_PROMPT (env) or argv any more --
+      # only a 0600 temp file's PATH does, via -e BG_PROMPT_FILE=...; the pane feeds the file
+      # to claude -p via stdin redirection. This fake stands in for that redirection.
+      [ -n "$promptfile" ] && cat "$promptfile" > "$d/prompt" 2>/dev/null
     fi ;;
 esac
 printf 'end %s\\n' "$sub" >> "$d/calls.log"
@@ -203,7 +208,7 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     expect(r.json.liveOutput).toBeNull()
   })
 
-  it('POST starts the tmux session with the prompt in BG_PROMPT without stalling the loop', async () => {
+  it('POST starts the tmux session with the prompt in a BG_PROMPT_FILE without stalling the loop', async () => {
     put('sleep', String(SLEEP_S))
     let r: { status: number; json: any } | undefined
     const stall = await stallDuring(async () => {

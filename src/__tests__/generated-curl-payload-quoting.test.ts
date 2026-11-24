@@ -132,9 +132,16 @@ describe('generated autonomy block: no shell-expanding curl payload', () => {
     expect(level1).not.toContain('AGENT_NAME')
   })
 
-  it('the token read in the header still interpolates -- do not quote that away', () => {
+  // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync, card 52114c2f follow-up): this block no
+  // longer reads the token itself with `$(cat <token>)` -- it shells out to agent-auth-header.sh,
+  // which prints the right header line itself (an agent's own device key when it has one, the
+  // shared token otherwise) and is PIPED into `curl -H @-`, so the line still has a live command
+  // substitution-equivalent read that a careless double-quote could just as easily break.
+  it('the header still comes from a live per-agent lookup -- do not quote that away', () => {
     const block = writtenAutonomyBlock('token-agent')
-    expect(block).toContain('$(cat ')
+    expect(block).toContain('agent-auth-header.sh')
+    expect(block).toContain(' | curl ')
+    expect(block).toContain('-H @-')
   })
 
   // The warning that ships with the fix recommends a heredoc. A heredoc whose

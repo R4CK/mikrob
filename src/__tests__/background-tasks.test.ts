@@ -54,6 +54,7 @@ vi.mock('node:child_process', async (importOriginal) => {
           if (args?.[0] === 'new-session') {
             const env = (options as { env?: NodeJS.ProcessEnv } | undefined)?.env
             execFileCallLog.newSessionEnvs.push(env)
+            execFileCallLog.newSessionArgs.push(args)
           }
           const promise = (promisify(actual.execFile) as (f: string, a?: readonly string[], o?: unknown) => Promise<{ stdout: string; stderr: string }>)(
             file, args, options,

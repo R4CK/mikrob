@@ -165,9 +165,14 @@ describe('a strict agent gets no recipe its dontAsk mode denies', () => {
       expect(text).not.toContain('Authorization: Bearer')
       expect(text.split('\n').filter((l) => l.trimStart().startsWith('curl '))).toEqual([])
     }
-    // memory save, daily log, search, hot list, move, stranger ping
+    // hot list, move, stranger ping -- memory-save/daily-log/memory-search moved out of the
+    // one-time creation prompt (card 1535f7f9 develop-sync, card 52114c2f upstream): they now
+    // come from the idempotent per-start generators (ensureMemorySaveSection, ensureDailyLogSection,
+    // ensureMemorySearchLabelSection), which ARE strict-aware on their own and run on every start,
+    // not just creation -- see startBlocks() above, and strict-api's own disclaimer that it
+    // overrides any curl recipe elsewhere in the file.
     expect(helperLines(prompt).map((l) => l.split(' ')[2])).toEqual(
-      ['memory-save', 'daily-log', 'memory-search', 'memory-list', 'memory-move', 'message'],
+      ['memory-list', 'memory-move', 'message'],
     )
     expect(prompt).toContain('Listázni sem tudsz')
   })
@@ -199,13 +204,17 @@ describe('a non-strict agent keeps the curl recipes', () => {
     const file = startBlocks('plain-b')
     expect(file).not.toContain('marveen-api.sh')
     expect(file).not.toContain('strict-api')
-    // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync): this fork's own convention is
-    // `printf 'Authorization: Bearer %s\n' "$(cat <token>)" | curl -H @-`, never a bare
-    // `curl -H "Authorization: Bearer $(cat ...)"` -- the latter puts the token in curl's own
-    // argv, readable via /proc/<pid>/cmdline (see the root CLAUDE.md's own extensive note on
-    // this). No generated block anywhere in this codebase uses the literal upstream substring.
+    // RE-DECIDED (card 1535f7f9, Koteg 28 upstream sync, card 52114c2f follow-up): the fork's
+    // own invariant is that the token NEVER rides on curl's own argv (never a bare
+    // `curl -H "Authorization: Bearer $(cat ...)"`, readable via /proc/<pid>/cmdline -- see the
+    // root CLAUDE.md's own extensive note on this), always via `-H @-` reading the header from
+    // STDIN. Card 52114c2f's agentAuthHeaderPath helper (printing the right header line itself,
+    // an agent's own device key when it has one) is now the mechanism for most blocks; the
+    // literal `printf ... | curl -H @-` form upstream's $(cat tokenPath) pattern used to need is
+    // no longer required everywhere -- both satisfy the same invariant.
     for (const part of file.split('<!-- BEGIN GENERATED: ').slice(1)) {
-      expect(part, part.slice(0, 60)).toContain("printf 'Authorization: Bearer %s\\n' \"$(cat ")
+      expect(part, part.slice(0, 60)).not.toMatch(/curl[^\n]*-H ["']Authorization: Bearer \$\(/)
+      expect(part, part.slice(0, 60)).toMatch(/-H @-/)
     }
   })
 
@@ -213,10 +222,11 @@ describe('a non-strict agent keeps the curl recipes', () => {
     stageAgent('plain-b', null)
     const { prompt } = await creation('plain-b')
     expect(prompt).not.toContain('marveen-api.sh')
-    // memory save, daily log, search, hot list, move, schedule listing, stranger ping (7) --
-    // measured at 8 on this fork's actual creation prompt (one more curl recipe than upstream's
-    // own enumeration counted; not re-derived item-by-item here, just measured and pinned).
-    expect(prompt.split('$(cat ').length - 1).toBe(8)
+    // hot list, move, schedule listing, stranger ping, plus the generic token-path explainer --
+    // memory save/daily log/search dropped out of this count (card 1535f7f9 develop-sync, see
+    // the strict-prompt test above): measured at 5 on the current creation prompt, down from the
+    // 8 measured before that move. Not re-derived item-by-item, just measured and pinned.
+    expect(prompt.split('$(cat ').length - 1).toBe(5)
   })
 
   it('ensureStrictApiSection does not touch a non-strict file at all', () => {
