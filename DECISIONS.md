@@ -32224,3 +32224,37 @@ gate: QA + CYBERSEC + CYBERED (22d. szabály, sign-off nem saját; a kártya 1-4
 mind lezárva -- ez a döntés csak a talált gyilkos fixét és a hozzá tartozó guard-ot fedi).
 
 **Hivatkozás:** kártya 8ab5eef3, fb3fff4d (az eredeti channel-var-strip teszt), MikroB üzenet 24371/24375.
+
+
+tmux-szerver-gyilkos fold-in -- cybersec M1 MEDIUM maradvány zárása (kártya 8ab5eef3, MikroB
+üzenet 24382): az efd87ec6c-n gated fixben a `fb3fff4d` blokk `beforeEach`-je a `process.env.TMUX`
+törlését az `initDatabase(':memory:')` hívás UTÁN végezte el; ha ez (vagy az előtte álló
+`mkdtempSync`) elhasalt, az `afterEach` feltétel nélküli, meztelen `tmux kill-server` hívása
+TOVÁBBRA IS a live szervert érte volna el, mert `$TMUX` ekkor még nem volt törölve. Fix: egy
+`privateServerReady` flaget csak a sikeres `new-session -d` UTÁN állítunk igazra, és az `afterEach`
+`kill-session`/`kill-server` hívásai csak akkor futnak, ha ez igaz -- a privát szerver tényleges
+felállása a feltétel, nem a szöveg sorrendje.
+
+**Miért:** cybersec GO (komment 38495) MEDIUM maradványként jelezte: egy `beforeEach`-hiba (törött
+better-sqlite3, db-import hiba, `mkdtemp` hiba) a törlés előtt pontosan akkor éri el a live
+szervert, amikor a környezet már amúgy is sérült -- vagyis éppen akkor, amikor valaki egy fájlt
+közvetlenül futtat egy panelből. MikroB (üzenet 24382) ezt land előtti fold-in-ként kérte, mert a
+flotta hatszor halt meg ugyanebből az osztályból.
+
+**Ellenőrzés:** mutáció-teszt, cybersec saját M6-reprodukciójának mintáját követve: egy scratch
+"stand-in live" tmux-szervert (`-S` saját socket) indítottunk, `$TMUX`-ot rá állítottuk, és egy
+ideiglenes, nem commitolt env-kapcsolt `throw`-t ültettünk a `beforeEach` elejére. A FIX-ES kóddal a
+stand-in szerver életben maradt a dobás után (`list-sessions` sikeres, `decoy-live` látható); a
+gating sor nélküli MUTÁNSSAL (a `privateServerReady` feltétel eltávolítva) a stand-in szerver
+MEGHALT ("no server running"). A kapcsolót és a mutánst eltávolítottuk, a commitolt kód csak a
+tényleges gating-fixet tartalmazza. Utána `background-tasks.test.ts` + a meglévő
+`tmux-server-wide-ops-need-scope-or-cleared-env.test.ts` izoláltan (rövid `TMUX_TMPDIR`, `env -u
+TMUX -u TMUX_PANE`): 1448/1448 zöld, változatlan a korábbi méréshez képest. `npx tsc --noEmit` és
+`eslint` a módosított fájlon tiszta.
+
+**Ki döntött:** backend3 (implementáció + mérés, MikroB fold-in dispatch alapján, üzenet 24382),
+gate: delta QA + CYBERSEC + CYBERED (22d. szabály, sign-off nem saját). A kártya 1., 2. és 4. Kész-ha
+pontja (halál-naplózó guard, MikroB-riasztás, egyéb útvonal-seprés) ettől a fold-intől függetlenül
+továbbra is nyitott, ahogy a cybersec/cybered GO L1-L4/F1-F5 lelete is jelzi.
+
+**Hivatkozás:** kártya 8ab5eef3, cybersec GO komment 38495 (M1), MikroB üzenet 24382.

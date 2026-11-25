@@ -496,6 +496,12 @@ describe('spawnBackgroundTask: the channel-var strip must be effective on an alr
   let savedTmuxPane: string | undefined
   let sessionName: string | undefined
   let outFile: string
+  // Card 8ab5eef3 fold-in (cybersec GO 38495, finding M1): afterEach's bare `tmux kill-server`
+  // must never run unless THIS block's own private server was actually brought up -- otherwise a
+  // beforeEach throw BEFORE the TMUX clear below (e.g. initDatabase, mkdtempSync) leaves $TMUX
+  // still pointing at the live server, and the old unconditional kill-server killed it. Only the
+  // successful new-session call below sets this true.
+  let privateServerReady = false
 
   beforeEach(async () => {
     const { initDatabase } = await import('../db.js')
@@ -529,6 +535,7 @@ describe('spawnBackgroundTask: the channel-var strip must be effective on an alr
     // it a session in one call, so it stays up; this keepalive session is killed alongside the
     // server in afterEach's kill-server.
     execFileSync('tmux', ['new-session', '-d', '-s', 'fb3fff4d-keepalive'])
+    privateServerReady = true
     execFileSync('tmux', ['set-environment', '-g', 'TELEGRAM_BOT_TOKEN', '123456:leaked-global-token'])
 
     const dir = mkdtempSync(join(tmpdir(), 'bg-prompt-repro-'))
@@ -541,11 +548,17 @@ describe('spawnBackgroundTask: the channel-var strip must be effective on an alr
   afterEach(() => {
     claudeResolveState.binPath = '/bin/true'
     claudeResolveState.shouldThrow = true
-    if (sessionName) {
-      try { execFileSync('tmux', ['kill-session', '-t', sessionName]) } catch { /* already gone */ }
+    // Card 8ab5eef3 fold-in: only touch the server at all if beforeEach actually got far enough
+    // to clear $TMUX and bring up the private one -- otherwise $TMUX (if set) still resolves to
+    // the live default server, and kill-session/kill-server must not run against it.
+    if (privateServerReady) {
+      if (sessionName) {
+        try { execFileSync('tmux', ['kill-session', '-t', sessionName]) } catch { /* already gone */ }
+      }
+      try { execFileSync('tmux', ['kill-server']) } catch { /* already gone */ }
     }
     sessionName = undefined
-    try { execFileSync('tmux', ['kill-server']) } catch { /* already gone */ }
+    privateServerReady = false
     if (savedTmuxTmpdir === undefined) delete process.env.TMUX_TMPDIR
     else process.env.TMUX_TMPDIR = savedTmuxTmpdir
     if (savedTmux === undefined) delete process.env.TMUX
