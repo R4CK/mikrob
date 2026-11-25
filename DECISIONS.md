@@ -32426,3 +32426,28 @@ javítási irányt a "Kész, ha:" lista adta (kártya 2d27b27b leírása). A vé
 
 **Hivatkozás:** kártya 2d27b27b (duplikátum: 3a4f27e8); `store/marveen-land.sh`
 (`land_one`, `land_notify_finish`); commit `6f94d20da`.
+
+## 2026-11-25 -- marveen-land.sh: --card gate-refúzió nem oszthatja a rc-t a nothing-to-land úttal (kártya 2d27b27b, MEDIUM-1)
+
+**Döntés:** a develop-drift merge delta-gate-körén cybersec (komment 38341/38572, sibling cybersec2
+MEDIUM-1 lelete) megtalálta, hogy a két `--card` gate-refúziós pont (nincs ervényes gate-verdikt;
+a kijelölt gate-ek nem AGREE-lnek) ugyanazt a 6-os kilépőkódot adta, amit `land_notify_finish` a
+hiányzó-ág "nincs mit landolni" esetre fordít NOTHING-TO-LAND-ra. Ez pontosan a kártya saját
+hibaosztálya a másik irányban: egy refúzió ártalmatlan no-op-nak tűnik, nem elutasításnak.
+MikroB döntése (komment 38574): a kártyán belül javítandó, nem follow-up. A két refúziós pont
+(`store/marveen-land.sh` ~1982/~2005 sor) most saját, 7-es kilépőkódot ad; `land_notify_finish`
+a 7-et REFUSED-GATE-re fordítja, a 6-ot (hiányzó ág) és a 3-at (általános precondition REFUSED)
+érintetlenül hagyva.
+
+**Ellenőrzés:** `--selftest-land-notify` 6/6 (új eset: rc=7 -> REFUSED-GATE, sosem NOTHING-TO-LAND,
+sosem LANDED); `marveen-land-card-branch.selftest.sh` 82/82 (a ccc333 no-verdict szcenárió most a
+pontos rc=7-et és a REFUSED-GATE inter-agent üzenetet is ellenőrzi, nem csak egy sima rc!=0-t);
+beágyazott `marveen-land.sh --selftest` 121/121. Minden rc-fogyasztó átnézve (`land_with_retry`
+csak az 5-öt kezeli külön, minden mást érintetlenül továbbad; a flotta más szkriptjei és a TS-oldal
+nem parse-olja a kilépőkódot vagy a notify-szöveget).
+
+**Ki döntött:** cybersec2 (MEDIUM-1 lelet, komment 38341), MikroB Fix-Direction (komment 38574,
+üzenet 24478). A végrehajtó backend.
+
+**Hivatkozás:** kártya 2d27b27b; `store/marveen-land.sh` (`land_one`, `land_notify_finish`);
+`store/marveen-land-card-branch.selftest.sh`.

@@ -372,12 +372,16 @@ git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card ccc333: add ccc
 git -C "$MAIN" checkout -q develop
 set_verdict ccc333 none
 
+rm -f "$CAPTURE_DIR/messages.ndjson"
 n=$((n + 1))
 land_card ccc333 backend3
-if [ "$rc" != 0 ] && grep -q "no passing gate verdict" "$OUT_FILE"; then
-  echo "  ok   --card REFUSES to land with no gate verdict at all (R1)"
+msgs_ccc333="$(cat "$CAPTURE_DIR/messages.ndjson" 2>/dev/null || true)"
+if [ "$rc" = 7 ] && grep -q "no passing gate verdict" "$OUT_FILE" \
+  && printf '%s' "$msgs_ccc333" | grep -q 'REFUSED-GATE (exit 7)' \
+  && ! printf '%s' "$msgs_ccc333" | grep -qE 'LANDED \(exit|NOTHING-TO-LAND'; then
+  echo "  ok   --card REFUSES to land with no gate verdict at all: rc=7, notice says REFUSED-GATE, never LANDED or NOTHING-TO-LAND (R1, card 2d27b27b MEDIUM-1)"
 else
-  echo "  FAIL expected a refusal for an ungated card -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+  echo "  FAIL expected a rc=7 REFUSED-GATE refusal for an ungated card -> rc=$rc msgs=[$msgs_ccc333]:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
 fi
 
 n=$((n + 1))
