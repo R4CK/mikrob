@@ -73,8 +73,11 @@ describe('message-close section: what it says (ACKONCLOSE927, card 01eb0d0c)', (
     expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,160}--notify true/)
   })
 
-  it('says a second close of a closed message is a no-op, not an error to retry', () => {
+  it('says a second close of a closed message is a no-op, and must not be retried or reported', () => {
     expect(body).toMatch(/MÁR lezárt[\s\S]{0,120}NEM hiba/)
+    // CYBERSEC GO 3a38fe2cc, LOW-2a (rule 7): restore the retry/report half of this pin --
+    // "NEM hiba" alone does not say the no-op must not be retried or re-reported.
+    expect(body).toMatch(/NEM hiba[\s\S]{0,160}NEM kell jelenteni/)
   })
 
   it('names the wrapper script instead of the raw curl recipe', () => {
@@ -96,6 +99,12 @@ describe('message-close section: what it says (ACKONCLOSE927, card 01eb0d0c)', (
     expect(body).toContain('--result-stdin')
     expect(body).toMatch(/SOHA[\s\S]{0,40}--result "\.\.\."/)
     expect(body.toLowerCase()).toContain('backtick')
+    // CYBERSEC GO 3a38fe2cc, LOW-1: --result-stdin must not be claimed safe unconditionally --
+    // only a quoted heredoc is safe; a double-quoted echo/printf still expands backticks/$(...)
+    // in the CALLER's shell. The old text claimed it "nem fut le soha" with no qualifier.
+    expect(body).not.toMatch(/result-stdin[\s\S]{0,40}nem fut le soha/)
+    expect(body).toMatch(/heredoc/)
+    expect(body.toLowerCase()).toContain('echo')
   })
 })
 

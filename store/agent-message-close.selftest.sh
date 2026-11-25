@@ -190,4 +190,29 @@ else
   fail "a dead dashboard maps to exit 5 with a message (rc=$RC, stderr: $(cat "$WORK/stderr10"))"
 fi
 
+# Case 11 (CYBERSEC GO 3a38fe2cc, LOW-3): a userinfo-smuggled non-loopback host is refused -- the
+# first fix was a glob that matched past the port into "@127.0.0.2:PORT" and sent the token
+# there (measured live).
+set +e
+MARVEEN_DASHBOARD_ORIGIN="http://localhost:1@127.0.0.2:9" bash "$SCRIPT" backend 130 >/dev/null 2>"$WORK/stderr11"
+RC=$?
+set -e
+if [ "$RC" = "2" ] && grep -q "localhost/127.0.0.1" "$WORK/stderr11"; then
+  pass "a userinfo-smuggled non-loopback host is refused"
+else
+  fail "a userinfo-smuggled non-loopback host is refused (rc=$RC, stderr: $(cat "$WORK/stderr11"))"
+fi
+
+# Case 12 (CYBERSEC GO 3a38fe2cc, LOW-3): a localhost-prefixed attacker suffix is refused -- the
+# glob also matched "localhost:80.attacker.invalid" (non-numeric "port").
+set +e
+MARVEEN_DASHBOARD_ORIGIN="http://localhost:80.attacker.invalid" bash "$SCRIPT" backend 131 >/dev/null 2>"$WORK/stderr12"
+RC=$?
+set -e
+if [ "$RC" = "2" ] && grep -q "localhost/127.0.0.1" "$WORK/stderr12"; then
+  pass "a localhost-prefixed attacker suffix is refused"
+else
+  fail "a localhost-prefixed attacker suffix is refused (rc=$RC, stderr: $(cat "$WORK/stderr12"))"
+fi
+
 [ "$FAIL" = "0" ] && echo "selftest: PASS" || { echo "SOME FAILED"; exit 1; }

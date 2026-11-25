@@ -36,12 +36,17 @@ set -euo pipefail
 SELF_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DASHBOARD_ORIGIN="${MARVEEN_DASHBOARD_ORIGIN:-http://localhost:3420}"
 # CYBERSEC NO-GO 38468, LOW2: an env override with no loopback check sends the bearer token to
-# any host it names. MARVEEN_SELFTEST_ALLOW_REMOTE=1 is for this script's own selftest only.
+# any host it names. CYBERSEC GO 3a38fe2cc, LOW-3: the first fix was a glob (http://localhost:*),
+# which matches past the port into a userinfo ("http://localhost:1@127.0.0.2:PORT", host actually
+# 127.0.0.2) or a suffix ("http://localhost:80.attacker.invalid", port actually non-numeric
+# garbage) -- both sent the token off-loopback in a live probe. This anchors the WHOLE string:
+# scheme, exactly localhost/127.0.0.1/[::1], then nothing or a numeric port, end of string.
+# MARVEEN_SELFTEST_ALLOW_REMOTE=1 is for this script's own selftest only.
 if [ "${MARVEEN_SELFTEST_ALLOW_REMOTE:-0}" != "1" ]; then
-  case "$DASHBOARD_ORIGIN" in
-    http://localhost:* | http://127.0.0.1:* | https://localhost:* | https://127.0.0.1:*) ;;
-    *) echo "agent-message-close.sh: MARVEEN_DASHBOARD_ORIGIN must be localhost/127.0.0.1, got: $DASHBOARD_ORIGIN" >&2; exit 2 ;;
-  esac
+  if ! [[ "$DASHBOARD_ORIGIN" =~ ^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?$ ]]; then
+    echo "agent-message-close.sh: MARVEEN_DASHBOARD_ORIGIN must be localhost/127.0.0.1, got: $DASHBOARD_ORIGIN" >&2
+    exit 2
+  fi
 fi
 
 die() { echo "agent-message-close.sh: $2" >&2; exit "$1"; }

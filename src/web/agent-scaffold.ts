@@ -5615,8 +5615,12 @@ export function buildMessageCloseBody(name: string): string {
     '  várakozó sorát 1-ről 4-re vitte).',
     '- SOHA ne írd `--result "..."` KÖZVETLENÜL a parancssorba dupla idézőjelben: egy backtick vagy',
     '  `$(...)` a szövegben a TE saját héjadban fut le, mielőtt a script elindulna (CYBERSEC NO-GO',
-    '  38468). `--result-file <path>` vagy `--result-stdin` (pipe-olva) nem fut le soha, ezt használd.',
-    '- Egy MÁR lezárt üzenet újabb lezárása (409) a script számára NEM hiba: egy sort ír stderr-re és 0-val lép ki.',
+    '  38468). A biztonságos forma a `--result-file <path>` (írd ki a Write toollal, add át az',
+    '  útvonalat) -- a `--result-stdin` CSAK egyszeres idézőjeles heredocból (`<<\'EOF\'`) biztonságos,',
+    '  mert egy dupla idézőjeles `echo`/`printf` ugyanúgy végrehajtja a backtickot/`$(...)`-t a HÍVÓ',
+    '  héjában, mielőtt a script látná a szöveget.',
+    '- Egy MÁR lezárt üzenet újabb lezárása (409) a script számára NEM hiba: egy sort ír stderr-re és',
+    '  0-val lép ki, NEM kell megismételni a lezárást, és NEM kell jelenteni.',
     '- A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
   ].join('\n')
 }
