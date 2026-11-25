@@ -32258,3 +32258,26 @@ pontja (halál-naplózó guard, MikroB-riasztás, egyéb útvonal-seprés) ettő
 továbbra is nyitott, ahogy a cybersec/cybered GO L1-L4/F1-F5 lelete is jelzi.
 
 **Hivatkozás:** kártya 8ab5eef3, cybersec GO komment 38495 (M1), MikroB üzenet 24382.
+
+
+CYBERED F-3 pinelve (kártya 8ab5eef3, MikroB üzenet 24384): a `store/fleet-test.sh`-ba tett
+`unset TMUX TMUX_PANE` sort eddig semmilyen teszt nem fedte -- a sor törlése semmit nem buktatott
+volna el. Új teszt (`src/__tests__/fleet-test-clears-tmux-env.test.ts`) a VALÓDI szkript-prefixet
+(a fájl eleje a tényleges `unset` sorig, nem egy kézzel írt helyettesítő) futtatja bash alatt
+előre beállított `TMUX`/`TMUX_PANE` env-változókkal, és az eredmény környezetben ellenőrzi, hogy
+mindkettő eltűnt. Mutáció-teszt: a sor eltávolításával a környezet MEGTARTJA mindkét változót --
+ez igazolja, hogy a teszt tényleg a törlő hatást méri, nem egy szöveg-egyezést.
+
+**Miért:** cybersec/cybered delta-gate (komment 38495/38496) opcionális LOW/F-3 maradványként
+jelezte a hiányzó pint; MikroB (üzenet 24384) a fold-inba kérte, ha néhány sor. Ez nem bővíti a
+kártya hatókörét: a fő M1 MEDIUM fix mellett egy meglévő, már gated kódrészlet utólagos
+lefedése.
+
+**Ellenőrzés:** az új teszt + `background-tasks.test.ts` + `tmux-server-wide-ops-need-scope-or-
+cleared-env.test.ts` izoláltan (rövid `TMUX_TMPDIR`, `env -u TMUX -u TMUX_PANE`): 1451/1451 zöld.
+`npx tsc --noEmit` és `eslint` az új fájlon tiszta.
+
+**Ki döntött:** backend3 (implementáció, MikroB opcionális fold-in kérése alapján, üzenet 24384),
+gate: ugyanaz a delta QA + CYBERSEC + CYBERED kör fedi, mint az M1 fixet.
+
+**Hivatkozás:** kártya 8ab5eef3, cybered GO komment 38496 (F-3), MikroB üzenet 24384.
