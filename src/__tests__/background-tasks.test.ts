@@ -492,8 +492,16 @@ describe('spawnBackgroundTask: a 16 KiB+ prompt gets a named, readable error (ca
 describe('spawnBackgroundTask: the channel-var strip must be effective on an already-running, globally-polluted tmux server (card fb3fff4d)', () => {
   let privateTmuxTmpdir: string
   let savedTmuxTmpdir: string | undefined
+  let savedTmux: string | undefined
+  let savedTmuxPane: string | undefined
   let sessionName: string | undefined
   let outFile: string
+  // Card 8ab5eef3 fold-in (cybersec GO 38495, finding M1): afterEach's bare `tmux kill-server`
+  // must never run unless THIS block's own private server was actually brought up -- otherwise a
+  // beforeEach throw BEFORE the TMUX clear below (e.g. initDatabase, mkdtempSync) leaves $TMUX
+  // still pointing at the live server, and the old unconditional kill-server killed it. Only the
+  // successful new-session call below sets this true.
+  let privateServerReady = false
 
   beforeEach(async () => {
     const { initDatabase } = await import('../db.js')
@@ -504,10 +512,30 @@ describe('spawnBackgroundTask: the channel-var strip must be effective on an alr
     privateTmuxTmpdir = mkdtempSync(join(tmpdir(), 'bg-private-tmux-'))
     process.env.TMUX_TMPDIR = privateTmuxTmpdir
 
+    // Card 8ab5eef3: tmux resolves its target server from $TMUX first, and only falls back to
+    // TMUX_TMPDIR's default socket when $TMUX is unset -- setting TMUX_TMPDIR above does NOT
+    // isolate this block from an already-running server if this process inherited $TMUX (e.g. a
+    // fleet-test run launched from an agent's own tmux pane). Without this, start-server/
+    // set-environment -g/kill-server below all silently targeted the LIVE server instead of the
+    // private one: planting a fake bot token in its global env, then killing it outright.
+    savedTmux = process.env.TMUX
+    savedTmuxPane = process.env.TMUX_PANE
+    delete process.env.TMUX
+    delete process.env.TMUX_PANE
+
     // Cold-start the private server, then plant the channel var GLOBALLY on it -- this is the
     // state a leaked var in the server's persistent global env looks like, independent of
     // whatever `env` any later `new-session` client call passes.
-    execFileSync('tmux', ['start-server'])
+    //
+    // Card 8ab5eef3: with $TMUX correctly cleared above, a bare `start-server` really does start
+    // a cold server with zero sessions -- and tmux's default `exit-empty on` tears such a server
+    // down again immediately (measured: the very next command then sees "no server running").
+    // This never surfaced before because the bug above made every command here silently target
+    // the live, already-populated server instead. `new-session -d` starts the server AND gives
+    // it a session in one call, so it stays up; this keepalive session is killed alongside the
+    // server in afterEach's kill-server.
+    execFileSync('tmux', ['new-session', '-d', '-s', 'fb3fff4d-keepalive'])
+    privateServerReady = true
     execFileSync('tmux', ['set-environment', '-g', 'TELEGRAM_BOT_TOKEN', '123456:leaked-global-token'])
 
     const dir = mkdtempSync(join(tmpdir(), 'bg-prompt-repro-'))
@@ -520,13 +548,23 @@ describe('spawnBackgroundTask: the channel-var strip must be effective on an alr
   afterEach(() => {
     claudeResolveState.binPath = '/bin/true'
     claudeResolveState.shouldThrow = true
-    if (sessionName) {
-      try { execFileSync('tmux', ['kill-session', '-t', sessionName]) } catch { /* already gone */ }
+    // Card 8ab5eef3 fold-in: only touch the server at all if beforeEach actually got far enough
+    // to clear $TMUX and bring up the private one -- otherwise $TMUX (if set) still resolves to
+    // the live default server, and kill-session/kill-server must not run against it.
+    if (privateServerReady) {
+      if (sessionName) {
+        try { execFileSync('tmux', ['kill-session', '-t', sessionName]) } catch { /* already gone */ }
+      }
+      try { execFileSync('tmux', ['kill-server']) } catch { /* already gone */ }
     }
     sessionName = undefined
-    try { execFileSync('tmux', ['kill-server']) } catch { /* already gone */ }
+    privateServerReady = false
     if (savedTmuxTmpdir === undefined) delete process.env.TMUX_TMPDIR
     else process.env.TMUX_TMPDIR = savedTmuxTmpdir
+    if (savedTmux === undefined) delete process.env.TMUX
+    else process.env.TMUX = savedTmux
+    if (savedTmuxPane === undefined) delete process.env.TMUX_PANE
+    else process.env.TMUX_PANE = savedTmuxPane
   })
 
   it('the pane does not see a channel var already planted in the server\'s global environment', async () => {

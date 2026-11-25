@@ -87,6 +87,15 @@ fleet_test_log_lock_event() { # $1=event(run|timeout) $2=wait_s $3=run_s(or -) $
 # it would dangle the instant this script exits. This copies it into a durable, caller-visible
 # location FIRST, and only when a notification was actually requested (so the ~2,400 un-notified
 # calls/day do not also start writing log files nobody asked for).
+# Card 8ab5eef3: defense in depth. If this script is launched from an agent's own tmux pane,
+# $TMUX/$TMUX_PANE are set on this process and inherited by every vitest worker. A test that
+# means to isolate itself against a private tmux server (its own TMUX_TMPDIR) but forgets to also
+# clear $TMUX gets silently redirected to the LIVE server instead -- tmux resolves the target
+# server from $TMUX first, TMUX_TMPDIR only when $TMUX is unset. Unsetting here closes that for
+# every test file at once; the real fix (clearing/restoring $TMUX around each private-server test)
+# still belongs in the test file itself.
+unset TMUX TMUX_PANE
+
 FLEET_TEST_LOG_DIR="${FLEET_TEST_LOG_DIR:-${ROOT}-fleet-test-logs}"
 # card a5c827ca: exported (not just a local shell var) so a test file running inside the vitest
 # child process can read it too and persist its own failure evidence (ps snapshot, state files) the

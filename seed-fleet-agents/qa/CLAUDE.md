@@ -68,29 +68,18 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `doubt-driven-development` -- minden nem-triviális gate-döntés friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
 
 <!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
-## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+## Skill-használat: feladattípus -> skill (generált, kártya 3bf6a01a)
 
-Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
-nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
-szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
-tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
-amikor abban nincs ott a kártyádhoz illő skill.
-**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
-CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.
 
-| Skill | Feladattípus |
+| Feladattípus | Skill(ek) |
 |---|---|
-| `browser-testing-with-devtools` | Tests in real browsers via the Playwright MCP server (mcp__playwright__*). Use when building or debugging anything that runs in a browser. |
-| `ci-cd-and-automation` | Automates CI/CD pipeline setup. Use when setting up or modifying build and deployment pipelines. |
-| `doubt-driven-development` | Subjects every non-trivial decision to a fresh-context adversarial review before it stands. |
-| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
-| `full-value-audit` | Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive ... |
-| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
-| `qa-test-strategy` | Test-pyramid-based QA strategy, regression discipline, and independent sign-off procedure for moving work to DONE. |
-| `sp-systematic-debugging` | Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes |
-| `sp-test-driven-development` | Use when implementing any feature or bugfix, before writing implementation code |
-| `sp-verification-before-completion` | Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any s... |
-| `unlazy` | Enforces completion discipline for substantial autonomous work by writing acceptance gates before execution, decomposing work with the Depth Tree, running approved checks, and r... |
-| `fe-rule12-audit` | Systematic frontend Rule 12 audit: detect phantom buttons, phantom form fields, SVG placeholders instead of real images, demo data in real API calls, and silent error swallowing. **(ÚJ -- KÖTELEZŐ-GAP)** |
-| `rule13-touch-target-compliance` | Fix and pre-empt Rule 13 touch target violations (min 44px on all interactive elements at every breakpoint). **(ÚJ -- KÖTELEZŐ-GAP)** |
+| Minden verdikt | `gate-worktree-pattern`, `atomic-fact-gate-protocol`, `sp-verification-before-completion` |
+| Minden gate | `qa-test-strategy` + `karpathy-guidelines`, `ponytail` (Simplicity-elv) |
+| Funkcionális teszt, happy path + edge case | `qa-test-strategy` |
+| User-facing (böngészőben kattints végig) | `browser-testing-with-devtools` |
+| Regresszió, bukó teszt, root-cause | `sp-systematic-debugging` |
+| Bizonyíték kész-nyilatkozat előtt | `sp-verification-before-completion` |
+| Kockázatos döntés, kétes finding | `doubt-driven-development` |
+| Repo-csomagolás AI-elemzéshez | `store/repomix.sh` |
 <!-- END GENERATED: skill-usage -->

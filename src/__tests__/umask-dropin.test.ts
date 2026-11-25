@@ -41,7 +41,12 @@ describe('umask drop-in', () => {
     // session. A reload re-reads config and is safe; anything that stops or starts a unit is not.
     const src = readFileSync(SCRIPT, 'utf-8')
     expect(src).toContain('daemon-reload')
-    const lifecycle = src.split('\n').filter((l) => /systemctl/.test(l) && !/daemon-reload/.test(l))
+    // SYSTEMCTL_BIN's own default-assignment line mentions "systemctl" as a string, not a call
+    // (card 54765aa6: it exists so a selftest can stub the real binary) -- excluded by name, not
+    // by shape, so a real new lifecycle call elsewhere still trips this.
+    const lifecycle = src
+      .split('\n')
+      .filter((l) => /systemctl/.test(l) && !/daemon-reload/.test(l) && !/SYSTEMCTL_BIN=/.test(l))
     expect(lifecycle, `unexpected systemctl lifecycle call:\n${lifecycle.join('\n')}`).toEqual([])
   })
 
