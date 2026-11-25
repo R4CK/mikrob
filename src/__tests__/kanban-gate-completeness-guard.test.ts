@@ -632,6 +632,45 @@ describe('gateCompletenessGuardVerdict', () => {
     })
   })
 
+  // Card b20d2062: marveen-land.sh's --allow-carry-forward posts a plain comment (no literal
+  // "REVIEW", not verdict-shaped either) citing BOTH the old gated sha and the new
+  // develop-drift-merged tip in full, from author "marveen-land". Same hazard shape as the
+  // local-llm describe block above, different trigger (a non-generated author citing a brand new
+  // sha moves currentRoundStartTs even without the word REVIEW -- see extractGateShas, which scans
+  // every comment, not just REVIEW-shaped ones).
+  describe('a marveen-land carry-forward comment must never move the round boundary (card b20d2062)', () => {
+    it('citing the new develop-drift sha from "marveen-land" does not make the OLD, still-fresh verdicts read as stale', () => {
+      card.description = 'Gate: QA + Cybersec + Cybered'
+      comments = [
+        { author: 'backend', content: 'REVIEW -- kesz\nGate-SHA: a1b2c3d', created_at: 100 },
+        { author: 'qa', content: 'QA PASS\nGate-SHA: a1b2c3d', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: a1b2c3d', created_at: 300 },
+        { author: 'cybered', content: 'CYBERED GO\nGate-SHA: a1b2c3d', created_at: 400 },
+        {
+          author: 'marveen-land',
+          content:
+            'CARRY-FORWARD (--allow-carry-forward, card b20d2062, backend)\n\n' +
+            'Gate-SHA tip moved from a1b2c3d (the latest REVIEW\'s gated sha) to deadbee9 via a develop-drift merge only.\n' +
+            'merge-only range (1 merge commit(s)), all --remerge-diff empty; card\'s own file(s) (store/x.sh) byte-identical between a1b2c3d and deadbee9.',
+          created_at: 500,
+        },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('CONTROL: a genuine builder hand-off AFTER a marveen-land carry-forward comment still correctly reopens the round', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend', content: 'REVIEW -- kesz\nGate-SHA: a1b2c3d', created_at: 100 },
+        { author: 'qa', content: 'QA PASS\nGate-SHA: a1b2c3d', created_at: 200 },
+        { author: 'marveen-land', content: 'CARRY-FORWARD (--allow-carry-forward, card b20d2062, backend)\nGate-SHA tip moved from a1b2c3d to deadbee9 via a develop-drift merge only.', created_at: 300 },
+        { author: 'backend', content: 'REVIEW -- valodi javitas\nGate-SHA: e5f6071', created_at: 400 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true) // nobody has verdicted e5f6071 yet -- must still block
+    })
+  })
+
   it('the Gate-SHA-first comment shape (REVIEW on line 2, not line 1) is recognised as a round-marker', () => {
     card.description = 'Gate: QA + Cybersec'
     comments = [

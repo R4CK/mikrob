@@ -18,6 +18,9 @@ WEB_PORT="${WEB_PORT:-3420}"
 
 set -e
 
+# Card 8ab5eef3: override point for selftests, same seam as store/ensure-umask-dropin.sh.
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$INSTALL_DIR"
 
@@ -197,8 +200,8 @@ elif [ "$OS" = "Linux" ]; then
   # Stop and disable the old-named units before the rename. Missing units are
   # fine (partial installs); a failure to stop a RUNNING unit is not, but stop
   # returns 0 for not-loaded units, so the || true only covers no-systemd hosts.
-  systemctl --user stop marveen-channels.service marveen-dashboard.service marveen-morning.timer 2>/dev/null || true
-  systemctl --user disable marveen-channels.service marveen-dashboard.service marveen-morning.timer marveen-host-watchdog.service 2>/dev/null || true
+  "$SYSTEMCTL_BIN" --user stop marveen-channels.service marveen-dashboard.service marveen-morning.timer 2>/dev/null || true
+  "$SYSTEMCTL_BIN" --user disable marveen-channels.service marveen-dashboard.service marveen-morning.timer marveen-host-watchdog.service 2>/dev/null || true
 fi
 tmux kill-session -t "=marveen-channels:" 2>/dev/null || true
 
@@ -421,13 +424,13 @@ if [ "$OS" = "Darwin" ]; then
 elif [ "$OS" = "Linux" ]; then
   # Restart under the new names. A failed start here must NOT end in "Done.":
   # the whole point of the migration is that the services come back.
-  if ! systemctl --user daemon-reload 2>/dev/null; then
+  if ! "$SYSTEMCTL_BIN" --user daemon-reload 2>/dev/null; then
     echo "WARNING: systemctl --user daemon-reload failed (no user systemd?)" >&2
   fi
   START_FAILED=0
   for u in "${NEW_SLUG}-dashboard.service" "${NEW_SLUG}-channels.service" "${NEW_SLUG}-morning.timer"; do
     if [ -f "$SYSTEMD_DIR/$u" ]; then
-      if ! systemctl --user enable --now "$u"; then
+      if ! "$SYSTEMCTL_BIN" --user enable --now "$u"; then
         echo "ERROR: failed to enable/start $u" >&2
         START_FAILED=1
       fi
@@ -436,7 +439,7 @@ elif [ "$OS" = "Linux" ]; then
   # host-watchdog is a oneshot fired at login; enable it for the next boot but
   # do not run it now (a mid-migration run would race its btime state file).
   if [ -f "$SYSTEMD_DIR/${NEW_SLUG}-host-watchdog.service" ]; then
-    if ! systemctl --user enable "${NEW_SLUG}-host-watchdog.service"; then
+    if ! "$SYSTEMCTL_BIN" --user enable "${NEW_SLUG}-host-watchdog.service"; then
       echo "ERROR: failed to enable ${NEW_SLUG}-host-watchdog.service" >&2
       START_FAILED=1
     fi

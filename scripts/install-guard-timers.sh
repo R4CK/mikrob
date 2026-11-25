@@ -58,6 +58,9 @@
 # + the dashboard, turning a one-session hiccup into a full outage.
 set -euo pipefail
 
+# Card 8ab5eef3: override point for selftests, same seam as store/ensure-umask-dropin.sh.
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
 STORE="$INSTALL_DIR/store"
@@ -193,21 +196,21 @@ echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR
 # WSL install systemctl --user may be unavailable; the unit files are already
 # on disk, so startup.sh (which re-invokes this script) enables them once the
 # user session exists. Never hard-fail the caller (install-linux.sh) over this.
-if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-  systemctl --user daemon-reload || true
+if pidof systemd >/dev/null 2>&1 && "$SYSTEMCTL_BIN" --user status >/dev/null 2>&1; then
+  "$SYSTEMCTL_BIN" --user daemon-reload || true
   for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard load-guard ollama-down-guard build-freshness-guard boot-reconcile; do
-    systemctl --user enable --now "${MAIN_AGENT_ID}-${t}.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-${t}.timer"
+    "$SYSTEMCTL_BIN" --user enable --now "${MAIN_AGENT_ID}-${t}.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-${t}.timer"
   done
   # Card 5cb861e6 Cybersec NO-GO (F1, comment 26900): the tick makes real Gemini calls, and a
   # 503-outage cap bug means this unit stays opt-in (off by default) until the fix is landed and
   # gated -- it must NOT auto-enable on every install/startup pass like the local-only guards above.
   if [ "${GEMINI_DAY_DRAFT_TICK_ENABLE:-0}" = "1" ]; then
-    systemctl --user enable --now "${MAIN_AGENT_ID}-gemini-day-draft-tick.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-gemini-day-draft-tick.timer"
+    "$SYSTEMCTL_BIN" --user enable --now "${MAIN_AGENT_ID}-gemini-day-draft-tick.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-gemini-day-draft-tick.timer"
   else
     echo "  gemini-day-draft-tick.timer: rendered but NOT enabled (opt-in -- set GEMINI_DAY_DRAFT_TICK_ENABLE=1 to enable)"
   fi
   echo "Enabled guard timers:"
-  systemctl --user list-timers "${MAIN_AGENT_ID}-*" --all --no-pager || true
+  "$SYSTEMCTL_BIN" --user list-timers "${MAIN_AGENT_ID}-*" --all --no-pager || true
 else
   echo "user systemd not available now -- units rendered; startup.sh will enable them on next start."
 fi

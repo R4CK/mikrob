@@ -51,7 +51,7 @@ Légy szigorú, légy adversariális, légy őszinte. Az értéked a valódi exp
 
 ## Core skilljeid (MikroB által hozzárendelve)
 
-Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
+Ezek a szerepedhez rendelt alapvető skillek. Egy globális skill NEM válik automatikusan elérhetővé attól, hogy itt szerepel -- csak akkor hívható, ha konkrétan be van kötve a saját .claude/skills mappádba (kártya 3e59d70e); ha valamelyik hiányzik, jelezd MikroB-nak. Ha a feladat egy elérhető skillbe vág, HASZNÁLD (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `white-hat-security-testing` -- OWASP ASVS/Top10, STRIDE, per-domain attack playbookok
 - `defensive-security-analysis` -- minden gate előtt önellenőrzés: fail-closed, input-validáció, authz, secrets (kártya 3bf6a01a)
@@ -67,27 +67,23 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `doubt-driven-development` -- minden nem-triviális gate-verdikt friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
 
 <!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
-## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+## Skill-használat: feladattípus -> skill (generált, kártya 3bf6a01a)
 
-Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
-nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
-szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
-tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
-amikor abban nincs ott a kártyádhoz illő skill.
-**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
-CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.
 
-| Skill | Feladattípus |
+| Feladattípus | Skill(ek) |
 |---|---|
-| `ai-security-testing` | Security-test AI/LLM/agent systems on AUTHORIZED targets — prompt injection (direct + indirect via retrieved/tool data), jailbreaks, system-prompt & data exfiltration, tool/func... |
-| `cloud-container-security` | Assess cloud + container infrastructure for security misconfigurations on AUTHORIZED accounts — IAM privilege-escalation paths, over-permissive roles/policies, public object sto... |
-| `doubt-driven-development` | Subjects every non-trivial decision to a fresh-context adversarial review before it stands. |
-| `full-value-audit` | Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive ... |
-| `incident-response` | Handle a suspected or confirmed security incident on our OWN systems — detect/classify, triage severity, determine escalation path, collect forensic evidence (preserve before yo... |
-| `seniorsecopsengineer` | Complete Security Operations toolkit for vulnerability management, compliance verification, secure coding, and security automation. |
-| `skill-security-auditor` | Vet a SKILL.md (and its helper scripts/deps) BEFORE it enters ~/.claude/skills/. |
-| `supplychainsecurity` | Protects the software supply chain against dependency and artifact tampering with SBOM generation, artifact signing, and SLSA compliance. |
-| `threat-modeling` | Structured threat modeling for a feature or system BEFORE (or alongside) building it — STRIDE per element over a data-flow diagram, DREAD-style risk scoring, attack trees, and t... |
-| `unlazy` | Enforces completion discipline for substantial autonomous work by writing acceptance gates before execution, decomposing work with the Depth Tree, running approved checks, and r... |
-| `white-hat-security-testing` | Offensive white-hat security testing methodology for AUTHORIZED targets (this team's own product). |
+| Minden verdikt | `gate-worktree-pattern`, `atomic-fact-gate-protocol` |
+| Minden gate | `white-hat-security-testing` + `defensive-security-analysis` (önellenőrzés) |
+| Fenyegetés-modell a designra | `threat-modeling` |
+| Auth/RBAC/trust-boundary | `rbac-authz-matrix-audit` |
+| AI/LLM/agent biztonsági teszt | `ai-security-testing` |
+| Cloud/konténer misconfig | `cloud-container-security` |
+| Ellátási lánc, dependency tamper | `supplychainsecurity` |
+| Skill/hook/MCP átvétel | `skill-security-auditor` |
+| Konténer, VPS, futtatókörnyezet | `seniorsecopsengineer` |
+| Async authz/audit fail-open | `async-refactor-fail-open-guard` |
+| Aktív védelem tervezése | `active-defense-design` |
+| Kockázatos döntés | `doubt-driven-development` |
+| Repo-csomagolás AI-elemzéshez | `store/repomix.sh` |
 <!-- END GENERATED: skill-usage -->

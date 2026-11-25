@@ -32471,3 +32471,414 @@ propagates a real failure.
 **Ki döntött:** MikroB kártya-leírása (2d9c0bb2) + Peti 14288 (additív-csak korlát). Fron Ted (fron-ted) a végrehajtó, a kontraktus FE-oldali javaslat, backend (0a527826 felelőse) megerősítésére/korrekciójára vár.
 
 **Hivatkozás:** kártya 2d9c0bb2 (Pair-BE 0a527826), commit 00f226e84.
+
+## 2026-11-25 -- Seal every test-reachable systemctl --user daemon-reload behind a SYSTEMCTL_BIN seam (kártya 8ab5eef3)
+
+**Döntés:** a 54765aa6 (a2cd8d92e) által javított ensure-umask-dropin selftest nem volt az egyetlen
+valós daemon-reload-hívó, amit egy fleet-test futás elérhet. A fennmaradó forrásokat (öt szkript:
+scripts/migrate-main-agent-id.sh, scripts/retire-progress-watchdog.sh, scripts/install-guard-timers.sh,
+scripts/install-mopsion-suite-guard-timer.sh, scripts/install-telegram-progress-hook.sh) ugyanazzal a
+mintával zártam le, mint a2cd8d92e: `SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"` felülírási pont,
+minden valós hívás ezen keresztül megy. A src/__tests__/update-env-allowlist.test.ts két busz-elérhetőségi
+tesztje most egy ártalmatlan, csak-olvasó `systemctl --user show-environment` hívással bizonyítja az
+elérhetőséget, nem `daemon-reload`-dal. Új őr-teszt (src/__tests__/systemctl-daemon-reload-seam.test.ts)
+elbukik, ha bármelyik érintett fájlban csupasz `systemctl --user daemon-reload` hívás jelenik meg a seam
+megkerülésével.
+
+**Miért:** MikroB mérése (komment 38361, kártya 8ab5eef3): a tmux-szerver a 54765aa6 landolása UTÁN is
+kihalt, egy futó fleet-test saját tmux-spawn scope-jából jövő daemon-reload-burst-tel egyidőben (11 reload
+21:00-21:23 között). A megmaradt, teszt-elérhető hívók ugyanazt a kockázati osztályt jelentik, amit
+a2cd8d92e már egyszer javított -- a seam-mintát kellett kiterjeszteni minden maradék hívóra, ne csak az
+eredetire.
+
+**Ellenőrzés:** teljes `fleet-test.sh` futás a d3d1654af ref-en: exit 0, 1423/1424 fájl, 50482/50614 teszt
+zöld (132 skipped), `lint-ratchet.sh` javult (268 -> 267 @typescript-eslint/no-unused-vars, semmi nem
+romlott). A futás saját tmux-spawn scope-jára (azonosítva /proc/self/cgroup + `systemctl --user list-units`
+kereszt-ellenőrzéssel) szűrt journalctl-delta: 0 "Reload requested" sor -- a 11-reload-burst, ami ugyanabban
+az időablakban jelent meg, egy MÁSIK, akkor már megszűnt tmux scope-hoz tartozott (a 21:19:45-21:20:27-es
+tmux-szerver-halál, nem ehhez a futáshoz). Mutáció-teszt: egy seam visszaállítva csupasz systemctl-re, az
+új őr-teszt elbukott a várt üzenettel; visszaállítva, újra zöld.
+
+**Ki döntött:** backend3 (implementáció + mérés), gate: QA + CYBERSEC + CYBERED (22d. szabály, sign-off
+nem saját).
+
+**Hivatkozás:** kártya 8ab5eef3, Gate-SHA d3d1654af82dd44866774c5432f3930930dd0116 (lásd a következő commit
+is, amely ezt a döntésnapló-sort adja hozzá, és a REVIEW-t ettől frissíti).
+
+---
+
+**Döntés:** a 46af6c822 (az előző bejegyzés) daemon-reload-seamje valós fix volt, de nem a tényleges
+tmux-szerver-gyilkos -- MikroB mérése (üzenet 24375, kártya 8ab5eef3): egy teljes fleet-test futás
+`env -u TMUX` + rövid `TMUX_TMPDIR`-rel 738 másodpercig futott, 11 daemon-reload is tüzelt, és a flotta
+mégsem halt meg. A valódi ok: `src/__tests__/background-tasks.test.ts` "channel-var strip ...
+globally-polluted tmux server" (kártya fb3fff4d) blokkja a `beforeEach`-ben beállítja a privát
+`TMUX_TMPDIR`-t, de sosem törli a `process.env.TMUX`-ot; a tmux viszont a cél-szervert ELŐBB `$TMUX`-ból
+oldja fel, és csak `$TMUX` hiányában esik vissza a `TMUX_TMPDIR` alapértelmezett socketjére. Egy
+fleet-agent saját tmux-paneljéből indított futásnál `$TMUX` be van állítva, így a teszt `start-server`
+/ `set-environment -g` / `kill-server` hívásai a LIVE szervert érték el: hamis bot-tokent írtak a globális
+env-jébe, majd kilőtték. Fix: a blokk most menti+törli (és visszaállítja) `process.env.TMUX` és
+`process.env.TMUX_PANE`-t a privát szerver köré; mivel ezzel a teszt most ELSŐ ÍZBEN valóban a saját hideg
+(session nélküli) szerverét érte el, egy második, korábban soha nem látott hiba is előjött --
+`tmux start-server` alapból `exit-empty on`, egy session nélküli szerver azonnal leáll, mire a következő
+parancs futna. Fix: `start-server` helyett `new-session -d -s fb3fff4d-keepalive`, ami egy lépésben indít
+szervert ÉS sessiont, életben tartva azt. `store/fleet-test.sh` elejére védelmi réteg (`unset TMUX
+TMUX_PANE`) került, hogy egy jövőbeli, hasonlóan hiányos teszt se tudja a live szervert elérni egy teljes
+suite-futás alatt. Új őr-teszt (`src/__tests__/tmux-server-wide-ops-need-scope-or-cleared-env.test.ts`)
+minden `src/__tests__/*.test.ts` fájlt átvizsgál: elbukik, ha egy `start-server`/`kill-server`/
+`set-environment -g` hívás `-L`/`-S` scope nélkül, ÉS egy megelőző (legfeljebb 2500 karakterrel korábbi)
+`delete process.env.TMUX` nélkül jelenik meg -- a lookback-ablak szándékosan kizárja, hogy egy TÁVOLI,
+utólagos (pl. egy `afterEach` visszaállító sora) egyezés hamisan igazolja a védelmet (mutáció-teszttel
+igazolva: csak a `beforeEach` törlés kivételével a teszt elbukik, visszatéve zöld).
+
+**Miért:** a kártya 1-es és 3-as Kész-ha pontja ("a guard logs every default tmux server death with
+killer evidence" és "reproduction... shows the daemon-reload storm kills tmux, or the next real event's
+guard log names a different killer") megköveteli a TÉNYLEGES gyilkos azonosítását, nem csak egy
+valószínű-tűnő korrelációt. A daemon-reload-elmélet ez a mérés alapján CÁFOLVA: a reload-burst önmagában
+NEM gyilkos, a tmux-szerver-manipuláció (start/kill-server + set-environment -g, hibás $TMUX-feloldással)
+az.
+
+**Ellenőrzés:** `src/__tests__/background-tasks.test.ts` + az új őr-teszt izoláltan lefuttatva (rövid,
+<60 karakteres `TMUX_TMPDIR` + `env -u TMUX -u TMUX_PANE`, a 108 byte-os UNIX socket-út-limit miatt):
+1448/1448 teszt zöld. `npx tsc --noEmit` tiszta. Mutáció-teszt: a `beforeEach` törlés-sorát kivéve (az
+`afterEach` visszaállító sorát érintetlenül hagyva) az új őr-teszt elbukott a várt üzenettel; visszatéve,
+újra zöld -- ez zárja ki, hogy a guard csak a fájl-szintű szöveg-jelenlétet nézze, nem a sorrendet.
+
+**Ki döntött:** backend3 (implementáció + mérés, MikroB gyökér-ok levezetése alapján, üzenet 24375),
+gate: QA + CYBERSEC + CYBERED (22d. szabály, sign-off nem saját; a kártya 1-4 Kész-ha pontjai még nincsenek
+mind lezárva -- ez a döntés csak a talált gyilkos fixét és a hozzá tartozó guard-ot fedi).
+
+**Hivatkozás:** kártya 8ab5eef3, fb3fff4d (az eredeti channel-var-strip teszt), MikroB üzenet 24371/24375.
+
+
+tmux-szerver-gyilkos fold-in -- cybersec M1 MEDIUM maradvány zárása (kártya 8ab5eef3, MikroB
+üzenet 24382): az efd87ec6c-n gated fixben a `fb3fff4d` blokk `beforeEach`-je a `process.env.TMUX`
+törlését az `initDatabase(':memory:')` hívás UTÁN végezte el; ha ez (vagy az előtte álló
+`mkdtempSync`) elhasalt, az `afterEach` feltétel nélküli, meztelen `tmux kill-server` hívása
+TOVÁBBRA IS a live szervert érte volna el, mert `$TMUX` ekkor még nem volt törölve. Fix: egy
+`privateServerReady` flaget csak a sikeres `new-session -d` UTÁN állítunk igazra, és az `afterEach`
+`kill-session`/`kill-server` hívásai csak akkor futnak, ha ez igaz -- a privát szerver tényleges
+felállása a feltétel, nem a szöveg sorrendje.
+
+**Miért:** cybersec GO (komment 38495) MEDIUM maradványként jelezte: egy `beforeEach`-hiba (törött
+better-sqlite3, db-import hiba, `mkdtemp` hiba) a törlés előtt pontosan akkor éri el a live
+szervert, amikor a környezet már amúgy is sérült -- vagyis éppen akkor, amikor valaki egy fájlt
+közvetlenül futtat egy panelből. MikroB (üzenet 24382) ezt land előtti fold-in-ként kérte, mert a
+flotta hatszor halt meg ugyanebből az osztályból.
+
+**Ellenőrzés:** mutáció-teszt, cybersec saját M6-reprodukciójának mintáját követve: egy scratch
+"stand-in live" tmux-szervert (`-S` saját socket) indítottunk, `$TMUX`-ot rá állítottuk, és egy
+ideiglenes, nem commitolt env-kapcsolt `throw`-t ültettünk a `beforeEach` elejére. A FIX-ES kóddal a
+stand-in szerver életben maradt a dobás után (`list-sessions` sikeres, `decoy-live` látható); a
+gating sor nélküli MUTÁNSSAL (a `privateServerReady` feltétel eltávolítva) a stand-in szerver
+MEGHALT ("no server running"). A kapcsolót és a mutánst eltávolítottuk, a commitolt kód csak a
+tényleges gating-fixet tartalmazza. Utána `background-tasks.test.ts` + a meglévő
+`tmux-server-wide-ops-need-scope-or-cleared-env.test.ts` izoláltan (rövid `TMUX_TMPDIR`, `env -u
+TMUX -u TMUX_PANE`): 1448/1448 zöld, változatlan a korábbi méréshez képest. `npx tsc --noEmit` és
+`eslint` a módosított fájlon tiszta.
+
+**Ki döntött:** backend3 (implementáció + mérés, MikroB fold-in dispatch alapján, üzenet 24382),
+gate: delta QA + CYBERSEC + CYBERED (22d. szabály, sign-off nem saját). A kártya 1., 2. és 4. Kész-ha
+pontja (halál-naplózó guard, MikroB-riasztás, egyéb útvonal-seprés) ettől a fold-intől függetlenül
+továbbra is nyitott, ahogy a cybersec/cybered GO L1-L4/F1-F5 lelete is jelzi.
+
+**Hivatkozás:** kártya 8ab5eef3, cybersec GO komment 38495 (M1), MikroB üzenet 24382.
+
+
+CYBERED F-3 pinelve (kártya 8ab5eef3, MikroB üzenet 24384): a `store/fleet-test.sh`-ba tett
+`unset TMUX TMUX_PANE` sort eddig semmilyen teszt nem fedte -- a sor törlése semmit nem buktatott
+volna el. Új teszt (`src/__tests__/fleet-test-clears-tmux-env.test.ts`) a VALÓDI szkript-prefixet
+(a fájl eleje a tényleges `unset` sorig, nem egy kézzel írt helyettesítő) futtatja bash alatt
+előre beállított `TMUX`/`TMUX_PANE` env-változókkal, és az eredmény környezetben ellenőrzi, hogy
+mindkettő eltűnt. Mutáció-teszt: a sor eltávolításával a környezet MEGTARTJA mindkét változót --
+ez igazolja, hogy a teszt tényleg a törlő hatást méri, nem egy szöveg-egyezést.
+
+**Miért:** cybersec/cybered delta-gate (komment 38495/38496) opcionális LOW/F-3 maradványként
+jelezte a hiányzó pint; MikroB (üzenet 24384) a fold-inba kérte, ha néhány sor. Ez nem bővíti a
+kártya hatókörét: a fő M1 MEDIUM fix mellett egy meglévő, már gated kódrészlet utólagos
+lefedése.
+
+**Ellenőrzés:** az új teszt + `background-tasks.test.ts` + `tmux-server-wide-ops-need-scope-or-
+cleared-env.test.ts` izoláltan (rövid `TMUX_TMPDIR`, `env -u TMUX -u TMUX_PANE`): 1451/1451 zöld.
+`npx tsc --noEmit` és `eslint` az új fájlon tiszta.
+
+**Ki döntött:** backend3 (implementáció, MikroB opcionális fold-in kérése alapján, üzenet 24384),
+gate: ugyanaz a delta QA + CYBERSEC + CYBERED kör fedi, mint az M1 fixet.
+
+**Hivatkozás:** kártya 8ab5eef3, cybered GO komment 38496 (F-3), MikroB üzenet 24384.
+
+## 2026-11-23 -- Gépi carry-forward a marveen-land.sh-ban: konfliktusmentes develop-drift merge nem igényel új gate-kört (kártya b20d2062)
+
+**Döntés:** egy kártya-ág, ami a REVIEW-ban gate-elt sha után egy KONFLIKTUSMENTES develop-drift
+merge-dzsel előrébb jár, és ez a merge a kártya SAJÁT fájljait egy bájtnyit sem érinti, mostantól
+`--allow-carry-forward` flaggel (csak `--card` módban, alapból KIKAPCSOLVA) landolhat ÚJ gate-kör
+nélkül. A `marveen-land.sh` ugyanazt a két git-tényt ellenőrzi mechanikusan, amit MikroB/Cybered ma
+kézzel ellenőrzött 5 valós esetben egy nap alatt (e2425f05, 11c6cab4, 1c8f6d25, 0c03aa06, f3343af0):
+(1) a kártya SAJÁT first-parent láncán gate_sha és az ág csúcsa között KIZÁRÓLAG merge-commit áll,
+mindegyik `--remerge-diff`-je üres (nincs kézi konfliktus-feloldás); (2) a kártya saját fájljai
+(merge-base(gate_sha, origin/develop)..gate_sha diffje) bájtra azonosak a két sha között. Ha mindkét
+feltétel igaz, a kijelölt gate-ek MEGLÉVŐ verdiktjét a RÉGI sha-n ellenőrzi (nem az új csúcsot),
+sosem hamisít új verdiktet, és egy `CARRY-FORWARD` kommentet tesz fel `marveen-land` szerzőséggel.
+
+**Miért `marveen-land` a szerző:** a komment mindkét sha-t teljes alakban idézi egy nem-gate
+szerzőtől -- ha a komment szerzősége egy sima emberi/ügynök-névre menne, a
+`kanban-gate-completeness-guard.ts` `currentRoundStartTs` függvénye az új sha-idézést friss
+kör-nyitásnak olvasná, és a gate-eknek EZUTÁN kellene verdiktelniük -- pontosan az a rés, ami miatt
+mind az 5 valós esetben force-close kellett MikroB-tól. A `marveen-land` felvétele a
+`GENERATED_COMMENT_AUTHORS` halmazba (`src/web/kanban-landed-guard.ts`) kizárja a kommentet a
+kör-határ számításából, úgy, hogy a VALÓDI, régebbi gate-verdiktek maradnak a mérvadók.
+
+**Két hiba a fejlesztés közben, mindkettőt a selftest fogta meg:** (a) az első verzió a TELJES
+`gate_sha..branch` tartományt vizsgálta nem-merge commitra, holott ez a tartomány a merge MÁSODIK
+szülőjén át mindenki MÁS develop-ra landolt, a kártyához nem tartozó munkáját is tartalmazza -- ez
+normális, egy drift merge pont ettől drift merge; csak a kártya SAJÁT first-parent láncát szabad
+nézni. (b) `git show --remerge-diff <sha>` MINDIG kiírja a commit saját header-jét (szerző/dátum/
+üzenet) még akkor is, ha a diff törzse üres, így egy puszta `[ -n "$(...)" ]` soha nem volt üres --
+a `--format=` kapcsoló szükséges a header elnyeléséhez.
+
+**Ellenőrzés:** `store/marveen-land-card-branch.selftest.sh` 5 új, valós alakú esettel (boldog út,
+flag-ki kontroll, nem-merge commit a tartományban, kézzel feloldott konfliktus, konfliktusmentes
+auto-merge ami mégis a kártya saját fájlját módosítja) -- mind az 5 ÚJ eset mutáció-próbával: a
+javítás előtti kóddal a boldog-út eset vörösre vált, pontosan az eredeti REFUSED-et reprodukálva,
+utána zöld. `src/__tests__/kanban-gate-completeness-guard.test.ts` 2 új esettel a
+`marveen-land`-szerzőségű komment kör-határra gyakorolt (vagy nem gyakorolt) hatására, kontroll-
+eset a valódi hand-off útnak. Teljes beágyazott `marveen-land.sh --selftest` (121 eset) és
+`--selftest-land-batch` (land_batch saját, sosem carry-forwardoló útja) regresszió nélkül zöld.
+
+**Ki döntött:** MikroB kártya-leírása (b20d2062, szülő ca32423a); terv-grilling kötelező volt
+(1b. szabály, KOCKÁZATOS/HIGH tag), verdikt a kártya kommentjében (GO, hatókör `--card` módra és
+csak-merge tartományra szűkítve). A végrehajtó backend.
+
+**Hivatkozás:** kártya b20d2062; `store/marveen-land.sh` (`_carry_forward_ok`,
+`gate_sha_tip_check`), `src/web/kanban-landed-guard.ts`, `src/__tests__/kanban-gate-completeness-guard.test.ts`.
+
+## 2026-11-23 -- Carry-forward landolás: 2 NO-GO javítás, delta-regate (kártya b20d2062)
+
+A fenti carry-forward feature (`_carry_forward_ok`) első gate-körén CYBERED (komment 38261) és
+CYBERSEC (komment 38262) egymástól függetlenül ugyanazt a biztonsági hibaosztályt találta meg,
+plusz egy harmadik, külön hibát és egy időzítési hibát:
+
+**F-1/HIGH-1 (mindkét gate):** egy üres `--remerge-diff` csak azt bizonyítja, hogy a merge
+konfliktusmentes volt -- NEM azt, hogy a bekerült tartalom `origin/develop`-ról jött. Egy TETSZŐLEGES
+nem-review-zott ág (oldalág, másik kártya le nem landolt munkája) konfliktusmentes merge-je is üres
+remerge-diffet ad. Javítás: a kártya first-parent láncán MINDEN merge MINDEN nem-első szülőjének
+függetlenül `origin/$DEFAULT_BRANCH` ősének kell lennie (`git merge-base --is-ancestor`), nem csak a
+diff-nek kell üresnek lennie.
+
+**F-2/MEDIUM:** `[ -n "$(g show --format= --remerge-diff "$m")" ]` egy git HIBÁT (nem-nulla kilépés,
+régi git, hiányzó objektum) ugyanúgy olvasott, mint "bizonyítottan tiszta" -- mindkettő üres
+kimenetet ad. Javítás: a kilépőkód explicit elkapása, bármilyen nem-nulla eset refúzió.
+
+**F-3/HIGH (Cybered) -- check-to-merge verseny:** a carry-forward bizonyíték `gate_sha_tip_check`
+idején a `$branch` NÉVRE futott, a tényleges `git merge --no-ff "$branch"` pedig később, lock-wait +
+DECISIONS.md-ellenőrzés + downward_check UTÁN ugyanazt a nevet olvasta újra -- egy helyi hook vagy
+konkurens folyamat ebben az ablakban nem-review-zott tartalomra mozdíthatta a ref-et. Javítás:
+mindkét hívás a korán, a verseny-ablak ELŐTT felvett `$work_sha`-t használja, nem a ref-nevet -- ez
+mellékesen a SIMA (nem carry-forward) landolási útvonal kisebb azonos rését is zárja.
+
+**MEDIUM-2 (Cybersec):** `core.quotepath=true` (git alapérték) egy nem-ASCII fájlnevet idézett
+C-string literálként ír ki (`"caf\303\251.sh"`); ha ezt a literált később pathspecként használjuk a
+bájt-azonosság ellenőrzésben, az semmilyen valós fájlra nem illeszkedik, és a check hamisan
+"nincs eltérés"-t jelez. Javítás: `-c core.quotepath=false` minden ilyen útvonalat előállító/
+felhasználó git-hívásra.
+
+**F-5 (Cybered) -- komment-időzítés:** a CARRY-FORWARD kanban-komment eddig a bizonyíték sikere
+UTÁN, de a merge/fleet-test/push SOROZAT ELŐTT ment ki -- egy későbbi refúzió (merge-konfliktus,
+bukó fleet-test, elvesztett push-verseny) hamis "Landing proceeds" állítást hagyott egy sosem
+landolt kártyán. Javítás: a komment a push `origin/$DEFAULT_BRANCH`-en való független
+visszaellenőrzése UTÁN megy ki, szövege "Landed."-re javítva.
+
+**LOW leletek (M1/M4/M5 mutánsok, Cybersec), mért, nem feltételezett eredmény:** M1 (parent-count
+check) és M5 (owned-set-empty guard) ESETÉRE dedikált selftest-eset készült (b2008d, b2010d), DE a
+mutáció-próba nem tudta kimutatni, hogy a teszt KIZÁRÓLAG az adott guard-tól függ ezen a git
+verzión/eset-alakon: `git show --format= --remerge-diff <sha>` egy hiteles, nem-merge commitra git
+2.53.0-n a commit TELJES, nem-üres diffjét adja -- ez megmérve EGYENESEN CÁFOLJA Cybersec 38262
+komment saját, kimondottan LEVEZETÉSKÉNT jelölt állítását, hogy ez a check "nem fut" egy nem-merge
+commitra. A parent-count check és az owned-set-empty guard védelmi-rétegként marad a kódban, a két
+teszteset regresszióként marad, de M1/M5 NEM jelölhető "pinnelt"-nek -- ezt a REVIEW is így közli,
+nem overclaim-elve a mutáció-eredményt. M4 (`CARD_BRANCH_MODE=1` gate) és F-4 (comment-author
+trust-boundary, a szerver-oldali re-verifikáció hiánya) elfogadott LOW maradék-kockázat, a gate-ek
+saját súlyozása szerint, nem volt MikroB explicit must-fix listáján.
+
+**Ellenőrzés:** `store/marveen-land-card-branch.selftest.sh` 74→81 eset (7 új: b2006d-b2012d), MIND
+mutáció-próbával -- F-1/MEDIUM-2/F-2/F-3/M2 esetében a célzott mutáns PONTOSAN a saját esetét
+fordítja vörösre, máshol nem. Beágyazott `marveen-land.sh --selftest` 121/121, `--selftest-land-batch`
+21/21, mindkettő regresszió nélkül. `src/__tests__/kanban-gate-completeness-guard.test.ts` +
+`kanban-landed-guard.test.ts` 186/186, bár ezen a körön TS kódot nem érintett a javítás. Minden
+mérés `fb0ad7f75` (gate_sha a NO-GO-kon) feletti commitra, `e180af36d` sha-n.
+
+**Ki döntött:** a NO-GO-k javítási iránya mindkét gate saját komentjében (38261, 38262); a prioritás
+és a "fejezd be waiting + REVIEW + új Gate-SHA"-val MikroB (msg 24098/24100/24104). A végrehajtó
+backend.
+
+**Hivatkozás:** kártya b20d2062; CYBERED komment 38261, CYBERSEC komment 38262; commit `e180af36d`;
+`store/marveen-land.sh` (`_carry_forward_ok`, `gate_sha_tip_check`, `land_one`),
+`store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-23 -- GET /api/llm/chain endpoint (kártya 954a6a93)
+
+Új végpont a dashboard LLM-lánc oldalához, a Fron Ted / backend2 által ACCEPTelt kontraktus
+szerint (fron-ted CONTRACT-PROPOSAL komment 37917, backend2 ACCEPT komment 37945):
+`GET /api/llm/chain?window=24h|7d&includeTest=false`, szekciónkénti `source` mezővel.
+
+**Stages:** local/freellm/online, NINCS külön gemini-szakasz -- a 2026-11-20-i mért audit szerint
+(card leírás) a valós lánc local -> freellm -> online, a freellm-first nincs élesítve. Az adat
+`llm_ledger`-ből jön (új `getLlmChainStageSummary`), test-forgalom (test-agent/selftest/queue)
+alapból kizárva, `?includeTest=1`-gyel bekapcsolható.
+
+**Routing:** a meglévő `card-build-route.log` parsere (korábban privát `readRecentDecisions`,
+most exportálva a `local-llm.ts`-ből, nem duplikálva) adja a LOCAL/ONLINE + ok-számlálást.
+
+**DraftReview:** `draft_accepted` oszlop MINDEN sorban NULL (mért, 14804 sor) -- a
+`markLlmLedgerDraftAccepted` függvénynek nincs hívója a kódbázisban. A válasz ezt őszintén
+`available: false, verdicts: null`-ként jelzi, nem hamisít számot.
+
+**Switches:** `freellmEnabled` a valódi kapcsoló-fájlból (meglévő `readFreellmEnabled`, exportálva
+a `freellm-status.ts`-ből); `freellmFirstLive` statikus `true`, mert a 6d8ef952 kártya (futásidejű
+kapcsoló ehhez) még nincs landolva -- nincs mit kiolvasni, a kontraktus 4. pontja szerint rendben.
+
+**Cost:** `getWindowCostEstimateUsd` (új, `costops/ledger.ts`), ablak-szkópos, a meglévő
+`estimateCostUsd` árazóval -- `isEstimate: true` mindig, a kontraktus szerint.
+
+**Ellenőrzés:** `src/__tests__/llm-chain.test.ts`, 13 eset (path/method, 400-ak, alapértékek,
+per-szekció `source`, stage-számlálás + gemini-kizárás, test-caller szűrés, 24h/7d ablak, routing
+számlálás valós logfájlból, draftReview átmenetek, switches, cost-pozitivitás). `tsc --noEmit`
+tiszta. `fleet-test.sh --ref eb7369a14c` a tesztfájlra: 1 fájl / 13 teszt, mind zöld.
+
+**Ki döntött:** a kontraktust Fron Ted + backend2 rögzítette (37917/37945), a kártyát MikroB adta
+ki; a végrehajtó backend (60 perces testvér-átadás után, msg 24092).
+
+**Hivatkozás:** kártya 954a6a93; `src/web/routes/llm-chain.ts`, `src/db.ts`
+(`getLlmChainStageSummary`, `getLlmChainDraftReviewCounts`), `src/costops/ledger.ts`
+(`getWindowCostEstimateUsd`); commit `eb7369a14`.
+
+## 2026-11-25 -- Per-agent named skills get wired by symlink, not a wholesale global link (kartya 3e59d70e)
+
+**Dontes:** sub-agent skill resolution has no agents/*/.claude-config/skills link anywhere
+(confirmed empty for every checked agent). A sub-agent can only invoke what is a real
+directory or symlink under its own agents/<name>/.claude/skills/. Measured 86 cases (all 18
+agents) where a prompt named a skill (backticked, matching a real skill somewhere in the
+fleet) that was not wired into that agent's own folder -- 12 of these had already produced a
+live "Unknown skill" tool error in 30 days.
+
+Chose: symlink each specific named-but-unreachable skill from the global catalog
+(~/.claude/skills/<name>) into agents/<name>/.claude/skills/<name>, one per missing name --
+NOT a single wholesale symlink/bind-mount of the whole global skills folder into every agent.
+A wholesale link would expose the full ~150-skill global catalog to every agent regardless of
+role, which is a larger blast radius than the prompt already grants (a prompt names specific
+skills because those are the ones the role is meant to use); per-skill linking keeps exposure
+scoped to exactly what each prompt already claims to use, and matches the convention already
+observed in multiple agents' own folders (e.g. backend2/prompty mixing real copies and
+per-skill symlinks for a subset of skills).
+
+**Ellenorzes:** static reachability check (named skill in allnames, not in own-folder union
+root-project-skills) went from 86 unreachable names across 17 agents to 0 across all 18,
+re-measured after wiring. The false "MINDEN globalis skill elerheto" sentence corrected to
+state the real mechanism in all 16 live agents/<name>/CLAUDE.md files carrying it plus the
+matching 16 seed-fleet-agents/<name>/CLAUDE.md templates (commit 6f66d9131), so a fresh
+install no longer repeats the same false claim. elemzo and prompty did not carry the false
+sentence (elemzo uses the rea skillset per its own override card; prompty's own gap was
+already closed before this card by a separate self-proposal application).
+
+**Ki dontott:** backend2, per MikroB dispatch (card 3e59d70e, source: Prompty full review
+13e25d1f, Peti approval Telegram 14658).
+
+**Nem meresz most:** the card's 4th criterion ("Unknown skill" count re-measured after 7
+days) is inherently time-delayed and could not be satisfied in this session -- flagged as a
+follow-up for whoever re-measures the fleet 7 days after this fix lands.
+
+**Hivatkozas:** kartya 3e59d70e (source 13e25d1f, Prompty comments 38395-38412), seed-fleet-agents
+commit 6f66d9131.
+
+
+## 2026-11-25 -- CYBERED F-1 closed: declare manual skill symlinks in skill-role-map.json, apply sibling-union to fron-ted/fron-teddy (kartya 3e59d70e)
+
+**Dontes:** CYBERED (comment 38477, Gate-SHA ccc2de0e3) found that 61 of the 86 symlinks
+from the decision above were never declared in store/skill-role-map.json, so they are not
+provisioner-managed: not recreated on a rebuilt agent dir, not removed if a role drops a
+skill, and invisible to agent-skill-drift-sync.sh's own tracking -- causing its clone-family
+check to report 15 false MISSING for the fron-ted/fron-teddy pair. Declared all 61 pairs in
+their owning agent's role. That alone left the 15 MISSING unchanged (declaring a skill for
+its owner does nothing for a LAGGING sibling, since the drift-sync tool's provisioner check
+is per-agent, not per-family) -- applied the existing clone-family-parity rule instead (Peti
+decision, card e589f07a, 2026-10-30: siblings get the union, copy the larger set) to this one
+asymmetric pair: fron-teddy gets the 12 skills only fron-ted had, fron-ted gets the 3 only
+fron-teddy had, both declared in skill-role-map.json and symlinked live.
+
+**Ellenorzes:** store/agent-skill-drift-sync.sh (role-map env-overridden to the fixed file,
+read-only against the live tree): missing 15 -> 0, sibling-pair-findings unchanged at 0, the
+pre-existing diverged=21 set unchanged (confirmed by diff, unrelated to this fix). A new test
+(skill-role-map-drift-sync.test.ts) runs the real script against a synthetic fixture and pins
+the mechanism with 3 cases, including one that rules out "declared somewhere" as a non-fix
+(must be declared for the LAGGING sibling specifically).
+
+**Ki dontott:** backend2, per MikroB dispatch (msg 24361) to close CYBERED F-1.
+
+**Nem meresz most:** cybersec's companion LOW suggestion (have skill-factory/skill-management
+write into the requesting agent's own .claude/skills instead of the global folder) is a larger
+behavioral change to the fleet's self-learning skill-generation mechanism, deferred to a
+separate card rather than folded into this MEDIUM fix.
+
+**Hivatkozas:** kartya 3e59d70e, CYBERED comment 38477 (F-1), CYBERSEC comment 38472 (LOW-1),
+e589f07a (sibling-union precedent), commit ea840b89e.
+## 2026-11-23 -- marveen-land.sh: nothing-to-land must never post LANDED (kártya 2d27b27b)
+
+`land_one` ugyanazt a 0-s kilépőkódot adta vissza akkor is, ha egy valódi landolás
+(push+ancestor-ellenőrzés sikerült), ÉS akkor is, ha a célágat SOSEM hozták létre --
+`land_notify_finish` pedig MINDKÉT esetet "LANDED" szövegre fordította. Egy `--card`
+landolás egy nem létező ágra ezért ugyanazt a "LANDED (exit 0)" inter-agent üzenetet
+küldte, mintha valóban landolt volna valami. Élőben kétszer mérve: msg 24070 (kártya
+39253062) és msg 24150 (kártya 380a5e16) -- mindkettőt csak az ellenkező oldali ügynök
+saját, független `card_landings`/ancestor-ellenőrzése fogta meg, a notify szövege önmagában
+hamis riasztást adott volna.
+
+**Javítás:** a hiányzó-ág útvonal most egy ÚJ, különálló kódot ad vissza (6, nem 5 --
+az 5-öt `land_with_retry` már belső push-verseny jelzésre használja). `land_notify_finish`
+a 6-ot NOTHING-TO-LAND-ra fordítja, sosem LANDED-re. Semelyik külső szkript nem ágaz
+`marveen-land.sh` saját process-exit kódjára (grep-elve `store/*.sh`), minden hívó a
+land-run-journal-t vagy ezt a notify-szöveget olvassa -- pont ez a felszín, amit a javítás
+zár.
+
+**Ellenőrzés:** `marveen-land.sh --selftest-land-notify` új esettel (rc=6 ->
+NOTHING-TO-LAND), mutáció-próbával megerősítve -- a case-6 leképezés kivétele PONTOSAN ezt
+az esetet fordítja vissza. `marveen-land-card-branch.selftest.sh` új, valódi end-to-end
+esettel (`--card` egy sosem létezett ágra: rc=6, NOTHING-TO-LAND szöveg, nincs
+`card_landings` sor), mutáció-próbával a valós `land_one` javítás ellen -- visszaállítva a
+pontos élő hamis-pozitív szöveget reprodukálja. Teljes regresszió: card-branch selftest
+70/70, `--selftest-land-notify` 5/5, beágyazott `--selftest` 121/121 (egy futás egy nem
+kapcsolódó, már korábban is létező HUP-időzítési flakiness-t mutatott párhuzamos terhelés
+alatt, elszigetelten megerősítve tiszta zöldnek). `--selftest-land-batch` J-HUP/J-INT
+esetei byte-azonosan bukkak a MÓDOSÍTATLAN `origin/develop`-on is (ugyanaz a 2 bukás,
+ugyanaz a 19 siker) -- ez egy ELŐZETES, ettől a változástól független teszt-fixture
+időzítési flakiness, külön jelentve, itt nem javítva.
+
+**Ki döntött:** a leletet fullstack mérte élőben (msg 24070/24150), a kártyát és a
+javítási irányt a "Kész, ha:" lista adta (kártya 2d27b27b leírása). A végrehajtó backend
+(self-advance, rule 11).
+
+**Hivatkozás:** kártya 2d27b27b (duplikátum: 3a4f27e8); `store/marveen-land.sh`
+(`land_one`, `land_notify_finish`); commit `6f94d20da`.
+
+## 2026-11-25 -- marveen-land.sh: --card gate-refúzió nem oszthatja a rc-t a nothing-to-land úttal (kártya 2d27b27b, MEDIUM-1)
+
+**Döntés:** a develop-drift merge delta-gate-körén cybersec (komment 38341/38572, sibling cybersec2
+MEDIUM-1 lelete) megtalálta, hogy a két `--card` gate-refúziós pont (nincs ervényes gate-verdikt;
+a kijelölt gate-ek nem AGREE-lnek) ugyanazt a 6-os kilépőkódot adta, amit `land_notify_finish` a
+hiányzó-ág "nincs mit landolni" esetre fordít NOTHING-TO-LAND-ra. Ez pontosan a kártya saját
+hibaosztálya a másik irányban: egy refúzió ártalmatlan no-op-nak tűnik, nem elutasításnak.
+MikroB döntése (komment 38574): a kártyán belül javítandó, nem follow-up. A két refúziós pont
+(`store/marveen-land.sh` ~1982/~2005 sor) most saját, 7-es kilépőkódot ad; `land_notify_finish`
+a 7-et REFUSED-GATE-re fordítja, a 6-ot (hiányzó ág) és a 3-at (általános precondition REFUSED)
+érintetlenül hagyva.
+
+**Ellenőrzés:** `--selftest-land-notify` 6/6 (új eset: rc=7 -> REFUSED-GATE, sosem NOTHING-TO-LAND,
+sosem LANDED); `marveen-land-card-branch.selftest.sh` 82/82 (a ccc333 no-verdict szcenárió most a
+pontos rc=7-et és a REFUSED-GATE inter-agent üzenetet is ellenőrzi, nem csak egy sima rc!=0-t);
+beágyazott `marveen-land.sh --selftest` 121/121. Minden rc-fogyasztó átnézve (`land_with_retry`
+csak az 5-öt kezeli külön, minden mást érintetlenül továbbad; a flotta más szkriptjei és a TS-oldal
+nem parse-olja a kilépőkódot vagy a notify-szöveget).
+
+**Ki döntött:** cybersec2 (MEDIUM-1 lelet, komment 38341), MikroB Fix-Direction (komment 38574,
+üzenet 24478). A végrehajtó backend.
+
+**Hivatkozás:** kártya 2d27b27b; `store/marveen-land.sh` (`land_one`, `land_notify_finish`);
+`store/marveen-land-card-branch.selftest.sh`.

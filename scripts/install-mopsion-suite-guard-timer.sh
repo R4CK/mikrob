@@ -25,6 +25,9 @@
 # is a separate, one-time manual step, not something this installer does on every run.
 set -euo pipefail
 
+# Card 8ab5eef3: override point for selftests, same seam as store/ensure-umask-dropin.sh.
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # POINT THE UNIT AT THE CANONICAL CHECKOUT, NEVER AT AN AGENT WORKTREE. Every fleet agent edits this
@@ -104,10 +107,10 @@ echo "Rendered $NAME.{service,timer} into $UNIT_DIR"
 # Enable only if a working user systemd is present. On a fresh headless/WSL install `systemctl
 # --user` may not be up yet; the unit files are on disk either way and startup.sh re-runs this.
 # Never hard-fail the caller.
-if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
-  systemctl --user daemon-reload || true
-  systemctl --user enable --now "$NAME.timer" || echo "  warn: could not enable $NAME.timer"
-  systemctl --user list-timers "$NAME.timer" --all --no-pager || true
+if pidof systemd >/dev/null 2>&1 && "$SYSTEMCTL_BIN" --user status >/dev/null 2>&1; then
+  "$SYSTEMCTL_BIN" --user daemon-reload || true
+  "$SYSTEMCTL_BIN" --user enable --now "$NAME.timer" || echo "  warn: could not enable $NAME.timer"
+  "$SYSTEMCTL_BIN" --user list-timers "$NAME.timer" --all --no-pager || true
 else
   echo "user systemd not available now -- unit rendered; startup.sh will enable it on next start."
 fi

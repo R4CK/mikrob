@@ -407,6 +407,33 @@ export function getTokenCostByAgentDay(
   }
 }
 
+// Card 954a6a93 (GET /api/llm/chain): a window-scoped (24h/7d), model-grouped USD estimate --
+// same pricing mechanism as getCostSummary/getTokenCostByAgentDay, but those are month- or
+// per-agent/day-scoped, neither of which fits a rolling 24h/7d window. Grouped by model (not
+// blended) for the same reason getTokenCostByAgentDay groups by model: different models have
+// different rates.
+export function getWindowCostEstimateUsd(db: Database.Database, sinceS: number): number {
+  const rows = db.prepare(`
+    SELECT model,
+      COALESCE(SUM(input_tokens),0) as input_tokens,
+      COALESCE(SUM(output_tokens),0) as output_tokens,
+      COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
+      COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
+      COALESCE(SUM(thinking_tokens),0) as thinking_tokens
+    FROM token_usage WHERE timestamp >= @since
+    GROUP BY model
+  `).all({ since: sinceS }) as Array<{
+    model: string | null; input_tokens: number; output_tokens: number
+    cache_read_tokens: number; cache_creation_tokens: number; thinking_tokens: number
+  }>
+  let total = 0
+  for (const r of rows) {
+    const cost = estimateCostUsd(r.model, r)
+    if (cost !== null) total += cost
+  }
+  return round4(total)
+}
+
 function round2(n: number): number { return Math.round(n * 100) / 100 }
 function round4(n: number): number { return Math.round(n * 10000) / 10000 }
 function roundValues(obj: Record<string, number>): Record<string, number> {

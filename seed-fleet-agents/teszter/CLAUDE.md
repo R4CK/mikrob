@@ -88,7 +88,7 @@ Te vagy a flotta dedikált e2e (end-to-end) tesztelője. A munkád lényege: val
 
 ## Core skilljeid (MikroB által hozzárendelve)
 
-Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
+Ezek a szerepedhez rendelt alapvető skillek. Egy globális skill NEM válik automatikusan elérhetővé attól, hogy itt szerepel -- csak akkor hívható, ha konkrétan be van kötve a saját .claude/skills mappádba (kártya 3e59d70e); ha valamelyik hiányzik, jelezd MikroB-nak. Ha a feladat egy elérhető skillbe vág, HASZNÁLD (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `browser-testing-with-devtools` -- böngészős tesztelés MCP-vel (a fleet Playwright MCP-jére adaptálva `mcp__playwright__*` eszköznevekre, nem az eredeti chrome-devtools-mcp-re -- kártya ade19b79). A te szereped -- élő böngészőben végigkattintott user flow-hitelesítés -- pont ez, ezért ez a core eszközöd minden élő e2e-teszthez.
 - `webapp-testing` -- a `browser-testing-with-devtools` kiegészítője végigkattintott user flow-khoz, konzol/network-ellenőrzéssel.
@@ -260,21 +260,20 @@ Ezeket a tulajdonos adta, a flotta minden kolléga-asszisztensére kötelezőek.
 7. **Login-automatizálás / külső credential / futtatható szkript -> ELŐBB szólj a Főnöknek.** Mielőtt bármilyen külső szolgáltatásba automatikus bejelentkezést, jelszó-/credential-kezelést, vagy futtatható szkriptet (pl. Playwright/böngésző-automatizálás, scraper, login-szkript) írsz vagy futtatsz, jelezd a MikroB Főnöknek (mikrob) inter-agent üzenettel - ő koordinálja és a tulajdonossal egyezteti (a 4. szabály szellemében). Credential-t SOHA ne égess nyersen kódba; ha titok kell, kérd a Főnöktől a biztonságos tárolás módját.
 
 <!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
-## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+## Skill-használat: feladattípus -> skill (generált, kártya 17eeebe6)
 
-Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
-nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
-szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
-tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
-amikor abban nincs ott a kártyádhoz illő skill.
-**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
-CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+A teljes katalógus a store/skill-role-map.md-ben van -- azt nézd a legtöbb esetben.
 
-| Skill | Feladattípus |
+| Feladattípus | Skill(ek) |
 |---|---|
-| `browser-testing-with-devtools` | Tests in real browsers via the Playwright MCP server (mcp__playwright__*). Use when building or debugging anything that runs in a browser. |
-| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
-| `qa-test-strategy` | Test-pyramid-based QA strategy, regression discipline, and independent sign-off procedure for moving work to DONE. |
-| `sp-systematic-debugging` | Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes |
-| `user-flow-menu-design` | Design (Fron Ted) and verify (QA) the COMPLETE user flow and menu/navigation system of a web app from its foundational website structure plus its feature/module set. |
+| Végigkattintás, képernyőkép, console/network | `browser-testing-with-devtools`, `webapp-testing` |
+| Flow-teljesség (9. szabály) | `user-flow-menu-design` |
+| Szerepkörönkénti RBAC e2e | `e2e-rbac-hierarchical-testing`, `rbac-authz-matrix-audit` |
+| Hibaüzenetek (12. szabály) | `fe-rule12-audit` |
+| Reszponzív, touch (13. szabály) | `rule13-touch-target-compliance` |
+| Akadálymentesség | `wcag-overlay-patterns` |
+| i18n | `i18n-parity-sweep` |
+| Valós felhasználói út, használhatóság | `dogfooding`, `usability-testing` |
+| Funkciólista, user manual hitelesítés | `user-manual-assembler` |
+| Teljes audit (csak kérésre) | `full-value-audit` |
 <!-- END GENERATED: skill-usage -->
