@@ -32641,3 +32641,28 @@ backend.
 **Hivatkozás:** kártya 69f63a1a; `scripts/hooks/kg-prompt-pointer-hook.py`,
 `scripts/hooks/kg-prompt-pointer-hook.selftest.sh`; `src/config-registry.ts`
 (`KG_PROMPT_HOOK_ENABLED` leírás javítva).
+
+## 2026-11-25 -- F8a (MT-14 part 1) round 2: fail-open test matrix for kg-prompt-pointer-hook (card 69f63a1a)
+
+MikroB decision (comment 38677, answering CYBERED GO 38674 msg 24551) split the remaining
+26011 items: the fail-open timeout/exit1/exit2/crash matrix was declared NOT deferrable
+(CYBERED's surviving mutant E showed the settings-read fail-closed branch was unpinned), while
+per-session cap/dedupe and the offered-row audit moved to a follow-up card (35a0e556) that is
+now a blocker on eed988e7 (F9 A/B pilot) -- KG_PROMPT_HOOK_ENABLED/KG_INJECT stays OFF for the
+F9 pilot until 35a0e556 is done.
+
+Added to scripts/hooks/kg-prompt-pointer-hook.selftest.sh: F11 (/api/settings returns a
+malformed/non-JSON body), F12 (/api/settings returns HTTP 500), F13 (/api/settings times out
+past the hook's own hardcoded 5s urlopen timeout, actually measured >=5s elapsed, not
+short-circuited), F14 (total connectivity loss via a dead port). F11-F13 share one live stub
+server where /api/kg/for-card stays healthy, so any for-card hit in that run can only mean the
+hook wrongly treated the broken settings read as enabled -- this is what makes them sensitive to
+mutant E (settings-read except branch flipped from `return False, 800` to `return True, 800`).
+Mutation-proven: applied mutant E to a scratch copy, reran the selftest -- F11 failed exactly as
+predicted (for-card hit + non-empty output), 11 other cases stayed green; restored, 15/15 green
+again. No hook code change was needed: _effective_settings was already fail-closed
+(`except Exception: return False, 800`), only the test coverage was missing.
+
+Ki döntött: MikroB (constraint reading + deferral split, comment 38677); végrehajtó: backend.
+Hivatkozás: kártya 69f63a1a, 35a0e556, eed988e7; CYBERED GO 38674 (mutant E);
+scripts/hooks/kg-prompt-pointer-hook.selftest.sh (F11-F14).

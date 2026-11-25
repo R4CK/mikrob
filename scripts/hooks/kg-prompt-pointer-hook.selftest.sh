@@ -34,18 +34,21 @@ HIT_LOG="$WORKDIR/hits.log"
 ENABLED_FILE="$WORKDIR/kg-prompt-hook-enabled.txt"
 MAXCHARS_FILE="$WORKDIR/kg-prompt-hook-maxchars.txt"
 PACKAGE_FILE="$WORKDIR/package.json"
+SETTINGS_FAULT_FILE="$WORKDIR/settings-fault.txt"
 printf '0' > "$ENABLED_FILE"  # default OFF, matches the registry default
 printf '800' > "$MAXCHARS_FILE"
 printf '{"card_id":"","solutions":[],"known_pitfalls":[],"decisions":[],"cross_project_refs":[]}' > "$PACKAGE_FILE"
+printf 'none' > "$SETTINGS_FAULT_FILE"  # none|malformed|http500|slow -- MikroB decision 38677 fail-open matrix
 PORT=$(( (RANDOM % 5000) + 24000 ))
 
-python3 - "$PORT" "$HIT_LOG" "$ENABLED_FILE" "$MAXCHARS_FILE" "$PACKAGE_FILE" > "$WORKDIR/server.log" 2>&1 <<'PYEOF' &
+python3 - "$PORT" "$HIT_LOG" "$ENABLED_FILE" "$MAXCHARS_FILE" "$PACKAGE_FILE" "$SETTINGS_FAULT_FILE" > "$WORKDIR/server.log" 2>&1 <<'PYEOF' &
 import http.server
 import json
 import sys
+import time
 
 port = int(sys.argv[1])
-hit_log, enabled_file, maxchars_file, package_file = sys.argv[2:6]
+hit_log, enabled_file, maxchars_file, package_file, settings_fault_file = sys.argv[2:7]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -53,6 +56,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with open(hit_log, "a") as f:
             f.write(self.path + "\n")
         if self.path.startswith("/api/settings"):
+            with open(settings_fault_file) as f:
+                fault = f.read().strip()
+            if fault == "slow":
+                time.sleep(6)  # exceeds the hook's hardcoded 5s urlopen timeout
+            elif fault == "malformed":
+                body = b"{not json"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            elif fault == "http500":
+                self.send_response(500)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             with open(enabled_file) as f:
                 enabled = f.read().strip()
             with open(maxchars_file) as f:
@@ -225,5 +245,60 @@ print(m._escape_frame(hidden))
 ")"
 printf '%s' "$HIDDEN_MARKER_OUT" | grep -q '^\[KG-POINTER vege\]$' && fail "F9: the REAL _escape_frame produced a live close marker from a control-char-hidden one: $HIDDEN_MARKER_OUT"
 pass "F9: the real _escape_frame strips control chars BEFORE the marker check (buggy order, same input, was confirmed to fail this exact assertion)"
+
+# --- F11-F13 (MikroB decision 38677, closes the CYBERED-named "fail-open timeout/exit1/exit2/
+#     crash matrix" and kills CYBERED's surviving mutant E): the hook's own settings-read already
+#     fail-CLOSES on any /api/settings error (_effective_settings's except -> enabled=False), but
+#     nothing in the shipped 11 cases exercised that branch -- a mutant flipping it to
+#     "except: return True, 800" (fail-OPEN) stayed 11/11 green. Each case here drives
+#     /api/settings into a distinct failure shape (malformed body/crash, HTTP 500, and an actual
+#     client-side timeout) while /api/kg/for-card stays healthy on the SAME live server, so a
+#     for-card hit in the log can only mean the hook wrongly treated the broken settings read as
+#     "enabled". All three must show: exit 0, empty stdout, zero for-card hits. ---
+printf '{"card_id":"69f63a1a","solutions":[{"card_id":"sol:1","error_class":"x","verdict":null,"why":""}],"known_pitfalls":[],"decisions":[]}' > "$PACKAGE_FILE"
+
+: > "$HIT_LOG"
+printf 'malformed' > "$SETTINGS_FAULT_FILE"
+OUT_SETTINGS_MALFORMED="$(run_hook "$CARD_PROMPT")"
+RC_SETTINGS_MALFORMED=$?
+[ "$RC_SETTINGS_MALFORMED" = "0" ] || fail "F11: expected exit 0 when /api/settings returns a malformed body, got rc=$RC_SETTINGS_MALFORMED"
+[ -z "$OUT_SETTINGS_MALFORMED" ] || fail "F11: expected empty output when /api/settings returns a malformed body, got: $OUT_SETTINGS_MALFORMED"
+grep -q 'for-card' "$HIT_LOG" && fail "F11: /api/kg/for-card was hit after a malformed /api/settings body -- fail-open regression (kills mutant E)"
+pass "F11: /api/settings returns a malformed (non-JSON) body -- fail-closed, zero for-card calls (crash shape)"
+
+: > "$HIT_LOG"
+printf 'http500' > "$SETTINGS_FAULT_FILE"
+OUT_SETTINGS_500="$(run_hook "$CARD_PROMPT")"
+RC_SETTINGS_500=$?
+[ "$RC_SETTINGS_500" = "0" ] || fail "F12: expected exit 0 when /api/settings returns HTTP 500, got rc=$RC_SETTINGS_500"
+[ -z "$OUT_SETTINGS_500" ] || fail "F12: expected empty output when /api/settings returns HTTP 500, got: $OUT_SETTINGS_500"
+grep -q 'for-card' "$HIT_LOG" && fail "F12: /api/kg/for-card was hit after a 500 from /api/settings -- fail-open regression (kills mutant E)"
+pass "F12: /api/settings returns HTTP 500 -- fail-closed, zero for-card calls (exit2/server-error shape)"
+
+: > "$HIT_LOG"
+printf 'slow' > "$SETTINGS_FAULT_FILE"
+SETTINGS_TIMEOUT_START=$(date +%s)
+OUT_SETTINGS_TIMEOUT="$(run_hook "$CARD_PROMPT")"
+RC_SETTINGS_TIMEOUT=$?
+SETTINGS_TIMEOUT_ELAPSED=$(( $(date +%s) - SETTINGS_TIMEOUT_START ))
+printf 'none' > "$SETTINGS_FAULT_FILE"
+[ "$RC_SETTINGS_TIMEOUT" = "0" ] || fail "F13: expected exit 0 when /api/settings times out, got rc=$RC_SETTINGS_TIMEOUT"
+[ -z "$OUT_SETTINGS_TIMEOUT" ] || fail "F13: expected empty output when /api/settings times out, got: $OUT_SETTINGS_TIMEOUT"
+[ "$SETTINGS_TIMEOUT_ELAPSED" -ge 5 ] || fail "F13: expected the hook's own 5s urlopen timeout to actually fire (elapsed ${SETTINGS_TIMEOUT_ELAPSED}s), not a short-circuit"
+grep -q 'for-card' "$HIT_LOG" && fail "F13: /api/kg/for-card was hit after /api/settings timed out -- fail-open regression (kills mutant E)"
+pass "F13: /api/settings times out past the hook's own 5s timeout -- fail-closed, zero for-card calls (timeout shape)"
+
+# --- F14 (crash/exit1 shape, total connectivity loss): WEB_PORT pointed at a port nothing is
+#     listening on. Every call (settings AND for-card, if it were ever reached) hits
+#     ConnectionRefusedError. This does not distinguish real code from mutant E (both fail
+#     closed here, since for-card would ALSO refuse), but it is the remaining matrix cell MikroB
+#     asked for: the hook must still exit 0 with empty stdout under total network loss, never a
+#     traceback or a non-zero exit that could block the prompt (38632). ---
+DEAD_PORT=$(( (RANDOM % 5000) + 30000 ))
+OUT_DEAD_PORT="$(printf '{"prompt": %s, "cwd": "/home/neon/marveen/agents/backend"}' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$CARD_PROMPT")" | (cd "$WORKDIR" && WEB_PORT="$DEAD_PORT" KG_PROMPT_HOOK_ENABLED=on python3 scripts/hooks/kg-prompt-pointer-hook.py))"
+RC_DEAD_PORT=$?
+[ "$RC_DEAD_PORT" = "0" ] || fail "F14: expected exit 0 under total connectivity loss, got rc=$RC_DEAD_PORT"
+[ -z "$OUT_DEAD_PORT" ] || fail "F14: expected empty output under total connectivity loss, got: $OUT_DEAD_PORT"
+pass "F14: total connectivity loss (dead port) -- exit 0, empty stdout, no traceback (exit1/crash shape)"
 
 echo "selftest: $PASS_COUNT case(s), PASS"
