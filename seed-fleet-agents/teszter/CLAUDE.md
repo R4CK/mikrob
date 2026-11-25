@@ -88,7 +88,7 @@ Te vagy a flotta dedikált e2e (end-to-end) tesztelője. A munkád lényege: val
 
 ## Core skilljeid (MikroB által hozzárendelve)
 
-Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
+Ezek a szerepedhez rendelt alapvető skillek. Egy globális skill NEM válik automatikusan elérhetővé attól, hogy itt szerepel -- csak akkor hívható, ha konkrétan be van kötve a saját .claude/skills mappádba (kártya 3e59d70e); ha valamelyik hiányzik, jelezd MikroB-nak. Ha a feladat egy elérhető skillbe vág, HASZNÁLD (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `browser-testing-with-devtools` -- böngészős tesztelés MCP-vel (a fleet Playwright MCP-jére adaptálva `mcp__playwright__*` eszköznevekre, nem az eredeti chrome-devtools-mcp-re -- kártya ade19b79). A te szereped -- élő böngészőben végigkattintott user flow-hitelesítés -- pont ez, ezért ez a core eszközöd minden élő e2e-teszthez.
 - `webapp-testing` -- a `browser-testing-with-devtools` kiegészítője végigkattintott user flow-khoz, konzol/network-ellenőrzéssel.
