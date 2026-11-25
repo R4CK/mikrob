@@ -81,6 +81,20 @@ else
 fi
 echo "  local-llm-installed.sh: $INSTALLED_OUT"
 
+# Z2 (card 39253062, RedHat f22cf4f4 19990): this used to run AFTER the start decision below, so
+# its ADMIT/HOLD verdict was pure after-the-fact reporting -- a HOLD (GPU under pressure, or genuine
+# doubt about its state, per vram-guard-check.sh's own fail-safe direction) could never stop an
+# --apply start. Running it first makes the verdict available to gate that decision. VRAM_RC=0 on a
+# missing tool (not a subject -- same ADMIT-on-absent convention vram-guard-check.sh itself uses for
+# a missing nvidia-smi), so a host with no GPU gate installed behaves exactly as before.
+if [ -x "$VRAM_GUARD" ]; then
+  VRAM_OUT="$(timeout "$VRAM_TIMEOUT" "$VRAM_GUARD" 2>&1)"; VRAM_RC=$?
+  echo "  GPU gate: $VRAM_OUT"
+else
+  VRAM_OUT=""; VRAM_RC=0
+  echo "  GPU gate: $VRAM_GUARD missing, skipped"
+fi
+
 if printf '%s' "$INSTALLED_OUT" | grep -q "masked"; then
   echo "  ollama.service is MASKED (gpu-crashloop-guard) -- respecting the mask, NOT starting it."
 elif [ "$INSTALLED_RC" -ne 0 ]; then
@@ -90,21 +104,17 @@ else
   if [ "$ACTIVE" = "active" ]; then
     echo "  ollama.service already active -- nothing to do."
   elif [ "$APPLY" = true ]; then
-    if START_ERR="$(timeout "$START_TIMEOUT" "$SYSTEMCTL_BIN" --user start "$OLLAMA_UNIT" 2>&1)"; then
+    if [ "$VRAM_RC" -ne 0 ]; then
+      echo "  ollama.service start SKIPPED (was '$ACTIVE'): GPU gate reports HOLD -- $VRAM_OUT"
+    elif START_ERR="$(timeout "$START_TIMEOUT" "$SYSTEMCTL_BIN" --user start "$OLLAMA_UNIT" 2>&1)"; then
       echo "  ollama.service was '$ACTIVE' -> started."
     else
       echo "  ollama.service start FAILED (was '$ACTIVE'): $START_ERR"
     fi
   else
     echo "  ollama.service is '$ACTIVE' -- would run: systemctl --user start $OLLAMA_UNIT (dry-run; re-run with --apply)"
+    [ "$VRAM_RC" -ne 0 ] && echo "  (an --apply run right now would be held back by the GPU gate above)"
   fi
-fi
-
-if [ -x "$VRAM_GUARD" ]; then
-  VRAM_OUT="$(timeout "$VRAM_TIMEOUT" "$VRAM_GUARD" 2>&1)" || true
-  echo "  GPU gate (read-only): $VRAM_OUT"
-else
-  echo "  GPU gate: $VRAM_GUARD missing, skipped"
 fi
 
 # =================================================================================================
@@ -149,6 +159,10 @@ if [ -n "$AGENTS_JSON" ]; then
   AGENTS_BODY="$AGENTS_JSON"
 elif [ -r "$TOKEN_FILE" ]; then
   AUTH_HDR_FILE="$(mktemp)"; chmod 600 "$AUTH_HDR_FILE"
+  # Z3 (card 39253062, RedHat f22cf4f4 19990): a bare `rm -f` after curl never runs if this script
+  # is SIGTERM'd while curl is in flight, leaving the bearer token on disk. The EXIT trap fires on
+  # signal termination too (same pattern the selftest's own top-level trap already uses).
+  trap 'rm -f "$AUTH_HDR_FILE"' EXIT
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$AUTH_HDR_FILE"
   AGENTS_BODY="$(curl -s --max-time 5 -H @"$AUTH_HDR_FILE" "$AGENTS_URL" 2>/dev/null || true)"
   rm -f "$AUTH_HDR_FILE"
