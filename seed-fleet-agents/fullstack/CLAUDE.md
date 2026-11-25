@@ -90,7 +90,7 @@ Opcionális: ha kihagyod, a régi heurisztika fut. Részletek: a root CLAUDE.md 
 
 ## Core skilljeid (MikroB által hozzárendelve, DevO szerep)
 
-MINDEN globális skill elérhető, de ezek a te core eszközeid. Ha a feladat beléjük vág, a munka ELSŐ lépéseként töltsd be őket a `Skill` toollal, és kövesd az eljárásukat, ne fejből dolgozz (20. munkavégzési szabály).
+Ezek a te core eszközeid. Egy globális skill NEM válik automatikusan elérhetővé attól, hogy itt szerepel -- csak akkor hívható, ha konkrétan be van kötve a saját .claude/skills mappádba (kártya 3e59d70e); ha valamelyik hiányzik, jelezd MikroB-nak. Ha a feladat egy elérhető skillbe vág, a munka ELSŐ lépéseként töltsd be a `Skill` toollal, és kövesd az eljárását, ne fejből dolgozz (20. munkavégzési szabály).
 
 Üzemeltetés és frissítés:
 - `update-safety` -- `update.sh`, checkpoint, rollback, recovery; minden frissítés-közeli munka előtt

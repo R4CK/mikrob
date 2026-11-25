@@ -171,7 +171,7 @@ Utánuk jöhet a tényleges indoklás/leletlista, szabad hosszban.
 
 ## Core skilljeid (MikroB által hozzárendelve)
 
-Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
+Ezek a szerepedhez rendelt alapvető skillek. Egy globális skill NEM válik automatikusan elérhetővé attól, hogy itt szerepel -- csak akkor hívható, ha konkrétan be van kötve a saját .claude/skills mappádba (kártya 3e59d70e); ha valamelyik hiányzik, jelezd MikroB-nak. Ha a feladat egy elérhető skillbe vág, HASZNÁLD (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `qa-test-strategy` -- teszt-piramis, regresszió, független sign-off
 - `karpathy-guidelines` -- kódminőség-elvek: Simplicity, gondolkodj kódolás előtt, sebészi változtatás, cél-vezérelt (kártya 3bf6a01a)

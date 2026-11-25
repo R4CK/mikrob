@@ -104,6 +104,12 @@ class H(http.server.BaseHTTPRequestHandler):
                 cid = 'unknown'
             with open(f"{CAPTURE_DIR}/landing-{cid}.ndjson", "a") as f:
                 f.write(body.decode() + "\n")
+        # card 2d27b27b: land_notify_finish posts here (same KANBAN_COMMENT_API base) -- capture it
+        # so a case can assert the real --card path never claims LANDED for a branch that was
+        # never pushed.
+        if self.path.rstrip('/') == '/api/messages':
+            with open(f"{CAPTURE_DIR}/messages.ndjson", "a") as f:
+                f.write(body.decode() + "\n")
         resp = json.dumps({"ok": True}).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -366,12 +372,16 @@ git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card ccc333: add ccc
 git -C "$MAIN" checkout -q develop
 set_verdict ccc333 none
 
+rm -f "$CAPTURE_DIR/messages.ndjson"
 n=$((n + 1))
 land_card ccc333 backend3
-if [ "$rc" != 0 ] && grep -q "no passing gate verdict" "$OUT_FILE"; then
-  echo "  ok   --card REFUSES to land with no gate verdict at all (R1)"
+msgs_ccc333="$(cat "$CAPTURE_DIR/messages.ndjson" 2>/dev/null || true)"
+if [ "$rc" = 7 ] && grep -q "no passing gate verdict" "$OUT_FILE" \
+  && printf '%s' "$msgs_ccc333" | grep -q 'REFUSED-GATE (exit 7)' \
+  && ! printf '%s' "$msgs_ccc333" | grep -qE 'LANDED \(exit|NOTHING-TO-LAND'; then
+  echo "  ok   --card REFUSES to land with no gate verdict at all: rc=7, notice says REFUSED-GATE, never LANDED or NOTHING-TO-LAND (R1, card 2d27b27b MEDIUM-1)"
 else
-  echo "  FAIL expected a refusal for an ungated card -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+  echo "  FAIL expected a rc=7 REFUSED-GATE refusal for an ungated card -> rc=$rc msgs=[$msgs_ccc333]:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
 fi
 
 n=$((n + 1))
@@ -1217,6 +1227,23 @@ if [ "$rc" != 0 ] && grep -q "REFUSED" "$OUT_FILE" && grep -q "does not resolve 
   echo "  ok   an unresolvable Gate-SHA prefix is refused with its own named message (card 35f67e7d)"
 else
   echo "  FAIL expected fff988 to refuse naming the unresolvable prefix -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# Scenario 7 (card 2d27b27b, F-N1 pin): --card <id> with a card id whose branch was NEVER
+# created at all must return a distinct rc (6, not 0) and the inter-agent notice must say
+# NOTHING-TO-LAND, never LANDED -- the real false-positive fullstack hit live twice (msg
+# 24070/24150). card_landings must stay empty for it (nothing was ever pushed).
+rm -f "$CAPTURE_DIR/messages.ndjson"
+n=$((n + 1))
+land_card deadbeef01 backend
+msgs="$(cat "$CAPTURE_DIR/messages.ndjson" 2>/dev/null || true)"
+if [ "$rc" = 6 ] \
+  && printf '%s' "$msgs" | grep -q 'NOTHING-TO-LAND (exit 6)' \
+  && ! printf '%s' "$msgs" | grep -q 'LANDED (exit' \
+  && [ ! -f "$CAPTURE_DIR/landing-deadbeef01.ndjson" ]; then
+  echo "  ok   --card with no such branch: rc=6, notice says NOTHING-TO-LAND, never LANDED, no card_landings row (card 2d27b27b)"
+else
+  echo "  FAIL expected --card deadbeef01 to report NOTHING-TO-LAND, rc=6, no card_landings row -> rc=$rc msgs=[$msgs]:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
 fi
 
 # --- card b20d2062: --allow-carry-forward ------------------------------------------------------

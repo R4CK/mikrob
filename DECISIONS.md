@@ -32461,3 +32461,172 @@ nem-mikrob ágensen ~41 KB / ~10,3k token.
 **Ki döntött:** fullstack (implementáció + verifikáció), gate: QA + CYBERSEC.
 **Hivatkozás:** kártya 01eb0d0c; forrás: Prompty review kártya 13e25d1f (msg 24273); Gate-SHA
 316a0f9b43fb58e1345a11d40ff6416a9dfdc7f2.
+
+## 2026-11-23 -- GET /api/llm/chain endpoint (kártya 954a6a93)
+
+Új végpont a dashboard LLM-lánc oldalához, a Fron Ted / backend2 által ACCEPTelt kontraktus
+szerint (fron-ted CONTRACT-PROPOSAL komment 37917, backend2 ACCEPT komment 37945):
+`GET /api/llm/chain?window=24h|7d&includeTest=false`, szekciónkénti `source` mezővel.
+
+**Stages:** local/freellm/online, NINCS külön gemini-szakasz -- a 2026-11-20-i mért audit szerint
+(card leírás) a valós lánc local -> freellm -> online, a freellm-first nincs élesítve. Az adat
+`llm_ledger`-ből jön (új `getLlmChainStageSummary`), test-forgalom (test-agent/selftest/queue)
+alapból kizárva, `?includeTest=1`-gyel bekapcsolható.
+
+**Routing:** a meglévő `card-build-route.log` parsere (korábban privát `readRecentDecisions`,
+most exportálva a `local-llm.ts`-ből, nem duplikálva) adja a LOCAL/ONLINE + ok-számlálást.
+
+**DraftReview:** `draft_accepted` oszlop MINDEN sorban NULL (mért, 14804 sor) -- a
+`markLlmLedgerDraftAccepted` függvénynek nincs hívója a kódbázisban. A válasz ezt őszintén
+`available: false, verdicts: null`-ként jelzi, nem hamisít számot.
+
+**Switches:** `freellmEnabled` a valódi kapcsoló-fájlból (meglévő `readFreellmEnabled`, exportálva
+a `freellm-status.ts`-ből); `freellmFirstLive` statikus `true`, mert a 6d8ef952 kártya (futásidejű
+kapcsoló ehhez) még nincs landolva -- nincs mit kiolvasni, a kontraktus 4. pontja szerint rendben.
+
+**Cost:** `getWindowCostEstimateUsd` (új, `costops/ledger.ts`), ablak-szkópos, a meglévő
+`estimateCostUsd` árazóval -- `isEstimate: true` mindig, a kontraktus szerint.
+
+**Ellenőrzés:** `src/__tests__/llm-chain.test.ts`, 13 eset (path/method, 400-ak, alapértékek,
+per-szekció `source`, stage-számlálás + gemini-kizárás, test-caller szűrés, 24h/7d ablak, routing
+számlálás valós logfájlból, draftReview átmenetek, switches, cost-pozitivitás). `tsc --noEmit`
+tiszta. `fleet-test.sh --ref eb7369a14c` a tesztfájlra: 1 fájl / 13 teszt, mind zöld.
+
+**Ki döntött:** a kontraktust Fron Ted + backend2 rögzítette (37917/37945), a kártyát MikroB adta
+ki; a végrehajtó backend (60 perces testvér-átadás után, msg 24092).
+
+**Hivatkozás:** kártya 954a6a93; `src/web/routes/llm-chain.ts`, `src/db.ts`
+(`getLlmChainStageSummary`, `getLlmChainDraftReviewCounts`), `src/costops/ledger.ts`
+(`getWindowCostEstimateUsd`); commit `eb7369a14`.
+
+## 2026-11-25 -- Per-agent named skills get wired by symlink, not a wholesale global link (kartya 3e59d70e)
+
+**Dontes:** sub-agent skill resolution has no agents/*/.claude-config/skills link anywhere
+(confirmed empty for every checked agent). A sub-agent can only invoke what is a real
+directory or symlink under its own agents/<name>/.claude/skills/. Measured 86 cases (all 18
+agents) where a prompt named a skill (backticked, matching a real skill somewhere in the
+fleet) that was not wired into that agent's own folder -- 12 of these had already produced a
+live "Unknown skill" tool error in 30 days.
+
+Chose: symlink each specific named-but-unreachable skill from the global catalog
+(~/.claude/skills/<name>) into agents/<name>/.claude/skills/<name>, one per missing name --
+NOT a single wholesale symlink/bind-mount of the whole global skills folder into every agent.
+A wholesale link would expose the full ~150-skill global catalog to every agent regardless of
+role, which is a larger blast radius than the prompt already grants (a prompt names specific
+skills because those are the ones the role is meant to use); per-skill linking keeps exposure
+scoped to exactly what each prompt already claims to use, and matches the convention already
+observed in multiple agents' own folders (e.g. backend2/prompty mixing real copies and
+per-skill symlinks for a subset of skills).
+
+**Ellenorzes:** static reachability check (named skill in allnames, not in own-folder union
+root-project-skills) went from 86 unreachable names across 17 agents to 0 across all 18,
+re-measured after wiring. The false "MINDEN globalis skill elerheto" sentence corrected to
+state the real mechanism in all 16 live agents/<name>/CLAUDE.md files carrying it plus the
+matching 16 seed-fleet-agents/<name>/CLAUDE.md templates (commit 6f66d9131), so a fresh
+install no longer repeats the same false claim. elemzo and prompty did not carry the false
+sentence (elemzo uses the rea skillset per its own override card; prompty's own gap was
+already closed before this card by a separate self-proposal application).
+
+**Ki dontott:** backend2, per MikroB dispatch (card 3e59d70e, source: Prompty full review
+13e25d1f, Peti approval Telegram 14658).
+
+**Nem meresz most:** the card's 4th criterion ("Unknown skill" count re-measured after 7
+days) is inherently time-delayed and could not be satisfied in this session -- flagged as a
+follow-up for whoever re-measures the fleet 7 days after this fix lands.
+
+**Hivatkozas:** kartya 3e59d70e (source 13e25d1f, Prompty comments 38395-38412), seed-fleet-agents
+commit 6f66d9131.
+
+
+## 2026-11-25 -- CYBERED F-1 closed: declare manual skill symlinks in skill-role-map.json, apply sibling-union to fron-ted/fron-teddy (kartya 3e59d70e)
+
+**Dontes:** CYBERED (comment 38477, Gate-SHA ccc2de0e3) found that 61 of the 86 symlinks
+from the decision above were never declared in store/skill-role-map.json, so they are not
+provisioner-managed: not recreated on a rebuilt agent dir, not removed if a role drops a
+skill, and invisible to agent-skill-drift-sync.sh's own tracking -- causing its clone-family
+check to report 15 false MISSING for the fron-ted/fron-teddy pair. Declared all 61 pairs in
+their owning agent's role. That alone left the 15 MISSING unchanged (declaring a skill for
+its owner does nothing for a LAGGING sibling, since the drift-sync tool's provisioner check
+is per-agent, not per-family) -- applied the existing clone-family-parity rule instead (Peti
+decision, card e589f07a, 2026-10-30: siblings get the union, copy the larger set) to this one
+asymmetric pair: fron-teddy gets the 12 skills only fron-ted had, fron-ted gets the 3 only
+fron-teddy had, both declared in skill-role-map.json and symlinked live.
+
+**Ellenorzes:** store/agent-skill-drift-sync.sh (role-map env-overridden to the fixed file,
+read-only against the live tree): missing 15 -> 0, sibling-pair-findings unchanged at 0, the
+pre-existing diverged=21 set unchanged (confirmed by diff, unrelated to this fix). A new test
+(skill-role-map-drift-sync.test.ts) runs the real script against a synthetic fixture and pins
+the mechanism with 3 cases, including one that rules out "declared somewhere" as a non-fix
+(must be declared for the LAGGING sibling specifically).
+
+**Ki dontott:** backend2, per MikroB dispatch (msg 24361) to close CYBERED F-1.
+
+**Nem meresz most:** cybersec's companion LOW suggestion (have skill-factory/skill-management
+write into the requesting agent's own .claude/skills instead of the global folder) is a larger
+behavioral change to the fleet's self-learning skill-generation mechanism, deferred to a
+separate card rather than folded into this MEDIUM fix.
+
+**Hivatkozas:** kartya 3e59d70e, CYBERED comment 38477 (F-1), CYBERSEC comment 38472 (LOW-1),
+e589f07a (sibling-union precedent), commit ea840b89e.
+## 2026-11-23 -- marveen-land.sh: nothing-to-land must never post LANDED (kártya 2d27b27b)
+
+`land_one` ugyanazt a 0-s kilépőkódot adta vissza akkor is, ha egy valódi landolás
+(push+ancestor-ellenőrzés sikerült), ÉS akkor is, ha a célágat SOSEM hozták létre --
+`land_notify_finish` pedig MINDKÉT esetet "LANDED" szövegre fordította. Egy `--card`
+landolás egy nem létező ágra ezért ugyanazt a "LANDED (exit 0)" inter-agent üzenetet
+küldte, mintha valóban landolt volna valami. Élőben kétszer mérve: msg 24070 (kártya
+39253062) és msg 24150 (kártya 380a5e16) -- mindkettőt csak az ellenkező oldali ügynök
+saját, független `card_landings`/ancestor-ellenőrzése fogta meg, a notify szövege önmagában
+hamis riasztást adott volna.
+
+**Javítás:** a hiányzó-ág útvonal most egy ÚJ, különálló kódot ad vissza (6, nem 5 --
+az 5-öt `land_with_retry` már belső push-verseny jelzésre használja). `land_notify_finish`
+a 6-ot NOTHING-TO-LAND-ra fordítja, sosem LANDED-re. Semelyik külső szkript nem ágaz
+`marveen-land.sh` saját process-exit kódjára (grep-elve `store/*.sh`), minden hívó a
+land-run-journal-t vagy ezt a notify-szöveget olvassa -- pont ez a felszín, amit a javítás
+zár.
+
+**Ellenőrzés:** `marveen-land.sh --selftest-land-notify` új esettel (rc=6 ->
+NOTHING-TO-LAND), mutáció-próbával megerősítve -- a case-6 leképezés kivétele PONTOSAN ezt
+az esetet fordítja vissza. `marveen-land-card-branch.selftest.sh` új, valódi end-to-end
+esettel (`--card` egy sosem létezett ágra: rc=6, NOTHING-TO-LAND szöveg, nincs
+`card_landings` sor), mutáció-próbával a valós `land_one` javítás ellen -- visszaállítva a
+pontos élő hamis-pozitív szöveget reprodukálja. Teljes regresszió: card-branch selftest
+70/70, `--selftest-land-notify` 5/5, beágyazott `--selftest` 121/121 (egy futás egy nem
+kapcsolódó, már korábban is létező HUP-időzítési flakiness-t mutatott párhuzamos terhelés
+alatt, elszigetelten megerősítve tiszta zöldnek). `--selftest-land-batch` J-HUP/J-INT
+esetei byte-azonosan bukkak a MÓDOSÍTATLAN `origin/develop`-on is (ugyanaz a 2 bukás,
+ugyanaz a 19 siker) -- ez egy ELŐZETES, ettől a változástól független teszt-fixture
+időzítési flakiness, külön jelentve, itt nem javítva.
+
+**Ki döntött:** a leletet fullstack mérte élőben (msg 24070/24150), a kártyát és a
+javítási irányt a "Kész, ha:" lista adta (kártya 2d27b27b leírása). A végrehajtó backend
+(self-advance, rule 11).
+
+**Hivatkozás:** kártya 2d27b27b (duplikátum: 3a4f27e8); `store/marveen-land.sh`
+(`land_one`, `land_notify_finish`); commit `6f94d20da`.
+
+## 2026-11-25 -- marveen-land.sh: --card gate-refúzió nem oszthatja a rc-t a nothing-to-land úttal (kártya 2d27b27b, MEDIUM-1)
+
+**Döntés:** a develop-drift merge delta-gate-körén cybersec (komment 38341/38572, sibling cybersec2
+MEDIUM-1 lelete) megtalálta, hogy a két `--card` gate-refúziós pont (nincs ervényes gate-verdikt;
+a kijelölt gate-ek nem AGREE-lnek) ugyanazt a 6-os kilépőkódot adta, amit `land_notify_finish` a
+hiányzó-ág "nincs mit landolni" esetre fordít NOTHING-TO-LAND-ra. Ez pontosan a kártya saját
+hibaosztálya a másik irányban: egy refúzió ártalmatlan no-op-nak tűnik, nem elutasításnak.
+MikroB döntése (komment 38574): a kártyán belül javítandó, nem follow-up. A két refúziós pont
+(`store/marveen-land.sh` ~1982/~2005 sor) most saját, 7-es kilépőkódot ad; `land_notify_finish`
+a 7-et REFUSED-GATE-re fordítja, a 6-ot (hiányzó ág) és a 3-at (általános precondition REFUSED)
+érintetlenül hagyva.
+
+**Ellenőrzés:** `--selftest-land-notify` 6/6 (új eset: rc=7 -> REFUSED-GATE, sosem NOTHING-TO-LAND,
+sosem LANDED); `marveen-land-card-branch.selftest.sh` 82/82 (a ccc333 no-verdict szcenárió most a
+pontos rc=7-et és a REFUSED-GATE inter-agent üzenetet is ellenőrzi, nem csak egy sima rc!=0-t);
+beágyazott `marveen-land.sh --selftest` 121/121. Minden rc-fogyasztó átnézve (`land_with_retry`
+csak az 5-öt kezeli külön, minden mást érintetlenül továbbad; a flotta más szkriptjei és a TS-oldal
+nem parse-olja a kilépőkódot vagy a notify-szöveget).
+
+**Ki döntött:** cybersec2 (MEDIUM-1 lelet, komment 38341), MikroB Fix-Direction (komment 38574,
+üzenet 24478). A végrehajtó backend.
+
+**Hivatkozás:** kártya 2d27b27b; `store/marveen-land.sh` (`land_one`, `land_notify_finish`);
+`store/marveen-land-card-branch.selftest.sh`.

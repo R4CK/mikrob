@@ -116,6 +116,7 @@ import { startTelegramOutboxDrain } from './web/telegram-outbox.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleLlmLedger } from './web/routes/llm-ledger.js'
+import { tryHandleLlmChain } from './web/routes/llm-chain.js'
 import { tryHandleGeminiCalls } from './web/routes/gemini-calls.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
@@ -312,6 +313,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleLlmLedger(routeCtx)) return
+      if (await tryHandleLlmChain(routeCtx)) return
       if (await tryHandleGeminiCalls(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return

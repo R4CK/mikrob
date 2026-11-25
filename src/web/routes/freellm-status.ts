@@ -18,7 +18,9 @@ export const FREELLM_ENABLED_PATH = join(STORE_DIR, 'freellm-enabled.json')
 // Same strict parse as freellm-call.sh's own switch check (card 4eb3743e F4): `d.get('enabled')
 // is True`, not a truthy/string compare -- {"enabled":"true"} or {"enabled":1} must read as OFF.
 // Missing/unreadable/malformed file = OFF, fail-closed like every other switch in this codebase.
-function readFreellmEnabled(): boolean {
+// Exported for card 954a6a93 (GET /api/llm/chain's switches.freellmEnabled) -- same switch file,
+// same strict-boolean read, reused rather than re-derived a second time.
+export function readFreellmEnabled(): boolean {
   if (!existsSync(FREELLM_ENABLED_PATH)) return false
   try {
     const raw = readFileSync(FREELLM_ENABLED_PATH, 'utf-8')
@@ -41,7 +43,9 @@ function writeFreellmEnabled(enabled: boolean): void {
 // traffic -- excluded from the dashboard's real-traffic counts by default so a manual/selftest
 // freellm-call.sh invocation never inflates what the operator reads as live usage. Opt back in
 // per-request with ?includeTest=1 (GET /api/freellm/calls only; /status always excludes).
-const FREELLM_TEST_CALLER_IDS = ['test-agent', 'selftest', 'queue']
+// Exported for card 954a6a93 (GET /api/llm/chain), same exclusion list reused rather than
+// re-derived a second time.
+export const FREELLM_TEST_CALLER_IDS = ['test-agent', 'selftest', 'queue']
 
 // Card 685f25cb: counters now come from llm_ledger (provider='freellm'), one row per REAL call --
 // success and failure both -- appended by freellm-call.sh's own _freellm_ledger_log on every exit
