@@ -36,7 +36,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         with open('$MOCK_LOG', 'a') as f:
             f.write(self.path + ' ' + raw.decode().rstrip(chr(10)) + chr(10))
-        if self.path == '/api/messages/409id':
+        if self.path == '/api/messages/409000':
             self.send_response(409)
             body = b'{\"error\":\"Message already closed\"}'
         else:
@@ -98,11 +98,11 @@ fi
 
 # Case 3: a 409 (already closed) is treated as a no-op success, not an error to retry.
 set +e
-OUT="$(bash "$SCRIPT" backend 409id 2>"$WORK/stderr3")"
+OUT="$(bash "$SCRIPT" backend 409000 2>"$WORK/stderr3")"
 RC=$?
 set -e
-if [ "$RC" = "0" ] && grep -q "already closed" "$WORK/stderr3"; then
-  pass "409 (already closed) exits 0 with a clear no-op message"
+if [ "$RC" = "0" ] && grep -q "already closed" "$WORK/stderr3" && grep -q "NOT applied" "$WORK/stderr3"; then
+  pass "409 (already closed) exits 0 with a clear no-op message, says the result was not applied"
 else
   fail "409 (already closed) exits 0 with a clear no-op message (rc=$RC, stderr: $(cat "$WORK/stderr3"))"
 fi
@@ -129,6 +129,65 @@ if [ "$RC" = "2" ] && grep -q "must be true or false" "$WORK/stderr5"; then
   pass "an invalid --notify value is refused"
 else
   fail "an invalid --notify value is refused (rc=$RC, stderr: $(cat "$WORK/stderr5"))"
+fi
+
+# Case 6 (CYBERSEC NO-GO 38468, F1): --result-file reaches the server byte-exact even with a
+# backtick and a command substitution inside -- the TAUGHT, quoting-risk-free form.
+RESULT_FILE="$WORK/result.txt"
+printf 'done: ran `touch %s/should-not-exist` and updated $(whoami) ok' "$WORK" > "$RESULT_FILE"
+bash "$SCRIPT" backend 126 --notify true --result-file "$RESULT_FILE" >/dev/null
+LAST_REQ="$(tail -n1 "$MOCK_LOG")"
+if echo "$LAST_REQ" | grep -q 'touch ' && [ ! -e "$WORK/should-not-exist" ]; then
+  pass "--result-file carries backticks/\$(...) literally and never executes them"
+else
+  fail "--result-file carries backticks/\$(...) literally and never executes them (got: $LAST_REQ)"
+fi
+
+# Case 7: --result-stdin reads the result from a pipe, same literal-byte guarantee.
+printf 'done via stdin: `rm -rf %s/should-not-exist-either`' "$WORK" | bash "$SCRIPT" backend 127 --notify true --result-stdin >/dev/null
+LAST_REQ="$(tail -n1 "$MOCK_LOG")"
+if echo "$LAST_REQ" | grep -q 'done via stdin' && [ ! -e "$WORK/should-not-exist-either" ]; then
+  pass "--result-stdin carries the piped text literally and never executes it"
+else
+  fail "--result-stdin carries the piped text literally and never executes it (got: $LAST_REQ)"
+fi
+
+# Case 8 (LOW1): a non-numeric / path-traversal-shaped message-id is refused before any request.
+BEFORE_LINES="$(wc -l < "$MOCK_LOG")"
+set +e
+bash "$SCRIPT" backend '409/../../kanban/zzz?x=1' >/dev/null 2>"$WORK/stderr8"
+RC=$?
+set -e
+AFTER_LINES="$(wc -l < "$MOCK_LOG")"
+if [ "$RC" = "2" ] && [ "$BEFORE_LINES" = "$AFTER_LINES" ] && grep -q "plain positive integer" "$WORK/stderr8"; then
+  pass "a path-traversal-shaped message-id is refused before any request is sent"
+else
+  fail "a path-traversal-shaped message-id is refused before any request is sent (rc=$RC)"
+fi
+
+# Case 9 (LOW2): MARVEEN_DASHBOARD_ORIGIN pointed at a non-loopback host is refused, so an env
+# override cannot be used to send the bearer token to an arbitrary host.
+set +e
+MARVEEN_DASHBOARD_ORIGIN="http://example.com" bash "$SCRIPT" backend 128 >/dev/null 2>"$WORK/stderr9"
+RC=$?
+set -e
+if [ "$RC" = "2" ] && grep -q "localhost/127.0.0.1" "$WORK/stderr9"; then
+  pass "a non-loopback MARVEEN_DASHBOARD_ORIGIN is refused"
+else
+  fail "a non-loopback MARVEEN_DASHBOARD_ORIGIN is refused (rc=$RC, stderr: $(cat "$WORK/stderr9"))"
+fi
+
+# Case 10 (LOW3): a dead dashboard (connection refused) maps to the same exit 5 as an HTTP
+# failure, with a message, instead of a silent -s failure.
+DEAD_PORT=1
+set +e
+MARVEEN_DASHBOARD_ORIGIN="http://127.0.0.1:$DEAD_PORT" bash "$SCRIPT" backend 129 >/dev/null 2>"$WORK/stderr10"
+RC=$?
+set -e
+if [ "$RC" = "5" ] && grep -q "PUT failed" "$WORK/stderr10"; then
+  pass "a dead dashboard maps to exit 5 with a message, not a silent failure"
+else
+  fail "a dead dashboard maps to exit 5 with a message (rc=$RC, stderr: $(cat "$WORK/stderr10"))"
 fi
 
 [ "$FAIL" = "0" ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

@@ -137,4 +137,28 @@ else
   fail "a request that never completed is reported as failed (rc=$RC, stdout: $OUT)"
 fi
 
+# Case 6 (CYBERSEC NO-GO 38468, LOW2): a non-loopback MARVEEN_DASHBOARD_ORIGIN is refused, so an
+# env override cannot be used to send the bearer token to an arbitrary host.
+set +e
+MARVEEN_DASHBOARD_ORIGIN="http://example.com" bash "$SCRIPT" backend goodquery >/dev/null 2>"$WORK/stderr6"
+RC=$?
+set -e
+if [ "$RC" = "2" ] && grep -q "localhost/127.0.0.1" "$WORK/stderr6"; then
+  pass "a non-loopback MARVEEN_DASHBOARD_ORIGIN is refused"
+else
+  fail "a non-loopback MARVEEN_DASHBOARD_ORIGIN is refused (rc=$RC, stderr: $(cat "$WORK/stderr6"))"
+fi
+
+# Case 7 (CYBERSEC NO-GO 38468, LOW3): a dead dashboard maps to exit 5 with a message, not a
+# raw/silent curl abort.
+set +e
+MARVEEN_DASHBOARD_ORIGIN="http://127.0.0.1:1" bash "$SCRIPT" backend goodquery >/dev/null 2>"$WORK/stderr7"
+RC=$?
+set -e
+if [ "$RC" = "5" ] && grep -q "request failed" "$WORK/stderr7"; then
+  pass "a dead dashboard maps to exit 5 with a message, not a silent/raw failure"
+else
+  fail "a dead dashboard maps to exit 5 with a message (rc=$RC, stderr: $(cat "$WORK/stderr7"))"
+fi
+
 [ "$FAIL" = "0" ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }

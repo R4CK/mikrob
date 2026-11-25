@@ -55,8 +55,13 @@ const read = (agent: string) => readFileSync(join(tmpRoot, 'agents', agent, 'CLA
 
 // Card 01eb0d0c: the inline curl recipe (notify boolean, 409 handling) moved into
 // store/agent-message-close.sh -- see agent-message-close.selftest.sh for the behavioural
-// pins (real JSON boolean, 409-is-a-no-op, quote/backtick-safe --result). This generated body
-// now only has to NAME the command and keep the delegated-vs-report decision visible.
+// pins (real JSON boolean, 409-is-a-no-op, quote/backtick-safe --result/--result-file/
+// --result-stdin). This generated body only has to NAME the command and keep the
+// delegated-vs-report decision visible -- it does NOT by itself prove the wrapper's quoting
+// is safe for every call shape (CYBERSEC NO-GO 38468, F1): the FIRST version of this body
+// taught `--result "..."` in double quotes, which a backtick/$(...) inside the text executes
+// in the CALLER's shell before the wrapper ever runs, regardless of how safe the wrapper's own
+// internals are. The fix is that this body must never teach that shape at all.
 describe('message-close section: what it says (ACKONCLOSE927, card 01eb0d0c)', () => {
   const body = buildMessageCloseBody('backend')
 
@@ -65,7 +70,7 @@ describe('message-close section: what it says (ACKONCLOSE927, card 01eb0d0c)', (
   })
 
   it('keeps the default for a DELEGATED task, where the ack is the result', () => {
-    expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,120}--notify true/)
+    expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,160}--notify true/)
   })
 
   it('says a second close of a closed message is a no-op, not an error to retry', () => {
@@ -75,6 +80,22 @@ describe('message-close section: what it says (ACKONCLOSE927, card 01eb0d0c)', (
   it('names the wrapper script instead of the raw curl recipe', () => {
     expect(body).toMatch(/agent-message-close\.sh backend <id>/)
     expect(body).not.toContain('curl -H @-')
+  })
+
+  // CYBERSEC NO-GO 38468, F1: this is the actual regression pin -- a double-quoted --result in
+  // the shell example is the shape that executes a backtick/$(...) in the caller's shell. Never
+  // taught again, in EITHER language's example line.
+  it('never teaches a double-quoted --result on the command line (the ```bash example)', () => {
+    const codeBlock = body.match(/```bash\n([\s\S]*?)```/)?.[1] ?? ''
+    expect(codeBlock.length).toBeGreaterThan(0)
+    expect(codeBlock).not.toMatch(/--result\s+"/)
+  })
+
+  it('teaches --result-file / --result-stdin as the safe forms, with an explicit double-quote warning', () => {
+    expect(body).toContain('--result-file')
+    expect(body).toContain('--result-stdin')
+    expect(body).toMatch(/SOHA[\s\S]{0,40}--result "\.\.\."/)
+    expect(body.toLowerCase()).toContain('backtick')
   })
 })
 

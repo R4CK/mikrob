@@ -550,14 +550,18 @@ Egy neked jött inter-agent üzenetet ezzel zárd le -- a script adja a PUT-ot, 
 `notify` mezőt és a 409 (már lezárt) eset csendes kezelését, nem kell kézzel curl-t írnod:
 
 ```bash
-/home/neon/marveen/store/agent-message-close.sh mikrob <id>                                    # bejövő riport/értesítés
-/home/neon/marveen/store/agent-message-close.sh mikrob <id> --notify true --result "..."       # delegált feladat eredménye
+/home/neon/marveen/store/agent-message-close.sh mikrob <id>                                        # bejövő riport/értesítés
+/home/neon/marveen/store/agent-message-close.sh mikrob <id> --notify true --result-file <path>      # delegált feladat eredménye
 ```
 
-- DELEGÁLT FELADAT (a feladó az eredményre vár): `--notify true --result "..."`, a nyugta maga az eredmény.
+- DELEGÁLT FELADAT (a feladó az eredményre vár): írd ki az eredményt a Write toollal egy
+  fájlba, majd `--notify true --result-file <path>` -- a nyugta maga az eredmény.
 - BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): flag nélkül -- alapértelmezés `--notify false`,
   mert a nyugta itt csak a feladó sorát növeli (mérve 2026-09-27: három lezárás a feladó
   várakozó sorát 1-ről 4-re vitte).
+- SOHA ne írd `--result "..."` KÖZVETLENÜL a parancssorba dupla idézőjelben: egy backtick vagy
+  `$(...)` a szövegben a TE saját héjadban fut le, mielőtt a script elindulna (CYBERSEC NO-GO
+  38468). `--result-file <path>` vagy `--result-stdin` (pipe-olva) nem fut le soha, ezt használd.
 - Egy MÁR lezárt üzenet újabb lezárása (409) a script számára NEM hiba: egy sort ír stderr-re és 0-val lép ki.
 - A `system` feladójú üzenet lezárása eleve nem küld nyugtát.
 <!-- END GENERATED: message-close -->

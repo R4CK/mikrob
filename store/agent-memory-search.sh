@@ -17,6 +17,15 @@ set -euo pipefail
 
 SELF_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DASHBOARD_ORIGIN="${MARVEEN_DASHBOARD_ORIGIN:-http://localhost:3420}"
+# CYBERSEC NO-GO 38468, LOW2 (both wrappers): an env override with no loopback check sends the
+# bearer token to any host it names. MARVEEN_SELFTEST_ALLOW_REMOTE=1 is for this script's own
+# selftest only.
+if [ "${MARVEEN_SELFTEST_ALLOW_REMOTE:-0}" != "1" ]; then
+  case "$DASHBOARD_ORIGIN" in
+    http://localhost:* | http://127.0.0.1:* | https://localhost:* | https://127.0.0.1:*) ;;
+    *) echo "agent-memory-search.sh: MARVEEN_DASHBOARD_ORIGIN must be localhost/127.0.0.1, got: $DASHBOARD_ORIGIN" >&2; exit 2 ;;
+  esac
+fi
 
 die() { echo "agent-memory-search.sh: $2" >&2; exit "$1"; }
 
@@ -55,7 +64,9 @@ ARGS=(-s -G -o "$BODY_FILE" -D "$HEADER_FILE" --data-urlencode "agent=$AGENT" --
 [ -n "$UNTIL" ] && ARGS+=(--data-urlencode "until=$UNTIL")
 [ "$STRICT" = "1" ] && ARGS+=(--data-urlencode "strict=1")
 
-HTTP_CODE="$(printf '%s\n' "$AUTH_HEADER" | curl -H @- -w '%{http_code}' "${ARGS[@]}" "$DASHBOARD_ORIGIN/api/memories")"
+# CYBERSEC NO-GO 38468, LOW3 (both wrappers): -sS plus an explicit fallback so a connection
+# failure maps to the documented "exit 5 means the request did not run", not a silent/raw abort.
+HTTP_CODE="$(printf '%s\n' "$AUTH_HEADER" | curl -sS -H @- -w '%{http_code}' "${ARGS[@]}" "$DASHBOARD_ORIGIN/api/memories" || echo "000")"
 
 if [ "$HTTP_CODE" != "200" ]; then
   echo "agent-memory-search.sh: request failed (http $HTTP_CODE): $(cat "$BODY_FILE")" >&2
