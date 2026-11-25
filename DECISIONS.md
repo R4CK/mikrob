@@ -32426,3 +32426,73 @@ ki; a végrehajtó backend (60 perces testvér-átadás után, msg 24092).
 **Hivatkozás:** kártya 954a6a93; `src/web/routes/llm-chain.ts`, `src/db.ts`
 (`getLlmChainStageSummary`, `getLlmChainDraftReviewCounts`), `src/costops/ledger.ts`
 (`getWindowCostEstimateUsd`); commit `eb7369a14`.
+
+## 2026-11-25 -- Per-agent named skills get wired by symlink, not a wholesale global link (kartya 3e59d70e)
+
+**Dontes:** sub-agent skill resolution has no agents/*/.claude-config/skills link anywhere
+(confirmed empty for every checked agent). A sub-agent can only invoke what is a real
+directory or symlink under its own agents/<name>/.claude/skills/. Measured 86 cases (all 18
+agents) where a prompt named a skill (backticked, matching a real skill somewhere in the
+fleet) that was not wired into that agent's own folder -- 12 of these had already produced a
+live "Unknown skill" tool error in 30 days.
+
+Chose: symlink each specific named-but-unreachable skill from the global catalog
+(~/.claude/skills/<name>) into agents/<name>/.claude/skills/<name>, one per missing name --
+NOT a single wholesale symlink/bind-mount of the whole global skills folder into every agent.
+A wholesale link would expose the full ~150-skill global catalog to every agent regardless of
+role, which is a larger blast radius than the prompt already grants (a prompt names specific
+skills because those are the ones the role is meant to use); per-skill linking keeps exposure
+scoped to exactly what each prompt already claims to use, and matches the convention already
+observed in multiple agents' own folders (e.g. backend2/prompty mixing real copies and
+per-skill symlinks for a subset of skills).
+
+**Ellenorzes:** static reachability check (named skill in allnames, not in own-folder union
+root-project-skills) went from 86 unreachable names across 17 agents to 0 across all 18,
+re-measured after wiring. The false "MINDEN globalis skill elerheto" sentence corrected to
+state the real mechanism in all 16 live agents/<name>/CLAUDE.md files carrying it plus the
+matching 16 seed-fleet-agents/<name>/CLAUDE.md templates (commit 6f66d9131), so a fresh
+install no longer repeats the same false claim. elemzo and prompty did not carry the false
+sentence (elemzo uses the rea skillset per its own override card; prompty's own gap was
+already closed before this card by a separate self-proposal application).
+
+**Ki dontott:** backend2, per MikroB dispatch (card 3e59d70e, source: Prompty full review
+13e25d1f, Peti approval Telegram 14658).
+
+**Nem meresz most:** the card's 4th criterion ("Unknown skill" count re-measured after 7
+days) is inherently time-delayed and could not be satisfied in this session -- flagged as a
+follow-up for whoever re-measures the fleet 7 days after this fix lands.
+
+**Hivatkozas:** kartya 3e59d70e (source 13e25d1f, Prompty comments 38395-38412), seed-fleet-agents
+commit 6f66d9131.
+
+
+## 2026-11-25 -- CYBERED F-1 closed: declare manual skill symlinks in skill-role-map.json, apply sibling-union to fron-ted/fron-teddy (kartya 3e59d70e)
+
+**Dontes:** CYBERED (comment 38477, Gate-SHA ccc2de0e3) found that 61 of the 86 symlinks
+from the decision above were never declared in store/skill-role-map.json, so they are not
+provisioner-managed: not recreated on a rebuilt agent dir, not removed if a role drops a
+skill, and invisible to agent-skill-drift-sync.sh's own tracking -- causing its clone-family
+check to report 15 false MISSING for the fron-ted/fron-teddy pair. Declared all 61 pairs in
+their owning agent's role. That alone left the 15 MISSING unchanged (declaring a skill for
+its owner does nothing for a LAGGING sibling, since the drift-sync tool's provisioner check
+is per-agent, not per-family) -- applied the existing clone-family-parity rule instead (Peti
+decision, card e589f07a, 2026-10-30: siblings get the union, copy the larger set) to this one
+asymmetric pair: fron-teddy gets the 12 skills only fron-ted had, fron-ted gets the 3 only
+fron-teddy had, both declared in skill-role-map.json and symlinked live.
+
+**Ellenorzes:** store/agent-skill-drift-sync.sh (role-map env-overridden to the fixed file,
+read-only against the live tree): missing 15 -> 0, sibling-pair-findings unchanged at 0, the
+pre-existing diverged=21 set unchanged (confirmed by diff, unrelated to this fix). A new test
+(skill-role-map-drift-sync.test.ts) runs the real script against a synthetic fixture and pins
+the mechanism with 3 cases, including one that rules out "declared somewhere" as a non-fix
+(must be declared for the LAGGING sibling specifically).
+
+**Ki dontott:** backend2, per MikroB dispatch (msg 24361) to close CYBERED F-1.
+
+**Nem meresz most:** cybersec's companion LOW suggestion (have skill-factory/skill-management
+write into the requesting agent's own .claude/skills instead of the global folder) is a larger
+behavioral change to the fleet's self-learning skill-generation mechanism, deferred to a
+separate card rather than folded into this MEDIUM fix.
+
+**Hivatkozas:** kartya 3e59d70e, CYBERED comment 38477 (F-1), CYBERSEC comment 38472 (LOW-1),
+e589f07a (sibling-union precedent), commit ea840b89e.

@@ -47,7 +47,7 @@ Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, White
 
 ## Core skilljeid (MikroB által hozzárendelve)
 
-Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
+Ezek a szerepedhez rendelt alapvető skillek. Egy globális skill NEM válik automatikusan elérhetővé attól, hogy itt szerepel -- csak akkor hívható, ha konkrétan be van kötve a saját .claude/skills mappádba (kártya 3e59d70e); ha valamelyik hiányzik, jelezd MikroB-nak. Ha a feladat egy elérhető skillbe vág, HASZNÁLD (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `finance-modeling` -- CAC/LTV/payback/burn/runway, árazás, forecast
 - `pricing-strategy` -- árazási modellek, csomagolás, ár-érzékenység
