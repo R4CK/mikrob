@@ -32625,3 +32625,31 @@ Nincs teljes fleet-test (delta szabály, Peti 13846): egyetlen bash teszt-fájl,
 végrehajtó backend.
 **Hivatkozás:** kártya 2ba5fa66; `store/marveen-land.sh` (`land_one`,
 `card_designated_gates_agree`); `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-25 -- wrapper scripts replace curl recipes in generated agent prompts (kártya 01eb0d0c)
+
+A `store/agent-message-close.sh` és `store/agent-memory-search.sh` wrapper-szkriptek VÉGZIK el a
+korábban minden egyes generált agent CLAUDE.md-be nyersen beírt curl-receptet (notify boolean,
+409-kezelés, URL-kódolás, X-Memory-Search fejléc-ellenőrzés relaxed/strict kilépő kódokkal), nem
+csak leírják. `agent-scaffold.ts` `buildMessageCloseBody`/`buildMemorySearchLabelBody` mostantól a
+parancsot nevezi meg, nem a receptet. A föderációs sub-agent reply/loop blokk (1352 byte) mostantól
+`cfg.peers.length > 0`-t is megköveteli, nem csak `cfg.enabled`-t -- az éles telepítésen `peers: []`
+mellett eddig minden sub-agent CLAUDE.md-jébe belement feleslegesen.
+
+**Miért:** Prompty teljes review-ja (kártya 13e25d1f, msg 24273) jelezte, hogy a generált
+boilerplate (12-30k karakter/ágens) túlnyomó részét determinisztikus curl-receptek teszik ki,
+amiket a hívó sosem rontott el máshogy, mint hogy elfelejtett egy flaget. Peti jóváhagyta az összes
+lelet kártyásítását (Telegram 14658).
+
+**Ellenőrzés:** mindkét wrapper saját selftesttel (mock HTTP szerver); minden érintett/új vitest
+fájl zöld (message-close-section, memory-search-recipe-reads-the-label,
+memory-search-label-backfill, federation-subagent-block-needs-a-peer, claude-md-split-reachability
+[élő CLAUDE.md eset], stb.); `tsc --noEmit` és `eslint` tiszta. Mérve `backend`-re: message-close
+body 1301→1135 byte, memory-search body 2235→1330 byte, föderációs sub-agent blokk 1352→0 byte
+(peers: [] mellett) -- összesen ~2423 byte/ágens a legközelebbi CLAUDE.md-regeneráláskor, a 17
+nem-mikrob ágensen ~41 KB / ~10,3k token.
+
+**Ki döntött:** fullstack (implementáció + verifikáció), gate: QA + CYBERSEC.
+**Hivatkozás:** kártya 01eb0d0c; forrás: Prompty review kártya 13e25d1f (msg 24273); Gate-SHA
+316a0f9b43fb58e1345a11d40ff6416a9dfdc7f2.
+

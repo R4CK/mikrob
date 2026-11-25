@@ -16,6 +16,16 @@
 // that make the answer readable -- a way to see the header, and the word
 // `relaxed`. A recipe that shows the command without the label is the exact
 // state this test exists to keep from coming back.
+//
+// Card 01eb0d0c: agent-scaffold.ts's per-sub-agent copy no longer carries the inline
+// "-D tempfile + grep" recipe at all -- it points the reader at store/agent-memory-search.sh,
+// which DOES the header read and the relaxed-vs-strict distinction itself (pinned
+// behaviourally by agent-memory-search.selftest.sh, and by the exit-code assertions in
+// memory-search-label-backfill.test.ts). A caller can no longer "follow the documented
+// path" to a bare curl -s -- the only documented path IS the wrapper. agent-scaffold.ts is
+// removed from this SURFACES list for that reason; templates/CLAUDE.md.template (mikrob's
+// own one-time install prose, which does not go through either wrapper) still carries the
+// prose recipe, so it still needs this guard.
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -26,7 +36,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..', '..')
 
 const SURFACES: Array<{ label: string; path: string }> = [
-  { label: 'agent-scaffold (generated per-agent CLAUDE.md)', path: join(ROOT, 'src', 'web', 'agent-scaffold.ts') },
   { label: 'templates/CLAUDE.md.template (new install)', path: join(ROOT, 'templates', 'CLAUDE.md.template') },
 ]
 

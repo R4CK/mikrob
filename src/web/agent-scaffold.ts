@@ -85,6 +85,13 @@ const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 // otherwise. Same absolute-path reasoning as tokenPath above.
 const agentAuthHeaderPath = join(PROJECT_ROOT, 'store', 'agent-auth-header.sh')
 
+// Card 01eb0d0c: wrapper scripts that DO the message-close / memory-search recipe (notify
+// boolean, X-Memory-Search header check) instead of teaching it inline in every agent's
+// CLAUDE.md -- the generator now names these commands, see buildMessageCloseBody /
+// buildMemorySearchLabelBody below.
+const agentMessageCloseScriptPath = join(PROJECT_ROOT, 'store', 'agent-message-close.sh')
+const agentMemorySearchScriptPath = join(PROJECT_ROOT, 'store', 'agent-memory-search.sh')
+
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
 // installs a bare `node` is not on that PATH, so the hook exits 127 -- which
 // Claude Code treats as a NON-blocking error and lets the tool call through:
@@ -511,6 +518,8 @@ export function hookScriptAlreadyEffectiveInOtherScope(
 export const INSTALL_ANCHORED_SUFFIXES = [
   '/store/.dashboard-token',
   '/store/agent-auth-header.sh',
+  '/store/agent-message-close.sh',
+  '/store/agent-memory-search.sh',
   '/scripts/hooks/',
   '/scripts/skill-index.sh',
   '/scripts/skill-lint.mjs',
@@ -5086,38 +5095,26 @@ const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
 // same time cannot read each other's label out of one shared /tmp path.
 export function buildMemorySearchLabelBody(name: string): string {
   return [
-    '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
+    '## Memória-keresés: a `agent-memory-search.sh` paranccsal (KÖTELEZŐ ezt használni)',
     '',
     'A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a',
-    'maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint',
-    'egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ezért a',
-    'keresés receptje `-D`-vel megy, és a `grep` NEM opcionális:',
+    'maradék töltelékszavakra hozott sorokat adja vissza -- a body ilyenkor UGYANÚGY néz ki, mint',
+    'egy valódi találat, a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ez a script',
+    'kódolja a kérdést, kiolvassa a fejlécet és felkiáltja, ha a válasz nem bizonyíték:',
     '',
     '```bash',
-    `${agentAuthHeaderPath} ${name} | curl -s -H @- -D /tmp/mem-fejlec-${name}.txt \\`,
-    `  "${dashboardOrigin}/api/memories?agent=${name}&q=KULCSSZO"`,
-    `grep -i '^x-memory-search' /tmp/mem-fejlec-${name}.txt`,
+    `${agentMemorySearchScriptPath} ${name} "KULCSSZÓ" [--category hot|warm|cold|shared] \\`,
+    '    [--date tegnap|ÉÉÉÉ-HH-NN] [--since ÉÉÉÉ-HH-NN] [--until ÉÉÉÉ-HH-NN] [--strict]',
     '```',
     '',
-    '- `relaxed=true` -- semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett',
-    '  közelítés, NEM bizonyíték. Egy sosem létezett minta így ötven sorral válaszol.',
-    '- `relaxed=false` -- a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez',
-    '  MINDEN, és azt sem, hogy van találat: a `relaxed=false; hits=0` létező válasz.',
+    '- Kilépő kód 0 = valódi (`relaxed=false`) találat vagy valódi, ellenőrzött 0 találat.',
+    '- Kilépő kód 6 = `relaxed=true`: amit kaptál, MENTETT KÖZELÍTÉS, nem bizonyíték --',
+    '  egy sosem létezett minta így is ötven sorral válaszolhat.',
+    '- Kilépő kód 5 = a kérés nem futott le; ÜRES TALÁLATKÉNT SOHA ne olvasd, a script ezt',
+    '  külön jelzi, nem engedi összekeverni a kettőt.',
+    '- Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), add meg a `--strict` flaget.',
     '',
-    'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
-    '`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.',
-    '',
-    'Időszakra szűrés: `&date=tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)',
-    'vagy `&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN`, ékezet nélkül, kódolva. A szűrő nem lazul: érvénytelen',
-    'kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen',
-    'használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
-    '',
-    'NYERS ÉKEZET A `q`-BAN = HTTP 400, ÜRES TÖRZZSEL. A `q=funkcionális` alak 400-at ad, a',
-    '`q=funkcion%C3%A1lis` és a `-G --data-urlencode "q=..."` alak 200-at. A 400-on NINCS',
-    '`X-Memory-Search` fejléc, tehát a fenti `grep` némán semmit nem ír, és a nulla sor pontosan',
-    'úgy néz ki, mint egy üres találat, holott a keresés EL SEM INDULT. Ezért: a magyar keresőszót',
-    'százalék-kódold (vagy `-G --data-urlencode`), vagy keress ékezet nélküli szótővel, és a',
-    '`grep` mellett a fejléc LÉTÉT is nézd: ha nincs `X-Memory-Search` sor, az elszállt kérés, nem üres találat.',
+    'A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
   ].join('\n')
 }
 
@@ -5601,26 +5598,30 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
 
 export function buildMessageCloseBody(name: string): string {
   return [
-    '## Üzenet lezárása: bejövő riportnál `notify:false`',
+    '## Üzenet lezárása: a `agent-message-close.sh` paranccsal',
     '',
-    'Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"status":"done"` vagy',
-    '`"failed"`). A lezárás ALAPBÓL egy `[Result] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.',
-    '',
-    '- DELEGÁLT FELADAT (a feladó az eredményre vár): zárd a szokásos módon, a nyugta maga az',
-    '  eredmény -- a `result` mezőbe írd, mit csináltál.',
-    '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): zárd `"notify":false`-szal. Itt a nyugta',
-    '  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a',
-    '  feladó várakozó sorát 1-ről 4-re vitte).',
+    'Egy neked jött inter-agent üzenetet ezzel zárd le -- a script adja a PUT-ot, a JSON boolean',
+    '`notify` mezőt és a 409 (már lezárt) eset csendes kezelését, nem kell kézzel curl-t írnod:',
     '',
     '```bash',
-    `${agentAuthHeaderPath} ${name} \\`,
-    `| curl -H @- -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
-    `  --data-binary '{"status":"done","notify":false}'`,
+    `${agentMessageCloseScriptPath} ${name} <id>                                        # bejövő riport/értesítés`,
+    `${agentMessageCloseScriptPath} ${name} <id> --notify true --result-file <path>      # delegált feladat eredménye`,
     '```',
-    'A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem',
-    'történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
-    'Egy MÁR lezárt (done/failed) üzenet újabb lezárása 409-et ad (`Message already closed`): az első',
-    'lezárás érvényes, semmi nem változott, nyugta nem ment. Ez nem hiba, nem kell ismételni vagy jelenteni.',
+    '',
+    '- DELEGÁLT FELADAT (a feladó az eredményre vár): írd ki az eredményt a Write toollal egy',
+    '  fájlba, majd `--notify true --result-file <path>` -- a nyugta maga az eredmény.',
+    '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): flag nélkül -- alapértelmezés `--notify false`,',
+    '  mert a nyugta itt csak a feladó sorát növeli (mérve 2026-09-27: három lezárás a feladó',
+    '  várakozó sorát 1-ről 4-re vitte).',
+    '- SOHA ne írd `--result "..."` KÖZVETLENÜL a parancssorba dupla idézőjelben: egy backtick vagy',
+    '  `$(...)` a szövegben a TE saját héjadban fut le, mielőtt a script elindulna (CYBERSEC NO-GO',
+    '  38468). A biztonságos forma a `--result-file <path>` (írd ki a Write toollal, add át az',
+    '  útvonalat) -- a `--result-stdin` CSAK egyszeres idézőjeles heredocból (`<<\'EOF\'`) biztonságos,',
+    '  mert egy dupla idézőjeles `echo`/`printf` ugyanúgy végrehajtja a backtickot/`$(...)`-t a HÍVÓ',
+    '  héjában, mielőtt a script látná a szöveget.',
+    '- Egy MÁR lezárt üzenet újabb lezárása (409) a script számára NEM hiba: egy sort ír stderr-re és',
+    '  0-val lép ki, NEM kell megismételni a lezárást, és NEM kell jelenteni.',
+    '- A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
   ].join('\n')
 }
 

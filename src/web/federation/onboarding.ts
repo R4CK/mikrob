@@ -379,7 +379,13 @@ export function ensureFederationClaudeMdSection(): boolean {
     // Sub-agents: the minimal reply/loop block so a directly-addressed
     // specialist can act and answer. No policy seed (owner policy is the main
     // agent's). Excluded/plumbing agents are filtered by catalogAgentNames.
-    const subBlock = cfg.enabled ? renderSubAgentFederationBlock(identity) : null
+    //
+    // Card 01eb0d0c: gated on cfg.enabled ALONE used to carry this block (1209 chars) into
+    // EVERY sub-agent's CLAUDE.md even with zero peers configured -- a sub-agent only needs the
+    // addressing/reply rules once a peer can actually address it directly. Gate on peers.length
+    // too; the main agent's own block (above) already has its own "(nincs tars konfigualva)"
+    // fallback text for the zero-peer case, so this is purely a sub-agent-boilerplate cut.
+    const subBlock = cfg.enabled && cfg.peers.length > 0 ? renderSubAgentFederationBlock(identity) : null
     for (const name of catalogAgentNames()) {
       if (ensureBlockInFile(join(agentDir(name), 'CLAUDE.md'), subBlock, lang, false)) changed = true
     }
