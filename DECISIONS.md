@@ -32147,3 +32147,42 @@ propagates a real failure.
 **Ki döntött:** MikroB kártya-leírása (2d9c0bb2) + Peti 14288 (additív-csak korlát). Fron Ted (fron-ted) a végrehajtó, a kontraktus FE-oldali javaslat, backend (0a527826 felelőse) megerősítésére/korrekciójára vár.
 
 **Hivatkozás:** kártya 2d9c0bb2 (Pair-BE 0a527826), commit 00f226e84.
+
+
+## 2026-11-25 -- Per-agent named skills get wired by symlink, not a wholesale global link (kartya 3e59d70e)
+
+**Dontes:** sub-agent skill resolution has no agents/*/.claude-config/skills link anywhere
+(confirmed empty for every checked agent). A sub-agent can only invoke what is a real
+directory or symlink under its own agents/<name>/.claude/skills/. Measured 86 cases (all 18
+agents) where a prompt named a skill (backticked, matching a real skill somewhere in the
+fleet) that was not wired into that agent's own folder -- 12 of these had already produced a
+live "Unknown skill" tool error in 30 days.
+
+Chose: symlink each specific named-but-unreachable skill from the global catalog
+(~/.claude/skills/<name>) into agents/<name>/.claude/skills/<name>, one per missing name --
+NOT a single wholesale symlink/bind-mount of the whole global skills folder into every agent.
+A wholesale link would expose the full ~150-skill global catalog to every agent regardless of
+role, which is a larger blast radius than the prompt already grants (a prompt names specific
+skills because those are the ones the role is meant to use); per-skill linking keeps exposure
+scoped to exactly what each prompt already claims to use, and matches the convention already
+observed in multiple agents' own folders (e.g. backend2/prompty mixing real copies and
+per-skill symlinks for a subset of skills).
+
+**Ellenorzes:** static reachability check (named skill in allnames, not in own-folder union
+root-project-skills) went from 86 unreachable names across 17 agents to 0 across all 18,
+re-measured after wiring. The false "MINDEN globalis skill elerheto" sentence corrected to
+state the real mechanism in all 16 live agents/<name>/CLAUDE.md files carrying it plus the
+matching 16 seed-fleet-agents/<name>/CLAUDE.md templates (commit 6f66d9131), so a fresh
+install no longer repeats the same false claim. elemzo and prompty did not carry the false
+sentence (elemzo uses the rea skillset per its own override card; prompty's own gap was
+already closed before this card by a separate self-proposal application).
+
+**Ki dontott:** backend2, per MikroB dispatch (card 3e59d70e, source: Prompty full review
+13e25d1f, Peti approval Telegram 14658).
+
+**Nem meresz most:** the card's 4th criterion ("Unknown skill" count re-measured after 7
+days) is inherently time-delayed and could not be satisfied in this session -- flagged as a
+follow-up for whoever re-measures the fleet 7 days after this fix lands.
+
+**Hivatkozas:** kartya 3e59d70e (source 13e25d1f, Prompty comments 38395-38412), seed-fleet-agents
+commit 6f66d9131.
