@@ -32611,3 +32611,33 @@ végrehajtó backend.
 `scripts/hooks/kg-prompt-pointer-hook.selftest.sh`; `src/config-registry.ts`
 (`KG_PROMPT_HOOK_ENABLED`, `KG_PROMPT_HOOK_MAX_CHARS`); `agents/backend/.claude/settings.json`
 (nem git-követett, lásd a REVIEW-t a pontos belépésért).
+
+
+## F8a (MT-14 part 1) fix round -- a KG-prompt-pointer hook sosem küldi a nyers promptot (kártya 69f63a1a)
+
+A CYBERSEC NO-GO (38647) és a CYBERED NO-GO (38650), mindkettő ugyanazt a Gate-SHA-t (15a68fc34)
+nézve, ugyanazt a blokkoló hibát találta: a hook a promptot (első 2000 karakter) szabad szöveges
+`q` paraméterként küldte a GET /api/kg/search-nek, amit a szerver szó szerint elment a
+kg_search_events táblába. Mérve a valós recordKgSearchEvent-en: egy Telegram-bot-token alakú
+string, egy `ghp_` token, egy `sk-ant-api03-...` kulcs, egy jelszó+telefonszám+email mondat
+MIND redaktálatlanul megmaradt. Ez megsértette MikroB saját kikötéseit (38632 "nem írhat
+semmit", 26011 "key on card id ... never the raw prompt head").
+
+**Javítás:** a hook most KIZÁRÓLAG egy, a promptban LITERÁLISAN megjelenő kanban kártya-azonosítót
+(ennek a flottának a [0-9a-f]{8} formátuma) keres, és erre hívja a GET /api/kg/for-card/<cardId>-t
+-- ugyanazt a végpontot, amit a kg-for-card-block.sh is használ, és amely a saját lekérdezését a
+KÁRTYA cím/leírás mezőjéből állítja elő szerver-oldalon, az aktivitás-logba pedig csak
+`for-card:<cardId>`-t ír, sosem a prompt szövegét. Ha nincs kártya-azonosító a promptban, a hook
+egyáltalán nem hív hálózatot a gráf felé (új selftest eset, F1b; mutáció-bizonyítva: a kapu
+visszaállítva a régi, feltétel nélküli alakra, a mutáns tényleg hálózatot hívott a prompt
+szövegével). Javítva egy másik, hamis állítás is (CYBERSEC F2 / CYBERED F5): kikapcsolt
+állapotban a NORMÁL eset (nincs env-override) továbbra is hív egy GET /api/settings-t
+promptonként -- csak egy explicit env-override vagy üres prompt ad valódi zéró hálózati hívást;
+a stdout bájtra azonos marad kikapcsolva, ettől függetlenül.
+
+**Ki döntött:** a gate-ek (cybersec, cybered) NO-GO-ja kötelezte a fix irányát; a végrehajtó
+backend.
+
+**Hivatkozás:** kártya 69f63a1a; `scripts/hooks/kg-prompt-pointer-hook.py`,
+`scripts/hooks/kg-prompt-pointer-hook.selftest.sh`; `src/config-registry.ts`
+(`KG_PROMPT_HOOK_ENABLED` leírás javítva).
