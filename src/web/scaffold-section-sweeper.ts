@@ -27,9 +27,23 @@
 // event this exists to propagate.
 //
 // SCOPE, deliberately narrow: the sweep applies the SAME writers to the SAME targets that start
-// time already applies -- three for the main agent (as web.ts does) and five for sub-agents (as
-// startAgentProcess does). It introduces no new section anywhere. The only new thing is that it
-// happens more than once.
+// time already applies -- three for the main agent (as web.ts does) and every marker-producing
+// writer startAgentProcess applies to a sub-agent (fifteen, as of card 4af036ab; the import list
+// above is the current count, not a number worth repeating here since it will drift again the
+// moment someone edits one list and not the other). It introduces no new section anywhere. The
+// only new thing is that it happens more than once.
+//
+// CARD 4af036ab (2026-11-25): the sub-agent list above had silently fallen behind
+// startAgentProcess's -- ten writers (agent-id-header, memory-search-label, fleet-auth-rule,
+// evidence-rule, mcp-list-channel-warning, message-close, skill-usage, agent-to-agent-language,
+// memory-save, daily-log) had been added to agent-process.ts over time and never added here, so
+// any sub-agent that had not restarted since one of them was introduced stayed missing that
+// section forever -- the exact 75a6fbe6 failure mode, reopened by list drift instead of a missing
+// timer. src/__tests__/scaffold-section-sweeper-parity.test.ts now asserts the two lists match, so
+// a future addition to one without the other fails loudly instead of waiting for someone to notice
+// a live CLAUDE.md missing a section. ensureThinChiefHandoffSection is NOT included: it is
+// profile-conditional at start time (`if (profileWantsThinChiefHandoff(profile))`), and the sweep
+// has no per-agent profile to consult -- a separate design question, not fixed by this card.
 //
 // EXCEPTION, added by card 8c6f30fb (HOSTMOVE923): ensureProjectRootAnchor is NOT one of the
 // section writers above -- it re-anchors already-baked literal PROJECT_ROOT paths in CLAUDE.md
@@ -44,6 +58,16 @@ import {
   ensureSkillsPathTrapSection,
   ensureSystemDirectiveAuthSection,
   ensureProjectRootAnchor,
+  ensureAgentIdHeaderSection,
+  ensureMemorySearchLabelSection,
+  ensureFleetAuthSection,
+  ensureEvidenceSection,
+  ensureMcpListChannelSection,
+  ensureMessageCloseSection,
+  ensureSkillUsageSection,
+  ensureLanguageSection,
+  ensureMemorySaveSection,
+  ensureDailyLogSection,
 } from './agent-scaffold.js'
 import { listAgentNames } from './agent-config.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -79,6 +103,16 @@ export function sweepScaffoldSections(): number {
       ensureLocalFirstSection(name)
       ensureSkillsPathTrapSection(name)
       ensureSystemDirectiveAuthSection(name)
+      ensureAgentIdHeaderSection(name)
+      ensureMemorySearchLabelSection(name)
+      ensureFleetAuthSection(name)
+      ensureEvidenceSection(name)
+      ensureMcpListChannelSection(name)
+      ensureMessageCloseSection(name)
+      ensureSkillUsageSection(name)
+      ensureLanguageSection(name)
+      ensureMemorySaveSection(name)
+      ensureDailyLogSection(name)
       ensureProjectRootAnchor(name)
       swept += 1
     } catch (err) {
