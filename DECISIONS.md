@@ -32389,3 +32389,40 @@ backend.
 **Hivatkozás:** kártya b20d2062; CYBERED komment 38261, CYBERSEC komment 38262; commit `e180af36d`;
 `store/marveen-land.sh` (`_carry_forward_ok`, `gate_sha_tip_check`, `land_one`),
 `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-23 -- GET /api/llm/chain endpoint (kártya 954a6a93)
+
+Új végpont a dashboard LLM-lánc oldalához, a Fron Ted / backend2 által ACCEPTelt kontraktus
+szerint (fron-ted CONTRACT-PROPOSAL komment 37917, backend2 ACCEPT komment 37945):
+`GET /api/llm/chain?window=24h|7d&includeTest=false`, szekciónkénti `source` mezővel.
+
+**Stages:** local/freellm/online, NINCS külön gemini-szakasz -- a 2026-11-20-i mért audit szerint
+(card leírás) a valós lánc local -> freellm -> online, a freellm-first nincs élesítve. Az adat
+`llm_ledger`-ből jön (új `getLlmChainStageSummary`), test-forgalom (test-agent/selftest/queue)
+alapból kizárva, `?includeTest=1`-gyel bekapcsolható.
+
+**Routing:** a meglévő `card-build-route.log` parsere (korábban privát `readRecentDecisions`,
+most exportálva a `local-llm.ts`-ből, nem duplikálva) adja a LOCAL/ONLINE + ok-számlálást.
+
+**DraftReview:** `draft_accepted` oszlop MINDEN sorban NULL (mért, 14804 sor) -- a
+`markLlmLedgerDraftAccepted` függvénynek nincs hívója a kódbázisban. A válasz ezt őszintén
+`available: false, verdicts: null`-ként jelzi, nem hamisít számot.
+
+**Switches:** `freellmEnabled` a valódi kapcsoló-fájlból (meglévő `readFreellmEnabled`, exportálva
+a `freellm-status.ts`-ből); `freellmFirstLive` statikus `true`, mert a 6d8ef952 kártya (futásidejű
+kapcsoló ehhez) még nincs landolva -- nincs mit kiolvasni, a kontraktus 4. pontja szerint rendben.
+
+**Cost:** `getWindowCostEstimateUsd` (új, `costops/ledger.ts`), ablak-szkópos, a meglévő
+`estimateCostUsd` árazóval -- `isEstimate: true` mindig, a kontraktus szerint.
+
+**Ellenőrzés:** `src/__tests__/llm-chain.test.ts`, 13 eset (path/method, 400-ak, alapértékek,
+per-szekció `source`, stage-számlálás + gemini-kizárás, test-caller szűrés, 24h/7d ablak, routing
+számlálás valós logfájlból, draftReview átmenetek, switches, cost-pozitivitás). `tsc --noEmit`
+tiszta. `fleet-test.sh --ref eb7369a14c` a tesztfájlra: 1 fájl / 13 teszt, mind zöld.
+
+**Ki döntött:** a kontraktust Fron Ted + backend2 rögzítette (37917/37945), a kártyát MikroB adta
+ki; a végrehajtó backend (60 perces testvér-átadás után, msg 24092).
+
+**Hivatkozás:** kártya 954a6a93; `src/web/routes/llm-chain.ts`, `src/db.ts`
+(`getLlmChainStageSummary`, `getLlmChainDraftReviewCounts`), `src/costops/ledger.ts`
+(`getWindowCostEstimateUsd`); commit `eb7369a14`.
