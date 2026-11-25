@@ -32147,3 +32147,36 @@ propagates a real failure.
 **Ki döntött:** MikroB kártya-leírása (2d9c0bb2) + Peti 14288 (additív-csak korlát). Fron Ted (fron-ted) a végrehajtó, a kontraktus FE-oldali javaslat, backend (0a527826 felelőse) megerősítésére/korrekciójára vár.
 
 **Hivatkozás:** kártya 2d9c0bb2 (Pair-BE 0a527826), commit 00f226e84.
+
+## 2026-11-25 -- Seal every test-reachable systemctl --user daemon-reload behind a SYSTEMCTL_BIN seam (kártya 8ab5eef3)
+
+**Döntés:** a 54765aa6 (a2cd8d92e) által javított ensure-umask-dropin selftest nem volt az egyetlen
+valós daemon-reload-hívó, amit egy fleet-test futás elérhet. A fennmaradó forrásokat (öt szkript:
+scripts/migrate-main-agent-id.sh, scripts/retire-progress-watchdog.sh, scripts/install-guard-timers.sh,
+scripts/install-mopsion-suite-guard-timer.sh, scripts/install-telegram-progress-hook.sh) ugyanazzal a
+mintával zártam le, mint a2cd8d92e: `SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"` felülírási pont,
+minden valós hívás ezen keresztül megy. A src/__tests__/update-env-allowlist.test.ts két busz-elérhetőségi
+tesztje most egy ártalmatlan, csak-olvasó `systemctl --user show-environment` hívással bizonyítja az
+elérhetőséget, nem `daemon-reload`-dal. Új őr-teszt (src/__tests__/systemctl-daemon-reload-seam.test.ts)
+elbukik, ha bármelyik érintett fájlban csupasz `systemctl --user daemon-reload` hívás jelenik meg a seam
+megkerülésével.
+
+**Miért:** MikroB mérése (komment 38361, kártya 8ab5eef3): a tmux-szerver a 54765aa6 landolása UTÁN is
+kihalt, egy futó fleet-test saját tmux-spawn scope-jából jövő daemon-reload-burst-tel egyidőben (11 reload
+21:00-21:23 között). A megmaradt, teszt-elérhető hívók ugyanazt a kockázati osztályt jelentik, amit
+a2cd8d92e már egyszer javított -- a seam-mintát kellett kiterjeszteni minden maradék hívóra, ne csak az
+eredetire.
+
+**Ellenőrzés:** teljes `fleet-test.sh` futás a d3d1654af ref-en: exit 0, 1423/1424 fájl, 50482/50614 teszt
+zöld (132 skipped), `lint-ratchet.sh` javult (268 -> 267 @typescript-eslint/no-unused-vars, semmi nem
+romlott). A futás saját tmux-spawn scope-jára (azonosítva /proc/self/cgroup + `systemctl --user list-units`
+kereszt-ellenőrzéssel) szűrt journalctl-delta: 0 "Reload requested" sor -- a 11-reload-burst, ami ugyanabban
+az időablakban jelent meg, egy MÁSIK, akkor már megszűnt tmux scope-hoz tartozott (a 21:19:45-21:20:27-es
+tmux-szerver-halál, nem ehhez a futáshoz). Mutáció-teszt: egy seam visszaállítva csupasz systemctl-re, az
+új őr-teszt elbukott a várt üzenettel; visszaállítva, újra zöld.
+
+**Ki döntött:** backend3 (implementáció + mérés), gate: QA + CYBERSEC + CYBERED (22d. szabály, sign-off
+nem saját).
+
+**Hivatkozás:** kártya 8ab5eef3, Gate-SHA d3d1654af82dd44866774c5432f3930930dd0116 (lásd a következő commit
+is, amely ezt a döntésnapló-sort adja hozzá, és a REVIEW-t ettől frissíti).
