@@ -706,6 +706,60 @@ else
   fail=1
 fi
 
+# Card 2ba5fa66 (CYBERSEC LOW-1 follow-up on 2d27b27b): card_designated_gates_agree's
+# non-AGREE/non-FAILED branch (designation_rc==1, "do not all AGREE") was never driven through
+# land_one's real code path -- beeffa above (W2) only reaches designation_rc==2 (a FAILING
+# verdict), and even that is caught earlier by gate_verdict_check's own broader scan before
+# card_designated_gates_agree ever runs. Here CYBERSEC posts NOTHING at all (not a FAIL) while QA
+# PASSes, so gate_verdict_check's QA-mandatory check succeeds and execution reaches
+# card_designated_gates_agree, which returns 1 (MISSING, neither AGREE nor FAILED) -- the only
+# path that exercises the designation_rc!=0 site's own `return 7`. A mutant reverting that one
+# line back to `return 6` (NOTHING-TO-LAND) survived every existing case before this one.
+git -C "$MAIN" checkout -q -b card/babe12 develop
+echo "babe12 content" > "$MAIN/babe12.txt"
+git -C "$MAIN" add babe12.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card babe12: add babe12.txt"
+git -C "$MAIN" checkout -q develop
+SHA_BABE12="$(git -C "$MAIN" rev-parse card/babe12)"
+set_card_desc babe12 "Gate: QA + CYBERSEC"
+set_verdict babe12 pass "$SHA_BABE12"
+
+rm -f "$CAPTURE_DIR/messages.ndjson"
+n=$((n + 1))
+land_card babe12 backend3
+msgs_babe12="$(cat "$CAPTURE_DIR/messages.ndjson" 2>/dev/null || true)"
+if [ "$rc" = 7 ] && grep -q "designated gates .*do not all AGREE" "$OUT_FILE" \
+  && printf '%s' "$msgs_babe12" | grep -q 'REFUSED-GATE (exit 7)' \
+  && ! printf '%s' "$msgs_babe12" | grep -qE 'LANDED \(exit|NOTHING-TO-LAND'; then
+  echo "  ok   --card REFUSES when a designated gate (CYBERSEC) posted no verdict at all: rc=7 via the AGREE-refusal site, REFUSED-GATE, never LANDED or NOTHING-TO-LAND (card 2ba5fa66)"
+else
+  echo "  FAIL expected a rc=7 REFUSED-GATE refusal for a not-all-AGREE card -> rc=$rc msgs=[$msgs_babe12]:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if ! git -C "$MAIN" merge-base --is-ancestor card/babe12 origin/develop 2>/dev/null; then
+  echo "  ok   the AGREE-refused landing pushed nothing"
+else
+  echo "  FAIL an AGREE-refused landing should not have pushed anything"; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/landing-babe12.ndjson" ]; then
+  echo "  ok   the AGREE-refused landing recorded NO card_landings row"
+else
+  echo "  FAIL an AGREE-refused landing must never call POST /api/card-landings:"
+  cat "$CAPTURE_DIR/landing-babe12.ndjson" | sed 's/^/       /'
+  fail=1
+fi
+
+n=$((n + 1))
+land_card babe12 backend3 --allow-ungated
+if [ "$rc" = 0 ] && grep -q "LANDED card/babe12 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   --allow-ungated tolerates the not-all-AGREE designation and lands anyway"
+else
+  echo "  FAIL --allow-ungated should have let babe12 land -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
 # N2: the "UNGATED LANDING" note must be posted ONLY after a successful merge+push -- not when the
 # gate-check tolerance was granted but the landing failed for an UNRELATED reason afterwards (here:
 # a forced fleet-test failure). Bypasses land_card() to override MARVEEN_LAND_TEST per-call.

@@ -32558,3 +32558,25 @@ nem parse-olja a kilépőkódot vagy a notify-szöveget).
 
 **Hivatkozás:** kártya 2d27b27b; `store/marveen-land.sh` (`land_one`, `land_notify_finish`);
 `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-25 -- Kártya 2ba5fa66 (CYBERSEC LOW-1 follow-up a 2d27b27b-n): a rc=7 AGREE-refúziós
+pont (`store/marveen-land.sh` ~2011. sor) pinnelve
+
+**Döntés:** a 2d27b27b fenti bejegyzésében leírt rc=7 kódnak két kiadási pontja van: a "nincs
+használható verdikt" ág (~1989. sor, a ccc333 szcenárió fedi) és a "a kijelölt gate-ek nem
+AGREE-lnek" ág (~2011. sor). Csak az elsőt pinnelte teszt -- a második mutáns (7 -> 6 csak ezen a
+sor) minden korábbi futáson zölden maradt. Új szcenárió (`card/babe12`,
+`marveen-land-card-branch.selftest.sh`): a kártya "Gate: QA + CYBERSEC"-et jelöl ki, csak QA PASS
+érkezik, CYBERSEC egyáltalán nem posztol (nem FAIL, hanem hiányzik) -- így `gate_verdict_check`
+(QA-kötelező ág) átenged, de `card_designated_gates_agree` MISSING-et ad (nem AGREE, nem FAILED),
+ami pontosan a ~2011. sor saját `return 7`-jét váltja ki, nem az 1989. sorét.
+**Miért:** test-only pin, QA tier-döntés (LOW), nem funkcióváltozás.
+**Ellenőrzés:** `marveen-land-card-branch.selftest.sh` 82 -> 86/86 PASS. Mutáció-bizonyítva: a
+~2011. sor `return 7`-jét `return 6`-ra írva KIZÁRÓLAG az új eset bukik (rc=6,
+NOTHING-TO-LAND a REFUSED-GATE helyett), a többi 85 zöld marad; visszaállítva bájt-azonos (diff
+üres). Beágyazott `marveen-land.sh --selftest` 121/121 (érintetlen, csak a teszt-fájl változott).
+Nincs teljes fleet-test (delta szabály, Peti 13846): egyetlen bash teszt-fájl, nincs TypeScript.
+**Ki döntött:** cybersec2 (LOW-1 lelet, msg 24496), MikroB tier-döntés (kártya leírása). A
+végrehajtó backend.
+**Hivatkozás:** kártya 2ba5fa66; `store/marveen-land.sh` (`land_one`,
+`card_designated_gates_agree`); `store/marveen-land-card-branch.selftest.sh`.
