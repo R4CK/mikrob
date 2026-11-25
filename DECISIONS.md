@@ -32390,78 +32390,6 @@ backend.
 `store/marveen-land.sh` (`_carry_forward_ok`, `gate_sha_tip_check`, `land_one`),
 `store/marveen-land-card-branch.selftest.sh`.
 
-## 2026-11-23 16:15 -- fleet-resume.sh: Z1/Z2/Z3 follow-up on RedHat f22cf4f4 comment 19990 (card 39253062)
-
-**Döntés:** three fixes to store/fleet-resume.sh + its selftest:
-Z1 -- the selftest's section-B assertion ("cleanup is never invoked with --apply/--yes") grepped the
-human-readable OUTPUT for a literal substring the stub never echoes regardless of actual args, so it
-stayed green against 3 measured mutants (cleanup called with `--apply --yes`, with `--yes --apply`,
-or with section-C printing the HANDOFF.md body instead of its path). Replaced with: (a) logging the
-cleanup stub's real argv to a file and asserting it is empty (matches the production contract --
-CLEANUP_SCRIPT is invoked with zero args), which kills both argument-order mutants and any other arg
-a future mutant might add; (b) a new assertion that the HANDOFF.md body text never reaches stdout.
-Also confirmed (not a code change) that the card's "nothing runs the selftest at landing time" half
-of Z1 is already false: card 711a7e57's generic store-selftests-all-run.test.ts auto-discovery
-already picks up fleet-resume.selftest.sh by its `.selftest.sh` suffix (verified: `fleet-resume
-passes` in that suite), landed after RedHat's original finding.
-Z2 -- the GPU gate (vram-guard-check.sh) ran AFTER the ollama.service start decision, so an ADMIT/
-HOLD verdict was pure reporting and could never stop an --apply start. Reordered: the gate now runs
-first, and an --apply start is skipped (not attempted) when it reports HOLD; an ADMIT still starts as
-before. Declined the card's other ask -- a new "dmesg dxgvmbus" check -- after measuring: this host's
-live dmesg carries 3793 `dxgk: dxgkio_escape: Ioctl failed` lines right now on an otherwise-healthy
-GPU, so a naive dxg/dxgvmbus substring grep would be a false-positive generator, which is exactly the
-mistake scripts/gpu-crashloop-guard.sh already made and fixed (card 970a90c3: tightened from a bare
-`dxg` substring to a BUG/Oops/Call-Trace window with a `dxg<sym>+0x.../0x...` stack-frame SHAPE).
-That script already detects a real GPU/dxg crash-loop and masks ollama.service on it, and
-fleet-resume.sh's section A already refuses to start a masked unit -- so the protection Z2 asks for
-structurally exists via a better-tuned mechanism; a second, naive detector in fleet-resume.sh would
-regress, not improve, on it.
-Z3 -- the Authorization-header temp file for the /api/agents call relied on a bare `rm -f` after
-curl, which never runs if the script is SIGTERM'd mid-request, leaking a bearer token on disk. Added
-an EXIT trap right after the file is created (same pattern the selftest's own top-level trap uses).
-**Miért:** cybersec red-team follow-up on an already-landed card (f22cf4f4), explicitly not blocking
-that land; this is the tracking card for exactly these 3 items plus a 4th (readPerAgentExtraKeep
-coverage) from the SAME delta-gate round but on a DIFFERENT card (c69a8da2) -- do not confuse the two.
-**Ellenőrzés:** 24/24 selftest cases pass (was 17; +1 HANDOFF-content guard, +2 Z2 HOLD/ADMIT cases,
-+1 Z3 SIGTERM case, net of renumbering). Mutation-proof, measured against BOTH the fixed script and
-the pre-fix script on origin/develop: all 3 Z1 mutants (cleanup `--apply --yes`, `--yes --apply`, and
-a HANDOFF-content-leak mutant) turn the fixed selftest red and the old one green; the Z2 HOLD case and
-the Z3 SIGTERM case both turn red against the pre-fix store/fleet-resume.sh and green against the
-fix. Verified through the real auto-discovery wiring: `npx vitest run
-src/__tests__/store-selftests-all-run.test.ts -t fleet-resume` -- 1 passed (`fleet-resume passes`).
-**Ki döntött:** fullstack (implementation + verification), gate: QA + WhiteHat (changes an
-ollama-start/GPU-gating decision path).
-**Hivatkozás:** card 39253062; comment 19990 on card f22cf4f4 (RedHat CYBERED GO, Gate-SHA
-2ec8de55); scripts/gpu-crashloop-guard.sh + card 970a90c3 (existing dxg-detection this decision
-defers to).
-
-## 2026-11-25 -- wrapper scripts replace curl recipes in generated agent prompts (kártya 01eb0d0c)
-
-A `store/agent-message-close.sh` és `store/agent-memory-search.sh` wrapper-szkriptek VÉGZIK el a
-korábban minden egyes generált agent CLAUDE.md-be nyersen beírt curl-receptet (notify boolean,
-409-kezelés, URL-kódolás, X-Memory-Search fejléc-ellenőrzés relaxed/strict kilépő kódokkal), nem
-csak leírják. `agent-scaffold.ts` `buildMessageCloseBody`/`buildMemorySearchLabelBody` mostantól a
-parancsot nevezi meg, nem a receptet. A föderációs sub-agent reply/loop blokk (1352 byte) mostantól
-`cfg.peers.length > 0`-t is megköveteli, nem csak `cfg.enabled`-t -- az éles telepítésen `peers: []`
-mellett eddig minden sub-agent CLAUDE.md-jébe belement feleslegesen.
-
-**Miért:** Prompty teljes review-ja (kártya 13e25d1f, msg 24273) jelezte, hogy a generált
-boilerplate (12-30k karakter/ágens) túlnyomó részét determinisztikus curl-receptek teszik ki,
-amiket a hívó sosem rontott el máshogy, mint hogy elfelejtett egy flaget. Peti jóváhagyta az összes
-lelet kártyásítását (Telegram 14658).
-
-**Ellenőrzés:** mindkét wrapper saját selftesttel (mock HTTP szerver); minden érintett/új vitest
-fájl zöld (message-close-section, memory-search-recipe-reads-the-label,
-memory-search-label-backfill, federation-subagent-block-needs-a-peer, claude-md-split-reachability
-[élő CLAUDE.md eset], stb.); `tsc --noEmit` és `eslint` tiszta. Mérve `backend`-re: message-close
-body 1301→1135 byte, memory-search body 2235→1330 byte, föderációs sub-agent blokk 1352→0 byte
-(peers: [] mellett) -- összesen ~2423 byte/ágens a legközelebbi CLAUDE.md-regeneráláskor, a 17
-nem-mikrob ágensen ~41 KB / ~10,3k token.
-
-**Ki döntött:** fullstack (implementáció + verifikáció), gate: QA + CYBERSEC.
-**Hivatkozás:** kártya 01eb0d0c; forrás: Prompty review kártya 13e25d1f (msg 24273); Gate-SHA
-316a0f9b43fb58e1345a11d40ff6416a9dfdc7f2.
-
 ## 2026-11-23 -- GET /api/llm/chain endpoint (kártya 954a6a93)
 
 Új végpont a dashboard LLM-lánc oldalához, a Fron Ted / backend2 által ACCEPTelt kontraktus
@@ -32630,3 +32558,98 @@ nem parse-olja a kilépőkódot vagy a notify-szöveget).
 
 **Hivatkozás:** kártya 2d27b27b; `store/marveen-land.sh` (`land_one`, `land_notify_finish`);
 `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-23 16:15 -- fleet-resume.sh: Z1/Z2/Z3 follow-up on RedHat f22cf4f4 comment 19990 (card 39253062)
+
+**Döntés:** three fixes to store/fleet-resume.sh + its selftest:
+Z1 -- the selftest's section-B assertion ("cleanup is never invoked with --apply/--yes") grepped the
+human-readable OUTPUT for a literal substring the stub never echoes regardless of actual args, so it
+stayed green against 3 measured mutants (cleanup called with `--apply --yes`, with `--yes --apply`,
+or with section-C printing the HANDOFF.md body instead of its path). Replaced with: (a) logging the
+cleanup stub's real argv to a file and asserting it is empty (matches the production contract --
+CLEANUP_SCRIPT is invoked with zero args), which kills both argument-order mutants and any other arg
+a future mutant might add; (b) a new assertion that the HANDOFF.md body text never reaches stdout.
+Also confirmed (not a code change) that the card's "nothing runs the selftest at landing time" half
+of Z1 is already false: card 711a7e57's generic store-selftests-all-run.test.ts auto-discovery
+already picks up fleet-resume.selftest.sh by its `.selftest.sh` suffix (verified: `fleet-resume
+passes` in that suite), landed after RedHat's original finding.
+Z2 -- the GPU gate (vram-guard-check.sh) ran AFTER the ollama.service start decision, so an ADMIT/
+HOLD verdict was pure reporting and could never stop an --apply start. Reordered: the gate now runs
+first, and an --apply start is skipped (not attempted) when it reports HOLD; an ADMIT still starts as
+before. Declined the card's other ask -- a new "dmesg dxgvmbus" check -- after measuring: this host's
+live dmesg carries 3793 `dxgk: dxgkio_escape: Ioctl failed` lines right now on an otherwise-healthy
+GPU, so a naive dxg/dxgvmbus substring grep would be a false-positive generator, which is exactly the
+mistake scripts/gpu-crashloop-guard.sh already made and fixed (card 970a90c3: tightened from a bare
+`dxg` substring to a BUG/Oops/Call-Trace window with a `dxg<sym>+0x.../0x...` stack-frame SHAPE).
+That script already detects a real GPU/dxg crash-loop and masks ollama.service on it, and
+fleet-resume.sh's section A already refuses to start a masked unit -- so the protection Z2 asks for
+structurally exists via a better-tuned mechanism; a second, naive detector in fleet-resume.sh would
+regress, not improve, on it.
+Z3 -- the Authorization-header temp file for the /api/agents call relied on a bare `rm -f` after
+curl, which never runs if the script is SIGTERM'd mid-request, leaking a bearer token on disk. Added
+an EXIT trap right after the file is created (same pattern the selftest's own top-level trap uses).
+**Miért:** cybersec red-team follow-up on an already-landed card (f22cf4f4), explicitly not blocking
+that land; this is the tracking card for exactly these 3 items plus a 4th (readPerAgentExtraKeep
+coverage) from the SAME delta-gate round but on a DIFFERENT card (c69a8da2) -- do not confuse the two.
+**Ellenőrzés:** 24/24 selftest cases pass (was 17; +1 HANDOFF-content guard, +2 Z2 HOLD/ADMIT cases,
++1 Z3 SIGTERM case, net of renumbering). Mutation-proof, measured against BOTH the fixed script and
+the pre-fix script on origin/develop: all 3 Z1 mutants (cleanup `--apply --yes`, `--yes --apply`, and
+a HANDOFF-content-leak mutant) turn the fixed selftest red and the old one green; the Z2 HOLD case and
+the Z3 SIGTERM case both turn red against the pre-fix store/fleet-resume.sh and green against the
+fix. Verified through the real auto-discovery wiring: `npx vitest run
+src/__tests__/store-selftests-all-run.test.ts -t fleet-resume` -- 1 passed (`fleet-resume passes`).
+**Ki döntött:** fullstack (implementation + verification), gate: QA + WhiteHat (changes an
+ollama-start/GPU-gating decision path).
+**Hivatkozás:** card 39253062; comment 19990 on card f22cf4f4 (RedHat CYBERED GO, Gate-SHA
+2ec8de55); scripts/gpu-crashloop-guard.sh + card 970a90c3 (existing dxg-detection this decision
+defers to).
+
+## 2026-11-25 -- Kártya 2ba5fa66 (CYBERSEC LOW-1 follow-up a 2d27b27b-n): a rc=7 AGREE-refúziós
+pont (`store/marveen-land.sh` ~2011. sor) pinnelve
+
+**Döntés:** a 2d27b27b fenti bejegyzésében leírt rc=7 kódnak két kiadási pontja van: a "nincs
+használható verdikt" ág (~1989. sor, a ccc333 szcenárió fedi) és a "a kijelölt gate-ek nem
+AGREE-lnek" ág (~2011. sor). Csak az elsőt pinnelte teszt -- a második mutáns (7 -> 6 csak ezen a
+sor) minden korábbi futáson zölden maradt. Új szcenárió (`card/babe12`,
+`marveen-land-card-branch.selftest.sh`): a kártya "Gate: QA + CYBERSEC"-et jelöl ki, csak QA PASS
+érkezik, CYBERSEC egyáltalán nem posztol (nem FAIL, hanem hiányzik) -- így `gate_verdict_check`
+(QA-kötelező ág) átenged, de `card_designated_gates_agree` MISSING-et ad (nem AGREE, nem FAILED),
+ami pontosan a ~2011. sor saját `return 7`-jét váltja ki, nem az 1989. sorét.
+**Miért:** test-only pin, QA tier-döntés (LOW), nem funkcióváltozás.
+**Ellenőrzés:** `marveen-land-card-branch.selftest.sh` 82 -> 86/86 PASS. Mutáció-bizonyítva: a
+~2011. sor `return 7`-jét `return 6`-ra írva KIZÁRÓLAG az új eset bukik (rc=6,
+NOTHING-TO-LAND a REFUSED-GATE helyett), a többi 85 zöld marad; visszaállítva bájt-azonos (diff
+üres). Beágyazott `marveen-land.sh --selftest` 121/121 (érintetlen, csak a teszt-fájl változott).
+Nincs teljes fleet-test (delta szabály, Peti 13846): egyetlen bash teszt-fájl, nincs TypeScript.
+**Ki döntött:** cybersec2 (LOW-1 lelet, msg 24496), MikroB tier-döntés (kártya leírása). A
+végrehajtó backend.
+**Hivatkozás:** kártya 2ba5fa66; `store/marveen-land.sh` (`land_one`,
+`card_designated_gates_agree`); `store/marveen-land-card-branch.selftest.sh`.
+
+## 2026-11-25 -- wrapper scripts replace curl recipes in generated agent prompts (kártya 01eb0d0c)
+
+A `store/agent-message-close.sh` és `store/agent-memory-search.sh` wrapper-szkriptek VÉGZIK el a
+korábban minden egyes generált agent CLAUDE.md-be nyersen beírt curl-receptet (notify boolean,
+409-kezelés, URL-kódolás, X-Memory-Search fejléc-ellenőrzés relaxed/strict kilépő kódokkal), nem
+csak leírják. `agent-scaffold.ts` `buildMessageCloseBody`/`buildMemorySearchLabelBody` mostantól a
+parancsot nevezi meg, nem a receptet. A föderációs sub-agent reply/loop blokk (1352 byte) mostantól
+`cfg.peers.length > 0`-t is megköveteli, nem csak `cfg.enabled`-t -- az éles telepítésen `peers: []`
+mellett eddig minden sub-agent CLAUDE.md-jébe belement feleslegesen.
+
+**Miért:** Prompty teljes review-ja (kártya 13e25d1f, msg 24273) jelezte, hogy a generált
+boilerplate (12-30k karakter/ágens) túlnyomó részét determinisztikus curl-receptek teszik ki,
+amiket a hívó sosem rontott el máshogy, mint hogy elfelejtett egy flaget. Peti jóváhagyta az összes
+lelet kártyásítását (Telegram 14658).
+
+**Ellenőrzés:** mindkét wrapper saját selftesttel (mock HTTP szerver); minden érintett/új vitest
+fájl zöld (message-close-section, memory-search-recipe-reads-the-label,
+memory-search-label-backfill, federation-subagent-block-needs-a-peer, claude-md-split-reachability
+[élő CLAUDE.md eset], stb.); `tsc --noEmit` és `eslint` tiszta. Mérve `backend`-re: message-close
+body 1301→1135 byte, memory-search body 2235→1330 byte, föderációs sub-agent blokk 1352→0 byte
+(peers: [] mellett) -- összesen ~2423 byte/ágens a legközelebbi CLAUDE.md-regeneráláskor, a 17
+nem-mikrob ágensen ~41 KB / ~10,3k token.
+
+**Ki döntött:** fullstack (implementáció + verifikáció), gate: QA + CYBERSEC.
+**Hivatkozás:** kártya 01eb0d0c; forrás: Prompty review kártya 13e25d1f (msg 24273); Gate-SHA
+316a0f9b43fb58e1345a11d40ff6416a9dfdc7f2.
+
