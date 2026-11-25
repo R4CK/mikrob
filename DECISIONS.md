@@ -32613,7 +32613,7 @@ végrehajtó backend.
 (nem git-követett, lásd a REVIEW-t a pontos belépésért).
 
 
-## F8a (MT-14 part 1) fix round -- a KG-prompt-pointer hook sosem küldi a nyers promptot (kártya 69f63a1a)
+## 2026-11-25 -- F8a (MT-14 part 1) fix round: a KG-prompt-pointer hook sosem küldi a nyers promptot (kártya 69f63a1a)
 
 A CYBERSEC NO-GO (38647) és a CYBERED NO-GO (38650), mindkettő ugyanazt a Gate-SHA-t (15a68fc34)
 nézve, ugyanazt a blokkoló hibát találta: a hook a promptot (első 2000 karakter) szabad szöveges
