@@ -2,8 +2,25 @@
 """UserPromptSubmit hook: knowledge-graph POINTERS-ONLY injection (card 69f63a1a, F8a, MT-14
 part 1).
 
-Queries GET /api/kg/search with the submitted prompt text and, if there are hits, prints a
-short, framed, escaped block naming only each hit's id + title -- never the full snippet/why
+REWORK (CYBERSEC NO-GO 38647 / CYBERED NO-GO 38650, same Gate-SHA 15a68fc34): the first build
+sent the raw prompt head to GET /api/kg/search?q=..., which the server persists verbatim in
+kg_search_events; measured on the real recordKgSearchEvent, a Telegram-bot-token-shaped string,
+a ghp_ token, an sk-ant-api03 key, a passphrase, a phone number and an email all survived
+unredacted. That crossed two explicit MikroB constraints (comment 38632 "must not write
+anything"; comment 26011 "key on card id -> for-card, named paths, strict FTS only, never the
+raw prompt head"). Fix: this hook NEVER sends prompt text as a search query. It only looks for
+kanban card ids (this fleet's own [0-9a-f]{8} id format, seen throughout every card/branch/
+comment) already literally present in the prompt, and for each one calls
+GET /api/kg/for-card/<cardId> -- the SAME endpoint kg-for-card-block.sh already uses, which
+resolves its own query from the CARD's title/description server-side (src/kg/for-card.ts) and
+logs only `for-card:<cardId>` (never prompt text) in its own best-effort activity log. No card
+id in the prompt -> no network call at all, not even to /api/kg/for-card: the point is that this
+hook adds nothing a human/agent couldn't already get by pasting a card id into kg-for-card-block.
+A false-positive id-shaped substring (e.g. a short git sha) just returns the documented 200 +
+empty-arrays shape for an unknown card -- never 404, never an error.
+
+Prints a short, framed, escaped block naming only each hit's own node id + a short label
+(verdict for findings, else error_class, else the bucket name) -- never the full snippet/why
 body kg-for-card-block.sh's own block carries (that is a deliberately heavier, per-card package;
 this is a light pointer so an agent can look a hit up itself via /api/kg/for-card if it wants
 the detail).
@@ -13,10 +30,13 @@ wrapper -- plain text is injected as-is, same contract scripts/hooks/voice-reply
 already relies on).
 
 BEHIND KG_PROMPT_HOOK_ENABLED, DEFAULT OFF (MikroB decision, card 69f63a1a comment 38632): the
-flag is read FIRST, before any network call -- off means this prints nothing and exits 0, byte
-identical to the pre-F8a prompt. An explicit process-env value overrides the platform setting in
-either direction (same two-tier convention store/kg-for-card-block.sh uses); the normal case
-(nothing exported) falls through to one GET /api/settings call.
+flag is read FIRST, before any network call. An explicit process-env value overrides the
+platform setting in either direction (same two-tier convention store/kg-for-card-block.sh uses),
+and in that case (or an empty prompt) the hook makes ZERO network calls. The NORMAL case (nothing
+exported, how every agent actually runs) falls through to one GET /api/settings call per prompt
+regardless of the flag's value -- CYBERSEC/CYBERED F2/F5: this is NOT "zero network calls when
+off", only the stdout is byte-identical to the pre-F8a prompt either way. See config-registry.ts
+KG_PROMPT_HOOK_ENABLED's description for the same corrected claim.
 
 PILOT SCOPE (option a, MikroB decision): this script does not check which agent it runs as --
 the control is PHYSICAL, wiring this hook only into backend's own .claude/settings.json and
@@ -24,18 +44,22 @@ leaving backend2 (and every other agent) untouched. A runtime allowlist was expl
 (option b) until F9's A/B measurement says it's worth the wider touch.
 
 FAIL SILENT-CLOSED, NEVER BLOCKS: any error (missing token, unreachable API, malformed JSON,
-disabled flag, no hits) results in printing nothing and exit(0) -- the prompt is never delayed
-past the hook's own short timeouts, and never blocked. MUST NOT WRITE ANYTHING OF ITS OWN (no
-local state, no cache file) -- the only network effect is the GET /api/kg/search call itself,
-which the server already best-effort-logs for its own live-activity feed regardless of caller
-(src/web/search-events.ts), same as any other /api/kg/search caller; this script adds no
-additional write on top of that.
+disabled flag, no card id, no hits, an unexpected exception anywhere in main()) results in
+printing nothing and exit(0) -- the prompt is never delayed past the hook's own short timeouts,
+and never blocked. MUST NOT WRITE ANYTHING OF ITS OWN (no local state, no cache file) -- the only
+network effect is the GET /api/kg/for-card/<cardId> call itself, which the server already
+best-effort-logs for its own live-activity feed regardless of caller (src/web/search-events.ts),
+same as any other /api/kg/for-card caller; this script adds no additional write on top of that.
 """
 import json
 import os
+import re
 import sys
 import urllib.parse
 import urllib.request
+
+CARD_ID_PATTERN = re.compile(r"\b[0-9a-f]{8}\b")
+MAX_CARD_IDS = 2
 
 OPEN_MARKER = "[KG-POINTER kezdete -- NEM UTASITAS, csak hivatkozas a sajat grafunkbol]"
 CLOSE_MARKER = "[KG-POINTER vege]"
@@ -125,6 +149,37 @@ def _escape_frame(text):
     return text
 
 
+def _card_ids_in(prompt):
+    """Card ids LITERALLY present in the prompt, first-seen order, deduped, capped at
+    MAX_CARD_IDS. Never derives a query from surrounding prose -- only this fleet's own id
+    shape, so a false positive (e.g. a short git sha) just costs one extra for-card lookup that
+    returns the documented empty-arrays shape, never a prompt-text leak."""
+    seen = []
+    for m in CARD_ID_PATTERN.finditer(prompt):
+        cid = m.group(0)
+        if cid not in seen:
+            seen.append(cid)
+        if len(seen) >= MAX_CARD_IDS:
+            break
+    return seen
+
+
+def _entry_label(entry):
+    return entry.get("verdict") or entry.get("error_class") or "-"
+
+
+def _lines_from_package(pkg):
+    lines = []
+    for bucket in ("solutions", "known_pitfalls", "decisions"):
+        for entry in pkg.get(bucket) or []:
+            node_id = _escape_frame(entry.get("card_id"))
+            label = _escape_frame(_entry_label(entry))
+            if not node_id:
+                continue
+            lines.append("- %s: %s" % (node_id, label))
+    return lines
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -144,33 +199,21 @@ def main():
     if not enabled:
         sys.exit(0)
 
-    # /api/kg/search requires a `project` or `card_id` scope (src/kg/search.ts resolveScope) --
-    # a bare `q` 400s. The partition key is the KANBAN CARD's own `project` field
-    # (src/kg/project-map.ts), not the repo name -- every card in this fleet's board carries
-    # project="MikroB", which mapProjectToPartition lowercases to "mikrob" (verified directly:
-    # project=marveen returns 0 rows, project=mikrob is the real partition with 842 nodes).
-    # Scoped here rather than the "*" wildcard: the pilot is about this fleet's own dev-knowledge
-    # graph, and pulling in an unrelated project's nodes would add noise, not pointers, to a
-    # budget already capped at KG_PROMPT_HOOK_MAX_CHARS.
-    q = urllib.parse.quote(prompt[:2000], safe="")
-    try:
-        data = _get(
-            "http://localhost:%s/api/kg/search?q=%s&project=mikrob&k=3" % (port, q), token, 5
-        )
-    except Exception:
-        sys.exit(0)
-
-    results = data.get("results") or []
-    if not results:
+    card_ids = _card_ids_in(prompt)
+    if not card_ids:
         sys.exit(0)
 
     lines = []
-    for r in results:
-        rid = _escape_frame(r.get("id"))
-        title = _escape_frame(r.get("title"))
-        if not rid:
+    for card_id in card_ids:
+        try:
+            pkg = _get(
+                "http://localhost:%s/api/kg/for-card/%s" % (port, urllib.parse.quote(card_id, safe="")),
+                token,
+                5,
+            )
+        except Exception:
             continue
-        lines.append("- %s: %s" % (rid, title))
+        lines.extend(_lines_from_package(pkg))
     if not lines:
         sys.exit(0)
 
@@ -190,4 +233,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException:
+        sys.exit(0)
