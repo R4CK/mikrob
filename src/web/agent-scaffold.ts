@@ -518,6 +518,8 @@ export function hookScriptAlreadyEffectiveInOtherScope(
 export const INSTALL_ANCHORED_SUFFIXES = [
   '/store/.dashboard-token',
   '/store/agent-auth-header.sh',
+  '/store/agent-message-close.sh',
+  '/store/agent-memory-search.sh',
   '/scripts/hooks/',
   '/scripts/skill-index.sh',
   '/scripts/skill-lint.mjs',

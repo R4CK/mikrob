@@ -190,4 +190,4 @@ else
   fail "a dead dashboard maps to exit 5 with a message (rc=$RC, stderr: $(cat "$WORK/stderr10"))"
 fi
 
-[ "$FAIL" = "0" ] && echo "ALL PASS" || { echo "SOME FAILED"; exit 1; }
+[ "$FAIL" = "0" ] && echo "selftest: PASS" || { echo "SOME FAILED"; exit 1; }
