@@ -75,11 +75,20 @@ describe('buildUpdateScriptEnv: systemctl --user keeps working (RedHat NO-GO F1 
   // calls swallow that failure (`2>/dev/null || true`), so the loss is silent. This test is
   // skipped if the test host has no running user session bus at all (CI containers often don't) --
   // the discriminating assertion is the SECOND one, which proves these two keys are what matters.
+  //
+  // Card 8ab5eef3: this used to prove bus reachability with a REAL `daemon-reload`. That issues a
+  // live "Reload requested" against the host's own user bus every time this file runs, no
+  // different from the command update.sh itself issues -- a burst of these (this file running
+  // inside several concurrent/queued full-suite fleet-test.sh invocations) was a contributor to
+  // the default tmux server dying mid-suite (card 8ab5eef3, journalctl: 11 reloads in 23 minutes,
+  // the tmux-spawn scope torn down right after). `show-environment` needs the exact same bus
+  // (XDG_RUNTIME_DIR + DBUS_SESSION_BUS_ADDRESS) to succeed and is read-only -- it proves the same
+  // thing without ever issuing a reload.
   const hasUserBus = !!process.env.XDG_RUNTIME_DIR && !!process.env.DBUS_SESSION_BUS_ADDRESS
 
-  it.skipIf(!hasUserBus)('systemctl --user daemon-reload succeeds with the built env', () => {
+  it.skipIf(!hasUserBus)('systemctl --user show-environment succeeds with the built env', () => {
     const env = buildUpdateScriptEnv({})
-    const result = spawnSync('systemctl', ['--user', 'daemon-reload'], { env })
+    const result = spawnSync('systemctl', ['--user', 'show-environment'], { env })
     expect(result.status).toBe(0)
   })
 
@@ -89,7 +98,7 @@ describe('buildUpdateScriptEnv: systemctl --user keeps working (RedHat NO-GO F1 
     const env = buildUpdateScriptEnv({})
     delete env.XDG_RUNTIME_DIR
     delete env.DBUS_SESSION_BUS_ADDRESS
-    const result = spawnSync('systemctl', ['--user', 'daemon-reload'], { env })
+    const result = spawnSync('systemctl', ['--user', 'show-environment'], { env })
     expect(result.status).not.toBe(0)
   })
 

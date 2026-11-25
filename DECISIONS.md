@@ -32147,3 +32147,137 @@ propagates a real failure.
 **Ki döntött:** MikroB kártya-leírása (2d9c0bb2) + Peti 14288 (additív-csak korlát). Fron Ted (fron-ted) a végrehajtó, a kontraktus FE-oldali javaslat, backend (0a527826 felelőse) megerősítésére/korrekciójára vár.
 
 **Hivatkozás:** kártya 2d9c0bb2 (Pair-BE 0a527826), commit 00f226e84.
+
+## 2026-11-25 -- Seal every test-reachable systemctl --user daemon-reload behind a SYSTEMCTL_BIN seam (kártya 8ab5eef3)
+
+**Döntés:** a 54765aa6 (a2cd8d92e) által javított ensure-umask-dropin selftest nem volt az egyetlen
+valós daemon-reload-hívó, amit egy fleet-test futás elérhet. A fennmaradó forrásokat (öt szkript:
+scripts/migrate-main-agent-id.sh, scripts/retire-progress-watchdog.sh, scripts/install-guard-timers.sh,
+scripts/install-mopsion-suite-guard-timer.sh, scripts/install-telegram-progress-hook.sh) ugyanazzal a
+mintával zártam le, mint a2cd8d92e: `SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"` felülírási pont,
+minden valós hívás ezen keresztül megy. A src/__tests__/update-env-allowlist.test.ts két busz-elérhetőségi
+tesztje most egy ártalmatlan, csak-olvasó `systemctl --user show-environment` hívással bizonyítja az
+elérhetőséget, nem `daemon-reload`-dal. Új őr-teszt (src/__tests__/systemctl-daemon-reload-seam.test.ts)
+elbukik, ha bármelyik érintett fájlban csupasz `systemctl --user daemon-reload` hívás jelenik meg a seam
+megkerülésével.
+
+**Miért:** MikroB mérése (komment 38361, kártya 8ab5eef3): a tmux-szerver a 54765aa6 landolása UTÁN is
+kihalt, egy futó fleet-test saját tmux-spawn scope-jából jövő daemon-reload-burst-tel egyidőben (11 reload
+21:00-21:23 között). A megmaradt, teszt-elérhető hívók ugyanazt a kockázati osztályt jelentik, amit
+a2cd8d92e már egyszer javított -- a seam-mintát kellett kiterjeszteni minden maradék hívóra, ne csak az
+eredetire.
+
+**Ellenőrzés:** teljes `fleet-test.sh` futás a d3d1654af ref-en: exit 0, 1423/1424 fájl, 50482/50614 teszt
+zöld (132 skipped), `lint-ratchet.sh` javult (268 -> 267 @typescript-eslint/no-unused-vars, semmi nem
+romlott). A futás saját tmux-spawn scope-jára (azonosítva /proc/self/cgroup + `systemctl --user list-units`
+kereszt-ellenőrzéssel) szűrt journalctl-delta: 0 "Reload requested" sor -- a 11-reload-burst, ami ugyanabban
+az időablakban jelent meg, egy MÁSIK, akkor már megszűnt tmux scope-hoz tartozott (a 21:19:45-21:20:27-es
+tmux-szerver-halál, nem ehhez a futáshoz). Mutáció-teszt: egy seam visszaállítva csupasz systemctl-re, az
+új őr-teszt elbukott a várt üzenettel; visszaállítva, újra zöld.
+
+**Ki döntött:** backend3 (implementáció + mérés), gate: QA + CYBERSEC + CYBERED (22d. szabály, sign-off
+nem saját).
+
+**Hivatkozás:** kártya 8ab5eef3, Gate-SHA d3d1654af82dd44866774c5432f3930930dd0116 (lásd a következő commit
+is, amely ezt a döntésnapló-sort adja hozzá, és a REVIEW-t ettől frissíti).
+
+---
+
+**Döntés:** a 46af6c822 (az előző bejegyzés) daemon-reload-seamje valós fix volt, de nem a tényleges
+tmux-szerver-gyilkos -- MikroB mérése (üzenet 24375, kártya 8ab5eef3): egy teljes fleet-test futás
+`env -u TMUX` + rövid `TMUX_TMPDIR`-rel 738 másodpercig futott, 11 daemon-reload is tüzelt, és a flotta
+mégsem halt meg. A valódi ok: `src/__tests__/background-tasks.test.ts` "channel-var strip ...
+globally-polluted tmux server" (kártya fb3fff4d) blokkja a `beforeEach`-ben beállítja a privát
+`TMUX_TMPDIR`-t, de sosem törli a `process.env.TMUX`-ot; a tmux viszont a cél-szervert ELŐBB `$TMUX`-ból
+oldja fel, és csak `$TMUX` hiányában esik vissza a `TMUX_TMPDIR` alapértelmezett socketjére. Egy
+fleet-agent saját tmux-paneljéből indított futásnál `$TMUX` be van állítva, így a teszt `start-server`
+/ `set-environment -g` / `kill-server` hívásai a LIVE szervert érték el: hamis bot-tokent írtak a globális
+env-jébe, majd kilőtték. Fix: a blokk most menti+törli (és visszaállítja) `process.env.TMUX` és
+`process.env.TMUX_PANE`-t a privát szerver köré; mivel ezzel a teszt most ELSŐ ÍZBEN valóban a saját hideg
+(session nélküli) szerverét érte el, egy második, korábban soha nem látott hiba is előjött --
+`tmux start-server` alapból `exit-empty on`, egy session nélküli szerver azonnal leáll, mire a következő
+parancs futna. Fix: `start-server` helyett `new-session -d -s fb3fff4d-keepalive`, ami egy lépésben indít
+szervert ÉS sessiont, életben tartva azt. `store/fleet-test.sh` elejére védelmi réteg (`unset TMUX
+TMUX_PANE`) került, hogy egy jövőbeli, hasonlóan hiányos teszt se tudja a live szervert elérni egy teljes
+suite-futás alatt. Új őr-teszt (`src/__tests__/tmux-server-wide-ops-need-scope-or-cleared-env.test.ts`)
+minden `src/__tests__/*.test.ts` fájlt átvizsgál: elbukik, ha egy `start-server`/`kill-server`/
+`set-environment -g` hívás `-L`/`-S` scope nélkül, ÉS egy megelőző (legfeljebb 2500 karakterrel korábbi)
+`delete process.env.TMUX` nélkül jelenik meg -- a lookback-ablak szándékosan kizárja, hogy egy TÁVOLI,
+utólagos (pl. egy `afterEach` visszaállító sora) egyezés hamisan igazolja a védelmet (mutáció-teszttel
+igazolva: csak a `beforeEach` törlés kivételével a teszt elbukik, visszatéve zöld).
+
+**Miért:** a kártya 1-es és 3-as Kész-ha pontja ("a guard logs every default tmux server death with
+killer evidence" és "reproduction... shows the daemon-reload storm kills tmux, or the next real event's
+guard log names a different killer") megköveteli a TÉNYLEGES gyilkos azonosítását, nem csak egy
+valószínű-tűnő korrelációt. A daemon-reload-elmélet ez a mérés alapján CÁFOLVA: a reload-burst önmagában
+NEM gyilkos, a tmux-szerver-manipuláció (start/kill-server + set-environment -g, hibás $TMUX-feloldással)
+az.
+
+**Ellenőrzés:** `src/__tests__/background-tasks.test.ts` + az új őr-teszt izoláltan lefuttatva (rövid,
+<60 karakteres `TMUX_TMPDIR` + `env -u TMUX -u TMUX_PANE`, a 108 byte-os UNIX socket-út-limit miatt):
+1448/1448 teszt zöld. `npx tsc --noEmit` tiszta. Mutáció-teszt: a `beforeEach` törlés-sorát kivéve (az
+`afterEach` visszaállító sorát érintetlenül hagyva) az új őr-teszt elbukott a várt üzenettel; visszatéve,
+újra zöld -- ez zárja ki, hogy a guard csak a fájl-szintű szöveg-jelenlétet nézze, nem a sorrendet.
+
+**Ki döntött:** backend3 (implementáció + mérés, MikroB gyökér-ok levezetése alapján, üzenet 24375),
+gate: QA + CYBERSEC + CYBERED (22d. szabály, sign-off nem saját; a kártya 1-4 Kész-ha pontjai még nincsenek
+mind lezárva -- ez a döntés csak a talált gyilkos fixét és a hozzá tartozó guard-ot fedi).
+
+**Hivatkozás:** kártya 8ab5eef3, fb3fff4d (az eredeti channel-var-strip teszt), MikroB üzenet 24371/24375.
+
+
+tmux-szerver-gyilkos fold-in -- cybersec M1 MEDIUM maradvány zárása (kártya 8ab5eef3, MikroB
+üzenet 24382): az efd87ec6c-n gated fixben a `fb3fff4d` blokk `beforeEach`-je a `process.env.TMUX`
+törlését az `initDatabase(':memory:')` hívás UTÁN végezte el; ha ez (vagy az előtte álló
+`mkdtempSync`) elhasalt, az `afterEach` feltétel nélküli, meztelen `tmux kill-server` hívása
+TOVÁBBRA IS a live szervert érte volna el, mert `$TMUX` ekkor még nem volt törölve. Fix: egy
+`privateServerReady` flaget csak a sikeres `new-session -d` UTÁN állítunk igazra, és az `afterEach`
+`kill-session`/`kill-server` hívásai csak akkor futnak, ha ez igaz -- a privát szerver tényleges
+felállása a feltétel, nem a szöveg sorrendje.
+
+**Miért:** cybersec GO (komment 38495) MEDIUM maradványként jelezte: egy `beforeEach`-hiba (törött
+better-sqlite3, db-import hiba, `mkdtemp` hiba) a törlés előtt pontosan akkor éri el a live
+szervert, amikor a környezet már amúgy is sérült -- vagyis éppen akkor, amikor valaki egy fájlt
+közvetlenül futtat egy panelből. MikroB (üzenet 24382) ezt land előtti fold-in-ként kérte, mert a
+flotta hatszor halt meg ugyanebből az osztályból.
+
+**Ellenőrzés:** mutáció-teszt, cybersec saját M6-reprodukciójának mintáját követve: egy scratch
+"stand-in live" tmux-szervert (`-S` saját socket) indítottunk, `$TMUX`-ot rá állítottuk, és egy
+ideiglenes, nem commitolt env-kapcsolt `throw`-t ültettünk a `beforeEach` elejére. A FIX-ES kóddal a
+stand-in szerver életben maradt a dobás után (`list-sessions` sikeres, `decoy-live` látható); a
+gating sor nélküli MUTÁNSSAL (a `privateServerReady` feltétel eltávolítva) a stand-in szerver
+MEGHALT ("no server running"). A kapcsolót és a mutánst eltávolítottuk, a commitolt kód csak a
+tényleges gating-fixet tartalmazza. Utána `background-tasks.test.ts` + a meglévő
+`tmux-server-wide-ops-need-scope-or-cleared-env.test.ts` izoláltan (rövid `TMUX_TMPDIR`, `env -u
+TMUX -u TMUX_PANE`): 1448/1448 zöld, változatlan a korábbi méréshez képest. `npx tsc --noEmit` és
+`eslint` a módosított fájlon tiszta.
+
+**Ki döntött:** backend3 (implementáció + mérés, MikroB fold-in dispatch alapján, üzenet 24382),
+gate: delta QA + CYBERSEC + CYBERED (22d. szabály, sign-off nem saját). A kártya 1., 2. és 4. Kész-ha
+pontja (halál-naplózó guard, MikroB-riasztás, egyéb útvonal-seprés) ettől a fold-intől függetlenül
+továbbra is nyitott, ahogy a cybersec/cybered GO L1-L4/F1-F5 lelete is jelzi.
+
+**Hivatkozás:** kártya 8ab5eef3, cybersec GO komment 38495 (M1), MikroB üzenet 24382.
+
+
+CYBERED F-3 pinelve (kártya 8ab5eef3, MikroB üzenet 24384): a `store/fleet-test.sh`-ba tett
+`unset TMUX TMUX_PANE` sort eddig semmilyen teszt nem fedte -- a sor törlése semmit nem buktatott
+volna el. Új teszt (`src/__tests__/fleet-test-clears-tmux-env.test.ts`) a VALÓDI szkript-prefixet
+(a fájl eleje a tényleges `unset` sorig, nem egy kézzel írt helyettesítő) futtatja bash alatt
+előre beállított `TMUX`/`TMUX_PANE` env-változókkal, és az eredmény környezetben ellenőrzi, hogy
+mindkettő eltűnt. Mutáció-teszt: a sor eltávolításával a környezet MEGTARTJA mindkét változót --
+ez igazolja, hogy a teszt tényleg a törlő hatást méri, nem egy szöveg-egyezést.
+
+**Miért:** cybersec/cybered delta-gate (komment 38495/38496) opcionális LOW/F-3 maradványként
+jelezte a hiányzó pint; MikroB (üzenet 24384) a fold-inba kérte, ha néhány sor. Ez nem bővíti a
+kártya hatókörét: a fő M1 MEDIUM fix mellett egy meglévő, már gated kódrészlet utólagos
+lefedése.
+
+**Ellenőrzés:** az új teszt + `background-tasks.test.ts` + `tmux-server-wide-ops-need-scope-or-
+cleared-env.test.ts` izoláltan (rövid `TMUX_TMPDIR`, `env -u TMUX -u TMUX_PANE`): 1451/1451 zöld.
+`npx tsc --noEmit` és `eslint` az új fájlon tiszta.
+
+**Ki döntött:** backend3 (implementáció, MikroB opcionális fold-in kérése alapján, üzenet 24384),
+gate: ugyanaz a delta QA + CYBERSEC + CYBERED kör fedi, mint az M1 fixet.
+
+**Hivatkozás:** kártya 8ab5eef3, cybered GO komment 38496 (F-3), MikroB üzenet 24384.
