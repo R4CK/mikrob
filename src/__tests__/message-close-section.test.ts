@@ -53,31 +53,28 @@ function setup(agent: string, content: string) {
 }
 const read = (agent: string) => readFileSync(join(tmpRoot, 'agents', agent, 'CLAUDE.md'), 'utf-8')
 
-describe('message-close section: what it says (ACKONCLOSE927)', () => {
+// Card 01eb0d0c: the inline curl recipe (notify boolean, 409 handling) moved into
+// store/agent-message-close.sh -- see agent-message-close.selftest.sh for the behavioural
+// pins (real JSON boolean, 409-is-a-no-op, quote/backtick-safe --result). This generated body
+// now only has to NAME the command and keep the delegated-vs-report decision visible.
+describe('message-close section: what it says (ACKONCLOSE927, card 01eb0d0c)', () => {
   const body = buildMessageCloseBody('backend')
 
-  it('tells the reader to close an INCOMING report with notify:false', () => {
-    expect(body).toMatch(/BEJÖVŐ RIPORT[\s\S]{0,120}"notify":false/)
+  it('tells the reader to close an INCOMING report with the default (no --notify flag)', () => {
+    expect(body).toMatch(/BEJÖVŐ RIPORT[\s\S]{0,160}--notify false/)
   })
 
   it('keeps the default for a DELEGATED task, where the ack is the result', () => {
-    expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,120}szokásos módon/)
+    expect(body).toMatch(/DELEGÁLT FELADAT[\s\S]{0,120}--notify true/)
   })
 
-  it('the example sends a real JSON boolean false, not the string', () => {
-    expect(body).toContain(`'{"status":"done","notify":false}'`)
-    expect(body).not.toContain('"notify":"false"')
-    expect(body).toMatch(/string 400-at kap/)
+  it('says a second close of a closed message is a no-op, not an error to retry', () => {
+    expect(body).toMatch(/MÁR lezárt[\s\S]{0,120}NEM hiba/)
   })
 
-  it('says a second close of a closed message is a 409 that needs no retry or report', () => {
-    expect(body).toMatch(/MÁR lezárt[\s\S]{0,80}409-et ad/)
-    expect(body).toMatch(/Ez nem hiba, nem kell ismételni vagy jelenteni\./)
-  })
-
-  it('the example is a PUT on the message id, with the bearer token via stdin header (not argv)', () => {
-    expect(body).toMatch(/curl -H @- -s -X PUT \S+\/api\/messages\/<id>/)
-    expect(body).toMatch(/agent-auth-header\.sh backend/)
+  it('names the wrapper script instead of the raw curl recipe', () => {
+    expect(body).toMatch(/agent-message-close\.sh backend <id>/)
+    expect(body).not.toContain('curl -H @-')
   })
 })
 

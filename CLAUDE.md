@@ -488,38 +488,26 @@ ide -- azoknak saját kerete van.)
 <!-- END GENERATED: system-directive-auth -->
 
 <!-- BEGIN GENERATED: memory-search-label (auto-generated, do not edit by hand) -->
-## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)
+## Memória-keresés: a `agent-memory-search.sh` paranccsal (KÖTELEZŐ ezt használni)
 
 A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a
-maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint
-egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ezért a
-keresés receptje `-D`-vel megy, és a `grep` NEM opcionális:
+maradék töltelékszavakra hozott sorokat adja vissza -- a body ilyenkor UGYANÚGY néz ki, mint
+egy valódi találat, a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ez a script
+kódolja a kérdést, kiolvassa a fejlécet és felkiáltja, ha a válasz nem bizonyíték:
 
 ```bash
-/home/neon/marveen/store/agent-auth-header.sh mikrob | curl -s -H @- -D /tmp/mem-fejlec-mikrob.txt \
-  "http://localhost:3420/api/memories?agent=mikrob&q=KULCSSZO"
-grep -i '^x-memory-search' /tmp/mem-fejlec-mikrob.txt
+/home/neon/marveen/store/agent-memory-search.sh mikrob "KULCSSZÓ" [--category hot|warm|cold|shared] \
+    [--date tegnap|ÉÉÉÉ-HH-NN] [--since ÉÉÉÉ-HH-NN] [--until ÉÉÉÉ-HH-NN] [--strict]
 ```
 
-- `relaxed=true` -- semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett
-  közelítés, NEM bizonyíték. Egy sosem létezett minta így ötven sorral válaszol.
-- `relaxed=false` -- a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez
-  MINDEN, és azt sem, hogy van találat: a `relaxed=false; hits=0` létező válasz.
+- Kilépő kód 0 = valódi (`relaxed=false`) találat vagy valódi, ellenőrzött 0 találat.
+- Kilépő kód 6 = `relaxed=true`: amit kaptál, MENTETT KÖZELÍTÉS, nem bizonyíték --
+  egy sosem létezett minta így is ötven sorral válaszolhat.
+- Kilépő kód 5 = a kérés nem futott le; ÜRES TALÁLATKÉNT SOHA ne olvasd, a script ezt
+  külön jelzi, nem engedi összekeverni a kettőt.
+- Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), add meg a `--strict` flaget.
 
-Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a
-`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
-
-Időszakra szűrés: `&date=tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)
-vagy `&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN`, ékezet nélkül, kódolva. A szűrő nem lazul: érvénytelen
-kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen
-használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).
-
-NYERS ÉKEZET A `q`-BAN = HTTP 400, ÜRES TÖRZZSEL. A `q=funkcionális` alak 400-at ad, a
-`q=funkcion%C3%A1lis` és a `-G --data-urlencode "q=..."` alak 200-at. A 400-on NINCS
-`X-Memory-Search` fejléc, tehát a fenti `grep` némán semmit nem ír, és a nulla sor pontosan
-úgy néz ki, mint egy üres találat, holott a keresés EL SEM INDULT. Ezért: a magyar keresőszót
-százalék-kódold (vagy `-G --data-urlencode`), vagy keress ékezet nélküli szótővel, és a
-`grep` mellett a fejléc LÉTÉT is nézd: ha nincs `X-Memory-Search` sor, az elszállt kérés, nem üres találat.
+A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).
 <!-- END GENERATED: memory-search-label -->
 
 <!-- BEGIN GENERATED: fleet-auth-rule (auto-generated, do not edit by hand) -->
@@ -556,24 +544,22 @@ a korlát a csatornát birtokló session, nem a parancs.
 <!-- END GENERATED: mcp-list-channel-warning -->
 
 <!-- BEGIN GENERATED: message-close (auto-generated, do not edit by hand) -->
-## Üzenet lezárása: bejövő riportnál `notify:false`
+## Üzenet lezárása: a `agent-message-close.sh` paranccsal
 
-Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"status":"done"` vagy
-`"failed"`). A lezárás ALAPBÓL egy `[Eredmény] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.
-
-- DELEGÁLT FELADAT (a feladó az eredményre vár): zárd a szokásos módon, a nyugta maga az
-  eredmény -- a `result` mezőbe írd, mit csináltál.
-- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): zárd `"notify":false`-szal. Itt a nyugta
-  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a
-  feladó várakozó sorát 1-ről 4-re vitte).
+Egy neked jött inter-agent üzenetet ezzel zárd le -- a script adja a PUT-ot, a JSON boolean
+`notify` mezőt és a 409 (már lezárt) eset csendes kezelését, nem kell kézzel curl-t írnod:
 
 ```bash
-printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" \
-| curl -H @- -s -X PUT http://localhost:3420/api/messages/<id> -H "Content-Type: application/json" \
-  --data-binary '{"status":"done","notify":false}'
+/home/neon/marveen/store/agent-message-close.sh mikrob <id>                                    # bejövő riport/értesítés
+/home/neon/marveen/store/agent-message-close.sh mikrob <id> --notify true --result "..."       # delegált feladat eredménye
 ```
-A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem
-történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.
+
+- DELEGÁLT FELADAT (a feladó az eredményre vár): `--notify true --result "..."`, a nyugta maga az eredmény.
+- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): flag nélkül -- alapértelmezés `--notify false`,
+  mert a nyugta itt csak a feladó sorát növeli (mérve 2026-09-27: három lezárás a feladó
+  várakozó sorát 1-ről 4-re vitte).
+- Egy MÁR lezárt üzenet újabb lezárása (409) a script számára NEM hiba: egy sort ír stderr-re és 0-val lép ki.
+- A `system` feladójú üzenet lezárása eleve nem küld nyugtát.
 <!-- END GENERATED: message-close -->
 
 <!-- BEGIN GENERATED: agent-id-header (auto-generated, do not edit by hand) -->
