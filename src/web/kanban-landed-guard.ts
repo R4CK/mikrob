@@ -142,6 +142,14 @@ export const GENERATED_COMMENT_AUTHORS: ReadonlySet<string> = new Set([
   'local-llm',
   'gate-pretriage',
   'gemini-orch-review',
+  // card b20d2062: marveen-land.sh's own carry-forward comment (--allow-carry-forward) cites both
+  // the old gated sha and the new develop-drift-merged tip in full, from a non-gate author. Left
+  // unmarked, kanban-gate-completeness-guard.ts's currentRoundStartTs would read the new sha
+  // citation as a fresh round boundary and demand a verdict AFTER it -- exactly the gap that
+  // forced a manual force-close on every one of the 5 real incidents this card fixes. The tool
+  // has already independently proven (via git, not by self-declaration) that the two shas are
+  // content-equivalent for the card's own files before it ever posts this comment.
+  'marveen-land',
 ])
 
 /**
