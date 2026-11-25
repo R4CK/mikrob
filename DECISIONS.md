@@ -32180,3 +32180,47 @@ nem saját).
 
 **Hivatkozás:** kártya 8ab5eef3, Gate-SHA d3d1654af82dd44866774c5432f3930930dd0116 (lásd a következő commit
 is, amely ezt a döntésnapló-sort adja hozzá, és a REVIEW-t ettől frissíti).
+
+---
+
+**Döntés:** a 46af6c822 (az előző bejegyzés) daemon-reload-seamje valós fix volt, de nem a tényleges
+tmux-szerver-gyilkos -- MikroB mérése (üzenet 24375, kártya 8ab5eef3): egy teljes fleet-test futás
+`env -u TMUX` + rövid `TMUX_TMPDIR`-rel 738 másodpercig futott, 11 daemon-reload is tüzelt, és a flotta
+mégsem halt meg. A valódi ok: `src/__tests__/background-tasks.test.ts` "channel-var strip ...
+globally-polluted tmux server" (kártya fb3fff4d) blokkja a `beforeEach`-ben beállítja a privát
+`TMUX_TMPDIR`-t, de sosem törli a `process.env.TMUX`-ot; a tmux viszont a cél-szervert ELŐBB `$TMUX`-ból
+oldja fel, és csak `$TMUX` hiányában esik vissza a `TMUX_TMPDIR` alapértelmezett socketjére. Egy
+fleet-agent saját tmux-paneljéből indított futásnál `$TMUX` be van állítva, így a teszt `start-server`
+/ `set-environment -g` / `kill-server` hívásai a LIVE szervert érték el: hamis bot-tokent írtak a globális
+env-jébe, majd kilőtték. Fix: a blokk most menti+törli (és visszaállítja) `process.env.TMUX` és
+`process.env.TMUX_PANE`-t a privát szerver köré; mivel ezzel a teszt most ELSŐ ÍZBEN valóban a saját hideg
+(session nélküli) szerverét érte el, egy második, korábban soha nem látott hiba is előjött --
+`tmux start-server` alapból `exit-empty on`, egy session nélküli szerver azonnal leáll, mire a következő
+parancs futna. Fix: `start-server` helyett `new-session -d -s fb3fff4d-keepalive`, ami egy lépésben indít
+szervert ÉS sessiont, életben tartva azt. `store/fleet-test.sh` elejére védelmi réteg (`unset TMUX
+TMUX_PANE`) került, hogy egy jövőbeli, hasonlóan hiányos teszt se tudja a live szervert elérni egy teljes
+suite-futás alatt. Új őr-teszt (`src/__tests__/tmux-server-wide-ops-need-scope-or-cleared-env.test.ts`)
+minden `src/__tests__/*.test.ts` fájlt átvizsgál: elbukik, ha egy `start-server`/`kill-server`/
+`set-environment -g` hívás `-L`/`-S` scope nélkül, ÉS egy megelőző (legfeljebb 2500 karakterrel korábbi)
+`delete process.env.TMUX` nélkül jelenik meg -- a lookback-ablak szándékosan kizárja, hogy egy TÁVOLI,
+utólagos (pl. egy `afterEach` visszaállító sora) egyezés hamisan igazolja a védelmet (mutáció-teszttel
+igazolva: csak a `beforeEach` törlés kivételével a teszt elbukik, visszatéve zöld).
+
+**Miért:** a kártya 1-es és 3-as Kész-ha pontja ("a guard logs every default tmux server death with
+killer evidence" és "reproduction... shows the daemon-reload storm kills tmux, or the next real event's
+guard log names a different killer") megköveteli a TÉNYLEGES gyilkos azonosítását, nem csak egy
+valószínű-tűnő korrelációt. A daemon-reload-elmélet ez a mérés alapján CÁFOLVA: a reload-burst önmagában
+NEM gyilkos, a tmux-szerver-manipuláció (start/kill-server + set-environment -g, hibás $TMUX-feloldással)
+az.
+
+**Ellenőrzés:** `src/__tests__/background-tasks.test.ts` + az új őr-teszt izoláltan lefuttatva (rövid,
+<60 karakteres `TMUX_TMPDIR` + `env -u TMUX -u TMUX_PANE`, a 108 byte-os UNIX socket-út-limit miatt):
+1448/1448 teszt zöld. `npx tsc --noEmit` tiszta. Mutáció-teszt: a `beforeEach` törlés-sorát kivéve (az
+`afterEach` visszaállító sorát érintetlenül hagyva) az új őr-teszt elbukott a várt üzenettel; visszatéve,
+újra zöld -- ez zárja ki, hogy a guard csak a fájl-szintű szöveg-jelenlétet nézze, nem a sorrendet.
+
+**Ki döntött:** backend3 (implementáció + mérés, MikroB gyökér-ok levezetése alapján, üzenet 24375),
+gate: QA + CYBERSEC + CYBERED (22d. szabály, sign-off nem saját; a kártya 1-4 Kész-ha pontjai még nincsenek
+mind lezárva -- ez a döntés csak a talált gyilkos fixét és a hozzá tartozó guard-ot fedi).
+
+**Hivatkozás:** kártya 8ab5eef3, fb3fff4d (az eredeti channel-var-strip teszt), MikroB üzenet 24371/24375.
