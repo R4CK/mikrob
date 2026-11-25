@@ -32186,3 +32186,35 @@ follow-up for whoever re-measures the fleet 7 days after this fix lands.
 
 **Hivatkozas:** kartya 3e59d70e (source 13e25d1f, Prompty comments 38395-38412), seed-fleet-agents
 commit 6f66d9131.
+
+
+## 2026-11-25 -- CYBERED F-1 closed: declare manual skill symlinks in skill-role-map.json, apply sibling-union to fron-ted/fron-teddy (kartya 3e59d70e)
+
+**Dontes:** CYBERED (comment 38477, Gate-SHA ccc2de0e3) found that 61 of the 86 symlinks
+from the decision above were never declared in store/skill-role-map.json, so they are not
+provisioner-managed: not recreated on a rebuilt agent dir, not removed if a role drops a
+skill, and invisible to agent-skill-drift-sync.sh's own tracking -- causing its clone-family
+check to report 15 false MISSING for the fron-ted/fron-teddy pair. Declared all 61 pairs in
+their owning agent's role. That alone left the 15 MISSING unchanged (declaring a skill for
+its owner does nothing for a LAGGING sibling, since the drift-sync tool's provisioner check
+is per-agent, not per-family) -- applied the existing clone-family-parity rule instead (Peti
+decision, card e589f07a, 2026-10-30: siblings get the union, copy the larger set) to this one
+asymmetric pair: fron-teddy gets the 12 skills only fron-ted had, fron-ted gets the 3 only
+fron-teddy had, both declared in skill-role-map.json and symlinked live.
+
+**Ellenorzes:** store/agent-skill-drift-sync.sh (role-map env-overridden to the fixed file,
+read-only against the live tree): missing 15 -> 0, sibling-pair-findings unchanged at 0, the
+pre-existing diverged=21 set unchanged (confirmed by diff, unrelated to this fix). A new test
+(skill-role-map-drift-sync.test.ts) runs the real script against a synthetic fixture and pins
+the mechanism with 3 cases, including one that rules out "declared somewhere" as a non-fix
+(must be declared for the LAGGING sibling specifically).
+
+**Ki dontott:** backend2, per MikroB dispatch (msg 24361) to close CYBERED F-1.
+
+**Nem meresz most:** cybersec's companion LOW suggestion (have skill-factory/skill-management
+write into the requesting agent's own .claude/skills instead of the global folder) is a larger
+behavioral change to the fleet's self-learning skill-generation mechanism, deferred to a
+separate card rather than folded into this MEDIUM fix.
+
+**Hivatkozas:** kartya 3e59d70e, CYBERED comment 38477 (F-1), CYBERSEC comment 38472 (LOW-1),
+e589f07a (sibling-union precedent), commit ea840b89e.
