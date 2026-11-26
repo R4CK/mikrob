@@ -172,7 +172,14 @@ export async function hybridKgSearch(
 ): Promise<{ results: KgSearchResult[]; meta: KgSearchMeta }> {
   const scope = resolveScope(opts)
   const k = opts.k ?? 3
-  const minScore = opts.minScore ?? 0.35
+  // Card 5ecf6133: 0.35 was unreachable. Each branch's RRF contribution is 1/(60+rank+1), and
+  // every branch caps its candidate pool at k*4 rows (the LIMIT above) -- with k in [1,8]
+  // (KG_TOPK's range), the worst-ranked row still in a pool contributes at least
+  // 1/(60+k*4+1), i.e. >= 1/92 ~= 0.0109 even at k=8. 0.01 sits just under that floor, so any
+  // FTS or embedding hit that made it into a branch's own pool now clears the seed filter --
+  // matching src/db.ts's hybridSearch for memories, which fuses the same way but has no
+  // absolute floor at all (rank + slice(0, limit) only).
+  const minScore = opts.minScore ?? 0.01
   const expandHops = opts.expandHops ?? 1
   const snippetMaxLines = opts.snippetMaxLines ?? 60
   const strict = opts.strict ?? false
